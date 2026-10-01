@@ -1,0 +1,424 @@
+;; Docs for std/http.bjo, read through (:doc #:file "http.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "HTTP requests: a request is a value you build, then send blocking, suspending or as an event.")
+  (see get post fetch fetching response-close with-response)
+  (example """
+    (import (std http))
+
+    (defun (main args)
+      (match (fetch (get "https://example.com/fruit"))
+        ((Err e) 1)
+        ((Ok r)
+         (println (response-status r))
+         (println (response-text r))
+         (response-close r)
+         0)))
+    """)
+  (example """
+    ;; Streaming a body a line at a time, without holding it in memory.
+    ;; fetch, port-eof? and read-line all suspend because this is a defbjo;
+    ;; the same source blocks in a defun.
+    (defbjo (count-lines url)
+      (match (fetch (get url))
+        ((Err e) 0)
+        ((Ok r)
+         (let ((port (response-port r)))
+           (let count ((n 0))
+             (if (port-eof? port)
+                 (let () (response-close r) n)
+                 (let () (ignore (read-line port)) (count (+ n 1)))))))))
+    """)
+  (example """
+    ;; JSON is two modules rather than one: this one has no serializer.
+    (import (text json))
+
+    (defbjo (fetch-json url)
+      (match (fetch (get url #:headers [("Accept" . "application/json")]))
+        ((Err e) (Err "the request failed"))
+        ((Ok r)
+         (let ((parsed (read-json (response-port r))))
+           (response-close r)
+           parsed))))
+    """)
+  (reference """
+    A request is a value you build and then send. How it is sent, blocking,
+    suspending, or as an event, is the only thing that differs between
+    @code{fetch} and @code{fetching}.
+
+    There is no C# in this module: @code{System.Net.Http} is reached with
+    @code{import/extern} and the @code{#:async} machinery, and the response
+    body is an ordinary @code{TextInputPort}.
+
+    Two things are deliberately not what .NET does. A status code is a
+    value, never an exception: 404 is an @code{Ok} holding a 404. And
+    @code{HttpClient.Timeout} is switched off, because a deadline belongs to
+    the event system (see below).
+
+    The ambient cancellation token reaches .NET by itself, so
+    @code{with-cancel} and @code{with-deadline} stop a request in flight
+    without anything being passed along.
+
+    @strong{Do not drain a body with @code{port->seq}.} A @code{seq} body
+    cannot hold an await, so its reads park the fiber's thread, and the
+    compiler says so. @code{port->vec}, @code{port->chan} and a loop like the
+    one in the example are the suspending ways to drain a port.
+
+    @strong{What to watch out for.}
+
+    @itemlist{
+    @item{@strong{Close the response, or leak the connection.} It is read as
+    headers only, so it owns a live socket until closed. @code{ignore}
+    closes it, @code{with-response} closes it, and dropping it silently is a
+    compile error.}
+    @item{@strong{@code{response-port} once.} A second call hands out a
+    second reader over a stream the first one is already draining.}
+    @item{@strong{A status is not an error.} Nothing here throws on 4xx or
+    5xx. Check @code{response-ok?} yourself.}
+    @item{@strong{Timeouts are yours.} @code{HttpClient.Timeout} is switched
+    off, because it cannot be varied per request and arrives as a
+    cancellation that cannot be told from a real one. Race a
+    @code{(timeout ms)} branch, or use @code{with-deadline}.}
+    @item{@strong{A request that has to be losable is @code{fetching}, not
+    @code{fetch}.} @code{fetch} waits for one thing; only an event can be a
+    branch of a @code{choose}.}
+    @item{@strong{A branch that loses after the headers have arrived leaks
+    that response.} The window is small, since losing cancels the token, but
+    the value is dropped where nothing can close it. Do not race a request
+    you cannot afford to lose twice.}
+    @item{@strong{Repeated headers are folded with @code{", "}.} That is
+    wrong for @code{Set-Cookie} alone, and nothing here reads cookies yet.}
+    @item{@strong{UTF-8 is assumed} when the server names no charset, names
+    one that is not installed, or names nonsense.}
+    @item{@strong{Bodies are text.} There is no bytes story yet, so an image
+    or a zip has no type to arrive as.}
+    }
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The types
+;; ---------------------------------------------------------------------------
+
+(:doc Method
+  (summary "An HTTP method: GET, POST, PUT, PATCH, DELETE or HEAD.")
+  (see request))
+
+(:doc Body
+  (summary "What a request carries: nothing, text, JSON text, a form, or a body of your own.")
+  (case Empty "No body.")
+  (case Text "Plain text, sent as @code{text/plain; charset=utf-8}.")
+  (case JsonText "Text that is @em{already} serialized JSON, sent as @code{application/json; charset=utf-8}.")
+  (case Form "Fields, percent-encoded and sent as @code{application/x-www-form-urlencoded}.")
+  (case Other "A @code{Custom} body: your own content type and text.")
+  (see post request Custom)
+  (reference """
+    @code{JsonText} takes text that is already serialized; this module has no
+    JSON writer. It is spelled that way rather than @code{Json} because
+    @code{(text json)} has a type called @code{Json}.
+
+    Every body is sent as UTF-8.
+    """))
+
+(:doc Custom
+  (summary "A body with a content type of your own.")
+  (field content-type "The @code{Content-Type} header to send, as written.")
+  (field text "The body, sent as UTF-8.")
+  (see Body)
+  (example """
+    (request PUT "https://example.com/note"
+             #:body (Other (Custom (content-type "text/csv") (text "a,b\n1,2"))))
+    """))
+
+(:doc Pair
+  (summary "A name and a value: a header, a query parameter or a form field.")
+  (example """
+    ("Accept" . "application/json")
+    """))
+
+(:doc Request
+  (summary "A request, not yet sent.")
+  (field method "The HTTP method.")
+  (field url "The url, which must be @code{http} or @code{https}. It may already carry a query.")
+  (field query "Query parameters, percent-encoded and appended to the url.")
+  (field headers "Headers, for the request and for its body alike.")
+  (field body "The body, or @code{Empty}.")
+  (see request get post fetch))
+
+(:doc Response
+  (summary "An answer: a status, headers, and a body not yet read.")
+  (see response-status response-text response-port response-close with-response)
+  (reference """
+    Opaque: the accessors are the whole of it. The CLR reply inside owns a
+    live connection, so a response has to be closed, with
+    @code{response-close}, @code{ignore} or @code{with-response}.
+    """))
+
+(:doc Client
+  (summary "A @code{System.Net.Http.HttpClient}: connections and their settings.")
+  (see make-client current-http-client))
+
+;; ---------------------------------------------------------------------------
+;; Writing a request
+;; ---------------------------------------------------------------------------
+
+(:doc request
+  (summary "A request with any method.")
+  (arg method "The method.")
+  (arg url "Where to send it.")
+  (key #:query "Query parameters, appended to the url.")
+  (key #:headers "Headers, for the request or its body.")
+  (key #:body "The body.")
+  (returns "The request, not yet sent.")
+  (see get post fetch)
+  (example """
+    (request PUT "https://example.com/note"
+             #:body (Other (Custom (content-type "text/csv") (text "a,b\n1,2"))))
+    """)
+  (reference """
+    Query parameters are percent-encoded and appended; a url that already
+    has a query gets @code{&} rather than @code{?}.
+
+    A header goes on the request or on the body depending on which it is,
+    @code{Accept} on the one and @code{Content-Type} on the other, and both
+    are written in the same vector. Naming a body header on a request with
+    no body is an @code{Err} when it is sent, as is a url that does not
+    parse or is not @code{http} or @code{https}.
+    """))
+
+(:doc get
+  (summary "A GET request.")
+  (arg url "Where to send it.")
+  (key #:query "Query parameters, appended to the url.")
+  (key #:headers "Headers.")
+  (returns "The request, not yet sent.")
+  (see post request)
+  (example """
+    (get "https://example.com/search"
+         #:query   [("q" . "banana split") ("limit" . "10")]
+         #:headers [("Accept" . "application/json")])
+    """))
+
+(:doc post
+  (summary "A POST request with a body.")
+  (arg url "Where to send it.")
+  (arg body "The body.")
+  (key #:query "Query parameters, appended to the url.")
+  (key #:headers "Headers, for the request or its body.")
+  (returns "The request, not yet sent.")
+  (see get request Body)
+  (example """
+    (post "https://example.com/basket"
+          (JsonText "{\"fruit\":\"banana\"}")
+          #:headers [("Authorization" . "Bearer hunter2")])
+
+    (post "https://example.com/login" (Form [("user" . "bjoli") ("pass" . "banan")]))
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Sending one
+;; ---------------------------------------------------------------------------
+
+(:doc fetch
+  (summary "Sends a request and waits for the answer's headers.")
+  (arg req "The request.")
+  (returns "@code{Ok} with the response, whatever its status, or @code{Err} if it could not be built or sent.")
+  (see fetching response-close with-response)
+  (example """
+    ;; A deadline over a whole request, including the body. A bjoroutine,
+    ;; because a scope waits for its children before it returns, and waiting
+    ;; is a yield point.
+    (defbjo (main args)
+      (with-deadline 5000
+        (match (fetch (get "https://example.com/slow"))
+          ((Ok r) (println (response-text r)) (response-close r) 0)
+          ((Err e) (println "gave up") 1))))
+    """)
+  (reference """
+    Colourless: inside a bjoroutine it suspends and the thread goes back to
+    the pool, outside one it parks the calling thread. There is no second
+    name, and a function that calls it needs no colour of its own.
+
+    Failure is a value. A status code is @em{not} a failure: 404 is an
+    @code{Ok} holding a 404. The response is closed by whoever receives it.
+    """))
+
+(:doc fetching
+  (summary "A request as an event: sent when the branch is reached, cancelled if it loses.")
+  (arg req "The request.")
+  (returns "An event answering what @code{fetch} would.")
+  (see fetch)
+  (example """
+    ;; Two mirrors, whichever answers first. The loser's request is
+    ;; cancelled, not merely ignored.
+    (type (: Answer (Union (: Got (Result Exception Response)) TimedOut)))
+
+    (defbjo (from-a-mirror)
+      (match (sync (choose (wrap (fetching (get "https://eu.example.com/fruit")) (fun (a) (Got a)))
+                           (wrap (fetching (get "https://us.example.com/fruit")) (fun (a) (Got a)))
+                           (wrap (timeout 2000) (fun (fired) TimedOut))))
+        ((Got (Ok r))  (let ((body (response-text r))) (response-close r) body))
+        ((Got (Err e)) "failed")
+        (TimedOut      "no mirror answered")))
+    """)
+  (example """
+    ;; Retrying. A fresh request is built at every sync, so a retry loop is
+    ;; just a loop.
+    (defbjo (with-retries req tries)
+      (match (sync (fetching req))
+        ((Ok r) (Ok r))
+        ((Err e) (if (= tries 0)
+                     (Err e)
+                     (let () (sync (timeout 250)) (with-retries req (- tries 1)))))))
+    """)
+  (reference """
+    What to reach for when the request has to be a branch of a
+    @code{choose}. Nothing is sent until the branch is reached.
+
+    The message is built afresh at every sync: a .NET request message may be
+    sent only once, and an event may be synced any number of times, so the
+    same event can be retried.
+
+    A branch that loses after the headers have arrived leaks that response,
+    since nothing is left to close it.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Reading the answer
+;; ---------------------------------------------------------------------------
+
+(:doc response-status
+  (summary "The status code.")
+  (arg r "The response.")
+  (returns "The code, such as 200 or 404.")
+  (see response-ok? response-reason))
+
+(:doc response-ok?
+  (summary "Whether the status is 2xx.")
+  (arg r "The response.")
+  (returns "#t for a status from 200 to 299.")
+  (see response-status)
+  (reference """
+    Nothing here throws on a 4xx or 5xx: which codes are failures is the
+    caller's business.
+    """))
+
+(:doc response-reason
+  (summary "The reason phrase, such as \"Not Found\".")
+  (arg r "The response.")
+  (returns "The phrase, or the empty string over HTTP/2, which has none. Do not parse it.")
+  (see response-status))
+
+(:doc response-header
+  (summary "One header of the answer.")
+  (arg r "The response.")
+  (arg name "The header's name, in any case.")
+  (returns "Its value, or @code{None}. Repeated headers are folded with @code{\", \"}.")
+  (see response-headers)
+  (example """
+    (response-header r "Content-Type")   ; the same as "content-type"
+    """))
+
+(:doc response-headers
+  (summary "Every header of the answer, its body's included.")
+  (arg r "The response.")
+  (returns "A map from lower-cased names to values. Repeated headers are folded with @code{\", \"}.")
+  (see response-header)
+  (reference """
+    Folding is wrong for @code{Set-Cookie} alone: folded cookies cannot be
+    taken apart again.
+    """))
+
+(:doc response-text
+  (summary "The whole body, as text.")
+  (arg r "The response.")
+  (returns "The body, decoded by the charset the server named, or UTF-8.")
+  (see response-port)
+  (reference """
+    Reads it through @code{response-port}, so it may be called once, and not
+    after @code{response-port}. Colourless: reading suspends inside a
+    bjoroutine and blocks outside one, exactly as reading a file does.
+    """))
+
+(:doc response-port
+  (summary "The body as a port, to read as it arrives.")
+  (arg r "The response.")
+  (returns "A @code{TextInputPort} over the body.")
+  (see response-text)
+  (reference """
+    So @code{read-line}, @code{port->chan} and @code{read-json} all work on
+    it. Reading suspends inside a bjoroutine and blocks outside one, exactly
+    as reading a file does.
+
+    Once per response: a second call hands out a second reader over a stream
+    the first one is already draining.
+
+    The text is decoded by the charset the @code{Content-Type} names. UTF-8
+    is assumed when it names none, names one that is not installed, or
+    names nonsense.
+    """))
+
+(:doc response-close
+  (summary "Releases the response's connection.")
+  (arg r "The response.")
+  (see with-response)
+  (reference """
+    A response holds a connection until it is closed. @code{(ignore r)} does
+    the same, so a response dropped in statement position releases it rather
+    than leaking it.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Scoped
+;; ---------------------------------------------------------------------------
+
+(:doc with-response
+  (summary "Runs body with a response, and closes it on the way out.")
+  (form (with-response (name form) body ...))
+  (arg name "Bound to the @code{(Result Exception Response)}.")
+  (arg form "What produces it, such as @code{(fetch req)}.")
+  (rest body "What to run. At least one form.")
+  (see fetch response-close)
+  (example """
+    (with-response (r (fetch (get "https://example.com/fruit")))
+      (match r
+        ((Ok got) (response-text got))
+        ((Err e) "")))
+    """)
+  (reference """
+    The response is closed however the body leaves, by returning or by
+    raising. An @code{Err} has nothing to close.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The client
+;; ---------------------------------------------------------------------------
+
+(:doc make-client
+  (summary "A new client, with settings of its own.")
+  (key #:connection-seconds "How long a pooled connection lives before it is replaced.")
+  (key #:redirects "Whether redirects are followed.")
+  (returns "The client. Responses are decompressed, and it has no timeout.")
+  (see current-http-client)
+  (reference """
+    A pooled connection is recycled after @code{connection-seconds}: one
+    that lived forever would outlast a DNS change and keep talking to an
+    address that stopped being right.
+
+    @code{HttpClient.Timeout} is off on purpose. It applies to every call
+    made through the client, cannot be varied per request, and arrives as a
+    cancellation that cannot be told from a real one. Race a
+    @code{(timeout ms)} branch, or use @code{with-deadline}.
+    """))
+
+(:doc current-http-client
+  (summary "The client every send uses.")
+  (see make-client)
+  (example """
+    (parameterize ((current-http-client (make-client #:redirects #f)))
+      (fetch (get "https://example.com/redirects-somewhere")))
+    """)
+  (reference """
+    A @code{(Param Client)}. Parameterize another one in for a proxy, a test
+    double or a second set of connection settings.
+    """))

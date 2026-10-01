@@ -1,0 +1,125 @@
+;; Docs for text/xml/write.bjo, read through (:doc #:file "write.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Writing XML: a node or a document, to a port or to a string.")
+  (see node->xml-string document->xml-string XmlWriteError)
+  (example """
+    (import (text xml) (text xml write))
+
+    (node->xml-string (xml-element (xml-name "p") Nil (list (xml-text "hi"))))
+    ;; (Ok "<p>hi</p>")
+
+    (document->xml-string doc #:indent? #t
+                          #:prefixes (list (Tuple "atom" "http://www.w3.org/2005/Atom")))
+    """)
+  (reference """
+    All four functions take @code{#:indent?} and @code{#:prefixes}; the
+    document ones also @code{#:declaration?}.
+
+    @strong{Errors.} @code{XmlWriter} does all the escaping. Content it
+    cannot write is an @code{XmlWriteError}, not an exception: a character
+    XML does not allow, U+0000 say, and three it would otherwise change or
+    drop without a word: a comment containing @code{--} or ending in
+    @code{-}, a processing instruction named @code{xml} or with a target
+    that is not a name, and processing instruction data containing
+    @code{?>}. Whatever was written to a port before the error stays
+    written, and nothing says how far it got. An exception from the port
+    itself, an @code{IOException}, passes through.
+
+    @strong{Prefixes.} A name has none, so the writer chooses:
+
+    @itemlist{
+      @item{an element uses a prefix already in scope for its namespace, then
+            a hinted one, then a default namespace declaration,
+            @code{xmlns="..."}; an element in no namespace inside a default
+            namespace gets @code{xmlns=""}}
+      @item{an attribute in a namespace always needs a prefix, since the
+            default namespace does not apply to attributes: one in scope,
+            then a hinted one, then @code{ns1}, @code{ns2} and so on}
+      @item{@code{xml:lang} and @code{xml:space} use @code{xml}, which is
+            never declared}}
+
+    @code{#:prefixes} is the hints, as
+    @code{(list (Tuple "atom" "http://www.w3.org/2005/Atom"))}. A hinted
+    prefix is declared once, on the root, for the namespaces the tree uses.
+    A hint that could not be a prefix (not a name, or @code{xml} or
+    @code{xmlns}), or that names no namespace, the @code{xml} namespace or
+    the @code{xmlns} one, raises an @code{ArgumentException}. A prefix given
+    twice: the first one is used, and the namespace of the second gets a
+    generated prefix where the two meet.
+
+    @strong{Indentation.} @code{#:indent? #t} puts an element's children on
+    lines of their own, two spaces a level, but never where the whitespace
+    would be content: not inside an element that has text among its
+    children, not anywhere below one, and not inside
+    @code{xml:space="preserve"}. @code{XmlWriter}'s own indentation is not
+    used: it decides only when it meets the text, and by then has indented
+    the elements before it.
+
+    @strong{The doctype} is the one piece of markup written by hand,
+    because @code{XmlWriter.WriteDocType} wants a C# null for an id that is
+    not there and there is no null to give it. Its parts are checked
+    instead of escaped: the name has to be an XML name, a public id needs a
+    system id with it, and a system id cannot hold both kinds of quote.
+    Its internal subset is not kept by the reader, so it is not written
+    back.
+    """))
+
+(:doc XmlWriteError
+  (summary "Content the writer cannot write, and why.")
+  (field message "What is wrong.")
+  (see node->xml document->xml)
+  (reference """
+    @code{->str} answers the message.
+    """))
+
+(:doc node->xml
+  (summary "Writes a node as XML to a port.")
+  (arg node "The node: an element, a text, a comment or a processing instruction.")
+  (arg port "Where to write it. It is left open.")
+  (key #:indent? "Whether to put an element's children on lines of their own.")
+  (key #:prefixes "Prefixes to use, as (Tuple prefix uri).")
+  (returns "Ok, or the XmlWriteError for what could not be written. What was written before it stays written.")
+  (raises ArgumentException "When a hint in #:prefixes could not be a prefix, or names no namespace, the xml one or the xmlns one.")
+  (see node->xml-string document->xml))
+
+(:doc node->xml-string
+  (summary "A node as a string of XML.")
+  (arg node "The node.")
+  (key #:indent? "Whether to put an element's children on lines of their own.")
+  (key #:prefixes "Prefixes to use, as (Tuple prefix uri).")
+  (returns "The XML, or the XmlWriteError for what could not be written.")
+  (raises ArgumentException "When a hint in #:prefixes could not be a prefix, or names no namespace, the xml one or the xmlns one.")
+  (see node->xml document->xml-string)
+  (example """
+    (node->xml-string (xml-element (xml-name "p")
+                                   (list (Tuple (xml-name "class") "note"))
+                                   (list (xml-text "hi"))))
+    ;; (Ok "<p class=\"note\">hi</p>")
+    """))
+
+(:doc document->xml
+  (summary "Writes a document as XML to a port.")
+  (arg doc "The document.")
+  (arg port "Where to write it. It is left open.")
+  (key #:indent? "Whether to put an element's children, and the nodes around the root, on lines of their own.")
+  (key #:prefixes "Prefixes to use, as (Tuple prefix uri).")
+  (key #:declaration? "Whether to begin with the XML declaration.")
+  (returns "Ok, or the XmlWriteError for what could not be written. What was written before it stays written.")
+  (raises ArgumentException "When a hint in #:prefixes could not be a prefix, or names no namespace, the xml one or the xmlns one.")
+  (see document->xml-string node->xml)
+  (reference """
+    The declaration is @code{<?xml version="1.0"?>}, with no encoding,
+    since which one the text ends up in is the port's business.
+    """))
+
+(:doc document->xml-string
+  (summary "A document as a string of XML.")
+  (arg doc "The document.")
+  (key #:indent? "Whether to put an element's children, and the nodes around the root, on lines of their own.")
+  (key #:prefixes "Prefixes to use, as (Tuple prefix uri).")
+  (key #:declaration? "Whether to begin with the XML declaration, <?xml version=\"1.0\"?>.")
+  (returns "The XML, or the XmlWriteError for what could not be written.")
+  (raises ArgumentException "When a hint in #:prefixes could not be a prefix, or names no namespace, the xml one or the xmlns one.")
+  (see document->xml node->xml-string))

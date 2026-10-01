@@ -1,0 +1,2014 @@
+;; Docs for std/datetime.bjo, read through (:doc #:file "datetime.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Dates, times, instants, zones and durations, with the clock as an argument.")
+  (see Moment datetime->moment now current-clock date->text text->date)
+  (example """
+    (import (std datetime))
+
+    (defun (main)
+      (def (Some stockholm) (timezone "Europe/Stockholm") :leave-with 1)
+      (def (Some noon) (datetime 2026 10 24 #:hours 12) :leave-with 1)
+      (def meeting (datetime->moment noon stockholm (resolver GapPush OverlapEarlier)))
+      (println (+days meeting 1))     ;; 2026-10-25T12:00:00+01:00[Europe/Stockholm]
+      (println (+hours meeting 24))   ;; 2026-10-25T11:00:00+01:00[Europe/Stockholm]
+      (println (now))                 ;; 2026-09-28T10:59:20.3067129Z
+      0)
+    """)
+  (reference """
+    In the example the clocks go back on the night between, so a calendar day
+    later and 24 hours later are two different times.
+
+    One model for time, the one java.time, NodaTime and Racket's Gregor
+    share, plus two ideas from OCaml's Ptime: the clock is an argument (with
+    a default that a program can rebind), and the types refuse operations
+    that mean nothing, such as adding a calendar day to an instant.
+
+    @strong{The types.}
+
+    @read-table{
+    | Type                | What it is                                          | Built on |
+    |---------------------+-----------------------------------------------------+----------|
+    | @code{Date}         | a calendar date, no zone                            | @code{DateOnly} |
+    | @code{Time}         | a time of day, no zone                              | @code{TimeOnly} |
+    | @code{DateTime}     | a date and a time, no zone                          | @code{DateTime}, Kind always Unspecified |
+    | @code{Instant}      | a point on the global timeline                      | a @code{long} of UTC ticks |
+    | @code{TimeZone}     | an IANA zone, such as @code{Europe/Stockholm}       | @code{TimeZoneInfo} |
+    | @code{Moment}       | a local datetime, its UTC offset, and its zone      | a struct of the three |
+    | @code{Duration}     | a fixed length of time: hours, not calendar days    | @code{TimeSpan} |
+    | @code{DatePeriod}   | calendar amounts: years, months, weeks, days        | a struct of four @code{int} |
+    | @code{Period}       | a date period and a duration: 1 day and 3 hours     | a struct of the two |
+    | @code{Clock}        | where @code{now} comes from, and its zone           | the system clock, a fixed or a manual one |
+    }
+
+    Each value type is a struct with one field (a @code{Moment} has three),
+    so a @code{Date} costs what a @code{DateOnly} costs. No .NET time type
+    appears in a public signature.
+
+    @strong{Traits.} Each trait has one method, and everything else is a
+    generic function over the traits. A new function, such as a
+    @code{->quarter}, never needs a new instance.
+
+    @read-table{
+    | Trait             | Method                           | Date | Time | DateTime | Moment | Instant | Duration |
+    |-------------------+----------------------------------+------+------+----------+--------+---------+----------|
+    | @code{HasDate}    | @code{(->date x)}                | ✓    |      | ✓        | ✓      |         |          |
+    | @code{HasTime}    | @code{(->time x)}                |      | ✓    | ✓        | ✓      |         |          |
+    | @code{HasInstant} | @code{(->instant x)}             |      |      |          | ✓      | ✓       |          |
+    | @code{DateArith}  | @code{(+date-period x p)}        | ✓    |      | ✓        | ✓      |         |          |
+    | @code{DateDiff}   | @code{(->date-in-zone-of b a)}   | ✓    |      | ✓        | ✓      |         |          |
+    | @code{TimeArith}  | @code{(+duration x d)}           |      | ✓    | ✓        | ✓      | ✓       | ✓        |
+    }
+
+    Every type has @code{=} and @code{->str}; all but @code{TimeZone}, the
+    periods and the resolvers also have @code{compare}. A @code{TimeZone} is
+    equal to another by its id.
+
+    @strong{Construction.} Bad input is @code{None}: @code{(date 2026 2 30)}
+    is @code{None}. Nanoseconds are cut to the 100 ns a tick holds:
+    @code{(time 1 2 #:nanoseconds 150)} holds 100 ns.
+
+    @strong{Moments.} A local time can be missing from a zone (a gap, when
+    the clocks go forward) or happen twice (an overlap, when they go back),
+    so @code{datetime->moment} takes a @code{Resolver} saying what to do with
+    each, and @code{datetime->moment/opt} answers @code{None} for both.
+
+    Date arithmetic on a moment works on the local time and then finds the
+    offset again, since a trait method cannot take a resolver. Through an
+    overlap it keeps the moment's own offset if that still fits, and takes
+    the earlier one if not. Through a gap it pushes forward. So 2026-10-24
+    02:30+02:00 plus a day is 2026-10-25 02:30+02:00, and 2026-10-26
+    02:30+01:00 minus a day is 2026-10-25 02:30+01:00.
+    @code{+date-period/resolver} and @code{-date-period/resolver} take a
+    resolver of their own.
+
+    Duration arithmetic on a moment is exact: through the instant, and back
+    into the same zone.
+
+    @strong{The clock.} Only @code{now}, @code{now/moment}, @code{today} and
+    @code{clock-timezone} read the time. Each takes @code{#:clock}, which
+    defaults to the value of the parameter @code{current-clock} at that
+    call. A clock carries its own zone, which is where @code{today} is, and
+    there is no separate current zone. Everything else in the module is
+    pure.
+
+    @codeblock[#:lang "bjolang"]|{
+    (now)                                      ;; the current clock
+    (now #:clock some-clock)                   ;; this one
+    (today #:tz tokyo)                         ;; the date in Tokyo
+    (parameterize ((current-clock test-clock))
+      (handle-request req))                    ;; every (now) inside reads test-clock
+    }|
+
+    This is the wall clock, and it can step backwards when the machine's
+    time is corrected. To measure how long something takes, use the
+    prelude's @code{(monotonic-ms)} or @code{(std stopwatch)} instead, whose
+    clock only moves forward.
+
+    @strong{Arithmetic.} Calendar units (@code{+years}, @code{+months},
+    @code{+weeks}, @code{+days} and their @code{-} twins) take an @code{int}
+    and work on anything @code{DateArith}; clock units (@code{+hours},
+    @code{+minutes}, @code{+seconds}, @code{+milliseconds} and their twins)
+    take a @code{long} and work on anything @code{TimeArith}.
+
+    Month arithmetic clamps to the end of the month: 2026-01-31 plus a month
+    is 2026-02-28, and 2024-01-31 plus a month is 2024-02-29. A period is
+    applied largest unit first: years, then months, then weeks and days,
+    then the duration. Time-of-day arithmetic wraps at midnight, modulo 24
+    hours, as @code{TimeOnly} and java.time's @code{LocalTime} do. 23:00
+    plus two hours is 01:00, 01:00 minus three hours is 22:00, and whole
+    days drop out: 12:00 plus @code{(duration #:days 3 #:hours 2)} is 14:00,
+    as is 12:00 plus 50 hours. Nothing is refused, so to know how many
+    midnights were crossed, add to a @code{DateTime} instead.
+
+    @strong{Weeks.} ISO 8601 weeks, as most of Europe numbers them: a week
+    runs Monday to Sunday, and week 1 is the week with the year's first
+    Thursday. A week belongs to the year its Thursday is in, so up to three
+    days at the start of January can be in the last week of the year
+    before, and up to three at the end of December in week 1 of the next:
+    2027-01-01 is in week 53 of 2026, and 2025-12-29 in week 1 of 2026. That
+    year is @code{->week-year}, and it is the one to print beside
+    @code{->week}.
+
+    @strong{Differences.} Whole units, toward zero, from the first argument
+    to the second. @code{days-between}, @code{weeks-between},
+    @code{months-between} and @code{years-between} read dates only, of two
+    values of one type. @code{duration-between} and the
+    @code{hours-between} family measure the time that passed, between two
+    things with an instant.
+
+    @strong{Text.} @code{->str} writes ISO 8601 for every type, and a reader
+    for each reads it back as an @code{Option}:
+
+    @read-table{
+    | @code{iso8601->date}        | @code{2026-10-25} |
+    | @code{iso8601->time}        | @code{02:30}, @code{02:30:00}, @code{02:30:00.5}, @code{02:30:00,5} |
+    | @code{iso8601->datetime}    | @code{2026-10-25T02:30:00} |
+    | @code{iso8601->instant}     | @code{2026-10-25T01:30:00Z}, or any offset, converted to UTC |
+    | @code{iso8601->moment}      | @code{2026-10-25T02:30:00+01:00[Europe/Stockholm]} |
+    | @code{iso8601->duration}    | @code{PT26H30M}, @code{-PT1.5S} |
+    | @code{iso8601->date-period} | @code{P1Y2M3W4D}, @code{P1M-3D} |
+    | @code{iso8601->period}      | @code{P1DT3H} |
+    }
+
+    Only the extended format is read (@code{2026-10-25}, not
+    @code{20261025}), with an upper case @code{T} and @code{Z}. Week dates,
+    @code{2026-W43-7}, and ordinal dates, @code{2026-298}, are not read. A
+    fraction of a second has up to seven digits written, and more are read
+    and dropped.
+
+    Text in a format of your own is written by @code{date->text} and its
+    neighbours and read by @code{text->date} and its neighbours. The digits
+    are written and read by this module, not by .NET, so no culture is
+    involved and nothing depends on the machine's locale.
+
+    @strong{Range and errors.} Every value lies between 0001-01-01T00:00 and
+    9999-12-31T23:59:59.9999999. A function that returns the value itself
+    raises a @code{System.OverflowException} when the result would be
+    outside; a constructor, a reader or an @code{/opt} function answers
+    @code{None}.
+
+    @codeblock[#:lang "bjolang"]|{
+    (-days (date 1 1 1) 1)        ;; raises
+    (date 0 12 31)                ;; None
+    }|
+
+    Nothing is clamped or wrapped silently, apart from the month-end rule
+    and the wrap at midnight above. The checks come before the arithmetic,
+    since C# arithmetic wraps where it overflows: @code{(+hours i n)} with an
+    @code{n} above about 256 million would multiply past a @code{long} and
+    could wrap back into range, so @code{n} is checked first.
+
+    A @code{Duration} holds ±(2@sup{63} − 1) ticks, about ±29 227 years,
+    from @code{-PT256204778H48M5.4775807S} to
+    @code{PT256204778H48M5.4775807S}. A @code{TimeSpan} goes one tick
+    further on the negative side, to a value with no negation; a sum that
+    would reach it raises instead, so every duration can be negated, printed
+    and read back.
+
+    Near the two ends of the range, a local time and its instant cannot both
+    fit: 0001-01-01T00:00 in Tokyo is an instant on the day before, and the
+    instant 0001-01-01T00:00Z is a local time on the day before in New York.
+    There, @code{datetime->moment} and @code{instant->moment} raise and
+    @code{datetime->moment/opt} is @code{None}. This is not a gap, so no
+    resolver moves it.
+
+    @strong{Limits.}
+
+    @itemlist{
+      @item{@strong{100 ns.} A tick is the finest unit.}
+      @item{@strong{Years 1 to 9999}, and the proleptic Gregorian calendar
+        throughout.}
+      @item{@strong{The zone data is the machine's.} On Linux and macOS,
+        .NET reads the IANA database from the operating system
+        (@code{/usr/share/zoneinfo} on Linux). A slim container image may
+        have none, and then @code{(timezone "Europe/Stockholm")} is
+        @code{None}. On Windows, .NET maps an IANA id onto Windows' own zone
+        data, which keeps little history, so dates before the 2000s may get
+        today's rules (Brussels' 1914 gap is not there).}
+      @item{@strong{Offsets are whole minutes.} Before standard time, a zone
+        used local mean time, with an offset in seconds: Stockholm's was
+        +1:12:12. .NET keeps whole minutes only, so a moment before about
+        1900 can be up to a minute off the tz database.}
+      @item{@strong{Offsets stop at ±14:00.} .NET caps them there. Nine zones
+        had local mean time beyond it: Alaska's before 1867 (Sitka's
+        +14:58:47 reads as +14:00), and Manila, Guam, Saipan and Palau
+        before 1845 (Manila's −15:56:08 reads as −14:00, so the day it
+        skipped is 22 hours and 3 minutes long rather than 24). Those
+        moments are off by up to two hours.}
+      @item{@strong{No leap seconds}, and no other calendars. Names come in
+        English and Swedish, or from a @code{DateNames} of your own.}
+    }
+
+    @strong{How a local time finds its offset.} An offset @code{o} fits a
+    local time @code{l} when the zone has offset @code{o} at the instant
+    @code{l - o}. The candidates are the offsets a day before and a day after
+    @code{l}, read as instants. No offset exceeds 16 hours, so those two
+    cover every offset in reach, as long as the zone changes its offset at
+    most once in 48 hours. Nothing in the tz database comes close: its two
+    closest changes, in Freetown in 1939, are 95 hours apart. When a lookup
+    answers with a third offset, that becomes a candidate too, which catches
+    most layouts with two changes in 48 hours, though not every one.
+
+    How far a change jumps does not matter, only that every offset is under
+    a day, so the two lookups land on either side of it. Samoa skipped
+    2011-12-30 entirely, going from −10:00 to +14:00, and that day is a gap
+    here; Alaska had 1867-10-18 twice, and that day is an overlap. Both are
+    in the tests.
+
+    .NET's own @code{IsInvalidTime} and @code{IsAmbiguousTime} are not used.
+    They miss the gaps and overlaps that a change of @em{standard} time
+    leaves: Brussels went from +00:00 to +01:00 on 1914-11-08, and .NET
+    calls 00:30 that night an ordinary time. Here it is a gap.
+
+    @strong{Why it is built this way.} Each of these rules something out,
+    and the example is what it rules out. Values are written as ISO text
+    here for short.
+
+    @itemlist{
+      @item{@strong{An instant is a @code{long} of UTC ticks, not a UTC
+        @code{DateTime}.} @code{DateTime.Equals} ignores the Kind, so a
+        @code{DateTime} saying 12:00 local time compares equal to 12:00 UTC
+        although the two are hours apart. A @code{long} has no Kind to get
+        wrong. The cost: the range check on every addition is this
+        module's.}
+      @item{@strong{The value types are opaque.} Nobody can build a moment
+        whose offset its zone never has, such as
+        @code{2026-07-01T12:00+01:00[Europe/Stockholm]} (July is +02:00).
+        Every moment comes from a function that checked it.}
+      @item{@strong{Periods are transparent.} Any mix of numbers is a valid
+        period (1 month and 40 days is fine, since months differ in length),
+        so there is nothing to protect, and @code{(record-ref p months)}
+        works. Equality is field by field:
+        @code{(= (date-period #:weeks 1) (date-period #:days 7))} is
+        @code{#f}.}
+      @item{@strong{Elapsed time is measured between instants only.}
+        @code{(hours-between a b)} on two @code{DateTime} values would answer
+        the wall-clock difference: 24 hours for 2026-10-25 00:00 to
+        2026-10-26 00:00, where 25 passed in Stockholm. Stored local times
+        look like timestamps, so that answer would be taken for the time
+        that passed, and code generic over anything with a duration between
+        could not tell the two apart. So it does not compile, as in
+        NodaTime, and the wall-clock reading is written out as a reading in
+        UTC. @code{DateTime} is not @code{HasInstant} either, since
+        @code{(->instant some-datetime)} would have to guess a zone.}
+      @item{@strong{Calendar differences read dates only, and count months as
+        java.time does.} @code{(days-between 2026-01-01T23:00
+        2026-01-02T01:00)} is 1, although two hours passed;
+        @code{hours-between} is for elapsed time.
+        @code{(months-between 2026-01-31 2026-02-28)} is 0, although
+        @code{(+months 2026-01-31 1)} is 2026-02-28. In return, swapping two
+        dates only flips the sign.}
+      @item{@strong{Two moments are compared in one zone, the first one's.}
+        Read each in its own zone, one instant would be a day apart from
+        itself in New York and in Tokyo. Both arguments have one type for
+        the same reason: a date against a moment would read the moment's
+        local date without saying so, and @code{(->date m)} says it.}
+      @item{@strong{@code{->weekday} counts as ISO 8601 does, Monday 1 to
+        Sunday 7,} as the text this module reads and writes is ISO 8601. It
+        is not called @code{->wday}: C's @code{tm_wday}, Ruby's @code{wday}
+        and Racket Gregor's @code{->wday} count Sunday as 0, so
+        @code{(= (->wday d) 0)} written from habit would compile and never be
+        true. For Sunday as 0, write @code{(% (->weekday d) 7)}.}
+      @item{@strong{A week number comes with a year of its own,
+        @code{->week-year}.} Printed beside @code{->year}, 2027-01-01 would
+        be week 53 of 2027, a week 2027 does not have, and 2025-12-29 week 1
+        of 2025, a year early. The two are separate functions rather than
+        one pair, since asking which week it is usually wants the number
+        only; the two years differ in at most three days at either end of a
+        year.}
+      @item{@strong{A format is a quoted list, not a pattern string.} In a
+        pattern string a letter's case changes its meaning: Java's
+        @code{YYYY} is the week-based year where @code{yyyy} is the year, so
+        @code{YYYY-MM-dd} writes 2025-12-29 as 2026-12-29, and @code{mm} is
+        minutes where @code{MM} is months. Here a field has a name, a wrong
+        name is a compile error that lists the right ones, and text needs no
+        escaping, being a string of its own. The cost: a format is longer
+        than @code{yyyy-MM-dd}, and cannot arrive as text from a
+        configuration file; a program chooses among formats it holds.}
+      @item{@strong{One format union and one function per type.} That is what
+        makes @code{hours} in a date's format a compile error. A moment's
+        date is written with @code{(date->text (->date m) ...)}, which says
+        whose date it is, as a calendar difference asks for @code{->date}
+        too.}
+      @item{@strong{A format that could read a text two ways is refused, not
+        read greedily.} With @code{'(year month day)}, January 11 and
+        November 1 of 2026 are both written @code{2026111}, so no reader can
+        tell which was meant. Read greedily, @code{2026110}, which the same
+        format writes for January 10, would be November 0, and
+        @code{None}. Trying every split instead would still have to pick one
+        of the two dates. So the format is refused when it is used to read,
+        and the message says what reads one way: a width, or text between
+        the parts. The cost: a format that is fine for the dates a program
+        has, such as @code{'(year month day)} for dates whose month and day
+        both have two digits, is refused anyway.}
+      @item{@strong{A field left out is its first value, rather than
+        refused.} HTML's month input sends @code{2026-10} and its week input
+        @code{2026-W43}, and a text without a day means the month itself;
+        reading it as the 1st, and a week as its Monday, gives a
+        @code{Date} that stands for it with no second function. The cost:
+        that @code{Date} is the month's first day, not a month, and written
+        back with a format that has a day it says @code{01}.}
+      @item{@strong{Month, day and @code{yday} count within @code{year}, and
+        @code{week} within @code{week-year}.} The two years differ in up to
+        three days at each end of a year, so a format that mixes them up is
+        right most of the year and wrong near New Year, as Java's
+        @code{YYYY-MM-dd} is. Read with @code{'((year 4) "-W" (week 2))},
+        @code{2026-W01} would be January 1, the Thursday of week 1, and
+        @code{2026-W43} nothing. Such a format is refused whatever the text,
+        so the mix-up shows the first time the format is used.}
+      @item{@strong{@code{text->moment} never guesses a zone.} RFC 3339's
+        @code{2026-10-25T02:30:00+01:00} has an offset, and +01:00 is
+        Stockholm's, Paris's, Lagos's and a dozen others'; a day later the
+        first two are still at +01:00 and Lagos too, but in March they part.
+        A moment read in a guessed zone would do its calendar arithmetic by
+        the wrong rules, a month later and silently. So a moment's format
+        needs @code{zone}, and a text without one is an instant, which
+        @code{instant->moment} puts in a zone the program names. A text's
+        offset is not a zone either: it is checked against the zone read, as
+        @code{iso8601->moment} checks it.}
+      @item{@strong{An instant's fields are UTC's unless its format has an
+        offset.} That is what @code{instant->text} writes, so the two are
+        inverses, and it is the one reading that needs no zone: a program
+        that stores UTC text writes and reads it with one format. A text in
+        some local time without an offset is a @code{DateTime}, and becomes
+        an instant only through a zone the program names, with
+        @code{datetime->moment}.}
+      @item{@strong{A moment's @code{=} compares every field, and
+        @code{compare} orders by instant, then local time, then zone id,} so
+        the two agree. 12:00+02:00[Europe/Stockholm] and 10:00+00:00[UTC]
+        are one instant and two values; a sorted set keeps both, side by
+        side. For the same instant, compare @code{(->instant a)} and
+        @code{(->instant b)}.}
+      @item{@strong{The resolvers are a closed set.} A resolver of your own
+        (on a gap, go back to the last valid time) needs a new case here. In
+        return, no resolver can produce a moment at a local time or in a
+        zone that was not asked for, and @code{/opt} covers refusing.}
+      @item{@strong{Leaving the range raises.}
+        @code{(+days (date 9999 12 31) 1)} raises rather than answering an
+        @code{Option}, which would force a @code{match} after every
+        addition. Constructors and readers answer @code{None}, since bad
+        input is expected there.}
+      @item{@strong{Calendar units take @code{int}, clock units take
+        @code{long}.} No date is two billion days away, but an @code{int} of
+        seconds runs out at 68 years.}
+      @item{@strong{@code{now/moment} answers a @code{Moment}.} An
+        @code{Instant} has no zone, so now in Stockholm cannot be one.}
+      @item{@strong{The clock is a keyword argument, defaulting to a
+        parameter read at each call.} A test binds @code{current-clock}
+        around code it did not write:
+        @code{(parameterize ((current-clock (fixed-clock t z))) (render-invoice order))}
+        makes every @code{(now)} and @code{(today)} inside answer @code{t},
+        however deep, with no clock passed down through every function
+        between. A binding lasts only inside its @code{parameterize} and the
+        fibers started there, so one test cannot leave a fake clock behind
+        for the next, as it could with a global clock set and reset. It is a
+        parameter rather than an effect by the prelude's rule: a clock is a
+        value the caller reads, as a random source is. The cost: a function
+        that calls @code{(now)} without @code{#:clock} does not say in its
+        signature that it reads the time.}
+      @item{@strong{The zone travels with the clock.} There is no
+        current-zone parameter, so a test that fixes the clock fixes
+        @code{today} too: under a fixed clock in Stockholm, @code{(today)} is
+        Stockholm's date, whether the test runs in Stockholm or on a build
+        machine set to UTC. With a zone parameter of its own, a test could
+        fix the instant and still get the machine's date. @code{#:tz} asks
+        about another zone, so there are no @code{/zone} twins.}
+      @item{@strong{A manual clock is a @code{Clock}, not a type of its
+        own.} So @code{clock-advance!} on a fixed clock is an error when it
+        runs rather than when it compiles. In return, a manual clock goes
+        wherever a clock does, @code{current-clock} and @code{#:clock}
+        included, with no conversion.}
+      @item{@strong{The prelude's @code{monotonic-ms} is another clock.} It
+        counts milliseconds from an unspecified start, has no time of day,
+        and never steps back, which is what measuring an interval needs. The
+        two share no name.}
+      @item{@strong{@code{DateTime} is this module's.} @code{(std clr-ord)}
+        orders @code{System.DateTime} and the other .NET time types without
+        exporting a name for them, so a module that imports both has one
+        @code{DateTime}, and code at the edge to .NET writes
+        @code{System.DateTime}. Renaming this one @code{LocalDateTime}, as
+        java.time and NodaTime do, would have asked for @code{LocalDate} and
+        @code{LocalTime} beside it.}
+    }
+
+    @strong{Also exported.} @code{date+date-period},
+    @code{datetime+date-period}, @code{moment+date-period},
+    @code{datetime+duration}, @code{instant+duration},
+    @code{moment+duration} and @code{duration+duration} are the trait
+    methods at one type. An importing module copies the trait methods'
+    bodies into its own code, and those bodies call these, so the compiler
+    exports them too.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Types
+;; ---------------------------------------------------------------------------
+
+(:doc Date
+  (summary "A calendar date, with no time and no zone.")
+  (see date iso8601->date HasDate)
+  (reference """
+    Built on @code{DateOnly}, and costs what one costs. Opaque: every date
+    comes from a function that checked it.
+    """))
+
+(:doc Time
+  (summary "A time of day, with no date and no zone.")
+  (see time iso8601->time HasTime)
+  (reference """
+    Built on @code{TimeOnly}, at a precision of 100 ns. Arithmetic on a time
+    wraps at midnight.
+    """))
+
+(:doc DateTime
+  (summary "A date and a time of day, with no zone.")
+  (see datetime date+time->datetime datetime->moment)
+  (reference """
+    Built on a @code{System.DateTime} whose Kind is always Unspecified. It
+    has no instant, so it is not @code{HasInstant}: put it in a zone with
+    @code{datetime->moment} first. The name is this module's; code at the
+    edge to .NET writes @code{System.DateTime}.
+    """))
+
+(:doc Instant
+  (summary "A point on the global timeline, with no zone.")
+  (see now instant->moment HasInstant)
+  (reference """
+    A @code{long} of UTC ticks rather than a UTC @code{DateTime}, whose
+    equality ignores the Kind. @code{->str} writes it in UTC, with a
+    @code{Z}.
+    """))
+
+(:doc TimeZone
+  (summary "An IANA time zone, such as Europe/Stockholm.")
+  (see timezone utc timezone-id)
+  (reference """
+    Built on @code{TimeZoneInfo}. Two zones are equal when their ids are,
+    and @code{->str} writes the id. A zone has no @code{compare}.
+    """))
+
+(:doc Moment
+  (summary "A local date and time, its UTC offset, and its zone.")
+  (see datetime->moment instant->moment iso8601->moment)
+  (reference """
+    Opaque, so its offset is always one its zone has at that local time:
+    nobody can build @code{2026-07-01T12:00+01:00[Europe/Stockholm]} (July is
+    +02:00).
+
+    @code{=} compares every field, so 12:00+02:00[Europe/Stockholm] and
+    10:00+00:00[UTC] are one instant and two values. @code{compare} orders
+    by instant, then local time, then zone id, so that it is 0 exactly when
+    @code{=} holds. For the same instant, compare @code{(->instant a)} and
+    @code{(->instant b)}.
+    """))
+
+(:doc Duration
+  (summary "A fixed length of time: hours, minutes and seconds, not calendar days.")
+  (see duration iso8601->duration duration-between)
+  (reference """
+    Built on @code{TimeSpan}, and holds ±(2@sup{63} − 1) ticks, about
+    ±29 227 years. @code{(duration #:days 1)} is exactly 24 hours; a
+    calendar day is a @code{DatePeriod}.
+    """))
+
+(:doc Clock
+  (summary "Where now comes from, and the zone today is in.")
+  (see current-clock system-clock fixed-clock manual-clock)
+  (reference """
+    The system clock, a fixed clock or a manual one. A clock carries its own
+    zone, and there is no separate current zone.
+    """))
+
+(:doc DatePeriod
+  (summary "Calendar amounts: years, months, weeks and days.")
+  (field years "Years.")
+  (field months "Months.")
+  (field weeks "Weeks.")
+  (field days "Days.")
+  (see date-period +date-period iso8601->date-period)
+  (reference """
+    Transparent, since any mix of numbers is a valid period: 1 month and 40
+    days is fine, as months differ in length. Equality is field by field, so
+    @code{(= (date-period #:weeks 1) (date-period #:days 7))} is @code{#f}.
+    It is applied largest unit first: years, then months, then weeks and
+    days together.
+    """))
+
+(:doc Period
+  (summary "A date period and a duration: 1 day and 3 hours.")
+  (field calendar "The calendar part, a DatePeriod, applied first.")
+  (field exact "The exact part, a Duration, applied after the calendar part.")
+  (see period +period iso8601->period))
+
+(:doc Gap
+  (summary "What datetime->moment does with a local time the zone skips.")
+  (case GapPush "Forward by the length of the gap: 02:30 in a one-hour gap is 03:30.")
+  (case GapNextValid "The first time after the gap: 03:00.")
+  (see resolver Overlap)
+  (reference """
+    In Stockholm, 2026-03-29 02:30 never happens: @code{GapPush} gives
+    03:30+02:00 and @code{GapNextValid} 03:00+02:00.
+    """))
+
+(:doc Overlap
+  (summary "What datetime->moment does with a local time the zone has twice.")
+  (case OverlapEarlier "The first of the two, at the larger offset.")
+  (case OverlapLater "The second.")
+  (see resolver Gap)
+  (reference """
+    In Stockholm, 2026-10-25 02:30 happens twice: @code{OverlapEarlier}
+    gives +02:00 (00:30Z) and @code{OverlapLater} +01:00 (01:30Z).
+    """))
+
+(:doc Resolver
+  (summary "What to do with a local time in a gap and with one in an overlap.")
+  (field gap "What to do in a gap.")
+  (field overlap "What to do in an overlap.")
+  (see resolver datetime->moment)
+  (reference """
+    A closed set: a resolver of your own, such as going back to the last
+    valid time on a gap, would need a new case here. In return, no resolver
+    can produce a moment at a local time or in a zone that was not asked
+    for, and @code{datetime->moment/opt} covers refusing.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Traits
+;; ---------------------------------------------------------------------------
+
+(:doc HasDate
+  (summary "Has a calendar date: Date, DateTime and Moment.")
+  (tparam %a "The type with a date.")
+  (see ->year ->month ->day ->weekday ->week))
+
+(:doc ->date
+  (summary "The date of a value; a moment's local date.")
+  (arg x "A date, a datetime or a moment.")
+  (returns "Its date."))
+
+(:doc HasTime
+  (summary "Has a time of day: Time, DateTime and Moment.")
+  (tparam %a "The type with a time of day.")
+  (see ->hours ->minutes ->seconds ->nanoseconds))
+
+(:doc ->time
+  (summary "The time of day of a value; a moment's local time.")
+  (arg x "A time, a datetime or a moment.")
+  (returns "Its time of day."))
+
+(:doc HasInstant
+  (summary "Is a point on the timeline: Instant and Moment.")
+  (tparam %a "The type with an instant.")
+  (see duration-between ->unix)
+  (reference """
+    @code{DateTime} is not one, since @code{(->instant some-datetime)} would
+    have to guess a zone.
+    """))
+
+(:doc ->instant
+  (summary "The instant of a value.")
+  (arg x "An instant or a moment.")
+  (returns "Its instant; a moment's is its local time less its offset."))
+
+(:doc DateArith
+  (summary "Takes calendar arithmetic: Date, DateTime and Moment.")
+  (tparam %a "The type that takes a DatePeriod.")
+  (see +days +months -date-period +period))
+
+(:doc +date-period
+  (summary "A value moved by calendar amounts.")
+  (arg x "A date, a datetime or a moment.")
+  (arg p "The period, applied years first, then months, then weeks and days.")
+  (returns "x moved by p, of x's type.")
+  (raises OverflowException "When the result is outside the calendar.")
+  (see -date-period +date-period/resolver)
+  (reference """
+    Month arithmetic clamps to the end of the month: 2026-01-31 plus a month
+    is 2026-02-28. On a moment the local time moves and the offset is found
+    again: through an overlap it keeps the moment's own offset if that still
+    fits, and takes the earlier one if not; through a gap it pushes forward.
+    """))
+
+(:doc DateDiff
+  (summary "Takes calendar differences: Date, DateTime and Moment.")
+  (tparam %a "The type whose dates are compared.")
+  (see days-between months-between))
+
+(:doc ->date-in-zone-of
+  (summary "The date of b where a is, which calendar differences compare with a's own date.")
+  (arg b "The value whose date is wanted.")
+  (arg a "The value whose zone it is read in.")
+  (returns "b's date; for two moments, b's date in a's zone.")
+  (raises OverflowException "Near either end of the calendar, when b moved into a's zone is outside it.")
+  (reference """
+    A moment @code{b} is first moved into @code{a}'s zone, so two moments of
+    one instant are the same day wherever they are. A date or a datetime is
+    its own date.
+    """))
+
+(:doc TimeArith
+  (summary "Takes a Duration: Time, DateTime, Moment, Instant and Duration.")
+  (tparam %a "The type that takes a Duration.")
+  (see +hours -duration +period))
+
+(:doc +duration
+  (summary "A value moved by an exact length of time.")
+  (arg x "A time, a datetime, a moment, an instant or a duration.")
+  (arg d "The duration.")
+  (returns "x moved by d, of x's type.")
+  (raises OverflowException "When the result is outside the calendar, or a duration outside ±29 227 years.")
+  (see -duration)
+  (reference """
+    A time wraps at midnight and never raises. A moment moves through its
+    instant and is put back in the same zone, so it is exact. A duration
+    plus a duration is their sum: @code{(+hours (duration #:minutes 30) 1)}
+    is PT1H30M.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Construction
+;; ---------------------------------------------------------------------------
+
+(:doc date
+  (summary "A date from a year, a month and a day, or None if there is no such date.")
+  (arg y "The year, 1 to 9999.")
+  (arg m "The month, 1 to 12.")
+  (arg d "The day of the month.")
+  (returns "Some date, or None: @code{(date 2026 2 30)} is None.")
+  (see week-date iso8601->date))
+
+(:doc time
+  (summary "A time of day, or None if there is no such time.")
+  (arg h "The hour, 0 to 23.")
+  (arg m "The minute, 0 to 59.")
+  (key #:seconds "The second, 0 to 59.")
+  (key #:nanoseconds "The fraction of the second, 0 to 999 999 999, cut to the 100 ns a tick holds.")
+  (returns "Some time, or None.")
+  (see datetime iso8601->time)
+  (example """
+    (time 13 5)                     ;; (Some 13:05:00)
+    (time 1 2 #:nanoseconds 150)    ;; holds 100 ns
+    """))
+
+(:doc datetime
+  (summary "A date and a time of day, or None if there is no such datetime.")
+  (arg y "The year, 1 to 9999.")
+  (arg mo "The month, 1 to 12.")
+  (arg d "The day of the month.")
+  (key #:hours "The hour, 0 to 23.")
+  (key #:minutes "The minute, 0 to 59.")
+  (key #:seconds "The second, 0 to 59.")
+  (key #:nanoseconds "The fraction of the second, cut to the 100 ns a tick holds.")
+  (returns "Some datetime, or None.")
+  (see date+time->datetime iso8601->datetime)
+  (example """
+    (datetime 2026 10 24 #:hours 12)   ;; (Some 2026-10-24T12:00:00)
+    """))
+
+(:doc date+time->datetime
+  (summary "A datetime from a date and a time.")
+  (arg d "The date.")
+  (arg t "The time of day.")
+  (returns "The datetime.")
+  (see ->datetime))
+
+(:doc ->datetime
+  (summary "The date and time of anything with both, as a DateTime.")
+  (arg x "A datetime or a moment.")
+  (returns "Its date and time; a moment's local ones.")
+  (see date+time->datetime datetime->text)
+  (reference """
+    How a moment is written with a datetime's format:
+    @code{(datetime->text (->datetime some-moment) ...)}.
+    """))
+
+(:doc duration
+  (summary "A fixed length of time, the sum of the units given.")
+  (key #:days "Days of exactly 24 hours.")
+  (key #:hours "Hours.")
+  (key #:minutes "Minutes.")
+  (key #:seconds "Seconds.")
+  (key #:milliseconds "Milliseconds.")
+  (key #:nanoseconds "Nanoseconds, cut to the 100 ns a tick holds.")
+  (returns "The duration.")
+  (raises OverflowException "When a unit or the sum is outside ±29 227 years.")
+  (see date-period period)
+  (example """
+    (duration #:hours 26 #:minutes 30)   ;; PT26H30M
+    """)
+  (reference """
+    A day here is exactly 24 hours. For calendar days, which can be 23 or 25
+    hours long across a change of offset, use a @code{DatePeriod}.
+    """))
+
+(:doc date-period
+  (summary "Calendar amounts: years, months, weeks and days.")
+  (key #:years "Years.")
+  (key #:months "Months.")
+  (key #:weeks "Weeks.")
+  (key #:days "Days.")
+  (returns "The period. Any mix of amounts, negative ones included, is a period.")
+  (see period duration +date-period)
+  (example """
+    (date-period #:months 1 #:days -3)   ;; P1M-3D
+    """))
+
+(:doc period
+  (summary "A date period and a duration together: 1 day and 3 hours.")
+  (key #:years "Years.")
+  (key #:months "Months.")
+  (key #:weeks "Weeks.")
+  (key #:days "Calendar days.")
+  (key #:hours "Hours.")
+  (key #:minutes "Minutes.")
+  (key #:seconds "Seconds.")
+  (key #:milliseconds "Milliseconds.")
+  (key #:nanoseconds "Nanoseconds, cut to the 100 ns a tick holds.")
+  (returns "The period.")
+  (raises OverflowException "When the clock units are outside ±29 227 years.")
+  (see +period date-period duration)
+  (example """
+    (period #:days 1 #:hours 3)   ;; P1DT3H
+    """)
+  (reference """
+    @code{#:days} is a calendar day here, in the date part; the clock units
+    make the duration.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Zones and moments
+;; ---------------------------------------------------------------------------
+
+(:doc timezone
+  (summary "The IANA zone with this id, or None.")
+  (arg id "An IANA id, such as @code{Europe/Stockholm}.")
+  (returns "Some zone, or None for an id the machine does not know.")
+  (see utc timezone-id)
+  (example """
+    (def (Some stockholm) (timezone "Europe/Stockholm") :leave-with 1)
+    """)
+  (reference """
+    IANA ids only, so a Windows id such as @code{"W. Europe Standard Time"}
+    is @code{None}, and so is every id on a machine without zone data (see
+    the module's limits). Stop there rather than fall back to @code{utc}:
+    @code{(option-value (timezone "Europe/Stockholm") utc)} would put every
+    date and time in UTC without a word, on exactly the machines that lack
+    the data.
+    """))
+
+(:doc utc
+  (summary "The UTC zone, which every machine has.")
+  (see timezone))
+
+(:doc timezone-id
+  (summary "A zone's IANA id.")
+  (arg z "The zone.")
+  (returns "Its id, such as @code{Europe/Stockholm}; what @code{->str} writes."))
+
+(:doc timezone-offset-at
+  (summary "A zone's UTC offset at an instant.")
+  (arg z "The zone.")
+  (arg i "The instant.")
+  (returns "The offset, as a Duration: PT2H in Stockholm in summer.")
+  (see ->utc-offset instant->moment))
+
+(:doc resolver
+  (summary "A resolver from what to do in a gap and in an overlap.")
+  (arg g "GapPush or GapNextValid.")
+  (arg o "OverlapEarlier or OverlapLater.")
+  (returns "The resolver.")
+  (see datetime->moment Gap Overlap)
+  (example """
+    (resolver GapPush OverlapEarlier)
+    """)
+  (reference """
+    @read-table{
+    | @code{GapPush}        | forward by the length of the gap: 02:30 in a one-hour gap is 03:30 |
+    | @code{GapNextValid}   | the first time after the gap: 03:00 |
+    | @code{OverlapEarlier} | the first of the two, at the larger offset |
+    | @code{OverlapLater}   | the second |
+    }
+
+    In Stockholm, 2026-10-25 02:30 happens twice: @code{OverlapEarlier}
+    gives +02:00 (00:30Z) and @code{OverlapLater} +01:00 (01:30Z).
+    2026-03-29 02:30 never happens: @code{GapPush} gives 03:30+02:00 and
+    @code{GapNextValid} 03:00+02:00.
+    """))
+
+(:doc datetime->moment
+  (summary "A local time in a zone, with a resolver for a gap or an overlap.")
+  (arg dt "The local time.")
+  (arg z "The zone.")
+  (arg r "What to do when dt is in a gap or an overlap.")
+  (returns "The moment. Always one, since the resolver decides.")
+  (raises OverflowException "Near either end of the calendar, when the local time and its instant cannot both fit.")
+  (see datetime->moment/opt resolver instant->moment)
+  (example """
+    (datetime->moment noon stockholm (resolver GapPush OverlapEarlier))
+    """)
+  (reference """
+    A local time can be missing from a zone (a gap, when the clocks go
+    forward) or happen twice (an overlap, when they go back); the resolver
+    says what to do with each. 0001-01-01T00:00 in Tokyo is an instant on the
+    day before: that is not a gap, so no resolver moves it, and this raises.
+    """))
+
+(:doc datetime->moment/opt
+  (summary "A local time in a zone, or None in a gap or an overlap.")
+  (arg dt "The local time.")
+  (arg z "The zone.")
+  (returns "Some moment when the local time happens exactly once in z, or None. None too when its instant is outside the calendar.")
+  (see datetime->moment))
+
+(:doc instant->moment
+  (summary "The moment an instant is in a zone.")
+  (arg i "The instant.")
+  (arg z "The zone.")
+  (returns "The moment. Always one answer.")
+  (raises OverflowException "Near either end of the calendar, when the local time is outside it: the instant 0001-01-01T00:00Z in New York.")
+  (see adjust-timezone datetime->moment))
+
+(:doc +date-period/resolver
+  (summary "A moment moved by calendar amounts, with a resolver for where it lands.")
+  (arg m "The moment.")
+  (arg p "The period.")
+  (arg r "What to do when the new local time is in a gap or an overlap.")
+  (returns "The moment in m's zone.")
+  (raises OverflowException "When the result is outside the calendar.")
+  (see -date-period/resolver +date-period)
+  (reference """
+    @code{+date-period} on a moment keeps its offset through an overlap if
+    that still fits, and pushes forward through a gap; this says otherwise.
+    """))
+
+(:doc -date-period/resolver
+  (summary "A moment moved back by calendar amounts, with a resolver for where it lands.")
+  (arg m "The moment.")
+  (arg p "The period, subtracted.")
+  (arg r "What to do when the new local time is in a gap or an overlap.")
+  (returns "The moment in m's zone.")
+  (raises OverflowException "When the result is outside the calendar.")
+  (see +date-period/resolver -date-period))
+
+(:doc ->utc-offset
+  (summary "A moment's UTC offset.")
+  (arg m "The moment.")
+  (returns "Its offset, as a Duration.")
+  (see timezone-offset-at))
+
+(:doc ->timezone
+  (summary "A moment's zone.")
+  (arg m "The moment.")
+  (returns "Its zone."))
+
+(:doc adjust-timezone
+  (summary "The same instant in another zone.")
+  (arg m "The moment.")
+  (arg z "The zone to put it in.")
+  (returns "A moment at m's instant in z.")
+  (raises OverflowException "Near either end of the calendar, when the local time in z is outside it.")
+  (see instant->moment))
+
+;; ---------------------------------------------------------------------------
+;; Instants
+;; ---------------------------------------------------------------------------
+
+(:doc instant->utc-datetime
+  (summary "An instant's date and time in UTC.")
+  (arg i "The instant.")
+  (returns "Its UTC date and time, as a DateTime.")
+  (see utc-datetime->instant))
+
+(:doc utc-datetime->instant
+  (summary "The instant of a date and time read as UTC.")
+  (arg dt "A date and time in UTC.")
+  (returns "The instant.")
+  (see instant->utc-datetime datetime->moment)
+  (reference """
+    It takes any @code{DateTime}, so a local time goes in and is read as UTC
+    without a word: put a local time in its zone with
+    @code{datetime->moment}. Read on purpose, it spells out a wall-clock
+    difference: @code{(hours-between (utc-datetime->instant a)
+    (utc-datetime->instant b))}.
+    """))
+
+(:doc instant->unix-seconds
+  (summary "An instant's Unix time in seconds, rounded toward the past.")
+  (arg i "The instant.")
+  (returns "Seconds since 1970-01-01T00:00Z. Half a second before 1970 is -1.")
+  (see unix-seconds->instant ->unix))
+
+(:doc unix-seconds->instant
+  (summary "The instant of a Unix time in seconds.")
+  (arg s "Seconds since 1970-01-01T00:00Z.")
+  (returns "Some instant, or None outside the years 1 to 9999.")
+  (see instant->unix-seconds unix-milliseconds->instant))
+
+(:doc instant->unix-milliseconds
+  (summary "An instant's Unix time in milliseconds, rounded toward the past.")
+  (arg i "The instant.")
+  (returns "Milliseconds since 1970-01-01T00:00Z. Half a millisecond before 1970 is -1.")
+  (see unix-milliseconds->instant))
+
+(:doc unix-milliseconds->instant
+  (summary "The instant of a Unix time in milliseconds.")
+  (arg ms "Milliseconds since 1970-01-01T00:00Z.")
+  (returns "Some instant, or None outside the years 1 to 9999.")
+  (see instant->unix-milliseconds unix-seconds->instant))
+
+(:doc ->unix
+  (summary "The Unix time in seconds of an instant or a moment.")
+  (arg x "An instant or a moment.")
+  (returns "Its instant's Unix time, rounded toward the past, whatever a moment's zone.")
+  (see instant->unix-seconds))
+
+;; ---------------------------------------------------------------------------
+;; The clock
+;; ---------------------------------------------------------------------------
+
+(:doc current-clock
+  (summary "The clock now, today and the others read when not given #:clock.")
+  (see system-clock-in fixed-clock now)
+  (example """
+    (parameterize ((current-clock (fixed-clock t z)))
+      (render-invoice order))   ;; every (now) and (today) inside answers t
+    """)
+  (reference """
+    A @code{(Param Clock)}, starting as @code{system-clock}. A binding lasts
+    only inside its @code{parameterize} and the fibers started there, so one
+    test cannot leave a fake clock behind for the next.
+    """))
+
+(:doc system-clock
+  (summary "The machine's clock, in the machine's zone.")
+  (see system-clock-in current-clock)
+  (reference """
+    @code{TimeProvider.System}, and the value @code{current-clock} starts
+    with. It is the wall clock, and steps back when the machine's time is
+    corrected.
+    """))
+
+(:doc system-clock-in
+  (summary "The machine's clock, in a zone of your choosing.")
+  (arg z "The zone today is to be in.")
+  (returns "A clock reading the system time, with z as its zone.")
+  (see system-clock current-clock)
+  (example """
+    (defun (main)
+      (def (Some stockholm) (timezone "Europe/Stockholm") :leave-with 1)
+      (parameterize ((current-clock (system-clock-in stockholm)))
+        (serve)))
+    """)
+  (reference """
+    A machine set to UTC, as most containers are, would otherwise make
+    @code{(today)} UTC's date, which in Stockholm is still yesterday until
+    01:00, or 02:00 in summer. A program binds it once, around everything it
+    runs, and the fibers it starts inherit it.
+    """))
+
+(:doc fixed-clock
+  (summary "A clock that always answers the same instant.")
+  (arg i "The instant it answers.")
+  (arg z "Its zone.")
+  (returns "The clock.")
+  (see manual-clock current-clock))
+
+(:doc manual-clock
+  (summary "A clock that stands still until clock-advance! moves it.")
+  (arg i "The instant it starts at.")
+  (arg z "Its zone.")
+  (returns "The clock.")
+  (see clock-advance! fixed-clock)
+  (reference """
+    The clock takes a lock to advance and to answer @code{now}, so fibers on
+    several threads may share one: every advance counts, and the next
+    @code{now} sees it.
+    """))
+
+(:doc clock-advance!
+  (summary "Moves a manual clock.")
+  (arg c "A clock from manual-clock.")
+  (arg d "How far. A negative duration steps it back, as a corrected wall clock does.")
+  (raises ArgumentException "When the clock is the system clock or a fixed one.")
+  (raises OverflowException "When the new instant is outside the calendar.")
+  (see manual-clock)
+  (reference """
+    A manual clock is a @code{Clock}, not a type of its own, so this on
+    another clock is an error when it runs rather than when it compiles.
+    """))
+
+(:doc clock-timezone
+  (summary "A clock's zone.")
+  (key #:clock "The clock.")
+  (returns "Its zone: the machine's for system-clock.")
+  (see today))
+
+(:doc now
+  (summary "The current instant.")
+  (key #:clock "The clock to read.")
+  (returns "What the clock says now.")
+  (see now/moment today)
+  (example """
+    (now)                     ;; the current clock
+    (now #:clock some-clock)  ;; this one
+    """))
+
+(:doc now/moment
+  (summary "The current moment, in the clock's zone or another.")
+  (key #:clock "The clock to read.")
+  (key #:tz "The zone to put it in.")
+  (returns "What the clock says now, as a moment.")
+  (see now today)
+  (reference """
+    A @code{Moment} rather than an @code{Instant}, since an instant has no
+    zone and so now in Stockholm cannot be one.
+    """))
+
+(:doc today
+  (summary "Today's date, in the clock's zone or another.")
+  (key #:clock "The clock to read.")
+  (key #:tz "The zone whose date it is.")
+  (returns "The date there now.")
+  (see now/moment system-clock-in)
+  (example """
+    (today #:tz tokyo)   ;; the date in Tokyo
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Accessors
+;; ---------------------------------------------------------------------------
+
+(:doc ->year
+  (summary "The year of anything with a date.")
+  (arg x "A date, a datetime or a moment; a moment's local date.")
+  (returns "The year, 1 to 9999.")
+  (see ->week-year))
+
+(:doc ->month
+  (summary "The month of anything with a date.")
+  (arg x "A date, a datetime or a moment; a moment's local date.")
+  (returns "The month, 1 to 12."))
+
+(:doc ->day
+  (summary "The day of the month of anything with a date.")
+  (arg x "A date, a datetime or a moment; a moment's local date.")
+  (returns "The day, 1 to 31."))
+
+(:doc ->weekday
+  (summary "The day of the week, Monday 1 to Sunday 7, as ISO 8601 counts.")
+  (arg x "A date, a datetime or a moment; a moment's local date.")
+  (returns "1 for Monday up to 7 for Sunday.")
+  (reference """
+    It is not called @code{->wday}, since C's @code{tm_wday}, Ruby's
+    @code{wday} and Racket Gregor's @code{->wday} count Sunday as 0. For
+    Sunday as 0, write @code{(% (->weekday d) 7)}.
+    """))
+
+(:doc ->yday
+  (summary "The day of the year of anything with a date.")
+  (arg x "A date, a datetime or a moment; a moment's local date.")
+  (returns "The day, 1 to 366."))
+
+(:doc ->week
+  (summary "The ISO 8601 week number of anything with a date.")
+  (arg x "A date, a datetime or a moment; a moment's local date.")
+  (returns "The week, 1 to 53, of the year ->week-year answers.")
+  (see ->week-year weeks-in-year week-date)
+  (reference """
+    A week runs Monday to Sunday and belongs to the year its Thursday is in,
+    so 2027-01-01 is in week 53 of 2026. Print it beside
+    @code{->week-year}, not @code{->year}.
+    """))
+
+(:doc ->week-year
+  (summary "The year ->week counts in.")
+  (arg x "A date, a datetime or a moment; a moment's local date.")
+  (returns "The year of the date's ISO week: 2026 for 2027-01-01, and 2026 for 2025-12-29.")
+  (see ->week ->year)
+  (reference """
+    It differs from @code{->year} in at most three days at either end of a
+    year. The two are separate functions, since asking which week it is
+    usually wants the number only.
+    """))
+
+(:doc weeks-in-year
+  (summary "How many ISO weeks a week-year has.")
+  (arg y "The week-year.")
+  (returns "52 or 53.")
+  (raises OverflowException "When y is outside 1 to 9999.")
+  (see week-date ->week))
+
+(:doc week-date
+  (summary "The date of a day of an ISO week, or None.")
+  (arg y "The week-year.")
+  (arg w "The week, 1 to 53.")
+  (arg d "The day of the week, 1 for Monday to 7 for Sunday.")
+  (returns "Some date, or None for a week the year does not have, such as week 53 of 2027.")
+  (see ->week ->week-year weeks-in-year)
+  (example """
+    (week-date 2026 43 1)   ;; (Some 2026-10-19)
+    """))
+
+(:doc ->hours
+  (summary "The hour of anything with a time of day.")
+  (arg x "A time, a datetime or a moment; a moment's local time.")
+  (returns "The hour, 0 to 23."))
+
+(:doc ->minutes
+  (summary "The minute of anything with a time of day.")
+  (arg x "A time, a datetime or a moment; a moment's local time.")
+  (returns "The minute, 0 to 59."))
+
+(:doc ->seconds
+  (summary "The second of anything with a time of day.")
+  (arg x "A time, a datetime or a moment; a moment's local time.")
+  (returns "The second, 0 to 59."))
+
+(:doc ->milliseconds
+  (summary "The millisecond of anything with a time of day.")
+  (arg x "A time, a datetime or a moment; a moment's local time.")
+  (returns "The whole milliseconds of the second, 0 to 999."))
+
+(:doc ->nanoseconds
+  (summary "The whole fraction of the second, in nanoseconds.")
+  (arg x "A time, a datetime or a moment; a moment's local time.")
+  (returns "0 to 999 999 900, always a multiple of 100."))
+
+;; ---------------------------------------------------------------------------
+;; Arithmetic
+;; ---------------------------------------------------------------------------
+
+(:doc +years
+  (summary "Years later.")
+  (arg x "A date, a datetime or a moment.")
+  (arg n "How many years.")
+  (returns "x moved by n years; February 29 becomes February 28 in a year without one.")
+  (raises OverflowException "When the result is outside the calendar.")
+  (see -years +date-period))
+
+(:doc +months
+  (summary "Months later, clamped to the end of the month.")
+  (arg x "A date, a datetime or a moment.")
+  (arg n "How many months.")
+  (returns "x moved by n months: 2026-01-31 plus a month is 2026-02-28, and 2024-01-31 plus a month 2024-02-29.")
+  (raises OverflowException "When the result is outside the calendar.")
+  (see -months months-between))
+
+(:doc +weeks
+  (summary "Weeks later.")
+  (arg x "A date, a datetime or a moment.")
+  (arg n "How many weeks.")
+  (returns "x moved by 7 × n calendar days.")
+  (raises OverflowException "When the result is outside the calendar.")
+  (see -weeks))
+
+(:doc +days
+  (summary "Calendar days later.")
+  (arg x "A date, a datetime or a moment.")
+  (arg n "How many days.")
+  (returns "x moved by n days; a moment keeps its local time, which across a change of offset is not 24 hours a day.")
+  (raises OverflowException "When the result is outside the calendar.")
+  (see -days +hours)
+  (example """
+    (+days meeting 1)    ;; 2026-10-25T12:00:00+01:00[Europe/Stockholm]
+    (+hours meeting 24)  ;; 2026-10-25T11:00:00+01:00[Europe/Stockholm]
+    """))
+
+(:doc -years
+  (summary "Years earlier.")
+  (arg x "A date, a datetime or a moment.")
+  (arg n "How many years.")
+  (returns "x moved back by n years.")
+  (raises OverflowException "When the result is outside the calendar.")
+  (see +years))
+
+(:doc -months
+  (summary "Months earlier, clamped to the end of the month.")
+  (arg x "A date, a datetime or a moment.")
+  (arg n "How many months.")
+  (returns "x moved back by n months.")
+  (raises OverflowException "When the result is outside the calendar.")
+  (see +months))
+
+(:doc -weeks
+  (summary "Weeks earlier.")
+  (arg x "A date, a datetime or a moment.")
+  (arg n "How many weeks.")
+  (returns "x moved back by 7 × n calendar days.")
+  (raises OverflowException "When the result is outside the calendar.")
+  (see +weeks))
+
+(:doc -days
+  (summary "Calendar days earlier.")
+  (arg x "A date, a datetime or a moment.")
+  (arg n "How many days.")
+  (returns "x moved back by n days.")
+  (raises OverflowException "When the result is outside the calendar: @code{(-days (date 1 1 1) 1)} raises.")
+  (see +days))
+
+(:doc -date-period
+  (summary "A value moved back by calendar amounts.")
+  (arg x "A date, a datetime or a moment.")
+  (arg p "The period, every amount negated and then applied as +date-period applies it.")
+  (returns "x moved back by p.")
+  (raises OverflowException "When the result is outside the calendar.")
+  (see +date-period -date-period/resolver))
+
+(:doc +hours
+  (summary "Hours later.")
+  (arg x "A time, a datetime, a moment, an instant or a duration.")
+  (arg n "How many hours.")
+  (returns "x moved by n hours; a time wraps at midnight.")
+  (raises OverflowException "When n hours is outside ±29 227 years, or the result is outside the calendar.")
+  (see -hours +duration +days))
+
+(:doc +minutes
+  (summary "Minutes later.")
+  (arg x "A time, a datetime, a moment, an instant or a duration.")
+  (arg n "How many minutes.")
+  (returns "x moved by n minutes; a time wraps at midnight.")
+  (raises OverflowException "When n minutes is outside ±29 227 years, or the result is outside the calendar.")
+  (see -minutes +duration))
+
+(:doc +seconds
+  (summary "Seconds later.")
+  (arg x "A time, a datetime, a moment, an instant or a duration.")
+  (arg n "How many seconds.")
+  (returns "x moved by n seconds; a time wraps at midnight.")
+  (raises OverflowException "When n seconds is outside ±29 227 years, or the result is outside the calendar.")
+  (see -seconds +duration))
+
+(:doc +milliseconds
+  (summary "Milliseconds later.")
+  (arg x "A time, a datetime, a moment, an instant or a duration.")
+  (arg n "How many milliseconds.")
+  (returns "x moved by n milliseconds; a time wraps at midnight.")
+  (raises OverflowException "When n milliseconds is outside ±29 227 years, or the result is outside the calendar.")
+  (see -milliseconds +duration))
+
+(:doc -hours
+  (summary "Hours earlier.")
+  (arg x "A time, a datetime, a moment, an instant or a duration.")
+  (arg n "How many hours.")
+  (returns "x moved back by n hours: 01:00 minus three hours is 22:00.")
+  (raises OverflowException "When n hours is outside ±29 227 years, or the result is outside the calendar.")
+  (see +hours -duration))
+
+(:doc -minutes
+  (summary "Minutes earlier.")
+  (arg x "A time, a datetime, a moment, an instant or a duration.")
+  (arg n "How many minutes.")
+  (returns "x moved back by n minutes.")
+  (raises OverflowException "When n minutes is outside ±29 227 years, or the result is outside the calendar.")
+  (see +minutes))
+
+(:doc -seconds
+  (summary "Seconds earlier.")
+  (arg x "A time, a datetime, a moment, an instant or a duration.")
+  (arg n "How many seconds.")
+  (returns "x moved back by n seconds.")
+  (raises OverflowException "When n seconds is outside ±29 227 years, or the result is outside the calendar.")
+  (see +seconds))
+
+(:doc -milliseconds
+  (summary "Milliseconds earlier.")
+  (arg x "A time, a datetime, a moment, an instant or a duration.")
+  (arg n "How many milliseconds.")
+  (returns "x moved back by n milliseconds.")
+  (raises OverflowException "When n milliseconds is outside ±29 227 years, or the result is outside the calendar.")
+  (see +milliseconds))
+
+(:doc -duration
+  (summary "A value moved back by an exact length of time.")
+  (arg x "A time, a datetime, a moment, an instant or a duration.")
+  (arg d "The duration.")
+  (returns "x moved back by d, of x's type.")
+  (raises OverflowException "When the result is outside the calendar, or a duration outside ±29 227 years.")
+  (see +duration duration-negate))
+
+(:doc +period
+  (summary "A value moved by a period: the calendar part, then the duration.")
+  (arg x "A datetime or a moment.")
+  (arg p "The period.")
+  (returns "x moved by p's calendar amounts and then by its duration.")
+  (raises OverflowException "When the result is outside the calendar.")
+  (see -period period))
+
+(:doc -period
+  (summary "A value moved back by a period: the calendar part, then the duration.")
+  (arg x "A datetime or a moment.")
+  (arg p "The period.")
+  (returns "x moved back by p's calendar amounts and then by its duration.")
+  (raises OverflowException "When the result is outside the calendar.")
+  (see +period))
+
+(:doc duration->hours
+  (summary "A duration in whole hours, toward zero.")
+  (arg d "The duration.")
+  (returns "The whole hours in it."))
+
+(:doc duration->minutes
+  (summary "A duration in whole minutes, toward zero.")
+  (arg d "The duration.")
+  (returns "The whole minutes in it."))
+
+(:doc duration->seconds
+  (summary "A duration in whole seconds, toward zero.")
+  (arg d "The duration.")
+  (returns "The whole seconds in it."))
+
+(:doc duration->milliseconds
+  (summary "A duration in whole milliseconds, toward zero.")
+  (arg d "The duration.")
+  (returns "The whole milliseconds in it."))
+
+(:doc duration-negate
+  (summary "A duration with its sign turned.")
+  (arg d "The duration.")
+  (returns "-d. It never raises, as every duration has a negation."))
+
+;; ---------------------------------------------------------------------------
+;; Differences
+;; ---------------------------------------------------------------------------
+
+(:doc years-between
+  (summary "Whole years from a to b, by their dates.")
+  (arg a "The start.")
+  (arg b "The end, of a's type.")
+  (returns "Whole months between them divided by 12, toward zero.")
+  (raises OverflowException "Near either end of the calendar, as ->date-in-zone-of raises.")
+  (see months-between))
+
+(:doc months-between
+  (summary "Whole months from a to b, by their dates, as java.time counts them.")
+  (arg a "The start.")
+  (arg b "The end, of a's type.")
+  (returns "The whole months, toward zero.")
+  (raises OverflowException "Near either end of the calendar, as ->date-in-zone-of raises.")
+  (see days-between years-between)
+  (reference """
+    A month counts once the day of the month is reached, so
+    @code{(months-between 2026-01-31 2026-02-28)} is 0, although
+    @code{(+months 2026-01-31 1)} is 2026-02-28. In return, swapping the two
+    dates only flips the sign.
+    """))
+
+(:doc weeks-between
+  (summary "Whole weeks from a to b, by their dates.")
+  (arg a "The start.")
+  (arg b "The end, of a's type.")
+  (returns "The days between them divided by 7, toward zero.")
+  (raises OverflowException "Near either end of the calendar, as ->date-in-zone-of raises.")
+  (see days-between))
+
+(:doc days-between
+  (summary "Calendar days from a to b, by their dates only.")
+  (arg a "The start.")
+  (arg b "The end, of a's type.")
+  (returns "The days between the two dates: 23:00 to 01:00 the next day is 1.")
+  (raises OverflowException "Near either end of the calendar, as ->date-in-zone-of raises.")
+  (see hours-between months-between ->date-in-zone-of)
+  (example """
+    (days-between some-date (->date some-moment))   ;; to mix types, say which date
+    """)
+  (reference """
+    The calendar differences read the two dates only, of two values of one
+    type (@code{DateDiff}). Between two moments in different zones, the
+    second is read in the first one's zone, as java.time does:
+    2026-10-25T20:00Z is the 25th in New York and the 26th in Tokyo, and
+    those two moments are 0 days apart. So across zones, swapping the
+    arguments also swaps the zone the dates are read in. For the time that
+    passed, use @code{hours-between}.
+    """))
+
+(:doc duration-between
+  (summary "The time that passed from a to b.")
+  (arg a "The start: an instant or a moment.")
+  (arg b "The end: an instant or a moment, not necessarily of a's type.")
+  (returns "The duration between their instants, negative when b is before a.")
+  (see hours-between days-between)
+  (reference """
+    Between two things with an instant (@code{HasInstant}): moments,
+    instants, or one of each. 2026-10-25 00:00 to 2026-10-26 00:00 is 25
+    hours as Stockholm moments, as the clocks went back that night.
+
+    Two @code{DateTime} values have no instant and do not compile. Their
+    wall-clock difference, which is not the time that passed across a change
+    of offset, is spelled out by reading both as UTC:
+    @code{(hours-between (utc-datetime->instant a) (utc-datetime->instant b))}
+    is 24.
+    """))
+
+(:doc hours-between
+  (summary "Whole hours that passed from a to b, toward zero.")
+  (arg a "The start: an instant or a moment.")
+  (arg b "The end: an instant or a moment.")
+  (returns "The whole hours of duration-between.")
+  (see duration-between days-between))
+
+(:doc minutes-between
+  (summary "Whole minutes that passed from a to b, toward zero.")
+  (arg a "The start: an instant or a moment.")
+  (arg b "The end: an instant or a moment.")
+  (returns "The whole minutes of duration-between.")
+  (see duration-between))
+
+(:doc seconds-between
+  (summary "Whole seconds that passed from a to b, toward zero.")
+  (arg a "The start: an instant or a moment.")
+  (arg b "The end: an instant or a moment.")
+  (returns "The whole seconds of duration-between.")
+  (see duration-between))
+
+(:doc milliseconds-between
+  (summary "Whole milliseconds that passed from a to b, toward zero.")
+  (arg a "The start: an instant or a moment.")
+  (arg b "The end: an instant or a moment.")
+  (returns "The whole milliseconds of duration-between.")
+  (see duration-between))
+
+;; ---------------------------------------------------------------------------
+;; Text
+;; ---------------------------------------------------------------------------
+
+(:doc iso8601->date
+  (summary "Reads an ISO 8601 date, 2026-10-25.")
+  (arg s "The text.")
+  (returns "Some date, or None when s is not a whole, valid date in the extended format.")
+  (see text->date))
+
+(:doc iso8601->time
+  (summary "Reads an ISO 8601 time of day: 02:30, 02:30:00, 02:30:00.5 or 02:30:00,5.")
+  (arg s "The text.")
+  (returns "Some time, or None. A fraction has up to seven digits kept; more are read and dropped.")
+  (see text->time))
+
+(:doc iso8601->datetime
+  (summary "Reads an ISO 8601 date and time, 2026-10-25T02:30:00.")
+  (arg s "The text, with an upper case T.")
+  (returns "Some datetime, or None.")
+  (see text->datetime))
+
+(:doc iso8601->instant
+  (summary "Reads an ISO 8601 date and time with an offset, converted to UTC.")
+  (arg s "The text: 2026-10-25T01:30:00Z, or any offset, such as +01:00.")
+  (returns "Some instant, or None, also when the instant is outside the calendar.")
+  (see text->instant))
+
+(:doc iso8601->moment
+  (summary "Reads an ISO 8601 date and time with an offset and a zone in brackets.")
+  (arg s "The text: 2026-10-25T02:30:00+01:00[Europe/Stockholm].")
+  (returns "Some moment, or None.")
+  (see text->moment)
+  (reference """
+    The offset has to be one its zone has at that local time, so
+    @code{2026-07-01T12:00:00+01:00[Europe/Stockholm]} is @code{None} (July
+    is +02:00), and so is any local time in a gap. A local time in an
+    overlap reads at either of its offsets. An id the machine does not know
+    is @code{None}.
+    """))
+
+(:doc iso8601->duration
+  (summary "Reads an ISO 8601 duration: PT26H30M, -PT1.5S.")
+  (arg s "The text.")
+  (returns "Some duration, or None.")
+  (see iso8601->period)
+  (reference """
+    A duration has no days, since a day is a calendar amount: @code{P1D} is
+    a @code{DatePeriod}, and @code{None} here. Only seconds take a fraction.
+    """))
+
+(:doc iso8601->date-period
+  (summary "Reads an ISO 8601 date period: P1Y2M3W4D, P1M-3D.")
+  (arg s "The text.")
+  (returns "Some period, or None. Each amount may have a sign of its own.")
+  (see iso8601->period))
+
+(:doc iso8601->period
+  (summary "Reads an ISO 8601 period with date and time parts: P1DT3H.")
+  (arg s "The text.")
+  (returns "Some period, or None. A T needs a time part after it.")
+  (see iso8601->date-period iso8601->duration))
+
+(:doc instant->http-date
+  (summary "Writes an instant as an HTTP date: Sun, 25 Oct 2026 01:30:00 GMT.")
+  (arg i "The instant.")
+  (returns "Its IMF-fixdate (RFC 9110). The fraction of a second is dropped.")
+  (see http-date->instant))
+
+(:doc http-date->instant
+  (summary "Reads an HTTP date: Sun, 25 Oct 2026 01:30:00 GMT.")
+  (arg s "An IMF-fixdate (RFC 9110).")
+  (returns "Some instant, or None.")
+  (see instant->http-date)
+  (reference """
+    The day name has to be the date's own. The two obsolete forms, RFC 850
+    and asctime, are not read.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Text of your own
+;; ---------------------------------------------------------------------------
+
+(:doc DateNumber
+  (summary "The numbers of a date, as a format names them: year, month, day and the others.")
+  (case NumYear "year, the year.")
+  (case NumMonth "month, 1 to 12.")
+  (case NumDay "day, the day of the month.")
+  (case NumWeekday "weekday, 1 for Monday to 7 for Sunday.")
+  (case NumYday "yday, the day of the year.")
+  (case NumWeek "week, the ISO week.")
+  (case NumWeekYear "week-year, the year the ISO week is in.")
+  (see DatePart date->text)
+  (reference """
+    Each is written by its tag, alone or with a width: @code{year} and
+    @code{(year)} are the same, and @code{(year 4)} fills with zeros to
+    four digits.
+    """))
+
+(:doc RomanNumber
+  (summary "What (roman ...) writes in a format: year, month or day.")
+  (case RomanYear "(roman year).")
+  (case RomanMonth "(roman month).")
+  (case RomanDay "(roman day).")
+  (see DatePart)
+  (reference """
+    No width, as a numeral has no zeros to fill with:
+    @code{(roman (year 4))} is a compile error.
+    """))
+
+(:doc DatePart
+  (summary "A part of a date's format, for date->text and text->date.")
+  (case DateNum "A number: year, month, day, weekday, yday, week or week-year.")
+  (case DateRoman "(roman year), (roman month) or (roman day).")
+  (case MonthName "month-name, from the names table.")
+  (case MonthAbbr "month-abbr, from the names table.")
+  (case WeekdayName "weekday-name, from the names table.")
+  (case WeekdayAbbr "weekday-abbr, from the names table.")
+  (case DateText "A string, written as it stands.")
+  (case DateChar "A character, written as it stands.")
+  (see date->text text->date DateNumber RomanNumber))
+
+(:doc TimePart
+  (summary "A part of a time's format, for time->text and text->time.")
+  (case TimeHours "hours, 0 to 23.")
+  (case TimeHours12 "hours12, 1 to 12: 12 for midnight's and noon's hour.")
+  (case TimeMinutes "minutes.")
+  (case TimeSeconds "seconds.")
+  (case TimeFraction "fraction: bare, ISO 8601's, point included; (fraction n), n digits.")
+  (case TimeAmPm "am-pm, the names table's word for the morning or the afternoon.")
+  (case TimeText "A string, written as it stands.")
+  (case TimeChar "A character, written as it stands.")
+  (see time->text text->time))
+
+(:doc DateTimePart
+  (summary "A part of a datetime's format: the fields of a date's and of a time's.")
+  (case DateTimeDate "A field of a DatePart.")
+  (case DateTimeTime "A field of a TimePart.")
+  (case DateTimeText "A string, written as it stands.")
+  (case DateTimeChar "A character, written as it stands.")
+  (see datetime->text text->datetime))
+
+(:doc MomentPart
+  (summary "A part of a moment's format: a datetime's fields, offset, zone, unix and unix-ms.")
+  (case MomentDateTime "A field of a DateTimePart, of the local time.")
+  (case MomentOffset "offset, as ISO 8601 writes it: +01:00.")
+  (case MomentZone "zone, the zone's id: Europe/Stockholm.")
+  (case MomentUnix "unix, the Unix time in seconds, rounded toward the past.")
+  (case MomentUnixMs "unix-ms, the Unix time in milliseconds, rounded toward the past.")
+  (case MomentText "A string, written as it stands.")
+  (case MomentChar "A character, written as it stands.")
+  (see moment->text text->moment))
+
+(:doc InstantPart
+  (summary "A part of an instant's format: a datetime's fields in UTC, offset, unix and unix-ms.")
+  (case InstantDateTime "A field of a DateTimePart, in UTC.")
+  (case InstantOffset "offset, which for an instant is Z.")
+  (case InstantUnix "unix, the Unix time in seconds, rounded toward the past.")
+  (case InstantUnixMs "unix-ms, the Unix time in milliseconds, rounded toward the past.")
+  (case InstantText "A string, written as it stands.")
+  (case InstantChar "A character, written as it stands.")
+  (see instant->text text->instant)
+  (reference """
+    An instant has no @code{zone} to write.
+    """))
+
+(:doc DateNames
+  (summary "The names a format writes and reads: months, weekdays, and the words of am-pm.")
+  (field months "Twelve month names, from January.")
+  (field months-short "Twelve abbreviated month names, from January.")
+  (field weekdays "Seven weekday names, from Monday.")
+  (field weekdays-short "Seven abbreviated weekday names, from Monday.")
+  (field am "What am-pm writes before noon.")
+  (field pm "What am-pm writes from noon.")
+  (see english-names swedish-names current-date-names)
+  (reference """
+    A table of your own for another language is a @code{DateNames} with
+    these six fields. One with the wrong number of names raises an
+    @code{ArgumentException} when a name is taken from it, in writing or in
+    reading.
+    """))
+
+(:doc english-names
+  (summary "English names: January, Jan, Monday, Mon, AM and PM.")
+  (see swedish-names current-date-names))
+
+(:doc swedish-names
+  (summary "Swedish names: januari, jan, måndag, mån, fm and em.")
+  (see english-names current-date-names))
+
+(:doc current-date-names
+  (summary "The names table the writers and readers use when not given #:names.")
+  (see english-names swedish-names DateNames)
+  (reference """
+    A @code{(Param DateNames)}, starting as @code{english-names}.
+    """))
+
+(:doc date->text
+  (summary "Writes a date in a format of your own.")
+  (arg d "The date.")
+  (arg parts """The format, a quoted list: @code{'((year 4) "-" (month 2) "-" (day 2))}.""")
+  (key #:names "The names month-name and the others write.")
+  (returns "The text.")
+  (raises ArgumentException "When a part is given more than one width, as @code{(year 4 2)} is, or a name is taken from a table without twelve months or seven weekdays.")
+  (see text->date time->text datetime->text moment->text instant->text DatePart)
+  (example """
+    (date->text d '((year 4) "-" (month 2) "-" (day 2)))            ;; 2026-10-25
+    (date->text d '(weekday-name ", " day " " month-name " " year))  ;; Sunday, 25 October 2026
+    (date->text d '(day "." (roman month) "." (roman year)))         ;; 25.X.MMXXVI
+    """)
+  (reference """
+    A format is a quoted list: a field's name, a string or a character, each
+    written as it stands. A number after a field's name is a width, filled
+    with zeros: @code{(month 2)} is @code{03}. Without one, a number takes
+    the digits it needs, and @code{day} and @code{(day)} are the same.
+
+    There is one format union and one writer per type, so the writers and
+    their formats are:
+
+    @read-table{
+    | Writer                  | Format              | Fields |
+    |-------------------------+---------------------+--------|
+    | @code{date->text}       | @code{DatePart}     | @code{year}, @code{month}, @code{day}, @code{weekday} (1 is Monday), @code{yday}, @code{week}, @code{week-year}; @code{(roman year)}, @code{(roman month)}, @code{(roman day)}; @code{month-name}, @code{month-abbr}, @code{weekday-name}, @code{weekday-abbr} |
+    | @code{time->text}       | @code{TimePart}     | @code{hours}, @code{hours12} (12 for midnight's and noon's hour), @code{minutes}, @code{seconds}, @code{fraction}, @code{am-pm} |
+    | @code{datetime->text}   | @code{DateTimePart} | both of those |
+    | @code{moment->text}     | @code{MomentPart}   | both, @code{offset} (@code{+01:00}), @code{zone} (@code{Europe/Stockholm}), and @code{unix} and @code{unix-ms} |
+    | @code{instant->text}    | @code{InstantPart}  | the fields of a @code{DateTimePart}, @code{offset}, @code{unix} and @code{unix-ms} |
+    }
+
+    @itemlist{
+      @item{@code{(fraction n)} is @code{n} digits of the second's fraction,
+        cut rather than rounded, and zeros past the seventh:
+        @code{(fraction 9)} is nanoseconds. A bare @code{fraction} is ISO
+        8601's, point included: @code{.5}, and nothing at all for a whole
+        second, so @code{'((hours 2) ":" (minutes 2) fraction)} reads well
+        either way.}
+      @item{@code{(roman year)} is @code{MMXXVI}, and 1900 is @code{MCM}.
+        Numerals stop at @code{MMMCMXCIX}, so a later year goes on adding
+        @code{M}: 4000 is @code{MMMM}. A numeral takes no width.}
+      @item{@code{unix} is the Unix time in seconds and @code{unix-ms} in
+        milliseconds, both rounded toward the past, as
+        @code{instant->unix-seconds} rounds: half a second before 1970 is
+        @code{-1} and @code{-500}.}
+      @item{A format kept in a variable says which kind it is, since nothing
+        else tells the list what it holds:
+        @code{(def (: stamp (List DateTimePart)) '(...))}.}
+    }
+
+    The mistakes are compile errors, with the list of the fields there are:
+
+    @codeblock[#:lang "bjolang"]|{
+    (date->text d '((year 4) (hours 2)))        ;; `hours` is not a tag of the union DatePart …
+    (datetime->text dt '((hours 2) offset))     ;; `offset` is not a tag of the union DateTimePart …
+    (date->text d '((roman (year 4))))          ;; RomanYear takes no argument …
+    (datetime->text some-moment '(year))        ;; a type error: write (->datetime some-moment)
+    }|
+
+    A moment's date is written with @code{(date->text (->date m) ...)},
+    which says whose date it is. Writing has none of the limits reading has:
+    a format that cannot read can still write. Beside @code{year},
+    @code{week} is written without a word, so
+    @code{'((year 4) "-W" (week 2))} writes 2027-01-01 as @code{2027-W53},
+    a week 2027 does not have; write @code{week-year} beside @code{week}.
+    """))
+
+(:doc time->text
+  (summary "Writes a time of day in a format of your own.")
+  (arg t "The time.")
+  (arg parts "The format, a list of TimePart.")
+  (key #:names "The words am-pm writes.")
+  (returns "The text.")
+  (raises ArgumentException "When a part is given more than one width.")
+  (see text->time date->text TimePart)
+  (example """
+    (time->text t '(hours12 ":" (minutes 2) " " am-pm))   ;; 1:05 PM
+    """)
+  (reference """
+    The fields are listed under @code{date->text}.
+    """))
+
+(:doc datetime->text
+  (summary "Writes a date and time in a format of your own.")
+  (arg dt "The datetime.")
+  (arg parts "The format, a list of DateTimePart: a date's fields and a time's.")
+  (key #:names "The names the name fields and am-pm write.")
+  (returns "The text.")
+  (raises ArgumentException "When a part is given more than one width, or a name is taken from a table without twelve months or seven weekdays.")
+  (see text->datetime date->text ->datetime))
+
+(:doc moment->text
+  (summary "Writes a moment in a format of your own.")
+  (arg m "The moment.")
+  (arg parts "The format, a list of MomentPart: its local date and time, offset, zone, unix and unix-ms.")
+  (key #:names "The names the name fields and am-pm write.")
+  (returns "The text.")
+  (raises ArgumentException "When a part is given more than one width, or a name is taken from a table without twelve months or seven weekdays.")
+  (see text->moment date->text)
+  (example """
+    (moment->text m '((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2)
+                      ":" (seconds 2) offset))   ;; 2026-10-25T02:30:00+01:00
+    """)
+  (reference """
+    A moment's @code{unix} and @code{unix-ms} are its instant's.
+    """))
+
+(:doc instant->text
+  (summary "Writes an instant in a format of your own, in UTC.")
+  (arg i "The instant.")
+  (arg parts "The format, a list of InstantPart: a datetime's fields, offset, unix and unix-ms.")
+  (key #:names "The names the name fields and am-pm write.")
+  (returns "The text.")
+  (raises ArgumentException "When a part is given more than one width, or a name is taken from a table without twelve months or seven weekdays.")
+  (see text->instant date->text)
+  (reference """
+    An instant is written in UTC, and its @code{offset} is @code{Z}, so
+    @code{'((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2) ":" (seconds 2) offset)}
+    writes what @code{->str} writes for a whole second:
+    @code{2026-10-25T01:30:00Z}.
+    """))
+
+(:doc text->date
+  (summary "Reads a date in a format of your own, the one that wrote it.")
+  (arg s "The text.")
+  (arg parts "The format, as date->text takes it.")
+  (key #:names "The names month-name and the others read.")
+  (returns "Some date, or None when the text does not fit the format or names no date.")
+  (raises ArgumentException "When the format cannot be read, whatever the text: see below.")
+  (see date->text text->time text->datetime text->instant text->moment iso8601->date)
+  (example """
+    (text->date "2026-10-25" '((year 4) "-" (month 2) "-" (day 2)))   ;; 2026-10-25
+    (text->date "Sunday, 25 October 2026"
+                '(weekday-name ", " day " " month-name " " year))    ;; 2026-10-25
+    (text->date "25.X.MMXXVI" '(day "." (roman month) "." (roman year)))
+    (text->date "2026-10" '((year 4) "-" (month 2)))                  ;; 2026-10-01
+    (text->date "2026-W43" '((week-year 4) "-W" (week 2)))            ;; 2026-10-19
+    """)
+  (reference """
+    Each writer has a reader, which reads a text with the format that wrote
+    it and answers an @code{Option}: @code{text->date}, @code{text->time},
+    @code{text->datetime}, @code{text->instant}, @code{text->moment} and
+    @code{text->moment/resolver}. Each takes @code{#:names} as the writers
+    do. What follows holds for all of them.
+
+    The parts are read in order, and the whole text has to be used. Text
+    that does not fit is @code{None}, never an exception.
+
+    @itemlist{
+      @item{Text and characters match exactly, case included.}
+      @item{A number is ASCII digits only. Without a width it is one digit up
+        to the field's most; with @code{(field w)} it is at least @code{w},
+        and at most @code{w} or the field's most, whichever is more. The most
+        digits are 4 for @code{year} and @code{week-year}, 3 for
+        @code{yday}, 1 for @code{weekday}, and 2 for the others. A number
+        takes as many digits as there are, up to its most, and never gives
+        one back.}
+      @item{A name, and @code{am-pm}, matches its table's own spelling, case
+        included: @code{oktober}, not @code{Oktober}, and @code{PM}, not
+        @code{pm}. When two names match, the longer one is read.}
+      @item{A Roman numeral is read only in the form it is written:
+        @code{MCM}, not @code{MDCCCC}, and @code{IV}, not @code{IIII}.}
+      @item{@code{(fraction n)} is exactly @code{n} digits, and digits past
+        the seventh are read and dropped. A bare @code{fraction} is ISO
+        8601's: nothing, or a point or a comma and at least one digit.}
+      @item{@code{unix} is an optional minus and up to 12 digits, and
+        @code{unix-ms} up to 15. A time outside the years 1 to 9999 is
+        @code{None}, as @code{unix-seconds->instant} answers.}
+      @item{@code{offset} is @code{Z}, or @code{+hh:mm} or @code{-hh:mm} with
+        an optional @code{:ss}.}
+      @item{@code{zone} is the longest run of the characters an IANA id is
+        made of (ASCII letters and digits, @code{/}, @code{_}, @code{-} and
+        @code{+}), and an id the machine does not know is @code{None}.}
+    }
+
+    @strong{The date.} The fields read make the date:
+
+    @itemlist{
+      @item{year, month and day; or year and @code{yday}, the ordinal date
+        2026-298; or @code{week-year}, @code{week} and @code{weekday}, the
+        week date 2026-W43-7.}
+      @item{A field the format leaves out is its first value: no @code{day}
+        is the 1st, and no @code{weekday} is Monday. So what HTML's
+        @code{<input type="month">} sends, @code{2026-10}, reads with
+        @code{'((year 4) "-" (month 2))} as 2026-10-01, and what its
+        @code{<input type="week">} sends, @code{2026-W43}, reads with
+        @code{'((week-year 4) "-W" (week 2))} as that week's Monday,
+        2026-10-19.}
+      @item{Every other field read has to be the date's own. A weekday name
+        that is not the date's, a @code{week} or @code{yday} beside a
+        calendar date that says another, or a Roman year beside a numeric
+        one that says another, is @code{None}. So is a value no date has:
+        February 30, week 53 of 2027, year 0.}
+    }
+
+    @strong{The time.}
+
+    @itemlist{
+      @item{@code{hours}, or @code{hours12} and @code{am-pm}, where 12 AM is
+        the hour 00 and 12 PM the hour 12. Minutes, seconds and the fraction
+        left out are 0.}
+      @item{@code{am-pm} beside @code{hours} has to agree with it, and two
+        fractions have to agree to the fewer digits of the two.}
+      @item{A datetime is a date and a time, and without any time field it is
+        midnight.}
+    }
+
+    @strong{Formats that cannot be read.} Each raises an
+    @code{ArgumentException} when it is used to read, whatever the text,
+    with a message that names the part:
+
+    @itemlist{
+      @item{@strong{A date without a year.} A date's format needs
+        @code{year}, @code{(roman year)} or @code{week-year}:
+        @code{'(month "/" day)} cannot say which year.}
+      @item{@strong{A field without its own kind of year.} Month, day and
+        @code{yday} count within @code{year}, and @code{week} within
+        @code{week-year}. @code{'((year 4) "-W" (week 2))} would read
+        @code{2026-W43} as nothing, and @code{2026-W01} as January 1, which
+        is that week's Thursday; it is refused, and a week is read with
+        @code{week-year}. A field of the other kind may stand beside a date
+        its own kind makes, and is checked against it:
+        @code{'((year 4) "-" (month 2) "-" (day 2) " W" (week 2))} reads.}
+      @item{@strong{A time without hours.} A time's format needs
+        @code{hours}, or @code{hours12} with @code{am-pm}, and so does a
+        datetime's that has minutes, seconds, a fraction or @code{am-pm}.}
+      @item{@strong{@code{hours12} without @code{am-pm}}: 1:05 could be
+        either.}
+      @item{@strong{A moment without a zone.} @code{text->moment}'s format
+        needs @code{zone}.}
+      @item{@strong{A Unix time beside another field of the instant.}
+        @code{unix} or @code{unix-ms} says the whole instant, and a second
+        field could say another, so a format that reads one has no other
+        field but text and, for a moment, @code{zone}.
+        @code{'(unix " " zone)} reads, and @code{'(unix " " (year 4))} and
+        @code{'(unix " " unix-ms)} are refused.}
+      @item{@strong{A text that reads two ways.} A part that can be of more
+        than one length (a number without a width or with a width below its
+        most digits, a Roman numeral, a bare fraction, @code{unix},
+        @code{zone}, or an @code{offset}, which may have seconds) followed by
+        a part that can begin with a character it could also take.
+        @code{'(year month day)} reads @code{2026110} as January 10 or as
+        November 0, so it is refused. @code{'((year 4) (month 2) (day 2))}
+        reads, and so does @code{'(year "-" month "-" day)}. A bare fraction
+        takes a point and the digits after it, a zone the characters of an
+        id, and an offset a colon, so none of those may follow them:
+        @code{'(offset "[" zone "]")} reads.}
+      @item{@strong{A names table without twelve months or seven weekdays},
+        when the format reads a name from it, as when it writes one.}
+    }
+
+    Writing has none of these limits: a format that cannot read can still
+    write.
+
+    @strong{Round trips.} What a writer writes with a format that can be
+    read, the reader of the same type reads back with that format. It gives
+    back the value, or what the format keeps of it: without seconds, the
+    minute; without a day, the 1st; with @code{(fraction 3)}, the
+    millisecond; with @code{unix}, the second, rounded toward the past. The
+    tests write and read thousands of values of every type so, across the
+    whole range and in zones with offsets such as Kathmandu's +05:45 and
+    Chatham's +12:45.
+
+    @strong{Cost.} A reader allocates nothing but a moment's zone id. It
+    walks the format part by part and checks it on every read, so it costs
+    about ten times what the @code{iso8601->} readers do, which stay the
+    fast path for ISO 8601 text.
+    """))
+
+(:doc text->time
+  (summary "Reads a time of day in a format of your own.")
+  (arg s "The text.")
+  (arg parts "The format, as time->text takes it.")
+  (key #:names "The words am-pm reads.")
+  (returns "Some time, or None.")
+  (raises ArgumentException "When the format cannot be read: without hours, or with hours12 and no am-pm.")
+  (see time->text text->date)
+  (example """
+    (text->time "1:05 PM" '(hours12 ":" (minutes 2) " " am-pm))   ;; 13:05:00
+    """)
+  (reference """
+    The rules are under @code{text->date}.
+    """))
+
+(:doc text->datetime
+  (summary "Reads a date and time in a format of your own.")
+  (arg s "The text.")
+  (arg parts "The format, as datetime->text takes it.")
+  (key #:names "The names the name fields and am-pm read.")
+  (returns "Some datetime, or None. Without any time field it is midnight.")
+  (raises ArgumentException "When the format cannot be read, as text->date and text->time say.")
+  (see datetime->text text->date)
+  (example """
+    (text->datetime "2026-10-25 02:30"
+                    '((year 4) "-" (month 2) "-" (day 2) " " (hours 2) ":" (minutes 2)))
+    """))
+
+(:doc text->instant
+  (summary "Reads an instant in a format of your own: UTC's fields, unless the format has an offset.")
+  (arg s "The text.")
+  (arg parts "The format, as instant->text takes it.")
+  (key #:names "The names the name fields and am-pm read.")
+  (returns "Some instant, or None.")
+  (raises ArgumentException "When the format cannot be read, as text->date says.")
+  (see instant->text text->moment instant->moment)
+  (example """
+    (text->instant "2026-10-25T02:30:00+01:00"
+                   '((year 4) "-" (month 2) "-" (day 2) "T" (hours 2) ":" (minutes 2) ":"
+                     (seconds 2) offset))                             ;; 2026-10-25T01:30:00Z
+    (text->instant "@1792891800" '("@" unix))                         ;; 2026-10-25T01:30:00Z
+    """)
+  (reference """
+    An instant is its Unix time, or a date and a time. Those are UTC's, as
+    @code{instant->text} writes them, unless the format has an
+    @code{offset}, and then they are the local time at that offset: the
+    inverse of the writer, and no guess at a zone.
+
+    A text with an offset and no zone, as RFC 3339 writes, is read with
+    @code{text->instant} and put in a zone with @code{instant->moment}: two
+    steps, and no zone is guessed.
+    """))
+
+(:doc text->moment
+  (summary "Reads a moment in a format of your own, which names its zone.")
+  (arg s "The text.")
+  (arg parts "The format, as moment->text takes it. It needs zone.")
+  (key #:names "The names the name fields and am-pm read.")
+  (returns "Some moment, or None.")
+  (raises ArgumentException "When the format has no zone, or cannot be read as text->date says.")
+  (see moment->text text->moment/resolver text->instant iso8601->moment)
+  (example """
+    (text->moment "2026-10-25 12:30 Europe/Stockholm"
+                  '((year 4) "-" (month 2) "-" (day 2) " " (hours 2) ":" (minutes 2) " " zone))
+    """)
+  (reference """
+    A moment is in the zone it reads, and a Unix time is put in that zone. A
+    local time with an @code{offset} has to be at an offset the zone has
+    then, as @code{iso8601->moment} demands: in Stockholm, 2026-07-01
+    12:00+01:00 is @code{None}, as July is +02:00, and 2026-10-25 02:30
+    reads at +02:00 and at +01:00, as the clocks go back that night. A local
+    time without an offset is @code{None} in a gap or an overlap, as
+    @code{datetime->moment/opt} answers.
+
+    A local time whose instant is outside the range, such as 0001-01-01
+    00:00 in Stockholm, is @code{None}, and so is a Unix time whose local
+    time is, such as the first second in New York.
+
+    It never guesses a zone: a text with an offset and no zone is an
+    instant, read with @code{text->instant}.
+    """))
+
+(:doc text->moment/resolver
+  (summary "Reads a moment in a format of your own, resolving a local time in a gap or an overlap.")
+  (arg s "The text.")
+  (arg parts "The format, as moment->text takes it. It needs zone.")
+  (arg r "What to do with a local time without an offset in a gap or an overlap.")
+  (key #:names "The names the name fields and am-pm read.")
+  (returns "Some moment, or None.")
+  (raises ArgumentException "When the format has no zone, or cannot be read as text->date says.")
+  (see text->moment datetime->moment)
+  (reference """
+    As @code{text->moment}, except that a local time without an offset is
+    found as @code{datetime->moment} finds it. Where the local time and its
+    instant cannot both be in the calendar, it is @code{None}.
+    """))

@@ -1,0 +1,457 @@
+;; Docs for text/bjodat-core.bjo, read through (:doc #:file "bjodat-core.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "The bjodat value, its reader and its writer: Bjolang's shapes read as data.")
+  (see Bjodat parse-bjodat bjodat->string bjodat-ref)
+  (example """
+    (import (text bjodat-core))
+
+    (parse-bjodat "{:a 1 :b [2 3]}")     ; (Ok (BjoMap ...))
+    (parse-bjodat-all "1 2 3")           ; (Ok (list (BjoInt 1) ...)), a file is a stream
+    (bjodat->string v)                   ; the canonical spelling, maps flat
+    """)
+  (reference """"
+    bjodat is Bjolang's shapes read as @em{data}: no evaluation, no macro
+    expansion, no environment. A file is what it says it is. It is what a
+    package manifest, a lockfile or a config file is written in.
+
+    This module is the machinery, not the interface. A program that declares
+    records imports @code{(text bjodat)}: its @code{def/bjodat-type} reads the
+    text straight into a record, with no @code{Bjodat} value in between, and
+    it re-exports @code{Bjodat}, its cases, @code{Reader}, the one-pass
+    driver and @code{bjodat->string}, so that one import covers the
+    generator, the traits and the writer. Import this module by name when you
+    want the @em{tree}: @code{parse-bjodat}, @code{read-bjodat},
+    @code{bjodat-ref} and the entry accessors, for data whose shape is not
+    known until run time.
+
+    @strong{The format.} Two differences from source, and they are the whole
+    of it:
+
+    @itemlist{
+      @item{A bare identifier is a @code{Symbol}. It is already quoted,
+      because there is nothing here to evaluate and so nothing for a quote to
+      protect it from. @code{'foo} is @em{refused}: the mark would be a second
+      spelling of one value.}
+      @item{@code{{...}} is a map. In source a brace opens a comprehension,
+      and a comprehension is a loop, and a loop is not data.}
+    }
+
+    @codeblock[#:lang "bjolang"]|{
+    42  -100  3.14159  1e10  0x2A  0b101010   ;; integer or double, and nothing else
+    #t  #f                                    ;; the booleans; `true` is a symbol
+    #\a  #\newline  #\space                   ;; characters, as in source
+    "a \"quoted\" word\n"                     ;; strings, escaped as source escapes
+    """a "raw" word"""                        ;; raw strings, as source writes them
+    :key   #:key                              ;; a keyword, either spelling
+    a-symbol   bjolang/http   net8.0          ;; symbols; `.` and `/` are in a name
+    (a list "of" :anything)                   ;; a list
+    ["a" "vec" "of" "strings"]                ;; a vec, the one sequence type
+    {:name "http" :version "1.2"}             ;; a map, flat
+    {(:name "http") (:version "1.2")}         ;; a map, parenthesised
+    ;; a comment, to the end of the line
+    }|
+
+    The escapes are those source has: @code{\n}, @code{\t}, @code{\r},
+    @code{\\}, @code{\"}, @code{\0} and @code{\uXXXX}. The named characters
+    are @code{#\newline}, @code{#\space}, @code{#\tab}, @code{#\return} and
+    @code{#\nul}. A byte order mark at the start of the text is skipped.
+
+    A raw string follows the rules in @code{Syntax.org}, "Raw strings",
+    margin and all. The writer still writes every string escaped and on one
+    line: a raw string written back out would need a margin to fit into the
+    text around it, and @code{bjodat->string} writes a value on its own.
+
+    A number has no width suffix. @code{21uy} and @code{21L} name a .NET
+    type, and which type a field holds is the record's to say, not the file's.
+    A number is a @code{long} unless it has a fraction or an exponent, or is
+    too wide for a @code{long}, and then it is a @code{double}. @code{-} is a
+    symbol of its own, and the start of a number when a digit follows it.
+
+    There is no @code{#[...]}. Source splits vec from array because one is
+    immutable and the other is a .NET array; data is neither, so a second
+    spelling would read the same and mean nothing.
+
+    A comma is not whitespace. Source lexes @code{,} as unquote, so a stray
+    one is a token rather than a decoration, and it is refused. Separate with
+    spaces.
+
+    @strong{Maps.} Two spellings, and no third. Which one a map is, is
+    decided by the character after the brace: a @code{(} means the
+    parenthesised form, anything else means the flat one. They do not mix,
+    and a map that starts one way and continues the other is refused.
+
+    That rule is why @em{a list may not be a key}. If it could,
+    @code{{(a b) 1}} would be both a flat map keyed by the list
+    @code{(a b)} and a parenthesised map whose first entry is @code{a -> b}.
+    A key is a name, and a name is a keyword, a symbol, a string, a number
+    or a char, never a list. A flat map with an odd number of forms is the
+    other refusal.
+
+    Entries keep the order they were written in, and writing one back out
+    writes them in that order. A manifest that round-trips through a record
+    comes back looking like what a person wrote, not sorted by hash.
+
+    @strong{A file is a stream.} Nothing requires a file to hold exactly one
+    value, which is what makes a log or a lockfile writable by appending.
+    @code{parse-bjodat} asks for exactly one and refuses trailing text;
+    @code{parse-bjodat-all} takes them all, and an empty file is an empty
+    list rather than an error.
+
+    @strong{The tree.} A @code{BjoMap} holds a flat @code{(Vec Bjodat)} of
+    alternating key and value, in written order, not a trie. Building a trie
+    was about seventy percent of what reading a keyed document cost, and a
+    record decoded from one reads every field once and throws it away. Reach
+    into it with @code{bjodat-entry-count}, @code{bjodat-entry-key},
+    @code{bjodat-entry-value} and @code{bjodat-ref}. If you want a
+    dictionary, build one from the entries.
+
+    @strong{Refusals.} Every reader answers @code{(Result string _)}. A
+    refusal while reading carries the line and column where it was found:
+
+    @codeblock[#:lang "text"]|{
+    line 1, column 12: Package: this map is written flat, so a '(' here is an entry of the other form
+    }|
+
+    @strong{The one-pass machinery.} @code{Reader} and the functions from
+    @code{open-map!} to @code{parse-one-pass-all} are what a decoder
+    generated by @code{def/bjodat-type} drives to read a record without a
+    @code{Bjodat} tree standing between the text and the fields. They are
+    small and awkward on purpose: the caller is generated code that already
+    knows its field names, and drives the loop itself rather than handing in
+    a table, because a table would be the thing this is trying not to build.
+    They are not an API for people, but the entry points
+    (@code{parse-one-pass} and the rest) are how a generated
+    @code{bjodat-read-<Name>} is run.
+    """"))
+
+;; ---------------------------------------------------------------------------
+;; The value
+;; ---------------------------------------------------------------------------
+
+(:doc Bjodat
+  (summary "A bjodat value: what a document reads as, as a tree.")
+  (case BjoBool "@code{#t} or @code{#f}.")
+  (case BjoInt "An integer, always a @code{long}.")
+  (case BjoFloat "A number with a fraction or an exponent, or one too wide for a @code{long}.")
+  (case BjoStr "A string, raw or escaped.")
+  (case BjoChar "A character, @code{#\\a} or @code{#\\newline}.")
+  (case BjoSym "A bare identifier. It is data, so it needs no quote.")
+  (case BjoKey "A keyword, written @code{:key} or @code{#:key}.")
+  (case BjoList "A @code{(...)}.")
+  (case BjoVec "A @code{[...]}.")
+  (case BjoMap "A @code{{...}}: key, value, key, value, an even length, in written order, whichever spelling it was written in.")
+  (see parse-bjodat bjodat->string bjodat-ref)
+  (example """
+    (match (parse-bjodat "{:name \"http\"}")
+      ((Ok (BjoMap entries)) (bjodat-ref entries :name))   ; (Some (BjoStr "http"))
+      (_ None))
+    """)
+  (reference """
+    A @code{BjoMap} is not a trie or a dictionary but a flat vec of
+    alternating key and value. Read it with @code{bjodat-entry-count},
+    @code{bjodat-entry-key}, @code{bjodat-entry-value} and
+    @code{bjodat-ref}.
+    """))
+
+(:doc bjodat-max-depth
+  (summary "How deep a value may nest before the reader refuses it: 200.")
+  (see read-bjodat)
+  (reference """
+    It applies to nesting in the reader, so a hostile document nested a
+    thousand deep is refused with a message rather than by the stack. Each
+    record a generated one-pass decoder reads starts a fresh budget, so a
+    chain of nested @em{record types} is bounded by the types rather than by
+    this; the values inside a field are bounded normally.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Reading and writing
+;; ---------------------------------------------------------------------------
+
+(:doc read-bjodat
+  (summary "Reads exactly one value from a port, and then the end.")
+  (arg port "The port to read from, to its end.")
+  (returns "@code{(Ok value)}, or @code{(Err message)} naming the line and column. Text after the value is refused.")
+  (see parse-bjodat read-bjodat-all))
+
+(:doc parse-bjodat
+  (summary "Reads exactly one value from a string.")
+  (arg text "The document.")
+  (returns "@code{(Ok value)}, or @code{(Err message)} naming the line and column. Text after the value is refused.")
+  (see read-bjodat parse-bjodat-all bjodat->string)
+  (example """
+    (parse-bjodat "{:a 1 :b [2 3]}")   ; (Ok (BjoMap ...))
+    (parse-bjodat "1 2")               ; (Err "line 1, column 3: the value ended here, ...")
+    """))
+
+(:doc read-bjodat-all
+  (summary "Reads every value from a port, in order.")
+  (arg port "The port to read from, to its end.")
+  (returns "@code{(Ok values)}, or the first refusal. An empty document is the empty list.")
+  (see parse-bjodat-all read-bjodat)
+  (reference """
+    A file is a stream of values, which is what makes a log or a lockfile
+    writable by appending.
+    """))
+
+(:doc parse-bjodat-all
+  (summary "Reads every value in a string, in order.")
+  (arg text "The document.")
+  (returns "@code{(Ok values)}, or the first refusal. An empty document is the empty list.")
+  (see read-bjodat-all parse-bjodat))
+
+(:doc bjodat->string
+  (summary "Writes a value in the canonical spelling.")
+  (arg v "The value.")
+  (returns "Its text: maps flat, entries in the order they are held, strings escaped and on one line.")
+  (see parse-bjodat)
+  (example """
+    (bjodat->string (BjoVec [(BjoInt 1) (BjoSym 'a)]))   ; "[1 a]"
+    """)
+  (reference """
+    Strings are always written escaped, never raw: a raw string written back
+    out would need a margin to fit into the text around it. A double is
+    written as .NET writes it, so one with no fraction, such as @code{2.0},
+    is written @code{2} and reads back as a @code{BjoInt}; the
+    @code{double} instance of @code{bjodat->} in @code{(text bjodat)}
+    takes an integer for that reason. Symbols and keywords are written as
+    their names, unchecked.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; What a map is, for anyone holding one
+;; ---------------------------------------------------------------------------
+
+(:doc bjodat-entry-count
+  (summary "How many entries a map's vec holds.")
+  (arg entries "What a @code{BjoMap} holds.")
+  (returns "Half its length.")
+  (see bjodat-entry-key bjodat-entry-value))
+
+(:doc bjodat-entry-key
+  (summary "The key of a map's i-th entry.")
+  (arg entries "What a @code{BjoMap} holds.")
+  (arg i "The entry, from 0.")
+  (returns "Its key, which may be any value but a list.")
+  (see bjodat-entry-value bjodat-entry-count))
+
+(:doc bjodat-entry-value
+  (summary "The value of a map's i-th entry.")
+  (arg entries "What a @code{BjoMap} holds.")
+  (arg i "The entry, from 0.")
+  (returns "Its value.")
+  (see bjodat-entry-key bjodat-entry-count))
+
+(:doc bjodat-ref
+  (summary "The first value under a keyword in a map.")
+  (arg entries "What a @code{BjoMap} holds.")
+  (arg k "The keyword.")
+  (returns "@code{(Some value)} for the first entry under @code{k}, in written order, or @code{None}.")
+  (see bjodat-entry-count)
+  (example """
+    (bjodat-ref entries :version)
+    """)
+  (reference """
+    A linear scan comparing interned keywords by reference. That is the
+    right shape for a record's handful of fields and the wrong one for a map
+    with thousands of keys used as a lookup table: if you want a dictionary,
+    build one from the entries. Only a @code{BjoKey} key can match, so an
+    entry under a symbol or a string is never found. A duplicate key: the
+    first wins.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; What a generated one-pass decoder drives. Not an API for people.
+;; ---------------------------------------------------------------------------
+
+(:doc Reader
+  (summary "A reader over a port, as a generated one-pass decoder drives it. Not an API for people.")
+  (field port "What it reads from.")
+  (field held "The one character of lookahead, as a code; -1 at the end of the port.")
+  (field row "The line the held character is on, from 1.")
+  (field col "Its column, from 1.")
+  (field scratch "One buffer for every string, symbol, number and key name in the document.")
+  (field stack "One array for every list, vec and map in the document.")
+  (field top "How much of the stack is in use.")
+  (field names "A small cache of the names read, so that a repeated key does not build a new string.")
+  (see read-one-pass parse-one-pass)
+  (reference """
+    Made by @code{read-one-pass} and its neighbours and handed to the
+    decoder they are given. A program has no reason to touch its fields.
+    """))
+
+(:doc open-map!
+  (summary "Steps over the brace that opens a map, and says which spelling it is in. Not an API for people.")
+  (arg rd "The reader.")
+  (arg owner "The record's name, for messages.")
+  (returns "@code{(Ok #t)} when the entries are parenthesised, @code{(Ok #f)} when flat; a refusal when there is no map here.")
+  (see next-key! end-entry!)
+  (reference """
+    Decided by the first thing inside the brace, as the tree reader decides
+    it; every entry after has to agree.
+    """))
+
+(:doc next-key!
+  (summary "Takes the next key's name into the buffer, without interning it. Not an API for people.")
+  (arg rd "The reader.")
+  (arg owner "The record's name, for messages.")
+  (arg paired "What @code{open-map!} answered.")
+  (returns "@code{(Ok #t)} when a key is in the buffer and the reader stands at its value, @code{(Ok #f)} when the map closed.")
+  (see key=? end-entry! skip-value!)
+  (reference """
+    A key that is not a keyword is read and dropped, and leaves the buffer
+    empty, which no field name can equal: it takes the path an unknown key
+    takes, as in the tree decoder, where @code{bjodat-ref} only matches a
+    @code{BjoKey}.
+    """))
+
+(:doc end-entry!
+  (summary "Steps over the ) of a parenthesised entry; nothing in the flat form. Not an API for people.")
+  (arg rd "The reader.")
+  (arg owner "The record's name, for messages.")
+  (arg paired "What @code{open-map!} answered.")
+  (returns "@code{(Ok #t)}, or a refusal when the entry holds more than a key and a value.")
+  (see next-key!))
+
+(:doc key=?
+  (summary "Whether the name in the reader's buffer is this one. Not an API for people.")
+  (arg rd "The reader.")
+  (arg name "A field name or tag, without its colon.")
+  (returns "#t when they are equal.")
+  (see next-key! next-field!)
+  (reference """
+    The comparison the one-pass decoder exists for: no string is built and
+    nothing is interned, for a key, a clause name or a tag.
+    """))
+
+(:doc field-value
+  (summary "Reads a field's value, as a Bjodat for its type's instance to convert. Not an API for people.")
+  (arg rd "The reader, standing at the value.")
+  (returns "The value, or a refusal.")
+  (see skip-value!)
+  (reference """
+    The value is still read as a @code{Bjodat} and converted by the field
+    type's own @code{bjodat->} instance. That keeps every instance, including
+    one a user wrote, working, and every message identical to the tree
+    decoder's. The entry is what the one-pass decoder saves, not the value.
+    """))
+
+(:doc skip-value!
+  (summary "Reads an unknown key's value and drops it. Not an API for people.")
+  (arg rd "The reader, standing at the value.")
+  (returns "@code{(Ok #t)}, or a refusal.")
+  (see field-value skip-clause!)
+  (reference """
+    It has to be @em{read}: a value is not a token, and finding where it ends
+    means parsing it.
+    """))
+
+;; The same, for a record written as a tagged form.
+
+(:doc open-form!
+  (summary "Steps over ( and a tagged form's head, refusing any head but the tag. Not an API for people.")
+  (arg rd "The reader.")
+  (arg owner "The record's name, for messages.")
+  (arg tag "The head the record is written under.")
+  (returns "@code{(Ok #t)}, or a refusal such as @code{expected (package ...), and this is (banana ...)}.")
+  (see next-field! skip-clause!)
+  (reference """
+    The tag is matched against the buffer, so a form costs no string for its
+    own name; one is built only on the way to refusing.
+    """))
+
+(:doc next-field!
+  (summary "Takes the next clause's field name into the buffer. Not an API for people.")
+  (arg rd "The reader.")
+  (arg owner "The record's name, for messages.")
+  (returns "@code{(Ok #t)} when a name is in the buffer and the reader stands at the clause's first value, @code{(Ok #f)} when the form closed.")
+  (see key=? end-clause! skip-clause! clause-values!))
+
+(:doc end-clause!
+  (summary "Steps over the ) of a clause holding one value. Not an API for people.")
+  (arg rd "The reader.")
+  (arg owner "The record's name, for messages.")
+  (arg name "The field's name, for messages.")
+  (returns "@code{(Ok #t)}, or a refusal when the clause holds more than one value.")
+  (see next-field!)
+  (reference """
+    The owner and the field name arrive apart and are joined only on the way
+    to refusing: joined by the caller they would be a string built per field
+    per record.
+    """))
+
+(:doc skip-clause!
+  (summary "Reads an unknown clause to its ), whatever it holds, and drops it. Not an API for people.")
+  (arg rd "The reader, after the clause's name.")
+  (returns "@code{(Ok #t)}, or a refusal.")
+  (see skip-value!)
+  (reference """
+    Any arity, and that is the point of it. A map's unknown key is one value
+    and done, but a clause may hold none, one or five, and a reader that
+    insisted on one would make every new clause a breaking change for every
+    older tool. This is what keeps a manifest forward-compatible.
+    """))
+
+(:doc clause-values!
+  (summary "Reads every value of a clause, for a #:rest field, and its ). Not an API for people.")
+  (arg rd "The reader, after the clause's name.")
+  (returns "The values in written order, or a refusal.")
+  (see next-field! field-value)
+  (reference """
+    The values are read as @code{Bjodat} and converted by the element type's
+    own instance. @code{read-value} carries the depth budget, so a manifest
+    nesting @code{(package (depends (package (depends ...))))} five hundred
+    deep is refused by @code{bjodat-max-depth} rather than by the stack. A
+    @code{#:rest} that recursed straight back into a generated decoder would
+    have no budget at all.
+    """))
+
+;; The entry points.
+
+(:doc read-one-pass
+  (summary "Runs a one-pass decoder over a port: one record, and then the end.")
+  (arg port "The port to read from, to its end.")
+  (arg decode "A generated @code{bjodat-read-<Name>}.")
+  (returns "What the decoder answered; text after the record is refused.")
+  (see parse-one-pass read-one-pass-all)
+  (reference """
+    The decoder is typed @code{-?->}, so that a bjoroutine calling this gets
+    the decoder's suspending copy rather than the one that parks the thread.
+    Pass it by name, not wrapped in a @code{(fun (rd) ...)}: a lambda body is
+    sealed to the sync copy of what it calls.
+    """))
+
+(:doc parse-one-pass
+  (summary "Runs a one-pass decoder over a string: one record, and then the end.")
+  (arg text "The document.")
+  (arg decode "A generated @code{bjodat-read-<Name>}, passed by name.")
+  (returns "What the decoder answered; text after the record is refused.")
+  (see read-one-pass parse-one-pass-all)
+  (reference """
+    A generated @code{bjodat-parse-<Name>} is exactly this with its own
+    decoder.
+    """))
+
+(:doc read-one-pass-all
+  (summary "Runs a one-pass decoder over each record of a [...] read from a port.")
+  (arg port "The port to read from.")
+  (arg decode "A generated @code{bjodat-read-<Name>}, passed by name.")
+  (returns "The records in order, or the first refusal. The document has to be a vec.")
+  (see parse-one-pass-all read-one-pass)
+  (reference """
+    A @code{List} rather than a @code{Vec}: it is built by consing and
+    turned round once, and a caller that folds over it once, which is most
+    of them, should not pay for a tree it does not index into.
+    """))
+
+(:doc parse-one-pass-all
+  (summary "Runs a one-pass decoder over each record of a [...] in a string.")
+  (arg text "The document, a vec of records.")
+  (arg decode "A generated @code{bjodat-read-<Name>}, passed by name.")
+  (returns "The records in order, or the first refusal.")
+  (see read-one-pass-all parse-one-pass)
+  (example """
+    (parse-one-pass-all text bjodat-read-Dep)   ; (Result string (List Dep))
+    """))

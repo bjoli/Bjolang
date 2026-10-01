@@ -1,0 +1,439 @@
+;; Docs for std/rx.bjo, read through (:doc #:file "rx.bjodoc"). The texts are
+;; samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Regular expressions written as s-expressions, checked and compiled at compile time.")
+  (see rx-match? rx-search rx-compile RxMatch)
+  (example """
+    (import (std rx))
+
+    (def phone #rx(seq :bos
+                       (=> :area (= 3 :ascii-digit))   ; three digits, named :area
+                       (lit "-")
+                       (=> :line (= 4 :ascii-digit))   ; four digits, named :line
+                       :eos))
+
+    (rx-match? phone "555-1234")          ; #t
+    (rx-search #rx((+ :digit)) "a42b")    ; (Some <match on "42">)
+    """)
+  (reference """
+    A pattern is written @code{#rx(...)} in a notation like Scheme's SRE,
+    not as a string such as @code{"[a-z]+"}, so nothing is ever escaped
+    twice. It is read, checked and compiled to a .NET pattern at compile
+    time, and a bad pattern is a compile error pointing at the sub-form that
+    is wrong. The pattern language is described with @code{#rx}.
+
+    @strong{Using a pattern.} A @code{#rx(...)} is an @code{Rx}, a compiled
+    regular expression. Compiling is cached by pattern, so evaluating the
+    same @code{#rx(...)} again does not build a second .NET regex.
+    @code{rx-match?} and @code{rx-match} match the
+    whole string; @code{rx-search?} and @code{rx-search} find the leftmost
+    match anywhere in it; @code{rx-matches} finds them all. A match is an
+    @code{RxMatch}, read with @code{rx-text}, @code{rx-start},
+    @code{rx-end} and the @code{rx-group} family. @code{rx-replace},
+    @code{rx-replace-with} and @code{rx-split} rewrite a string. In a
+    @code{match}, the patterns @code{Rx} and @code{RxIn} do the same as
+    @code{rx-match} and @code{rx-search}.
+
+    @strong{The engine.} The matching is
+    @code{System.Text.RegularExpressions} in its non-backtracking mode,
+    which matches in time linear in the length of the string, and the
+    options are fixed: @code{NonBacktracking}, @code{ExplicitCapture},
+    @code{CultureInvariant}. That mode refuses backreferences, lookarounds,
+    atomic groups and conditionals, the constructs that would tie Bjolang to
+    a backtracking engine for good. So these are not supported, on purpose:
+
+    @itemlist{
+      @item{Lookarounds, backreferences and conditionals.}
+      @item{Complementing a whole pattern. A character set can be
+        complemented: @code{(~ :digit)}.}
+      @item{Case-insensitive matching, which would depend on the runtime's
+        culture tables.}
+      @item{Patterns built at run time. A pattern is built at compile time,
+        so @code{,x} inside @code{#rx(...)} is an error: every pattern is
+        known statically.}
+    }
+
+    @strong{Unicode.} The alphabet is the Unicode scalar, as it is for
+    @code{char} and the string cursors, but .NET's engine works in UTF-16
+    code units. So @code{:any} and every complemented set are emitted as an
+    alternation that takes a surrogate pair as one unit, and a match never
+    begins or ends inside a pair: an emoji is not split in half.
+
+    .NET's character classes cannot name a scalar above U+FFFF, so a
+    character set cannot hold one: @code{(in "😀")} is a compile error.
+    Match it as a literal, @code{"😀"} or @code{(lit "😀")}, instead.
+
+    The emitted pattern never uses @code{.}, @code{^}, @code{$},
+    @code{\d}, @code{\w}, @code{\s} or @code{\p{...}}, whose meanings .NET
+    decides and which move when the runtime's Unicode tables are updated.
+    The named sets are written out as explicit ranges from tables in
+    @code{rx.bjo}, generated from .NET's @code{CharUnicodeInfo} so that
+    @code{:alpha} agrees with @code{char-alphabetic?}. A compiled program
+    means the same thing on every runtime.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The types
+;; ---------------------------------------------------------------------------
+
+;; `Rx` is also the name of the pattern macro below, which is what (:doc Rx)
+;; documents; the type is described in rx-compile's doc and the module's.
+
+(:doc RxMatch
+  (summary "One match: the string it was found in, where, and its groups.")
+  (see rx-text rx-start rx-group rx-group/n))
+
+;; ---------------------------------------------------------------------------
+;; The pattern language
+;; ---------------------------------------------------------------------------
+
+(:doc rx #:reader
+  (summary "A regular expression, checked and compiled at compile time.")
+  (form (rx pattern))
+  (arg pattern "The pattern, in the notation below.")
+  (see rx-compile rx-match rx-search)
+  (example """
+    #rx(seq :bos (+ :digit) (lit "-") ($ (** 4 4 :digit)) :eos)
+    #rx(:digit)              ; one argument is the pattern itself
+    #rx((+ :digit))
+    #rx(+ :digit)            ; and the same as #rx((+ :digit))
+    """)
+  (reference """
+    It expands to @code{(rx-compile "<pattern>" "<names>")}, with the .NET
+    pattern and the group names worked out at compile time. Its value is an
+    @code{Rx}. @code{#rx(seq a b)} reads as @code{(#rx seq a b)}, so a form
+    may be written with or without its own parentheses.
+
+    @strong{Two spelling rules.} Anything that takes no argument is a
+    keyword: @code{:bos}, @code{:any}, @code{:digit}. Anything that takes
+    arguments is a form headed by a symbol: @code{(seq ...)}, @code{(+ ...)},
+    @code{(in ...)}. A string or a character is itself: a literal sequence
+    in pattern position, the set of its characters inside a set.
+
+    @read-table{
+    | Pattern                                      | Matches                                                          |
+    |----------------------------------------------+------------------------------------------------------------------|
+    | @code{"text"}, @code{#\c}                    | Exactly that text or character.                                  |
+    | @code{(lit "text")}                          | Exactly that text. It takes one string or character.             |
+    | @code{(seq a b ...)}                         | @code{a}, then @code{b}, and so on.                              |
+    | @code{(or a b ...)}                          | @code{a} or @code{b} or ...                                      |
+    | @code{(* r)}, @code{(+ r)}, @code{(? r)}     | Zero or more, one or more, or zero or one of @code{r}.           |
+    | @code{(*? r)}, @code{(+? r)}, @code{(?? r)}  | The same, lazily: as few as will do.                             |
+    | @code{(** least most r)}                     | @code{r}, from @code{least} to @code{most} times.                |
+    | @code{(= n r)}, @code{(>= n r)}              | @code{r} exactly @code{n} times, or at least @code{n} times.     |
+    | @code{($ r ...)}                             | @code{r}, captured in an unnamed group.                          |
+    | @code{(=> :name r ...)}                      | @code{r}, captured in a group named by the keyword.              |
+    | @code{:bos}, @code{:eos}                     | The beginning and the end of the string.                         |
+    | @code{:any}                                  | Any one character, newlines included.                            |
+    | @code{:nonl}                                 | Any one character but U+000A, the only line break it knows.      |
+    | a named set, or a set form                   | One character of the set.                                        |
+    }
+
+    A repetition, @code{$} or @code{=>} given several patterns takes them
+    in sequence: @code{(+ "a" "b")} is @code{(+ (seq "a" "b"))}. Counts are
+    whole numbers. Groups are numbered from zero in the order they open.
+
+    @strong{Character sets} match one character. They are worked out at
+    compile time, and a set that can match nothing is an error.
+
+    @read-table{
+    | Set                          | Holds                                                                      |
+    |------------------------------+----------------------------------------------------------------------------|
+    | @code{#\c}, @code{"abc"}     | Those characters.                                                          |
+    | @code{(in a b ...)}          | Every character in any of the sets; @code{(or a b ...)} inside a set is the same. |
+    | @code{(/ lo hi ...)}         | The ranges from @code{lo} to @code{hi}, the endpoints taken in pairs.      |
+    | @code{(~ a b ...)}           | Every character in none of the sets.                                       |
+    | @code{(- a b ...)}           | The characters of @code{a} that are in none of the others.                 |
+    | @code{(& a b ...)}           | The characters in all of the sets.                                         |
+    }
+
+    @code{(/ #\a #\z #\0 #\9)} and @code{(/ "az09")} are the same set,
+    the lowercase letters and the digits: the endpoints are taken in pairs
+    however they are written. A range runs upwards. A set member or a range
+    endpoint is a character in U+0000 to U+FFFF; above that, match a
+    literal instead.
+
+    @strong{The named sets} are keywords. Where two names are given they are
+    the same set.
+
+    @read-table{
+    | Name                                    | Holds                                                         |
+    |-----------------------------------------+---------------------------------------------------------------|
+    | @code{:alpha}, @code{:alphabetic}       | Letters, in all of Unicode.                                   |
+    | @code{:digit}, @code{:numeric}          | Every Unicode decimal digit, as @code{char-numeric?} answers. |
+    | @code{:alnum}, @code{:alphanumeric}     | Letters and decimal digits.                                   |
+    | @code{:upper}, @code{:upper-case}       | Uppercase letters.                                            |
+    | @code{:lower}, @code{:lower-case}       | Lowercase letters.                                            |
+    | @code{:space}, @code{:whitespace}       | Whitespace: U+0009 to U+000D, the space, and Unicode's others. |
+    | @code{:word}                            | Letters, digits, marks and connector punctuation such as @code{_}. |
+    | @code{:control}                         | U+0000 to U+001F and U+007F to U+009F.                        |
+    | @code{:hex-digit}                       | @code{0} to @code{9}, @code{A} to @code{F} and @code{a} to @code{f}. |
+    | @code{:ascii}                           | U+0000 to U+007F.                                             |
+    | @code{:ascii-digit}                     | @code{0} to @code{9}.                                         |
+    | @code{:ascii-alpha}                     | @code{A} to @code{Z} and @code{a} to @code{z}.                |
+    | @code{:ascii-alnum}                     | The ASCII letters and digits.                                 |
+    | @code{:any}                             | Every character.                                              |
+    | @code{:nonl}                            | Every character but U+000A.                                   |
+    }
+
+    @strong{Mind :digit.} It holds every Unicode decimal digit, such as ٩
+    and ०, not only @code{0} to @code{9}. A pattern for the ASCII digits
+    wants @code{:ascii-digit}, and the same goes for @code{:alpha} and
+    @code{:alnum}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Matching
+;; ---------------------------------------------------------------------------
+
+(:doc rx-match
+  (summary "Matches a pattern against the whole string.")
+  (arg rx "The pattern.")
+  (arg s "The string.")
+  (returns "The match, anchored at both ends, or None.")
+  (see rx-match? rx-search Rx)
+  (example """
+    (match (rx-match phone "555-1234")
+      ((Some m) (rx-group m :area))   ; (Some "555")
+      (None None))
+    """))
+
+(:doc rx-match?
+  (summary "Whether a pattern matches the whole string.")
+  (arg rx "The pattern.")
+  (arg s "The string.")
+  (returns "#t if the whole of s matches.")
+  (see rx-match rx-search?)
+  (example """
+    (rx-match? #rx((+ :ascii-digit)) "123")    ; #t
+    (rx-match? #rx((+ :ascii-digit)) "123a")   ; #f
+    """))
+
+(:doc rx-search
+  (summary "The leftmost match anywhere in the string.")
+  (arg rx "The pattern.")
+  (arg s "The string.")
+  (returns "The leftmost match, or None.")
+  (see rx-search? rx-match rx-matches RxIn)
+  (example """
+    (rx-search #rx((+ :digit)) "a42b")   ; (Some <match on "42">)
+    """))
+
+(:doc rx-search?
+  (summary "Whether a pattern matches anywhere in the string.")
+  (arg rx "The pattern.")
+  (arg s "The string.")
+  (returns "#t if some part of s matches.")
+  (see rx-search rx-match?))
+
+(:doc rx-matches
+  (summary "Every non-overlapping match, left to right.")
+  (arg rx "The pattern.")
+  (arg s "The string.")
+  (returns "The matches, in order; empty if there are none.")
+  (see rx-search rx-split)
+  (example """
+    (vec-map rx-text (rx-matches #rx((+ :digit)) "a1b22c333"))   ; ["1" "22" "333"]
+    """)
+  (reference """
+    Each search starts where the last match ended. After an empty match it
+    starts one character on, a whole surrogate pair if that is what is
+    there, so it is never inside one.
+    """))
+
+(:doc rx-replace
+  (summary "The string with every match replaced by a fixed text.")
+  (arg rx "The pattern.")
+  (arg s "The string.")
+  (arg replacement "The text to put in place of each match, taken literally.")
+  (returns "The new string.")
+  (see rx-replace-with)
+  (example """
+    (rx-replace #rx((+ :space)) "a  b   c" " ")   ; "a b c"
+    """)
+  (reference """
+    There is no @code{$1} substitution syntax: that would be a second
+    pattern language, arriving without being decided on. Use
+    @code{rx-replace-with} to build the replacement from the match.
+    """))
+
+(:doc rx-replace-with
+  (summary "The string with every match replaced by what a function makes of it.")
+  (arg rx "The pattern.")
+  (arg s "The string.")
+  (arg f "Given each match, answers its replacement.")
+  (returns "The new string.")
+  (see rx-replace)
+  (example """
+    (rx-replace-with #rx(($ (+ :ascii-digit)))
+                     "3 and 4"
+                     (fun (m) (str "<" (rx-text m) ">")))   ; "<3> and <4>"
+    """))
+
+(:doc rx-split
+  (summary "The pieces of the string between the matches.")
+  (arg rx "The separator pattern.")
+  (arg s "The string.")
+  (returns "The pieces, in order. The empty pieces before a leading and after a trailing separator are kept; with no match, the whole string.")
+  (see rx-matches)
+  (example """
+    (rx-split #rx(seq "," (* :space)) "a, b,c")   ; ["a" "b" "c"]
+    """)
+  (reference """
+    An empty match is not a separator, so a pattern that can match nothing
+    does not split between every character.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Reading a match
+;; ---------------------------------------------------------------------------
+
+(:doc rx-text
+  (summary "The text a match matched.")
+  (arg m "The match.")
+  (returns "The matched part of the string.")
+  (see rx-start rx-group))
+
+(:doc rx-input
+  (summary "The string a match was found in.")
+  (arg m "The match.")
+  (returns "The whole string that was searched, which its cursors index.")
+  (see rx-start rx-end))
+
+(:doc rx-start
+  (summary "Where a match begins.")
+  (arg m "The match.")
+  (returns "A cursor into rx-input, on the match's first character.")
+  (raises System.InvalidOperationException "When the position falls inside a surrogate pair, which only a pattern written by hand for rx-compile can bring about.")
+  (see rx-end rx-input))
+
+(:doc rx-end
+  (summary "Where a match ends.")
+  (arg m "The match.")
+  (returns "A cursor into rx-input, just after the match's last character.")
+  (raises System.InvalidOperationException "When the position falls inside a surrogate pair, which only a pattern written by hand for rx-compile can bring about.")
+  (see rx-start rx-input))
+
+(:doc rx-group
+  (summary "The text a named group captured.")
+  (arg m "The match.")
+  (arg name "The keyword the group was named with, in @code{(=> :name ...)}.")
+  (returns "The captured text, or None if the group took no part in the match. An unknown name is None too.")
+  (see rx-group/n rx-group-start rx-group-end)
+  (example """
+    (rx-group m :area)   ; (Some "555")
+    """))
+
+(:doc rx-group-start
+  (summary "Where a named group's capture begins.")
+  (arg m "The match.")
+  (arg name "The keyword the group was named with.")
+  (returns "A cursor into rx-input, or None if the group took no part in the match or there is no such group.")
+  (raises System.InvalidOperationException "When the position falls inside a surrogate pair, which only a pattern written by hand for rx-compile can bring about.")
+  (see rx-group rx-group-end))
+
+(:doc rx-group-end
+  (summary "Where a named group's capture ends.")
+  (arg m "The match.")
+  (arg name "The keyword the group was named with.")
+  (returns "A cursor into rx-input just after the capture, or None if the group took no part in the match or there is no such group.")
+  (raises System.InvalidOperationException "When the position falls inside a surrogate pair, which only a pattern written by hand for rx-compile can bring about.")
+  (see rx-group rx-group-start))
+
+(:doc rx-group/n
+  (summary "The text a group captured, by its number.")
+  (arg m "The match.")
+  (arg n "The group's number, counted from zero in the order the groups open. Named and unnamed groups are counted alike.")
+  (returns "The captured text, or None if the group took no part in the match or there is no such group.")
+  (see rx-group rx-group-count)
+  (example """
+    (match (rx-search #rx(seq ($ (+ :ascii-alpha)) "=" ($ (+ :ascii-digit))) "x=42")
+      ((Some m) (rx-group/n m 1))   ; (Some "42")
+      (None None))
+    """))
+
+(:doc rx-group-count
+  (summary "How many groups the pattern has.")
+  (arg m "The match.")
+  (returns "The number of groups, named and unnamed, whether or not they took part in this match.")
+  (see rx-group/n))
+
+;; ---------------------------------------------------------------------------
+;; What #rx(...) expands into
+;; ---------------------------------------------------------------------------
+
+(:doc rx-compile
+  (summary "Compiles a .NET pattern into an Rx: what #rx(...) expands into.")
+  (arg pattern "The .NET pattern, as @code{#rx} writes it.")
+  (arg names "The Bjolang name of each group in order, separated by commas. An unnamed group has an empty name.")
+  (returns "The compiled regular expression.")
+  (raises System.ArgumentException "When pattern is not a valid .NET pattern.")
+  (raises System.NotSupportedException "When pattern uses a construct the non-backtracking engine refuses, such as a backreference or a lookaround.")
+  (see rx-pattern)
+  (reference """
+    An @code{Rx} is a compiled regular expression. The options are fixed:
+    @code{NonBacktracking}, @code{ExplicitCapture} and
+    @code{CultureInvariant}. Compiling is cached by the pattern and the
+    names, so the same pattern compiled twice is one regex.
+
+    It is there for @code{#rx}, which checks what it emits. A pattern passed
+    here by hand is not checked, and is not held to the promises the module
+    makes: it may use @code{.}, @code{\d} and the rest, and may let a match
+    boundary fall inside a surrogate pair. Commas cannot occur in a keyword,
+    so they cannot occur in a name.
+    """))
+
+(:doc rx-pattern
+  (summary "The .NET pattern an Rx was compiled from.")
+  (arg rx "The compiled regular expression.")
+  (returns "The pattern string, so that a test can check what was emitted and not only what it matches.")
+  (see rx-compile))
+
+;; ---------------------------------------------------------------------------
+;; In a match
+;; ---------------------------------------------------------------------------
+
+(:doc Rx
+  (summary "A match pattern: matches a regular expression against the whole string.")
+  (form (Rx regex pattern))
+  (arg regex "The regular expression: an @code{Rx}, such as a @code{#rx(...)} or a name bound to one.")
+  (arg pattern "Matched against the @code{(Option RxMatch)} that @code{rx-match} answers.")
+  (see RxIn rx-match)
+  (example """
+    (match line
+      ((Rx phone (Some m)) (str "phone: " (option-ref-or (rx-group m :area) "?")))
+      ((RxIn #rx((+ :digit)) (Some m)) (str "a number: " (rx-text m)))
+      (_ "neither"))
+    """)
+  (reference """
+    @code{Rx} is also the name of the type of a compiled regular expression,
+    which @code{rx-compile} describes.
+
+    A view covers nothing for exhaustiveness, so a @code{match} using
+    @code{Rx} or @code{RxIn} still needs a clause that matches anything.
+
+    The regular expression is evaluated each time the clause is tried. The
+    compiled regex is cached, but a @code{#rx(...)} written in the clause is
+    still looked up anew each time, so bind the pattern once, at the top
+    level, and name it in the clause:
+
+    @codeblock[#:lang "bjolang"]|{
+    (def digits #rx((+ :digit)))
+
+    (match text
+      ((RxIn digits (Some m)) (rx-text m))
+      (_ "none"))
+    }|
+    """))
+
+(:doc RxIn
+  (summary "A match pattern: searches the string for a regular expression.")
+  (form (RxIn regex pattern))
+  (arg regex "The regular expression: an @code{Rx}, such as a @code{#rx(...)} or a name bound to one.")
+  (arg pattern "Matched against the @code{(Option RxMatch)} that @code{rx-search} answers.")
+  (see Rx rx-search)
+  (reference """
+    As @code{Rx}, but finding the leftmost match anywhere in the string. A
+    @code{match} using it still needs a clause that matches anything.
+    """))

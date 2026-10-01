@@ -1,0 +1,352 @@
+;; Docs for std/run.bjo, read through (:doc #:file "run.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Running programs: pipelines and redirections written as quoted forms.")
+  (see run/string run Form running run/channel with-run)
+  (example """
+    (import (std run))
+
+    (run/string '(pipe (cat "hej.txt") (wc -l)))
+    (run/status '(into-file "out.txt" (from-file "in.txt" (pipe (grep "x") sort))))
+    """)
+  (example """
+    ;; From inside a bjoroutine: lines as they come, until the form exits.
+    (match (run/channel '(cat "log.txt") by-lines)
+      ((Err e) 0)
+      ((Ok (Tuple items p))
+       (let go ((n 0))
+         (match (sync (choose (wrap (chan-recv items) (fun (line) (Got line)))
+                              (wrap (exited p)        (fun (r) Ended))))
+           ((Got line) (go (+ n 1)))
+           (Ended n)))))
+    """)
+  (reference """
+    A @em{form} is one thing to run, written as a quoted literal.
+
+    @strong{The grammar.}
+
+    @read-table{
+    | @code{'(cat "hej.txt")}                     | run a program                    |
+    | @code{'(sort)}, or @code{sort} in a pipe    | one taking no arguments          |
+    | @code{'(pipe (cat "a") (wc -l))}            | connect them                     |
+    | @code{'(from-file "in.txt" (wc -l))}        | stdin from a file                |
+    | @code{'(into-file "out.txt" (ls))}          | stdout to a file, truncating     |
+    | @code{'(append-to-file "log" (date))}       | stdout to a file, appending      |
+    | @code{'(errors-into-file "e" (make))}       | stderr of every command inside   |
+    | @code{'(errors-append-to-file "e" (make))}  | the same, appending              |
+    | @code{'(,(cmd program "-l"))}               | a computed program name          |
+    | @code{'(pipe (cat "x") ,my-filter)}         | a stage written in Bjolang       |
+    | @code{'(grep ["-i" "bomb"])}                | splice a computed argv           |
+    | @code{'("pipe" "-x")}                       | the @em{program} called @code{pipe} |
+    }
+
+    Redirections nest:
+    @code{(into-file "out" (from-file "in" (pipe (tr "a" "b") sort)))}.
+
+    @code{pipe}, @code{from-file} and the rest are tags: the head of a form
+    names its case, and the name, the arity and every argument are checked at
+    compile time. A head that names no tag is a command.
+
+    A word is a symbol, string, int, double, @code{[...]} argv vector, nested
+    form, unquoted @code{Cmd} or unquoted @code{Filter}: eight cases, and
+    nothing else. A character is a type error where it is written. One word is
+    one argument, spaces and all; nothing re-splits it. A double is written
+    the same on every machine, @code{0.5} and never @code{0,5}.
+
+    A command's program is looked up on @code{PATH}, and its standard error is
+    inherited unless @code{errors-into-file} or @code{errors-append-to-file}
+    says otherwise.
+
+    @strong{Blocking or not.} @code{run/string}, @code{run/strings},
+    @code{run/status}, @code{run/output} and @code{wait} block, which is
+    right in an ordinary function. Inside a bjoroutine, blocking parks a pool
+    thread the fibers need: use @code{exited}, @code{running} or
+    @code{run/channel}, or @code{(blocking ...)}.
+
+    @strong{Gotchas.}
+
+    @itemlist{
+    @item{Close the input, and drain the output, or the first stage never
+    sees end of file and @code{wait} never returns.}
+    @item{A form is one thing: @code{'((cat "a") (wc -l))} is refused. Say
+    @code{pipe}.}
+    @item{A bare tag in stage position is a type error;
+    @code{'("into-file" ...)} is the program of that name.}
+    @item{Piping out of a redirect, or redirecting an end twice, is
+    refused.}
+    @item{After @code{into-file}, @code{run/string} gives @code{""}. Use
+    @code{run/status}.}
+    @item{stderr is inherited unless @code{errors-into-file} says
+    otherwise.}
+    @item{A filter must not close its output port, and a raising one
+    surfaces through @code{wait} rather than as an exit code.}
+    @item{The blocking entry points inside a bjoroutine park a pool thread.}
+    @item{One word is one argument, spaces and all; doubles render
+    invariantly.}
+    }
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The types
+;; ---------------------------------------------------------------------------
+
+(:doc Word
+  (summary "One word of a command in a form.")
+  (case WSym "A symbol, used as its name.")
+  (case WStr "A string, as it is.")
+  (case WInt "An int.")
+  (case WDouble "A double, written the same on every machine.")
+  (case WArgv "A computed argv, @code{[...]}, spliced in as several arguments.")
+  (case WCmd "An unquoted @code{Cmd}.")
+  (case WFilter "An unquoted @code{Filter}.")
+  (case WForm "A nested form.")
+  (see Form cmd)
+  (reference """
+    A form's words are elaborated into these cases where the literal is
+    written, which is why the type is transparent. Only symbols, strings,
+    ints, doubles and argv vectors are plain words; the rest stand for a whole
+    stage, and among a command's arguments they are an @code{Err} from
+    @code{run}.
+    """))
+
+(:doc Form
+  (summary "One thing to run: a command, a pipeline, a redirection, or one bare stage.")
+  (case FSym "A bare program name, such as @code{sort} in a pipe.")
+  (case FStr "A bare program name written as a string.")
+  (case FArgv "A bare computed argv: the program and its arguments.")
+  (case FCmdValue "A bare @code{,(cmd ...)}.")
+  (case FFilter "A bare @code{,filter}.")
+  (case FCmd "A command: @code{(echo \"x\")}.")
+  (case FPipe "@code{(pipe form ...)}: each form's output into the next one's input.")
+  (case FFrom "@code{(from-file path form)}: stdin from a file.")
+  (case FInto "@code{(into-file path form)}: stdout to a file, truncating it.")
+  (case FAppend "@code{(append-to-file path form)}: stdout to a file, appending.")
+  (case FErrInto "@code{(errors-into-file path form)}: stderr of every command inside to a file, truncating it.")
+  (case FErrAppend "@code{(errors-append-to-file path form)}: the same, appending.")
+  (see run Word)
+  (reference """
+    Written as a quoted literal; the module's documentation has the grammar.
+    The tagged cases are checked where the form is written: the name, the
+    number of arguments and every position. What no tag names is a command,
+    so @code{'(sort)} and @code{'(echo "x")} are commands. A pipeline takes
+    any number of stages.
+    """))
+
+(:doc Cmd
+  (summary "A command and its arguments, for a program name that is computed rather than spelled.")
+  (field program "The program, looked up on @code{PATH}.")
+  (field arguments "Its arguments, one word each.")
+  (see cmd))
+
+(:doc Filter
+  (summary "A stage written in Bjolang: read the input to its end, write the output, return.")
+  (see run Form)
+  (example """
+    (: shout Filter)
+    (defbjo (shout in out)
+      (write-string out (string-upcase (read-all in)))
+      unit)
+
+    (run/string '(pipe (cat "x") ,shout))
+    """)
+  (reference """
+    A @code{defbjo}, so it may @code{sync}. @strong{Do not close the output
+    port}: @code{run} does that when the filter returns. A filter that raises
+    surfaces through @code{wait} as an @code{Err}, not as an exit code.
+    """))
+
+(:doc Reader
+  (summary "How run/channel turns a form's output into items on a channel.")
+  (tparam %a "What an item is.")
+  (see run/channel by-lines)
+  (reference """
+    A @code{defbjo} given the output port and the channel. It sends what it
+    reads and returns when it is done; it runs as a stage of its own, so
+    @code{wait} and @code{exited} cover it.
+    """))
+
+(:doc Proc
+  (summary "A started form: its two ends, and what to wait for.")
+  (see run proc-input proc-output wait kill))
+
+;; ---------------------------------------------------------------------------
+;; Writing a form
+;; ---------------------------------------------------------------------------
+
+(:doc cmd
+  (summary "A command with a computed program name, for @code{,(cmd ...)} in a form.")
+  (arg program "The program.")
+  (rest arguments "Its arguments, one word each.")
+  (returns "The command.")
+  (see Cmd)
+  (example """
+    (run/string '(,(cmd program "-l")))
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Running one, blocking
+;; ---------------------------------------------------------------------------
+
+(:doc run
+  (summary "Starts a form; both ends are yours.")
+  (arg form "What to run.")
+  (returns "The running form, or @code{Err} if the form is malformed, a program cannot be started or a file cannot be opened.")
+  (see proc-input proc-output wait kill with-run)
+  (reference """
+    Every other entry point is built on this one. Nothing is waited for:
+    write to @code{proc-input} and close it, drain @code{proc-output}, then
+    @code{wait}. A form that fails part-way through starting kills what it
+    had already started.
+    """))
+
+(:doc run/string
+  (summary "Runs a form and answers its standard output.")
+  (arg form "What to run.")
+  (returns "Everything it wrote, once it has exited. The exit code is dropped.")
+  (see run/output run/strings run/status)
+  (reference """
+    Its input is closed at once. After an @code{into-file} there is no output
+    to read, and this answers @code{""}: use @code{run/status}.
+    """))
+
+(:doc run/strings
+  (summary "Runs a form and answers its standard output, by line.")
+  (arg form "What to run.")
+  (returns "Its lines, once it has exited. The exit code is dropped.")
+  (see run/string))
+
+(:doc run/status
+  (summary "Runs a form, throws away its output, and answers its exit code.")
+  (arg form "What to run.")
+  (returns "The last command's exit code, or 0 if it has none.")
+  (see run/output wait))
+
+(:doc run/output
+  (summary "Runs a form and answers its exit code and its output, together.")
+  (arg form "What to run.")
+  (returns "The last command's exit code and everything the form wrote.")
+  (see run/string run/status)
+  (reference """
+    For a command whose failure is an ordinary answer:
+    @code{git show v1.0.0:manifest.bjodat} on a tag that has no manifest
+    prints nothing and exits non-zero, which is not the same as a tag whose
+    manifest is empty. Both halves come from one run.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; A running form
+;; ---------------------------------------------------------------------------
+
+(:doc proc-input
+  (summary "Where to write the form's input.")
+  (arg p "The running form.")
+  (returns "The port, or @code{None} after a @code{from-file}.")
+  (see proc-output)
+  (reference """
+    Closing it is what ends the first stage: until it is closed, the first
+    stage waits for more.
+    """))
+
+(:doc proc-output
+  (summary "Where to read the form's output.")
+  (arg p "The running form.")
+  (returns "The port, or @code{None} after an @code{into-file}.")
+  (see proc-input)
+  (reference """
+    It has to be drained, or the last stage blocks writing and @code{wait}
+    never returns.
+    """))
+
+(:doc wait
+  (summary "Waits for a form to finish, blocking.")
+  (arg p "The running form.")
+  (returns "The last command's exit code, or 0 if it has none; @code{Err} if a filter or a redirection failed.")
+  (see wait/all exited)
+  (reference """
+    Close the input and drain the output first, or it never returns. Inside a
+    bjoroutine it parks a pool thread: use @code{exited}.
+    """))
+
+(:doc wait/all
+  (summary "Waits for a form to finish, blocking, and answers every exit code.")
+  (arg p "The running form.")
+  (returns "Every command's exit code, in the order they were started. Filters have none; their failures are the @code{Err}.")
+  (see wait))
+
+(:doc kill
+  (summary "Stops every program a form started.")
+  (arg p "The running form.")
+  (see with-run)
+  (reference """
+    One that has already exited is passed over. The copying between stages
+    ends by itself once the streams it copies do.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; ...and from inside a bjoroutine
+;; ---------------------------------------------------------------------------
+
+(:doc exited
+  (summary "An event for a form's exit.")
+  (arg p "The running form.")
+  (returns "An event answering what @code{wait} would.")
+  (see wait running)
+  (reference """
+    It observes only: a branch that loses leaves the form running.
+    """))
+
+(:doc running
+  (summary "A whole form as one event, answering its standard output.")
+  (arg form "What to run.")
+  (returns "An event answering what @code{run/string} would.")
+  (see exited run/string)
+  (reference """
+    It owns the form: nothing starts until the branch is reached, the input is
+    closed at once, and a branch that loses kills it.
+    """))
+
+(:doc run/channel
+  (summary "Runs a form and sends its output onto a channel, as items.")
+  (arg form "What to run.")
+  (arg read "Turns the output into items.")
+  (returns "The channel and the running form; @code{Err} if it cannot start, or its output goes to a file.")
+  (see by-lines exited Reader)
+  (reference """
+    The reader runs as a stage of the form, so @code{wait} and @code{exited}
+    cover it: the form has not exited until the reader has returned.
+    """))
+
+(:doc by-lines
+  (summary "The stock Reader: one item per line.")
+  (arg out "The output to read.")
+  (arg items "Where to send the lines.")
+  (returns "@code{unit}, once every line has been sent.")
+  (see run/channel)
+  (reference """
+    Line ends, @code{\r\n} included, and a missing last newline are handled
+    by .NET's @code{TextReader}. The output is read to its end before the
+    first line is sent.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Scoped
+;; ---------------------------------------------------------------------------
+
+(:doc with-run
+  (summary "Runs a form for the extent of body, and kills it on the way out.")
+  (form (with-run (name form) body ...))
+  (arg name "Bound to the @code{(Result Exception Proc)}.")
+  (arg form "What to run.")
+  (rest body "What to run with it. At least one form.")
+  (see run kill)
+  (example """
+    (with-run (p '(ls "-l"))
+      (match p
+        ((Ok proc) (println "started"))
+        ((Err e) (println "could not start"))))
+    """)
+  (reference """
+    The form is killed however the body leaves. A macro, so the body may
+    @code{sync}.
+    """))

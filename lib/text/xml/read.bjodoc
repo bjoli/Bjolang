@@ -1,0 +1,356 @@
+;; Docs for text/xml/read.bjo, read through (:doc #:file "read.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Reading XML: as signals, as a fold, as a tree of your own, or as a Document.")
+  (see parse-xml xml-fold xml-tree-fold xml-for-each call-with-xml-signals XmlSource)
+  (example """
+    (import (text xml) (text xml read))
+
+    (parse-xml "<feed><entry id='1'>hello</entry></feed>")   ; (Ok document)
+    (parse-xml (xml-file "feed.xml") #:whitespace 'drop)
+    (xml-fold source 0 #:new-level (fun (name attrs pos n) (+ n 1)))   ; the number of elements
+    """)
+  (reference """
+    Four layers, each built on the one below: signals, a pull stream as
+    OCaml's Xmlm has it; @code{xml-fold}, Kiselyov's SSAX fold;
+    @code{xml-tree-fold}, a tree of your own type; and @code{parse-xml}, a
+    @code{Document}, with @code{xml-for-each} to read one element at a time.
+    Only the signal layer calls @code{XmlReader}.
+
+    Every reader takes a source, anything with an @code{XmlSource}
+    implementation, and the same options.
+
+    @strong{Options.}
+
+    @read-table{
+    | keyword                | default             | what it does |
+    |------------------------+---------------------+--------------|
+    | @code{#:dtd}            | @code{'prohibit}    | @code{'ignore} skips a DOCTYPE; @code{'parse} reads one |
+    | @code{#:max-depth}      | @code{512}          | more nesting than this is an error |
+    | @code{#:max-characters} | @code{0}            | a limit on the document's length; @code{0} is none |
+    | @code{#:whitespace}     | @code{'keep}        | @code{'drop} leaves out text that is only whitespace |
+    | @code{#:comments?}      | @code{#f}           | whether comments are read (signals, @code{parse-xml}, @code{xml-for-each}) |
+    }
+
+    The defaults are the safe ones. @code{'prohibit} refuses a document with
+    a DOCTYPE. @code{'ignore} skips it, and then @code{XmlReader} does not
+    report it at all, so the document has no doctype, and an entity it
+    declared is an error. @code{'parse} reads it, never resolves anything
+    external (an external DTD or entity is an error) and expands at most
+    10 000 000 characters of entities, which stops a "billion laughs"
+    document quickly. So an XHTML document, which names an external DTD,
+    reads only under @code{'ignore}.
+
+    @code{'drop} drops text that is only spaces, tabs and line ends. That
+    includes the space in @code{<b>x</b> <i>y</i>}, which then reads
+    @code{xy}, and whitespace inside @code{xml:space="preserve"}.
+
+    The folds take a @code{#:comment} handler instead of
+    @code{#:comments?}.
+
+    A @code{#:max-depth} under 1 or a negative @code{#:max-characters}
+    raises an @code{ArgumentException}: that is a programming error, not
+    the document's.
+
+    @strong{Errors.} What is wrong with the document is an @code{XmlError},
+    answered in a @code{Result}. An exception your own handler raises is
+    never an @code{XmlError}: it passes through as it was, an
+    @code{XmlException} of your own included.
+
+    A reader streams, so one that fails at a node has already run its
+    handlers for every node before it.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Options
+;; ---------------------------------------------------------------------------
+
+(:doc DtdMode
+  (summary "What a reader does with a DOCTYPE: #:dtd's value.")
+  (case DtdProhibit "'prohibit, the default: a DOCTYPE is an error.")
+  (case DtdIgnore "'ignore: it is skipped, and not reported, so the document has no doctype and an entity it declared is an error.")
+  (case DtdParse "'parse: it is read, nothing external is resolved, and at most 10 000 000 characters of entities are expanded.")
+  (see XmlErrorKind))
+
+(:doc WhitespaceMode
+  (summary "Whether a reader keeps text that is only whitespace: #:whitespace's value.")
+  (case KeepWhitespace "'keep, the default: every character of text is kept.")
+  (case DropWhitespace "'drop: text that is only spaces, tabs and line ends is left out.")
+  (reference """
+    @code{'drop} includes the space in @code{<b>x</b> <i>y</i>}, which then
+    reads @code{xy}, and whitespace inside @code{xml:space="preserve"}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Errors
+;; ---------------------------------------------------------------------------
+
+(:doc XmlError
+  (summary "What is wrong with a document, and where.")
+  (field kind "Which kind of error it is.")
+  (field message "What .NET or the reader says.")
+  (field line "The line, from 1; 0 where there is no position.")
+  (field column "The column, from 1; 0 where there is no position.")
+  (see XmlErrorKind)
+  (reference """
+    @code{line} and @code{column} are @code{0} where .NET gives no
+    position, which it does not for a DOCTYPE refused or a limit reached.
+    @code{->str} writes all of it on one line:
+    @code{malformed at line 1, column 16: ...}.
+    """))
+
+(:doc XmlErrorKind
+  (summary "Which kind of error an XmlError is.")
+  (case Malformed "The document is not well-formed XML.")
+  (case DtdProhibited "A DOCTYPE under 'prohibit, or an external DTD or entity under 'parse.")
+  (case TooDeep "More nesting than #:max-depth.")
+  (case LimitExceeded "More than #:max-characters, or the entity limit under 'parse.")
+  (see XmlError DtdMode))
+
+;; ---------------------------------------------------------------------------
+;; Sources
+;; ---------------------------------------------------------------------------
+
+(:doc XmlInput
+  (summary "What a source is read as: what xml-input answers.")
+  (see XmlSource xml-input)
+  (reference """
+    Opaque. A type of your own gets one by handing @code{xml-input}
+    something that already has an @code{XmlSource} implementation.
+    """))
+
+(:doc XmlSource
+  (summary "What can be read as XML.")
+  (tparam %s "The source's type.")
+  (see xml-input xml-file)
+  (example """
+    (impl (XmlSource Upload)
+      (defun (xml-input u) (xml-input (upload-stream u))))
+    """)
+  (reference """
+    These have an implementation:
+
+    @read-table{
+    | @code{string}          | the XML itself |
+    | @code{TextInputPort}   | read as it is; left open |
+    | @code{Stream}          | bytes, whose encoding the reader works out from a byte order mark or the XML declaration, else UTF-8; left open |
+    | @code{ByteInputPort}   | the same, through the port, so nothing it buffered is lost |
+    | @code{(xml-file path)} | opened through the @code{FS} effect and closed again |
+    }
+
+    A port or stream you hand over stays open: whoever opens a resource
+    closes it.
+    """))
+
+(:doc xml-input
+  (summary "A source as the reader takes it.")
+  (arg source "The source.")
+  (returns "What it reads as.")
+  (see XmlSource))
+
+(:doc XmlFile
+  (summary "A path to read XML from, as opposed to a string of XML.")
+  (see xml-file))
+
+(:doc xml-file
+  (summary "A file to read, as a source.")
+  (arg path "The file's path.")
+  (returns "A source the reader opens, through the FS effect, and closes again.")
+  (see XmlSource)
+  (example """
+    (parse-xml (xml-file "feed.xml"))
+    """)
+  (reference """
+    Nothing is opened until a reader reads it. A missing file then raises,
+    as @code{file-read-text} does; it is not an @code{XmlError}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Signals
+;; ---------------------------------------------------------------------------
+
+(:doc XmlSignal
+  (summary "One step through a document, as xml-next! answers it.")
+  (case XmlStart "An element begins: its name, attributes and position.")
+  (case XmlEnd "The element last begun ends.")
+  (case XmlData "Text.")
+  (case XmlComment "A comment, with #:comments? #t.")
+  (case XmlPI "A processing instruction: its target and data.")
+  (case XmlDoctype "The doctype, under 'parse.")
+  (see xml-next!)
+  (reference """
+    @itemlist{
+      @item{An empty element, @code{<br/>}, is an @code{XmlStart} and an
+            @code{XmlEnd} like any other.}
+      @item{Adjacent text, CDATA and whitespace are one @code{XmlData}, even
+            across a comment that is not being read.
+            @code{a<![CDATA[b]]>c} is @code{"abc"}.}
+      @item{Whitespace outside the root element is not data.}}
+    """))
+
+(:doc XmlSignals
+  (summary "A document being read, signal by signal.")
+  (see call-with-xml-signals xml-next! xml-skip-element!))
+
+(:doc call-with-xml-signals
+  (summary "Calls a function with a pull stream of a document's signals.")
+  (arg source "What to read.")
+  (arg proc "Called with the signals, which are closed when it returns.")
+  (key #:dtd "What to do with a DOCTYPE.")
+  (key #:max-depth "How deep elements may nest.")
+  (key #:max-characters "A limit on the document's length; 0 is none.")
+  (key #:whitespace "Whether to keep text that is only whitespace.")
+  (key #:comments? "Whether comments are read.")
+  (returns "What proc answers.")
+  (raises ArgumentException "When #:max-depth is less than 1 or #:max-characters is negative.")
+  (raises System.IO.IOException "When the source is an xml-file that cannot be opened.")
+  (see xml-next! xml-skip-element! xml-fold)
+  (example """
+    (call-with-xml-signals source
+      (fun (signals)
+        (match (xml-next! signals)
+          ((Ok (Some (XmlStart name attrs pos))) ...)
+          ((Ok (Some XmlEnd)) ...)
+          ((Ok (Some (XmlData text))) ...)
+          ((Ok None) ...)                     ; the end of the document
+          ((Err e) ...)
+          (_ ...))))
+    """)
+  (reference """
+    The bottom layer, as OCaml's Xmlm has it. The signals are for
+    @code{proc}'s use only. An error the reader meets before the first
+    signal is answered by the first @code{xml-next!}.
+    """))
+
+(:doc xml-next!
+  (summary "The next signal of a document.")
+  (arg s "The signals.")
+  (returns "Some signal, None at the end of the document, or the error. After an error, the same error again.")
+  (see XmlSignal xml-skip-element!))
+
+(:doc xml-skip-element!
+  (summary "Skips the rest of the element just begun.")
+  (arg s "The signals, right after an XmlStart.")
+  (returns "Ok when the rest of the element, its XmlEnd included, has been skipped, or the error met on the way.")
+  (raises InvalidOperationException "When the last signal read was not an XmlStart.")
+  (see xml-next!)
+  (reference """
+    The skipped part is not checked against @code{#:max-depth}, though
+    @code{#:max-characters} still counts it.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Folds
+;; ---------------------------------------------------------------------------
+
+(:doc xml-fold
+  (summary "Kiselyov's SSAX fold: a seed threaded through a document.")
+  (arg source "What to read.")
+  (arg seed "The seed to begin with.")
+  (key #:new-level "Going into an element: its name, attributes, position and the seed; answers the element's own seed.")
+  (key #:finish "Coming out: name, attributes, position, the seed from before the element and the element's final seed; answers the seed to carry on with.")
+  (key #:text "A piece of text and the seed.")
+  (key #:comment "A comment and the seed.")
+  (key #:pi "A processing instruction's target and data, and the seed.")
+  (key #:doctype "The doctype, under 'parse, and the seed.")
+  (key #:dtd "What to do with a DOCTYPE.")
+  (key #:max-depth "How deep elements may nest.")
+  (key #:max-characters "A limit on the document's length; 0 is none.")
+  (key #:whitespace "Whether to keep text that is only whitespace.")
+  (returns "The final seed, or the error.")
+  (raises ArgumentException "When #:max-depth is less than 1 or #:max-characters is negative.")
+  (raises System.IO.IOException "When the source is an xml-file that cannot be opened.")
+  (see xml-tree-fold call-with-xml-signals)
+  (example """
+    (xml-fold source 0 #:new-level (fun (name attrs pos n) (+ n 1)))     ; the number of elements
+
+    ;; (Ok "(a(b x)(c))")
+    (xml-fold "<a><b>x</b><c/></a>" ""
+              #:new-level (fun (name attrs pos seed) "")
+              #:finish (fun (name attrs pos parent seed) (str parent "(" (xml-name-local name) seed ")"))
+              #:text (fun (s seed) (str seed " " s)))
+    """)
+  (reference """
+    Every handler passes the seed through unless it is given. The seed is
+    an argument rather than a keyword, since a keyword needs a default and
+    a seed of any type has none.
+
+    The fold is a loop over the signals, with the open elements in a list,
+    so a flat document of a million elements and one nested 100 000 deep
+    are the same to it.
+    """))
+
+(:doc xml-tree-fold
+  (summary "A tree of your own type, as Xmlm's input_tree builds one.")
+  (arg source "What to read.")
+  (arg element "Called with an element's name, attributes, position and its children already folded.")
+  (arg text "Called with a piece of text.")
+  (key #:comment "Called with a comment; None leaves it out, which is what the default does.")
+  (key #:pi "Called with a processing instruction's target and data; None leaves it out, which is what the default does.")
+  (key #:dtd "What to do with a DOCTYPE.")
+  (key #:max-depth "How deep elements may nest.")
+  (key #:max-characters "A limit on the document's length; 0 is none.")
+  (key #:whitespace "Whether to keep text that is only whitespace.")
+  (returns "The root element's tree, or the error. What is outside the root is not folded.")
+  (raises ArgumentException "When #:max-depth is less than 1 or #:max-characters is negative.")
+  (raises System.IO.IOException "When the source is an xml-file that cannot be opened.")
+  (see xml-fold parse-xml)
+  (example """
+    (xml-tree-fold source
+                   (fun (name attrs pos kids) (Branch (xml-name-local name) kids))
+                   (fun (s) (Leaf s))
+                   #:comment (fun (s) (Some (Note s))))
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Documents
+;; ---------------------------------------------------------------------------
+
+(:doc parse-xml
+  (summary "Reads a whole document.")
+  (arg source "What to read.")
+  (key #:dtd "What to do with a DOCTYPE.")
+  (key #:max-depth "How deep elements may nest.")
+  (key #:max-characters "A limit on the document's length; 0 is none.")
+  (key #:whitespace "Whether to keep text that is only whitespace.")
+  (key #:comments? "Whether comments are kept.")
+  (returns "The Document, or the error.")
+  (raises ArgumentException "When #:max-depth is less than 1 or #:max-characters is negative.")
+  (raises System.IO.IOException "When the source is an xml-file that cannot be opened.")
+  (see xml-for-each xml-tree-fold)
+  (example """
+    (match (parse-xml "<feed><entry id='1'>hello</entry></feed>")
+      ((Ok doc) (document-root doc))
+      ((Err e) (println e)))
+    """)
+  (reference """
+    The document is built with the node constructors, so it keeps their
+    rules. Processing instructions are always kept, comments with
+    @code{#:comments? #t}, in the prolog and epilog as in the tree.
+    """))
+
+(:doc xml-for-each
+  (summary "Calls a function with each outermost element of a name, one at a time.")
+  (arg source "What to read.")
+  (arg name "The name of the elements to hand over.")
+  (arg f "Called with each one, as a Node.")
+  (key #:dtd "What to do with a DOCTYPE.")
+  (key #:max-depth "How deep elements may nest.")
+  (key #:max-characters "A limit on the document's length; 0 is none.")
+  (key #:whitespace "Whether to keep text that is only whitespace.")
+  (key #:comments? "Whether comments are kept in the elements.")
+  (returns "Ok when the document has been read, or the error.")
+  (raises ArgumentException "When #:max-depth is less than 1 or #:max-characters is negative.")
+  (raises System.IO.IOException "When the source is an xml-file that cannot be opened.")
+  (see parse-xml)
+  (example """
+    (xml-for-each (xml-file "feed.xml") (xml-name "entry" #:ns atom)
+                  (fun (entry) (store! (text-content entry))))
+    """)
+  (reference """
+    Burst mode: each element is built, handed to @code{f} and dropped, so
+    what is held at a time is one such element, never the whole document.
+    One inside another is part of the outer one, and is not handed over by
+    itself.
+    """))

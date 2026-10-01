@@ -1,0 +1,612 @@
+;; Docs for std/fmt.bjo, read through (:doc #:file "fmt.bjodoc"). The texts
+;; are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Formatting in two layers: interpolation of scalars, and a composable layout of blocks.")
+  (see println* show render->string with-fmt Block)
+  (example """
+    (import (std prelude))
+    (import (std fmt))
+
+    ;; Layer 1: interpolation
+    (println* ["Hello, " 42 ", ok? " #t])
+
+    ;; Layer 2: layout
+    (show ["Padding: [" (padded/left 10 ["foo"]) "]\n"])
+    (show ["Number: " (numeric/comma 1234567.89) "\n"])
+    (show ["Columns:\n"
+           (columnar [["first long text string" "second text string"]
+                      ["col 2" "more text for col 2"]])])
+    """)
+  (reference """
+    @strong{Interpolation} combines scalars of mixed types into text. It
+    works on a @code{(Vec Disp)}: a vec literal whose elements are strings,
+    ints, doubles, chars and bools, each elaborated into the @code{Disp} case
+    that holds it. @code{println*} prints one.
+
+    @strong{Layout} is a block algebra, for padding, aligning, wrapping
+    paragraphs and laying out tables. The unit is a @code{Block}: a string,
+    int or char, which needs no wrapping in a vec literal, or a @code{BRun},
+    a function that writes to an output sink and threads the current column
+    through. Every combinator takes its content as a @code{(Vec Block)} and
+    answers a @code{Block}, so they nest. Nothing is written until the blocks
+    are run by @code{show}, @code{render} or @code{render->string}.
+
+    A combinator of your own is a @code{BRun} and the two functions that run
+    blocks, @code{run-block} and @code{run-blocks}. It is the same kind of
+    thing as the ones in this module:
+
+    @codeblock[#:lang "bjolang"]|{
+    (: boxed (-> (Vec Block) Block))
+    (defun (boxed bs)
+      (BRun (fun (out col)
+              (run-blocks out col ["[" (render->string bs) "]"]))))
+    }|
+
+    @strong{Settings} are parameters, so they are dynamically scoped:
+    @code{with-fmt} binds one around some blocks while they run, and it is
+    restored when they end. The ones here are:
+
+    @read-table{
+    | Parameter                     | Default                | What it sets                                            |
+    |-------------------------------+------------------------+---------------------------------------------------------|
+    | @code{current-pad}            | @code{#\space}         | The character padding is made of.                       |
+    | @code{current-width}          | @code{78}              | The right margin of @code{wrapped}, @code{justified} and @code{columnar}. |
+    | @code{current-ellipsis}       | @code{""}              | What replaces the part a trim cuts off.                 |
+    | @code{current-string-width}   | the character count    | How wide a string is, in columns.                       |
+    | @code{current-precision}      | @code{-1}              | Digits after the decimal separator; negative is as many as needed. |
+    | @code{current-comma}          | @code{0}               | Digits per group; zero is no grouping.                  |
+    | @code{current-comma-sep}      | @code{#\,}             | The character between groups.                           |
+    | @code{current-decimal-sep}    | @code{#\.}             | The decimal separator.                                  |
+    | @code{current-signed}         | @code{#f}              | Whether a positive number gets a leading @code{+}.      |
+    }
+
+    A setting of your own works the same way: @code{with-fmt} takes the
+    parameter as an argument. Read it with @code{parameter-ref} inside the
+    @code{BRun}'s function, when the block runs. Read where the block is
+    built, it is read before any enclosing @code{with-fmt} has bound it.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Types
+;; ---------------------------------------------------------------------------
+
+(:doc Disp
+  (summary "A scalar to interpolate: a string, int, double, char or bool.")
+  (case DStr "A string, as it is.")
+  (case DInt "An int, by int->string.")
+  (case DDouble "A double, by double->string.")
+  (case DChar "A char, as one character.")
+  (case DBool "A bool, as #t or #f.")
+  (see println*)
+  (reference """
+    A vec literal of mixed scalars, such as @code{["n = " 42 ", ok? " #t]},
+    elaborates each element into the case that can hold it, so the cases are
+    rarely written.
+    """))
+
+(:doc Sink
+  (summary "Where a block writes its text: a function given each piece of it.")
+  (see Block run-block))
+
+(:doc Block
+  (summary "A piece of layout: a scalar, or a function that writes and answers the column it left.")
+  (case BStr "A string, written as it is.")
+  (case BInt "An int, written in decimal.")
+  (case BChar "A char.")
+  (case BRun "A function of the sink and the column it starts at, which writes and answers the column it ends at.")
+  (see run-block each captured)
+  (example """
+    (render->string ["x = " 7 #\!])   ; "x = 7!": the leaves need no wrapping
+    """)
+  (reference """
+    The column is counted in characters since the last newline written. It
+    is the one thing threaded through every block, and what lets @code{fl},
+    @code{space-to} and @code{wrapped} know where the cursor is.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Layer 1: interpolation
+;; ---------------------------------------------------------------------------
+
+(:doc println*
+  (summary "Prints scalars of mixed types, then a newline.")
+  (arg ds "The scalars, written as a vec literal.")
+  (see Disp show)
+  (example """
+    (println* ["n = " 42 ", ok? " #t ", " #\x ", " 1.5])
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Running blocks
+;; ---------------------------------------------------------------------------
+
+(:doc render
+  (summary "Writes blocks to a port.")
+  (arg port "The port to write to.")
+  (arg bs "The blocks, run from column 0.")
+  (see show render->string)
+  (reference """
+    It is @code{#:sync}, and cannot be otherwise: the sink is stored in a
+    @code{BRun}, and a stored function's colour is its type, so no
+    suspending sink can go there. To render from a fiber, use
+    @code{render->string} and write the string yourself.
+    """))
+
+(:doc show
+  (summary "Writes blocks to the current output port.")
+  (arg bs "The blocks, run from column 0.")
+  (see render render->string)
+  (example """
+    (show ["Padding: [" (padded/left 10 ["foo"]) "]\n"])
+    """)
+  (reference """
+    @code{render} to @code{current-output-port}, and @code{#:sync} for the
+    same reason.
+    """))
+
+(:doc render->string
+  (summary "The text blocks write, as a string.")
+  (arg bs "The blocks, run from column 0.")
+  (returns "Everything the blocks wrote.")
+  (see show render captured)
+  (example """
+    (render->string [(padded/left 5 ["7"])])   ; "    7"
+    """))
+
+(:doc run-block
+  (summary "Runs one block: the engine's step, for writing combinators.")
+  (arg out "The sink to write to.")
+  (arg col "The column the block starts at.")
+  (arg b "The block.")
+  (returns "The column it ends at.")
+  (see run-blocks Block))
+
+(:doc run-blocks
+  (summary "Runs blocks one after another, threading the column.")
+  (arg out "The sink to write to.")
+  (arg col "The column the first block starts at.")
+  (arg bs "The blocks.")
+  (returns "The column the last one ends at.")
+  (see run-block))
+
+;; ---------------------------------------------------------------------------
+;; Settings
+;; ---------------------------------------------------------------------------
+
+(:doc with-fmt
+  (summary "Runs blocks with a parameter bound to a value.")
+  (tparam %a "The parameter's type.")
+  (arg p "The parameter: one of this module's settings, or one of your own.")
+  (arg v "Its value while the blocks run.")
+  (arg bs "The blocks.")
+  (returns "A block. The parameter is bound when it runs, not when it is built, and restored when it ends.")
+  (see with-pad current-width)
+  (example """
+    (show [(with-fmt current-precision 2 [(numeric 3.14159)])])   ; 3.14
+    """))
+
+(:doc with-pad
+  (summary "Runs blocks with another padding character.")
+  (arg c "The padding character.")
+  (arg bs "The blocks.")
+  (returns "A block: @code{(with-fmt current-pad c bs)}.")
+  (see current-pad space-to)
+  (example """
+    (show [(with-pad #\. ["ab" (space-to 6) "c"])])   ; ab....c, a dot leader
+    """))
+
+(:doc current-pad
+  (summary "The character padding is made of. A space unless set.")
+  (see with-pad padded/left space-to)
+  (reference """
+    Padding that is not a whole number of pad characters wide is as many as
+    fit. Words in @code{wrapped} and @code{justified} are separated by it
+    too.
+    """))
+
+(:doc current-width
+  (summary "The right margin: what wrapped, justified and columnar fill up to. 78 unless set.")
+  (see wrapped justified columnar))
+
+(:doc current-ellipsis
+  (summary "What replaces the part a trim cuts off. Empty, which cuts silently, unless set.")
+  (see trimmed/right)
+  (example """
+    (with-fmt current-ellipsis "..." [(trimmed/right 6 ["abcdefgh"])])   ; abc...
+    """)
+  (reference """
+    It takes its room out of the content, so a trimmed text is never wider
+    than asked for. An ellipsis wider than that is cut itself.
+    """))
+
+(:doc current-string-width
+  (summary "How many columns a string takes. Its character count unless set.")
+  (see width-of)
+  (example """
+    ;; An astral character takes two columns on a terminal.
+    (defun (terminal-width s)
+      (string-fold (fun (ch acc) (+ acc (if (> (char->integer ch) 65535) 2 1))) 0 s))
+
+    (with-fmt current-string-width terminal-width [(padded/left 5 ["😀"])])
+    """)
+  (reference """
+    Everything that measures or cuts goes through it: padding, trimming,
+    wrapping and tables. The column a @code{BRun} is handed is not: it
+    counts characters.
+    """))
+
+(:doc current-precision
+  (summary "Digits after the decimal separator. Negative, the default, is as many as the number needs.")
+  (see numeric)
+  (reference """
+    As many as it needs is what @code{double->string} would give. A
+    precision rounds.
+    """))
+
+(:doc current-comma
+  (summary "Digits per group in the integer part. Zero, the default, is no grouping.")
+  (see numeric numeric/comma current-comma-sep))
+
+(:doc current-comma-sep
+  (summary "The character between groups of digits. A comma unless set.")
+  (see current-comma numeric))
+
+(:doc current-decimal-sep
+  (summary "The decimal separator. A full stop unless set.")
+  (see numeric current-comma-sep))
+
+(:doc current-signed
+  (summary "Whether a number with no sign of its own gets a leading +. #f unless set.")
+  (see numeric))
+
+;; ---------------------------------------------------------------------------
+;; The block algebra
+;; ---------------------------------------------------------------------------
+
+(:doc nothing
+  (summary "A block that writes nothing: what a conditional arm answers when it has nothing to say.")
+  (see each)
+  (example """
+    (render->string ["a" (if verbose? nl nothing) "b"])
+    """))
+
+(:doc each
+  (summary "Many blocks as one.")
+  (arg bs "The blocks.")
+  (returns "A block that runs them in order.")
+  (see nothing joined))
+
+(:doc captured
+  (summary "Renders blocks to a string and hands it to a function that answers a block.")
+  (arg f "Given the text the blocks wrote; its block is run in their place.")
+  (arg bs "The blocks to render.")
+  (returns "A block.")
+  (see render->string)
+  (example """
+    (captured (fun (s) (BInt (string-count s))) ["abcd"])   ; writes 4
+    """)
+  (reference """
+    How a combinator that needs the whole text, rather than writing as it
+    goes, is made: padding, trimming and wrapping are all written with it.
+    The blocks are rendered from column 0, and @code{f}'s block runs at the
+    current column.
+    """))
+
+(:doc width-of
+  (summary "How many columns a string takes, by current-string-width.")
+  (arg s "The string.")
+  (returns "Its width.")
+  (see current-string-width))
+
+;; ---------------------------------------------------------------------------
+;; Vertical and horizontal space
+;; ---------------------------------------------------------------------------
+
+(:doc nl
+  (summary "A newline.")
+  (see fl))
+
+(:doc fl
+  (summary "A fresh line: a newline, unless the cursor is already at the start of one.")
+  (see nl)
+  (example """
+    (render->string ["a" nl fl "b"])   ; "a\nb"
+    (render->string [fl "a"])          ; "a"
+    """))
+
+(:doc space-to
+  (summary "Pads to a column.")
+  (arg goal "The column to move to.")
+  (returns "A block that writes padding up to goal, and nothing if the cursor is already at or past it.")
+  (see tab-to with-pad)
+  (example """
+    (render->string ["ab" (space-to 5) "c"])   ; "ab   c"
+    """)
+  (reference """
+    It fills with @code{current-pad}, so under @code{with-pad} it is a
+    leader. It never moves backwards.
+    """))
+
+(:doc tab-to
+  (summary "Pads to the next tab stop.")
+  (key width "The distance between tab stops. 8 unless given.")
+  (returns "A block that pads to the next multiple of width.")
+  (see space-to)
+  (example """
+    (render->string ["ab" (tab-to #:width 4) "c"])     ; "ab  c"
+    (render->string ["abcd" (tab-to #:width 4) "c"])   ; "abcd    c"
+    """)
+  (reference """
+    It always moves: at a tab stop already, it pads to the next one.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Fitting to a width
+;; ---------------------------------------------------------------------------
+
+(:doc padded/left
+  (summary "Pads content on the left to a width: aligned right.")
+  (arg w "The width, in columns.")
+  (arg bs "The content.")
+  (returns "A block. Content wider than w is left as it is: padding never cuts.")
+  (see padded/right padded/both fitted/left current-pad)
+  (example """
+    (render->string [(padded/left 6 ["x=" 7])])   ; "   x=7"
+    """))
+
+(:doc padded/right
+  (summary "Pads content on the right to a width: aligned left.")
+  (arg w "The width, in columns.")
+  (arg bs "The content.")
+  (returns "A block. Content wider than w is left as it is.")
+  (see padded/left padded/both fitted/right))
+
+(:doc padded/both
+  (summary "Pads content on both sides to a width: centred.")
+  (arg w "The width, in columns.")
+  (arg bs "The content.")
+  (returns "A block, with the odd column, if there is one, on the right. Content wider than w is left as it is.")
+  (see padded/left padded/right fitted/both))
+
+(:doc trimmed/left
+  (summary "Cuts content to a width, keeping its end.")
+  (arg w "The width, in columns.")
+  (arg bs "The content.")
+  (returns "A block. Content that fits is left as it is; otherwise current-ellipsis stands at the start, where the cut was.")
+  (see trimmed/right trimmed/both fitted/left current-ellipsis)
+  (example """
+    (render->string [(trimmed/left 3 ["abcdef"])])   ; "def"
+    """))
+
+(:doc trimmed/right
+  (summary "Cuts content to a width, keeping its start.")
+  (arg w "The width, in columns.")
+  (arg bs "The content.")
+  (returns "A block. Content that fits is left as it is; otherwise current-ellipsis stands at the end.")
+  (see trimmed/left trimmed/both fitted/right current-ellipsis)
+  (example """
+    (render->string [(trimmed/right 3 ["abcdef"])])   ; "abc"
+    """))
+
+(:doc trimmed/both
+  (summary "Cuts content to a width, keeping its middle.")
+  (arg w "The width, in columns.")
+  (arg bs "The content.")
+  (returns "A block. Content that fits is left as it is; otherwise current-ellipsis stands at both ends.")
+  (see trimmed/left trimmed/right fitted/both)
+  (example """
+    (render->string [(trimmed/both 4 ["abcdefgh"])])   ; "cdef"
+    """))
+
+(:doc fitted/left
+  (summary "Content at exactly a width, aligned right: padded if short, cut if long.")
+  (arg w "The width, in columns.")
+  (arg bs "The content.")
+  (returns "A block: trimmed/left, then padded/left.")
+  (see padded/left trimmed/left))
+
+(:doc fitted/right
+  (summary "Content at exactly a width, aligned left: padded if short, cut if long.")
+  (arg w "The width, in columns.")
+  (arg bs "The content.")
+  (returns "A block: trimmed/right, then padded/right.")
+  (see padded/right trimmed/right)
+  (example """
+    (render->string [(fitted/right 5 ["ab"]) "|"])       ; "ab   |"
+    (render->string [(fitted/right 3 ["abcdef"]) "|"])   ; "abc|"
+    """))
+
+(:doc fitted/both
+  (summary "Content at exactly a width, centred: padded if short, cut in the middle if long.")
+  (arg w "The width, in columns.")
+  (arg bs "The content.")
+  (returns "A block: trimmed/both, then padded/both.")
+  (see padded/both trimmed/both))
+
+;; ---------------------------------------------------------------------------
+;; Sequences
+;; ---------------------------------------------------------------------------
+
+(:doc joined
+  (summary "Every element of a list, formatted, with a separator between them.")
+  (tparam %a "The elements' type.")
+  (arg f "Formats one element.")
+  (arg xs "The elements.")
+  (arg sep "The separator, itself blocks.")
+  (returns "A block. One element has no separator, and none is nothing.")
+  (see joined/prefix joined/suffix joined/last)
+  (example """
+    (show [(joined (fun (n) (BInt n)) (list 1 2 3) [", "])])   ; 1, 2, 3
+    """))
+
+(:doc joined/prefix
+  (summary "Every element of a list, formatted, with a separator before each, the first included.")
+  (tparam %a "The elements' type.")
+  (arg f "Formats one element.")
+  (arg xs "The elements.")
+  (arg sep "The separator, itself blocks.")
+  (returns "A block.")
+  (see joined joined/suffix)
+  (example """
+    (show [(joined/prefix (fun (s) (BStr s)) (list "a" "b") [","])])   ; ,a,b
+    """))
+
+(:doc joined/suffix
+  (summary "Every element of a list, formatted, with a separator after each, the last included.")
+  (tparam %a "The elements' type.")
+  (arg f "Formats one element.")
+  (arg xs "The elements.")
+  (arg sep "The separator, itself blocks.")
+  (returns "A block.")
+  (see joined joined/prefix)
+  (example """
+    (show [(joined/suffix (fun (s) (BStr s)) (list "a" "b") [","])])   ; a,b,
+    """))
+
+(:doc joined/last
+  (summary "Like joined, with the last element formatted by a function of its own.")
+  (tparam %a "The elements' type.")
+  (arg f "Formats every element but the last.")
+  (arg last-f "Formats the last element.")
+  (arg xs "The elements.")
+  (arg sep "The separator, itself blocks.")
+  (returns "A block. A list of one is formatted by last-f alone.")
+  (see joined)
+  (example """
+    (show [(joined/last (fun (s) (BStr s))
+                        (fun (s) (each ["and " (BStr s)]))
+                        (list "a" "b" "c")
+                        [", "])])
+    ;; a, b, and c
+    """)
+  (reference """
+    The separator is written before the last element too, so what
+    @code{last-f} adds is a word, not a comma.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Numbers
+;; ---------------------------------------------------------------------------
+
+(:doc numeric
+  (summary "A number, with a precision, grouped digits and separators of your choosing.")
+  (arg x "The number. An int is formatted as (cast double n).")
+  (key precision "Digits after the decimal separator. Negative, the default, is current-precision.")
+  (key comma "Digits per group; 0 is no grouping. Negative, the default, is current-comma.")
+  (key comma-sep "The character between groups. #\\nul, the default, is current-comma-sep.")
+  (key decimal-sep "The decimal separator. #\\nul, the default, is current-decimal-sep.")
+  (key signed "#t gives a positive number a leading +. #f, the default, is current-signed.")
+  (returns "A block.")
+  (see numeric/comma current-precision current-comma)
+  (example """
+    (numeric 2.0 #:precision 2)                  ; 2.00
+    (numeric -3.14159 #:precision 3)             ; -3.142
+    (numeric 1234567.891 #:precision 2 #:comma 3)  ; 1,234,567.89
+    (numeric 42.0 #:signed #t)                   ; +42
+    (numeric 1234.5 #:comma 3 #:comma-sep #\space #:decimal-sep #\,)  ; 1 234,5
+    """)
+  (reference """
+    The digits are the invariant culture's and the separators are settings,
+    so the machine's locale never shows. A keyword not given defaults to its
+    parameter when the block runs. Since a keyword's default is what stands
+    for the parameter, a keyword cannot ask for that default against a
+    parameter bound otherwise: @code{#:signed #f} under a
+    @code{current-signed} of @code{#t} still signs, and a negative
+    @code{#:precision} still reads @code{current-precision}.
+    """))
+
+(:doc numeric/comma
+  (summary "A number with its digits grouped in thousands: the common case.")
+  (arg x "The number.")
+  (returns "A block: @code{(numeric x #:comma 3)}.")
+  (see numeric)
+  (example """
+    (numeric/comma 1234567.0)   ; 1,234,567
+    (numeric/comma 42.0)        ; 42
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Paragraphs and tables
+;; ---------------------------------------------------------------------------
+
+(:doc wrapped
+  (summary "Content filled to the right margin, ragged on the right.")
+  (arg bs "The content. Every run of whitespace in it, newlines too, is a break between words.")
+  (returns "A block.")
+  (see justified current-width)
+  (example """
+    (with-fmt current-width 12 [(wrapped ["the quick brown fox jumps"])])
+    ;; the quick
+    ;; brown fox
+    ;; jumps
+    """)
+  (reference """
+    The first line starts wherever the cursor is, and has only the room left
+    before @code{current-width}. Words are separated by one
+    @code{current-pad}. A word wider than a line gets a line of its own
+    rather than being cut.
+    """))
+
+(:doc justified
+  (summary "Content filled to the right margin and flush against both, the last line excepted.")
+  (arg bs "The content. Every run of whitespace in it is a break between words.")
+  (returns "A block.")
+  (see wrapped current-width)
+  (example """
+    (with-fmt current-width 12 [(justified ["the quick brown fox jumps"])])
+    ;; the    quick
+    ;; brown    fox
+    ;; jumps
+    """)
+  (reference """
+    Lines are broken as @code{wrapped} breaks them, then the gaps are
+    widened to fill the line, the leftmost ones taking any extra column. The
+    last line, and a line of one word, are not stretched.
+    """))
+
+(:doc columnar
+  (summary "Columns side by side, dividing current-width evenly and cutting what does not fit.")
+  (arg cols "The columns, each a vec of blocks; a newline in one starts its next row.")
+  (key sep "Written between the columns. A space unless given.")
+  (returns "A block.")
+  (see tabular current-width)
+  (example """
+    (show [(with-fmt current-width 11
+             [(columnar [["abc" nl "def"]
+                         ["123" nl "456"]])])])
+    ;; abc   123
+    ;; def   456
+    """)
+  (reference """
+    Each column is rendered on its own and the lines are laid out together.
+    The width left once the separators are taken out is shared equally, and
+    every cell is cut and padded to its share, the last column cut but not
+    padded. A column with fewer lines than the others contributes blanks.
+    The table starts on a fresh line, and every row ends with a newline.
+    """))
+
+(:doc tabular
+  (summary "Columns side by side, each as wide as its widest line, cutting nothing.")
+  (arg cols "The columns, each a vec of blocks; a newline in one starts its next row.")
+  (key sep "Written between the columns. A space unless given.")
+  (returns "A block.")
+  (see columnar)
+  (example """
+    (show [(tabular [["a" nl "bbb"]
+                     ["1" nl "2"]])])
+    ;; a   1
+    ;; bbb 2
+
+    (show [(tabular [["a" nl "bbb"]
+                     ["1" nl "2"]]
+                    #:sep " | ")])
+    ;; a   | 1
+    ;; bbb | 2
+    """)
+  (reference """
+    Laid out as @code{columnar} lays them out, but with each column padded
+    to the width its own content asks for, the last not padded at all. A
+    column with fewer lines than the others contributes blanks. The table
+    starts on a fresh line, and every row ends with a newline.
+    """))

@@ -180,8 +180,10 @@ MODE_FILE="${FILE%.bjo}.bjobuild"
 
 # Every source the binary was built from: the file itself plus everything it
 # imports or includes by path, transitively. A path is any string literal
-# naming a .bjo or .protobjo, which is what both forms spell, and paths are
-# relative to the file that mentions them.
+# naming a .bjo, .protobjo or .bjodoc, which is what `include`, an import by
+# path and `(:doc #:file ...)` spell, and paths are relative to the file that
+# mentions them. A .bjodoc is a source: its docs are checked and published
+# into the binary.
 SOURCES=()
 
 collect_sources() {
@@ -202,7 +204,7 @@ collect_sources() {
     while read -r rel; do
         [ -z "$rel" ] && continue
         [ -f "$dir/$rel" ] && collect_sources "$dir/$rel"
-    done < <(grep -oE '"[^"]+\.(bjo|protobjo)"' "$file" 2>/dev/null | tr -d '"')
+    done < <(grep -oE '"[^"]+\.(bjo|protobjo|bjodoc)"' "$file" 2>/dev/null | tr -d '"')
 }
 
 # The library modules a file imports, as the `.dll` each of them resolves to.

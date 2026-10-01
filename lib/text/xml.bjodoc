@@ -1,0 +1,427 @@
+;; Docs for text/xml.bjo, read through (:doc #:file "xml.bjodoc"). The texts
+;; are samizdat markup: code in prose is @code{...}, and a literal at sign is
+;; @"@".
+
+(:doc #:module
+  (summary "XML trees: names, nodes, documents, and the views over them.")
+  (see xml-name xml-element element-view node-case xml-document)
+  (example """
+    (import (text xml) (text xml read) (text xml write))
+
+    (match (parse-xml "<feed><entry id='1'>hello</entry></feed>")
+      ((Ok doc)
+       (def entry (list-head (element-children (document-root doc))))
+       (println (attr-ref entry (xml-name "id")))    ; (Some 1)
+       (println (text-content entry))                ; hello
+       (println (document-root doc)))                ; (feed (entry (@ (id "1")) "hello"))
+      ((Err e) (println e)))
+
+    (parse-xml "<feed><entry></feed>")
+    ;; (Err ...), which prints as
+    ;; malformed at line 1, column 16: The 'entry' start tag on line 1 position 8 does not ...
+    """)
+  (reference """
+    XML is three modules. @code{(text xml)} is the tree: names, nodes,
+    documents, and the views over them. @code{(text xml read)} reads XML, as a
+    stream of signals, as a fold, as a tree of your own or as a
+    @code{Document}. @code{(text xml write)} writes it.
+
+    Only @code{System.Xml} and @code{System.Xml.Linq} are underneath:
+    @code{XmlReader} reads, @code{XmlWriter} writes and escapes, and
+    @code{XName} is a name.
+
+    @strong{The tree is opaque.} A @code{Node} is an element, a text, a
+    comment or a processing instruction. Nodes are built by
+    @code{xml-element}, @code{xml-text}, @code{xml-comment} and
+    @code{xml-pi}, and taken apart by the views, which is what keeps every
+    tree, whoever built it, to four rules:
+
+    @itemlist{
+      @item{no two text children side by side: @code{xml-element} merges them}
+      @item{no empty text child: @code{xml-element} drops it}
+      @item{no attribute twice: @code{xml-element} raises}
+      @item{no namespace declaration among the attributes: @code{xml-element}
+            raises, and the reader never gives one}}
+
+    The reader, the writer and the modules still to come use only what is
+    exported here, so the views are the whole of the access there is.
+
+    Whitespace is never dropped by a node: a tree read with the defaults has
+    every character of text its document had.
+
+    @strong{Deep trees.} Nothing here recurses per level of nesting. A tree
+    can be built by hand as deep as memory allows, and a stack overflow is not
+    something .NET lets a program catch, so every walk (@code{node=?},
+    @code{eq-hash}, @code{text-content}, @code{descendants}, the printer and
+    the writer) keeps a stack of its own.
+
+    @strong{Printing.} @code{->str} shows a node or a document the way SXML
+    writes one. A name in a namespace is written in Clark notation.
+
+    @codeblock[#:lang "bjolang"]|{
+    (p (@ (class "note")) "hi " (b "!"))
+    ({http://www.w3.org/2005/Atom}entry (@ (href "#a")))
+    (*COMMENT* " a comment ")
+    (*PI* xml-stylesheet "href='a.css'")
+    (*TOP* (*DOCTYPE* html) (html ...))
+    }|
+
+    It is for the REPL and for debugging. Nothing promises yet that it reads
+    back.
+
+    @strong{Not here yet.} Pattern matching, typed paths, decoding into
+    records, HTML and asynchronous reading are later modules, over the views
+    here. HTML parsing, XML Schema, XSLT, XML 1.1 and DTD validation are not
+    planned.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Names
+;; ---------------------------------------------------------------------------
+
+(:doc XmlName
+  (summary "A name: a namespace URI and a local name, with no prefix.")
+  (see xml-name xml-name-local xml-name-ns)
+  (reference """
+    A prefix belongs to the text a name was read from or is written to, not
+    to the name. So writing a parsed document may choose other prefixes than
+    the input had, and means the same.
+
+    Names are interned, so @code{=} on two of them is a reference
+    comparison, and @code{->str} writes Clark notation,
+    @code{{http://www.w3.org/2005/Atom}entry}, or the local name alone for a
+    name in no namespace.
+    """))
+
+(:doc xml-name
+  (summary "A name, in a namespace or in none.")
+  (arg local "The local name: an XML name with no colon in it.")
+  (key #:ns "The namespace URI; \"\" is no namespace.")
+  (returns "The name.")
+  (raises ArgumentException "When local is not a valid local name, such as \"a:b\", \"\" or \"1a\".")
+  (see xml-name-local xml-name-ns xml-namespace)
+  (example """
+    (xml-name "p")
+    (xml-name "entry" #:ns "http://www.w3.org/2005/Atom")
+    """)
+  (reference """
+    A bad local name raises, as an index out of range does: it is a
+    programming error, not the document's.
+    """))
+
+(:doc xml-name-local
+  (summary "A name's local name.")
+  (arg n "The name.")
+  (returns "The local name, without namespace or prefix.")
+  (see xml-name-ns))
+
+(:doc xml-name-ns
+  (summary "A name's namespace URI.")
+  (arg n "The name.")
+  (returns "The namespace URI, or \"\" when the name is in no namespace.")
+  (see xml-name-local))
+
+(:doc xml-namespace
+  (summary "The namespace of xml:lang and xml:space.")
+  (see xml-name)
+  (reference """
+    @code{http://www.w3.org/XML/1998/namespace}. The writer gives a name in
+    it the prefix @code{xml}, which is never declared.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Small types
+;; ---------------------------------------------------------------------------
+
+(:doc XmlPos
+  (summary "Where an element begins: a line and a column.")
+  (field line "The line, from 1.")
+  (field column "The column of the element's name, from 1: one past the <.")
+  (see element-pos)
+  (reference """
+    As .NET reports them. Only an element carries a position; a text, a
+    comment or a processing instruction has none.
+    """))
+
+(:doc XmlAttrs
+  (summary "An element's attributes: names and values, in document order.")
+  (see attr-ref element-attrs))
+
+(:doc Doctype
+  (summary "A document's DOCTYPE: its name and its public and system ids.")
+  (field name "The name of the root element it declares.")
+  (field public-id "The public id, if there is one.")
+  (field system-id "The system id, if there is one.")
+  (see document-doctype)
+  (reference """
+    It is kept so that a document can be written back with it. Nothing
+    validates against it.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Nodes
+;; ---------------------------------------------------------------------------
+
+(:doc Node
+  (summary "An element, a text, a comment or a processing instruction.")
+  (see xml-element xml-text xml-comment xml-pi element-view node-case node=?)
+  (reference """
+    The type is opaque: nodes are built by the functions of this module and
+    taken apart by its views, which keep every tree to the rules in the
+    module's documentation.
+
+    @code{=} on two nodes is @code{node=?}, and @code{eq-hash} agrees with
+    it, so a node is a sound @code{Map} key. @code{->str} prints it as SXML.
+    """))
+
+(:doc xml-element
+  (summary "An element.")
+  (arg name "The element's name.")
+  (arg attrs "Its attributes, in document order.")
+  (arg children "Its children, in document order.")
+  (key #:pos "Where it was read from; None for an element built by hand.")
+  (returns "The element, with adjacent text children merged into one and empty ones dropped.")
+  (raises ArgumentException "When an attribute is given twice, or one is a namespace declaration (xmlns or xmlns:p). The writer declares namespaces itself.")
+  (see xml-text element-view)
+  (example """
+    (xml-element (xml-name "p")
+                 (list (Tuple (xml-name "class") "note"))
+                 (list (xml-text "hi ") (xml-element (xml-name "b") Nil (list (xml-text "!")))))
+    """))
+
+(:doc xml-text
+  (summary "A text node.")
+  (arg s "The text, unescaped.")
+  (returns "The node. An empty one is allowed on its own; xml-element drops it.")
+  (see xml-element text-value))
+
+(:doc xml-comment
+  (summary "A comment.")
+  (arg s "What is between the comment's delimiters.")
+  (returns "The node.")
+  (see comment-value)
+  (reference """
+    Not checked here: a comment containing @code{--} or ending in @code{-}
+    is refused when it is written.
+    """))
+
+(:doc xml-pi
+  (summary "A processing instruction.")
+  (arg target "Its target, the name after the <?.")
+  (arg data "Its data, the rest.")
+  (returns "The node.")
+  (see pi-target pi-data)
+  (reference """
+    Not checked here, but when it is written, as a comment is.
+    """))
+
+(:doc element?
+  (summary "Whether a node is an element.")
+  (arg n "The node.")
+  (returns "#t for an element.")
+  (see text? comment? pi? element-view))
+
+(:doc text?
+  (summary "Whether a node is a text.")
+  (arg n "The node.")
+  (returns "#t for a text.")
+  (see element? text-value))
+
+(:doc comment?
+  (summary "Whether a node is a comment.")
+  (arg n "The node.")
+  (returns "#t for a comment.")
+  (see element? comment-value))
+
+(:doc pi?
+  (summary "Whether a node is a processing instruction.")
+  (arg n "The node.")
+  (returns "#t for a processing instruction.")
+  (see element? pi-target pi-data))
+
+(:doc element-name
+  (summary "An element's name.")
+  (arg n "An element.")
+  (returns "Its name.")
+  (raises ArgumentException "When n is not an element.")
+  (see element-view))
+
+(:doc element-attrs
+  (summary "An element's attributes.")
+  (arg n "An element.")
+  (returns "Its attributes, in document order.")
+  (raises ArgumentException "When n is not an element.")
+  (see attr-ref element-view))
+
+(:doc element-children
+  (summary "An element's children.")
+  (arg n "An element.")
+  (returns "Its children, in document order.")
+  (raises ArgumentException "When n is not an element.")
+  (see element-children-only element-view))
+
+(:doc element-pos
+  (summary "Where an element was read from.")
+  (arg n "An element.")
+  (returns "Its position, or None for an element built without one.")
+  (raises ArgumentException "When n is not an element.")
+  (see XmlPos))
+
+(:doc element-view
+  (summary "An element's name, attributes and children, in one call.")
+  (arg n "Any node.")
+  (returns "(Some (Tuple name attrs children)) for an element, None for any other node.")
+  (see element? node-case)
+  (example """
+    (match n
+      ((:view element-view (Some (Tuple name attrs kids))) (list-length kids))
+      (_ 0))
+    """)
+  (reference """
+    It allocates nothing, since @code{Option} is a struct and @code{Tuple} a
+    value tuple, which makes it the view a pattern can be compiled into.
+    """))
+
+(:doc text-value
+  (summary "A text node's text.")
+  (arg n "A text.")
+  (returns "The text.")
+  (raises ArgumentException "When n is not a text.")
+  (see text-content))
+
+(:doc comment-value
+  (summary "A comment's text.")
+  (arg n "A comment.")
+  (returns "What is between its delimiters.")
+  (raises ArgumentException "When n is not a comment."))
+
+(:doc pi-target
+  (summary "A processing instruction's target.")
+  (arg n "A processing instruction.")
+  (returns "Its target.")
+  (raises ArgumentException "When n is not a processing instruction.")
+  (see pi-data))
+
+(:doc pi-data
+  (summary "A processing instruction's data.")
+  (arg n "A processing instruction.")
+  (returns "Its data.")
+  (raises ArgumentException "When n is not a processing instruction.")
+  (see pi-target))
+
+(:doc node-case
+  (summary "Calls the handler for the kind of node it is given.")
+  (arg n "The node.")
+  (key #:element "Called with an element's name, attributes, children and position.")
+  (key #:text "Called with a text's string.")
+  (key #:comment "Called with a comment's string.")
+  (key #:pi "Called with a processing instruction's target and data.")
+  (key #:else "Called with the node itself when its kind has no handler.")
+  (returns "What the handler answers.")
+  (raises ArgumentException "When the node's kind has no handler and there is no #:else.")
+  (see element-view)
+  (example """
+    (node-case n
+      #:element (fun (name attrs kids pos) (xml-name-local name))
+      #:text (fun (s) s)
+      #:else (fun (other) ""))
+    """)
+  (reference """
+    A call that writes @code{#:else} keeps working if a kind of node is ever
+    added.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Helpers
+;; ---------------------------------------------------------------------------
+
+(:doc attr-ref
+  (summary "The value of an element's attribute.")
+  (arg n "The node.")
+  (arg name "The attribute's name.")
+  (returns "Some value, or None when the element has no such attribute, or n is not an element.")
+  (see element-attrs))
+
+(:doc element-children-only
+  (summary "The children of an element that are elements.")
+  (arg n "The node.")
+  (returns "The element children, in document order; Nil for a node that is not an element.")
+  (see element-children))
+
+(:doc text-content
+  (summary "All the text below a node, joined.")
+  (arg n "The node.")
+  (returns "Every text below n joined in document order; a text's own value; \"\" for a comment or a processing instruction.")
+  (see text-value descendants))
+
+(:doc descendants
+  (summary "Every node below a node, in document order.")
+  (arg n "The node.")
+  (returns "A lazy Seq of the nodes below n, not n itself. Empty for a node that is not an element.")
+  (see element-children))
+
+(:doc node=?
+  (summary "Whether two nodes are the same tree.")
+  (arg a "A node.")
+  (arg b "Another.")
+  (returns "#t when they are the same tree, positions and the order of attributes aside.")
+  (see document=?)
+  (reference """
+    This is what @code{=} on nodes is, and @code{eq-hash} agrees with it.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Documents
+;; ---------------------------------------------------------------------------
+
+(:doc Document
+  (summary "A root element, what comes before and after it, and the doctype.")
+  (see xml-document document-root)
+  (reference """
+    The comments and processing instructions before the root are the
+    prolog, those after it the epilog. @code{=} on two documents is
+    @code{document=?}, and @code{->str} prints one as SXML's
+    @code{*TOP*}.
+    """))
+
+(:doc xml-document
+  (summary "A document.")
+  (arg root "The root element.")
+  (key #:doctype "The doctype, if it has one.")
+  (key #:prolog "The comments and processing instructions before the root.")
+  (key #:epilog "The comments and processing instructions after it.")
+  (returns "The document.")
+  (raises ArgumentException "When root is not an element, or the prolog or epilog holds anything but comments and processing instructions.")
+  (see document-root Doctype))
+
+(:doc document-root
+  (summary "A document's root element.")
+  (arg d "The document.")
+  (returns "The root, an element.")
+  (see document-prolog document-epilog))
+
+(:doc document-doctype
+  (summary "A document's doctype.")
+  (arg d "The document.")
+  (returns "The doctype, or None when it has none.")
+  (see Doctype))
+
+(:doc document-prolog
+  (summary "The comments and processing instructions before a document's root.")
+  (arg d "The document.")
+  (returns "Them, in document order.")
+  (see document-epilog))
+
+(:doc document-epilog
+  (summary "The comments and processing instructions after a document's root.")
+  (arg d "The document.")
+  (returns "Them, in document order.")
+  (see document-prolog))
+
+(:doc document=?
+  (summary "Whether two documents are the same.")
+  (arg a "A document.")
+  (arg b "Another.")
+  (returns "#t when their doctypes are equal and their nodes are, as node=? compares them.")
+  (see node=?)
+  (reference "This is what @code{=} on documents is."))

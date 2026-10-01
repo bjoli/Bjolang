@@ -1,0 +1,512 @@
+;; Docs for text/bjodat.bjo, read through (:doc #:file "bjodat.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}. The names this
+;; module re-exports from (text bjodat-core) are documented there.
+
+(:doc #:module
+  (summary "Records that read and write themselves as bjodat: declare one, get its decoder and encoder.")
+  (see def/bjodat-type ->bjodat bjodat->)
+  (example """
+    (import (text bjodat))
+
+    (def/bjodat-type
+      (: Dep (Record (: name string)
+                     (: version string #:default "*")
+                     (: note (Option string) #:optional))))
+
+    (bjodat-parse-Dep "{:name \"http\" :version \"1.2\"}")  ; (Ok Dep)
+    (bjodat->string (Dep->bjodat d))                        ; "{:name \"http\" ...}"
+    """)
+  (reference """
+    bjodat is Bjolang's shapes read as @em{data}, and is described with
+    @code{(text bjodat-core)}, which holds the value, the reader and the
+    writer. This module declares records that are read from it and written
+    to it. @code{bjo/manifest.bjo} is a worked example of everything here:
+    tagged forms, @code{#:rest}, a union dispatched on its head symbol, and
+    hand-written instances for types the generator never heard of. It is an
+    ordinary user of this module and gets no special case anywhere in it.
+
+    @code{bjodat-parse-<Name>} reads the text @strong{straight into the
+    record}. There is no intermediate tree: the key is compared against the
+    field names in the reader's own buffer, so a record costs no key string,
+    no interned @code{Keyword}, no node and no map. That is the interface to
+    reach for.
+
+    @strong{The two modules.}
+
+    @read-table{
+    | @code{(text bjodat)}      | @code{def/bjodat-type}, the traits, and what they generate |
+    | @code{(text bjodat-core)} | the @code{Bjodat} value, the reader and the writer         |
+    }
+
+    @code{(text bjodat)} is enough for everything but the tree: the
+    generator, the traits, @code{bjodat->string}, and hand-written instances
+    naming @code{BjoInt} and the other cases. The code
+    @code{def/bjodat-type} writes is spliced into @em{your} module and names
+    @code{Bjodat} and @code{Reader} in its signatures, and this module
+    re-exports both: one spelling of @code{bjodat-core}'s declarations, not a
+    copy of them, so a @code{Bjodat} built either side of the boundary is one
+    type. Re-exporting a union re-exports its cases.
+
+    Import @code{(text bjodat-core)} as well when you want the @em{tree}:
+    @code{parse-bjodat}, @code{read-bjodat}, @code{bjodat-ref} and the entry
+    accessors, for data whose shape is not known until run time.
+
+    These were once always imported together, on the belief that a type
+    could not cross a facade. What cannot cross is a type @em{declared}
+    twice; what a re-export publishes is the declaring module's declaration
+    under a spelling of the facade's. See @code{re-export} in
+    @code{Docs/MODULES.org}.
+
+    @strong{Instances for a type of your own.} The generated decoders reach a
+    field's type through its @code{bjodat->} instance, so a type the macro
+    never heard of works as soon as it has one:
+
+    @codeblock[#:lang "bjolang"]|{
+    (type (: Port (Record (: number int))))
+
+    (impl (->bjodat Port)
+      (defun (->bjodat p) (BjoInt (cast System.Int64 (record-ref p number)))))
+
+    (impl (bjodat-> Port)
+      (defun (bjodat-> v)
+        (match v
+          ((BjoInt n) (Ok (Port (number (cast System.Int32 n)))))
+          (_ (Err "expected a port number")))))
+
+    (def/bjodat-type (: Server (Record (: host string) (: port Port))))
+    }|
+
+    @strong{Errors.} Every decoder answers @code{(Result string _)}, and the
+    message names the path:
+
+    @codeblock[#:lang "text"]|{
+    Package: the map has no :version entry
+    Package.name: expected a symbol
+    Package.deps: Dep: the map has no :version entry
+    line 1, column 12: Package: this map is written flat, so a '(' here is an entry of the other form
+    }|
+
+    and, for a tagged form:
+
+    @codeblock[#:lang "text"]|{
+    Package: there is no (version ...) clause
+    Package.name: expected a string
+    Package.name: a clause holds a field name and one value
+    Package: a clause begins with a field name
+    line 1, column 8: Package: expected (package ...), and this is (banana ...)
+    }|
+
+    The one-pass and the tree decoders give the same message for the same
+    document, word for word, which is asserted rather than assumed: the
+    codec tests check each refusal through both paths. A @em{structural}
+    refusal carries a line and column, because the reader knows one and a
+    decoder walking a tree does not; the sentence under it is the same.
+    @code{TestFiles/218_bjodat_forms.bjo} asserts both halves: the
+    agreement, and the two cases where only the position differs.
+
+    @strong{What to watch out for.}
+
+    @itemlist{
+      @item{@strong{An unknown key is read and ignored}, and so is an unknown
+      clause, at any arity. It has to be @em{read}: finding where a value
+      ends means parsing it. Whether a manifest format should instead refuse
+      a misspelt @code{:verison} is still open: refusing is safer, ignoring
+      is what makes a file forward-compatible with a newer tool, and it may
+      want to be a marker rather than a decision taken once for everyone.}
+      @item{@strong{A record holds its fields and nothing else}, so a
+      manifest that round-trips through one comes back without whatever
+      clauses that version of the tool did not know. A tool that edits a
+      manifest in place has to work on the @em{tree}. This is the cost of
+      the item above, and the two are the same fact.}
+      @item{@strong{A key that is not a keyword can never name a field}, so
+      it is ignored too. The tree decoder agrees, for its own reason:
+      @code{bjodat-ref} only matches a @code{BjoKey}.}
+      @item{@strong{A duplicate key: the first wins}, in both decoders. The
+      later one is still read, and then dropped. The same holds for a
+      repeated clause.}
+      @item{@strong{An @code{(Option (List %a))} holding @code{(Some Nil)}
+      writes @code{()} and reads back as @code{None}}, because @code{None}
+      is written as the empty list. Nothing else collides.}
+      @item{@strong{The one-pass decoder does not track nesting depth across
+      records.} Each generated decoder starts a fresh budget, so a chain of
+      nested @em{record types} is bounded by the types rather than by
+      @code{bjodat-max-depth}. The values inside a field are bounded
+      normally.}
+    }
+
+    @strong{Speed.} 20 000 records, 2.36 MB, best of 20 on one machine.
+    Five scalar fields:
+
+    @read-table{
+    | text to records, one pass                                       | 376–383 ns/rec | about 310 MB/s |
+    | text to records, via tree                                       | 478–492 ns/rec | about 245 MB/s |
+    | the same through @code{(text json)} + @code{(text json-codec)}  | 582–599 ns/rec | about 215 MB/s |
+    }
+
+    @strong{A record whose fields are sequences gains nothing.} The same
+    corpus with a @code{(Vec string)} and an @code{(Option string)} field
+    measures 725–737 ns/rec one-pass against 708–711 through the tree: a
+    wash, and on some runs marginally worse.
+
+    That is the design, not a defect. The one-pass decoder saves the
+    @em{entry}: the key's string, its interned @code{Keyword}, the
+    @code{BjoKey} node, the vec slot it lived in, and the scan over it. It
+    does not save the @em{value}: each still becomes a @code{Bjodat} and goes
+    through its field type's own instance, which is what keeps a
+    hand-written instance working and every message identical. Where the
+    values dominate, there is nothing left for it to take away.
+
+    So reach for @code{bjodat-parse-<Name>} by default, and do not expect it
+    to be the thing that makes a sequence-heavy document fast. If it
+    matters, measure both: they are both there and they agree. Numbers, and
+    what did not move, are in @code{bench/BASELINE.md}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The generator
+;; ---------------------------------------------------------------------------
+
+(:doc def/bjodat-type
+  (summary "Declares a record and the codecs that read it from bjodat and write it back.")
+  ;; The form is written with one variable for the whole declaration: a
+  ;; published doc is read back as bjodat, where a lone `:` is not a value.
+  (form (def/bjodat-type declaration))
+  (arg declaration """
+    A record's declaration, @code{(: Name (Record field ...))}, or
+    @code{(: Name (Record #:tag tag field ...))} for a record written as a
+    tagged form. @code{Name} may be @code{(Name %a ...)} for a generic
+    record, and then each generated instance wants the same trait of every
+    type variable. A field is @code{(: name type)}, then any of the markers
+    below.
+    """)
+  (see ->bjodat bjodat-> parse-one-pass-all)
+  (example """
+    (def/bjodat-type
+      (: Package (Record (: name Symbol)
+                         (: version string)
+                         (: description string #:key :desc)
+                         (: authors (Vec string))
+                         (: entry string #:default "src/main.bjo")
+                         (: private bool #:default #f)
+                         (: note (Option string) #:optional)
+                         (: deps (Vec Dep)))))
+    """)
+  (example """
+    (def/bjodat-type
+      (: Package (Record #:tag package
+                         (: name (List Symbol))
+                         (: version Version)
+                         (: entry string #:default "src/main.bjo")
+                         (: depends (List Dep) #:rest #:default Nil))))
+    """)
+  (reference """
+    Declares the record @em{and} its codecs. Without @code{#:tag}, a record
+    is a map whose keys are keywords naming its fields. The keys are keyword
+    literals in the generated code, so decoding a field through a tree
+    compares interned references and never interns anything at run time.
+
+    @strong{Field markers.}
+
+    @read-table{
+    | @code{#:key :other-name} | written and read under @code{:other-name} rather than the field's own |
+    | @code{#:optional}        | may be absent; absent is @code{None}                                  |
+    | @code{#:default <expr>}  | may be absent; absent is that expression, evaluated at decode         |
+    | @code{#:rest}            | takes @em{every} value of its clause; a tagged form only              |
+    | @code{#:mutable}         | passed through to the record declaration, and means nothing here      |
+    }
+
+    @code{#:optional} is exactly @code{#:default None}, and the field's type
+    must be an @code{(Option %a)} to hold it. An optional field that is
+    @code{None} is not written at all.
+
+    @strong{There is no null.} A key that may be missing is
+    @code{#:optional}, and absence is the whole of it: a data format whose
+    values are the language's values has no separate empty. Where an
+    @code{(Option %a)} @em{is} written out, @code{None} is the empty list
+    @code{()}.
+
+    @strong{A record as a tagged form.} With @code{#:tag}, the record has
+    a second spelling, and a manifest is what it is for. The second example
+    reads and writes
+
+    @codeblock[#:lang "bjolang"]|{
+    (package
+      (name (bjolang http))
+      (version "1.2.3")
+      (depends
+        (package (name (bjolang cml)) (version (version-at-least "2.0.1")))
+        (package (name (bjo core)))))
+    }|
+
+    The head symbol names the type and each clause names a field. It diffs a
+    line at a time, it nests without a bracket per level, and it is what a
+    person writes. The format did not change to allow this:
+    @code{(package (name ...) ...)} was already a @code{BjoList} headed by a
+    @code{BjoSym}. What @code{#:tag} changes is the @em{record's encoding},
+    which shape its generated codec reads and writes, and nothing about the
+    reader. A type has one encoding: a value that read as @code{{...}}
+    writes back as @code{{...}}, and one that read as @code{(tag ...)}
+    writes back as that.
+
+    @strong{The type picks the shape; the shape never picks the type.} A
+    @code{BjoList} headed by a symbol is a tagged record where a tagged
+    record is expected, a union case where a union is, and a plain list where
+    a @code{(List Symbol)} is, which is why a module name can be written
+    @code{(std run)}, the way @code{import} writes it, with no ambiguity
+    against @code{(git ...)} in the next clause. It is the rule @code{{...}}
+    has always run on: a map is a @code{Package} in one field and a lookup
+    table in the next, and the field's declared type says which. Nothing in
+    the reader commits, and nothing in the reader could.
+
+    @strong{@code{#:tag} is explicit, with no default.} @code{Package}
+    spelled @code{package} would be a guess about capital letters, and which
+    tag a type is written under belongs in the file's vocabulary. Two types
+    may share a tag: @code{bjo/manifest.bjo} has both @code{Package} and
+    @code{Dep} under @code{package}, because a dependency @em{is} a package,
+    named and constrained rather than described, and which one a form decodes
+    into is the field's to say.
+
+    @strong{@code{#:rest} says which clauses may repeat.} A tagged list says
+    nothing about whether a clause may appear with many values, so it is
+    answered per field, by the type, which is the only place that knows:
+    @code{version} holds one and @code{depends} holds many.
+
+    @codeblock[#:lang "bjolang"]|{
+    (depends (package ...) (package ...))   ;; (: depends (List Dep) #:rest)
+    (version "1.2.3")                       ;; (: version Version)
+    }|
+
+    A field is marked; a clause is not repeated. @code{(depends a) (depends b)}
+    does @em{not} accumulate: the first clause wins, as the first entry under
+    a key does. Accumulating would have meant one rule for maps and another
+    for forms. A @code{#:rest} field reads each of its values through the
+    element type's own instance, which keeps the depth budget honest: a
+    hostile @code{(package (depends (package (depends ...))))} nested five
+    hundred deep is refused by @code{bjodat-max-depth} rather than by the
+    stack. An empty @code{#:rest} field with a default is not written.
+
+    @strong{An unknown clause is read and ignored, at any arity.} A map's
+    unknown key is one value and done; a clause may hold none, one or five,
+    and a reader that insisted on one would make every new clause a breaking
+    change for every older tool. So a manifest written for a newer
+    @code{bjo} still builds under an older one.
+
+    @strong{What a tagged form costs.} Nothing new. A clause is the
+    parenthesised map entry with a bare symbol where the keyword was, so the
+    tag and every field name are matched against the reader's own buffer: no
+    string is built and nothing is interned for any of them.
+
+    @strong{What it generates.} For @code{(: Package (Record ...))}:
+
+    @read-table{
+    | @code{(bjodat-parse-Package text)} | @code{(-> string (Result string Package))}: the one to use |
+    | @code{(bjodat-read-Package rd)}    | @code{(-> Reader (Result string Package))}: from a port    |
+    | @code{(Package->bjodat p)}         | @code{(-> Package Bjodat)}                                |
+    | @code{(bjodat->Package v)}         | @code{(-> Bjodat (Result string Package))}                |
+    }
+
+    and the @code{->bjodat} and @code{bjodat->} instances the last two stand
+    for. The named pair exists because @code{bjodat->} alone is ambiguous at
+    a call site; the signature is what fixes the instance.
+
+    @code{bjodat-read-Package} is what to hand @code{read-one-pass-all} or
+    @code{parse-one-pass-all} for a document that is a @code{[...]} of
+    records:
+
+    @codeblock[#:lang "bjolang"]|{
+    (parse-one-pass-all text bjodat-read-Dep)   ;; -> (Result string (List Dep))
+    }|
+
+    Pass it @strong{by name}, not wrapped in a @code{(fun (rd) ...)}. A
+    lambda body is a member of its own and is sealed to the sync copy of what
+    it calls, so the wrapped form makes a bjoroutine park its thread. The
+    blocking lint says so.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The traits
+;; ---------------------------------------------------------------------------
+
+(:doc ->bjodat
+  (summary "Writing a value as bjodat: a type with an instance can be a field.")
+  (tparam %a "The type written.")
+  (arg v "The value.")
+  (returns "It, as a @code{Bjodat}.")
+  (see bjodat-> def/bjodat-type)
+  (reference """
+    @code{def/bjodat-type} writes an instance for each record it declares.
+    Instances ship for @code{long}, @code{int}, @code{double}, @code{bool},
+    @code{string}, @code{char}, @code{Symbol}, @code{Keyword} and
+    @code{Bjodat} itself, and for @code{(Option %a)}, @code{(Vec %a)} and
+    @code{(List %a)} when the element type has one. @code{None} is written
+    as the empty list @code{()}; a @code{Vec} is a @code{[...]} and a
+    @code{List} a @code{(...)}.
+    """))
+
+(:doc bjodat->
+  (summary "Reading a value from bjodat: a type with an instance can be a field.")
+  (tparam %a "The type read.")
+  (arg v "The value read.")
+  (returns "@code{(Ok x)}, or @code{(Err message)} when the value is not of the type's shape.")
+  (see ->bjodat def/bjodat-type)
+  (reference """
+    Instances ship for the same types as @code{->bjodat}'s. Each takes only
+    its own shape: a symbol and a keyword are different values, and a field
+    asking for one does not take the other; a @code{Vec} wants a
+    @code{[...]} and a @code{List} a @code{(...)}. The one widening is
+    @code{double}, which takes an integer too. An @code{(Option %a)} reads
+    the empty list as @code{None} and anything else as @code{Some}. A
+    refusal is a message such as @code{expected a string}, which the
+    generated decoders prefix with the path to the field.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; What generated field code calls. Not an API for people.
+;; ---------------------------------------------------------------------------
+
+(:doc bjodat-map
+  (summary "A value's map entries, or a refusal. Generated code calls it; not an API for people.")
+  (arg owner "The record's name, for the message.")
+  (arg v "The value.")
+  (returns "The entries of a @code{BjoMap}, or @code{owner: expected a map}.")
+  (see bjodat-field))
+
+(:doc bjodat-field
+  (summary "A required field, from a map's entries. Generated code calls it; not an API for people.")
+  (arg owner "The record's name, for messages.")
+  (arg entries "The map's entries.")
+  (arg key "The field's key.")
+  (returns "The first value under the key, converted by its instance; a refusal names the record and the key.")
+  (see bjodat-field/default bjodat-need-field))
+
+(:doc bjodat-field/default
+  (summary "A field with a fallback, from a map's entries. Generated code calls it; not an API for people.")
+  (arg owner "The record's name, for messages.")
+  (arg entries "The map's entries.")
+  (arg key "The field's key.")
+  (arg fallback "What an absent field is.")
+  (returns "The first value under the key, converted by its instance, or the fallback when there is none.")
+  (see bjodat-field))
+
+(:doc bjodat-read-field
+  (summary "Reads a field's value off the reader and converts it. Generated code calls it; not an API for people.")
+  (arg owner "The record's name, for messages.")
+  (arg key "The field's key, for messages.")
+  (arg rd "The reader, standing at the value.")
+  (returns "The value, converted by its instance; a refusal names the record and the key.")
+  (see bjodat-need-field))
+
+(:doc bjodat-need-field
+  (summary "A required field the one-pass decoder may not have met. Generated code calls it; not an API for people.")
+  (arg slot "What the decoder found, if anything.")
+  (arg owner "The record's name, for the message.")
+  (arg key "The field's key, for the message.")
+  (returns "The value, or @code{bjodat-field}'s refusal word for word, so a report does not reveal which decoder read the document.")
+  (see bjodat-field))
+
+(:doc bjodat-key
+  (summary "A keyword as a BjoKey, for a generated encoder. Not an API for people.")
+  (arg k "The keyword.")
+  (returns "@code{(BjoKey k)}.")
+  (see bjodat-entries))
+
+(:doc bjodat-entries
+  (summary "A map from entries pushed in reverse, for a generated encoder. Not an API for people.")
+  (arg acc "Value, key, value, key, ..., last entry first.")
+  (returns "The @code{BjoMap}, entries in order.")
+  (see bjodat-key))
+
+;; The same, for a record written as a tagged form.
+
+(:doc bjodat-clauses
+  (summary "A tagged form's clauses, with its tag checked. Generated code calls it; not an API for people.")
+  (arg owner "The record's name, for messages.")
+  (arg tag "The head the form must have.")
+  (arg v "The value.")
+  (returns "The clauses, or a refusal when the head is not the tag or a clause does not begin with a field name.")
+  (see bjodat-clause-field))
+
+(:doc bjodat-clause-field
+  (summary "A required field, from a tagged form's clauses. Generated code calls it; not an API for people.")
+  (arg owner "The record's name, for messages.")
+  (arg cs "The clauses.")
+  (arg name "The field's name.")
+  (returns "The one value of the first clause under the name, converted; a refusal when there is none or it holds more than one.")
+  (see bjodat-clause-field/default bjodat-clause-rest))
+
+(:doc bjodat-clause-field/default
+  (summary "A field with a fallback, from a tagged form's clauses. Generated code calls it; not an API for people.")
+  (arg owner "The record's name, for messages.")
+  (arg cs "The clauses.")
+  (arg name "The field's name.")
+  (arg fallback "What an absent field is.")
+  (returns "The one value of the first clause under the name, converted, or the fallback when there is none.")
+  (see bjodat-clause-field))
+
+(:doc bjodat-clause-rest
+  (summary "A required #:rest field, from a tagged form's clauses. Generated code calls it; not an API for people.")
+  (arg owner "The record's name, for messages.")
+  (arg cs "The clauses.")
+  (arg name "The field's name.")
+  (returns "Every value of the first clause under the name, each converted; a refusal when there is none.")
+  (see bjodat-clause-rest/default bjodat-clause-field))
+
+(:doc bjodat-clause-rest/default
+  (summary "A #:rest field with a fallback, from a tagged form's clauses. Generated code calls it; not an API for people.")
+  (arg owner "The record's name, for messages.")
+  (arg cs "The clauses.")
+  (arg name "The field's name.")
+  (arg fallback "What an absent field is.")
+  (returns "Every value of the first clause under the name, each converted, or the fallback when there is none.")
+  (see bjodat-clause-rest))
+
+(:doc bjodat-read-clause
+  (summary "Reads a clause's one value off the reader, and its ). Generated code calls it; not an API for people.")
+  (arg owner "The record's name, for messages.")
+  (arg name "The field's name, for messages.")
+  (arg rd "The reader, standing at the value.")
+  (returns "The value, converted; a refusal names the record and the field.")
+  (see bjodat-read-rest bjodat-need-clause))
+
+(:doc bjodat-read-rest
+  (summary "Reads every value of a clause off the reader, and its ). Generated code calls it; not an API for people.")
+  (arg owner "The record's name, for messages.")
+  (arg name "The field's name, for messages.")
+  (arg rd "The reader, standing at the first value.")
+  (returns "The values, each converted; a refusal names the record and the field.")
+  (see bjodat-read-clause))
+
+(:doc bjodat-need-clause
+  (summary "A required clause the one-pass decoder may not have met. Generated code calls it; not an API for people.")
+  (arg slot "What the decoder found, if anything.")
+  (arg owner "The record's name, for the message.")
+  (arg name "The field's name, for the message.")
+  (returns "The value, or @code{bjodat-clause-field}'s refusal word for word.")
+  (see bjodat-clause-field))
+
+(:doc bjodat-clause
+  (summary "A clause holding one value, for a generated encoder. Not an API for people.")
+  (arg name "The field's name.")
+  (arg v "The value.")
+  (returns "@code{(name v)}.")
+  (see bjodat-clause-many bjodat-form-value))
+
+(:doc bjodat-clause-many
+  (summary "A clause holding many values, for a generated encoder. Not an API for people.")
+  (arg name "The field's name.")
+  (arg vs "The values.")
+  (returns "@code{(name v ...)}.")
+  (see bjodat-clause bjodat-clause-values))
+
+(:doc bjodat-clause-values
+  (summary "Each element written as bjodat, for a #:rest field. Not an API for people.")
+  (arg xs "The field's elements.")
+  (returns "Each converted by its instance.")
+  (see bjodat-clause-many))
+
+(:doc bjodat-form-value
+  (summary "A tagged form from clauses pushed in reverse, for a generated encoder. Not an API for people.")
+  (arg tag "The head.")
+  (arg acc "The clauses, last first.")
+  (returns "@code{(tag clause ...)}, clauses in order.")
+  (see bjodat-clause))
