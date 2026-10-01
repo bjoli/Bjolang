@@ -1,0 +1,82 @@
+;; Docs for text/json.bjo, read through (:doc #:file "json.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "JSON, read into a tree: RFC 8259, one character at a time.")
+  (see Json parse-json read-json)
+  (example """
+    (import (text json))
+
+    (match (parse-json "{\"name\": \"http\", \"tags\": [\"net\", \"web\"]}")
+      ((Ok (JsonObj m)) (map-try-ref m "name"))   ; (Some (JsonStr "http"))
+      ((Ok other) None)
+      ((Err why) (println why) None))
+    """)
+  (reference """
+    A document is read into a @code{Json}, a union with a case for each
+    kind of JSON value. Reading a record straight from JSON, and writing one
+    as JSON, is @code{(text json-codec)}'s: its @code{def/json-type} declares
+    a record and the instances that convert it.
+
+    @strong{What is read.} Exactly RFC 8259: one value, with whitespace
+    around it and nothing else after it. A byte order mark before the value is
+    skipped. There are no comments, no trailing commas, no single quotes and
+    no unquoted keys. A number may not have a leading zero, and needs digits
+    after its decimal point and its exponent. A control character in a string
+    has to be escaped, and a surrogate has to be one half of a pair, written
+    out or as two @code{\u} escapes; a pair is read as one character.
+
+    @strong{Numbers.} A number without a fraction or an exponent is a
+    @code{JsonInt}, a @code{long}. One with either, or one too wide for a
+    @code{long}, is a @code{JsonFloat}. So @code{1} and @code{1.0} are
+    different values in the tree; @code{(text json-codec)} reads either into
+    a @code{double}, and only the first into an integer.
+
+    @strong{Objects.} An object is a @code{(Map string Json)}, so the order
+    its keys were written in is not kept, and when a key is written twice the
+    last value wins.
+
+    @strong{Errors.} A document that is not JSON is an @code{Err} saying
+    where and why: @code{line 1, column 7: ']' does not begin a value}.
+    Nothing is raised. A document nested deeper than
+    @code{json-max-depth} is refused the same way rather than exhausting the
+    stack.
+
+    @strong{Not here yet.} There is no writer: a @code{Json} cannot yet be
+    turned back into text by this module.
+    """))
+
+(:doc Json
+  (summary "A JSON value.")
+  (case JsonNull "null.")
+  (case JsonBool "true or false.")
+  (case JsonInt "A number with no fraction and no exponent that fits in a long.")
+  (case JsonFloat "Any other number.")
+  (case JsonStr "A string, its escapes resolved.")
+  (case JsonArr "An array, in order.")
+  (case JsonObj "An object, by key. The order of the keys is not kept; a key written twice keeps its last value.")
+  (see parse-json))
+
+(:doc json-max-depth
+  (summary "How deep arrays and objects may nest before reading refuses the document: 1000.")
+  (see read-json))
+
+(:doc read-json
+  (summary "Reads one JSON document from a port.")
+  (arg port "The port. Everything left in it is read: one value, and only space after it.")
+  (returns "The value, or why the text is not JSON, with its line and column.")
+  (see parse-json)
+  (reference """
+    A byte order mark before the value is skipped and does not count as a
+    column. On a bjoroutine the port is read without blocking the thread.
+    """))
+
+(:doc parse-json
+  (summary "Reads one JSON document from a string.")
+  (arg text "The document.")
+  (returns "The value, or why the text is not JSON, with its line and column.")
+  (see read-json)
+  (example """
+    (parse-json "[1, 2.5, null]")   ; (Ok (JsonArr [(JsonInt 1) (JsonFloat 2.5) JsonNull]))
+    (parse-json "[1, 2,]")          ; (Err "line 1, column 7: ']' does not begin a value")
+    """))

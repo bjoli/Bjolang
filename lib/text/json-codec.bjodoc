@@ -1,0 +1,162 @@
+;; Docs for text/json-codec.bjo, read through (:doc #:file "json-codec.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Records to JSON and back: two traits, and a macro that writes their instances for a record.")
+  (see def/json-type ->json json->)
+  (example """
+    (import (text json))
+    (import (text json-codec))
+
+    (def/json-type
+      (: Package (Record (: name string)
+                         (: version string #:default "0.1.0")
+                         (: homepage (Option string) #:optional)
+                         (: dependencies (Vec string) #:json "deps" #:default []))))
+
+    (match (parse-json "{\"name\": \"http\", \"deps\": [\"net\"]}")
+      ((Ok j) (json->Package j))   ; (Ok (Package (name "http") (version "0.1.0") ...))
+      ((Err why) (Err why)))
+    """)
+  (reference """
+    @code{->json} turns a value into a @code{Json} tree, and @code{json->}
+    reads one back, answering @code{(Err why)} when the tree is not the
+    shape the type wants. Instances come with the module for @code{Json}
+    itself, @code{long}, @code{int}, @code{double}, @code{bool},
+    @code{string}, and for @code{(Option %a)}, @code{(Vec %a)} and
+    @code{(Map string %a)} of anything that has one. A record gets its pair
+    from @code{def/json-type}; any other type can have them written by hand.
+
+    @strong{Null is None.} An @code{Option} is @code{null} when it is
+    @code{None}, and the value itself when it is @code{Some}; nothing else
+    reads or writes @code{null}.
+
+    @strong{Numbers.} An integer type reads only a JSON integer: @code{1.0}
+    is refused for an @code{int} field. A @code{double} reads either.
+
+    @strong{Errors.} An error names where it happened, as far as one level
+    down: @code{Point.x: expected an integer}, or
+    @code{Point: the object has no "y" field}. A path through several levels
+    of records is not given. A key in a @code{Map} prefixes its value's
+    error.
+
+    @strong{Not here yet.} @code{(text json)} has no writer, so an encoded
+    @code{Json} cannot yet be written out as text.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The traits
+;; ---------------------------------------------------------------------------
+;; A trait and its method share a name, and so a doc: it is checked as the
+;; method's.
+
+(:doc ->json
+  (summary "A value as a Json tree.")
+  (arg x "The value.")
+  (returns "Its tree: a record is an object, an Option is null or its value, a Vec an array, a Map an object.")
+  (see json-> def/json-type)
+  (reference """
+    A trait. Its instances are those listed in the module's doc, and the
+    ones @code{def/json-type} writes for a record. An @code{int} is written
+    as a @code{JsonInt}, a @code{double} as a @code{JsonFloat}.
+    """))
+
+(:doc json->
+  (summary "A Json tree read as a value of a type.")
+  (arg j "The tree.")
+  (returns "The value, or why the tree is not that type's shape.")
+  (see ->json def/json-type)
+  (reference """
+    A trait. Which instance a call means is decided by the type it is used
+    at; where nothing says, write the type's own reader instead, such as
+    the @code{json->Package} that @code{def/json-type} declares. An
+    @code{int} is read from a @code{JsonInt} as it is, without a check that
+    it fits.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; What generated code calls
+;; ---------------------------------------------------------------------------
+
+(:doc json-object
+  (summary "The fields of a tree that has to be an object. Called by the code def/json-type writes.")
+  (arg owner "The type being read, for the message.")
+  (arg j "The tree.")
+  (returns "The object's fields, or @code{Owner: expected an object}.")
+  (see json-field)
+  (reference """
+    Exported because the code @code{def/json-type} writes runs in the
+    module that uses it, and calls this by name. Not an API for people.
+    """))
+
+(:doc json-field
+  (summary "A required field of an object, read as its type. Called by the code def/json-type writes.")
+  (arg owner "The type being read, for the message.")
+  (arg m "The object's fields.")
+  (arg key "The field's key.")
+  (returns "The value, or why not: a missing key, or the value's own error with @code{Owner.key: } in front.")
+  (see json-field/default json-object)
+  (reference """
+    Exported because generated code calls it by name. Not an API for people.
+    """))
+
+(:doc json-field/default
+  (summary "A field that may be absent, read as its type. Called by the code def/json-type writes.")
+  (arg owner "The type being read, for the message.")
+  (arg m "The object's fields.")
+  (arg key "The field's key.")
+  (arg fallback "What an absent field, or one that is null, is read as.")
+  (returns "The value, the fallback, or the value's own error with @code{Owner.key: } in front.")
+  (see json-field)
+  (reference """
+    Exported because generated code calls it by name. Not an API for people.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The generator
+;; ---------------------------------------------------------------------------
+
+(:doc def/json-type
+  (summary "Declares a record, and the instances that write it as JSON and read it back.")
+  (form (def/json-type declaration))
+  (arg declaration "A record declaration, as type takes one, whose fields may carry the markers below.")
+  (see ->json json->)
+  (example """
+    (def/json-type
+      (: (Page %a) (Record (: items (Vec %a))
+                           (: next (Option string) #:optional)
+                           (: total int #:json "totalCount"))))
+
+    (json->Page j)          ; (Result string (Page %a)), given (json-> %a)
+    (Page->json page)       ; Json
+    """)
+  (reference """
+    @code{(def/json-type (: Name (Record (: field type marker ...) ...)))}
+    declares the record @code{Name} as @code{type} would, then an
+    @code{->json} and a @code{json->} instance for it, and two functions
+    that name the type: @code{Name->json} and @code{json->Name}. A type with
+    parameters, @code{(: (Page %a) ...)}, gets instances that need the same
+    trait of each parameter.
+
+    A record is an object with a key for each field. The markers, after a
+    field's type:
+
+    @itemlist{
+      @item{@code{#:json "key"}: the key in JSON, when it is not the
+      field's name.}
+      @item{@code{#:default expr}: a field that may be absent, or null, and
+      is then @code{expr}. It is still written.}
+      @item{@code{#:optional}: a field whose type is an @code{Option},
+      @code{None} when it is absent or null, and left out when it is
+      @code{None}.}
+      @item{@code{#:mutable}: kept, and passed on to the record.}
+    }
+
+    A field without @code{#:default} or @code{#:optional} is required, and
+    reading an object without it is an error. Keys the record has no field
+    for are passed over.
+
+    The field types are not looked at: what a field is written as is
+    settled by the instance its type has, so a field of a type with no
+    @code{->json} is an error where the instance is wanted, not here.
+    """))
