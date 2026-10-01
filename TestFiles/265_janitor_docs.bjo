@@ -1,0 +1,189 @@
+;; (janitor docs) and (janitor modules): a module's published docs read back
+;; as records, from its dll found by module name, and from this program's own
+;; exe. Every way to fail says why.
+
+(import (std prelude))
+(import (std simpletest))
+(import (janitor modules))
+(import (janitor docs))
+
+(export twice Pair)
+
+(:doc #:module
+  (summary "Reads docs back.")
+  (see twice))
+
+(:doc twice
+  (summary "Twice n.")
+  (arg n "A number.")
+  (key #:by "What to multiply by.")
+  (returns "n times by.")
+  (see Pair)
+  (example "(twice 2) ; 4"))
+(: twice (-> int (#:by int) int))
+(defun (twice n #:by 2) (* n by))
+
+(:doc Pair
+  (summary "Two ints.")
+  (field a "The first.")
+  (field b "The second."))
+(type (: Pair (Record (: a int) (: b int))))
+
+(:doc twin #:reader
+  (summary "Two of the same.")
+  (form (twin x))
+  (arg x "What to have two of."))
+(def/hash-extend (twin form inject compare)
+  (match form
+    (_ #'(Tuple 1 1))))
+
+(import/class (Assembly (: System.Reflection.Assembly)))
+(import/extern
+  (entry-assembly (: System.Reflection.Assembly.GetEntryAssembly (-> Assembly)))
+  (location-of (: System.Reflection.Assembly.Location (-> Assembly string) #:get)))
+
+(: sym (-> string Symbol))
+(defun (sym s) (string->symbol s))
+
+(: err-text (-> (Result string %a) string))
+(defun (err-text r)
+  (match r
+    ((Err why) why)
+    ((Ok _) "<ok>")))
+
+(: summary-of (-> (Option Doc) string))
+(defun (summary-of d)
+  (match d
+    ((Some doc) (doc-summary doc))
+    (None "none")))
+
+(: kind-text (-> DocKind string))
+(defun (kind-text k)
+  (match k
+    (KindFunction "function")
+    (KindRecord "record")
+    (KindReader "reader")
+    (KindModule "module")
+    ((KindOther s) (str "other " (symbol->string s)))
+    (_ "something else")))
+
+(defun (main args)
+  (expect "twice" (twice 3) 6)
+
+  ;; This program's own docs, from its exe.
+  (match (assembly-docs (location-of (entry-assembly)))
+    ((Err why) (expect "this program's docs read" why ""))
+    ((Ok docs)
+     (expect "every doc" (vec-length docs) 4)
+     (match (module-doc docs)
+       (None (expect "the module doc" #f #t))
+       ((Some d)
+        (expect "the module's summary" (doc-summary d) "Reads docs back.")
+        (expect "the module's kind" (kind-text (record-ref d kind)) "module")))
+     (match (doc-named docs "twice")
+       (None (expect "twice is documented" #f #t))
+       ((Some d)
+        (expect "its kind" (kind-text (record-ref d kind)) "function")
+        (expect "its signature" (record-ref d signature) (Some "(-> int (#:by int) int)"))
+        (expect "its definition" (record-ref d definition) (Some "(twice n #:by 2)"))
+        (expect "its subject" (doc-subject->string (record-ref d subject)) "twice")
+        (expect "its clauses, in order, without what the compiler added"
+                (list-map (fun (c)
+                            (match c
+                              ((DocSummary s) (str "summary " s))
+                              ((DocArg n t) (str "arg " (symbol->string n) " " t))
+                              ((DocKey n t) (str "key " (symbol->string n) " " t))
+                              ((DocReturns t) (str "returns " t))
+                              ((DocSee ns) (str "see " (string-join (list->vec (list-map symbol->string ns)) " ")))
+                              ((DocExample t) (str "example " t))
+                              (_ "?")))
+                          (record-ref d clauses))
+                (list "summary Twice n." "arg n A number." "key by What to multiply by."
+                      "returns n times by." "see Pair" "example (twice 2) ; 4"))))
+     (match (doc-named docs "Pair")
+       (None (expect "Pair is documented" #f #t))
+       ((Some d)
+        (expect "a record has no signature" (record-ref d signature) None)
+        (expect "a record's kind" (kind-text (record-ref d kind)) "record")))
+     (expect "a reader extension is not its name alone" (summary-of (doc-named docs "twin")) "none")
+     (match (doc-named docs "#twin")
+       (None (expect "#twin is documented" #f #t))
+       ((Some d)
+        (expect "a reader extension's kind" (kind-text (record-ref d kind)) "reader")
+        (expect "its subject" (doc-subject->string (record-ref d subject)) "#twin")))))
+
+  ;; A module's docs by name: (janitor docs) documents itself.
+  (def standard (standard-roots))
+  (match (module-docs standard (list (sym "janitor") (sym "docs")))
+    ((Err why) (expect "(janitor docs) reads" why ""))
+    ((Ok docs)
+     (expect "(janitor docs) documents module-docs"
+             (summary-of (doc-named docs "module-docs"))
+             "The docs of a module, by name.")))
+
+  ;; A module without docs has none, rather than failing.
+  (match (module-docs standard (list (sym "std") (sym "eq")))
+    ((Err why) (expect "(std eq) reads" why ""))
+    ((Ok docs) (expect "(std eq) has no docs" (vec-length docs) 0)))
+
+  ;; Resolving.
+  (expect "the longest prefix owns a name"
+          (match (find-module-source standard (list (sym "std") (sym "mutable") (sym "vec")))
+            ((Some p) (string-ends-with? p "/lib/std/mutable/vec.bjo"))
+            (None #f))
+          #t)
+  (expect "a package is not a module" (find-module-source standard (list (sym "std"))) None)
+  (expect "no package"
+          (err-text (module-docs standard (list (sym "nopackage") (sym "here"))))
+          "no package provides (nopackage here)")
+  (expect "no module"
+          (string-starts-with? (err-text (module-docs standard (list (sym "std") (sym "nothing-here"))))
+                               "no module (std nothing-here): no ")
+          #t)
+
+  ;; A file that is not an assembly.
+  (def not-dll (path-combine (current-directory) "TestFiles" "265_janitor_docs.bjo"))
+  (expect "not an assembly"
+          (string-contains? (err-text (assembly-docs not-dll)) "265_janitor_docs.bjo: ")
+          #t)
+  (expect "no file" (err-text (assembly-docs "/no/such/file.dll")) "no such file: /no/such/file.dll")
+
+  ;; Published text that a later compiler might write, and text that is wrong.
+  (match (parse-docs "[(:doc f (kind gadget) (summary \"S.\") (law (= a a)))]")
+    ((Err why) (expect "unknown kinds and clauses read" why ""))
+    ((Ok docs)
+     (def d (vec-ref docs 0))
+     (expect "an unknown kind" (kind-text (record-ref d kind)) "other gadget")
+     (expect "an unknown clause is kept"
+             (match (record-ref d clauses)
+               ((Cons (DocSummary _) (Cons (DocOther h _) Nil)) (symbol->string h))
+               (_ "?"))
+             "law")))
+  (expect "no docs at all" (result-map vec-length (parse-docs "")) (Ok 0))
+  (expect "a clause of the wrong shape"
+          (err-text (parse-docs "[(:doc f (summary 1))]"))
+          "a clause of the wrong shape: (summary 1)")
+  (expect "not a doc" (err-text (parse-docs "[(f)]")) "a doc is (:doc name clause ...): (f)")
+
+  ;; A roots file: a relative directory is relative to the file.
+  (def dir (path-combine (current-directory) "TestFiles" "265_janitor_docs.roots"))
+  (directory-create dir)
+  (def roots-file (path-combine dir "roots"))
+  (file-write-text roots-file "(roots (root (my pkg) \"src\") (root (other) \"/abs\"))")
+  (match (read-roots-file roots-file)
+    ((Err why) (expect "a roots file reads" why ""))
+    ((Ok roots)
+     (expect "its packages"
+             (list-map (fun (r) (str (module-name->string (record-ref r name)) " " (record-ref r directory)))
+                       roots)
+             (list (str "(my pkg) " (path-combine dir "src")) "(other) /abs"))
+     (expect "a roots package owns its modules"
+             (find-module-source (list-append standard roots) (list (sym "my") (sym "pkg") (sym "a") (sym "b")))
+             (Some (path-combine dir "src" "a" "b.bjo")))))
+  (file-write-text roots-file "(roots (root my \"src\"))")
+  (expect "a malformed roots file"
+          (string-contains? (err-text (read-roots-file roots-file)) "expected (root (name ...) \"directory\")")
+          #t)
+  (expect "no roots file" (err-text (read-roots-file (path-combine dir "none"))) (str "no roots file at " (path-combine dir "none")))
+  (directory-delete-tree dir)
+  0)

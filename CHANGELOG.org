@@ -3,6 +3,39 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(janitor docs)~: published docs, read back as records
+
+A new top-level package, ~janitor~, holds what tools need from the compiler's
+side of things. It is a directory of ~lib~, so the name is reserved, and it is
+not ~std~: a program has no reason to import it.
+
+- ~(janitor modules)~ finds a module by name the way ~Paths.fs~ does: the
+  installed ~lib~ (~lib-directory~, ~standard-roots~), a project's packages
+  from its roots file (~read-roots-file~), and the longest package name that
+  is a proper prefix of the module's (~find-module-source~,
+  ~find-module-assembly~, which answers the dll beside the source).
+- ~(janitor docs)~ reads a module's ~BjolangDocs~ into ~Doc~ records:
+  ~module-docs~ by name, ~assembly-docs~ by path, ~parse-docs~ from the text.
+  A ~Doc~ has its subject, its kind, a function's signature and ~defun~ head
+  as the compiler added them, and its clauses as ~DocClause~ values in the
+  order written. A clause or kind this version does not know is kept as
+  ~DocOther~ / ~KindOther~, so docs from a later compiler still read.
+- The attribute is read with ~System.Reflection.Metadata~, by a new runtime
+  helper ~Bjolang.Runtime.BjoAssemblyMetadata.Read~, so the assembly is never
+  loaded: a tool can read the docs of a module it links itself, or of the
+  whole library, and keep none of it loaded.
+
+Both modules are documented with ~(:doc ...)~, so they are also the first
+modules of ~lib~ to carry docs. ~TestFiles/265_janitor_docs.bjo~ reads its own
+exe's docs and ~(janitor docs)~'s by module name, and covers each failure: no
+package, no module, an uncompiled one, a file that is not an assembly, a
+malformed clause, and a roots file that is wrong or missing.
+
+Left open: the samizdat commands for the manual and the REPL's ~:doc~, which
+are what this is for; and a match guard that calls a function in some
+positions fails in codegen ("this ~match~ guard needs statements to
+evaluate"), which ~read-clauses~ works around by matching on the head first.
+
 * Documentation: ~(:doc ...)~, checked against what it documents
 
 A definition is documented with ~(:doc name clause ...)~ in the module that

@@ -1,0 +1,236 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; janitor/modules.bjo — where a module name leads, found the way the compiler
+;; finds it.
+;;
+;; `janitor` holds what tools need from the compiler's side of things. The
+;; rules here are `Paths.fs`'s, written again: the installed `lib` is the first
+;; candidate with a `std` in it, each directory of it is a package, a roots
+;; file adds more, and the longest package name that is a proper prefix of a
+;; module name owns it. A module's dll sits beside its source.
+
+(export
+  PackageRoot
+  module-name->string
+  lib-directory standard-roots read-roots-file
+  find-module-source find-module-assembly)
+
+(import (std prelude))
+(import (text bjodat-core))
+
+(import/extern
+  (clr-base-dir       (: System.AppContext.BaseDirectory #:get))
+  (clr-directory-name (: System.IO.Path.GetDirectoryName (-> string string)))
+  (clr-change-ext     (: System.IO.Path.ChangeExtension (-> string string string)))
+  (clr-null-or-empty? (: System.String.IsNullOrEmpty (-> string bool))))
+
+(:doc #:module
+  (summary "Where a module name leads: its package, its source and its dll.")
+  (see find-module-assembly read-roots-file)
+  (reference """
+    The rules are the compiler's. The installed lib is the first candidate
+    that has a std in it: $BJOLANG_LIB, $BJOLANG_HOME/lib, then a lib in the
+    directory of the running program or any directory above it, then the same
+    from the working directory. Each directory of lib is a package of the
+    standard library. A roots file, which bjo writes as .bjo/roots, adds the
+    packages of a project. The longest package name that is a proper prefix of
+    a module name owns the module, and the rest of the name is a path below
+    the package's directory.
+    """))
+
+(:doc PackageRoot
+  (summary "A package: its name, and the directory its modules are in.")
+  (field name "As an import spells it: (std), (bjolang http).")
+  (field directory "Absolute.")
+  (field standard "Whether it is part of the installed standard library."))
+(type (: PackageRoot (Record (: name (List Symbol))
+                             (: directory string)
+                             (: standard bool))))
+
+(:doc module-name->string
+  (summary "A module name as source writes it.")
+  (arg name "The name.")
+  (returns "(std random), for (std random)."))
+(: module-name->string (-> (List Symbol) string))
+(defun (module-name->string name)
+  (str "(" (string-join (list->vec (list-map symbol->string name)) " ") ")"))
+
+;; ---------------------------------------------------------------------------
+;; The installed library
+;; ---------------------------------------------------------------------------
+
+;; `None` at the root of the filesystem, where `GetDirectoryName` answers null.
+(: parent-of (-> string (Option string)))
+(defun (parent-of dir)
+  (def up (clr-directory-name (path-absolute dir)))
+  (if (clr-null-or-empty? up) None (Some up)))
+
+;; `<dir>/lib` for `dir` and every directory above it, deepest first.
+(: ancestor-libs (-> string (List string)))
+(defun (ancestor-libs start)
+  (let go ((dir (path-absolute start)))
+    (Cons (path-combine dir "lib")
+          (match (parent-of dir)
+            ((Some up) (go up))
+            (None Nil)))))
+
+(: env-dir (-> string string (List string)))
+(defun (env-dir var below)
+  (match (get-environment-variable var)
+    ((Some dir) (Cons (path-absolute (if (= below "") dir (path-combine dir below))) Nil))
+    (None Nil)))
+
+(:doc lib-directory
+  (summary "The installed lib directory, or None when there is none to find.")
+  (returns "The first candidate with a std directory in it, as the compiler picks it.")
+  (see standard-roots))
+(: lib-directory (-> (Option string)))
+(defun (lib-directory)
+  (find #(directory-exists? (path-combine & "std"))
+        (list-append (env-dir "BJOLANG_LIB" "")
+                     (list-append (env-dir "BJOLANG_HOME" "lib")
+                                  (list-append (ancestor-libs clr-base-dir)
+                                               (ancestor-libs (current-directory)))))))
+
+(:doc standard-roots
+  (summary "The standard library's packages: one per directory of lib.")
+  (returns "The packages, or none when there is no lib to find.")
+  (see lib-directory))
+(: standard-roots (-> (List PackageRoot)))
+(defun (standard-roots)
+  (match (lib-directory)
+    (None Nil)
+    ((Some lib)
+     (loop (:for dir (directory-subdirectories lib))
+           (:acc out (listing (PackageRoot (name (Cons (string->symbol (option-value (path-filename dir) "")) Nil))
+                                           (directory (path-absolute dir))
+                                           (standard #t))))
+           => out))))
+
+;; ---------------------------------------------------------------------------
+;; A roots file
+;; ---------------------------------------------------------------------------
+
+;; `(root (pkg name) "dir")`, the directory relative to the file's.
+(: root-entry (-> string Bjodat (Result string PackageRoot)))
+(defun (root-entry base entry)
+  (match entry
+    ((BjoList (Cons (BjoSym head) (Cons (BjoList parts) (Cons (BjoStr dir) Nil))))
+     (if (not (= (symbol->string head) "root"))
+         (Err #"expected (root (name ...) \"directory\"), not ${(bjodat->string entry)}")
+         (match (symbols-of parts)
+           (None (Err #"a package name is a list of symbols: ${(bjodat->string entry)}"))
+           ((Some Nil) (Err "a package name has at least one segment"))
+           ((Some name)
+            (Ok (PackageRoot (name name)
+                             (directory (path-absolute (path-combine base dir)))
+                             (standard #f)))))))
+    (_ (Err #"expected (root (name ...) \"directory\"), not ${(bjodat->string entry)}"))))
+
+(: symbols-of (-> (List Bjodat) (Option (List Symbol))))
+(defun (symbols-of parts)
+  (match parts
+    (Nil (Some Nil))
+    ((Cons (BjoSym s) rest)
+     (match (symbols-of rest)
+       ((Some more) (Some (Cons s more)))
+       (None None)))
+    (_ None)))
+
+(: root-entries (-> string (List Bjodat) (Result string (List PackageRoot))))
+(defun (root-entries base entries)
+  (match entries
+    (Nil (Ok Nil))
+    ((Cons e rest)
+     (def (Ok root) (root-entry base e) :propagate)
+     (def (Ok more) (root-entries base rest) :propagate)
+     (Ok (Cons root more)))))
+
+(:doc read-roots-file
+  (summary "The packages a roots file names, as bjo writes one in .bjo/roots.")
+  (arg file "The roots file: (roots (root (name ...) \"directory\") ...).")
+  (returns "Its packages, or why the file could not be read. A relative directory is relative to the file.")
+  (see standard-roots))
+(: read-roots-file (-> string (Result string (List PackageRoot))))
+(defun (read-roots-file file)
+  (if (not (file-exists? file))
+      (Err #"no roots file at ${file}")
+      (match (parse-bjodat (file-read-text file))
+        ((Err why) (Err #"${file}: ${why}"))
+        ((Ok (BjoList (Cons (BjoSym head) entries)))
+         (if (= (symbol->string head) "roots")
+             (match (root-entries (option-value (parent-of file) ".") entries)
+               ((Err why) (Err #"${file}: ${why}"))
+               ((Ok roots) (Ok roots)))
+             (Err #"${file}: expected one (roots ...) form")))
+        ((Ok _) (Err #"${file}: expected one (roots ...) form")))))
+
+;; ---------------------------------------------------------------------------
+;; Resolving
+;; ---------------------------------------------------------------------------
+
+;; `prefix` is a proper prefix of `name`: shorter, and equal as far as it goes.
+(: proper-prefix? (-> (List Symbol) (List Symbol) bool))
+(defun (proper-prefix? prefix name)
+  (match (Tuple prefix name)
+    ((Tuple Nil (Cons _ _)) #t)
+    ((Tuple (Cons p ps) (Cons n ns)) (and (= p n) (proper-prefix? ps ns)))
+    (_ #f)))
+
+(: drop-segments (-> int (List Symbol) (List Symbol)))
+(defun (drop-segments n name)
+  (match name
+    ((Cons _ rest) (if (> n 0) (drop-segments (- n 1) rest) name))
+    (Nil Nil)))
+
+(:doc find-module-source
+  (summary "The .bjo a module name names, whether or not it exists.")
+  (arg roots "The packages to look in, standard ones included.")
+  (arg name "The module: (std random).")
+  (returns "The source path, or None when no package owns the name.")
+  (see find-module-assembly standard-roots))
+(: find-module-source (-> (List PackageRoot) (List Symbol) (Option string)))
+(defun (find-module-source roots name)
+  (def owner
+    (loop (:for r roots)
+          (:acc best
+                (folding None
+                         (if (and (proper-prefix? (record-ref r name) name)
+                                  (match best
+                                    (None #t)
+                                    ((Some b) (> (list-length (record-ref r name))
+                                                 (list-length (record-ref b name))))))
+                             (Some r)
+                             best)))))
+  (match owner
+    (None None)
+    ((Some r)
+     (def below (list-map symbol->string (drop-segments (list-length (record-ref r name)) name)))
+     (Some (path-absolute (str (path-combine (record-ref r directory) (string-join (list->vec below) "/")) ".bjo"))))))
+
+(:doc find-module-assembly
+  (summary "The compiled dll of a module.")
+  (arg roots "The packages to look in, standard ones included.")
+  (arg name "The module: (std random).")
+  (returns "The dll beside the module's source, or why there is none.")
+  (see find-module-source))
+(: find-module-assembly (-> (List PackageRoot) (List Symbol) (Result string string)))
+(defun (find-module-assembly roots name)
+  (match (find-module-source roots name)
+    (None (Err #"no package provides ${(module-name->string name)}"))
+    ((Some source)
+     (def dll (clr-change-ext source ".dll"))
+     (cond
+       ((file-exists? dll) (Ok dll))
+       ((file-exists? source) (Err #"${(module-name->string name)} is not compiled: no ${dll}"))
+       (else (Err #"no module ${(module-name->string name)}: no ${source}"))))))

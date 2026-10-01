@@ -1,0 +1,335 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; janitor/docs.bjo — a module's published docs, as records.
+;;
+;; The compiler publishes a module's `(:doc ...)` forms in its assembly, under
+;; the metadata key `BjolangDocs` (Docs/Documentation.org, "Where the
+;; documentation goes"). This reads them back without loading the assembly, so
+;; a tool can read the docs of a module it also links, or of many modules,
+;; without keeping them loaded.
+;;
+;; A clause this version does not know is kept as `DocOther` rather than
+;; refused: docs written for a later compiler still read.
+
+(export
+  Doc DocSubject DocKind DocClause
+  parse-docs assembly-docs module-docs
+  doc-summary doc-named module-doc doc-subject->string)
+
+(import (std prelude))
+(import (text bjodat-core))
+(import (janitor modules))
+
+(import/extern
+  (clr-read-metadata (: Bjolang.Runtime.BjoAssemblyMetadata.Read (-> string string string)
+                        #:exceptions (System.IO.IOException
+                                      System.UnauthorizedAccessException
+                                      System.BadImageFormatException))))
+
+(:doc #:module
+  (summary "A module's published docs, read back as records.")
+  (see module-docs assembly-docs Doc)
+  (reference """
+    Each (:doc ...) form a module was compiled with is a Doc. Its clauses are
+    as written, in the order written, with what the compiler added taken out
+    into the record: the kind of definition, and for a function or a value its
+    signature, and for a defun its head as written.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The records
+;; ---------------------------------------------------------------------------
+
+(:doc DocSubject
+  (summary "What a doc is about.")
+  (case SubjectName "A definition, by its name.")
+  (case SubjectReader "A reader extension: (:doc name #:reader ...).")
+  (case SubjectModule "The module itself: (:doc #:module ...)."))
+(type (: DocSubject (Union (: SubjectName Symbol)
+                           (: SubjectReader Symbol)
+                           SubjectModule)))
+
+(:doc DocKind
+  (summary "What kind of definition a doc is about, as the compiler found it.")
+  (case KindOther "A kind this version does not know, as published."))
+(type (: DocKind (Union KindFunction KindValue KindRecord KindUnion KindAlias
+                        KindTrait KindMacro KindReader KindModule
+                        (: KindOther Symbol))))
+
+(:doc DocClause
+  (summary "One clause of a doc, as written.")
+  (case DocArg "A positional parameter's name and text.")
+  (case DocKey "A keyword parameter's name, without #:, and text.")
+  (case DocRaises "The exception's type as written, and when.")
+  (case DocTparam "The type parameter as written, %a, and its text.")
+  (case DocForm "How a macro is written, as data.")
+  (case DocOther "A clause this version does not know: its head and the rest."))
+(type (: DocClause (Union
+                    (: DocSummary string)
+                    (: DocArg Symbol string)
+                    (: DocRest Symbol string)
+                    (: DocKey Symbol string)
+                    (: DocReturns string)
+                    (: DocRaises Symbol string)
+                    (: DocSee (List Symbol))
+                    (: DocExample string)
+                    (: DocReference string)
+                    (: DocField Symbol string)
+                    (: DocCase Symbol string)
+                    (: DocTparam Symbol string)
+                    (: DocForm Bjodat)
+                    (: DocLiteral (List Symbol))
+                    (: DocOther Symbol (List Bjodat)))))
+
+(:doc Doc
+  (summary "One published doc.")
+  (field subject "What it is about.")
+  (field kind "What kind of definition that is.")
+  (field signature "A function's or a value's type, as source writes it, when it has one.")
+  (field definition "A defun's head as written, defaults and all: (random-int lo hi #:rng r).")
+  (field clauses "Every other clause, in the order written."))
+(type (: Doc (Record (: subject DocSubject)
+                     (: kind DocKind)
+                     (: signature (Option string))
+                     (: definition (Option string))
+                     (: clauses (List DocClause)))))
+
+;; ---------------------------------------------------------------------------
+;; Reading
+;; ---------------------------------------------------------------------------
+
+;; A message names the form, so a published doc that does not read says where.
+(: malformed (-> string Bjodat (Result string %a)))
+(defun (malformed what form)
+  (Err #"${what}: ${(bjodat->string form)}"))
+
+(: kind-named (-> Symbol DocKind))
+(defun (kind-named s)
+  (match (symbol->string s)
+    ("function" KindFunction)
+    ("value" KindValue)
+    ("record" KindRecord)
+    ("union" KindUnion)
+    ("alias" KindAlias)
+    ("trait" KindTrait)
+    ("macro" KindMacro)
+    ("reader" KindReader)
+    ("module" KindModule)
+    (_ (KindOther s))))
+
+(: symbol-list (-> (List Bjodat) (Option (List Symbol))))
+(defun (symbol-list xs)
+  (match xs
+    (Nil (Some Nil))
+    ((Cons (BjoSym s) rest)
+     (match (symbol-list rest)
+       ((Some more) (Some (Cons s more)))
+       (None None)))
+    (_ None)))
+
+;; A clause by its head. `#:rng` and `rng` are the same key.
+(: read-clause (-> Bjodat (Result string DocClause)))
+(defun (read-clause c)
+  (match c
+    ((BjoList (Cons (BjoSym head) args))
+     (match (Tuple (symbol->string head) args)
+       ((Tuple "summary" (Cons (BjoStr t) Nil)) (Ok (DocSummary t)))
+       ((Tuple "arg" (Cons (BjoSym n) (Cons (BjoStr t) Nil))) (Ok (DocArg n t)))
+       ((Tuple "rest" (Cons (BjoSym n) (Cons (BjoStr t) Nil))) (Ok (DocRest n t)))
+       ((Tuple "key" (Cons (BjoSym n) (Cons (BjoStr t) Nil))) (Ok (DocKey n t)))
+       ((Tuple "key" (Cons (BjoKey k) (Cons (BjoStr t) Nil)))
+        (Ok (DocKey (string->symbol (keyword->string k)) t)))
+       ((Tuple "returns" (Cons (BjoStr t) Nil)) (Ok (DocReturns t)))
+       ((Tuple "raises" (Cons (BjoSym n) (Cons (BjoStr t) Nil))) (Ok (DocRaises n t)))
+       ((Tuple "example" (Cons (BjoStr t) Nil)) (Ok (DocExample t)))
+       ((Tuple "reference" (Cons (BjoStr t) Nil)) (Ok (DocReference t)))
+       ((Tuple "field" (Cons (BjoSym n) (Cons (BjoStr t) Nil))) (Ok (DocField n t)))
+       ((Tuple "case" (Cons (BjoSym n) (Cons (BjoStr t) Nil))) (Ok (DocCase n t)))
+       ((Tuple "tparam" (Cons (BjoSym n) (Cons (BjoStr t) Nil))) (Ok (DocTparam n t)))
+       ((Tuple "form" (Cons shape Nil)) (Ok (DocForm shape)))
+       ((Tuple "see" names)
+        (match (symbol-list names)
+          ((Some ns) (Ok (DocSee ns)))
+          (None (malformed "a see clause names symbols" c))))
+       ((Tuple "literal" names)
+        (match (symbol-list names)
+          ((Some ns) (Ok (DocLiteral ns)))
+          (None (malformed "a literal clause names symbols" c))))
+       ((Tuple (or "summary" "arg" "rest" "key" "returns" "raises" "example"
+                   "reference" "field" "case" "tparam" "form") _)
+        (malformed "a clause of the wrong shape" c))
+       (_ (Ok (DocOther head args)))))
+    (_ (malformed "a clause is a list headed by a symbol" c))))
+
+;; The doc being built: the record's parts, before its clauses are reversed.
+(type (: Partial (Record (: kind DocKind)
+                         (: signature (Option string))
+                         (: definition (Option string))
+                         (: clauses (List DocClause)))))
+
+;; The symbol a list is headed by, or "" for anything else.
+(: head-of (-> Bjodat string))
+(defun (head-of b)
+  (match b
+    ((BjoList (Cons (BjoSym h) _)) (symbol->string h))
+    (_ "")))
+
+;; The added clauses go into the record, the rest into its clauses.
+(: read-clauses (-> Partial (List Bjodat) (Result string Partial)))
+(defun (read-clauses p cs)
+  (match cs
+    (Nil (Ok p))
+    ((Cons c rest)
+     (match (Tuple (head-of c) c)
+       ((Tuple "kind" (BjoList (Cons _ (Cons (BjoSym k) Nil))))
+        (read-clauses (record-set p (kind (kind-named k))) rest))
+       ((Tuple "signature" (BjoList (Cons _ (Cons (BjoStr s) Nil))))
+        (read-clauses (record-set p (signature (Some s))) rest))
+       ((Tuple "definition" (BjoList (Cons _ (Cons (BjoStr s) Nil))))
+        (read-clauses (record-set p (definition (Some s))) rest))
+       (_
+        (def (Ok clause) (read-clause c) :propagate)
+        (read-clauses (record-set p (clauses (Cons clause (record-ref p clauses)))) rest))))))
+
+;; `(:doc name ...)`, `(:doc name #:reader ...)` or `(:doc #:module ...)`.
+(: read-doc (-> Bjodat (Result string Doc)))
+(defun (read-doc form)
+  (def start (Partial (kind (KindOther (string->symbol "unknown")))
+                      (signature None) (definition None) (clauses Nil)))
+  (def subject+clauses
+    (match form
+      ((BjoList (Cons (BjoKey d) after))
+       (if (not (= (keyword->string d) "doc"))
+           None
+           (match after
+             ((Cons (BjoKey m) cs)
+              (if (= (keyword->string m) "module") (Some (Tuple SubjectModule cs)) None))
+             ((Cons (BjoSym n) (Cons (BjoKey r) cs))
+              (if (= (keyword->string r) "reader") (Some (Tuple (SubjectReader n) cs)) None))
+             ((Cons (BjoSym n) cs) (Some (Tuple (SubjectName n) cs)))
+             (_ None))))
+      (_ None)))
+  (match subject+clauses
+    (None (malformed "a doc is (:doc name clause ...)" form))
+    ((Some (Tuple subject cs))
+     (def (Ok p) (read-clauses start cs) :propagate)
+     (Ok (Doc (subject subject)
+              (kind (record-ref p kind))
+              (signature (record-ref p signature))
+              (definition (record-ref p definition))
+              (clauses (list-reverse (record-ref p clauses))))))))
+
+(: read-docs (-> (List Bjodat) (Result string (List Doc))))
+(defun (read-docs forms)
+  (match forms
+    (Nil (Ok Nil))
+    ((Cons f rest)
+     (def (Ok doc) (read-doc f) :propagate)
+     (def (Ok more) (read-docs rest) :propagate)
+     (Ok (Cons doc more)))))
+
+(:doc parse-docs
+  (summary "Published docs, from the text the compiler wrote.")
+  (arg text "A bjodat vec of (:doc ...) forms, or \"\" for a module with none.")
+  (returns "The docs, in the order the module wrote them, or why the text does not read.")
+  (see assembly-docs))
+(: parse-docs (-> string (Result string (Vec Doc))))
+(defun (parse-docs text)
+  (if (= (string-trim text) "")
+      (Ok [])
+      (match (parse-bjodat text)
+        ((Err why) (Err why))
+        ((Ok (BjoVec forms))
+         (def (Ok docs) (read-docs (vec->list forms)) :propagate)
+         (Ok (list->vec docs)))
+        ((Ok other) (malformed "published docs are a vec" other)))))
+
+(:doc assembly-docs
+  (summary "The docs published in an assembly, read without loading it.")
+  (arg path "The module's dll, or a program's exe.")
+  (returns "Its docs, none when it has none, or why the file could not be read.")
+  (see module-docs parse-docs))
+(: assembly-docs (-> string (Result string (Vec Doc))))
+(defun (assembly-docs path)
+  (if (not (file-exists? path))
+      (Err #"no such file: ${path}")
+      (match (clr-read-metadata path "BjolangDocs")
+        ((Err e) (Err #"${path}: ${(.-Message e)}"))
+        ((Ok text)
+         (match (parse-docs text)
+           ((Err why) (Err #"${path}: ${why}"))
+           ((Ok docs) (Ok docs)))))))
+
+(:doc module-docs
+  (summary "The docs of a module, by name.")
+  (arg roots "The packages to look in: (standard-roots), and a project's from read-roots-file.")
+  (arg name "The module: (std random).")
+  (returns "Its docs, or why there are none to read.")
+  (see assembly-docs find-module-assembly standard-roots read-roots-file))
+(: module-docs (-> (List PackageRoot) (List Symbol) (Result string (Vec Doc))))
+(defun (module-docs roots name)
+  (def (Ok dll) (find-module-assembly roots name) :propagate)
+  (assembly-docs dll))
+
+;; ---------------------------------------------------------------------------
+;; Asking
+;; ---------------------------------------------------------------------------
+
+(:doc doc-summary
+  (summary "A doc's one-line summary.")
+  (arg doc "The doc.")
+  (returns "Its summary, or \"\" for one published without."))
+(: doc-summary (-> Doc string))
+(defun (doc-summary doc)
+  (loop (:for c (record-ref doc clauses))
+        (:acc found (folding ""
+                             (match c
+                               ((DocSummary s) (if (= found "") s found))
+                               (_ found))))))
+
+(:doc doc-named
+  (summary "The doc of a definition, by its name.")
+  (arg docs "A module's docs.")
+  (arg name "The definition's name. A reader extension's is written with its #: #pair.")
+  (returns "The doc, or None when the module has none by that name.")
+  (see module-doc))
+(: doc-named (-> (Vec Doc) string (Option Doc)))
+(defun (doc-named docs name)
+  (find #(match (record-ref & subject)
+           ((SubjectName n) (= (symbol->string n) name))
+           ((SubjectReader n) (= (str "#" (symbol->string n)) name))
+           (SubjectModule #f))
+        docs))
+
+(:doc module-doc
+  (summary "The doc of the module itself: its (:doc #:module ...).")
+  (arg docs "A module's docs.")
+  (returns "The doc, or None when the module has none.")
+  (see doc-named))
+(: module-doc (-> (Vec Doc) (Option Doc)))
+(defun (module-doc docs)
+  (find #(match (record-ref & subject)
+           (SubjectModule #t)
+           (_ #f))
+        docs))
+
+(:doc doc-subject->string
+  (summary "What a doc is about, as source writes it.")
+  (arg subject "The subject.")
+  (returns "random-int, #pair for a reader extension, or #:module."))
+(: doc-subject->string (-> DocSubject string))
+(defun (doc-subject->string subject)
+  (match subject
+    ((SubjectName n) (symbol->string n))
+    ((SubjectReader n) (str "#" (symbol->string n)))
+    (SubjectModule "#:module")))

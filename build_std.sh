@@ -142,6 +142,16 @@ echo "Building standard library..."
 # `text/xml/write` imports `prelude` and `text/xml`, whose nodes it writes.
 ./bjor --lib lib/text/xml/write.bjo
 
+# `janitor` is what tools need from the compiler's side: not part of what a
+# program reaches for, so not under `std`. `modules` imports `prelude` and
+# `text/bjodat-core`, which reads the roots file.
+./bjor --lib lib/janitor/modules.bjo
+# `docs` imports `modules` and `text/bjodat-core`, and binds
+# `BjoAssemblyMetadata` out of the runtime assembly, so a change to
+# `BjolangRuntime/BjoAssemblyMetadata.cs` has to reach the compiler before this
+# line, as for `run`.
+./bjor --lib lib/janitor/docs.bjo
+
 # The package manifest is no longer part of the standard library: it is
 # `bjo/manifest.bjo`, built by `bjo` along with the rest of the driver. A
 # package name that `lib/` has a directory for is reserved, so a `(bjor)` here
