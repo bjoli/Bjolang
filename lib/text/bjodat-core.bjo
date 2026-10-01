@@ -1259,12 +1259,24 @@
     ((= n 0) (stringbuilder-add-string! sb "nul"))
     (else (stringbuilder-add! sb c))))
 
+;; A double with a fraction or an exponent, so that it reads back as a
+;; `BjoFloat`: .NET writes 1.0 as "1", which the reader takes for an integer.
+;; "1E+20" already has its exponent. NaN and the infinities are left as .NET
+;; writes them; bjodat has no spelling for them.
+(: double-text (-> double string))
+(defun (double-text d)
+  (def s (double->string d))
+  (if (or (string-contains? s ".") (string-contains? s "E") (string-contains? s "e")
+          (string-contains? s "N") (string-contains? s "I"))
+      s
+      (str s ".0")))
+
 (: write-into! (-> StringBuilder Bjodat void))
 (defun (write-into! sb v)
   (match v
     ((BjoBool b) (stringbuilder-add-string! sb (if b "#t" "#f")))
     ((BjoInt n) (stringbuilder-add-string! sb (long->string n)))
-    ((BjoFloat d) (stringbuilder-add-string! sb (double->string d)))
+    ((BjoFloat d) (stringbuilder-add-string! sb (double-text d)))
     ((BjoStr s) (escape-into! sb s))
     ((BjoChar c) (char-into! sb c))
     ((BjoSym s) (stringbuilder-add-string! sb (symbol->string s)))

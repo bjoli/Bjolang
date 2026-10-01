@@ -301,5 +301,16 @@
             ((Ok _) "accepted"))
           "err: Dep.version: \"1.x\" is not a version: a version is written \"1.2.3\"")
 
+  ;; A double is written so that it reads back as one: 1.0 was written "1",
+  ;; which the reader took for an integer.
+  (expect "a double with no fraction keeps one"
+          (bjodat->string (BjoVec [(BjoFloat 1.0) (BjoFloat -2.0) (BjoFloat 0.5) (BjoFloat 1e20)]))
+          "[1.0 -2.0 0.5 1E+20]")
+  (expect "and reads back as a double"
+          (match (parse-bjodat (bjodat->string (BjoFloat 3.0)))
+            ((Ok (BjoFloat d)) d)
+            (_ -1.0))
+          3.0)
+
   (println "218 ok")
   0)
