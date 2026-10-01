@@ -312,5 +312,20 @@
             (_ -1.0))
           3.0)
 
+  ;; NaN and the infinities, as Scheme spells them, both ways.
+  (expect "the doubles that are not numbers are written as Scheme writes them"
+          (bjodat->string (BjoVec [(BjoFloat (/ 1.0 0.0)) (BjoFloat (/ -1.0 0.0)) (BjoFloat (/ 0.0 0.0))]))
+          "[+inf.0 -inf.0 +nan.0]")
+  (expect "and read back as doubles"
+          (match (parse-bjodat "[+inf.0 -inf.0 +nan.0 -nan.0 +inf inf.0 -]")
+            ((Ok v) (bjodat->string v))
+            ((Err e) e))
+          "[+inf.0 -inf.0 +nan.0 +nan.0 +inf inf.0 -]")
+  (expect "a read infinity is a BjoFloat"
+          (match (parse-bjodat "-inf.0")
+            ((Ok (BjoFloat d)) (< d -1e308))
+            (_ #f))
+          #t)
+
   (println "218 ok")
   0)

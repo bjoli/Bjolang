@@ -55,6 +55,11 @@
   (clr-to-long   (: Bjolang.Runtime.BjoNum.ParseLong))
   (clr-to-double (: Bjolang.Runtime.BjoNum.ParseDouble)))
 
+(import/extern
+  (clr-nan?               (: System.Double.IsNaN              (-> double bool)))
+  (clr-positive-infinity? (: System.Double.IsPositiveInfinity (-> double bool)))
+  (clr-negative-infinity? (: System.Double.IsNegativeInfinity (-> double bool))))
+
 ;; Hex and binary, which have no reader of their own.
 (import/extern
   (clr-radix-long (: System.Convert.ToInt64 (-> string int long)
@@ -678,12 +683,30 @@
           (go (+ n 1)))
         n)))
 
+;; NaN and the infinities, spelled as Scheme spells them. They read as names
+;; do, so a name is checked for them before it becomes a symbol.
+(: special-double (-> string (Option double)))
+(defun (special-double name)
+  (cond
+    ((= name "+inf.0") (Some (/ 1.0 0.0)))
+    ((= name "-inf.0") (Some (/ -1.0 0.0)))
+    ((or (= name "+nan.0") (= name "-nan.0")) (Some (/ 0.0 0.0)))
+    (else None)))
+
+;; A name as a symbol, unless it is one of the doubles above.
+(: name-value (-> Reader StringBuilder Bjodat))
+(defun (name-value rd sb)
+  (def name (cached-name (record-ref rd names) sb))
+  (match (special-double name)
+    ((Some d) (BjoFloat d))
+    (None (BjoSym (string->symbol name)))))
+
 (: read-symbol (-> Reader (Result string Bjodat)))
 (defun (read-symbol rd)
   (def sb (buffer rd))
   (if (= (take-name! rd sb) 0)
       (Err (at rd (str (found rd) " does not begin a value")))
-      (Ok (BjoSym (string->symbol (cached-name (record-ref rd names) sb))))))
+      (Ok (name-value rd sb))))
 
 ;; `:name`. The colon is held.
 (: read-keyword (-> Reader (Result string Bjodat)))
@@ -891,7 +914,7 @@
            (def sb (buffer rd))
            (stringbuilder-add-code! sb 45)
            (ignore (take-name! rd sb))
-           (Ok (BjoSym (string->symbol (cached-name (record-ref rd names) sb)))))))
+           (Ok (name-value rd sb)))))
        (else (read-symbol rd))))))
 
 ;; ---------------------------------------------------------------------------
@@ -1261,15 +1284,19 @@
 
 ;; A double with a fraction or an exponent, so that it reads back as a
 ;; `BjoFloat`: .NET writes 1.0 as "1", which the reader takes for an integer.
-;; "1E+20" already has its exponent. NaN and the infinities are left as .NET
-;; writes them; bjodat has no spelling for them.
+;; "1E+20" already has its exponent. NaN and the infinities are written as
+;; Scheme writes them, which the reader reads back.
 (: double-text (-> double string))
 (defun (double-text d)
-  (def s (double->string d))
-  (if (or (string-contains? s ".") (string-contains? s "E") (string-contains? s "e")
-          (string-contains? s "N") (string-contains? s "I"))
-      s
-      (str s ".0")))
+  (cond
+    ((clr-nan? d) "+nan.0")
+    ((clr-positive-infinity? d) "+inf.0")
+    ((clr-negative-infinity? d) "-inf.0")
+    (else
+     (def s (double->string d))
+     (if (or (string-contains? s ".") (string-contains? s "E") (string-contains? s "e"))
+         s
+         (str s ".0")))))
 
 (: write-into! (-> StringBuilder Bjodat void))
 (defun (write-into! sb v)
