@@ -33,9 +33,9 @@ namespace Bjolang.Runtime;
 /// whose consumer will await cannot hold the first, and something has to bridge
 /// the representation. The alternative was to generate a second body for every
 /// procedure that might ever be passed somewhere suspending; this is one
-/// delegate instead, and costs the same at run time — an <c>async</c> method
-/// returning <c>Fiber&lt;T&gt;</c> allocates a <c>FiberCore</c> whether or not
-/// it awaits, so the copy was never the cheap option.
+/// delegate instead. An <c>async</c> method returning <c>Fiber&lt;T&gt;</c>
+/// allocates nothing when it does not suspend, so a lifted call costs a
+/// delegate call and a state machine run to completion on the stack.
 /// </para>
 /// <para>
 /// <b>Lifting does not make a call polite.</b> The lifted function still runs to

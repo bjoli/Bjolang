@@ -28,6 +28,16 @@ public static class FiberTests
         Run("two fibers ping-pong over channels", PingPong);
         Run("an exception surfaces at the await, not the spawn", ExceptionSurfacesAtAwait);
 
+        Section("Called bjoroutines");
+        Run("a call that does not suspend allocates nothing", NonSuspendingCallAllocatesNothing);
+        Run("a call that suspends hands its value to its caller", SuspendingCallReturns);
+        Run("a call that suspends twice resumes from its own box", CallSuspendsTwice);
+        Run("a called fiber's context change stays in the callee", CalleeContextStaysInCallee);
+        Run("a failure before the first suspension reaches the caller", CallFailsBeforeSuspending);
+        Run("a failure after suspending reaches the caller", CallFailsAfterSuspending);
+        Run("AsPromise on a call that did not suspend is already complete", AsPromiseOfCompletedCall);
+        Run("a spawn whose body never took its core still lands", SpawnBodyWithoutCore);
+
         Section("Dynamic context shim");
         Run("context survives a suspension resumed on another thread", ContextSurvivesSuspension);
         Run("a resuming fiber restores the borrowed thread's context", BorrowedThreadIsRestored);
@@ -127,6 +137,129 @@ public static class FiberTests
         {
             AssertEqual("boom", ex.Message, "wrong exception surfaced");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Called bjoroutines: no promise until the first suspension
+    // -----------------------------------------------------------------------
+
+    private static async Fiber<int> AddOneNow(int x) => await Constant(x) + 1;
+
+    private static void NonSuspendingCallAllocatesNothing()
+    {
+        for (int i = 0; i < 1000; i++) AddOneNow(i).GetAwaiter().GetResult();   // warm up
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        int sum = 0;
+        for (int i = 0; i < 1000; i++) sum += AddOneNow(i).GetAwaiter().GetResult();
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        AssertEqual(500500, sum, "the calls returned the wrong values");
+        AssertEqual(0L, allocated, "a call that never suspended allocated");
+    }
+
+    private static async Fiber<int> CallReceiver(Channel<int> ch) => await ReceiveOnce(ch) + 1;
+
+    private static void SuspendingCallReturns()
+    {
+        var ch = new Channel<int>();
+        var p = Bjo.Spawn(() => CallReceiver(ch));
+
+        AwaitSuspension(ch);
+        Cml.Sync(new ChannelSendEvent<int>(ch, 41), _ => { });
+
+        AssertEqual(42, WaitFor(p), "the caller did not get the callee's value");
+    }
+
+    private static async Fiber<int> ReceiveTwice(Channel<int> ch) => await ch.Receive() + await ch.Receive();
+
+    private static async Fiber<int> CallReceiveTwice(Channel<int> ch) => await ReceiveTwice(ch);
+
+    private static void CallSuspendsTwice()
+    {
+        var ch = new Channel<int>();
+        var p = Bjo.Spawn(() => CallReceiveTwice(ch));
+
+        AwaitSuspension(ch);
+        Cml.Sync(new ChannelSendEvent<int>(ch, 1), _ => { });
+        AwaitSuspension(ch);
+        Cml.Sync(new ChannelSendEvent<int>(ch, 2), _ => { });
+
+        AssertEqual(3, WaitFor(p), "the second resume did not continue the same call");
+    }
+
+    /// <summary>
+    /// The callee is a called fiber, so its context lives in its own
+    /// <c>CalledFiber</c>; the caller's lives in the spawn's box. Each must come
+    /// back with its own.
+    /// </summary>
+    private static async Fiber<string> CallRecaptureProbe(Channel<int> data)
+    {
+        var callee = await RecaptureProbe(data);
+        return (FiberContext.Current?.ToString() ?? "<null>") + "/" + callee;
+    }
+
+    private static void CalleeContextStaysInCallee()
+    {
+        var data = new Channel<int>();
+
+        FiberContext.Current = new Ctx("caller");
+        var p = Bjo.Spawn(() => CallRecaptureProbe(data));
+        FiberContext.Current = null;
+
+        AwaitSuspension(data);
+        RunOnForeignThread(new Ctx("stranger-a"), () =>
+            Cml.Sync(new ChannelSendEvent<int>(data, 1), _ => { }));
+
+        AwaitSuspension(data);
+        RunOnForeignThread(new Ctx("stranger-b"), () =>
+            Cml.Sync(new ChannelSendEvent<int>(data, 2), _ => { }));
+
+        AssertEqual("caller/second", WaitFor(p), "a context crossed between caller and callee");
+    }
+
+#pragma warning disable CS1998
+    private static async Fiber<int> ThrowNow() => throw new InvalidOperationException("now");
+#pragma warning restore CS1998
+
+    private static async Fiber<string> CatchFrom(Func<Fiber<int>> callee)
+    {
+        try
+        {
+            await callee();
+            return "<no exception>";
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    private static void CallFailsBeforeSuspending()
+    {
+        AssertEqual("now", Bjo.RunToCompletion(() => CatchFrom(ThrowNow)), "the failure was lost");
+
+        var failed = ThrowNow().AsPromise();
+        Assert(failed.IsCompleted, "a call that failed at once has a pending promise");
+    }
+
+    private static void CallFailsAfterSuspending()
+    {
+        AssertEqual("boom", WaitFor(Bjo.Spawn(() => CatchFrom(Thrower))), "the failure was lost");
+    }
+
+    private static void AsPromiseOfCompletedCall()
+    {
+        var p = AddOneNow(6).AsPromise();
+        Assert(p.IsCompleted, "the promise of a completed call is pending");
+        AssertEqual(7, p.GetAwaiter().GetResult(), "the promise has the wrong value");
+    }
+
+    private static void SpawnBodyWithoutCore()
+    {
+        AssertEqual(0, WaitFor(Bjo.Spawn<int>(() => default)), "a typed spawn did not land");
+        WaitFor(Bjo.Spawn(() => default(Fiber)));
+        AssertEqual(0, WaitFor(Bjo.Spawn<int, int>(static x => default, 5)), "a stateful spawn did not land");
     }
 
     // -----------------------------------------------------------------------

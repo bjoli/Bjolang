@@ -12,6 +12,7 @@
  */
 
 using System;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -106,14 +107,15 @@ public static class Bjo
     /// </summary>
     public static T RunToCompletion<T>(Func<Fiber<T>> body)
     {
-        var p = body().AsPromise();
+        var fiber = body();
+        if (fiber.Core is not { } p) return fiber.Result;
         WaitFor(p);
         return p.GetAwaiter().GetResult();
     }
 
     public static void RunToCompletion(Func<Fiber> body)
     {
-        var p = body().AsPromise();
+        if (body().Core is not { } p) return;
         WaitFor(p);
         p.GetAwaiter().GetResult();
     }
@@ -145,13 +147,40 @@ public static class Bjo
     }
 }
 
+/// <summary>
+/// Moves a spawned body's outcome into the spawn's promise.
+///
+/// Usually there is nothing to do: the body's builder took the spawn's core
+/// through <c>CurrentSpawning</c> and completes it directly. The core is a
+/// different one, or none, when the body is not itself the bjoroutine that took
+/// it: a lambda that calls one and returns another's fiber, or a fiber that
+/// completed without suspending through a builder that never saw the core.
+/// </summary>
+internal static class SpawnSettle
+{
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void Settle<T>(in Fiber<T> fiber, FiberCore<T> core)
+    {
+        var p = fiber.Core;
+        if (p is null) core.TrySetResult(fiber.Result);
+        else if (!ReferenceEquals(p, core)) p.Forward(core);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void Settle(in Fiber fiber, FiberCore<Unit> core)
+    {
+        var p = fiber.Core;
+        if (p is null) core.TrySetResult(default);
+        else if (!ReferenceEquals(p, core)) p.Forward(core);
+    }
+}
+
 internal static class SpawnRunners<T>
 {
     public static readonly Action<FiberCore<T>> FuncRunner = static core =>
     {
         var func = (Func<Fiber<T>>)core._spawnBody!;
-        var fiber = func();
-        if (!ReferenceEquals(fiber.Core, core)) fiber.AsPromise().Forward(core);
+        SpawnSettle.Settle(func(), core);
     };
 }
 
@@ -160,8 +189,7 @@ internal static class SpawnUnitRunners
     public static readonly Action<FiberCore<Unit>> FuncRunner = static core =>
     {
         var func = (Func<Fiber>)core._spawnBody!;
-        var fiber = func();
-        if (!ReferenceEquals(fiber.Core, core)) fiber.AsPromise().Forward(core);
+        SpawnSettle.Settle(func(), core);
     };
 }
 
@@ -173,8 +201,7 @@ internal static class SpawnStateRunners<TState, TResult>
         var func = (Func<TState, Fiber<TResult>>)core._spawnBody!;
         var state = stateful.SpawnState;
         stateful.SpawnState = default!;   // the promise handle must not pin the args
-        var fiber = func(state);
-        if (!ReferenceEquals(fiber.Core, core)) fiber.AsPromise().Forward(core);
+        SpawnSettle.Settle(func(state), core);
     };
 
     public static readonly Action<FiberCore<Unit>> UnitStateRunner = static core =>
@@ -183,8 +210,7 @@ internal static class SpawnStateRunners<TState, TResult>
         var func = (Func<TState, Fiber>)core._spawnBody!;
         var state = stateful.SpawnState;
         stateful.SpawnState = default!;
-        var fiber = func(state);
-        if (!ReferenceEquals(fiber.Core, core)) fiber.AsPromise().Forward(core);
+        SpawnSettle.Settle(func(state), core);
     };
 }
 

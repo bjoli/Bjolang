@@ -114,11 +114,17 @@ store.
 The shim lives in the *builder*, because that is the only place that sees every
 suspension point of a fiber:
 
-- **at suspend** — `FiberCore.GetMoveNextAction` re-captures `FiberContext.Current`
+- **at suspend** — `FiberBuilder.GetMoveNextAction` re-captures `FiberContext.Current`
   into the state machine box. Re-capturing every time (not just at box creation) is
   what makes a `(parameterize ...)` that spans an await work.
-- **at resume** — `FiberStateMachineBox.Run` saves the ambient context, installs the
+- **at resume** — `FiberResume.Run` saves the ambient context, installs the
   fiber's, calls `MoveNext`, and restores in a `finally`.
+
+The box is made at a fiber's first suspension. For a *called* bjoroutine it is a
+`CalledFiber`, which is the call's promise as well; a call that never suspends
+allocates nothing, and its result travels back inside the `Fiber<T>`, as with
+`ValueTask<T>`. A *spawned* fiber's promise, a `FiberCore`, exists before its body
+runs, so its box is a separate `FiberStateMachineBox`.
 
 The save/restore is not optional. Continuations run inline on whichever thread
 completed the rendezvous, and that thread may be several frames deep inside a

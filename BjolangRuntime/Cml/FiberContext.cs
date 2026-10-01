@@ -39,7 +39,7 @@ namespace Bjoml;
 /// Continuations run inline on whichever thread completed a rendezvous. That thread
 /// may be several frames deep inside a DIFFERENT fiber. So a resuming fiber borrows
 /// the thread, and must hand it back exactly as it found it — see
-/// <c>FiberStateMachineBox.Execute</c>.
+/// <c>FiberResume.Run</c>.
 ///
 /// CONSEQUENCE
 ///

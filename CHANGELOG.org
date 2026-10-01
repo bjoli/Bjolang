@@ -3,6 +3,49 @@
 
 What each change guarantees, and what it leaves open.
 
+* A bjoroutine call that does not suspend allocates nothing
+
+Every call to a bjoroutine allocated its promise, a ~FiberCore~ of about 88 B,
+before its body ran, and a box for its state machine if it suspended. Now a
+call allocates nothing until it suspends, as ~ValueTask~ does: a call that
+returns without suspending carries its value back in the ~Fiber<T>~, and a
+call that suspends makes one ~CalledFiber~, which is both its promise and its
+box. A spawned fiber is unchanged, because its promise is handed out before its
+body runs: it is still a ~FiberCore~ and a separate box.
+
+What it costs: ~Fiber<T>~ now holds a ~T~ beside its reference, so a result is
+copied through the fiber, its awaiter and the builder instead of through the
+heap. For a 32-byte result, the size of an ~Option~ of a ~Result~, a single
+call that does not suspend is about 4 ns slower. A chain of eight is still 10%
+faster, because the allocation it saves is worth more than the copies.
+
+Measured with ~bench/Diag --mode calls~, old and new alternated, per call chain:
+
+| Shape                                  | Before          | After           |
+|----------------------------------------+-----------------+-----------------|
+| one call, ~int~, no suspension         | 18 ns, 88 B     | 8 ns, 0 B       |
+| eight nested calls, ~int~              | 162 ns, 704 B   | 49 ns, 0 B      |
+| one call, 16 B result                  | 20 ns           | 15 ns           |
+| eight nested calls, 16 B result        | 174 ns          | 114 ns          |
+| one call, 32 B result                  | 20 ns           | 24 ns           |
+| eight nested calls, 32 B result        | 222 ns          | 199 ns          |
+| ~Colour.Lift~ call                     | 20 ns, 88 B     | 8 ns, 0 B       |
+| eight nested calls that all suspend    | 4364 ns, 1776 B | 3811 ns, 1520 B |
+| eight inline helpers and one suspension | 1668 ns, 1192 B | 1431 ns, 416 B  |
+
+In bjoweb's ~examples/hello.bjo~ about half of the bjoroutine calls a request
+makes never suspend. Each ~GET~ allocates about 545 B less (~7.0 KB~ to
+~6.4 KB~) and an echo about 990 B less; requests per second are unchanged
+within the noise of ~bench/bjoweb.sh~.
+
+~default(Fiber<T>)~ is now a call that returned ~default~ rather than a fiber
+that cannot be awaited. ~AsPromise~ on a call that did not suspend makes a new,
+completed promise each time it is asked. The runtime tests in
+~BjolangRuntime/Cml/Tests~ gain a section for called bjoroutines: no
+allocation without a suspension, one and two suspensions, the caller's and the
+callee's contexts kept apart, a failure before and after the first suspension,
+and a spawn whose body never took its promise.
+
 * ~string-split~ gives its fields to the vec without copying them
 
 ~string-split~ added each field of .NET's ~Split~ to a ~VecBuilder~, which
