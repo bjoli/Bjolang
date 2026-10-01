@@ -1,0 +1,280 @@
+;; Docs for std/random.bjo, read through (:doc #:file "random.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Random numbers: ChaCha20, one generator per thread, and sources of your own.")
+  (see random-int current-random make-random with-random-seed)
+  (example """
+    (import (std random))
+
+    (random-int 1 6)                          ; the calling thread's generator
+    (random-int 1 6 #:rng my-source)          ; one of your own
+    (with-random-seed 42UL (deal-a-hand))     ; a run that replays
+    """)
+  (reference """
+    The generator is ChaCha20, seeded with 256 bits from the operating
+    system's CSPRNG, one per thread. The default path locks nothing and
+    shares nothing, so drawing from two threads at once costs what drawing
+    from one costs. A source you make yourself is locked instead, once per
+    operation.
+
+    Every function takes @code{#:rng}, which defaults to
+    @code{(parameter-ref current-random)}. A program that wants another
+    source binds the parameter and changes no call site.
+
+    @strong{The ambient source.} The value of @code{current-random} holds no generator. It names the
+    calling thread's, and which thread that is is decided at each draw.
+    That is what makes the default safe on a bjoroutine: a fiber may resume
+    on a thread it did not suspend on, and a source read before the
+    suspension would otherwise go on drawing from a generator another fiber
+    is already inside. The ambient source has no state to race on.
+
+    @strong{A bound source is safe to share, and still does not replay.} Every
+    operation on a source you made takes its lock, so no draw is lost,
+    doubled or torn however fibers interleave. What the lock cannot give is
+    what the seed was for: the stream is one sequence, but which fiber gets
+    which value of it is the scheduler's choice.
+
+    @codeblock[#:lang "bjolang"]|{
+    (parameterize ((current-random (make-random/seed64 42UL)))
+      (bjo (worker))     ; these two share one generator, under its lock:
+      (bjo (worker)))    ; safe, but the order they draw in is not fixed
+    }|
+
+    Give each fiber @code{(random-split (parameter-ref current-random))}, or
+    a seed of its own, and the run replays. The default source needs
+    neither: it is one generator per thread, reached by no other.
+
+    @strong{The lock is per operation, not per draw.} @code{shuffle-array!}
+    and @code{random-bytes!} are many draws and take the lock once, so a
+    shuffle is the permutation the stream describes rather than one
+    interleaved with another fiber's. It also means that shuffling a large
+    array under a source other fibers are drawing from makes them wait.
+
+    @strong{Binding a seeded source makes everything under it predictable},
+    including code you did not have in mind: a session token minted inside a
+    @code{with-random-seed} is guessable. Keep the extent to what is being
+    replayed.
+
+    @strong{Seeded means reproducible, not unguessable.}
+    @code{make-random/seed64} and @code{make-random/seed256} take what they
+    are given. Use @code{make-random}, or the default, for anything anyone
+    else must not predict.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Sources
+;; ---------------------------------------------------------------------------
+
+(:doc RandomSource
+  (summary "Where random numbers come from: the ambient source, or a generator of its own.")
+  (see current-random make-random random-split)
+  (reference """
+    A source made by @code{make-random} and its neighbours holds a generator,
+    and every operation on it takes its lock. The ambient source, the default
+    value of @code{current-random}, holds none and draws from the calling
+    thread's.
+    """))
+
+(:doc current-random
+  (summary "The source every function draws from when it is not given #:rng.")
+  (see with-random-seed RandomSource)
+  (example """
+    (parameterize ((current-random (make-random/seed64 7UL)))
+      (random-int 1 6))   ; the same number every run
+    """)
+  (reference """
+    A @code{(Param RandomSource)}. Its default value is the ambient source,
+    which draws from the calling thread's generator at each draw, so it is
+    safe to read on a bjoroutine and to hand to another thread.
+    """))
+
+(:doc make-random
+  (summary "A new generator, seeded with 256 bits from the operating system.")
+  (returns "A source of its own: unpredictable, and locked per operation.")
+  (see make-random/seed64 random-split))
+
+(:doc make-random/seed64
+  (summary "A generator that replays: the same seed draws the same numbers.")
+  (arg seed "Any 64 bits.")
+  (returns "A source of its own, locked per operation.")
+  (see make-random/seed256 with-random-seed)
+  (reference """
+    The 64 bits are stretched to ChaCha20's 256-bit key by SplitMix64, so
+    only 2@sup{64} of the generators are reachable. Reproducible is not
+    unguessable: use @code{make-random} for anything that must not be
+    predicted.
+    """))
+
+(:doc make-random/seed256
+  (summary "A generator that replays, seeded at ChaCha20's full key width.")
+  (arg a "The first 64 bits of the key.")
+  (arg b "The next 64.")
+  (arg c "The next 64.")
+  (arg d "The last 64. Four words make the key, so no seed is malformed.")
+  (returns "A source of its own, locked per operation.")
+  (see make-random/seed64))
+
+(:doc random-split
+  (summary "An independent generator, drawn from another source.")
+  (arg r "The source to draw the new generator's key from. On the ambient source, the calling thread's generator.")
+  (returns "A source of its own.")
+  (see make-random with-random-seed)
+  (example """
+    (def mine (random-split (parameter-ref current-random)))
+    (bjo (worker #:rng mine))
+    """)
+  (reference """
+    How a fiber gets a generator of its own: split one per fiber from a
+    seeded source and the run replays however the fibers are scheduled.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Drawing
+;; ---------------------------------------------------------------------------
+
+(:doc random-int
+  (summary "A number from lo to hi, both included.")
+  (arg lo "The least it may answer.")
+  (arg hi "The most it may answer. Not less than lo.")
+  (key #:rng "The source to draw from.")
+  (returns "A number in [lo, hi], each equally likely.")
+  (raises System.ArgumentException "When hi is less than lo.")
+  (see random-ref random-double)
+  (example """
+    (random-int 1 6)   ; a die
+    """)
+  (reference """
+    Lemire's method, so there is no modulo bias. Mind that @code{hi} is
+    included: @code{(random-int 0 (vec-length v))} can be one past the end,
+    and @code{random-ref} is the way to pick an element.
+    """))
+
+(:doc random-double
+  (summary "A number from 0, included, to 1, not included.")
+  (key #:rng "The source to draw from.")
+  (returns "A double in [0, 1), with 53 bits of randomness.")
+  (see random-int random-chance?))
+
+(:doc random-u32
+  (summary "32 random bits.")
+  (key #:rng "The source to draw from.")
+  (returns "A uint, every value equally likely.")
+  (see random-u64 random-bytes!))
+
+(:doc random-u64
+  (summary "64 random bits.")
+  (key #:rng "The source to draw from.")
+  (returns "A ulong, every value equally likely.")
+  (see random-u32 random-bytes!))
+
+(:doc random-bool
+  (summary "#t or #f, equally likely.")
+  (key #:rng "The source to draw from.")
+  (returns "One random bit. They are drawn 64 at a time.")
+  (see random-chance?))
+
+(:doc random-chance?
+  (summary "#t with probability p.")
+  (arg p "How likely #t is, from 0 to 1.")
+  (key #:rng "The source to draw from.")
+  (returns "#t with probability p. Outside [0, 1] it is the nearer of #f and #t, and costs no draw.")
+  (see random-bool random-double)
+  (example """
+    (when (random-chance? 0.01) (log-sample request))
+    """))
+
+(:doc random-bytes!
+  (summary "Fills an array with random bytes, in place.")
+  (arg bytes "The array to fill.")
+  (key #:rng "The source to draw from.")
+  (see random-u64)
+  (reference """
+    Whole blocks of the generator's output go straight into the array, so
+    this is the way to ask for many bytes at once. A source of its own is
+    locked once for the whole fill.
+    """))
+
+(:doc shuffle-array!
+  (summary "Shuffles an array in place.")
+  (arg a "The array, which is shuffled.")
+  (key #:rng "The source to draw from.")
+  (see shuffle-vec)
+  (reference """
+    Fisher-Yates. It answers nothing: the array it was given is the shuffled
+    one. A source of its own is locked once for the whole shuffle.
+    """))
+
+(:doc shuffle-vec
+  (summary "A shuffled copy of a vec.")
+  (arg v "The vec, which is left as it was.")
+  (key #:rng "The source to draw from.")
+  (returns "A new vec with v's elements in random order.")
+  (see shuffle-array!)
+  (reference """
+    A @code{Vec} is persistent, so unlike @code{shuffle-array!} this answers
+    a new one.
+    """))
+
+(:doc random-ref
+  (summary "An element of a vec, each equally likely.")
+  (arg v "The vec to pick from. Not empty.")
+  (key #:rng "The source to draw from.")
+  (returns "One of v's elements.")
+  (raises ArgumentException "When v is empty.")
+  (see random-int shuffle-vec)
+  (example """
+    (random-ref ["rock" "paper" "scissors"])
+    """)
+  (reference """
+    Only for a @code{Vec}: picking from any collection would need
+    @code{Refable}'s index pinned to @code{int}, which a @code{where} clause
+    cannot say.
+    """))
+
+(:doc random-string
+  (summary "A random string over A-Z, a-z, 0-9, - and _.")
+  (arg length "How many characters.")
+  (key #:rng "The source to draw from.")
+  (returns "A string of that many characters, each of the 64 equally likely.")
+  (raises System.ArgumentOutOfRangeException "When length is negative.")
+  (see random-string/chars random-bytes!)
+  (reference """
+    Six bits per character, which suits a token in a URL. Draw it from the
+    default source or from @code{make-random}, never under a seed, when it
+    must not be guessed.
+    """))
+
+(:doc random-string/chars
+  (summary "A random string over an alphabet of your own.")
+  (arg length "How many characters.")
+  (arg alphabet "The characters to pick from, each equally likely. Not empty.")
+  (key #:rng "The source to draw from.")
+  (returns "A string of that many characters from alphabet.")
+  (raises ArgumentException "When alphabet is empty, or length is negative.")
+  (see random-string)
+  (example """
+    (random-string/chars 6 (string->vec "0123456789"))   ; a PIN
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Binding a source
+;; ---------------------------------------------------------------------------
+
+(:doc with-random-seed
+  (summary "Runs body with a generator that replays.")
+  (form (with-random-seed seed body ...))
+  (arg seed "A ulong; the same seed draws the same numbers.")
+  (rest body "What to run with it.")
+  (see current-random make-random/seed64 random-split)
+  (example """
+    (with-random-seed 42UL
+      (deal-a-hand))   ; the same hand every run
+    """)
+  (reference """
+    @code{current-random} bound to @code{(make-random/seed64 seed)} for
+    body's extent. That is one generator for the whole extent: a fiber
+    spawned in it shares it, safely, but draws in the scheduler's order, so
+    the run stops replaying. A fiber wants @code{random-split} or a seed of
+    its own.
+    """))

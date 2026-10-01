@@ -58,6 +58,9 @@
 (import (std prelude))
 (import (std syntax-match))
 
+;; Every export is documented there; the module doc is too.
+(:doc #:file "random.bjodoc")
+
 (import/class
   (RandomSource      (: Bjolang.Runtime.RandomSource))
   (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
@@ -95,7 +98,7 @@
 (defun (random-int lo hi #:rng (parameter-ref current-random))
   (clr-random-range rng lo hi))
 
-;; [0, 1], with 53 bits of randomness.
+;; [0, 1), with 53 bits of randomness.
 (: random-double (-> (#:rng RandomSource) double))
 (defun (random-double #:rng (parameter-ref current-random))
   (clr-random-double rng))
@@ -174,6 +177,9 @@
 (defun (random-string/chars length alphabet #:rng (parameter-ref current-random))
   (when (= (vec-length alphabet) 0)
     (raise (cast Exception (ArgumentException. "random-string/chars was given an empty alphabet."))))
+  ;; The loop below counts up to `length`, so a negative one never ends.
+  (when (< length 0)
+    (raise (cast Exception (ArgumentException. "random-string/chars was given a negative length."))))
   (def sb (stringbuilder-empty))
   (def top (- (vec-length alphabet) 1))
   (let go ((i 0))
