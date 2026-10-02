@@ -10,151 +10,28 @@
 # templates, generics, or macros), you may redistribute such embedded portions
 # in such object code or executable form without complying with the source code
 # availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+# Builds the standard library: every module under lib/, in parallel, in the
+# order their imports give.
+#
+# The compiler reads the imports and builds each out-of-date module as soon as
+# everything it imports is built (see BuildGraph.fs). A module added under
+# lib/ is therefore built without being listed here.
+#
+# Arguments are passed on to the compiler: `./build_std.sh -j 4`, or
+# `./build_std.sh --dry-run` to see what would be built and why.
 set -e
 
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+# The compiler first, when anything it is built from is newer than it. Every
+# module counts the compiler as one of its inputs, so a library built by a
+# compiler that is about to change is built for nothing.
+#
+# This is the one thing the graph build cannot do for itself: a compiler cannot
+# tell that its own sources have moved on, only that its assembly is newer than
+# a module. build_compiler.sh can, and knows where the compiler is.
+./build_compiler.sh
+
 echo "Building standard library..."
-
-# In dependency order: `maths` imports nothing, and `prelude` imports it in
-# order to re-export the `Num` trait. Building `prelude` first would find a
-# stale `maths.dll`, or none at all and fall back to compiling the source a
-# second time into `prelude` itself.
-#
-# `syntax-match` comes before both. It imports nothing at all — deliberately,
-# since `prelude` imports *it* to write `cond` and its neighbours, and a macro
-# has to be compiled before whatever uses it is read.
-# `eq` is below all of them: `=` is a trait method, so every module that
-# compares two values imports the module declaring the trait.
-./bjor --lib lib/std/eq.bjo
-./bjor --lib lib/std/syntax-match.bjo
-# `effect` is between them and `prelude` for the same reason `syntax-match` is
-# below it: `prelude` declares effects of its own, so `defeffect` has to be
-# compiled first. It imports `eq` and `syntax-match` and nothing else, which is
-# what keeps it below `prelude` rather than beside it.
-./bjor --lib lib/std/effect.bjo
-./bjor --lib lib/std/maths.bjo
-./bjor --lib lib/std/prelude.bjo
-# `ports` imports `prelude`, so it comes last for the same reason.
-./bjor --lib lib/std/ports.bjo
-# `net` imports `prelude` and `ports` — the byte ports are what a connection is
-# made of — and nothing else. Like `run` it binds names out of the runtime
-# assembly, `Bjolang.Runtime.Net` and the listener beside it, so a change to
-# `BjolangRuntime/BjoNet.cs` has to reach the compiler before this line.
-# Rebuild the compiler after the runtime, then run this.
-./bjor --lib lib/std/net.bjo
-# `inbox` imports `prelude` and nothing else. Like `run` it binds names out of
-# the runtime assembly — `Bjoml.InboxModule` and the types beside it — so a
-# change to `BjolangRuntime/Cml/Inbox.cs` has to reach the compiler before this
-# line. Rebuild the compiler after the runtime, then run this.
-./bjor --lib lib/std/inbox.bjo
-# `monad` imports `prelude` for `list-append` and `syntax-match` to write `do`
-# with. Both have to be compiled first — a macro's module is loaded into the
-# compiler along with everything it imports.
-./bjor --lib lib/std/monad.bjo
-# `stopwatch` imports both `prelude` and `syntax-match`, the latter because its
-# `time-it` is written with it.
-./bjor --lib lib/std/stopwatch.bjo
-# `fmt` imports `prelude` and nothing else.
-./bjor --lib lib/std/fmt.bjo
-# `datetime` imports `prelude` and nothing else. Its clock reads
-# `TimeProvider.System` directly: the prelude's `monotonic-ms` effect measures
-# intervals and has no time of day.
-./bjor --lib lib/std/datetime.bjo
-# `run` imports `prelude` and `syntax-match`, the latter because `with-run` is
-# written with it. It also binds `BjoPipe` and `BjoProc` out of the runtime
-# assembly, so a change to `BjolangRuntime/BjoProcess.cs` has to reach the
-# compiler before this line: the compiler links a copy of the runtime of its
-# own, and the default load context serves whichever identity loaded first.
-# Rebuild the compiler after the runtime, then run this.
-./bjor --lib lib/std/run.bjo
-# `http` imports `prelude` and `syntax-match`, the latter for `with-response`.
-# It binds nothing out of the runtime assembly — it is System.Net.Http all the
-# way down — so unlike `run` it does not care when the runtime was last built.
-./bjor --lib lib/std/http.bjo
-# `simpletest` likewise. It is what the suite's assertions are written in, so
-# it is built with the library rather than beside the tests: a test file is an
-# ordinary program, and this is an ordinary module it imports.
-./bjor --lib lib/std/simpletest.bjo
-
-# `random` imports `prelude`, and `syntax-match` for `with-random-seed`. Like
-# `run` it binds names out of the runtime assembly — `RandomSource` and the
-# module beside it — so a change to `BjolangRuntime/BjoRandom.cs` has to reach
-# the compiler before this line. Rebuild the compiler after the runtime, then
-# run this.
-./bjor --lib lib/std/random.bjo
-
-# The collections. Each imports `prelude` and nothing else, and each is
-# independent of the other two, so the order between them does not matter.
-./bjor --lib lib/std/set.bjo
-# `clr-ord` imports `prelude` for the `Ord` trait it implements against, and
-# declares nothing else.
-./bjor --lib lib/std/clr-ord.bjo
-./bjor --lib lib/std/orderedset.bjo
-./bjor --lib lib/std/orderedmap.bjo
-
-# The mutable collections, under `std/mutable` so that reaching for one is a
-# deliberate act. `deque` imports `prelude` and nothing else.
-./bjor --lib lib/std/mutable/deque.bjo
-# The four written over the .NET collections. Each binds names out of the
-# runtime assembly — `Bjolang.Runtime.MutableVecModule` and its neighbours — so
-# a change to `BjolangRuntime/BjoMutable.cs` has to reach the compiler before
-# these lines, exactly as `run` and `random` need. Rebuild the compiler after
-# the runtime, then run this.
-#
-# `vec`, `map` and `heap` import `prelude` and nothing else. `set` also imports
-# `std/set`, for the `set->seq` and `seq->set` its two conversions to the
-# persistent set are written with, so it comes after the line that builds it.
-./bjor --lib lib/std/mutable/vec.bjo
-./bjor --lib lib/std/mutable/map.bjo
-./bjor --lib lib/std/mutable/set.bjo
-./bjor --lib lib/std/mutable/heap.bjo
-
-# `std/rx` imports `prelude` and `syntax-match`, which its `#rx` transformer is
-# written in. Its character-class tables and its pattern emitter are ordinary
-# code in the same module, so nothing else has to be built first.
-./bjor --lib lib/std/rx.bjo
-
-# `text/json` imports `prelude` and nothing else.
-./bjor --lib lib/text/json.bjo
-
-# After `json`, whose `Json` type it names, and after `syntax-match`, which its
-# transformer is written in.
-./bjor --lib lib/text/json-codec.bjo
-
-# `text/bjodat-core` imports `prelude` and nothing else. It is the value type,
-# the reader and the writer; `text/bjodat` is the interface people import.
-./bjor --lib lib/text/bjodat-core.bjo
-
-# After `bjodat-core`, whose `Bjodat` type it names and whose reader its
-# generated decoders drive, and after `syntax-match`, which its transformer is
-# written in.
-./bjor --lib lib/text/bjodat.bjo
-
-# `text/xml` imports `prelude` and nothing else: names, nodes and documents.
-# It names System.Xml.Linq's `XName`, which is part of .NET itself.
-./bjor --lib lib/text/xml.bjo
-
-# `text/xml/read` imports `prelude` and `text/xml`, whose nodes it builds.
-# It binds `BjoByteInputPort` out of the runtime assembly for its byte-port
-# source, so a change to `BjolangRuntime/BjoBytePort.cs` has to reach the
-# compiler before this line, as for `run`.
-./bjor --lib lib/text/xml/read.bjo
-
-# `text/xml/write` imports `prelude` and `text/xml`, whose nodes it writes.
-./bjor --lib lib/text/xml/write.bjo
-
-# `janitor` is what tools need from the compiler's side: not part of what a
-# program reaches for, so not under `std`. `modules` imports `prelude` and
-# `text/bjodat-core`, which reads the roots file.
-./bjor --lib lib/janitor/modules.bjo
-# `docs` imports `modules` and `text/bjodat-core`, and binds
-# `BjoAssemblyMetadata` out of the runtime assembly, so a change to
-# `BjolangRuntime/BjoAssemblyMetadata.cs` has to reach the compiler before this
-# line, as for `run`.
-./bjor --lib lib/janitor/docs.bjo
-
-# The package manifest is no longer part of the standard library: it is
-# `bjo/manifest.bjo`, built by `bjo` along with the rest of the driver. A
-# package name that `lib/` has a directory for is reserved, so a `(bjor)` here
-# would have taken a name away from users for a module only `bjo` reads.
-
-echo "Standard library built successfully!"
+exec dotnet "$(./build_compiler.sh --path)" --build-graph lib "$@"

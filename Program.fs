@@ -62,7 +62,22 @@ type CompilerOptions =
 
       /// `--nuget`: the directory holding the restored packages' lists. See
       /// `NuGetRefs`.
-      NuGet: string option }
+      NuGet: string option
+
+      /// `--build-graph`: build the libraries under the inputs, files or
+      /// directories, and everything they import, in parallel. See `BuildGraph`.
+      BuildGraph: bool
+
+      /// `--jobs N`: how many workers a graph build runs at most.
+      Jobs: int
+
+      /// `--dry-run`: plan a graph build and say what it would do.
+      DryRun: bool
+
+      /// `--worker`: build libraries named on stdin for a graph build. A graph
+      /// build starts these processes itself; they are not meant to be run by
+      /// hand.
+      Worker: bool }
 
 let defaultOptions =
     { InputFiles = []
@@ -78,7 +93,11 @@ let defaultOptions =
       Roots = None
       FrameworksFile = None
       Frameworks = []
-      NuGet = None }
+      NuGet = None
+      BuildGraph = false
+      Jobs = System.Environment.ProcessorCount
+      DryRun = false
+      Worker = false }
 
 let printUsage () =
     printfn "Bjolang Compiler"
@@ -137,6 +156,18 @@ let printUsage () =
     printfn ""
     printfn "Under --batch the exit code says only whether every input compiled; which one"
     printfn "did not, and what it said, is in the report."
+    printfn ""
+    printfn "Graph builds:"
+    printfn "  --build-graph <path>..."
+    printfn "              Build the libraries under each path — a .bjo, or every .bjo"
+    printfn "              below a directory — and everything they import, in parallel."
+    printfn "              The order comes from the imports; a module is built when all it"
+    printfn "              imports is built, and only if it is out of date or something"
+    printfn "              below it was rebuilt. Directories starting with . are skipped."
+    printfn "  -j, --jobs <n>"
+    printfn "              At most n compilers at once. Defaults to the number of cores."
+    printfn "  --dry-run   Say what a graph build would build, and what each module"
+    printfn "              imports, and build nothing."
     printfn ""
     printfn "Without -d the output is optimized; a debug build runs several times slower."
 
@@ -292,6 +323,15 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
         parseArgs rest { opts with Frameworks = opts.Frameworks @ [ name ] }
     | "-d" :: rest
     | "--debug" :: rest -> parseArgs rest { opts with Debug = true }
+    | "--build-graph" :: rest -> parseArgs rest { opts with BuildGraph = true }
+    | "--dry-run" :: rest -> parseArgs rest { opts with DryRun = true }
+    | "--worker" :: rest -> parseArgs rest { opts with Worker = true }
+    | ("-j" | "--jobs") :: n :: rest ->
+        match System.Int32.TryParse n with
+        | true, jobs when jobs > 0 -> parseArgs rest { opts with Jobs = jobs }
+        | _ ->
+            printfn $"Error: --jobs needs a positive number, not '%s{n}'."
+            exit 1
     | arg :: rest when not (arg.StartsWith("-")) ->
         // Everything that doesn't start with '-' is an input file. The order is preserved, so
         // a batch compiles in the order the command line named the files.
@@ -354,6 +394,8 @@ let private run (argv: string array) =
 
     if options.Repl then
         Repl.run ()
+    elif options.Worker then
+        Build.runWorker ()
     else
 
     let inputFiles =
@@ -363,6 +405,16 @@ let private run (argv: string array) =
             exit 1
         | Some path -> options.InputFiles @ readFileList path
         | None -> options.InputFiles
+
+    // Handled before the file checks below, because a graph build's inputs may
+    // be directories. `BuildGraph.run` reports missing inputs itself.
+    if options.BuildGraph then
+        if inputFiles.IsEmpty then
+            printfn "Error: --build-graph needs at least one file or directory."
+            exit 1
+
+        BuildGraph.run inputFiles options.Jobs options.DryRun
+    else
 
     if inputFiles.IsEmpty then
         printfn "Error: No input file specified."

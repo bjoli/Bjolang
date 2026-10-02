@@ -999,6 +999,70 @@ let private factsOf (bjoPath: string) : SourceFacts =
 let sourceClosure (bjoPath: string) : string list =
     (factsOf bjoPath).Sources |> Set.toList
 
+/// Whether `bjoPath`'s `.dll` is current, given what each of its imports
+/// resolves to.
+///
+/// This is the rule `ensureLibrary` uses, separated from the walk so that it
+/// can also be checked without building anything. `ensureLibrary` passes a
+/// resolver that builds each import first; a graph build passes one that only
+/// looks at what is on disk. Both use this function so that the two cannot
+/// disagree about what out of date means.
+let private upToDateAgainst (resolve: ImportSpec -> Result<string, string>) (bjoPath: string) : bool =
+    let dllPath = Path.ChangeExtension(bjoPath, ".dll")
+
+    let compilerBuilt =
+        let loc = System.Reflection.Assembly.GetExecutingAssembly().Location
+        if loc <> "" && File.Exists loc then File.GetLastWriteTimeUtc loc else DateTime.MinValue
+
+    /// What the packages of this build declare. An input like the compiler
+    /// itself: a framework taken out of a manifest has to make the modules
+    /// that named types from it stale, so that they fail with the naming
+    /// error instead of quietly staying built.
+    let declarationsWritten =
+        match Frameworks.declarationFilePath () with
+        | Some path when File.Exists path -> File.GetLastWriteTimeUtc path
+        | _ -> DateTime.MinValue
+
+    // The restored NuGet packages, for the same reason.
+    let packagesWritten =
+        if NuGetRefs.appliesTo bjoPath then
+            NuGetRefs.listFiles ()
+            |> List.filter File.Exists
+            |> List.map File.GetLastWriteTimeUtc
+            |> List.fold max DateTime.MinValue
+        else
+            DateTime.MinValue
+
+    File.Exists dllPath
+    && (let built = File.GetLastWriteTimeUtc dllPath
+        let facts = factsOf bjoPath
+
+        compilerBuilt <= built
+        && declarationsWritten <= built
+        && packagesWritten <= built
+        && not (NuGetRefs.changedSince bjoPath)
+        // A declaration *removed* deletes the file rather than
+        // touching it, so the comparison above cannot see it. This one
+        // reads what the module was built under and compares the sets.
+        && not (Frameworks.declarationsChanged bjoPath)
+        && facts.Sources |> Set.forall (fun src -> File.GetLastWriteTimeUtc src <= built)
+        // The implicit prelude edge counts as much as a written one:
+        // a module that never names the prelude is still compiled
+        // against its metadata.
+        && (facts.Imports
+            |> List.forall (fun (spec, _) ->
+                match resolve spec with
+                // A dependency whose `.dll` does not exist yet makes this
+                // module stale. This only happens with a resolver that does
+                // not build: `ensureLibrary`'s builds the dependency first.
+                | Ok dep -> File.Exists dep && File.GetLastWriteTimeUtc dep <= built
+                // An import that resolves to nothing makes the module
+                // stale rather than current, so the compile runs and
+                // reports it against the form that wrote it. Answering
+                // "up to date" here would leave a broken import
+                // undetected for as long as the stale `.dll` survives.
+                | Error _ -> false)))
+
 /// The `.dll` for an imported `.bjo`, built if there is not a current one.
 ///
 /// `(import "x.bjo")` means a compiled unit, always. Merging the source into
@@ -1048,58 +1112,13 @@ let rec ensureLibrary (bjoPath: string) : string =
     let root = walking.Count = 1
 
     try
-        let compilerBuilt =
-            let loc = System.Reflection.Assembly.GetExecutingAssembly().Location
-            if loc <> "" && File.Exists loc then File.GetLastWriteTimeUtc loc else DateTime.MinValue
-
-        /// What the packages of this build declare. An input like the compiler
-        /// itself: a framework taken out of a manifest has to make the modules
-        /// that named types from it stale, so that they fail with the naming
-        /// error instead of quietly staying built.
-        let declarationsWritten =
-            match Frameworks.declarationFilePath () with
-            | Some path when File.Exists path -> File.GetLastWriteTimeUtc path
-            | _ -> DateTime.MinValue
-
-        // The restored NuGet packages, for the same reason.
-        let packagesWritten =
-            if NuGetRefs.appliesTo bjoPath then
-                NuGetRefs.listFiles ()
-                |> List.filter File.Exists
-                |> List.map File.GetLastWriteTimeUtc
-                |> List.fold max DateTime.MinValue
-            else
-                DateTime.MinValue
-
-        let upToDate =
-            File.Exists dllPath
-            && (let built = File.GetLastWriteTimeUtc dllPath
-                let facts = factsOf bjoPath
-
-                compilerBuilt <= built
-                && declarationsWritten <= built
-                && packagesWritten <= built
-                && not (NuGetRefs.changedSince bjoPath)
-                // A declaration *removed* deletes the file rather than
-                // touching it, so the comparison above cannot see it. This one
-                // reads what the module was built under and compares the sets.
-                && not (Frameworks.declarationsChanged bjoPath)
-                && facts.Sources |> Set.forall (fun src -> File.GetLastWriteTimeUtc src <= built)
-                // The implicit prelude edge counts as much as a written one:
-                // a module that never names the prelude is still compiled
-                // against its metadata.
-                && (facts.Imports
-                    |> List.forall (fun (spec, _) ->
-                        match resolveDependency bjoPath spec with
-                        | Ok dep -> File.GetLastWriteTimeUtc dep <= built
-                        // An import that resolves to nothing makes the module
-                        // stale rather than current, so the compile runs and
-                        // reports it against the form that wrote it. Answering
-                        // "up to date" here would leave a broken import
-                        // undetected for as long as the stale `.dll` survives.
-                        | Error _ -> false)))
-
-        if upToDate then dllPath else compileLibrary bjoPath
+        // `resolveDependency` builds each import that is out of date before
+        // its timestamp is compared, so a change anywhere below this module
+        // reaches it.
+        if upToDateAgainst (resolveDependency bjoPath) bjoPath then
+            dllPath
+        else
+            compileLibrary bjoPath
     finally
         // Only the walk that started it forgets, so that everything one build
         // decided stays decided for the whole of it — including for the
@@ -1125,13 +1144,23 @@ let rec ensureLibrary (bjoPath: string) : string =
 /// as an unbound variable, or as a missing assembly at run time. The failure is
 /// here, where the spelling that caused it is still in hand.
 and private resolveDependency (basePath: string) (spec: ImportSpec) : Result<string, string> =
+    resolveImport true basePath spec
+
+/// `resolveDependency`, with a choice of whether an imported `.bjo` is built
+/// first.
+///
+/// With `build = false` it answers the `.dll` beside the `.bjo` as it is on
+/// disk, whether or not it exists or is current. A graph build plans with this.
+/// Both cases share this function so that a graph build resolves imports to
+/// exactly the files the compiler would.
+and private resolveImport (build: bool) (basePath: string) (spec: ImportSpec) : Result<string, string> =
     /// The artefact a candidate source path names, if any of the three shapes
     /// is on disk.
     let artefactOf (raw: string) : string option =
         let bjoPath = if raw.EndsWith ".bjo" then raw else raw + ".bjo"
         let dllPath = Path.ChangeExtension(bjoPath, ".dll")
 
-        if File.Exists bjoPath then Some(ensureLibrary bjoPath)
+        if File.Exists bjoPath then Some(if build then ensureLibrary bjoPath else dllPath)
         elif File.Exists dllPath then Some dllPath
         // `(import "x.dll")` names an artefact outright: the two probes above
         // looked for `x.dll.bjo` and `x.dll.dll` and found neither, and the
@@ -1165,6 +1194,34 @@ and private resolveDependency (basePath: string) (spec: ImportSpec) : Result<str
             | None ->
                 Error
                     $"no module %s{shown}: package %s{Paths.showPackageName root.Name} at %s{root.Directory} has no %s{Paths.moduleFileName root parts}."
+
+// ---------------------------------------------------------------------------
+// Asking about the graph without building it
+// ---------------------------------------------------------------------------
+
+/// The `.bjo` files `bjoPath` imports, as absolute paths, whether built or not.
+///
+/// These are the edges of a graph build, including the implicit prelude.
+/// Imports that resolve to a prebuilt `.dll` are left out because there is
+/// nothing to build. Imports that resolve to nothing are left out too; the
+/// compiler reports them when the module itself is compiled.
+let importedSources (bjoPath: string) : string list =
+    (factsOf bjoPath).Imports
+    |> List.choose (fun (spec, _) ->
+        match resolveImport false bjoPath spec with
+        | Ok artefact ->
+            let source = Path.ChangeExtension(artefact, ".bjo")
+            if File.Exists source then Some(Path.GetFullPath source) else None
+        | Error _ -> None)
+    |> List.distinct
+
+/// Whether `bjoPath`'s `.dll` is current, without building anything.
+///
+/// It compares against the `.dll`s of the imports as they are on disk now. It
+/// cannot know that an import is about to be rebuilt, so a graph build also
+/// counts a module stale when anything it imports will be rebuilt.
+let isCurrent (bjoPath: string) : bool =
+    upToDateAgainst (resolveImport false bjoPath) bjoPath
 
 /// How a library records one of the assemblies it links.
 ///

@@ -100,9 +100,11 @@
          (respond! resp 200 (str verb " " (request-body req)
                                  " basket=" (header-or-empty req "X-Basket")
                                  " type=" (header-or-empty req "Content-Type"))))
-        ;; Long enough that the client's 300ms branch always wins.
+        ;; Long enough that the client's 300ms timeout always wins. Kept short
+        ;; because main is a scope, so the program cannot exit until this sleep
+        ;; is over.
         ((string-starts-with? path "/slow")
-         (sleep 4000)
+         (sleep 1200)
          (respond! resp 200 "eventually"))
         (else (respond! resp 500 "unknown path")))
       (serve listener (- remaining 1)))))

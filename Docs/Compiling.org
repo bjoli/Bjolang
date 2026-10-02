@@ -7,10 +7,46 @@ From a fresh checkout, in this order:
 #+BEGIN_SRC sh
 git submodule update --init --recursive          # Collections, Map, SchemeList, Bjoml
 dotnet build BjolangRuntime/BjolangRuntime.csproj -c Release
-dotnet build -c Release                          # the compiler itself
-./build_std.sh                                   # lib/std/*.dll, in dependency order
-./run_tests.sh
+./build_compiler.sh                              # the compiler, in bin/compiler
+./build_std.sh                                   # everything under lib/, in parallel
+./run_tests.py
 #+END_SRC
+
+*** Where the compiler is
+
+~build_compiler.sh~ is the one place that knows. Everything that runs the
+compiler — ~bjo~, ~build_std.sh~, ~run_tests.py~, ~run_bjo_tests.py~ —
+asks it, for the path or to have the compiler built:
+
+#+BEGIN_SRC sh
+./build_compiler.sh           # build it if anything it is made of is newer
+./build_compiler.sh --force   # build it, and let MSBuild decide what is current
+./build_compiler.sh --path    # print where it is: bin/compiler/Bjolang.dll
+#+END_SRC
+
+It is a ReadyToRun ~dotnet publish~ for this machine's platform, so the compiler
+does not spend the first half second of every start JIT-compiling itself. That
+matters because a compiler is started for every compile and for every worker
+in a graph build:
+
+| Compiling                       | JIT (~dotnet build~) | ReadyToRun |
+|---------------------------------+----------------------+------------|
+| ~std/eq~                        | 0.86 s               | 0.39 s     |
+| ~std/fmt~, ~text/json~          | 1.3 s                | 0.7 s      |
+| ~std/prelude~                   | 2.7 s                | 2.0 s      |
+| the standard library, graph     | 9.3 s                | 6.1 s      |
+
+The two produce the same bytes. The platform is worked out from ~uname~ rather
+than asked of the SDK, because a distribution's own SDK reports an identifier of
+its own — Fedora's says ~fedora.43-x64~ — and ReadyToRun only has crossgen
+packages for the portable ones (~linux-x64~, ~osx-arm64~, …). Where there is
+none, the compiler is published without ReadyToRun.
+
+~dotnet build -c Release~ still works and still writes ~bin/Release/net10.0~,
+which is what an editor or a debugger uses. No tool runs that build.
+
+A module records the compiler that built it, and ~bjo~ treats a record naming
+another compiler as stale, so moving the compiler rebuilds everything once.
 
 The runtime assemblies come first because everything a compiled program links
 against lives in ~BjolangRuntime/bin/Release/net10.0~ — see "Runtime assemblies"
@@ -35,19 +71,93 @@ changed source does.
 
 Three things, in this order, and only what is out of date:
 
-- *the compiler*, through ~dotnet build~;
+- *the compiler*, through ~build_compiler.sh~;
 - *the standard library*, when any ~lib/std/*.dll~ is older than its source or
   than the compiler. It has to happen here rather than fall out of the first
   test that notices: an import of a ~.bjo~ rebuilds a stale dependency
   (~ensureLibrary~), so 200 compilations running at once would each rebuild the
   prelude into the same files;
-- *the fixture libraries* in ~TestFiles/inc~, in dependency waves — everything
-  whose dependencies are already built goes at once. A fixture is rebuilt when
-  its ~.dll~ is older than a source it names, than the compiler, or than the
-  standard library, and rebuilding one rebuilds everything downstream of it.
+- *the fixture libraries* in ~TestFiles/inc~, with ~--build-graph~ like the
+  standard library. A fixture is rebuilt when its ~.dll~ is older than a source
+  it names, than the compiler, or than what it imports, and rebuilding one
+  rebuilds everything downstream of it.
 
 The tests themselves are always compiled afresh, in parallel, one job per
 three-digit group.
+
+** Graph builds
+
+~--build-graph~ builds a set of libraries and everything they import, in
+parallel, in the order their imports give. It is what ~build_std.sh~ is now:
+
+#+BEGIN_SRC sh
+dotnet bin/compiler/Bjolang.dll --build-graph lib            # the standard library
+dotnet bin/compiler/Bjolang.dll --build-graph lib -j 4       # at most four compilers
+dotnet bin/compiler/Bjolang.dll --build-graph --dry-run lib  # what would be built, and why
+#+END_SRC
+
+An input is a ~.bjo~, or a directory, which means every ~.bjo~ below it except
+in directories whose names start with a dot. What the inputs import is built
+too, wherever it is, as an import would build it.
+
+It goes like this:
+
+1. *Read the graph.* Each module's imports are read off its S-expressions, the
+   implicit prelude included, and resolved the way the compiler resolves them —
+   ~Pipeline.importedSources~, which shares its path rules with the import walk
+   and builds nothing.
+2. *Plan.* The modules are sorted so that each comes after what it imports. A
+   cycle is refused, and named as a chain. A module is to be built when its
+   ~.dll~ is out of date by the rule an import uses (~Pipeline.isCurrent~), or
+   when anything it imports is about to be rebuilt.
+3. *Build.* Each module goes to a worker process when everything it imports is
+   built — the one with the longest chain of importers waiting on it first. A
+   module that fails skips everything above it, and nothing else.
+
+One line per module: ~Up to date:~ first, then ~Built library:~ or
+~Failed to build~ as each finishes, with what the compiler said. The summary
+goes to stderr, and the exit code is 0 only when everything is current at the
+end. With nothing to do it starts no workers and answers in about 0.3 s.
+
+*** Why processes
+
+A compilation keeps its state in module-level variables that
+~Session.isolated~ saves and restores. That is right for compilations nested on
+one thread — an import built in the middle of the module importing it — and for
+nothing running side by side. ~Diagnostics.captured~ swaps the console for the
+whole process as well. So each module is built in a ~--worker~ process.
+
+A worker is long-lived: it reads source paths on stdin and answers a JSON line
+per module, because a cold compiler costs about half a second before it does
+anything. Building one module at a time keeps it as correct as a batch. What
+makes several workers at once safe is the order alone: a module is sent only
+when everything it imports is built, so a worker's own import walk finds each
+dependency current and never builds one. No two workers write the same ~.dll~,
+and none loads an assembly another is still writing.
+
+A worker emits through the same C# backend as a single ~--lib~ compile — the
+SDK's ~csc~, not in-process Roslyn, which produces different bytes — so a module
+is the same file whichever worker built it, and the same as it would be built
+alone. The test suite checks that.
+
+On this machine (24 cores), the standard library:
+
+| Situation                     | One compiler per module, in order | ~--build-graph~, JIT | ~--build-graph~, ReadyToRun |
+|-------------------------------+---------------------------------+----------------------+-----------------------------|
+| Everything (35 modules)       | 44 s                            | 9.5 s                | 6.1 s                       |
+| ~prelude~ edited (31 modules) | about 38 s                      | 6.7 s                | 4.8 s                       |
+| Nothing to do                 | 1.3 s                           | 0.3 s                | 0.25 s                      |
+
+Most of what remains is the chain at the bottom — ~eq~, ~syntax-match~,
+~effect~, ~prelude~ — which cannot be built side by side.
+
+*** The compiler itself
+
+~--build-graph~ cannot tell that the compiler's own sources have moved on, only
+that its assembly is newer than a module. ~build_std.sh~ runs
+~build_compiler.sh~ first, which rebuilds the compiler when any ~*.fs~ or
+runtime ~*.cs~ is newer than it. The runtime counts because the modules that
+bind names out of it have to be compiled against the runtime they will link.
 
 ** ~bjo~
 
@@ -93,11 +203,11 @@ everything: a rebuilt ~Bjolang.dll~ is newer than every artefact, and each is
 rebuilt on the next command that wants it, because the compiler is one of the
 inputs the build record names.
 
-It used to be asked on the way to every command, by both this and ~bjor~, and
-the question cost a walk of every ~.fs~ and ~.cs~ in the tree to answer "no"
-nearly every time — and when the answer was "yes", the build ran in the middle
-of whatever had been asked for. An up-to-date ~bjo build~ now answers in about
-40 ms.
+Asking on the way to every command would cost a walk of every ~.fs~ and ~.cs~
+in the tree, nearly always to answer "no", and a "yes" would start a compiler
+build in the middle of whatever had been asked for. Without it, an up-to-date
+~bjo build~ answers in about 40 ms. ~build_std.sh~ and ~run_tests.py~ do ask,
+through ~build_compiler.sh~.
 
 ~rebjo~ is the one command the bootstrap script answers itself, and it has to
 be: it rebuilds ~bjo.exe~, which ~bjo.bjo~ is running from.
@@ -120,7 +230,7 @@ resolves it at run time.
 #+BEGIN_SRC text
 mode release
 output /home/you/prog.exe
-compiler /home/you/bjolang/bin/Release/net10.0/Bjolang.dll
+compiler /home/you/bjolang/bin/compiler/Bjolang.dll
 source /home/you/prog.bjo
 source /home/you/parts/helpers.bjo
 dep /home/you/bjolang/lib/std/prelude.dll
@@ -133,38 +243,21 @@ ask would cost about half a second.
 
 The compiler writes it because the compiler is the only one that knows what is
 in it. An ~include~ is a path inside a form and an import is a module path
-resolved against the installation; a driver that works those out from the text
-— as ~bjor~ does, with ~grep~ and ~awk~ — is a second answer to a question that
-already has one, and the two can disagree. See ~Build.writeBuildRecord~.
+resolved against the installation. A driver that worked those out from the
+text, with ~grep~ and ~awk~, could disagree with the compiler about what a
+module depends on. See ~Build.writeBuildRecord~.
 
 A record is written only after a build that succeeded, and never by ~--check~,
 which builds nothing.
 
-** ~bjor~
-
-The shell driver ~bjo~ was written to replace. Still here, and still works —
-it reads the mode from the first line of the record above, and works the rest
-out for itself:
-
-#+BEGIN_SRC sh
-./bjor Playground/test.bjo          # compile if needed, then run
-./bjor Playground/test.bjo a b c    # arguments after the file go to the program
-./bjor -c Playground/test.bjo       # compile unconditionally
-./bjor -d Playground/test.bjo       # debug build (see below)
-./bjor --lib lib/std/list.bjo       # compile to a .dll, do not run
-#+END_SRC
-
-Options come *before* the source file; everything after it is passed to the
-compiled program.
-
-*** When it recompiles
+*** When ~bjo~ recompiles
 
 Nothing is rebuilt if the binary is newer than everything it was built from.
 That means the source file, every ~.bjo~ or ~.protobjo~ it imports or includes
 transitively, the standard library, and the compiler itself — a program built by
 a different compiler is stale even when nothing you wrote has changed.
 
-Two cases always recompile, under ~bjo~ as well as ~bjor~:
+Two cases always recompile:
 
 - ~-c~, which is what it is for.
 - ~-d~, because the dumps a debug build produces are a product of compiling, and
@@ -177,7 +270,8 @@ a debug build, and the standard library was rebuilt on every invocation.
 
 ** Compiler flags
 
-The compiler itself (~dotnet bin/Release/net10.0/Bjolang.dll~) takes:
+The compiler itself (~dotnet bin/compiler/Bjolang.dll~, or wherever
+~./build_compiler.sh --path~ says) takes:
 
 | Flag           | Effect                                                      |
 |----------------+-------------------------------------------------------------|

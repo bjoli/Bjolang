@@ -28,5 +28,6 @@ dotnet bench/Cml/bin/Release/net10.0/CmlBench.dll
 
 echo
 echo "=== Bjolang ==="
-dotnet bin/Release/net10.0/Bjolang.dll bench/bjolang/cmlbench.bjo >/dev/null
+./build_compiler.sh
+dotnet "$(./build_compiler.sh --path)" bench/bjolang/cmlbench.bjo >/dev/null
 DOTNET_gcServer=1 DOTNET_gcConcurrent=1 dotnet bench/bjolang/cmlbench.exe

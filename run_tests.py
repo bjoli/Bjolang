@@ -68,39 +68,20 @@ except Exception as e:
 # Ensure dotnet subprocesses don't inherit the lock fd
 os.set_inheritable(lock_fd, False)
 
-COMPILER_DLL = Path("bin/Release/net10.0/Bjolang.dll")
+# `build_compiler.sh` vet var kompilatorn ligger och bygger den när något den
+# är gjord av är nyare än den. Den skriver ingenting när kompilatorn är
+# aktuell, vilket är hur utskriften nedan vet om något byggdes.
+COMPILER_DLL = Path(subprocess.run(["./build_compiler.sh", "--path"],
+                                   capture_output=True, text=True, check=True).stdout.strip())
 
-def get_compiler_source_mtime():
-    max_mtime = 0
-    patterns = [
-        Path('.').glob('*.fs'),
-        Path('.').glob('*.fsi'),
-        Path('.').glob('*.fsproj'),
-        Path('BjolangRuntime').rglob('*.cs'),
-        Path('BjolangRuntime').rglob('*.csproj')
-    ]
-    for pattern in patterns:
-        for p in pattern:
-            max_mtime = max(max_mtime, p.stat().st_mtime)
-    return max_mtime
-
-# 1. Build the compiler once in Release mode
 print_color(BLUE, "Checking if compiler needs rebuilding...")
-needs_build = True
-if COMPILER_DLL.exists():
-    dll_mtime = COMPILER_DLL.stat().st_mtime
-    src_mtime = get_compiler_source_mtime()
-    if dll_mtime > src_mtime:
-        needs_build = False
-
-if needs_build:
-    print_color(BLUE, "Building compiler in Release mode...")
-    result = subprocess.run(["dotnet", "build", "-c", "Release"], capture_output=True, text=True)
-    if result.returncode != 0:
-        print_color(RED, "Compiler build failed!")
-        print(result.stdout)
-        print(result.stderr)
-        sys.exit(1)
+result = subprocess.run(["./build_compiler.sh"], capture_output=True, text=True)
+if result.returncode != 0:
+    print_color(RED, "Compiler build failed!")
+    print(result.stdout)
+    print(result.stderr)
+    sys.exit(1)
+if result.stdout.strip():
     print_color(GREEN, "Compiler build succeeded.\n")
 else:
     print_color(GREEN, "Compiler is up to date, skipping build.\n")
@@ -328,14 +309,17 @@ def build_fixture_libs():
         return
 
     before = {f: mtime(f.with_suffix(".dll")) for f in modules}
-    results = batch_compile(modules, if_stale=True, tag="inc")
 
-    for f in modules:
-        entry = result_for(results, f)
-        if entry["status"] != 0:
-            print_color(RED, f"Failed to build fixture library {f}")
-            print(entry["output"])
-            sys.exit(1)
+    # En grafbyggnad: kompilatorn läser importerna och bygger det som är redo
+    # parallellt, i stället för en batch som tar dem en i taget. Modulerna ges
+    # som filer och inte som katalogen, eftersom `inc` också har fragment som
+    # bara inkluderas och inte är moduler för sig.
+    res = subprocess.run(["dotnet", str(COMPILER_DLL), "--build-graph"] + [str(f) for f in modules],
+                         capture_output=True, text=True)
+    if res.returncode != 0:
+        print_color(RED, "Failed to build the fixture libraries")
+        print(res.stdout + res.stderr)
+        sys.exit(1)
 
     for f in modules:
         if mtime(f.with_suffix(".dll")) != before[f]:
@@ -453,428 +437,6 @@ def run_prefix_group(prefix, log_file, compiled):
             out.write(f"PASS: {basename}\n")
 
     return 0
-
-print_color(BLUE, f"Running tests in parallel (max {MAX_JOBS} concurrent jobs)...")
-print("-" * 50)
-
-start_time = time.time()
-
-# Allt raderas före batchen, inte i den: en fil vars `.exe` ligger kvar från
-# förra körningen skulle annars kunna se ut som byggd av den här.
-for f in bjo_files:
-    remove_artifacts(f)
-
-# En klunga är hela grupper, så att en grupps filer kompileras i ordning och i
-# samma process — det är där en `_lib.bjo` byggs som den efterföljande filen
-# importerar.
-prefix_chunks = chunk(prefixes, MAX_JOBS)
-file_chunks = [[f for prefix in pc for f in groups[prefix]] for pc in prefix_chunks]
-compiled = batch_compile_parallel(file_chunks, tag="tests")
-
-success_count = 0
-fail_compile_count = 0
-fail_run_count = 0
-skipped_count = 0
-
-compiled_failed = []
-run_failed = []
-skipped_list = []
-
-group_futures = {}
-with ThreadPoolExecutor(max_workers=MAX_JOBS) as executor:
-    for prefix in prefixes:
-        log_file = LOG_DIR / f"{prefix}.log"
-        if log_file.exists():
-            log_file.unlink()
-        group_futures[executor.submit(run_prefix_group, prefix, log_file, compiled)] = prefix
-
-    for future in as_completed(group_futures):
-        prefix = group_futures[future]
-        status = future.result()
-        log_file = LOG_DIR / f"{prefix}.log"
-
-        files_in_group = " ".join([os.path.basename(f) for f in groups[prefix]])
-
-        if log_file.exists():
-            with open(log_file, "r") as log:
-                content = log.read()
-        else:
-            content = ""
-
-        if status == 0:
-            if "PASS" in content or "PASS_LIB" in content:
-                print(f"  [{GREEN}PASS{NC}] Group {prefix}: {files_in_group}")
-                success_count += 1
-            elif "SKIP" in content:
-                print(f"  [{YELLOW}SKIP{NC}] Group {prefix}: {files_in_group}")
-                skipped_count += 1
-                skipped_list.append(files_in_group)
-            else:
-                print(f"  [{GREEN}PASS{NC}] Group {prefix}: {files_in_group}")
-                success_count += 1
-        else:
-            print(f"  [{RED}FAIL{NC}] Group {prefix}: {files_in_group}")
-            if "FAIL_COMPILE" in content:
-                fail_compile_count += 1
-                match = re.search(r"FAIL_COMPILE:\s+(\S+)", content)
-                if match:
-                    compiled_failed.append(match.group(1))
-            elif "FAIL_RUN" in content:
-                fail_run_count += 1
-                match = re.search(r"FAIL_RUN:\s+(\S+)", content)
-                if match:
-                    run_failed.append(match.group(1))
-            else:
-                fail_run_count += 1
-                match = re.search(r"FAIL_LOGIC:\s+(\S+)", content)
-                if match:
-                    run_failed.append(f"{match.group(1)} (logic failure: contains 'FAILURE:')")
-
-# --- Error tests ---
-ERROR_DIR = Path("TestFiles/errors")
-error_total = 0
-error_failed = 0
-error_failures = []
-
-error_files = sorted(ERROR_DIR.glob("*.bjo")) if ERROR_DIR.exists() else []
-if error_files:
-    print("-" * 50)
-    print_color(BLUE, "Running error tests (must be rejected)...")
-
-    rejected = batch_compile_parallel(chunk(error_files, MAX_JOBS), tag="errors")
-
-    def judge_error_test(bjo_file, entry):
-        if entry["status"] == 0:
-            return "FAIL", "compiled successfully, but was expected to be rejected"
-
-        # `EXPECT-ERROR` säger inte bara att filen ska avvisas utan varför.
-        # En fil som avvisas av något annat skäl än det angivna är ett
-        # felmeddelande som slutat gälla, inte ett test som går igenom.
-        for line in bjo_file.read_text().splitlines():
-            match = re.match(r'^\s*;;\s*EXPECT-ERROR:\s*(.*)', line)
-            if match:
-                expected = match.group(1).strip()
-                if expected and expected not in entry["output"]:
-                    return "FAIL", f"rejected, but not for the stated reason. Expected to find: {expected}"
-
-            # `EXPECT-NO-ERROR` säger vad avvisandet *inte* får skylla på. En
-            # deklaration som inte gick att kontrollera binder en platshållare,
-            # och det som anropar den ska därför tiga — ett kaskadfel är det
-            # första felet berättat en gång till, per anropare.
-            match = re.match(r'^\s*;;\s*EXPECT-NO-ERROR:\s*(.*)', line)
-            if match:
-                unwanted = match.group(1).strip()
-                if unwanted and unwanted in entry["output"]:
-                    return "FAIL", f"rejected, but also reported what it should have suppressed: {unwanted}"
-
-        return "PASS", ""
-
-    for bjo_file in error_files:
-        entry = result_for(rejected, bjo_file)
-        remove_artifacts(bjo_file)
-
-        verdict, reason = judge_error_test(bjo_file, entry)
-        error_total += 1
-        if verdict == "PASS":
-            print(f"  [{GREEN}PASS{NC}] {bjo_file.name}")
-        else:
-            print(f"  [{RED}FAIL{NC}] {bjo_file.name}")
-            error_failed += 1
-            error_failures.append(f"{bjo_file.name}: {reason}")
-
-# --- Warning tests ---
-WARNING_DIR = Path("TestFiles/warnings")
-warning_total = 0
-warning_failed = 0
-warning_failures = []
-
-warning_files = sorted(WARNING_DIR.glob("*.bjo")) if WARNING_DIR.exists() else []
-if warning_files:
-    print("-" * 50)
-    print_color(BLUE, "Running warning tests (must compile, and say so)...")
-
-    warned = batch_compile(warning_files, tag="warnings")
-
-    def judge_warning_test(bjo_file, entry):
-        if entry["status"] != 0:
-            return "FAIL", "was expected to compile, and did not"
-
-        for line in bjo_file.read_text().splitlines():
-            match = re.match(r'^\s*;;\s*EXPECT-WARNING:\s*(.*)', line)
-            if match:
-                expected = match.group(1).strip()
-                if expected and expected not in entry["output"]:
-                    return "FAIL", f"compiled, but said nothing about it. Expected to find: {expected}"
-
-            match = re.match(r'^\s*;;\s*EXPECT-NO-WARNING:\s*(.*)', line)
-            if match:
-                unwanted = match.group(1).strip()
-                if unwanted and unwanted in entry["output"]:
-                    return "FAIL", f"warned where it should have kept quiet: {unwanted}"
-
-        return "PASS", ""
-
-    for bjo_file in warning_files:
-        entry = result_for(warned, bjo_file)
-        remove_artifacts(bjo_file)
-
-        verdict, reason = judge_warning_test(bjo_file, entry)
-        warning_total += 1
-        if verdict == "PASS":
-            print(f"  [{GREEN}PASS{NC}] {bjo_file.name}")
-        else:
-            print(f"  [{RED}FAIL{NC}] {bjo_file.name}")
-            warning_failed += 1
-            warning_failures.append(f"{bjo_file.name}: {reason}")
-
-# --- Phase Runners ---
-def run_codegen_tests():
-    """Läser den genererade C#-koden.
-
-    `--debug` lägger den bredvid indatafilen som `<namn>.out.cs`, en per fil,
-    vilket är vad som gör att de kan byggas i en batch: förut skrev varje
-    kompilering `out.cs` i arbetskatalogen, så de fick köras en i taget i var
-    sin katalog.
-    """
-    CODEGEN_DIR = Path("TestFiles/codegen")
-    c_total, c_failed = 0, 0
-    c_failures = []
-
-    files = sorted(CODEGEN_DIR.glob("*.bjo")) if CODEGEN_DIR.exists() else []
-    if not files:
-        return "codegen", c_total, c_failed, c_failures
-
-    emitted = batch_compile(files, lib=True, debug=True, tag="codegen")
-
-    for bjo_file in files:
-        cs_name = bjo_file.stem
-        c_total += 1
-        entry = result_for(emitted, bjo_file)
-
-        out_cs = bjo_file.with_suffix(".out.cs")
-        out_cs_content = out_cs.read_text() if out_cs.exists() else ""
-        remove_artifacts(bjo_file, extra=(".out.cs", ".out.ast.txt"))
-
-        if entry["status"] != 0:
-            c_failed += 1
-            c_failures.append(f"{cs_name}.bjo: did not compile")
-            continue
-
-        cs_missing = None
-        cs_present = None
-
-        for line in bjo_file.read_text().splitlines():
-            match1 = re.match(r'^\s*;;\s*EXPECT-CS:\s*(.*)', line)
-            if match1:
-                pattern = match1.group(1).strip()
-                if pattern and not re.search(pattern, out_cs_content, re.MULTILINE):
-                    cs_missing = pattern
-                    break
-            match2 = re.match(r'^\s*;;\s*EXPECT-NO-CS:\s*(.*)', line)
-            if match2:
-                pattern = match2.group(1).strip()
-                if pattern and re.search(pattern, out_cs_content, re.MULTILINE):
-                    cs_present = pattern
-                    break
-
-        if cs_missing:
-            c_failed += 1
-            c_failures.append(f"{cs_name}.bjo: the generated C# has no match for: {cs_missing}")
-        elif cs_present:
-            c_failed += 1
-            c_failures.append(f"{cs_name}.bjo: the generated C# matches what it must not: {cs_present}")
-
-    return "codegen", c_total, c_failed, c_failures
-
-def run_repl_tests():
-    REPL_DIR = Path("TestFiles/repl")
-    r_total, r_failed = 0, 0
-    r_failures = []
-    
-    files = list(REPL_DIR.glob("*.in")) if REPL_DIR.exists() else []
-    if files:
-        for in_file in files:
-            repl_name = in_file.stem
-            r_total += 1
-            expected = in_file.with_suffix(".expected")
-            
-            res = subprocess.run(["dotnet", COMPILER_DLL, "--repl"], stdin=open(in_file), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            
-            # Clean output
-            cleaned_lines = []
-            for line in res.stdout.splitlines():
-                line = re.sub(r'^(bjo> |\.\.\.> )*', '', line)
-                if not re.match(r'^(Building imported module|$)', line):
-                    cleaned_lines.append(line)
-            out_text = "\n".join(cleaned_lines) + ("\n" if cleaned_lines else "")
-            
-            if not expected.exists():
-                r_failed += 1
-                r_failures.append(f"{repl_name}: no recorded transcript")
-            else:
-                expected_text = expected.read_text()
-                if out_text != expected_text:
-                    r_failed += 1
-                    r_failures.append(f"{repl_name}: the session no longer matches its transcript")
-                    diff_file = LOG_DIR / f"repl_{repl_name}.diff"
-                    with open(diff_file, "w") as df:
-                        df.write("EXPECTED:\n" + expected_text + "\nGOT:\n" + out_text)
-                    
-    return "repl", r_total, r_failed, r_failures
-
-def run_reproducibility():
-    # Enstaka kompileringar med flit. Det som mäts är att samma källa ger samma
-    # byte, och batchläget emitterar med en annan C#-backend än en ensam
-    # kompilering gör — att jämföra över den gränsen vore att mäta något annat.
-    REPRO_MAIN = Path("TestFiles/006_modules_and_input.bjo")
-    REPRO_DEP = Path("TestFiles/006_lib")
-    rp_failed = 0
-    rp_failures = []
-    
-    if not REPRO_MAIN.exists():
-        return "repro", 0, 0, []
-        
-    def repro_build(env_var, val):
-        for ext in (".dll", ".pdb"):
-            REPRO_DEP.with_suffix(ext).unlink(missing_ok=True)
-        for ext in (".exe", ".dll", ".runtimeconfig.json", ".deps.json", ".pdb"):
-            REPRO_MAIN.with_suffix(ext).unlink(missing_ok=True)
-            
-        env = os.environ.copy()
-        env[env_var] = val
-        res = subprocess.run(["dotnet", COMPILER_DLL, str(REPRO_MAIN)], env=env, capture_output=True, text=True)
-        if res.returncode != 0:
-            return None
-            
-        md5s = []
-        for f in (REPRO_DEP.with_suffix(".dll"), REPRO_MAIN.with_suffix(".exe")):
-            if f.exists():
-                with open(f, "rb") as file:
-                    md5s.append(hashlib.md5(file.read()).hexdigest())
-            else:
-                md5s.append("MISSING")
-        return " ".join(md5s)
-
-    repro_a = repro_build("BJOLANG_X", "1")
-    repro_b = repro_build("BJOLANG_X", "1")
-    repro_c = repro_build("BJOLANG_OUT_OF_PROCESS_DEPS", "1")
-    
-    if repro_a and repro_b and repro_c:
-        if repro_a != repro_b:
-            rp_failed = 1
-            rp_failures.append(f"two identical builds differed: {repro_a} vs {repro_b}")
-        if repro_a != repro_c:
-            rp_failed = 1
-            rp_failures.append(f"in-process {repro_a} vs out-of-process {repro_c} — compilation state has leaked")
-    else:
-        rp_failed = 1
-        rp_failures.append("a reproducibility build did not compile")
-        
-    for ext in (".dll", ".pdb"):
-        REPRO_DEP.with_suffix(ext).unlink(missing_ok=True)
-    for ext in (".exe", ".dll", ".runtimeconfig.json", ".deps.json", ".pdb"):
-        REPRO_MAIN.with_suffix(ext).unlink(missing_ok=True)
-        
-    return "repro", 0, rp_failed, rp_failures
-
-def run_staleness():
-    STALE_DIR = LOG_DIR / "staleness"
-    s_total, s_failed = 0, 0
-    s_failures = []
-    
-    STALE_DIR.mkdir(exist_ok=True)
-    
-    (STALE_DIR / "leaf.bjo").write_text("(export flavour)\n(import (std prelude))\n(: flavour (-> string))\n(defun (flavour) \"banana\")\n")
-    (STALE_DIR / "middle.bjo").write_text("(export describe)\n(import (std prelude))\n(import \"leaf.bjo\")\n(: describe (-> string))\n(defun (describe) (string-append \"a \" (flavour)))\n")
-    (STALE_DIR / "app.bjo").write_text("(import (std prelude))\n(import \"middle.bjo\")\n(defun (main args) (println (describe)) 0)\n")
-    
-    def stale_check(label, wanted, got):
-        nonlocal s_total, s_failed, s_failures
-        s_total += 1
-        if got == wanted:
-            pass # OK
-        else:
-            s_failed += 1
-            s_failures.append(f"{label}: got '{got}', wanted '{wanted}'")
-
-    res = subprocess.run(["dotnet", COMPILER_DLL, str(STALE_DIR / "app.bjo")], capture_output=True, text=True)
-    if res.returncode == 0:
-        app_res = subprocess.run(["dotnet", str(STALE_DIR / "app.exe")], capture_output=True, text=True)
-        stale_check("a chain of three modules builds", "a banana\n", app_res.stdout)
-        
-        leaf = (STALE_DIR / "leaf.bjo")
-        leaf.write_text(leaf.read_text().replace('"banana"', '"cloudberry"'))
-        
-        res2 = subprocess.run(["dotnet", COMPILER_DLL, str(STALE_DIR / "app.bjo")], capture_output=True, text=True)
-        if res2.returncode == 0:
-            app_res2 = subprocess.run(["dotnet", str(STALE_DIR / "app.exe")], capture_output=True, text=True)
-            stale_check("an edit two modules down reaches the program", "a cloudberry\n", app_res2.stdout)
-        else:
-            stale_check("an edit two modules down reaches the program", "a cloudberry\n", "it did not compile")
-            
-        res3 = subprocess.run(["dotnet", COMPILER_DLL, str(STALE_DIR / "app.bjo")], capture_output=True, text=True)
-        stale_check("a build with nothing changed rebuilds nothing", 0, res3.stdout.count("Building imported module"))
-    else:
-        stale_check("a chain of three modules builds", "a banana\n", "it did not compile")
-
-    return "staleness", s_total, s_failed, s_failures
-
-def run_check_tests():
-    # `--check` kör frontenden och stannar. Det som mäts är de två sakerna som
-    # skiljer den från ett bygge: att den inte lämnar någon artefakt efter sig,
-    # och att den säger exakt samma sak om ett trasigt program som ett bygge
-    # gör — en check som rapporterar annorlunda vore en andra sanning om
-    # programmet.
-    GOOD = Path("TestFiles/000_simple.bjo")
-    BAD = Path("TestFiles/errors/multi_type_errors.bjo")
-    c_total, c_failed = 0, 0
-    c_failures = []
-
-    def check_that(label, condition, detail=""):
-        nonlocal c_total, c_failed
-        c_total += 1
-        if not condition:
-            c_failed += 1
-            c_failures.append(f"{label}{': ' + detail if detail else ''}")
-
-    if GOOD.exists():
-        for ext in (".exe", ".dll", ".runtimeconfig.json", ".deps.json", ".pdb"):
-            GOOD.with_suffix(ext).unlink(missing_ok=True)
-
-        res = subprocess.run(["dotnet", COMPILER_DLL, "--check", str(GOOD)], capture_output=True, text=True)
-        check_that("a good file checks clean", res.returncode == 0, f"exit {res.returncode}")
-
-        produced = [ext for ext in (".exe", ".dll") if GOOD.with_suffix(ext).exists()]
-        check_that("a check writes no assembly", not produced, ", ".join(produced))
-
-        for ext in (".exe", ".dll", ".runtimeconfig.json", ".deps.json", ".pdb"):
-            GOOD.with_suffix(ext).unlink(missing_ok=True)
-
-    if BAD.exists():
-        checked = subprocess.run(["dotnet", COMPILER_DLL, "--check", str(BAD)], capture_output=True, text=True)
-        built = subprocess.run(["dotnet", COMPILER_DLL, str(BAD)], capture_output=True, text=True)
-        remove_artifacts(BAD)
-
-        check_that("a bad file is rejected by --check", checked.returncode != 0)
-
-        # Varje rad som är ett felmeddelande, i den ordning de kom. Banderoller
-        # och "Compilation failed." hör till bygget, inte till diagnostiken.
-        def diagnostics(output):
-            return [
-                line for line in output.splitlines()
-                if line.strip() and not line.startswith("===") and not line.startswith("Compiling")
-                and not line.startswith("Building imported module") and line != "Compilation failed."
-                and not re.match(r'^\d+ errors?\.$', line)
-            ]
-
-        check_that(
-            "--check says what a build says",
-            diagnostics(checked.stdout) == diagnostics(built.stdout),
-            "the two reports differ",
-        )
-
-    return "check", c_total, c_failed, c_failures
-
 
 # --- Packages -----------------------------------------------------------
 #
@@ -1139,9 +701,567 @@ def run_package_tests():
     return "packages", p_total, p_failed, p_failures
 
 
+# Paketproven startas här, samtidigt som testgrupperna, eftersom de är ett
+# trettiotal kompileringar i följd. De rör ingenting som testgrupperna rör:
+# de bygger under `.test-logs/packages` och läser bara standardbiblioteket.
+packages_executor = ThreadPoolExecutor(max_workers=1)
+packages_future = packages_executor.submit(run_package_tests)
+
+print_color(BLUE, f"Running tests in parallel (max {MAX_JOBS} concurrent jobs)...")
+print("-" * 50)
+
+start_time = time.time()
+
+# Allt raderas före batchen, inte i den: en fil vars `.exe` ligger kvar från
+# förra körningen skulle annars kunna se ut som byggd av den här.
+for f in bjo_files:
+    remove_artifacts(f)
+
+# En klunga är hela grupper, så att en grupps filer kompileras i ordning och i
+# samma process — det är där en `_lib.bjo` byggs som den efterföljande filen
+# importerar.
+prefix_chunks = chunk(prefixes, MAX_JOBS)
+file_chunks = [[f for prefix in pc for f in groups[prefix]] for pc in prefix_chunks]
+compiled = batch_compile_parallel(file_chunks, tag="tests")
+
+success_count = 0
+fail_compile_count = 0
+fail_run_count = 0
+skipped_count = 0
+
+compiled_failed = []
+run_failed = []
+skipped_list = []
+
+group_futures = {}
+with ThreadPoolExecutor(max_workers=MAX_JOBS) as executor:
+    for prefix in prefixes:
+        log_file = LOG_DIR / f"{prefix}.log"
+        if log_file.exists():
+            log_file.unlink()
+        group_futures[executor.submit(run_prefix_group, prefix, log_file, compiled)] = prefix
+
+    for future in as_completed(group_futures):
+        prefix = group_futures[future]
+        status = future.result()
+        log_file = LOG_DIR / f"{prefix}.log"
+
+        files_in_group = " ".join([os.path.basename(f) for f in groups[prefix]])
+
+        if log_file.exists():
+            with open(log_file, "r") as log:
+                content = log.read()
+        else:
+            content = ""
+
+        if status == 0:
+            if "PASS" in content or "PASS_LIB" in content:
+                print(f"  [{GREEN}PASS{NC}] Group {prefix}: {files_in_group}")
+                success_count += 1
+            elif "SKIP" in content:
+                print(f"  [{YELLOW}SKIP{NC}] Group {prefix}: {files_in_group}")
+                skipped_count += 1
+                skipped_list.append(files_in_group)
+            else:
+                print(f"  [{GREEN}PASS{NC}] Group {prefix}: {files_in_group}")
+                success_count += 1
+        else:
+            print(f"  [{RED}FAIL{NC}] Group {prefix}: {files_in_group}")
+            if "FAIL_COMPILE" in content:
+                fail_compile_count += 1
+                match = re.search(r"FAIL_COMPILE:\s+(\S+)", content)
+                if match:
+                    compiled_failed.append(match.group(1))
+            elif "FAIL_RUN" in content:
+                fail_run_count += 1
+                match = re.search(r"FAIL_RUN:\s+(\S+)", content)
+                if match:
+                    run_failed.append(match.group(1))
+            else:
+                fail_run_count += 1
+                match = re.search(r"FAIL_LOGIC:\s+(\S+)", content)
+                if match:
+                    run_failed.append(f"{match.group(1)} (logic failure: contains 'FAILURE:')")
+
+# --- Error tests ---
+ERROR_DIR = Path("TestFiles/errors")
+error_total = 0
+error_failed = 0
+error_failures = []
+
+error_files = sorted(ERROR_DIR.glob("*.bjo")) if ERROR_DIR.exists() else []
+if error_files:
+    print("-" * 50)
+    print_color(BLUE, "Running error tests (must be rejected)...")
+
+    rejected = batch_compile_parallel(chunk(error_files, MAX_JOBS), tag="errors")
+
+    def judge_error_test(bjo_file, entry):
+        if entry["status"] == 0:
+            return "FAIL", "compiled successfully, but was expected to be rejected"
+
+        # `EXPECT-ERROR` säger inte bara att filen ska avvisas utan varför.
+        # En fil som avvisas av något annat skäl än det angivna är ett
+        # felmeddelande som slutat gälla, inte ett test som går igenom.
+        for line in bjo_file.read_text().splitlines():
+            match = re.match(r'^\s*;;\s*EXPECT-ERROR:\s*(.*)', line)
+            if match:
+                expected = match.group(1).strip()
+                if expected and expected not in entry["output"]:
+                    return "FAIL", f"rejected, but not for the stated reason. Expected to find: {expected}"
+
+            # `EXPECT-NO-ERROR` säger vad avvisandet *inte* får skylla på. En
+            # deklaration som inte gick att kontrollera binder en platshållare,
+            # och det som anropar den ska därför tiga — ett kaskadfel är det
+            # första felet berättat en gång till, per anropare.
+            match = re.match(r'^\s*;;\s*EXPECT-NO-ERROR:\s*(.*)', line)
+            if match:
+                unwanted = match.group(1).strip()
+                if unwanted and unwanted in entry["output"]:
+                    return "FAIL", f"rejected, but also reported what it should have suppressed: {unwanted}"
+
+        return "PASS", ""
+
+    for bjo_file in error_files:
+        entry = result_for(rejected, bjo_file)
+        remove_artifacts(bjo_file)
+
+        verdict, reason = judge_error_test(bjo_file, entry)
+        error_total += 1
+        if verdict == "PASS":
+            print(f"  [{GREEN}PASS{NC}] {bjo_file.name}")
+        else:
+            print(f"  [{RED}FAIL{NC}] {bjo_file.name}")
+            error_failed += 1
+            error_failures.append(f"{bjo_file.name}: {reason}")
+
+# --- Warning tests ---
+WARNING_DIR = Path("TestFiles/warnings")
+warning_total = 0
+warning_failed = 0
+warning_failures = []
+
+warning_files = sorted(WARNING_DIR.glob("*.bjo")) if WARNING_DIR.exists() else []
+if warning_files:
+    print("-" * 50)
+    print_color(BLUE, "Running warning tests (must compile, and say so)...")
+
+    # I klungor, som felproven, så att filerna kompileras parallellt.
+    warned = batch_compile_parallel(chunk(warning_files, MAX_JOBS), tag="warnings")
+
+    def judge_warning_test(bjo_file, entry):
+        if entry["status"] != 0:
+            return "FAIL", "was expected to compile, and did not"
+
+        for line in bjo_file.read_text().splitlines():
+            match = re.match(r'^\s*;;\s*EXPECT-WARNING:\s*(.*)', line)
+            if match:
+                expected = match.group(1).strip()
+                if expected and expected not in entry["output"]:
+                    return "FAIL", f"compiled, but said nothing about it. Expected to find: {expected}"
+
+            match = re.match(r'^\s*;;\s*EXPECT-NO-WARNING:\s*(.*)', line)
+            if match:
+                unwanted = match.group(1).strip()
+                if unwanted and unwanted in entry["output"]:
+                    return "FAIL", f"warned where it should have kept quiet: {unwanted}"
+
+        return "PASS", ""
+
+    for bjo_file in warning_files:
+        entry = result_for(warned, bjo_file)
+        remove_artifacts(bjo_file)
+
+        verdict, reason = judge_warning_test(bjo_file, entry)
+        warning_total += 1
+        if verdict == "PASS":
+            print(f"  [{GREEN}PASS{NC}] {bjo_file.name}")
+        else:
+            print(f"  [{RED}FAIL{NC}] {bjo_file.name}")
+            warning_failed += 1
+            warning_failures.append(f"{bjo_file.name}: {reason}")
+
+# --- Phase Runners ---
+def run_codegen_tests():
+    """Läser den genererade C#-koden.
+
+    `--debug` lägger den bredvid indatafilen som `<namn>.out.cs`, en per fil,
+    vilket är vad som gör att de kan byggas i en batch: förut skrev varje
+    kompilering `out.cs` i arbetskatalogen, så de fick köras en i taget i var
+    sin katalog.
+    """
+    CODEGEN_DIR = Path("TestFiles/codegen")
+    c_total, c_failed = 0, 0
+    c_failures = []
+
+    files = sorted(CODEGEN_DIR.glob("*.bjo")) if CODEGEN_DIR.exists() else []
+    if not files:
+        return "codegen", c_total, c_failed, c_failures
+
+    # Varje fil skriver sin egen `.out.cs`, så klungorna kan köras samtidigt
+    # utan att skriva över varandras utdata.
+    emitted = batch_compile_parallel(chunk(files, MAX_JOBS), lib=True, debug=True, tag="codegen")
+
+    for bjo_file in files:
+        cs_name = bjo_file.stem
+        c_total += 1
+        entry = result_for(emitted, bjo_file)
+
+        out_cs = bjo_file.with_suffix(".out.cs")
+        out_cs_content = out_cs.read_text() if out_cs.exists() else ""
+        remove_artifacts(bjo_file, extra=(".out.cs", ".out.ast.txt"))
+
+        if entry["status"] != 0:
+            c_failed += 1
+            c_failures.append(f"{cs_name}.bjo: did not compile")
+            continue
+
+        cs_missing = None
+        cs_present = None
+
+        for line in bjo_file.read_text().splitlines():
+            match1 = re.match(r'^\s*;;\s*EXPECT-CS:\s*(.*)', line)
+            if match1:
+                pattern = match1.group(1).strip()
+                if pattern and not re.search(pattern, out_cs_content, re.MULTILINE):
+                    cs_missing = pattern
+                    break
+            match2 = re.match(r'^\s*;;\s*EXPECT-NO-CS:\s*(.*)', line)
+            if match2:
+                pattern = match2.group(1).strip()
+                if pattern and re.search(pattern, out_cs_content, re.MULTILINE):
+                    cs_present = pattern
+                    break
+
+        if cs_missing:
+            c_failed += 1
+            c_failures.append(f"{cs_name}.bjo: the generated C# has no match for: {cs_missing}")
+        elif cs_present:
+            c_failed += 1
+            c_failures.append(f"{cs_name}.bjo: the generated C# matches what it must not: {cs_present}")
+
+    return "codegen", c_total, c_failed, c_failures
+
+def run_repl_tests():
+    REPL_DIR = Path("TestFiles/repl")
+    r_total, r_failed = 0, 0
+    r_failures = []
+    
+    files = list(REPL_DIR.glob("*.in")) if REPL_DIR.exists() else []
+
+    # Sessionerna delar ingenting, och var och en är mest en kall
+    # kompilatorstart, så de körs samtidigt i stället för i följd.
+    def run_session(in_file):
+        with open(in_file) as stdin:
+            return subprocess.run(["dotnet", COMPILER_DLL, "--repl"], stdin=stdin,
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+    with ThreadPoolExecutor(max_workers=max(1, min(MAX_JOBS, len(files)))) as pool:
+        sessions = list(pool.map(run_session, files))
+
+    if files:
+        for in_file, res in zip(files, sessions):
+            repl_name = in_file.stem
+            r_total += 1
+            expected = in_file.with_suffix(".expected")
+
+            # Clean output
+            cleaned_lines = []
+            for line in res.stdout.splitlines():
+                line = re.sub(r'^(bjo> |\.\.\.> )*', '', line)
+                if not re.match(r'^(Building imported module|$)', line):
+                    cleaned_lines.append(line)
+            out_text = "\n".join(cleaned_lines) + ("\n" if cleaned_lines else "")
+            
+            if not expected.exists():
+                r_failed += 1
+                r_failures.append(f"{repl_name}: no recorded transcript")
+            else:
+                expected_text = expected.read_text()
+                if out_text != expected_text:
+                    r_failed += 1
+                    r_failures.append(f"{repl_name}: the session no longer matches its transcript")
+                    diff_file = LOG_DIR / f"repl_{repl_name}.diff"
+                    with open(diff_file, "w") as df:
+                        df.write("EXPECTED:\n" + expected_text + "\nGOT:\n" + out_text)
+                    
+    return "repl", r_total, r_failed, r_failures
+
+def run_reproducibility():
+    # Enstaka kompileringar med flit. Det som mäts är att samma källa ger samma
+    # byte, och batchläget emitterar med en annan C#-backend än en ensam
+    # kompilering gör — att jämföra över den gränsen vore att mäta något annat.
+    REPRO_MAIN = Path("TestFiles/006_modules_and_input.bjo")
+    REPRO_DEP = Path("TestFiles/006_lib")
+    rp_failed = 0
+    rp_failures = []
+    
+    if not REPRO_MAIN.exists():
+        return "repro", 0, 0, []
+        
+    def repro_build(env_var, val):
+        for ext in (".dll", ".pdb"):
+            REPRO_DEP.with_suffix(ext).unlink(missing_ok=True)
+        for ext in (".exe", ".dll", ".runtimeconfig.json", ".deps.json", ".pdb"):
+            REPRO_MAIN.with_suffix(ext).unlink(missing_ok=True)
+            
+        env = os.environ.copy()
+        env[env_var] = val
+        res = subprocess.run(["dotnet", COMPILER_DLL, str(REPRO_MAIN)], env=env, capture_output=True, text=True)
+        if res.returncode != 0:
+            return None
+            
+        md5s = []
+        for f in (REPRO_DEP.with_suffix(".dll"), REPRO_MAIN.with_suffix(".exe")):
+            if f.exists():
+                with open(f, "rb") as file:
+                    md5s.append(hashlib.md5(file.read()).hexdigest())
+            else:
+                md5s.append("MISSING")
+        return " ".join(md5s)
+
+    repro_a = repro_build("BJOLANG_X", "1")
+    repro_b = repro_build("BJOLANG_X", "1")
+    repro_c = repro_build("BJOLANG_OUT_OF_PROCESS_DEPS", "1")
+    
+    if repro_a and repro_b and repro_c:
+        if repro_a != repro_b:
+            rp_failed = 1
+            rp_failures.append(f"two identical builds differed: {repro_a} vs {repro_b}")
+        if repro_a != repro_c:
+            rp_failed = 1
+            rp_failures.append(f"in-process {repro_a} vs out-of-process {repro_c} — compilation state has leaked")
+    else:
+        rp_failed = 1
+        rp_failures.append("a reproducibility build did not compile")
+        
+    for ext in (".dll", ".pdb"):
+        REPRO_DEP.with_suffix(ext).unlink(missing_ok=True)
+    for ext in (".exe", ".dll", ".runtimeconfig.json", ".deps.json", ".pdb"):
+        REPRO_MAIN.with_suffix(ext).unlink(missing_ok=True)
+        
+    return "repro", 0, rp_failed, rp_failures
+
+def run_staleness():
+    STALE_DIR = LOG_DIR / "staleness"
+    s_total, s_failed = 0, 0
+    s_failures = []
+    
+    STALE_DIR.mkdir(exist_ok=True)
+    
+    (STALE_DIR / "leaf.bjo").write_text("(export flavour)\n(import (std prelude))\n(: flavour (-> string))\n(defun (flavour) \"banana\")\n")
+    (STALE_DIR / "middle.bjo").write_text("(export describe)\n(import (std prelude))\n(import \"leaf.bjo\")\n(: describe (-> string))\n(defun (describe) (string-append \"a \" (flavour)))\n")
+    (STALE_DIR / "app.bjo").write_text("(import (std prelude))\n(import \"middle.bjo\")\n(defun (main args) (println (describe)) 0)\n")
+    
+    def stale_check(label, wanted, got):
+        nonlocal s_total, s_failed, s_failures
+        s_total += 1
+        if got == wanted:
+            pass # OK
+        else:
+            s_failed += 1
+            s_failures.append(f"{label}: got '{got}', wanted '{wanted}'")
+
+    res = subprocess.run(["dotnet", COMPILER_DLL, str(STALE_DIR / "app.bjo")], capture_output=True, text=True)
+    if res.returncode == 0:
+        app_res = subprocess.run(["dotnet", str(STALE_DIR / "app.exe")], capture_output=True, text=True)
+        stale_check("a chain of three modules builds", "a banana\n", app_res.stdout)
+        
+        leaf = (STALE_DIR / "leaf.bjo")
+        leaf.write_text(leaf.read_text().replace('"banana"', '"cloudberry"'))
+        
+        res2 = subprocess.run(["dotnet", COMPILER_DLL, str(STALE_DIR / "app.bjo")], capture_output=True, text=True)
+        if res2.returncode == 0:
+            app_res2 = subprocess.run(["dotnet", str(STALE_DIR / "app.exe")], capture_output=True, text=True)
+            stale_check("an edit two modules down reaches the program", "a cloudberry\n", app_res2.stdout)
+        else:
+            stale_check("an edit two modules down reaches the program", "a cloudberry\n", "it did not compile")
+            
+        res3 = subprocess.run(["dotnet", COMPILER_DLL, str(STALE_DIR / "app.bjo")], capture_output=True, text=True)
+        stale_check("a build with nothing changed rebuilds nothing", 0, res3.stdout.count("Building imported module"))
+    else:
+        stale_check("a chain of three modules builds", "a banana\n", "it did not compile")
+
+    return "staleness", s_total, s_failed, s_failures
+
+def run_check_tests():
+    # `--check` kör frontenden och stannar. Det som mäts är de två sakerna som
+    # skiljer den från ett bygge: att den inte lämnar någon artefakt efter sig,
+    # och att den säger exakt samma sak om ett trasigt program som ett bygge
+    # gör — en check som rapporterar annorlunda vore en andra sanning om
+    # programmet.
+    GOOD = Path("TestFiles/000_simple.bjo")
+    BAD = Path("TestFiles/errors/multi_type_errors.bjo")
+    c_total, c_failed = 0, 0
+    c_failures = []
+
+    def check_that(label, condition, detail=""):
+        nonlocal c_total, c_failed
+        c_total += 1
+        if not condition:
+            c_failed += 1
+            c_failures.append(f"{label}{': ' + detail if detail else ''}")
+
+    if GOOD.exists():
+        for ext in (".exe", ".dll", ".runtimeconfig.json", ".deps.json", ".pdb"):
+            GOOD.with_suffix(ext).unlink(missing_ok=True)
+
+        res = subprocess.run(["dotnet", COMPILER_DLL, "--check", str(GOOD)], capture_output=True, text=True)
+        check_that("a good file checks clean", res.returncode == 0, f"exit {res.returncode}")
+
+        produced = [ext for ext in (".exe", ".dll") if GOOD.with_suffix(ext).exists()]
+        check_that("a check writes no assembly", not produced, ", ".join(produced))
+
+        for ext in (".exe", ".dll", ".runtimeconfig.json", ".deps.json", ".pdb"):
+            GOOD.with_suffix(ext).unlink(missing_ok=True)
+
+    if BAD.exists():
+        checked = subprocess.run(["dotnet", COMPILER_DLL, "--check", str(BAD)], capture_output=True, text=True)
+        built = subprocess.run(["dotnet", COMPILER_DLL, str(BAD)], capture_output=True, text=True)
+        remove_artifacts(BAD)
+
+        check_that("a bad file is rejected by --check", checked.returncode != 0)
+
+        # Varje rad som är ett felmeddelande, i den ordning de kom. Banderoller
+        # och "Compilation failed." hör till bygget, inte till diagnostiken.
+        def diagnostics(output):
+            return [
+                line for line in output.splitlines()
+                if line.strip() and not line.startswith("===") and not line.startswith("Compiling")
+                and not line.startswith("Building imported module") and line != "Compilation failed."
+                and not re.match(r'^\d+ errors?\.$', line)
+            ]
+
+        check_that(
+            "--check says what a build says",
+            diagnostics(checked.stdout) == diagnostics(built.stdout),
+            "the two reports differ",
+        )
+
+    return "check", c_total, c_failed, c_failures
+
+
+
+
+def run_graph_tests():
+    """`--build-graph`: att ordningen kommer ur importerna, att bara det som är
+    inaktuellt byggs, att ett fel stoppar det som står ovanför och inget annat,
+    och att det som byggs är samma sak som en ensam kompilering ger.
+
+    Ett eget litet träd under `.test-logs`, så att inget annat i sviten rör det:
+    a ← b ← c, och d för sig själv. Alla får preluden underförstått, så grafen
+    når också in i standardbiblioteket — som redan är byggt och ska förbli
+    orört.
+    """
+    GRAPH_DIR = (LOG_DIR / "graph").resolve()
+    g_total, g_failed = 0, 0
+    g_failures = []
+
+    def check_that(label, ok, detail=""):
+        nonlocal g_total, g_failed
+        g_total += 1
+        if not ok:
+            g_failed += 1
+            g_failures.append(f"{label}: {detail}" if detail else label)
+
+    GRAPH_DIR.mkdir(parents=True, exist_ok=True)
+    sources = {
+        "a": '(export one)\n(: one (-> int))\n(defun (one) 1)\n',
+        "b": '(import "a.bjo")\n(export two)\n(: two (-> int))\n(defun (two) (+ (one) 1))\n',
+        "c": '(import "b.bjo")\n(export three)\n(: three (-> int))\n(defun (three) (+ (two) 1))\n',
+        "d": '(export four)\n(: four (-> int))\n(defun (four) 4)\n',
+    }
+    for name, text in sources.items():
+        (GRAPH_DIR / f"{name}.bjo").write_text(text)
+
+    def graph(*extra):
+        return subprocess.run(["dotnet", str(COMPILER_DLL), "--build-graph", *extra, str(GRAPH_DIR)],
+                              capture_output=True, text=True)
+
+    def built(res):
+        """Namnen på det trädets moduler som byggdes, i den ordning de blev klara."""
+        return [Path(line.split(": ", 1)[1]).stem
+                for line in res.stdout.splitlines()
+                if line.startswith("Built library: ") and str(GRAPH_DIR) in str(Path(line.split(": ", 1)[1]).resolve())]
+
+    def say(res):
+        return (res.stdout + res.stderr)[-400:]
+
+    first = graph()
+    order = built(first)
+    check_that("a graph builds everything in it", first.returncode == 0 and sorted(order) == ["a", "b", "c", "d"],
+               say(first))
+    check_that("and in an order its imports allow",
+               all(x in order for x in "abc") and order.index("a") < order.index("b") < order.index("c"),
+               f"built in the order {order}")
+    check_that("and leaves the standard library alone",
+               "lib/std" not in "".join(l for l in first.stdout.splitlines() if l.startswith("Built")),
+               say(first))
+
+    again = graph()
+    check_that("a graph with nothing changed builds nothing", again.returncode == 0 and built(again) == [],
+               say(again))
+
+    planned = graph("--dry-run")
+    check_that("and a dry run says so", planned.returncode == 0 and "Would build" not in planned.stdout,
+               say(planned))
+
+    # En ändring längst ned når allt ovanför den, och inget vid sidan om.
+    time.sleep(0.01)
+    (GRAPH_DIR / "a.bjo").write_text(sources["a"].replace("(defun (one) 1)", "(defun (one) 10)"))
+    edited = graph()
+    check_that("an edit rebuilds the module and what imports it, and nothing else",
+               edited.returncode == 0 and sorted(built(edited)) == ["a", "b", "c"], say(edited))
+
+    # Det som byggdes länkar, och med det nya värdet.
+    app = GRAPH_DIR / "app.bjo"
+    app.write_text('(import "c.bjo")\n(defun (main args) (println (int->string (three))) 0)\n')
+    compiled = subprocess.run(["dotnet", str(COMPILER_DLL), str(app)], capture_output=True, text=True)
+    ran = subprocess.run(["dotnet", str(app.with_suffix(".exe"))], capture_output=True, text=True) \
+        if compiled.returncode == 0 else None
+    check_that("a program linking what the graph built runs, with the edit in it",
+               ran is not None and ran.stdout == "12\n",
+               ran.stdout if ran else say(compiled))
+    remove_artifacts(app, extra=(".bjobuild",))
+    app.unlink()
+
+    # En arbetare bygger samma byte som en ensam kompilering.
+    from_graph = (GRAPH_DIR / "b.dll").read_bytes()
+    alone = subprocess.run(["dotnet", str(COMPILER_DLL), "--lib", str(GRAPH_DIR / "b.bjo")], capture_output=True, text=True)
+    check_that("a module built by the graph is the same bytes as one compiled alone",
+               alone.returncode == 0 and (GRAPH_DIR / "b.dll").read_bytes() == from_graph, say(alone))
+
+    # Ett fel: det som importerar den felaktiga hoppas över, d byggs inte om.
+    time.sleep(0.01)
+    (GRAPH_DIR / "a.bjo").write_text(sources["a"].replace("(defun (one) 1)", '(defun (one) "not an int")'))
+    broken = graph()
+    check_that("a module that does not compile fails the graph", broken.returncode != 0, "it exited 0")
+    check_that("and says which, with what the compiler said",
+               "Failed to build" in broken.stdout and "a.bjo" in broken.stdout and "do not match" in broken.stdout,
+               say(broken))
+    skipped = [l for l in broken.stdout.splitlines() if l.startswith("Skipped:")]
+    check_that("and skips what imports it, naming the cause",
+               len(skipped) == 2 and all("a.bjo" in l for l in skipped)
+               and any("b.dll" in l for l in skipped) and any("c.dll" in l for l in skipped),
+               "\n".join(skipped) or say(broken))
+    check_that("and leaves what does not import it alone", "d" not in built(broken), say(broken))
+
+    # En cykel: ingenting kan byggas först, och det sägs som en kedja.
+    (GRAPH_DIR / "a.bjo").write_text('(import "c.bjo")\n' + sources["a"])
+    cyclic = graph()
+    check_that("an import cycle is refused", cyclic.returncode != 0 and built(cyclic) == [], say(cyclic))
+    check_that("and named as a chain",
+               "import each other" in cyclic.stdout and all(f"{n}.bjo" in cyclic.stdout for n in "abc"),
+               say(cyclic))
+
+    return "graph", g_total, g_failed, g_failures
+
+
 # Run phases concurrently
 phases = []
-with ThreadPoolExecutor(max_workers=4) as executor:
+# En tråd per fas. Faserna väntar mest på kompilatorprocesser, så ingen av dem
+# ska behöva vänta på en ledig tråd.
+with ThreadPoolExecutor(max_workers=6) as executor:
     if list(Path("TestFiles/codegen").glob("*.bjo")) if Path("TestFiles/codegen").exists() else []:
         print("-" * 50)
         print_color(BLUE, "Checking the generated C#...")
@@ -1166,10 +1286,16 @@ with ThreadPoolExecutor(max_workers=4) as executor:
 
     print("-" * 50)
     print_color(BLUE, "Checking packages and roots...")
-    phases.append(executor.submit(run_package_tests))
+    phases.append(packages_future)
+
+    print("-" * 50)
+    print_color(BLUE, "Checking graph builds...")
+    phases.append(executor.submit(run_graph_tests))
 
     package_total = package_failed = 0
     package_failures = []
+    graph_total = graph_failed = 0
+    graph_failures = []
     codegen_total = codegen_failed = 0
     repl_total = repl_failed = 0
     repro_total = repro_failed = 0
@@ -1224,6 +1350,13 @@ with ThreadPoolExecutor(max_workers=4) as executor:
             else:
                 for f in package_failures:
                     print(f"  [{RED}FAIL{NC}] {f}")
+        elif name == "graph":
+            graph_total, graph_failed, graph_failures = total, failed, failures
+            if failed == 0:
+                print(f"  [{GREEN}PASS{NC}] graph builds")
+            else:
+                for f in graph_failures:
+                    print(f"  [{RED}FAIL{NC}] {f}")
 
 end_time = time.time()
 duration = end_time - start_time
@@ -1250,6 +1383,8 @@ if check_total > 0:
     print(f"--check:            {check_total - check_failed}/{check_total} checks behaved")
 if package_total > 0:
     print(f"Packages:           {package_total - package_failed}/{package_total} package rules held")
+if graph_total > 0:
+    print(f"Graph builds:       {graph_total - graph_failed}/{graph_total} graph rules held")
 print(f"Total time:         {duration:.2f}s")
 print("")
 
@@ -1268,8 +1403,9 @@ print_failures("Staleness Failures", stale_failures)
 print_failures("Codegen Test Failures", codegen_failures)
 print_failures("--check Failures", check_failures)
 print_failures("Package Failures", package_failures)
+print_failures("Graph Build Failures", graph_failures)
 
-if (error_failed or codegen_failed or repl_failed or repro_failed or stale_failed or warning_failed or check_failed or package_failed) and not compiled_failed and not run_failed:
+if (error_failed or codegen_failed or repl_failed or repro_failed or stale_failed or warning_failed or check_failed or package_failed or graph_failed) and not compiled_failed and not run_failed:
     sys.exit(1)
     
 if compiled_failed or run_failed:

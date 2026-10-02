@@ -57,15 +57,14 @@ let private dumpPaths (emitCs: string option) : string * string =
 /// What a finished build was built from, written beside the source as
 /// `<source>.bjobuild`.
 ///
-/// A driver — `bjo`, `bjor` — has to decide whether to compile at all before it
-/// starts a compiler, because starting one costs about half a second whatever
-/// the answer turns out to be. Deciding that means knowing the file's whole
-/// source closure and every module it links, and only the compiler knows those:
-/// an `include` is a path inside a form and an import is a module path resolved
-/// against the installation, so a driver that wants the same answer has to read
-/// Bjolang. `bjor` did read it, with `grep` and `awk`, and the approximation
-/// was wrong in both directions — it followed module imports only one edge deep
-/// and could not see an `include` written anywhere unusual.
+/// A driver such as `bjo` has to decide whether to compile at all before it
+/// starts a compiler, because starting one costs time whatever the answer turns
+/// out to be. Deciding that means knowing the file's whole source closure and
+/// every module it links, and only the compiler knows those: an `include` is a
+/// path inside a form and an import is a module path resolved against the
+/// installation. A driver that worked them out from the text itself could
+/// disagree with the compiler, for example by following imports only one edge
+/// deep or by missing an `include`.
 ///
 /// So the build records what it read, and the driver compares timestamps.
 /// One line per fact, `key value`, keys repeating:
@@ -978,6 +977,24 @@ let private buildChain () =
 
     inherited @ List.ofSeq inFlight
 
+/// The command-line options a child compiler needs to see the same packages and
+/// frameworks as this one.
+///
+/// A child process does not inherit them, and a module built without them would
+/// be compiled against other packages than the module importing it. Used by the
+/// out-of-process dependency build and by graph-build workers, so both forward
+/// the same options.
+let forwardedArguments () : string list =
+    (match Paths.rootsFile () with
+     | Some path -> [ "--roots"; path ]
+     | None -> [])
+    @ (match Frameworks.declarationFilePath () with
+       | Some path -> [ "--frameworks"; path ]
+       | None -> [])
+    @ (match NuGetRefs.directory () with
+       | Some dir -> [ "--nuget"; dir ]
+       | None -> [])
+
 /// Refuses a module that is imported from a module it is itself building.
 let private checkNotCyclic (chain: string list) (bjoPath: string) =
     if List.contains bjoPath chain then
@@ -1004,20 +1021,9 @@ let private compileDependencyOutOfProcess (bjoPath: string) : string =
 
     let self = System.Reflection.Assembly.GetEntryAssembly().Location
 
-    // What this process was told about packages and frameworks, forwarded: a
-    // subprocess inherits neither, and a dependency built without them would be
-    // built against other packages and under other declarations than the module
-    // importing it.
+    // What this process was told about packages and frameworks, forwarded.
     let inherited =
-        (match Paths.rootsFile () with
-         | Some path -> $" --roots \"{path}\""
-         | None -> "")
-        + (match Frameworks.declarationFilePath () with
-           | Some path -> $" --frameworks \"{path}\""
-           | None -> "")
-        + (match NuGetRefs.directory () with
-           | Some dir -> $" --nuget \"{dir}\""
-           | None -> "")
+        forwardedArguments () |> List.map (fun a -> $" \"{a}\"") |> String.concat ""
 
     let fileName, args =
         if System.String.IsNullOrEmpty self then
@@ -1285,3 +1291,67 @@ let runBatch (options: Options) (ifStale: bool) (reportPath: string option) (fil
     eprintfn "Batch: %d files, %d failed." results.Length failed.Length
 
     if failed.IsEmpty then 0 else 1
+
+// ---------------------------------------------------------------------------
+// A worker for a graph build
+// ---------------------------------------------------------------------------
+
+/// Builds libraries for a graph build until stdin ends.
+///
+/// Reads one source path per line on stdin, compiles it as a library, and
+/// writes one JSON line to stdout with `file`, `status` and `output`. The
+/// process stays alive between modules so that the compiler's start-up cost is
+/// paid once per worker rather than once per module.
+///
+/// The worker does not decide what to build. `BuildGraph` sends a module only
+/// when everything it imports is built, so the import walk inside `compile`
+/// finds every dependency current and builds nothing itself. That is what makes
+/// it safe to run several workers at once.
+///
+/// Each module is compiled the way a single `--lib` compilation would compile
+/// it: in `Session.isolated`, and through the same C# backend. In-process
+/// Roslyn and the SDK's `csc` produce different bytes (see
+/// `CSharpEmit.preferInProcess`), so using the same backend means a module
+/// comes out identical whichever worker builds it.
+///
+/// The JSON lines go to the stdout the process started with.
+/// `Diagnostics.captured` redirects the console while a module compiles and
+/// restores it afterwards, so nothing else writes there.
+let runWorker () : int =
+    loadReferencedAssemblies ()
+
+    // Turns off the step-by-step narration of a successful compile. Warnings
+    // and errors are still printed, and the graph build shows them.
+    Diagnostics.verbose <- false
+
+    let reply = System.Console.Out
+
+    let rec serve () =
+        match System.Console.In.ReadLine() with
+        | null -> 0
+        | line when line.Trim() = "" -> serve ()
+        | line ->
+            let fullPath = Path.GetFullPath(line.Trim())
+
+            let compileOne () =
+                Diagnostics.reset ()
+
+                try
+                    compile { IsLibrary = true; Debug = false; EmitCs = None; Check = false } fullPath
+                with ex ->
+                    Diagnostics.reportFailure ex
+                    1
+
+            let status, output = Diagnostics.captured (fun () -> Session.isolated compileOne)
+
+            reply.WriteLine(
+                "{\"file\":" + jsonString fullPath
+                + ",\"status\":" + string status
+                + ",\"output\":" + jsonString output
+                + "}"
+            )
+
+            reply.Flush()
+            serve ()
+
+    serve ()

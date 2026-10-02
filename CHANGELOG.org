@@ -3,6 +3,40 @@
 
 What each change guarantees, and what it leaves open.
 
+* Graph builds, a ReadyToRun compiler, and ~bjor~ removed
+
+- *The compiler builds a set of libraries in parallel.*
+  ~--build-graph PATH...~ reads the imports of every ~.bjo~ under the given
+  paths, sorts them, works out which modules are out of date, and builds each
+  one in a ~--worker~ process as soon as everything it imports is built. A
+  module that fails skips everything that imports it; an import cycle is
+  refused and printed as a chain. ~-j N~ limits the workers, and ~--dry-run~
+  prints the plan. The out-of-date rule is the one ~ensureLibrary~ uses
+  (~Pipeline.upToDateAgainst~), and imports resolve through the same function
+  (~resolveImport~), so the plan matches what the compiler would build. A
+  worker emits through the same C# backend as a single ~--lib~ compile, so its
+  output is byte-identical. Checked by a new phase in ~run_tests.py~.
+- *~build_std.sh~ is one graph build over ~lib/~.* It no longer lists modules
+  or their order, so a module added under ~lib/~ is built without being named
+  there. The fixture libraries in ~TestFiles/inc~ are built the same way.
+- *The compiler is a ReadyToRun publish in ~bin/compiler~,* built by
+  ~build_compiler.sh~, which is also the only place that knows that path.
+  ~bjo~, ~build_std.sh~, ~run_tests.py~, ~run_bjo_tests.py~ and
+  ~bench/run.sh~ ask it. ~bjo~ treats a build record naming a different
+  compiler as stale, so moving the compiler rebuilds everything once.
+- *~bjor~ is gone.* Use ~bjo~, or the compiler directly. The leftover
+  ~lib/bjor~ build output, whose source moved to ~bjo/manifest.bjo~, is gone
+  with it, which frees the package name ~(bjor)~.
+- *~run_tests.py~ runs more of itself in parallel:* codegen and warning tests
+  in batches, REPL sessions at once, and the package tests alongside the test
+  groups. ~TestFiles/172_http.bjo~'s slow handler sleeps 1.2 s instead of 4.
+
+Left open: ~bjo~ still builds project libraries with ~--batch --if-stale~
+rather than ~--build-graph~, and nothing stops a graph build and an unrelated
+compile from writing the same ~.dll~ at the same time. The first build of the
+compiler on a new machine downloads the ReadyToRun crossgen package for its
+platform.
+
 * Four silent failures fixed: an operator's name, file-copy, by-lines, json-> int
 
 Each did the wrong thing without a word. All four were listed as open in

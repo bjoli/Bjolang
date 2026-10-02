@@ -942,7 +942,8 @@ def test_frameworks(work, c):
           '  (status-ok (: Microsoft.AspNetCore.Http.StatusCodes.Status200OK int #:get)))\n'
           '(defun (main) (println (str "lone " (int->string status-ok))) 0)\n')
 
-    compiler = ROOT / "bin" / "Release" / "net10.0" / "Bjolang.dll"
+    compiler = Path(subprocess.run([str(ROOT / "build_compiler.sh"), "--path"],
+                                   capture_output=True, text=True, check=True).stdout.strip())
     built = subprocess.run(["dotnet", str(compiler), "--framework", ASPNET, "lone.bjo"],
                            cwd=str(lone), capture_output=True, text=True, timeout=600)
     c.worked("--framework declares one for a single-file build", built)

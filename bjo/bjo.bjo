@@ -22,9 +22,8 @@
 ;; module it read; see `Build.writeBuildRecord`. So the question "is there
 ;; anything to do?" is a timestamp comparison over a list, and nothing here has
 ;; to know what an `include` is or where a module path resolves to. Those are
-;; the compiler's to know. A driver that reads them out of the source again —
-;; as `bjor` does, with `grep` and `awk` — is a second answer to a question that
-;; already has one, and the two can differ.
+;; the compiler's to know. A driver that worked them out from the source
+;; itself could disagree with the compiler about what a file depends on.
 ;;
 ;; Children inherit this process's console, which is why `(std run)` is not used
 ;; here: it redirects stdin and stdout in order to read them, and the output of
@@ -145,8 +144,14 @@
     ((Some dir) dir)
     (None (path-absolute (path-combine clr-base-dir "..")))))
 
+;; The compiler. `build_compiler.sh` is the one place that knows where it is,
+;; and the launcher exports its answer as `BJOLANG_COMPILER`. The fallback is
+;; that same answer written down, for a `bjo.exe` started without the launcher.
 (: compiler-dll string)
-(def compiler-dll (path-combine root "bin" "Release" target-framework "Bjolang.dll"))
+(def compiler-dll
+  (match (get-environment-variable "BJOLANG_COMPILER")
+    ((Some path) path)
+    (None (path-combine root "bin" "compiler" "Bjolang.dll"))))
 
 
 ;; ---------------------------------------------------------------------------
@@ -174,6 +179,12 @@
   (: BuildRecord (Record (: mode string)
                          (: output string)
                          (: inputs (List string))
+                         ;; The compiler that built it. Its timestamp is also
+                         ;; in `inputs`; this is compared as a path, because a
+                         ;; different compiler can be older than the artefact,
+                         ;; and the timestamp check would then call the
+                         ;; artefact current.
+                         (: compiler string)
                          ;; The .NET shared frameworks the file's package
                          ;; declared when it was built. Not a file, so not an
                          ;; input: a declaration that is *removed* deletes the
@@ -235,6 +246,7 @@
           (:when-let (Some (Tuple key value)) (split-line (string-trim line)))
           (:acc mode (folding "" (if (= key "mode") value mode)))
           (:acc artefact (folding "" (if (= key "output") value artefact)))
+          (:acc compiler (folding "" (if (= key "compiler") value compiler)))
           ;; A key this `bjo` does not know is a record from a later one, and is
           ;; accumulated nowhere: the three fields here are what a decision is
           ;; made of, and they are all present.
@@ -247,6 +259,7 @@
                  (Some (BuildRecord (mode mode)
                                     (output artefact)
                                     (inputs inputs)
+                                    (compiler compiler)
                                     (frameworks (list-sort frameworks))
                                     (declaration-file declarations)
                                     (nuget nuget)))))))
@@ -360,6 +373,10 @@
         (artefact (record-ref rec output)))
   (or (not (= (record-ref rec mode) wanted))
       (not (file-exists? artefact))
+      ;; Built by another compiler than the one this would build it with, or by
+      ;; one the record does not name.
+      (= (record-ref rec compiler) "")
+      (not (= (path-absolute (record-ref rec compiler)) (path-absolute compiler-dll)))
       ;; A changed declaration is a changed build: what a module may *name*
       ;; follows from it, so one built under another set has to be built again
       ;; — and told, if it now names something it may not.
