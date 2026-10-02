@@ -422,6 +422,23 @@ its spelling into the emitted C#, so only one end of the rename would move.
 
 * Inference faults found in passing
 
+** A local function generic only in its result cannot be called
+
+#+BEGIN_SRC scheme
+(defun (parse args)
+  (defun (done rest) (Ok (Record ... rest)))   ; (-> (List string) (Result %e Record))
+  (match args (Nil (done Nil)) ...))
+#+END_SRC
+
+~done~ is generalised over the error type of its ~Result~, which appears only in
+its result. The frontend accepts that, and the C# it becomes is a generic local
+method whose type argument nothing at a call site determines, so the C# compile
+fails with CS0411 instead of a Bjolang error. Either the instantiation should be
+emitted at the call (~done<string>(...)~), or a type variable that appears only in
+a local function's result should not be generalised. Found in ~bjo/bjo.bjo~'s
+~parse-flags~, which now has ~done~ answer the record and wraps it in ~Ok~ at
+each call.
+
 ** An accumulator's type is left unresolved in the generic original
 
 #+BEGIN_SRC scheme

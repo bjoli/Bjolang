@@ -54,6 +54,7 @@
 (import "manifest.bjo")
 (import "project.bjo")
 (import "resolve.bjo")
+(import "publish.bjo")
 
 ;; ---------------------------------------------------------------------------
 ;; Interop
@@ -202,7 +203,12 @@
                          ;; Compared for the same reason as `declaration-file`:
                          ;; packages removed from the manifest leave no file
                          ;; that a timestamp could show.
-                         (: nuget string))))
+                         (: nuget string)
+                         ;; For a program: what its resolver loads, as the
+                         ;; `link` and `native` lines name them. What
+                         ;; `bjo publish` copies.
+                         (: links (List (Tuple string string)))
+                         (: natives (List (Tuple string string))))))
 
 (: record-file (-> string string))
 (defun (record-file file) (clr-change-extension file ".bjobuild"))
@@ -219,6 +225,14 @@
                   (substring/cursors line (string-cursor-next line space)
                                      (string-cursor-end line)))))
     (None None)))
+
+;; A `link` or `native` value: a name, then a path. A value with no space in it
+;; is a name with no path, which a publish reports as a file that is not there.
+(: pair-of (-> string (Tuple string string)))
+(defun (pair-of value)
+  (match (split-line value)
+    ((Some pair) pair)
+    (None (Tuple value ""))))
 
 ;; The keys that name a file the artefact must be newer than. What they are
 ;; called apart is nothing this has to know.
@@ -254,6 +268,10 @@
           (:acc frameworks (listing value) #:when (= key "framework"))
           (:acc declarations (folding "" (if (= key "frameworks") value declarations)))
           (:acc nuget (folding "" (if (= key "nuget") value nuget)))
+          ;; `link <name> <path>` and `native <key> <path>`: the value splits
+          ;; at its first space the way a line does, and a path may hold more.
+          (:acc links (listing (pair-of value)) #:when (= key "link"))
+          (:acc natives (listing (pair-of value)) #:when (= key "native"))
           => (if (= artefact "")
                  None
                  (Some (BuildRecord (mode mode)
@@ -262,7 +280,9 @@
                                     (compiler compiler)
                                     (frameworks (list-sort frameworks))
                                     (declaration-file declarations)
-                                    (nuget nuget)))))))
+                                    (nuget nuget)
+                                    (links links)
+                                    (natives natives)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Compiling
@@ -537,6 +557,11 @@
                      (: force bool)
                      (: lib bool)
                      (: locked bool)
+                     ;; `-o DIR`: where `publish` writes. Only `publish` takes it.
+                     (: output (Option string))
+                     ;; `--whole-stdlib`: `publish` copies all of the standard
+                     ;; library, sources and documentation included.
+                     (: whole-stdlib bool)
                      (: rest (List string)))))
 
 ;; The directory a file sits in, for the walk upward that finds a project.
@@ -673,6 +698,107 @@
 
 
 ;; ---------------------------------------------------------------------------
+;; Publishing
+;; ---------------------------------------------------------------------------
+
+;; The runtime the compiler links programs against, where the compiler finds
+;; it: the Release build of BjolangRuntime in the installation.
+(: runtime-dir string)
+(def runtime-dir (path-combine root "BjolangRuntime" "bin" "Release" target-framework))
+
+;; The packages a project was built from, with the resources their manifests
+;; declare. The project itself is the one whose files go under `app/`.
+(: published-packages (-> Project Prepared (List PublishedPackage)))
+(defun (published-packages project ready)
+  (def own-name (record-ref (project-package project) name))
+  (loop (:for r (prepared-roots ready))
+        (:when-let (Some dir) (root-package-dir r))
+        (:let resources (match (root-package r)
+                          ((Some package) (record-ref package resources))
+                          (None Nil)))
+        (:acc out (listing (PublishedPackage (name (root-name r))
+                                             (dir dir)
+                                             (resources resources)
+                                             (own (= (root-name r) own-name)))))
+        => out))
+
+;; Publishes a program that has been built, and says where to.
+(: publish-built #:sync (-> BuildRecord (List PublishedPackage) Cmdline string int))
+(defun (publish-built rec packages line out)
+  (def program (record-ref rec output))
+  (if (string-ends-with? program ".dll")
+      (fail (str "bjo publish: " program " has no main, so it is a library. Only a program can be published."))
+      (match (publish (Publication (program program)
+                                   (links (record-ref rec links))
+                                   (natives (record-ref rec natives))
+                                   (packages packages)
+                                   (lib (lib-dir))
+                                   (whole-stdlib (record-ref line whole-stdlib))
+                                   (runtime runtime-dir)
+                                   (out out)))
+        ((Err why) (fail why))
+        ((Ok n)
+         (def dir (path-absolute out))
+         (def name (match (path-filename program)
+                     ((Some name) name)
+                     (None program)))
+         (println #"Published ${program} to ${dir}: ${n} files.")
+         (println #"Run it with: dotnet ${(path-combine dir name)}")
+         0))))
+
+;; `bjo publish` in a project: a release build of its entry, then the copy.
+(: publish-project #:sync (-> Project Cmdline int))
+(defun (publish-project project line)
+  (with-return ret
+    (unless (project-has-entry? project)
+      (ret (fail (str "bjo publish: " (package-name-of project) " is a library — there is no "
+                      (record-ref (project-package project) entry) " to publish."))))
+    (def (Ok ready) (prepare project (record-ref line locked))
+      :leave ((Err why) (fail why)))
+    (match (ensure-built (project-entry project) #f #f (record-ref line force) (prepared-against ready))
+      ((Err status) status)
+      ((Ok (Tuple rec _))
+       (publish-built rec
+                      (published-packages project ready)
+                      line
+                      (match (record-ref line output)
+                        ((Some dir) dir)
+                        (None (path-combine (project-dir project) "publish"))))))))
+
+;; `bjo publish file.bjo`. A file inside a project is built against the
+;; project's packages, and carries their resources, as `bjo build` would build
+;; it; one outside a project has neither.
+(: publish-file #:sync (-> string Cmdline int))
+(defun (publish-file file line)
+  (with-return ret
+    (def (Ok around) (project-around (file-directory file))
+      :leave ((Err why) (fail why)))
+    (def context
+      (match around
+        (None (Ok None))
+        ((Some project)
+         (match (prepare project (record-ref line locked))
+           ((Ok ready) (Ok (Some (Tuple project ready))))
+           ((Err why) (Err why))))))
+    (def (Ok prepared) context :leave ((Err why) (fail why)))
+    (def roots (match prepared
+                 ((Some (Tuple _ ready)) (prepared-against ready))
+                 (None nothing-against)))
+    (def packages (match prepared
+                    ((Some (Tuple project ready)) (published-packages project ready))
+                    (None Nil)))
+    (match (ensure-built file #f #f (record-ref line force) roots)
+      ((Err status) status)
+      ((Ok (Tuple rec _))
+       (publish-built rec
+                      packages
+                      line
+                      (match (record-ref line output)
+                        ((Some dir) dir)
+                        (None (path-combine (file-directory file) "publish"))))))))
+
+
+;; ---------------------------------------------------------------------------
 ;; The command line
 ;; ---------------------------------------------------------------------------
 
@@ -682,20 +808,28 @@
 ;; to the program rather than to the compiler.
 (: parse-flags (-> (List string) (Result string Cmdline)))
 (defun (parse-flags argv)
-  (let go ((left argv) (debug #f) (force #f) (lib #f) (locked #f))
+  (let go ((left argv) (debug #f) (force #f) (lib #f) (locked #f) (output None) (whole-stdlib #f))
+    (defun (done rest)
+      (Cmdline (debug debug) (force force) (lib lib) (locked locked)
+               (output output) (whole-stdlib whole-stdlib) (rest rest)))
     (match left
-      (Nil (Ok (Cmdline (debug debug) (force force) (lib lib) (locked locked) (rest Nil))))
+      (Nil (Ok (done Nil)))
       ((Cons a more)
        (case a
-         ("--" (Ok (Cmdline (debug debug) (force force) (lib lib) (locked locked) (rest more))))
-         (("-d" "--debug") (go more #t force lib locked))
-         (("-c" "--compile") (go more debug #t lib locked))
-         ("--lib" (go more debug force #t locked))
-         ("--locked" (go more debug force lib #t))
+         ("--" (Ok (done more)))
+         (("-d" "--debug") (go more #t force lib locked output whole-stdlib))
+         (("-c" "--compile") (go more debug #t lib locked output whole-stdlib))
+         ("--lib" (go more debug force #t locked output whole-stdlib))
+         ("--locked" (go more debug force lib #t output whole-stdlib))
+         ("--whole-stdlib" (go more debug force lib locked output #t))
+         (("-o" "--output")
+          (match more
+            ((Cons dir after) (go after debug force lib locked (Some dir) whole-stdlib))
+            (Nil (Err "bjo: -o needs a directory"))))
          (else
           (if (string-starts-with? a "-")
               (Err #"bjo: unknown flag '${a}'")
-              (Ok (Cmdline (debug debug) (force force) (lib lib) (locked locked) (rest left))))))))))
+              (Ok (done left)))))))))
 
 (: usage (-> void))
 (defun (usage)
@@ -713,6 +847,9 @@
   (println "  bjo build [-d] [-c] [--lib] <file.bjo>  Compile one file if it needs it, and stop.")
   (println "  bjo check [<file.bjo>...]               Report errors without building anything.")
   (println "                                          With no file, every module of this project.")
+  (println "  bjo publish [-c] [-o dir] [<file.bjo>]  Build a program for release, and copy it with")
+  (println "                                          everything it loads into one directory that")
+  (println "                                          runs from anywhere. Default: publish/ beside it.")
   (println "  bjo repl                                Start a REPL, under rlwrap where there is one.")
   (println "  bjo rebjo                               Rebuild the compiler and bjo itself.")
   (println "  bjo help                                Show this message.")
@@ -725,6 +862,11 @@
   (println "  --locked       Refuse to change bjo.lock or packages.lock.json: any difference")
   (println "                 from them is an error. For a build that must be the one the")
   (println "                 locks describe.")
+  (println "  -o <dir>       Where publish writes. An existing directory is replaced only")
+  (println "                 when an earlier publish made it.")
+  (println "  --whole-stdlib For publish: copy all of the standard library, sources and")
+  (println "                 documentation included, for a program that reads Bjolang's")
+  (println "                 own modules at run time. Otherwise only what it links.")
   (println "  --             End of flags, for a file whose name begins with a dash.")
   (println "")
   (println "A project is a directory with a manifest.bjodat in it, found by looking")
@@ -841,6 +983,24 @@
        (def (Ok roots) (roots-for-file first locked?) :leave ((Err why) (fail why)))
        (cmd-check resolved roots)))
 
+    ;; A release build of a program, and a copy of everything it loads in one
+    ;; directory that can be moved anywhere. See `publish.bjo`.
+    ("publish"
+     (with-return ret
+       (when (or debug? lib?)
+         (ret (fail "bjo publish: publishes a release build of a program, so it takes no -d or --lib.")))
+       (cond
+         ((or (empty? rest) (= rest (list ".")))
+          (match (project-here "publish")
+            ((Err why) (fail why))
+            ((Ok project) (publish-project project line))))
+         ((= (length rest) 1)
+          (def (Cons name _) rest :leave-with 1)
+          (def (Some file) (resolve-source name)
+            :leave-with (fail #"bjo publish: no such file '${name}'."))
+          (publish-file file line))
+         (else (fail "bjo publish: takes one source file, or none for this project.")))))
+
     ("repl"
      (with-return ret
        (when (or debug? force? lib?) (ret (fail "bjo repl: takes no build flags.")))
@@ -874,4 +1034,6 @@
     :leave (Nil (usage) 1))
   (match (parse-flags rest)
     ((Err message) (fail message))
+    ((Ok line) #:when (and (some? (record-ref line output)) (not (= command "publish")))
+     (fail #"bjo ${command}: -o is for publish, which writes a directory; ${command} does not."))
     ((Ok line) (dispatch command line))))

@@ -3559,8 +3559,12 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         let tmp = freshName "__tuple"
         generateBindingValue ctx (DeclareAndAssign(typeToString value.Type, tmp)) value
         for i, name in List.indexed names do
-            indent ctx
-            appendLine ctx $"var %s{sanitizeIdent name} = %s{tmp}.Item%d{i + 1};"
+            // A `_` binds nothing. Emitted, it would be a C# local named `_`:
+            // two of them collide, and one turns every later `_ = ...` discard
+            // in the method into an assignment to it.
+            if name <> "_" then
+                indent ctx
+                appendLine ctx $"var %s{sanitizeIdent name} = %s{tmp}.Item%d{i + 1};"
         generateBlock ctx target body
 
     | TTryFinally (body, cleanup) ->
@@ -5693,8 +5697,10 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     appendLine ctx $"public static %s{typeToString defType} %s{Prelude.moduleMemberName defName};"
                 | Choice3Of4(names, _, tupleType) ->
                     for name, elemType in List.zip names (tupleElemTypes tupleType) do
-                        indent ctx
-                        appendLine ctx $"public static readonly %s{typeToString elemType} %s{Prelude.moduleMemberName name};"
+                        // A `_` binds nothing, so it has no field.
+                        if name <> "_" then
+                            indent ctx
+                            appendLine ctx $"public static readonly %s{typeToString elemType} %s{Prelude.moduleMemberName name};"
                 | Choice4Of4(_, _, binders, _) ->
                     for name, bindType in binders do
                         indent ctx
@@ -5723,8 +5729,10 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                             generateBindingValue c (DeclareAndAssign(typeToString defValue.Type, tmp)) defValue
 
                             for i, name in List.indexed names do
-                                indent c
-                                appendLine c $"%s{Prelude.moduleMemberName name} = %s{tmp}.Item%d{i + 1};"
+                                // A `_` binds nothing, as in `TLetTuple`.
+                                if name <> "_" then
+                                    indent c
+                                    appendLine c $"%s{Prelude.moduleMemberName name} = %s{tmp}.Item%d{i + 1};"
                         | Choice4Of4(pattern, defValue, binders, r) ->
                             let tmp = freshName "__bound"
                             generateBindingValue c (DeclareAndAssign(typeToString defValue.Type, tmp)) defValue

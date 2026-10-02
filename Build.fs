@@ -89,6 +89,12 @@ let private dumpPaths (emitCs: string option) : string * string =
 ///              so editing it compiles the same source against other code —
 ///              and the dependency paths already in this record are the ones it
 ///              chose last time, which say nothing about the change
+///     link     for an executable: `link <assembly name> <path>`, one per
+///              assembly the program loads through its resolver — modules,
+///              runtime assemblies and NuGet assemblies. `bjo publish` copies
+///              these and writes the `.bjolinks` table the resolver reads
+///     native   for an executable: `native <key> <path>`, one per native
+///              library the program's unmanaged resolver can load
 ///
 /// The mode is first and alone on its line so that reading just the head of the
 /// file answers the cheapest question.
@@ -97,6 +103,8 @@ let private writeBuildRecord
     (inputFilePath: string)
     (outputFilePath: string)
     (linked: string list)
+    (links: (string * string) list)
+    (natives: (string * string) list)
     =
     try
         // The module half of `linked` is already transitive — a dependency's own
@@ -168,6 +176,8 @@ let private writeBuildRecord
             @ nugetLines
             @ (sources |> List.map (fun s -> $"source %s{s}"))
             @ (linked |> List.map Path.GetFullPath |> List.distinct |> List.sort |> List.map (fun d -> $"dep %s{d}"))
+            @ (links |> List.distinct |> List.sort |> List.map (fun (name, path) -> $"link %s{name} %s{Path.GetFullPath path}"))
+            @ (natives |> List.distinct |> List.sort |> List.map (fun (key, path) -> $"native %s{key} %s{Path.GetFullPath path}"))
 
         File.WriteAllLines(Path.ChangeExtension(inputFilePath, ".bjobuild"), lines)
     with ex ->
@@ -431,6 +441,39 @@ let compile (options: Options) (inputFilePath: string) : int =
                     "            return System.IntPtr.Zero;\n" +
                     "        };\n"
 
+            // A published program (`bjo publish`) has `<program>.bjolinks`
+            // beside it: one line per assembly or native library, `link` or
+            // `native`, its name, and its path relative to the program, all
+            // separated by tabs. When the table is there it is the only place
+            // anything is loaded from, so a published program never falls back
+            // on the absolute paths of the tree it was built in.
+            let publishedResolverCode =
+                """    private static bool InstallPublishedResolver() {
+        var self = typeof(BjolangEntryPoint).Assembly.Location;
+        if (string.IsNullOrEmpty(self)) return false;
+        var table = System.IO.Path.ChangeExtension(self, ".bjolinks");
+        if (!System.IO.File.Exists(table)) return false;
+        var baseDir = System.IO.Path.GetDirectoryName(self);
+        var managed = new System.Collections.Generic.Dictionary<string, string>();
+        var native = new System.Collections.Generic.Dictionary<string, string>();
+        foreach (var line in System.IO.File.ReadAllLines(table)) {
+            var parts = line.Split('\t');
+            if (parts.Length != 3) continue;
+            var full = System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDir, parts[2]));
+            if (parts[0] == "link") managed[parts[1]] = full;
+            else if (parts[0] == "native") native[parts[1]] = full;
+        }
+        System.Runtime.Loader.AssemblyLoadContext.Default.Resolving += (context, name) =>
+            name.Name != null && managed.TryGetValue(name.Name, out var found) ? context.LoadFromAssemblyPath(found) : null;
+        System.Runtime.Loader.AssemblyLoadContext.Default.ResolvingUnmanagedDll += (assembly, name) => {
+            var key = System.Text.RegularExpressions.Regex.Replace(System.IO.Path.GetFileName(name), @"(\.dll|\.dylib|\.so(\.[0-9]+)*)$", "");
+            if (key.StartsWith("lib", System.StringComparison.Ordinal)) key = key.Substring(3);
+            return native.TryGetValue(key, out var found) ? System.Runtime.InteropServices.NativeLibrary.Load(found) : System.IntPtr.Zero;
+        };
+        return true;
+    }
+"""
+
             let resolverCode =
                 if isLibrary || (probeDirs.IsEmpty && resolvedByName.IsEmpty && nativeLibraries.IsEmpty) then ""
                 else
@@ -447,7 +490,9 @@ let compile (options: Options) (inputFilePath: string) : int =
                     "    private static readonly string[] BjolangProbeDirs = new string[] { " + dirLiterals + " };\n" +
                     "    private static readonly string[] BjolangModuleNames = new string[] { " + nameLiterals + " };\n" +
                     "    private static readonly string[] BjolangModulePaths = new string[] { " + pathLiterals + " };\n" +
+                    publishedResolverCode +
                     "    private static void InstallAssemblyResolver() {\n" +
+                    "        if (InstallPublishedResolver()) return;\n" +
                     "        System.Runtime.Loader.AssemblyLoadContext.Default.Resolving += (context, name) => {\n" +
                     "            var libOverride = System.Environment.GetEnvironmentVariable(\"BJOLANG_LIB\");\n" +
                     "            if (!string.IsNullOrEmpty(libOverride) && name.Name != null && name.Name.StartsWith(\"" + rootPrefix + "\")) {\n" +
@@ -938,7 +983,22 @@ let compile (options: Options) (inputFilePath: string) : int =
             // produced is worse than none: the driver would compare timestamps
             // against a file from an older build and find it current.
             if buildStatus = 0 then
-                writeBuildRecord options inputFilePath outputFilePath linkedAssemblies
+                // What the program's resolver loads, for `bjo publish`. The
+                // runtime assemblies are found by probing their directory, so
+                // they are added under their own names; a library has no
+                // resolver and records none.
+                let links, natives =
+                    if isLibrary then
+                        [], []
+                    else
+                        let runtime =
+                            Paths.runtimeAssemblies
+                            |> List.filter File.Exists
+                            |> List.map (fun path -> Path.GetFileNameWithoutExtension path, path)
+
+                        resolvedByName @ runtime, nativeLibraries
+
+                writeBuildRecord options inputFilePath outputFilePath linkedAssemblies links natives
 
             buildStatus
         | None ->

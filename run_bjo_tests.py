@@ -1317,6 +1317,115 @@ def test_nuget(work, c):
 # Running the suite
 # ---------------------------------------------------------------------------
 
+# --- publish -----------------------------------------------------------------
+
+# A module that reads data/greeting.txt beside its package's src/, found from
+# its own dll, the way a package with resources finds them.
+GREETER_CORE = (
+    '(import (std prelude))\n(export greeting)\n'
+    '(import/extern\n'
+    '  (clr-this-assembly (: System.Reflection.Assembly.GetExecutingAssembly'
+    ' (-> System.Reflection.Assembly)))\n'
+    '  (clr-location (: System.Reflection.Assembly.Location'
+    ' (-> System.Reflection.Assembly string) #:get))\n'
+    '  (clr-directory-of (: System.IO.Path.GetDirectoryName (-> string string))))\n'
+    '(: greeting (-> string))\n'
+    '(defun (greeting)\n'
+    '  (def dll (clr-location (clr-this-assembly)))\n'
+    '  (string-trim (file-read-text (path-combine (clr-directory-of dll) ".." "data" "greeting.txt"))))\n')
+
+
+@test("publish")
+def test_publish(work, c):
+    greeter = work / "greeter"
+    write(greeter / "manifest.bjodat",
+          '(package\n  (name (greeter))\n  (version "0.1.0")\n  (resources "data"))\n')
+    write(greeter / "data" / "greeting.txt", "hello from a resource\n")
+    write(greeter / "src" / "core.bjo", GREETER_CORE)
+
+    app = work / "app"
+    write(app / "manifest.bjodat",
+          '(package\n  (name (app))\n  (version "0.1.0")\n'
+          '  (depends (package (name (greeter)) (source (path (dir "../greeter"))))))\n')
+    write(app / "src" / "main.bjo",
+          '(import (std prelude))\n(import (greeter core))\n'
+          '(defun (main) (println (greeting)) 0)\n')
+
+    out = app / "publish"
+    published = run_bjo(app, "publish")
+    c.worked("a project publishes", published)
+    c.says("and says how to run it", published, "dotnet")
+    for made in ("main.exe", "main.runtimeconfig.json", "main.bjolinks",
+                 "packages/greeter/src/core.dll", "packages/greeter/data/greeting.txt",
+                 "lib/std/prelude.dll", "runtime/BjolangRuntime.dll"):
+        c.that(f"the output has {made}", (out / made).exists())
+    table = (out / "main.bjolinks").read_text() if (out / "main.bjolinks").exists() else ""
+    c.that("the table names only paths inside the output",
+           table and all(not line.split("\t")[2].startswith("/") for line in table.splitlines()), table)
+    c.that("and no build records are copied", not list(out.rglob("*.bjobuild")))
+
+    # Moved elsewhere, and with the package it was built from gone, it still
+    # runs and still finds its resource: everything it loads is inside.
+    moved = work / "elsewhere" / "published"
+    moved.parent.mkdir(parents=True)
+    out.rename(moved)
+    greeter.rename(work / "greeter-gone")
+    ran = subprocess.run(["dotnet", str(moved / "main.exe")], cwd=str(work),
+                         capture_output=True, text=True, timeout=600)
+    c.worked("the published program runs after being moved", ran)
+    c.says("and reads the resource it was published with", ran, "hello from a resource")
+    (work / "greeter-gone").rename(greeter)
+
+    # Publishing again replaces what an earlier publish made, and nothing else.
+    again = run_bjo(app, "publish", "-o", str(moved))
+    c.worked("publishing over an earlier publish replaces it", again)
+    mine = work / "mine"
+    write(mine / "important.txt", "keep me")
+    refused = run_bjo(app, "publish", "-o", str(mine))
+    c.failed("a directory bjo publish did not make is refused", refused)
+    c.says("and the message says so", refused, "did not make it")
+    c.that("and its files are untouched", (mine / "important.txt").read_text() == "keep me")
+
+    # A resource that is not there, or not inside the package.
+    write(greeter / "manifest.bjodat",
+          '(package\n  (name (greeter))\n  (version "0.1.0")\n  (resources "data" "missing"))\n')
+    missing = run_bjo(app, "publish", "-o", str(moved))
+    c.failed("a missing resource is an error", missing)
+    c.says("naming the resource", missing, '"missing"')
+    c.that("and the earlier output is left as it was", (moved / "main.exe").exists())
+    write(greeter / "manifest.bjodat",
+          '(package\n  (name (greeter))\n  (version "0.1.0")\n  (resources "../app"))\n')
+    outside = run_bjo(app, "publish", "-o", str(moved))
+    c.failed("a resource outside the package is refused", outside)
+    c.says("as not a path inside it", outside, "not a path inside the package")
+    write(greeter / "manifest.bjodat",
+          '(package\n  (name (greeter))\n  (version "0.1.0")\n  (resources "data"))\n')
+
+    # --whole-stdlib: the whole standard library, sources and docs, without records.
+    whole = work / "whole"
+    whole_stdlib = run_bjo(app, "publish", "--whole-stdlib", "-o", str(whole))
+    c.worked("--whole-stdlib publishes", whole_stdlib)
+    c.that("with the standard library's sources",
+           (whole / "lib" / "std" / "prelude.bjo").exists()
+           and (whole / "lib" / "std" / "random.dll").exists())
+    c.that("and still no build records", not list(whole.rglob("*.bjobuild")))
+
+    # A single file, outside any project.
+    lone = work / "lone"
+    write(lone / "lone.bjo", '(import (std prelude))\n(defun (main) (println "lone and published") 0)\n')
+    single = run_bjo(lone, "publish", "-o", str(lone / "out"), "lone.bjo")
+    c.worked("a single file publishes", single)
+    lone_ran = subprocess.run(["dotnet", str(lone / "out" / "lone.exe")], cwd=str(work),
+                              capture_output=True, text=True, timeout=600)
+    c.says("and runs", lone_ran, "lone and published")
+
+    # What publish refuses.
+    c.failed("-o is refused by build", run_bjo(app, "build", "-o", "x"))
+    c.failed("-d is refused by publish", run_bjo(app, "publish", "-d"))
+    library = make_package(work / "library", "library", "0.1.0")
+    c.failed("a library is refused", run_bjo(library, "publish"))
+
+
 def main():
     patterns = sys.argv[1:]
 

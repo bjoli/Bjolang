@@ -1,0 +1,36 @@
+;; `_` in a tuple pattern binds nothing.
+;;
+;; It used to be emitted as a C# local named `_`: two of them in one pattern
+;; did not compile, and one turned a later discard in the same method into an
+;; assignment to that local.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: triples (List (Tuple string string int)))
+(def triples (list (Tuple "a" "x" 1) (Tuple "b" "y" 2) (Tuple "c" "z" 3)))
+
+;; At top level as well.
+(: top-third int)
+(def (Tuple _ _ top-third) (Tuple "ignored" "also ignored" 7))
+
+(defun (main)
+  ;; Two wildcards in a loop's pattern, and a discard after it.
+  (def total (loop (:for (Tuple _ _ n) triples)
+                   (:acc sum (summing n))
+                   => sum))
+  (expect "two wildcards in a loop pattern" total 6)
+
+  ;; A wildcard beside a name, and something accumulated next to it that the
+  ;; C# writes as a discard.
+  (def names (loop (:for (Tuple name _ n) triples)
+                   (:acc out (listing name) #:when (> n 1))
+                   => out))
+  (expect "a wildcard beside a name, filtered" names (list "b" "c"))
+
+  ;; In a let.
+  (let (((Tuple _ second _) (Tuple 1 "two" 3.0)))
+    (expect "a let with two wildcards" second "two"))
+
+  (expect "a top-level def with two wildcards" top-third 7)
+  0)

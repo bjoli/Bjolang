@@ -387,6 +387,69 @@ timestamp would make every artefact in the project stale.
 imported module itself, in dependency order, so all ~bjo~ has to do is make the
 modules findable and then compile the entry.
 
+** Publishing
+
+A built program loads its modules, the Bjolang runtime and its NuGet packages
+from wherever they were when it was built. ~bjo publish~ makes a directory that
+holds all of them, and runs from anywhere:
+
+#+BEGIN_SRC sh
+bjo publish                 # a release build, then a copy in ./publish
+bjo publish -o /srv/myapp   # somewhere else
+dotnet publish/main.exe     # needs the .NET runtime, nothing else
+#+END_SRC
+
+#+BEGIN_SRC text
+publish/
+  main.exe                 the program, its runtimeconfig, deps and pdb
+  main.bjolinks            every assembly and native library it loads, and where
+  lib/std/...              the standard library modules it links
+  runtime/...              the Bjolang runtime assemblies
+  app/src/...              the project's other modules, and its resources
+  packages/<name>/...      each dependency, laid out as in its own directory
+  external/...             NuGet packages and anything else it loads
+#+END_SRC
+
+*A published program loads only what is in the directory.* The compiler's
+resolver reads ~main.bjolinks~ beside the program; when the file is there, it
+is the only place anything is loaded from, so a published program never falls
+back on the tree it was built in. The table comes from the program's build
+record: for a program, the compiler records every assembly and native library
+its resolver loads.
+
+*Each file keeps its place relative to its neighbours*, because some code finds
+files from its own ~.dll~. A package that reads files at run time declares
+them in its manifest, relative to the package directory:
+
+#+BEGIN_SRC scheme
+(package
+  (name (textmate-bjolang))
+  (version "0.1.1")
+  (resources "grammars"))
+#+END_SRC
+
+~bjo publish~ copies them into the package's place in the output, so the module
+finds them exactly where it did. A resource that is not there, or that points
+outside the package, is an error before anything is written.
+
+*The standard library modules a program links are always copied* — every
+program links at least the prelude. *~--whole-stdlib~ copies the rest as well*:
+every module, with its sources and documentation. Only a program that reads
+Bjolang's own modules at run time needs it — one that shows their
+documentation, such as a site built with samizdat's ~@defmodule~.
+
+*An existing directory is replaced only when an earlier publish made it.* Each
+output has a ~.bjopublish~ file in it; a directory without one that is not
+empty is refused, so a mistyped ~-o~ cannot delete something else. ~bjo init~'s
+~.gitignore~ leaves ~publish/~ out.
+
+A single file publishes the same way: ~bjo publish -o out tool.bjo~. Inside a
+project it is built against the project's packages and carries their resources;
+outside one it has neither.
+
+The output is framework-dependent: the machine that runs it needs the .NET
+runtime, and the ASP.NET Core one for a program whose packages declare it.
+
 ** The commands
 
 | Command                 | What it does                                                  |
@@ -396,6 +459,7 @@ modules findable and then compile the entry.
 | ~bjo build [--locked]~  | ~fetch~, then compile the entry — or every module of a library |
 | ~bjo run [. args...]~   | ~build~, then run the entry                                   |
 | ~bjo check~             | Every module of the project, errors only                      |
+| ~bjo publish [-o dir]~  | A release build, and a directory that runs from anywhere      |
 | ~bjo repl~              | The REPL, with the project's packages importable              |
 
 ~bjo run .~ is the way to pass arguments to your own program: everything after

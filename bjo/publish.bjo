@@ -1,0 +1,309 @@
+;; bjo/publish.bjo — a program and everything it loads, in one directory.
+;;
+;; A built program loads its modules, the runtime and its NuGet packages from
+;; wherever they were when it was built, by absolute path. A published one
+;; carries copies of them and loads only those: the compiler's resolver reads
+;; `<program>.bjolinks` beside the program, when there is one, and loads
+;; nothing that the table does not name.
+;;
+;; The layout keeps each file's place relative to its neighbours, because some
+;; code finds files from its own `.dll` — a package's resources, or the
+;; standard library's `lib/` from `(janitor modules)`:
+;;
+;;     <out>/<program>.exe            and its runtimeconfig, deps and pdb
+;;     <out>/<program>.bjolinks       assembly and native library -> path
+;;     <out>/lib/...                  standard library modules, as under lib/
+;;     <out>/runtime/...              the Bjolang runtime assemblies
+;;     <out>/app/...                  the project's own modules and resources
+;;     <out>/packages/<name>/...      each dependency, as under its directory
+;;     <out>/external/...             anything else, such as NuGet packages,
+;;                                    below the deepest directory they share
+
+(export PublishedPackage Publication publish published-marker)
+
+(import (std prelude))
+
+(import/extern
+  (clr-relative-path (: System.IO.Path.GetRelativePath (-> string string string)))
+  (clr-path-rooted?  (: System.IO.Path.IsPathRooted (-> string bool)))
+  (clr-directory-of  (: System.IO.Path.GetDirectoryName (-> string string)))
+  (clr-file-name     (: System.IO.Path.GetFileName (-> string string)))
+  (clr-file-stem     (: System.IO.Path.GetFileNameWithoutExtension (-> string string)))
+  (clr-change-ext    (: System.IO.Path.ChangeExtension (-> string string string)))
+  (error-message     (: System.Exception.Message (-> Exception string) #:get)))
+
+;; A package the program was built from: its name, the directory its manifest
+;; is in, the resources that manifest declares, and whether it is the project
+;; being published, whose files go under `app/`.
+(type (: PublishedPackage (Record (: name (List Symbol))
+                                  (: dir string)
+                                  (: resources (List string))
+                                  (: own bool))))
+
+;; What to publish. `links` and `natives` are the build record's `link` and
+;; `native` lines: a name or key, and the file's path.
+;;
+;; `whole-stdlib` copies all of the standard library, sources and documentation
+;; included, rather than only the modules the program links. A program that
+;; reads Bjolang's own modules at run time, such as one that shows their
+;; documentation, needs that.
+(type (: Publication (Record (: program string)
+                             (: links (List (Tuple string string)))
+                             (: natives (List (Tuple string string)))
+                             (: packages (List PublishedPackage))
+                             (: lib (Option string))
+                             (: whole-stdlib bool)
+                             (: runtime string)
+                             (: out string))))
+
+;; Written into every output directory. An existing directory is only replaced
+;; when it has this file, so a mistyped `-o` cannot delete something else.
+(: published-marker string)
+(def published-marker ".bjopublish")
+
+;; ---------------------------------------------------------------------------
+;; Where a file goes
+;; ---------------------------------------------------------------------------
+
+;; `path` relative to `dir`, or `None` when it is not below it.
+(: below (-> string string (Option string)))
+(defun (below dir path)
+  (def rel (clr-relative-path (path-absolute dir) (path-absolute path)))
+  (if (or (= rel ".") (string-starts-with? rel "..") (clr-path-rooted? rel))
+      None
+      (Some rel)))
+
+(: package-prefix (-> PublishedPackage string))
+(defun (package-prefix p)
+  (if (record-ref p own)
+      "app"
+      (path-combine "packages"
+                    (string-join (list->vec (list-map symbol->string (record-ref p name))) "."))))
+
+;; The package whose directory holds `path`, and the path relative to it. The
+;; deepest directory wins, because fetched dependencies live in `.bjo/pkg`
+;; inside the project's own directory.
+(: package-of (-> (List PublishedPackage) string (Option (Tuple PublishedPackage string))))
+(defun (package-of packages path)
+  (loop (:for p packages)
+        (:when-let (Some rel) (below (record-ref p dir) path))
+        (:acc best (folding None
+                            (match best
+                              ((Some (Tuple q _)) #:when (> (string-length (record-ref q dir))
+                                                            (string-length (record-ref p dir)))
+                               best)
+                              (_ (Some (Tuple p rel))))))
+        => best))
+
+;; Where `path` goes in the output, when it is under the standard library,
+;; the runtime or a package. `None` for anything else.
+(: known-destination (-> Publication string (Option string)))
+(defun (known-destination p path)
+  (def in-lib (match (record-ref p lib)
+                ((Some lib) (below lib path))
+                (None None)))
+  (match in-lib
+    ((Some rel) (Some (path-combine "lib" rel)))
+    (None
+     (match (below (record-ref p runtime) path)
+       ((Some rel) (Some (path-combine "runtime" rel)))
+       (None
+        (match (package-of (record-ref p packages) path)
+          ((Some (Tuple package rel)) (Some (path-combine (package-prefix package) rel)))
+          (None None)))))))
+
+;; The longest list both start with.
+(: common-prefix (-> (List string) (List string) (List string)))
+(defun (common-prefix a b)
+  (match (Tuple a b)
+    ((Tuple (Cons x xs) (Cons y ys)) #:when (= x y) (Cons x (common-prefix xs ys)))
+    (_ Nil)))
+
+;; The deepest directory that holds every one of `paths`.
+(: common-directory (-> (List string) string))
+(defun (common-directory paths)
+  (match (list-map (fun (path) (vec->list (string-split (clr-directory-of (path-absolute path)) "/")))
+                   paths)
+    (Nil "/")
+    ((Cons first rest)
+     (def dir (string-join (list->vec (list-foldl common-prefix first rest)) "/"))
+     (if (= dir "") "/" dir))))
+
+;; ---------------------------------------------------------------------------
+;; Copying
+;; ---------------------------------------------------------------------------
+
+;; Copies `from` to `rel` under `out`, making the directories on the way.
+(: copy-to! #:sync (-> string string string void))
+(defun (copy-to! out rel from)
+  (def to (path-combine out rel))
+  (directory-create (clr-directory-of to))
+  (file-copy from to #:mode Truncate))
+
+;; Copies an assembly, and its `.pdb` when there is one, so that a stack trace
+;; from the published program still names the source.
+(: copy-assembly! #:sync (-> string string string void))
+(defun (copy-assembly! out rel from)
+  (copy-to! out rel from)
+  (def pdb (clr-change-ext from ".pdb"))
+  (when (file-exists? pdb)
+    (copy-to! out (clr-change-ext rel ".pdb") pdb)))
+
+;; Copies a directory and everything in it, leaving out the files `skip?`
+;; answers true for.
+(: copy-tree! #:sync (-> string string (-> string bool) void))
+(defun (copy-tree! from to skip?)
+  (directory-create to)
+  (loop (:for f (directory-files from))
+        (:when (not (skip? f)))
+        (:do (file-copy f (path-combine to (clr-file-name f)) #:mode Truncate)))
+  (loop (:for d (directory-subdirectories from))
+        (:do (copy-tree! d (path-combine to (clr-file-name d)) skip?))))
+
+;; The standard library is copied with its sources and documentation, but not
+;; its build records, which name this machine's paths and which nothing reads
+;; in a published program.
+(: build-record? (-> string bool))
+(defun (build-record? f) (string-ends-with? f ".bjobuild"))
+
+(: nothing-skipped (-> string bool))
+(defun (nothing-skipped f) #f)
+
+;; Copies a resource, a file or a directory, to `rel` under `out`.
+(: copy-resource! #:sync (-> string string string void))
+(defun (copy-resource! out rel from)
+  (if (directory-exists? from)
+      (copy-tree! from (path-combine out rel) nothing-skipped)
+      (copy-to! out rel from)))
+
+;; How many files are under `dir`, at any depth.
+(: count-files #:sync (-> string int))
+(defun (count-files dir)
+  (+ (length (directory-files dir))
+     (loop (:for d (directory-subdirectories dir))
+           (:acc n (summing (count-files d)))
+           => n)))
+
+;; Empties the output directory, or makes it. A directory that is there and
+;; holds files is replaced only when an earlier publish made it. Answers why
+;; it refused, or `None` when the directory is ready.
+(: prepare-output! #:sync (-> string (Option string)))
+(defun (prepare-output! out)
+  (cond
+    ((not (directory-exists? out))
+     (directory-create out)
+     None)
+    ((file-exists? (path-combine out published-marker))
+     (directory-delete-tree out)
+     (directory-create out)
+     None)
+    ((and (empty? (directory-files out)) (empty? (directory-subdirectories out)))
+     None)
+    (else
+     (Some (str "bjo publish: " out " is not empty, and bjo publish did not make it. "
+               "Give an empty or new directory with -o.")))))
+
+;; Why a declared resource cannot be published, or nothing when it can.
+(: resource-problem (-> PublishedPackage string (Option string)))
+(defun (resource-problem package resource)
+  (def shown (str "the resource \"" resource "\" of " (record-ref package dir)))
+  (def from (path-combine (record-ref package dir) resource))
+  (cond
+    ((or (clr-path-rooted? resource)
+         (any? #(= & "..") (string-split (string-replace resource "\\" "/") "/")))
+     (Some (str "bjo publish: " shown " is not a path inside the package. "
+                "A resource is written relative to the package's directory.")))
+    ((not (or (file-exists? from) (directory-exists? from)))
+     (Some (str "bjo publish: " shown " is not there.")))
+    (else None)))
+
+;; Every resource problem, across all the packages.
+(: resource-problems (-> (List PublishedPackage) (List string)))
+(defun (resource-problems packages)
+  (loop (:for package packages)
+        (:subloop)
+        (:for resource (record-ref package resources))
+        (:when-let (Some why) (resource-problem package resource))
+        (:acc out (listing why))
+        => out))
+
+;; ---------------------------------------------------------------------------
+;; Publishing
+;; ---------------------------------------------------------------------------
+
+;; Lays out the program in `out`, and answers how many files the output holds.
+;;
+;; Every resource is checked before anything is written, so that a manifest
+;; naming one that is not there leaves the output as it was.
+(: publish #:sync (-> Publication (Result string int)))
+(defun (publish p)
+  (with-return ret
+    (when (empty? (record-ref p links))
+      (ret (Err (str "bjo publish: the build record of " (record-ref p program)
+                     " names nothing the program loads. Rebuild it with -c and publish again."))))
+
+    (match (resource-problems (record-ref p packages))
+      ((Cons why _) (ret (Err why)))
+      (Nil unit))
+
+    (def out (path-absolute (record-ref p out)))
+    (match (prepare-output! out)
+      ((Some why) (ret (Err why)))
+      (None unit))
+
+    (def files (list-append (list-map (fun (link) (match link ((Tuple name path) (Tuple "link" name path))))
+                                      (record-ref p links))
+                            (list-map (fun (native) (match native ((Tuple key path) (Tuple "native" key path))))
+                                      (record-ref p natives))))
+    (def external-root
+      (common-directory (loop (:for (Tuple _ _ path) files)
+                              (:acc paths (listing path) #:when (not (some? (known-destination p path))))
+                              => paths)))
+    (defun (destination path)
+      (match (known-destination p path)
+        ((Some rel) rel)
+        (None (path-combine "external"
+                            (match (below external-root path)
+                              ((Some rel) rel)
+                              (None (clr-file-name path)))))))
+
+    (def program (record-ref p program))
+
+    (def copied
+      (try
+        (let ()
+          (loop (:for companion (list program
+                                      (clr-change-ext program ".runtimeconfig.json")
+                                      (clr-change-ext program ".deps.json")
+                                      (clr-change-ext program ".pdb")))
+                (:when (file-exists? companion))
+                (:do (copy-to! out (clr-file-name companion) companion)))
+          (match (record-ref p lib)
+            ((Some lib) #:when (record-ref p whole-stdlib)
+             (copy-tree! lib (path-combine out "lib") build-record?))
+            (_ unit))
+          (loop (:for (Tuple _ _ path) files)
+                (:do (copy-assembly! out (destination path) path)))
+          (loop (:for package (record-ref p packages))
+                (:subloop)
+                (:for resource (record-ref package resources))
+                (:do (copy-resource! out
+                                     (path-combine (package-prefix package) resource)
+                                     (path-combine (record-ref package dir) resource))))
+          ;; Relative to the program, with `/`, which .NET accepts on every
+          ;; platform, so that the table means the same wherever the directory
+          ;; is copied to.
+          (def table
+            (loop (:for (Tuple kind name path) files)
+                  (:acc lines (listing (str kind "\t" name "\t" (string-replace (destination path) "\\" "/"))))
+                  => lines))
+          (file-write-text (path-combine out (str (clr-file-stem program) ".bjolinks"))
+                           (str (string-join (list->vec table) "\n") "\n"))
+          (file-write-text (path-combine out published-marker)
+                           "Made by bjo publish. Publishing again replaces this directory.\n")
+          (count-files out))
+        #:catch (System.Exception)))
+
+    (match copied
+      ((Ok n) (Ok n))
+      ((Err e) (Err (str "bjo publish: " (error-message e)))))))

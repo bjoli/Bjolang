@@ -3,6 +3,44 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~bjo publish~: a program that runs from anywhere
+
+- *~bjo publish [-o dir] [file]~* makes a release build of a program and copies
+  it, with every module, runtime assembly, NuGet assembly and native library it
+  loads, into one directory: ~lib/~ and ~runtime/~ for Bjolang's own, ~app/~ for
+  the project's modules, ~packages/<name>/~ for each dependency laid out as in
+  its own directory, and ~external/~ for the rest. The output runs from
+  anywhere with only the .NET runtime installed.
+- *A program's build record lists what its resolver loads,* as ~link~ and
+  ~native~ lines, and the generated resolver reads ~<program>.bjolinks~ beside
+  the program when there is one. With the table it loads only what the table
+  names, by paths relative to the program, so a published program never falls
+  back on the tree it was built in. Without it, nothing changes.
+- *A package declares the files it reads at run time* with
+  ~(resources "dir" ...)~ in its manifest, relative to the package directory.
+  They are copied to the same place relative to the package's modules, so code
+  that finds them from its own ~.dll~ still does. A missing one, or one outside
+  the package, is an error before anything is written.
+- *~--whole-stdlib~* copies the whole standard library, sources and documentation
+  included, for programs that read Bjolang's own modules at run time.
+- *An output directory is replaced only when an earlier publish made it*,
+  which a ~.bjopublish~ file in it records.
+- *A ~_~ in a tuple pattern binds nothing.* It was emitted as a C# local or
+  field named ~_~: two of them in one pattern did not compile, and one turned
+  every later discard in the method into an assignment to it.
+  ~TestFiles/267_tuple_wildcards.bjo~.
+
+Checked by a new ~publish~ test in ~run_bjo_tests.py~: a project with a path
+dependency and a resource is published, moved, and run with the dependency's
+directory renamed away.
+
+Left open: the output is framework-dependent, so the machine running it needs
+.NET installed; a ~--self-contained~ option is not written. A program's own
+resources, as opposed to a dependency's, are copied under ~app/~ while the
+program itself sits at the top of the output, so a program that finds files
+from its own location does not find them. A local function generalised over a
+type that appears only in its result fails at the C# compile (~Todo.org~).
+
 * Graph builds, a ReadyToRun compiler, and ~bjor~ removed
 
 - *The compiler builds a set of libraries in parallel.*
