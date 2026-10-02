@@ -106,7 +106,7 @@ public sealed class BjoPort : TextReader {
     // characters already handed out.
     //
     // And a cancelled fill must not set `ended`. If it did,
-    // `(loop (:break (port-eof? p)) ...)` would end normally on cancellation and
+    // `(loop (:finish (port-eof? p)) ...)` would end normally on cancellation and
     // return a partial result as though it were the whole thing.
 
     private int FillSync() {

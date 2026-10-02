@@ -131,7 +131,7 @@
   (loop (:for x xs)
         (:acc seen (counting x))
         (:acc (listing x))
-        (:break (> seen 2))
+        (:finish (> seen 2))
         => seen))
 
 ;; Two `listing` collectors in one function at two different element types. If a
@@ -156,20 +156,20 @@
 
 ;; Leaving a `(loop ...)` early, and taking over its continue edge.
 ;;
-;; Every exit routes through the same finish block — exhaustion, `:break`, and a
+;; Every exit routes through the same finish block — exhaustion, `:finish`, and a
 ;; named loop's final `:do` declining to iterate. Nothing bypasses it, which is
 ;; why an accumulator always arrives *finished*.
 
 ;; ---------------------------------------------------------------------------
-;; :break and :final
+;; :finish and :final
 ;; ---------------------------------------------------------------------------
 
-;; `:break` ends the loop before the rest of the iteration runs, so the element
+;; `:finish` ends the loop before the rest of the iteration runs, so the element
 ;; that triggered it is not accumulated.
 (: until-big (-> (List int) (List int)))
 (defun (until-big xs)
   (loop (:for x xs)
-        (:break (> x 3))
+        (:finish (> x 3))
         (:acc out (listing x))))
 
 ;; `:final` is the same predicate one iteration later: it reads an accumulator
@@ -190,13 +190,13 @@
         (:acc tmp (summing x))
         => tmp))
 
-;; A `:break` below an `:acc` accumulates the triggering element first: clause
+;; A `:finish` below an `:acc` accumulates the triggering element first: clause
 ;; order decides, as everywhere else.
 (: including-trigger (-> (List int) (List int)))
 (defun (including-trigger xs)
   (loop (:for x xs)
         (:acc out (listing x))
-        (:break (> x 3))))
+        (:finish (> x 3))))
 
 ;; The hidden accumulator does not show up in an auto-generated result, which is
 ;; still a bare single accumulator rather than a tuple.
@@ -207,7 +207,7 @@
         (:acc n (counting x))))
 
 ;; ---------------------------------------------------------------------------
-;; :when-let and :break-let
+;; :when-let and :finish-let
 ;; ---------------------------------------------------------------------------
 
 ;; A `:let` whose pattern is allowed to fail, and which says where the failure
@@ -245,16 +245,16 @@
         (:when-let (Round n) s)
         (:acc out (vecing n))))
 
-;; `:break-let` leaves the loop instead, through the finish block like every
+;; `:finish-let` leaves the loop instead, through the finish block like every
 ;; other exit.
 (: until-odd (-> (Vec int) (Vec int)))
 (defun (until-odd xs)
   (loop (:for x xs)
-        (:break-let (Some h) (halve x))
+        (:finish-let (Some h) (halve x))
         (:acc out (vecing h))))
 
 ;; Clauses above it have already run, so an accumulator stepped before it keeps
-;; what it was given — the same as `:when` and `:break`.
+;; what it was given — the same as `:when` and `:finish`.
 (: seen-before (-> (Vec int) (Vec int)))
 (defun (seen-before xs)
   (loop (:for x xs)
@@ -280,7 +280,7 @@
 (: lazily (-> (Vec int) (Seq int)))
 (defun (lazily xs)
   (seql (:for x xs)
-        (:break-let (Some h) (halve x))
+        (:finish-let (Some h) (halve x))
         (:yield h)))
 
 ;; ---------------------------------------------------------------------------
@@ -416,15 +416,15 @@
   (expect "break-below-acc" (list-length (including-trigger xs)) 4)
   (expect "hidden-not-in-result" (still-single xs) 5)
 
-  ;; --- :when-let and :break-let --------------------------------------------
+  ;; --- :when-let and :finish-let --------------------------------------------
   (expect "when-let skips and binds" (evens-halved [1 2 3 4 5 6]) [1 2 3])
   (expect "when-let over a Result" (oks [1 2 3 4]) [1 2])
   (expect "when-let over a union of one's own" (rounds [(Round 1) (Square 9) (Round 3)]) [1 3])
   (expect "when-let that never matches" (evens-halved [1 3 5]) [])
 
-  (expect "break-let stops at the first miss" (until-odd [2 4 5 6]) [1 2])
-  (expect "break-let that never fires" (until-odd [2 4 6]) [1 2 3])
-  (expect "break-let missing on the first element" (until-odd [1 2]) [])
+  (expect "finish-let stops at the first miss" (until-odd [2 4 5 6]) [1 2])
+  (expect "finish-let that never fires" (until-odd [2 4 6]) [1 2 3])
+  (expect "finish-let missing on the first element" (until-odd [1 2]) [])
 
   (expect "clauses above a skipped one still ran" (seen-before [1 2 3 4]) [1 2 3 4])
   (expect "the binding reaches a subloop" (pairs [4] [10 20]) [12 22])

@@ -709,7 +709,7 @@ public static partial class BjolangRuntime {
     /// `Done` therefore disposes as soon as the walk is exhausted, which is
     /// what `foreach` does at the same point.
     ///
-    /// A walk abandoned part-way — a `:break` — does not reach that, and the
+    /// A walk abandoned part-way — a `:finish` — does not reach that, and the
     /// handle waits for the collector. Closing that would need the `Iterable`
     /// protocol to have a notion of a walk being over, which today it has not:
     /// there is no hook between the last `done?` and leaving the loop.

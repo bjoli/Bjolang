@@ -1441,18 +1441,103 @@ A macro is a function the compiler runs while parsing. It takes the form written
 |---------------------------------+----------------------------------------------------|
 | `(:for pat seq)`                | Binds `pat` to successive elements of `seq`.       |
 | `(:with pat start update end)`  | Maintains state across iterations.                 |
+| `(:while test)`                 | Keeps the level iterating while `test` holds. Binds nothing. |
+| `(:until test)`                 | Keeps the level iterating until `test` holds. Binds nothing. |
 | `(:let pat expr)`               | Per-iteration local binding. The pattern must always match. |
 | `(:when-let pat expr)`          | The same, for a pattern that may fail: skips the rest of the iteration when it does not match. |
-| `(:break-let pat expr)`         | The same, but a pattern that does not match ends the loop. |
+| `(:finish-let pat expr)`        | The same, but a pattern that does not match ends the loop. |
 | `(:do expr ...)`                | Executes for side-effects, discarding result.      |
 | `(:when cond)`                  | Skips the rest of the current iteration unless `cond` holds. |
 | `(:acc [name] (coll ...) #:when c)`| Accumulates values into `coll`; optionally gated by `#:when`. The name is optional. |
-| `(:break cond)`                 | Immediately aborts the entire loop.                |
+| `(:finish test [value])`        | Ends the whole loop when `test` holds. With `value`, that is the result and `=>` does not run. |
 | `(:final cond)`                 | Aborts the loop *after* the current iteration completes. |
 | `(:until-cancelled [tok])`      | Ends loop upon a cancellation token firing.        |
-| `(:end-subloop-if cond)`        | Exits the current loop level and resumes the enclosing one. |
+| `(:abandon test)`               | Ends the current level when `test` holds, and goes to the next iteration of the level above. |
 | `(:subloop)`                    | Explicitly opens a new loop level.                 |
+| `(:subloop clause ... [=> (name expr)])` | The `:subloop` form: a nested loop, run each time its level reaches it. |
+| `(:finish-subloop test)`        | Ends the nearest `:subloop` form; the clauses after it run. |
+| `(:abandon-subloop test)`       | Drops the nearest `:subloop` form, and goes to the next iteration of the level holding it. |
 | `(:yield expr)`                 | Used in `(seql ...)` to produce an element.        |
+
+Clauses run top to bottom within an iteration. A control clause acts at its position: when it fires, the clauses after it do not run in that iteration.
+
+**** `:finish` and `:abandon`
+The names follow one rule: *finish* stops and continues *after* the thing, *abandon* stops and goes *up* to the next iteration of the level above. `:finish-subloop` and `:abandon-subloop` follow it for the `:subloop` form.
+
+#+BEGIN_SRC scheme
+(loop (:for x xs)
+      (:acc s (summing x))
+      (:finish (> s 100))          ;; leave the loop; => runs
+      => s)
+
+(loop (:for x xs)
+      (:finish (< x 0) -1)         ;; leave the loop with -1; => does not run
+      (:acc s (summing x))
+      => s)
+
+(loop (:for row rows)
+      (:subloop)
+      (:for cell row)
+      (:abandon (= cell 0))        ;; rest of this row skipped; next row
+      (:acc n (counting cell)))
+#+END_SRC
+
+- `(:finish test)` ends the loop from any level, and the `=>` expression is evaluated.
+- `(:finish test value)` ends the loop with `value` as its result. `value` is evaluated only when `test` holds, and sees loop variables and accumulators as the clauses above it left them in this iteration: an accumulator is its running state, as anywhere else inside the loop, not the finished value `=>` sees. It must have the type of the loop's result; a mismatch is a compile error naming both types. A `seql` has no result, so it takes only `(:finish test)`.
+- `(:abandon test)` ends the current level. At the outermost level there is no level above, and it is a compile error.
+- `:break`, `:break-let` and `:end-subloop-if` are deprecated spellings of `:finish`, `:finish-let` and `:abandon`, and warn.
+
+**** `:while` and `:until`
+Drivers, like `:for`: they decide how long a level iterates, and bind no variables.
+
+#+BEGIN_SRC scheme
+(loop (:until (port-eof? my-port))
+      (:let line (read-line my-port))
+      (:do (println line)))
+
+(loop (:for x xs)
+      (:until (> x 5))             ;; ends at the first x over 5, or at the end of xs
+      (:acc out (listing x)))
+#+END_SRC
+
+- The test runs before each iteration, the first included. If it stops at once, the level runs zero times.
+- They are grouped with neighbouring drivers exactly as a `:for` is, and open a new level where a `:for` would. When one ends its level, the effect is that of a `:for` running out: at the outermost level the loop ends and `=>` runs; in a nested level, the level above goes on with its next iteration.
+- In a group of drivers the level ends as soon as any of them ends. They are checked in clause order, and a test may use the variables of the drivers before it in the group.
+- The test has type bool, and takes exactly one argument.
+- To stop on a value computed in the body — `(eof-object? line)` after a `(:let line ...)` — use `(:finish (eof-object? line))` at that position instead. A `:while` or `:until` runs before the body and cannot see it.
+
+**** The `:subloop` form
+A nested loop inside a level. It runs each time its level reaches it, and what it accumulates is bound for the clauses after it.
+
+#+BEGIN_SRC scheme
+(loop (:for x rows)
+      (:subloop (:for y x)
+                (:acc sum (summing y))
+                (:finish-subloop (> sum 100))    ;; stop this row; sum so far
+                (:abandon-subloop (< y 0)))      ;; skip this row entirely
+      (:acc total (summing sum))
+      (:finish (> total 1000) -1)
+      => total)
+
+(loop (:for row rows)
+      (:subloop (:for y row)
+                (:acc s (summing y))
+                (:acc n (counting y))
+                => (avg (if (= n 0) 0 (/ s n))))  ;; only avg is bound after it
+      (:acc out (listing avg)))
+#+END_SRC
+
+- Without `=>`, every named `:acc` of the form is bound after it, to its finished value. With `=> (name expr)`, only `name` is, bound to `expr`, which may use the form's accumulators. The form's `:for` variables and other bindings are never visible after it.
+- The form's accumulators start over on each run. If it runs zero times they keep their initial values. An accumulator of an implicit level, by contrast, persists across the outer iterations.
+- The form sees the level's variables and everything bound before it in the iteration. Its sequences are evaluated each time it runs.
+- The form has its own levels. `:when`, `:abandon`, `:while` and `:until` inside it work on those levels exactly as in a loop. `:abandon` at the form's topmost level is a compile error, since leaving the form that way is `:abandon-subloop`.
+- `:finish`, with or without a value, ends the whole loop from inside the form; the form's accumulators are dropped.
+- `(:finish-subloop test)` ends the form now: the exports are computed from its accumulators as they stand, and the clauses after the form run.
+- `(:abandon-subloop test)` drops the form, its accumulators, and the rest of the iteration that holds it: the next thing to run is the next iteration of the level holding the form, as for a failing `:when` at the form's position.
+- In nested forms, `:finish-subloop` and `:abandon-subloop` refer to the nearest one. Both are a compile error outside a form.
+- `:final` is not supported inside the form.
+- The form's names, its exports included, may not reuse a name the loop carries, as for any level.
+- `(:subloop)` with no clauses is not the form: it only separates two groups of drivers so the second opens a level.
 
 **** An accumulator need not be named
 The name in `(:acc name (coll ...))` may be omitted; one is invented:
@@ -1464,7 +1549,7 @@ The name in `(:acc name (coll ...))` may be omitted; one is invented:
 
 Name it when something reads it back — a later clause, a `=>`, or a named loop's `#:name` — since an anonymous name is a gensym nothing can read. Several in one loop deliver a tuple of the finished values in clause order: `(:acc (summing x)) (:acc (counting x))` answers the sum and the count.
 
-**** `:when-let` and `:break-let`
+**** `:when-let` and `:finish-let`
 A `:let` binds by destructuring and its pattern must always match — a pattern that could fail has nowhere to go. These two say where it goes.
 
 #+BEGIN_SRC scheme
@@ -1473,16 +1558,16 @@ A `:let` binds by destructuring and its pattern must always match — a pattern 
       (:acc out (vecing h)))
 
 (loop (:for n (up-from 0))
-      (:break-let (Some job) (next-job q)) ;; no match: leave the loop
+      (:finish-let (Some job) (next-job q)) ;; no match: leave the loop
       (:do (handle job)))
 #+END_SRC
 
-The pattern names the constructor, so a `Result` or the program's own union works the same way. A clause above one of these has already run, so an accumulator stepped before it keeps its value, as with `:when` and `:break`.
+The pattern names the constructor, so a `Result` or the program's own union works the same way. A clause above one of these has already run, so an accumulator stepped before it keeps its value, as with `:when` and `:finish`.
 
 Two clauses, not one with a modifier: a `chan-recv` answering `None` answers it forever, so a skip where a break was meant spins rather than stops.
 
 **** `:until-cancelled`
-Monitors a cancellation token and exits via a `break`.
+Monitors a cancellation token and exits via a `:finish`.
 
 #+BEGIN_SRC scheme
 (loop (:for job jobs)
@@ -1508,7 +1593,7 @@ Monitors a cancellation token and exits via a `break`.
 #+END_SRC
 
 **Rules**:
-- All `loop` clauses (`:when`, `:break`, `:let`, `:with`, etc.) are supported inside comprehensions.
+- All `loop` clauses (`:when`, `:finish`, `:let`, `:with`, etc.) are supported inside comprehensions.
 - A loose `:when` (without parentheses) may appear immediately before the first clause to gate the accumulator step: `{listing a :when (even? a) (:for a xs)}`.
 - `{seqing ...}` acts lazily and generates a `seql` instead of a fold.
 - Do not use explicit `(:acc ...)` or `=>` inside a comprehension.
@@ -1564,10 +1649,10 @@ Behaves similarly to `:for`, but provides its own sequence of state updates.
 - Emits a sequence using `(:yield expr)`.
 - Rejects `(:acc ...)` as there is no single value to aggregate.
 - Supports `=> e`, evaluating as one final `yield` after the loop.
-- Seamlessly handles subloops (`(:subloop)`); `(:break)` works naturally and jumps out of the sequence entirely.
+- Seamlessly handles subloops (`(:subloop)`); `(:finish test)` works naturally and jumps out of the sequence entirely.
 
 *** Levels
-Loop levels implicitly structure iteration blocks. A new level opens when an iterating clause (`:for` or `:with`) follows a non-iterating clause.
+Loop levels implicitly structure iteration blocks. A new level opens when an iterating clause (`:for`, `:with`, `:while` or `:until`) follows a non-iterating clause.
 
 #+BEGIN_SRC scheme
 ;; Lockstep iteration:
@@ -1578,11 +1663,12 @@ Loop levels implicitly structure iteration blocks. A new level opens when an ite
 #+END_SRC
 
 **Rules**:
-- `:subloop` explicitly forces a level transition.
+- `(:subloop)` with no clauses explicitly forces a level transition. With clauses it is the `:subloop` form, which is not a level of this loop but a nested loop of its own.
 - Accumulators defined in outer levels persist across subloop iterations.
 - `:when` skips the current iteration of its level.
-- `:end-subloop-if` terminates the inner level and resumes the outer level.
-- At the outermost level, `:end-subloop-if` results in a compilation error.
+- `:abandon` terminates the inner level and resumes the outer level.
+- At the outermost level, `:abandon` results in a compilation error.
+- A clause may not bind a name that the loop already carries: an accumulator's, a `:with` variable's at its own or an enclosing level, or that of a variable bound in an enclosing level. `(:for x xs) (:subloop) (:for x ys)` is a compile error; rebinding within one level, as in `(:for x xs) (:let x (* x 2))`, is not.
 - The `range`, `range-by`, `listing`, `vecing`, `mapping`, `summing`, `counting`, and `folding` iterators/collectors are natively supported standard implementations.
 
 *** Iterators — walking something other than the whole of a collection
@@ -1602,7 +1688,7 @@ Loop levels implicitly structure iteration blocks. A new level opens when an ite
 {summing x (:for x (in-array row #:from 2 #:to 20))}   ;; indices 2..19
 {listing x (:for x (in-reverse-vec v))}                ;; the vec, last first
 
-(loop (:for i (up-from 0))                             ;; no #:to: :break ends it
+(loop (:for i (up-from 0))                             ;; no #:to: :finish ends it
       (:for line (in-port p read-line/opt))
       (:do (println (Tuple i line))))
 
@@ -1617,7 +1703,7 @@ Loop levels implicitly structure iteration blocks. A new level opens when an ite
 - A reverse form takes the *same* slice as the forward one and walks it the other way: `(in-reverse-array a #:from 2 #:to 5)` is elements 4, 3, 2.
 - A slice that is not one — a negative `#:from`, a `#:to` past the end, a `#:from` above the `#:to` — is a panic naming the bounds, raised once when the walk is built rather than as an index failure somewhere inside the loop. A `#:by` of zero or less is refused for the same reason.
 - `up-from`'s `#:to` is exclusive and `down-from`'s is inclusive: `(up-from 0 #:to n)` is the indices of something of length `n`, and `(down-from n #:to 0)` counts down to zero and says zero. `#:by` is a distance in both, and `down-from` subtracts it; zero or less is refused.
-- `up-from` and `down-from` without a `#:to` never end on their own. `:break`, `:final` and `:until-cancelled` are what ends them.
+- `up-from` and `down-from` without a `#:to` never end on their own. `:finish`, `:final` and `:until-cancelled` are what ends them.
 - Each of these is a value, not an allocation: the walk lands in the loop's prologue and compiles to the same code the hand-written loop does. A vec slice walks by the vec's own enumerator, so an element costs an array read rather than a descent of the tree.
 - They are ordinary `Iterable`s, so `fold`, `map`, `filter`, `enumerate`, `any?`, `find` and the rest apply to them: `(fold + 0 (in-array a #:from 7))`.
-- `in-port` reads one element ahead, because `done?` has to know before `current` is asked — so a loop left by `:break` has consumed the element it did not look at. It also *blocks*: `Iterable`'s methods are synchronous, so the reader's sync copy is what runs even inside a bjoroutine. A port that should suspend wants `port->seq`, or `port-fold`, whose callback carries either colour.
+- `in-port` reads one element ahead, because `done?` has to know before `current` is asked — so a loop left by `:finish` has consumed the element it did not look at. It also *blocks*: `Iterable`'s methods are synchronous, so the reader's sync copy is what runs even inside a bjoroutine. A port that should suspend wants `port->seq`, or `port-fold`, whose callback carries either colour.

@@ -35,13 +35,13 @@ open Bjolang.TypedAST
 ///     fused:     K(x) [ (looplevel cur slots...) := (begin (set! cells...) REST) ]
 ///
 /// `REST` is a tail call to a producer member, so `K` sits in tail position of
-/// that member. That is what makes early exit free: a consumer `:break` is a
+/// that member. That is what makes early exit free: a consumer `:finish` is a
 /// tail position that calls the finish member instead of `REST`, so nothing
 /// resumes the producer, and since every path in a loop is a tail call the
 /// finish's value flows out of the producer's group as the result. Nothing is
 /// threaded. The producer's members are retyped to return the consumer's
 /// result for the same reason, and the producer's own exits — exhaustion, its
-/// `:break`, its `:final` — are the sequence ending, so they become the
+/// `:finish`, its `:final` — are the sequence ending, so they become the
 /// consumer's finish on the cells.
 ///
 /// Why it is safe: the consumer pulls the producer exactly once and in order,

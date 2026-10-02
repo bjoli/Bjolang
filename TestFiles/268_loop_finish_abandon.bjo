@@ -1,0 +1,134 @@
+;; `:finish` and `:abandon`.
+;;
+;; `(:finish test)` ends the whole loop and runs the `=>` expression.
+;; `(:finish test value)` ends it with `value` as the result, and the `=>`
+;; expression does not run. `(:abandon test)` ends the current level and goes
+;; to the next iteration of the level above.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; ---------------------------------------------------------------------------
+;; :finish without a value runs the end expression
+;; ---------------------------------------------------------------------------
+
+(: finish-runs-end (-> (List int) (Tuple int int)))
+(defun (finish-runs-end xs)
+  (def/mutable ends 0)
+
+  (def got
+    (loop (:for x xs)
+          (:finish (> x 2))
+          (:acc s (summing x))
+          => (begin (set! ends (+ ends 1)) s)))
+
+  (Tuple got ends))
+
+;; ---------------------------------------------------------------------------
+;; :finish with a value skips the end expression
+;; ---------------------------------------------------------------------------
+
+(: finish-value-skips-end (-> (List int) (Tuple int int)))
+(defun (finish-value-skips-end xs)
+  (def/mutable ends 0)
+
+  (def got
+    (loop (:for x xs)
+          (:finish (> x 2) -1)
+          (:acc s (summing x))
+          => (begin (set! ends (+ ends 1)) s)))
+
+  (Tuple got ends))
+
+;; The value is evaluated only when the test holds.
+(: value-only-on-finish (-> (List int) (Tuple int int)))
+(defun (value-only-on-finish xs)
+  (def/mutable evaluated 0)
+
+  (def got
+    (loop (:for x xs)
+          (:finish (> x 100) (begin (set! evaluated (+ evaluated 1)) x))
+          (:acc s (summing x))
+          => s))
+
+  (Tuple got evaluated))
+
+;; ---------------------------------------------------------------------------
+;; The value sees loop variables and accumulators as of its position
+;; ---------------------------------------------------------------------------
+
+;; `s` already includes the triggering `x`: the `:acc` is above the `:finish`.
+(: acc-then-finish (-> (List int) int))
+(defun (acc-then-finish xs)
+  (loop (:for x xs)
+        (:acc s (summing x))
+        (:finish (> x 2) (* s 100))
+        => s))
+
+;; The same clauses the other way round: `s` does not include it yet.
+(: finish-then-acc (-> (List int) int))
+(defun (finish-then-acc xs)
+  (loop (:for x xs)
+        (:finish (> x 2) (* s 100))
+        (:acc s (summing x))
+        => s))
+
+;; A loop variable in the value.
+(: first-over (-> int (List int) (Option int)))
+(defun (first-over limit xs)
+  (loop (:for x xs)
+        (:finish (> x limit) (Some x))
+        => None))
+
+;; From a nested level, the value ends the whole loop.
+(: first-pair (-> (List int) (List int) int))
+(defun (first-pair xs ys)
+  (loop (:for x xs)
+        (:subloop)
+        (:for y ys)
+        (:acc n (counting y))
+        (:finish (= (+ x y) 5) (+ (* 100 x) (* 10 y) n))
+        => -1))
+
+;; In a consumer of a `seql`, which `SeqFusion` splices into the producer.
+(: fused-first (-> int (Option int)))
+(defun (fused-first limit)
+  (loop (:for e (seql (:for i (range 0 10)) (:yield (* i i))))
+        (:finish (> e limit) (Some e))
+        => None))
+
+;; ---------------------------------------------------------------------------
+;; :abandon
+;; ---------------------------------------------------------------------------
+
+;; An implicit level: the `:let` opens it. `:abandon` ends the inner level and
+;; the outer one goes on with its next `x`.
+(: prefixes (-> (List int) (List int)))
+(defun (prefixes xs)
+  (loop (:for x xs)
+        (:let ys (range 0 10))
+        (:for y ys)
+        (:abandon (>= y x))
+        (:acc out (listing (+ (* 10 x) y)))))
+
+;; ---------------------------------------------------------------------------
+
+(defun (main)
+  (def xs '(1 2 3 4))
+
+  (expect "finish: result" (finish-runs-end xs) (Tuple 3 1))
+  (expect "finish with value: result, end not run" (finish-value-skips-end xs) (Tuple -1 0))
+  (expect "finish with value: never triggered, end runs" (finish-value-skips-end '(1 1)) (Tuple 2 1))
+  (expect "finish value only evaluated when the test holds" (value-only-on-finish xs) (Tuple 10 0))
+
+  (expect "acc above finish" (acc-then-finish xs) 600)
+  (expect "finish above acc" (finish-then-acc xs) 300)
+  (expect "value reads a loop variable" (first-over 2 xs) (Some 3))
+  (expect "value not reached" (first-over 9 xs) None)
+  ;; x=1, y=4 is the first pair to sum to 5, after four inner iterations.
+  (expect "value from a nested level" (first-pair '(1 2 3) '(1 2 3 4)) 144)
+  (expect "value from a fused consumer" (fused-first 10) (Some 16))
+  (expect "fused consumer, not reached" (fused-first 100) None)
+
+  (expect "abandon in an implicit level" (prefixes '(1 2 3)) '(10 20 21 30 31 32))
+  0)

@@ -1,0 +1,132 @@
+;; `:while` and `:until` — drivers that bind nothing.
+;;
+;; They belong to a level the way a `:for` does, and are grouped with the
+;; drivers next to them the same way. The test runs before each iteration,
+;; the first included, and the level ends as soon as any of its drivers ends,
+;; checked in clause order.
+
+(import (std prelude))
+(import (std ports))
+(import (std simpletest))
+
+;; ---------------------------------------------------------------------------
+;; Zero iterations
+;; ---------------------------------------------------------------------------
+
+(: never-while (-> int))
+(defun (never-while)
+  (loop (:while #f)
+        (:acc n (counting 1))))
+
+(: never-until (-> int))
+(defun (never-until)
+  (loop (:until #t)
+        (:acc n (counting 1))))
+
+;; The test sees the first element before the body does.
+(: stops-on-first (-> (List int) int))
+(defun (stops-on-first xs)
+  (loop (:for x xs)
+        (:until (> x 0))
+        (:acc n (counting x))))
+
+;; ---------------------------------------------------------------------------
+;; A port
+;; ---------------------------------------------------------------------------
+
+(: lines-of (-> TextInputPort (List string)))
+(defun (lines-of my-port)
+  (loop (:until (port-eof? my-port))
+        (:let line (read-line my-port))
+        (:acc out (listing line))))
+
+;; ---------------------------------------------------------------------------
+;; A plain while loop over state
+;; ---------------------------------------------------------------------------
+
+(: powers-below (-> int (List int)))
+(defun (powers-below limit)
+  (loop (:with p 1 (* p 2))
+        (:while (< p limit))
+        (:acc out (listing p))))
+
+;; ---------------------------------------------------------------------------
+;; Grouped with a :for
+;; ---------------------------------------------------------------------------
+
+;; Whichever ends first ends the level: here the test.
+(: up-to-three (-> (List int) (List int)))
+(defun (up-to-three xs)
+  (loop (:for x xs)
+        (:until (> x 3))
+        (:acc out (listing x))))
+
+;; A tuple pattern's parts are visible to the test as well.
+(: ordered-prefix (-> (List (Tuple int int)) int))
+(defun (ordered-prefix pairs)
+  (loop (:for (Tuple a b) pairs)
+        (:while (< a b))
+        (:acc n (counting a))))
+
+;; Drivers are checked in clause order. A test after a `:for` is not run once
+;; the `:for` has ended; a test before it is.
+(: test-calls-after (-> (List int) int))
+(defun (test-calls-after xs)
+  (def/mutable calls 0)
+  (loop (:for x xs)
+        (:while (begin (set! calls (+ calls 1)) #t))
+        (:do (ignore x)))
+  calls)
+
+(: test-calls-before (-> (List int) int))
+(defun (test-calls-before xs)
+  (def/mutable calls 0)
+  (loop (:while (begin (set! calls (+ calls 1)) #t))
+        (:for x xs)
+        (:do (ignore x)))
+  calls)
+
+;; ---------------------------------------------------------------------------
+;; In a nested level
+;; ---------------------------------------------------------------------------
+
+;; `:until` ends only the inner level; the outer goes on with its next `x`.
+(: below-each (-> (List int) (List int) (List int)))
+(defun (below-each xs ys)
+  (loop (:for x xs)
+        (:subloop)
+        (:for y ys)
+        (:until (>= y x))
+        (:acc out (listing (+ (* 10 x) y)))))
+
+;; An inner level driven by nothing but a `:with` and a `:while`. The `:with`
+;; restarts on every entry to the level.
+(: counts-up (-> (List int) (List int)))
+(defun (counts-up xs)
+  (loop (:for x xs)
+        (:subloop)
+        (:with j 0 (+ j 1))
+        (:while (< j x))
+        (:acc out (listing j))))
+
+;; ---------------------------------------------------------------------------
+
+(defun (main)
+  (expect "while #f runs zero times" (never-while) 0)
+  (expect "until #t runs zero times" (never-until) 0)
+  (expect "test holds on the first element" (stops-on-first '(1 2 3)) 0)
+
+  (expect "port lines" (lines-of (open-input-string "one\ntwo\nthree\n")) '("one" "two" "three"))
+  (expect "empty port" (lines-of (open-input-string "")) '())
+
+  (expect "while over :with" (powers-below 20) '(1 2 4 8 16))
+
+  (expect "until ends before the list" (up-to-three '(1 2 3 4 5)) '(1 2 3))
+  (expect "list ends before until" (up-to-three '(1 2)) '(1 2))
+  (expect "tuple pattern in the test" (ordered-prefix (list (Tuple 1 2) (Tuple 2 3) (Tuple 5 4) (Tuple 1 9))) 2)
+  (expect "test after :for: not run once the :for ends" (test-calls-after '(1 2)) 2)
+  (expect "test before :for: run once more" (test-calls-before '(1 2)) 3)
+
+  (expect "until in a nested level" (below-each '(1 2 3) '(0 1 2 3)) '(10 20 21 30 31 32))
+  (expect "while drives an inner level" (counts-up '(2 0 3)) '(0 1 0 1 2))
+  0)

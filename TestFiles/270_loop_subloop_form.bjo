@@ -1,0 +1,251 @@
+;; The `:subloop` form: `(:subloop clause ... [=> (name expr)])`.
+;;
+;; A nested loop that runs each time its level reaches it. Its accumulators
+;; start over on every run, and are bound for the clauses after the form with
+;; their finished values — or only `name` is, with `=> (name expr)`.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; ---------------------------------------------------------------------------
+;; Exports
+;; ---------------------------------------------------------------------------
+
+;; Every accumulator of the form is visible after it.
+(: sums-and-counts (-> (List (List int)) (List (Tuple int int))))
+(defun (sums-and-counts rows)
+  (loop (:for row rows)
+        (:subloop (:for y row)
+                  (:acc s (summing y))
+                  (:acc n (counting y)))
+        (:acc out (listing (Tuple s n)))))
+
+;; With `=> (name expr)`, only `name`, computed from the accumulators.
+(: averages (-> (List (List int)) (List int)))
+(defun (averages rows)
+  (loop (:for row rows)
+        (:subloop (:for y row)
+                  (:acc s (summing y))
+                  (:acc n (counting y))
+                  => (avg (if (= n 0) 0 (/ s n))))
+        (:acc out (listing avg))))
+
+;; A form that runs zero times exports the initial values.
+(: empty-rows (-> (List (List int)) (List (Tuple int int))))
+(defun (empty-rows rows)
+  (loop (:for row rows)
+        (:subloop (:for y row)
+                  (:acc s (summing y))
+                  (:acc ys (listing y)))
+        (:acc out (listing (Tuple s (list-length ys))))))
+
+;; The form's accumulators start over on each run. An implicit level's do not.
+(: per-run-and-running (-> (List (List int)) (Tuple (List int) int)))
+(defun (per-run-and-running rows)
+  (loop (:for row rows)
+        (:subloop (:for y row)
+                  (:acc s (summing y)))
+        (:acc per-row (listing s))
+        (:subloop)
+        (:for y row)
+        (:acc running (summing y))))
+
+;; ---------------------------------------------------------------------------
+;; What the form sees, and what the clauses after it see
+;; ---------------------------------------------------------------------------
+
+;; The form reads the level's variables and the `:let`s before it, and the
+;; clauses after the form still see them.
+(: scaled (-> (List int) (List int)))
+(defun (scaled ks)
+  (loop (:for k ks)
+        (:let factor (* k 10))
+        (:subloop (:for y (range 0 k))
+                  (:acc s (summing (* y factor))))
+        (:acc out (listing (+ s factor)))))
+
+;; An implicit level after the form sees the export.
+(: export-into-level (-> (List (List int)) (List int)))
+(defun (export-into-level rows)
+  (loop (:for row rows)
+        (:subloop (:for y row)
+                  (:acc s (summing y)))
+        (:let base (* s 100))
+        (:for z '(1 2))
+        (:acc out (listing (+ base z)))))
+
+;; A `:with` inside the form starts over on each run.
+(: indices (-> (List (List int)) (List int)))
+(defun (indices rows)
+  (loop (:for row rows)
+        (:subloop (:for y row)
+                  (:with i 0 (+ i 1))
+                  (:acc last (folding -1 i)))
+        (:acc out (listing last))))
+
+;; ---------------------------------------------------------------------------
+;; :finish-subloop and :abandon-subloop
+;; ---------------------------------------------------------------------------
+
+;; Ends the form with its accumulators as they stand; the clauses after it run.
+(: capped-sums (-> (List (List int)) (List int)))
+(defun (capped-sums rows)
+  (loop (:for row rows)
+        (:subloop (:for y row)
+                  (:acc s (summing y))
+                  (:finish-subloop (> s 10)))
+        (:acc out (listing s))))
+
+;; Drops the form and the rest of the iteration: the row is not listed, and the
+;; next row is still read.
+(: non-negative-sums (-> (List (List int)) (List int)))
+(defun (non-negative-sums rows)
+  (loop (:for row rows)
+        (:subloop (:for y row)
+                  (:abandon-subloop (< y 0))
+                  (:acc s (summing y)))
+        (:acc out (listing s))))
+
+;; Both, as in the docs.
+(: guarded-total (-> (List (List int)) int))
+(defun (guarded-total rows)
+  (loop (:for x rows)
+        (:subloop (:for y x)
+                  (:acc sum (summing y))
+                  (:finish-subloop (> sum 100))
+                  (:abandon-subloop (< y 0)))
+        (:acc total (summing sum))
+        (:finish (> total 1000) -1)
+        => total))
+
+;; ---------------------------------------------------------------------------
+;; :finish from inside the form ends the whole loop
+;; ---------------------------------------------------------------------------
+
+(: first-big (-> (List (List int)) int))
+(defun (first-big rows)
+  (loop (:for row rows)
+        (:subloop (:for y row)
+                  (:finish (> y 50) y)
+                  (:acc s (summing y)))
+        (:acc total (summing s))
+        => (- 0 total)))
+
+;; Without a value, the loop's `=>` runs, on the loop's accumulators.
+(: total-until-big (-> (List (List int)) int))
+(defun (total-until-big rows)
+  (loop (:for row rows)
+        (:subloop (:for y row)
+                  (:finish (> y 50))
+                  (:acc s (summing y)))
+        (:acc total (summing s))
+        => total))
+
+;; ---------------------------------------------------------------------------
+;; :when and :abandon stay inside the form
+;; ---------------------------------------------------------------------------
+
+(: even-sums (-> (List (List int)) (List int)))
+(defun (even-sums rows)
+  (loop (:for row rows)
+        (:subloop (:for y row)
+                  (:when (even? y))
+                  (:acc s (summing y)))
+        (:acc out (listing s))))
+
+;; `:abandon` in the form's inner level ends that level; the form goes on.
+(: prefix-pairs (-> (List int) (List int)))
+(defun (prefix-pairs ks)
+  (loop (:for k ks)
+        (:subloop (:for a '(1 2 3))
+                  (:subloop)
+                  (:for b '(1 2 3))
+                  (:abandon (> b a))
+                  (:acc n (counting b)))
+        (:acc out (listing (* k n)))))
+
+;; ---------------------------------------------------------------------------
+;; :while and :until inside the form
+;; ---------------------------------------------------------------------------
+
+(: prefix-sums (-> (List (List int)) (List int)))
+(defun (prefix-sums rows)
+  (loop (:for row rows)
+        (:subloop (:for y row)
+                  (:until (< y 0))
+                  (:acc s (summing y)))
+        (:acc out (listing s))))
+
+(: powers (-> (List int) (List int)))
+(defun (powers limits)
+  (loop (:for limit limits)
+        (:subloop (:with p 1 (* p 2))
+                  (:while (< p limit))
+                  (:acc c (counting p)))
+        (:acc out (listing c))))
+
+;; ---------------------------------------------------------------------------
+;; Nested forms
+;; ---------------------------------------------------------------------------
+
+;; `:finish-subloop` and `:abandon-subloop` refer to the nearest form.
+(: nested (-> (List (List (List int))) (List int)))
+(defun (nested blocks)
+  (loop (:for block blocks)
+        (:subloop (:for row block)
+                  (:subloop (:for y row)
+                            (:abandon-subloop (< y 0))
+                            (:acc s (summing y))
+                            (:finish-subloop (> s 5)))
+                  (:acc block-sum (summing s)))
+        (:acc out (listing block-sum))))
+
+;; ---------------------------------------------------------------------------
+;; In a seql
+;; ---------------------------------------------------------------------------
+
+(: row-sums (-> (List (List int)) (Seq int)))
+(defun (row-sums rows)
+  (seql (:for row rows)
+        (:subloop (:for y row)
+                  (:acc s (summing y)))
+        (:yield s)))
+
+(: sum-of-row-sums (-> (List (List int)) int))
+(defun (sum-of-row-sums rows)
+  (loop (:for s (row-sums rows))
+        (:acc total (summing s))))
+
+;; ---------------------------------------------------------------------------
+
+(defun (main)
+  (expect "all accumulators exported" (sums-and-counts '((1 2) (3 4 5))) (list (Tuple 3 2) (Tuple 12 3)))
+  (expect "=> (name expr)" (averages '((2 4) () (9))) '(3 0 9))
+  (expect "zero runs export initial values" (empty-rows '(() (1))) (list (Tuple 0 0) (Tuple 1 1)))
+  (expect "form restarts, implicit level does not"
+          (per-run-and-running '((1 2) (3)))
+          (Tuple '(3 3) 6))
+
+  (expect "form sees level variables and :let" (scaled '(1 2 3)) '(10 40 120))
+  (expect "implicit level after the form" (export-into-level '((1) (2 3))) '(101 102 501 502))
+  (expect ":with restarts in the form" (indices '((7 8 9) () (5))) '(2 -1 0))
+
+  (expect ":finish-subloop" (capped-sums '((5 6 7) (1 2))) '(11 3))
+  (expect ":abandon-subloop" (non-negative-sums '((1 2) (3 -1 4) (5))) '(3 5))
+  (expect "both" (guarded-total '((1 2) (3 4) (200 5 6) (7 -1 8) (9))) 219)
+  (expect "both, finish with value" (guarded-total '((600) (600))) -1)
+
+  (expect ":finish with a value from the form" (first-big '((1 2) (3 99 4) (5))) 99)
+  (expect ":finish not reached" (first-big '((1 2) (3))) -6)
+  (expect ":finish without a value from the form" (total-until-big '((1 2) (3 99 4) (5))) 3)
+
+  (expect ":when stays in the form" (even-sums '((1 2 3 4) (5))) '(6 0))
+  (expect ":abandon stays in the form" (prefix-pairs '(1 2)) '(6 12))
+
+  (expect ":until in the form" (prefix-sums '((1 2 -1 5) (3))) '(3 3))
+  (expect ":while in the form" (powers '(1 5 20)) '(0 3 5))
+
+  (expect "nested forms" (nested '(((1 2) (3 -1 9)) ((4 4 4) (1)))) '(3 9))
+
+  (expect "a form in a seql" (sum-of-row-sums '((1 2) () (3 4))) 10)
+  0)

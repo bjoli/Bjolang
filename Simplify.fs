@@ -20,6 +20,7 @@ open Bjolang.TypedAST
 ///
 ///   * A `match` on the local picks its arm at compile time.
 ///   * A local nothing reads, whose value has no effects, is dropped.
+///   * An `if` on a literal condition is replaced by the arm it takes.
 ///
 /// Runs on the typed tree before `Lowering`, which turns matches into type
 /// tests that no longer say which case they test for.
@@ -227,6 +228,10 @@ let rec private simplify (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
 
         | None when not (mentions name body) && isPure ctx value -> body
         | None -> expr
+
+    // A constant condition, as the type check of `(:finish test value)` leaves.
+    | TIf({ Node = TBool true }, t, _) -> { t with Type = expr.Type }
+    | TIf({ Node = TBool false }, _, f) -> { f with Type = expr.Type }
 
     | _ -> expr
 

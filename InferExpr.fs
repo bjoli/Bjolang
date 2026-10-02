@@ -2263,7 +2263,14 @@ and private inferIf (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (cond: 
     unify env.Registry condType TypeConstants.boolType
     let trueType, tTrue = tail env trueBranch
     let falseType, tFalse = tail env falseBranch
-    unify env.Registry trueType falseType
+
+    // Located here because a tail position is checked through `inferChecked`,
+    // which attaches no location of its own: without this, branches that
+    // disagree are reported at whatever encloses the `if`.
+    try
+        unify env.Registry trueType falseType
+    with ex when Diagnostics.needsLocation ex ->
+        raise (Diagnostics.withLocation r ex)
 
     trueType,
     { Type = trueType

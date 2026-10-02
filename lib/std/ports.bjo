@@ -79,7 +79,7 @@
 (: port->list (-> (-?-> TextInputPort %a) TextInputPort (List %a)))
 (defun (port->list reader p)
   (loop (:with i 1 1)
-        (:break (port-eof? p))
+        (:finish (port-eof? p))
         (:acc lst (listing (reader p)))))
 
 
@@ -87,7 +87,7 @@
 (: port->vec (-> (-?-> TextInputPort %a) TextInputPort (Vec %a)))
 (defun (port->vec reader p)
   (loop (:with i 1 1)
-        (:break (port-eof? p))
+        (:finish (port-eof? p))
         (:acc vec (vecing (reader p)))))
 
 (: port->lines (-> TextInputPort (Vec string)))
@@ -102,7 +102,7 @@
 (: port->seq #:sync (-> (-> TextInputPort %a) TextInputPort (Seq %a)))
 (defun (port->seq reader p)
   (seql (:with i 0 0)
-        (:break (port-eof? p))
+        (:finish (port-eof? p))
         (:yield (reader p))))
 
 ;; ---------------------------------------------------------------------------
@@ -306,7 +306,7 @@
 ;; Whether the port is at end of input.
 ;;
 ;; A port that *failed* is not at end of input: this raises rather than
-;; answering `#t`, or `(loop (:break (byte-port-eof? p)) ...)` would end normally
+;; answering `#t`, or `(loop (:finish (byte-port-eof? p)) ...)` would end normally
 ;; on a broken connection and return a truncated result as though it were the
 ;; whole thing.
 (: byte-port-eof? (-> ByteInputPort bool))

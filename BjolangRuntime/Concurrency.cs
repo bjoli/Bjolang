@@ -41,7 +41,7 @@ public static partial class BjolangRuntime {
     ///
     /// and not, as it had to be written before:
     ///
-    ///     (:break-let (Some url) (sync (until-cancelled (chan-recv jobs))))
+    ///     (:finish-let (Some url) (sync (until-cancelled (chan-recv jobs))))
     ///
     /// The second spelling still exists and still means what it meant, but the
     /// token it watches is now written down — see `until-cancelled`. The

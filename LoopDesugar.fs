@@ -44,8 +44,13 @@ type private LoopClause =
     /// never ends the level on its own, and contributes no test rather than a
     /// folded constant.
     | LWith of SExpr * SExpr * SExpr option * SExpr option * Range
+    /// `(:while test)` and `(:until test)`. A driver that binds nothing: it
+    /// belongs to a level as a `:for` does, and its test is one of the level's
+    /// termination tests. `true` is `:until`, which ends the level when the
+    /// test holds.
+    | LTestDriver of SExpr * bool * Range
     | LLet of SExpr * SExpr * Range
-    /// `(:when-let pat expr)` and `(:break-let pat expr)`. A `:let` whose
+    /// `(:when-let pat expr)` and `(:finish-let pat expr)`. A `:let` whose
     /// pattern is allowed to fail, and which says where the failure goes: the
     /// next iteration of this level, or the finish block.
     ///
@@ -58,7 +63,18 @@ type private LoopClause =
     | LRefutableLet of SExpr * SExpr * bool * Range
     | LDo of SExpr list * Range
     | LWhen of SExpr * Range
+    /// The bare `(:subloop)`, which only separates two groups of drivers so
+    /// that the second opens a level.
     | LSubloop of Range
+    /// `(:subloop clause ... [=> (name expr)])`. A nested loop that runs each
+    /// time its level reaches it, with its own accumulators, and whose
+    /// accumulators — or `name` — are bound for the clauses after it.
+    | LSubloopForm of LoopClause list * (string * SExpr) option * Range
+    /// `(:finish-subloop test)`: ends the nearest `:subloop` form normally.
+    | LFinishSubloop of SExpr * Range
+    /// `(:abandon-subloop test)`: drops the nearest `:subloop` form and goes to
+    /// the next iteration of the level that holds it.
+    | LAbandonSubloop of SExpr * Range
     /// `(:acc name (collector args...) #:when cond)`. The `#:when` is a clause
     /// modifier the loop form intercepts, never something the collector sees: it
     /// mentions loop variables, and construction arguments are hoisted out of
@@ -71,21 +87,23 @@ type private LoopClause =
     /// accumulator is exactly the one that cannot be read back: not by a later
     /// clause, not by `=>`, and not by a named loop's `#:name` override.
     | LAcc of string option * SExpr * SExpr option * Range
-    /// Ends the whole loop when the condition holds, before the rest of the
-    /// iteration runs. Routes through the finish block like every other exit.
-    | LBreak of SExpr * Range
-    /// Abandons the current subloop and resumes the enclosing level's next
-    /// iteration — an early return from a subloop, not an iteration skip. The
-    /// same edge inner exhaustion takes.
-    | LEndSubloop of SExpr * Range
+    /// `(:finish test [value])`. Ends the whole loop when the test holds, before
+    /// the rest of the iteration runs. Without a value it routes through the
+    /// finish block like every other exit; with one, the value is the loop's
+    /// result and the finish block does not run.
+    | LFinish of SExpr * SExpr option * Range
+    /// `(:abandon test)`. Ends the current level and resumes the enclosing
+    /// level's next iteration — the same edge inner exhaustion takes. The
+    /// string is the keyword as written, for the error at the outermost level.
+    | LAbandon of SExpr * string * Range
     /// Ends the loop *after* the current iteration completes.
     ///
-    /// Not a mechanism of its own: it is a `:break` on a hidden accumulator
+    /// Not a mechanism of its own: it is a `:finish` on a hidden accumulator
     /// holding the previous iteration's verdict, and the two sit at the position
-    /// `:final` occupied with the break first. An accumulator slot read at the
+    /// `:final` occupied with the finish first. An accumulator slot read at the
     /// top of iteration N holds what was written at the end of N-1, which is
-    /// exactly "finish this one, then stop". Reversed, the break would read the
-    /// value written this iteration and `:final` would collapse into `:break`.
+    /// exactly "finish this one, then stop". Reversed, the finish would read the
+    /// value written this iteration and `:final` would collapse into `:finish`.
     | LFinal of SExpr * Range
 
 /// An accumulator's slot, after its collector form has been split.
@@ -111,20 +129,78 @@ type private AccSlot =
       Level: int
       Range: Range }
 
+/// One driver of a level, in clause order: an index into the level's `:for`s
+/// or `:with`s, or a `:while`/`:until` test.
+type private Driver =
+    | DFor of int
+    | DWith of int
+    /// The test, whether it is `:until`, and how many of the level's `:for`s
+    /// come before it.
+    | DTest of SExpr * bool * int * Range
+
+/// Where a group of loop members sits. The group of a `(loop ...)` has nothing
+/// around it. The group of a `:subloop` form is merged into its loop's group,
+/// so that `:finish` and `:abandon-subloop` are jumps to members of that group.
+type private GroupCtx =
+    { /// Slots every member of the group carries ahead of its own: the slots of
+      /// the level holding the form, and the names bound before the form in
+      /// that level's iteration. Every member is a separate function, so these
+      /// are how the form's clauses see them and how they are handed back.
+      Carried: string list
+      /// `:finish` without a value: the enclosing loop's finish. `None` for a
+      /// `(loop ...)`, whose own finish it is.
+      OuterFinish: (Range -> Expr) option
+      /// `:abandon-subloop`: the next iteration of the level holding the form.
+      AbandonSubloop: (Range -> Expr) option
+      /// The member running the clauses after the form, on the exports.
+      Resume: (Range -> Expr) option
+      /// The form's `=> (name expr)`.
+      Export: (string * SExpr) option }
+
+/// A group's members, its entering expression, and the bindings to hoist ahead
+/// of the whole loop.
+type private GroupResult =
+    { Members: (string * bool * DefunArg list * FType option * Expr) list
+      Entry: Expr
+      Hoisted: (string * Expr * Range) list }
+
+/// The names a `:subloop` form binds for the clauses after it: `name` of its
+/// `=> (name expr)`, or else every accumulator it names.
+let private subloopExports (clauses: LoopClause list) (export: (string * SExpr) option) : string list =
+    match export with
+    | Some(name, _) -> [ name ]
+    | None ->
+        clauses
+        |> List.choose (function
+            | LAcc(Some n, _, _, _) -> Some n
+            | _ -> None)
+
 /// A `(loop ...)` clause's own range, for diagnostics.
 let private loopClauseRange (c: LoopClause) : Range =
     match c with
     | LFor(_, _, r)
     | LWith(_, _, _, _, r)
+    | LTestDriver(_, _, r)
     | LLet(_, _, r)
     | LRefutableLet(_, _, _, r)
     | LDo(_, r)
     | LWhen(_, r)
     | LSubloop r
+    | LSubloopForm(_, _, r)
+    | LFinishSubloop(_, r)
+    | LAbandonSubloop(_, r)
     | LAcc(_, _, _, r)
-    | LBreak(_, r)
-    | LEndSubloop(_, r)
+    | LFinish(_, _, r)
+    | LAbandon(_, _, r)
     | LFinal(_, r) -> r
+
+/// Every symbol in a form, at any depth. Over-approximates the names it reads,
+/// which is enough to decide what to bind around it.
+let rec private sexprSymbols (s: SExpr) : Set<string> =
+    match s with
+    | SAtom { Token = Symbol n } -> Set.singleton n
+    | SAtom _ -> Set.empty
+    | SList(items, _) -> items |> List.map sexprSymbols |> Set.unionMany
 
 // ---------------------------------------------------------------------------
 // n-ary arithmetic and comparison
@@ -177,6 +253,11 @@ and private parseLoopClause (s: SExpr) : LoopClause =
             failwithf
                 $"Invalid (:with ...) at %s{Lexer.formatPos r}. Expected: (:with pattern start [update [end]])"
 
+    | SList(SAtom { Token = Keyword("while" | "until" as k) } :: rest, r) ->
+        match rest with
+        | [ test ] -> LTestDriver(test, (k = "until"), r)
+        | _ -> failwithf $"Invalid (:%s{k} ...) at %s{Lexer.formatPos r}. Expected: (:%s{k} test)"
+
     | SList(SAtom { Token = Keyword "let" } :: rest, r) ->
         match rest with
         | [ pat; value ] -> LLet(pat, value, r)
@@ -187,10 +268,13 @@ and private parseLoopClause (s: SExpr) : LoopClause =
         | [ pat; value ] -> LRefutableLet(pat, value, false, r)
         | _ -> failwithf $"Invalid (:when-let ...) at %s{Lexer.formatPos r}. Expected: (:when-let pattern expr)"
 
-    | SList(SAtom { Token = Keyword "break-let" } :: rest, r) ->
+    | SList(SAtom { Token = Keyword("finish-let" | "break-let" as k) } :: rest, r) ->
+        if k = "break-let" then
+            Diagnostics.warn $"`:break-let` at %s{Lexer.formatPos r} is deprecated, use `:finish-let`."
+
         match rest with
         | [ pat; value ] -> LRefutableLet(pat, value, true, r)
-        | _ -> failwithf $"Invalid (:break-let ...) at %s{Lexer.formatPos r}. Expected: (:break-let pattern expr)"
+        | _ -> failwithf $"Invalid (:%s{k} ...) at %s{Lexer.formatPos r}. Expected: (:%s{k} pattern expr)"
 
     | SList(SAtom { Token = Keyword "do" } :: rest, r) ->
         if rest.IsEmpty then
@@ -205,11 +289,50 @@ and private parseLoopClause (s: SExpr) : LoopClause =
 
     | SList([ SAtom { Token = Keyword "subloop" } ], r) -> LSubloop r
 
-    | SList(SAtom { Token = Keyword "end-subloop-if" } :: rest, r) ->
+    | SList(SAtom { Token = Keyword "subloop" } :: forms, r) ->
+        let isArrow =
+            function
+            | SAtom { Token = Symbol "=>" } -> true
+            | _ -> false
+
+        let clauseForms, export =
+            match forms |> List.tryFindIndex isArrow with
+            | None -> forms, None
+            | Some i when i = forms.Length - 2 ->
+                match List.last forms with
+                | SList([ SAtom { Token = Symbol name }; expr ], _) -> List.take i forms, Some(name, expr)
+                | other ->
+                    failwithf
+                        $"'=>' in a (:subloop ...) at %s{Lexer.formatPos (getRange other)} must be followed by (name expr): the name the clauses after the form see, and the expression it is bound to."
+            | Some i ->
+                failwithf
+                    $"'=>' in a (:subloop ...) at %s{Lexer.formatPos (getRange forms[i])} must be followed by exactly one (name expr), at the end of the form."
+
+        if clauseForms.IsEmpty then
+            failwithf $"Invalid (:subloop ...) at %s{Lexer.formatPos r}: it has no clauses."
+
+        let clauses = expandUntilCancelled clauseForms |> List.map parseLoopClause
+
+        if clauses |> List.exists (function LFinal _ -> true | _ -> false) then
+            let fr = clauses |> List.pick (function LFinal(_, fr) -> Some fr | _ -> None)
+            failwithf
+                $"(:final ...) at %s{Lexer.formatPos fr} is not supported inside a (:subloop ...) form. Use (:finish-subloop test) to end the form, or (:finish test) to end the whole loop."
+
+        LSubloopForm(clauses, export, r)
+
+    | SList(SAtom { Token = Keyword("finish-subloop" | "abandon-subloop" as k) } :: rest, r) ->
         match rest with
-        | [ cond ] -> LEndSubloop(cond, r)
-        | _ ->
-            failwithf $"Invalid (:end-subloop-if ...) at %s{Lexer.formatPos r}. Expected: (:end-subloop-if cond)"
+        | [ cond ] when k = "finish-subloop" -> LFinishSubloop(cond, r)
+        | [ cond ] -> LAbandonSubloop(cond, r)
+        | _ -> failwithf $"Invalid (:%s{k} ...) at %s{Lexer.formatPos r}. Expected: (:%s{k} test)"
+
+    | SList(SAtom { Token = Keyword("abandon" | "end-subloop-if" as k) } :: rest, r) ->
+        if k = "end-subloop-if" then
+            Diagnostics.warn $"`:end-subloop-if` at %s{Lexer.formatPos r} is deprecated, use `:abandon`."
+
+        match rest with
+        | [ cond ] -> LAbandon(cond, k, r)
+        | _ -> failwithf $"Invalid (:%s{k} ...) at %s{Lexer.formatPos r}. Expected: (:%s{k} test)"
 
     | SList(SAtom { Token = Keyword "acc" } :: SAtom { Token = Symbol name } :: collector :: rest, r) ->
         LAcc(Some name, collector, accModifier rest r, r)
@@ -224,13 +347,17 @@ and private parseLoopClause (s: SExpr) : LoopClause =
         failwithf
             $"Invalid (:acc ...) at %s{Lexer.formatPos r}. Expected: (:acc [name] (collector ...) [#:when cond]). The name is optional and only worth giving when a later clause, a => or a named loop reads the accumulator back."
 
-    // Both take a condition rather than being guarded by a preceding `:when`:
-    // clauses do not compose, so there is no bare `(:break)` to be reached
-    // conditionally.
-    | SList(SAtom { Token = Keyword "break" } :: rest, r) ->
+    // `:finish` and `:final` take a condition rather than being guarded by a
+    // preceding `:when`: clauses do not compose, so there is no bare
+    // `(:finish)` to be reached conditionally.
+    | SList(SAtom { Token = Keyword("finish" | "break" as k) } :: rest, r) ->
+        if k = "break" then
+            Diagnostics.warn $"`:break` at %s{Lexer.formatPos r} is deprecated, use `:finish`."
+
         match rest with
-        | [ cond ] -> LBreak(cond, r)
-        | _ -> failwithf $"Invalid (:break ...) at %s{Lexer.formatPos r}. Expected: (:break cond)"
+        | [ cond ] -> LFinish(cond, None, r)
+        | [ cond; value ] -> LFinish(cond, Some value, r)
+        | _ -> failwithf $"Invalid (:%s{k} ...) at %s{Lexer.formatPos r}. Expected: (:%s{k} test) or (:%s{k} test value)"
 
     | SList(SAtom { Token = Keyword "final" } :: rest, r) ->
         match rest with
@@ -334,7 +461,7 @@ and private splitCollector (fns: ParseFns) (s: SExpr) : Expr * SExpr =
 ///     (seql clauses... => e)   →  (seq (loop clauses'...) (yield e))
 ///     (:yield e)               →  (:do (yield e))
 ///
-/// Every level, cursor, `:break` and `:with` is the loop facility's, unchanged.
+/// Every level, cursor, `:finish` and `:with` is the loop facility's, unchanged.
 /// The loop group is emitted inline as a `while`/`switch` in the sequence's own
 /// iterator method, and a `yield return` inside that switch is ordinary C# —
 /// which is the only reason this can be a rewrite rather than a second
@@ -367,8 +494,15 @@ and internal desugarSeqLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : 
             failwithf
                 $"'=>' at %s{Lexer.formatPos ar} must be followed by exactly one expression, at the end of the seql."
 
-    let rewriteClause (s: SExpr) : SExpr =
+    // Recurses into `:subloop` forms, whose accumulators are theirs rather than
+    // the seql's and so are allowed there.
+    let rec rewriteClause (inForm: bool) (s: SExpr) : SExpr =
         match s with
+        | SList((SAtom { Token = Keyword "subloop" } as head) :: (_ :: _ as inner), cr) ->
+            SList(head :: (inner |> List.map (rewriteClause true)), cr)
+
+        | SList(SAtom { Token = Keyword "acc" } :: _, _) when inForm -> s
+
         | SList(SAtom { Token = Keyword "yield" } :: rest, cr) ->
             match rest with
             | [ value ] ->
@@ -383,12 +517,18 @@ and internal desugarSeqLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : 
             failwithf
                 $"(:acc ...) at %s{Lexer.formatPos cr} has no meaning in a (seql ...): a seql yields its elements one at a time rather than accumulating a result. Use (:yield expr), or write a (loop ...) if you wanted the fold."
 
+        // A seql has no result for the value to be. `SeqFusion` also relies on
+        // every producer exit being a call to the finish member.
+        | SList(SAtom { Token = Keyword("finish" | "break" as k) } :: [ _; _ ], cr) ->
+            failwithf
+                $"(:%s{k} test value) at %s{Lexer.formatPos cr} has no meaning in a (seql ...): a seql has no result to return the value as. Use (:%s{k} test)."
+
         | other -> other
 
     if clauseForms.IsEmpty then
         failwithf $"Invalid seql at %s{Lexer.formatPos r}: it has no clauses"
 
-    let loopExpr = desugarLoop fns (clauseForms |> List.map rewriteClause) r
+    let loopExpr = desugarLoop fns (clauseForms |> List.map (rewriteClause false)) r
 
     let body =
         match finishForm with
@@ -415,7 +555,7 @@ and internal desugarSeqLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : 
 ///
 /// The clauses are passed through untouched and in order, which is the point of
 /// taking them parenthesized: everything `loop` already understands — `:when`,
-/// `:break`, `:let`, `:with`, `:final`, `:subloop` — works here on the day this
+/// `:finish`, `:let`, `:with`, `:final`, `:subloop` — works here on the day this
 /// is written, and keeps meaning exactly what it means in a loop. There is no
 /// second dialect of clause to learn.
 ///
@@ -510,10 +650,10 @@ and internal desugarComprehension (fns: ParseFns) (allForms: SExpr list) (r: Ran
 ///
 ///     (:with %tok (parameter-ref current-cancel))   ;; loop ENTRY, wherever the
 ///                                                   ;; clause was written
-///     (:break (cancelled? %tok))                    ;; left exactly where it was
+///     (:finish (cancelled? %tok))                   ;; left exactly where it was
 ///
 /// Two-expression `:with` is already the loop-invariant binding form, so this
-/// needs no new machinery. The break stays put because clause order decides
+/// needs no new machinery. The finish stays put because clause order decides
 /// *where in an iteration* the exit happens, and that is the author's to say.
 ///
 /// **The hoist is the point.** `current-cancel` holds a field on `DynEnv` — it
@@ -573,7 +713,7 @@ and private expandUntilCancelled (clauseForms: SExpr list) : SExpr list =
                     failwithf
                         $"Invalid (:until-cancelled ...) at %s{Lexer.formatPos r}. Expected: (:until-cancelled) for the ambient token, or (:until-cancelled token) for a named one."
 
-            SList([ at r (Keyword "break"); SList([ at r (Symbol "cancelled?"); token ], r) ], r)
+            SList([ at r (Keyword "finish"); SList([ at r (Symbol "cancelled?"); token ], r) ], r)
 
         | other -> other
 
@@ -613,20 +753,55 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
 
     let clauses = clauseForms |> List.map parseLoopClause
 
+    let top =
+        buildGroup
+            fns
+            r
+            userLoopName
+            finishForm
+            { Carried = []
+              OuterFinish = None
+              AbandonSubloop = None
+              Resume = None
+              Export = None }
+            clauses
+
+    // The prologue. Everything loop-invariant is evaluated once, outside: the
+    // collectors, and level 0's sequences.
+    //
+    // `let/mono` rather than `let` because a collector is typically a bare
+    // nullary constructor, which `let` would generalize — and then its element
+    // type would never pin down.
+    List.foldBack (fun (n, e, hr) acc -> ELetMono(n, e, acc, hr)) top.Hoisted (ELetRec(top.Members, top.Entry, r))
+
+/// The members of one group: a `(loop ...)`'s, or a `:subloop` form's, which
+/// its loop merges into its own. A form's members are the members of its
+/// levels, a member finishing the form, and, for each form nested in it, the
+/// nested form's members and a member resuming after it.
+and private buildGroup
+    (fns: ParseFns)
+    (r: Range)
+    (userLoopName: string option)
+    (finishForm: SExpr option)
+    (ctx: GroupCtx)
+    (clauses: LoopClause list)
+    : GroupResult =
+    let isSub = ctx.OuterFinish.IsSome
+
     match clauses with
-    | (LFor _ | LWith _) :: _ -> ()
+    | (LFor _ | LWith _ | LTestDriver _) :: _ -> ()
     | c :: _ ->
         let cr = loopClauseRange c
         failwithf
-            $"A loop must begin with a (:for ...) or (:with ...) at %s{Lexer.formatPos cr}: every other clause belongs to the level open at its position, and before the first one there is none."
+            $"A loop must begin with a (:for ...), (:with ...), (:while ...) or (:until ...) at %s{Lexer.formatPos cr}: every other clause belongs to the level open at its position, and before the first one there is none."
     | [] -> ()
 
     // Level assignment, in one left-to-right pass. An *iterating* clause — a
-    // `:for` or a `:with` — preceded by anything other than another iterating
-    // clause opens a new level; every other clause belongs to the level that was
-    // current at its own position, so an `:acc` above an inner `:for`, or a
-    // `:let` between a `:subloop` and the `:for` it opens, stays in the
-    // enclosing level.
+    // `:for`, `:with`, `:while` or `:until` — preceded by anything other than
+    // another iterating clause opens a new level; every other clause belongs to
+    // the level that was current at its own position, so an `:acc` above an
+    // inner `:for`, or a `:let` between a `:subloop` and the `:for` it opens,
+    // stays in the enclosing level.
     //
     // A `:with` counts here for the same reason it is tested here: it advances
     // with the level, so it is in lockstep with the level's cursors rather than
@@ -640,7 +815,8 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
         |> List.map (fun c ->
             match c with
             | LFor _
-            | LWith _ ->
+            | LWith _
+            | LTestDriver _ ->
                 if not prevWasIter then current <- current + 1
                 prevWasIter <- true
                 current
@@ -663,7 +839,7 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
                 | _ -> None)
         | _ -> []
 
-    /// The names a `:when-let` or `:break-let` pattern binds.
+    /// The names a `:when-let` or `:finish-let` pattern binds.
     ///
     /// Read through the pattern parser rather than off the s-expression:
     /// these patterns destructure constructors, and `patternNames` above only
@@ -699,11 +875,10 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
                     | LWith(p, st, up, en, cr) -> Some(p, st, up, en, cr)
                     | _ -> None)
 
-            // The level's iterating clauses in source order, as indices into
-            // `fors` and `withs`. Termination tests are built from this rather
-            // than from the two lists in turn: `done?` may be effectful, so
-            // which test runs before which is observable and has to be what the
-            // author wrote.
+            // The level's iterating clauses in source order. Termination tests
+            // are built from this rather than from the lists in turn: `done?`
+            // may be effectful, so which test runs before which is observable
+            // and has to be what the author wrote.
             let iterOrder =
                 let mutable fi = -1
                 let mutable wi = -1
@@ -712,10 +887,11 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
                 |> List.choose (function
                     | LFor _ ->
                         fi <- fi + 1
-                        Some(Choice1Of2 fi)
+                        Some(DFor fi)
                     | LWith _ ->
                         wi <- wi + 1
-                        Some(Choice2Of2 wi)
+                        Some(DWith wi)
+                    | LTestDriver(test, isUntil, cr) -> Some(DTest(test, isUntil, fi + 1, cr))
                     | _ -> None)
 
             // `:subloop` emits nothing. Its only role is to have not been an
@@ -726,6 +902,7 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
                 |> List.filter (function
                     | LFor _
                     | LWith _
+                    | LTestDriver _
                     | LSubloop _ -> false
                     | _ -> true)
 
@@ -738,6 +915,7 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
                     | LFor(p, _, _) -> patternNames p
                     | LLet(p, _, _) -> patternNames p
                     | LRefutableLet(p, _, _, _) -> refutableNames p
+                    | LSubloopForm(cs, export, _) -> subloopExports cs export
                     | _ -> [])
 
             {| Index = i
@@ -817,6 +995,64 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
             | SAtom { Token = Symbol n } -> Some n
             | _ -> None)
 
+    // Refuses a clause binding a name that is carried between members under
+    // that name: an accumulator, a `:with` variable of this or an enclosing
+    // level, or a variable bound in an enclosing level. A jump fills each slot
+    // from whatever the slot's name means at the jump, so the clause's value
+    // would be written into the carried one.
+    do
+        let named = overridableAccNames |> Set.ofList
+
+        let withNamesOf (i: int) =
+            levels[i].Withs |> List.collect (fun (p, _, _, _, _) -> patternNames p)
+
+        let refuse (n: string) (cr: Range) (what: string) =
+            failwithf
+                $"'%s{n}' at %s{Lexer.formatPos cr} is already %s{what} of this loop. Binding it again inside the loop is not supported: the loop carries that variable from one iteration to the next by its name, and the new binding would be carried in its place. Use another name."
+
+        let mutable withsSeen = Set.empty
+
+        // A `:subloop` form's members carry the enclosing loop's names, so
+        // the form may not bind any of them either, an accumulator included.
+        let carried = Set.ofList ctx.Carried
+
+        for slot in accInfo do
+            if slot.Named && Set.contains slot.Name carried then
+                refuse slot.Name slot.Range "a variable of an enclosing level"
+
+        for level, clause in List.zip levelOf clauses do
+            let enclosingBound =
+                [ for j in 0 .. level - 1 do
+                      yield! levels[j].Bound ]
+                |> Set.ofList
+                |> Set.union carried
+
+            let withsHere =
+                [ for j in 0..level do
+                      yield! withNamesOf j ]
+                |> Set.ofList
+
+            let check (names: string list) (cr: Range) (isWith: bool) =
+                for n in names do
+                    if Set.contains n named then
+                        refuse n cr "an accumulator"
+                    elif isWith && Set.contains n withsSeen then
+                        refuse n cr "a (:with ...) variable"
+                    elif not isWith && Set.contains n withsHere then
+                        refuse n cr "a (:with ...) variable"
+                    elif Set.contains n enclosingBound then
+                        refuse n cr "a variable of an enclosing level"
+
+            match clause with
+            | LFor(p, _, cr)
+            | LLet(p, _, cr) -> check (patternNames p) cr false
+            | LRefutableLet(p, _, _, cr) -> check (refutableNames p) cr false
+            | LWith(p, _, _, _, cr) ->
+                check (patternNames p) cr true
+                withsSeen <- Set.union withsSeen (Set.ofList (patternNames p))
+            | LSubloopForm(cs, export, cr) -> check (subloopExports cs export) cr false
+            | _ -> ()
+
     /// The slot vector of level `i`, in emission order.
     ///
     /// Every enclosing level's sequences and cursors are carried, because an
@@ -834,9 +1070,14 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
     /// over unchanged. Unlike an accumulator it is *not* on every member — it
     /// does not exist above the level that owns it, which is the same reason it
     /// is out of scope in the finish block.
+    ///
+    /// A `:subloop` form's group carries the enclosing loop's names first, and
+    /// its level 0's sequences like any inner level's: they are evaluated each
+    /// time the form is entered.
     let slotNames (i: int) : string list =
-        [ for j in 0..i do
-              if j > 0 then yield! levels[j].SeqNames
+        [ yield! ctx.Carried
+          for j in 0..i do
+              if j > 0 || isSub then yield! levels[j].SeqNames
               yield! levels[j].CurNames
               yield! levels[j].WithNames
           for j in 0 .. i - 1 do
@@ -905,20 +1146,50 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
     // branch instead of a folded constant. A level of nothing but such `:with`
     // clauses yields `false` and never ends on its own — the same as a `:for`
     // over an infinite sequence, and equally the author's business.
+    //
+    // A `:while` or `:until` test may name the variables of the `:for`s before
+    // it in the level. Those are bound around the test alone, from
+    // `iterable-current`, so the exit edges outside it still see the slots the
+    // variables might shadow. The body reads `current` again in `bindCurrents`.
+    // Each test's node carries its clause's range, so a test that is not a
+    // bool is reported at the clause.
     let exhausted (i: int) =
         let tests =
             levels[i].IterOrder
             |> List.choose (function
-                | Choice1Of2 fi ->
-                    Some(call "iterable-done?" [ EIdent(levels[i].SeqNames[fi], r); EIdent(levels[i].CurNames[fi], r) ] r)
-                | Choice2Of2 wi ->
-                    let (_, _, _, endCond, _) = levels[i].Withs[wi]
-                    endCond |> Option.map fns.Expr)
+                | DFor fi ->
+                    Some(call "iterable-done?" [ EIdent(levels[i].SeqNames[fi], r); EIdent(levels[i].CurNames[fi], r) ] r, r)
+                | DWith wi ->
+                    let (_, _, _, endCond, wr) = levels[i].Withs[wi]
+                    endCond |> Option.map (fun e -> fns.Expr e, wr)
+                | DTest(test, isUntil, forsBefore, cr) ->
+                    let t = fns.Expr test
+                    let ends = if isUntil then t else EIf(t, EBool(false, cr), EBool(true, cr), cr)
+                    let mentioned = sexprSymbols test
+
+                    let named =
+                        List.zip3 levels[i].Fors levels[i].SeqNames levels[i].CurNames
+                        |> List.take forsBefore
+                        |> List.filter (fun ((pat, _, _), _, _) ->
+                            // A pattern macro's names are not known before
+                            // expansion, so such a pattern is always bound.
+                            match patternNames pat with
+                            | [] -> true
+                            | names -> names |> List.exists (fun n -> Set.contains n mentioned))
+
+                    let bound =
+                        List.foldBack
+                            (fun ((pat, _, fr), sn, cn) acc ->
+                                bindLoopPattern pat (call "iterable-current" [ EIdent(sn, fr); EIdent(cn, fr) ] fr) acc fr)
+                            named
+                            ends
+
+                    Some(bound, cr))
 
         let rec anyOf ts =
             match ts with
-            | [ last ] -> last
-            | t :: tl -> EIf(t, EBool(true, r), anyOf tl, r)
+            | [ last, _ ] -> last
+            | (t, tr) :: tl -> EIf(t, EBool(true, tr), anyOf tl, tr)
             | [] -> EBool(false, r)
 
         anyOf tests
@@ -927,10 +1198,14 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
     // shadowing the slot, so `=> expr` sees the finished one by name.
     //
     // It is a member of the group rather than something spliced at each exit:
-    // exhaustion, every `:break`, every `:final` and a named loop's declining
+    // exhaustion, every `:finish`, every `:final` and a named loop's declining
     // `:do` all reach it, and inlining it at each one would emit as many copies
     // of the `=>` expression as there are ways out.
-    let exitName = Gensym.fresh "loopexit"
+    //
+    // A `:subloop` form's finish is a `looplevel` member: it jumps on to the
+    // member resuming after the form, and `SeqFusion` reads `loopexit` as the
+    // finish of the whole loop.
+    let exitName = Gensym.fresh (if isSub then "looplevel" else "loopexit")
 
     /// Refuses a `:with` variable named in the finish block.
     ///
@@ -994,11 +1269,52 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
             declared
             result
 
-    /// Leaving the loop: hand the accumulators as they stand to the finish
-    /// member. They are in scope under their own names at every exit, whether as
-    /// a slot or as a rebinding an `:acc` clause made earlier this iteration.
+    /// Ending this group normally: hand the accumulators as they stand to the
+    /// finish member. They are in scope under their own names at every exit,
+    /// whether as a slot or as a rebinding an `:acc` clause made earlier this
+    /// iteration.
+    let ownFinish (cr: Range) =
+        EApp(EIdent(exitName, cr), ctx.Carried @ accNames |> List.map (fun n -> EIdent(n, cr)), cr)
+
+    /// Leaving the whole loop. Inside a `:subloop` form that is the enclosing
+    /// loop's finish, and the form's accumulators are dropped.
     let finishBlock (cr: Range) =
-        EApp(EIdent(exitName, cr), accNames |> List.map (fun n -> EIdent(n, cr)), cr)
+        match ctx.OuterFinish with
+        | Some outer -> outer cr
+        | None -> ownFinish cr
+
+    /// A `:subloop` form's finish member: its accumulators finished, its export
+    /// bound, and then the clauses after the form. Only the accumulators the
+    /// author named are finished, since only those can be exported or read.
+    let subExitBody =
+        let named = accInfo |> List.filter (fun slot -> slot.Named)
+
+        let resume =
+            match ctx.Resume with
+            | Some resume -> resume r
+            | None -> EBool(false, r)
+
+        let exported =
+            match ctx.Export with
+            | Some(name, e) ->
+                let parsed = fns.Expr e
+                rejectWithInFinish parsed
+                ELet(name, false, [], None, parsed, resume, getRange e)
+            | None -> resume
+
+        List.foldBack
+            (fun slot acc ->
+                ELet(
+                    slot.Name,
+                    false,
+                    [],
+                    None,
+                    call "collector-finish" [ EIdent(slot.Collector, slot.Range); EIdent(slot.Name, slot.Range) ] slot.Range,
+                    acc,
+                    slot.Range
+                ))
+            named
+            exported
 
     /// Steps one accumulator, then carries on.
     let stepAcc (slot: AccSlot) (rest: Expr) =
@@ -1026,7 +1342,10 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
     /// owns the clause*, so a `:with` inside a subloop is reset on every entry
     /// to that subloop. This is the opposite of an accumulator, which is hoisted
     /// and persists across the outer iterations.
-    let enterLevel (i: int) (cr: Range) =
+    ///
+    /// `extra` fills more slots on the same jump: a `:subloop` form's
+    /// accumulators, which start over on each entry to the form.
+    let enterLevelWith (i: int) (extra: Map<string, Expr>) (cr: Range) =
         let temps = levels[i].Fors |> List.map (fun _ -> Gensym.fresh "loopenter")
 
         let overrides =
@@ -1034,6 +1353,7 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
             @ (List.map2 (fun cn t -> cn, call "iterable-start" [ EIdent(t, cr) ] cr) levels[i].CurNames temps)
             @ (List.zip levels[i].WithNames levels[i].Withs
                |> List.map (fun (slot, (_, start, _, _, _)) -> slot, fns.Expr start))
+            @ Map.toList extra
             |> Map.ofList
 
         List.foldBack
@@ -1041,40 +1361,121 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
             (List.zip temps levels[i].Fors)
             (jump i overrides cr)
 
-    /// Leaving level `i`: level 0 is the end of the loop, and any other level
+    let enterLevel (i: int) (cr: Range) = enterLevelWith i Map.empty cr
+
+    /// Leaving level `i`: level 0 is the end of the group, and any other level
     /// hands back to its parent with the parent's cursors advanced — the same
-    /// edge an `:end-subloop-if` takes.
+    /// edge an `:abandon` takes.
     let exitLevel (i: int) (cr: Range) =
-        if i = 0 then finishBlock cr else advanceLevel (i - 1) cr
+        if i = 0 then ownFinish cr else advanceLevel (i - 1) cr
+
+    // Filled by `buildClauses` at each `:subloop` form: the form's members and
+    // the member resuming after it, and the form's collectors.
+    let extraMembers = ResizeArray<string * bool * DefunArg list * FType option * Expr>()
+    let extraHoisted = ResizeArray<string * Expr * Range>()
+
+    /// The names a member body has bound ahead of level `i`'s clauses: the
+    /// level's `:for` variables, and the parts of every tuple-pattern `:with`
+    /// up to it. With the slots, they are what a `:subloop` form in the level
+    /// carries.
+    let levelLocals (i: int) =
+        (levels[i].Fors |> List.collect (fun (p, _, _) -> patternNames p))
+        @ [ for j in 0..i do
+                for (p, _, _, _, _) in levels[j].Withs do
+                    match p with
+                    | SAtom { Token = Symbol _ } -> ()
+                    | _ -> yield! patternNames p ]
 
     // The clauses of one level, in order. The last of them falls into the next
     // level if there is one, and otherwise into the next iteration of this one —
     // unless a named loop's final `:do` has taken that edge over.
-    let rec buildClauses (level: int) (cs: LoopClause list) (accsLeft: AccSlot list) =
+    //
+    // `locals` are the names bound so far in this iteration of the level, which
+    // a `:subloop` form carries along with the level's slots.
+    let rec buildClauses (level: int) (cs: LoopClause list) (accsLeft: AccSlot list) (locals: string list) =
         let continueEdgeOf (cr: Range) =
             if level < maxLevel then enterLevel (level + 1) cr else advanceLevel level cr
+
+        let next tl = buildClauses level tl accsLeft locals
 
         match cs with
         | [] -> continueEdgeOf r
 
         | LLet(pat, value, cr) :: tl ->
-            bindLoopPattern pat (fns.Expr value) (buildClauses level tl accsLeft) cr
+            bindLoopPattern pat (fns.Expr value) (buildClauses level tl accsLeft (locals @ patternNames pat)) cr
 
         // The `:let` whose pattern may fail. `bindLoopPattern` refuses one of
         // these because it has nowhere to send the failure; the second arm is
         // that somewhere.
         //
         // Clauses above it have already run, so an accumulator stepped before
-        // this one keeps what it was given — the same as `:when` and `:break`.
+        // this one keeps what it was given — the same as `:when` and `:finish`.
         | LRefutableLet(pat, value, stops, cr) :: tl ->
             let missed = if stops then finishBlock cr else advanceLevel level cr
 
             EMatch(
                 fns.Expr value,
-                [ fns.Pattern pat, None, buildClauses level tl accsLeft
+                [ fns.Pattern pat, None, buildClauses level tl accsLeft (locals @ refutableNames pat)
                   PWildcard cr, None, missed ],
                 cr
             )
+
+        // A nested loop. Its levels are members of this group; entering it is a
+        // jump to its level 0, and its finish jumps to a member that runs the
+        // clauses after it with the exports bound. Both carry this level's
+        // slots and the names bound so far, so the clauses after the form see
+        // what they would have seen without it.
+        | LSubloopForm(subClauses, export, cr) :: tl ->
+            let exports = subloopExports subClauses export
+            let carried = slotNames level @ locals |> List.distinct
+            let resumeParams = (carried |> List.filter (fun n -> not (List.contains n exports))) @ exports
+            let resumeName = Gensym.fresh "looplevel"
+
+            let sub =
+                buildGroup
+                    fns
+                    cr
+                    None
+                    None
+                    { Carried = carried
+                      OuterFinish = Some finishBlock
+                      AbandonSubloop = Some(fun ar -> advanceLevel level ar)
+                      Resume =
+                        Some(fun rr -> EApp(EIdent(resumeName, rr), resumeParams |> List.map (fun n -> EIdent(n, rr)), rr))
+                      Export = export }
+                    subClauses
+
+            // Members are checked in order, and a slot's type comes from the
+            // jump that enters its member. So the form's members follow the one
+            // entering the form, and the resume member — which enters what comes
+            // after — precedes the members of any form after this one.
+            extraMembers.AddRange sub.Members
+            extraHoisted.AddRange sub.Hoisted
+            let at = extraMembers.Count
+
+            let resumeBody =
+                buildClauses level tl accsLeft (locals @ exports |> List.distinct)
+
+            extraMembers.Insert(at, (resumeName, true, resumeParams |> List.map (fun n -> MandatoryArg(n, None)), None, resumeBody))
+            sub.Entry
+
+        // Ends the nearest `:subloop` form as if it had run out: exports from
+        // the accumulators as they stand, then the clauses after the form.
+        | LFinishSubloop(cond, cr) :: tl ->
+            if not isSub then
+                failwithf
+                    $"(:finish-subloop ...) at %s{Lexer.formatPos cr} is only allowed inside a (:subloop ...) form. Use (:finish test) to end the loop, or (:abandon test) to end the current level."
+
+            EIf(fns.Expr cond, ownFinish cr, next tl, cr)
+
+        // Drops the nearest `:subloop` form and its accumulators, and goes to
+        // the next iteration of the level holding it.
+        | LAbandonSubloop(cond, cr) :: tl ->
+            match ctx.AbandonSubloop with
+            | Some abandon -> EIf(fns.Expr cond, abandon cr, next tl, cr)
+            | None ->
+                failwithf
+                    $"(:abandon-subloop ...) at %s{Lexer.formatPos cr} is only allowed inside a (:subloop ...) form. Use (:abandon test) to end the current level, or (:when test) to skip an iteration."
 
         // In a named loop the *final* `:do` owns the continue edge: if it tail
         // calls the loop, that is the jump, and if it completes without one the
@@ -1096,33 +1497,44 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
             List.foldBack
                 (fun e acc -> ELet("_", false, [], None, fns.Expr e, acc, cr))
                 exprs
-                (buildClauses level tl accsLeft)
+                (next tl)
 
         // Skips the rest of *this* iteration of *this* level. Clauses above it
         // have already run, so an accumulator stepped before it keeps what it
         // was given.
         | LWhen(cond, cr) :: tl ->
-            EIf(fns.Expr cond, buildClauses level tl accsLeft, advanceLevel level cr, cr)
+            EIf(fns.Expr cond, next tl, advanceLevel level cr, cr)
 
         // Abandons this level and resumes the enclosing one — an early return
-        // from a subloop, not an iteration skip. At level 0 the two would
+        // from a level, not an iteration skip. At level 0 the two would
         // coincide, which is a coincidence rather than a definition.
-        | LEndSubloop(cond, cr) :: tl ->
+        | LAbandon(cond, spelled, cr) :: tl ->
             if level = 0 then
-                failwithf
-                    $"(:end-subloop-if ...) at %s{Lexer.formatPos cr} is at the outermost level, where there is no enclosing loop to resume. Use (:when ...) to skip an iteration, or (:break ...) to leave the loop."
+                let instead = if isSub then "`:abandon-subloop`" else "`:finish`"
+                failwithf $"`:%s{spelled}` has no level above here; use %s{instead}.\n  at %s{Lexer.formatPos cr}"
 
-            EIf(fns.Expr cond, exitLevel level cr, buildClauses level tl accsLeft, cr)
+            EIf(fns.Expr cond, exitLevel level cr, next tl, cr)
 
-        // Leaves the whole loop from any level, through the finish block.
-        // Accumulators stepped earlier in this iteration keep what they were
-        // given.
-        | LBreak(cond, cr) :: tl ->
-            EIf(fns.Expr cond, finishBlock cr, buildClauses level tl accsLeft, cr)
+        // Leaves the whole loop from any level. Accumulators stepped earlier in
+        // this iteration keep what they were given. With a value, the value is
+        // the result in place of the finish block's.
+        //
+        // The value sits under an `if #f` whose other arm is the finish block,
+        // so its type is checked against the loop's result type here, at this
+        // clause. Left in tail position on its own, a mismatch would be found
+        // only where the level's branches meet, and reported at the loop.
+        // `Simplify` removes the dead arm.
+        | LFinish(cond, value, cr) :: tl ->
+            let leave =
+                match value with
+                | None -> finishBlock cr
+                | Some v -> EIf(EBool(false, cr), finishBlock cr, fns.Expr v, cr)
 
-        // `:break` on the hidden accumulator, then the accumulator's own step —
+            EIf(fns.Expr cond, leave, next tl, cr)
+
+        // `:finish` on the hidden accumulator, then the accumulator's own step —
         // in that order. The slot still holds the previous iteration's verdict
-        // when the break reads it, which is what makes this "after the current
+        // when the finish reads it, which is what makes this "after the current
         // iteration" rather than "before the rest of it".
         | LFinal _ :: tl ->
             match accsLeft with
@@ -1130,17 +1542,17 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
                 EIf(
                     EIdent(slot.Name, slot.Range),
                     finishBlock slot.Range,
-                    stepAcc slot (buildClauses level tl restAcc),
+                    stepAcc slot (buildClauses level tl restAcc locals),
                     slot.Range
                 )
             | [] -> failwith "internal error: :final without its accumulator"
 
         | LAcc _ :: tl ->
             match accsLeft with
-            | slot :: restAcc -> stepAcc slot (buildClauses level tl restAcc)
+            | slot :: restAcc -> stepAcc slot (buildClauses level tl restAcc locals)
             | [] -> failwith "internal error: accumulator clause without its info"
 
-        | (LFor _ | LWith _ | LSubloop _) :: _ -> failwith "internal error: clause should have been rejected"
+        | (LFor _ | LWith _ | LTestDriver _ | LSubloop _) :: _ -> failwith "internal error: clause should have been rejected"
 
     /// Rewrites the tail positions of a named loop's final `:do`.
     ///
@@ -1245,9 +1657,14 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
     // construction, and they are all in one group rather than nested: a jump
     // across levels has to reach the *same* switch, and a nested group would
     // bind it to the wrong one.
-    let members =
+    let asArgs (names: string list) = names |> List.map (fun n -> MandatoryArg(n, None))
+
+    // Each level is followed by the members its `:subloop` forms added, so a
+    // member is checked after the one that enters it.
+    let levelMembers =
         levels
-        |> List.map (fun lvl ->
+        |> List.collect (fun lvl ->
+            let before = extraMembers.Count
             let accsHere = accInfo |> List.filter (fun slot -> slot.Level = lvl.Index)
 
             let body =
@@ -1256,47 +1673,59 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
                     (EIf(
                         exhausted lvl.Index,
                         exitLevel lvl.Index r,
-                        bindCurrents lvl.Index (buildClauses lvl.Index lvl.Others accsHere),
+                        bindCurrents lvl.Index (buildClauses lvl.Index lvl.Others accsHere (levelLocals lvl.Index)),
                         r
                     ))
 
-            (lvl.Member, true, slotNames lvl.Index |> List.map (fun n -> MandatoryArg(n, None)), None, body))
+            (lvl.Member, true, asArgs (slotNames lvl.Index), None, body)
+            :: (extraMembers |> Seq.skip before |> List.ofSeq))
 
-    // The finish member. It calls nothing, so `LetRecify` gives it a component
-    // of its own and it is bound ahead of the loop group rather than becoming a
-    // case in the same switch — which costs one call on the way out and saves a
-    // copy of the block at every other exit.
-    let members =
-        members
-        @ [ (exitName, true, accNames |> List.map (fun n -> MandatoryArg(n, None)), None, finishBlockBody) ]
+    // The finish member. A loop's calls nothing, so `LetRecify` gives it a
+    // component of its own and it is bound ahead of the loop group rather than
+    // becoming a case in the same switch — which costs one call on the way out
+    // and saves a copy of the block at every other exit. A form's resumes the
+    // level holding the form, so it is a case like any other.
+    let exitMember =
+        if isSub then
+            (exitName, true, asArgs (ctx.Carried @ accNames), None, subExitBody)
+        else
+            (exitName, true, asArgs accNames, None, finishBlockBody)
 
-    // In `slotNames 0`'s order: level 0's cursors, then its `:with` slots, then
-    // the accumulators.
-    let initialArgs =
-        (levels[0].SeqNames
-         |> List.map (fun sn -> call "iterable-start" [ EIdent(sn, r) ] r))
-        @ (levels[0].Withs |> List.map (fun (_, start, _, _, _) -> fns.Expr start))
-        @ (accInfo |> List.map (fun slot -> call "collector-init" [ EIdent(slot.Collector, slot.Range) ] slot.Range))
+    let members = levelMembers @ [ exitMember ]
 
-    let group =
-        ELetRec(members, EApp(EIdent(levels[0].Member, r), initialArgs, r), r)
+    // Collectors are hoisted out of the whole loop, a form's included: their
+    // construction arguments are loop-invariant by definition.
+    let collectors =
+        accInfo |> List.map (fun slot -> slot.Collector, slot.CollectorExpr, slot.Range)
 
-    // The prologue. Everything loop-invariant is evaluated once, outside: the
-    // collectors, and level 0's sequences. An inner level's sequence usually
-    // names an outer loop variable, so it is evaluated at the entering jump
-    // instead — hoisting is per clause, not unconditional.
-    //
-    // `let/mono` rather than `let` because a collector is typically a bare
-    // nullary constructor, which `let` would generalize — and then its element
-    // type would never pin down.
-    let withCollectors =
-        List.foldBack
-            (fun slot acc -> ELetMono(slot.Collector, slot.CollectorExpr, acc, slot.Range))
+    if isSub then
+        // A form's level 0 is entered like an inner level, its sequences
+        // evaluated on every entry, and its accumulators start over.
+        let inits =
             accInfo
-            group
+            |> List.map (fun slot -> slot.Name, call "collector-init" [ EIdent(slot.Collector, slot.Range) ] slot.Range)
+            |> Map.ofList
 
-    List.foldBack
-        (fun (sn, (_, sequence, cr)) acc -> ELetMono(sn, fns.Expr sequence, acc, cr))
-        (List.zip levels[0].SeqNames levels[0].Fors)
-        withCollectors
+        { Members = members
+          Entry = enterLevelWith 0 inits r
+          Hoisted = collectors @ List.ofSeq extraHoisted }
+    else
+        // In `slotNames 0`'s order: level 0's cursors, then its `:with` slots,
+        // then the accumulators.
+        let initialArgs =
+            (levels[0].SeqNames
+             |> List.map (fun sn -> call "iterable-start" [ EIdent(sn, r) ] r))
+            @ (levels[0].Withs |> List.map (fun (_, start, _, _, _) -> fns.Expr start))
+            @ (accInfo |> List.map (fun slot -> call "collector-init" [ EIdent(slot.Collector, slot.Range) ] slot.Range))
+
+        // Level 0's sequences are loop-invariant and evaluated once, outside.
+        // An inner level's usually names an outer loop variable, so it is
+        // evaluated at the entering jump instead.
+        let sequences =
+            List.zip levels[0].SeqNames levels[0].Fors
+            |> List.map (fun (sn, (_, sequence, cr)) -> sn, fns.Expr sequence, cr)
+
+        { Members = members
+          Entry = EApp(EIdent(levels[0].Member, r), initialArgs, r)
+          Hoisted = sequences @ collectors @ List.ofSeq extraHoisted }
 

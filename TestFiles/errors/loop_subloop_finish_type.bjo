@@ -1,0 +1,19 @@
+;; `:finish` with a value inside a `:subloop` form ends the whole loop, so the
+;; value has the type of the loop's result.
+
+;; EXPECT-ERROR: these types do not match.
+;; EXPECT-ERROR: (List
+;; EXPECT-ERROR: string
+;; EXPECT-ERROR: loop_subloop_finish_type.bjo:15
+
+(import (std prelude))
+
+(: f (-> (List (List int)) (List int)))
+(defun (f rows)
+  (loop (:for row rows)
+        (:subloop (:for y row)
+                  (:finish (< y 0) "negative")
+                  (:acc s (summing y)))
+        (:acc out (listing s))))
+
+(defun (main) (println (int->string (list-length (f '((1)))))) 0)

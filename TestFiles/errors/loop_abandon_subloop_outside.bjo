@@ -1,0 +1,16 @@
+;; `:abandon-subloop` belongs inside a `:subloop` form, and an implicit level
+;; is not one.
+
+;; EXPECT-ERROR: (:abandon-subloop ...) at loop_abandon_subloop_outside.bjo:13 is only allowed inside a (:subloop ...) form.
+
+(import (std prelude))
+
+(: f (-> (List int) (List int) int))
+(defun (f xs ys)
+  (loop (:for x xs)
+        (:subloop)
+        (:for y ys)
+        (:abandon-subloop (> y 2))
+        (:acc s (summing y))))
+
+(defun (main) (println (int->string (f '(1 2) '(1 2 3)))) 0)

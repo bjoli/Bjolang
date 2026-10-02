@@ -87,17 +87,17 @@
 ;; Leaving a level, and leaving the loop
 ;; ---------------------------------------------------------------------------
 
-;; `:break` from inside a subloop leaves the whole thing, through the finish
+;; `:finish` from inside a subloop leaves the whole thing, through the finish
 ;; block like every other exit.
 (: until-sum (-> (List int) (List int) (List int)))
 (defun (until-sum xs ys)
   (loop (:for x xs)
         (:subloop)
         (:for y ys)
-        (:break (> (+ x y) 4))
+        (:finish (> (+ x y) 4))
         (:acc out (listing (+ (* 10 x) y)))))
 
-;; `:end-subloop-if` abandons *this* level and resumes the enclosing one's next
+;; `:abandon` abandons *this* level and resumes the enclosing one's next
 ;; iteration — the same edge inner exhaustion takes, and a different jump from
 ;; `:when`, which would only skip one inner iteration.
 (: capped (-> (List int) (List int) (List int)))
@@ -105,7 +105,7 @@
   (loop (:for x xs)
         (:subloop)
         (:for y ys)
-        (:end-subloop-if (> y 1))
+        (:abandon (> y 1))
         (:acc out (listing (+ (* 10 x) y)))))
 
 ;; ...whereas `:when` on the same condition keeps going round the inner level.

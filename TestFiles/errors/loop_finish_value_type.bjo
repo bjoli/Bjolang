@@ -1,0 +1,19 @@
+;; `(:finish test value)`: the value is the loop's result, so it has the type of
+;; the `=>` expression. The error names both types and points at the clause.
+
+;; EXPECT-ERROR: these types do not match.
+;; EXPECT-ERROR: int
+;; EXPECT-ERROR: string
+;; EXPECT-ERROR: loop_finish_value_type.bjo:15
+
+(import (std prelude))
+
+(: f (-> (List int) int))
+(defun (f xs)
+  (loop (:for x xs)
+        (:acc s (summing x))
+        (:finish (> x 2)
+                 "too big")
+        => s))
+
+(defun (main) (println (int->string (f '(1 2 3)))) 0)

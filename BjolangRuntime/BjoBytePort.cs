@@ -832,7 +832,7 @@ public sealed class BjoByteInputPort : IDisposable {
     /// whenever the buffer holds anything.
     ///
     /// A port that FAILED is not at end of input, and this raises rather than
-    /// answering true — or `(loop (:break (byte-port-eof? p)) ...)` would end
+    /// answering true — or `(loop (:finish (byte-port-eof? p)) ...)` would end
     /// normally on a broken socket and return a truncated result as though it
     /// were the whole thing.
     /// </summary>

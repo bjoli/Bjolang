@@ -3,6 +3,37 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~loop~: ~:finish~, ~:abandon~, ~:while~, ~:until~ and the ~:subloop~ form
+
+- *~(:finish test [value])~* ends the whole loop. With a value, that is the
+  result and ~=>~ does not run; the value must have the loop's result type.
+  ~:break~ is a deprecated spelling, and warns. ~:break-let~ is renamed
+  ~:finish-let~ the same way.
+- *~(:abandon test)~* ends the current level. ~:end-subloop-if~ is a
+  deprecated spelling, and warns. At the outermost level it is an error.
+- *~(:while test)~ and ~(:until test)~* are drivers that bind nothing, grouped
+  and opening levels as a ~:for~ does. The test runs before every iteration and
+  may read the variables of the drivers before it in its group.
+- *~(:subloop clause ... [=> (name expr)])~* is a nested loop whose
+  accumulators, or ~name~, are bound for the clauses after it.
+  ~(:finish-subloop test)~ ends it, ~(:abandon-subloop test)~ drops it and the
+  rest of the iteration holding it. A bare ~(:subloop)~ still only separates
+  levels.
+- *A clause may not bind a name the loop carries*: an accumulator, a ~:with~
+  variable of its own or an enclosing level, or a variable of an enclosing
+  level. Such a binding used to be carried in place of the outer one, so
+  ~(:with i 0 (+ i 1) (= i 3)) (:subloop) (:for i ys)~ never ended.
+- *A type error between an ~if~'s branches is reported at the ~if~.*
+
+~TestFiles/268_loop_finish_abandon.bjo~, ~269_loop_while_until.bjo~,
+~270_loop_subloop_form.bjo~, and ~TestFiles/errors/loop_*~,
+~TestFiles/warnings/loop_*~.
+
+Left open: ~:final~ is refused inside a ~:subloop~ form. A ~seql~ holding a
+~:subloop~ form is not fused with its consumer. A ~:while~ or ~:until~ that
+reads a ~:for~ variable reads its element once for the test and once for the
+body.
+
 * ~bjo publish~: a program that runs from anywhere
 
 - *~bjo publish [-o dir] [file]~* makes a release build of a program and copies

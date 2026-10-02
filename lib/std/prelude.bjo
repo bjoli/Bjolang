@@ -418,7 +418,7 @@
   (#:bjo
     ;; (loop (:for (k v) m)
     ;;       (:acc acc (folding #t (f k v)))
-    ;;       (:break (not acc)))
+    ;;       (:finish (not acc)))
     (def c (map-cursor m))
     (let go ()
       (if (map-cursor-done? c)
@@ -603,7 +603,7 @@
   (defun (take n s)
     (seql (:with i 0 (+ i 1))
           (:for elem s)
-          (:break (= n i))
+          (:finish (= n i))
           (:yield elem)))
   ;; this is of course not efficient, but hey. 
   (defun (drop n s)
@@ -613,7 +613,7 @@
           (:yield elem)))
   (defun (take-while f s)
     (seql (:for elem s)
-          (:break (not (f elem)))
+          (:finish (not (f elem)))
           (:yield elem)))
 
   ;; This can also be rewritten
@@ -637,21 +637,21 @@
           (:yield x)))
 
   ;; `folding` keeps the last stepped value, so the accumulator holds the
-  ;; current element's answer and `:break` stops on it.
+  ;; current element's answer and `:finish` stops on it.
   (defun (any? f s)
     (loop (:for e s)
           (:acc found (folding #f (f e)))
-          (:break found)))
+          (:finish found)))
 
   (defun (all? f s)
     (loop (:for e s)
           (:acc ok (folding #t (f e)))
-          (:break (not ok))))
+          (:finish (not ok))))
 
   (defun (find f s)
     (loop (:for e s)
           (:acc got (folding None (if (f e) (Some e) None)))
-          (:break (match got ((Some _) #t) (None #f)))))
+          (:finish (match got ((Some _) #t) (None #f)))))
 
   (defun (for-each f s)
     (loop (:for e s)
@@ -866,7 +866,7 @@
   (#:bjo
     (loop (:for elem v)
           (:acc acc (folding #t (f elem)))
-          (:break (not acc)))))
+          (:finish (not acc)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Seqs, where the callback may suspend

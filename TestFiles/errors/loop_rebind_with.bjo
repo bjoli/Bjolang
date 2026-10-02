@@ -1,0 +1,15 @@
+;; An inner variable may not reuse the name of a `:with` variable: the loop
+;; carries the `:with` by its name, and the inner value would be carried instead.
+
+;; EXPECT-ERROR: 'i' at loop_rebind_with.bjo:12 is already a (:with ...) variable of this loop.
+
+(import (std prelude))
+
+(: f (-> (List int)))
+(defun (f)
+  (loop (:with i 0 (+ i 1) (= i 3))
+        (:subloop)
+        (:for i '(10 20 30))
+        (:acc out (listing i))))
+
+(defun (main) (println (int->string (list-length (f)))) 0)
