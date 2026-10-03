@@ -209,12 +209,9 @@
       ((BjoVec items)
        ;; vec-fold is already very very fast. no need to rewrite it as a loop
        (vec-fold (fun (el acc)
-                   (match acc
-                     ((Err e) (Err e))
-                     ((Ok b)
-                      (match (bjodat-> el)
-                        ((Err e) (Err e))
-                        ((Ok x) (Ok (vec-add b x)))))))
+                   (def (Ok b) acc :propagate)
+                   (def (Ok x) (bjodat-> el) :propagate)
+                   (Ok (vec-add b x)))
                  (Ok (vec-empty))
                  items))
       (_ (Err "expected a vec")))))
@@ -384,17 +381,14 @@
 ;; Every value of a clause, for a `#:rest` field.
 (: bjodat-all-values (-> string string (List Bjodat) (Result string (List %a))) (where (bjodat-> %a)))
 (defun (bjodat-all-values owner name vs)
-  (match (list-foldl (fun (el acc)
-                       (match acc
-                         ((Err e) (Err e))
-                         ((Ok b)
-                          (match (bjodat-> el)
-                            ((Err e) (Err (str owner "." name ": " e)))
-                            ((Ok x) (Ok (Cons x b)))))))
-                     (Ok Nil)
-                     vs)
-    ((Err e) (Err e))
-    ((Ok b) (Ok (list-reverse b)))))
+  (result-map list-reverse
+              (list-foldl (fun (el acc)
+                            (def (Ok b) acc :propagate)
+                            (match (bjodat-> el)
+                              ((Err e) (Err (str owner "." name ": " e)))
+                              ((Ok x) (Ok (Cons x b)))))
+                          (Ok Nil)
+                          vs)))
 
 (: bjodat-clause-field (-> string (List Bjodat) string (Result string %a)) (where (bjodat-> %a)))
 (defun (bjodat-clause-field owner cs name)

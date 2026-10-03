@@ -35,12 +35,9 @@
   (match items
     (Nil (Some Nil))
     ((Cons item rest)
-     (match (f item)
-       (None None)
-       ((Some value)
-        (match (all-of rest f)
-          (None None)
-          ((Some values) (Some (Cons value values)))))))))
+     (def (Some value) (f item) :propagate)
+     (def (Some values) (all-of rest f) :propagate)
+     (Some (Cons value values)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Reading a pattern
@@ -287,17 +284,15 @@
 
 (: repeated-value (-> (List Syntax) Syntax Syntax string (Option Syntax)))
 (defun (repeated-value items whole var path)
-  (match (repeated-of items whole)
-    (None None)
-    ((Some repeated)
-     (if (irrefutable? repeated)
-         ;; The tail binder, bound by the pattern like any other variable.
-         (if (same-name? repeated var) (Some repeated) None)
-         (match (value-of repeated var (repeated-path items whole path))
-           (None None)
-           ((Some inner)
-            ;; option-ref takes answer.
-            (Some #'(option-ref ,(fold-over items whole path repeated inner)))))))))
+  (def (Some repeated) (repeated-of items whole) :propagate)
+  (if (irrefutable? repeated)
+      ;; The tail binder, bound by the pattern like any other variable.
+      (if (same-name? repeated var) (Some repeated) None)
+      (match (value-of repeated var (repeated-path items whole path))
+        (None None)
+        ((Some inner)
+         ;; option-ref takes answer.
+         (Some #'(option-ref ,(fold-over items whole path repeated inner)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; A clause

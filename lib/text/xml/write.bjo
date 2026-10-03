@@ -405,16 +405,15 @@
       (Nil done)
       ((Cons item rest)
        (when (and indent (not first)) (clr-whitespace w "\n"))
-       (def written
+       (def (Ok _)
          (match item
            ((TopDoctype dt)
-            (match (doctype-markup dt)
-              ((Ok markup) (clr-raw w markup) done)
-              ((Err e) (Err e))))
-           ((TopNode n) (write-tree w n indent (if (element? n) hints Nil)))))
-       (match written
-         ((Ok _) (loop rest #f))
-         ((Err e) (Err e)))))))
+            (def (Ok markup) (doctype-markup dt) :propagate)
+            (clr-raw w markup)
+            done)
+           ((TopNode n) (write-tree w n indent (if (element? n) hints Nil))))
+         :propagate)
+       (loop rest #f)))))
 
 ;; ===========================================================================
 ;; Running a writer

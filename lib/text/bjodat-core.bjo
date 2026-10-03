@@ -651,23 +651,19 @@
 (: finish-number (-> Reader bool StringBuilder (Result string Bjodat)))
 (defun (finish-number rd neg sb)
   (ignore (take-digits! rd sb))
-  (match (scan-fraction! rd sb)
-    ((Err e) (Err e))
-    ((Ok frac?)
-     (match (scan-exponent! rd sb)
-       ((Err e) (Err e))
-       ((Ok exp?)
-        (cond
-          ((or frac? exp?)
-           (def d (clr-to-double sb))
-           (Ok (BjoFloat (if neg (- 0.0 d) d))))
-          ;; Wider than a long is still a number.
-          (else
-           (match (try (clr-to-long sb) #:catch (System.OverflowException))
-             ((Ok n) (Ok (BjoInt (if neg (- 0L n) n))))
-             ((Err _)
-              (def d (clr-to-double sb))
-              (Ok (BjoFloat (if neg (- 0.0 d) d))))))))))))
+  (def (Ok frac?) (scan-fraction! rd sb) :propagate)
+  (def (Ok exp?) (scan-exponent! rd sb) :propagate)
+  (cond
+    ((or frac? exp?)
+     (def d (clr-to-double sb))
+     (Ok (BjoFloat (if neg (- 0.0 d) d))))
+    ;; Wider than a long is still a number.
+    (else
+     (match (try (clr-to-long sb) #:catch (System.OverflowException))
+       ((Ok n) (Ok (BjoInt (if neg (- 0L n) n))))
+       ((Err _)
+        (def d (clr-to-double sb))
+        (Ok (BjoFloat (if neg (- 0.0 d) d))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Symbols, keywords, and what a `#` begins
@@ -815,19 +811,15 @@
                         "and here there is " (found rd)))))
       (else
        (step! rd)
-       (match (read-key rd (+ depth 1))
-         ((Err e) (Err e))
-         ((Ok k)
-          (push! rd k)
-          (match (read-value rd (+ depth 1))
-            ((Err e) (Err e))
-            ((Ok v)
-             (push! rd v)
-             (skip-space! rd)
-             (if (= (held-code rd) 41)
-                 (begin (step! rd) (go))
-                 (Err (at rd (str "an entry holds a key and a value, and then there is "
-                                  (found rd))))))))))))) 
+       (def (Ok k) (read-key rd (+ depth 1)) :propagate)
+       (push! rd k)
+       (def (Ok v) (read-value rd (+ depth 1)) :propagate)
+       (push! rd v)
+       (skip-space! rd)
+       (if (= (held-code rd) 41)
+           (begin (step! rd) (go))
+           (Err (at rd (str "an entry holds a key and a value, and then there is "
+                            (found rd)))))))))
 
 ;; `{k v k v}`. The opening brace has been stepped over before reaching this fun.
 (: read-flat-map (-> Reader int int (Result string Bjodat)))
@@ -842,16 +834,14 @@
       ((= (held-code rd) 40)
        (Err (at rd "this map is written flat, so a '(' here is an entry of the other form")))
       (else
-       (match (read-key rd (+ depth 1))
-         ((Err e) (Err e))
-         ((Ok k)
-          (push! rd k)
-          (skip-space! rd)
-          (if (or (at-end? rd) (= (held-code rd) 125))
-              (Err (at rd "this map has a key with no value"))
-              (match (read-value rd (+ depth 1))
-                ((Err e) (Err e))
-                ((Ok v) (push! rd v) (go))))))))))
+       (def (Ok k) (read-key rd (+ depth 1)) :propagate)
+       (push! rd k)
+       (skip-space! rd)
+       (if (or (at-end? rd) (= (held-code rd) 125))
+           (Err (at rd "this map has a key with no value"))
+           (match (read-value rd (+ depth 1))
+             ((Err e) (Err e))
+             ((Ok v) (push! rd v) (go))))))))
 
 ;; Which form a map is written in is decided by the first thing inside it, and
 ;; then every entry has to agree.

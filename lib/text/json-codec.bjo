@@ -127,12 +127,9 @@
     (match j
       ((JsonArr items)
        (vec-fold (fun (el acc)
-                   (match acc
-                     ((Err e) (Err e))
-                     ((Ok b)
-                      (match (json-> el)
-                        ((Err e) (Err e))
-                        ((Ok v) (Ok (vec-add b v)))))))
+                   (def (Ok b) acc :propagate)
+                   (def (Ok v) (json-> el) :propagate)
+                   (Ok (vec-add b v)))
                  (Ok (vec-empty))
                  items))
       (_ (Err "expected an array")))))
