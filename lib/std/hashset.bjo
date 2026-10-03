@@ -1,0 +1,258 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/hashset.bjo — the unordered hash set.
+;; CHAMP trie of elements.
+
+(export
+  ;; The types.
+  HashSet HashSetBuilder TransientHashSet HashSetCursor HashSetting
+
+  ;; Sets
+  hashset-empty hashset-add hashset-add-all hashset-remove hashset-remove-all
+  hashset-contains? hashset-length hashset-empty? hashset-clear hashset-union
+  hashset-map hashset-filter hashset-fold hashset-for-each hashset-iter hashset-any? hashset-find
+  ;; Conversions
+  list->hashset hashset->list vec->hashset hashset->vec seq->hashset hashset->seq
+  hashset->str
+  ;; Builders — the same shape as ListBuilder
+  hashsetbuilder-empty hashset->hashsetbuilder hashsetbuilder-add! hashsetbuilder-add-all!
+  hashsetbuilder-length hashsetbuilder->hashset
+  ;; Transients — the set's interface, in place
+  transienthashset-empty hashset->transienthashset transienthashset->hashset
+  transienthashset-add! transienthashset-add-all! transienthashset-remove!
+  transienthashset-remove-all! transienthashset-contains? transienthashset-length
+  transienthashset-empty?)
+
+(import (std prelude))
+
+;; The types.
+(import/class
+  ((HashSet %a) (: Set.Set))
+  ((HashSetBuilder %a) (: Set.SetBuilder))
+  ((TransientHashSet %a) (: Set.TransientSet))
+  ((HashSetCursor %a) (: Set.SetCursor)))
+
+;; ---------------------------------------------------------------------------
+;; The set
+;; ---------------------------------------------------------------------------
+
+(import/extern
+  (hashset-empty      (: Set.SetModule.Empty          (-> (HashSet %a))))
+  (hashset-add        (: Set.SetModule.Add            (-> (HashSet %a) %a (HashSet %a))))
+  (hashset-add-all    (: Set.SetModule.AddRange       (-> (HashSet %a) (Seq %a) (HashSet %a))))
+  (hashset-remove     (: Set.SetModule.Remove         (-> (HashSet %a) %a (HashSet %a))))
+  (hashset-remove-all (: Set.SetModule.RemoveRange    (-> (HashSet %a) (Seq %a) (HashSet %a))))
+  (hashset-contains?  (: Set.SetModule.Contains       (-> (HashSet %a) %a bool)))
+  (hashset-length     (: Set.SetModule.Count          (-> (HashSet %a) int)))
+  (hashset-empty?     (: Set.SetModule.IsEmpty        (-> (HashSet %a) bool)))
+  (hashset-clear      (: Set.SetModule.Clear          (-> (HashSet %a) (HashSet %a))))
+  ;; The union.
+  (hashset-union      (: Set.SetModule.Merge          (-> (HashSet %a) (HashSet %a) (HashSet %a))))
+  (clr-hashset-map    (: Set.SetModule.Map            (-> (-> %a %b) (HashSet %a) (HashSet %b))))
+  (clr-hashset-filter (: Set.SetModule.Filter         (-> (-> %a bool) (HashSet %a) (HashSet %a))))
+  (clr-hashset-fold   (: Set.SetModule.Fold           (-> (-> %a %s %s) %s (HashSet %a) %s)))
+  (clr-hashset-iter   (: Set.SetModule.Iter           (-> (-> %a bool) (HashSet %a) bool)))
+  (hashset-any?       (: Set.SetModule.Exists         (-> (-> %a bool) (HashSet %a) bool)))
+  ;; The first element satisfying `pred`, as an `Option`.
+  (hashset-find       (: Set.SetModule.TryFindKey     (-> (-> %a bool) (HashSet %a) (out %a) (Option %a))))
+  (seq->hashset       (: Set.SetModule.FromEnumerable (-> (Seq %a) (HashSet %a))))
+  (hashset->seq       (: Set.SetModule.AsEnumerable   (-> (HashSet %a) (Seq %a))))
+  (hashset-cursor          (: Set.SetModule.Cursor        (-> (HashSet %a) (HashSetCursor %a))))
+  (hashset-cursor-done?    (: Set.SetModule.CursorDone    (-> (HashSetCursor %a) bool)))
+  (hashset-cursor-current  (: Set.SetModule.CursorCurrent (-> (HashSetCursor %a) %a))))
+
+;; ---------------------------------------------------------------------------
+;; Builders
+;; ---------------------------------------------------------------------------
+
+
+(import/extern
+  (hashsetbuilder-empty     (: Set.SetBuilderModule.Empty    (-> (HashSetBuilder %a))))
+  (hashset->hashsetbuilder      (: Set.SetBuilderModule.FromSet  (-> (HashSet %a) (HashSetBuilder %a))))
+  (hashsetbuilder-add!      (: Set.SetBuilderModule.Add      (-> (HashSetBuilder %a) %a void)))
+  (hashsetbuilder-add-all!  (: Set.SetBuilderModule.AddRange (-> (HashSetBuilder %a) (Seq %a) void)))
+  (hashsetbuilder-length    (: Set.SetBuilderModule.Count    (-> (HashSetBuilder %a) int)))
+  (hashsetbuilder->hashset      (: Set.SetBuilderModule.Build    (-> (HashSetBuilder %a) (HashSet %a))))
+
+  ;; --- Transients ---
+  (transienthashset-empty        (: Set.TransientSetModule.Empty          (-> (TransientHashSet %a))))
+  (hashset->transienthashset         (: Set.TransientSetModule.FromPersistent (-> (HashSet %a) (TransientHashSet %a))))
+  (transienthashset->hashset         (: Set.TransientSetModule.ToPersistent   (-> (TransientHashSet %a) (HashSet %a))))
+  (transienthashset-add!         (: Set.TransientSetModule.Add            (-> (TransientHashSet %a) %a void)))
+  (transienthashset-add-all!     (: Set.TransientSetModule.AddRange       (-> (TransientHashSet %a) (Seq %a) void)))
+  (transienthashset-remove!      (: Set.TransientSetModule.Remove         (-> (TransientHashSet %a) %a void)))
+  (transienthashset-remove-all!  (: Set.TransientSetModule.RemoveRange    (-> (TransientHashSet %a) (Seq %a) void)))
+  (transienthashset-contains?    (: Set.TransientSetModule.Contains       (-> (TransientHashSet %a) %a bool)))
+  (transienthashset-length       (: Set.TransientSetModule.Count          (-> (TransientHashSet %a) int)))
+  (transienthashset-empty?       (: Set.TransientSetModule.IsEmpty        (-> (TransientHashSet %a) bool))))
+
+;; ---------------------------------------------------------------------------
+;; Sets, where the callback may suspend
+;; ---------------------------------------------------------------------------
+
+(: hashset-map (-> (-?-> %a %b) (HashSet %a) (HashSet %b)))
+(defbjouble (hashset-map f s)
+  (#:sync (clr-hashset-map f s))
+  (#:bjo
+    (def b (hashsetbuilder-empty))
+    (def c (hashset-cursor s))
+    (let go ()
+      (cond
+        ((hashset-cursor-done? c) (hashsetbuilder->hashset b))
+        (else
+          (hashsetbuilder-add! b (f (hashset-cursor-current c)))
+          (go))))))
+
+(: hashset-filter (-> (-?-> %a bool) (HashSet %a) (HashSet %a)))
+(defbjouble (hashset-filter keep? s)
+  (#:sync (clr-hashset-filter keep? s))
+  (#:bjo
+    (def b (hashsetbuilder-empty))
+    (def c (hashset-cursor s))
+    (let go ()
+      (cond
+        ((hashset-cursor-done? c) (hashsetbuilder->hashset b))
+        (else
+          (def x (hashset-cursor-current c))
+          (when (keep? x)
+            (hashsetbuilder-add! b x))
+          (go))))))
+
+(: hashset-fold (-> (-?-> %a %s %s) %s (HashSet %a) %s))
+(defbjouble (hashset-fold f init s)
+  (#:sync (clr-hashset-fold f init s))
+  (#:bjo
+    (def c (hashset-cursor s))
+    (let go ((acc init))
+      (if (hashset-cursor-done? c)
+          acc
+          (go (f (hashset-cursor-current c) acc))))))
+
+(: hashset-iter (-> (-?-> %a bool) (HashSet %a) bool))
+(defbjouble (hashset-iter f s)
+  (#:sync (clr-hashset-iter f s))
+  (#:bjo
+    (def c (hashset-cursor s))
+    (let go ()
+      (if (hashset-cursor-done? c)
+          #t
+          (if (f (hashset-cursor-current c))
+              (go)
+              #f)))))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+
+(: list->hashset (-> (List %a) (HashSet %a)))
+(defun (list->hashset xs) (seq->hashset (list->seq xs)))
+
+(: hashset->list (-> (HashSet %a) (List %a)))
+(defun (hashset->list s) (seq->list (hashset->seq s)))
+
+(: vec->hashset (-> (Vec %a) (HashSet %a)))
+(defun (vec->hashset v) (seq->hashset (vec->seq v)))
+
+(: hashset->vec (-> (HashSet %a) (Vec %a)))
+(defun (hashset->vec s) (seq->vec (hashset->seq s)))
+
+;; ---------------------------------------------------------------------------
+;; The traits
+;; ---------------------------------------------------------------------------
+(impl (Refable (HashSet %a))
+  (type %index %a)
+  (type %out bool)
+  (defun (ref set key)
+    (hashset-contains? set key)))
+(impl (Refable (TransientHashSet %a))
+  (type %index %a)
+  (type %out bool)
+  (defun (ref set key)
+    (transienthashset-contains? set key)))
+(impl (Iterable (HashSet %a))
+  (type %elem %a)
+  (type %cursor (HashSetCursor %a))
+  (defun (iterable-start s) (hashset-cursor s))
+  (defun (iterable-done? s c) (hashset-cursor-done? c))
+  (defun (iterable-current s c) (hashset-cursor-current c))
+  (defun (iterable-next s c) c))
+
+(: hashset-for-each (-> (-?-> %a void) (HashSet %a) void))
+(defun (hashset-for-each f s)
+  (def c (hashset-cursor s))
+  (let go ()
+    (cond
+      ((hashset-cursor-done? c) unit)
+      (else
+        (f (hashset-cursor-current c))
+        (go)))))
+
+(impl (Collection (HashSet %a))
+  (type %content %a)
+  (defun (length s) (hashset-length s))
+  (defun (empty? s) (hashset-empty? s)))
+
+
+(type (: (HashSetting %a) (Union hash-setting)))
+
+(impl (Collector (HashSetting %a))
+  (type %elem %a)
+  (type %acc (HashSetBuilder %a))
+  (type %out (HashSet %a))
+  (defun (collector-init c) (hashsetbuilder-empty))
+  (defun (collector-step c acc x) (hashsetbuilder-add! acc x) acc)
+  (defun (collector-finish c acc) (hashsetbuilder->hashset acc)))
+
+;; The mutable sinks, one element at a time. `Addable!` is the prelude's
+;; trait; this module owns the types, which is what licenses the impls.
+(impl (Addable! (HashSetBuilder %a))
+      (type %elem %a)
+      (defun (add! sb elem)
+        (hashsetbuilder-add! sb elem)))
+
+(impl (Addable! (TransientHashSet %a))
+      (type %elem %a)
+      (defun (add! ts elem)
+        (transienthashset-add! ts elem)))
+
+;; And the persistent set itself.
+(impl (Addable (HashSet %a))
+      (type %elem %a)
+      (defun (add s elem)
+        (hashset-add s elem)))
+
+;; Equality for sets.
+(impl (Eq (HashSet %a))
+  (where (Eq %a))
+  (defun (= a b)
+    (and (= (hashset-length a) (hashset-length b))
+         (hashset-iter (fun (x) (hashset-contains? b x)) a)))
+  (defun (eq-hash s)
+    (hashset-fold (fun (x h) (bitwise-xor h (eq-hash x))) 0 s)))
+
+(: hashset->str (-> (HashSet %a) string) (where (->str %a)))
+(defun (hashset->str s)
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add-string! sb "#{")
+  (loop (:with first? #t #f)
+        (:for elem s)
+        (:do (unless first? (stringbuilder-add-string! sb " "))
+             (stringbuilder-add-string! sb (->str elem))))
+  (stringbuilder-add-string! sb "}")
+  (stringbuilder->string sb))
+
+(impl (->str (HashSet %a))
+  (where (->str %a))
+  (defun (->str s)
+    (hashset->str s)))

@@ -24,7 +24,7 @@
 ;; EXPECT-CS: await .*responsesubport__bjo\(
 
 ;; The blocking copy calls the blocking halves of the same names.
-;; EXPECT-CS: switch \(fetch\(get\(url\)\)\)
+;; EXPECT-CS: switch \(fetch\(httpsubget\(url\)\)\)
 ;; EXPECT-CS: responsesubtext\(r\)
 
 ;; And nothing anywhere waits on a task by hand, which is what any of these
@@ -38,13 +38,13 @@
 ;; Written once. No colour is named anywhere in it.
 (: fetch-body (-> string string))
 (defun (fetch-body url)
-  (match (fetch (get url))
+  (match (fetch (http-get url))
     ((Ok r) (let ((text (response-text r))) (response-close r) text))
     ((Err e) "failed")))
 
 (: first-line (-> string string))
 (defun (first-line url)
-  (match (fetch (get url))
+  (match (fetch (http-get url))
     ((Ok r) (let ((line (read-line (response-port r)))) (response-close r) line))
     ((Err e) "failed")))
 

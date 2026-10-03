@@ -1,12 +1,12 @@
 ;; Collections as keys.
 ;;
-;; A `Map` and a `Set` file a key under `EqualityComparer<T>.Default`, which is
+;; A `Map` and a `HashSet` file a key under `EqualityComparer<T>.Default`, which is
 ;; .NET's equality and not the `Eq` impl in `std/eq`. For the four collection
 ;; types those two have to say the same thing, or a key never finds its own
 ;; entry — and it fails *silently*, as a lookup that misses rather than as
 ;; anything anyone could catch.
 ;;
-;; `Map`, `Set` and `List` carry structural equality of their own. `Vec` did
+;; `Map`, `HashSet` and `List` carry structural equality of their own. `Vec` did
 ;; not, so a vec key was compared by reference: `(map-ref-or m (string->vec
 ;; "ab") 0)` answered the default however the map was built.
 ;;
@@ -14,7 +14,7 @@
 ;; *must* — a hand-written `Eq` that departs from .NET's is still ignored here,
 ;; which is the general fix written up in Todo.org.
 (import (std prelude))
-(import (std set))
+(import (std hashset))
 (import (std orderedset))
 (import (std orderedmap))
 (import (std simpletest))
@@ -27,8 +27,8 @@
 (: pair (-> (List int)))
 (defun (pair) (Cons 1 (Cons 2 Nil)))
 
-(: trio (-> (Set int)))
-(defun (trio) (set-add (set-add (set-empty) 1) 2))
+(: trio (-> (HashSet int)))
+(defun (trio) (hashset-add (hashset-add (hashset-empty) 1) 2))
 
 (: entry (-> (Map string int)))
 (defun (entry) (map-set (map-empty) "a" 1))
@@ -86,7 +86,7 @@
           7)
 
   (expect-true "an orderedset in a set"
-               (set-contains? (set-add (set-empty) (sorted)) (sorted-other-way)))
+               (hashset-contains? (hashset-add (hashset-empty) (sorted)) (sorted-other-way)))
 
   ;; Insertion order is not part of the value, so these are one entry.
   (expect "insertion order is not identity"
@@ -113,9 +113,9 @@
                        (orderedmap-set (orderedmap-set (orderedmap-empty) "a" 1) "b" 99))))
 
   ;; --- as set members ------------------------------------------------------
-  (expect-true "a vec in a set" (set-contains? (set-add (set-empty) (word)) (word)))
+  (expect-true "a vec in a set" (hashset-contains? (hashset-add (hashset-empty) (word)) (word)))
   (expect "an equal vec is not a second member"
-          (set-length (set-add (set-add (set-empty) (word)) (word)))
+          (hashset-length (hashset-add (hashset-add (hashset-empty) (word)) (word)))
           1)
 
   ;; --- equality and hashing agree ------------------------------------------
@@ -140,8 +140,8 @@
   (def cleared (map-clear (map-set (map-empty) (word) 7)))
   (expect "cleared and usable again" (map-ref-or (map-set cleared (word) 9) (word) 0) 9)
 
-  (def unset (set-remove (set-add (set-empty) (word)) (word)))
+  (def unset (hashset-remove (hashset-add (hashset-empty) (word)) (word)))
   (expect-true "a set survives being emptied"
-               (set-contains? (set-add unset (word)) (word)))
+               (hashset-contains? (hashset-add unset (word)) (word)))
 
   0)

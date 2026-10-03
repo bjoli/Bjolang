@@ -167,6 +167,7 @@ let rec private ownYields (expr: TypedExpr) : TypedExpr list =
     | TYield _
     | TYieldFrom _ -> [ expr ]
     | TSeq _
+    | THoist _
     | TBjo _ -> []
     | _ -> TypeVisitor.children expr |> List.collect ownYields
 
@@ -587,6 +588,7 @@ let private fuse (c: Consumer) (producerBody: TypedExpr) : TypedExpr option =
     let rec replaceYields (e: TypedExpr) : TypedExpr =
         match e.Node with
         | TSeq _
+        | THoist _
         | TBjo _ -> e
         | _ ->
             let e = TypeVisitor.mapChildren replaceYields e

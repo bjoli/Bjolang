@@ -129,6 +129,8 @@ type private Site =
     | InLambda of Pin
     /// A `(seq ...)` body, which is emitted as a C# iterator.
     | InSeq
+    /// A hoisted form's body, which is emitted as an ordinary method of its own.
+    | InHoist
     /// A function-shaped `let` binding, which is emitted as a C# local
     /// function.
     | InLocalFun of string
@@ -182,6 +184,11 @@ let private explain (site: Site) : string =
         lines
             [ "It is inside a (seq ...) body — which is also what a (seql ...) becomes — and a sequence is emitted as a C# iterator, where `yield return` and `await` are mutually exclusive in one member."
               "A stream of values produced by suspending work is a channel rather than a sequence: fill one with (bjo ...) and read it. For a port that is written already — (std ports) has port->chan, which is port->seq with a channel where the iterator was. If the sequence is short, build the whole list first and yield from that." ]
+
+    | InHoist ->
+        lines
+            [ "It is inside (please-hoist-i-promise-i-am-not-naughty ...), so the form cannot be hoisted: a hoisted form runs once, the first time it is reached, in an ordinary method of its own, and that method cannot await."
+              "Compute the value in a bjoroutine and pass it in, or take this call out of the hoisted form." ]
 
     | InLocalFun name ->
         lines
@@ -273,6 +280,9 @@ let rec private checkExpr (site: Site) (expr: TypedExpr) : unit =
     // A `seq` body is emitted as a C# iterator, and an iterator cannot be
     // async: `yield return` and `await` are mutually exclusive in one member.
     | TSeq body -> checkExpr InSeq body
+
+    // A hoisted body is an ordinary method of its own.
+    | THoist body -> checkExpr InHoist body
 
     // `(bjo (f x y))` splits in two, and the halves have different colours.
     //

@@ -157,6 +157,7 @@ let rec letrecifyExpr (expr: Expr) : Expr =
 
     | ETryFinally(body, cleanup, r) -> ETryFinally(letrecifyExpr body, letrecifyExpr cleanup, r)
     | ETryCatch(body, exceptions, r) -> ETryCatch(letrecifyExpr body, exceptions, r)
+    | EHoist(body, r) -> EHoist(letrecifyExpr body, r)
 
     | ESeq(body, r) -> ESeq(letrecifyExpr body, r)
     | EBjo(body, kind, r) -> EBjo(letrecifyExpr body, kind, r)

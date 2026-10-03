@@ -1,0 +1,82 @@
+;; `(please-hoist-i-promise-i-am-not-naughty expr)`: `expr` is evaluated the
+;; first time the form is reached, and that value is the form's value from then
+;; on. A body that throws is not kept, so the next evaluation tries again.
+
+(import (std prelude))
+(import (std simpletest))
+(import/class (Failure (: System.Exception (-> string Failure))))
+
+;; The body may call functions of this module, and what those functions do is
+;; their own business: the counter is read by `build!`, not by the form.
+(def/mutable builds 0)
+
+(: build! (-> string (Vec string)))
+(defun (build! tag)
+  (set! builds (+ builds 1))
+  [tag tag])
+
+(: built (-> int))
+(defun (built) builds)
+
+(: shared (-> (Vec string)))
+(defun (shared)
+  (please-hoist-i-promise-i-am-not-naughty (build! "x")))
+
+;; The same form again, in another function: one value between them.
+(: shared-again (-> (Vec string)))
+(defun (shared-again)
+  (please-hoist-i-promise-i-am-not-naughty (build! "x")))
+
+;; Throws the first time, and the time after that answers.
+(def/mutable attempts 0)
+
+(: flaky! (-> int))
+(defun (flaky!)
+  (set! attempts (+ attempts 1))
+  (if (= attempts 1) (raise (Failure. "not yet")) 42))
+
+
+(: flaky-value (-> int))
+(defun (flaky-value)
+  (please-hoist-i-promise-i-am-not-naughty (flaky!)))
+
+;; In a generic function, at a type that does not depend on it.
+(: label-all (-> (Vec %a) (Vec string)))
+(defun (label-all xs)
+  (vec-map (fun (_) (vec-ref (please-hoist-i-promise-i-am-not-naughty (build! "label")) 0)) xs))
+
+;; In a pattern's guard and in a view.
+(: classify (-> int string))
+(defun (classify n)
+  (match n
+    (k #:when (vec-contains (please-hoist-i-promise-i-am-not-naughty [1 2 3]) k) "small")
+    (_ "big")))
+
+;; Nested, with a keyword and a local bound inside the body.
+(: nested (-> Keyword))
+(defun (nested)
+  (please-hoist-i-promise-i-am-not-naughty
+    (let ((inner (please-hoist-i-promise-i-am-not-naughty :deep)))
+      inner)))
+
+(defun (main)
+  (expect "the value" (shared) ["x" "x"])
+  (ignore (loop (:for i (range 0 100)) (:do (ignore (shared)))))
+  (expect "built once, however often it is reached" (built) 1)
+  (expect "the same form elsewhere is the same value" (shared-again) ["x" "x"])
+  (expect "and still built once" (built) 1)
+
+  (expect-true "a body that throws throws"
+               (err? (try (flaky-value) #:catch (System.Exception))))
+  (expect "and is tried again next time" (flaky-value) 42)
+  (expect "then kept" (flaky-value) 42)
+  (expect "two attempts in all" attempts 2)
+
+  (expect "in a generic function" (label-all [1 2 3]) ["label" "label" "label"])
+  (expect "at another type, the same value" (label-all ["a"]) ["label"])
+  (expect "built once for both" (built) 2)
+
+  (expect "in a guard" (classify 2) "small")
+  (expect "in a guard, failing" (classify 7) "big")
+  (expect "nested" (nested) :deep)
+  0)

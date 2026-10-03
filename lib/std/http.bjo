@@ -24,7 +24,7 @@
   Method Body Custom Pair Request Response Client
 
   ;; Writing a request
-  request get post
+  request http-get http-post
 
   ;; Sending one
   fetch fetching
@@ -200,12 +200,12 @@
 (defun (request method url #:query (vec-empty) #:headers (vec-empty) #:body Empty)
   (Request (method method) (url url) (query query) (headers headers) (body body)))
 
-(: get (-> string (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
-(defun (get url #:query (vec-empty) #:headers (vec-empty))
+(: http-get (-> string (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
+(defun (http-get url #:query (vec-empty) #:headers (vec-empty))
   (request GET url #:query query #:headers headers))
 
-(: post (-> string Body (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
-(defun (post url body #:query (vec-empty) #:headers (vec-empty))
+(: http-post (-> string Body (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
+(defun (http-post url body #:query (vec-empty) #:headers (vec-empty))
   (request POST url #:query query #:headers headers #:body body))
 
 (: method-name (-> Method string))
@@ -481,7 +481,7 @@
 ;; Scoped
 ;; ===========================================================================
 
-;; `(with-response (r (fetch (get url))) body ...)` — closes the response on
+;; `(with-response (r (fetch (http-get url))) body ...)` — closes the response on
 ;; the way out, however the body leaves.
 (def/macro (with-response form inject compare)
   (syntax-match form
@@ -495,4 +495,4 @@
            #:finally (match answer
                        ((Ok got) (response-close got))
                        ((Err failed) unit)))))
-    (bad (syntax-error bad "with-response names a response and takes a body: (with-response (r (fetch (get url))) body ...)"))))
+    (bad (syntax-error bad "with-response names a response and takes a body: (with-response (r (fetch (http-get url))) body ...)"))))

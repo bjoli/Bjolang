@@ -75,7 +75,7 @@ A hand-written implementation is how a type says its equality is not its fields:
                                    (eq-hash (record-ref p y)))))
 #+END_SRC
 
-The implementation *is* the type's .NET equality: its ~Equals~ and ~GetHashCode~ are emitted as calls to it, so ~Map~, ~Set~ and every other .NET consumer agree with ~=~. ~Ord~ becomes ~IComparable<T>~/~CompareTo~ the same way, which is what ~OrderedMap~ and ~OrderedSet~ compare with.
+The implementation *is* the type's .NET equality: its ~Equals~ and ~GetHashCode~ are emitted as calls to it, so ~Map~, ~HashSet~ and every other .NET consumer agree with ~=~. ~Ord~ becomes ~IComparable<T>~/~CompareTo~ the same way, which is what ~OrderedMap~ and ~OrderedSet~ compare with.
 
 - An implementation that wants "the field-by-field comparison, plus one tweak" writes ~(structural-equals a b)~ and ~(structural-hash a)~: they compare the fields directly and never consult the receiver type's own ~Equals~, while each *field* still compares through its own type's equality.
 - The implementation is compiled into the type, so it must live in the module that declares the type. An ~Eq~ or ~Ord~ implementation for an imported type, an ~import/class~ alias, or (in the REPL) a type from an earlier entry is refused. The way out: the declaring module, the same REPL entry, or a wrapper type.
@@ -94,7 +94,7 @@ A type with parameters is no different. Its implementation is usually *condition
     (bitwise-xor (eq-hash (record-ref e from)) (eq-hash (record-ref e to)))))
 #+END_SRC
 
-Inside the type nobody hands it the ~Eq~ of ~%a~, so the type answers ~(where (Eq %a))~ itself, with ~%a~'s own ~Equals~ and ~GetHashCode~. That is right because they *are* ~%a~'s ~Eq~: compiled in for a type a module declares, and the same members for everything ~(std eq)~ implements. ~(where (Ord %a))~ is answered with ~%a~'s ~CompareTo~, and a string ordinally, as ~(Ord string)~ does. So a ~Set~ of the edges (1 2) and (2 1) has one element, and a ~Map~ finds either through the other.
+Inside the type nobody hands it the ~Eq~ of ~%a~, so the type answers ~(where (Eq %a))~ itself, with ~%a~'s own ~Equals~ and ~GetHashCode~. That is right because they *are* ~%a~'s ~Eq~: compiled in for a type a module declares, and the same members for everything ~(std eq)~ implements. ~(where (Ord %a))~ is answered with ~%a~'s ~CompareTo~, and a string ordinally, as ~(Ord string)~ does. So a ~HashSet~ of the edges (1 2) and (2 1) has one element, and a ~Map~ finds either through the other.
 
 Where ~=~ and a ~Map~ can still disagree:
 
@@ -114,8 +114,8 @@ Where ~=~ and a ~Map~ can still disagree:
   (defun (eq-hash m) (eq-hash (money->cents m))))
 
 (= (Cents 100) (Dollars 1))                              ;; #t
-(set-length (list->set (list (Cents 100) (Dollars 1))))  ;; 2, not 1
-(set-length (list->set (list (Cents 100) (Cents (money->cents (Dollars 1))))))  ;; 1
+(hashset-length (list->hashset (list (Cents 100) (Dollars 1))))  ;; 2, not 1
+(hashset-length (list->hashset (list (Cents 100) (Cents (money->cents (Dollars 1))))))  ;; 1
 #+END_SRC
 
 *** ~type/derive~
@@ -444,8 +444,8 @@ The persistent trait first — ~add~ answers a new collection and touches nothin
      (where (Iterable %s #:elem %elem #:cursor %k))))
 #+END_SRC
 
-- ~(add coll elem)~ : One element; a new collection back. ~Vec~ appends at the end; ~Set~ and ~OrderedSet~ are idempotent; ~Map~ and ~OrderedMap~ take a pair, ~(add m (k . v))~, with *set* semantics — a key already there is replaced. ~map-add~, which refuses a duplicate, keeps its own name.
-- ~(add-all coll iterable)~ : Everything the source yields, folded in. ~(add-all (set-empty) some-vec)~ is how a collection changes shape.
+- ~(add coll elem)~ : One element; a new collection back. ~Vec~ appends at the end; ~HashSet~ and ~OrderedSet~ are idempotent; ~Map~ and ~OrderedMap~ take a pair, ~(add m (k . v))~, with *set* semantics — a key already there is replaced. ~map-add~, which refuses a duplicate, keeps its own name.
+- ~(add-all coll iterable)~ : Everything the source yields, folded in. ~(add-all (hashset-empty) some-vec)~ is how a collection changes shape.
 
 ~List~ has no implementation: a cheap add would prepend (reversing what ~add-all~ pours in), an in-order one costs O(n) per element. Build with a ~ListBuilder~ instead.
 
@@ -463,7 +463,7 @@ One trait over every builder and transient, so that filling a collection does no
 - ~(add! sink elem)~ : One element. For a map-shaped sink the element is a pair, ~(add! mb (k . v))~.
 - ~(add-all! sink iterable)~ : Everything an ~Iterable~ holds, in the order it yields. The source may be a ~List~, a ~Vec~, a ~Range~, a string or a ~Map~; a mismatch is refused at the call (see *Member-level where clauses* in ~Syntax.org~).
 
-Implementations ship for ~VecBuilder~, ~ListBuilder~, ~StringBuilder~, ~MapBuilder~ and ~TransientMap~ in the prelude, and for the set and ordered-collection builders and transients in ~(std set)~, ~(std orderedset)~ and ~(std orderedmap)~.
+Implementations ship for ~VecBuilder~, ~ListBuilder~, ~StringBuilder~, ~MapBuilder~ and ~TransientMap~ in the prelude, and for the set and ordered-collection builders and transients in ~(std hashset)~, ~(std orderedset)~ and ~(std orderedmap)~.
 
 ** Maps (~Map~)
 High-performance immutable CHAMP (Compressed Hash-Array Mapped Prefix-tree) maps.
@@ -524,7 +524,7 @@ The pair is also what ~map->list~, ~map->seq~, ~map-cursor-current~, ~map-find~ 
 
 *** Builders and transients
 
-Two more ways to build a map, in the shape ~(std set)~ and =(std orderedmap)= use.
+Two more ways to build a map, in the shape ~(std hashset)~ and =(std orderedmap)= use.
 
 The builder is the fast way to make a map out of nothing: put things in and call ~mapbuilder->map~. It supports no get or set, and a duplicate key keeps the last one.
 
@@ -538,12 +538,12 @@ The transient is the fast way to make a map out of *another* map: it owns the no
 - ~(transientmap-set! t key value)~, ~(transientmap-set-all! t seq)~, ~(transientmap-remove! t key)~, ~(transientmap-remove-all! t seq)~, ~(transientmap-filter! f t)~
 - ~(transientmap-ref t key)~, ~(transientmap-ref-or t key default)~, ~(transientmap-try-ref t key)~, ~(transientmap-contains? t key)~, ~(transientmap-length t)~, ~(transientmap-empty? t)~
 
-** Sets and sorted collections =(std set)= =(std orderedset)= =(std orderedmap)=
+** Sets and sorted collections =(std hashset)= =(std orderedset)= =(std orderedmap)=
 
 Three libraries rather than builtins, and imported by name:
 
 #+BEGIN_SRC scheme
-(import (std set))          ;; (Set %a)        — a CHAMP trie, unordered
+(import (std hashset))      ;; (HashSet %a)    — a CHAMP trie, unordered
 (import (std orderedset))   ;; (OrderedSet %a) — a B-tree, sorted
 (import (std orderedmap))   ;; (OrderedMap %k %v)
 #+END_SRC
@@ -554,18 +554,40 @@ Each collection provides three identical interfaces for different usage patterns
 - a **builder**, shaped exactly like ~ListBuilder~ — ~empty~, ~add!~, ~add-all!~, ~length~, and the conversion each way;
 - a **transient**, which mutates in place.
 
-~(Set %a)~ is ~(Map %k %v)~ with the values left out. Constant time access. Unordered.
+~(HashSet %a)~ is ~(Map %k %v)~ with the values left out. Constant time access. Unordered.
 
 ~(OrderedSet %a)~ and ~(OrderedMap %k %v)~ are persistent B-trees keyed in the elements' natural order, by ~Comparer<T>.Default~.
 
 ~(OrderedMap %k %v)~'s api is the prelude's ~map-*~ under an ~orderedmap-~ prefix.
 
-All three implement ~Iterable~, ~Collection~ and ~->str~, and each publishes a collector — ~setting~, ~ordered-setting~, ~ordered-mapping~ — so a loop can accumulate into one:
+All three implement ~Iterable~, ~Collection~ and ~->str~, and each publishes a collector — ~hash-setting~, ~ordered-setting~, ~ordered-mapping~ — so a loop can accumulate into one:
 
 #+BEGIN_SRC scheme
 (loop (:for x (range 0 10))
       (:when (= 0 (% x 2)))
-      (:acc evens (setting x)))
+      (:acc evens (hash-setting x)))
+#+END_SRC
+
+** Paths: ~get~, ~try-get~, ~set~, ~update~ =(std prelude)=
+
+Reading and copying along a path of fields and keys. A step written ~.name~ is a field step; any other step is a key.
+
+- ~(get target step ...)~ : Reads along the path. A field step reads with ~(.name x)~, so it is a record or struct field, or a .NET member such as ~.-Length~. A key step reads with ~ref~.
+- ~(try-get target step ...)~ : The same as an ~Option~, ~None~ at the first key ~try-ref~ does not find. The keys after it are not evaluated. A Vec index out of range is an error rather than a missing key, as it is for ~try-ref~. A field that holds an ~Option~ is answered as one, inside the ~Some~.
+- ~(set target step ... value)~ : A copy of ~target~ with ~value~ at the end of the path. Field steps copy with ~record-set~, key steps with ~ref-set~. The last key is not read, so a Map gains a key it did not have; a key missing earlier in the path throws.
+- ~(update target step ... f)~ : The same, with ~(f old)~ at the end of the path.
+- ~(ref-set coll key value)~ : The ~Settable~ trait, the persistent write that goes with ~ref~. Implemented for ~Vec~ (an index out of range throws) and ~Map~.
+
+~set~ and ~update~ evaluate the target, then each key from left to right, then the value or function, each once. Only fields of Bjolang records and structs can be written through; a ~.-Property~ step in ~set~ or ~update~ is refused. The step kinds are told apart by spelling because these are macros, which run before anything has a type.
+
+#+BEGIN_SRC scheme
+(type (: Player (Record (: name string) (: score int))))
+(type (: Team (Record (: players (Vec Player)) (: tags (Map string int)))))
+
+(get team .players 0 .name)                  ;; "Ada"
+(try-get team .tags "veg")                   ;; None
+(set team .players 0 .name "Bea")            ;; a new Team
+(update team .players 1 .score (fun (s) (+ s 1)))
 #+END_SRC
 
 ** Control =(std prelude)=

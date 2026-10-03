@@ -210,6 +210,7 @@ let rec private rewriteExpr (expr: Expr) : Expr =
 
     | ETryFinally(body, cleanup, r) -> ETryFinally(rewriteExpr body, rewriteExpr cleanup, r)
     | ETryCatch(body, exceptions, r) -> ETryCatch(rewriteExpr body, exceptions, r)
+    | EHoist(body, r) -> EHoist(rewriteExpr body, r)
 
     | ESeq(body, r) -> ESeq(rewriteExpr body, r)
     | EBjo(body, kind, r) -> EBjo(rewriteExpr body, kind, r)

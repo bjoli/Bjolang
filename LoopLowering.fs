@@ -145,6 +145,7 @@ let rec containsRecur (expr: TypedExpr) : bool =
     // a spawned call runs on the pool. A tail call inside one is not this
     // function's tail call.
     | TSeq _
+    | THoist _
     | TBjo _ -> false
     | TLoop(_, bodyOpt) -> bodyOpt |> Option.map containsRecur |> Option.defaultValue false
     | _ -> TypeVisitor.children expr |> List.exists containsRecur
@@ -157,6 +158,7 @@ let rec recurTargetsIn (expr: TypedExpr) : Set<int> =
         args |> List.fold (fun acc a -> Set.union acc (recurTargetsIn a)) (Set.singleton index)
     | TLambda _
     | TSeq _
+    | THoist _
     | TBjo _ -> Set.empty
     | TLoop(_, bodyOpt) ->
         bodyOpt |> Option.map recurTargetsIn |> Option.defaultValue Set.empty
@@ -283,6 +285,11 @@ let rec private lowerExpr (targets: LoopTarget list) (inTail: bool) (expr: Typed
     | TSeq b ->
         { expr with
             Node = TSeq(newScope b) }
+
+    // A hoisted body is a method of its own for the same reason.
+    | THoist b ->
+        { expr with
+            Node = THoist(newScope b) }
 
     // Likewise for a spawned call: it runs on the pool, so a call in its tail
     // position is not a jump into the loop it was written inside.

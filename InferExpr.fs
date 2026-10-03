@@ -713,6 +713,16 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
           Range = r
           Node = TTryCatch(tBody, exceptions) }
 
+    // A hoisted form has the type of what it hoists. Whether it may be hoisted
+    // is asked later, by `HoistCheck`, of the checked body.
+    | EHoist(body, r) ->
+        let bodyType, tBody = infer env body
+
+        bodyType,
+        { Type = bodyType
+          Range = r
+          Node = THoist tBody }
+
     | ESeq(body, r) ->
         inferSeq env body r
 

@@ -16,21 +16,21 @@
 ;; algebra that rewrites the receiver rather than building a new set.
 ;;
 ;; **This is the mutable one.** `(mutableset-add! s x)` writes `s`; everyone
-;; holding `s` sees the change. `Set` is the persistent structure of the same
-;; shape, and `TransientSet` is a `Set` being built — made from one, filled, and
+;; holding `s` sees the change. `HashSet` is the persistent structure of the same
+;; shape, and `TransientHashSet` is a `HashSet` being built — made from one, filled, and
 ;; frozen back. This is the one that is never frozen.
 ;;
 ;; **The set algebra writes the left-hand side.** `(mutableset-union! a b)` is
 ;; `a` becoming the union, not a third set: rebuilding is what the persistent
-;; `set-union` is for, and doing it in place is the reason to reach for this.
+;; `hashset-union` is for, and doing it in place is the reason to reach for this.
 ;;
 ;; **Members are filed under .NET's equality**, `EqualityComparer<T>.Default`,
 ;; not under the `Eq` implementation in `std/eq` — the same equality `Map` and
-;; `Set` file their keys under.
+;; `HashSet` file their keys under.
 (import (std prelude))
-;; For `set->seq` and `seq->set`, which the two conversions at the bottom are
+;; For `hashset->seq` and `seq->hashset`, which the two conversions at the bottom are
 ;; written with. The persistent set is a module of its own.
-(import (std set))
+(import (std hashset))
 
 (export
   MutableSet MutableSetCursor
@@ -45,7 +45,7 @@
   mutableset-cursor mutableset-cursor-done? mutableset-cursor-current
   mutableset-for-each
   list->mutableset mutableset->list vec->mutableset mutableset->vec
-  seq->mutableset mutableset->seq set->mutableset mutableset->set
+  seq->mutableset mutableset->seq hashset->mutableset mutableset->hashset
   mutableset->str)
 
 ;; The type is .NET's, so a `MutableSet` handed to any other `import/extern`
@@ -92,7 +92,7 @@
   (mutableset-cursor-current (: Bjolang.Runtime.MutableSetModule.CursorCurrent (-> (MutableSetCursor %a) %a))))
 
 ;; A walk whose callback may suspend. The `Iterable` default would do as well;
-;; this one names the set first, matching `set-for-each`.
+;; this one names the set first, matching `hashset-for-each`.
 (: mutableset-for-each (-> (-?-> %a void) (MutableSet %a) void))
 (defun (mutableset-for-each f s)
   (def c (mutableset-cursor s))
@@ -119,11 +119,11 @@
 (: mutableset->vec (-> (MutableSet %a) (Vec %a)))
 (defun (mutableset->vec s) (seq->vec (mutableset->seq s)))
 
-(: set->mutableset (-> (Set %a) (MutableSet %a)))
-(defun (set->mutableset s) (seq->mutableset (set->seq s)))
+(: hashset->mutableset (-> (HashSet %a) (MutableSet %a)))
+(defun (hashset->mutableset s) (seq->mutableset (hashset->seq s)))
 
-(: mutableset->set (-> (MutableSet %a) (Set %a)))
-(defun (mutableset->set s) (seq->set (mutableset->seq s)))
+(: mutableset->hashset (-> (MutableSet %a) (HashSet %a)))
+(defun (mutableset->hashset s) (seq->hashset (mutableset->seq s)))
 
 ;; ---------------------------------------------------------------------------
 ;; The traits

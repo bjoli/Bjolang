@@ -1,7 +1,7 @@
 ;; Sammanslagning av 118_set.bjo och 119_orderedset.bjo.
 ;; Etiketter som krockade har fått prefixet "set: " respektive "ordered: ".
 
-;; `(std set)`: the unordered set, its builder and its transient.
+;; `(std hashset)`: the unordered set, its builder and its transient.
 ;;
 ;; Everything here reaches the collection through `import/extern` clauses in the
 ;; library — there is no builtin in the path — so what is being tested is as
@@ -11,12 +11,12 @@
 
 ;; `(std orderedset)`: the sorted set, its builder and its transient.
 ;;
-;; What is tested beyond `(std set)`'s ground is the *order*: a walk arrives
+;; What is tested beyond `(std hashset)`'s ground is the *order*: a walk arrives
 ;; sorted, and the navigation — min, max, successor, predecessor and the three
 ;; range walks — answers questions a hash trie cannot answer at all.
 
 (import (std prelude))
-(import (std set))
+(import (std hashset))
 (import (std orderedset))
 (import (std simpletest))
 
@@ -41,53 +41,53 @@
 
 ;; The type is the library's, written in a signature here — which is what an
 ;; exported `import/class` alias buys.
-(: set-numbers (-> (Set int)))
+(: set-numbers (-> (HashSet int)))
 (defun (set-numbers)
-  (set-add (set-add (set-add (set-empty) 1) 2) 3))
+  (hashset-add (hashset-add (hashset-add (hashset-empty) 1) 2) 3))
 
 ;; --- The set ---------------------------------------------------------------
 
 (: test-set-core (-> void))
 (defun (test-set-core)
   (def s (set-numbers))
-  (expect "set: length" (set-length s) 3)
-  (expect-bool "set: contains a member" (set-contains? s 2) #t)
-  (expect-bool "set: contains a stranger" (set-contains? s 9) #f)
-  (expect-bool "empty? of a set with elements" (set-empty? s) #f)
-  (expect-bool "set: empty? of the empty set" (set-empty? (set-clear s)) #t)
+  (expect "set: length" (hashset-length s) 3)
+  (expect-bool "set: contains a member" (hashset-contains? s 2) #t)
+  (expect-bool "set: contains a stranger" (hashset-contains? s 9) #f)
+  (expect-bool "empty? of a set with elements" (hashset-empty? s) #f)
+  (expect-bool "set: empty? of the empty set" (hashset-empty? (hashset-clear s)) #t)
 
   ;; Adding an element twice is adding it once: that is what makes it a set.
-  (expect "set: add is idempotent" (set-length (set-add s 1)) 3)
-  (expect "set: remove" (set-length (set-remove s 1)) 2)
-  (expect "set: remove of a stranger" (set-length (set-remove s 9)) 3)
+  (expect "set: add is idempotent" (hashset-length (hashset-add s 1)) 3)
+  (expect "set: remove" (hashset-length (hashset-remove s 1)) 2)
+  (expect "set: remove of a stranger" (hashset-length (hashset-remove s 9)) 3)
 
-  (expect "set: add-all" (set-length (set-add-all s (list->seq (list 3 4 5)))) 5)
-  (expect "set: remove-all" (set-length (set-remove-all s (list->seq (list 1 2)))) 1)
+  (expect "set: add-all" (hashset-length (hashset-add-all s (list->seq (list 3 4 5)))) 5)
+  (expect "set: remove-all" (hashset-length (hashset-remove-all s (list->seq (list 1 2)))) 1)
 
-  (def other (set-add (set-add (set-empty) 3) 4))
-  (expect "set: union" (set-length (set-union s other)) 4)
+  (def other (hashset-add (hashset-add (hashset-empty) 3) 4))
+  (expect "set: union" (hashset-length (hashset-union s other)) 4)
 
-  (expect "set: filter" (set-length (set-filter #(> &1 1) s)) 2)
-  (expect "set: fold" (set-fold + 0 s) 6)
+  (expect "set: filter" (hashset-length (hashset-filter #(> &1 1) s)) 2)
+  (expect "set: fold" (hashset-fold + 0 s) 6)
   ;; A mapping that collides merges, which a list's map cannot do.
-  (expect "set: map" (set-length (set-map #(% &1 2) s)) 2)
-  (expect-bool "set: any?" (set-any? #(= &1 3) s) #t)
-  (expect-bool "any? with no hit" (set-any? #(= &1 30) s) #f)
+  (expect "set: map" (hashset-length (hashset-map #(% &1 2) s)) 2)
+  (expect-bool "set: any?" (hashset-any? #(= &1 3) s) #t)
+  (expect-bool "any? with no hit" (hashset-any? #(= &1 30) s) #f)
   ;; `iter` reports whether the walk ran to the end, so a predicate that fails
   ;; somewhere answers false.
-  (expect-bool "iter runs out" (set-iter #(< &1 10) s) #t)
-  (expect-bool "set: iter stops early" (set-iter #(< &1 3) s) #f)
+  (expect-bool "iter runs out" (hashset-iter #(< &1 10) s) #t)
+  (expect-bool "set: iter stops early" (hashset-iter #(< &1 3) s) #f)
 
-  (match (set-find #(> &1 2) s)
+  (match (hashset-find #(> &1 2) s)
     ((Some found) (expect "find" found 3))
     (None (println "FAILURE: find found nothing")))
 
-  (match (set-find #(> &1 20) s)
+  (match (hashset-find #(> &1 20) s)
     ((Some _) (println "FAILURE: find found something"))
     (None (println "ok: find comes up empty")))
 
   (def b (vecbuilder-empty))
-  (set-for-each #(vecbuilder-add! b &1) s)
+  (hashset-for-each #(vecbuilder-add! b &1) s)
   (expect "for-each" (vec-fold + 0 (vecbuilder->vec b)) 6))
 
 ;; --- Conversions and traits ------------------------------------------------
@@ -105,81 +105,81 @@
   (expect "loop over a set" (loop (:for x s) (:acc total (summing x))) 6)
 
   ;; And as an accumulator, through the builder.
-  (def evens (loop (:for x (range 0 10)) (:when (= 0 (% x 2))) (:acc s (setting x))))
-  (expect "setting collector" (set-length evens) 5)
-  (expect-bool "setting collector holds 8" (set-contains? evens 8) #t)
+  (def evens (loop (:for x (range 0 10)) (:when (= 0 (% x 2))) (:acc s (hash-setting x))))
+  (expect "setting collector" (hashset-length evens) 5)
+  (expect-bool "setting collector holds 8" (hashset-contains? evens 8) #t)
 
-  (expect "list->set" (set-length (list->set (list 1 1 2))) 2)
-  (expect "set->list" (list-length (set->list s)) 3)
-  (expect "vec->set" (set-length (vec->set [1 2 2 3])) 3)
-  (expect "set->vec" (vec-length (set->vec s)) 3)
-  (expect "seq->set" (set-length (seq->set (list->seq (list 5 5)))) 1)
+  (expect "list->set" (hashset-length (list->hashset (list 1 1 2))) 2)
+  (expect "set->list" (list-length (hashset->list s)) 3)
+  (expect "vec->set" (hashset-length (vec->hashset [1 2 2 3])) 3)
+  (expect "set->vec" (vec-length (hashset->vec s)) 3)
+  (expect "seq->set" (hashset-length (seq->hashset (list->seq (list 5 5)))) 1)
 
   ;; The string of a one-element set is pinned; a larger one is in trie order,
   ;; which is stable but not worth writing down.
-  (expect-str "->str" (->str (set-add (set-empty) 7)) "#{7}"))
+  (expect-str "->str" (->str (hashset-add (hashset-empty) 7)) "#{7}"))
 
 ;; --- The builder -----------------------------------------------------------
 
 (: test-set-builder (-> void))
 (defun (test-set-builder)
-  (def b (setbuilder-empty))
-  (setbuilder-add! b 1)
-  (setbuilder-add! b 2)
-  (setbuilder-add! b 1)
+  (def b (hashsetbuilder-empty))
+  (hashsetbuilder-add! b 1)
+  (hashsetbuilder-add! b 2)
+  (hashsetbuilder-add! b 1)
   ;; The builder counts *appends*: duplicates are compacted when the set is
   ;; built, which is the whole reason it is faster than adding one at a time.
-  (expect "set: builder length counts appends" (setbuilder-length b) 3)
-  (expect "builder->set compacts" (set-length (setbuilder->set b)) 2)
+  (expect "set: builder length counts appends" (hashsetbuilder-length b) 3)
+  (expect "builder->set compacts" (hashset-length (hashsetbuilder->hashset b)) 2)
 
-  (def c (setbuilder-empty))
-  (setbuilder-add-all! c (list->seq (list 1 2 3)))
-  (expect "builder add-all" (set-length (setbuilder->set c)) 3)
+  (def c (hashsetbuilder-empty))
+  (hashsetbuilder-add-all! c (list->seq (list 1 2 3)))
+  (expect "builder add-all" (hashset-length (hashsetbuilder->hashset c)) 3)
 
-  (def d (set->setbuilder (set-numbers)))
-  (setbuilder-add! d 4)
-  (expect "set->setbuilder" (set-length (setbuilder->set d)) 4))
+  (def d (hashset->hashsetbuilder (set-numbers)))
+  (hashsetbuilder-add! d 4)
+  (expect "set->setbuilder" (hashset-length (hashsetbuilder->hashset d)) 4))
 
 ;; --- The transient ---------------------------------------------------------
 
 (: test-set-transient (-> void))
 (defun (test-set-transient)
-  (def t (transientset-empty))
-  (expect-bool "set: transient starts empty" (transientset-empty? t) #t)
-  (transientset-add! t 1)
-  (transientset-add! t 2)
-  (transientset-add! t 1)
+  (def t (transienthashset-empty))
+  (expect-bool "set: transient starts empty" (transienthashset-empty? t) #t)
+  (transienthashset-add! t 1)
+  (transienthashset-add! t 2)
+  (transienthashset-add! t 1)
   ;; The persistent interface, in place: `add!` of a member already there is the
-  ;; same no-op `set-add` is.
-  (expect "set: transient length" (transientset-length t) 2)
-  (expect-bool "set: transient contains?" (transientset-contains? t 2) #t)
-  (transientset-remove! t 1)
-  (expect "set: transient remove!" (transientset-length t) 1)
+  ;; same no-op `hashset-add` is.
+  (expect "set: transient length" (transienthashset-length t) 2)
+  (expect-bool "set: transient contains?" (transienthashset-contains? t 2) #t)
+  (transienthashset-remove! t 1)
+  (expect "set: transient remove!" (transienthashset-length t) 1)
 
-  (transientset-add-all! t (list->seq (list 7 8 9)))
-  (expect "set: transient add-all!" (transientset-length t) 4)
-  (transientset-remove-all! t (list->seq (list 7 8)))
-  (expect "set: transient remove-all!" (transientset-length t) 2)
+  (transienthashset-add-all! t (list->seq (list 7 8 9)))
+  (expect "set: transient add-all!" (transienthashset-length t) 4)
+  (transienthashset-remove-all! t (list->seq (list 7 8)))
+  (expect "set: transient remove-all!" (transienthashset-length t) 2)
 
   ;; The snapshot is taken in O(1), and the transient goes on being usable —
   ;; what it hands over it disowns, so the next edit copies instead.
-  (def snapshot (transientset->set t))
-  (transientset-add! t 100)
-  (expect "set: the snapshot did not move" (set-length snapshot) 2)
-  (expect "set: the transient did" (transientset-length t) 3)
+  (def snapshot (transienthashset->hashset t))
+  (transienthashset-add! t 100)
+  (expect "set: the snapshot did not move" (hashset-length snapshot) 2)
+  (expect "set: the transient did" (transienthashset-length t) 3)
 
-  (def from-set (set->transientset (set-numbers)))
-  (transientset-add! from-set 4)
-  (expect "set->transientset" (transientset-length from-set) 4)
-  (expect "set: and the set it came from is untouched" (set-length (set-numbers)) 3))
+  (def from-set (hashset->transienthashset (set-numbers)))
+  (transienthashset-add! from-set 4)
+  (expect "set->transientset" (transienthashset-length from-set) 4)
+  (expect "set: and the set it came from is untouched" (hashset-length (set-numbers)) 3))
 
 ;; A set of something other than an int, to pin that the type arguments are
 ;; solved per call site rather than once.
 (: test-set-strings (-> void))
 (defun (test-set-strings)
-  (def s (set-add (set-add (set-empty) "a") "b"))
-  (expect "a set of strings" (set-length s) 2)
-  (expect-bool "and it can be asked about" (set-contains? s "b") #t))
+  (def s (hashset-add (hashset-add (hashset-empty) "a") "b"))
+  (expect "a set of strings" (hashset-length s) 2)
+  (expect-bool "and it can be asked about" (hashset-contains? s "b") #t))
 
 ;; ===========================================================================
 ;; (std orderedset)

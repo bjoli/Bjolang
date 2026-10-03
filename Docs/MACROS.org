@@ -80,6 +80,12 @@ msg)~, which is how a transformer rejects its input. ~syntax-error~ types as a
 ~Syntax~ so it can sit beside the arms that return one, and never returns — the
 expander catches it and reports it against the macro's call site.
 
+Everything a transformer builds is reported at the macro's call site.
+~(syntax-at form source)~ is ~form~ with the source position of ~source~, a
+piece of the input, so an error in code built from one argument points at
+that argument instead. ~get~ and ~set~ use it to report an error at the
+step that caused it. A position can only be copied from input, never made up.
+
 ** ~#'~ builds a template
 
 ~#'form~ is syntax-quote. It is spelled differently from ~'(...)~ because the
@@ -378,6 +384,41 @@ Two details worth knowing:
 In expression position — where a value is wanted and no body was being read —
 ~(begin ...)~ opens a nested body instead, which is the sequencing expression
 the language otherwise lacks: ~(+ 1 (begin (log!) 2))~.
+
+** Hoisting a value a macro builds
+
+A template that builds a value out of constants still builds it again every
+time the expansion is evaluated. When that is expensive, as compiling a regex
+is, the template can ask for it to be built once:
+
+#+BEGIN_SRC scheme
+#'(please-hoist-i-promise-i-am-not-naughty
+    (rx-compile ,(SStr pattern) ,(SStr names)))
+#+END_SRC
+
+The form's value is computed the first time the form is reached, in a method
+of its own, and every later evaluation answers that same value. If computing it
+throws, nothing is kept and the next evaluation tries again. Identical forms,
+such as the same ~#rx(...)~ written twice, share one value.
+
+The name is a promise about the two things the compiler cannot check: that the
+form has no effects worth repeating, and that it does not depend on dynamic
+context, such as a parameter or an effect handler, which would be read once and
+kept. Everything else is checked, and a form that fails is one error listing
+every reason. The form cannot:
+
+- refer to a local or a parameter, or assign one;
+- read a ~def~ of the module it is written in, which may not have its value yet
+  when the form first runs, or any ~def/mutable~;
+- use a type variable of the function around it;
+- await, ~yield~ to a ~seq~ around it, or leave a ~with-return~ around it;
+- be void, or produce a value that can be written in place: an ~Array~, a
+  ~Box~, a mutable or transient collection, a builder, or a record with a
+  ~#:mutable~ field.
+
+It may use literals, functions, and the defs of other modules. A macro that
+splices its caller's code into the form passes these rules on to its caller,
+so it is best kept to forms whose parts the macro built itself.
 
 ** ~def/pattern~: a macro in pattern position
 

@@ -93,8 +93,9 @@
   Box
   make-box box-ref box-set!
 
-  ;; Refable, Derefable
+  ;; Refable, Settable, Derefable
   ref try-ref
+  ref-set
   deref try-deref
 
   ;; Strings
@@ -1033,6 +1034,33 @@
     (if (string-cursor-end? str cur)
         None
         (Some (string-cursor-ref str cur)))))
+
+;; Settable — the persistent write that goes with `ref`
+;;
+;; `(ref-set coll i x)` answers a copy of `coll` with `x` at `i`, and leaves
+;; `coll` alone. It is a trait of its own rather than a method of `Refable`
+;; because many things that can be read by index cannot sensibly be copied
+;; with one slot changed: a string read by cursor, a set read by membership,
+;; or a mutable collection, whose write is `!` and in place.
+;;
+;; `set` and `update` write through it. A Map gains a key it did not have; a
+;; Vec index out of range throws.
+(def/trait (Settable %c)
+  (type %index)
+  (type %in)
+  (: ref-set (-> %c %index %in %c)))
+
+(impl (Settable (Vec %i))
+  (type %index int)
+  (type %in %i)
+  (defun (ref-set vec i x)
+    (vec-set vec i x)))
+
+(impl (Settable (Map %k %v))
+  (type %index %k)
+  (type %in %v)
+  (defun (ref-set map k v)
+    (map-set map k v)))
 
 (def/trait (Derefable %a)
   (type %out)
@@ -2393,7 +2421,7 @@
   (defun (add! lb elem)
     (listbuilder-add! lb elem)))
 
-;; The set and ordered-collection sinks live with their types, in (std set),
+;; The set and ordered-collection sinks live with their types, in (std hashset),
 ;; (std orderedset) and (std orderedmap): `Addable!` is this module's trait,
 ;; so a module that owns the type may implement it.
 
@@ -2438,7 +2466,7 @@
       (map-set m k v))))
 
 ;; As with the sinks, the set and ordered-collection impls live with their
-;; types, in (std set), (std orderedset) and (std orderedmap).
+;; types, in (std hashset), (std orderedset) and (std orderedmap).
 
 
 
@@ -2583,6 +2611,228 @@
      #'(match (-> ,value ,step)
         ((Err e) (Err e))
         ((Ok it) ,(try-steps #'it rest))))))
+
+;; ---------------------------------------------------------------------------
+;; Paths: get, try-get, set and update
+;; ---------------------------------------------------------------------------
+;;
+;; `(get target step ...)` reads along a path. `(set target step ... value)` and
+;; `(update target step ... f)` answer a copy of `target` in which the value at
+;; the end of the path is replaced, and leave `target` alone.
+;;
+;; A step is a field step, `.name`, or a key, which is any other expression.
+;; These expand before anything has a type, so which kind a step is depends
+;; only on how it is written:
+;;
+;;   * A field step reads with `(.name x)`, so it means whatever `.name` means
+;;     on that value: a record or struct field, or a .NET member. It writes
+;;     with `record-set`, so only a field can be written through one.
+;;   * A key step reads with `ref` (`Refable`) and writes with `ref-set`
+;;     (`Settable`).
+;;
+;; `try-get` answers an Option, which is `None` at the first key that is
+;; missing; the keys after it are not evaluated. Missing is what `try-ref`
+;; says it is: a Map key that is absent, but not a Vec index out of range,
+;; which `Refable` treats as an error either way. A field step cannot be
+;; missing. A field that holds an Option is answered as one, inside the `Some`.
+;;
+;; `set` and `update` evaluate the target, then each key from left to right,
+;; then the value or the function, each exactly once. A key that is missing
+;; before the last step throws, as `ref` does. `set` does not read the last
+;; key, so on a Map it adds a key that was not there.
+;;
+;; Each step's code carries that step's source position, so an error in it is
+;; reported at the step rather than at the whole form.
+
+;; `(get target step ...)`
+(def/macro (get form inject compare)
+  (syntax-match form
+    ((_ target first rest ...)
+     (path-reads target (Cons first rest)))
+    (bad (syntax-error bad "get reads along a path and needs at least one step: (get target step ...), where a step is .field or a key."))))
+
+;; `(try-get target step ...)`
+(def/macro (try-get form inject compare)
+  (syntax-match form
+    ((_ target first rest ...)
+     (path-tries target (Cons first rest)))
+    (bad (syntax-error bad "try-get reads along a path and needs at least one step: (try-get target step ...), where a step is .field or a key."))))
+
+;; `(set target step ... value)`
+(def/macro (set form inject compare)
+  (syntax-match form
+    ((_ target first second rest ...)
+     (path-write inject target (Cons first (Cons second rest)) #f))
+    (bad (syntax-error bad "set needs a target, at least one step and a value: (set target step ... value)."))))
+
+;; `(update target step ... f)`
+(def/macro (update form inject compare)
+  (syntax-match form
+    ((_ target first second rest ...)
+     (path-write inject target (Cons first (Cons second rest)) #t))
+    (bad (syntax-error bad "update needs a target, at least one step and a function: (update target step ... f)."))))
+
+;; True for a field step: an identifier written with a leading dot. `...` and a
+;; lone `.` are punctuation, not identifiers, so they never get here.
+(: path-dotted? (-> Syntax bool))
+(defun (path-dotted? step)
+  (match step
+    ((SSym s)
+     (let ((name (symbol->string s)))
+       (and (> (string-length name) 1) (string-starts-with? name "."))))
+    (_ #f)))
+
+;; A `.-Name` step, which reads a .NET property.
+(: path-property? (-> Syntax bool))
+(defun (path-property? step)
+  (match step
+    ((SSym s) (string-starts-with? (symbol->string s) ".-"))
+    (_ #f)))
+
+;; Rejects a step that cannot be read: punctuation such as `.` or `...`.
+(: path-check (-> Syntax Syntax))
+(defun (path-check step)
+  (match step
+    ((SPunct p)
+     (syntax-error step (str "'" p "' is not a path step. A step is .field or a key expression.")))
+    (_ step)))
+
+;; One step's read of `acc`.
+(: path-read (-> Syntax Syntax Syntax))
+(defun (path-read acc step)
+  (syntax-at
+    (if (path-dotted? (path-check step))
+        #'(,step ,acc)
+        #'(ref ,acc ,step))
+    step))
+
+(: path-reads (-> Syntax (List Syntax) Syntax))
+(defun (path-reads acc steps)
+  (match steps
+    (Nil acc)
+    ((Cons step rest) (path-reads (path-read acc step) rest))))
+
+;; Every key read is a `try-ref`, and the first `None` is the answer. The last
+;; key's Option is already the answer, so it is not taken apart and rebuilt.
+(: path-tries (-> Syntax (List Syntax) Syntax))
+(defun (path-tries acc steps)
+  (match steps
+    (Nil #'(Some ,acc))
+    ((Cons step rest)
+     (if (path-dotted? (path-check step))
+         (path-tries (path-read acc step) rest)
+         (let ((probe (syntax-at #'(try-ref ,acc ,step) step)))
+           (match rest
+             (Nil probe)
+             (_ #'(match ,probe
+                    (None None)
+                    ((Some it) ,(path-tries #'it rest))))))))))
+
+;; A name for the expansion's own temporaries. Built from a string so that each
+;; depth gets a name of its own: hygiene gives every distinct name one fresh
+;; spelling per expansion, so a single template name would shadow itself.
+(: path-temp (-> string int Syntax))
+(defun (path-temp prefix i)
+  (SSym (string->symbol (str prefix (->str i)))))
+
+;; The field a `.name` step writes. A hygiene mark — `.name__37`, when the
+;; step was written in another macro's template — is stripped, since a field
+;; name is never renamed. Injected, so that this macro's hygiene leaves it
+;; alone too.
+(: path-field (-> (-> Symbol Syntax) Syntax Syntax))
+(defun (path-field inject step)
+  (def name (match step ((SSym s) (.Substring (symbol->string s) 1)) (_ "")))
+  (def mark (.LastIndexOf name "__" clr-ordinal))
+  (inject
+    (string->symbol
+      (if (and (> mark 0) (path-digits? name (+ mark 2)))
+          (.Substring name 0 mark)
+          name))))
+
+;; Is everything in `s` from `i` on an ASCII digit, and is there anything?
+(: path-digits? (-> string int bool))
+(defun (path-digits? s i)
+  (and (< i (string-length s))
+       (let go ((j i))
+         (if (= j (string-length s))
+             #t
+             (let ((c (string-code-ref s j)))
+               (and (>= c 48) (<= c 57) (go (+ j 1))))))))
+
+;; `set` and `update`. `items` is the steps followed by the value or function.
+;;
+;; Everything that is evaluated is bound first, in order — the target, each
+;; key, then the value — and the copy is then built from the bound names, so
+;; that nothing is evaluated twice or out of order.
+(: path-write (-> (-> Symbol Syntax) Syntax (List Syntax) bool Syntax))
+(defun (path-write inject target items update?)
+  (def reversed (list-reverse items))
+  (def value (list-head reversed))
+  (def steps (list-reverse (list-tail reversed)))
+  (def named (path-key-names steps 1))
+  (def obj (path-temp "obj" 0))
+  (def new (path-temp "new" 0))
+  (def (: leaf (-> Syntax Syntax))
+    (if update?
+        (fun (old) #'(,new ,old))
+        (fun (old) new)))
+  (def body (path-body inject obj 0 named steps leaf))
+  #'(let ((,obj ,target))
+      ,(list-foldr (fun (binding inner) #'(let (,binding) ,inner))
+                   #'(let ((,new ,value)) ,body)
+                   (path-key-bindings named steps))))
+
+;; The steps, each key replaced by the name it is bound to. A field step is
+;; kept, and refused if it is a .NET property: `set` copies with `record-set`,
+;; which has no way to copy a .NET object.
+(: path-key-names (-> (List Syntax) int (List Syntax)))
+(defun (path-key-names steps i)
+  (match steps
+    (Nil Nil)
+    ((Cons step rest)
+     (if (path-dotted? (path-check step))
+         (if (path-property? step)
+             (Cons (syntax-error step
+                     (str (syntax->string step) " is a .NET property. set and update copy along the path with record-set, which only copies a Bjolang record or struct; set the property itself, or build the new value with get."))
+                   Nil)
+             (Cons step (path-key-names rest (+ i 1))))
+         (Cons (path-temp "key" i) (path-key-names rest (+ i 1)))))))
+
+;; `(key-n expr)` for each key step, in order.
+(: path-key-bindings (-> (List Syntax) (List Syntax) (List Syntax)))
+(defun (path-key-bindings named steps)
+  (match named
+    (Nil Nil)
+    ((Cons name names)
+     (def step (list-head steps))
+     (def rest (path-key-bindings names (list-tail steps)))
+     (if (path-dotted? step)
+         rest
+         (Cons #'(,name ,step) rest)))))
+
+;; The copy of `obj` with the rest of the path written. `named` and `steps` run
+;; side by side: `named` is what the code uses, and `steps` is where each step
+;; was written.
+(: path-body (-> (-> Symbol Syntax) Syntax int (List Syntax) (List Syntax) (-> Syntax Syntax) Syntax))
+(defun (path-body inject obj depth named steps leaf)
+  (match named
+    (Nil (syntax-error obj "internal error: a path ran out of steps."))
+    ((Cons key names)
+     (def step (list-head steps))
+     (def rest (list-tail steps))
+     (def inner (path-temp "obj" (+ depth 1)))
+     (def field? (path-dotted? step))
+     (def old (if field? #'(,step ,obj) #'(ref ,obj ,key)))
+     (def value
+       (match rest
+         (Nil (leaf old))
+         (_ #'(let ((,inner ,old))
+                ,(path-body inject inner (+ depth 1) names rest leaf)))))
+     (syntax-at
+       (if field?
+           #'(record-set ,obj (,(path-field inject step) ,value))
+           #'(ref-set ,obj ,key ,value))
+       step))))
 
 ;; ---------------------------------------------------------------------------
 ;; Hash macros

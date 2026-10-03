@@ -825,6 +825,11 @@ and TExprNode =
     /// during inference and emitted as a C# exception filter. Anything not
     /// listed keeps propagating.
     | TTryCatch of TypedExpr * string list
+    /// `(please-hoist-i-promise-i-am-not-naughty expr)`, of `expr`'s type. The
+    /// body is evaluated the first time the form is reached, in a method of its
+    /// own, and its value is kept for every later evaluation. `HoistCheck`
+    /// decides whether a body may be hoisted at all.
+    | THoist of TypedExpr
     /// A lazy sequence, of type `Seq 'a`. Its body is a *function scope*: it
     /// runs when the sequence is enumerated, not where the form appears, so no
     /// tail call inside it belongs to the enclosing function's loop.

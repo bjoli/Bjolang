@@ -1,0 +1,91 @@
+;; `get`, `try-get`, `set` and `update`: reading and copying along a path.
+;;
+;; A `.name` step is a field, read with `(.name x)` and written with
+;; `record-set`. Any other step is a key, read with `ref` and written with
+;; `ref-set`.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/path_macros.bjo")
+
+(type (: Player (Record (: name string) (: score int))))
+(type (: Pos (Struct (: x int) (: y int))))
+(type (: Team (Record (: players (Vec Player)) (: home Pos) (: tags (Map string int)))))
+(type (: League (Record (: teams (Map Keyword Team)) (: motto (Option string)))))
+
+(: league (-> League))
+(defun (league)
+  (League
+    (teams (map-set (map-empty) :bananas
+                    (Team (players [(Player (name "Ada") (score 3)) (Player (name "Bo") (score 5))])
+                          (home (Pos (x 1) (y 2)))
+                          (tags (map-set (map-empty) "fruit" 1)))))
+    (motto None)))
+
+(def/mutable calls '())
+(: note! (-> string %a %a))
+(defun (note! what x)
+  (set! calls (Cons what calls))
+  x)
+
+(defun (main)
+  (def l (league))
+
+  ;; --- get ------------------------------------------------------------------
+  (expect "a field" (get l .motto) None)
+  (expect "field, key, field" (get l .teams :bananas .home) (Pos (x 1) (y 2)))
+  (expect "through a map, a vec, a record" (get l .teams :bananas .players 1 .name) "Bo")
+  (expect "into a struct" (get l .teams :bananas .home .y) 2)
+  (expect "a computed key" (get l .teams :bananas .players (- 2 2) .score) 3)
+  (expect "a .NET property at the end" (get l .teams :bananas .players 0 .name .-Length) 3)
+  (expect "the same as nesting" (get l .teams :bananas .tags "fruit")
+          (ref (.tags (ref (.teams l) :bananas)) "fruit"))
+
+  ;; --- try-get --------------------------------------------------------------
+  (expect "present" (try-get l .teams :bananas .players 1 .score) (Some 5))
+  (expect "a missing map key" (try-get l .teams :apples .players 0 .score) None)
+  ;; A Vec index out of range is an error rather than a missing key, as it is
+  ;; for `try-ref`.
+  (expect-true "a vec index out of range throws"
+               (err? (try (try-get l .teams :bananas .players 7) #:catch (System.IndexOutOfRangeException))))
+  (expect "a missing last key" (try-get l .teams :bananas .tags "veg") None)
+  (expect "an Option field is answered as one" (try-get l .motto) (Some None))
+  (set! calls '())
+  (ignore (try-get l .teams (note! "first" :apples) .players (note! "second" 0)))
+  (expect "the keys after a missing one are not evaluated" calls '("first"))
+
+  ;; --- set ------------------------------------------------------------------
+  (def renamed (set l .teams :bananas .players 1 .name "Bea"))
+  (expect "set, deep" (get renamed .teams :bananas .players 1 .name) "Bea")
+  (expect "the original is untouched" (get l .teams :bananas .players 1 .name) "Bo")
+  (expect "the neighbours are kept" (get renamed .teams :bananas .players 0 .name) "Ada")
+  (expect "set a struct field" (get (set l .teams :bananas .home .x 9) .teams :bananas .home) (Pos (x 9) (y 2)))
+  (expect "set a top-level field" (get (set l .motto (Some "peel")) .motto) (Some "peel"))
+  (expect "set adds a missing last map key"
+          (get (set l .teams :bananas .tags "veg" 2) .teams :bananas .tags "veg") 2)
+  (expect "set on a vec alone" (set [1 2 3] 1 20) [1 20 3])
+  (expect "set on a map alone" (map-ref (set (map-empty) "k" 1) "k") 1)
+
+  ;; --- update ---------------------------------------------------------------
+  (def bumped (update l .teams :bananas .players 0 .score (fun (s) (* s 10))))
+  (expect "update, deep" (get bumped .teams :bananas .players 0 .score) 30)
+  (expect "update a map value" (get (update l .teams :bananas .tags "fruit" (fun (n) (+ n 1))) .teams :bananas .tags "fruit") 2)
+  (expect "update a vec alone" (update [1 2 3] 2 (fun (n) (+ n 1))) [1 2 4])
+
+  ;; --- evaluation order -----------------------------------------------------
+  (set! calls '())
+  (def ordered (set (note! "target" l) .teams (note! "key 1" :bananas) .players (note! "key 2" 1) .score (note! "value" 0)))
+  (expect "target, keys, value: each once, in order" (list-reverse calls) '("target" "key 1" "key 2" "value"))
+  (expect "and it still wrote" (get ordered .teams :bananas .players 1 .score) 0)
+  (set! calls '())
+  (ignore (update (note! "target" l) .teams (note! "key" :bananas) .home .y (note! "f" (fun (n) (+ n 1)))))
+  (expect "update evaluates its function last, once" (list-reverse calls) '("target" "key" "f"))
+
+  ;; --- in a macro template --------------------------------------------------
+  (def ada (Player (name "Ada") (score 3)))
+  (expect "a field step written in a template" (score-of (bump-score ada 4)) 7)
+
+  ;; --- a missing key before the last step throws ----------------------------
+  (expect-true "set through a missing key throws"
+               (err? (try (set l .teams :apples .home .x 1) #:catch (System.Collections.Generic.KeyNotFoundException System.Exception))))
+  0)

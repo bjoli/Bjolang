@@ -1001,6 +1001,7 @@ and private serializeExprNode (here: string) (e: Ast.Expr) : string =
     | Ast.ESplice _ -> failwith "an inline template body may not contain a spliced literal"
     | Ast.ETryFinally _ -> failwith "an inline template body may not contain try/finally"
     | Ast.ETryCatch _ -> failwith "an inline template body may not contain try/catch"
+    | Ast.EHoist(body, _) -> list [ "please-hoist-i-promise-i-am-not-naughty"; serializeExprAt here body ]
 
 /// A pattern, written back as source.
 ///
@@ -1299,25 +1300,35 @@ let private calleeDeclaresKeywords (target: TypedExpr) (args: TypedExpr list) : 
 // Statement shape
 // ---------------------------------------------------------------------------
 
-/// True when *this node* has no C# expression form and `generateExpr` therefore
-/// has to hoist it into a preceding statement.
-///
-/// A node whose operands merely *contain* something statement-shaped is not
-/// itself statement-shaped: those operands are hoisted individually, which keeps
-/// the node an expression.
 /// A call to a void method whose value is its outs. A void call cannot be an
 /// operand of a C# tuple, so the call is a statement and the outs are read
-/// after it. A guarded one already has a lambda body to put the statement in.
+/// after it. A guarded one is a statement already.
 let private isVoidOutCall (meta: DotNetMethodMetadata) : bool =
     meta.Exceptions.IsEmpty
     && (match meta.Outs with
         | Some outs -> outs.Form = OutTuple && not outs.KeepsReturn
         | None -> false)
 
+/// A foreign call or constructor imported with `#:exceptions`. Its `Result` is
+/// produced by a `try`/`catch` statement, so it needs a statement position.
+let private isGuardedCall (expr: TypedExpr) : bool =
+    match expr.Node with
+    | TNewObject(_, _, Some meta) -> not meta.Exceptions.IsEmpty
+    | TForeignStaticCall(_, _, _, Some meta)
+    | TDotMethodCall(_, _, _, Some meta) -> not meta.Exceptions.IsEmpty
+    | _ -> false
+
+/// True when *this node* has no C# expression form and `generateExpr` therefore
+/// has to hoist it into a preceding statement.
+///
+/// A node whose operands merely *contain* something statement-shaped is not
+/// itself statement-shaped: those operands are hoisted individually, which keeps
+/// the node an expression.
 let rec isStatementShaped (expr: TypedExpr) : bool =
     match expr.Node with
     | TForeignStaticCall(_, _, _, Some meta)
     | TDotMethodCall(_, _, _, Some meta) when isVoidOutCall meta -> true
+    | _ when isGuardedCall expr -> true
     | TLet _
     | TLetRec _
     | TLetTuple _
@@ -1333,6 +1344,9 @@ let rec isStatementShaped (expr: TypedExpr) : bool =
     | TForeignStaticSet _
     | TThrow _
     | TTryFinally _
+    // Emitted as a `try`/`catch` statement assigning the `Result` to a local,
+    // so that it needs no lambda (and no closure or delegate allocation).
+    | TTryCatch _
     | TLoop _
     | TRecur _
     // A C# iterator is a *method*: the body has to be emitted as one, and this
@@ -1387,13 +1401,9 @@ and containsHoist (expr: TypedExpr) : bool =
        // Both open a block of their own, so nothing inside can need a statement
        // position out here.
        | TLambda _
-       | TSeq _ -> false
-       // So does a guarded call: it is emitted as an immediately invoked
-       // lambda, and everything it needs a statement for goes inside that.
-       | TTryCatch _ -> false
-       | TNewObject (_, _, Some meta) when not meta.Exceptions.IsEmpty -> false
-       | TForeignStaticCall (_, _, _, Some meta) when not meta.Exceptions.IsEmpty -> false
-       | TDotMethodCall (_, _, _, Some meta) when not meta.Exceptions.IsEmpty -> false
+       | TSeq _
+       // A hoisted form's body is a method of its own too. See `hoistForm`.
+       | THoist _ -> false
        | _ -> TypeVisitor.children expr |> List.exists containsHoist
 
 /// How the ambient cancellation token reaches a .NET call.
@@ -1418,11 +1428,6 @@ let private foreignTypeArguments (meta: DotNetMethodMetadata option) =
     | Some m when not m.TypeArguments.IsEmpty ->
         "<" + (m.TypeArguments |> List.map typeToString |> String.concat ", ") + ">"
     | _ -> ""
-
-/// Does evaluating this expression *in the member it is written in* reach an
-/// `await`? Shared with `EffectGraph`, which decides a body-local function's
-/// colour with the same walk that decides a guarded region's here.
-let private containsAwait = TypeVisitor.reachesAwait
 
 /// A view met while a label was emitted.
 ///
@@ -1903,15 +1908,14 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     // ambient token all have to be available here too; the comments on
     // `TForeignStaticCall` below explain why each is not optional.
     | TDotMethodCall (target, methodName, args, Some meta) when meta.Outs.IsSome ->
-        generateOutCall ctx expr (Some target) "" methodName args meta meta.Outs.Value |> ignore
+        generateOutCall ctx None expr (Some target) "" methodName args meta meta.Outs.Value |> ignore
 
     | TForeignStaticCall (clrType, methodName, args, Some meta) when meta.Outs.IsSome ->
-        generateOutCall ctx expr None clrType methodName args meta meta.Outs.Value |> ignore
+        generateOutCall ctx None expr None clrType methodName args meta meta.Outs.Value |> ignore
 
+    // A guarded call (`#:exceptions`) is statement-shaped and never reaches
+    // here; see `generateGuardedCall`.
     | TDotMethodCall (target, methodName, args, meta) ->
-        let exceptions =
-            meta |> Option.map (fun m -> m.Exceptions) |> Option.defaultValue []
-
         let methodName = methodName + foreignTypeArguments meta
 
         let awaits = meta |> Option.map (fun m -> m.Await) |> Option.defaultValue false
@@ -1922,36 +1926,24 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             | Some m -> isVoidType m.ReturnType
             | None -> false
 
-        if exceptions.IsEmpty then
-            if awaits then append ctx (if awaits && returnsVoid then "await " else "(await ")
+        if awaits then append ctx (if returnsVoid then "await " else "(await ")
 
-            let emitters = prepareOperands ctx (target :: args)
-            emitReceiver ctx target emitters.Head
-            append ctx $".%s{methodName}("
+        let emitters = prepareOperands ctx (target :: args)
+        emitReceiver ctx target emitters.Head
+        append ctx $".%s{methodName}("
 
-            for i, emit in List.indexed emitters.Tail do
-                if i > 0 then append ctx ", "
-                emit ctx
+        for i, emit in List.indexed emitters.Tail do
+            if i > 0 then append ctx ", "
+            emit ctx
 
-            if ambient then
-                if not args.IsEmpty then append ctx ", "
-                append ctx ambientTokenArgument
+        if ambient then
+            if not args.IsEmpty then append ctx ", "
+            append ctx ambientTokenArgument
 
-            append ctx ")"
+        append ctx ")"
 
-            if awaits then
-                append ctx (if returnsVoid then ".ConfigureAwait(false)" else ".ConfigureAwait(false))")
-        else
-            // The receiver is bound with the arguments, and first: it is
-            // evaluated before them and its evaluation is not part of what the
-            // call may fail at.
-            generateGuarded ctx expr returnsVoid exceptions (target :: args) awaits (fun c names ->
-                let receiver = List.head names
-                let rest = List.tail names
-                let allArgs = if ambient then rest @ [ ambientTokenArgument ] else rest
-                let argList = String.concat ", " allArgs
-                let call = $"%s{receiver}.%s{methodName}(%s{argList})"
-                append c (if awaits then $"(await %s{call}.ConfigureAwait(false))" else call))
+        if awaits then
+            append ctx (if returnsVoid then ".ConfigureAwait(false)" else ".ConfigureAwait(false))")
 
     | TDotPropertyGet (target, propName, _) ->
         let emitters = prepareOperands ctx [ target ]
@@ -1973,28 +1965,14 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
 
         append ctx ")"
 
-    | TNewObject (clrName, args, meta) ->
-        let exceptions =
-            meta |> Option.map (fun m -> m.Exceptions) |> Option.defaultValue []
-
-        if exceptions.IsEmpty then
-            append ctx $"new %s{clrName}("
-            for i, emit in List.indexed (prepareOperands ctx args) do
-                if i > 0 then append ctx ", "
-                emit ctx
-            append ctx ")"
-        else
-            // A constructor always produces a value, so the guarded form never
-            // has a void inner call — and never an awaited one, since a
-            // constructor is not a task.
-            generateGuarded ctx expr false exceptions args false (fun c names ->
-                let argList = String.concat ", " names
-                append c $"new %s{clrName}(%s{argList})")
+    | TNewObject (clrName, args, _) ->
+        append ctx $"new %s{clrName}("
+        for i, emit in List.indexed (prepareOperands ctx args) do
+            if i > 0 then append ctx ", "
+            emit ctx
+        append ctx ")"
 
     | TForeignStaticCall (clrType, methodName, args, meta) ->
-        let exceptions =
-            meta |> Option.map (fun m -> m.Exceptions) |> Option.defaultValue []
-
         let methodName = methodName + foreignTypeArguments meta
 
         // An `#:async` import. Two things are added and neither is optional —
@@ -2028,51 +2006,21 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                 | Some m -> isVoidType m.ReturnType
                 | None -> false)
 
-        if exceptions.IsEmpty then
-            if awaits then append ctx (if awaitsVoid then "await " else "(await ")
+        if awaits then append ctx (if awaitsVoid then "await " else "(await ")
 
-            append ctx $"%s{clrType}.%s{methodName}("
-            for i, emit in List.indexed (prepareOperands ctx args) do
-                if i > 0 then append ctx ", "
-                emit ctx
+        append ctx $"%s{clrType}.%s{methodName}("
+        for i, emit in List.indexed (prepareOperands ctx args) do
+            if i > 0 then append ctx ", "
+            emit ctx
 
-            if ambient then
-                if not args.IsEmpty then append ctx ", "
-                append ctx ambientTokenArgument
+        if ambient then
+            if not args.IsEmpty then append ctx ", "
+            append ctx ambientTokenArgument
 
-            append ctx ")"
+        append ctx ")"
 
-            if awaits then
-                append ctx (if awaitsVoid then ".ConfigureAwait(false)" else ".ConfigureAwait(false))")
-        else
-            let innerIsVoid =
-                match meta with
-                | Some m -> isVoidType m.ReturnType
-                | None -> false
-
-            generateGuarded ctx expr innerIsVoid exceptions args awaits (fun c names ->
-                let allArgs = if ambient then names @ [ ambientTokenArgument ] else names
-                let argList = String.concat ", " allArgs
-                let call = $"%s{clrType}.%s{methodName}(%s{argList})"
-                append c (if awaits then $"(await %s{call}.ConfigureAwait(false))" else call))
-
-    // `(try body #:catch (...))`. Like a guarded foreign call, but around an
-    // arbitrary expression — which is what lets one guard cover a whole region
-    // rather than a single call.
-    | TTryCatch (body, exceptions) ->
-        // A `(try ...)` around an async call is the natural way to say "and
-        // this one may fail", so the guard has to be able to hold the await
-        // that call compiles to.
-        emitGuard ctx expr (containsAwait body) exceptions ignore (fun c okOf ->
-            if isVoidType body.Type then
-                generateBlock c Effect body
-                indent c
-                appendLine c (okOf "default(ValueTuple)")
-            else
-                let tmp = freshName "__ok"
-                generateBindingValue c (DeclareAndAssign(typeToString body.Type, tmp)) body
-                indent c
-                appendLine c (okOf tmp))
+        if awaits then
+            append ctx (if awaitsVoid then ".ConfigureAwait(false)" else ".ConfigureAwait(false))")
 
     | TInterfaceCall (iType, mName, methodType, dict, args) ->
         // Parenthesised for the same reason a bjoroutine call is: `await` binds
@@ -2117,6 +2065,10 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         let inner = { ctx with Prelude = None; Loop = None; InSeq = false; ReturnsVoid = returnsVoid }
         withIndent inner (fun c -> generateBlock c Return body)
         indent ctx; append ctx "}"
+
+    // `(please-hoist-i-promise-i-am-not-naughty expr)`: a read of the field
+    // holding the value. See `hoistForm`.
+    | THoist body -> append ctx (hoistForm ctx expr body)
 
     | TIf (cond, t, f) ->
         // Reached only when nothing inside needs a statement position. Both arms
@@ -2325,6 +2277,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TRecordSet _
     | TWhen _
     | TTryFinally _
+    | TTryCatch _
     | TLoop _
     | TRecur _
     | TSeq _
@@ -2357,91 +2310,73 @@ and private emitReceiver (ctx: CodegenContext) (target: TypedExpr) (emit: Codege
         emit ctx
         append ctx ")"
 
-/// Emits a foreign call whose declared exceptions turn it into a `Result`.
+/// Emits a `try`/`catch` statement that delivers a `Result` to `target`.
 ///
-/// The shape is an immediately invoked `Func<>` so that the whole thing stays a
-/// C# *expression* and can appear anywhere a call could.
+/// The `Result` is assigned to a slot declared ahead of the `try`, so that it is
+/// still in scope after the `catch`. The `catch` carries an exception filter
+/// naming exactly the listed types, so anything else keeps unwinding.
 ///
-/// Two details are load-bearing:
-///
-///   * The arguments are evaluated into locals *before* the `try`. An exception
-///     raised while working out an argument is not one the call raised, and
-///     catching it would blame the wrong thing.
-///   * The `catch` carries an exception *filter* naming exactly the types that
-///     were declared. Anything not listed keeps unwinding — a `#:exceptions`
-///     clause says which failures are values, and everything else stays a bug.
+/// `emitTryBody` is given `okOf`, which turns a C# value into the statement that
+/// stores it as the `Ok`.
 and private emitGuard
     (ctx: CodegenContext)
-    (expr: TypedExpr)
-    (isAsync: bool)
+    (target: BlockTarget)
+    (resultHM: HMType)
     (exceptions: string list)
-    (emitPrologue: CodegenContext -> unit)
     (emitTryBody: CodegenContext -> (string -> string) -> unit)
     : unit =
 
-    let resultType = typeToString expr.Type
+    let resultType = typeToString resultHM
     let exVar = freshName "__ex"
     let filter = exceptions |> List.map (fun e -> $"%s{exVar} is %s{e}") |> String.concat " || "
-    let okOf (value: string) = $"return %s{resultType}.Ok(%s{value});"
 
-    // A guarded region containing an `await` needs a lambda that can hold one,
-    // and a lambda that can hold one is a fiber of its own. `Func<Fiber<R>>`
-    // rather than `Func<Task<R>>` for the usual reason: awaiting a fiber costs
-    // no context capture, and this one is immediately awaited by the member
-    // that wrote it.
-    //
-    // The alternative was to reject `#:exceptions` on an `#:async` import.
-    // §7.2's own example writes both together — an async call that cannot fail
-    // is not an interesting async call — so the cost of one extra state machine
-    // per guarded call is the right side of that trade.
-    if isAsync then
-        append ctx $"(await new Func<Bjoml.Fiber<%s{resultType}>>(async () => {{\n"
-    else
-        append ctx $"new Func<%s{resultType}>(() => {{\n"
+    let slot =
+        match target with
+        | Assign name -> name
+        | DeclareAndAssign (varType, varName) ->
+            indent ctx; appendLine ctx $"%s{varType} %s{varName};"
+            varName
+        | _ ->
+            let name = freshName "__tried"
+            indent ctx; appendLine ctx $"%s{resultType} %s{name};"
+            name
 
-    // A lambda is its own function scope: no enclosing loop to jump to, and no
-    // iterator to yield from.
-    let inner = { ctx with Prelude = None; Loop = None; InSeq = false }
+    let okOf (value: string) = $"%s{slot} = %s{resultType}.Ok(%s{value});"
 
-    withIndent inner (fun c ->
-        // Whatever has to happen before the guarded region — evaluating a
-        // call's arguments, which is not part of what the call may fail at.
-        emitPrologue c
+    indent ctx; appendLine ctx "try {"
+    // C# rejects a `yield return` inside a `try` that has a `catch` (CS1626),
+    // so the body is not treated as part of an iterator and a `yield` in it is
+    // reported by `requireSeqScope` instead.
+    withIndent { ctx with InSeq = false } (fun c -> emitTryBody c okOf)
+    indent ctx; appendLine ctx $"}} catch (Exception %s{exVar}) when (%s{filter}) {{"
+    withIndent ctx (fun c -> indent c; appendLine c $"%s{slot} = %s{resultType}.Err(%s{exVar});")
+    indent ctx; appendLine ctx "}"
 
-        indent c
-        appendLine c "try {"
-        withIndent c (fun c2 -> emitTryBody c2 okOf)
+    match target with
+    | Assign _
+    | DeclareAndAssign _ -> exitInlineLoop ctx
+    | _ -> emitTerminal ctx target resultHM (fun c -> append c slot)
 
-        indent c
-        appendLine c $"}} catch (Exception %s{exVar}) when (%s{filter}) {{"
-
-        withIndent c (fun c2 ->
-            indent c2
-            appendLine c2 $"return %s{resultType}.Err(%s{exVar});")
-
-        indent c
-        appendLine c "}")
-
-    indent ctx
-    append ctx (if isAsync then "})())" else "})()")
-
+/// A guarded foreign call: its operands are bound to locals, then the call is
+/// made inside `emitGuard`'s `try`. The operands are evaluated *before* the
+/// `try` because an exception raised while computing an argument is not one the
+/// call raised, and catching it would blame the wrong thing.
 and private generateGuarded
     (ctx: CodegenContext)
+    (target: BlockTarget)
     (expr: TypedExpr)
     (innerIsVoid: bool)
     (exceptions: string list)
     (args: TypedExpr list)
-    (isAsync: bool)
     (emitCall: CodegenContext -> string list -> unit)
     : unit =
 
     let temps = args |> List.map (fun a -> freshName "__farg", a)
 
-    let prologue (c: CodegenContext) =
-        for tmp, arg in temps do
-            generateBindingValue c (DeclareAndAssign(typeToString arg.Type, tmp)) arg
+    for tmp, arg in temps do
+        generateBindingValue ctx (DeclareAndAssign(typeToString arg.Type, tmp)) arg
 
-    emitGuard ctx expr isAsync exceptions prologue (fun c okOf ->
+    emitGuard ctx target expr.Type exceptions (fun c okOf ->
         indent c
 
         if innerIsVoid then
@@ -2459,6 +2394,48 @@ and private generateGuarded
             indent c
             appendLine c (okOf tmp))
 
+/// A foreign call or constructor imported with `#:exceptions`, in statement
+/// position. `isGuardedCall` routes these here rather than to `generateExpr`.
+and private generateGuardedCall (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) : unit =
+    // `ConfigureAwait(false)` and the ambient token, as on the unguarded paths
+    // in `generateExpr`.
+    let callText (meta: DotNetMethodMetadata) (call: string) =
+        if meta.Await then $"(await %s{call}.ConfigureAwait(false))" else call
+
+    let withToken (meta: DotNetMethodMetadata) (names: string list) =
+        if meta.AmbientToken then names @ [ ambientTokenArgument ] else names
+
+    match expr.Node with
+    | TDotMethodCall (receiver, methodName, args, Some meta) when meta.Outs.IsSome ->
+        generateOutCall ctx (Some target) expr (Some receiver) "" methodName args meta meta.Outs.Value |> ignore
+
+    | TForeignStaticCall (clrType, methodName, args, Some meta) when meta.Outs.IsSome ->
+        generateOutCall ctx (Some target) expr None clrType methodName args meta meta.Outs.Value |> ignore
+
+    // The receiver is bound with the arguments, and first: it is evaluated
+    // before them.
+    | TDotMethodCall (receiver, methodName, args, Some meta) ->
+        let methodName = methodName + foreignTypeArguments (Some meta)
+
+        generateGuarded ctx target expr (isVoidType meta.ReturnType) meta.Exceptions (receiver :: args) (fun c names ->
+            let argList = String.concat ", " (withToken meta (List.tail names))
+            append c (callText meta $"%s{List.head names}.%s{methodName}(%s{argList})"))
+
+    | TForeignStaticCall (clrType, methodName, args, Some meta) ->
+        let methodName = methodName + foreignTypeArguments (Some meta)
+
+        generateGuarded ctx target expr (isVoidType meta.ReturnType) meta.Exceptions args (fun c names ->
+            let argList = String.concat ", " (withToken meta names)
+            append c (callText meta $"%s{clrType}.%s{methodName}(%s{argList})"))
+
+    // A constructor always produces a value and is never awaited.
+    | TNewObject (clrName, args, Some meta) ->
+        generateGuarded ctx target expr false meta.Exceptions args (fun c names ->
+            let argList = String.concat ", " names
+            append c $"new %s{clrName}(%s{argList})")
+
+    | _ -> codegenError expr.Range "internal error: not a guarded call"
+
 /// A call with out parameters, emitted as the value its form builds.
 ///
 /// Each out is declared at its C# position with its type written, so that an
@@ -2469,8 +2446,12 @@ and private generateGuarded
 ///
 /// The void tuple form writes only the call, as a statement, and the caller
 /// reads the returned value after it.
+///
+/// A guarded call (`#:exceptions`) is a statement delivering its `Result` to
+/// `guardTarget`, which is `Some` exactly when the call is guarded.
 and private generateOutCall
     (ctx: CodegenContext)
+    (guardTarget: BlockTarget option)
     (expr: TypedExpr)
     (receiver: TypedExpr option)
     (clrType: string)
@@ -2539,12 +2520,16 @@ and private generateOutCall
 
         writeValue ctx writeCall
     else
+        let target =
+            match guardTarget with
+            | Some t -> t
+            | None -> codegenError expr.Range "internal error: guarded out call reached expression emission"
+
         // As `generateGuarded`: the arguments are evaluated before the `try`.
         let temps = operands |> List.map (fun a -> freshName "__farg", a)
 
-        let prologue (c: CodegenContext) =
-            for tmp, arg in temps do
-                generateBindingValue c (DeclareAndAssign(typeToString arg.Type, tmp)) arg
+        for tmp, arg in temps do
+            generateBindingValue ctx (DeclareAndAssign(typeToString arg.Type, tmp)) arg
 
         let tempEmitters =
             temps |> List.map (fun (tmp, _) -> fun (c: CodegenContext) -> append c tmp)
@@ -2560,7 +2545,7 @@ and private generateOutCall
 
             append c ")"
 
-        emitGuard ctx expr false meta.Exceptions prologue (fun c okOf ->
+        emitGuard ctx target expr.Type meta.Exceptions (fun c okOf ->
             indent c
 
             if outs.Form = OutTuple && not outs.KeepsReturn then
@@ -2625,6 +2610,98 @@ and private hoistToTemp (ctx: CodegenContext) (prelude: ResizeArray<string>) (ex
     prelude.Add(scratch.ToString())
     ctx.Line.Pending <- pendingHere
     tmp
+
+/// A hoisted form, as the C# expression that reads its value.
+///
+/// The body becomes a static method of the literal holder class, and its value
+/// is kept in a `StrongBox` field, filled the first time the form is read. A
+/// box rather than the value itself, so that "not computed yet" is `null`
+/// whatever the value's type.
+///
+/// Not a field initializer like the other hoisted literals. Field initializers
+/// all run together, on the first read of any field of the class, so every
+/// hoisted form in the program would run when the first keyword was read; and a
+/// class whose initializer threw is broken for good. Here a body that throws
+/// leaves the field empty, and the next evaluation tries again, which is what
+/// the form would have done unhoisted.
+///
+/// Two threads reaching the form for the first time together may both run the
+/// body. The first to store its value wins and the other value is dropped; the
+/// promise the form's name makes, that the body has no effects worth repeating,
+/// is what makes that harmless.
+///
+/// Two forms whose bodies generate the same code share one field. Their
+/// `#line` directives are left out of the comparison, so that the same form
+/// written twice, or reached through two copies of a function, is one value.
+and private hoistForm (ctx: CodegenContext) (expr: TypedExpr) (body: TypedExpr) : string =
+    let resultType = typeToString expr.Type
+    let scratch = StringBuilder()
+
+    // A method of its own: nothing around the form is in scope in it, and
+    // `HoistCheck` has made sure the body needs nothing that is.
+    let inner =
+        { ctx with
+            Builder = scratch
+            Prelude = None
+            Loop = None
+            InSeq = false
+            ReturnsVoid = false
+            Returns = Map.empty
+            TypeParams = Set.empty
+            IndentLevel = 3 }
+
+    // As in `hoistToTemp`: this is generated out of order, so the directive
+    // owed to the line being written must not land inside it.
+    let pendingHere = ctx.Line.Pending
+    ctx.Line.Pending <- None
+    generateBlock inner Return body
+    ctx.Line.Pending <- pendingHere
+
+    let bodyText = scratch.ToString()
+
+    let key =
+        let lines =
+            bodyText.Split('\n')
+            |> Array.filter (fun l -> not (l.TrimStart().StartsWith "#line"))
+        "hoist:" + resultType + "\n" + String.concat "\n" lines
+
+    let table = ctx.Literals
+
+    let name =
+        match table.Fields.TryGetValue key with
+        | true, existing -> existing
+        | _ ->
+            let wanted = literalFieldBase "Hoist" ""
+            let mutable field = wanted
+            let mutable n = 2
+
+            while not (table.Taken.Add field) do
+                field <- $"%s{wanted}_%d{n}"
+                n <- n + 1
+
+            table.Fields[key] <- field
+
+            let box = $"System.Runtime.CompilerServices.StrongBox<%s{resultType}>"
+            let pad = "        "
+
+            table.Decls.Add(
+                String.concat
+                    "\n"
+                    [ $"private static %s{box}? %s{field}_box;"
+                      $"%s{pad}internal static %s{resultType} %s{field} => (%s{field}_box ?? %s{field}_fill()).Value;"
+                      $"%s{pad}private static %s{box} %s{field}_fill() {{"
+                      $"%s{pad}    var box = new %s{box}(%s{field}_compute());"
+                      $"%s{pad}    return System.Threading.Interlocked.CompareExchange(ref %s{field}_box, box, null) ?? box;"
+                      $"%s{pad}}}"
+                      $"%s{pad}private static %s{resultType} %s{field}_compute() {{"
+                      bodyText.TrimEnd('\n', '\r')
+                      $"%s{pad}}}"
+                      "#line hidden" ]
+            )
+
+            field
+
+    $"%s{literalHolderClass}.%s{name}"
 
 /// Emits the operands of a single construct, preserving left-to-right evaluation.
 ///
@@ -3377,9 +3454,9 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
             value.Value <-
                 match expr.Node with
                 | TDotMethodCall (receiver, methodName, args, _) ->
-                    generateOutCall c expr (Some receiver) "" methodName args meta meta.Outs.Value
+                    generateOutCall c None expr (Some receiver) "" methodName args meta meta.Outs.Value
                 | TForeignStaticCall (clrType, methodName, args, _) ->
-                    generateOutCall c expr None clrType methodName args meta meta.Outs.Value
+                    generateOutCall c None expr None clrType methodName args meta meta.Outs.Value
                 | _ -> ""
 
             appendLine c ";")
@@ -3584,6 +3661,20 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         // own; it must not try to break or return out of one.
         withIndent ctx (fun c -> generateBlock c Effect cleanup)
         indent ctx; appendLine ctx "}"
+
+    // `(try body #:catch (...))`: `emitGuard` around an arbitrary expression,
+    // so one guard can cover a whole region rather than a single call.
+    | TTryCatch (body, exceptions) ->
+        emitGuard ctx target expr.Type exceptions (fun c okOf ->
+            if isVoidType body.Type then
+                generateBindingValue c Effect body
+                indent c; appendLine c (okOf "default(ValueTuple)")
+            else
+                let ok = freshName "__ok"
+                generateBindingValue c (DeclareAndAssign(typeToString body.Type, ok)) body
+                indent c; appendLine c (okOf ok))
+
+    | _ when isGuardedCall expr -> generateGuardedCall ctx target expr
 
     | TIf (cond, t, f) ->
         let armTarget =

@@ -97,6 +97,7 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TTryFinally(body, cleanup) -> TTryFinally(f body, f cleanup)
         | TTryCatch(body, exceptions) -> TTryCatch(f body, exceptions)
         | TSeq body -> TSeq(f body)
+        | THoist body -> THoist(f body)
         | TBjo(body, kind) -> TBjo(f body, kind)
         | TTaskEvent(receiver, clrType, name, args, payload, isVoid) ->
             TTaskEvent(Option.map f receiver, clrType, name, List.map f args, payload, isVoid)
@@ -257,17 +258,16 @@ let liftsToSuspending (wanted: HMType) (supplied: HMType) : bool =
 /// `bjo` is the one shape where the distinction is live: its operands are
 /// evaluated here and its call is not.
 ///
-/// Two callers, and they have to agree: `EffectGraph` asks it to decide whether
-/// a body-local function is async, and `Codegen` asks it to decide whether a
-/// guarded region — `#:exceptions`, or a `(try ...)` — has to become an async
-/// lambda rather than a plain one. Two copies of this walk would be two
-/// answers, and the second would be found by Roslyn rather than by a test.
+/// `EffectGraph` uses it to decide whether a body-local function is async.
 let rec reachesAwait (expr: TypedExpr) : bool =
     match expr.Node with
     // A function-shaped binding's value is a `TLambda`, so both are covered
     // here, and a `TLetRec` group's members likewise.
     | TLambda _
-    | TSeq _ -> false
+    | TSeq _
+    // A hoisted body runs in a method of its own, and `HoistCheck` and
+    // `ColourCheck` make sure it cannot await there either.
+    | THoist _ -> false
     | TBjo(body, _) ->
         match body.Node with
         | TApply(target, args, kwArgs) ->

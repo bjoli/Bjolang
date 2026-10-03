@@ -1203,6 +1203,8 @@ Records and structs are constructed by naming their type:
 
 Read and update using ~(record-ref target field)~ and ~(record-set target (field value) ...)~. These resolve against the target's exact type, falling back to field name lookup only if the type is unresolved. ~struct-ref~ and ~struct-set~ are synonyms.
 
+~(.field target)~ reads a field the same way as ~record-ref~. For reading or copying several levels down, through records, structs, maps and vectors, use the path macros ~get~, ~try-get~, ~set~ and ~update~ from the prelude: ~(set team .players 0 .name "Bea")~.
+
 **** Mutable fields
 A field marked ~#:mutable~ can be mutated in place using ~record-set!~:
 
@@ -1388,6 +1390,21 @@ Dictionaries can be synthesized locally or fetched from constraints dynamically:
 
 **** Non-Features & Design Non-Goals
 No implicit boxing, no unpinned associated types, no downcasting back to concrete types, and no multi-trait composite boxes.
+** ~please-hoist-i-promise-i-am-not-naughty~ — computing a value once
+
+~(please-hoist-i-promise-i-am-not-naughty expr)~ evaluates ~expr~ the first time
+the form is reached and answers that value from then on. If ~expr~ throws,
+nothing is kept and the next evaluation tries again. It is mostly for macros:
+~#rx(...)~ uses it so that a regex is compiled once rather than looked up each
+time it is evaluated.
+
+The compiler refuses a form it cannot hoist, with every reason: one that
+refers to a local, reads a def of its own module or a ~def/mutable~, uses a type
+variable of the function around it, awaits, yields, leaves a ~with-return~, is
+void, or produces a value that can be written in place. What it cannot check is
+promised by the name: that ~expr~ has no effects worth repeating and does not
+read dynamic context. See ~Docs/MACROS.org~.
+
 ** Macros
 A macro is a function the compiler runs while parsing. It takes the form written and returns the form to evaluate.
 

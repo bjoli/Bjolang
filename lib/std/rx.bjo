@@ -743,12 +743,20 @@
 ;; `#rx(seq a b)` reads as `(#rx seq a b)`, so the arguments are the form's own
 ;; contents. One argument is the form itself, which is what makes `#rx(:digit)`
 ;; and `#rx((+ :digit))` work as well as `#rx(+ :digit)`.
+;;
+;; The compile is hoisted: both arguments are literals, so the regex is built
+;; the first time the expression is reached and every later evaluation reuses
+;; it. Without that, every evaluation looks the pattern up in `BjoRegex`'s
+;; cache, which hashes and compares the whole pattern string, and an emitted
+;; character class can be thousands of characters long. A pattern in a match
+;; clause is evaluated once per match attempt, so it pays that every time.
 (: rx-expansion (-> Syntax Syntax))
 (defun (rx-expansion form)
   (def node (parse form))
   (def names (make-box Nil))
   (def pattern (emit node names))
-  #'(rx-compile ,(SStr pattern) ,(SStr (names-text (list-reverse (box-ref names))))))
+  #'(please-hoist-i-promise-i-am-not-naughty
+      (rx-compile ,(SStr pattern) ,(SStr (names-text (list-reverse (box-ref names)))))))
 
 (def/hash-extend (rx form inject compare)
   (match (form-args form)

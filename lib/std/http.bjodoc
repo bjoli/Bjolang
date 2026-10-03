@@ -3,12 +3,12 @@
 
 (:doc #:module
   (summary "HTTP requests: a request is a value you build, then send blocking, suspending or as an event.")
-  (see get post fetch fetching response-close with-response)
+  (see http-get http-post fetch fetching response-close with-response)
   (example """
     (import (std http))
 
     (defun (main args)
-      (match (fetch (get "https://example.com/fruit"))
+      (match (fetch (http-get "https://example.com/fruit"))
         ((Err e) 1)
         ((Ok r)
          (println (response-status r))
@@ -21,7 +21,7 @@
     ;; fetch, port-eof? and read-line all suspend because this is a defbjo;
     ;; the same source blocks in a defun.
     (defbjo (count-lines url)
-      (match (fetch (get url))
+      (match (fetch (http-get url))
         ((Err e) 0)
         ((Ok r)
          (let ((port (response-port r)))
@@ -35,7 +35,7 @@
     (import (text json))
 
     (defbjo (fetch-json url)
-      (match (fetch (get url #:headers [("Accept" . "application/json")]))
+      (match (fetch (http-get url #:headers [("Accept" . "application/json")]))
         ((Err e) (Err "the request failed"))
         ((Ok r)
          (let ((parsed (read-json (response-port r))))
@@ -111,7 +111,7 @@
   (case JsonText "Text that is @em{already} serialized JSON, sent as @code{application/json; charset=utf-8}.")
   (case Form "Fields, percent-encoded and sent as @code{application/x-www-form-urlencoded}.")
   (case Other "A @code{Custom} body: your own content type and text.")
-  (see post request Custom)
+  (see http-post request Custom)
   (reference """
     @code{JsonText} takes text that is already serialized; this module has no
     JSON writer. It is spelled that way rather than @code{Json} because
@@ -143,7 +143,7 @@
   (field query "Query parameters, percent-encoded and appended to the url.")
   (field headers "Headers, for the request and for its body alike.")
   (field body "The body, or @code{Empty}.")
-  (see request get post fetch))
+  (see request http-get http-post fetch))
 
 (:doc Response
   (summary "An answer: a status, headers, and a body not yet read.")
@@ -170,7 +170,7 @@
   (key #:headers "Headers, for the request or its body.")
   (key #:body "The body.")
   (returns "The request, not yet sent.")
-  (see get post fetch)
+  (see http-get http-post fetch)
   (example """
     (request PUT "https://example.com/note"
              #:body (Other (Custom (content-type "text/csv") (text "a,b\n1,2"))))
@@ -186,33 +186,33 @@
     parse or is not @code{http} or @code{https}.
     """))
 
-(:doc get
+(:doc http-get
   (summary "A GET request.")
   (arg url "Where to send it.")
   (key #:query "Query parameters, appended to the url.")
   (key #:headers "Headers.")
   (returns "The request, not yet sent.")
-  (see post request)
+  (see http-post request)
   (example """
-    (get "https://example.com/search"
+    (http-get "https://example.com/search"
          #:query   [("q" . "banana split") ("limit" . "10")]
          #:headers [("Accept" . "application/json")])
     """))
 
-(:doc post
+(:doc http-post
   (summary "A POST request with a body.")
   (arg url "Where to send it.")
   (arg body "The body.")
   (key #:query "Query parameters, appended to the url.")
   (key #:headers "Headers, for the request or its body.")
   (returns "The request, not yet sent.")
-  (see get request Body)
+  (see http-get request Body)
   (example """
-    (post "https://example.com/basket"
+    (http-post "https://example.com/basket"
           (JsonText "{\"fruit\":\"banana\"}")
           #:headers [("Authorization" . "Bearer hunter2")])
 
-    (post "https://example.com/login" (Form [("user" . "bjoli") ("pass" . "banan")]))
+    (http-post "https://example.com/login" (Form [("user" . "bjoli") ("pass" . "banan")]))
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -230,7 +230,7 @@
     ;; is a yield point.
     (defbjo (main args)
       (with-deadline 5000
-        (match (fetch (get "https://example.com/slow"))
+        (match (fetch (http-get "https://example.com/slow"))
           ((Ok r) (println (response-text r)) (response-close r) 0)
           ((Err e) (println "gave up") 1))))
     """)
@@ -254,8 +254,8 @@
     (type (: Answer (Union (: Got (Result Exception Response)) TimedOut)))
 
     (defbjo (from-a-mirror)
-      (match (sync (choose (wrap (fetching (get "https://eu.example.com/fruit")) (fun (a) (Got a)))
-                           (wrap (fetching (get "https://us.example.com/fruit")) (fun (a) (Got a)))
+      (match (sync (choose (wrap (fetching (http-get "https://eu.example.com/fruit")) (fun (a) (Got a)))
+                           (wrap (fetching (http-get "https://us.example.com/fruit")) (fun (a) (Got a)))
                            (wrap (timeout 2000) (fun (fired) TimedOut))))
         ((Got (Ok r))  (let ((body (response-text r))) (response-close r) body))
         ((Got (Err e)) "failed")
@@ -380,7 +380,7 @@
   (rest body "What to run. At least one form.")
   (see fetch response-close)
   (example """
-    (with-response (r (fetch (get "https://example.com/fruit")))
+    (with-response (r (fetch (http-get "https://example.com/fruit")))
       (match r
         ((Ok got) (response-text got))
         ((Err e) "")))
@@ -416,7 +416,7 @@
   (see make-client)
   (example """
     (parameterize ((current-http-client (make-client #:redirects #f)))
-      (fetch (get "https://example.com/redirects-somewhere")))
+      (fetch (http-get "https://example.com/redirects-somewhere")))
     """)
   (reference """
     A @code{(Param Client)}. Parameterize another one in for a proxy, a test

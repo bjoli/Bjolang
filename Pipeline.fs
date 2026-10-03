@@ -2243,6 +2243,10 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // reported on once per instantiation under a name nobody wrote.
         Exhaustiveness.run env.Registry typedAst
 
+        // Beside them and for their reason: a hoisted form is reported on once,
+        // as written, with every reason it cannot be hoisted.
+        HoistCheck.run env.Registry env.Bindings typedAst
+
         // After type checking, which is when what a name is — and whether a
         // name in `(see ...)` exists at all — can be asked; before the gate,
         // so that a doc that does not match its definition stops the build.

@@ -3,6 +3,34 @@
 
 What each change guarantees, and what it leaves open.
 
+* Hoisting, paths, and two renames
+
+- *~(please-hoist-i-promise-i-am-not-naughty expr)~* evaluates ~expr~ the first
+  time the form is reached and keeps the value. A throw keeps nothing, so the
+  next evaluation tries again; identical forms share one value. A form that
+  cannot be hoisted is one error listing every reason: a local, a def of its
+  own module or a ~def/mutable~, a type variable of the function around it, an
+  await, a ~yield~, a ~with-return~ escape, a void form, or a value that can be
+  written in place. Purity and independence from dynamic context are promised,
+  not checked.
+- *~#rx(...)~ is hoisted*, in expressions and in ~Rx~ / ~RxIn~ patterns alike.
+  It no longer hashes its pattern on every evaluation; a search with
+  ~(+ :alpha)~ is about eighteen times faster.
+- *~(try ... #:catch ...)~ and calls imported with ~#:exceptions~* compile to
+  a ~try~ / ~catch~ statement rather than an immediately invoked lambda, so
+  they allocate no closure, and an ~#:async~ one no extra state machine.
+- *~get~, ~try-get~, ~set~ and ~update~* read and copy along a path of
+  ~.field~ steps and keys. Keys go through ~Refable~ to read and the new
+  ~Settable~ (~ref-set~, for ~Vec~ and ~Map~) to write. Errors in a step are
+  reported at the step, using the new ~(syntax-at form source)~.
+- *~(std set)~ is ~(std hashset)~*: ~Set~ is ~HashSet~ and ~set-*~ is
+  ~hashset-*~, and the collector is ~hash-setting~. *~(std http)~'s ~get~ and
+  ~post~ are ~http-get~ and ~http-post~.* Both free the names for the path
+  macros.
+
+~TestFiles/271_paths.bjo~, ~272_hoist.bjo~, ~TestFiles/codegen/hoisted_form.bjo~,
+~TestFiles/errors/hoist_*~ and ~TestFiles/errors/path_*~.
+
 * ~loop~: ~:finish~, ~:abandon~, ~:while~, ~:until~ and the ~:subloop~ form
 
 - *~(:finish test [value])~* ends the whole loop. With a value, that is the

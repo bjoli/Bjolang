@@ -1,0 +1,35 @@
+;; What a hoisted form compiles to.
+;;
+;; The use site reads a property of the literal holder. The body is a method of
+;; its own, and the value is kept in a box that is filled the first time it is
+;; read, rather than by a field initializer: those all run together on the first
+;; read of any field, and a class whose initializer threw stays broken.
+;;
+;;   public static int answer() {
+;;       return __Literals.Hoist;
+;;   }
+;;   ...
+;;   private static StrongBox<int>? Hoist_box;
+;;   internal static int Hoist => (Hoist_box ?? Hoist_fill()).Value;
+;;   private static StrongBox<int> Hoist_fill() { ... CompareExchange ... }
+;;   private static int Hoist_compute() { return slowsubsquare(7); }
+;;
+;; EXPECT-CS: return __Literals\.Hoist;
+;; EXPECT-CS: internal static int Hoist => \(Hoist_box \?\? Hoist_fill\(\)\)\.Value;
+;; EXPECT-CS: Interlocked\.CompareExchange\(ref Hoist_box, box, null\)
+;; EXPECT-CS: private static int Hoist_compute\(\)
+;; The call is made in the compute method, not in `answer`.
+;; EXPECT-NO-CS: answer\(\) \{\s*(#line[^\n]*\n\s*)*return [^\n]*slowsubsquare
+
+(import (std prelude))
+
+(: slow-square (-> int int))
+(defun (slow-square n) (* n n))
+
+(: answer (-> int))
+(defun (answer)
+  (please-hoist-i-promise-i-am-not-naughty (slow-square 7)))
+
+(defun (main)
+  (println (->str (answer)))
+  0)

@@ -1588,6 +1588,14 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int syntaxsubline(Bjolang.Runtime.Syntax s) => s.Range.StartLine;
 
+    /// `(syntax-at form source)`: `form` with `source`'s range. A range can only
+    /// be copied from syntax that has one, never made up, so a constructed form
+    /// can report where the part of the input it was built from was written
+    /// rather than where the macro call was.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Bjolang.Runtime.Syntax syntaxsubat(Bjolang.Runtime.Syntax form, Bjolang.Runtime.Syntax source) =>
+        source.Range.IsUnset ? form : form.WithRange(source.Range);
+
     /// `(syntax-ident=? a b)`. Are these two the same identifier?
     ///
     /// The value-level `compare`: the same test, available to code rather than

@@ -1050,6 +1050,9 @@ let prelude : Env =
         "syntax->string", {Scheme = Scheme([], [], makeFunType [syntaxType] stringType); IsMutable = false }
         "syntax-file", {Scheme = Scheme([], [], makeFunType [syntaxType] stringType); IsMutable = false }
         "syntax-line", {Scheme = Scheme([], [], makeFunType [syntaxType] intType); IsMutable = false }
+        // `(syntax-at form source)`: `form` carrying `source`'s range, so a
+        // diagnostic about the built form points at the input it came from.
+        "syntax-at", {Scheme = Scheme([], [], makeFunType [syntaxType; syntaxType] syntaxType); IsMutable = false }
 
         // Seq operations. A Seq is lazy: nothing below that returns one does any
         // work until the result is consumed.

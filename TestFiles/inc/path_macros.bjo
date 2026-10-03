@@ -1,0 +1,17 @@
+;; Macros whose templates write path steps. The expander renames every symbol a
+;; template writes, so `.score` arrives at `set` as `.score__N`, and the field
+;; it writes has to be found under its plain name.
+
+(import (std syntax-match))
+
+;; `(bump-score p n)` is `(update p .score (fun (s) (+ s n)))`.
+(def/macro (bump-score form inject compare)
+  (syntax-match form
+    ((_ p n) #'(update ,p .score (fun (s) (+ s ,n))))
+    (bad (syntax-error bad "(bump-score p n) takes two arguments."))))
+
+;; `(score-of p)` is `(get p .score)`.
+(def/macro (score-of form inject compare)
+  (syntax-match form
+    ((_ p) #'(get ,p .score))
+    (bad (syntax-error bad "(score-of p) takes one argument."))))

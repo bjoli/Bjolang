@@ -229,6 +229,11 @@ let checkEscapeUses (name: string) (body: Expr) : unit =
 
         | ETryCatch(b, _, _) -> stmt b
 
+        // An escape inside a hoisted form is not refused here, so that
+        // `HoistCheck` can list it beside every other reason the form cannot be
+        // hoisted. It reaches inference as a `TReturn` and is reported there.
+        | EHoist(b, _) -> go barrier true b
+
         | ELet(n, isFun, args, _, value, b, _) ->
             // `(def x (ret 1))` is an initialiser, not a statement. Only the
             // `_` binding `parseBody` writes for a bare form in a body is one.
@@ -554,6 +559,7 @@ let private renameWith
 
         | ETryFinally(body, cleanup, r) -> ETryFinally(sub body, sub cleanup, r)
         | ETryCatch(body, exceptions, r) -> ETryCatch(sub body, exceptions, r)
+        | EHoist(body, r) -> EHoist(sub body, r)
         | ESeq(body, r) -> ESeq(sub body, r)
         | EBjo(body, kind, r) -> EBjo(sub body, kind, r)
         | ETaskEvent(body, r) -> ETaskEvent(sub body, r)

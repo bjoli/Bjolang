@@ -1147,6 +1147,16 @@ let rec parseExpr (s: SExpr) : Expr =
                 else
                     ETryFinally(caught, parseBody finallyForms listRange, r)
 
+            // `(please-hoist-i-promise-i-am-not-naughty expr)` — evaluate `expr`
+            // once, the first time the form is reached, and keep the value. The
+            // name is long on purpose: it is a promise, mostly written by macros.
+            | "please-hoist-i-promise-i-am-not-naughty" ->
+                match args with
+                | [ form ] -> EHoist(parseExpr form, r)
+                | _ ->
+                    failwithf
+                        $"Invalid please-hoist-i-promise-i-am-not-naughty at %s{Lexer.formatPos r}: it takes exactly one form, the one to hoist. Wrap several in (let () ...)."
+
             // `(with-open ((name ctor) ...) body...)` — bind each resource,
             // and dispose it on the way out however the body ends.
             //

@@ -527,6 +527,10 @@ let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedE
 
     | TSeq body -> { expr with Node = TSeq(sealed_ body) }
 
+    // A hoisted body runs in a method of its own that cannot await, so a
+    // `defbjouble` called in it means the ordinary copy.
+    | THoist body -> { expr with Node = THoist(sealed_ body) }
+
     | TBjo(body, kind) ->
         // The operands run in the parent and the call runs in the child, which
         // is always async — the same split `ColourCheck` makes, down to

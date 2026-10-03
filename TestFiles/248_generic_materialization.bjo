@@ -1,13 +1,13 @@
 ;; A generic type's `Eq` and `Ord`, compiled into the type's own .NET members.
 ;;
-;; `Map`, `Set`, `OrderedMap` and `OrderedSet` are .NET collections: they never
+;; `Map`, `HashSet`, `OrderedMap` and `OrderedSet` are .NET collections: they never
 ;; call `=` or `compare`, only the key type's `Equals`, `GetHashCode` and
 ;; `CompareTo`. An implementation for a generic type is conditional — it needs
 ;; the element type's `Eq` or `Ord` — and the type builds that from the
 ;; element type's own .NET members, so the collections agree with `=` for a
 ;; generic type too. See `Docs/prelude.org`, "Writing one by hand".
 (import (std prelude))
-(import (std set))
+(import (std hashset))
 (import (std orderedmap))
 (import (std orderedset))
 (import (std simpletest))
@@ -70,23 +70,23 @@
   (def e1 (Edge (from 1) (to 2)))
   (def e2 (Edge (from 2) (to 1)))
   (expect-true "= says the two edges are one" (= e1 e2))
-  (expect "and so does a Set" (set-length (list->set (list e1 e2))) 1)
+  (expect "and so does a Set" (hashset-length (list->hashset (list e1 e2))) 1)
   (expect-true "a Map finds one edge through the other"
                (some? (map-try-ref (map-set (map-empty) e1 "road") e2)))
   (expect-true "and the Set still tells edges apart"
-               (not (set-contains? (list->set (list e1)) (Edge (from 1) (to 3)))))
+               (not (hashset-contains? (list->hashset (list e1)) (Edge (from 1) (to 3)))))
 
   (def l1 (Link (from "a") (to "b")))
   (def l2 (Link (from "b") (to "a")))
-  (expect "a record struct in a Set" (set-length (list->set (list l1 l2))) 1)
+  (expect "a record struct in a Set" (hashset-length (list->hashset (list l1 l2))) 1)
   (expect-true "and in a Map" (some? (map-try-ref (map-set (map-empty) l1 1) l2)))
 
   (def n1 (Named "first" 7))
   (def n2 (Named "second" 7))
-  (expect "a union's same-case values in a Set" (set-length (list->set (list n1 n2))) 1)
+  (expect "a union's same-case values in a Set" (hashset-length (list->hashset (list n1 n2))) 1)
   (expect-true "and in a Map" (some? (map-try-ref (map-set (map-empty) n1 1) n2)))
   (expect "and different payloads stay apart"
-          (set-length (list->set (list n1 (Named "first" 8) (Unnamed 7)))) 3))
+          (hashset-length (list->hashset (list n1 (Named "first" 8) (Unnamed 7)))) 3))
 
 ;; The element's own `Eq` is what the edge's is built from: here that is a
 ;; derived `Pair`'s, itself compiled into `Pair<int>`.
@@ -95,23 +95,23 @@
   (def e1 (Edge (from (pair 1 2)) (to (pair 3 4))))
   (def e2 (Edge (from (pair 3 4)) (to (pair 1 2))))
   (expect-true "= on nested generic types" (= e1 e2))
-  (expect "a Set of nested edges" (set-length (list->set (list e1 e2))) 1)
+  (expect "a Set of nested edges" (hashset-length (list->hashset (list e1 e2))) 1)
   (expect-true "a Map of nested edges" (some? (map-try-ref (map-set (map-empty) e1 1) e2))))
 
 ;; A derived implementation says what C#'s own members said, field by field,
 ;; so nothing a program can observe changes.
 (: eq-derived (-> void))
 (defun (eq-derived)
-  (expect "equal pairs are one" (set-length (list->set (list (pair 1 2) (pair 1 2)))) 1)
-  (expect "pairs differing in order are two" (set-length (list->set (list (pair 1 2) (pair 2 1)))) 2)
+  (expect "equal pairs are one" (hashset-length (list->hashset (list (pair 1 2) (pair 1 2)))) 1)
+  (expect "pairs differing in order are two" (hashset-length (list->hashset (list (pair 1 2) (pair 2 1)))) 2)
   (expect-true "a Map finds a fresh equal pair"
                (some? (map-try-ref (map-set (map-empty) (pair 5 6) 1) (pair 5 6))))
-  (def ps (list->set (list (Pair (first "x") (second "y")) (Pair (first "x") (second "y")))))
-  (expect "pairs of strings" (set-length ps) 1))
+  (def ps (list->hashset (list (Pair (first "x") (second "y")) (Pair (first "x") (second "y")))))
+  (expect "pairs of strings" (hashset-length ps) 1))
 
 ;; A `(where ...)` of another trait has no .NET member to answer it, so this
 ;; implementation is not compiled in: `=` compares by `->str` length, and a
-;; `Set` still compares field by field, as C# wrote it.
+;; `HashSet` still compares field by field, as C# wrote it.
 (type (: (Loose %a) (Record (: item %a))))
 
 (impl (Eq (Loose %a))
@@ -123,7 +123,7 @@
 (: eq-other-trait (-> void))
 (defun (eq-other-trait)
   (expect-true "= uses the implementation" (= (Loose (item 1)) (Loose (item 2))))
-  (expect "a Set does not" (set-length (list->set (list (Loose (item 1)) (Loose (item 2))))) 2))
+  (expect "a Set does not" (hashset-length (list->hashset (list (Loose (item 1)) (Loose (item 2))))) 2))
 
 ;; A generic record with a mutable field. Written by hand, reading only the
 ;; field that does not move, it is a key, and stays found across a write.
@@ -134,7 +134,7 @@
   (defun (= x y) (= (record-ref x key) (record-ref y key)))
   (defun (eq-hash x) (eq-hash (record-ref x key))))
 
-;; Derived, its `eq-hash` refuses, and so does a `Set`.
+;; Derived, its `eq-hash` refuses, and so does a `HashSet`.
 (type/derive (Eq)
   (: (Tally %a) (Record (: key %a) (: hits int #:mutable))))
 
@@ -142,7 +142,7 @@
 (defun (eq-mutable)
   (def a (Slot (key "k") (hits 1)))
   (def b (Slot (key "k") (hits 2)))
-  (expect "the implementation's Equals, not the fields'" (set-length (list->set (list a b))) 1)
+  (expect "the implementation's Equals, not the fields'" (hashset-length (list->hashset (list a b))) 1)
   (def m (map-set (map-empty) a "found"))
   (record-set! a (hits 9))
   (expect-true "and found after a write" (some? (map-try-ref m a)))
@@ -152,7 +152,7 @@
   (expect-true "whose hash refuses"
                (threw? (try (eq-hash t) #:catch (System.InvalidOperationException))))
   (expect-true "and so does a Set, asking .NET"
-               (threw? (try (list->set (list t t)) #:catch (System.InvalidOperationException)))))
+               (threw? (try (list->hashset (list t t)) #:catch (System.InvalidOperationException)))))
 
 ;; A record with no `Eq` of its own compares by the blanket, which is .NET's
 ;; `Equals`, field by field — so it reaches a `Deque`'s `Equals`. That is the
@@ -175,7 +175,7 @@
   (deque-push-back! b 4)
   (expect-true "until one is written" (not (= (Holder (d a)) (Holder (d b)))))
   (expect-true "a deque is still not a key"
-               (threw? (try (list->set (list a b)) #:catch (System.InvalidOperationException)))))
+               (threw? (try (list->hashset (list a b)) #:catch (System.InvalidOperationException)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Ord
@@ -248,7 +248,7 @@
 
 ;; Two spellings of one amount. `=` equates them across cases, but each case
 ;; is a C# record whose `Equals` C# writes itself, and it answers false for a
-;; value of another case before any implementation runs. So a `Set` keeps
+;; value of another case before any implementation runs. So a `HashSet` keeps
 ;; both: a value with two spellings is normalized before it is a key. See
 ;; `Docs/prelude.org`, "Writing one by hand". If this starts answering 1, the
 ;; rule has changed and the documentation with it.
@@ -267,9 +267,9 @@
 (: union-rule (-> void))
 (defun (union-rule)
   (expect-true "= equates the two spellings" (= (Cents 100) (Dollars 1)))
-  (expect "a Set does not" (set-length (list->set (list (Cents 100) (Dollars 1)))) 2)
+  (expect "a Set does not" (hashset-length (list->hashset (list (Cents 100) (Dollars 1)))) 2)
   (expect "normalized, it does"
-          (set-length (list->set (list (Cents (money->cents (Cents 100)))
+          (hashset-length (list->hashset (list (Cents (money->cents (Cents 100)))
                                        (Cents (money->cents (Dollars 1))))))
           1))
 

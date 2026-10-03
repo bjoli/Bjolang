@@ -323,6 +323,12 @@ and Expr =
     | ETryFinally of Expr * Expr * Range
     /// `(try body... #:catch (E1 E2 ...))`: run the body, and catch specific .NET exception types.
     | ETryCatch of Expr * string list * Range
+    /// `(please-hoist-i-promise-i-am-not-naughty expr)`: `expr` is evaluated
+    /// the first time the form is reached, and that value is the form's value
+    /// from then on. The writer promises that `expr` has no effects worth
+    /// repeating and does not depend on dynamic context; everything else that
+    /// makes this sound is checked by `HoistCheck`.
+    | EHoist of Expr * Range
     /// `(seq body...)`: a lazy sequence evaluated one `yield` at a time.
     | ESeq of Expr * Range
     /// `(bjo (f x y))` and the three `spawn` forms: start a fiber. Operands are
@@ -800,6 +806,7 @@ let exprRange (e: Expr) : Range =
     | EMatch(_, _, r)
     | ETryFinally(_, _, r)
     | ETryCatch(_, _, r)
+    | EHoist(_, r)
     | ESeq(_, r)
     | EBjo(_, _, r)
     | ETaskEvent(_, r)
@@ -932,6 +939,7 @@ let exprChildren (e: Expr) : Expr list =
     | ERecordSet(_, fields, _) -> fields |> List.map snd
     | ETryFinally(b, c, _) -> [ b; c ]
     | ETryCatch(b, _, _) -> [ b ]
+    | EHoist(b, _) -> [ b ]
     | EMatch(target, clauses, _) ->
         target
         :: (clauses
@@ -1047,6 +1055,7 @@ let freeNamesWith (reference: string -> Range -> bool -> unit) (guarded: bool) (
             sub body
             sub cleanup
         | ETryCatch(body, _, _) -> sub body
+        | EHoist(body, _) -> sub body
         // A `seq` body is deferred exactly as a lambda body is: nothing in it
         // runs until the sequence is consumed.
         | ESeq(body, _) -> go true bound body

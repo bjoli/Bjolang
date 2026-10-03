@@ -132,7 +132,7 @@
 ;; the source is the same as the blocking calls in `main`.
 (: fetch-lines (-bjo-> string (Vec string)))
 (defbjo (fetch-lines url)
-  (match (fetch (get url))
+  (match (fetch (http-get url))
     ((Err e) (vec-empty))
     ((Ok r)
      (let ((lines (port->vec read-line (response-port r))))
@@ -146,7 +146,7 @@
 ;; nobody is reading, which `respond!` above survives.
 (: race-slow (-bjo-> string string))
 (defbjo (race-slow url)
-  (match (sync (choose (wrap (fetching (get url)) (fun (answer) (Answered answer)))
+  (match (sync (choose (wrap (fetching (http-get url)) (fun (answer) (Answered answer)))
                        (wrap (timeout 300) (fun (fired) TimedOut))))
     ((Answered outcome)
      (match outcome
@@ -168,7 +168,7 @@
      (let ((base (str "http://127.0.0.1:" (int->string port))))
 
        ;; --- A GET, from an ordinary function ------------------------------
-       (match (fetch (get (str base "/hello")))
+       (match (fetch (http-get (str base "/hello")))
          ((Err e) (fail "a plain GET failed"))
          ((Ok r)
           (expect "a GET comes back 200" (response-status r) 200)
@@ -183,7 +183,7 @@
        ;;
        ;; `EnsureSuccessStatusCode` is not imported anywhere in `std/http`, and
        ;; this is the test that says so: a 404 is an `Ok` holding a 404.
-       (match (fetch (get (str base "/missing")))
+       (match (fetch (http-get (str base "/missing")))
          ((Err e) (fail "a 404 arrived as an Err"))
          ((Ok r)
           (expect "404 is a value, not a failure" (response-status r) 404)
@@ -193,7 +193,7 @@
           (ignore r)))
 
        ;; --- Query parameters are escaped ------------------------------------
-       (match (fetch (get (str base "/query") #:query [("q" . "banana split") ("n" . "2")]))
+       (match (fetch (http-get (str base "/query") #:query [("q" . "banana split") ("n" . "2")]))
          ((Err e) (fail "a query GET failed"))
          ((Ok r)
           (expect "query parameters are escaped and joined"
@@ -204,7 +204,7 @@
        ;;
        ;; `X-Basket` belongs on the request and `Content-Type` on the content,
        ;; and the caller writes both in the same vector.
-       (match (fetch (post (str base "/echo") (Text "bananas")
+       (match (fetch (http-post (str base "/echo") (Text "bananas")
                            #:headers [("X-Basket" . "full")]))
          ((Err e) (fail "a POST failed"))
          ((Ok r)
@@ -221,7 +221,7 @@
                   (string-join lines "|") "one|two|three")))
 
        ;; --- with-response ---------------------------------------------------
-       (with-response (r (fetch (get (str base "/hello"))))
+       (with-response (r (fetch (http-get (str base "/hello"))))
          (match r
            ((Err e) (fail "with-response could not fetch"))
            ((Ok got) (expect "with-response hands the body its response"
@@ -231,7 +231,7 @@
        ;;
        ;; Refused before anything is sent, which is why it does not count
        ;; against the server's eight.
-       (match (fetch (get "ftp://example.com/fruit"))
+       (match (fetch (http-get "ftp://example.com/fruit"))
          ((Ok r) (fail "an ftp url was accepted") (ignore r))
          ((Err e) (expect-true "a non-http url is refused as a value" #t)))
 

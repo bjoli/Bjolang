@@ -88,11 +88,11 @@ public sealed class BjoRegex
         Pattern = pattern;
     }
 
-    // Two programs in one process compiling the same pattern is the common
-    // case — the same `#rx(...)` in a loop body reaches here once per
-    // evaluation, because a constructed value is not a literal the emitter
-    // hoists. Keyed on both strings, since the group names are part of what
-    // the value means.
+    // A `#rx(...)` reaches here once per program, the first time it is
+    // evaluated, because the macro hoists the compile. The same pattern written
+    // in two places, and `rx-compile` called with a pattern built at run time,
+    // still come here more than once. Keyed on both strings, since the group
+    // names are part of what the value means.
     private static readonly ConcurrentDictionary<(string, string), BjoRegex> Cache = new();
 
     internal Regex Whole => _whole ??= new Regex(@"\A(?:" + Pattern + @")\z", Options);

@@ -11,7 +11,7 @@
 
 (import (std prelude))
 (import (std mutable deque))
-(import (std set))
+(import (std hashset))
 (import (std orderedmap))
 (import (std orderedset))
 (import (std simpletest))
@@ -299,30 +299,30 @@
 ;; Set
 ;; ---------------------------------------------------------------------------
 
-(: numbers (-> (Set int)))
+(: numbers (-> (HashSet int)))
 (defun (numbers)
-  (list->set (list 1 2 3)))
+  (list->hashset (list 1 2 3)))
 
-(: sum-set (-> (Set int) int))
+(: sum-set (-> (HashSet int) int))
 (defun (sum-set s)
-  (set-fold (fun (x acc) (+ acc x)) 0 s))
+  (hashset-fold (fun (x acc) (+ acc x)) 0 s))
 
 (: set-mapped (-bjo-> int))
 (defbjo (set-mapped)
-  (sum-set (set-map (bjoroutine (x) (slow-double x)) (numbers))))
+  (sum-set (hashset-map (bjoroutine (x) (slow-double x)) (numbers))))
 
 (: set-kept (-bjo-> int))
 (defbjo (set-kept)
-  (set-length (set-filter (bjoroutine (x) (slow-big? x)) (numbers))))
+  (hashset-length (hashset-filter (bjoroutine (x) (slow-big? x)) (numbers))))
 
 (: set-folded (-bjo-> int))
 (defbjo (set-folded)
-  (set-fold (bjoroutine (x acc) (+ acc (slow-double x))) 0 (numbers)))
+  (hashset-fold (bjoroutine (x acc) (+ acc (slow-double x))) 0 (numbers)))
 
 (: set-stopped (-bjo-> int))
 (defbjo (set-stopped)
   (set! steps 0)
-  (ignore (set-iter (bjoroutine (x)
+  (ignore (hashset-iter (bjoroutine (x)
                       (set! steps (+ steps 1))
                       (ignore (slow-double x))
                       #f)
@@ -332,7 +332,7 @@
 (: set-each (-bjo-> int))
 (defbjo (set-each)
   (set! seen 0)
-  (set-for-each (bjoroutine (x) (set! seen (+ seen (slow-double x)))) (numbers))
+  (hashset-for-each (bjoroutine (x) (set! seen (+ seen (slow-double x)))) (numbers))
   seen)
 
 ;; ---------------------------------------------------------------------------
@@ -454,7 +454,7 @@
   ;; The ordinary colour still reaches the C# bodies. `118`, `119`, `120` and
   ;; `043` cover it in depth.
   (expect "map-map, ordinarily" (sum-values (map-map (fun (k v) (* v 2)) (pairs))) 12)
-  (expect "set-filter, ordinarily" (set-length (set-filter (fun (x) (> x 2)) (numbers))) 1)
+  (expect "set-filter, ordinarily" (hashset-length (hashset-filter (fun (x) (> x 2)) (numbers))) 1)
   (expect "orderedmap-fold, ordinarily" (joined-map (ordered-pairs)) "123")
   (expect "orderedset-map, ordinarily"
           (joined-set (orderedset-map (fun (x) (* x 2)) (ordered-numbers))) "246"))
