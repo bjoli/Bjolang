@@ -184,7 +184,7 @@
 (defun (word->text w)
   (match w
     ((WSym s) (symbol->string s))
-    ((WStr s) (string-append "\"" (string-append s "\"")))
+    ((WStr s) (str "\"" s "\""))
     ((WInt n) (int->string n))
     ((WDouble x) (number->argument x))
     ((WArgv v) "a spliced vector")
@@ -232,12 +232,9 @@
   (match forms
     (Nil (Ok Nil))
     ((Cons form rest)
-     (match (form->node form)
-       ((Err e) (Err e))
-       ((Ok node)
-        (match (form->each rest)
-          ((Err e) (Err e))
-          ((Ok more) (Ok (Cons node more)))))))))
+     (def (Ok node) (form->node form) :propagate)
+     (def (Ok more) (form->each rest) :propagate)
+     (Ok (Cons node more)))))
 
 ;; A redirection is its file name and the one form it wraps.
 (: form->redirect (-> Redirection string Form (Result Exception Node)))
@@ -352,46 +349,42 @@
 
 (: start-command (-> Cmd (Option TextOutputPort) (Result Exception Wired)))
 (defun (start-command c errors)
-  (let ((settings (ProcessStartInfo.)))
-    (settings-program! settings (record-ref c program))
-    (let ((argv (record-ref c arguments)))
-      (let add ((i 0))
-        (when (< i (vec-length argv))
-          (ignore (settings-argument settings (vec-ref argv i)))
-          (add (+ i 1)))))
-    ;; `UseShellExecute` off is what makes redirection legal at all, and also
-    ;; what makes the program name resolve against PATH rather than against a
-    ;; desktop association.
-    (settings-use-shell! settings #f)
-    (settings-redirect-input! settings #t)
-    (settings-redirect-output! settings #t)
-    (match errors
-      ((Some w) (settings-redirect-errors! settings #t))
-      (None unit))
-    (match (process-start settings)
-      ((Err e) (Err e))
-      ((Ok child)
-       (Ok (Wired (sink (Some (cast TextOutputPort (process-stdin child))))
-                  (source (Some (cast TextInputPort (process-stdout child))))
-                  (children [child])
-                  (exits [(bjo (awaiting-exit child))])
-                  ;; Handle stderr copying.
-                  (waits (match errors
-                           ((Some w) [(bjo (pump-into (cast TextInputPort (process-stderr child)) w))])
-                           (None (vec-empty))))))))))
+  (def settings (ProcessStartInfo.))
+  (settings-program! settings (record-ref c program))
+  (loop (:for arg (record-ref c arguments))
+        (:do (ignore (settings-argument settings arg))))
+  ;; `UseShellExecute` off is what makes redirection legal at all, and also
+  ;; what makes the program name resolve against PATH rather than against a
+  ;; desktop association.
+  (settings-use-shell! settings #f)
+  (settings-redirect-input! settings #t)
+  (settings-redirect-output! settings #t)
+  (when (some? errors)
+    (settings-redirect-errors! settings #t))
+  (match (process-start settings)
+    ((Err e) (Err e))
+    ((Ok child)
+     (Ok (Wired (sink (Some (cast TextOutputPort (process-stdin child))))
+                (source (Some (cast TextInputPort (process-stdout child))))
+                (children [child])
+                (exits [(bjo (awaiting-exit child))])
+                ;; Handle stderr copying.
+                (waits (match errors
+                         ((Some w) [(bjo (pump-into (cast TextInputPort (process-stderr child)) w))])
+                         (None (vec-empty)))))))))
 
 ;; Two pipes, because a filter has no ends of its own: one for what is written
 ;; to it and one for what it writes.
 (: start-filter (-> Filter Wired))
 (defun (start-filter f)
-  (let ((in (make-pipe))
-        (out (make-pipe)))
-    (let ((done (bjo (f (pipe-input in) (pipe-output out)))))
-      (Wired (sink (Some (pipe-output in)))
-             (source (Some (pipe-input out)))
-             (children (vec-empty))
-             (exits (vec-empty))
-             (waits [(bjo (close-after done (pipe-output out)))])))))
+  (def in (make-pipe))
+  (def out (make-pipe))
+  (def done (bjo (f (pipe-input in) (pipe-output out))))
+  (Wired (sink (Some (pipe-output in)))
+         (source (Some (pipe-input out)))
+         (children (vec-empty))
+         (exits (vec-empty))
+         (waits [(bjo (close-after done (pipe-output out)))])))
 
 ;; Closes and raises errors.
 (: close-after (-> (Promise Unit) TextOutputPort Unit))
@@ -417,18 +410,14 @@
 (defbjo (close-when-all-done ps out)
   ;; The failure is already carried by one of `ps`, which is in this form's
   ;; `waits` too, so it is not re-raised here — only the file is closed.
-  (match (join-all ps) ((Ok u) unit) ((Err e) unit))
+  (ignore (join-all ps))
   (close-output-port out)
   unit)
 
 (: kill-all (-> (Vec Process) void))
 (defun (kill-all children)
-  (let go ((i 0))
-    (when (< i (vec-length children))
-      (match (process-kill (vec-ref children i))
-        ((Ok u) unit)
-        ((Err e) unit))
-      (go (+ i 1)))))
+  (loop (:for child children)
+        (:do (ignore (process-kill child)))))
 
 ;; Connect wired stages front to back, pumping each one's output into the next
 ;; one's input.
@@ -439,32 +428,32 @@
     ((Cons first rest)
      (match (wire first errors)
        ((Err e) (Err e))
-       ((Ok head)
-        (let go ((remaining rest)
-                 (upstream (record-ref head source))
-                 (children (record-ref head children))
-                 (exits (record-ref head exits))
-                 (waits (record-ref head waits)))
-          (match remaining
-            (Nil (Ok (Wired (sink (record-ref head sink))
-                            (source upstream)
-                            (children children)
-                            (exits exits)
-                            (waits waits))))
-            ((Cons node more)
-             (match (wire node errors)
-               ;; Whatever is already running would otherwise sit on a stdin
-               ;; nobody will ever close.
-               ((Err e) (kill-all children) (Err e))
-               ((Ok w)
-                (match (junction upstream (record-ref w sink))
-                  ((Err e) (kill-all children) (kill-all (record-ref w children)) (Err e))
-                  ((Ok link)
-                   (go more
-                       (record-ref w source)
-                       (vec-merge children (record-ref w children))
-                       (vec-merge exits (record-ref w exits))
-                       (vec-add (vec-merge waits (record-ref w waits)) link))))))))))))))
+       ((Ok head) (join-onto head rest errors))))))
+
+(: join-onto (-> Wired (List Node) (Option TextOutputPort) (Result Exception Wired)))
+(defun (join-onto joined nodes errors)
+  (match nodes
+    (Nil (Ok joined))
+    ((Cons node more)
+     (match (wire node errors)
+       ;; Whatever is already running would otherwise sit on a stdin nobody
+       ;; will ever close.
+       ((Err e) (kill-all (record-ref joined children)) (Err e))
+       ((Ok w)
+        (match (junction (record-ref joined source) (record-ref w sink))
+          ((Err e)
+           (kill-all (record-ref joined children))
+           (kill-all (record-ref w children))
+           (Err e))
+          ((Ok link)
+           (join-onto
+             (record-set joined
+                         (source (record-ref w source))
+                         (children (vec-merge (record-ref joined children) (record-ref w children)))
+                         (exits (vec-merge (record-ref joined exits) (record-ref w exits)))
+                         (waits (vec-add (vec-merge (record-ref joined waits) (record-ref w waits)) link)))
+             more
+             errors))))))))
 
 ;; Creates stream junction.
 (: junction (-> (Option TextInputPort) (Option TextOutputPort) (Result Exception (Promise Unit))))
@@ -494,92 +483,70 @@
 
 (: wire-redirect (-> Redirect (Option TextOutputPort) (Result Exception Wired)))
 (defun (wire-redirect r errors)
-  (let ((path (record-ref r path))
-        (inner (record-ref r inner)))
-    (match (record-ref r how)
-      (RFrom
-       (match (open-input-file path)
-         ((Err e) (Err e))
-         ((Ok file) (redirect-input inner errors file))))
-      (RInto
-       (match (open-for-writing path #f)
-         ((Err e) (Err e))
-         ((Ok file) (redirect-output inner errors file))))
-      (RAppend
-       (match (open-for-writing path #t)
-         ((Err e) (Err e))
-         ((Ok file) (redirect-output inner errors file))))
-      (RErrInto
-       (match (open-for-writing path #f)
-         ((Err e) (Err e))
-         ((Ok file) (redirect-errors inner file))))
-      (RErrAppend
-       (match (open-for-writing path #t)
-         ((Err e) (Err e))
-         ((Ok file) (redirect-errors inner file)))))))
+  (def path (record-ref r path))
+  (def inner (record-ref r inner))
+  (match (record-ref r how)
+    (RFrom
+     (def (Ok file) (open-input-file path) :propagate)
+     (redirect-input inner errors file))
+    (RInto
+     (def (Ok file) (open-for-writing path #f) :propagate)
+     (redirect-output inner errors file))
+    (RAppend
+     (def (Ok file) (open-for-writing path #t) :propagate)
+     (redirect-output inner errors file))
+    (RErrInto
+     (def (Ok file) (open-for-writing path #f) :propagate)
+     (redirect-errors inner file))
+    (RErrAppend
+     (def (Ok file) (open-for-writing path #t) :propagate)
+     (redirect-errors inner file))))
 
 ;; The file replaces the caller as the thing writing in, so `sink` goes away.
 (: redirect-input (-> Node (Option TextOutputPort) TextInputPort (Result Exception Wired)))
 (defun (redirect-input inner errors file)
-  (match (wire inner errors)
-    ((Err e) (Err e))
-    ((Ok w)
-     (match (record-ref w sink)
-       (None (kill-all (record-ref w children))
-             (Err (run-error "this form already takes its input from somewhere, so it cannot also take it from a file")))
-       ((Some to)
-        (Ok (Wired (sink None)
-                   (source (record-ref w source))
-                   (children (record-ref w children))
-                   (exits (record-ref w exits))
-                   (waits (vec-add (record-ref w waits) (bjo (pump file to)))))))))))
+  (def (Ok w) (wire inner errors) :propagate)
+  (match (record-ref w sink)
+    (None (kill-all (record-ref w children))
+          (Err (run-error "this form already takes its input from somewhere, so it cannot also take it from a file")))
+    ((Some to)
+     (Ok (record-set w
+                     (sink None)
+                     (waits (vec-add (record-ref w waits) (bjo (pump file to)))))))))
 
 ;; ...and the file replaces the caller as the thing reading out, so `source`
 ;; goes away.
 (: redirect-output (-> Node (Option TextOutputPort) TextOutputPort (Result Exception Wired)))
 (defun (redirect-output inner errors file)
-  (match (wire inner errors)
-    ((Err e) (Err e))
-    ((Ok w)
-     (match (record-ref w source)
-       (None (kill-all (record-ref w children))
-             (Err (run-error "this form already sends its output somewhere, so it cannot also send it to a file")))
-       ((Some from)
-        (Ok (Wired (sink (record-ref w sink))
-                   (source None)
-                   (children (record-ref w children))
-                   (exits (record-ref w exits))
-                   (waits (vec-add (record-ref w waits) (bjo (pump from file)))))))))))
+  (def (Ok w) (wire inner errors) :propagate)
+  (match (record-ref w source)
+    (None (kill-all (record-ref w children))
+          (Err (run-error "this form already sends its output somewhere, so it cannot also send it to a file")))
+    ((Some from)
+     (Ok (record-set w
+                     (source None)
+                     (waits (vec-add (record-ref w waits) (bjo (pump from file)))))))))
 
 ;; Standard error is not a stream this module wires between stages — every
 ;; command under here writes into the one file — so neither end changes.
 (: redirect-errors (-> Node TextOutputPort (Result Exception Wired)))
 (defun (redirect-errors inner file)
-  (let ((shared (shared-writer file)))
-    (match (wire inner (Some shared))
-      ((Err e) (Err e))
-      ((Ok w)
-       (Ok (Wired (sink (record-ref w sink))
-                  (source (record-ref w source))
-                  (children (record-ref w children))
-                  (exits (record-ref w exits))
+  (def shared (shared-writer file))
+  (def (Ok w) (wire inner (Some shared)) :propagate)
+  (Ok (record-set w
                   (waits (vec-add (record-ref w waits)
-                                  (bjo (close-when-all-done (record-ref w waits) shared))))))))))
+                                  (bjo (close-when-all-done (record-ref w waits) shared)))))))
 
 ;; Parses and runs form.
 (: run (-> Form (Result Exception Proc)))
 (defun (run form)
-  (match (form->node form)
-    ((Err e) (Err e))
-    ((Ok node)
-     (match (wire node None)
-       ((Err e) (Err e))
-       ((Ok w)
-        (Ok (Proc (input (record-ref w sink))
-                  (output (record-ref w source))
-                  (children (record-ref w children))
-                  (exits (record-ref w exits))
-                  (waits (record-ref w waits)))))))))
+  (def (Ok node) (form->node form) :propagate)
+  (def (Ok w) (wire node None) :propagate)
+  (Ok (Proc (input (record-ref w sink))
+            (output (record-ref w source))
+            (children (record-ref w children))
+            (exits (record-ref w exits))
+            (waits (record-ref w waits)))))
 
 ;; Where to write the form's input, unless a `from-file` took it. Closing it is
 ;; what ends the first stage.
@@ -609,25 +576,18 @@
 ;; Awaits process completion.
 (: waiting (-> Proc (Result Exception int)))
 (defbjo (waiting p)
-  (match (join-all (record-ref p exits))
-    ((Err e) (Err e))
-    ((Ok gone)
-     (match (join-all (record-ref p waits))
-       ((Err e) (Err e))
-       ((Ok done)
-        (let ((children (record-ref p children)))
-          (Ok (if (vec-empty? children)
-                  0
-                  (process-code (vec-ref children (- (vec-length children) 1)))))))))))
+  (def (Ok _) (join-all (record-ref p exits)) :propagate)
+  (def (Ok _) (join-all (record-ref p waits)) :propagate)
+  (def children (record-ref p children))
+  (Ok (if (vec-empty? children)
+          0
+          (process-code (vec-ref children (- (vec-length children) 1))))))
 
 (: waiting/all (-> Proc (Result Exception (Vec int))))
 (defbjo (waiting/all p)
-  (match (join-all (record-ref p exits))
-    ((Err e) (Err e))
-    ((Ok gone)
-     (match (join-all (record-ref p waits))
-       ((Err e) (Err e))
-       ((Ok done) (Ok (vec-map (fun (c) (process-code c)) (record-ref p children))))))))
+  (def (Ok _) (join-all (record-ref p exits)) :propagate)
+  (def (Ok _) (join-all (record-ref p waits)) :propagate)
+  (Ok (vec-map (fun (c) (process-code c)) (record-ref p children))))
 
 ;; Gets blocking result.
 (: blocking-result (-> (Promise (Result Exception %a)) (Result Exception %a)))
@@ -660,11 +620,7 @@
 ;; `exited` cover it too. `run/channel`'s reader is the one caller.
 (: with-wait (-> Proc (Promise Unit) Proc))
 (defun (with-wait p extra)
-  (Proc (input (record-ref p input))
-        (output (record-ref p output))
-        (children (record-ref p children))
-        (exits (record-ref p exits))
-        (waits (vec-add (record-ref p waits) extra))))
+  (record-set p (waits (vec-add (record-ref p waits) extra))))
 
 
 ;; ===========================================================================
