@@ -573,10 +573,10 @@ All three implement ~Iterable~, ~Collection~ and ~->str~, and each publishes a c
 Reading and copying along a path of fields and keys. A step written ~.name~ is a field step; any other step is a key.
 
 - ~(get target step ...)~ : Reads along the path. A field step reads with ~(.name x)~, so it is a record or struct field, or a .NET member such as ~.-Length~. A key step reads with ~ref~.
-- ~(try-get target step ...)~ : The same as an ~Option~, ~None~ at the first key ~try-ref~ does not find. The keys after it are not evaluated. A Vec index out of range is an error rather than a missing key, as it is for ~try-ref~. A field that holds an ~Option~ is answered as one, inside the ~Some~.
+- ~(try-get target step ...)~ : The same as an ~Option~, ~None~ at the first key ~try-ref~ does not find. The keys after it are not evaluated. A Vec index out of range counts as missing. A field that holds an ~Option~ is answered as one, inside the ~Some~.
 - ~(set target step ... value)~ : A copy of ~target~ with ~value~ at the end of the path. Field steps copy with ~record-set~, key steps with ~ref-set~. The last key is not read, so a Map gains a key it did not have; a key missing earlier in the path throws.
 - ~(update target step ... f)~ : The same, with ~(f old)~ at the end of the path.
-- ~(ref-set coll key value)~ : The ~Settable~ trait, the persistent write that goes with ~ref~. Implemented for ~Vec~ (an index out of range throws) and ~Map~.
+- ~(ref-set coll key value)~ : The ~Settable~ trait, the persistent write that goes with ~ref~. Implemented for ~Vec~ (an index out of range throws), ~Map~ and ~OrderedMap~.
 
 ~set~ and ~update~ evaluate the target, then each key from left to right, then the value or function, each once. Only fields of Bjolang records and structs can be written through; a ~.-Property~ step in ~set~ or ~update~ is refused. The step kinds are told apart by spelling because these are macros, which run before anything has a type.
 

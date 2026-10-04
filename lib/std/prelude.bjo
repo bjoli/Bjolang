@@ -1015,7 +1015,11 @@
   (type %index int)
   (type %out %i)
   (defun (ref vec i)
-    (vec-ref vec i)))
+    (vec-ref vec i))
+  (defun (try-ref vec i)
+    (if (and (>= i 0) (< i (vec-length vec)))
+        (Some (vec-ref vec i))
+        None)))
 
 (impl (Refable (Map %k %v))
   (type %index %k)
@@ -2632,9 +2636,8 @@
 ;;
 ;; `try-get` answers an Option, which is `None` at the first key that is
 ;; missing; the keys after it are not evaluated. Missing is what `try-ref`
-;; says it is: a Map key that is absent, but not a Vec index out of range,
-;; which `Refable` treats as an error either way. A field step cannot be
-;; missing. A field that holds an Option is answered as one, inside the `Some`.
+;; says it is: a Map key that is absent, or a Vec index out of range. A field
+;; step cannot be missing. A field that holds an Option is answered as one, inside the `Some`.
 ;;
 ;; `set` and `update` evaluate the target, then each key from left to right,
 ;; then the value or the function, each exactly once. A key that is missing

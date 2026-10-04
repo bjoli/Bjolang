@@ -6,6 +6,7 @@
 
 (import (std prelude))
 (import (std simpletest))
+(import (std orderedmap))
 (import "inc/path_macros.bjo")
 
 (type (: Player (Record (: name string) (: score int))))
@@ -44,10 +45,8 @@
   ;; --- try-get --------------------------------------------------------------
   (expect "present" (try-get l .teams :bananas .players 1 .score) (Some 5))
   (expect "a missing map key" (try-get l .teams :apples .players 0 .score) None)
-  ;; A Vec index out of range is an error rather than a missing key, as it is
-  ;; for `try-ref`.
-  (expect-true "a vec index out of range throws"
-               (err? (try (try-get l .teams :bananas .players 7) #:catch (System.IndexOutOfRangeException))))
+  (expect "a vec index out of range" (try-get l .teams :bananas .players 7 .score) None)
+  (expect "a negative vec index" (try-get l .teams :bananas .players -1) None)
   (expect "a missing last key" (try-get l .teams :bananas .tags "veg") None)
   (expect "an Option field is answered as one" (try-get l .motto) (Some None))
   (set! calls '())
