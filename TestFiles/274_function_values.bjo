@@ -1,0 +1,45 @@
+;; A function passed by name.
+;;
+;; A `defun` is passed as a lambda calling it, which the JIT can inline into
+;; a loop; a `def` holding a function is read where it is named, so what was
+;; read stays what is called after the def is set again.
+(import "inc/fn_hooks.bjo")
+(import (prefix "inc/fn_hooks_facade.bjo" "f/"))
+(import (std prelude))
+(import (std simpletest))
+
+(: local-twice (-> int int))
+(defun (local-twice x) (* x 2))
+
+(: apply-to (-> (-> int int) int int))
+(defun (apply-to f x) (f x))
+
+;; Locals named like a builtin and like an imported defun: what is passed is
+;; the local, not a lambda calling the other.
+(: with-local (-> (-> char char) (List char)))
+(defun (with-local char-upcase)
+  (list-map char-upcase (list #\A)))
+
+(: kw-apply (-> int (#:tripled (-> int int)) (List int)))
+(defun (kw-apply x #:tripled (fun (y) y))
+  (list-map tripled (list x)))
+
+(defun (main)
+  (expect "a local defun" (list-map local-twice (list 1 2)) (list 2 4))
+  (expect "an imported defun" (list-map tripled (list 1 2)) (list 3 6))
+  (expect "an imported def" (list-map doubled (list 1 2)) (list 2 4))
+  (expect "a builtin" (list-map char-upcase (list #\a #\b)) (list #\A #\B))
+  (expect "through a facade" (apply-to f/tripled 2) 6)
+  (expect "a local named like a builtin" (with-local char-downcase) (list #\a))
+  (expect "a keyword parameter named like a defun" (kw-apply 2 #:tripled #(* &1 10)) (list 20))
+  (expect "and its default" (kw-apply 2) (list 2))
+
+  (def saved handler)
+  (def saved-there f/handler)
+  (set-handler! (fun (x) (- x 100)))
+  (expect "a mutable def is read once" (saved 1) 2)
+  (expect "and through a facade" (saved-there 1) 2)
+  (expect "and read again" (handler 1) -99)
+
+  (println "274 ok")
+  0)

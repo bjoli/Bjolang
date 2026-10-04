@@ -709,6 +709,22 @@ let metadata
                         Some(originModule, alias.OriginalName)
                 | None -> None
 
+            let ownDefuns =
+                ownModuleDecls
+                |> List.choose (function
+                    | TypedAST.TDefun(n, _, _, _, _, _, _, _, _) -> Some n
+                    | _ -> None)
+                |> Set.ofList
+
+            // Read where `originOf` reads, so that the flag describes the
+            // member the published origin names.
+            let isMethod (name: string) =
+                match Map.tryFind name env.Registry.ImportAliases with
+                | Some alias when alias.OriginModule <> "" && alias.OriginModule <> Naming.moduleKeyOfPath inputFilePath ->
+                    alias.IsMethod
+                | Some alias -> Set.contains alias.OriginalName ownDefuns
+                | None -> Set.contains name ownDefuns
+
             let exportedDef name : ModuleMetadata.ExportedDef option =
                 Map.tryFind name env.Bindings
                 |> Option.map (fun b ->
@@ -728,7 +744,8 @@ let metadata
                     ({ Name = name
                        TypeText = serializeSignature name t
                        ConstraintsText = constraintsText
-                       Origin = originOf name }
+                       Origin = originOf name
+                       IsMethod = isMethod name }
                     : ModuleMetadata.ExportedDef))
                 
             // A field or payload type is written as the type it resolves to,

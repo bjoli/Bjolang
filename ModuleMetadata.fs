@@ -82,7 +82,9 @@ open System.Text
 /// representation as visible to all code, and read a marker as a call.
 /// 14: a published union case with a payload is written `(: Case type ...)`.
 /// A reader of 13 would refuse every such case as an unknown type form.
-let currentVersion = 14
+/// 15: an exported binding says whether it is a method. A reader of 14 would
+/// read that flag as the next binding's name.
+let currentVersion = 15
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -95,6 +97,9 @@ type ExportedDef = {
     /// exporting module was only a facade for it. The importer then emits a
     /// qualified reference to the origin instead of binding a local extern.
     Origin: (string * string) option
+    /// A `defun`, at its origin. A reference to one may be passed as a lambda
+    /// calling it; a `def` holding a function has to be read once.
+    IsMethod: bool
 }
 
 /// A method body an importing module may splice at a call site.
@@ -335,17 +340,20 @@ let private putDef (sb: StringBuilder) (d: ExportedDef) =
     putStr sb d.TypeText
     putStr sb d.ConstraintsText
     putOpt sb putPair d.Origin
+    putStr sb (if d.IsMethod then "1" else "0")
 
 let private getDef (c: Cursor) : ExportedDef =
     let name = getStr c
     let typeText = getStr c
     let constraintsText = getStr c
     let origin = getOpt getPair c
+    let isMethod = getStr c = "1"
 
     { Name = name
       TypeText = typeText
       ConstraintsText = constraintsText
-      Origin = origin }
+      Origin = origin
+      IsMethod = isMethod }
 
 let private putTemplate (sb: StringBuilder) (t: InlineTemplateEntry) =
     putStr sb t.TraitName

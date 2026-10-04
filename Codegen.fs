@@ -157,10 +157,11 @@ type CodegenContext = {
     /// type parameters are collected from its type instead, so neither belongs
     /// here.
     ModuleFunctions: Set<string>
-    /// The module functions compiled here, which are C# methods for certain.
-    /// An imported name may be a `def` holding a function instead, and a
-    /// reference to that has to read the field once, not on every call.
-    OwnFunctions: Set<string>
+    /// The names that are C# methods: the builtins, the module functions
+    /// compiled here, and the imports whose metadata says so. Any other may be
+    /// a `def` holding a function, and a reference to that has to read the
+    /// field once, not on every call.
+    Methods: Set<string>
     /// Where `generateExpr` may hoist statement-shaped operands to. `None` in
     /// the three contexts C# gives no statement position: optional-parameter
     /// defaults, `case ... when` guards, and switch-expression arms.
@@ -1917,11 +1918,11 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             let targetName = qualifiedName ctx name
             match expr.Type with
             | TFun (argTypes, _, _) ->
-                // A delegate-typed cast of a value, or for a function compiled
-                // here a lambda calling it. Dynamic PGO devirtualizes and inlines a
-                // delegate call whose target it has seen, but only for a closed
-                // delegate: a method-group conversion of a static method makes
-                // an open one, which stays an indirect call. Roslyn caches both.
+                // A delegate-typed cast of a value, or for a method a lambda
+                // calling it. Dynamic PGO devirtualizes and inlines a delegate
+                // call whose target it has seen, but only for a closed delegate:
+                // a method-group conversion of a static method makes an open
+                // one, which stays an indirect call. Roslyn caches both.
                 //
                 // A generic module function has its type arguments written out.
                 // C# infers a method group's from the delegate's *parameter*
@@ -1940,7 +1941,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                     else
                         "<" + (tArgs |> List.map typeToString |> String.concat ", ") + ">"
 
-                if Set.contains name ctx.OwnFunctions then
+                if Set.contains name ctx.Methods then
                     let ps = [ for i in 0 .. argTypes.Length - 1 -> $"fa{i}" ] |> String.concat ", "
                     append ctx $"(({typeToString expr.Type})(({ps}) => {targetName}%s{explicitTyArgs}({ps})))"
                 else
@@ -4563,7 +4564,8 @@ and private withKeywordLocals (ctx: CodegenContext) (kwArgs: (string * HMType * 
         ctx
     else
         { ctx with
-            GlobalBindings = kwArgs |> List.fold (fun acc (n, _, _) -> Map.remove n acc) ctx.GlobalBindings }
+            GlobalBindings = kwArgs |> List.fold (fun acc (n, _, _) -> Map.remove n acc) ctx.GlobalBindings
+            Methods = kwArgs |> List.fold (fun acc (n, _, _) -> Set.remove n acc) ctx.Methods }
 
 /// Emits the prologue that turns keyword parameters back into ordinary locals.
 ///
@@ -6196,16 +6198,22 @@ let generateProgram
           UnionCases = unionCases
           GlobalBindings = globalBindings
           ModuleFunctions = moduleFunctions
-          OwnFunctions =
+          Methods =
             decls
             |> collectDecls (function
                 | TModule (_, innerDecls, _) ->
                     innerDecls |> List.choose (function
                         | TDefun (n, _, _, _, _, _, _, _, _) -> Some n
+                        | TExtern (visible, origin, _, _) when origin.IsMethod -> Some visible
                         | _ -> None)
                 | _ -> [])
             |> Set.ofList
             |> Set.intersect moduleFunctions
+            // A builtin some module binds over is that binding instead.
+            |> Set.union (
+                builtinBindings
+                |> Set.filter (fun n ->
+                    not (Map.containsKey n globalBindings || Set.contains n env.TraitMethodNames)))
           Prelude = None
           Loop = None
           Returns = Map.empty

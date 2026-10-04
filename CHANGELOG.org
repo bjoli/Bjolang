@@ -3,6 +3,22 @@
 
 What each change guarantees, and what it leaves open.
 
+* A function passed by name is passed as a lambda
+
+- *~(string-fold tally 0 s)~ is up to 2.5× faster.* A ~defun~, imported
+  or not, and a builtin passed by name used to become a method group of a
+  static method, which .NET's dynamic PGO never devirtualizes; it is now
+  ~(a, b) => tally(a, b)~, whose call the JIT inlines into a loop that sees
+  it.
+- A ~def~ holding a function is still read where it is named, so a
+  ~def/mutable~ set afterwards does not change what was passed. Telling the
+  two apart across modules is new in the metadata, which is version 15:
+  every library has to be rebuilt, and ~bjo~ does so.
+- A local named like a builtin is renamed in the generated C#, as one named
+  like a module-level binding already was.
+
+~TestFiles/274_function_values.bjo~, ~TestFiles/codegen/function_values.bjo~.
+
 * Faster string walks
 
 - *~string-reverse~ is BjoString's ~Reverse~*, which reverses the bytes and

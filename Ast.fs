@@ -473,7 +473,10 @@ type AliasKind =
 type ImportAlias =
     { OriginModule: string
       OriginalName: string
-      Kind: AliasKind }
+      Kind: AliasKind
+      /// The origin is a `defun`, so its member is a method rather than a field
+      /// holding a function. False when not known, which is always safe.
+      IsMethod: bool }
 
 /// An import with nothing done to it, which is what most of them are.
 let plainImport (path: ImportPath) = { Path = path; Modifiers = [] }

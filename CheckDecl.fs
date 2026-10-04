@@ -51,7 +51,8 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                         name
                         { OriginModule = env.CurrentModule
                           OriginalName = keyed
-                          Kind = kind }
+                          Kind = kind
+                          IsMethod = false }
                         registry.ImportAliases }
 
     // The whole group's type names before any of its bodies: a `type-rec` names
@@ -455,7 +456,8 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
                             visible
                             { OriginModule = env.CurrentModule
                               OriginalName = original
-                              Kind = kind }
+                              Kind = kind
+                              IsMethod = false }
                             env.Registry.ImportAliases } },
         sigs,
         []
@@ -1162,7 +1164,7 @@ and private checkAlias (env: Env) (sigs: Sigs) (newName: string) (oldName: strin
         let resolution =
             match Map.tryFind oldName env.Registry.ImportAliases with
             | Some a -> { a with Kind = AliasDef }
-            | None -> { OriginModule = ""; OriginalName = oldName; Kind = AliasDef }
+            | None -> { OriginModule = ""; OriginalName = oldName; Kind = AliasDef; IsMethod = false }
 
         // `addBinding` for the reason `DExtern` uses it — a second spelling
         // is a binder, and one that lands on a trait method's name shadows
@@ -2889,7 +2891,8 @@ and internal checkDeclGroup
                                         visible
                                         { OriginModule = acc.CurrentModule
                                           OriginalName = original
-                                          Kind = kind }
+                                          Kind = kind
+                                          IsMethod = false }
                                         acc.Registry.ImportAliases } }
                 // Provisionally register traits for associated types and dyn-safety:
                 // signature annotations may reference `(dyn LocalTrait #:item int)`

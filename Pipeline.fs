@@ -1712,11 +1712,13 @@ let loadModuleGraph
                                         | Some(originModule, originalName) ->
                                             { OriginModule = originModule
                                               OriginalName = originalName
-                                              Kind = AliasDef }
+                                              Kind = AliasDef
+                                              IsMethod = d.IsMethod }
                                         | None ->
                                             { OriginModule = ""
                                               OriginalName = name
-                                              Kind = AliasDef }
+                                              Kind = AliasDef
+                                              IsMethod = d.IsMethod }
 
                                     DExtern(name, origin, t, constraints, r)
                                 | other -> other))
@@ -2331,7 +2333,7 @@ let runFullFrontendPipeline (mainFilePath: string) =
 
         // Last, and a cleanup pass only: C# rejects a local that shadows an
         // enclosing one, and every pass above is free to produce that.
-        let uniquifiedAst = Timing.phase "alpha rename" (fun () -> AlphaRename.uniquifyProgram loopLoweredAst)
+        let uniquifiedAst = Timing.phase "alpha rename" (fun () -> AlphaRename.uniquifyProgram Prelude.builtinNames loopLoweredAst)
 
         Diagnostics.progress "=== Frontend pipeline complete ==="
         // The gates above answer `None` for a program that had an error, so a

@@ -1,0 +1,41 @@
+;; A function passed by name, and what it is passed as.
+;;
+;; A method group of a static method converts to an open delegate, which
+;; dynamic PGO does not devirtualize; a lambda calling the method converts to
+;; a closed one, which it does. So a method is passed as a lambda — but only
+;; one known to be a method. A `def` holding a function is a field, and a
+;; lambda would read it on every call instead of once.
+
+(export pass-all upcase-all)
+
+(import "../inc/fn_hooks.bjo")
+(import (prefix "../inc/fn_hooks_facade.bjo" "f/"))
+(import (std prelude))
+
+(: local-twice (-> int int))
+(defun (local-twice x) (* x 2))
+
+(: pass-all (-> (List (List int))))
+(defun (pass-all)
+  (list (list-map local-twice (list 1))
+        (list-map tripled (list 1))
+        (list-map f/tripled (list 1))
+        (list-map doubled (list 1))
+        (list-map f/handler (list 1))))
+
+(: upcase-all (-> (List char) (List char)))
+(defun (upcase-all cs) (list-map char-upcase cs))
+
+;; --- A defun, here, imported, or through a facade ----------------------------
+;; EXPECT-CS: \(\(fa0\) => function_values_Module\.localsubtwice\(fa0\)\)
+;; EXPECT-CS: \(\(fa0\) => tripled\(fa0\)\)
+;; EXPECT-CS: \(\(fa0\) => fn_hooks_Module\.tripled\(fa0\)\)
+
+;; --- A builtin ---------------------------------------------------------------
+;; EXPECT-CS: \(\(fa0\) => charsubupcase\(fa0\)\)
+
+;; --- A def is read where it is named -----------------------------------------
+;; EXPECT-CS: \(Func<int, int>\)\(doubled\)
+;; EXPECT-CS: \(Func<int, int>\)\(fn_hooks_Module\.handler\)
+;; EXPECT-NO-CS: => doubled\(
+;; EXPECT-NO-CS: => fn_hooks_Module\.handler\(

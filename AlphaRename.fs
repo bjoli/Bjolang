@@ -536,6 +536,8 @@ let rec uniquifyDeclWith (globals: Set<string>) (decl: TDecl) : TDecl =
     | TDefMutable(name, value, t, r) -> TDefMutable(name, inFunction globals Map.empty value, t, r)
     | _ -> decl
 
-let uniquifyProgram (decls: TDecl list) : TDecl list =
-    let globals = topLevelNames decls
+/// `builtins` are renamed around too: `Codegen` passes a builtin by name as a
+/// lambda calling it, which would capture a local of the same name instead.
+let uniquifyProgram (builtins: Set<string>) (decls: TDecl list) : TDecl list =
+    let globals = Set.union (topLevelNames decls) builtins
     decls |> List.map (uniquifyDeclWith globals)
