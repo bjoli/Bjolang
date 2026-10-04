@@ -1563,7 +1563,7 @@ public static partial class BjolangRuntime {
     /// ago must not be able to hold Ctrl-D.
     /// </summary>
     public static Unit CloseReplSession(Scope scope) {
-        scope.Token.TrySetResult(new CancelReason.Requested("the REPL session ended"));
+        scope.Token.TrySetResult(new CancelReason.Requested(BjoString.Utf8String.FromUtf16("the REPL session ended")));
         _ = Bjo.RunToCompletion(() => scope.Close(default));
         return default;
     }

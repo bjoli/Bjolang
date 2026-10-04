@@ -16,6 +16,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
+using BjoString;
 
 namespace Bjolang.Runtime;
 
@@ -116,6 +117,69 @@ public sealed class BjoRegex
     public override string ToString() => "#<regex " + Pattern + ">";
 }
 
+/// <summary>
+/// A Bjolang string searched as the UTF-16 text .NET's regex engine reads, and
+/// the UTF-8 byte offsets its match positions correspond to.
+/// </summary>
+///
+/// <remarks>
+/// The bridge until <c>(std rx)</c> runs on BjoRx, which searches UTF-8
+/// directly. The offsets are built on the first position asked for, once per
+/// input, and every match found in that input shares them.
+/// </remarks>
+internal sealed class Searched
+{
+    internal readonly Utf8String Input;
+    internal readonly string Text;
+    private int[]? _offsets;
+
+    internal Searched(Utf8String input)
+    {
+        Input = input;
+        Text = input.ToString();
+    }
+
+    /// <summary>The cursor at UTF-16 index <paramref name="index"/>.</summary>
+    ///
+    /// <remarks>
+    /// A pattern emitted by <c>lib/std/rx.bjo</c> cannot begin or end a match
+    /// inside a surrogate pair: no class it writes contains a surrogate, an
+    /// astral literal is emitted as its whole pair, and the iteration below
+    /// advances a scalar at a time. So this throws rather than clamping — a
+    /// cursor that is off a boundary is a bug in the emitter.
+    /// </remarks>
+    internal StringCursor Cursor(int index)
+    {
+        if (index > 0 && index < Text.Length && char.IsLowSurrogate(Text[index]))
+        {
+            throw new InvalidOperationException(
+                $"rx: a match boundary at {index} falls inside a surrogate pair.");
+        }
+        return new StringCursor(Offsets()[index]);
+    }
+
+    // The byte offset of every UTF-16 index: a pair is four bytes, counted at
+    // its high surrogate, and its low surrogate's entry is never asked for.
+    private int[] Offsets()
+    {
+        if (_offsets is not null) return _offsets;
+        var offsets = new int[Text.Length + 1];
+        int bytes = 0;
+        for (int i = 0; i < Text.Length; i++)
+        {
+            offsets[i] = bytes;
+            char c = Text[i];
+            bytes += c < 0x80 ? 1
+                : c < 0x800 ? 2
+                : char.IsHighSurrogate(c) && i + 1 < Text.Length && char.IsLowSurrogate(Text[i + 1]) ? 4
+                : char.IsLowSurrogate(c) && i > 0 && char.IsHighSurrogate(Text[i - 1]) ? 0
+                : 3;
+        }
+        offsets[Text.Length] = bytes;
+        return _offsets = offsets;
+    }
+}
+
 /// <summary>One match: the input it was found in, and where.</summary>
 ///
 /// <remarks>
@@ -126,10 +190,10 @@ public sealed class BjoRegex
 public sealed class BjoMatch
 {
     internal readonly BjoRegex Owner;
-    internal readonly string Input;
+    internal readonly Searched Input;
     internal readonly Match M;
 
-    internal BjoMatch(BjoRegex owner, string input, Match m)
+    internal BjoMatch(BjoRegex owner, Searched input, Match m)
     {
         Owner = owner;
         Input = input;
@@ -152,29 +216,6 @@ public static class BjoRegexModule
 
     // --- Positions ---------------------------------------------------------
 
-    /// <summary>
-    /// A cursor at <paramref name="index"/>, checked against the invariant that
-    /// a cursor sits on a character boundary.
-    /// </summary>
-    ///
-    /// <remarks>
-    /// A pattern emitted by <c>lib/std/rx.bjo</c> cannot begin or end a match
-    /// inside a surrogate pair: no class it writes contains a surrogate, an
-    /// astral literal is emitted as its whole pair, and the iteration below
-    /// advances a scalar at a time. So this throws rather than clamping — a
-    /// cursor that is off a boundary is a bug in the emitter, and silently
-    /// decoding as U+FFFD would hide it.
-    /// </remarks>
-    private static StringCursor Cursor(string input, int index)
-    {
-        if (index > 0 && index < input.Length && char.IsLowSurrogate(input[index]))
-        {
-            throw new InvalidOperationException(
-                $"rx: a match boundary at {index} falls inside a surrogate pair.");
-        }
-        return new StringCursor(index);
-    }
-
     /// <summary>The offset after the scalar at <paramref name="index"/>.</summary>
     ///
     /// <remarks>
@@ -193,25 +234,27 @@ public static class BjoRegexModule
 
     // --- Searching ---------------------------------------------------------
 
-    public static global::BjolangRuntime.Option<BjoMatch> Search(BjoRegex rx, string input)
+    public static global::BjolangRuntime.Option<BjoMatch> Search(BjoRegex rx, Utf8String input)
     {
-        Match m = rx.Re.Match(input);
+        var searched = new Searched(input);
+        Match m = rx.Re.Match(searched.Text);
         return m.Success
-            ? global::BjolangRuntime.Some(new BjoMatch(rx, input, m))
+            ? global::BjolangRuntime.Some(new BjoMatch(rx, searched, m))
             : global::BjolangRuntime.None<BjoMatch>();
     }
 
-    public static bool IsSearchMatch(BjoRegex rx, string input) => rx.Re.IsMatch(input);
+    public static bool IsSearchMatch(BjoRegex rx, Utf8String input) => rx.Re.IsMatch(input.ToString());
 
-    public static global::BjolangRuntime.Option<BjoMatch> MatchWhole(BjoRegex rx, string input)
+    public static global::BjolangRuntime.Option<BjoMatch> MatchWhole(BjoRegex rx, Utf8String input)
     {
-        Match m = rx.Whole.Match(input);
+        var searched = new Searched(input);
+        Match m = rx.Whole.Match(searched.Text);
         return m.Success
-            ? global::BjolangRuntime.Some(new BjoMatch(rx, input, m))
+            ? global::BjolangRuntime.Some(new BjoMatch(rx, searched, m))
             : global::BjolangRuntime.None<BjoMatch>();
     }
 
-    public static bool IsWholeMatch(BjoRegex rx, string input) => rx.Whole.IsMatch(input);
+    public static bool IsWholeMatch(BjoRegex rx, Utf8String input) => rx.Whole.IsMatch(input.ToString());
 
     /// <summary>Every non-overlapping match, left to right.</summary>
     private static List<Match> AllMatches(BjoRegex rx, string input)
@@ -231,11 +274,12 @@ public static class BjoRegexModule
         return found;
     }
 
-    public static BjoMatch[] Matches(BjoRegex rx, string input)
+    public static BjoMatch[] Matches(BjoRegex rx, Utf8String input)
     {
-        List<Match> found = AllMatches(rx, input);
+        var searched = new Searched(input);
+        List<Match> found = AllMatches(rx, searched.Text);
         var result = new BjoMatch[found.Count];
-        for (int i = 0; i < found.Count; i++) result[i] = new BjoMatch(rx, input, found[i]);
+        for (int i = 0; i < found.Count; i++) result[i] = new BjoMatch(rx, searched, found[i]);
         return result;
     }
 
@@ -247,55 +291,60 @@ public static class BjoRegexModule
     // deciding to, and `Split` returns captured groups interleaved with the
     // pieces. Doing the walk here keeps both meanings Bjolang's own.
 
-    public static string Replace(BjoRegex rx, string input, string replacement)
+    public static Utf8String Replace(BjoRegex rx, Utf8String input, Utf8String replacement)
     {
+        string text = input.ToString();
+        string with = replacement.ToString();
         var sb = new StringBuilder();
         int last = 0;
-        foreach (Match m in AllMatches(rx, input))
+        foreach (Match m in AllMatches(rx, text))
         {
-            sb.Append(input, last, m.Index - last).Append(replacement);
+            sb.Append(text, last, m.Index - last).Append(with);
             last = m.Index + m.Length;
         }
-        return sb.Append(input, last, input.Length - last).ToString();
+        return Utf8String.FromUtf16(sb.Append(text, last, text.Length - last).ToString());
     }
 
-    public static string ReplaceWith(BjoRegex rx, string input, Func<BjoMatch, string> f)
+    public static Utf8String ReplaceWith(BjoRegex rx, Utf8String input, Func<BjoMatch, Utf8String> f)
     {
+        var searched = new Searched(input);
+        string text = searched.Text;
         var sb = new StringBuilder();
         int last = 0;
-        foreach (Match m in AllMatches(rx, input))
+        foreach (Match m in AllMatches(rx, text))
         {
-            sb.Append(input, last, m.Index - last).Append(f(new BjoMatch(rx, input, m)));
+            sb.Append(text, last, m.Index - last).Append(f(new BjoMatch(rx, searched, m)).ToString());
             last = m.Index + m.Length;
         }
-        return sb.Append(input, last, input.Length - last).ToString();
+        return Utf8String.FromUtf16(sb.Append(text, last, text.Length - last).ToString());
     }
 
-    public static string[] Split(BjoRegex rx, string input)
+    public static Utf8String[] Split(BjoRegex rx, Utf8String input)
     {
-        var pieces = new List<string>();
+        string text = input.ToString();
+        var pieces = new List<Utf8String>();
         int last = 0;
-        foreach (Match m in AllMatches(rx, input))
+        foreach (Match m in AllMatches(rx, text))
         {
             // A separator that matched nothing would split between every pair
             // of characters and put the whole input back as single characters.
             if (m.Length == 0) continue;
-            pieces.Add(input.Substring(last, m.Index - last));
+            pieces.Add(Utf8String.FromUtf16(text.AsSpan(last, m.Index - last)));
             last = m.Index + m.Length;
         }
-        pieces.Add(input.Substring(last));
+        pieces.Add(Utf8String.FromUtf16(text.AsSpan(last)));
         return pieces.ToArray();
     }
 
     // --- Reading a match ---------------------------------------------------
 
-    public static string Text(BjoMatch m) => m.M.Value;
+    public static Utf8String Text(BjoMatch m) => Utf8String.FromUtf16(m.M.Value);
 
-    public static string Input(BjoMatch m) => m.Input;
+    public static Utf8String Input(BjoMatch m) => m.Input.Input;
 
-    public static StringCursor Start(BjoMatch m) => Cursor(m.Input, m.M.Index);
+    public static StringCursor Start(BjoMatch m) => m.Input.Cursor(m.M.Index);
 
-    public static StringCursor End(BjoMatch m) => Cursor(m.Input, m.M.Index + m.M.Length);
+    public static StringCursor End(BjoMatch m) => m.Input.Cursor(m.M.Index + m.M.Length);
 
     public static int Count(BjoMatch m) => m.Owner.GroupNames.Length;
 
@@ -306,12 +355,12 @@ public static class BjoRegexModule
         return g.Success ? g : null;
     }
 
-    public static global::BjolangRuntime.Option<string> GroupText(BjoMatch m, int index)
+    public static global::BjolangRuntime.Option<Utf8String> GroupText(BjoMatch m, int index)
     {
         Group? g = GroupAt(m, index);
         return g is null
-            ? global::BjolangRuntime.None<string>()
-            : global::BjolangRuntime.Some(g.Value);
+            ? global::BjolangRuntime.None<Utf8String>()
+            : global::BjolangRuntime.Some(Utf8String.FromUtf16(g.Value));
     }
 
     public static global::BjolangRuntime.Option<StringCursor> GroupStart(BjoMatch m, int index)
@@ -319,7 +368,7 @@ public static class BjoRegexModule
         Group? g = GroupAt(m, index);
         return g is null
             ? global::BjolangRuntime.None<StringCursor>()
-            : global::BjolangRuntime.Some(Cursor(m.Input, g.Index));
+            : global::BjolangRuntime.Some(m.Input.Cursor(g.Index));
     }
 
     public static global::BjolangRuntime.Option<StringCursor> GroupEnd(BjoMatch m, int index)
@@ -327,7 +376,7 @@ public static class BjoRegexModule
         Group? g = GroupAt(m, index);
         return g is null
             ? global::BjolangRuntime.None<StringCursor>()
-            : global::BjolangRuntime.Some(Cursor(m.Input, g.Index + g.Length));
+            : global::BjolangRuntime.Some(m.Input.Cursor(g.Index + g.Length));
     }
 
     /// <summary>The number of the group the user named, or -1.</summary>

@@ -279,8 +279,17 @@ let assocTypeVar (implVar: string) (assocName: string) = $"%s{implVar}_%s{assocN
 module TypeConstants =
     [<Literal>]
     let Int32Name = "System.Int32"
+    /// A string of Unicode scalars stored as UTF-8, backed by
+    /// `BjoString.Utf8String`.
+    ///
+    /// Not `System.String`, which is UTF-16 and stays a separate type: a .NET
+    /// member typed with it is converted from and to this one where it is
+    /// called (`ForeignTyping.marshalArg` and `marshalResult`).
     [<Literal>]
-    let StringName = "System.String"
+    let StringName = "String"
+    /// .NET's own string, as .NET members name it.
+    [<Literal>]
+    let ClrStringName = "System.String"
     [<Literal>]
     let BooleanName = "System.Boolean"
     [<Literal>]
@@ -331,6 +340,7 @@ module TypeConstants =
 
     let intType = TCon(Int32Name, [])
     let stringType = TCon(StringName, [])
+    let clrStringType = TCon(ClrStringName, [])
     let boolType = TCon(BooleanName, [])
     /// The **interop** void: an expression that yields no C# value at all.
     ///
@@ -606,7 +616,11 @@ type ExternOuts =
       /// with a non-void method has it.
       KeepsReturn: bool
       /// The method's own return type, in the same variables as `Types`.
-      MethodReturn: HMType }
+      MethodReturn: HMType
+      /// The arguments, by index among the call's arguments, that are declared
+      /// as a Bjolang string where the method takes a .NET one, with the .NET
+      /// type each is converted to at the call.
+      StringIns: (int * HMType) list }
 
 /// A .NET member bound as a first-class Bjolang function by `import/extern`.
 type ClrExternInfo =

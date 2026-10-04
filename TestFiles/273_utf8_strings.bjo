@@ -1,0 +1,100 @@
+;; Strings are UTF-8 (BjoString's `Utf8String`), and .NET's own string is a
+;; separate type that a call converts from and to.
+;;
+;; What is pinned here: storage counts bytes, order is scalar order, a .NET
+;; member taking or returning `System.String` is converted at the call (null
+;; becoming ""), a method BjoString lacks is called on the converted string,
+;; string literals still match in every pattern position, and the readers'
+;; UTF-16 units still pair up into scalars.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std rx))
+
+(import/extern
+  (file-name      (: System.IO.Path.GetFileName (-> string string)))
+  (env-var        (: System.Environment.GetEnvironmentVariable (-> string string)))
+  (parse-int      (: System.Int32.TryParse (-> string (out int) (Option int))))
+  (join-clr       (: System.String.Join (-> string (Array string) string))))
+
+(: kind (-> string string))
+(defun (kind s)
+  (match s
+    ("" "empty")
+    ((or "a" "b") "letter")
+    ("😀" "emoji")
+    (_ "other")))
+
+(: kinds (-> string string))
+(defun (kinds s)
+  ;; In argument position, so a switch expression with an or-pattern.
+  (string-append (case s (("x" "y") "xy") (else "rest")) "!"))
+
+(: first-word (-> (Tuple string int) string))
+(defun (first-word pair)
+  (def (Tuple "key" n) pair :leave-with "no key")
+  (int->string n))
+
+(: describe (-> System.Object string))
+(defun (describe o)
+  (match o
+    ((:is string s) (str "string of " (int->string (string-count s))))
+    (_ "not a string")))
+
+;; Units as a text port's reader takes them, and "invalid" for a lone surrogate.
+(: from-units (-> (List int) string))
+(defun (from-units codes)
+  (def sb (stringbuilder-empty))
+  (loop (:for c codes) (:do (stringbuilder-add-unit! sb c)))
+  (match (try (stringbuilder->string sb) #:catch (System.Exception))
+    ((Ok s) s)
+    ((Err _) "invalid")))
+
+(defun (main)
+  ;; ---- bytes and scalars -----------------------------------------------------
+  (expect "ASCII is a byte a character" (string-length "abc") 3)
+  (expect "é is two bytes" (string-length "é") 2)
+  (expect "€ is three" (string-length "€") 3)
+  (expect "😀 is four" (string-length "😀") 4)
+  (expect "and one character" (string-count "a😀é") 3)
+  (expect "string-code-ref reads a byte" (string-code-ref "é" 0) 195)
+
+  ;; ---- order -------------------------------------------------------------------
+  ;; UTF-16 would put the emoji (a surrogate pair, 0xD83D...) before U+FFFD.
+  (expect-true "scalar order, not UTF-16 order" (< "�" "😀"))
+  (expect-true "ordinary order" (< "abc" "abd"))
+
+  ;; ---- .NET members --------------------------------------------------------------
+  (expect "a .NET string parameter and result" (file-name "dir/file.txt") "file.txt")
+  (expect "a null result is the empty string" (env-var "BJOLANG_SURELY_NOT_SET_42") "")
+  (expect "an out method with a string parameter" (parse-int "42") (Some 42))
+  (expect "a string array parameter" (join-clr "," #["a" "b"]) "a,b")
+  (expect "BjoString's own member" (.ToUpperInvariant "abc") "ABC")
+  (expect "a member only .NET's string has" (.Substring "hello" 1) "ello")
+  (expect "...which counts UTF-16 units" (.-Length "😀") 2)
+  (expect "the explicit conversions round trip"
+          (clr-string->string (string->clr-string "a😀")) "a😀")
+  (expect "a boxed string tests as string" (describe (cast System.Object "a😀")) "string of 2")
+
+  ;; ---- patterns ----------------------------------------------------------------
+  (expect "the empty literal" (kind "") "empty")
+  (expect "an or of literals" (kind "b") "letter")
+  (expect "a non-ASCII literal" (kind "😀") "emoji")
+  (expect "no literal" (kind "c") "other")
+  (expect "an or in a switch expression" (kinds "y") "xy!")
+  (expect "and its fallback" (kinds "z") "rest!")
+  (expect "a literal in a def pattern" (first-word (Tuple "key" 7)) "7")
+  (expect "and its failure" (first-word (Tuple "lock" 7)) "no key")
+
+  ;; ---- UTF-16 units into a builder -------------------------------------------------
+  (expect "a pair becomes its character" (from-units (list 97 55357 56832)) "a😀")
+  (expect "a lone surrogate fails" (from-units (list 55357 97)) "invalid")
+
+  ;; ---- regex positions are byte cursors ---------------------------------------------
+  (match (rx-search #rx("b") "äé😀b")
+    ((Some m)
+     (expect "the match text" (rx-text m) "b")
+     (expect "a cursor past three non-ASCII characters"
+             (substring/cursors (rx-input m) (rx-start m) (string-cursor-end (rx-input m))) "b"))
+    (None (fail "the regex found nothing")))
+  0)

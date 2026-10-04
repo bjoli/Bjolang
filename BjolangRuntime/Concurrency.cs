@@ -1293,7 +1293,7 @@ public static partial class BjolangRuntime {
             // "my choose branch lost" from "the whole scope is going down" has
             // it in the string.
             Cml.Sync(nack, _ => token.TrySetResult(
-                new CancelReason.Requested("spawn-evt: the branch lost its choose")));
+                new CancelReason.Requested(BjoString.Utf8String.FromUtf16("spawn-evt: the branch lost its choose"))));
 
             return Cml.Wrap(
                 child.Join(),

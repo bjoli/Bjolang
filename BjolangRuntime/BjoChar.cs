@@ -37,6 +37,14 @@ public readonly record struct BjoChar : IComparable<BjoChar>, IComparisonOperato
         Value = codePoint;
     }
 
+    // A `Rune` is already a valid scalar, so the check above is not repeated.
+    private BjoChar(Rune r) => Value = (uint)r.Value;
+
+    /// <summary>The scalar that BjoString's operations answer.</summary>
+    public static BjoChar FromRune(Rune r) => new(r);
+
+    public Rune ToRune() => System.Runtime.CompilerServices.Unsafe.BitCast<uint, Rune>(Value);
+
     /// <summary>
     /// Helper for string literal building during string interpolation or concatenation.
     /// </summary>

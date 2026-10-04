@@ -381,7 +381,7 @@
   (step! rd)
   (let go ((k 0) (acc 0))
     (cond
-      ((= k 4) (stringbuilder-add-code! sb acc) (Ok #t))
+      ((= k 4) (stringbuilder-add-unit! sb acc) (Ok #t))
       ((at-end? rd) (Err (at rd "the document ended inside a \\u escape")))
       (else
        (def d (hex-digit (peek rd)))
@@ -436,7 +436,7 @@
   (let spaces ()
     (def c (held-code rd))
     (when (or (= c 32) (= c 9))
-      (stringbuilder-add-code! sb c)
+      (stringbuilder-add-unit! sb c)
       (step! rd)
       (spaces)))
   (cond
@@ -464,7 +464,7 @@
          ((= k n) (Ok (stringbuilder->string sb)))
          ((> k n) (Err (too-many-quotes rd n k)))
          (else (add-quotes! sb k) (go))))
-      (else (stringbuilder-add-code! sb c) (step! rd) (go)))))
+      (else (stringbuilder-add-unit! sb c) (step! rd) (go)))))
 
 ;; A raw string over several lines. Each line is kept as it was written, with
 ;; the row it is on, until the closing quotes say what the margin is.
@@ -476,7 +476,7 @@
     (let spaces ()
       (def c (held-code rd))
       (when (or (= c 32) (= c 9))
-        (stringbuilder-add-code! sb c)
+        (stringbuilder-add-unit! sb c)
         (step! rd)
         (spaces)))
     (def lead (skip-quotes! rd))
@@ -509,7 +509,7 @@
                (Err (at rd (str "a raw string closes only on a line of its own. For " (int->string n)
                                 " quotes in the text, open and close it with more"))))
               (else (add-quotes! sb k) (go))))
-           (else (stringbuilder-add-code! sb c) (step! rd) (go))))))))
+           (else (stringbuilder-add-unit! sb c) (step! rd) (go))))))))
 
 (: begins-with-margin? (-> string string bool))
 (defun (begins-with-margin? s margin)
@@ -530,6 +530,12 @@
 ;; The margin is the whitespace before the closing quotes. It comes off every
 ;; line, and a line with text that does not begin with it is refused, since
 ;; cutting it anyway would cut text.
+(import/extern
+  (clr-index-of        (: BjolangRuntime.StringIndexOf))
+  (clr-last-index-of   (: BjolangRuntime.StringLastIndexOf))
+  (clr-substring       (: BjolangRuntime.StringSubstring))
+  (clr-substring-from  (: BjolangRuntime.StringSubstringFrom)))
+
 (: strip-margin (-> string (List (Tuple int string)) (Result string string)))
 (defun (strip-margin margin lines)
   (def out (stringbuilder-empty))
@@ -540,7 +546,7 @@
        (unless first (stringbuilder-add-code! out 10))
        (cond
          ((begins-with-margin? s margin)
-          (stringbuilder-add-string! out (.Substring s (string-length margin)))
+          (stringbuilder-add-string! out (clr-substring-from s (string-length margin)))
           (go more #f))
          ((blank? s) (go more #f))
          (else
@@ -563,7 +569,7 @@
                    ((Err e) (Err e))
                    ((Ok _) (go))))
        (else
-        (stringbuilder-add-code! sb c)
+        (stringbuilder-add-unit! sb c)
         (if (= c 10) (newline! rd) (step! rd))
         (go)))))))
 
@@ -576,7 +582,7 @@
   (let go ((n 0))
     (if (digit-code? (held-code rd))
         (begin
-          (stringbuilder-add-code! sb (held-code rd))
+          (stringbuilder-add-unit! sb (held-code rd))
           (step! rd)
           (go (+ n 1)))
         n)))
@@ -588,7 +594,7 @@
   (def sb (buffer rd))
   (let go ((n 0))
     (if (and (not (at-end? rd)) (>= (hex-digit (peek rd)) 0))
-        (begin (stringbuilder-add-code! sb (held-code rd)) (step! rd) (go (+ n 1)))
+        (begin (stringbuilder-add-unit! sb (held-code rd)) (step! rd) (go (+ n 1)))
         (if (= n 0)
             (Err (at rd (str "this number has no digits after its radix, and there is "
                              (found rd))))
@@ -623,7 +629,7 @@
      ;; circuit in the right order.
      (def s (held-code rd))
      (when (or (= s 43) (= s 45))
-       (stringbuilder-add-code! sb s)
+       (stringbuilder-add-unit! sb s)
        (step! rd))
      (if (= (take-digits! rd sb) 0)
          (Err (at rd (str "a number needs a digit after its exponent, and this is "
@@ -674,7 +680,7 @@
   (let go ((n 0))
     (if (symbol-code? (held-code rd))
         (begin
-          (stringbuilder-add-code! sb (held-code rd))
+          (stringbuilder-add-unit! sb (held-code rd))
           (step! rd)
           (go (+ n 1)))
         n)))
@@ -734,7 +740,7 @@
     (else
      (def first (held-code rd))
      (def sb (buffer rd))
-     (stringbuilder-add-code! sb first)
+     (stringbuilder-add-unit! sb first)
      (step! rd)
      ;; `n` is bound rather than inlined into the test: a name compares
      ;; straight into the `if`, where the call needs a temporary for its

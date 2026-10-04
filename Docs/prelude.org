@@ -145,17 +145,25 @@ Ordering has no law to break where hashing does: a sorted collection going stale
 A field whose type has no ~Eq~ is reported against the ~type/derive~ form, naming the type that has no implementation and the implementation that needed it.
 
 ** String Operations
+A string is UTF-8 (BjoString's ~Utf8String~), always valid: text that comes from .NET with an unpaired surrogate in it arrives with U+FFFD in its place.
+
 - ~(string-append a b)~ : Concatenates strings ~a~ and ~b~. =(std prelude)=
-- ~(string-length s)~ : The length of ~s~ in *storage units*. O(1). In current storage units. =(std prelude)=
+- ~(string-length s)~ : The length of ~s~ in *storage units*, which are bytes of UTF-8. O(1). =(std prelude)=
 - ~(string-count s)~ : The number of *characters* in ~s~. O(n).
 - ~(string-empty? s)~ : Returns true if ~s~ has no characters. Builtin rather than =(std prelude)=.
 
 ~string-length~ sizes a buffer; ~string-count~ is "how long is this text". Two questions, two answers, two costs, which is why neither is called ~size~.
 
-There is no ~string-ref~, and no other index-based accessor. Indexing UTF-16 by codepoint is O(n); string traversal belongs to a cursor.
+There is no ~string-ref~, and no other index-based accessor. Indexing UTF-8 by codepoint is O(n); string traversal belongs to a cursor.
+
+Strings order by byte, which for UTF-8 is codepoint order. That differs from .NET's ordinal order only where a character above U+FFFF meets one in U+E000–U+FFFF: here U+FFFD sorts before 😀.
+
+*** .NET's string
+.NET's ~System.String~ is UTF-16 and a separate type. A .NET member that takes or returns one, or an array of them, is converted at the call, so ~(Path.GetFileName s)~ takes and gives a Bjolang string; a ~null~ answer becomes ~""~. A method ~string~ does not have itself is called on the converted string: ~(.Substring s 1)~ works, in .NET's UTF-16 terms. An import that declares ~System.String~ as its result keeps the .NET string, for a member whose ~null~ means something ~""~ would not. A .NET string inside another type — a ~(Seq System.String)~, a ~Func~ — is not converted:
+- ~(string->clr-string s)~ / ~(clr-string->string s)~ : The conversions, by hand.
 
 *** Searching and rewriting =(std prelude)=
-All *ordinal*: they compare storage, not culture. Fold the case first for an insensitive answer — ~(string-contains? (string-downcase s) needle)~.
+All *ordinal*: they compare bytes, not culture. Fold the case first for an insensitive answer — ~(string-contains? (string-downcase s) needle)~.
 - ~(string-contains? s needle)~
 - ~(string-starts-with? s prefix)~ / ~(string-ends-with? s suffix)~
 - ~(string-replace s old new)~ : every occurrence; replacing with ~""~ deletes.
@@ -187,7 +195,7 @@ There is no ~char?~: a value's type is a static question here, and the predicate
 *** Conversions
 - ~(char->int c)~ / ~(char->integer c)~ : The codepoint. =(std prelude)=
 - ~(int->char n)~ / ~(integer->char n)~ : The character with codepoint ~n~.
-- ~(char->string c)~ : A one-character string. For an astral character that string has ~string-length~ 2 and ~string-count~ 1.
+- ~(char->string c)~ : A one-character string. For an astral character that string has ~string-length~ 4 and ~string-count~ 1.
 
 *** Comparison =(std prelude)=
 - ~(char=? a b)~, ~(char<? a b)~, ~(char>? a b)~, ~(char<=? a b)~, ~(char>=? a b)~ : Ordering by codepoint.
@@ -250,7 +258,9 @@ The accumulator behind the ~Stringing~ collector, and the same shape as the vect
 - ~(stringbuilder-empty)~ : Creates an empty builder.
 - ~(stringbuilder-add! b c)~ : Appends a character.
 - ~(stringbuilder-add-string! b s)~ : Appends a string.
-- ~(stringbuilder-length b)~ : The length so far, in storage units.
+- ~(stringbuilder-length b)~ : The length so far, in bytes.
+- ~(stringbuilder-add-code! b n)~ / ~(stringbuilder-code-ref b i)~ / ~(string-code-ref s i)~ : One byte in or out, for scanners that copy input a byte at a time. Bytes added this way are checked when the builder becomes a string, which throws if they do not form whole characters.
+- ~(stringbuilder-add-unit! b n)~ : One UTF-16 code unit, for a reader taking units from a text port; a surrogate pair given in two calls becomes its character.
 - ~(stringbuilder->string b)~ : Freezes the builder into a string.
 
 Use one — or a ~(:acc out (stringing c))~ clause — rather than ~string-append~ in a loop: appending rebuilds the whole string per element and is quadratic.

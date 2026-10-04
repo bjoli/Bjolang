@@ -803,6 +803,11 @@ let prelude : Env =
         // being ordinary .NET calls; this one is here to sit with the other
         // emptiness predicates rather than alone in the library.
         "string-empty?", {Scheme = Scheme([], [], makeFunType [stringType] boolType); IsMutable = false }
+        // A string from and to .NET's own, `System.String`. A .NET member
+        // that takes or returns one directly is converted at the call; these
+        // are for one nested in another type, such as a `(Seq System.String)`.
+        "string->clr-string", {Scheme = Scheme([], [], makeFunType [stringType] clrStringType); IsMutable = false }
+        "clr-string->string", {Scheme = Scheme([], [], makeFunType [clrStringType] stringType); IsMutable = false }
 
         // Keyword & Symbol conversions / predicates
         "keyword->string", {Scheme = Scheme([], [], makeFunType [keywordType] stringType); IsMutable = false }
@@ -813,7 +818,7 @@ let prelude : Env =
         // codepoint rather than a UTF-16 code unit.
         //
         // No `string-ref`, and no other index-based accessor: indexing a
-        // UTF-16 string by codepoint is O(n), so an innocent-looking loop over
+        // UTF-8 string by codepoint is O(n), so an innocent-looking loop over
         // indices is quadratic. String traversal belongs to a cursor.
         "char->int", {Scheme = Scheme([], [], makeFunType [charType] intType); IsMutable = false }
         "int->char", {Scheme = Scheme([], [], makeFunType [intType] charType); IsMutable = false }
@@ -882,18 +887,23 @@ let prelude : Env =
         "stringbuilder-add-string!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; stringType] unitType); IsMutable = false }
         // Empties one for reuse. The identity is unchanged, as `add!` leaves it.
         "stringbuilder-clear!", {Scheme = Scheme([], [], makeFunType [stringBuilderType] unitType); IsMutable = false }
-        // One UTF-16 unit rather than a scalar, for a reader that holds codes.
-        // The caller owns what `add!` would have checked.
+        // One UTF-8 byte rather than a scalar, for a reader that holds codes.
+        // The bytes are checked when the builder becomes a string, which
+        // fails if they do not form whole scalars.
         "stringbuilder-add-code!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; intType] unitType); IsMutable = false }
+        // One UTF-16 code unit, for a reader taking units from a text port. A
+        // surrogate pair given in two calls becomes its scalar, and one left
+        // unpaired fails when the builder becomes a string.
+        "stringbuilder-add-unit!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; intType] unitType); IsMutable = false }
         "stringbuilder-length", {Scheme = Scheme([], [], makeFunType [stringBuilderType] intType); IsMutable = false }
-        // One UTF-16 unit back out, the counterpart of `add-code!`, and for the
+        // One UTF-8 byte back out, the counterpart of `add-code!`, and for the
         // same reason: a reader that holds codes. It is what lets a name be
         // compared against one already interned without building the string to
         // compare with — the allocation is the cost of interning a name a
         // document repeats, and this is how it is avoided in Bjolang rather
         // than in a helper written in C#.
         //
-        // Indices are units, not characters. `string-cursor-ref` is the
+        // Indices are bytes, not characters. `string-cursor-ref` is the
         // scalar-aware accessor and remains the one to reach for when the index
         // means a character.
         "stringbuilder-code-ref", {Scheme = Scheme([], [], makeFunType [stringBuilderType; intType] intType); IsMutable = false }

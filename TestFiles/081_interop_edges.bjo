@@ -28,7 +28,8 @@
   ;; `#:cancellable` because its `CancellationToken` parameter is not optional:
   ;; every overload takes one, so without the ambient token being threaded in
   ;; this method would be uncallable rather than merely uncancellable.
-  (file-lines-async (: System.IO.File.ReadLinesAsync (-> string (AsyncSeq string))
+  ;; The lines stay .NET strings: a string inside another type is not converted.
+  (file-lines-async (: System.IO.File.ReadLinesAsync (-> string (AsyncSeq System.String))
                        #:cancellable))
 
   (write-file (: System.IO.File.WriteAllTextAsync (-> string string void) #:async))
@@ -79,10 +80,10 @@
 ;; until its last send was taken, so a fired promise means a genuinely empty
 ;; channel and this loop never has to guess.
 
-(: drain (-> (Chan string) (Promise Unit) string))
+(: drain (-> (Chan System.String) (Promise Unit) string))
 (defbjo (drain ch done)
   (let go ((acc ""))
-    (match (sync (choose (wrap (chan-recv ch) (fun (line) (Got line)))
+    (match (sync (choose (wrap (chan-recv ch) (fun (line) (Got (clr-string->string line))))
                          (wrap (promise-join done) (fun (r) Ended))))
       ((Got line) (go (string-append acc line)))
       (Ended acc)

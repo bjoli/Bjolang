@@ -553,7 +553,7 @@ let compile (options: Options) (inputFilePath: string) : int =
             // arguments are dropped, or a placeholder is passed to a `main` that
             // cannot take one.
             let runBody =
-                $"        Collections.RrbList<string> bjoArgs = Collections.RrbList<string>.Create(new System.ReadOnlySpan<string>(args));\n" +
+                $"        Collections.RrbList<BjoString.Utf8String> bjoArgs = Collections.RrbList<BjoString.Utf8String>.Create(new System.ReadOnlySpan<BjoString.Utf8String>(BjolangRuntime.StringsFromClr(args)));\n" +
                 callMain "bjoArgs"
 
             let entryPointCode =

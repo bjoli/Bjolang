@@ -110,7 +110,8 @@
   (clr-empty-element? (: System.Xml.XmlReader.IsEmptyElement (-> XmlReader bool) #:get))
   (clr-next-attribute (: System.Xml.XmlReader.MoveToNextAttribute (-> XmlReader bool)))
   (clr-to-element (: System.Xml.XmlReader.MoveToElement (-> XmlReader bool)))
-  (clr-attribute (: System.Xml.XmlReader.GetAttribute (-> XmlReader string string)))
+  ;; Kept a .NET string, whose null says the attribute is absent.
+  (clr-attribute (: System.Xml.XmlReader.GetAttribute (-> XmlReader string System.String)))
   (clr-has-line-info (: System.Xml.IXmlLineInfo.HasLineInfo (-> IXmlLineInfo bool)))
   (clr-line-number (: System.Xml.IXmlLineInfo.LineNumber (-> IXmlLineInfo int) #:get))
   (clr-line-position (: System.Xml.IXmlLineInfo.LinePosition (-> IXmlLineInfo int) #:get))
@@ -398,7 +399,7 @@
 (: attribute-opt (-> XmlReader string (Option string)))
 (defun (attribute-opt r name)
   (match (cast Object (clr-attribute r name))
-    ((:is System.String s) (Some s))
+    ((:is System.String s) (Some (clr-string->string s)))
     (_ None)))
 
 ;; In document order, without the namespace declarations, and back on the

@@ -306,6 +306,7 @@ let mapPrimitiveType (name: string) =
     | "System.UInt64" -> "ulong"
     | "System.Double" -> "double"
     | "System.String" -> "string"
+    | "String" -> "BjoString.Utf8String"
     | "System.Boolean" -> "bool"
     | "System.Void" -> "void"
     // The unit *value*. `System.Void` above is the interop void, which is not a
@@ -319,11 +320,8 @@ let mapPrimitiveType (name: string) =
     | "ListBuilder" -> "SchemeList.SchemeListBuilder"
     | "VecCursor" -> "BjolangRuntime.VecCursor"
     | "SeqCursor" -> "BjolangRuntime.SeqCursor"
-    // Fully qualified for the same reason `BjoChar` is: it lives in the
-    // `Bjolang.Runtime` namespace rather than nested in the static class the
-    // generated file has a `using static` for.
-    | "StringCursor" -> "Bjolang.Runtime.StringCursor"
-    | "StringBuilder" -> "System.Text.StringBuilder"
+    | "StringCursor" -> "BjoString.StringCursor"
+    | "StringBuilder" -> "BjoString.Utf8StringBuilder"
     | "VecBuilder" -> "Collections.RrbBuilder"
     | "List" -> "SchemeList.SchemeList"
     // A `seq` is a C# iterator, so its type is the one C# iterators produce.
@@ -1196,9 +1194,9 @@ let private liveClauses (clauses: TMatchClause list) =
 /// not only the node:
 ///
 ///   - A C# optional parameter's default must be a constant expression. `1.5`
-///     and `"n="` are; `new Bjolang.Runtime.BjoChar(32)` and
-///     `BjolangRuntime.Keyword.Intern("k")` are how `char` and a keyword are
-///     emitted, and are not. Nor is `@true` — the runtime spells the boolean
+///     is; `new Bjolang.Runtime.BjoChar(32)`, `BjolangRuntime.Keyword.Intern("k")`
+///     and a hoisted `Utf8String` field are how `char`, a keyword and a string
+///     are emitted, and are not. Nor is `@true` — the runtime spells the boolean
 ///     literals as static fields — so `true` and `false` are emitted here
 ///     directly rather than through `generateExpr`.
 ///   - A type *parameter* admits no constant default but `default`, so a
@@ -1222,7 +1220,6 @@ let private csharpConstantDefault (kwType: HMType) (kwDefault: TypedExpr) : stri
     // grow a case that a bare numeral is not a constant of.
     | TInt text, ("int" | "byte" | "short" | "ushort" | "uint" | "long" | "ulong" | "double") ->
         NumericLiteral.csharp kwType text
-    | TString value, "string" -> Some $"\"%s{escapeStringLiteral value}\""
     | TBool b, "bool" -> Some(if b then "true" else "false")
     | _ -> None
 
@@ -1457,6 +1454,41 @@ let rec renamePatternBinders (locals: Map<string, string>) (pat: TypedPattern) :
 
     { pat with Node = node }
 
+/// The runtime helper that converts a .NET method's answer of type `clrType` to
+/// the Bjolang string inference typed the call as, if it is a .NET string or an
+/// array of them. See `ForeignTyping.bjolangViewOf`.
+let clrStringConversion (clrType: HMType) : string option =
+    match clrType with
+    | TCon(TypeConstants.ClrStringName, []) -> Some "StringFromClr"
+    | TCon("Array", [ TCon(TypeConstants.ClrStringName, []) ]) -> Some "StringsFromClr"
+    | _ -> None
+
+/// A pattern of one or more string literals: a `var` designation in the label,
+/// and a view whose step compares the bound value with each literal.
+let private generateStringTest
+    (ctx: CodegenContext)
+    (views: ResizeArray<ViewFragment>)
+    (pat: TypedPattern)
+    (values: string list)
+    : unit =
+    let name = freshName "__str"
+    let at node t : TypedExpr = { Type = t; Range = pat.Range; Node = node }
+    let bound = at (TIdent(name, [])) pat.Type
+    let isLiteral value = at (TDotMethodCall(bound, "Equals", [ at (TString value) pat.Type ], None)) TypeConstants.boolType
+
+    let test =
+        values
+        |> List.map isLiteral
+        |> List.reduceBack (fun a rest -> at (TIf(a, at (TBool true) TypeConstants.boolType, rest)) TypeConstants.boolType)
+
+    let isTrue: TypedPattern =
+        { Type = TypeConstants.boolType
+          Range = pat.Range
+          Node = TPBool true }
+
+    views.Add { Name = name; Applied = test; Inner = isTrue }
+    append ctx $"var %s{name}"
+
 /// Translates a typed pattern into C# pattern syntax.
 ///
 /// Every view in the pattern is appended to `views` and stands in the label as
@@ -1472,7 +1504,14 @@ let rec generatePattern (ctx: CodegenContext) (views: ResizeArray<ViewFragment>)
     // literal. `((byte)21)` is still a constant expression, which is all a
     // `case` label asks of it.
     | TPInt value -> append ctx (numericLiteral pat.Range pat.Type value)
-    | TPString value -> append ctx $"\"%s{escapeStringLiteral value}\""
+    // A string is a struct, and C# has no constant of one, so the literal is
+    // tested as a view is: the label binds the value and the guard compares it
+    // with the hoisted literal. Alternatives of string literals share one
+    // binding, since C# allows no designation inside an `or` pattern.
+    | TPString value -> generateStringTest ctx views pat [ value ]
+    | TPOr alts when alts |> List.forall (fun a -> match a.Node with TPString _ -> true | _ -> false) ->
+        let values = alts |> List.map (fun a -> match a.Node with TPString v -> v | _ -> "")
+        generateStringTest ctx views pat values
     // A property pattern rather than a constant: `BjoChar` is a record struct,
     // and C# has no literal syntax for one.
     | TPChar c -> append ctx $"Bjolang.Runtime.BjoChar {{ Value: %d{c} }}"
@@ -1790,7 +1829,14 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
 
     match expr.Node with
     | TInt i -> append ctx (numericLiteral expr.Range expr.Type i)
-    | TString s -> append ctx $"\"%s{escapeStringLiteral s}\""
+    // Hoisted, one field per distinct text: C# lays out a `u8` literal as UTF-8
+    // at compile time, and `FromUtf8` copies it into a string once, when the
+    // holder class is initialized. The field is named after the first few
+    // characters.
+    | TString s ->
+        let named = if s.Length > 24 then s.Substring(0, 24) else s
+        let init = $"BjoString.Utf8String.FromUtf8(\"%s{escapeStringLiteral s}\"u8)"
+        append ctx (hoistLiteral ctx "Str" named "BjoString.Utf8String" init)
     | TChar c -> append ctx $"new Bjolang.Runtime.BjoChar(%d{c})"
     | TBool b -> append ctx (if b then "true" else "false")
     // Both interned once per assembly rather than once per evaluation. See
@@ -1912,6 +1958,15 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
 
     | TForeignStaticCall (clrType, methodName, args, Some meta) when meta.Outs.IsSome ->
         generateOutCall ctx None expr None clrType methodName args meta meta.Outs.Value |> ignore
+
+    // A method answering a .NET string, typed by inference as the Bjolang
+    // string it is converted to here. The call itself is emitted with the
+    // method's own type, which is what ends the recursion.
+    | TDotMethodCall (_, _, _, Some meta)
+    | TForeignStaticCall (_, _, _, Some meta) when (clrStringConversion meta.ReturnType).IsSome && expr.Type <> meta.ReturnType ->
+        append ctx $"BjolangRuntime.%s{(clrStringConversion meta.ReturnType).Value}("
+        generateExpr ctx { expr with Type = meta.ReturnType }
+        append ctx ")"
 
     // A guarded call (`#:exceptions`) is statement-shaped and never reaches
     // here; see `generateGuardedCall`.
@@ -2399,8 +2454,13 @@ and private generateGuarded
 and private generateGuardedCall (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) : unit =
     // `ConfigureAwait(false)` and the ambient token, as on the unguarded paths
     // in `generateExpr`.
+    // A .NET string answer converted, as on the unguarded path.
     let callText (meta: DotNetMethodMetadata) (call: string) =
-        if meta.Await then $"(await %s{call}.ConfigureAwait(false))" else call
+        let call = if meta.Await then $"(await %s{call}.ConfigureAwait(false))" else call
+
+        match clrStringConversion meta.ReturnType with
+        | Some helper -> $"BjolangRuntime.%s{helper}(%s{call})"
+        | None -> call
 
     let withToken (meta: DotNetMethodMetadata) (names: string list) =
         if meta.AmbientToken then names @ [ ambientTokenArgument ] else names
@@ -3830,7 +3890,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
                 let views = ResizeArray<ViewFragment>()
                 append c (if isFirst then $"if (%s{scrutinee} is " else $"else if (%s{scrutinee} is ")
                 generatePattern c views pattern
-                generateClauseGuard c views None
+                generateIsGuard c views
                 appendLine c ") {"
 
             withIndent c (fun inner -> generateBlock inner armTarget body)
@@ -4035,12 +4095,25 @@ and private generateClauseGuard
     (views: ResizeArray<ViewFragment>)
     (guard: TypedExpr option)
     : unit =
+    generateGuardJoined " when " ctx views guard
+
+/// The same tests after an `is` expression rather than a `case` label, where
+/// C# has no `when` and they are joined with `&&` from the first.
+and private generateIsGuard (ctx: CodegenContext) (views: ResizeArray<ViewFragment>) : unit =
+    generateGuardJoined " && " ctx views None
+
+and private generateGuardJoined
+    (first: string)
+    (ctx: CodegenContext)
+    (views: ResizeArray<ViewFragment>)
+    (guard: TypedExpr option)
+    : unit =
 
     let guardCtx = { ctx with Prelude = None }
     let mutable joined = 0
 
     let next () =
-        append ctx (if joined = 0 then " when " else " && ")
+        append ctx (if joined = 0 then first else " && ")
         joined <- joined + 1
 
     let mutable i = 0
@@ -5838,7 +5911,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                             indent c
                             append c $"if (%s{tmp} is "
                             generatePattern c views (renamePatternBinders locals pattern)
-                            generateClauseGuard c views None
+                            generateIsGuard c views
                             appendLine c ") {"
 
                             withIndent c (fun inner ->

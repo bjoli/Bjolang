@@ -230,8 +230,8 @@ let rec private ofSExpr (s: SExpr) : Syn =
         | SAtom { Token = Symbol sym } -> Syn.SSym(BjolangRuntime.Symbol.Intern sym)
         | SAtom { Token = ResolvedSymbol sym } -> Syn.SSym(BjolangRuntime.Symbol.Intern sym)
         | SAtom { Token = QuotedSymbol sym } -> Syn.SDatum(BjolangRuntime.Symbol.Intern sym)
-        | SAtom { Token = NumberLit n } -> Syn.SInt n
-        | SAtom { Token = StringLit str } -> Syn.SStr str
+        | SAtom { Token = NumberLit n } -> Syn.SInt(BjoString.Utf8String.FromUtf16 n)
+        | SAtom { Token = StringLit str } -> Syn.SStr(BjoString.Utf8String.FromUtf16 str)
         | SAtom { Token = CharLit c } -> Syn.SChar(Bjolang.Runtime.BjoChar(uint c))
         // As the symbol it is spelled with: `Syntax` has no boolean node, and
         // `neverRenamed` below already knows these two names.
@@ -239,7 +239,7 @@ let rec private ofSExpr (s: SExpr) : Syn =
         | SAtom { Token = Keyword k } -> Syn.SKey(BjolangRuntime.Keyword.Intern k)
         | SAtom { Token = t } ->
             match Map.tryFind t punctSpelling with
-            | Some spelling -> Syn.SPunct spelling
+            | Some spelling -> Syn.SPunct(BjoString.Utf8String.FromUtf16 spelling)
             | None ->
                 failwithf
                     $"Cannot hand %A{t} to a macro at %s{Lexer.formatPos (getRange s)}: it is not a form."
@@ -317,14 +317,14 @@ let rec private toSExpr (memo: Dictionary<string, string>) (macroModule: string)
         | _ -> atom (Symbol spelled)
 
     | :? Syn.SDatum as d -> atom (QuotedSymbol d.Item1.Name)
-    | :? Syn.SInt as n -> atom (NumberLit n.Item1)
-    | :? Syn.SStr as s -> atom (StringLit s.Item1)
+    | :? Syn.SInt as n -> atom (NumberLit(n.Item1.ToString()))
+    | :? Syn.SStr as s -> atom (StringLit(s.Item1.ToString()))
     | :? Syn.SChar as c -> atom (CharLit(int c.Item1.Value))
     | :? Syn.SKey as k -> atom (Keyword k.Item1.Name)
     | :? Syn.SPunct as p ->
-        match Map.tryFind p.Item1 punctToken with
+        match Map.tryFind (p.Item1.ToString()) punctToken with
         | Some t -> atom t
-        | None -> failwithf $"A macro produced the punctuation '%s{p.Item1}' at %s{Lexer.formatPos r}, which does not read."
+        | None -> failwithf $"A macro produced the punctuation '%s{p.Item1.ToString()}' at %s{Lexer.formatPos r}, which does not read."
     | :? Syn.SList as l -> SList(l.Item1 |> Seq.map (toSExpr memo macroModule callSite) |> List.ofSeq, r)
     | _ -> failwithf $"A macro produced a syntax node the compiler does not know at %s{Lexer.formatPos r}."
 

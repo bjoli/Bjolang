@@ -133,13 +133,10 @@
   (cast Exception (Failure. message)))
 
 ;; .NET says null where it has nothing: a reason phrase over HTTP/2, a header
-;; that is not there. C#'s `is` answers false for null, so a type test is a
-;; null check that needs no null.
+;; that is not there. A .NET string becomes a Bjolang one at the call, and a
+;; null becomes "" there.
 (: text-or-empty (-> string string))
-(defun (text-or-empty s)
-  (match (cast Object s)
-    ((:is System.String text) text)
-    (_ "")))
+(defun (text-or-empty s) s)
 
 
 ;; ===========================================================================
@@ -324,9 +321,9 @@
              (: headers (Map string string))
              (: raw Reply))))
 
-(: join-values (-> (Seq string) string))
+(: join-values (-> (Seq System.String) string))
 (defun (join-values values)
-  (string-join (loop (:for value values) (:acc all (vecing value))) ", "))
+  (string-join (loop (:for value values) (:acc all (vecing (clr-string->string value)))) ", "))
 
 ;; Makes both headers and into  lower-cased, folded with ", ". Header names are
 ;; case-insensitive on the wire 
@@ -334,7 +331,7 @@
 ;; Set-Cookie is the exception the RFC makes and this does not: folded cookies
 ;; cannot be taken apart again. When something here reads cookies it needs a
 ;; call of its own.
-(: collect-headers (-> (Seq (Pairing string (Seq string))) (Map string string) (Map string string)))
+(: collect-headers (-> (Seq (Pairing System.String (Seq System.String))) (Map string string) (Map string string)))
 (defun (collect-headers headers into)
   (loop (:for header headers)
         (:acc all (folding into
@@ -347,9 +344,9 @@
   (Response (status (cast int (reply-status raw)))
             (reason (text-or-empty (reply-reason raw)))
             (headers (collect-headers
-                      (cast (Seq (Pairing string (Seq string))) (content-headers (reply-content raw)))
+                      (cast (Seq (Pairing System.String (Seq System.String))) (content-headers (reply-content raw)))
                       (collect-headers
-                       (cast (Seq (Pairing string (Seq string))) (reply-headers raw))
+                       (cast (Seq (Pairing System.String (Seq System.String))) (reply-headers raw))
                        (map-empty))))
             (raw raw)))
 

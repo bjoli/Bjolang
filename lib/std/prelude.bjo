@@ -1108,7 +1108,8 @@
 ;; U+2212 where sv-SE does, so a number written by one machine is unreadable on
 ;; the next.
 (import/extern
-  (clr-concat        (: System.String.Concat))
+  (clr-concat        (: BjoString.Utf8String.Concat))
+  (clr-concat-all    (: BjolangRuntime.StringConcat))
   (clr-parse-int     (: Bjolang.Runtime.BjoNum.ParseInt))
   (clr-parse-double  (: Bjolang.Runtime.BjoNum.ParseDouble))
   (clr-double-string (: Bjolang.Runtime.BjoNum.DoubleToString))
@@ -1121,30 +1122,33 @@
 
 ;; Variadic concatenation.
 (: str (-> #:rest string string))
-(defun (str #:rest parts) (clr-concat parts))
+(defun (str #:rest parts) (clr-concat-all parts))
 
-;; String length in storage units.
+;; String length in storage units: bytes of UTF-8.
 (: string-length (-> string int))
-(defun (string-length s) (.-Length s))
+(defun (string-length s) (.-ByteLength s))
 
 ;; --- Searching and rewriting -----------------------------------------------
-;; Ordinal comparison.
+;; Ordinal: bytes of UTF-8 compared as they are.
 
 (import/extern
-  (clr-ordinal (: System.StringComparison.Ordinal #:get)))
+  (clr-contains    (: BjolangRuntime.StringContains))
+  (clr-starts-with (: BjolangRuntime.StringStartsWith))
+  (clr-ends-with   (: BjolangRuntime.StringEndsWith))
+  (clr-replace     (: BjolangRuntime.StringReplace)))
 
 (: string-contains? (-> string string bool))
-(defun (string-contains? s needle) (.Contains s needle clr-ordinal))
+(defun (string-contains? s needle) (clr-contains s needle))
 
 (: string-starts-with? (-> string string bool))
-(defun (string-starts-with? s prefix) (.StartsWith s prefix clr-ordinal))
+(defun (string-starts-with? s prefix) (clr-starts-with s prefix))
 
 (: string-ends-with? (-> string string bool))
-(defun (string-ends-with? s suffix) (.EndsWith s suffix clr-ordinal))
+(defun (string-ends-with? s suffix) (clr-ends-with s suffix))
 
 ;; String replace.
 (: string-replace (-> string string string string))
-(defun (string-replace s old new) (.Replace s old new clr-ordinal))
+(defun (string-replace s old new) (clr-replace s old new))
 
 ;; --- Case ------------------------------------------------------------------
 ;; Invariant case.
@@ -1190,7 +1194,7 @@
 
 ;; --- Splitting and joining -------------------------------------------------
 
-;; String split, empty fields kept. The runtime gives the array .NET's Split
+;; String split, empty fields kept. The runtime gives the array the split
 ;; makes to the vec without copying it, which only it can do safely.
 (import/extern
   (clr-split (: BjolangRuntime.SplitToVec (-> string string (Vec string)))))
@@ -2742,14 +2746,20 @@
 ;; step was written in another macro's template — is stripped, since a field
 ;; name is never renamed. Injected, so that this macro's hygiene leaves it
 ;; alone too.
+(import/extern
+  (clr-index-of        (: BjolangRuntime.StringIndexOf))
+  (clr-last-index-of   (: BjolangRuntime.StringLastIndexOf))
+  (clr-substring       (: BjolangRuntime.StringSubstring))
+  (clr-substring-from  (: BjolangRuntime.StringSubstringFrom)))
+
 (: path-field (-> (-> Symbol Syntax) Syntax Syntax))
 (defun (path-field inject step)
-  (def name (match step ((SSym s) (.Substring (symbol->string s) 1)) (_ "")))
-  (def mark (.LastIndexOf name "__" clr-ordinal))
+  (def name (match step ((SSym s) (clr-substring-from (symbol->string s) 1)) (_ "")))
+  (def mark (clr-last-index-of name "__"))
   (inject
     (string->symbol
       (if (and (> mark 0) (path-digits? name (+ mark 2)))
-          (.Substring name 0 mark)
+          (clr-substring name 0 mark)
           name))))
 
 ;; Is everything in `s` from `i` on an ASCII digit, and is there anything?

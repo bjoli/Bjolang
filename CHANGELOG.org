@@ -3,6 +3,34 @@
 
 What each change guarantees, and what it leaves open.
 
+* Strings are UTF-8
+
+- *~string~ is BjoString's ~Utf8String~*, an immutable UTF-8 string that is
+  always valid. A submodule, ~BjolangRuntime/BjoString~, linked like the
+  collections. ~StringCursor~ and ~StringBuilder~ are BjoString's too.
+- *Storage units are bytes.* ~string-length~, ~string-code-ref~,
+  ~stringbuilder-length~, ~stringbuilder-code-ref~ and
+  ~stringbuilder-add-code!~ count and move UTF-8 bytes; ~string-count~ and
+  the cursors are unchanged. Bytes from ~add-code!~ are checked when the
+  builder becomes a string, which throws if they do not form whole
+  characters. ~(stringbuilder-add-unit! b n)~ takes a UTF-16 code unit, for a
+  reader of a text port, and pairs surrogates into their character.
+- *Order is codepoint order*, which differs from the old UTF-16 ordinal order
+  only between a character above U+FFFF and one in U+E000–U+FFFF.
+- *.NET's ~System.String~ is a separate type.* A .NET member taking or
+  returning one, or an array of them, is converted at the call; ~null~
+  becomes ~""~. An import declaring ~System.String~ as its result keeps it.
+  A method ~string~ lacks is called on the converted string, so
+  ~(.Substring s 1)~ still works in .NET's terms. Strings inside other types
+  are not converted: ~(string->clr-string s)~ and ~(clr-string->string s)~.
+  ~(:is string s)~ tests for a Bjolang string.
+- *String literals are hoisted*, one static field per distinct text, and a
+  literal in a pattern is a guard rather than a C# constant label.
+- *~(std rx)~ still runs on .NET's engine*, through UTF-16, with match
+  positions turned into byte cursors; its API is unchanged.
+
+~TestFiles/273_utf8_strings.bjo~.
+
 * Hoisting, paths, and two renames
 
 - *~(please-hoist-i-promise-i-am-not-naughty expr)~* evaluates ~expr~ the first

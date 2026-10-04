@@ -543,12 +543,18 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
             | _ -> ()
 
             let clrTarget = receiverClrType where name targetType
-            let propType = DotNetInterop.resolveMemberRead where clrTarget propName false
 
-            propType,
-            { Type = propType
-              Range = r
-              Node = TDotPropertyGet(typedTarget, propName, propType) }
+            let propType, typedTarget =
+                onStringOrClrString env.Registry targetType typedTarget (fun target ->
+                    DotNetInterop.resolveMemberRead where (Option.defaultValue clrTarget target) propName false)
+
+            let read =
+                marshalResult
+                    { Type = propType
+                      Range = r
+                      Node = TDotPropertyGet(typedTarget, propName, propType) }
+
+            read.Type, read
         | _ ->
             failwithf
                 $"Type Error at %s{where}: '%s{name}' reads a property, so it takes exactly one argument — the object to read it from — but was given %d{args.Length}."
@@ -1115,10 +1121,13 @@ and private inferStaticMember (env: Env) (name: string) (r: Range) : HMType * Ty
     let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrName
     let memberType = DotNetInterop.resolveMemberRead where clrType memberName true
 
-    memberType,
-    { Type = memberType
-      Range = r
-      Node = TForeignStaticGet(info.ClrName, memberName, memberType) }
+    let read =
+        marshalResult
+            { Type = memberType
+              Range = r
+              Node = TForeignStaticGet(info.ClrName, memberName, memberType) }
+
+    read.Type, read
 
 // An `import/extern` name used as a *value* rather than applied.
 //
@@ -1154,21 +1163,25 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
     | ExternGet when not info.IsInstance ->
         let memberType = DotNetInterop.resolveMemberRead where clrType info.MemberName true
 
-        memberType,
-        { Type = memberType
-          Range = r
-          Node = TForeignStaticGet(info.ClrType, info.MemberName, memberType) }
+        let read =
+            marshalExternResult info
+                { Type = memberType
+                  Range = r
+                  Node = TForeignStaticGet(info.ClrType, info.MemberName, memberType) }
+
+        read.Type, read
 
     | ExternGet ->
         let memberType = DotNetInterop.resolveMemberRead where clrType info.MemberName false
         let recv = Gensym.fresh "__foreign"
 
         let body: TypedExpr =
-            { Type = memberType
-              Range = r
-              Node = TDotPropertyGet(identOf recv receiverType, info.MemberName, memberType) }
+            marshalExternResult info
+                { Type = memberType
+                  Range = r
+                  Node = TDotPropertyGet(identOf recv receiverType, info.MemberName, memberType) }
 
-        let funType = tfun [ receiverType ] memberType
+        let funType = tfun [ receiverType ] body.Type
 
         funType,
         { Type = funType
@@ -1176,9 +1189,14 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
           Node = TLambda([ recv ], body) }
 
     | ExternSet ->
-        let memberType = DotNetInterop.resolveMemberWrite where clrType info.MemberName (not info.IsInstance)
+        let clrMemberType = DotNetInterop.resolveMemberWrite where clrType info.MemberName (not info.IsInstance)
         let value = Gensym.fresh "__foreign"
-        let valueExpr = identOf value memberType
+
+        // A .NET string member is set from a Bjolang string.
+        let memberType, valueExpr =
+            match bjolangViewOf clrMemberType with
+            | Some seen -> seen, toClrString (identOf value seen) clrMemberType
+            | None -> clrMemberType, identOf value clrMemberType
 
         let paramNames, paramTypes, node =
             if info.IsInstance then
@@ -1232,9 +1250,9 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
 
             let node =
                 if info.IsInstance then
-                    foreignCallNode info.ClrType info.MemberName (Some(List.head argExprs)) (List.tail argExprs) meta
+                    foreignCallNode info.ClrType info.MemberName (Some(List.head argExprs)) (convertStringIns outs (List.tail argExprs)) meta
                 else
-                    foreignCallNode info.ClrType info.MemberName None argExprs meta
+                    foreignCallNode info.ClrType info.MemberName None (convertStringIns outs argExprs) meta
 
             let resultType = wrapForeignExceptions info.Exceptions retType
 
@@ -1269,31 +1287,36 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
 
             let resolved = resolveExternMethod where info clrType methodParamTypes
             unifyForeignArgs env.Registry methodParamTypes resolved.ParameterTypes
-            declaredReceiver |> Option.iter (fun t -> unify env.Registry t receiverType)
+            declaredReceiver |> Option.iter (fun t -> unify env.Registry t (seenType receiverType))
 
-            let retType = wrapForeignExceptions info.Exceptions resolved.ReturnType
+            let retType = wrapForeignExceptions info.Exceptions (externResultType info resolved.ReturnType)
             let argNames = resolved.ParameterTypes |> List.map (fun _ -> Gensym.fresh "__foreign")
 
-            // Annotated because `TypedExpr` and `TypedPattern` have the same
-            // three field names, and neither of these is in a position that
-            // says which one is meant.
-            let argExprs: TypedExpr list = List.map2 identOf argNames resolved.ParameterTypes
+            // The lambda takes Bjolang strings where the method takes .NET
+            // ones, and converts them in the call.
+            let passed (n: string) (t: HMType) : TypedExpr =
+                match bjolangViewOf t with
+                | Some seen -> toClrString (identOf n seen) t
+                | None -> identOf n t
+
+            let argExprs = List.map2 passed argNames resolved.ParameterTypes
+            let seenParams = resolved.ParameterTypes |> List.map seenType
 
             let paramNames, paramTypes, node =
                 if info.IsInstance then
                     let recv = Gensym.fresh "__foreign"
 
                     recv :: argNames,
-                    receiverType :: resolved.ParameterTypes,
+                    seenType receiverType :: seenParams,
                     TDotMethodCall(
-                        identOf recv receiverType,
+                        passed recv receiverType,
                         info.MemberName,
                         argExprs,
                         Some(metadataOf resolved info.Exceptions)
                     )
                 else
                     argNames,
-                    resolved.ParameterTypes,
+                    seenParams,
                     TForeignStaticCall(
                         resolved.DeclaringType,
                         info.MemberName,
@@ -1566,7 +1589,10 @@ and private inferDotMethod (env: Env) (name: string) (args: Expr list) (r: Range
         let argTypes = typedArgs |> List.map fst
 
         settleLiterals argTypes
-        let resolved = DotNetInterop.resolveMethod where false clrTarget methodName argTypes
+
+        let resolved, typedTarget =
+            onStringOrClrString env.Registry targetType typedTarget (fun target ->
+                DotNetInterop.resolveMethod where false (Option.defaultValue clrTarget target) methodName argTypes)
 
         let coercedArgs =
             reconcileForeignArgs env.Registry (typedArgs |> List.map snd) resolved.ParameterTypes
@@ -1575,7 +1601,7 @@ and private inferDotMethod (env: Env) (name: string) (args: Expr list) (r: Range
         // the constructor's — so there is nowhere to say what a method may
         // raise, and wrapping it anyway would swallow exceptions nobody
         // listed.
-        let retType = resolved.ReturnType
+        let retType = seenType resolved.ReturnType
 
         retType,
         { Type = retType
@@ -1604,7 +1630,7 @@ and private inferClassConstruct (env: Env) (name: string) (args: Expr list) (r: 
     // consulting the BCL; getting it wrong is an error rather than a
     // silently ignored comment.
     match info.CtorType with
-    | Some declared -> unify env.Registry declared (tfun resolved.ParameterTypes resolved.ReturnType)
+    | Some declared -> unify env.Registry declared (tfun (resolved.ParameterTypes |> List.map seenType) resolved.ReturnType)
     | None -> ()
 
     let retType = wrapForeignExceptions info.CtorExceptions resolved.ReturnType
@@ -1670,10 +1696,13 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
         let memberType = DotNetInterop.resolveMemberRead where clrType info.MemberName false
         checkDeclaredExtern env.Registry info receiverType true [] memberType
 
-        memberType,
-        { Type = memberType
-          Range = r
-          Node = TDotPropertyGet(receiver, info.MemberName, memberType) }
+        let read =
+            marshalExternResult info
+                { Type = memberType
+                  Range = r
+                  Node = TDotPropertyGet(receiver, info.MemberName, memberType) }
+
+        read.Type, read
 
     // A property write. Void, like `set!`, and for the same reason: the
     // value assigned is not what the form is for, and handing it back would
@@ -1753,7 +1782,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
         resultType,
         { Type = resultType
           Range = r
-          Node = foreignCallNode info.ClrType info.MemberName receiver methodArgs meta }
+          Node = foreignCallNode info.ClrType info.MemberName receiver (convertStringIns outs methodArgs) meta }
 
     | ExternMethod ->
         let allTypedArgs = args |> List.map (infer env)
@@ -1797,7 +1826,9 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
 
         checkDeclaredExtern env.Registry info receiverType receiver.IsSome visibleParams callResultType
 
-        let retType = wrapForeignExceptions info.Exceptions callResultType
+        // A .NET string answer is converted by `Codegen`, which reads
+        // `ReturnType` below; see `bjolangViewOf`.
+        let retType = wrapForeignExceptions info.Exceptions (externResultType info callResultType)
 
         let meta =
             Some

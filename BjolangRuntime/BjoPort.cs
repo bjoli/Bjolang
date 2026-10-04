@@ -842,6 +842,18 @@ public sealed class BjoWriter : TextWriter {
         return default;
     }
 
+    // A Bjolang string, written without becoming a .NET string first.
+    public static Unit WritePort(TextWriter writer, BjoString.Utf8String value) {
+        BjoString.Utf8Text.Write(writer, value);
+        return default;
+    }
+
+    public static Unit WriteLinePort(TextWriter writer, BjoString.Utf8String value) {
+        BjoString.Utf8Text.Write(writer, value);
+        writer.WriteLine();
+        return default;
+    }
+
     public static ValueTask<Unit> WritePortAsync(
         TextWriter writer,
         string value,

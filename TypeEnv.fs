@@ -525,7 +525,10 @@ let rec checkPattern
     // nobody wrote.
     | PTypeTest(typeName, binder, r) ->
         let where = Lexer.formatPos r
-        let testedClr = DotNetInterop.resolveNamedType r typeName
+        // `string` is Bjolang's string, which is not a .NET type name.
+        let testedClr =
+            DotNetInterop.resolveNamedType r (if typeName = "string" then "BjoString.Utf8String" else typeName)
+
         let scrutinee = prune env.Registry expectedType
 
         if DotNetInterop.isUnresolved scrutinee then

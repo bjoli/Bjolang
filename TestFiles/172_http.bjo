@@ -49,12 +49,11 @@
   (reply-done!       (: System.Net.HttpListenerResponse.Close (-> ServerResponse void)))
   (sleep             (: System.Threading.Tasks.Task.Delay (-> int void) #:async)))
 
-;; The server side has nulls too: a header that was not sent.
+;; The server side has nulls too: a header that was not sent. A .NET string
+;; becomes a Bjolang one at the call, and a null becomes "" there.
 (: header-or-empty (-> ServerRequest string string))
 (defun (header-or-empty req name)
-  (match (cast Object (name-value (request-headers req) name))
-    ((:is System.String value) value)
-    (_ "")))
+  (name-value (request-headers req) name))
 
 (: request-body (-> ServerRequest string))
 (defun (request-body req)

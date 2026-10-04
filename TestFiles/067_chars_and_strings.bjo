@@ -86,11 +86,11 @@
   (expect "astral round trip" (char->int (int->char 128512)) 128512)
 
   ;; char->string, where the astral case is the one that catches a 16-bit
-  ;; assumption: it must produce a two-code-unit string, not a broken half.
+  ;; assumption: it must produce the four bytes UTF-8 gives it, not a broken half.
   (expect "char->string ascii" (char->string #\a) "a")
   (expect "char->string length" (string-length (char->string #\a)) 1)
   (expect "char->string astral length"
-          (string-length (char->string #\😀)) 2)
+          (string-length (char->string #\😀)) 4)
 
   ;; Pattern matching.
   (expect "vowel yes" (if (vowel? #\e) "yes" "no") "yes")
@@ -243,10 +243,10 @@
 
   ;; ---- Storage units against characters -----------------------------------
   ;;
-  ;; The heart of it. "a😀b" is three characters in four UTF-16 code units, and
+  ;; The heart of it. "a😀b" is three characters in six bytes of UTF-8, and
   ;; every operation below has to agree about which of those two numbers it
   ;; deals in.
-  (expect-int "string-length counts storage" (string-length "a😀b") 4)
+  (expect-int "string-length counts storage" (string-length "a😀b") 6)
   (expect-int "string-count counts characters" (string-count "a😀b") 3)
   (expect-int "cursor walk counts characters" (count-by-cursor "a😀b") 3)
   (expect-int "backward walk agrees" (count-backwards "a😀b") 3)

@@ -8,19 +8,30 @@
 (import (std prelude))
 (import (std simpletest))
 
-;; The only way to put a code unit into a string without it being checked for
-;; being a scalar first, which is what makes a lone surrogate reachable at all.
-(: units (-> (List int) string))
-(defun (units codes)
-  (let ((sb (stringbuilder-empty)))
-    (loop (:for c codes) (:do (stringbuilder-add-code! sb c)))
-    (stringbuilder->string sb)))
+;; A port over .NET text, which is UTF-16 and so can hold a lone surrogate: a
+;; Bjolang string cannot. The .NET string is kept as one by declaring it.
+(import/class
+  (ClrBuilder (: System.Text.StringBuilder))
+  (ClrReader (: System.IO.StringReader)))
 
-(: first-char (-> string string))
-(defun (first-char s)
-  (match (try (reader-read-char! (open-input-string s)) #:catch (System.Exception))
+(import/extern
+  (clr-add-unit (: System.Text.StringBuilder.Append (-> ClrBuilder System.Char ClrBuilder)))
+  (clr-text (: System.Text.StringBuilder.ToString (-> ClrBuilder System.String))))
+
+(: units (-> (List int) TextInputPort))
+(defun (units codes)
+  (let ((sb (ClrBuilder.)))
+    (loop (:for c codes) (:do (ignore (clr-add-unit sb (cast System.Char c)))))
+    (cast TextInputPort (ClrReader. (clr-text sb)))))
+
+(: first-char-in (-> TextInputPort string))
+(defun (first-char-in p)
+  (match (try (reader-read-char! p) #:catch (System.Exception))
     ((Ok c) (str "read " (int->string (char->integer c))))
     ((Err e) (.-Message e))))
+
+(: first-char (-> string string))
+(defun (first-char s) (first-char-in (open-input-string s)))
 
 ;; U+1F600, the pair 0xD83D 0xDE00.
 (: emoji string)
@@ -33,9 +44,9 @@
   (expect "a BMP character above ASCII"
           (first-char (list->string (list (integer->char 233) #\x)))
           "read 233")
-  ;; Two code units in, one scalar out.
+  ;; Four bytes in, one scalar out.
   (expect "an astral character is one char" (first-char emoji) "read 128512")
-  (expect "and the pair is spelled as two units" (string-length emoji) 2)
+  (expect "and it is spelled as four bytes" (string-length emoji) 4)
 
   ;; --- what it refuses -----------------------------------------------------
   (expect "the empty port"
@@ -45,22 +56,22 @@
   ;; A low surrogate with nothing before it. Refused without reading a second
   ;; unit, so the character after it is still there for the next read.
   (expect "a lone low surrogate"
-          (first-char (units (list 56320 65)))
+          (first-char-in (units (list 56320 65)))
           "read-char: the port holds an unpaired low surrogate, which is not a character.")
 
   ;; A high surrogate with the wrong thing after it.
   (expect "a high surrogate followed by a letter"
-          (first-char (units (list 55296 65)))
+          (first-char-in (units (list 55296 65)))
           "read-char: the port holds a high surrogate with no low surrogate after it, which is not a character.")
 
   ;; A high surrogate with nothing after it at all.
   (expect "a high surrogate at the end of the port"
-          (first-char (units (list 55296)))
+          (first-char-in (units (list 55296)))
           "read-char: the port holds a high surrogate with no low surrogate after it, which is not a character.")
 
   ;; --- the port is left where it should be ---------------------------------
   ;; A lone low surrogate costs one unit, so 'A' is the next character.
-  (let ((p (open-input-string (units (list 56320 65)))))
+  (let ((p (units (list 56320 65))))
     (match (try (reader-read-char! p) #:catch (System.Exception))
       ((Ok _) (fail "a lone low surrogate was accepted"))
       ((Err _)

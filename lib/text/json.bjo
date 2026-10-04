@@ -284,23 +284,23 @@
       (go))
      ((< c 32)
       (Err (at rd "a control character in a string has to be written as an escape")))
-     ;; Both units, as they came. A string is UTF-16 and this is already it;
-     ;; the pair is still checked, because half of one cannot be encoded.
+     ;; Both units, as they came; the builder pairs them into their scalar.
+     ;; The pair is still checked, because half of one cannot be encoded.
      ((high-surrogate? c)
       (step! rd)
       (def lo (held-code rd))
       (cond
        ((low-surrogate? lo)
         (step! rd)
-        (stringbuilder-add-code! sb c)
-        (stringbuilder-add-code! sb lo)
+        (stringbuilder-add-unit! sb c)
+        (stringbuilder-add-unit! sb lo)
         (go))
        (else
         (Err (at rd "a high surrogate has to be followed by its low surrogate")))))
      ((low-surrogate? c)
       (Err (at rd "a low surrogate with no high surrogate before it")))
      (else
-      (stringbuilder-add-code! sb c)
+      (stringbuilder-add-unit! sb c)
       (step! rd)
       (go)))))
 
@@ -321,7 +321,7 @@
     ;; ascii codes for 0-9
     (cond
       ((and (>= c 48) (<= c 57))
-       (stringbuilder-add-code! sb c)
+       (stringbuilder-add-unit! sb c)
        (step! rd)
        (go (+ n 1)))
       (else n))))

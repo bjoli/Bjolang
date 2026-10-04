@@ -16,6 +16,8 @@ using System.Runtime.CompilerServices;
 // by UTF-16 code unit, and `StringBuilder` for the `Stringing` accumulator.
 using System.Text;
 using Unit = Bjoml.Unit;
+using Utf8String = BjoString.Utf8String;
+using Utf8StringBuilder = BjoString.Utf8StringBuilder;
 
 public static partial class BjolangRuntime {
 
@@ -44,6 +46,18 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Unit displayln(object o) { Dyn.Current.Out.WriteLine(o); return unit; }
 
+    // A string is written without becoming a .NET string first.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Unit display(Utf8String s) { BjoString.Utf8Text.Write(Dyn.Current.Out, s); return unit; }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Unit displayln(Utf8String s) {
+        var w = Dyn.Current.Out;
+        BjoString.Utf8Text.Write(w, s);
+        w.WriteLine();
+        return unit;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Unit newline() { Dyn.Current.Out.WriteLine(); return unit; }
 
@@ -52,17 +66,19 @@ public static partial class BjolangRuntime {
     // `None` that means the same thing. That is also why this is the one path
     // operation not written in `std/prelude`.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Option<string> pathsubdirectory(string path) =>
-        System.IO.Path.GetDirectoryName(path) is { Length: > 0 } dir ? Some(dir) : None<string>();
+    public static Option<Utf8String> pathsubdirectory(Utf8String path) =>
+        System.IO.Path.GetDirectoryName(path.ToString()) is { Length: > 0 } dir
+            ? Some(Utf8String.FromUtf16(dir))
+            : None<Utf8String>();
 
     // The failing read. `ReadLine` reports end of input by returning null, and
     // Bjolang has no null to test against, so the sentinel is converted into an
     // exception right at the boundary rather than let loose in the program.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static string readersubreadsubline_BANG(System.IO.TextReader reader) =>
-        reader.ReadLine()
+    public static Utf8String readersubreadsubline_BANG(System.IO.TextReader reader) =>
+        Utf8String.FromUtf16(reader.ReadLine()
         ?? throw new System.IO.EndOfStreamException(
-            "read-line: the port is at end of input. Guard with (port-eof? p), or use read-line/opt.");
+            "read-line: the port is at end of input. Guard with (port-eof? p), or use read-line/opt."));
 
     // The failing char read.
     //
@@ -99,9 +115,9 @@ public static partial class BjolangRuntime {
     // "System.IO.StreamWriter" and never say a word — and a port is one type to
     // every caller by design, so the type checker cannot rule the question out.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static string writersubgtstring(System.IO.TextWriter writer) =>
+    public static Utf8String writersubgtstring(System.IO.TextWriter writer) =>
         writer is System.IO.StringWriter sw
-            ? sw.ToString()
+            ? Utf8String.FromUtf16(sw.ToString())
             : throw new InvalidOperationException(
                 "get-output-string: this port is a "
                 + writer.GetType().Name
@@ -109,17 +125,17 @@ public static partial class BjolangRuntime {
 
     // Draining a port into a collection, done here rather than as a Bjolang
     // loop so that the builder is used directly and each line is added once.
-    public static SchemeList.SchemeList<string> readersubgtlist(System.IO.TextReader reader) {
-        var builder = new SchemeList.SchemeListBuilder<string>();
+    public static SchemeList.SchemeList<Utf8String> readersubgtlist(System.IO.TextReader reader) {
+        var builder = new SchemeList.SchemeListBuilder<Utf8String>();
         string? line;
-        while ((line = reader.ReadLine()) is not null) builder.Add(line);
+        while ((line = reader.ReadLine()) is not null) builder.Add(Utf8String.FromUtf16(line));
         return builder.ToSchemeList();
     }
 
-    public static Collections.RrbList<string> readersubgtvec(System.IO.TextReader reader) {
-        var builder = new Collections.RrbBuilder<string>();
+    public static Collections.RrbList<Utf8String> readersubgtvec(System.IO.TextReader reader) {
+        var builder = new Collections.RrbBuilder<Utf8String>();
         string? line;
-        while ((line = reader.ReadLine()) is not null) builder.Add(line);
+        while ((line = reader.ReadLine()) is not null) builder.Add(Utf8String.FromUtf16(line));
         return builder.ToImmutable();
     }
 
@@ -215,7 +231,7 @@ public static partial class BjolangRuntime {
     // generic return has no argument to infer itself from. Loud rather than
     // silent for the reason the whole design turns on: the alternative is a
     // `Map` that quietly loses the entry the next time the field is written.
-    public static int unhashable(string typeName) =>
+    public static int unhashable(Utf8String typeName) =>
         throw new InvalidOperationException(
             $"{typeName} has a mutable field, so it has no stable hash: it cannot be a Map or Set key. "
             + "Compare it with = instead, or write an Eq implementation whose eq-hash reads only the immutable fields.");
@@ -243,7 +259,7 @@ public static partial class BjolangRuntime {
     // — so interop cannot resolve `.ToString` on one, and this stays here while
     // the numeric conversions moved to `std/prelude`.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static string charsubgtstring(Bjolang.Runtime.BjoChar c) => c.ToString();
+    public static Utf8String charsubgtstring(Bjolang.Runtime.BjoChar c) => Utf8String.FromRune(c.ToRune());
 
     // --- Character classification and case ---
     //
@@ -366,77 +382,75 @@ public static partial class BjolangRuntime {
 
     // --- String cursors ---
     //
-    // Thin forwarders onto `Bjolang.Runtime.StringCursor`, where the reasoning
-    // and the decoding live. A cursor is an opaque offset into the string's
-    // storage; see that file for why there is no way to turn one into an int.
+    // Thin forwarders onto `BjoString.StringCursor`, where the decoding lives.
+    // A cursor is an opaque byte offset into the string's UTF-8; BjoString
+    // keeps the offset internal, so there is no way to turn one into an int.
     //
-    // This is what replaces `string-ref`. An index-based accessor over UTF-16
+    // This is what replaces `string-ref`. An index-based accessor over UTF-8
     // is O(n) per lookup, so the obvious loop is quadratic; a cursor makes the
     // same loop linear and costs a struct holding an int.
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Bjolang.Runtime.StringCursor stringsubcursorsubstart(string s) =>
-        Bjolang.Runtime.StringCursor.Start(s);
+    public static BjoString.StringCursor stringsubcursorsubstart(Utf8String s) =>
+        BjoString.StringCursor.Start(s);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Bjolang.Runtime.StringCursor stringsubcursorsubend(string s) =>
-        Bjolang.Runtime.StringCursor.End(s);
+    public static BjoString.StringCursor stringsubcursorsubend(Utf8String s) =>
+        BjoString.StringCursor.End(s);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool stringsubcursorsubend_QMARK(string s, Bjolang.Runtime.StringCursor c) =>
-        Bjolang.Runtime.StringCursor.AtEnd(s, c);
+    public static bool stringsubcursorsubend_QMARK(Utf8String s, BjoString.StringCursor c) =>
+        BjoString.StringCursor.AtEnd(s, c);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Bjolang.Runtime.BjoChar stringsubcursorsubref(string s, Bjolang.Runtime.StringCursor c) =>
-        Bjolang.Runtime.StringCursor.Ref(s, c);
+    public static Bjolang.Runtime.BjoChar stringsubcursorsubref(Utf8String s, BjoString.StringCursor c) =>
+        Bjolang.Runtime.BjoChar.FromRune(BjoString.StringCursor.Ref(s, c));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Bjolang.Runtime.StringCursor stringsubcursorsubnext(string s, Bjolang.Runtime.StringCursor c) =>
-        Bjolang.Runtime.StringCursor.Next(s, c);
+    public static BjoString.StringCursor stringsubcursorsubnext(Utf8String s, BjoString.StringCursor c) =>
+        BjoString.StringCursor.Next(s, c);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Bjolang.Runtime.StringCursor stringsubcursorsubprev(string s, Bjolang.Runtime.StringCursor c) =>
-        Bjolang.Runtime.StringCursor.Prev(s, c);
+    public static BjoString.StringCursor stringsubcursorsubprev(Utf8String s, BjoString.StringCursor c) =>
+        BjoString.StringCursor.Prev(s, c);
 
     // `string-cursor-ref+next`: the character and the cursor after it, for the
-    // loop that wants both. One read of the unit at the cursor answers both
-    // questions, so this is cheaper than the two calls it replaces.
+    // loop that wants both. One read of the lead byte answers both questions,
+    // so this is cheaper than the two calls it replaces.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static (Bjolang.Runtime.BjoChar, Bjolang.Runtime.StringCursor) stringsubcursorsubrefaddnext(
-        string s, Bjolang.Runtime.StringCursor c) =>
-        Bjolang.Runtime.StringCursor.RefNext(s, c);
+    public static (Bjolang.Runtime.BjoChar, BjoString.StringCursor) stringsubcursorsubrefaddnext(
+        Utf8String s, BjoString.StringCursor c) {
+        var (r, next) = BjoString.StringCursor.RefNext(s, c);
+        return (Bjolang.Runtime.BjoChar.FromRune(r), next);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static string substringdivcursors(string s, Bjolang.Runtime.StringCursor start, Bjolang.Runtime.StringCursor end) =>
-        Bjolang.Runtime.StringCursor.Substring(s, start, end);
+    public static Utf8String substringdivcursors(Utf8String s, BjoString.StringCursor start, BjoString.StringCursor end) =>
+        BjoString.StringCursor.Substring(s, start, end);
 
-    // The character count, which is a walk. `string-length` is the storage
-    // length and O(1); the two differ for any string with an astral character
-    // in it, and the names are meant to be told apart.
+    // The character count. `string-length` is the byte length and O(1); the two
+    // differ for any string with a character outside ASCII in it, and the
+    // names are meant to be told apart.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int stringsubcount(string s) => Bjolang.Runtime.StringCursor.Count(s);
+    public static int stringsubcount(Utf8String s) => s.Count();
 
     // --- StringBuilder ---
     //
     // The accumulator behind the `Stringing` collector, and the same shape as
     // the list and vec builders: `add!` mutates and returns `Unit`, so a loop
     // slot carries the identity that never changes (§8.1).
-    //
-    // `AppendTo` rather than `Append(c.ToString())` — a `BjoChar` knows how to
-    // write itself as one or two UTF-16 units without allocating the string
-    // in between.
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static StringBuilder stringbuildersubempty() => new StringBuilder();
+    public static Utf8StringBuilder stringbuildersubempty() => new Utf8StringBuilder();
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit stringbuildersubadd_BANG(StringBuilder b, Bjolang.Runtime.BjoChar c) {
-        c.AppendTo(b);
+    public static Unit stringbuildersubadd_BANG(Utf8StringBuilder b, Bjolang.Runtime.BjoChar c) {
+        b.Append(c.ToRune());
         return unit;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit stringbuildersubaddsubstring_BANG(StringBuilder b, string s) {
+    public static Unit stringbuildersubaddsubstring_BANG(Utf8StringBuilder b, Utf8String s) {
         b.Append(s);
         return unit;
     }
@@ -446,66 +460,118 @@ public static partial class BjolangRuntime {
     // chunk every time otherwise, which measures as more than the parse it
     // feeds.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit stringbuildersubclear_BANG(StringBuilder b) {
+    public static Unit stringbuildersubclear_BANG(Utf8StringBuilder b) {
         b.Clear();
         return unit;
     }
 
-    // One UTF-16 unit, for a caller that already has the number.
+    // One UTF-8 byte, for a caller that already has the number.
     //
-    // `add!` takes a scalar, so a reader holding units has to validate a
-    // `BjoChar` — and a pair it just put together is split straight back into
-    // the two units it came from. Both ends of that are skipped here.
-    //
-    // The caller owns the invariant `add!` would have enforced: half a pair
-    // written on its own is a string that cannot be encoded.
+    // `add!` takes a scalar and encodes it; a reader copying its input byte by
+    // byte skips both. The bytes are validated when the builder becomes a
+    // string, which throws if they did not form whole scalars.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit stringbuildersubaddsubcode_BANG(StringBuilder b, int code) {
-        b.Append((char)code);
+    public static Unit stringbuildersubaddsubcode_BANG(Utf8StringBuilder b, int code) {
+        b.AppendByte((byte)code);
         return unit;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int stringbuildersublength(StringBuilder b) => b.Length;
+    public static Unit stringbuildersubaddsubunit_BANG(Utf8StringBuilder b, int code) {
+        b.AppendUtf16Unit((char)code);
+        return unit;
+    }
 
-    // One UTF-16 unit out of the buffer, the counterpart of `add-code!`.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int stringbuildersublength(Utf8StringBuilder b) => b.ByteLength;
+
+    // One byte out of the buffer, the counterpart of `add-code!`.
     //
     // This is what lets a reader answer "is what I just buffered the name I
     // already have?" without building the string to ask — which is the whole
-    // cost of interning a name that a document repeats. Reading a buffer it
-    // filled itself, a reader knows the units are its own and needs no scalar
-    // to be reconstituted; a caller that wants scalars wants a string and the
-    // cursor API.
-    //
-    // `StringBuilder`'s indexer walks its chunk list, so this is a few
-    // operations rather than one. For the short names a reader compares, the
-    // buffer is one chunk and the walk stops immediately.
+    // cost of interning a name that a document repeats.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int stringbuildersubcodesubref(StringBuilder b, int i) => b[i];
+    public static int stringbuildersubcodesubref(Utf8StringBuilder b, int i) => b.ByteAt(i);
 
     // The same for a string, so that the two sides of that comparison are
     // spelled the same way. `string-cursor-ref` is the scalar-aware accessor
     // and stays the one to reach for when the index means a character; this one
-    // means a unit, as `string-length` does.
+    // means a byte, as `string-length` does.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int stringsubcodesubref(string s, int i) => s[i];
+    public static int stringsubcodesubref(Utf8String s, int i) => s.ByteAt(i);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static string stringbuildersubgtstring(StringBuilder b) => b.ToString();
+    public static Utf8String stringbuildersubgtstring(Utf8StringBuilder b) => b.ToUtf8String();
 
     // --- Strings ---
     //
-    // The string operations proper are `std/prelude`'s, since they are plain
-    // .NET calls. This one is here so that the emptiness predicates are one
-    // family: `list-empty?`, `map-empty?` and `vec-empty?` are all builtins,
-    // and a `string-empty?` written as `(= (string-length s) 0)` in the library
-    // would be the odd one out for no reason a caller can see.
-    //
-    // `Length == 0` rather than `IsNullOrEmpty`: a Bjolang string is never
-    // null, and answering true for one would hide a bug at the interop
-    // boundary rather than report it.
+    // The string operations proper are `std/prelude`'s. This one is here so
+    // that the emptiness predicates are one family: `list-empty?`,
+    // `map-empty?` and `vec-empty?` are all builtins.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool stringsubempty_QMARK(string s) => s.Length == 0;
+    public static bool stringsubempty_QMARK(Utf8String s) => s.IsEmpty;
+
+    // What `std/prelude` imports for the operations whose BjoString members
+    // take a `StringSlice`: interop does not apply the implicit conversion
+    // from a string, so these name the string type outright.
+    public static bool StringContains(Utf8String s, Utf8String needle) => s.Contains(needle);
+
+    public static bool StringStartsWith(Utf8String s, Utf8String prefix) => s.StartsWith(prefix);
+
+    public static bool StringEndsWith(Utf8String s, Utf8String suffix) => s.EndsWith(suffix);
+
+    public static Utf8String StringReplace(Utf8String s, Utf8String old, Utf8String replacement) =>
+        s.Replace(old, replacement);
+
+    // Byte offsets, for the library's scanners that already count in bytes
+    // (`string-length`, `string-code-ref`). -1 when there is no occurrence.
+    public static int StringIndexOf(Utf8String s, Utf8String needle) =>
+        s.AsSpan().IndexOf(needle.AsSpan());
+
+    public static int StringLastIndexOf(Utf8String s, Utf8String needle) =>
+        s.AsSpan().LastIndexOf(needle.AsSpan());
+
+    // The bytes `[start, end)`, which have to fall on character boundaries.
+    public static Utf8String StringSubstring(Utf8String s, int start, int end) =>
+        s.Substring(new BjoString.StringCursor(start), new BjoString.StringCursor(end));
+
+    public static Utf8String StringSubstringFrom(Utf8String s, int start) =>
+        StringSubstring(s, start, s.ByteLength);
+
+    // `str`'s rest array, in one allocation.
+    public static Utf8String StringConcat(Utf8String[] parts) => Utf8String.Concat(parts);
+
+    // The explicit conversions to and from .NET's string, for one nested in
+    // another type. A .NET member that takes or returns one directly is
+    // converted by the helpers below, which the compiler writes at the call.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static string stringsubgtclrsubstring(Utf8String s) => s.ToString();
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Utf8String clrsubstringsubgtstring(string? s) => StringFromClr(s);
+
+    // A .NET string where a Bjolang one is wanted. Null becomes the empty
+    // string: Bjolang has no null, and a .NET member answering null for "no
+    // text" is common enough that failing on it would make the member unusable.
+    // Members whose null means something else are wrapped by name.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Utf8String StringFromClr(string? s) => s is null ? default : Utf8String.FromUtf16(s);
+
+    public static Utf8String[] StringsFromClr(string?[]? strings) {
+        if (strings is null) return [];
+        var result = new Utf8String[strings.Length];
+        for (int i = 0; i < strings.Length; i++) result[i] = StringFromClr(strings[i]);
+        return result;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static string StringToClr(Utf8String s) => s.ToString();
+
+    public static string[] StringsToClr(Utf8String[] strings) {
+        var result = new string[strings.Length];
+        for (int i = 0; i < strings.Length; i++) result[i] = strings[i].ToString();
+        return result;
+    }
 
     // Vec operations mapped from RrbFun
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -778,9 +844,8 @@ public static partial class BjolangRuntime {
     // vec's tail as it is, without a copy. An array Bjolang code could still
     // reach must be copied instead, since writing to it would change the vec:
     // that is why this is not a prelude function over any array.
-    public static Collections.RrbList<string> SplitToVec(string s, string separator) =>
-        Collections.RrbBuilder<string>.FromArray(s.Split(separator, StringSplitOptions.None),
-                                                 reuseArrayIfShorterThan32: true);
+    public static Collections.RrbList<Utf8String> SplitToVec(Utf8String s, Utf8String separator) =>
+        Collections.RrbBuilder<Utf8String>.FromArray(s.Split(separator), reuseArrayIfShorterThan32: true);
 
     // The collection-to-rest-array conversions behind `apply`. Neither is
     // reachable from Bjolang source: `apply` is an intrinsic and builds the
@@ -933,7 +998,8 @@ public static partial class BjolangRuntime {
     public static readonly Param<bool> currentlysubinsubrepl =
         new(-1, ParamIds.NextCold(), false);
 
-    public static T Panic<T>(string message, int exitCode) {
+    public static T Panic<T>(Utf8String text, int exitCode) {
+        string message = text.ToString();
         // If we are in a repl, we raise. 
         if (parametersubref(currentlysubinsubrepl))
             throw new PanicException(message);
@@ -966,7 +1032,7 @@ public static partial class BjolangRuntime {
         private CancelReason() { }
 
         /// Someone asked to stop, and the string names who.
-        public sealed record Requested(string Item1) : CancelReason;
+        public sealed record Requested(Utf8String Item1) : CancelReason;
 
         /// A time limit fired. What `with-deadline` raises.
         public sealed record Deadline : CancelReason {
@@ -1555,16 +1621,16 @@ public static partial class BjolangRuntime {
 
     // --- Keyword & Symbol helpers ---
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static string keywordsubgtstring(Keyword k) => k.Name;
+    public static Utf8String keywordsubgtstring(Keyword k) => Utf8String.FromUtf16(k.Name);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Keyword stringsubgtkeyword(string s) => Keyword.Intern(s);
+    public static Keyword stringsubgtkeyword(Utf8String s) => Keyword.Intern(s.ToString());
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static string symbolsubgtstring(Symbol s) => s.Name;
+    public static Utf8String symbolsubgtstring(Symbol s) => Utf8String.FromUtf16(s.Name);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Symbol stringsubgtsymbol(string s) => Symbol.Intern(s);
+    public static Symbol stringsubgtsymbol(Utf8String s) => Symbol.Intern(s.ToString());
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool keyword_QMARK(object? o) => o is Keyword;
@@ -1577,13 +1643,13 @@ public static partial class BjolangRuntime {
     /// `(syntax->string s)`. Renders a piece of syntax back to something that
     /// reads as source, which is what a macro's error message wants to quote.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static string syntaxsubgtstring(Bjolang.Runtime.Syntax s) => s.ToString();
+    public static Utf8String syntaxsubgtstring(Bjolang.Runtime.Syntax s) => Utf8String.FromUtf16(s.ToString());
 
     /// `(syntax-file s)` and `(syntax-line s)`. The range is otherwise opaque:
     /// a macro has no business constructing one, and the expander fills in the
     /// call site's range for everything a transformer builds.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static string syntaxsubfile(Bjolang.Runtime.Syntax s) => s.Range.File ?? "<unknown>";
+    public static Utf8String syntaxsubfile(Bjolang.Runtime.Syntax s) => Utf8String.FromUtf16(s.Range.File ?? "<unknown>");
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int syntaxsubline(Bjolang.Runtime.Syntax s) => s.Range.StartLine;
@@ -1635,7 +1701,7 @@ public static partial class BjolangRuntime {
     /// Types as a `Syntax` so it can stand in a `match` arm beside the arms that
     /// return one. It never does return: the expander catches this, unwraps the
     /// reflection frame, and reports it against the macro's call site.
-    public static Bjolang.Runtime.Syntax syntaxsuberror(Bjolang.Runtime.Syntax form, string message) =>
+    public static Bjolang.Runtime.Syntax syntaxsuberror(Bjolang.Runtime.Syntax form, Utf8String message) =>
         throw new InvalidOperationException($"{message} — in {form}");
 
     /// What a `#"..."`'s `str` and `->str` become inside a `#'` template: an

@@ -710,6 +710,8 @@ public static class Net {
 
     public static BjoByteOutputPort ConnectionOutput(BjoConnection connection) => connection.Output();
 
-    public static BjolangRuntime.Option<string> PeerAddress(BjoByteInputPort port) =>
-        port.Peer is { } peer ? BjolangRuntime.Some(peer) : BjolangRuntime.None<string>();
+    public static BjolangRuntime.Option<BjoString.Utf8String> PeerAddress(BjoByteInputPort port) =>
+        port.Peer is { } peer
+            ? BjolangRuntime.Some(BjoString.Utf8String.FromUtf16(peer))
+            : BjolangRuntime.None<BjoString.Utf8String>();
 }

@@ -199,6 +199,93 @@ let internal receiverClrType (where: string) (form: string) (targetType: HMType)
         failwithf
             $"Type Error at %s{where}: '%s{form}' needs a .NET receiver, but its target has the Bjolang type %s{shown}, which is not a .NET class."
 
+/// The Bjolang type a .NET string type is seen as at a call: `string` for
+/// `System.String`, and an array of strings for `string[]`. `None` for every
+/// other type, including a .NET string nested in another type, which stays a
+/// `System.String`.
+///
+/// A call converts between the two. An argument is converted in the tree
+/// (`toClrString`); a method's answer is converted by `Codegen`, which reads
+/// the method's own return type off its metadata, so that the call node stays
+/// the one the guarded, awaited and out-parameter paths recognize.
+let internal bjolangViewOf (t: HMType) : HMType option = DotNetInterop.clrStringViewOf t
+
+let internal seenType (t: HMType) : HMType = bjolangViewOf t |> Option.defaultValue t
+
+/// Whether an import's declared signature names `System.String` (or an array
+/// of it) as its result, which keeps the .NET string unconverted — for a
+/// member whose null means something a Bjolang "" would not.
+let internal declaresClrResult (info: ClrExternInfo) : bool =
+    match info.DeclaredType with
+    | Some(TFun(_, result, _)) -> (bjolangViewOf result).IsSome
+    | _ -> false
+
+/// What a call to an import answers: the Bjolang view of the member's type,
+/// or the .NET type itself when the declaration asks for it.
+let internal externResultType (info: ClrExternInfo) (memberType: HMType) : HMType =
+    if declaresClrResult info then memberType else seenType memberType
+
+/// A call to a runtime conversion, typed as its result.
+let private conversion (helper: string) (arg: TypedExpr) (result: HMType) : TypedExpr =
+    { Type = result
+      Range = arg.Range
+      Node = TForeignStaticCall("BjolangRuntime", helper, [ arg ], None) }
+
+/// A Bjolang string, or array of them, as the .NET type `clrType`.
+let internal toClrString (arg: TypedExpr) (clrType: HMType) : TypedExpr =
+    match clrType with
+    | TCon("Array", _) -> conversion "StringsToClr" arg clrType
+    | _ -> conversion "StringToClr" arg clrType
+
+/// A property or field read as Bjolang sees it: a `System.String`, or an array
+/// of them, converted to Bjolang strings, and anything else as it is.
+let internal marshalResult (expr: TypedExpr) : TypedExpr =
+    match expr.Type with
+    | TCon(TypeConstants.ClrStringName, []) -> conversion "StringFromClr" expr TypeConstants.stringType
+    | TCon("Array", [ TCon(TypeConstants.ClrStringName, []) ]) ->
+        conversion "StringsFromClr" expr (TCon("Array", [ TypeConstants.stringType ]))
+    | _ -> expr
+
+/// Resolves a member on a dot form's target, and for a Bjolang string falls
+/// back to .NET's string: `(.Substring s 1)` is a member BjoString does not
+/// have, so it is called on the string converted. `resolve` is given the type
+/// to resolve on, `None` meaning the target's own; the target comes back
+/// converted when the fallback was taken. The first failure is the one
+/// reported when both fail.
+let internal onStringOrClrString
+    (registry: TraitRegistry)
+    (targetType: HMType)
+    (target: TypedExpr)
+    (resolve: System.Type option -> 'a)
+    : 'a * TypedExpr =
+    if prune registry targetType <> TypeConstants.stringType then
+        resolve None, target
+    else
+        try
+            resolve None, target
+        with own ->
+            try
+                resolve (Some typeof<string>), toClrString target TypeConstants.clrStringType
+            with _ ->
+                raise own
+
+/// An out-parameter import's arguments, with those its `StringIns` names
+/// converted to the .NET string the method takes.
+let internal convertStringIns (outs: ExternOuts option) (args: TypedExpr list) : TypedExpr list =
+    match outs with
+    | Some o when not o.StringIns.IsEmpty ->
+        args
+        |> List.mapi (fun i arg ->
+            match List.tryFind (fun (j, _) -> j = i) o.StringIns with
+            | Some(_, clrType) -> toClrString arg clrType
+            | None -> arg)
+    | _ -> args
+
+/// `marshalResult` for an import's property read, unless its declaration keeps
+/// the .NET string.
+let internal marshalExternResult (info: ClrExternInfo) (expr: TypedExpr) : TypedExpr =
+    if declaresClrResult info then expr else marshalResult expr
+
 /// Unifies a foreign member's parameter types into the argument types.
 ///
 /// This is what makes reflection *drive* inference rather than merely check it:
@@ -211,7 +298,16 @@ let internal receiverClrType (where: string) (form: string) (targetType: HMType)
 /// through `reconcileForeignArgs` instead, an argument there being allowed to
 /// fit by conversion.
 let internal unifyForeignArgs (registry: TraitRegistry) (argTypes: HMType list) (paramTypes: HMType list) =
-    List.iter2 (unify registry) argTypes paramTypes
+    List.iter2
+        (fun argType paramType ->
+            // A .NET string parameter is declared as the Bjolang string a
+            // caller passes, unless the declaration names the .NET type itself.
+            let wanted =
+                if prune registry argType = paramType then paramType else seenType paramType
+
+            unify registry argType wanted)
+        argTypes
+        paramTypes
 
 /// Reconciles the arguments of a foreign call with the parameters of the
 /// overload that was selected for it, one argument at a time.
@@ -251,6 +347,14 @@ let internal reconcileForeignArgs
         (fun (arg: TypedExpr) paramType ->
             let argType = prune registry arg.Type
             let paramType = prune registry paramType
+
+            match bjolangViewOf paramType with
+            | Some wanted when argType <> paramType ->
+                // A .NET string parameter takes a Bjolang string, converted
+                // here; an argument that already is a .NET string passes as it is.
+                unify registry argType wanted
+                toClrString arg paramType
+            | _ ->
 
             if not (List.isEmpty (freeVars registry argType)) then
                 unify registry argType paramType
@@ -345,7 +449,15 @@ let internal checkDeclaredExtern
         let declaredParams =
             if hasReceiver then receiverType :: visibleParams else visibleParams
 
-        unify registry declared (tfun declaredParams result)
+        // Written as the caller sees it, after the string conversions, unless
+        // the declaration names the .NET string itself; see `declaresClrResult`.
+        let seenAs (written: HMType) (actual: HMType) =
+            if prune registry written = actual then actual else seenType actual
+
+        match prune registry declared with
+        | TFun(written, writtenResult, _) when written.Length = declaredParams.Length ->
+            unify registry declared (tfun (List.map2 seenAs written declaredParams) (seenAs writtenResult result))
+        | _ -> unify registry declared (tfun (List.map seenType declaredParams) (seenType result))
     | None -> ()
 
 let internal metadataOf (resolved: DotNetInterop.ResolvedCall) (exceptions: string list) : DotNetMethodMetadata =

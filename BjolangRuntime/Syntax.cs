@@ -102,9 +102,9 @@ public abstract record Syntax
     /// A numeric literal, as written. Text rather than a number for the same
     /// reason `Parser.EInt` is: the same node carries `1` and `1.5`, and which
     /// one it is has not been decided yet.
-    public sealed record SInt(string Item1) : Syntax;
+    public sealed record SInt(global::BjoString.Utf8String Item1) : Syntax;
 
-    public sealed record SStr(string Item1) : Syntax;
+    public sealed record SStr(global::BjoString.Utf8String Item1) : Syntax;
 
     public sealed record SChar(BjoChar Item1) : Syntax;
 
@@ -121,7 +121,7 @@ public abstract record Syntax
     /// and `...` is a rest pattern — so an input form can contain any of them,
     /// and dropping one would silently change what the macro was handed.
     /// Carrying the spelling is what makes the round trip total.
-    public sealed record SPunct(string Item1) : Syntax;
+    public sealed record SPunct(global::BjoString.Utf8String Item1) : Syntax;
 
     /// This node with a different range. The expander's fill-in step; F# has no
     /// `with` expression for a C# record.
@@ -162,10 +162,10 @@ public abstract record Syntax
                 sb.Append('\'').Append(d.Item1.Name);
                 break;
             case SInt n:
-                sb.Append(n.Item1);
+                sb.Append(n.Item1.ToString());
                 break;
             case SStr s:
-                sb.Append('"').Append(s.Item1.Replace("\\", "\\\\").Replace("\"", "\\\"")).Append('"');
+                sb.Append('"').Append(s.Item1.ToString().Replace("\\", "\\\\").Replace("\"", "\\\"")).Append('"');
                 break;
             case SChar c:
                 sb.Append("#\\").Append(c.Item1.ToString());
@@ -174,7 +174,7 @@ public abstract record Syntax
                 sb.Append("#:").Append(k.Item1.Name);
                 break;
             case SPunct p:
-                sb.Append(p.Item1);
+                sb.Append(p.Item1.ToString());
                 break;
             case SList l:
                 sb.Append('(');

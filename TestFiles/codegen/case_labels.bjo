@@ -29,10 +29,10 @@
 ;; assignment analysis with one.
 ;; EXPECT-CS: default: \{
 
-;; A string switch is a jump table too: C# hashes and dispatches rather than
-;; comparing down the list.
-;; EXPECT-CS: case "hi":
-;; EXPECT-CS: case "hello":
+;; A string is a struct with no C# constant, so each literal is a label that
+;; binds the value and a guard that compares it with the hoisted literal.
+;; EXPECT-CS: case var (__str__\d+) when \1\.Equals\(__Literals\.Str_hi\) is true:
+;; EXPECT-CS: case var (__str__\d+) when \1\.Equals\(__Literals\.Str_hello\) is true:
 (: greeting? (-> string bool))
 (defun (greeting? s)
   (case s
@@ -64,8 +64,8 @@
 ;; there the fallback arm has to be left off: `#t` and `#f` cover `bool`, and C#
 ;; rejects an arm it can prove unreachable (CS8510). Nothing else in the
 ;; language can be exhausted by listing its values.
-;; EXPECT-CS: true => "yes"
-;; EXPECT-CS: false => "no"
+;; EXPECT-CS: true => __Literals\.Str_yes
+;; EXPECT-CS: false => __Literals\.Str_no
 (: shout (-> bool string))
 (defun (shout b)
   (string-append (case b ((#t) "yes") ((#f) "no")) "!"))

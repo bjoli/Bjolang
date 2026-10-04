@@ -13,6 +13,7 @@
 
 using System.Globalization;
 using System.Text;
+using BjoString;
 
 namespace Bjolang.Runtime;
 
@@ -34,58 +35,32 @@ namespace Bjolang.Runtime;
 /// </para>
 /// </remarks>
 public static class BjoNum {
-    public static double ParseDouble(string s) =>
-        double.Parse(s, NumberStyles.Float, CultureInfo.InvariantCulture);
+    public static double ParseDouble(Utf8String s) => Utf8Number.ParseDouble(s);
 
-    public static string DoubleToString(double d) =>
-        d.ToString(CultureInfo.InvariantCulture);
+    public static Utf8String DoubleToString(double d) => Utf8Number.Format(d);
 
     // Integers too. `sv-SE` writes its minus as U+2212 MINUS SIGN, so
     // `(-100).ToString()` there is not a string any parser expects — it is not
     // even ASCII.
-    public static int ParseInt(string s) =>
-        int.Parse(s, NumberStyles.Integer, CultureInfo.InvariantCulture);
+    public static int ParseInt(Utf8String s) => Utf8Number.ParseInt(s);
 
-    public static string IntToString(int n) =>
-        n.ToString(CultureInfo.InvariantCulture);
+    public static Utf8String IntToString(int n) => Utf8Number.Format(n);
 
-    public static string LongToString(long n) =>
-        n.ToString(CultureInfo.InvariantCulture);
+    public static Utf8String LongToString(long n) => Utf8Number.Format(n);
 
-    public static string ByteToString(byte n) =>
-        n.ToString(CultureInfo.InvariantCulture);
+    public static Utf8String ByteToString(byte n) => Utf8Number.Format(n);
 
     /// The `->str` fallback: whatever a type with no implementation of its own
     /// says about itself, asked in the invariant culture. Reaches the numeric
     /// types the prelude names no conversion for, and every `IFormattable`.
-    public static string ToStringInvariant(object? o) =>
-        System.Convert.ToString(o, CultureInfo.InvariantCulture) ?? "";
+    public static Utf8String ToStringInvariant(object? o) =>
+        Utf8String.FromUtf16(System.Convert.ToString(o, CultureInfo.InvariantCulture) ?? "");
 
     // A scanner that has just spelled a number into a builder wants the number,
-    // not the string. `ToString` allocates one per number read; these copy into
-    // the stack instead.
-    //
-    // The bound is longer than any number worth writing. Past it the digits
-    // cannot change the answer, but they are still copied, because a number is
-    // allowed to be as long as it likes and refusing one here would be a
-    // parse error invented by an optimisation.
-    private const int Stacked = 512;
-
-    public static double ParseDouble(StringBuilder b) {
-        char[]? spilled = null;
-        Span<char> chars = b.Length <= Stacked ? stackalloc char[Stacked]
-                                               : (spilled = new char[b.Length]);
-        b.CopyTo(0, chars, b.Length);
-        return double.Parse(chars[..b.Length], NumberStyles.Float, CultureInfo.InvariantCulture);
-    }
+    // not the string. These parse the builder's bytes where they are.
+    public static double ParseDouble(Utf8StringBuilder b) => Utf8Number.ParseDouble(b.AsSpan());
 
     /// Overflows rather than saturating, so a number too wide for a long can be
     /// caught and read again as a double.
-    public static long ParseLong(StringBuilder b) {
-        char[]? spilled = null;
-        Span<char> chars = b.Length <= Stacked ? stackalloc char[Stacked]
-                                               : (spilled = new char[b.Length]);
-        b.CopyTo(0, chars, b.Length);
-        return long.Parse(chars[..b.Length], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture);
-    }
+    public static long ParseLong(Utf8StringBuilder b) => Utf8Number.ParseLong(b.AsSpan());
 }

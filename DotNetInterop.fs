@@ -395,9 +395,10 @@ let private nullaryCorrespondence =
     dict
         [ "Unit", "Bjoml.Unit"
           TypeConstants.CharName, "Bjolang.Runtime.BjoChar"
-          "StringCursor", "Bjolang.Runtime.StringCursor"
+          TypeConstants.StringName, "BjoString.Utf8String"
+          "StringCursor", "BjoString.StringCursor"
           "Syntax", "Bjolang.Runtime.Syntax"
-          "StringBuilder", "System.Text.StringBuilder"
+          "StringBuilder", "BjoString.Utf8StringBuilder"
           "Keyword", "BjolangRuntime.Keyword"
           "Symbol", "BjolangRuntime.Symbol"
           "CancelReason", "BjolangRuntime.CancelReason"
@@ -417,7 +418,7 @@ let private nullaryCorrespondence =
 /// unified with nothing. No such method could be imported, which is why
 /// `read-char` was a builtin — the workaround, not the design.
 ///
-/// Only `char` and `StringCursor`, and deliberately not the whole table. The
+/// Only the entries below, and deliberately not the whole table. The
 /// others have a .NET name a program may also write:
 /// `(import/class (SB (: System.Text.StringBuilder ...)))` is a real thing to
 /// do, and mapping the reflected type to `StringBuilder` would make the
@@ -431,8 +432,14 @@ let private nullaryCorrespondence =
 let private clrToNullary =
     dict
         [ "Bjolang.Runtime.BjoChar", TypeConstants.CharName
-          "Bjolang.Runtime.StringCursor", "StringCursor"
-          // The third entry, and it earns its place the same way: a .NET method
+          "BjoString.StringCursor", "StringCursor"
+          // A .NET member taking or returning Bjolang's string or builder —
+          // the runtime's, mostly. Neither has another spelling, since the
+          // .NET string and builder are `System.String` and
+          // `System.Text.StringBuilder`.
+          "BjoString.Utf8String", TypeConstants.StringName
+          "BjoString.Utf8StringBuilder", "StringBuilder"
+          // This entry earns its place the same way: a .NET method
           // *returning* a bare `Task` — which is what every middleware delegate
           // does — has to come back as the very type `(cast Task t)` names, or
           // an upcast could not be written where one is required. The long
@@ -635,7 +642,7 @@ let rec mapClrType (t: Type) : HMType =
         | "System.Int32" -> intType
         | "System.Int64" -> longType
         | "System.Double" -> doubleType
-        | "System.String" -> stringType
+        | "System.String" -> clrStringType
         | "System.Boolean" -> boolType
         | "System.Byte" -> byteType
         | "System.Int16" -> shortType
@@ -652,6 +659,15 @@ let rec mapClrType (t: Type) : HMType =
             match clrToNullary.TryGetValue name with
             | true, bjolang -> TCon(bjolang, [])
             | _ -> TCon(name, [])
+
+/// The Bjolang string type a .NET string type stands for at a call — `string`
+/// for `System.String` and an array of them for `string[]` — if it is one.
+/// `ForeignTyping.bjolangViewOf` is the same, for the passes after this one.
+let clrStringViewOf (t: HMType) : HMType option =
+    match t with
+    | TCon(TypeConstants.ClrStringName, []) -> Some stringType
+    | TCon("Array", [ TCon(TypeConstants.ClrStringName, []) ]) -> Some(TCon("Array", [ stringType ]))
+    | _ -> None
 
 /// The .NET type a Bjolang type corresponds to, when it has one.
 ///
@@ -819,7 +835,7 @@ let showTypesTogether (ts: HMType list) : string list =
             | "System.UInt32" -> "uint"
             | "System.UInt64" -> "ulong"
             | "System.Double" -> "double"
-            | "System.String" -> "string"
+            | "String" -> "string"
             | "System.Boolean" -> "bool"
             | "System.Byte" -> "byte"
             | "System.Object" -> "object"
@@ -1313,11 +1329,15 @@ let resolveOutMethod
 
         let paramPairs =
             List.zip (List.ofArray ps) declaredParams
-            |> List.map (fun (p, (declared, _)) ->
+            |> List.map (fun (p, (declared, isOut)) ->
                 let own =
                     if p.ParameterType.IsByRef then p.ParameterType.GetElementType() else p.ParameterType
 
-                mapClrType own, declared)
+                let own = mapClrType own
+
+                // A .NET string parameter is declared as the Bjolang string
+                // the call converts; see `StringIns`.
+                if not isOut && clrStringViewOf own = Some declared then declared, declared else own, declared)
 
         let receiverPairs =
             match declaredReceiver with
@@ -1405,6 +1425,14 @@ let resolveOutMethod
                     let inTypes =
                         declaredParams |> List.filter (fun (_, isOut) -> not isOut) |> List.map fst
 
+                    let stringIns =
+                        List.zip (List.ofArray ps) declaredParams
+                        |> List.filter (fun (_, (_, isOut)) -> not isOut)
+                        |> List.indexed
+                        |> List.choose (fun (i, (p, (declared, _))) ->
+                            let own = mapClrType p.ParameterType
+                            if clrStringViewOf own = Some declared then Some(i, own) else None)
+
                     Ok
                         { TypeArguments = methodTypeArgs |> List.map Option.get
                           ParameterTypes = inTypes
@@ -1413,7 +1441,8 @@ let resolveOutMethod
                               Types = outDeclared
                               Form = form
                               KeepsReturn = form = OutTuple && not returnsVoid
-                              MethodReturn = substTypeVars solution methodReturn } }
+                              MethodReturn = substTypeVars solution methodReturn
+                              StringIns = stringIns } }
 
     let shaped =
         candidates |> List.map (fun m -> m, shapeOf m)
@@ -1503,6 +1532,13 @@ let private scoreArgument (param: Type) (arg: HMType) : int option =
         | None -> None
         | Some argType ->
             if argType = param then Some 0
+            // A Bjolang string for a .NET one, converted at the call. Scored as
+            // a widening, so that `Write(string)` beats `Write(object)`.
+            elif
+                (param = typeof<string> && argType.FullName = "BjoString.Utf8String")
+                || (param = typeof<string[]> && argType.FullName = "BjoString.Utf8String[]")
+            then
+                Some 1
             elif
                 widenings.ContainsKey argType
                 && widenings[argType] |> List.contains param
