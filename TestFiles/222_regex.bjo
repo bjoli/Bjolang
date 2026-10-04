@@ -1,10 +1,9 @@
 ;; Regular expressions, in s-expression notation.
 ;;
-;; `#rx(...)` is read and compiled to a .NET pattern at compile time, so what is
+;; `#rx(...)` is read and compiled to a pattern at compile time, so what is
 ;; under test here is a string this repository wrote. The `rx-pattern`
-;; assertions are the ones that matter most: the whole design rests on every
-;; character of the emitted pattern being chosen here rather than inherited from
-;; `System.Text.RegularExpressions`, and a regression to `\d` or `.` would be
+;; assertions are the ones that matter most: every class in the emitted pattern
+;; is a list of scalar ranges chosen here, and a regression in one would be
 ;; invisible behaviourally until the wrong input turned up.
 
 (import (std prelude))
@@ -100,18 +99,19 @@
 
   ;; ---- Astral scalars ------------------------------------------------------
   ;;
-  ;; The alphabet is the scalar, not the UTF-16 code unit. These four are what
-  ;; keeps it that way: an emoji is one `:any`, not two, and a complemented BMP
-  ;; set still holds it.
+  ;; The alphabet is the scalar, not the byte. An emoji is one `:any`, not two,
+  ;; a complemented set holds it, and a set can name it.
   (expect-true "one astral scalar is one :any" (rx-match? #rx(:any) "😀"))
   (expect-true "and not two" (not (rx-match? #rx(seq :any :any) "😀")))
   (expect-true "a complemented set holds it" (rx-match? #rx((~ (/ #\a #\z))) "😀"))
   (expect-true "an astral literal matches" (rx-match? #rx("😀") "😀"))
+  (expect-true "a set can hold an astral scalar" (rx-match? #rx((in #\😀)) "😀"))
+  (expect-true "and a range of them" (rx-match? #rx((+ (/ #\😀 #\🙏))) "😃🙂"))
+  (expect-true "which excludes what is outside it" (not (rx-match? #rx((/ #\😀 #\🙏)) "🚀")))
   (expect "counted as one scalar" (string-count "😀") 1)
 
   ;; A cursor a match hands back sits on a character boundary, which is the
-  ;; invariant `StringCursor` is built on and the one a UTF-16 match index does
-  ;; not carry by itself.
+  ;; invariant `StringCursor` is built on.
   (match (rx-search #rx("b") "😀b😀")
     ((Some m)
      (expect "a cursor lands after the pair" (substring/cursors (rx-input m) (rx-start m) (rx-end m)) "b")
@@ -132,6 +132,18 @@
                (not (rx-search? #rx(seq "sat" :eos) "the cat sat\n")))
 
   ;; ---- Captures ------------------------------------------------------------
+  ;; One unnamed group writes its name list as "", which is also the list of a
+  ;; pattern with no groups: the count comes from the pattern.
+  (match (rx-search #rx(seq "=" ($ (+ :ascii-digit))) "x=42")
+    ((Some m)
+     (expect "a lone unnamed group" (option-ref-or (rx-group/n m 0) "?") "42")
+     (expect "counted" (rx-group-count m) 1))
+    (None (fail "a lone unnamed group")))
+  ;; A group in a loop whose body can match empty keeps the last iteration
+  ;; that matched something.
+  (match (rx-match #rx(* ($ (* "a"))) "a")
+    ((Some m) (expect "a group in a loop" (option-ref-or (rx-group/n m 0) "?") "a"))
+    (None (fail "a group in a loop")))
   (match (rx-match phone "555-1234")
     ((Some m)
      (expect "a named group" (option-ref-or (rx-group m :area) "?") "555")
@@ -199,24 +211,21 @@
 
   ;; ---- What was emitted ----------------------------------------------------
   ;;
-  ;; The pattern is asserted literally. Every escape is a `\uXXXX`, every group
-  ;; is named `gN`, and none of `.` `^` `$` `\d` `\w` `\s` `\p{` appears.
-  (expect "a literal is hex-escaped" (rx-pattern #rx("ab")) "(?:\\u0061\\u0062)")
-  (expect "a range is a class" (rx-pattern #rx((/ #\a #\z))) "[\\u0061-\\u007A]")
+  ;; The pattern is asserted literally: BjoRx's tree as text, scalars in hex.
+  (expect "a literal is its scalars" (rx-pattern #rx("ab")) "(l 61 62)")
+  (expect "a range is a class" (rx-pattern #rx((/ #\a #\z))) "(c 61-7A)")
   (expect "a quantifier wraps its body"
-          (rx-pattern #rx((+ (/ #\a #\z)))) "(?:[\\u0061-\\u007A]+)")
-  (expect "a group is named by number"
-          (rx-pattern #rx(($ "a"))) "(?<g0>\\u0061)")
-  (expect "anchors are \\A and \\z"
-          (rx-pattern #rx(seq :bos "a" :eos)) "(?:\\A\\u0061\\z)")
-  ;; `:any` is an alternation over the surrogate pair, which is what makes one
-  ;; atom consume one scalar.
-  (expect "any takes a surrogate pair as one"
-          (rx-pattern #rx(:any))
-          "(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[\\u0000-\\uD7FF\\uE000-\\uFFFF])")
+          (rx-pattern #rx((+ (/ #\a #\z)))) "(r 1 - g (c 61-7A))")
+  (expect "a lazy one says so" (rx-pattern #rx((*? "a"))) "(r 0 - l (l 61))")
+  (expect "a group is numbered from 1"
+          (rx-pattern #rx(($ "a"))) "(g 1 (l 61))")
+  (expect "anchors are A and z"
+          (rx-pattern #rx(seq :bos "a" :eos)) "(s (A) (l 61) (z))")
+  (expect "any is every scalar but the surrogates"
+          (rx-pattern #rx(:any)) "(c 0-D7FF E000-10FFFF)")
   ;; Adjacent ranges are merged, so two spellings of one set compile alike.
   (expect "adjacent ranges merge"
-          (rx-pattern #rx((in (/ #\a #\m) (/ #\n #\z)))) "[\\u0061-\\u007A]")
+          (rx-pattern #rx((in (/ #\a #\m) (/ #\n #\z)))) "(c 61-7A)")
   (expect "difference is computed here"
-          (rx-pattern #rx((- (/ #\a #\e) (in #\c)))) "[\\u0061-\\u0062\\u0064-\\u0065]")
+          (rx-pattern #rx((- (/ #\a #\e) (in #\c)))) "(c 61-62 64-65)")
   0)

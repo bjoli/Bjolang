@@ -19,13 +19,13 @@
   (reference """
     A pattern is written @code{#rx(...)} in a notation like Scheme's SRE,
     not as a string such as @code{"[a-z]+"}, so nothing is ever escaped
-    twice. It is read, checked and compiled to a .NET pattern at compile
+    twice. It is read, checked and compiled to a pattern at compile
     time, and a bad pattern is a compile error pointing at the sub-form that
     is wrong. The pattern language is described with @code{#rx}.
 
     @strong{Using a pattern.} A @code{#rx(...)} is an @code{Rx}, a compiled
     regular expression. Compiling is cached by pattern, so evaluating the
-    same @code{#rx(...)} again does not build a second .NET regex.
+    same @code{#rx(...)} again does not build a second regex.
     @code{rx-match?} and @code{rx-match} match the
     whole string; @code{rx-search?} and @code{rx-search} find the leftmost
     match anywhere in it; @code{rx-matches} finds them all. A match is an
@@ -35,13 +35,14 @@
     @code{match}, the patterns @code{Rx} and @code{RxIn} do the same as
     @code{rx-match} and @code{rx-search}.
 
-    @strong{The engine.} The matching is
-    @code{System.Text.RegularExpressions} in its non-backtracking mode,
-    which matches in time linear in the length of the string, and the
-    options are fixed: @code{NonBacktracking}, @code{ExplicitCapture},
-    @code{CultureInvariant}. That mode refuses backreferences, lookarounds,
-    atomic groups and conditionals, the constructs that would tie Bjolang to
-    a backtracking engine for good. So these are not supported, on purpose:
+    @strong{The engine.} The matching is BjoRx, a translation of Rust's
+    @code{regex} crate: it matches in time linear in the length of the
+    string, over the string's UTF-8 as it is, and a match is the leftmost
+    one, with alternatives tried in the order written. Only @code{($ ...)}
+    and @code{(=> :name ...)} capture. It has no backreferences,
+    lookarounds, atomic groups or conditionals, the constructs that would
+    tie Bjolang to a backtracking engine for good. So these are not
+    supported, on purpose:
 
     @itemlist{
       @item{Lookarounds, backreferences and conditionals.}
@@ -55,22 +56,14 @@
     }
 
     @strong{Unicode.} The alphabet is the Unicode scalar, as it is for
-    @code{char} and the string cursors, but .NET's engine works in UTF-16
-    code units. So @code{:any} and every complemented set are emitted as an
-    alternation that takes a surrogate pair as one unit, and a match never
-    begins or ends inside a pair: an emoji is not split in half.
+    @code{char} and the string cursors: @code{:any} is one character, a
+    match never begins or ends inside one, and a character set may hold any
+    scalar, @code{(in "😀")} included.
 
-    .NET's character classes cannot name a scalar above U+FFFF, so a
-    character set cannot hold one: @code{(in "😀")} is a compile error.
-    Match it as a literal, @code{"😀"} or @code{(lit "😀")}, instead.
-
-    The emitted pattern never uses @code{.}, @code{^}, @code{$},
-    @code{\d}, @code{\w}, @code{\s} or @code{\p{...}}, whose meanings .NET
-    decides and which move when the runtime's Unicode tables are updated.
     The named sets are written out as explicit ranges from tables in
     @code{rx.bjo}, generated from .NET's @code{CharUnicodeInfo} so that
-    @code{:alpha} agrees with @code{char-alphabetic?}. A compiled program
-    means the same thing on every runtime.
+    @code{:alpha} agrees with @code{char-alphabetic?} below U+10000. A
+    compiled program means the same thing on every runtime.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -100,7 +93,7 @@
     #rx(+ :digit)            ; and the same as #rx((+ :digit))
     """)
   (reference """
-    It expands to @code{(rx-compile "<pattern>" "<names>")}, with the .NET
+    It expands to @code{(rx-compile "<pattern>" "<names>")}, with the
     pattern and the group names worked out at compile time. Its value is an
     @code{Rx}. @code{#rx(seq a b)} reads as @code{(#rx seq a b)}, so a form
     may be written with or without its own parentheses.
@@ -238,8 +231,7 @@
     """)
   (reference """
     Each search starts where the last match ended. After an empty match it
-    starts one character on, a whole surrogate pair if that is what is
-    there, so it is never inside one.
+    starts one character on, so it never starts inside one.
     """))
 
 (:doc rx-replace
@@ -305,14 +297,12 @@
   (summary "Where a match begins.")
   (arg m "The match.")
   (returns "A cursor into rx-input, on the match's first character.")
-  (raises System.InvalidOperationException "When the position falls inside a surrogate pair, which only a pattern written by hand for rx-compile can bring about.")
   (see rx-end rx-input))
 
 (:doc rx-end
   (summary "Where a match ends.")
   (arg m "The match.")
   (returns "A cursor into rx-input, just after the match's last character.")
-  (raises System.InvalidOperationException "When the position falls inside a surrogate pair, which only a pattern written by hand for rx-compile can bring about.")
   (see rx-start rx-input))
 
 (:doc rx-group
@@ -330,7 +320,6 @@
   (arg m "The match.")
   (arg name "The keyword the group was named with.")
   (returns "A cursor into rx-input, or None if the group took no part in the match or there is no such group.")
-  (raises System.InvalidOperationException "When the position falls inside a surrogate pair, which only a pattern written by hand for rx-compile can bring about.")
   (see rx-group rx-group-end))
 
 (:doc rx-group-end
@@ -338,7 +327,6 @@
   (arg m "The match.")
   (arg name "The keyword the group was named with.")
   (returns "A cursor into rx-input just after the capture, or None if the group took no part in the match or there is no such group.")
-  (raises System.InvalidOperationException "When the position falls inside a surrogate pair, which only a pattern written by hand for rx-compile can bring about.")
   (see rx-group rx-group-start))
 
 (:doc rx-group/n
@@ -364,30 +352,31 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc rx-compile
-  (summary "Compiles a .NET pattern into an Rx: what #rx(...) expands into.")
-  (arg pattern "The .NET pattern, as @code{#rx} writes it.")
+  (summary "Compiles a pattern into an Rx: what #rx(...) expands into.")
+  (arg pattern "The pattern, as @code{#rx} writes it: BjoRx's tree as text.")
   (arg names "The Bjolang name of each group in order, separated by commas. An unnamed group has an empty name.")
   (returns "The compiled regular expression.")
-  (raises System.ArgumentException "When pattern is not a valid .NET pattern.")
-  (raises System.NotSupportedException "When pattern uses a construct the non-backtracking engine refuses, such as a backreference or a lookaround.")
+  (raises System.ArgumentException "When pattern is not a pattern as #rx writes them.")
   (see rx-pattern)
   (reference """
-    An @code{Rx} is a compiled regular expression. The options are fixed:
-    @code{NonBacktracking}, @code{ExplicitCapture} and
-    @code{CultureInvariant}. Compiling is cached by the pattern and the
-    names, so the same pattern compiled twice is one regex.
+    An @code{Rx} is a compiled regular expression. Compiling is cached by
+    the pattern and the names, so the same pattern compiled twice is one
+    regex.
 
-    It is there for @code{#rx}, which checks what it emits. A pattern passed
-    here by hand is not checked, and is not held to the promises the module
-    makes: it may use @code{.}, @code{\d} and the rest, and may let a match
-    boundary fall inside a surrogate pair. Commas cannot occur in a keyword,
-    so they cannot occur in a name.
+    It is there for @code{#rx}, which checks what it emits. The text is one
+    parenthesized form per node: @code{(l 61 62)} a literal, @code{(c 30-39)}
+    a class of scalar ranges, @code{(s ...)} a sequence, @code{(a ...)} an
+    alternation, @code{(r least most g pattern)} a repetition (@code{-} for no
+    bound, @code{l} for lazy), @code{(g n pattern)} group @code{n} counting
+    from 1, @code{(A)} and @code{(z)} the start and end, @code{(e)} nothing.
+    Scalars are hexadecimal. Commas cannot occur in a keyword, so they
+    cannot occur in a name.
     """))
 
 (:doc rx-pattern
-  (summary "The .NET pattern an Rx was compiled from.")
+  (summary "The pattern an Rx was compiled from.")
   (arg rx "The compiled regular expression.")
-  (returns "The pattern string, so that a test can check what was emitted and not only what it matches.")
+  (returns "The pattern text, so that a test can check what was emitted and not only what it matches.")
   (see rx-compile))
 
 ;; ---------------------------------------------------------------------------

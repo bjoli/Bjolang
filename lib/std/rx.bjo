@@ -14,9 +14,9 @@
 ;;
 ;;     #rx(seq :bos (+ :digit) (lit "-") ($ (** 4 4 :digit)) :eos)
 ;;
-;; `#rx(...)` is read, checked and compiled to a .NET pattern string at compile
-;; time; a bad pattern is a compile error pointing at the sub-form that is
-;; wrong. What the expansion evaluates is `(rx-compile "<pattern>" "<names>")`.
+;; `#rx(...)` is read, checked and compiled to a pattern at compile time; a bad
+;; pattern is a compile error pointing at the sub-form that is wrong. What the
+;; expansion evaluates is `(rx-compile "<pattern>" "<names>")`.
 ;;
 ;; Two spelling rules, and they are what let the reader tell the parts apart
 ;; without a name table. Anything that takes no argument is a keyword — `:bos`,
@@ -25,27 +25,17 @@
 ;; itself: a literal sequence in pattern position, the set of its characters
 ;; inside `(in ...)`.
 ;;
-;; The matching is `System.Text.RegularExpressions`, under
-;; `NonBacktracking | ExplicitCapture | CultureInvariant`, and the pattern this
-;; file writes stays inside the subset that mode accepts. That is not only
-;; about the linear-time guarantee: the mode refuses backreferences,
-;; lookarounds, atomic groups and conditionals, which are the constructs that
-;; would tie Bjolang to a backtracking engine for good. Nothing here can emit
-;; one, so nothing can come to depend on one.
+;; The engine is BjoRx (`BjolangRuntime/BjoRx`): linear time, leftmost-first,
+;; over the string's UTF-8 as it is. It has no backreferences, lookarounds,
+;; atomic groups or conditionals, which are the constructs that would tie
+;; Bjolang to a backtracking engine for good, and nothing here can emit one.
 ;;
-;; The emitted pattern never contains `.`, `^`, `$`, `\d`, `\w`, `\s` or
-;; `\p{...}`. Each of those means something .NET decides — `\d` is every
-;; Unicode decimal digit, `$` matches before a trailing newline, `.` matches
-;; `\r` but not `\n` — and the Unicode ones move when the runtime's tables are
-;; updated. Classes are written out as explicit `\uXXXX` ranges from the tables
-;; at the bottom of this file instead, so a compiled program means the same
-;; thing on every runtime and the meaning is readable here.
-;;
-;; The alphabet is the Unicode scalar, as it is for `char` and the string
-;; cursors, but .NET's regex engine works in UTF-16 code units. So `:any` and
-;; every complemented set are emitted as an alternation that takes a surrogate
-;; pair as one unit, and a match boundary can never land inside a pair. See
-;; `BjolangRuntime/BjoRegex.cs`, which checks it.
+;; The pattern is BjoRx's tree as text (`BjoRx.Syntax.HirText`): literals,
+;; classes as scalar ranges, sequence, alternation, repetition, groups and the
+;; two anchors, nothing else. Classes are written out from the tables at the
+;; bottom of this file, so `:digit` means the same thing on every runtime and
+;; the meaning is readable here. The alphabet is the Unicode scalar, as it is
+;; for `char` and the string cursors.
 
 (export
   ;; The types.
@@ -108,7 +98,7 @@
 (: rx-compile (-> string string Rx))
 (defun (rx-compile pattern names) (clr-rx-compile pattern names))
 
-;; The .NET pattern this was compiled to. Here so a test can assert what was
+;; The pattern text this was compiled to. Here so a test can assert what was
 ;; emitted rather than only what it matches.
 (: rx-pattern (-> Rx string))
 (defun (rx-pattern rx) (clr-rx-pattern rx))
@@ -180,22 +170,15 @@
 ;; Character sets
 ;; ---------------------------------------------------------------------------
 ;;
-;; A set is a sorted, disjoint list of inclusive BMP ranges, plus whether it
-;; holds every astral scalar. The flag is what keeps complement total without
-;; the range list having to describe 16 further planes: an astral scalar is a
-;; surrogate pair in UTF-16, so it is emitted as an alternation branch rather
-;; than as class members, and one branch covers all of them.
-;;
-;; The range list never contains a surrogate code point. `BjoChar` rejects
-;; those, so no set the language can write holds one, and a positive class that
-;; excludes them can never match half a pair.
+;; A set is a sorted, disjoint list of inclusive scalar ranges. It never
+;; contains a surrogate code point: `BjoChar` rejects those, so no set the
+;; language can write holds one.
 
 (type
-  (: Cset (Record (: ranges (List (Tuple int int)))
-                  (: all-astral bool))))
+  (: Cset (Record (: ranges (List (Tuple int int))))))
 
-;; U+0000–U+D7FF and U+E000–U+FFFF: the BMP without the surrogate block.
-(def bmp-universe (list (Tuple 0 55295) (Tuple 57344 65535)))
+;; U+0000–U+D7FF and U+E000–U+10FFFF: every scalar.
+(def universe (list (Tuple 0 55295) (Tuple 57344 1114111)))
 
 (: range-lo (-> (Tuple int int) int))
 (defun (range-lo r) (match r ((Tuple lo _) lo)))
@@ -270,38 +253,33 @@
 
 ;; Normalizing and clipping to the universe here is what lets every other
 ;; operation assume both.
-(: cs-make (-> (List (Tuple int int)) bool Cset))
-(defun (cs-make rs all)
-  (Cset (ranges (ranges-inter (ranges-norm rs) bmp-universe)) (all-astral all)))
+(: cs-make (-> (List (Tuple int int)) Cset))
+(defun (cs-make rs)
+  (Cset (ranges (ranges-inter (ranges-norm rs) universe))))
 
 (: cs-ranges (-> Cset (List (Tuple int int))))
 (defun (cs-ranges c) (record-ref c ranges))
 
-(: cs-astral? (-> Cset bool))
-(defun (cs-astral? c) (record-ref c all-astral))
-
 (: cs-union (-> Cset Cset Cset))
 (defun (cs-union a b)
-  (cs-make (list-append (cs-ranges a) (cs-ranges b))
-           (or (cs-astral? a) (cs-astral? b))))
+  (cs-make (list-append (cs-ranges a) (cs-ranges b))))
 
 (: cs-inter (-> Cset Cset Cset))
 (defun (cs-inter a b)
-  (cs-make (ranges-inter (cs-ranges a) (cs-ranges b))
-           (and (cs-astral? a) (cs-astral? b))))
+  (cs-make (ranges-inter (cs-ranges a) (cs-ranges b))))
 
 (: cs-complement (-> Cset Cset))
 (defun (cs-complement a)
-  (cs-make (ranges-gaps 0 65535 (cs-ranges a)) (not (cs-astral? a))))
+  (cs-make (ranges-gaps 0 1114111 (cs-ranges a))))
 
 (: cs-diff (-> Cset Cset Cset))
 (defun (cs-diff a b) (cs-inter a (cs-complement b)))
 
 (: cs-empty? (-> Cset bool))
-(defun (cs-empty? c) (and (list-empty? (cs-ranges c)) (not (cs-astral? c))))
+(defun (cs-empty? c) (list-empty? (cs-ranges c)))
 
 (: cs-char (-> int Cset))
-(defun (cs-char n) (cs-make (list (Tuple n n)) #f))
+(defun (cs-char n) (cs-make (list (Tuple n n))))
 
 ;; ---------------------------------------------------------------------------
 ;; Reading the tables
@@ -336,7 +314,7 @@
 (defun (hex-ranges text) (hex-chunks (string->list text)))
 
 (: table-set (-> string Cset))
-(defun (table-set text) (cs-make (hex-ranges text) #f))
+(defun (table-set text) (cs-make (hex-ranges text)))
 
 ;; ---------------------------------------------------------------------------
 ;; The tree
@@ -360,33 +338,21 @@
 ;; Emitting
 ;; ---------------------------------------------------------------------------
 ;;
-;; Every `emit` answers a pattern that is one regex atom, so a caller may
-;; concatenate or quantify it without asking what it is made of.
-
-(def astral-pair "[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]")
+;; The text of BjoRx's tree, one parenthesized form per node: `(l 61 62)` a
+;; literal, `(c 30-39)` a class, `(s ...)` a sequence, `(a ...)` an
+;; alternation, `(r least most g|l body)` a repetition, `(g n body)` a group,
+;; `(A)` and `(z)` the anchors, `(e)` nothing. Scalars are hexadecimal.
 
 (: hex-digit-string (-> int string))
 (defun (hex-digit-string n)
   (def d (% n 16))
   (char->string (if (< d 10) (int->char (+ 48 d)) (int->char (+ 55 d)))))
 
-;; `\uXXXX`, and it is written for every character rather than only the ones
-;; that need it. A whitelist of what to escape is a list that can be wrong; a
-;; hex escape is right for every scalar, and sidesteps `]`, `^`, `-`, `\` and
-;; `RegexOptions.IgnorePatternWhitespace` in one go.
-(: unit-escape (-> int string))
-(defun (unit-escape n)
-  (str "\\u" (hex-digit-string (/ n 4096)) (hex-digit-string (/ n 256))
-             (hex-digit-string (/ n 16)) (hex-digit-string n)))
-
-;; A scalar as the UTF-16 units .NET's engine will see.
-(: scalar-escape (-> int string))
-(defun (scalar-escape n)
-  (if (< n 65536)
-      (unit-escape n)
-      (let ((v (- n 65536)))
-        (str (unit-escape (+ 55296 (/ v 1024)))
-             (unit-escape (+ 56320 (% v 1024)))))))
+(: hex (-> int string))
+(defun (hex n)
+  (if (< n 16)
+      (hex-digit-string n)
+      (string-append (hex (/ n 16)) (hex-digit-string n))))
 
 (: concat-strings (-> (List string) string))
 (defun (concat-strings parts) (list-foldl (fun (part acc) (string-append acc part)) "" parts))
@@ -398,72 +364,47 @@
     ((Cons p Nil) p)
     ((Cons p more) (str p sep (join-strings more sep)))))
 
-(: class-body (-> (List (Tuple int int)) string))
-(defun (class-body rs)
-  (concat-strings
-    (list-map (fun (r)
-                (if (= (range-lo r) (range-hi r))
-                    (unit-escape (range-lo r))
-                    (str (unit-escape (range-lo r)) "-" (unit-escape (range-hi r)))))
-              rs)))
+(: emit-range (-> (Tuple int int) string))
+(defun (emit-range r)
+  (if (= (range-lo r) (range-hi r))
+      (str " " (hex (range-lo r)))
+      (str " " (hex (range-lo r)) "-" (hex (range-hi r)))))
 
 (: emit-set (-> Cset string))
-(defun (emit-set c)
-  (cond
-    ((list-empty? (cs-ranges c)) (str "(?:" astral-pair ")"))
-    ((cs-astral? c) (str "(?:" astral-pair "|[" (class-body (cs-ranges c)) "])"))
-    (else (str "[" (class-body (cs-ranges c)) "]"))))
+(defun (emit-set c) (str "(c" (concat-strings (list-map emit-range (cs-ranges c))) ")"))
 
 (: emit-lit (-> string string))
 (defun (emit-lit text)
-  (def scalars (string->list text))
-  (def body (concat-strings (list-map (fun (c) (scalar-escape (char->int c))) scalars)))
-  ;; One BMP scalar is already an atom. Anything else — nothing, a pair, or
-  ;; several characters — has to be grouped before it can be quantified.
-  (if (and (= (list-length scalars) 1) (< (char->int (list-head scalars)) 65536))
-      body
-      (str "(?:" body ")")))
+  (str "(l" (concat-strings (list-map (fun (c) (str " " (hex (char->int c)))) (string->list text))) ")"))
 
-(: rep-suffix (-> int int bool string))
-(defun (rep-suffix least most greedy)
-  (def core
-    (cond
-      ((and (= least 0) (= most -1)) "*")
-      ((and (= least 1) (= most -1)) "+")
-      ((and (= least 0) (= most 1)) "?")
-      ((= most -1) (str "{" (int->string least) ",}"))
-      ((= least most) (str "{" (int->string least) "}"))
-      (else (str "{" (int->string least) "," (int->string most) "}"))))
-  (if greedy core (str core "?")))
+(: emit-list (-> string (List Rxn) (Box (List string)) string))
+(defun (emit-list head parts names)
+  (match parts
+    (Nil "(e)")
+    ((Cons p Nil) (emit p names))
+    (_ (str "(" head " " (join-strings (list-map (fun (p) (emit p names)) parts) " ") ")"))))
 
 ;; `names` accumulates the Bjolang name of each group, most recent first. A
-;; group's number is how many were open before it, so the count is read before
-;; the body is walked and nested groups number after their parent — which is
-;; the order .NET numbers them in too.
+;; group's number is one more than how many were open before it, so the count
+;; is read before the body is walked and nested groups number after their
+;; parent.
 (: emit (-> Rxn (Box (List string)) string))
 (defun (emit node names)
   (match node
-    (RxEmpty "(?:)")
+    (RxEmpty "(e)")
     ((RxLit text) (emit-lit text))
     ((RxSet c) (emit-set c))
-    ((RxSeq parts)
-     (match parts
-       (Nil "(?:)")
-       ((Cons p Nil) (emit p names))
-       (_ (str "(?:" (concat-strings (list-map (fun (p) (emit p names)) parts)) ")"))))
-    ((RxAlt parts)
-     (match parts
-       (Nil "(?:)")
-       ((Cons p Nil) (emit p names))
-       (_ (str "(?:" (join-strings (list-map (fun (p) (emit p names)) parts) "|") ")"))))
+    ((RxSeq parts) (emit-list "s" parts names))
+    ((RxAlt parts) (emit-list "a" parts names))
     ((RxRep body least most greedy)
-     (str "(?:" (emit body names) (rep-suffix least most greedy) ")"))
+     (str "(r " (int->string least) " " (if (< most 0) "-" (int->string most))
+          (if greedy " g " " l ") (emit body names) ")"))
     ((RxGroup name body)
-     (def n (list-length (box-ref names)))
+     (def n (+ 1 (list-length (box-ref names))))
      (box-set! names (Cons name (box-ref names)))
-     (str "(?<g" (int->string n) ">" (emit body names) ")"))
-    (RxBos "\\A")
-    (RxEos "\\z")))
+     (str "(g " (int->string n) " " (emit body names) ")"))
+    (RxBos "(A)")
+    (RxEos "(z)")))
 
 ;; ---------------------------------------------------------------------------
 ;; Reading a set
@@ -486,20 +427,11 @@
     ((SList items) (if (list-empty? items) Nil (list-tail items)))
     (_ Nil)))
 
-;; A character usable as a set member or a range endpoint. Astral scalars are
-;; refused here and only here: .NET's classes are written in UTF-16 units and
-;; have no way to name a scalar above U+FFFF, so a range that crossed the
-;; boundary could not be emitted at all.
+;; A character usable as a set member or a range endpoint.
 (: set-scalar (-> Syntax char int))
 (defun (set-scalar form c)
-  (def n (char->int c))
-  (if (> n 65535)
-      (ignore-int
-        (syntax-error form
-          (str "A character set is limited to U+0000..U+FFFF, and "
-               (char->string c) " is above it. Match it with (lit \"" (char->string c)
-               "\") instead.")))
-      n))
+  (ignore form)
+  (char->int c))
 
 ;; `syntax-error` types as a `Syntax` and never returns, so a branch that owes
 ;; an `int` has to discard it.
@@ -507,7 +439,7 @@
 (defun (ignore-int s) (ignore s) 0)
 
 (: ignore-cset (-> Syntax Cset))
-(defun (ignore-cset s) (ignore s) (cs-make Nil #f))
+(defun (ignore-cset s) (ignore s) (cs-make Nil))
 
 (: chars-of (-> Syntax (List Syntax) (List int)))
 (defun (chars-of whole items)
@@ -528,25 +460,25 @@
 (: pairs->cset (-> Syntax (List int) Cset))
 (defun (pairs->cset whole ns)
   (match ns
-    (Nil (cs-make Nil #f))
+    (Nil (cs-make Nil))
     ((Cons lo (Cons hi more))
      (if (> lo hi)
          (ignore-cset
            (syntax-error whole "A range runs upwards, and this one does not."))
-         (cs-union (cs-make (list (Tuple lo hi)) #f) (pairs->cset whole more))))
+         (cs-union (cs-make (list (Tuple lo hi))) (pairs->cset whole more))))
     (_ (ignore-cset
          (syntax-error whole "A range takes its endpoints in pairs, and this one has an odd number.")))))
 
 (: union-of (-> (List Syntax) Cset))
 (defun (union-of items)
-  (list-foldl (fun (item acc) (cs-union acc (parse-set item))) (cs-make Nil #f) items))
+  (list-foldl (fun (item acc) (cs-union acc (parse-set item))) (cs-make Nil) items))
 
 (: parse-set (-> Syntax Cset))
 (defun (parse-set form)
   (match form
     ((SChar c) (cs-char (set-scalar form c)))
     ((SStr text) (list-foldl (fun (c acc) (cs-union acc (cs-char (set-scalar form c))))
-                             (cs-make Nil #f)
+                             (cs-make Nil)
                              (string->list text)))
     ((SKey k)
      (match (named-class (keyword->string k))
@@ -591,8 +523,7 @@
                   (list-tail args))))
 
 ;; A set reaching pattern position has to be able to match something, and an
-;; empty one is a mistake that would otherwise be an unreadable .NET error
-;; about an empty character class.
+;; empty one is a mistake that would otherwise silently never match.
 (: set-node (-> Syntax Cset Rxn))
 (defun (set-node form c)
   (if (cs-empty? c)
@@ -1122,8 +1053,8 @@
 (def cs-word    (table-set tbl-word))
 (def cs-control (table-set tbl-control))
 
-(def cs-ascii     (cs-make (list (Tuple 0 127)) #f))
-(def cs-hex-digit (cs-make (list (Tuple 48 57) (Tuple 65 70) (Tuple 97 102)) #f))
+(def cs-ascii     (cs-make (list (Tuple 0 127))))
+(def cs-hex-digit (cs-make (list (Tuple 48 57) (Tuple 65 70) (Tuple 97 102))))
 
 ;; `:digit` is every Unicode decimal digit, which is what `numeric` means in
 ;; SRE and what `char-numeric?` answers. A program that wants the ten ASCII
@@ -1134,10 +1065,9 @@
 (def cs-ascii-alnum (cs-inter cs-alnum cs-ascii))
 
 ;; One scalar, whatever it is. `:nonl` is the same set without U+000A, which is
-;; the only character either of them treats as a line break: the emitted
-;; pattern never uses `.`, so .NET's rule that `.` matches `\r` does not apply.
-(def cs-any  (cs-make bmp-universe #t))
-(def cs-nonl (cs-make (ranges-gaps 0 65535 (list (Tuple 10 10))) #t))
+;; the only character either of them treats as a line break.
+(def cs-any  (cs-make universe))
+(def cs-nonl (cs-make (ranges-gaps 0 1114111 (list (Tuple 10 10)))))
 
 (: named-class (-> string (Option Cset)))
 (defun (named-class name)

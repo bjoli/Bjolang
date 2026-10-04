@@ -279,7 +279,8 @@ let private runtimeAssemblyNames =
       "BjoSet"
       "BjoOrderedSet"
       "BjoOrderedMap"
-      "BjoString" ]
+      "BjoString"
+      "BjoRx" ]
 
 /// Directory holding the runtime support assemblies every compiled program
 /// links against.

@@ -3,6 +3,28 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std rx)~ runs on BjoRx
+
+- *The engine is BjoRx*, a translation of Rust's ~regex~ crate, linked as the
+  submodule ~BjolangRuntime/BjoRx~. It matches the string's UTF-8 in linear
+  time, so match positions are the string's cursors with no conversion. The
+  API is unchanged: leftmost-first, ~:bos~ only at the start of the string,
+  only ~$~ and ~=>~ groups capture, an empty match moves the next search one
+  character on, and ~rx-split~ skips empty separators.
+- *A character set may hold any scalar*: ~(in #\😀)~ and ~(/ #\😀 #\🙏)~
+  compile, where they were an error.
+- *~#rx(...)~ compiles to BjoRx's tree as text* (~(s (A) (l 61) (z))~), which
+  is what ~rx-pattern~ answers and ~rx-compile~ takes.
+- Where .NET's engine and this one disagree, this one follows Rust's: a group
+  inside a loop whose body can match empty, like ~(* ($ (* "a")))~, reports
+  the last non-empty iteration, and nested loops such as ~(+ (** 2 4 "x"))~
+  are not merged into one.
+
+- A pattern whose only group is unnamed, ~(seq "=" ($ (+ :digit)))~, has that
+  group; ~rx-group/n~ answered ~None~ for it.
+
+~TestFiles/222_regex.bjo~; ~TestFiles/errors/rx_astral_set.bjo~ is gone.
+
 * Strings are UTF-8
 
 - *~string~ is BjoString's ~Utf8String~*, an immutable UTF-8 string that is
