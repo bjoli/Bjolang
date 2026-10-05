@@ -526,9 +526,56 @@ side at a time says which side:
 
 So it is the claim protocol on a direct park — `TryBegin` and `Arm` on the
 fiber's cell, and the partner's `TryTake`, which drags the cell's cache line to
-the partner's core and back every rendezvous. Allocation is not involved. Moving
-the claim word into the op, whose line the partner touches anyway, is the
-candidate; it changes who owns the generation and was not attempted here.
+the partner's core and back every rendezvous. Allocation is not involved.
+
+#### The partner's half of the claim, on the op — kept
+
+The partner now takes a watched op by clearing `Operation.ParkedGen`, a plain
+store under the channel lock it already holds, to a line it is already
+writing. It never touches the fiber's cell, and its side of a rendezvous has
+no interlocked instruction and no interface call. The token, which fires at
+most once, takes the same lock to withdraw the op (`IParkSite.CancelParked`).
+
+The generation that tells a stale reference from a live park moved with it.
+The op mints one each time it is watched and keeps the counter across
+recycling, so a token holding an op that was taken, recycled and parked again
+by another fiber names an old generation and is refused. The cell keeps a
+generation of its own for the owner's and the token's steps, but nothing on a
+channel's list points at the cell any more. `ITakeable` lost its generation:
+only the one-shot `CancelWatch` uses it.
+
+Old and new runtimes published side by side and run interleaved, eleven runs
+each over two sessions (min, median):
+
+    Ring                  85, 89-94 -> 80-81, 86-89 ns/op
+    Ring (nested scope)   74-78, 80 -> 70-74, 75-81 ns/op
+    Spawn burst             unchanged
+    Skewed choose(8)        unchanged (a choose does not take this path)
+
+About half of what removing the token from direct ops was worth. The rest is
+the owner's two compare-exchanges on its own cell, `TryBegin` and `Arm`. `Arm`
+is the fence that keeps a token firing during the park from being lost.
+`TryBegin` is only there because two fibers can share a cell (a child started
+straight from `Bjo.Spawn` inherits its parent's environment). It could be a
+plain store if every spawn path gave the child an environment without the
+cell, as `Scope.Start` already does.
+
+A deterministic test drives each order of the race by hand: a partner first
+(the token is refused), the token first (once only, and a sender passes the
+op by), and a stale generation on a reused op. The fiber-level race test cannot
+reach the first order reliably, because a partner resumes the parked fiber
+inline: with the check sabotaged to ignore the generation it still passed,
+and the deterministic one failed.
+
+#### A token that cannot unregister — measured, not a cost
+
+`Promise` prunes waiters amortised and has no unregister. An intrusive node the
+fiber unlinks would remove `FiberWatch`'s abandonment protocol (the `Gone`
+state) and nothing else. The cell's generation guards against stale parks on
+channel lists, and the fallback is for two fibers sharing one environment, and
+neither depends on how the registration leaves the token. Stubbing out the
+fiber's registration altogether moved no row of the suite (ring 81-87,
+skewed 141-154), because a fiber registers once per scope, not per park.
 
 **Event ids as a plain increment — measured and rejected.** `NextEventId` is an
 interlocked increment with one writer, nine per sync of an eight-way `choose`.

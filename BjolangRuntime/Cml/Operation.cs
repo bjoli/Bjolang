@@ -17,7 +17,8 @@ using System.Threading;
 namespace Bjoml;
 
 /// <summary>
-/// The claim that lets something other than the channel take a parked op.
+/// A claim, held outside the op, that lets something other than the channel
+/// take a parked op.
 ///
 /// A direct op — one parked with no <see cref="SyncState"/> — normally commits
 /// unconditionally, because the sync block that parked it offered nothing else
@@ -25,41 +26,39 @@ namespace Bjoml;
 /// that can want such an op, and this word is what makes exactly one of the two
 /// win.
 ///
-/// It is not a <see cref="SyncState"/>: there are no branches, no event ids and
-/// no nacks here, only "who got there first". One interlocked exchange rather
-/// than a claim protocol and a locked list walk.
+/// Only used by the one-shot watch of a sync that could not claim its fiber's
+/// registration. That watch serves one park and is then thrown away, so it
+/// needs no generation. A sync under the fiber's own registration is claimed
+/// through the op's <see cref="Operation.ParkedGen"/> instead.
 ///
-/// Owned by whatever parked the op — in practice a pooled awaiter — and re-armed
-/// with <see cref="Rearm"/> before each park, so linking costs no allocation.
-/// </summary>
 /// An interface rather than a class so that one object can be both this claim
-/// and the registration on whatever else wants the op — see the cancellation
-/// watch in `Concurrency.cs`, which is a promise waiter as well.
-///
-/// The generation is what makes a claim REUSABLE. A watch that serves one park
-/// and is then thrown away needs none, but one that a fiber keeps across syncs
-/// must be able to tell "the park you are asking about" from "a park of mine
-/// that is already over" — an op left behind by a cancelled sync stays on the
-/// channel's list until the sweep reaches it, and it must not be matched against
-/// the fiber's next park. The op records the generation it was parked with and
-/// hands it back here.
+/// and the registration on the token — see `CancelWatch` in `Concurrency.cs`.
+/// </summary>
 public interface ITakeable
 {
-    /// <summary>The generation a park starting now belongs to.</summary>
-    int Gen { get; }
+    /// <summary>Win the park. Exactly one caller can.</summary>
+    bool TryTake();
 
     /// <summary>
-    /// Win the park <paramref name="gen"/> identifies. Exactly one caller can,
-    /// and a caller naming a generation that is over never does.
+    /// Is the park over — taken by the other side? Read by the channel's sweep
+    /// to reclaim the op, and by the token's prune to drop the registration.
     /// </summary>
-    bool TryTake(int gen);
+    bool IsDead();
+}
 
+/// <summary>
+/// The other end of a watched park: whatever can withdraw a parked op on behalf
+/// of the token watching it. Non-generic, because the fiber's registration
+/// watches parks on channels of every element type.
+/// </summary>
+internal interface IParkSite
+{
     /// <summary>
-    /// Is this op's park over — taken by the other side, or left behind by one?
-    /// Read by the channel's sweep to reclaim it, and by a registration to
-    /// report itself prunable.
+    /// Withdraw <paramref name="op"/> if it is still parked as
+    /// <paramref name="gen"/>. False means a partner took it first, and the
+    /// value it delivered stands.
     /// </summary>
-    bool IsDead(int gen);
+    bool CancelParked(Operation op, int gen);
 }
 
 public abstract class Operation
@@ -68,28 +67,75 @@ public abstract class Operation
     public int EventId;
 
     /// <summary>
-    /// Non-null while something other than the channel can take this op.
+    /// Non-null while a one-shot watch can take this op instead of the channel.
     ///
     /// Only ever set on a direct op. A choose op arbitrates through its
     /// <see cref="SyncState"/>, which already handles every competitor.
     /// </summary>
     internal ITakeable? Link;
 
-    /// <summary>Which park of <see cref="Link"/> this op belongs to.</summary>
-    internal int LinkGen;
+    /// <summary>
+    /// The claim that decides whether a partner or the token gets a watched
+    /// op. Positive while the park is live, zero once a partner has taken it
+    /// (or when no token watches it), <see cref="Withdrawn"/> once the token
+    /// has taken it.
+    ///
+    /// The claim lives on the op because a partner already holds the channel's
+    /// lock and is already writing to this op when it takes it, so taking it
+    /// costs one plain store and no interlocked instruction. The token, which
+    /// fires at most once, pays for the lock instead: it withdraws the op
+    /// through <see cref="IParkSite.CancelParked"/>.
+    ///
+    /// Only read and written under the lock of the channel the op is parked in,
+    /// except by the renter before the op is published.
+    /// </summary>
+    internal int ParkedGen;
+
+    /// <summary>
+    /// The last generation handed out for this op. It is kept when the op is
+    /// recycled, so a generation identifies one park of one op. A token still
+    /// holding a reference to an op that has since been recycled and parked
+    /// again by another fiber names an old generation, and its withdrawal is
+    /// refused.
+    /// </summary>
+    private int _gen;
+
+    internal const int Withdrawn = -1;
+
+    /// <summary>Mark this op as a watched park, and name it.</summary>
+    internal int Watch()
+    {
+        int g = _gen + 1;
+        if (g <= 0) g = 1;
+        _gen = g;
+        ParkedGen = g;
+        return g;
+    }
 
     public bool IsSynchronized => State != null && State.IsSynchronized;
 
     public bool TrySync() => State != null && State.TrySync();
 
     /// <summary>
-    /// Win a direct op. Unlinked ones cannot be contested, so they always win;
-    /// a linked one goes through the claim.
+    /// Win a direct op. Caller holds the channel's lock. Unwatched ops cannot be
+    /// contested, so they always win; a watched one is taken by clearing its
+    /// generation, which is what turns the token's withdrawal away.
     /// </summary>
-    internal bool TryTakeDirect() => Link is null || Link.TryTake(LinkGen);
+    internal bool TryTakeDirect()
+    {
+        int g = ParkedGen;
+        if (g != 0)
+        {
+            if (g < 0) return false;
+            ParkedGen = 0;
+            return true;
+        }
+
+        return Link is null || Link.TryTake();
+    }
 
     /// <summary>A direct op whose park is over, and which the channel may drop.</summary>
-    internal bool IsCancelled => Link is { } link && link.IsDead(LinkGen);
+    internal bool IsCancelled => ParkedGen < 0 || (Link is { } link && link.IsDead());
 }
 
 public sealed class PutOp<T> : Operation
@@ -167,6 +213,7 @@ public sealed class PutOp<T> : Operation
     {
         State = null;
         Link = null;
+        ParkedGen = 0;
         Value = default!;
         ResumePut = null!;
         ResumeGive = null;
@@ -253,6 +300,7 @@ public sealed class GetOp<T> : Operation
     {
         State = null;
         Link = null;
+        ParkedGen = 0;
         ResumeGet = null;
         DirectResume = null;
         DirectValue = default!;

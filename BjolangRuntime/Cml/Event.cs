@@ -60,7 +60,7 @@ internal interface INowable<T>
 /// withdraw it. <c>choose</c> publishes its branches the general way and keeps
 /// the full protocol.
 /// </summary>
-internal interface IDirectSyncable<T>
+internal interface IDirectSyncable<T> : IParkSite
 {
     /// <summary>
     /// Commit against a waiting partner if there is one, otherwise park.
@@ -84,11 +84,11 @@ internal interface IDirectSyncable<T>
     bool SyncDirect(Action<T> onSync, ITakeable link);
 
     /// <summary>
-    /// The op a park with the fiber's own resume in it will use, claimed through
-    /// <paramref name="link"/> for park <paramref name="gen"/>. Nothing is
-    /// published yet.
+    /// The op a park with the fiber's own resume in it will use. Nothing is
+    /// published yet; a caller racing a token marks it with
+    /// <see cref="Operation.Watch"/> before it parks.
     /// </summary>
-    Operation RentPark(ITakeable? link, int gen);
+    Operation RentPark();
 
     /// <summary>
     /// Park <paramref name="op"/> with <paramref name="resume"/> as what a partner
@@ -525,13 +525,9 @@ public class ChannelSendEvent<T> : IEvent<Unit>, INowable<Unit>, IDirectSyncable
     bool IDirectSyncable<Unit>.SyncDirect(Action<Unit> onSync, ITakeable link) =>
         _channel.SyncDirectSend(_value, onSync, link);
 
-    Operation IDirectSyncable<Unit>.RentPark(ITakeable? link, int gen)
-    {
-        var op = PutOp<T>.RentDirect(_value);
-        op.Link = link;
-        op.LinkGen = gen;
-        return op;
-    }
+    Operation IDirectSyncable<Unit>.RentPark() => PutOp<T>.RentDirect(_value);
+
+    bool IParkSite.CancelParked(Operation op, int gen) => _channel.CancelParked(op, gen);
 
     bool IDirectSyncable<Unit>.Park(Operation op, Action resume)
     {

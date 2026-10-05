@@ -3,6 +3,25 @@
 
 What each change guarantees, and what it leaves open.
 
+* A partner takes a parked channel operation without touching the other fiber
+
+- *The claim a partner and the cancellation token race for is on the parked
+  op*, not on the parked fiber's registration. A partner takes it with a plain
+  store under the channel lock it already holds; the token takes the same lock
+  to withdraw it. A rendezvous under a scope no longer pays an interlocked
+  instruction and an interface call on the partner's side, or moves the other
+  fiber's cell to the partner's core. Ring 85 -> 80-81 ns/op (minimum), nested
+  ring 74 -> 70; spawn burst and skewed choose unchanged.
+- *A value a partner took is still never thrown away by a cancel*, and a token
+  that fires while a fiber is parking still reaches it. The op mints a
+  generation per watched park and keeps it across recycling, so a token
+  holding a stale op cannot withdraw another fiber's park.
+- New test driving each order of the race by hand (partner first, token
+  first, stale generation); the ping-pong cancel race now also checks that
+  every send that returned was received.
+- Left open: the owner still pays two compare-exchanges on its own cell per
+  watched park. One of them exists only because two fibers can share a cell.
+
 * A collection compares keys the way = does
 
 - *What makes a ~Map~, ~HashSet~, ~OrderedMap~ or ~OrderedSet~ out of nothing

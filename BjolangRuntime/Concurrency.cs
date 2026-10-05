@@ -131,7 +131,7 @@ public static partial class BjolangRuntime {
                 // Nothing to race: a single channel operation parks with the
                 // fiber's resume in it and no claim at all.
                 if (_ev is IDirectSyncable<T> unwatched)
-                    return new SyncAwaiter<T>(unwatched, unwatched.RentPark(null, 0), null, 0);
+                    return new SyncAwaiter<T>(unwatched, unwatched.RentPark(), 0, null, 0);
 
                 return new SyncAwaiter<T>(_ev.GetAwaiter(), null);
             }
@@ -221,7 +221,11 @@ public static partial class BjolangRuntime {
             // resume in it once the fiber has decided to suspend — see
             // `SyncAwaiter.UnsafeOnCompleted` — so a rendezvous needs no awaiter
             // object, no delegate hop and no handover between the two.
-            return new SyncAwaiter<T>(ev, ev.RentPark(cell, gen), cell, gen);
+            //
+            // The op carries the claim the partner and the token race for, so
+            // a partner never touches the cell: see `Operation.ParkedGen`.
+            var op = ev.RentPark();
+            return new SyncAwaiter<T>(ev, op, op.Watch(), cell, gen);
         }
     }
 
@@ -269,16 +273,14 @@ public static partial class BjolangRuntime {
         private ICancellableAwaiter? _aw;
         private Promise<CancelReason>? _token;
 
-        public int Gen => 0;
+        public bool TryTake() => System.Threading.Interlocked.Exchange(ref _taken, 1) == 0;
 
-        public bool TryTake(int gen) => System.Threading.Interlocked.Exchange(ref _taken, 1) == 0;
-
-        public bool IsDead(int gen) => System.Threading.Volatile.Read(ref _taken) != 0;
+        public bool IsDead() => System.Threading.Volatile.Read(ref _taken) != 0;
 
         /// Taken means resolved, whichever side took it — so this is also the
         /// answer to "may the promise drop me", and what keeps a scope's token
         /// from accumulating a waiter per rendezvous.
-        public override bool IsAbandoned => IsDead(0);
+        public override bool IsAbandoned => IsDead();
 
         /// The token fired. Take the op if the channel has not already, and
         /// complete the sync as cancelled.
@@ -287,7 +289,7 @@ public static partial class BjolangRuntime {
         /// <see cref="SyncAwaiter{T}.GetResult"/>, on the resuming fiber's own
         /// stack. Throwing here would unwind into a promise's completion walk.
         public override void Signal() {
-            if (!TryTake(0)) return;
+            if (!TryTake()) return;
             _aw!.OnCancelled(_token!.GetAwaiter().GetResult());
         }
 
@@ -343,30 +345,40 @@ public static partial class BjolangRuntime {
     /// interlocked write and the token is re-read afterwards: one of the two
     /// sides always sees the other.
     ///
-    /// **A stale park.** A sync cancelled by the token leaves its op on the
-    /// channel's list until the sweep gets there, and that op still points at
-    /// this claim. The generation is what stops the fiber's *next* park being
-    /// matched through it: an op carries the generation it was parked with, and
-    /// a claim for a generation that is over is refused.
+    /// **A stale reference.** The token reads which op the park is and then
+    /// withdraws it, and in between the op can be taken, recycled and parked
+    /// again by another fiber. So each watched park gets a generation of its
+    /// own on the op, and the withdrawal names it (see `Operation.ParkedGen`).
+    /// The cell's generation does the same for the cell: every step the owner
+    /// or the token takes names the park it means, and does nothing once that
+    /// park is over.
     ///
     /// **A registration that outlives its fiber.** A fiber that ends leaves this
     /// idle, and nothing would ever drop it. So an idle cell reports itself
     /// abandoned when the token's prune asks, and marks itself unregistered as
     /// it does; the next park registers again. A parked cell answers no.
-    internal sealed class FiberWatch : PromiseWaiter, ITakeable {
+    ///
+    /// # Who touches it
+    ///
+    /// Only the owning fiber and the token. A partner never does: it takes a
+    /// single channel operation by its op, under the channel's lock, and a
+    /// `choose` through its `SyncState`. That keeps the cell out of the
+    /// partner's cache, and keeps interlocked instructions off the partner's
+    /// side of a rendezvous.
+    internal sealed class FiberWatch : PromiseWaiter {
         /// Not in a sync. The prune may drop this cell.
         private const int Idle = 0;
 
-        /// Owned by one sync which is still publishing its operation. The
-        /// channel may take it — the op can already be on a list — but the
-        /// token may not, because the owner has not finished deciding whether
-        /// there is a park at all.
+        /// Owned by one sync which is still publishing. A partner may already
+        /// have the op, but the token may not have the park, because the owner
+        /// has not finished deciding whether there is a park at all.
         private const int Held = 1;
 
-        /// Parked and published. The channel and the token may both take it.
+        /// Parked and published. The token may take it.
         private const int Armed = 2;
 
-        /// Resolved, by whichever side got there. Nobody may take it again.
+        /// Resolved, by the token or by the owner seeing the token, or closed
+        /// by the owner after an inline commit. Nobody may take it again.
         private const int Done = 3;
 
         /// Dropped by the token's prune. The next park registers again.
@@ -384,6 +396,13 @@ public static partial class BjolangRuntime {
         /// cleared when the park ends.
         private System.Action? _resume;
 
+        /// For a parked channel operation: where it is parked, which op it is,
+        /// and the generation the op was watched as. Written before the op is
+        /// published.
+        private IParkSite? _site;
+        private Operation? _op;
+        private int _opGen;
+
         /// For a parked `choose`: its awaiter, its state, and the event id the
         /// token commits under. Written before <see cref="Arm"/>.
         private ICancellableAwaiter? _aw;
@@ -398,8 +417,6 @@ public static partial class BjolangRuntime {
         internal FiberWatch(Promise<CancelReason> token) { _token = token; }
 
         internal Promise<CancelReason> Token => _token;
-
-        public int Gen => System.Threading.Volatile.Read(ref _state) >> StatusBits;
 
         /// Claim the cell for one park, minting the generation that park is
         /// known by. False means somebody else holds it and the caller must use
@@ -422,9 +439,14 @@ public static partial class BjolangRuntime {
             }
         }
 
-        /// The resume this park will run, stored before the operation is
-        /// published so that a matcher can never reach a half-built park.
-        internal void Attach(System.Action resume) => _resume = resume;
+        /// The park this sync is about to publish, stored first so that the
+        /// token can never reach a half-built one.
+        internal void AttachDirect(System.Action resume, IParkSite site, Operation op, int opGen) {
+            _resume = resume;
+            _site = site;
+            _op = op;
+            _opGen = opGen;
+        }
 
         /// The same for a `choose`, whose token branch commits through its state.
         internal void AttachChoose(ICancellableAwaiter aw, SyncState state, int tokenBranch) {
@@ -445,12 +467,15 @@ public static partial class BjolangRuntime {
             return r;
         }
 
-        /// Publish the park to the token as well.
+        /// Publish the park to the token.
         ///
         /// Interlocked rather than a release write because the caller re-reads
         /// the token straight after, and a store that may sink past that read is
-        /// exactly the lost wake-up. False means the channel took the park while
-        /// it was being published, so there is nothing left to arm.
+        /// exactly the lost wake-up. False means the park is already over — its
+        /// fiber was resumed by a partner and has moved on — so there is
+        /// nothing left to arm. A partner that took the op without the fiber
+        /// having run yet leaves this to succeed, and the token then finds the
+        /// op gone when it reaches for it.
         internal bool Arm(int gen) {
             int held = (gen << StatusBits) | Held;
             return System.Threading.Interlocked.CompareExchange(
@@ -467,28 +492,21 @@ public static partial class BjolangRuntime {
         /// and only from `Done`, which nobody else can leave.
         internal void End(int gen) {
             _resume = null;
+            _site = null;
+            _op = null;
             _aw = null;
             _choice = null;
             System.Threading.Volatile.Write(ref _state, (gen << StatusBits) | Idle);
         }
 
-        /// Win the park. The channel may take one that is still being published;
-        /// the token may not, and calls <see cref="Signal"/> instead.
-        public bool TryTake(int gen) {
-            int done = (gen << StatusBits) | Done;
-            int held = (gen << StatusBits) | Held;
-            if (System.Threading.Interlocked.CompareExchange(ref _state, done, held) == held)
-                return true;
-
+        /// Take an armed park on the token's behalf: the owner's own check, made
+        /// after arming, that the token had already fired. The token itself
+        /// takes it in <see cref="Signal"/>. Whoever wins still has to withdraw
+        /// the op or commit the token's branch, and can lose that to a partner.
+        internal bool TryTake(int gen) {
             int armed = (gen << StatusBits) | Armed;
-            return System.Threading.Interlocked.CompareExchange(ref _state, done, armed) == armed;
-        }
-
-        /// Dead for everything but the park this generation names, in either of
-        /// the two states a live park can be in.
-        public bool IsDead(int gen) {
-            int s = System.Threading.Volatile.Read(ref _state);
-            return s != ((gen << StatusBits) | Held) && s != ((gen << StatusBits) | Armed);
+            return System.Threading.Interlocked.CompareExchange(
+                ref _state, (gen << StatusBits) | Done, armed) == armed;
         }
 
         /// An idle cell is droppable and says so, marking itself unregistered in
@@ -522,8 +540,15 @@ public static partial class BjolangRuntime {
             var resume = _resume;
             var aw = _aw;
             var choice = _choice;
+            var site = _site;
+            var op = _op;
+            int opGen = _opGen;
             if (resume is null && aw is null) return;
 
+            // Read before the exchange and used only if it succeeds: the state
+            // was this generation, armed, both before and after the reads, and
+            // the fields are written before arming and cleared after the park
+            // ends, so they are this park's.
             int armed = (gen << StatusBits) | Armed;
             if (System.Threading.Interlocked.CompareExchange(
                     ref _state, (gen << StatusBits) | Done, armed) != armed) return;
@@ -537,6 +562,11 @@ public static partial class BjolangRuntime {
                     aw.OnCancelled(_token.GetAwaiter().GetResult());
                 return;
             }
+
+            // A partner may have taken the op since it was armed, in which case
+            // it has resumed the fiber with a value and that stands. The
+            // channel's lock decides, as it does between two partners.
+            if (!site!.CancelParked(op!, opGen)) return;
 
             // Stored before the resume runs, which is what publishes it to the
             // fiber. The op stays where it is; the channel's sweep drops it.
@@ -646,10 +676,13 @@ public static partial class BjolangRuntime {
         private readonly IDirectSyncable<T>? _direct;
         private readonly Operation? _op;
 
+        /// The generation the op was watched as, or 0 when no token watches it.
+        private readonly int _opGen;
+
         internal SyncAwaiter(EventAwaiter<T> aw, CancellableEvent<T>? race) {
             _aw = aw; _race = race; _cell = null; _gen = 0;
             _ready = default!; _why = null; _isReady = false;
-            _direct = null; _op = null;
+            _direct = null; _op = null; _opGen = 0;
         }
 
         /// A `choose` under the fiber's own registration: the park has to be
@@ -657,22 +690,24 @@ public static partial class BjolangRuntime {
         internal SyncAwaiter(EventAwaiter<T> aw, FiberWatch cell, int gen) {
             _aw = aw; _race = null; _cell = cell; _gen = gen;
             _ready = default!; _why = null; _isReady = false;
-            _direct = null; _op = null;
+            _direct = null; _op = null; _opGen = 0;
         }
 
-        /// A single channel operation under the fiber's own registration. The op
-        /// is rented and claimed but not yet published; that happens in
-        /// <see cref="UnsafeOnCompleted"/>.
-        internal SyncAwaiter(IDirectSyncable<T> direct, Operation op, FiberWatch? cell, int gen) {
+        /// A single channel operation, under the fiber's own registration when
+        /// there is a token. The op is rented and watched but not yet
+        /// published; that happens in <see cref="UnsafeOnCompleted"/>.
+        internal SyncAwaiter(
+            IDirectSyncable<T> direct, Operation op, int opGen, FiberWatch? cell, int gen) {
+
             _aw = null; _race = null; _cell = cell; _gen = gen;
             _ready = default!; _why = null; _isReady = false;
-            _direct = direct; _op = op;
+            _direct = direct; _op = op; _opGen = opGen;
         }
 
         private SyncAwaiter(T ready, CancelReason? why) {
             _aw = null; _race = null; _cell = null; _gen = 0;
             _ready = ready; _why = why; _isReady = true;
-            _direct = null; _op = null;
+            _direct = null; _op = null; _opGen = 0;
         }
 
         internal static SyncAwaiter<T> Ready(T value) => new SyncAwaiter<T>(value, null);
@@ -731,34 +766,41 @@ public static partial class BjolangRuntime {
                 return;
             }
 
+            // Copied out first. From the moment the op is parked a partner may
+            // resume this fiber on another thread, and the state machine then
+            // overwrites the field this awaiter lives in with its next one.
             var cell = _cell;
             int gen = _gen;
+            var direct = _direct!;
+            var op = _op;
+            int opGen = _opGen;
 
             if (cell is null) {
                 // No token: no claim to settle or arm.
-                if (!_direct!.Park(_op, k)) Scheduler.Enqueue(k);
+                if (!direct.Park(op, k)) Scheduler.Enqueue(k);
                 return;
             }
 
-            cell.Attach(k);
+            cell.AttachDirect(k, direct, op, opGen);
 
-            // Published while the claim is held rather than armed. The channel
-            // can take a held park — the op is on its list — but the token
-            // cannot, which keeps a rendezvous that commits here out of reach
-            // of a token firing in the same instant. From the moment the op is
-            // parked a partner may resume this fiber on another thread, so
-            // nothing below may touch the op, and every step on the cell names
-            // its generation and fails harmlessly if the park is already over.
-            if (!_direct!.Park(_op, k)) {
-                // A partner was waiting. The claim is closed before the fiber
-                // is let go, so its `End` cannot be overwritten.
+            // Published while the cell is held rather than armed. A partner can
+            // take the op — it is on the channel's list — but the token cannot
+            // reach the park, which keeps a rendezvous that commits here out of
+            // reach of a token firing in the same instant. Nothing below touches
+            // the op except through `CancelParked`, which names its generation,
+            // and every step on the cell names the cell's: both fail harmlessly
+            // if the park is already over.
+            if (!direct.Park(op, k)) {
+                // A partner was waiting. The cell is closed before the fiber is
+                // let go, so its `End` cannot be overwritten.
                 cell.Settle(gen);
                 Scheduler.Enqueue(k);
                 return;
             }
 
             var token = cell.Token;
-            if (cell.Arm(gen) && token.IsCompleted && cell.TryTake(gen)) {
+            if (cell.Arm(gen) && token.IsCompleted && cell.TryTake(gen)
+                && direct.CancelParked(op, opGen)) {
                 // The token fired before the arm, so its walk of the token's
                 // waiters missed this park. Arming is interlocked and this read
                 // follows it, so one of the two sides always sees the other.

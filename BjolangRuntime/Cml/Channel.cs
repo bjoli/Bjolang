@@ -45,12 +45,32 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     bool IDirectSyncable<T>.SyncDirect(Action<T> onSync, ITakeable link) =>
         SyncDirectReceive(onSync, link);
 
-    Operation IDirectSyncable<T>.RentPark(ITakeable? link, int gen)
+    Operation IDirectSyncable<T>.RentPark() => GetOp<T>.RentDirect();
+
+    bool IParkSite.CancelParked(Operation op, int gen) => CancelParked(op, gen);
+
+    /// <summary>
+    /// Withdraw a watched op, sending or receiving, if it is still parked here
+    /// as <paramref name="gen"/>.
+    ///
+    /// This is the token's half of the claim in <see cref="Operation.ParkedGen"/>.
+    /// A partner takes the op by clearing that word under this same lock, so
+    /// only one of the two can win. An op that was taken, recycled and parked
+    /// again somewhere else has a new generation, so a stale reference cannot
+    /// withdraw it.
+    ///
+    /// The withdrawn op is left on its list, and the next walk past it or the
+    /// sweep recycles it. Unlinking it here would need a walk to find its
+    /// predecessor, and cancellation is rare.
+    /// </summary>
+    internal bool CancelParked(Operation op, int gen)
     {
-        var op = GetOp<T>.RentDirect();
-        op.Link = link;
-        op.LinkGen = gen;
-        return op;
+        lock (_lock)
+        {
+            if (op.ParkedGen != gen) return false;
+            op.ParkedGen = Operation.Withdrawn;
+            return true;
+        }
     }
 
     bool IDirectSyncable<T>.Park(Operation op, Action resume)
@@ -188,7 +208,6 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 // right — a direct op is never dead, because it cannot lose.
                 var myOp = GetOp<T>.Rent(null, 0, onSync);
                 myOp.Link = link;
-                myOp.LinkGen = link is null ? 0 : link.Gen;
                 if (_takersTail == null)
                 {
                     _takersHead = _takersTail = myOp;
@@ -312,7 +331,6 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 
                 var myOp = PutOp<T>.Rent(null, 0, value, onSync);
                 myOp.Link = link;
-                myOp.LinkGen = link is null ? 0 : link.Gen;
                 if (_giversTail == null)
                 {
                     _giversHead = _giversTail = myOp;

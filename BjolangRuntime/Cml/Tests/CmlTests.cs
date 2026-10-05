@@ -86,6 +86,7 @@ public static class CmlTests
         Run("cancelling a running ping-pong never hangs or resumes twice", CancelRacesWithParking);
         Run("a cancel that lands while a fiber is parking is not lost", CancelDuringAParkIsNotLost);
         Run("two fibers sharing one environment both park and both cancel", SharedCellStillCancelsBoth);
+        Run("a watched park has one winner, and a stale withdrawal finds nothing", OpClaimHasOneWinner);
     }
 
     // -----------------------------------------------------------------------
@@ -353,6 +354,11 @@ public static class CmlTests
     /// so that the cancel lands in the window between a fiber checking the token
     /// and publishing its park. A miss shows up as a fiber that never comes back,
     /// which the harness reports as a timeout.
+    ///
+    /// And the lost-message hunt, in the same race: a rendezvous is one event for
+    /// both sides, so every send that returned was received. A token that
+    /// withdrew a park a partner had already taken would raise at a receiver
+    /// whose value had been handed over, and the two counts would differ.
     /// </summary>
     private static void CancelRacesWithParking()
     {
@@ -363,6 +369,7 @@ public static class CmlTests
             var receiverDone = new ManualResetEventSlim(false);
             var senderDone = new ManualResetEventSlim(false);
             int received = 0;
+            int sent = 0;
 
             _ = UnderToken(token, async () =>
             {
@@ -385,7 +392,10 @@ public static class CmlTests
                 try
                 {
                     for (int i = 0; i < 50_000; i++)
+                    {
                         await global::BjolangRuntime.sync(global::BjolangRuntime.chansubsend(ch, i));
+                        sent++;
+                    }
                 }
                 catch (Bjolang.Runtime.Cancelled) { }
 
@@ -398,6 +408,7 @@ public static class CmlTests
 
             Await(receiverDone, $"the receiver of trial {trial} ({received} received)");
             Await(senderDone, $"the sender of trial {trial}");
+            AssertEqual(sent, received, $"trial {trial}: sends that returned against values received");
         }
     }
 
@@ -494,6 +505,57 @@ public static class CmlTests
 
         Assert(done.Wait(10_000), $"only {raised} of 2 fibers came back");
         AssertEqual(2, raised, "fibers that raised Cancelled");
+    }
+
+    /// <summary>
+    /// The claim a partner and the token race for, driven by hand so that each
+    /// order happens for certain rather than now and then.
+    ///
+    /// The fiber-level race above cannot reach the dangerous order reliably: a
+    /// partner resumes the parked fiber inline, so the window between "a sender
+    /// took the op" and "the fiber gave its park back" is a few instructions
+    /// wide. Here nothing resumes anything, and the window stays open.
+    /// </summary>
+    private static void OpClaimHasOneWinner()
+    {
+        var ch = new Channel<int>();
+        IDirectSyncable<int> direct = ch;
+        int resumed = 0;
+        Action resume = () => Interlocked.Increment(ref resumed);
+
+        // A sender takes the park first: the token's withdrawal is refused, and
+        // the value is the receiver's.
+        var taken = direct.RentPark();
+        int takenGen = taken.Watch();
+        Assert(direct.Park(taken, resume), "a receive with nobody to meet did not park");
+        Assert(ch.TryDirectSend(7), "the sender did not find the parked receive");
+        Assert(!ch.CancelParked(taken, takenGen), "the token withdrew a park a sender had already taken");
+        AssertEqual(7, direct.TakeParked(taken), "the value the parked receive was handed");
+
+        // The token withdraws first: once only, and a sender then passes the
+        // park by rather than handing its value to a fiber that is leaving.
+        var withdrawn = direct.RentPark();
+        int withdrawnGen = withdrawn.Watch();
+        Assert(direct.Park(withdrawn, resume), "the second receive did not park");
+        Assert(ch.CancelParked(withdrawn, withdrawnGen), "the token could not withdraw a live park");
+        Assert(!ch.CancelParked(withdrawn, withdrawnGen), "the same park was withdrawn twice");
+        Assert(!ch.TryDirectSend(8), "a sender took a park the token had withdrawn");
+
+        // A stale reference: the same op object, watched again as a later park,
+        // is not the park the old generation names.
+        var reused = direct.RentPark();
+        int oldGen = reused.Watch();
+        int newGen = reused.Watch();
+        Assert(direct.Park(reused, resume), "the third receive did not park");
+        Assert(!ch.CancelParked(reused, oldGen), "a stale generation withdrew a later park of the same op");
+        Assert(ch.CancelParked(reused, newGen), "the current generation could not withdraw its own park");
+
+        // Only the one rendezvous resumed anybody: a withdrawal leaves the
+        // resume to whoever withdrew.
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (Volatile.Read(ref resumed) < 1 && DateTime.UtcNow < deadline) Thread.Yield();
+        Thread.Sleep(20);
+        AssertEqual(1, Volatile.Read(ref resumed), "parks resumed by a partner");
     }
 
     private static int WaitersAfter(int rendezvous)
