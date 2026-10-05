@@ -1022,6 +1022,15 @@ let private upToDateAgainst (resolve: ImportSpec -> Result<string, string>) (bjo
         let loc = System.Reflection.Assembly.GetExecutingAssembly().Location
         if loc <> "" && File.Exists loc then File.GetLastWriteTimeUtc loc else DateTime.MinValue
 
+    /// The runtime assemblies, for the reason the compiler is an input: a
+    /// library is compiled against their API, and one rebuilt on its own may
+    /// no longer have a member the library calls.
+    let runtimeBuilt =
+        Paths.runtimeAssemblies
+        |> List.filter File.Exists
+        |> List.map File.GetLastWriteTimeUtc
+        |> List.fold max DateTime.MinValue
+
     /// What the packages of this build declare. An input like the compiler
     /// itself: a framework taken out of a manifest has to make the modules
     /// that named types from it stale, so that they fail with the naming
@@ -1069,6 +1078,7 @@ let private upToDateAgainst (resolve: ImportSpec -> Result<string, string>) (bjo
             | None -> []
 
         compilerBuilt <= built
+        && runtimeBuilt <= built
         && declarationsWritten <= built
         && packagesWritten <= built
         && not (NuGetRefs.changedSince bjoPath)

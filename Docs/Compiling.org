@@ -72,14 +72,14 @@ changed source does.
 Three things, in this order, and only what is out of date:
 
 - *the compiler*, through ~build_compiler.sh~;
-- *the standard library*, when any ~lib/std/*.dll~ is older than its source or
-  than the compiler. It has to happen here rather than fall out of the first
+- *the standard library*, when any ~lib/std/*.dll~ is older than its source,
+  than the compiler or than the runtime assemblies. It has to happen here rather than fall out of the first
   test that notices: an import of a ~.bjo~ rebuilds a stale dependency
   (~ensureLibrary~), so 200 compilations running at once would each rebuild the
   prelude into the same files;
 - *the fixture libraries* in ~TestFiles/inc~, with ~--build-graph~ like the
   standard library. A fixture is rebuilt when its ~.dll~ is older than a source
-  it names, than the compiler, or than what it imports — unless what it imports
+  it names, than the compiler or the runtime, or than what it imports — unless what it imports
   came out with the interface it was built against (see [[*Early cutoff][Early cutoff]]).
 
 The tests themselves are always compiled afresh, in parallel, one job per
@@ -158,8 +158,9 @@ Some modules are judged by timestamp as before:
   line), says nothing an importer can trust. When an importer was built with
   one of those linked, its record has no ~interface-of~ lines at all.
 
-A compiler update still rebuilds everything. The compiler is an input of each
-module on its own, not something an import passes on, and a new compiler can
+A compiler update still rebuilds everything, and so does a runtime rebuilt on
+its own: a library is compiled against the runtime's API. Both are inputs of
+each module on its own, not something an import passes on, and a new compiler can
 change the C# it emits without changing a single interface.
 
 *** Why processes
