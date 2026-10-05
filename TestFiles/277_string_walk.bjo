@@ -1,0 +1,44 @@
+;; (:for ch s) walks a string with a StringWalk, which takes the string's
+;; bytes once. What is pinned here: it gives the characters string->list
+;; gives, for every width of UTF-8, in a whole string and in a slice of one,
+;; and through what is built on Iterable; and a walk at the end refuses to give
+;; a character.
+(import (std prelude))
+(import (std simpletest))
+
+(: chars (-> string (List char)))
+(defun (chars s)
+  (loop (:for ch s) (:acc (listing ch))))
+
+(defun (main)
+  (def text "aé€😀 z")
+
+  (expect "nothing in the empty string" (chars "") '())
+  (expect "every width of UTF-8" (chars text) (string->list text))
+
+  ;; A slice's walk stops at its end, not the end of its array.
+  (def middle (substring/slice text (string-cursor-next text (string-cursor-start text))
+                               (string-cursor-prev text (string-cursor-prev text (string-cursor-end text)))))
+  (expect "a slice" (chars middle) (list #\é #\€ #\😀))
+  (expect "a field of a split" (chars (vec-ref (string-split/slice "ab,cd,ef" ",") 1)) (list #\c #\d))
+
+  (expect "what Iterable builds" (seq->list (->seq "añb")) (list #\a #\ñ #\b))
+  (expect "a loop that stops early"
+          (loop (:for ch text) (:finish (char=? ch #\😀)) (:acc n (counting ch)) => n)
+          3)
+
+  ;; The walk itself, as an inlined impl reaches it.
+  (def w (string-walk "é"))
+  (expect "a walk on a character" (string-walk-done? w) #f)
+  (expect "its character" (string-walk-current w) #\é)
+  (def past (string-walk-next w))
+  (expect "then the end" (string-walk-done? past) #t)
+  (expect "and stays there" (string-walk-done? (string-walk-next past)) #t)
+  (expect "the end has no character"
+          (match (try (string-walk-current past) #:catch (System.InvalidOperationException))
+            ((Ok c) "no error")
+            ((Err e) "refused"))
+          "refused")
+
+  (println "277 ok")
+  0)

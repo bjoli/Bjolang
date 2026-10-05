@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* A string's ~(:for ch s)~ is a walk
+
+- *~Iterable string~ walks with a ~StringWalk~*, not a ~StringCursor~. It
+  takes the string's array and bounds once and decodes each character as it
+  steps onto it, so the loop asks nothing of the string again. Since
+  strings and slices became one type, every cursor step has checked which
+  of the two it has, and the JIT does not hoist that out of a loop: a loop
+  over ASCII text had lost a quarter of its speed. ~(:for ch s)~ is now
+  about twice what it was, and faster than a ~string-cursor-ref+next~ loop.
+- ~string-walk~, ~string-walk-done?~, ~string-walk-current~ and
+  ~string-walk-next~ are exported, because an inlined impl body reaches
+  them. A walk's fields are private, and only those functions make one, so
+  it is always on a character boundary of its own string; it is a type of
+  its own, so no cursor function takes it; and a default one is at the end.
+- Explicit ~string-cursor-*~ loops are as they were.
+
+~TestFiles/277_string_walk.bjo~.
+
 * Slices
 
 - *A slice is a string that shares its source's bytes.* ~substring/slice~,

@@ -18,7 +18,7 @@
   Map MapBuilder TransientMap MapCursor
   Range
   ArraySlice ReverseArraySlice VecSlice ReverseVecSlice
-  VecWalkCursor VecBackCursor ListTails PortReads UpFrom DownFrom
+  VecWalkCursor VecBackCursor StringWalk ListTails PortReads UpFrom DownFrom
   Listing Vecing Mapping Stringing Summing Counting Folding
   TextInputPort TextOutputPort Exception
 
@@ -47,6 +47,7 @@
   ;; The cursors those walk with, named because an inlined impl body reaches them
   vec-walk-cursor vec-walk-cursor-done? vec-walk-cursor-current
   vec-back-cursor vec-back-cursor-done? vec-back-cursor-current
+  string-walk string-walk-done? string-walk-current string-walk-next
 
   print println ->str list->str
   list-append
@@ -726,14 +727,25 @@
   (defun (iterable-current s c) (map-cursor-current c))
   (defun (iterable-next s c) c))
 
-;; String characters.
+;; String characters. Not a `StringCursor`, which asks the string at every
+;; step whether it is a slice: a walk takes its bytes once and decodes each
+;; character as it steps onto it.
+(import/class
+  (StringWalk (: Bjolang.Runtime.StringWalk)))
+
+(import/extern
+  (string-walk         (: Bjolang.Runtime.StringWalks.Start   (-> string StringWalk)))
+  (string-walk-done?   (: Bjolang.Runtime.StringWalks.Done    (-> StringWalk bool)))
+  (string-walk-current (: Bjolang.Runtime.StringWalks.Current (-> StringWalk char)))
+  (string-walk-next    (: Bjolang.Runtime.StringWalks.Next    (-> StringWalk StringWalk))))
+
 (impl (Iterable string)
   (type %elem char)
-  (type %cursor StringCursor)
-  (defun (iterable-start s) (string-cursor-start s))
-  (defun (iterable-done? s c) (string-cursor-end? s c))
-  (defun (iterable-current s c) (string-cursor-ref s c))
-  (defun (iterable-next s c) (string-cursor-next s c)))
+  (type %cursor StringWalk)
+  (defun (iterable-start s) (string-walk s))
+  (defun (iterable-done? s c) (string-walk-done? c))
+  (defun (iterable-current s c) (string-walk-current c))
+  (defun (iterable-next s c) (string-walk-next c)))
 
 
 ;; ---------------------------------------------------------------------------

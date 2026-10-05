@@ -11,6 +11,8 @@
  * availability requirements or notice obligations of Section 3 of the MPL 2.0.
  */
 
+using System.Runtime.CompilerServices;
+using BjoString;
 using Collections;
 
 namespace Bjolang.Runtime;
@@ -68,4 +70,79 @@ public static class VecWalk {
     public static bool BackwardDone<T>(VecBackCursor<T> cursor) => !cursor.E.MoveNext();
 
     public static T BackwardCurrent<T>(VecBackCursor<T> cursor) => cursor.E.Current;
+}
+
+// The walk `(:for ch s)` takes over a string.
+//
+// `string-cursor-*` take the string at every step, and each one asks again
+// whether it is a whole array or a slice of one, which the JIT does not hoist
+// out of a loop. This takes the array and the bounds once, and decodes each
+// character as it steps onto it, so that `current` is a field.
+//
+// The fields are private and only `Start` and `Next` make one, so a walk is
+// always on a character boundary of its own array: what lets its reads go
+// unchecked, and what keeps a walk from being anything but a walk. A default
+// one is at the end.
+
+/// The character a walk is on, and where the next one begins.
+public readonly struct StringWalk {
+    private readonly byte[]? _bytes;
+    private readonly int _next;
+    private readonly int _end;
+    private readonly BjoChar _current;
+    private readonly bool _more;
+
+    private StringWalk(byte[]? bytes, int next, int end, BjoChar current, bool more) {
+        _bytes = bytes;
+        _next = next;
+        _end = end;
+        _current = current;
+        _more = more;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static StringWalk At(byte[]? bytes, int i, int end) {
+        if (i >= end) {
+            return default;
+        }
+        var (r, next) = BjoString.Cursors.RefNext(bytes, 0, end, i);
+        return new StringWalk(bytes, next.Offset, end, BjoChar.FromRune(r), true);
+    }
+
+    public static StringWalk Start(Utf8String s) {
+        var b = s.GetBounds();
+        return At(b.Bytes, b.Lo, b.Hi);
+    }
+
+    public bool Done {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => !_more;
+    }
+
+    /// The character; a walk at the end has none, and says so.
+    public BjoChar Current {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _more ? _current : ThrowAtEnd();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public StringWalk Next() => _more ? At(_bytes, _next, _end) : this;
+
+    [System.Diagnostics.CodeAnalysis.DoesNotReturn]
+    private static BjoChar ThrowAtEnd() =>
+        throw new InvalidOperationException("string-walk-current: the walk is at the end of the string.");
+}
+
+public static class StringWalks {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static StringWalk Start(Utf8String s) => StringWalk.Start(s);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool Done(StringWalk w) => w.Done;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static BjoChar Current(StringWalk w) => w.Current;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static StringWalk Next(StringWalk w) => w.Next();
 }
