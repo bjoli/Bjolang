@@ -428,6 +428,12 @@ public static partial class BjolangRuntime {
     public static Utf8String substring(Utf8String s, BjoString.StringCursor start, BjoString.StringCursor end) =>
         BjoString.StringCursor.Substring(s, start, end);
 
+    // The same text without a copy: it shares the string's bytes, and keeps
+    // all of them alive for as long as it is held.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Utf8String substringdivslice(Utf8String s, BjoString.StringCursor start, BjoString.StringCursor end) =>
+        s.Slice(start, end);
+
     // Where the needle starts, as a cursor: a valid needle can only match at a
     // character boundary. An empty one is found at the start, and from the end.
     public static Option<BjoString.StringCursor> stringsubsearch(Utf8String s, Utf8String needle) =>
@@ -834,6 +840,9 @@ public static partial class BjolangRuntime {
     // that is why this is not a prelude function over any array.
     public static Collections.RrbList<Utf8String> SplitToVec(Utf8String s, Utf8String separator) =>
         Collections.RrbBuilder<Utf8String>.FromArray(s.Split(separator), reuseArrayIfShorterThan32: true);
+
+    public static Collections.RrbList<Utf8String> SplitSlicesToVec(Utf8String s, Utf8String separator) =>
+        Collections.RrbBuilder<Utf8String>.FromArray(s.SplitSlices(separator), reuseArrayIfShorterThan32: true);
 
     // The collection-to-rest-array conversions behind `apply`. Neither is
     // reachable from Bjolang source: `apply` is an intrinsic and builds the

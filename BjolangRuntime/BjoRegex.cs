@@ -124,7 +124,9 @@ public sealed class BjoRegex
 /// The input is carried because a <see cref="StringCursor"/> does not carry the
 /// string it indexes, and every span this hands out is a pair of cursors into
 /// this particular input. <c>Slots</c> holds start and end byte offsets, group
-/// 0 first, -1 for a group that took no part.
+/// 0 first, -1 for a group that took no part. They count from the start of the
+/// input, which a slice does not share with its array, so they become cursors
+/// through <c>CursorAt</c>.
 /// </remarks>
 public sealed class BjoMatch
 {
@@ -140,7 +142,7 @@ public sealed class BjoMatch
     }
 
     internal Utf8String TextOf(int start, int end) =>
-        Input.Substring(new StringCursor(start), new StringCursor(end));
+        Input.Substring(Input.CursorAt(start), Input.CursorAt(end));
 
     public override string ToString() => "#<rx-match " + TextOf(Slots[0], Slots[1]) + ">";
 }
@@ -230,10 +232,10 @@ public static class BjoRegexModule
         int last = 0;
         foreach (Match m in AllMatches(rx, input))
         {
-            sb.Append(input.Slice(new StringCursor(last), new StringCursor(m.Start))).Append(replacement);
+            sb.Append(input.Slice(input.CursorAt(last), input.CursorAt(m.Start))).Append(replacement);
             last = m.End;
         }
-        return sb.Append(input.Slice(new StringCursor(last), StringCursor.End(input))).ToUtf8String();
+        return sb.Append(input.Slice(input.CursorAt(last), StringCursor.End(input))).ToUtf8String();
     }
 
     public static Utf8String ReplaceWith(BjoRegex rx, Utf8String input, Func<BjoMatch, Utf8String> f)
@@ -242,10 +244,10 @@ public static class BjoRegexModule
         int last = 0;
         foreach (BjoMatch m in Matches(rx, input))
         {
-            sb.Append(input.Slice(new StringCursor(last), new StringCursor(m.Slots[0]))).Append(f(m));
+            sb.Append(input.Slice(input.CursorAt(last), input.CursorAt(m.Slots[0]))).Append(f(m));
             last = m.Slots[1];
         }
-        return sb.Append(input.Slice(new StringCursor(last), StringCursor.End(input))).ToUtf8String();
+        return sb.Append(input.Slice(input.CursorAt(last), StringCursor.End(input))).ToUtf8String();
     }
 
     public static Utf8String[] Split(BjoRegex rx, Utf8String input)
@@ -257,10 +259,10 @@ public static class BjoRegexModule
             // A separator that matched nothing would split between every pair
             // of characters and put the whole input back as single characters.
             if (m.IsEmpty) continue;
-            pieces.Add(input.Substring(new StringCursor(last), new StringCursor(m.Start)));
+            pieces.Add(input.Substring(input.CursorAt(last), input.CursorAt(m.Start)));
             last = m.End;
         }
-        pieces.Add(input.Substring(new StringCursor(last), StringCursor.End(input)));
+        pieces.Add(input.Substring(input.CursorAt(last), StringCursor.End(input)));
         return pieces.ToArray();
     }
 
@@ -270,9 +272,9 @@ public static class BjoRegexModule
 
     public static Utf8String Input(BjoMatch m) => m.Input;
 
-    public static StringCursor Start(BjoMatch m) => new(m.Slots[0]);
+    public static StringCursor Start(BjoMatch m) => m.Input.CursorAt(m.Slots[0]);
 
-    public static StringCursor End(BjoMatch m) => new(m.Slots[1]);
+    public static StringCursor End(BjoMatch m) => m.Input.CursorAt(m.Slots[1]);
 
     public static int Count(BjoMatch m) => m.Owner.GroupNames.Length;
 
@@ -297,7 +299,7 @@ public static class BjoRegexModule
         int slot = GroupSlot(m, index);
         return slot < 0
             ? global::BjolangRuntime.None<StringCursor>()
-            : global::BjolangRuntime.Some(new StringCursor(m.Slots[slot]));
+            : global::BjolangRuntime.Some(m.Input.CursorAt(m.Slots[slot]));
     }
 
     public static global::BjolangRuntime.Option<StringCursor> GroupEnd(BjoMatch m, int index)
@@ -305,7 +307,7 @@ public static class BjoRegexModule
         int slot = GroupSlot(m, index);
         return slot < 0
             ? global::BjolangRuntime.None<StringCursor>()
-            : global::BjolangRuntime.Some(new StringCursor(m.Slots[slot + 1]));
+            : global::BjolangRuntime.Some(m.Input.CursorAt(m.Slots[slot + 1]));
     }
 
     /// <summary>The number of the group the user named, or -1.</summary>

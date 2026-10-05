@@ -1,0 +1,64 @@
+;; Slices: strings that share the bytes of the string they were taken from.
+;;
+;; A slice is a string, so everything that takes a string takes one. What is
+;; pinned here: the /slice forms give the same text as the copying ones, a
+;; slice's cursors are its source's, it equals and finds a string with the same
+;; text, and the regex engine answers cursors that are right in both.
+(import (std prelude))
+(import (std simpletest))
+(import (std rx))
+
+(defun (main)
+  (def text "  smörgås, café, 😀  ")
+  (def start (string-cursor-start text))
+  (def end (string-cursor-end text))
+
+  ;; ---- the same text as the copying forms ------------------------------------
+  (expect "trim/slice" (string-trim/slice text) (string-trim text))
+  (expect "trim-left/slice" (string-trim-left/slice text) (string-trim-left text))
+  (expect "trim-right/slice" (string-trim-right/slice text) (string-trim-right text))
+  (expect "split/slice" (string-split/slice text ", ") (string-split text ", "))
+  (expect "substring/slice" (substring/slice text start end) (substring text start end))
+  (expect "string-copy" (string-copy (string-trim/slice text)) "smörgås, café, 😀")
+
+  ;; ---- a slice is a string ----------------------------------------------------
+  (def word (vec-ref (string-split/slice (string-trim/slice text) ", ") 1))
+  (expect "its text" word "café")
+  (expect "string-length counts its bytes" (string-length word) 5)
+  (expect "string-count its characters" (string-count word) 4)
+  (expect "a map finds the string with its text" (map-ref (map-set (map-empty) "café" 1) word) 1)
+  (expect "it orders as that string" (compare word "café") 0)
+  (expect "it folds over its own characters" (string-fold #(+ &2 1) 0 word) 4)
+  (expect "str" (str "[" word "]") "[café]")
+  (expect "upcase makes new text" (string-upcase word) "CAFÉ")
+  (expect "and .NET gets its text" (.-Length word) 4)
+
+  ;; ---- its cursors are its source's -----------------------------------------
+  (def at-e (option-ref (string-search word "é")))
+  (expect "a cursor found in the slice reads the source" (string-cursor-ref text at-e) #\é)
+  (expect "the slice starts where it was taken"
+          (substring text (string-cursor-start word) (string-cursor-end word))
+          "café")
+  (expect "a slice of a slice"
+          (substring/slice word (string-cursor-start word) at-e)
+          "caf")
+  (expect "string-index answers the same cursors"
+          (string-cursor=? (option-ref (string-index #(char=? &1 #\é) word)) at-e)
+          #t)
+
+  ;; ---- regex on a slice -------------------------------------------------------
+  (def line (substring/slice "id=7 x=42 y=9" (option-ref (string-search "id=7 x=42 y=9" "x")) (string-cursor-end "id=7 x=42 y=9")))
+  (match (rx-search #rx((+ :digit)) line)
+    ((Some m)
+     (expect "the match's text" (rx-text m) "42")
+     (expect "its cursors are the slice's"
+             (substring line (rx-start m) (rx-end m))
+             "42"))
+    (None (fail "a match in a slice")))
+  (expect "split" (rx-split #rx(" ") line) [ "x=42" "y=9" ])
+  (expect "replace" (rx-replace #rx((+ :digit)) line "N") "x=N y=N")
+  (expect "replace-with" (rx-replace-with #rx((+ :digit)) line #(str "<" (rx-text &1) ">")) "x=<42> y=<9>")
+  (expect "every match" (vec-length (rx-matches #rx((+ :digit)) line)) 2)
+
+  (println "276 ok")
+  0)

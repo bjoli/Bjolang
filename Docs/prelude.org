@@ -177,12 +177,21 @@ Invariant, character for character: ß upcases to itself rather than to SS. Thes
 
 *** Trimming and padding =(std prelude)=
 - ~(string-trim s)~, ~(string-trim-left s)~, ~(string-trim-right s)~ : whitespace, by ~char-whitespace?~'s definition. There is no "trim these characters" form.
+- ~(string-trim/slice s)~, ~(string-trim-left/slice s)~, ~(string-trim-right/slice s)~ : the same text as a slice of ~s~. See [[*Slices][Slices]].
 - ~(string-pad-left s width #:with #\space)~ / ~(string-pad-right s width #:with #\space)~ : to ~width~ *characters*, which is ~string-count~'s count and not ~string-length~'s. Never truncates.
 
 The pad is a ~char~, so an astral one counts as the single character it is.
 
 *** Splitting and joining =(std prelude)=
 - ~(string-split s sep)~ : the fields between occurrences of ~sep~, as a ~(Vec string)~. Empty fields are kept; drop them with ~(vec-filter #(not (string-empty? &1)) parts)~.
+- ~(string-split/slice s sep)~ : the same fields as slices of ~s~.
+
+*** Slices =(std prelude)=
+A slice is a string that shares the bytes of the string it was taken from instead of copying them. It is a ~string~ like any other — it equals, hashes and orders by its text, finds a map key with that text, and goes anywhere a string goes — and only the forms named ~/slice~ make one: ~substring/slice~, ~string-trim/slice~, ~string-trim-left/slice~, ~string-trim-right/slice~ and ~string-split/slice~.
+
+- *Its cursors are its source's.* A cursor found in a slice, by ~string-search~, ~string-index~ or a regex, is a position in the string it was taken from, and ~(string-cursor-start sl)~ is where the slice begins in it.
+- *It keeps all of its source alive.* A ten-byte slice of a megabyte keeps the megabyte. That is why the plain forms copy: a slice is for a scanner that cuts many short pieces out of one text and lets them go, not for keeping a piece.
+- ~(string-copy s)~ : the same text with bytes of its own, and ~s~ itself when it already has them. Copy a slice before holding on to it.
 - ~(string-join parts sep)~ : the elements with ~sep~ between them, through one buffer.
 
 A ~Vec~ rather than the ~(Array %a)~ .NET answers with, which is ~Iterable~ and nothing more.
@@ -232,6 +241,7 @@ Every operation takes the string *and* the cursor, because the cursor carries no
 - ~(string-cursor-prev s c)~ : The cursor on the previous character. O(1). ~string-cursor-ref~ is the only one of these that decodes.
 - ~(string-cursor-ref+next s c)~ : The character at ~c~ *and* the cursor after it, as a ~(Tuple char StringCursor)~. A ~ValueTuple~, so it does not allocate; destructure it with ~(def (ch next) ...)~. Throws at the end, like ~string-cursor-ref~.
 - ~(substring s start end)~ : The text between two cursors, ~end~ exclusive.
+- ~(substring/slice s start end)~ : The same text as a slice of ~s~, without a copy.
 - ~(string-search s needle)~ / ~(string-search-backward s needle)~ : Where the first, or last, occurrence of ~needle~ starts, as ~(Some cursor)~, or ~None~. An empty needle is found at the start, and searching backward, at the end.
 
 Positions in a string are cursors. ~string-length~ counts bytes and ~string-count~ characters, and nothing takes a byte index.

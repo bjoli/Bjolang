@@ -103,8 +103,9 @@
   string-contains? string-starts-with? string-ends-with? string-replace
   string-upcase string-downcase
   string-trim string-trim-left string-trim-right
+  string-trim/slice string-trim-left/slice string-trim-right/slice string-copy
   string-pad-left string-pad-right
-  string-split string-join
+  string-split string-split/slice string-join
   ;; Characters.
   char->integer integer->char
   char=? char<? char>? char<=? char>=?
@@ -1169,6 +1170,21 @@
 (: string-trim-right (-> string string))
 (defun (string-trim-right s) (.TrimEnd s))
 
+;; The /slice forms share the string's bytes rather than copying them, so
+;; what they answer keeps the whole string alive. `string-copy` gives such a
+;; string bytes of its own, and is the string itself when it has them.
+(: string-trim/slice (-> string string))
+(defun (string-trim/slice s) (.TrimSlice s))
+
+(: string-trim-left/slice (-> string string))
+(defun (string-trim-left/slice s) (.TrimStartSlice s))
+
+(: string-trim-right/slice (-> string string))
+(defun (string-trim-right/slice s) (.TrimEndSlice s))
+
+(: string-copy (-> string string))
+(defun (string-copy s) (.Copy s))
+
 ;; Pad width.
 (: string-pad-left (-> string int (#:with char) string))
 (defun (string-pad-left s width #:with #\space)
@@ -1197,10 +1213,15 @@
 ;; String split, empty fields kept. The runtime gives the array the split
 ;; makes to the vec without copying it, which only it can do safely.
 (import/extern
-  (clr-split (: BjolangRuntime.SplitToVec (-> string string (Vec string)))))
+  (clr-split        (: BjolangRuntime.SplitToVec (-> string string (Vec string))))
+  (clr-split/slices (: BjolangRuntime.SplitSlicesToVec (-> string string (Vec string)))))
 
 (: string-split (-> string string (Vec string)))
 (defun (string-split s sep) (clr-split s sep))
+
+;; The fields as slices of `s`, sharing its bytes.
+(: string-split/slice (-> string string (Vec string)))
+(defun (string-split/slice s sep) (clr-split/slices s sep))
 
 (: string-join (-> (Vec string) string string))
 (defun (string-join parts sep)

@@ -874,6 +874,10 @@ let prelude : Env =
         // does not allocate, so this costs a destructuring and no more.
         "string-cursor-ref+next", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType] (TTuple [charType; stringCursorType])); IsMutable = false }
         "substring", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType; stringCursorType] stringType); IsMutable = false }
+        // The same text sharing the string's bytes, which it keeps alive. Its
+        // cursors are the string's, so a position found in it is one in the
+        // string.
+        "substring/slice", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType; stringCursorType] stringType); IsMutable = false }
         // Where `needle` first, or last, starts. Positions are cursors, as
         // everywhere else; there is no byte index to get wrong.
         "string-search", {Scheme = Scheme([], [], makeFunType [stringType; stringType] (makeOptionType stringCursorType)); IsMutable = false }
