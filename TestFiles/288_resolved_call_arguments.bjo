@@ -1,0 +1,47 @@
+;; A call the compiler writes — string interpolation's `str`, `do`'s `bind` and
+;; `pure`, a macro's call to a trait method — gives its head the module-level
+;; meaning. Its arguments are the user's, and a local of the same name in them
+;; is the local.
+(import (std prelude))
+(import (std simpletest))
+(import (std monad))
+(import "inc/macro_trait_show.bjo")
+(import "inc/macro_trait_twice.bjo")
+
+(: framed (-> string string))
+(defun (framed str) #"[${str}]")
+
+(: twice-then (-> (-> int int) (Option int) (Option int)))
+(defun (twice-then bind m)
+  (do (:bind x m)
+      (:return (bind x))))
+
+(: counted (-> string))
+(defun (counted)
+  (def/mutable str "a")
+  #"${(begin (set! str (string-append str "b")) str)}/${str}")
+
+(: shadowed-again (-> string string))
+(defun (shadowed-again str)
+  #"${(let ((str 7)) (->str (+ str 1)))} ${str}")
+
+(: with-local-function (-> string))
+(defun (with-local-function)
+  (defun (str n) (string-append "n=" (->str n)))
+  #"<${(str 3)}>")
+
+(: nested (-> string string))
+(defun (nested str) #"(${#"<${str}>"})")
+
+(: shown-by-macro (-> (-> int int) string))
+(defun (shown-by-macro show) (show-twice (show 1)))
+
+(defun (main)
+  (expect "a parameter named str inside an interpolation" (framed "p") "[p]")
+  (expect "a parameter named bind inside a do block" (twice-then (fun (n) (* n 2)) (Some 21)) (Some 42))
+  (expect "set! on the local inside an interpolation" (counted) "ab/ab")
+  (expect "shadowed again inside the arguments" (shadowed-again "s") "8 s")
+  (expect "a local function named str" (with-local-function) "<n=3>")
+  (expect "an interpolation inside an interpolation" (nested "q") "(<q>)")
+  (expect "a macro's argument naming the caller's show" (shown-by-macro (fun (n) (* n 10))) "#10#10")
+  0)

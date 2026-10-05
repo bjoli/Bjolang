@@ -278,6 +278,37 @@ let private localFunShape (env: Env) (args: DefunArg list) (retAnn: FType option
           KeywordParams = keywords |> List.map (fun (n, t, _) -> n, t)
           RestParam = rest |> Option.map snd } }
 
+/// The arguments of a call the compiler wrote, with the user's own mentions of
+/// its head moved out of the way.
+///
+/// `unshadow` gives the head its module-level meaning back, and the arguments
+/// are inferred in that same environment, so a local of the same spelling
+/// mentioned in them would mean the module-level one too: a parameter `str`
+/// inside `#"${str}"`, or `bind` inside a `do`. Every mention the compiler wrote
+/// is an `EResolved`, which `renameFree` leaves alone, so what it renames is what
+/// the user wrote. The local goes in under a spelling no source can write, and
+/// the answer puts the name back in the typed tree.
+let private shieldLocal (name: string) (env: Env) (args: Expr list) : Env * Expr list * (TypedExpr -> TypedExpr) =
+    let local = Map.tryFind name env.Bindings
+    let escape = Map.tryFind name env.Escapes
+    let shadowed = escape.IsSome || (local.IsSome && local <> Map.tryFind name env.Resolved)
+
+    let mentioned () =
+        args |> List.exists (fun a -> AlphaRename.freeNames Set.empty a |> Seq.contains name)
+
+    if not shadowed || not (mentioned ()) then
+        env, args, id
+    else
+        let hidden = $"%s{name} (local)"
+        let carry (m: Map<string, 'v>) = match Map.tryFind name m with Some v -> Map.add hidden v m | None -> m
+
+        { env with
+            Bindings = carry env.Bindings
+            FunMetas = carry env.FunMetas
+            Escapes = carry env.Escapes },
+        args |> List.map (AlphaRename.renameFree (Map.ofList [ name, hidden ])),
+        AlphaRename.applyQualification (Map.ofList [ hidden, name ])
+
 /// Infers a type, attaching a source location to any diagnostic that lacks one.
 ///
 /// `unify` is where most type errors are raised and it is given two types and
@@ -497,8 +528,9 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     // constructor, union case or ordinary function — with its head meaning what
     // it meant at module level.
     | EApp(EResolved(name, mr), args, r) ->
-        let t, te = infer (unshadow name env) (EApp(EIdent(name, mr), args, r))
-        t, requalifyResolved name env te
+        let shielded, args, restore = shieldLocal name env args
+        let t, te = infer (unshadow name shielded) (EApp(EIdent(name, mr), args, r))
+        t, requalifyResolved name env (restore te)
 
     | EApp(EIdent(methodName, _), args, r) when Set.contains methodName env.TraitMethodNames ->
         inferTraitMethodCall env methodName args r

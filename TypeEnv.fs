@@ -266,6 +266,12 @@ let internal withSeqElement (elemType: HMType) (env: Env) : Env =
 /// is the usual case for a union constructor such as `folding`, which reaches
 /// its meaning through the registry, where nothing in scope can interfere.
 let internal unshadow (name: string) (env: Env) : Env =
+    let env =
+        if Map.tryFind name env.Bindings <> Map.tryFind name env.Resolved then
+            { env with Unshadowed = Set.add name env.Unshadowed }
+        else
+            env
+
     // Dispatch comes back with the binding. A trait method that something has
     // bound over is no longer dispatched on, which is the point of the rule —
     // but the compiler wrote *this* mention, and it meant the method.
@@ -319,7 +325,9 @@ let internal unshadow (name: string) (env: Env) : Env =
 /// module that defines its own `str`, shadows it locally and interpolates
 /// there still emits the bare name — which is what every case did before.
 let private resolvedSpelling (name: string) (env: Env) : string option =
-    let shadowed = Map.tryFind name env.Bindings <> Map.tryFind name env.Resolved
+    let shadowed =
+        Map.tryFind name env.Bindings <> Map.tryFind name env.Resolved
+        || Set.contains name env.Unshadowed
 
     if not shadowed || Map.containsKey name env.Registry.TraitMethods then
         None

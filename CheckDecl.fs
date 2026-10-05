@@ -298,7 +298,8 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
     let env =
         { env with
             Resolved = env.Bindings
-            ResolvedFunMetas = env.FunMetas }
+            ResolvedFunMetas = env.FunMetas
+            Unshadowed = Set.empty }
 
     match decl with
     | DSignature(name, ftype, constraints, _) ->

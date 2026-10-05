@@ -1945,6 +1945,11 @@ type Env =
       /// of a `#"..."` under a local `str` — needs its shape back with its
       /// binding.
       ResolvedFunMetas: Map<string, FunMeta>
+      /// The names an enclosing compiler-written call gave their module-level
+      /// binding back over a local, for the rest of that call. A name the
+      /// compiler wrote inside it is still under the local in C#, and has to
+      /// be spelled qualified there — see `TypeEnv.requalifyResolved`.
+      Unshadowed: Set<string>
       /// The trait method names whose binding is still the method's own.
       ///
       /// A method is bound like anything else, so a program that binds the same

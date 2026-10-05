@@ -1154,6 +1154,7 @@ let prelude : Env =
       // declaration. Empty here because nothing is being checked yet.
       Resolved = Map.empty
       ResolvedFunMetas = Map.empty
+      Unshadowed = Set.empty
       TraitMethodNames = Set.empty
       ImplMethod = None
       Registry = emptyRegistry
