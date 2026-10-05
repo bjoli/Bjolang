@@ -1,0 +1,51 @@
+;; A keyword parameter named like a module-level binding.
+;;
+;; Its name is its calling convention, so it keeps it, and in the body it is
+;; the parameter. A default is evaluated before its own parameter and the later
+;; ones are bound, so there the same name is still the module's: `#:inc inc`
+;; defaults to the function `inc`.
+(import (std prelude))
+(import (std simpletest))
+
+(: inc (-> int int))
+(defun (inc x) (+ x 1))
+
+(: limit int)
+(def limit 10)
+
+(: apply-inc (-> int (#:inc (-> int int)) int))
+(defun (apply-inc x #:inc inc)
+  (inc x))
+
+;; A later default reads the parameter, not the module's function.
+(: apply-twice (-> int (#:inc (-> int int)) (#:twice (-> int int)) int))
+(defun (apply-twice x #:inc inc #:twice (fun (y) (inc (inc y))))
+  (twice x))
+
+;; An earlier default names what a later parameter is called: still the module's.
+(: capped (-> int (#:cap int) (#:limit int) int))
+(defun (capped x #:cap limit #:limit 3)
+  (min x (min cap limit)))
+
+;; And one named like a builtin.
+(: shout (-> char (#:char-upcase (-> char char)) char))
+(defun (shout c #:char-upcase char-upcase)
+  (char-upcase c))
+
+(defun (main)
+  (expect "the default is the module's function" (apply-inc 1) 2)
+  (expect "an argument replaces it" (apply-inc 1 #:inc #(* &1 10)) 10)
+  (expect "a later default reads the parameter" (apply-twice 1 #:inc #(* &1 10)) 100)
+  (expect "and its default" (apply-twice 1) 3)
+  (expect "an earlier default reads the module's def" (capped 20 #:limit 50) 10)
+  (expect "a constant default" (capped 20) 3)
+  (expect "the default is the builtin" (shout #\a) #\A)
+  (expect "an argument replaces it" (shout #\A #:char-upcase char-downcase) #\a)
+
+  ;; A local function's keyword parameters are scoped the same way.
+  (defun (local-inc x #:inc inc) (inc x))
+  (expect "in a local function" (local-inc 5) 6)
+  (expect "with an argument" (local-inc 5 #:inc #(- &1 5)) 0)
+
+  (println "275 ok")
+  0)

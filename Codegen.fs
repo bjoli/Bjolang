@@ -4552,20 +4552,62 @@ and private generateMergedLoop (ctx: CodegenContext) (members: TLoopMember list)
                 append ctx (if owned.Contains slotName then sanitizeIdent slotName else "default!")
             appendLine ctx ");"
 
-/// The context for the member that declares these keyword parameters: inside
-/// it, each of their names is a local.
+/// The keyword parameters whose local cannot have the parameter's own name.
+///
+/// A default is evaluated before its own parameter and the later ones are
+/// bound, so a name of one of those in it means the module-level binding —
+/// `#:inc inc` defaults to the module's `inc`. C# scopes a local over its
+/// whole block, so a local of that name would capture the reference.
+and private renamedKeywordLocals (kwArgs: (string * HMType * TypedExpr) list) : Set<string> =
+    let mentioned (e: TypedExpr) =
+        e
+        |> TypeVisitor.foldExpr
+            (fun acc x ->
+                match x.Node with
+                | TIdent(n, _)
+                | TSet(n, _)
+                | TRecordSet(n, _) -> Set.add n acc
+                | _ -> acc)
+            Set.empty
+
+    kwArgs
+    |> List.fold
+        (fun (seen, renamed) (n, _, d) ->
+            let seen = Set.union seen (mentioned d)
+            seen, (if Set.contains n seen then Set.add n renamed else renamed))
+        (Set.empty, Set.empty)
+    |> snd
+
+/// The C# local a keyword parameter is bound to in the body.
+and private keywordLocalName (renamed: Set<string>) (kwName: string) =
+    if Set.contains kwName renamed then sanitizeIdent ("__kwl_" + kwName) else sanitizeIdent kwName
+
+/// The context with the first `count` of these keyword parameters as locals,
+/// which is what the default of the next one is evaluated in; all of them for
+/// the body.
 ///
 /// `AlphaRename` renames a positional parameter that takes a module-level name,
 /// but leaves a keyword parameter alone, because its spelling is the calling
 /// convention. Without this, `(defun (f #:circle ...) (circle r))` in a module
 /// that also defines `circle` would call the module's function.
-and private withKeywordLocals (ctx: CodegenContext) (kwArgs: (string * HMType * TypedExpr) list) : CodegenContext =
+and private keywordScope (ctx: CodegenContext) (kwArgs: (string * HMType * TypedExpr) list) (count: int) : CodegenContext =
     if kwArgs.IsEmpty then
         ctx
     else
+        let renamed = renamedKeywordLocals kwArgs
+        let bound = kwArgs |> List.truncate count |> List.map (fun (n, _, _) -> n)
+
         { ctx with
-            GlobalBindings = kwArgs |> List.fold (fun acc (n, _, _) -> Map.remove n acc) ctx.GlobalBindings
-            Methods = kwArgs |> List.fold (fun acc (n, _, _) -> Set.remove n acc) ctx.Methods }
+            GlobalBindings =
+                bound
+                |> List.fold
+                    (fun acc n ->
+                        if Set.contains n renamed then Map.add n ("", "__kwl_" + n) acc else Map.remove n acc)
+                    ctx.GlobalBindings
+            Methods = bound |> List.fold (fun acc n -> Set.remove n acc) ctx.Methods }
+
+and private withKeywordLocals (ctx: CodegenContext) (kwArgs: (string * HMType * TypedExpr) list) : CodegenContext =
+    keywordScope ctx kwArgs kwArgs.Length
 
 /// Emits the prologue that turns keyword parameters back into ordinary locals.
 ///
@@ -4601,10 +4643,13 @@ and private generateArgumentPrologue
     (entry: KeywordEntry)
     : unit =
 
-    for (kwName, kwType, kwDefault) in kwArgs do
+    let renamed = renamedKeywordLocals kwArgs
+
+    for i, (kwName, kwType, kwDefault) in List.indexed kwArgs do
         let cType = typeToString kwType
-        let sName = sanitizeIdent kwName
+        let sName = keywordLocalName renamed kwName
         let pName = keywordParamName kwName
+        let defaultCtx = keywordScope ctx kwArgs i
         match entry, csharpConstantDefault kwType kwDefault with
         | KeywordDefaultsOnly, Some constant ->
             indent ctx
@@ -4612,7 +4657,7 @@ and private generateArgumentPrologue
         | KeywordDefaultsOnly, None ->
             indent ctx
             appendLine ctx $"{cType} {sName};"
-            generateBlock ctx (Assign(sName)) kwDefault
+            generateBlock defaultCtx (Assign(sName)) kwDefault
         | KeywordParameters, Some _ ->
             // Copied to the name the body wrote rather than the parameter being
             // given that name outright: the parameter's name is the calling
@@ -4627,7 +4672,7 @@ and private generateArgumentPrologue
             withIndent ctx (fun c -> indent c; appendLine c $"{sName} = {pName}.Value;")
             indent ctx
             appendLine ctx "} else {"
-            withIndent ctx (fun c -> generateBlock c (Assign(sName)) kwDefault)
+            withIndent defaultCtx (fun c -> generateBlock c (Assign(sName)) kwDefault)
             indent ctx
             appendLine ctx "}"
 
@@ -4701,13 +4746,13 @@ and private generateLocalFunction
     // not: `async Fiber<Bjoml.Unit>` owes its builder a `SetResult(value)`, so
     // the body has to produce a unit rather than fall off the end.
     withIndent
-        { withKeywordLocals ctx fn.KeywordArgs with
+        { ctx with
             Loop = None
             InSeq = false
             ReturnsVoid = isVoidType retType && effect <> EAsync }
         (fun c ->
             generateArgumentPrologue c fn.KeywordArgs fn.RestArg KeywordParameters
-            generateBlock c Return lambdaBody)
+            generateBlock (withKeywordLocals c fn.KeywordArgs) Return lambdaBody)
     indent ctx
     appendLine ctx "}"
 
@@ -4766,11 +4811,11 @@ let private generateMethod
     // Fiber<Bjoml.Unit>` method owes its builder a `SetResult(value)`, so the
     // body has to produce a unit rather than fall off the end. That is the same
     // path a `(-> ... void)` ordinary function already takes.
-    let ctx = { withKeywordLocals ctx kwArgs with ReturnsVoid = (effect = ESync && isVoidType retType) }
+    let ctx = { ctx with ReturnsVoid = (effect = ESync && isVoidType retType) }
 
     withIndent ctx (fun c ->
         generateArgumentPrologue c kwArgs restArg entry
-        generateFunctionBody c body)
+        generateFunctionBody (withKeywordLocals c kwArgs) body)
     indent ctx
     appendLine ctx "}"
     hiddenDirective ctx
