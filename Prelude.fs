@@ -1178,9 +1178,15 @@ let prelude : Env =
 let builtinNames: Set<string> =
     prelude.Bindings |> Map.toSeq |> Seq.map fst |> Set.ofSeq
 
+/// The builtins as C# spells them. `stringsubsearch` is a different Bjolang
+/// name from `string-search`, and the same C# one.
+let private spelledBuiltins: Set<string> = builtinNames |> Set.map Naming.sanitizeIdent
+
 /// The C# name under which a module-level binding is emitted.
 ///
-/// A binding named the same as a builtin gets a derived name.
+/// A binding named the same as a builtin gets a derived name, and so does one
+/// spelled the same in C# as a builtin, or as `Main`, which C# would take for a
+/// second entry point.
 /// Otherwise `using static BjolangRuntime` and `using static <module>_Module`
 /// provide two members with the same name, and C# resolves a bare call to neither of
 /// them — even in a module that only wanted the builtin and never imported
@@ -1193,10 +1199,12 @@ let builtinNames: Set<string> =
 /// Derived, not published: the metadata carries the bjolang name, and each reader
 /// calculates the same string again — like `Naming.suspendingCopy`.
 let moduleMemberName (name: string) : string =
-    if Set.contains name builtinNames then
+    let spelled = Naming.sanitizeIdent name
+
+    if Set.contains name builtinNames || Set.contains spelled spelledBuiltins || spelled = "Main" then
         Naming.sanitizeIdent ("shadowed__" + name)
     else
-        Naming.sanitizeIdent name
+        spelled
 
 /// The same name, as reflection asks for it.
 ///

@@ -1,0 +1,26 @@
+;; Names C# would have spelled into errors. A function named `Main` was a
+;; second entry point (CS0017); one spelled like a builtin in C# hid it
+;; (CS1501); an emoji is no C# identifier (CS1056). Each is given a C# name of
+;; its own, which an importing module derives the same way.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/odd_names.bjo")
+
+(: here (-> string))
+(defun (here) "here")
+
+(defun (main)
+  (expect "Main, imported" (Main) 1)
+  (expect "a name C# spells like a builtin" (stringsubsearch 1) 2)
+  (expect "and the builtin it is spelled like"
+          (match (string-search "abc" "c") ((Some c) "found") (None "missing"))
+          "found")
+  (expect "a letter outside ASCII" (smörgås) 3)
+  (expect "an emoji" (😀) 4)
+  (def π 3)
+  (expect "a local, too" (+ π (here-length)) 7)
+  (println "280 ok")
+  0)
+
+(: here-length (-> int))
+(defun (here-length) (string-length (here)))

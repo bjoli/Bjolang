@@ -1,0 +1,34 @@
+;; A local function whose type variable appears only in its result was
+;; generalized over it, and C#, which reads a local function's type arguments
+;; off its arguments, could not infer it at a call (CS0411). Such a variable is
+;; now one type, which the calls agree on.
+(import (std prelude))
+(import (std simpletest))
+
+;; The shape Todo.org had: the error type of a Result.
+(: parse (-> (List string) (Result string int)))
+(defun (parse args)
+  (defun (done rest) (Ok (list-length rest)))
+  (match args
+    (Nil (done Nil))
+    ((Cons a rest) (if (= a "-") (Err "a dash") (done rest)))))
+
+;; An empty list, whose element type only the call can say.
+(: lengths (-> (List int) int))
+(defun (lengths xs)
+  (defun (none) Nil)
+  (+ (list-length (none)) (list-length (if (list-empty? xs) (none) xs))))
+
+;; A function as the result, whose parameter type only the result mentions.
+(: constant (-> int int))
+(defun (constant n)
+  (defun (always x) (fun (y) x))
+  ((always n) "ignored"))
+
+(defun (main)
+  (expect "the Result's error type, from the calls" (parse (list "a" "b")) (Ok 1))
+  (expect "and the other case" (parse (list "-")) (Err "a dash"))
+  (expect "an empty list, at the call's type" (lengths (list 1 2 3)) 3)
+  (expect "a function's parameter" (constant 7) 7)
+  (println "281 ok")
+  0)

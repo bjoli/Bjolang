@@ -159,22 +159,6 @@ tracking the library from the mode.
 ** No completion, no imenu, no eldoc
 Font lock and indentation only.
 
-* Operators
-
-An unapplied operator is eta-expanded into the lambda it stands for, so its type
-comes from the use site. One thing that leaves.
-
-** A polymorphic operator value is a C# error, not a Bjolang one
-Reachable only by asking for one in a signature —
-~(: get-plus (-> (-> %a %a %a)))~ — which emits ~Func<T_a, T_a, T_a>~ with
-~a + b~ in the body, and C# says ~Operator '+' cannot be applied to operands of
-type 'T_a'~. The other routes are already closed by rules that predate this:
-~(def plus +)~ with no signature is caught by the module-level value rule, and a
-~defun~ needs a signature at all.
-
-The message is the gap, not the rejection — there is nothing a C# type parameter
-could mean here. It is the same wall generic arithmetic hits everywhere else.
-
 * Monomorphisation of constrained generics
 
 ~Monomorphise~ copies a constrained function at each ground instantiation the
@@ -422,36 +406,6 @@ its spelling into the emitted C#, so only one end of the rename would move.
 
 * Inference faults found in passing
 
-** A local function generic only in its result cannot be called
-
-#+BEGIN_SRC scheme
-(defun (parse args)
-  (defun (done rest) (Ok (Record ... rest)))   ; (-> (List string) (Result %e Record))
-  (match args (Nil (done Nil)) ...))
-#+END_SRC
-
-~done~ is generalised over the error type of its ~Result~, which appears only in
-its result. The frontend accepts that, and the C# it becomes is a generic local
-method whose type argument nothing at a call site determines, so the C# compile
-fails with CS0411 instead of a Bjolang error. Either the instantiation should be
-emitted at the call (~done<string>(...)~), or a type variable that appears only in
-a local function's result should not be generalised. Found in ~bjo/bjo.bjo~'s
-~parse-flags~, which now has ~done~ answer the record and wraps it in ~Ok~ at
-each call.
-
-** An accumulator's type is left unresolved in the generic original
-
-#+BEGIN_SRC scheme
-(: f (-> (Vec %a) int int) (where (Ord %a)))
-(defun (f v n)
-  (let loop ((i 0) (s (orderedset-empty)))
-    (if (= i n) (orderedset-length s) (loop (+ i 1) (orderedset-add s (vec-ref v i))))))
-#+END_SRC
-
-The monomorphised copy is right, but the generic original is emitted with
-~Empty<object /* unresolved meta */>()~ and fails in C# with CS0029. The same
-loop over a ~List~ with ~match~ compiles.
-
 ** Maybe: a signature's keywords are paired with the ~defun~'s by position
 
 #+BEGIN_SRC scheme
@@ -474,63 +428,21 @@ order with an error that says the order has to agree.
 
 * Interop faults found in passing
 
-Both found writing textmate-bjolang, a wrapper over TextMateSharp. Neither was
-in the way: each has a workaround, given below.
+Found writing textmate-bjolang, a wrapper over TextMateSharp.
 
-** A .NET indexer cannot be called
-
-#+BEGIN_SRC scheme
-(import/class ((ROD %k %v) (: System.Collections.ObjectModel.ReadOnlyDictionary)))
-
-(.get_Item colours "editor.background")
-;; error CS0571: 'ReadOnlyDictionary<string, string>.this[string].get':
-;; cannot explicitly call operator or accessor
-#+END_SRC
-
-The call type-checks: ~DotNetInterop.resolveMethod~ finds ~get_Item~ among
-~GetMethods~ and selects the overload by the argument types, as it would any
-method. ~TDotMethodCall~ in ~Codegen~ then emits ~colours.get_Item(...)~,
-which C# refuses for an accessor. ~string~'s indexer, ~get_Chars~, fails the
-same way.
-
-The fix is small. ~resolveMethod~ says in its ~ResolvedCall~ when the method
-is an indexer's getter or setter — ~IsSpecialName~, and the declaring type has
-a property with index parameters whose ~GetMethod~ or ~SetMethod~ it is — and
-~metadataOf~ carries that into ~DotNetMethodMetadata~ (about six places build
-one; it is not serialized). ~TDotMethodCall~'s plain and guarded paths then
-emit ~colours["editor.background"]~, and ~recv[k] = v~ for a setter. An
-~import/extern~ of ~get_Item~ goes through the same node and is covered too.
-
-A spelling of its own, ~(.-Item colours key)~, would be nicer and costs more:
-~resolveMemberRead~ reads properties only, ~findProperty~ leaves indexers out
-on purpose, and an indexer has overloads to choose between by the arguments.
-
-Workaround: ~TryGetValue~ imported with ~(out T)~, or walking the pairs.
-
-** An undeclared type in an ~import/extern~ signature is not reported as one
+** A failed ~import/extern~ clause takes the rest of the import with it
 
 #+BEGIN_SRC scheme
 (import/extern
   (s-len (: System.String.Length (-> string int) #:get))
   (bad (: System.Int32.TryParse (-> NOPE (out int) (Option int)))))
-;; The declared parameter types (Tuple NOPE int) do not match the method's
-;; (Tuple (System.ReadOnlySpan byte) int).
+;; Type Error: there is no type named 'NOPE'.
 ;; Unbound variable: s-len
 #+END_SRC
 
-~NOPE~ names nothing, and nothing says so. It is taken as a type of that name,
-so an out import reports it as a mismatch against every overload, and a
-misspelt or missing ~import/class~ alias reads as a wrong signature. The failed
-clause also takes the rest of its ~import/extern~ with it: ~s-len~, which is
-fine, is reported unbound where it is used. In an ordinary import that is
-never called, nothing is reported at all, because the member is resolved at
-the first call.
-
-The fix is to check every type name in the signature when ~checkImportExtern~
-(~CheckDecl.fs~) processes the clause — against the aliases, the declared
-types and the .NET names that resolve — with an error that names the unknown
-one; and to let the other clauses stand when one fails, as a declaration
-group already does.
+The unknown name is reported now, but ~s-len~, which is fine, is still reported
+unbound where it is used. The fix is to let the other clauses stand when one
+fails, as a declaration group already does.
 
 * A lowercase union case cannot be matched by name
 

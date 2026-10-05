@@ -36,6 +36,13 @@ open Bjolang.InferExpr
 /// imports this module plainly. It is filed as a spelling in the same table an
 /// import modifier's spellings go in, which `originalName` resolves before any
 /// registry is consulted.
+/// The members a C# record declares or inherits, which a positional field
+/// of the same name collides with (CS8866, CS0102).
+let private recordMemberNames =
+    Set.ofList
+        [ "ToString"; "Equals"; "GetHashCode"; "GetType"; "MemberwiseClone"
+          "Deconstruct"; "EqualityContract"; "PrintMembers" ]
+
 let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * TypeDef list =
     let key (name: string) = Naming.typeKey env.CurrentModule name
 
@@ -70,6 +77,24 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
     let keyedDefs = ResizeArray<TypeDef>()
 
     for td in typeDefs do
+        // Names the C# a type becomes already has. A record is a C# record,
+        // which has these members, and a case is a class nested in its union's.
+        match td.Kind with
+        | Record(fields, _) ->
+            for f in fields do
+                if Set.contains f.Name recordMemberNames then
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos td.Range}: the record %s{td.Name} has a field called %s{f.Name}, which is the name of a member every .NET record has. Call it something else."
+        | Union cases ->
+            for case in cases do
+                match case with
+                | SimpleCase(n, r)
+                | DataCase(n, _, _, r) when n = td.Name ->
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: the case %s{n} has the name of its type, which is a class its cases are nested in, and .NET does not let a member share it. Rename the case or the type."
+                | _ -> ()
+        | Alias _ -> ()
+
         // A constructor follows its type, in expression and in pattern
         // position alike, so its bare name is a spelling in exactly the same
         // sense. Registered before the payloads are resolved, because a case
@@ -849,21 +874,31 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
             addBinding rn { Scheme = Scheme([], [], TCon("Array", [ bodyParamType rt ])); IsMutable = false } bodyEnv
         | _ -> bodyEnv
 
-    // The return type is the body's expectation, so a literal the body ends
-    // in is elaborated against it.
-    let bodyType, typedBody = inferChecked expectedRetType bodyEnv body
-    unify env.Registry bodyType expectedRetType
+    // The signature's variables are the body's: see `scopedTypeVars`.
+    let outerScoped = Unification.scopedTypeVars
+    Unification.scopedTypeVars <- Set.union outerScoped (Set.ofList (freeTVars env.Registry funType))
 
-    // Type-check keyword default expressions, each against its parameter's
-    // declared type, so `#:mode 'fast` elaborates as an argument would.
-    let typedKeywordArgs, _ =
-        List.zip keywordArgDefs keywordTypes
-        |> List.fold (fun (typedArgs, currentEnv) ((kwName, defaultExpr), (_, kwType)) ->
-            let defaultType, typedDefault = inferChecked kwType currentEnv defaultExpr
-            unify env.Registry defaultType kwType
-            let nextEnv = addBinding kwName { Scheme = Scheme([], [], kwType); IsMutable = false } currentEnv
-            (typedArgs @ [kwName, kwType, typedDefault], nextEnv)
-        ) ([], envWithMandatory)
+    let typedBody, typedKeywordArgs =
+        try
+            // The return type is the body's expectation, so a literal the body ends
+            // in is elaborated against it.
+            let bodyType, typedBody = inferChecked expectedRetType bodyEnv body
+            unify env.Registry bodyType expectedRetType
+
+            // Type-check keyword default expressions, each against its parameter's
+            // declared type, so `#:mode 'fast` elaborates as an argument would.
+            let typedKeywordArgs, _ =
+                List.zip keywordArgDefs keywordTypes
+                |> List.fold (fun (typedArgs, currentEnv) ((kwName, defaultExpr), (_, kwType)) ->
+                    let defaultType, typedDefault = inferChecked kwType currentEnv defaultExpr
+                    unify env.Registry defaultType kwType
+                    let nextEnv = addBinding kwName { Scheme = Scheme([], [], kwType); IsMutable = false } currentEnv
+                    (typedArgs @ [kwName, kwType, typedDefault], nextEnv)
+                ) ([], envWithMandatory)
+
+            typedBody, typedKeywordArgs
+        finally
+            Unification.scopedTypeVars <- outerScoped
 
     solvePending env
 
@@ -3142,8 +3177,8 @@ and internal checkDeclGroup
                         let funMeta =
                             { MandatoryCount = mandatory.Length
                               KeywordParams =
-                                keywords |> List.map (fun (n, ft) -> n, resolveTypeAnnotation acc.Registry ft)
-                              RestParam = restOpt |> Option.map (resolveTypeAnnotation acc.Registry) }
+                                keywords |> List.map (fun (n, ft) -> n, resolveTypeAnnotationEarly acc.Registry ft)
+                              RestParam = restOpt |> Option.map (resolveTypeAnnotationEarly acc.Registry) }
 
                         { bound with FunMetas = Map.add name funMeta bound.FunMetas }
                     | _ -> bound)

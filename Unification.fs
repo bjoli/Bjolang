@@ -615,6 +615,15 @@ let mutable heldMetaIds: unit -> Set<int> = fun () -> Set.empty
 /// is the only thing the binding can honestly be.
 let mutable heldLocalMetaIds: unit -> Set<int> = fun () -> Set.empty
 
+/// The type variables of the signature whose body is being checked.
+///
+/// A local binding that mentions `%a` means the enclosing function's `%a`,
+/// which is one type for the whole body, so it is not the local's to quantify.
+/// Quantified, every call instantiated it afresh: a named let's `(vec-empty)`
+/// came out as `Vec<object>`, and C# would not assign it to the `Vec<T_a>` the
+/// loop carries (CS0029).
+let mutable scopedTypeVars: Set<string> = Set.empty
+
 /// Quantifies the cells in `t` that lie deeper than the level the binding
 /// ends up at.
 ///
@@ -627,7 +636,7 @@ let mutable heldLocalMetaIds: unit -> Set<int> = fun () -> Set.empty
 /// binding — prelude and all imports included — once per binding that
 /// was generalized, meaning O(environment) per binding and quadratic over a
 /// module. This only touches `t`.
-let private generalizeWith (held: Set<int>) (env: Env) (t: HMType) : Scheme =
+let private generalizeWith (held: Set<int>) (scoped: Set<string>) (env: Env) (t: HMType) : Scheme =
     let tFv = freeVars env.Registry t |> List.distinct
 
     let generalizable =
@@ -635,7 +644,8 @@ let private generalizeWith (held: Set<int>) (env: Env) (t: HMType) : Scheme =
         |> List.filter (fun m -> m.Level > currentLevel && not (Set.contains m.Id held))
     
     // Find all explicitly named TVars that are already in the type
-    let explicitTVars = freeTVars env.Registry t |> List.distinct
+    let explicitTVars =
+        freeTVars env.Registry t |> List.distinct |> List.filter (fun v -> not (Set.contains v scoped))
     
     // Generated names have to be unique across the *whole* program, not just
     // within this type. The code generator maps `'a` to `T_a`, so two
@@ -653,12 +663,28 @@ let private generalizeWith (held: Set<int>) (env: Env) (t: HMType) : Scheme =
 
 /// Generalizes a top-level binding: anything an unresolved *inline*-trait
 /// obligation is watching stays monomorphic, and everything else is quantified.
-let generalize (env: Env) (t: HMType) : Scheme = generalizeWith (heldMetaIds ()) env t
+let generalize (env: Env) (t: HMType) : Scheme = generalizeWith (heldMetaIds ()) Set.empty env t
 
 /// Generalizes a binding local to a function body.
 ///
 /// Everything `generalize` holds back, plus the interface-trait obligations —
 /// see `heldLocalMetaIds`. A local function may still be polymorphic; it may
 /// just not be polymorphic in a variable that a trait call has to dispatch on.
+///
+/// Nor in one only its result mentions. A C# local function gets its type
+/// arguments from its arguments, so `done<T>` answering a `(Result T int)`
+/// was a call C# could not infer (CS0411). Held back, the variable is one
+/// type that every call agrees on.
 let generalizeLocal (env: Env) (t: HMType) : Scheme =
-    generalizeWith (Set.union (heldMetaIds ()) (heldLocalMetaIds ())) env t
+    let resultOnly =
+        match prune env.Registry t with
+        | TFun(ps, ret, _) ->
+            let inParams = ps |> List.collect (freeVars env.Registry) |> List.map (fun m -> m.Id) |> Set.ofList
+
+            freeVars env.Registry ret
+            |> List.map (fun m -> m.Id)
+            |> List.filter (fun id -> not (Set.contains id inParams))
+            |> Set.ofList
+        | _ -> Set.empty
+
+    generalizeWith (Set.unionMany [ heldMetaIds (); heldLocalMetaIds (); resultOnly ]) scopedTypeVars env t

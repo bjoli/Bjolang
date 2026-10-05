@@ -558,6 +558,11 @@ let private bjolangOfClrGeneric =
 let private clrOfBjolangGeneric =
     genericTypeCorrespondence |> List.map (fun (clr, bjo) -> bjo, clr) |> dict
 
+/// Every type name the compiler itself spells to a .NET type, generic or not:
+/// what a signature may name without anything having declared it.
+let compilerTypeNames : Set<string> =
+    Set.ofSeq (Seq.append nullaryCorrespondence.Keys (genericTypeCorrespondence |> Seq.map snd))
+
 /// The name a .NET type is known by in a Bjolang type constructor.
 ///
 /// The arity mark goes: a Bjolang constructor carries its arity in the number
@@ -1642,7 +1647,8 @@ type ResolvedCall =
       RawReturnType: Type
       DeclaringType: string
       Name: string
-      IsStatic: bool }
+      IsStatic: bool
+      Syntax: CallSyntax }
 
 /// Methods are filtered down to the ones Bjolang can actually call.
 ///
@@ -1760,6 +1766,37 @@ let private rejectSyncOverAsync (where: string) (t: Type) (name: string) : unit 
 /// `DeclaringType` is the type the lookup started from rather than the one that
 /// declares the method: an inherited method is still called through the target,
 /// and the field is only ever used for diagnostics and for static calls.
+/// How C# calls `m`. An indexer's accessors are written `x[k]` and
+/// `x[k] = v`. A plain property's are refused here, with the two spellings
+/// Bjolang has for one: C# will not call `get_Length` by name either, and the
+/// error it gives names a method nobody wrote.
+let private accessorSyntax (where: string) (t: Type) (m: MethodInfo) : CallSyntax =
+    if not m.IsSpecialName then
+        ByName
+    else
+        let flags = BindingFlags.Public ||| BindingFlags.Instance ||| BindingFlags.Static
+        let owner =
+            t.GetProperties flags
+            |> Array.tryFind (fun p ->
+                (not (isNull p.GetMethod) && p.GetMethod.Name = m.Name)
+                || (not (isNull p.SetMethod) && p.SetMethod.Name = m.Name))
+
+        match owner with
+        | None -> ByName
+        | Some p ->
+            let getter = not (isNull p.GetMethod) && p.GetMethod.Name = m.Name
+
+            if p.GetIndexParameters().Length > 0 then
+                if getter then IndexerGet else IndexerSet
+            else
+                let how =
+                    if getter then
+                        $"getter of the property '%s{p.Name}', which is read with (.-%s{p.Name} x), or imported with #:get: (name (: %s{t.FullName}.%s{p.Name} (-> ...) #:get))"
+                    else
+                        $"setter of the property '%s{p.Name}', which is written through an import with #:set: (name (: %s{t.FullName}.%s{p.Name} (-> ... void) #:set))"
+
+                failwithf $"Type Error at %s{where}: '%s{m.Name}' is the %s{how}."
+
 let resolveMethod
     (where: string)
     (isStatic: bool)
@@ -1798,7 +1835,8 @@ let resolveMethod
       RawReturnType = m.ReturnType
       DeclaringType = t.FullName
       Name = name
-      IsStatic = isStatic }
+      IsStatic = isStatic
+      Syntax = accessorSyntax where t m }
 
 // ---------------------------------------------------------------------------
 // Awaiting .NET
@@ -1902,6 +1940,7 @@ let resolveConstructor (where: string) (targetType: Type) (argTypes: HMType list
       RawReturnType = targetType
       DeclaringType = targetType.FullName
       Name = ".ctor"
+      Syntax = ByName
       IsStatic = false }
 
 /// Resolves a member read — `(.-Name x)`, `Class.Member`, or a `#:get` import —

@@ -1,0 +1,34 @@
+;; Inside a generic function, %a is the function's own, one type for the whole
+;; body. A local binding was generalized over it as well, so every call of the
+;; local instantiated it afresh: a named let's (vec-empty) came out as
+;; Vec<object>, which C# would not assign to the loop's Vec<T_a> (CS0029).
+(import (std prelude))
+(import (std simpletest))
+(import (std orderedset))
+
+(: copy-all (-> (Vec %a) (Vec %a)))
+(defun (copy-all v)
+  (let loop ((i 0) (out (vec-empty)))
+    (if (= i (vec-length v)) out (loop (+ i 1) (vec-add out (vec-ref v i))))))
+
+(: distinct-count (-> (Vec %a) int) (where (Ord %a)))
+(defun (distinct-count v)
+  (let loop ((i 0) (s (orderedset-empty)))
+    (if (= i (vec-length v)) (orderedset-length s) (loop (+ i 1) (orderedset-add s (vec-ref v i))))))
+
+;; A local annotated with the signature's %a takes that %a, and a local
+;; written without one is still generic in a variable of its own.
+(: pair-up (-> %a (Tuple %a int)))
+(defun (pair-up x)
+  (defun (keep (: y %a)) y)
+  (defun (twice z) (Tuple z z))
+  (def (Tuple n _) (twice 1))
+  (def (Tuple s _) (twice "s"))
+  (Tuple (keep x) (+ n (string-length s))))
+
+(defun (main)
+  (expect "a named let's empty vec, in a generic function" (copy-all [1 2 3]) [1 2 3])
+  (expect "and a set, where the type is constrained" (distinct-count ["b" "a" "b"]) 2)
+  (expect "a local at the signature's %a, and one generic of its own" (pair-up "x") (Tuple "x" 2))
+  (println "282 ok")
+  0)

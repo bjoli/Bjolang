@@ -414,7 +414,8 @@ let internal genericExternMeta
       Exceptions = info.Exceptions
       Await = false
       AmbientToken = false
-      Blocking = info.IsBlocking }
+      Blocking = info.IsBlocking
+      Syntax = ByName }
 
 /// A foreign call's node: an instance member keeps its receiver, a static one
 /// names the type it was declared on.
@@ -479,7 +480,8 @@ let internal metadataOf (resolved: DotNetInterop.ResolvedCall) (exceptions: stri
       AmbientToken = false
       // A direct `(.Method x)` reaches here, and there is no import clause it
       // could have carried a `#:blocking` claim on. An alias overrides this.
-      Blocking = false }
+      Blocking = false
+      Syntax = resolved.Syntax }
 
 /// One use of a generic extern alias: its parameter types, its return type and
 /// its .NET type arguments, all instantiated at fresh metavariables.

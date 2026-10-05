@@ -48,11 +48,38 @@ let private typeNameMap =
         "System.Threading.Tasks.Task", TCon("Task", [])
     ]
 
+/// Whether a type name means something. A dotted one is a .NET name, or the
+/// key of a declared type, and `checkNameableAnnotation` answers for the first;
+/// anything else has to be one the compiler spells, a builtin, declared,
+/// imported, an alias or an `import/class` alias. Otherwise it became a C# type of that name, which C#
+/// then could not find.
+let private typeNameKnown (registry: TraitRegistry) (name: string) =
+    name.Contains '.'
+    || Set.contains name DotNetInterop.compilerTypeNames
+    || Set.contains name registry.LocalTypes
+    || Map.containsKey name registry.Records
+    || Map.containsKey name registry.Unions
+    || Map.containsKey name registry.Aliases
+    || Map.containsKey name registry.ClrClasses
+
+/// A name C# would have found in `System` worked by accident before, so the
+/// error says how to bring that type in.
+let private unknownType (r: Range) (name: string) : 'a =
+    let shown = Naming.showTypeName name
+
+    let hint =
+        match DotNetInterop.tryResolveType ("System." + name) with
+        | Some _ -> $" For .NET's, write (import/class (%s{shown} (: System.%s{shown})))."
+        | None -> ""
+
+    failwithf
+        $"Type Error at %s{Lexer.formatPos r}: there is no type named '%s{shown}'. A type is declared with (type ...), brought in by import/class, or imported from the module that declares it.%s{hint}"
+
 /// A .NET type written in an annotation is a type *named in source*, so it is
 /// subject to the same rule an `import/class` is: the package writing it has to
 /// have declared the shared framework it comes from. Only a dotted name can be
 /// one — everything else is a Bjolang type, an alias, or a primitive.
-let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType =
+let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype: FType) : HMType =
     match ptype with
     | TName(name, nameRange) ->
         if name.StartsWith("'") then
@@ -70,9 +97,10 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
                 | Some t -> t
                 | None ->
                     DotNetInterop.checkNameableAnnotation nameRange name 0
+                    if checkNames && not (typeNameKnown registry name) then unknownType nameRange name
                     TCon(name, [])
     | TApp("->", args, _) ->
-        let resolvedArgs = args |> List.map (resolveTypeAnnotation registry)
+        let resolvedArgs = args |> List.map (resolveWith checkNames registry)
         tfun (List.take (resolvedArgs.Length - 1) resolvedArgs) (List.last resolvedArgs)
     // `(-bjo-> ...)` reaching here rather than as a `TArrow` — the nested
     // positions of an arrow are read by `parseArrowTypeInner`, which builds a
@@ -80,7 +108,7 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
     // reachable from source yet, but the metadata serializer writes what the
     // type says, so it can be read.
     | TApp("-bjo->", args, _) ->
-        let resolvedArgs = args |> List.map (resolveTypeAnnotation registry)
+        let resolvedArgs = args |> List.map (resolveWith checkNames registry)
         TFun(List.take (resolvedArgs.Length - 1) resolvedArgs, List.last resolvedArgs, EAsync)
     // `(-?-> ...)`: a parameter this signature accepts at either colour.
     //
@@ -90,7 +118,7 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
     // already refused every position where it would mean nothing, so anything
     // reaching here is a parameter arrow or came back from metadata.
     | TApp("-?->", args, _) ->
-        let resolvedArgs = args |> List.map (resolveTypeAnnotation registry)
+        let resolvedArgs = args |> List.map (resolveWith checkNames registry)
         TFun(List.take (resolvedArgs.Length - 1) resolvedArgs, List.last resolvedArgs, EPoly)
     // `(out T)`: the parser lets it through as a parameter of any arrow, and
     // only `import/extern` takes it off before resolving the rest. So reaching
@@ -99,13 +127,13 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
         failwithf
             $"Type Error at %s{Lexer.formatPos r}: (out T) marks an out parameter of a .NET method, and only an import/extern signature describes one. A Bjolang function returns what it produces."
     | TArrow(mandatory, keywords, restOpt, ret, colour, _) ->
-        let mandatoryTypes = mandatory |> List.map (resolveTypeAnnotation registry)
-        let keywordTypes = keywords |> List.map (fun (_, t) -> resolveTypeAnnotation registry t)
+        let mandatoryTypes = mandatory |> List.map (resolveWith checkNames registry)
+        let keywordTypes = keywords |> List.map (fun (_, t) -> resolveWith checkNames registry t)
         let restArrayType =
             match restOpt with
-            | Some rt -> [TCon("Array", [resolveTypeAnnotation registry rt])]
+            | Some rt -> [TCon("Array", [resolveWith checkNames registry rt])]
             | None -> []
-        let retType = resolveTypeAnnotation registry ret
+        let retType = resolveWith checkNames registry ret
         let allArgTypes = mandatoryTypes @ keywordTypes @ restArrayType
         TFun(allArgTypes, retType, colourEffect colour)
     // (assoc Trait item 'col) — an associated type projected out of an
@@ -114,9 +142,9 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
     // `(Tuple a b)` is the tuple type, not a one-off constructor named "Tuple".
     // It is also what `serializeHMType` writes for a `TTuple`, so without this
     // no exported signature mentioning a tuple could be read back.
-    | TApp("Tuple", args, _) -> TTuple(args |> List.map (resolveTypeAnnotation registry))
+    | TApp("Tuple", args, _) -> TTuple(args |> List.map (resolveWith checkNames registry))
     | TApp("assoc", [ TName(traitName, _); TName(assocName, _); implType ], _) ->
-        TAssoc(traitName, assocName, resolveTypeAnnotation registry implType)
+        TAssoc(traitName, assocName, resolveWith checkNames registry implType)
     // `(dyn ->str)`, `(dyn Foldable #:item int)` — a trait object type.
     //
     // Resolves to a standard `TCon` whose constructor name is the unique key
@@ -169,7 +197,7 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
             info.AssociatedTypes
             |> List.map (fun assocName ->
                 match given |> List.tryFind (fun (n, _) -> n = assocName) with
-                | Some(_, t) -> resolveTypeAnnotation registry t
+                | Some(_, t) -> resolveWith checkNames registry t
                 | None ->
                     failwithf
                         $"Type Error at %s{Lexer.formatPos r}: the associated type #:%s{assocName} of '%s{traitName}' is not pinned. A dyn type pins every one of them, because the box hides the type that would otherwise answer them — %s{listed}.")
@@ -201,7 +229,7 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
 
     | TApp(name, args, appRange) ->
         let name = originalName registry name
-        let resolvedArgs = args |> List.map (resolveTypeAnnotation registry)
+        let resolvedArgs = args |> List.map (resolveWith checkNames registry)
         DotNetInterop.checkNameableAnnotation appRange name resolvedArgs.Length
         match Map.tryFind name registry.Aliases with
         | Some (typeParams, t) ->
@@ -213,7 +241,16 @@ let rec resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType 
             let normalizeParam (p: string) = if p.StartsWith("'") then p else "'" + p
             let subst = List.zip (typeParams |> List.map normalizeParam) resolvedArgs |> Map.ofList
             substTypeVars subst t
-        | None -> TCon(name, resolvedArgs)
+        | None ->
+            if checkNames && not (typeNameKnown registry name) then unknownType appRange name
+            TCon(name, resolvedArgs)
+
+let resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType = resolveWith true registry ptype
+
+/// The same, before the types of the group it is in are registered: a forward
+/// declaration's guess, which the declaration's own check replaces.
+let resolveTypeAnnotationEarly (registry: TraitRegistry) (ptype: FType) : HMType =
+    resolveWith false registry ptype
 
 
 // ---------------------------------------------------------------------------

@@ -1728,6 +1728,31 @@ let private infixOperators =
           "shift-right", ">>"
           "shift-right-logical", ">>>" ]
 
+/// Whether C# reads this as a constant expression. It evaluates one while it
+/// compiles, and checks it for overflow although the program runs unchecked:
+/// `(* 2147483647 2)` wraps at run time and was CS0220. So arithmetic on
+/// constants is emitted inside `unchecked(...)`, and means what it would mean
+/// on variables.
+let rec private isCsConstant (e: TypedExpr) =
+    match e.Node with
+    | TInt _ -> true
+    | TCast(inner, _) -> isCsConstant inner
+    | TApply({ Node = TIdent(name, _) }, args, []) ->
+        (Map.containsKey name infixOperators || name = "negate" || name = "bitwise-not")
+        && List.forall isCsConstant args
+    | _ -> false
+
+/// An integer literal that is zero. C# refuses to divide a constant by one
+/// even inside `unchecked` (CS0020), so Bjolang says so first; a variable
+/// divided by zero throws when it runs, as it would anywhere.
+let private isZeroLiteral (e: TypedExpr) =
+    match e.Node with
+    | TInt text ->
+        let d = (NumericLiteral.digits text).TrimStart('-').ToLowerInvariant()
+        let d = if d.StartsWith "0x" || d.StartsWith "0b" then d.Substring 2 else d
+        d.Length > 0 && Seq.forall (fun c -> c = '0') d
+    | _ -> false
+
 /// Does C# widen this type to `int` before applying an operator to it?
 ///
 /// If we encounter a solved type variable, we just follow its pointer directly
@@ -1980,6 +2005,29 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         generateExpr ctx { expr with Type = meta.ReturnType }
         append ctx ")"
 
+    // An indexer: `x[k]`, and `x[k] = v` for its setter.
+    | TDotMethodCall (target, _, args, Some ({ Syntax = IndexerGet | IndexerSet } as meta)) ->
+        let emitters = prepareOperands ctx (target :: args)
+        let keys, value =
+            match meta.Syntax with
+            | IndexerSet -> List.take (args.Length - 1) emitters.Tail, Some (List.last emitters.Tail)
+            | _ -> emitters.Tail, None
+
+        emitReceiver ctx target emitters.Head
+        append ctx "["
+
+        for i, emit in List.indexed keys do
+            if i > 0 then append ctx ", "
+            emit ctx
+
+        append ctx "]"
+
+        match value with
+        | Some emit ->
+            append ctx " = "
+            emit ctx
+        | None -> ()
+
     // A guarded call (`#:exceptions`) is statement-shaped and never reaches
     // here; see `generateGuardedCall`.
     | TDotMethodCall (target, methodName, args, meta) ->
@@ -2202,12 +2250,17 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         append ctx "."
         append ctx (sanitizeIdent field)
 
+    // A constant cast is checked by C# as constant arithmetic is: see
+    // `isCsConstant`. `(cast System.Byte 300)` wraps, as the docs say.
     | TCast (target, t) ->
+        let constant = isCsConstant target
+        if constant then append ctx "unchecked("
         append ctx "(("
         append ctx (typeToString t)
         append ctx ")("
         generateExpr ctx target
         append ctx "))"
+        if constant then append ctx ")"
 
     | TCaseCast (target, t, caseName) ->
         append ctx "(("
@@ -2490,8 +2543,15 @@ and private generateGuardedCall (ctx: CodegenContext) (target: BlockTarget) (exp
         let methodName = methodName + foreignTypeArguments (Some meta)
 
         generateGuarded ctx target expr (isVoidType meta.ReturnType) meta.Exceptions (receiver :: args) (fun c names ->
-            let argList = String.concat ", " (withToken meta (List.tail names))
-            append c (callText meta $"%s{List.head names}.%s{methodName}(%s{argList})"))
+            let recv, rest = List.head names, List.tail names
+            match meta.Syntax with
+            | IndexerGet -> append c (callText meta $"""%s{recv}[%s{String.concat ", " rest}]""")
+            | IndexerSet ->
+                let keys = List.take (rest.Length - 1) rest
+                append c $"""%s{recv}[%s{String.concat ", " keys}] = %s{List.last rest}"""
+            | ByName ->
+                let argList = String.concat ", " (withToken meta rest)
+                append c (callText meta $"%s{recv}.%s{methodName}(%s{argList})"))
 
     | TForeignStaticCall (clrType, methodName, args, Some meta) ->
         let methodName = methodName + foreignTypeArguments (Some meta)
@@ -2845,6 +2905,9 @@ and private generateApply
     // binary.
     | TIdent (("negate" | "recip" | "bitwise-not") as name, _) when args.Length = 1 && kwArgs.IsEmpty ->
         let operand = (prepareOperands ctx args).Head
+        let constant = isCsConstant args.Head
+
+        if constant then append ctx "unchecked("
 
         castPromoted ctx expr.Type (fun () ->
             match name with
@@ -2855,8 +2918,17 @@ and private generateApply
             operand ctx
             append ctx "))")
 
+        if constant then append ctx ")"
+
     | TIdent (name, _) when Map.containsKey name infixOperators && args.Length = 2 && kwArgs.IsEmpty ->
+        if (name = "/" || name = "%") && isZeroLiteral args[1] && isCsConstant args[0]
+           && NumericLiteral.settled expr.Type <> TypeConstants.doubleType then
+            codegenError args[1].Range $"a constant integer divided by zero, which always throws."
+
         let emitters = prepareOperands ctx args
+        let constant = List.forall isCsConstant args
+
+        if constant then append ctx "unchecked("
 
         castPromoted ctx expr.Type (fun () ->
             append ctx "("
@@ -2864,6 +2936,8 @@ and private generateApply
             append ctx $" %s{infixOperators[name]} "
             emitters[1] ctx
             append ctx ")")
+
+        if constant then append ctx ")"
 
     | TIdent (name, _) when List.contains name ["<"; ">"; "<="; ">="] && args.Length = 2 && kwArgs.IsEmpty ->
         let emitters = prepareOperands ctx args
@@ -6148,6 +6222,31 @@ let generateProgram
         |> List.map fst
         |> Set.ofList
 
+    // Two names a module binds that C# spells alike: `a-b` and `asubb`, `a?`
+    // and `a_QMARK`. Mangling is not injective, and the module class would
+    // declare the member twice (CS0111, CS0102).
+    for d in decls do
+        match d with
+        | TModule (_, innerDecls, _) ->
+            innerDecls
+            |> List.collect (function
+                | TDef (n, _, _, r)
+                | TDefMutable (n, _, _, r)
+                | TDefun (n, _, _, _, _, _, _, _, r) -> [ (n, r) ]
+                | TDefTuple (names, _, _, r) -> names |> List.map (fun n -> (n, r))
+                | TDefPattern (_, _, binders, r) -> binders |> List.map (fun (n, _) -> (n, r))
+                | _ -> [])
+            |> List.distinctBy fst
+            |> List.groupBy (fun (n, _) -> Prelude.moduleMemberName n)
+            |> List.iter (fun (spelled, named) ->
+                match named with
+                | (first, _) :: (second, r) :: _ ->
+                    codegenError
+                        r
+                        $"'%s{first}' and '%s{second}' are both '%s{spelled.TrimStart '@'}' in the C# this module is compiled to, which cannot declare one name twice. Rename one of them."
+                | _ -> ())
+        | _ -> ()
+
     // Where each top-level name is emitted from, and under what member name.
     //
     // A plain import is deliberately absent: it resolves through the
@@ -6178,8 +6277,11 @@ let generateProgram
                     // moved: the branch below reads "differs from what a bare
                     // identifier would find", and for these a bare identifier
                     // finds the wrong thing even when nothing differs.
+                    // So does one whose member got a derived name, which a bare
+                    // identifier does not spell: see `Prelude.moduleMemberName`.
                     | TExtern (visible, origin, _, _) when
                         Set.contains visible builtinBindings || Set.contains visible contested
+                        || Prelude.moduleMemberName origin.OriginalName <> Naming.sanitizeIdent origin.OriginalName
                         ->
                         [ (visible, (origin.OriginModule, origin.OriginalName)) ]
                     // An import whose spelling or whose home differs from what a

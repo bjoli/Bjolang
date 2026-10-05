@@ -3,6 +3,43 @@
 
 What each change guarantees, and what it leaves open.
 
+* A program Bjolang accepts is one C# accepts
+
+Each of these was a C# error about code nobody wrote, and is now either a
+Bjolang error or a program that runs.
+
+- *A type name nothing declares is an error*, where it is written: in a
+  signature, a field, a case's payload or an ~import/extern~. It was a C#
+  type of that name (CS0246). A name C# would have found in ~System~ worked
+  by accident before, so the error says how to ~import/class~ it.
+- *An indexer is called by its accessor's name*: ~(.get_Item d k)~ is
+  ~d[k]~ and ~(.set_Item d k v)~ is ~d[k] = v~, through an import and
+  ~#:exceptions~ too (CS0571). A plain property's accessor named as a method
+  is an error that gives ~(.-Name x)~ and ~#:get~/~#:set~.
+- *Arithmetic on constants wraps*, as on variables: ~(* 2147483647 2)~,
+  ~(- -2147483648)~ and ~(cast System.Byte 300)~ are emitted in
+  ~unchecked(...)~ (CS0220, CS0221). A constant integer divided by zero is an
+  error (CS0020), and ~1e400~ does not fit in a ~double~ (CS0594).
+- *Names C# spells alike.* Two of a module's names that mangle to one —
+  ~a-b~ and ~asubb~, ~a?~ and ~a_QMARK~ — are an error naming both (CS0111,
+  CS0102). A name spelled like a builtin in C# (~stringsubsearch~) or
+  ~Main~ gets a member name of its own, as a builtin's own name already did
+  (CS1501, CS0017), and an importer derives it the same way. A character no
+  C# identifier holds, an emoji, is spelled by its codepoint (CS1056).
+- *A record field named like a .NET record's member* (~ToString~,
+  ~Equals~, ~Deconstruct~ ...) and *a case named like its union* are errors
+  at the declaration (CS8866, CS0542).
+- *A local function is not generalized over the enclosing signature's type
+  variables*, which are one type for the whole body. A named let's
+  ~(vec-empty)~ in a generic function came out as ~Vec<object>~ (CS0029).
+  Nor over a variable only its result mentions, which C# could not infer at
+  a call (CS0411).
+- ~run_tests.py~ fails an error test that only the C# compiler rejected.
+
+~TestFiles/278_indexers.bjo~, ~279_constant_arithmetic.bjo~,
+~280_csharp_names.bjo~, ~281_local_result_only.bjo~,
+~282_scoped_type_vars.bjo~, and ten new error tests.
+
 * A string's ~(:for ch s)~ is a walk
 
 - *~Iterable string~ walks with a ~StringWalk~*, not a ~StringCursor~. It

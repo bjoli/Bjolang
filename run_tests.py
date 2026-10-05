@@ -800,6 +800,11 @@ if error_files:
         if entry["status"] == 0:
             return "FAIL", "compiled successfully, but was expected to be rejected"
 
+        # Ett program som bara C#-kompilatorn avvisar har Bjolang släppt
+        # igenom: felet gäller kod som användaren aldrig skrev.
+        if re.search(r'\berror CS\d+', entry["output"]):
+            return "FAIL", "rejected by the C# compiler, not by Bjolang"
+
         # `EXPECT-ERROR` säger inte bara att filen ska avvisas utan varför.
         # En fil som avvisas av något annat skäl än det angivna är ett
         # felmeddelande som slutat gälla, inte ett test som går igenom.

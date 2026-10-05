@@ -34,6 +34,36 @@ let private escapeReserved (s: string) =
     | "abstract" | "base" | "checked" | "const" | "delegate" | "enum" | "event" | "explicit" | "extern" | "fixed" | "implicit" | "interface" | "namespace" | "operator" | "override" | "sealed" | "stackalloc" | "this" | "unchecked" | "unsafe" | "using" | "virtual" | "volatile" -> "@" + s
     | _ -> s
 
+/// A character C# allows in an identifier: letters, digits, `_`, and the
+/// marks and formatting characters that may follow them.
+let private identifierChar (r: Text.Rune) =
+    Text.Rune.IsLetterOrDigit r
+    || r.Value = int '_'
+    || (match Text.Rune.GetUnicodeCategory r with
+        | Globalization.UnicodeCategory.NonSpacingMark
+        | Globalization.UnicodeCategory.SpacingCombiningMark
+        | Globalization.UnicodeCategory.ConnectorPunctuation
+        | Globalization.UnicodeCategory.Format
+        | Globalization.UnicodeCategory.LetterNumber -> true
+        | _ -> false)
+
+/// Anything else, as `_u` and its codepoint: `😀` is `_u1F600_`. The ASCII a
+/// name may hold has its own spellings by then, so this is for the rest of
+/// Unicode, which a Bjolang name may hold and a C# one may not.
+let private escapeUnidentifiable (part: string) =
+    if part |> Seq.forall (fun c -> c < '\u0080') then
+        part
+    else
+        let sb = Text.StringBuilder()
+
+        for r in part.EnumerateRunes() do
+            if identifierChar r || r.Value = int '@' || r.Value = int '.' then
+                sb.Append(r.ToString()) |> ignore
+            else
+                sb.Append($"_u%X{r.Value}_") |> ignore
+
+        sb.ToString()
+
 /// How a Bjolang name is spelled in C#.
 ///
 /// Deliberately **not** injective: `a-b` and `asubb` both come out as `asubb`.
@@ -49,6 +79,7 @@ let sanitizeIdent (s: string) =
     let s = s.Replace("::", ".").Replace("-", "sub").Replace("?", "_QMARK").Replace("!", "_BANG").Replace("+", "add").Replace("*", "mul").Replace("/", "div").Replace("<", "lt").Replace(">", "gt").Replace("=", "eq").Replace("'", "").Replace("&", "arg_").Replace("#", "hash__")
 
     let segment (part: string) =
+        let part = escapeUnidentifiable part
         let part = if part.Length > 0 && Char.IsDigit(part[0]) then "_" + part else part
         escapeReserved part
 

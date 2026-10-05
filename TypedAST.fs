@@ -501,6 +501,11 @@ module NumericLiteral =
     /// question to be put in the other language.
     let fits (t: HMType) (text: string) : bool =
         match bounds (settled t) with
+        | None when settled t = TypeConstants.doubleType ->
+            // Too large a double is infinity to .NET's parser, and CS0594 to C#.
+            match System.Double.TryParse(digits text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+            | true, v -> not (System.Double.IsInfinity v)
+            | _ -> true
         | None -> true
         | Some(lo, hi) ->
             match value (digits text) with
@@ -692,6 +697,14 @@ type ClrExternInfo =
 /// nothing downstream re-derives it and nothing is left for the C# compiler to
 /// guess. `Exceptions` being non-empty is what makes the emitted call
 /// `try`/`catch`-wrapped into a `Result`.
+/// How C# lets a method be called. An indexer's accessors are methods to
+/// reflection and not to C#, which refuses `x.get_Item(k)` (CS0571) and wants
+/// `x[k]` and `x[k] = v`.
+type CallSyntax =
+    | ByName
+    | IndexerGet
+    | IndexerSet
+
 type DotNetMethodMetadata =
     { DeclaringType: string
       MethodName: string
@@ -732,7 +745,8 @@ type DotNetMethodMetadata =
       /// The out parameters the emitter declares and passes between the
       /// arguments. With these, `ReturnType` is still the method's own, and
       /// the call's value is what `Form` builds from it and the outs.
-      Outs: ExternOuts option }
+      Outs: ExternOuts option
+      Syntax: CallSyntax }
 
 type DotNetConstructorMetadata =
     { ClrType: string

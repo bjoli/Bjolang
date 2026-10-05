@@ -1,0 +1,41 @@
+;; A .NET indexer is called by its accessor's name, get_Item or set_Item, and
+;; written as C# writes one: x[k] and x[k] = v. Calling it by name was a C#
+;; error (CS0571), about code nobody wrote.
+(import (std prelude))
+(import (std simpletest))
+(import (std mutable map))
+(import (std mutable vec))
+
+(import/class (ArrayList (: System.Collections.ArrayList (-> ArrayList))))
+
+(import/extern
+  (al-add! (: System.Collections.ArrayList.Add (-> ArrayList System.Object int)))
+  (al-get (: System.Collections.ArrayList.get_Item (-> ArrayList int System.Object)))
+  (al-ref (: System.Collections.ArrayList.get_Item (-> ArrayList int System.Object)
+             #:exceptions (System.ArgumentOutOfRangeException))))
+
+(defun (main)
+  (def d (mutablemap))
+  (mutablemap-set! d "a" 1)
+  (.set_Item d "b" 2)
+  (expect "a dictionary's indexer, read and written" (+ (.get_Item d "a") (.get_Item d "b")) 3)
+
+  (def v (mutablevec))
+  (mutablevec-add! v 10)
+  (.set_Item v 0 11)
+  (expect "a list's, written as a statement" (.get_Item v 0) 11)
+  (def written (.set_Item v 0 12))
+  (expect "and as a value, which is the unit" (.get_Item v 0) 12)
+
+  (def a (ArrayList.))
+  (ignore (al-add! a (cast System.Object 1)))
+  (ignore (al-add! a (cast System.Object 2)))
+  (expect "through an import, guarded"
+          (match (al-ref a 5) ((Ok o) "found") ((Err e) "out of range"))
+          "out of range")
+  (expect "and as a function value"
+          (list-length (list-map (fun (i) (al-get a i)) (list 0 1)))
+          2)
+
+  (println "278 ok")
+  0)

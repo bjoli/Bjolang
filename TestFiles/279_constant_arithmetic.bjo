@@ -1,0 +1,24 @@
+;; Arithmetic on constants means what it means on variables. C# evaluates a
+;; constant expression while it compiles and checks it for overflow, though a
+;; program runs unchecked, so these were C# errors (CS0220, CS0221) and are now
+;; emitted inside unchecked(...).
+(import (std prelude))
+(import (std simpletest))
+
+(: wrap-mul (-> int int int))
+(defun (wrap-mul a b) (* a b))
+
+(defun (main)
+  (def big 2147483647)
+  (expect "a product that overflows, as on variables" (* 2147483647 2) (wrap-mul big 2))
+  (expect "a sum" (+ 2147483647 1) -2147483648)
+  (expect "the negation of the smallest int" (- -2147483648) -2147483648)
+  (expect "a cast wraps, as the docs say" (cast System.Byte 300) 44uy)
+  (expect "milliseconds in a year, as ints" (* 60 60 24 365 1000) 1471228928)
+  (expect "a variable still divides by zero when it runs, and throws"
+          (match (try (/ big (- big big)) #:catch (System.DivideByZeroException))
+            ((Ok n) "no error")
+            ((Err e) "threw"))
+          "threw")
+  (println "279 ok")
+  0)
