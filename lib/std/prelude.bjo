@@ -102,7 +102,7 @@
   str string-append string-length
   string-contains? string-starts-with? string-ends-with? string-replace
   string-upcase string-downcase
-  string-trim string-trim-start string-trim-end
+  string-trim string-trim-left string-trim-right
   string-pad-left string-pad-right
   string-split string-join
   ;; Characters.
@@ -1163,11 +1163,11 @@
 (: string-trim (-> string string))
 (defun (string-trim s) (.Trim s))
 
-(: string-trim-start (-> string string))
-(defun (string-trim-start s) (.TrimStart s))
+(: string-trim-left (-> string string))
+(defun (string-trim-left s) (.TrimStart s))
 
-(: string-trim-end (-> string string))
-(defun (string-trim-end s) (.TrimEnd s))
+(: string-trim-right (-> string string))
+(defun (string-trim-right s) (.TrimEnd s))
 
 ;; Pad width.
 (: string-pad-left (-> string int (#:with char) string))
@@ -2739,31 +2739,34 @@
 ;; step was written in another macro's template — is stripped, since a field
 ;; name is never renamed. Injected, so that this macro's hygiene leaves it
 ;; alone too.
-(import/extern
-  (clr-index-of        (: BjolangRuntime.StringIndexOf))
-  (clr-last-index-of   (: BjolangRuntime.StringLastIndexOf))
-  (clr-substring       (: BjolangRuntime.StringSubstring))
-  (clr-substring-from  (: BjolangRuntime.StringSubstringFrom)))
-
 (: path-field (-> (-> Symbol Syntax) Syntax Syntax))
 (defun (path-field inject step)
-  (def name (match step ((SSym s) (clr-substring-from (symbol->string s) 1)) (_ "")))
-  (def mark (clr-last-index-of name "__"))
+  (def name
+    (match step
+      ((SSym s)
+       (def dotted (symbol->string s))
+       (substring dotted (string-cursor-next dotted (string-cursor-start dotted)) (string-cursor-end dotted)))
+      (_ "")))
+  (def start (string-cursor-start name))
   (inject
     (string->symbol
-      (if (and (> mark 0) (path-digits? name (+ mark 2)))
-          (clr-substring name 0 mark)
-          name))))
+      (match (string-search-backward name "__")
+        ((Some mark)
+         (if (and (string-cursor>? mark start)
+                  (path-digits? name (string-cursor-next name (string-cursor-next name mark))))
+             (substring name start mark)
+             name))
+        (None name)))))
 
-;; Is everything in `s` from `i` on an ASCII digit, and is there anything?
-(: path-digits? (-> string int bool))
-(defun (path-digits? s i)
-  (and (< i (string-length s))
-       (let go ((j i))
-         (if (= j (string-length s))
+;; Is everything in `s` from `c` on an ASCII digit, and is there anything?
+(: path-digits? (-> string StringCursor bool))
+(defun (path-digits? s c)
+  (and (not (string-cursor-end? s c))
+       (let go ((c c))
+         (if (string-cursor-end? s c)
              #t
-             (let ((c (string-code-ref s j)))
-               (and (>= c 48) (<= c 57) (go (+ j 1))))))))
+             (let ((ch (string-cursor-ref s c)))
+               (and (char>=? ch #\0) (char<=? ch #\9) (go (string-cursor-next s c))))))))
 
 ;; `set` and `update`. `items` is the steps followed by the value or function.
 ;;

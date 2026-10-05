@@ -275,8 +275,8 @@
 (: valid-segment? (-> string bool))
 (defun (valid-segment? s)
   (and (not (= s ""))
-       (let ((first (string-code-ref s 0)))
-         (not (and (>= first 48) (<= first 57))))
+       (let ((first (string-cursor-ref s (string-cursor-start s))))
+         (not (and (char>=? first #\0) (char<=? first #\9))))
        (all? name-char? (string->list s))))
 
 ;; The name a command line wrote: `myapp`, or `(my app)` for several segments.
@@ -284,9 +284,9 @@
 (defun (parse-package-name written)
   (def trimmed (string-trim written))
   (def inner (if (and (string-starts-with? trimmed "(") (string-ends-with? trimmed ")"))
-                 (string-trim (substring/cursors trimmed
-                                                 (string-cursor-next trimmed (string-cursor-start trimmed))
-                                                 (string-cursor-prev trimmed (string-cursor-end trimmed))))
+                 (string-trim (substring trimmed
+                                         (string-cursor-next trimmed (string-cursor-start trimmed))
+                                         (string-cursor-prev trimmed (string-cursor-end trimmed))))
                  trimmed))
   (def segments (loop (:for part (string-split inner " "))
                       (:acc out (listing part) #:when (not (= part "")))

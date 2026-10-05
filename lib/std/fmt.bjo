@@ -214,7 +214,7 @@
         (let ((cw (width-of (char->string (string-cursor-ref s c)))))
           (if (<= cw room)
               (loop (string-cursor-next s c) (- room cw))
-              (substring/cursors s (string-cursor-start s) c))))))
+              (substring s (string-cursor-start s) c))))))
 
 (: suffix-of-width (-> string int string))
 (defun (suffix-of-width s w)
@@ -225,14 +225,14 @@
       (:def p (string-cursor-prev s c))
       (:def cw (width-of (char->string (string-cursor-ref s p))))
       ((<= cw room) (loop p (- room cw)))
-      (else (substring/cursors s c (string-cursor-end s))))))
+      (else (substring s c (string-cursor-end s))))))
     ;; (if (string-cursor=? c (string-cursor-start s))
     ;;     s
     ;;     (let* ((p (string-cursor-prev s c))
     ;;            (cw (width-of (char->string (string-cursor-ref s p)))))
     ;;           (if (<= cw room)
     ;;               (loop p (- room cw))
-    ;;               (substring/cursors s c (string-cursor-end s)))))))
+    ;;               (substring s c (string-cursor-end s)))))))
 
 (: pad/left (-> int string string))
 (defun (pad/left w s) (string-append (padding (- w (width-of s))) s))
@@ -459,8 +459,8 @@
 (: split-at-point (-> string (Tuple string string)))
 (defun (split-at-point s)
   (match (string-index (fun (c) (char=? c #\.)) s)
-    ((Some c) (Tuple (substring/cursors s (string-cursor-start s) c)
-                     (substring/cursors s (string-cursor-next s c) (string-cursor-end s))))
+    ((Some c) (Tuple (substring s (string-cursor-start s) c)
+                     (substring s (string-cursor-next s c) (string-cursor-end s))))
     (None (Tuple s ""))))
 
 (: first-of (-> (Tuple string string) string))
@@ -473,9 +473,9 @@
 (defun (string-drop-first s)
   (if (string-empty? s)
       s
-      (substring/cursors s
-                         (string-cursor-next s (string-cursor-start s))
-                         (string-cursor-end s))))
+      (substring s
+                 (string-cursor-next s (string-cursor-start s))
+                 (string-cursor-end s))))
 
 
 ;; --- Paragraphs ------------------------------------------------------------
@@ -487,10 +487,10 @@
   (let lp ((c (string-cursor-start s)) (start (string-cursor-start s)) (in? #f))
     (if (string-cursor-end? s c)
         ;; todo: add a (cond ...) here
-        (when in? (vecbuilder-add! out (substring/cursors s start c)))
+        (when in? (vecbuilder-add! out (substring s start c)))
         (if (char-whitespace? (string-cursor-ref s c))
             (let ()
-              (when in? (vecbuilder-add! out (substring/cursors s start c)))
+              (when in? (vecbuilder-add! out (substring s start c)))
               (lp (string-cursor-next s c) (string-cursor-next s c) #f))
             (lp (string-cursor-next s c) (if in? start c) #t))))
   (vecbuilder->vec out))

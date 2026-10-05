@@ -282,15 +282,15 @@
                                   (string-cursor-next "a😀b" (string-cursor-start "a😀b"))))
                #t)
 
-  ;; ---- substring/cursors --------------------------------------------------
+  ;; ---- substring ----------------------------------------------------------
   (expect "substring whole"
-          (substring/cursors "hello" (string-cursor-start "hello") (string-cursor-end "hello"))
+          (substring "hello" (string-cursor-start "hello") (string-cursor-end "hello"))
           "hello")
   (expect "substring empty at start"
-          (substring/cursors "hello" (string-cursor-start "hello") (string-cursor-start "hello"))
+          (substring "hello" (string-cursor-start "hello") (string-cursor-start "hello"))
           "")
   (expect "substring drops first char"
-          (substring/cursors "hello"
+          (substring "hello"
             (string-cursor-next "hello" (string-cursor-start "hello"))
             (string-cursor-end "hello"))
           "ello")
@@ -330,11 +330,36 @@
   ;; ---- string-index -------------------------------------------------------
   ;; The result is a cursor, so it can be used to cut without converting back.
   (expect "index finds and slices"
-          (substring/cursors "hello world"
+          (substring "hello world"
             (option-ref (string-index char-whitespace? "hello world"))
             (string-cursor-end "hello world"))
           " world")
   (expect-bool "index missing" (none? (string-index char-numeric? "no digits here")) #t)
+
+  ;; ---- string-search --------------------------------------------------------
+  (def path "a/bé/c")
+  (expect "search finds the first"
+          (substring path (string-cursor-start path) (option-ref (string-search path "/")))
+          "a")
+  (expect "search-backward finds the last"
+          (substring path (option-ref (string-search-backward path "/")) (string-cursor-end path))
+          "/c")
+  (expect "after a two-byte character"
+          (substring path (option-ref (string-search path "é")) (string-cursor-end path))
+          "é/c")
+  (expect-bool "search missing" (none? (string-search path "x")) #t)
+  (expect-bool "an empty needle is at the start"
+               (string-cursor=? (option-ref (string-search path "")) (string-cursor-start path))
+               #t)
+  (expect-bool "and searched backward, at the end"
+               (string-cursor=? (option-ref (string-search-backward path "")) (string-cursor-end path))
+               #t)
+
+  ;; ---- stringbuilder=? ------------------------------------------------------
+  (let ((b (stringbuilder-empty)))
+    (stringbuilder-add-string! b "smörgås")
+    (expect-bool "a builder equals its text" (stringbuilder=? b "smörgås") #t)
+    (expect-bool "and not a prefix of it" (stringbuilder=? b "smör") #f))
 
   ;; ---- Iterating a string with `loop` -------------------------------------
   ;;
@@ -424,8 +449,8 @@
 
   ;; --- Trimming and padding ------------------------------------------------
   (expect "trim" (string-trim "  padded\t\n") "padded")
-  (expect "trim-start" (string-trim-start "  padded  ") "padded  ")
-  (expect "trim-end" (string-trim-end "  padded  ") "  padded")
+  (expect "trim-left" (string-trim-left "  padded  ") "padded  ")
+  (expect "trim-right" (string-trim-right "  padded  ") "  padded")
   (expect "pad-left" (string-pad-left "7" 3) "  7")
   (expect "pad-right" (string-pad-right "7" 3) "7  ")
   (expect "padding never truncates" (string-pad-left "wide" 2) "wide")

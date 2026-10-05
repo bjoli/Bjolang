@@ -205,27 +205,29 @@
 (: fake-epoch-ms long)
 (def fake-epoch-ms 946684800000L)
 
-;; Byte offsets, for the scanning below that counts in bytes.
-(import/extern
-  (clr-index-of        (: BjolangRuntime.StringIndexOf))
-  (clr-last-index-of   (: BjolangRuntime.StringLastIndexOf))
-  (clr-substring       (: BjolangRuntime.StringSubstring))
-  (clr-substring-from  (: BjolangRuntime.StringSubstringFrom)))
+;; What follows `prefix` in `s`, which starts with it.
+(: after-prefix (-> string string string))
+(defun (after-prefix s prefix)
+  (let go ((c (string-cursor-start s)) (n (string-count prefix)))
+    (if (= n 0)
+        (substring s c (string-cursor-end s))
+        (go (string-cursor-next s c) (- n 1)))))
 
 (: fake-path (-> string string))
 (defun (fake-path path)
   (let loop ((p (string-replace path "\\" "/")))
     (cond
       ((= p ".") "")
-      ((string-starts-with? p "./") (loop (clr-substring-from p 2)))
+      ((string-starts-with? p "./") (loop (after-prefix p "./")))
       ((and (string-ends-with? p "/") (> (string-length p) 1))
-       (loop (clr-substring p 0 (- (string-length p) 1))))
+       (loop (substring p (string-cursor-start p) (string-cursor-prev p (string-cursor-end p)))))
       (else p))))
 
 (: fake-parent (-> string string))
 (defun (fake-parent path)
-  (def at (clr-last-index-of path "/"))
-  (if (< at 0) "" (clr-substring path 0 at)))
+  (match (string-search-backward path "/")
+    ((Some at) (substring path (string-cursor-start path) at))
+    (None "")))
 
 ;; "" for the root, so that a child of the root is its own name.
 (: fake-prefix (-> string string))
@@ -423,9 +425,11 @@
         (no-directory path)
         (let ((children (map-fold (fun (k v found)
                                     (if (and (string-starts-with? k prefix) (not (= k path)))
-                                        (let* ((rest (clr-substring-from k (string-length prefix)))
-                                               (at (clr-index-of rest "/")))
-                                          (map-set found (str prefix (if (< at 0) rest (clr-substring rest 0 at))) #t))
+                                        (let* ((rest (after-prefix k prefix))
+                                               (child (match (string-search rest "/")
+                                                        ((Some at) (substring rest (string-cursor-start rest) at))
+                                                        (None rest))))
+                                          (map-set found (str prefix child) #t))
                                         found))
                                   (map-empty)
                                   (fake-entries fs))))
@@ -482,7 +486,7 @@
               (cond
                 ((= k from) (map-set acc to v))
                 ((string-starts-with? k from-prefix)
-                 (map-set acc (str to "/" (clr-substring-from k (string-length from-prefix))) v))
+                 (map-set acc (str to "/" (after-prefix k from-prefix)) v))
                 (else (map-set acc k v))))
             (map-empty)
             m))

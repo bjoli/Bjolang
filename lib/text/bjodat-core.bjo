@@ -127,8 +127,8 @@
 ;; one of those allocations is of a string that already exists.
 ;;
 ;; This holds the last name seen in each slot and compares the buffer against it
-;; without building a string, which is what `stringbuilder-code-ref` is for. A
-;; hit costs that comparison and nothing else. A miss costs what interning
+;; without building a string, which is what `stringbuilder=?` is for. A hit
+;; costs that comparison and nothing else. A miss costs what interning
 ;; always cost, plus the failed comparison.
 ;;
 ;; Direct-mapped rather than associative: a probe is one comparison, and two
@@ -138,9 +138,8 @@
 ;; This was a class in `BjolangRuntime/BjoText.cs` — a hundred lines of C# that
 ;; existed for one library. It is here instead because a library in the standard
 ;; library should not need a file in the runtime; what the runtime owes it is
-;; primitives, and `stringbuilder-code-ref` and `string-code-ref` are the two it
-;; was missing. The comparison is a loop here where it was `StringBuilder.Equals`
-;; over a span there, and what that costs is measured in `bench/BASELINE.md`.
+;; primitives, and `stringbuilder-code-ref` and `stringbuilder=?` are the two it
+;; was missing.
 
 (: name-slots int)
 (def name-slots 16)
@@ -165,17 +164,6 @@
       (bitwise-and (bitwise-xor (* (stringbuilder-code-ref sb 0) 31) n)
                    (- name-slots 1))))
 
-;; Is what was just buffered the name already held here? Length first, which
-;; settles most of it without looking at a single unit.
-(: buffer=? (-> StringBuilder string int bool))
-(defun (buffer=? sb name n)
-  (if (not (= n (string-length name)))
-      #f
-      (let go ((i 0))
-        (cond ((= i n) #t)
-              ((= (stringbuilder-code-ref sb i) (string-code-ref name i)) (go (+ i 1)))
-              (else #f)))))
-
 ;; The buffer's contents as a string, reusing the one already handed out for
 ;; those same units.
 ;;
@@ -188,7 +176,7 @@
   (def i (name-slot sb n))
   (def name (array-ref cache i))
   (cond
-    ((buffer=? sb name n) name)
+    ((stringbuilder=? sb name) name)
     (else
      (def s (stringbuilder->string sb))
      (array-set! cache i s)
@@ -511,31 +499,21 @@
               (else (add-quotes! sb k) (go))))
            (else (stringbuilder-add-unit! sb c) (step! rd) (go))))))))
 
-(: begins-with-margin? (-> string string bool))
-(defun (begins-with-margin? s margin)
-  (def m (string-length margin))
-  (and (>= (string-length s) m)
-       (let go ((i 0))
-         (cond ((= i m) #t)
-               ((= (string-code-ref s i) (string-code-ref margin i)) (go (+ i 1)))
-               (else #f)))))
-
 (: blank? (-> string bool))
 (defun (blank? s)
-  (let go ((i 0))
-    (cond ((= i (string-length s)) #t)
-          ((let* ((c (string-code-ref s i))) (or (= c 32) (= c 9))) (go (+ i 1)))
-          (else #f))))
+  (none? (string-index #(not (or (char=? &1 #\space) (char=? &1 #\tab))) s)))
+
+;; What follows `prefix` in `s`, which starts with it.
+(: after-prefix (-> string string string))
+(defun (after-prefix s prefix)
+  (let go ((c (string-cursor-start s)) (n (string-count prefix)))
+    (if (= n 0)
+        (substring s c (string-cursor-end s))
+        (go (string-cursor-next s c) (- n 1)))))
 
 ;; The margin is the whitespace before the closing quotes. It comes off every
 ;; line, and a line with text that does not begin with it is refused, since
 ;; cutting it anyway would cut text.
-(import/extern
-  (clr-index-of        (: BjolangRuntime.StringIndexOf))
-  (clr-last-index-of   (: BjolangRuntime.StringLastIndexOf))
-  (clr-substring       (: BjolangRuntime.StringSubstring))
-  (clr-substring-from  (: BjolangRuntime.StringSubstringFrom)))
-
 (: strip-margin (-> string (List (Tuple int string)) (Result string string)))
 (defun (strip-margin margin lines)
   (def out (stringbuilder-empty))
@@ -545,8 +523,8 @@
       ((Cons (Tuple row s) more)
        (unless first (stringbuilder-add-code! out 10))
        (cond
-         ((begins-with-margin? s margin)
-          (stringbuilder-add-string! out (clr-substring-from s (string-length margin)))
+         ((string-starts-with? s margin)
+          (stringbuilder-add-string! out (after-prefix s margin))
           (go more #f))
          ((blank? s) (go more #f))
          (else
@@ -1063,7 +1041,7 @@
 (: key=? (-> Reader string bool))
 (defun (key=? rd name)
   (def sb (record-ref rd scratch))
-  (buffer=? sb name (stringbuilder-length sb)))
+  (stringbuilder=? sb name))
 
 ;; A field's value, as a `Bjodat` for its own instance to convert.
 (: field-value (-> Reader (Result string Bjodat)))

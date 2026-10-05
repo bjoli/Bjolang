@@ -425,8 +425,16 @@ public static partial class BjolangRuntime {
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Utf8String substringdivcursors(Utf8String s, BjoString.StringCursor start, BjoString.StringCursor end) =>
+    public static Utf8String substring(Utf8String s, BjoString.StringCursor start, BjoString.StringCursor end) =>
         BjoString.StringCursor.Substring(s, start, end);
+
+    // Where the needle starts, as a cursor: a valid needle can only match at a
+    // character boundary. An empty one is found at the start, and from the end.
+    public static Option<BjoString.StringCursor> stringsubsearch(Utf8String s, Utf8String needle) =>
+        s.IndexOf(needle) is { } c ? Some(c) : None<BjoString.StringCursor>();
+
+    public static Option<BjoString.StringCursor> stringsubsearchsubbackward(Utf8String s, Utf8String needle) =>
+        s.LastIndexOf(needle) is { } c ? Some(c) : None<BjoString.StringCursor>();
 
     // The character count. `string-length` is the byte length and O(1); the two
     // differ for any string with a character outside ASCII in it, and the
@@ -486,19 +494,14 @@ public static partial class BjolangRuntime {
     public static int stringbuildersublength(Utf8StringBuilder b) => b.ByteLength;
 
     // One byte out of the buffer, the counterpart of `add-code!`.
-    //
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int stringbuildersubcodesubref(Utf8StringBuilder b, int i) => b.ByteAt(i);
+
     // This is what lets a reader answer "is what I just buffered the name I
     // already have?" without building the string to ask — which is the whole
     // cost of interning a name that a document repeats.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int stringbuildersubcodesubref(Utf8StringBuilder b, int i) => b.ByteAt(i);
-
-    // The same for a string, so that the two sides of that comparison are
-    // spelled the same way. `string-cursor-ref` is the scalar-aware accessor
-    // and stays the one to reach for when the index means a character; this one
-    // means a byte, as `string-length` does.
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int stringsubcodesubref(Utf8String s, int i) => s.ByteAt(i);
+    public static bool stringbuildereq_QMARK(Utf8StringBuilder b, Utf8String s) => b.AsSpan().SequenceEqual(s.AsSpan());
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Utf8String stringbuildersubgtstring(Utf8StringBuilder b) => b.ToUtf8String();
@@ -522,21 +525,6 @@ public static partial class BjolangRuntime {
 
     public static Utf8String StringReplace(Utf8String s, Utf8String old, Utf8String replacement) =>
         s.Replace(old, replacement);
-
-    // Byte offsets, for the library's scanners that already count in bytes
-    // (`string-length`, `string-code-ref`). -1 when there is no occurrence.
-    public static int StringIndexOf(Utf8String s, Utf8String needle) =>
-        s.AsSpan().IndexOf(needle.AsSpan());
-
-    public static int StringLastIndexOf(Utf8String s, Utf8String needle) =>
-        s.AsSpan().LastIndexOf(needle.AsSpan());
-
-    // The bytes `[start, end)`, which have to fall on character boundaries.
-    public static Utf8String StringSubstring(Utf8String s, int start, int end) =>
-        s.Substring(new BjoString.StringCursor(start), new BjoString.StringCursor(end));
-
-    public static Utf8String StringSubstringFrom(Utf8String s, int start) =>
-        StringSubstring(s, start, s.ByteLength);
 
     // `str`'s rest array, in one allocation.
     public static Utf8String StringConcat(Utf8String[] parts) => Utf8String.Concat(parts);

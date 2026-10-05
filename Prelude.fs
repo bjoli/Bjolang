@@ -873,7 +873,11 @@ let prelude : Env =
         // reads and bounds-checks it twice. The tuple is a `ValueTuple` and
         // does not allocate, so this costs a destructuring and no more.
         "string-cursor-ref+next", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType] (TTuple [charType; stringCursorType])); IsMutable = false }
-        "substring/cursors", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType; stringCursorType] stringType); IsMutable = false }
+        "substring", {Scheme = Scheme([], [], makeFunType [stringType; stringCursorType; stringCursorType] stringType); IsMutable = false }
+        // Where `needle` first, or last, starts. Positions are cursors, as
+        // everywhere else; there is no byte index to get wrong.
+        "string-search", {Scheme = Scheme([], [], makeFunType [stringType; stringType] (makeOptionType stringCursorType)); IsMutable = false }
+        "string-search-backward", {Scheme = Scheme([], [], makeFunType [stringType; stringType] (makeOptionType stringCursorType)); IsMutable = false }
         // The character count, as against `string-length`'s storage count. Two
         // names because they are two questions with two answers and two costs:
         // this one walks.
@@ -896,18 +900,14 @@ let prelude : Env =
         // unpaired fails when the builder becomes a string.
         "stringbuilder-add-unit!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; intType] unitType); IsMutable = false }
         "stringbuilder-length", {Scheme = Scheme([], [], makeFunType [stringBuilderType] intType); IsMutable = false }
-        // One UTF-8 byte back out, the counterpart of `add-code!`, and for the
-        // same reason: a reader that holds codes. It is what lets a name be
-        // compared against one already interned without building the string to
-        // compare with — the allocation is the cost of interning a name a
-        // document repeats, and this is how it is avoided in Bjolang rather
-        // than in a helper written in C#.
-        //
-        // Indices are bytes, not characters. `string-cursor-ref` is the
-        // scalar-aware accessor and remains the one to reach for when the index
-        // means a character.
+        // One UTF-8 byte back out, the counterpart of `add-code!`, for a reader
+        // that holds codes. Indices are bytes, not characters.
         "stringbuilder-code-ref", {Scheme = Scheme([], [], makeFunType [stringBuilderType; intType] intType); IsMutable = false }
-        "string-code-ref", {Scheme = Scheme([], [], makeFunType [stringType; intType] intType); IsMutable = false }
+        // Does the builder hold exactly this text? What lets a name be compared
+        // against one already interned without building the string to compare
+        // with — the allocation is the cost of interning a name a document
+        // repeats.
+        "stringbuilder=?", {Scheme = Scheme([], [], makeFunType [stringBuilderType; stringType] boolType); IsMutable = false }
         "stringbuilder->string", {Scheme = Scheme([], [], makeFunType [stringBuilderType] stringType); IsMutable = false }
 
         "keyword?", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] boolType); IsMutable = false }

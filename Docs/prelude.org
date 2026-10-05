@@ -176,7 +176,7 @@ The ~char~-taking overloads are not wrapped and cannot be: a Bjolang ~char~ is a
 Invariant, character for character: ß upcases to itself rather than to SS. These are for normalising before a comparison.
 
 *** Trimming and padding =(std prelude)=
-- ~(string-trim s)~, ~(string-trim-start s)~, ~(string-trim-end s)~ : whitespace, by ~char-whitespace?~'s definition. There is no "trim these characters" form.
+- ~(string-trim s)~, ~(string-trim-left s)~, ~(string-trim-right s)~ : whitespace, by ~char-whitespace?~'s definition. There is no "trim these characters" form.
 - ~(string-pad-left s width #:with #\space)~ / ~(string-pad-right s width #:with #\space)~ : to ~width~ *characters*, which is ~string-count~'s count and not ~string-length~'s. Never truncates.
 
 The pad is a ~char~, so an astral one counts as the single character it is.
@@ -231,7 +231,10 @@ Every operation takes the string *and* the cursor, because the cursor carries no
 - ~(string-cursor-next s c)~ : The cursor on the next character. Steps over *all* the storage units that character occupies.
 - ~(string-cursor-prev s c)~ : The cursor on the previous character. O(1). ~string-cursor-ref~ is the only one of these that decodes.
 - ~(string-cursor-ref+next s c)~ : The character at ~c~ *and* the cursor after it, as a ~(Tuple char StringCursor)~. A ~ValueTuple~, so it does not allocate; destructure it with ~(def (ch next) ...)~. Throws at the end, like ~string-cursor-ref~.
-- ~(substring/cursors s start end)~ : The text between two cursors, ~end~ exclusive.
+- ~(substring s start end)~ : The text between two cursors, ~end~ exclusive.
+- ~(string-search s needle)~ / ~(string-search-backward s needle)~ : Where the first, or last, occurrence of ~needle~ starts, as ~(Some cursor)~, or ~None~. An empty needle is found at the start, and searching backward, at the end.
+
+Positions in a string are cursors. ~string-length~ counts bytes and ~string-count~ characters, and nothing takes a byte index.
 
 *** Comparison =(std prelude)=
 - ~(string-cursor=? a b)~, ~(string-cursor<? a b)~, ~(string-cursor>? a b)~, ~(string-cursor<=? a b)~, ~(string-cursor>=? a b)~
@@ -242,7 +245,7 @@ Aliases for the operators, which work at ~StringCursor~ directly.
 - ~(string-fold f init s)~ : Left fold; ~f~ receives ~(char acc)~.
 - ~(string-fold-right f init s)~ : Right fold; ~f~ receives ~(char acc)~. Walks backwards with ~string-cursor-prev~, so it is a loop rather than n stack frames.
 - ~(string-for-each f s)~ : Applies ~f~ to each character for side effects.
-- ~(string-index pred s)~ : The first character satisfying ~pred~, as ~(Some cursor)~, or ~None~. A cursor, so the result goes straight to ~substring/cursors~.
+- ~(string-index pred s)~ : The first character satisfying ~pred~, as ~(Some cursor)~, or ~None~. A cursor, so the result goes straight to ~substring~.
 
 *** Conversions =(std prelude)=
 - ~(string->list s)~ : ~(List char)~.
@@ -259,7 +262,8 @@ The accumulator behind the ~Stringing~ collector, and the same shape as the vect
 - ~(stringbuilder-add! b c)~ : Appends a character.
 - ~(stringbuilder-add-string! b s)~ : Appends a string.
 - ~(stringbuilder-length b)~ : The length so far, in bytes.
-- ~(stringbuilder-add-code! b n)~ / ~(stringbuilder-code-ref b i)~ / ~(string-code-ref s i)~ : One byte in or out, for scanners that copy input a byte at a time. Bytes added this way are checked when the builder becomes a string, which throws if they do not form whole characters.
+- ~(stringbuilder-add-code! b n)~ / ~(stringbuilder-code-ref b i)~ : One byte in or out, for scanners that copy input a byte at a time. Bytes added this way are checked when the builder becomes a string, which throws if they do not form whole characters.
+- ~(stringbuilder=? b s)~ : Whether the builder holds exactly ~s~, without building a string — what a reader interning names compares with.
 - ~(stringbuilder-add-unit! b n)~ : One UTF-16 code unit, for a reader taking units from a text port; a surrogate pair given in two calls becomes its character.
 - ~(stringbuilder->string b)~ : Freezes the builder into a string.
 
