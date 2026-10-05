@@ -79,8 +79,8 @@ Three things, in this order, and only what is out of date:
   prelude into the same files;
 - *the fixture libraries* in ~TestFiles/inc~, with ~--build-graph~ like the
   standard library. A fixture is rebuilt when its ~.dll~ is older than a source
-  it names, than the compiler, or than what it imports, and rebuilding one
-  rebuilds everything downstream of it.
+  it names, than the compiler, or than what it imports — unless what it imports
+  came out with the interface it was built against (see [[*Early cutoff][Early cutoff]]).
 
 The tests themselves are always compiled afresh, in parallel, one job per
 three-digit group.
@@ -114,16 +114,53 @@ It goes like this:
    and builds nothing.
 2. *Plan.* The modules are sorted so that each comes after what it imports. A
    cycle is refused, and named as a chain. A module is to be built when its
-   ~.dll~ is out of date by the rule an import uses (~Pipeline.isCurrent~), or
-   when anything it imports is about to be rebuilt.
+   ~.dll~ is out of date by the rule an import uses (~Pipeline.isCurrent~). A
+   module that imports one of those /may/ have to be, and is decided when its
+   imports are done.
 3. *Build.* Each module goes to a worker process when everything it imports is
-   built — the one with the longest chain of importers waiting on it first. A
+   built — the one with the longest chain of importers waiting on it first —
+   unless it is current by then, because its imports kept their interfaces. A
    module that fails skips everything above it, and nothing else.
 
 One line per module: ~Up to date:~ first, then ~Built library:~ or
-~Failed to build~ as each finishes, with what the compiler said. The summary
+~Failed to build~ as each finishes, with what the compiler said, and
+~Up to date:~ for a module decided after its imports. ~--dry-run~ says
+~Would build:~ for the first kind and ~Might build:~ for the second. The summary
 goes to stderr, and the exit code is 0 only when everything is current at the
 end. With nothing to do it starts no workers and answers in about 0.3 s.
+
+*** Early cutoff
+
+A module whose import was rebuilt is still current if the import's /interface/
+is the one it was built against. An edit to a function body rebuilds that
+module and nothing above it.
+
+The interface is a digest a library's build record carries (~interface~), of
+everything an importer is compiled against:
+
+- the metadata the compiler publishes in the ~.dll~ — types, signatures, inline
+  bodies, what it re-exports;
+- the keyword defaults emitted as C# constants. The C# compiler copies those
+  into each call site, so a changed default has to rebuild the callers although
+  no signature changed.
+
+An importer's record says what it saw: an ~interface-of~ line per linked module,
+every one it linked and not just what it imports. A module may stay as it was
+while one below it changes, and the importer read that one's metadata too.
+
+Some modules are judged by timestamp as before:
+
+- a module that publishes macros has no digest. Its macros run while the
+  importer compiles, so its code — and the code of everything it links — is
+  part of what the importer was built from, and no digest of declarations
+  covers that;
+- a module whose record is missing, or older than its ~.dll~ (the ~written~
+  line), says nothing an importer can trust. When an importer was built with
+  one of those linked, its record has no ~interface-of~ lines at all.
+
+A compiler update still rebuilds everything. The compiler is an input of each
+module on its own, not something an import passes on, and a new compiler can
+change the C# it emits without changing a single interface.
 
 *** Why processes
 

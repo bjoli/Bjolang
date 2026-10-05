@@ -413,6 +413,11 @@ let moduleClassName = Naming.moduleClassName
 /// since `using` both makes the bare name ambiguous. Set per file.
 let mutable private ambiguousModuleClasses: Set<string> = Set.empty
 
+/// Every keyword default emitted as a C# constant, as `owner #:name = value`.
+/// The C# compiler copies these into callers, so they are part of what an
+/// importer is compiled against without being in the metadata. Set per file.
+let mutable emittedConstantDefaults: string list = []
+
 /// The C# spelling of a module class given as `Namespace.Class` or `Class`.
 let private moduleClassReference (qualified: string) =
     let bare =
@@ -1211,11 +1216,11 @@ let private liveClauses (clauses: TMatchClause list) =
 /// One thing does change, and is the price of the whole optimization: a C#
 /// optional parameter's default is baked into the *call site* by the C#
 /// compiler, so a library that changes a default value only reaches callers
-/// that are recompiled. Bjolang rebuilds a dependent whenever its dependency's
-/// `.dll` is newer — `Pipeline.ensureLibrary` — so a changed default cannot
-/// outlive the build that changed it. Nothing else is observable: the value is
-/// a constant, so evaluating it at the call site and evaluating it in the
-/// callee cannot be told apart.
+/// that are recompiled. The defaults are part of a library's interface digest
+/// (`emittedConstantDefaults`), so a changed one makes its importers stale —
+/// `Pipeline.ensureLibrary` — and cannot outlive the build that changed it.
+/// Nothing else is observable: the value is a constant, so evaluating it at the
+/// call site and evaluating it in the callee cannot be told apart.
 let private csharpConstantDefault (kwType: HMType) (kwDefault: TypedExpr) : string option =
     match kwDefault.Node, typeToString kwType with
     // Spelled for its type rather than emitted verbatim — see `numericLiteral`
@@ -1822,6 +1827,7 @@ let private generateParameterList
             // site has to know either.
             match csharpConstantDefault kwType kwDefault with
             | Some constant ->
+                emittedConstantDefaults <- $"%s{ownerName} #:%s{kwName} = %s{constant}" :: emittedConstantDefaults
                 append ctx $"%s{typeToString kwType} "
                 append ctx (keywordParamName kwName)
                 append ctx $" = %s{constant}"
@@ -6175,6 +6181,7 @@ let generateProgram
     (decls: TDecl list)
     : string =
     let registry = env.Registry
+    emittedConstantDefaults <- []
 
     let unionCases =
         decls

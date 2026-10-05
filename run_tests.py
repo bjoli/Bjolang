@@ -1148,6 +1148,92 @@ def run_check_tests():
 
 
 
+def run_cutoff_rules(check_that, say):
+    """Tidig avbrytning: en modul vars importer byggdes om med samma gränssnitt
+    som den byggdes mot är aktuell. Det som inte får gå förlorat är det en
+    importör ser utan att det står i metadatan — ett nyckelordsstandardvärde
+    som C# kopierar in i anropen, och ett makro som kör kod medan importören
+    kompileras.
+
+    base ← mid ← top, och helper ← mac ← user där mac är ett makro som anropar
+    helper. Ett eget träd, så att `--build-graph` på grafträdet inte når det.
+    """
+    CUT_DIR = (LOG_DIR / "cutoff").resolve()
+    CUT_DIR.mkdir(parents=True, exist_ok=True)
+    sources = {
+        "base": '(export twice scaled)\n(: twice (-> int int))\n(defun (twice x) (* 2 x))\n'
+                '(: scaled (-> int (#:by int) int))\n(defun (scaled n #:by 2) (* n by))\n',
+        "mid": '(import "base.bjo")\n(export six)\n(: six (-> int))\n(defun (six) (scaled 3))\n',
+        "top": '(import "mid.bjo")\n(export seven)\n(: seven (-> int))\n(defun (seven) (+ (six) 1))\n',
+        "helper": '(export base-answer)\n(: base-answer (-> int))\n(defun (base-answer) 42)\n',
+        "mac": '(import (std syntax-match))\n(import "helper.bjo")\n'
+               '(def/macro (answer form inject compare)\n'
+               '  (syntax-match form ((_) (SInt (int->string (base-answer))))))\n',
+        "user": '(import "mac.bjo")\n(export val)\n(: val (-> int))\n(defun (val) (answer))\n',
+    }
+    for name, text in sources.items():
+        (CUT_DIR / f"{name}.bjo").write_text(text)
+    app = CUT_DIR / "app.bjo"
+    app.write_text('(import "top.bjo")\n(import "user.bjo")\n'
+                   '(defun (main args) (println (int->string (seven))) (println (int->string (val))) 0)\n')
+
+    def graph():
+        return subprocess.run(["dotnet", str(COMPILER_DLL), "--build-graph",
+                               *[str(CUT_DIR / f"{n}.bjo") for n in sources]],
+                              capture_output=True, text=True)
+
+    def built_here(res):
+        return sorted(Path(line.split(": ", 1)[1]).stem
+                      for line in res.stdout.splitlines()
+                      if line.startswith("Built library: ")
+                      and str(CUT_DIR) in str(Path(line.split(": ", 1)[1]).resolve()))
+
+    def edit(name, old, new):
+        time.sleep(0.01)
+        path = CUT_DIR / f"{name}.bjo"
+        text = path.read_text()
+        assert old in text
+        path.write_text(text.replace(old, new))
+
+    def runs():
+        compiled = subprocess.run(["dotnet", str(COMPILER_DLL), str(app)], capture_output=True, text=True)
+        if compiled.returncode != 0:
+            return say(compiled)
+        return subprocess.run(["dotnet", str(app.with_suffix(".exe"))], capture_output=True, text=True).stdout
+
+    first = graph()
+    check_that("cutoff: a tree builds", first.returncode == 0 and built_here(first) == sorted(sources), say(first))
+
+    edit("base", "(* 2 x)", "(+ x x)")
+    body = graph()
+    check_that("cutoff: a body edit rebuilds nothing above it", built_here(body) == ["base"], say(body))
+
+    # C# kopierar standardvärdet in i mid, så mid måste byggas om, och top
+    # länkar base och läste dess metadata.
+    edit("base", "#:by 2)", "#:by 3)")
+    default = graph()
+    check_that("cutoff: a changed keyword default rebuilds what calls it, two levels up",
+               built_here(default) == ["base", "mid", "top"], say(default))
+    check_that("cutoff: and the program sees the new default", runs() == "10\n42\n")
+
+    # mac:s makro anropar helper medan user kompileras. mac byggs inte om,
+    # men user måste.
+    edit("helper", "42", "43")
+    macro = graph()
+    check_that("cutoff: a body a macro runs rebuilds what uses the macro",
+               built_here(macro) == ["helper", "user"], say(macro))
+    check_that("cutoff: and the program sees the new expansion", runs() == "10\n43\n")
+
+    # Utan sin byggpost bedöms mid efter tidsstämplar, som förr.
+    (CUT_DIR / "mid.bjobuild").unlink()
+    edit("base", "(+ x x)", "(* x 2)")
+    unrecorded = graph()
+    check_that("cutoff: a module with no build record is judged by timestamps",
+               built_here(unrecorded) == ["base", "mid"], say(unrecorded))
+
+    remove_artifacts(app, extra=(".bjobuild",))
+
+
 def run_graph_tests():
     """`--build-graph`: att ordningen kommer ur importerna, att bara det som är
     inaktuellt byggs, att ett fel stoppar det som står ovanför och inget annat,
@@ -1211,12 +1297,21 @@ def run_graph_tests():
     check_that("and a dry run says so", planned.returncode == 0 and "Would build" not in planned.stdout,
                say(planned))
 
-    # En ändring längst ned når allt ovanför den, och inget vid sidan om.
+    # En ändring i en kropp bygger om modulen och inget annat: det som
+    # importerar den byggdes mot samma gränssnitt.
     time.sleep(0.01)
-    (GRAPH_DIR / "a.bjo").write_text(sources["a"].replace("(defun (one) 1)", "(defun (one) 10)"))
+    a_body = sources["a"].replace("(defun (one) 1)", "(defun (one) 10)")
+    (GRAPH_DIR / "a.bjo").write_text(a_body)
     edited = graph()
-    check_that("an edit rebuilds the module and what imports it, and nothing else",
-               edited.returncode == 0 and sorted(built(edited)) == ["a", "b", "c"], say(edited))
+    check_that("an edit to a body rebuilds that module and nothing else",
+               edited.returncode == 0 and built(edited) == ["a"], say(edited))
+
+    # En ändring i gränssnittet når allt ovanför, och inget vid sidan om.
+    time.sleep(0.01)
+    (GRAPH_DIR / "a.bjo").write_text(a_body + '(export zero)\n(: zero (-> int))\n(defun (zero) 0)\n')
+    widened = graph()
+    check_that("an edit to an interface rebuilds what imports it, and nothing else",
+               widened.returncode == 0 and sorted(built(widened)) == ["a", "b", "c"], say(widened))
 
     quiet = graph("--quiet")
     check_that("a quiet graph with nothing to do says nothing",
@@ -1225,7 +1320,7 @@ def run_graph_tests():
     # `--deps-only` bygger det en fil importerar och inte filen: det `bjo`
     # gör före ett programs ingång, som sedan kompileras som program.
     time.sleep(0.01)
-    (GRAPH_DIR / "a.bjo").write_text(sources["a"].replace("(defun (one) 1)", "(defun (one) 10)"))
+    (GRAPH_DIR / "a.bjo").write_text(a_body + '(export minus)\n(: minus (-> int))\n(defun (minus) -1)\n')
     below = subprocess.run(["dotnet", str(COMPILER_DLL), "--build-graph", "--deps-only", str(GRAPH_DIR / "c.bjo")],
                            capture_output=True, text=True)
     check_that("--deps-only builds what a file imports, and not the file",
@@ -1264,6 +1359,8 @@ def run_graph_tests():
                and any("b.dll" in l for l in skipped) and any("c.dll" in l for l in skipped),
                "\n".join(skipped) or say(broken))
     check_that("and leaves what does not import it alone", "d" not in built(broken), say(broken))
+
+    run_cutoff_rules(check_that, say)
 
     # En cykel: ingenting kan byggas först, och det sägs som en kedja.
     (GRAPH_DIR / "a.bjo").write_text('(import "c.bjo")\n' + sources["a"])

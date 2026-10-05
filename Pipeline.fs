@@ -1036,6 +1036,29 @@ let private upToDateAgainst (resolve: ImportSpec -> Result<string, string>) (bjo
     File.Exists dllPath
     && (let built = File.GetLastWriteTimeUtc dllPath
         let facts = factsOf bjoPath
+        let record = BuildRecord.ofArtefact dllPath
+
+        /// A linked module that was rebuilt after this one is still no reason
+        /// to rebuild this one if its interface is the one this build saw.
+        let unchanged (dep: string) =
+            File.Exists dep
+            && (File.GetLastWriteTimeUtc dep <= built
+                || (match record with
+                    | Some r ->
+                        match Map.tryFind (Path.GetFullPath dep) r.InterfaceOf with
+                        | Some seen -> BuildRecord.interfaceOf dep = Some seen
+                        | None -> false
+                    | None -> false))
+
+        // Everything the build linked, not only what it imports: with early
+        // cutoff a module between the two can stay as it was while one below
+        // it changes, and this module read that one's metadata too.
+        let linkedModules =
+            match record with
+            | Some r ->
+                let runtime = Paths.runtimeAssemblies |> List.map Path.GetFullPath |> Set.ofList
+                r.Deps |> List.filter (runtime.Contains >> not)
+            | None -> []
 
         compilerBuilt <= built
         && declarationsWritten <= built
@@ -1055,13 +1078,14 @@ let private upToDateAgainst (resolve: ImportSpec -> Result<string, string>) (bjo
                 // A dependency whose `.dll` does not exist yet makes this
                 // module stale. This only happens with a resolver that does
                 // not build: `ensureLibrary`'s builds the dependency first.
-                | Ok dep -> File.Exists dep && File.GetLastWriteTimeUtc dep <= built
+                | Ok dep -> unchanged dep
                 // An import that resolves to nothing makes the module
                 // stale rather than current, so the compile runs and
                 // reports it against the form that wrote it. Answering
                 // "up to date" here would leave a broken import
                 // undetected for as long as the stale `.dll` survives.
-                | Error _ -> false)))
+                | Error _ -> false))
+        && linkedModules |> List.forall unchanged)
 
 /// The `.dll` for an imported `.bjo`, built if there is not a current one.
 ///
@@ -1091,6 +1115,12 @@ let private upToDateAgainst (resolve: ImportSpec -> Result<string, string>) (bjo
 /// this transitive: resolving builds the dependency if it is itself behind, so
 /// by the time its timestamp is compared it is current, and a change anywhere
 /// in the graph reaches everything above it one edge at a time.
+///
+/// Except where it changed nothing an importer can see. A linked module newer
+/// than this one whose interface digest is the one this module's build record
+/// says it was built against leaves this module current — early cutoff, so that
+/// an edit to a body rebuilds one module rather than everything above it. With
+/// no record to go by, a newer import is a stale module, as it always was.
 ///
 /// Public because a batch wants exactly this question asked about files that
 /// nobody imports. `--if-stale` builds a set of libraries by asking

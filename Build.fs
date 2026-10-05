@@ -95,6 +95,13 @@ let private dumpPaths (emitCs: string option) : string * string =
 ///              these and writes the `.bjolinks` table the resolver reads
 ///     native   for an executable: `native <key> <path>`, one per native
 ///              library the program's unmanaged resolver can load
+///     written  the output's last-write time, in ticks. A record whose output
+///              has been written since belongs to another build, and the
+///              compiler does not trust it
+///     interface  for a library: a digest of what an importer is compiled
+///              against. See `BuildRecord`
+///     interface-of  `interface-of <digest> <path>`, one per linked module, as
+///              this build saw it. The compiler's early cutoff
 ///
 /// The mode is first and alone on its line so that reading just the head of the
 /// file answers the cheapest question.
@@ -105,6 +112,7 @@ let private writeBuildRecord
     (linked: string list)
     (links: (string * string) list)
     (natives: (string * string) list)
+    (iface: string option)
     =
     try
         // The module half of `linked` is already transitive — a dependency's own
@@ -166,6 +174,43 @@ let private writeBuildRecord
                 $"nuget %s{dir}" :: (NuGetRefs.listFiles () |> List.map (fun f -> $"nuget-list %s{f}"))
             | _ -> []
 
+        // The interfaces of the linked modules as this build saw them, for
+        // `Pipeline`'s staleness check. A module that publishes macros has
+        // none, and its code runs inside this compile — so neither it nor
+        // anything it links may be judged by interface. One linked module with
+        // no record at all and the build cannot know what that one links, so
+        // none is.
+        let interfaceLines =
+            let runtime = Paths.runtimeAssemblies |> List.map Path.GetFullPath |> Set.ofList
+
+            let modules =
+                linked
+                |> List.map Path.GetFullPath
+                |> List.distinct
+                |> List.filter (runtime.Contains >> not)
+                |> List.map (fun dll -> dll, BuildRecord.ofArtefact dll)
+
+            if modules |> List.exists (snd >> Option.isNone) then
+                []
+            else
+                let judgedByTime =
+                    modules
+                    |> List.collect (fun (dll, r) ->
+                        match r with
+                        | Some r when r.Interface.IsNone -> dll :: r.Deps
+                        | _ -> [])
+                    |> Set.ofList
+
+                modules
+                |> List.choose (fun (dll, r) ->
+                    match r |> Option.bind (fun r -> r.Interface) with
+                    | Some hash when not (judgedByTime.Contains dll) -> Some $"interface-of %s{hash} %s{dll}"
+                    | _ -> None)
+
+        let ownLines =
+            [ $"written %d{File.GetLastWriteTimeUtc(outputFilePath).Ticks}" ]
+            @ (iface |> Option.map (fun h -> $"interface %s{h}") |> Option.toList)
+
         let lines =
             [ $"""mode %s{if options.Debug then "debug" else "release"}"""
               $"output %s{Path.GetFullPath outputFilePath}" ]
@@ -178,6 +223,8 @@ let private writeBuildRecord
             @ (linked |> List.map Path.GetFullPath |> List.distinct |> List.sort |> List.map (fun d -> $"dep %s{d}"))
             @ (links |> List.distinct |> List.sort |> List.map (fun (name, path) -> $"link %s{name} %s{Path.GetFullPath path}"))
             @ (natives |> List.distinct |> List.sort |> List.map (fun (key, path) -> $"native %s{key} %s{Path.GetFullPath path}"))
+            @ ownLines
+            @ interfaceLines
 
         File.WriteAllLines(Path.ChangeExtension(inputFilePath, ".bjobuild"), lines)
     with ex ->
@@ -219,6 +266,8 @@ let private runProcess (fileName: string) (args: string) (env: (string * string)
 /// way a library does — through `Exports.metadata` and nothing else. A REPL
 /// that built its own view of "what entry 3 defined" would be a second answer
 /// to a question the compiler already answers, and the two would drift.
+let mutable private lastInterface: string option = None
+
 let generateSource
     (env: TypedAST.Env)
     (typedAst: TypedAST.TDecl list)
@@ -241,7 +290,19 @@ let generateSource
             // goes into the runtimeconfig instead.
             Frameworks = if isLibrary then Frameworks.usedHere () else [] }
 
-    Timing.phase "codegen" (fun () -> Codegen.generateProgram env metadata dllDeps inputFilePath typedAst)
+    let code = Timing.phase "codegen" (fun () -> Codegen.generateProgram env metadata dllDeps inputFilePath typedAst)
+
+    // What an importer is compiled against: the metadata, and the defaults the
+    // C# compiler copies into its call sites. See `BuildRecord.Record.Interface`
+    // for why a library with macros has none.
+    lastInterface <-
+        if isLibrary && metadata.Macros.IsEmpty && metadata.PatternMacros.IsEmpty && metadata.HashMacros.IsEmpty then
+            let defaults = List.rev Codegen.emittedConstantDefaults
+            Some(BuildRecord.digest (String.concat "\n" (ModuleMetadata.serialize metadata :: defaults)))
+        else
+            None
+
+    code
 
 /// Makes the runtime assemblies and the NuGet packages' runtime assemblies
 /// reflectable, which has to happen *before* anything is type-checked.
@@ -1006,7 +1067,7 @@ let compile (options: Options) (inputFilePath: string) : int =
 
                         resolvedByName @ runtime, nativeLibraries
 
-                writeBuildRecord options inputFilePath outputFilePath linkedAssemblies links natives
+                writeBuildRecord options inputFilePath outputFilePath linkedAssemblies links natives lastInterface
 
             buildStatus
         | None ->

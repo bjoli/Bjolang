@@ -185,28 +185,27 @@ let private readGraph (sources: string list) : Result<Graph, string> =
               ImportedBy = importedBy
               Unreadable = unreadable }
 
-/// Which modules have to be built: the ones that are out of date, and the ones
-/// that import something that is about to be rebuilt.
+/// Which modules may have to be built: the ones that are out of date, and the
+/// ones that import something that may be rebuilt. The first set is the second
+/// one's subset.
 ///
-/// Modules are checked in build order, so everything a module imports has
-/// already been decided when the module is checked. A module that imports
-/// something about to be rebuilt is stale whatever its timestamps say, because
-/// its `.dll` was compiled against metadata that is about to change.
-/// `Pipeline.isCurrent` cannot know that, since it only looks at what is on
-/// disk now.
-let private staleModules (graph: Graph) : HashSet<string> =
-    let stale = HashSet<string>()
+/// A module of the second kind is decided when its imports are done.
+/// `Pipeline.isCurrent` only looks at what is on disk, and before then that is
+/// the imports as they were. After, an import that was rebuilt with the same
+/// interface leaves it current — that is early cutoff, and the reason the
+/// decision cannot be made here.
+let private affectedModules (graph: Graph) : HashSet<string> * HashSet<string> =
+    let behind = HashSet<string>()
+    let affected = HashSet<string>()
 
     for m in graph.Order do
-        let behind =
-            graph.Unreadable.Contains m
-            || graph.Imports[m] |> List.exists stale.Contains
-            || (try not (Pipeline.isCurrent m) with _ -> true)
+        if graph.Unreadable.Contains m || (try not (Pipeline.isCurrent m) with _ -> true) then
+            behind.Add m |> ignore
+            affected.Add m |> ignore
+        elif graph.Imports[m] |> List.exists affected.Contains then
+            affected.Add m |> ignore
 
-        if behind then
-            stale.Add m |> ignore
-
-    stale
+    behind, affected
 
 /// For each module, the length of the longest chain of modules that import it,
 /// directly or further up. Ready modules are handed out longest chain first,
@@ -318,12 +317,14 @@ type private Worker(forwarded: string list) =
 ///
 /// Prints one line per module: first `Up to date:` for the modules that need
 /// nothing, then `Built library:`, `Failed to build` or `Skipped:` as each
-/// finishes, followed by anything the compiler said. A summary goes to stderr.
+/// finishes, followed by anything the compiler said — or `Up to date:` for one
+/// whose imports were rebuilt with the interfaces it was built against. A summary goes to stderr.
 /// Results are printed in the order they finish, so the order varies between
 /// runs, but each module's text is printed in one piece.
 ///
-/// With `dryRun`, it prints what would be built and what each module imports,
-/// and builds nothing.
+/// With `dryRun`, it prints what would be built, what might be (depending on
+/// whether what it imports changes its interface) and what each module
+/// imports, and builds nothing.
 ///
 /// With `depsOnly`, the given sources themselves are left out: what they import
 /// is built, so that a program's entry can then be compiled as a program, by a
@@ -360,19 +361,28 @@ let run (paths: string list) (jobs: int) (dryRun: bool) (depsOnly: bool) (quiet:
         1
     | Ok graph ->
 
-    let stale = staleModules graph
+    let behind, stale = affectedModules graph
     let dllOf (m: string) = shown (Path.ChangeExtension(m, ".dll"))
 
     if dryRun then
         for m in graph.Order do
-            let verdict = if stale.Contains m then "Would build:" else "Up to date:"
+            let verdict =
+                if behind.Contains m then "Would build:"
+                elif stale.Contains m then "Might build:"
+                else "Up to date:"
+
             printfn $"%s{verdict} %s{dllOf m}"
 
             match graph.Imports[m] with
             | [] -> ()
             | ds -> printfn "    imports %s" (ds |> List.map shown |> List.sort |> String.concat ", ")
 
-        eprintfn "Graph: %d modules, %d to build." graph.Order.Length stale.Count
+        eprintfn
+            "Graph: %d modules, %d to build, %d more if what they import changes its interface."
+            graph.Order.Length
+            behind.Count
+            (stale.Count - behind.Count)
+
         0
     else
 
@@ -422,7 +432,37 @@ let run (paths: string list) (jobs: int) (dryRun: bool) (depsOnly: bool) (quiet:
                   thread.Start()
                   thread ]
 
-        enqueue (stale |> Seq.filter (fun m -> waiting[m] = 0))
+        /// Hands the modules whose imports are done to the workers, or counts
+        /// them current when the imports came out with the interfaces they were
+        /// built against — and then does the same for what that releases.
+        let release (ready: string seq) =
+            let pending = Queue<string>(ready)
+            let toBuild = ResizeArray<string>()
+
+            while pending.Count > 0 do
+                let m = pending.Dequeue()
+
+                let current =
+                    not (graph.Unreadable.Contains m) && (try Pipeline.isCurrent m with _ -> false)
+
+                if current then
+                    outcomes[m] <- UpToDate
+
+                    if not quiet then
+                        printfn $"Up to date: %s{dllOf m}"
+
+                    for user in graph.ImportedBy[m] do
+                        if stale.Contains user then
+                            waiting[user] <- waiting[user] - 1
+
+                            if waiting[user] = 0 && not (outcomes.ContainsKey user) then
+                                pending.Enqueue user
+                else
+                    toBuild.Add m
+
+            enqueue toBuild
+
+        release (stale |> Seq.filter (fun m -> waiting[m] = 0))
 
         /// Everything above `failed` that is still to be built, which now never
         /// will be.
@@ -452,7 +492,7 @@ let run (paths: string list) (jobs: int) (dryRun: bool) (depsOnly: bool) (quiet:
                         if waiting[user] = 0 && not (outcomes.ContainsKey user) then
                             ready.Add user
 
-                enqueue ready
+                release ready
             else
                 outcomes[m] <- Failed answer.Output
                 printfn $"Failed to build %s{shown m}:"

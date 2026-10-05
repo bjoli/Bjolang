@@ -3,6 +3,22 @@
 
 What each change guarantees, and what it leaves open.
 
+* A body edit rebuilds one module
+
+- *A module whose imports were rebuilt with the interfaces it was built
+  against is current* (early cutoff). A library's build record carries a
+  digest of what an importer is compiled against — its metadata, and the
+  keyword defaults C# copies into call sites — and an importer's record the
+  digest of each module it linked. Both ~ensureLibrary~ and ~--build-graph~
+  ask; the graph decides a module once its imports are done, and ~--dry-run~
+  says ~Might build:~ for those. glasnost after a body edit in bjorsec: one
+  module rebuilt rather than eleven, 7.6 s to 1.6 s.
+- A module that publishes macros has no digest, and neither it nor what it
+  links is judged by one in its importers: the macros run while they compile.
+  A module with no record, or one older than its ~.dll~, is judged by
+  timestamp as before. A compiler update still rebuilds everything.
+- An executable is still recompiled whenever anything below it changed.
+
 * ~bjo build~ builds what a program imports in parallel
 
 - *A library's modules, and what a program's entry imports, are built by the
