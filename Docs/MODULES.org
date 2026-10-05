@@ -632,6 +632,14 @@ code of anything re-exported through it actually lives — but their exports are
 not imported. Only what a module explicitly exports or re-exports is visible
 through it.
 
+A value can still reach you with a type from one of those: ~(m)~ exports
+~origin : Pt~, where ~Pt~ is a record ~(t)~ declares, and you import ~(m)~ and
+not ~(t)~. ~(.x origin)~ works all the same, because ~(m)~ publishes the
+declaration of every other module's type that its exports name, and of the
+types those name in turn. Nothing comes into scope with it: you cannot write
+~Pt~, or a case of a union carried that way, without importing ~(t)~. The REPL
+depends on this, since an entry imports only the entries whose names it writes.
+
 Note the asymmetry that follows: at the C# level a ~using static~ is emitted for
 every linked assembly, so all of their static classes are technically in scope.
 Visibility is enforced by the Bjolang type checker, not by C#.
@@ -760,9 +768,11 @@ travels:
   importing][Linking is not importing]]): nothing has to be registered for it
   to mean what it meant.
 
-So a module publishes only the types it declares *and exports*. A dependency's
-arrive through the dependency, or not at all — and a signature that mentions one
-still resolves, because the name in it says where the type lives.
+So a module publishes the types it declares *and exports*, and a signature that
+mentions a dependency's type still resolves, because the name in it says where
+the type lives. Resolving is not knowing the fields, though, so the
+dependency's declarations that the published text names cross too, with no
+name an importer could write (~CarriedTypes~, version 16).
 
 An ~#:opaque~ export publishes its whole declaration, marker included, so that
 the bodies its module published can be checked where they are spliced. The

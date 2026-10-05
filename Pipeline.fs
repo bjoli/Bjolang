@@ -1701,8 +1701,18 @@ let loadModuleGraph
                             DImportAlias(entry.Name, entry.Key, AliasType, r)
                             :: (cases |> List.map (fun n -> DImportAlias(bare n, n, AliasConstructor, r))))
 
+                    // Declarations of other modules' types this assembly's
+                    // signatures name, read the way a re-exported one is and
+                    // offered under no spelling at all: what they are for is
+                    // a value of the type, not a name for it.
+                    let carriedGroups =
+                        meta.CarriedTypes
+                        |> List.map (fun (entry: ModuleMetadata.ReExportedType) ->
+                            entry, (Lexer.tokenize absPath entry.Decl |> read |> fst |> DeclParser.parseModule))
+                        |> List.filter (fun (_, decls) -> not decls.IsEmpty)
+
                     let carriedDecls =
-                        reExportedGroups
+                        reExportedGroups @ carriedGroups
                         |> List.groupBy (fun (entry, _) -> entry.OriginModule)
                         |> List.map (fun (originModule, group) ->
                             let decls = group |> List.collect snd

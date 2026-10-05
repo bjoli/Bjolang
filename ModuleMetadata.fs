@@ -84,7 +84,9 @@ open System.Text
 /// A reader of 13 would refuse every such case as an unknown type form.
 /// 15: an exported binding says whether it is a method. A reader of 14 would
 /// read that flag as the next binding's name.
-let currentVersion = 15
+/// 16: `CarriedTypes`, other modules' types that what a module publishes names.
+/// A reader of 15 would read the list as the extern declarations.
+let currentVersion = 16
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -190,6 +192,13 @@ type Metadata = {
     /// somebody else's keys. Read before `TypeDecls`, because one of this
     /// module's own types may name one of these.
     ReExportedTypes: ReExportedType list
+    /// The declarations of other modules' types that something published here
+    /// names, and of the types those name in turn. An importer that does not
+    /// import the declaring module still has a value of such a type, and needs
+    /// the declaration to read its fields or take it apart. Unlike a
+    /// re-exported type, no spelling goes with it: `Name` is empty, and nothing
+    /// comes into scope.
+    CarriedTypes: ReExportedType list
     ExternDecls: string list
     TraitDecls: string list
     ImplDecls: string list
@@ -238,6 +247,7 @@ let empty = {
     Deps = []
     TypeDecls = []
     ReExportedTypes = []
+    CarriedTypes = []
     ExternDecls = []
     TraitDecls = []
     ImplDecls = []
@@ -433,6 +443,7 @@ let serialize (m: Metadata) : string =
     putList sb putStr m.Deps
     putList sb putStr m.TypeDecls
     putList sb putReExportedType m.ReExportedTypes
+    putList sb putReExportedType m.CarriedTypes
     putList sb putStr m.ExternDecls
     putList sb putStr m.TraitDecls
     putList sb putStr m.ImplDecls
@@ -466,6 +477,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
     let deps = getList getStr c
     let typeDecls = getList getStr c
     let reExportedTypes = getList getReExportedType c
+    let carriedTypes = getList getReExportedType c
     let externDecls = getList getStr c
     let traitDecls = getList getStr c
     let implDecls = getList getStr c
@@ -483,6 +495,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
       Deps = deps
       TypeDecls = typeDecls
       ReExportedTypes = reExportedTypes
+      CarriedTypes = carriedTypes
       ExternDecls = externDecls
       TraitDecls = traitDecls
       ImplDecls = implDecls

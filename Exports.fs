@@ -1042,8 +1042,59 @@ let metadata
                 for (traitName, typeKey), text in implEntries do
                     check $"the implementation of '%s{traitName}' for '%s{bare typeKey}'" text
 
-            typeDecls, reExportedTypes, externDecls, traitDecls, implDecls, defs
-        else [], [], [], [], [], []
+            // Other modules' types that what crosses names, with their own
+            // declarations, until nothing new is named. Read off the text for
+            // the reason the check above is: the text is what crosses.
+            let carriedTypes =
+                let own = Naming.moduleKeyOfPath inputFilePath
+                let reExportedKeys = reExportedTypes |> List.map (fun t -> t.Key) |> Set.ofList
+
+                let foreign =
+                    allTypeDeclarations
+                    |> List.filter (fun (m, (td: Ast.TypeDef), _) -> m <> own && not (reExportedKeys.Contains td.Name))
+                    |> List.distinctBy (fun (_, td, _) -> td.Name)
+
+                let tokens (texts: string list) =
+                    texts
+                    |> List.collect (fun t ->
+                        t.Split([| ' '; '\t'; '\n'; '\r'; '('; ')'; '"' |], System.StringSplitOptions.RemoveEmptyEntries)
+                        |> List.ofArray)
+                    |> Set.ofList
+
+                let rec grow (named: Set<string>) (carried: Set<string>) (acc: ModuleMetadata.ReExportedType list) =
+                    let found =
+                        foreign
+                        |> List.filter (fun (_, td, _) -> named.Contains td.Name && not (carried.Contains td.Name))
+
+                    if found.IsEmpty then
+                        List.rev acc
+                    else
+                        let entries =
+                            found
+                            |> List.map (fun (m, td, isRec) ->
+                                ({ Name = ""
+                                   Key = td.Name
+                                   OriginModule = m
+                                   Decl = serializeTypeDef (td, isRec) }
+                                : ModuleMetadata.ReExportedType))
+
+                        grow
+                            (tokens (entries |> List.map (fun e -> e.Decl)))
+                            (entries |> List.fold (fun c e -> Set.add e.Key c) carried)
+                            (List.rev entries @ acc)
+
+                let published =
+                    typeDecls
+                    @ (reExportedTypes |> List.map (fun t -> t.Decl))
+                    @ externDecls
+                    @ traitDecls
+                    @ implDecls
+                    @ (defs |> List.map (fun d -> d.TypeText + " " + d.ConstraintsText))
+
+                grow (tokens published) Set.empty []
+
+            typeDecls, reExportedTypes, carriedTypes, externDecls, traitDecls, implDecls, defs
+        else [], [], [], [], [], [], []
 
     let inlineTemplates =
         if isLibrary then
@@ -1140,7 +1191,7 @@ let metadata
                 declaredHashMacros.Length
                 (declaredHashMacros |> List.map (fun n -> "#" + n) |> String.concat ", "))
 
-    let typeDecls, reExportedTypes, externDecls, traitDecls, implDecls, defs = declMetadata
+    let typeDecls, reExportedTypes, carriedTypes, externDecls, traitDecls, implDecls, defs = declMetadata
 
     // Only the exported ones. A private helper that parks is this module's own
     // business — nothing outside can call it, so nothing outside can be told
@@ -1166,6 +1217,7 @@ let metadata
       Deps = []
       TypeDecls = typeDecls
       ReExportedTypes = reExportedTypes
+      CarriedTypes = carriedTypes
       ExternDecls = externDecls
       TraitDecls = traitDecls
       ImplDecls = implDecls

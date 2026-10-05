@@ -1,0 +1,15 @@
+;; A value whose type is declared in a module this one does not import still
+;; has fields. The declaration crosses with the module that names the type, and
+;; with it the types that one names in turn, so (.x p) is a field read rather
+;; than a call to a .NET method nobody wrote. The REPL is the usual case: an
+;; entry imports only the entries whose names it writes.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/carried_values.bjo")
+
+(defun (main)
+  (expect "a field of a value whose type was not imported" (.x origin) 3)
+  (expect "and record-ref" (record-ref origin y) 4)
+  (expect "a field of a field, one type further down" (.y (.inner (boxed 5))) 10)
+  (expect "and along a path" (get (boxed 6) .inner .x) 6)
+  0)
