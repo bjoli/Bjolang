@@ -1,0 +1,26 @@
+;; An impl at a concrete instantiation, (Over (List int)), emits a non-generic
+;; class. A dictionary for it is that class's instance, with no type arguments,
+;; also when it is the argument of a conditional impl's dictionary. A mutually
+;; recursive pair is used because monomorphisation declines it, so the calls
+;; pass dictionaries.
+(import (std prelude))
+(import (std simpletest))
+
+(def/trait (Over %a)
+  (: over (-> %a string)))
+
+(impl (Over (List int))
+  (defun (over xs) (string-append "ints:" (->str (list-length xs)))))
+
+(impl (Over (Option %a)) (where (Over %a))
+  (defun (over o) (match o ((Some x) (string-append "some " (over x))) (None "none"))))
+
+(: ping (-> int %a string) (where (Over %a)))
+(: pong (-> int %a string) (where (Over %a)))
+(defun (ping n x) (if (= n 0) (over x) (pong (- n 1) x)))
+(defun (pong n x) (if (= n 0) (over x) (ping (- n 1) x)))
+
+(defun (main)
+  (expect "a concrete impl, through a dictionary" (ping 3 (list 1 2 3)) "ints:3")
+  (expect "and inside a conditional one" (ping 2 (Some (list 1))) "some ints:1")
+  0)
