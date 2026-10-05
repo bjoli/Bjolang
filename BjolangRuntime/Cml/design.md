@@ -495,6 +495,46 @@ Same suite, same protocol, two runs:
 The C# twin is 54-56 on the ring and 89-98 on the skewed row. A sync that cannot
 claim the fiber's registration, and a `choose`, still go through `EventAwaiter`.
 
+A sync with no token at all — the REPL, a hand-built environment — parks the
+same way with no claim, as the C# twin does.
+
+#### A `choose`'s token branch on the same registration — kept
+
+The receiver of the skewed row syncs a `choose`, and each of its parks still
+built a `CancellableEvent` and a `TokenWatch` registered under the token's lock.
+Now the fiber's registration is the token branch: the branches are published
+against the sync's own `SyncState`, and only if none committed inline is one more
+event id reserved and the cell armed with it. The token commits through
+`TryCommit(id)` like any branch, so an available branch still wins, and a branch
+committing after the token fired still keeps its value.
+
+    Skewed choose(8)      148-152 -> 144-149 ns/op, 112 -> 72 B/op, gc0 3 -> 1/rep
+
+The 32 B/op left over the C# twin is the send event.
+
+#### Where the token's cost is now — measured, not yet acted on
+
+With every per-park object gone, making `sync` ignore the token still takes the
+ring from ~88 to ~73 and the skewed row from ~150 to ~118. Removing it from one
+side at a time says which side:
+
+    token removed from     ring     skewed
+    nothing               82-87    145-162
+    `choose` only         93-95    142-151
+    direct ops only       72-81    133-138
+    both                  69-77    114-130
+
+So it is the claim protocol on a direct park — `TryBegin` and `Arm` on the
+fiber's cell, and the partner's `TryTake`, which drags the cell's cache line to
+the partner's core and back every rendezvous. Allocation is not involved. Moving
+the claim word into the op, whose line the partner touches anyway, is the
+candidate; it changes who owns the generation and was not attempted here.
+
+**Event ids as a plain increment — measured and rejected.** `NextEventId` is an
+interlocked increment with one writer, nine per sync of an eight-way `choose`.
+A plain increment measured within the noise on every row, so the interlocked one
+stays; it costs nothing it would be worth reasoning away.
+
 ---
 
 ## 5. Known issues

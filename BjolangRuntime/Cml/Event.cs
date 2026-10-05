@@ -88,7 +88,7 @@ internal interface IDirectSyncable<T>
     /// <paramref name="link"/> for park <paramref name="gen"/>. Nothing is
     /// published yet.
     /// </summary>
-    Operation RentPark(ITakeable link, int gen);
+    Operation RentPark(ITakeable? link, int gen);
 
     /// <summary>
     /// Park <paramref name="op"/> with <paramref name="resume"/> as what a partner
@@ -525,7 +525,7 @@ public class ChannelSendEvent<T> : IEvent<Unit>, INowable<Unit>, IDirectSyncable
     bool IDirectSyncable<Unit>.SyncDirect(Action<Unit> onSync, ITakeable link) =>
         _channel.SyncDirectSend(_value, onSync, link);
 
-    Operation IDirectSyncable<Unit>.RentPark(ITakeable link, int gen)
+    Operation IDirectSyncable<Unit>.RentPark(ITakeable? link, int gen)
     {
         var op = PutOp<T>.RentDirect(_value);
         op.Link = link;

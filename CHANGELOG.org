@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* A rendezvous costs a quarter less
+
+- *A single channel operation parks with the fiber's own resume in the op*,
+  as the C# twin's awaiter does, rather than through a pooled ~EventAwaiter~
+  and a delegate hop. ~bench/bjolang/cmlbench.bjo~: the ring from 117 to
+  about 90 ns/op, the nested-scope ring from 100 to about 80, against the C#
+  twin's 55-65.
+- *A ~choose~'s cancellation branch is the fiber's one registration on the
+  token*, committed through the sync's own ~SyncState~, rather than an event
+  and a waiter built per park: the skewed-choose row from 112 to 72 B/op and
+  a third of its collections, at about the same time.
+- What remains of the token's cost is the claim on a direct park, measured in
+  ~design.md~; event ids as a plain increment were measured and gave nothing.
+
 * A call the compiler writes reads its arguments in the caller's scope
 
 - *A local named like the head of a compiler-written call means the local in

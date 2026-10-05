@@ -204,6 +204,29 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
     }
 
     /// <summary>
+    /// Rent and publish <paramref name="ev"/> against a state of the caller's,
+    /// which can then race one more branch of its own against the event's.
+    /// </summary>
+    internal static EventAwaiter<T> RentPublished(IEvent<T> ev, out SyncState state)
+    {
+        var aw = _free;
+        if (aw is null)
+        {
+            aw = new EventAwaiter<T>();
+        }
+        else
+        {
+            _free = aw._next;
+            _freeCount--;
+            aw._next = null;
+        }
+
+        state = new SyncState();
+        ev.Publish(state, SyncState.RootEventId, aw._onSync);
+        return aw;
+    }
+
+    /// <summary>
     /// Rent and start a direct sync with a claim on the parked op, so
     /// <paramref name="link"/> can take it instead of the channel.
     ///

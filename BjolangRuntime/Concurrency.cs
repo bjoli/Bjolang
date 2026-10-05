@@ -77,11 +77,12 @@ public static partial class BjolangRuntime {
     /// registration below. A rendezvous allocates only the send event, 32 bytes,
     /// which a receive does not pay either.
     ///
-    /// A `choose` has branches to arbitrate between, so it keeps the published
-    /// form: a `SyncState`, a `CancellableEvent`, and one waiter on the token
-    /// whenever the branches all park. That waiter is registered on the token
-    /// and left there until the promise's amortised prune drops it, which
-    /// `IsAbandoned` makes safe.
+    /// A `choose` has branches to arbitrate between, so it keeps its
+    /// `SyncState`, and the token is one more branch of it: an event id
+    /// reserved once the real branches are published, committed through
+    /// `TryCommit` like any other. The registration is the same per-fiber one.
+    /// A sync that cannot claim it builds a `CancellableEvent` and a waiter of
+    /// its own, which the promise's amortised prune drops once `IsAbandoned`.
     ///
     /// The watch is not built per park. It is one registration per fiber and
     /// scope, re-armed each time — see `FiberWatch` — so a fiber in a loop pays
@@ -126,7 +127,14 @@ public static partial class BjolangRuntime {
             if (_ev is INowable<T> now && now.TryNow(out var ready))
                 return SyncAwaiter<T>.Ready(ready);
 
-            if (_token is null) return new SyncAwaiter<T>(_ev.GetAwaiter(), null);
+            if (_token is null) {
+                // Nothing to race: a single channel operation parks with the
+                // fiber's resume in it and no claim at all.
+                if (_ev is IDirectSyncable<T> unwatched)
+                    return new SyncAwaiter<T>(unwatched, unwatched.RentPark(null, 0), null, 0);
+
+                return new SyncAwaiter<T>(_ev.GetAwaiter(), null);
+            }
 
             // A single channel operation parks one op, and one op can carry a
             // claim — so cancellation is a link to that claim rather than a
@@ -134,23 +142,14 @@ public static partial class BjolangRuntime {
             // `SyncState`.
             if (_ev is IDirectSyncable<T> direct) return Direct(direct, _token);
 
-            // A `choose` has branches to arbitrate between, so it keeps the
-            // published-branch form: the `SyncState` is already the thing that
-            // decides, and a claim on one op could not speak for the rest.
-            var race = new CancellableEvent<T>(_ev, _token);
-            return new SyncAwaiter<T>(((IEvent<T>)race).GetAwaiter(), race);
+            // A `choose` has branches to arbitrate between, so the token is one
+            // more branch of its `SyncState` rather than a claim on one op.
+            return Chosen(_ev, _token);
         }
 
-        /// One channel operation, watched by this fiber's own registration on
-        /// the token where it can have one.
-        private static SyncAwaiter<T> Direct(IDirectSyncable<T> ev, Promise<CancelReason> token) {
-            // The token may have fired while this fiber was running, in which
-            // case its registration has already been walked and parking now
-            // would wait for a signal that has been and gone. `SyncDirect` is
-            // not reached at all, so nothing is left parked.
-            if (token.IsCompleted)
-                return SyncAwaiter<T>.Cancelled(token.GetAwaiter().GetResult());
-
+        /// The fiber's registration on `token`, made the first time this fiber
+        /// syncs in this scope.
+        private static FiberWatch Cell(Promise<CancelReason> token) {
             var env = Dyn.Current;
             var cell = env.Park;
 
@@ -165,6 +164,55 @@ public static partial class BjolangRuntime {
                 // in the copy it keeps.
                 Dyn.Current = env.WithPark(cell);
             }
+
+            return cell;
+        }
+
+        /// A `choose`, raced against the token through the fiber's
+        /// registration: the token's branch is an event id reserved on the
+        /// sync's own state once the real branches are published, so it commits
+        /// through the same protocol they do and can only win if none has.
+        private static SyncAwaiter<T> Chosen(IEvent<T> ev, Promise<CancelReason> token) {
+            var cell = Cell(token);
+
+            if (!cell.TryBegin(out int gen)) {
+                var race = new CancellableEvent<T>(ev, token);
+                return new SyncAwaiter<T>(((IEvent<T>)race).GetAwaiter(), race);
+            }
+
+            // The branches first: publish order is priority, so one that is
+            // available commits here and the token is never armed.
+            var aw = EventAwaiter<T>.RentPublished(ev, out var state);
+
+            if (state.IsSynchronized) {
+                cell.Settle(gen);
+                return new SyncAwaiter<T>(aw, cell, gen);
+            }
+
+            int tokenBranch = state.NextEventId();
+            cell.AttachChoose(aw, state, tokenBranch);
+
+            if (cell.Arm(gen) && token.IsCompleted && cell.TryTake(gen)
+                && state.TryCommit(tokenBranch)) {
+                // Fired before the arm, so its walk missed this park; see
+                // `SyncAwaiter.UnsafeOnCompleted` for why the re-read suffices.
+                ((ICancellableAwaiter)aw).OnCancelled(token.GetAwaiter().GetResult());
+            }
+
+            return new SyncAwaiter<T>(aw, cell, gen);
+        }
+
+        /// One channel operation, watched by this fiber's own registration on
+        /// the token where it can have one.
+        private static SyncAwaiter<T> Direct(IDirectSyncable<T> ev, Promise<CancelReason> token) {
+            // The token may have fired while this fiber was running, in which
+            // case its registration has already been walked and parking now
+            // would wait for a signal that has been and gone. `SyncDirect` is
+            // not reached at all, so nothing is left parked.
+            if (token.IsCompleted)
+                return SyncAwaiter<T>.Cancelled(token.GetAwaiter().GetResult());
+
+            var cell = Cell(token);
 
             if (!cell.TryBegin(out int gen))
                 return new SyncAwaiter<T>(CancelWatch.Start(ev, token), null);
@@ -336,6 +384,12 @@ public static partial class BjolangRuntime {
         /// cleared when the park ends.
         private System.Action? _resume;
 
+        /// For a parked `choose`: its awaiter, its state, and the event id the
+        /// token commits under. Written before <see cref="Arm"/>.
+        private ICancellableAwaiter? _aw;
+        private SyncState? _choice;
+        private int _tokenBranch;
+
         /// Why the park in progress was cancelled. Here rather than on the op,
         /// because a cancelled op stays on the channel's list until the sweep
         /// recycles it, and by then it may be somebody else's.
@@ -372,6 +426,13 @@ public static partial class BjolangRuntime {
         /// published so that a matcher can never reach a half-built park.
         internal void Attach(System.Action resume) => _resume = resume;
 
+        /// The same for a `choose`, whose token branch commits through its state.
+        internal void AttachChoose(ICancellableAwaiter aw, SyncState state, int tokenBranch) {
+            _aw = aw;
+            _choice = state;
+            _tokenBranch = tokenBranch;
+        }
+
         /// The park was cancelled by its own fiber, which saw the token fired
         /// while arming it.
         internal void CancelledHere(object reason) => _reason = reason;
@@ -406,6 +467,8 @@ public static partial class BjolangRuntime {
         /// and only from `Done`, which nobody else can leave.
         internal void End(int gen) {
             _resume = null;
+            _aw = null;
+            _choice = null;
             System.Threading.Volatile.Write(ref _state, (gen << StatusBits) | Idle);
         }
 
@@ -457,16 +520,28 @@ public static partial class BjolangRuntime {
 
             int gen = s >> StatusBits;
             var resume = _resume;
-            if (resume is null) return;
+            var aw = _aw;
+            var choice = _choice;
+            if (resume is null && aw is null) return;
 
             int armed = (gen << StatusBits) | Armed;
             if (System.Threading.Interlocked.CompareExchange(
                     ref _state, (gen << StatusBits) | Done, armed) != armed) return;
 
+            if (aw is not null) {
+                // `TryCommit`, not `TryClaim`: the state may be transiently
+                // claimed by a branch being paired, and treating that as a loss
+                // would drop a cancellation that did happen. False means a
+                // branch won, and the value it delivered stands.
+                if (choice!.TryCommit(_tokenBranch))
+                    aw.OnCancelled(_token.GetAwaiter().GetResult());
+                return;
+            }
+
             // Stored before the resume runs, which is what publishes it to the
             // fiber. The op stays where it is; the channel's sweep drops it.
             _reason = _token.GetAwaiter().GetResult();
-            Scheduler.Dispatch(resume);
+            Scheduler.Dispatch(resume!);
         }
     }
 
@@ -577,10 +652,18 @@ public static partial class BjolangRuntime {
             _direct = null; _op = null;
         }
 
+        /// A `choose` under the fiber's own registration: the park has to be
+        /// given back when it ends.
+        internal SyncAwaiter(EventAwaiter<T> aw, FiberWatch cell, int gen) {
+            _aw = aw; _race = null; _cell = cell; _gen = gen;
+            _ready = default!; _why = null; _isReady = false;
+            _direct = null; _op = null;
+        }
+
         /// A single channel operation under the fiber's own registration. The op
         /// is rented and claimed but not yet published; that happens in
         /// <see cref="UnsafeOnCompleted"/>.
-        internal SyncAwaiter(IDirectSyncable<T> direct, Operation op, FiberWatch cell, int gen) {
+        internal SyncAwaiter(IDirectSyncable<T> direct, Operation op, FiberWatch? cell, int gen) {
             _aw = null; _race = null; _cell = cell; _gen = gen;
             _ready = default!; _why = null; _isReady = false;
             _direct = direct; _op = op;
@@ -616,13 +699,19 @@ public static partial class BjolangRuntime {
             if (_op is not null) {
                 // A cancelled op belongs to the channel's sweep now and is not
                 // touched again; the reason is on the cell.
-                var cancelled = _cell!.TakeReason();
-                _cell.End(_gen);
-                if (cancelled is CancelReason stopped) throw new Bjolang.Runtime.Cancelled(stopped);
+                if (_cell is { } cell) {
+                    var cancelled = cell.TakeReason();
+                    cell.End(_gen);
+                    if (cancelled is CancelReason stopped) throw new Bjolang.Runtime.Cancelled(stopped);
+                }
                 return _direct!.TakeParked(_op);
             }
 
             var v = _aw!.TakeResult(out var linked);
+
+            // Back to idle before anything can throw, so that a cancelled sync
+            // still leaves the cell usable by the next one.
+            _cell?.End(_gen);
 
             // Two ways a cancellation arrives: carried on the awaiter by the
             // watch that took the parked op, or recorded on the
@@ -642,8 +731,15 @@ public static partial class BjolangRuntime {
                 return;
             }
 
-            var cell = _cell!;
+            var cell = _cell;
             int gen = _gen;
+
+            if (cell is null) {
+                // No token: no claim to settle or arm.
+                if (!_direct!.Park(_op, k)) Scheduler.Enqueue(k);
+                return;
+            }
+
             cell.Attach(k);
 
             // Published while the claim is held rather than armed. The channel

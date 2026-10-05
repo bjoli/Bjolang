@@ -45,7 +45,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     bool IDirectSyncable<T>.SyncDirect(Action<T> onSync, ITakeable link) =>
         SyncDirectReceive(onSync, link);
 
-    Operation IDirectSyncable<T>.RentPark(ITakeable link, int gen)
+    Operation IDirectSyncable<T>.RentPark(ITakeable? link, int gen)
     {
         var op = GetOp<T>.RentDirect();
         op.Link = link;
