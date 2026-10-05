@@ -45,6 +45,29 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     bool IDirectSyncable<T>.SyncDirect(Action<T> onSync, ITakeable link) =>
         SyncDirectReceive(onSync, link);
 
+    Operation IDirectSyncable<T>.RentPark(ITakeable link, int gen)
+    {
+        var op = GetOp<T>.RentDirect();
+        op.Link = link;
+        op.LinkGen = gen;
+        return op;
+    }
+
+    bool IDirectSyncable<T>.Park(Operation op, Action resume)
+    {
+        var get = (GetOp<T>)op;
+        get.DirectResume = resume;
+        return ParkLinkedReceive(get);
+    }
+
+    T IDirectSyncable<T>.TakeParked(Operation op)
+    {
+        var get = (GetOp<T>)op;
+        var value = get.DirectValue;
+        get.Recycle();
+        return value;
+    }
+
     /// <summary>
     /// Receive with no <see cref="SyncState"/>: commit against a parked giver if
     /// there is one, otherwise park uncontested.
@@ -942,7 +965,20 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         return false;
     }
 
-    public void ParkDirectReceive(GetOp<T> op)
+    public void ParkDirectReceive(GetOp<T> op) => ParkReceive(op, linked: false);
+
+    /// <summary>
+    /// The same park for an op that carries a claim, so that a token can take
+    /// it instead of a sender.
+    ///
+    /// True when it parked. False when a giver was waiting: the value is in
+    /// <c>op.DirectValue</c> and the op's own resume has NOT been scheduled,
+    /// because the caller has to close the claim before the fiber can run on.
+    /// A parked linked op can die where it lies, so it counts toward the sweep.
+    /// </summary>
+    internal bool ParkLinkedReceive(GetOp<T> op) => ParkReceive(op, linked: true);
+
+    private bool ParkReceive(GetOp<T> op, bool linked)
     {
         Action? putResume = null;
         Action<Unit>? putResumeGive = null;
@@ -1045,6 +1081,8 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
             }
             else
             {
+                if (linked) NotePark();
+
                 if (_takersTail == null)
                 {
                     _takersHead = _takersTail = op;
@@ -1054,7 +1092,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                     _takersTail.Next = op;
                     _takersTail = op;
                 }
-                return;
+                return true;
             }
         }
 
@@ -1063,7 +1101,8 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         if (putResumeGive != null) Scheduler.Dispatch(putResumeGive, Unit.Value);
         else Scheduler.Dispatch(putResume!);
 
-        Scheduler.Enqueue(op.DirectResume!);
+        if (!linked) Scheduler.Enqueue(op.DirectResume!);
+        return false;
     }
 
     public bool TryDirectSend(T value)
@@ -1173,7 +1212,12 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         return false;
     }
 
-    public void ParkDirectSend(PutOp<T> op)
+    public void ParkDirectSend(PutOp<T> op) => ParkSend(op, linked: false);
+
+    /// <summary>The send side of <see cref="ParkLinkedReceive"/>.</summary>
+    internal bool ParkLinkedSend(PutOp<T> op) => ParkSend(op, linked: true);
+
+    private bool ParkSend(PutOp<T> op, bool linked)
     {
         Action<T>? getResume = null;
         Action? directResume = null;
@@ -1269,6 +1313,8 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 
             if (!matched)
             {
+                if (linked) NotePark();
+
                 if (_giversTail == null)
                 {
                     _giversHead = _giversTail = op;
@@ -1278,7 +1324,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                     _giversTail.Next = op;
                     _giversTail = op;
                 }
-                return;
+                return true;
             }
         }
 
@@ -1287,7 +1333,8 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         if (getResume != null) Scheduler.Dispatch(getResume, op.Value);
         else if (directResume != null) Scheduler.Dispatch(directResume);
 
-        Scheduler.Enqueue(op.ResumePut);
+        if (!linked) Scheduler.Enqueue(op.ResumePut);
+        return false;
     }
 }
 

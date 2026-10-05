@@ -408,7 +408,7 @@ change is not on the branch; this paragraph and the numbers are what is left of
 it. Anyone reinstating it should first make the per-park registration go away —
 which is the persistent-registration item below, and which this measurement moved
 from "the remaining token cost" to "the thing that has to happen first". That has
-since been done, so this is worth another attempt.
+since been done, and the direct park is back — see "The direct park, again" below.
 
 **A lock-free waiter list on `Promise`.** Worth at most the 18 ns of hack 2b, and
 only part of that is the lock — the rest is the list add and the prune. Removing
@@ -460,9 +460,40 @@ the token may not — so a rendezvous that commits inline is out of reach of a t
 firing in the same instant. Arming comes after, and only then is the park visible
 to the token.
 
-**What the remaining gap is.** The ring is 112 against the C# twin's 58 and the
-skewed row 151 against 88. The direct-park rewrite above is worth ~13 ns of that
-and is now unblocked, since the per-park registration it collided with is gone.
+**What the remaining gap was.** The ring was 112 against the C# twin's 58 and the
+skewed row 151 against 88, with the direct-park rewrite above unblocked.
+
+#### The direct park, again — kept
+
+With one registration per fiber, the op-carries-the-resume shape no longer
+collides with anything. A single channel operation under the fiber's registration
+rents its op in `GetAwaiter` and parks it in `SyncAwaiter.UnsafeOnCompleted`, with
+the state machine's own resume in the op's slot — the shape of the C# twin's
+`ChannelSendAwaiter`. The partner resumes the fiber straight from the op; there is
+no `EventAwaiter`, no `onSync` hop and no handover.
+
+Three things the park had to get right, since it now happens *after* the fiber
+decided to suspend:
+
+- A cancelled op stays on the channel's list until the sweep recycles it, so the
+  reason is stored on the cell, not the op, and a cancelled awaiter never touches
+  its op again. A linked park counts toward the sweep (`NotePark`), as the old
+  direct park did.
+- From the moment the op is parked, a partner may resume the fiber on another
+  thread. Every later step names its generation and fails harmlessly once the
+  park is over: `Arm` is a CAS from (gen, Held).
+- A park that found its partner waiting returns without scheduling its own
+  resume, so the claim is settled before the fiber can run `End`.
+
+Same suite, same protocol, two runs:
+
+    Ring                  117 -> 88-92 ns/op    32 B/op either way
+    Ring (nested scope)   100 -> 78-79 ns/op
+    Skewed choose(8)      160 -> 148-152 ns/op  112 B/op either way
+    Spawn burst             unchanged
+
+The C# twin is 54-56 on the ring and 89-98 on the skewed row. A sync that cannot
+claim the fiber's registration, and a `choose`, still go through `EventAwaiter`.
 
 ---
 

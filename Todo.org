@@ -6,15 +6,12 @@ matters, and the fix where one is known.
 
 * CML: where the remaining speed is
 
-~bench/Cml/Program.cs~ runs the ring at 58 ns/op on the same layer the language
-runs at 112, so the cost is the seam between ~sync~ and the layer. Surgical,
+~bench/Cml/Program.cs~ runs the ring at 55 ns/op on the same layer the language
+runs at 90, and the skewed choose at 90 against 150, so the cost is the seam
+between ~sync~ and the layer. Surgical,
 separately measurable changes; ~IEvent<T>~ stays the spec. Unmeasured unless
 noted.
 
-- *Delivery is a callback where a fiber wants a slot.* ~EventAwaiter~ turns
-  ~Publish~'s "call me" into "resume me" at a pooled object, a delegate hop and
-  an interlocked handover (~13 ns). Tried once and regressed while per-park
-  registration existed, which it no longer does. Try first.
 - *A token cannot unregister.* ~Promise~ prunes waiters amortised, which is why
   ~FiberWatch~ needs a generation, an abandonment protocol and a fallback. An
   intrusive node the fiber unlinks deletes all three. Best value per risk.
@@ -24,8 +21,6 @@ noted.
   a mapper per join to convert ~Bjoml.Result<T>~.
 - *Event ids use an interlocked increment* with one writer: eight atomics per
   eight-way ~choose~. A guess; measure first.
-- *Unexplained: the direct-park rewrite regressed the ring.* Six explanations
-  ruled out in ~design.md~. Needs ~perf~.
 
 * Source mapping (~#line~)
 

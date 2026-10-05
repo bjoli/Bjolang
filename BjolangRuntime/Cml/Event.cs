@@ -82,6 +82,24 @@ internal interface IDirectSyncable<T>
     /// direct park keeps committing unconditionally.
     /// </summary>
     bool SyncDirect(Action<T> onSync, ITakeable link);
+
+    /// <summary>
+    /// The op a park with the fiber's own resume in it will use, claimed through
+    /// <paramref name="link"/> for park <paramref name="gen"/>. Nothing is
+    /// published yet.
+    /// </summary>
+    Operation RentPark(ITakeable link, int gen);
+
+    /// <summary>
+    /// Park <paramref name="op"/> with <paramref name="resume"/> as what a partner
+    /// runs. True when it parked; false when a partner was already there, in
+    /// which case the value is in the op and <paramref name="resume"/> has NOT
+    /// been scheduled — the caller closes its claim first.
+    /// </summary>
+    bool Park(Operation op, Action resume);
+
+    /// <summary>The value a completed park carried. Recycles the op.</summary>
+    T TakeParked(Operation op);
 }
 
 public readonly struct Unit
@@ -506,6 +524,27 @@ public class ChannelSendEvent<T> : IEvent<Unit>, INowable<Unit>, IDirectSyncable
 
     bool IDirectSyncable<Unit>.SyncDirect(Action<Unit> onSync, ITakeable link) =>
         _channel.SyncDirectSend(_value, onSync, link);
+
+    Operation IDirectSyncable<Unit>.RentPark(ITakeable link, int gen)
+    {
+        var op = PutOp<T>.RentDirect(_value);
+        op.Link = link;
+        op.LinkGen = gen;
+        return op;
+    }
+
+    bool IDirectSyncable<Unit>.Park(Operation op, Action resume)
+    {
+        var put = (PutOp<T>)op;
+        put.ResumePut = resume;
+        return _channel.ParkLinkedSend(put);
+    }
+
+    Unit IDirectSyncable<Unit>.TakeParked(Operation op)
+    {
+        ((PutOp<T>)op).Recycle();
+        return default;
+    }
 }
 
 public class ChannelReceiveEvent<T> : IEvent<T>

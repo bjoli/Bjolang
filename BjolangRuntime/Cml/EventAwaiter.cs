@@ -204,24 +204,6 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
     }
 
     /// <summary>
-    /// Rent an awaiter without starting anything, for a caller that has to arm a
-    /// claim on it before the operation becomes visible to anyone else.
-    /// </summary>
-    internal static EventAwaiter<T> RentBare()
-    {
-        var aw = _free;
-        if (aw is null) return new EventAwaiter<T>();
-
-        _free = aw._next;
-        _freeCount--;
-        aw._next = null;
-        return aw;
-    }
-
-    /// <summary>The cached continuation to hand to a channel's park site.</summary>
-    internal Action<T> OnSyncAction => _onSync;
-
-    /// <summary>
     /// Rent and start a direct sync with a claim on the parked op, so
     /// <paramref name="link"/> can take it instead of the channel.
     ///
@@ -246,9 +228,6 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
         parked = ev.SyncDirect(aw._onSync, link);
         return aw;
     }
-
-    /// <summary>Complete this sync as cancelled. See the interface.</summary>
-    internal void Cancel(object reason) => ((ICancellableAwaiter)this).OnCancelled(reason);
 
     public void OnCompleted(Action continuation) => UnsafeOnCompleted(continuation);
 
