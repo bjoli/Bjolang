@@ -1351,7 +1351,7 @@ def run_graph_tests():
     broken = graph()
     check_that("a module that does not compile fails the graph", broken.returncode != 0, "it exited 0")
     check_that("and says which, with what the compiler said",
-               "Failed to build" in broken.stdout and "a.bjo" in broken.stdout and "do not match" in broken.stdout,
+               "Failed to build" in broken.stdout and "a.bjo" in broken.stdout and "has the wrong type" in broken.stdout,
                say(broken))
     skipped = [l for l in broken.stdout.splitlines() if l.startswith("Skipped:")]
     check_that("and skips what imports it, naming the cause",

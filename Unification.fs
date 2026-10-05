@@ -460,7 +460,54 @@ let dynPackHint (t1: HMType) (t2: HMType) : string =
     | hint, "" -> hint
     | _ -> ""
 
-let rec unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
+/// Where a failed unification parted: the innermost pair that differed, the
+/// steps that led down to it from the pair `unify` was given, and anything
+/// worth saying about the innermost pair itself.
+type private Mismatch =
+    { Steps: string list
+      Left: HMType
+      Right: HMType
+      /// How many arguments each side's function takes, when that is the
+      /// difference. Data rather than a sentence, because which side is
+      /// "first" is the formatter's to say.
+      Arity: (int * int) option
+      Note: string }
+
+/// Raised inside unification and turned into words at its edge, by `unify` or
+/// `unifyExpecting`. Not a diagnostic itself (`Diagnostics.isDiagnostic` takes
+/// exactly `System.Exception`), so one that escaped would show as the bug it is.
+type private MismatchException(m: Mismatch) =
+    inherit System.Exception("Type error: these types do not match.")
+    member _.Mismatch = m
+
+let ordinal (n: int) =
+    match n % 100, n % 10 with
+    | (11 | 12 | 13), _ -> $"%d{n}th"
+    | _, 1 -> $"%d{n}st"
+    | _, 2 -> $"%d{n}nd"
+    | _, 3 -> $"%d{n}rd"
+    | _ -> $"%d{n}th"
+
+/// One step down, in words: the way into the `i`th argument of `name`.
+let private conStep (name: string) (arity: int) (i: int) =
+    let shown = Naming.showTypeName name
+
+    match name, arity, i with
+    | ("Map" | "OrderedMap" | "TransientMap" | "TransientOrderedMap"), 2, 0 -> $"in the %s{shown}'s keys"
+    | ("Map" | "OrderedMap" | "TransientMap" | "TransientOrderedMap"), 2, 1 -> $"in the %s{shown}'s values"
+    | "Result", 2, 0 -> "in the Result's error"
+    | "Result", 2, 1 -> "in the Result's value"
+    | _, 1, _ -> $"inside the %s{shown}"
+    | _ -> $"in the %s{ordinal (i + 1)} type argument of %s{shown}"
+
+/// Runs one step of a unification, adding the step to a mismatch found below.
+let private within (step: string) (f: unit -> unit) =
+    try
+        f ()
+    with :? MismatchException as e ->
+        raise (MismatchException { e.Mismatch with Steps = step :: e.Mismatch.Steps })
+
+let rec private unifyIn (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
     let t1, t2 = prune registry t1, prune registry t2
 
     match t1, t2 with
@@ -491,17 +538,25 @@ let rec unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
         ->
         List.iteri2
             (fun i a b ->
-                try
-                    unify registry a b
-                with ex ->
-                    let assocName = Naming.dynAssocNamesOf name1 |> List.item i
+                let assocName = Naming.dynAssocNamesOf name1 |> List.item i
 
-                    failwithf
-                        $"%s{ex.Message}\n  They are what #:%s{assocName} is pinned to on either side of a (dyn %s{(Naming.dynTraitOf name1).Value} ...). The value's own implementation decides it, and the annotation has to agree.")
+                try
+                    unifyIn registry a b
+                with :? MismatchException as e ->
+                    let m = e.Mismatch
+
+                    raise (
+                        MismatchException
+                            { m with
+                                Steps = $"in #:%s{assocName}" :: m.Steps
+                                Note =
+                                    m.Note
+                                    + $"\n  They are what #:%s{assocName} is pinned to on either side of a (dyn %s{(Naming.dynTraitOf name1).Value} ...). The value's own implementation decides it, and the annotation has to agree." }
+                    ))
             args1
             args2
     | TCon(name1, args1), TCon(name2, args2) when name1 = name2 && args1.Length = args2.Length ->
-        List.iter2 (unify registry) args1 args2
+        List.iteri2 (fun i a b -> within (conStep name1 args1.Length i) (fun () -> unifyIn registry a b)) args1 args2
     | TFun(args1, ret1, eff1), TFun(args2, ret2, eff2) when args1.Length = args2.Length ->
         unifyEffect eff1 eff2
 
@@ -512,28 +567,26 @@ let rec unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
         // order should not decide whether a program type-checks.
         let ready, waiting =
             List.zip args1 args2
-            |> List.partition (fun (a, b) -> not (awaitsImplementor registry a || awaitsImplementor registry b))
+            |> List.indexed
+            |> List.partition (fun (_, (a, b)) -> not (awaitsImplementor registry a || awaitsImplementor registry b))
 
-        for (a, b) in ready do
-            unify registry a b
+        for (i, (a, b)) in ready @ waiting do
+            within $"in the %s{ordinal (i + 1)} parameter" (fun () -> unifyIn registry a b)
 
-        for (a, b) in waiting do
-            unify registry a b
-
-        unify registry ret1 ret2
-    | TTuple args1, TTuple args2 when args1.Length = args2.Length -> List.iter2 (unify registry) args1 args2
-    | TAssoc(tn1, an1, impl1), TAssoc(tn2, an2, impl2) when tn1 = tn2 && an1 = an2 -> unify registry impl1 impl2
+        within "in what it returns" (fun () -> unifyIn registry ret1 ret2)
+    | TTuple args1, TTuple args2 when args1.Length = args2.Length ->
+        List.iteri2 (fun i a b -> within $"in the %s{ordinal (i + 1)} element of the tuple" (fun () -> unifyIn registry a b)) args1 args2
+    | TAssoc(tn1, an1, impl1), TAssoc(tn2, an2, impl2) when tn1 = tn2 && an1 = an2 -> unifyIn registry impl1 impl2
     | _ ->
-        let shown = DotNetInterop.showTypesTogether [ t1; t2 ]
-
         // Arity is called out because it is the common case and the hardest to
         // read off two arrows printed one above the other.
-        let note =
-            let args n = if n = 1 then "1 argument" else $"%d{n} arguments"
-
+        let arity =
             match t1, t2 with
-            | TFun(a1, _, _), TFun(a2, _, _) when a1.Length <> a2.Length ->
-                $"\n  The first takes %s{args a1.Length}, the second %s{args a2.Length}."
+            | TFun(a1, _, _), TFun(a2, _, _) when a1.Length <> a2.Length -> Some(a1.Length, a2.Length)
+            | _ -> None
+
+        let note =
+            match t1, t2 with
             // Two types of one name. The pair above then differs only by the
             // module in front of it, which is a lot to expect a reader to spot
             // — and the thing they have to know is not that the spellings
@@ -553,8 +606,73 @@ let rec unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
                 | _ -> ""
             | _ -> ""
 
+        raise (
+            MismatchException
+                { Steps = []
+                  Left = t1
+                  Right = t2
+                  Arity = arity
+                  Note = note + dynPackHint t1 t2 }
+        )
+
+/// The arity sentence, naming the sides as the formatter does.
+let private arityLine (first: string) (second: string) (m: Mismatch) =
+    let args n = if n = 1 then "1 argument" else $"%d{n} arguments"
+
+    match m.Arity with
+    | Some(a1, a2) -> $"\n  %s{first} takes %s{args a1}, %s{second} %s{args a2}."
+    | None -> ""
+
+/// The line that says where inside the two types they part, when it is not at
+/// the top.
+let private whereTheyPart (registry: TraitRegistry) (m: Mismatch) =
+    match m.Steps with
+    | [] -> ""
+    | steps ->
+        let shown = DotNetInterop.showTypesTogether [ prune registry m.Left; prune registry m.Right ]
+        let path = String.concat ", " steps
+        $"\n  They differ %s{path}: %s{shown[0]} against %s{shown[1]}."
+
+/// Makes two types the same, or fails saying where they differ.
+///
+/// The message shows the two types as given, and below them the innermost
+/// pair that differed and the way down to it — a mismatch deep inside a
+/// function type is otherwise either the whole arrow twice or `int` against
+/// `string` with no word about where.
+let unify (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
+    try
+        unifyIn registry t1 t2
+    with :? MismatchException as e ->
+        let m = e.Mismatch
+        let shown = DotNetInterop.showTypesTogether [ prune registry t1; prune registry t2 ]
+        let arity = arityLine "The first" "the second" m
+
         failwithf
-            $"Type error: these types do not match.\n  %s{shown[0]}\n  %s{shown[1]}%s{note}%s{dynPackHint t1 t2}"
+            $"Type error: these types do not match.\n  %s{shown[0]}\n  %s{shown[1]}%s{whereTheyPart registry m}%s{arity}%s{m.Note}"
+
+/// `unify`, for a caller that can say what the two types are: `header` is the
+/// first line, and each type is shown beside its label.
+let unifyLabelled (registry: TraitRegistry) (header: string) (label1: string, t1: HMType) (label2: string, t2: HMType) =
+    try
+        unifyIn registry t1 t2
+    with :? MismatchException as e ->
+        let m = e.Mismatch
+        let shown = DotNetInterop.showTypesTogether [ prune registry t1; prune registry t2 ]
+        let width = max label1.Length label2.Length
+        let line (label: string) (t: string) = $"\n  %s{label.PadRight width} %s{t}"
+
+        let arity =
+            match m.Steps with
+            | [] -> arityLine $"The %s{label1} function" $"the %s{label2} one" m
+            | _ -> arityLine "One" "the other" m
+
+        failwithf
+            $"Type error: %s{header}%s{line label1 shown[0]}%s{line label2 shown[1]}%s{whereTheyPart registry m}%s{arity}%s{m.Note}"
+
+/// `unify`, for a caller that knows which side is the expectation and what the
+/// value is: `what` names it, as in "the 1st argument to 'f'".
+let unifyExpecting (registry: TraitRegistry) (expected: HMType) (found: HMType) (what: string) =
+    unifyLabelled registry $"%s{what} has the wrong type." ("expected", expected) ("found", found)
 
 /// `prune` is deep and leaves no bound metavariable behind, so pruning once at
 /// the top is what makes the survivors exactly the free ones.

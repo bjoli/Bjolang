@@ -379,7 +379,7 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
         let exprType, typedExpr = infer env expr
 
         match Map.tryFind name sigs with
-        | Some signature -> unify env.Registry exprType signature.Type
+        | Some signature -> unifyExpecting env.Registry signature.Type exprType $"'%s{name}'"
         | None -> ()
 
         solvePending env
@@ -516,7 +516,7 @@ and private checkDef (env: Env) (sigs: Sigs) (name: string) (expr: Expr) (r: Ran
                 | None -> infer env expr
 
             match declaredType with
-            | Some sigType -> unify env.Registry exprType sigType
+            | Some sigType -> unifyExpecting env.Registry sigType exprType $"'%s{name}'"
             | None -> ()
 
             // Trait obligations are discharged before generalization: a scheme must
@@ -898,7 +898,7 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
             // The return type is the body's expectation, so a literal the body ends
             // in is elaborated against it.
             let bodyType, typedBody = inferChecked expectedRetType bodyEnv body
-            unify env.Registry bodyType expectedRetType
+            unifyExpecting env.Registry expectedRetType bodyType $"what '%s{name}' returns"
 
             // Type-check keyword default expressions, each against its parameter's
             // declared type, so `#:mode 'fast` elaborates as an argument would.
@@ -906,7 +906,11 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
                 List.zip keywordArgDefs keywordTypes
                 |> List.fold (fun (typedArgs, currentEnv) ((kwName, defaultExpr), (_, kwType)) ->
                     let defaultType, typedDefault = inferChecked kwType currentEnv defaultExpr
-                    unify env.Registry defaultType kwType
+
+                    try
+                        unifyExpecting env.Registry kwType defaultType $"the default of #:%s{kwName}"
+                    with ex when Diagnostics.needsLocation ex ->
+                        raise (Diagnostics.withLocation (exprRange defaultExpr) ex)
                     let nextEnv = addBinding kwName { Scheme = Scheme([], [], kwType); IsMutable = false } currentEnv
                     (typedArgs @ [kwName, kwType, typedDefault], nextEnv)
                 ) ([], envWithMandatory)

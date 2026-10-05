@@ -1482,7 +1482,15 @@ and private inferRecordConstruct (env: Env) (recordTypeName: string) (args: Expr
             let exprType, typedExpr = infer env expr
 
             match Map.tryFind name expectedFieldsInstantiated with
-            | Some expectedType -> unify env.Registry exprType expectedType
+            | Some expectedType ->
+                try
+                    unifyExpecting
+                        env.Registry
+                        expectedType
+                        exprType
+                        $"the field '%s{name}' of '%s{Naming.showTypeName recordTypeName}'"
+                with ex when Diagnostics.needsLocation ex ->
+                    raise (Diagnostics.withLocation (exprRange expr) ex)
             | None ->
                 failwithf
                     $"Type Error at %s{Lexer.formatPos (exprRange expr)}: '%s{recordTypeName}' has no field '%s{name}'. Its fields are: %s{fieldList}."
@@ -2170,11 +2178,22 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
     /// exception `unify` makes for `TFun`: in `(fold + 0 v)` the folding
     /// function mentions `Foldable`'s associated type, which nothing knows
     /// until `v` has been inferred.
-    let pin (expected: HMType option) (argType: HMType) =
+    ///
+    /// `what` names the argument in a mismatch, which is reported at the
+    /// argument rather than at the whole call.
+    let pin (expected: HMType option) (argType: HMType) (what: string) (where: Range) =
         match expected with
         | Some paramTy when not (awaitsImplementor env.Registry paramTy || awaitsImplementor env.Registry argType) ->
-            unify env.Registry paramTy argType
+            try
+                unifyExpecting env.Registry paramTy argType what
+            with ex when Diagnostics.needsLocation ex ->
+                raise (Diagnostics.withLocation where ex)
         | _ -> ()
+
+    let callee =
+        match target with
+        | EIdent(name, _) -> $"'%s{name}'"
+        | _ -> "the function"
 
     /// An argument that is not a lambda, inferred against the type its
     /// parameter declares.
@@ -2208,7 +2227,7 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
         | EFun _ -> ()
         | _ ->
             let argType, typedArg = inferArg arg (expectedParam i)
-            pin (expectedParam i) argType
+            pin (expectedParam i) argType $"the %s{ordinal (i + 1)} argument to %s{callee}" (Ast.exprRange arg)
             slots[i] <- Some(argType, typedArg))
 
     // Keyword arguments get the same treatment, so `(f #:mode 'fast)`
@@ -2222,13 +2241,16 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
         | EFun _ -> ()
         | _ ->
             let argType, typedArg = inferArg value (expectedKeyword kwName)
-            pin (expectedKeyword kwName) argType
+            pin (expectedKeyword kwName) argType $"the #:%s{kwName} argument to %s{callee}" (Ast.exprRange value)
             keywordSlots[i] <- Some(argType, typedArg))
 
     positionalExprs
     |> List.iteri (fun i arg ->
         match arg with
-        | EFun _ -> slots[i] <- Some(inferLambdaArg arg (expectedParam i))
+        | EFun _ ->
+            let lambdaType, typedLambda = inferLambdaArg arg (expectedParam i)
+            pin (expectedParam i) lambdaType $"the %s{ordinal (i + 1)} argument to %s{callee}" (Ast.exprRange arg)
+            slots[i] <- Some(lambdaType, typedLambda)
         | _ -> ())
 
     keywordExprs
@@ -2331,6 +2353,16 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
         if not keywordArgs.IsEmpty then
             failwithf $"Keyword arguments used on a function without keyword parameter metadata at %s{Lexer.formatPos r}"
 
+        // Said in terms of the call rather than as two arrows printed one above
+        // the other, which is what the unification below would report.
+        match prune env.Registry targetType with
+        | TFun(paramTys, _, _) when paramTys.Length <> positionalArgs.Length ->
+            let count n = if n = 1 then "1 argument" else $"%d{n} arguments"
+
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: %s{callee} takes %s{count paramTys.Length}, and is given %s{count positionalArgs.Length} here."
+        | _ -> ()
+
         unify
             env.Registry
             targetType
@@ -2354,7 +2386,9 @@ and private inferIf (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (cond: 
     // which attaches no location of its own: without this, branches that
     // disagree are reported at whatever encloses the `if`.
     try
-        unify env.Registry trueType falseType
+        // Not "then" and "else": `cond` and a loop's `:finish` are ifs too, and
+        // neither says either word.
+        unifyLabelled env.Registry "two branches here give values of different types." ("one", trueType) ("other", falseType)
     with ex when Diagnostics.needsLocation ex ->
         raise (Diagnostics.withLocation r ex)
 
@@ -2416,7 +2450,7 @@ and private inferLet (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (name:
         let valType, typedVal, localFun =
             match shape with
             | Some s ->
-                let lambda, lf = inferLocalFunBody env s args r value
+                let lambda, lf = inferLocalFunBody env name s args r value
                 s.FunType, lambda, lf
             | None ->
                 // When the binding has a type annotation, resolve it first and
@@ -2529,7 +2563,7 @@ and private inferLetRec (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (bi
             let valType, typedVal, localFun =
                 match shape with
                 | Some s ->
-                    let lambda, lf = inferLocalFunBody recEnv s args r expr
+                    let lambda, lf = inferLocalFunBody recEnv name s args r expr
                     s.FunType, lambda, lf
                 | None ->
                     let t, typed = infer recEnv expr
@@ -2817,7 +2851,15 @@ and private inferRecordUpdate (env: Env) (targetName: string) (fields: (string *
         fields |> List.map (fun (name, expr) ->
             let exprType, typedExpr = infer env expr
             match Map.tryFind name expectedFieldsInstantiated with
-            | Some expectedType -> unify env.Registry exprType expectedType
+            | Some expectedType ->
+                try
+                    unifyExpecting
+                        env.Registry
+                        expectedType
+                        exprType
+                        $"the field '%s{name}' of '%s{Naming.showTypeName recordTypeName}'"
+                with ex when Diagnostics.needsLocation ex ->
+                    raise (Diagnostics.withLocation (exprRange expr) ex)
             | None -> failwithf $"Type Error: Field '%s{name}' does not belong to record '%s{recordTypeName}' at %s{Lexer.formatPos r}"
             name, typedExpr)
 
@@ -2864,7 +2906,15 @@ and private inferRecordSet (env: Env) (targetName: string) (fields: (string * Ex
             let exprType, typedExpr = infer env expr
 
             match Map.tryFind name expectedFieldsInstantiated with
-            | Some expectedType -> unify env.Registry exprType expectedType
+            | Some expectedType ->
+                try
+                    unifyExpecting
+                        env.Registry
+                        expectedType
+                        exprType
+                        $"the field '%s{name}' of '%s{Naming.showTypeName recordTypeName}'"
+                with ex when Diagnostics.needsLocation ex ->
+                    raise (Diagnostics.withLocation (exprRange expr) ex)
             | None ->
                 failwithf
                     $"Type Error at %s{formatPos r}: field '%s{name}' does not belong to record '%s{Naming.showTypeName recordTypeName}'."
@@ -2958,6 +3008,7 @@ and private inferDynPack (env: Env) (writtenTrait: string) (valueExpr: Expr) (r:
 
 and private inferLocalFunBody
     (env: Env)
+    (name: string)
     (shape: LocalFunShape)
     (args: DefunArg list)
     (r: Range)
@@ -2985,7 +3036,7 @@ and private inferLocalFunBody
         match prune env.Registry shape.RetType with
         | TMeta _ -> functionResult env bodyType None
         | _ -> bodyType
-    unify env.Registry bodyType shape.RetType
+    unifyExpecting env.Registry shape.RetType bodyType $"what '%s{name}' returns"
 
     let typedKeywords, _ =
         shape.Keywords
@@ -3210,6 +3261,14 @@ and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) :
 
     let pe = prune env.Registry expectedElem
 
+    /// The element against what its siblings have to be, reported at the
+    /// element.
+    let fitElement (elemTy: HMType) =
+        try
+            unifyExpecting env.Registry expectedElem elemTy "this element"
+        with ex when Diagnostics.needsLocation ex ->
+            raise (Diagnostics.withLocation (exprRange expr) ex)
+
     /// The typed constructor application, around already typed payloads.
     let wrapInCtor (ctorName: string) (payloadTys: HMType list) (args: TypedExpr list) (r: Range) : TypedExpr =
         let ctorType = tfun payloadTys pe
@@ -3260,7 +3319,7 @@ and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) :
                                  && (match pg with
                                      | TCon(elemHead, _) -> elemHead = unionName
                                      | _ -> false) ->
-            unify env.Registry elemTy expectedElem
+            fitElement elemTy
             te
         | TCon(unionName, typeArgs) when Map.containsKey unionName env.Registry.Unions ->
             match env.Registry.CandidateCases unionName typeArgs pg with
@@ -3273,10 +3332,10 @@ and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) :
             | _ ->
                 // Zero or ambiguous matches — unify directly and let the type
                 // error (if any) be reported normally.
-                unify env.Registry elemTy expectedElem
+                fitElement elemTy
                 te
         | _ ->
-            unify env.Registry elemTy expectedElem
+            fitElement elemTy
             te
 
     /// The shape-directed path, and the reports it can end in. `headTag` is the
