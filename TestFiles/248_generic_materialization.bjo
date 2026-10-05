@@ -110,8 +110,9 @@
   (expect "pairs of strings" (hashset-length ps) 1))
 
 ;; A `(where ...)` of another trait has no .NET member to answer it, so this
-;; implementation is not compiled in: `=` compares by `->str` length, and a
-;; `HashSet` still compares field by field, as C# wrote it.
+;; implementation is not compiled in: `=` compares by `->str` length, and C#'s
+;; own members field by field. A `HashSet` is handed the implementation as its
+;; comparer, so it agrees with `=` all the same.
 (type (: (Loose %a) (Record (: item %a))))
 
 (impl (Eq (Loose %a))
@@ -123,7 +124,7 @@
 (: eq-other-trait (-> void))
 (defun (eq-other-trait)
   (expect-true "= uses the implementation" (= (Loose (item 1)) (Loose (item 2))))
-  (expect "a Set does not" (hashset-length (list->hashset (list (Loose (item 1)) (Loose (item 2))))) 2))
+  (expect "and so does a Set" (hashset-length (list->hashset (list (Loose (item 1)) (Loose (item 2))))) 1))
 
 ;; A generic record with a mutable field. Written by hand, reading only the
 ;; field that does not move, it is a key, and stays found across a write.
@@ -248,10 +249,8 @@
 
 ;; Two spellings of one amount. `=` equates them across cases, but each case
 ;; is a C# record whose `Equals` C# writes itself, and it answers false for a
-;; value of another case before any implementation runs. So a `HashSet` keeps
-;; both: a value with two spellings is normalized before it is a key. See
-;; `Docs/prelude.org`, "Writing one by hand". If this starts answering 1, the
-;; rule has changed and the documentation with it.
+;; value of another case before any implementation runs. So a `HashSet` of
+;; such a union is handed the implementation as its comparer, and keeps one.
 (type (: Money (Union (: Cents int) (: Dollars int))))
 
 (: money->cents (-> Money int))
@@ -267,7 +266,7 @@
 (: union-rule (-> void))
 (defun (union-rule)
   (expect-true "= equates the two spellings" (= (Cents 100) (Dollars 1)))
-  (expect "a Set does not" (hashset-length (list->hashset (list (Cents 100) (Dollars 1)))) 2)
+  (expect "and so does a Set" (hashset-length (list->hashset (list (Cents 100) (Dollars 1)))) 1)
   (expect "normalized, it does"
           (hashset-length (list->hashset (list (Cents (money->cents (Cents 100)))
                                        (Cents (money->cents (Dollars 1))))))

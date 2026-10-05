@@ -412,6 +412,27 @@ let prelude : Env =
         "clr-equals", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"; TVar "a"] boolType); IsMutable = false }
         "clr-hash", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] intType); IsMutable = false }
 
+        // What a collection compares with, so that it agrees with `=` and
+        // `compare`: the type's own .NET members where they answer the same,
+        // the evidence itself where they do not. `Lowering` passes the
+        // dictionary, as to any constrained callee.
+        "eq-comparer",
+        { Scheme =
+            Scheme(
+                [ "a" ],
+                [ { TraitName = "Eq"; TargetType = TVar "a"; Pins = [] } ],
+                makeFunType [] (TCon("System.Collections.Generic.IEqualityComparer", [ TVar "a" ]))
+            )
+          IsMutable = false }
+        "ord-comparer",
+        { Scheme =
+            Scheme(
+                [ "a" ],
+                [ { TraitName = "Ord"; TargetType = TVar "a"; Pins = [] } ],
+                makeFunType [] (TCon("System.Collections.Generic.IComparer", [ TVar "a" ]))
+            )
+          IsMutable = false }
+
         // The field-by-field comparison and hash, by name. Public, unlike the
         // three above: this is what an `Eq` impl writes when it wants "what C#
         // would have synthesized, plus one tweak". It never consults the

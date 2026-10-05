@@ -53,14 +53,17 @@
   ((OrderedSet %a) (: OrderedSet.OrderedSet))
   ((OrderedSetBuilder %a) (: OrderedSet.OrderedSetBuilder))
   ((TransientOrderedSet %a) (: OrderedSet.TransientOrderedSet))
-  ((OrderedSetCursor %a) (: OrderedSet.OrderedSetCursor)))
+  ((OrderedSetCursor %a) (: OrderedSet.OrderedSetCursor))
+  ;; What a set orders its elements by. See `ord-comparer`.
+  ((Comparer %a) (: System.Collections.Generic.IComparer)))
 
 ;; ---------------------------------------------------------------------------
 ;; The set
 ;; ---------------------------------------------------------------------------
 
 (import/extern
-  (clr-orderedset-empty  (: OrderedSet.OrderedSetModule.Empty       (-> (OrderedSet %a))))
+  (clr-orderedset-empty  (: OrderedSet.OrderedSetModule.Empty       (-> (Comparer %a) (OrderedSet %a))))
+  (clr-orderedset-comparer (: OrderedSet.OrderedSetModule.Comparer  (-> (OrderedSet %a) (Comparer %a))))
   (orderedset-add        (: OrderedSet.OrderedSetModule.Add         (-> (OrderedSet %a) %a (OrderedSet %a))))
   ;; Add a run of elements.
   (orderedset-add-all    (: OrderedSet.OrderedSetModule.AddRange    (-> (OrderedSet %a) (Seq %a) (OrderedSet %a))))
@@ -91,14 +94,14 @@
   (orderedset-until (: OrderedSet.OrderedSetModule.Until (-> (OrderedSet %a) %a (Seq %a))))
 
   ;; --- Walking ---
-  (clr-orderedset-map    (: OrderedSet.OrderedSetModule.Map        (-> (-> %a %b) (OrderedSet %a) (OrderedSet %b))))
+  (clr-orderedset-map    (: OrderedSet.OrderedSetModule.Map        (-> (-> %a %b) (OrderedSet %a) (Comparer %b) (OrderedSet %b))))
   (clr-orderedset-filter (: OrderedSet.OrderedSetModule.Filter     (-> (-> %a bool) (OrderedSet %a) (OrderedSet %a))))
   (clr-orderedset-fold   (: OrderedSet.OrderedSetModule.Fold       (-> (-> %a %s %s) %s (OrderedSet %a) %s)))
   (clr-orderedset-iter   (: OrderedSet.OrderedSetModule.Iter       (-> (-> %a bool) (OrderedSet %a) bool)))
   (orderedset-any?       (: OrderedSet.OrderedSetModule.Exists     (-> (-> %a bool) (OrderedSet %a) bool)))
   (orderedset-find       (: OrderedSet.OrderedSetModule.TryFindKey (-> (-> %a bool) (OrderedSet %a) (out %a) (Option %a))))
 
-  (clr-seq->orderedset (: OrderedSet.OrderedSetModule.FromEnumerable (-> (Seq %a) (OrderedSet %a))))
+  (clr-seq->orderedset (: OrderedSet.OrderedSetModule.FromEnumerable (-> (Seq %a) (Comparer %a) (OrderedSet %a))))
   (orderedset->seq (: OrderedSet.OrderedSetModule.AsEnumerable   (-> (OrderedSet %a) (Seq %a))))
 
   (orderedset-cursor         (: OrderedSet.OrderedSetModule.Cursor        (-> (OrderedSet %a) (OrderedSetCursor %a))))
@@ -110,14 +113,14 @@
 ;; ---------------------------------------------------------------------------
 
 (import/extern
-  (clr-orderedsetbuilder-empty     (: OrderedSet.OrderedSetBuilderModule.Empty    (-> (OrderedSetBuilder %a))))
+  (clr-orderedsetbuilder-empty     (: OrderedSet.OrderedSetBuilderModule.Empty    (-> (Comparer %a) (OrderedSetBuilder %a))))
   (orderedset->orderedsetbuilder   (: OrderedSet.OrderedSetBuilderModule.FromSet  (-> (OrderedSet %a) (OrderedSetBuilder %a))))
   (orderedsetbuilder-add!          (: OrderedSet.OrderedSetBuilderModule.Add      (-> (OrderedSetBuilder %a) %a void)))
   (orderedsetbuilder-add-all!      (: OrderedSet.OrderedSetBuilderModule.AddRange (-> (OrderedSetBuilder %a) (Seq %a) void)))
   (orderedsetbuilder-length        (: OrderedSet.OrderedSetBuilderModule.Count    (-> (OrderedSetBuilder %a) int)))
   (orderedsetbuilder->orderedset   (: OrderedSet.OrderedSetBuilderModule.Build    (-> (OrderedSetBuilder %a) (OrderedSet %a))))
 
-  (clr-transientorderedset-empty   (: OrderedSet.TransientOrderedSetModule.Empty          (-> (TransientOrderedSet %a))))
+  (clr-transientorderedset-empty   (: OrderedSet.TransientOrderedSetModule.Empty          (-> (Comparer %a) (TransientOrderedSet %a))))
   (orderedset->transientorderedset (: OrderedSet.TransientOrderedSetModule.FromPersistent (-> (OrderedSet %a) (TransientOrderedSet %a))))
   (transientorderedset->orderedset (: OrderedSet.TransientOrderedSetModule.ToPersistent   (-> (TransientOrderedSet %a) (OrderedSet %a))))
   (transientorderedset-add!        (: OrderedSet.TransientOrderedSetModule.Add            (-> (TransientOrderedSet %a) %a void)))
@@ -136,20 +139,20 @@
 ;; Where a set comes from
 ;; ---------------------------------------------------------------------------
 
-;; The tree compares elements with their CompareTo, which is what an Ord
-;; compiles to, so a set of a type with none failed at its second element. Only
-;; what makes a set out of nothing asks: one made from a set already had to.
+;; What makes a set out of nothing asks for the element's Ord, and the tree
+;; orders elements by it — the order `compare` gives, also where the type has
+;; no CompareTo of its own. One made from a set keeps that set's.
 (: orderedset-empty (-> (OrderedSet %a)) (where (Ord %a)))
-(defun (orderedset-empty) (clr-orderedset-empty))
+(defun (orderedset-empty) (clr-orderedset-empty (ord-comparer)))
 
 (: seq->orderedset (-> (Seq %a) (OrderedSet %a)) (where (Ord %a)))
-(defun (seq->orderedset xs) (clr-seq->orderedset xs))
+(defun (seq->orderedset xs) (clr-seq->orderedset xs (ord-comparer)))
 
 (: orderedsetbuilder-empty (-> (OrderedSetBuilder %a)) (where (Ord %a)))
-(defun (orderedsetbuilder-empty) (clr-orderedsetbuilder-empty))
+(defun (orderedsetbuilder-empty) (clr-orderedsetbuilder-empty (ord-comparer)))
 
 (: transientorderedset-empty (-> (TransientOrderedSet %a)) (where (Ord %a)))
-(defun (transientorderedset-empty) (clr-transientorderedset-empty))
+(defun (transientorderedset-empty) (clr-transientorderedset-empty (ord-comparer)))
 
 ;; ---------------------------------------------------------------------------
 ;; Ordered sets, where the callback may suspend
@@ -157,7 +160,7 @@
 
 (: orderedset-map (-> (-?-> %a %b) (OrderedSet %a) (OrderedSet %b)) (where (Ord %b)))
 (defbjouble (orderedset-map f s)
-  (#:sync (clr-orderedset-map f s))
+  (#:sync (clr-orderedset-map f s (ord-comparer)))
   (#:bjo
     (def b (orderedsetbuilder-empty))
     (def c (orderedset-cursor s))
@@ -172,7 +175,7 @@
 (defbjouble (orderedset-filter keep? s)
   (#:sync (clr-orderedset-filter keep? s))
   (#:bjo
-    (def b (clr-orderedsetbuilder-empty))
+    (def b (clr-orderedsetbuilder-empty (clr-orderedset-comparer s)))
     (def c (orderedset-cursor s))
     (let go ()
       (cond

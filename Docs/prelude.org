@@ -75,7 +75,9 @@ A hand-written implementation is how a type says its equality is not its fields:
                                    (eq-hash (record-ref p y)))))
 #+END_SRC
 
-The implementation *is* the type's .NET equality: its ~Equals~ and ~GetHashCode~ are emitted as calls to it, so ~Map~, ~HashSet~ and every other .NET consumer agree with ~=~. ~Ord~ becomes ~IComparable<T>~/~CompareTo~ the same way, which is what ~OrderedMap~ and ~OrderedSet~ compare with.
+The implementation *is* the type's .NET equality: its ~Equals~ and ~GetHashCode~ are emitted as calls to it, so ~Map~, ~HashSet~ and every other .NET consumer agree with ~=~. ~Ord~ becomes ~IComparable<T>~/~CompareTo~ the same way.
+
+A collection does not depend on that, though. What makes a ~Map~, ~HashSet~, ~OrderedMap~ or ~OrderedSet~ out of nothing — ~map-empty~, ~list->hashset~, ~seq->orderedmap~, a collector — asks for the key's ~Eq~ or ~Ord~, and compares keys with it. Where the type's own members give the same answer, which is almost always, it keeps them and nothing changes; where they do not (below), it is handed the implementation itself. A collection made from another keeps that one's comparison. The constraint is inferred, so a signature need not mention it.
 
 - An implementation that wants "the field-by-field comparison, plus one tweak" writes ~(structural-equals a b)~ and ~(structural-hash a)~: they compare the fields directly and never consult the receiver type's own ~Equals~, while each *field* still compares through its own type's equality.
 - The implementation is compiled into the type, so it must live in the module that declares the type. An ~Eq~ or ~Ord~ implementation for an imported type, an ~import/class~ alias, or (in the REPL) a type from an earlier entry is refused. The way out: the declaring module, the same REPL entry, or a wrapper type.
@@ -96,11 +98,11 @@ A type with parameters is no different. Its implementation is usually *condition
 
 Inside the type nobody hands it the ~Eq~ of ~%a~, so the type answers ~(where (Eq %a))~ itself, with ~%a~'s own ~Equals~ and ~GetHashCode~. That is right because they *are* ~%a~'s ~Eq~: compiled in for a type a module declares, and the same members for everything ~(std eq)~ implements. ~(where (Ord %a))~ is answered with ~%a~'s ~CompareTo~, and a string ordinally, as ~(Ord string)~ does. So a ~HashSet~ of the edges (1 2) and (2 1) has one element, and a ~Map~ finds either through the other.
 
-Where ~=~ and a ~Map~ can still disagree:
+Where the type's own .NET members and ~=~ part ways — which matters to .NET code handed such a value, and not to the collections above:
 
 - *An implementation with a ~(where ...)~ of another trait*, such as ~(where (->str %a))~. .NET has nothing to answer it with, so the type keeps the members C# writes, which compare field by field.
 - *An implementation for a specialized target*, such as ~(impl (Eq (Pair %a %a)))~ on a ~Pair~ with two parameters. The same.
-- *Two different cases of a union.* Each case is a C# record, and C# writes its ~Equals~ itself: asked about a value of another case, it answers false before the implementation runs. Two values of the *same* case do reach the implementation. A value with two spellings is normalized before it is a key:
+- *Two different cases of a union.* Each case is a C# record, and C# writes its ~Equals~ itself: asked about a value of another case, it answers false before the implementation runs. Two values of the *same* case do reach the implementation.
 
 #+BEGIN_SRC scheme
 (type (: Money (Union (: Cents int) (: Dollars int))))
@@ -113,12 +115,11 @@ Where ~=~ and a ~Map~ can still disagree:
   (defun (= x y) (= (money->cents x) (money->cents y)))
   (defun (eq-hash m) (eq-hash (money->cents m))))
 
-(= (Cents 100) (Dollars 1))                              ;; #t
-(hashset-length (list->hashset (list (Cents 100) (Dollars 1))))  ;; 2, not 1
-(hashset-length (list->hashset (list (Cents 100) (Cents (money->cents (Dollars 1))))))  ;; 1
+(= (Cents 100) (Dollars 1))                                      ;; #t
+(hashset-length (list->hashset (list (Cents 100) (Dollars 1))))  ;; 1
 #+END_SRC
 
-An ~Ord~ of the first two shapes leaves the type with no ~CompareTo~ at all, since C# writes none, so an ~OrderedSet~ or ~OrderedMap~ of it fails at its second element although the ~Ord~ is there. Two cases of a union do not have this problem with ~Ord~: ~CompareTo~ is the union's, and the implementation sees both.
+An ~Ord~ of the first two shapes leaves the type with no ~CompareTo~ at all, since C# writes none; an ~OrderedSet~ or ~OrderedMap~ of it is ordered by the implementation all the same. Two cases of a union do not have this problem with ~Ord~: ~CompareTo~ is the union's, and the implementation sees both.
 
 *** ~type/derive~
 ~type/derive~ writes that out per field. A macro in ~(std prelude)~, and syntactic — where a declaration is read there is no registry to ask what a type's fields are, only the form that declares them.

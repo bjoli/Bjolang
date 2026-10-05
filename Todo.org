@@ -92,7 +92,7 @@ out-degree ≤ 1, so copies grow additively; largest demand 722 nodes
   where it calls it, so ~f~ at ~int~ is copied into every module that calls it
   at ~int~. A project should collect its instantiations and monomorphise each
   function once: the copies in one place every module links, rather than one
-  per caller. Belongs with evidence structs and the collection comparers.
+  per caller. Belongs with evidence structs.
 
 * Colourless concurrency
 
@@ -108,27 +108,12 @@ out-degree ≤ 1, so copies grow additively; largest demand 722 nodes
 
 * Equality and hashing
 
-~Map~ and ~Set~ key on ~EqualityComparer<T>.Default~, not on ~std/eq~'s ~Eq~;
-they agree only because a declared type's ~Eq~ is compiled into its ~Equals~.
-Three cases still disagree (documented in ~Docs/prelude.org~, "Writing one by
-hand"), each a lookup that silently misses:
-
-- two cases of a union that ~=~ equates (~248_generic_materialization.bjo~);
-- a specialized target, ~(impl (Eq (Pair %a %a)))~;
-- a ~(where ...)~ of another trait.
-
-For ~Ord~ the last two are worse: the type gets no ~CompareTo~, so an
-~OrderedSet~ or ~OrderedMap~ of it throws at its second element. A type with no
-~Ord~ at all is refused, since what makes an ordered collection out of nothing
-has ~(where (Ord %a))~.
-
-One design closes all three: *the key's evidence as the collection's comparer*.
-The CHAMP already takes an ~IEqualityComparer~, and ~Eq<T>~ could be emitted as
-one (default interface methods forwarding to ~eq~ and ~eqsubhash~). Missing:
-naming the evidence in scope, so ~map-empty~ and the other constructors (not
-~map-set~ or ~map-ref~) gain ~(where (Eq %k))~. Pass ~null~ for the CLR-derived
-~Eq~ to keep the JIT's devirtualisation. Do ~Ord~ and the ordered collections
-the same way, not one without the other.
+The collections compare with the key's ~Eq~/~Ord~ (~eq-comparer~), but the
+type's own .NET members still disagree with ~=~ in three shapes (documented in
+~Docs/prelude.org~, "Writing one by hand"): two cases of a union ~=~ equates, a
+specialized target, a ~(where ...)~ of another trait. That reaches any .NET code
+handed such a value — a ~Dictionary~ through interop, LINQ's ~Distinct~ — and a
+collection the runtime makes from nothing (none today has such keys).
 
 * Packages and projects
 

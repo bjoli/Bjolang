@@ -53,14 +53,17 @@
   ((OrderedMap %k %v) (: OrderedMap.OrderedMap))
   ((OrderedMapBuilder %k %v) (: OrderedMap.OrderedMapBuilder))
   ((TransientOrderedMap %k %v) (: OrderedMap.TransientOrderedMap))
-  ((OrderedMapCursor %k %v) (: OrderedMap.OrderedMapCursor)))
+  ((OrderedMapCursor %k %v) (: OrderedMap.OrderedMapCursor))
+  ;; What a map orders its keys by. See `ord-comparer`.
+  ((Comparer %a) (: System.Collections.Generic.IComparer)))
 
 ;; ---------------------------------------------------------------------------
 ;; The map
 ;; ---------------------------------------------------------------------------
 
 (import/extern
-  (clr-orderedmap-empty  (: OrderedMap.OrderedMapModule.Empty       (-> (OrderedMap %k %v))))
+  (clr-orderedmap-empty  (: OrderedMap.OrderedMapModule.Empty       (-> (Comparer %k) (OrderedMap %k %v))))
+  (clr-orderedmap-comparer (: OrderedMap.OrderedMapModule.Comparer  (-> (OrderedMap %k %v) (Comparer %k))))
   ;; Lookups.
   (orderedmap-ref        (: OrderedMap.OrderedMapModule.Ref         (-> (OrderedMap %k %v) %k %v)))
   (orderedmap-ref-or     (: OrderedMap.OrderedMapModule.RefOr       (-> (OrderedMap %k %v) %k %v %v)))
@@ -107,7 +110,7 @@
   ;; Find entry satisfying pred.
   (orderedmap-find       (: OrderedMap.OrderedMapModule.TryFind   (-> (-> %k %v bool) (OrderedMap %k %v) (out %k) (out %v) (Option (Tuple %k %v)))))
 
-  (clr-seq->orderedmap (: OrderedMap.OrderedMapModule.FromEnumerable (-> (Seq (Tuple %k %v)) (OrderedMap %k %v))))
+  (clr-seq->orderedmap (: OrderedMap.OrderedMapModule.FromEnumerable (-> (Seq (Tuple %k %v)) (Comparer %k) (OrderedMap %k %v))))
   (orderedmap->seq (: OrderedMap.OrderedMapModule.AsEnumerable   (-> (OrderedMap %k %v) (Seq (Tuple %k %v)))))
 
   (orderedmap-cursor         (: OrderedMap.OrderedMapModule.Cursor        (-> (OrderedMap %k %v) (OrderedMapCursor %k %v))))
@@ -142,7 +145,7 @@
 ;; ---------------------------------------------------------------------------
 
 (import/extern
-  (clr-orderedmapbuilder-empty   (: OrderedMap.OrderedMapBuilderModule.Empty    (-> (OrderedMapBuilder %k %v))))
+  (clr-orderedmapbuilder-empty   (: OrderedMap.OrderedMapBuilderModule.Empty    (-> (Comparer %k) (OrderedMapBuilder %k %v))))
   (orderedmap->orderedmapbuilder (: OrderedMap.OrderedMapBuilderModule.FromMap  (-> (OrderedMap %k %v) (OrderedMapBuilder %k %v))))
   (orderedmapbuilder-add!        (: OrderedMap.OrderedMapBuilderModule.Add      (-> (OrderedMapBuilder %k %v) %k %v void)))
   (orderedmapbuilder-add-all!    (: OrderedMap.OrderedMapBuilderModule.AddRange (-> (OrderedMapBuilder %k %v) (Seq (Tuple %k %v)) void)))
@@ -150,7 +153,7 @@
   (orderedmapbuilder-length      (: OrderedMap.OrderedMapBuilderModule.Count    (-> (OrderedMapBuilder %k %v) int)))
   (orderedmapbuilder->orderedmap (: OrderedMap.OrderedMapBuilderModule.Build    (-> (OrderedMapBuilder %k %v) (OrderedMap %k %v))))
 
-  (clr-transientorderedmap-empty   (: OrderedMap.TransientOrderedMapModule.Empty          (-> (TransientOrderedMap %k %v))))
+  (clr-transientorderedmap-empty   (: OrderedMap.TransientOrderedMapModule.Empty          (-> (Comparer %k) (TransientOrderedMap %k %v))))
   (orderedmap->transientorderedmap (: OrderedMap.TransientOrderedMapModule.FromPersistent (-> (OrderedMap %k %v) (TransientOrderedMap %k %v))))
   (transientorderedmap->orderedmap (: OrderedMap.TransientOrderedMapModule.ToPersistent   (-> (TransientOrderedMap %k %v) (OrderedMap %k %v))))
   (transientorderedmap-set!        (: OrderedMap.TransientOrderedMapModule.Set            (-> (TransientOrderedMap %k %v) %k %v void)))
@@ -169,20 +172,20 @@
 ;; Where a map comes from
 ;; ---------------------------------------------------------------------------
 
-;; The tree compares keys with their CompareTo, which is what an Ord compiles
-;; to, so a map keyed on a type with none failed at its second key. Only what
-;; makes a map out of nothing asks: one made from a map already had to.
+;; What makes a map out of nothing asks for the key's Ord, and the tree orders
+;; keys by it — the order `compare` gives, also where the type has no CompareTo
+;; of its own. One made from a map keeps that map's.
 (: orderedmap-empty (-> (OrderedMap %k %v)) (where (Ord %k)))
-(defun (orderedmap-empty) (clr-orderedmap-empty))
+(defun (orderedmap-empty) (clr-orderedmap-empty (ord-comparer)))
 
 (: seq->orderedmap (-> (Seq (Tuple %k %v)) (OrderedMap %k %v)) (where (Ord %k)))
-(defun (seq->orderedmap xs) (clr-seq->orderedmap xs))
+(defun (seq->orderedmap xs) (clr-seq->orderedmap xs (ord-comparer)))
 
 (: orderedmapbuilder-empty (-> (OrderedMapBuilder %k %v)) (where (Ord %k)))
-(defun (orderedmapbuilder-empty) (clr-orderedmapbuilder-empty))
+(defun (orderedmapbuilder-empty) (clr-orderedmapbuilder-empty (ord-comparer)))
 
 (: transientorderedmap-empty (-> (TransientOrderedMap %k %v)) (where (Ord %k)))
-(defun (transientorderedmap-empty) (clr-transientorderedmap-empty))
+(defun (transientorderedmap-empty) (clr-transientorderedmap-empty (ord-comparer)))
 
 ;; ---------------------------------------------------------------------------
 ;; Ordered maps, where the callback may suspend
@@ -192,7 +195,7 @@
 (defbjouble (orderedmap-map f m)
   (#:sync (clr-orderedmap-map f m))
   (#:bjo
-    (def b (clr-orderedmapbuilder-empty))
+    (def b (clr-orderedmapbuilder-empty (clr-orderedmap-comparer m)))
     (def c (orderedmap-cursor m))
     (let go ()
       (cond
@@ -206,7 +209,7 @@
 (defbjouble (orderedmap-map-values f m)
   (#:sync (clr-orderedmap-map-values f m))
   (#:bjo
-    (def b (clr-orderedmapbuilder-empty))
+    (def b (clr-orderedmapbuilder-empty (clr-orderedmap-comparer m)))
     (def c (orderedmap-cursor m))
     (let go ()
       (cond
@@ -220,7 +223,7 @@
 (defbjouble (orderedmap-filter keep? m)
   (#:sync (clr-orderedmap-filter keep? m))
   (#:bjo
-    (def b (clr-orderedmapbuilder-empty))
+    (def b (clr-orderedmapbuilder-empty (clr-orderedmap-comparer m)))
     (def c (orderedmap-cursor m))
     (let go ()
       (cond

@@ -3,6 +3,32 @@
 
 What each change guarantees, and what it leaves open.
 
+* A collection compares keys the way = does
+
+- *What makes a ~Map~, ~HashSet~, ~OrderedMap~ or ~OrderedSet~ out of nothing
+  asks for the key's ~Eq~ or ~Ord~ and compares with it*: the ~-empty~
+  functions, the conversions from lists, vecs and seqs, the collectors, and
+  ~hashset-map~ into a new element type. Three lookups that silently missed now
+  find their key: two cases of a union that ~=~ equates, a specialized target
+  such as ~(Eq (Pair %a %a))~, and an implementation with a ~(where ...)~ of
+  another trait. An ordered collection of the last two threw at its second
+  element; it is now ordered by the ~Ord~.
+- *No signature changes.* The constraint is inferred where a signature leaves
+  it out, and reaches callers as any ~(where ...)~ does.
+- *Ordinary keys run the same code.* Each ~Eq~/~Ord~ dictionary is also a .NET
+  comparer and says whether the type's own members give the same answer; where
+  they do, which is every primitive, std container of such and compiled-in
+  implementation, the collection keeps the default comparer and the shared
+  empty map. 1M ~map-set~/~map-ref~ on ~int~ keys measured the same before
+  and after.
+- A collection made from another keeps its comparer, also through a builder or
+  transient left empty, ~map-map~ and ~map-map-values~, and the suspending
+  halves of the walking functions. These used to fall back to the default.
+- ~eq-comparer~ and ~ord-comparer~ are builtins: the comparer that agrees with
+  ~=~ or ~compare~ at a type, for handing to .NET.
+- ~(compare a b)~ on strings compares code points without converting to
+  UTF-16: the order an ~OrderedMap~ of strings keeps, and no allocation.
+
 * A suspending copy that awaits nothing is not emitted
 
 - *An inferred copy whose body awaits nothing is dropped after selection*, and

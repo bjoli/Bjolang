@@ -40,14 +40,17 @@
   ((HashSet %a) (: Set.Set))
   ((HashSetBuilder %a) (: Set.SetBuilder))
   ((TransientHashSet %a) (: Set.TransientSet))
-  ((HashSetCursor %a) (: Set.SetCursor)))
+  ((HashSetCursor %a) (: Set.SetCursor))
+  ;; What a set compares its elements with. See `eq-comparer`.
+  ((EqualityComparer %a) (: System.Collections.Generic.IEqualityComparer)))
 
 ;; ---------------------------------------------------------------------------
 ;; The set
 ;; ---------------------------------------------------------------------------
 
 (import/extern
-  (hashset-empty      (: Set.SetModule.Empty          (-> (HashSet %a))))
+  (clr-hashset-empty  (: Set.SetModule.Empty          (-> (EqualityComparer %a) (HashSet %a))))
+  (clr-hashset-comparer (: Set.SetModule.Comparer     (-> (HashSet %a) (EqualityComparer %a))))
   (hashset-add        (: Set.SetModule.Add            (-> (HashSet %a) %a (HashSet %a))))
   (hashset-add-all    (: Set.SetModule.AddRange       (-> (HashSet %a) (Seq %a) (HashSet %a))))
   (hashset-remove     (: Set.SetModule.Remove         (-> (HashSet %a) %a (HashSet %a))))
@@ -58,14 +61,14 @@
   (hashset-clear      (: Set.SetModule.Clear          (-> (HashSet %a) (HashSet %a))))
   ;; The union.
   (hashset-union      (: Set.SetModule.Merge          (-> (HashSet %a) (HashSet %a) (HashSet %a))))
-  (clr-hashset-map    (: Set.SetModule.Map            (-> (-> %a %b) (HashSet %a) (HashSet %b))))
+  (clr-hashset-map    (: Set.SetModule.Map            (-> (-> %a %b) (HashSet %a) (EqualityComparer %b) (HashSet %b))))
   (clr-hashset-filter (: Set.SetModule.Filter         (-> (-> %a bool) (HashSet %a) (HashSet %a))))
   (clr-hashset-fold   (: Set.SetModule.Fold           (-> (-> %a %s %s) %s (HashSet %a) %s)))
   (clr-hashset-iter   (: Set.SetModule.Iter           (-> (-> %a bool) (HashSet %a) bool)))
   (hashset-any?       (: Set.SetModule.Exists         (-> (-> %a bool) (HashSet %a) bool)))
   ;; The first element satisfying `pred`, as an `Option`.
   (hashset-find       (: Set.SetModule.TryFindKey     (-> (-> %a bool) (HashSet %a) (out %a) (Option %a))))
-  (seq->hashset       (: Set.SetModule.FromEnumerable (-> (Seq %a) (HashSet %a))))
+  (clr-seq->hashset   (: Set.SetModule.FromEnumerable (-> (Seq %a) (EqualityComparer %a) (HashSet %a))))
   (hashset->seq       (: Set.SetModule.AsEnumerable   (-> (HashSet %a) (Seq %a))))
   (hashset-cursor          (: Set.SetModule.Cursor        (-> (HashSet %a) (HashSetCursor %a))))
   (hashset-cursor-done?    (: Set.SetModule.CursorDone    (-> (HashSetCursor %a) bool)))
@@ -77,7 +80,7 @@
 
 
 (import/extern
-  (hashsetbuilder-empty     (: Set.SetBuilderModule.Empty    (-> (HashSetBuilder %a))))
+  (clr-hashsetbuilder-empty (: Set.SetBuilderModule.Empty    (-> (EqualityComparer %a) (HashSetBuilder %a))))
   (hashset->hashsetbuilder      (: Set.SetBuilderModule.FromSet  (-> (HashSet %a) (HashSetBuilder %a))))
   (hashsetbuilder-add!      (: Set.SetBuilderModule.Add      (-> (HashSetBuilder %a) %a void)))
   (hashsetbuilder-add-all!  (: Set.SetBuilderModule.AddRange (-> (HashSetBuilder %a) (Seq %a) void)))
@@ -85,7 +88,7 @@
   (hashsetbuilder->hashset      (: Set.SetBuilderModule.Build    (-> (HashSetBuilder %a) (HashSet %a))))
 
   ;; --- Transients ---
-  (transienthashset-empty        (: Set.TransientSetModule.Empty          (-> (TransientHashSet %a))))
+  (clr-transienthashset-empty    (: Set.TransientSetModule.Empty          (-> (EqualityComparer %a) (TransientHashSet %a))))
   (hashset->transienthashset         (: Set.TransientSetModule.FromPersistent (-> (HashSet %a) (TransientHashSet %a))))
   (transienthashset->hashset         (: Set.TransientSetModule.ToPersistent   (-> (TransientHashSet %a) (HashSet %a))))
   (transienthashset-add!         (: Set.TransientSetModule.Add            (-> (TransientHashSet %a) %a void)))
@@ -97,12 +100,31 @@
   (transienthashset-empty?       (: Set.TransientSetModule.IsEmpty        (-> (TransientHashSet %a) bool))))
 
 ;; ---------------------------------------------------------------------------
+;; Where a set comes from
+;; ---------------------------------------------------------------------------
+
+;; What makes a set out of nothing asks for the element's Eq, and the set
+;; compares elements with it — the same answer `=` gives, also for two cases of
+;; a union that `=` equates. One made from a set keeps that set's.
+(: hashset-empty (-> (HashSet %a)) (where (Eq %a)))
+(defun (hashset-empty) (clr-hashset-empty (eq-comparer)))
+
+(: seq->hashset (-> (Seq %a) (HashSet %a)) (where (Eq %a)))
+(defun (seq->hashset xs) (clr-seq->hashset xs (eq-comparer)))
+
+(: hashsetbuilder-empty (-> (HashSetBuilder %a)) (where (Eq %a)))
+(defun (hashsetbuilder-empty) (clr-hashsetbuilder-empty (eq-comparer)))
+
+(: transienthashset-empty (-> (TransientHashSet %a)) (where (Eq %a)))
+(defun (transienthashset-empty) (clr-transienthashset-empty (eq-comparer)))
+
+;; ---------------------------------------------------------------------------
 ;; Sets, where the callback may suspend
 ;; ---------------------------------------------------------------------------
 
-(: hashset-map (-> (-?-> %a %b) (HashSet %a) (HashSet %b)))
+(: hashset-map (-> (-?-> %a %b) (HashSet %a) (HashSet %b)) (where (Eq %b)))
 (defbjouble (hashset-map f s)
-  (#:sync (clr-hashset-map f s))
+  (#:sync (clr-hashset-map f s (eq-comparer)))
   (#:bjo
     (def b (hashsetbuilder-empty))
     (def c (hashset-cursor s))
@@ -117,7 +139,7 @@
 (defbjouble (hashset-filter keep? s)
   (#:sync (clr-hashset-filter keep? s))
   (#:bjo
-    (def b (hashsetbuilder-empty))
+    (def b (clr-hashsetbuilder-empty (clr-hashset-comparer s)))
     (def c (hashset-cursor s))
     (let go ()
       (cond
@@ -153,13 +175,13 @@
 ;; ---------------------------------------------------------------------------
 
 
-(: list->hashset (-> (List %a) (HashSet %a)))
+(: list->hashset (-> (List %a) (HashSet %a)) (where (Eq %a)))
 (defun (list->hashset xs) (seq->hashset (list->seq xs)))
 
 (: hashset->list (-> (HashSet %a) (List %a)))
 (defun (hashset->list s) (seq->list (hashset->seq s)))
 
-(: vec->hashset (-> (Vec %a) (HashSet %a)))
+(: vec->hashset (-> (Vec %a) (HashSet %a)) (where (Eq %a)))
 (defun (vec->hashset v) (seq->hashset (vec->seq v)))
 
 (: hashset->vec (-> (HashSet %a) (Vec %a)))
@@ -205,6 +227,7 @@
 (type (: (HashSetting %a) (Union hash-setting)))
 
 (impl (Collector (HashSetting %a))
+  (where (Eq %a))
   (type %elem %a)
   (type %acc (HashSetBuilder %a))
   (type %out (HashSet %a))

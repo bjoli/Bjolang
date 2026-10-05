@@ -265,10 +265,13 @@
   ((Map %k %v)          (: Map.Map))
   ((MapBuilder %k %v)   (: Map.MapBuilder))
   ((TransientMap %k %v) (: Map.TransientMap))
-  ((MapCursor %k %v)    (: Map.MapCursor)))
+  ((MapCursor %k %v)    (: Map.MapCursor))
+  ;; What a map compares its keys with. See `eq-comparer`.
+  ((EqualityComparer %a) (: System.Collections.Generic.IEqualityComparer)))
 
 (import/extern
-  (map-empty      (: Map.MapModule.Empty       (-> (Map %k %v))))
+  (clr-map-empty  (: Map.MapModule.Empty       (-> (EqualityComparer %k) (Map %k %v))))
+  (clr-map-comparer (: Map.MapModule.Comparer  (-> (Map %k %v) (EqualityComparer %k))))
   ;; Lookup.
   (map-ref        (: Map.MapModule.Ref         (-> (Map %k %v) %k %v)))
   (map-ref-or     (: Map.MapModule.RefOr       (-> (Map %k %v) %k %v %v)))
@@ -305,7 +308,7 @@
   (map-any?       (: Map.MapModule.Exists    (-> (-> %k %v bool) (Map %k %v) bool)))
   (map-try-find   (: Map.MapModule.TryFind   (-> (-> %k %v bool) (Map %k %v) (out %k) (out %v) (Option (Tuple %k %v)))))
 
-  (seq->map (: Map.MapModule.FromEnumerable (-> (Seq (Tuple %k %v)) (Map %k %v))))
+  (clr-seq->map (: Map.MapModule.FromEnumerable (-> (Seq (Tuple %k %v)) (EqualityComparer %k) (Map %k %v))))
   (map->seq (: Map.MapModule.AsEnumerable   (-> (Map %k %v) (Seq (Tuple %k %v)))))
 
   ;; Cursor.
@@ -315,7 +318,7 @@
 
   ;; --- Builders ---
   ;; Build map.
-  (mapbuilder-empty    (: Map.MapBuilderModule.Empty    (-> (MapBuilder %k %v))))
+  (clr-mapbuilder-empty (: Map.MapBuilderModule.Empty   (-> (EqualityComparer %k) (MapBuilder %k %v))))
   (map->mapbuilder     (: Map.MapBuilderModule.FromMap  (-> (Map %k %v) (MapBuilder %k %v))))
   (mapbuilder-add!     (: Map.MapBuilderModule.Add      (-> (MapBuilder %k %v) %k %v void)))
   (mapbuilder-add-all! (: Map.MapBuilderModule.AddRange (-> (MapBuilder %k %v) (Seq (Tuple %k %v)) void)))
@@ -324,7 +327,7 @@
   (mapbuilder->map     (: Map.MapBuilderModule.Build    (-> (MapBuilder %k %v) (Map %k %v))))
 
   ;; --- Transients ---
-  (transientmap-empty       (: Map.TransientMapModule.Empty          (-> (TransientMap %k %v))))
+  (clr-transientmap-empty   (: Map.TransientMapModule.Empty          (-> (EqualityComparer %k) (TransientMap %k %v))))
   (map->transientmap        (: Map.TransientMapModule.FromPersistent (-> (Map %k %v) (TransientMap %k %v))))
   ;; Convert.
   (transientmap->map        (: Map.TransientMapModule.ToPersistent   (-> (TransientMap %k %v) (Map %k %v))))
@@ -348,6 +351,21 @@
 (: map-find (-> (-> %k %v bool) (Map %k %v) (Option (Tuple %k %v))))
 (defun (map-find pred m) (map-try-find pred m))
 
+;; What makes a map out of nothing asks for the key's Eq, and the map compares
+;; keys with it — the same answer `=` gives, also for two cases of a union that
+;; `=` equates. One made from a map keeps that map's.
+(: map-empty (-> (Map %k %v)) (where (Eq %k)))
+(defun (map-empty) (clr-map-empty (eq-comparer)))
+
+(: seq->map (-> (Seq (Tuple %k %v)) (Map %k %v)) (where (Eq %k)))
+(defun (seq->map xs) (clr-seq->map xs (eq-comparer)))
+
+(: mapbuilder-empty (-> (MapBuilder %k %v)) (where (Eq %k)))
+(defun (mapbuilder-empty) (clr-mapbuilder-empty (eq-comparer)))
+
+(: transientmap-empty (-> (TransientMap %k %v)) (where (Eq %k)))
+(defun (transientmap-empty) (clr-transientmap-empty (eq-comparer)))
+
 
 ;; ---------------------------------------------------------------------------
 ;; Maps, where the callback may suspend
@@ -359,7 +377,7 @@
   (#:bjo
     ;; (loop (:for (k v) m)
     ;;       (:acc acc (mapping (Tuple k (f k v)))))
-    (let ((b (mapbuilder-empty))
+    (let ((b (clr-mapbuilder-empty (clr-map-comparer m)))
           (c (map-cursor m)))
       (let go ()
         (if (map-cursor-done? c)
@@ -373,7 +391,7 @@
 (defbjouble (map-map-values f m)
   (#:sync (clr-map-map-values f m))
   (#:bjo
-    (let ((b (mapbuilder-empty))
+    (let ((b (clr-mapbuilder-empty (clr-map-comparer m)))
           (c (map-cursor m)))
       (let go ()
         (if (map-cursor-done? c)
@@ -390,7 +408,7 @@
     ;; (loop (:for (k v) m)
     ;;       (:when (keep? k v))
     ;;       (:acc new-map (mapping (Tuple k v))))
-    (let ((b (mapbuilder-empty))
+    (let ((b (clr-mapbuilder-empty (clr-map-comparer m)))
           (c (map-cursor m)))
       (let go ()
         (if (map-cursor-done? c)
@@ -504,6 +522,7 @@
 (type (: (Mapping %k %v) (Union mapping)))
 
 (impl (Collector (Mapping %k %v))
+  (where (Eq %k))
   (type %elem (Tuple %k %v))
   (type %acc (MapBuilder %k %v))
   (type %out (Map %k %v))

@@ -158,6 +158,24 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int clrsubhash<T>(T a) => a is null ? 0 : EqualityComparer<T>.Default.GetHashCode(a);
 
+    /// An `Eq` or `Ord` dictionary. Every one is also the .NET comparer it
+    /// describes; this says whether the type's own members already answer the
+    /// same, so that a collection can keep its default comparer.
+    public interface IEvidence {
+        bool AgreesWithClr { get; }
+    }
+
+    // `eq-comparer` and `ord-comparer`: what a collection compares with, given
+    // the evidence. The default comparer when it agrees, which is the common
+    // case and the fast one; the dictionary itself when it does not — two
+    // union cases `=` equates, a specialized target, a `(where ...)` of another
+    // trait.
+    public static IEqualityComparer<T> eqsubcomparer<T>(IEqualityComparer<T> evidence) =>
+        evidence is IEvidence { AgreesWithClr: true } ? EqualityComparer<T>.Default : evidence;
+
+    public static IComparer<T> ordsubcomparer<T>(IComparer<T> evidence) =>
+        evidence is IEvidence { AgreesWithClr: true } ? Comparer<T>.Default : evidence;
+
     // The field-by-field comparison, asked for by name.
     //
     // `EqualityComparer<T>.Default` reaches a type's own `Equals` — which, for

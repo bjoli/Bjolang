@@ -4941,7 +4941,8 @@ let private standInTraits = set [ "Eq"; "Ord" ]
 /// constraint on one of the type's own parameters, of a trait whose every
 /// implementation *is* such a member: `standInTraits`. A `(where (->str %a))`
 /// has nothing .NET could answer it with, so an implementation asking for one
-/// keeps C#'s synthesized members, and `=` and a `Set` can part ways on it.
+/// keeps C#'s synthesized members, and a collection of the type is handed the
+/// dictionary instead (`agreementWithClr`).
 let private materializableImpl
     (registry: TraitRegistry)
     (traitName: string)
@@ -5001,12 +5002,93 @@ let private standInClass (traitName: string) : string =
     | "Eq" ->
         let eqHash = sanitizeIdent "eq-hash"
         let comparer = "System.Collections.Generic.EqualityComparer<X>.Default"
-        $"private sealed class %s{name}<X> : Eq<X> {{ public bool eq(X a, X b) => %s{comparer}.Equals(a, b); public int %s{eqHash}(X a) => a is null ? 0 : %s{comparer}.GetHashCode(a); }}"
+        $"private sealed class %s{name}<X> : Eq<X> {{ public bool eq(X a, X b) => %s{comparer}.Equals(a, b); public int %s{eqHash}(X a) => a is null ? 0 : %s{comparer}.GetHashCode(a); bool BjolangRuntime.IEvidence.AgreesWithClr => true; }}"
     | "Ord" ->
         let compare = sanitizeIdent "compare"
         let ordinal = "string.CompareOrdinal((string?)(object?)a, (string?)(object?)b)"
-        $"private sealed class %s{name}<X> : Ord<X> {{ public int %s{compare}(X a, X b) => typeof(X) == typeof(string) ? %s{ordinal} : System.Collections.Generic.Comparer<X>.Default.Compare(a, b); }}"
+        $"private sealed class %s{name}<X> : Ord<X> {{ public int %s{compare}(X a, X b) => typeof(X) == typeof(string) ? %s{ordinal} : System.Collections.Generic.Comparer<X>.Default.Compare(a, b); bool BjolangRuntime.IEvidence.AgreesWithClr => typeof(X) != typeof(string); }}"
     | other -> failwithf $"Internal error: no stand-in dictionary for '%s{other}'"
+
+/// The .NET comparer a dictionary of `traitName` doubles as, at type argument
+/// `t`, and the members that make it one, if the trait is `std/eq`'s `Eq` or
+/// `Ord`. A collection is handed the dictionary itself where the type's own
+/// members would answer differently; see `agreementWithClr`.
+let private comparerInterface (registry: TraitRegistry) (traitName: string) (t: string) : (string * string list) option =
+    let members =
+        match Map.tryFind traitName registry.Traits with
+        | Some info -> info.Signatures |> Map.toList |> List.map fst |> Set.ofList
+        | None -> Set.empty
+
+    match traitName with
+    | "Eq" when members = set [ "="; "eq-hash" ] ->
+        let iface = $"System.Collections.Generic.IEqualityComparer<%s{t}>"
+        let eq = sanitizeIdent "="
+        let hash = sanitizeIdent "eq-hash"
+
+        Some(
+            iface,
+            [ $"bool %s{iface}.Equals(%s{t} x, %s{t} y) => %s{eq}(x, y);"
+              $"int %s{iface}.GetHashCode(%s{t} x) => %s{hash}(x);" ]
+        )
+    | "Ord" when members = set [ "compare" ] ->
+        let iface = $"System.Collections.Generic.IComparer<%s{t}>"
+        let compare = sanitizeIdent "compare"
+        Some(iface, [ $"int %s{iface}.Compare(%s{t} x, %s{t} y) => %s{compare}(x, y);" ])
+    | _ -> None
+
+/// Whether a dictionary of this implementation answers what the type's own
+/// .NET members answer, as a C# expression over the dictionaries it was built
+/// from — or `None` where it may not, and a collection has to be handed the
+/// dictionary.
+///
+/// Three kinds agree. The blanket, which *is* .NET's equality. An
+/// implementation for a builtin or .NET type, which only `std` may write and
+/// which delegates to those very members (`Naming.isStdModuleKey`). And one
+/// materialized into a type this module declares — except `Eq` on a union of
+/// more than one case, whose cases are C# records that answer false for each
+/// other before the implementation runs. A conditional one agrees only if the
+/// dictionaries it stands on do: `(List Money)`'s .NET `Equals` asks `Money`'s.
+let private agreementWithClr
+    (registry: TraitRegistry)
+    (traitName: string)
+    (targetType: HMType)
+    (dictFields: (string * HMType) list)
+    : string option =
+    let fromDicts () =
+        let parts =
+            dictFields
+            |> List.map (fun (name, t) ->
+                match t with
+                | TCon(dictTrait, _) when (comparerInterface registry dictTrait "_").IsSome ->
+                    Some $"((BjolangRuntime.IEvidence)this.%s{sanitizeIdent name}).AgreesWithClr"
+                | _ -> None)
+
+        if parts |> List.forall Option.isSome then
+            match parts |> List.choose id with
+            | [] -> Some "true"
+            | ps -> Some(String.concat " && " ps)
+        else
+            None
+
+    match targetType with
+    | TVar _ -> Some "true"
+    | TCon(key, args) when
+        not (Set.contains key Naming.builtinTypeNames)
+        && (Map.containsKey key registry.Records || Map.containsKey key registry.Unions)
+        ->
+        let crossCase =
+            traitName = "Eq"
+            && (match Map.tryFind key registry.Unions with
+                | Some(_, cases) -> cases.Length > 1
+                | None -> false)
+
+        if materializableImpl registry traitName key args.Length && not crossCase then
+            fromDicts ()
+        else
+            None
+    | TCon _
+    | TTuple _ -> fromDicts ()
+    | _ -> None
 
 /// What a materialized member calls the implementation through: the
 /// implementation's singleton, or for a conditional one the static field
@@ -5664,7 +5746,14 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         // Class-level type params: the implementor var + associated types
         let classTyParamsList = targetVar :: assocTypes
         let tyParams = classTyParamsList |> List.map typeParamName |> String.concat ", "
-        appendLine ctx $"public interface %s{sanitizeIdent name}<%s{tyParams}> {{"
+        let asComparer = comparerInterface ctx.Registry name (typeParamName targetVar)
+
+        let bases =
+            match asComparer with
+            | Some(iface, _) -> $" : %s{iface}, BjolangRuntime.IEvidence"
+            | None -> ""
+
+        appendLine ctx $"public interface %s{sanitizeIdent name}<%s{tyParams}>%s{bases} {{"
         withIndent ctx (fun ctx ->
             // The raw trait signature uses unprimed names (e.g. "col"),
             // but the TVars in the resolved HMType are primed (e.g. "'col").
@@ -5770,6 +5859,15 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 
                     appendLine ctx ");"
                 | _ -> () // Should be function
+
+            // Every dictionary is the comparer too; whether a collection may
+            // use the type's own members instead is each implementation's to say.
+            match asComparer with
+            | Some(_, members) ->
+                for m in members @ [ "bool BjolangRuntime.IEvidence.AgreesWithClr => false;" ] do
+                    indent ctx
+                    appendLine ctx m
+            | None -> ()
         )
         indent ctx
         appendLine ctx "}"
@@ -5889,6 +5987,15 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 indent ctx
                 appendLine ctx $"private %s{interfaceStr} %s{selfName} => this;"
             | InlineTrait, _ -> ()
+
+            match kind with
+            | InterfaceTrait when (comparerInterface ctx.Registry traitName "_").IsSome ->
+                match agreementWithClr ctx.Registry traitName targetType dictFields with
+                | Some agrees ->
+                    indent ctx
+                    appendLine ctx $"bool BjolangRuntime.IEvidence.AgreesWithClr => %s{agrees};"
+                | None -> ()
+            | _ -> ()
 
             let modifier =
                 match kind with

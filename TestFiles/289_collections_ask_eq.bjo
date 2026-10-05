@@ -1,0 +1,78 @@
+;; A collection compares with the key's Eq or Ord, not with what C# wrote.
+;;
+;; What makes a Map, a HashSet or an ordered collection out of nothing is handed
+;; the key's evidence, and keeps the type's own .NET members only where they
+;; give the same answer. Each case below is one where they do not: before, the
+;; first three were lookups that silently missed and the fourth threw at its
+;; second element.
+
+(import (std prelude))
+(import (std hashset))
+(import (std orderedmap))
+(import (std orderedset))
+(import (std simpletest))
+
+;; A specialized target: an unordered pair. Not compiled into `Pair`, whose
+;; C#-written `Equals` compares in order.
+(type (: (Pair %a %b) (Record (: fst %a) (: snd %b))))
+
+(impl (Eq (Pair %a %a))
+  (where (Eq %a))
+  (defun (= x y)
+    (or (and (= (.fst x) (.fst y)) (= (.snd x) (.snd y)))
+        (and (= (.fst x) (.snd y)) (= (.snd x) (.fst y)))))
+  (defun (eq-hash p) (bitwise-xor (eq-hash (.fst p)) (eq-hash (.snd p)))))
+
+;; Ordered by the first component alone. `Pair` gets no CompareTo at all.
+(impl (Ord (Pair %a %a))
+  (where (Ord %a))
+  (defun (compare x y) (compare (.fst x) (.fst y))))
+
+(: pair (-> int int (Pair int int)))
+(defun (pair a b) (Pair (fst a) (snd b)))
+
+;; Two cases `=` equates.
+(type (: Money (Union (: Cents int) (: Dollars int))))
+
+(: money->cents (-> Money int))
+(defun (money->cents m)
+  (match m ((Cents c) c) ((Dollars d) (* d 100))))
+
+(impl (Eq Money)
+  (defun (= x y) (= (money->cents x) (money->cents y)))
+  (defun (eq-hash m) (eq-hash (money->cents m))))
+
+;; A generic function that never mentions Eq: the constraint is inferred, and
+;; the caller's evidence is what reaches the set.
+(: distinct-count (-> (List %a) int))
+(defun (distinct-count xs) (hashset-length (list->hashset xs)))
+
+(defun (main)
+  (expect "a Map keyed on a specialized target"
+          (map-length (map-set (map-set (map-empty) (pair 1 2) "a") (pair 2 1) "b"))
+          1)
+  (expect-true "finds the other order"
+               (some? (map-try-ref (list->map (list (Tuple (pair 1 2) "a"))) (pair 2 1))))
+  (expect "an OrderedSet ordered by an Ord the type has no CompareTo for"
+          (orderedset-length (list->orderedset (list (pair 1 2) (pair 3 1) (pair 2 2) (pair 1 5))))
+          3)
+  (expect "an OrderedMap likewise"
+          (orderedmap-length (orderedmap-set (orderedmap-set (orderedmap-empty) (pair 1 9) "a") (pair 1 2) "b"))
+          1)
+  (expect "through a generic function" (distinct-count (list (Cents 100) (Dollars 1) (Cents 5))) 2)
+  (expect "a list of such keys"
+          (map-length (list->map (list (Tuple (list (Cents 100)) 1) (Tuple (list (Dollars 1)) 2))))
+          1)
+  (expect "a set mapped into a new element type asks that type"
+          (hashset-length (hashset-map (fun (c) (if (= c 100) (Cents c) (Dollars 1))) (list->hashset (list 100 200))))
+          1)
+  (expect "a filtered set keeps its comparer"
+          (hashset-length (hashset-add (hashset-filter (fun (m) #t) (list->hashset (list (Cents 100)))) (Dollars 1)))
+          1)
+  (expect "an emptied map keeps it"
+          (map-length (map-set (map-set (map-clear (map-set (map-empty) (Cents 1) 0)) (Cents 100) 1) (Dollars 1) 2))
+          1)
+  (expect "a collected map asks the key's Eq"
+          (map-length {mapping (Tuple m 0) (:for m (list (Cents 100) (Dollars 1)))})
+          1)
+  0)
