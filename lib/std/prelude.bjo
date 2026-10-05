@@ -805,6 +805,12 @@
 (defun (list-for-each f xs)
   (loop (:for elem xs)
         (:do (f elem))))
+
+(: nil? (-> (List %a) bool))
+(defun (nil? lst)
+  (match lst
+    (Nil #t)
+    (_ #f)))
 ;; ---------------------------------------------------------------------------
 ;; Vecs, where the callback may suspend
 ;; ---------------------------------------------------------------------------
@@ -2680,6 +2686,8 @@
 ;; `(get target step ...)`
 (def/macro (get form inject compare)
   (syntax-match form
+    ((_ target)
+     #'(deref ,target))
     ((_ target first rest ...)
      (path-reads target (Cons first rest)))
     (bad (syntax-error bad "get reads along a path and needs at least one step: (get target step ...), where a step is .field or a key."))))
@@ -2752,6 +2760,7 @@
   (match steps
     (Nil #'(Some ,acc))
     ((Cons step rest)
+     ;; cond is not available here.
      (if (path-dotted? (path-check step))
          (path-tries (path-read acc step) rest)
          (let ((probe (syntax-at #'(try-ref ,acc ,step) step)))
