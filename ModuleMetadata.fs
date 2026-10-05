@@ -86,7 +86,9 @@ open System.Text
 /// read that flag as the next binding's name.
 /// 16: `CarriedTypes`, other modules' types that what a module publishes names.
 /// A reader of 15 would read the list as the extern declarations.
-let currentVersion = 16
+/// 17: `MacroTraitMethods`, the trait methods a macro's module sees. A reader
+/// of 16 would read the list as the blocking definitions.
+let currentVersion = 17
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -210,6 +212,10 @@ type Metadata = {
     PatternMacros: MacroEntry list
     /// The `def/hash-extend`s, by bare name: `fl` for `#fl(...)`.
     HashMacros: MacroEntry list
+    /// The trait methods the module sees, its own and those it imports, when it
+    /// publishes a macro. A template's call to one dispatches on the trait where
+    /// it expands, rather than reaching whatever the caller binds by that name.
+    MacroTraitMethods: string list
     /// Exported definitions whose call parks the thread it runs on.
     ///
     /// A separate list rather than a flag on `ExportedDef` because it is about
@@ -256,6 +262,7 @@ let empty = {
     Macros = []
     PatternMacros = []
     HashMacros = []
+    MacroTraitMethods = []
     BlockingDefs = []
     DoubleDefs = []
     ConstrainedBodies = []
@@ -452,6 +459,7 @@ let serialize (m: Metadata) : string =
     putList sb putMacro m.Macros
     putList sb putMacro m.PatternMacros
     putList sb putMacro m.HashMacros
+    putList sb putStr m.MacroTraitMethods
     putList sb putStr m.BlockingDefs
     putList sb putStr m.DoubleDefs
     putList sb putConstrainedBody m.ConstrainedBodies
@@ -486,6 +494,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
     let macros = getList getMacro c
     let patternMacros = getList getMacro c
     let hashMacros = getList getMacro c
+    let macroTraitMethods = getList getStr c
     let blockingDefs = getList getStr c
     let doubleDefs = getList getStr c
     let constrainedBodies = getList getConstrainedBody c
@@ -504,6 +513,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
       Macros = macros
       PatternMacros = patternMacros
       HashMacros = hashMacros
+      MacroTraitMethods = macroTraitMethods
       BlockingDefs = blockingDefs
       DoubleDefs = doubleDefs
       ConstrainedBodies = constrainedBodies

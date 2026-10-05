@@ -1226,6 +1226,9 @@ let metadata
       Macros = macros
       PatternMacros = patternMacros
       HashMacros = hashMacros
+      MacroTraitMethods =
+        if macros.IsEmpty && patternMacros.IsEmpty && hashMacros.IsEmpty then []
+        else env.TraitMethodNames |> Set.toList
       BlockingDefs = blockingDefs
       DoubleDefs = doubleDefs
       ConstrainedBodies = constrainedBodies

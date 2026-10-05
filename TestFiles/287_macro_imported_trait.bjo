@@ -1,0 +1,15 @@
+;; A macro's template calls `show`, a method of a trait its module imports
+;; rather than declares. The call dispatches on the trait where it expands, so
+;; a parameter named `show` at the call site does not take it over.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/macro_trait_show.bjo")
+(import "inc/macro_trait_twice.bjo")
+
+(: with-a-show (-> (-> int string) string))
+(defun (with-a-show show) (show-twice 1))
+
+(defun (main)
+  (expect "the trait's show" (show-twice 2) "#2#2")
+  (expect "and not the parameter's" (with-a-show (fun (n) "PARAM")) "#1#1")
+  0)

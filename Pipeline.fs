@@ -691,6 +691,11 @@ let private installAssemblyResolver () =
 /// *this* import makes it visible as, and one the edge filtered out is not
 /// registered at all. Everything else stays the original's — the transformer to
 /// invoke, and the module its templates resolve against.
+/// What each loaded assembly's metadata says its module's macros see as trait
+/// methods. Read from the metadata alone, so it holds across compilations.
+let private macroTraitMethods =
+    System.Collections.Generic.Dictionary<System.Reflection.Assembly, Set<string>>()
+
 let private registerMacros
     (asm: System.Reflection.Assembly)
     (entries: ModuleMetadata.MacroEntry list)
@@ -720,18 +725,21 @@ let private registerMacros
                 | _ -> None)
             |> Map.ofList
 
-        // The names rule three *resolves* rather than merely strips. Read off
-        // the same declarations as `exports`, which is what limits it to the
-        // traits this module declares: every import edge in the graph points at
-        // a `.dll`, and a `.dll`'s node carries its own declarations and no
-        // dependencies, so what a macro's module imported is not reachable from
-        // here. See `Todo.org`.
+        // The names rule three *resolves* rather than merely strips: the
+        // methods of the traits this module declares, and of the ones it
+        // imports, which its metadata lists since its own dependencies are not
+        // in this graph.
         let traitMethods =
             decls
             |> List.collect (function
                 | DTrait(_, _, _, _, signatures, _, _, _) -> signatures |> List.map (fun (n, _, _) -> n)
                 | _ -> [])
             |> Set.ofList
+            |> Set.union (
+                match macroTraitMethods.TryGetValue asm with
+                | true, seen -> seen
+                | _ -> Set.empty
+            )
 
         // `transformer` is the `defun` the transformer was compiled as: the
         // macro's own name, or `#name` for a hash macro.
@@ -1564,6 +1572,9 @@ let loadModuleGraph
                     // because a program linking this assembly has to load the
                     // frameworks it uses.
                     Frameworks.noteImported meta.Frameworks
+
+                    if not meta.MacroTraitMethods.IsEmpty then
+                        macroTraitMethods[asm] <- Set.ofList meta.MacroTraitMethods
 
                     // Where a name this DLL publishes was defined, as its
                     // extern's origin says: a facade's entry names the module
