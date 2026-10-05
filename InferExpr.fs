@@ -1613,6 +1613,19 @@ and private inferClassConstruct (env: Env) (name: string) (args: Expr list) (r: 
     let alias = name.Substring(0, name.Length - 1)
     let info = env.Registry.ClrClasses[alias]
     let where = Lexer.formatPos r
+
+    // A generic class is known to .NET by its arity, `Dictionary`2`, and an
+    // import of one names it as a type only: the construction would have
+    // nowhere to take its type arguments from.
+    match DotNetInterop.tryResolveType info.ClrName with
+    | None ->
+        match [ 1..8 ] |> List.tryFind (fun n -> (DotNetInterop.tryResolveType $"%s{info.ClrName}`%d{n}").IsSome) with
+        | Some arity ->
+            failwithf
+                $"Type Error at %s{where}: '%s{alias}' is %s{info.ClrName}, a generic class taking %d{arity} type argument(s), and (%s{alias}.) cannot construct one: an imported generic class is a type only. Make one through a static generic method, imported with a signature that says its type, as (set-empty (: Set.SetModule.Empty (-> (Set %%a)))) does."
+        | None -> ()
+    | Some _ -> ()
+
     let clrType = DotNetInterop.resolveType $" at %s{where}" info.ClrName
 
     let typedArgs = args |> List.map (infer env)

@@ -753,6 +753,20 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
         (defunArgs |> List.choose (function MandatoryArg(_, a) -> Some a | _ -> None))
         mandatoryTypes
 
+    // The flat type lays keywords out in the defun's order and the signature's
+    // in its own, so two orders would pair them by position and report a
+    // mismatch between two different keywords. The defun's order is the one
+    // that means something — a default sees the keywords before it — so the
+    // signature has to follow it.
+    let defunKeywords = keywordArgDefs |> List.map fst
+    let signatureKeywords = keywordFTypes |> List.map fst
+
+    if sigOpt.IsSome && defunKeywords <> signatureKeywords && Set.ofList defunKeywords = Set.ofList signatureKeywords then
+        let shown names = names |> List.map (fun n -> "#:" + n) |> String.concat " "
+
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: '%s{name}' takes its keywords in the order %s{shown defunKeywords} and its signature lists them as %s{shown signatureKeywords}. Write them in the same order in both; a default may use the keywords before it, so the defun's order is the one to keep."
+
     // Resolve keyword arg types from signature and type-check defaults
     let keywordTypes =
         keywordArgDefs |> List.map (fun (kwName, _defaultExpr) ->

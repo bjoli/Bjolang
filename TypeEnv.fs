@@ -404,6 +404,25 @@ let rec checkPattern
           Node = TPWildcard },
         Map.empty
     | PIdent(name, r) ->
+        // A bare name that does not begin with a capital is a binder, so a
+        // lowercase case of the scrutinee's own union, written bare, would bind
+        // and match everything. Written as a list it is the constructor.
+        match prune env.Registry expectedType with
+        | TCon(unionName, _) ->
+            let keyed = originalName env.Registry name
+
+            match Map.tryFind unionName env.Registry.Unions with
+            | Some(_, cases) when cases |> List.exists (fun (c, payload, _) -> payload.IsEmpty && (c = keyed || c = name)) ->
+                let shown =
+                    match Naming.typeKeyParts unionName with
+                    | Some(_, bare) -> bare
+                    | None -> unionName
+
+                failwithf
+                    $"Pattern Error at %s{Lexer.formatPos r}: %s{name} is a case of %s{shown}, but a bare name that does not begin with a capital is a variable in a pattern, and would match every value. Write (%s{name}) to match the case."
+            | _ -> ()
+        | _ -> ()
+
         { Type = expectedType
           Range = r
           Node = TPIdent name },

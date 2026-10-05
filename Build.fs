@@ -541,11 +541,19 @@ let compile (options: Options) (inputFilePath: string) : int =
             // `(-> (Vec string) int)` was a type nothing read. Anything driving
             // a Bjolang program — a shell, a test runner, `bjo` — asks this way
             // and no other.
+            //
+            // A `main` that answered 0 defers to `Environment.ExitCode`, which
+            // .NET ignores once `Main` returns an int: it is how code that is
+            // not `main` — a failed `expect` in `(std simpletest)` — says the
+            // program failed.
             let callMain (argExpr: string) =
-                if mainIsBjoroutine then
-                    $"        return Bjoml.Bjo.RunToCompletion(() => BjolangRuntime.RunMainFiber(() => %s{mainModuleClass}.main(%s{argExpr})));\n"
-                else
-                    $"        return BjolangRuntime.RunMainSync(() => %s{mainModuleClass}.main(%s{argExpr}));\n"
+                let call =
+                    if mainIsBjoroutine then
+                        $"Bjoml.Bjo.RunToCompletion(() => BjolangRuntime.RunMainFiber(() => %s{mainModuleClass}.main(%s{argExpr})))"
+                    else
+                        $"BjolangRuntime.RunMainSync(() => %s{mainModuleClass}.main(%s{argExpr}))"
+
+                $"        var exitCode = %s{call};\n        return exitCode == 0 ? System.Environment.ExitCode : exitCode;\n"
 
             // One call, always. `main` takes the arguments as a `(Vec string)`
             // whether or not it was written with a parameter, so there is no

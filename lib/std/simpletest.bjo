@@ -25,24 +25,34 @@
 (import (std effect))
 (import (std syntax-match))
 
+;; A failure makes the program exit 1 even when `main` answers 0, so that a
+;; test run is a command a shell or CI can check.
+(import/extern
+  (set-exit-code! (: System.Environment.ExitCode (-> int void) #:set)))
+
+(: failed! (-> string void))
+(defun (failed! message)
+  (println message)
+  (set-exit-code! 1))
+
 ;; Asserts equality and prints result.
 (: expect (-> string %a %a void) (where (Eq %a) (->str %a)))
 (defun (expect label actual wanted)
   (if (= actual wanted)
       (println #"ok: ${label}")
-      (println #"FAILURE: ${label} gave ${actual} but wanted ${wanted}")))
+      (failed! #"FAILURE: ${label} gave ${actual} but wanted ${wanted}")))
 
 ;; Asserts boolean and prints result.
 (: expect-true (-> string bool void))
 (defun (expect-true label ok)
   (if ok
       (println #"ok: ${label}")
-      (println #"FAILURE: ${label}")))
+      (failed! #"FAILURE: ${label}")))
 
 ;; Marks a failing branch.
 (: fail (-> string void))
 (defun (fail label)
-  (println #"FAILURE: ${label}"))
+  (failed! #"FAILURE: ${label}"))
 
 ;; ---------------------------------------------------------------------------
 ;; A test body, under a scope

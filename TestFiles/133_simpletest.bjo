@@ -11,12 +11,18 @@
 ;;     for exactly that word and would fail a green run;
 ;;   * a failing one always does, and says what it got and what it wanted;
 ;;   * one `expect` serves every type, which is the whole point of routing the
-;;     comparison through `Eq` and the report through `->str`.
+;;     comparison through `Eq` and the report through `->str`;
+;;   * a failure makes the program exit 1, so a test run is a command a shell
+;;     can check, and a pass does not.
 (import (std prelude))
 (import (std simpletest))
 
 (import/class
   (StringWriter (: System.IO.StringWriter (-> StringWriter))))
+
+(import/extern
+  (exit-code (: System.Environment.ExitCode (-> int) #:get))
+  (set-exit-code! (: System.Environment.ExitCode (-> int void) #:set)))
 
 ;; What `body` printed, so an assertion's *output* can be examined rather than
 ;; its effect on the console.
@@ -63,6 +69,8 @@
         (printed (fun () (expect "the label" "a" "a")))
         "ok: the label\n")
 
+  (same "a pass leaves the exit code alone" (int->string exit-code) "0")
+
   ;; --- A failing assertion -------------------------------------------------
   (same "a failure names both values"
         (printed (fun () (expect "two and two" 4 5)))
@@ -102,5 +110,12 @@
   (same "fail always fails"
         (printed (fun () (fail "unreachable arm")))
         "FAILURE: unreachable arm\n")
+
+  ;; --- the exit code -------------------------------------------------------
+  ;;
+  ;; Every failure above was one on purpose. Each set the exit code, and this
+  ;; test's own run is green only if it is put back.
+  (same "a failure makes the program exit 1" (int->string exit-code) "1")
+  (set-exit-code! 0)
 
   0)
