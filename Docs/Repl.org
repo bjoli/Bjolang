@@ -10,7 +10,8 @@ where there is one, which is what supplies the first three.
 
 An entry is either a group of declarations or a single expression. An
 expression's value is printed; a group of declarations prints the names it
-bound. End of input, ~:quit~ or Ctrl-D leaves; ~:help~ prints a summary.
+bound. End of input, ~:quit~ or Ctrl-D leaves; ~:help~ prints a summary;
+~:show name~ prints a visible name's doc (see "~:show~" below).
 
 #+begin_src scheme
 bjo> (+ 1 2)
@@ -152,6 +153,26 @@ noise.
 
 A definition entry is still loaded and its class constructor run, because a
 ~def~'s initializer is its effect.
+
+* ~:show~
+
+~:show random-int~ prints the doc of the visible name ~random-int~, then a line
+for each other visible name containing the text, in any case, with its module
+and its summary. When no visible name contains it, nothing is printed.
+
+A name is visible when an entry typed now could write it: a builtin, a name an
+import brings in, or one an earlier entry defined. ~random-int~ is not visible
+until ~(std random)~ is imported, and after ~(import (prefix (std random)
+"r/"))~ it is ~r/random-int~.
+
+The REPL does not work out the scope itself. It compiles an entry holding only
+the session's imports and reads what the compiler built, so ~only~, ~except~,
+~rename~, ~prefix~ and re-exports mean what they mean in an entry. Each name is
+looked up under its original name in the module that defines it, which is
+where its doc is published (see ~Documentation.org~, "Where the documentation
+goes"). A re-exported name's doc is the defining module's. A doc written at
+the prompt, beside its definition, is found in that entry. Builtins have no
+docs.
 
 * Semantics
 

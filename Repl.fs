@@ -296,11 +296,14 @@ let private showName = "__bjo_show"
 ///
 /// Only string paths. `(import (std prelude))` is a module path, anchored to
 /// the installation, and is already independent of anyone's working directory.
+///
+/// A modifier's path is its first argument. Its other strings are not paths:
+/// in `(prefix (std random) "r/")` the prefix stays as written.
 let private absolutizeImports (text: string) (forms: SExpr list) : string =
     let rec paths (s: SExpr) =
         match s with
         | SAtom { Token = StringLit p } -> [ p ]
-        | SList(items, _) -> items |> List.collect paths
+        | SList(_ :: imported :: _, _) -> paths imported
         | _ -> []
 
     let imported =
@@ -677,12 +680,301 @@ let private evaluate (state: State) (text: string) : State =
                     :: state.Entries }
 
 // ---------------------------------------------------------------------------
+// :show
+// ---------------------------------------------------------------------------
+
+/// A name visible at the prompt, and where its documentation would be.
+type private Visible =
+    { Name: string
+      /// The name in the module that defines it. A rename or a prefix on the
+      /// import makes it differ from `Name`, and a doc is published under this.
+      Original: string
+      /// `(std random)`, `entry 3`, or `builtin`.
+      Module: string
+      /// The assembly whose published docs answer for the name. Builtins are
+      /// compiled into the runtime and have none.
+      Dll: string option }
+
+/// Every name the next entry could write, and where each is defined.
+///
+/// The REPL does not work out the scope itself. It compiles an entry holding
+/// nothing but the session's imports, and reads the scope off what the
+/// compiler built, so `only`, `except`, renames, prefixes and re-exports mean
+/// here exactly what they mean in an entry. A re-exported name is found in the
+/// module that defines it, which is where its doc is published.
+///
+/// Earlier entries come first and builtins last, so a name defined at the
+/// prompt shadows an import of the same name, and an import shadows a builtin.
+let private visibleNames (state: State) : Visible list =
+    Diagnostics.reset ()
+
+    // The next entry is read against the macro table as the last entry left
+    // it. The probe links no entries, so it would leave out a macro one of
+    // them defined.
+    let macros = Macro.snapshot ()
+    let sourcePath = Path.Combine(state.Directory, "Bjo_Repl_show.bjo")
+    File.WriteAllText(sourcePath, String.concat "\n" (state.Imports @ [ $"(def %s{valueName} 0)" ]) + "\n")
+
+    let compiled =
+        try
+            Session.replEntry (fun () ->
+                Pipeline.runFullFrontendPipeline sourcePath
+                |> Option.map (fun (env, _, dllDeps, _, _, _) -> env, dllDeps, Macro.snapshot ()))
+        finally
+            Macro.restore macros
+
+    match compiled with
+    | None -> []
+    | Some(env, dllDeps, probeMacros) ->
+        let dllOf =
+            dllDeps |> List.map (fun dll -> Naming.moduleKeyOfPath dll, dll) |> Map.ofList
+
+        let imported (origin: string) (original: string) (name: string) =
+            Map.tryFind origin dllOf
+            |> Option.map (fun dll ->
+                { Name = name
+                  Original = original
+                  Module = Pipeline.dependencyEntry dll
+                  Dll = Some dll })
+
+        // A union's cases are documented in the union's doc, not under their
+        // own names.
+        let bindings =
+            env.Registry.ImportAliases
+            |> Map.toList
+            |> List.choose (fun (name, alias) ->
+                match alias.Kind with
+                | AliasConstructor -> None
+                | _ -> imported alias.OriginModule alias.OriginalName name)
+
+        let macros =
+            (probeMacros.Bindings |> List.choose (fun (name, b) -> imported b.ModuleName b.Name name))
+            @ (probeMacros.HashBindings
+               |> List.choose (fun (name, b) -> imported b.ModuleName ("#" + b.Name) ("#" + name)))
+
+        let entries =
+            state.Entries
+            |> List.collect (fun e ->
+                e.Provides
+                |> Set.toList
+                |> List.map (fun name ->
+                    { Name = name
+                      Original = name
+                      Module = $"entry %d{e.Index}"
+                      Dll = Some e.DllPath }))
+
+        let builtins =
+            Prelude.builtinNames
+            |> Set.toList
+            |> List.map (fun name ->
+                { Name = name
+                  Original = name
+                  Module = "builtin"
+                  Dll = None })
+
+        entries @ bindings @ macros @ builtins
+        |> List.filter (fun v -> not (v.Name.StartsWith "__") && not (v.Name.Contains "::"))
+        |> List.distinctBy (fun v -> v.Name)
+
+/// Published docs by assembly path. A library does not change under a running
+/// session, and an entry's assembly is written once.
+let private docCache = Collections.Generic.Dictionary<string, Map<string, SExpr>>()
+
+/// A module's published docs, by the name each documents: `#name` for a
+/// reader extension. The module's own doc is left out, since no name leads to
+/// it. An assembly that cannot be read has none.
+let private docsOf (dll: string) : Map<string, SExpr> =
+    match docCache.TryGetValue dll with
+    | true, docs -> docs
+    | _ ->
+        let rec docForms (s: SExpr) =
+            if Docs.isDocForm s then
+                [ s ]
+            else
+                match s with
+                | SList(items, _) -> List.collect docForms items
+                | SAtom _ -> []
+
+        let docs =
+            try
+                match Bjolang.Runtime.BjoAssemblyMetadata.Read(dll, "BjolangDocs") with
+                | text when String.IsNullOrWhiteSpace text -> Map.empty
+                | text ->
+                    Lexer.tokenize dll text
+                    |> Pipeline.read
+                    |> fst
+                    |> List.collect docForms
+                    |> List.choose (fun form ->
+                        match form with
+                        | SList(_ :: SAtom { Token = Symbol n } :: SAtom { Token = Keyword "reader" } :: _, _) ->
+                            Some("#" + n, form)
+                        | SList(_ :: SAtom { Token = Symbol n } :: _, _) -> Some(n, form)
+                        | _ -> None)
+                    |> Map.ofList
+            with _ ->
+                Map.empty
+
+        docCache[dll] <- docs
+        docs
+
+/// A form as source writes it, for a doc's `form`, `see` and `literal`
+/// clauses and for anything else that is not a string.
+let rec private sourceText (s: SExpr) : string =
+    match s with
+    | SList(items, _) -> "(" + String.concat " " (List.map sourceText items) + ")"
+    | SAtom t ->
+        match t.Token with
+        | Symbol n
+        | ResolvedSymbol n
+        | NumberLit n
+        | TypeVar n -> n
+        | Keyword k -> "#:" + k
+        | QuotedSymbol a -> "%" + a
+        | StringLit text -> "\"" + text + "\""
+        | BoolLit b -> if b then "#t" else "#f"
+        | Spread -> "..."
+        | Colon -> ":"
+        | Dot -> "."
+        | _ -> "?"
+
+/// The clauses of a published doc, by head, in the order written.
+let private clausesOf (form: SExpr) : (string * SExpr list) list =
+    match form with
+    | SList(_ :: rest, _) ->
+        rest
+        |> List.choose (function
+            | SList(SAtom { Token = Symbol head } :: parts, _) -> Some(head, parts)
+            | _ -> None)
+    | _ -> []
+
+/// Samizdat markup with plain text inside, `@code{hi}`, as the plain text. A
+/// terminal has nothing to render it with, and the braces are noise.
+let private plainMarkup =
+    Text.RegularExpressions.Regex(@"@[A-Za-z][A-Za-z0-9-]*\{([^{}]*)\}", Text.RegularExpressions.RegexOptions.Compiled)
+
+let private clauseString (s: SExpr) =
+    match s with
+    | SAtom { Token = StringLit text } -> plainMarkup.Replace(text, "$1")
+    | other -> sourceText other
+
+let private summaryOf (form: SExpr) : string =
+    clausesOf form
+    |> List.tryPick (function
+        | "summary", [ text ] -> Some(clauseString text)
+        | _ -> None)
+    |> Option.defaultValue ""
+
+/// Indents every line of `text` but the first by `width` spaces.
+let private hanging (width: int) (text: string) =
+    text.Replace("\n", "\n" + String(' ', width))
+
+/// Prints one doc: what the name is and where it is from, how it is called,
+/// then its clauses in the order the author wrote them.
+let private showDoc (v: Visible) (form: SExpr) =
+    let clauses = clausesOf form
+
+    let single head =
+        clauses
+        |> List.tryPick (fun (h, parts) ->
+            match parts with
+            | [ p ] when h = head -> Some(clauseString p)
+            | _ -> None)
+
+    // `r/random-bool: function random-bool from (std random)` for a name an
+    // import renamed.
+    let what =
+        [ yield! Option.toList (single "kind")
+          if v.Original <> v.Name then yield v.Original
+          yield $"from %s{v.Module}" ]
+
+    printfn $"""%s{v.Name}: %s{String.concat " " what}"""
+
+    // How it is called: a defun's head as written, else a macro's forms.
+    match single "definition" with
+    | Some head -> printfn $"  %s{head}"
+    | None ->
+        for (h, parts) in clauses do
+            if h = "form" then
+                for p in parts do printfn $"  %s{sourceText p}"
+
+    single "signature" |> Option.iter (fun t -> printfn $"  : %s{t}")
+
+    single "summary" |> Option.iter (fun s -> printfn $"\n  %s{s}")
+
+    // The parameters, fields, cases, result and exceptions, as rows under
+    // one column.
+    let rows =
+        clauses
+        |> List.choose (fun (h, parts) ->
+            match h, parts with
+            | ("arg" | "field" | "case"), [ n; text ] -> Some(sourceText n, clauseString text)
+            | "rest", [ n; text ] -> Some("#:rest " + sourceText n, clauseString text)
+            | "key", [ n; text ] -> Some("#:" + (sourceText n).TrimStart('#', ':'), clauseString text)
+            | "tparam", [ n; text ] -> Some(sourceText n, clauseString text)
+            | "returns", [ text ] -> Some("returns", clauseString text)
+            | "raises", [ n; text ] -> Some("raises", sourceText n + ": " + clauseString text)
+            | _ -> None)
+
+    if not rows.IsEmpty then
+        printfn ""
+        let width = rows |> List.map (fst >> String.length) |> List.max |> min 24
+
+        for (label, text) in rows do
+            printfn $"  %s{label.PadRight width}  %s{hanging (width + 4) text}"
+
+    for (h, parts) in clauses do
+        match h, parts with
+        | "example", [ text ] -> printfn $"\n  Example:\n    %s{hanging 4 (clauseString text)}"
+        | "reference", [ text ] -> printfn $"\n  %s{hanging 2 (clauseString text)}"
+        | "literal", names -> printfn $"""%s{"\n"}  Literals: %s{names |> List.map sourceText |> String.concat " "}"""
+        | _ -> ()
+
+    match clauses |> List.collect (fun (h, parts) -> if h = "see" then parts else []) with
+    | [] -> ()
+    | names -> printfn $"""%s{"\n"}  See also: %s{names |> List.map sourceText |> String.concat ", "}"""
+
+/// `:show text`: the doc of the visible name `text`, and a line for each other
+/// visible name containing it, in any case. Prints nothing when no visible
+/// name does: a name from a module the session has not imported is not one the
+/// next entry could write.
+let private show (state: State) (query: string) =
+    let needle = query.ToLowerInvariant()
+
+    let matches =
+        visibleNames state
+        |> List.filter (fun v -> v.Name.ToLowerInvariant().Contains needle)
+        |> List.sortBy (fun v -> v.Name)
+
+    let docOf (v: Visible) =
+        v.Dll |> Option.bind (fun dll -> Map.tryFind v.Original (docsOf dll))
+
+    let exact, others = matches |> List.partition (fun v -> v.Name = query)
+
+    for v in exact do
+        match docOf v with
+        | Some form -> showDoc v form
+        | None -> printfn $"%s{v.Name}: from %s{v.Module}, with no doc"
+
+    if not others.IsEmpty then
+        if not exact.IsEmpty then printfn ""
+        let width = others |> List.map (fun v -> v.Name.Length) |> List.max |> min 32
+        let moduleWidth = others |> List.map (fun v -> v.Module.Length) |> List.max
+
+        for v in others do
+            let summary = docOf v |> Option.map summaryOf |> Option.defaultValue ""
+            printfn "%s" ($"  %s{v.Name.PadRight width}  %s{v.Module.PadRight moduleWidth}  %s{summary}".TrimEnd())
+
+// ---------------------------------------------------------------------------
 // The loop
 // ---------------------------------------------------------------------------
 
 let private help () =
-    printfn "  :help    this"
-    printfn "  :quit    leave (so does Ctrl-D)"
+    printfn "  :help       this"
+    printfn "  :quit       leave (so does Ctrl-D)"
+    printfn "  :show name  the doc of the visible name, and the other visible"
+    printfn "              names containing it. A name is visible when an entry"
+    printfn "              typed now could use it: a builtin, one an import"
+    printfn "              brings in, or one an earlier entry defined."
     printfn ""
     printfn "  Anything else is a Bjolang entry: a group of definitions, or one"
     printfn "  expression, whose value is printed with ->str."
@@ -765,6 +1057,12 @@ let run () : int =
             | ":quit" | ":q" -> state
             | ":help" | ":h" ->
                 help ()
+                loop state
+            | ":show" ->
+                printfn "  :show name  the doc of a visible name"
+                loop state
+            | entry when entry.StartsWith ":show " ->
+                show state (entry.Substring(":show ".Length).Trim())
                 loop state
             | entry ->
                 let next = Timing.phase "repl entry" (fun () -> evaluate state entry)
