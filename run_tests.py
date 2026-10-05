@@ -1218,6 +1218,20 @@ def run_graph_tests():
     check_that("an edit rebuilds the module and what imports it, and nothing else",
                edited.returncode == 0 and sorted(built(edited)) == ["a", "b", "c"], say(edited))
 
+    quiet = graph("--quiet")
+    check_that("a quiet graph with nothing to do says nothing",
+               quiet.returncode == 0 and quiet.stdout.strip() == "" and "Graph:" not in quiet.stderr, say(quiet))
+
+    # `--deps-only` bygger det en fil importerar och inte filen: det `bjo`
+    # gör före ett programs ingång, som sedan kompileras som program.
+    time.sleep(0.01)
+    (GRAPH_DIR / "a.bjo").write_text(sources["a"].replace("(defun (one) 1)", "(defun (one) 10)"))
+    below = subprocess.run(["dotnet", str(COMPILER_DLL), "--build-graph", "--deps-only", str(GRAPH_DIR / "c.bjo")],
+                           capture_output=True, text=True)
+    check_that("--deps-only builds what a file imports, and not the file",
+               below.returncode == 0 and sorted(built(below)) == ["a", "b"], say(below))
+    graph()
+
     # Det som byggdes länkar, och med det nya värdet.
     app = GRAPH_DIR / "app.bjo"
     app.write_text('(import "c.bjo")\n(defun (main args) (println (int->string (three))) 0)\n')

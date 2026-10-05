@@ -73,6 +73,10 @@ type CompilerOptions =
 
       /// `--dry-run`: plan a graph build and say what it would do.
       DryRun: bool
+      /// `--deps-only`: a graph build leaves out the inputs themselves.
+      DepsOnly: bool
+      /// `--quiet`: a graph build says nothing about what was current.
+      Quiet: bool
 
       /// `--worker`: build libraries named on stdin for a graph build. A graph
       /// build starts these processes itself; they are not meant to be run by
@@ -97,6 +101,8 @@ let defaultOptions =
       BuildGraph = false
       Jobs = System.Environment.ProcessorCount
       DryRun = false
+      DepsOnly = false
+      Quiet = false
       Worker = false }
 
 let printUsage () =
@@ -168,6 +174,10 @@ let printUsage () =
     printfn "              At most n compilers at once. Defaults to the number of cores."
     printfn "  --dry-run   Say what a graph build would build, and what each module"
     printfn "              imports, and build nothing."
+    printfn "  --deps-only Build what the given files import, and not the files: what a"
+    printfn "              program's entry needs before it is compiled as a program."
+    printfn "  --quiet     Say nothing about modules that were current, and give the"
+    printfn "              summary only when something failed."
     printfn ""
     printfn "Without -d the output is optimized; a debug build runs several times slower."
 
@@ -325,6 +335,8 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
     | "--debug" :: rest -> parseArgs rest { opts with Debug = true }
     | "--build-graph" :: rest -> parseArgs rest { opts with BuildGraph = true }
     | "--dry-run" :: rest -> parseArgs rest { opts with DryRun = true }
+    | "--deps-only" :: rest -> parseArgs rest { opts with DepsOnly = true }
+    | "--quiet" :: rest -> parseArgs rest { opts with Quiet = true }
     | "--worker" :: rest -> parseArgs rest { opts with Worker = true }
     | ("-j" | "--jobs") :: n :: rest ->
         match System.Int32.TryParse n with
@@ -413,7 +425,7 @@ let private run (argv: string array) =
             printfn "Error: --build-graph needs at least one file or directory."
             exit 1
 
-        BuildGraph.run inputFiles options.Jobs options.DryRun
+        BuildGraph.run inputFiles options.Jobs options.DryRun options.DepsOnly options.Quiet
     else
 
     if inputFiles.IsEmpty then

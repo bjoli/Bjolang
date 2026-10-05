@@ -425,11 +425,21 @@
                                        (against-flags roots))))
   (exec "dotnet" (list->vec (Cons compiler-dll (list-append flags (Cons file Nil))))))
 
-;; Every module of a library, in one compiler process.
+;; Modules and everything they import, built in parallel, each as soon as what
+;; it imports is built: the compiler's `--build-graph`. With `deps-only?` the
+;; files themselves are left out, which is what a program's entry needs before
+;; it is compiled as a program.
+(: compile-graph #:sync (-> (List string) bool Against int))
+(defun (compile-graph files deps-only? roots)
+  (def flags (list-append (Cons "--build-graph" (Cons "--quiet" (if deps-only? (Cons "--deps-only" Nil) Nil)))
+                          (against-flags roots)))
+  (exec "dotnet" (list->vec (Cons compiler-dll (list-append flags files)))))
+
+;; Every module of a library, in one compiler process, one after another.
 ;;
 ;; `--if-stale` leaves out what is current, and `--batch` pays the compiler's
-;; half-second start once rather than once per module. A library has no entry
-;; to compile *from*, so this is the only way its modules get built at all.
+;; half-second start once rather than once per module. What a debug build of a
+;; library goes through: a graph build's workers build without `-d`.
 (: compile-batch #:sync (-> (List string) bool Against int))
 (defun (compile-batch files debug? roots)
   (def flags (list-append (Cons "--batch" (Cons "--if-stale" Nil))
@@ -450,6 +460,19 @@
     ;; saying anything at all.
     (None (Err (fail #"bjo: the build record for ${file} went away while it was being read.")))))
 
+;; Whether what `file` imports should be built before it, by a graph build: when
+;; nothing says what it was built from, or something other than the file itself
+;; changed. An edit to the entry alone is the common case, and it compiles
+;; straight away; the entry's own compile would build a stale import too, one
+;; after another, which is what the graph saves.
+(: imports-first? (-> string bool))
+(defun (imports-first? file)
+  (def* ((Some rec) (read-record file) :leave-with #t)
+        (artefact (record-ref rec output))
+        (self (path-absolute file)))
+  (or (not (file-exists? artefact))
+      (any? #(and (not (= (path-absolute &) self)) (newer? & artefact)) (record-ref rec inputs))))
+
 ;; Compiles `file` if it needs it, and answers the record the build left — which
 ;; is where the artefact's name comes from. A file with no `main` is a library
 ;; whether or not `--lib` was passed, so the compiler is the only one that knows
@@ -468,6 +491,10 @@
     (def wanted (if debug? "debug" "release"))
     (unless (or force? debug? (stale? file wanted roots))
       (ret (record-as-built file)))
+
+    (when (imports-first? file)
+      (let ((imports (compile-graph (Cons file Nil) #t roots)))
+        (unless (= imports 0) (ret (Err imports)))))
 
     (def status (compile file debug? lib? roots))
     (unless (= status 0) (ret (Err status)))
@@ -646,7 +673,9 @@
     (when (empty? sources)
       (ret (Err (fail #"bjo build: there are no modules under ${(project-src project)}."))))
 
-    (def status (compile-batch sources (record-ref line debug) roots))
+    (def status (if (record-ref line debug)
+                    (compile-batch sources #t roots)
+                    (compile-graph sources #f roots)))
     (unless (= status 0) (ret (Err status)))
 
     (when say?

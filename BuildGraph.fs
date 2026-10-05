@@ -324,14 +324,37 @@ type private Worker(forwarded: string list) =
 ///
 /// With `dryRun`, it prints what would be built and what each module imports,
 /// and builds nothing.
-let run (paths: string list) (jobs: int) (dryRun: bool) : int =
+///
+/// With `depsOnly`, the given sources themselves are left out: what they import
+/// is built, so that a program's entry can then be compiled as a program, by a
+/// compile that finds everything below it current. With `quiet`, nothing is said
+/// about modules that need nothing, and the summary only when something failed.
+let run (paths: string list) (jobs: int) (dryRun: bool) (depsOnly: bool) (quiet: bool) : int =
     let sources =
         try
             paths |> List.collect sourcesUnder |> List.distinct |> Ok
         with ex ->
             Error ex.Message
 
-    match sources |> Result.bind readGraph with
+    let leaveOut (given: string list) (graph: Graph) =
+        if not depsOnly then
+            graph
+        else
+            let dropped = Set.ofList given
+            let keep (ms: string list) = ms |> List.filter (fun m -> not (dropped.Contains m))
+            let imports = Dictionary<string, string list>()
+            let importedBy = Dictionary<string, string list>()
+
+            for m in keep graph.Order do
+                imports[m] <- keep graph.Imports[m]
+                importedBy[m] <- keep graph.ImportedBy[m]
+
+            { graph with
+                Order = keep graph.Order
+                Imports = imports
+                ImportedBy = importedBy }
+
+    match sources |> Result.bind (fun given -> readGraph given |> Result.map (leaveOut given)) with
     | Error message ->
         printfn $"%s{message}"
         1
@@ -353,9 +376,10 @@ let run (paths: string list) (jobs: int) (dryRun: bool) : int =
         0
     else
 
-    for m in graph.Order do
-        if not (stale.Contains m) then
-            printfn $"Up to date: %s{dllOf m}"
+    if not quiet then
+        for m in graph.Order do
+            if not (stale.Contains m) then
+                printfn $"Up to date: %s{dllOf m}"
 
     let outcomes = Dictionary<string, Outcome>()
 
@@ -451,8 +475,9 @@ let run (paths: string list) (jobs: int) (dryRun: bool) : int =
     let skipped = count (function Skipped _ -> true | _ -> false)
     let current = count (function UpToDate -> true | _ -> false)
 
-    eprintfn
-        "Graph: %d modules, %d built, %d up to date, %d failed, %d skipped."
-        graph.Order.Length built current failed skipped
+    if not quiet || failed > 0 || skipped > 0 then
+        eprintfn
+            "Graph: %d modules, %d built, %d up to date, %d failed, %d skipped."
+            graph.Order.Length built current failed skipped
 
     if failed = 0 && skipped = 0 then 0 else 1

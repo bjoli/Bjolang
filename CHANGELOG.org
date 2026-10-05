@@ -3,6 +3,22 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~bjo build~ builds what a program imports in parallel
+
+- *A library's modules, and what a program's entry imports, are built by the
+  compiler's ~--build-graph~*: each module as soon as everything it imports is
+  built, in parallel worker processes. Before, one compiler built them one
+  after another. glasnost, after a change in bjorsec that reaches eleven
+  modules: 11.7 s to 7.6 s. A build is no faster than its longest chain of
+  imports, which is most of that 7.6 s; a graph that is wider than it is deep
+  gains more.
+- An edit to a program's entry alone compiles only the entry, as before, and a
+  build with nothing to do costs what it did. ~bjo build -d~ builds a library's
+  modules in one process, as before, since the workers build without ~-d~.
+- ~--build-graph~ takes ~--deps-only~, which leaves the given files out and
+  builds what they import, and ~--quiet~, which says nothing about what was
+  current.
+
 * Four errors that say what is wrong, and a test run that fails
 
 - *A failed ~expect~ makes the program exit 1*, even when ~main~ answers 0,
