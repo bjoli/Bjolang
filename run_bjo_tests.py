@@ -386,6 +386,31 @@ def test_path_dependency(work, c):
     edited = run_bjo(app, "run")
     c.says("editing the dependency rebuilds what links it", edited, "edited")
 
+    # Early cutoff: a body edit leaves the dependency's interface as it was, so
+    # the program is not compiled again, and runs the new body.
+    write(lib / "src" / "core.bjo",
+          '(import (std prelude))\n(export hello)\n'
+          '(: hello (-> (#:n int) string))\n(defun (hello #:n 1) (->str n))\n')
+    run_bjo(app, "run")
+    entry = app / "src" / "main.exe"
+    entry_at = entry.stat().st_mtime_ns
+    write(lib / "src" / "core.bjo",
+          '(import (std prelude))\n(export hello)\n'
+          '(: hello (-> (#:n int) string))\n(defun (hello #:n 1) (string-append (->str n) "!"))\n')
+    body = run_bjo(app, "run")
+    c.says("a body edit in a dependency runs", body, "1!")
+    c.that("without compiling the program again",
+           "Compiling" not in said(body) and entry.stat().st_mtime_ns == entry_at, said(body))
+
+    # A numeric keyword default is a C# constant, which the C# compiler copies
+    # into the caller, so changing one does compile the program again.
+    write(lib / "src" / "core.bjo",
+          '(import (std prelude))\n(export hello)\n'
+          '(: hello (-> (#:n int) string))\n(defun (hello #:n 2) (string-append (->str n) "!"))\n')
+    default = run_bjo(app, "run")
+    c.says("a changed keyword default reaches the program", default, "2!")
+    c.that("because the program was compiled again", entry.stat().st_mtime_ns != entry_at, said(default))
+
 
 @test("dependencies refused")
 def test_dependencies_refused(work, c):

@@ -82,6 +82,7 @@
   (error-message (: System.Exception.Message (-> Exception string) #:get))
   (clr-mtime     (: System.IO.File.GetLastWriteTimeUtc (-> string DateTime)))
   (clr-ticks     (: System.DateTime.Ticks (-> DateTime long) #:get))
+  (string->long  (: System.Int64.TryParse (-> string (out long) (Option long))))
   (clr-change-extension (: System.IO.Path.ChangeExtension (-> string string string)))
   ;; Where this executable sits, for an installation that was not told where it
   ;; is. See `root`.
@@ -208,7 +209,19 @@
                          ;; `link` and `native` lines name them. What
                          ;; `bjo publish` copies.
                          (: links (List (Tuple string string)))
-                         (: natives (List (Tuple string string))))))
+                         (: natives (List (Tuple string string)))
+                         ;; The artefact's last write when the record was
+                         ;; written, 0 where it does not say. A record whose
+                         ;; artefact was written since is another build's.
+                         (: written long)
+                         ;; For a library, the digest of what an importer is
+                         ;; compiled against, or "".
+                         (: interface string)
+                         ;; Each linked module's digest as this build saw it, as
+                         ;; `(digest . path)`.
+                         (: interface-of (List (Tuple string string)))
+                         ;; The `source` lines alone.
+                         (: sources (List string)))))
 
 (: record-file (-> string string))
 (defun (record-file file) (clr-change-extension file ".bjobuild"))
@@ -272,6 +285,12 @@
           ;; at its first space the way a line does, and a path may hold more.
           (:acc links (listing (pair-of value)) #:when (= key "link"))
           (:acc natives (listing (pair-of value)) #:when (= key "native"))
+          (:acc written (folding 0L (if (= key "written")
+                                        (match (string->long value) ((Some n) n) (None 0L))
+                                        written)))
+          (:acc interface (folding "" (if (= key "interface") value interface)))
+          (:acc interface-of (listing (pair-of value)) #:when (= key "interface-of"))
+          (:acc sources (listing value) #:when (= key "source"))
           => (if (= artefact "")
                  None
                  (Some (BuildRecord (mode mode)
@@ -282,7 +301,11 @@
                                     (declaration-file declarations)
                                     (nuget nuget)
                                     (links links)
-                                    (natives natives)))))))
+                                    (natives natives)
+                                    (written written)
+                                    (interface interface)
+                                    (interface-of interface-of)
+                                    (sources sources)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Compiling
@@ -389,8 +412,15 @@
   ;; the artefact was built from, so the only safe answer is to build it. `#f`
   ;; here makes `ensure-built` serve a record that is not there, and fail with
   ;; an exit code and no message.
-  (def* ((Some rec) (read-record file) :leave-with #t)
-        (artefact (record-ref rec output)))
+  (def* ((Some rec) (read-record file) :leave-with #t))
+  (or (built-otherwise? rec wanted against file)
+      (any? #(newer? & (record-ref rec output)) (record-ref rec inputs))))
+
+;; Whether the record describes a build other than the one asked for, whatever
+;; the timestamps say.
+(: built-otherwise? (-> BuildRecord string Against string bool))
+(defun (built-otherwise? rec wanted against file)
+  (def artefact (record-ref rec output))
   (or (not (= (record-ref rec mode) wanted))
       (not (file-exists? artefact))
       ;; Built by another compiler than the one this would build it with, or by
@@ -414,8 +444,38 @@
       (not (= (record-ref rec nuget)
               (match (record-ref against nuget)
                 ((Some dir) (path-absolute dir))
-                (None ""))))
-      (any? #(newer? & artefact) (record-ref rec inputs))))
+                (None ""))))))
+
+;; A linked module whose own record vouches for the interface `entry` says the
+;; build saw: the module and the sources it was built from. Nothing otherwise.
+(: interface-kept (-> (Tuple string string) (List string)))
+(defun (interface-kept entry)
+  (def (Tuple digest dll) entry)
+  (match (read-record dll)
+    ((Some dep)
+     (if (and (= (record-ref dep written) (mtime dll))
+              (= (record-ref dep interface) digest))
+         (Cons dll (record-ref dep sources))
+         Nil))
+    (None Nil)))
+
+;; Early cutoff, for an artefact whose imports have just been built: current if
+;; everything newer than it is a linked module whose interface is the one it was
+;; built against, or a source such a module was built from. The compiler decides
+;; a library this way; this is the same for the entry it is never asked about.
+(: current-by-interface? (-> string string Against bool))
+(defun (current-by-interface? file wanted against)
+  (def* ((Some rec) (read-record file) :leave-with #f)
+        (artefact (record-ref rec output)))
+  (def excused
+    (loop (:for entry (record-ref rec interface-of))
+          (:acc out (folding Nil (list-append (interface-kept entry) out)))
+          => out))
+  (and (not (built-otherwise? rec wanted against file))
+       (file-exists? artefact)
+       (= (record-ref rec written) (mtime artefact))
+       (all? (fun (input) (or (not (newer? input artefact)) (any? #(= & input) excused)))
+             (record-ref rec inputs))))
 
 
 (: compile #:sync (-> string bool bool Against int))
@@ -494,7 +554,10 @@
 
     (when (imports-first? file)
       (let ((imports (compile-graph (Cons file Nil) #t roots)))
-        (unless (= imports 0) (ret (Err imports)))))
+        (unless (= imports 0) (ret (Err imports))))
+      ;; What they changed may be nothing the entry was compiled against.
+      (unless (or force? debug? (not (current-by-interface? file wanted roots)))
+        (ret (record-as-built file))))
 
     (def status (compile file debug? lib? roots))
     (unless (= status 0) (ret (Err status)))
