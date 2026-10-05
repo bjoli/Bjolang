@@ -14,7 +14,7 @@
 ;;
 ;; Each `EXPECT-CS` line is an extended regex matched against one line.
 
-(export drain count-here count-suspending names-here names-suspending seq-here)
+(export drain count-here count-suspending names-here names-suspending seq-here both-suspending vec-total)
 
 (import (std prelude))
 (import (std ports))
@@ -93,6 +93,25 @@
 ;;
 ;; Defaulting only ever decides what nothing else has decided. This is the line
 ;; that pins it.
-;; EXPECT-CS: seqsubhere__bjo\(System.IO.TextReader p\) \{\n.*\n\s*return seqsublength\(portsubgtseq\(\(\(Func<System.IO.TextReader, BjoString\.Utf8String>\)\(\(fa0\) => readsubline\(fa0\)\)\), p\)\);
+;; EXPECT-CS: return seqsublength\(portsubgtseq\(\(\(Func<System.IO.TextReader, BjoString\.Utf8String>\)\(\(fa0\) => readsubline\(fa0\)\)\), p\)\);
 (: seq-here (-> TextInputPort int))
 (defun (seq-here p) (seq-length (port->seq read-line p)))
+
+;; --- A copy that awaits nothing is not emitted -------------------------------
+;;
+;; `seq-here` mentions `read-line`, so it was copied; the copy then had nothing
+;; to await. It is dropped, and a bjoroutine calls the ordinary body — no state
+;; machine for a yield point that is not there, and nothing published that
+;; would copy this module's importers in turn.
+;; EXPECT-NO-CS: seqsubhere__bjo
+;; EXPECT-CS: \(await colour_copies_Module\.drain__bjo\(p\)\) \+ colour_copies_Module\.seqsubhere\(p\)
+(: both-suspending (-bjo-> TextInputPort int))
+(defbjo (both-suspending p) (+ (drain p) (seq-here p)))
+
+;; And across a module boundary. The prelude's `vec->list` reaches
+;; `vec-for-each`, a `defbjouble`, but hands it an ordinary lambda; its copy is
+;; dropped there, so it is not published as a double and a `defun` calling it
+;; is not copied here.
+;; EXPECT-NO-CS: vecsubtotal__bjo
+(: vec-total (-> (Vec int) int))
+(defun (vec-total v) (list-length (vec->list v)))

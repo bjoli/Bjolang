@@ -259,7 +259,13 @@ let liftsToSuspending (wanted: HMType) (supplied: HMType) : bool =
 /// evaluated here and its call is not.
 ///
 /// `EffectGraph` uses it to decide whether a body-local function is async.
-let rec reachesAwait (expr: TypedExpr) : bool =
+let rec reachesAwait (expr: TypedExpr) : bool = reachesAwaitExcept (fun _ -> false) expr
+
+/// `reachesAwait`, not counting a call to a name `idle` holds: one about to be
+/// pointed at a callee that does not suspend.
+and reachesAwaitExcept (idle: string -> bool) (expr: TypedExpr) : bool =
+    let reachesAwait = reachesAwaitExcept idle
+
     match expr.Node with
     // A function-shaped binding's value is a `TLambda`, so both are covered
     // here, and a `TLetRec` group's members likewise.
@@ -277,7 +283,15 @@ let rec reachesAwait (expr: TypedExpr) : bool =
         | _ -> false
     | TForeignStaticCall(_, _, _, Some meta) when meta.Await -> true
     | TDotMethodCall(_, _, _, Some meta) when meta.Await -> true
-    | TApply(target, _, _) when callSuspends target.Type -> true
+    | TApply(target, _, _) when
+        callSuspends target.Type
+        && not (
+            match target.Node with
+            | TIdent(name, _) -> idle (Naming.writtenName name)
+            | _ -> false
+        )
+        ->
+        true
     // A dispatched trait method whose trait declared `-bjo->`. The colour is on
     // the node rather than on an arrow, so the case above cannot see it.
     | TInterfaceCall(_, _, methodType, _, _) when callSuspends methodType -> true

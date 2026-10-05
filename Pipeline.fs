@@ -2384,6 +2384,21 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // `ColourCheck` asks and has the same answer.
         let loopLoweredAst = EffectGraph.selectDoubles env.Registry loopLoweredAst
 
+        // Before anything reads the registry's doubles: an idle copy is neither
+        // emitted nor published, so importers are not copied for it.
+        let loopLoweredAst, idleCopies = EffectGraph.pruneIdleCopies env.Registry loopLoweredAst
+
+        let env =
+            if idleCopies.IsEmpty then
+                env
+            else
+                { env with
+                    Registry =
+                        { env.Registry with
+                            DoubleDefs = env.Registry.DoubleDefs |> Map.filter (fun _ copy -> not (Set.contains copy idleCopies))
+                            GeneratedCopies = Set.difference env.Registry.GeneratedCopies idleCopies
+                            InferredCopies = Set.difference env.Registry.InferredCopies idleCopies } }
+
         ColourCheck.run env.Registry loopLoweredAst
 
         // Beside `ColourCheck` and for the same reason: both are about what a

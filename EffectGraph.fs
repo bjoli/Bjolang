@@ -758,6 +758,102 @@ let selectDoubles (registry: TraitRegistry) (decls: TDecl list) : TDecl list =
                 selectIn registry allowed e)
         )
 
+/// Drops the inferred copies that turned out never to suspend, and points every
+/// call to one back at the definition it was copied from.
+///
+/// `ColourTwins.expandReachingDefuns` copies by name, before there are types,
+/// so a copy can come out awaiting nothing: `vec->list` reaches `vec-for-each`,
+/// a `defbjouble`, but hands it an ordinary lambda and so gets its ordinary
+/// body. Such a copy is an async method for no yield point, and it spreads: it
+/// is published as a double, so every importer calling it is copied in turn.
+///
+/// A copy is kept when its body awaits something other than a call to another
+/// copy that is not kept — the least fixpoint, so that copies calling only one
+/// another go together. One referenced as a value is kept whatever it does:
+/// its delegate's type was settled by what it was handed to.
+///
+/// Answers the names of the dropped copies, which the registry has to forget.
+let pruneIdleCopies (registry: TraitRegistry) (decls: TDecl list) : TDecl list * Set<string> =
+    let originals =
+        registry.DoubleDefs
+        |> Map.toSeq
+        |> Seq.filter (fun (_, copy) -> Set.contains copy registry.InferredCopies)
+        |> Seq.map (fun (original, copy) -> copy, original)
+        |> Map.ofSeq
+
+    let rec copiesIn (decl: TDecl) =
+        match decl with
+        | TDefun(name, _, _, kwArgs, _, _, _, body, _) when Map.containsKey name originals ->
+            [ name, body :: (kwArgs |> List.map (fun (_, _, e) -> e)) ]
+        | TModule(_, inner, _) -> inner |> List.collect copiesIn
+        | _ -> []
+
+    let copies = decls |> List.collect copiesIn |> Map.ofList
+
+    let valueUses = System.Collections.Generic.HashSet<string>()
+
+    let rec scan (expr: TypedExpr) =
+        match expr.Node with
+        | TApply({ Node = TIdent _ }, args, kwArgs)
+        | TBjo({ Node = TApply({ Node = TIdent _ }, args, kwArgs) }, _) ->
+            args |> List.iter scan
+            kwArgs |> List.iter (snd >> scan)
+        | TIdent(name, _) -> valueUses.Add(Naming.writtenName name) |> ignore
+        | _ -> TypeVisitor.children expr |> List.iter scan
+
+    if not copies.IsEmpty then
+        for d in decls do
+            d
+            |> TypeVisitor.mapDecl (fun e ->
+                scan e
+                e)
+            |> ignore
+
+    let mutable kept =
+        copies |> Map.toSeq |> Seq.map fst |> Seq.filter valueUses.Contains |> Set.ofSeq
+
+    let mutable changed = true
+
+    while changed do
+        changed <- false
+
+        let idle (name: string) =
+            Map.containsKey name copies && not (Set.contains name kept)
+
+        for KeyValue(name, exprs) in copies do
+            if not (Set.contains name kept) && exprs |> List.exists (TypeVisitor.reachesAwaitExcept idle) then
+                kept <- Set.add name kept
+                changed <- true
+
+    let dropped = copies |> Map.toSeq |> Seq.map fst |> Seq.filter (fun n -> not (Set.contains n kept)) |> Set.ofSeq
+
+    if dropped.IsEmpty then
+        decls, dropped
+    else
+        let redirect (expr: TypedExpr) =
+            match expr.Node with
+            | TApply({ Node = TIdent(name, tyArgs) } as target, args, kwArgs) when
+                Set.contains (Naming.writtenName name) dropped
+                ->
+                let original = Naming.requalifyLike name originals[Naming.writtenName name]
+
+                let target =
+                    { target with
+                        Node = TIdent(original, tyArgs)
+                        Type = recolour ESync target.Type }
+
+                { expr with Node = TApply(target, args, kwArgs) }
+            | _ -> expr
+
+        let rec keep (decls: TDecl list) =
+            decls
+            |> List.choose (function
+                | TDefun(name, _, _, _, _, _, _, _, _) when Set.contains name dropped -> None
+                | TModule(name, inner, r) -> Some(TModule(name, keep inner, r))
+                | d -> Some d)
+
+        keep decls |> List.map (TypeVisitor.mapDecl (TypeVisitor.mapExpr redirect)), dropped
+
 /// Reports every suspending body that can reach a call which parks its thread.
 ///
 /// A warning rather than an error, and that is the whole design: parking is

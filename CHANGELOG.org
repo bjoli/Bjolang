@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* A suspending copy that awaits nothing is not emitted
+
+- *An inferred copy whose body awaits nothing is dropped after selection*, and
+  its calls go to the ordinary body. ~vec->list~ reaches ~vec-for-each~, a
+  ~defbjouble~, but hands it an ordinary lambda: its copy was an ~async~
+  method with no ~await~, awaited by every bjoroutine calling it.
+- *A dropped copy is not published as a double*, so an importer calling it is
+  not copied in turn. That was how one such copy spread through every module
+  above it (samizdat's HTML writer; glasnost's ~folder-page~ needed ~#:sync~).
+- Copies that only call one another go together; a copy referenced as a value
+  is kept, since its delegate type was settled where it was handed over.
+- The blocking lint then reports the bjoroutine that calls the ordinary body,
+  rather than a copy nobody calls.
+
 * A type error says what is wrong with what, and where inside
 
 - *A mismatch inside two types names the innermost pair and the way down to
