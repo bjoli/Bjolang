@@ -1,27 +1,27 @@
-* Bjolang - a language
+(meta (title "Bjolang - a language"))
 
-I think we have all had the thought: all programming languages suck in at least one way. Not all of us think it is a big deal, but some of us feel the urge to try our wings at designing a language. This is my 95% vibe coded try. Not really meant for real use, but to see if my thoughts made any sense. And, oh, it sucks in at least one way. 
+I think we have all had the thought: all programming languages suck in at least one way. Not all of us think it is a big deal, but some of us feel the urge to try our wings at designing a language. This is my 95% vibe coded try. Not really meant for real use, but to see if my thoughts made any sense. And, oh, it sucks in at least one way.
 
-* Elevator pitch
-Bjolang is a scheme-inspired eager language with local HM type inference that bjompiles to constipated c#. Traits instead of classes. Never worry about two-way-interop with c# ever again! Fast immutable bjollections. Rrb tree! A champ map! A  b-tree bjordered map! Sets based on the previous 2! (and of course a linked list). Tail-resumptive effects: Fearlessly mock production code! 
+@section{Elevator pitch}
+Bjolang is a scheme-inspired eager language with local HM type inference that bjompiles to constipated c#. Traits instead of classes. Never worry about two-way-interop with c# ever again! Fast immutable bjollections. Rrb tree! A champ map! A  b-tree bjordered map! Sets based on the previous 2! (and of course a linked list). Tail-resumptive effects: Fearlessly mock production code!
 
 Inlineable traits gives us brand-like types that enable things like functors and do-notation.
 
 It has concurrentML, which means we shake break the shackles of goroutines and go channels, in favour of the amazing expressiveness of bjoroutines and bjo channels.
 
-* Greatest hits
+@section{Greatest hits}
 
 The things I am most smug about, in descending order of smugness.
 
-*** Concurrency: bjoroutines and first-class events
+@subsection{Concurrency: bjoroutines and first-class events}
 
-Bjolang has ConcurrentML. And by that I mean: WOOP WOOP WAKE UP, BJOLANG HAS CONCURRENTML. No async. No Task. We have channels and bjoroutines. Not quite as fast as go when used through bjolang, but also not far from. 
+Bjolang has ConcurrentML. And by that I mean: WOOP WOOP WAKE UP, BJOLANG HAS CONCURRENTML. No async. No Task. We have channels and bjoroutines. Not quite as fast as go when used through bjolang, but also not far from.
 
-It is fully cooperative, and yields control when calling other bjoroutines or when syncing on channels. Any function that calls down to a "leaf" IO function gets one synchronous and one asynchronous version, so that any function that does IO can suspend. Examples/run_with_bjoroutine.bjo runs a shell pipeline with a bjoroutine as one stage of it, suspending whenever the (cat ...) or the (grep ...) is not ready.
+It is fully cooperative, and yields control when calling other bjoroutines or when syncing on channels. Any function that calls down to a "leaf" IO function gets one synchronous and one asynchronous version, so that any function that does IO can suspend. Examples/run_with_bjoroutine.bjo runs a shell pipeline with a bjoroutine as one stage of it, suspending whenever the @code{(cat ...)} or the @code{(grep ...)} is not ready.
 
-But here is the part that is actually worth waking up for. "within" is a deadline, written once, as an ordinary function — and it works on every event there will ever be, because an event is a *value* and not a statement.
+But here is the part that is actually worth waking up for. "within" is a deadline, written once, as an ordinary function — and it works on every event there will ever be, because an event is a @strong{value} and not a statement.
 
-#+begin_src scheme
+@codeblock[#:lang "scheme"]|{
 (: within (-> int (Event %a) (Event (Option %a))))
 (defun (within ms ev)
   (choose (wrap ev #(Some &))
@@ -65,24 +65,24 @@ But here is the part that is actually worth waking up for. "within" is a deadlin
             ((Some (Err e)) (Some "it threw"))
             (None None)))
   0)
-#+end_src
+}|
 
 which prints
 
-#+BEGIN_SRC
+@codeblock|{
 first ask : gave up
 second ask: dinner
 slow work : gave up
-#+END_SRC
+}|
 
 "second ask: dinner" is what is important here. Go cannot give within a name: select only reads channel operations spelled out at the site, and a statement is not a thing you can hand to a function - so there, every function that might one day need a deadline has to be given one, all the way down. Neither cook nor count-to was given anything. And a select that had taken the message off the channel before deciding to drop that branch would have lost dinner for good.
 
 The whole program, report included, is in Examples/events_are_values.bjo.
 
-*** Macros
+@subsection{Macros}
 Bjolang supports hygienic macros based on implicit-renaming. Together with syntax-match, thing brings about 90% of what syntax-case brings: An anaphoric if could look like this, for example:
 
-#+BEGIN_SRC scheme
+@codeblock[#:lang "scheme"]|{
 (def/macro (aif form compare inject)
   (syntax-match form
     ((_ test true-branch false-branch)
@@ -95,25 +95,25 @@ Bjolang supports hygienic macros based on implicit-renaming. Together with synta
 (aif (maybe-get-string)
      (println it)
      (println "fail"))
-#+END_SRC
+}|
 
 The main limitation is that macros cannot be used in the same module.
 
-*** Reader macros
+@subsection{Reader macros}
  Anyone can define reader macros. They work like macros, and add nothing exciting, but you can do things like
- #+BEGIN_SRC scheme
+@codeblock[#:lang "scheme"]|{
 #fl(compose f1 f2 f3) => (compose (compose f1 f2) f3) ;; syntactic left fold
 #ch(char<=? #\a my-char #\m) => (and (char<=? #\a my-char) (char<=? my-char #\m)) ;; and-chain
 #fr(cons 1 2 3 4 Nil) => (cons 1 (cons 2 (cons 3 (cons 4 Nil)))) ;; Right fold
 
- #+END_SRC
+}|
  They could just as well be regular macros: (fl compose f1 f2 f3), but i kind of like the distinction.
 
-*** Pattern matching that knows about the CLR
+@subsection{Pattern matching that knows about the CLR}
 
-~(:is Type binder)~ is a .NET type test in pattern position, and the binder is narrowed to that type afterwards. Which also means ~try~ can discriminate on exception type the same way ~match~ does.
+@code{(:is Type binder)} is a .NET type test in pattern position, and the binder is narrowed to that type afterwards. Which also means @code{try} can discriminate on exception type the same way @code{match} does.
 
-#+begin_src scheme
+@codeblock[#:lang "scheme"]|{
 (match (thing :> Object)
   ((:is System.String s) (string-length s))
   ((:is Exception e)     (.-Message e))
@@ -124,11 +124,11 @@ The main limitation is that macros cannot be used in the same module.
   #:catch ((:is System.IO.FileNotFoundException e) "missing")
           ((:is Exception e)                       "other")
   #:finally (cleanup))
-#+end_src
+}|
 
 and it is extensible.
 
-#+BEGIN_SRC scheme
+@codeblock[#:lang "scheme"]|{
 ;; In (std orderedmap):
 (def/pattern (om-has form inject compare)
   (syntax-match form
@@ -141,19 +141,18 @@ and it is extensible.
   ;; This checks if (orderedmap-try-ref config "port") matches (Some p).
   ((om-has "port" p) p)
   (_ "8080"))
-#+END_SRC
+}|
 
+@section{Examples}
 
-* Examples
+Have a look inte the Examples directory. Or at the code in @link["lib/text/json.bjo"]{the json module}. It is a decently fast json reader, that reaches a between 150 and 380MB/s on jsonbench. That code is written to be fast, and while a lot of it is idiomatic, there are some things that are not really pretty. For the love of god, do not look at the json-coder.bjo. That is half AI-translated from guile code I wrote a long time ago, and AI does NOT write good bjolang code.
 
-Have a look inte the Examples directory. Or at the code in [[file:lib/text/json.bjo][the json module]]. It is a decently fast json reader, that reaches a between 150 and 380MB/s on jsonbench. That code is written to be fast, and while a lot of it is idiomatic, there are some things that are not really pretty. For the love of god, do not look at the json-coder.bjo. That is half AI-translated from guile code I wrote a long time ago, and AI does NOT write good bjolang code. 
+@section{Further code}
 
-* Further code
+@subsection{Do notation}
+Look Ma, a Monad!
 
-*** Do notation
-Look Ma, a Monad! 
-
-#+BEGIN_SRC scheme
+@codeblock[#:lang "scheme"]|{
 ;; The do notation is defined as a macro here
 ;; as is the bind and pure trait
 (import (std monad))
@@ -164,11 +163,11 @@ Look Ma, a Monad!
       (:let  doubled (* half 2))
       (:bind third (safe-div doubled 3))
       (:return (+ doubled third))))
-#+END_SRC
+}|
 
-although most do-notation cases (matching option and Result) is better handled by the built in ~def~ form
+although most do-notation cases (matching option and Result) is better handled by the built in @code{def} form
 
-#+BEGIN_SRC scheme
+@codeblock[#:lang "scheme"]|{
 
 ;; every body supports def and def*. The pattern that matches
 ;; swallows the rest of the body; the third slot says what the
@@ -197,10 +196,10 @@ although most do-notation cases (matching option and Result) is better handled b
         ((Some b) (map-try-ref myMap :second) :propagate))
   (Some (string-append a b)))
 
-#+END_SRC
-*** The usual syntactic things in a modern lisp
+}|
+@subsection{The usual syntactic things in a modern lisp}
 
-#+begin_src scheme
+@codeblock[#:lang "scheme"]|{
 (defun (add1 n) (+ n 1))
 (-> [1 2 3 4 5]
     (map add1 &)
@@ -210,14 +209,14 @@ although most do-notation cases (matching option and Result) is better handled b
 ;; in fact, there is also a lambda shorthand:
 
 #(+ & 5) ;; => (fun (&1) (+ &1 5))
-#+end_src
+}|
 
 if-let, when-let, some-> and try-> is also there.
 
-*** Keyword arguments
+@subsection{Keyword arguments}
 Unlike f#, bjolang has keyword arguments (but no optargs!):
 
-#+begin_src scheme
+@codeblock[#:lang "scheme"]|{
 (: key-fun (-> Int (#:what string) Void))
 (defun (key-fun times #:what (string-append "ban" "ana"))
   (let loop ((times times))
@@ -227,14 +226,14 @@ Unlike f#, bjolang has keyword arguments (but no optargs!):
 
 (key-fun 100) ;; prints "banana\n" 100 times
 (key-fun 10 #:what "orange") ;; prints "orange\n" 10 times
-#+end_src
+}|
 
 You can use arbitrary expressions as default values for keyword args. If the function only takes c# literals, it is transformed into a c# named parameter call. If no parameters are used, a body that just binds the names is picked over one that checks which are used. The slow path does some Option unpacking.
 
-*** Structs and records
+@subsection{Structs and records}
 Have the same syntax, and both are constructed by naming the type — there is no f#-esque guessing at which type a bag of field names belongs to. This is a record example:
 
-#+begin_src scheme
+@codeblock[#:lang "scheme"]|{
 (type
  (: Colors (Enum Red Green Brown Golden))
  (: Fruit (Record
@@ -246,16 +245,15 @@ Have the same syntax, and both are constructed by naming the type — there is n
 ;; Records are immutable, so record-set copies
 (def megaripe-banana (record-set banana (colour Brown))
 
-#+end_src
+}|
 
-
-*** A proper looping facility
+@subsection{A proper looping facility}
 
 I got tired of shitty looping facilities a long time ago. I took Alex Shinn's (chibi loop) and made (goof loop) for guile scheme. Not only was it extensible and much more flexible than most looping facilities, it also had the fantastic feature that the code it produced was as fast as a hand-rolled loop (looking at you, python's for loop).
 
-Bjolangs loop is based on what I learned writing goof-loop, but instead of using macros, it uses traits meaning it sucks a bit more. 
+Bjolangs loop is based on what I learned writing goof-loop, but instead of using macros, it uses traits meaning it sucks a bit more.
 
-#+begin_src scheme
+@codeblock[#:lang "scheme"]|{
 (defun (main args)
   (def* (my-vec (get-a-huge-vec))
         (my-list (get-an-equally-huge-list)))
@@ -264,11 +262,11 @@ Bjolangs loop is based on what I learned writing goof-loop, but instead of using
         (:finish (= a (* b 2)))
         (:when (not (= a b)))
         (:acc (listing (+ a b)))))
-#+end_src
+}|
 
 It also supports subloops. Anything that isn't a for clause followed by a :for clause starts a subloop:
 
-#+begin_src scheme
+@codeblock[#:lang "scheme"]|{
 (defun (main args)
   (loop (:for a '(1 2 3))
         (:acc (listing (* a a)))
@@ -277,13 +275,13 @@ It also supports subloops. Anything that isn't a for clause followed by a :for c
         (:acc (vectoring (a . b)))))
 ;; => (1 4 9)
 ;;    [(1 . 1) (1 . 2) (3 . 1) (3 . 2)]
-#+end_src
+}|
 
- And the best part? It is fast. The version with subloops has some issues where the JIT cannot 
+ And the best part? It is fast. The version with subloops has some issues where the JIT cannot
 
  Oh, and it also has a seq version
 
- #+begin_src scheme
+@codeblock[#:lang "scheme"]|{
 (defun (main args)
   (def all-fibs
     (seql (:with a 0L b)
@@ -291,14 +289,13 @@ It also supports subloops. Anything that isn't a for clause followed by a :for c
           (:yield a))))
   (println "I wonder if we can print all the fibonacci numbers up to 2^64-1")
   (seq-for-each #(println &) all-fibs))
- #+end_src
+}|
 
-
-*** Constructorless DSLs
+@subsection{Constructorless DSLs}
 
 Lists, quasiquoted lists and vectors do not need constructors in some circumstances, giving us nice small DSLs. Like the (std fmt) string formatter, bringing string formatting into the 1980s:
 
-#+begin_src scheme
+@codeblock[#:lang "scheme"]|{
 ;; Check Examples/receipt.bjo for the full source
 ;; This is our list of lines, Line being a record
 (: basket (List Line))
@@ -374,26 +371,25 @@ keep  the  receipt:  it is your proof of
 purchase,  and  anything unopened may be
 returned within thirty days.
 
-#+end_src
+}|
 
 And any declared (Vec block), also a def, gets this treatment, so any function that needs formatted strings can use this.
 
-The same machinery gives (std run) its shell notation, have a look at [[file:Examples/run_with_bjoroutine.bjo]] which finds insidious plans!
+The same machinery gives (std run) its shell notation, have a look at @link["Examples/run_with_bjoroutine.bjo"] which finds insidious plans!
 
-* License
+@section{License}
 
 MPL-2.0 with a linking exception. The exception says that what the bjompiler
 embeds into your bjoogram — inlined functions, monobjorphised generics, whatever a
 macro expanded to — does not drag section 3's source-availability obligation
-into your executable. See [[file:LICENSE]].
+into your executable. See @link["LICENSE"].
 
+@section{Things to fix/TODO}
 
-* Things to fix/TODO
-
-** major problems
+@subsection{major problems}
 Probably many.
 
-** Problems
+@subsection{Problems}
 macros are always exported, invisibly.
 
 The compiler actually doesn't check if types exist, so a function typed (: a-fun (-> DoesNotExist int)) errors first in the c# compilation with CS0246.
@@ -402,7 +398,7 @@ mutual recursion doesn't do any dictionary passing, so it is monomorphic once en
 
 pruning raises type resolution errors eagerly during environment traversals which causes the compiler to report errors on unrelated lines of code.
 
-** Minor problems
+@subsection{Minor problems}
 
 If a function is not exported, an unreferenced async version of it is not purged.
 
@@ -410,24 +406,26 @@ If a user has a dir called lib/std it is mistaken as the stdlib :/
 
 fix tail recursion and parameterization: Since tail calls have no code in the recursive function running after it, we can restore the parameters outside the recursion. is this doable ?
 
-** features to add in no particular order
+@subsection{features to add in no particular order}
 add #:align to columnar and tabular in (std fmt)
 
 remove the use for (bjoroutine ...) special syntax in places where the lambda is in direct argument position: (result-map #(read-line &) r) currently needs a bjoroutine.
 
-extend match to support Records and Structs in a pretty way.  
+extend match to support Records and Structs in a pretty way.
 
 output LINE-directives a little bit better than I do now
 
-** Things for the stdlib
+@subsection{Things for the stdlib}
 
 data structures:
+@read-list{
 - deque, perhaps by adding a prefix to the vec
 - heap with transients
+}
 
 network io by wrapping c# async in events for the cml goodness. (std http) is here, but we need sockets.
 
-** Performance things
+@subsection{Performance things}
 
 The compiler is too conservative about hoisting operators.
 
@@ -435,11 +433,10 @@ Inline small functions, especially things that are just a single expr or seql.
 
 Slices for data structures using Memory<T>. That would speed up parsers that work on strings.
 
-Simple source transformations: let bound functions only ever used as function should be turned into static local functions instead of delegates/funcs. lambdas that do not escape that have simple bodies can be inlined (and removed maybe). 
+Simple source transformations: let bound functions only ever used as function should be turned into static local functions instead of delegates/funcs. lambdas that do not escape that have simple bodies can be inlined (and removed maybe).
 
 Make things like (summing expr) type neutral, so that it can sum doubles.
 
 Hoist the threadlocal loads of several parameter-ref in synchronous functions. Say I do 5 (parameter-ref ) in a body, since there is no parameter-set! we can hoist the environment so that we do not pay the [ThreadLocal] read cost.
 
 Unboxing small unions, say if someone call map-try-ref in a tight loop.
-

@@ -1,0 +1,449 @@
+# Bjolang - a language
+
+I think we have all had the thought: all programming languages suck in at least one way. Not all of us think it is a big deal, but some of us feel the urge to try our wings at designing a language. This is my 95% vibe coded try. Not really meant for real use, but to see if my thoughts made any sense. And, oh, it sucks in at least one way.
+
+## Elevator pitch
+
+Bjolang is a scheme-inspired eager language with local HM type inference that bjompiles to constipated c#. Traits instead of classes. Never worry about two-way-interop with c# ever again! Fast immutable bjollections. Rrb tree! A champ map! A  b-tree bjordered map! Sets based on the previous 2! (and of course a linked list). Tail-resumptive effects: Fearlessly mock production code!
+
+Inlineable traits gives us brand-like types that enable things like functors and do-notation.
+
+It has concurrentML, which means we shake break the shackles of goroutines and go channels, in favour of the amazing expressiveness of bjoroutines and bjo channels.
+
+## Greatest hits
+
+The things I am most smug about, in descending order of smugness.
+
+### Concurrency: bjoroutines and first-class events
+
+Bjolang has ConcurrentML. And by that I mean: WOOP WOOP WAKE UP, BJOLANG HAS CONCURRENTML. No async. No Task. We have channels and bjoroutines. Not quite as fast as go when used through bjolang, but also not far from.
+
+It is fully cooperative, and yields control when calling other bjoroutines or when syncing on channels. Any function that calls down to a “leaf” IO function gets one synchronous and one asynchronous version, so that any function that does IO can suspend. Examples/run_with_bjoroutine.bjo runs a shell pipeline with a bjoroutine as one stage of it, suspending whenever the `(cat ...)` or the `(grep ...)` is not ready.
+
+But here is the part that is actually worth waking up for. “within” is a deadline, written once, as an ordinary function — and it works on every event there will ever be, because an event is a **value** and not a statement.
+
+```scheme
+(: within (-> int (Event %a) (Event (Option %a))))
+(defun (within ms ev)
+  (choose (wrap ev #(Some &))
+          (wrap (timeout ms) (fun (u) None))))
+
+;; A cook in no particular hurry.
+(: cook (-> (Chan string) void))
+(defbjo (cook ch)
+  (sync (timeout 60))
+  (sync (chan-send ch "dinner")))
+
+;; Work that takes as long as it is told to.
+(: count-to (-> int int))
+(defbjo (count-to ms)
+  (sync (timeout ms))
+  ms)
+
+(: report (-> string (Option string) void))
+(defun (report what answer)
+  (def (Some v) answer
+       #:default "gave up")
+  (println "{what}: ${v}"))
+
+(defbjo (main args)
+  (def kitchen (make-chan))
+  (spawn (cook kitchen))
+
+  ;; Too impatient. The receive loses the race and is withdrawn.
+  (report "first ask " (sync (within 20 (chan-recv kitchen))))
+
+  ;; Withdrawn, not consumed. Nothing came off the channel, so the cook is
+  ;; still holding dinner out and this ask gets it.
+  (report "second ask" (sync (within 500 (chan-recv kitchen))))
+
+  ;; The same combinator on something that is not a channel at all: the result
+  ;; of a fiber. The deadline wins, so that branch loses, and a losing
+  ;; spawn-evt cancels its child rather than leaving it running.
+  (report "slow work "
+          (match (sync (within 20 (spawn-evt (count-to 1000))))
+            ((Some (Ok n)) (Some (int->string n)))
+            ((Some (Err e)) (Some "it threw"))
+            (None None)))
+  0)
+```
+
+which prints
+
+```
+first ask : gave up
+second ask: dinner
+slow work : gave up
+```
+
+“second ask: dinner” is what is important here. Go cannot give within a name: select only reads channel operations spelled out at the site, and a statement is not a thing you can hand to a function - so there, every function that might one day need a deadline has to be given one, all the way down. Neither cook nor count-to was given anything. And a select that had taken the message off the channel before deciding to drop that branch would have lost dinner for good.
+
+The whole program, report included, is in Examples/events_are_values.bjo.
+
+### Macros
+
+Bjolang supports hygienic macros based on implicit-renaming. Together with syntax-match, thing brings about 90% of what syntax-case brings: An anaphoric if could look like this, for example:
+
+```scheme
+(def/macro (aif form compare inject)
+  (syntax-match form
+    ((_ test true-branch false-branch)
+     #'(match test
+        ((Some ,(inject 'it)) true-branch)
+        (_ false-branch)))
+    (_ (syntax-error "aif needs 3 forms"))))
+
+;; which is then used like this
+(aif (maybe-get-string)
+     (println it)
+     (println "fail"))
+```
+
+The main limitation is that macros cannot be used in the same module.
+
+### Reader macros
+
+Anyone can define reader macros. They work like macros, and add nothing exciting, but you can do things like
+
+```scheme
+#fl(compose f1 f2 f3) => (compose (compose f1 f2) f3) ;; syntactic left fold
+#ch(char<=? #\a my-char #\m) => (and (char<=? #\a my-char) (char<=? my-char #\m)) ;; and-chain
+#fr(cons 1 2 3 4 Nil) => (cons 1 (cons 2 (cons 3 (cons 4 Nil)))) ;; Right fold
+```
+
+They could just as well be regular macros: (fl compose f1 f2 f3), but i kind of like the distinction.
+
+### Pattern matching that knows about the CLR
+
+`(:is Type binder)` is a .NET type test in pattern position, and the binder is narrowed to that type afterwards. Which also means `try` can discriminate on exception type the same way `match` does.
+
+```scheme
+(match (thing :> Object)
+  ((:is System.String s) (string-length s))
+  ((:is Exception e)     (.-Message e))
+  ([a b [1 2]]           "an array of three subarrays where the last is [1 2]")
+  (_                     "no idea"))
+
+(try (risky-thing)
+  #:catch ((:is System.IO.FileNotFoundException e) "missing")
+          ((:is Exception e)                       "other")
+  #:finally (cleanup))
+```
+
+and it is extensible.
+
+```scheme
+;; In (std orderedmap):
+(def/pattern (om-has form inject compare)
+  (syntax-match form
+    ((_ key p)
+     #'(:view (orderedmap-try-ref & ,key) (Some ,p)))
+    (_ (syntax-error form "(om-has key p) matches a map that has key."))))
+
+;; Anywhere that imports it:
+(match config
+  ;; This checks if (orderedmap-try-ref config "port") matches (Some p).
+  ((om-has "port" p) p)
+  (_ "8080"))
+```
+
+## Examples
+
+Have a look inte the Examples directory. Or at the code in [the json module](lib/text/json.bjo). It is a decently fast json reader, that reaches a between 150 and 380MB/s on jsonbench. That code is written to be fast, and while a lot of it is idiomatic, there are some things that are not really pretty. For the love of god, do not look at the json-coder.bjo. That is half AI-translated from guile code I wrote a long time ago, and AI does NOT write good bjolang code.
+
+## Further code
+
+### Do notation
+
+Look Ma, a Monad!
+
+```scheme
+;; The do notation is defined as a macro here
+;; as is the bind and pure trait
+(import (std monad))
+
+(: calc (-> int (Option int)))
+(defun (calc n)
+  (do (:bind half (safe-div n 2))
+      (:let  doubled (* half 2))
+      (:bind third (safe-div doubled 3))
+      (:return (+ doubled third))))
+```
+
+although most do-notation cases (matching option and Result) is better handled by the built in `def` form
+
+```scheme
+
+;; every body supports def and def*. The pattern that matches
+;; swallows the rest of the body; the third slot says what the
+;; body produces when it does not match
+(: print-key (-> (Map Keyword string) (Result string string)))
+(defun (print-key myMap)
+  (def (Some b) (try-ref myMap :key)
+       :leave-with (Err "Map was somehow not populated correctly"))
+  ;; Here we know the call above worked and that b is bound to the value
+  ;; under :key in myMap, otherwise 
+  (println ":key is #${b}.")
+  (Ok b))
+
+;; if you put :propagate in the slot where the error value is put
+;; it just propagates the error value from the match.
+(: key-length (-> (Map Keyword string) (Option int)))
+(defun (key-length myMap)
+  (def (Some b) (try-ref myMap :key) :propagate)
+  (Some (string-length b)))
+
+;; def* is to def what let* is to let: several clauses, in order,
+;; and a failing one evaluates no later scrutinee
+(: both-keys (-> (Map Keyword string) (Option string)))
+(defun (both-keys myMap)
+  (def* ((Some a) (map-try-ref myMap :first) :propagate)
+        ((Some b) (map-try-ref myMap :second) :propagate))
+  (Some (string-append a b)))
+```
+
+### The usual syntactic things in a modern lisp
+
+```scheme
+(defun (add1 n) (+ n 1))
+(-> [1 2 3 4 5]
+    (map add1 &)
+    (fold + 0 &)
+    println)
+
+;; in fact, there is also a lambda shorthand:
+
+#(+ & 5) ;; => (fun (&1) (+ &1 5))
+```
+
+if-let, when-let, some-> and try-> is also there.
+
+### Keyword arguments
+
+Unlike f#, bjolang has keyword arguments (but no optargs!):
+
+```scheme
+(: key-fun (-> Int (#:what string) Void))
+(defun (key-fun times #:what (string-append "ban" "ana"))
+  (let loop ((times times))
+    (when (> times 0)
+      (println what)
+      (loop (- times 1)))))
+
+(key-fun 100) ;; prints "banana\n" 100 times
+(key-fun 10 #:what "orange") ;; prints "orange\n" 10 times
+```
+
+You can use arbitrary expressions as default values for keyword args. If the function only takes c# literals, it is transformed into a c# named parameter call. If no parameters are used, a body that just binds the names is picked over one that checks which are used. The slow path does some Option unpacking.
+
+### Structs and records
+
+Have the same syntax, and both are constructed by naming the type — there is no f#-esque guessing at which type a bag of field names belongs to. This is a record example:
+
+```scheme
+(type
+ (: Colors (Enum Red Green Brown Golden))
+ (: Fruit (Record
+           (: name String)
+           (: has-peel? Bool)
+           (: colour Colors))))
+
+(def banana (Fruit (name "banana") (has-peel? #t) (colour Golden)))
+;; Records are immutable, so record-set copies
+(def megaripe-banana (record-set banana (colour Brown))
+```
+
+### A proper looping facility
+
+I got tired of shitty looping facilities a long time ago. I took Alex Shinn’s (chibi loop) and made (goof loop) for guile scheme. Not only was it extensible and much more flexible than most looping facilities, it also had the fantastic feature that the code it produced was as fast as a hand-rolled loop (looking at you, python’s for loop).
+
+Bjolangs loop is based on what I learned writing goof-loop, but instead of using macros, it uses traits meaning it sucks a bit more.
+
+```scheme
+(defun (main args)
+  (def* (my-vec (get-a-huge-vec))
+        (my-list (get-an-equally-huge-list)))
+  (loop (:for a my-vec)
+        (:for b my-vec)
+        (:finish (= a (* b 2)))
+        (:when (not (= a b)))
+        (:acc (listing (+ a b)))))
+```
+
+It also supports subloops. Anything that isn’t a for clause followed by a :for clause starts a subloop:
+
+```scheme
+(defun (main args)
+  (loop (:for a '(1 2 3))
+        (:acc (listing (* a a)))
+        (:when (odd? a))
+        (:for b [1 2])
+        (:acc (vectoring (a . b)))))
+;; => (1 4 9)
+;;    [(1 . 1) (1 . 2) (3 . 1) (3 . 2)]
+```
+
+And the best part? It is fast. The version with subloops has some issues where the JIT cannot
+
+Oh, and it also has a seq version
+
+```scheme
+(defun (main args)
+  (def all-fibs
+    (seql (:with a 0L b)
+          (:with b 1L (+ a b))
+          (:yield a))))
+  (println "I wonder if we can print all the fibonacci numbers up to 2^64-1")
+  (seq-for-each #(println &) all-fibs))
+```
+
+### Constructorless DSLs
+
+Lists, quasiquoted lists and vectors do not need constructors in some circumstances, giving us nice small DSLs. Like the (std fmt) string formatter, bringing string formatting into the 1980s:
+
+```scheme
+;; Check Examples/receipt.bjo for the full source
+;; This is our list of lines, Line being a record
+(: basket (List Line))
+(def basket
+     ;; This could of course be function, like
+     ;; (line "bananas" 1.24 24.90) or a list of tuples like
+     ;; (map mkline (list ("banana" . 1.24 . 24.90) ...))
+  (list (Line (what "Bananas, organic") (qty 1.24) (unit 24.90))
+        (Line (what "Coffee beans, dark roast, whole") (qty 2.0) (unit 89.00))
+        (Line (what "Rye bread") (qty 1.0) (unit 32.50))
+        (Line (what "Oat milk") (qty 3.0) (unit 18.95))
+        (Line (what "Cloudberry jam from Lapland, the small jar") (qty 1.0) (unit 64.00))))
+
+(: receipt (-> (List Line) (Vec Block)))
+(defun (receipt ls)
+  (def* (total (list-foldl #(+ %2 (amount-of %1)) 0.0 ls))
+        (net (/ total 1.12))
+        (vat (- total net)))
+    ;; cloudberry jam gets truncated, with "..."
+  [(with-fmt current-ellipsis "..."
+    ;; first print the heading.
+    [(heading ["BJOLI'S GROCERY"])
+     nl ;; Newline
+     masthead ;; formatted header
+     (rule #\=) ;; ruler with the = char
+     (joined item ls []) ;; item is a formatter for Lines
+     (rule #\-) ;; ruler with -
+     ;; labelled is a function (see receipt.bjo) that prints
+     ;; the first argument left justified and the second
+     ;; right justified
+     (labelled ["Net"] net)
+     (labelled ["VAT 12%"] vat)
+     (rule #\=)
+     ;; function that pads a value with "TOTAL" and ...
+     ;; until it fills the complete width
+     (total-line total)
+     nl ;; newline
+     ;; prints three columns, rate, net and vat
+     (vat-summary net vat)
+     nl              
+     ;; justified footer
+     footer])]))
+
+(defun (main args)
+  (show (receipt basket))
+  0)
+
+;; Prints:
+            BJOLI'S GROCERY             
+
+Fruktgatan 12           2026-08-21 14:32
+211 44 Malmö                Receipt 1042
+========================================
+Bananas, organic                   30.88
+  1.24 x 24.90
+Coffee beans, dark roast, whole   178.00
+  2.00 x 89.00
+Rye bread                          32.50
+Oat milk                           56.85
+  3.00 x 18.95
+Cloudberry jam from Lapland,...    64.00
+----------------------------------------
+Net                               323.42
+VAT 12%                            38.81
+========================================
+TOTAL.............................362.23
+
+Rate   Net      VAT
+12 %   323.42   38.81
+
+Thank  you  for shopping with us. Please
+keep  the  receipt:  it is your proof of
+purchase,  and  anything unopened may be
+returned within thirty days.
+```
+
+And any declared (Vec block), also a def, gets this treatment, so any function that needs formatted strings can use this.
+
+The same machinery gives (std run) its shell notation, have a look at [Examples/run_with_bjoroutine.bjo](Examples/run_with_bjoroutine.bjo) which finds insidious plans!
+
+## License
+
+MPL-2.0 with a linking exception. The exception says that what the bjompiler
+embeds into your bjoogram — inlined functions, monobjorphised generics, whatever a
+macro expanded to — does not drag section 3’s source-availability obligation
+into your executable. See [LICENSE](LICENSE).
+
+## Things to fix/TODO
+
+### major problems
+
+Probably many.
+
+### Problems
+
+macros are always exported, invisibly.
+
+The compiler actually doesn’t check if types exist, so a function typed (: a-fun (-> DoesNotExist int)) errors first in the c# compilation with CS0246.
+
+mutual recursion doesn’t do any dictionary passing, so it is monomorphic once entered. This is pretty minor, tbh.
+
+pruning raises type resolution errors eagerly during environment traversals which causes the compiler to report errors on unrelated lines of code.
+
+### Minor problems
+
+If a function is not exported, an unreferenced async version of it is not purged.
+
+If a user has a dir called lib/std it is mistaken as the stdlib :/
+
+fix tail recursion and parameterization: Since tail calls have no code in the recursive function running after it, we can restore the parameters outside the recursion. is this doable ?
+
+### features to add in no particular order
+
+add #:align to columnar and tabular in (std fmt)
+
+remove the use for (bjoroutine …) special syntax in places where the lambda is in direct argument position: (result-map #(read-line &) r) currently needs a bjoroutine.
+
+extend match to support Records and Structs in a pretty way.
+
+output LINE-directives a little bit better than I do now
+
+### Things for the stdlib
+
+data structures:
+
+- deque, perhaps by adding a prefix to the vec
+- heap with transients
+
+network io by wrapping c# async in events for the cml goodness. (std http) is here, but we need sockets.
+
+### Performance things
+
+The compiler is too conservative about hoisting operators.
+
+Inline small functions, especially things that are just a single expr or seql.
+
+Slices for data structures using Memory\<T>. That would speed up parsers that work on strings.
+
+Simple source transformations: let bound functions only ever used as function should be turned into static local functions instead of delegates/funcs. lambdas that do not escape that have simple bodies can be inlined (and removed maybe).
+
+Make things like (summing expr) type neutral, so that it can sum doubles.
+
+Hoist the threadlocal loads of several parameter-ref in synchronous functions. Say I do 5 (parameter-ref ) in a body, since there is no parameter-set! we can hoist the environment so that we do not pay the \[ThreadLocal\] read cost.
+
+Unboxing small unions, say if someone call map-try-ref in a tight loop.
