@@ -6210,23 +6210,37 @@ let generateProgram
     // best — not necessarily the binding inference chose — or reports an
     // ambiguity. A module is counted by where the binding really lives, so a
     // facade passing on another module's name is not a second binder.
+    //
+    // Counted by the C# member name, not the Bjolang one: `a-b` in one module
+    // and `asubb` in another are both `asubb` to C# (CS0121).
     let contested =
-        decls
-        |> collectDecls (function
-            | TModule (modName, innerDecls, _) ->
-                innerDecls |> List.collect (function
-                    | TDef (n, _, _, _)
-                    | TDefMutable (n, _, _, _)
-                    | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, modName) ]
-                    | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, modName))
-                    | TDefPattern (_, _, binders, _) -> binders |> List.map (fun (n, _) -> (n, modName))
-                    | TExtern (visible, origin, _, _) -> [ (visible, origin.OriginModule) ]
-                    | _ -> [])
-            | _ -> [])
-        |> List.distinct
-        |> List.countBy fst
-        |> List.filter (fun (_, count) -> count > 1)
-        |> List.map fst
+        let bound =
+            decls
+            |> collectDecls (function
+                | TModule (modName, innerDecls, _) ->
+                    innerDecls |> List.collect (function
+                        | TDef (n, _, _, _)
+                        | TDefMutable (n, _, _, _)
+                        | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, modName, n) ]
+                        | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, modName, n))
+                        | TDefPattern (_, _, binders, _) -> binders |> List.map (fun (n, _) -> (n, modName, n))
+                        | TExtern (visible, origin, _, _) -> [ (visible, origin.OriginModule, origin.OriginalName) ]
+                        | _ -> [])
+                | _ -> [])
+            |> List.distinct
+
+        let spelledByMany =
+            bound
+            |> List.map (fun (_, modName, original) -> Prelude.moduleMemberName original, modName)
+            |> List.distinct
+            |> List.countBy fst
+            |> List.filter (fun (_, count) -> count > 1)
+            |> List.map fst
+            |> Set.ofList
+
+        bound
+        |> List.filter (fun (_, _, original) -> spelledByMany.Contains(Prelude.moduleMemberName original))
+        |> List.map (fun (visible, _, _) -> visible)
         |> Set.ofList
 
     // Two names a module binds that C# spells alike: `a-b` and `asubb`, `a?`

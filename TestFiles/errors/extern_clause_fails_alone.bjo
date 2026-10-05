@@ -1,0 +1,17 @@
+;; A failed import/extern clause costs that clause. The clauses beside it are
+;; bound, so a use of one is checked rather than reported unknown, and a use of
+;; the failed one is not reported again.
+;; EXPECT-ERROR: has no public method named 'NoSuchMethod'
+;; EXPECT-ERROR: '5' is a number, and it is being used where a 'string' is wanted
+;; EXPECT-NO-ERROR: Unbound variable
+(import (std prelude))
+(import/extern
+  (str-upper (: System.String.ToUpperInvariant (-> System.String System.String)))
+  (no-such (: System.String.NoSuchMethod (-> System.String int)))
+  (str-lower (: System.String.ToLowerInvariant (-> System.String System.String))))
+
+(defun (main)
+  (println (str-upper 5))
+  (println (str-lower "B"))
+  (println (->str (no-such "x")))
+  0)

@@ -1,0 +1,29 @@
+;; Two constrained functions calling each other hand each other the dictionary
+;; they were given. Their signatures make each a polymorphic binding inside its
+;; own group, so a call between them records the type arguments the evidence is
+;; chosen by. Monomorphisation declines a recursive group, so this is the
+;; dictionary path, also from a caller that is itself generic.
+(import (std prelude))
+(import (std simpletest))
+
+(: shown-ev (-> (List %a) string) (where (->str %a)))
+(: shown-od (-> (List %a) string) (where (->str %a)))
+
+(defun (shown-ev xs)
+  (match xs
+    (Nil "")
+    ((Cons x rest) (string-append (->str x) (shown-od rest)))))
+
+(defun (shown-od xs)
+  (match xs
+    (Nil "")
+    ((Cons _ rest) (string-append "," (shown-ev rest)))))
+
+(: twice-shown (-> (List %a) string) (where (->str %a)))
+(defun (twice-shown xs) (string-append (shown-ev xs) (shown-od xs)))
+
+(defun (main)
+  (expect "a mutually recursive pair at int" (shown-ev (list 1 2 3 4)) "1,3,")
+  (expect "and at string" (shown-ev (list "a" "b" "c")) "a,c")
+  (expect "from a generic caller" (twice-shown (list 1 2 3)) "1,3,2,")
+  0)

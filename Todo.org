@@ -77,8 +77,8 @@ out-degree ≤ 1, so copies grow additively; largest demand 722 nodes
 - *Suspending functions are not copied.* The twin is generated inside
   ~checkDeclGroup~, out of this pass's reach; ~Naming.specializedCopy~ already
   names it ~f__at_int__bjo~.
-- *Mutual recursion is declined.* Specialising the whole group would also fix
-  "Mutual recursion does not forward dictionaries".
+- *Mutual recursion is declined*: the group keeps its dictionaries
+  (~284_mutual_dictionaries.bjo~).
 - *A mention that is not a call is passed over.* Correct via eta-expansion.
 - *A body that will not serialize is not published* (~try~, bare list literal,
   tuple destructuring, local function with keyword/rest parameters): calls keep
@@ -88,13 +88,6 @@ out-degree ≤ 1, so copies grow additively; largest demand 722 nodes
   arguments in the resolved name's scope".
 - *A private helper a published body names becomes public* in the importer's
   scope (~doubled~ in ~193_lib.bjo~).
-
-* Constraints and numerics
-
-- *Mutual recursion does not forward dictionaries.* Direct recursion does
-  (~Scope.SelfCall~); two constrained functions calling each other pass none
-  and get CS7036. Fix: record type arguments for monomorphic recursive
-  bindings. Nothing in the library does it yet.
 
 * Colourless concurrency
 
@@ -123,14 +116,6 @@ out-degree ≤ 1, so copies grow additively; largest demand 722 nodes
   ~(do (:bind x m) (:return (bind x)))~ the parameter ~bind~ means Monad's.
   Fix: infer callee and arguments in different environments; ~EApp(EIdent)~ is
   not shaped for it.
-
-* Interop
-
-- *A failed ~import/extern~ clause takes the rest of the import with it*: a good
-  clause beside a bad one is reported unbound. Let the others stand, as a
-  declaration group does.
-- *Names that mangle alike in two modules* (~a-b~ in one, ~asubb~ in another)
-  meet in C# through ~using static~. Checked within a module only.
 
 * Equality and hashing
 

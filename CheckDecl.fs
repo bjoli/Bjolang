@@ -1305,9 +1305,7 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
     // oversight from a pair.
     let importedTargets = specs |> List.map (fun s -> s.ClrTarget) |> Set.ofList
 
-    let infos =
-        specs
-        |> List.map (fun spec ->
+    let checkClause (spec: ExternImportSpec) : ClrExternInfo =
             let where = Lexer.formatPos spec.Range
             let split = spec.ClrTarget.LastIndexOf "."
 
@@ -1588,13 +1586,35 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
               IsAsync = spec.IsAsync
               Uncancellable = spec.Uncancellable
               Cancellable = spec.Cancellable
-              IsBlocking = spec.IsBlocking })
+              IsBlocking = spec.IsBlocking }
+
+    // One clause's failure costs that clause, as one declaration's does in a
+    // group: the others are bound, and the failed alias is a placeholder, so
+    // its uses are not reported again as unknown names.
+    let checkedClauses =
+        specs
+        |> List.map (fun spec ->
+            spec, Diagnostics.recover "type check" (Some spec.Range) None (fun () -> Some(checkClause spec)))
+
+    let infos = checkedClauses |> List.choose snd
+
+    let failed =
+        checkedClauses
+        |> List.choose (fun (spec, info) -> if info.IsNone then Some spec.Alias else None)
+
+    Diagnostics.poison failed
 
     let newRegistry =
         infos
         |> List.fold (fun (reg: TraitRegistry) info -> { reg with ClrExterns = Map.add info.Alias info reg.ClrExterns }) env.Registry
 
-    { env with Registry = newRegistry }, sigs, [ TImportExtern(infos, r) ]
+    let withPlaceholders =
+        failed
+        |> List.fold
+            (fun (acc: Env) alias -> addBinding alias { Scheme = Scheme([ "a" ], [], TVar "a"); IsMutable = false } acc)
+            { env with Registry = newRegistry }
+
+    withPlaceholders, sigs, (if infos.IsEmpty then [] else [ TImportExtern(infos, r) ])
 
 and private checkReExport (env: Env) (sigs: Sigs) (names: string list) (r: Range) : Env * Sigs * TDecl list =
     // A re-exported name was defined elsewhere and already carries a
