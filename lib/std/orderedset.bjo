@@ -60,7 +60,7 @@
 ;; ---------------------------------------------------------------------------
 
 (import/extern
-  (orderedset-empty      (: OrderedSet.OrderedSetModule.Empty       (-> (OrderedSet %a))))
+  (clr-orderedset-empty  (: OrderedSet.OrderedSetModule.Empty       (-> (OrderedSet %a))))
   (orderedset-add        (: OrderedSet.OrderedSetModule.Add         (-> (OrderedSet %a) %a (OrderedSet %a))))
   ;; Add a run of elements.
   (orderedset-add-all    (: OrderedSet.OrderedSetModule.AddRange    (-> (OrderedSet %a) (Seq %a) (OrderedSet %a))))
@@ -98,7 +98,7 @@
   (orderedset-any?       (: OrderedSet.OrderedSetModule.Exists     (-> (-> %a bool) (OrderedSet %a) bool)))
   (orderedset-find       (: OrderedSet.OrderedSetModule.TryFindKey (-> (-> %a bool) (OrderedSet %a) (out %a) (Option %a))))
 
-  (seq->orderedset (: OrderedSet.OrderedSetModule.FromEnumerable (-> (Seq %a) (OrderedSet %a))))
+  (clr-seq->orderedset (: OrderedSet.OrderedSetModule.FromEnumerable (-> (Seq %a) (OrderedSet %a))))
   (orderedset->seq (: OrderedSet.OrderedSetModule.AsEnumerable   (-> (OrderedSet %a) (Seq %a))))
 
   (orderedset-cursor         (: OrderedSet.OrderedSetModule.Cursor        (-> (OrderedSet %a) (OrderedSetCursor %a))))
@@ -110,14 +110,14 @@
 ;; ---------------------------------------------------------------------------
 
 (import/extern
-  (orderedsetbuilder-empty         (: OrderedSet.OrderedSetBuilderModule.Empty    (-> (OrderedSetBuilder %a))))
+  (clr-orderedsetbuilder-empty     (: OrderedSet.OrderedSetBuilderModule.Empty    (-> (OrderedSetBuilder %a))))
   (orderedset->orderedsetbuilder   (: OrderedSet.OrderedSetBuilderModule.FromSet  (-> (OrderedSet %a) (OrderedSetBuilder %a))))
   (orderedsetbuilder-add!          (: OrderedSet.OrderedSetBuilderModule.Add      (-> (OrderedSetBuilder %a) %a void)))
   (orderedsetbuilder-add-all!      (: OrderedSet.OrderedSetBuilderModule.AddRange (-> (OrderedSetBuilder %a) (Seq %a) void)))
   (orderedsetbuilder-length        (: OrderedSet.OrderedSetBuilderModule.Count    (-> (OrderedSetBuilder %a) int)))
   (orderedsetbuilder->orderedset   (: OrderedSet.OrderedSetBuilderModule.Build    (-> (OrderedSetBuilder %a) (OrderedSet %a))))
 
-  (transientorderedset-empty       (: OrderedSet.TransientOrderedSetModule.Empty          (-> (TransientOrderedSet %a))))
+  (clr-transientorderedset-empty   (: OrderedSet.TransientOrderedSetModule.Empty          (-> (TransientOrderedSet %a))))
   (orderedset->transientorderedset (: OrderedSet.TransientOrderedSetModule.FromPersistent (-> (OrderedSet %a) (TransientOrderedSet %a))))
   (transientorderedset->orderedset (: OrderedSet.TransientOrderedSetModule.ToPersistent   (-> (TransientOrderedSet %a) (OrderedSet %a))))
   (transientorderedset-add!        (: OrderedSet.TransientOrderedSetModule.Add            (-> (TransientOrderedSet %a) %a void)))
@@ -133,14 +133,29 @@
   (transientorderedset-max         (: OrderedSet.TransientOrderedSetModule.TryGetMax      (-> (TransientOrderedSet %a) (out %a) (Option %a)))))
 
 ;; ---------------------------------------------------------------------------
-;; Conversions
+;; Where a set comes from
 ;; ---------------------------------------------------------------------------
+
+;; The tree compares elements with their CompareTo, which is what an Ord
+;; compiles to, so a set of a type with none failed at its second element. Only
+;; what makes a set out of nothing asks: one made from a set already had to.
+(: orderedset-empty (-> (OrderedSet %a)) (where (Ord %a)))
+(defun (orderedset-empty) (clr-orderedset-empty))
+
+(: seq->orderedset (-> (Seq %a) (OrderedSet %a)) (where (Ord %a)))
+(defun (seq->orderedset xs) (clr-seq->orderedset xs))
+
+(: orderedsetbuilder-empty (-> (OrderedSetBuilder %a)) (where (Ord %a)))
+(defun (orderedsetbuilder-empty) (clr-orderedsetbuilder-empty))
+
+(: transientorderedset-empty (-> (TransientOrderedSet %a)) (where (Ord %a)))
+(defun (transientorderedset-empty) (clr-transientorderedset-empty))
 
 ;; ---------------------------------------------------------------------------
 ;; Ordered sets, where the callback may suspend
 ;; ---------------------------------------------------------------------------
 
-(: orderedset-map (-> (-?-> %a %b) (OrderedSet %a) (OrderedSet %b)))
+(: orderedset-map (-> (-?-> %a %b) (OrderedSet %a) (OrderedSet %b)) (where (Ord %b)))
 (defbjouble (orderedset-map f s)
   (#:sync (clr-orderedset-map f s))
   (#:bjo
@@ -157,7 +172,7 @@
 (defbjouble (orderedset-filter keep? s)
   (#:sync (clr-orderedset-filter keep? s))
   (#:bjo
-    (def b (orderedsetbuilder-empty))
+    (def b (clr-orderedsetbuilder-empty))
     (def c (orderedset-cursor s))
     (let go ()
       (cond
@@ -190,13 +205,13 @@
               (go)
               #f)))))
 
-(: list->orderedset (-> (List %a) (OrderedSet %a)))
+(: list->orderedset (-> (List %a) (OrderedSet %a)) (where (Ord %a)))
 (defun (list->orderedset xs) (seq->orderedset (list->seq xs)))
 
 (: orderedset->list (-> (OrderedSet %a) (List %a)))
 (defun (orderedset->list s) (seq->list (orderedset->seq s)))
 
-(: vec->orderedset (-> (Vec %a) (OrderedSet %a)))
+(: vec->orderedset (-> (Vec %a) (OrderedSet %a)) (where (Ord %a)))
 (defun (vec->orderedset v) (seq->orderedset (vec->seq v)))
 
 (: orderedset->vec (-> (OrderedSet %a) (Vec %a)))
@@ -243,6 +258,7 @@
 (type (: (OrderedSetting %a) (Union ordered-setting)))
 
 (impl (Collector (OrderedSetting %a))
+  (where (Ord %a))
   (type %elem %a)
   (type %acc (OrderedSetBuilder %a))
   (type %out (OrderedSet %a))

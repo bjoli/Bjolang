@@ -88,6 +88,11 @@ out-degree ≤ 1, so copies grow additively; largest demand 722 nodes
   arguments in the resolved name's scope".
 - *A private helper a published body names becomes public* in the importer's
   scope (~doubled~ in ~193_lib.bjo~).
+- *Each module makes its own copies.* An importer specialises a published body
+  where it calls it, so ~f~ at ~int~ is copied into every module that calls it
+  at ~int~. A project should collect its instantiations and monomorphise each
+  function once: the copies in one place every module links, rather than one
+  per caller. Belongs with evidence structs and the collection comparers.
 
 * Colourless concurrency
 
@@ -127,6 +132,11 @@ hand"), each a lookup that silently misses:
 - two cases of a union that ~=~ equates (~248_generic_materialization.bjo~);
 - a specialized target, ~(impl (Eq (Pair %a %a)))~;
 - a ~(where ...)~ of another trait.
+
+For ~Ord~ the last two are worse: the type gets no ~CompareTo~, so an
+~OrderedSet~ or ~OrderedMap~ of it throws at its second element. A type with no
+~Ord~ at all is refused, since what makes an ordered collection out of nothing
+has ~(where (Ord %a))~.
 
 One design closes all three: *the key's evidence as the collection's comparer*.
 The CHAMP already takes an ~IEqualityComparer~, and ~Eq<T>~ could be emitted as

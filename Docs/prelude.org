@@ -118,6 +118,8 @@ Where ~=~ and a ~Map~ can still disagree:
 (hashset-length (list->hashset (list (Cents 100) (Cents (money->cents (Dollars 1))))))  ;; 1
 #+END_SRC
 
+An ~Ord~ of the first two shapes leaves the type with no ~CompareTo~ at all, since C# writes none, so an ~OrderedSet~ or ~OrderedMap~ of it fails at its second element although the ~Ord~ is there. Two cases of a union do not have this problem with ~Ord~: ~CompareTo~ is the union's, and the implementation sees both.
+
 *** ~type/derive~
 ~type/derive~ writes that out per field. A macro in ~(std prelude)~, and syntactic — where a declaration is read there is no registry to ask what a type's fields are, only the form that declares them.
 
@@ -589,7 +591,7 @@ Each collection provides three identical interfaces for different usage patterns
 
 ~(HashSet %a)~ is ~(Map %k %v)~ with the values left out. Constant time access. Unordered.
 
-~(OrderedSet %a)~ and ~(OrderedMap %k %v)~ are persistent B-trees keyed in the elements' natural order, by ~Comparer<T>.Default~.
+~(OrderedSet %a)~ and ~(OrderedMap %k %v)~ are persistent B-trees keyed in the elements' natural order, by ~Comparer<T>.Default~. So the elements, or the keys, need an ~Ord~: what makes one out of nothing — ~orderedset-empty~, ~seq->~, ~list->~ and ~vec->orderedset~, a builder's or a transient's ~-empty~, ~orderedset-map~, ~ordered-setting~, and the same for ~OrderedMap~ — has ~(where (Ord %a))~ (~%k~ for a map). What works on one that exists asks nothing, since it could only have been made with one.
 
 ~(OrderedMap %k %v)~'s api is the prelude's ~map-*~ under an ~orderedmap-~ prefix.
 

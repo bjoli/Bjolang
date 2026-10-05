@@ -60,7 +60,7 @@
 ;; ---------------------------------------------------------------------------
 
 (import/extern
-  (orderedmap-empty      (: OrderedMap.OrderedMapModule.Empty       (-> (OrderedMap %k %v))))
+  (clr-orderedmap-empty  (: OrderedMap.OrderedMapModule.Empty       (-> (OrderedMap %k %v))))
   ;; Lookups.
   (orderedmap-ref        (: OrderedMap.OrderedMapModule.Ref         (-> (OrderedMap %k %v) %k %v)))
   (orderedmap-ref-or     (: OrderedMap.OrderedMapModule.RefOr       (-> (OrderedMap %k %v) %k %v %v)))
@@ -107,7 +107,7 @@
   ;; Find entry satisfying pred.
   (orderedmap-find       (: OrderedMap.OrderedMapModule.TryFind   (-> (-> %k %v bool) (OrderedMap %k %v) (out %k) (out %v) (Option (Tuple %k %v)))))
 
-  (seq->orderedmap (: OrderedMap.OrderedMapModule.FromEnumerable (-> (Seq (Tuple %k %v)) (OrderedMap %k %v))))
+  (clr-seq->orderedmap (: OrderedMap.OrderedMapModule.FromEnumerable (-> (Seq (Tuple %k %v)) (OrderedMap %k %v))))
   (orderedmap->seq (: OrderedMap.OrderedMapModule.AsEnumerable   (-> (OrderedMap %k %v) (Seq (Tuple %k %v)))))
 
   (orderedmap-cursor         (: OrderedMap.OrderedMapModule.Cursor        (-> (OrderedMap %k %v) (OrderedMapCursor %k %v))))
@@ -142,7 +142,7 @@
 ;; ---------------------------------------------------------------------------
 
 (import/extern
-  (orderedmapbuilder-empty       (: OrderedMap.OrderedMapBuilderModule.Empty    (-> (OrderedMapBuilder %k %v))))
+  (clr-orderedmapbuilder-empty   (: OrderedMap.OrderedMapBuilderModule.Empty    (-> (OrderedMapBuilder %k %v))))
   (orderedmap->orderedmapbuilder (: OrderedMap.OrderedMapBuilderModule.FromMap  (-> (OrderedMap %k %v) (OrderedMapBuilder %k %v))))
   (orderedmapbuilder-add!        (: OrderedMap.OrderedMapBuilderModule.Add      (-> (OrderedMapBuilder %k %v) %k %v void)))
   (orderedmapbuilder-add-all!    (: OrderedMap.OrderedMapBuilderModule.AddRange (-> (OrderedMapBuilder %k %v) (Seq (Tuple %k %v)) void)))
@@ -150,7 +150,7 @@
   (orderedmapbuilder-length      (: OrderedMap.OrderedMapBuilderModule.Count    (-> (OrderedMapBuilder %k %v) int)))
   (orderedmapbuilder->orderedmap (: OrderedMap.OrderedMapBuilderModule.Build    (-> (OrderedMapBuilder %k %v) (OrderedMap %k %v))))
 
-  (transientorderedmap-empty       (: OrderedMap.TransientOrderedMapModule.Empty          (-> (TransientOrderedMap %k %v))))
+  (clr-transientorderedmap-empty   (: OrderedMap.TransientOrderedMapModule.Empty          (-> (TransientOrderedMap %k %v))))
   (orderedmap->transientorderedmap (: OrderedMap.TransientOrderedMapModule.FromPersistent (-> (OrderedMap %k %v) (TransientOrderedMap %k %v))))
   (transientorderedmap->orderedmap (: OrderedMap.TransientOrderedMapModule.ToPersistent   (-> (TransientOrderedMap %k %v) (OrderedMap %k %v))))
   (transientorderedmap-set!        (: OrderedMap.TransientOrderedMapModule.Set            (-> (TransientOrderedMap %k %v) %k %v void)))
@@ -166,6 +166,25 @@
   (transientorderedmap-try-ref     (: OrderedMap.TransientOrderedMapModule.TryGetValue    (-> (TransientOrderedMap %k %v) %k (out %v) (Option %v)))))
 
 ;; ---------------------------------------------------------------------------
+;; Where a map comes from
+;; ---------------------------------------------------------------------------
+
+;; The tree compares keys with their CompareTo, which is what an Ord compiles
+;; to, so a map keyed on a type with none failed at its second key. Only what
+;; makes a map out of nothing asks: one made from a map already had to.
+(: orderedmap-empty (-> (OrderedMap %k %v)) (where (Ord %k)))
+(defun (orderedmap-empty) (clr-orderedmap-empty))
+
+(: seq->orderedmap (-> (Seq (Tuple %k %v)) (OrderedMap %k %v)) (where (Ord %k)))
+(defun (seq->orderedmap xs) (clr-seq->orderedmap xs))
+
+(: orderedmapbuilder-empty (-> (OrderedMapBuilder %k %v)) (where (Ord %k)))
+(defun (orderedmapbuilder-empty) (clr-orderedmapbuilder-empty))
+
+(: transientorderedmap-empty (-> (TransientOrderedMap %k %v)) (where (Ord %k)))
+(defun (transientorderedmap-empty) (clr-transientorderedmap-empty))
+
+;; ---------------------------------------------------------------------------
 ;; Ordered maps, where the callback may suspend
 ;; ---------------------------------------------------------------------------
 
@@ -173,7 +192,7 @@
 (defbjouble (orderedmap-map f m)
   (#:sync (clr-orderedmap-map f m))
   (#:bjo
-    (def b (orderedmapbuilder-empty))
+    (def b (clr-orderedmapbuilder-empty))
     (def c (orderedmap-cursor m))
     (let go ()
       (cond
@@ -187,7 +206,7 @@
 (defbjouble (orderedmap-map-values f m)
   (#:sync (clr-orderedmap-map-values f m))
   (#:bjo
-    (def b (orderedmapbuilder-empty))
+    (def b (clr-orderedmapbuilder-empty))
     (def c (orderedmap-cursor m))
     (let go ()
       (cond
@@ -201,7 +220,7 @@
 (defbjouble (orderedmap-filter keep? m)
   (#:sync (clr-orderedmap-filter keep? m))
   (#:bjo
-    (def b (orderedmapbuilder-empty))
+    (def b (clr-orderedmapbuilder-empty))
     (def c (orderedmap-cursor m))
     (let go ()
       (cond
@@ -244,20 +263,20 @@
 ;; going through seq is lazy af. If we move it below the Iterable we can
 ;; just use loop.
 ;; TODO: see above.
-(: list->orderedmap (-> (List (Tuple %k %v)) (OrderedMap %k %v)))
+(: list->orderedmap (-> (List (Tuple %k %v)) (OrderedMap %k %v)) (where (Ord %k)))
 (defun (list->orderedmap xs) (seq->orderedmap (list->seq xs)))
 
 (: orderedmap->list (-> (OrderedMap %k %v) (List (Tuple %k %v))))
 (defun (orderedmap->list m) (seq->list (orderedmap->seq m)))
 
-(: vec->orderedmap (-> (Vec (Tuple %k %v)) (OrderedMap %k %v)))
+(: vec->orderedmap (-> (Vec (Tuple %k %v)) (OrderedMap %k %v)) (where (Ord %k)))
 (defun (vec->orderedmap v) (seq->orderedmap (vec->seq v)))
 
 (: orderedmap->vec (-> (OrderedMap %k %v) (Vec (Tuple %k %v))))
 (defun (orderedmap->vec m) (seq->vec (orderedmap->seq m)))
 
 ;; Hashed map conversions.
-(: map->orderedmap (-> (Map %k %v) (OrderedMap %k %v)))
+(: map->orderedmap (-> (Map %k %v) (OrderedMap %k %v)) (where (Ord %k)))
 (defun (map->orderedmap m) (seq->orderedmap (map->seq m)))
 
 (: orderedmap->map (-> (OrderedMap %k %v) (Map %k %v)))
@@ -314,6 +333,7 @@
 (type (: (OrderedMapping %k %v) (Union ordered-mapping)))
 
 (impl (Collector (OrderedMapping %k %v))
+  (where (Ord %k))
   (type %elem (Tuple %k %v))
   (type %acc (OrderedMapBuilder %k %v))
   (type %out (OrderedMap %k %v))
