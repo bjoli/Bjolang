@@ -141,7 +141,7 @@ public static class CmlTests
         AwaitPark(() => a.RawPendingReceiveCount, "the choose to park");
         AwaitPark(() => b.RawPendingReceiveCount, "the choose to park in both channels");
 
-        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested("test"));
+        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested(BjoString.Utf8String.FromUtf16("test")));
         Await(done, "the cancelled choose to resume");
 
         return (caught, thread, stack);
@@ -191,7 +191,7 @@ public static class CmlTests
         _ = Bjo.Spawn<Unit>(async () => { await a.Send(7); return default; });
         AwaitPark(() => a.RawPendingSendCount, "the sender to park");
 
-        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested("before the sync"));
+        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested(BjoString.Utf8String.FromUtf16("before the sync")));
 
         var done = new ManualResetEventSlim(false);
         int got = -1;
@@ -233,7 +233,7 @@ public static class CmlTests
         // Returns once the rendezvous has committed, so the token below is
         // strictly later than the commit.
         Cml.Sync(new ChannelSendEvent<int>(a, 11), _ => { });
-        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested("after the commit"));
+        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested(BjoString.Utf8String.FromUtf16("after the commit")));
 
         Await(done, "the committed sync to resume");
         Assert(!cancelled, "a token fired after the commit took the sync back");
@@ -248,7 +248,7 @@ public static class CmlTests
     private static void FiredTokenLeavesNothingParked()
     {
         var token = new Promise<global::BjolangRuntime.CancelReason>();
-        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested("already cancelled"));
+        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested(BjoString.Utf8String.FromUtf16("already cancelled")));
 
         var a = new Channel<int>();
         var b = new Channel<int>();
@@ -341,7 +341,7 @@ public static class CmlTests
 
         for (int i = 0; i < N; i++) AwaitPark(() => channels[i].RawPendingReceiveCount, $"fiber {i} to park");
 
-        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested("all of you"));
+        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested(BjoString.Utf8String.FromUtf16("all of you")));
 
         Assert(done.Wait(10_000), $"only {raised + delivered} of {N} fibers came back");
         AssertEqual(N, raised, "fibers that raised Cancelled");
@@ -394,7 +394,7 @@ public static class CmlTests
             });
 
             if ((trial & 1) == 0) Thread.Sleep(trial % 4);
-            token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested($"trial {trial}"));
+            token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested(BjoString.Utf8String.FromUtf16($"trial {trial}")));
 
             Await(receiverDone, $"the receiver of trial {trial} ({received} received)");
             Await(senderDone, $"the sender of trial {trial}");
@@ -439,7 +439,7 @@ public static class CmlTests
             }
 
             Thread.SpinWait((trial * 31) % 4096);
-            token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested($"trial {trial}"));
+            token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested(BjoString.Utf8String.FromUtf16($"trial {trial}")));
 
             Assert(done.Wait(5000),
                 $"trial {trial}: {done.CurrentCount} of {N} fibers parked through the cancel");
@@ -490,7 +490,7 @@ public static class CmlTests
         AwaitPark(() => a.RawPendingReceiveCount, "the parent to park");
         AwaitPark(() => b.RawPendingReceiveCount, "the child to park");
 
-        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested("both of you"));
+        token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested(BjoString.Utf8String.FromUtf16("both of you")));
 
         Assert(done.Wait(10_000), $"only {raised} of 2 fibers came back");
         AssertEqual(2, raised, "fibers that raised Cancelled");
