@@ -1,652 +1,185 @@
 #+TITLE: Todo
 #+STARTUP: showall
 
-Known gaps, written down where they were found rather than in a commit message.
+Known gaps, written down where they were found. One entry each: what, why it
+matters, and the fix where one is known.
 
+* CML: where the remaining speed is
 
-* The CML layer: where the remaining speed is
+~bench/Cml/Program.cs~ runs the ring at 58 ns/op on the same layer the language
+runs at 112, so the cost is the seam between ~sync~ and the layer. Surgical,
+separately measurable changes; ~IEvent<T>~ stays the spec. Unmeasured unless
+noted.
 
-The anchor fact for all of these: ~bench/Cml/Program.cs~ uses ~Channel<T>~,
-~Cml.Choose~ and ~EventAwaiter~ out of the same assembly the language links, and
-runs the ring at 58 ns/op where the language runs it at 112. The layer is capable
-of the numbers; what costs is the seam between ~sync~ and the layer. So these are
-surgical changes, each independently measurable, and not a rewrite — ~IEvent<T>~
-stays the specification the ~Cml/Tests~ suite is written against.
-
-Everything below is unmeasured except where it says otherwise.
-
-** Delivery is a callback where a fiber wants a slot
-
-~IEvent<T>.Publish~ says "call me with the value"; a fiber wants "put the value
-here and resume me". ~EventAwaiter~ converts one into the other, at a pooled
-object, a delegate hop and an interlocked handover per rendezvous — where the C#
-path stores the fiber's resume straight into the ~PutOp~. Measured at ~13 ns, and
-tried once already: it regressed the ring badly while the per-park registration
-still existed, which it no longer does. Worth another attempt, and the first
-thing to try.
-
-** A token cannot unregister
-
-Nothing removes a waiter from a ~Promise~; it prunes amortised instead. That one
-fact is why ~FiberWatch~ needs a generation, an abandonment protocol and a
-fallback path. A cancellation token with O(1) removal — an intrusive node the
-fiber owns and unlinks when the park ends — deletes all three and is *simpler*
-than what is there now. Best value per unit of risk on this list.
-
-** A send carries a ~Unit~ it does not want
-
-~ChannelSendEvent : IEvent<Unit>~ puts ~Action<Unit>~ through the whole path, and
-~PutOp.ResumeGive~ exists only so publishing a send does not allocate a closure
-adapting it to ~Action~ (88 of that row's 128 B/op, per its own comment). A
-void-shaped send needs none of it. Allocation, not time.
-
-** Two ~Result~ types meet at every join
-
-~promise-join~ allocates a ~Wrap~ and a mapper per join to turn
-~Bjoml.Result<T>~ — which carries an ~ExceptionDispatchInfo~ — into Bjolang's
-~Result~. A promise that spoke the language's own failure type would not.
-Allocation, not time.
-
-** Event ids are minted with an interlocked increment
-
-Publishing happens on the syncing fiber's thread and nowhere else, so a
-~choose~ over eight branches pays eight atomics for a counter with one writer.
-Only the readers (~withNack~'s interval close, ~MarkSynchronized~) are on other
-threads. Measure before touching; it is a guess.
-
-** Unexplained: the direct-park rewrite regressed the ring
-
-Recorded in ~design.md~ with the six explanations that were ruled out. It wants
-~perf~, which is not installed on the development machine. Worth an afternoon
-before anyone commits to a larger redesign, because if it is structural the case
-for one gets stronger.
+- *Delivery is a callback where a fiber wants a slot.* ~EventAwaiter~ turns
+  ~Publish~'s "call me" into "resume me" at a pooled object, a delegate hop and
+  an interlocked handover (~13 ns). Tried once and regressed while per-park
+  registration existed, which it no longer does. Try first.
+- *A token cannot unregister.* ~Promise~ prunes waiters amortised, which is why
+  ~FiberWatch~ needs a generation, an abandonment protocol and a fallback. An
+  intrusive node the fiber unlinks deletes all three. Best value per risk.
+- *A send carries a ~Unit~ it does not want.* ~ChannelSendEvent : IEvent<Unit>~;
+  ~PutOp.ResumeGive~ exists only to avoid a closure (88 of 128 B/op).
+- *Two ~Result~ types meet at every join.* ~promise-join~ allocates a ~Wrap~ and
+  a mapper per join to convert ~Bjoml.Result<T>~.
+- *Event ids use an interlocked increment* with one writer: eight atomics per
+  eight-way ~choose~. A guess; measure first.
+- *Unexplained: the direct-park rewrite regressed the ring.* Six explanations
+  ruled out in ~design.md~. Needs ~perf~.
 
 * Source mapping (~#line~)
 
-Statement-level directives are emitted from ~generateBlock~, and both build
-configurations now carry a portable pdb, so stack traces name ~.bjo~ files and
-lines. What is not done:
-
-** Hoisted temporaries are attributed to the statement that produced them
-~emitStatement~ builds into a scratch buffer and then prepends a ~prelude~ of
-hoisted statements. The hoists are compiler glue with no honest source line, but
-they inherit the directive of whatever preceded them. They want ~#line hidden~
-around the prelude. Three sibling sites buffer the same way (~hoistToTemp~, and
-the two buffered-scratch paths in ~generateLocalFunction~).
-
-Harmless today — the line they inherit is the statement they belong to, which is
-close enough to be useful — but it is luck rather than design.
-
-** Directives are emitted unconditionally
-No suppression when the line has not changed since the last one, so the
-generated C# carries more directives than it needs. Correct, just larger. A
-dedup needs care: scratch buffers are relocated after the fact, so a
-module-level "last line emitted" would be wrong the moment a buffer moves.
-
-
-** Inlined trait methods report the impl, not the call site
-~TraitInline~ splices an impl body into a caller, and the spliced nodes keep the
-impl's ranges. A failure inside an inlined ~fold~ names the ~impl~. That is
-defensible — it is where the code is written — but a caller reading the trace
-has no way to see which call site reached it.
-
-** The pdb no longer distinguishes a ~-d~ build
-Optimized builds used to delete their pdb, and its absence was how a caller
-could tell which way a binary was built. Both configurations now keep one.
-Nothing depended on the signal, but it is gone.
+- Hoisted temporaries inherit the directive of the statement before them; they
+  want ~#line hidden~ (~emitStatement~'s prelude, ~hoistToTemp~, two paths in
+  ~generateLocalFunction~). Harmless today by luck.
+- Directives are emitted even when the line has not changed. A dedup must
+  survive scratch buffers being relocated.
+- Inlined trait methods keep the impl's ranges, so a trace names the impl and
+  not the call site.
+- Both build configurations keep a pdb, so its absence no longer tells a ~-d~
+  build apart. Nothing depended on it.
 
 * Diagnostics
 
-** Errors raised outside ~infer~ depend on their own call site for a location
-~infer~ attaches ~file.bjo:N~ to any diagnostic that arrives without one, which
-covers type errors. Reports from generalization, trait registration and parts of
-declaration checking are outside that wrapper and carry a location only if the
-site supplied one. Threading a ~Range~ into ~unify~ would close this, at the
-cost of inventing a location at the several call sites that have no natural one.
-
-** ~unify~ reports the two types, not the path to the mismatch
-Two large types differing deep inside are printed whole, and the reader finds
-the difference. Reporting the innermost disagreeing pair, or marking it, would
-be better.
+- Errors from generalization, trait registration and parts of declaration
+  checking carry a location only if their call site supplied one. Threading a
+  ~Range~ into ~unify~ would close it.
+- ~unify~ prints both types whole; it should point at the innermost mismatch.
+- ~(Dict.)~ on a generic ~import/class~ says "cannot find the .NET type".
 
 * Characters and strings
 
-** ~char-foldcase~ is simple lowercasing
-.NET exposes no simple case-folding table, so ~ToLowerInvariant~ stands in. It
-agrees with Unicode's simple fold except for characters like ß and ﬁ, where a
-full fold expands — which no char-to-char function can express in any case.
-
-** A number cannot be read or written in a culture
-~double->string~ and ~string->double~ now go through ~BjoNum~, which pins both
-to the invariant culture. That is the right default — they round-trip, and a
-document does not change meaning when it crosses a machine — but it is the
-*only* setting on offer, so a program that wants to show a Swede ~1,5~ has
-nowhere to ask.
-
-~string->int~ is still ~Int32.Parse~ on the ambient culture. ~NumberStyles.Integer~
-allows no group separators, so only the sign differs and nothing has been seen
-to break; it is inconsistent rather than wrong.
-
-What is missing is a ~Culture~ the prelude can name, and the overloads that take
-one. Until then, formatting for a human means reaching into .NET through
-~import/extern~.
+- ~char-foldcase~ is ~ToLowerInvariant~: differs from Unicode's simple fold for
+  ß, ﬁ and the like.
+- Numbers are read and written in the invariant culture only; there is no
+  ~Culture~ to ask for ~1,5~. ~string->int~ still uses the ambient culture
+  (only the sign can differ).
 
 * Emacs mode (~bjomode.el~)
 
-Indentation follows Scheme's rules: bodies two, ~if~ four, everything else
-aligned under the first argument. Reindenting ~lib/std/prelude.bjo~ and
-~TestFiles/008_iterators.bjo~ from scratch reproduces them exactly.
-
-** A named loop aligns under the name, not the first clause
-~(loop lp (:for x xs) ...)~ puts the clauses under ~lp~, where the sources put
-them under ~(:for~. Standard Lisp alignment gives the former, and the latter
-needs a custom indenter that returns the column of the *second* argument —
-~lisp-indent-specform~ cannot express it. Named ~let~ is special-cased already
-(~bjo-let-indent~) because its body is a body; a named loop's clauses align, so
-it needs different machinery for one rarely-used form.
-
-** A ~match~ arm's body aligns under the pattern
-~((Ok probe) body)~ is a list with a list at its head, so the body lines up
-under ~(Ok probe)~. Emacs does the same for a ~cond~ clause. Some sources
-indent it two from the arm's own paren instead.
-
-** Library functions that read as body forms are not known
-~with-nack~ takes a function and looks like a body form, but it is an ordinary
-call, so its argument aligns under the head. Only forms the parser gives a
-meaning to are in ~bjo-indent-forms~; adding library names there would mean
-tracking the library from the mode.
-
-** No completion, no imenu, no eldoc
-Font lock and indentation only.
+- A named loop aligns its clauses under the name, not under ~(:for~; needs a
+  custom indenter (~lisp-indent-specform~ cannot express it).
+- A ~match~ arm's body aligns under the pattern, as Emacs does for ~cond~.
+- Library forms that read as bodies (~with-nack~) are not in
+  ~bjo-indent-forms~.
+- No completion, imenu or eldoc.
 
 * Monomorphisation of constrained generics
 
-~Monomorphise~ copies a constrained function at each ground instantiation the
-module calls it with, and the copy takes no dictionary. The body of an exported
-one travels in the dll — ~Metadata.ConstrainedBodies~, format version 8 — so the
-copy is made in the module that calls it, which is also what lets it resolve
-against implementations the library never saw.
+Copies are made per ground instantiation, to a fixpoint, bounded by a code-size
+budget (module size or ~budgetFloor~). Termination is by key; polymorphic
+recursion cannot be written. The stdlib's 22 constrained generics have call
+out-degree ≤ 1, so copies grow additively; largest demand 722 nodes
+(~139_ord.bjo~). A branching graph would make the floor matter.
 
-What it does not do, written as what was deferred rather than as what was found.
-
-** The budget, and what stops the sweep
-
-The sweep runs to a fixpoint rather than to a depth: each round collects demand
-over the copies the round before it made, and it stops when a round asks for
-nothing new. There is no depth number, and deliberately — the number that would
-have worked when this was written is 3, which is only where the standard
-library's chains happen to run out.
-
-Termination is by the key, not by a counter. A copy is keyed by its name and its
-ground type arguments, so demanding one that exists is a lookup; new keys can
-only run out. What would break that is *polymorphic recursion* — ~f~ at ~T~
-calling ~f~ at ~(List T)~, which is why C++ and Rust need a depth cap — and
-Bjolang cannot express it: a recursive occurrence is bound monomorphically, the
-same fact ~Lowering.Scope.SelfCall~ relies on, and a mutually recursive group is
-not a candidate at all.
-
-What bounds it instead is a code-size budget, in typed AST nodes: the module's
-own size or ~budgetFloor~, whichever is larger. When it is spent the pass warns,
-names the function it stopped at, and leaves the remaining calls dispatching —
-always correct, and the same fallback a body that will not re-check takes.
-
-The floor is measured rather than chosen, and the measurement is worth keeping
-because it is what makes the fixpoint safe rather than merely terminating. The
-standard library has 22 constrained generics and its call graph among them has
-**out-degree at most one** — 15 call no other constrained generic and 7 call
-exactly one. So copies grow by addition: 1.41 per call site on average, 3 in the
-worst case, and depth 8 costs exactly what depth 3 costs. The largest demand
-anywhere in the fixtures is ~139_ord.bjo~ at 722 nodes.
-
-A graph that branched would grow by multiplication, and then the floor is what
-would matter. Nothing here branches yet.
-
-** Every type argument has to be ground
-
-A call at ~(-> %a int)~ where ~%a~ is still open is passed over, and so is one
-where only the *constrained* variables are ground. The copy therefore has no
-type parameters at all, which is what lets a call site drop its type arguments
-without agreeing with ~generalize~ about the order it put them in. Keeping the
-unconstrained ones would give fewer, more general copies and needs that
-agreement.
-
-A type argument that is a function type is declined outright: it has no short
-spelling for a copy's name, and ~Eq~ and ~Ord~ have no implementation at one.
-
-** Suspending functions are not copied at all
-
-A ~-?->~ signature and a ~defun~ that reaches a ~defbjouble~ both already have a
-second body, and it is generated inside ~checkDeclGroup~ — so it is not among
-the untyped declarations this pass reads, and it could not copy both halves even
-if it wanted to. Copying only the ordinary half would leave ~selectDoubles~
-looking up a mangled name in ~DoubleDefs~ and finding nothing, which is not a
-wrong answer but is a fiber that blocks where it used to park.
-
-~Naming.specializedCopy~ puts its infix ahead of the colour suffix so that
-~f__at_int__bjo~ is what the twin would be called, which is the half of the fix
-that is already in place.
-
-** Mutual recursion is declined
-
-Specialising one member of a cycle leaves it calling the generic other, which is
-the ~CS7036~ recorded above under "Mutual recursion does not forward
-dictionaries". Specialising the whole group together would *fix* that bug at
-every ground instantiation, which is the reason to do it and the reason it is a
-separate change.
-
-** A mention that is not a call is passed over
-
-~Lowering~ eta-expands one back into call position and supplies its dictionary
-there, so it is correct as it stands. Specialising it would remove the
-eta-expansion as well as the dictionary, and it is a rewrite at a different node.
-
-** A body that will not serialize is not published
-
-~Codegen.isSerializableTemplate~ decides, and it refuses ~try~, a bare list
-literal, a tuple-destructuring binding and a local function with keyword or rest
-parameters. Such a function crosses as a signature only, and a call to it keeps
-its dictionary — which is what every call did before bodies crossed at all, so
-nothing regresses and nothing says so either. The same rule has governed inline
-templates since they existed.
-
-** A published body is *checked* in the importer's scope
-
-Qualification rewrites the copy's free names to name the module they came from,
-but it is applied after inference: during checking the body still says ~helper~,
-and ~helper~ means whatever the importing module calls that. A module that binds
-a name the library's body uses would have its own binding checked into the copy
-and the library's emitted into it.
-
-Exactly the hazard ~qualifyInlineTemplates~ documents for a splice, with the
-same mechanism and the same gap. Closing it means inferring the body in one
-environment and emitting from another, which is a change to ~infer~'s ~EApp~
-case — see "A resolved call reads its arguments in the resolved name's scope"
-above, which is the same seam from the other side.
-
-** A private helper named by a published body becomes public
-
-~autoExports~ already did this for inline templates; there is simply more of it
-now. ~doubled~ in ~TestFiles/193_lib.bjo~ is not exported and is published
-anyway, because ~width-of~ names it and a copy of ~width-of~ has to be able to
-call it. The C# was public either way — what changes is that the name is now in
-the importing module's scope, where it can shadow or be shadowed.
+- *Every type argument must be ground*, so copies have no type parameters.
+  Keeping unconstrained ones needs agreement with ~generalize~ on order. A
+  function-typed argument is declined.
+- *Suspending functions are not copied.* The twin is generated inside
+  ~checkDeclGroup~, out of this pass's reach; ~Naming.specializedCopy~ already
+  names it ~f__at_int__bjo~.
+- *Mutual recursion is declined.* Specialising the whole group would also fix
+  "Mutual recursion does not forward dictionaries".
+- *A mention that is not a call is passed over.* Correct via eta-expansion.
+- *A body that will not serialize is not published* (~try~, bare list literal,
+  tuple destructuring, local function with keyword/rest parameters): calls keep
+  their dictionary.
+- *A published body is checked in the importer's scope*, so an importer's
+  binding can be checked into the copy. Same seam as "A resolved call reads its
+  arguments in the resolved name's scope".
+- *A private helper a published body names becomes public* in the importer's
+  scope (~doubled~ in ~193_lib.bjo~).
 
 * Constraints and numerics
 
-Found while opening ~Ord~ up and making the numeric constraints explicit. All of
-them are the same seam: a constraint discharged by *passing a dictionary* rather
-than by a C# ~where~ clause. Direct recursion, deriving ~Ord~ and using a
-constrained function as a value were three of these and are fixed; what is left
-is written as what remains rather than as what was found.
-
-** Mutual recursion does not forward dictionaries
-
-*Direct* recursion does, now: ~Scope.SelfCall~ carries the function's own
-dictionary parameters and a call to its own name forwards them. That is correct
-by construction rather than by luck — inside its own body a function is bound
-monomorphically, so the call is at exactly the enclosing type variables and the
-dictionaries it was handed are the right evidence in the right order.
-
-Two constrained functions calling *each other* are still stuck. Neither is its
-own callee, so each takes the ordinary route, finds no type arguments recorded —
-the mutual bindings are monomorphic for the same reason — and passes nothing.
-The result is the ~CS7036~ that direct recursion used to give.
-
-Nothing in the library does this yet, which is the only reason it is written here
-rather than fixed. The general answer is to record type arguments for a
-monomorphic recursive binding, which is a change to how recursion is typed rather
-than a patch to ~Lowering~.
+- *Mutual recursion does not forward dictionaries.* Direct recursion does
+  (~Scope.SelfCall~); two constrained functions calling each other pass none
+  and get CS7036. Fix: record type arguments for monomorphic recursive
+  bindings. Nothing in the library does it yet.
 
 * Colourless concurrency
 
-Layers 0–4 ship, and so does trait colour in both shapes. Four things left,
-none of which blocks anything.
+- *A copy that never suspends is still emitted*, and it spreads: ~vec->list~ has
+  a copy because ~vec-for-each~ is a ~defbjouble~, so every importer calling it
+  gets copies too (all of samizdat's HTML writer; glasnost's ~folder-page~
+  needed ~#:sync~). Pruning needs call sites redirected after selection.
+- Two lambda pins (into a .NET ~Func~, into a structure of ground ~->~) get the
+  generic ~Unpinned~ message. Unreachable from fixtures today.
+- The lazy ~Seq~ functions have no suspending copy. Decided: the copy would
+  return ~AsyncSeq~, a different function. ~port->chan~ instead.
+- A ~(do ...)~ block cannot suspend: ~:bind~'s lambda colour is fixed. Would
+  need ~:bind/bjo~ or a keyword on ~do~.
 
-** A generated copy that never suspends is still emitted
+* Traits and macros
 
-The copies that gain no yield point are async methods awaiting nothing.
-Pruning them needs call sites redirected back to the original *after*
-selection, which is a rewrite nothing so far has needed.
+- *An impl at a concrete instantiation cannot be dispatched to.*
+  ~(impl (Over (List int)) ...)~ emits non-generic ~Over_List~, and a dispatched
+  dictionary is spelled ~Over_List<int>.Instance~ (CS0308). Not reproduced in
+  October 2026, even with a recursive generic forcing dispatch; may be fixed.
+- *A trait a macro's module imports is not among the ones it resolves.* The set
+  comes from the module's own ~def/trait~s, so ~time-it~'s ~(->str ...)~ resolves
+  where it expands. Fix: carry the set in module metadata.
+- *A resolved call reads its arguments in the resolved name's scope.*
+  ~unshadow~ applies to the whole application, so in
+  ~(do (:bind x m) (:return (bind x)))~ the parameter ~bind~ means Monad's.
+  Fix: infer callee and arguments in different environments; ~EApp(EIdent)~ is
+  not shaped for it.
 
-Not only size, across a module boundary. The prelude's ~vec->list~ has a copy,
-because its body names ~vec-for-each~, a ~defbjouble~ of its own module — yet
-the lambda it passes is ordinary, so the copy never suspends. An importer's
-function that calls ~vec->list~ then gets a copy too, awaiting
-~vec->list__bjo~, and so on up; the same body written in the importer, calling
-~vec-for-each~ directly, gets none. samizdat 0.5.0's HTML writer uses
-~vec->list~ and ~list-map~, so every function of it has a copy, and so does
-anything that makes a page with it. glasnost's ~folder-page~ drew the blocking
-lint for a copy nobody calls, and needed ~#:sync~ to quiet it.
+* Inference
 
-** Two lambda pins have no message of their own
+- *Maybe: a signature's keywords pair with the ~defun~'s by position.* A
+  different order unifies the wrong keywords (found in ~(text xml)~'s
+  ~node-case~). Pair by name, or refuse with a message.
+- *A lowercase nullary union case cannot be matched*: ~(blob "a")~ binds. Fix:
+  resolve pattern constructors after parsing, or refuse lowercase nullary cases
+  at the declaration (the prelude has none).
 
-A lambda handed to a .NET ~Func<A,B>~, and one stored in a structure whose
-element type is a ground ~->~. Both land in ~Unpinned~ and get the generic
-message, which is true about them.
+* Interop
 
-Neither is reachable from a fixture: every ~Func~-taking method in the runtime
-is generic, and ~Task.Run~ fails overload resolution through ~import/extern~.
-A message waiting for a case.
-
-** The lazy half of ~Seq~ has no suspending copy
-
-~seq-map~, ~seq-filter~, ~seq-unfold~. Closed as a decision rather than open
-work: the two copies would have different *types* — ~Seq~ against ~AsyncSeq~ —
-and a copy that changes its return type is two functions, not monomorphisation.
-~port->chan~ shipped instead.
-
-If a suspending sequence is ever wanted it is a separate form producing a
-separate type, with an ~AsyncIterable~ trait to consume it. Expressible now that
-a trait method may carry a colour; not worth it at two ~seql~ producers in the
-whole library.
-
-** A ~(do ...)~ block cannot suspend
-
-~:bind~ desugars to ~bind~ with the rest of the block as ~(fun ...)~, and a
-lambda's text is fixed while its colour is not. ~(bind m (bjoroutine (x) ...))~
-written by hand does suspend; the macro cannot know which was wanted.
-
-A second definer — ~:bind/bjo~, or a keyword the whole ~do~ reads — would settle
-it. Nothing has needed one yet.
-
-* An impl at a concrete instantiation cannot be dispatched to
-
-~(impl (Over (List int)) ...)~ emits ~Over_List~, a non-generic class,
-because the impl's fixed prefix is ~int~ and has no type variable in it. A
-dictionary built for it is still spelled ~Over_List<int>.Instance~, and Roslyn
-answers ~CS0308: the non-generic type 'Over_List' cannot be used with type
-arguments~ about a file nobody wrote.
-
-Only the *dispatched* path. A resolved call is inlined or lands on the pad, and
-both are fine; ~(impl (Over (List %a)) ...)~ is fine too, which is why this
-has not been hit — an impl at one instantiation of a generic type is an unusual
-thing to write.
-
-Reproduces with a plain ~->~ method, so it has nothing to do with colour.
-
-* Macros and trait methods
-
-Both found while making a trait method in a template mean the trait. Neither is
-reachable from the standard library as it stands, which is why they are written
-here.
-
-** A trait a macro's module imports is not among the ones it resolves
-
-The set is read off the macro module's own ~def/trait~ declarations, at the
-point where its assembly's macros are registered. Every import edge in the
-module graph names a compiled ~.dll~, and a ~.dll~'s node carries its own
-declarations and no dependencies, so nothing further is reachable from there.
-
-So ~time-it~ in ~std/stopwatch~ writes ~(->str ...)~ in its template and gets
-the old behaviour: the bare name, resolved where the expansion lands. Closing it
-means the module's metadata carrying the set, which is where the compiler
-genuinely knows it — inference has the whole registry for the module it is
-compiling.
-
-** A resolved call reads its arguments in the resolved name's scope
-
-~Inference.unshadow~ puts module level's binding for one name back over what is
-in scope, and the ~EApp(EResolved ...)~ case then infers the whole application
-in that environment — arguments included. Its docstring says otherwise.
-
-The visible consequence is that a name written by hand *inside* an argument of a
-compiler-written call means the compiler's binding rather than the caller's:
-
-#+BEGIN_SRC scheme
-(defun (through m bind)
-  (do (:bind x m)
-      (:return (bind x))))     ;; reaches Monad's bind, not the parameter
-#+END_SRC
-
-Fixing it means inferring the callee in one environment and the arguments in
-another, which the ~EApp(EIdent ...)~ case is not shaped for: it is one branch
-covering trait dispatch, extern resolution and keyword arguments. Renaming the
-shadow apart in the arguments instead does not work either — the binder keeps
-its spelling into the emitted C#, so only one end of the rename would move.
-
-* Inference faults found in passing
-
-** Maybe: a signature's keywords are paired with the ~defun~'s by position
-
-#+BEGIN_SRC scheme
-(: tree-case (-> Tree (#:leaf (-> string %r)) (#:else (-> Tree %r)) %r))
-(defun (tree-case t #:else no-case #:leaf (fun (s) (else t)))
-  ...)
-;; Type error: these types do not match.  Tree  string
-#+END_SRC
-
-~checkDefun~ looks each keyword's type up in the signature by name, but lays
-the flat type out in the ~defun~'s order and unifies it with the signature's,
-which is in the signature's order. So the same keywords in another order are
-paired by position, and the error names two types from different keywords
-without saying why they met.
-
-Found writing ~(text xml)~'s ~node-case~, whose ~#:else~ has to come first in
-the ~defun~ because the other defaults call it. Writing the signature in the
-same order is the workaround. Either pair them by name, or refuse a different
-order with an error that says the order has to agree.
-
-* Interop faults found in passing
-
-Found writing textmate-bjolang, a wrapper over TextMateSharp.
-
-** A failed ~import/extern~ clause takes the rest of the import with it
-
-#+BEGIN_SRC scheme
-(import/extern
-  (s-len (: System.String.Length (-> string int) #:get))
-  (bad (: System.Int32.TryParse (-> NOPE (out int) (Option int)))))
-;; Type Error: there is no type named 'NOPE'.
-;; Unbound variable: s-len
-#+END_SRC
-
-The unknown name is reported now, but ~s-len~, which is fine, is still reported
-unbound where it is used. The fix is to let the other clauses stand when one
-fails, as a declaration group already does.
-
-* A lowercase union case cannot be matched by name
-
-Found while letting a binder shadow a union case constructor, and separate from
-it: in *expression* position the two are now told apart by scope, but a pattern
-has no such thing to consult.
-
-#+BEGIN_SRC scheme
-(type (: Shape (Union blob (: dot int) Big)))
-
-(match s
-  (blob "a")     ;; binds `s` to `blob` and answers "a" for every shape
-  ((dot _) "b")
-  (Big "c"))
-#+END_SRC
-
-~parsePattern~ reads a bare lowercase symbol as a binder, before any registry
-exists to say otherwise — which is right for the overwhelmingly common case and
-leaves no way to *test* for a nullary lowercase case. A case with a payload is
-fine: ~(dot _)~ is a list, so it reads as a constructor. An uppercase case is
-fine for the same reason the binder rule is safe.
-
-Two ways out. Resolve the pattern's constructors after parsing, where the
-registry is known — which is where the expression side resolves and would make
-the two agree. Or refuse a lowercase nullary case at the ~type~ declaration,
-which is smaller and would cost the prelude nothing: its lowercase cases all
-carry payloads.
+- *A failed ~import/extern~ clause takes the rest of the import with it*: a good
+  clause beside a bad one is reported unbound. Let the others stand, as a
+  declaration group does.
+- *Names that mangle alike in two modules* (~a-b~ in one, ~asubb~ in another)
+  meet in C# through ~using static~. Checked within a module only.
 
 * Equality and hashing
 
-A ~Map~ and a ~Set~ file a key under ~EqualityComparer<T>.Default~ — .NET's
-equality — and not under the ~Eq~ impl in ~std/eq~. The two agree today, and
-nothing makes them.
+~Map~ and ~Set~ key on ~EqualityComparer<T>.Default~, not on ~std/eq~'s ~Eq~;
+they agree only because a declared type's ~Eq~ is compiled into its ~Equals~.
+Three cases still disagree (documented in ~Docs/prelude.org~, "Writing one by
+hand"), each a lookup that silently misses:
 
-What was found: ~RrbList~ had no ~Equals~ or ~GetHashCode~ of its own, so a
-~Vec~ key was compared by reference and never found its own entry. It has them
-now, and ~Map~, ~Set~ and ~SchemeList~ already did. Separately, ~Map.Clear~,
-~Set.Clear~ and both ~Remove~ methods answered with the shared ~Empty~
-singleton, which carries the *default* comparer — so a collection built with one
-of its own silently reverted to .NET equality the moment it was emptied.
-~TestFiles/186_collection_keys.bjo~ pins both.
+- two cases of a union that ~=~ equates (~248_generic_materialization.bjo~);
+- a specialized target, ~(impl (Eq (Pair %a %a)))~;
+- a ~(where ...)~ of another trait.
 
-** Where ~=~ and a ~Map~ can still disagree
+One design closes all three: *the key's evidence as the collection's comparer*.
+The CHAMP already takes an ~IEqualityComparer~, and ~Eq<T>~ could be emitted as
+one (default interface methods forwarding to ~eq~ and ~eqsubhash~). Missing:
+naming the evidence in scope, so ~map-empty~ and the other constructors (not
+~map-set~ or ~map-ref~) gain ~(where (Eq %k))~. Pass ~null~ for the CLR-derived
+~Eq~ to keep the JIT's devirtualisation. Do ~Ord~ and the ordered collections
+the same way, not one without the other.
 
-A declared type's ~Eq~ and ~Ord~ are compiled into its ~Equals~,
-~GetHashCode~ and ~CompareTo~, a generic type's conditional ones included, and
-an ~Eq~ or ~Ord~ for a type declared elsewhere is refused. Three cases are left,
-each documented in ~Docs/prelude.org~, "Writing one by hand". In each the
-symptom is a lookup that misses rather than anything that can be caught.
+* Packages and projects
 
-- *Two different cases of a union that ~=~ equates.* C# writes each case
-  record's ~Equals(Base?)~, and it answers false for another case before the
-  implementation runs; declaring it by hand is CS0111. ~(Cents 100)~ and
-  ~(Dollars 1)~ are two keys. Pinned in ~248_generic_materialization.bjo~.
-- *A specialized target*, ~(impl (Eq (Pair %a %a)))~ on a two-parameter
-  ~Pair~: the impl class instantiated at the type's own parameters is not the
-  impl the trait system would pick, so C#'s field-wise members stay.
-- *A ~(where ...)~ of another trait*, ~(where (->str %a))~: no .NET member can
-  stand in for the dictionary, so C#'s field-wise members stay.
-
-All three close with one design, which would also let a program key a map on
-an equality that is not the type's own: the key's evidence as the collection's
-comparer.
-
-The pieces are all in place. The CHAMP is comparer-parameterised end to end:
-~TrieOps~ takes an ~IEqualityComparer<TK>~, ~Map<TK,TV>~ stores one and
-propagates it through every operation, and ~MapModule.Empty~ already accepts
-one. And a ~where (Eq %a)~ compiles to an ordinary interface dictionary:
-
-#+BEGIN_SRC csharp
-public static bool same_QMARK<T_a>(Eq<T_a> _dict_Eq_a, T_a a, T_a b) { ... }
-// call site: same_QMARK(Eq_System_Int32.Instance, 1, 1)
-#+END_SRC
-
-~Eq<T>~ is a public generic interface with a singleton per implementor, which is
-nearly an ~IEqualityComparer<T>~ already. Emitting it as one — with default
-interface methods forwarding ~Equals~ and ~GetHashCode~ to ~eq~ and ~eqsubhash~
-— makes the dictionary itself the comparer: no wrapper, no allocation, no
-delegates, one interface call per probe.
-
-The half that is missing is that Bjolang cannot *name* the evidence in scope, so
-~map-empty~ has nothing to pass. Either an intrinsic that reads the dictionary
-~Lowering~ already threads, or these few constructors become compiler-known.
-Only the constructors need it — ~map-empty~, ~mapbuilder-empty~,
-~transientmap-empty~, ~seq->map~ and their ~Set~ counterparts — because the
-comparer is stored; ~map-set~ and ~map-ref~ keep their signatures. Those
-constructors gain ~(where (Eq %k))~, which is the honest cost: it makes "this
-key type has Bjolang equality" a checked fact rather than an assumption.
-
-Keep ~null~ meaning "use ~EqualityComparer<T>.Default~", and pass it when the
-key's ~Eq~ is the CLR-derived one. Otherwise every ~int~-keyed map loses the
-devirtualisation the JIT gives the default comparer, which is a real cost on the
-structure whose whole point is speed. With the dictionary as the comparer that
-is one check at construction.
-
-The same is true of ~Ord~ and the ordered collections: ~orderedmap-empty~ is a
-bare extern, and ~OrderedMap~ keys on ~Comparer<T>.Default~ (ordinal for a
-string), which reaches a Bjolang ~Ord~ only where it is compiled into the key
-type.
-
-Doing it for one trait and not the other is not worth it: both are one
-mechanism, ~evidence-as-comparer~, applied twice.
-
-* Packages: what the roots work left undone
-
-~--roots~ gives a package a name and a directory, and a module its identity from
-that name. These are the pieces around it that were deliberately not built at
-the same time, each with the reason it could wait.
-
-** An executable names its dependencies by absolute path
-
-~BjolangModulePaths~ in ~Build.fs~ embeds the full path of every module ~.dll~ in
-the generated resolver, so a program only runs on the machine that built it:
-copy ~app.exe~ to another host and it resolves nothing, however the packages are
-arranged there. Deferred because a resolver that searches roots at run time
-needs the roots to *be* somewhere at run time — an installed layout, or the
-paths written into the executable as a manifest — and that is a decision about
-deployment, which no part of this work had to make.
-
-** Build output still lands next to the source
-
-~core.bjo~ compiles to ~core.dll~ beside it, so building the same package in two
-projects writes into the fetched copy twice, and a read-only package directory
-cannot be built at all. Deferred because moving the output means teaching
-staleness, the resolver table and the build record about a second directory, and
-none of that is needed to prove that identity no longer depends on location.
-
-
-** A relative import still means a path
-
-~(import "core.bjo")~ resolves against the importing file's directory, as it
-always has. What changed is only what the file it finds is *called*: if that
-file is inside a package, it is the module the package names, so the two
-spellings reach one assembly. Deferred any further change — making a relative
-import illegal across a package boundary, say — because nothing yet says what a
-package boundary is worth, and a rule refusing programs that work today needs
-that.
-
-
-* Projects: what ~bjo init/fetch/build~ left undone
-
-~bjo~ reads a manifest, resolves a dependency graph, fetches git packages by
-version tag, writes ~bjo.lock~ and hands the compiler a roots file. See
-~Docs/Projects.org~. These are the pieces around that, each with why it waited.
-
-** ~bjo add~, ~bjo update~, ~bjo remove~
-
-A dependency is added by editing ~manifest.bjodat~ by hand. Deferred because
-those commands *write* the manifest, and doing that without destroying the
-user's comments and layout is its own piece of work: the bjodat reader gives a
-value, not a text with positions, so writing one back out would reformat the
-file — the commented-out example ~bjo init~ writes would be the first casualty.
-
-** No shared cache in the home directory
-
-Every project clones into its own ~.bjo/git~, so two projects that depend on
-~(bjorsec)~ clone it twice. Deferred because a shared cache is shared *state* —
-two ~bjo~ processes fetching into one clone at once — and nothing here locks
-anything yet.
-
-** Build output still lands beside the source
-
-A fetched package is built inside ~.bjo/pkg/bjorsec@1.2.3/src~, so the
-directory has to be writable and two projects that depend on one version build
-it twice. Deferred for the reason the roots work deferred it: moving the output
-means teaching staleness, the resolver table and the build record about a
-second directory.
-
-** No registries, no commit or branch pins, no pseudo-versions
-
-~(source (registry))~ is an error saying there are none; ~commit~ and ~branch~
-in a git source are refused. A dependency on an untagged commit — "the fix I
-pushed this morning" — has no spelling at all; use a path source. Deferred
-because a version is a tag here, and a pin that is not a version would need its
-own place in the lock and its own answer to "is this newer than that".
-
-** One version of a package per build
-
-If two packages need ~(json)~ and their constraints cannot both be met, the
-build is refused rather than given two copies of ~(json)~. Deferred because a
-module's identity is its package name, so two copies would be two modules
-called ~(json core)~ — and a value made by one would not be of the type the
-other declared.
-
-** No ~bjo install~, ~bjo test~, ~bjo clean~, and one entry point per package
-
-~tests/~ is a directory ~bjo init~ makes and nothing reads: a test is run with
-~bjo run tests/whatever.bjo~, which works because a file inside a project is
-compiled against the project's packages. A package builds one program, named by
-~entry~, so a repository holding both ~myapp~ and ~myapp-server~ needs two
-packages. Deferred as conventions that are cheap to add and expensive to
-change.
-
-** Nothing locks ~.bjo~ against two ~bjo~ processes
-
-Two builds of one project at the same time can both unpack ~.bjo/pkg/x@1.0.0~,
-and the second rename over the first fails. Deferred because a lock file is
-easy and the failure mode — one of the two builds stopping with an error — is
-loud rather than silent.
-
-** A version requirement on a path dependency is ignored
-
-~(package (name (mylib)) (version (version-at-least "2.0")) (source (path (dir
-"../mylib"))))~ builds against ~../mylib~ whatever its manifest says its
-version is. Deferred because a path source is an override — "use this copy" —
-and refusing it on a version would make the override conditional on the thing
-it is overriding.
+- *An executable names its dependencies by absolute path* (~BjolangModulePaths~
+  in ~Build.fs~), so it only runs where it was built. Needs a decision about
+  deployment layout.
+- *Build output lands beside the source*, also inside ~.bjo/pkg/...~: two
+  projects build one package twice, and a read-only package cannot be built.
+  Needs staleness, the resolver table and the build record to know a second
+  directory.
+- *A relative import still means a path*, even across a package boundary.
+- *No ~bjo add~, ~update~, ~remove~*: writing the manifest back would lose its
+  comments and layout.
+- *No shared clone cache*: it would be shared state, and nothing locks.
+- *No registries, commit or branch pins, or pseudo-versions*; an untagged commit
+  needs a path source.
+- *One version of a package per build*: two copies would be two modules with one
+  identity.
+- *No ~bjo install~, ~test~ or ~clean~*, and one entry point per package. Tests
+  are ~bjo run tests/x.bjo~, and ~simpletest~ exits 0 after a ~FAILURE:~.
+- *Nothing locks ~.bjo~* against two ~bjo~ processes; the second fails loudly.
+- *A version requirement on a path dependency is ignored*: a path source is an
+  override.
