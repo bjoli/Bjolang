@@ -309,6 +309,7 @@ let emptyRegistry : TraitRegistry =
       Unions = Map.empty
       ClrClasses = Map.empty
       ClrExterns = Map.empty
+      ExternOrigins = Map.empty
 
       OpaqueTypes = Map.empty
       OpaqueCases = Map.empty

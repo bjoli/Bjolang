@@ -88,7 +88,9 @@ open System.Text
 /// A reader of 15 would read the list as the extern declarations.
 /// 17: `MacroTraitMethods`, the trait methods a macro's module sees. A reader
 /// of 16 would read the list as the blocking definitions.
-let currentVersion = 17
+/// 18: `TraitOrigins`, the module that declared each trait a module re-exports.
+/// A reader of 17 would read the list as the impl declarations.
+let currentVersion = 18
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -203,6 +205,13 @@ type Metadata = {
     CarriedTypes: ReExportedType list
     ExternDecls: string list
     TraitDecls: string list
+    /// The module that declared each trait in `TraitDecls` another module
+    /// declared, by trait name. A trait declared here is not listed.
+    ///
+    /// A trait's name is not a key the way a type's is, so without this an
+    /// importer would take a re-exported trait for this module's: the REPL
+    /// would look for its doc here, where none is published.
+    TraitOrigins: (string * string) list
     ImplDecls: string list
     Defs: ExportedDef list
     InlineTemplates: InlineTemplateEntry list
@@ -256,6 +265,7 @@ let empty = {
     CarriedTypes = []
     ExternDecls = []
     TraitDecls = []
+    TraitOrigins = []
     ImplDecls = []
     Defs = []
     InlineTemplates = []
@@ -453,6 +463,7 @@ let serialize (m: Metadata) : string =
     putList sb putReExportedType m.CarriedTypes
     putList sb putStr m.ExternDecls
     putList sb putStr m.TraitDecls
+    putList sb putPair m.TraitOrigins
     putList sb putStr m.ImplDecls
     putList sb putDef m.Defs
     putList sb putTemplate m.InlineTemplates
@@ -488,6 +499,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
     let carriedTypes = getList getReExportedType c
     let externDecls = getList getStr c
     let traitDecls = getList getStr c
+    let traitOrigins = getList getPair c
     let implDecls = getList getStr c
     let defs = getList getDef c
     let templates = getList getTemplate c
@@ -507,6 +519,7 @@ let deserialize (assemblyPath: string) (text: string) : Metadata =
       CarriedTypes = carriedTypes
       ExternDecls = externDecls
       TraitDecls = traitDecls
+      TraitOrigins = traitOrigins
       ImplDecls = implDecls
       Defs = defs
       InlineTemplates = templates

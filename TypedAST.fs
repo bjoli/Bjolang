@@ -1544,6 +1544,11 @@ type TraitRegistry =
       /// Static methods brought in by `import/extern`, keyed by the Bjolang
       /// name they were bound to.
       ClrExterns: Map<string, ClrExternInfo>
+      /// The module whose `import/extern` bound each name in `ClrExterns`:
+      /// for one read from a `.dll`, the module that published it. What the
+      /// REPL asks to find a foreign import's doc; nothing emitted depends on
+      /// it.
+      ExternOrigins: Map<string, string>
 
       /// `#:opaque` type key -> the code that may use its representation.
       ///

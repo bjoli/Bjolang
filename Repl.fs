@@ -740,10 +740,14 @@ let private visibleNames (state: State) : Visible list =
             dllDeps |> List.map (fun dll -> Naming.moduleKeyOfPath dll, dll) |> Map.ofList
 
         let signatureOf (name: string) =
-            Map.tryFind name env.Bindings
-            |> Option.map (fun b ->
+            match Map.tryFind name env.Bindings with
+            | Some b ->
                 let (TypedAST.Scheme(_, _, t)) = b.Scheme
-                DotNetInterop.showType t)
+                Some(DotNetInterop.showType t)
+            | None ->
+                Map.tryFind name env.Registry.ClrExterns
+                |> Option.bind (fun info -> info.DeclaredType)
+                |> Option.map DotNetInterop.showType
 
         let imported (origin: string) (original: string) (name: string) =
             Map.tryFind origin dllOf
@@ -766,6 +770,14 @@ let private visibleNames (state: State) : Visible list =
                 | AliasType ->
                     imported alias.OriginModule (Naming.bareTypeName alias.OriginModule alias.OriginalName) name
                 | _ -> imported alias.OriginModule alias.OriginalName name)
+
+        // A foreign import a module published is bound to the .NET member
+        // rather than to a definition, so it has no alias; its doc is in the
+        // module whose `import/extern` it was.
+        let externs =
+            env.Registry.ExternOrigins
+            |> Map.toList
+            |> List.choose (fun (name, origin) -> imported origin name name)
 
         let macros =
             (probeMacros.Bindings |> List.choose (fun (name, b) -> imported b.ModuleName b.Name name))
@@ -814,7 +826,7 @@ let private visibleNames (state: State) : Visible list =
 
         // `__` marks a name the compiler made, such as the suspending copy
         // `read-line__bjo`, and `::` a qualified one. Neither is written.
-        entries @ bindings @ macros @ traits @ builtins
+        entries @ bindings @ externs @ macros @ traits @ builtins
         |> List.filter (fun v -> not (v.Name.Contains "__") && not (v.Name.Contains "::"))
         |> List.distinctBy (fun v -> v.Name)
 

@@ -1220,6 +1220,18 @@ let metadata
       CarriedTypes = carriedTypes
       ExternDecls = externDecls
       TraitDecls = traitDecls
+      TraitOrigins =
+        if traitDecls.IsEmpty then
+            []
+        else
+            let own = Naming.moduleKeyOfPath inputFilePath
+
+            exportedTraits
+            |> Map.toList
+            |> List.choose (fun (traitName, _) ->
+                match Map.tryFind traitName env.Registry.TraitOrigins with
+                | Some origin when origin <> own -> Some(traitName, origin)
+                | _ -> None)
       ImplDecls = implDecls
       Defs = defs
       InlineTemplates = inlineTemplates

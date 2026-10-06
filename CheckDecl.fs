@@ -1611,7 +1611,12 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
 
     let newRegistry =
         infos
-        |> List.fold (fun (reg: TraitRegistry) info -> { reg with ClrExterns = Map.add info.Alias info reg.ClrExterns }) env.Registry
+        |> List.fold
+            (fun (reg: TraitRegistry) info ->
+                { reg with
+                    ClrExterns = Map.add info.Alias info reg.ClrExterns
+                    ExternOrigins = Map.add info.Alias env.CurrentModule reg.ExternOrigins })
+            env.Registry
 
     let withPlaceholders =
         failed

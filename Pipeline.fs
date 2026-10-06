@@ -878,10 +878,26 @@ type LoadedModule = {
 /// re-reading the prelude's metadata was about a third of what an entry cost.
 let mutable cacheLoadedModules = false
 
+/// What a `.dll`'s metadata says about its bindings and traits that is not a
+/// declaration, collected for the whole compilation rather than checked.
+type private DllFacts =
+    { /// Exports whose call parks a thread, each with where it was defined.
+      Blocking: (string * (string * string)) list
+      /// Exports written with `defbjouble`, each with where it was defined.
+      Doubles: (string * (string * string)) list
+      /// The bodies of exported constrained generics.
+      Bodies: (string * TypedAST.InlineTemplate) list
+      /// This module's key, a trait it re-exported, and the module that
+      /// declared the trait.
+      TraitOrigins: (string * string * string) list }
+
 /// Keyed on the timestamp as well as the path, so that rebuilding a dependency
 /// and importing it again in the same process gets the new one.
 type private CachedDll =
     { Decls: Decl list
+      /// Replayed into each compilation that reads the cached entry, like
+      /// `Linked`: the sets they go into belong to one compilation.
+      Facts: DllFacts
       Carried: Decl list
       Macros: ModuleMetadata.MacroEntry list
       PatternMacros: ModuleMetadata.MacroEntry list
@@ -1455,6 +1471,7 @@ let loadModuleGraph
       * Set<string * (string * string)>
       * Set<string * (string * string)>
       * Map<string, TypedAST.InlineTemplate>
+      * (string * string * string) list
       * Docs.Entry list =
     // Unconditionally, not only when something publishes a macro: the expander
     // is also what reports a macro used in the module that defines it.
@@ -1499,6 +1516,23 @@ let loadModuleGraph
     let constrainedBodies =
         System.Collections.Generic.Dictionary<string, TypedAST.InlineTemplate>()
 
+    /// The traits a dependency re-exported: the module whose metadata
+    /// published each, and the module that declared it.
+    let reExportedTraits = System.Collections.Generic.HashSet<string * string * string>()
+
+    let noteFacts (facts: DllFacts) =
+        for entry in facts.Blocking do
+            blockingDefs.Add entry |> ignore
+
+        for entry in facts.Doubles do
+            doubleDefs.Add entry |> ignore
+
+        for (name, body) in facts.Bodies do
+            constrainedBodies[name] <- body
+
+        for entry in facts.TraitOrigins do
+            reExportedTraits.Add entry |> ignore
+
     /// Every import edge that reaches a given module, as the renaming it
     /// produces and the position of the form that wrote it.
     ///
@@ -1538,6 +1572,7 @@ let loadModuleGraph
                         noteAssemblyPath path
 
                     Frameworks.noteImported hit.Frameworks
+                    noteFacts hit.Facts
 
                     hit.Decls, hit.Carried, [], hit.Macros, hit.PatternMacros, hit.HashMacros, Some hit.Assembly
                 | None ->
@@ -1643,17 +1678,21 @@ let loadModuleGraph
                     // Transitive, unlike the exports above: a name re-exported
                     // through this DLL is bound here, and whether calling it
                     // parks a thread is a fact about the body it still reaches.
-                    for name in meta.BlockingDefs do
-                        blockingDefs.Add((name, originOf name)) |> ignore
+                    let facts =
+                        { Blocking = meta.BlockingDefs |> List.map (fun name -> name, originOf name)
+                          Doubles = meta.DoubleDefs |> List.map (fun name -> name, originOf name)
+                          // Transitive for the same reason `BlockingDefs` is: a
+                          // name re-exported through this DLL is bound here, and
+                          // the body a copy would be made from is still the one
+                          // it reaches.
+                          Bodies =
+                            meta.ConstrainedBodies
+                            |> List.map (fun entry -> entry.Name, constrainedBodyTemplate absPath entry)
+                          TraitOrigins =
+                            meta.TraitOrigins
+                            |> List.map (fun (t, origin) -> Naming.moduleKeyOfPath absPath, t, origin) }
 
-                    for name in meta.DoubleDefs do
-                        doubleDefs.Add((name, originOf name)) |> ignore
-
-                    // Transitive for the same reason `BlockingDefs` is: a name
-                    // re-exported through this DLL is bound here, and the body
-                    // a copy would be made from is still the one it reaches.
-                    for entry in meta.ConstrainedBodies do
-                        constrainedBodies[entry.Name] <- constrainedBodyTemplate absPath entry
+                    noteFacts facts
 
                     // Inlineable method bodies, if this assembly published any.
                     // Without them everything that would have been inlined
@@ -1843,6 +1882,7 @@ let loadModuleGraph
                     if cacheLoadedModules then
                         dllCache[cacheKey] <-
                             { Decls = decls
+                              Facts = facts
                               Carried = carriedDecls
                               Macros = meta.Macros
                               PatternMacros = meta.PatternMacros
@@ -2131,6 +2171,7 @@ let loadModuleGraph
     Set.ofSeq blockingDefs,
     Set.ofSeq doubleDefs,
     constrainedBodies |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq,
+    List.ofSeq reExportedTraits,
     List.ofSeq mainDocs
 
 /// Which module each top-level name belongs to.
@@ -2222,7 +2263,7 @@ let private importOrigins (decls: Decl list) : Map<string, string * string> =
 let runFullFrontendPipeline (mainFilePath: string) =
     try
         Diagnostics.progress "=== Step 1: Parsing & Module Resolution ==="
-        let parsedModuleDecls, dllDeps, importedBlocking, importedDoubles, importedBodies, docEntries =
+        let parsedModuleDecls, dllDeps, importedBlocking, importedDoubles, importedBodies, reExportedTraits, docEntries =
             Timing.phase "parse + module graph" (fun () -> loadModuleGraph mainFilePath)
 
         // A dependency compiled while the graph was loaded has published its
@@ -2319,13 +2360,30 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // is the only thing that does. The pairs and the blocking names came in
         // with `startEnv` and are not joined again: that would put back the
         // names this module took over.
+        //
+        // A trait a dependency re-exported was registered as that dependency's,
+        // because its declaration was read from there; it is put back with the
+        // module that declared it. Only an entry still naming the re-exporter
+        // is touched: a trait of that name declared since is somebody else's.
+        // Nothing in inference minds the interim answer, since the one question
+        // it asks is whether a trait is the module being compiled's own, and
+        // that module never reads its own metadata.
         let env =
             { env with
                 Registry =
                     { env.Registry with
                         ConstrainedBodies =
                             importedBodies
-                            |> Map.fold (fun acc k v -> Map.add k v acc) env.Registry.ConstrainedBodies } }
+                            |> Map.fold (fun acc k v -> Map.add k v acc) env.Registry.ConstrainedBodies
+                        TraitOrigins =
+                            reExportedTraits
+                            |> List.fold
+                                (fun acc (facade, traitName, origin) ->
+                                    if Map.tryFind traitName acc = Some facade then
+                                        Map.add traitName origin acc
+                                    else
+                                        acc)
+                                env.Registry.TraitOrigins } }
 
         // Before anything reads `main`: the entry point is generated code's
         // caller, and a type it cannot call is a diagnostic here rather than a
