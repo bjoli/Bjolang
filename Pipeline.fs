@@ -66,7 +66,34 @@ let rec private collapseSynQuote (nodes: SExpr list) : SExpr list =
     | node :: rest -> node :: collapseSynQuote rest
     | [] -> []
 
-let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
+/// A bracket as the source writes it, for the reader's diagnostics.
+let private bracketText (t: Lexer.Token) =
+    match t with
+    | LParen -> "("
+    | RParen -> ")"
+    | LBracket -> "["
+    | RBracket -> "]"
+    | LBrace -> "{"
+    | RBrace -> "}"
+    | _ -> "?"
+
+/// The bracket that closes `opener`.
+let private closerOf (opener: Lexer.Token) =
+    match opener with
+    | LBracket -> RBracket
+    | LBrace -> RBrace
+    | _ -> RParen
+
+/// Reads the forms in `tokens` up to the bracket that closes `opener`, and
+/// returns them with the tokens after it. With no opener it reads to the end.
+///
+/// Every bracket has to be closed, by its own kind, and nothing may be closed
+/// that was not opened. Each of those is an error rather than something to
+/// make the best of, because what the reader would otherwise do is guess: the
+/// end of the file closed every open form, any closing bracket closed any
+/// opening one, and a stray closing bracket at the top ended the file, so
+/// that the forms after it were silently not compiled at all.
+let rec private readIn (opener: LexedToken option) (tokens: LexedToken list) : SExpr list * LexedToken list =
     let isDot = function SAtom { Token = Dot } -> true | _ -> false
 
     /// Reads the body of a bracketed form, up to its closing bracket, and puts
@@ -77,16 +104,17 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
     /// and `{...}` a dot is an ordinary element, because a vec literal and a
     /// comprehension are not spellings of a tuple.
     ///
-    /// `startRange` opens the form and `rangeFrom` opens the range the result
+    /// `bracket` opens the form and `rangeFrom` opens the range the result
     /// spans — they differ for a quoted list, where the quote comes first.
     let readForm
         (dotMakesTuple: bool)
-        (startRange: Lexer.Range)
+        (bracket: LexedToken)
         (rangeFrom: Lexer.Range)
         (undotted: SExpr list -> SExpr list)
         rest
         =
-        let innerNodes, afterList = read rest
+        let startRange = bracket.Range
+        let innerNodes, afterList = readIn (Some bracket) rest
         let endRange = if List.isEmpty afterList then startRange else (List.head afterList).Range
         let listRange = unionLexerRanges rangeFrom endRange
 
@@ -108,22 +136,33 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
     // them and nothing else has to know about `#'`.
     let rec loop acc remaining =
         match remaining with
-        | [] -> collapseSynQuote (List.rev acc), []
-        | { Token = RParen } :: rest -> collapseSynQuote (List.rev acc), rest
-        | { Token = RBracket } :: rest -> collapseSynQuote (List.rev acc), rest
-        | { Token = RBrace } :: rest -> collapseSynQuote (List.rev acc), rest
+        | [] ->
+            match opener with
+            | None -> collapseSynQuote (List.rev acc), []
+            | Some o ->
+                failwithf
+                    $"Syntax error at %s{Lexer.formatPos o.Range}: the '%s{bracketText o.Token}' opened here is never closed. The file ends first."
+        | ({ Token = (RParen | RBracket | RBrace) } as closer) :: rest ->
+            match opener with
+            | Some o when closerOf o.Token = closer.Token -> collapseSynQuote (List.rev acc), rest
+            | Some o ->
+                failwithf
+                    $"Syntax error at %s{Lexer.formatPos o.Range}: the '%s{bracketText o.Token}' opened here is closed by the '%s{bracketText closer.Token}' at %s{Lexer.formatPos closer.Range}. A form opened with '%s{bracketText o.Token}' is closed with '%s{bracketText (closerOf o.Token)}'."
+            | None ->
+                failwithf
+                    $"Syntax error at %s{Lexer.formatPos closer.Range}: this '%s{bracketText closer.Token}' closes nothing. Every bracket before it is already closed."
 
         // Quoted list: '(items...) → (quoted-list items...)
-        | { Token = Quote; Range = qr } :: { Token = LParen; Range = r } :: rest ->
-            let node, afterList = readForm true r qr (headed "quoted-list" qr) rest
+        | { Token = Quote; Range = qr } :: ({ Token = LParen } as bracket) :: rest ->
+            let node, afterList = readForm true bracket qr (headed "quoted-list" qr) rest
             loop (node :: acc) afterList
 
         // Function shorthand: #(+ &1 &2 5) → (fun (&1 &2) (+ &1 &2 5))
         //
         // `&` is `&1`, for the one-argument case that has no number to tell
         // apart: #(+ & 5).
-        | { Token = Hash; Range = hr } :: { Token = LParen; Range = r } :: rest ->
-            let rawBody, afterList = readForm true r hr id rest
+        | { Token = Hash; Range = hr } :: ({ Token = LParen } as bracket) :: rest ->
+            let rawBody, afterList = readForm true bracket hr id rest
             let bodySList = expandBareArg rawBody
             let argIndices = collectPositionalArgs bodySList
             let maxArg = if Set.isEmpty argIndices then 0 else Set.maxElement argIndices
@@ -137,8 +176,8 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
         //
         // The range starts at the `#`, so a diagnostic underlines the literal
         // and not the bracket half of it.
-        | { Token = Hash; Range = hr } :: { Token = LBracket; Range = r } :: rest ->
-            let node, afterList = readForm false r hr (headed "array-literal" hr) rest
+        | { Token = Hash; Range = hr } :: ({ Token = LBracket } as bracket) :: rest ->
+            let node, afterList = readForm false bracket hr (headed "array-literal" hr) rest
             loop (node :: acc) afterList
 
         // Hash macro call: #name(args...) or #name[args...] → (#name args...)
@@ -148,32 +187,38 @@ let rec read (tokens: LexedToken list) : SExpr list * LexedToken list =
         // the arguments is handed to the macro as written rather than making
         // the form a tuple, which would lose the head; an argument that is
         // itself a `(k . v)` gets the tuple rule from its own parentheses.
-        | { Token = Lexer.Symbol name; Range = hr } :: { Token = (LParen | LBracket); Range = r } :: rest when
+        | { Token = Lexer.Symbol name; Range = hr } :: ({ Token = (LParen | LBracket) } as bracket) :: rest when
             name.StartsWith "#"
             ->
-            let node, afterList = readForm false r hr (headed name hr) rest
+            let node, afterList = readForm false bracket hr (headed name hr) rest
             loop (node :: acc) afterList
 
-        | { Token = LParen; Range = r } :: rest ->
-            let node, afterList = readForm true r r id rest
+        | ({ Token = LParen; Range = r } as bracket) :: rest ->
+            let node, afterList = readForm true bracket r id rest
             loop (node :: acc) afterList
 
         // Comprehension: {collector expr clause...} → (comprehension collector expr clause...)
         //
         // Read as an ordinary list under a reserved head, exactly as a vec
         // literal is; the parser is where it becomes a loop.
-        | { Token = LBrace; Range = r } :: rest ->
-            let node, afterList = readForm false r r (headed "comprehension" r) rest
+        | ({ Token = LBrace; Range = r } as bracket) :: rest ->
+            let node, afterList = readForm false bracket r (headed "comprehension" r) rest
             loop (node :: acc) afterList
 
         // Vec literal: [items...] → (vec-literal items...)
-        | { Token = LBracket; Range = r } :: rest ->
-            let node, afterList = readForm false r r (headed "vec-literal" r) rest
+        | ({ Token = LBracket; Range = r } as bracket) :: rest ->
+            let node, afterList = readForm false bracket r (headed "vec-literal" r) rest
             loop (node :: acc) afterList
 
         | token :: rest -> loop (SAtom token :: acc) rest
 
     loop [] tokens
+
+/// Reads every form in `tokens`. The second half of the result is always empty:
+/// a bracket left open or closed without being opened is an error, so the
+/// reader never stops short of the end. It is kept for the callers that take
+/// the pair apart.
+let read (tokens: LexedToken list) : SExpr list * LexedToken list = readIn None tokens
 
 /// Splices the top-level forms of other files in at the position of each
 /// `(include "path")`.
