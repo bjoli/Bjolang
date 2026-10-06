@@ -3,6 +3,17 @@
 
 What each change guarantees, and what it leaves open.
 
+* (cancelled ct) and a with-nack's nack wrap nothing
+
+- *~(cancelled ct)~ is the token's value as an event of its own*, delivered
+  through a waiter rather than through ~Cml.Wrap~, and committed on the spot
+  once the token has fired. The nack ~with-nack~ hands its generator is built
+  the same way. ~(sync (cancelled ct))~ on a fired token: 57 -> 11 ns/op,
+  168 -> 24 B/op; a worker choosing between a receive and ~(cancelled ct)~:
+  180 -> 160 ns/op, 408 -> 304 B/op.
+- No change of meaning: the event carries the token's reason, loses a
+  ~choose~ without leaving anything behind, and fires once the token has.
+
 * promise-join is the promise, and a landed one is joined on the spot
 
 - *~(promise-join p)~ returns ~p~.* A promise is the join event in Bjolang's

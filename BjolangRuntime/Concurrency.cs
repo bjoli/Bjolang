@@ -942,8 +942,7 @@ public static partial class BjolangRuntime {
     /// The outcome is unwrapped to its value because a token cannot fail: the
     /// only writer Bjolang can reach is `make-cancel`'s thunk, which calls
     /// `TrySetResult`, and `link-cancel` only ever forwards from another token.
-    public static IEvent<CancelReason> cancelled(Promise<CancelReason> ct) =>
-        Cml.Wrap(ct.Join(), static r => r.Value);
+    public static IEvent<CancelReason> cancelled(Promise<CancelReason> ct) => ct.ValueEvent();
 
     /// `(until-cancelled token ev)` — `ev`, or `None` if `token` fires first.
     ///

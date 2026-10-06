@@ -227,7 +227,7 @@ public static class Cml
             Sync(nack, _ => DisposeOnce());
             p.OnCompleted(DisposeOnce);
 
-            return Wrap(p.Join(), static r => r.Value);
+            return p.ValueEvent();
         });
 }
 
@@ -436,9 +436,9 @@ public class WithNackEvent<T> : IEvent<T>
         // Register Nack interval starting at i0.
         var nackNode = sharedState.RegisterNack(i0, () => nack.TrySetResult(default));
 
-        // A nack promise is only ever completed successfully, so the Result wrapper
-        // can be projected away.
-        var ev = _generator(Cml.Wrap(nack.Join(), static r => r.Value));
+        // A nack promise is only ever completed successfully, so its value is
+        // the event.
+        var ev = _generator(nack.ValueEvent());
         
         // Publish the generated event with our starting eventId.
         ev.Publish(sharedState, eventId, onSync);

@@ -526,9 +526,89 @@ public class Promise<T> : IEvent<Result<T>>,
         public override bool IsAbandoned => _state.IsSynchronized;
     }
 
+    /// <summary>
+    /// This promise's value as an event, for a promise that is only ever
+    /// completed with a value: a cancellation token, a timer, a nack. See
+    /// <see cref="PromiseValue{T}"/>.
+    /// </summary>
+    internal IEvent<T> ValueEvent() => new PromiseValue<T>(this);
+
     // ---- direct-await surface (cheaper than routing through Cml.Sync) ------
 
     public PromiseAwaiter<T> GetAwaiter() => new PromiseAwaiter<T>(this);
+}
+
+/// <summary>
+/// A promise's value as an event, for a promise that is never completed with an
+/// exception.
+///
+/// What <c>Cml.Wrap(p.Join(), r => r.Value)</c> spelled: a wrap event, and a
+/// closure and its delegate at every publish, to take the value out of the
+/// <see cref="Result{T}"/>. This delivers the value itself through a waiter of
+/// its own, and a promise that has landed commits on the spot through
+/// <see cref="INowable{T}"/>.
+///
+/// A failed promise delivers <c>default</c>; nothing that builds one of these
+/// completes its promise with a failure.
+/// </summary>
+internal sealed class PromiseValue<T> : IEvent<T>, INowable<T>
+{
+    private readonly Promise<T> _promise;
+
+    internal PromiseValue(Promise<T> promise) => _promise = promise;
+
+    public bool TryNow(out T value)
+    {
+        if (_promise.IsCompleted)
+        {
+            value = _promise.Outcome.Value;
+            return true;
+        }
+
+        value = default!;
+        return false;
+    }
+
+    public void Publish(SyncState state, int eventId, Action<T> onSync)
+    {
+        if (_promise.IsCompleted)
+        {
+            Deliver(state, eventId, onSync);
+            return;
+        }
+
+        _promise.Register(new Waiter(this, state, eventId, onSync));
+    }
+
+    /// <summary>
+    /// <c>TryCommit</c>, not <c>TryClaim</c>, for the reason
+    /// <see cref="Promise{T}"/>'s own delivery gives.
+    /// </summary>
+    private void Deliver(SyncState state, int eventId, Action<T> onSync)
+    {
+        if (!state.TryCommit(eventId)) return;
+        Scheduler.Dispatch(onSync, _promise.Outcome.Value);
+    }
+
+    private sealed class Waiter : PromiseWaiter
+    {
+        private readonly PromiseValue<T> _owner;
+        private readonly SyncState _state;
+        private readonly int _eventId;
+        private readonly Action<T> _onSync;
+
+        public Waiter(PromiseValue<T> owner, SyncState state, int eventId, Action<T> onSync)
+        {
+            _owner = owner;
+            _state = state;
+            _eventId = eventId;
+            _onSync = onSync;
+        }
+
+        public override void Signal() => _owner.Deliver(_state, _eventId, _onSync);
+
+        public override bool IsAbandoned => _state.IsSynchronized;
+    }
 }
 
 public readonly struct PromiseAwaiter<T> : ICriticalNotifyCompletion

@@ -684,8 +684,23 @@ without publishing anything. A million joins of a landed promise: 74 -> 12
 ns/op and 168 -> 0 B/op. Starting a fiber and joining it: 362 -> 230 B/op, the
 time set by the spawn.
 
-`(cancelled ct)` still wraps a token's join. A loop that offers it in a
-`choose` pays a wrap per call and a closure per publish.
+#### A promise's value as an event — kept
+
+`(cancelled ct)`, the nack a `with-nack` hands its generator, and the timer
+behind `TimeoutViaCombinators` were each `Cml.Wrap(p.Join(), r => r.Value)`:
+the value of a promise that is never completed with a failure, at the cost of
+a wrap and a closure and delegate per publish. `PromiseValue<T>`
+(`Promise.ValueEvent()`) delivers the value through a waiter of its own and
+answers `INowable` once the promise has landed.
+
+    (sync (cancelled ct)) on a fired token        57 -> 11 ns/op, 168 -> 24 B/op
+    a worker's choose of a receive and (cancelled ct)  180 -> 160 ns/op, 408 -> 304 B/op
+
+The 24 B is the `PromiseValue` itself, made per `(cancelled ct)`. Caching one
+per token would need a token class of its own, for 24 bytes. Most of the
+worker's 304 is the `choose` and the program's own `wrap`, whose closure per
+publish is the same cost this removed, in a combinator that can be published
+many times at once and so has nowhere else to keep its `onSync`.
 
 **Event ids as a plain increment — measured and rejected.** `NextEventId` is an
 interlocked increment with one writer, nine per sync of an eight-way `choose`.
