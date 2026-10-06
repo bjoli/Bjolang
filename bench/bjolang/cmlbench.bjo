@@ -36,9 +36,11 @@
 ;;   counts down to a `ManualResetEventSlim`. A scope waits for its children by
 ;;   construction, so there is no Bjolang spelling of the latch that is not
 ;;   also a scope.
-;; - Every `sync` here goes through the language's `sync`, which builds an
-;;   event value; the C# twin awaits `ch.Send(v)` / `ch.Receive()` directly and
-;;   so has no event object on the send side.
+;; - The event rows sync events, which builds a send event per send; the C#
+;;   twin awaits `ch.Send(v)` / `ch.Receive()` directly and so has no event
+;;   object on the send side. The `put` rows use `chan-put` and `chan-get`,
+;;   which do not build one either, and the difference between a row and its
+;;   `put` twin is the overhead of syncing an event.
 
 (import (std prelude))
 (import (std stopwatch))
@@ -150,6 +152,45 @@
   (stopwatch-stop! sw)
   (Tuple (stopwatch-ms sw) (- (total-allocated #t) before) (- (gc-count 0) gc0)))
 
+;; The same ring with the operations performed by `chan-get` and `chan-put`
+;; rather than synced as events. Everything else is the row above: the
+;; difference between the two is what building an event and handing it to
+;; `sync` costs.
+(: ring-node/put (-bjo-> (Chan int) (Chan int) bool int void))
+(defbjo (ring-node/put in out is-last trips)
+  (let go ()
+    (def msg (chan-get in))
+    (if (= msg -1)
+        (if is-last unit (chan-put out -1))
+        (let ((m (if is-last (+ msg 1) msg)))
+          (if (and is-last (>= m trips))
+              (let () (chan-put out -1) (go))
+              (let () (chan-put out m) (go)))))))
+
+(: send-one/put (-bjo-> (Chan int) int void))
+(defbjo (send-one/put ch v)
+  (chan-put ch v))
+
+(: ring-joined/put (-bjo-> int int (Tuple long long int)))
+(defbjo (ring-joined/put workers trips)
+  (def channels (loop (:for i (range 0 workers))
+                      (:acc v (vecing (make-chan)))))
+  (def handles (loop (:for i (range 0 workers))
+                     (:acc v (vecing (bjo (ring-node/put (vec-ref channels i)
+                                                         (vec-ref channels (% (+ i 1) workers))
+                                                         (= i (- workers 1))
+                                                         trips))))))
+  (settle)
+  (def gc0 (gc-count 0))
+  (def before (total-allocated #t))
+  (def sw (stopwatch))
+  (stopwatch-start! sw)
+  (ignore (sync (promise-join (bjo (send-one/put (vec-ref channels 0) 0)))))
+  (loop (:for i (range 0 workers))
+        (:do (ignore (sync (promise-join (vec-ref handles i))))))
+  (stopwatch-stop! sw)
+  (Tuple (stopwatch-ms sw) (- (total-allocated #t) before) (- (gc-count 0) gc0)))
+
 ;; The same ring under a nested `with-cancel`, which is the only difference
 ;; between this row and the one above: the nodes are `spawn`ed rather than
 ;; `bjo`ed, the nested scope owns them and waits for them instead of a join per
@@ -208,6 +249,13 @@
   (loop (:for i (range 0 rounds))
         (:do (sync (chan-send ch i)))))
 
+;; The sender with `chan-put`. The receiver is a `choose` either way: a choice
+;; between operations is what an event is for.
+(: skewed-sender/put (-bjo-> (Chan int) int void))
+(defbjo (skewed-sender/put ch rounds)
+  (loop (:for i (range 0 rounds))
+        (:do (chan-put ch i))))
+
 (: skewed-receiver (-bjo-> (Vec (Chan int)) int void))
 (defbjo (skewed-receiver chs rounds)
   ;; Built once and synced a million times, as in the C# twin.
@@ -222,11 +270,13 @@
   (loop (:for i (range 0 rounds))
         (:do (ignore (sync ev)))))
 
-(: skewed-choose (-bjo-> int (Tuple long long int)))
-(defbjo (skewed-choose rounds)
+(: skewed-choose (-bjo-> int bool (Tuple long long int)))
+(defbjo (skewed-choose rounds put?)
   (def chs (loop (:for i (range 0 8))
                  (:acc v (vecing (make-chan)))))
-  (def sender (bjo (skewed-sender (vec-ref chs 0) rounds)))
+  (def sender (if put?
+                  (bjo (skewed-sender/put (vec-ref chs 0) rounds))
+                  (bjo (skewed-sender (vec-ref chs 0) rounds))))
   (settle)
   (def gc0 (gc-count 0))
   (def before (total-allocated #t))
@@ -256,16 +306,22 @@
   ;; paying for tier-0 code. A row hands its numbers back rather than printing
   ;; them, so a warmup rep is discarded by ignoring the result.
   (ignore (ring-joined 100 100))
+  (ignore (ring-joined/put 100 100))
   (ignore (ring-nested-scope 100 100))
   (ignore (spawn-burst 50000))
-  (ignore (skewed-choose 50000))
+  (ignore (skewed-choose 50000 #f))
+  (ignore (skewed-choose 50000 #t))
 
   (report "Ring" 1000000
           (loop (:for r (range 0 reps)) (:acc l (listing (ring-joined 1000 1000)))))
+  (report "Ring (put/get)" 1000000
+          (loop (:for r (range 0 reps)) (:acc l (listing (ring-joined/put 1000 1000)))))
   (report "Ring (nested scope)" 1000000
           (loop (:for r (range 0 reps)) (:acc l (listing (ring-nested-scope 1000 1000)))))
   (report "Spawn burst" 1000000
           (loop (:for r (range 0 reps)) (:acc l (listing (spawn-burst 1000000)))))
   (report "Skewed choose(8)" 1000000
-          (loop (:for r (range 0 reps)) (:acc l (listing (skewed-choose 1000000)))))
+          (loop (:for r (range 0 reps)) (:acc l (listing (skewed-choose 1000000 #f)))))
+  (report "Skewed choose(8), put" 1000000
+          (loop (:for r (range 0 reps)) (:acc l (listing (skewed-choose 1000000 #t)))))
   0)

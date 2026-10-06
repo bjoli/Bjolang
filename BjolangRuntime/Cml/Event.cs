@@ -60,7 +60,30 @@ internal interface INowable<T>
 /// withdraw it. <c>choose</c> publishes its branches the general way and keeps
 /// the full protocol.
 /// </summary>
-internal interface IDirectSyncable<T> : IParkSite
+/// <summary>
+/// The half of a single channel operation a sync needs once its op is rented:
+/// park it, take its value back, and let the token withdraw it.
+///
+/// Separate from <see cref="IDirectSyncable{T}"/> because a send performed by
+/// `chan-put` has no event: the op is rented by the caller, which holds the
+/// value, and the channel's one send side does the rest.
+/// </summary>
+internal interface IParkable<T> : IParkSite
+{
+    /// <summary>
+    /// Park <paramref name="op"/> with <paramref name="resume"/> as what a
+    /// partner runs. On <see cref="ParkResult.Matched"/> a partner was already
+    /// there: the value is in the op and <paramref name="resume"/> has NOT been
+    /// scheduled. On <see cref="ParkResult.Withdrawn"/> the token withdrew the
+    /// op first and nothing was done. The caller resumes the fiber in both.
+    /// </summary>
+    ParkResult Park(Operation op, Action resume);
+
+    /// <summary>The value a completed park carried. Recycles the op.</summary>
+    T TakeParked(Operation op);
+}
+
+internal interface IDirectSyncable<T> : IParkable<T>
 {
     /// <summary>
     /// Commit against a waiting partner if there is one, otherwise park.
@@ -75,18 +98,6 @@ internal interface IDirectSyncable<T> : IParkSite
     /// <see cref="Operation.Watch"/> before it parks.
     /// </summary>
     Operation RentPark();
-
-    /// <summary>
-    /// Park <paramref name="op"/> with <paramref name="resume"/> as what a
-    /// partner runs. On <see cref="ParkResult.Matched"/> a partner was already
-    /// there: the value is in the op and <paramref name="resume"/> has NOT been
-    /// scheduled. On <see cref="ParkResult.Withdrawn"/> the token withdrew the
-    /// op first and nothing was done. The caller resumes the fiber in both.
-    /// </summary>
-    ParkResult Park(Operation op, Action resume);
-
-    /// <summary>The value a completed park carried. Recycles the op.</summary>
-    T TakeParked(Operation op);
 }
 
 public readonly struct Unit
@@ -513,18 +524,36 @@ public class ChannelSendEvent<T> : IEvent<Unit>, INowable<Unit>, IDirectSyncable
 
     Withdrawal IParkSite.CancelParked(Operation op, int gen) => _channel.CancelParked(op, gen);
 
-    ParkResult IDirectSyncable<Unit>.Park(Operation op, Action resume)
+    ParkResult IParkable<Unit>.Park(Operation op, Action resume) => _channel.SendSide.Park(op, resume);
+
+    Unit IParkable<Unit>.TakeParked(Operation op) => _channel.SendSide.TakeParked(op);
+}
+
+/// <summary>
+/// The send half of one channel, as a sync parks it: one per channel, made the
+/// first time a send parks, and shared by every send after it. The value is in
+/// the op, which the caller rents, so nothing here is per send.
+/// </summary>
+internal sealed class ChannelSendSide<T> : IParkable<Unit>
+{
+    private readonly Channel<T> _channel;
+
+    internal ChannelSendSide(Channel<T> channel) => _channel = channel;
+
+    public ParkResult Park(Operation op, Action resume)
     {
         var put = (PutOp<T>)op;
         put.ResumePut = resume;
         return _channel.ParkLinkedSend(put);
     }
 
-    Unit IDirectSyncable<Unit>.TakeParked(Operation op)
+    public Unit TakeParked(Operation op)
     {
         ((PutOp<T>)op).Recycle();
         return default;
     }
+
+    public Withdrawal CancelParked(Operation op, int gen) => _channel.CancelParked(op, gen);
 }
 
 public class ChannelReceiveEvent<T> : IEvent<T>

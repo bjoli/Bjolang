@@ -1,0 +1,93 @@
+;; chan-put and chan-get: a send and a receive performed, without an event value
+;; in between. They meet each other, the events, and a choose; a fiber parked in
+;; either is cancelled with its scope; and a value handed over is never lost.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: echo (-bjo-> (Chan int) (Chan int) int void))
+(defbjo (echo in out n)
+  (loop (:for i (range 0 n))
+        (:do (chan-put out (* 2 (chan-get in))))))
+
+(: put-then-say (-bjo-> (Chan int) string))
+(defbjo (put-then-say ch)
+  (chan-put ch 1)
+  "sent")
+
+(: get-then-say (-bjo-> (Chan int) string))
+(defbjo (get-then-say ch)
+  (->str (chan-get ch)))
+
+(: chooser (-bjo-> (Chan int) (Chan string) int))
+(defbjo (chooser a b)
+  (sync (choose (chan-recv a) (wrap (chan-recv b) string-length))))
+
+(: outcome (-bjo-> (Promise string) string))
+(defbjo (outcome p)
+  (match (sync (promise-join p))
+    ((Ok v) v)
+    ((Err e) "cancelled")))
+
+(defbjo (main args)
+  ;; A round trip, both ways, a thousand times.
+  (def a (make-chan))
+  (def b (make-chan))
+  (spawn (echo a b 1000))
+  (expect "every reply came back doubled"
+          (loop (:for i (range 0 1000))
+                (:do (chan-put a i))
+                (:acc s (summing (chan-get b)))
+                => s)
+          999000)
+
+  ;; Against the events: chan-put meets a sync on chan-recv, and chan-get one
+  ;; on chan-send.
+  (def c (make-chan))
+  (def got (bjo (sync (chan-recv c))))
+  (chan-put c 7)
+  (expect "chan-put to a sync on chan-recv" (sync (promise-join got)) (Ok 7))
+  (spawn (sync (chan-send c 8)))
+  (expect "chan-get from a sync on chan-send" (chan-get c) 8)
+
+  ;; Into a choose: the branch it went to is the one that commits.
+  (def x (make-chan))
+  (def y (make-chan))
+  (def picked (bjo (chooser x y)))
+  (chan-put y "four")
+  (expect "chan-put into one branch of a choose" (sync (promise-join picked)) (Ok 4))
+
+  ;; A put and a get on one channel, in a scope that is cancelled.
+  (def shared (make-chan))
+  (def parked
+    (with-cancel (cancel)
+      (def sender (bjo (put-then-say shared)))
+      (def receiver (bjo (get-then-say shared)))
+      (sync (timeout 20))
+      (cancel (Requested "stop"))
+      (Tuple sender receiver)))
+  (match parked
+    ((Tuple sender receiver)
+     ;; The two met each other before the cancel, or were both cancelled; the
+     ;; one thing that may not happen is one of them delivering and the other
+     ;; being told it was cancelled.
+     (def s (outcome sender))
+     (def r (outcome receiver))
+     (expect "a put and a get on one channel meet or are both cancelled"
+             (or (and (= s "sent") (= r "1"))
+                 (and (= s "cancelled") (= r "cancelled")))
+             #t)))
+
+  (def lonely (make-chan))
+  (def alone
+    (with-cancel (cancel)
+      (def p (bjo (put-then-say lonely)))
+      (sync (timeout 20))
+      (cancel (Requested "stop"))
+      p))
+  (expect "a parked chan-put is cancelled with its scope" (outcome alone) "cancelled")
+
+  ;; The cancelled put left nothing a later receive could take.
+  (spawn (chan-put lonely 2))
+  (expect "a later receive gets the later value" (chan-get lonely) 2)
+  0)

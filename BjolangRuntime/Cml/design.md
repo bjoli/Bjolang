@@ -626,6 +626,43 @@ The spawn row's median is within its noise, and the one thing added to it is
 the type test in `FiberContext.ForChild`; the parent there has no cell, so
 nothing is copied. B/op is unchanged on every row.
 
+#### `chan-put` and `chan-get`: an operation without its event — kept
+
+The syntactic fast path for `(sync (chan-send ch v))` was rejected above
+(hack 3b) because it would be attached to a spelling, and because keeping one
+send event per thread bought 32 B/op and no time. `chan-put` is the same saving
+as a function of its own, as Guile fibers has `put-message` beside
+`put-operation`: what it does does not depend on how a call is written, and
+the event forms stay for `choose`, `wrap` and passing an operation around.
+
+It is faster than hack 3b predicted, because it removes more than the
+allocation. `sync` reaches a channel's fast paths through type tests on the
+event (`INowable`, `IDirectSyncable`) and interface calls; `chan-put` calls
+`TryDirectSend` and rents its `PutOp` directly, and parks through the
+channel's one cached `ChannelSendSide`. Everything after that is the same
+watched park (`SyncOp.Watched`), so the token is raced exactly as `sync` races
+it. `chan-get` is `sync` on the channel, which never allocated.
+
+`bench/bjolang/cmlbench.bjo` with each `(sync (chan-send ...))` and
+`(sync (chan-recv ...))` replaced, six interleaved rounds (min, first quartile,
+median, ns/op, and B/op):
+
+    Ring                  77 / 80 / 82.5, 32 B   -> 62 / 65 / 68, 0 B
+    Ring (nested scope)   69 / 74 / 75,   32 B   -> 61 / 64 / 64, 0 B
+    Skewed choose(8)     144 / 149 / 151.5, 72 B -> 132 / 136 / 137, 40 B
+    Spawn burst             unchanged
+
+The choose row's sender uses `chan-put`; the 40 B left is the receiver's
+`SyncState`.
+
+The suite now carries the pair as rows of its own, `Ring` and
+`Ring (put/get)`, `Skewed choose(8)` and `Skewed choose(8), put`. Run side by
+side in one process, six runs: the ring 80-92 against 63-73 (minimum), and the
+choose 147-172 against 146-164. The choose's time is the receiver's, and a
+cheaper sender does not move it; the separate-file comparison above, which
+showed 151 -> 137, ran each variant in its own process and caught that row in
+different modes.
+
 **Event ids as a plain increment — measured and rejected.** `NextEventId` is an
 interlocked increment with one writer, nine per sync of an eight-way `choose`.
 A plain increment measured within the noise on every row, so the interlocked one

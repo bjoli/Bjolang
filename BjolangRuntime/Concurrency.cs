@@ -98,12 +98,54 @@ public static partial class BjolangRuntime {
     /// language does not notice: `sync`'s Bjolang type is written down in
     /// `Prelude.fs`, not read off this signature, so all the call site needs is
     /// that `await` compiles.
-    public static SyncOp<T> sync<T>(IEvent<T> ev) {
-        // Nothing to lose to. The comparison against `RootCancel` is what makes
-        // a program that binds `(current-cancel)` to its own default free as
-        // well: that token has no other half and can never fire.
+    public static SyncOp<T> sync<T>(IEvent<T> ev) => new SyncOp<T>(ev, AmbientRace());
+
+    /// The token a `sync` here races, or null when there is nothing to lose
+    /// to. The comparison against `RootCancel` is what makes a program that
+    /// binds `(current-cancel)` to its own default free as well: that token has
+    /// no other half and can never fire.
+    private static Promise<CancelReason>? AmbientRace() {
         var token = Dyn.Current.Cancel;
-        return new SyncOp<T>(ev, ReferenceEquals(token, RootCancel) ? null : token);
+        return ReferenceEquals(token, RootCancel) ? null : token;
+    }
+
+    /// `(chan-put ch v)` — hand `v` over, and return when it has been taken.
+    ///
+    /// What `(sync (chan-send ch v))` does, without the event: a send that is
+    /// synced where it is written has no use for a value describing it, and
+    /// that value was the one object a rendezvous allocated. Everything else is
+    /// the same path — a waiting receiver commits inline, a parked send is a
+    /// pooled op, and the ambient token is raced exactly as `sync` races it.
+    public static ChanPut<T> chansubput<T>(Channel<T> ch, T value) =>
+        new ChanPut<T>(ch, value, AmbientRace());
+
+    /// `(chan-get ch)` — take one message. `(sync (chan-recv ch))`, which
+    /// allocates nothing either, since a receive event is the channel itself.
+    public static SyncOp<T> chansubget<T>(Channel<T> ch) => new SyncOp<T>(ch, AmbientRace());
+
+    /// What `(chan-put ch v)` evaluates to. As with `SyncOp`, nothing happens
+    /// until `GetAwaiter`.
+    public readonly struct ChanPut<T> {
+        private readonly Channel<T> _ch;
+        private readonly T _value;
+        private readonly Promise<CancelReason>? _token;
+
+        internal ChanPut(Channel<T> ch, T value, Promise<CancelReason>? token) {
+            _ch = ch; _value = value; _token = token;
+        }
+
+        public SyncAwaiter<Unit> GetAwaiter() {
+            if (_ch.TryDirectSend(_value)) return SyncAwaiter<Unit>.Ready(default);
+
+            var side = _ch.SendSide;
+            if (_token is null)
+                return new SyncAwaiter<Unit>(side, PutOp<T>.RentDirect(_value), 0, null);
+
+            if (_token.IsCompleted)
+                return SyncAwaiter<Unit>.Cancelled(_token.GetAwaiter().GetResult());
+
+            return SyncOp<Unit>.Watched(side, PutOp<T>.RentDirect(_value), _token);
+        }
     }
 
     /// What `(sync ev)` evaluates to: the event, and the token racing it.
@@ -208,23 +250,29 @@ public static partial class BjolangRuntime {
             if (token.IsCompleted)
                 return SyncAwaiter<T>.Cancelled(token.GetAwaiter().GetResult());
 
+            return Watched(ev, ev.RentPark(), token);
+        }
+
+        /// The watched park of an op already rented, which is `Direct` once
+        /// it has its op, and all of `chan-put`, whose op the caller rents
+        /// because it holds the value. The token has been checked once.
+        internal static SyncAwaiter<T> Watched(IParkable<T> site, Operation op, Promise<CancelReason> token) {
             var cell = Cell(token);
-            var op = ev.RentPark();
             int opGen = op.Watch();
-            cell.AttachDirect(ev, op, opGen);
+            cell.AttachDirect(site, op, opGen);
             int gen = cell.Arm();
 
-            // Fired between the check above and the arm, as in `Chosen`. The op
-            // has not been handed over, so taking the cell back is all there is
-            // to cancelling. If the token's own walk takes the cell first, it
+            // Fired between the caller's check and the arm, as in `Chosen`. The
+            // op has not been handed over, so taking the cell back is all there
+            // is to cancelling. If the token's own walk takes the cell first, it
             // withdraws the op and leaves the resuming to `Park`.
             if (token.IsCompleted && cell.TryTake(gen)) {
-                ev.TakeParked(op);
+                site.TakeParked(op);
                 cell.End();
                 return SyncAwaiter<T>.Cancelled(token.GetAwaiter().GetResult());
             }
 
-            return new SyncAwaiter<T>(ev, op, opGen, cell);
+            return new SyncAwaiter<T>(site, op, opGen, cell);
         }
     }
 
@@ -505,7 +553,7 @@ public static partial class BjolangRuntime {
 
         /// The direct form: one channel operation, parked with the fiber's own
         /// resume in it, under the fiber's registration when there is a token.
-        private readonly IDirectSyncable<T>? _direct;
+        private readonly IParkable<T>? _direct;
         private readonly Operation? _op;
 
         /// The generation the op was watched as, or 0 when no token watches it.
@@ -523,7 +571,7 @@ public static partial class BjolangRuntime {
         /// A single channel operation. The op is rented, and armed under the
         /// cell when there is one, but not yet handed to the channel; that
         /// happens in <see cref="UnsafeOnCompleted"/>.
-        internal SyncAwaiter(IDirectSyncable<T> direct, Operation op, int opGen, FiberWatch? cell) {
+        internal SyncAwaiter(IParkable<T> direct, Operation op, int opGen, FiberWatch? cell) {
             _aw = null; _cell = cell;
             _ready = default!; _why = null; _isReady = false;
             _direct = direct; _op = op; _opGen = opGen;

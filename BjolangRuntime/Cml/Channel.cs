@@ -28,6 +28,7 @@ namespace Bjoml;
 public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 {
     private readonly object _lock = new();
+    private ChannelSendSide<T>? _sendSide;
     private PutOp<T>? _giversHead;
     private PutOp<T>? _giversTail;
     private GetOp<T>? _takersHead;
@@ -43,6 +44,13 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     void IDirectSyncable<T>.SyncDirect(Action<T> onSync) => SyncDirectReceive(onSync);
 
     Operation IDirectSyncable<T>.RentPark() => GetOp<T>.RentDirect();
+
+    /// <summary>
+    /// What parks a send on this channel. Made once and kept, so a send that
+    /// parks costs its pooled op and nothing else. Two threads racing to make
+    /// it make two equivalent ones, and either will do.
+    /// </summary>
+    internal ChannelSendSide<T> SendSide => _sendSide ??= new ChannelSendSide<T>(this);
 
     Withdrawal IParkSite.CancelParked(Operation op, int gen) => CancelParked(op, gen);
 
@@ -75,14 +83,14 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         }
     }
 
-    ParkResult IDirectSyncable<T>.Park(Operation op, Action resume)
+    ParkResult IParkable<T>.Park(Operation op, Action resume)
     {
         var get = (GetOp<T>)op;
         get.DirectResume = resume;
         return ParkLinkedReceive(get);
     }
 
-    T IDirectSyncable<T>.TakeParked(Operation op)
+    T IParkable<T>.TakeParked(Operation op)
     {
         var get = (GetOp<T>)op;
         var value = get.DirectValue;

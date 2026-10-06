@@ -44,13 +44,18 @@ func repeat(reps int, body func()) {
 
 func main() {
 	reps := flag.Int("reps", 1, "repetitions per benchmark")
-	suite := flag.String("suite", "main", "main or varied")
+	suite := flag.String("suite", "main", "main, varied, or cmlbench (the twin of bench/bjolang/cmlbench.bjo)")
 	flag.Parse()
 
 	fmt.Printf("Go %s, GOMAXPROCS=%d, reps=%d\n\n", runtime.Version(), runtime.GOMAXPROCS(0), *reps)
 
 	if *suite == "varied" {
 		runVaried(*reps)
+		return
+	}
+
+	if *suite == "cmlbench" {
+		runCmlbench()
 		return
 	}
 

@@ -304,6 +304,13 @@ timeout, a fiber's result, or a .NET ~Task~.
 A channel is a rendezvous: a send waits for its receive. That is what makes a
 losing branch withdrawable, and it is why the feeder is a fiber of its own.
 
+An operation synced where it is written can be performed in one call:
+~(chan-put ch v)~ is ~(sync (chan-send ch v))~ and ~(chan-get ch)~ is
+~(sync (chan-recv ch))~, as in Guile's ~put-message~ beside its
+~put-operation~. They wait and are cancelled exactly as ~sync~ does, but no
+event value is built, so a rendezvous allocates nothing. The event forms are
+for what an event is for: ~choose~, ~wrap~, and passing one around.
+
 The part worth waking up for: an event is a *value*. ~choose~ races events and
 ~wrap~ maps one, so a deadline is an ordinary function that works on every
 event there will ever be — and a losing branch is withdrawn, not consumed.

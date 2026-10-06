@@ -528,6 +528,13 @@ let prelude : Env =
         "chan-send", {Scheme = Scheme(["a"], [], makeFunType [makeChanType (TVar "a"); TVar "a"] (makeEventType unitType)); IsMutable = false }
         "chan-recv", {Scheme = Scheme(["a"], [], makeFunType [makeChanType (TVar "a")] (makeEventType (TVar "a"))); IsMutable = false }
 
+        // The send and the receive performed, as Guile's put-message and
+        // get-message beside its put-operation and get-operation: what
+        // `(sync (chan-send ch v))` and `(sync (chan-recv ch))` do, without an
+        // event value in between. Yield points, so their arrows suspend.
+        "chan-put", {Scheme = Scheme(["a"], [], TFun([makeChanType (TVar "a"); TVar "a"], unitType, EAsync)); IsMutable = false }
+        "chan-get", {Scheme = Scheme(["a"], [], TFun([makeChanType (TVar "a")], TVar "a", EAsync)); IsMutable = false }
+
         // Variadic, so its flat type takes the rest array and a `FunMeta` below
         // says how to fill it.
         "choose", {Scheme = Scheme(["a"], [], makeFunType [makeArrayType (makeEventType (TVar "a"))] (makeEventType (TVar "a"))); IsMutable = false }

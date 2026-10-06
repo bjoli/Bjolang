@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* chan-put and chan-get: a send and a receive without an event
+
+- *~(chan-put ch v)~ is ~(sync (chan-send ch v))~ and ~(chan-get ch)~ is
+  ~(sync (chan-recv ch))~*, as Guile fibers has ~put-message~ beside
+  ~put-operation~. They are yield points like ~sync~, race the ambient token
+  as ~sync~ does, and are cancelled the same way.
+- *No event value is built*, so a rendezvous through them allocates nothing,
+  and the type tests ~sync~ makes on an event are skipped. On the ring
+  benchmark 80-92 -> 63-73 ns/op (minimum over six runs) and 32 -> 0 B/op.
+  A choose whose sender uses ~chan-put~ goes 72 -> 40 B/op; its time is set
+  by the receiving ~choose~ and does not move.
+- ~bench/bjolang/cmlbench.bjo~ has a ~put~ twin of the ring row and of the
+  skewed-choose row, so the overhead of syncing an event is on the table.
+- The event forms are unchanged and are what ~choose~, ~wrap~ and anything
+  that passes an operation around still take.
+- Each channel keeps one object that parks its sends, made the first time a
+  send parks.
+
 * A watched park costs one compare-exchange, and a fiber's cell is its own
 
 - *A spawned fiber never shares its parent's park cell.* ~Bjo.Spawn~ starts
