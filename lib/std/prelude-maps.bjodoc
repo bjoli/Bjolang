@@ -1,0 +1,617 @@
+;; Docs for the prelude's maps: Map, its cursor, builder and transient, and the
+;; Mapping collector. Read through (:doc #:file ...) from prelude.bjo. The texts
+;; are samizdat markup: code in prose is @code{...}.
+
+;; ---------------------------------------------------------------------------
+;; Types
+;; ---------------------------------------------------------------------------
+
+(:doc Map
+  (summary "A persistent, unordered hash map.")
+  (tparam %k "The key type. What makes a map out of nothing asks for its Eq.")
+  (tparam %v "The value type.")
+  (see map-empty map-ref map-set map-remove MapBuilder TransientMap Mapping)
+  (example """
+    (def m #map(("one" 1) ("two" 2)))
+    (map-ref m "two")              ; 2
+    (map-ref (map-set m "one" 11) "one")   ; 11
+    (map-ref m "one")              ; 1, m is unchanged
+    """)
+  (reference """
+    A CHAMP trie (Compressed Hash-Array Mapped Prefix-tree), the class
+    @code{Map.Map} of the runtime. Every write answers a new map and leaves
+    the old one as it was; the two share the parts of the trie the write did
+    not touch.
+
+    @strong{Key equality.} What makes a map out of nothing (@code{map-empty},
+    @code{seq->map}, @code{list->map}, @code{vec->map}, the @code{#map(...)}
+    literal, a builder's or a transient's @code{-empty}, the @code{mapping}
+    collector) asks for the key type's @code{Eq}, and the map compares keys
+    with it: the same answer @code{=} gives. A map made from another map keeps
+    that map's comparison, also when it is emptied by @code{map-clear} or by
+    removing its last key.
+
+    @strong{Order.} The entries are walked in the trie's own order, which is no
+    order to rely on.
+
+    @strong{Entries.} The callbacks of @code{map-fold}, @code{map-filter},
+    @code{map-for-each} and their neighbours take the key and the value as two
+    arguments. An entry is a single @code{(Tuple k v)} only where it is a value:
+    in @code{map->list}, @code{map->seq}, @code{map-cursor-current},
+    @code{map-find}, the bulk writes, and wherever a trait fixes one element,
+    as @code{Iterable} does for a @code{loop} or @code{fold}.
+
+    Two maps are @code{=} when they have the same number of entries and every
+    key of one finds an @code{=} value in the other. A map is
+    @code{Iterable}, @code{Collection}, @code{Refable}, @code{Settable} and
+    @code{Addable}, and prints with @code{->str} as @code{map->str} does.
+    @code{add} on a map takes a pair and replaces a key already there.
+    """))
+
+(:doc MapCursor
+  (summary "A position in a walk of a map.")
+  (tparam %k "The key type of the map walked.")
+  (tparam %v "The value type of the map walked.")
+  (see map-cursor map-cursor-done? map-cursor-current)
+  (reference """
+    What @code{Iterable} walks a map with. One allocation for the whole walk
+    and none per entry. A cursor is mutable: @code{map-cursor-done?} moves it.
+    """))
+
+(:doc MapBuilder
+  (summary "A mutable buffer that a map is built from in one pass.")
+  (tparam %k "The key type.")
+  (tparam %v "The value type.")
+  (see mapbuilder-empty mapbuilder-add! mapbuilder->map TransientMap)
+  (example """
+    (def b (mapbuilder-empty))
+    (mapbuilder-add! b "a" 1)
+    (mapbuilder-add! b "a" 2)
+    (mapbuilder-length b)   ; 2
+    (mapbuilder->map b)     ; #map(a 2)
+    """)
+  (reference """
+    The fast way to make a map out of nothing. Appends land in a flat buffer
+    and are scattered into the trie by hash in one pass when
+    @code{mapbuilder->map} builds the map, where setting a key on a map copies
+    a path down the trie per entry.
+
+    A builder supports no lookup and no removal. A key appended twice is
+    resolved when the map is built, the last one winning. It is
+    @code{Addable!} with a pair, and a @code{Collection} whose length is the
+    number of entries appended.
+    """))
+
+(:doc TransientMap
+  (summary "A mutable map, the fast way to make a map out of another map.")
+  (tparam %k "The key type.")
+  (tparam %v "The value type.")
+  (see map->transientmap transientmap->map transientmap-set! MapBuilder)
+  (example """
+    (def t (map->transientmap m))
+    (transientmap-set! t "c" 3)
+    (transientmap-remove! t "a")
+    (transientmap->map t)
+    """)
+  (reference """
+    The map's own operations with the writes done in place: the
+    @code{transientmap-} functions take the same arguments in the same order
+    as their @code{map-} namesakes, and the writes answer nothing.
+
+    A transient owns the trie nodes it has touched, so it writes them in place
+    rather than copying, and @code{transientmap->map} hands the result back in
+    O(1). The transient stays usable afterwards; a later write copies rather
+    than changing the map it handed back.
+
+    It is @code{Addable!} with a pair, and a @code{Collection}.
+    """))
+
+(:doc Mapping
+  (summary "The collector that gathers (key value) pairs into a map.")
+  (tparam %k "The key type. Collecting asks for its Eq.")
+  (tparam %v "The value type.")
+  (case mapping "The collector. Each element it is handed is a @code{(Tuple k v)}.")
+  (see list->map MapBuilder)
+  (example """
+    (loop (:for (k v) pairs)
+          (:acc m (mapping (Tuple k (* v 2)))))
+    """)
+  (reference """
+    Accumulates through a @code{MapBuilder}, so a key collected twice keeps
+    the last value.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Making a map
+;; ---------------------------------------------------------------------------
+
+(:doc map-empty
+  (summary "An empty map.")
+  (returns "A map with no entries, comparing keys with the key type's Eq.")
+  (see map-clear seq->map list->map))
+
+(:doc map-clear
+  (summary "An empty map that compares keys as another does.")
+  (arg m "The map whose key comparison to keep.")
+  (returns "An empty map.")
+  (see map-empty map-remove-all))
+
+;; ---------------------------------------------------------------------------
+;; Reading
+;; ---------------------------------------------------------------------------
+
+(:doc map-ref
+  (summary "The value under a key, which must be there.")
+  (arg m "The map.")
+  (arg k "The key.")
+  (returns "The value under k.")
+  (raises System.Collections.Generic.KeyNotFoundException "When k is not in the map.")
+  (see map-ref-or map-try-ref ref))
+
+(:doc map-ref-or
+  (summary "The value under a key, or a default when it is not there.")
+  (arg m "The map.")
+  (arg k "The key.")
+  (arg default "What to answer when k is not in the map.")
+  (returns "The value under k, or default.")
+  (see map-ref map-try-ref))
+
+(:doc map-try-ref
+  (summary "The value under a key, if it is there.")
+  (arg m "The map.")
+  (arg k "The key.")
+  (returns "(Some v) for the value under k, or None.")
+  (see map-ref map-ref-or try-ref)
+  (example """
+    (map-try-ref #map(("a" 1)) "a")   ; (Some 1)
+    (map-try-ref #map(("a" 1)) "b")   ; None
+    """))
+
+(:doc map-contains?
+  (summary "Whether a map has a key.")
+  (arg m "The map.")
+  (arg k "The key.")
+  (returns "#t when k is in the map.")
+  (see map-has-key? map-try-ref))
+
+(:doc map-has-key?
+  (summary "Whether a map has a key.")
+  (arg m "The map.")
+  (arg key "The key.")
+  (returns "#t when key is in the map.")
+  (see map-contains?)
+  (reference "The same as @code{map-contains?}."))
+
+(:doc map-length
+  (summary "How many entries a map has.")
+  (arg m "The map.")
+  (returns "The number of keys.")
+  (see map-empty? length))
+
+(:doc map-empty?
+  (summary "Whether a map has no entries.")
+  (arg m "The map.")
+  (returns "#t when the map has no keys.")
+  (see map-length empty?))
+
+(:doc map-keys
+  (summary "The keys of a map.")
+  (arg m "The map.")
+  (returns "A sequence of the keys, in the trie's order.")
+  (see map-values map->seq))
+
+(:doc map-values
+  (summary "The values of a map.")
+  (arg m "The map.")
+  (returns "A sequence of the values, in the trie's order.")
+  (see map-keys map->seq))
+
+;; ---------------------------------------------------------------------------
+;; Writing
+;; ---------------------------------------------------------------------------
+
+(:doc map-set
+  (summary "A map with a key set to a value, replacing or adding it.")
+  (arg m "The map, which is left as it was.")
+  (arg k "The key.")
+  (arg v "Its value.")
+  (returns "A map with k mapped to v.")
+  (see map-add map-set-all ref-set)
+  (reference """
+    When k already holds a value equal to v, by the value type's .NET
+    @code{Equals}, the answer is m itself.
+    """))
+
+(:doc map-add
+  (summary "A map with a key that was not there added.")
+  (arg m "The map, which is left as it was. Without k.")
+  (arg k "The key.")
+  (arg v "Its value.")
+  (returns "A map with k mapped to v.")
+  (raises System.ArgumentException "When k is already in the map.")
+  (see map-set add)
+  (reference """
+    @code{map-set} without the replacement. The @code{add} of the
+    @code{Addable} trait replaces instead, as @code{map-set} does.
+    """))
+
+(:doc map-set-all
+  (summary "A map with every entry of a sequence set.")
+  (arg m "The map, which is left as it was.")
+  (arg kvs "The (key value) pairs to set, in order: a later pair wins over an earlier one with the same key.")
+  (returns "The map with every pair set.")
+  (see map-set map-merge transientmap-set-all!)
+  (reference """
+    Through a transient, so the trie is copied once rather than once per entry.
+    """))
+
+(:doc map-remove
+  (summary "A map without a key.")
+  (arg m "The map, which is left as it was.")
+  (arg k "The key to remove.")
+  (returns "The map without k. When k is not there, m itself.")
+  (see map-remove-all map-filter))
+
+(:doc map-remove-all
+  (summary "A map without every key of a sequence.")
+  (arg m "The map, which is left as it was.")
+  (arg ks "The keys to remove. A key that is not there is skipped.")
+  (returns "The map without those keys.")
+  (see map-remove transientmap-remove-all!)
+  (reference """
+    Through a transient, so the trie is copied once rather than once per key.
+    """))
+
+(:doc map-merge
+  (summary "One map laid over another: where both have a key, the second's value wins.")
+  (arg m "The map underneath.")
+  (arg other "The map laid over it.")
+  (returns "Every key of either, with other's value where both have one.")
+  (see map-merge-with map-set-all)
+  (reference """
+    The result compares keys as @code{m} does. The merge is cheap where the
+    two maps share a history: a subtree that both have untouched is taken
+    whole rather than walked.
+    """))
+
+(:doc map-merge-with
+  (summary "Two maps merged, with a function deciding the keys both have.")
+  (arg f "Called as (f key left right) for a key both have; answers its value.")
+  (arg m "The left map.")
+  (arg other "The right map.")
+  (returns "Every key of either, with f's answer where both have one.")
+  (see map-merge)
+  (example """
+    (map-merge-with (fun (k a b) (+ a b))
+                    #map(("x" 1) ("y" 2))
+                    #map(("y" 10)))   ; x 1, y 12
+    """)
+  (reference "The result compares keys as @code{m} does."))
+
+;; ---------------------------------------------------------------------------
+;; Walking
+;; ---------------------------------------------------------------------------
+
+(:doc map-map
+  (summary "A map with every value replaced by a function of its key and value.")
+  (arg f "Called as (f key value); answers the new value.")
+  (arg m "The map.")
+  (returns "A map of the same keys, filed under the same comparison, with f's answers.")
+  (see map-map-values map-filter)
+  (reference """
+    The key is what the result is filed under, so @code{f} cannot move it.
+    """))
+
+(:doc map-map-values
+  (summary "A map with every value replaced by a function of the value.")
+  (arg f "Called as (f value); answers the new value.")
+  (arg m "The map.")
+  (returns "A map of the same keys, filed under the same comparison, with f's answers.")
+  (see map-map))
+
+(:doc map-filter
+  (summary "The entries of a map that a predicate keeps.")
+  (arg keep? "Called as (keep? key value); #t keeps the entry.")
+  (arg m "The map.")
+  (returns "A map of the entries kept, filed under the same comparison.")
+  (see map-remove-all transientmap-filter! map-find))
+
+(:doc map-fold
+  (summary "Combines every entry of a map into one value.")
+  (arg f "Called as (f key value acc); answers the next acc.")
+  (arg init "The acc before the first entry.")
+  (arg m "The map.")
+  (returns "The last acc, or init for an empty map.")
+  (see map-for-each fold)
+  (example """
+    (map-fold (fun (k v acc) (+ acc v)) 0 m)   ; the sum of the values
+    """)
+  (reference "The entries come in the trie's order."))
+
+(:doc map-for-each
+  (summary "Calls a function on every entry of a map, for its effect.")
+  (arg f "Called as (f key value).")
+  (arg m "The map.")
+  (see map-iter map-fold))
+
+(:doc map-iter
+  (summary "Walks a map until a function answers #f.")
+  (arg f "Called as (f key value); #f stops the walk.")
+  (arg m "The map.")
+  (returns "#t when the walk ran to the end, #f when f stopped it.")
+  (see map-for-each map-any? map-find))
+
+(:doc map-any?
+  (summary "Whether a predicate holds of some entry of a map.")
+  (arg pred "Called as (pred key value).")
+  (arg m "The map.")
+  (returns "#t at the first entry pred holds of; #f when there is none.")
+  (see map-find map-iter))
+
+(:doc map-find
+  (summary "The first entry of a map that a predicate holds of.")
+  (arg pred "Called as (pred key value).")
+  (arg m "The map.")
+  (returns "(Some (Tuple key value)) for the entry, or None.")
+  (see map-try-find map-any? map-filter)
+  (reference """
+    First in the trie's order, which is no order to rely on: when several
+    entries match, which one is found is unspecified.
+    """))
+
+(:doc map-try-find
+  (summary "The first entry of a map that a predicate holds of.")
+  (arg pred "Called as (pred key value).")
+  (arg m "The map.")
+  (returns "(Some (Tuple key value)) for the entry, or None.")
+  (see map-find)
+  (reference "The same as @code{map-find}."))
+
+;; ---------------------------------------------------------------------------
+;; Cursors
+;; ---------------------------------------------------------------------------
+
+(:doc map-cursor
+  (summary "A cursor before the first entry of a map.")
+  (arg m "The map to walk.")
+  (returns "A cursor; the first map-cursor-done? moves it to the first entry.")
+  (see map-cursor-done? map-cursor-current MapCursor))
+
+(:doc map-cursor-done?
+  (summary "Moves a cursor to the next entry, and answers whether there was none.")
+  (arg c "The cursor, which is moved.")
+  (returns "#t when the walk has run past the last entry.")
+  (see map-cursor map-cursor-current)
+  (example """
+    (let ((c (map-cursor m)))
+      (let go ()
+        (unless (map-cursor-done? c)
+          (displayln (map-entry->str (map-cursor-current c)))
+          (go))))
+    """)
+  (reference """
+    The step and the test are one call: ask once per entry. A second call
+    without reading @code{map-cursor-current} in between skips an entry.
+    """))
+
+(:doc map-cursor-current
+  (summary "The entry a cursor stands on.")
+  (arg c "The cursor, after a map-cursor-done? that answered #f.")
+  (returns "The entry, as (Tuple key value).")
+  (see map-cursor map-cursor-done?))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(:doc list->map
+  (summary "A map of the (key value) pairs of a list.")
+  (arg xs "The pairs. A later pair wins over an earlier one with the same key.")
+  (returns "The map, comparing keys with the key type's Eq.")
+  (see map->list vec->map seq->map Mapping)
+  (reference "What the @code{#map(...)} literal expands to."))
+
+(:doc vec->map
+  (summary "A map of the (key value) pairs of a vec.")
+  (arg v "The pairs. A later pair wins over an earlier one with the same key.")
+  (returns "The map, comparing keys with the key type's Eq.")
+  (see map->vec list->map seq->map))
+
+(:doc seq->map
+  (summary "A map of the (key value) pairs of a sequence.")
+  (arg xs "The pairs. A later pair wins over an earlier one with the same key.")
+  (returns "The map, comparing keys with the key type's Eq.")
+  (see map->seq list->map vec->map)
+  (reference "Through a builder, so the trie is made in one pass."))
+
+(:doc map->list
+  (summary "The entries of a map, as a list of pairs.")
+  (arg m "The map.")
+  (returns "A list of (Tuple key value), in the trie's order.")
+  (see list->map map->vec map->seq))
+
+(:doc map->vec
+  (summary "The entries of a map, as a vec of pairs.")
+  (arg m "The map.")
+  (returns "A vec of (Tuple key value), in the trie's order.")
+  (see vec->map map->list map->seq))
+
+(:doc map->seq
+  (summary "The entries of a map, as a sequence of pairs.")
+  (arg m "The map.")
+  (returns "A sequence of (Tuple key value), in the trie's order.")
+  (see seq->map map-keys map-values))
+
+(:doc map->str
+  (summary "A map written out as text.")
+  (arg m "The map.")
+  (returns "@code{#map(} and @code{)} around the entries, each written by map-entry->str, separated by spaces.")
+  (see map-entry->str)
+  (example """
+    (map->str (map-set (map-empty) "a" 1))   ; #map(a 1)
+    """)
+  (reference """
+    Also the @code{->str} implementation of a map, so @code{(println m)}
+    prints this. The entries are not put in parentheses, so a map of more
+    than nothing does not read back as a @code{#map(...)} literal.
+    """))
+
+(:doc map-entry->str
+  (summary "A (key value) pair written out as text.")
+  (arg entry "The pair.")
+  (returns "The key's ->str and the value's, separated by a space.")
+  (see map->str))
+
+;; ---------------------------------------------------------------------------
+;; Builders
+;; ---------------------------------------------------------------------------
+
+(:doc mapbuilder-empty
+  (summary "An empty map builder.")
+  (returns "A builder whose map will compare keys with the key type's Eq.")
+  (see map->mapbuilder mapbuilder-add! MapBuilder))
+
+(:doc map->mapbuilder
+  (summary "A map builder that starts with the entries of a map.")
+  (arg m "The map, which is left as it was.")
+  (returns "A builder holding m's entries, comparing keys as m does.")
+  (see mapbuilder-empty map->transientmap)
+  (reference """
+    A key added afterwards replaces m's value for it when the map is built.
+    To change an existing map, @code{map->transientmap} copies less.
+    """))
+
+(:doc mapbuilder-add!
+  (summary "Appends an entry to a map builder.")
+  (arg b "The builder.")
+  (arg k "The key.")
+  (arg v "Its value. A key appended twice keeps the last value.")
+  (see mapbuilder-add-all! mapbuilder->map add!))
+
+(:doc mapbuilder-add-all!
+  (summary "Appends every (key value) pair of a sequence to a map builder.")
+  (arg b "The builder.")
+  (arg kvs "The pairs, appended in order.")
+  (see mapbuilder-add! add-all!))
+
+(:doc mapbuilder-length
+  (summary "How many entries have been appended to a map builder.")
+  (arg b "The builder.")
+  (returns "The number of appends, counting a repeated key each time.")
+  (see mapbuilder->map)
+  (reference """
+    Keys appended twice are resolved when the map is built, so this is an
+    upper bound on the size of the map to come, not its size.
+    """))
+
+(:doc mapbuilder->map
+  (summary "Builds the map a builder holds.")
+  (arg b "The builder.")
+  (returns "The map of the entries appended, the last value winning for a repeated key.")
+  (see mapbuilder-empty MapBuilder))
+
+;; ---------------------------------------------------------------------------
+;; Transients
+;; ---------------------------------------------------------------------------
+
+(:doc transientmap-empty
+  (summary "An empty transient map.")
+  (returns "A transient comparing keys with the key type's Eq.")
+  (see map->transientmap TransientMap))
+
+(:doc map->transientmap
+  (summary "A transient map holding the entries of a map.")
+  (arg m "The map, which is left as it was.")
+  (returns "A transient that writes in place, comparing keys as m does.")
+  (see transientmap->map transientmap-empty)
+  (reference """
+    Nothing is copied up front: the transient copies a node the first time
+    it writes to it.
+    """))
+
+(:doc transientmap->map
+  (summary "The map a transient holds, as it stands.")
+  (arg t "The transient, which stays usable.")
+  (returns "A persistent map, made in O(1).")
+  (see map->transientmap)
+  (reference """
+    The transient disowns the nodes it handed over, so a later write to it
+    copies them rather than changing the map answered.
+    """))
+
+(:doc transientmap-set!
+  (summary "Sets a key of a transient map to a value, in place.")
+  (arg t "The transient.")
+  (arg k "The key.")
+  (arg v "Its value, replacing any it had.")
+  (see transientmap-set-all! map-set))
+
+(:doc transientmap-set-all!
+  (summary "Sets every (key value) pair of a sequence in a transient map, in place.")
+  (arg t "The transient.")
+  (arg kvs "The pairs, set in order: a later pair wins.")
+  (see transientmap-set! map-set-all))
+
+(:doc transientmap-remove!
+  (summary "Removes a key from a transient map, in place.")
+  (arg t "The transient.")
+  (arg k "The key. When it is not there, nothing happens.")
+  (see transientmap-remove-all! map-remove))
+
+(:doc transientmap-remove-all!
+  (summary "Removes every key of a sequence from a transient map, in place.")
+  (arg t "The transient.")
+  (arg ks "The keys. One that is not there is skipped.")
+  (see transientmap-remove! map-remove-all))
+
+(:doc transientmap-filter!
+  (summary "Removes the entries of a transient map that a predicate rejects, in place.")
+  (arg keep? "Called as (keep? key value); #f removes the entry.")
+  (arg t "The transient.")
+  (see map-filter transientmap-remove-all!)
+  (reference """
+    The keys to remove are all found before any is removed, so the predicate
+    sees the transient as it was.
+    """))
+
+(:doc transientmap-ref
+  (summary "The value under a key of a transient map, which must be there.")
+  (arg t "The transient.")
+  (arg k "The key.")
+  (returns "The value under k.")
+  (raises System.Collections.Generic.KeyNotFoundException "When k is not in the transient.")
+  (see transientmap-ref-or transientmap-try-ref map-ref))
+
+(:doc transientmap-ref-or
+  (summary "The value under a key of a transient map, or a default.")
+  (arg t "The transient.")
+  (arg k "The key.")
+  (arg default "What to answer when k is not there.")
+  (returns "The value under k, or default.")
+  (see transientmap-ref transientmap-try-ref))
+
+(:doc transientmap-try-ref
+  (summary "The value under a key of a transient map, if it is there.")
+  (arg t "The transient.")
+  (arg k "The key.")
+  (returns "(Some v) for the value under k, or None.")
+  (see transientmap-ref transientmap-ref-or))
+
+(:doc transientmap-contains?
+  (summary "Whether a transient map has a key.")
+  (arg t "The transient.")
+  (arg k "The key.")
+  (returns "#t when k is there.")
+  (see transientmap-try-ref map-contains?))
+
+(:doc transientmap-length
+  (summary "How many entries a transient map holds.")
+  (arg t "The transient.")
+  (returns "The number of keys, as it stands.")
+  (see transientmap-empty? map-length))
+
+(:doc transientmap-empty?
+  (summary "Whether a transient map holds no entries.")
+  (arg t "The transient.")
+  (returns "#t when it has no keys.")
+  (see transientmap-length map-empty?))

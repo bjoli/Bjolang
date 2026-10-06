@@ -121,6 +121,18 @@
              (summary-of (doc-named docs "module-docs"))
              "The docs of a module, by name.")))
 
+  ;; The prelude documents the builtins beside its own definitions, with the
+  ;; kind and the signature read off the builtin's type.
+  (match (module-docs standard (list (sym "std") (sym "prelude")))
+    ((Err why) (expect "(std prelude) reads" why ""))
+    ((Ok docs)
+     (match (doc-named docs "list-head")
+       (None (expect "the builtin list-head is documented" #f #t))
+       ((Some d)
+        (expect "a builtin's kind" (kind-text (record-ref d kind)) "function")
+        (expect "a builtin's signature" (record-ref d signature) (Some "(-> (List %a) %a)"))
+        (expect "a builtin has no definition" (record-ref d definition) None)))))
+
   ;; A module without docs has none, rather than failing.
   (match (module-docs standard (list (sym "std") (sym "eq")))
     ((Err why) (expect "(std eq) reads" why ""))

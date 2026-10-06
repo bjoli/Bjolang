@@ -1,0 +1,52 @@
+;; The module doc of std/prelude.bjo, read through (:doc #:file
+;; "prelude.bjodoc"). The prelude's names are documented by area in the
+;; prelude-*.bjodoc files beside it. The texts are samizdat markup: code in
+;; prose is @code{...}.
+
+(:doc #:module
+  (summary "What every module has without importing anything: collections, strings, files, ports, concurrency and the macros the language is written with.")
+  (see println ->str fold map list-map vec-map map-ref str file-read-text read-line sync with-scope cond)
+  (example """
+    (defun (main)
+      (def words (string-split (file-read-text "notes.txt") " "))
+      (println #"${(length words)} words")
+      0)
+    """)
+  (reference """
+    Every module outside the standard library imports @code{(std prelude)}
+    without saying so, unless it imports it itself, with modifiers, to hide or
+    rename part of it. Its names come from three
+    places: the definitions in @code{std/prelude.bjo} and the files it
+    includes, the names it re-exports from @code{(std eq)} and
+    @code{(std maths)}, whose docs are in those modules, and the builtins
+    compiled into the runtime, whose docs are here.
+
+    @strong{Collections.} @code{List} is the immutable linked list,
+    @code{Vec} the persistent vector, @code{Map} the persistent hash map, and
+    .NET arrays are there for interop and speed. Each has functions of its
+    own, named after it (@code{list-map}, @code{vec-ref}, @code{map-set}),
+    and a builder or a transient for building one in a loop.
+
+    @strong{Iteration.} The traits @code{Iterable}, @code{Collection},
+    @code{Cursor} and @code{Collector} are what @code{loop} and the generic
+    @code{fold}, @code{map}, @code{filter} and @code{length} work through, so
+    those work on every collection, on strings, on ranges and on lazy
+    @code{Seq}s.
+
+    @strong{Strings and characters.} A string is UTF-8, and positions in one
+    are cursors rather than indices. A @code{char} is a Unicode scalar value.
+
+    @strong{Files and ports.} Files are read and written whole, or through
+    ports. The file system is reached through the @code{FS} effect, so a test
+    can replace it, and logging through the @code{warn} and @code{log}
+    effects.
+
+    @strong{Concurrency.} Bjoroutines run on fibers, which meet on channels
+    through Concurrent ML events (@code{sync}, @code{choose}, @code{wrap}),
+    inside scopes that wait for them, cancel them, and raise their failures
+    (@code{with-scope}, @code{with-deadline}).
+
+    @strong{Macros.} @code{cond}, @code{if-let}, @code{some->}, @code{get},
+    @code{type/derive} and the reader extensions @code{#map} and @code{#ch} are
+    macros, and the syntax functions macro transformers use are here as well.
+    """))

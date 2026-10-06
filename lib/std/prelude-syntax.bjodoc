@@ -1,0 +1,571 @@
+;; Docs for the prelude's macros, its reader extensions, and the syntax-object
+;; builtins macro transformers are written with. Read through
+;; (:doc #:file "prelude-syntax.bjodoc"). The texts are samizdat markup: code
+;; in prose is @code{...}.
+
+;; ---------------------------------------------------------------------------
+;; Control
+;; ---------------------------------------------------------------------------
+
+(:doc cond
+  (summary "Picks the first clause whose test holds, at any number of arms; the last clause is else.")
+  (form (cond clause ... (else body ...)))
+  (rest clause """
+    A clause, one of:
+
+    @code{(test body ...)}: answers the body when @code{test} is true.
+
+    @code{(:match pattern expr body ...)}, or
+    @code{(:match pattern expr #:when guard body ...)}: answers the body when
+    @code{expr} matches @code{pattern} and the guard, if any, holds.
+
+    @code{(:def pattern expr)}, or @code{(:def pattern expr failure ...)}:
+    binds, and answers nothing.
+
+    @code{(:do body ...)}: runs the body, and answers nothing.
+    """)
+  (rest body "What the else clause answers. At least one form; several are run in order and the last answers.")
+  (literal else)
+  (see if-let when-let)
+  (example """
+    (cond ((< n 0) "negative")
+          ((= n 0) "zero")
+          (else "positive"))
+
+    ;; A value a later test needs, without a nested cond to hold it
+    (cond ((string-empty? text) "empty")
+          (:def first (string-cursor-ref text (string-cursor-start text)))
+          ((char-numeric? first) "number")
+          (else "word"))
+    """)
+  (reference """
+    @code{if} at any number of arms. The final @code{else} is required, since
+    every arm answers something and there has to be a last answer; every arm
+    needs the same type. Only the clause that is taken runs. A clause with a
+    test and no body is an error.
+
+    A @code{:match} clause is a test that binds: what its pattern binds is in
+    scope in its guard and body only, and when it does not match the cond
+    goes on to the next clause.
+
+    @code{:def} and @code{:do} answer nothing. Both are reached only when
+    every test above them has failed. A @code{:def} binds, and what it binds
+    is in scope in every clause below it and nowhere else. It @strong{is} a
+    @code{def} whose body is the rest of the cond, so it takes the same
+    patterns and the same failure parts: @code{(:def (Ok v) (parse s) :propagate)}
+    makes the whole cond the @code{Err}, and
+    @code{(:def (Some n) (lookup k) :default 0)} binds @code{n} either way and
+    never answers. A @code{:do} runs its forms and goes on. A cond may not end
+    in either.
+
+    The @code{else} clause answers without looking at anything after it, so
+    clauses written after it are not used.
+    """))
+
+(:doc if-let
+  (summary "Answers then with name bound to what an Option holds, or else when it is None.")
+  (form (if-let (name expr) then else))
+  (arg name "The name bound to the value inside the @code{Some}, in @code{then} only.")
+  (arg expr "An expression answering an Option. Evaluated once.")
+  (arg then "What to answer when @code{expr} is @code{(Some ...)}.")
+  (arg else "What to answer when @code{expr} is @code{None}. Not evaluated otherwise.")
+  (see when-let some-> cond)
+  (example """
+    (if-let (half (halve n)) half 0)
+    """)
+  (reference """
+    One binding, written @code{(name expr)} without a second pair of
+    parentheses. It is @code{(match expr ((Some name) then) (None else))}.
+    """))
+
+(:doc when-let
+  (summary "Runs the body with name bound to what an Option holds, when it is not None.")
+  (form (when-let (name expr) body more ...))
+  (arg name "The name bound to the value inside the @code{Some}, in the body.")
+  (arg expr "An expression answering an Option. Evaluated once.")
+  (arg body "The first form of the body.")
+  (rest more "The rest of the body.")
+  (see if-let)
+  (example """
+    (when-let (line (read-line/opt port))
+      (println line))
+    """)
+  (reference """
+    A @code{when}: it answers nothing, so the body's last value is dropped and
+    has to be one that may be, as it would inside a @code{when}. The body
+    does not run when @code{expr} is @code{None}.
+    """))
+
+(:doc some->
+  (summary "Threads a value through steps as -> does, stopping at the first None.")
+  (form (some-> value step ...))
+  (arg value "The plain value the first step receives.")
+  (rest step "Each answers an Option, and receives what the step before it held. Threaded as @code{->} threads: first argument, or where @code{&} is.")
+  (see try-> if-let)
+  (example """
+    (some-> 8 (halve) (halve))           ; (Some 2)
+    (some-> 6 (halve) (try-ref [10 20 30 40] &))   ; (Some 40): & says where the value goes
+    (some-> 5)                           ; (Some 5)
+    """)
+  (reference """
+    Each step's @code{Some} is unwrapped before the next step is called with
+    what it held. A @code{None} answers @code{None}, and the steps after it do
+    not run. The last step's Option is the answer; with no steps it is
+    @code{(Some value)}.
+    """))
+
+(:doc try->
+  (summary "Threads a value through steps as -> does, stopping at the first Err.")
+  (form (try-> value step ...))
+  (arg value "The plain value the first step receives.")
+  (rest step "Each answers a Result, and receives what the step before it held. Threaded as @code{->} threads: first argument, or where @code{&} is.")
+  (see some-> result-map)
+  (example """
+    (try-> path (open-input-file &) (read-header &))
+    """)
+  (reference """
+    The same shape as @code{some->}, over @code{Result}. Each step's
+    @code{Ok} is unwrapped before the next step is called with what it held,
+    so a chain reads in the order it runs rather than inside out. An
+    @code{Err} answers that error, and the steps after it do not run. The
+    last step's Result is the answer; with no steps it is @code{(Ok value)}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Sequential binding
+;; ---------------------------------------------------------------------------
+
+(:doc let*
+  (summary "Binds in order, each binding in scope for the ones after it.")
+  (form (let* (binding ...) body ...))
+  (rest binding "A binding as @code{let} takes it, such as @code{(name expr)}.")
+  (rest body "What to run with them bound. The last form answers.")
+  (see parameterize*)
+  (example """
+    (let* ((a 1)
+           (b (+ a 1)))
+      (* a b))   ; 2
+    """)
+  (reference """
+    One @code{let} per binding, nested, so each expression sees the names
+    bound before it.
+    """))
+
+(:doc parameterize*
+  (summary "Binds parameters in order, each binding in effect for the ones after it.")
+  (form (parameterize* (binding ...) body ...))
+  (rest binding "A binding as @code{parameterize} takes it: @code{(param expr)}.")
+  (rest body "What to run with them bound. The last form answers.")
+  (see let*)
+  (reference """
+    The @code{let*} of @code{parameterize}: one @code{parameterize} per
+    binding, nested, so each expression runs with the parameters bound before
+    it already bound. With no bindings it is the body in a @code{let}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Paths
+;; ---------------------------------------------------------------------------
+
+(:doc get
+  (summary "Reads along a path of fields and keys, or reads what a Box or a Param holds.")
+  (form (get target))
+  (form (get target step ...))
+  (arg target "What the path starts from.")
+  (rest step "A field step, @code{.name}, or a key, which is any other expression.")
+  (see try-get set update ref deref)
+  (example """
+    (get team .players 0 .name)   ; "Ada"
+    (get counter)                 ; what the Box holds
+    """)
+  (reference """
+    A step written with a leading dot reads with @code{(.name x)}, so it is a
+    record or struct field, or a .NET member such as @code{.-Length}. Any
+    other step is a key and reads with @code{ref}. Which kind a step is
+    depends only on how it is written, since a macro runs before anything has
+    a type. A lone @code{.} or @code{...} is not a step and is an error.
+
+    With no steps it is @code{(deref target)}: what a @code{Box} or a
+    @code{Param} holds, or anything else with a @code{Derefable} impl.
+
+    Each step's code carries that step's source position, so an error in it
+    is reported at the step.
+    """))
+
+(:doc try-get
+  (summary "Reads along a path of fields and keys, None at the first key that is missing.")
+  (form (try-get target step more ...))
+  (arg target "What the path starts from.")
+  (arg step "The first step: @code{.name} for a field, or a key expression.")
+  (rest more "The steps after it.")
+  (see get try-ref)
+  (example """
+    (try-get team .tags "veg")   ; None
+    """)
+  (reference """
+    Every key is read with @code{try-ref}, so missing is what @code{try-ref}
+    says it is: a Map key that is absent, or a Vec index out of range. The
+    keys after a missing one are not evaluated. A field step cannot be
+    missing; a field that holds an Option is answered as one, inside the
+    @code{Some}. At least one step is required.
+    """))
+
+(:doc set
+  (summary "A copy of target with a value at the end of a path of fields and keys.")
+  (form (set target step more ... value))
+  (arg target "What the path starts from. It is left as it was.")
+  (arg step "The first step: @code{.name} for a field, or a key expression.")
+  (rest more "The steps after it.")
+  (arg value "What goes at the end of the path.")
+  (see update get ref-set)
+  (example """
+    (set team .players 0 .name "Bea")   ; a new Team
+    """)
+  (reference """
+    Field steps copy with @code{record-set}, so only a field of a Bjolang
+    record or struct can be written through; a @code{.-Property} step is
+    refused. Key steps copy with @code{ref-set}.
+
+    The target is evaluated first, then each key from left to right, then the
+    value, each exactly once. The last key is not read, so on a Map it adds a
+    key that was not there; a key missing earlier in the path throws, as
+    @code{ref} does.
+    """))
+
+(:doc update
+  (summary "A copy of target with a function applied to the value at the end of a path.")
+  (form (update target step more ... f))
+  (arg target "What the path starts from. It is left as it was.")
+  (arg step "The first step: @code{.name} for a field, or a key expression.")
+  (rest more "The steps after it.")
+  (arg f "Called with the value at the end of the path; what it answers takes its place.")
+  (see set get)
+  (example """
+    (update team .players 1 .score (fun (s) (+ s 1)))
+    """)
+  (reference """
+    @code{set} with @code{(f old)} at the end of the path, and the same rules:
+    the target, then each key from left to right, then @code{f}, each
+    evaluated once; field steps copy with @code{record-set} and key steps with
+    @code{ref-set}. Every key is read, so a missing one throws.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Deriving
+;; ---------------------------------------------------------------------------
+
+(:doc type/derive
+  (summary "Declares types and writes their Eq or Ord implementations from the declaration.")
+  (form (type/derive (trait ...) typedef ...))
+  (rest trait "@code{Eq} or @code{Ord}; the list may hold both.")
+  (rest typedef "A type declaration as @code{type} takes it, @code{(: Name (Record ...))}: a record, a struct or a union.")
+  (example """
+    (type/derive (Eq Ord)
+      (: Version (Record (: major int) (: minor int))))
+
+    (list-sort versions)
+    """)
+  (reference """
+    It expands to the @code{type} form it was given and one @code{impl} per
+    trait and type. It is syntactic: it reads only the declaration, not a
+    registry of types.
+
+    @code{Eq}: a record or struct compares its fields in declaration order; a
+    union compares the case first, so different cases are unequal, and the
+    same case compares its payload positionally. The hash combines the
+    fields' hashes. A record or struct with a @code{#:mutable} field has no
+    lawful hash, so its @code{eq-hash} is @code{unhashable}, which throws
+    naming the type: equality works, but it cannot be a key.
+
+    @code{Ord}: a record or struct compares its fields in declaration order
+    and stops at the first that decides; a union compares the case index
+    before the payload.
+
+    A type with parameters gets a conditional implementation, with a
+    @code{where} of the trait being derived for each parameter:
+    @code{(where (Eq %a))} for @code{Eq}, @code{(where (Ord %a))} for
+    @code{Ord}. A field whose type has no
+    implementation is reported against the @code{type/derive} form. An alias
+    cannot derive: derive for the type it names.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Pattern macros
+;; ---------------------------------------------------------------------------
+
+(:doc Has
+  (summary "A pattern matching a collection that holds a key, with a pattern for its value.")
+  (form (Has key pattern))
+  (arg key "The key to look up, an expression.")
+  (arg pattern "The pattern the value at that key must match.")
+  (see Has* try-ref)
+  (example """
+    (match config
+      ((Has "port" p) p)
+      (_ 8080))
+    """)
+  (reference """
+    @code{(:view (try-ref & key) (Some pattern))}: the key is looked up with
+    @code{try-ref}, and the pattern is tried on what it finds. A view covers
+    nothing for the exhaustiveness check, so a match on it needs another arm.
+    """))
+
+(:doc Has*
+  (summary "A pattern matching a collection that holds every one of several keys.")
+  (form (Has* (key pattern) ...))
+  (arg key "A key to look up, an expression.")
+  (arg pattern "The pattern the value at that key must match.")
+  (see Has)
+  (example """
+    (match config
+      ((Has* ("host" h) ("port" p)) (connect h p))
+      (_ (connect "localhost" 8080)))
+    """)
+  (reference """
+    An @code{(and ...)} of one @code{Has} per pair. At least one pair is
+    required.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Reader extensions
+;; ---------------------------------------------------------------------------
+
+(:doc fl #:reader
+  (summary "Folds a binary operator over its operands from the left.")
+  (form (fl op a b more ...))
+  (arg op "A binary operator or function.")
+  (arg a "The first operand.")
+  (arg b "The second operand.")
+  (rest more "Further operands.")
+  (example """
+    #fl(- 10 3 2)   ; (- (- 10 3) 2), 5
+    """)
+  (reference """
+    @code{#fl(op a b c)} is @code{(op (op a b) c)}, for any binary
+    @code{op}. Fewer than two operands is an error. @code{#fr} is the right
+    fold and @code{#ch} the chain. The parser hands an arithmetic or bitwise operator with
+    three or more operands to it: @code{(+ a b c)} is @code{#fl(+ a b c)}.
+    """))
+
+(:doc fr #:reader
+  (summary "Folds a binary operator over its operands from the right.")
+  (form (fr op a b more ...))
+  (arg op "A binary operator or function.")
+  (arg a "The first operand.")
+  (arg b "The second operand.")
+  (rest more "Further operands.")
+  (example """
+    #fr(Cons 1 2 Nil)   ; (Cons 1 (Cons 2 Nil))
+    """)
+  (reference """
+    @code{#fr(op a b c)} is @code{(op a (op b c))}, for any binary
+    @code{op}. Fewer than two operands is an error. @code{#fl} is the left
+    fold, and the one the parser uses.
+    """))
+
+(:doc ch #:reader
+  (summary "Chains a comparison over its operands: (op a b), then (op b c), and so on.")
+  (form (ch op a b more ...))
+  (arg op "A binary comparison.")
+  (arg a "The first operand.")
+  (arg b "The second operand.")
+  (rest more "Further operands.")
+  (example """
+    #ch(< 0 i n)            ; (< 0 i), then (< i n) if that held
+    #ch(< 0 (next!) 10)     ; (next!) is called once
+    """)
+  (reference """
+    Each comparison is tested only if the one before it held, and the first
+    that fails answers @code{#f} with the operands after it unevaluated. A
+    middle operand that is not an atom is bound once, right before its first
+    use, so nothing is evaluated twice. Fewer than two operands is an error.
+
+    The parser hands a comparison operator with three or more operands to
+    it: @code{(< a b c)} is @code{#ch(< a b c)}.
+    """))
+
+(:doc map #:reader
+  (summary "A Map literal.")
+  (form (map))
+  (form (map entry ...))
+  (rest entry "A key and its value, written @code{(k v)}, @code{[k v]} or @code{(k . v)}.")
+  (see map-empty list->map)
+  (example """
+    #map(("a" 1) ["b" 2] ("c" . 3))
+    #map()                           ; (map-empty)
+    """)
+  (reference """
+    @code{(list->map ...)} of the entries as tuples, and @code{#map()} is
+    @code{(map-empty)}. A name of its own beside the function @code{map}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Syntax objects: the cases
+;; ---------------------------------------------------------------------------
+
+(:doc SSym
+  (summary "An identifier, as a Syntax.")
+  (arg s "Its name.")
+  (returns "The identifier. Built in a transformer, it is renamed by hygiene.")
+  (see SDatum syntax-ident=?)
+  (reference """
+    @code{SSym} and @code{SDatum} carry the same payload and mean opposite
+    things to hygiene: an @code{SSym} a transformer constructs is renamed
+    apart from the call site, an @code{SDatum} never is. An identifier made
+    from a string, @code{(SSym (string->symbol ...))}, is renamed like any
+    other the transformer builds; @code{inject} makes one that binds at the
+    call site.
+    """))
+
+(:doc SDatum
+  (summary "A quoted symbol written as data, 'foo, as a Syntax.")
+  (arg s "The symbol.")
+  (returns "The datum. Never renamed by hygiene: it is a value, not a reference to a binding.")
+  (see SSym))
+
+(:doc SInt
+  (summary "A numeric literal, as a Syntax.")
+  (arg text "The literal as written, such as @code{\"1\"} or @code{\"1.5\"}.")
+  (returns "The literal.")
+  (reference """
+    Text rather than a number, since the same case carries @code{1} and
+    @code{1.5} and which one it is has not been decided when a macro runs.
+    """))
+
+(:doc SStr
+  (summary "A string literal, as a Syntax.")
+  (arg text "The string.")
+  (returns "The literal."))
+
+(:doc SChar
+  (summary "A character literal, as a Syntax.")
+  (arg c "The character.")
+  (returns "The literal."))
+
+(:doc SKey
+  (summary "A keyword such as #:when, as a Syntax.")
+  (arg k "The keyword.")
+  (returns "The keyword as syntax."))
+
+(:doc SList
+  (summary "A parenthesized form, as a Syntax.")
+  (arg items "What is inside it, in order.")
+  (returns "The form.")
+  (example """
+    (match form
+      ((SList (Cons _ (Cons only Nil))) ...)   ; exactly one argument
+      ((SList (Cons _ rest)) ...))             ; any number
+    """)
+  (reference """
+    It holds a real @code{(List Syntax)}, so @code{map}, folds and the
+    trailing rest pattern work on a macro's input.
+    """))
+
+(:doc SPunct
+  (summary "A punctuation token that survives reading, as a Syntax.")
+  (arg text "Its spelling: @code{,} @code{,@\"@\"} @code{:} @code{.} or @code{...}.")
+  (returns "The token.")
+  (reference """
+    These are not identifiers and not data, but they reach a macro: a comma
+    is an optional argument separator, @code{(: name type)} is a signature
+    and @code{...} is a rest pattern. Carrying the spelling is what lets an
+    input form be handed back exactly as it was read.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Syntax objects: operations
+;; ---------------------------------------------------------------------------
+
+(:doc syntax-error
+  (summary "Rejects a macro's input with a message; never returns.")
+  (arg form "The syntax the message is about. It is quoted in the message.")
+  (arg msg "What is wrong, and preferably how the macro is written.")
+  (returns "Nothing: it throws. Typed as a Syntax so that it can stand beside the arms that answer one.")
+  (raises System.InvalidOperationException "Always, with the message followed by the form.")
+  (see syntax-at syntax->string)
+  (example """
+    (syntax-match form
+      ((_ x) #'(let ((v ,x)) (+ v v)))
+      (bad (syntax-error bad "twice takes one argument.")))
+    """)
+  (reference """
+    How a transformer rejects its input. The expander catches the exception
+    and reports the message against the macro's call site.
+    """))
+
+(:doc syntax-at
+  (summary "A form carrying the source position of another piece of syntax.")
+  (arg form "The form, usually one a transformer built.")
+  (arg source "A piece of the input, whose position is copied.")
+  (returns "@code{form} with @code{source}'s position, or @code{form} unchanged when @code{source} has none.")
+  (see syntax-line syntax-file)
+  (reference """
+    Everything a transformer builds is reported at the macro's call site.
+    With this, an error in code built from one argument points at that
+    argument instead: @code{get} and @code{set} use it to report an error at
+    the step that caused it. A position can only be copied from input, never
+    made up.
+    """))
+
+(:doc syntax-file
+  (summary "The file a piece of syntax was read from.")
+  (arg s "The syntax.")
+  (returns "The file's path, or @code{\"<unknown>\"} for syntax with no position, such as what a transformer has just built.")
+  (see syntax-line syntax-at))
+
+(:doc syntax-line
+  (summary "The line a piece of syntax starts on.")
+  (arg s "The syntax.")
+  (returns "The line, or 0 for syntax with no position, such as what a transformer has just built.")
+  (see syntax-file syntax-at))
+
+(:doc syntax-ident=?
+  (summary "Whether two pieces of syntax are the same identifier.")
+  (arg a "The first.")
+  (arg b "The second.")
+  (returns "#t when both are identifiers or quoted symbols with the same base name; #f otherwise, including when either is not one.")
+  (see SSym SDatum)
+  (reference """
+    The value-level @code{compare}: the test a transformer gets as its third
+    parameter, available to any code. A @code{syntax-match} pattern's
+    @code{'name} compiles to a call to it.
+
+    Names are compared with hygiene marks stripped, so an identifier built by
+    one macro and handed to another is still recognised. A quoted symbol
+    counts, so @code{'else} matches an input that wrote @code{else} or
+    @code{'else}. It is not denotational equality: a name the caller has
+    rebound locally still compares equal.
+    """))
+
+(:doc syntax->string
+  (summary "Renders a piece of syntax back to something that reads as source.")
+  (arg s "The syntax.")
+  (returns "Its source text: a list in parentheses with its items separated by spaces, a quoted symbol with its quote, a string in quotes with its quotes and backslashes escaped.")
+  (see syntax-error)
+  (reference """
+    What a macro's error message wants to quote.
+    """))
+
+(:doc syntax-resolved
+  (summary "An identifier that hygiene leaves alone and that resolves where the template was written.")
+  (arg s "Its name.")
+  (returns "An identifier with the resolved origin.")
+  (see SSym)
+  (reference """
+    What the @code{str} and @code{->str} of a @code{#"..."} written inside a
+    @code{#'} template desugar to. The expander lowers it back to a
+    reference no binding at the call site can capture. It is what the
+    compiler writes for a template, not meant to be called directly.
+    """))
+
+(:doc syntax-splice
+  (summary "Two lists of syntax, one after the other: what a splice in a template compiles to.")
+  (arg a "The items before.")
+  (arg b "The items after.")
+  (returns "The items of a followed by those of b.")
+  (reference """
+    The append behind @code{,@"@"} in a @code{#'} template. It is what the
+    compiler writes, not meant to be called directly; it works without the
+    prelude's own list functions, which a module compiled without the prelude
+    does not have.
+    """))

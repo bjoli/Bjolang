@@ -755,13 +755,16 @@ let private visibleNames (state: State) : Visible list =
                   Signature = signatureOf name })
 
         // A union's cases are documented in the union's doc, not under their
-        // own names.
+        // own names. A type's original name is its key, which carries the
+        // module it was declared in; its doc is under the name alone.
         let bindings =
             env.Registry.ImportAliases
             |> Map.toList
             |> List.choose (fun (name, alias) ->
                 match alias.Kind with
                 | AliasConstructor -> None
+                | AliasType ->
+                    imported alias.OriginModule (Naming.bareTypeName alias.OriginModule alias.OriginalName) name
                 | _ -> imported alias.OriginModule alias.OriginalName name)
 
         let macros =
@@ -784,8 +787,8 @@ let private visibleNames (state: State) : Visible list =
         // A plain import records no alias for a trait or its methods: only a
         // modifier that respells them does. So they are found through the trait
         // each belongs to, and the module that declared it.
-        let traitOf (trait: string) (name: string) =
-            Map.tryFind trait env.Registry.TraitOrigins
+        let traitOf (traitName: string) (name: string) =
+            Map.tryFind traitName env.Registry.TraitOrigins
             |> Option.bind (fun origin -> imported origin name name)
 
         let traits =
@@ -891,9 +894,14 @@ let private clausesOf (form: SExpr) : (string * SExpr list) list =
 let private plainMarkup =
     Text.RegularExpressions.Regex(@"@[A-Za-z][A-Za-z0-9-]*\{([^{}]*)\}", Text.RegularExpressions.RegexOptions.Compiled)
 
+/// Samizdat's `@"text"`: text taken literally, which is how markup writes an
+/// `@` of its own, as in `@code{,@"@"}` for `,@`.
+let private literalMarkup =
+    Text.RegularExpressions.Regex("@\"([^\"]*)\"", Text.RegularExpressions.RegexOptions.Compiled)
+
 let private clauseString (s: SExpr) =
     match s with
-    | SAtom { Token = StringLit text } -> plainMarkup.Replace(text, "$1")
+    | SAtom { Token = StringLit text } -> plainMarkup.Replace(literalMarkup.Replace(text, "$1"), "$1")
     | other -> sourceText other
 
 let private summaryOf (form: SExpr) : string =

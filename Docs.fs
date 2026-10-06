@@ -266,10 +266,21 @@ let private isVoid (t: FType) =
     | _ -> false
 
 /// A function named by a type alone.
+///
+/// An `(out T)` parameter of an `import/extern` is not an argument: the call
+/// passes nothing for it, and what .NET writes there comes back in the result.
+/// So the doc names the arguments a call writes, and the out slots are not
+/// among them.
 let private unnamedOf (t: FType) : Kind option =
     match t with
     | TArrow(mandatory, keywords, rest, ret, _, _) ->
-        Some(KUnnamed(Some mandatory.Length, Some(List.map fst keywords), Some rest.IsSome, Some ret, typeVarsOf t))
+        let written =
+            mandatory
+            |> List.filter (function
+                | TApp("out", _, _) -> false
+                | _ -> true)
+
+        Some(KUnnamed(Some written.Length, Some(List.map fst keywords), Some rest.IsSome, Some ret, typeVarsOf t))
     | _ -> None
 
 /// Where a builtin's description says it is, which is nowhere: a builtin has no
@@ -338,14 +349,20 @@ let private kindsOf (decls: Decl list) : Map<string, Kind> * Set<string> =
         | Some(TArrow(_, _, _, ret, _, _)) -> Some ret
         | _ -> None
 
+    // A parameter whose name holds `__` was named by the compiler, as a macro
+    // that writes a `defun` renames the parameters it makes up: `defeffect`'s
+    // wrapper takes `effect-arg0__164`. Nobody can write that in a doc, and the
+    // number moves when anything before it changes, so such a function is
+    // documented as one without parameter names is: the doc names them.
     let functionOf n (args: DefunArg list) =
-        KFunction(
-            mandatoryNames args,
-            args |> List.choose (function KeywordArg(k, _) -> Some k | _ -> None),
-            args |> List.tryPick (function RestArg r -> Some r | _ -> None),
-            retOfSig n,
-            typeVarsOfSig n
-        )
+        let positional = mandatoryNames args
+        let keywords = args |> List.choose (function KeywordArg(k, _) -> Some k | _ -> None)
+        let rest = args |> List.tryPick (function RestArg r -> Some r | _ -> None)
+
+        if positional |> List.exists (fun p -> p.Contains "__") then
+            KUnnamed(Some positional.Length, Some keywords, Some rest.IsSome, retOfSig n, typeVarsOfSig n)
+        else
+            KFunction(positional, keywords, rest, retOfSig n, typeVarsOfSig n)
 
     let valueOf n =
         match Map.tryFind n signatures |> Option.bind unnamedOf with

@@ -160,7 +160,9 @@ var r = await Cml.Choose(
 
 `(sync ev)` compiles to `await ev` via `EventAwaitExtensions.GetAwaiter`. Nothing
 else in the language suspends, which is what makes CML reasoning work: between two
-syncs a fiber is atomic with respect to every other fiber.
+syncs nothing interrupts a fiber, and every exchange with another fiber is a sync.
+Fibers still run in parallel on the pool, so state two of them share outside a
+channel needs a lock, as it would between threads.
 
 ### Errors are values
 

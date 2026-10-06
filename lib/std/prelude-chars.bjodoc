@@ -1,0 +1,457 @@
+;; Docs for the prelude's characters, keywords and symbols, and string
+;; builders, read through (:doc #:file ...). The texts are samizdat markup:
+;; code in prose is @code{...}.
+;;
+;; A char is a Unicode scalar value, a codepoint, backed by
+;; Bjolang.Runtime.BjoChar rather than a C# char.
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(:doc char->int
+  (summary "The codepoint of a character.")
+  (arg c "The character.")
+  (returns "Its Unicode scalar value, from 0 to #x10FFFF, never a surrogate.")
+  (see int->char char->integer char->string)
+  (example """
+    (char->int #\a)    ; 97
+    """)
+  (reference """
+    A codepoint rather than a UTF-16 code unit: a character outside the
+    Basic Multilingual Plane answers its whole scalar value, not a
+    surrogate. @code{char->integer} is the same function under R6RS's name.
+    """))
+
+(:doc char->integer
+  (summary "The codepoint of a character, under R6RS's name.")
+  (arg c "The character.")
+  (returns "Its Unicode scalar value.")
+  (see char->int integer->char))
+
+(:doc int->char
+  (summary "The character with a given codepoint.")
+  (arg n "A Unicode scalar value: from 0 to #x10FFFF, outside the surrogates #xD800 to #xDFFF.")
+  (returns "The character.")
+  (raises System.ArgumentOutOfRangeException "When n is not a Unicode scalar value: negative, a surrogate, or above #x10FFFF.")
+  (see char->int integer->char)
+  (example """
+    (int->char 955)    ; #\λ
+    """))
+
+(:doc integer->char
+  (summary "The character with a given codepoint, under R6RS's name.")
+  (arg n "A Unicode scalar value.")
+  (returns "The character.")
+  (raises System.ArgumentOutOfRangeException "When n is not a Unicode scalar value, as for int->char.")
+  (see int->char char->integer))
+
+(:doc char->string
+  (summary "A string of one character.")
+  (arg c "The character.")
+  (returns "The one-character string.")
+  (see char->int string-length string-count)
+  (reference """
+    For a character outside ASCII the string is longer than one in
+    @code{string-length}, which counts UTF-8 bytes: an astral character
+    gives a string of @code{string-length} 4 and @code{string-count} 1.
+
+    This is the way from a @code{char} to a .NET method that wants text: a
+    Bjolang @code{char} is a codepoint, not a C# @code{char}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Comparison
+;; ---------------------------------------------------------------------------
+
+(:doc char=?
+  (summary "Whether two characters are the same codepoint.")
+  (arg a "The first character.")
+  (arg b "The second.")
+  (returns "#t when a and b are the same character.")
+  (see char-ci=? char<?)
+  (reference """
+    Binary, where R6RS's is n-ary. @code{=} works on characters directly.
+    """))
+
+(:doc char<?
+  (summary "Whether one character comes before another, by codepoint.")
+  (arg a "The first character.")
+  (arg b "The second.")
+  (returns "#t when a's codepoint is less than b's.")
+  (see char<=? char>? char-ci<?)
+  (reference """
+    Ordering is by codepoint, so a character above U+FFFF sorts after
+    U+FFFD rather than by its leading surrogate.
+
+    Binary, where R6RS's is n-ary. The operators work on characters, so
+    @code{(< a b c)} chains as it does for numbers.
+    """))
+
+(:doc char>?
+  (summary "Whether one character comes after another, by codepoint.")
+  (arg a "The first character.")
+  (arg b "The second.")
+  (returns "#t when a's codepoint is greater than b's.")
+  (see char>=? char<? char-ci>?))
+
+(:doc char<=?
+  (summary "Whether one character comes before another or is the same, by codepoint.")
+  (arg a "The first character.")
+  (arg b "The second.")
+  (returns "#t when a's codepoint is not greater than b's.")
+  (see char<? char>=? char-ci<=?))
+
+(:doc char>=?
+  (summary "Whether one character comes after another or is the same, by codepoint.")
+  (arg a "The first character.")
+  (arg b "The second.")
+  (returns "#t when a's codepoint is not less than b's.")
+  (see char>? char<=? char-ci>=?))
+
+;; ---------------------------------------------------------------------------
+;; Case-insensitive comparison
+;; ---------------------------------------------------------------------------
+
+(:doc char-ci=?
+  (summary "Whether two characters are the same, ignoring case.")
+  (arg a "The first character.")
+  (arg b "The second.")
+  (returns "#t when a and b are the same after char-foldcase.")
+  (see char=? char-foldcase)
+  (example """
+    (char-ci=? #\a #\A)    ; #t
+    """)
+  (reference """
+    Both sides go through @code{char-foldcase} and are then compared by
+    codepoint, as every @code{char-ci} comparison does. Binary, where
+    R6RS's is n-ary.
+    """))
+
+(:doc char-ci<?
+  (summary "Whether one character comes before another, ignoring case.")
+  (arg a "The first character.")
+  (arg b "The second.")
+  (returns "#t when a's folded codepoint is less than b's.")
+  (see char<? char-foldcase))
+
+(:doc char-ci>?
+  (summary "Whether one character comes after another, ignoring case.")
+  (arg a "The first character.")
+  (arg b "The second.")
+  (returns "#t when a's folded codepoint is greater than b's.")
+  (see char>? char-foldcase))
+
+(:doc char-ci<=?
+  (summary "Whether one character comes before another or is the same, ignoring case.")
+  (arg a "The first character.")
+  (arg b "The second.")
+  (returns "#t when a's folded codepoint is not greater than b's.")
+  (see char<=? char-foldcase))
+
+(:doc char-ci>=?
+  (summary "Whether one character comes after another or is the same, ignoring case.")
+  (arg a "The first character.")
+  (arg b "The second.")
+  (returns "#t when a's folded codepoint is not less than b's.")
+  (see char>=? char-foldcase))
+
+;; ---------------------------------------------------------------------------
+;; Case
+;; ---------------------------------------------------------------------------
+
+(:doc char-upcase
+  (summary "The uppercase form of a character.")
+  (arg c "The character.")
+  (returns "Its uppercase mapping, or c itself when it has none.")
+  (see char-downcase char-titlecase char-upper-case?)
+  (reference """
+    The invariant culture's mapping, so the answer does not depend on the
+    machine's locale. A mapping is one character to one character: ß
+    upcases to itself, not to SS.
+    """))
+
+(:doc char-downcase
+  (summary "The lowercase form of a character.")
+  (arg c "The character.")
+  (returns "Its lowercase mapping, or c itself when it has none.")
+  (see char-upcase char-foldcase char-lower-case?)
+  (reference """
+    The invariant culture's mapping. For comparing without regard to case,
+    use @code{char-foldcase}.
+    """))
+
+(:doc char-titlecase
+  (summary "The titlecase form of a character.")
+  (arg c "The character.")
+  (returns "Its titlecase mapping, or c itself when it has none.")
+  (see char-upcase char-title-case?)
+  (example """
+    (char-titlecase #\ǆ)    ; #\ǅ
+    (char-titlecase #\a)    ; #\A
+    """)
+  (reference """
+    The same as @code{char-upcase} except for the handful of Latin digraphs
+    Unicode gives a titlecase form of their own: ǆ and Ǆ both answer ǅ.
+    It goes through the invariant culture's string title-casing, which
+    costs a small allocation, so @code{char-upcase} is the one to use
+    unless the digraphs matter.
+    """))
+
+(:doc char-foldcase
+  (summary "A character with its case folded, for comparing without regard to case.")
+  (arg c "The character.")
+  (returns "Its simple case fold.")
+  (see char-ci=? char-downcase)
+  (reference """
+    Close to Unicode's simple case folding, one character to one
+    character, as R6RS specifies it. It is the invariant lowercase mapping,
+    which differs from the simple fold for a few characters that are
+    already lowercase: ς, ſ and µ stay as they are, where the fold gives
+    σ, s and μ, so @code{(char-ci=? #\ς #\σ)} is #f. ß stays as it is,
+    which the simple fold does too.
+
+    Every @code{char-ci} comparison folds both sides with it.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Classification
+;; ---------------------------------------------------------------------------
+
+(:doc char-alphabetic?
+  (summary "Whether a character is a letter.")
+  (arg c "The character.")
+  (returns "#t when c is in one of the letter categories: Lu, Ll, Lt, Lm or Lo.")
+  (see char-numeric? char-general-category)
+  (reference """
+    Classified by codepoint, so an astral letter answers #t.
+    """))
+
+(:doc char-numeric?
+  (summary "Whether a character is a number of any kind.")
+  (arg c "The character.")
+  (returns "#t when c is in category Nd, Nl or No.")
+  (see digit-value char-alphabetic?)
+  (reference """
+    Wider than decimal digits: ½ and Ⅶ are numeric. @code{digit-value}
+    answers only for decimal digits.
+    """))
+
+(:doc char-whitespace?
+  (summary "Whether a character is white space.")
+  (arg c "The character.")
+  (returns "#t for the separators (Zs, Zl, Zp) and the control characters tab, line feed, vertical tab, form feed, carriage return and U+0085.")
+  (see char-general-category)
+  (reference """
+    The definition @code{string-trim} and its neighbours use.
+    """))
+
+(:doc char-upper-case?
+  (summary "Whether a character is an uppercase letter.")
+  (arg c "The character.")
+  (returns "#t when c is in category Lu.")
+  (see char-lower-case? char-title-case? char-upcase))
+
+(:doc char-lower-case?
+  (summary "Whether a character is a lowercase letter.")
+  (arg c "The character.")
+  (returns "#t when c is in category Ll.")
+  (see char-upper-case? char-downcase))
+
+(:doc char-title-case?
+  (summary "Whether a character is a titlecase letter.")
+  (arg c "The character.")
+  (returns "#t when c is in category Lt, such as ǅ.")
+  (see char-titlecase char-upper-case?))
+
+(:doc digit-value
+  (summary "The value of a decimal digit.")
+  (arg c "The character.")
+  (returns "(Some n), n from 0 to 9, when c is a decimal digit (category Nd); None otherwise.")
+  (see char-numeric?)
+  (example """
+    (digit-value #\7)    ; (Some 7)
+    (digit-value #\٣)    ; (Some 3), ARABIC-INDIC DIGIT THREE
+    (digit-value #\½)    ; None
+    """)
+  (reference """
+    Narrower than @code{char-numeric?}: ½ is numeric and has no digit
+    value. Any decimal digit counts, not only 0 to 9 of ASCII.
+    """))
+
+(:doc char-general-category
+  (summary "The Unicode general category of a character.")
+  (arg c "The character.")
+  (returns "The two-letter category as a symbol: 'Lu, 'Ll, 'Nd, 'Zs and the rest.")
+  (see char-alphabetic? char-numeric? char-whitespace?)
+  (example """
+    (char-general-category #\a)        ; 'Ll
+    (char-general-category #\space)    ; 'Zs
+    """)
+  (reference """
+    One of the thirty categories R6RS names: Lu Ll Lt Lm Lo, Mn Mc Me,
+    Nd Nl No, Pc Pd Ps Pe Pi Pf Po, Sm Sc Sk So, Zs Zl Zp, Cc Cf Cs Co
+    and Cn. An unassigned codepoint answers @code{'Cn}. A symbol, so it is
+    compared with @code{=} or @code{eq?} at the cost of a reference
+    comparison.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Keywords and symbols
+;; ---------------------------------------------------------------------------
+
+(:doc keyword?
+  (summary "Whether a value is a keyword.")
+  (arg x "Any value.")
+  (returns "#t when x is a Keyword at run time.")
+  (see symbol? string->keyword))
+
+(:doc keyword->string
+  (summary "The name of a keyword.")
+  (arg k "The keyword.")
+  (returns "Its name, without the colon: \"foo\" for :foo.")
+  (see string->keyword symbol->string))
+
+(:doc string->keyword
+  (summary "The keyword with a given name.")
+  (arg s "The name, without the colon.")
+  (returns "The interned keyword: the same string always answers the same keyword.")
+  (see keyword->string string->symbol)
+  (reference """
+    Keywords are interned, so @code{(= a b)} on two of them is a reference
+    comparison.
+    """))
+
+(:doc symbol?
+  (summary "Whether a value is a symbol.")
+  (arg x "Any value.")
+  (returns "#t when x is a Symbol at run time.")
+  (see keyword? string->symbol))
+
+(:doc symbol->string
+  (summary "The name of a symbol.")
+  (arg sym "The symbol.")
+  (returns "Its name: \"foo\" for 'foo.")
+  (see string->symbol keyword->string))
+
+(:doc string->symbol
+  (summary "The symbol with a given name.")
+  (arg s "The name.")
+  (returns "The interned symbol: the same string always answers the same symbol.")
+  (see symbol->string string->keyword)
+  (reference """
+    Symbols are interned, so @code{(= a b)} on two of them is a reference
+    comparison, and either can be a map key.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; String builders
+;; ---------------------------------------------------------------------------
+
+(:doc stringbuilder-empty
+  (summary "A new, empty string builder.")
+  (returns "A builder holding no text.")
+  (see stringbuilder-add! stringbuilder-add-string! stringbuilder->string)
+  (example """
+    (def b (stringbuilder-empty))
+    (stringbuilder-add-string! b "ab")
+    (stringbuilder-add! b #\c)
+    (stringbuilder->string b)    ; "abc"
+    """)
+  (reference """
+    A growable UTF-8 buffer, and the accumulator behind the @code{stringing}
+    collector. The adding functions change it in place and answer nothing:
+    the builder is the same object throughout.
+
+    Use one, or a @code{(:acc out (stringing c))} clause, rather than
+    @code{string-append} in a loop, which copies the whole string at every
+    step. A builder also carries no colour, where writing to a string port
+    gives the writing function a suspending copy.
+    """))
+
+(:doc stringbuilder-add!
+  (summary "Adds a character to the end of a string builder, in place.")
+  (arg b "The builder.")
+  (arg c "The character, encoded as UTF-8.")
+  (see stringbuilder-add-string! stringbuilder-add-code!))
+
+(:doc stringbuilder-add-string!
+  (summary "Adds a string to the end of a string builder, in place.")
+  (arg b "The builder.")
+  (arg s "The string.")
+  (see stringbuilder-add!))
+
+(:doc stringbuilder-add-code!
+  (summary "Adds one UTF-8 byte to the end of a string builder, in place.")
+  (arg b "The builder.")
+  (arg n "The byte, from 0 to 255. Only its low eight bits are kept.")
+  (see stringbuilder-code-ref stringbuilder-add! stringbuilder->string)
+  (reference """
+    For a scanner that copies its input a byte at a time and already holds
+    the number: it skips decoding and re-encoding a character.
+
+    The bytes are not checked here. @code{stringbuilder->string} checks
+    them, and raises if they do not form whole characters.
+    """))
+
+(:doc stringbuilder-add-unit!
+  (summary "Adds one UTF-16 code unit to the end of a string builder, in place.")
+  (arg b "The builder.")
+  (arg n "The code unit, from 0 to 65535.")
+  (see stringbuilder-add! stringbuilder->string)
+  (reference """
+    For a reader taking units from a .NET text port. A surrogate pair given
+    in two calls, high then low, becomes its one character. A surrogate
+    left unpaired makes @code{stringbuilder->string} raise.
+    """))
+
+(:doc stringbuilder-length
+  (summary "How much text a string builder holds, in bytes.")
+  (arg b "The builder.")
+  (returns "The number of UTF-8 bytes added so far, not characters.")
+  (see stringbuilder-code-ref string-length))
+
+(:doc stringbuilder-code-ref
+  (summary "One byte of what a string builder holds.")
+  (arg b "The builder.")
+  (arg i "The byte index, from 0, less than stringbuilder-length.")
+  (returns "The byte at i, from 0 to 255.")
+  (raises System.ArgumentOutOfRangeException "When i is negative or not less than the builder's length.")
+  (see stringbuilder-add-code! stringbuilder-length)
+  (reference """
+    The counterpart of @code{stringbuilder-add-code!}, for a scanner that
+    looks back at what it wrote. Indices are bytes, not characters.
+    """))
+
+(:doc stringbuilder-clear!
+  (summary "Empties a string builder for reuse, in place.")
+  (arg b "The builder.")
+  (see stringbuilder-empty)
+  (reference """
+    The builder keeps the buffer it has grown, so a reader that builds many
+    short strings does not pay for a new builder each time. Strings already
+    made from it are unaffected.
+    """))
+
+(:doc stringbuilder=?
+  (summary "Whether a string builder holds exactly a given text.")
+  (arg b "The builder.")
+  (arg s "The text to compare with.")
+  (returns "#t when b's bytes are s's bytes.")
+  (see stringbuilder->string)
+  (reference """
+    Compares without building a string, which lets a reader ask whether
+    the name it just buffered is one it has already interned without
+    paying for the allocation.
+    """))
+
+(:doc stringbuilder->string
+  (summary "The text a string builder holds, as a string.")
+  (arg b "The builder.")
+  (returns "A copy of the text so far.")
+  (raises System.InvalidOperationException "When bytes from stringbuilder-add-code!, or a surrogate from stringbuilder-add-unit! left unpaired, do not form valid UTF-8.")
+  (see stringbuilder-empty stringbuilder-clear!)
+  (reference """
+    The string is a copy: the builder keeps its text and can go on
+    growing, and what is added afterwards does not change the string.
+    """))

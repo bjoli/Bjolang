@@ -1,0 +1,963 @@
+;; Docs for the core of std/prelude: arithmetic, bits, printing, boxes, the
+;; ref traits, Option and Result, parameters, equality's helpers and failure.
+;; Read through (:doc #:file ...). The texts are samizdat markup: code in prose
+;; is @code{...}.
+
+;; ---------------------------------------------------------------------------
+;; Arithmetic
+;; ---------------------------------------------------------------------------
+
+(:doc +
+  (summary "The sum of two numbers.")
+  (arg a "The first addend.")
+  (arg b "The second, of the same type.")
+  (returns "a plus b. An integer sum that overflows wraps.")
+  (see - * negate)
+  (example """
+    (+ 1 2)       ; 3
+    (+ 1 2 3)     ; 6, folded from the left
+    (+)           ; 0
+    """)
+  (reference """
+    The C# operator, at any type with a @code{Num} implementation. Written
+    with more than two operands it folds from the left; @code{(+ x)} is
+    @code{x} and @code{(+)} is 0.
+
+    Nothing checks for overflow at run time: @code{(+ n 1)} at
+    @code{int} 2147483647 is -2147483648. Widen first where a sum must not
+    overflow. There is no implicit widening between variables, so an
+    @code{int} and a @code{double} need a @code{cast} to be added.
+    """))
+
+(:doc -
+  (summary "The difference of two numbers.")
+  (arg a "What to subtract from.")
+  (arg b "What to subtract, of the same type.")
+  (returns "a minus b. An integer difference that overflows wraps.")
+  (see + negate)
+  (example """
+    (- 10 3)      ; 7
+    (- 10 3 2)    ; 5, folded from the left
+    (- 4)         ; -4, which is (negate 4)
+    """)
+  (reference """
+    The C# operator. With more than two operands it folds from the left. With
+    one, it is @code{negate}, which keeps the operand's type.
+    """))
+
+(:doc *
+  (summary "The product of two numbers.")
+  (arg a "The first factor.")
+  (arg b "The second, of the same type.")
+  (returns "a times b. An integer product that overflows wraps.")
+  (see + /)
+  (example """
+    (* 6 7)       ; 42
+    (* 2 3 4)     ; 24
+    (*)           ; 1
+    """)
+  (reference """
+    The C# operator. With more than two operands it folds from the left;
+    @code{(* x)} is @code{x} and @code{(*)} is 1.
+    """))
+
+(:doc /
+  (summary "The quotient of two numbers, truncated at an integer type.")
+  (arg a "The dividend.")
+  (arg b "The divisor, of the same type.")
+  (returns "a divided by b, rounded toward zero for integers.")
+  (raises System.DivideByZeroException "When b is an integer zero.")
+  (see % recip *)
+  (example """
+    (/ 7 2)       ; 3
+    (/ 7.0 2.0)   ; 3.5
+    (/ 1.0 0.0)   ; infinity
+    (/ 100 5 2)   ; 10
+    """)
+  (reference """
+    The C# operator. Integer division truncates and throws on a zero
+    divisor; a constant integer divided by the literal 0 is refused at
+    compile time. Double division by zero is infinite, and
+    @code{(/ 0.0 0.0)} is NaN.
+
+    With more than two operands it folds from the left. With one, it is
+    @code{recip}.
+    """))
+
+(:doc %
+  (summary "The remainder of a division, with the sign of the dividend.")
+  (arg a "The dividend.")
+  (arg b "The divisor, of the same type.")
+  (returns "What is left of a after dividing by b.")
+  (raises System.DivideByZeroException "When b is an integer zero.")
+  (see /)
+  (example """
+    (% 7 2)       ; 1
+    (% -7 2)      ; -1, not 1
+    (% 7 -2)      ; 1
+    """)
+  (reference """
+    The C# operator: a remainder, not a modulus. The always-positive one is
+    @code{(% (+ (% a n) n) n)}.
+    """))
+
+(:doc negate
+  (summary "A number with its sign flipped.")
+  (arg x "The number.")
+  (returns "Minus x, of x's own type.")
+  (see - recip)
+  (reference """
+    What @code{(- x)} is written as. A primitive rather than
+    @code{(- 0 x)}, which would fix the type to that of the literal 0 and so
+    refuse a @code{double}. It is C#'s unary minus, so negating the most
+    negative integer of a type wraps to itself.
+    """))
+
+(:doc recip
+  (summary "The reciprocal of a number: one divided by it.")
+  (arg x "The number.")
+  (returns "1 divided by x, of x's own type.")
+  (see / negate)
+  (example """
+    (recip 4.0)   ; 0.25
+    (/ 4.0)       ; the same
+    (recip 4)     ; 0: integer division
+    """)
+  (reference """
+    What @code{(/ x)} is written as, emitted as @code{1 / x} at x's type. At
+    an integer type that is integer division, so it is 0 for any x other
+    than 1 and -1, and throws @code{System.DivideByZeroException} for 0.
+    """))
+
+(:doc sqrt
+  (summary "The square root of a number.")
+  (arg x "The number. An integer argument is widened to a double.")
+  (returns "The non-negative square root, as a double. NaN for a negative x.")
+  (see * recip)
+  (example """
+    (sqrt 9)      ; 3.0
+    (sqrt 2.0)    ; 1.4142135623730951
+    """)
+  (reference """
+    @code{System.Math.Sqrt}. The rest of @code{System.Math} is in
+    @code{(std maths)}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Comparison
+;; ---------------------------------------------------------------------------
+
+(:doc <
+  (summary "Whether one number is less than another.")
+  (arg a "The first operand.")
+  (arg b "The second, of the same type.")
+  (returns "#t when a is less than b. #f when either is NaN.")
+  (see <= > >= compare)
+  (example """
+    (< 1 2)       ; #t
+    (< 1 2 3)     ; #t: each is less than the next
+    """)
+  (reference """
+    The C# operator, at numbers, @code{char} and @code{StringCursor}: the
+    types with an @code{Ordered} implementation. Not at @code{string}, which
+    has no such operator; @code{compare} and @code{less?} order every
+    comparable type, strings ordinally.
+
+    Written with more than two operands it chains, comparing each operand
+    with the next. Comparisons follow IEEE, so one against NaN is #f
+    whichever way round it is written.
+    """))
+
+(:doc <=
+  (summary "Whether one number is less than or equal to another.")
+  (arg a "The first operand.")
+  (arg b "The second, of the same type.")
+  (returns "#t when a is at most b. #f when either is NaN.")
+  (see < >= at-most?)
+  (reference """
+    The C# operator, as @code{<} is. With more than two operands it chains.
+    """))
+
+(:doc >
+  (summary "Whether one number is greater than another.")
+  (arg a "The first operand.")
+  (arg b "The second, of the same type.")
+  (returns "#t when a is greater than b. #f when either is NaN.")
+  (see >= < greater?)
+  (reference """
+    The C# operator, as @code{<} is. With more than two operands it chains.
+    """))
+
+(:doc >=
+  (summary "Whether one number is greater than or equal to another.")
+  (arg a "The first operand.")
+  (arg b "The second, of the same type.")
+  (returns "#t when a is at least b. #f when either is NaN.")
+  (see > <= at-least?)
+  (reference """
+    The C# operator, as @code{<} is. With more than two operands it chains.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Bits
+;; ---------------------------------------------------------------------------
+
+(:doc bitwise-and
+  (summary "The bits set in both of two integers.")
+  (arg a "The first integer.")
+  (arg b "The second, of the same type.")
+  (returns "a AND b, bit by bit.")
+  (see bitwise-ior bitwise-xor bitwise-not)
+  (example """
+    (bitwise-and 12 10)   ; 8
+    """)
+  (reference """
+    C#'s @code{&}, at every integer type, signed and unsigned: the types with
+    an @code{Integral} implementation. With more than two operands it folds
+    from the left.
+    """))
+
+(:doc bitwise-ior
+  (summary "The bits set in either of two integers.")
+  (arg a "The first integer.")
+  (arg b "The second, of the same type.")
+  (returns "a OR b, bit by bit.")
+  (see bitwise-and bitwise-xor)
+  (example """
+    (bitwise-ior 12 10)   ; 14
+    """)
+  (reference """
+    C#'s @code{|}, at every integer type. With more than two operands it
+    folds from the left.
+    """))
+
+(:doc bitwise-xor
+  (summary "The bits set in exactly one of two integers.")
+  (arg a "The first integer.")
+  (arg b "The second, of the same type.")
+  (returns "a XOR b, bit by bit.")
+  (see bitwise-and bitwise-ior)
+  (example """
+    (bitwise-xor 12 10)   ; 6
+    """)
+  (reference """
+    C#'s @code{^}, at every integer type. With more than two operands it
+    folds from the left.
+    """))
+
+(:doc bitwise-not
+  (summary "An integer with every bit flipped.")
+  (arg x "The integer.")
+  (returns "The complement of x, of x's type.")
+  (see bitwise-and bitwise-xor)
+  (example """
+    (bitwise-not 0)       ; -1
+    """)
+  (reference """
+    C#'s @code{~}, at every integer type.
+    """))
+
+(:doc shift-left
+  (summary "An integer's bits moved toward the high end.")
+  (arg x "The integer to shift.")
+  (arg n "How many places. An int whatever x is, masked to x's width.")
+  (returns "x shifted left by n, zeroes filling in from the low end.")
+  (see shift-right shift-right-logical)
+  (example """
+    (shift-left 1 4)      ; 16
+    (shift-left 1 32)     ; 1, not 0: the count is masked
+    """)
+  (reference """
+    C#'s @code{<<}. C# masks the count to the operand's width, so at an
+    @code{int} a count of 32 shifts by 0.
+    """))
+
+(:doc shift-right
+  (summary "An integer's bits moved toward the low end, keeping the sign of a signed type.")
+  (arg x "The integer to shift.")
+  (arg n "How many places. An int whatever x is, masked to x's width.")
+  (returns "x shifted right by n.")
+  (see shift-right-logical shift-left)
+  (example """
+    (shift-right -16 2)   ; -4
+    """)
+  (reference """
+    C#'s @code{>>}: arithmetic on a signed type, copying the sign bit in,
+    and logical on an unsigned one. The count is masked as for
+    @code{shift-left}.
+    """))
+
+(:doc shift-right-logical
+  (summary "An integer's bits moved toward the low end, zeroes filling in.")
+  (arg x "The integer to shift.")
+  (arg n "How many places. An int whatever x is, masked to x's width.")
+  (returns "x shifted right by n, with zeroes in the high bits whatever x's sign.")
+  (see shift-right shift-left)
+  (example """
+    (shift-right-logical -1 28)   ; 15
+    """)
+  (reference """
+    C#'s @code{>>>}. The count is masked as for @code{shift-left}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Numbers to strings
+;; ---------------------------------------------------------------------------
+
+(:doc int->string
+  (summary "The decimal text of an int, the same on every machine.")
+  (arg n "The number.")
+  (returns "Its digits, with an ASCII minus when negative.")
+  (see string->int long->string ->str)
+  (reference """
+    Invariant, whatever the machine's culture, so it reads back with
+    @code{string->int} anywhere. .NET's own @code{ToString} takes the
+    ambient culture, under which -100 can come back with a U+2212 MINUS SIGN.
+    """))
+
+(:doc long->string
+  (summary "The decimal text of a long, the same on every machine.")
+  (arg n "The number.")
+  (returns "Its digits, with an ASCII minus when negative.")
+  (see int->string ->str))
+
+(:doc byte->string
+  (summary "The decimal text of a byte.")
+  (arg n "The number.")
+  (returns "Its digits, from 0 to 255.")
+  (see int->string ->str))
+
+(:doc double->string
+  (summary "The text of a double, the same on every machine.")
+  (arg n "The number.")
+  (returns "The shortest text that reads back as the same double, with a point as the decimal separator.")
+  (see string->double int->string ->str)
+  (example """
+    (double->string 6.0)   ; "6"
+    (double->string 2.5)   ; "2.5"
+    """)
+  (reference """
+    .NET's default formatting in the invariant culture, so it round-trips
+    through @code{string->double} on any machine. A whole number has no
+    point: 6.0 is written @code{6}. Use @code{(std fmt)} when the shape of
+    the output matters.
+    """))
+
+(:doc number->string
+  (summary "The decimal text of an int, under the name R7RS uses.")
+  (arg n "The number.")
+  (returns "What int->string answers.")
+  (see int->string ->str)
+  (reference """
+    Only for @code{int}. Other numeric types have their own conversions, or
+    @code{->str}.
+    """))
+
+(:doc clr-string->string
+  (summary "A Bjolang string from a .NET System.String.")
+  (arg s "The .NET string. Null is allowed.")
+  (returns "The same text as a Bjolang string; the empty string for null.")
+  (see string->clr-string)
+  (reference """
+    A .NET member that takes or returns a @code{System.String} directly is
+    converted at the call. This is for one nested in another type, such as
+    a @code{(Seq System.String)}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Printing
+;; ---------------------------------------------------------------------------
+
+(:doc ->str
+  (summary "The text a value prints as.")
+  (arg x "The value.")
+  (returns "Its text, as print and println write it.")
+  (see print println list->str int->string)
+  (example """
+    (->str 42)                ; "42"
+    (->str #\a)               ; "a"
+    (->str (list 1 2 3))      ; "(1 2 3)"
+    (->str [1 2])             ; "[1 2]"
+    (->str (Some "x"))        ; "(Some x)"
+    """)
+  (reference """
+    The method of the @code{->str} trait. Implemented for @code{string},
+    which is itself, @code{int}, @code{long}, @code{double} and
+    @code{byte}, through the invariant conversions such as
+    @code{int->string}, and for @code{char}, @code{Keyword} and
+    @code{Symbol}. A @code{char} prints as itself, not as @code{#\a}.
+
+    The containers print their elements through the elements' own
+    @code{->str}: a @code{List} as @code{(1 2 3)}, a @code{Vec} as
+    @code{[1 2 3]}, an @code{Array} as @code{#[1 2 3]}, a @code{Map} as
+    @code{#map(k v ...)}, an @code{Option} as @code{(Some x)} or
+    @code{None}, a @code{Result} as @code{(Ok x)} or @code{(Err e)}, and a
+    @code{Box} as @code{(Box x)}. A @code{Seq} prints as @code{(Seq ...)},
+    without being walked.
+
+    Anything with no implementation of its own falls to .NET's
+    @code{ToString}, asked in the invariant culture.
+    """))
+
+(:doc print
+  (summary "Writes a value's text to the current output port.")
+  (arg x "The value, written through its ->str.")
+  (see println ->str display)
+  (reference """
+    @code{(display (->str x))}: no newline after it. The port is
+    @code{current-output-port}, so @code{parameterize} redirects it.
+    """))
+
+(:doc println
+  (summary "Writes a value's text to the current output port, then a newline.")
+  (arg x "The value, written through its ->str.")
+  (see print ->str displayln)
+  (example """
+    (println 42)          ; 42
+    (println [1 2 3])     ; [1 2 3]
+    """)
+  (reference """
+    @code{(displayln (->str x))}. The port is @code{current-output-port}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Unit and discarding
+;; ---------------------------------------------------------------------------
+
+(:doc unit
+  (summary "The one value of type Unit.")
+  (see ignore)
+  (reference """
+    For a body that has to answer a @code{Unit} without doing anything,
+    such as @code{Discard}'s blanket implementation. @code{(begin)} is the
+    same value. @code{(Tuple)} is not: that is the empty tuple, a type of
+    its own.
+    """))
+
+(:doc ignore
+  (summary "Discards a value that would otherwise have to be used.")
+  (arg x "The value.")
+  (see unit detach)
+  (example """
+    (ignore (map-try-ref m k))
+    (ignore (bjo (log-visit user)))   ; detaches the promise
+    """)
+  (reference """
+    The method of the @code{Discard} trait. A value in statement position
+    must be a @code{Unit}: any other, a @code{Result} or a .NET method's
+    answer included, is refused. @code{ignore} is how to say it is not
+    wanted. For most types it does nothing.
+
+    On a @code{Promise} it is @code{detach}: the result is not wanted, but
+    a failure inside the fiber is reported as unhandled rather than lost
+    silently. A fiber that stopped because it was cancelled is not
+    reported.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Boxes
+;; ---------------------------------------------------------------------------
+
+(:doc Box
+  (summary "A mutable cell holding one value.")
+  (tparam %a "What it holds.")
+  (see make-box box-ref box-set! deref)
+  (example """
+    (def count (make-box 0))
+    (box-set! count (+ (box-ref count) 1))
+    (deref count)   ; 1
+    """)
+  (reference """
+    A one-element array behind an opaque struct. Copying a box copies the
+    reference to the array, so every copy reads and writes the same cell.
+    It has a @code{Derefable} implementation, so @code{deref} and
+    @code{get} read it, and prints as @code{(Box x)}.
+    """))
+
+(:doc make-box
+  (summary "A new box holding a value.")
+  (arg elem "What it starts out holding.")
+  (returns "A box of its own.")
+  (see box-ref box-set!))
+
+(:doc box-ref
+  (summary "What a box holds.")
+  (arg b "The box.")
+  (returns "The value most recently put in it.")
+  (see box-set! deref))
+
+(:doc box-set!
+  (summary "Replaces what a box holds, in place.")
+  (arg box "The box.")
+  (arg val "Its new value.")
+  (see box-ref make-box))
+
+;; ---------------------------------------------------------------------------
+;; Reading and writing by key
+;; ---------------------------------------------------------------------------
+
+(:doc ref
+  (summary "The element of a collection at an index or key.")
+  (arg coll "The collection.")
+  (arg i "The index or key. What it is depends on the collection.")
+  (returns "The element there.")
+  (see try-ref ref-set get vec-ref map-ref)
+  (example """
+    (ref [10 20 30] 1)          ; 20
+    (ref #map("a" 1) "a")       ; 1
+    """)
+  (reference """
+    The method of the @code{Refable} trait, which @code{get} reads key
+    steps with. Implemented for an @code{Array} and a @code{Vec}, by
+    @code{int} index; a @code{Map}, by key; and a @code{string}, by
+    @code{StringCursor}, answering a @code{char}. Each is the collection's
+    own read, so a missing index or key fails as that read does.
+    """))
+
+(:doc try-ref
+  (summary "The element of a collection at an index or key, if there is one.")
+  (arg coll "The collection.")
+  (arg i "The index or key.")
+  (returns "(Some element), or None where there is none.")
+  (see ref try-get map-try-ref)
+  (example """
+    (try-ref [10 20 30] 5)      ; None
+    """)
+  (reference """
+    The other method of @code{Refable}. A @code{Vec} answers @code{None} for
+    an index out of range, a @code{Map} for a missing key, and a
+    @code{string} for the end cursor.
+
+    Its default body is @code{(Some (ref coll i))}, which an @code{Array}
+    keeps: an index out of an array's bounds throws here as in @code{ref}.
+    """))
+
+(:doc ref-set
+  (summary "A copy of a collection with one index or key set.")
+  (arg coll "The collection, which is left as it was.")
+  (arg i "The index or key.")
+  (arg x "The value to put there.")
+  (returns "A new collection with x at i.")
+  (see ref set update vec-set map-set)
+  (example """
+    (ref-set [1 2 3] 0 9)       ; [9 2 3]
+    """)
+  (reference """
+    The method of the @code{Settable} trait, the persistent write that goes
+    with @code{ref}, and what @code{set} and @code{update} write key steps
+    with. Implemented for a @code{Vec}, where an index out of range throws,
+    and a @code{Map}, which gains a key it did not have.
+
+    A trait of its own rather than part of @code{Refable}, because much that
+    can be read by key cannot sensibly be copied with one slot changed: a
+    string read by cursor, or a mutable collection, whose write is in place.
+    """))
+
+(:doc deref
+  (summary "What a cell holds: a box's value, or a parameter's current one.")
+  (arg p "The cell.")
+  (returns "Its value.")
+  (see try-deref box-ref parameter-ref get)
+  (reference """
+    The method of the @code{Derefable} trait, implemented for @code{Box},
+    as @code{box-ref}, and @code{Param}, as @code{parameter-ref}. It is
+    what @code{get} with no steps reads.
+    """))
+
+(:doc try-deref
+  (summary "What a cell holds, as an Option.")
+  (arg p "The cell.")
+  (returns "(Some value), or None for a cell that may be empty.")
+  (see deref)
+  (reference """
+    The other method of @code{Derefable}. Its default body is
+    @code{(Some (deref p))}, which the @code{Box} and @code{Param}
+    implementations keep, so for them it is always @code{Some}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Option
+;; ---------------------------------------------------------------------------
+
+(:doc Some
+  (summary "An Option holding a value.")
+  (arg v "The value.")
+  (returns "(Some v).")
+  (see None some? option-ref option-ref-or)
+  (reference """
+    A case of the builtin @code{Option}, which marks presence or absence.
+    It is a struct, so building one does not allocate.
+    """))
+
+(:doc None
+  (summary "The Option that holds nothing.")
+  (see Some none? option-ref-or)
+  (example """
+    (match (map-try-ref m k)
+      ((Some v) v)
+      (None 0))
+    """))
+
+(:doc some?
+  (summary "Whether an Option holds a value.")
+  (arg opt "The Option.")
+  (returns "#t for Some, #f for None.")
+  (see none? option-ref))
+
+(:doc none?
+  (summary "Whether an Option is None.")
+  (arg opt "The Option.")
+  (returns "#t for None, #f for Some.")
+  (see some?))
+
+(:doc option-ref
+  (summary "The value inside a Some.")
+  (arg opt "The Option. Must be Some.")
+  (returns "The value it holds.")
+  (raises System.InvalidOperationException "When opt is None.")
+  (see option-ref-or option-value some?))
+
+(:doc option-ref-or
+  (summary "The value inside an Option, or a fallback for None.")
+  (arg opt "The Option.")
+  (arg fallback "What to answer for None. Evaluated either way, being an argument.")
+  (returns "The value opt holds, or fallback.")
+  (see option-value option-ref)
+  (example """
+    (option-ref-or (map-try-ref settings "port") 8080)
+    """))
+
+(:doc option-value
+  (summary "The value inside an Option, or a fallback for None.")
+  (arg opt "The Option.")
+  (arg fallback "What to answer for None.")
+  (returns "The value opt holds, or fallback.")
+  (see option-ref-or)
+  (reference """
+    The same as @code{option-ref-or}, written in Bjolang with a
+    @code{match}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Result
+;; ---------------------------------------------------------------------------
+
+(:doc Ok
+  (summary "A Result holding an answer.")
+  (arg v "The answer.")
+  (returns "(Ok v).")
+  (see Err ok? result-map)
+  (reference """
+    A case of the builtin @code{(Result %e %a)}: an answer or the error
+    that stopped it. Every @code{#:exceptions} interop call answers one. A
+    module that declares a @code{Result} type of its own gets its own
+    @code{Ok} and @code{Err}, which shadow these.
+
+    Like any value, a @code{Result} must be used: matched, propagated, or
+    handed to @code{ignore}.
+    """))
+
+(:doc Err
+  (summary "A Result holding the error that stopped it.")
+  (arg e "The error.")
+  (returns "(Err e).")
+  (see Ok err? raise)
+  (example """
+    (match (open-input-file path)
+      ((Ok port) (read-all port))
+      ((Err e) (raise e)))
+    """))
+
+(:doc ok?
+  (summary "Whether a Result is Ok.")
+  (arg r "The Result.")
+  (returns "#t for Ok, #f for Err.")
+  (see err?))
+
+(:doc err?
+  (summary "Whether a Result is Err.")
+  (arg r "The Result.")
+  (returns "#t for Err, #f for Ok.")
+  (see ok?))
+
+(:doc result-map
+  (summary "Applies a function to the answer inside an Ok.")
+  (arg f "The function, given the Ok's value. It answers a plain value.")
+  (arg r "The Result.")
+  (returns "(Ok (f v)) for (Ok v); an Err as it was.")
+  (see ok? Ok)
+  (example """
+    (result-map string-length (Ok "abc"))   ; (Ok 3)
+    """)
+  (reference """
+    A step that answers a @code{Result} of its own belongs in a
+    @code{try->} chain instead.
+
+    @code{f} may be either colour. A step that waits has to be a
+    @code{(bjoroutine (x) ...)}; written @code{(fun (x) ...)}, the same call
+    selects the blocking copy and parks the fiber's thread.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Parameters
+;; ---------------------------------------------------------------------------
+
+(:doc make-parameter
+  (summary "A new parameter: a value that parameterize rebinds for a dynamic extent.")
+  (arg v "Its value where nothing has bound it.")
+  (returns "A parameter, read with parameter-ref.")
+  (see parameter-ref make-cold-parameter deref)
+  (example """
+    (: verbose? (Param bool))
+    (def verbose? (make-parameter #f))
+
+    (parameterize ((verbose? #t))
+      (parameter-ref verbose?))   ; #t
+    """)
+  (reference """
+    A parameter is a value, not a function: it is read with
+    @code{parameter-ref}, so @code{(Param %a)} is an ordinary type that can
+    be passed, stored and returned.
+
+    The first 31 parameters made with @code{make-parameter} are cheap to read
+    however many others exist. The count is shared by the whole program,
+    the libraries it uses included: the prelude's own effect operations take
+    some of the 31. Past that, @code{make-parameter} makes a cold one, as
+    @code{make-cold-parameter} does.
+    """))
+
+(:doc make-cold-parameter
+  (summary "A new parameter that gives up the cheapest kind of read.")
+  (arg v "Its value where nothing has bound it.")
+  (returns "A parameter, the same as make-parameter's in every other way.")
+  (see make-parameter)
+  (reference """
+    For a parameter that is not read in a loop, so that it does not spend one
+    of the 31 ids that stay cheap to read. Worth it for a parameter made per
+    request or per connection rather than once at module level. Reading one
+    costs nothing extra while it is the only cold parameter bound, and one
+    more node access after that.
+    """))
+
+(:doc parameter-ref
+  (summary "A parameter's value where it is read.")
+  (arg p "The parameter.")
+  (returns "What the innermost parameterize bound it to, or its initial value.")
+  (see make-parameter deref)
+  (example """
+    (writeln (parameter-ref current-error-port) "failed")
+    """))
+
+(:doc parameter-push!
+  (summary "Binds a parameter in the current dynamic environment; half of what parameterize expands to.")
+  (arg p "The parameter.")
+  (arg v "Its new value.")
+  (returns "The environment it displaced, for dyn-restore! to put back.")
+  (see dyn-restore! parameter-ref)
+  (reference """
+    @code{parameterize} is written as a push, the body, and a
+    @code{dyn-restore!} of what the push answered in a @code{finally}. Not
+    meant to be called directly: by hand it pairs a push with a restore that
+    nothing guards.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Equality and hashing
+;; ---------------------------------------------------------------------------
+
+(:doc eq?
+  (summary "Whether two values are the same object.")
+  (arg a "The first.")
+  (arg b "The second.")
+  (returns "#t when a and b are one object; on a value type, when they are equal.")
+  (see = structural-equals)
+  (reference """
+    Object identity, for mutable cells, and not a substitute for @code{=}.
+    A value type has no identity to ask about, so on one it compares as
+    .NET's default equality does. Keywords and symbols are interned, so on
+    them it agrees with @code{=}.
+    """))
+
+(:doc clr-eq
+  (summary "C#'s == operator, private to std/eq.")
+  (arg a "The first.")
+  (arg b "The second.")
+  (returns "a == b.")
+  (see clr-equals =)
+  (reference """
+    What @code{(std eq)}'s @code{Eq} implementations for the primitive types
+    are written with, so that @code{=} on them compiles to the operator.
+    Refused in any module but @code{std/eq}: a type's own @code{Eq}
+    implementation is what .NET equality is made of, and writing one in
+    terms of the other is a loop. Use @code{=}, or
+    @code{structural-equals}.
+    """))
+
+(:doc clr-equals
+  (summary ".NET's default equality, private to std/eq.")
+  (arg a "The first.")
+  (arg b "The second.")
+  (returns "What EqualityComparer's Default answers.")
+  (see clr-eq clr-hash structural-equals)
+  (reference """
+    Unlike @code{clr-eq} it compiles at a type variable, and it is reflexive
+    on NaN, which is why the @code{double} implementation of @code{=} uses
+    it. Refused in any module but @code{std/eq}, as @code{clr-eq} is.
+    """))
+
+(:doc clr-hash
+  (summary ".NET's default hash, private to std/eq.")
+  (arg a "The value.")
+  (returns "Its hash from EqualityComparer's Default; 0 for null.")
+  (see clr-equals structural-hash)
+  (reference """
+    The hash that goes with @code{clr-equals}, read through the same
+    comparer. Refused in any module but @code{std/eq}.
+    """))
+
+(:doc structural-equals
+  (summary "Field-by-field equality, without the type's own Eq.")
+  (arg a "The first.")
+  (arg b "The second.")
+  (returns "#t when both are of the same runtime type and every field is equal.")
+  (see structural-hash = hash-combine)
+  (example """
+    (impl (Eq Point)
+      (defun (= a b) (structural-equals a b))
+      (defun (eq-hash p) (structural-hash p)))
+    """)
+  (reference """
+    For an @code{Eq} implementation that wants the field-by-field comparison
+    plus one tweak. It never consults the type's own @code{Equals}, which is
+    the implementation being written, so it does not loop; each field still
+    compares through its own type's equality.
+
+    A primitive, enum or string compares as .NET does. Otherwise the fields
+    are found by reflection, those of base types included, and cached per
+    type: an escape hatch, not a fast path.
+    """))
+
+(:doc structural-hash
+  (summary "A hash over a value's fields, without the type's own Eq.")
+  (arg a "The value.")
+  (returns "A hash that agrees with structural-equals; 0 for null.")
+  (see structural-equals hash-combine)
+  (reference """
+    Folds the fields' hashes in declaration order. It agrees with
+    @code{structural-equals} about what is equal, and is not the hash C#
+    would have written bit for bit.
+    """))
+
+(:doc hash-combine
+  (summary "Two hashes folded into one.")
+  (arg h1 "The first hash.")
+  (arg h2 "The second.")
+  (returns "A hash of the pair. Order matters.")
+  (see eq-hash structural-hash)
+  (example """
+    (defun (eq-hash p) (hash-combine (eq-hash (record-ref p x))
+                                     (eq-hash (record-ref p y))))
+    """)
+  (reference """
+    What an @code{eq-hash} over several fields folds with.
+    @code{System.HashCode.Combine}, so @code{(hash-combine a b)} and
+    @code{(hash-combine b a)} differ, and the value differs from one run of
+    the program to the next.
+    """))
+
+(:doc unhashable
+  (summary "The eq-hash of a type that has none: it throws, naming the type.")
+  (arg type-name "The type's name, for the message.")
+  (returns "Nothing: it always throws.")
+  (raises System.InvalidOperationException "Always, saying the type cannot be a Map or Set key.")
+  (see hash-combine eq-hash)
+  (example """
+    (impl (Eq Counter)
+      (defun (= a b) (structural-equals a b))
+      (defun (eq-hash c) (unhashable "Counter")))
+    """)
+  (reference """
+    A record with a mutable field has no lawful hash: hashing the field
+    breaks the rule that a key's hash does not change, and leaving it out
+    breaks the rule that equal values hash alike. @code{type/derive} writes
+    this for such a type, and it is how a hand-written implementation says
+    its type is not a key. It is loud rather than silent because the
+    alternative is a @code{Map} that loses an entry the next time the field
+    is written.
+    """))
+
+(:doc eq-comparer
+  (summary "The .NET equality comparer that agrees with = at a type.")
+  (returns "An IEqualityComparer for the type the call is used at.")
+  (see ord-comparer = eq-hash)
+  (example """
+    (defun (hashset-empty) (clr-hashset-empty (eq-comparer)))
+    """)
+  (reference """
+    What a collection is made with, so that its keys compare as @code{=}
+    and @code{eq-hash} say. Where the type's own .NET members answer the
+    same, which is almost always, it is .NET's default comparer, which a
+    collection can keep; otherwise it is the @code{Eq} implementation
+    itself.
+    """))
+
+(:doc ord-comparer
+  (summary "The .NET comparer that agrees with compare at a type.")
+  (returns "An IComparer for the type the call is used at.")
+  (see eq-comparer compare)
+  (reference """
+    The ordering counterpart of @code{eq-comparer}: .NET's default comparer
+    where the type's own @code{CompareTo} answers as its @code{Ord} does,
+    and the @code{Ord} implementation itself where it does not.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Failure
+;; ---------------------------------------------------------------------------
+
+(:doc Exception
+  (summary "System.Exception, the type every .NET exception derives from.")
+  (see raise Err)
+  (reference """
+    The error type of the prelude's fallible operations, such as
+    @code{(Result Exception TextInputPort)}. The @code{Err} carries the real
+    .NET exception, so a handler can test for a more specific type.
+    """))
+
+(:doc raise
+  (summary "Throws an exception, keeping the stack trace it already has.")
+  (arg e "The exception.")
+  (returns "Nothing: it never returns, so it fits where any type is wanted.")
+  (see Err panic!)
+  (example """
+    (match (parse s)
+      ((Ok n) n)
+      ((Err e) (raise e)))
+    """)
+  (reference """
+    The counterpart of @code{try}, which turns the failures it names into
+    values: this is how one gets back out. An exception that was caught and
+    is raised again keeps the stack trace of where it first failed.
+
+    Its result type is free because it never returns, so it can stand in a
+    @code{match} arm whose siblings produce a value.
+    """))
+
+(:doc panic!
+  (summary "Stops the program with a message.")
+  (arg msg "What went wrong, written to the error port.")
+  (key #:exit-code "The process's exit code. 1 when not given.")
+  (returns "Nothing: it never returns, so it fits where any type is wanted.")
+  (see raise)
+  (example """
+    (when (vec-empty? args)
+      (panic! "usage: tool FILE" #:exit-code 2))
+    """)
+  (reference """
+    For a program that cannot go on. It writes @code{msg} and a newline to
+    @code{current-error-port}, flushes it, and exits the process. No
+    @code{finally} and no scope's cleanup runs.
+
+    At the REPL it does not exit: it throws an exception of its own type,
+    which the REPL reports as a panic.
+    """))

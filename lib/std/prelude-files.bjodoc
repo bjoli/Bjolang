@@ -1,0 +1,640 @@
+;; Docs for the prelude's files, paths, directories and environment, read
+;; through (:doc #:file "prelude-files.bjodoc"). The texts are samizdat markup:
+;; code in prose is @code{...}.
+
+;; ---------------------------------------------------------------------------
+;; Whole files
+;; ---------------------------------------------------------------------------
+
+(:doc file-read-text
+  (summary "The whole of a file, as one string.")
+  (arg path "The file to read.")
+  (returns "Everything the file holds.")
+  (see file-read-lines file-read-bytes file-write-text open-input-file)
+  (reference """
+    For a file that fits in memory; a port reads one that does not. Opening
+    goes through the @code{FS} effect's @code{open-read-stream}, and an
+    @code{Err} from it is raised, as the .NET methods raise: wrap the call in
+    @code{try} for a @code{Result}. The file is closed before this returns.
+
+    A bjoroutine calling it awaits the file rather than parking its thread.
+    """))
+
+(:doc file-write-text
+  (summary "Writes a string to a file, replacing what it held.")
+  (arg path "The file to write. Created if it is missing, emptied if it is there.")
+  (arg contents "The text to write.")
+  (see file-append-text file-write-lines file-read-text)
+  (reference """
+    Opened with @code{Truncate} through the @code{FS} effect; an error opening
+    it is raised. The text is flushed before the file is closed, and a
+    bjoroutine awaits the write.
+    """))
+
+(:doc file-append-text
+  (summary "Writes a string after what a file holds.")
+  (arg path "The file to add to. Created if it is missing.")
+  (arg contents "The text to add.")
+  (see file-write-text file-append-bytes)
+  (reference """
+    Opened with @code{Append} through the @code{FS} effect; an error opening
+    it is raised.
+    """))
+
+(:doc file-read-lines
+  (summary "The lines of a file, without their line ends.")
+  (arg path "The file to read.")
+  (returns "One string per line, in order.")
+  (see file-write-lines file-read-lines/seq file-read-text)
+  (reference """
+    @code{"\n"}, @code{"\r\n"} and a lone @code{"\r"} each end a line, as
+    @code{read-line} reads them, a last line needs none,
+    and a final line end makes no empty line after it. The whole file is
+    read before this returns; @code{file-read-lines/seq} pulls the lines
+    lazily instead. An error opening the file is raised.
+    """))
+
+(:doc file-write-lines
+  (summary "Writes lines to a file, each followed by a newline, replacing what it held.")
+  (arg path "The file to write. Created if it is missing, emptied if it is there.")
+  (arg lines "The lines, without line ends.")
+  (see file-read-lines file-write-text)
+  (reference """
+    Every line is followed by @code{"\n"}, the last one too, on every OS, so
+    the same lines make the same bytes wherever they are written.
+    @code{file-read-lines} gives them back as long as no line holds a line
+    end of its own.
+    """))
+
+(:doc file-read-bytes
+  (summary "The whole of a file, as bytes.")
+  (arg path "The file to read.")
+  (returns "A new array holding everything the file holds.")
+  (see file-write-bytes file-read-text)
+  (reference """
+    Opened through the @code{FS} effect's @code{open-read-stream}; an
+    @code{Err} from it is raised.
+    """))
+
+(:doc file-write-bytes
+  (summary "Writes bytes to a file, replacing what it held.")
+  (arg path "The file to write. Created if it is missing, emptied if it is there.")
+  (arg bytes "What to write.")
+  (see file-append-bytes file-read-bytes))
+
+(:doc file-append-bytes
+  (summary "Writes bytes after what a file holds.")
+  (arg path "The file to add to. Created if it is missing.")
+  (arg bytes "What to add.")
+  (see file-write-bytes file-append-text))
+
+(:doc file-copy
+  (summary "Copies a file.")
+  (arg from "The file to copy.")
+  (arg to "Where the copy goes.")
+  (key #:mode "How to is written: CreateNew, the default, Truncate or Append.")
+  (raises System.IO.IOException "When from and to are the same path.")
+  (see file-move file-read-bytes)
+  (example """
+    (file-copy "a.txt" "b.txt")                    ; fails if b.txt exists
+    (file-copy "a.txt" "b.txt" #:mode Truncate)    ; replaces it
+    """)
+  (reference """
+    @code{CreateNew}, the default, fails if @code{to} exists, so a copy never
+    loses a file by accident; it is the one function whose @code{WriteMode}
+    does not default to @code{Truncate}. @code{Truncate} replaces @code{to},
+    and @code{Append} adds to it. The source is opened first, so a missing
+    one leaves @code{to} as it was. A copy onto its own path, compared after
+    @code{path-absolute}, is refused.
+
+    @code{to} may be the source under another name, a link say, and the text
+    of the paths cannot tell. So nothing that could empty the source is ever
+    opened: @code{Truncate} copies into a new file beside @code{to} and moves
+    it over @code{to} with @code{MoveReplace}, which replaces a link there
+    rather than writing through it, and @code{Append} copies the length the
+    source had when it was opened, so a file appended to itself grows once and
+    stops. The copy is a new file, with a modified time of its own.
+    """))
+
+(:doc file-info
+  (summary "What a path names: its kind, size, last write and whether it is a link.")
+  (arg path "The path to ask about.")
+  (returns "None when the path names nothing.")
+  (see FsInfo file-exists? directory-exists? fs-info)
+  (example """
+    (match (file-info "notes.txt")
+      ((Some info) (record-ref info size))
+      (None 0L))
+    """)
+  (reference """
+    The @code{FS} effect's @code{fs-info}, so a handler answers for it. A
+    symbolic link's size and time are those of what it leads to, which is
+    what reading it reads; @code{link?} says it is one. With
+    @code{(std datetime)},
+    @code{(unix-milliseconds->instant (record-ref info modified-ms))} answers
+    the time as an @code{(Option Instant)}.
+
+    A path that is no path at all, @code{""} say, is @code{None} rather than
+    an error.
+    """))
+
+(:doc file-exists?
+  (summary "Whether a path names a file.")
+  (arg path "The path to ask about.")
+  (returns "#t for a file, #f for a directory or for nothing.")
+  (see directory-exists? file-info))
+
+(:doc file-delete
+  (summary "Deletes a file.")
+  (arg path "The file to delete.")
+  (see directory-delete fs-delete-file)
+  (reference """
+    A missing file is not an error. Through the @code{FS} effect's
+    @code{fs-delete-file}; an @code{Err} from it is raised.
+    """))
+
+(:doc file-move
+  (summary "Moves or renames a file or a directory.")
+  (arg from "What to move.")
+  (arg to "Its new path.")
+  (key #:mode "MoveNew, the default, or MoveReplace.")
+  (see MoveMode file-copy fs-move)
+  (example """
+    (file-write-text "config.tmp" text)
+    (file-move "config.tmp" "config" #:mode MoveReplace)   ; never seen half-written
+    """)
+  (reference """
+    @code{MoveNew} fails if @code{to} exists. @code{MoveReplace} replaces a
+    file at @code{to}, in the one rename that moves the new one there, so
+    nothing ever sees @code{to} missing: write a temporary file, then move it
+    over the old one. A directory is never replaced, and never replaces
+    anything.
+
+    Through the @code{FS} effect's @code{fs-move}; an @code{Err} from it is
+    raised.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Lazy reading
+;; ---------------------------------------------------------------------------
+
+(:doc file-read/seq
+  (summary "The items a reader reads from a file, pulled lazily.")
+  (arg reader "Reads one item from the port. Called while the port is not at its end.")
+  (arg path "The file to read.")
+  (returns "A sequence of the items, which may be walked more than once.")
+  (see file-read-lines/seq file-read-lines)
+  (reference """
+    The file is opened when the sequence is walked, not when it is made, so
+    every walk opens it afresh and reads from the start, and it is the
+    @code{FS} handler installed at the walk that answers. It is closed when
+    the walk ends: at the end of the file, or when the walker stops early.
+
+    A missing file raises on the first pull. @code{(std ports)}'
+    @code{file->seq}, which is built on this, reports it as a @code{Result}
+    at the call instead.
+
+    A @code{seq} body cannot await, so a bjoroutine pulling from this parks
+    its thread on every pull. In a bjoroutine, read the whole file with
+    @code{file-read-lines}, or stream it with @code{port->chan}.
+    """))
+
+(:doc file-read-lines/seq
+  (summary "The lines of a file, pulled lazily.")
+  (arg path "The file to read.")
+  (returns "A sequence of the lines, without their line ends.")
+  (see file-read/seq file-read-lines)
+  (reference """
+    @code{file-read/seq} with @code{read-line}: opened at each walk, closed
+    when the walk ends, and never suspending.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Paths
+;; ---------------------------------------------------------------------------
+
+(:doc path-absolute
+  (summary "A path made absolute, against the current directory.")
+  (arg path "The path, relative or absolute.")
+  (returns "The full path.")
+  (see current-directory path-combine)
+  (reference """
+    .NET's @code{Path.GetFullPath}. Like the other path functions it works on
+    the text and asks nothing of the file system.
+    """))
+
+(:doc path-combine
+  (summary "Paths joined with the separator.")
+  (rest parts "The pieces, in order.")
+  (returns "The joined path.")
+  (see path-directory path-filename path-absolute)
+  (example """
+    (path-combine "src" "std" "prelude.bjo")   ; "src/std/prelude.bjo" on Linux
+    """)
+  (reference """
+    .NET's @code{Path.Combine}, so a piece that is itself an absolute path
+    starts the result over from it.
+    """))
+
+(:doc path-filename
+  (summary "The last part of a path: the file's name and extension.")
+  (arg path "The path.")
+  (returns "None for a path that ends in a separator, which names a directory.")
+  (see path-file-extension path-directory)
+  (example """
+    (path-filename "src/main.bjo")   ; (Some "main.bjo")
+    (path-filename "src/")           ; None
+    """))
+
+(:doc path-file-extension
+  (summary "The extension of a path's file name, with its dot.")
+  (arg path "The path.")
+  (returns "None when the name has no extension.")
+  (see path-filename)
+  (example """
+    (path-file-extension "main.bjo")   ; (Some ".bjo")
+    (path-file-extension "Makefile")   ; None
+    """)
+  (reference """
+    A name that is nothing but a dotted suffix, @code{.bashrc}, counts as an
+    extension, as it does to .NET.
+    """))
+
+(:doc path-directory
+  (summary "The directory part of a path: all of it but the last part.")
+  (arg path "The path.")
+  (returns "None for a root and for a bare file name.")
+  (see path-filename path-combine)
+  (example """
+    (path-directory "src/main.bjo")   ; (Some "src")
+    (path-directory "main.bjo")       ; None
+    """)
+  (reference """
+    .NET's @code{Path.GetDirectoryName}, whose @code{null} and empty answers
+    become @code{None}. A builtin rather than a function of the prelude's own,
+    for that reason.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Directories
+;; ---------------------------------------------------------------------------
+
+(:doc directory-exists?
+  (summary "Whether a path names a directory.")
+  (arg path "The path to ask about.")
+  (returns "#t for a directory, #f for a file or for nothing.")
+  (see file-exists? file-info))
+
+(:doc directory-create
+  (summary "Creates a directory, and every missing one along its path.")
+  (arg path "The directory to create.")
+  (see directory-delete fs-create-directory)
+  (reference """
+    One that is already there is not an error, so the call needs no guard.
+    Through the @code{FS} effect's @code{fs-create-directory}; an @code{Err}
+    from it is raised.
+    """))
+
+(:doc directory-delete
+  (summary "Deletes an empty directory.")
+  (arg path "The directory to delete. Empty.")
+  (see directory-delete-tree file-delete fs-delete-directory)
+  (reference """
+    A missing or non-empty directory is an error, raised from the
+    @code{FS} effect's @code{fs-delete-directory}.
+    """))
+
+(:doc directory-delete-tree
+  (summary "Deletes a directory and everything under it.")
+  (arg path "The directory to delete.")
+  (see directory-delete directory-walk)
+  (reference """
+    Spelled differently from @code{directory-delete} because it is not a
+    mistake anything can undo.
+
+    It deletes one entry at a time through the @code{FS} operations, so a
+    handler sees every deletion. A symbolic link to a directory is removed as
+    a link and never entered, @code{path} itself included, so nothing a link
+    points at is deleted: a link to the home directory inside a build
+    directory leaves the home directory alone, and a link back up the tree
+    does not loop. A link that leads nowhere is removed as a file.
+    """))
+
+(:doc directory-files
+  (summary "The files directly in a directory.")
+  (arg path "The directory to list.")
+  (returns "Whole paths, in the order the OS lists them.")
+  (see directory-subdirectories directory-walk)
+  (example """
+    (vec-filter #(string-ends-with? &1 ".bjo") (directory-files dir))
+    """)
+  (reference """
+    Listing takes no pattern: filter the answer. An error listing is raised,
+    from the @code{FS} effect's @code{fs-list}.
+    """))
+
+(:doc directory-subdirectories
+  (summary "The directories directly in a directory.")
+  (arg path "The directory to list.")
+  (returns "Whole paths, in the order the OS lists them.")
+  (see directory-files directory-walk))
+
+(:doc directory-walk
+  (summary "The files under a directory, depth first, pulled lazily.")
+  (arg dir "The directory to walk.")
+  (key #:into? "Asked about each directory below dir before the walk enters it. By default every one is entered.")
+  (returns "A sequence of whole paths to files; directories themselves are not in it.")
+  (see directory-files directory-delete-tree)
+  (example """
+    (filter #(string-ends-with? & ".bjo")
+            (directory-walk "." #:into? (fun (d) (not (= (path-filename d) (Some ".git"))))))
+
+    (find #(string-ends-with? & ".bjo") (directory-walk "."))   ; stops at the first
+    """)
+  (reference """
+    Each directory's entries come in ordinal order, so a walk is the same on
+    every OS and on a fake filesystem. A directory that is a symbolic link is
+    never entered, so a link back up the tree cannot loop the walk. An entry
+    gone between listing and visiting is skipped.
+
+    Nothing is listed until the sequence is walked, so it is the @code{FS}
+    handler installed at the walk that answers, and a walk that stops early
+    lists nothing more. An error listing a directory is raised, as
+    @code{directory-files} raises it. A @code{seq} body cannot await, so a
+    bjoroutine pulling from it parks its thread on each pull.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The FS effect
+;; ---------------------------------------------------------------------------
+
+(:doc FsKind
+  (summary "What a path names, when it names anything.")
+  (case FsFile "A file.")
+  (case FsDirectory "A directory.")
+  (see FsInfo file-info))
+
+(:doc FsInfo
+  (summary "What fs-info answers about a path that names something.")
+  (field kind "A file or a directory.")
+  (field size "In bytes. 0 for a directory.")
+  (field modified-ms "The last write, in Unix milliseconds, UTC.")
+  (field link? "Whether the path itself is a symbolic link.")
+  (see file-info fs-info FsKind)
+  (reference """
+    One answer to one question, so that a handler cannot say a path is a file
+    and then forget to say how big it is.
+
+    For a link, @code{size} and @code{modified-ms} are those of what it leads
+    to, and a link to nothing keeps its own. @code{directory-walk} and
+    @code{directory-delete-tree} do not enter a directory that is a link.
+
+    Milliseconds because @code{(std datetime)}'s
+    @code{unix-milliseconds->instant} takes them, and the prelude cannot name
+    an @code{Instant} itself.
+    """))
+
+(:doc MoveMode
+  (summary "What a move does when something is already at the target.")
+  (case MoveNew "Fails, and changes nothing.")
+  (case MoveReplace "A file at the target is replaced, in the one rename that moves the new one there.")
+  (see file-move fs-move)
+  (reference """
+    With @code{MoveReplace} nothing ever sees the target missing. A directory
+    is never replaced, whichever of the two it is.
+    """))
+
+(:doc fs-info
+  (summary "The FS operation that answers what a path names.")
+  (arg path "The path to ask about.")
+  (returns "None when the path names nothing.")
+  (see file-info FsInfo op/fs-info fs-info/raw)
+  (reference """
+    An operation of the @code{FS} effect: it calls the handler installed for
+    it, @code{fs-info/raw} when none is. Install one with
+    @code{(with-handler ((fs-info (fun (path) ...))) body ...)}, which needs
+    @code{(import (std effect))}. @code{file-info}, @code{file-exists?},
+    @code{directory-exists?} and the directory functions ask through it.
+    """))
+
+(:doc op/fs-info
+  (summary "The parameter holding the handler fs-info calls.")
+  (see fs-info fs-info/raw)
+  (reference """
+    @code{with-handler} binds it when it installs a handler for
+    @code{fs-info}, and @code{(handler-of fs-info)} reads it. Under a prefix
+    or a rename, where @code{with-handler} cannot derive this name from the
+    operation's, @code{parameterize} it directly. Cold: it takes none of the
+    dynamic environment's cheap parameter ids.
+    """))
+
+(:doc fs-info/raw
+  (summary "What the real file system says a path names, bypassing any FS handler.")
+  (arg path "The path to ask about.")
+  (returns "None when the path names nothing, or is no path at all.")
+  (see fs-info FsInfo)
+  (reference """
+    The default handler of @code{fs-info}, and what a handler that wants to
+    fall through to the disk calls. A symbolic link's size and time are those
+    of the end of its chain of links, followed for at most 40 steps; a link to
+    nothing keeps its own.
+    """))
+
+(:doc fs-list
+  (summary "The FS operation that lists a directory.")
+  (arg dir "The directory to list.")
+  (returns "Whole paths, files and directories both, or the error listing it.")
+  (see directory-files directory-walk op/fs-list fs-list/raw)
+  (reference """
+    An operation of the @code{FS} effect: it calls the handler installed for
+    it, @code{fs-list/raw} when none is. @code{directory-files},
+    @code{directory-subdirectories}, @code{directory-walk} and
+    @code{directory-delete-tree} list through it.
+    """))
+
+(:doc op/fs-list
+  (summary "The parameter holding the handler fs-list calls.")
+  (see fs-list fs-list/raw)
+  (reference """
+    @code{with-handler} binds it when it installs a handler for
+    @code{fs-list}, and @code{(handler-of fs-list)} reads it. Cold.
+    """))
+
+(:doc fs-list/raw
+  (summary "The entries of a directory on the real file system, bypassing any FS handler.")
+  (arg path "The directory to list.")
+  (returns "Whole paths, in the order the OS gives them, or the exception .NET raised.")
+  (see fs-list))
+
+(:doc fs-create-directory
+  (summary "The FS operation that creates a directory and every missing one along its path.")
+  (arg dir "The directory to create.")
+  (returns "Ok when it is there afterwards, or the error.")
+  (see directory-create op/fs-create-directory fs-create-directory/raw)
+  (reference """
+    An operation of the @code{FS} effect: it calls the handler installed for
+    it, @code{fs-create-directory/raw} when none is.
+    """))
+
+(:doc op/fs-create-directory
+  (summary "The parameter holding the handler fs-create-directory calls.")
+  (see fs-create-directory fs-create-directory/raw)
+  (reference """
+    @code{with-handler} binds it when it installs a handler for
+    @code{fs-create-directory}. Cold.
+    """))
+
+(:doc fs-create-directory/raw
+  (summary "Creates a directory on the real file system, bypassing any FS handler.")
+  (arg path "The directory to create.")
+  (returns "Ok, or the exception .NET raised.")
+  (see fs-create-directory)
+  (reference """
+    Every missing directory along the path is created, and one that is
+    already there is not an error.
+    """))
+
+(:doc fs-delete-file
+  (summary "The FS operation that deletes a file.")
+  (arg path "The file to delete.")
+  (returns "Ok, or the error.")
+  (see file-delete op/fs-delete-file fs-delete-file/raw)
+  (reference """
+    An operation of the @code{FS} effect: it calls the handler installed for
+    it, @code{fs-delete-file/raw} when none is.
+    """))
+
+(:doc op/fs-delete-file
+  (summary "The parameter holding the handler fs-delete-file calls.")
+  (see fs-delete-file fs-delete-file/raw)
+  (reference """
+    @code{with-handler} binds it when it installs a handler for
+    @code{fs-delete-file}. Cold.
+    """))
+
+(:doc fs-delete-file/raw
+  (summary "Deletes a file on the real file system, bypassing any FS handler.")
+  (arg path "The file to delete.")
+  (returns "Ok, also when the file is missing, or the exception .NET raised.")
+  (see fs-delete-file))
+
+(:doc fs-delete-directory
+  (summary "The FS operation that deletes an empty directory.")
+  (arg dir "The directory to delete.")
+  (returns "Ok, or the error.")
+  (see directory-delete op/fs-delete-directory fs-delete-directory/raw)
+  (reference """
+    An operation of the @code{FS} effect: it calls the handler installed for
+    it, @code{fs-delete-directory/raw} when none is.
+    """))
+
+(:doc op/fs-delete-directory
+  (summary "The parameter holding the handler fs-delete-directory calls.")
+  (see fs-delete-directory fs-delete-directory/raw)
+  (reference """
+    @code{with-handler} binds it when it installs a handler for
+    @code{fs-delete-directory}. Cold.
+    """))
+
+(:doc fs-delete-directory/raw
+  (summary "Deletes an empty directory on the real file system, bypassing any FS handler.")
+  (arg path "The directory to delete.")
+  (returns "Ok, or the exception .NET raised: a missing or non-empty directory is an IOException.")
+  (see fs-delete-directory))
+
+(:doc fs-move
+  (summary "The FS operation that moves or renames a file or a directory.")
+  (arg from "What to move.")
+  (arg to "Its new path.")
+  (arg mode "What to do when something is already there.")
+  (returns "Ok, or the error.")
+  (see file-move MoveMode op/fs-move fs-move/raw)
+  (reference """
+    An operation of the @code{FS} effect: it calls the handler installed for
+    it, @code{fs-move/raw} when none is. @code{file-move} moves through it,
+    and @code{file-copy} with @code{Truncate} replaces its target with it.
+    """))
+
+(:doc op/fs-move
+  (summary "The parameter holding the handler fs-move calls.")
+  (see fs-move fs-move/raw)
+  (reference """
+    @code{with-handler} binds it when it installs a handler for
+    @code{fs-move}. Cold.
+    """))
+
+(:doc fs-move/raw
+  (summary "Moves a file or a directory on the real file system, bypassing any FS handler.")
+  (arg from "What to move.")
+  (arg to "Its new path.")
+  (arg mode "Whether a file at to is replaced. Ignored for a directory, which never replaces.")
+  (returns "Ok, or the exception .NET raised.")
+  (see fs-move MoveMode))
+
+;; ---------------------------------------------------------------------------
+;; The environment
+;; ---------------------------------------------------------------------------
+
+(:doc get-environment-variable
+  (summary "The value of an environment variable of this process.")
+  (arg name "The variable's name.")
+  (returns "None when it is not set, or set to the empty string.")
+  (see set-environment-variable! getenv)
+  (reference """
+    R7RS's name, with @code{None} where R7RS answers @code{#f}. What it cannot
+    tell apart is a variable that is unset and one set to nothing. It reads
+    the real environment directly; @code{getenv} asks through a handler a
+    test can replace.
+    """))
+
+(:doc set-environment-variable!
+  (summary "Sets an environment variable for this process and the processes it starts.")
+  (arg name "The variable's name.")
+  (arg value "Its new value. The empty string removes it.")
+  (see get-environment-variable)
+  (reference """
+    Not for the shell that started the process.
+    """))
+
+(:doc current-directory
+  (summary "The process's current directory, which relative paths are resolved against.")
+  (returns "Its full path.")
+  (see set-current-directory! path-absolute)
+  (reference """
+    A function rather than a value, because it is process-wide mutable state.
+    """))
+
+(:doc set-current-directory!
+  (summary "Changes the process's current directory.")
+  (arg path "The new current directory.")
+  (see current-directory)
+  (reference """
+    Process-wide: every thread and fiber resolves relative paths against it
+    from then on.
+    """))
+
+(:doc getenv
+  (summary "The Env operation that reads an environment variable.")
+  (arg name "The variable's name.")
+  (returns "None when it is not set.")
+  (see get-environment-variable op/getenv)
+  (example """
+    (with-handler ((getenv (fun (name) (if (= name "HOME") (Some "/tmp/home") None))))
+      (run-the-thing))
+    """)
+  (reference """
+    An operation of the @code{Env} effect, so a test can answer for the
+    environment without writing to the real one. With no handler installed it
+    is @code{get-environment-variable}. Installing one needs
+    @code{(import (std effect))}.
+    """))
+
+(:doc op/getenv
+  (summary "The parameter holding the handler getenv calls.")
+  (see getenv)
+  (reference """
+    @code{with-handler} binds it when it installs a handler for
+    @code{getenv}, and @code{(handler-of getenv)} reads it. Under a prefix or
+    a rename, @code{parameterize} it directly. Cold: it takes none of the
+    dynamic environment's cheap parameter ids.
+    """))

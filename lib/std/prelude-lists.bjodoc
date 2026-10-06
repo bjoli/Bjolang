@@ -1,0 +1,366 @@
+;; Docs for the prelude's lists, read through (:doc #:file ...). The texts are
+;; samizdat markup: code in prose is @code{...}.
+
+;; ---------------------------------------------------------------------------
+;; Making lists
+;; ---------------------------------------------------------------------------
+
+(:doc Cons
+  (summary "A list with one more element in front.")
+  (arg x "The new first element.")
+  (arg xs "The list it goes in front of, which is shared, not copied.")
+  (returns "A list whose head is x and whose tail is xs.")
+  (see cons Nil list list-head list-tail)
+  (example """
+    (Cons 1 (Cons 2 Nil))   ; (1 2)
+
+    (match xs
+      (Nil 0)
+      ((Cons h _) h))
+    """)
+  (reference """
+    One of the two cases of a list, with @code{Nil}, and what a
+    @code{match} takes a non-empty list apart with: @code{(Cons h t)}.
+    @code{cons} is the same function under a lower-case name.
+    """))
+
+(:doc Nil
+  (summary "The empty list.")
+  (see Cons list-empty list-empty?)
+  (example """
+    (match xs
+      (Nil "empty")
+      ((Cons _ _) "not empty"))
+    """)
+  (reference """
+    The other case of a list, with @code{Cons}. It is a value, not a
+    function: written @code{Nil}, not @code{(Nil)}.
+    """))
+
+(:doc cons
+  (summary "A list with one more element in front.")
+  (arg x "The new first element.")
+  (arg xs "The list it goes in front of, which is shared, not copied.")
+  (returns "A list whose head is x and whose tail is xs.")
+  (see Cons list list-empty)
+  (example """
+    (cons 0 (list 1 2))   ; (0 1 2)
+    """)
+  (reference """
+    The same as @code{Cons}. Only one cell is allocated: a list is
+    immutable, so the new list and xs share every cell of xs.
+    """))
+
+(:doc list
+  (summary "A list of the arguments, in the order they are given.")
+  (rest items "The elements. None makes the empty list.")
+  (returns "A new list of items.")
+  (see cons Nil list->vec)
+  (example """
+    (list 1 2 3)   ; (1 2 3)
+    (list)         ; ()
+    """)
+  (reference """
+    Taken as a value, as in @code{(def f list)}, it is the function from an
+    @code{Array} of elements to a list.
+    """))
+
+(:doc list-empty
+  (summary "The empty list.")
+  (returns "The same list as @code{Nil}.")
+  (see Nil list-empty?))
+
+;; ---------------------------------------------------------------------------
+;; Taking lists apart
+;; ---------------------------------------------------------------------------
+
+(:doc list-head
+  (summary "The first element of a list.")
+  (arg xs "The list. Not empty.")
+  (returns "Its first element.")
+  (raises System.InvalidOperationException "When xs is empty.")
+  (see list-tail list-empty? Cons))
+
+(:doc list-tail
+  (summary "A list without its first element.")
+  (arg xs "The list. Not empty.")
+  (returns "Everything after the first element: the list xs was built on, not a copy.")
+  (raises System.InvalidOperationException "When xs is empty.")
+  (see list-head over-list))
+
+(:doc list-empty?
+  (summary "Whether a list has no elements.")
+  (arg xs "The list.")
+  (returns "#t for @code{Nil}, #f for any other list.")
+  (see Nil list-length))
+
+(:doc list-length
+  (summary "How many elements a list has.")
+  (arg xs "The list.")
+  (returns "The number of elements, 0 for the empty list.")
+  (see list-empty? listbuilder-length)
+  (reference """
+    O(n): a list stores no count, so this walks it. To ask only whether a
+    list is empty, @code{list-empty?} costs nothing.
+    """))
+
+(:doc list-ref
+  (summary "The element at an index of a list.")
+  (arg xs "The list.")
+  (arg i "The index, from 0. Not negative, and less than the length.")
+  (returns "The element at i.")
+  (raises System.ArgumentOutOfRangeException "When i is negative, or not less than the length of xs.")
+  (see list-head list->vec)
+  (reference """
+    O(i): it walks from the front. For many lookups by index, convert with
+    @code{list->vec} first.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Making lists from lists
+;; ---------------------------------------------------------------------------
+
+(:doc list-reverse
+  (summary "A list's elements in the opposite order.")
+  (arg xs "The list, which is left as it is.")
+  (returns "A new list, last element first.")
+  (see list-foldr))
+
+(:doc list-append
+  (summary "One list followed by another.")
+  (arg xs "The elements that come first. They are copied.")
+  (arg ys "The elements that come after. They are shared, not copied.")
+  (returns "A list of xs's elements and then ys's.")
+  (see cons list-foldr)
+  (example """
+    (list-append (list 1 2) (list 3))   ; (1 2 3)
+    """)
+  (reference """
+    O(n) in the length of xs, and independent of ys: the result's last
+    cells are ys itself.
+    """))
+
+(:doc list-map
+  (summary "A list of what a function answers for each element of another.")
+  (arg f "The function. It may suspend.")
+  (arg xs "The list.")
+  (returns "A new list of f's answers, in xs's order.")
+  (see list-filter list-for-each list-foldl)
+  (example """
+    (list-map (fun (x) (* x x)) (list 1 2 3))   ; (1 4 9)
+    """)
+  (reference """
+    f is called on the elements in order, from the first.
+    """))
+
+(:doc list-filter
+  (summary "The elements of a list that pass a test.")
+  (arg keep? "The test. An element is kept when it answers #t. It may suspend.")
+  (arg xs "The list.")
+  (returns "A new list of the elements kept, in xs's order.")
+  (see list-map)
+  (example """
+    (list-filter (fun (x) (> x 1)) (list 1 2 3))   ; (2 3)
+    """))
+
+(:doc list-foldl
+  (summary "Combines a list's elements into one value, from the first.")
+  (arg f "Called with an element and the value so far, and answers the next value. It may suspend.")
+  (arg init "The value before any element.")
+  (arg xs "The list.")
+  (returns "What f answered for the last element, or init when xs is empty.")
+  (see list-foldr list-for-each)
+  (example """
+    (list-foldl cons Nil (list 1 2 3))   ; (3 2 1)
+    """)
+  (reference """
+    f takes the element first and the accumulator second, the same order as
+    @code{list-foldr} and @code{fold}.
+    """))
+
+(:doc list-foldr
+  (summary "Combines a list's elements into one value, from the last.")
+  (arg f "Called with an element and the value so far, and answers the next value. It may suspend.")
+  (arg init "The value before any element.")
+  (arg xs "The list.")
+  (returns "What f answered for the first element, or init when xs is empty.")
+  (see list-foldl list-append)
+  (example """
+    (list-foldr cons Nil (list 1 2 3))   ; (1 2 3)
+    """)
+  (reference """
+    It reverses xs and folds that from the front, so a long list uses no
+    stack, at the cost of one reversed copy.
+    """))
+
+(:doc list-for-each
+  (summary "Calls a function on each element of a list, for its effect.")
+  (arg f "The function. It may suspend.")
+  (arg xs "The list, walked from the first element.")
+  (see list-map list-foldl))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(:doc list->vec
+  (summary "A vec of a list's elements, in the same order.")
+  (arg lst "The list.")
+  (returns "A new vec.")
+  (see list->seq list-ref))
+
+(:doc list->seq
+  (summary "A list seen as a sequence.")
+  (arg xs "The list.")
+  (returns "A seq of xs's elements, in order.")
+  (see list->vec listbuilder-add-range!)
+  (reference """
+    Nothing is copied: the seq is the list itself, and walking it walks the
+    list. Since the list is immutable, it can be walked any number of times.
+    """))
+
+(:doc list->string
+  (summary "A string of a list's characters.")
+  (arg cs "The characters, in order.")
+  (returns "A new string.")
+  (see list->str))
+
+(:doc list->str
+  (summary "A list written out as (1 2 3).")
+  (arg l "The list. Each element is formatted by its own @code{->str}.")
+  (returns "The elements between parentheses, separated by one space: @code{()} for the empty list.")
+  (see list->string)
+  (example """
+    (list->str (list 1 2 3))             ; "(1 2 3)"
+    (list->str (list (list 1) (list 2)))  ; "((1) (2))"
+    """)
+  (reference """
+    No quote is written in front, and a string element is written as it is,
+    without quotes. It is what @code{->str} answers for a list.
+    """))
+
+(:doc reader->list
+  (summary "The lines a reader has left, as a list.")
+  (arg r "The reader. It is read to its end and not closed.")
+  (returns "Each line without its line ending, in order.")
+  (see list->vec)
+  (reference """
+    It blocks the thread until the reader is out of lines.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; List builders
+;; ---------------------------------------------------------------------------
+
+(:doc listbuilder-empty
+  (summary "A new builder, empty, for making a list from the front to the back.")
+  (returns "A builder with no elements.")
+  (see listbuilder-add! listbuilder->list list->builder)
+  (example """
+    (def b (listbuilder-empty))
+    (listbuilder-add! b 1)
+    (listbuilder-add! b 2)
+    (listbuilder->list b)   ; (1 2)
+    """)
+  (reference """
+    Adding to a builder appends in O(1), which consing cannot do: the
+    alternative is to cons onto the front and reverse at the end.
+    """))
+
+(:doc list->builder
+  (summary "A new builder holding a copy of a list's elements.")
+  (arg xs "The list, which later changes to the builder do not touch.")
+  (returns "A builder with xs's elements, in order.")
+  (see list->listbuilder listbuilder-empty))
+
+(:doc list->listbuilder
+  (summary "A new builder holding a copy of a list's elements.")
+  (arg xs "The list, which later changes to the builder do not touch.")
+  (returns "A builder with xs's elements, in order.")
+  (see list->builder)
+  (reference """
+    The same as @code{list->builder}.
+    """))
+
+(:doc listbuilder-add!
+  (summary "Adds an element to the end of a builder, in place.")
+  (arg b "The builder.")
+  (arg x "The element.")
+  (raises System.InvalidOperationException "When b has already been made into a list.")
+  (see listbuilder-add-range! listbuilder->list))
+
+(:doc listbuilder-add-range!
+  (summary "Adds every element of a sequence to the end of a builder, in place.")
+  (arg b "The builder.")
+  (arg s "The elements, added in the order the seq yields them.")
+  (raises System.InvalidOperationException "When b has already been made into a list.")
+  (see listbuilder-add! list->seq))
+
+(:doc listbuilder-length
+  (summary "How many elements a builder holds.")
+  (arg b "The builder.")
+  (returns "The number of elements added so far. The builder keeps a count, so this does not walk.")
+  (raises System.InvalidOperationException "When b has already been made into a list.")
+  (see list-length))
+
+(:doc listbuilder->list
+  (summary "The list a builder has built.")
+  (arg b "The builder. It cannot be used again afterwards.")
+  (returns "A list of the elements added, in order.")
+  (raises System.InvalidOperationException "When b has already been made into a list.")
+  (see listbuilder-empty)
+  (reference """
+    Nothing is copied: the cells the builder linked become the list. That
+    is why the builder is finished after it, and every later operation on
+    it, this one included, raises.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Walking and collecting
+;; ---------------------------------------------------------------------------
+
+(:doc ListTails
+  (summary "What @code{over-list} answers: a walk over a list's tails.")
+  (tparam %a "The type of the list's elements.")
+  (field rest "The list the walk starts from.")
+  (see over-list)
+  (reference """
+    Its @code{Iterable} implementation yields the list, then its tail, and
+    so on, stopping before @code{Nil}. Each element is a
+    @code{(List %a)} with a head.
+    """))
+
+(:doc over-list
+  (summary "The tails of a list, for a @code{:for} clause.")
+  (arg xs "The list.")
+  (returns "A walk yielding xs, its tail, its tail's tail, and so on. The empty list is not yielded.")
+  (see ListTails list-tail)
+  (example """
+    {listing t (:for t (over-list (list 1 2 3)))}   ; ((1 2 3) (2 3) (3))
+
+    (loop (:for tail (over-list xs))
+          (:when (> (list-length tail) 1))
+          (:acc pairs (listing (Tuple (list-head tail) (list-head (list-tail tail))))))
+    """)
+  (reference """
+    For a walk that has to look at the rest of the list, not only the
+    element it is on. Each tail is the cell of xs itself, not a copy.
+    """))
+
+(:doc Listing
+  (summary "The collector that gathers a loop's values into a list.")
+  (tparam %a "The type of the elements.")
+  (case listing "Written @code{(listing x)} in an @code{:acc} clause, or as the head of a comprehension.")
+  (see listbuilder-empty)
+  (example """
+    (loop (:for x (list 1 2 3))
+          (:acc out (listing (* x 10)))
+          => out)                        ; (10 20 30)
+
+    {listing x :when (> x 2) (:for x (range 0 6))}   ; (3 4 5)
+    """)
+  (reference """
+    The list is in the order the values were added. It is built with a
+    list builder, so each value costs O(1) and nothing is reversed at the
+    end.
+    """))

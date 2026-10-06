@@ -1,0 +1,676 @@
+;; Docs for the prelude's strings, cursors and string walks, read through
+;; (:doc #:file "prelude-strings.bjodoc"). The texts are samizdat markup: code
+;; in prose is @code{...}.
+;;
+;; A string is UTF-8 and always valid. string-length counts its bytes and
+;; string-count its characters; positions in it are cursors, never indices.
+
+;; ---------------------------------------------------------------------------
+;; Building and measuring
+;; ---------------------------------------------------------------------------
+
+(:doc str
+  (summary "Concatenates any number of strings.")
+  (rest parts "The strings, in order.")
+  (returns "Their text, one after the other. No parts is the empty string.")
+  (see string-append string-join)
+  (example """
+    (str "n = " (int->string n) "!")
+    """)
+  (reference """
+    Every part must already be a string: @code{str} formats nothing, so a
+    number goes through @code{int->string} or @code{->str} first. The result
+    is made in one allocation of the exact size.
+
+    In a loop, collect into a builder or a @code{stringing} clause instead:
+    appending to a growing string copies it every time, and is quadratic.
+    """))
+
+(:doc string-append
+  (summary "Two strings, one after the other.")
+  (arg a "The first.")
+  (arg b "The second.")
+  (returns "The text of a followed by that of b. When either is empty, the other.")
+  (see str string-join))
+
+(:doc string-length
+  (summary "The length of a string in bytes of UTF-8.")
+  (arg s "The string.")
+  (returns "The number of bytes. O(1).")
+  (see string-count string-empty?)
+  (example """
+    (string-length "héllo")   ; 6
+    (string-count "héllo")    ; 5
+    """)
+  (reference """
+    The storage length, for sizing a buffer. It is not "how long is this
+    text": for that, @code{string-count} counts characters. The two differ
+    for any string with a character outside ASCII in it, which is why
+    neither is called @code{size}.
+    """))
+
+(:doc string-count
+  (summary "The number of characters in a string.")
+  (arg s "The string.")
+  (returns "How many characters (Unicode scalar values) s holds.")
+  (see string-length length)
+  (reference """
+    O(n): the characters are counted, not stored. @code{string-length} is
+    the O(1) byte length. @code{length} on a string answers this count too.
+    """))
+
+(:doc string-empty?
+  (summary "Whether a string has no characters.")
+  (arg s "The string.")
+  (returns "#t for the empty string.")
+  (see string-length))
+
+;; ---------------------------------------------------------------------------
+;; .NET's string
+;; ---------------------------------------------------------------------------
+
+(:doc string->clr-string
+  (summary "The same text as a .NET System.String.")
+  (arg s "The string.")
+  (returns "A UTF-16 System.String with the same characters.")
+  (see clr-string->string)
+  (reference """
+    A .NET member that takes a @code{System.String} directly is converted at
+    the call, so this is needed only for a .NET string inside another type,
+    such as an element of a @code{(Seq System.String)} or the argument of a
+    @code{Func}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Searching and rewriting
+;; ---------------------------------------------------------------------------
+
+(:doc string-contains?
+  (summary "Whether a string contains another.")
+  (arg s "The string to search.")
+  (arg needle "The text to look for. An empty one is always found.")
+  (returns "#t when needle occurs in s.")
+  (see string-search string-starts-with? string-ends-with?)
+  (reference """
+    Ordinal: bytes are compared as they are, with no culture. For an answer
+    that ignores case, fold the case of both first:
+    @code{(string-contains? (string-downcase s) (string-downcase needle))}.
+    """))
+
+(:doc string-starts-with?
+  (summary "Whether a string starts with another.")
+  (arg s "The string.")
+  (arg prefix "What it may start with.")
+  (returns "#t when s begins with prefix. Every string starts with the empty one.")
+  (see string-ends-with? string-contains?)
+  (reference "Ordinal, as @code{string-contains?} is."))
+
+(:doc string-ends-with?
+  (summary "Whether a string ends with another.")
+  (arg s "The string.")
+  (arg suffix "What it may end with.")
+  (returns "#t when s ends with suffix. Every string ends with the empty one.")
+  (see string-starts-with? string-contains?)
+  (reference "Ordinal, as @code{string-contains?} is."))
+
+(:doc string-replace
+  (summary "A string with every occurrence of one text replaced by another.")
+  (arg s "The string.")
+  (arg old "The text to replace. Not empty.")
+  (arg new "What goes in its place. The empty string deletes.")
+  (returns "s with each occurrence of old replaced, left to right and not overlapping; s itself when there is none.")
+  (raises System.ArgumentException "When old is empty.")
+  (see string-search string-contains?)
+  (example """
+    (string-replace "a-b-c" "-" "")    ; "abc"
+    (string-replace "aaa" "aa" "b")    ; "ba"
+    """)
+  (reference "Ordinal, as @code{string-contains?} is."))
+
+(:doc string-search
+  (summary "Where the first occurrence of a text in a string starts.")
+  (arg s "The string to search.")
+  (arg needle "The text to look for.")
+  (returns "(Some cursor) on the start of the first occurrence, or None. An empty needle is found at the start.")
+  (see string-search-backward string-index substring string-contains?)
+  (example """
+    (match (string-search line "=")
+      ((Some c) (substring line (string-cursor-start line) c))   ; the key
+      (None line))
+    """)
+  (reference """
+    Ordinal. The answer is a cursor, so it goes straight to
+    @code{substring}; there is no byte index to get wrong. In a slice, the
+    cursor is a position in the string the slice was taken from.
+    """))
+
+(:doc string-search-backward
+  (summary "Where the last occurrence of a text in a string starts.")
+  (arg s "The string to search.")
+  (arg needle "The text to look for.")
+  (returns "(Some cursor) on the start of the last occurrence, or None. An empty needle is found at the end.")
+  (see string-search substring))
+
+(:doc string-index
+  (summary "Where the first character satisfying a predicate is.")
+  (arg pred "The test, given each character in turn from the start.")
+  (arg s "The string.")
+  (returns "(Some cursor) on the first character pred answers #t for, or None.")
+  (see string-search substring)
+  (example """
+    (string-index char-whitespace? "key value")   ; (Some cursor) on the space
+    """)
+  (reference """
+    A cursor rather than a character, so the result goes straight to
+    @code{substring}. It stops at the first match.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Case
+;; ---------------------------------------------------------------------------
+
+(:doc string-upcase
+  (summary "A string with every character upper-cased.")
+  (arg s "The string.")
+  (returns "The upper-cased text; s itself when no character changes.")
+  (see string-downcase char-upcase)
+  (reference """
+    Invariant culture, character for character: ß upcases to itself rather
+    than to SS, so this is for normalising before a comparison rather than
+    for display.
+    """))
+
+(:doc string-downcase
+  (summary "A string with every character lower-cased.")
+  (arg s "The string.")
+  (returns "The lower-cased text; s itself when no character changes.")
+  (see string-upcase char-downcase char-foldcase)
+  (reference """
+    Invariant culture, character for character. Downcase both sides before
+    an ordinal comparison or search to ignore case.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Trimming and padding
+;; ---------------------------------------------------------------------------
+
+(:doc string-trim
+  (summary "A string without the whitespace at both ends.")
+  (arg s "The string.")
+  (returns "s with leading and trailing whitespace removed.")
+  (see string-trim-left string-trim-right string-trim/slice char-whitespace?)
+  (reference """
+    Whitespace is what @code{char-whitespace?} says it is. There is no form
+    that trims other characters. The result has bytes of its own, unless
+    nothing was trimmed, when it is @code{s} itself.
+    """))
+
+(:doc string-trim-left
+  (summary "A string without the whitespace at its start.")
+  (arg s "The string.")
+  (returns "s with leading whitespace removed.")
+  (see string-trim string-trim-right string-trim-left/slice))
+
+(:doc string-trim-right
+  (summary "A string without the whitespace at its end.")
+  (arg s "The string.")
+  (returns "s with trailing whitespace removed.")
+  (see string-trim string-trim-left string-trim-right/slice))
+
+(:doc string-trim/slice
+  (summary "What string-trim leaves, as a slice of the string.")
+  (arg s "The string.")
+  (returns "s without whitespace at either end, sharing s's bytes.")
+  (see string-trim string-copy substring/slice)
+  (reference """
+    No copy is made, and the slice keeps all of @code{s}'s bytes alive. For
+    a scanner that cuts many short pieces out of one text and lets them go;
+    @code{string-copy} a piece before keeping it.
+    """))
+
+(:doc string-trim-left/slice
+  (summary "What string-trim-left leaves, as a slice of the string.")
+  (arg s "The string.")
+  (returns "s without leading whitespace, sharing s's bytes.")
+  (see string-trim-left string-trim/slice string-copy))
+
+(:doc string-trim-right/slice
+  (summary "What string-trim-right leaves, as a slice of the string.")
+  (arg s "The string.")
+  (returns "s without trailing whitespace, sharing s's bytes.")
+  (see string-trim-right string-trim/slice string-copy))
+
+(:doc string-pad-left
+  (summary "A string padded at the start to a width in characters.")
+  (arg s "The string.")
+  (arg width "The width wanted, in characters.")
+  (key #:with "The character to pad with.")
+  (returns "s with enough copies of the pad before it to make width characters; s's text unchanged when it is already that wide.")
+  (see string-pad-right string-count)
+  (example """
+    (string-pad-left "7" 3 #:with #\0)   ; "007"
+    (string-pad-left "1234" 3)           ; "1234"
+    """)
+  (reference """
+    The width is @code{string-count}'s count, not @code{string-length}'s,
+    and the pad is one character however many bytes it takes. It never
+    truncates.
+    """))
+
+(:doc string-pad-right
+  (summary "A string padded at the end to a width in characters.")
+  (arg s "The string.")
+  (arg width "The width wanted, in characters.")
+  (key #:with "The character to pad with.")
+  (returns "s with enough copies of the pad after it to make width characters; s's text unchanged when it is already that wide.")
+  (see string-pad-left string-count)
+  (example """
+    (string-pad-right "ab" 4 #:with #\.)   ; "ab.."
+    """)
+  (reference "Counts characters and never truncates, as @code{string-pad-left} does."))
+
+;; ---------------------------------------------------------------------------
+;; Splitting and joining
+;; ---------------------------------------------------------------------------
+
+(:doc string-split
+  (summary "The fields between occurrences of a separator.")
+  (arg s "The string to split.")
+  (arg sep "The separator.")
+  (returns "The fields in order, empty ones kept. One more than the number of separators in s.")
+  (see string-split/slice string-join)
+  (example """
+    (string-split "a,,b" ",")   ; ["a" "" "b"]
+    (string-split "" ",")       ; [""]
+    """)
+  (reference """
+    Empty fields are kept; drop them with
+    @code{(vec-filter #(not (string-empty? &1)) parts)}. An empty separator
+    gives the whole string as the one field. Each field has bytes of its
+    own; @code{string-split/slice} shares them instead.
+    """))
+
+(:doc string-split/slice
+  (summary "The fields between occurrences of a separator, as slices of the string.")
+  (arg s "The string to split.")
+  (arg sep "The separator.")
+  (returns "The fields string-split answers, each sharing s's bytes.")
+  (see string-split string-copy)
+  (reference """
+    No field is copied, and each keeps all of @code{s} alive while it is
+    held. @code{string-copy} a field before keeping it.
+    """))
+
+(:doc string-join
+  (summary "Strings joined with a separator between them.")
+  (arg parts "The strings, in order.")
+  (arg sep "What goes between two of them.")
+  (returns "The parts with sep between each two. No parts is the empty string.")
+  (see string-split str)
+  (example """
+    (string-join ["a" "b" "c"] ", ")   ; "a, b, c"
+    """)
+  (reference "Built through one builder, so it costs the length of the result."))
+
+;; ---------------------------------------------------------------------------
+;; Slices and substrings
+;; ---------------------------------------------------------------------------
+
+(:doc substring
+  (summary "The text between two cursors.")
+  (arg s "The string.")
+  (arg start "Where the text begins.")
+  (arg end "Where it ends, not included. Not before start.")
+  (returns "The characters from start up to end, with bytes of their own; s itself when that is all of it.")
+  (raises System.ArgumentException "When start is after end, or a cursor is not on a character boundary of s.")
+  (raises System.ArgumentOutOfRangeException "When a cursor is outside s.")
+  (see substring/slice string-search string-index string-cursor-start)
+  (example """
+    (substring s (string-cursor-next s (string-cursor-start s))
+                 (string-cursor-end s))   ; all but the first character
+    """))
+
+(:doc substring/slice
+  (summary "The text between two cursors, as a slice of the string.")
+  (arg s "The string.")
+  (arg start "Where the text begins.")
+  (arg end "Where it ends, not included. Not before start.")
+  (returns "The characters from start up to end, sharing s's bytes.")
+  (raises System.ArgumentException "When start is after end, or a cursor is not on a character boundary of s.")
+  (raises System.ArgumentOutOfRangeException "When a cursor is outside s.")
+  (see substring string-copy)
+  (reference """
+    A slice is a string like any other: it equals, hashes and orders by its
+    text, and goes anywhere a string goes. Two things set it apart.
+
+    @strong{Its cursors are its source's.} A cursor found in a slice, by
+    @code{string-search}, @code{string-index} or a regex, is a position in
+    the string it was taken from, and @code{(string-cursor-start sl)} is
+    where the slice begins in it.
+
+    @strong{It keeps all of its source alive.} A ten-byte slice of a
+    megabyte keeps the megabyte. That is why the plain forms copy: a slice
+    is for a scanner that cuts many short pieces out of one text and lets
+    them go, not for keeping a piece.
+    """))
+
+(:doc string-copy
+  (summary "The same text with bytes of its own.")
+  (arg s "The string.")
+  (returns "A string equal to s that shares no bytes; s itself when it already has its own.")
+  (see substring/slice string-trim/slice string-split/slice)
+  (reference """
+    What to do to a slice before holding on to it, so that it stops keeping
+    the whole of its source alive.
+
+    The plain forms, such as @code{substring}, @code{string-trim} and
+    @code{string-replace}, answer their argument itself when it is already
+    the result. Given a slice, that answer is still the slice, so
+    @code{string-copy} is the one way to be sure a string holds nothing
+    more than its text.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Cursors
+;; ---------------------------------------------------------------------------
+
+(:doc string-cursor-start
+  (summary "A cursor on the first character of a string.")
+  (arg s "The string.")
+  (returns "The cursor where s begins. For the empty string it is also the end.")
+  (see string-cursor-end string-cursor-next string-cursor-ref)
+  (example """
+    (let loop ((c (string-cursor-start s)))
+      (unless (string-cursor-end? s c)
+        (println (char->string (string-cursor-ref s c)))
+        (loop (string-cursor-next s c))))
+    """)
+  (reference """
+    A cursor is a position in a string, and what takes the place of an
+    index: there is no @code{string-ref}, since reaching the n-th character
+    of UTF-8 is O(n). A cursor costs what an @code{int} does, and stepping
+    it is O(1).
+
+    It is opaque. There is no conversion between cursors and numbers: a
+    cursor is made by @code{string-cursor-start}, @code{string-cursor-end},
+    a search, or a step, so it always rests on a character boundary.
+
+    It does not carry its string, so every operation takes the string as
+    well. A cursor of a slice is a cursor of the string the slice was taken
+    from, and is where the slice begins in it. A cursor used with another
+    string is caught only when it falls outside that string or inside one of
+    its characters.
+
+    @code{(:for ch s)} walks a string faster than a cursor loop does; a
+    cursor is for when the positions are wanted.
+    """))
+
+(:doc string-cursor-end
+  (summary "The past-the-end cursor of a string.")
+  (arg s "The string.")
+  (returns "The cursor after the last character: the bound a traversal stops at.")
+  (see string-cursor-end? string-cursor-start string-cursor-prev))
+
+(:doc string-cursor-end?
+  (summary "Whether a cursor has reached the end of its string.")
+  (arg s "The string.")
+  (arg c "A cursor of s.")
+  (returns "#t when c is the past-the-end cursor, and there is no character at it.")
+  (see string-cursor-end string-cursor-ref))
+
+(:doc string-cursor-ref
+  (summary "The character at a cursor.")
+  (arg s "The string.")
+  (arg c "A cursor of s, not at the end.")
+  (returns "The character c is on.")
+  (raises System.ArgumentOutOfRangeException "When c is at the end of s, or outside it.")
+  (raises System.ArgumentException "When c is not on a character boundary of s, as a cursor from another string may be.")
+  (see string-cursor-ref+next string-cursor-end?)
+  (reference "Guard it with @code{string-cursor-end?}."))
+
+(:doc string-cursor-next
+  (summary "The cursor on the next character.")
+  (arg s "The string.")
+  (arg c "A cursor of s, not at the end.")
+  (returns "The cursor after the character at c, which is the end after the last one.")
+  (raises System.ArgumentOutOfRangeException "When c is at the end of s, or outside it.")
+  (raises System.ArgumentException "When c is not on a character boundary of s.")
+  (see string-cursor-prev string-cursor-ref+next)
+  (reference "Steps over all the bytes the character takes, so it lands on the next character whatever its width."))
+
+(:doc string-cursor-prev
+  (summary "The cursor on the previous character.")
+  (arg s "The string.")
+  (arg c "A cursor of s, not at the start.")
+  (returns "The cursor on the character before c.")
+  (raises System.ArgumentOutOfRangeException "When c is at the start of s, or outside it.")
+  (see string-cursor-next string-cursor-end string-fold-right)
+  (reference "O(1): it steps back over at most three continuation bytes, and decodes nothing."))
+
+(:doc string-cursor-ref+next
+  (summary "The character at a cursor and the cursor after it, in one call.")
+  (arg s "The string.")
+  (arg c "A cursor of s, not at the end.")
+  (returns "A tuple of the character at c and the cursor on the next one.")
+  (raises System.ArgumentOutOfRangeException "When c is at the end of s, or outside it.")
+  (raises System.ArgumentException "When c is not on a character boundary of s.")
+  (see string-cursor-ref string-cursor-next)
+  (example """
+    (def (Tuple ch next) (string-cursor-ref+next s c))
+    """)
+  (reference """
+    One read of the byte at @code{c} answers both questions, where
+    @code{string-cursor-ref} and @code{string-cursor-next} each read and
+    check it. The tuple is a @code{ValueTuple} and does not allocate, so a
+    forward loop that wants both pays only for destructuring it.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Cursor comparison
+;; ---------------------------------------------------------------------------
+
+(:doc string-cursor=?
+  (summary "Whether two cursors are at the same position.")
+  (arg a "A cursor.")
+  (arg b "A cursor of the same string.")
+  (returns "#t when they are equal.")
+  (see string-cursor<? string-cursor-start)
+  (reference """
+    The comparisons are aliases for @code{=}, @code{<} and the rest, which
+    work on cursors directly. Cursors of two different strings compare
+    without complaint and mean nothing; those of a slice and of its source
+    are of one string.
+    """))
+
+(:doc string-cursor<?
+  (summary "Whether one cursor is before another.")
+  (arg a "A cursor.")
+  (arg b "A cursor of the same string.")
+  (returns "#t when a is before b.")
+  (see string-cursor<=? string-cursor>? string-cursor=?))
+
+(:doc string-cursor>?
+  (summary "Whether one cursor is after another.")
+  (arg a "A cursor.")
+  (arg b "A cursor of the same string.")
+  (returns "#t when a is after b.")
+  (see string-cursor>=? string-cursor<? string-cursor=?))
+
+(:doc string-cursor<=?
+  (summary "Whether one cursor is before another or at it.")
+  (arg a "A cursor.")
+  (arg b "A cursor of the same string.")
+  (returns "#t when a is not after b.")
+  (see string-cursor<? string-cursor>=? string-cursor=?))
+
+(:doc string-cursor>=?
+  (summary "Whether one cursor is after another or at it.")
+  (arg a "A cursor.")
+  (arg b "A cursor of the same string.")
+  (returns "#t when a is not before b.")
+  (see string-cursor>? string-cursor<=? string-cursor=?))
+
+;; ---------------------------------------------------------------------------
+;; Traversal
+;; ---------------------------------------------------------------------------
+
+(:doc string-fold
+  (summary "Folds a function over the characters of a string, from the start.")
+  (arg f "Called with each character and the accumulator, answering the next accumulator.")
+  (arg init "The accumulator before the first character.")
+  (arg s "The string.")
+  (returns "The accumulator after the last character; init for the empty string.")
+  (see string-fold-right string-for-each fold)
+  (example """
+    (string-fold (fun (c n) (if (char=? c #\a) (+ n 1) n)) 0 "banana")   ; 3
+    """))
+
+(:doc string-fold-right
+  (summary "Folds a function over the characters of a string, from the end.")
+  (arg f "Called with each character and the accumulator, answering the next accumulator.")
+  (arg init "The accumulator before the last character.")
+  (arg s "The string.")
+  (returns "The accumulator after the first character; init for the empty string.")
+  (see string-fold string->list)
+  (example """
+    (string-fold-right cons Nil "abc")   ; (#\a #\b #\c)
+    """)
+  (reference """
+    It walks backwards with @code{string-cursor-prev}, so it is a loop and
+    not one stack frame per character.
+    """))
+
+(:doc string-for-each
+  (summary "Calls a function on each character of a string, in order.")
+  (arg f "Called once per character, for its effect.")
+  (arg s "The string.")
+  (see string-fold string-walk))
+
+;; ---------------------------------------------------------------------------
+;; Walks: what (:for ch s) steps with
+;; ---------------------------------------------------------------------------
+
+(:doc StringWalk
+  (summary "A step through a string's characters: what (:for ch s) iterates with.")
+  (see string-walk string-cursor-start)
+  (reference """
+    The cursor of a string's @code{Iterable} impl. It is not a
+    @code{StringCursor}: it takes the string's bytes once and decodes each
+    character as it steps onto it, where a cursor loop asks the string at
+    every step whether it is a slice. So @code{(:for ch s)} is the fastest
+    way through a string, and a cursor loop is for when the positions are
+    wanted.
+
+    A walk holds the character it is on, and the next is decoded when it
+    steps. It has no position to compare or to give to @code{substring}.
+    """))
+
+(:doc string-walk
+  (summary "A walk on the first character of a string.")
+  (arg s "The string.")
+  (returns "A walk on s's first character, or one already done for the empty string.")
+  (see string-walk-done? string-walk-current string-walk-next StringWalk)
+  (example """
+    (let loop ((w (string-walk s)))
+      (unless (string-walk-done? w)
+        (println (char->string (string-walk-current w)))
+        (loop (string-walk-next w))))
+    """)
+  (reference """
+    The four @code{string-walk} functions are exported because the
+    @code{Iterable} impl for @code{string} is inlined where it is used, and
+    reaches them there. A @code{(:for ch s)} clause is the ordinary way to
+    use them.
+    """))
+
+(:doc string-walk-done?
+  (summary "Whether a walk has passed the last character.")
+  (arg w "The walk.")
+  (returns "#t when there is no character left.")
+  (see string-walk string-walk-current))
+
+(:doc string-walk-current
+  (summary "The character a walk is on.")
+  (arg w "The walk, not done.")
+  (returns "The character, already decoded.")
+  (raises System.InvalidOperationException "When the walk is done.")
+  (see string-walk-done? string-walk-next))
+
+(:doc string-walk-next
+  (summary "The walk on the next character.")
+  (arg w "The walk.")
+  (returns "A walk on the character after w's, decoded; done after the last one. A walk that is done answers itself.")
+  (see string-walk string-walk-done?))
+
+(:doc Stringing
+  (summary "The collector that gathers characters into a string.")
+  (case stringing "Written in an :acc clause with the character to add.")
+  (see Collector string->list)
+  (example """
+    (loop (:for c "hello")
+          (:acc out (stringing (char-upcase c)))
+          => out)                                  ; "HELLO"
+    {stringing c (:for c "a1b2") (:when (char-alphabetic? c))}   ; "ab"
+    """)
+  (reference """
+    Its accumulator is a @code{StringBuilder}, so collecting n characters
+    costs the length of the result, where @code{string-append} in a loop
+    copies the growing string every time.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(:doc string->list
+  (summary "The characters of a string, as a list.")
+  (arg s "The string.")
+  (returns "Its characters in order.")
+  (see list->string string->vec string-fold-right))
+
+(:doc string->vec
+  (summary "The characters of a string, as a vec.")
+  (arg s "The string.")
+  (returns "Its characters in order.")
+  (see string->list string-for-each))
+
+(:doc string-reverse
+  (summary "A string with its characters in reverse order.")
+  (arg s "The string.")
+  (returns "The characters of s, last first. The same number of bytes as s.")
+  (see string->list)
+  (example """
+    (string-reverse "a😀b")   ; "b😀a"
+    """)
+  (reference "By character, not by byte, so a character of several bytes comes back whole."))
+
+(:doc string->int
+  (summary "The int a string writes.")
+  (arg s "Decimal digits, with an optional sign.")
+  (returns "The number.")
+  (see string->double int->string)
+  (example """
+    (string->int "-42")   ; -42
+    """)
+  (reference """
+    Invariant culture, so it reads what @code{int->string} writes on any
+    machine. Whitespace at either end is allowed. Text that is not such a
+    number throws, as .NET's @code{int.Parse} does: a
+    @code{FormatException}, or an @code{OverflowException} when the number
+    does not fit.
+    """))
+
+(:doc string->double
+  (summary "The double a string writes.")
+  (arg s "A sign, digits, a decimal point and an exponent.")
+  (returns "The number.")
+  (see string->int double->string)
+  (example """
+    (string->double "1.5e3")   ; 1500
+    """)
+  (reference """
+    Invariant culture, so the decimal point is always @code{.} and it reads
+    what @code{double->string} writes on any machine. There are no thousands
+    separators. Text that is not such a number throws, as .NET's
+    @code{double.Parse} does.
+    """))

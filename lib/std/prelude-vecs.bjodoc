@@ -1,0 +1,688 @@
+;; Docs for the prelude's vecs and arrays: the persistent Vec (an RRB tree),
+;; its builder and cursors, slices of vecs and arrays to loop over, .NET
+;; arrays, and the Vecing collector. Read through (:doc #:file ...) from
+;; prelude.bjo. The texts are samizdat markup: code in prose is @code{...}.
+
+;; ---------------------------------------------------------------------------
+;; Making and reading a vec
+;; ---------------------------------------------------------------------------
+
+(:doc vec-empty
+  (summary "An empty vec.")
+  (returns "A vec with no elements.")
+  (see vec-empty? vecbuilder-empty)
+  (reference """
+    The constructor. The predicate is @code{vec-empty?}.
+    """))
+
+(:doc vec-empty?
+  (summary "Whether a vec has no elements.")
+  (arg v "The vec.")
+  (returns "#t when its length is 0.")
+  (see vec-empty vec-length)
+  (reference """
+    O(1): a vec stores its count, and this reads it.
+    """))
+
+(:doc vec-length
+  (summary "How many elements a vec has.")
+  (arg v "The vec.")
+  (returns "Its number of elements.")
+  (see vec-empty?)
+  (reference """
+    O(1): a vec stores its count.
+    """))
+
+(:doc vec-ref
+  (summary "The element of a vec at an index.")
+  (arg v "The vec.")
+  (arg i "From 0. Less than the length.")
+  (returns "The element at i.")
+  (raises System.IndexOutOfRangeException "When i is negative or not less than the length.")
+  (see vec-set vec-length)
+  (reference """
+    A descent of the tree from the root, unless i is in the last few
+    elements, which are kept in an array of their own. To visit every
+    element, a @code{(:for x v)} loop, @code{in-vec} or @code{vec-for-each}
+    walks the leaf arrays instead and costs less per element.
+    """))
+
+(:doc vec-contains
+  (summary "Whether a vec holds an element.")
+  (arg v "The vec.")
+  (arg x "The element to look for.")
+  (returns "#t when some element of v equals x.")
+  (see vec-iter)
+  (reference """
+    A walk from the front that stops at the first match. Elements are
+    compared with .NET's default equality for the type
+    (@code{EqualityComparer<T>.Default}), not through Bjolang's @code{Eq}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Changing a vec
+;; ---------------------------------------------------------------------------
+
+(:doc vec-add
+  (summary "A vec with one element added at the end.")
+  (arg v "The vec, which is left as it was.")
+  (arg x "The element to add.")
+  (returns "A new vec, one longer, with x last.")
+  (see vecbuilder-add! vec-insert vec-merge)
+  (reference """
+    The persistent counterpart of @code{vecbuilder-add!}, and what the
+    @code{Addable} implementation for @code{Vec} calls. To add many
+    elements, a @code{VecBuilder} or the @code{vecing} collector avoids
+    making a vec per element.
+    """))
+
+(:doc vec-set
+  (summary "A vec with the element at an index replaced.")
+  (arg v "The vec, which is left as it was.")
+  (arg i "From 0. Less than the length.")
+  (arg x "The new element.")
+  (returns "A new vec with x at i.")
+  (raises System.IndexOutOfRangeException "When i is negative or not less than the length.")
+  (see vec-ref vecbuilder-set!))
+
+(:doc vec-insert
+  (summary "A vec with an element inserted at an index.")
+  (arg v "The vec, which is left as it was.")
+  (arg i "From 0 to the length, both included. At the length it is vec-add.")
+  (arg x "The element to insert.")
+  (returns "A new vec, one longer, with x at i and the elements from i on moved up one.")
+  (raises System.IndexOutOfRangeException "When i is negative or greater than the length.")
+  (see vec-add vec-remove-at vec-compact)
+  (reference """
+    An insertion leaves the tree relaxed, so many of them can make it deeper
+    than a vec built from the front; @code{vec-compact} rebuilds it.
+    """))
+
+(:doc vec-remove-at
+  (summary "A vec with the element at an index removed.")
+  (arg v "The vec, which is left as it was.")
+  (arg i "From 0. Less than the length.")
+  (returns "A new vec, one shorter.")
+  (raises System.IndexOutOfRangeException "When i is negative or not less than the length.")
+  (see vec-insert vec-pop vec-pop-first))
+
+(:doc vec-pop
+  (summary "A vec without its last element.")
+  (arg v "The vec, which is left as it was. Not empty.")
+  (returns "A new vec, one shorter.")
+  (raises System.InvalidOperationException "When v is empty.")
+  (see vec-pop-first vec-remove-at vec-slice))
+
+(:doc vec-pop-first
+  (summary "A vec without its first element.")
+  (arg v "The vec, which is left as it was. Not empty.")
+  (returns "A new vec, one shorter.")
+  (raises System.InvalidOperationException "When v is empty.")
+  (see vec-pop vec-slice)
+  (reference """
+    @code{(vec-slice v 1 (- (vec-length v) 1))}.
+    """))
+
+(:doc vec-slice
+  (summary "The part of a vec from an index, for a count of elements.")
+  (arg v "The vec, which is left as it was.")
+  (arg start "The first index taken, from 0.")
+  (arg count "How many elements. start plus count is at most the length.")
+  (returns "A new vec of count elements, v's from start on.")
+  (raises System.ArgumentOutOfRangeException "When start or count is negative, or start plus count is more than the length.")
+  (see vec-split in-vec subarray->vec)
+  (example """
+    (vec-slice [10 20 30 40] 1 2)   ; [20 30]
+    """)
+  (reference """
+    A count, not an end index. A count of 0 answers the empty vec, and the
+    whole of v answers v itself. To loop over part of a vec without making a
+    new one, use @code{in-vec}.
+    """))
+
+(:doc vec-split
+  (summary "A vec cut in two at an index.")
+  (arg v "The vec, which is left as it was.")
+  (arg i "Where to cut, from 0 to the length, both included.")
+  (returns "A tuple of the first i elements and the rest.")
+  (raises System.IndexOutOfRangeException "When i is negative or greater than the length.")
+  (see vec-slice vec-merge)
+  (example """
+    (def (front back) (vec-split [1 2 3 4 5] 2))   ; [1 2] and [3 4 5]
+    """))
+
+(:doc vec-merge
+  (summary "Two vecs joined, one after the other.")
+  (arg a "The first part, which is left as it was.")
+  (arg b "The second part, which is left as it was.")
+  (returns "A new vec with a's elements, then b's.")
+  (see vec-merge/pure vec-add vec-split vec-compact)
+  (reference """
+    An RRB concatenation, which joins the two trees rather than copying
+    every element. When either is empty it answers the other. The result
+    may be relaxed; @code{vec-compact} rebuilds it dense.
+    """))
+
+(:doc vec-merge/pure
+  (summary "Two vecs joined, asking for a pure concatenation.")
+  (arg a "The first part, which is left as it was.")
+  (arg b "The second part, which is left as it was.")
+  (returns "A new vec with a's elements, then b's.")
+  (see vec-merge vec-compact)
+  (reference """
+    Meant as a slower concatenation that leaves the tree tidier. The runtime
+    takes the flag for it but does not read it, so this does exactly what
+    @code{vec-merge} does. @code{vec-compact} is the way to get a dense tree.
+    """))
+
+(:doc vec-compact
+  (summary "A vec with the same elements in a dense tree.")
+  (arg v "The vec, which is left as it was.")
+  (returns "A vec equal to v, rebuilt from the front.")
+  (see vec-insert vec-merge)
+  (reference """
+    O(n): every element is added to a new builder. Inserting and merging
+    can leave relaxed nodes that make the tree deeper than it needs
+    to be; this is for when that has made access slower. A vec small enough
+    to have no tree is answered as it is.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Functions over a vec
+;; ---------------------------------------------------------------------------
+
+(:doc vec-map
+  (summary "A vec of what a function answers for each element.")
+  (arg f "Applied to each element, front to back.")
+  (arg v "The vec, which is left as it was.")
+  (returns "A new vec of the same length.")
+  (see vec-filter vec-for-each vec-fold)
+  (reference """
+    The ordinary copy walks the tree and builds one of the same shape. The
+    copy for a suspending @code{f} is a loop that collects with
+    @code{vecing}.
+    """))
+
+(:doc vec-filter
+  (summary "The elements of a vec that a predicate keeps.")
+  (arg keep? "Asked about each element, front to back.")
+  (arg v "The vec, which is left as it was.")
+  (returns "A new vec of the elements keep? answered #t for, in order.")
+  (see vec-map vec-iter))
+
+(:doc vec-fold
+  (summary "Combines a vec's elements from the front, starting from a value.")
+  (arg f "Called with an element and the value so far: (f elem acc).")
+  (arg init "The value before the first element.")
+  (arg v "The vec.")
+  (returns "What f answered for the last element, or init when v is empty.")
+  (see vec-reduce vec-for-each)
+  (example """
+    (vec-fold + 0 [1 2 3])                 ; 6
+    (vec-fold cons '() [1 2 3])            ; (3 2 1)
+    """))
+
+(:doc vec-reduce
+  (summary "Combines a vec's elements from the front, starting from the first.")
+  (arg f "Called with an element and the value so far: (f elem acc).")
+  (arg v "The vec. Not empty.")
+  (returns "The first element combined with each of the others in turn.")
+  (see vec-fold)
+  (reference """
+    @code{f} is first called with the second element and the first. An
+    empty vec raises: @code{System.InvalidOperationException} from the
+    ordinary copy, @code{System.IndexOutOfRangeException} from the copy for
+    a suspending @code{f}.
+    """))
+
+(:doc vec-for-each
+  (summary "Calls a function on each element of a vec, for its effect.")
+  (arg f "Called with each element, front to back.")
+  (arg v "The vec.")
+  (see vec-for-each/range vec-iter vec-map))
+
+(:doc vec-for-each/range
+  (summary "Calls a function on a run of a vec's elements, for its effect.")
+  (arg f "Called with each element of the run, front to back.")
+  (arg v "The vec.")
+  (arg index "The first index visited, from 0.")
+  (arg count "How many elements. index plus count is at most the length.")
+  (see vec-for-each in-vec)
+  (reference """
+    The ordinary copy checks the run first and raises
+    @code{System.ArgumentOutOfRangeException} when it is not in v. The copy
+    for a suspending @code{f} reads each element with @code{vec-ref}, so a
+    bad run fails at the first index outside the vec.
+    """))
+
+(:doc vec-iter
+  (summary "Calls a function on each element of a vec until it answers #f.")
+  (arg f "Called with each element, front to back. #f stops the walk.")
+  (arg v "The vec.")
+  (returns "#t when f answered #t for every element, which an empty vec does; #f when it stopped early.")
+  (see vec-for-each vec-contains)
+  (example """
+    (vec-iter (fun (x) (< x 10)) [1 2 30 4])   ; #f, and 4 is never looked at
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(:doc vec->list
+  (summary "The elements of a vec, as a list.")
+  (arg v "The vec.")
+  (returns "A list of v's elements, in order.")
+  (see list->vec vec->seq)
+  (reference """
+    Fills a list builder with @code{vec-for-each}, which walks the leaf
+    arrays.
+    """))
+
+(:doc vec->seq
+  (summary "The elements of a vec, as a lazy sequence.")
+  (arg v "The vec.")
+  (returns "A sequence of v's elements, in order.")
+  (see seq->vec vec->list)
+  (reference """
+    Nothing is read until the sequence is walked, and it may be walked more
+    than once, since the vec does not change. Each element is read by index.
+    """))
+
+(:doc reader->vec
+  (summary "Every remaining line of a .NET text reader, as a vec.")
+  (arg r "The reader. It is read to the end and not closed.")
+  (returns "The lines, without their line terminators.")
+  (see vecbuilder-empty)
+  (reference """
+    Lines as @code{TextReader.ReadLine} splits them, each converted to a
+    Bjolang string and added to a builder. The drains in @code{(std ports)}
+    are the usual way to read a port into a vec.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Vec builders
+;; ---------------------------------------------------------------------------
+
+(:doc vecbuilder-empty
+  (summary "A new, empty vec builder.")
+  (returns "A builder to add to in place and freeze with vecbuilder->vec.")
+  (see vecbuilder-add! vecbuilder->vec vec->vecbuilder Vecing)
+  (example """
+    (def b (vecbuilder-empty))
+    (vecbuilder-add! b 1)
+    (vecbuilder-add! b 2)
+    (vecbuilder->vec b)   ; [1 2]
+    """)
+  (reference """
+    The way to make a vec of many elements without a new vec per element.
+    The @code{vecing} collector is one of these under a loop.
+    """))
+
+(:doc vec->vecbuilder
+  (summary "A builder holding a vec's elements, to go on adding to.")
+  (arg v "The vec. Changing the builder does not change it.")
+  (returns "A builder starting with v's elements.")
+  (see vecbuilder-empty vecbuilder->vec)
+  (reference """
+    The builder shares v's tree and copies a part before it writes to it.
+    """))
+
+(:doc vecbuilder-add!
+  (summary "Adds an element to the end of a vec builder, in place.")
+  (arg b "The builder.")
+  (arg x "The element to add.")
+  (see vecbuilder-set! vec-add vecbuilder->vec))
+
+(:doc vecbuilder-set!
+  (summary "Replaces the element at an index in a vec builder, in place.")
+  (arg b "The builder.")
+  (arg i "From 0. Less than the builder's length.")
+  (arg x "The new element.")
+  (raises System.IndexOutOfRangeException "When i is negative or not less than the length.")
+  (see vecbuilder-ref vec-set))
+
+(:doc vecbuilder-ref
+  (summary "The element at an index in a vec builder.")
+  (arg b "The builder.")
+  (arg i "From 0. Less than the builder's length.")
+  (returns "The element at i.")
+  (see vecbuilder-set! vecbuilder-length vec-ref)
+  (reference """
+    Unlike @code{vec-ref}, this does not check i against the length, so an
+    index out of range is a mistake that may not raise.
+    """))
+
+(:doc vecbuilder-length
+  (summary "How many elements a vec builder holds.")
+  (arg b "The builder.")
+  (returns "Its number of elements.")
+  (see vecbuilder-ref))
+
+(:doc vecbuilder->vec
+  (summary "The vec a builder holds.")
+  (arg b "The builder. It may be added to afterwards.")
+  (returns "A vec of the builder's elements.")
+  (see vecbuilder-empty vec->vecbuilder)
+  (reference """
+    The builder stays usable: what is added or set in it afterwards does not
+    change the vec this answered.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Collecting into a vec
+;; ---------------------------------------------------------------------------
+
+(:doc Vecing
+  (summary "The collector that gathers a loop's values into a vec.")
+  (tparam %a "The element type.")
+  (case vecing "The collector itself, written (vecing x) in an :acc clause.")
+  (see Collector vecbuilder-empty)
+  (example """
+    (loop (:for x '(1 2 3))
+          (:acc v (vecing (* x x))))   ; [1 4 9]
+    """)
+  (reference """
+    Its accumulator is a @code{VecBuilder}: each value is added in place,
+    and the builder is frozen into a vec when the loop ends.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Vec cursors
+;; ---------------------------------------------------------------------------
+
+(:doc vec-cursor
+  (summary "A cursor at the start of a vec, for walking it front to back.")
+  (arg v "The vec.")
+  (returns "A cursor before the first element.")
+  (see vec-cursor-done? vec-cursor-current vec-walk-cursor)
+  (reference """
+    What @code{Vec}'s @code{Iterable} implementation walks with. The cursor
+    holds the vec's enumerator, so a walk allocates the cursor and nothing
+    per element. Asking @code{vec-cursor-done?} is what moves it on: call
+    it once per element, before @code{vec-cursor-current}. A cursor is used
+    by one walk.
+    """))
+
+(:doc vec-cursor-done?
+  (summary "Moves a vec cursor to the next element, and says whether there was none.")
+  (arg c "The cursor.")
+  (returns "#t when the walk is over; #f when the cursor is now on an element.")
+  (see vec-cursor vec-cursor-current)
+  (reference """
+    Not a pure question: each call advances the cursor. The first call
+    moves it onto the first element.
+    """))
+
+(:doc vec-cursor-current
+  (summary "The element a vec cursor is on.")
+  (arg c "The cursor, after vec-cursor-done? answered #f.")
+  (returns "The element.")
+  (see vec-cursor vec-cursor-done?))
+
+(:doc VecWalkCursor
+  (summary "A cursor walking part of a vec forwards.")
+  (tparam %a "The element type.")
+  (see vec-walk-cursor VecSlice VecBackCursor)
+  (reference """
+    A class holding the vec's range enumerator, which walks leaf arrays, so
+    a walk allocates the cursor and nothing per element.
+    """))
+
+(:doc vec-walk-cursor
+  (summary "A cursor for walking a run of a vec's elements forwards.")
+  (arg v "The vec.")
+  (arg from "The first index walked, from 0.")
+  (arg count "How many elements. from plus count is at most the length.")
+  (returns "A cursor before the first element of the run.")
+  (raises System.ArgumentOutOfRangeException "When the run is not in v.")
+  (see vec-walk-cursor-done? vec-walk-cursor-current in-vec)
+  (reference """
+    What @code{VecSlice}'s @code{Iterable} implementation calls, and so
+    what @code{in-vec} walks with; it is exported because that
+    implementation's body names it. As with
+    @code{vec-cursor}, asking whether it is done is what moves it on.
+    """))
+
+(:doc vec-walk-cursor-done?
+  (summary "Moves a forward vec cursor to the next element, and says whether there was none.")
+  (arg c "The cursor.")
+  (returns "#t when the run is over; #f when the cursor is now on an element.")
+  (see vec-walk-cursor vec-walk-cursor-current))
+
+(:doc vec-walk-cursor-current
+  (summary "The element a forward vec cursor is on.")
+  (arg c "The cursor, after vec-walk-cursor-done? answered #f.")
+  (returns "The element.")
+  (see vec-walk-cursor vec-walk-cursor-done?))
+
+(:doc VecBackCursor
+  (summary "A cursor walking part of a vec backwards.")
+  (tparam %a "The element type.")
+  (see vec-back-cursor ReverseVecSlice VecWalkCursor)
+  (reference """
+    A class holding the vec's reverse enumerator, which walks leaf arrays,
+    so a walk allocates the cursor and nothing per element.
+    """))
+
+(:doc vec-back-cursor
+  (summary "A cursor for walking a run of a vec's elements backwards.")
+  (arg v "The vec.")
+  (arg last "The first index walked, the highest of the run. -1 with a count of 0 is the empty run.")
+  (arg count "How many elements, going down from last. last minus count is at least -1.")
+  (returns "A cursor before the first element of the run.")
+  (raises System.ArgumentOutOfRangeException "When the run is not in v.")
+  (see vec-back-cursor-done? vec-back-cursor-current in-reverse-vec)
+  (reference """
+    What @code{ReverseVecSlice}'s @code{Iterable} implementation calls, and
+    so what @code{in-reverse-vec} walks with; it is exported because that
+    implementation's body names it. Asking whether it is done
+    is what moves it on.
+    """))
+
+(:doc vec-back-cursor-done?
+  (summary "Moves a backward vec cursor to the previous element, and says whether there was none.")
+  (arg c "The cursor.")
+  (returns "#t when the run is over; #f when the cursor is now on an element.")
+  (see vec-back-cursor vec-back-cursor-current))
+
+(:doc vec-back-cursor-current
+  (summary "The element a backward vec cursor is on.")
+  (arg c "The cursor, after vec-back-cursor-done? answered #f.")
+  (returns "The element.")
+  (see vec-back-cursor vec-back-cursor-done?))
+
+;; ---------------------------------------------------------------------------
+;; Walking part of a vec
+;; ---------------------------------------------------------------------------
+
+(:doc in-vec
+  (summary "Part of a vec, to walk front to back in a loop.")
+  (arg v "The vec.")
+  (key #:from "The first index walked, included.")
+  (key #:to "The index the walk stops before, not included.")
+  (returns "A slice that a (:for ...) clause walks.")
+  (see in-reverse-vec VecSlice vec-slice)
+  (example """
+    (loop (:for x (in-vec v #:from 1 #:to 4))   ; elements 1, 2 and 3
+          (:do (displayln x)))
+    """)
+  (reference """
+    Makes no new vec: the slice is a small value holding v and the bounds,
+    and the walk goes through the leaf arrays rather than calling
+    @code{vec-ref} per index, so part of a vec costs what the whole costs
+    per element.
+
+    The bounds are checked once, when the slice is made. When
+    @code{#:from} is negative, @code{#:to} is past the length or
+    @code{#:from} is past @code{#:to}, it panics with a message naming the
+    bounds.
+    """))
+
+(:doc in-reverse-vec
+  (summary "Part of a vec, to walk back to front in a loop.")
+  (arg v "The vec.")
+  (key #:from "The lowest index walked, included; the last one visited.")
+  (key #:to "The index above the first one visited, not included.")
+  (returns "A slice that a (:for ...) clause walks.")
+  (see in-vec ReverseVecSlice)
+  (example """
+    (loop (:for x (in-reverse-vec v #:from 2 #:to 5))   ; elements 4, 3 and 2
+          (:do (displayln x)))
+    """)
+  (reference """
+    The same slice @code{in-vec} takes with the same bounds, walked the
+    other way. The bounds are checked as @code{in-vec} checks them.
+    """))
+
+(:doc VecSlice
+  (summary "A run of a vec, which a loop walks front to back.")
+  (tparam %a "The element type.")
+  (field items "The vec.")
+  (field from "The first index walked.")
+  (field count "How many elements are walked.")
+  (see in-vec VecWalkCursor)
+  (reference """
+    Made by @code{in-vec}, which checks the bounds. A value, so a loop over
+    one allocates only its cursor.
+    """))
+
+(:doc ReverseVecSlice
+  (summary "A run of a vec, which a loop walks back to front.")
+  (tparam %a "The element type.")
+  (field items "The vec.")
+  (field last "The first index walked, the highest of the run; -1 for an empty run.")
+  (field count "How many elements are walked.")
+  (see in-reverse-vec VecBackCursor)
+  (reference """
+    Made by @code{in-reverse-vec}, which checks the bounds.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Arrays
+;; ---------------------------------------------------------------------------
+
+(:doc make-array
+  (summary "A new .NET array of a length.")
+  (arg n "The length.")
+  (returns "An array of n elements, each .NET's default for the type: zero for a number.")
+  (see array-ref array-set! array-resize))
+
+(:doc array-ref
+  (summary "The element of an array at an index.")
+  (arg a "The array.")
+  (arg i "From 0. Less than the length.")
+  (returns "The element at i.")
+  (see array-set! array-length vec-ref)
+  (reference """
+    @code{a[i]}, with .NET's bounds check.
+    """))
+
+(:doc array-set!
+  (summary "Replaces the element of an array at an index, in place.")
+  (arg a "The array, which is changed.")
+  (arg i "From 0. Less than the length.")
+  (arg x "The new element.")
+  (see array-ref)
+  (reference """
+    @code{a[i] = x}, with .NET's bounds check.
+    """))
+
+(:doc array-length
+  (summary "How many elements an array has.")
+  (arg a "The array.")
+  (returns "Its length.")
+  (see make-array))
+
+(:doc array-resize
+  (summary "A new array of another length, holding as much of an array as fits.")
+  (arg a "The array, which is left as it was.")
+  (arg n "The new length. Larger grows, smaller shrinks.")
+  (returns "A new array of n elements: a's first ones, then .NET's default for the type.")
+  (see make-array)
+  (reference """
+    What a growable array is written over: @code{make-array}, and this when
+    it fills up. It always copies, so the old array is not the new one.
+    """))
+
+(:doc array->vec
+  (summary "A vec of an array's elements.")
+  (arg a "The array, which is copied: changing it afterwards does not change the vec.")
+  (returns "A vec of a's elements, in order.")
+  (see subarray->vec vecbuilder-empty)
+  (reference """
+    The elements go straight into the tree's leaves in one walk, with no
+    add per element, so an array is the cheapest thing to build a vec out
+    of. It suits making a great many small vecs, where a builder is sized
+    for large ones.
+    """))
+
+(:doc subarray->vec
+  (summary "A vec of a run of an array's elements.")
+  (arg a "The array, which is copied.")
+  (arg start "The first index taken, from 0.")
+  (arg count "How many elements. start plus count is at most the length.")
+  (returns "A vec of count elements, a's from start on.")
+  (see array->vec vec-slice)
+  (reference """
+    Start and count, as @code{vec-slice} takes them.
+    """))
+
+(:doc in-array
+  (summary "Part of an array, to walk front to back in a loop.")
+  (arg arr "The array.")
+  (key #:from "The first index walked, included.")
+  (key #:to "The index the walk stops before, not included.")
+  (returns "A slice that a (:for ...) clause walks.")
+  (see in-reverse-array ArraySlice in-vec)
+  (example """
+    (loop (:for x (in-array a #:from 2))   ; from element 2 to the end
+          (:do (displayln x)))
+    """)
+  (reference """
+    The slice is a small value holding the array and the bounds, and the
+    walk is an @code{int} index and @code{array-ref}. The bounds are checked
+    once, when the slice is made. When @code{#:from} is negative,
+    @code{#:to} is past the length or @code{#:from} is past @code{#:to}, it
+    panics with a message naming the bounds.
+    """))
+
+(:doc in-reverse-array
+  (summary "Part of an array, to walk back to front in a loop.")
+  (arg arr "The array.")
+  (key #:from "The lowest index walked, included; the last one visited.")
+  (key #:to "The index above the first one visited, not included.")
+  (returns "A slice that a (:for ...) clause walks.")
+  (see in-array ReverseArraySlice)
+  (example """
+    (loop (:for x (in-reverse-array a #:from 2 #:to 5))   ; elements 4, 3 and 2
+          (:do (displayln x)))
+    """)
+  (reference """
+    The same slice @code{in-array} takes with the same bounds, walked the
+    other way. The bounds are checked as @code{in-array} checks them.
+    """))
+
+(:doc ArraySlice
+  (summary "A run of an array, which a loop walks front to back.")
+  (tparam %a "The element type.")
+  (field items "The array.")
+  (field from "The first index walked.")
+  (field to "The index the walk stops before.")
+  (see in-array)
+  (reference """
+    Made by @code{in-array}, which checks the bounds. Its cursor is an
+    @code{int}.
+    """))
+
+(:doc ReverseArraySlice
+  (summary "A run of an array, which a loop walks back to front.")
+  (tparam %a "The element type.")
+  (field items "The array.")
+  (field from "The lowest index walked, the last visited.")
+  (field to "The index above the first one visited.")
+  (see in-reverse-array)
+  (reference """
+    Made by @code{in-reverse-array}, which checks the bounds. Its cursor is
+    an @code{int}, starting at @code{to} minus 1.
+    """))

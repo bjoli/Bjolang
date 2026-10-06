@@ -1,0 +1,636 @@
+;; Docs for the prelude's ports, console output and diagnostics, read through
+;; (:doc #:file "prelude-ports.bjodoc"). The texts are samizdat markup: code
+;; in prose is @code{...}.
+
+;; ---------------------------------------------------------------------------
+;; The port types
+;; ---------------------------------------------------------------------------
+
+(:doc TextInputPort
+  (summary "A port text is read from.")
+  (see open-input-file open-input-string read-line read-char port-eof? close-input-port)
+  (reference """
+    The .NET @code{System.IO.TextReader} itself, not a Bjolang type around
+    it. A file port and a string port are the same type, so a function that
+    reads never learns where the text comes from.
+
+    A file port, and standard input, is a buffered reader whose
+    @code{port-eof?} usually answers from the buffer, and whose reads
+    suspend inside a bjoroutine. A string port is a @code{StringReader} and
+    is read synchronously in either colour. A @code{TextReader} from a .NET
+    API works too.
+    """))
+
+(:doc TextOutputPort
+  (summary "A port text is written to.")
+  (see open-output-file open-output-string write-string flush-port close-output-port)
+  (reference """
+    The .NET @code{System.IO.TextWriter}. A file port and a string port are
+    the same type, so a function that writes never learns where the text
+    goes.
+
+    A file port buffers what is written to it. A write that fills the buffer
+    drains it, which is why the writes have a suspending copy as well as the
+    flush.
+    """))
+
+(:doc WriteMode
+  (summary "How an output file is opened.")
+  (case Truncate "Create the file, or empty it if it exists. The default.")
+  (case Append "Create the file, or write after what it holds.")
+  (case CreateNew """
+    Create the file, and fail with an @code{IOException} if it exists. The
+    check and the create are one system call, so of two writers racing for
+    a path exactly one wins.
+    """)
+  (see open-output-file call-with-output-file open-write-stream))
+
+;; ---------------------------------------------------------------------------
+;; The standard ports
+;; ---------------------------------------------------------------------------
+
+(:doc current-input-port
+  (summary "The port standard input is read from.")
+  (see current-output-port read-line port-eof?)
+  (example """
+    (read-line (parameter-ref current-input-port))
+    """)
+  (reference """
+    A @code{(Param TextInputPort)}, read with @code{parameter-ref} and rebound
+    with @code{parameterize}. There is no read without a port: standard
+    input is read as any other port is.
+
+    Its default is standard input, buffered once for the whole program, so
+    @code{port-eof?} on it usually costs no system call. Closing it does
+    nothing.
+    """))
+
+(:doc current-output-port
+  (summary "The port display, displayln and newline write to.")
+  (see current-error-port display write-string)
+  (example """
+    (def out (open-output-string))
+    (parameterize ((current-output-port out))
+      (display "captured"))
+    (get-output-string out)   ; "captured"
+    """)
+  (reference """
+    A @code{(Param TextOutputPort)}. Its default is standard output, which the
+    runtime does not buffer. Binding it with @code{parameterize} redirects
+    @code{display}, @code{displayln}, @code{newline}, @code{print} and
+    @code{println}.
+
+    @code{close-output-port} on standard output flushes it and does nothing
+    more.
+    """))
+
+(:doc current-error-port
+  (summary "The port for errors and diagnostics, standard error by default.")
+  (see current-output-port warn log)
+  (reference """
+    A @code{(Param TextOutputPort)}. The default handlers of @code{warn} and
+    @code{log} write a line to it. @code{close-output-port} on standard error
+    flushes it and does nothing more.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Console output
+;; ---------------------------------------------------------------------------
+
+(:doc display
+  (summary "Writes a string to the current output port.")
+  (arg s "The text, written as it is, with no newline after it.")
+  (see displayln newline print current-output-port write-string)
+  (reference """
+    Writes to whatever @code{current-output-port} is bound to. It takes a
+    string; @code{print} takes any value with @code{->str}.
+    """))
+
+(:doc displayln
+  (summary "Writes a string and a newline to the current output port.")
+  (arg s "The text, followed by the port's line terminator.")
+  (see display newline println writeln))
+
+(:doc newline
+  (summary "Writes a newline to the current output port.")
+  (see displayln current-output-port)
+  (reference """
+    The port's line terminator, which for standard output is the platform's.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Opening and closing
+;; ---------------------------------------------------------------------------
+
+(:doc open-input-file
+  (summary "Opens a file for reading.")
+  (arg path "The file.")
+  (returns "The port, or Err with the .NET exception when the file cannot be opened.")
+  (see call-with-input-file open-input-file/raw open-read-stream close-input-port read-all)
+  (example """
+    (match (open-input-file "notes.txt")
+      ((Ok p) (read-all p))
+      ((Err (:is System.IO.FileNotFoundException)) "")
+      ((Err e) (raise e)))
+    """)
+  (reference """
+    A missing file is expected, so it is a @code{Result} rather than a
+    raise. The @code{Err} carries the real exception, so an arm can test
+    for @code{System.IO.FileNotFoundException}.
+
+    The file is opened through the @code{open-read-stream} operation, so a
+    handler of the @code{FS} effect answers for it. The port is owned by the
+    ambient scope: when the scope returns, the file is closed, whether the
+    program closed it or not. The scope is read before the file is opened,
+    so a program with no scope fails without having opened anything.
+    """))
+
+(:doc open-input-file/raw
+  (summary "Opens a file for reading, past any FS handler.")
+  (arg path "The file.")
+  (returns "The port, or Err with the .NET exception.")
+  (see open-input-file open-read-stream/raw)
+  (reference """
+    @code{open-input-file} over @code{open-read-stream/raw}: the real
+    filesystem whatever handler is installed. What a fake filesystem calls
+    to fall through to the disk. The port is owned by the ambient scope.
+    """))
+
+(:doc open-output-file
+  (summary "Opens a file for writing.")
+  (arg path "The file.")
+  (key #:mode "How: Truncate, the default, Append or CreateNew.")
+  (returns "The port, or Err with the .NET exception when the file cannot be opened.")
+  (see call-with-output-file WriteMode open-output-file/raw open-write-stream close-output-port)
+  (example """
+    (open-output-file "log.txt" #:mode Append)
+    """)
+  (reference """
+    The file is opened through the @code{open-write-stream} operation, so a
+    handler of the @code{FS} effect answers for it. The port is owned by the
+    ambient scope and closed when the scope returns.
+
+    What is written is buffered. Closing flushes, but synchronously:
+    @code{flush-port} before the close lets a bjoroutine suspend on the
+    write instead.
+    """))
+
+(:doc open-output-file/raw
+  (summary "Opens a file for writing, past any FS handler.")
+  (arg path "The file.")
+  (arg mode "Truncate, Append or CreateNew.")
+  (returns "The port, or Err with the .NET exception.")
+  (see open-output-file open-write-stream/raw WriteMode)
+  (reference """
+    @code{open-output-file} over @code{open-write-stream/raw}: the real
+    filesystem whatever handler is installed. The mode is positional here.
+    The port is owned by the ambient scope.
+    """))
+
+(:doc open-input-string
+  (summary "A string as an input port.")
+  (arg contents "The text the port reads.")
+  (returns "The port. It cannot fail, so there is no Result.")
+  (see open-output-string open-input-file)
+  (example """
+    (read-line (open-input-string "one\ntwo"))   ; "one"
+    """)
+  (reference """
+    Memory only, so no scope owns it. Its reads never suspend, in either
+    colour.
+    """))
+
+(:doc open-output-string
+  (summary "A port that collects what is written to it.")
+  (returns "The port. get-output-string answers what it holds.")
+  (see get-output-string open-input-string)
+  (reference """
+    Memory only, so no scope owns it. To build a string, prefer a
+    @code{StringBuilder}: writing to a port carries a colour, so a function
+    that writes to one gets a suspending copy, where a builder keeps it an
+    ordinary function.
+    """))
+
+(:doc get-output-string
+  (summary "Everything written to a string port so far.")
+  (arg p "A port from open-output-string.")
+  (returns "The text collected. The port stays open and keeps collecting.")
+  (raises System.InvalidOperationException "When p is not a port from open-output-string.")
+  (see open-output-string writer->string)
+  (example """
+    (def out (open-output-string))
+    (write-string out "a")
+    (get-output-string out)   ; "a"
+    (write-string out "b")
+    (get-output-string out)   ; "ab"
+    """))
+
+(:doc close-input-port
+  (summary "Closes an input port.")
+  (arg p "The port.")
+  (see close-output-port call-with-input-file)
+  (reference """
+    Rarely needed: @code{with-open} closes a port however the body ends, and
+    the scope that owns a file port closes it when it returns.
+
+    A port a scope owns is released through its registration, so the
+    scope's list does not keep a spent entry. A port nothing owns, such as a
+    string port, is disposed. Standard input is never closed.
+    """))
+
+(:doc close-output-port
+  (summary "Flushes and closes an output port.")
+  (arg p "The port.")
+  (see close-input-port flush-port call-with-output-file)
+  (reference """
+    Rarely needed: @code{with-open} closes a port however the body ends, and
+    the scope that owns a file port closes it when it returns.
+
+    A port a scope owns is released through its registration, and its
+    buffered text is written before the file is closed. That flush is
+    synchronous; call @code{flush-port} first for one a bjoroutine suspends
+    on. A port nothing owns is disposed. On standard output or standard
+    error it flushes and stops: nothing can take them away from the rest of
+    the program.
+    """))
+
+(:doc call-with-input-file
+  (summary "Opens a file, hands the port to a function, and closes it.")
+  (arg path "The file.")
+  (arg proc "What to do with the port. Either colour.")
+  (returns "Ok with what proc answered, or Err when the file cannot be opened.")
+  (see open-input-file call-with-output-file)
+  (example """
+    (call-with-input-file "notes.txt" read-all)
+    """)
+  (reference """
+    The port is closed however @code{proc} ends, through its registration,
+    so the scope's list is back to the length it had. An exception from
+    @code{proc} is raised, not put in the @code{Err}.
+    """))
+
+(:doc call-with-output-file
+  (summary "Opens a file for writing, hands the port to a function, and closes it.")
+  (arg path "The file.")
+  (arg proc "What to do with the port. Either colour.")
+  (key #:mode "How the file is opened, as for open-output-file: Truncate by default.")
+  (returns "Ok with what proc answered, or Err when the file cannot be opened.")
+  (see open-output-file call-with-input-file WriteMode)
+  (example """
+    (call-with-output-file "out.txt"
+      (fun (p) (writeln p "hello")))
+    """)
+  (reference """
+    The port is closed however @code{proc} ends, which writes what is still
+    buffered. An exception from @code{proc} is raised, not put in the
+    @code{Err}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Reading
+;; ---------------------------------------------------------------------------
+
+(:doc port-eof?
+  (summary "Whether a port has no more input.")
+  (arg p "The port.")
+  (returns "#t at end of input. Asking consumes nothing.")
+  (see read-line read-line/opt read-char/opt)
+  (reference """
+    On a file port, or standard input, it answers from the buffer whenever
+    the buffer holds anything, and reads ahead only when it is empty. That
+    read suspends in a bjoroutine.
+    """))
+
+(:doc read-line
+  (summary "The next line of a port, without its line terminator.")
+  (arg p "The port. Not at end of input.")
+  (returns "The line. A line ends at \\n, \\r or \\r\\n.")
+  (raises System.IO.EndOfStreamException "When the port is at end of input.")
+  (see read-line/opt port-eof? read-all in-port)
+  (example """
+    (let loop ()
+      (unless (port-eof? p)
+        (displayln (read-line p))
+        (loop)))
+    """))
+
+(:doc read-line/opt
+  (summary "The next line of a port, or None at end of input.")
+  (arg p "The port.")
+  (returns "Some line without its terminator, or None at end of input.")
+  (see read-line in-port port-fold)
+  (example """
+    (when-let (line (read-line/opt port))
+      (displayln line))
+    """))
+
+(:doc read-char
+  (summary "The next character of a port.")
+  (arg p "The port. Not at end of input.")
+  (returns "The character: a Unicode scalar, so one outside the BMP is one char.")
+  (raises System.IO.EndOfStreamException "When the port is at end of input.")
+  (raises System.InvalidOperationException "When the port holds a surrogate that is not half of a pair.")
+  (see read-char/opt write-char port-eof?)
+  (reference """
+    A .NET port is made of UTF-16 code units, and a character outside the
+    BMP is two of them. @code{read-char} reads both and answers the one
+    character, so reading a port a character at a time agrees with
+    @code{read-all} walked as a string.
+
+    There is no @code{peek-char}: one unit of lookahead is not always a
+    character. @code{port-eof?} answers the question peeking is usually
+    asked for; a parser that needs more wants @code{read-all} and a
+    @code{StringCursor}.
+    """))
+
+(:doc read-char/opt
+  (summary "The next character of a port, or None at end of input.")
+  (arg p "The port.")
+  (returns "Some character, or None at end of input.")
+  (raises System.InvalidOperationException "When the port holds a surrogate that is not half of a pair.")
+  (see read-char in-port))
+
+(:doc read-all
+  (summary "Everything left in a port, as one string.")
+  (arg p "The port.")
+  (returns "The rest of the input. Empty at end of input.")
+  (see read-line port-fold))
+
+(:doc port-fold
+  (summary "Folds a reading function over a port until it is out.")
+  (arg f "Called with the port and the accumulator while there is input; reads what it wants and answers the new accumulator. Either colour.")
+  (arg init "The first accumulator.")
+  (arg port "The port.")
+  (returns "The accumulator once the port is at end of input.")
+  (see in-port read-line port-eof?)
+  (example """
+    (port-fold (fun (p n) (ignore (read-line p)) (+ n 1)) 0 port)   ; lines left
+    """)
+  (reference """
+    @code{f} is called only when @code{port-eof?} says there is more, and
+    decides how much one step reads. A suspending @code{f} makes the fold
+    suspend, so it is the way to read a port element by element in a
+    bjoroutine.
+    """))
+
+(:doc in-port
+  (summary "A port as something a loop walks, read by a function of your choice.")
+  (arg port "The port.")
+  (arg read "What one element is: answers Some element, or None to end the walk.")
+  (returns "A PortReads, which is Iterable.")
+  (see PortReads read-line/opt read-char/opt port-fold)
+  (example """
+    (loop (:for line (in-port p read-line/opt))
+          (:do (displayln line)))
+    """)
+  (reference """
+    @code{read-line/opt} and @code{read-char/opt} are the two readers the
+    prelude has; any @code{(-> TextInputPort (Option %a))} will do.
+
+    The walk reads one ahead, because it has to know it is done before the
+    element is asked for: a loop left by @code{:finish} has consumed the
+    element it did not look at.
+
+    It blocks. @code{Iterable}'s methods are synchronous, so the reader's
+    synchronous copy runs even inside a bjoroutine. A walk that should
+    suspend wants @code{port-fold}.
+    """))
+
+(:doc PortReads
+  (summary "A port and the function that reads one element from it: what in-port answers.")
+  (tparam %a "What one read answers.")
+  (field port "The port.")
+  (field read "Reads the next element, or answers None at end of input.")
+  (see in-port)
+  (reference """
+    Its @code{Iterable} implementation calls @code{read} until it answers
+    @code{None}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Writing
+;; ---------------------------------------------------------------------------
+
+(:doc write-string
+  (summary "Writes a string to a port.")
+  (arg p "The port.")
+  (arg s "The text, written as it is.")
+  (see writeln write-char flush-port display)
+  (reference """
+    The port comes first, as for every port operation. A file port buffers
+    the text, so it reaches the file at a flush, a close, or when the buffer
+    fills; in a bjoroutine a write that fills the buffer suspends on the
+    drain.
+    """))
+
+(:doc writeln
+  (summary "Writes a string and a newline to a port.")
+  (arg p "The port.")
+  (arg s "The text, followed by the port's line terminator.")
+  (see write-string displayln))
+
+(:doc write-char
+  (summary "Writes one character to a port.")
+  (arg p "The port.")
+  (arg c "The character. One outside the BMP is written as both of its UTF-16 units.")
+  (see read-char write-string))
+
+(:doc flush-port
+  (summary "Writes what a port has buffered to where it goes.")
+  (arg p "The port.")
+  (see close-output-port write-string)
+  (reference """
+    In a bjoroutine it suspends on the write. Closing a port flushes too,
+    but synchronously, so flush first where waiting should not block a
+    thread.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Primitives
+;; ---------------------------------------------------------------------------
+
+(:doc reader-read-line!
+  (summary "The next line of a reader, blocking until it is read.")
+  (arg r "The reader. Not at end of input.")
+  (returns "The line, without its line terminator.")
+  (raises System.IO.EndOfStreamException "When the reader is at end of input.")
+  (see read-line read-line/opt)
+  (reference """
+    A runtime primitive that only blocks; it has no suspending copy.
+    @code{read-line} is the same read in both colours, and is what a
+    program calls.
+    """))
+
+(:doc reader-read-char!
+  (summary "The next character of a reader, blocking until it is read.")
+  (arg r "The reader. Not at end of input.")
+  (returns "The character, with a surrogate pair put back together.")
+  (raises System.IO.EndOfStreamException "When the reader is at end of input.")
+  (raises System.InvalidOperationException "When the reader holds a surrogate that is not half of a pair.")
+  (see read-char read-char/opt)
+  (reference """
+    A runtime primitive that only blocks; it has no suspending copy.
+    @code{read-char} is the same read in both colours, and is what a
+    program calls.
+    """))
+
+(:doc writer-write-char!
+  (summary "Writes one character to a writer.")
+  (arg w "The writer.")
+  (arg c "The character. One outside the BMP is written as both of its UTF-16 units.")
+  (see write-char)
+  (reference """
+    A runtime primitive with no suspending copy. @code{write-char} is the
+    same write in both colours, and is what a program calls.
+    """))
+
+(:doc writer->string
+  (summary "What a string writer has collected.")
+  (arg w "A writer from open-output-string.")
+  (returns "The text written to it so far.")
+  (raises System.InvalidOperationException "When w is not a string writer.")
+  (see get-output-string)
+  (reference """
+    What @code{get-output-string} is built on. It raises rather than answer
+    the writer's type name, which is what .NET's @code{ToString} would give
+    for a file port.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The filesystem's openers
+;; ---------------------------------------------------------------------------
+
+(:doc open-read-stream
+  (summary "Opens a file as a stream for reading: an operation of the FS effect.")
+  (arg path "The path.")
+  (returns "The stream, or Err with the exception.")
+  (see open-read-stream/raw op/open-read-stream open-input-file open-write-stream)
+  (reference """
+    Everything in the prelude and @code{(std ports)} that reads a file opens
+    it through this, so a handler installed with @code{with-handler} answers
+    for all of it: a test reads from a fake, a sandbox refuses. With no
+    handler it is @code{open-read-stream/raw}.
+
+    It answers a @code{Stream}, not a port. @code{open-input-file} builds the
+    port over it and registers it on the ambient scope, so a
+    @code{MemoryStream} a handler made is owned exactly as a file is.
+    """))
+
+(:doc open-write-stream
+  (summary "Opens a file as a stream for writing: an operation of the FS effect.")
+  (arg path "The path.")
+  (arg mode "How the file is opened.")
+  (returns "The stream, or Err with the exception.")
+  (see open-write-stream/raw op/open-write-stream open-output-file WriteMode)
+  (reference """
+    Everything in the prelude and @code{(std ports)} that writes a file
+    opens it through this, so a handler answers for all of it. With no
+    handler it is @code{open-write-stream/raw}.
+
+    It answers a @code{Stream}, not a port. @code{open-output-file} builds
+    the port over it and registers it on the ambient scope.
+    """))
+
+(:doc op/open-read-stream
+  (summary "The parameter holding the open-read-stream operation's handler.")
+  (see open-read-stream open-read-stream/raw)
+  (reference """
+    What @code{(with-handler ((open-read-stream h)) ...)} binds. It is cold:
+    files are not opened in a loop, so it spends none of the cheap parameter
+    ids. Bind it with @code{parameterize} directly when the operation was
+    imported under another name, so that @code{with-handler} cannot find
+    the cell by spelling.
+    """))
+
+(:doc op/open-write-stream
+  (summary "The parameter holding the open-write-stream operation's handler.")
+  (see open-write-stream open-write-stream/raw)
+  (reference """
+    What @code{(with-handler ((open-write-stream h)) ...)} binds. It is
+    cold, like the other operations of the @code{FS} effect.
+    """))
+
+(:doc open-read-stream/raw
+  (summary "Opens a file on disk as a stream for reading, past any handler.")
+  (arg path "The file.")
+  (returns "The stream, or Err with an IOException or UnauthorizedAccessException.")
+  (see open-read-stream open-input-file/raw)
+  (reference """
+    The default handler of @code{open-read-stream}. Read-only, with other
+    readers allowed alongside. A missing file is a
+    @code{FileNotFoundException}, which is an @code{IOException}.
+    """))
+
+(:doc open-write-stream/raw
+  (summary "Opens a file on disk as a stream for writing, past any handler.")
+  (arg path "The file.")
+  (arg mode "Truncate, Append or CreateNew.")
+  (returns "The stream, or Err with an IOException or UnauthorizedAccessException.")
+  (see open-write-stream open-output-file/raw WriteMode)
+  (reference """
+    The default handler of @code{open-write-stream}. Write-only, with
+    readers allowed alongside. @code{CreateNew} on a file that exists is an
+    @code{IOException}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Diagnostics
+;; ---------------------------------------------------------------------------
+
+(:doc warn
+  (summary "Reports that something is wrong, and carries on: an operation of the Diagnostics effect.")
+  (arg message "The message.")
+  (see log op/warn current-error-port)
+  (example """
+    (warn "config.toml not found; using defaults")
+    """)
+  (reference """
+    By default it writes the message as a line on @code{current-error-port}.
+    A handler installed with @code{with-handler} decides otherwise: collect
+    the warnings, count them, or raise to make them fatal.
+
+    It is synchronous on purpose, so that an ordinary function can warn. A
+    handler that wants to hand the line to a channel puts it on a mutable
+    queue rather than @code{sync}ing.
+    """))
+
+(:doc log
+  (summary "A line of diagnostics: an operation of the Diagnostics effect.")
+  (arg message "The line.")
+  (see warn op/log current-error-port)
+  (example """
+    (with-handler ((log (let ((outer (handler-of log)))
+                          (fun (s) (outer (str "[app] " s))))))
+      (log "started"))
+    """)
+  (reference """
+    By default it writes the line on @code{current-error-port}. A handler
+    installed with @code{with-handler} sends it elsewhere. A handler that
+    calls @code{log} calls itself; @code{(handler-of log)} is the one
+    installed before it.
+
+    Synchronous, like @code{warn}, so an ordinary function can log. The
+    natural logarithm is @code{loge}, in @code{(std maths)}.
+    """))
+
+(:doc op/warn
+  (summary "The parameter holding the warn operation's handler.")
+  (see warn)
+  (reference """
+    What @code{(with-handler ((warn h)) ...)} binds. Bind it with
+    @code{parameterize} directly when @code{warn} was imported under another
+    name, so that @code{with-handler} cannot find the cell by spelling.
+    """))
+
+(:doc op/log
+  (summary "The parameter holding the log operation's handler.")
+  (see log)
+  (example """
+    (parameterize ((p:op/log collect)) ...)
+    """)
+  (reference """
+    What @code{(with-handler ((log h)) ...)} binds. Bind it with
+    @code{parameterize} directly when @code{log} was imported under a prefix
+    or another name, so that @code{with-handler} cannot find the cell by
+    spelling.
+    """))

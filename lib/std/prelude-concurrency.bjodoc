@@ -1,0 +1,1001 @@
+;; Docs for the prelude's concurrency: Concurrent ML events and channels,
+;; promises, cancellation, scopes, durations and the clock. Read through
+;; (:doc #:file "prelude-concurrency.bjodoc"). The texts are samizdat markup:
+;; code in prose is @code{...}.
+
+;; ---------------------------------------------------------------------------
+;; Syncing
+;; ---------------------------------------------------------------------------
+
+(:doc sync
+  (summary "Waits for an event and answers its value: the yield point of a bjoroutine.")
+  (arg ev "The event to wait for. Any event: a channel operation, a choose, a timeout, a promise's join.")
+  (returns "The value of the event that committed.")
+  (raises Bjolang.Runtime.Cancelled "When the ambient token fires before the event commits.")
+  (see sync/blocking choose chan-get chan-put current-cancel)
+  (example """
+    (sync (chan-recv jobs))
+    (sync (choose (chan-recv a) (chan-recv b)))
+    """)
+  (reference """
+    Building an event never suspends; only @code{sync} does, so only a
+    bjoroutine may write it. The other yield points are calls to bjoroutines
+    (@code{chan-put}, @code{chan-get}, the scope forms, an @code{#:async}
+    .NET call), and a fiber may resume on a different thread after any of
+    them. Other fibers run on other threads at the same time: nothing gives a
+    fiber exclusive access to state it shares with another, even between two
+    syncs, so shared state is passed on a channel or guarded, as it would be
+    between threads.
+
+    Every @code{sync} watches the ambient token, @code{current-cancel}: once
+    the scope it runs in has been cancelled, the sync raises instead of
+    waiting. An event that is ready at the sync still commits, since the token
+    is offered after the event's own branches and a cancellation never undoes
+    a commit. Code that has to wait after a cancellation, such as cleanup,
+    runs inside @code{with-shield}.
+
+    A plain @code{defun} cannot write it. @code{sync/blocking} is the same
+    wait for an ordinary function, parking the calling thread.
+    """))
+
+(:doc sync/blocking
+  (summary "Waits for an event from an ordinary function, parking the calling thread.")
+  (arg ev "The event to wait for.")
+  (returns "The value of the event that committed.")
+  (raises Bjolang.Runtime.Cancelled "When the ambient token fires first, raised on the calling thread.")
+  (see sync blocking promise-join/sync)
+  (example """
+    (sync/blocking (chan-recv ch))
+    (sync/blocking (promise-join (bjo (work 21))))
+    (sync/blocking (choose (wrap (chan-recv ch) (fun (v) (Got v)))
+                           (wrap (timeout 1000) (fun (u) TimedOut))))
+    """)
+  (reference """
+    No fiber is spawned. It is the mirror of @code{blocking}: that one carries
+    a thread-parking call into fiber-land, this one carries an event out.
+
+    @strong{Do not call it from inside a bjoroutine.} It parks the thread it is
+    called on, and inside a fiber that thread belongs to the pool, which is
+    what the events being waited for need in order to fire. There the answer
+    is @code{sync}.
+
+    @strong{Nothing withdraws it once parked.} A wait that might not end needs
+    its own way out composed in first, as with the @code{timeout} above. The
+    ambient token is offered as one more branch, as @code{sync} offers it.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Channels
+;; ---------------------------------------------------------------------------
+
+(:doc make-chan
+  (summary "A new synchronous, unbuffered channel.")
+  (returns "A channel on which a send and a receive meet.")
+  (see chan-send chan-recv chan-put chan-get)
+  (reference """
+    A rendezvous: neither a send nor a receive completes until the other
+    arrives, which is where backpressure comes from.
+
+    A channel has no close. A producer that has to say it is finished hands
+    over a promise beside the channel, as @code{async-seq->chan} does.
+
+    Waiting operations on a contended channel are not guaranteed to be served
+    in the order they arrived.
+    """))
+
+(:doc chan-send
+  (summary "The event of handing a value over a channel.")
+  (arg ch "The channel.")
+  (arg v "The value to hand over.")
+  (returns "An event that commits when a receiver takes v.")
+  (see chan-put chan-recv sync choose)
+  (reference """
+    Not the handing over: that happens at the @code{sync}. Building the event
+    does nothing to the channel, and a send that loses a @code{choose} is
+    withdrawn, so v is never delivered.
+
+    @code{(sync (chan-send ch v))} is @code{(chan-put ch v)}, which builds no
+    event value.
+    """))
+
+(:doc chan-recv
+  (summary "The event of taking one message off a channel.")
+  (arg ch "The channel.")
+  (returns "An event whose value is the message taken.")
+  (see chan-get chan-send sync choose)
+  (reference """
+    A receive that loses a @code{choose} is removed from the channel, so
+    nothing is left waiting for a message that will never be read.
+
+    @code{(sync (chan-recv ch))} is @code{(chan-get ch)}.
+    """))
+
+(:doc chan-put
+  (summary "Hands a value over a channel, and returns when it has been taken.")
+  (arg ch "The channel.")
+  (arg v "The value to hand over.")
+  (raises Bjolang.Runtime.Cancelled "When the ambient token fires before a receiver takes v.")
+  (see chan-send chan-get sync)
+  (reference """
+    @code{(sync (chan-send ch v))} without the event value in between, as in
+    Guile's @code{put-message} beside its @code{put-operation}. It waits and is
+    cancelled exactly as @code{sync} is. The event form is for what an event is
+    for: @code{choose}, @code{wrap}, and passing one around.
+    """))
+
+(:doc chan-get
+  (summary "Takes one message off a channel, waiting for a sender.")
+  (arg ch "The channel.")
+  (returns "The message.")
+  (raises Bjolang.Runtime.Cancelled "When the ambient token fires before a sender arrives.")
+  (see chan-recv chan-put sync)
+  (reference """
+    @code{(sync (chan-recv ch))} in one call. It waits and is cancelled exactly
+    as @code{sync} is.
+    """))
+
+(:doc async-seq->chan
+  (summary "A .NET async stream as a channel, and a promise that it is over.")
+  (arg s "The stream, an @code{IAsyncEnumerable}.")
+  (returns "A tuple of the channel the items arrive on and a promise that lands when the stream has ended or failed.")
+  (see make-chan promise-join choose)
+  (reference """
+    An async stream can only be walked. A channel can go into a @code{choose},
+    be raced against a timeout and be withdrawn, so a fiber pumps the one
+    into the other. The pump watches the token of the scope that asked for
+    the stream.
+
+    The channel is synchronous, so the pump waits in the rendezvous until a
+    receiver takes each item: a slow consumer stops the producer rather than
+    growing a buffer. For the same reason the pump cannot finish until its last
+    item was taken, so when the promise lands the channel is empty, and a
+    consumer choosing between the two branches never has to guess.
+
+    The promise is there because a channel has no close, and a close could not
+    say why the stream ended. A stream that throws fails the promise.
+
+    The pump notices cancellation only between items. A stream that stalls
+    while producing one stalls the pump with it.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Events and their combinators
+;; ---------------------------------------------------------------------------
+
+(:doc choose
+  (summary "An event that offers several and commits to exactly one.")
+  (rest evs "The events to offer.")
+  (returns "An event whose value is the value of whichever event committed.")
+  (see wrap guard with-nack sync never)
+  (example """
+    (sync (choose (wrap (chan-recv answers) #(Some &))
+                  (wrap (timeout 20) (fun (u) None))))
+    """)
+  (reference """
+    The losers are withdrawn, not merely ignored: a losing receive is taken off
+    its channel and a losing send never delivers.
+
+    Order is priority. When several branches are ready at the sync, the first
+    one written wins, every time. A loop that chooses between two busy channels
+    can therefore starve the second.
+
+    An event that is always ready, such as @code{always}, a promise that has
+    landed or a token that has fired, wins every iteration of a loop it is
+    offered in.
+    """))
+
+(:doc wrap
+  (summary "An event that answers f applied to another event's value.")
+  (arg ev "The event.")
+  (arg f "What to apply to its value once it has committed.")
+  (returns "An event that commits when ev does, with f's answer as its value.")
+  (see choose guard)
+  (example """
+    (choose (wrap (chan-recv ch) (fun (v) (Got v)))
+            (wrap (timeout 1000) (fun (u) TimedOut)))
+    """)
+  (reference """
+    @code{map} for events, and the way branches of different types are brought
+    to one type for a @code{choose}. f runs after the commit, as the value is
+    delivered, so it does not decide whether its branch wins.
+
+    There is no @code{bind}: a composite with two commit points could not be
+    withdrawn.
+    """))
+
+(:doc guard
+  (summary "An event built afresh at each sync.")
+  (arg thunk "Makes the event, called each time the guard is synced.")
+  (returns "An event that is whatever thunk answers at that sync.")
+  (see timeout with-nack choose)
+  (reference """
+    For an event that depends on the moment of synchronisation, or that has to
+    acquire something only when it is actually offered. thunk runs when the
+    sync publishes the event, not when the guard is built.
+    """))
+
+(:doc with-nack
+  (summary "An event built with a second event that fires if it loses.")
+  (arg f "Given the nack event, answers the branch itself.")
+  (returns "An event that is the branch f built, built afresh at each sync.")
+  (see guard choose)
+  (reference """
+    For a branch that acquires something which must be released if it does
+    not win: a timer, a cancellation source, a tentative reservation. Without
+    it, every losing @code{choose} leaks whatever the branch took.
+
+    The nack is a fact rather than a message: every listener sees it, and a
+    late listener still does.
+
+    What reacts to the nack must not be ordinary work. Its callbacks run on a
+    borrowed thread; they may wake a fiber or fire a token, as
+    @code{make-cancel}'s thunk does, and nothing more.
+    """))
+
+(:doc always
+  (summary "An event that is always ready, with the given value.")
+  (arg v "Its value.")
+  (returns "An event that commits at once with v.")
+  (see never choose)
+  (reference """
+    Always ready, so it wins every iteration of a @code{choose} loop it is
+    offered in. That is the definition, and the same trap a landed promise
+    sets.
+    """))
+
+(:doc never
+  (summary "An event that is never ready.")
+  (returns "An event that never commits.")
+  (see always choose)
+  (reference """
+    The identity of @code{choose}, and what a branch that has nothing to offer
+    this time round answers. Synced on its own, only the ambient token firing
+    ends the wait.
+    """))
+
+(:doc timeout
+  (summary "An event that is ready a number of milliseconds after it is synced.")
+  (arg ms "Milliseconds, counted from each sync. Zero or less is ready at once.")
+  (returns "An event that commits with unit when the time is up.")
+  (see at-time seconds choose with-deadline)
+  (example """
+    (sync (choose (wrap (chan-recv ch) #(Some &))
+                  (wrap (timeout (seconds 5)) (fun (u) None))))
+    """)
+  (reference """
+    Relative to the sync, not to when the event was built, so one timeout
+    value offered in a loop gives each iteration the full interval. A losing
+    timeout's timer is disposed.
+
+    For a budget over a whole loop, use @code{at-time}.
+    """))
+
+(:doc at-time
+  (summary "An event that is ready at a fixed instant.")
+  (arg t "The instant, read as UTC.")
+  (returns "An event that commits with unit at t, or at once if t has passed.")
+  (see timeout)
+  (reference """
+    Absolute, and so not interchangeable with @code{timeout}: the instant is
+    fixed when the event is built, and only the time remaining is worked out
+    at each sync. That makes it a budget for a whole loop rather than for one
+    iteration.
+
+    The instant is compared with @code{DateTime.UtcNow} as it is, so a local
+    time is taken to be UTC.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Promises
+;; ---------------------------------------------------------------------------
+
+(:doc promise-join
+  (summary "The event of a promise landing, with its success or failure.")
+  (arg p "The promise, from @code{bjo} or @code{spawn-thunk}.")
+  (returns "An event whose value is @code{(Ok v)}, or @code{(Err e)} when the fiber raised e.")
+  (see promise-join/sync promise-done? detach)
+  (example """
+    (match (sync (promise-join (bjo (fetch url))))
+      ((Ok page) (use page))
+      ((Err e) (log-failure e)))
+    """)
+  (reference """
+    Building the event does not wait; @code{(sync (promise-join p))} does.
+    Failure is a value because "the fiber died" is a fact the joiner needs.
+
+    A promise is persistent: once it has landed, every sync of its join
+    commits at once with the same answer. A landed promise in a @code{choose}
+    loop wins every iteration.
+    """))
+
+(:doc promise-join/sync
+  (summary "Waits for a promise from an ordinary function and answers its value.")
+  (arg p "The promise.")
+  (returns "The promise's value. When the fiber raised, that exception is raised here.")
+  (raises Bjolang.Runtime.Cancelled "When the ambient token fires before the promise lands, as for @code{sync/blocking}.")
+  (see promise-join sync/blocking)
+  (reference """
+    @code{(sync/blocking (promise-join p))}, with the failure raised rather
+    than answered. It parks the calling thread, so it is for ordinary
+    functions; a bjoroutine syncs on @code{promise-join}.
+    """))
+
+(:doc promise-done?
+  (summary "Whether a promise has landed, answered without waiting.")
+  (arg p "The promise.")
+  (returns "#t once the promise has a value or a failure.")
+  (see promise-join))
+
+(:doc detach
+  (summary "Stops listening to a promise, deliberately.")
+  (arg p "The promise whose result is not wanted.")
+  (see promise-join spawn-thunk)
+  (reference """
+    Dropping a promise loses any exception inside it silently. This says "I
+    know, and I still do not want the result", and a failure is reported to
+    the scheduler's unhandled-exception hook instead. A fiber that stopped
+    because it was cancelled is not reported: that is how a worker normally
+    ends.
+
+    @code{(ignore p)} on a promise is this.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Spawning and leaving the pool
+;; ---------------------------------------------------------------------------
+
+(:doc spawn-thunk
+  (summary "Starts a thunk as a fiber of the current scope: bjo as a function.")
+  (arg f "The work. It runs to completion without suspending.")
+  (returns "Its promise, as @code{bjo} answers one.")
+  (raises Bjolang.Runtime.ScopeEnded "When there is no ambient scope.")
+  (see detach promise-join spawn/thread)
+  (example """
+    (map spawn-thunk thunks)
+    """)
+  (reference """
+    @code{bjo} is a special form and not a value, so this is the spelling for
+    the higher-order case. The fiber goes into the current scope as
+    @code{bjo}'s does, and the scope waits for it.
+
+    A thunk has no yield point, so it cannot be cancelled: the scope waits for
+    it to finish, and a long one holds its scope open. Spawned into a scope
+    that has begun closing, it starts nothing and answers a promise that has
+    already failed with @code{Cancelled}.
+    """))
+
+(:doc blocking
+  (summary "An event that runs a thread-parking thunk off the fiber pool.")
+  (arg thunk "The work: a call that parks its thread, such as a synchronous read.")
+  (returns "An event whose value is @code{(Ok v)}, or @code{(Err e)} when thunk raised e.")
+  (see spawn/thread sync/blocking)
+  (example """
+    (sync (blocking #(file-read-text path)))   ; (Result Exception string)
+    """)
+  (reference """
+    @code{File.ReadAllText}, @code{Console.ReadLine}, @code{Monitor.Enter}:
+    each parks the thread it is called on, and in a fiber that is a pool
+    thread. This runs the thunk through @code{Task.Run}, on a thread the pool
+    can grow to replace, and the fiber suspends on the result.
+
+    Guarded, so each sync starts a fresh run rather than replaying the first
+    one's answer. The thunk sees the dynamic environment of the sync.
+
+    @strong{Not cancellable.} What cancellation reaches is the wait: a
+    cancelled scope stops waiting while the thunk carries on to the end, and
+    the scope does not wait for it either.
+    """))
+
+(:doc spawn/thread
+  (summary "An event that runs a CPU-heavy thunk on a thread of its own.")
+  (arg thunk "The work: long computation.")
+  (returns "An event whose value is @code{(Ok v)}, or @code{(Err e)} when thunk raised e.")
+  (see blocking spawn-thunk)
+  (example """
+    (sync (spawn/thread #(resize image 2048)))   ; (Result Exception Image)
+    """)
+  (reference """
+    A function, not one of the @code{spawn} special forms, despite the name:
+    it is written @code{(sync (spawn/thread #(crunch data)))}. The spawn forms
+    decide who owns a fiber; this decides where work runs.
+
+    @code{blocking} is for work that parks a thread, this for work that uses a
+    core. It asks .NET for a dedicated thread, which costs about a megabyte of
+    stack and is created and destroyed per call: worth it for work measured in
+    tens of milliseconds, a loss for work measured in microseconds.
+
+    Guarded, so each sync starts a fresh thread. Not cancellable: a cancelled
+    scope stops waiting, the thread carries on to the end, and the scope does
+    not wait for it.
+    """))
+
+(:doc spawn-evt/start
+  (summary "What (spawn-evt (f x)) becomes: start a fiber at the sync, cancel it if the branch loses.")
+  (arg start "A thunk holding the spawn.")
+  (returns "An event whose value is the fiber's @code{(Ok v)} or @code{(Err e)}.")
+  (see promise-join with-nack)
+  (reference """
+    The parser turns @code{(spawn-evt (f x))} into a call of this over a
+    thunk holding the spawn. It is not meant to be called by hand.
+
+    At each sync the child is started under a cancellation token of its own,
+    not linked to the ambient one, installed as @code{current-cancel} around
+    the spawn so that the whole subtree inherits it. The child still goes
+    into the current scope, which waits for it. If the branch loses its @code{choose}, the token
+    fires with @code{(Requested "spawn-evt: the branch lost its choose")}.
+    @code{(promise-join (bjo (f x)))}, by contrast, starts eagerly and a lost
+    choose only stops the listening.
+
+    Cancellation is still cooperative: a child that never syncs runs to the
+    end.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Cancellation
+;; ---------------------------------------------------------------------------
+
+(:doc make-cancel
+  (summary "A cancel thunk and the token it fires.")
+  (returns "A tuple: the thunk, which takes a reason and fires the token, and the token.")
+  (see cancelled cancelled? cancel-reason link-cancel with-cancel)
+  (example """
+    (def (Tuple cancel token) (make-cancel))
+    (spawn (worker token))
+    (cancel (Requested "shutdown"))
+    """)
+  (reference """
+    Two values because they are two rights: whoever holds the thunk can
+    cancel, whoever holds the token can only notice. A worker handed the token
+    can watch for its own end without being able to stop its siblings.
+
+    Cancelling twice does nothing, so the token carries the first reason it
+    was given.
+    """))
+
+(:doc cancelled
+  (summary "The event of a token having fired, carrying the reason.")
+  (arg token "The token.")
+  (returns "An event whose value is the reason the token was fired with.")
+  (see until-cancelled cancelled? choose)
+  (example """
+    (sync (choose (wrap (chan-recv jobs) #(Job &))
+                  (wrap (cancelled token) #(Stop &))))
+    """)
+  (reference """
+    An event rather than a callback, so a token can be raced against real
+    work. A token fires once and stays fired, so after it fires this commits
+    at once at every sync: a loop that offers it has to leave when it wins.
+    """))
+
+(:doc cancelled?
+  (summary "Whether a token has fired, answered without waiting.")
+  (arg token "The token.")
+  (returns "#t once it has fired.")
+  (see cancel-reason cancelled)
+  (reference """
+    The poll, for a compute loop with no @code{sync} to hang a @code{choose}
+    on. A loop that neither syncs nor checks runs to the end whoever cancelled
+    it.
+    """))
+
+(:doc cancel-reason
+  (summary "Why a token fired, if it has.")
+  (arg token "The token.")
+  (returns "@code{(Some reason)}, or @code{None} while it has not fired.")
+  (see cancelled? Requested)
+  (reference """
+    A loop tests with @code{cancelled?} and, having left, asks this what
+    cleanup it owes.
+    """))
+
+(:doc until-cancelled
+  (summary "An event, or None if a token fires first.")
+  (arg token "A token other than the ambient one.")
+  (arg ev "The event.")
+  (returns "An event whose value is @code{(Some v)} when ev commits, and @code{None} when token has fired.")
+  (see cancelled choose)
+  (example """
+    (match (sync (until-cancelled deadline (chan-recv jobs)))
+      ((Some job) (handle job))
+      (None (give-up)))
+    """)
+  (reference """
+    For a per-request deadline, a sub-scope's token, or one received from
+    elsewhere. @code{None} rather than a raise because a fired token stays
+    fired: a loop that raced one directly would win on it every iteration and
+    spin, and with @code{None} leaving is the natural spelling.
+
+    ev is offered first, so a token that has already fired does not take an
+    iteration in which ev was ready.
+
+    @strong{Do not hand it the ambient token.} @code{sync} already watches
+    that one, and the two would race: whichever commits first decides between
+    @code{None} and a raise.
+    """))
+
+(:doc link-cancel
+  (summary "Makes one token fire when another does.")
+  (arg parent "The token whose firing is passed on.")
+  (arg child "The token fired with the parent's reason.")
+  (see make-cancel)
+  (reference """
+    One way only: firing the child says nothing to the parent. A tree of
+    tokens is repeated linking, and a leaf that is cancelled cancels only what
+    hangs below it.
+    """))
+
+(:doc current-cancel
+  (summary "The ambient cancellation token, which every sync watches.")
+  (see sync cancelled? with-cancel current-scope)
+  (reference """
+    A @code{(Param CancelToken)}. A scope installs its token here for its
+    body, and a spawned fiber starts with the environment it was spawned in,
+    so the whole subtree sees the same token without one being passed
+    anywhere.
+
+    Outside every scope it is a token that never fires. Inside a
+    @code{with-shield} it is the shield's own, which a cancellation outside
+    the shield does not fire.
+
+    A bare @code{(parameterize ((current-cancel t)) ...)} binds the token
+    without changing which scope a @code{spawn} goes into.
+    """))
+
+(:doc Requested
+  (summary "A cancellation reason: someone asked to stop.")
+  (arg who "Who asked, or why. A diagnostic, not something to dispatch on.")
+  (returns "The reason.")
+  (see Deadline Scope-Ended Failed make-cancel)
+  (reference """
+    The cancellation reasons are a closed set: @code{Requested},
+    @code{Deadline}, @code{Scope-Ended} and @code{Failed}. A library cannot
+    add one, and @code{Requested} is the case for everything the other three
+    do not name.
+    """))
+
+(:doc Deadline
+  (summary "A cancellation reason: a time limit ran out.")
+  (see with-deadline with-shield Requested)
+  (reference """
+    What the timer of @code{with-deadline} or @code{with-shield} fires its
+    scope's token with.
+    """))
+
+(:doc Scope-Ended
+  (summary "A cancellation reason: the scope owning the token has finished.")
+  (see with-cancel Requested)
+  (reference """
+    A scope fires its token with this once every child it waits for has
+    landed, unless the token fired earlier, so a daemon or a fiber handed the
+    token stops rather than outliving the scope.
+    """))
+
+(:doc Failed
+  (summary "A cancellation reason: the scope's body, or a child, raised.")
+  (arg e "The exception.")
+  (returns "The reason.")
+  (see with-cancel Requested))
+
+;; ---------------------------------------------------------------------------
+;; Scopes
+;; ---------------------------------------------------------------------------
+
+(:doc with-scope
+  (summary "Runs body in a scope that waits for its fibers and releases what it owns.")
+  (form (with-scope body ...))
+  (rest body "What to run. Its last value is the form's.")
+  (see with-cancel own! in-scope)
+  (example """
+    (with-scope
+      (match (open-input-file "notes.txt")
+        ((Ok p) (read-all p))   ; closed when the scope returns
+        ((Err e) "")))
+    """)
+  (reference """
+    A @code{with-cancel} whose cancel thunk nothing in the body can reach: the
+    plain form, and the one to put around resources. It waits for every fiber
+    @code{spawn}, @code{bjo} or @code{spawn-thunk} started in it, then
+    releases what was owned in it, newest first.
+
+    It suspends, so only a bjoroutine may write it.
+    """))
+
+(:doc with-cancel
+  (summary "Runs body in a scope that owns the fibers it starts, with a thunk to cancel them.")
+  (form (with-cancel (cancel) body ...))
+  (arg cancel "The name the cancel thunk is bound to. It takes a reason.")
+  (rest body "What to run. Its last value is the form's.")
+  (see with-scope with-deadline with-shield Requested current-cancel)
+  (example """
+    (with-cancel (cancel)
+      (spawn (worker jobs answers))
+      (def answer (sync (chan-recv answers)))
+      (cancel (Requested "got it"))
+      answer)
+    """)
+  (reference """
+    Opens a scope whose token is linked to the ambient one, installs it as the
+    current scope and @code{current-cancel} for the body, and closes it on the
+    way out. The binding is restored however the body is left.
+
+    @strong{The order on the way out.} When the body leaves with an
+    exception, the token fires with @code{(Failed e)} first; so it does when
+    a child had already failed. Then the scope waits for every child, fires
+    the token with @code{Scope-Ended} if it has not fired, and runs its
+    releases newest first. Only then does it report. A scope whose children
+    never end, and which never calls @code{cancel}, hangs rather than
+    returning.
+
+    @strong{A child that fails} does not interrupt the body: the token is
+    fired with @code{(Failed e)} once the body has ended, as above, or at once
+    if the child fails while the scope is already waiting. Its failure is
+    raised when the scope returns. Several failures, a release that threw
+    among them, are raised together as one @code{System.AggregateException},
+    the body's first. A child that stopped because it was cancelled has not
+    failed. A @code{bjo} child's failure is its promise's, and the scope does
+    not raise it again.
+
+    It suspends, so only a bjoroutine may write it.
+    """))
+
+(:doc with-deadline
+  (summary "Runs body in a scope that is cancelled with Deadline after some milliseconds.")
+  (form (with-deadline ms body ...))
+  (arg ms "Milliseconds. Zero or less means no deadline.")
+  (rest body "What to run. Its last value is the form's.")
+  (see with-cancel seconds timeout Deadline)
+  (example """
+    (with-deadline (seconds 5)
+      (spawn (fetch "a"))
+      (spawn (fetch "b")))   ; returns once both have landed or been cancelled
+    """)
+  (reference """
+    @code{with-cancel} with a timer the scope owns. When it fires, the token
+    fires with @code{Deadline}, and every @code{sync} in the scope that has to
+    wait raises @code{Cancelled}. The body has no cancel thunk.
+
+    Running out of time is not itself a failure. A child stopped by the
+    deadline has not failed, so the form above returns normally either way;
+    it raises only when the body itself was stopped, or a child failed.
+    A caller that needs to know reads the reason off the scope's token.
+    """))
+
+(:doc with-shield
+  (summary "Runs body in a scope that a cancellation outside it does not reach.")
+  (form (with-shield body ...))
+  (form (with-shield #:within ms body ...))
+  (arg ms "The shield's own deadline, in milliseconds. Thirty seconds when it is not given.")
+  (rest body "What to run. Its last value is the form's.")
+  (see with-cancel current-cancel)
+  (example """
+    (with-shield #:within (seconds 5)
+      (spawn (flush-buffer a))
+      (spawn (flush-buffer b)))
+    """)
+  (reference """
+    How cleanup runs after a cancellation. Once a scope has been cancelled
+    every @code{sync} in it raises, including those in the code trying to
+    tidy up. Inside a shield the ambient token is a fresh one, not linked to
+    the parent's, so a @code{sync} works again, and
+    @code{current-cancel} agrees with it.
+
+    The deadline is not optional: a shield nothing outside can reach and that
+    never times out would make the program impossible to stop. It is a scope,
+    so it waits for its own children.
+    """))
+
+(:doc in-scope
+  (summary "Runs body with a given scope as the ambient one.")
+  (form (in-scope s body ...))
+  (arg s "The scope, from @code{current-scope}.")
+  (rest body "What to run. Its last value is the form's.")
+  (see current-scope own! with-scope)
+  (example """
+    (def home (current-scope))
+    (on-event (fun (e) (in-scope home (handle e))))
+    """)
+  (reference """
+    The way to own something in a scope other than the innermost one, and the
+    way back in from a .NET callback, which arrives on a thread with no
+    ambient scope at all.
+
+    It installs a scope; it does not open or close one, and it does not
+    suspend. Whoever opened s is still the one that waits for it.
+    """))
+
+(:doc current-scope
+  (summary "The ambient scope, as a value.")
+  (returns "The innermost scope the caller is running in.")
+  (raises Bjolang.Runtime.ScopeEnded "When there is none: during module initialisation, or in a callback from .NET.")
+  (see in-scope own!)
+  (reference """
+    For @code{in-scope}, and for a callback that has to capture one. @code{main}
+    runs in a scope, so there is one everywhere else.
+    """))
+
+(:doc own!
+  (summary "Registers a release on the ambient scope.")
+  (arg thunk "What releases the resource. It runs once, when the scope closes or at release!.")
+  (returns "The handle that runs it early, through @code{release!}.")
+  (raises Bjolang.Runtime.ScopeEnded "When there is no ambient scope, or the scope has already run its releases.")
+  (see release! own-disposable with-scope in-scope)
+  (example """
+    (ignore (own! (fun () (release-the-permit))))
+    """)
+  (reference """
+    For what the GC cannot price: OS handles, permits, subscriptions, state
+    that has to be put back. Not for memory.
+
+    Releases run when the scope closes, after every fiber it waits for has
+    landed, newest first, with a fresh token installed so that they are not cancelled. A
+    release that throws is recorded and the rest still run.
+
+    A release is a plain thunk: it cannot suspend and has no deadline, so one
+    that blocks blocks the close.
+
+    A closing scope still accepts an @code{own!} until its releases have run,
+    so a child opening a file during the drain is covered. After that it
+    raises, since nothing would release the resource. A file opened in a
+    spawned fiber belongs to the enclosing scope, not to the fiber.
+    """))
+
+(:doc release!
+  (summary "Runs an owned release now, and takes it off its scope.")
+  (arg owned "The handle @code{own!} answered.")
+  (see own!)
+  (reference """
+    A second call does nothing, and so does one that lost the race with the
+    scope's own closing pass: the thunk runs exactly once either way. When it
+    runs here, on the caller's stack, its exception reaches the caller.
+    """))
+
+(:doc own-disposable
+  (summary "Registers an IDisposable's Dispose on the ambient scope, and answers it.")
+  (form (own-disposable x))
+  (arg x "An expression answering something with a @code{.Dispose} method.")
+  (see own! with-scope)
+  (example """
+    (def reader (own-disposable (StreamReader. path)))
+    """)
+  (reference """
+    @code{(own! (fun () (.Dispose x)))}, answering x. A form so that
+    @code{.Dispose} resolves at the call site, as @code{with-open} resolves
+    it. @code{with-open} is for a resource whose lifetime is one block; this
+    is for one whose lifetime is the scope's.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; What the scope forms expand to
+;; ---------------------------------------------------------------------------
+
+(:doc scope-form
+  (summary "The shared expansion of with-scope, with-cancel, with-deadline and with-shield.")
+  (form (scope-form opener (cancel) first body ...))
+  (arg opener "The call that makes the scope: @code{scope-open!} or @code{shield-open!}.")
+  (arg cancel "The name the cancel thunk is bound to.")
+  (arg first "The body's first form.")
+  (rest body "The rest of the body.")
+  (see with-scope with-cancel with-deadline with-shield)
+  (reference """
+    Opens the scope, installs it with @code{scope-push!}, binds the thunk from
+    @code{scope-canceller}, runs the body, and closes the scope with
+    @code{scope-close!}, telling it about the body's exception if there was
+    one, which is then raised again unless the close raised first. @code{dyn-restore!} puts the old
+    environment back however the form is left.
+
+    Not meant to be written by hand: use one of the four forms.
+    """))
+
+(:doc scope-open!
+  (summary "A new scope linked to the ambient one. Internal to the scope forms.")
+  (arg ms "A deadline in milliseconds, or zero for none.")
+  (returns "The scope, not yet installed.")
+  (see scope-form with-cancel shield-open!)
+  (reference """
+    Cancelling the ambient token cancels this scope; this scope cancelling
+    itself says nothing to its parent. When ms is more than zero, a timer
+    fires the scope's token with @code{Deadline}.
+
+    What @code{with-scope}, @code{with-cancel} and @code{with-deadline} expand
+    to, through @code{scope-form}. Not meant to be called directly: an
+    install needs a close that a @code{finally} guards.
+    """))
+
+(:doc shield-open!
+  (summary "A new scope with no link to the ambient one. Internal to with-shield.")
+  (arg ms "A deadline in milliseconds.")
+  (returns "The scope, not yet installed.")
+  (see with-shield scope-open!)
+  (reference """
+    What @code{with-shield} expands to. Not meant to be called directly.
+    """))
+
+(:doc scope-push!
+  (summary "Installs a scope as the ambient one, and answers the environment it displaced.")
+  (arg s "The scope.")
+  (returns "The environment to hand back to @code{dyn-restore!}.")
+  (see dyn-restore! scope-form in-scope)
+  (reference """
+    Binds the scope and @code{current-cancel} together, so that a
+    @code{spawn} and a @code{sync} inside it always mean the same
+    cancellation. What @code{scope-form} and @code{in-scope} expand to; not
+    meant to be called directly.
+    """))
+
+(:doc scope-canceller
+  (summary "The thunk that fires a scope's token. Internal to the scope forms.")
+  (arg s "The scope.")
+  (returns "A function taking the reason to fire the token with.")
+  (see scope-cancel! with-cancel make-cancel)
+  (reference """
+    What the @code{cancel} of @code{with-cancel} is bound to. Firing an
+    already fired token does nothing.
+    """))
+
+(:doc scope-token
+  (summary "A scope's cancellation token.")
+  (arg s "The scope.")
+  (returns "The token the scope installs as @code{current-cancel}.")
+  (see current-scope until-cancelled cancel-reason))
+
+(:doc scope-close!
+  (summary "Ends a scope: waits for its children, releases what it owns, and reports. Internal to the scope forms.")
+  (arg s "The scope.")
+  (arg failure "The exception the body is leaving with, or @code{None}.")
+  (see scope-form with-cancel)
+  (reference """
+    With a failure, the token fires with @code{(Failed e)} first. Then the
+    scope is marked closing, and from then on a spawn into it starts nothing;
+    if a child had already failed, the token fires with that child's
+    @code{Failed} now. It waits for every child without watching any token,
+    fires the token with @code{Scope-Ended}, stops the deadline timer, and
+    runs the releases newest first. Then it raises what the children and the
+    releases raised: one failure as itself, several, or any beside the
+    body's, as one @code{System.AggregateException}. The body's failure alone
+    is not raised here; @code{scope-form} raises it again.
+
+    What @code{scope-form} expands to; not meant to be called directly.
+    """))
+
+(:doc scope-cancel!
+  (summary "Fires the token of a scope held as a value.")
+  (arg s "The scope.")
+  (arg reason "The reason to fire it with.")
+  (see scope-canceller current-scope)
+  (reference """
+    What the cancel thunk does. Firing an already fired token does nothing.
+    """))
+
+(:doc scope-owned-count
+  (summary "How many releases a scope still holds.")
+  (arg s "The scope.")
+  (returns "The number of handles registered and not yet released.")
+  (see own! release!)
+  (reference """
+    A test hook: @code{std/simpletest} fails a test that left one behind.
+    """))
+
+(:doc dyn-restore!
+  (summary "Puts back a dynamic environment saved earlier. Internal to the forms that bind one.")
+  (arg env "The environment @code{scope-push!} or a parameter push answered.")
+  (see scope-push! in-scope scope-form)
+  (reference """
+    The other half of @code{scope-push!}, and of the push
+    @code{parameterize} expands to. @code{scope-form}, @code{in-scope} and
+    @code{parameterize} call it in a @code{finally}. Not meant to be called
+    directly.
+    """))
+
+(:doc close-owned-or-dispose
+  (summary "Closes what a with-open bound: through its owner if a scope owns it, by disposing it if not.")
+  (arg x "The value the binding held.")
+  (see release! own-disposable)
+  (reference """
+    The exit the parser writes for @code{with-open}, which binds anything an
+    @code{import/class} can produce. A port or connection its scope owns is
+    released through the owner handle, so the registration does not stay on
+    the scope's list. Anything else disposable is disposed. A standard port
+    is flushed and left open.
+
+    Not meant to be called directly.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Durations
+;; ---------------------------------------------------------------------------
+
+(:doc millis
+  (summary "A number of milliseconds, as milliseconds.")
+  (arg n "Milliseconds.")
+  (returns "n, unchanged.")
+  (see seconds minutes)
+  (reference """
+    Every timer in the language counts milliseconds. These three spell a
+    duration the way it is said, and @code{(seconds 5)} is harder to misread
+    than @code{5000}.
+    """))
+
+(:doc seconds
+  (summary "A number of seconds, in milliseconds.")
+  (arg n "Seconds.")
+  (returns "n times 1000.")
+  (see millis minutes with-deadline timeout)
+  (example """
+    (with-deadline (seconds 5) (fetch url))
+    """))
+
+(:doc minutes
+  (summary "A number of minutes, in milliseconds.")
+  (arg n "Minutes.")
+  (returns "n times 60000.")
+  (see millis seconds))
+
+;; ---------------------------------------------------------------------------
+;; The clock
+;; ---------------------------------------------------------------------------
+
+(:doc Clock
+  (summary "Where the time comes from: a record of functions, so a program can make its own.")
+  (field read-monotonic-ms "Milliseconds from an unspecified start. Never decreases; only differences mean anything.")
+  (field read-utc-ticks "The wall clock, in .NET ticks since 0001-01-01 UTC. May step back when the machine's time is corrected.")
+  (field read-zone "The zone @code{(std datetime)}'s @code{today} is in.")
+  (field advance-ticks "What @code{(std datetime)}'s @code{clock-advance!} calls, with a number of ticks. @code{None} for a clock that cannot be moved.")
+  (see make-clock current-clock monotonic-ms)
+  (reference """
+    @code{monotonic-ms} reads @code{current-clock}, and @code{(std datetime)}'s
+    @code{now} and @code{today} read the same one, so binding it moves both.
+    """))
+
+(:doc make-clock
+  (summary "A clock, with each part not given taken from the system's.")
+  (key #:monotonic-ms "Reads the monotonic milliseconds.")
+  (key #:utc-ticks "Reads the wall clock in .NET ticks, UTC.")
+  (key #:zone "Answers the local zone.")
+  (key #:advance "Moves the clock on by a number of ticks, or @code{None}.")
+  (returns "The clock.")
+  (see Clock system-clock current-clock)
+  (example """
+    (parameterize ((current-clock (make-clock #:monotonic-ms (fun () 0L))))
+      (time-the-thing))   ; every stopwatch inside reads 0
+    """)
+  (reference """
+    @code{(std datetime)} has @code{fixed-clock}, @code{manual-clock} and
+    @code{clock-in} for the clocks a test wants.
+    """))
+
+(:doc system-clock
+  (summary "The machine's clock, in the machine's zone.")
+  (see current-clock make-clock))
+
+(:doc current-clock
+  (summary "The clock monotonic-ms and (std datetime) read.")
+  (see system-clock make-clock monotonic-ms)
+  (reference """
+    A cold @code{(Param Clock)}, starting as @code{system-clock}. Binding it
+    fixes both @code{monotonic-ms} and @code{(std datetime)}'s @code{now} and
+    @code{today}.
+    """))
+
+(:doc monotonic-ms
+  (summary "The clock's monotonic reading, in milliseconds.")
+  (key #:clock "The clock to read.")
+  (returns "Milliseconds from an unspecified start. Only differences mean anything.")
+  (see current-clock Clock)
+  (reference """
+    For measuring how long something took; @code{(std stopwatch)} measures
+    with it. Not the wall-clock time, which is @code{(std datetime)}'s
+    @code{now}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The REPL
+;; ---------------------------------------------------------------------------
+
+(:doc currently-in-repl
+  (summary "Whether the code is running in a REPL.")
+  (see panic!)
+  (reference """
+    A cold @code{(Param bool)}: #t while the REPL runs an entry, #f in a built
+    program. @code{panic!} reads it, and at a prompt raises instead of ending
+    the process.
+    """))
