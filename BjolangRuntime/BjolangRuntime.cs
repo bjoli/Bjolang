@@ -1255,7 +1255,7 @@ public static partial class BjolangRuntime {
     /// single reference assignment — which is what makes `parameterize` cheap
     /// and exception-safe.
     /// </summary>
-    public sealed class DynEnv {
+    public sealed class DynEnv : Bjoml.IFiberContext {
         public readonly System.IO.TextWriter Out;
         public readonly System.IO.TextReader In;
 
@@ -1312,11 +1312,11 @@ public static partial class BjolangRuntime {
         /// for as long as it stays in the same scope, which is exactly the
         /// lifetime a registration on that scope's token wants.
         ///
-        /// It is not private to one fiber: a child spawned after the parent
-        /// built one inherits the same environment and so the same cell. That
-        /// costs nothing but speed — the cell is claimed for the duration of a
-        /// park, and a fiber that cannot claim it falls back to a registration
-        /// of its own.
+        /// It belongs to one fiber. Nothing claims it before a park, so two
+        /// fibers holding the same one would overwrite each other's park. The
+        /// two ways an environment reaches another fiber or thread both drop
+        /// it: `Bjo.Spawn` asks for <see cref="ForChild"/>, and `blocking`
+        /// hands its thunk the same copy.
         internal readonly FiberWatch? Park;
 
         internal DynEnv(
@@ -1340,6 +1340,11 @@ public static partial class BjolangRuntime {
         /// The cell travels with the environment except where the token changes
         /// under it, which is the one thing it may not outlive.
         internal DynEnv WithPark(FiberWatch? park) => new(Out, In, Cancel, Scope, Vals, park);
+
+        /// What a fiber spawned from this environment starts with: everything
+        /// but the park cell, which is this fiber's own. The child builds its
+        /// own at its first sync.
+        public object ForChild() => Park is null ? this : WithPark(null);
 
         /// Binding a token by hand leaves the scope alone. That is the airlock
         /// `parameterize ((current-cancel t))` has always been: a fiber can be

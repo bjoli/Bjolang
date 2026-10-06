@@ -70,20 +70,6 @@ internal interface IDirectSyncable<T> : IParkSite
     void SyncDirect(Action<T> onSync);
 
     /// <summary>
-    /// The same, with a claim on the parked op so that <paramref name="link"/>
-    /// can take it instead of the channel — which is how a cancellation token
-    /// reaches a fiber parked on a rendezvous.
-    ///
-    /// Returns true when it actually parked. False means it committed inline and
-    /// <paramref name="onSync"/> has already run, so there is nothing to take and
-    /// the caller must not arm anything.
-    ///
-    /// The claim is only consulted for ops that carry a link, so an unlinked
-    /// direct park keeps committing unconditionally.
-    /// </summary>
-    bool SyncDirect(Action<T> onSync, ITakeable link);
-
-    /// <summary>
     /// The op a park with the fiber's own resume in it will use. Nothing is
     /// published yet; a caller racing a token marks it with
     /// <see cref="Operation.Watch"/> before it parks.
@@ -91,12 +77,13 @@ internal interface IDirectSyncable<T> : IParkSite
     Operation RentPark();
 
     /// <summary>
-    /// Park <paramref name="op"/> with <paramref name="resume"/> as what a partner
-    /// runs. True when it parked; false when a partner was already there, in
-    /// which case the value is in the op and <paramref name="resume"/> has NOT
-    /// been scheduled — the caller closes its claim first.
+    /// Park <paramref name="op"/> with <paramref name="resume"/> as what a
+    /// partner runs. On <see cref="ParkResult.Matched"/> a partner was already
+    /// there: the value is in the op and <paramref name="resume"/> has NOT been
+    /// scheduled. On <see cref="ParkResult.Withdrawn"/> the token withdrew the
+    /// op first and nothing was done. The caller resumes the fiber in both.
     /// </summary>
-    bool Park(Operation op, Action resume);
+    ParkResult Park(Operation op, Action resume);
 
     /// <summary>The value a completed park carried. Recycles the op.</summary>
     T TakeParked(Operation op);
@@ -522,14 +509,11 @@ public class ChannelSendEvent<T> : IEvent<Unit>, INowable<Unit>, IDirectSyncable
     void IDirectSyncable<Unit>.SyncDirect(Action<Unit> onSync) =>
         _channel.SyncDirectSend(_value, onSync);
 
-    bool IDirectSyncable<Unit>.SyncDirect(Action<Unit> onSync, ITakeable link) =>
-        _channel.SyncDirectSend(_value, onSync, link);
-
     Operation IDirectSyncable<Unit>.RentPark() => PutOp<T>.RentDirect(_value);
 
-    bool IParkSite.CancelParked(Operation op, int gen) => _channel.CancelParked(op, gen);
+    Withdrawal IParkSite.CancelParked(Operation op, int gen) => _channel.CancelParked(op, gen);
 
-    bool IDirectSyncable<Unit>.Park(Operation op, Action resume)
+    ParkResult IDirectSyncable<Unit>.Park(Operation op, Action resume)
     {
         var put = (PutOp<T>)op;
         put.ResumePut = resume;

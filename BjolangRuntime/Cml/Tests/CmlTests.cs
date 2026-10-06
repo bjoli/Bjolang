@@ -85,7 +85,7 @@ public static class CmlTests
         Run("every parked fiber raises exactly once when the token fires", AllParkedFibersRaiseOnce);
         Run("cancelling a running ping-pong never hangs or resumes twice", CancelRacesWithParking);
         Run("a cancel that lands while a fiber is parking is not lost", CancelDuringAParkIsNotLost);
-        Run("two fibers sharing one environment both park and both cancel", SharedCellStillCancelsBoth);
+        Run("a spawned child builds a cell of its own, and both cancel", SpawnedChildHasACellOfItsOwn);
         Run("a watched park has one winner, and a stale withdrawal finds nothing", OpClaimHasOneWinner);
     }
 
@@ -458,32 +458,47 @@ public static class CmlTests
     }
 
     /// <summary>
-    /// A child spawned straight from `Bjo.Spawn` inherits its parent's
-    /// environment, and therefore its cell. Only one of them can hold it, so the
-    /// other takes a watch of its own — and cancellation has to reach both.
+    /// A child spawned straight from `Bjo.Spawn` after its parent built its
+    /// cell starts without it. A cell is armed with no claim before it, so two
+    /// fibers parked on one would overwrite each other's park. Each builds its
+    /// own, and cancellation reaches both.
     /// </summary>
-    private static void SharedCellStillCancelsBoth()
+    private static void SpawnedChildHasACellOfItsOwn()
     {
         var token = new Promise<global::BjolangRuntime.CancelReason>();
         var warmup = new Channel<int>();
+        var childWarmup = new Channel<int>();
         var a = new Channel<int>();
         var b = new Channel<int>();
         var done = new CountdownEvent(2);
         int raised = 0;
+        object? parentCell = null;
+        object? inherited = "not read";
+        object? childCell = null;
 
         _ = UnderToken(token, async () =>
         {
-            // Builds the cell on this fiber's environment, which the child below
-            // then inherits.
+            // Builds the cell on this fiber's environment.
             _ = Bjo.Spawn<Unit>(async () =>
             {
                 await warmup.Send(1);
                 return default;
             });
             await global::BjolangRuntime.sync((IEvent<int>)warmup);
+            parentCell = global::BjolangRuntime.Dyn.Current.Park;
 
             _ = Bjo.Spawn<Unit>(async () =>
             {
+                inherited = global::BjolangRuntime.Dyn.Current.Park;
+
+                _ = Bjo.Spawn<Unit>(async () =>
+                {
+                    await childWarmup.Send(1);
+                    return default;
+                });
+                await global::BjolangRuntime.sync((IEvent<int>)childWarmup);
+                childCell = global::BjolangRuntime.Dyn.Current.Park;
+
                 try { await global::BjolangRuntime.sync((IEvent<int>)b); }
                 catch (Bjolang.Runtime.Cancelled) { Interlocked.Increment(ref raised); }
 
@@ -500,6 +515,11 @@ public static class CmlTests
 
         AwaitPark(() => a.RawPendingReceiveCount, "the parent to park");
         AwaitPark(() => b.RawPendingReceiveCount, "the child to park");
+
+        Assert(parentCell is not null, "the parent built no cell");
+        AssertEqual(null, inherited, "the cell the child started with");
+        Assert(childCell is not null && !ReferenceEquals(childCell, parentCell),
+            "the child did not build a cell of its own");
 
         token.TrySetResult(new global::BjolangRuntime.CancelReason.Requested(BjoString.Utf8String.FromUtf16("both of you")));
 
@@ -527,31 +547,57 @@ public static class CmlTests
         // the value is the receiver's.
         var taken = direct.RentPark();
         int takenGen = taken.Watch();
-        Assert(direct.Park(taken, resume), "a receive with nobody to meet did not park");
+        AssertEqual(ParkResult.Parked, direct.Park(taken, resume), "a receive with nobody to meet");
         Assert(ch.TryDirectSend(7), "the sender did not find the parked receive");
-        Assert(!ch.CancelParked(taken, takenGen), "the token withdrew a park a sender had already taken");
+        AssertEqual(Withdrawal.Refused, ch.CancelParked(taken, takenGen),
+            "a withdrawal of a park a sender had already taken");
         AssertEqual(7, direct.TakeParked(taken), "the value the parked receive was handed");
 
-        // The token withdraws first: once only, and a sender then passes the
-        // park by rather than handing its value to a fiber that is leaving.
+        // The token withdraws a parked op first: once only, the token resumes
+        // the fiber, and a sender passes the op by rather than handing its
+        // value to a fiber that is leaving.
         var withdrawn = direct.RentPark();
         int withdrawnGen = withdrawn.Watch();
-        Assert(direct.Park(withdrawn, resume), "the second receive did not park");
-        Assert(ch.CancelParked(withdrawn, withdrawnGen), "the token could not withdraw a live park");
-        Assert(!ch.CancelParked(withdrawn, withdrawnGen), "the same park was withdrawn twice");
+        AssertEqual(ParkResult.Parked, direct.Park(withdrawn, resume), "the second receive");
+        AssertEqual(Withdrawal.Published, ch.CancelParked(withdrawn, withdrawnGen),
+            "a withdrawal of a live park on the list");
+        AssertEqual(Withdrawal.Refused, ch.CancelParked(withdrawn, withdrawnGen),
+            "a second withdrawal of the same park");
         Assert(!ch.TryDirectSend(8), "a sender took a park the token had withdrawn");
+
+        // The token withdraws before the owner has handed the op over: the
+        // owner's park finds it withdrawn, publishes nothing, and resumes the
+        // fiber itself.
+        var early = direct.RentPark();
+        int earlyGen = early.Watch();
+        AssertEqual(Withdrawal.Unpublished, ch.CancelParked(early, earlyGen),
+            "a withdrawal of a park not yet handed over");
+        AssertEqual(ParkResult.Withdrawn, direct.Park(early, resume), "parking a withdrawn op");
+        AssertEqual(0, ch.RawPendingReceiveCount, "receives left on the list after a withdrawn park");
+
+        // The owner meets a waiting sender inline: it takes its own op, so a
+        // token that fires afterwards is refused.
+        Assert(ch.SyncDirectSend(10, static _ => { }), "the waiting sender did not park");
+        var inline = direct.RentPark();
+        int inlineGen = inline.Watch();
+        AssertEqual(ParkResult.Matched, direct.Park(inline, resume), "a receive with a sender waiting");
+        AssertEqual(Withdrawal.Refused, ch.CancelParked(inline, inlineGen),
+            "a withdrawal of a park its owner matched inline");
+        AssertEqual(10, direct.TakeParked(inline), "the value the inline match carried");
 
         // A stale reference: the same op object, watched again as a later park,
         // is not the park the old generation names.
         var reused = direct.RentPark();
         int oldGen = reused.Watch();
         int newGen = reused.Watch();
-        Assert(direct.Park(reused, resume), "the third receive did not park");
-        Assert(!ch.CancelParked(reused, oldGen), "a stale generation withdrew a later park of the same op");
-        Assert(ch.CancelParked(reused, newGen), "the current generation could not withdraw its own park");
+        AssertEqual(ParkResult.Parked, direct.Park(reused, resume), "the last receive");
+        AssertEqual(Withdrawal.Refused, ch.CancelParked(reused, oldGen),
+            "a stale generation's withdrawal of a later park of the same op");
+        AssertEqual(Withdrawal.Published, ch.CancelParked(reused, newGen),
+            "the current generation's withdrawal of its own park");
 
-        // Only the one rendezvous resumed anybody: a withdrawal leaves the
-        // resume to whoever withdrew.
+        // Only the one rendezvous with a parked receive resumed anybody: a
+        // withdrawal and an inline match leave the resume to their caller.
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (Volatile.Read(ref resumed) < 1 && DateTime.UtcNow < deadline) Thread.Yield();
         Thread.Sleep(20);

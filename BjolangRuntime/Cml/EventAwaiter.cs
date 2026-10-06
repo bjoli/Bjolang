@@ -35,9 +35,9 @@ public static class EventAwaitExtensions
 /// <summary>
 /// The non-generic half of <see cref="EventAwaiter{T}"/>.
 ///
-/// A cancellation watch that one fiber keeps across its syncs cannot be generic
-/// in the value of the sync it is currently watching, since that changes from
-/// one sync to the next. This is the only thing it needs to do to one.
+/// A fiber's registration on its token outlives any one sync, so it cannot be
+/// generic in the value of the `choose` it is currently watching. Cancelling
+/// one is the only thing it needs to do to it.
 /// </summary>
 internal interface ICancellableAwaiter
 {
@@ -223,32 +223,6 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
 
         state = new SyncState();
         ev.Publish(state, SyncState.RootEventId, aw._onSync);
-        return aw;
-    }
-
-    /// <summary>
-    /// Rent and start a direct sync with a claim on the parked op, so
-    /// <paramref name="link"/> can take it instead of the channel.
-    ///
-    /// <paramref name="parked"/> is false when the rendezvous happened inline, in
-    /// which case there is nothing to take and the caller must not arm the link.
-    /// </summary>
-    internal static EventAwaiter<T> RentLinked(
-        IDirectSyncable<T> ev, ITakeable link, out bool parked)
-    {
-        var aw = _free;
-        if (aw is null)
-        {
-            aw = new EventAwaiter<T>();
-        }
-        else
-        {
-            _free = aw._next;
-            _freeCount--;
-            aw._next = null;
-        }
-
-        parked = ev.SyncDirect(aw._onSync, link);
         return aw;
     }
 

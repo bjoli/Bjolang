@@ -660,20 +660,7 @@ public static partial class BjolangRuntime {
             // allocates a fiber object and queues it — so nothing the program
             // wrote can throw here, and the count cannot be left one too high.
             var landing = reports ? _reporting : _silent;
-
-            var env = Dyn.Current;
-            if (env.Park is null) return Bjo.Spawn(body, landing);
-
-            // The child does not inherit the parent's registration on the token:
-            // two fibers cannot park on one claim, so it would fall back to a
-            // watch per park for its whole life. It builds its own at its first
-            // sync. Only a parent that has parked at least once pays the copy.
-            Dyn.Current = env.WithPark(null);
-            try {
-                return Bjo.Spawn(body, landing);
-            } finally {
-                Dyn.Current = env;
-            }
+            return Bjo.Spawn(body, landing);
         }
 
         /// <summary>
@@ -1030,17 +1017,7 @@ public static partial class BjolangRuntime {
 
         // The scope's token, so that a daemon unwinding on the cancellation the
         // scope just fired is not printed as an unhandled exception.
-        //
-        // Started with its own park cell, for the reason `Scope.Start` does the
-        // same: a child that inherits its parent's cannot use it.
-        var env = Dyn.Current;
-        if (env.Park is not null) Dyn.Current = env.WithPark(null);
-        try {
-            _ = Bjo.Spawn(body, new UnhandledReporter(scope.Token));
-        } finally {
-            Dyn.Current = env;
-        }
-
+        _ = Bjo.Spawn(body, new UnhandledReporter(scope.Token));
         return default;
     }
 
@@ -1472,16 +1449,14 @@ public static partial class BjolangRuntime {
     //
     // # What this costs, and why it is paid
     //
-    // A live ambient token puts one `CancelWatch` on every parked sync: 40
-    // bytes and about 20% on the ring benchmark, measured in
-    // `bench/BASELINE.md`. `main` was taken out of a scope to avoid exactly
-    // that. It is back because the alternative is that a top-level `spawn` is
-    // owned by nothing, a top-level `open-input-file` is released by nothing,
-    // and `own!` has no answer at all outside a written-down `with-cancel`.
+    // A live ambient token means every sync that parks races it. Without the
+    // scope, a top-level `spawn` would be owned by nothing, a top-level
+    // `open-input-file` released by nothing, and `own!` would have no answer
+    // outside a written-down `with-cancel`.
     //
-    // The watch is the thing to make cheaper, and it is not a scope problem:
-    // nothing can remove a waiter from a promise's list, so it cannot be
-    // pooled. See the baseline.
+    // The race costs one registration per fiber and scope, and one
+    // compare-exchange per park on the fiber's own cell (`FiberWatch` in
+    // `Concurrency.cs`; the measurements are in `Cml/design.md`).
 
     /// A Bjolang program runs in the invariant culture.
     ///

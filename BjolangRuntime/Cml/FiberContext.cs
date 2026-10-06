@@ -99,4 +99,22 @@ public static class FiberContext
     }
 
     public static Scope Push(object? next) => new Scope(next);
+
+    /// <summary>
+    /// The context a fiber spawned now starts with: the current one, or what
+    /// the current one says a child should have when it implements
+    /// <see cref="IFiberContext"/>.
+    /// </summary>
+    public static object? ForChild() => _current is IFiberContext c ? c.ForChild() : _current;
+}
+
+/// <summary>
+/// A context that holds something belonging to one fiber, which a child must
+/// not inherit. BjoML asks for the child's copy at every spawn and otherwise
+/// still knows nothing about the payload.
+/// </summary>
+public interface IFiberContext
+{
+    /// <summary>This context as a fiber spawned from it starts with.</summary>
+    object ForChild();
 }

@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* A watched park costs one compare-exchange, and a fiber's cell is its own
+
+- *A spawned fiber never shares its parent's park cell.* ~Bjo.Spawn~ starts
+  every child with ~FiberContext.ForChild()~, which ~DynEnv~ answers without
+  the cell, and ~blocking~ / ~spawn/thread~ hand their thread the same copy.
+  ~Scope.Start~ and ~spawn/daemon~ no longer do it themselves.
+- *So the cell needs no claim before a park.* The owner fills it in with plain
+  stores and arms it with one compare-exchange, before the op is handed to
+  the channel. The claim, the re-read of the token after the park, and the
+  fallback for a fiber that could not claim the cell (~CancelWatch~, the
+  ~ITakeable~ link on ops, ~CancellableEvent~ for a ~choose~) are gone.
+- *Cancellation keeps its guarantees.* A value a partner took is never thrown
+  away, a token that fires during a park is never missed, and the fiber is
+  resumed once: whether the op was on the channel's list when the token
+  withdrew it decides, under the channel's lock, who resumes it.
+- A park that finds its cell already armed raises instead of overwriting
+  another fiber's park.
+- Ring 86 -> 80 ns/op at the first quartile, nested ring 77 -> 72, skewed
+  choose 148 -> 144; spawn burst within its noise. Interleaved runs of the two
+  runtimes, in ~Cml/design.md~.
+- Tests: each order of the race on the op driven by hand, including the token
+  withdrawing before the op is parked and the owner matching inline; a spawned
+  child starts without its parent's cell.
+
 * :show at the REPL: the docs of what an entry could write
 
 - *~:show name~* prints the doc of the visible name, and lists every other

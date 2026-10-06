@@ -16,34 +16,36 @@ using System.Threading;
 
 namespace Bjoml;
 
-/// <summary>
-/// A claim, held outside the op, that lets something other than the channel
-/// take a parked op.
-///
-/// A direct op — one parked with no <see cref="SyncState"/> — normally commits
-/// unconditionally, because the sync block that parked it offered nothing else
-/// and so has nothing to arbitrate. A cancellation token is the one other thing
-/// that can want such an op, and this word is what makes exactly one of the two
-/// win.
-///
-/// Only used by the one-shot watch of a sync that could not claim its fiber's
-/// registration. That watch serves one park and is then thrown away, so it
-/// needs no generation. A sync under the fiber's own registration is claimed
-/// through the op's <see cref="Operation.ParkedGen"/> instead.
-///
-/// An interface rather than a class so that one object can be both this claim
-/// and the registration on the token — see `CancelWatch` in `Concurrency.cs`.
-/// </summary>
-public interface ITakeable
+/// <summary>What became of an op handed to a channel to park.</summary>
+internal enum ParkResult
 {
-    /// <summary>Win the park. Exactly one caller can.</summary>
-    bool TryTake();
+    /// <summary>It is on the channel's list, waiting for a partner.</summary>
+    Parked,
+
+    /// <summary>A partner was already waiting, and the two met.</summary>
+    Matched,
 
     /// <summary>
-    /// Is the park over — taken by the other side? Read by the channel's sweep
-    /// to reclaim the op, and by the token's prune to drop the registration.
+    /// The token withdrew it before it could be parked. Nothing was published,
+    /// and resuming the fiber is up to whoever called <c>Park</c>.
     /// </summary>
-    bool IsDead();
+    Withdrawn
+}
+
+/// <summary>What a withdrawal found.</summary>
+internal enum Withdrawal
+{
+    /// <summary>The park is over: a partner took the op, or it was never this park.</summary>
+    Refused,
+
+    /// <summary>Withdrawn from the channel's list. The withdrawer resumes the fiber.</summary>
+    Published,
+
+    /// <summary>
+    /// Withdrawn before its owner parked it. The owner's <c>Park</c> sees that
+    /// and resumes the fiber itself.
+    /// </summary>
+    Unpublished
 }
 
 /// <summary>
@@ -53,12 +55,8 @@ public interface ITakeable
 /// </summary>
 internal interface IParkSite
 {
-    /// <summary>
-    /// Withdraw <paramref name="op"/> if it is still parked as
-    /// <paramref name="gen"/>. False means a partner took it first, and the
-    /// value it delivered stands.
-    /// </summary>
-    bool CancelParked(Operation op, int gen);
+    /// <summary>Withdraw <paramref name="op"/> if it is still live as <paramref name="gen"/>.</summary>
+    Withdrawal CancelParked(Operation op, int gen);
 }
 
 public abstract class Operation
@@ -67,18 +65,10 @@ public abstract class Operation
     public int EventId;
 
     /// <summary>
-    /// Non-null while a one-shot watch can take this op instead of the channel.
-    ///
-    /// Only ever set on a direct op. A choose op arbitrates through its
-    /// <see cref="SyncState"/>, which already handles every competitor.
-    /// </summary>
-    internal ITakeable? Link;
-
-    /// <summary>
     /// The claim that decides whether a partner or the token gets a watched
-    /// op. Positive while the park is live, zero once a partner has taken it
-    /// (or when no token watches it), <see cref="Withdrawn"/> once the token
-    /// has taken it.
+    /// op. Positive while the park is live, zero once a partner (or, on an
+    /// inline match, its owner) has taken it, or when no token watches it,
+    /// <see cref="Withdrawn"/> once the token has taken it.
     ///
     /// The claim lives on the op because a partner already holds the channel's
     /// lock and is already writing to this op when it takes it, so taking it
@@ -87,9 +77,17 @@ public abstract class Operation
     /// through <see cref="IParkSite.CancelParked"/>.
     ///
     /// Only read and written under the lock of the channel the op is parked in,
-    /// except by the renter before the op is published.
+    /// except by the renter before the op is handed to the channel.
     /// </summary>
     internal int ParkedGen;
+
+    /// <summary>
+    /// Whether the op has been put on a channel's list. Set under the channel's
+    /// lock, so that a withdrawal under the same lock can tell who resumes the
+    /// fiber: the withdrawer if the op was waiting there, or the owner, whose
+    /// <c>Park</c> has not run yet and will find the op withdrawn.
+    /// </summary>
+    internal bool Published;
 
     /// <summary>
     /// The last generation handed out for this op. It is kept when the op is
@@ -123,19 +121,13 @@ public abstract class Operation
     /// </summary>
     internal bool TryTakeDirect()
     {
-        int g = ParkedGen;
-        if (g != 0)
-        {
-            if (g < 0) return false;
-            ParkedGen = 0;
-            return true;
-        }
-
-        return Link is null || Link.TryTake();
+        if (ParkedGen < 0) return false;
+        ParkedGen = 0;
+        return true;
     }
 
-    /// <summary>A direct op whose park is over, and which the channel may drop.</summary>
-    internal bool IsCancelled => ParkedGen < 0 || (Link is { } link && link.IsDead());
+    /// <summary>A direct op the token withdrew, which the channel may drop.</summary>
+    internal bool IsCancelled => ParkedGen < 0;
 }
 
 public sealed class PutOp<T> : Operation
@@ -186,7 +178,7 @@ public sealed class PutOp<T> : Operation
         _freeCount--;
         op.Next = null;
         op.State = state;
-        op.Link = null;
+        op.Published = false;
         op.EventId = eventId;
         op.Value = value;
         op.ResumeGive = resumeGive;
@@ -203,7 +195,7 @@ public sealed class PutOp<T> : Operation
         _freeCount--;
         op.Next = null;
         op.State = null;
-        op.Link = null;
+        op.Published = false;
         op.EventId = 0;
         op.Value = value;
         return op;
@@ -212,7 +204,7 @@ public sealed class PutOp<T> : Operation
     public void Recycle()
     {
         State = null;
-        Link = null;
+        Published = false;
         ParkedGen = 0;
         Value = default!;
         ResumePut = null!;
@@ -261,7 +253,7 @@ public sealed class GetOp<T> : Operation
         _freeCount--;
         op.Next = null;
         op.State = state;
-        op.Link = null;
+        op.Published = false;
         op.EventId = eventId;
         op.ResumeGet = resumeGet;
         op.DirectResume = null;
@@ -288,7 +280,7 @@ public sealed class GetOp<T> : Operation
         _freeCount--;
         op.Next = null;
         op.State = null;
-        op.Link = null;
+        op.Published = false;
         op.EventId = 0;
         op.ResumeGet = null;
         op.DirectResume = null;
@@ -299,7 +291,7 @@ public sealed class GetOp<T> : Operation
     public void Recycle()
     {
         State = null;
-        Link = null;
+        Published = false;
         ParkedGen = 0;
         ResumeGet = null;
         DirectResume = null;

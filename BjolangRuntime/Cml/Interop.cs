@@ -52,7 +52,7 @@ public static class Bjo
     /// </summary>
     public static Promise<T> Spawn<T>(Func<Fiber<T>> body, IFiberLanding? landing)
     {
-        var inherited = FiberContext.Current;
+        var inherited = FiberContext.ForChild();
         var core = new FiberCore<T>(SpawnRunners<T>.FuncRunner, body, inherited);
         core.Landing = landing;
         Scheduler.EnqueueSpawn(core);
@@ -67,7 +67,7 @@ public static class Bjo
     /// </summary>
     public static Promise<TResult> Spawn<TState, TResult>(Func<TState, Fiber<TResult>> body, TState state)
     {
-        var inherited = FiberContext.Current;
+        var inherited = FiberContext.ForChild();
         var core = new StatefulFiberCore<TState, TResult>(SpawnStateRunners<TState, TResult>.StateRunner, body, state, inherited);
         Scheduler.EnqueueSpawn(core);
         return core;
@@ -76,7 +76,7 @@ public static class Bjo
     /// <summary>Spawn a bjoroutine with no useful result.</summary>
     public static Promise<Unit> Spawn(Func<Fiber> body)
     {
-        var inherited = FiberContext.Current;
+        var inherited = FiberContext.ForChild();
         var core = new FiberCore<Unit>(SpawnUnitRunners.FuncRunner, body, inherited);
         Scheduler.EnqueueSpawn(core);
         return core;
@@ -88,7 +88,7 @@ public static class Bjo
     /// </summary>
     public static Promise<Unit> Spawn<TState>(Func<TState, Fiber> body, TState state)
     {
-        var inherited = FiberContext.Current;
+        var inherited = FiberContext.ForChild();
         var core = new StatefulFiberCore<TState, Unit>(SpawnStateRunners<TState, Unit>.UnitStateRunner, body, state, inherited);
         Scheduler.EnqueueSpawn(core);
         return core;

@@ -42,16 +42,13 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 
     void IDirectSyncable<T>.SyncDirect(Action<T> onSync) => SyncDirectReceive(onSync);
 
-    bool IDirectSyncable<T>.SyncDirect(Action<T> onSync, ITakeable link) =>
-        SyncDirectReceive(onSync, link);
-
     Operation IDirectSyncable<T>.RentPark() => GetOp<T>.RentDirect();
 
-    bool IParkSite.CancelParked(Operation op, int gen) => CancelParked(op, gen);
+    Withdrawal IParkSite.CancelParked(Operation op, int gen) => CancelParked(op, gen);
 
     /// <summary>
-    /// Withdraw a watched op, sending or receiving, if it is still parked here
-    /// as <paramref name="gen"/>.
+    /// Withdraw a watched op, sending or receiving, if it is still live here as
+    /// <paramref name="gen"/>.
     ///
     /// This is the token's half of the claim in <see cref="Operation.ParkedGen"/>.
     /// A partner takes the op by clearing that word under this same lock, so
@@ -59,21 +56,26 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     /// again somewhere else has a new generation, so a stale reference cannot
     /// withdraw it.
     ///
-    /// The withdrawn op is left on its list, and the next walk past it or the
-    /// sweep recycles it. Unlinking it here would need a walk to find its
+    /// The op may not be parked yet: its owner marks the park before it hands
+    /// the op over, so that a token firing in between is not missed. Whether
+    /// the op is on the list decides who resumes the fiber, and this lock is
+    /// what makes that answer the same for both sides.
+    ///
+    /// A withdrawn op on the list is left there, and the next walk past it or
+    /// the sweep recycles it. Unlinking it here would need a walk to find its
     /// predecessor, and cancellation is rare.
     /// </summary>
-    internal bool CancelParked(Operation op, int gen)
+    internal Withdrawal CancelParked(Operation op, int gen)
     {
         lock (_lock)
         {
-            if (op.ParkedGen != gen) return false;
+            if (op.ParkedGen != gen) return Withdrawal.Refused;
             op.ParkedGen = Operation.Withdrawn;
-            return true;
+            return op.Published ? Withdrawal.Published : Withdrawal.Unpublished;
         }
     }
 
-    bool IDirectSyncable<T>.Park(Operation op, Action resume)
+    ParkResult IDirectSyncable<T>.Park(Operation op, Action resume)
     {
         var get = (GetOp<T>)op;
         get.DirectResume = resume;
@@ -102,7 +104,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     /// the unconditional commit sound: an op parked here cannot be inside a
     /// choose, so nothing can ever need to withdraw it.
     /// </summary>
-    internal bool SyncDirectReceive(Action<T> onSync, ITakeable? link = null)
+    internal bool SyncDirectReceive(Action<T> onSync)
     {
         Action? putResume = null;
         Action<Unit>? putResumeGive = null;
@@ -207,7 +209,6 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 // State null: uncontested. The sweep leaves it alone, which is
                 // right — a direct op is never dead, because it cannot lose.
                 var myOp = GetOp<T>.Rent(null, 0, onSync);
-                myOp.Link = link;
                 if (_takersTail == null)
                 {
                     _takersHead = _takersTail = myOp;
@@ -231,7 +232,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     }
 
     /// <summary>Send with no <see cref="SyncState"/>. See <see cref="SyncDirectReceive"/>.</summary>
-    internal bool SyncDirectSend(T value, Action<Unit> onSync, ITakeable? link = null)
+    internal bool SyncDirectSend(T value, Action<Unit> onSync)
     {
         Action<T>? getResume = null;
         Action? directTakerResume = null;
@@ -330,7 +331,6 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 NotePark();
 
                 var myOp = PutOp<T>.Rent(null, 0, value, onSync);
-                myOp.Link = link;
                 if (_giversTail == null)
                 {
                     _giversHead = _giversTail = myOp;
@@ -986,17 +986,18 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     public void ParkDirectReceive(GetOp<T> op) => ParkReceive(op, linked: false);
 
     /// <summary>
-    /// The same park for an op that carries a claim, so that a token can take
-    /// it instead of a sender.
+    /// The same park for an op a token may withdraw.
     ///
-    /// True when it parked. False when a giver was waiting: the value is in
+    /// On <see cref="ParkResult.Matched"/> a giver was waiting: the value is in
     /// <c>op.DirectValue</c> and the op's own resume has NOT been scheduled,
-    /// because the caller has to close the claim before the fiber can run on.
-    /// A parked linked op can die where it lies, so it counts toward the sweep.
+    /// because the caller resumes the fiber itself. On
+    /// <see cref="ParkResult.Withdrawn"/> the token got there first and nothing
+    /// was done. A parked op can die where it lies, so it counts toward the
+    /// sweep.
     /// </summary>
-    internal bool ParkLinkedReceive(GetOp<T> op) => ParkReceive(op, linked: true);
+    internal ParkResult ParkLinkedReceive(GetOp<T> op) => ParkReceive(op, linked: true);
 
-    private bool ParkReceive(GetOp<T> op, bool linked)
+    private ParkResult ParkReceive(GetOp<T> op, bool linked)
     {
         Action? putResume = null;
         Action<Unit>? putResumeGive = null;
@@ -1007,6 +1008,8 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 
         lock (_lock)
         {
+            if (op.ParkedGen < 0) return ParkResult.Withdrawn;
+
             PutOp<T>? prev = null;
             PutOp<T>? curr = _giversHead;
 
@@ -1096,11 +1099,15 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
             if (matched)
             {
                 op.DirectValue = val;
+                // The owner took its own op, so a token arriving now is
+                // refused rather than resuming a fiber that is already going.
+                op.ParkedGen = 0;
             }
             else
             {
                 if (linked) NotePark();
 
+                op.Published = true;
                 if (_takersTail == null)
                 {
                     _takersHead = _takersTail = op;
@@ -1110,7 +1117,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                     _takersTail.Next = op;
                     _takersTail = op;
                 }
-                return true;
+                return ParkResult.Parked;
             }
         }
 
@@ -1120,7 +1127,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         else Scheduler.Dispatch(putResume!);
 
         if (!linked) Scheduler.Enqueue(op.DirectResume!);
-        return false;
+        return ParkResult.Matched;
     }
 
     public bool TryDirectSend(T value)
@@ -1233,9 +1240,9 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     public void ParkDirectSend(PutOp<T> op) => ParkSend(op, linked: false);
 
     /// <summary>The send side of <see cref="ParkLinkedReceive"/>.</summary>
-    internal bool ParkLinkedSend(PutOp<T> op) => ParkSend(op, linked: true);
+    internal ParkResult ParkLinkedSend(PutOp<T> op) => ParkSend(op, linked: true);
 
-    private bool ParkSend(PutOp<T> op, bool linked)
+    private ParkResult ParkSend(PutOp<T> op, bool linked)
     {
         Action<T>? getResume = null;
         Action? directResume = null;
@@ -1245,6 +1252,8 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 
         lock (_lock)
         {
+            if (op.ParkedGen < 0) return ParkResult.Withdrawn;
+
             GetOp<T>? prev = null;
             GetOp<T>? curr = _takersHead;
 
@@ -1333,6 +1342,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
             {
                 if (linked) NotePark();
 
+                op.Published = true;
                 if (_giversTail == null)
                 {
                     _giversHead = _giversTail = op;
@@ -1342,8 +1352,11 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                     _giversTail.Next = op;
                     _giversTail = op;
                 }
-                return true;
+                return ParkResult.Parked;
             }
+
+            // See ParkReceive: the owner took its own op.
+            op.ParkedGen = 0;
         }
 
         getState?.MarkSynchronized(getEventId);
@@ -1352,7 +1365,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         else if (directResume != null) Scheduler.Dispatch(directResume);
 
         if (!linked) Scheduler.Enqueue(op.ResumePut);
-        return false;
+        return ParkResult.Matched;
     }
 }
 

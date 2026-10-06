@@ -577,6 +577,55 @@ neither depends on how the registration leaves the token. Stubbing out the
 fiber's registration altogether moved no row of the suite (ring 81-87,
 skewed 141-154), because a fiber registers once per scope, not per park.
 
+#### One fiber per cell, and one compare-exchange per park — kept
+
+`TryBegin` existed because two fibers could hold the same cell: a child
+started straight from `Bjo.Spawn` inherited its parent's environment, and
+with it the cell. That is now closed where it opens. `Bjo.Spawn` starts every
+child with `FiberContext.ForChild()`, which `DynEnv` answers without its cell,
+and `blocking`/`spawn/thread` hand their thread the same copy. Compiled code
+cannot start two bjoroutines on one environment any other way: every call is
+awaited where it is made, and every spawn goes through `Bjo.Spawn`. So the
+owner writes the cell with plain stores, and the claim before a park is gone,
+with the fallback for a fiber that lost it (`CancelWatch`, the `ITakeable`
+link on ops and `CancellableEvent`'s use for a `choose`).
+
+The prune is what made a plain `TryBegin` unsound on its own: it may mark an
+idle cell unregistered at any moment, and a plain store over that would leave a
+cell believing it is registered. So there is no `Held` state at all. The owner
+fills in the park while the cell is idle and moves it straight to armed with
+one compare-exchange, which fails against the prune's mark and is also the
+fence the lost-wake-up argument needs. A cell found unregistered is armed
+first and registered second: registered idle, a token that has already fired
+asks it whether it is abandoned, it says yes and drops itself again, and the
+arm loops forever. That was the first version, and the cancel tests hung on
+it.
+
+Arming before the park is published is what makes the generation on the
+cell's arm unnecessary. Armed after `Park`, as before, a partner could resume
+the fiber on another thread and the arm would land on its next park. Armed in
+`GetAwaiter`, nothing can resume the fiber yet. The cost is that the token can
+now find a park whose op is not on the list, and the channel lock decides who
+resumes the fiber: `CancelParked` answers `Published` (the token resumes it)
+or `Unpublished` (the owner's `Park` finds the op withdrawn, parks nothing and
+resumes it), and an owner that meets a partner inline clears its own claim so
+that a late token is refused. The re-read of the token after `Park` and
+`Settle` went with it. A park that finds the cell already armed throws: two
+fibers on one cell is a bug somewhere else, and failing there beats corrupting
+another fiber's park.
+
+Old and new runtimes published side by side, 16 interleaved runs each (min,
+first quartile, median, ns/op):
+
+    Ring                  79 / 86 / 88    -> 77 / 80 / 85.5
+    Ring (nested scope)   72 / 77 / 78.5  -> 65 / 72 / 74
+    Skewed choose(8)     145 / 148 / 149.5 -> 139 / 144 / 147
+    Spawn burst           76 / 80 / 81    -> 75 / 83 / 83.5
+
+The spawn row's median is within its noise, and the one thing added to it is
+the type test in `FiberContext.ForChild`; the parent there has no cell, so
+nothing is copied. B/op is unchanged on every row.
+
 **Event ids as a plain increment — measured and rejected.** `NextEventId` is an
 interlocked increment with one writer, nine per sync of an eight-way `choose`.
 A plain increment measured within the noise on every row, so the interlocked one
