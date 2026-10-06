@@ -261,27 +261,46 @@
 ;; ---------------------------------------------------------------------------
 ;; Conversions
 ;; ---------------------------------------------------------------------------
-;; going through seq is lazy af. If we move it below the Iterable we can
-;; just use loop.
-;; TODO: see above.
+;; TODO: currently orderedmap-for-each goes through the enumerator,
+;;       when internal iteration would be a lot faster. 
 (: list->orderedmap (-> (List (Tuple %k %v)) (OrderedMap %k %v)) (where (Ord %k)))
-(defun (list->orderedmap xs) (seq->orderedmap (list->seq xs)))
+(defun (list->orderedmap xs)
+  (def om (orderedmapbuilder-empty))
+  (loop (:for (k . v) xs)
+        (:do (orderedmapbuilder-add! om k v)))
+  (orderedmapbuilder->orderedmap om))
 
 (: orderedmap->list (-> (OrderedMap %k %v) (List (Tuple %k %v))))
-(defun (orderedmap->list m) (seq->list (orderedmap->seq m)))
+(defun (orderedmap->list m)
+  (def lb (listbuilder-empty))
+  (orderedmap-for-each #(listbuilder-add! lb (&1 . &2)) m)
+  (listbuilder->list lb))
 
 (: vec->orderedmap (-> (Vec (Tuple %k %v)) (OrderedMap %k %v)) (where (Ord %k)))
-(defun (vec->orderedmap v) (seq->orderedmap (vec->seq v)))
+(defun (vec->orderedmap v)
+  (def om (orderedmapbuilder-empty))
+  (vec-for-each #(let (((k . v) &))
+                   (orderedmapbuilder-add! om k v)) v)
+  (orderedmapbuilder->orderedmap om))
 
 (: orderedmap->vec (-> (OrderedMap %k %v) (Vec (Tuple %k %v))))
-(defun (orderedmap->vec m) (seq->vec (orderedmap->seq m)))
+(defun (orderedmap->vec m)
+  (def vb (vecbuilder-empty))
+  (orderedmap-for-each #(vecbuilder-add! vb (&1 . &2)) m)
+  (vecbuilder->vec vb))
 
 ;; Hashed map conversions.
 (: map->orderedmap (-> (Map %k %v) (OrderedMap %k %v)) (where (Ord %k)))
-(defun (map->orderedmap m) (seq->orderedmap (map->seq m)))
+(defun (map->orderedmap m)
+  (def om (orderedmapbuilder-empty))
+  (map-for-each #(orderedmapbuilder-add! om &1 &2) m)
+  (orderedmapbuilder->orderedmap om))
 
 (: orderedmap->map (-> (OrderedMap %k %v) (Map %k %v)))
-(defun (orderedmap->map m) (seq->map (orderedmap->seq m)))
+(defun (orderedmap->map m)
+  (def mb (mapbuilder-empty))
+  (orderedmap-for-each #(mapbuilder-add! mb &1 &2) m)
+  (mapbuilder->map mb))
 
 ;; ---------------------------------------------------------------------------
 ;; The traits
@@ -307,9 +326,6 @@
     (transientorderedmap-ref orderedmap key))
   (defun (try-ref orderedmap key)
     (transientorderedmap-try-ref orderedmap key)))
-
-
-
 
 
 (impl (Iterable (OrderedMap %k %v))

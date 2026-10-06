@@ -180,8 +180,8 @@
     (let go ()
       (cond
         ((orderedset-cursor-done? c) (orderedsetbuilder->orderedset b))
+        (:def x (orderedset-cursor-current c))
         (else
-          (def x (orderedset-cursor-current c))
           (when (keep? x)
             (orderedsetbuilder-add! b x))
           (go))))))
@@ -207,16 +207,29 @@
             (else #f)))))
 
 (: list->orderedset (-> (List %a) (OrderedSet %a)) (where (Ord %a)))
-(defun (list->orderedset xs) (seq->orderedset (list->seq xs)))
+(defun (list->orderedset xs)
+  (def sb (orderedsetbuilder-empty))
+  (loop (:for x xs)
+        (:do (orderedsetbuilder-add! sb x)))
+  (orderedsetbuilder->orderedset sb))
 
 (: orderedset->list (-> (OrderedSet %a) (List %a)))
-(defun (orderedset->list s) (seq->list (orderedset->seq s)))
+(defun (orderedset->list s)
+  (def lb (listbuilder-empty))
+  (orderedset-for-each #(listbuilder-add! lb &) s)
+  (listbuilder->list lb))
 
 (: vec->orderedset (-> (Vec %a) (OrderedSet %a)) (where (Ord %a)))
-(defun (vec->orderedset v) (seq->orderedset (vec->seq v)))
+(defun (vec->orderedset v)
+  (def sb (orderedsetbuilder-empty))
+  (vec-for-each #(orderedsetbuilder-add! sb &) v)
+  (orderedsetbuilder->orderedset sb))
 
 (: orderedset->vec (-> (OrderedSet %a) (Vec %a)))
-(defun (orderedset->vec s) (seq->vec (orderedset->seq s)))
+(defun (orderedset->vec s)
+  (def vb (vecbuilder-empty))
+  (orderedset-for-each #(vecbuilder-add! vb &) s)
+  (vecbuilder->vec vb))
 
 ;; ---------------------------------------------------------------------------
 ;; The traits
