@@ -100,6 +100,14 @@
   (expect "stepped range length" (size-of (range-by 0 10 3)) 4)
   (expect "stepped range elements" (seq-fold add-int 0 (->seq (range-by 0 10 3))) 18)
   (expect "stepped range, exact fit" (size-of (range-by 0 9 3)) 3)
+  ;; A step near int-max: lo, and nothing more. Rounding up by adding the step
+  ;; first would overflow.
+  (expect "a step larger than the range" (size-of (range-by 0 10 int-max)) 1)
+
+  ;; --- drop-while starts over on every walk -------------------------------
+  (def dropped (drop-while (fun (x) (< x 3)) '(1 2 3 1 2)))
+  (expect "drop-while, first walk" (seq->list dropped) '(3 1 2))
+  (expect "drop-while, second walk" (seq->list dropped) '(3 1 2))
   (expect "backwards range" (size-of (range 5 2)) 0)
   (expect-bool "backwards range is empty" (none? (range 5 2)) #t)
   0)

@@ -656,14 +656,16 @@
           (:finish (not (f elem)))
           (:yield elem)))
 
-  ;; This can also be rewritten
+  ;; The flag is made inside the `seq`, whose body runs once per walk, so that
+  ;; walking the result twice drops the same elements both times.
   (defun (drop-while f s)
-    (def/mutable yield? #f)
-    (seql (:for elem s)
-          (:do (when (and (not yield?) (not (f elem)))
-                 (set! yield? #t)))
-          (:when yield?)
-          (:yield elem)))
+    (seq
+      (def/mutable dropping #t)
+      (loop (:for elem s)
+            (:do (when (and dropping (not (f elem)))
+                   (set! dropping #f)))
+            (:when (not dropping))
+            (:do (yield elem)))))
 
   (defun (enumerate s)
     (seql (:with i 0 (+ i 1))
@@ -743,8 +745,11 @@
 (defun (range lo hi)
   (Range (lo lo) (hi hi) (by 1)))
 
+;; A range counts up, so a step of zero or less would never reach `hi`.
 (: range-by (-> int int int Range))
 (defun (range-by lo hi by)
+  (when (<= by 0)
+    (panic! #"range-by: the step is ${by}, and a range counts up from lo to hi. down-from counts down."))
   (Range (lo lo) (hi hi) (by by)))
 
 (impl (Iterable Range)
@@ -2468,9 +2473,10 @@
     (def lo (record-ref r lo))
     (def hi (record-ref r hi))
     (def by (record-ref r by))
+    ;; Not (hi - lo + by - 1) / by, which overflows for a step near int-max.
     (if (<= hi lo)
         0
-        (/ (+ (- hi lo) (- by 1)) by)))
+        (+ (/ (- (- hi lo) 1) by) 1)))
   (defun (empty? r)
     (>= (record-ref r lo) (record-ref r hi))))
 
