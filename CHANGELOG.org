@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* A vec no longer wears down
+
+- *However a vec is edited, it stays close to the shape of a vec built
+  from scratch.* ~vec-insert~, ~vec-remove-at~, ~vec-merge~, ~vec-split~
+  and ~vec-slice~ could leave a tree taller than its items needed, with
+  leaves of a single item and lookups that scanned far through a node. After
+  cutting pieces out of a 100,000-item vec and appending them 20,000 times,
+  it had gained two levels and four times its leaves, and indexing took
+  68 ns against 6 for a fresh vec. It now keeps its height, has within about
+  10% of the fewest leaves, and indexes in 19 ns.
+- On random edits to a vec that is already in good shape, inserting costs
+  20 to 35% more and long runs of small merges about 30% more. Removing,
+  slicing and splitting cost what they did.
+
 * vec-merge/pure is gone
 
 - *~vec-merge/pure~ is removed.* It did exactly what ~vec-merge~ does: the
