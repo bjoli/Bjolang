@@ -1,0 +1,101 @@
+;; Collections at the sizes and edges that used to break them: long lists
+;; through `=` and `list-sort`, a large deque, a mutable vec shrunk during its
+;; own walk, `vec-pop-first`, a prefix slice, a builder over a large vec, and a
+;; transient that must leave the map it came from alone.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std mutable deque))
+(import (std mutable vec))
+
+;; Compares on the number only, so a stable sort keeps the strings in order.
+(type (: Key (Union (: Keyed int string))))
+
+(impl (Ord Key)
+  (defun (compare a b)
+    (match (Tuple a b)
+      ((Tuple (Keyed x _) (Keyed y _)) (compare x y)))))
+
+(: count-down (-> int (List int)))
+(defun (count-down n)
+  (let go ((i 0) (acc Nil))
+    (if (= i n) acc (go (+ i 1) (Cons i acc)))))
+
+(: count-up (-> int (List int)))
+(defun (count-up n) (list-reverse (count-down n)))
+
+(: vec-up (-> int (Vec int)))
+(defun (vec-up n)
+  (let go ((i 0) (v (vec-empty)))
+    (if (= i n) v (go (+ i 1) (vec-add v i)))))
+
+(: sorted? (-> (List int) bool))
+(defun (sorted? xs)
+  (let go ((rest xs))
+    (match rest
+      ((Cons a (Cons b more)) (if (<= a b) (go (Cons b more)) #f))
+      (_ #t))))
+
+(defun (main)
+  ;; --- Long lists ----------------------------------------------------------
+  (def big 1000000)
+  (expect-true "= on two equal million-element lists" (= (count-up big) (count-up big)))
+  (expect-true "and on two that differ at the end"
+               (not (= (count-up big) (list-append (count-up (- big 1)) (list 0)))))
+  (expect-true "a list equals itself" (let ((xs (count-up big))) (= xs xs)))
+  (expect-true "lists of different lengths differ" (not (= (count-up 3) (count-up 4))))
+
+  (def sorted (list-sort (count-down big)))
+  (expect "list-sort keeps every element" (list-length sorted) big)
+  (expect-true "and puts them in order" (sorted? sorted))
+  (expect "list-sort of a short list" (list-sort (list 3 1 2)) (list 1 2 3))
+  (expect "list-sort of one element" (list-sort (list 7)) (list 7))
+  (expect "list-sort of nothing" (list-sort (count-up 0)) (count-up 0))
+  ;; Stable: equal keys keep their order. Pairs compare by their first part only.
+  (def pairs (list-sort (list (Keyed 1 "a") (Keyed 0 "b") (Keyed 1 "c") (Keyed 0 "d") (Keyed 1 "e"))))
+  (expect "list-sort is stable"
+          (list-map (fun (k) (match k ((Keyed _ s) s))) pairs)
+          (list "b" "d" "a" "c" "e"))
+
+  ;; --- Vec equality --------------------------------------------------------
+  (expect-true "= on two equal large vecs" (= (vec-up 100000) (vec-up 100000)))
+  (expect-true "and on two that differ in the last element"
+               (not (= (vec-up 100000) (vec-set (vec-up 100000) 99999 -1))))
+  (expect-true "vecs of different lengths differ" (not (= (vec-up 3) (vec-up 4))))
+
+  ;; --- A large deque -------------------------------------------------------
+  (def d (deque))
+  (loop (:for i (range 0 big)) (:do (deque-push-back! d i)))
+  (expect "a million-element deque pops from the front" (deque-pop-front! d) (Some 0))
+  (expect "and from the back" (deque-pop-back! d) (Some (- big 1)))
+  (expect "deque->list of it" (list-length (deque->list d)) (- big 2))
+  (expect-true "and = on two of them" (= d (list->deque (deque->list d))))
+
+  ;; --- A mutable vec shrunk during its walk --------------------------------
+  (def mv (list->mutablevec (count-up 20)))
+  (def seen (make-box 0))
+  (loop (:for x mv)
+        (:do (box-set! seen (+ (box-ref seen) 1))
+             (when (= x 10) (mutablevec-clear! mv))))
+  (expect "clearing a mutable vec inside its walk ends the walk" (box-ref seen) 11)
+
+  ;; --- Vec edges -----------------------------------------------------------
+  (expect "vec-pop-first" (vec->list (vec-pop-first (vec-up 3))) (list 1 2))
+  (expect "vec-pop-first down to empty" (vec-length (vec-pop-first (vec-up 1))) 0)
+  (def prefix (vec-slice (vec-up 1000000) 0 100))
+  (expect "a prefix slice of a large vec" (vec->list prefix) (count-up 100))
+  (expect "and it still grows" (vec-ref (vec-add prefix 100) 100) 100)
+
+  (def vb (vec->vecbuilder (vec-up 32972)))
+  (vecbuilder-add! vb 32972)
+  (expect "a builder over a large vec reads past 32768" (vecbuilder-ref vb 32768) 32768)
+  (expect "and builds the vec it holds" (vec-ref (vecbuilder->vec vb) 32972) 32972)
+
+  ;; --- A transient leaves its map alone ------------------------------------
+  (def m (map-set (map-set (map-set (map-empty) 1 "a") 0 "b") 32 "c"))
+  (def t (map->transientmap m))
+  (transientmap-set! t 32 "c2")
+  (transientmap-set! t 1 "a2")
+  (expect "a transient does not write into the map it came from" (map-ref m 1) "a")
+  (expect "and has its own value" (transientmap-ref t 1) "a2")
+  0)

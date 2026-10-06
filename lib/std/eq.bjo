@@ -53,38 +53,60 @@
 
 ;; --- Sorting ---------------------------------------------------------------
 ;; Merge sort. Stable. Uses builtins only.
+;;
+;; Bottom-up over two arrays rather than recursive over the list, so a long
+;; list neither overflows the stack nor allocates a cons cell per element per
+;; level: runs of width 1, 2, 4, ... merge from one array into the other, and
+;; the list is rebuilt once at the end.
 (: list-sort (-> (List %a) (List %a)) (where (Ord %a)))
 (defun (list-sort xs)
-  (defun (merge as bs)
-    (if (list-empty? as)
-        bs
-        (if (list-empty? bs)
-            as
-            (if (at-most? (list-head as) (list-head bs))
-                (Cons (list-head as) (merge (list-tail as) bs))
-                (Cons (list-head bs) (merge as (list-tail bs)))))))
-
-  ;; Uses (< n 1) instead of (= n 0).
-  (defun (take n ys)
-    (if (< n 1)
-        Nil
-        (if (list-empty? ys)
-            Nil
-            (Cons (list-head ys) (take (- n 1) (list-tail ys))))))
-
-  (defun (drop n ys)
-    (if (< n 1)
-        ys
-        (if (list-empty? ys)
-            ys
-            (drop (- n 1) (list-tail ys)))))
-
   (def n (list-length xs))
-  ;; Base case.
-  (if (< n 2)
-      xs
-      (merge (list-sort (take (/ n 2) xs))
-             (list-sort (drop (/ n 2) xs)))))
+
+  (defun (smaller (: a int) b) (if (< a b) a b))
+
+  ;; src[lo, mid) and src[mid, hi) into dst[lo, hi), answering hi: where the
+  ;; next pair of runs starts. Ties take the left run, which is what keeps the
+  ;; sort stable.
+  (defun (merge-runs (: src (Array %a)) dst lo mid hi)
+    (let go ((l lo) (r mid) (k lo))
+      (if (< k hi)
+          (if (if (< l mid)
+                  (if (< r hi) (at-most? (array-ref src l) (array-ref src r)) #t)
+                  #f)
+              (let ()
+                (array-set! dst k (array-ref src l))
+                (go (+ l 1) r (+ k 1)))
+              (let ()
+                (array-set! dst k (array-ref src r))
+                (go l (+ r 1) (+ k 1))))
+          k)))
+
+  (defun (merge-pass src dst width)
+    (let go ((lo 0))
+      (if (< lo n)
+          (go (merge-runs src dst lo (smaller (+ lo width) n) (smaller (+ lo (* 2 width)) n)))
+          dst)))
+
+  (defun (fill arr)
+    (let go ((i 0) (rest xs))
+      (if (< i n)
+          (let ()
+            (array-set! arr i (list-head rest))
+            (go (+ i 1) (list-tail rest)))
+          arr)))
+
+  (defun (sorted)
+    (def done
+      (let go ((src (fill (make-array n))) (dst (make-array n)) (width 1))
+        (if (< width n)
+            (go (merge-pass src dst width) src (* width 2))
+            src)))
+    (let go ((i (- n 1)) (acc Nil))
+      (if (< i 0)
+          acc
+          (go (- i 1) (Cons (array-ref done i) acc)))))
+
+  (if (< n 2) xs (sorted)))
 
 ;; Private left fold for list min/max.
 (: fold-left (-> (-> %a %b %b) %b (List %a) %b))
@@ -208,27 +230,44 @@
 ;; --- The containers --------------------------------------------------------
 ;; Container equality using element Eq. Uses builtins only.
 
+;; A loop rather than recursion through `and`, so a long list does not
+;; overflow the stack. Two lists that share a tail stop comparing there.
 (impl (Eq (List %a))
   (where (Eq %a))
   (defun (= xs ys)
-    (if (list-empty? xs)
-        (list-empty? ys)
-        (and (not (list-empty? ys))
-             (and (= (list-head xs) (list-head ys))
-                  (= (list-tail xs) (list-tail ys))))))
+    (let go ((a xs) (b ys))
+      (if (eq? a b)
+          #t
+          (if (list-empty? a)
+              (list-empty? b)
+              (if (list-empty? b)
+                  #f
+                  (if (= (list-head a) (list-head b))
+                      (go (list-tail a) (list-tail b))
+                      #f))))))
   (defun (eq-hash xs)
     (fold-left (fun (x h) (hash-combine h (eq-hash x))) 17 xs)))
 
+;; Two cursors walk the leaves in step: no tree lookup per element, and no
+;; recursion per element through `and`.
 (impl (Eq (Vec %a))
   (where (Eq %a))
   (defun (= xs ys)
-    (defun (same-from i)
-      (if (= i (vec-length xs))
-          #t
-          (and (= (vec-ref xs i) (vec-ref ys i))
-               (same-from (+ i 1)))))
-    (and (= (vec-length xs) (vec-length ys))
-         (same-from 0)))
+    (if (eq? xs ys)
+        #t
+        (if (= (vec-length xs) (vec-length ys))
+            (let ()
+              (def cx (vec-cursor xs))
+              (def cy (vec-cursor ys))
+              (let go ()
+                (if (vec-cursor-done? cx)
+                    #t
+                    (if (vec-cursor-done? cy)
+                        #f
+                        (if (= (vec-cursor-current cx) (vec-cursor-current cy))
+                            (go)
+                            #f)))))
+            #f)))
   ;; Manual indexing.
   (defun (eq-hash xs)
     (defun (hash-from i h)

@@ -85,13 +85,16 @@
 ;; O(n) indexing a cons list cannot support — so the two walks a split needs are
 ;; here. Both run once per rebalance, which is once per n operations.
 
+;; Collected reversed and turned once, so a long prefix does not recurse once
+;; per element.
 (: take-n (-> int (List %a) (List %a)))
 (defun (take-n k xs)
-  (if (= k 0)
-      Nil
-      (match xs
-        (Nil Nil)
-        ((Cons x rest) (Cons x (take-n (- k 1) rest))))))
+  (let go ((k k) (rest xs) (acc Nil))
+    (if (= k 0)
+        (list-reverse acc)
+        (match rest
+          (Nil (list-reverse acc))
+          ((Cons x more) (go (- k 1) more (Cons x acc)))))))
 
 (: drop-n (-> int (List %a) (List %a)))
 (defun (drop-n k xs)
@@ -198,15 +201,13 @@
 ;; None of these rebalance: they read both halves as they stand, so a walk is
 ;; not a write and a deque may be folded from anywhere.
 
-(: append-onto (-> (List %a) (List %a) (List %a)))
-(defun (append-onto xs ys)
-  (match xs
-    (Nil ys)
-    ((Cons x rest) (Cons x (append-onto rest ys)))))
-
+;; `front` reversed, then consed element by element onto `back` in order: the
+;; front lands first, and nothing recurses per element.
 (: deque->list (-> (Deque %a) (List %a)))
 (defun (deque->list d)
-  (append-onto (record-ref d front) (list-reverse (record-ref d back))))
+  (list-foldl (fun (x acc) (Cons x acc))
+              (list-reverse (record-ref d back))
+              (list-reverse (record-ref d front))))
 
 (: list->deque (-> (List %a) (Deque %a)))
 (defun (list->deque xs)
