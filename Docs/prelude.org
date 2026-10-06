@@ -272,7 +272,7 @@ them; a walk is always on a character of its own string, and
 *** Conversions =(std prelude)=
 - ~(string->list s)~ : ~(List char)~.
 - ~(list->string cs)~ : Builds a string from ~(List char)~.
-- ~(list->str xs)~ : Formats a list as ~'(1 2 3)~, each element through its own ~->str~. Constrained ~(where (->str %a))~. =(std prelude)=
+- ~(list->str xs)~ : Formats a list as ~(1 2 3)~, each element through its own ~->str~. Constrained ~(where (->str %a))~. =(std prelude)=
 - ~(string->vec s)~ : ~(Vec char)~.
 - ~(string-reverse s)~ : Reverses by *character*, so an astral character comes back intact.
 
@@ -1087,7 +1087,7 @@ The sequence is passed to every method, so a cursor need carry nothing — a ~Ve
 These methods use long names to prevent collisions with common user variables (like ~next~, ~start~, and ~current~). They are intended to be called by the compiler rather than directly in user code.
 
 ** Traits
-- ~->str~ : Trait for string representation with method ~(->str x)~. Implemented for ~string~, ~int~, ~double~, ~byte~, ~long~, ~char~, ~Keyword~ and ~Symbol~. A ~char~ prints as itself, not as ~#\a~. A list prints as ~'(1 2 3)~, through a *conditional* implementation, ~(impl (->str (List %a)) (where (->str %a)) ...)~. Anything with no implementation of its own falls to the blanket, which is ~Object.ToString~.
+- ~->str~ : Trait for string representation with method ~(->str x)~. Implemented for ~string~, ~int~, ~double~, ~byte~, ~long~, ~char~, ~Keyword~ and ~Symbol~. A ~char~ prints as itself, not as ~#\a~. A list prints as ~(1 2 3)~, through a *conditional* implementation, ~(impl (->str (List %a)) (where (->str %a)) ...)~. Anything with no implementation of its own falls to the blanket, which is ~Object.ToString~.
 - ~Iterable~ : ~(iterable-start s)~, ~(iterable-done? s c)~, ~(iterable-current s c)~ and ~(iterable-next s c)~ — how to walk a collection, and what a ~(:for ...)~ clause uses. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~(Seq %a)~, ~Range~ and ~string~. A string's ~%cursor~ is a ~StringCursor~ and its ~%elem~ is ~char~, so ~(loop (:for c "a😀b") ...)~ runs three times and hands over whole characters.
 - ~Foldable~ : ~(fold f init col)~, where ~f~ receives ~(item acc)~. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~ and ~string~. A map's ~%item~ is its ~(Tuple %k %v)~ pair; a string's is ~char~, so ~fold~ over one is ~string-fold~.
 - ~Collection~ : ~(length c)~, ~(empty? c)~ and ~(->seq c)~ — what a collection can be *asked*, as opposed to walked (~Iterable~) or consumed (~Foldable~). The associated ~%content~ is the element type, and for a ~(Map %k %v)~ that is the pair. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~Range~, ~(Seq %a)~ and ~string~; not for ~(Array %a)~, which has no ~->seq~ to give. ~length~ is O(1) only where the collection stores a count (~Vec~, ~Map~, and ~Range~): a ~List~ walks, a ~Seq~ walks *and* consumes an effectful source, and a ~string~ walks because its ~%content~ is ~char~ and so ~length~ must be ~string-count~ rather than ~string-length~.

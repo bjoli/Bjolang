@@ -3,6 +3,21 @@
 
 What each change guarantees, and what it leaves open.
 
+* Lists print without a quote; mutablevec-sort! is stable; hash collisions stay local
+
+- *A list prints as ~(1 2 3)~*, not ~'(1 2 3)~. A nested list was printed as
+  ~'('(1) '(2 3))~, which is no literal; it is now ~((1) (2 3))~, and the empty
+  list stays ~()~. Output that matched the quote has to drop it.
+- *~mutablevec-sort!~ and ~mutablevec-sort-by!~ are stable*, as ~list-sort~ is:
+  equal elements keep their order. They used .NET's introsort.
+- *A hash collision node holds only keys with one full hash.* It used to take
+  in every later key that shared its hash prefix, turning 1/32 of a map's or
+  set's keys into a linear scan after one real collision.
+- *Merging two maps or sets with different key comparers* adds the right
+  side's entries through the left one's comparer. The result used to keep the
+  right side's layout under the left comparer, and lookups failed.
+- Tested in ~291_collection_edges.bjo~ and the Map and Set test suites.
+
 * One clock, in the prelude, and a program can make its own
 
 - *~Clock~ is the prelude's, and a record of functions*: ~read-monotonic-ms~,

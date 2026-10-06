@@ -98,4 +98,22 @@
   (transientmap-set! t 1 "a2")
   (expect "a transient does not write into the map it came from" (map-ref m 1) "a")
   (expect "and has its own value" (transientmap-ref t 1) "a2")
+
+  ;; --- mutablevec-sort! is stable --------------------------------------------
+  ;; Forty keys in three classes, so equal keys span the insertion-sort runs
+  ;; and the merges after them.
+  (def mkeys (mutablevec))
+  (loop (:for i (range 0 40)) (:do (mutablevec-add! mkeys (Keyed (% i 3) (->str i)))))
+  (mutablevec-sort! mkeys)
+  (expect "mutablevec-sort! keeps equal elements in order"
+          (list-map (fun (k) (match k ((Keyed _ s) s))) (mutablevec->list mkeys))
+          (list-map ->str (list-append (list-filter (fun (i) (= (% i 3) 0)) (count-up 40))
+                                       (list-append (list-filter (fun (i) (= (% i 3) 1)) (count-up 40))
+                                                    (list-filter (fun (i) (= (% i 3) 2)) (count-up 40))))))
+  (def mbig (list->mutablevec (count-down 100000)))
+  (mutablevec-sort! mbig)
+  (expect-true "and sorts a large vec" (sorted? (mutablevec->list mbig)))
+
+  ;; --- Lists print without quotes --------------------------------------------
+  (expect "a nested list prints as one literal" (->str (list (list 1 2) (count-up 0))) "((1 2) ())")
   0)

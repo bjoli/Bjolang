@@ -13,6 +13,7 @@
 
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace Bjolang.Runtime;
 
@@ -123,8 +124,63 @@ public static class MutableVecModule {
 
     public static void Reverse<T>(List<T> xs) => xs.Reverse();
 
+    /// Stable, as `list-sort` is: equal elements keep their order. `List.Sort`
+    /// is introsort, which does not keep it.
     public static void SortBy<T>(List<T> xs, Func<T, T, int> compare) =>
-        xs.Sort(new Comparison<T>(compare.Invoke));
+        StableSort(CollectionsMarshal.AsSpan(xs), compare);
+
+    // Insertion sort over runs of 16, then bottom-up merges between the items
+    // and one buffer. A merge takes from the left run on a tie, which is what
+    // keeps it stable.
+    private static void StableSort<T>(Span<T> items, Func<T, T, int> compare)
+    {
+        const int run = 16;
+        int n = items.Length;
+
+        for (int lo = 0; lo < n; lo += run)
+        {
+            int hi = Math.Min(lo + run, n);
+            for (int i = lo + 1; i < hi; i++)
+            {
+                T x = items[i];
+                int j = i - 1;
+                while (j >= lo && compare(items[j], x) > 0)
+                {
+                    items[j + 1] = items[j];
+                    j--;
+                }
+                items[j + 1] = x;
+            }
+        }
+
+        if (n <= run) return;
+
+        var buffer = new T[n];
+        Span<T> src = items;
+        Span<T> dst = buffer;
+        bool inBuffer = false;
+
+        for (int width = run; width < n; width *= 2)
+        {
+            for (int lo = 0; lo < n; lo += 2 * width)
+            {
+                int mid = Math.Min(lo + width, n);
+                int hi = Math.Min(lo + 2 * width, n);
+                int l = lo, r = mid, k = lo;
+                while (l < mid && r < hi)
+                    dst[k++] = compare(src[l], src[r]) <= 0 ? src[l++] : src[r++];
+                while (l < mid) dst[k++] = src[l++];
+                while (r < hi) dst[k++] = src[r++];
+            }
+
+            Span<T> swap = src;
+            src = dst;
+            dst = swap;
+            inBuffer = !inBuffer;
+        }
+
+        if (inBuffer) src.CopyTo(items);
+    }
 }
 
 // ---------------------------------------------------------------------------
