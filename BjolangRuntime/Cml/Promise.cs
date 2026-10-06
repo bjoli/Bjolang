@@ -120,7 +120,9 @@ internal abstract class PromiseWaiter : IPromiseWaiter, IThreadPoolWorkItem
 /// STARVATION WARNING: a completed promise inside a <c>choose</c> loop wins every
 /// iteration, exactly like <c>Cml.Always</c>. Document this for language users.
 /// </summary>
-public class Promise<T> : IEvent<Result<T>>
+public class Promise<T> : IEvent<Result<T>>,
+    IEvent<global::BjolangRuntime.Result<Exception, T>>,
+    INowable<global::BjolangRuntime.Result<Exception, T>>
 {
     private static readonly object s_completedSentinel = new();
 
@@ -440,6 +442,85 @@ public class Promise<T> : IEvent<Result<T>>
         }
 
         public override void Signal() => _owner.Deliver(_state, _eventId, _onSync);
+
+        /// <summary>Our sync block was won by another branch; we can be dropped.</summary>
+        public override bool IsAbandoned => _state.IsSynchronized;
+    }
+
+    // ---- the hosted language's join ---------------------------------------
+
+    /// <summary>
+    /// The outcome as Bjolang's `(Result Exception a)`: the exception itself
+    /// rather than the dispatch info, because that is what `(Err e)` binds.
+    /// `SourceException` rather than `Throw()`, since a join must not raise.
+    /// </summary>
+    private static global::BjolangRuntime.Result<Exception, T> ForJoin(Result<T> r) =>
+        r.IsError
+            ? global::BjolangRuntime.Result<Exception, T>.Err(r.Error!.SourceException)
+            : global::BjolangRuntime.Result<Exception, T>.Ok(r.Value);
+
+    /// <summary>
+    /// A landed promise is available, so `sync` takes it without publishing
+    /// anything. Skipping the token race is not a change of meaning: an
+    /// available event beats the token, which is published after it.
+    /// </summary>
+    bool INowable<global::BjolangRuntime.Result<Exception, T>>.TryNow(
+        out global::BjolangRuntime.Result<Exception, T> value)
+    {
+        if (IsCompleted)
+        {
+            value = ForJoin(Outcome);
+            return true;
+        }
+
+        value = default;
+        return false;
+    }
+
+    /// <summary>
+    /// `(promise-join p)` is this promise, as an event carrying Bjolang's
+    /// result. Converting in the waiter rather than through `Cml.Wrap` saves
+    /// the wrap event a join used to build, and the closure and delegate the
+    /// wrap built at every publish.
+    /// </summary>
+    void IEvent<global::BjolangRuntime.Result<Exception, T>>.Publish(
+        SyncState state, int eventId, Action<global::BjolangRuntime.Result<Exception, T>> onSync)
+    {
+        if (IsCompleted)
+        {
+            DeliverJoin(state, eventId, onSync);
+            return;
+        }
+
+        Register(new JoinWaiter(this, state, eventId, onSync));
+    }
+
+    /// <summary>See <see cref="Deliver"/>, which this is with the conversion.</summary>
+    private void DeliverJoin(
+        SyncState state, int eventId, Action<global::BjolangRuntime.Result<Exception, T>> onSync)
+    {
+        if (!state.TryCommit(eventId)) return;
+        Scheduler.Dispatch(onSync, ForJoin(Outcome));
+    }
+
+    private sealed class JoinWaiter : PromiseWaiter
+    {
+        private readonly Promise<T> _owner;
+        private readonly SyncState _state;
+        private readonly int _eventId;
+        private readonly Action<global::BjolangRuntime.Result<Exception, T>> _onSync;
+
+        public JoinWaiter(
+            Promise<T> owner, SyncState state, int eventId,
+            Action<global::BjolangRuntime.Result<Exception, T>> onSync)
+        {
+            _owner = owner;
+            _state = state;
+            _eventId = eventId;
+            _onSync = onSync;
+        }
+
+        public override void Signal() => _owner.DeliverJoin(_state, _eventId, _onSync);
 
         /// <summary>Our sync block was won by another branch; we can be dropped.</summary>
         public override bool IsAbandoned => _state.IsSynchronized;

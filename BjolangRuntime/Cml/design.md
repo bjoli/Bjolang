@@ -663,6 +663,30 @@ cheaper sender does not move it; the separate-file comparison above, which
 showed 151 -> 137, ran each variant in its own process and caught that row in
 different modes.
 
+What the event costs `sync` on the ring is its allocation, not the type tests
+on it. `chan-put` given back a dummy `ChannelSendEvent` per send, kept alive
+with `GC.KeepAlive` and otherwise unused, measured no faster than the event
+row (minimum 82-117 against 79-86 over five runs). So a base class for the two
+channel events, replacing the interface tests with one class test, would buy
+nothing. The note under hack 3b that one cached send event per thread "bought
+no time" does not hold for the runtime as it is now.
+
+#### `promise-join` is the promise — kept
+
+`(promise-join p)` used to be `Cml.Wrap(p.Join(), convert)`: a wrap event per
+join, and a closure and its delegate every time the wrap was published, to
+turn BjoML's `Result<T>` into Bjolang's `(Result Exception a)`. With the
+`SyncState` a join needs because a promise had no `INowable`, joining a
+promise that had already landed cost 168 B. `Promise<T>` now implements
+Bjolang's join event as well, converting as it delivers through a `JoinWaiter`
+of its own, and answers `INowable` once it has landed, so such a join commits
+without publishing anything. A million joins of a landed promise: 74 -> 12
+ns/op and 168 -> 0 B/op. Starting a fiber and joining it: 362 -> 230 B/op, the
+time set by the spawn.
+
+`(cancelled ct)` still wraps a token's join. A loop that offers it in a
+`choose` pays a wrap per call and a closure per publish.
+
 **Event ids as a plain increment — measured and rejected.** `NextEventId` is an
 interlocked increment with one writer, nine per sync of an eight-way `choose`.
 A plain increment measured within the noise on every row, so the interlocked one

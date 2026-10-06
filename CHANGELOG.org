@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* promise-join is the promise, and a landed one is joined on the spot
+
+- *~(promise-join p)~ returns ~p~.* A promise is the join event in Bjolang's
+  shape as well as BjoML's, and converts its outcome to ~(Result Exception a)~
+  as it delivers. The ~Cml.Wrap~ a join used to build, and the closure and
+  delegate the wrap built at every publish, are gone.
+- *A promise that has landed is available*, so ~(sync (promise-join p))~ on one
+  commits without a ~SyncState~ or a publish. Joining a landed promise:
+  74 -> 12 ns/op and 168 -> 0 B/op. Starting a fiber and joining it:
+  362 -> 230 B/op.
+- No change of meaning: the outcome, the failure as ~(Err e)~, a join as a
+  branch of a ~choose~, and the ambient token's race are as before. A landed
+  promise skips the race because an available event already beats the token.
+
 * chan-put and chan-get: a send and a receive without an event
 
 - *~(chan-put ch v)~ is ~(sync (chan-send ch v))~ and ~(chan-get ch)~ is

@@ -697,20 +697,15 @@ public static partial class BjolangRuntime {
     ///
     /// Failure arrives as a value rather than as a throw, because an exception
     /// raised inside an event continuation lands in a channel's matching loop
-    /// and wedges the whole sync block. The conversion here is between two
-    /// unrelated `Result`s: BjoML's carries an `ExceptionDispatchInfo` so that a
-    /// rethrow keeps the original stack, and Bjolang's carries a plain error
-    /// value because that is what `match` on `(Err e)` binds.
+    /// and wedges the whole sync block. BjoML's `Result` carries an
+    /// `ExceptionDispatchInfo` so that a rethrow keeps the original stack, and
+    /// Bjolang's carries the exception, because that is what `match` on
+    /// `(Err e)` binds.
     ///
-    /// `SourceException` rather than `Throw()`: this runs at sync time, not on
-    /// the joining fiber's stack, so it must not raise.
-    public static IEvent<Result<Exception, T>> promisesubjoin<T>(Promise<T> p) =>
-        Cml.Wrap(
-            p.Join(),
-            static r =>
-                r.IsError
-                    ? Result<Exception, T>.Err(r.Error!.SourceException)
-                    : Result<Exception, T>.Ok(r.Value));
+    /// The promise itself. It is the event in both shapes and converts as it
+    /// delivers, so a join builds nothing, and joining a promise that has
+    /// already landed commits without publishing (see `Promise.TryNow`).
+    public static IEvent<Result<Exception, T>> promisesubjoin<T>(Promise<T> p) => p;
 
     /// `(spawn-thunk f)` — the first-class counterpart of the `bjo` special
     /// form, for the higher-order case `(map spawn-thunk thunks)`.
