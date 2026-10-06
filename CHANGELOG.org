@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* One clock, in the prelude, and a program can make its own
+
+- *~Clock~ is the prelude's, and a record of functions*: ~read-monotonic-ms~,
+  ~read-utc-ticks~, ~read-zone~ and ~advance-ticks~. ~(make-clock ...)~ takes
+  any of them as a keyword and fills in the rest from the system clock.
+  ~(std datetime)~'s clock used to be a closed union of three cases.
+- *~current-clock~ and ~system-clock~ moved from ~(std datetime)~ to the
+  prelude.* ~current-clock~ is cold. A program that imports both sees one of
+  each, so no call site changes.
+- *The ~MonotonicClock~ effect is gone.* ~(monotonic-ms #:clock c)~ reads the
+  clock, defaulting to ~current-clock~. A test that installed
+  ~(with-handler ((monotonic-ms f)) ...)~ binds
+  ~(parameterize ((current-clock (make-clock #:monotonic-ms f))) ...)~ instead,
+  and ~op/monotonic-ms~ is no longer exported.
+- *Binding ~current-clock~ moves ~now~ and ~monotonic-ms~ together.* A fixed
+  clock's monotonic reading stands still. A manual clock's starts at 0 and
+  moves on a forward ~clock-advance!~ only, so a stopwatch over it never reads
+  a negative time when the wall clock is stepped back.
+- *~(clock-in c z)~* is ~c~ with ~today~ in ~z~, for a clock of one's own;
+  ~(system-clock-in z)~ is ~(clock-in system-clock z)~.
+- *~clock-advance!~ calls the clock's ~advance-ticks~*, so a clock of one's
+  own made with ~#:advance~ can be moved too. On one without, it raises
+  ~ArgumentException~ as before.
+- *~now~ checks the reading*: ticks outside the calendar raise
+  ~OverflowException~.
+- Tested in ~210_prelude_effects.bjo~ and ~245_datetime.bjo~.
+
 * The reader refuses brackets that do not pair
 
 - *A form left open at the end of a file is an error*, at the bracket that was

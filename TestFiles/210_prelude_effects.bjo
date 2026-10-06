@@ -10,11 +10,12 @@
 ;; in such object code or executable form without complying with the source code
 ;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
 
-;; The effects the standard library performs: `warn`, `log`, `monotonic-ms`,
-;; `getenv`.
+;; The effects the standard library performs: `warn`, `log` and `getenv`. And
+;; the clock `monotonic-ms` reads, which is a parameter.
 ;;
-;; Each has a default, so a program that installs nothing behaves as it did
-;; before there was an effect at all. What the handler buys is in each section.
+;; Each effect has a default, so a program that installs nothing behaves as it
+;; did before there was an effect at all. What the handler buys is in each
+;; section.
 
 (import (std prelude))
 (import (std effect))
@@ -108,12 +109,12 @@
 
   ;; --- monotonic-ms, and the stopwatch over it -----------------------------
   ;;
-  ;; `std/stopwatch` performs `monotonic-ms`; it does not name a parameter and
-  ;; does not hold a clock. So installing one here decides what it measures,
-  ;; and the elapsed time is exact rather than approximate.
+  ;; `std/stopwatch` reads `monotonic-ms` from `current-clock`. So binding a
+  ;; clock here decides what it measures, and the elapsed time is exact rather
+  ;; than approximate.
   (def clock (make-box (list 1000L 1250L)))
   (def measured
-    (with-handler ((monotonic-ms (ticking clock)))
+    (parameterize ((current-clock (make-clock #:monotonic-ms (ticking clock))))
       (let ((sw (stopwatch)))
         (stopwatch-start! sw)
         (stopwatch-stop! sw)
@@ -123,7 +124,7 @@
   ;; Two intervals on one watch add up, which is what `elapsed` is for.
   (def clock2 (make-box (list 0L 10L 100L 130L)))
   (def summed
-    (with-handler ((monotonic-ms (ticking clock2)))
+    (parameterize ((current-clock (make-clock #:monotonic-ms (ticking clock2))))
       (let ((sw (stopwatch)))
         (stopwatch-start! sw)
         (stopwatch-stop! sw)
@@ -132,10 +133,17 @@
         (stopwatch-ms sw))))
   (expect "two runs of one stopwatch add up" summed 40L)
 
+  ;; Passed rather than bound.
+  (def clock4 (make-box (list 5L 12L)))
+  (def given (make-clock #:monotonic-ms (ticking clock4)))
+  (def start (monotonic-ms #:clock given))
+  (expect "monotonic-ms reads the clock it is given"
+          (- (monotonic-ms #:clock given) start) 7L)
+
   ;; `(ref sw 'ms)` reads the same number.
   (def clock3 (make-box (list 0L 7000L)))
   (def named
-    (with-handler ((monotonic-ms (ticking clock3)))
+    (parameterize ((current-clock (make-clock #:monotonic-ms (ticking clock3))))
       (let ((sw (stopwatch)))
         (stopwatch-start! sw)
         (stopwatch-stop! sw)

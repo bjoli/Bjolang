@@ -39,7 +39,7 @@
     | @code{Duration}     | a fixed length of time: hours, not calendar days    | @code{TimeSpan} |
     | @code{DatePeriod}   | calendar amounts: years, months, weeks, days        | a struct of four @code{int} |
     | @code{Period}       | a date period and a duration: 1 day and 3 hours     | a struct of the two |
-    | @code{Clock}        | where @code{now} comes from, and its zone           | the system clock, a fixed or a manual one |
+    | @code{Clock}        | where @code{now} comes from, and its zone (the prelude's) | a record of functions |
     }
 
     Each value type is a struct with one field (a @code{Moment} has three),
@@ -88,10 +88,16 @@
 
     @strong{The clock.} Only @code{now}, @code{now/moment}, @code{today} and
     @code{clock-timezone} read the time. Each takes @code{#:clock}, which
-    defaults to the value of the parameter @code{current-clock} at that
-    call. A clock carries its own zone, which is where @code{today} is, and
-    there is no separate current zone. Everything else in the module is
-    pure.
+    defaults to the value of the prelude's parameter @code{current-clock}
+    at that call. A clock carries its own zone, which is where @code{today}
+    is, and there is no separate current zone. Everything else in the
+    module is pure.
+
+    @code{Clock}, @code{make-clock}, @code{system-clock} and
+    @code{current-clock} are the prelude's, so @code{(monotonic-ms)} and
+    @code{(std stopwatch)} read the same clock as @code{now}. This module
+    adds the clocks a test wants: @code{fixed-clock}, @code{manual-clock},
+    and @code{clock-in} for a clock of your own in one of its zones.
 
     @codeblock[#:lang "bjolang"]|{
     (now)                                      ;; the current clock
@@ -103,8 +109,8 @@
 
     This is the wall clock, and it can step backwards when the machine's
     time is corrected. To measure how long something takes, use the
-    prelude's @code{(monotonic-ms)} or @code{(std stopwatch)} instead, whose
-    clock only moves forward.
+    prelude's @code{(monotonic-ms)} or @code{(std stopwatch)} instead. They
+    read the monotonic part of the same clock, which only moves forward.
 
     @strong{Arithmetic.} Calendar units (@code{+years}, @code{+months},
     @code{+weeks}, @code{+days} and their @code{-} twins) take an @code{int}
@@ -400,10 +406,17 @@
         runs rather than when it compiles. In return, a manual clock goes
         wherever a clock does, @code{current-clock} and @code{#:clock}
         included, with no conversion.}
-      @item{@strong{The prelude's @code{monotonic-ms} is another clock.} It
-        counts milliseconds from an unspecified start, has no time of day,
-        and never steps back, which is what measuring an interval needs. The
-        two share no name.}
+      @item{@strong{One clock, two readings.} A @code{Clock} answers both
+        @code{now} and the prelude's @code{monotonic-ms}. The monotonic
+        reading counts milliseconds from an unspecified start, has no time
+        of day, and never steps back, which is what measuring an interval
+        needs. Binding @code{current-clock} to a fake moves both, so a test
+        cannot fix one and leave the other running.}
+      @item{@strong{A clock is a record of functions.} Anyone can make one
+        with the prelude's @code{make-clock}; @code{fixed-clock} and
+        @code{manual-clock} are made that way. @code{clock-advance!} calls
+        the clock's own @code{advance-ticks}, which is how a manual clock
+        moves.}
       @item{@strong{@code{DateTime} is this module's.} @code{(std clr-ord)}
         orders @code{System.DateTime} and the other .NET time types without
         exporting a name for them, so a module that imports both has one
@@ -491,14 +504,6 @@
     Built on @code{TimeSpan}, and holds ±(2@sup{63} − 1) ticks, about
     ±29 227 years. @code{(duration #:days 1)} is exactly 24 hours; a
     calendar day is a @code{DatePeriod}.
-    """))
-
-(:doc Clock
-  (summary "Where now comes from, and the zone today is in.")
-  (see current-clock system-clock fixed-clock manual-clock)
-  (reference """
-    The system clock, a fixed clock or a manual one. A clock carries its own
-    zone, and there is no separate current zone.
     """))
 
 (:doc DatePeriod
@@ -948,33 +953,25 @@
 ;; The clock
 ;; ---------------------------------------------------------------------------
 
-(:doc current-clock
-  (summary "The clock now, today and the others read when not given #:clock.")
-  (see system-clock-in fixed-clock now)
+(:doc clock-in
+  (summary "A clock, with today in another zone.")
+  (arg c "The clock to read.")
+  (arg z "The zone today is to be in.")
+  (returns "A clock reading what c reads, with z as its zone.")
+  (see system-clock-in clock-timezone)
   (example """
-    (parameterize ((current-clock (fixed-clock t z)))
-      (render-invoice order))   ;; every (now) and (today) inside answers t
+    (clock-in (make-clock #:utc-ticks recorded-ticks) stockholm)
     """)
   (reference """
-    A @code{(Param Clock)}, starting as @code{system-clock}. A binding lasts
-    only inside its @code{parameterize} and the fibers started there, so one
-    test cannot leave a fake clock behind for the next.
-    """))
-
-(:doc system-clock
-  (summary "The machine's clock, in the machine's zone.")
-  (see system-clock-in current-clock)
-  (reference """
-    @code{TimeProvider.System}, and the value @code{current-clock} starts
-    with. It is the wall clock, and steps back when the machine's time is
-    corrected.
+    The prelude's @code{Clock} carries a .NET @code{TimeZoneInfo}; this is
+    how a clock of your own gets one of this module's zones.
     """))
 
 (:doc system-clock-in
   (summary "The machine's clock, in a zone of your choosing.")
   (arg z "The zone today is to be in.")
   (returns "A clock reading the system time, with z as its zone.")
-  (see system-clock current-clock)
+  (see clock-in now)
   (example """
     (defun (main)
       (def (Some stockholm) (timezone "Europe/Stockholm") :leave-with 1)
@@ -992,8 +989,8 @@
   (summary "A clock that always answers the same instant.")
   (arg i "The instant it answers.")
   (arg z "Its zone.")
-  (returns "The clock.")
-  (see manual-clock current-clock))
+  (returns "The clock. Its monotonic-ms stands still too.")
+  (see manual-clock now))
 
 (:doc manual-clock
   (summary "A clock that stands still until clock-advance! moves it.")
@@ -1002,20 +999,24 @@
   (returns "The clock.")
   (see clock-advance! fixed-clock)
   (reference """
-    The clock takes a lock to advance and to answer @code{now}, so fibers on
-    several threads may share one: every advance counts, and the next
-    @code{now} sees it.
+    The clock takes a lock to advance and to answer, so fibers on several
+    threads may share one: every advance counts, and the next read sees it.
+
+    Its @code{monotonic-ms} starts at 0 and moves with every forward
+    advance. A negative advance steps only the wall clock back, so a
+    stopwatch on it never reads a negative time.
     """))
 
 (:doc clock-advance!
-  (summary "Moves a manual clock.")
-  (arg c "A clock from manual-clock.")
+  (summary "Moves a clock that can be moved, as a manual clock can.")
+  (arg c "A clock with an advance: one from manual-clock, or made with #:advance.")
   (arg d "How far. A negative duration steps it back, as a corrected wall clock does.")
-  (raises ArgumentException "When the clock is the system clock or a fixed one.")
+  (raises ArgumentException "When the clock has no advance, as the system clock and a fixed one have not.")
   (raises OverflowException "When the new instant is outside the calendar.")
   (see manual-clock)
   (reference """
-    A manual clock is a @code{Clock}, not a type of its own, so this on
+    Calls the clock's @code{advance-ticks} with the duration in ticks. A
+    manual clock is a @code{Clock}, not a type of its own, so this on
     another clock is an error when it runs rather than when it compiles.
     """))
 

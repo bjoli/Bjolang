@@ -14,8 +14,8 @@
 public static partial class BjolangRuntime {
 
     /// <summary>
-    /// The default handler for the prelude's `monotonic-ms`: milliseconds on a
-    /// monotonic clock.
+    /// The prelude's `system-clock` reads `monotonic-ms` here: milliseconds on
+    /// a monotonic clock.
     ///
     /// Monotonic rather than wall-clock, because what reads it is
     /// `std/stopwatch`, and a wall clock can step backwards over an NTP

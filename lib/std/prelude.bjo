@@ -162,8 +162,10 @@
   ;; parameter `with-handler` binds, and is exported for that reason.
   warn op/warn
   log op/log
-  monotonic-ms op/monotonic-ms
   getenv op/getenv
+
+  ;; The clock
+  Clock make-clock system-clock current-clock monotonic-ms
 
   promise-join/sync panic!)
 
@@ -2272,6 +2274,7 @@
 ;; standard ports stay parameters, and random stays the parameter
 ;; (std random) already has: it is swappable, it has no abort case, and an
 ;; effect would put a wrapper function over a read that is already one.
+;; The clock is a parameter for the same reason.
 ;;
 ;; Installing a handler needs (import (std effect)) for with-handler. A
 ;; macro is not a binding, so it cannot be re-exported from here.
@@ -2293,33 +2296,72 @@
   #:default ((warn (fun (s) (writeln (parameter-ref current-error-port) s)))
              (log (fun (s) (writeln (parameter-ref current-error-port) s)))))
 
-;; (monotonic-ms) - milliseconds on a monotonic clock, for measuring an interval.
-;;
-;; An effect rather than a parameter because std/stopwatch performs it, and
-;; library code that times something should not have to know which parameter a
-;; test put the clock in.
-;;
-;; Not called `now`: the time of day is (std datetime)'s `(now)`, an Instant
-;; on the wall clock, which can step backwards where this one cannot.
-;;
-;; Cold, as in using a cold parameter since it is not necessarily used within a loop,
-;; but at the end of it. 
-(import/extern
-  (clock-ms (: BjolangRuntime.ClockMs (-> long))))
-
-(defeffect MonotonicClock
-  (monotonic-ms (-> long))
-  #:default ((monotonic-ms clock-ms))
-  #:cold (monotonic-ms))
-
 ;; (getenv "HOME") - the process environment, as an effect so that a test can
 ;; answer for it without writing to the real one.
 ;;
-;; Cold, for the reason now is: read at startup, not in a loop.
+;; Cold: read at startup, not in a loop.
 (defeffect Env
   (getenv (-> string (Option string)))
   #:default ((getenv get-environment-variable))
   #:cold (getenv))
+
+
+;; ---------------------------------------------------------------------------
+;; The clock
+;; ---------------------------------------------------------------------------
+;;
+;; A `Clock` is a record of functions, so a program can make its own.
+;; `monotonic-ms` reads it here, and (std datetime)'s `now` and `today` read
+;; the same one, so binding `current-clock` moves both.
+;;
+;; - `read-monotonic-ms`: milliseconds from an unspecified start. Never
+;;   decreases; only differences mean anything.
+;; - `read-utc-ticks`: the wall clock, in .NET ticks since 0001-01-01 UTC. May
+;;   step back.
+;; - `read-zone`: the zone (std datetime)'s `today` is in.
+;; - `advance-ticks`: what (std datetime)'s `clock-advance!` calls, with a
+;;   number of ticks. `None` for a clock that cannot be moved.
+(type (: Clock (Record (: read-monotonic-ms (-> long))
+                       (: read-utc-ticks (-> long))
+                       (: read-zone (-> System.TimeZoneInfo))
+                       (: advance-ticks (Option (-> long void))))))
+
+(import/extern
+  (clock-ms (: BjolangRuntime.ClockMs (-> long)))
+  (clr-utc-now (: System.DateTime.UtcNow #:get))
+  (clr-local-zone (: System.TimeZoneInfo.Local #:get)))
+
+(: system-utc-ticks (-> long))
+(defun (system-utc-ticks) (.-Ticks clr-utc-now))
+
+(: system-zone (-> System.TimeZoneInfo))
+(defun (system-zone) clr-local-zone)
+
+;; Each part not given is the system clock's.
+(: make-clock (-> (#:monotonic-ms (-> long))
+                  (#:utc-ticks (-> long))
+                  (#:zone (-> System.TimeZoneInfo))
+                  (#:advance (Option (-> long void)))
+                  Clock))
+(defun (make-clock #:monotonic-ms clock-ms #:utc-ticks system-utc-ticks
+                   #:zone system-zone #:advance None)
+  (Clock (read-monotonic-ms monotonic-ms)
+         (read-utc-ticks utc-ticks)
+         (read-zone zone)
+         (advance-ticks advance)))
+
+;; The machine's clock, in the machine's zone.
+(: system-clock Clock)
+(def system-clock (make-clock))
+
+;; Cold: nothing reads the time in a loop.
+(: current-clock (Param Clock))
+(def current-clock (make-cold-parameter system-clock))
+
+;; Not called `now`: that is (std datetime)'s wall-clock `Instant`.
+(: monotonic-ms (-> (#:clock Clock) long))
+(defun (monotonic-ms #:clock (parameter-ref current-clock))
+  ((record-ref clock read-monotonic-ms)))
 
 
 ;; ---------------------------------------------------------------------------

@@ -48,8 +48,6 @@
   (ClrDateTime (: System.DateTime (-> long DateTimeKind ClrDateTime)))
   (DateTimeKind (: System.DateTimeKind))
   (ClrTimeSpan (: System.TimeSpan (-> long ClrTimeSpan)))
-  (ClrDateTimeOffset (: System.DateTimeOffset))
-  (TimeProvider (: System.TimeProvider))
   (TimeZoneInfo (: System.TimeZoneInfo))
   (OverflowException (: System.OverflowException (-> string OverflowException)))
   (ArgumentException (: System.ArgumentException (-> string ArgumentException)))
@@ -95,10 +93,6 @@
   (clr-tz-utc-offset (: System.TimeZoneInfo.GetUtcOffset (-> TimeZoneInfo ClrDateTime ClrTimeSpan)))
   (clr-lock-enter (: System.Threading.Lock.Enter (-> ClrLock void)))
   (clr-lock-exit (: System.Threading.Lock.Exit (-> ClrLock void)))
-  (clr-provider-system (: System.TimeProvider.System #:get))
-  (clr-provider-utc-now (: System.TimeProvider.GetUtcNow (-> TimeProvider ClrDateTimeOffset)))
-  (clr-provider-local-zone (: System.TimeProvider.LocalTimeZone (-> TimeProvider TimeZoneInfo) #:get))
-  (clr-dto-utc-ticks (: System.DateTimeOffset.UtcTicks (-> ClrDateTimeOffset long) #:get))
   (clr-add-unit (: System.Text.StringBuilder.Append (-> TextBuilder System.Char TextBuilder)))
   (clr-add-text (: System.Text.StringBuilder.Append (-> TextBuilder string TextBuilder)))
   (clr-builder-text (: System.Text.StringBuilder.ToString (-> TextBuilder string))))
@@ -108,7 +102,7 @@
 
 (export
   ;; Types
-  Date Time DateTime Instant TimeZone Moment Duration Clock
+  Date Time DateTime Instant TimeZone Moment Duration
   DatePeriod Period Gap Overlap Resolver
   ;; Traits
   HasDate ->date HasTime ->time HasInstant ->instant
@@ -127,7 +121,7 @@
   instant->unix-seconds unix-seconds->instant
   instant->unix-milliseconds unix-milliseconds->instant ->unix
   ;; The clock
-  current-clock system-clock system-clock-in fixed-clock manual-clock clock-advance!
+  system-clock-in clock-in fixed-clock manual-clock clock-advance!
   clock-timezone now now/moment today
   ;; Accessors
   ->year ->month ->day ->weekday ->yday
@@ -169,11 +163,6 @@
 (type (: TimeZone #:opaque (Struct (: tz TimeZoneInfo))))
 (type (: Duration #:opaque (Struct (: v ClrTimeSpan))))
 (type (: Moment #:opaque (Struct (: local DateTime) (: offset Duration) (: zone TimeZone))))
-;; A clock carries its own zone, which is where today is. A system clock with
-;; no zone of its own is in the machine's.
-(type (: Clock #:opaque (Union (: SystemClock TimeProvider (Option TimeZone))
-                               (: FixedClock Instant TimeZone)
-                               (: ManualClock (Box Instant) ClrLock TimeZone))))
 
 ;; Any mix of amounts is a valid period, so these are transparent. Structs,
 ;; so that the one +days builds is not an allocation.
@@ -1062,61 +1051,75 @@
 ;; ===========================================================================
 
 ;; The functions that read the time take #:clock, defaulting to the value of
-;; current-clock at the call, so a program that binds the parameter changes no
-;; call site. They are the only functions here that are not pure.
+;; the prelude's current-clock at the call, so a program that binds the
+;; parameter changes no call site. They are the only functions here that are
+;; not pure.
 
-;; The system clock reads TimeProvider.System, and its zone is the machine's.
-(: system-clock Clock)
-(def system-clock (SystemClock clr-provider-system None))
+(: zone-reader (-> TimeZone (-> TimeZoneInfo)))
+(defun (zone-reader z)
+  (def info (struct-ref z tz))
+  (fun () info))
+
+;; c, with today in z.
+(: clock-in (-> Clock TimeZone Clock))
+(defun (clock-in c z) (record-set c (read-zone (zone-reader z))))
 
 ;; The system's time in zone z, so that a program on a machine set to UTC can
 ;; bind current-clock once and have (today) be z's date everywhere.
 (: system-clock-in (-> TimeZone Clock))
-(defun (system-clock-in z) (SystemClock clr-provider-system (Some z)))
+(defun (system-clock-in z) (clock-in system-clock z))
 
-;; After system-clock, which is its first value: a module's values are
-;; initialised in the order they are written.
-(: current-clock (Param Clock))
-(def current-clock (make-parameter system-clock))
-
-;; Always the same instant.
+;; Always the same instant. Its monotonic reading stands still too.
 (: fixed-clock (-> Instant TimeZone Clock))
-(defun (fixed-clock i z) (FixedClock i z))
+(defun (fixed-clock i z)
+  (def t (instant-ticks i))
+  (make-clock #:monotonic-ms (fun () 0L)
+              #:utc-ticks (fun () t)
+              #:zone (zone-reader z)))
 
-;; Stands still until clock-advance! moves it. Its instant is read and written
-;; under its lock, because a test may advance it while fibers on other threads
-;; read it: the lock makes an advance whole, and visible to the next read.
+(: locked (-> ClrLock (-> %a) %a))
+(defun (locked lock body)
+  (clr-lock-enter lock)
+  (try (body) #:finally (clr-lock-exit lock)))
+
+;; Stands still until clock-advance! moves it. Read and written under its lock,
+;; so fibers on other threads may share one: an advance is whole, and visible
+;; to the next read.
+;;
+;; The monotonic reading starts at 0 and moves only on a positive advance, so a
+;; step back of the wall clock never makes an elapsed time negative.
 (: manual-clock (-> Instant TimeZone Clock))
-(defun (manual-clock i z) (ManualClock (make-box i) (ClrLock.) z))
+(defun (manual-clock i z)
+  (def wall (make-box i))
+  (def mono (make-box 0L))
+  (def lock (ClrLock.))
+  (make-clock
+    #:monotonic-ms (fun () (/ (locked lock (fun () (box-ref mono))) ticks-per-millisecond))
+    #:utc-ticks (fun () (instant-ticks (locked lock (fun () (box-ref wall)))))
+    #:zone (zone-reader z)
+    #:advance (Some (fun (t)
+                      (clr-lock-enter lock)
+                      (try (let ()
+                             (box-set! wall (instant+duration (box-ref wall) (ticks->duration t)))
+                             (when (> t 0L) (box-set! mono (+ (box-ref mono) t))))
+                        #:finally (clr-lock-exit lock))))))
 
 ;; A negative duration steps the clock back, as a corrected wall clock does.
 (: clock-advance! (-> Clock Duration void))
 (defun (clock-advance! c d)
-  (match c
-    ((ManualClock cell lock z)
-     (clr-lock-enter lock)
-     (try (box-set! cell (instant+duration (box-ref cell) d))
-       #:finally (clr-lock-exit lock)))
-    (_ (raise (cast Exception
-                    (ArgumentException.
-                      "(std datetime): clock-advance! moves a manual clock, and this is the system clock or a fixed one."))))))
+  (match (record-ref c advance-ticks)
+    ((Some advance) (advance (duration-ticks d)))
+    (None (raise (cast Exception
+                       (ArgumentException.
+                         "(std datetime): clock-advance! moves a clock made with #:advance, as a manual clock is, and this one has none."))))))
 
 (: clock-timezone (-> (#:clock Clock) TimeZone))
 (defun (clock-timezone #:clock (parameter-ref current-clock))
-  (match clock
-    ((SystemClock p (Some z)) z)
-    ((SystemClock p None) (TimeZone (tz (clr-provider-local-zone p))))
-    ((FixedClock i z) z)
-    ((ManualClock cell lock z) z)))
+  (TimeZone (tz ((record-ref clock read-zone)))))
 
 (: now (-> (#:clock Clock) Instant))
 (defun (now #:clock (parameter-ref current-clock))
-  (match clock
-    ((SystemClock p z) (Instant (ticks (clr-dto-utc-ticks (clr-provider-utc-now p)))))
-    ((FixedClock i z) i)
-    ((ManualClock cell lock z)
-     (clr-lock-enter lock)
-     (try (box-ref cell) #:finally (clr-lock-exit lock)))))
+  (ticks->instant ((record-ref clock read-utc-ticks)) "a clock's reading"))
 
 (: now/moment (-> (#:clock Clock) (#:tz TimeZone) Moment))
 (defun (now/moment #:clock (parameter-ref current-clock) #:tz (clock-timezone #:clock clock))
