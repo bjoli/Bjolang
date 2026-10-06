@@ -501,18 +501,29 @@ public static partial class BjolangRuntime {
     //
     // `add!` takes a scalar and encodes it; a reader copying its input byte by
     // byte skips both. The bytes are validated when the builder becomes a
-    // string, which throws if they did not form whole scalars.
+    // string, which throws if they did not form whole scalars. A number that
+    // is not a byte is refused rather than cut down to one.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Unit stringbuildersubaddsubcode_BANG(Utf8StringBuilder b, int code) {
+        if ((uint)code > 0xFF) ThrowNotA("stringbuilder-add-code!", "byte, 0 to 255", code);
         b.AppendByte((byte)code);
         return unit;
     }
 
+    // One UTF-16 code unit. A number that is not one is refused rather than
+    // cut down to one.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Unit stringbuildersubaddsubunit_BANG(Utf8StringBuilder b, int code) {
+        if ((uint)code > 0xFFFF) ThrowNotA("stringbuilder-add-unit!", "UTF-16 code unit, 0 to 65535", code);
         b.AppendUtf16Unit((char)code);
         return unit;
     }
+
+    // Out of line, so that the check the callers inline is a compare and a
+    // branch.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void ThrowNotA(string who, string what, int code) =>
+        throw new ArgumentOutOfRangeException("code", code, $"{who}: {code} is not a {what}.");
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int stringbuildersublength(Utf8StringBuilder b) => b.ByteLength;
@@ -632,7 +643,27 @@ public static partial class BjolangRuntime {
     public static TState RrbFold<T, TState>(Func<T, TState, TState> func, TState seed, Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Fold(list, seed, func);
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public static T RrbReduce<T>(Func<T, T, T> func, Collections.RrbList<T> list) where T : notnull => Collections.RrbFun.Reduce(list, func);
+    public static T RrbReduce<T>(Func<T, T, T> func, Collections.RrbList<T> list) where T : notnull {
+        RrbCheckReduce(list);
+        return Collections.RrbFun.Reduce(list, func);
+    }
+
+    // What `vec-reduce` and `vec-for-each/range` check before they start. Both
+    // copies of each, the ordinary one and the one for a suspending callback,
+    // call these, so a mistake raises the same exception from either.
+    public static Unit RrbCheckReduce<T>(Collections.RrbList<T> list) where T : notnull {
+        if (list.Count == 0)
+            throw new InvalidOperationException("vec-reduce: the vec is empty, so there is no first element to start from.");
+        return unit;
+    }
+
+    public static Unit RrbCheckRange<T>(Collections.RrbList<T> list, int index, int count) where T : notnull {
+        if (index < 0 || index > list.Count)
+            throw new ArgumentOutOfRangeException(nameof(index), index, $"vec-for-each/range: index {index} is outside a vec of length {list.Count}.");
+        if (count < 0 || count > list.Count - index)
+            throw new ArgumentOutOfRangeException(nameof(count), count, $"vec-for-each/range: {count} elements from index {index} do not fit in a vec of length {list.Count}.");
+        return unit;
+    }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     // `Func<T, Unit>` rather than `Action<T>`: a Bjolang `(-> %a void)` is
@@ -645,6 +676,9 @@ public static partial class BjolangRuntime {
     }
 
     public static Unit RrbForEachRange<T>(Func<T, Unit> action, Collections.RrbList<T> list, int index, int count) where T : notnull {
+        // Checked here as well as in the library, which reads a count of -1 as
+        // "to the end"; a Bjolang count means what it says.
+        RrbCheckRange(list, index, count);
         Collections.RrbFun.ForEach(list, x => action(x), index, count);
         return unit;
     }
@@ -689,8 +723,13 @@ public static partial class BjolangRuntime {
         return unit;
     }
 
+    // Checked here because the builder's indexer is not: past the length but
+    // inside the tail array it answers whatever the slot holds.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static T vecbuildersubref<T>(Collections.RrbBuilder<T> builder, int index) where T : notnull => Collections.RrbBuilderFun.Get(builder, index);
+    public static T vecbuildersubref<T>(Collections.RrbBuilder<T> builder, int index) where T : notnull {
+        if ((uint)index >= (uint)builder.Count) throw new IndexOutOfRangeException();
+        return Collections.RrbBuilderFun.Get(builder, index);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int vecbuildersublength<T>(Collections.RrbBuilder<T> builder) where T : notnull => Collections.RrbBuilderFun.Count(builder);

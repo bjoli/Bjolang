@@ -144,12 +144,12 @@
   ;; `True` rather than `true`: a bool has no `->str` of its own, so the blanket
   ;; runs and hands the job to `System.Convert.ToString`. That is the prelude's
   ;; behaviour everywhere, not something the map does.
-  (expect-str "constrained generic over int keys" (describe n) "<1: #map(1 True)>")
+  (expect-str "constrained generic over int keys" (describe n) "<1: #map((1 True))>")
   (expect-str "constrained generic over string keys"
               (describe #map(("a" 1)))
-              "<1: #map(a 1)>")
+              "<1: #map((a 1))>")
   ;; Two entries, so the trie's order decides which way round it comes out.
-  (expect-true "the same at two entries" (= (string-length (describe m)) 18))
+  (expect-true "the same at two entries" (= (string-length (describe m)) 22))
 
   (expect-true "Iterable-generic count" (= (count-via-iterable m) 2))
   (expect-true "Iterable-generic count at other types" (= (count-via-iterable n) 1))
@@ -172,7 +172,7 @@
 (: test-printing (-> void))
 (defun (test-printing)
   ;; A single entry, so the trie's order cannot make this flaky.
-  (expect-str "->str of a map" (->str #map(("a" 1))) "#map(a 1)")
+  (expect-str "->str of a map" (->str #map(("a" 1))) "#map((a 1))")
   (expect-str "an empty map" (->str (nothing)) "#map()")
 
   ;; Two entries: whichever order the trie walks them in, the result is one of
@@ -180,10 +180,11 @@
   (def m #map(("a" 1) ("b" 2)))
   (def shown (->str m))
   (expect-true "two entries print as a literal"
-          (or (= shown "#map(a 1 b 2)") (= shown "#map(b 2 a 1)")))
+          (or (= shown "#map((a 1) (b 2))") (= shown "#map((b 2) (a 1))")))
 
-  ;; And it round-trips: what was printed reads back as the same map.
-  (expect-true "the literal round-trips" (= m #map(("a" 1) ("b" 2)))))
+  ;; Each entry is in parentheses, as the literal writes it, so a map of
+  ;; numbers prints as the literal that makes it.
+  (expect-str "the literal's own shape" (->str #map((1 2))) "#map((1 2))"))
 
 ;; ---------------------------------------------------------------------------
 ;; The surface `map-*` did not have before
@@ -294,7 +295,7 @@
 (: test-order (-> void))
 (defun (test-order)
   (def m (scores))
-  (expect-str "a walk arrives sorted by key" (->str m) "#map(apple 1 fig 2 pear 3)")
+  (expect-str "a walk arrives sorted by key" (->str m) "#map((apple 1) (fig 2) (pear 3))")
 
   (match (orderedmap-min m)
     ((Some entry) (expect-str "min" (entry-key entry) "apple"))
@@ -370,7 +371,7 @@
   (def doubled
     (loop (:for entry m)
           (:acc out (ordered-mapping (Tuple (entry-key entry) (* 2 (entry-value entry)))))))
-  (expect-str "ordered-mapping collector" (->str doubled) "#map(apple 2 fig 4 pear 6)")
+  (expect-str "ordered-mapping collector" (->str doubled) "#map((apple 2) (fig 4) (pear 6))")
 
   (expect "orderedmap->list" (list-length (orderedmap->list m)) 3)
   (expect "list->orderedmap" (orderedmap-length (list->orderedmap (orderedmap->list m))) 3)
@@ -391,11 +392,11 @@
   ;; A key appended twice is resolved when the map is built, last one winning.
   (expect-str "builder->orderedmap sorts and resolves"
               (->str (orderedmapbuilder->orderedmap b))
-              "#map(a 1 b 20)")
+              "#map((a 1) (b 20))")
 
   (def c (orderedmapbuilder-empty))
   (orderedmapbuilder-add-all! c (list->seq (list (Tuple "z" 26) (Tuple "y" 25))))
-  (expect-str "builder add-all!" (->str (orderedmapbuilder->orderedmap c)) "#map(y 25 z 26)")
+  (expect-str "builder add-all!" (->str (orderedmapbuilder->orderedmap c)) "#map((y 25) (z 26))")
 
   (def d (orderedmap->orderedmapbuilder (scores)))
   (orderedmapbuilder-add! d "plum" 4)
@@ -444,7 +445,7 @@
 (defun (test-int-keys)
   (def m (seq->orderedmap (list->seq (list (Tuple 3 "c") (Tuple 1 "a") (Tuple 2 "b")))))
   (expect "a map keyed by int" (orderedmap-length m) 3)
-  (expect-str "in numeric order" (->str m) "#map(1 a 2 b 3 c)"))
+  (expect-str "in numeric order" (->str m) "#map((1 a) (2 b) (3 c))"))
 
 (defun (main args)
   (test-literal)

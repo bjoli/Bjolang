@@ -1,0 +1,97 @@
+;; The prelude's edges that answered something wrong instead of refusing: a
+;; vec builder read past its length, a byte or code unit out of range, an empty
+;; vec reduced and a run outside a vec walked by either copy of the function, a
+;; shield with no deadline, and a stream pump left parked when its scope ended.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/extern
+  (file-lines-async (: System.IO.File.ReadLinesAsync (-> string (AsyncSeq System.String))
+                       #:cancellable))
+  (write-file (: System.IO.File.WriteAllTextAsync (-> string string void) #:async))
+  (delete-file (: System.IO.File.Delete (-> string void))))
+
+;; Suspends, so that a vec function handed it runs its suspending copy.
+(: slow-add (-bjo-> int int int))
+(defbjo (slow-add x acc)
+  (sync (timeout 0))
+  (+ x acc))
+
+(: slow-touch (-bjo-> int Unit))
+(defbjo (slow-touch x)
+  (sync (timeout 0))
+  unit)
+
+(: raised? (-> (Result %a %e) bool))
+(defun (raised? r)
+  (match r
+    ((Ok _) #f)
+    ((Err _) #t)))
+
+(defbjo (main)
+  ;; --- vecbuilder-ref ------------------------------------------------------
+  (def b (vecbuilder-empty))
+  (vecbuilder-add! b 1)
+  (vecbuilder-add! b 2)
+  (expect "vecbuilder-ref inside the builder" (vecbuilder-ref b 1) 2)
+  (expect-true "vecbuilder-ref past the length raises"
+               (raised? (try (vecbuilder-ref b 2) #:catch (System.IndexOutOfRangeException))))
+  (expect-true "and at a negative index"
+               (raised? (try (vecbuilder-ref b -1) #:catch (System.IndexOutOfRangeException))))
+
+  ;; --- stringbuilder-add-code! and -add-unit! ------------------------------
+  (def sb (stringbuilder-empty))
+  (stringbuilder-add-code! sb 104)
+  (stringbuilder-add-unit! sb 105)
+  (expect "a byte and a code unit in range" (stringbuilder->string sb) "hi")
+  (expect-true "a byte of 256 raises"
+               (raised? (try (stringbuilder-add-code! sb 256) #:catch (System.ArgumentOutOfRangeException))))
+  (expect-true "and of -1"
+               (raised? (try (stringbuilder-add-code! sb -1) #:catch (System.ArgumentOutOfRangeException))))
+  (expect-true "a code unit of 65536 raises"
+               (raised? (try (stringbuilder-add-unit! sb 65536) #:catch (System.ArgumentOutOfRangeException))))
+  (expect "and nothing was added" (stringbuilder->string sb) "hi")
+
+  ;; --- vec-reduce and vec-for-each/range, both copies ----------------------
+  (def none (vec-empty))
+  (def three [1 2 3])
+  (expect "vec-reduce" (vec-reduce + three) 6)
+  (expect "vec-reduce with a suspending function" (vec-reduce slow-add three) 6)
+  (expect-true "vec-reduce of an empty vec raises"
+               (raised? (try (vec-reduce + none) #:catch (System.InvalidOperationException))))
+  (expect-true "and the same from the suspending copy"
+               (raised? (try (vec-reduce slow-add none) #:catch (System.InvalidOperationException))))
+
+  (vec-for-each/range slow-touch three 1 2)
+  (expect-true "a run past the end raises"
+               (raised? (try (vec-for-each/range (fun (x) unit) three 2 2)
+                             #:catch (System.ArgumentOutOfRangeException))))
+  (expect-true "and the same from the suspending copy"
+               (raised? (try (vec-for-each/range slow-touch three 2 2)
+                             #:catch (System.ArgumentOutOfRangeException))))
+  (expect-true "a count of -1 raises from both"
+               (and (raised? (try (vec-for-each/range (fun (x) unit) three 0 -1)
+                                  #:catch (System.ArgumentOutOfRangeException)))
+                    (raised? (try (vec-for-each/range slow-touch three 0 -1)
+                                  #:catch (System.ArgumentOutOfRangeException)))))
+
+  ;; --- with-shield ---------------------------------------------------------
+  (expect "a shield with a deadline runs its body" (with-shield #:within 1000 (+ 1 2)) 3)
+  (expect-true "a shield of 0 ms raises"
+               (raised? (try (with-shield #:within 0 1) #:catch (System.ArgumentOutOfRangeException))))
+
+  ;; --- async-seq->chan -----------------------------------------------------
+  ;; The consumer takes one line and its scope ends. The pump is parked handing
+  ;; over the second, and the end of the scope stops it there.
+  (def path "292_stream.txt")
+  (write-file path "alpha\nbeta\ngamma\n")
+  (def done
+    (with-scope
+      (def (lines done) (async-seq->chan (file-lines-async path)))
+      (expect "the first line arrives" (clr-string->string (chan-get lines)) "alpha")
+      done))
+  (expect-true "the pump of a scope that ended stops, and says so"
+               (raised? (sync (promise-join done))))
+  (delete-file path)
+  0)

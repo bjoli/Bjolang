@@ -866,6 +866,10 @@
   (clr-vec-for-each       (: BjolangRuntime.RrbForEach      (-> (-> %a Unit) (Vec %a) Unit)))
   (clr-vec-for-each/range (: BjolangRuntime.RrbForEachRange (-> (-> %a Unit) (Vec %a) int int Unit)))
   (clr-vec-iter           (: BjolangRuntime.RrbIter         (-> (-> %a bool) (Vec %a) bool)))
+  ;; The checks the ordinary copies make, for the suspending copies to make
+  ;; too, so that both raise the same thing.
+  (clr-vec-check-reduce   (: BjolangRuntime.RrbCheckReduce  (-> (Vec %a) Unit)))
+  (clr-vec-check-range    (: BjolangRuntime.RrbCheckRange   (-> (Vec %a) int int Unit)))
   ;; Append one element at the end — the persistent counterpart of
   ;; `vecbuilder-add!`, and what `Addable`'s impl for Vec delegates to.
   (vec-add                (: Collections.RrbFun.Add         (-> (Vec %a) %a (Vec %a)))))
@@ -898,6 +902,7 @@
 (defbjouble (vec-reduce f v)
   (#:sync (clr-vec-reduce f v))
   (#:bjo
+    (ignore (clr-vec-check-reduce v))
     (let go ((i 1) (acc (vec-ref v 0)))
       (if (= i (vec-length v))
           acc
@@ -914,6 +919,7 @@
 (defbjouble (vec-for-each/range f v index count)
   (#:sync (clr-vec-for-each/range f v index count))
   (#:bjo
+    (ignore (clr-vec-check-range v index count))
     (let go ((i index) (left count))
       (if (= left 0)
           unit
@@ -2657,8 +2663,13 @@
         #'(let () ,first ,@body ,(cond-arms rest whole)))
        ((:do)
         (syntax-error clause "(:do ...) needs something to run."))
-       ;; Else clause.
-       (('else body ...) (one-form body clause))
+       ;; Else clause. It always answers, so a clause after it could never be
+       ;; reached.
+       (('else body ...)
+        (match rest
+          (Nil (one-form body clause))
+          ((Cons after _)
+           (syntax-error after "This clause comes after (else ...), so it is never reached. Move it above the else, or remove it."))))
        ((test body ...) #'(if ,test ,(one-form body clause) ,(cond-arms rest whole)))
        (bad (syntax-error bad "A cond clause is (test body ...), (:match pattern expr body ...) to answer on a match, (:def pattern expr) to bind, (:do body ...) to run something, or (else body ...) for the last one."))))))
 
@@ -3378,7 +3389,7 @@
   (def (k v) entry)
   (str (->str k) " " (->str v)))
 
-;; Map to str.
+;; Map to str. Each entry in parentheses, as the `#map` literal writes it.
 (: map->str (-> (Map %k %v) string) (where (->str %k) (->str %v)))
 (defun (map->str m)
   (def sb (stringbuilder-empty))
@@ -3386,7 +3397,9 @@
   (loop (:with first? #t #f)
         (:for entry m)
         (:do (unless first? (stringbuilder-add-string! sb " "))
-             (stringbuilder-add-string! sb (map-entry->str entry))))
+             (stringbuilder-add-string! sb "(")
+             (stringbuilder-add-string! sb (map-entry->str entry))
+             (stringbuilder-add-string! sb ")")))
   (stringbuilder-add-string! sb ")")
   (stringbuilder->string sb))
 

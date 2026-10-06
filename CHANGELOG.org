@@ -3,6 +3,31 @@
 
 What each change guarantees, and what it leaves open.
 
+* The prelude refuses what it used to get wrong quietly
+
+- *~cond~ refuses a clause after ~else~*, which could never be reached. It
+  had been dropped without a word.
+- *A map prints each entry in parentheses*, ~#map((a 1) (b 2))~, the shape
+  the ~#map~ literal reads, so a map of numbers prints as the literal that
+  makes it. An ordered map prints the same way.
+- *~vecbuilder-ref~ checks its index* and raises
+  ~IndexOutOfRangeException~, as ~vec-ref~ does. Past the length but inside
+  the builder's tail it had answered whatever the slot held.
+- *~stringbuilder-add-code!~ refuses a number that is not a byte, and
+  ~stringbuilder-add-unit!~ one that is not a UTF-16 code unit*, with
+  ~ArgumentOutOfRangeException~. They had kept the low bits.
+- *Both copies of ~vec-reduce~ and ~vec-for-each/range~ fail alike*: an
+  empty vec is an ~InvalidOperationException~ and a run outside the vec an
+  ~ArgumentOutOfRangeException~, before the callback is first called, whether
+  or not the callback suspends. A count of -1 is refused rather than read as
+  "to the end".
+- *~with-shield #:within~ refuses zero or less*, which to a scope means no
+  deadline, so a shield could be written that nothing could end.
+- *The pump of ~async-seq->chan~ ends with its scope*: its send races the
+  scope's token, so a pump parked on an item nobody takes stops when the
+  scope ends, and its promise fails with ~Cancelled~. It had stayed parked
+  for good.
+
 * The REPL finds foreign imports, and re-exported traits where they live
 
 - *Tab and ~:complete~ offer a module's published ~import/extern~ names*, such

@@ -142,8 +142,10 @@
   (reference """
     An async stream can only be walked. A channel can go into a @code{choose},
     be raced against a timeout and be withdrawn, so a fiber pumps the one
-    into the other. The pump watches the token of the scope that asked for
-    the stream.
+    into the other. The pump belongs to the scope that asked for the stream
+    as a @code{spawn/daemon} does: the scope does not wait for it, and when
+    the scope ends the pump stops, even in the middle of a send nobody takes,
+    and the promise fails with @code{Cancelled}.
 
     The channel is synchronous, so the pump waits in the rendezvous until a
     receiver takes each item: a slow consumer stops the producer rather than
@@ -154,8 +156,8 @@
     The promise is there because a channel has no close, and a close could not
     say why the stream ended. A stream that throws fails the promise.
 
-    The pump notices cancellation only between items. A stream that stalls
-    while producing one stalls the pump with it.
+    A stream that stalls while producing an item stalls the pump with it:
+    the token is the stream's to honour.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -680,8 +682,9 @@
     @code{current-cancel} agrees with it.
 
     The deadline is not optional: a shield nothing outside can reach and that
-    never times out would make the program impossible to stop. It is a scope,
-    so it waits for its own children.
+    never times out would make the program impossible to stop. So an ms of
+    zero or less raises @code{System.ArgumentOutOfRangeException}. It is a
+    scope, so it waits for its own children.
     """))
 
 (:doc in-scope
@@ -803,7 +806,7 @@
 
 (:doc shield-open!
   (summary "A new scope with no link to the ambient one. Internal to with-shield.")
-  (arg ms "A deadline in milliseconds.")
+  (arg ms "A deadline in milliseconds, more than zero.")
   (returns "The scope, not yet installed.")
   (see with-shield scope-open!)
   (reference """

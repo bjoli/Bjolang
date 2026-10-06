@@ -1275,10 +1275,17 @@ public static partial class BjolangRuntime {
     /// means a genuinely empty channel and the consumer's `choose` between the
     /// two branches never has to guess.
     ///
-    /// **Limitation:** the pump only notices cancellation *between* items. A
-    /// stream that stalls in the middle of producing one stalls the pump with
-    /// it, since the token is the enumerator's to honour and nothing here can
-    /// interrupt a `MoveNextAsync` that has stopped answering.
+    /// The pump belongs to the scope that asked for the stream the way a
+    /// `spawn/daemon` does: the scope does not wait for it, and its token stops
+    /// it. A send races that token as `chan-put` does, so a pump parked on an
+    /// item nobody takes ends when the scope does, and the promise fails with
+    /// `Cancelled`. Waiting for it instead would hang every scope whose consumer
+    /// stopped reading early.
+    ///
+    /// **Limitation:** a stream that stalls in the middle of producing an item
+    /// stalls the pump with it, since the token is the enumerator's to honour
+    /// and nothing here can interrupt a `MoveNextAsync` that has stopped
+    /// answering.
     public static ValueTuple<Channel<T>, Promise<Unit>> asyncsubseqsubgtchan<T>(
         IAsyncEnumerable<T> source) {
 
@@ -1291,7 +1298,7 @@ public static partial class BjolangRuntime {
             await foreach (var item in source
                                .WithCancellation(AmbientCancellation())
                                .ConfigureAwait(false)) {
-                await channel.Send(item);
+                await chansubput(channel, item);
             }
 
             return default;

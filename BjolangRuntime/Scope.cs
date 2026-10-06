@@ -1129,8 +1129,14 @@ public static partial class BjolangRuntime {
     /// Because a shield with no deadline makes a program impossible to kill:
     /// nothing outside it can reach in, by construction. The default is thirty
     /// seconds, which is long enough for a flush and short enough to notice.
-    public static Scope shieldsubopen_BANG(int deadlineMs) =>
-        new Scope(deadlineMs, null);
+    /// Zero or less is refused: to a scope it means no deadline at all.
+    public static Scope shieldsubopen_BANG(int deadlineMs) {
+        if (deadlineMs <= 0)
+            throw new ArgumentOutOfRangeException(
+                "ms", deadlineMs,
+                $"with-shield: a shield needs a deadline above zero, and {deadlineMs} ms is not one. Nothing outside a shield can cancel it, so the deadline is the only way it ends.");
+        return new Scope(deadlineMs, null);
+    }
 
     /// `(scope-push! sc)` — install the scope, and hand back the environment it
     /// displaced.
