@@ -388,7 +388,10 @@ let private mainSuite reps =
 
 [<EntryPoint>]
 let main argv =
-    if argv |> Array.contains "varied" then
+    if argv |> Array.contains "cmlbench" then
+        Cmlbench.run ()
+        0
+    elif argv |> Array.contains "varied" then
         // Same --reps convention as the main suite.
         let reps =
             match Array.tryFindIndex ((=) "--reps") argv with
