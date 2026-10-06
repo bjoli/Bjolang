@@ -1410,16 +1410,14 @@ let private editorEntry (prompt: PrettyPrompt.Prompt) (callbacks: EditorCallback
 // ---------------------------------------------------------------------------
 
 let private help () =
-    printfn "  :complete text"
-    printfn "              what could be written at the end of text, one name"
-    printfn "              per line with where it comes from after a tab. For"
-    printfn "              an editor's completion; at a terminal, press Tab."
     printfn "  :help       this"
     printfn "  :quit       leave (so does Ctrl-D)"
     printfn "  :show name  the doc of the visible name, and the other visible"
     printfn "              names containing it. A name is visible when an entry"
     printfn "              typed now could use it: a builtin, one an import"
     printfn "              brings in, or one an earlier entry defined."
+    printfn ""
+    printfn "  Tab completes the name at the cursor."
     printfn ""
     printfn "  Anything else is a Bjolang entry: a group of definitions, or one"
     printfn "  expression, whose value is printed with ->str."
@@ -1436,6 +1434,13 @@ let private help () =
     printfn ""
     printfn "  Redefining a name shadows it. Code compiled against the earlier"
     printfn "  one goes on calling the earlier one."
+    printfn ""
+    printfn "  For tools rather than people:"
+    printfn ""
+    printfn "  :complete text"
+    printfn "              what could be written at the end of text, one name"
+    printfn "              per line with where it comes from after a tab. A"
+    printfn "              completion source for an editor."
 
 let run () : int =
     // Nothing narrates a REPL entry. Six step banners per keystroke is not what
