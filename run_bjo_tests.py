@@ -838,6 +838,11 @@ def test_frameworks(work, c):
     write(web / "src" / "router.bjo", WEB_ROUTER)
 
     # 15. Declare and use, in the package that declares it.
+    #
+    # `WebApplicationBuilder` is there for what its assembly references: the
+    # dependency-injection abstractions, which are also a NuGet package. The
+    # type loads only if the framework's own copy answers for that assembly,
+    # so an older copy shipped next to the compiler makes naming it fail.
     own = work / "own"
     write(own / "manifest.bjodat",
           f'(package\n  (name (fwown))\n  (version "0.1.0")\n  (frameworks "{ASPNET}"))\n')
@@ -845,6 +850,8 @@ def test_frameworks(work, c):
           '(import (std prelude))\n'
           '(import/extern\n'
           '  (status-ok (: Microsoft.AspNetCore.Http.StatusCodes.Status200OK int #:get)))\n'
+          '(import/class\n'
+          '  (AppBuilder (: Microsoft.AspNetCore.Builder.WebApplicationBuilder)))\n'
           '(defun (main) (println (str "status " (int->string status-ok))) 0)\n')
 
     declared = run_bjo(own, "run")
