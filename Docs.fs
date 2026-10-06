@@ -272,6 +272,55 @@ let private unnamedOf (t: FType) : Kind option =
         Some(KUnnamed(Some mandatory.Length, Some(List.map fst keywords), Some rest.IsSome, Some ret, typeVarsOf t))
     | _ -> None
 
+/// Where a builtin's description says it is, which is nowhere: a builtin has no
+/// source. Only the checks below read the ranges inside a `Kind`'s types, and
+/// none of them reports one.
+let private nowhere: Range =
+    { Start = { Line = 0; Column = 0 }
+      End = { Line = 0; Column = 0 }
+      File = ""
+      Module = "" }
+
+/// Whether the module being compiled is `(std prelude)`, whose docs are also
+/// where the builtins are documented.
+let private isPrelude (moduleKey: string) =
+    moduleKey = Naming.moduleKeyOfPath (IO.Path.Combine(Paths.libDir, "std", "prelude.bjo"))
+
+/// What a builtin is, read off its type in `Prelude`.
+///
+/// A builtin has no definition in any `.bjo` file to be read, and its
+/// parameters have no names, so it is described as an `import/extern` written
+/// with a type is: the doc names the arguments, and the check counts them.
+let private builtinKind (name: string) : Kind option =
+    Map.tryFind name Prelude.prelude.Bindings
+    |> Option.map (fun binding ->
+        let (Scheme(vars, _, t)) = binding.Scheme
+
+        match t with
+        | TFun(args, ret, _) ->
+            let meta = Map.tryFind name Prelude.prelude.FunMetas
+
+            let count =
+                match meta with
+                | Some m -> m.MandatoryCount
+                | None -> args.Length
+
+            let keywords =
+                meta |> Option.map (fun m -> List.map fst m.KeywordParams) |> Option.defaultValue []
+
+            let hasRest = meta |> Option.exists (fun m -> m.RestParam.IsSome)
+
+            // Only whether it returns anything is checked, so that is all the
+            // return type has to say.
+            let returns =
+                if ret = TypeConstants.unitType || ret = TypeConstants.voidType then
+                    TName("void", nowhere)
+                else
+                    TName("value", nowhere)
+
+            KUnnamed(Some count, Some keywords, Some hasRest, Some returns, vars |> List.map (fun v -> v.TrimStart '\''))
+        | _ -> KValue)
+
 /// What each name this module defines is, read off its declarations.
 let private kindsOf (decls: Decl list) : Map<string, Kind> * Set<string> =
     let signatures =
@@ -912,8 +961,13 @@ let publish (decls: Decl list) (entries: Entry list) : string =
                 | Reader n when Set.contains n readers -> [ "(kind reader)" ]
                 | Reader _ -> []
                 | Named n ->
+                    // A name with no declaration here that got this far is a
+                    // builtin documented in the prelude: `check` refuses every
+                    // other one.
+                    let builtin = if Map.containsKey n kinds then None else builtinKind n
+
                     let kind =
-                        match Map.tryFind n kinds with
+                        match Map.tryFind n kinds |> Option.orElse builtin with
                         | Some(KFunction _)
                         | Some(KUnnamed _) -> "function"
                         | Some KValue -> "value"
@@ -927,6 +981,12 @@ let publish (decls: Decl list) (entries: Entry list) : string =
                     let signature =
                         match Map.tryFind n signatures, kind with
                         | Some t, ("function" | "value") -> [ $"(signature %s{quoted (typeText t)})" ]
+                        | None, ("function" | "value") when builtin.IsSome ->
+                            Map.tryFind n Prelude.prelude.Bindings
+                            |> Option.map (fun b ->
+                                let (Scheme(_, _, t)) = b.Scheme
+                                $"(signature %s{quoted (DotNetInterop.showType t)})")
+                            |> Option.toList
                         | _ -> []
 
                     let definition =
@@ -974,6 +1034,10 @@ let check (env: Env) (moduleKey: string) (decls: Decl list) (entries: Entry list
                 | Named n ->
                     match Map.tryFind n kinds with
                     | Some k -> n, k
+                    // The prelude is where the builtins are documented: they
+                    // are compiled into the runtime, and this is the module
+                    // every program imports beside them.
+                    | None when isPrelude moduleKey && (builtinKind n).IsSome -> n, (builtinKind n).Value
                     | None when Set.contains n readers ->
                         n, KRefused $"#%s{n} is a reader extension, documented as (:doc %s{n} #:reader ...)."
                     | None when Map.containsKey n env.Bindings || Macro.isMacro n || typeKnown env moduleKey n ->
@@ -1035,3 +1099,9 @@ let check (env: Env) (moduleKey: string) (decls: Decl list) (entries: Entry list
                 Diagnostics.warn
                     $"The reader extension #%s{n} at %s{formatPos r} has no (:doc %s{n} #:reader ...). Every reader extension is published. %s{why}"
             | _ -> ()
+
+        // The builtins are offered beside the prelude, and are documented in it.
+        if isPrelude moduleKey then
+            for n in Prelude.builtinNames do
+                if not (Set.contains n documented) && not (Map.containsKey n kinds) && warned.Add n then
+                    Diagnostics.warn $"The builtin %s{n} has no (:doc %s{n} ...). %s{why}"

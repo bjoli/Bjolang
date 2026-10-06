@@ -781,6 +781,24 @@ let private visibleNames (state: State) : Visible list =
                       Dll = Some e.DllPath
                       Signature = None }))
 
+        // A plain import records no alias for a trait or its methods: only a
+        // modifier that respells them does. So they are found through the trait
+        // each belongs to, and the module that declared it.
+        let traitOf (trait: string) (name: string) =
+            Map.tryFind trait env.Registry.TraitOrigins
+            |> Option.bind (fun origin -> imported origin name name)
+
+        let traits =
+            (env.Registry.Traits |> Map.toList |> List.choose (fun (t, _) -> traitOf t t))
+            @ (env.TraitMethodNames
+               |> Set.toList
+               |> List.choose (fun m -> Map.tryFind m env.Registry.TraitMethods |> Option.bind (fun t -> traitOf t m)))
+
+        // The builtins are documented in the prelude, which is where their
+        // docs are published.
+        let preludeDll =
+            Map.tryFind (Naming.moduleKeyOfPath (Path.Combine(Paths.libDir, "std", "prelude.bjo"))) dllOf
+
         let builtins =
             Prelude.builtinNames
             |> Set.toList
@@ -788,11 +806,13 @@ let private visibleNames (state: State) : Visible list =
                 { Name = name
                   Original = name
                   Module = "builtin"
-                  Dll = None
+                  Dll = preludeDll
                   Signature = signatureOf name })
 
-        entries @ bindings @ macros @ builtins
-        |> List.filter (fun v -> not (v.Name.StartsWith "__") && not (v.Name.Contains "::"))
+        // `__` marks a name the compiler made, such as the suspending copy
+        // `read-line__bjo`, and `::` a qualified one. Neither is written.
+        entries @ bindings @ macros @ traits @ builtins
+        |> List.filter (fun v -> not (v.Name.Contains "__") && not (v.Name.Contains "::"))
         |> List.distinctBy (fun v -> v.Name)
 
 /// Published docs by assembly path. A library does not change under a running
@@ -908,13 +928,28 @@ let private showDoc (v: Visible) (form: SExpr) =
 
     printfn $"""%s{v.Name}: %s{String.concat " " what}"""
 
-    // How it is called: a defun's head as written, else a macro's forms.
+    // How it is called: a defun's head as written, else a macro's forms, else
+    // for a function with no definition to show — a builtin, or an
+    // import/extern — the call its doc's argument names spell.
     match single "definition" with
     | Some head -> printfn $"  %s{head}"
     | None ->
-        for (h, parts) in clauses do
-            if h = "form" then
-                for p in parts do printfn $"  %s{sourceText p}"
+        let forms = clauses |> List.filter (fun (h, _) -> h = "form")
+
+        for (_, parts) in forms do
+            for p in parts do printfn $"  %s{sourceText p}"
+
+        if forms.IsEmpty && single "kind" = Some "function" then
+            let parameters =
+                clauses
+                |> List.choose (fun (h, parts) ->
+                    match h, parts with
+                    | "arg", n :: _ -> Some(sourceText n)
+                    | "key", n :: _ -> Some("#:" + (sourceText n).TrimStart('#', ':'))
+                    | "rest", n :: _ -> Some(sourceText n + " ...")
+                    | _ -> None)
+
+            printfn $"""  (%s{String.concat " " (v.Original :: parameters)})"""
 
     single "signature" |> Option.iter (fun t -> printfn $"  : %s{t}")
 
