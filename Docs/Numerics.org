@@ -100,7 +100,10 @@ by zero is ~∞~, and ~(/ 0.0 0.0)~ is NaN.
 (%  7 -2)     ;;  1
 #+END_SRC
 
-A remainder, not a modulus. ~(% (+ (% a n) n) n)~ is the always-positive one.
+A remainder, not a modulus. ~(std maths)~ has both under Racket's names:
+~remainder~ is ~%~, and ~modulo~ takes the sign of the divisor, so
+~(modulo -7 2)~ is 1. ~quotient~ is ~/~ at an integer type, and
+~quotient/remainder~ answers both as a tuple.
 
 *** Overflow wraps
 
@@ -291,15 +294,26 @@ fails and ~(* 2 1.5)~ is 3.0.
 
 ** The maths surface
 
-~sqrt~ is in the prelude. The rest of ~System.Math~ is ~(std maths)~:
+~sqrt~ is in the prelude. The rest is ~(std maths)~, whose docs say what each
+does:
 
 #+BEGIN_SRC scheme
 (import (std maths))
+;; quotient remainder modulo quotient/remainder   ; integer division, Racket's names
+;; gcd lcm expt integer-sqrt sqr                   ; at every integer type
+;; positive? negative?                             ; at every numeric type
+;; nan? infinite? finite? pi                       ; doubles
 ;; cbrt exp pow loge log-base log2 log10
 ;; floor ceiling truncate round
+;; exact-floor exact-ceiling exact-truncate exact-round   ; to an int
 ;; sin cos tan asin acos atan atan2
 ;; sinh cosh tanh asinh acosh atanh
 #+END_SRC
+
+The integer functions wrap on overflow as the operators do; ~expt~ and
+~integer-sqrt~ refuse a negative argument. The ~exact-~ roundings answer an
+~int~ and refuse NaN, the infinities and what does not fit, where a ~cast~
+would answer some number.
 
 All over ~double~; an integer argument widens at the call as it would in C#.
 ~atan2~ takes ~(y x)~, in that order.

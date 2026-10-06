@@ -1,0 +1,468 @@
+;; Docs for std/maths.bjo, read through (:doc #:file "maths.bjodoc"). The texts
+;; are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Numbers beyond the operators: the Num members, integer division, gcd and powers, and System.Math over doubles.")
+  (see modulo quotient/remainder gcd expt integer-sqrt exact-round pi)
+  (example """
+    (import (std maths))
+
+    (modulo -7 3)              ; 2
+    (quotient/remainder 17 5)  ; (3, 2)
+    (gcd 12 18)                ; 6
+    (expt 2L 40)               ; 1099511627776L
+    (exact-round 2.7)          ; 3
+    """)
+  (reference """
+    The prelude re-exports @code{abs}, @code{sign}, @code{min}, @code{max},
+    @code{clamp} and @code{zero?} from here. Everything else needs
+    @code{(import (std maths))}.
+
+    @strong{Integer division} has Racket's names. @code{quotient} and
+    @code{remainder} are what @code{/} and @code{%} already do at an integer
+    type: the quotient rounds toward zero and the remainder takes the sign
+    of the dividend. @code{modulo} takes the sign of the divisor, which is
+    the one to use for wrapping an index round: @code{(modulo -1 n)} is
+    @code{n - 1}. R7RS's @code{truncate/} family is @code{quotient} and
+    @code{remainder}, and @code{floor-remainder} is @code{modulo}.
+
+    @strong{The integer functions} work at every integer type, signed and
+    unsigned, and wrap on overflow as the operators do. They are generic over
+    .NET's numeric interfaces, so nothing is boxed and no dictionary is
+    passed.
+
+    @strong{The double functions} are @code{System.Math}'s, over
+    @code{double}: an integer argument widens at the call, as in C#. There is
+    one logarithm per base, @code{loge}, @code{log2}, @code{log10} and
+    @code{log-base}, because @code{log} is the prelude's logging effect.
+    @code{round} rounds a half to the even neighbour.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Num
+;; ---------------------------------------------------------------------------
+
+(:doc abs
+  (summary "The magnitude of a number.")
+  (arg x "The number.")
+  (returns "x without its sign.")
+  (raises System.OverflowException "For the smallest value of a signed integer type, which has no positive counterpart.")
+  (see sign negate)
+  (example """
+    (abs -5)     ; 5
+    (abs -2.5)   ; 2.5
+    """))
+
+(:doc sign
+  (summary "Which side of zero a number is on.")
+  (arg x "The number.")
+  (returns "-1, 0 or 1.")
+  (raises System.ArithmeticException "For a NaN.")
+  (see abs positive? negative?))
+
+(:doc min
+  (summary "The smaller of two numbers.")
+  (arg a "One.")
+  (arg b "The other.")
+  (returns "Whichever is smaller. A NaN in either gives NaN.")
+  (see max clamp least))
+
+(:doc max
+  (summary "The larger of two numbers.")
+  (arg a "One.")
+  (arg b "The other.")
+  (returns "Whichever is larger. A NaN in either gives NaN.")
+  (see min clamp greatest))
+
+(:doc clamp
+  (summary "A number held between two bounds.")
+  (arg x "The number.")
+  (arg lo "The least it may be.")
+  (arg hi "The most it may be. Not less than lo.")
+  (returns "lo when x is below it, hi when x is above it, and x otherwise.")
+  (raises System.ArgumentException "When lo is greater than hi.")
+  (see min max)
+  (example """
+    (clamp 5 1 3)    ; 3
+    (clamp -2 1 3)   ; 1
+    """))
+
+(:doc zero?
+  (summary "Whether a number is zero.")
+  (arg x "The number.")
+  (returns "#t for 0, and for both zeros of a double.")
+  (see positive? negative?))
+
+(:doc even?
+  (summary "Whether a number is an even integer.")
+  (arg x "The number. A double counts when it is whole.")
+  (returns "#t when x is an integer divisible by 2. 2.5 is neither even nor odd.")
+  (see odd? modulo))
+
+(:doc odd?
+  (summary "Whether a number is an odd integer.")
+  (arg x "The number. A double counts when it is whole.")
+  (returns "#t when x is an integer not divisible by 2.")
+  (see even?))
+
+(:doc sqr
+  (summary "A number times itself.")
+  (arg x "The number.")
+  (returns "x * x, which wraps at an integer type as * does.")
+  (see expt integer-sqrt))
+
+(:doc positive?
+  (summary "Whether a number is greater than zero.")
+  (arg x "The number.")
+  (returns "#t when x is above 0. Zero is not positive, and neither is NaN.")
+  (see negative? sign zero?))
+
+(:doc negative?
+  (summary "Whether a number is less than zero.")
+  (arg x "The number.")
+  (returns "#t when x is below 0. -0.0 is not negative, and neither is NaN.")
+  (see positive? sign))
+
+;; ---------------------------------------------------------------------------
+;; Integer division
+;; ---------------------------------------------------------------------------
+
+(:doc quotient
+  (summary "Integer division, rounding toward zero.")
+  (arg a "The dividend.")
+  (arg b "The divisor.")
+  (returns "a divided by b with the fraction dropped: (quotient -7 2) is -3.")
+  (raises System.DivideByZeroException "When b is zero.")
+  (see remainder modulo quotient/remainder)
+  (reference """
+    The same as @code{/} at an integer type, under a name that says which
+    rounding is meant and can be passed to a function.
+    """))
+
+(:doc remainder
+  (summary "What integer division leaves, with the sign of the dividend.")
+  (arg a "The dividend.")
+  (arg b "The divisor.")
+  (returns "a - b * (quotient a b): (remainder -7 2) is -1.")
+  (raises System.DivideByZeroException "When b is zero.")
+  (see modulo quotient)
+  (reference """
+    The same as @code{%}. Use @code{modulo} for an answer with the sign of
+    the divisor.
+    """))
+
+(:doc modulo
+  (summary "What integer division leaves, with the sign of the divisor.")
+  (arg a "The dividend.")
+  (arg b "The divisor.")
+  (returns "The number from 0 toward b that differs from a by a multiple of b.")
+  (raises System.DivideByZeroException "When b is zero.")
+  (see remainder quotient)
+  (example """
+    (modulo -7 2)    ; 1
+    (modulo 7 -2)    ; -1
+    (modulo -1 10)   ; 9, the last index of ten
+    """)
+  (reference """
+    It differs from @code{remainder} only when the two signs differ, and
+    then by one divisor. With a positive divisor it is never negative, which
+    is what makes it the one for wrapping round: an index, an hour, a
+    position on a ring.
+    """))
+
+(:doc quotient/remainder
+  (summary "Integer division's quotient and remainder at once.")
+  (arg a "The dividend.")
+  (arg b "The divisor.")
+  (returns "(Tuple (quotient a b) (remainder a b)).")
+  (raises System.DivideByZeroException "When b is zero.")
+  (see quotient remainder)
+  (example """
+    (def (q r) (quotient/remainder 17 5))   ; q is 3, r is 2
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The integer functions
+;; ---------------------------------------------------------------------------
+
+(:doc gcd
+  (summary "The greatest common divisor of two integers.")
+  (arg a "One.")
+  (arg b "The other.")
+  (returns "The largest integer dividing both, never negative. (gcd 0 0) is 0.")
+  (raises System.OverflowException "When a or b is the smallest value of a signed type, whose magnitude does not fit.")
+  (see lcm)
+  (example """
+    (gcd 12 18)    ; 6
+    (gcd -12 18)   ; 6
+    """))
+
+(:doc lcm
+  (summary "The least common multiple of two integers.")
+  (arg a "One.")
+  (arg b "The other.")
+  (returns "The smallest positive integer both divide, or 0 when either is 0.")
+  (see gcd)
+  (reference """
+    Computed as @code{a / (gcd a b) * b}, so the arithmetic overflows only
+    when the answer does, and then it wraps as @code{*} does.
+    """))
+
+(:doc expt
+  (summary "An integer raised to a whole power.")
+  (arg base "The integer.")
+  (arg n "The power. Not negative.")
+  (returns "base multiplied by itself n times; (expt b 0) is 1. It wraps on overflow, as * does.")
+  (raises System.ArgumentOutOfRangeException "When n is negative.")
+  (see pow sqr)
+  (example """
+    (expt 2 10)     ; 1024
+    (expt 10L 18)   ; 1000000000000000000L
+    """)
+  (reference """
+    By squaring, so it takes a number of multiplications in proportion to
+    the number of bits in @code{n}. @code{pow} is the one over doubles, for a
+    fractional or negative power.
+    """))
+
+(:doc integer-sqrt
+  (summary "The integer square root: the largest integer whose square is not more than a number.")
+  (arg n "The number. Not negative.")
+  (returns "The floor of the square root of n: (integer-sqrt 15) is 3.")
+  (raises System.ArgumentOutOfRangeException "When n is negative.")
+  (see sqr expt)
+  (reference """
+    Exact at every size, where going through the prelude's @code{sqrt}
+    rounds once a
+    @code{long} has more digits than a double holds. Newton's method, which
+    never overflows, even at the type's largest value.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Doubles
+;; ---------------------------------------------------------------------------
+
+(:doc nan?
+  (summary "Whether a double is NaN, not a number.")
+  (arg x "The double.")
+  (returns "#t for NaN, such as (/ 0.0 0.0) gives.")
+  (see finite? infinite?)
+  (reference """
+    NaN is unequal to everything, itself included, so @code{(= x x)} cannot
+    test for it and this is the way to.
+    """))
+
+(:doc infinite?
+  (summary "Whether a double is positive or negative infinity.")
+  (arg x "The double.")
+  (returns "#t for either infinity.")
+  (see finite? nan?))
+
+(:doc finite?
+  (summary "Whether a double is an ordinary number: neither infinite nor NaN.")
+  (arg x "The double.")
+  (returns "#t unless x is an infinity or NaN.")
+  (see nan? infinite?))
+
+(:doc pi
+  (summary "The ratio of a circle's circumference to its diameter, as a double.")
+  (see sin cos atan2))
+
+(:doc cbrt
+  (summary "The cube root of a double.")
+  (arg x "The double. A negative one has a negative root.")
+  (returns "The number whose cube is x.")
+  (see pow)
+  (reference "The square root is the prelude's @code{sqrt}."))
+
+(:doc exp
+  (summary "e raised to a power.")
+  (arg x "The power.")
+  (returns "e to the x.")
+  (see loge pow))
+
+(:doc pow
+  (summary "A double raised to a power.")
+  (arg x "The base.")
+  (arg y "The power, which may be fractional or negative.")
+  (returns "x to the y. NaN for a negative x and a fractional y.")
+  (see expt exp sqr))
+
+(:doc loge
+  (summary "The natural logarithm.")
+  (arg x "The number. Positive.")
+  (returns "The power e is raised to to give x. Negative infinity for 0, NaN for a negative x.")
+  (see log2 log10 log-base exp))
+
+(:doc log-base
+  (summary "The logarithm to a given base.")
+  (arg x "The number. Positive.")
+  (arg b "The base.")
+  (returns "The power b is raised to to give x.")
+  (see loge log2 log10)
+  (example """
+    (log-base 8.0 2.0)   ; 3.0
+    """))
+
+(:doc log2
+  (summary "The logarithm to base 2.")
+  (arg x "The number. Positive.")
+  (returns "The power 2 is raised to to give x.")
+  (see loge log10 log-base))
+
+(:doc log10
+  (summary "The logarithm to base 10.")
+  (arg x "The number. Positive.")
+  (returns "The power 10 is raised to to give x.")
+  (see loge log2 log-base))
+
+;; ---------------------------------------------------------------------------
+;; Rounding
+;; ---------------------------------------------------------------------------
+
+(:doc floor
+  (summary "A double rounded down, as a double.")
+  (arg x "The double.")
+  (returns "The largest whole number not above x: (floor -2.5) is -3.0.")
+  (see ceiling truncate round exact-floor))
+
+(:doc ceiling
+  (summary "A double rounded up, as a double.")
+  (arg x "The double.")
+  (returns "The smallest whole number not below x: (ceiling -2.5) is -2.0.")
+  (see floor exact-ceiling))
+
+(:doc truncate
+  (summary "A double rounded toward zero, as a double.")
+  (arg x "The double.")
+  (returns "x with its fraction dropped: (truncate -2.5) is -2.0.")
+  (see floor exact-truncate))
+
+(:doc round
+  (summary "A double rounded to the nearest whole number, a half to the even one, as a double.")
+  (arg x "The double.")
+  (returns "The nearest whole number; between two, the even one: (round 2.5) is 2.0 and (round 3.5) is 4.0.")
+  (see floor exact-round)
+  (reference """
+    Rounding a half to even is what @code{Math.Round} does, and what R7RS
+    and Racket do: it keeps a long sum of rounded values from drifting
+    upward.
+    """))
+
+(:doc exact-floor
+  (summary "A double rounded down, as an int.")
+  (arg x "The double.")
+  (returns "(floor x) as an int.")
+  (raises System.OverflowException "When x is NaN, an infinity, or rounds outside an int's range.")
+  (see floor exact-round)
+  (reference """
+    A @code{cast} from a double answers some number for NaN and for what
+    does not fit; these refuse instead.
+    """))
+
+(:doc exact-ceiling
+  (summary "A double rounded up, as an int.")
+  (arg x "The double.")
+  (returns "(ceiling x) as an int.")
+  (raises System.OverflowException "When x is NaN, an infinity, or rounds outside an int's range.")
+  (see ceiling exact-floor))
+
+(:doc exact-truncate
+  (summary "A double rounded toward zero, as an int.")
+  (arg x "The double.")
+  (returns "(truncate x) as an int.")
+  (raises System.OverflowException "When x is NaN, an infinity, or rounds outside an int's range.")
+  (see truncate exact-floor))
+
+(:doc exact-round
+  (summary "A double rounded to the nearest whole number, a half to the even one, as an int.")
+  (arg x "The double.")
+  (returns "(round x) as an int: (exact-round 2.5) is 2.")
+  (raises System.OverflowException "When x is NaN, an infinity, or rounds outside an int's range.")
+  (see round exact-floor))
+
+;; ---------------------------------------------------------------------------
+;; Trigonometric and hyperbolic
+;; ---------------------------------------------------------------------------
+
+(:doc sin
+  (summary "The sine of an angle in radians.")
+  (arg x "The angle, in radians.")
+  (returns "Its sine, from -1 to 1.")
+  (see cos tan asin pi))
+
+(:doc cos
+  (summary "The cosine of an angle in radians.")
+  (arg x "The angle, in radians.")
+  (returns "Its cosine, from -1 to 1.")
+  (see sin tan acos))
+
+(:doc tan
+  (summary "The tangent of an angle in radians.")
+  (arg x "The angle, in radians.")
+  (returns "Its tangent.")
+  (see sin cos atan))
+
+(:doc asin
+  (summary "The angle whose sine is a number.")
+  (arg x "The sine, from -1 to 1.")
+  (returns "The angle in radians, from -pi/2 to pi/2. NaN outside -1 to 1.")
+  (see sin acos))
+
+(:doc acos
+  (summary "The angle whose cosine is a number.")
+  (arg x "The cosine, from -1 to 1.")
+  (returns "The angle in radians, from 0 to pi. NaN outside -1 to 1.")
+  (see cos asin))
+
+(:doc atan
+  (summary "The angle whose tangent is a number.")
+  (arg x "The tangent.")
+  (returns "The angle in radians, from -pi/2 to pi/2.")
+  (see tan atan2))
+
+(:doc atan2
+  (summary "The angle of a point from the positive x axis.")
+  (arg y "The point's y. First, as in C and .NET.")
+  (arg x "The point's x.")
+  (returns "The angle in radians, from -pi to pi, in the point's own quadrant.")
+  (see atan)
+  (example """
+    (atan2 1.0 -1.0)   ; 2.356..., 3pi/4: up and to the left
+    """))
+
+(:doc sinh
+  (summary "The hyperbolic sine.")
+  (arg x "The number.")
+  (returns "Its hyperbolic sine.")
+  (see cosh tanh asinh))
+
+(:doc cosh
+  (summary "The hyperbolic cosine.")
+  (arg x "The number.")
+  (returns "Its hyperbolic cosine, never below 1.")
+  (see sinh tanh acosh))
+
+(:doc tanh
+  (summary "The hyperbolic tangent.")
+  (arg x "The number.")
+  (returns "Its hyperbolic tangent, from -1 to 1.")
+  (see sinh cosh atanh))
+
+(:doc asinh
+  (summary "The inverse hyperbolic sine.")
+  (arg x "The number.")
+  (returns "The number whose hyperbolic sine is x.")
+  (see sinh))
+
+(:doc acosh
+  (summary "The inverse hyperbolic cosine.")
+  (arg x "The number. At least 1.")
+  (returns "The non-negative number whose hyperbolic cosine is x. NaN below 1.")
+  (see cosh))
+
+(:doc atanh
+  (summary "The inverse hyperbolic tangent.")
+  (arg x "The number, between -1 and 1.")
+  (returns "The number whose hyperbolic tangent is x. NaN outside -1 to 1, and an infinity at either end.")
+  (see tanh))

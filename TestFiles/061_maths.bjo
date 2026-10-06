@@ -60,4 +60,52 @@
   (expect "atan2" (double->string (atan2 0.0 1.0)) "0")
   (expect "sinh of zero" (double->string (sinh 0.0)) "0")
   (expect "acosh of one" (double->string (acosh 1.0)) "0")
+
+  ;; Integer division, Racket's way. The four sign combinations are where
+  ;; remainder and modulo differ.
+  (expect "quotient" (quotient -7 2) -3)
+  (expect "remainder" (remainder -7 2) -1)
+  (expect "modulo, negative dividend" (modulo -7 2) 1)
+  (expect "modulo, negative divisor" (modulo 7 -2) -1)
+  (expect "modulo, both negative" (modulo -7 -2) -1)
+  (expect "modulo, exact" (modulo -6 3) 0)
+  (expect "modulo of a long" (long->string (modulo -7L 3L)) "2")
+  (expect "modulo of a uint" (modulo 7u 3u) 1u)
+  (expect "quotient/remainder" (quotient/remainder 17 -5) (Tuple -3 2))
+
+  ;; The integer functions.
+  (expect "gcd" (gcd -12 18) 6)
+  (expect "gcd with zero" (gcd 0 5) 5)
+  (expect "lcm" (lcm 4 -6) 12)
+  (expect "lcm with zero" (lcm 0 3) 0)
+  (expect "expt" (expt 2 10) 1024)
+  (expect "expt to zero" (expt 7 0) 1)
+  (expect "expt of a long" (long->string (expt 10L 18)) "1000000000000000000")
+  (expect "a negative exponent is refused"
+          (match (try (expt 2 -1) #:catch (System.ArgumentOutOfRangeException))
+            ((Ok _) #f)
+            ((Err _) #t))
+          #t)
+  (expect "integer-sqrt" (integer-sqrt 15) 3)
+  (expect "integer-sqrt, exact" (integer-sqrt 16) 4)
+  (expect "integer-sqrt at int-max" (integer-sqrt int-max) 46340)
+  (expect "integer-sqrt of a uint, at its largest" (integer-sqrt 4294967295u) 65535u)
+  (expect "sqr" (sqr -3) 9)
+  (expect "zero is not positive" (positive? 0) #f)
+  (expect "negative?" (negative? -0.5) #t)
+
+  ;; Doubles.
+  (expect "nan?" (nan? (/ 0.0 0.0)) #t)
+  (expect "infinite?" (infinite? (/ -1.0 0.0)) #t)
+  (expect "finite?" (finite? 1.0) #t)
+  (expect "pi" (double->string pi) "3.141592653589793")
+  (expect "exact-round, half to even" (exact-round 2.5) 2)
+  (expect "exact-floor" (exact-floor -2.5) -3)
+  (expect "exact-ceiling" (exact-ceiling -2.5) -2)
+  (expect "exact-truncate" (exact-truncate -2.5) -2)
+  (expect "NaN has no int"
+          (match (try (exact-round (/ 0.0 0.0)) #:catch (System.OverflowException))
+            ((Ok _) #f)
+            ((Err _) #t))
+          #t)
   0)
