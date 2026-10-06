@@ -29,7 +29,10 @@
 /// method on the module class, which is exactly what an importing entry links
 /// against.
 ///
-/// No line editing, no completion, no history. Run it under `rlwrap`.
+/// At a terminal an entry is read with a line editor (PrettyPrompt): Tab
+/// completes from the names an entry could write, Enter with a bracket open is
+/// a newline, and entries are kept across sessions. Piped input is read line
+/// by line. `:complete` offers the same completions to a tool outside.
 module Bjolang.Repl
 
 open System
@@ -107,6 +110,9 @@ let private readEntry (prompt: string) (continuation: string) : string option =
 
         match Console.In.ReadLine() with
         | null -> if acc.Trim() = "" then None else Some acc
+        // A command is one line whatever it holds: the text `:complete` is
+        // given is an entry cut off at the cursor, and has brackets open.
+        | line when acc = "" && line.TrimStart().StartsWith ":" -> Some line
         | line ->
             let text = if acc = "" then line else acc + "\n" + line
             if incomplete text then go text else Some text
@@ -693,7 +699,11 @@ type private Visible =
       Module: string
       /// The assembly whose published docs answer for the name. Builtins are
       /// compiled into the runtime and have none.
-      Dll: string option }
+      Dll: string option
+      /// The name's type as a signature spells it, where the probe entry's
+      /// environment knows it: a builtin's or an imported binding's. What a
+      /// completion shows for a name that has no doc.
+      Signature: string option }
 
 /// Every name the next entry could write, and where each is defined.
 ///
@@ -729,13 +739,20 @@ let private visibleNames (state: State) : Visible list =
         let dllOf =
             dllDeps |> List.map (fun dll -> Naming.moduleKeyOfPath dll, dll) |> Map.ofList
 
+        let signatureOf (name: string) =
+            Map.tryFind name env.Bindings
+            |> Option.map (fun b ->
+                let (TypedAST.Scheme(_, _, t)) = b.Scheme
+                DotNetInterop.showType t)
+
         let imported (origin: string) (original: string) (name: string) =
             Map.tryFind origin dllOf
             |> Option.map (fun dll ->
                 { Name = name
                   Original = original
                   Module = Pipeline.dependencyEntry dll
-                  Dll = Some dll })
+                  Dll = Some dll
+                  Signature = signatureOf name })
 
         // A union's cases are documented in the union's doc, not under their
         // own names.
@@ -761,7 +778,8 @@ let private visibleNames (state: State) : Visible list =
                     { Name = name
                       Original = name
                       Module = $"entry %d{e.Index}"
-                      Dll = Some e.DllPath }))
+                      Dll = Some e.DllPath
+                      Signature = None }))
 
         let builtins =
             Prelude.builtinNames
@@ -770,7 +788,8 @@ let private visibleNames (state: State) : Visible list =
                 { Name = name
                   Original = name
                   Module = "builtin"
-                  Dll = None })
+                  Dll = None
+                  Signature = signatureOf name })
 
         entries @ bindings @ macros @ builtins
         |> List.filter (fun v -> not (v.Name.StartsWith "__") && not (v.Name.Contains "::"))
@@ -965,10 +984,436 @@ let private show (state: State) (query: string) =
             printfn "%s" ($"  %s{v.Name.PadRight width}  %s{v.Module.PadRight moduleWidth}  %s{summary}".TrimEnd())
 
 // ---------------------------------------------------------------------------
+// Completion
+// ---------------------------------------------------------------------------
+
+/// The REPL's own commands, which are words at the start of an entry.
+let private commands = [ ":complete"; ":help"; ":quit"; ":show" ]
+
+/// The heads the parsers recognise themselves, which are neither bindings nor
+/// macros and so are in no scope the probe entry could read. Taken from the
+/// dispatch in `Parser.parseExpr` and the declaration heads in `DeclParser`,
+/// leaving out the forms only the reader writes (`vec-literal`, `quoted-list`
+/// and the like). A form added there has to be added here to be offered.
+let private specialForms =
+    [ "->"; "and"; "begin"; "bjo"; "bjoroutine"; "case"; "cast"; "def"; "def*"; "def/hash-extend"
+      "def/macro"; "def/mutable"; "def/pattern"; "def/trait"; "defbjo"; "defbjouble"; "defun"; "dyn"
+      "export"; "fun"; "if"; "impl"; "impl/extern"; "import"; "import/class"; "import/extern"; "include"
+      "let"; "let/mono"; "letrec"; "loop"; "match"; "module"; "not"; "or"; "parameterize"; "re-export"
+      "record"; "record-ref"; "record-set"; "record-set!"; "seq"; "seql"; "set!"; "spawn"; "spawn-evt"
+      "spawn/daemon"; "spawn/detached"; "struct"; "struct-ref"; "struct-set"; "struct-set!"; "task->event"
+      "try"; "type"; "type-rec"; "unless"; "when"; "with-open"; "with-return"; "yield"; "yield-from" ]
+
+/// What an import may wrap a module path in, as `DeclParser.parseImportForm`
+/// reads them.
+let private importModifiers =
+    [ "except"; "only"; "postfix"; "postfix-defs"; "postfix-types"; "prefix"; "prefix-defs"; "prefix-types"
+      "rename" ]
+
+/// One thing that could be written where the cursor is.
+type private Candidate =
+    { Name: string
+      /// Where it comes from, as `:complete` prints it: a module, `entry 3`,
+      /// `builtin`, `special form`, `command`, `module`, or `this entry`.
+      Source: string
+      Visible: Visible option }
+
+/// What kind of word the cursor is in, which decides what is offered.
+type private CompletionContext =
+    /// A REPL command at the start of the entry.
+    | Command
+    /// The argument of `:show`.
+    | ShowArgument
+    /// The first word of a list inside an import: a modifier, or the first
+    /// segment of a module path.
+    | ImportClause
+    /// A later segment of a module path, after the segments already written.
+    | ModulePath of string list
+    /// Code, which is everything else. Carries the symbols already written
+    /// before the cursor, which are offered too: the names a `let` or a `fun`
+    /// being typed binds are in no scope yet.
+    | Code of string list
+    /// Inside a string or a comment, after `#:`, or after text the lexer
+    /// cannot read. Nothing is offered.
+    | Silent
+
+/// The word the cursor is in, as the span to replace: the run of symbol
+/// characters on either side of it, by the lexer's own rule for what a symbol
+/// character is. A command's leading colon belongs to the word, although a
+/// colon is not a symbol character.
+let private wordAt (text: string) (caret: int) : int * int =
+    let caret = max 0 (min caret text.Length)
+    let mutable start = caret
+
+    while start > 0 && Lexer.isSymbolChar text[start - 1] do
+        start <- start - 1
+
+    if start > 0 && text[start - 1] = ':' && String.IsNullOrWhiteSpace(text.Substring(0, start - 1)) then
+        start <- start - 1
+
+    let mutable finish = caret
+
+    while finish < text.Length && Lexer.isSymbolChar text[finish] do
+        finish <- finish + 1
+
+    start, finish
+
+/// An element of a list the cursor is inside, as far as the context needs it.
+type private Element =
+    | ElemSymbol of string
+    | ElemOther
+
+/// Reads the context of the word that starts at `start`.
+///
+/// The text before the word is tokenized, which settles strings for free: an
+/// unterminated one makes the lexer throw. A comment does not, since the lexer
+/// drops comments, so a `;` between the last token and the word is looked for
+/// separately. The open lists are then replayed from the tokens, outermost
+/// first, which is what tells an import's module path from code.
+let private contextAt (text: string) (start: int) : CompletionContext =
+    let before = text.Substring(0, start)
+
+    if String.IsNullOrWhiteSpace before && text.Substring(start).StartsWith ":" then
+        Command
+    elif before.TrimStart().StartsWith ":" then
+        if before.TrimStart().StartsWith ":show " then ShowArgument else Silent
+    elif start >= 2 && before.EndsWith "#:" then
+        Silent
+    else
+        match (try Some(Lexer.tokenize "<repl>" before) with _ -> None) with
+        | None -> Silent
+        | Some tokens ->
+            let lineStarts =
+                0 :: [ for i in 0 .. before.Length - 1 do if before[i] = '\n' then yield i + 1 ]
+                |> Array.ofList
+
+            let afterLast =
+                match List.tryLast tokens with
+                | None -> 0
+                | Some t ->
+                    let line = t.Range.End.Line - 1
+                    if line < lineStarts.Length then min before.Length (lineStarts[line] + t.Range.End.Column) else before.Length
+
+            if before.Substring(afterLast).Contains ';' then
+                Silent
+            else
+                // The open lists, innermost first, each holding its elements
+                // so far in reverse.
+                let frames =
+                    tokens
+                    |> List.fold
+                        (fun (frames: Element list list) t ->
+                            match t.Token, frames with
+                            | (LParen | LBracket | LBrace), _ -> [] :: frames
+                            | (RParen | RBracket | RBrace), _ :: parent :: rest -> (ElemOther :: parent) :: rest
+                            | (RParen | RBracket | RBrace), _ -> []
+                            | Symbol n, top :: rest -> (ElemSymbol n :: top) :: rest
+                            | _, top :: rest -> (ElemOther :: top) :: rest
+                            | _, [] -> [])
+                        []
+                    |> List.map List.rev
+
+                let written =
+                    tokens
+                    |> List.choose (fun t ->
+                        match t.Token with
+                        | Symbol n -> Some n
+                        | _ -> None)
+                    |> List.distinct
+
+                match List.rev frames with
+                | (ElemSymbol "import" :: _) :: _ :: _ ->
+                    match List.head frames with
+                    | [] -> ImportClause
+                    | ElemSymbol head :: _ when List.contains head importModifiers -> Silent
+                    | elements when elements |> List.forall (function ElemSymbol _ -> true | ElemOther -> false) ->
+                        ModulePath(elements |> List.map (function ElemSymbol s -> s | ElemOther -> ""))
+                    | _ -> Silent
+                | (ElemSymbol "import" :: _) :: _ -> Silent
+                | _ -> Code written
+
+/// The next segments of a module path after `parts`: package names that go on
+/// from them, and the directories and `.bjo` files under the package they are
+/// already inside.
+let private moduleSegments (parts: string list) : string list =
+    let roots = Paths.packageRoots ()
+
+    let isPrefix (shorter: string list) (longer: string list) =
+        shorter.Length <= longer.Length && List.truncate shorter.Length longer = shorter
+
+    let packageSegments =
+        roots
+        |> List.filter (fun r -> r.Name.Length > parts.Length && isPrefix parts r.Name)
+        |> List.map (fun r -> r.Name[parts.Length])
+
+    let fileSegments =
+        roots
+        |> List.filter (fun r -> isPrefix r.Name parts)
+        |> List.collect (fun r ->
+            let dir = Path.Combine(Array.ofList (r.Directory :: List.skip r.Name.Length parts))
+
+            if Directory.Exists dir then
+                [ for d in Directory.GetDirectories dir -> Path.GetFileName d
+                  for f in Directory.GetFiles(dir, "*.bjo") -> Path.GetFileNameWithoutExtension f ]
+            else
+                [])
+
+    packageSegments @ fileSegments
+    |> List.filter (fun s -> s <> "" && s |> Seq.forall Lexer.isSymbolChar)
+    |> List.distinct
+
+/// The names visible at the prompt, kept until the next entry changes them.
+/// Finding them compiles a probe entry, which is far too slow for every
+/// keystroke and does not need doing again until an entry has been evaluated.
+let mutable private visibleCache: (int * Visible list) option = None
+
+let private cachedVisibleNames (state: State) : Visible list =
+    match visibleCache with
+    | Some(next, names) when next = state.Next -> names
+    | _ ->
+        let names = visibleNames state
+        visibleCache <- Some(state.Next, names)
+        names
+
+/// What could be written at `caret` in `text`, sorted, with the span the
+/// chosen one replaces. Offered by the line editor on Tab, and printed by
+/// `:complete`.
+let private completions (state: State) (text: string) (caret: int) : (int * int) * Candidate list =
+    let start, finish = wordAt text caret
+    let prefix = text.Substring(start, max 0 (min caret text.Length - start))
+
+    let plain source names =
+        names |> List.map (fun n -> { Name = n; Source = source; Visible = None })
+
+    let names () =
+        cachedVisibleNames state
+        |> List.map (fun v -> { Name = v.Name; Source = v.Module; Visible = Some v })
+
+    let candidates =
+        match contextAt text start with
+        | Command -> plain "command" commands
+        | ShowArgument -> names ()
+        | ImportClause -> plain "import modifier" importModifiers @ plain "module" (moduleSegments [])
+        | ModulePath parts -> plain "module" (moduleSegments parts)
+        | Code written -> names () @ plain "special form" specialForms @ plain "this entry" written
+        | Silent -> []
+
+    let chosen =
+        candidates
+        |> List.filter (fun c -> c.Name.StartsWith(prefix, StringComparison.Ordinal))
+        |> List.distinctBy (fun c -> c.Name)
+        |> List.sortWith (fun a b -> String.CompareOrdinal(a.Name, b.Name))
+
+    (start, finish), chosen
+
+/// `:complete text`: what could be written at the end of `text`, one name per
+/// line, with where it comes from after a tab.
+///
+/// For a tool outside the REPL that wants completion without a line editor,
+/// such as an editor's completion source: it sends the current entry up to
+/// the cursor on one line, and replaces the run of symbol characters at its
+/// end with the name chosen.
+let private complete (state: State) (text: string) =
+    let _, chosen = completions state text text.Length
+
+    for c in chosen do
+        printfn $"%s{c.Name}\t%s{c.Source}"
+
+/// What the completion menu shows beside a candidate: its signature and the
+/// summary of its doc, where there are any, and where it comes from.
+let private describe (c: Candidate) : string =
+    let doc =
+        c.Visible
+        |> Option.bind (fun v -> v.Dll |> Option.bind (fun dll -> Map.tryFind v.Original (docsOf dll)))
+
+    let signature =
+        doc
+        |> Option.bind (fun form ->
+            clausesOf form
+            |> List.tryPick (function
+                | "signature", [ s ] -> Some(clauseString s)
+                | "definition", [ s ] -> Some(clauseString s)
+                | _ -> None))
+        |> Option.orElse (c.Visible |> Option.bind (fun v -> v.Signature))
+
+    let summary = doc |> Option.map summaryOf |> Option.filter (fun s -> s <> "")
+
+    // A name says which module or entry it is from; a special form, a command
+    // or a module segment just says what it is.
+    let source =
+        match c.Visible with
+        | Some _ -> "from " + c.Source
+        | None -> c.Source
+
+    [ Option.toList signature; Option.toList summary; [ source ] ]
+    |> List.concat
+    |> String.concat "\n\n"
+
+// ---------------------------------------------------------------------------
+// Line editing
+// ---------------------------------------------------------------------------
+
+/// Whether to read with the line editor rather than line by line.
+///
+/// Only at a terminal it can draw on. Piped input is read line by line, which
+/// is what the transcript tests feed. Emacs's shell and comint buffers are
+/// ptys that cannot render the editor's escapes, and say so by `INSIDE_EMACS`
+/// or `TERM=dumb`. `BJOLANG_REPL_PLAIN` asks for line-by-line reading anywhere,
+/// for running under `rlwrap` or another wrapper that edits lines itself.
+let private useLineEditor () =
+    not Console.IsInputRedirected
+    && not Console.IsOutputRedirected
+    && Environment.GetEnvironmentVariable "TERM" <> "dumb"
+    && String.IsNullOrEmpty(Environment.GetEnvironmentVariable "INSIDE_EMACS")
+    && String.IsNullOrEmpty(Environment.GetEnvironmentVariable "BJOLANG_REPL_PLAIN")
+
+/// What the Ctrl-D binding submits, standing for the end of input. No key
+/// types it, so no entry can be mistaken for it.
+let private endOfInput = "\u0004"
+
+/// The line editor's hooks into the REPL. `state` is the session as the loop
+/// last left it, read at each keystroke that asks for completions.
+type private EditorCallbacks(state: unit -> State) =
+    inherit PrettyPrompt.PromptCallbacks()
+
+    let mutable menuOpen = false
+
+    let key (k: ConsoleKey) (shift: bool) (control: bool) =
+        PrettyPrompt.Consoles.KeyPress(ConsoleKeyInfo('\000', k, shift, false, control))
+
+    /// Text inserted as though pasted. The editor inserts pasted text only for
+    /// the paste key, Shift-Insert, and acts on any other key as that key.
+    let pasted (text: string) =
+        PrettyPrompt.Consoles.KeyPress(ConsoleKeyInfo('\000', ConsoleKey.Insert, true, false, false), text)
+
+    override _.GetSpanToReplaceByCompletionAsync(text, caret, _) =
+        let start, finish = wordAt text caret
+        Threading.Tasks.Task.FromResult(PrettyPrompt.Documents.TextSpan.FromBounds(start, finish))
+
+    override _.GetCompletionItemsAsync(text, caret, _, _) =
+        let _, chosen = completions (state ()) text caret
+
+        let items =
+            chosen
+            |> List.map (fun c ->
+                PrettyPrompt.Completion.CompletionItem(
+                    c.Name,
+                    getExtendedDescription =
+                        PrettyPrompt.Completion.CompletionItem.GetExtendedDescriptionHandler(fun _ ->
+                            Threading.Tasks.Task.FromResult(PrettyPrompt.Highlighting.FormattedString(describe c)))
+                ))
+
+        Threading.Tasks.Task.FromResult(ResizeArray items :> Collections.Generic.IReadOnlyList<_>)
+
+    /// The menu opens when asked, by Tab or Ctrl-Space, and not while typing:
+    /// most words at a prompt are finished before a menu would help.
+    override _.ShouldOpenCompletionWindowAsync(_, _, _, _) = Threading.Tasks.Task.FromResult false
+
+    override _.CompletionWindowOpenedAsync(_, _, _) =
+        menuOpen <- true
+        Threading.Tasks.Task.CompletedTask
+
+    override _.CompletionWindowClosedAsync(_, _, _) =
+        menuOpen <- false
+        Threading.Tasks.Task.CompletedTask
+
+    /// Called before each entry is read. An entry submitted or abandoned with
+    /// the menu showing takes the menu with it without saying it closed.
+    member _.NewEntry() = menuOpen <- false
+
+    /// Two keys mean something of their own here while the menu is closed.
+    ///
+    /// Enter submits only a complete entry. With a bracket still open it is a
+    /// newline, as it is at the line-by-line prompt, and a command is always
+    /// complete.
+    ///
+    /// Tab completes as a shell does: the one candidate there is, or as much
+    /// as all candidates share, inserted at once; the menu when that inserts
+    /// nothing. Completing in the middle of a word always opens the menu,
+    /// since inserting would leave the rest of the word behind it.
+    override _.TransformKeyPressAsync(text, caret, keyPress, _) =
+        let info = keyPress.ConsoleKeyInfo
+
+        let transformed =
+            match info.Key, info.Modifiers with
+            | ConsoleKey.Enter, ConsoleModifiers.None when
+                not menuOpen && not (text.TrimStart().StartsWith ":") && incomplete text
+                ->
+                key ConsoleKey.Enter true false
+            | ConsoleKey.Tab, ConsoleModifiers.None when not menuOpen ->
+                let (start, finish), chosen = completions (state ()) text caret
+                let typed = text.Substring(start, caret - start)
+
+                let shared =
+                    match chosen with
+                    | [] -> typed
+                    | first :: rest ->
+                        rest
+                        |> List.fold
+                            (fun (common: string) c ->
+                                let n = Seq.zip common c.Name |> Seq.takeWhile (fun (a, b) -> a = b) |> Seq.length
+                                common.Substring(0, n))
+                            first.Name
+
+                if chosen.IsEmpty then
+                    pasted ""
+                elif caret = finish && shared.Length > typed.Length then
+                    pasted (shared.Substring(typed.Length))
+                else
+                    key ConsoleKey.Spacebar false true
+            | _ -> keyPress
+
+        Threading.Tasks.Task.FromResult transformed
+
+    /// Ctrl-D on an empty entry ends the session, as end of input does at the
+    /// line-by-line prompt. On a non-empty one it does nothing.
+    override _.GetKeyPressCallbacks() =
+        seq {
+            struct (PrettyPrompt.Consoles.KeyPressPattern(ConsoleModifiers.Control, ConsoleKey.D),
+                    PrettyPrompt.KeyPressCallbackAsync(fun text _ _ ->
+                        Threading.Tasks.Task.FromResult(
+                            if text = "" then PrettyPrompt.KeyPressCallbackResult(endOfInput, null) else null
+                        )))
+        }
+
+/// Where the line editor keeps the entries of earlier sessions:
+/// `$XDG_DATA_HOME/bjolang/repl-history`, which is `~/.local/share/...` when
+/// that is unset. `null` turns history off, which is what a machine with no
+/// such directory gets, rather than a history file in whatever directory the
+/// REPL was started from.
+let private historyFile () : string =
+    match
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.Create)
+    with
+    | null | "" -> null
+    | data ->
+        try
+            let dir = Path.Combine(data, "bjolang")
+            Directory.CreateDirectory dir |> ignore
+            Path.Combine(dir, "repl-history")
+        with _ ->
+            null
+
+/// Reads one entry with the line editor. `None` is the end of the session.
+let private editorEntry (prompt: PrettyPrompt.Prompt) (callbacks: EditorCallbacks) () : string option =
+    callbacks.NewEntry()
+    let result = prompt.ReadLineAsync().GetAwaiter().GetResult()
+
+    match result with
+    | :? PrettyPrompt.KeyPressCallbackResult as r when r.Text = endOfInput -> None
+    | r when r.IsSuccess -> Some r.Text
+    // Ctrl-C abandons the entry, and the prompt comes back empty.
+    | _ -> Some ""
+
+// ---------------------------------------------------------------------------
 // The loop
 // ---------------------------------------------------------------------------
 
 let private help () =
+    printfn "  :complete text"
+    printfn "              what could be written at the end of text, one name"
+    printfn "              per line with where it comes from after a tab. For"
+    printfn "              an editor's completion; at a terminal, press Tab."
     printfn "  :help       this"
     printfn "  :quit       leave (so does Ctrl-D)"
     printfn "  :show name  the doc of the visible name, and the other visible"
@@ -1046,8 +1491,30 @@ let run () : int =
 
     printfn "Bjolang REPL. :help for commands, Ctrl-D to leave."
 
+    // The session as the loop last left it, for the line editor's completion,
+    // which is asked for while the loop is waiting on a read.
+    let mutable current: State option = None
+
+    let editor =
+        if useLineEditor () then
+            let callbacks = EditorCallbacks(fun () -> current.Value)
+
+            let configuration =
+                PrettyPrompt.PromptConfiguration(prompt = PrettyPrompt.Highlighting.FormattedString("bjo> "))
+
+            Some(new PrettyPrompt.Prompt(historyFile (), callbacks, null, configuration), callbacks)
+        else
+            None
+
+    let read =
+        match editor with
+        | Some(prompt, callbacks) -> editorEntry prompt callbacks
+        | None -> fun () -> readEntry "bjo> " "...> "
+
     let rec loop (state: State) =
-        match readEntry "bjo> " "...> " with
+        current <- Some state
+
+        match read () with
         | None ->
             printfn ""
             state
@@ -1064,6 +1531,16 @@ let run () : int =
             | entry when entry.StartsWith ":show " ->
                 show state (entry.Substring(":show ".Length).Trim())
                 loop state
+            // The argument is taken from the untrimmed line: a space at its
+            // end means the cursor is past the last word, which asks for every
+            // name rather than for the ones continuing that word.
+            | ":complete" ->
+                complete state ""
+                loop state
+            | entry when entry.StartsWith ":complete " ->
+                let raw = text.TrimStart()
+                complete state (raw.Substring(":complete ".Length))
+                loop state
             | entry ->
                 let next = Timing.phase "repl entry" (fun () -> evaluate state entry)
                 loop next
@@ -1075,6 +1552,8 @@ let run () : int =
           Entries = []
           Directory = directory }
     |> ignore
+
+    editor |> Option.iter (fun (prompt, _) -> prompt.DisposeAsync().AsTask().Wait())
 
     // Before the directory, so that anything the session still owns is released
     // while the session's own files are still where it left them.

@@ -618,21 +618,16 @@
                                      (list-append (against-flags roots)
                                                   (list-append batch files)))))))))
   
-;; The compiler's REPL has no line editing of its own, so it is run under
-;; `rlwrap` where there is one. `-a` forces it on: the prompt is written by the
-;; REPL rather than by a terminal rlwrap can recognise.
+;; The compiler's REPL edits its own lines at a terminal, with completion and
+;; history, so it is run as it is. Under a wrapper that edits lines itself,
+;; such as `rlwrap`, set BJOLANG_REPL_PLAIN to have it read line by line.
 (: cmd-repl #:sync (-> Against int))
 (defun (cmd-repl roots)
   (def flags (against-flags roots))
   (if (not (have-compiler?))
       1
-      (match (which "rlwrap")
-        ((Some rlwrap)
-         (exec rlwrap (list->vec (Cons "-a" (Cons "dotnet" (Cons compiler-dll
-                                                                 (list-append flags (Cons "--repl" Nil))))))))
-        (None (println "bjo: no rlwrap in PATH, so the REPL has no line editing")
-              (exec "dotnet" (list->vec (Cons compiler-dll
-                                              (list-append flags (Cons "--repl" Nil)))))))))
+      (exec "dotnet" (list->vec (Cons compiler-dll
+                                      (list-append flags (Cons "--repl" Nil)))))))
 
 
 ;; ---------------------------------------------------------------------------
@@ -942,7 +937,7 @@
   (println "  bjo publish [-c] [-o dir] [<file.bjo>]  Build a program for release, and copy it with")
   (println "                                          everything it loads into one directory that")
   (println "                                          runs from anywhere. Default: publish/ beside it.")
-  (println "  bjo repl                                Start a REPL, under rlwrap where there is one.")
+  (println "  bjo repl                                Start a REPL.")
   (println "  bjo rebjo                               Rebuild the compiler and bjo itself.")
   (println "  bjo help                                Show this message.")
   (println "")

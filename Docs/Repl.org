@@ -5,13 +5,15 @@
 
 : ./bjo/bjo repl
 
-No line editing, no completion, no history — ~bjo repl~ runs it under ~rlwrap~
-where there is one, which is what supplies the first three.
+At a terminal the REPL edits its own lines (see "Line editing and completion"
+below). Tab completes, Enter with a bracket still open starts a new line, and
+entries are kept from one session to the next.
 
 An entry is either a group of declarations or a single expression. An
 expression's value is printed; a group of declarations prints the names it
 bound. End of input, ~:quit~ or Ctrl-D leaves; ~:help~ prints a summary;
-~:show name~ prints a visible name's doc (see "~:show~" below).
+~:show name~ prints a visible name's doc (see "~:show~" below);
+~:complete text~ prints what could be written at the end of ~text~.
 
 #+begin_src scheme
 bjo> (+ 1 2)
@@ -173,6 +175,78 @@ where its doc is published (see ~Documentation.org~, "Where the documentation
 goes"). A re-exported name's doc is the defining module's. A doc written at
 the prompt, beside its definition, is found in that entry. Builtins have no
 docs.
+
+* Line editing and completion
+
+At a terminal an entry is read with a line editor ([[https://github.com/waf/PrettyPrompt][PrettyPrompt]]).
+
+- *Tab* completes the word at the cursor as a shell does: the one candidate
+  there is, or as much as all candidates share, is inserted at once, and when
+  that would insert nothing a menu opens. Ctrl-Space opens the menu too. In
+  the menu the arrow keys choose, Enter or Tab inserts and Escape closes. Beside
+  the chosen name is its signature, the summary of its doc, and where it is
+  from.
+- *Enter* submits a complete entry. With a bracket still open it starts a new
+  line, so a long form can be written, and edited, across lines. A command
+  (~:show~, ~:complete~) is always complete.
+- *History* is kept in ~$XDG_DATA_HOME/bjolang/repl-history~
+  (=~/.local/share/...= when that is unset), and the arrow keys bring earlier
+  entries back. Ctrl-C abandons the entry being written; Ctrl-D on an empty one
+  leaves.
+
+Piped input is read line by line with none of this, which is what the
+transcript tests feed. So are Emacs's shell and comint buffers, which say they
+are by ~INSIDE_EMACS~ or ~TERM=dumb~. ~BJOLANG_REPL_PLAIN=1~ asks for line by
+line reading anywhere, for running under ~rlwrap~ or another wrapper that edits
+lines itself.
+
+** What is offered
+
+What the word at the cursor is decides what is offered. A word is a run of
+characters the lexer would read as part of a symbol, so ~string-le~ and
+~r/random-b~ are one word each.
+
+- *Code*: every visible name, as ~:show~ finds them, then the special forms
+  (~let~, ~match~, ~defun~ ...), then the symbols already written earlier in
+  the entry. The last are there for the names a ~let~ or a ~fun~ being typed
+  binds, which are in no scope yet.
+- *A command* at the start of an entry: ~:complete~, ~:help~, ~:quit~, ~:show~.
+- *The argument of ~:show~*: the visible names.
+- *Inside an import*: the first word of a list is an import modifier
+  (~only~, ~prefix~ ...) or a package, and a later word of a module path is the
+  next segment, read off the package directories. ~(import (std ra~ offers
+  ~random~.
+- *Nothing* inside a string or a comment, after ~#:~, or where the lexer cannot
+  read the text before the cursor.
+
+The visible names are found by compiling a probe entry, about 90 ms, and kept
+until the next entry is evaluated, so only the first Tab after an entry pays
+for it.
+
+The special forms are a list in ~Repl.fs~. The parsers recognise them by
+matching on the head of a form, so there is no table of them to read, and a
+form added to ~Parser.parseExpr~ or ~DeclParser~ is offered once it is added
+to that list too.
+
+** ~:complete~
+
+~:complete text~ prints what could be written at the end of ~text~: one name per
+line, then a tab, then where it comes from (a module, ~entry 3~, ~builtin~,
+~special form~, ~command~, ~module~, ~import modifier~ or ~this entry~). Nothing
+is printed when nothing fits.
+
+#+begin_src text
+bjo> :complete (random-in
+random-int	(std random)
+#+end_src
+
+It is the completion the line editor offers, for a tool outside the REPL: an
+editor's completion source, until there is a language server. The tool sends
+the current entry up to the cursor, on one line, and replaces the run of symbol
+characters at its end with the chosen name. A trailing space asks for every
+name rather than the ones continuing a word. A command is a line of its own
+whatever it holds, so the brackets an unfinished entry leaves open do not make
+the REPL wait for more.
 
 * Semantics
 

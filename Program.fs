@@ -112,7 +112,7 @@ let printUsage () =
     printfn ""
     printfn "Options:"
     printfn "  --repl      Read, evaluate and print Bjolang forms until end of input."
-    printfn "              No line editing — run it under rlwrap."
+    printfn "              At a terminal, with line editing, completion and history."
     printfn "  --lib       Compile the source as a library (.dll) instead of an executable"
     printfn "  -d, --debug Build unoptimized, with debug symbols, and dump the typed AST to"
     printfn "              ast_dump.txt and the generated C# to out.cs"
