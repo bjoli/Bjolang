@@ -5,6 +5,15 @@ What each change guarantees, and what it leaves open.
 
 * Silent failures found by a correctness audit
 
+- *A local function named like a constrained top-level one is called as
+  itself.* With a top-level ~(: pick (-> %a %a %a) (where (Eq %a)))~, a body
+  that defined its own ~pick~ and called it got a specialised copy of the
+  top-level one instead, so ~(pick 1 2)~ answered what the other ~pick~
+  would. With a different number of type variables the compiler crashed, and
+  a local inside the constrained function it shadowed was handed that
+  function's dictionaries, which C# refused. Specialisation and dictionary
+  lowering go by the callee's name, so such a local is now renamed apart
+  before either runs.
 - *~(:final test)~ stops before anything of the next iteration runs.* The
   verdict was read where the clause stands, in the next iteration, so that
   iteration pulled an element and ran every clause written before the
