@@ -111,15 +111,6 @@ let rec private typedPatternBinders (pat: TypedPattern) : string list =
 /// Kept for callers that only need the names.
 let patternNames = typedPatternBinders
 
-/// Rewrites the free names of a body that was written somewhere else to name
-/// the module they actually came from — `Origin_Module::helper`.
-///
-/// Applied *after* inference, never before: `infer` fails hard on unbound names
-/// and `Origin_Module::helper` is not a key in `env.Bindings`.
-///
-/// Two callers, both splicing a body from another module into this one:
-/// `TraitInline` at an inlined trait method, and `Monomorphise` at a
-/// specialised copy of an imported constrained function.
 /// Points a body written in another module at the bindings this module has
 /// only under their qualified reference, so that checking it here finds them.
 ///
@@ -129,9 +120,24 @@ let patternNames = typedPatternBinders
 /// A name the importer kept is left as written; `applyQualification` deals
 /// with it after the check.
 let reachHidden (isBound: string -> bool) (qualification: Map<string, string>) (body: Expr) : Expr =
-    let hidden = qualification |> Map.filter (fun _ qualified -> isBound qualified)
+    // Only a name this module cannot reach as written. One it can — a builtin
+    // most of all, which binds no import edge keeps — is left to mean what it
+    // means here, as it always did.
+    let hidden =
+        qualification
+        |> Map.filter (fun bare qualified -> not (isBound bare) && isBound qualified)
+
     renameFree hidden body
 
+/// Rewrites the free names of a body that was written somewhere else to name
+/// the module they actually came from — `Origin_Module::helper`.
+///
+/// Applied *after* inference, never before: `infer` fails hard on unbound names
+/// and `Origin_Module::helper` is not, in general, a key in `env.Bindings`.
+///
+/// Two callers, both splicing a body from another module into this one:
+/// `TraitInline` at an inlined trait method, and `Monomorphise` at a
+/// specialised copy of an imported constrained function.
 let applyQualification (qualification: Map<string, string>) (expr: TypedExpr) : TypedExpr =
     if Map.isEmpty qualification then
         expr
