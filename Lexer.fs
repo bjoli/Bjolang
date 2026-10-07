@@ -321,6 +321,22 @@ module Lexer =
         not (Char.IsWhiteSpace c)
         && not (List.contains c [ '('; ')'; '['; ']'; '{'; '}'; ','; ':'; '"'; ';'; '\'' ])
 
+    /// What a number literal may be spelled as: the shapes and suffixes
+    /// `TypedAST.NumericLiteral` reads.
+    ///
+    /// Hexadecimal and binary digits take only the `u` and `l` suffixes, since
+    /// the others are hex digits. A real has a digit after its point.
+    let private numberSpelling =
+        System.Text.RegularExpressions.Regex(
+            "^-?(?:"
+            + "0[xX][0-9a-fA-F]+(?:[uU][lL]?|[lL])?"
+            + "|0[bB][01]+(?:[uU][lL]?|[lL])?"
+            + "|[0-9]+(?:uy|us|[uU][lL]?|s|[lL]|[dD])?"
+            + "|[0-9]+(?:\\.[0-9]+(?:[eE]-?[0-9]+)?|[eE]-?[0-9]+)[dD]?"
+            + ")$",
+            System.Text.RegularExpressions.RegexOptions.Compiled
+        )
+
     let rec tokenize (file: string) (input: string) : LexedToken list =
         let length = input.Length
 
@@ -510,7 +526,17 @@ module Lexer =
 
                     let nextPos = readNumber pos
                     let len = nextPos - pos
-                    emit (NumberLit(input.Substring(pos, len))) len
+                    let text = input.Substring(pos, len)
+
+                    // The run takes letters, digits, `.` and `-` so that suffixes,
+                    // hex digits and an exponent's sign are part of it, which also
+                    // lets in runs that are no number, such as `3-1` or `5abc`.
+                    // Their digits are what C# is given.
+                    if not (numberSpelling.IsMatch text) then
+                        failwithf
+                            $"Syntax error at %s{formatAt file line col}: '%s{text}' is not a number. A number is digits, with a fraction and an exponent if it is a real, as in 1.5 or 2e-3, or 0x or 0b and hex or binary digits, and one of the type suffixes. Separate it from what follows with a space."
+
+                    emit (NumberLit text) len
 
                 // Hashtag prefixes (#:, #\, #(, #[, etc.)
                 | '#' when pos + 1 < length ->
@@ -585,7 +611,10 @@ module Lexer =
                                               hex.Substring 1,
                                               Globalization.NumberStyles.HexNumber,
                                               Globalization.CultureInfo.InvariantCulture) with
-                                    | true, value when value >= 0 && value <= 0x10FFFF -> value
+                                    | true, value when
+                                        value >= 0 && value <= 0x10FFFF && not (value >= 0xD800 && value <= 0xDFFF)
+                                        ->
+                                        value
                                     | _ ->
                                         failwithf
                                             $"Invalid character literal #\\%s{name} at %s{formatAt file line col}: not a Unicode scalar value."
