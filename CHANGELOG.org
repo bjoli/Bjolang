@@ -18,10 +18,17 @@ What each change guarantees, and what it leaves open.
   error.
 - *A ~from-file~ redirect closes its file* once it has been copied into the
   command. Each run had left one descriptor open.
-- *A body-local ~def~ in an ~impl~ method, a trait default or a
-  ~defbjouble~ may read one written after it*, as in a ~defun~. The defs
-  had been evaluated in source order there, so one that read a later def
-  got its default value: ~(def a (+ b 1)) (def b 41)~ gave ~a~ the value 1.
+- *The definitions in a body follow ~letrec*~.* A run of ~def~ and
+  ~defun~ forms is one scope, and values run in the order they are written.
+  A value that reads one written below it, directly or through a local
+  function it calls, is refused: "'b' is used before its definition". Such
+  definitions had been reordered silently, so effects ran out of the order
+  written, and a ~def~ that meant an outer binding of the same name read the
+  later one: ~(def y 10) (println "x") (def a y) (def y 20)~ gave ~a~ 20.
+  In ~impl~ methods, trait defaults and ~defbjouble~ bodies nothing had
+  been ordered at all, so ~(def a (+ b 1)) (def b 41)~ gave ~a~ the value 1.
+  A use inside a ~fun~, a ~seq~ or a ~bjo~ may still name a later value,
+  and local functions may stand in any order.
 - *~(def (: name Type) value)~ at the top level is checked against its type*,
   as ~def/mutable~ and a ~def*~ clause written that way are. The annotation
   had been dropped, so ~(def (: x int) "hello")~ compiled and printed

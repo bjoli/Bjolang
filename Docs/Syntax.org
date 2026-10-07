@@ -439,6 +439,37 @@ Keyword parameters with defaults, a ~#:rest~ parameter, a type written at a para
 
 A local ~defun~ cannot have a *separate* signature. Local functions with keyword or rest parameters are not tail-call promoted; deep tail recursion needs a plain positional local ~defun~ or an explicit ~loop~. A top-level ~defun~ is promoted regardless.
 
+*** The definitions in a body run in the order they are written
+A run of ~def~ and ~defun~ forms in a body is one scope, as Scheme's ~letrec*~ is: every name in it is visible to all of them. A value's init runs where it is written, so it may read only the values above it. A use inside a ~fun~, a ~seq~ or a ~bjo~ waits until that runs, and may name a value written below.
+
+#+BEGIN_SRC scheme
+(def a (+ b 1))           ;; an error: b is used before its definition
+(def b 41)
+
+(def get-b (fun () b))    ;; fine: the lambda reads b when it is called
+(def b 41)
+(get-b)                   ;; 41
+#+END_SRC
+
+Defining a local function runs nothing, so a ~defun~ may stand below the ~def~ that calls it, and local functions may call each other in any order. A call runs the function's body there and then, so what the body reads has to be defined above the call:
+
+#+BEGIN_SRC scheme
+(def total (add-bonus 40))   ;; an error: add-bonus reads bonus, defined below
+(defun (add-bonus x) (+ x bonus))
+(def bonus 2)
+#+END_SRC
+
+The scope is the whole run, so a name defined in it is that definition everywhere in it, above its ~def~ too. A ~def~ that means an outer binding of the same name has to stand in a different run, separated from the redefinition by an expression:
+
+#+BEGIN_SRC scheme
+(def y 10)
+(println "between")       ;; ends the run
+(def a y)                 ;; an error: this y is the one below
+(def y 20)
+#+END_SRC
+
+A use of a later value inside a lambda that is called before that value is defined is not caught, and reads the type's default value.
+
 *** Mutable bindings
 ~def/mutable~ declares a binding ~set!~ may write, at module level or inside a function.
 #+BEGIN_SRC scheme

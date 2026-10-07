@@ -1,6 +1,7 @@
-;; A run of body-local defs is one group, put in dependency order, so a def may
-;; read one written after it. That holds in an impl method, a trait default and
-;; either body of a defbjouble as it does in a defun.
+;; The definitions in an impl method, a trait default and either body of a
+;; defbjouble follow the same rule as a defun's: values run in the order they
+;; are written, and a local function may be defined below the value that calls
+;; it, as long as what it reads is defined above that value.
 
 (import (std prelude))
 (import (std simpletest))
@@ -9,16 +10,18 @@
   (: speak (-> %a int))
   (: speak-twice (-> %a int))
   (defun (speak-twice x)
-    (def doubled (* 2 once))
     (def once (speak x))
+    (def doubled (twice once))
+    (defun (twice (: n int)) (* 2 n))
     doubled))
 
 (type (: Dog (Record (: n int))))
 
 (impl (Speak Dog)
   (defun (speak d)
-    (def a (+ b 1))
     (def b (.n d))
+    (def a (plus-one b))
+    (defun (plus-one (: x int)) (+ x 1))
     a))
 
 (: helper (-bjo-> int int))
@@ -27,21 +30,23 @@
 (: plus-one (-> int int))
 (defbjouble (plus-one x)
   (#:sync
-    (def a (+ b 1))
     (def b x)
+    (def a (step b))
+    (defun (step (: n int)) (+ n 1))
     a)
   (#:bjo
-    (def a (+ b 1))
     (def b (helper x))
+    (def a (step b))
+    (defun (step (: n int)) (+ n 1))
     a))
 
 (: plus-one-suspending (-bjo-> int int))
 (defbjo (plus-one-suspending x) (plus-one x))
 
 (defun (main args)
-  (expect "an impl method reads a later def" (speak (Dog (n 41))) 42)
-  (expect "a trait default reads a later def" (speak-twice (Dog (n 41))) 84)
-  (expect "a defbjouble's sync body reads a later def" (plus-one 41) 42)
+  (expect "an impl method calls a function defined below" (speak (Dog (n 41))) 42)
+  (expect "a trait default calls a function defined below" (speak-twice (Dog (n 41))) 84)
+  (expect "a defbjouble's sync body calls a function defined below" (plus-one 41) 42)
   (expect "and so does its suspending body"
           (match (sync/blocking (promise-join (bjo (plus-one-suspending 41))))
             ((Ok n) n)

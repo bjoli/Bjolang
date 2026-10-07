@@ -1,0 +1,60 @@
+;; The definitions in a body follow letrec*: one scope, values run in the order
+;; they are written, and a name defined below may be used inside a function or
+;; a seq that runs later. Local functions may be defined in any order, and may
+;; call each other.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: log (Array string))
+(def log (make-array 1))
+
+(: note! (-> string int int))
+(defun (note! tag v)
+  (array-set! log 0 (string-append (array-ref log 0) tag))
+  v)
+
+(: effects-in-order (-> string))
+(defun (effects-in-order)
+  (array-set! log 0 "")
+  ;; c does not depend on a or b, and it still runs after them.
+  (def a (note! "a" 1))
+  (def b (note! "b" (+ a 1)))
+  (def c (note! "c" 7))
+  (ignore (+ a (+ b c)))
+  (array-ref log 0))
+
+(: parity (-> int string))
+(defun (parity n)
+  (defun (ev? k) (if (= k 0) #t (od? (- k 1))))
+  (defun (od? k) (if (= k 0) #f (ev? (- k 1))))
+  (if (ev? n) "even" "odd"))
+
+(: later-inside-a-lambda (-> int))
+(defun (later-inside-a-lambda)
+  (def get-b (fun () b))
+  (def b 41)
+  (+ (get-b) 1))
+
+(: later-inside-a-seq (-> (List int)))
+(defun (later-inside-a-seq)
+  (def s (seq (yield first) (yield second)))
+  (def first 1)
+  (def second 2)
+  (seq->list s))
+
+(: function-below-its-caller (-> int))
+(defun (function-below-its-caller)
+  (def base 40)
+  (def total (add-two base))
+  (defun (add-two x) (+ x 2))
+  total)
+
+(defun (main args)
+  (expect "values run in the order they are written" (effects-in-order) "abc")
+  (expect "local functions call each other in any order" (parity 7) "odd")
+  (expect "a lambda may read a def written below it" (later-inside-a-lambda) 42)
+  (expect "so may a seq" (later-inside-a-seq) (list 1 2))
+  (expect "a function may be defined below the def that calls it"
+          (function-below-its-caller) 42)
+  0)

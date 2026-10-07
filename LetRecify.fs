@@ -102,6 +102,71 @@ let computeSCCs (nodes: Set<string>) (edges: Map<string, Map<string, bool>>) : S
     sccs
 
 
+/// The first use of each name `expr` makes when it is evaluated, with where it
+/// is. A use inside a lambda, a `seq` or a `bjo` waits to be called and is not
+/// one of them.
+let private unguardedUses (bound: Set<string>) (expr: Expr) : (string * Lexer.Range) list =
+    let uses = ResizeArray<string * Lexer.Range>()
+    let seen = System.Collections.Generic.HashSet<string>()
+
+    freeNamesWith (fun n r guarded -> if not guarded && seen.Add n then uses.Add(n, r)) false bound expr
+    List.ofSeq uses
+
+/// What a binding runs when it is called: its parameters and its body. `None`
+/// for a value, whose init runs where it is written.
+let private calledBody (isFun: bool) (args: DefunArg list) (value: Expr) : (Set<string> * Expr) option =
+    if isFun then
+        Some(Set.ofList (allArgNames args), value)
+    else
+        match value with
+        | EFun(parameters, body, _, _) -> Some(Set.ofList parameters, body)
+        | _ -> None
+
+/// The ordering rule of a body's definitions, which is `letrec*`'s: they run in
+/// the order they are written, and a value's init may read only the values
+/// written above it. Scheme finds a read of an unassigned variable when it
+/// happens; this finds it before the program runs. A call to a local function
+/// runs its body there and then, so what that body reads counts as read by the
+/// init that calls it.
+let private checkDefinedBeforeUse
+    (bindings: (string * bool * DefunArg list * FType option * Expr) list)
+    (nodes: Set<string>)
+    (sourceIndex: Map<string, int>)
+    =
+    let called =
+        bindings
+        |> List.choose (fun (n, isFun, args, _, value) ->
+            calledBody isFun args value
+            |> Option.map (fun (bound, body) ->
+                n, unguardedUses bound body |> List.map fst |> List.filter (fun m -> Set.contains m nodes)))
+        |> Map.ofList
+
+    // The first value a call to `f` reads that is not yet defined at `index`.
+    let rec readsLate (index: int) (visited: Set<string>) (f: string) : string option =
+        Map.find f called
+        |> List.tryPick (fun m ->
+            if Map.containsKey m called then
+                if Set.contains m visited then None else readsLate index (Set.add m visited) m
+            elif Map.find m sourceIndex >= index then Some m
+            else None)
+
+    for (n, _, _, _, value) in bindings do
+        if not (Map.containsKey n called) then
+            let index = Map.find n sourceIndex
+
+            for (m, r) in unguardedUses Set.empty value do
+                if Set.contains m nodes then
+                    if not (Map.containsKey m called) then
+                        if Map.find m sourceIndex >= index then
+                            failwithf
+                                $"Syntax error at %s{Lexer.formatPos r}: '%s{m}' is used before its definition. The definitions in a body run in the order they are written, so a def can only read the ones above it. Move this one below '%s{m}', or read '%s{m}' inside a function that is called later."
+                    else
+                        match readsLate index (Set.singleton m) m with
+                        | Some late ->
+                            failwithf
+                                $"Syntax error at %s{Lexer.formatPos r}: '%s{m}' is called here, before '%s{late}' is defined, and it reads '%s{late}'. The definitions in a body run in the order they are written. Move this one below '%s{late}'."
+                        | None -> ()
+
 /// Recursively optimizes ELetRec blocks into minimal ELet/ELetRec chains
 let rec letrecifyExpr (expr: Expr) : Expr =
     match expr with
@@ -193,12 +258,34 @@ let rec letrecifyExpr (expr: Expr) : Expr =
                 (n, localDeps))
             |> Map.ofList
 
-        let sccs = computeSCCs nodes edges
-
-        // Sort components topologically while preserving original source order for independent nodes
-        // to prevent reordering side effects.
         let sourceIndex =
             optBindings |> List.mapi (fun i (n, _, _, _, _) -> n, i) |> Map.ofList
+
+        checkDefinedBeforeUse optBindings nodes sourceIndex
+
+        // A function is defined without running anything, so it may move to
+        // where its uses need it. A value's init runs where it is written, so
+        // each value is made to depend on the one written before it. A value
+        // that refers to a later one from inside a lambda closes a cycle with
+        // these edges, and the values between them become one group, emitted
+        // in source order.
+        let valuesInOrder =
+            optBindings
+            |> List.choose (fun (n, isFun, args, _, e) ->
+                match calledBody isFun args e with
+                | Some _ -> None
+                | None -> Some n)
+
+        let orderEdges =
+            valuesInOrder
+            |> List.pairwise
+            |> List.fold
+                (fun (acc: Map<string, Map<string, bool>>) (earlier, later) ->
+                    let deps = Map.tryFind later acc |> Option.defaultValue Map.empty
+                    Map.add later (Map.add earlier false deps) acc)
+                edges
+
+        let sccs = computeSCCs nodes orderEdges
 
         /// A component's position: that of its earliest member.
         let keyOf (scc: Set<string>) =
@@ -214,7 +301,7 @@ let rec letrecifyExpr (expr: Expr) : Expr =
             scc
             |> Set.toList
             |> List.collect (fun n ->
-                match Map.tryFind n edges with
+                match Map.tryFind n orderEdges with
                 | Some deps -> deps |> Map.toList |> List.map fst
                 | None -> [])
             |> List.map (fun d -> Map.find d ownerOf)
