@@ -1,0 +1,16 @@
+;; EXPECT-ERROR: is a yield point, and a yield point is not allowed here
+
+;; The result of a call that is a bjoroutine is a yield point when called, in
+;; an ordinary function as anywhere else.
+
+(import (std prelude))
+
+(: susp (-bjo-> int int))
+(defbjo (susp x) (+ x 1))
+
+(: first-of (-> (List (-bjo-> int int)) (-bjo-> int int)))
+(defun (first-of fs) (list-head fs))
+
+(defun (main args)
+  (println (->str ((first-of (list susp)) 1)))
+  0)

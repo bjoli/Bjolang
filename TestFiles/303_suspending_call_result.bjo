@@ -1,0 +1,27 @@
+;; Calling the result of a call is a yield point when that result is a
+;; bjoroutine: `((make 1) 1)` awaits like `(susp 1)` does. The callee's type is
+;; then the type its result was solved to, and that is what is asked.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: susp (-bjo-> int int))
+(defbjo (susp x)
+  (sync (timeout 0))
+  (+ x 1))
+
+(: make (-> int (-bjo-> int int)))
+(defun (make n) susp)
+
+(: first-of (-> (List (-bjo-> int int)) (-bjo-> int int)))
+(defun (first-of fs) (list-head fs))
+
+(: run-them (-bjo-> int))
+(defbjo (run-them)
+  (+ ((make 1) 1) ((first-of (list susp)) 10)))
+
+(defun (main args)
+  (expect "a call's result is awaited when it is a bjoroutine"
+          (match (sync/blocking (promise-join (bjo (run-them)))) ((Ok v) v) ((Err e) -1))
+          13)
+  0)

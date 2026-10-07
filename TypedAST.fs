@@ -191,7 +191,15 @@ let groundEffect (eff: Effect) : Effect =
 /// call to a `Fiber<T>`-returning delegate with no `await` on it, which Roslyn
 /// then rejects in a file nobody wrote.
 let callSuspends (t: HMType) : bool =
-    match t with
+    // The callee's type is followed through solved metavariables first. A
+    // callee that is itself a call, `((make 1) 1)`, has the type its result
+    // variable was solved to rather than an arrow.
+    let rec solved (t: HMType) =
+        match t with
+        | TMeta { Value = Some inner } -> solved inner
+        | _ -> t
+
+    match solved t with
     | TFun(_, _, eff) -> pruneEffect eff = EAsync
     | _ -> false
 
