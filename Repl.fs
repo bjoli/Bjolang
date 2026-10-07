@@ -608,10 +608,13 @@ let private evaluate (state: State) (text: string) : State =
         | _ -> [], [], [], [], false
 
     // The signatures waiting for a name this entry defines. Replayed into its
-    // source and dropped afterwards; the rest go on waiting.
+    // source and dropped afterwards; the rest go on waiting. One the entry
+    // writes itself replaces the waiting one, as a later signature would in a
+    // file being edited, rather than being a second signature for the name.
     let consumed, stillPending =
         state.Pending |> List.partition (fun (name, _) -> List.contains name defined)
 
+    let consumed = consumed |> List.filter (fun (name, _) -> not (List.contains name signedHere))
     let replayed = List.map snd consumed
 
     // The replayed signatures count as text this entry mentions: `(: area
@@ -724,14 +727,20 @@ let private evaluate (state: State) (text: string) : State =
                            | SList(SAtom { Token = Symbol "import" } :: _, _) -> true
                            | _ -> false)
                        |> List.map (textOf text))
+                // A signature typed for a name already waiting for its
+                // definition replaces the one that was waiting.
                 Pending =
-                    stillPending
-                    @ (match shape with
-                       | Definitions(_, _, _, signed, _) ->
-                           signed
-                           |> List.filter (fun (name, _) -> not (List.contains name defined))
-                           |> List.map (fun (name, form) -> name, textOf text form)
-                       | _ -> [])
+                    let waiting =
+                        match shape with
+                        | Definitions(_, _, _, signed, _) ->
+                            signed
+                            |> List.filter (fun (name, _) -> not (List.contains name defined))
+                            |> List.map (fun (name, form) -> name, textOf text form)
+                        | _ -> []
+
+                    (stillPending
+                     |> List.filter (fun (name, _) -> not (waiting |> List.exists (fun (n, _) -> n = name))))
+                    @ waiting
                 Entries =
                     { Index = index
                       Provides = Set.ofList provided
