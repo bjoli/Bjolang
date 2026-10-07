@@ -69,8 +69,6 @@
   (Encoding       (: System.Text.Encoding))
   (Span           (: System.TimeSpan))
   (Stream         (: System.IO.Stream))
-  (Reader         (: System.IO.StreamReader (-> Stream Encoding Reader)))
-  (Buffered       (: Bjolang.Runtime.BjoPort (-> TextInputPort Buffered)))
   (Url            (: System.Uri (-> string Url) #:exceptions (System.UriFormatException)))
   (Failure        (: System.Net.Http.HttpRequestException (-> string Failure)))
   (Object         (: System.Object))
@@ -83,6 +81,9 @@
   (decompress-all (: System.Net.DecompressionMethods.All #:get))
   (no-timeout     (: System.Threading.Timeout.InfiniteTimeSpan #:get))
   (utf8           (: System.Text.Encoding.UTF8 #:get))
+  ;; Bytes in a declared encoding as a text port, by the rule
+  ;; `byte->text-input-port` follows.
+  (text-port-over (: Bjolang.Runtime.BytePorts.TextReaderOver (-> Stream Encoding TextInputPort)))
   ;; Named `span-seconds` rather than `seconds`: `std/prelude` exports a
   ;; `seconds` that answers milliseconds, for a deadline, and two bindings of
   ;; one name that differ only in what they return is the kind of collision
@@ -423,11 +424,14 @@
 ;; The body as a port, so that `read-line`, `port->seq`, `port->chan` and
 ;; `read-json` all work on it. Reading suspends inside a bjoroutine and blocks
 ;; outside one, exactly as reading a file does.
+;;
+;; Decoded by the charset the server declared, and only by it: a byte order
+;; mark does not override the declaration. A UTF-8 body is read without a
+;; round trip through UTF-16.
 (: response-port (-> Response TextInputPort))
 (defun (response-port r)
   (def body (reply-content (record-ref r raw)))
-  (cast TextInputPort
-        (Buffered. (cast TextInputPort (Reader. (body-stream body) (charset-of r))))))
+  (text-port-over (body-stream body) (charset-of r)))
 
 (: response-text (-> Response string))
 (defun (response-text r)

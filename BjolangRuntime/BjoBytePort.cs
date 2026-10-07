@@ -1758,17 +1758,32 @@ public static class BytePorts {
     /// A text reader over the byte port, reading THROUGH it rather than past it.
     /// See <see cref="BjoByteInputPort.AsStream"/> for why that distinction is
     /// the whole of this function.
+    /// </summary>
+    public static TextReader ToTextReader(BjoByteInputPort port, Encoding encoding) =>
+        TextReaderOver(port.AsStream(), encoding);
+
+    /// <summary>
+    /// A text port over bytes in a declared encoding: the one rule for how
+    /// bytes become text, for a byte port here and for an HTTP body in
+    /// `(std http)`.
+    ///
+    /// The declared encoding is the one used. A byte order mark never
+    /// overrides it, as `StreamReader` lets one do by default: the bytes would
+    /// then be read as something nobody said they were.
     ///
     /// UTF-8 that replaces invalid bytes, which is what `utf8` and
     /// `Encoding.UTF8` both are, is read by a <see cref="BjoUtf8Port"/>, whose
-    /// lines need no transcoding. Any other encoding, including a UTF-8 that
-    /// throws on invalid bytes, is decoded by a `StreamReader`.
+    /// lines need no transcoding. It skips a UTF-8 mark and refuses a UTF-16
+    /// or UTF-32 one, which contradicts the declaration. Any other encoding,
+    /// including a UTF-8 that throws on invalid bytes, is decoded by a
+    /// `StreamReader` that skips that encoding's own mark and no other.
     /// </summary>
-    public static TextReader ToTextReader(BjoByteInputPort port, Encoding encoding) {
+    public static TextReader TextReaderOver(Stream stream, Encoding encoding) {
+        ArgumentNullException.ThrowIfNull(stream);
         ArgumentNullException.ThrowIfNull(encoding);
         if (encoding is UTF8Encoding && encoding.DecoderFallback is DecoderReplacementFallback { DefaultString: "\uFFFD" })
-            return new BjoUtf8Port(port.AsStream());
-        return new BjoPort(new StreamReader(port.AsStream(), Decoding(encoding), detectEncodingFromByteOrderMarks: false));
+            return new BjoUtf8Port(stream);
+        return new BjoPort(new StreamReader(stream, Decoding(encoding), detectEncodingFromByteOrderMarks: false));
     }
 
     /// `StreamReader` skips a leading byte order mark only when its encoding

@@ -47,6 +47,7 @@
   (reply-header!     (: System.Net.HttpListenerResponse.AddHeader (-> ServerResponse string string void)))
   (reply-stream      (: System.Net.HttpListenerResponse.OutputStream (-> ServerResponse Stream) #:get))
   (reply-done!       (: System.Net.HttpListenerResponse.Close (-> ServerResponse void)))
+  (stream-write!     (: System.IO.Stream.Write (-> Stream (Array byte) int int void)))
   (sleep             (: System.Threading.Tasks.Task.Delay (-> int void) #:async)))
 
 ;; The server side has nulls too: a header that was not sent. A .NET string
@@ -82,6 +83,19 @@
     ((Ok written) unit)
     ((Err e) unit)))
 
+;; A body given as bytes, under a Content-Type of the caller's: what an
+;; encoding test needs to say exactly what is on the wire.
+(: respond-bytes! (-> ServerResponse string (Array byte) void))
+(defun (respond-bytes! resp content-type body)
+  (match (try (let ()
+                (reply-status! resp 200)
+                (reply-header! resp "Content-Type" content-type)
+                (stream-write! (reply-stream resp) body 0 (array-length body))
+                (reply-done! resp))
+              #:catch (System.Exception))
+    ((Ok written) unit)
+    ((Err e) unit)))
+
 (: serve (-bjo-> Listener int void))
 (defbjo (serve listener remaining)
   (when (> remaining 0)
@@ -95,6 +109,15 @@
         ((string-starts-with? path "/missing") (respond! resp 404 "no such fruit"))
         ((string-starts-with? path "/query") (respond! resp 200 path))
         ((string-starts-with? path "/lines") (respond! resp 200 "one\ntwo\nthree"))
+        ;; "grüße" in Latin-1: ü is 0xFC and ß is 0xDF, neither valid UTF-8.
+        ((string-starts-with? path "/latin1")
+         (respond-bytes! resp "text/plain; charset=iso-8859-1" #[103 114 252 223 101]))
+        ;; "grüße" in UTF-8 after a UTF-8 byte order mark.
+        ((string-starts-with? path "/utf8-bom")
+         (respond-bytes! resp "text/plain; charset=utf-8" #[239 187 191 103 114 195 188 195 159 101]))
+        ;; Declared UTF-8, but "hi" in UTF-16 behind its mark.
+        ((string-starts-with? path "/utf16-as-utf8")
+         (respond-bytes! resp "text/plain; charset=utf-8" #[255 254 104 0 105 0]))
         ((string-starts-with? path "/echo")
          (respond! resp 200 (str verb " " (request-body req)
                                  " basket=" (header-or-empty req "X-Basket")
@@ -160,9 +183,9 @@
   (match (listen-on listener 8497 20)
     (None (fail "no free port to listen on") 1)
     ((Some port)
-     ;; Eight requests reach the server below. The fiber is detached: nothing
+     ;; Eleven requests reach the server below. The fiber is detached: nothing
      ;; joins it, and `Discard`'s impl for a promise is what says so.
-     (ignore (bjo (serve listener 8)))
+     (ignore (bjo (serve listener 11)))
 
      (let ((base (str "http://127.0.0.1:" (int->string port))))
 
@@ -219,6 +242,35 @@
           (expect "the body reads as lines through std/ports"
                   (string-join lines "|") "one|two|three")))
 
+       ;; --- The declared charset decides ------------------------------------
+       ;;
+       ;; By the rule `byte->text-input-port` follows: the charset the server
+       ;; named is used, a UTF-8 mark is skipped, and a mark that contradicts
+       ;; the declaration is refused rather than obeyed.
+       (match (fetch (http-get (str base "/latin1")))
+         ((Err e) (fail "the Latin-1 GET failed"))
+         ((Ok r)
+          (expect "a Latin-1 body is decoded as Latin-1" (response-text r) "grüße")
+          (response-close r)))
+
+       (match (fetch (http-get (str base "/utf8-bom")))
+         ((Err e) (fail "the UTF-8 GET failed"))
+         ((Ok r)
+          (expect "a UTF-8 body skips its mark" (response-text r) "grüße")
+          (response-close r)))
+
+       (match (fetch (http-get (str base "/utf16-as-utf8")))
+         ((Err e) (fail "the UTF-16 GET failed"))
+         ((Ok r)
+          (expect "a UTF-16 mark in a body declared UTF-8 is refused"
+                  (match (try (response-text r) #:catch (System.Exception))
+                    ((Ok text) (str "read [" text "]"))
+                    ((Err e) (if (string-contains? (.-Message e) "UTF-16 (little-endian) byte order mark")
+                                 "refused"
+                                 (.-Message e))))
+                  "refused")
+          (response-close r)))
+
        ;; --- with-response ---------------------------------------------------
        (with-response (r (fetch (http-get (str base "/hello"))))
          (match r
@@ -229,7 +281,7 @@
        ;; --- A url that is not http ------------------------------------------
        ;;
        ;; Refused before anything is sent, which is why it does not count
-       ;; against the server's eight.
+       ;; against the server's eleven.
        (match (fetch (http-get "ftp://example.com/fruit"))
          ((Ok r) (fail "an ftp url was accepted") (ignore r))
          ((Err e) (expect-true "a non-http url is refused as a value" #t)))

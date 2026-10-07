@@ -27,6 +27,15 @@ What each change guarantees, and what it leaves open.
   ~bom-encoding~ in ~(std ports)~ peeks at a byte port and names the
   encoding a mark is for, so the file is read with ~open-byte-input-file~
   and ~(byte->text-input-port p (option-ref-or (bom-encoding p) utf8))~.
+- *An HTTP body is decoded by the charset the server declared, and only by
+  it.* ~response-port~ and ~response-text~ used a ~StreamReader~ that let a
+  byte order mark override the ~Content-Type~ charset, so a body declared
+  UTF-8 that began with a UTF-16 mark was read as UTF-16 without a word.
+  They now make text from bytes by the one rule ~byte->text-input-port~
+  follows (~BytePorts.TextReaderOver~): the declared encoding is the one
+  used, a UTF-8 body is read by the UTF-8 port (skipping a UTF-8 mark,
+  refusing a UTF-16 or UTF-32 one), and any other charset by a decoder held
+  to it.
 - Standard input and string ports are unchanged, and so is output: a UTF-8
   output port is still to come.
 
