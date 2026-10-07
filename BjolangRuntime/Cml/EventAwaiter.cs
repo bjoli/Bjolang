@@ -72,7 +72,7 @@ internal interface ICancellableAwaiter
 /// <see cref="Cml.Sync"/> publishes, because the instant an op is parked, a thread
 /// on the other side of the channel can call <see cref="OnSync"/> concurrently.
 /// </summary>
-public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwaiter
+public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwaiter, IWrapHost
 {
     /// <summary>Marks "already completed" so a late continuation runs immediately.</summary>
     private static readonly Action Sentinel = () => { };
@@ -96,11 +96,18 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
     /// </summary>
     private object? _cancelReason;
 
+    /// <summary>
+    /// The committed branch's innermost wrap, handed over by the thread that
+    /// committed, for <see cref="TakeResult"/> to apply on the syncing fiber.
+    /// See <see cref="WrapSink{T, U}"/>.
+    /// </summary>
+    private IDeferredWrap? _deferred;
+
     private EventAwaiter() => _onSync = OnSync;
 
     public EventAwaiter(IEvent<T> ev) : this()
     {
-        Start(ev, _onSync);
+        Start(ev);
     }
 
     public static EventAwaiter<T> Rent(IEvent<T> ev)
@@ -113,8 +120,24 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
         aw._next = null;
 
         // _result/_continuation were cleared when this instance was recycled.
-        Start(ev, aw._onSync);
+        aw.Start(ev);
         return aw;
+    }
+
+    /// <summary>A state whose wraps are applied on this awaiter's fiber.</summary>
+    private SyncState NewState() => new SyncState { WrapHost = this };
+
+    /// <summary>
+    /// Called once by the thread that committed, which then resumes the fiber
+    /// with no value yet; and again, from inside the wrap being run by
+    /// <see cref="TakeResult"/>, by each wrap further out, which is refused.
+    /// </summary>
+    bool IWrapHost.TryDefer(IDeferredWrap wrap)
+    {
+        if (_deferred is not null) return false;
+        _deferred = wrap;
+        OnSync(default!);
+        return true;
     }
 
     /// <summary>
@@ -129,10 +152,10 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
     /// Everything else — including a <c>choose</c> over channels — goes the
     /// general way, which is what keeps a losing branch withdrawable.
     /// </summary>
-    private static void Start(IEvent<T> ev, Action<T> onSync)
+    private void Start(IEvent<T> ev)
     {
-        if (ev is IDirectSyncable<T> direct) direct.SyncDirect(onSync);
-        else Cml.Sync(ev, onSync);
+        if (ev is IDirectSyncable<T> direct) direct.SyncDirect(_onSync);
+        else ev.Publish(NewState(), SyncState.RootEventId, _onSync);
     }
 
     private void OnSync(T value)
@@ -144,7 +167,8 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
         var c = Interlocked.Exchange(ref _continuation, Sentinel);
 
         // null  -> completed inline, before anyone asked to be resumed.
-        // Sentinel -> impossible, we only ever complete once.
+        // Sentinel -> already woken: this is a deferred wrap delivering its
+        //             value from TakeResult, on the resumed fiber.
         // anything else -> the fiber parked; resume it.
         if (c != null && !ReferenceEquals(c, Sentinel)) c();
     }
@@ -175,19 +199,30 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
     {
         cancelReason = _cancelReason;
 
-        var r = _result;
-        _result = default!;
-        _cancelReason = null;
-        _continuation = null;
-
-        if (_freeCount < MaxCached)
+        try
         {
-            _next = _free;
-            _free = this;
-            _freeCount++;
-        }
+            // A committed wrap left its function here rather than run it on
+            // the thread that committed. Applied now, on this fiber, it
+            // delivers the mapped value through OnSync, whose second call only
+            // stores it. An exception from it is raised here, to this fiber.
+            if (cancelReason is null && _deferred is { } deferred) deferred.Run();
 
-        return r;
+            return _result;
+        }
+        finally
+        {
+            _result = default!;
+            _cancelReason = null;
+            _continuation = null;
+            _deferred = null;
+
+            if (_freeCount < MaxCached)
+            {
+                _next = _free;
+                _free = this;
+                _freeCount++;
+            }
+        }
     }
 
     /// <summary>
@@ -221,7 +256,7 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
             aw._next = null;
         }
 
-        state = new SyncState();
+        state = aw.NewState();
         ev.Publish(state, SyncState.RootEventId, aw._onSync);
         return aw;
     }

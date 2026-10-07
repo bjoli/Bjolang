@@ -382,8 +382,87 @@ public class WrapEvent<T, U> : IEvent<U>
 
     public void Publish(SyncState sharedState, int eventId, Action<U> onSync)
     {
-        // Intercept the synchronization callback to apply the mapping function before resuming the user.
-        _ev.Publish(sharedState, eventId, value => onSync(_mapper(value)));
+        _ev.Publish(sharedState, eventId, new WrapSink<T, U>(sharedState, _mapper, onSync).Commit);
+    }
+}
+
+/// <summary>A wrap whose function is still to be applied, with the value it was given.</summary>
+internal interface IDeferredWrap
+{
+    /// <summary>
+    /// Apply the wrap and every wrap around it, and deliver the result to the
+    /// sync's own continuation.
+    /// </summary>
+    void Run();
+}
+
+/// <summary>
+/// The syncing side of a sync whose wraps it applies itself. See
+/// <see cref="SyncState.WrapHost"/>.
+/// </summary>
+internal interface IWrapHost
+{
+    /// <summary>
+    /// Keep <paramref name="wrap"/> for the syncing side to run, and wake that
+    /// side. Called by the thread that committed, for the innermost wrap of the
+    /// winning branch. False when a wrap is already kept: the caller is then
+    /// one further out, being run by the syncing side, and applies its own
+    /// function directly.
+    /// </summary>
+    bool TryDefer(IDeferredWrap wrap);
+}
+
+/// <summary>
+/// One published wrap: where its event's value goes once it commits.
+///
+/// The mapper is user code, so where it runs matters. The thread that commits
+/// is whichever got there: a partner inside its own sync, a timer thread, a
+/// pool thread completing a promise. Run there, the mapper sees that thread's
+/// dynamic environment, and an exception from it unwinds into the partner's
+/// sync while this one is never resumed. So when the sync has a
+/// <see cref="SyncState.WrapHost"/>, the commit only records the value and
+/// hands the wrap to the syncing side, which applies the mapper on its own
+/// stack.
+///
+/// Only the innermost wrap of a branch is handed over that way. Running it
+/// calls the next wrap out, which finds the host already holding one and
+/// applies its mapper directly, as does every one after it.
+///
+/// One object per publish, as the closure it replaces was.
+/// </summary>
+internal sealed class WrapSink<T, U> : IDeferredWrap
+{
+    private readonly SyncState _state;
+    private readonly Func<T, U> _mapper;
+    private readonly Action<U> _onSync;
+    private T _value = default!;
+
+    public WrapSink(SyncState state, Func<T, U> mapper, Action<U> onSync)
+    {
+        _state = state;
+        _mapper = mapper;
+        _onSync = onSync;
+    }
+
+    public void Commit(T value)
+    {
+        if (_state.WrapHost is { } host)
+        {
+            // Written before the handover, which wakes the syncing side
+            // through a full fence.
+            _value = value;
+            if (host.TryDefer(this)) return;
+            _value = default!;
+        }
+
+        _onSync(_mapper(value));
+    }
+
+    public void Run()
+    {
+        var value = _value;
+        _value = default!;
+        _onSync(_mapper(value));
     }
 }
 

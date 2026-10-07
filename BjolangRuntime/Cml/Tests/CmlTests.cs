@@ -54,6 +54,7 @@ public static class CmlTests
 
         Section("Baseline combinator behaviour");
         Run("wrap maps the value", WrapMapsValue);
+        Run("a throwing wrap raises in the syncing fiber, not the partner", WrapThrowsOnTheSyncingFiber);
         Run("guard is evaluated at sync time", GuardIsDeferred);
 
         Section("Timers");
@@ -1473,6 +1474,43 @@ public static class CmlTests
 
         Await(done, "the wrapped receive");
         AssertEqual("<5>", result, "wrap did not map the value");
+    }
+
+    /// <summary>
+    /// A wrap function is applied on the fiber that synced, after the commit.
+    /// Applied by the thread that committed, its exception unwound into the
+    /// sender's sync, and the receiver was never resumed at all.
+    /// </summary>
+    private static void WrapThrowsOnTheSyncingFiber()
+    {
+        var ch = new Channel<int>();
+        var caught = new ManualResetEventSlim(false);
+        string? message = null;
+
+        _ = Bjo.Spawn<Unit>(async () =>
+        {
+            try
+            {
+                await global::BjolangRuntime.sync(
+                    Cml.Wrap<int, int>(ch, v => throw new InvalidOperationException($"mapper got {v}")));
+            }
+            catch (InvalidOperationException e)
+            {
+                message = e.Message;
+                caught.Set();
+            }
+
+            return default;
+        });
+
+        AwaitPark(() => ch.RawPendingReceiveCount, "the wrapped receive to park");
+
+        var sent = new ManualResetEventSlim(false);
+        Cml.Sync(new ChannelSendEvent<int>(ch, 7), _ => sent.Set());
+
+        Await(sent, "the sender to complete");
+        Await(caught, "the receiver to raise the wrap's exception");
+        AssertEqual("mapper got 7", message, "the receiver raised something else");
     }
 
     private static void GuardIsDeferred()

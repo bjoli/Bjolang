@@ -615,11 +615,16 @@ public static partial class BjolangRuntime {
                 return _direct!.TakeParked(_op);
             }
 
-            var v = _aw!.TakeResult(out var cancelReason);
-
             // Back to idle before anything can throw, so that a cancelled sync
-            // still leaves the cell usable by the next one.
-            _cell?.End();
+            // still leaves the cell usable by the next one. `TakeResult` itself
+            // throws what a wrap function raised.
+            T v;
+            object? cancelReason;
+            try {
+                v = _aw!.TakeResult(out cancelReason);
+            } finally {
+                _cell?.End();
+            }
 
             if (cancelReason is CancelReason reason) throw new Bjolang.Runtime.Cancelled(reason);
             return v;
@@ -1232,25 +1237,52 @@ public static partial class BjolangRuntime {
                     Cml.Wrap(ev, static v => Synced<T>.Value(v)),
                     Cml.Wrap(cancelled(token), static why => Synced<T>.Cancelled(why)));
 
-        var gate = new object();
-        bool landed = false;
-        Synced<T> value = default!;
-
-        Cml.Sync(offered, v => {
-            lock (gate) {
-                value = v;
-                landed = true;
-                Monitor.Pulse(gate);
-            }
-        });
-
-        lock (gate) {
-            while (!landed) { Monitor.Wait(gate); }
-        }
+        // A committed wrap is handed to this thread, which applies it below, as
+        // `sync` applies one on its fiber.
+        var landing = new BlockingLanding<Synced<T>>();
+        offered.Publish(new SyncState { WrapHost = landing }, SyncState.RootEventId, landing.Land);
+        landing.Wait()?.Run();
 
         // Raised here rather than in the continuation above, which runs on the
         // thread that completed the event and must not throw.
-        return value.Unwrap();
+        return landing.Value.Unwrap();
+    }
+
+    /// Where a `sync/blocking` lands, and the thread waiting for it: either
+    /// the value, or the committed branch's wrap for the waiting thread to
+    /// apply, whose result then lands here from that thread.
+    private sealed class BlockingLanding<T> : IWrapHost {
+        private readonly object _gate = new();
+        private bool _landed;
+        private IDeferredWrap? _deferred;
+        internal T Value = default!;
+
+        internal void Land(T value) {
+            lock (_gate) {
+                Value = value;
+                _landed = true;
+                Monitor.Pulse(_gate);
+            }
+        }
+
+        bool IWrapHost.TryDefer(IDeferredWrap wrap) {
+            lock (_gate) {
+                if (_deferred is not null) return false;
+                _deferred = wrap;
+                _landed = true;
+                Monitor.Pulse(_gate);
+                return true;
+            }
+        }
+
+        /// Parks until something lands, and answers the wrap still to be
+        /// applied, if a wrap was handed over rather than a value.
+        internal IDeferredWrap? Wait() {
+            lock (_gate) {
+                while (!_landed) Monitor.Wait(_gate);
+                return _deferred;
+            }
+        }
     }
 
     /// `(async-seq->chan s)` — a .NET async stream as a channel, plus a promise

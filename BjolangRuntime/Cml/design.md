@@ -177,7 +177,8 @@ machine turns them into `SetException`.
 | inside a bjoroutine body | correct |
 | inside an awaiter's `GetResult()` | correct |
 | inside an `IEvent` continuation | **wrong** |
-| inside a `Wrap` mapper | **wrong** (mappers run in the continuation) |
+| inside a `Wrap` mapper, under a language `sync` | correct (applied on the syncing fiber; see B13) |
+| inside a `Wrap` mapper, under `Cml.Sync` | **wrong** (mappers run in the continuation) |
 | inside a nack action | **wrong** |
 
 ### Task interop
@@ -249,6 +250,20 @@ the corresponding fix is reverted.
   of waiting ends at a thread making progress. A direct send or receive, which
   holds no claim, waits out the partner's `C` (`TrySyncWaiting`), as `TryCommit`
   does.
+- **B13** — a `wrap` function ran on whichever thread committed: the partner
+  inside its own sync, a timer thread, a pool thread completing a promise. It
+  saw that thread's dynamic environment, and an exception from it unwound into
+  the partner's sync, whose fiber died, while the syncing fiber was never
+  resumed. A sync started by the language (`EventAwaiter`, and
+  `sync/blocking`) now gives its `SyncState` a `WrapHost`. The winning
+  branch's innermost `WrapSink` hands itself and its value to the host, which
+  wakes the syncing side with no value yet. `TakeResult` then runs it on the
+  fiber: it applies its mapper and calls the next wrap out, which finds the
+  host already holding one and applies its own directly, and so on to the
+  awaiter. A sync through `Cml.Sync` has no host and maps where it commits, as
+  before; the runtime's own wraps there are pure conversions. Cost: 8 bytes on
+  every `SyncState`, and about 9 ns on a wrapped cross-fiber rendezvous of
+  250 ns.
 
 Two bugs in the *proposed* code were also fixed: `TaskInterop.Cancellable` could not
 compile (generic inference through an async lambda) and leaked its

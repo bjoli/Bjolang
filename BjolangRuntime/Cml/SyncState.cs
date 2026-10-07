@@ -72,6 +72,18 @@ public class SyncState
     // Allocated on demand only when withNack is actually used.
     private NackNode? _nacks;
 
+    /// <summary>
+    /// Set by a sync whose <c>wrap</c> functions run on the syncing side rather
+    /// than on the thread that commits. Null for a sync that maps where it
+    /// commits.
+    ///
+    /// A wrap function is user code. On the committing thread it would see the
+    /// partner's dynamic environment, or a timer thread's empty one, and an
+    /// exception from it would unwind into the partner's sync and leave this
+    /// one waiting for good. See <see cref="WrapSink{T, U}"/>.
+    /// </summary>
+    internal IWrapHost? WrapHost;
+
     // B7 cleanup is deliberately NOT tracked here. SyncState used to remember every
     // channel a block parked in so that committing could drive cleanup, and that cost
     // 36 ns/op on Select/Choose — see the B7 section of BjolangRuntime/Cml/design.md. The trigger

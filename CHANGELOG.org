@@ -5,6 +5,17 @@ What each change guarantees, and what it leaves open.
 
 * Silent failures found by a correctness audit
 
+- *A ~wrap~ function runs on the fiber that synced.* It ran on whichever
+  thread committed the event: the partner of a rendezvous, inside its own
+  ~sync~, or a timer thread for a ~timeout~. So it saw the partner's
+  ~parameterize~ bindings, or none at all, and an exception from it was
+  raised in the partner, whose fiber died, while the fiber that synced was
+  never resumed. Now the committing thread hands the value over, and the
+  syncing fiber applies the function before its ~sync~ returns, which is
+  what the documentation promised. The partner has gone on by then and the
+  value is consumed either way, so an exception from the function is raised
+  by the ~sync~ that offered it. ~sync/blocking~ does the same on its own
+  thread.
 - *Two chooses that can pair always do.* ~(choose (send a) (recv b))~ in
   one fiber and ~(choose (send b) (recv a))~ in another, started together,
   could both park for good, each with a partner it could have taken: a

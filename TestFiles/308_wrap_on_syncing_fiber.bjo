@@ -1,0 +1,67 @@
+;; A `wrap` function runs after the commit, on the fiber that synced: it sees
+;; that fiber's dynamic environment, and what it raises is raised there.
+;;
+;; It ran on whichever thread committed. Across a channel that was the
+;; partner, inside the partner's own `sync`: the function saw the partner's
+;; `parameterize` bindings, and its exception went to the partner, whose fiber
+;; died, while this one was never resumed. For a `timeout` it was a timer
+;; thread, with no environment at all.
+
+(import (std prelude))
+(import (std simpletest))
+(import/class (Failure (: System.Exception (-> string Failure))))
+
+(: who (Param string))
+(def who (make-parameter "root"))
+
+(: send-as (-bjo-> string (Chan int) (Chan string) void))
+(defbjo (send-as name ch done)
+  (parameterize ((who name))
+    (sync (timeout 50))
+    (sync (chan-send ch 1))
+    (sync (chan-send done "sender finished"))))
+
+(: seen-across-a-channel (-bjo-> string))
+(defbjo (seen-across-a-channel)
+  (def ch (make-chan))
+  (def done (make-chan))
+  (spawn/detached (send-as "SENDER" ch done))
+  (def seen (parameterize ((who "RECEIVER"))
+              (sync (wrap (chan-recv ch) (fun (v) (parameter-ref who))))))
+  (ignore (sync (chan-recv done)))
+  seen)
+
+(: seen-after-a-timeout (-bjo-> string))
+(defbjo (seen-after-a-timeout)
+  (parameterize ((who "RECEIVER"))
+    (sync (wrap (timeout 20) (fun (u) (parameter-ref who))))))
+
+(: boom (-> int int))
+(defun (boom v) (raise (Failure. "boom")))
+
+;; What the receiver caught, and what the sender said afterwards, or that one
+;; of them never finished.
+(: raised-in-the-receiver (-bjo-> string))
+(defbjo (raised-in-the-receiver)
+  (def ch (make-chan))
+  (def done (make-chan))
+  (spawn/detached (send-as "SENDER" ch done))
+  (def caught
+    (match (try (sync (choose (wrap (chan-recv ch) boom)
+                              (wrap (timeout 2000) (fun (u) -1))))
+                #:catch (System.Exception))
+      ((Ok -1) "receiver timed out")
+      ((Ok v) "receiver got a value")
+      ((Err e) "receiver caught it")))
+  (def sender (sync (choose (chan-recv done)
+                            (wrap (timeout 2000) (fun (u) "sender never finished")))))
+  (str caught ", " sender))
+
+(defbjo (main args)
+  (expect "a wrap across a channel sees the receiver's bindings"
+          (seen-across-a-channel) "RECEIVER")
+  (expect "a wrap on a timeout sees the syncing fiber's bindings"
+          (seen-after-a-timeout) "RECEIVER")
+  (expect "a wrap's exception is raised in the fiber that synced"
+          (raised-in-the-receiver) "receiver caught it, sender finished")
+  0)
