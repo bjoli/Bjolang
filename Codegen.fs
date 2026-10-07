@@ -3368,6 +3368,8 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
                     // A label needs a statement; an empty one will do.
                     indent ctx; appendLine ctx $"%s{exitLabel}: ;"
 
+                leaveAfterNestedLoop ctx target
+
             | None ->
 
             match mergedInlineInfo with
@@ -3478,6 +3480,8 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
                 if exitLabelUsed.Value then
                     indent ctx
                     appendLine ctx $"%s{exitLabel}: ;"
+
+                leaveAfterNestedLoop ctx target
 
             | None ->
                 // General letrec / mutually-recursive / escaping loop: emit as local functions
@@ -4076,6 +4080,21 @@ and private exitInlineLoop (ctx: CodegenContext) : unit =
             loop.ExitLabelUsed.Value <- true
             appendLine ctx $"goto %s{loop.ExitLabel};"
     | _ -> ()
+
+/// Leaves the enclosing inlined loop once a nested inlined loop has ended.
+///
+/// A nested loop given one of the enclosing loop's terminal targets ends by
+/// filling it, and its own exit only leaves its own `while`. The enclosing
+/// loop's value is then decided too, so control must not fall through to the
+/// enclosing `while`, which would run the same iteration again. `ctx` is the
+/// enclosing loop's context, so the exit is the one it would emit itself.
+and private leaveAfterNestedLoop (ctx: CodegenContext) (target: BlockTarget) : unit =
+    match target with
+    | Assign _
+    | DeclareAndAssign _
+    | Discard -> exitInlineLoop ctx
+    | Effect
+    | Return -> ()
 
 /// Discharges `target` after a form that has already emitted all of its own
 /// statements and produced no value.

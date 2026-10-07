@@ -1,0 +1,56 @@
+;; A loop nested in tail position of another, whose result is the outer loop's
+;; result, ends the outer loop when it ends. Both are emitted as `while` loops
+;; in one method, and the inner one's exit used to leave only the inner loop:
+;; the outer one then ran the same iteration again, for ever.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; The outer loop jumps in one branch; in the other, the inner loop's result is
+;; the outer loop's.
+(: flat (-> int int))
+(defun (flat n)
+  (def r
+    (let outer ((i 0))
+      (if (< i n)
+          (if (< i 2)
+              (outer (+ i 1))
+              (let inner ((j 0))
+                (if (< j 2) (inner (+ j 1)) (+ i 100))))
+          -1)))
+  r)
+
+;; The same with the inner loop in a match arm, which is emitted as a switch,
+;; so the exit cannot be a plain `break`.
+(: in-arm (-> int string))
+(defun (in-arm n)
+  (def r
+    (let outer ((i 0))
+      (match (< i n)
+        (#f "none")
+        (#t (if (< i 2)
+                (outer (+ i 1))
+                (let inner ((j 0))
+                  (if (< j 3) (inner (+ j 1)) (str "found " (->str i)))))))))
+  r)
+
+;; A loop of two levels nested in a named let, which is emitted as a switch
+;; over its levels.
+(: levels (-> int int))
+(defun (levels n)
+  (def r
+    (let outer ((i 0))
+      (if (< i 1)
+          (outer (+ i 1))
+          (loop (:for x (list 1 2))
+                (:subloop)
+                (:for y (list 10 20))
+                (:acc s (summing (* x y)))
+                => (+ s n)))))
+  r)
+
+(defun (main args)
+  (expect "the inner loop's result ends the outer loop" (flat 5) 102)
+  (expect "and from a match arm" (in-arm 5) "found 2")
+  (expect "and from a loop of two levels" (levels 1) 91)
+  0)
