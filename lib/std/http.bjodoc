@@ -146,7 +146,7 @@
   (see request http-get http-post fetch))
 
 (:doc Response
-  (summary "An answer: a status, headers, and a body not yet read.")
+  (summary "An HTTP response: status code, headers, and an unread body stream.")
   (see response-status response-text response-port response-close with-response)
   (reference """
     Opaque: the accessors are the whole of it. The CLR reply inside owns a
@@ -220,7 +220,7 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc fetch
-  (summary "Sends a request and waits for the answer's headers.")
+  (summary "Sends a request and waits for response headers.")
   (arg req "The request.")
   (returns "@code{Ok} with the response, whatever its status, or @code{Err} if it could not be built or sent.")
   (see fetching response-close with-response)
@@ -246,12 +246,12 @@
 (:doc fetching
   (summary "A request as an event: sent when the branch is reached, cancelled if it loses.")
   (arg req "The request.")
-  (returns "An event answering what @code{fetch} would.")
+  (returns "An event evaluating to the result that @code{fetch} would return.")
   (see fetch)
   (example """
-    ;; Two mirrors, whichever answers first. The loser's request is
+    ;; Two mirrors, whichever responds first. The loser's request is
     ;; cancelled, not merely ignored.
-    (type (: Answer (Union (: Got (Result Exception Response)) TimedOut)))
+    (type (: Outcome (Union (: Got (Result Exception Response)) TimedOut)))
 
     (defbjo (from-a-mirror)
       (match (sync (choose (wrap (fetching (http-get "https://eu.example.com/fruit")) (fun (a) (Got a)))
@@ -259,7 +259,7 @@
                            (wrap (timeout 2000) (fun (fired) TimedOut))))
         ((Got (Ok r))  (let ((body (response-text r))) (response-close r) body))
         ((Got (Err e)) "failed")
-        (TimedOut      "no mirror answered")))
+        (TimedOut      "no mirror responded")))
     """)
   (example """
     ;; Retrying. A fresh request is built at every sync, so a retry loop is
@@ -284,7 +284,7 @@
     """))
 
 ;; ---------------------------------------------------------------------------
-;; Reading the answer
+;; Reading the response
 ;; ---------------------------------------------------------------------------
 
 (:doc response-status
@@ -310,7 +310,7 @@
   (see response-status))
 
 (:doc response-header
-  (summary "One header of the answer.")
+  (summary "Retrieves a header value from a response.")
   (arg r "The response.")
   (arg name "The header's name, in any case.")
   (returns "Its value, or @code{None}. Repeated headers are folded with @code{\", \"}.")
@@ -320,7 +320,7 @@
     """))
 
 (:doc response-headers
-  (summary "Every header of the answer, its body's included.")
+  (summary "All headers from a response, including content headers.")
   (arg r "The response.")
   (returns "A map from lower-cased names to values. Repeated headers are folded with @code{\", \"}.")
   (see response-header)

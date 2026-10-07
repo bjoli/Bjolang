@@ -1,0 +1,148 @@
+#+TITLE: def: named failure parts, and :default
+
+What changes about ~def~, ~def*~ and ~cond~'s ~:def~, and why. How a
+failure leaves is not one of the changes.
+
+* Summary
+
+| Today                           | After                              |
+|---------------------------------+------------------------------------|
+| ~(def p e value)~               | ~(def p e :leave-with value)~      |
+| ~(def p e :fail (arm ...))~     | ~(def p e :leave arm ...)~         |
+| ~(def p e :propagate)~          | unchanged                          |
+| —                               | ~(def p e :default value)~         |
+| ~(def p e)~                     | unchanged: the pattern must match every value |
+
+The bare third slot goes away. Every failure part starts with a keyword.
+
+* What does not change
+
+- *Where a failure goes.* ~:leave~ and ~:leave-with~ leave the innermost
+  enclosing body, as the value slot and ~:fail~ do today. One inside a ~when~
+  leaves the ~when~. The warning when that value goes nowhere stays. Leaving
+  the function is still ~ret~ under ~with-return~, ~raise~ or ~panic!~.
+- ~:propagate~, including its rules about whole cases and the body's type.
+- The checks: the pattern together with the failure part must cover the
+  scrutinee's type. A pattern that has a failure part must be able to fail.
+  The arms are checked against the type minus the pattern.
+- ~def*~: clauses run in order and each sees what the ones before it bound. A
+  clause that leaves evaluates no later clause.
+- ~cond~'s ~(:def ...)~ is a ~def~ and takes the same failure parts, so it
+  gets every change below.
+- A top-level ~def~ still takes no failure part that leaves. See ~:default~
+  for the one it does take.
+
+* Changes
+
+** The bare value slot is removed
+
+~(def (Some port) (lookup cfg "port") 8080)~ is an error.
+
+*Rationale.* It is the one way out of a body that has no word on the line,
+and it reads as a default. Nearly everyone reads the line above as "port is
+8080 when missing", but it means "the rest of the body is skipped and the
+body's value is 8080". The prelude's own example of ~:def~ in a ~cond~ reads
+that way. A failure part should say which of the two it is.
+
+The error asks which one was meant rather than guessing:
+
+: Syntax error at app.bjo:12: a def's failure part starts with a keyword.
+:   (def (Some port) e :leave-with 8080)  leaves the body with 8080
+:   (def (Some port) e :default 8080)     binds port to 8080 and carries on
+
+Converting existing code is mechanical and keeps its meaning: every bare value
+becomes ~:leave-with~.
+
+** ~:leave-with value~
+
+The old bare slot, with a name. If the pattern does not match, the body is
+left and ~value~ is its value. What the pattern would have bound is not in
+scope in ~value~.
+
+*Rationale.* "Leave" says it is an exit and cannot be read as a default. It
+also says what is left: the body the ~def~ stands in, not the function.
+Rust's and Swift's ~else~ was considered, but in both languages the else must
+leave the function, and it still looks like a default in ~(def p e :else 8080)~.
+
+** ~:leave arm ...~ replaces ~:fail (arm ...)~
+
+Same meaning as ~:fail~: the arms match what the pattern did not, and the arm
+that matches decides the body's value. The arms are no longer wrapped in a
+list:
+
+#+BEGIN_SRC scheme
+(def (Cons 1 rest) items
+  :leave ((Cons first _) (str "starts with " (int->string first)))
+         (Nil "empty"))
+#+END_SRC
+
+~:leave~ must be the last thing in the form, so everything after it is arms,
+each ~(pattern body ...)~, as in ~match~. In a ~def*~ each clause is
+parenthesised, so its arms end where the clause does. ~:leave~ with no arms is
+an error.
+
+*Rationale.* ~:leave~ and ~:leave-with~ are one family: both leave the body,
+and the suffix says whether arms or a value decide what with. The value form
+is the one that was unmarked, so it gets the more explicit name. The extra
+list around the arms was only needed because the slot after the scrutinee
+could be either an expression or arms. With a keyword that ambiguity is gone.
+
+** ~:default value~ (new)
+
+If the pattern does not match, its one binder is bound to ~value~ and
+execution continues with the next form. It never leaves.
+
+#+BEGIN_SRC scheme
+(def (Some port) (lookup cfg "port") :default 8080)   ;; port : int
+(+ port 1)                                             ;; always runs
+#+END_SRC
+
+- *One binder.* The pattern must bind exactly one name, and ~value~ is that
+  name's value: it has the binder's type, not the scrutinee's. A pattern
+  binding none or several is an error pointing at ~match~ and ~:leave~. A form
+  for several names is planned as ~:defaults~.
+- *Evaluated only on failure.* ~value~ is not evaluated when the pattern
+  matches.
+- *The pattern must be able to fail*, as with any failure part. A ~:default~
+  that could never be used is refused, not warned about.
+- *Coverage.* The pattern together with ~:default~ covers every value, so no
+  other check is needed.
+- *At the top level.* Allowed, because it never leaves: there is no body
+  needed for a failure to be the value of. The name becomes a definition like
+  any other top-level ~def~. The value is evaluated once, when the module
+  initialises and the pattern fails.
+- *In ~def*~* a clause with ~:default~ never short-circuits, and later clauses
+  see the defaulted name. In ~cond~, ~(:def p e :default v)~ binds for the
+  clauses below and never answers.
+
+*Rationale.* Defaulting is by far the most common reason to write a
+refutable ~def~, and today it can only be written by nesting a ~match~ inside
+the ~def~'s expression, or by writing the leaving form, which is wrong for a
+default. A named default removes the reason to reach for the misleading form.
+It is the only failure part with no control flow at all: the next line always
+runs.
+
+Restricting it to one binder keeps the question "which value goes to which
+name" out of this change. ~(option-value e 8080)~ still covers the plain
+~Option~ case. ~:default~ earns its keep when the pattern reaches further in,
+such as ~(Ok (Config (port p)))~.
+
+* Spelling
+
+~:propagate~, ~:leave~, ~:leave-with~ and ~:default~ are all ~:~-keywords, as
+~:propagate~ and ~:fail~ are today. ~:defaults~, when it comes, should be one
+too.
+
+* Migration
+
+- Every bare value becomes ~:leave-with value~.
+- Every ~:fail (arm ...)~ becomes ~:leave arm ...~.
+- Both are mechanical and change no meaning. ~:fail~ is used in 39 places,
+  mostly in ~bjo/~, ~lib/text/bjodat.bjo~ and ~TestFiles/errors/~. Bare values
+  are found by the new error.
+- ~:fail~ is removed rather than kept as an alias. An alias would leave two
+  spellings of one thing.
+- Docs to update: the ~def~ section and the ~cond~ section of ~Docs/Syntax.org~,
+  and the ~cond~ entry and its example in ~Docs/prelude.org~. That example is
+  the ~(:def (Some port) ... 8080)~ one, which becomes ~:leave-with~, or
+  ~:default~ if the default reading is what was wanted.

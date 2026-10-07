@@ -29,8 +29,8 @@
     int or char, which needs no wrapping in a vec literal, or a @code{BRun},
     a function that writes to an output sink and threads the current column
     through. Every combinator takes its content as a @code{(Vec Block)} and
-    answers a @code{Block}, so they nest. Nothing is written until the blocks
-    are run by @code{show}, @code{render} or @code{render->string}.
+    returns a @code{Block}, allowing them to nest. Nothing is written until
+    the blocks are run by @code{show}, @code{render} or @code{render->string}.
 
     A combinator of your own is a @code{BRun} and the two functions that run
     blocks, @code{run-block} and @code{run-blocks}. It is the same kind of
@@ -90,11 +90,11 @@
   (see Block run-block))
 
 (:doc Block
-  (summary "A piece of layout: a scalar, or a function that writes and answers the column it left.")
+  (summary "A piece of layout: a scalar, or a function that writes output and returns the final column position.")
   (case BStr "A string, written as it is.")
   (case BInt "An int, written in decimal.")
   (case BChar "A char.")
-  (case BRun "A function of the sink and the column it starts at, which writes and answers the column it ends at.")
+  (case BRun "A function taking (sink, col) that writes output and returns the resulting column.")
   (see run-block each captured)
   (example """
     (render->string ["x = " 7 #\!])   ; "x = 7!": the leaves need no wrapping
@@ -265,7 +265,7 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc nothing
-  (summary "A block that writes nothing: what a conditional arm answers when it has nothing to say.")
+  (summary "An empty block that writes nothing, suitable as a no-op branch in conditionals.")
   (see each)
   (example """
     (render->string ["a" (if verbose? nl nothing) "b"])
@@ -278,7 +278,7 @@
   (see nothing joined))
 
 (:doc captured
-  (summary "Renders blocks to a string and hands it to a function that answers a block.")
+  (summary "Renders blocks to a string and passes it to a function returning a replacement block.")
   (arg f "Given the text the blocks wrote; its block is run in their place.")
   (arg bs "The blocks to render.")
   (returns "A block.")

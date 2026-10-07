@@ -19,8 +19,8 @@
       ((Cons h _) h))
     """)
   (reference """
-    One of the two cases of a list, with @code{Nil}, and what a
-    @code{match} takes a non-empty list apart with: @code{(Cons h t)}.
+    One of the two cases of a list, with @code{Nil}. Also used in pattern
+    matching to deconstruct a non-empty list: @code{(Cons h t)}.
     @code{cons} is the same function under a lower-case name.
     """))
 
@@ -76,15 +76,15 @@
 
 (:doc list-head
   (summary "The first element of a list.")
-  (arg xs "The list. Not empty.")
+  (arg xs "The non-empty list.")
   (returns "Its first element.")
   (raises System.InvalidOperationException "When xs is empty.")
   (see list-tail list-empty? Cons))
 
 (:doc list-tail
   (summary "A list without its first element.")
-  (arg xs "The list. Not empty.")
-  (returns "Everything after the first element: the list xs was built on, not a copy.")
+  (arg xs "The non-empty list.")
+  (returns "The list following the first element (shares structural tail of xs).")
   (raises System.InvalidOperationException "When xs is empty.")
   (see list-head over-list))
 
@@ -122,7 +122,7 @@
 
 (:doc list-reverse
   (summary "A list's elements in the opposite order.")
-  (arg xs "The list, which is left as it is.")
+  (arg xs "The list to reverse.")
   (returns "A new list, last element first.")
   (see list-foldr))
 
@@ -141,10 +141,10 @@
     """))
 
 (:doc list-map
-  (summary "A list of what a function answers for each element of another.")
-  (arg f "The function. It may suspend.")
-  (arg xs "The list.")
-  (returns "A new list of f's answers, in xs's order.")
+  (summary "Applies a function to each element of a list.")
+  (arg f "The transformation function. May suspend.")
+  (arg xs "The list to map over.")
+  (returns "A new list of mapped values, in xs's order.")
   (see list-filter list-for-each list-foldl)
   (example """
     (list-map (fun (x) (* x x)) (list 1 2 3))   ; (1 4 9)
@@ -154,10 +154,10 @@
     """))
 
 (:doc list-filter
-  (summary "The elements of a list that pass a test.")
-  (arg keep? "The test. An element is kept when it answers #t. It may suspend.")
-  (arg xs "The list.")
-  (returns "A new list of the elements kept, in xs's order.")
+  (summary "The elements of a list that satisfy a predicate.")
+  (arg keep? "The predicate function, returning #t to keep an element. May suspend.")
+  (arg xs "The list to filter.")
+  (returns "A new list containing elements that satisfied the predicate, in xs's order.")
   (see list-map)
   (example """
     (list-filter (fun (x) (> x 1)) (list 1 2 3))   ; (2 3)
@@ -165,10 +165,10 @@
 
 (:doc list-foldl
   (summary "Combines a list's elements into one value, from the first.")
-  (arg f "Called with an element and the value so far, and answers the next value. It may suspend.")
-  (arg init "The value before any element.")
-  (arg xs "The list.")
-  (returns "What f answered for the last element, or init when xs is empty.")
+  (arg f "Accumulator function taking (element, acc) and returning the next value. May suspend.")
+  (arg init "The initial accumulator value.")
+  (arg xs "The list to fold.")
+  (returns "The value returned by f after the last element, or init when xs is empty.")
   (see list-foldr list-for-each)
   (example """
     (list-foldl cons Nil (list 1 2 3))   ; (3 2 1)
@@ -180,10 +180,10 @@
 
 (:doc list-foldr
   (summary "Combines a list's elements into one value, from the last.")
-  (arg f "Called with an element and the value so far, and answers the next value. It may suspend.")
-  (arg init "The value before any element.")
-  (arg xs "The list.")
-  (returns "What f answered for the first element, or init when xs is empty.")
+  (arg f "Accumulator function taking (element, acc) and returning the next value. May suspend.")
+  (arg init "The initial accumulator value.")
+  (arg xs "The list to fold.")
+  (returns "The value returned by f after the first element, or init when xs is empty.")
   (see list-foldl list-append)
   (example """
     (list-foldr cons Nil (list 1 2 3))   ; (1 2 3)
@@ -236,7 +236,7 @@
     """)
   (reference """
     No quote is written in front, and a string element is written as it is,
-    without quotes. It is what @code{->str} answers for a list.
+    without quotes. It is the default representation returned by @code{->str} for lists.
     """))
 
 (:doc reader->list
@@ -320,7 +320,7 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc ListTails
-  (summary "What @code{over-list} answers: a walk over a list's tails.")
+  (summary "The sequence of list tails returned by @code{over-list}.")
   (tparam %a "The type of the list's elements.")
   (field rest "The list the walk starts from.")
   (see over-list)
@@ -331,9 +331,9 @@
     """))
 
 (:doc over-list
-  (summary "The tails of a list, for a @code{:for} clause.")
+  (summary "Returns the successive tails of a list for iteration.")
   (arg xs "The list.")
-  (returns "A walk yielding xs, its tail, its tail's tail, and so on. The empty list is not yielded.")
+  (returns "A sequence yielding xs, its tail, its tail's tail, and so on. The empty list is not yielded.")
   (see ListTails list-tail)
   (example """
     {listing t (:for t (over-list (list 1 2 3)))}   ; ((1 2 3) (2 3) (3))

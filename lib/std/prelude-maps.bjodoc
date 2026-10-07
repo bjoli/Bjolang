@@ -8,7 +8,7 @@
 
 (:doc Map
   (summary "A persistent, unordered hash map.")
-  (tparam %k "The key type. What makes a map out of nothing asks for its Eq.")
+  (tparam %k "The key type. Requires an Eq instance.")
   (tparam %v "The value type.")
   (see map-empty map-ref map-set map-remove MapBuilder TransientMap Mapping)
   (example """
@@ -18,48 +18,42 @@
     (map-ref m "one")              ; 1, m is unchanged
     """)
   (reference """
-    A CHAMP trie (Compressed Hash-Array Mapped Prefix-tree), the class
-    @code{Map.Map} of the runtime. Every write answers a new map and leaves
-    the old one as it was; the two share the parts of the trie the write did
-    not touch.
+    A CHAMP trie (Compressed Hash-Array Mapped Prefix-tree) implementation
+    (@code{Map.Map} in the runtime). Updates return a new persistent map
+    sharing untouched subtrees with the original.
 
-    @strong{Key equality.} What makes a map out of nothing (@code{map-empty},
-    @code{seq->map}, @code{list->map}, @code{vec->map}, the @code{#map(...)}
-    literal, a builder's or a transient's @code{-empty}, the @code{mapping}
-    collector) asks for the key type's @code{Eq}, and the map compares keys
-    with it: the same answer @code{=} gives. A map made from another map keeps
-    that map's comparison, also when it is emptied by @code{map-clear} or by
-    removing its last key.
+    @strong{Key equality.} Map constructors (@code{map-empty}, @code{seq->map},
+    @code{list->map}, @code{vec->map}, the @code{#map(...)} literal,
+    builder or transient constructors, and the @code{mapping} collector) require
+    an @code{Eq} instance for the key type, using it for equality and hashing.
+    Maps derived from an existing map retain its key comparer.
 
-    @strong{Order.} The entries are walked in the trie's own order, which is no
-    order to rely on.
+    @strong{Order.} Hash maps are unordered; iteration order is not guaranteed.
 
-    @strong{Entries.} The callbacks of @code{map-fold}, @code{map-filter},
-    @code{map-for-each} and their neighbours take the key and the value as two
-    arguments. An entry is a single @code{(Tuple k v)} only where it is a value:
-    in @code{map->list}, @code{map->seq}, @code{map-cursor-current},
-    @code{map-find}, the bulk writes, and wherever a trait fixes one element,
-    as @code{Iterable} does for a @code{loop} or @code{fold}.
+    @strong{Entries.} Callbacks for @code{map-fold}, @code{map-filter},
+    @code{map-for-each} and related functions receive the key and value as two
+    separate arguments. An entry is represented as a @code{(Tuple k v)} pair
+    when treated as a single value: in @code{map->list}, @code{map->seq},
+    @code{map-cursor-current}, @code{map-find}, and generic @code{Iterable} loops.
 
-    Two maps are @code{=} when they have the same number of entries and every
-    key of one finds an @code{=} value in the other. A map is
-    @code{Iterable}, @code{Collection}, @code{Refable}, @code{Settable} and
-    @code{Addable}, and prints with @code{->str} as @code{map->str} does.
-    @code{add} on a map takes a pair and replaces a key already there.
+    Two maps are @code{=} when they contain identical key-value pairs.
+    A map implements @code{Iterable}, @code{Collection}, @code{Refable},
+    @code{Settable}, and @code{Addable}. Calling @code{add} on a map takes a pair
+    and replaces any existing association for that key.
     """))
 
 (:doc MapCursor
-  (summary "A position in a walk of a map.")
-  (tparam %k "The key type of the map walked.")
-  (tparam %v "The value type of the map walked.")
+  (summary "A cursor for iterating over a map.")
+  (tparam %k "The key type of the map.")
+  (tparam %v "The value type of the map.")
   (see map-cursor map-cursor-done? map-cursor-current)
   (reference """
-    What @code{Iterable} walks a map with. One allocation for the whole walk
-    and none per entry. A cursor is mutable: @code{map-cursor-done?} moves it.
+    Used by @code{Iterable} to traverse a map with a single allocation.
+    The cursor is mutable: calling @code{map-cursor-done?} advances it.
     """))
 
 (:doc MapBuilder
-  (summary "A mutable buffer that a map is built from in one pass.")
+  (summary "A mutable buffer used to construct a map efficiently in a single pass.")
   (tparam %k "The key type.")
   (tparam %v "The value type.")
   (see mapbuilder-empty mapbuilder-add! mapbuilder->map TransientMap)
@@ -71,19 +65,17 @@
     (mapbuilder->map b)     ; #map((a 2))
     """)
   (reference """
-    The fast way to make a map out of nothing. Appends land in a flat buffer
-    and are scattered into the trie by hash in one pass when
-    @code{mapbuilder->map} builds the map, where setting a key on a map copies
-    a path down the trie per entry.
+    An efficient builder for constructing maps in bulk. Insertions append to
+    a flat buffer and are populated into the trie in a single pass when
+    @code{mapbuilder->map} is called, avoiding intermediate tree copies.
 
-    A builder supports no lookup and no removal. A key appended twice is
-    resolved when the map is built, the last one winning. It is
-    @code{Addable!} with a pair, and a @code{Collection} whose length is the
-    number of entries appended.
+    A builder does not support lookup or removal. If duplicate keys are added,
+    the last value wins. It implements @code{Addable!} with a pair and
+    @code{Collection} reporting the number of entries appended.
     """))
 
 (:doc TransientMap
-  (summary "A mutable map, the fast way to make a map out of another map.")
+  (summary "A mutable in-place map for high-performance batch updates.")
   (tparam %k "The key type.")
   (tparam %v "The value type.")
   (see map->transientmap transientmap->map transientmap-set! MapBuilder)
@@ -94,16 +86,15 @@
     (transientmap->map t)
     """)
   (reference """
-    The map's own operations with the writes done in place: the
-    @code{transientmap-} functions take the same arguments in the same order
-    as their @code{map-} namesakes, and the writes answer nothing.
+    Provides in-place variants of standard map operations: functions take the
+    same arguments in the same order as their @code{map-} counterparts, and
+    mutations return Unit.
 
-    A transient owns the trie nodes it has touched, so it writes them in place
-    rather than copying, and @code{transientmap->map} hands the result back in
-    O(1). The transient stays usable afterwards; a later write copies rather
-    than changing the map it handed back.
+    A transient mutates modified trie nodes in place without copying, and
+    @code{transientmap->map} freezes it back into an immutable map in O(1).
+    The transient remains usable afterwards, with subsequent writes safely copying nodes.
 
-    It is @code{Addable!} with a pair, and a @code{Collection}.
+    Implements @code{Addable!} with a pair, and @code{Collection}.
     """))
 
 (:doc Mapping
@@ -152,7 +143,7 @@
   (summary "The value under a key, or a default when it is not there.")
   (arg m "The map.")
   (arg k "The key.")
-  (arg default "What to answer when k is not in the map.")
+  (arg default "The fallback value returned if k is absent.")
   (returns "The value under k, or default.")
   (see map-ref map-try-ref))
 
@@ -212,14 +203,14 @@
 
 (:doc map-set
   (summary "A map with a key set to a value, replacing or adding it.")
-  (arg m "The map, which is left as it was.")
+  (arg m "The persistent map (unmodified).")
   (arg k "The key.")
   (arg v "Its value.")
   (returns "A map with k mapped to v.")
   (see map-add map-set-all ref-set)
   (reference """
     When k already holds a value equal to v, by the value type's .NET
-    @code{Equals}, the answer is m itself.
+    @code{Equals}, it returns m itself unchanged.
     """))
 
 (:doc map-add
@@ -276,10 +267,10 @@
 
 (:doc map-merge-with
   (summary "Two maps merged, with a function deciding the keys both have.")
-  (arg f "Called as (f key left right) for a key both have; answers its value.")
+  (arg f "Merger function (f key left right) returning the resolved value.")
   (arg m "The left map.")
   (arg other "The right map.")
-  (returns "Every key of either, with f's answer where both have one.")
+  (returns "A map containing all keys from both maps, with conflicts resolved by f.")
   (see map-merge)
   (example """
     (map-merge-with (fun (k a b) (+ a b))
@@ -294,9 +285,9 @@
 
 (:doc map-map
   (summary "A map with every value replaced by a function of its key and value.")
-  (arg f "Called as (f key value); answers the new value.")
+  (arg f "Function (f key value) returning the new value.")
   (arg m "The map.")
-  (returns "A map of the same keys, filed under the same comparison, with f's answers.")
+  (returns "A map containing the same keys with updated values.")
   (see map-map-values map-filter)
   (reference """
     The key is what the result is filed under, so @code{f} cannot move it.
@@ -304,9 +295,9 @@
 
 (:doc map-map-values
   (summary "A map with every value replaced by a function of the value.")
-  (arg f "Called as (f value); answers the new value.")
+  (arg f "Function (f value) returning the new value.")
   (arg m "The map.")
-  (returns "A map of the same keys, filed under the same comparison, with f's answers.")
+  (returns "A map containing the same keys with updated values.")
   (see map-map))
 
 (:doc map-filter
@@ -318,10 +309,10 @@
 
 (:doc map-fold
   (summary "Combines every entry of a map into one value.")
-  (arg f "Called as (f key value acc); answers the next acc.")
+  (arg f "Accumulator function (f key value acc) returning the next accumulator.")
   (arg init "The acc before the first entry.")
   (arg m "The map.")
-  (returns "The last acc, or init for an empty map.")
+  (returns "The final accumulator value, or init for an empty map.")
   (see map-for-each fold)
   (example """
     (map-fold (fun (k v acc) (+ acc v)) 0 m)   ; the sum of the values
@@ -335,10 +326,10 @@
   (see map-iter map-fold))
 
 (:doc map-iter
-  (summary "Walks a map until a function answers #f.")
-  (arg f "Called as (f key value); #f stops the walk.")
+  (summary "Traverses a map until a function returns #f.")
+  (arg f "Called as (f key value); returning #f stops traversal.")
   (arg m "The map.")
-  (returns "#t when the walk ran to the end, #f when f stopped it.")
+  (returns "#t if the traversal completed without f returning #f; #f otherwise.")
   (see map-for-each map-any? map-find))
 
 (:doc map-any?
@@ -378,9 +369,9 @@
   (see map-cursor-done? map-cursor-current MapCursor))
 
 (:doc map-cursor-done?
-  (summary "Moves a cursor to the next entry, and answers whether there was none.")
+  (summary "Moves a cursor to the next entry, returning #t if exhausted.")
   (arg c "The cursor, which is moved.")
-  (returns "#t when the walk has run past the last entry.")
+  (returns "#t when the walk has run past the last entry; #f if an entry is available.")
   (see map-cursor map-cursor-current)
   (example """
     (let ((c (map-cursor m)))
@@ -396,7 +387,7 @@
 
 (:doc map-cursor-current
   (summary "The entry a cursor stands on.")
-  (arg c "The cursor, after a map-cursor-done? that answered #f.")
+  (arg c "The cursor, after map-cursor-done? returned #f.")
   (returns "The entry, as (Tuple key value).")
   (see map-cursor map-cursor-done?))
 
@@ -537,7 +528,7 @@
   (see map->transientmap)
   (reference """
     The transient disowns the nodes it handed over, so a later write to it
-    copies them rather than changing the map answered.
+    copies them rather than modifying the returned map.
     """))
 
 (:doc transientmap-set!
@@ -587,7 +578,7 @@
   (summary "The value under a key of a transient map, or a default.")
   (arg t "The transient.")
   (arg k "The key.")
-  (arg default "What to answer when k is not there.")
+  (arg default "The fallback value returned if k is absent.")
   (returns "The value under k, or default.")
   (see transientmap-ref transientmap-try-ref))
 

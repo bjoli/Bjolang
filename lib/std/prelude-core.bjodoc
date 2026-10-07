@@ -15,7 +15,7 @@
   (see - * negate)
   (example """
     (+ 1 2)       ; 3
-    (+ 1 2 3)     ; 6, folded from the left
+    #fl(+ 1 2 3)     ; 6, folded from the left
     (+)           ; 0
     """)
   (reference """
@@ -37,7 +37,7 @@
   (see + negate)
   (example """
     (- 10 3)      ; 7
-    (- 10 3 2)    ; 5, folded from the left
+    #fl(- 10 3 2)    ; 5, folded from the left
     (- 4)         ; -4, which is (negate 4)
     """)
   (reference """
@@ -53,7 +53,7 @@
   (see + /)
   (example """
     (* 6 7)       ; 42
-    (* 2 3 4)     ; 24
+    #fl(* 2 3 4)     ; 24
     (*)           ; 1
     """)
   (reference """
@@ -72,7 +72,7 @@
     (/ 7 2)       ; 3
     (/ 7.0 2.0)   ; 3.5
     (/ 1.0 0.0)   ; infinity
-    (/ 100 5 2)   ; 10
+    #fl(/ 100 5 2)   ; 10
     """)
   (reference """
     The C# operator. Integer division truncates and throws on a zero
@@ -107,8 +107,8 @@
   (returns "Minus x, of x's own type.")
   (see - recip)
   (reference """
-    What @code{(- x)} is written as. A primitive rather than
-    @code{(- 0 x)}, which would fix the type to that of the literal 0 and so
+    @code{(negate x)} is the same as @code{(- x)}, since @code{(- x)} expands to thi function.
+    A primitive rather than @code{(- 0 x)}, which would fix the type to that of the literal 0 and so
     refuse a @code{double}. It is C#'s unary minus, so negating the most
     negative integer of a type wraps to itself.
     """))
@@ -124,7 +124,7 @@
     (recip 4)     ; 0: integer division
     """)
   (reference """
-    What @code{(/ x)} is written as, emitted as @code{1 / x} at x's type. At
+    What @code{(/ x)} expands to, emitted as @code{1 / x} at x's type. At
     an integer type that is integer division, so it is 0 for any x other
     than 1 and -1, and throws @code{System.DivideByZeroException} for 0.
     """))
@@ -154,8 +154,8 @@
   (returns "#t when a is less than b. #f when either is NaN.")
   (see <= > >= compare)
   (example """
-    (< 1 2)       ; #t
-    (< 1 2 3)     ; #t: each is less than the next
+    (< 1 2)          ; #t
+    #ch(< 1 2 3)     ; #t: each is less than the next
     """)
   (reference """
     The C# operator, at numbers, @code{char} and @code{StringCursor}: the
@@ -163,7 +163,7 @@
     has no such operator; @code{compare} and @code{less?} order every
     comparable type, strings ordinally.
 
-    Written with more than two operands it chains, comparing each operand
+    For chaining, use the #ch(< 1 2 3) hash extension, comparing each operand
     with the next. Comparisons follow IEEE, so one against NaN is #f
     whichever way round it is written.
     """))
@@ -185,7 +185,7 @@
   (returns "#t when a is greater than b. #f when either is NaN.")
   (see >= < greater?)
   (reference """
-    The C# operator, as @code{<} is. With more than two operands it chains.
+    The C# operator, as @code{<} is.
     """))
 
 (:doc >=
@@ -195,7 +195,7 @@
   (returns "#t when a is at least b. #f when either is NaN.")
   (see > <= at-least?)
   (reference """
-    The C# operator, as @code{<} is. With more than two operands it chains.
+    The C# operator, as @code{<} is.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -227,8 +227,7 @@
     (bitwise-ior 12 10)   ; 14
     """)
   (reference """
-    C#'s @code{|}, at every integer type. With more than two operands it
-    folds from the left.
+    C#'s @code{|}, at every integer type.
     """))
 
 (:doc bitwise-xor
@@ -241,8 +240,7 @@
     (bitwise-xor 12 10)   ; 6
     """)
   (reference """
-    C#'s @code{^}, at every integer type. With more than two operands it
-    folds from the left.
+    C#'s @code{^}, at every integer type.
     """))
 
 (:doc bitwise-not
@@ -310,9 +308,8 @@
   (returns "Its digits, with an ASCII minus when negative.")
   (see string->int long->string ->str)
   (reference """
-    Invariant, whatever the machine's culture, so it reads back with
-    @code{string->int} anywhere. .NET's own @code{ToString} takes the
-    ambient culture, under which -100 can come back with a U+2212 MINUS SIGN.
+    Does not use the c# culture, where minus can come back with U+2212 MINUS SIGN.
+    The result is guaranteed to round-trip through string->int. 
     """))
 
 (:doc long->string
@@ -346,7 +343,7 @@
 (:doc number->string
   (summary "The decimal text of an int, under the name R7RS uses.")
   (arg n "The number.")
-  (returns "What int->string answers.")
+  (returns "The string representation of n, identical to int->string.")
   (see int->string ->str)
   (reference """
     Only for @code{int}. Other numeric types have their own conversions, or
@@ -425,13 +422,13 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc unit
-  (summary "The one value of type Unit.")
+  (summary "The single value of type Unit.")
   (see ignore)
   (reference """
-    For a body that has to answer a @code{Unit} without doing anything,
-    such as @code{Discard}'s blanket implementation. @code{(begin)} is the
-    same value. @code{(Tuple)} is not: that is the empty tuple, a type of
-    its own.
+    Used when an expression or function body must evaluate to @code{Unit}
+    without performing meaningful work, such as in @code{Discard}'s blanket
+    implementation. Equivalent to @code{(begin)}. Not to be confused with
+    @code{(Tuple)}, which is the empty tuple.
     """))
 
 (:doc ignore
@@ -443,10 +440,11 @@
     (ignore (bjo (log-visit user)))   ; detaches the promise
     """)
   (reference """
-    The method of the @code{Discard} trait. A value in statement position
-    must be a @code{Unit}: any other, a @code{Result} or a .NET method's
-    answer included, is refused. @code{ignore} is how to say it is not
-    wanted. For most types it does nothing.
+    The method of the @code{Discard} trait. An expression in statement
+    position must evaluate to @code{Unit}; any other type (including a
+    @code{Result} or a .NET method return value) will trigger a compiler
+    error. Use @code{ignore} to explicitly discard unwanted values.
+    For most types it does nothing.
 
     On a @code{Promise} it is @code{detach}: the result is not wanted, but
     a failure inside the fiber is reported as unhandled rather than lost
@@ -497,82 +495,93 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc ref
-  (summary "The element of a collection at an index or key.")
-  (arg coll "The collection.")
-  (arg i "The index or key. What it is depends on the collection.")
-  (returns "The element there.")
+  (summary "Looks up an element in a collection by index or key.")
+  (arg coll "The collection to index.")
+  (arg i "The lookup key or zero-based integer index.")
+  (returns "The element associated with i.")
+  (raises System.IndexOutOfRangeException "When coll is an Array or Vec and i is out of bounds.")
+  (raises System.Collections.Generic.KeyNotFoundException "When coll is a Map and i is not present.")
   (see try-ref ref-set get vec-ref map-ref)
   (example """
     (ref [10 20 30] 1)          ; 20
     (ref #map("a" 1) "a")       ; 1
     """)
   (reference """
-    The method of the @code{Refable} trait, which @code{get} reads key
-    steps with. Implemented for an @code{Array} and a @code{Vec}, by
-    @code{int} index; a @code{Map}, by key; and a @code{string}, by
-    @code{StringCursor}, answering a @code{char}. Each is the collection's
-    own read, so a missing index or key fails as that read does.
+    The primary method of the @code{Refable} trait, also used by @code{get}
+    for nested path lookups.
+
+    Supported collections:
+    @itemlist{
+      @item{@code{Array} and @code{Vec}: indexed by integer.}
+      @item{@code{Map}: indexed by key.}
+      @item{@code{string}: indexed by @code{StringCursor}, returning a @code{char}.}
+    }
     """))
 
 (:doc try-ref
-  (summary "The element of a collection at an index or key, if there is one.")
-  (arg coll "The collection.")
-  (arg i "The index or key.")
-  (returns "(Some element), or None where there is none.")
+  (summary "Safely looks up an element by index or key, returning an Option.")
+  (arg coll "The collection to index.")
+  (arg i "The lookup key or integer index.")
+  (returns "(Some element) if present; None if the key is missing or index is out of bounds.")
   (see ref try-get map-try-ref)
   (example """
     (try-ref [10 20 30] 5)      ; None
+    (try-ref #map("a" 1) "b")   ; None
     """)
   (reference """
-    The other method of @code{Refable}. A @code{Vec} answers @code{None} for
-    an index out of range, a @code{Map} for a missing key, and a
-    @code{string} for the end cursor.
+    A non-throwing lookup method on the @code{Refable} trait. Returns @code{None}
+    when:
+    @itemlist{
+      @item{An index into a @code{Vec} is out of bounds.}
+      @item{A key in a @code{Map} does not exist.}
+      @item{A @code{StringCursor} has reached the end of a string.}
+    }
 
-    Its default body is @code{(Some (ref coll i))}, which an @code{Array}
-    keeps: an index out of an array's bounds throws here as in @code{ref}.
+    Note: for .NET @code{Array}, the default implementation calls @code{ref},
+    which will throw if the index is out of bounds.
     """))
 
 (:doc ref-set
-  (summary "A copy of a collection with one index or key set.")
-  (arg coll "The collection, which is left as it was.")
-  (arg i "The index or key.")
-  (arg x "The value to put there.")
-  (returns "A new collection with x at i.")
+  (summary "Returns a copy of a persistent collection with an updated key or index.")
+  (arg coll "The persistent collection to update (unmodified).")
+  (arg i "The index or key to update.")
+  (arg x "The new value to associate with i.")
+  (returns "A new collection containing the updated value.")
+  (raises System.IndexOutOfRangeException "When coll is a Vec and i is out of bounds.")
   (see ref set update vec-set map-set)
   (example """
     (ref-set [1 2 3] 0 9)       ; [9 2 3]
+    (ref-set #map("a" 1) "b" 2) ; #map(("a" 1) ("b" 2))
     """)
   (reference """
-    The method of the @code{Settable} trait, the persistent write that goes
-    with @code{ref}, and what @code{set} and @code{update} write key steps
-    with. Implemented for a @code{Vec}, where an index out of range throws,
-    and a @code{Map}, which gains a key it did not have.
+    The method of the @code{Settable} trait, supporting persistent updates
+    for @code{Vec} and @code{Map}. Also used by @code{set} and @code{update}
+    when traversing nested key paths.
 
-    A trait of its own rather than part of @code{Refable}, because much that
-    can be read by key cannot sensibly be copied with one slot changed: a
-    string read by cursor, or a mutable collection, whose write is in place.
+    For a @code{Vec}, updating an existing index is O(log n); an out-of-range index throws.
+    For a @code{Map}, sets an existing key or inserts a new one in O(log n).
     """))
 
 (:doc deref
-  (summary "What a cell holds: a box's value, or a parameter's current one.")
-  (arg p "The cell.")
-  (returns "Its value.")
+  (summary "Returns the current value held in a cell, box, or parameter.")
+  (arg p "The cell or parameter.")
+  (returns "The value currently stored in p.")
   (see try-deref box-ref parameter-ref get)
   (reference """
-    The method of the @code{Derefable} trait, implemented for @code{Box},
-    as @code{box-ref}, and @code{Param}, as @code{parameter-ref}. It is
-    what @code{get} with no steps reads.
+    The primary method of the @code{Derefable} trait, implemented for
+    @code{Box} (calling @code{box-ref}) and @code{Param} (calling
+    @code{parameter-ref}). Also used by @code{get} when called without path steps.
     """))
 
 (:doc try-deref
-  (summary "What a cell holds, as an Option.")
-  (arg p "The cell.")
-  (returns "(Some value), or None for a cell that may be empty.")
+  (summary "Returns the value held in a cell as an Option.")
+  (arg p "The cell or parameter.")
+  (returns "(Some value) if present, or None if the cell is empty.")
   (see deref)
   (reference """
-    The other method of @code{Derefable}. Its default body is
-    @code{(Some (deref p))}, which the @code{Box} and @code{Param}
-    implementations keep, so for them it is always @code{Some}.
+    The optional access method of the @code{Derefable} trait. The default
+    implementation returns @code{(Some (deref p))}, which both @code{Box}
+    and @code{Param} use.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -618,9 +627,9 @@
   (see option-ref-or option-value some?))
 
 (:doc option-ref-or
-  (summary "The value inside an Option, or a fallback for None.")
+  (summary "Returns the value inside an Option, or a fallback default for None.")
   (arg opt "The Option.")
-  (arg fallback "What to answer for None. Evaluated either way, being an argument.")
+  (arg fallback "The default value to return if opt is None. Eagerly evaluated.")
   (returns "The value opt holds, or fallback.")
   (see option-value option-ref)
   (example """
@@ -628,9 +637,9 @@
     """))
 
 (:doc option-value
-  (summary "The value inside an Option, or a fallback for None.")
+  (summary "Returns the value inside an Option, or a fallback default for None.")
   (arg opt "The Option.")
-  (arg fallback "What to answer for None.")
+  (arg fallback "The default value to return if opt is None.")
   (returns "The value opt holds, or fallback.")
   (see option-ref-or)
   (reference """
@@ -643,23 +652,23 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc Ok
-  (summary "A Result holding an answer.")
-  (arg v "The answer.")
+  (summary "A Result representing a successful computation.")
+  (arg v "The success value.")
   (returns "(Ok v).")
   (see Err ok? result-map)
   (reference """
-    A case of the builtin @code{(Result %e %a)}: an answer or the error
-    that stopped it. Every @code{#:exceptions} interop call answers one. A
-    module that declares a @code{Result} type of its own gets its own
-    @code{Ok} and @code{Err}, which shadow these.
+    A constructor of the builtin @code{(Result %e %a)} type representing a
+    successful value. Every @code{#:exceptions} interop call returns a Result.
+    A module declaring its own @code{Result} type gets its own @code{Ok}
+    and @code{Err}, which shadow these.
 
-    Like any value, a @code{Result} must be used: matched, propagated, or
-    handed to @code{ignore}.
+    Like any value, a @code{Result} must be explicitly used: matched, propagated,
+    or discarded with @code{ignore}.
     """))
 
 (:doc Err
-  (summary "A Result holding the error that stopped it.")
-  (arg e "The error.")
+  (summary "A Result representing a failure, holding an error value.")
+  (arg e "The error value.")
   (returns "(Err e).")
   (see Ok err? raise)
   (example """
@@ -681,17 +690,17 @@
   (see ok?))
 
 (:doc result-map
-  (summary "Applies a function to the answer inside an Ok.")
-  (arg f "The function, given the Ok's value. It answers a plain value.")
-  (arg r "The Result.")
-  (returns "(Ok (f v)) for (Ok v); an Err as it was.")
+  (summary "Applies a transformation function to the value inside an Ok.")
+  (arg f "The function applied to the Ok value, returning a new value.")
+  (arg r "The Result to transform.")
+  (returns "(Ok (f v)) for (Ok v); returns an Err unchanged.")
   (see ok? Ok)
   (example """
     (result-map string-length (Ok "abc"))   ; (Ok 3)
     """)
   (reference """
-    A step that answers a @code{Result} of its own belongs in a
-    @code{try->} chain instead.
+    To chain a function that itself returns a @code{Result}, use @code{try->}
+    instead.
 
     @code{f} may be either colour. A step that waits has to be a
     @code{(bjoroutine (x) ...)}; written @code{(fun (x) ...)}, the same call
@@ -755,10 +764,9 @@
   (returns "The environment it displaced, for dyn-restore! to put back.")
   (see dyn-restore! parameter-ref)
   (reference """
-    @code{parameterize} is written as a push, the body, and a
-    @code{dyn-restore!} of what the push answered in a @code{finally}. Not
-    meant to be called directly: by hand it pairs a push with a restore that
-    nothing guards.
+    @code{parameterize} expands into a push, the body evaluation, and a
+    @code{dyn-restore!} of the previous environment in a @code{finally} block.
+    Not intended to be called directly.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -797,7 +805,7 @@
   (summary ".NET's default equality, private to std/eq.")
   (arg a "The first.")
   (arg b "The second.")
-  (returns "What EqualityComparer's Default answers.")
+  (returns "The boolean result of EqualityComparer's Default.Equals.")
   (see clr-eq clr-hash structural-equals)
   (reference """
     Unlike @code{clr-eq} it compiles at a type variable, and it is reflexive
@@ -894,11 +902,10 @@
     (defun (hashset-empty) (clr-hashset-empty (eq-comparer)))
     """)
   (reference """
-    What a collection is made with, so that its keys compare as @code{=}
-    and @code{eq-hash} say. Where the type's own .NET members answer the
-    same, which is almost always, it is .NET's default comparer, which a
-    collection can keep; otherwise it is the @code{Eq} implementation
-    itself.
+    Used when creating collections so that keys are compared using @code{=}
+    and hashed using @code{eq-hash}. If the type's own .NET equality matches
+    Bjolang's (which is almost always true), it returns .NET's default comparer;
+    otherwise, it delegates directly to the type's @code{Eq} implementation.
     """))
 
 (:doc ord-comparer
@@ -906,9 +913,9 @@
   (returns "An IComparer for the type the call is used at.")
   (see eq-comparer compare)
   (reference """
-    The ordering counterpart of @code{eq-comparer}: .NET's default comparer
-    where the type's own @code{CompareTo} answers as its @code{Ord} does,
-    and the @code{Ord} implementation itself where it does not.
+    The ordering counterpart of @code{eq-comparer}: returns .NET's default
+    comparer when the type's @code{CompareTo} agrees with its @code{Ord}
+    implementation, and delegates to @code{Ord} otherwise.
     """))
 
 ;; ---------------------------------------------------------------------------

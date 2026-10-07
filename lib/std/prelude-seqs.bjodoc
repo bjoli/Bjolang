@@ -8,52 +8,51 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc iterable-start
-  (summary "A cursor at the beginning of a walk.")
-  (arg s "What is walked.")
-  (returns "A cursor before or on the first element; ask iterable-done? before anything else.")
+  (summary "Returns a cursor positioned at the start of an iterable sequence.")
+  (arg s "The iterable collection or sequence.")
+  (returns "A cursor before or on the first element. Check iterable-done? before advancing.")
   (see iterable-done? iterable-current iterable-next)
   (reference """
     One of the four methods @code{(:for x s)} is built on. A program may call
-    them, but normally reaches for @code{loop}, @code{fold} and the
-    comprehensions. The long names keep them out of the way of variables
-    called @code{start}, @code{next} or @code{current}.
+    them directly, but typically uses @code{loop}, @code{fold}, or
+    comprehensions instead.
     """))
 
 (:doc iterable-done?
-  (summary "Whether a walk is over.")
-  (arg s "What is walked.")
+  (summary "Whether iteration has finished.")
+  (arg s "The iterable collection or sequence.")
   (arg c "The cursor.")
-  (returns "#t when there is no element at c.")
+  (returns "#t if the iteration has completed or no element exists at c; #f otherwise.")
   (see iterable-start iterable-current iterable-next)
   (reference """
-    Ask it once before each @code{iterable-current}. For a @code{Vec}, a
-    @code{Seq} and a @code{Map} it is this call that moves the walk on: their
-    cursors wrap an enumerator, @code{iterable-next} answers the cursor it is
-    given, and asking @code{iterable-done?} twice skips an element.
+    Call once before each @code{iterable-current}. For @code{Vec}, @code{Seq},
+    and @code{Map}, this call advances the underlying enumerator:
+    @code{iterable-next} returns the cursor passed to it, and calling
+    @code{iterable-done?} twice advances past an element.
     """))
 
 (:doc iterable-current
-  (summary "The element at a cursor.")
-  (arg s "What is walked.")
-  (arg c "The cursor. iterable-done? has answered #f for it.")
-  (returns "The element there.")
+  (summary "The element at the current cursor position.")
+  (arg s "The iterable collection or sequence.")
+  (arg c "The cursor (after iterable-done? returned #f).")
+  (returns "The element at c.")
   (see iterable-done? iterable-next))
 
 (:doc iterable-next
-  (summary "The cursor after this one.")
-  (arg s "What is walked.")
+  (summary "Returns the cursor for the next element.")
+  (arg s "The iterable collection or sequence.")
   (arg c "The cursor.")
-  (returns "The cursor on the next element, or past the end.")
+  (returns "The cursor for the next element, or past-the-end.")
   (see iterable-start iterable-done?)
   (reference """
-    For a cursor that wraps an enumerator, as a @code{Vec}'s, a
-    @code{Seq}'s and a @code{Map}'s do, this is the cursor itself, and
-    @code{iterable-done?} does the stepping.
+    For cursors that wrap an enumerator (such as @code{Vec}, @code{Seq}, and
+    @code{Map}), this returns the cursor itself, while @code{iterable-done?}
+    advances the position.
     """))
 
 (:doc Iterable
-  (summary "What can be walked front to back: what a (:for x s) clause takes.")
-  (tparam %s "The type that is walked.")
+  (summary "Trait for sequentially iterable collections, used by (:for x s) loops.")
+  (tparam %s "The iterable collection or sequence type.")
   (see iterable-start iterable-done? iterable-current iterable-next fold map ->seq)
   (example """
     (loop (:for x '(1 2 3))
@@ -62,30 +61,17 @@
     (seq->list (map (fun (x) (* x x)) (range 0 4)))   ; (0 1 4 9)
     """)
   (reference """
-    An implementation names two types, @code{%elem}, what the walk yields,
-    and @code{%cursor}, where it is, and gives the four methods
-    @code{iterable-start}, @code{iterable-done?}, @code{iterable-current} and
-    @code{iterable-next}. The walked value is passed to every method, so a
-    cursor need carry nothing else: an @code{Array}'s is a bare @code{int}.
+    An implementation defines two associated types: @code{%elem} (the element
+    yielded) and @code{%cursor} (the cursor type), and implements the four core
+    methods: @code{iterable-start}, @code{iterable-done?},
+    @code{iterable-current}, and @code{iterable-next}.
 
-    Everything else the trait declares has a default written over those four,
-    so an implementation gets @code{fold}, @code{map}, @code{filter},
-    @code{take}, @code{drop}, @code{take-while}, @code{drop-while},
-    @code{enumerate}, @code{flat-map}, @code{any?}, @code{all?},
-    @code{find}, @code{for-each} and @code{->seq} without writing them. The
-    ones that answer a @code{Seq} are @code{seql}s and lazy; @code{fold},
-    @code{any?}, @code{all?}, @code{find} and @code{for-each} are ordinary
-    loops. A @code{seql} cannot suspend, so only those four, @code{fold}
-    excepted, take a callback of either colour.
-
-    The prelude implements it for @code{List}, @code{Vec}, @code{Array},
-    @code{Map} (its elements are @code{(Tuple k v)} pairs), @code{Seq},
-    @code{string} (whole characters, through a @code{StringWalk}) and
-    @code{Range}, and for the walks @code{in-array},
-    @code{in-reverse-array}, @code{in-vec}, @code{in-reverse-vec},
-    @code{over-list}, @code{in-port}, @code{up-from} and @code{down-from}
-    answer. The sets and ordered collections implement it in their own
-    modules.
+    Default implementations are provided for @code{fold}, @code{map},
+    @code{filter}, @code{take}, @code{drop}, @code{take-while},
+    @code{drop-while}, @code{enumerate}, @code{flat-map}, @code{any?},
+    @code{all?}, @code{find}, @code{for-each}, and @code{->seq}. Methods
+    returning a @code{Seq} are lazy; @code{fold}, @code{any?}, @code{all?},
+    @code{find}, and @code{for-each} execute eagerly.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -94,10 +80,10 @@
 
 (:doc fold
   (summary "Combines every element of an iterable into one value, front to back.")
-  (arg f "Called with an element and the value so far; answers the next value.")
-  (arg acc "The value to start from.")
-  (arg s "What is walked.")
-  (returns "The last value f answered, or acc when s is empty.")
+  (arg f "The accumulator function: (f elem acc) returning the next accumulator.")
+  (arg acc "The initial value.")
+  (arg s "The iterable collection or sequence.")
+  (returns "The accumulated result, or acc if s is empty.")
   (see seq-fold for-each)
   (example """
     (fold + 0 '(1 2 3))                         ; 6
@@ -111,118 +97,113 @@
 
 (:doc map
   (summary "A lazy sequence of a function applied to each element.")
-  (arg f "The function.")
-  (arg s "What is walked.")
-  (returns "A Seq of f's answers, in s's order.")
+  (arg f "The transformation function.")
+  (arg s "The iterable collection or sequence.")
+  (returns "A Seq of the transformed elements, in order.")
   (see filter flat-map seq-map seq->list)
   (example """
     (seq->list (map (fun (x) (* 2 x)) '(1 2 3)))   ; (2 4 6)
     """)
   (reference """
-    The answer is a @code{Seq} whatever @code{s} is: nothing is called until
-    it is walked, and @code{f} runs again on each walk. @code{seq->list} or
-    @code{seq->vec} makes a collection of it, and a comprehension such as
-    @code{{listing (f x) (:for x xs)}} builds one directly.
+    Returns a @code{Seq} regardless of @code{s}'s concrete collection type:
+    elements are produced lazily as the sequence is evaluated, and @code{f}
+    runs on each traversal. Use @code{seq->list} or @code{seq->vec} to collect
+    results into a concrete data structure.
     """))
 
 (:doc filter
   (summary "A lazy sequence of the elements that satisfy a predicate.")
-  (arg f "The predicate.")
-  (arg s "What is walked.")
-  (returns "A Seq of the elements f answers #t for, in s's order.")
+  (arg f "The predicate function.")
+  (arg s "The iterable collection or sequence.")
+  (returns "A Seq of elements matching the predicate, in order.")
   (see map take-while seq-filter))
 
 (:doc take
   (summary "A lazy sequence of the first n elements.")
-  (arg n "How many. Zero or less gives the empty sequence.")
-  (arg s "What is walked.")
-  (returns "A Seq of s's first n elements, or all of them if s has fewer.")
+  (arg n "The number of elements to take (0 or negative yields an empty sequence).")
+  (arg s "The iterable collection or sequence.")
+  (returns "A Seq of s's first n elements, or all elements if s contains fewer.")
   (see drop take-while seq-take)
   (reference """
-    After the n-th element it stops without pulling another from s, so it is
-    safe on an endless sequence, and over a port the next item is left for
-    the next reader.
+    Stops after the n-th element without pulling additional elements from s,
+    making it safe for endless sequences and stream ports.
     """))
 
 (:doc drop
-  (summary "A lazy sequence of everything after the first n elements.")
-  (arg n "How many to skip.")
-  (arg s "What is walked.")
-  (returns "A Seq of s without its first n elements; empty if s has no more than n.")
-  (see take drop-while seq-drop)
-  (reference """
-    The skipped elements are still walked, and tested one by one.
-    """))
+  (summary "A lazy sequence skipping the first n elements.")
+  (arg n "The number of elements to skip.")
+  (arg s "The iterable collection or sequence.")
+  (returns "A Seq of s without its first n elements; empty if s has no more than n elements.")
+  (see take drop-while seq-drop))
 
 (:doc take-while
-  (summary "A lazy sequence of the elements before the first that fails a predicate.")
-  (arg f "The predicate.")
-  (arg s "What is walked.")
-  (returns "A Seq of s's leading elements f answers #t for.")
+  (summary "A lazy sequence of elements taken while a predicate holds true.")
+  (arg f "The predicate function.")
+  (arg s "The iterable collection or sequence.")
+  (returns "A Seq of s's leading elements while (f x) is true.")
   (see drop-while take filter))
 
 (:doc drop-while
-  (summary "A lazy sequence of everything from the first element that fails a predicate.")
-  (arg f "The predicate.")
-  (arg s "What is walked.")
-  (returns "A Seq of s from the first element f answers #f for, that one included.")
+  (summary "A lazy sequence skipping elements while a predicate holds true.")
+  (arg f "The predicate function.")
+  (arg s "The iterable collection or sequence.")
+  (returns "A Seq of s starting from the first element where (f x) returns #f.")
   (see take-while drop)
   (reference """
-    Each walk of the answer starts over: it drops the leading run of
-    @code{s} again, calling @code{f} on it again.
+    Each traversal re-evaluates @code{s} from the start, skipping leading
+    elements where @code{f} returns #t.
     """))
 
 (:doc enumerate
-  (summary "A lazy sequence of each element paired with its position.")
-  (arg s "What is walked.")
-  (returns "A Seq of (Tuple i x), with i counting from 0.")
+  (summary "A lazy sequence of each element paired with its index.")
+  (arg s "The iterable collection or sequence.")
+  (returns "A Seq of (Tuple i x), with index i counting from 0.")
   (see map up-from)
   (example """
     (seq->list (enumerate "ab"))   ; the pairs 0 and #\a, 1 and #\b
     """))
 
 (:doc flat-map
-  (summary "A lazy sequence of the elements of the sequences a function answers.")
-  (arg f "Called with each element; answers a Seq.")
-  (arg s "What is walked.")
-  (returns "A Seq of everything f's answers yield, one after the other.")
+  (summary "A lazy sequence flattening the sub-sequences returned by a function.")
+  (arg f "A function taking each element and returning a Seq.")
+  (arg s "The iterable collection or sequence.")
+  (returns "A Seq concatenating the elements of each sequence returned by f.")
   (see map seq-append))
 
 (:doc any?
-  (summary "Whether some element satisfies a predicate.")
+  (summary "Whether at least one element satisfies a predicate.")
   (arg f "The predicate. It may suspend.")
-  (arg s "What is walked.")
-  (returns "#t at the first element f answers #t for; #f if there is none, and for an empty s.")
+  (arg s "The iterable collection or sequence.")
+  (returns "#t if (f x) is true for any element; #f if none match or s is empty.")
   (see all? find)
   (reference """
-    The walk stops at the first match, so @code{f} is not called on the
-    elements after it.
+    Stops at the first match; @code{f} is not called on subsequent elements.
     """))
 
 (:doc all?
-  (summary "Whether every element satisfies a predicate.")
+  (summary "Whether all elements satisfy a predicate.")
   (arg f "The predicate. It may suspend.")
-  (arg s "What is walked.")
-  (returns "#f at the first element f answers #f for; #t otherwise, and for an empty s.")
+  (arg s "The iterable collection or sequence.")
+  (returns "#t if (f x) is true for all elements (or s is empty); #f if any element returns false.")
   (see any? find))
 
 (:doc find
-  (summary "The first element that satisfies a predicate.")
+  (summary "Finds the first element that satisfies a predicate.")
   (arg f "The predicate. It may suspend.")
-  (arg s "What is walked.")
-  (returns "(Some x) for the first such x, or None.")
+  (arg s "The iterable collection or sequence.")
+  (returns "(Some x) for the first element satisfying f; None otherwise.")
   (see any? filter))
 
 (:doc for-each
-  (summary "Calls a function on each element, for its effect.")
-  (arg f "The function. It may suspend.")
-  (arg s "What is walked.")
+  (summary "Calls a function on each element for its side effects.")
+  (arg f "The procedure to call. It may suspend.")
+  (arg s "The iterable collection or sequence.")
   (see fold seq-for-each))
 
 (:doc ->seq
-  (summary "An iterable as a lazy sequence.")
-  (arg s "What is walked.")
-  (returns "A Seq of s's elements, in the order it yields them. A Seq answers itself.")
+  (summary "Converts an iterable into a lazy sequence.")
+  (arg s "The iterable collection or sequence.")
+  (returns "A Seq of s's elements, in order. Passing a Seq returns the sequence itself.")
   (see seq->list seq->vec list->seq vec->seq))
 
 ;; ---------------------------------------------------------------------------
@@ -230,55 +211,53 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc Cursor
-  (summary "What can be walked both ways, by positions that stand between uses.")
-  (tparam %s "The type that is walked.")
+  (summary "Bidirectional cursor trait for collections navigable forward and backward.")
+  (tparam %s "The collection type.")
   (see cursor-start cursor-end cursor-ref cursor-next cursor-prev string-cursor-start)
   (reference """
-    An implementation names @code{%elem} and @code{%cursor} and gives the six
-    methods. As with @code{Iterable}, every method takes the walked value as
-    well as the cursor, which carries no reference to it.
+    An implementation defines @code{%elem} and @code{%cursor} and provides the six
+    core cursor methods. Every method takes the collection as well as the cursor.
 
-    The prelude implements it for @code{string}, with a
-    @code{StringCursor} as the cursor and each method the matching
-    @code{string-cursor-} function.
+    The prelude implements it for @code{string}, with @code{StringCursor} as
+    the cursor type.
     """))
 
 (:doc cursor-start
-  (summary "The cursor on the first element.")
-  (arg s "What is walked.")
-  (returns "A cursor; at the end already when s is empty.")
+  (summary "Returns a cursor positioned at the first element.")
+  (arg s "The collection.")
+  (returns "A cursor; at the end if s is empty.")
   (see cursor-end cursor-next))
 
 (:doc cursor-end
-  (summary "The past-the-end cursor.")
-  (arg s "What is walked.")
-  (returns "The cursor after the last element: the bound a walk stops at.")
+  (summary "Returns a cursor positioned past the last element.")
+  (arg s "The collection.")
+  (returns "The cursor after the last element: the terminating boundary.")
   (see cursor-end? cursor-prev))
 
 (:doc cursor-end?
-  (summary "Whether a cursor has reached the end.")
-  (arg s "What is walked.")
+  (summary "Whether a cursor has reached the terminating boundary.")
+  (arg s "The collection.")
   (arg c "The cursor.")
-  (returns "#t at the past-the-end position.")
+  (returns "#t if at the past-the-end position; #f otherwise.")
   (see cursor-end cursor-ref))
 
 (:doc cursor-ref
-  (summary "The element at a cursor.")
-  (arg s "What is walked.")
-  (arg c "The cursor. Not at the end.")
-  (returns "The element there.")
+  (summary "The element at the current cursor position.")
+  (arg s "The collection.")
+  (arg c "The cursor. Must not be at the end.")
+  (returns "The element at c.")
   (see cursor-end? string-cursor-ref))
 
 (:doc cursor-next
-  (summary "The cursor on the next element.")
-  (arg s "What is walked.")
+  (summary "Returns the cursor for the next element.")
+  (arg s "The collection.")
   (arg c "The cursor.")
   (returns "The cursor after c.")
   (see cursor-prev cursor-end?))
 
 (:doc cursor-prev
-  (summary "The cursor on the previous element.")
-  (arg s "What is walked.")
+  (summary "Returns the cursor for the previous element.")
+  (arg s "The collection.")
   (arg c "The cursor.")
   (returns "The cursor before c.")
   (see cursor-next cursor-start))
@@ -298,7 +277,7 @@
   (arg c "The collector.")
   (arg acc "The accumulator so far.")
   (arg x "The value to take in.")
-  (returns "The accumulator after it. A builder-backed collector adds in place and answers the same one.")
+  (returns "The updated accumulator. A mutable builder-backed collector modifies in place and returns the same builder.")
   (see collector-init collector-finish))
 
 (:doc collector-finish
@@ -408,17 +387,17 @@
     """))
 
 (:doc add-all
-  (summary "A new collection with everything an iterable yields added.")
-  (arg coll "The collection, which is left as it was.")
-  (arg xs "Anything Iterable whose elements are coll's elements.")
-  (returns "The new collection, with xs's elements added in the order it yields them.")
+  (summary "A new collection with all elements from an iterable added.")
+  (arg coll "The persistent collection to add to (unmodified).")
+  (arg xs "An Iterable whose elements match coll's element type.")
+  (returns "The new collection, with xs's elements added in order.")
   (see add add-all!)
   (example """
     (add-all [1 2] '(3 4))   ; [1 2 3 4]
     """)
   (reference """
-    The default is @code{add} once per element. The element type of
-    @code{xs} must be the collection's, which is checked at the call.
+    The default implementation calls @code{add} once per element. The element type of
+    @code{xs} must match the collection's element type.
     """))
 
 (:doc add!
@@ -439,7 +418,7 @@
 (:doc add-all!
   (summary "Adds everything an iterable yields to a builder or transient, in place.")
   (arg coll "The builder or transient.")
-  (arg xs "Anything Iterable whose elements are coll's elements.")
+  (arg xs "An Iterable whose elements match coll's element type.")
   (see add! add-all)
   (reference """
     In the order @code{xs} yields them. The source may be a @code{List}, a
@@ -453,21 +432,20 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc Range
-  (summary "A walk over ints, from lo up to but not including hi.")
-  (field lo "The first int, included.")
-  (field hi "The bound, not included.")
-  (field by "The step.")
+  (summary "An integer range from lo up to but not including hi.")
+  (field lo "The first integer, included.")
+  (field hi "The upper bound, not included.")
+  (field by "The positive step.")
   (see range range-by up-from)
   (reference """
-    @code{Iterable} and a @code{Collection}. The walk stops at the first
-    value not below @code{hi}, so it counts up only, and @code{range-by}
-    refuses a step of zero or less. @code{down-from} is the walk that counts
-    down.
+    Implements @code{Iterable} and @code{Collection}. Traversal stops at the first
+    value at or above @code{hi}, counting upward only. @code{range-by} requires
+    a step strictly greater than zero. Use @code{down-from} to count downward.
     """))
 
 (:doc range
-  (summary "The ints from lo up to but not including hi.")
-  (arg lo "The first, included.")
+  (summary "The integers from lo up to but not including hi.")
+  (arg lo "The first integer, included.")
   (arg hi "The bound, not included. At or below lo, the range is empty.")
   (returns "A Range with step 1.")
   (see range-by up-from seq-range)
@@ -476,10 +454,10 @@
     """))
 
 (:doc range-by
-  (summary "Every by-th int from lo up to but not including hi.")
-  (arg lo "The first, included.")
+  (summary "Every by-th integer from lo up to but not including hi.")
+  (arg lo "The first integer, included.")
   (arg hi "The bound, not included.")
-  (arg by "The step. Positive: zero or less is a panic, since a range counts up. down-from counts down.")
+  (arg by "The positive step size. Must be greater than zero.")
   (returns "A Range.")
   (see range up-from down-from)
   (example """
@@ -487,14 +465,14 @@
     """))
 
 (:doc UpFrom
-  (summary "A walk over ints counting up, what up-from answers.")
+  (summary "An iterable sequence of ints counting upward; returned by up-from.")
   (field from "The first int.")
   (field to "The bound, not included.")
   (field by "The step, positive.")
   (see up-from DownFrom))
 
 (:doc DownFrom
-  (summary "A walk over ints counting down, what down-from answers.")
+  (summary "An iterable sequence of ints counting downward; returned by down-from.")
   (field from "The first int.")
   (field to "The bound, included.")
   (field by "The distance subtracted each step, positive.")
@@ -503,9 +481,9 @@
 (:doc up-from
   (summary "The ints counting up from a start, with or without a bound.")
   (arg from "The first int.")
-  (key #:to "Where to stop, not included. Without it, int-max.")
-  (key #:by "The step. Positive.")
-  (returns "A walk to give (:for ...).")
+  (key #:to "Where to stop, not included. Defaults to int-max.")
+  (key #:by "The positive step.")
+  (returns "An iterable sequence for (:for ...) loops.")
   (see down-from range int-max)
   (example """
     (loop (:for i (up-from 0))          ; no #:to: the port running out ends it
@@ -525,9 +503,9 @@
 (:doc down-from
   (summary "The ints counting down from a start, with or without a bound.")
   (arg from "The first int.")
-  (key #:to "Where to stop, included. Without it, int-min.")
+  (key #:to "Where to stop, included. Defaults to int-min.")
   (key #:by "The distance to subtract each step. Positive.")
-  (returns "A walk to give (:for ...).")
+  (returns "An iterable sequence for (:for ...) loops.")
   (see up-from range int-min)
   (example """
     {listing i (:for i (down-from 3 #:to 0))}   ; (3 2 1 0)
@@ -590,14 +568,14 @@
   (summary "A sequence of a function applied to each element, lazily.")
   (arg f "The function.")
   (arg s "The sequence.")
-  (returns "A Seq of f's answers. f runs as it is pulled.")
+  (returns "A Seq of the transformed elements, evaluated as pulled.")
   (see map seq-filter))
 
 (:doc seq-filter
   (summary "A sequence of the elements that satisfy a predicate, lazily.")
   (arg f "The predicate.")
   (arg s "The sequence.")
-  (returns "A Seq of the elements f answers #t for.")
+  (returns "A Seq of the elements where (f x) is true.")
   (see filter seq-map))
 
 (:doc seq-take
@@ -627,7 +605,7 @@
   (summary "A sequence generated from a state, lazily.")
   (arg f "Maps a state to (Some (Tuple x next-state)), the next element and the state after it, or to None to end.")
   (arg state "The first state.")
-  (returns "A Seq of the elements f produces, until it answers None.")
+  (returns "A Seq of the elements f produces, until it returns None.")
   (see seq-range seq-empty)
   (example """
     (seq-take (seq-unfold (fun (n) (Some (Tuple n (* 2 n)))) 1) 5)
@@ -672,10 +650,10 @@
 
 (:doc seq-fold
   (summary "Combines every element of a sequence into one value, front to back.")
-  (arg f "Called with an element and the value so far; answers the next value. It may suspend.")
+  (arg f "Called with an element and the current accumulator; returns the next value. It may suspend.")
   (arg init "The value to start from.")
   (arg s "The sequence.")
-  (returns "The last value f answered, or init when s is empty.")
+  (returns "The final accumulated value, or init when s is empty.")
   (see fold seq-for-each)
   (reference """
     Eager, unlike the sequence builtins, so its callback may be of either
@@ -693,36 +671,31 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc seq-cursor
-  (summary "A cursor for one walk of a sequence.")
+  (summary "A cursor for one traversal of a sequence.")
   (arg s "The sequence.")
   (returns "A cursor holding a fresh enumerator of s.")
   (see seq-cursor-done? seq-cursor-current)
   (reference """
-    What @code{Iterable}'s implementation for @code{Seq} walks with. Holding
-    the enumerator makes a walk pull each element once, where stepping by
-    dropping would start over at every element.
-
-    It is consumed by the walk: stepping it moves the enumerator, so two
-    walks from one cursor share a position. Make one per walk; a
-    @code{Seq} can be walked again from a new cursor.
+    What @code{Iterable}'s implementation for @code{Seq} traverses with. Holding
+    the enumerator allows each element to be evaluated once, rather than
+    re-evaluating earlier elements. The cursor is stateful and consumed during
+    iteration; create a new cursor for repeated traversals.
     """))
 
 (:doc seq-cursor-done?
-  (summary "Moves a seq cursor to its next element, and says whether there was none.")
+  (summary "Advances a seq cursor to its next element, returning #t if exhausted.")
   (arg c "The cursor.")
-  (returns "#t when the sequence is exhausted.")
+  (returns "#t when the sequence is exhausted; #f if an element is available.")
   (see seq-cursor seq-cursor-current)
   (reference """
-    This is the call that steps: ask it once before each
-    @code{seq-cursor-current}. When it answers @code{#t} the enumerator is
-    disposed, which releases a file or port a sequence such as
-    @code{file->seq} holds; asking again after that answers @code{#t}. A walk
-    left before the end does not reach that point, and the enumerator is
-    left to the garbage collector.
+    Advances the cursor: call once before each @code{seq-cursor-current}. When
+    it returns @code{#t}, the sequence is exhausted and the underlying enumerator
+    is disposed, closing any underlying file or stream resources. Calling it
+    again continues to return @code{#t}.
     """))
 
 (:doc seq-cursor-current
-  (summary "The element a seq cursor is on.")
-  (arg c "The cursor. seq-cursor-done? has just answered #f for it.")
+  (summary "The element at the current seq cursor position.")
+  (arg c "The cursor, after seq-cursor-done? returned #f.")
   (returns "The element.")
   (see seq-cursor-done?))

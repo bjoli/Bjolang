@@ -27,7 +27,7 @@
     """))
 
 (:doc string-append
-  (summary "Two strings, one after the other.")
+  (summary "Concatenates two strings.")
   (arg a "The first.")
   (arg b "The second.")
   (returns "The text of a followed by that of b. When either is empty, the other.")
@@ -56,7 +56,7 @@
   (see string-length length)
   (reference """
     O(n): the characters are counted, not stored. @code{string-length} is
-    the O(1) byte length. @code{length} on a string answers this count too.
+    the O(1) byte length. @code{length} on a string returns this count as well.
     """))
 
 (:doc string-empty?
@@ -92,8 +92,8 @@
   (returns "#t when needle occurs in s.")
   (see string-search string-starts-with? string-ends-with?)
   (reference """
-    Ordinal: bytes are compared as they are, with no culture. For an answer
-    that ignores case, fold the case of both first:
+    Ordinal: bytes are compared as they are, with no culture. For
+    case-insensitive search, fold the case of both first:
     @code{(string-contains? (string-downcase s) (string-downcase needle))}.
     """))
 
@@ -139,7 +139,7 @@
       (None line))
     """)
   (reference """
-    Ordinal. The answer is a cursor, so it goes straight to
+    Ordinal. The returned cursor can be passed directly to
     @code{substring}; there is no byte index to get wrong. In a slice, the
     cursor is a position in the string the slice was taken from.
     """))
@@ -155,7 +155,7 @@
   (summary "Where the first character satisfying a predicate is.")
   (arg pred "The test, given each character in turn from the start.")
   (arg s "The string.")
-  (returns "(Some cursor) on the first character pred answers #t for, or None.")
+  (returns "(Some cursor) on the first character pred returns #t for, or None.")
   (see string-search substring)
   (example """
     (string-index char-whitespace? "key value")   ; (Some cursor) on the space
@@ -218,7 +218,7 @@
   (see string-trim string-trim-left string-trim-right/slice))
 
 (:doc string-trim/slice
-  (summary "What string-trim leaves, as a slice of the string.")
+  (summary "Returns the trimmed string as a zero-copy slice.")
   (arg s "The string.")
   (returns "s without whitespace at either end, sharing s's bytes.")
   (see string-trim string-copy substring/slice)
@@ -229,13 +229,13 @@
     """))
 
 (:doc string-trim-left/slice
-  (summary "What string-trim-left leaves, as a slice of the string.")
+  (summary "Returns the left-trimmed string as a zero-copy slice.")
   (arg s "The string.")
   (returns "s without leading whitespace, sharing s's bytes.")
   (see string-trim-left string-trim/slice string-copy))
 
 (:doc string-trim-right/slice
-  (summary "What string-trim-right leaves, as a slice of the string.")
+  (summary "Returns the right-trimmed string as a zero-copy slice.")
   (arg s "The string.")
   (returns "s without trailing whitespace, sharing s's bytes.")
   (see string-trim-right string-trim/slice string-copy))
@@ -294,7 +294,7 @@
   (summary "The fields between occurrences of a separator, as slices of the string.")
   (arg s "The string to split.")
   (arg sep "The separator.")
-  (returns "The fields string-split answers, each sharing s's bytes.")
+  (returns "The substrings produced by string-split, each sharing s's bytes.")
   (see string-split string-copy)
   (reference """
     No field is copied, and each keeps all of @code{s} alive while it is
@@ -364,8 +364,8 @@
     the whole of its source alive.
 
     The plain forms, such as @code{substring}, @code{string-trim} and
-    @code{string-replace}, answer their argument itself when it is already
-    the result. Given a slice, that answer is still the slice, so
+    @code{string-replace}, return their argument unchanged when no modification
+    is needed. Given a slice, that return value is still the slice, so
     @code{string-copy} is the one way to be sure a string holds nothing
     more than its text.
     """))
@@ -459,10 +459,10 @@
     (def (Tuple ch next) (string-cursor-ref+next s c))
     """)
   (reference """
-    One read of the byte at @code{c} answers both questions, where
-    @code{string-cursor-ref} and @code{string-cursor-next} each read and
-    check it. The tuple is a @code{ValueTuple} and does not allocate, so a
-    forward loop that wants both pays only for destructuring it.
+    Reading the byte at @code{c} provides both the character and the next
+    cursor in a single operation, whereas @code{string-cursor-ref} and
+    @code{string-cursor-next} each read and validate independently. The tuple
+    is a @code{ValueTuple} and does not allocate.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -516,7 +516,7 @@
 
 (:doc string-fold
   (summary "Folds a function over the characters of a string, from the start.")
-  (arg f "Called with each character and the accumulator, answering the next accumulator.")
+  (arg f "Called with each character and the accumulator, returning the next accumulator value.")
   (arg init "The accumulator before the first character.")
   (arg s "The string.")
   (returns "The accumulator after the last character; init for the empty string.")
@@ -527,7 +527,7 @@
 
 (:doc string-fold-right
   (summary "Folds a function over the characters of a string, from the end.")
-  (arg f "Called with each character and the accumulator, answering the next accumulator.")
+  (arg f "Called with each character and the accumulator, returning the next accumulator value.")
   (arg init "The accumulator before the last character.")
   (arg s "The string.")
   (returns "The accumulator after the first character; init for the empty string.")
@@ -599,7 +599,7 @@
 (:doc string-walk-next
   (summary "The walk on the next character.")
   (arg w "The walk.")
-  (returns "A walk on the character after w's, decoded; done after the last one. A walk that is done answers itself.")
+  (returns "A walk on the character after w's, decoded; done after the last one. A completed walk returns itself.")
   (see string-walk string-walk-done?))
 
 (:doc Stringing
@@ -645,9 +645,9 @@
   (reference "By character, not by byte, so a character of several bytes comes back whole."))
 
 (:doc string->int
-  (summary "The int a string writes.")
+  (summary "Parses a string into an int.")
   (arg s "Decimal digits, with an optional sign.")
-  (returns "The number.")
+  (returns "The parsed integer value.")
   (see string->double int->string)
   (example """
     (string->int "-42")   ; -42
@@ -661,9 +661,9 @@
     """))
 
 (:doc string->double
-  (summary "The double a string writes.")
+  (summary "Parses a string into a double.")
   (arg s "A sign, digits, a decimal point and an exponent.")
-  (returns "The number.")
+  (returns "The parsed double value.")
   (see string->int double->string)
   (example """
     (string->double "1.5e3")   ; 1500

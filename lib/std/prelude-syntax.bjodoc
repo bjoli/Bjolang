@@ -13,18 +13,18 @@
   (rest clause """
     A clause, one of:
 
-    @code{(test body ...)}: answers the body when @code{test} is true.
+    @code{(test body ...)}: evaluates the body when @code{test} is true.
 
     @code{(:match pattern expr body ...)}, or
-    @code{(:match pattern expr #:when guard body ...)}: answers the body when
+    @code{(:match pattern expr #:when guard body ...)}: evaluates the body when
     @code{expr} matches @code{pattern} and the guard, if any, holds.
 
     @code{(:def pattern expr)}, or @code{(:def pattern expr failure ...)}:
-    binds, and answers nothing.
+    binds locally; does not produce a value.
 
-    @code{(:do body ...)}: runs the body, and answers nothing.
+    @code{(:do body ...)}: runs the body for side effects; does not produce a value.
     """)
-  (rest body "What the else clause answers. At least one form; several are run in order and the last answers.")
+  (rest body "The forms evaluated in the else clause; the final form is returned.")
   (literal else)
   (see if-let when-let)
   (example """
@@ -40,36 +40,36 @@
     """)
   (reference """
     @code{if} at any number of arms. The final @code{else} is required, since
-    every arm answers something and there has to be a last answer; every arm
-    needs the same type. Only the clause that is taken runs. A clause with a
-    test and no body is an error, and so is a clause after the else, which
+    every arm must evaluate to a value and the branches must be exhaustive;
+    every arm needs the same type. Only the clause that is taken runs. A clause
+    with a test and no body is an error, and so is a clause after the else, which
     could never be reached.
 
     A @code{:match} clause is a test that binds: what its pattern binds is in
     scope in its guard and body only, and when it does not match the cond
     goes on to the next clause.
 
-    @code{:def} and @code{:do} answer nothing. Both are reached only when
+    @code{:def} and @code{:do} do not produce values. Both are reached only when
     every test above them has failed. A @code{:def} binds, and what it binds
     is in scope in every clause below it and nowhere else. It @strong{is} a
     @code{def} whose body is the rest of the cond, so it takes the same
     patterns and the same failure parts: @code{(:def (Ok v) (parse s) :propagate)}
     makes the whole cond the @code{Err}, and
     @code{(:def (Some n) (lookup k) :default 0)} binds @code{n} either way and
-    never answers. A @code{:do} runs its forms and goes on. A cond may not end
-    in either.
+    never terminates the cond early. A @code{:do} runs its forms and goes on.
+    A cond may not end in either.
 
-    The @code{else} clause answers without looking at anything after it, so
-    clauses written after it are not used.
+    The @code{else} clause unconditionally evaluates its body without looking
+    at anything after it, so clauses written after it are not used.
     """))
 
 (:doc if-let
-  (summary "Answers then with name bound to what an Option holds, or else when it is None.")
+  (summary "Evaluates then with name bound to the value of an Option, or evaluates else when None.")
   (form (if-let (name expr) then else))
   (arg name "The name bound to the value inside the @code{Some}, in @code{then} only.")
-  (arg expr "An expression answering an Option. Evaluated once.")
-  (arg then "What to answer when @code{expr} is @code{(Some ...)}.")
-  (arg else "What to answer when @code{expr} is @code{None}. Not evaluated otherwise.")
+  (arg expr "An expression evaluating to an Option. Evaluated once.")
+  (arg then "Expression evaluated when @code{expr} is @code{(Some ...)}.")
+  (arg else "Expression evaluated when @code{expr} is @code{None}.")
   (see when-let some-> cond)
   (example """
     (if-let (half (halve n)) half 0)
@@ -83,7 +83,7 @@
   (summary "Runs the body with name bound to what an Option holds, when it is not None.")
   (form (when-let (name expr) body more ...))
   (arg name "The name bound to the value inside the @code{Some}, in the body.")
-  (arg expr "An expression answering an Option. Evaluated once.")
+  (arg expr "An expression evaluating to an Option. Evaluated once.")
   (arg body "The first form of the body.")
   (rest more "The rest of the body.")
   (see if-let)
@@ -92,16 +92,15 @@
       (println line))
     """)
   (reference """
-    A @code{when}: it answers nothing, so the body's last value is dropped and
-    has to be one that may be, as it would inside a @code{when}. The body
-    does not run when @code{expr} is @code{None}.
+    A @code{when}: it returns unit (@code{()}), discarding the body's result,
+    which must be droppable. The body does not run when @code{expr} is @code{None}.
     """))
 
 (:doc some->
   (summary "Threads a value through steps as -> does, stopping at the first None.")
   (form (some-> value step ...))
   (arg value "The plain value the first step receives.")
-  (rest step "Each answers an Option, and receives what the step before it held. Threaded as @code{->} threads: first argument, or where @code{&} is.")
+  (rest step "Each step evaluates to an Option, receiving the previous unwrapped value. Threaded as @code{->} threads: first argument, or where @code{&} is.")
   (see try-> if-let)
   (example """
     (some-> 8 (halve) (halve))           ; (Some 2)
@@ -110,16 +109,16 @@
     """)
   (reference """
     Each step's @code{Some} is unwrapped before the next step is called with
-    what it held. A @code{None} answers @code{None}, and the steps after it do
-    not run. The last step's Option is the answer; with no steps it is
-    @code{(Some value)}.
+    what it held. A @code{None} immediately short-circuits to @code{None}, and
+    subsequent steps do not run. Returns the final step's Option; with no
+    steps it returns @code{(Some value)}.
     """))
 
 (:doc try->
   (summary "Threads a value through steps as -> does, stopping at the first Err.")
   (form (try-> value step ...))
   (arg value "The plain value the first step receives.")
-  (rest step "Each answers a Result, and receives what the step before it held. Threaded as @code{->} threads: first argument, or where @code{&} is.")
+  (rest step "Each step evaluates to a Result, receiving the previous unwrapped value. Threaded as @code{->} threads: first argument, or where @code{&} is.")
   (see some-> result-map)
   (example """
     (try-> path (open-input-file &) (read-header &))
@@ -128,8 +127,9 @@
     The same shape as @code{some->}, over @code{Result}. Each step's
     @code{Ok} is unwrapped before the next step is called with what it held,
     so a chain reads in the order it runs rather than inside out. An
-    @code{Err} answers that error, and the steps after it do not run. The
-    last step's Result is the answer; with no steps it is @code{(Ok value)}.
+    @code{Err} immediately short-circuits to that error, and subsequent steps
+    do not run. Returns the final step's Result; with no steps it returns
+    @code{(Ok value)}.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -140,7 +140,7 @@
   (summary "Binds in order, each binding in scope for the ones after it.")
   (form (let* (binding ...) body ...))
   (rest binding "A binding as @code{let} takes it, such as @code{(name expr)}.")
-  (rest body "What to run with them bound. The last form answers.")
+  (rest body "What to run with them bound. Evaluates to the value of the last form.")
   (see parameterize*)
   (example """
     (let* ((a 1)
@@ -156,7 +156,7 @@
   (summary "Binds parameters in order, each binding in effect for the ones after it.")
   (form (parameterize* (binding ...) body ...))
   (rest binding "A binding as @code{parameterize} takes it: @code{(param expr)}.")
-  (rest body "What to run with them bound. The last form answers.")
+  (rest body "What to run with them bound. Evaluates to the value of the last form.")
   (see let*)
   (reference """
     The @code{let*} of @code{parameterize}: one @code{parameterize} per
@@ -207,8 +207,8 @@
     Every key is read with @code{try-ref}, so missing is what @code{try-ref}
     says it is: a Map key that is absent, or a Vec index out of range. The
     keys after a missing one are not evaluated. A field step cannot be
-    missing; a field that holds an Option is answered as one, inside the
-    @code{Some}. At least one step is required.
+    missing; a field holding an Option is wrapped inside @code{Some}.
+    At least one step is required.
     """))
 
 (:doc set
@@ -239,7 +239,7 @@
   (arg target "What the path starts from. It is left as it was.")
   (arg step "The first step: @code{.name} for a field, or a key expression.")
   (rest more "The steps after it.")
-  (arg f "Called with the value at the end of the path; what it answers takes its place.")
+  (arg f "Transformation function applied to the target value; its return value replaces the target.")
   (see set get)
   (example """
     (update team .players 1 .score (fun (s) (+ s 1)))
@@ -377,7 +377,7 @@
     """)
   (reference """
     Each comparison is tested only if the one before it held, and the first
-    that fails answers @code{#f} with the operands after it unevaluated. A
+    that fails returns @code{#f} without evaluating subsequent operands. A
     middle operand that is not an atom is bound once, right before its first
     use, so nothing is evaluated twice. Fewer than two operands is an error.
 
@@ -481,7 +481,7 @@
   (summary "Rejects a macro's input with a message; never returns.")
   (arg form "The syntax the message is about. It is quoted in the message.")
   (arg msg "What is wrong, and preferably how the macro is written.")
-  (returns "Nothing: it throws. Typed as a Syntax so that it can stand beside the arms that answer one.")
+  (returns "Nothing: it throws. Typed as Syntax so it can appear in expression positions returning Syntax.")
   (raises System.InvalidOperationException "Always, with the message followed by the form.")
   (see syntax-at syntax->string)
   (example """

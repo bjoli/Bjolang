@@ -72,7 +72,7 @@
     @strong{Moments.} A local time can be missing from a zone (a gap, when
     the clocks go forward) or happen twice (an overlap, when they go back),
     so @code{datetime->moment} takes a @code{Resolver} saying what to do with
-    each, and @code{datetime->moment/opt} answers @code{None} for both.
+    each, and @code{datetime->moment/opt} returns @code{None} for both.
 
     Date arithmetic on a moment works on the local time and then finds the
     offset again, since a trait method cannot take a resolver. Through an
@@ -172,7 +172,7 @@
     @strong{Range and errors.} Every value lies between 0001-01-01T00:00 and
     9999-12-31T23:59:59.9999999. A function that returns the value itself
     raises a @code{System.OverflowException} when the result would be
-    outside; a constructor, a reader or an @code{/opt} function answers
+    outside; a constructor, a reader or an @code{/opt} function returns
     @code{None}.
 
     @codeblock[#:lang "bjolang"]|{
@@ -234,7 +234,7 @@
     cover every offset in reach, as long as the zone changes its offset at
     most once in 48 hours. Nothing in the tz database comes close: its two
     closest changes, in Freetown in 1939, are 95 hours apart. When a lookup
-    answers with a third offset, that becomes a candidate too, which catches
+    yields a third offset, that becomes a candidate too, which catches
     most layouts with two changes in 48 hours, though not every one.
 
     How far a change jumps does not matter, only that every offset is under
@@ -270,10 +270,10 @@
         @code{(= (date-period #:weeks 1) (date-period #:days 7))} is
         @code{#f}.}
       @item{@strong{Elapsed time is measured between instants only.}
-        @code{(hours-between a b)} on two @code{DateTime} values would answer
+        @code{(hours-between a b)} on two @code{DateTime} values would compute
         the wall-clock difference: 24 hours for 2026-10-25 00:00 to
         2026-10-26 00:00, where 25 passed in Stockholm. Stored local times
-        look like timestamps, so that answer would be taken for the time
+        look like timestamps, so that result would be taken for the time
         that passed, and code generic over anything with a duration between
         could not tell the two apart. So it does not compile, as in
         NodaTime, and the wall-clock reading is written out as a reading in
@@ -372,20 +372,20 @@
         return, no resolver can produce a moment at a local time or in a
         zone that was not asked for, and @code{/opt} covers refusing.}
       @item{@strong{Leaving the range raises.}
-        @code{(+days (date 9999 12 31) 1)} raises rather than answering an
+        @code{(+days (date 9999 12 31) 1)} raises rather than returning an
         @code{Option}, which would force a @code{match} after every
-        addition. Constructors and readers answer @code{None}, since bad
+        addition. Constructors and readers return @code{None}, since bad
         input is expected there.}
       @item{@strong{Calendar units take @code{int}, clock units take
         @code{long}.} No date is two billion days away, but an @code{int} of
         seconds runs out at 68 years.}
-      @item{@strong{@code{now/moment} answers a @code{Moment}.} An
+      @item{@strong{@code{now/moment} returns a @code{Moment}.} An
         @code{Instant} has no zone, so now in Stockholm cannot be one.}
       @item{@strong{The clock is a keyword argument, defaulting to a
         parameter read at each call.} A test binds @code{current-clock}
         around code it did not write:
         @code{(parameterize ((current-clock (fixed-clock t z))) (render-invoice order))}
-        makes every @code{(now)} and @code{(today)} inside answer @code{t},
+        makes every @code{(now)} and @code{(today)} inside return @code{t},
         however deep, with no clock passed down through every function
         between. A binding lasts only inside its @code{parameterize} and the
         fibers started there, so one test cannot leave a fake clock behind
@@ -406,7 +406,7 @@
         runs rather than when it compiles. In return, a manual clock goes
         wherever a clock does, @code{current-clock} and @code{#:clock}
         included, with no conversion.}
-      @item{@strong{One clock, two readings.} A @code{Clock} answers both
+      @item{@strong{One clock, two readings.} A @code{Clock} supports both
         @code{now} and the prelude's @code{monotonic-ms}. The monotonic
         reading counts milliseconds from an unspecified start, has no time
         of day, and never steps back, which is what measuring an interval
@@ -851,7 +851,7 @@
   (summary "The moment an instant is in a zone.")
   (arg i "The instant.")
   (arg z "The zone.")
-  (returns "The moment. Always one answer.")
+  (returns "The moment in z.")
   (raises OverflowException "Near either end of the calendar, when the local time is outside it: the instant 0001-01-01T00:00Z in New York.")
   (see adjust-timezone datetime->moment))
 
@@ -986,8 +986,8 @@
     """))
 
 (:doc fixed-clock
-  (summary "A clock that always answers the same instant.")
-  (arg i "The instant it answers.")
+  (summary "A clock that always returns the same instant.")
+  (arg i "The instant it returns.")
   (arg z "Its zone.")
   (returns "The clock. Its monotonic-ms stands still too.")
   (see manual-clock now))
@@ -999,7 +999,7 @@
   (returns "The clock.")
   (see clock-advance! fixed-clock)
   (reference """
-    The clock takes a lock to advance and to answer, so fibers on several
+    The clock takes a lock to advance and to read, so fibers on several
     threads may share one: every advance counts, and the next read sees it.
 
     Its @code{monotonic-ms} starts at 0 and moves with every forward
@@ -1095,7 +1095,7 @@
 (:doc ->week
   (summary "The ISO 8601 week number of anything with a date.")
   (arg x "A date, a datetime or a moment; a moment's local date.")
-  (returns "The week, 1 to 53, of the year ->week-year answers.")
+  (returns "The week, 1 to 53, of the year returned by ->week-year.")
   (see ->week-year weeks-in-year week-date)
   (reference """
     A week runs Monday to Sunday and belongs to the year its Thursday is in,
@@ -1788,7 +1788,7 @@
     """)
   (reference """
     Each writer has a reader, which reads a text with the format that wrote
-    it and answers an @code{Option}: @code{text->date}, @code{text->time},
+    it and returns an @code{Option}: @code{text->date}, @code{text->time},
     @code{text->datetime}, @code{text->instant}, @code{text->moment} and
     @code{text->moment/resolver}. Each takes @code{#:names} as the writers
     do. What follows holds for all of them.
@@ -1815,7 +1815,7 @@
         8601's: nothing, or a point or a comma and at least one digit.}
       @item{@code{unix} is an optional minus and up to 12 digits, and
         @code{unix-ms} up to 15. A time outside the years 1 to 9999 is
-        @code{None}, as @code{unix-seconds->instant} answers.}
+        @code{None}, matching @code{unix-seconds->instant}.}
       @item{@code{offset} is @code{Z}, or @code{+hh:mm} or @code{-hh:mm} with
         an optional @code{:ss}.}
       @item{@code{zone} is the longest run of the characters an IANA id is
@@ -1989,7 +1989,7 @@
     12:00+01:00 is @code{None}, as July is +02:00, and 2026-10-25 02:30
     reads at +02:00 and at +01:00, as the clocks go back that night. A local
     time without an offset is @code{None} in a gap or an overlap, as
-    @code{datetime->moment/opt} answers.
+    @code{datetime->moment/opt} returns.
 
     A local time whose instant is outside the range, such as 0001-01-01
     00:00 in Stockholm, is @code{None}, and so is a Unix time whose local

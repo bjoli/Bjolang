@@ -127,12 +127,12 @@
       (None 0L))
     """)
   (reference """
-    The @code{FS} effect's @code{fs-info}, so a handler answers for it. A
+    Dispatched through the @code{FS} effect's @code{fs-info} operation. A
     symbolic link's size and time are those of what it leads to, which is
     what reading it reads; @code{link?} says it is one. With
     @code{(std datetime)},
-    @code{(unix-milliseconds->instant (record-ref info modified-ms))} answers
-    the time as an @code{(Option Instant)}.
+    @code{(unix-milliseconds->instant (record-ref info modified-ms))} converts
+    the timestamp to an @code{(Option Instant)}.
 
     A path that is no path at all, @code{""} say, is @code{None} rather than
     an error.
@@ -186,9 +186,9 @@
   (see file-read-lines/seq file-read-lines)
   (reference """
     The file is opened when the sequence is walked, not when it is made, so
-    every walk opens it afresh and reads from the start, and it is the
-    @code{FS} handler installed at the walk that answers. It is closed when
-    the walk ends: at the end of the file, or when the walker stops early.
+    every walk opens it afresh and reads from the start, using whatever
+    @code{FS} handler is active when iterated. It is closed when the walk ends:
+    at the end of the file, or when the walker stops early.
 
     A missing file raises on the first pull. @code{(std ports)}'
     @code{file->seq}, which is built on this, reports it as a @code{Result}
@@ -270,8 +270,8 @@
     (path-directory "main.bjo")       ; None
     """)
   (reference """
-    .NET's @code{Path.GetDirectoryName}, whose @code{null} and empty answers
-    become @code{None}. A builtin rather than a function of the prelude's own,
+    .NET's @code{Path.GetDirectoryName}, mapping @code{null} and empty strings
+    to @code{None}. A builtin rather than a function of the prelude's own,
     for that reason.
     """))
 
@@ -329,8 +329,9 @@
     (vec-filter #(string-ends-with? &1 ".bjo") (directory-files dir))
     """)
   (reference """
-    Listing takes no pattern: filter the answer. An error listing is raised,
-    from the @code{FS} effect's @code{fs-list}.
+    Directory listing does not accept a pattern glob; filter the returned
+    vector instead. An error listing is raised from the @code{FS} effect's
+    @code{fs-list}.
     """))
 
 (:doc directory-subdirectories
@@ -357,11 +358,11 @@
     never entered, so a link back up the tree cannot loop the walk. An entry
     gone between listing and visiting is skipped.
 
-    Nothing is listed until the sequence is walked, so it is the @code{FS}
-    handler installed at the walk that answers, and a walk that stops early
-    lists nothing more. An error listing a directory is raised, as
-    @code{directory-files} raises it. A @code{seq} body cannot await, so a
-    bjoroutine pulling from it parks its thread on each pull.
+    Nothing is listed until the sequence is walked, using whatever @code{FS}
+    handler is active during traversal. Stopping early avoids reading further
+    entries. An error listing a directory is raised, as @code{directory-files}
+    raises it. A @code{seq} body cannot await, so a bjoroutine pulling from it
+    parks its thread on each pull.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -375,15 +376,14 @@
   (see FsInfo file-info))
 
 (:doc FsInfo
-  (summary "What fs-info answers about a path that names something.")
+  (summary "Metadata returned by fs-info describing an existing path.")
   (field kind "A file or a directory.")
   (field size "In bytes. 0 for a directory.")
   (field modified-ms "The last write, in Unix milliseconds, UTC.")
   (field link? "Whether the path itself is a symbolic link.")
   (see file-info fs-info FsKind)
   (reference """
-    One answer to one question, so that a handler cannot say a path is a file
-    and then forget to say how big it is.
+    Bundles all file attributes together to ensure atomic metadata queries.
 
     For a link, @code{size} and @code{modified-ms} are those of what it leads
     to, and a link to nothing keeps its own. @code{directory-walk} and
@@ -405,7 +405,7 @@
     """))
 
 (:doc fs-info
-  (summary "The FS operation that answers what a path names.")
+  (summary "The FS operation that queries metadata for a path.")
   (arg path "The path to ask about.")
   (returns "None when the path names nothing.")
   (see file-info FsInfo op/fs-info fs-info/raw)
@@ -581,10 +581,10 @@
   (returns "None when it is not set, or set to the empty string.")
   (see set-environment-variable! getenv)
   (reference """
-    R7RS's name, with @code{None} where R7RS answers @code{#f}. What it cannot
-    tell apart is a variable that is unset and one set to nothing. It reads
-    the real environment directly; @code{getenv} asks through a handler a
-    test can replace.
+    Follows R7RS naming, returning @code{None} where R7RS returns @code{#f}.
+    What it cannot tell apart is a variable that is unset and one set to
+    nothing. It reads the real environment directly; @code{getenv} asks
+    through a handler a test can replace.
     """))
 
 (:doc set-environment-variable!
@@ -623,9 +623,9 @@
       (run-the-thing))
     """)
   (reference """
-    An operation of the @code{Env} effect, so a test can answer for the
-    environment without writing to the real one. With no handler installed it
-    is @code{get-environment-variable}. Installing one needs
+    An operation of the @code{Env} effect, allowing tests to mock environment
+    variables without modifying the process environment. With no handler
+    installed it is @code{get-environment-variable}. Installing one needs
     @code{(import (std effect))}.
     """))
 

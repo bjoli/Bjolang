@@ -1,0 +1,52 @@
+
+(: path string)
+(def path "/home/linis/Downloads")
+
+(: pcfg (List (List string)))
+(def pcfg '(("Documents" ".md" ".doc" ".docx" ".pdf")
+            ("Pictures" ".png" ".jpg" ".jpeg" ".jxl" "tiff")
+            ("Archives" ".tar.gz" ".zip" ".rar" ".tar.bz2")
+            ("Misc" "")))
+(: folders (Seq string))
+(def folders (map #(path-combine path (list-head &)) pcfg))
+
+
+(: cfg (Map string string))
+(def cfg
+    (loop (:for p pcfg)
+          (:let folder (list-head p))
+          (:for format (list-tail p))
+          (:acc acc (mapping (format . folder)))))
+
+
+(: unwrap (-> (Option %a) %a))
+(defun (unwrap opt)
+  (match opt
+    ((Some a) a)
+    (None (panic! "the option is a none!")))
+  )
+
+(: split-name (-> string (Tuple string string)))
+(defun (split-name name)
+  (def start (string-cursor-start name))
+  (def end (string-cursor-end name))
+  (loop (:with cur start (string-cursor-next name cur))
+        (:break (string-cursor-end? name cur))
+        (:when (char=? #\. (string-cursor-ref name cur)))
+        (:let ext? (substring/cursors name cur end))
+        (:when (some? (try-ref cfg ext?)))
+        (:acc name (folding name (substring/cursors name start cur)))
+        (:acc ext (folding "" ext?))
+        (:break #t)))
+            
+
+
+
+(defun (main args)
+  ;; ensure directories exist
+  (loop (:for dir folders)
+        (:when (not (directory-exists? dir)))
+        (:do (directory-create dir)))
+  (loop (:for file (directory-files path))
+        (:do (println (split-name  (unwrap (path-filename file))))))
+  0)

@@ -7,31 +7,29 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc TextInputPort
-  (summary "A port text is read from.")
+  (summary "A text input port.")
   (see open-input-file open-input-string read-line read-char port-eof? close-input-port)
   (reference """
     The .NET @code{System.IO.TextReader} itself, not a Bjolang type around
-    it. A file port and a string port are the same type, so a function that
-    reads never learns where the text comes from.
+    it. A file port and a string port are the same type, so a reading function
+    works uniformly across both.
 
     A file port, and standard input, is a buffered reader whose
-    @code{port-eof?} usually answers from the buffer, and whose reads
+    @code{port-eof?} usually checks the buffer directly, and whose reads
     suspend inside a bjoroutine. A string port is a @code{StringReader} and
     is read synchronously in either colour. A @code{TextReader} from a .NET
     API works too.
     """))
 
 (:doc TextOutputPort
-  (summary "A port text is written to.")
+  (summary "A text output port.")
   (see open-output-file open-output-string write-string flush-port close-output-port)
   (reference """
     The .NET @code{System.IO.TextWriter}. A file port and a string port are
-    the same type, so a function that writes never learns where the text
-    goes.
+    the same type, so a writing function works uniformly across both.
 
     A file port buffers what is written to it. A write that fills the buffer
-    drains it, which is why the writes have a suspending copy as well as the
-    flush.
+    drains it, which is why writes have a suspending copy as well as flush.
     """))
 
 (:doc WriteMode
@@ -139,7 +137,7 @@
     for @code{System.IO.FileNotFoundException}.
 
     The file is opened through the @code{open-read-stream} operation, so a
-    handler of the @code{FS} effect answers for it. The port is owned by the
+    handler of the @code{FS} effect intercepts it. The port is owned by the
     ambient scope: when the scope returns, the file is closed, whether the
     program closed it or not. The scope is read before the file is opened,
     so a program with no scope fails without having opened anything.
@@ -167,7 +165,7 @@
     """)
   (reference """
     The file is opened through the @code{open-write-stream} operation, so a
-    handler of the @code{FS} effect answers for it. The port is owned by the
+    handler of the @code{FS} effect intercepts it. The port is owned by the
     ambient scope and closed when the scope returns.
 
     What is written is buffered. Closing flushes, but synchronously:
@@ -202,7 +200,7 @@
 
 (:doc open-output-string
   (summary "A port that collects what is written to it.")
-  (returns "The port. get-output-string answers what it holds.")
+  (returns "The output port. Call @code{get-output-string} to retrieve accumulated text.")
   (see get-output-string open-input-string)
   (reference """
     Memory only, so no scope owns it. To build a string, prefer a
@@ -258,7 +256,7 @@
   (summary "Opens a file, hands the port to a function, and closes it.")
   (arg path "The file.")
   (arg proc "What to do with the port. Either colour.")
-  (returns "Ok with what proc answered, or Err when the file cannot be opened.")
+  (returns "Ok containing proc's return value, or Err when the file cannot be opened.")
   (see open-input-file call-with-output-file)
   (example """
     (call-with-input-file "notes.txt" read-all)
@@ -274,7 +272,7 @@
   (arg path "The file.")
   (arg proc "What to do with the port. Either colour.")
   (key #:mode "How the file is opened, as for open-output-file: Truncate by default.")
-  (returns "Ok with what proc answered, or Err when the file cannot be opened.")
+  (returns "Ok containing proc's return value, or Err when the file cannot be opened.")
   (see open-output-file call-with-input-file WriteMode)
   (example """
     (call-with-output-file "out.txt"
@@ -296,7 +294,7 @@
   (returns "#t at end of input. Asking consumes nothing.")
   (see read-line read-line/opt read-char/opt)
   (reference """
-    On a file port, or standard input, it answers from the buffer whenever
+    On a file port, or standard input, it checks the buffer directly whenever
     the buffer holds anything, and reads ahead only when it is empty. That
     read suspends in a bjoroutine.
     """))
@@ -333,13 +331,13 @@
   (see read-char/opt write-char port-eof?)
   (reference """
     A .NET port is made of UTF-16 code units, and a character outside the
-    BMP is two of them. @code{read-char} reads both and answers the one
+    BMP is two of them. @code{read-char} reads both and returns the decoded
     character, so reading a port a character at a time agrees with
     @code{read-all} walked as a string.
 
     There is no @code{peek-char}: one unit of lookahead is not always a
-    character. @code{port-eof?} answers the question peeking is usually
-    asked for; a parser that needs more wants @code{read-all} and a
+    character. @code{port-eof?} handles the check peeking is typically
+    used for; a parser that needs more wants @code{read-all} and a
     @code{StringCursor}.
     """))
 
@@ -358,7 +356,7 @@
 
 (:doc port-fold
   (summary "Folds a reading function over a port until it is out.")
-  (arg f "Called with the port and the accumulator while there is input; reads what it wants and answers the new accumulator. Either colour.")
+  (arg f "Called with (port, acc) while there is input; reads from port and returns the new accumulator value. Either colour.")
   (arg init "The first accumulator.")
   (arg port "The port.")
   (returns "The accumulator once the port is at end of input.")
@@ -376,7 +374,7 @@
 (:doc in-port
   (summary "A port as something a loop walks, read by a function of your choice.")
   (arg port "The port.")
-  (arg read "What one element is: answers Some element, or None to end the walk.")
+  (arg read "Reader function returning (Some element), or None at end of input.")
   (returns "A PortReads, which is Iterable.")
   (see PortReads read-line/opt read-char/opt port-fold)
   (example """
@@ -397,13 +395,13 @@
     """))
 
 (:doc PortReads
-  (summary "A port and the function that reads one element from it: what in-port answers.")
-  (tparam %a "What one read answers.")
+  (summary "An iterable sequence wrapping a port and reader function, produced by in-port.")
+  (tparam %a "The type of element yielded by the reader.")
   (field port "The port.")
-  (field read "Reads the next element, or answers None at end of input.")
+  (field read "Reads the next element, returning None at end of input.")
   (see in-port)
   (reference """
-    Its @code{Iterable} implementation calls @code{read} until it answers
+    Its @code{Iterable} implementation calls @code{read} until it returns
     @code{None}.
     """))
 
@@ -491,7 +489,7 @@
   (raises System.InvalidOperationException "When w is not a string writer.")
   (see get-output-string)
   (reference """
-    What @code{get-output-string} is built on. It raises rather than answer
+    What @code{get-output-string} is built on. It raises rather than returning
     the writer's type name, which is what .NET's @code{ToString} would give
     for a file port.
     """))
@@ -507,11 +505,11 @@
   (see open-read-stream/raw op/open-read-stream open-input-file open-write-stream)
   (reference """
     Everything in the prelude and @code{(std ports)} that reads a file opens
-    it through this, so a handler installed with @code{with-handler} answers
-    for all of it: a test reads from a fake, a sandbox refuses. With no
-    handler it is @code{open-read-stream/raw}.
+    it through this, so a handler installed with @code{with-handler} intercepts
+    all reads: a test reads from a fake, a sandbox refuses. With no
+    handler it falls back to @code{open-read-stream/raw}.
 
-    It answers a @code{Stream}, not a port. @code{open-input-file} builds the
+    Returns a @code{Stream}, not a port. @code{open-input-file} builds the
     port over it and registers it on the ambient scope, so a
     @code{MemoryStream} a handler made is owned exactly as a file is.
     """))
@@ -524,10 +522,10 @@
   (see open-write-stream/raw op/open-write-stream open-output-file WriteMode)
   (reference """
     Everything in the prelude and @code{(std ports)} that writes a file
-    opens it through this, so a handler answers for all of it. With no
-    handler it is @code{open-write-stream/raw}.
+    opens it through this, so an installed handler intercepts all writes.
+    With no handler it falls back to @code{open-write-stream/raw}.
 
-    It answers a @code{Stream}, not a port. @code{open-output-file} builds
+    Returns a @code{Stream}, not a port. @code{open-output-file} builds
     the port over it and registers it on the ambient scope.
     """))
 

@@ -36,7 +36,7 @@
 (:doc vec-ref
   (summary "The element of a vec at an index.")
   (arg v "The vec.")
-  (arg i "From 0. Less than the length.")
+  (arg i "Zero-based index (0 <= i < length).")
   (returns "The element at i.")
   (raises System.IndexOutOfRangeException "When i is negative or not less than the length.")
   (see vec-set vec-length)
@@ -64,8 +64,8 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc vec-add
-  (summary "A vec with one element added at the end.")
-  (arg v "The vec, which is left as it was.")
+  (summary "Returns a vec with one element added at the end.")
+  (arg v "The persistent vector (unmodified).")
   (arg x "The element to add.")
   (returns "A new vec, one longer, with x last.")
   (see vecbuilder-add! vec-insert vec-merge)
@@ -77,20 +77,20 @@
     """))
 
 (:doc vec-set
-  (summary "A vec with the element at an index replaced.")
-  (arg v "The vec, which is left as it was.")
-  (arg i "From 0. Less than the length.")
+  (summary "Returns a vec with the element at an index replaced.")
+  (arg v "The persistent vector (unmodified).")
+  (arg i "Zero-based index (0 <= i < length).")
   (arg x "The new element.")
   (returns "A new vec with x at i.")
   (raises System.IndexOutOfRangeException "When i is negative or not less than the length.")
   (see vec-ref vecbuilder-set!))
 
 (:doc vec-insert
-  (summary "A vec with an element inserted at an index.")
-  (arg v "The vec, which is left as it was.")
-  (arg i "From 0 to the length, both included. At the length it is vec-add.")
+  (summary "Returns a vec with an element inserted at an index.")
+  (arg v "The persistent vector (unmodified).")
+  (arg i "Zero-based index at which to insert (0 <= i <= length). If i == length, behaves like vec-add.")
   (arg x "The element to insert.")
-  (returns "A new vec, one longer, with x at i and the elements from i on moved up one.")
+  (returns "A new vec, one longer, with x at i and subsequent elements shifted right.")
   (raises System.IndexOutOfRangeException "When i is negative or greater than the length.")
   (see vec-add vec-remove-at vec-compact)
   (reference """
@@ -99,10 +99,10 @@
     """))
 
 (:doc vec-remove-at
-  (summary "A vec with the element at an index removed.")
-  (arg v "The vec, which is left as it was.")
-  (arg i "From 0. Less than the length.")
-  (returns "A new vec, one shorter.")
+  (summary "Returns a vec with the element at an index removed.")
+  (arg v "The persistent vector (unmodified).")
+  (arg i "Zero-based index (0 <= i < length).")
+  (returns "A new vec with the element at i removed.")
   (raises System.IndexOutOfRangeException "When i is negative or not less than the length.")
   (see vec-insert vec-pop vec-pop-first))
 
@@ -135,15 +135,15 @@
     (vec-slice [10 20 30 40] 1 2)   ; [20 30]
     """)
   (reference """
-    A count, not an end index. A count of 0 answers the empty vec, and the
-    whole of v answers v itself. To loop over part of a vec without making a
+    A count, not an end index. A count of 0 returns the empty vec, and the
+    whole of v returns v itself. To loop over part of a vec without creating a
     new one, use @code{in-vec}.
     """))
 
 (:doc vec-split
-  (summary "A vec cut in two at an index.")
-  (arg v "The vec, which is left as it was.")
-  (arg i "Where to cut, from 0 to the length, both included.")
+  (summary "Splits a vec into two parts at an index.")
+  (arg v "The persistent vector (unmodified).")
+  (arg i "Split index, from 0 to length inclusive.")
   (returns "A tuple of the first i elements and the rest.")
   (raises System.IndexOutOfRangeException "When i is negative or greater than the length.")
   (see vec-slice vec-merge)
@@ -152,27 +152,27 @@
     """))
 
 (:doc vec-merge
-  (summary "Two vecs joined, one after the other.")
-  (arg a "The first part, which is left as it was.")
-  (arg b "The second part, which is left as it was.")
-  (returns "A new vec with a's elements, then b's.")
+  (summary "Concatenates two vecs into a single vec.")
+  (arg a "The first part (unmodified).")
+  (arg b "The second part (unmodified).")
+  (returns "A new vec with a's elements followed by b's.")
   (see vec-add vec-split vec-compact)
   (reference """
     An RRB concatenation, which joins the two trees rather than copying
-    every element. When either is empty it answers the other. The result
+    every element. When either vector is empty it returns the other. The result
     may be relaxed; @code{vec-compact} rebuilds it dense.
     """))
 
 (:doc vec-compact
-  (summary "A vec with the same elements in a dense tree.")
-  (arg v "The vec, which is left as it was.")
+  (summary "Returns a vec with the same elements in a compact, dense tree.")
+  (arg v "The persistent vector (unmodified).")
   (returns "A vec equal to v, rebuilt from the front.")
   (see vec-insert vec-merge)
   (reference """
     O(n): every element is added to a new builder. Inserting and merging
     can leave relaxed nodes that make the tree deeper than it needs
     to be; this is for when that has made access slower. A vec small enough
-    to have no tree is answered as it is.
+    to have no tree is returned unchanged.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -180,30 +180,29 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc vec-map
-  (summary "A vec of what a function answers for each element.")
+  (summary "Returns a new vec with a function applied to each element.")
   (arg f "Applied to each element, front to back.")
-  (arg v "The vec, which is left as it was.")
+  (arg v "The persistent vector (unmodified).")
   (returns "A new vec of the same length.")
   (see vec-filter vec-for-each vec-fold)
   (reference """
-    The ordinary copy walks the tree and builds one of the same shape. The
-    copy for a suspending @code{f} is a loop that collects with
-    @code{vecing}.
+    The synchronous variant traverses the tree and builds a vec of the same shape.
+    When @code{f} is suspending, elements are collected using @code{vecing}.
     """))
 
 (:doc vec-filter
-  (summary "The elements of a vec that a predicate keeps.")
-  (arg keep? "Asked about each element, front to back.")
-  (arg v "The vec, which is left as it was.")
-  (returns "A new vec of the elements keep? answered #t for, in order.")
+  (summary "Returns a new vec keeping only elements that satisfy a predicate.")
+  (arg keep? "Predicate evaluated on each element, front to back.")
+  (arg v "The persistent vector (unmodified).")
+  (returns "A new vec of the elements where keep? returned #t, in order.")
   (see vec-map vec-iter))
 
 (:doc vec-fold
-  (summary "Combines a vec's elements from the front, starting from a value.")
-  (arg f "Called with an element and the value so far: (f elem acc).")
-  (arg init "The value before the first element.")
+  (summary "Reduces a vec's elements from left to right, starting from an initial value.")
+  (arg f "Accumulator function: (f elem acc).")
+  (arg init "The initial value before the first element.")
   (arg v "The vec.")
-  (returns "What f answered for the last element, or init when v is empty.")
+  (returns "The final accumulated value, or init when v is empty.")
   (see vec-reduce vec-for-each)
   (example """
     (vec-fold + 0 [1 2 3])                 ; 6
@@ -240,10 +239,10 @@
     """))
 
 (:doc vec-iter
-  (summary "Calls a function on each element of a vec until it answers #f.")
-  (arg f "Called with each element, front to back. #f stops the walk.")
+  (summary "Calls a function on each element of a vec until it returns #f.")
+  (arg f "Called with each element, front to back. Returning #f stops traversal.")
   (arg v "The vec.")
-  (returns "#t when f answered #t for every element, which an empty vec does; #f when it stopped early.")
+  (returns "#t when f returned #t for every element (or if v is empty); #f when stopped early.")
   (see vec-for-each vec-contains)
   (example """
     (vec-iter (fun (x) (< x 10)) [1 2 30 4])   ; #f, and 4 is never looked at
@@ -350,7 +349,7 @@
   (see vecbuilder-empty vec->vecbuilder)
   (reference """
     The builder stays usable: what is added or set in it afterwards does not
-    change the vec this answered.
+    change the previously returned vec.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -400,7 +399,7 @@
 
 (:doc vec-cursor-current
   (summary "The element a vec cursor is on.")
-  (arg c "The cursor, after vec-cursor-done? answered #f.")
+  (arg c "The cursor, after vec-cursor-done? returned #f.")
   (returns "The element.")
   (see vec-cursor vec-cursor-done?))
 
@@ -436,7 +435,7 @@
 
 (:doc vec-walk-cursor-current
   (summary "The element a forward vec cursor is on.")
-  (arg c "The cursor, after vec-walk-cursor-done? answered #f.")
+  (arg c "The cursor, after vec-walk-cursor-done? returned #f.")
   (returns "The element.")
   (see vec-walk-cursor vec-walk-cursor-done?))
 
@@ -472,7 +471,7 @@
 
 (:doc vec-back-cursor-current
   (summary "The element a backward vec cursor is on.")
-  (arg c "The cursor, after vec-back-cursor-done? answered #f.")
+  (arg c "The cursor, after vec-back-cursor-done? returned #f.")
   (returns "The element.")
   (see vec-back-cursor vec-back-cursor-done?))
 

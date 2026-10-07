@@ -8,7 +8,7 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc sync
-  (summary "Waits for an event and answers its value: the yield point of a bjoroutine.")
+  (summary "Synchronizes on an event and returns its value: the yield point of a bjoroutine.")
   (arg ev "The event to wait for. Any event: a channel operation, a choose, a timeout, a promise's join.")
   (returns "The value of the event that committed.")
   (raises Bjolang.Runtime.Cancelled "When the ambient token fires before the event commits.")
@@ -56,8 +56,8 @@
 
     @strong{Do not call it from inside a bjoroutine.} It parks the thread it is
     called on, and inside a fiber that thread belongs to the pool, which is
-    what the events being waited for need in order to fire. There the answer
-    is @code{sync}.
+    what the events being waited for need in order to fire. Use @code{sync}
+    instead.
 
     @strong{Nothing withdraws it once parked.} A wait that might not end needs
     its own way out composed in first, as with the @code{timeout} above. The
@@ -170,7 +170,7 @@
   (returns "An event whose value is the value of whichever event committed.")
   (see wrap guard with-nack sync never)
   (example """
-    (sync (choose (wrap (chan-recv answers) #(Some &))
+    (sync (choose (wrap (chan-recv results) #(Some &))
                   (wrap (timeout 20) (fun (u) None))))
     """)
   (reference """
@@ -187,10 +187,10 @@
     """))
 
 (:doc wrap
-  (summary "An event that answers f applied to another event's value.")
+  (summary "An event that applies a function to another event's value upon commit.")
   (arg ev "The event.")
   (arg f "What to apply to its value once it has committed.")
-  (returns "An event that commits when ev does, with f's answer as its value.")
+  (returns "An event that commits when ev commits, yielding (f value).")
   (see choose guard)
   (example """
     (choose (wrap (chan-recv ch) (fun (v) (Got v)))
@@ -208,7 +208,7 @@
 (:doc guard
   (summary "An event built afresh at each sync.")
   (arg thunk "Makes the event, called each time the guard is synced.")
-  (returns "An event that is whatever thunk answers at that sync.")
+  (returns "The event constructed by thunk at synchronization time.")
   (see timeout with-nack choose)
   (reference """
     For an event that depends on the moment of synchronisation, or that has to
@@ -218,7 +218,7 @@
 
 (:doc with-nack
   (summary "An event built with a second event that fires if it loses.")
-  (arg f "Given the nack event, answers the branch itself.")
+  (arg f "Function receiving the nack event and returning the event to synchronize.")
   (returns "An event that is the branch f built, built afresh at each sync.")
   (see guard choose)
   (reference """
@@ -250,8 +250,8 @@
   (returns "An event that never commits.")
   (see always choose)
   (reference """
-    The identity of @code{choose}, and what a branch that has nothing to offer
-    this time round answers. Synced on its own, only the ambient token firing
+    The identity of @code{choose}, and what a branch returns when it has
+    nothing to offer. Synced on its own, only the ambient token firing
     ends the wait.
     """))
 
@@ -306,24 +306,24 @@
     Failure is a value because "the fiber died" is a fact the joiner needs.
 
     A promise is persistent: once it has landed, every sync of its join
-    commits at once with the same answer. A landed promise in a @code{choose}
+    commits immediately with the same value. A landed promise in a @code{choose}
     loop wins every iteration.
     """))
 
 (:doc promise-join/sync
-  (summary "Waits for a promise from an ordinary function and answers its value.")
+  (summary "Waits synchronously for a promise and returns its value.")
   (arg p "The promise.")
   (returns "The promise's value. When the fiber raised, that exception is raised here.")
   (raises Bjolang.Runtime.Cancelled "When the ambient token fires before the promise lands, as for @code{sync/blocking}.")
   (see promise-join sync/blocking)
   (reference """
-    @code{(sync/blocking (promise-join p))}, with the failure raised rather
-    than answered. It parks the calling thread, so it is for ordinary
+    @code{(sync/blocking (promise-join p))}, with any failure re-raised
+    rather than returned as an Err. It parks the calling thread, so it is for ordinary
     functions; a bjoroutine syncs on @code{promise-join}.
     """))
 
 (:doc promise-done?
-  (summary "Whether a promise has landed, answered without waiting.")
+  (summary "Polls whether a promise has completed, without blocking.")
   (arg p "The promise.")
   (returns "#t once the promise has a value or a failure.")
   (see promise-join))
@@ -349,7 +349,7 @@
 (:doc spawn-thunk
   (summary "Starts a thunk as a fiber of the current scope: bjo as a function.")
   (arg f "The work. It runs to completion without suspending.")
-  (returns "Its promise, as @code{bjo} answers one.")
+  (returns "A promise for the thunk's completion, identical to @code{bjo}.")
   (raises Bjolang.Runtime.ScopeEnded "When there is no ambient scope.")
   (see detach promise-join spawn/thread)
   (example """
@@ -362,7 +362,7 @@
 
     A thunk has no yield point, so it cannot be cancelled: the scope waits for
     it to finish, and a long one holds its scope open. Spawned into a scope
-    that has begun closing, it starts nothing and answers a promise that has
+    that has begun closing, it starts nothing and returns a promise that has
     already failed with @code{Cancelled}.
     """))
 
@@ -380,8 +380,8 @@
     thread. This runs the thunk through @code{Task.Run}, on a thread the pool
     can grow to replace, and the fiber suspends on the result.
 
-    Guarded, so each sync starts a fresh run rather than replaying the first
-    one's answer. The thunk sees the dynamic environment of the sync.
+    Guarded, so each sync starts a fresh run rather than replaying the initial
+    result. The thunk sees the dynamic environment of the sync.
 
     @strong{Not cancellable.} What cancellation reaches is the wait: a
     cancelled scope stops waiting while the thunk carries on to the end, and
@@ -470,7 +470,7 @@
     """))
 
 (:doc cancelled?
-  (summary "Whether a token has fired, answered without waiting.")
+  (summary "Polls whether a cancellation token has fired, without waiting.")
   (arg token "The token.")
   (returns "#t once it has fired.")
   (see cancel-reason cancelled)
@@ -610,10 +610,10 @@
   (see with-scope with-deadline with-shield Requested current-cancel)
   (example """
     (with-cancel (cancel)
-      (spawn (worker jobs answers))
-      (def answer (sync (chan-recv answers)))
+      (spawn (worker jobs results))
+      (def res (sync (chan-recv results)))
       (cancel (Requested "got it"))
-      answer)
+      res)
     """)
   (reference """
     Opens a scope whose token is linked to the ambient one, installs it as the
@@ -744,7 +744,7 @@
 
 (:doc release!
   (summary "Runs an owned release now, and takes it off its scope.")
-  (arg owned "The handle @code{own!} answered.")
+  (arg owned "The handle returned by @code{own!}.")
   (see own!)
   (reference """
     A second call does nothing, and so does one that lost the race with the
@@ -753,15 +753,15 @@
     """))
 
 (:doc own-disposable
-  (summary "Registers an IDisposable's Dispose on the ambient scope, and answers it.")
+  (summary "Registers an IDisposable's Dispose method on the ambient scope, returning the resource.")
   (form (own-disposable x))
-  (arg x "An expression answering something with a @code{.Dispose} method.")
+  (arg x "An expression evaluating to an object with a @code{.Dispose} method.")
   (see own! with-scope)
   (example """
     (def reader (own-disposable (StreamReader. path)))
     """)
   (reference """
-    @code{(own! (fun () (.Dispose x)))}, answering x. A form so that
+    @code{(own! (fun () (.Dispose x)))}, returning x. A form so that
     @code{.Dispose} resolves at the call site, as @code{with-open} resolves
     it. @code{with-open} is for a resource whose lifetime is one block; this
     is for one whose lifetime is the scope's.
@@ -814,7 +814,7 @@
     """))
 
 (:doc scope-push!
-  (summary "Installs a scope as the ambient one, and answers the environment it displaced.")
+  (summary "Installs a scope as the ambient one, returning the displaced environment.")
   (arg s "The scope.")
   (returns "The environment to hand back to @code{dyn-restore!}.")
   (see dyn-restore! scope-form in-scope)
@@ -880,7 +880,7 @@
 
 (:doc dyn-restore!
   (summary "Puts back a dynamic environment saved earlier. Internal to the forms that bind one.")
-  (arg env "The environment @code{scope-push!} or a parameter push answered.")
+  (arg env "The environment returned by @code{scope-push!} or parameter push.")
   (see scope-push! in-scope scope-form)
   (reference """
     The other half of @code{scope-push!}, and of the push
@@ -953,7 +953,7 @@
   (summary "A clock, with each part not given taken from the system's.")
   (key #:monotonic-ms "Reads the monotonic milliseconds.")
   (key #:utc-ticks "Reads the wall clock in .NET ticks, UTC.")
-  (key #:zone "Answers the local zone.")
+  (key #:zone "Function returning the local time zone.")
   (key #:advance "Moves the clock on by a number of ticks, or @code{None}.")
   (returns "The clock.")
   (see Clock system-clock current-clock)
