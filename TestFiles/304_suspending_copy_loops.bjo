@@ -1,0 +1,49 @@
+;; The suspending copy of a tail-recursive function loops, as the ordinary copy
+;; does: its tail call to itself names the copy, so it is a jump. It had named
+;; the original, and a bjoroutine running the copy a million steps deep
+;; overflowed the stack, one awaited call per step.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; A copy made for a -?-> parameter.
+(: count-up (-> (-?-> int int) int int int))
+(defun (count-up f n acc)
+  (if (= n 0) acc (count-up f (- n 1) (f acc))))
+
+(: inc (-bjo-> int int))
+(defbjo (inc x) (+ x 1))
+
+;; A copy made because the function reaches a defbjouble.
+(: helper (-bjo-> int int))
+(defbjo (helper x) (+ x 1))
+
+(: step (-> int int))
+(defbjouble (step x)
+  (#:sync (+ x 1))
+  (#:bjo (helper x)))
+
+(: count-steps (-> int int int))
+(defun (count-steps n acc)
+  (if (= n 0) acc (count-steps (- n 1) (step acc))))
+
+;; A function that also names itself inside a lambda keeps calling the
+;; original there, where the lambda has to be ordinary.
+(: sum-to (-> int int))
+(defun (sum-to n)
+  (if (= n 0)
+      0
+      (+ (step 0) (list-foldl (fun (x acc) (+ acc (sum-to x))) 0 (list (- n 1))))))
+
+(: in-a-bjoroutine (-bjo-> (List int)))
+(defbjo (in-a-bjoroutine)
+  (list (count-up (fun (x) (+ x 1)) 1000000 0)
+        (count-up inc 1000000 0)
+        (count-steps 1000000 0)
+        (sum-to 3)))
+
+(defun (main args)
+  (expect "both copies loop a million times"
+          (match (sync/blocking (promise-join (bjo (in-a-bjoroutine)))) ((Ok v) v) ((Err e) Nil))
+          (list 1000000 1000000 1000000 3))
+  0)

@@ -26,6 +26,40 @@ open Bjolang.Ast
 open Bjolang.TypedAST
 open Bjolang.ForeignTyping
 
+/// A copy's body with the original's name, where it calls itself, naming the
+/// copy. The recursive call of the suspending copy belongs to the copy, and
+/// `LoopLowering` turns a tail call into a jump only when it names the
+/// function it is in; left naming the original it was a real call into the
+/// other body, one awaited fiber per step.
+///
+/// Only when every use of the name is a call made where the body itself runs.
+/// One inside a lambda, a `seq` or a `bjo`, or the name passed as a value, is
+/// given its copy by where it stands, and a lambda that has to be ordinary
+/// needs the ordinary one, so such a body keeps the original's name.
+let private callingItself (name: string) (body: Expr) : Expr =
+    let mutable uses = 0
+    let mutable deferred = false
+
+    Ast.freeNamesWith
+        (fun n _ guarded ->
+            if n = name then
+                uses <- uses + 1
+                if guarded then deferred <- true)
+        false
+        Set.empty
+        body
+
+    let rec calls (e: Expr) =
+        (match e with
+         | EApp(EIdent(n, _), _, _) when n = name -> 1
+         | _ -> 0)
+        + (Ast.exprChildren e |> List.sumBy calls)
+
+    if uses > 0 && not deferred && calls body = uses then
+        AlphaRename.renameFree (Map.ofList [ name, Naming.suspendingCopy name ]) body
+    else
+        body
+
 /// Every `defun` whose signature declares a `-?->` parameter gets a second
 /// definition, generated from the same body and checked at the suspending
 /// colour. This is monomorphisation: `-?->` promises two copies, and this
@@ -94,7 +128,7 @@ let expandPolymorphicDefuns (decls: Decl list) : Decl list =
                 // already was.
                 [ d
                   DSignature(Naming.suspendingCopy name, suspendingSignature ftype, constraints, sigRange)
-                  DDefun(Naming.suspendingCopy name, args, body, Suspending, r) ]
+                  DDefun(Naming.suspendingCopy name, args, callingItself name body, Suspending, r) ]
             | _ -> [ d ]
         | _ -> [ d ])
 
@@ -235,7 +269,7 @@ let expandReachingDefuns (registry: TraitRegistry) (decls: Decl list) : Decl lis
                 // `-?->` there is no parameter whose colour changes.
                 [ d
                   DSignature(twin, ftype, constraints, sigRange)
-                  DDefun(twin, args, body, Suspending, r) ]
+                  DDefun(twin, args, callingItself name body, Suspending, r) ]
             | _ -> [ d ])
 
     expanded, (reaching |> Seq.map (fun n -> n, Naming.suspendingCopy n) |> Map.ofSeq)
