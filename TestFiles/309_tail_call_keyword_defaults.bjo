@@ -1,0 +1,46 @@
+;; A self tail call that leaves out a keyword argument gets the default a call
+;; would give it, computed from the call's own arguments.
+;;
+;; The call is a jump, and an omitted keyword was filled in by writing its
+;; default into the jump. A default that reads another parameter then read the
+;; loop's current values of it, which are the previous iteration's: `#:k n`
+;; gave the old n, and `#:b (+ a 100)` the old a.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; k defaults to n: each call's k is that call's n.
+(: down (-> int (#:k int) int))
+(defun (down n #:k n)
+  (if (= n 0) k (down (- n 1))))
+
+;; b defaults to a + 100, and a is passed: b follows the new a.
+(: follow (-> int (#:a int) (#:b int) int))
+(defun (follow n #:a 0 #:b (+ a 100))
+  (if (= n 0) b (follow (- n 1) #:a (+ a 1))))
+
+;; The same with the keyword given, and with a default that reads nothing:
+;; neither needs the arguments bound first.
+(: given (-> int (#:a int) (#:b int) int))
+(defun (given n #:a 0 #:b (+ a 100))
+  (if (= n 0) b (given (- n 1) #:a (+ a 1) #:b a)))
+
+(: constant (-> int int (#:step int) int))
+(defun (constant n acc #:step 2)
+  (if (= n 0) acc (constant (- n 1) (+ acc step))))
+
+;; What each iteration saw, to check the arguments are evaluated once and in
+;; the old scope.
+(: seen (-> int (List int) (#:k int) (List int)))
+(defun (seen n acc #:k (* n 10))
+  (if (= n 0) (list-reverse (cons k acc)) (seen (- n 1) (cons k acc))))
+
+(defun (main args)
+  (expect "a default reading a mandatory parameter" (down 2) 0)
+  (expect "a default reading a keyword parameter" (follow 2) 102)
+  (expect "a supplied keyword is used as given" (given 3) 2)
+  (expect "a constant default" (constant 5 0) 10)
+  (expect "every iteration sees its own default" (seen 3 '()) '(30 20 10 0))
+  ;; Still a loop: a million iterations do not use the stack.
+  (expect "the call is still a jump" (follow 1000000) 1000100)
+  0)

@@ -5,6 +5,14 @@ What each change guarantees, and what it leaves open.
 
 * Silent failures found by a correctness audit
 
+- *A self tail call computes a left-out keyword's default from its own
+  arguments.* In ~(defun (g n #:a 0 #:b (+ a 100)) ... (g (- n 1) #:a (+ a 1)))~
+  the recursive call got ~b~ from the previous iteration's ~a~, and
+  ~(defun (f n #:k n) ... (f (- n 1)))~ kept ~k~ one step behind ~n~. The call
+  is compiled as a jump, and the default was written into it reading the
+  loop's current values. When a left-out default reads another parameter,
+  the arguments are now bound first and the default reads those, as a call
+  would. Other self tail calls compile as before.
 - *A library function is specialised even when its helpers were not
   imported.* ~(import (only (std hashset) list->hashset))~ warned "could not
   specialise 'list->hashset' ... Unbound variable: seq->hashset" and left

@@ -109,15 +109,34 @@ let private normalizeRecur
     let mandatoryValues = args |> List.truncate mandatoryCount
     let restValues = args |> List.skip mandatoryCount
 
+    let supplied (kwName: string) =
+        kwArgs |> List.tryFind (fun (n, _) -> n = kwName) |> Option.map snd
+
     // An omitted optional must be re-supplied from its default: the slot still
     // holds the *previous* iteration's value, which is not what a fresh call
     // would have produced.
-    let keywordValues =
+    //
+    // A default may read the parameters before it — `#:b (+ a 100)` — and in a
+    // call those are the *new* arguments. Written into the jump as it stands,
+    // the default would read the loop's current locals, which are the old
+    // ones. So when an omitted default mentions a parameter, every argument is
+    // bound to a temporary first, in parameter order, and each such default
+    // reads the temporaries of the parameters before it.
+    let paramNames = (t.Mandatory |> List.map fst) @ (t.Keywords |> List.map (fun (n, _, _) -> n))
+
+    let mentionsParam (e: TypedExpr) =
+        TypeVisitor.foldExpr
+            (fun found (x: TypedExpr) ->
+                found
+                || (match x.Node with
+                    | TIdent(n, _) -> List.contains n paramNames
+                    | _ -> false))
+            false
+            e
+
+    let readsNewArguments =
         t.Keywords
-        |> List.map (fun (kwName, _, defaultValue) ->
-            match kwArgs |> List.tryFind (fun (n, _) -> n = kwName) with
-            | Some(_, value) -> value
-            | None -> defaultValue)
+        |> List.exists (fun (kwName, _, defaultValue) -> (supplied kwName).IsNone && mentionsParam defaultValue)
 
     let restValue =
         match t.Rest with
@@ -132,7 +151,53 @@ let private normalizeRecur
 
             []
 
-    TRecur(t.Depth, t.Index, mandatoryValues @ keywordValues @ restValue)
+    if not readsNewArguments then
+        let keywordValues =
+            t.Keywords
+            |> List.map (fun (kwName, _, defaultValue) -> supplied kwName |> Option.defaultValue defaultValue)
+
+        TRecur(t.Depth, t.Index, mandatoryValues @ keywordValues @ restValue)
+    else
+        // (parameter, temporary, value), in parameter order. A default is
+        // renamed to read the temporaries bound before it.
+        let bound =
+            let mandatory =
+                List.zip (t.Mandatory |> List.map fst) mandatoryValues
+                |> List.map (fun (p, value) -> p, fresh ("_" + p), value)
+
+            t.Keywords
+            |> List.fold
+                (fun (acc: (string * string * TypedExpr) list) (kwName, _, defaultValue) ->
+                    let value =
+                        match supplied kwName with
+                        | Some value -> value
+                        | None ->
+                            let earlier = acc |> List.map (fun (p, temp, _) -> p, temp) |> Map.ofList
+                            renameExpr earlier defaultValue
+
+                    acc @ [ kwName, fresh ("_" + kwName), value ])
+                mandatory
+
+        let temporaries =
+            bound
+            |> List.map (fun (_, temp, value) ->
+                ({ Type = value.Type
+                   Range = value.Range
+                   Node = TIdent(temp, []) }
+                : TypedExpr))
+
+        let jump =
+            { source with
+                Node = TRecur(t.Depth, t.Index, temporaries @ restValue) }
+
+        let wrapped =
+            List.foldBack
+                (fun (_, temp, value) (inner: TypedExpr) ->
+                    { inner with Node = TLet(temp, false, noParams, value, inner) })
+                bound
+                jump
+
+        wrapped.Node
 
 // ---------------------------------------------------------------------------
 // Queries
