@@ -1,0 +1,117 @@
+;; Bytes and strings: `bytes->string` and `string->bytes`, UTF-8 by default
+;; and any encoding from `(text encodings)` on request. Both are strict, as
+;; Racket's conversions are, unless given a replacement; a port is lenient.
+;; The encodings are imported by name, only the ones used.
+
+(import (std prelude))
+(import (std ports))
+(import (std simpletest))
+(import (only (text encodings)
+              utf-16le utf-16be utf-32le utf-32be iso-8859-1 windows-1252 dos-862
+              us-ascii shift_jis encoding-named encoding-of-code-page encoding-name))
+
+;; Bytes as text: "104.105." for "hi".
+(: shown (-> (Array byte) string))
+(defun (shown bs)
+  (let loop ((i 0) (acc ""))
+    (if (= i (array-length bs))
+        acc
+        (loop (+ i 1) (str acc (byte->string (array-ref bs i)) ".")))))
+
+;; What a conversion that should fail says, or what it gave instead.
+(: failure (-> (-> string) string))
+(defun (failure thunk)
+  (match (try (thunk) #:catch (System.ArgumentException))
+    ((Ok s) (str "no failure: " s))
+    ((Err e) (.-Message e))))
+
+(: named (-> string string))
+(defun (named name)
+  (match (encoding-named name)
+    ((Some e) (encoding-name e))
+    (None "none")))
+
+(: of-code-page (-> int string))
+(defun (of-code-page n)
+  (match (encoding-of-code-page n)
+    ((Some e) (encoding-name e))
+    (None "none")))
+
+(: round-trip (-> string Encoding string))
+(defun (round-trip s e)
+  (bytes->string (string->bytes s #:encoding e) #:encoding e))
+
+(: replacement string)
+(def replacement (list->string (list (integer->char 65533))))
+
+(: text string)
+(def text "hej räksmörgås 🎉")
+
+(defbjo (main args)
+  ;; --- UTF-8, the default ---------------------------------------------------
+  (def bs (string->bytes text))
+  (expect "a string's bytes are its UTF-8" (array-length bs) 22)
+  (expect "and are text again" (bytes->string bs) text)
+  (expect "a range of them" (bytes->string bs #:start 4 #:end 12) "räksmö")
+  (expect "an empty range" (bytes->string bs #:start 3 #:end 3) "")
+  (expect "a range that cuts a character fails where it cuts"
+          (failure (fun () (bytes->string bs #:start 4 #:end 11)))
+          "bytes->string: the bytes at offset 10 (0xC3) are not valid utf-8.")
+  (expect "invalid UTF-8 fails at its offset"
+          (failure (fun () (bytes->string #[104 255 105])))
+          "bytes->string: the bytes at offset 1 (0xFF) are not valid utf-8.")
+  (expect "or is replaced" (bytes->string #[104 255 105] #:replace (Some #\?)) "h?i")
+  (expect "once per invalid sequence"
+          (bytes->string #[104 226 130 105] #:replace (Some #\?)) "h?i")
+  (expect "a byte order mark is a character"
+          (char->integer (vec-ref (string->vec (bytes->string #[239 187 191 104])) 0)) 65279)
+
+  ;; --- The Unicode encodings ------------------------------------------------
+  (expect "utf-16le" (shown (string->bytes "hi" #:encoding utf-16le)) "104.0.105.0.")
+  (expect "utf-16be" (shown (string->bytes "hi" #:encoding utf-16be)) "0.104.0.105.")
+  (expect "utf-32be" (shown (string->bytes "a" #:encoding utf-32be)) "0.0.0.97.")
+  (expect "utf-32le, outside the BMP" (shown (string->bytes "😀" #:encoding utf-32le)) "0.246.1.0.")
+  (expect "utf-16le and back" (round-trip text utf-16le) text)
+  (expect "utf-16be and back" (round-trip text utf-16be) text)
+  (expect "utf-32le and back" (round-trip text utf-32le) text)
+  (expect "utf-32be and back" (round-trip text utf-32be) text)
+  (expect "half a UTF-16 unit fails"
+          (failure (fun () (bytes->string #[104 0 105] #:encoding utf-16le)))
+          "bytes->string: the bytes at offset 2 (0x69) are not valid utf-16le.")
+
+  ;; --- Code pages -----------------------------------------------------------
+  (expect "iso-8859-1" (shown (string->bytes "grüße" #:encoding iso-8859-1)) "103.114.252.223.101.")
+  (expect "windows-1252" (bytes->string #[128 159] #:encoding windows-1252) "€Ÿ")
+  (expect "dos-862" (shown (string->bytes "שלום" #:encoding dos-862)) "153.140.133.141.")
+  (expect "dos-862 and back" (round-trip "שלום" dos-862) "שלום")
+  (expect "shift_jis and back" (round-trip "日本語" shift_jis) "日本語")
+  (expect "a byte us-ascii lacks fails"
+          (failure (fun () (bytes->string #[97 128] #:encoding us-ascii)))
+          "bytes->string: the bytes at offset 1 (0x80) are not valid us-ascii.")
+  (expect "a character us-ascii lacks fails"
+          (failure (fun () (shown (string->bytes "aé" #:encoding us-ascii))))
+          "string->bytes: U+00E9 (é) at offset 1 is not in us-ascii.")
+  (expect "or is replaced, once per character"
+          (bytes->string (string->bytes "ok ✓😀" #:encoding us-ascii #:replace (Some #\?))) "ok ??")
+  (expect "a replacement the encoding lacks fails"
+          (failure (fun () (shown (string->bytes "é" #:encoding us-ascii #:replace (Some #\ü)))))
+          "string->bytes: the replacement U+00FC (ü) is not in us-ascii either.")
+
+  ;; --- Finding one ----------------------------------------------------------
+  (expect "by name, in any case" (named "Windows-1252") "windows-1252")
+  (expect "by .NET's alias" (named "latin1") "iso-8859-1")
+  (expect ".NET's utf-16 is little-endian" (named "utf-16") "utf-16le")
+  (expect "an unknown name" (named "no-such-encoding") "none")
+  (expect "UTF-7 is not provided" (named "utf-7") "none")
+  (expect "by code page" (of-code-page 862) "dos-862")
+  (expect "an unknown code page" (of-code-page 65000) "none")
+
+  ;; --- A port is lenient ----------------------------------------------------
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out #[97 128 98 10])
+     (close-byte-output-port! out)
+     (expect "a re-encoded port reads what does not decode as U+FFFD"
+             (read-line (reencode-input-port in us-ascii))
+             (str "a" replacement "b"))))
+  0)

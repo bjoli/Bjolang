@@ -1,0 +1,211 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; text/encodings.bjo
+;;
+;; Every character encoding .NET knows, as a value to hand to
+;; `bytes->string`, `string->bytes` and `reencode-input-port`, and finding
+;; one by name or code page.
+;;
+;; The names are .NET's, lower-cased: `utf-8`, `windows-1252`, `dos-862`,
+;; `shift_jis`. Two kinds differ. .NET's `utf-16` and `utf-32` are
+;; little-endian and are `utf-16le` and `utf-32le` here, next to `utf-16be`
+;; and `utf-32be`. Where .NET gives one name to two code pages, the less
+;; common one is `cp` and its number: `euc-jp` is 51932 and `cp20932` the
+;; other, `iso-2022-jp` is 50220 and `cp50222` the other.
+;;
+;; Each value is a property of `Bjolang.Runtime.Encodings` that makes its
+;; encoding the first time it is read, so importing the module makes none of
+;; them and a program pays only for the ones it uses.
+
+(export
+  encoding-named encoding-of-code-page encoding-name
+  asmo-708 big5 cp1025 cp20932 cp50222 cp866 cp875 csiso2022jp dos-720
+  dos-862 euc-cn euc-jp euc-kr gb18030 gb2312 hz-gb-2312 ibm-thai ibm00858
+  ibm00924 ibm01047 ibm01140 ibm01141 ibm01142 ibm01143 ibm01144 ibm01145
+  ibm01146 ibm01147 ibm01148 ibm01149 ibm037 ibm1026 ibm273 ibm277 ibm278
+  ibm280 ibm284 ibm285 ibm290 ibm297 ibm420 ibm423 ibm424 ibm437 ibm500
+  ibm737 ibm775 ibm850 ibm852 ibm855 ibm857 ibm860 ibm861 ibm863 ibm864
+  ibm865 ibm869 ibm870 ibm871 ibm880 ibm905 iso-2022-jp iso-2022-kr
+  iso-8859-1 iso-8859-13 iso-8859-15 iso-8859-2 iso-8859-3 iso-8859-4
+  iso-8859-5 iso-8859-6 iso-8859-7 iso-8859-8 iso-8859-8-i iso-8859-9 johab
+  koi8-r koi8-u ks_c_5601-1987 macintosh shift_jis us-ascii utf-16be
+  utf-16le utf-32be utf-32le utf-8 windows-1250 windows-1251 windows-1252
+  windows-1253 windows-1254 windows-1255 windows-1256 windows-1257
+  windows-1258 windows-874 x-chinese-cns x-chinese-eten x-cp20001 x-cp20003
+  x-cp20004 x-cp20005 x-cp20261 x-cp20269 x-cp20936 x-cp20949 x-cp50227
+  x-ebcdic-koreanextended x-europa x-ia5 x-ia5-german x-ia5-norwegian
+  x-ia5-swedish x-iscii-as x-iscii-be x-iscii-de x-iscii-gu x-iscii-ka
+  x-iscii-ma x-iscii-or x-iscii-pa x-iscii-ta x-iscii-te x-mac-arabic
+  x-mac-ce x-mac-chinesesimp x-mac-chinesetrad x-mac-croatian x-mac-cyrillic
+  x-mac-greek x-mac-hebrew x-mac-icelandic x-mac-japanese x-mac-korean
+  x-mac-romanian x-mac-thai x-mac-turkish x-mac-ukrainian)
+
+(import (std prelude))
+
+(:doc #:file "encodings.bjodoc")
+
+(import/extern
+  (clr-named        (: Bjolang.Runtime.Encodings.Named (-> string (Option Encoding))))
+  (clr-of-code-page (: Bjolang.Runtime.Encodings.OfCodePage (-> int (Option Encoding))))
+  (clr-name-of      (: Bjolang.Runtime.Encodings.NameOf (-> Encoding string))))
+
+(: encoding-named (-> string (Option Encoding)))
+(defun (encoding-named name) (clr-named name))
+
+(: encoding-of-code-page (-> int (Option Encoding)))
+(defun (encoding-of-code-page code-page) (clr-of-code-page code-page))
+
+(: encoding-name (-> Encoding string))
+(defun (encoding-name encoding) (clr-name-of encoding))
+
+;; The encodings.
+(import/extern
+  (asmo-708                (: Bjolang.Runtime.Encodings.Cp708 #:get))
+  (big5                    (: Bjolang.Runtime.Encodings.Cp950 #:get))
+  (cp1025                  (: Bjolang.Runtime.Encodings.Cp21025 #:get))
+  (cp20932                 (: Bjolang.Runtime.Encodings.Cp20932 #:get))
+  (cp50222                 (: Bjolang.Runtime.Encodings.Cp50222 #:get))
+  (cp866                   (: Bjolang.Runtime.Encodings.Cp866 #:get))
+  (cp875                   (: Bjolang.Runtime.Encodings.Cp875 #:get))
+  (csiso2022jp             (: Bjolang.Runtime.Encodings.Cp50221 #:get))
+  (dos-720                 (: Bjolang.Runtime.Encodings.Cp720 #:get))
+  (dos-862                 (: Bjolang.Runtime.Encodings.Cp862 #:get))
+  (euc-cn                  (: Bjolang.Runtime.Encodings.Cp51936 #:get))
+  (euc-jp                  (: Bjolang.Runtime.Encodings.Cp51932 #:get))
+  (euc-kr                  (: Bjolang.Runtime.Encodings.Cp51949 #:get))
+  (gb18030                 (: Bjolang.Runtime.Encodings.Cp54936 #:get))
+  (gb2312                  (: Bjolang.Runtime.Encodings.Cp936 #:get))
+  (hz-gb-2312              (: Bjolang.Runtime.Encodings.Cp52936 #:get))
+  (ibm-thai                (: Bjolang.Runtime.Encodings.Cp20838 #:get))
+  (ibm00858                (: Bjolang.Runtime.Encodings.Cp858 #:get))
+  (ibm00924                (: Bjolang.Runtime.Encodings.Cp20924 #:get))
+  (ibm01047                (: Bjolang.Runtime.Encodings.Cp1047 #:get))
+  (ibm01140                (: Bjolang.Runtime.Encodings.Cp1140 #:get))
+  (ibm01141                (: Bjolang.Runtime.Encodings.Cp1141 #:get))
+  (ibm01142                (: Bjolang.Runtime.Encodings.Cp1142 #:get))
+  (ibm01143                (: Bjolang.Runtime.Encodings.Cp1143 #:get))
+  (ibm01144                (: Bjolang.Runtime.Encodings.Cp1144 #:get))
+  (ibm01145                (: Bjolang.Runtime.Encodings.Cp1145 #:get))
+  (ibm01146                (: Bjolang.Runtime.Encodings.Cp1146 #:get))
+  (ibm01147                (: Bjolang.Runtime.Encodings.Cp1147 #:get))
+  (ibm01148                (: Bjolang.Runtime.Encodings.Cp1148 #:get))
+  (ibm01149                (: Bjolang.Runtime.Encodings.Cp1149 #:get))
+  (ibm037                  (: Bjolang.Runtime.Encodings.Cp37 #:get))
+  (ibm1026                 (: Bjolang.Runtime.Encodings.Cp1026 #:get))
+  (ibm273                  (: Bjolang.Runtime.Encodings.Cp20273 #:get))
+  (ibm277                  (: Bjolang.Runtime.Encodings.Cp20277 #:get))
+  (ibm278                  (: Bjolang.Runtime.Encodings.Cp20278 #:get))
+  (ibm280                  (: Bjolang.Runtime.Encodings.Cp20280 #:get))
+  (ibm284                  (: Bjolang.Runtime.Encodings.Cp20284 #:get))
+  (ibm285                  (: Bjolang.Runtime.Encodings.Cp20285 #:get))
+  (ibm290                  (: Bjolang.Runtime.Encodings.Cp20290 #:get))
+  (ibm297                  (: Bjolang.Runtime.Encodings.Cp20297 #:get))
+  (ibm420                  (: Bjolang.Runtime.Encodings.Cp20420 #:get))
+  (ibm423                  (: Bjolang.Runtime.Encodings.Cp20423 #:get))
+  (ibm424                  (: Bjolang.Runtime.Encodings.Cp20424 #:get))
+  (ibm437                  (: Bjolang.Runtime.Encodings.Cp437 #:get))
+  (ibm500                  (: Bjolang.Runtime.Encodings.Cp500 #:get))
+  (ibm737                  (: Bjolang.Runtime.Encodings.Cp737 #:get))
+  (ibm775                  (: Bjolang.Runtime.Encodings.Cp775 #:get))
+  (ibm850                  (: Bjolang.Runtime.Encodings.Cp850 #:get))
+  (ibm852                  (: Bjolang.Runtime.Encodings.Cp852 #:get))
+  (ibm855                  (: Bjolang.Runtime.Encodings.Cp855 #:get))
+  (ibm857                  (: Bjolang.Runtime.Encodings.Cp857 #:get))
+  (ibm860                  (: Bjolang.Runtime.Encodings.Cp860 #:get))
+  (ibm861                  (: Bjolang.Runtime.Encodings.Cp861 #:get))
+  (ibm863                  (: Bjolang.Runtime.Encodings.Cp863 #:get))
+  (ibm864                  (: Bjolang.Runtime.Encodings.Cp864 #:get))
+  (ibm865                  (: Bjolang.Runtime.Encodings.Cp865 #:get))
+  (ibm869                  (: Bjolang.Runtime.Encodings.Cp869 #:get))
+  (ibm870                  (: Bjolang.Runtime.Encodings.Cp870 #:get))
+  (ibm871                  (: Bjolang.Runtime.Encodings.Cp20871 #:get))
+  (ibm880                  (: Bjolang.Runtime.Encodings.Cp20880 #:get))
+  (ibm905                  (: Bjolang.Runtime.Encodings.Cp20905 #:get))
+  (iso-2022-jp             (: Bjolang.Runtime.Encodings.Cp50220 #:get))
+  (iso-2022-kr             (: Bjolang.Runtime.Encodings.Cp50225 #:get))
+  (iso-8859-1              (: Bjolang.Runtime.Encodings.Cp28591 #:get))
+  (iso-8859-13             (: Bjolang.Runtime.Encodings.Cp28603 #:get))
+  (iso-8859-15             (: Bjolang.Runtime.Encodings.Cp28605 #:get))
+  (iso-8859-2              (: Bjolang.Runtime.Encodings.Cp28592 #:get))
+  (iso-8859-3              (: Bjolang.Runtime.Encodings.Cp28593 #:get))
+  (iso-8859-4              (: Bjolang.Runtime.Encodings.Cp28594 #:get))
+  (iso-8859-5              (: Bjolang.Runtime.Encodings.Cp28595 #:get))
+  (iso-8859-6              (: Bjolang.Runtime.Encodings.Cp28596 #:get))
+  (iso-8859-7              (: Bjolang.Runtime.Encodings.Cp28597 #:get))
+  (iso-8859-8              (: Bjolang.Runtime.Encodings.Cp28598 #:get))
+  (iso-8859-8-i            (: Bjolang.Runtime.Encodings.Cp38598 #:get))
+  (iso-8859-9              (: Bjolang.Runtime.Encodings.Cp28599 #:get))
+  (johab                   (: Bjolang.Runtime.Encodings.Cp1361 #:get))
+  (koi8-r                  (: Bjolang.Runtime.Encodings.Cp20866 #:get))
+  (koi8-u                  (: Bjolang.Runtime.Encodings.Cp21866 #:get))
+  (ks_c_5601-1987          (: Bjolang.Runtime.Encodings.Cp949 #:get))
+  (macintosh               (: Bjolang.Runtime.Encodings.Cp10000 #:get))
+  (shift_jis               (: Bjolang.Runtime.Encodings.Cp932 #:get))
+  (us-ascii                (: Bjolang.Runtime.Encodings.Cp20127 #:get))
+  (utf-16be                (: Bjolang.Runtime.Encodings.Cp1201 #:get))
+  (utf-16le                (: Bjolang.Runtime.Encodings.Cp1200 #:get))
+  (utf-32be                (: Bjolang.Runtime.Encodings.Cp12001 #:get))
+  (utf-32le                (: Bjolang.Runtime.Encodings.Cp12000 #:get))
+  (utf-8                   (: Bjolang.Runtime.Encodings.Cp65001 #:get))
+  (windows-1250            (: Bjolang.Runtime.Encodings.Cp1250 #:get))
+  (windows-1251            (: Bjolang.Runtime.Encodings.Cp1251 #:get))
+  (windows-1252            (: Bjolang.Runtime.Encodings.Cp1252 #:get))
+  (windows-1253            (: Bjolang.Runtime.Encodings.Cp1253 #:get))
+  (windows-1254            (: Bjolang.Runtime.Encodings.Cp1254 #:get))
+  (windows-1255            (: Bjolang.Runtime.Encodings.Cp1255 #:get))
+  (windows-1256            (: Bjolang.Runtime.Encodings.Cp1256 #:get))
+  (windows-1257            (: Bjolang.Runtime.Encodings.Cp1257 #:get))
+  (windows-1258            (: Bjolang.Runtime.Encodings.Cp1258 #:get))
+  (windows-874             (: Bjolang.Runtime.Encodings.Cp874 #:get))
+  (x-chinese-cns           (: Bjolang.Runtime.Encodings.Cp20000 #:get))
+  (x-chinese-eten          (: Bjolang.Runtime.Encodings.Cp20002 #:get))
+  (x-cp20001               (: Bjolang.Runtime.Encodings.Cp20001 #:get))
+  (x-cp20003               (: Bjolang.Runtime.Encodings.Cp20003 #:get))
+  (x-cp20004               (: Bjolang.Runtime.Encodings.Cp20004 #:get))
+  (x-cp20005               (: Bjolang.Runtime.Encodings.Cp20005 #:get))
+  (x-cp20261               (: Bjolang.Runtime.Encodings.Cp20261 #:get))
+  (x-cp20269               (: Bjolang.Runtime.Encodings.Cp20269 #:get))
+  (x-cp20936               (: Bjolang.Runtime.Encodings.Cp20936 #:get))
+  (x-cp20949               (: Bjolang.Runtime.Encodings.Cp20949 #:get))
+  (x-cp50227               (: Bjolang.Runtime.Encodings.Cp50227 #:get))
+  (x-ebcdic-koreanextended (: Bjolang.Runtime.Encodings.Cp20833 #:get))
+  (x-europa                (: Bjolang.Runtime.Encodings.Cp29001 #:get))
+  (x-ia5                   (: Bjolang.Runtime.Encodings.Cp20105 #:get))
+  (x-ia5-german            (: Bjolang.Runtime.Encodings.Cp20106 #:get))
+  (x-ia5-norwegian         (: Bjolang.Runtime.Encodings.Cp20108 #:get))
+  (x-ia5-swedish           (: Bjolang.Runtime.Encodings.Cp20107 #:get))
+  (x-iscii-as              (: Bjolang.Runtime.Encodings.Cp57006 #:get))
+  (x-iscii-be              (: Bjolang.Runtime.Encodings.Cp57003 #:get))
+  (x-iscii-de              (: Bjolang.Runtime.Encodings.Cp57002 #:get))
+  (x-iscii-gu              (: Bjolang.Runtime.Encodings.Cp57010 #:get))
+  (x-iscii-ka              (: Bjolang.Runtime.Encodings.Cp57008 #:get))
+  (x-iscii-ma              (: Bjolang.Runtime.Encodings.Cp57009 #:get))
+  (x-iscii-or              (: Bjolang.Runtime.Encodings.Cp57007 #:get))
+  (x-iscii-pa              (: Bjolang.Runtime.Encodings.Cp57011 #:get))
+  (x-iscii-ta              (: Bjolang.Runtime.Encodings.Cp57004 #:get))
+  (x-iscii-te              (: Bjolang.Runtime.Encodings.Cp57005 #:get))
+  (x-mac-arabic            (: Bjolang.Runtime.Encodings.Cp10004 #:get))
+  (x-mac-ce                (: Bjolang.Runtime.Encodings.Cp10029 #:get))
+  (x-mac-chinesesimp       (: Bjolang.Runtime.Encodings.Cp10008 #:get))
+  (x-mac-chinesetrad       (: Bjolang.Runtime.Encodings.Cp10002 #:get))
+  (x-mac-croatian          (: Bjolang.Runtime.Encodings.Cp10082 #:get))
+  (x-mac-cyrillic          (: Bjolang.Runtime.Encodings.Cp10007 #:get))
+  (x-mac-greek             (: Bjolang.Runtime.Encodings.Cp10006 #:get))
+  (x-mac-hebrew            (: Bjolang.Runtime.Encodings.Cp10005 #:get))
+  (x-mac-icelandic         (: Bjolang.Runtime.Encodings.Cp10079 #:get))
+  (x-mac-japanese          (: Bjolang.Runtime.Encodings.Cp10001 #:get))
+  (x-mac-korean            (: Bjolang.Runtime.Encodings.Cp10003 #:get))
+  (x-mac-romanian          (: Bjolang.Runtime.Encodings.Cp10010 #:get))
+  (x-mac-thai              (: Bjolang.Runtime.Encodings.Cp10021 #:get))
+  (x-mac-turkish           (: Bjolang.Runtime.Encodings.Cp10081 #:get))
+  (x-mac-ukrainian         (: Bjolang.Runtime.Encodings.Cp10017 #:get)))

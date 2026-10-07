@@ -797,14 +797,6 @@ public static class BytePorts {
     // --- The text layer -----------------------------------------------------
 
     /// <summary>
-    /// `utf8` in `(std ports)`: UTF-8 that never writes a byte order mark.
-    /// `Encoding.UTF8` writes one at the start of every text port over bytes,
-    /// which a peer that is not a browser reads as three bytes of junk before
-    /// the text.
-    /// </summary>
-    public static Encoding Utf8 { get; } = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-
-    /// <summary>
     /// A text writer over the byte port. Flushing or closing it pushes its
     /// characters into the byte port AND drains the byte port, because the
     /// view's `Flush` is the port's.

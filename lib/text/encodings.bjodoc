@@ -1,0 +1,639 @@
+;; Docs for text/encodings.bjo, read through (:doc #:file "encodings.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Every character encoding .NET knows, as a value, and finding one by name.")
+  (see encoding-named encoding-of-code-page encoding-name)
+  (example """
+    (import (only (text encodings) utf-16be windows-1252 encoding-named))
+
+    (string->bytes "blåbär" #:encoding utf-16be)
+    (bytes->string bs #:encoding windows-1252)
+    (match (encoding-named "Shift_JIS")
+      ((Some e) (bytes->string bs #:encoding e))
+      (None "an encoding nothing here knows"))
+    """)
+  (reference """
+    An encoding is an @code{Encoding}, the prelude's name for .NET's
+    @code{System.Text.Encoding}. This module exports one for each of the
+    139 encodings .NET provides, the Windows and DOS code pages included,
+    named as .NET names them, in lower case: @code{utf-8}, @code{us-ascii},
+    @code{iso-8859-1}, @code{windows-1252}, @code{dos-862}, @code{koi8-r},
+    @code{shift_jis}, @code{big5}, @code{gb18030}, @code{ibm437},
+    @code{x-mac-cyrillic} and the rest.
+
+    @strong{Two exceptions.} .NET's @code{utf-16} and @code{utf-32} are
+    little-endian; here they are @code{utf-16le} and @code{utf-32le}, next
+    to @code{utf-16be} and @code{utf-32be}. Where .NET gives two code pages
+    one name, the less common is @code{cp} and its number: @code{euc-jp} is
+    code page 51932 and @code{cp20932} the other, @code{iso-2022-jp} is
+    50220 and @code{cp50222} the other.
+
+    @strong{Strict or lenient is not the encoding's.} @code{bytes->string}
+    and @code{string->bytes} fail on what does not convert unless given a
+    replacement; a port reads what does not decode as U+FFFD. The same value
+    serves both.
+
+    @strong{No byte order marks.} The Unicode encodings neither write a mark
+    nor skip one: a mark is the character U+FEFF.
+
+    @strong{Cost.} An encoding is made the first time its name is used and
+    kept; importing the module makes none. UTF-7 is not provided, as .NET
+    has stopped providing it.
+    """))
+
+(:doc encoding-named
+  (summary "The encoding a name means, as a charset header would give it.")
+  (arg name "A name, in any case: the names this module exports, and every name and alias .NET knows (latin1, cp1252, Shift-JIS, unicodeFFFE).")
+  (returns "(Some encoding), or None for a name nothing knows.")
+  (see encoding-name encoding-of-code-page)
+  (example """
+    (encoding-named "Windows-1252")   ; (Some windows-1252)
+    (encoding-named "latin1")         ; (Some iso-8859-1)
+    (encoding-named "utf-7")          ; None
+    """)
+  (reference """
+    Space around the name is ignored. .NET's own names come after this
+    module's, so @code{utf-16} means what .NET means by it, little-endian.
+    The value is the same object the module exports under its own name.
+    """))
+
+(:doc encoding-of-code-page
+  (summary "The encoding of a Windows code page number.")
+  (arg code-page "The number: 1252, 862, 65001.")
+  (returns "(Some encoding), or None for a number no encoding has.")
+  (see encoding-named encoding-name)
+  (example """
+    (encoding-of-code-page 862)     ; (Some dos-862)
+    (encoding-of-code-page 65000)   ; None: UTF-7
+    """))
+
+(:doc encoding-name
+  (summary "The name this module exports an encoding under.")
+  (arg encoding "An encoding.")
+  (returns "Its name here, or .NET's name for it in lower case for one made elsewhere.")
+  (see encoding-named)
+  (example """
+    (encoding-name windows-1252)   ; "windows-1252"
+    (encoding-name utf-16le)       ; "utf-16le"
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The encodings, by name
+;; ---------------------------------------------------------------------------
+
+(:doc asmo-708
+  (summary "Arabic (ASMO 708), code page 708.")
+  (see encoding-named encoding-name))
+
+(:doc big5
+  (summary "Chinese Traditional (Big5), code page 950.")
+  (see encoding-named encoding-name))
+
+(:doc cp1025
+  (summary "IBM EBCDIC (Cyrillic Serbian-Bulgarian), code page 21025.")
+  (see encoding-named encoding-name))
+
+(:doc cp20932
+  (summary "Japanese (JIS 0208-1990 and 0212-1990), code page 20932.")
+  (see encoding-named encoding-name))
+
+(:doc cp50222
+  (summary "Japanese (JIS-Allow 1 byte Kana - SO/SI), code page 50222.")
+  (see encoding-named encoding-name))
+
+(:doc cp866
+  (summary "Cyrillic (DOS), code page 866.")
+  (see encoding-named encoding-name))
+
+(:doc cp875
+  (summary "IBM EBCDIC (Greek Modern), code page 875.")
+  (see encoding-named encoding-name))
+
+(:doc csiso2022jp
+  (summary "Japanese (JIS-Allow 1 byte Kana), code page 50221.")
+  (see encoding-named encoding-name))
+
+(:doc dos-720
+  (summary "Arabic (DOS), code page 720.")
+  (see encoding-named encoding-name))
+
+(:doc dos-862
+  (summary "Hebrew (DOS), code page 862.")
+  (see encoding-named encoding-name))
+
+(:doc euc-cn
+  (summary "Chinese Simplified (EUC), code page 51936.")
+  (see encoding-named encoding-name))
+
+(:doc euc-jp
+  (summary "Japanese (EUC), code page 51932.")
+  (see encoding-named encoding-name))
+
+(:doc euc-kr
+  (summary "Korean (EUC), code page 51949.")
+  (see encoding-named encoding-name))
+
+(:doc gb18030
+  (summary "Chinese Simplified (GB18030), code page 54936.")
+  (see encoding-named encoding-name))
+
+(:doc gb2312
+  (summary "Chinese Simplified (GB2312), code page 936.")
+  (see encoding-named encoding-name))
+
+(:doc hz-gb-2312
+  (summary "Chinese Simplified (HZ), code page 52936.")
+  (see encoding-named encoding-name))
+
+(:doc ibm-thai
+  (summary "IBM EBCDIC (Thai), code page 20838.")
+  (see encoding-named encoding-name))
+
+(:doc ibm00858
+  (summary "OEM Multilingual Latin I, code page 858.")
+  (see encoding-named encoding-name))
+
+(:doc ibm00924
+  (summary "IBM Latin-1, code page 20924.")
+  (see encoding-named encoding-name))
+
+(:doc ibm01047
+  (summary "IBM Latin-1, code page 1047.")
+  (see encoding-named encoding-name))
+
+(:doc ibm01140
+  (summary "IBM EBCDIC (US-Canada-Euro), code page 1140.")
+  (see encoding-named encoding-name))
+
+(:doc ibm01141
+  (summary "IBM EBCDIC (Germany-Euro), code page 1141.")
+  (see encoding-named encoding-name))
+
+(:doc ibm01142
+  (summary "IBM EBCDIC (Denmark-Norway-Euro), code page 1142.")
+  (see encoding-named encoding-name))
+
+(:doc ibm01143
+  (summary "IBM EBCDIC (Finland-Sweden-Euro), code page 1143.")
+  (see encoding-named encoding-name))
+
+(:doc ibm01144
+  (summary "IBM EBCDIC (Italy-Euro), code page 1144.")
+  (see encoding-named encoding-name))
+
+(:doc ibm01145
+  (summary "IBM EBCDIC (Spain-Euro), code page 1145.")
+  (see encoding-named encoding-name))
+
+(:doc ibm01146
+  (summary "IBM EBCDIC (UK-Euro), code page 1146.")
+  (see encoding-named encoding-name))
+
+(:doc ibm01147
+  (summary "IBM EBCDIC (France-Euro), code page 1147.")
+  (see encoding-named encoding-name))
+
+(:doc ibm01148
+  (summary "IBM EBCDIC (International-Euro), code page 1148.")
+  (see encoding-named encoding-name))
+
+(:doc ibm01149
+  (summary "IBM EBCDIC (Icelandic-Euro), code page 1149.")
+  (see encoding-named encoding-name))
+
+(:doc ibm037
+  (summary "IBM EBCDIC (US-Canada), code page 37.")
+  (see encoding-named encoding-name))
+
+(:doc ibm1026
+  (summary "IBM EBCDIC (Turkish Latin-5), code page 1026.")
+  (see encoding-named encoding-name))
+
+(:doc ibm273
+  (summary "IBM EBCDIC (Germany), code page 20273.")
+  (see encoding-named encoding-name))
+
+(:doc ibm277
+  (summary "IBM EBCDIC (Denmark-Norway), code page 20277.")
+  (see encoding-named encoding-name))
+
+(:doc ibm278
+  (summary "IBM EBCDIC (Finland-Sweden), code page 20278.")
+  (see encoding-named encoding-name))
+
+(:doc ibm280
+  (summary "IBM EBCDIC (Italy), code page 20280.")
+  (see encoding-named encoding-name))
+
+(:doc ibm284
+  (summary "IBM EBCDIC (Spain), code page 20284.")
+  (see encoding-named encoding-name))
+
+(:doc ibm285
+  (summary "IBM EBCDIC (UK), code page 20285.")
+  (see encoding-named encoding-name))
+
+(:doc ibm290
+  (summary "IBM EBCDIC (Japanese katakana), code page 20290.")
+  (see encoding-named encoding-name))
+
+(:doc ibm297
+  (summary "IBM EBCDIC (France), code page 20297.")
+  (see encoding-named encoding-name))
+
+(:doc ibm420
+  (summary "IBM EBCDIC (Arabic), code page 20420.")
+  (see encoding-named encoding-name))
+
+(:doc ibm423
+  (summary "IBM EBCDIC (Greek), code page 20423.")
+  (see encoding-named encoding-name))
+
+(:doc ibm424
+  (summary "IBM EBCDIC (Hebrew), code page 20424.")
+  (see encoding-named encoding-name))
+
+(:doc ibm437
+  (summary "OEM United States, code page 437.")
+  (see encoding-named encoding-name))
+
+(:doc ibm500
+  (summary "IBM EBCDIC (International), code page 500.")
+  (see encoding-named encoding-name))
+
+(:doc ibm737
+  (summary "Greek (DOS), code page 737.")
+  (see encoding-named encoding-name))
+
+(:doc ibm775
+  (summary "Baltic (DOS), code page 775.")
+  (see encoding-named encoding-name))
+
+(:doc ibm850
+  (summary "Western European (DOS), code page 850.")
+  (see encoding-named encoding-name))
+
+(:doc ibm852
+  (summary "Central European (DOS), code page 852.")
+  (see encoding-named encoding-name))
+
+(:doc ibm855
+  (summary "OEM Cyrillic, code page 855.")
+  (see encoding-named encoding-name))
+
+(:doc ibm857
+  (summary "Turkish (DOS), code page 857.")
+  (see encoding-named encoding-name))
+
+(:doc ibm860
+  (summary "Portuguese (DOS), code page 860.")
+  (see encoding-named encoding-name))
+
+(:doc ibm861
+  (summary "Icelandic (DOS), code page 861.")
+  (see encoding-named encoding-name))
+
+(:doc ibm863
+  (summary "French Canadian (DOS), code page 863.")
+  (see encoding-named encoding-name))
+
+(:doc ibm864
+  (summary "Arabic (864), code page 864.")
+  (see encoding-named encoding-name))
+
+(:doc ibm865
+  (summary "Nordic (DOS), code page 865.")
+  (see encoding-named encoding-name))
+
+(:doc ibm869
+  (summary "Greek, Modern (DOS), code page 869.")
+  (see encoding-named encoding-name))
+
+(:doc ibm870
+  (summary "IBM EBCDIC (Multilingual Latin-2), code page 870.")
+  (see encoding-named encoding-name))
+
+(:doc ibm871
+  (summary "IBM EBCDIC (Icelandic), code page 20871.")
+  (see encoding-named encoding-name))
+
+(:doc ibm880
+  (summary "IBM EBCDIC (Cyrillic Russian), code page 20880.")
+  (see encoding-named encoding-name))
+
+(:doc ibm905
+  (summary "IBM EBCDIC (Turkish), code page 20905.")
+  (see encoding-named encoding-name))
+
+(:doc iso-2022-jp
+  (summary "Japanese (JIS), code page 50220.")
+  (see encoding-named encoding-name))
+
+(:doc iso-2022-kr
+  (summary "Korean (ISO), code page 50225.")
+  (see encoding-named encoding-name))
+
+(:doc iso-8859-1
+  (summary "Western European (ISO), code page 28591.")
+  (see encoding-named encoding-name))
+
+(:doc iso-8859-13
+  (summary "Estonian (ISO), code page 28603.")
+  (see encoding-named encoding-name))
+
+(:doc iso-8859-15
+  (summary "Latin 9 (ISO), code page 28605.")
+  (see encoding-named encoding-name))
+
+(:doc iso-8859-2
+  (summary "Central European (ISO), code page 28592.")
+  (see encoding-named encoding-name))
+
+(:doc iso-8859-3
+  (summary "Latin 3 (ISO), code page 28593.")
+  (see encoding-named encoding-name))
+
+(:doc iso-8859-4
+  (summary "Baltic (ISO), code page 28594.")
+  (see encoding-named encoding-name))
+
+(:doc iso-8859-5
+  (summary "Cyrillic (ISO), code page 28595.")
+  (see encoding-named encoding-name))
+
+(:doc iso-8859-6
+  (summary "Arabic (ISO), code page 28596.")
+  (see encoding-named encoding-name))
+
+(:doc iso-8859-7
+  (summary "Greek (ISO), code page 28597.")
+  (see encoding-named encoding-name))
+
+(:doc iso-8859-8
+  (summary "Hebrew (ISO-Visual), code page 28598.")
+  (see encoding-named encoding-name))
+
+(:doc iso-8859-8-i
+  (summary "Hebrew (ISO-Logical), code page 38598.")
+  (see encoding-named encoding-name))
+
+(:doc iso-8859-9
+  (summary "Turkish (ISO), code page 28599.")
+  (see encoding-named encoding-name))
+
+(:doc johab
+  (summary "Korean (Johab), code page 1361.")
+  (see encoding-named encoding-name))
+
+(:doc koi8-r
+  (summary "Cyrillic (KOI8-R), code page 20866.")
+  (see encoding-named encoding-name))
+
+(:doc koi8-u
+  (summary "Cyrillic (KOI8-U), code page 21866.")
+  (see encoding-named encoding-name))
+
+(:doc ks_c_5601-1987
+  (summary "Korean, code page 949.")
+  (see encoding-named encoding-name))
+
+(:doc macintosh
+  (summary "Western European (Mac), code page 10000.")
+  (see encoding-named encoding-name))
+
+(:doc shift_jis
+  (summary "Japanese (Shift-JIS), code page 932.")
+  (see encoding-named encoding-name))
+
+(:doc us-ascii
+  (summary "US-ASCII, code page 20127.")
+  (see encoding-named encoding-name))
+
+(:doc utf-16be
+  (summary "Unicode, UTF-16 big-endian, code page 1201.")
+  (see encoding-named encoding-name))
+
+(:doc utf-16le
+  (summary "Unicode, UTF-16 little-endian, code page 1200.")
+  (see encoding-named encoding-name))
+
+(:doc utf-32be
+  (summary "Unicode, UTF-32 big-endian, code page 12001.")
+  (see encoding-named encoding-name))
+
+(:doc utf-32le
+  (summary "Unicode, UTF-32 little-endian, code page 12000.")
+  (see encoding-named encoding-name))
+
+(:doc utf-8
+  (summary "Unicode, UTF-8, code page 65001.")
+  (see encoding-named encoding-name))
+
+(:doc windows-1250
+  (summary "Central European (Windows), code page 1250.")
+  (see encoding-named encoding-name))
+
+(:doc windows-1251
+  (summary "Cyrillic (Windows), code page 1251.")
+  (see encoding-named encoding-name))
+
+(:doc windows-1252
+  (summary "Western European (Windows), code page 1252.")
+  (see encoding-named encoding-name))
+
+(:doc windows-1253
+  (summary "Greek (Windows), code page 1253.")
+  (see encoding-named encoding-name))
+
+(:doc windows-1254
+  (summary "Turkish (Windows), code page 1254.")
+  (see encoding-named encoding-name))
+
+(:doc windows-1255
+  (summary "Hebrew (Windows), code page 1255.")
+  (see encoding-named encoding-name))
+
+(:doc windows-1256
+  (summary "Arabic (Windows), code page 1256.")
+  (see encoding-named encoding-name))
+
+(:doc windows-1257
+  (summary "Baltic (Windows), code page 1257.")
+  (see encoding-named encoding-name))
+
+(:doc windows-1258
+  (summary "Vietnamese (Windows), code page 1258.")
+  (see encoding-named encoding-name))
+
+(:doc windows-874
+  (summary "Thai (Windows), code page 874.")
+  (see encoding-named encoding-name))
+
+(:doc x-chinese-cns
+  (summary "Chinese Traditional (CNS), code page 20000.")
+  (see encoding-named encoding-name))
+
+(:doc x-chinese-eten
+  (summary "Chinese Traditional (Eten), code page 20002.")
+  (see encoding-named encoding-name))
+
+(:doc x-cp20001
+  (summary "TCA Taiwan, code page 20001.")
+  (see encoding-named encoding-name))
+
+(:doc x-cp20003
+  (summary "IBM5550 Taiwan, code page 20003.")
+  (see encoding-named encoding-name))
+
+(:doc x-cp20004
+  (summary "TeleText Taiwan, code page 20004.")
+  (see encoding-named encoding-name))
+
+(:doc x-cp20005
+  (summary "Wang Taiwan, code page 20005.")
+  (see encoding-named encoding-name))
+
+(:doc x-cp20261
+  (summary "T.61, code page 20261.")
+  (see encoding-named encoding-name))
+
+(:doc x-cp20269
+  (summary "ISO-6937, code page 20269.")
+  (see encoding-named encoding-name))
+
+(:doc x-cp20936
+  (summary "Chinese Simplified (GB2312-80), code page 20936.")
+  (see encoding-named encoding-name))
+
+(:doc x-cp20949
+  (summary "Korean Wansung, code page 20949.")
+  (see encoding-named encoding-name))
+
+(:doc x-cp50227
+  (summary "Chinese Simplified (ISO-2022), code page 50227.")
+  (see encoding-named encoding-name))
+
+(:doc x-ebcdic-koreanextended
+  (summary "IBM EBCDIC (Korean Extended), code page 20833.")
+  (see encoding-named encoding-name))
+
+(:doc x-europa
+  (summary "Europa, code page 29001.")
+  (see encoding-named encoding-name))
+
+(:doc x-ia5
+  (summary "Western European (IA5), code page 20105.")
+  (see encoding-named encoding-name))
+
+(:doc x-ia5-german
+  (summary "German (IA5), code page 20106.")
+  (see encoding-named encoding-name))
+
+(:doc x-ia5-norwegian
+  (summary "Norwegian (IA5), code page 20108.")
+  (see encoding-named encoding-name))
+
+(:doc x-ia5-swedish
+  (summary "Swedish (IA5), code page 20107.")
+  (see encoding-named encoding-name))
+
+(:doc x-iscii-as
+  (summary "ISCII Assamese, code page 57006.")
+  (see encoding-named encoding-name))
+
+(:doc x-iscii-be
+  (summary "ISCII Bengali, code page 57003.")
+  (see encoding-named encoding-name))
+
+(:doc x-iscii-de
+  (summary "ISCII Devanagari, code page 57002.")
+  (see encoding-named encoding-name))
+
+(:doc x-iscii-gu
+  (summary "ISCII Gujarati, code page 57010.")
+  (see encoding-named encoding-name))
+
+(:doc x-iscii-ka
+  (summary "ISCII Kannada, code page 57008.")
+  (see encoding-named encoding-name))
+
+(:doc x-iscii-ma
+  (summary "ISCII Malayalam, code page 57009.")
+  (see encoding-named encoding-name))
+
+(:doc x-iscii-or
+  (summary "ISCII Oriya, code page 57007.")
+  (see encoding-named encoding-name))
+
+(:doc x-iscii-pa
+  (summary "ISCII Punjabi, code page 57011.")
+  (see encoding-named encoding-name))
+
+(:doc x-iscii-ta
+  (summary "ISCII Tamil, code page 57004.")
+  (see encoding-named encoding-name))
+
+(:doc x-iscii-te
+  (summary "ISCII Telugu, code page 57005.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-arabic
+  (summary "Arabic (Mac), code page 10004.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-ce
+  (summary "Central European (Mac), code page 10029.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-chinesesimp
+  (summary "Chinese Simplified (Mac), code page 10008.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-chinesetrad
+  (summary "Chinese Traditional (Mac), code page 10002.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-croatian
+  (summary "Croatian (Mac), code page 10082.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-cyrillic
+  (summary "Cyrillic (Mac), code page 10007.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-greek
+  (summary "Greek (Mac), code page 10006.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-hebrew
+  (summary "Hebrew (Mac), code page 10005.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-icelandic
+  (summary "Icelandic (Mac), code page 10079.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-japanese
+  (summary "Japanese (Mac), code page 10001.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-korean
+  (summary "Korean (Mac), code page 10003.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-romanian
+  (summary "Romanian (Mac), code page 10010.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-thai
+  (summary "Thai (Mac), code page 10021.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-turkish
+  (summary "Turkish (Mac), code page 10081.")
+  (see encoding-named encoding-name))
+
+(:doc x-mac-ukrainian
+  (summary "Ukrainian (Mac), code page 10017.")
+  (see encoding-named encoding-name))

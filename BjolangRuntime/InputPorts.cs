@@ -50,18 +50,18 @@ public static class InputPorts {
     /// A port over bytes in a declared encoding: the one rule for how bytes
     /// become text, used for an HTTP body and by <see cref="Reencode"/>.
     ///
-    /// UTF-8 that replaces invalid bytes, which is what `utf8` and
-    /// `Encoding.UTF8` both are, needs no conversion: the port reads it as it
-    /// is. Anything else, including a UTF-8 that throws on invalid bytes, is
-    /// transcoded to UTF-8 on the way in, decoded strictly by the encoding's
-    /// own rules. A byte order mark is not treated specially.
+    /// UTF-8 needs no conversion: the port reads it as it is. Anything else
+    /// is transcoded to UTF-8 on the way in. Either way a port is lenient,
+    /// as Racket's are: bytes that do not decode read as U+FFFD, whatever
+    /// fallback the encoding object carries. A byte order mark is not treated
+    /// specially.
     /// </summary>
     public static BjoInputPort Over(Stream stream, Encoding encoding) {
         ArgumentNullException.ThrowIfNull(stream);
         ArgumentNullException.ThrowIfNull(encoding);
-        return IsLenientUtf8(encoding)
+        return encoding.CodePage == Utf8CodePage
             ? new BjoInputPort(stream)
-            : new BjoInputPort(Encoding.CreateTranscodingStream(stream, encoding, Encoding.UTF8, leaveOpen: false));
+            : new BjoInputPort(Transcoded(stream, encoding));
     }
 
     /// <summary>
@@ -74,12 +74,14 @@ public static class InputPorts {
     public static BjoInputPort Reencode(BjoInputPort port, Encoding encoding) {
         ArgumentNullException.ThrowIfNull(port);
         ArgumentNullException.ThrowIfNull(encoding);
-        return new BjoInputPort(
-            Encoding.CreateTranscodingStream(port.AsStream(), encoding, Encoding.UTF8, leaveOpen: false));
+        return new BjoInputPort(Transcoded(port.AsStream(), encoding));
     }
 
-    private static bool IsLenientUtf8(Encoding encoding) =>
-        encoding is UTF8Encoding && encoding.DecoderFallback is DecoderReplacementFallback { DefaultString: "\uFFFD" };
+    private const int Utf8CodePage = 65001;
+
+    /// <summary>The stream's bytes, read as the encoding, as UTF-8; what does not decode is U+FFFD.</summary>
+    private static Stream Transcoded(Stream stream, Encoding encoding) =>
+        Encoding.CreateTranscodingStream(stream, Encodings.Lenient(encoding), Encoding.UTF8, leaveOpen: false);
 
     /// <summary>
     /// A <see cref="TextReader"/>'s characters as UTF-8 bytes. A lone

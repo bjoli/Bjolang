@@ -24,6 +24,7 @@
 
 (import (std prelude))
 (import (std ports))
+(import (only (text encodings) utf-8))
 (import (std inbox))
 (import (std simpletest))
 
@@ -506,7 +507,7 @@
   (def out-path "231_bytes_out.tmp")
   (match (open-byte-output-file out-path)
     ((Ok w) (with-open ((o w))
-              (def t (byte->text-output-port o utf8))
+              (def t (byte->text-output-port o utf-8))
               (write-string t "hello")
               (write-string t " world")
               ;; Closing the text port pushes its characters into the byte port
@@ -515,15 +516,15 @@
     ((Err e) (println "FAILURE: could not open the byte file for writing")))
   (expect "a text port over a byte port" (file-read-text out-path) "hello world")
 
-  ;; `utf8` writes no byte order mark, and a port reads one as the character
+  ;; `utf-8` writes no byte order mark, and a port reads one as the character
   ;; it is: 239 187 191 is U+FEFF in UTF-8.
   (match (byte-pipe)
     ((Tuple in out)
-     (def t (byte->text-output-port out utf8))
+     (def t (byte->text-output-port out utf-8))
      (write-string t "a")
      (close-output-port t)
      (close-byte-output-port! out)
-     (expect "utf8 writes no byte order mark" (drain-bytes in) "97.")))
+     (expect "utf-8 writes no byte order mark" (drain-bytes in) "97.")))
 
   (match (byte-pipe)
     ((Tuple in out)

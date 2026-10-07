@@ -3,6 +3,35 @@
 
 What each change guarantees, and what it leaves open.
 
+* bytes->string and string->bytes, and every encoding as a value
+
+- *~(bytes->string bs)~ and ~(string->bytes s)~ convert, UTF-8 by default.*
+  ~#:encoding~ takes any encoding; ~bytes->string~ also takes ~#:start~ and
+  ~#:end~. Both are strict, as Racket's ~bytes->string/utf-8~ is: bytes
+  that do not decode, or a character the encoding has no bytes for, throw
+  an ~ArgumentException~ naming the offset and what was there.
+  ~#:replace (Some c)~ puts ~c~ in their place instead, once per invalid
+  sequence or character, even a character UTF-16 writes as two units.
+  Neither writes nor skips a byte order mark. From and to UTF-8 is a check
+  and a copy, since a string is UTF-8 already.
+- *~Encoding~ is a prelude type,* .NET's ~System.Text.Encoding~.
+- *~(text encodings)~ exports every encoding .NET knows,* 139 of them, the
+  Windows and DOS code pages included, named as .NET names them in lower
+  case: ~(import (only (text encodings) utf-32be dos-862))~. .NET's
+  little-endian ~utf-16~ and ~utf-32~ are ~utf-16le~ and ~utf-32le~ here;
+  of two code pages .NET gives one name, the less common is ~cp20932~ or
+  ~cp50222~. The Unicode encodings write no byte order mark. Each is made
+  the first time it is used, so importing the module costs nothing.
+  ~encoding-named~ finds one by any name or alias .NET knows, ignoring case,
+  and gives ~None~ for one it does not (UTF-7 among them);
+  ~encoding-of-code-page~ finds one by number, ~encoding-name~ names one.
+- *A port is lenient, whatever the encoding object says.*
+  ~reencode-input-port~ reads bytes that do not decode as U+FFFD, as every
+  port does; an encoding's own fallback (US-ASCII's was ~?~) no longer
+  decides.
+- *~(std ports)~ no longer exports ~Encoding~ or ~utf8~.* ~utf-8~ from
+  ~(text encodings)~ is the same encoding, and the prelude has the type.
+
 * Standard input and a child's output are their raw bytes
 
 - *~current-input-port~ is a port over standard input's own bytes,* as a

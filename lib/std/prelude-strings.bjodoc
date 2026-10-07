@@ -674,3 +674,63 @@
     separators. Text that is not such a number throws, as .NET's
     @code{double.Parse} does.
     """))
+
+;; ---------------------------------------------------------------------------
+;; Bytes and strings
+;; ---------------------------------------------------------------------------
+
+(:doc Encoding
+  (summary "A character encoding: a .NET System.Text.Encoding.")
+  (see bytes->string string->bytes)
+  (reference """
+    @code{(text encodings)} has one value for every encoding .NET knows,
+    named as .NET names it in lower case (@code{utf-8}, @code{utf-16be},
+    @code{windows-1252}, @code{dos-862}), and finds one by name with
+    @code{encoding-named}. What happens to bytes that do not decode is up to
+    the operation, not the encoding: @code{bytes->string} is strict, a port
+    is lenient.
+    """))
+
+(:doc bytes->string
+  (summary "The text some bytes encode.")
+  (arg bytes "The bytes.")
+  (key #:encoding "What they are in: utf-8, the default, or any value from (text encodings).")
+  (key #:start "The first byte to decode: 0 by default.")
+  (key #:end "One past the last byte to decode: the end of the array by default.")
+  (key #:replace "None, the default, to fail on bytes that do not decode; (Some c) to put c in their place, once per invalid sequence.")
+  (returns "The text of the bytes from start to end.")
+  (see string->bytes Encoding)
+  (example """
+    (bytes->string (string->bytes "blåbär"))              ; "blåbär"
+    (bytes->string bs #:encoding windows-1252)            ; with (text encodings)
+    (bytes->string bs #:start 4 #:end 8)
+    (bytes->string bs #:replace (Some #\\xFFFD))           ; never fails
+    """)
+  (reference """
+    Strict, as Racket's @code{bytes->string/utf-8} is: bytes that do not
+    decode throw an @code{ArgumentException} naming their offset and the
+    bytes themselves. A string is UTF-8, so from UTF-8 this checks the bytes
+    and copies them; the string never shares the array. A byte order mark is
+    not skipped: it is the character U+FEFF. A range outside the array
+    throws.
+    """))
+
+(:doc string->bytes
+  (summary "The bytes that encode a string.")
+  (arg s "The string.")
+  (key #:encoding "What to encode it in: utf-8, the default, or any value from (text encodings).")
+  (key #:replace "None, the default, to fail on a character the encoding lacks; (Some c) to encode c in its place.")
+  (returns "A new array of the bytes, without a byte order mark.")
+  (see bytes->string Encoding)
+  (example """
+    (string->bytes "blåbär")                          ; 8 bytes of UTF-8
+    (string->bytes "blåbär" #:encoding iso-8859-1)    ; 6 bytes, with (text encodings)
+    (string->bytes "ok ✓" #:encoding us-ascii #:replace (Some #\\?))   ; "ok ?"
+    """)
+  (reference """
+    Strict: a character the encoding has no bytes for throws an
+    @code{ArgumentException} naming it and its offset in the string. The
+    replacement character must itself be in the encoding, and stands in for
+    one character, even one that UTF-16 would write as two units. To UTF-8
+    this is a copy of the string's own bytes.
+    """))

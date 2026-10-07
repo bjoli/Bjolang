@@ -38,8 +38,8 @@
 
   ;; --- Bytes ---------------------------------------------------------------
 
-  ;; The types, and the encoding a text layer needs.
-  ByteOutputPort Stream Encoding utf8
+  ;; The types. `Encoding` is the prelude's, its values `(text encodings)`'s.
+  ByteOutputPort Stream
 
   ;; Reading, as events. These are what go in a `choose`.
   read-some-evt read-bytes-evt eof-evt
@@ -172,8 +172,7 @@
   ;; The pipe object, which exists only so that `byte-pipe` can take its two
   ;; halves off it. Not exported: a pipe *is* its two ports.
   (BytePipe       (: Bjolang.Runtime.BjoBytePipe))
-  (Stream         (: System.IO.Stream))
-  (Encoding       (: System.Text.Encoding)))
+  (Stream         (: System.IO.Stream)))
 
 (import/extern
   ;; Sources.
@@ -213,15 +212,7 @@
 
   ;; Encodings.
   (clr-reencode  (: Bjolang.Runtime.InputPorts.Reencode (-> InputPort Encoding InputPort)))
-  (clr-to-writer (: Bjolang.Runtime.BytePorts.ToTextWriter (-> ByteOutputPort Encoding TextOutputPort)))
-
-  ;; The encoding almost every caller wants. `System.Text.Encoding` has the rest.
-  (clr-utf8 (: Bjolang.Runtime.BytePorts.Utf8 #:get)))
-
-;; UTF-8 that never writes a byte order mark. Not `System.Text.Encoding.UTF8`,
-;; which starts every text port over bytes with one.
-(: utf8 Encoding)
-(def utf8 clr-utf8)
+  (clr-to-writer (: Bjolang.Runtime.BytePorts.ToTextWriter (-> ByteOutputPort Encoding TextOutputPort))))
 
 ;; ---------------------------------------------------------------------------
 ;; Reading, as events
@@ -427,8 +418,9 @@
 ;; a refill that overshot — is not skipped: sniff the first bytes, then
 ;; re-encode the rest. Closing the new port does not close `p`.
 ;;
-;; The encoding decodes by its own rules, invalid input included; a byte order
-;; mark is not treated specially.
+;; `encoding` is any value from `(text encodings)`. Bytes that do not decode
+;; read as U+FFFD, as they do on every port; `bytes->string` is the strict
+;; one. A byte order mark is not treated specially.
 (: reencode-input-port (-> InputPort Encoding InputPort))
 (defun (reencode-input-port p encoding)
   (clr-reencode p encoding))

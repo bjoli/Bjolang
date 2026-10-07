@@ -20,7 +20,7 @@
   ArraySlice ReverseArraySlice VecSlice ReverseVecSlice
   VecWalkCursor VecBackCursor StringWalk ListTails PortReads UpFrom DownFrom
   Listing Vecing Mapping Stringing Summing Counting Folding
-  InputPort TextOutputPort Exception
+  InputPort TextOutputPort Exception Encoding
 
   ;; Iterable
   iterable-start iterable-done? iterable-current iterable-next
@@ -118,6 +118,7 @@
   ;; Conversions
   int->string long->string double->string byte->string number->string
   string->int string->double
+  bytes->string string->bytes
   ;; Math.
   sqrt
   ;; Files
@@ -1324,6 +1325,43 @@
 
 (: string->double (-> string double))
 (defun (string->double s) (clr-parse-double s))
+
+;; --- Bytes and strings ---
+;;
+;; An encoding is a .NET `System.Text.Encoding`. `(text encodings)` has one
+;; value for each encoding .NET knows, and finds them by name; UTF-8 is the
+;; default here and needs no import.
+;;
+;; Both directions are strict, as Racket's `bytes->string/utf-8` is: what
+;; does not decode, or has no bytes in the encoding, is an error naming its
+;; offset. `#:replace (Some c)` puts `c` there instead. A port is the
+;; lenient one: it reads what does not decode as U+FFFD.
+
+(type (: Encoding System.Text.Encoding))
+
+(import/extern
+  (clr-utf-8          (: Bjolang.Runtime.Encodings.Cp65001 #:get))
+  (clr-decode         (: Bjolang.Runtime.Encodings.Decode (-> (Array byte) int int Encoding string)))
+  (clr-decode/replace (: Bjolang.Runtime.Encodings.Decode (-> (Array byte) int int Encoding char string)))
+  (clr-encode         (: Bjolang.Runtime.Encodings.Encode (-> string Encoding (Array byte))))
+  (clr-encode/replace (: Bjolang.Runtime.Encodings.Encode (-> string Encoding char (Array byte)))))
+
+;; The text of the bytes from `#:start` to `#:end`, in `#:encoding`. A string
+;; is UTF-8, so from UTF-8 this checks the bytes and copies them. A byte order
+;; mark is a character like any other.
+(: bytes->string (-> (Array byte) (#:encoding Encoding) (#:start int) (#:end int) (#:replace (Option char)) string))
+(defun (bytes->string bytes #:encoding clr-utf-8 #:start 0 #:end (array-length bytes) #:replace None)
+  (match replace
+    (None (clr-decode bytes start end encoding))
+    ((Some c) (clr-decode/replace bytes start end encoding c))))
+
+;; The string's bytes in `#:encoding`, without a byte order mark. To UTF-8
+;; this is a copy of the string's own bytes.
+(: string->bytes (-> string (#:encoding Encoding) (#:replace (Option char)) (Array byte)))
+(defun (string->bytes s #:encoding clr-utf-8 #:replace None)
+  (match replace
+    (None (clr-encode s encoding))
+    ((Some c) (clr-encode/replace s encoding c))))
 
 ;; ---------------------------------------------------------------------------
 ;; Characters
