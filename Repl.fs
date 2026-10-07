@@ -305,22 +305,45 @@ let private showName = "__bjo_show"
 ///
 /// A modifier's path is its first argument. Its other strings are not paths:
 /// in `(prefix (std random) "r/")` the prefix stays as written.
+///
+/// Each path is replaced where it stands, so a string elsewhere in the entry
+/// that happens to read the same is left as it was written.
 let private absolutizeImports (text: string) (forms: SExpr list) : string =
-    let rec paths (s: SExpr) =
+    let rec paths (s: SExpr) : LexedToken list =
         match s with
-        | SAtom { Token = StringLit p } -> [ p ]
+        | SAtom({ Token = StringLit _ } as t) -> [ t ]
         | SList(_ :: imported :: _, _) -> paths imported
         | _ -> []
 
-    let imported =
+    let relative =
         forms
         |> List.collect (function
             | SList(SAtom { Token = Symbol "import" } :: rest, _) -> rest |> List.collect paths
             | _ -> [])
+        |> List.choose (fun t ->
+            match t.Token with
+            | StringLit p when not (Path.IsPathRooted p) -> Some(t.Range, p)
+            | _ -> None)
 
-    imported
-    |> List.filter (fun p -> not (Path.IsPathRooted p))
-    |> List.fold (fun (acc: string) p -> acc.Replace($"\"%s{p}\"", $"\"%s{Path.GetFullPath p}\"")) text
+    // A position's offset into `text`: the lengths of the lines before it,
+    // each with its newline, and then its column.
+    let lineStarts =
+        text.Split('\n') |> Array.scan (fun start (line: string) -> start + line.Length + 1) 0
+
+    let offset (p: Position) = lineStarts[p.Line - 1] + p.Column
+
+    let quoted (path: string) =
+        "\"" + path.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""
+
+    // From the last to the first, so that a replacement leaves the offsets of
+    // the ones before it where they were.
+    relative
+    |> List.sortByDescending (fun (r, _) -> offset r.Start)
+    |> List.fold
+        (fun (acc: string) (r, p) ->
+            let s, e = offset r.Start, offset r.End
+            acc.Substring(0, s) + quoted (Path.GetFullPath p) + acc.Substring e)
+        text
 
 /// A binding given to an entry that would otherwise publish nothing.
 ///
