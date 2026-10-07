@@ -53,6 +53,13 @@ let mapPatternChildrenWith (f: TypedExpr -> TypedExpr) (fp: TypedPattern -> Type
 
     { pat with Node = node }
 
+/// A local function's keyword defaults, each mapped by `f`.
+let private mapLocalFun (f: TypedExpr -> TypedExpr) (fn: LocalFun) : LocalFun =
+    if fn.KeywordArgs.IsEmpty then
+        fn
+    else
+        { fn with KeywordArgs = fn.KeywordArgs |> List.map (fun (n, t, d) -> n, t, f d) }
+
 /// Applies `f` to each *immediate* sub-expression of `expr` and rebuilds the node.
 /// `f` is responsible for any further recursion.
 let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
@@ -77,9 +84,11 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TKeyword _
         | TSymbol _ as leaf -> leaf
 
-        | TLet(name, isFun, args, value, body) -> TLet(name, isFun, args, f value, f body)
+        // A local function's keyword defaults are expressions of the program
+        // like any other, and every pass built on this has to reach them.
+        | TLet(name, isFun, fn, value, body) -> TLet(name, isFun, mapLocalFun f fn, f value, f body)
         | TLetRec(bindings, body) ->
-            TLetRec(bindings |> List.map (fun (n, isFun, args, e) -> n, isFun, args, f e), f body)
+            TLetRec(bindings |> List.map (fun (n, isFun, fn, e) -> n, isFun, mapLocalFun f fn, f e), f body)
         | TLetTuple(names, value, body) -> TLetTuple(names, f value, f body)
         | TLambda(args, body) -> TLambda(args, f body)
         | TApply(target, args, kwArgs) ->

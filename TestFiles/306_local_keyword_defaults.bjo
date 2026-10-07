@@ -1,0 +1,37 @@
+;; A local function's keyword defaults are checked and compiled like the rest
+;; of the program. Passes over the typed program had skipped them, so a trait
+;; call in one was never resolved and a match in one was not checked.
+
+(import (std prelude))
+(import (std simpletest))
+
+(def/trait (Describe %a)
+  (: describe (-> %a string)))
+
+(impl (Describe int)
+  (defun (describe x) "int"))
+
+(: via (-> %a string) (where (Describe %a)))
+(defun (via x)
+  (defun (inner a #:k (describe x))
+    (string-append a k))
+  (inner "v:"))
+
+(: pick (-> (Option int) int))
+(defun (pick o)
+  (defun (inner a #:k (match o ((Some v) v) (None 0)))
+    (+ a k))
+  (inner 1))
+
+(: scaled (-> int int))
+(defun (scaled n)
+  (defun (times a #:by (* a 2))
+    (* a by))
+  (+ (times n) (times n #:by 1)))
+
+(defun (main args)
+  (expect "a trait call in a local keyword default" (via 5) "v:int")
+  (expect "a match in one" (pick (Some 2)) 3)
+  (expect "and its other arm" (pick None) 1)
+  (expect "a default reading an earlier parameter" (scaled 3) 21)
+  0)
