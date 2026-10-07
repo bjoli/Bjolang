@@ -58,13 +58,14 @@ open Bjolang.TypedAST
 /// and the reads let the body keep mentioning each slot by the name it
 /// already uses, with every `:acc` clause rebinding it exactly as before.
 ///
-/// One ordering caveat the splice introduces. A `:with`'s `end` is tested where
-/// the cursor's `done?` is, in clause order, and `done?` on a cursor is what
-/// pulls the next element; so `(:for x s) (:with i ...)` tests after pulling
-/// and `(:with i ...) (:for x s)` tests before. Fused, the producer has always
-/// already produced the element when the `end` test runs. The two agree for
-/// the first order and differ, by one produced-but-unconsumed element, for the
-/// second — observable only through a `:do` in the producer.
+/// The consumer's other end tests — a `:with`'s `end`, a `:while` or `:until`
+/// that does not name the element — run in clause order with the cursor's
+/// `done?`, and `done?` is what pulls the next element, evaluating the yielded
+/// expression. A test written before the `:for` therefore runs before the
+/// producer resumes: fused, after each jump's stores and once before the
+/// producer starts. A test written after it runs once the element has been
+/// produced: fused, at the yield, after the yielded expression is evaluated and
+/// before the element is bound. The producer runs exactly as often either way.
 ///
 /// What this version refuses, each of which is a correct program left as it is:
 ///
@@ -251,10 +252,15 @@ type private Consumer =
       /// The call to it at exhaustion, on the slot names. Reused verbatim
       /// where a `:with`'s `end` holds, since the reads bind those names.
       ExitCall: TypedExpr
-      /// The `:with` `end` tests, as one `or`-chain — `None` when there are
-      /// none. The cursor's `done?` is not among them: the producer ending is
-      /// what it meant.
-      WithTests: TypedExpr option
+      /// The level's other end tests written before its `:for`, as one
+      /// `or`-chain, or `None`. Unfused they run before the cursor's `done?`
+      /// pulls the next element, so fused they run before the producer resumes.
+      PreTests: TypedExpr option
+      /// Those written after it. Unfused they run once `done?` has pulled the
+      /// element, which evaluates the yielded expression, so fused they run
+      /// after it is evaluated and before it is bound. The cursor's `done?` is
+      /// in neither: the producer ending is what it meant.
+      PostTests: TypedExpr option
       /// Rebuilds the tuple-pattern `:with` destructuring that `bindWiths`
       /// wrapped the member body in, around a new inner expression.
       WrapWiths: TypedExpr -> TypedExpr
@@ -318,14 +324,15 @@ let private recognize
                         | _ -> [ t ]
 
                     let all = tests exhausted
-                    let cursorTests, withTests = all |> List.partition (fun t -> mentions cur t || mentions seqName t)
+                    let isCursorTest (t: TypedExpr) = mentions cur t || mentions seqName t
+                    let cursorTests = all |> List.filter isCursorTest
 
-                    let orChain =
-                        match withTests with
+                    let orChain (ts: TypedExpr list) =
+                        match ts with
                         | [] -> None
                         | _ ->
-                            let last = List.last withTests
-                            let before = List.take (withTests.Length - 1) withTests
+                            let last = List.last ts
+                            let before = List.take (ts.Length - 1) ts
 
                             Some(
                                 List.foldBack
@@ -336,6 +343,9 @@ let private recognize
 
                     match cursorTests, elemBind.Node with
                     | [ _ ], (TLet(_, false, _, _, _) | TLetTuple _) ->
+                        let cursorAt = all |> List.findIndex isCursorTest
+                        let pre, post = List.take cursorAt all, List.skip (cursorAt + 1) all
+
                         Some
                             { SeqName = seqName
                               Level = lvlName
@@ -345,7 +355,8 @@ let private recognize
                               Starts = starts
                               ExitName = exitName
                               ExitCall = exitCall
-                              WithTests = orChain
+                              PreTests = orChain pre
+                              PostTests = orChain post
                               WrapWiths = wrapWiths
                               ElemBind = elemBind
                               Group = group }
@@ -555,33 +566,46 @@ let private fuse (c: Consumer) (producerBody: TypedExpr) : TypedExpr option =
 
     // 4. The consumer's body for one element, given the yielded expression and
     //    the producer's continuation: read the cells into the slots' names,
-    //    destructure tuple `:with`s, test the `:with` ends, bind the element,
-    //    run the rest with every jump a store-and-continue. Freshened per
-    //    site, since a producer with several yields gets a copy at each, and
-    //    a copy shares no binder with its siblings.
+    //    destructure tuple `:with`s, evaluate the yielded expression, run the
+    //    post-tests, bind the element, run the rest with every jump a
+    //    store-and-continue. Freshened per site, since a producer with several
+    //    yields gets a copy at each, and a copy shares no binder with its
+    //    siblings.
+    let readSlots (body: TypedExpr) : TypedExpr =
+        List.foldBack
+            (fun (slot, cell, t) inner -> at r inner.Type (TLet(slot, false, noParams, at r t (TIdent(cell, [])), inner)))
+            (List.zip3 slots cells cellTypes)
+            body
+
+    // The pre-tests on the slots' current values, ahead of `resume`, which
+    // pulls the next element. A test that holds ends the loop there, before
+    // the producer has produced anything more.
+    let beforePulling (resume: TypedExpr) : TypedExpr =
+        match c.PreTests with
+        | None -> resume
+        | Some t -> readSlots (c.WrapWiths(at r resume.Type (TIf(t, c.ExitCall, resume))))
+
     let perSite (x: TypedExpr) (rest: TypedExpr) : TypedExpr =
         let rec asStores (e: TypedExpr) : TypedExpr =
             match e.Node with
             | TApply({ Node = TIdent(n, _) }, _ :: slotArgs, []) when n = c.Level && slotArgs.Length = cells.Length ->
-                stores r cells (slotArgs |> List.map asStores) rest
+                stores r cells (slotArgs |> List.map asStores) (beforePulling rest)
             | _ -> TypeVisitor.mapChildren asStores e
 
-        let iteration = asStores k1 |> retype |> rebindElem x
+        let iteration = asStores k1 |> retype
 
         let tested =
-            match c.WithTests with
-            | None -> iteration
-            | Some t -> at r iteration.Type (TIf(t, c.ExitCall, iteration))
+            match c.PostTests with
+            | None -> rebindElem x iteration
+            | Some t ->
+                let held = Gensym.fresh "elem"
+                let heldRef = at x.Range x.Type (TIdent(held, []))
 
-        let body = c.WrapWiths tested
+                at r iteration.Type (
+                    TLet(held, false, noParams, x, at r iteration.Type (TIf(t, c.ExitCall, rebindElem heldRef iteration)))
+                )
 
-        let withReads =
-            List.foldBack
-                (fun (slot, cell, t) inner -> at r inner.Type (TLet(slot, false, noParams, at r t (TIdent(cell, [])), inner)))
-                (List.zip3 slots cells cellTypes)
-                body
-
-        AlphaRename.freshenTyped [] withReads |> fst
+        AlphaRename.freshenTyped [] (readSlots (c.WrapWiths tested)) |> fst
 
     // 5. Yields replaced, innermost first, so that a continuation holding a
     //    later yield is spliced already rewritten.
@@ -608,8 +632,13 @@ let private fuse (c: Consumer) (producerBody: TypedExpr) : TypedExpr option =
     else
 
     // 6. Assemble: cells, then the producer's prologue around its rewritten
-    //    group. The consumer's finish member stays where it is, outside.
-    let producer' = p.Rebuild fusedGroup
+    //    group. The consumer's finish member stays where it is, outside. The
+    //    pre-tests run on the start values before the prologue, which is the
+    //    first element's pull.
+    let producer' =
+        match c.PreTests with
+        | None -> p.Rebuild fusedGroup
+        | Some _ -> AlphaRename.freshenTyped [] (beforePulling (p.Rebuild fusedGroup)) |> fst
 
     Some(
         List.foldBack

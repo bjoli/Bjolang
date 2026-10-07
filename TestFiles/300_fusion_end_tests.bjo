@@ -1,0 +1,60 @@
+;; A fused loop over a seq runs the producer as often as the unfused one. The
+;; consumer's other end tests run in clause order with the pull: one written
+;; before the `:for` runs before the next element is produced, one written
+;; after it runs once the element has been produced, its yielded expression
+;; evaluated. Every loop here fuses; the numbers are the ones the cursor walk
+;; gives.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: pulls (Array int))
+(def pulls (make-array 1))
+(: calls (Array int))
+(def calls (make-array 1))
+
+;; A sequence that counts how many elements are taken from it.
+(: source (-> int (Seq int)))
+(defun (source n)
+  (seql (:for x (range 1 (+ n 1)))
+        (:do (array-set! pulls 0 (+ (array-ref pulls 0) 1)))
+        (:yield x)))
+
+(: counted (-> int int))
+(defun (counted x)
+  (array-set! calls 0 (+ (array-ref calls 0) 1))
+  x)
+
+(: reset! (-> void))
+(defun (reset!) (array-set! pulls 0 0) (array-set! calls 0 0))
+
+(: counts (-> string))
+(defun (counts)
+  (str "pulls " (->str (array-ref pulls 0)) ", calls " (->str (array-ref calls 0))))
+
+(defun (main args)
+  (reset!)
+  (ignore (loop (:for e (map counted (source 10))) (:with k 0 (+ k 1) (>= k 2)) (:acc s (listing e)) => s))
+  (expect "a test after the :for runs once the element is produced" (counts) "pulls 3, calls 3")
+
+  (reset!)
+  (ignore (loop (:with k 0 (+ k 1) (>= k 2)) (:for e (map counted (source 10))) (:acc s (listing e)) => s))
+  (expect "a test before the :for runs before the next is produced" (counts) "pulls 2, calls 2")
+
+  (reset!)
+  (ignore (loop (:for e (map counted (source 10))) (:with k 0 (+ k 1)) (:while (< k 2)) (:acc s (listing e)) => s))
+  (expect "a :while after the :for" (counts) "pulls 3, calls 3")
+
+  (reset!)
+  (ignore (loop (:with k 0 (+ k 1)) (:until (>= k 2)) (:for e (map counted (source 10))) (:acc s (listing e)) => s))
+  (expect "an :until before the :for" (counts) "pulls 2, calls 2")
+
+  (reset!)
+  (expect "the elements are the same either way"
+          (loop (:with k 0 (+ k 1) (>= k 3)) (:for e (map counted (source 10))) (:acc s (listing e)) => s)
+          (list 1 2 3))
+
+  (reset!)
+  (ignore (loop (:for e (take 3 (map counted (source 10)))) (:acc s (listing e)) => s))
+  (expect "take takes no more than it answers" (counts) "pulls 3, calls 3")
+  0)

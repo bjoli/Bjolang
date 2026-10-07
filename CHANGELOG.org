@@ -38,6 +38,13 @@ What each change guarantees, and what it leaves open.
   forced an element, and taking lines from a ~port->seq~ consumed and lost
   the line after them. Zero or less now gives the empty sequence, as
   ~seq-take~ does; a negative count had answered all of ~s~.
+- *A fused loop runs its producer as often as the unfused one.* A ~:with~
+  end test, ~:while~ or ~:until~ written after the ~:for~ had run before
+  the yielded expression was evaluated, so ~(:for e (map f s)) (:with k 0
+  (+ k 1) (>= k 2))~ called ~f~ twice where the unfused loop calls it three
+  times. One written before the ~:for~ had run after the producer had
+  already produced the next element, pulling one more from the source than
+  the unfused loop does.
 - *A bjodat ~int~ field refuses an integer that does not fit in an int*, in
   both decoders, with "expected an integer that fits in an int", as
   ~(text json-codec)~ does. It had kept the low 32 bits, so ~:n 4294967297~
