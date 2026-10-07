@@ -639,13 +639,30 @@ and private substArgs (subst: Map<string, FType>) (args: DefunArg list) : DefunA
 // Generation
 // ---------------------------------------------------------------------------
 
+/// Renames apart every local binder that has the name of a constrained
+/// binding. See `AlphaRename.renameLocalBinders`.
+let private separateShadowing (env: Env) : TDecl -> TDecl =
+    let constrained =
+        env.Bindings
+        |> Seq.choose (fun kv ->
+            let (Scheme(_, constraints, _)) = kv.Value.Scheme
+            if constraints.IsEmpty then None else Some kv.Key)
+        |> Set.ofSeq
+
+    TypeVisitor.mapDecl (AlphaRename.renameLocalBinders constrained)
+
 /// The copy's declarations, checked, or `None` if it could not be made.
 ///
 /// Best-effort throughout, and deliberately: a body that will not check at a
 /// concrete type is a bug in this pass, and the generic function it was copied
 /// from is always a correct answer. Failing the build over an optimisation
 /// would report a line the reader did not write.
-let private generate (env: Env) (cand: Candidate) (demand: Demand) : (Env * TDecl list) option =
+let private generate
+    (separate: TDecl -> TDecl)
+    (env: Env)
+    (cand: Candidate)
+    (demand: Demand)
+    : (Env * TDecl list) option =
     try
         let subst = demand.Bindings |> List.map (fun (v, t) -> bareVar v, t) |> Map.ofList
         let specialise = specialiseType env.Registry cand.SigRange subst
@@ -720,6 +737,7 @@ let private generate (env: Env) (cand: Candidate) (demand: Demand) : (Env * TDec
         let typed =
             typed
             |> List.map (TypeVisitor.mapDecl (AlphaRename.applyQualification cand.Qualification))
+            |> List.map separate
 
         Some({ checked' with CurrentModule = env.CurrentModule }, typed)
     with ex ->
@@ -870,6 +888,13 @@ let run
     // happened to call any of it itself.
     let env = publish moduleOf ownModuleName cands env
 
+    // A local function named like a constrained binding is renamed apart
+    // first, here and in every copy, so that neither this pass nor dictionary
+    // lowering, which both go by the callee's name, takes a call to it for a
+    // call to the binding. Before the early exit, for lowering's sake.
+    let separate = separateShadowing env
+    let typed = typed |> List.map separate
+
     if Map.isEmpty cands then
         env, typed
     else
@@ -907,7 +932,7 @@ let run
                         env, made, fresh, spent, true
                     else
 
-                    match generate env (Map.find demand.Callee cands) demand with
+                    match generate separate env (Map.find demand.Callee cands) demand with
                     | Some(env, decls) ->
                         env, Map.add copyName demand made, fresh @ decls, spent + nodeCount decls, false
                     | None -> env, made, fresh, spent, false)

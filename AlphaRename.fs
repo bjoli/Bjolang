@@ -401,6 +401,38 @@ let renameExpr (subst: Map<string, string>) (expr: TypedExpr) : TypedExpr =
     else
         renameCore (fun _ _ -> None) Set.empty subst expr
 
+/// Gives a fresh name to every local binder called one of `names`, and to the
+/// references to it.
+///
+/// For the passes that decide what a call means from the callee's name alone,
+/// by looking it up among the module's bindings: `Monomorphise` and dictionary
+/// lowering. A local function that shadows a constrained top-level one has the
+/// same name and type arguments of its own, so to them it *was* the top-level
+/// one. Renamed apart, it is a name neither finds.
+///
+/// Returns the expression untouched unless a `let` in it binds one of the
+/// names, which is the only binder that can be called with type arguments.
+let renameLocalBinders (names: Set<string>) (expr: TypedExpr) : TypedExpr =
+    let shadows =
+        TypeVisitor.foldExpr
+            (fun found (e: TypedExpr) ->
+                found
+                || (match e.Node with
+                    | TLet(n, _, _, _, _) -> Set.contains n names
+                    | TLetRec(bindings, _) -> bindings |> List.exists (fun (n, _, _, _) -> Set.contains n names)
+                    | _ -> false))
+            false
+            expr
+
+    if not shadows then
+        expr
+    else
+        renameCore
+            (fun _ n -> if Set.contains n names then Some(Gensym.fresh (Gensym.baseName n)) else None)
+            Set.empty
+            Map.empty
+            expr
+
 /// Freshens every binder in a typed expression, plus free occurrences of
 /// `roots`. The typed counterpart of `freshen`, used to keep beta reduction
 /// hygienic.

@@ -1,0 +1,46 @@
+;; A local function named like a constrained top-level one is its own
+;; function.
+;;
+;; Specialisation and dictionary lowering both decide what a call means from
+;; the callee's name, looked up among the module's bindings. A local generic
+;; function has type arguments of its own, so a call to it was taken for a call
+;; to the top-level function: it was redirected to a copy of that one, or
+;; handed its dictionaries, or crashed the compiler when the two had a
+;; different number of type variables.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: pick (-> %a %a %a) (where (Eq %a)))
+(defun (pick a b) (if (= a b) b a))
+
+(: describe (-> %a string) (where (->str %a)))
+(defun (describe v)
+  (defun (describe (: n int)) (* n 2))
+  (string-append (->str v) (->str (describe 21))))
+
+(: local-same-shape (-> int))
+(defun (local-same-shape)
+  (defun (pick x y) (if #t y x))
+  (pick 1 2))
+
+(: local-other-shape (-> string))
+(defun (local-other-shape)
+  (defun (pick x y) y)
+  (pick 1 "two"))
+
+(: local-and-top (-> int))
+(defun (local-and-top)
+  ;; The top-level one is still reached where nothing shadows it.
+  (def top (pick 3 4))
+  (defun (inner)
+    (defun (pick (: x int) (: y int)) (+ x y))
+    (pick 10 20))
+  (+ top (inner)))
+
+(defun (main args)
+  (expect "a local with the same shape is called, not the top-level one" (local-same-shape) 2)
+  (expect "a local with a different number of type variables" (local-other-shape) "two")
+  (expect "a local inside the constrained function it shadows" (describe #t) "True42")
+  (expect "the top-level one where nothing shadows it" (local-and-top) 33)
+  0)
