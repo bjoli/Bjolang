@@ -149,7 +149,7 @@ type private GroupCtx =
       Carried: string list
       /// `:finish` without a value: the enclosing loop's finish. `None` for a
       /// `(loop ...)`, whose own finish it is.
-      OuterFinish: (Range -> Expr) option
+      OuterFinish: (Map<string, string> -> Range -> Expr) option
       /// `:abandon-subloop`: the next iteration of the level holding the form.
       AbandonSubloop: (Range -> Expr) option
       /// The member running the clauses after the form, on the exports.
@@ -1085,19 +1085,26 @@ and private buildGroup
           yield! accNames ]
 
     /// A jump to level `target`, filling every slot: with `overrides` where one
-    /// is given, and with whatever is in scope under that name otherwise.
+    /// is given, and with the slot's value otherwise.
     ///
     /// A `TRecur` carries one argument per slot, so a partial update has to be
     /// completed here rather than left to the emitter.
-    let jump (target: int) (overrides: Map<string, Expr>) (cr: Range) =
+    ///
+    /// The slot's value is what is in scope under its name, except where
+    /// `aliases` names it otherwise: a jump written inside user code that binds
+    /// the name reads it through an alias bound outside that code. See the
+    /// named loop's final `:do` in `buildClauses`.
+    let jumpWith (aliases: Map<string, string>) (target: int) (overrides: Map<string, Expr>) (cr: Range) =
         let args =
             slotNames target
             |> List.map (fun n ->
                 match Map.tryFind n overrides with
                 | Some e -> e
-                | None -> EIdent(n, cr))
+                | None -> EIdent(Map.tryFind n aliases |> Option.defaultValue n, cr))
 
         EApp(EIdent(levels[target].Member, cr), args, cr)
+
+    let jump (target: int) (overrides: Map<string, Expr>) (cr: Range) = jumpWith Map.empty target overrides cr
 
     /// Level `i` one step on: its cursors advanced and its `:with` slots
     /// updated.
@@ -1108,7 +1115,10 @@ and private buildGroup
     /// before any slot is written, so `(:with a 0 b) (:with b 1 (+ a b))` is
     /// fibonacci rather than a sequence of assignments. An author who wants the
     /// sequential reading names the new value with a `:let` first.
-    let advanced (i: int) (cr: Range) =
+    ///
+    /// `aliases` is `jumpWith`'s: a `:with` update reads the iteration's
+    /// values, not what user code around the jump bound under their names.
+    let advanced (aliases: Map<string, string>) (i: int) (cr: Range) =
         let cursors =
             List.map2
                 (fun sn cn -> cn, call "iterable-next" [ EIdent(sn, cr); EIdent(cn, cr) ] cr)
@@ -1121,15 +1131,18 @@ and private buildGroup
         let withs =
             List.zip levels[i].WithNames levels[i].Withs
             |> List.choose (fun (slot, (_, _, update, _, _)) ->
-                update |> Option.map (fun u -> slot, fns.Expr u))
+                update |> Option.map (fun u -> slot, renameFree aliases (fns.Expr u)))
 
         cursors @ withs |> Map.ofList
 
     /// The next iteration of level `i`: its own cursors advanced, everything
     /// else as it stands.
+    let advanceLevelAliased (aliases: Map<string, string>) (i: int) (extra: Map<string, Expr>) (cr: Range) =
+        let overrides = Map.fold (fun acc k v -> Map.add k v acc) (advanced aliases i cr) extra
+        jumpWith aliases i overrides cr
+
     let advanceLevelWith (i: int) (extra: Map<string, Expr>) (cr: Range) =
-        let overrides = Map.fold (fun acc k v -> Map.add k v acc) (advanced i cr) extra
-        jump i overrides cr
+        advanceLevelAliased Map.empty i extra cr
 
     let advanceLevel (i: int) (cr: Range) = advanceLevelWith i Map.empty cr
 
@@ -1273,15 +1286,27 @@ and private buildGroup
     /// finish member. They are in scope under their own names at every exit,
     /// whether as a slot or as a rebinding an `:acc` clause made earlier this
     /// iteration.
-    let ownFinish (cr: Range) =
-        EApp(EIdent(exitName, cr), ctx.Carried @ accNames |> List.map (fun n -> EIdent(n, cr)), cr)
+    ///
+    /// `aliases` is `jumpWith`'s, for an exit taken inside user code that
+    /// binds one of those names.
+    let ownFinishAliased (aliases: Map<string, string>) (cr: Range) =
+        EApp(
+            EIdent(exitName, cr),
+            ctx.Carried @ accNames
+            |> List.map (fun n -> EIdent(Map.tryFind n aliases |> Option.defaultValue n, cr)),
+            cr
+        )
+
+    let ownFinish (cr: Range) = ownFinishAliased Map.empty cr
 
     /// Leaving the whole loop. Inside a `:subloop` form that is the enclosing
     /// loop's finish, and the form's accumulators are dropped.
-    let finishBlock (cr: Range) =
+    let finishBlockAliased (aliases: Map<string, string>) (cr: Range) =
         match ctx.OuterFinish with
-        | Some outer -> outer cr
-        | None -> ownFinish cr
+        | Some outer -> outer aliases cr
+        | None -> ownFinishAliased aliases cr
+
+    let finishBlock (cr: Range) = finishBlockAliased Map.empty cr
 
     /// A `:subloop` form's finish member: its accumulators finished, its export
     /// bound, and then the clauses after the form. Only the accumulators the
@@ -1392,6 +1417,15 @@ and private buildGroup
     //
     // `locals` are the names bound so far in this iteration of the level, which
     // a `:subloop` form carries along with the level's slots.
+    /// The names bound on the way to the tail positions of a named loop's final
+    /// `:do`: the places `continueEdge` looks for the jump.
+    let rec edgeBinders (e: Expr) : string list =
+        match e with
+        | EIf(_, t, f, _) -> edgeBinders t @ edgeBinders f
+        | ELet(n, _, _, _, _, body, _) -> n :: edgeBinders body
+        | ELetTuple(names, _, body, _) -> names @ edgeBinders body
+        | _ -> []
+
     let rec buildClauses (level: int) (cs: LoopClause list) (accsLeft: AccSlot list) (locals: string list) =
         let continueEdgeOf (cr: Range) =
             if level < maxLevel then enterLevel (level + 1) cr else advanceLevel level cr
@@ -1438,7 +1472,7 @@ and private buildGroup
                     None
                     None
                     { Carried = carried
-                      OuterFinish = Some finishBlock
+                      OuterFinish = Some finishBlockAliased
                       AbandonSubloop = Some(fun ar -> advanceLevel level ar)
                       Resume =
                         Some(fun rr -> EApp(EIdent(resumeName, rr), resumeParams |> List.map (fun n -> EIdent(n, rr)), rr))
@@ -1480,10 +1514,26 @@ and private buildGroup
         // In a named loop the *final* `:do` owns the continue edge: if it tail
         // calls the loop, that is the jump, and if it completes without one the
         // loop leaves through the finish block like any other exit.
+        //
+        // The jump in it may sit inside user code that binds one of the slot
+        // names — `(let ((total 1000)) (lp))` — and a slot the call does not
+        // override has to carry the iteration's value, not that binding. Each
+        // such name is read through an alias bound before the user code.
         | [ LDo(exprs, cr) ] when userLoopName.IsSome && level = maxLevel ->
             let name = userLoopName.Value
             let statements = exprs |> List.take (exprs.Length - 1)
-            let final = List.last exprs
+            let final = fns.Expr(List.last exprs)
+
+            let aliases =
+                Set.intersect (Set.ofList (edgeBinders final)) (Set.ofList (slotNames level))
+                |> Seq.map (fun n -> n, Gensym.fresh n)
+                |> Map.ofSeq
+
+            let edge =
+                Map.foldBack
+                    (fun slot alias acc -> ELet(alias, false, [], None, EIdent(slot, cr), acc, cr))
+                    aliases
+                    (continueEdge aliases level name final cr)
 
             List.foldBack
                 (fun e acc ->
@@ -1491,7 +1541,7 @@ and private buildGroup
                     rejectLoopName name parsed
                     ELet("_", false, [], None, parsed, acc, cr))
                 statements
-                (continueEdge level name (fns.Expr final) cr)
+                edge
 
         | LDo(exprs, cr) :: tl ->
             List.foldBack
@@ -1559,30 +1609,30 @@ and private buildGroup
     /// Every tail position either *is* a call to the loop — which becomes the
     /// jump, keeping it a tail call so it can be one — or is not, in which case
     /// it runs for its effect and the loop leaves through the finish block.
-    and continueEdge (level: int) (name: string) (e: Expr) (cr: Range) : Expr =
+    and continueEdge (aliases: Map<string, string>) (level: int) (name: string) (e: Expr) (cr: Range) : Expr =
         match e with
         | EApp(EIdent(n, ir), args, ar) when n = name ->
             for a in args do
                 rejectLoopName name a
 
-            advanceLevelWith level (parseOverrides name args ir) ar
+            advanceLevelAliased aliases level (parseOverrides name args ir) ar
 
         | EIf(cond, t, f, ir) ->
             rejectLoopName name cond
-            EIf(cond, continueEdge level name t cr, continueEdge level name f cr, ir)
+            EIf(cond, continueEdge aliases level name t cr, continueEdge aliases level name f cr, ir)
 
         | ELet(n, isFun, args, ann, value, body, ir) ->
             rejectLoopName name value
-            ELet(n, isFun, args, ann, value, continueEdge level name body cr, ir)
+            ELet(n, isFun, args, ann, value, continueEdge aliases level name body cr, ir)
 
         | ELetTuple(names, value, body, ir) ->
             rejectLoopName name value
-            ELetTuple(names, value, continueEdge level name body cr, ir)
+            ELetTuple(names, value, continueEdge aliases level name body cr, ir)
 
         // Anything else completes, and then the loop is over.
         | other ->
             rejectLoopName name other
-            ELet("_", false, [], None, other, finishBlock cr, cr)
+            ELet("_", false, [], None, other, finishBlockAliased aliases cr, cr)
 
     /// `(lp #:name expr ...)` — the slots the call overrides.
     and parseOverrides (name: string) (args: Expr list) (cr: Range) : Map<string, Expr> =

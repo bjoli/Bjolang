@@ -1,0 +1,48 @@
+;; A named loop's `(lp)` carries every slot it does not override with the
+;; iteration's value, whatever the code around the call binds under the slot's
+;; name.
+;;
+;; The jump filled such a slot with whatever was in scope under its name, so a
+;; `let` in the final `:do` that rebound an accumulator, a `:with` variable or
+;; an enclosing level's variable wrote its own value into the loop. Leaving the
+;; loop from inside that code handed the finish the same wrong value.
+
+(import (std prelude))
+(import (std simpletest))
+
+(defun (main args)
+  (expect "an accumulator rebound around the jump"
+          (loop lp (:for x (list 1 2 3)) (:acc total (summing x))
+                (:do (let ((total 1000)) (lp)))
+                => total)
+          6)
+
+  (expect "a :with variable rebound around the jump, and read by its update"
+          (loop lp (:for x (list 1 2 3)) (:with w 0 (+ w 1)) (:acc total (summing w))
+                (:do (let ((w 1000)) (lp)))
+                => total)
+          3)
+
+  (expect "an enclosing level's variable rebound around the jump"
+          (loop lp (:for x (list 1 2 3)) (:subloop) (:for y (list 1 2))
+                (:acc total (listing (Tuple x y)))
+                (:do (let ((x 1000)) (lp)))
+                => total)
+          (list (Tuple 1 1) (Tuple 1 2) (Tuple 2 1) (Tuple 2 2) (Tuple 3 1) (Tuple 3 2)))
+
+  ;; The other branch completes, which leaves the loop through its finish:
+  ;; that reads the accumulator too.
+  (expect "on one branch of an if, with the other leaving the loop"
+          (loop lp (:for x (list 1 2 3 4)) (:acc total (summing x))
+                (:do (let ((total -1)) (if (< x 3) (lp) (ignore x))))
+                => total)
+          6)
+
+  ;; An override is the caller's own expression, so it reads what the caller
+  ;; bound.
+  (expect "an override reads the binding around the call"
+          (loop lp (:for x (list 1 2 3)) (:acc total (summing x))
+                (:do (let ((total 100)) (lp #:total (+ total x))))
+                => total)
+          103)
+  0)

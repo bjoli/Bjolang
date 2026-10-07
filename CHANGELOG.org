@@ -5,6 +5,15 @@ What each change guarantees, and what it leaves open.
 
 * Silent failures found by a correctness audit
 
+- *A named loop's ~(lp)~ carries the loop's values past a ~let~ that
+  shadows them.* In ~(:do (let ((total 1000)) (lp)))~ the accumulator
+  ~total~ became 1000: a slot the call did not override was filled with
+  whatever was in scope under its name. The same held for a ~:with~
+  variable, which its update then also read, for an enclosing level's
+  variable, and for the finish when the ~:do~ left the loop from inside such
+  a ~let~. Those names are now read through aliases bound before the user's
+  code. An override such as ~(lp #:total (+ total x))~ is the caller's own
+  expression and still reads what the caller bound.
 - *A self tail call computes a left-out keyword's default from its own
   arguments.* In ~(defun (g n #:a 0 #:b (+ a 100)) ... (g (- n 1) #:a (+ a 1)))~
   the recursive call got ~b~ from the previous iteration's ~a~, and
