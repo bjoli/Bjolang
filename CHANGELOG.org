@@ -11,6 +11,13 @@ What each change guarantees, and what it leaves open.
   so its nack never fired. A cancelled ~(sync (spawn-evt ...))~ left its
   child running and its scope never closed, and a cancelled
   ~(sync (task->event ...))~ never cancelled the .NET call.
+- *A ~(std run)~ pipeline ends when a stage stops reading early*, as in a
+  shell: ~(pipe (seq 1 200000) (head -n 1))~ answers ~"1\n"~. The upstream
+  stage had blocked on a full pipe for good, and the run never returned. A
+  process that stops reading is an ordinary end of the copy into it, not an
+  error.
+- *A ~from-file~ redirect closes its file* once it has been copied into the
+  command. Each run had left one descriptor open.
 
 * A vec no longer wears down
 
