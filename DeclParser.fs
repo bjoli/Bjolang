@@ -885,6 +885,15 @@ and tryParseDeclGroup (s: SExpr) : Decl list option =
     | SList(SAtom { Token = Symbol(("defun" | "defbjo") as definer) } :: SList(SAtom { Token = Symbol name } :: args, _) :: rest, _) ->
         Some(parseDefunDecl definer name args rest (getRange s))
 
+    // `(def (: name Type) value)` is the definition and its signature, which
+    // is what gives the value its type, a union literal included.
+    | SList(SAtom { Token = Symbol(("def" | "def/mutable") as definer) } :: SList([ SAtom { Token = Colon }; SAtom { Token = Symbol name }; tType ], _) :: [ expr ], r) ->
+        let definition =
+            if definer = "def" then DDef(name, parseExpr expr, r)
+            else DDefMutable(name, parseExpr expr, r)
+
+        Some [ DSignature(name, parseType tType, [], r); definition ]
+
     // `(def* (pattern scrutinee) ...)` at the top level *is* its clauses
     // written one after another, so each one is handed back to `tryParseDecl`
     // as the `def` it would have been.
@@ -901,15 +910,15 @@ and tryParseDeclGroup (s: SExpr) : Decl list option =
 
         let decls =
             clauseForms
-            |> List.map (fun clause ->
+            |> List.collect (fun clause ->
                 let cr = getRange clause
 
                 match clause with
                 | SList((_ :: _ :: _) as clauseParts, _) ->
                     let asDef = SList(SAtom { Token = Symbol "def"; Range = cr } :: clauseParts, cr)
 
-                    match tryParseDecl asDef with
-                    | Some d -> d
+                    match tryParseDeclGroup asDef with
+                    | Some ds -> ds
                     | None ->
                         failwithf
                             $"Syntax error at %s{Lexer.formatPos cr}: a def* clause is written (pattern scrutinee)."

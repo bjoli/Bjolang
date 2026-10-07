@@ -1,0 +1,28 @@
+;; `(def (: name Type) value)` at the top level gives the value its type, the
+;; same as a separate signature: a literal takes the annotated type, a
+;; constrained function becomes a value at the annotated arity, and a mutable
+;; definition keeps the type for every later set!.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: twice-long (-> long long))
+(defun (twice-long n) (* n 2L))
+
+(def (: big long) 5)
+
+(def (: smaller (-> int int int)) least)
+
+(def/mutable (: latest (Option string)) None)
+
+(: remember! (-> string void))
+(defun (remember! s) (set! latest (Some s)))
+
+(defun (main args)
+  (expect "a literal takes the annotated type" (twice-long big) 10L)
+  (expect "a constrained function is a value of the annotated type" (smaller 3 7) 3)
+  (remember! "seen")
+  (expect "a mutable definition keeps its annotated type"
+          (match latest ((Some s) s) (None "nothing"))
+          "seen")
+  0)
