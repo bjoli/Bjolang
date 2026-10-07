@@ -1,0 +1,59 @@
+;; A text input port makes the byte port's promises: a read that is cancelled
+;; consumes nothing, and two fibers may read one port, each line going to
+;; exactly one of them.
+;;
+;; A `read-line` whose deadline fired while it waited for the rest of a line
+;; had already moved the first part out of the port, and dropped it: the next
+;; read-line returned only what came after. Two fibers draining one file port
+;; raced on its cursor, and one of them failed or lines came out malformed.
+
+(import (std prelude))
+(import (std ports))
+(import (std simpletest))
+
+;; The first read-line gives up on half a line; the second gets all of it.
+(: half-then-whole (-bjo-> string))
+(defbjo (half-then-whole)
+  (match (byte-pipe)
+    ((Tuple bin bout)
+     (def tin (byte->text-input-port bin utf8))
+     (def tout (byte->text-output-port bout utf8))
+     (write-string tout "abc")
+     (flush-port tout)
+     (def first
+       (match (try (with-deadline (millis 100) (read-line tin)) #:catch (System.Exception))
+         ((Ok l) (str "got [" l "]"))
+         ((Err e) "deadline")))
+     (write-string tout "def\n")
+     (flush-port tout)
+     (str first ", then [" (read-line tin) "]"))))
+
+(: drain (-bjo-> TextInputPort int))
+(defbjo (drain p)
+  (let go ((n 0))
+    (match (read-line/opt p)
+      ((Some l) (go (+ n 1)))
+      (None n))))
+
+(: two-readers (-bjo-> string int int))
+(defbjo (two-readers path lines)
+  (match (open-input-file path)
+    ((Ok p)
+     (def a (bjo (drain p)))
+     (def b (bjo (drain p)))
+     (match (Tuple (sync (promise-join a)) (sync (promise-join b)))
+       ((Tuple (Ok x) (Ok y)) (+ x y))
+       (_ -1)))
+    ((Err e) -2)))
+
+(defbjo (main args)
+  (expect "a cancelled read-line keeps the half line it was waiting on"
+          (half-then-whole)
+          "deadline, then [abcdef]")
+
+  (def path (path-combine (current-directory) "313-scratch.txt"))
+  (def lines 50000)
+  (file-write-lines path (loop (:for i (range 0 lines)) (:acc out (vecing (str "line-" (->str i)))) => out))
+  (expect "two fibers draining one port see every line once" (two-readers path lines) lines)
+  (file-delete path)
+  0)

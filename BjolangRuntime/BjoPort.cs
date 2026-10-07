@@ -32,6 +32,7 @@
 // `(cast TextInputPort ...)`, `(.Peek p)` and handing a port to a .NET API all
 // go on working.
 
+using System.Runtime.ExceptionServices;
 using System.Text;
 using Unit = Bjoml.Unit;
 
@@ -45,11 +46,73 @@ namespace Bjolang.Runtime;
 /// those characters would be skipped — silently, as wrong output rather than as
 /// an exception. The rule for anything added here: read through the buffer, or
 /// drain the buffer first.
+///
+/// # The port owns the buffer
+///
+/// The guarantees are the byte port's (<see cref="BjoByteInputPort"/>), and
+/// for its reasons:
+///
+///   * **A read takes nothing until it is complete.** A line, a character or
+///     the rest of the input is handed over by moving the cursor once, under
+///     the lock, when all of it is in the buffer. Until then everything read so
+///     far stays where it is, in the buffer, which grows when one line is longer
+///     than it.
+///   * **A fill is the port's, not a reader's.** It is started with no
+///     cancellation token, at most one at a time, and it appends to the buffer
+///     whatever happens to whoever asked for it. A reader whose deadline fires,
+///     or whose scope is cancelled, stops waiting for the fill and leaves; the
+///     fill finishes anyway and its text is there for the next read. So a
+///     cancelled read consumes nothing.
+///   * **Two fibers, one port.** Allowed: they serialize on the single fill and
+///     on the lock, and every line is handed out exactly once. Which of them
+///     gets which line is theirs to arrange.
+///   * **A failure is sticky,** as end of input is, and is reported only once
+///     the lines that arrived before it have been handed out.
+///
+/// The lock is held while the cursor moves and never across a read of
+/// <c>inner</c> or an await.
 public sealed class BjoPort : TextReader {
     private const int DefaultBufferSize = 4096;
 
     private readonly TextReader inner;
-    private readonly char[] buf;
+
+    /// The lock over the cursor: 1 while held.
+    ///
+    /// A spin lock and not a monitor, because of what it guards. Every section
+    /// under it moves a cursor, copies characters out or allocates the string
+    /// handed back, and none waits on anything; so it is never held long, never
+    /// reentered and never contended in the common case of one reader. Taking
+    /// it is one interlocked instruction, where a monitor's enter and exit cost
+    /// a `read-char` about a third of its time.
+    private int held;
+
+    /// Holding <see cref="held"/>, released by <c>Dispose</c> at the end of a
+    /// <c>using</c>, which releases it however the section is left.
+    private readonly ref struct Held {
+        private readonly BjoPort port;
+        public Held(BjoPort port) => this.port = port;
+        public void Dispose() => port.Release();
+    }
+
+    private void Release() => Volatile.Write(ref held, 0);
+
+    private Held Hold() {
+        if (Interlocked.CompareExchange(ref held, 1, 0) != 0) HoldSlow();
+        return new Held(this);
+    }
+
+    private void HoldSlow() {
+        var spin = new SpinWait();
+        while (Interlocked.CompareExchange(ref held, 1, 0) != 0) spin.SpinOnce();
+    }
+
+    // The buffer, and the window of it that holds unread characters.
+    //
+    // `buf` and `len` move ONLY while a fill is being prepared or committed,
+    // and there is at most one fill; a reader only ever moves `pos`, forwards,
+    // and never past `len`. That pair of facts is what lets a fill write into
+    // `buf[len..]` outside the lock while readers take from `buf[pos..len]`.
+    private char[] buf;
     private int pos;
     private int len;
 
@@ -57,6 +120,14 @@ public sealed class BjoPort : TextReader {
     /// un-end, and asking again after that costs a syscall for an answer we
     /// have.
     private bool ended;
+
+    /// The inner reader failed once. Sticky, for the same reason, and thrown
+    /// with its original stack.
+    private ExceptionDispatchInfo? failure;
+
+    /// The fill in flight, or null. Holding it in a field is the whole of "at
+    /// most one": a second reader waits for this rather than starting another.
+    private Task? fill;
 
     private bool disposed;
 
@@ -92,54 +163,146 @@ public sealed class BjoPort : TextReader {
     /// and would double the copying for nothing.
     public static BjoPort Wrap(TextReader inner) => inner as BjoPort ?? new BjoPort(inner);
 
-    private bool Buffered => pos < len;
-
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(disposed, this);
 
     // --- Filling ------------------------------------------------------------
     //
-    // Only ever called with the buffer empty, and `pos`/`len` are assigned only
-    // *after* the read returns. That ordering is the whole of how the three
-    // endings stay apart: a fill that throws — because the token fired, or
-    // because the port was disposed under it — leaves the port exactly as it
-    // was, rather than half-reset with a stale `len` that would re-serve
-    // characters already handed out.
+    // `len` is assigned only *after* the read returns, and a fill that throws
+    // records the failure instead. So a fill never leaves a stale length behind
+    // that would re-serve characters already handed out, and a cancelled
+    // *reader* has no way to touch the port at all: it was only waiting.
     //
-    // And a cancelled fill must not set `ended`. If it did,
-    // `(loop (:finish (port-eof? p)) ...)` would end normally on cancellation and
-    // return a partial result as though it were the whole thing.
+    // A failed or cancelled read must not set `ended`. If it did,
+    // `(loop (:finish (port-eof? p)) ...)` would end normally and return a
+    // partial result as though it were the whole thing.
 
-    private int FillSync() {
-        if (ended) return 0;
+    /// <summary>
+    /// Room after <c>len</c> for the next fill. Under the lock, and only while
+    /// no fill is in flight, which is what keeps the array still while one is
+    /// writing into it.
+    ///
+    /// Growing is how a line longer than the buffer stays in the port rather
+    /// than in a reader's local builder, where a cancelled read would lose it.
+    /// </summary>
+    private void MakeRoomLocked() {
+        int have = len - pos;
 
-        int n = inner.Read(buf, 0, buf.Length);
-        if (n <= 0) {
-            ended = true;
+        if (have == 0) {
             pos = len = 0;
-            return 0;
+            return;
         }
 
+        // Plenty of room after what is held: leave it where it is.
+        if (buf.Length - len >= buf.Length / 2) return;
+
+        if (pos > 0) {
+            Array.Copy(buf, pos, buf, 0, have);
+            pos = 0;
+            len = have;
+            if (buf.Length - len >= buf.Length / 2) return;
+        }
+
+        var bigger = new char[buf.Length * 2];
+        Array.Copy(buf, pos, bigger, 0, have);
+        buf = bigger;
         pos = 0;
-        len = n;
-        return n;
+        len = have;
     }
 
-    private async ValueTask<int> FillAsync(CancellationToken cancel) {
-        if (ended) return 0;
+    /// <summary>
+    /// Under the lock: the fill to wait for, or a fresh one this caller is to
+    /// perform, described by <paramref name="start"/>. Null and no start when
+    /// there will never be more: the input ended, failed or was disposed.
+    /// </summary>
+    private Task? FillLocked(out (TaskCompletionSource Done, char[] Into, int At, int Room)? start) {
+        start = null;
+        if (fill is not null) return fill;
+        if (disposed || ended || failure is not null) return null;
 
-        int n = await inner.ReadAsync(buf.AsMemory(), cancel).ConfigureAwait(false);
-        if (n <= 0) {
-            ended = true;
-            pos = len = 0;
-            return 0;
+        MakeRoomLocked();
+
+        // Published into the field BEFORE the read starts, so that a read
+        // completing synchronously cannot find `fill` still null and let a
+        // second one through.
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fill = done.Task;
+        start = (done, buf, len, buf.Length - len);
+        return done.Task;
+    }
+
+    /// What a finished read leaves behind. Never throws: the failure is the
+    /// port's, and whoever reads next finds it.
+    private void Commit(TaskCompletionSource done, int at, int n, Exception? error) {
+        using (Hold()) {
+            if (error is not null) failure ??= ExceptionDispatchInfo.Capture(error);
+            else if (n <= 0) ended = true;
+            else len = at + n;
+
+            // Cleared before the task completes, so a reader woken by it that
+            // still needs more starts a FRESH fill rather than finding this one.
+            fill = null;
         }
 
-        pos = 0;
-        len = n;
-        return n;
+        done.TrySetResult();
+    }
+
+    /// One fill, for a caller that may block: performed here with a blocking
+    /// read, or waited for if another reader's is already in flight.
+    private void FillSync() {
+        Task? pending;
+        (TaskCompletionSource Done, char[] Into, int At, int Room)? start;
+
+        using (Hold()) pending = FillLocked(out start);
+
+        if (start is { } s) {
+            int n = 0;
+            Exception? error = null;
+            try { n = inner.Read(s.Into, s.At, s.Room); }
+            catch (Exception e) { error = e; }
+            Commit(s.Done, s.At, n, error);
+        } else {
+            pending?.GetAwaiter().GetResult();
+        }
+    }
+
+    /// One fill, for a caller that suspends. The read itself runs with no
+    /// token; <paramref name="cancel"/> only ends this caller's wait for it.
+    private ValueTask FillAsync(CancellationToken cancel) {
+        Task? pending;
+        (TaskCompletionSource Done, char[] Into, int At, int Room)? start;
+
+        using (Hold()) pending = FillLocked(out start);
+
+        if (start is { } s) _ = Pump(s.Done, s.Into, s.At, s.Room);
+
+        if (pending is null || pending.IsCompleted) return default;
+        return new ValueTask(cancel.CanBeCanceled ? pending.WaitAsync(cancel) : pending);
+    }
+
+    private async Task Pump(TaskCompletionSource done, char[] into, int at, int room) {
+        int n = 0;
+        Exception? error = null;
+        try { n = await inner.ReadAsync(into.AsMemory(at, room), CancellationToken.None).ConfigureAwait(false); }
+        catch (Exception e) { error = e; }
+        Commit(done, at, n, error);
+    }
+
+    /// Under the lock: nothing more is coming. Throws the sticky failure, which
+    /// is only asked once everything that arrived before it is gone.
+    private bool FinishedLocked() {
+        if (ended) return true;
+        failure?.Throw();
+        return false;
     }
 
     // --- The eof question ---------------------------------------------------
+
+    /// Under the lock: true or false when known, null when a fill has to say.
+    private bool? EofLocked() {
+        if (pos < len) return false;
+        if (FinishedLocked()) return true;
+        return null;
+    }
 
     /// Whether the port is at end of input.
     ///
@@ -148,36 +311,56 @@ public sealed class BjoPort : TextReader {
     /// in a bufferful.
     public ValueTask<bool> EofAsync(CancellationToken cancel = default) {
         ThrowIfDisposed();
-        if (Buffered) return new ValueTask<bool>(false);
-        if (ended) return new ValueTask<bool>(true);
-        return FillThenEofAsync(cancel);
+        using (Hold()) {
+            if (EofLocked() is { } known) return new ValueTask<bool>(known);
+        }
+        return EofSlowAsync(cancel);
     }
 
-    private async ValueTask<bool> FillThenEofAsync(CancellationToken cancel) =>
-        await FillAsync(cancel).ConfigureAwait(false) == 0;
+    private async ValueTask<bool> EofSlowAsync(CancellationToken cancel) {
+        while (true) {
+            await FillAsync(cancel).ConfigureAwait(false);
+            ThrowIfDisposed();
+            using (Hold()) {
+                if (EofLocked() is { } known) return known;
+            }
+        }
+    }
 
-    /// The blocking twin, for an ordinary function. This is what `Peek` is
-    /// already doing; it is named so that a call site says which question it is
-    /// asking.
+    /// The blocking twin, for an ordinary function.
     public bool Eof() {
-        ThrowIfDisposed();
-        if (Buffered) return false;
-        return FillSync() == 0;
+        while (true) {
+            ThrowIfDisposed();
+            using (Hold()) {
+                if (EofLocked() is { } known) return known;
+            }
+            FillSync();
+        }
     }
 
     // --- Character reads ----------------------------------------------------
 
-    public override int Peek() {
-        ThrowIfDisposed();
-        if (!Buffered && FillSync() == 0) return -1;
-        return buf[pos];
+    /// Under the lock: the next code unit or -1, or null when a fill has to
+    /// say. Moves the cursor only when <paramref name="take"/>.
+    private int? UnitLocked(bool take) {
+        if (pos < len) return take ? buf[pos++] : buf[pos];
+        if (FinishedLocked()) return -1;
+        return null;
     }
 
-    public override int Read() {
-        ThrowIfDisposed();
-        if (!Buffered && FillSync() == 0) return -1;
-        return buf[pos++];
+    private int UnitSync(bool take) {
+        while (true) {
+            ThrowIfDisposed();
+            using (Hold()) {
+                if (UnitLocked(take) is { } unit) return unit;
+            }
+            FillSync();
+        }
     }
+
+    public override int Peek() => UnitSync(take: false);
+
+    public override int Read() => UnitSync(take: true);
 
     /// The async single-character read, for `read-char`.
     ///
@@ -187,17 +370,94 @@ public sealed class BjoPort : TextReader {
     /// `reader-read-char!`.
     public ValueTask<int> ReadValueAsync(CancellationToken cancel = default) {
         ThrowIfDisposed();
-        if (Buffered) return new ValueTask<int>(buf[pos++]);
-        if (ended) return new ValueTask<int>(-1);
-        return FillThenReadAsync(cancel);
+        using (Hold()) {
+            // The common case spelled out, ahead of the general one.
+            if (pos < len) return new ValueTask<int>(buf[pos++]);
+            if (UnitLocked(take: true) is { } unit) return new ValueTask<int>(unit);
+        }
+        return ReadSlowAsync(cancel);
     }
 
-    private async ValueTask<int> FillThenReadAsync(CancellationToken cancel) {
-        if (await FillAsync(cancel).ConfigureAwait(false) == 0) return -1;
-        return buf[pos++];
+    private async ValueTask<int> ReadSlowAsync(CancellationToken cancel) {
+        while (true) {
+            await FillAsync(cancel).ConfigureAwait(false);
+            ThrowIfDisposed();
+            using (Hold()) {
+                if (UnitLocked(take: true) is { } unit) return unit;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Under the lock: the next character, as its one or two code units, taken
+    /// whole — a surrogate pair is never split between two readers. False when
+    /// a fill has to come first. <paramref name="first"/> is -1 at end of
+    /// input; <paramref name="second"/> is -1 unless the first is a high
+    /// surrogate, and stays -1 for one left unpaired at the end, which
+    /// `Assemble` reports.
+    /// </summary>
+    private bool ScalarLocked(out int first, out int second) {
+        first = -1;
+        second = -1;
+
+        if (pos < len) {
+            int unit = buf[pos];
+            if (char.IsHighSurrogate((char)unit)) {
+                if (pos + 1 < len) second = buf[pos + 1];
+                else if (!FinishedLocked()) return false;
+            }
+
+            first = unit;
+            pos += second < 0 ? 1 : 2;
+            return true;
+        }
+
+        return FinishedLocked();
+    }
+
+    /// One character as code units, for `read-char`. See <see cref="ScalarLocked"/>.
+    public (int First, int Second) ReadScalar() {
+        while (true) {
+            ThrowIfDisposed();
+            using (Hold()) {
+                if (ScalarLocked(out int first, out int second)) return (first, second);
+            }
+            FillSync();
+        }
+    }
+
+    public ValueTask<(int First, int Second)> ReadScalarValueAsync(CancellationToken cancel = default) {
+        ThrowIfDisposed();
+        using (Hold()) {
+            if (ScalarLocked(out int first, out int second)) return new ValueTask<(int, int)>((first, second));
+        }
+        return ReadScalarSlowAsync(cancel);
+    }
+
+    private async ValueTask<(int First, int Second)> ReadScalarSlowAsync(CancellationToken cancel) {
+        while (true) {
+            await FillAsync(cancel).ConfigureAwait(false);
+            ThrowIfDisposed();
+            using (Hold()) {
+                if (ScalarLocked(out int first, out int second)) return (first, second);
+            }
+        }
     }
 
     // --- Block reads --------------------------------------------------------
+
+    /// Under the lock: how many were copied, 0 at end of input, or -1 when a
+    /// fill has to come first.
+    private int BlockLocked(Span<char> into) {
+        if (pos < len) {
+            int n = Math.Min(into.Length, len - pos);
+            buf.AsSpan(pos, n).CopyTo(into);
+            pos += n;
+            return n;
+        }
+
+        return FinishedLocked() ? 0 : -1;
+    }
 
     public override int Read(char[] buffer, int index, int count) {
         ArgumentNullException.ThrowIfNull(buffer);
@@ -205,14 +465,15 @@ public sealed class BjoPort : TextReader {
     }
 
     public override int Read(Span<char> buffer) {
-        ThrowIfDisposed();
         if (buffer.IsEmpty) return 0;
-        if (!Buffered && FillSync() == 0) return 0;
 
-        int n = Math.Min(buffer.Length, len - pos);
-        buf.AsSpan(pos, n).CopyTo(buffer);
-        pos += n;
-        return n;
+        while (true) {
+            ThrowIfDisposed();
+            int n;
+            using (Hold()) n = BlockLocked(buffer);
+            if (n >= 0) return n;
+            FillSync();
+        }
     }
 
     public override int ReadBlock(char[] buffer, int index, int count) {
@@ -242,24 +503,21 @@ public sealed class BjoPort : TextReader {
 
         // The point of the buffer: a read that is already satisfied never
         // becomes a state machine.
-        if (Buffered) {
-            int n = Math.Min(buffer.Length, len - pos);
-            buf.AsSpan(pos, n).CopyTo(buffer.Span);
-            pos += n;
-            return new ValueTask<int>(n);
-        }
+        int n;
+        using (Hold()) n = BlockLocked(buffer.Span);
+        if (n >= 0) return new ValueTask<int>(n);
 
-        if (ended) return new ValueTask<int>(0);
-        return FillThenReadAsync(buffer, cancel);
+        return ReadBlockSlowAsync(buffer, cancel);
     }
 
-    private async ValueTask<int> FillThenReadAsync(Memory<char> buffer, CancellationToken cancel) {
-        if (await FillAsync(cancel).ConfigureAwait(false) == 0) return 0;
-
-        int n = Math.Min(buffer.Length, len - pos);
-        buf.AsSpan(pos, n).CopyTo(buffer.Span);
-        pos += n;
-        return n;
+    private async ValueTask<int> ReadBlockSlowAsync(Memory<char> buffer, CancellationToken cancel) {
+        while (true) {
+            await FillAsync(cancel).ConfigureAwait(false);
+            ThrowIfDisposed();
+            int n;
+            using (Hold()) n = BlockLocked(buffer.Span);
+            if (n >= 0) return n;
+        }
     }
 
     public override Task<int> ReadBlockAsync(char[] buffer, int index, int count) {
@@ -280,67 +538,52 @@ public sealed class BjoPort : TextReader {
     // --- Lines --------------------------------------------------------------
     //
     // `\n`, `\r` and `\r\n` all end a line, and the `\n` of a `\r\n` is consumed
-    // eagerly — `StreamReader`'s semantics exactly, because `read-line` is
-    // documented against them and a port that disagreed would be a trap. The
-    // one cost is that a `\r` landing on the last character of a buffer needs
-    // one more read to find out whether an `\n` follows it.
+    // with it — `StreamReader`'s semantics exactly, because `read-line` is
+    // documented against them and a port that disagreed would be a trap. A `\r`
+    // that is the last character buffered therefore needs one more fill before
+    // its line can be handed over, to find out whether an `\n` follows it.
 
-    /// Where the current buffer's next line ends, or -1 if it does not end in it.
-    private int IndexOfTerminator() {
+    /// <summary>
+    /// Under the lock: the next line, taken whole. True with the line, true
+    /// with null at end of input, or false when a fill has to come first —
+    /// in which case nothing has moved.
+    /// </summary>
+    private bool LineLocked(out string? line) {
+        line = null;
+
         int rel = buf.AsSpan(pos, len - pos).IndexOfAny('\r', '\n');
-        return rel < 0 ? -1 : pos + rel;
-    }
+        if (rel >= 0) {
+            int at = pos + rel;
+            bool cr = buf[at] == '\r';
 
-    private bool StepOverTerminator(int at) {
-        bool cr = buf[at] == '\r';
-        pos = at + 1;
-        if (!cr) return false;
-        if (Buffered) {
-            if (buf[pos] == '\n') pos++;
-            return false;
+            // Whether this `\r` is a `\r\n` is not known yet.
+            if (cr && at + 1 == len && !FinishedLocked()) return false;
+
+            line = new string(buf, pos, at - pos);
+            pos = at + 1;
+            if (cr && pos < len && buf[pos] == '\n') pos++;
+            return true;
         }
-        // The `\n` may be in the next bufferful, so the caller has to fill.
-        return !ended;
+
+        if (!FinishedLocked()) return false;
+
+        // Input that ended without a terminator is still a line.
+        if (pos < len) {
+            line = new string(buf, pos, len - pos);
+            pos = len;
+        }
+
+        return true;
     }
 
     public override string? ReadLine() {
-        ThrowIfDisposed();
-        if (!Buffered && FillSync() == 0) return null;
-
-        // The common case, and the reason to bother: the whole line is already
-        // here, so the only allocation is the string itself.
-        int at = IndexOfTerminator();
-        if (at >= 0) {
-            var line = new string(buf, pos, at - pos);
-            if (StepOverTerminator(at)) {
-                FillSync();
-                if (Buffered && buf[pos] == '\n') pos++;
+        while (true) {
+            ThrowIfDisposed();
+            using (Hold()) {
+                if (LineLocked(out var line)) return line;
             }
-            return line;
+            FillSync();
         }
-
-        var sb = new StringBuilder();
-        sb.Append(buf, pos, len - pos);
-        pos = len;
-
-        while (FillSync() > 0) {
-            at = IndexOfTerminator();
-            if (at < 0) {
-                sb.Append(buf, pos, len - pos);
-                pos = len;
-                continue;
-            }
-
-            sb.Append(buf, pos, at - pos);
-            if (StepOverTerminator(at)) {
-                FillSync();
-                if (Buffered && buf[pos] == '\n') pos++;
-            }
-            return sb.ToString();
-        }
-
-        // Input that ended without a terminator is still a line.
-        return sb.ToString();
     }
 
     /// The suspending twin, and the reason this type exists rather than a
@@ -348,43 +591,23 @@ public sealed class BjoPort : TextReader {
     /// allocating, so it can return `ValueTask<string?>` where
     /// `TextReader.ReadLineAsync` has to return `Task<string?>`.
     ///
-    /// `null` at end of input, which `read-line/opt` turns into `None`. There
-    /// is no peek in it at all.
-    public async ValueTask<string?> ReadLineValueAsync(CancellationToken cancel = default) {
+    /// `null` at end of input, which `read-line/opt` turns into `None`.
+    public ValueTask<string?> ReadLineValueAsync(CancellationToken cancel = default) {
         ThrowIfDisposed();
-        if (!Buffered && await FillAsync(cancel).ConfigureAwait(false) == 0) return null;
-
-        int at = IndexOfTerminator();
-        if (at >= 0) {
-            var line = new string(buf, pos, at - pos);
-            if (StepOverTerminator(at)) {
-                await FillAsync(cancel).ConfigureAwait(false);
-                if (Buffered && buf[pos] == '\n') pos++;
-            }
-            return line;
+        using (Hold()) {
+            if (LineLocked(out var line)) return new ValueTask<string?>(line);
         }
+        return ReadLineSlowAsync(cancel);
+    }
 
-        var sb = new StringBuilder();
-        sb.Append(buf, pos, len - pos);
-        pos = len;
-
-        while (await FillAsync(cancel).ConfigureAwait(false) > 0) {
-            at = IndexOfTerminator();
-            if (at < 0) {
-                sb.Append(buf, pos, len - pos);
-                pos = len;
-                continue;
+    private async ValueTask<string?> ReadLineSlowAsync(CancellationToken cancel) {
+        while (true) {
+            await FillAsync(cancel).ConfigureAwait(false);
+            ThrowIfDisposed();
+            using (Hold()) {
+                if (LineLocked(out var line)) return line;
             }
-
-            sb.Append(buf, pos, at - pos);
-            if (StepOverTerminator(at)) {
-                await FillAsync(cancel).ConfigureAwait(false);
-                if (Buffered && buf[pos] == '\n') pos++;
-            }
-            return sb.ToString();
         }
-
-        return sb.ToString();
     }
 
     public override Task<string?> ReadLineAsync() => ReadLineValueAsync().AsTask();
@@ -393,46 +616,36 @@ public sealed class BjoPort : TextReader {
 
     // --- Everything that is left --------------------------------------------
 
+    /// Under the lock: the rest of the input once it has all arrived, or null
+    /// while more is coming. Everything gathered so far stays in the buffer
+    /// until then, so a cancelled `read-all` loses none of it.
+    private string? RestLocked() {
+        if (!FinishedLocked()) return null;
+        var rest = new string(buf, pos, len - pos);
+        pos = len;
+        return rest;
+    }
+
     public override string ReadToEnd() {
-        ThrowIfDisposed();
-
-        // The buffer first. `inner.ReadToEnd()` on its own would skip whatever
-        // is held here, which is the corruption this class exists to prevent.
-        if (!Buffered) {
-            if (ended) return "";
-            ended = true;
-            return inner.ReadToEnd();
+        while (true) {
+            ThrowIfDisposed();
+            using (Hold()) {
+                if (RestLocked() is { } rest) return rest;
+            }
+            FillSync();
         }
-
-        var sb = new StringBuilder(len - pos);
-        sb.Append(buf, pos, len - pos);
-        pos = len = 0;
-        ended = true;
-        sb.Append(inner.ReadToEnd());
-        return sb.ToString();
     }
 
     public override Task<string> ReadToEndAsync() => ReadToEndAsync(CancellationToken.None);
 
     public override async Task<string> ReadToEndAsync(CancellationToken cancel) {
-        ThrowIfDisposed();
-
-        var sb = new StringBuilder();
-        if (Buffered) sb.Append(buf, pos, len - pos);
-        // Emptied before the first await: the buffer is about to be scratch
-        // space, and a cancelled read must not leave it looking like content.
-        pos = len = 0;
-
-        while (!ended) {
-            int n = await inner.ReadAsync(buf.AsMemory(), cancel).ConfigureAwait(false);
-            if (n <= 0) {
-                ended = true;
-                break;
+        while (true) {
+            ThrowIfDisposed();
+            using (Hold()) {
+                if (RestLocked() is { } rest) return rest;
             }
-            sb.Append(buf, 0, n);
+            await FillAsync(cancel).ConfigureAwait(false);
         }
-
-        return sb.ToString();
     }
 
     /// Releasing the handle, and nothing else.
@@ -440,7 +653,8 @@ public sealed class BjoPort : TextReader {
     /// **Close is not the wakeup.** Disposing a stream with a read in flight is
     /// racy across stream types, so a reader parked on this port is woken by the
     /// ambient cancellation token instead — which is what makes `with-deadline`
-    /// work on a stalled read.
+    /// work on a stalled read. A fill still in flight then fails into the port
+    /// or finishes there; nobody is waiting for it.
     protected override void Dispose(bool disposing) {
         if (!disposed) {
             disposed = true;
@@ -536,20 +750,113 @@ public sealed class BjoPort : TextReader {
         new EndOfStreamException(
             "read-char: the port is at end of input. Guard with (port-eof? p), or use read-char/opt.");
 
-    public static BjoChar ReadCharOrThrow(TextReader reader)
+    /// The next character's code units: -1 first at end of input, -1 second
+    /// unless the first is a high surrogate. One read on a `BjoPort`, so that
+    /// two readers cannot split a pair between them; two on anything else.
+    private static (int First, int Second) Units(TextReader reader)
     {
+        if (reader is BjoPort p) return p.ReadScalar();
+
         var first = reader.Read();
-        if (first < 0) throw EndOfChar();
-        return Assemble(first, NeedsPair(first) ? reader.Read() : -1);
+        return (first, NeedsPair(first) ? reader.Read() : -1);
     }
 
-    public static async ValueTask<BjoChar> ReadCharOrThrowAsync(TextReader reader, CancellationToken cancel = default)
+    private static async ValueTask<(int First, int Second)> UnitsAsync(TextReader reader, CancellationToken cancel)
     {
-        var first = await ReadUnitAsync(reader, cancel).ConfigureAwait(false);
-        if (first < 0) throw EndOfChar();
+        if (reader is BjoPort p) return await p.ReadScalarValueAsync(cancel).ConfigureAwait(false);
 
+        var first = await ReadUnitAsync(reader, cancel).ConfigureAwait(false);
         var second = NeedsPair(first) ? await ReadUnitAsync(reader, cancel).ConfigureAwait(false) : -1;
+        return (first, second);
+    }
+
+    public static BjoChar ReadCharOrThrow(TextReader reader)
+    {
+        var (first, second) = Units(reader);
+        if (first < 0) throw EndOfChar();
         return Assemble(first, second);
+    }
+
+    public static ValueTask<BjoChar> ReadCharOrThrowAsync(TextReader reader, CancellationToken cancel = default)
+    {
+        // A character already buffered completes here, with no state machine.
+        // One that is not is awaited as it stands: asking again would start a
+        // second read, and the first would take a character nobody receives.
+        var pending = reader is BjoPort p ? p.ReadScalarValueAsync(cancel) : UnitsAsync(reader, cancel);
+
+        if (pending.IsCompletedSuccessfully)
+        {
+            var (first, second) = pending.Result;
+            if (first < 0) throw EndOfChar();
+            return new ValueTask<BjoChar>(Assemble(first, second));
+        }
+
+        return Awaited(pending);
+
+        static async ValueTask<BjoChar> Awaited(ValueTask<(int First, int Second)> pending)
+        {
+            var (first, second) = await pending.ConfigureAwait(false);
+            if (first < 0) throw EndOfChar();
+            return Assemble(first, second);
+        }
+    }
+
+    // --- The `/opt` reads -----------------------------------------------------
+    //
+    // One read each, answering `None` at end of input. Not `port-eof?` and
+    // then a read: between the two another fiber reading the same port can
+    // take the last line, and the read then fails at an end of input the
+    // check said was not there.
+
+    private static BjolangRuntime.Option<BjoString.Utf8String> LineOption(string? line) =>
+        line is null
+            ? BjolangRuntime.None<BjoString.Utf8String>()
+            : BjolangRuntime.Some(BjoString.Utf8String.FromUtf16(line));
+
+    public static BjolangRuntime.Option<BjoString.Utf8String> ReadLineOpt(TextReader reader) =>
+        LineOption(reader.ReadLine());
+
+    public static ValueTask<BjolangRuntime.Option<BjoString.Utf8String>> ReadLineOptAsync(
+        TextReader reader,
+        CancellationToken cancel = default)
+    {
+        var pending = ReadLineOrNullAsync(reader, cancel);
+        return pending.IsCompletedSuccessfully
+            ? new ValueTask<BjolangRuntime.Option<BjoString.Utf8String>>(LineOption(pending.Result))
+            : Awaited(pending);
+
+        static async ValueTask<BjolangRuntime.Option<BjoString.Utf8String>> Awaited(ValueTask<string?> pending) =>
+            LineOption(await pending.ConfigureAwait(false));
+    }
+
+    public static BjolangRuntime.Option<BjoChar> ReadCharOpt(TextReader reader)
+    {
+        var (first, second) = Units(reader);
+        return first < 0 ? BjolangRuntime.None<BjoChar>() : BjolangRuntime.Some(Assemble(first, second));
+    }
+
+    public static ValueTask<BjolangRuntime.Option<BjoChar>> ReadCharOptAsync(
+        TextReader reader,
+        CancellationToken cancel = default)
+    {
+        // As `ReadCharOrThrowAsync`: a read not yet complete is awaited, never
+        // asked for again.
+        var pending = reader is BjoPort p ? p.ReadScalarValueAsync(cancel) : UnitsAsync(reader, cancel);
+
+        if (pending.IsCompletedSuccessfully)
+        {
+            var (first, second) = pending.Result;
+            return new ValueTask<BjolangRuntime.Option<BjoChar>>(
+                first < 0 ? BjolangRuntime.None<BjoChar>() : BjolangRuntime.Some(Assemble(first, second)));
+        }
+
+        return Awaited(pending);
+
+        static async ValueTask<BjolangRuntime.Option<BjoChar>> Awaited(ValueTask<(int First, int Second)> pending)
+        {
+            var (first, second) = await pending.ConfigureAwait(false);
+            return first < 0 ? BjolangRuntime.None<BjoChar>() : BjolangRuntime.Some(Assemble(first, second));
+        }
     }
 }
 

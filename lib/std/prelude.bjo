@@ -2199,7 +2199,11 @@
   (clr-char       (: Bjolang.Runtime.BjoPort.ReadCharOrThrow    (-> TextInputPort char)   #:blocking))
   (clr-char-await (: Bjolang.Runtime.BjoPort.ReadCharOrThrowAsync (-> TextInputPort char) #:async))
   (clr-rest       (: Bjolang.Runtime.BjoPort.ReadRest           (-> TextInputPort string) #:blocking))
-  (clr-rest-await (: Bjolang.Runtime.BjoPort.ReadRestAsync      (-> TextInputPort string) #:async)))
+  (clr-rest-await (: Bjolang.Runtime.BjoPort.ReadRestAsync      (-> TextInputPort string) #:async))
+  (clr-line-opt       (: Bjolang.Runtime.BjoPort.ReadLineOpt      (-> TextInputPort (Option string)) #:blocking))
+  (clr-line-opt-await (: Bjolang.Runtime.BjoPort.ReadLineOptAsync (-> TextInputPort (Option string)) #:async))
+  (clr-char-opt       (: Bjolang.Runtime.BjoPort.ReadCharOpt      (-> TextInputPort (Option char)) #:blocking))
+  (clr-char-opt-await (: Bjolang.Runtime.BjoPort.ReadCharOptAsync (-> TextInputPort (Option char)) #:async)))
 
 ;; Port eof.
 (: port-eof? (-> TextInputPort bool))
@@ -2212,23 +2216,23 @@
   (#:sync (clr-line p))
   (#:bjo  (clr-line-await p)))
 
+;; One read, not `port-eof?` and then `read-line`: between those two another
+;; fiber reading the same port can take the last line.
 (: read-line/opt (-> TextInputPort (Option string)))
-(defun (read-line/opt p)
-  (if (port-eof? p)
-      None
-      (Some (read-line p))))
+(defbjouble (read-line/opt p)
+  (#:sync (clr-line-opt p))
+  (#:bjo  (clr-line-opt-await p)))
 
 (: read-char (-> TextInputPort char))
 (defbjouble (read-char p)
   (#:sync (clr-char p))
   (#:bjo  (clr-char-await p)))
 
-;; If successful, returns Some(char). 
+;; One read, for the reason `read-line/opt` is.
 (: read-char/opt (-> TextInputPort (Option char)))
-(defun (read-char/opt p)
-  (if (port-eof? p)
-      None
-      (Some (read-char p))))
+(defbjouble (read-char/opt p)
+  (#:sync (clr-char-opt p))
+  (#:bjo  (clr-char-opt-await p)))
 
 ;; Drains a port
 (: read-all (-> TextInputPort string))

@@ -5,6 +5,28 @@ What each change guarantees, and what it leaves open.
 
 * Silent failures found by a correctness audit
 
+- *A text port makes the byte port's promises.* Three things went wrong
+  reading a text port from fibers:
+  - A ~read-line~ cancelled while it waited for the rest of a line, by
+    ~with-deadline~ or a cancelled scope, had already moved the first part
+    out of the port and dropped it: the next ~read-line~ returned only what
+    came after. A line whose ~\r~ was the last character read was lost
+    whole, and a cancelled ~read-all~ lost everything it had gathered.
+  - Two fibers reading one port raced on its cursor: exceptions from inside
+    the port, malformed lines and lost lines.
+  - ~read-line/opt~ and ~read-char/opt~ asked ~port-eof?~ and then read, so a
+    second fiber could take the last line between the two and the read
+    failed at an end of input the check had said was not there.
+  The port now owns its buffer as the byte port does: a read takes nothing
+  until all of it has arrived, a fill is the port's and runs to the end
+  whoever stops waiting for it, at most one is in flight, and a short lock
+  hands each line or character to exactly one reader. A failure of the
+  underlying reader is sticky and reported after the text before it. The
+  ~/opt~ reads are one read each, which also makes them faster: reading a
+  3-million-line file with ~read-line/opt~ went from about 345 ms to 240 ms,
+  and ~read-char/opt~ over the same file from about 4.9 s to 2.1 s. A plain
+  ~read-line~ costs what it did; a plain ~read-char~ about 4 ns more, which
+  is the lock.
 - *A local function named like a constrained top-level one is called as
   itself.* With a top-level ~(: pick (-> %a %a %a) (where (Eq %a)))~, a body
   that defined its own ~pick~ and called it got a specialised copy of the

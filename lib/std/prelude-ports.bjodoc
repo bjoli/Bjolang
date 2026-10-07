@@ -19,6 +19,14 @@
     suspend inside a bjoroutine. A string port is a @code{StringReader} and
     is read synchronously in either colour. A @code{TextReader} from a .NET
     API works too.
+
+    A buffered port makes a byte port's promises. A read that is cancelled
+    while it waits, by @code{with-deadline} or a cancelled scope, consumes
+    nothing: the part of a line that had arrived stays in the port for the
+    next read. Two fibers may read one port, and each line or character
+    goes to exactly one of them; which of them gets which is theirs to
+    arrange. A failure of the underlying reader is reported to every read
+    after it, once the text that arrived before it has been read.
     """))
 
 (:doc TextOutputPort
@@ -320,6 +328,11 @@
   (example """
     (when-let (line (read-line/opt port))
       (displayln line))
+    """)
+  (reference """
+    One read. Where two fibers share a port, this is the way to read it to
+    the end: @code{port-eof?} followed by @code{read-line} is two, and the
+    other fiber can take the last line between them.
     """))
 
 (:doc read-char
@@ -346,7 +359,11 @@
   (arg p "The port.")
   (returns "Some character, or None at end of input.")
   (raises System.InvalidOperationException "When the port holds a surrogate that is not half of a pair.")
-  (see read-char in-port))
+  (see read-char in-port)
+  (reference """
+    One read, for the reason @code{read-line/opt} is. A character outside
+    the BMP is taken whole, so two fibers reading one port never split it.
+    """))
 
 (:doc read-all
   (summary "Everything left in a port, as one string.")
