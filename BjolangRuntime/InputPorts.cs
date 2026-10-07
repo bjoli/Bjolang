@@ -198,10 +198,18 @@ public static class InputPorts {
     private static Utf8String LineOrThrow(BjolangRuntime.Option<Utf8String> line) =>
         line.IsSome ? line.Value : throw EndOfLine();
 
-    public static Utf8String ReadLineOrThrow(BjoInputPort port) => LineOrThrow(port.ReadLineUtf8());
+    /// A `LineMode` as the prelude numbers it, in `line-mode-code`.
+    private static LineMode Mode(int code) =>
+        code is >= (int)LineMode.Any and <= (int)LineMode.ReturnLinefeed
+            ? (LineMode)code
+            : throw new ArgumentOutOfRangeException(nameof(code), code, "not a line mode.");
 
-    public static ValueTask<Utf8String> ReadLineOrThrowAsync(BjoInputPort port, CancellationToken cancel = default) {
-        var pending = port.ReadLineUtf8ValueAsync(cancel);
+    public static Utf8String ReadLineOrThrow(BjoInputPort port, int mode = 0) =>
+        LineOrThrow(port.ReadLineUtf8(Mode(mode)));
+
+    public static ValueTask<Utf8String> ReadLineOrThrowAsync(
+        BjoInputPort port, int mode, CancellationToken cancel = default) {
+        var pending = port.ReadLineUtf8ValueAsync(Mode(mode), cancel);
         return pending.IsCompletedSuccessfully
             ? new ValueTask<Utf8String>(LineOrThrow(pending.Result))
             : Awaited(pending);
@@ -213,11 +221,12 @@ public static class InputPorts {
     /// One read, answering `None` at end of input. Not `port-eof?` and then a
     /// read: between the two another fiber reading the same port can take the
     /// last line.
-    public static BjolangRuntime.Option<Utf8String> ReadLineOpt(BjoInputPort port) => port.ReadLineUtf8();
+    public static BjolangRuntime.Option<Utf8String> ReadLineOpt(BjoInputPort port, int mode) =>
+        port.ReadLineUtf8(Mode(mode));
 
     public static ValueTask<BjolangRuntime.Option<Utf8String>> ReadLineOptAsync(
-        BjoInputPort port, CancellationToken cancel = default) =>
-        port.ReadLineUtf8ValueAsync(cancel);
+        BjoInputPort port, int mode, CancellationToken cancel = default) =>
+        port.ReadLineUtf8ValueAsync(Mode(mode), cancel);
 
     // --- Characters ---------------------------------------------------------
 

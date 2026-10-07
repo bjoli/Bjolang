@@ -151,7 +151,7 @@
   fs-delete-directory op/fs-delete-directory fs-delete-directory/raw
   fs-move op/fs-move fs-move/raw
   ;; Ports — input
-  port-eof? read-line read-line/opt read-char read-char/opt read-all port-fold
+  port-eof? read-line read-line/opt LineMode read-char read-char/opt read-all port-fold
   ;; Ports — output
   write-string write-char writeln get-output-string
 
@@ -1703,6 +1703,10 @@
   (: InputPort Bjolang.Runtime.BjoInputPort)
   (: TextOutputPort System.IO.TextWriter))
 
+;; What ends a line: Racket's `read-line` modes. `Any` is the default
+;; everywhere a line is read.
+(type (: LineMode (Union Any AnyOne Linefeed Return ReturnLinefeed)))
+
 ;; --- Opening ---
 ;;
 ;; A file port is owned by the ambient scope: when the scope returns, the file
@@ -2102,16 +2106,17 @@
 (: file-append-bytes (-> string (Array byte) void))
 (defun (file-append-bytes path bytes) (write-whole-bytes path bytes Append))
 
-;; The lines, without their line ends. "\n" and "\r\n" both end a line, a
-;; last line needs none, and a final line end makes no empty line after it.
-(: file-read-lines (-> string (Vec string)))
-(defun (file-read-lines path)
+;; The lines, without their line ends. What ends a line is `#:mode`'s to say;
+;; by default "\n", "\r" and "\r\n" all do. A last line needs no end, and a
+;; final line end makes no empty line after it.
+(: file-read-lines (-> string (#:mode LineMode) (Vec string)))
+(defun (file-read-lines path #:mode Any)
   (match (open-input-file path)
     ((Ok opened) (with-open ((p opened))
                    (def lines (vecbuilder-empty))
                    (let next ()
                      (unless (port-eof? p)
-                       (vecbuilder-add! lines (read-line p))
+                       (vecbuilder-add! lines (read-line p #:mode mode))
                        (next)))
                    (vecbuilder->vec lines)))
     ((Err e) (raise e))))
@@ -2144,8 +2149,9 @@
           (yield (reader p))
           (loop))))))
 
-(: file-read-lines/seq #:sync (-> string (Seq string)))
-(defun (file-read-lines/seq path) (file-read/seq read-line path))
+(: file-read-lines/seq #:sync (-> string (#:mode LineMode) (Seq string)))
+(defun (file-read-lines/seq path #:mode Any)
+  (file-read/seq (fun (p) (read-line p #:mode mode)) path))
 
 ;; The files under `dir`, depth first, pulled lazily.
 ;;
@@ -2197,14 +2203,14 @@
 (import/extern
   (clr-eof        (: Bjolang.Runtime.InputPorts.PortEof            (-> InputPort bool)   #:blocking))
   (clr-eof-await  (: Bjolang.Runtime.InputPorts.PortEofAsync       (-> InputPort bool)   #:async))
-  (clr-line       (: Bjolang.Runtime.InputPorts.ReadLineOrThrow    (-> InputPort string) #:blocking))
-  (clr-line-await (: Bjolang.Runtime.InputPorts.ReadLineOrThrowAsync (-> InputPort string) #:async))
+  (clr-line       (: Bjolang.Runtime.InputPorts.ReadLineOrThrow    (-> InputPort int string) #:blocking))
+  (clr-line-await (: Bjolang.Runtime.InputPorts.ReadLineOrThrowAsync (-> InputPort int string) #:async))
   (clr-char       (: Bjolang.Runtime.InputPorts.ReadCharOrThrow    (-> InputPort char)   #:blocking))
   (clr-char-await (: Bjolang.Runtime.InputPorts.ReadCharOrThrowAsync (-> InputPort char) #:async))
   (clr-rest       (: Bjolang.Runtime.InputPorts.ReadRest           (-> InputPort string) #:blocking))
   (clr-rest-await (: Bjolang.Runtime.InputPorts.ReadRestAsync      (-> InputPort string) #:async))
-  (clr-line-opt       (: Bjolang.Runtime.InputPorts.ReadLineOpt      (-> InputPort (Option string)) #:blocking))
-  (clr-line-opt-await (: Bjolang.Runtime.InputPorts.ReadLineOptAsync (-> InputPort (Option string)) #:async))
+  (clr-line-opt       (: Bjolang.Runtime.InputPorts.ReadLineOpt      (-> InputPort int (Option string)) #:blocking))
+  (clr-line-opt-await (: Bjolang.Runtime.InputPorts.ReadLineOptAsync (-> InputPort int (Option string)) #:async))
   (clr-char-opt       (: Bjolang.Runtime.InputPorts.ReadCharOpt      (-> InputPort (Option char)) #:blocking))
   (clr-char-opt-await (: Bjolang.Runtime.InputPorts.ReadCharOptAsync (-> InputPort (Option char)) #:async)))
 
@@ -2214,17 +2220,29 @@
   (#:sync (clr-eof p))
   (#:bjo  (clr-eof-await p)))
 
-(: read-line (-> InputPort string))
-(defbjouble (read-line p)
-  (#:sync (clr-line p))
-  (#:bjo  (clr-line-await p)))
+;; `LineMode` as `Bjolang.Runtime.LineMode` numbers it.
+(: line-mode-code (-> LineMode int))
+(defun (line-mode-code mode)
+  (match mode
+    (Any 0)
+    (AnyOne 1)
+    (Linefeed 2)
+    (Return 3)
+    (ReturnLinefeed 4)))
+
+;; With a `#:mode`, `read-line` is a function of two arguments when passed as
+;; a value: hand it over as `(fun (p) (read-line p))`.
+(: read-line (-> InputPort (#:mode LineMode) string))
+(defbjouble (read-line p #:mode Any)
+  (#:sync (clr-line p (line-mode-code mode)))
+  (#:bjo  (clr-line-await p (line-mode-code mode))))
 
 ;; One read, not `port-eof?` and then `read-line`: between those two another
 ;; fiber reading the same port can take the last line.
-(: read-line/opt (-> InputPort (Option string)))
-(defbjouble (read-line/opt p)
-  (#:sync (clr-line-opt p))
-  (#:bjo  (clr-line-opt-await p)))
+(: read-line/opt (-> InputPort (#:mode LineMode) (Option string)))
+(defbjouble (read-line/opt p #:mode Any)
+  (#:sync (clr-line-opt p (line-mode-code mode)))
+  (#:bjo  (clr-line-opt-await p (line-mode-code mode))))
 
 (: read-char (-> InputPort char))
 (defbjouble (read-char p)

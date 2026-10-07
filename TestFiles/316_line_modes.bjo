@@ -1,0 +1,69 @@
+;; What ends a line is `#:mode`'s to say, with Racket's five modes. `Any`, the
+;; default, is "\n", "\r" or "\r\n" — what a line end has always been here.
+;;
+;; The input holds every terminator: a lone "\r", a lone "\n", "\r\n", and
+;; "\n\r", which is two.
+
+(import (std prelude))
+(import (std ports))
+(import (std simpletest))
+
+(: input string)
+(def input "a\rb\nc\r\nd\n\re")
+
+;; The lines as one string, each made visible: "\r" as <CR>, "\n" as <LF>.
+(: shown (-> (Vec string) string))
+(defun (shown lines)
+  (string-join (vec-map (fun (l) (string-replace (string-replace l "\r" "<CR>") "\n" "<LF>")) lines) "|"))
+
+(: lines-sync (-> LineMode (Vec string)))
+(defun (lines-sync mode)
+  (def p (open-input-string input))
+  (def out (vecbuilder-empty))
+  (let go ()
+    (match (read-line/opt p #:mode mode)
+      ((Some l) (vecbuilder-add! out l) (go))
+      (None (vecbuilder->vec out)))))
+
+(: lines-bjo (-bjo-> LineMode (Vec string)))
+(defbjo (lines-bjo mode)
+  (def p (open-input-string input))
+  (def out (vecbuilder-empty))
+  (let go ()
+    (if (port-eof? p)
+        (vecbuilder->vec out)
+        (let () (vecbuilder-add! out (read-line p #:mode mode)) (go)))))
+
+(: check (-bjo-> string LineMode string Unit))
+(defbjo (check name mode wanted)
+  (expect (str name ", read-line/opt in a defun") (shown (lines-sync mode)) wanted)
+  (expect (str name ", read-line on a fiber") (shown (lines-bjo mode)) wanted)
+  (expect (str name ", port->lines") (shown (port->lines (open-input-string input) #:mode mode)) wanted))
+
+(defbjo (main args)
+  (check "Any" Any "a|b|c|d||e")
+  (check "AnyOne" AnyOne "a|b|c||d||e")
+  (check "Linefeed" Linefeed "a<CR>b|c<CR>|d|<CR>e")
+  (check "Return" Return "a|b<LF>c|<LF>d<LF>|e")
+  (check "ReturnLinefeed" ReturnLinefeed "a<CR>b<LF>c|d<LF><CR>e")
+
+  (expect "the default is Any" (shown (port->lines (open-input-string input))) "a|b|c|d||e")
+
+  ;; A file, by default and by mode.
+  (def path (path-combine (current-directory) "316-scratch.txt"))
+  (file-write-text path input)
+  (expect "file-read-lines" (shown (file-read-lines path)) "a|b|c|d||e")
+  (expect "file-read-lines, Linefeed" (shown (file-read-lines path #:mode Linefeed)) "a<CR>b|c<CR>|d|<CR>e")
+  (expect "file-read-lines/seq, ReturnLinefeed"
+          (shown (seq->vec (file-read-lines/seq path #:mode ReturnLinefeed)))
+          "a<CR>b<LF>c|d<LF><CR>e")
+  (file-delete path)
+
+  ;; Passed as a value, read-line is wrapped, and the wrapper can choose.
+  (expect "read-line passed as a value"
+          (list-length (port->list (fun (p) (read-line p)) (open-input-string input)))
+          6)
+  (expect "with a mode of its own"
+          (list-length (port->list (fun (p) (read-line p #:mode Linefeed)) (open-input-string input)))
+          4)
+  0)

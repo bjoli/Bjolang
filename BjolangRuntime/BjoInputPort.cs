@@ -69,6 +69,23 @@ namespace Bjolang.Runtime;
 internal interface ISyncReadable { }
 
 /// <summary>
+/// What ends a line: Racket's `read-line` modes, and the prelude's
+/// `LineMode`, whose cases `line-mode-code` numbers as these are numbered.
+/// </summary>
+public enum LineMode {
+    /// `\n`, `\r` or `\r\n`, whichever is longest. The default.
+    Any = 0,
+    /// `\n` or `\r`, each on its own: `\r\n` ends a line and then an empty one.
+    AnyOne = 1,
+    /// `\n` alone; a `\r` is part of the line.
+    Linefeed = 2,
+    /// `\r` alone; a `\n` is part of the line.
+    Return = 3,
+    /// `\r\n` alone; a `\r` or `\n` on its own is part of the line.
+    ReturnLinefeed = 4,
+}
+
+/// <summary>
 /// A buffered input port: bytes, read directly or as CML events, and text,
 /// decoded from them as UTF-8.
 ///
@@ -1280,10 +1297,12 @@ public sealed class BjoInputPort : TextReader {
 
     // --- Lines --------------------------------------------------------------
     //
-    // `\n`, `\r` and `\r\n` each end a line, and the `\n` of a `\r\n` is
-    // consumed with it. A `\r` that is the last byte buffered waits for one
-    // more refill to learn whether an `\n` follows it. The search is over
-    // bytes: neither byte can occur inside a multi-byte sequence.
+    // What ends a line is the reader's choice, among Racket's `read-line`
+    // modes (see `LineMode`). The default, `Any`, is `\n`, `\r` or `\r\n`,
+    // the longest that matches, so the `\n` of a `\r\n` is consumed with it;
+    // a `\r` that is the last byte buffered then waits for one more refill to
+    // learn whether an `\n` follows it. The search is over bytes: neither byte
+    // can occur inside a multi-byte sequence.
 
     /// <summary>
     /// Under the lock: where the next line's bytes are, taken whole: true with
@@ -1291,23 +1310,49 @@ public sealed class BjoInputPort : TextReader {
     /// input, or false when a refill has to come first — in which case nothing
     /// has moved. The bounds stay valid only while the lock is held.
     /// </summary>
-    private bool LineBoundsLocked(out int start, out int count, out bool some) {
+    private bool LineBoundsLocked(LineMode mode, out int start, out int count, out bool some) {
         start = 0;
         count = 0;
         some = false;
 
-        int rel = _buf.AsSpan(_pos, _len - _pos).IndexOfAny((byte)'\r', (byte)'\n');
+        var window = _buf.AsSpan(_pos, _len - _pos);
+
+        // Where the terminator starts in the window, and how long it is.
+        int rel;
+        int ending = 1;
+        switch (mode) {
+            case LineMode.Any:
+                rel = window.IndexOfAny((byte)'\r', (byte)'\n');
+                if (rel >= 0 && window[rel] == (byte)'\r') {
+                    // Whether this `\r` is a `\r\n` is not known yet.
+                    if (rel + 1 == window.Length && !Finished) return false;
+                    if (rel + 1 < window.Length && window[rel + 1] == (byte)'\n') ending = 2;
+                }
+                break;
+            case LineMode.AnyOne:
+                rel = window.IndexOfAny((byte)'\r', (byte)'\n');
+                break;
+            case LineMode.Linefeed:
+                rel = window.IndexOf((byte)'\n');
+                break;
+            case LineMode.Return:
+                rel = window.IndexOf((byte)'\r');
+                break;
+            case LineMode.ReturnLinefeed:
+                // A `\r` last in the buffer is no terminator yet, and so no
+                // reason to stop: the search simply finds none and waits.
+                rel = window.IndexOf("\r\n"u8);
+                ending = 2;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(mode), mode, "not a line mode.");
+        }
+
         if (rel >= 0) {
-            int at = _pos + rel;
-            bool cr = _buf[at] == (byte)'\r';
-
-            if (cr && at + 1 == _len && !Finished) return false;
-
             start = _pos;
             count = rel;
             some = true;
-            _pos = at + 1;
-            if (cr && _pos < _len && _buf[_pos] == (byte)'\n') _pos++;
+            _pos += rel + ending;
             return true;
         }
 
@@ -1354,50 +1399,57 @@ public sealed class BjoInputPort : TextReader {
         return string.Concat(new ReadOnlySpan<char>(in low), text);
     }
 
-    private bool LineLocked(out BjolangRuntime.Option<Utf8String> line) {
+    private bool LineLocked(LineMode mode, out BjolangRuntime.Option<Utf8String> line) {
         line = default;
-        if (!LineBoundsLocked(out int start, out int count, out bool some)) return false;
+        if (!LineBoundsLocked(mode, out int start, out int count, out bool some)) return false;
         if (some) line = BjolangRuntime.Some(TextLocked(_buf.AsSpan(start, count)));
         return true;
     }
 
-    /// The next line, or `None` at end of input.
-    public BjolangRuntime.Option<Utf8String> ReadLineUtf8() {
+    /// The next line, ended as <paramref name="mode"/> says, or `None` at end
+    /// of input.
+    public BjolangRuntime.Option<Utf8String> ReadLineUtf8(LineMode mode = LineMode.Any) {
         var spin = new SpinWait();
         while (true) {
             bool busy = false;
             using (Hold()) {
                 ThrowIfDisposed();
                 if (_taking) busy = true;
-                else if (LineLocked(out var line)) return line;
+                else if (LineLocked(mode, out var line)) return line;
             }
             WaitSync(busy, 1, ref spin);
         }
     }
 
-    public ValueTask<BjolangRuntime.Option<Utf8String>> ReadLineUtf8ValueAsync(CancellationToken cancel = default) {
+    public ValueTask<BjolangRuntime.Option<Utf8String>> ReadLineUtf8ValueAsync(CancellationToken cancel = default) =>
+        ReadLineUtf8ValueAsync(LineMode.Any, cancel);
+
+    public ValueTask<BjolangRuntime.Option<Utf8String>> ReadLineUtf8ValueAsync(
+        LineMode mode, CancellationToken cancel = default) {
         using (Hold()) {
             ThrowIfDisposed();
-            if (!_taking && LineLocked(out var line)) return new ValueTask<BjolangRuntime.Option<Utf8String>>(line);
+            if (!_taking && LineLocked(mode, out var line)) return new ValueTask<BjolangRuntime.Option<Utf8String>>(line);
         }
-        return ReadLineUtf8SlowAsync(cancel);
+        return ReadLineUtf8SlowAsync(mode, cancel);
     }
 
-    private async ValueTask<BjolangRuntime.Option<Utf8String>> ReadLineUtf8SlowAsync(CancellationToken cancel) {
+    private async ValueTask<BjolangRuntime.Option<Utf8String>> ReadLineUtf8SlowAsync(
+        LineMode mode, CancellationToken cancel) {
         while (true) {
             Task? quiet = null;
             using (Hold()) {
                 ThrowIfDisposed();
                 if (_taking) quiet = QuietLocked();
-                else if (LineLocked(out var line)) return line;
+                else if (LineLocked(mode, out var line)) return line;
             }
             await WaitAsync(quiet, 1, cancel).ConfigureAwait(false);
         }
     }
 
+    /// The .NET `ReadLine` contract is `StreamReader`'s, which is `Any`.
     private bool LineStringLocked(out string? line) {
         line = null;
-        if (!LineBoundsLocked(out int start, out int count, out bool some)) return false;
+        if (!LineBoundsLocked(LineMode.Any, out int start, out int count, out bool some)) return false;
         if (some) line = StringLocked(_buf.AsSpan(start, count));
         return true;
     }

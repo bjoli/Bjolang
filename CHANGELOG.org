@@ -3,6 +3,22 @@
 
 What each change guarantees, and what it leaves open.
 
+* read-line takes a #:mode, as Racket's does
+
+- *What ends a line is the reader's to say.* ~read-line~, ~read-line/opt~,
+  ~port->lines~, ~file-read-lines~ and ~file-read-lines/seq~ take
+  ~#:mode~, a ~LineMode~ with Racket's five cases: ~Any~ (~\n~, ~\r~ or
+  ~\r\n~, the longest that matches), ~AnyOne~ (~\n~ or ~\r~, each on its
+  own), ~Linefeed~, ~Return~ and ~ReturnLinefeed~. The default is ~Any~,
+  which is what a line end has always been here, so nothing changes unless a
+  mode is asked for. A line at the end of input needs no terminator in any
+  mode.
+- *Passing ~read-line~ as a value takes a lambda now.* A keyword parameter is
+  an extra argument where a function is used as a value, so
+  ~(port->list read-line p)~ no longer fits a reader of one argument; it is
+  ~(port->list (fun (p) (read-line p)) p)~, which can also choose a mode. The
+  same holds for ~read-line/opt~.
+
 * One input port type: bytes, and text read from them
 
 Following Racket: a port is bytes, and `read-line` and `read-char` decode

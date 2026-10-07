@@ -197,53 +197,53 @@
 
   ;; --- Draining -----------------------------------------------------------
   (expect "port->list"
-          (int->string (list-length (port->list read-line (open-input-string "a\nb\nc"))))
+          (int->string (list-length (port->list (fun (q) (read-line q)) (open-input-string "a\nb\nc"))))
           "3")
   (expect "port->vec"
-          (int->string (vec-length (port->vec read-line (open-input-string "a\nb\nc\nd"))))
+          (int->string (vec-length (port->vec (fun (q) (read-line q)) (open-input-string "a\nb\nc\nd"))))
           "4")
 
 
   ;; Order is preserved, and the newline is not part of a line.
   (expect "port->list order"
           (list-foldl (fun (l acc) (string-append acc l)) ""
-                      (port->list read-line (open-input-string "x\ny\nz")))
+                      (port->list (fun (q) (read-line q)) (open-input-string "x\ny\nz")))
           "xyz")
   (expect "port->vec order"
           (vec-fold (fun (l acc) (string-append acc l)) ""
-                    (port->vec read-line (open-input-string "x\ny\nz")))
+                    (port->vec (fun (q) (read-line q)) (open-input-string "x\ny\nz")))
           "xyz")
 
   (expect "drain of an empty port"
-          (int->string (list-length (port->list read-line (open-input-string ""))))
+          (int->string (list-length (port->list (fun (q) (read-line q)) (open-input-string ""))))
           "0")
 
   ;; Draining consumes, so a second drain of the same port is empty.
   (def p9 (open-input-string "one\ntwo"))
-  (expect "first drain" (vec-length (port->vec read-line p9)) 2)
-  (expect "second drain is empty" (vec-length (port->vec read-line p9)) 0)
+  (expect "first drain" (vec-length (port->vec (fun (q) (read-line q)) p9)) 2)
+  (expect "second drain is empty" (vec-length (port->vec (fun (q) (read-line q)) p9)) 0)
 
   ;; A drain works the same over a file port.
   (match (open-input-file path)
     ((Ok r) (with-open ((in r))
-              (expect "drain a file port" (vec-length (port->vec read-line in)) 3)))
+              (expect "drain a file port" (vec-length (port->vec (fun (q) (read-line q)) in)) 3)))
     ((Err e) (println "FAILURE: could not reopen the file")))
 
   ;; --- Streaming ----------------------------------------------------------
   (expect "port->seq"
           (seq-fold (fun (l acc) (string-append acc l)) ""
-                    (port->seq read-line (open-input-string "x\ny\nz")))
+                    (port->seq (fun (q) (read-line q)) (open-input-string "x\ny\nz")))
           "xyz")
 
   (expect "port->seq of an empty port"
-          (int->string (seq-length (port->seq read-line (open-input-string ""))))
+          (int->string (seq-length (port->seq (fun (q) (read-line q)) (open-input-string ""))))
           "0")
 
   ;; Laziness is the point: taking two from a port never reads the third line.
   ;; The port is shared, so what is left in it afterwards is the evidence.
   (def p10 (open-input-string "1\n2\n3\n4"))
   (expect "seq-take pulls only what it needs"
-          (seq-fold (fun (l acc) (string-append acc l)) "" (seq-take (port->seq read-line p10) 2))
+          (seq-fold (fun (l acc) (string-append acc l)) "" (seq-take (port->seq (fun (q) (read-line q)) p10) 2))
           "12")
   (expect "and the rest is still in the port" (read-line p10) "3")
 
@@ -251,7 +251,7 @@
   (expect "port->seq through seq-map"
           (seq-fold (fun (l acc) (string-append acc l)) ""
                     (seq-map (fun (l) (string-append l "!"))
-                             (port->seq read-line (open-input-string "a\nb"))))
+                             (port->seq (fun (q) (read-line q)) (open-input-string "a\nb"))))
           "a!b!")
 
   ;; --- file->seq ----------------------------------------------------------
@@ -260,7 +260,7 @@
   ;; the call and is a `Result` like every other opener here — not a surprise
   ;; thrown on the first pull.
   (expect "file->seq"
-          (match (file->seq read-line path)
+          (match (file->seq (fun (q) (read-line q)) path)
             ((Ok lines) (seq-fold (fun (l acc) (string-append acc (string-append l "|"))) "" lines))
             ((Err e) "FAILURE"))
           "first|second|third|")
@@ -277,7 +277,7 @@
   ;; sequence owns the file, so each enumeration opens it again and reads it
   ;; from the start. Sharing one spent reader would make this 3.
   (expect "file->seq is re-enumerable"
-          (match (file->seq read-line path)
+          (match (file->seq (fun (q) (read-line q)) path)
             ((Ok lines) (int->string (+ (seq-length lines) (seq-length lines))))
             ((Err e) "FAILURE"))
           "6")
@@ -285,7 +285,7 @@
   ;; And that holds after a walk that stopped early and disposed the enumerator
   ;; mid-file, which is where a shared reader would be left part-way through.
   (expect "re-enumerable after stopping early"
-          (match (file->seq read-line path)
+          (match (file->seq (fun (q) (read-line q)) path)
             ((Ok lines)
               (let ()
                 ;; Walked for its effect — the count is beside the point, which
@@ -296,13 +296,13 @@
           "firstsecondthird")
 
   (expect "missing file is Err, at the call"
-          (match (file->seq read-line "no_such_file_here.txt")
+          (match (file->seq (fun (q) (read-line q)) "no_such_file_here.txt")
             ((Ok _) "opened")
             ((Err e) "missing"))
           "missing")
 
   (expect "and it is FileNotFound"
-          (match (file->seq read-line "no_such_file_here.txt")
+          (match (file->seq (fun (q) (read-line q)) "no_such_file_here.txt")
             ((Ok _) "opened")
             ((Err (:is System.IO.FileNotFoundException _)) "not-found")
             ((Err _) "other"))
@@ -311,7 +311,7 @@
   ;; Reading is still lazy even though opening is not: taking two lines from a
   ;; four-line file never reads the rest.
   (expect "file->seq is lazy in the pulling"
-          (match (file->seq read-line path)
+          (match (file->seq (fun (q) (read-line q)) path)
             ((Ok lines) (seq-fold (fun (l acc) (string-append acc l)) "" (seq-take lines 2)))
             ((Err e) "FAILURE"))
           "firstsecond")

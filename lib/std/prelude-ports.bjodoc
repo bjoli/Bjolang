@@ -319,24 +319,42 @@
     read suspends in a bjoroutine.
     """))
 
+(:doc LineMode
+  (summary "What ends a line: Racket's read-line modes.")
+  (case Any "\\n, \\r or \\r\\n, the longest that matches. The default.")
+  (case AnyOne "\\n or \\r, each on its own, so \\r\\n ends a line and then an empty one.")
+  (case Linefeed "\\n alone. A \\r is part of the line.")
+  (case Return "\\r alone. A \\n is part of the line.")
+  (case ReturnLinefeed "\\r\\n alone. A \\r or \\n on its own is part of the line.")
+  (see read-line read-line/opt file-read-lines))
+
 (:doc read-line
   (summary "The next line of a port, without its line terminator.")
   (arg p "The port. Not at end of input.")
-  (returns "The line. A line ends at \\n, \\r or \\r\\n.")
+  (key #:mode "What ends a line: Any, the default, AnyOne, Linefeed, Return or ReturnLinefeed.")
+  (returns "The line. A line at the end of input needs no terminator.")
   (raises System.IO.EndOfStreamException "When the port is at end of input.")
-  (see read-line/opt port-eof? read-all in-port)
+  (see read-line/opt LineMode port-eof? read-all in-port)
   (example """
     (let loop ()
       (unless (port-eof? p)
         (displayln (read-line p))
         (loop)))
+
+    (read-line p #:mode Linefeed)   ; a \\r stays in the line
+    """)
+  (reference """
+    The keyword makes @code{read-line} a function of two arguments where it
+    is passed as a value, so a reader that takes one is handed
+    @code{(fun (p) (read-line p))}.
     """))
 
 (:doc read-line/opt
   (summary "The next line of a port, or None at end of input.")
   (arg p "The port.")
+  (key #:mode "What ends a line, as for read-line: Any by default.")
   (returns "Some line without its terminator, or None at end of input.")
-  (see read-line in-port port-fold)
+  (see read-line LineMode in-port port-fold)
   (example """
     (when-let (line (read-line/opt port))
       (displayln line))
@@ -345,6 +363,9 @@
     One read. Where two fibers share a port, this is the way to read it to
     the end: @code{port-eof?} followed by @code{read-line} is two, and the
     other fiber can take the last line between them.
+
+    Passed as a value, it is @code{(fun (p) (read-line/opt p))}, for the
+    reason @code{read-line} is.
     """))
 
 (:doc read-char
@@ -407,7 +428,7 @@
   (returns "A PortReads, which is Iterable.")
   (see PortReads read-line/opt read-char/opt port-fold)
   (example """
-    (loop (:for line (in-port p read-line/opt))
+    (loop (:for line (in-port p (fun (q) (read-line/opt q))))
           (:do (displayln line)))
     """)
   (reference """

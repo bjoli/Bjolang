@@ -54,6 +54,7 @@ public static class InputPortTextTests
         Run("four readers get every line exactly once", ReadersEveryLineOnce);
         Run("a failure is sticky, after the lines before it", FailureIsStickyAfterLines);
         Run("\\r\\n split across refills is one terminator", CrLfAcrossRefills);
+        Run("every line mode, at every buffer size", LineModes);
         Run("read-char/opt across waiting refills hands out every character once", CharsAcrossWaitingRefills);
         Run("a multi-byte character split across refills is one character", MultiByteAcrossRefills);
         Run("lines, characters and text agree with a decoding reader", AgreesWithStreamReader);
@@ -391,6 +392,41 @@ public static class InputPortTextTests
         AssertEqual("a", Line(port), "the line before the split \\r\\n");
         AssertEqual("b", Line(port), "the line after it");
         AssertEqual(null, Line(port), "end of input");
+    }
+
+    /// Racket's five modes over one input that holds every terminator: a lone
+    /// `\r`, a lone `\n`, `\r\n`, and `\n\r`, which is two. The buffer sizes put
+    /// a refill between the two bytes of each pair somewhere.
+    private static void LineModes()
+    {
+        var input = Encoding.UTF8.GetBytes("a\rb\nc\r\nd\n\re");
+        var expected = new (LineMode Mode, string Lines)[] {
+            (LineMode.Any, "a|b|c|d||e"),
+            (LineMode.AnyOne, "a|b|c||d||e"),
+            (LineMode.Linefeed, "a\rb|c\r|d|\re"),
+            (LineMode.Return, "a|b\nc|\nd\n|e"),
+            (LineMode.ReturnLinefeed, "a\rb\nc|d\n\re"),
+        };
+
+        foreach (var (mode, lines) in expected)
+        {
+            foreach (int bufferSize in new[] { 1, 2, 3, 4, 64 })
+            {
+                var port = Over(input, bufferSize);
+                var got = new List<string>();
+                while (port.ReadLineUtf8(mode) is { IsSome: true } line) got.Add(line.Value.ToString());
+                AssertEqual(lines, string.Join("|", got), $"{mode}, buffer {bufferSize}");
+
+                var feed = new FeedStream();
+                foreach (var b in input) feed.Feed([b]);
+                feed.Feed((byte[]?)null);
+                var fed = new BjoInputPort(feed, bufferSize);
+                got.Clear();
+                while (fed.ReadLineUtf8ValueAsync(mode).AsTask().GetAwaiter().GetResult() is { IsSome: true } line)
+                    got.Add(line.Value.ToString());
+                AssertEqual(lines, string.Join("|", got), $"{mode}, buffer {bufferSize}, a byte per refill");
+            }
+        }
     }
 
     /// The `read-char/opt` dispatcher while the text arrives a few bytes at a

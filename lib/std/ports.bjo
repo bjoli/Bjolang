@@ -92,9 +92,11 @@
         (:finish (port-eof? p))
         (:acc vec (vecing (reader p)))))
 
-(: port->lines (-> InputPort (Vec string)))
-(defun (port->lines port)
-  (port->vec read-line port))
+;; The lines left in `port`, ended as `#:mode` says (`Any` by default), as
+;; Racket's `port->lines` takes a `#:line-mode`.
+(: port->lines (-> InputPort (#:mode LineMode) (Vec string)))
+(defun (port->lines port #:mode Any)
+  (port->vec (fun (p) (read-line p #:mode mode)) port))
 
 ;; ---------------------------------------------------------------------------
 ;; Streaming

@@ -27,7 +27,7 @@
 ;; An ordinary reader here would park the fiber on every line.
 (: collect (-bjo-> InputPort (List string)))
 (defbjo (collect p)
-  (match (port->chan read-line p)
+  (match (port->chan (fun (q) (read-line q)) p)
     ((Tuple c done)
      (let go ((acc (list)))
        (match (chan-next c done)
@@ -38,7 +38,7 @@
 ;; items. Both numbers come out of one traversal of the port.
 (: count-both (-bjo-> InputPort (Tuple int int)))
 (defbjo (count-both p)
-  (match (port->chan read-line p)
+  (match (port->chan (fun (q) (read-line q)) p)
     ((Tuple c done)
      (let go ((seen 0))
        (match (chan-next c done)
