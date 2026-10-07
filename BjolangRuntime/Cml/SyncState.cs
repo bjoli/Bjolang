@@ -62,7 +62,10 @@ public class SyncState
     public const int RootEventId = 0;
 
     private int _value = W;
-    private int _eventIdCounter = RootEventId;
+    // Minting starts after the root id. A with-nack published at the root owns
+    // [RootEventId, CurrentEventId), and a branch reserved after it (such as the
+    // cancellation token's) must fall outside that interval for the nack to fire.
+    private int _eventIdCounter = RootEventId + 1;
     private int _winningEventId = -1;
 
     // Intrusive singly-linked list of NACKs.

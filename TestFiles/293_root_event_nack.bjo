@@ -1,0 +1,70 @@
+;; An event synced on its own, outside any `choose`, is published at the root
+;; event id. When its scope is cancelled, the cancellation token wins the sync,
+;; so a `with-nack` at the root has lost and its nack must fire. The token's
+;; branch is minted after the event is published, and it has to land outside
+;; the with-nack's interval for that to happen.
+;;
+;; `spawn-evt` is built on a nack: the child runs under a token that only the
+;; nack cancels. If the nack does not fire, the child is never cancelled and the
+;; scope that spawned it never closes.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; The nack the generator was handed, kept so the trial can look at it.
+(: nack-waiter (-bjo-> (Box (Option (Event Unit))) (Chan int) bool void))
+(defbjo (nack-waiter slot silent in-choose)
+  (def ev (with-nack (fun (nack)
+                       (box-set! slot (Some nack))
+                       (chan-recv silent))))
+  (ignore (sync (if in-choose (choose ev (never)) ev))))
+
+(: nack-trial (-bjo-> bool string))
+(defbjo (nack-trial in-choose)
+  (def slot (make-box None))
+  (def silent (make-chan))
+  (with-cancel (cancel)
+    (spawn (nack-waiter slot silent in-choose))
+    (sync (timeout 50))
+    (ignore (cancel (Requested "stop"))))
+  (with-shield
+    (match (box-ref slot)
+      ((Some nack)
+       (sync (choose (wrap nack (fun (u) "nack fired"))
+                     (wrap (timeout 2000) (fun (u) "nack never fired")))))
+      (None "generator never ran"))))
+
+(: forever (-bjo-> (Chan int) int))
+(defbjo (forever silent) (sync (chan-recv silent)))
+
+(: spawn-waiter (-bjo-> (Chan int) bool void))
+(defbjo (spawn-waiter silent in-choose)
+  (def ev (spawn-evt (forever silent)))
+  (ignore (sync (if in-choose (choose ev (never)) ev))))
+
+(: spawned-scope (-bjo-> (Chan int) bool (Chan int) void))
+(defbjo (spawned-scope silent in-choose done)
+  (with-cancel (cancel)
+    (spawn (spawn-waiter silent in-choose))
+    (sync (timeout 50))
+    (ignore (cancel (Requested "stop"))))
+  (sync (chan-send done 1)))
+
+(: spawn-trial (-bjo-> bool string))
+(defbjo (spawn-trial in-choose)
+  (def silent (make-chan))
+  (def done (make-chan))
+  (spawn/detached (spawned-scope silent in-choose done))
+  (sync (choose (wrap (chan-recv done) (fun (x) "scope closed"))
+                (wrap (timeout 2000) (fun (u) "scope hung")))))
+
+(defbjo (main args)
+  (expect "a with-nack inside a choose is nacked when its scope is cancelled"
+          (nack-trial #t) "nack fired")
+  (expect "a with-nack synced on its own is nacked when its scope is cancelled"
+          (nack-trial #f) "nack fired")
+  (expect "a spawn-evt inside a choose lets its scope close when cancelled"
+          (spawn-trial #t) "scope closed")
+  (expect "a spawn-evt synced on its own lets its scope close when cancelled"
+          (spawn-trial #f) "scope closed")
+  0)
