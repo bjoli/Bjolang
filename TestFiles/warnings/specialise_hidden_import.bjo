@@ -1,0 +1,17 @@
+;; A published constrained body naming a binding the importer hid is still
+;; specialised: `list->hashset` calls `seq->hashset`, which `only` leaves out,
+;; and `prefix` gives neither its own name. Both copies are checked against the
+;; binding kept under its qualified reference rather than given up on.
+;;
+;; EXPECT-NO-WARNING: could not specialise
+
+(import (only (std hashset) list->hashset hashset-contains?))
+(import (prefix (std hashset) "hs/"))
+
+(def s (list->hashset (list "a" "b")))
+(def t (hs/list->hashset (list 1 2 3)))
+
+(defun (main args)
+  (println (->str (hashset-contains? s "a")))
+  (println (->str (hs/hashset-contains? t 2)))
+  0)

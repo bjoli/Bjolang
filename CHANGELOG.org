@@ -5,6 +5,15 @@ What each change guarantees, and what it leaves open.
 
 * Silent failures found by a correctness audit
 
+- *A library function is specialised even when its helpers were not
+  imported.* ~(import (only (std hashset) list->hashset))~ warned "could not
+  specialise 'list->hashset' ... Unbound variable: seq->hashset" and left
+  every call passing a dictionary: the published body of ~list->hashset~
+  calls ~seq->hashset~, which ~only~ had left out, so the copy could not be
+  checked in the importing module. The same held for a name ~prefix~ or
+  ~rename~ had respelled, and for an inline trait method calling one. A
+  binding an import leaves out is now still bound, under a qualified name
+  source cannot write, and a published body is checked against that.
 - *A ~wrap~ function runs on the fiber that synced.* It ran on whichever
   thread committed the event: the partner of a rendezvous, inside its own
   ~sync~, or a timer thread for a ~timeout~. So it saw the partner's

@@ -1,0 +1,16 @@
+;; A published body that names a binding this module did not import under that
+;; name. `list->hashset` calls `seq->hashset`, and `(only ...)` leaves the
+;; latter out. The copy of `list->hashset` is still checked here, against the
+;; binding kept under its qualified reference, and its call to `seq->hashset`
+;; is copied in turn: no dictionary parameter is left in the generated code.
+;;
+;; EXPECT-CS: listsubgthashset__at_string
+;; EXPECT-CS: seqsubgthashset__at_string
+;; EXPECT-NO-CS: _dict_
+
+(import (only (std hashset) list->hashset hashset-contains?))
+
+(export has-a?)
+
+(: has-a? (-> (List string) bool))
+(defun (has-a? xs) (hashset-contains? (list->hashset xs) "a"))

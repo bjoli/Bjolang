@@ -291,7 +291,10 @@ and private spliceTemplate
         // 1. Freshen at the splice. Mandatory, and *not* something the global
         //    uniquifying pass can do afterwards: renaming preserves meaning, it
         //    cannot recover a meaning the splice already destroyed.
-        let freshBody, subst = AlphaRename.freshen tpl.Params tpl.Body
+        let body =
+            AlphaRename.reachHidden (fun n -> Map.containsKey n ctx.Env.Bindings) tpl.Qualification tpl.Body
+
+        let freshBody, subst = AlphaRename.freshen tpl.Params body
         let freshParams = tpl.Params |> List.map (fun p -> Map.tryFind p subst |> Option.defaultValue p)
 
         // 2. Each parameter is bound at the argument's *concrete* type. Not a

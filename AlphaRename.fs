@@ -120,6 +120,18 @@ let patternNames = typedPatternBinders
 /// Two callers, both splicing a body from another module into this one:
 /// `TraitInline` at an inlined trait method, and `Monomorphise` at a
 /// specialised copy of an imported constrained function.
+/// Points a body written in another module at the bindings this module has
+/// only under their qualified reference, so that checking it here finds them.
+///
+/// An importer that hid a name — `(only (std hashset) list->hashset)` — still
+/// binds it, under the spelling `qualification` maps it to (see
+/// `Pipeline.applyDefRenaming`), and a body naming it is checked against that.
+/// A name the importer kept is left as written; `applyQualification` deals
+/// with it after the check.
+let reachHidden (isBound: string -> bool) (qualification: Map<string, string>) (body: Expr) : Expr =
+    let hidden = qualification |> Map.filter (fun _ qualified -> isBound qualified)
+    renameFree hidden body
+
 let applyQualification (qualification: Map<string, string>) (expr: TypedExpr) : TypedExpr =
     if Map.isEmpty qualification then
         expr

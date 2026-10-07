@@ -641,8 +641,16 @@ let private typeRenaming
 ///
 /// The spellings are a list rather than one name, which is rule 10: a module
 /// imported twice under different modifiers contributes both, and the
-/// declaration is duplicated once per spelling. A name no edge kept is dropped.
-let private applyDefRenaming (renaming: Map<string, string list>) (decls: Decl list) : Decl list =
+/// declaration is duplicated once per spelling.
+///
+/// A binding no edge keeps under the name it was published as is still bound,
+/// under its qualified reference — `BjoMod.std.hashset_Module::seq->hashset` —
+/// which source cannot write. A published body may name it: `list->hashset`
+/// calls `seq->hashset`, and an importer that took only `list->hashset` still
+/// has to be able to check a copy of it, or splice it. The body's
+/// qualification map names exactly this spelling, and
+/// `AlphaRename.reachHidden` points the body at it before the check.
+let private applyDefRenaming (moduleName: string) (renaming: Map<string, string list>) (decls: Decl list) : Decl list =
     let visible (n: string) =
         match Map.tryFind n renaming with
         | Some names -> names
@@ -652,7 +660,16 @@ let private applyDefRenaming (renaming: Map<string, string list>) (decls: Decl l
     |> List.collect (fun d ->
         match d with
         | DExtern(name, origin, t, constraints, r) ->
-            visible name |> List.map (fun v -> DExtern(v, origin, t, constraints, r))
+            let spellings = visible name
+
+            let hidden =
+                if List.contains name spellings then
+                    []
+                else
+                    let home = if origin.OriginModule = "" then moduleName else origin.OriginModule
+                    [ Naming.qualifiedBinding home origin.OriginalName ]
+
+            spellings @ hidden |> List.map (fun v -> DExtern(v, origin, t, constraints, r))
         | DImportExtern(specs, r) ->
             let kept =
                 specs
@@ -2172,7 +2189,7 @@ let loadModuleGraph
                 typeSpellings
                 |> List.map (fun (original, visible, kind, r) -> DImportAlias(visible, original, kind, r))
 
-            aliasDecls @ applyDefRenaming byOriginal m.ParsedDecls
+            aliasDecls @ applyDefRenaming m.ModuleName byOriginal m.ParsedDecls
         | _ -> m.ParsedDecls
 
     let allDecls =

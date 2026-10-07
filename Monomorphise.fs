@@ -455,12 +455,17 @@ let private demandOf (env: Env) (cands: Map<string, Candidate>) (name: string) (
             | Some origin -> Naming.qualifiedBinding origin bare = name
             | None -> false)
 
-    match Map.tryFind bare cands with
+    // An import this module hid is a candidate under its qualified spelling
+    // itself, which is the only name it is bound by here.
+    let key =
+        if name <> bare && Map.containsKey name cands then name else bare
+
+    match Map.tryFind key cands with
     | None -> None
-    | Some cand when not (named cand) -> None
+    | Some cand when key = bare && not (named cand) -> None
     | Some _ ->
 
-    match Map.tryFind bare env.Bindings with
+    match Map.tryFind key env.Bindings with
     | Some binding ->
         let (Scheme(schemeVars, constraints, _)) = binding.Scheme
 
@@ -503,7 +508,7 @@ let private demandOf (env: Env) (cands: Map<string, Candidate>) (name: string) (
             // written in, so it is named bare and the qualifier does not travel
             // onto it.
             Some
-                { Callee = bare
+                { Callee = key
                   CopyName = copyName bare keys
                   Bindings = List.zip schemeVars resolved }
         | None -> None
@@ -672,7 +677,16 @@ let private generate (env: Env) (cand: Candidate) (demand: Demand) : (Env * TDec
         // Sound because a recursive occurrence is bound monomorphically, so it
         // is at the enclosing function's own type variables and therefore at
         // precisely this instantiation.
-        let body = AlphaRename.renameFree (Map.ofList [ cand.Name, demand.CopyName ]) cand.Body
+        //
+        // A hidden import's candidate is named by its qualified spelling, and
+        // its body calls itself by the bare name it was written with.
+        let body =
+            AlphaRename.renameFree
+                (Map.ofList [ cand.Name, demand.CopyName; Naming.writtenName cand.Name, demand.CopyName ])
+                cand.Body
+
+        let body =
+            AlphaRename.reachHidden (fun n -> Map.containsKey n env.Bindings) cand.Qualification body
 
         // A variable that cannot be spelled is left as written; the copy then
         // fails to check and is declined, as any other unspellable type is.

@@ -37,6 +37,14 @@ let unqualify (name: string) =
     | i when name.Substring(0, i).EndsWith "_Module" -> name.Substring(i + 2)
     | _ -> name
 
+/// The binding a callee's name stands for: the name itself first, which is
+/// where an import this module hid is bound (see `Pipeline.applyDefRenaming`),
+/// and then the name with its qualifier taken off.
+let private bindingOf (env: Env) (name: string) : Binding option =
+    match Map.tryFind name env.Bindings with
+    | Some b -> Some b
+    | None -> Map.tryFind (unqualify name) env.Bindings
+
 /// The type of a dictionary for `traitName` at `implType`.
 ///
 /// A trait is emitted as an interface parameterized by its implementor *and*
@@ -352,7 +360,7 @@ let private takesDictionaries (env: Env) (scope: Scope) (name: string) (tArgs: H
     | Some(selfName, dicts) when selfName = name -> not dicts.IsEmpty
     | _ ->
         not tArgs.IsEmpty
-        && (match Map.tryFind (unqualify name) env.Bindings with
+        && (match bindingOf env name with
             | Some binding ->
                 let (Scheme(_, constraints, _)) = binding.Scheme
                 constraints |> List.exists (fun c -> (clrConstraintOf env c.TraitName).IsNone)
@@ -565,7 +573,7 @@ module DictionaryLowering =
                         )
 
                     | TIdent(calleeName, tArgs) ->
-                        match Map.tryFind (unqualify calleeName) env.Bindings with
+                        match bindingOf env calleeName with
                         | Some binding ->
                             let (Scheme(schemeVars, constraints, _)) = binding.Scheme
 
