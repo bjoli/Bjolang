@@ -1047,11 +1047,13 @@ let private factsOf (bjoPath: string) : SourceFacts =
     | true, hit -> hit
     | _ ->
         let forms, _ = Lexer.tokenize bjoPath (File.ReadAllText bjoPath) |> read
-        let _, sources = expandIncludes [ bjoPath ] bjoPath forms
+        let expanded, sources = expandIncludes [ bjoPath ] bjoPath forms
 
+        // The imports of the expanded forms, as `loadModuleGraph` reads them:
+        // an import written in an included file is this module's dependency.
         let facts =
             { Sources = sources
-              Imports = importsOf (withImplicitPrelude bjoPath forms) }
+              Imports = importsOf (withImplicitPrelude bjoPath expanded) }
 
         sourceFacts[key] <- facts
         facts

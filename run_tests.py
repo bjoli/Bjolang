@@ -1087,6 +1087,30 @@ def run_staleness():
     else:
         stale_check("a chain of three modules builds", "a banana\n", "it did not compile")
 
+    # An import written in an included file is a dependency of the module that
+    # includes it, so an edit to what it imports reaches the program.
+    (STALE_DIR / "incdep.bjo").write_text("(export dep-f)\n(import (std prelude))\n(: dep-f (-> int int))\n(defun (dep-f x) (+ x 1))\n")
+    (STALE_DIR / "incpart.bjo").write_text("(import \"incdep.bjo\")\n(: g (-> int int))\n(defun (g x) (dep-f x))\n")
+    (STALE_DIR / "inclib.bjo").write_text("(export g)\n(import (std prelude))\n(include \"incpart.bjo\")\n")
+    (STALE_DIR / "incapp.bjo").write_text("(import (std prelude))\n(import \"inclib.bjo\")\n(defun (main args) (println (->str (g 1))) 0)\n")
+
+    res = subprocess.run(["dotnet", COMPILER_DLL, str(STALE_DIR / "incapp.bjo")], capture_output=True, text=True)
+    if res.returncode == 0:
+        app_res = subprocess.run(["dotnet", str(STALE_DIR / "incapp.exe")], capture_output=True, text=True)
+        stale_check("an import in an included file builds", "2\n", app_res.stdout)
+
+        dep = (STALE_DIR / "incdep.bjo")
+        dep.write_text(dep.read_text().replace("(+ x 1)", "(+ x 100)"))
+
+        res2 = subprocess.run(["dotnet", COMPILER_DLL, str(STALE_DIR / "incapp.bjo")], capture_output=True, text=True)
+        if res2.returncode == 0:
+            app_res2 = subprocess.run(["dotnet", str(STALE_DIR / "incapp.exe")], capture_output=True, text=True)
+            stale_check("an edit to what an included file imports reaches the program", "101\n", app_res2.stdout)
+        else:
+            stale_check("an edit to what an included file imports reaches the program", "101\n", "it did not compile")
+    else:
+        stale_check("an import in an included file builds", "2\n", "it did not compile")
+
     return "staleness", s_total, s_failed, s_failures
 
 def run_check_tests():
