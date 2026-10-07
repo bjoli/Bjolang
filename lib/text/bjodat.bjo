@@ -128,10 +128,15 @@
       ((BjoInt n) (Ok n))
       (_ (Err "expected an integer")))))
 
+;; A cast would keep the low 32 bits, and a number out of range would read as
+;; a different one.
 (impl (bjodat-> int)
   (defun (bjodat-> v)
     (match v
-      ((BjoInt n) (Ok (cast System.Int32 n)))
+      ((BjoInt n)
+       (if (and (>= n -2147483648L) (<= n 2147483647L))
+           (Ok (cast System.Int32 n))
+           (Err "expected an integer that fits in an int")))
       (_ (Err "expected an integer")))))
 
 (impl (bjodat-> double)

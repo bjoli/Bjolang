@@ -1,0 +1,39 @@
+;; An `int` field refuses an integer that does not fit in an int, in both
+;; decoders, the way (text json-codec) does. It had kept the low 32 bits, so
+;; 4294967297 read as 1.
+
+(import (text bjodat))
+(import (text bjodat-core))
+(import (std simpletest))
+
+(def/bjodat-type
+  (: Limits (Record (: name string) (: n int #:default 0))))
+
+(: one-pass (-> string string))
+(defun (one-pass text)
+  (match (bjodat-parse-Limits text)
+    ((Ok m) (->str (record-ref m n)))
+    ((Err e) e)))
+
+(: through-tree (-> string string))
+(defun (through-tree text)
+  (match (parse-bjodat text)
+    ((Ok v) (match (bjodat->Limits v)
+              ((Ok m) (->str (record-ref m n)))
+              ((Err e) e)))
+    ((Err e) e)))
+
+(defun (main args)
+  (def too-big "{:name \"a\" :n 4294967297}")
+  (def too-small "{:name \"a\" :n -2147483649}")
+  (expect "one pass refuses an int that does not fit"
+          (one-pass too-big) "Limits.n: expected an integer that fits in an int")
+  (expect "and so does the tree"
+          (through-tree too-big) "Limits.n: expected an integer that fits in an int")
+  (expect "below the range as well"
+          (one-pass too-small) "Limits.n: expected an integer that fits in an int")
+  (expect "the largest int is read"
+          (one-pass "{:name \"a\" :n 2147483647}") "2147483647")
+  (expect "and the smallest"
+          (through-tree "{:name \"a\" :n -2147483648}") "-2147483648")
+  0)
