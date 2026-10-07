@@ -5,6 +5,16 @@ What each change guarantees, and what it leaves open.
 
 * Silent failures found by a correctness audit
 
+- *~(:final test)~ stops before anything of the next iteration runs.* The
+  verdict was read where the clause stands, in the next iteration, so that
+  iteration pulled an element and ran every clause written before the
+  ~:final~ for it: ~(:do (println x)) (:acc s (listing x)) (:final (= x 2))~
+  printed 3 and collected ~(1 2 3)~, and a ~:when~ before it put the stop off
+  until an element got past. It is now read at the head of the next
+  iteration, which is what Syntax.org always said: "after the current
+  iteration completes". Still one test per iteration; a ~:final~ in an inner
+  level adds one per iteration of the levels outside it. Measured unchanged
+  on a 300-million-iteration loop.
 - *A named loop's ~(lp)~ carries the loop's values past a ~let~ that
   shadows them.* In ~(:do (let ((total 1000)) (lp)))~ the accumulator
   ~total~ became 1000: a slot the call did not override was filled with

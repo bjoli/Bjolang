@@ -1,0 +1,54 @@
+;; `(:final test)` ends the loop after the iteration in which the test held:
+;; nothing of the next iteration runs, the clauses written before the `:final`
+;; included, and no further element is pulled.
+;;
+;; The verdict was read where the clause stands, in the next iteration, so the
+;; clauses before it ran for one more element, and a `:when` before it that
+;; skipped elements put the stop off until one got through.
+
+(import (std prelude))
+(import (std simpletest))
+
+(defun (main args)
+  (def seen (make-box '()))
+
+  (expect "the clauses before :final do not run again"
+          (loop (:for x (list 1 2 3 4))
+                (:do (box-set! seen (cons x (box-ref seen))))
+                (:acc s (listing x))
+                (:final (= x 2))
+                => s)
+          '(1 2))
+  (expect "and the :do saw only those elements" (list-reverse (box-ref seen)) '(1 2))
+
+  (expect "a :when before :final does not put the stop off"
+          (loop (:for x (list 1 2 3 4 5 6 7)) (:when (odd? x)) (:acc s (listing x)) (:final (= x 3)) => s)
+          '(1 3))
+
+  (expect "an inner level stops the whole loop"
+          (loop (:for x (list 1 2 3)) (:subloop) (:for y (list 1 2 3))
+                (:acc s (listing (Tuple x y)))
+                (:final (= y 2))
+                => s)
+          (list (Tuple 1 1) (Tuple 1 2)))
+
+  (expect "an outer level's :final lets the inner level finish first"
+          (loop (:for x (list 1 2 3)) (:final (= x 2)) (:subloop) (:for y (list 1 2))
+                (:acc s (listing (Tuple x y)))
+                => s)
+          (list (Tuple 1 1) (Tuple 1 2) (Tuple 2 1) (Tuple 2 2)))
+
+  (expect "a test that holds on the last element"
+          (loop (:for x (list 1 2 3)) (:acc s (listing x)) (:final (= x 3)) => s)
+          '(1 2 3))
+
+  ;; Nothing more is pulled from the source either.
+  (def pulled (make-box 0))
+  (expect "no element is pulled after the stop"
+          (loop (:for x (map (fun (v) (begin (box-set! pulled (+ (box-ref pulled) 1)) v)) (range 0 100)))
+                (:acc s (summing x))
+                (:final (= x 4))
+                => s)
+          10)
+  (expect "five elements were pulled" (box-ref pulled) 5)
+  0)

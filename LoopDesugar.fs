@@ -1582,19 +1582,12 @@ and private buildGroup
 
             EIf(fns.Expr cond, leave, next tl, cr)
 
-        // `:finish` on the hidden accumulator, then the accumulator's own step —
-        // in that order. The slot still holds the previous iteration's verdict
-        // when the finish reads it, which is what makes this "after the current
-        // iteration" rather than "before the rest of it".
+        // Records the verdict in the hidden accumulator and nothing else. It is
+        // read at the head of the next iteration, before anything of it runs:
+        // see `levelMembers`.
         | LFinal _ :: tl ->
             match accsLeft with
-            | slot :: restAcc ->
-                EIf(
-                    EIdent(slot.Name, slot.Range),
-                    finishBlock slot.Range,
-                    stepAcc slot (buildClauses level tl restAcc locals),
-                    slot.Range
-                )
+            | slot :: restAcc -> stepAcc slot (buildClauses level tl restAcc locals)
             | [] -> failwith "internal error: :final without its accumulator"
 
         | LAcc _ :: tl ->
@@ -1717,15 +1710,34 @@ and private buildGroup
             let before = extraMembers.Count
             let accsHere = accInfo |> List.filter (fun slot -> slot.Level = lvl.Index)
 
-            let body =
-                bindWiths
-                    lvl.Index
-                    (EIf(
-                        exhausted lvl.Index,
-                        exitLevel lvl.Index r,
-                        bindCurrents lvl.Index (buildClauses lvl.Index lvl.Others accsHere (levelLocals lvl.Index)),
-                        r
-                    ))
+            let iteration =
+                EIf(
+                    exhausted lvl.Index,
+                    exitLevel lvl.Index r,
+                    bindCurrents lvl.Index (buildClauses lvl.Index lvl.Others accsHere (levelLocals lvl.Index)),
+                    r
+                )
+
+            // `(:final test)` ends the loop after the iteration in which the
+            // test held. So its verdict is read here, at the head of the next
+            // iteration, before the termination test pulls an element and
+            // before any clause runs for it. Every way back to this level or
+            // an inner one comes through a member head, so an iteration that
+            // ends early — a `:when`, a named loop's jump — is seen too. A
+            // level outside the `:final`'s reads it as well, for an inner level
+            // left through its parent.
+            //
+            // One test per iteration, as when it was read at the clause.
+            let finals = accInfo |> List.filter (fun slot -> slot.Hidden && slot.Level >= lvl.Index)
+
+            let headed =
+                List.foldBack
+                    (fun (slot: AccSlot) rest ->
+                        EIf(EIdent(slot.Name, slot.Range), finishBlock slot.Range, rest, slot.Range))
+                    finals
+                    iteration
+
+            let body = bindWiths lvl.Index headed
 
             (lvl.Member, true, asArgs (slotNames lvl.Index), None, body)
             :: (extraMembers |> Seq.skip before |> List.ofSeq))
