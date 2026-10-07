@@ -677,11 +677,24 @@ public sealed class BjoPort : TextReader {
     // per colour, and the two have to be the same question asked twice. A
     // dispatcher with no twin would be half a leaf.
 
+    // A `BjoUtf8Port` is a second kind of buffered port, and each dispatcher
+    // that has a Bjolang string or character to hand back asks it directly:
+    // its answers are UTF-8 already, so they reach the program with no
+    // transcoding. Everything else answers UTF-16, converted on the way out.
+
     public static bool PortEof(TextReader reader) =>
-        reader is BjoPort p ? p.Eof() : reader.Peek() == -1;
+        reader switch {
+            BjoPort p => p.Eof(),
+            BjoUtf8Port u => u.Eof(),
+            _ => reader.Peek() == -1,
+        };
 
     public static ValueTask<bool> PortEofAsync(TextReader reader, CancellationToken cancel = default) =>
-        reader is BjoPort p ? p.EofAsync(cancel) : new ValueTask<bool>(reader.Peek() == -1);
+        reader switch {
+            BjoPort p => p.EofAsync(cancel),
+            BjoUtf8Port u => u.EofAsync(cancel),
+            _ => new ValueTask<bool>(reader.Peek() == -1),
+        };
 
     /// `null` at end of input, from both halves. `read-line/opt` turns that
     /// into `None`; `read-line` turns it into the exception its docstring
@@ -697,12 +710,21 @@ public sealed class BjoPort : TextReader {
     public static int ReadUnit(TextReader reader) => reader.Read();
 
     public static ValueTask<int> ReadUnitAsync(TextReader reader, CancellationToken cancel = default) =>
-        reader is BjoPort p ? p.ReadValueAsync(cancel) : new ValueTask<int>(reader.Read());
+        reader switch {
+            BjoPort p => p.ReadValueAsync(cancel),
+            BjoUtf8Port u => u.ReadUnitValueAsync(cancel),
+            _ => new ValueTask<int>(reader.Read()),
+        };
 
-    public static string ReadRest(TextReader reader) => reader.ReadToEnd();
+    public static BjoString.Utf8String ReadRest(TextReader reader) =>
+        reader is BjoUtf8Port u ? u.ReadToEndUtf8() : BjoString.Utf8String.FromUtf16(reader.ReadToEnd());
 
-    public static Task<string> ReadRestAsync(TextReader reader, CancellationToken cancel = default) =>
-        reader.ReadToEndAsync(cancel);
+    public static ValueTask<BjoString.Utf8String> ReadRestAsync(TextReader reader, CancellationToken cancel = default) {
+        return reader is BjoUtf8Port u ? u.ReadToEndUtf8Async(cancel) : Converted(reader, cancel);
+
+        static async ValueTask<BjoString.Utf8String> Converted(TextReader reader, CancellationToken cancel) =>
+            BjoString.Utf8String.FromUtf16(await reader.ReadToEndAsync(cancel).ConfigureAwait(false));
+    }
 
     /// The message both halves of `read-line` fail with.
     ///
@@ -712,10 +734,35 @@ public sealed class BjoPort : TextReader {
         new EndOfStreamException(
             "read-line: the port is at end of input. Guard with (port-eof? p), or use read-line/opt.");
 
-    public static string ReadLineOrThrow(TextReader reader) => reader.ReadLine() ?? throw EndOfLine();
+    private static BjoString.Utf8String LineOrThrow(BjolangRuntime.Option<BjoString.Utf8String> line) =>
+        line.IsSome ? line.Value : throw EndOfLine();
 
-    public static async ValueTask<string> ReadLineOrThrowAsync(TextReader reader, CancellationToken cancel = default) =>
-        await ReadLineOrNullAsync(reader, cancel).ConfigureAwait(false) ?? throw EndOfLine();
+    public static BjoString.Utf8String ReadLineOrThrow(TextReader reader) =>
+        reader is BjoUtf8Port u
+            ? LineOrThrow(u.ReadLineUtf8())
+            : BjoString.Utf8String.FromUtf16(reader.ReadLine() ?? throw EndOfLine());
+
+    public static ValueTask<BjoString.Utf8String> ReadLineOrThrowAsync(
+        TextReader reader,
+        CancellationToken cancel = default)
+    {
+        if (reader is not BjoUtf8Port u) return Converted(reader, cancel);
+
+        // As with characters below: a line not yet complete is awaited as it
+        // stands, never asked for a second time.
+        var pending = u.ReadLineUtf8ValueAsync(cancel);
+        return pending.IsCompletedSuccessfully
+            ? new ValueTask<BjoString.Utf8String>(LineOrThrow(pending.Result))
+            : Awaited(pending);
+
+        static async ValueTask<BjoString.Utf8String> Awaited(
+            ValueTask<BjolangRuntime.Option<BjoString.Utf8String>> pending) =>
+            LineOrThrow(await pending.ConfigureAwait(false));
+
+        static async ValueTask<BjoString.Utf8String> Converted(TextReader reader, CancellationToken cancel) =>
+            BjoString.Utf8String.FromUtf16(
+                await ReadLineOrNullAsync(reader, cancel).ConfigureAwait(false) ?? throw EndOfLine());
+    }
 
     // --- Characters ---------------------------------------------------------
     //
@@ -770,8 +817,18 @@ public sealed class BjoPort : TextReader {
         return (first, second);
     }
 
+    /// A scalar from a `BjoUtf8Port`, which decodes whole characters and so
+    /// has no pair to put back together. -1 is end of input.
+    private static BjoChar CharOrThrow(int scalar) =>
+        scalar < 0 ? throw EndOfChar() : new BjoChar((uint)scalar);
+
+    private static BjolangRuntime.Option<BjoChar> CharOption(int scalar) =>
+        scalar < 0 ? BjolangRuntime.None<BjoChar>() : BjolangRuntime.Some(new BjoChar((uint)scalar));
+
     public static BjoChar ReadCharOrThrow(TextReader reader)
     {
+        if (reader is BjoUtf8Port u) return CharOrThrow(u.ReadScalar());
+
         var (first, second) = Units(reader);
         if (first < 0) throw EndOfChar();
         return Assemble(first, second);
@@ -779,6 +836,14 @@ public sealed class BjoPort : TextReader {
 
     public static ValueTask<BjoChar> ReadCharOrThrowAsync(TextReader reader, CancellationToken cancel = default)
     {
+        if (reader is BjoUtf8Port u)
+        {
+            var scalar = u.ReadScalarValueAsync(cancel);
+            return scalar.IsCompletedSuccessfully
+                ? new ValueTask<BjoChar>(CharOrThrow(scalar.Result))
+                : AwaitedScalar(scalar);
+        }
+
         // A character already buffered completes here, with no state machine.
         // One that is not is awaited as it stands: asking again would start a
         // second read, and the first would take a character nobody receives.
@@ -799,6 +864,9 @@ public sealed class BjoPort : TextReader {
             if (first < 0) throw EndOfChar();
             return Assemble(first, second);
         }
+
+        static async ValueTask<BjoChar> AwaitedScalar(ValueTask<int> pending) =>
+            CharOrThrow(await pending.ConfigureAwait(false));
     }
 
     // --- The `/opt` reads -----------------------------------------------------
@@ -814,12 +882,14 @@ public sealed class BjoPort : TextReader {
             : BjolangRuntime.Some(BjoString.Utf8String.FromUtf16(line));
 
     public static BjolangRuntime.Option<BjoString.Utf8String> ReadLineOpt(TextReader reader) =>
-        LineOption(reader.ReadLine());
+        reader is BjoUtf8Port u ? u.ReadLineUtf8() : LineOption(reader.ReadLine());
 
     public static ValueTask<BjolangRuntime.Option<BjoString.Utf8String>> ReadLineOptAsync(
         TextReader reader,
         CancellationToken cancel = default)
     {
+        if (reader is BjoUtf8Port u) return u.ReadLineUtf8ValueAsync(cancel);
+
         var pending = ReadLineOrNullAsync(reader, cancel);
         return pending.IsCompletedSuccessfully
             ? new ValueTask<BjolangRuntime.Option<BjoString.Utf8String>>(LineOption(pending.Result))
@@ -831,6 +901,8 @@ public sealed class BjoPort : TextReader {
 
     public static BjolangRuntime.Option<BjoChar> ReadCharOpt(TextReader reader)
     {
+        if (reader is BjoUtf8Port u) return CharOption(u.ReadScalar());
+
         var (first, second) = Units(reader);
         return first < 0 ? BjolangRuntime.None<BjoChar>() : BjolangRuntime.Some(Assemble(first, second));
     }
@@ -839,6 +911,14 @@ public sealed class BjoPort : TextReader {
         TextReader reader,
         CancellationToken cancel = default)
     {
+        if (reader is BjoUtf8Port u)
+        {
+            var scalar = u.ReadScalarValueAsync(cancel);
+            return scalar.IsCompletedSuccessfully
+                ? new ValueTask<BjolangRuntime.Option<BjoChar>>(CharOption(scalar.Result))
+                : AwaitedScalar(scalar);
+        }
+
         // As `ReadCharOrThrowAsync`: a read not yet complete is awaited, never
         // asked for again.
         var pending = reader is BjoPort p ? p.ReadScalarValueAsync(cancel) : UnitsAsync(reader, cancel);
@@ -857,6 +937,9 @@ public sealed class BjoPort : TextReader {
             var (first, second) = await pending.ConfigureAwait(false);
             return first < 0 ? BjolangRuntime.None<BjoChar>() : BjolangRuntime.Some(Assemble(first, second));
         }
+
+        static async ValueTask<BjolangRuntime.Option<BjoChar>> AwaitedScalar(ValueTask<int> pending) =>
+            CharOption(await pending.ConfigureAwait(false));
     }
 }
 

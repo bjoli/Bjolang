@@ -20,6 +20,14 @@
     is read synchronously in either colour. A @code{TextReader} from a .NET
     API works too.
 
+    A file port reads UTF-8, and hands a line to the program as the bytes
+    the file held, with no detour through UTF-16. A byte sequence that is
+    not UTF-8 reads as U+FFFD, and a UTF-8 byte order mark at the start is
+    skipped. A UTF-16 or UTF-32 byte order mark makes the first read raise,
+    naming the encoding; such a file is read with
+    @code{open-byte-input-file}, @code{bom-encoding} and
+    @code{byte->text-input-port} from @code{(std ports)}.
+
     A buffered port makes a byte port's promises. A read that is cancelled
     while it waits, by @code{with-deadline} or a cancelled scope, consumes
     nothing: the part of a line that had arrived stays in the port for the
@@ -149,6 +157,9 @@
     ambient scope: when the scope returns, the file is closed, whether the
     program closed it or not. The scope is read before the file is opened,
     so a program with no scope fails without having opened anything.
+
+    The file is read as UTF-8; see @code{TextInputPort} for invalid bytes
+    and byte order marks, and for reading a file in another encoding.
     """))
 
 (:doc open-input-file/raw

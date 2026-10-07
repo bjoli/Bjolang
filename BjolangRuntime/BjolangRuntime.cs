@@ -74,11 +74,11 @@ public static partial class BjolangRuntime {
     // The failing read. `ReadLine` reports end of input by returning null, and
     // Bjolang has no null to test against, so the sentinel is converted into an
     // exception right at the boundary rather than let loose in the program.
+    // The same dispatcher both colours of `read-line` use, so a UTF-8 port
+    // answers its own line here too.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Utf8String readersubreadsubline_BANG(System.IO.TextReader reader) =>
-        Utf8String.FromUtf16(reader.ReadLine()
-        ?? throw new System.IO.EndOfStreamException(
-            "read-line: the port is at end of input. Guard with (port-eof? p), or use read-line/opt."));
+        Bjolang.Runtime.BjoPort.ReadLineOrThrow(reader);
 
     // The failing char read.
     //

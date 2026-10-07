@@ -1729,12 +1729,45 @@ public static class BytePorts {
     public static Encoding Utf8 { get; } = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
     /// <summary>
+    /// `bom-encoding`: the encoding a byte order mark at the start of
+    /// <paramref name="head"/> names, or `None` when it starts with none.
+    ///
+    /// Each answer, handed to <see cref="ToTextReader"/>, skips the mark it
+    /// was recognised by: a UTF-8 port skips one whatever its encoding says,
+    /// and `StreamReader` skips the preamble of the others. UTF-32's
+    /// little-endian mark begins with UTF-16's, so it is tested first.
+    /// </summary>
+    public static BjolangRuntime.Option<Encoding> BomEncoding(BjolangRuntime.Option<byte[]> head) {
+        if (!head.IsSome) return BjolangRuntime.None<Encoding>();
+        ReadOnlySpan<byte> bytes = head.Value;
+
+        Encoding? named =
+            bytes.StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF]) ? Utf8
+            : bytes.StartsWith((ReadOnlySpan<byte>)[0xFF, 0xFE, 0x00, 0x00]) ? Encoding.UTF32
+            : bytes.StartsWith((ReadOnlySpan<byte>)[0x00, 0x00, 0xFE, 0xFF]) ? Utf32BigEndian
+            : bytes.StartsWith((ReadOnlySpan<byte>)[0xFF, 0xFE]) ? Encoding.Unicode
+            : bytes.StartsWith((ReadOnlySpan<byte>)[0xFE, 0xFF]) ? Encoding.BigEndianUnicode
+            : null;
+
+        return named is null ? BjolangRuntime.None<Encoding>() : BjolangRuntime.Some(named);
+    }
+
+    private static readonly Encoding Utf32BigEndian = new UTF32Encoding(bigEndian: true, byteOrderMark: true);
+
+    /// <summary>
     /// A text reader over the byte port, reading THROUGH it rather than past it.
     /// See <see cref="BjoByteInputPort.AsStream"/> for why that distinction is
     /// the whole of this function.
+    ///
+    /// UTF-8 that replaces invalid bytes, which is what `utf8` and
+    /// `Encoding.UTF8` both are, is read by a <see cref="BjoUtf8Port"/>, whose
+    /// lines need no transcoding. Any other encoding, including a UTF-8 that
+    /// throws on invalid bytes, is decoded by a `StreamReader`.
     /// </summary>
     public static TextReader ToTextReader(BjoByteInputPort port, Encoding encoding) {
         ArgumentNullException.ThrowIfNull(encoding);
+        if (encoding is UTF8Encoding && encoding.DecoderFallback is DecoderReplacementFallback { DefaultString: "\uFFFD" })
+            return new BjoUtf8Port(port.AsStream());
         return new BjoPort(new StreamReader(port.AsStream(), Decoding(encoding), detectEncodingFromByteOrderMarks: false));
     }
 

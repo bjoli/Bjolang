@@ -60,7 +60,7 @@
   stream->byte-input-port stream->byte-output-port
 
   ;; The layer.
-  byte->text-input-port byte->text-output-port)
+  byte->text-input-port byte->text-output-port bom-encoding)
 
 (import (std prelude))
 
@@ -213,6 +213,7 @@
   ;; The text layer.
   (clr-to-reader (: Bjolang.Runtime.BytePorts.ToTextReader (-> ByteInputPort Encoding TextInputPort)))
   (clr-to-writer (: Bjolang.Runtime.BytePorts.ToTextWriter (-> ByteOutputPort Encoding TextOutputPort)))
+  (clr-bom-encoding (: Bjolang.Runtime.BytePorts.BomEncoding (-> (Option (Array byte)) (Option Encoding))))
 
   ;; The encoding almost every caller wants. `System.Text.Encoding` has the rest.
   (clr-utf8 (: Bjolang.Runtime.BytePorts.Utf8 #:get)))
@@ -454,10 +455,28 @@
 ;; scope that opened it.
 ;;
 ;; With a UTF-8 encoding, one leading byte order mark is skipped, whether or not
-;; the encoding writes one.
+;; the encoding writes one, and a UTF-16 or UTF-32 one makes the first read
+;; raise rather than hand out text that is not there. `bom-encoding` says which
+;; encoding a mark names.
 (: byte->text-input-port (-> ByteInputPort Encoding TextInputPort))
 (defun (byte->text-input-port p encoding)
   (clr-to-reader p encoding))
+
+;; The encoding a byte order mark at the start of `p` names - UTF-8, UTF-16 or
+;; UTF-32, either byte order - or `None` when there is none. Peeks, so nothing
+;; is taken: hand `p` and the answer to `byte->text-input-port`, which skips
+;; the mark.
+;;
+;; This is how to read a file that is not UTF-8, since a text file port reads
+;; UTF-8 and nothing else:
+;;
+;;   (match (open-byte-input-file path)
+;;     ((Ok p) (byte->text-input-port p (option-ref-or (bom-encoding p) utf8)))
+;;     ((Err e) (raise e)))
+(: bom-encoding (-> ByteInputPort (Option Encoding)))
+(defbjouble (bom-encoding p)
+  (#:sync (clr-bom-encoding (clr-peek p 0 4)))
+  (#:bjo  (clr-bom-encoding (clr-peek-await p 0 4))))
 
 ;; The other direction. Flushing or closing the text port pushes its characters
 ;; into the byte port *and* drains the byte port, so nothing is left stranded in

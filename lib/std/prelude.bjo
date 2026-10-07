@@ -1694,6 +1694,7 @@
 
   ;; Buffered pair.
   (BjoPort (: Bjolang.Runtime.BjoPort (-> TextReader BjoPort)))
+  (BjoUtf8Port (: Bjolang.Runtime.BjoUtf8Port (-> Stream BjoUtf8Port)))
   (BjoWriter (: Bjolang.Runtime.BjoWriter (-> TextWriter BjoWriter)))
 
   (Exception (: System.Exception)))
@@ -1714,6 +1715,7 @@
 
 (import/extern
   (own-port-in  (: BjolangRuntime.OwnReader  (-> BjoPort BjoPort)))
+  (own-utf8-port-in (: BjolangRuntime.OwnUtf8Reader (-> BjoUtf8Port BjoUtf8Port)))
   (own-port-out (: BjolangRuntime.OwnWriter  (-> BjoWriter BjoWriter)))
   (close-in     (: BjolangRuntime.CloseInput  (-> TextInputPort void)))
   (close-out    (: BjolangRuntime.CloseOutput (-> TextOutputPort void))))
@@ -1721,10 +1723,14 @@
 ;; A text port over a stream an opener answered, registered on the ambient
 ;; scope. Whatever the stream is - a file, or a `MemoryStream` a fake
 ;; filesystem made - the port is owned the same way.
+;;
+;; The port reads UTF-8 itself rather than through a `StreamReader`, so a line
+;; reaches the program as the bytes the file held, without a round trip
+;; through UTF-16.
 (: stream->input-port (-> (Result Exception Stream) (Result Exception TextInputPort)))
 (defun (stream->input-port opened)
   (match opened
-    ((Ok s) (Ok (cast TextInputPort (own-port-in (BjoPort. (cast TextInputPort (StreamReader. s)))))))
+    ((Ok s) (Ok (cast TextInputPort (own-utf8-port-in (BjoUtf8Port. s)))))
     ((Err e) (Err e))))
 
 (: stream->output-port (-> (Result Exception Stream) (Result Exception TextOutputPort)))

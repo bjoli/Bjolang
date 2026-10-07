@@ -1,0 +1,133 @@
+;; A file port reads UTF-8 itself, without going through UTF-16, and must read
+;; the same text a decoding reader did: every line ending, characters of every
+;; length, invalid bytes as U+FFFD, a UTF-8 byte order mark skipped. A UTF-16
+;; or UTF-32 mark is refused with a message, rather than read as garbage, and
+;; `bom-encoding` is how such a file is read instead.
+
+(import (std prelude))
+(import (std ports))
+(import (std simpletest))
+
+(: text string)
+(def text "räksmörgås\r\nåäö 漢字\rsista 🎉\nlast")
+
+(: expected-lines (Vec string))
+(def expected-lines ["räksmörgås" "åäö 漢字" "sista 🎉" "last"])
+
+(: opened (-> string TextInputPort))
+(defun (opened path)
+  (match (open-input-file path)
+    ((Ok p) p)
+    ((Err e) (raise e))))
+
+;; --- Lines and characters, in both colours ------------------------------------
+
+(: lines-sync (-> string (Vec string)))
+(defun (lines-sync path)
+  (def p (opened path))
+  (def out (vecbuilder-empty))
+  (let go ()
+    (match (read-line/opt p)
+      ((Some l) (vecbuilder-add! out l) (go))
+      (None (close-input-port p) (vecbuilder->vec out)))))
+
+(: lines-bjo (-bjo-> string (Vec string)))
+(defbjo (lines-bjo path)
+  (def p (opened path))
+  (def out (vecbuilder-empty))
+  (let go ()
+    (if (port-eof? p)
+        (let () (close-input-port p) (vecbuilder->vec out))
+        (let () (vecbuilder-add! out (read-line p)) (go)))))
+
+(: chars-sync (-> string (List char)))
+(defun (chars-sync path)
+  (def p (opened path))
+  (let go ((acc (list)))
+    (match (read-char/opt p)
+      ((Some c) (go (cons c acc)))
+      (None (close-input-port p) (list-reverse acc)))))
+
+(: chars-bjo (-bjo-> string (List char)))
+(defbjo (chars-bjo path)
+  (def p (opened path))
+  (let go ((acc (list)))
+    (if (port-eof? p)
+        (let () (close-input-port p) (list-reverse acc))
+        (go (cons (read-char p) acc)))))
+
+(: all-bjo (-bjo-> string string))
+(defbjo (all-bjo path)
+  (def p (opened path))
+  (def all (read-all p))
+  (close-input-port p)
+  all)
+
+(: codes (-> (List char) string))
+(defun (codes cs)
+  (string-join (list->vec (list-map (fun (c) (int->string (char->integer c))) cs)) " "))
+
+;; --- What a read raised --------------------------------------------------------
+
+(: first-line (-> string string))
+(defun (first-line path)
+  (def p (opened path))
+  (def got
+    (match (try (read-line p) #:catch (System.Exception))
+      ((Ok l) (str "read [" l "]"))
+      ((Err e) (.-Message e))))
+  (close-input-port p)
+  got)
+
+;; The way to read a file in another encoding: as bytes, through the encoding
+;; its mark names.
+(: first-line-by-bom (-bjo-> string string))
+(defbjo (first-line-by-bom path)
+  (match (open-byte-input-file path)
+    ((Ok bp)
+     (def p (byte->text-input-port bp (option-ref-or (bom-encoding bp) utf8)))
+     (def l (read-line p))
+     (close-byte-input-port! bp)
+     l)
+    ((Err e) (raise e))))
+
+(: replacement string)
+(def replacement (list->string (list (integer->char 65533))))
+
+(defbjo (main args)
+  (def path (path-combine (current-directory) "314-scratch.txt"))
+
+  (file-write-text path text)
+  (expect "read-line/opt in a defun" (lines-sync path) expected-lines)
+  (expect "port-eof? and read-line on a fiber" (lines-bjo path) expected-lines)
+  (expect "read-char/opt in a defun" (codes (chars-sync path)) (codes (string->list text)))
+  (expect "read-char on a fiber" (codes (chars-bjo path)) (codes (string->list text)))
+  (expect "read-all on a fiber" (all-bjo path) text)
+  (expect "file-read-text" (file-read-text path) text)
+
+  ;; A UTF-8 mark is skipped, once; the second one is text.
+  (file-write-bytes path #[239 187 191 239 187 191 104 105 10])
+  (expect "a UTF-8 mark is skipped once"
+          (codes (string->list (vec-ref (file-read-lines path) 0)))
+          "65279 104 105")
+  (file-write-bytes path #[239 187 191])
+  (expect "a lone UTF-8 mark is an empty file" (file-read-lines path) [])
+
+  ;; Invalid bytes, and a character cut off by the end of the file.
+  (file-write-bytes path #[104 105 255 10 240 159 152])
+  (expect "invalid bytes read as U+FFFD"
+          (file-read-lines path)
+          [(str "hi" replacement) replacement])
+
+  ;; UTF-16, little-endian, with its mark: "hi\n".
+  (file-write-bytes path #[255 254 104 0 105 0 10 0])
+  (expect "a UTF-16 file is refused by name"
+          (string-contains? (first-line path) "starts with a UTF-16 (little-endian) byte order mark")
+          #t)
+  (expect "and read through the encoding its mark names" (first-line-by-bom path) "hi")
+
+  (file-write-bytes path #[104 105 10])
+  (expect "bom-encoding without a mark falls back to UTF-8" (first-line-by-bom path) "hi")
+
+  (file-delete path)
+  0)

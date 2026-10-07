@@ -28,6 +28,7 @@ public static class Program
         SpawnBatchTests.RunAll();
         BytePortTests.RunAll();
         TextPortTests.RunAll();
+        Utf8PortTests.RunAll();
         NetTests.RunAll();
 
         return Harness.Report();

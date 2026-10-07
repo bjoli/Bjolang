@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* File ports read UTF-8 without a detour through UTF-16
+
+- *A line from a file reaches the program as the bytes the file held.* A
+  file port decoded UTF-8 to UTF-16 in a ~StreamReader~, made a .NET string
+  of each line and encoded it back to UTF-8 for the program. It now reads
+  UTF-8 itself: a line is found by searching the bytes, checked, and copied
+  once. Over a 3-million-line file, ~read-line/opt~ went from about 236 ms to
+  130 ms for ASCII text and from 710 ms to 310 ms for Swedish text with some
+  CJK and emoji; ~read-all~ from about 600 ms to 210 ms and from 720 ms to
+  300 ms. ~read-char~ costs what it did on ASCII and is about 10% faster on
+  the rest. ~byte->text-input-port~ with UTF-8 uses the same port.
+- *What is read is what was read before.* Every line ending, invalid bytes
+  as U+FFFD (one per maximal invalid sequence, as ~StreamReader~ does), a
+  UTF-8 byte order mark skipped once, and the text port's guarantees: a
+  cancelled read consumes nothing, every line or character goes to exactly
+  one reader, a character split between two reads of the file waits for its
+  other half, and a failure is reported after the text before it.
+- *A UTF-16 or UTF-32 file is refused, not decoded.* ~StreamReader~ switched
+  encoding on a UTF-16 or UTF-32 byte order mark. A file port now raises on
+  its first read, naming the encoding, rather than guessing; reading such a
+  file as UTF-8 would be replacement characters from start to end. The new
+  ~bom-encoding~ in ~(std ports)~ peeks at a byte port and names the
+  encoding a mark is for, so the file is read with ~open-byte-input-file~
+  and ~(byte->text-input-port p (option-ref-or (bom-encoding p) utf8))~.
+- Standard input and string ports are unchanged, and so is output: a UTF-8
+  output port is still to come.
+
 * Silent failures found by a correctness audit
 
 - *A text port makes the byte port's promises.* Three things went wrong

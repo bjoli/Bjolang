@@ -1226,6 +1226,12 @@ public static partial class BjolangRuntime {
         return port;
     }
 
+    /// <summary>The same, for a port that reads UTF-8 itself.</summary>
+    public static Bjolang.Runtime.BjoUtf8Port OwnUtf8Reader(Bjolang.Runtime.BjoUtf8Port port) {
+        port.Owner = RegisterPort(port);
+        return port;
+    }
+
     public static Bjolang.Runtime.BjoWriter OwnWriter(Bjolang.Runtime.BjoWriter port) {
         port.Owner = RegisterPort(port);
         return port;
@@ -1294,7 +1300,9 @@ public static partial class BjolangRuntime {
     /// unowned; only ports that arrive through the effect are adopted.
     /// </summary>
     public static System.IO.TextReader AdoptReader(System.IO.TextReader port) {
-        if (port is Bjolang.Runtime.BjoPort { Owner: not null }) return port;
+        if (port is Bjolang.Runtime.BjoPort { Owner: not null } or Bjolang.Runtime.BjoUtf8Port { Owner: not null })
+            return port;
+        if (port is Bjolang.Runtime.BjoUtf8Port utf8) return OwnUtf8Reader(utf8);
         return OwnReader(Bjolang.Runtime.BjoPort.Wrap(port));
     }
 
@@ -1338,6 +1346,7 @@ public static partial class BjolangRuntime {
     public static Unit CloseInput(System.IO.TextReader? port) {
         if (port is null) return default;
         if (port is Bjolang.Runtime.BjoPort { Owner: { } owned }) return owned.Release();
+        if (port is Bjolang.Runtime.BjoUtf8Port { Owner: { } ownedUtf8 }) return ownedUtf8.Release();
         if (ReferenceEquals(port, StdIn) || ReferenceEquals(port, Console.In)) return default;
         port.Dispose();
         return default;
