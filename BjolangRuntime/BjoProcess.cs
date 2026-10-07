@@ -87,19 +87,51 @@ public static class BjoProc {
     /// indication of which stage is at fault. The one place a stream must *not*
     /// be closed on exhaustion is the pipeline's last reader, which belongs to
     /// whoever called `run` — and nothing pumps that.
+    ///
+    /// `from` is closed too, however the copy ends. Every caller hands over a
+    /// stream nothing else reads: an upstream stage's output or a file opened
+    /// for the redirect.
+    ///
+    /// A process that stops reading early (`head -n 1`) is an ordinary end of
+    /// the copy, as it is in a shell, not a failure: the write into its input
+    /// fails, the copy stops, and closing `from` lets the upstream process see
+    /// a broken pipe and exit rather than block on a full one. A write that
+    /// fails into anything else, such as a file, is still an error.
     public static async Task PumpAsync(TextReader from, TextWriter to, CancellationToken cancel) {
         var buffer = new char[8192];
+        bool readerGone = false;
         try {
             while (true) {
                 int n = await from.ReadAsync(buffer.AsMemory(), cancel).ConfigureAwait(false);
                 if (n == 0) { break; }
-                await to.WriteAsync(buffer.AsMemory(0, n), cancel).ConfigureAwait(false);
+                try {
+                    await to.WriteAsync(buffer.AsMemory(0, n), cancel).ConfigureAwait(false);
+                } catch (IOException) when (IsProcessInput(to)) {
+                    readerGone = true;
+                    break;
+                }
             }
-            await to.FlushAsync(cancel).ConfigureAwait(false);
+            if (!readerGone) {
+                try {
+                    await to.FlushAsync(cancel).ConfigureAwait(false);
+                } catch (IOException) when (IsProcessInput(to)) {
+                    readerGone = true;
+                }
+            }
         } finally {
-            to.Dispose();
+            try {
+                // Closing flushes what is still buffered, which fails again
+                // once the reader is gone. The stream is closed either way.
+                try { to.Dispose(); } catch (IOException) when (readerGone) { }
+            } finally {
+                from.Dispose();
+            }
         }
     }
+
+    /// Standard input of a started process: a pipe whose reader is the process.
+    static bool IsProcessInput(TextWriter to) =>
+        to is StreamWriter { BaseStream: System.IO.Pipes.PipeStream };
 
     /// A number as it has to appear in an argv.
     ///

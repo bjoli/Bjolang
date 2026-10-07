@@ -1,0 +1,57 @@
+;; A pipeline whose downstream stage stops reading early ends, as it does in a
+;; shell: `seq 1 200000 | head -n 1` gives the first line. The upstream stage
+;; writes more than a pipe holds, so it only ends once the junction between the
+;; two closes its side and the upstream process sees a broken pipe.
+;;
+;; A `from-file` redirect closes its file once the copy into the command is
+;; done, so running it in a loop leaves no descriptors open.
+
+(import (std prelude))
+(import (std run))
+(import (std simpletest))
+
+(import/extern
+  (temp-directory (: System.IO.Path.GetTempPath (-> string))))
+
+(: shown (-> (Result Exception string) string))
+(defun (shown r)
+  (match r
+    ((Ok s) s)
+    ((Err e) (str "Err " (.-Message e)))))
+
+;; Raced against a timeout, so that a pipeline that hangs fails a line rather
+;; than the whole suite.
+(: bounded (-> (-> (Result Exception string)) string))
+(defun (bounded f)
+  (sync/blocking
+    (choose (wrap (blocking f)
+                  (fun (r) (match r ((Ok v) (shown v)) ((Err e) "raised"))))
+            (wrap (timeout 20000) (fun (u) "hung")))))
+
+;; The shell's parent is this program, so `$PPID` names its descriptors.
+(: open-descriptors-on (-> string int))
+(defun (open-descriptors-on name)
+  (match (run/string '(sh "-c" ,(str "ls -l /proc/$PPID/fd | grep -c " name " || true")))
+    ((Ok s) (string->int (string-trim s)))
+    ((Err e) -1)))
+
+;; The upstream stages run under `sh` only to silence them: a process started
+;; by .NET inherits its ignored SIGPIPE, so `seq` and `yes` report the broken
+;; pipe on standard error instead of dying of the signal quietly.
+(defun (main args)
+  (expect "a stage that stops reading early ends the pipeline"
+          (bounded (fun () (run/string '(pipe (sh "-c" "seq 1 200000 2>/dev/null") (head "-n" "1")))))
+          "1\n")
+  (expect "and so does one that never stops writing"
+          (bounded (fun () (run/string '(pipe (sh "-c" "yes 2>/dev/null") (head "-n" "2")))))
+          "y\ny\n")
+  (def name "bjo-run-early-exit-input")
+  (def input (path-combine (temp-directory) name))
+  (file-write-text input "one\ntwo\n")
+  (loop (:for i (range 0 20))
+        (:do (ignore (run/status '(from-file ,input (wc "-l"))))))
+  (expect "a from-file redirect closes its file"
+          (open-descriptors-on name)
+          0)
+  (file-delete input)
+  0)
