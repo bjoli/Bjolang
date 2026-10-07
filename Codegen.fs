@@ -894,6 +894,17 @@ and private serializeExprNode (here: string) (e: Ast.Expr) : string =
     | Ast.ELetMono(n, value, body, _) ->
         list [ "let/mono"; n; serializeExprAt here value; serializeExprAt here body ]
 
+    // A local function goes back out as the `defun` it was read from, in a body
+    // block of its own. `SeqFusion` recognizes a loop's functions only in that
+    // shape, and a `(fun ...)` bound by `let` reads back as a lambda value.
+    // A function whose body names an outer binding of its own name stays a
+    // `let`: as a `defun` that name would read back as the function itself.
+    | Ast.ELet(n, true, args, None, value, body, _)
+        when not (Set.contains n (Ast.freeNames (Set.ofList (Ast.mandatoryNames args)) value)) ->
+        list [ "let"; "()"
+               list [ "defun"; list (n :: serializableParams args); serializeExprAt here value ]
+               serializeExprAt here body ]
+
     | Ast.ELet(n, isFun, args, ann, value, body, _) ->
         let valueStr =
             if isFun then list [ "fun"; list (serializableParams args); serializeExprAt here value ]

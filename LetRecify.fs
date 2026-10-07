@@ -301,7 +301,22 @@ let rec letrecifyDecl (decl: Decl) : Decl =
                 | KeywordArg(n, defaultExpr) -> KeywordArg(n, letrecifyExpr defaultExpr)
                 | other -> other)
         DDefun(name, letrecifiedArgs, letrecifyExpr body, colour, r)
+    | DDefDouble(name, args, syncBody, bjoBody, r) ->
+        let letrecifiedArgs =
+            args |> List.map (function
+                | KeywordArg(n, defaultExpr) -> KeywordArg(n, letrecifyExpr defaultExpr)
+                | other -> other)
+        DDefDouble(name, letrecifiedArgs, letrecifyExpr syncBody, letrecifyExpr bjoBody, r)
     | DModule(name, decls, r) -> DModule(name, letrecifyModule decls, r)
-    | _ -> decl // Types, imports, exports, and signatures carry no executable body [cite: 29, 30, 31, 37, 38]
+    // A trait default and an impl method are `DDefun`s with bodies like any
+    // other, and a run of body-local defs in them is one group this pass has
+    // to put in dependency order.
+    | DTrait(name, implementor, arity, assocTypes, signatures, defaults, clr, r) ->
+        DTrait(name, implementor, arity, assocTypes, signatures, List.map letrecifyDecl defaults, clr, r)
+    | DImpl(traitName, target, assocTypes, constraints, methodWheres, methods, r) ->
+        DImpl(traitName, target, assocTypes, constraints, methodWheres, List.map letrecifyDecl methods, r)
+    // An inline template is letrecified where it is read back from metadata.
+    // Types, imports, exports and signatures carry no executable body.
+    | _ -> decl
 
 and letrecifyModule (decls: Decl list) : Decl list = List.map letrecifyDecl decls
