@@ -5,6 +5,15 @@ What each change guarantees, and what it leaves open.
 
 * Silent failures found by a correctness audit
 
+- *Two chooses that can pair always do.* ~(choose (send a) (recv b))~ in
+  one fiber and ~(choose (send b) (recv a))~ in another, started together,
+  could both park for good, each with a partner it could have taken: a
+  channel match skipped a partner that was busy pairing in another channel at
+  that moment, and nothing came back for it. A compiled program lost the first
+  such rendezvous every time. A busy partner is now waited for, the lower
+  ranked of two busy sides waiting while the other gives way, so the two
+  cannot wait on each other. A plain send or receive meeting a busy partner
+  in a choose waits for it the same way.
 - *An event synced on its own is nacked when its scope is cancelled.* A
   ~with-nack~, ~spawn-evt~ or ~task->event~ passed straight to ~sync~,
   outside a ~choose~, was judged to have won against the cancellation token,

@@ -102,6 +102,107 @@ public class SyncState
     /// <summary>C -&gt; W. Release a claim we could not turn into a pairing.</summary>
     public void ResetClaim() => Volatile.Write(ref _value, W);
 
+    /// <summary>
+    /// W -&gt; S on a partner, waiting out a transient <c>C</c>, for a caller that
+    /// holds no claim of its own: a direct send or receive.
+    ///
+    /// A partner in <c>C</c> is busy pairing in another channel and comes back
+    /// to <c>W</c> or goes on to <c>S</c> within a few instructions. Reporting
+    /// failure instead would skip it, and since its op is already parked here,
+    /// nothing would come back to pair it: the two sides would both park, each
+    /// with a partner it could have taken.
+    ///
+    /// Returns false only when the partner was synchronized by someone else.
+    /// </summary>
+    public bool TrySyncWaiting()
+    {
+        var sw = new SpinWait();
+        while (true)
+        {
+            int v = Volatile.Read(ref _value);
+            if (v == S) return false;
+            if (v == W && Interlocked.CompareExchange(ref _value, S, W) == W) return true;
+            sw.SpinOnce();
+        }
+    }
+
+    /// <summary>What became of an attempt to pair with a partner.</summary>
+    public enum Pairing
+    {
+        /// <summary>The partner is ours. The caller still holds its own claim.</summary>
+        Paired,
+        /// <summary>The partner was synchronized by someone else. The caller still holds its own claim.</summary>
+        Lost,
+        /// <summary>
+        /// The caller's claim was given back, so that the partner could take
+        /// it, and the partner has finished what it was doing. The caller looks
+        /// at the same partner again, claiming itself first; if that claim
+        /// fails, the partner took it.
+        /// </summary>
+        Retry,
+    }
+
+    private static long s_nextOrder;
+    private long _order;
+
+    /// <summary>
+    /// A rank no other state shares, which decides who waits for whom when
+    /// two claimed states meet. Taken on first use, which is when two claims
+    /// first meet, so a sync that never contends never pays for it.
+    /// </summary>
+    private long Order
+    {
+        get
+        {
+            long order = Volatile.Read(ref _order);
+            if (order != 0) return order;
+            long fresh = Interlocked.Increment(ref s_nextOrder);
+            long previous = Interlocked.CompareExchange(ref _order, fresh, 0);
+            return previous == 0 ? fresh : previous;
+        }
+    }
+
+    /// <summary>
+    /// W -&gt; S on <paramref name="partner"/>, for a caller holding <c>C</c> on
+    /// this state.
+    ///
+    /// A partner in <c>C</c> is pairing somewhere else, and may be trying to
+    /// take this very state. Skipping it loses the rendezvous: both sides park,
+    /// and neither looks at the other's channel again. Both waiting for each
+    /// other is a deadlock. So the lower <see cref="Order"/> waits, keeping its
+    /// claim, and the higher gives its claim back and waits for the partner to
+    /// leave <c>C</c> before trying again.
+    ///
+    /// Nothing that holds a claim waits on a lock: a claim is taken inside a
+    /// channel's lock and given up before it is left. And a claim holder only
+    /// ever waits for a state of higher order. So every chain of waiting ends
+    /// at a thread that is making progress.
+    /// </summary>
+    public Pairing TryPair(SyncState partner)
+    {
+        var sw = new SpinWait();
+        while (true)
+        {
+            int v = Volatile.Read(ref partner._value);
+            if (v == S) return Pairing.Lost;
+            if (v == W)
+            {
+                if (Interlocked.CompareExchange(ref partner._value, S, W) == W) return Pairing.Paired;
+                continue;
+            }
+
+            if (Order < partner.Order)
+            {
+                sw.SpinOnce();
+                continue;
+            }
+
+            ResetClaim();
+            while (Volatile.Read(ref partner._value) == C) sw.SpinOnce();
+            return Pairing.Retry;
+        }
+    }
+
     public bool IsSynchronized => Volatile.Read(ref _value) == S;
 
     /// <summary>

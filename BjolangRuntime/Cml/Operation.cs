@@ -112,7 +112,12 @@ public abstract class Operation
 
     public bool IsSynchronized => State != null && State.IsSynchronized;
 
-    public bool TrySync() => State != null && State.TrySync();
+    /// <summary>
+    /// Takes this op for a caller holding no claim of its own: a direct send or
+    /// receive. Waits out a transient claim on the op's state rather than
+    /// skipping it; see <see cref="SyncState.TrySyncWaiting"/>.
+    /// </summary>
+    public bool TrySync() => State != null && State.TrySyncWaiting();
 
     /// <summary>
     /// Win a direct op. Caller holds the channel's lock. Unwatched ops cannot be

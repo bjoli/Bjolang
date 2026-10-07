@@ -235,6 +235,20 @@ the corresponding fix is reverted.
   every payload was a `Unit`. The hosted language's cancellation token carries a
   reason, and "cancelling twice is a no-op" has to mean the first reason is the
   one kept, so the claim now precedes the store.
+- **B12** — a channel match skipped a partner whose state was in `C`, the same
+  mistake as B4 on the pairing side. `(choose (send a) (recv b))` against
+  `(choose (send b) (recv a))`, started together: each side claims itself to
+  publish its second branch, finds the other claimed, skips it and parks, and
+  all four ops sit in their channels with nobody left to walk them. A compiled
+  program hit it on its first such rendezvous, since the cold JIT holds the
+  claim for milliseconds. A claim holder now resolves a claimed partner through
+  `SyncState.TryPair`: of two claimed states, the one with the lower order (a
+  rank taken on first contention) waits with its claim, and the other gives its
+  claim back, waits for the partner to leave `C` and looks again. A claim holder
+  never waits on a lock and only ever waits for a higher order, so every chain
+  of waiting ends at a thread making progress. A direct send or receive, which
+  holds no claim, waits out the partner's `C` (`TrySyncWaiting`), as `TryCommit`
+  does.
 
 Two bugs in the *proposed* code were also fixed: `TaskInterop.Cancellable` could not
 compile (generic inference through an async lambda) and leaked its

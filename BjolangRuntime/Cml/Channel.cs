@@ -620,7 +620,8 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 {
                     if (curr.State != null)
                     {
-                        if (curr.TrySync())
+                        var pairing = state.TryPair(curr.State);
+                        if (pairing == SyncState.Pairing.Paired)
                         {
                             if (prev == null) _takersHead = next;
                             else prev.Next = next;
@@ -636,18 +637,20 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                             break;
                         }
 
+                        // Our claim was given back to a partner that ranks
+                        // first. Look at the same taker again.
+                        if (pairing == SyncState.Pairing.Retry) continue;
+
+                        // Lost: someone else synchronized the taker.
                         state.ResetClaim();
-                        if (curr.IsSynchronized)
-                        {
-                            if (prev == null) _takersHead = next;
-                            else prev.Next = next;
+                        if (prev == null) _takersHead = next;
+                        else prev.Next = next;
 
-                            if (curr == _takersTail) _takersTail = prev;
+                        if (curr == _takersTail) _takersTail = prev;
 
-                            curr.Recycle();
-                            curr = next;
-                            continue;
-                        }
+                        curr.Recycle();
+                        curr = next;
+                        continue;
                     }
                     else
                     {
@@ -695,9 +698,6 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 {
                     return;
                 }
-
-                prev = curr;
-                curr = next;
             }
 
             if (!matched)
@@ -772,7 +772,8 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 {
                     if (curr.State != null)
                     {
-                        if (curr.TrySync())
+                        var pairing = state.TryPair(curr.State);
+                        if (pairing == SyncState.Pairing.Paired)
                         {
                             if (prev == null) _giversHead = next;
                             else prev.Next = next;
@@ -789,18 +790,18 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                             break;
                         }
 
+                        // See PublishSend.
+                        if (pairing == SyncState.Pairing.Retry) continue;
+
                         state.ResetClaim();
-                        if (curr.IsSynchronized)
-                        {
-                            if (prev == null) _giversHead = next;
-                            else prev.Next = next;
+                        if (prev == null) _giversHead = next;
+                        else prev.Next = next;
 
-                            if (curr == _giversTail) _giversTail = prev;
+                        if (curr == _giversTail) _giversTail = prev;
 
-                            curr.Recycle();
-                            curr = next;
-                            continue;
-                        }
+                        curr.Recycle();
+                        curr = next;
+                        continue;
                     }
                     else
                     {
@@ -842,9 +843,6 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 {
                     return;
                 }
-
-                prev = curr;
-                curr = next;
             }
 
             if (!matched)

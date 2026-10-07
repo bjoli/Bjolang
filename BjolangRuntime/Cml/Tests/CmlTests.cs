@@ -27,6 +27,7 @@ public static class CmlTests
         Run("choose(send ch, recv ch) publishes without spinning", SelfChooseTerminates);
         Run("self-choose still pairs with an external partner", SelfChoosePairsExternally);
         Run("two symmetric self-chooses pair with each other", SymmetricSelfChooses);
+        Run("two crossed chooses started together always pair", CrossedChoosesAlwaysPair);
 
         Section("B1 - nack must not fire when a nested choose under it wins");
         Run("nack silent when its own subtree wins", NackSilentWhenSubtreeWins);
@@ -970,6 +971,62 @@ public static class CmlTests
 
         Await(first, "the first symmetric choose");
         Await(second, "the second symmetric choose");
+    }
+
+    /// <summary>
+    /// choose(send a, recv b) against choose(send b, recv a), started together,
+    /// many times over.
+    ///
+    /// Each side parks its first branch and then, publishing its second,
+    /// claims itself and finds the other's op, whose state is claimed too: the
+    /// other side is doing the same thing in the other channel. Skipping a
+    /// claimed partner left all four ops parked and both syncs waiting, each
+    /// with a partner it could have taken. A cold JIT widens the window enough
+    /// that a compiled program hit it on its first such rendezvous.
+    /// </summary>
+    private static void CrossedChoosesAlwaysPair()
+    {
+        const int rounds = 3000;
+        Channel<int>[] chans = new Channel<int>[2];
+        var start = new Barrier(3);
+        var done = new[] { new SemaphoreSlim(0), new SemaphoreSlim(0) };
+        int stop = 0;
+        var threads = new Thread[2];
+
+        for (int t = 0; t < 2; t++)
+        {
+            int me = t;
+            threads[t] = new Thread(() =>
+            {
+                while (true)
+                {
+                    start.SignalAndWait();
+                    if (Volatile.Read(ref stop) != 0) return;
+                    var mine = chans[me];
+                    var theirs = chans[1 - me];
+                    Cml.Sync(
+                        Cml.Choose<int>(
+                            Cml.Wrap(new ChannelSendEvent<int>(mine, me), _ => 0),
+                            Cml.Wrap<int, int>(theirs, _ => 1)),
+                        _ => done[me].Release());
+                }
+            }) { IsBackground = true };
+            threads[t].Start();
+        }
+
+        int lost = -1;
+        for (int r = 0; r < rounds && lost < 0; r++)
+        {
+            chans[0] = new Channel<int>();
+            chans[1] = new Channel<int>();
+            start.SignalAndWait();
+            if (!done[0].Wait(5000) || !done[1].Wait(5000)) lost = r;
+        }
+
+        Volatile.Write(ref stop, 1);
+        if (lost < 0) start.SignalAndWait();
+
+        Assert(lost < 0, $"round {lost}: the two chooses both parked without pairing");
     }
 
     // -----------------------------------------------------------------------

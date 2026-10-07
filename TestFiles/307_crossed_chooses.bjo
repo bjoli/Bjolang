@@ -1,0 +1,49 @@
+;; Two fibers each offer to send on their own channel or receive on the
+;; other's: p = (choose (send a) (recv b)), q = (choose (send b) (recv a)).
+;; Either pairing will do, so both syncs must commit, one sending and one
+;; receiving.
+;;
+;; Publishing its second branch, each side claims itself and finds the other's
+;; op parked, with the other side claimed as well, since it is doing the same
+;; thing in the other channel. A side that skipped a claimed partner left both
+;; ops parked in each channel and both fibers waiting for good. The first such
+;; rendezvous in a program runs cold JIT-compiled code, which kept the claim
+;; long enough to lose it every time.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: side (-bjo-> (Chan int) (Chan int) int (Chan int) void))
+(defbjo (side mine theirs id done)
+  (def v (sync (choose (wrap (chan-send mine id) (fun (u) 0))
+                       (wrap (chan-recv theirs) (fun (x) 1)))))
+  (sync (chan-send done v)))
+
+;; 1 for the side that received, 0 for the one that sent, and -100 for a side
+;; that never committed.
+(: arrival (-bjo-> (Chan int) int))
+(defbjo (arrival done)
+  (sync (choose (chan-recv done)
+                (wrap (timeout 2000) (fun (u) -100)))))
+
+(: crossed-round (-bjo-> bool))
+(defbjo (crossed-round)
+  (def a (make-chan))
+  (def b (make-chan))
+  (def done (make-chan))
+  (spawn/detached (side a b 1 done))
+  (spawn/detached (side b a 2 done))
+  (def first (arrival done))
+  (def second (arrival done))
+  (= (+ first second) 1))
+
+(: crossed-rounds (-bjo-> int int int))
+(defbjo (crossed-rounds n paired)
+  (if (= n 0)
+      paired
+      (let ((ok (crossed-round)))
+        (crossed-rounds (- n 1) (if ok (+ paired 1) paired)))))
+
+(defbjo (main args)
+  (expect "two crossed chooses pair every time" (crossed-rounds 300 0) 300)
+  0)
