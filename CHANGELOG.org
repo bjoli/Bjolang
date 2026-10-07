@@ -38,6 +38,17 @@ What each change guarantees, and what it leaves open.
   forced an element, and taking lines from a ~port->seq~ consumed and lost
   the line after them. Zero or less now gives the empty sequence, as
   ~seq-take~ does; a negative count had answered all of ~s~.
+- *A module edited during a REPL session is reloaded.* The REPL rebuilt an
+  imported module whose source had changed, but went on running the old
+  one: an assembly name, once loaded, could not be loaded again, and its
+  metadata was read from the first copy. If the export list had changed,
+  every name from the module became unbound. Entries now run in a load
+  context of the session's own. When a module the session was compiled
+  against has been rebuilt, the REPL says so, starts a new one, and
+  compiles the session's definition entries again, in order, against the
+  new module. Their initializers run again; expressions are not run again.
+  Imported metadata is read from the file as it is now in any long-running
+  compiler process.
 - *A later REPL signature replaces one still waiting for its definition.*
   Typing ~(: h (-> int int))~, then ~(: h (-> int string))~, then the
   ~defun~ gave ~h~ both signatures and refused the definition; a ~defun~

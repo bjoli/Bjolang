@@ -1111,6 +1111,36 @@ def run_staleness():
     else:
         stale_check("an import in an included file builds", "2\n", "it did not compile")
 
+    # A module edited while a REPL session uses it: the session reloads, so
+    # an earlier entry's function calls the new code, and a name the edit
+    # added to the export list is bound.
+    reload_mod = (STALE_DIR / "reloaded.bjo").resolve()
+    reload_mod.write_text("(export val)\n(: val (-> int int))\n(defun (val x) (+ x 1))\n")
+    session = subprocess.Popen(["dotnet", COMPILER_DLL, "--repl"], stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+    def repl_until(marker):
+        seen = []
+        for line in session.stdout:
+            seen.append(line)
+            if marker in line:
+                break
+        return "".join(seen)
+
+    session.stdin.write(f'(import "{reload_mod}")\n(: g (-> int int))\n(defun (g x) (* 2 (val x)))\n(g 1)\n"sync-one"\n')
+    session.stdin.flush()
+    before = repl_until("sync-one")
+    stale_check("a REPL session runs an imported module", True, "4\n" in before or before)
+
+    reload_mod.write_text("(export val val2)\n(: val (-> int int))\n(defun (val x) (+ x 100))\n(: val2 (-> int int))\n(defun (val2 x) x)\n")
+    session.stdin.write("(g 1)\n(val2 7)\n")
+    session.stdin.close()
+    after = session.stdout.read()
+    session.wait()
+    stale_check("a module edited during a REPL session is reloaded", True,
+                "changed: reloading the session" in after and "202\n" in after and "7\n" in after
+                or after)
+
     return "staleness", s_total, s_failed, s_failures
 
 def run_check_tests():

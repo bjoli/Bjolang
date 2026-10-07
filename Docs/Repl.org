@@ -49,11 +49,14 @@ That works because ~Codegen~ already emits a top-level ~def~ as a
 ~public static~ method, which is what an importing entry links against. No
 separate emission path exists for the REPL.
 
-Assemblies are loaded into the *default* load context. Entry N+1 holds a hard
-reference to entry N's assembly, so the two have to be one identity to the
-loader; and the resolver ~Pipeline~ installs — which is what finds ~prelude~ and
-the runtime assemblies — belongs to that context. Nothing is ever unloaded, so a
-session grows by one small assembly per entry.
+Entries are loaded into a load context of the session's own, a /generation/,
+together with the modules they import from outside the standard library. Entry
+N+1 holds a hard reference to entry N's assembly, so the two have to be one
+identity to the loader. The standard library and the runtime resolve through
+the default context, as in a program, so every generation shares one copy of
+them, and with it the session scope and the runtime's ports. Nothing is
+unloaded until the session is reloaded (see "A module edited during the
+session is reloaded"), so a session grows by one small assembly per entry.
 
 Set ~BJOLANG_REPL_DIR~ to keep the generated sources somewhere readable. What an
 entry becomes is the whole of what the driver decides, so being able to read one
@@ -349,6 +352,45 @@ replay the only path, which is what makes it safe.
 
 A relative path means relative to the working directory, not to the temporary
 file the entry is written to, so the REPL makes it absolute before writing.
+
+** A module edited during the session is reloaded
+
+An imported module is rebuilt when its source changes, the next time an entry
+is compiled, as a build would rebuild it. A load context holds one assembly
+per name, though, so once the session has run the old ~m.dll~ the new one
+cannot be loaded beside it. When a module the session was compiled against has
+been rebuilt, the REPL starts a new generation: it compiles the session's
+definition entries again, in the order they were typed, and then the entry
+being typed.
+
+#+begin_src scheme
+bjo> (import "m.bjo")
+bjo> (: g (-> int int))
+bjo> (defun (g x) (* 2 (val x)))
+g
+bjo> (g 1)
+4
+;; m.bjo is edited: val now adds 100, and val2 is exported as well
+bjo> (g 1)
+m.bjo changed: reloading the session, and compiling its 3 definition entries again.
+202
+bjo> (val2 7)
+7
+#+end_src
+
+What follows from compiling the definitions again:
+
+- Every top-level initializer runs again, including its effects. A
+  ~(def x (begin (println "hi") 1))~ prints ~hi~ again.
+- The module's own top-level state starts over, as it would in a new process.
+- An expression entry is not run again. What it printed or did has happened.
+- A definition that no longer compiles against the edited module reports its
+  error and is left out, and so is anything that needed it.
+- Values made by the old generation and still held somewhere, by a fiber that
+  is still running for instance, go on running the old code.
+
+The standard library is not reloaded: it lives in the default context, which
+every generation shares.
 
 * Compilation state between entries
 

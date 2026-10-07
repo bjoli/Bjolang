@@ -680,6 +680,44 @@ let private noteAssemblyPath (path: string) =
     if not (assemblyPaths.ContainsKey name) then
         assemblyPaths[name] <- path
 
+/// The file a Bjolang assembly name was found at, if this process has read one
+/// by that name. What a load context outside this module resolves a reference
+/// between two modules with.
+let assemblyPathOf (name: string) : string option =
+    match assemblyPaths.TryGetValue name with
+    | true, path -> Some path
+    | _ -> None
+
+/// The assembly a `.dll`'s metadata and macros are read from, by path, with the
+/// timestamp of the file it was loaded from.
+let private metadataAssemblies =
+    System.Collections.Generic.Dictionary<string, int64 * System.Reflection.Assembly>()
+
+/// Loads a `.dll` to read what it publishes, as the file is now.
+///
+/// `Assembly.LoadFile` answers every later call for the same path with the
+/// assembly it loaded first, so a module rebuilt while the process runs — the
+/// REPL rebuilds an imported module whose source was edited — would go on
+/// being read as it was. A file whose timestamp has moved is therefore loaded
+/// again from its bytes, into a context of its own, and that version is what
+/// its exports, macros and inline bodies are read from. The first version of a
+/// file still goes through `LoadFile`, which keeps its location for stack
+/// traces out of a macro.
+let private loadForMetadata (absPath: string) : System.Reflection.Assembly =
+    let ticks = File.GetLastWriteTimeUtc(absPath).Ticks
+
+    match metadataAssemblies.TryGetValue absPath with
+    | true, (seen, asm) when seen = ticks -> asm
+    | known, _ ->
+        let asm =
+            if known then
+                System.Reflection.Assembly.Load(File.ReadAllBytes absPath)
+            else
+                System.Reflection.Assembly.LoadFile absPath
+
+        metadataAssemblies[absPath] <- (ticks, asm)
+        asm
+
 let mutable private resolverInstalled = false
 
 /// Lets a transformer call into the modules its own module was compiled against.
@@ -1585,7 +1623,7 @@ let loadModuleGraph
                     // publishes may call into any of these, and the resolver is
                     // what makes that possible.
                     noteAssemblyPath absPath
-                    let asm = System.Reflection.Assembly.LoadFile(absPath)
+                    let asm = loadForMetadata absPath
                     let attr = asm.GetCustomAttributes(typeof<System.Reflection.AssemblyMetadataAttribute>, false)
 
                     let metadataValue (key: string) : string option =

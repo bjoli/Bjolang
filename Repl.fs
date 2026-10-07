@@ -49,7 +49,58 @@ type private Entry =
       Provides: Set<string>
       /// Linked by every later entry regardless — see `isSticky`.
       Sticky: bool
-      DllPath: string }
+      DllPath: string
+      /// What was typed, with its import paths made absolute. What the entry
+      /// is compiled from again when the session is reloaded.
+      Text: string
+      /// A group of definitions rather than an expression: compiled again when
+      /// the session is reloaded, where an expression is not run twice.
+      Replayed: bool }
+
+/// The load context a session's entries run in, with the modules they import.
+///
+/// One per *generation* of the session rather than the default context, for
+/// the sake of a module edited while the session runs. A context holds one
+/// assembly per name and never gives it up, so once an entry has run the old
+/// `m.dll`, the rebuilt one cannot be loaded beside it. Starting a new context
+/// is what makes the rebuilt one loadable — see `evaluate`.
+///
+/// The standard library and the runtime are not loaded here. They resolve
+/// through the default context, as they would in a program, so every
+/// generation shares one copy of them, and with it the session scope and the
+/// ports the runtime holds.
+type private Generation(directory: string) =
+    inherit AssemblyLoadContext("Bjolang REPL session", true)
+
+    /// Can this assembly be rebuilt while the session runs? Everything outside
+    /// the standard library can.
+    static member Reloadable(dll: string) =
+        match Paths.identityOf (Path.ChangeExtension(Path.GetFullPath dll, ".bjo")) with
+        | Some identity -> not identity.Root.IsStandardLibrary
+        | None -> true
+
+    override this.Load(name: Reflection.AssemblyName) : Reflection.Assembly =
+        let simple = name.Name
+
+        match this.Assemblies |> Seq.tryFind (fun a -> a.GetName().Name = simple) with
+        | Some loaded -> loaded
+        | None ->
+            // An entry's assembly is named after the entry, and sits in the
+            // session directory. A module's is named after its module key,
+            // which only the compiler knows the file of.
+            let entry = Path.Combine(directory, simple + ".dll")
+
+            if File.Exists entry then
+                this.LoadFromAssemblyPath entry
+            else
+                // From its bytes rather than its path. The runtime keeps the
+                // image it mapped for a path, and a module rebuilt at the same
+                // path is then refused as a corrupt copy of the old one.
+                match Pipeline.assemblyPathOf simple with
+                | Some path when Generation.Reloadable path ->
+                    use bytes = new MemoryStream(File.ReadAllBytes path)
+                    this.LoadFromStream bytes
+                | _ -> null
 
 type private State =
     { Next: int
@@ -75,7 +126,12 @@ type private State =
       /// Newest first, so the first entry defining a name is the latest one to
       /// have done so.
       Entries: Entry list
-      Directory: string }
+      Directory: string
+      Generation: Generation
+      /// Every module assembly the session's entries were compiled against,
+      /// outside the standard library, with the timestamp it had then. One
+      /// that has moved since was rebuilt, and the session is reloaded.
+      Compiled: Map<string, int64> }
 
 // ---------------------------------------------------------------------------
 // Reading
@@ -516,14 +572,12 @@ let private producesAValue (env: TypedAST.Env) =
 /// `public static readonly` field assigned in the class's static constructor,
 /// which the CLR runs on first touch.
 ///
-/// Into the default load context, not one of its own. Entry N+1's assembly
-/// holds a hard reference to entry N's, so the two have to be one identity to
-/// the loader; and the resolver `Pipeline` installs — which is what finds
-/// `prelude` and the runtime assemblies — is the default context's. The cost is
-/// that nothing is ever unloaded, so a session grows by one small assembly per
-/// entry.
-let private readBinding (dllPath: string) (moduleName: string) (memberName: string) : obj =
-    let assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath dllPath
+/// Into the session's current `Generation`, which every entry since the last
+/// reload shares: entry N+1's assembly holds a hard reference to entry N's, so
+/// the two have to be one identity to the loader. Nothing is unloaded before
+/// the next reload, so a session grows by one small assembly per entry.
+let private readBinding (context: Generation) (dllPath: string) (moduleName: string) (memberName: string) : obj =
+    let assembly = context.LoadFromAssemblyPath dllPath
     // Namnrymden ur dll:ens katalog, klassen ur modulnamnet.
     let className = $"%s{Naming.moduleNamespace dllPath}.%s{Naming.moduleClassName moduleName}"
     let clrType = assembly.GetType className
@@ -539,8 +593,8 @@ let private readBinding (dllPath: string) (moduleName: string) (memberName: stri
 ///
 /// A definition entry still has effects — `(def x (begin (println "hi") 1))` —
 /// and they live in the static constructor like any other initializer.
-let private force (dllPath: string) (moduleName: string) : unit =
-    let assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath dllPath
+let private force (context: Generation) (dllPath: string) (moduleName: string) : unit =
+    let assembly = context.LoadFromAssemblyPath dllPath
 
     match assembly.GetType($"%s{Naming.moduleNamespace dllPath}.%s{Naming.moduleClassName moduleName}") with
     | null -> ()
@@ -565,7 +619,27 @@ let private warnAboutShadowing (state: State) (names: string list) =
                 $"  note: %s{name} shadows the one from entry %d{earlier.Index}. Anything already compiled against that one still calls it."
         | None -> ()
 
-let private evaluate (state: State) (text: string) : State =
+/// The module assemblies the session was compiled against that have been
+/// rebuilt since. Usually by compiling the entry being typed, which rebuilds
+/// an imported module whose source was edited, but a build run elsewhere
+/// counts as well.
+let private changedModules (state: State) : string list =
+    state.Compiled
+    |> Map.toList
+    |> List.filter (fun (dll, ticks) -> File.GetLastWriteTimeUtc(dll).Ticks <> ticks)
+    |> List.map fst
+
+/// `Compiled` with what an entry was just compiled against.
+let private noteCompiled (state: State) (dllDeps: string list) : Map<string, int64> =
+    dllDeps
+    |> List.map Path.GetFullPath
+    |> List.filter (fun dll ->
+        Path.GetDirectoryName dll <> state.Directory && Generation.Reloadable dll)
+    |> List.fold (fun acc dll -> Map.add dll (File.GetLastWriteTimeUtc(dll).Ticks) acc) state.Compiled
+
+/// Evaluates one entry. `replaying` is set while a reload compiles the
+/// session's definitions again, which then says nothing about each of them.
+let rec private evaluate (replaying: bool) (state: State) (text: string) : State =
     // The collector is process-global and a prompt reuses the process, so each
     // entry starts with an empty one. Without it the phase gates would see the
     // entry before last's errors and refuse to check this one.
@@ -652,6 +726,40 @@ let private evaluate (state: State) (text: string) : State =
         // The diagnostic has already been printed by the pipeline, naming the
         // entry's file and the line the user typed on.
         state
+    | Some _ when not replaying && not (changedModules state).IsEmpty ->
+        // A module the session ran was rebuilt, and the generation it ran in
+        // cannot load the new one. The session is compiled again in a fresh
+        // one: its definitions in the order they were typed, then this entry,
+        // which was compiled against entries about to be replaced. An
+        // expression is not run again, since what it printed or did happened
+        // already.
+        let changed =
+            changedModules state
+            |> List.map (fun dll -> Path.GetFileName(Path.ChangeExtension(dll, ".bjo")))
+            |> List.sort
+            |> String.concat ", "
+
+        let definitions = state.Entries |> List.rev |> List.filter (fun e -> e.Replayed)
+
+        let what =
+            match definitions.Length with
+            | 1 -> "entry"
+            | _ -> "entries"
+
+        printfn
+            $"%s{changed} changed: reloading the session, and compiling its %d{definitions.Length} definition %s{what} again."
+        state.Generation.Unload()
+
+        let fresh =
+            { state with
+                Imports = []
+                Pending = []
+                Entries = []
+                Generation = new Generation(state.Directory)
+                Compiled = Map.empty }
+
+        let replayed = definitions |> List.fold (fun s e -> evaluate true s e.Text) fresh
+        evaluate false replayed text
     | Some(env, typedAst, dllDeps, declaredMacros, declaredPatternMacros, declaredHashMacros) ->
         let source =
             Build.generateSource env typedAst dllDeps declaredMacros declaredPatternMacros declaredHashMacros sourcePath true
@@ -686,14 +794,14 @@ let private evaluate (state: State) (text: string) : State =
                 match shape with
                 | Expression ->
                     if producesAValue env then
-                        match readBinding dllPath moduleName showName with
+                        match readBinding state.Generation dllPath moduleName showName with
                         | :? string as rendered -> printfn "%s" rendered
                         | other -> printfn "%A" other
                     else
                         // Read for the effect, not the value: `(println "hi")`
                         // happens in the static constructor.
-                        readBinding dllPath moduleName valueName |> ignore
-                | Definitions _ -> force dllPath moduleName
+                        readBinding state.Generation dllPath moduleName valueName |> ignore
+                | Definitions _ -> force state.Generation dllPath moduleName
                 | Malformed _ -> ()
             with
             | ex ->
@@ -713,13 +821,15 @@ let private evaluate (state: State) (text: string) : State =
                 | :? BjolangRuntime.PanicException as panic -> printfn $"panic: %s{panic.Message}"
                 | ex -> printfn $"%s{ex.GetType().Name}: %s{Diagnostics.humanize ex.Message}"
 
-            warnAboutShadowing state defined
+            if not replaying then
+                warnAboutShadowing state defined
 
-            if not defined.IsEmpty then
-                printfn "%s" (String.concat " " defined)
+                if not defined.IsEmpty then
+                    printfn "%s" (String.concat " " defined)
 
             { state with
                 Next = index + 1
+                Compiled = noteCompiled state dllDeps
                 Imports =
                     state.Imports
                     @ (forms
@@ -745,7 +855,12 @@ let private evaluate (state: State) (text: string) : State =
                     { Index = index
                       Provides = Set.ofList provided
                       Sticky = sticky
-                      DllPath = dllPath }
+                      DllPath = dllPath
+                      Text = text
+                      Replayed =
+                        match shape with
+                        | Definitions _ -> true
+                        | _ -> false }
                     :: state.Entries }
 
 // ---------------------------------------------------------------------------
@@ -893,15 +1008,17 @@ let private visibleNames (state: State) : Visible list =
         |> List.filter (fun v -> not (v.Name.Contains "__") && not (v.Name.Contains "::"))
         |> List.distinctBy (fun v -> v.Name)
 
-/// Published docs by assembly path. A library does not change under a running
-/// session, and an entry's assembly is written once.
-let private docCache = Collections.Generic.Dictionary<string, Map<string, SExpr>>()
+/// Published docs by assembly path and the timestamp they were read at, since
+/// an imported module may be rebuilt while the session runs.
+let private docCache = Collections.Generic.Dictionary<string * int64, Map<string, SExpr>>()
 
 /// A module's published docs, by the name each documents: `#name` for a
 /// reader extension. The module's own doc is left out, since no name leads to
 /// it. An assembly that cannot be read has none.
 let private docsOf (dll: string) : Map<string, SExpr> =
-    match docCache.TryGetValue dll with
+    let key = dll, File.GetLastWriteTimeUtc(dll).Ticks
+
+    match docCache.TryGetValue key with
     | true, docs -> docs
     | _ ->
         let rec docForms (s: SExpr) =
@@ -931,7 +1048,7 @@ let private docsOf (dll: string) : Map<string, SExpr> =
             with _ ->
                 Map.empty
 
-        docCache[dll] <- docs
+        docCache[key] <- docs
         docs
 
 /// A form as source writes it, for a doc's `form`, `see` and `literal`
@@ -1553,6 +1670,10 @@ let private help () =
     printfn "  Redefining a name shadows it. Code compiled against the earlier"
     printfn "  one goes on calling the earlier one."
     printfn ""
+    printfn "  An imported module edited during the session is rebuilt, and the"
+    printfn "  session's definitions are compiled again against it. Expressions"
+    printfn "  are not run again."
+    printfn ""
     printfn "  For tools rather than people:"
     printfn ""
     printfn "  :complete text"
@@ -1665,7 +1786,7 @@ let run () : int =
                 complete state (raw.Substring(":complete ".Length))
                 loop state
             | entry ->
-                let next = Timing.phase "repl entry" (fun () -> evaluate state entry)
+                let next = Timing.phase "repl entry" (fun () -> evaluate false state entry)
                 loop next
 
     loop
@@ -1673,7 +1794,9 @@ let run () : int =
           Imports = []
           Pending = []
           Entries = []
-          Directory = directory }
+          Directory = directory
+          Generation = new Generation(directory)
+          Compiled = Map.empty }
     |> ignore
 
     editor |> Option.iter (fun (prompt, _) -> prompt.DisposeAsync().AsTask().Wait())
