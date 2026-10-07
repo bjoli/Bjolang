@@ -1,0 +1,92 @@
+;; A tail call to a loop from inside a loop nested in it is a jump, so it runs
+;; in constant stack space however many times it is made. The nested loop is
+;; emitted inline, in the same method, and the call jumps out of it to the top
+;; of the loop it names. It had been a real call, one stack frame per outer
+;; iteration, and a million of them overflowed the stack.
+
+(import (std prelude))
+(import (std simpletest))
+
+(def big 1000000)
+
+;; A named let called from inside another.
+(: named-lets (-> int int))
+(defun (named-lets n)
+  (let outer ((i 0) (acc 0))
+    (if (< i n)
+        (let inner ((j 0) (a acc))
+          (if (< j 2) (inner (+ j 1) (+ a 1)) (outer (+ i 1) a)))
+        acc)))
+
+;; A function calling itself from inside a named let in its body.
+(: self-call (-> int int int))
+(defun (self-call i acc)
+  (if (< i big)
+      (let inner ((j 0) (a acc))
+        (if (< j 2) (inner (+ j 1) (+ a 1)) (self-call (+ i 1) a)))
+      acc))
+
+;; A loop whose result clause calls the loop it is written in.
+(: from-finish (-> int int))
+(defun (from-finish n)
+  (let outer ((i 0) (acc 0))
+    (if (< i n)
+        (loop (:for k [1 2]) (:acc s (summing k)) => (outer (+ i 1) (+ acc s)))
+        acc)))
+
+;; Two local functions calling each other, one of them from inside a named let.
+(: parity (-> int string))
+(defun (parity n)
+  (defun (ev? (: k int))
+    (if (= k 0)
+        #t
+        (let inner ((m 0)) (if (< m 1) (inner (+ m 1)) (od? (- k 1))))))
+  (defun (od? (: k int)) (if (= k 0) #f (ev? (- k 1))))
+  (if (ev? n) "even" "odd"))
+
+;; In a bjoroutine, which is an async state machine, with a yield point in the
+;; inner loop now and then.
+(: suspending (-bjo-> int int))
+(defbjo (suspending n)
+  (let outer ((i 0) (acc 0))
+    (if (< i n)
+        (let inner ((j 0) (a acc))
+          (when (= (% i 1000) 0) (sync (timeout 0)))
+          (if (< j 2) (inner (+ j 1) (+ a 1)) (outer (+ i 1) a)))
+        acc)))
+
+;; In a seq, which is an iterator.
+(: pairs (-> int (Seq int)))
+(defun (pairs n)
+  (seq
+    (let outer ((i 0))
+      (when (< i n)
+        (let inner ((j 0))
+          (if (< j 2)
+              (begin (yield (+ (* 10 i) j)) (inner (+ j 1)))
+              (outer (+ i 1))))))))
+
+;; Closures made in the inner loop keep the values of their own iteration.
+(: closures (-> (List int)))
+(defun (closures)
+  (def made
+    (let outer ((i 0) (fs Nil))
+      (if (< i 3)
+          (let inner ((j 0) (gs fs))
+            (if (< j 2)
+                (inner (+ j 1) (cons (fun () (+ (* 10 i) j)) gs))
+                (outer (+ i 1) gs)))
+          fs)))
+  (list-reverse (list-map (fun (f) (f)) made)))
+
+(defun (main args)
+  (expect "a named let called from inside another" (named-lets big) 2000000)
+  (expect "a function calling itself from inside a named let" (self-call 0 0) 2000000)
+  (expect "a loop's result clause calling the loop it is in" (from-finish big) 3000000)
+  (expect "local functions calling each other from inside a named let" (parity big) "even")
+  (expect "in a bjoroutine"
+          (match (sync/blocking (promise-join (bjo (suspending 100000)))) ((Ok v) v) ((Err e) -1))
+          200000)
+  (expect "in a seq" (seq->list (pairs 3)) (list 0 1 10 11 20 21))
+  (expect "closures keep their own iteration's values" (closures) (list 0 1 10 11 20 21))
+  0)

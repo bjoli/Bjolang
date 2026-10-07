@@ -45,6 +45,13 @@ type LoopScope = {
     /// jump to is a warning, so it is only emitted once it has been used —
     /// which is known only after the body has been generated.
     ExitLabelUsed: bool ref
+    /// A label just before the loop's `while`, which a jump from a loop nested
+    /// inline in its members goes to. Empty when no such jump exists, which
+    /// `LoopLowering.jumpedToFromNested` knows before the body is generated.
+    TopLabel: string
+    /// The loop this one is emitted inline in, for a jump of a greater depth.
+    /// `None` for a loop that starts a method of its own.
+    Outer: LoopScope option
 }
 
 /// A `with-return` block an escape may leave.
@@ -3283,7 +3290,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
     lineDirective ctx expr.Range
 
     match expr.Node with
-    | TRecur (index, args) -> generateRecur ctx target expr index args
+    | TRecur (depth, index, args) -> generateRecur ctx target expr depth index args
 
     | TLoop (members, bodyOpt) ->
         match bodyOpt with
@@ -3337,6 +3344,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
 
                 let exitLabel = freshName "__exit"
                 let exitLabelUsed = ref false
+                let topLabel = topLabelFor members
 
                 let inner =
                     { ctx with
@@ -3348,7 +3356,9 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
                                   NestedSwitches = 0
                                   IsInlineLoop = true
                                   ExitLabel = exitLabel
-                                  ExitLabelUsed = exitLabelUsed } }
+                                  ExitLabelUsed = exitLabelUsed
+                                  TopLabel = topLabel
+                                  Outer = ctx.Loop } }
 
                 // Whether the label is needed is only known once the body has
                 // been generated, and it has to appear *after* the loop — so
@@ -3356,6 +3366,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
                 let scratch = StringBuilder()
                 let buffered = { inner with Builder = scratch }
 
+                emitTopLabel buffered topLabel
                 indent buffered; appendLine buffered "while (true) {"
                 withIndent buffered (fun c2 ->
                     emitIterationCopies c2 member_
@@ -3431,6 +3442,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
 
                 let exitLabel = freshName "__exit"
                 let exitLabelUsed = ref false
+                let topLabel = topLabelFor members
 
                 let inner =
                     { ctx with
@@ -3447,13 +3459,16 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
                                   NestedSwitches = 0
                                   IsInlineLoop = true
                                   ExitLabel = exitLabel
-                                  ExitLabelUsed = exitLabelUsed } }
+                                  ExitLabelUsed = exitLabelUsed
+                                  TopLabel = topLabel
+                                  Outer = ctx.Loop } }
 
                 // Buffered, because whether the label is needed is only known
                 // once the bodies have been generated.
                 let scratch = StringBuilder()
                 let buffered = { inner with Builder = scratch }
 
+                emitTopLabel buffered topLabel
                 indent buffered
                 appendLine buffered $"while (true) switch (%s{stateVar}) {{"
 
@@ -4408,19 +4423,34 @@ and private generateMatch
 // Loops
 // ---------------------------------------------------------------------------
 
+/// The label a loop's `while` gets when a loop nested inline in its members
+/// jumps out to it, or `""`.
+and private topLabelFor (members: TLoopMember list) : string =
+    if LoopLowering.jumpedToFromNested members then freshName "__top" else ""
+
+/// Emits a loop's top label ahead of its `while`, if it has one.
+and private emitTopLabel (ctx: CodegenContext) (label: string) : unit =
+    if label <> "" then
+        indent ctx
+        appendLine ctx $"%s{label}: ;"
+
 and private generateRecur
     (ctx: CodegenContext)
     (target: BlockTarget)
     (expr: TypedExpr)
+    (depth: int)
     (index: int)
     (args: TypedExpr list)
     : unit =
 
-    let loop =
-        match ctx.Loop with
-        | Some l -> l
-        | None ->
-            codegenError expr.Range "internal error: a loop jump was emitted with no loop in scope"
+    let rec outward (scope: LoopScope option) (steps: int) =
+        match scope, steps with
+        | Some l, 0 -> l
+        | Some l, n -> outward l.Outer (n - 1)
+        | None, _ ->
+            codegenError expr.Range "internal error: a loop jump was emitted with no loop in scope at its depth"
+
+    let loop = outward ctx.Loop depth
 
     // A jump discards the enclosing block's remaining work. Under any target
     // (Return, Discard, Assign, DeclareAndAssign), the slot variables are updated
@@ -4448,7 +4478,17 @@ and private generateRecur
     for slot, tmp in List.zip slots temps do
         indent ctx; appendLine ctx $"%s{slot} = %s{tmp};"
 
-    if loop.Merged then
+    if depth > 0 then
+        // Out of the nested loops to the top of the enclosing one, whose `while`
+        // starts the member again from its slots.
+        if loop.TopLabel = "" then
+            codegenError expr.Range "internal error: a jump out of a nested loop has no label to go to"
+
+        if loop.Merged then
+            indent ctx; appendLine ctx $"%s{loop.StateVar} = %d{index};"
+
+        indent ctx; appendLine ctx $"goto %s{loop.TopLabel};"
+    elif loop.Merged then
         // `goto case` is a direct jump to another switch section rather than a
         // re-dispatch through the discriminant, so prefer it where it is legal.
         if loop.NestedSwitches = 0 then
@@ -4473,11 +4513,13 @@ and private emitIterationCopies (ctx: CodegenContext) (member_: TLoopMember) : u
 and private generateFunctionBody (ctx: CodegenContext) (body: TypedExpr) : unit =
     match body.Node with
     | TLoop ([ member_ ], None) ->
+        let topLabel = topLabelFor [ member_ ]
+        emitTopLabel ctx topLabel
         indent ctx; appendLine ctx "while (true) {"
         withIndent ctx (fun c ->
             let inner =
                 { c with
-                    Loop = Some { Members = [ member_ ]; Merged = false; StateVar = ""; NestedSwitches = 0; IsInlineLoop = false; ExitLabel = ""; ExitLabelUsed = ref false } }
+                    Loop = Some { Members = [ member_ ]; Merged = false; StateVar = ""; NestedSwitches = 0; IsInlineLoop = false; ExitLabel = ""; ExitLabelUsed = ref false; TopLabel = topLabel; Outer = None } }
 
             emitIterationCopies inner member_
             generateBlock inner Return member_.Body)
@@ -4535,6 +4577,10 @@ and private generateSingleLoop
     // can simply carry the source's names.
     let paramNames = if loops then member_.Slots |> List.map fst else member_.Locals
 
+    // A group emitted this way has no jumps between its members, so a jump out
+    // of a loop nested in this member's body comes back to this member.
+    let topLabel = if loops then topLabelFor [ member_ ] else ""
+
     // A local loop introduces no type parameters of its own; it inherits the
     // enclosing method's. That also makes polymorphic recursion unrepresentable
     // rather than something to detect and reject.
@@ -4568,9 +4614,10 @@ and private generateSingleLoop
                 // result, so the body has to produce a unit rather than fall
                 // off the end.
                 ReturnsVoid = isVoidType member_.RetType && effect <> EAsync
-                Loop = Some { Members = members; Merged = false; StateVar = ""; NestedSwitches = 0; IsInlineLoop = false; ExitLabel = ""; ExitLabelUsed = ref false } }
+                Loop = Some { Members = members; Merged = false; StateVar = ""; NestedSwitches = 0; IsInlineLoop = false; ExitLabel = ""; ExitLabelUsed = ref false; TopLabel = topLabel; Outer = None } }
 
         if loops then
+            emitTopLabel inner topLabel
             indent inner; appendLine inner "while (true) {"
             withIndent inner (fun c2 ->
                 emitIterationCopies c2 member_
@@ -4625,7 +4672,10 @@ and private generateMergedLoop (ctx: CodegenContext) (members: TLoopMember list)
         append ctx (sanitizeIdent slotName)
     appendLine ctx ") {"
 
+    let topLabel = topLabelFor members
+
     withIndent ctx (fun c ->
+        emitTopLabel c topLabel
         indent c; appendLine c $"while (true) switch (%s{stateVar}) {{"
         withIndent c (fun cs ->
             for i, member_ in List.indexed members do
@@ -4635,7 +4685,7 @@ and private generateMergedLoop (ctx: CodegenContext) (members: TLoopMember list)
                         { cb with
                             InSeq = false
                             ReturnsVoid = isVoidType member_.RetType && effect <> EAsync
-                            Loop = Some { Members = members; Merged = true; StateVar = stateVar; NestedSwitches = 0; IsInlineLoop = false; ExitLabel = ""; ExitLabelUsed = ref false } }
+                            Loop = Some { Members = members; Merged = true; StateVar = stateVar; NestedSwitches = 0; IsInlineLoop = false; ExitLabel = ""; ExitLabelUsed = ref false; TopLabel = topLabel; Outer = None } }
 
                     emitIterationCopies inner member_
                     generateBlock inner Return member_.Body)

@@ -38,6 +38,14 @@ What each change guarantees, and what it leaves open.
   forced an element, and taking lines from a ~port->seq~ consumed and lost
   the line after them. Zero or less now gives the empty sequence, as
   ~seq-take~ does; a negative count had answered all of ~s~.
+- *A tail call to a loop from inside a loop nested in it is a jump.* A named
+  let, a ~loop~'s ~=>~ clause or a function's body that calls an enclosing
+  named let, an enclosing local function of its group, or the function
+  itself from the tail of a nested named let or ~loop~ runs in constant
+  stack space. The nested loop is emitted inline and the call jumps out of
+  it to the top of the loop it names, in a bjoroutine and in a ~seq~ as
+  well. It had been a real call, one stack frame per outer iteration, and a
+  million iterations overflowed the stack.
 - *A loop nested in tail position of another ends the outer loop when its
   result is the outer loop's.* Both are emitted as ~while~ loops in one
   method, and the inner one's exit left only the inner loop, so the outer

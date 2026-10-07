@@ -72,7 +72,10 @@ type private LoopTarget =
       /// so reassigning it would be work with no effect — but `Lowering` does
       /// forward them on a recursive call, so a jump arrives carrying this many
       /// arguments that have nowhere to land. Dropped rather than stored.
-      Dicts: int }
+      Dicts: int
+      /// How many loops out the target is from where the jump is lowered: 0 in
+      /// its own members, one more for each nested loop it is reached through.
+      Depth: int }
 
     member this.Name = List.head this.Names
 
@@ -129,42 +132,41 @@ let private normalizeRecur
 
             []
 
-    TRecur(t.Index, mandatoryValues @ keywordValues @ restValue)
+    TRecur(t.Depth, t.Index, mandatoryValues @ keywordValues @ restValue)
 
 // ---------------------------------------------------------------------------
 // Queries
 // ---------------------------------------------------------------------------
 
-/// Whether `expr` contains a jump belonging to the loop scope it was lowered in.
-/// Lambda bodies and nested loop members carry jumps of their own scopes.
-let rec containsRecur (expr: TypedExpr) : bool =
+/// The member indices of the loop scope `expr` belongs to that a jump in it
+/// targets, each with how many loops in the jump stands: 0 in the scope's own
+/// members, more from a loop nested in them. `level` is how many loops in
+/// `expr` itself is. Lambda bodies, seqs, hoisted bodies and spawned calls run
+/// elsewhere, so no jump in one targets this scope.
+let rec private jumpsAt (level: int) (expr: TypedExpr) : (int * int) list =
     match expr.Node with
-    | TRecur _ -> true
+    | TRecur(depth, index, args) ->
+        (if depth = level then [ index, level ] else []) @ List.collect (jumpsAt level) args
     | TLambda _
-    // Neither runs where it is written: a `seq` body runs as it is drained, and
-    // a spawned call runs on the pool. A tail call inside one is not this
-    // function's tail call.
     | TSeq _
     | THoist _
-    | TBjo _ -> false
-    | TLoop(_, bodyOpt) -> bodyOpt |> Option.map containsRecur |> Option.defaultValue false
-    | _ -> TypeVisitor.children expr |> List.exists containsRecur
+    | TBjo _ -> []
+    | TLoop(members, bodyOpt) ->
+        (members |> List.collect (fun m -> jumpsAt (level + 1) m.Body))
+        @ (bodyOpt |> Option.map (jumpsAt level) |> Option.defaultValue [])
+    | _ -> TypeVisitor.children expr |> List.collect (jumpsAt level)
+
+/// Whether `expr` contains a jump belonging to the loop scope it was lowered in.
+let containsRecur (expr: TypedExpr) : bool = not (jumpsAt 0 expr).IsEmpty
 
 /// The set of member indices jumped to from within `expr`, in the loop scope
 /// `expr` belongs to.
-let rec recurTargetsIn (expr: TypedExpr) : Set<int> =
-    match expr.Node with
-    | TRecur(index, args) ->
-        args |> List.fold (fun acc a -> Set.union acc (recurTargetsIn a)) (Set.singleton index)
-    | TLambda _
-    | TSeq _
-    | THoist _
-    | TBjo _ -> Set.empty
-    | TLoop(_, bodyOpt) ->
-        bodyOpt |> Option.map recurTargetsIn |> Option.defaultValue Set.empty
-    | _ ->
-        TypeVisitor.children expr
-        |> List.fold (fun acc c -> Set.union acc (recurTargetsIn c)) Set.empty
+let recurTargetsIn (expr: TypedExpr) : Set<int> = jumpsAt 0 expr |> List.map fst |> Set.ofList
+
+/// Whether a loop nested in these members jumps out to one of them, which then
+/// needs a label at its top for the jump to go to.
+let jumpedToFromNested (members: TLoopMember list) : bool =
+    members |> List.exists (fun m -> jumpsAt 0 m.Body |> List.exists (fun (_, level) -> level > 0))
 
 /// Every name `expr` mentions as a reference. Shadowing is ignored, so this
 /// over-approximates: the emitter uses it to decide which loop members are still
@@ -181,6 +183,65 @@ let rec referencedNames (expr: TypedExpr) : Set<string> =
 
     TypeVisitor.children expr
     |> List.fold (fun acc c -> Set.union acc (referencedNames c)) here
+
+// ---------------------------------------------------------------------------
+// Will this loop group be emitted inline, or as local functions?
+// ---------------------------------------------------------------------------
+//
+// A `TLoop (_, Some body)` — a named `let`, or a `(loop ...)` — is emitted
+// *inline* into the enclosing method as a `while`/`switch` whenever it is
+// entered by an immediate call and no member escapes as a value. Otherwise its
+// members become C# local functions.
+//
+// The difference is not a detail. A local function may not `yield return`, so a
+// nested loop inside a `seq` has to be inlined for its `yield` to reach the
+// enclosing iterator; and a local function is not `async`, so a loop inside a
+// bjoroutine has to be inlined for a yield point inside it to reach the
+// enclosing state machine. Same fact, twice.
+//
+// These live here rather than in `Codegen` because `ColourCheck` has to decide
+// exactly what `Codegen` will do. Two copies of this recognition would mean a
+// program the checker accepts and the emitter cannot compile.
+
+/// A single-member group entered by an immediate call — the named-`let` shape.
+/// `Some (member, initialArgs)` when it will be emitted inline.
+let flatLoopEntry (members: TLoopMember list) (body: TypedExpr) : (TLoopMember * TypedExpr list) option =
+    match members, body.Node with
+    | [ member_ ], TApply({ Node = TIdent(calleeName, _) }, initArgs, _) when
+        calleeName = member_.LoopName && initArgs.Length = member_.Slots.Length
+        ->
+        // A member that still names itself is calling rather than jumping, so it
+        // needs to be a real function.
+        if not ((referencedNames member_.Body).Contains member_.LoopName) then
+            Some(member_, initArgs)
+        else
+            None
+    | _ -> None
+
+/// The same recognition for a group of *several* members, which is what a
+/// multi-level `(loop ...)` is. `Some (entryIndex, initialArgs)` when it will be
+/// emitted inline.
+let mergedLoopEntry (members: TLoopMember list) (body: TypedExpr) : (int * TypedExpr list) option =
+    match body.Node with
+    | TApply({ Node = TIdent(calleeName, _) }, initArgs, _) when members.Length > 1 ->
+        match members |> List.tryFindIndex (fun m -> m.LoopName = calleeName) with
+        | Some entryIdx when initArgs.Length = members[entryIdx].Slots.Length ->
+            let names = members |> List.map (fun m -> m.LoopName) |> Set.ofList
+
+            // A member that names another as a *value* rather than jumping to it
+            // needs a real function to be a value of.
+            let escapes =
+                members
+                |> List.exists (fun m -> referencedNames m.Body |> Set.intersect names |> Set.isEmpty |> not)
+
+            if escapes then None else Some(entryIdx, initArgs)
+        | _ -> None
+    | _ -> None
+
+/// Does this loop group run in the enclosing method rather than in local
+/// functions of its own?
+let isInlinedLoop (members: TLoopMember list) (body: TypedExpr) : bool =
+    (flatLoopEntry members body).IsSome || (mergedLoopEntry members body).IsSome
 
 // ---------------------------------------------------------------------------
 // Expressions
@@ -297,6 +358,18 @@ let rec private lowerExpr (targets: LoopTarget list) (inTail: bool) (expr: Typed
         { expr with
             Node = TBjo(newScope b, kind) }
 
+    // A `loop`'s finish member, bound ahead of its group, whose `=>` tail-calls
+    // an enclosing loop. As a local function of its own it could only call that
+    // loop. Moved into the group as one more member, it is jumped to by the
+    // levels and jumps out from its own tail position; the group then becomes
+    // a dispatch over its members, emitted inline as before.
+    | TLet(n, true, fn, ({ Node = TLambda _ } as v), ({ Node = TLetRec(bindings, entry) } as group)) when
+        inTail
+        && (referencedNames v |> Set.exists (fun r -> targets |> List.exists (fun t -> List.contains r t.Names)))
+        && not ((referencedNames entry).Contains n)
+        ->
+        lowerExpr targets inTail { group with Node = TLetRec(bindings @ [ n, true, fn, v ], entry) }
+
     | TLet(n, isFun, fn, v, b) ->
         let loweredValue = if isFun then newScope v else notTail v
 
@@ -383,14 +456,25 @@ and private lowerLetRec
                       // A `loop` form's members take no dictionaries: they are
                       // local, and a local takes its evidence from the function
                       // it is written inside.
-                      Dicts = 0 })
+                      Dicts = 0
+                      Depth = 0 })
                 names
                 slotNames
 
-        let loweredMembers =
+        // A group in tail position of an enclosing loop's member may jump to
+        // that loop from its own tail positions, if it is emitted inline: it
+        // then runs inside the enclosing loop's `while`, in the same method.
+        // A member's parameter of the same name hides an enclosing loop.
+        let enclosing =
+            if inTail then targets |> List.map (fun t -> { t with Depth = t.Depth + 1 }) else []
+
+        let lowerMembers (outward: LoopTarget list) =
             List.mapi2
                 (fun i name slots ->
                     let lambdaArgs, argTypes, retType, lambdaBody = members[i]
+
+                    let visible =
+                        outward |> List.filter (fun t -> not (t.Names |> List.exists (fun n -> List.contains n lambdaArgs)))
 
                     { LoopName = name
                       Slots = List.zip slots argTypes
@@ -401,14 +485,27 @@ and private lowerLetRec
                       // member the group lands in — neither of which is
                       // available here.
                       Effect = ESync
-                      Body = lowerExpr loopTargets true lambdaBody })
+                      Body = lowerExpr (loopTargets @ visible) true lambdaBody })
                 names
                 slotNames
 
         // The group's own body is *outside* the loops: entering a loop from here
         // is a call, not a jump, so it keeps the enclosing scope's targets.
+        let loweredBody = lowerExpr targets inTail renamedBody
+
+        // A group that is not emitted inline becomes local functions, which
+        // cannot jump into the enclosing loop, so it is lowered again without
+        // it. Whether a group is inlined does not depend on jumps out of it.
+        let loweredMembers =
+            let withEnclosing = lowerMembers enclosing
+
+            if enclosing.IsEmpty || isInlinedLoop withEnclosing loweredBody then
+                withEnclosing
+            else
+                lowerMembers []
+
         { expr with
-            Node = TLoop(loweredMembers, Some(lowerExpr targets inTail renamedBody)) }
+            Node = TLoop(loweredMembers, Some loweredBody) }
 
 // ---------------------------------------------------------------------------
 // Declarations
@@ -438,7 +535,8 @@ let private lowerFunctionBody
           Mandatory = args |> List.filter (fst >> isDictionaryParam >> not)
           Keywords = kwArgs
           Rest = restArg
-          Dicts = args |> List.filter (fst >> isDictionaryParam) |> List.length }
+          Dicts = args |> List.filter (fst >> isDictionaryParam) |> List.length
+          Depth = 0 }
 
     let lowered = lowerExpr [ target ] true body
 
@@ -464,65 +562,6 @@ let private lowerFunctionBody
                         Body = renameExpr toLocals lowered } ],
                     None
                 ) }
-
-// ---------------------------------------------------------------------------
-// Will this loop group be emitted inline, or as local functions?
-// ---------------------------------------------------------------------------
-//
-// A `TLoop (_, Some body)` — a named `let`, or a `(loop ...)` — is emitted
-// *inline* into the enclosing method as a `while`/`switch` whenever it is
-// entered by an immediate call and no member escapes as a value. Otherwise its
-// members become C# local functions.
-//
-// The difference is not a detail. A local function may not `yield return`, so a
-// nested loop inside a `seq` has to be inlined for its `yield` to reach the
-// enclosing iterator; and a local function is not `async`, so a loop inside a
-// bjoroutine has to be inlined for a yield point inside it to reach the
-// enclosing state machine. Same fact, twice.
-//
-// These live here rather than in `Codegen` because `ColourCheck` has to decide
-// exactly what `Codegen` will do. Two copies of this recognition would mean a
-// program the checker accepts and the emitter cannot compile.
-
-/// A single-member group entered by an immediate call — the named-`let` shape.
-/// `Some (member, initialArgs)` when it will be emitted inline.
-let flatLoopEntry (members: TLoopMember list) (body: TypedExpr) : (TLoopMember * TypedExpr list) option =
-    match members, body.Node with
-    | [ member_ ], TApply({ Node = TIdent(calleeName, _) }, initArgs, _) when
-        calleeName = member_.LoopName && initArgs.Length = member_.Slots.Length
-        ->
-        // A member that still names itself is calling rather than jumping, so it
-        // needs to be a real function.
-        if not ((referencedNames member_.Body).Contains member_.LoopName) then
-            Some(member_, initArgs)
-        else
-            None
-    | _ -> None
-
-/// The same recognition for a group of *several* members, which is what a
-/// multi-level `(loop ...)` is. `Some (entryIndex, initialArgs)` when it will be
-/// emitted inline.
-let mergedLoopEntry (members: TLoopMember list) (body: TypedExpr) : (int * TypedExpr list) option =
-    match body.Node with
-    | TApply({ Node = TIdent(calleeName, _) }, initArgs, _) when members.Length > 1 ->
-        match members |> List.tryFindIndex (fun m -> m.LoopName = calleeName) with
-        | Some entryIdx when initArgs.Length = members[entryIdx].Slots.Length ->
-            let names = members |> List.map (fun m -> m.LoopName) |> Set.ofList
-
-            // A member that names another as a *value* rather than jumping to it
-            // needs a real function to be a value of.
-            let escapes =
-                members
-                |> List.exists (fun m -> referencedNames m.Body |> Set.intersect names |> Set.isEmpty |> not)
-
-            if escapes then None else Some(entryIdx, initArgs)
-        | _ -> None
-    | _ -> None
-
-/// Does this loop group run in the enclosing method rather than in local
-/// functions of its own?
-let isInlinedLoop (members: TLoopMember list) (body: TypedExpr) : bool =
-    (flatLoopEntry members body).IsSome || (mergedLoopEntry members body).IsSome
 
 /// Which of the group's names are mentioned somewhere that is not a jump.
 ///

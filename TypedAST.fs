@@ -979,10 +979,13 @@ and TExprNode =
     /// `TLoop (members, Some body)` binds the members as local functions that
     /// are in scope in `body`.
     | TLoop of TLoopMember list * TypedExpr option
-    /// A jump back to the top of member `index` of the innermost enclosing
-    /// `TLoop`, carrying a *complete* argument vector aligned with that
-    /// member's `Slots`.
-    | TRecur of int * TypedExpr list
+    /// `TRecur(depth, index, args)`: a jump back to the top of member `index`
+    /// of a `TLoop`, carrying a *complete* argument vector aligned with that
+    /// member's `Slots`. `depth` counts loops outwards from the innermost
+    /// enclosing one, which is 0. A jump with a depth above 0 stands in tail
+    /// position of a nested loop that is emitted inline in the loop it jumps
+    /// to, so both run in one C# method.
+    | TRecur of int * int * TypedExpr list
 
     // --- Foreign .NET interop ---
     //

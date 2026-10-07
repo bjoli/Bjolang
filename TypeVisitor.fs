@@ -130,7 +130,7 @@ let mapChildren (f: TypedExpr -> TypedExpr) (expr: TypedExpr) : TypedExpr =
         | TArrayMake items -> TArrayMake(List.map f items)
         | TLoop(members, bodyOpt) ->
             TLoop(members |> List.map (fun m -> { m with Body = f m.Body }), Option.map f bodyOpt)
-        | TRecur(index, args) -> TRecur(index, List.map f args)
+        | TRecur(depth, index, args) -> TRecur(depth, index, List.map f args)
 
         // Foreign .NET interop. The metadata is not an expression and is
         // carried through untouched: it records what the type checker resolved
