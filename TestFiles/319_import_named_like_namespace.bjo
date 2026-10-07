@@ -1,0 +1,17 @@
+;; An imported function may be named like a namespace a module is compiled
+;; into. Code is emitted inside `namespace BjoMod.<dir>`, and C# looks a bare
+;; name up in the enclosing namespaces before the `using static` lines that
+;; bring imports in: `std` and, once a (text ...) module is linked, `text`
+;; would find the namespaces `BjoMod.std` and `BjoMod.text` instead.
+
+(import (std prelude))
+(import (std simpletest))
+(import (only (text encodings) utf-16be))
+(import "inc/segment_names.bjo")
+
+(defun (main args)
+  (expect "a function named like (std ...)" (std "prelude") "std prelude")
+  (expect "a function named like (text ...)" (text "encodings") "text encodings")
+  (expect "as a value too" (list-map text (list "a" "b")) (list "text a" "text b"))
+  (expect "and (text encodings) still works" (array-length (string->bytes "hi" #:encoding utf-16be)) 4)
+  0)

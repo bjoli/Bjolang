@@ -6466,6 +6466,20 @@ let generateProgram
                 | _ -> ())
         | _ -> ()
 
+    // Every segment of every namespace a module of this compilation lives in:
+    // `BjoMod`, `std`, `text`, `net`, `websocket`. The code is emitted inside
+    // `namespace BjoMod.<dir>`, and C# looks a bare name up in each enclosing
+    // namespace before it reaches the `using static` lines at the top of the
+    // file. A function `text` imported into `BjoMod.app` therefore finds the
+    // namespace `BjoMod.text` that `(text encodings)` lives in, and stops there
+    // (CS0118). An import spelled like a segment is qualified, as a contested
+    // one is.
+    let namespaceSegments =
+        (mainModulePath :: linkedDlls)
+        |> List.map (IO.Path.GetFullPath >> Naming.moduleNamespace)
+        |> List.collect (fun ns -> ns.Split '.' |> List.ofArray)
+        |> Set.ofList
+
     // Where each top-level name is emitted from, and under what member name.
     //
     // A plain import is deliberately absent: it resolves through the
@@ -6501,6 +6515,7 @@ let generateProgram
                     | TExtern (visible, origin, _, _) when
                         Set.contains visible builtinBindings || Set.contains visible contested
                         || Prelude.moduleMemberName origin.OriginalName <> Naming.sanitizeIdent origin.OriginalName
+                        || Set.contains (Prelude.moduleMemberName origin.OriginalName) namespaceSegments
                         ->
                         [ (visible, (origin.OriginModule, origin.OriginalName)) ]
                     // An import whose spelling or whose home differs from what a
