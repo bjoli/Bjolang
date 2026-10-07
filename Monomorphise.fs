@@ -542,6 +542,95 @@ let private collect (env: Env) (cands: Map<string, Candidate>) (decls: TDecl lis
     |> Map.ofList
 
 // ---------------------------------------------------------------------------
+// Substituting into the types a body writes
+// ---------------------------------------------------------------------------
+
+/// A written type with its type variables replaced by surface types.
+let rec private substFType (subst: Map<string, FType>) (ft: FType) : FType =
+    match ft with
+    | TName(n, _) when n.StartsWith "'" -> Map.tryFind (bareVar n) subst |> Option.defaultValue ft
+    | TName _ -> ft
+    | TApp(n, args, r) -> TApp(n, List.map (substFType subst) args, r)
+    | TArrow(mandatory, keywords, rest, ret, colour, r) ->
+        TArrow(
+            List.map (substFType subst) mandatory,
+            keywords |> List.map (fun (k, t) -> k, substFType subst t),
+            Option.map (substFType subst) rest,
+            substFType subst ret,
+            colour,
+            r
+        )
+
+/// A copy's body with every type it writes at the copy's instantiation.
+///
+/// A local parameter written `(: src (Array %a))` names the signature's type
+/// variable, and that is what keeps the local function from being generalized
+/// on its own. The copy's signature is concrete, so a variable left in the
+/// body would belong to no signature, and the local would be generalized over
+/// it and take the constraint with it.
+let rec private substBodyTypes (subst: Map<string, FType>) (expr: Expr) : Expr =
+    let go = substBodyTypes subst
+    let ty = substFType subst
+    let pattern = Ast.mapPatternSteps go
+
+    match expr with
+    | EInt _
+    | EString _
+    | EChar _
+    | EBool _
+    | EResolved _
+    | EQuotedSymbol _
+    | EKeyword _
+    | EIdent _ -> expr
+    | ETuple(items, r) -> ETuple(List.map go items, r)
+    | EList(items, r) -> EList(List.map go items, r)
+    | EVec(items, r) -> EVec(List.map go items, r)
+    | EArray(items, r) -> EArray(List.map go items, r)
+    | ESplice(e, r) -> ESplice(go e, r)
+    | EApp(target, args, r) -> EApp(go target, List.map go args, r)
+    | ECast(t, e, r) -> ECast(ty t, go e, r)
+    | EDynPack(traitName, e, r) -> EDynPack(traitName, go e, r)
+    | ELet(name, isFun, args, ann, value, body, r) ->
+        ELet(name, isFun, substArgs subst args, Option.map ty ann, go value, go body, r)
+    | ELetMono(name, value, body, r) -> ELetMono(name, go value, go body, r)
+    | ELetRec(bindings, body, r) ->
+        ELetRec(
+            bindings
+            |> List.map (fun (n, isFun, args, ann, value) -> n, isFun, substArgs subst args, Option.map ty ann, go value),
+            go body,
+            r
+        )
+    | ELetTuple(names, value, body, r) -> ELetTuple(names, go value, go body, r)
+    | ELetMutable(name, ann, value, body, r) -> ELetMutable(name, Option.map ty ann, go value, go body, r)
+    | ESet(name, value, r) -> ESet(name, go value, r)
+    | EIf(c, t, f, r) -> EIf(go c, go t, go f, r)
+    | EWhen(c, body, negated, r) -> EWhen(go c, go body, negated, r)
+    | EFun(args, body, colour, r) -> EFun(args, go body, colour, r)
+    | ERecordUpdate(target, fields, r) -> ERecordUpdate(target, fields |> List.map (fun (k, v) -> k, go v), r)
+    | ERecordSet(target, fields, r) -> ERecordSet(target, fields |> List.map (fun (k, v) -> k, go v), r)
+    | EGetField(target, field, r) -> EGetField(go target, field, r)
+    | EMatch(target, clauses, r) ->
+        EMatch(go target, clauses |> List.map (fun (p, g, b) -> pattern p, Option.map go g, go b), r)
+    | ETryFinally(body, cleanup, r) -> ETryFinally(go body, go cleanup, r)
+    | ETryCatch(body, exceptions, r) -> ETryCatch(go body, exceptions, r)
+    | EHoist(body, r) -> EHoist(go body, r)
+    | ESeq(body, r) -> ESeq(go body, r)
+    | EBjo(body, kind, r) -> EBjo(go body, kind, r)
+    | ETaskEvent(body, r) -> ETaskEvent(go body, r)
+    | EYield(value, r) -> EYield(go value, r)
+    | EYieldFrom(value, r) -> EYieldFrom(go value, r)
+    | EWithReturn(name, body, r) -> EWithReturn(name, go body, r)
+    | EDefMatch(binder, scrutinee, failure, sequel, r) ->
+        EDefMatch(pattern binder, go scrutinee, Ast.mapDefFailure go pattern failure, go sequel, r)
+
+and private substArgs (subst: Map<string, FType>) (args: DefunArg list) : DefunArg list =
+    args
+    |> List.map (function
+        | MandatoryArg(n, Some t) -> MandatoryArg(n, Some(substFType subst t))
+        | KeywordArg(n, value) -> KeywordArg(n, substBodyTypes subst value)
+        | other -> other)
+
+// ---------------------------------------------------------------------------
 // Generation
 // ---------------------------------------------------------------------------
 
@@ -585,6 +674,17 @@ let private generate (env: Env) (cand: Candidate) (demand: Demand) : (Env * TDec
         // precisely this instantiation.
         let body = AlphaRename.renameFree (Map.ofList [ cand.Name, demand.CopyName ]) cand.Body
 
+        // A variable that cannot be spelled is left as written; the copy then
+        // fails to check and is declined, as any other unspellable type is.
+        let typeSubst =
+            subst
+            |> Map.toList
+            |> List.choose (fun (v, t) -> spellGround env.Registry cand.SigRange t |> Option.map (fun ft -> v, ft))
+            |> Map.ofList
+
+        let body = substBodyTypes typeSubst body
+        let args = substArgs typeSubst cand.Args
+
         // An imported body is checked under the module it was *written* in, not
         // the one it is landing in: it may name something its own module is
         // allowed to name and this one is not. `TraitInline` does the same at a
@@ -598,7 +698,7 @@ let private generate (env: Env) (cand: Candidate) (demand: Demand) : (Env * TDec
             Inference.checkAddendum
                 checkEnv
                 [ DSignature(demand.CopyName, signature, [], cand.SigRange)
-                  DDefun(demand.CopyName, cand.Args, body, Ordinary, cand.DefRange) ]
+                  DDefun(demand.CopyName, args, body, Ordinary, cand.DefRange) ]
 
         // Free names now say which module they came from. The copy is emitted
         // in *this* module's class, so a bare `helper` in it would bind to

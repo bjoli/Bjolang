@@ -856,6 +856,17 @@ let private serializableParams (args: Ast.DefunArg list) : string list =
 
     names
 
+/// A local `defun`'s parameters as it was written, with the types given to
+/// them. A type on a parameter is what ties the function to the enclosing
+/// signature's type variables, and without it the function is generalized on
+/// its own when the body is read back.
+let private serializableDefunParams (args: Ast.DefunArg list) : string list =
+    args
+    |> List.map (function
+        | Ast.MandatoryArg(n, Some t) -> $"(: %s{n} %s{serializeFType t})"
+        | Ast.MandatoryArg(n, None) -> n
+        | _ -> failwith "an inline template body may not contain a local function with keyword or rest parameters")
+
 /// A published body's code is marked with the module that wrote it where that
 /// is not the module of its surroundings, so that `Ast.readOrigins` can give it
 /// back the same access to `#:opaque` representations it had where it was
@@ -902,7 +913,7 @@ and private serializeExprNode (here: string) (e: Ast.Expr) : string =
     | Ast.ELet(n, true, args, None, value, body, _)
         when not (Set.contains n (Ast.freeNames (Set.ofList (Ast.mandatoryNames args)) value)) ->
         list [ "let"; "()"
-               list [ "defun"; list (n :: serializableParams args); serializeExprAt here value ]
+               list [ "defun"; list (n :: serializableDefunParams args); serializeExprAt here value ]
                serializeExprAt here body ]
 
     | Ast.ELet(n, isFun, args, ann, value, body, _) ->
@@ -927,7 +938,7 @@ and private serializeExprNode (here: string) (e: Ast.Expr) : string =
         let defs =
             bindings
             |> List.map (fun (n, isFun, args, _, value) ->
-                if isFun then list [ "defun"; list (n :: serializableParams args); serializeExprAt here value ]
+                if isFun then list [ "defun"; list (n :: serializableDefunParams args); serializeExprAt here value ]
                 else list [ "def"; n; serializeExprAt here value ])
 
         list ([ "let"; "()" ] @ defs @ [ serializeExprAt here body ])
