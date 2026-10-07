@@ -331,18 +331,44 @@ let private absolutizeImports (text: string) (forms: SExpr list) : string =
 /// binding is enough to open the metadata block; nothing reads it.
 let private anchorName = "__bjo_anchor"
 
-/// The lines of `text` a form was written on.
+/// The text of `form` as it was written in `text`.
 ///
-/// Whole lines, which is coarse and is enough: what it is used for is replaying
-/// an `(import ...)` or a `(: f ...)` into a later entry, and those are written
-/// on lines of their own.
+/// What it is used for is replaying an `(import ...)` or a `(: f ...)` into a
+/// later entry, so it has to be the form alone: a form written on the same
+/// line as an import would otherwise be replayed with it, into every later
+/// entry, and run again each time.
+///
+/// The end is found from the tokens: the reader gives a list a range that
+/// ends at whatever follows it. A token's columns count the characters before
+/// it on its line, and its end is just past its last character.
 let private textOf (text: string) (form: SExpr) : string =
-    let r = getRange form
+    let start = (getRange form).Start
+    let tokens = Lexer.tokenize "<repl>" text |> Array.ofList
+    let first = tokens |> Array.findIndex (fun t -> t.Range.Start = start)
 
-    text.Split('\n')
-    |> Array.skip (r.Start.Line - 1)
-    |> Array.truncate (r.End.Line - r.Start.Line + 1)
-    |> String.concat "\n"
+    let rec closing (i: int) (depth: int) =
+        let depth =
+            match tokens[i].Token with
+            | LParen
+            | LBracket
+            | LBrace -> depth + 1
+            | RParen
+            | RBracket
+            | RBrace -> depth - 1
+            | _ -> depth
+
+        if depth = 0 || i = tokens.Length - 1 then i else closing (i + 1) depth
+
+    let stop = tokens[closing first 0].Range.End
+    let lines = text.Split('\n')
+
+    if start.Line = stop.Line then
+        lines[start.Line - 1].Substring(start.Column, stop.Column - start.Column)
+    else
+        [ yield lines[start.Line - 1].Substring start.Column
+          yield! lines[start.Line .. stop.Line - 2]
+          yield lines[stop.Line - 1].Substring(0, stop.Column) ]
+        |> String.concat "\n"
 
 /// Which earlier entries this one has to link.
 ///
@@ -533,6 +559,10 @@ let private evaluate (state: State) (text: string) : State =
     else
 
     let text = absolutizeImports text forms
+
+    // Read again from the rewritten text, whose paths are longer, so that a
+    // form's range points into the text it is taken from.
+    let forms = Lexer.tokenize "<repl>" text |> Pipeline.read |> fst
 
     // Before the session is reset, so that a macro an earlier entry imported is
     // still in the table and a form using it reads as what it is.
