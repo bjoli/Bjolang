@@ -47,8 +47,11 @@
   (Process (: System.Diagnostics.Process))
   (ProcessStartInfo (: System.Diagnostics.ProcessStartInfo (-> ProcessStartInfo)))
   ;; Stream types for Process.
-  (TextReader (: System.IO.TextReader))
+  (Stream (: System.IO.Stream))
   (StreamReader (: System.IO.StreamReader))
+  ;; An input port over a stream, registered on no scope: a child's pipes are
+  ;; `run`'s to close, not the ambient scope's.
+  (PipePort (: Bjolang.Runtime.BjoInputPort (-> Stream PipePort)))
   (StreamWriter (: System.IO.StreamWriter (-> string bool StreamWriter)
                    #:exceptions (System.IO.DirectoryNotFoundException
                                  System.UnauthorizedAccessException
@@ -84,8 +87,8 @@
   (process-stdin (: System.Diagnostics.Process.StandardInput (-> Process StreamWriter) #:get))
   (process-stdout (: System.Diagnostics.Process.StandardOutput (-> Process StreamReader) #:get))
   (process-stderr (: System.Diagnostics.Process.StandardError (-> Process StreamReader) #:get))
-  ;; A child's output as an input port, its characters as UTF-8 bytes.
-  (reader->port   (: Bjolang.Runtime.InputPorts.FromTextReader (-> TextReader InputPort)))
+  ;; The pipe under a child's output reader, read by nothing yet.
+  (reader-bytes   (: System.IO.StreamReader.BaseStream (-> StreamReader Stream) #:get))
   ;; Killing something that has already exited is the ordinary case when a
   ;; later stage fails to start, so the raise is turned into a value here.
   (process-kill  (: System.Diagnostics.Process.Kill (-> Process void)
@@ -110,6 +113,12 @@
   (copy-into    (: BjoProc.PumpIntoAsync (-> InputPort TextOutputPort void) #:async))
   (read-lines   (: BjoProc.ReadLinesAsync (-> InputPort (Array string)) #:async))
   (read-rest    (: Bjolang.Runtime.InputPorts.ReadRestAsync (-> InputPort string) #:async)))
+
+;; A child's output as an input port over the pipe's own bytes, as Racket's
+;; subprocess ports are: its text reads decode UTF-8, whatever encoding .NET
+;; would have guessed the child writes.
+(: output-port (-> StreamReader InputPort))
+(defun (output-port reader) (cast InputPort (PipePort. (reader-bytes reader))))
 
 ;; Nothing in the language builds an `Exception`, and every rejection below is
 ;; this module's own rather than .NET's, so they need a carrier.
@@ -367,12 +376,12 @@
     ((Err e) (Err e))
     ((Ok child)
      (Ok (Wired (sink (Some (cast TextOutputPort (process-stdin child))))
-                (source (Some (reader->port (cast TextReader (process-stdout child)))))
+                (source (Some (output-port (process-stdout child))))
                 (children [child])
                 (exits [(bjo (awaiting-exit child))])
                 ;; Handle stderr copying.
                 (waits (match errors
-                         ((Some w) [(bjo (pump-into (reader->port (cast TextReader (process-stderr child))) w))])
+                         ((Some w) [(bjo (pump-into (output-port (process-stderr child)) w))])
                          (None (vec-empty)))))))))
 
 ;; Two pipes, because a filter has no ends of its own: one for what is written
@@ -739,9 +748,9 @@
                      (with-wait p (bjo (read out items)))))))))))
 
 ;; The stock `Reader`: one item per line, `\r\n` and a missing last newline
-;; handled by `TextReader` rather than by guessing. Each line is sent as soon
-;; as it is read: a program whose output does not end, `tail -f`, still
-;; delivers its lines, and the output is never held whole.
+;; handled by `read-line`'s default mode rather than by guessing. Each line is
+;; sent as soon as it is read: a program whose output does not end, `tail -f`,
+;; still delivers its lines, and the output is never held whole.
 (: by-lines (Reader string))
 (defbjo (by-lines out items)
   (let next ()

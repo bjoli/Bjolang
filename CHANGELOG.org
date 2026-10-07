@@ -3,6 +3,19 @@
 
 What each change guarantees, and what it leaves open.
 
+* Standard input and a child's output are their raw bytes
+
+- *~current-input-port~ is a port over standard input's own bytes,* as a
+  Racket port is, rather than over .NET's ~Console.In~. Its text reads
+  decode UTF-8 whatever the console's encoding says, and its byte reads
+  (~read-bytes~, ~peek-bytes~) get piped binary input as it is: a byte that
+  is not UTF-8 used to arrive as U+FFFD. On a terminal nothing in .NET takes
+  the terminal over, so the terminal edits and echoes the line as it does
+  for any program, and Ctrl-D at the start of a line is end of input.
+- *A child's output in ~(std run)~ is a port over the pipe,* not over the
+  ~StreamReader~ .NET puts on it: decoded as UTF-8 by the port, whatever
+  encoding .NET would have guessed the child writes.
+
 * read-line takes a #:mode, as Racket's does
 
 - *What ends a line is the reader's to say.* ~read-line~, ~read-line/opt~,

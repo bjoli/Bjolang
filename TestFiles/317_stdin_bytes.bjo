@@ -1,0 +1,29 @@
+;; Standard input is a port over its raw bytes, as every port is. Text reads
+;; decode UTF-8 whatever the console's encoding says, and byte reads take the
+;; bytes as they arrived: the three in the middle of `317_stdin_bytes.in` are
+;; 0xFF 0x00 0xFE, which a reader decoding the console's text would have
+;; handed over as replacement characters and a NUL.
+
+(import (std prelude))
+(import (std ports))
+(import (std simpletest))
+
+;; Bytes as text: "255.0.254." for the three above.
+(: shown (-> (Option (Array byte)) string))
+(defun (shown o)
+  (match o
+    ((Some bs) (let loop ((i 0) (acc ""))
+                 (if (= i (array-length bs))
+                     acc
+                     (loop (+ i 1) (str acc (byte->string (array-ref bs i)) ".")))))
+    (None "none")))
+
+(defbjo (main args)
+  (def in (parameter-ref current-input-port))
+  (expect "a line of UTF-8" (read-line in) "hej räksmörgås 🎉")
+  (expect "a peek at bytes that are not UTF-8" (shown (peek-bytes in 0 3)) "255.0.254.")
+  (expect "and a read of them, as they are" (shown (read-bytes in 3)) "255.0.254.")
+  (expect "a line after them" (read-line in) "")
+  (expect "and the last, unterminated" (read-line in) "slut")
+  (expect "then end of input" (port-eof? in) #t)
+  0)

@@ -1528,14 +1528,17 @@ public static partial class BjolangRuntime {
     /// buffer that makes `port-eof?` free is also a claim on input nobody else
     /// may read. Nothing is read here: making the port only allocates.
     ///
-    /// Over `Console.In`, and so through the console's encoding, for now. A
-    /// port over standard input's raw bytes is the Racket shape.
+    /// Over standard input's raw bytes, as a Racket port is: its text reads
+    /// decode UTF-8 whatever the console's encoding, and its byte reads work
+    /// on piped binary input. `Console.In` is never touched, so .NET never
+    /// takes over the terminal: on one in canonical mode the kernel edits and
+    /// echoes the line, and Ctrl-D at the start of a line is end of input.
     ///
     /// Standard *output* is deliberately not wrapped. A writer has no eof
     /// problem to solve, and a buffer in front of the console would only delay
     /// output past the point a program crashed.
     public static readonly Bjolang.Runtime.BjoInputPort StdIn =
-        Bjolang.Runtime.InputPorts.FromTextReader(Console.In);
+        new(Console.OpenStandardInput(), Bjolang.Runtime.BjoInputPort.SmallBufferSize, ownsInner: false);
 
     /// The output port. Bound to a value, not a nullary function: it is read
     /// with `parameter-ref` like every other parameter.
