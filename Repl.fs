@@ -455,11 +455,12 @@ let private entrySource
 
     // What the user typed comes first in both shapes, and everything the REPL
     // adds after it, so that a diagnostic's line number is the line they typed
-    // on. An expression is one line, and is reported as line 1.
+    // on. An expression starts on line 1. Its closing bracket is on a line of
+    // its own, so that a comment at the end of the entry does not swallow it.
     let body =
         match shape with
         | Expression ->
-            [ $"(def %s{valueName} %s{text})"
+            [ $"(def %s{valueName} %s{text}\n)"
               $"(def %s{showName} (->str %s{valueName}))" ]
         | _ -> [ text ]
 
