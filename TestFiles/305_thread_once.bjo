@@ -1,0 +1,32 @@
+;; `->` evaluates the value it threads once, however many `&` a step puts it
+;; at. It had been copied into each `&`, so its effects ran once per copy. A
+;; nested `->` keeps its own `&`; only its first form can name the outer value.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: counter (Array int))
+(def counter (make-array 1))
+
+(: noisy (-> int int))
+(defun (noisy x)
+  (array-set! counter 0 (+ (array-ref counter 0) 1))
+  x)
+
+(: evaluations (-> int))
+(defun (evaluations)
+  (def n (array-ref counter 0))
+  (array-set! counter 0 0)
+  n)
+
+(defun (main args)
+  (array-set! counter 0 0)
+  (expect "two & in one step" (-> (noisy 3) (+ & &)) 6)
+  (expect "and the value was evaluated once" (evaluations) 1)
+  (expect "a step's value threaded into the next step's two &" (-> (noisy 4) (+ & 1) (* & &)) 25)
+  (expect "evaluated once as well" (evaluations) 1)
+  (expect "a nested -> keeps its own &" (-> 1 (list (-> 2 (+ & 10)))) (list 1 12))
+  (expect "its first form is the outer step's" (-> 1 (list (-> & (+ & 10)))) (list 11))
+  (def x 5)
+  (expect "a name is threaded as it is" (-> x (+ & &)) 10)
+  0)

@@ -23,7 +23,11 @@ open Bjolang.TypeSyntax
 /// A bare symbol `f` becomes `(f prev)`. A list containing `&` puts `prev` at
 /// every `&`; a list without one takes it as its first argument. A `#(...)`
 /// inside the step is left alone, because its `&` is the shorthand lambda's
-/// own placeholder.
+/// own placeholder, and so are the steps of a nested `->`, whose `&` is its
+/// own value; the nested one's first form is still this step's.
+///
+/// `prev` is evaluated once. A step with more than one `&` binds it to a name
+/// first, unless it is already a name or a literal.
 ///
 /// `(:view step p)` reads its step through this too, so that the threading
 /// notation means one thing.
@@ -31,29 +35,47 @@ let threadStep (prev: SExpr) (step: SExpr) : SExpr =
     match step with
     | SAtom { Token = Symbol _ } as sym -> SList([ sym; prev ], getRange sym)
     | SList(items, stepR) ->
-        let rec replaceListItems (items: SExpr list) : SExpr list * bool =
+        let rec replaceListItems (value: SExpr) (items: SExpr list) : SExpr list * int =
             match items with
-            | [] -> [], false
+            | [] -> [], 0
             | SAtom { Token = Hash } as h :: SList(subItems, subR) :: tail ->
-                let rest, foundInRest = replaceListItems tail
+                let rest, foundInRest = replaceListItems value tail
                 h :: SList(subItems, subR) :: rest, foundInRest
             | head :: tail ->
-                let newHead, foundHead = replaceAmpersand head
-                let newTail, foundTail = replaceListItems tail
-                newHead :: newTail, foundHead || foundTail
+                let newHead, foundHead = replaceAmpersand value head
+                let newTail, foundTail = replaceListItems value tail
+                newHead :: newTail, foundHead + foundTail
 
-        and replaceAmpersand (expr: SExpr) : SExpr * bool =
+        and replaceAmpersand (value: SExpr) (expr: SExpr) : SExpr * int =
             match expr with
-            | SAtom { Token = Symbol "&" } -> prev, true
+            | SAtom { Token = Symbol "&" } -> value, 1
+            | SList((SAtom { Token = Symbol "->" } as arrow) :: init :: steps, subR) ->
+                let newInit, found = replaceAmpersand value init
+                SList(arrow :: newInit :: steps, subR), found
             | SList(subItems, subR) ->
-                let newItems, found = replaceListItems subItems
+                let newItems, found = replaceListItems value subItems
                 SList(newItems, subR), found
-            | _ -> expr, false
+            | _ -> expr, 0
 
-        let newItems, hasAmp = replaceListItems items
+        let _, ampCount = replaceListItems prev items
 
-        if hasAmp then
-            SList(newItems, stepR)
+        let isAtom =
+            match prev with
+            | SAtom _ -> true
+            | _ -> false
+
+        if ampCount > 1 && not isAtom then
+            let held = SAtom { Token = Symbol(Gensym.fresh "threaded"); Range = getRange prev }
+            let newItems, _ = replaceListItems held items
+
+            SList(
+                [ SAtom { Token = Symbol "let"; Range = stepR }
+                  SList([ SList([ held; prev ], stepR) ], stepR)
+                  SList(newItems, stepR) ],
+                stepR
+            )
+        elif ampCount > 0 then
+            SList(fst (replaceListItems prev items), stepR)
         else
             match items with
             | head :: tail -> SList(head :: prev :: tail, stepR)
