@@ -55,14 +55,14 @@
 ;; The suspending lambda actually suspends: it awaits a leaf rather than just
 ;; being painted the colour. Without this the test would pass on a copy that was
 ;; async in name only.
-(: read-lengths (-bjo-> TextInputPort int))
+(: read-lengths (-bjo-> InputPort int))
 (defbjo (read-lengths p)
   (port-fold (bjoroutine (port acc) (+ acc (string-length (read-line port))))
              0
              p))
 
 ;; The same fold, ordinarily. One source, one name, two emitted bodies.
-(: read-lengths-sync (-> TextInputPort int))
+(: read-lengths-sync (-> InputPort int))
 (defun (read-lengths-sync p)
   (port-fold (fun (port acc) (+ acc (string-length (read-line port))))
              0
@@ -102,7 +102,7 @@
 ;; `(-> ...)` is a type error, so there was no way to write it at all.
 ;;
 ;; The reader may be spelled out as a lambda...
-(: drain-count (-bjo-> TextInputPort int))
+(: drain-count (-bjo-> InputPort int))
 (defbjo (drain-count p)
   (list-length (port->list (bjoroutine (q) (read-line q)) p)))
 
@@ -115,7 +115,7 @@
 ;; mention is written in. Spelling out `(bjoroutine (q) (read-line q))` was the
 ;; workaround for that — and naming a colour is the one thing this design exists
 ;; to avoid having to do.
-(: drain-count-named (-bjo-> TextInputPort int))
+(: drain-count-named (-bjo-> InputPort int))
 (defbjo (drain-count-named p)
   (list-length (port->list read-line p)))
 
@@ -123,7 +123,7 @@
 ;; reader — passing the suspending one would hand a `Func<A,Fiber<B>>` to a
 ;; parameter emitted for `Func<A,B>`. Nothing here says which; the enclosing
 ;; member does.
-(: drain-count-sync (-> TextInputPort int))
+(: drain-count-sync (-> InputPort int))
 (defun (drain-count-sync p)
   (list-length (port->list read-line p)))
 

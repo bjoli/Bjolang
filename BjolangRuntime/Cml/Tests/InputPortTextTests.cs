@@ -11,17 +11,21 @@
  * availability requirements or notice obligations of Section 3 of the MPL 2.0.
  */
 
-// `BjoUtf8Port`, the text port that reads UTF-8 without passing through
-// UTF-16. Two kinds of test:
+// The input port's text reads, which decode UTF-8 from its bytes. Three kinds
+// of test:
 //
-//   * `BjoPort`'s guarantees, case for case (see `TextPortTests.cs`): a
-//     cancelled read consumes nothing, one fill in flight, every line to
-//     exactly one reader, a sticky failure after the lines before it.
-//   * Agreement with `StreamReader`, which is what file ports were before:
-//     random bytes, invalid sequences included, cut into random fills and read
-//     through small buffers, must give the same lines, characters and text.
-//     Plus what is new here: a multi-byte character split across fills, the
-//     byte order marks, and the UTF-16 view a .NET caller gets.
+//   * The port's guarantees as a text reader: a cancelled read consumes
+//     nothing, one refill in flight, every line to exactly one reader, a
+//     sticky failure reported after the text before it.
+//   * Agreement with a decoding reader: random bytes, invalid sequences
+//     included, cut into random refills and read through small buffers, give
+//     the lines, characters and text a `StreamReader` gives. A byte order mark
+//     is a character to both.
+//   * One port for bytes and text: byte reads and text reads mixed on one
+//     port, string ports over a string's own bytes, a .NET `TextReader` made a
+//     port, and text in another encoding re-encoded.
+//
+// `BytePortTests.cs` has the byte reads and events on their own.
 
 using System;
 using System.Collections.Concurrent;
@@ -33,31 +37,37 @@ using System.Threading;
 using System.Threading.Tasks;
 using static Bjoml.Tests.Harness;
 using Bjolang.Runtime;
+using BjoString;
 
 namespace Bjoml.Tests;
 
-public static class Utf8PortTests
+public static class InputPortTextTests
 {
     public static void RunAll()
     {
-        Section("UTF-8 text ports");
+        Section("Input ports: text");
         Run("a cancelled read-line keeps the partial line", CancelledLineKeepsPartial);
         Run("a cancelled read-line after a final \\r keeps the line", CancelledLineAfterCr);
         Run("a cancelled read-all keeps what it gathered", CancelledReadAllKeepsText);
         Run("a line longer than the buffer survives a cancellation", LongLineSurvivesCancel);
-        Run("at most one fill is ever in flight", OneFillAtATime);
+        Run("at most one refill is ever in flight", OneRefillAtATime);
         Run("four readers get every line exactly once", ReadersEveryLineOnce);
         Run("a failure is sticky, after the lines before it", FailureIsStickyAfterLines);
-        Run("\\r\\n split across fills is one terminator", CrLfAcrossFills);
-        Run("read-char/opt across waiting fills hands out every character once", CharsAcrossWaitingFills);
-        Run("a multi-byte character split across fills is one character", MultiByteAcrossFills);
-        Run("lines, characters and text agree with StreamReader", AgreesWithStreamReader);
-        Run("a UTF-8 byte order mark is skipped once", Utf8BomSkippedOnce);
-        Run("a UTF-16 or UTF-32 byte order mark is refused", ForeignBomRefused);
-        Run("bom-encoding names the encoding a mark is for", BomEncodingNames);
+        Run("\\r\\n split across refills is one terminator", CrLfAcrossRefills);
+        Run("read-char/opt across waiting refills hands out every character once", CharsAcrossWaitingRefills);
+        Run("a multi-byte character split across refills is one character", MultiByteAcrossRefills);
+        Run("lines, characters and text agree with a decoding reader", AgreesWithStreamReader);
+        Run("a byte order mark is a character", ByteOrderMarkIsACharacter);
         Run("UTF-16 reads hand out both halves of an astral character", Utf16ReadsSplitAstral);
         Run("read-char after half a character raises and moves on", ReadCharAfterHalf);
-        Run("eof on empty input and on a lone byte order mark", EofCases);
+        Run("eof on empty input, and peek-char leaves the character", EofAndPeek);
+
+        Section("Input ports: bytes and text on one port");
+        Run("byte reads and text reads mix on one port", BytesAndTextMix);
+        Run("a peek at bytes leaves them for read-line", PeekThenLine);
+        Run("a string port reads the string's own bytes, a slice too", StringPortSharesBytes);
+        Run("a .NET TextReader becomes a port of UTF-8 bytes", TextReaderBecomesPort);
+        Run("text in another encoding is re-encoded as UTF-8", ReencodedText);
     }
 
     /// A stream fed by the test: each `Feed` is what one read hands over, and a
@@ -191,6 +201,25 @@ public static class Utf8PortTests
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
+    /// A .NET reader handing over one character per read, so that every
+    /// surrogate pair arrives in two reads.
+    private sealed class OneCharReader(string text) : TextReader
+    {
+        private int _at;
+
+        public override int Read(char[] buffer, int index, int count) => Read(buffer.AsSpan(index, count));
+
+        public override int Read(Span<char> buffer)
+        {
+            if (_at == text.Length || buffer.IsEmpty) return 0;
+            buffer[0] = text[_at++];
+            return 1;
+        }
+
+        public override ValueTask<int> ReadAsync(Memory<char> buffer, CancellationToken cancel = default) =>
+            new(Read(buffer.Span));
+    }
+
     /// Runs `read` with a token that fires after a moment, and insists that it
     /// was cancelled rather than completed.
     private static void Cancelled<T>(Func<CancellationToken, Task<T>> read, string what)
@@ -204,23 +233,26 @@ public static class Utf8PortTests
         catch (OperationCanceledException) { }
     }
 
-    private static string? Line(BjoUtf8Port p)
+    private static string? Line(BjoInputPort p)
     {
         var line = p.ReadLineUtf8ValueAsync().AsTask().GetAwaiter().GetResult();
         return line.IsSome ? line.Value.ToString() : null;
     }
 
-    private static BjoUtf8Port Over(byte[] bytes, int bufferSize = 64) =>
+    private static BjoInputPort Over(byte[] bytes, int bufferSize = 64) =>
         new(new MemoryStream(bytes), bufferSize);
 
     private static byte[] Bytes(params int[] values) => values.Select(v => (byte)v).ToArray();
 
-    // -----------------------------------------------------------------------
+    private static string Shown(BjolangRuntime.Option<byte[]> bytes) =>
+        bytes.IsSome ? Convert.ToHexString(bytes.Value) : "none";
+
+    // --- Guarantees -----------------------------------------------------------
 
     private static void CancelledLineKeepsPartial()
     {
         var feed = new FeedStream();
-        var port = new BjoUtf8Port(feed);
+        var port = new BjoInputPort(feed);
 
         feed.Feed("abc");
         Cancelled(c => port.ReadLineUtf8ValueAsync(c).AsTask(), "read-line with half a line");
@@ -232,7 +264,7 @@ public static class Utf8PortTests
     private static void CancelledLineAfterCr()
     {
         var feed = new FeedStream();
-        var port = new BjoUtf8Port(feed);
+        var port = new BjoInputPort(feed);
 
         feed.Feed("line1\r");
         Cancelled(c => port.ReadLineUtf8ValueAsync(c).AsTask(), "read-line ending at a \\r");
@@ -245,7 +277,7 @@ public static class Utf8PortTests
     private static void CancelledReadAllKeepsText()
     {
         var feed = new FeedStream();
-        var port = new BjoUtf8Port(feed);
+        var port = new BjoInputPort(feed);
 
         feed.Feed("hello ");
         Cancelled(c => port.ReadToEndUtf8Async(c).AsTask(), "read-all before the end");
@@ -259,7 +291,7 @@ public static class Utf8PortTests
     private static void LongLineSurvivesCancel()
     {
         var feed = new FeedStream();
-        var port = new BjoUtf8Port(feed, 4);
+        var port = new BjoInputPort(feed, 4);
 
         feed.Feed("0123456789");
         feed.Feed("åäöÅÄÖ");
@@ -270,10 +302,10 @@ public static class Utf8PortTests
         AssertEqual("next", Line(port), "the line after it");
     }
 
-    private static void OneFillAtATime()
+    private static void OneRefillAtATime()
     {
         var feed = new FeedStream();
-        var port = new BjoUtf8Port(feed);
+        var port = new BjoInputPort(feed);
 
         var readers = Enumerable.Range(0, 3).Select(_ => port.ReadLineUtf8ValueAsync().AsTask()).ToArray();
         Thread.Sleep(50);
@@ -290,7 +322,7 @@ public static class Utf8PortTests
         var text = new StringBuilder();
         for (int i = 0; i < count; i++) text.Append("rad-").Append(i).Append("-åäö😀\n");
 
-        // A small buffer, so that the readers meet at fills constantly.
+        // A small buffer, so that the readers meet at refills constantly.
         var port = Over(Encoding.UTF8.GetBytes(text.ToString()));
         var seen = new ConcurrentBag<string>();
 
@@ -312,11 +344,13 @@ public static class Utf8PortTests
 
     private static void FailureIsStickyAfterLines()
     {
-        var port = new BjoUtf8Port(new FailingStream(Encoding.UTF8.GetBytes("one\ntwå\nthr")), 64);
+        var port = new BjoInputPort(new FailingStream(Encoding.UTF8.GetBytes("one\ntwå\nthr")), 64);
 
         AssertEqual("one", Line(port), "the first line");
         AssertEqual("twå", Line(port), "the second line");
 
+        // "thr" is a line cut short by the failure, not a line: the failure
+        // is what the read reports.
         for (int attempt = 0; attempt < 2; attempt++)
         {
             try
@@ -330,9 +364,9 @@ public static class Utf8PortTests
             }
         }
 
-        // A character cut short by the failure is not a replacement character:
-        // the rest of it was lost, and the read says so.
-        var chars = new BjoUtf8Port(new FailingStream(Bytes('a', 0xF0, 0x9F)), 64);
+        // A character cut short by the failure is not a replacement character
+        // either.
+        var chars = new BjoInputPort(new FailingStream(Bytes('a', 0xF0, 0x9F)), 64);
         AssertEqual((int)'a', chars.ReadScalar(), "the character before the cut");
         try
         {
@@ -345,10 +379,10 @@ public static class Utf8PortTests
         }
     }
 
-    private static void CrLfAcrossFills()
+    private static void CrLfAcrossRefills()
     {
         var feed = new FeedStream();
-        var port = new BjoUtf8Port(feed);
+        var port = new BjoInputPort(feed);
 
         feed.Feed("a\r");
         feed.Feed("\nb\r\n");
@@ -360,12 +394,12 @@ public static class Utf8PortTests
     }
 
     /// The `read-char/opt` dispatcher while the text arrives a few bytes at a
-    /// time, so that most reads wait for a fill and many characters arrive in
-    /// two pieces. A read that waited must be the read that completes.
-    private static void CharsAcrossWaitingFills()
+    /// time, so that most reads wait for a refill and many characters arrive
+    /// in two pieces. A read that waited must be the read that completes.
+    private static void CharsAcrossWaitingRefills()
     {
         var feed = new FeedStream();
-        var port = new BjoUtf8Port(feed, 8);
+        var port = new BjoInputPort(feed, 8);
         var expected = string.Concat(Enumerable.Range(0, 300).Select(i => $"{i}å€😀,"));
         var bytes = Encoding.UTF8.GetBytes(expected);
 
@@ -382,7 +416,7 @@ public static class Utf8PortTests
         var got = new StringBuilder();
         while (true)
         {
-            var c = BjoPort.ReadCharOptAsync(port).AsTask().GetAwaiter().GetResult();
+            var c = InputPorts.ReadCharOptAsync(port).AsTask().GetAwaiter().GetResult();
             if (!c.IsSome) break;
             got.Append(char.ConvertFromUtf32((int)c.Value.Value));
         }
@@ -391,14 +425,14 @@ public static class Utf8PortTests
         AssertEqual(expected, got.ToString(), "what read-char/opt handed out");
     }
 
-    private static void MultiByteAcrossFills()
+    private static void MultiByteAcrossRefills()
     {
-        // Two, three and four bytes, each handed over one byte per fill, read
+        // Two, three and four bytes, each handed over one byte per refill, read
         // through buffers too small to hold more than a piece at a time.
-        foreach (int bufferSize in new[] { 2, 3, 4, 16 })
+        foreach (int bufferSize in new[] { 1, 2, 3, 4, 16 })
         {
             var feed = new FeedStream();
-            var port = new BjoUtf8Port(feed, bufferSize);
+            var port = new BjoInputPort(feed, bufferSize);
             foreach (var b in Encoding.UTF8.GetBytes("aå€😀b\nö😀\n")) feed.Feed([b]);
             feed.Feed((byte[]?)null);
 
@@ -411,16 +445,16 @@ public static class Utf8PortTests
         }
     }
 
-    // --- Against StreamReader ------------------------------------------------
+    // --- Against a decoding reader ----------------------------------------------
 
     /// Pieces random input is made of: ASCII, every line ending, valid
-    /// sequences of each length, and the invalid ones a decoder has to make a
-    /// decision about. No 0xFE, so no input begins with a UTF-16 mark.
+    /// sequences of each length, a byte order mark, and the invalid sequences
+    /// a decoder has to make a decision about.
     private static readonly byte[][] Pieces = [
         Bytes('a'), Bytes('b'), Bytes(' '), Bytes('\r'), Bytes('\n'), Bytes('\r', '\n'),
         Bytes(0xC3, 0xA5), Bytes(0xE2, 0x82, 0xAC), Bytes(0xF0, 0x9F, 0x98, 0x80),
         Bytes(0xEF, 0xBB, 0xBF),
-        Bytes(0x80), Bytes(0xBF), Bytes(0xFF), Bytes(0xC0, 0xAF), Bytes(0xC3),
+        Bytes(0x80), Bytes(0xBF), Bytes(0xFF), Bytes(0xFE), Bytes(0xC0, 0xAF), Bytes(0xC3),
         Bytes(0xE2, 0x82), Bytes(0xF0, 0x9F, 0x98), Bytes(0xED, 0xA0, 0x80),
         Bytes(0xF4, 0x90, 0x80, 0x80), Bytes(0xF8, 0x88, 0x80, 0x80, 0x80),
     ];
@@ -434,13 +468,17 @@ public static class Utf8PortTests
         return bytes.ToArray();
     }
 
+    /// The reference: a decoder held to UTF-8 that neither skips a byte order
+    /// mark nor switches encoding on one. An encoding with no preamble is what
+    /// keeps `StreamReader` from skipping one.
     private static StreamReader Reference(byte[] bytes) =>
-        new(new MemoryStream(bytes), Encoding.UTF8, detectEncodingFromByteOrderMarks: false);
+        new(new MemoryStream(bytes), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            detectEncodingFromByteOrderMarks: false);
 
-    private static BjoUtf8Port Chunked(byte[] bytes, Random random)
+    private static BjoInputPort Chunked(byte[] bytes, Random random)
     {
         var sizes = Enumerable.Range(0, 5).Select(_ => random.Next(1, 6)).ToArray();
-        return new BjoUtf8Port(new ChunkyStream(bytes, sizes), random.Next(2, 10));
+        return new BjoInputPort(new ChunkyStream(bytes, sizes), random.Next(1, 10));
     }
 
     private static string Show(byte[] bytes) => Convert.ToHexString(bytes);
@@ -458,7 +496,7 @@ public static class Utf8PortTests
             var lines = new List<string>();
             using (var reference = Reference(bytes))
                 while (reference.ReadLine() is { } line) lines.Add(line);
-            var expectedLines = string.Join("|", lines.Select(l => BjoString.Utf8String.FromUtf16(l).ToString()));
+            var expectedLines = string.Join("|", lines.Select(l => Utf8String.FromUtf16(l).ToString()));
 
             var port = Chunked(bytes, random);
             var got = new List<string>();
@@ -489,73 +527,26 @@ public static class Utf8PortTests
             AssertEqual(expected, units.ToString(), $"{Show(bytes)}: Read into a block");
 
             // The rest.
-            AssertEqual(BjoString.Utf8String.FromUtf16(expected).ToString(),
+            AssertEqual(Utf8String.FromUtf16(expected).ToString(),
                 Chunked(bytes, random).ReadToEndUtf8().ToString(), $"{Show(bytes)}: read-all");
             AssertEqual(expected, Chunked(bytes, random).ReadToEnd(), $"{Show(bytes)}: ReadToEnd");
         }
     }
 
-    // --- Byte order marks ------------------------------------------------------
+    // --- Characters -------------------------------------------------------------
 
-    private static void Utf8BomSkippedOnce()
+    private static void ByteOrderMarkIsACharacter()
     {
-        var text = Bytes(0xEF, 0xBB, 0xBF, 0xEF, 0xBB, 0xBF, 'a', '\n');
-        AssertEqual("\uFEFFa", Line(Over(text)), "the line after one mark");
+        AssertEqual("\uFEFFa", Line(Over(Bytes(0xEF, 0xBB, 0xBF, 'a', '\n'))), "a UTF-8 mark");
+        AssertEqual(0xFEFF, Over(Bytes(0xEF, 0xBB, 0xBF)).ReadScalar(), "a mark on its own");
 
-        // The mark arriving a byte at a time, through the smallest buffer.
-        var feed = new FeedStream();
-        var port = new BjoUtf8Port(feed, 2);
-        foreach (var b in text) feed.Feed([b]);
-        feed.Feed((byte[]?)null);
-        AssertEqual(0xFEFF, port.ReadScalar(), "the second mark is a character");
-        AssertEqual((int)'a', port.ReadScalar(), "the character after it");
+        // UTF-16, read as the UTF-8 it is not: each byte that cannot start a
+        // character is one replacement.
+        var scalars = new List<int>();
+        var port = Over(Bytes(0xFF, 0xFE, 'h', 0));
+        for (int c; (c = port.ReadScalar()) >= 0;) scalars.Add(c);
+        AssertEqual("FFFD,FFFD,68,0", string.Join(",", scalars.Select(c => c.ToString("X"))), "UTF-16 bytes");
     }
-
-    private static void ForeignBomRefused()
-    {
-        var cases = new (byte[] Bytes, string Name)[] {
-            (Bytes(0xFF, 0xFE, 'a', 0), "UTF-16 (little-endian)"),
-            (Bytes(0xFE, 0xFF, 0, 'a'), "UTF-16 (big-endian)"),
-            (Bytes(0xFF, 0xFE, 0, 0, 'a', 0, 0, 0), "UTF-32 (little-endian)"),
-            (Bytes(0, 0, 0xFE, 0xFF, 0, 0, 0, 'a'), "UTF-32 (big-endian)"),
-        };
-
-        foreach (var (bytes, name) in cases)
-        {
-            var port = Over(bytes, 2);
-            for (int attempt = 0; attempt < 2; attempt++)
-            {
-                try
-                {
-                    var line = port.ReadLineUtf8();
-                    throw new AssertionException($"{name}, attempt {attempt}: expected a refusal, got <{line}>");
-                }
-                catch (InvalidDataException e)
-                {
-                    Assert(e.Message.Contains(name), $"{name}, attempt {attempt}: the message names it: {e.Message}");
-                }
-            }
-        }
-
-        // A mark cut short by the end of the input is only bytes, and invalid ones.
-        AssertEqual("\uFFFD", Line(Over(Bytes(0xFF))), "a lone 0xFF");
-    }
-
-    private static void BomEncodingNames()
-    {
-        string? Named(params int[] head) =>
-            BytePorts.BomEncoding(BjolangRuntime.Some(Bytes(head))) is { IsSome: true } e ? e.Value.WebName : null;
-
-        AssertEqual("utf-8", Named(0xEF, 0xBB, 0xBF, 'a'), "UTF-8");
-        AssertEqual("utf-16", Named(0xFF, 0xFE, 'a', 0), "UTF-16 little-endian");
-        AssertEqual("utf-16BE", Named(0xFE, 0xFF, 0, 'a'), "UTF-16 big-endian");
-        AssertEqual("utf-32", Named(0xFF, 0xFE, 0, 0), "UTF-32 little-endian");
-        AssertEqual("utf-32BE", Named(0, 0, 0xFE, 0xFF), "UTF-32 big-endian");
-        AssertEqual(null, Named('a', 'b'), "no mark");
-        AssertEqual(null, BytePorts.BomEncoding(BjolangRuntime.None<byte[]>()).IsSome ? "some" : null, "no bytes");
-    }
-
-    // --- The UTF-16 view ---------------------------------------------------------
 
     private static void Utf16ReadsSplitAstral()
     {
@@ -598,12 +589,101 @@ public static class Utf8PortTests
         AssertEqual((int)'x', port.ReadScalar(), "the character after the half");
     }
 
-    private static void EofCases()
+    private static void EofAndPeek()
     {
         Assert(Over([]).Eof(), "empty input");
-        Assert(Over(Bytes(0xEF, 0xBB, 0xBF)).EofAsync().AsTask().GetAwaiter().GetResult(), "a lone mark");
-        Assert(!Over(Bytes(0xEF, 0xBB)).Eof(), "two bytes of a mark are text");
+        Assert(!Over(Bytes(0xEF, 0xBB)).Eof(), "two bytes of a mark are input");
         AssertEqual("\uFFFD", Line(Over(Bytes(0xEF, 0xBB))), "and read as one replacement");
-        AssertEqual(null, Line(Over(Bytes(0xEF, 0xBB, 0xBF))), "no line after a lone mark");
+
+        var port = Over(Encoding.UTF8.GetBytes("😀a"));
+        AssertEqual(0x1F600, port.PeekScalar(), "peek-char");
+        AssertEqual(0x1F600, port.PeekScalar(), "peek-char again");
+        AssertEqual(0x1F600, port.ReadScalar(), "read-char gets the peeked character");
+        AssertEqual((int)'a', port.ReadScalar(), "and then the next");
+        AssertEqual(-1, port.PeekScalar(), "peek-char at the end");
     }
+
+    // --- One port for bytes and text ----------------------------------------------
+
+    private static void BytesAndTextMix()
+    {
+        foreach (int bufferSize in new[] { 1, 3, 64 })
+        {
+            var port = Over(Encoding.UTF8.GetBytes("HEAD\r\nå😀rest\nbody"), bufferSize);
+            var into = new byte[4];
+
+            AssertEqual("HEAD", Line(port), $"buffer {bufferSize}: a line");
+            AssertEqual(0xE5, port.ReadScalar(), $"buffer {bufferSize}: a character");
+
+            AssertEqual(4, port.ReadInto(into), $"buffer {bufferSize}: four bytes");
+            AssertEqual("F09F9880", Convert.ToHexString(into), $"buffer {bufferSize}: the emoji's bytes");
+
+            AssertEqual("rest", Line(port), $"buffer {bufferSize}: the line after the bytes");
+            AssertEqual("body", port.ReadToEndUtf8().ToString(), $"buffer {bufferSize}: the rest");
+            Assert(port.Eof(), $"buffer {bufferSize}: at end");
+        }
+    }
+
+    private static void PeekThenLine()
+    {
+        var feed = new FeedStream();
+        var port = new BjoInputPort(feed, 4);
+        feed.Feed("GET / HTTP/1.1\r\n");
+        feed.Feed("Host: x\r\n");
+        feed.Feed((byte[]?)null);
+
+        AssertEqual("474554", Shown(port.PeekBytes(0, 3)), "the method, peeked");
+        AssertEqual("GET / HTTP/1.1", Line(port), "the request line, peeked bytes included");
+        AssertEqual("Host: x", Line(port), "the header");
+    }
+
+    private static void StringPortSharesBytes()
+    {
+        var whole = Utf8String.FromUtf16("  åäö\n😀x  ");
+        var slice = whole.TrimSlice();
+
+        var port = InputPorts.FromString(slice);
+        AssertEqual("åäö", Line(port), "the slice's first line");
+        AssertEqual(0x1F600, port.ReadScalar(), "a character");
+        AssertEqual("x", port.ReadToEndUtf8().ToString(), "the rest, and not the whole string's");
+        Assert(port.Eof(), "at end");
+
+        var empty = InputPorts.FromString(Utf8String.Empty);
+        Assert(empty.Eof(), "an empty string port is at end");
+        AssertEqual(null, Line(empty), "and has no line");
+    }
+
+    private static void TextReaderBecomesPort()
+    {
+        var smile = char.ConvertFromUtf32(0x1F600);
+        var port = InputPorts.FromTextReader(new OneCharReader("a" + smile + "\nb" + '\uD800' + "c"));
+
+        AssertEqual("a" + smile, Line(port), "a pair that arrived in two reads");
+        AssertEqual("b\uFFFDc", port.ReadToEndUtf8().ToString(), "a lone surrogate is a replacement");
+
+        var already = Over(Bytes('x'));
+        Assert(ReferenceEquals(already, InputPorts.FromTextReader(already)), "a port is handed back as it is");
+    }
+
+    private static void ReencodedText()
+    {
+        // "grüße" in Latin-1: ü and ß are single bytes that are not UTF-8.
+        var latin1 = Over(Bytes('g', 'r', 0xFC, 0xDF, 'e', '\n', 'x'));
+        AssertEqual("FC", Shown(latin1.PeekBytes(2, 1)), "the Latin-1 byte, peeked first");
+        var text = InputPorts.Reencode(latin1, Encoding.Latin1);
+        AssertEqual("grüße", Line(text), "a Latin-1 line");
+        AssertEqual("C3BC", Shown(InputPorts.Reencode(Over(Bytes(0xFC)), Encoding.Latin1).PeekBytes(0, 2)),
+            "the re-encoded port's bytes are UTF-8");
+
+        // UTF-16 with its mark: the mark is a character here too.
+        var utf16 = InputPorts.Reencode(Over(Bytes(0xFF, 0xFE, 'h', 0, 'i', 0)), Encoding.Unicode);
+        var all = utf16.ReadToEndUtf8().ToString();
+        AssertEqual("hi", all.TrimStart('\uFEFF'), "UTF-16 text");
+        AssertEqual(all.StartsWith('\uFEFF') ? "kept" : "dropped", ReencodeKeepsMark, "what happens to the mark");
+    }
+
+    /// Whether re-encoding keeps a byte order mark as a character. Pinned
+    /// here so that a change in what .NET's transcoder does is a failing test
+    /// and not a silent change of what `reencode-input-port` hands out.
+    private const string ReencodeKeepsMark = "kept";
 }

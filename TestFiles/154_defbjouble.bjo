@@ -24,7 +24,7 @@
 ;; Nothing in `drain` mentions a colour. It is not `-bjo->`, it takes no flag,
 ;; and it does not choose between two spellings of `port-finished?` — there is
 ;; only one spelling.
-(: drain (-> TextInputPort int))
+(: drain (-> InputPort int))
 (defun (drain p)
   (let loop ((n 0))
     (if (port-finished? p)
@@ -48,7 +48,7 @@
 ;; is kept only because this file is about the leaf rather than about the copies
 ;; above it. `(drain p)` from a bjoroutine would do the same thing, which is
 ;; what `codegen/colour_copies.bjo` pins.
-(: count-suspending (-bjo-> TextInputPort int))
+(: count-suspending (-bjo-> InputPort int))
 (defbjo (count-suspending p)
   (let loop ((n 0))
     (if (port-finished? p)
@@ -71,14 +71,14 @@
 ;; two functions are the same source written twice, differing only in the
 ;; definer — and that difference is the whole of what decides whether the reads
 ;; park a thread or suspend a fiber.
-(: join-lines (-> TextInputPort string))
+(: join-lines (-> InputPort string))
 (defun (join-lines p)
   (let go ((acc ""))
     (if (port-eof? p)
         acc
         (go (string-append acc (string-append (read-line p) "|"))))))
 
-(: join-lines-bjo (-bjo-> TextInputPort string))
+(: join-lines-bjo (-bjo-> InputPort string))
 (defbjo (join-lines-bjo p)
   (let go ((acc ""))
     (if (port-eof? p)
@@ -87,7 +87,7 @@
 
 ;; Reading past the end from the suspending half. Both halves promise the same
 ;; exception, which is the part no compiler can check.
-(: read-past-end (-bjo-> TextInputPort string))
+(: read-past-end (-bjo-> InputPort string))
 (defbjo (read-past-end p)
   (match (try (read-line p) #:catch (System.IO.EndOfStreamException))
     ((Ok l) "returned")

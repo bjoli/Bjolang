@@ -57,13 +57,13 @@
     ((Ok xs) xs)
     ((Err e) (list "raised"))))
 
-(: two-ports (-> (List TextInputPort)))
+(: two-ports (-> (List InputPort)))
 (defun (two-ports)
   (list (open-input-string "one\ntwo\n") (open-input-string "three\n")))
 
 ;; --- map ---------------------------------------------------------------------
 
-(: list-first-lines (-bjo-> (List TextInputPort) (List string)))
+(: list-first-lines (-bjo-> (List InputPort) (List string)))
 (defbjo (list-first-lines ps)
   (list-map (bjoroutine (p) (read-line p)) ps))
 
@@ -72,18 +72,18 @@
 ;; The predicate suspends, and the elements it keeps are the ports that had
 ;; something on their first line.
 
-(: non-empty-first (-bjo-> (List TextInputPort) int))
+(: non-empty-first (-bjo-> (List InputPort) int))
 (defbjo (non-empty-first ps)
   (list-length
     (list-filter (bjoroutine (p) (not (string-empty? (read-line p)))) ps)))
 
 ;; --- the folds ---------------------------------------------------------------
 
-(: list-total-length (-bjo-> (List TextInputPort) int))
+(: list-total-length (-bjo-> (List InputPort) int))
 (defbjo (list-total-length ps)
   (list-foldl (bjoroutine (p acc) (+ acc (string-length (read-line p)))) 0 ps))
 
-(: joined (-bjo-> (List TextInputPort) string))
+(: joined (-bjo-> (List InputPort) string))
 (defbjo (joined ps)
   (list-foldr (bjoroutine (p acc) (string-append (read-line p) acc)) "" ps))
 
@@ -161,22 +161,22 @@
 ;; expressible. `vec-filter` is here because it is the one predicate that is
 ;; not: filtering with a fold needs an intermediate structure.
 
-(: ports (-> (Vec TextInputPort)))
+(: ports (-> (Vec InputPort)))
 (defun (ports)
   (vec-add (vec-add (vec-empty) (open-input-string "one\n"))
            (open-input-string "three\n")))
 
 ;; --- suspending callbacks -----------------------------------------------------
 
-(: vec-first-lines (-bjo-> (Vec TextInputPort) string))
+(: vec-first-lines (-bjo-> (Vec InputPort) string))
 (defbjo (vec-first-lines ps)
   (->str (vec-map (bjoroutine (p) (read-line p)) ps)))
 
-(: loud-count (-bjo-> (Vec TextInputPort) int))
+(: loud-count (-bjo-> (Vec InputPort) int))
 (defbjo (loud-count ps)
   (vec-length (vec-filter (bjoroutine (p) (not (string-empty? (read-line p)))) ps)))
 
-(: vec-total-length (-bjo-> (Vec TextInputPort) int))
+(: vec-total-length (-bjo-> (Vec InputPort) int))
 (defbjo (vec-total-length ps)
   (vec-fold (bjoroutine (p acc) (+ acc (string-length (read-line p)))) 0 ps))
 
@@ -186,7 +186,7 @@
 ;; the predicate is false at the first element and the walk ends there.
 (def/mutable reads 0)
 
-(: read-until-short (-bjo-> (Vec TextInputPort) int))
+(: read-until-short (-bjo-> (Vec InputPort) int))
 (defbjo (read-until-short ps)
   (set! reads 0)
   (ignore (vec-iter (bjoroutine (p)

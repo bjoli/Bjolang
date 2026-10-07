@@ -3,6 +3,43 @@
 
 What each change guarantees, and what it leaves open.
 
+* One input port type: bytes, and text read from them
+
+Following Racket: a port is bytes, and `read-line` and `read-char` decode
+UTF-8 from it. Byte reads and text reads mix on one port, in any order.
+
+- *~InputPort~ replaces ~TextInputPort~ and ~ByteInputPort~,* which are
+  gone, not aliased. Every input port is one: a file, a string, standard
+  input, a socket, a pipe, a ~limited~ view. The byte reads from
+  ~(std ports)~ — ~read-some~, ~read-bytes~, ~peek-bytes~ and their events —
+  take the same port as ~read-line~, so a protocol can read its header lines
+  and then its body's bytes without converting anything, and a byte read that
+  loses a ~choose~ still takes nothing.
+- *Names that only existed because there were two types are gone:*
+  ~byte-port-eof?~ is ~port-eof?~, ~close-byte-input-port!~ is
+  ~close-input-port~, ~open-byte-input-file~ is ~open-input-file~,
+  ~stream->byte-input-port~ is ~stream->input-port~. ~byte->text-input-port~
+  is not needed for UTF-8 any more; for another encoding it is
+  ~reencode-input-port~, Racket's name, which reads through the port so a
+  peek before it loses nothing. Output is still two types for now.
+- *A byte order mark is a character,* as in Racket and OCaml: U+FEFF, read
+  like any other. The UTF-8 skip and the UTF-16/32 refusal from the section
+  below are reversed, and ~bom-encoding~ is gone. A HTTP body is the same: its
+  declared charset decides, and a mark is not special.
+- *A string port is a port over the string's own UTF-8 bytes,* shared rather
+  than copied. A .NET ~TextReader~ cannot be cast to a port any more; the
+  runtime turns one into a port of UTF-8 bytes (~InputPorts.FromTextReader~),
+  which is what standard input and a child process's output are read through
+  for now. A port is still a ~System.IO.TextReader~, so a .NET API that takes
+  one takes a port.
+- *(text xml read)* reads a port as bytes, as it reads a ~Stream~: the encoding
+  comes from the document. A string is still read as text.
+- *Faster, both ways.* Over a 3-million-line file, text reads cost what they
+  did after the UTF-8 port, ~read-char~ about 10% less; ~read-some~ about half
+  (93 to 48 ms), and ~read-bytes~ of 16 at a time about 20% less (450 to 365
+  ms). The port's lock is now the spin lock the text port had, and a blocking
+  reader refills with a plain read on streams that allow one.
+
 * File ports read UTF-8 without a detour through UTF-16
 
 - *A line from a file reaches the program as the bytes the file held.* A

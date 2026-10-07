@@ -1,0 +1,84 @@
+;; One input port type, as in Racket: a port is bytes, and text reads decode
+;; UTF-8 from those bytes. So byte reads and text reads mix on one port in any
+;; order, a string port can be read as bytes, a byte read that loses a
+;; `choose` leaves its bytes for the next `read-line`, and text in another
+;; encoding is a port re-encoded as UTF-8.
+
+(import (std prelude))
+(import (std ports))
+(import (std simpletest))
+
+(import/extern
+  (latin1 (: System.Text.Encoding.Latin1 #:get)))
+
+;; Bytes as text: "97.98." for "ab".
+(: shown (-> (Option (Array byte)) string))
+(defun (shown o)
+  (match o
+    ((Some bs) (let loop ((i 0) (acc ""))
+                 (if (= i (array-length bs))
+                     acc
+                     (loop (+ i 1) (str acc (byte->string (array-ref bs i)) ".")))))
+    (None "none")))
+
+(: line-or (-> InputPort string))
+(defun (line-or p)
+  (match (read-line/opt p) ((Some l) l) (None "eof")))
+
+;; A read of four bytes against a stop signal that is already there, so the
+;; read loses. Answers which branch won.
+(: losing-read (-bjo-> InputPort string))
+(defbjo (losing-read p)
+  (sync (choose (wrap (read-bytes-evt p 4) (fun (r) "read"))
+                (wrap (always unit) (fun (u) "stopped")))))
+
+(defbjo (main args)
+  ;; --- a string port is bytes ------------------------------------------------
+  (def s (open-input-string "åb\nrest"))
+  (expect "the first character's bytes" (shown (read-bytes s 2)) "195.165.")
+  (expect "a line after them" (read-line s) "b")
+  (expect "a character" (char->string (read-char s)) "r")
+  (expect "bytes again" (shown (read-some s)) "101.115.116.")
+  (expect "the end, for text" (port-eof? s) #t)
+  (expect "and for bytes" (shown (read-some s)) "none")
+
+  ;; --- peek, then read text ---------------------------------------------------
+  (def h (open-input-string "GET /x HTTP/1.1\r\nHost: y\r\n\r\nbody"))
+  (expect "a peek at the method" (shown (peek-bytes h 0 3)) "71.69.84.")
+  (expect "the request line still starts with it" (read-line h) "GET /x HTTP/1.1")
+  (expect "a header" (read-line h) "Host: y")
+  (expect "the blank line" (read-line h) "")
+  (expect "and the body as bytes" (shown (read-bytes h 4)) "98.111.100.121.")
+
+  ;; --- a byte read that loses a choose takes nothing ---------------------------
+  ;; Two of the four bytes the read wants are there, so it waits, and the
+  ;; branch that is ready already wins. The two bytes stay in the port.
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out #[97 98])
+     (expect "the read lost" (losing-read in) "stopped")
+     (write-bytes! out #[99 100 101 102 10 110 101 120 116])
+     (close-byte-output-port! out)
+     (expect "and the line is whole" (read-line in) "abcdef")
+     (expect "and so is the one after" (line-or in) "next")))
+
+  ;; --- over a pipe, written while it is read ------------------------------------
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out #[104 195 165 10 1 2 3])
+     (close-byte-output-port! out)
+     (expect "a line off a byte pipe" (read-line in) "hå")
+     (expect "then its bytes" (shown (read-some in)) "1.2.3.")))
+
+  ;; --- another encoding ----------------------------------------------------------
+  ;; "grüße" in Latin-1, where ü and ß are one byte each and neither is UTF-8.
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out #[103 114 252 223 101 10 120])
+     (close-byte-output-port! out)
+     (expect "read as UTF-8 it is not text"
+             (shown (peek-bytes in 2 2)) "252.223.")
+     (def text (reencode-input-port in latin1))
+     (expect "re-encoded it is" (read-line text) "grüße")
+     (expect "and its bytes are UTF-8" (shown (read-some text)) "120.")))
+  0)

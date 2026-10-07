@@ -24,9 +24,9 @@
 ;; Nothing below says `defbjo`, `-bjo->` or `-?->`. The second body exists
 ;; because the call graph reaches a leaf that has one.
 
-;; EXPECT-CS: public static int drain\(System.IO.TextReader p\)
-;; EXPECT-CS: public static async Bjoml.Fiber<int> drain__bjo\(System.IO.TextReader p\)
-(: drain (-> TextInputPort int))
+;; EXPECT-CS: public static int drain\(Bjolang.Runtime.BjoInputPort p\)
+;; EXPECT-CS: public static async Bjoml.Fiber<int> drain__bjo\(Bjolang.Runtime.BjoInputPort p\)
+(: drain (-> InputPort int))
 (defun (drain p)
   (let loop ((n 0))
     (if (port-eof? p)
@@ -39,7 +39,7 @@
 ;;
 ;; A plain call, and inside it a plain `PortEof`. No state machine, no fiber.
 ;; EXPECT-CS: return colour_copies_Module\.drain\(p\);
-(: count-here (-> TextInputPort int))
+(: count-here (-> InputPort int))
 (defun (count-here p) (drain p))
 
 ;; --- The bjoroutine gets the generated one -----------------------------------
@@ -48,7 +48,7 @@
 ;; This is the assertion the whole design is for: the call site said nothing
 ;; about colour and the compiler chose.
 ;; EXPECT-CS: return \(await colour_copies_Module\.drain__bjo\(p\)\);
-(: count-suspending (-bjo-> TextInputPort int))
+(: count-suspending (-bjo-> InputPort int))
 (defbjo (count-suspending p) (drain p))
 
 ;; --- And the copy suspends, rather than merely being async -------------------
@@ -74,12 +74,12 @@
 ;; other would not compile — but picking *neither* compiles fine and parks on
 ;; every line, which is how this went unnoticed until it was looked for.
 
-;; EXPECT-CS: portsubgtlist\(\(\(Func<System.IO.TextReader, BjoString\.Utf8String>\)\(\(fa0\) => readsubline\(fa0\)\)\), p\)
-(: names-here (-> TextInputPort int))
+;; EXPECT-CS: portsubgtlist\(\(\(Func<Bjolang.Runtime.BjoInputPort, BjoString\.Utf8String>\)\(\(fa0\) => readsubline\(fa0\)\)\), p\)
+(: names-here (-> InputPort int))
 (defun (names-here p) (list-length (port->list read-line p)))
 
-;; EXPECT-CS: await portsubgtlist__bjo\(\(\(Func<System.IO.TextReader, Bjoml.Fiber<BjoString\.Utf8String>>\)\(\(fa0\) => readsubline__bjo\(fa0\)\)\), p\)
-(: names-suspending (-bjo-> TextInputPort int))
+;; EXPECT-CS: await portsubgtlist__bjo\(\(\(Func<Bjolang.Runtime.BjoInputPort, Bjoml.Fiber<BjoString\.Utf8String>>\)\(\(fa0\) => readsubline__bjo\(fa0\)\)\), p\)
+(: names-suspending (-bjo-> InputPort int))
 (defbjo (names-suspending p) (list-length (port->list read-line p)))
 
 ;; --- A written arrow still outranks the default ------------------------------
@@ -93,8 +93,8 @@
 ;;
 ;; Defaulting only ever decides what nothing else has decided. This is the line
 ;; that pins it.
-;; EXPECT-CS: return seqsublength\(portsubgtseq\(\(\(Func<System.IO.TextReader, BjoString\.Utf8String>\)\(\(fa0\) => readsubline\(fa0\)\)\), p\)\);
-(: seq-here (-> TextInputPort int))
+;; EXPECT-CS: return seqsublength\(portsubgtseq\(\(\(Func<Bjolang.Runtime.BjoInputPort, BjoString\.Utf8String>\)\(\(fa0\) => readsubline\(fa0\)\)\), p\)\);
+(: seq-here (-> InputPort int))
 (defun (seq-here p) (seq-length (port->seq read-line p)))
 
 ;; --- A copy that awaits nothing is not emitted -------------------------------
@@ -105,7 +105,7 @@
 ;; would copy this module's importers in turn.
 ;; EXPECT-NO-CS: seqsubhere__bjo
 ;; EXPECT-CS: \(await colour_copies_Module\.drain__bjo\(p\)\) \+ colour_copies_Module\.seqsubhere\(p\)
-(: both-suspending (-bjo-> TextInputPort int))
+(: both-suspending (-bjo-> InputPort int))
 (defbjo (both-suspending p) (+ (drain p) (seq-here p)))
 
 ;; And across a module boundary. The prelude's `vec->list` reaches

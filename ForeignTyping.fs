@@ -59,7 +59,7 @@ let internal checkExceptionTypes (where: string) (exceptions: string list) : uni
 ///
 /// Split out because the *signature* pre-pass needs the alias too. Signatures
 /// are read before any declaration is checked, so `(: open-input-file (-> string
-/// (Result Exception TextInputPort)))` was resolved with no idea that
+/// (Result Exception InputPort)))` was resolved with no idea that
 /// `Exception` had been imported, and took it for a constructor of that name.
 /// The definition's own body was checked against the annotation resolved again
 /// in place, where the import had landed — so only a reference *above* the

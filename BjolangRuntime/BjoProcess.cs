@@ -37,10 +37,10 @@
 using System.IO.Pipelines;
 using System.Text;
 
-/// A `TextWriter` and a `TextReader` joined end to end, for a pipeline stage
+/// A `TextWriter` and an input port joined end to end, for a pipeline stage
 /// that is a Bjolang procedure rather than a child process.
 public sealed class BjoPipe {
-    private readonly TextReader reader;
+    private readonly Bjolang.Runtime.BjoInputPort reader;
     private readonly TextWriter writer;
 
     private BjoPipe() {
@@ -48,7 +48,7 @@ public sealed class BjoPipe {
         // Not `Encoding.UTF8`: its preamble would be written into the stream
         // and read back out of the other end as a character.
         var encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-        reader = new StreamReader(pipe.Reader.AsStream(), encoding);
+        reader = new Bjolang.Runtime.BjoInputPort(pipe.Reader.AsStream());
         // `AutoFlush`, because whatever reads the other end is a different
         // fiber and there is no later moment at which we would know to flush.
         //
@@ -62,7 +62,7 @@ public sealed class BjoPipe {
 
     public static BjoPipe Create() => new BjoPipe();
 
-    public TextReader Reader => reader;
+    public Bjolang.Runtime.BjoInputPort Reader => reader;
     public TextWriter Writer => writer;
 }
 
@@ -97,7 +97,7 @@ public static class BjoProc {
     /// fails, the copy stops, and closing `from` lets the upstream process see
     /// a broken pipe and exit rather than block on a full one. A write that
     /// fails into anything else, such as a file, is still an error.
-    public static async Task PumpAsync(TextReader from, TextWriter to, CancellationToken cancel) {
+    public static async Task PumpAsync(Bjolang.Runtime.BjoInputPort from, TextWriter to, CancellationToken cancel) {
         var buffer = new char[8192];
         bool readerGone = false;
         try {
@@ -152,7 +152,7 @@ public static class BjoProc {
     ///
     /// `to` is expected to be a `TextWriter.Synchronized` wrapper, since the
     /// pumps run concurrently.
-    public static async Task PumpIntoAsync(TextReader from, TextWriter to, CancellationToken cancel) {
+    public static async Task PumpIntoAsync(Bjolang.Runtime.BjoInputPort from, TextWriter to, CancellationToken cancel) {
         var buffer = new char[8192];
         while (true) {
             int n = await from.ReadAsync(buffer.AsMemory(), cancel).ConfigureAwait(false);
@@ -169,7 +169,7 @@ public static class BjoProc {
     /// would need a substring, which the language does not have, and would have
     /// to re-decide what `\r\n` and a trailing newline mean — questions
     /// `TextReader` has already answered.
-    public static async Task<string[]> ReadLinesAsync(TextReader from, CancellationToken cancel) {
+    public static async Task<string[]> ReadLinesAsync(Bjolang.Runtime.BjoInputPort from, CancellationToken cancel) {
         var lines = new List<string>();
         while (await from.ReadLineAsync(cancel).ConfigureAwait(false) is string line) {
             lines.Add(line);

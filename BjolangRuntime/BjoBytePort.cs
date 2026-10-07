@@ -11,45 +11,9 @@
  * availability requirements or notice obligations of Section 3 of the MPL 2.0.
  */
 
-// Bytes, under the text. The layer `BjoPort` is a layer over.
-//
-// THE ONE INVARIANT, which everything here follows from:
-//
-//   Every byte that leaves the operating system lands in the port's buffer. A
-//   read never takes bytes from the underlying stream — it takes them from the
-//   buffer, and only when it wins.
-//
-// Commitment is therefore a cursor move inside the port and nothing else. That
-// is what makes a read safe inside a `choose`; it is why `peek` is the same
-// mechanism with the last step removed rather than a second one; and it is why
-// a refill that lands after its branch has already lost is harmless rather than
-// data loss.
-//
-// It is also `BjoPort`'s own rule one layer down. That file's header says:
-//
-//   Every virtual read is overridden, and that is load bearing. If any
-//   inherited path reached `inner` while the buffer still held characters,
-//   those characters would be skipped — silently, as wrong output rather than
-//   as an exception. The rule for anything added here: read through the buffer,
-//   or drain the buffer first.
-//
-// `AsStream` below is where that rule bites here: the text layer is built over
-// a `Stream` that serves the port's buffer first and refills *through* the
-// port, never over the port's own `Stream`. Reaching past the port would skip
-// whatever a peek or an overshooting refill had already pulled in, silently.
-//
-// WHAT IS DELIBERATELY NOT HERE
-//
-//   * A cancellable refill. `Stream.ReadAsync` that has already taken bytes
-//     from the kernel cannot put them back, so a cancelled refill is lost data.
-//     A refill belongs to the PORT and runs to completion; the thing that gets
-//     cancelled is the fiber's WAIT for it, which loses nothing because the
-//     bytes land in the buffer either way.
-//   * Two refills at once. Two concurrent `ReadAsync` on one `Stream` is
-//     undefined behaviour in .NET, so a second reader joins the one in flight
-//     rather than starting another.
-//   * Interleaving byte reads and text reads on one port. `byte->text-input-port`
-//     is one-way; see `AsStream`.
+// Everything around the input port (`BjoInputPort.cs`): connections, the byte
+// output port, pipes, `limited`, the read events, and the dispatchers
+// `(std ports)` imports.
 
 using System;
 using System.IO;
@@ -147,897 +111,10 @@ public sealed class BjoConnection : IDisposable {
     }
 
     /// <summary>The reading half. Owns nothing on its own; see the class doc.</summary>
-    public BjoByteInputPort Input() => new(this);
+    public BjoInputPort Input() => new(this);
 
     /// <summary>The writing half.</summary>
     public BjoByteOutputPort Output() => new(this);
-}
-
-/// <summary>
-/// A buffered byte source whose reads are CML events.
-///
-/// **The port owns the buffer, and the buffer is the only place bytes live.**
-/// A read is a cursor move; a peek is the same look with the cursor left alone;
-/// a refill is the port's own business and is never cancelled. See the file
-/// header.
-///
-/// # Two fibers, one port
-///
-/// Allowed, and not guarded against: two fibers reading one port serialize on
-/// the single in-flight refill and on the buffer lock. What is *not* promised
-/// is which of them gets which bytes — that is theirs to arrange. Every byte is
-/// handed out exactly once.
-///
-/// # Errors
-///
-/// A failure from the underlying stream is sticky, exactly as end of input is.
-/// It reaches a read in one of two shapes, and which one depends on where the
-/// reader was standing when it landed:
-///
-///   * As a value, <c>Err e</c>, out of the read events. The CML resume path
-///     carries a value and cannot carry a raise — which is why
-///     <c>promise-join</c>, <c>blocking</c> and <c>task-&gt;event</c> all yield a
-///     <c>Result</c> too. The language's `read-some`/`read-bytes` unwrap it and
-///     raise on the fiber's own stack.
-///   * As a throw, out of <see cref="Eof"/>, <see cref="Peek"/> and the
-///     <see cref="AsStream"/> reads, all of which are ordinary awaits and so
-///     already stand on the caller's stack.
-///
-/// Bytes that arrived before the failure are handed out first. The failure is
-/// only reported once the buffer is empty, because those bytes are data.
-/// </summary>
-public sealed class BjoByteInputPort : IDisposable {
-    private const int DefaultBufferSize = 4096;
-
-    private readonly object _lock = new();
-    private readonly Stream _inner;
-
-    /// Whether disposing this port disposes the stream under it. False for the
-    /// read half of a pipe and for `limited`, where the stream is a view of
-    /// something the caller still owns.
-    private readonly bool _ownsInner;
-
-    // The buffer, and the window of it that holds unread bytes.
-    //
-    // `_buf` and `_len` are moved ONLY while preparing a refill, and there is at
-    // most one refill; a taker only ever moves `_pos`, forwards, and never past
-    // `_len`. That pair of facts is what lets the pump write into
-    // `_buf[at.._buf.Length]` outside the lock without a copy.
-    private byte[] _buf;
-    private int _pos;
-    private int _len;
-
-    /// The stream answered zero once. Sticky: a stream does not un-end.
-    private bool _ended;
-
-    /// The stream failed once. Sticky, for the same reason, and reported only
-    /// after whatever had already arrived has been handed out.
-    private Exception? _error;
-
-    private bool _disposed;
-
-    /// The refill in flight, or null. Holding it in a field is the whole of
-    /// "at most one": a second reader awaits this rather than starting another.
-    private Task? _refill;
-
-    /// A take is tentatively holding the cursor: it has moved <c>_pos</c> and is
-    /// out at <c>TryCommit</c>, which may yet fail and put it back. Nothing else
-    /// may take while this is set.
-    ///
-    /// It cannot be held for long — <c>TryCommit</c> spins past another branch's
-    /// transient claim and runs no I/O — and it is cleared on both paths.
-    private bool _taking;
-
-    /// Completed and replaced whenever <c>_taking</c> clears, for the async
-    /// readers that cannot sit on the monitor.
-    private TaskCompletionSource? _quiet;
-
-    /// Whoever is waiting for bytes, oldest first. Singly linked and appended by
-    /// walking: a port has one or two waiters, not a queue.
-    private Waiter? _waiters;
-
-    private const int Idle = 0;
-    private const int Running = 1;
-    private const int RunningAgain = 2;
-    private int _deliverState;
-
-    /// <summary>See <see cref="BjoPort.Owner"/>. Null for a port nothing owns —
-    /// a pipe, a `limited` view — and set by whatever opened a real handle.</summary>
-    public BjolangRuntime.Owned? Owner;
-
-    /// The connection this is one half of, or null for a port that stands
-    /// alone. When it is set, closing this port closes a half rather than the
-    /// stream — see <see cref="BjoConnection"/>.
-    private readonly BjoConnection? _connection;
-
-    public BjoByteInputPort(Stream inner) : this(inner, DefaultBufferSize, true, null) { }
-
-    public BjoByteInputPort(Stream inner, bool ownsInner) : this(inner, DefaultBufferSize, ownsInner, null) { }
-
-    /// The buffer size is settable for the reason `BjoPort`'s is: every
-    /// interesting bug in a buffered reader lives at a buffer boundary, and a
-    /// test that cannot put the boundary where it wants cannot reach them.
-    public BjoByteInputPort(Stream inner, int bufferSize, bool ownsInner = true)
-        : this(inner, bufferSize, ownsInner, null) { }
-
-    /// The reading half of a connection. Owns neither the stream nor a place on
-    /// a scope: the connection owns both, and this tells it when it is closed.
-    internal BjoByteInputPort(BjoConnection connection)
-        : this(connection.Stream, DefaultBufferSize, false, connection) { }
-
-    private BjoByteInputPort(Stream inner, int bufferSize, bool ownsInner, BjoConnection? connection) {
-        ArgumentNullException.ThrowIfNull(inner);
-        ArgumentOutOfRangeException.ThrowIfLessThan(bufferSize, 1);
-        if (!inner.CanRead)
-            throw new ArgumentException("a byte input port needs a readable stream.", nameof(inner));
-
-        _inner = inner;
-        _ownsInner = ownsInner;
-        _connection = connection;
-        _buf = new byte[bufferSize];
-    }
-
-    /// <summary>
-    /// Who is at the other end, when this port is one half of a connection.
-    /// Null for a file, a pipe or a `limited` view, which have no peer.
-    /// </summary>
-    public string? Peer => _connection?.Peer;
-
-    /// The stream this port reads from, for a caller that has to hand it to a
-    /// .NET API. **Not** the thing to build a text reader over — see
-    /// <see cref="AsStream"/>.
-    internal Stream Inner => _inner;
-
-    private bool Finished => _ended || _error is not null;
-
-    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
-
-    /// Rethrow with the original stack rather than a fresh one. Written as a
-    /// function returning `Exception` so a call site can be `throw Rethrow(e)`
-    /// and the compiler can see the flow end there.
-    private static Exception Rethrow(Exception e) {
-        ExceptionDispatchInfo.Capture(e).Throw();
-        return e;
-    }
-
-    // --- The buffer ---------------------------------------------------------
-
-    /// <summary>
-    /// Room for <paramref name="want"/> unread bytes, compacting and growing as
-    /// needed. Under the lock, and only ever from <see cref="EnsureRefill"/>,
-    /// which is what keeps the array still while a pump is writing into it.
-    ///
-    /// Growing is how a read of more than one bufferful stays a cursor move: a
-    /// `(read-bytes p 100000)` is asking for an array of that size anyway, so
-    /// holding it in the buffer costs nothing that was not already going to be
-    /// paid.
-    /// </summary>
-    private void MakeRoomLocked(int want) {
-        int have = _len - _pos;
-        int need = Math.Max(want, have + 1);
-
-        if (_buf.Length < need) {
-            var bigger = new byte[Math.Max(need, _buf.Length * 2)];
-            if (have > 0) Buffer.BlockCopy(_buf, _pos, bigger, 0, have);
-            _buf = bigger;
-        } else if (have + (_buf.Length - _len) < need) {
-            if (have > 0) Buffer.BlockCopy(_buf, _pos, _buf, 0, have);
-        } else {
-            return; // there is already room after `_len`
-        }
-
-        _pos = 0;
-        _len = have;
-    }
-
-    /// <summary>
-    /// How many bytes a request for <paramref name="count"/> may take right
-    /// now: -1 for "not yet, wait", 0 for "there will never be any more", and
-    /// otherwise the count to hand over.
-    ///
-    /// <paramref name="count"/> of 0 means `read-some`: whatever is there, and
-    /// never an empty array. A positive count is exactly that many, except at
-    /// end of input, where the short remainder is handed over and the call
-    /// after it answers 0.
-    ///
-    /// Buffered bytes are served before a sticky failure is reported, because
-    /// bytes that arrived are data.
-    /// </summary>
-    private int TakeableLocked(int count) {
-        int have = _len - _pos;
-
-        if (count <= 0) return have > 0 ? have : (Finished ? 0 : -1);
-        if (have >= count) return count;
-        return Finished ? have : -1;
-    }
-
-    /// <summary>
-    /// Move the cursor and hand the bytes over. Under the lock, and the only
-    /// place the cursor ever moves forward.
-    /// </summary>
-    private ByteRead TakeLocked(int n) {
-        if (n <= 0) {
-            return _error is not null
-                ? ByteRead.Err(_error)
-                : ByteRead.Ok(BjolangRuntime.None<byte[]>());
-        }
-
-        var bytes = new byte[n];
-        Buffer.BlockCopy(_buf, _pos, bytes, 0, n);
-        _pos += n;
-        return ByteRead.Ok(BjolangRuntime.Some(bytes));
-    }
-
-    // --- Refilling ----------------------------------------------------------
-    //
-    // A refill is the port's, not a reader's. It is started with no
-    // cancellation token at all, it completes whatever happens to whoever asked
-    // for it, and it deposits into the buffer. A reader that has gone away —
-    // lost its `choose`, hit its deadline — loses nothing by it: the bytes are
-    // in the buffer for the next reader.
-    //
-    // The task is completed rather than faulted even when the read threw. A
-    // failure is recorded on the port, where it is sticky and where a later
-    // reader can find it; a faulted task would have to be observed by every
-    // waiter or reported as unhandled.
-
-    /// <summary>
-    /// The refill in flight, starting one if there is none. Never faults, and
-    /// never cancels.
-    /// </summary>
-    private Task EnsureRefill(int want) {
-        TaskCompletionSource tcs;
-        byte[] buf;
-        int at, room;
-
-        lock (_lock) {
-            if (_refill is not null) return _refill;
-            if (_disposed || Finished) return Task.CompletedTask;
-
-            MakeRoomLocked(want);
-            buf = _buf;
-            at = _len;
-            room = _buf.Length - _len;
-
-            // Published into the field BEFORE the read starts, so that a read
-            // completing synchronously cannot find `_refill` still null and let
-            // a second one through.
-            tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            _refill = tcs.Task;
-        }
-
-        // Started outside the lock. A synchronous completion runs `Pump` to its
-        // end right here, and its end is `Deliver`, which commits waiters and
-        // resumes fibers — none of which may happen with the buffer lock held.
-        _ = Pump(tcs, buf, at, room);
-        return tcs.Task;
-    }
-
-    private async Task Pump(TaskCompletionSource tcs, byte[] buf, int at, int room) {
-        Exception? failure = null;
-        int n = 0;
-
-        try {
-            n = await _inner.ReadAsync(buf.AsMemory(at, room), CancellationToken.None).ConfigureAwait(false);
-        } catch (Exception e) {
-            failure = e;
-        }
-
-        lock (_lock) {
-            // `_len` is assigned only after the read has returned, which is what
-            // keeps a failed refill from leaving a stale length behind that
-            // would re-serve bytes already handed out.
-            if (failure is not null) _error ??= failure;
-            else if (n <= 0) _ended = true;
-            else _len = at + n;
-
-            // Cleared before the task is completed, so a waiter woken by it that
-            // still cannot be satisfied asks for a FRESH refill rather than
-            // finding this spent one.
-            _refill = null;
-        }
-
-        tcs.TrySetResult();
-        Deliver();
-    }
-
-    // --- Waiting ------------------------------------------------------------
-
-    /// <summary>
-    /// One published read, parked until the buffer can answer it.
-    ///
-    /// The three steps are apart on purpose. <c>BeginLocked</c> runs under the
-    /// buffer lock and moves the cursor tentatively; <c>TryCommit</c> runs
-    /// outside it, because committing fires the losing branches' nacks and a
-    /// nack can resume a fiber; and then either <c>Handover</c> or
-    /// <c>UndoLocked</c>. Nothing is consumed by a branch that loses.
-    /// </summary>
-    private abstract class Waiter {
-        public SyncState State = null!;
-        public int EventId;
-        public Waiter? Next;
-
-        /// What a refill on this waiter's behalf has to make room for.
-        public abstract int Want { get; }
-
-        /// Under the lock: can this be answered now, and if so take it.
-        public abstract bool BeginLocked(BjoByteInputPort p);
-
-        /// Outside the lock, the commit having succeeded.
-        public abstract void Handover();
-
-        /// Under the lock, the commit having failed. Put the cursor back.
-        public abstract void UndoLocked(BjoByteInputPort p);
-    }
-
-    private sealed class ReadWaiter : Waiter {
-        /// 0 is `read-some`; a positive count is `read-bytes`.
-        public int Count;
-        public Action<ByteRead> OnSync = null!;
-
-        private ByteRead _value;
-        private int _oldPos;
-
-        public override int Want => Count <= 0 ? 1 : Count;
-
-        public override bool BeginLocked(BjoByteInputPort p) {
-            int n = p.TakeableLocked(Count);
-            if (n < 0) return false;
-
-            _oldPos = p._pos;
-            _value = p.TakeLocked(n);
-            return true;
-        }
-
-        public override void Handover() {
-            var v = _value;
-            _value = default;
-            InboxWake.Resume(OnSync, v);
-        }
-
-        public override void UndoLocked(BjoByteInputPort p) {
-            p._pos = _oldPos;
-            _value = default;
-        }
-    }
-
-    /// The port is finished — cleanly or because it failed. It says only that,
-    /// which is what makes it the right thing to wait on for "the other end has
-    /// gone away"; a read beside it is what says which of the two happened.
-    private sealed class EofWaiter : Waiter {
-        public Action<Unit> OnSync = null!;
-
-        public override int Want => 1;
-
-        public override bool BeginLocked(BjoByteInputPort p) => p._pos >= p._len && p.Finished;
-
-        public override void Handover() => InboxWake.Resume(OnSync, Unit.Value);
-
-        public override void UndoLocked(BjoByteInputPort p) { }
-    }
-
-    private void AppendLocked(Waiter w) {
-        if (_waiters is null) {
-            _waiters = w;
-            return;
-        }
-
-        var last = _waiters;
-        while (last.Next is not null) last = last.Next;
-        last.Next = w;
-    }
-
-    /// Unlink <paramref name="cur"/> and answer what follows it. Under the lock.
-    private Waiter? UnlinkLocked(Waiter? prev, Waiter cur) {
-        var next = cur.Next;
-        if (prev is null) _waiters = next;
-        else prev.Next = next;
-        cur.Next = null;
-        return next;
-    }
-
-    /// <summary>
-    /// Match what is buffered with who is waiting until nothing more can be
-    /// matched, then start a refill if anyone is still waiting.
-    ///
-    /// ONE RUNNER, NOT RECURSION, for the reason `Inbox.Settle` gives: serving a
-    /// waiter can complete a refill inline, which re-enters this, and writing
-    /// that as recursion makes the stack as deep as the port is busy. A second
-    /// arrival leaves a note instead and whoever is already here goes round
-    /// again.
-    /// </summary>
-    private void Deliver() {
-        // Take ownership, or leave a note for whoever has it.
-        //
-        // THE NOTE IS A COMPARE-AND-SWAP FROM `Running`, NEVER A PLAIN WRITE,
-        // and that is the whole of this loop. A plain write is decided while
-        // the owner is still inside and can land *after* the owner has released
-        // the state to `Idle`:
-        //
-        //     U: CAS(Running, Idle) fails — reads Running, the owner is inside
-        //     T: exit CAS succeeds — the state becomes Idle, T leaves
-        //     U: writes RunningAgain — with nobody running
-        //
-        // From then on every call here sees a state that is not `Idle`, writes
-        // the note again and returns, and the port is dead: bytes in its
-        // buffer, readers parked on it, and nothing left to hand them over. A
-        // CAS from `Running` cannot do that, because a release has already
-        // moved the state out of `Running`.
-        while (true) {
-            int state = Volatile.Read(ref _deliverState);
-
-            if (state == Idle) {
-                if (Interlocked.CompareExchange(ref _deliverState, Running, Idle) == Idle) break;
-                continue;                      // someone took it first; look again
-            }
-
-            if (state == RunningAgain) return; // already told
-            if (Interlocked.CompareExchange(ref _deliverState, RunningAgain, Running) == Running) return;
-            // It moved under us — the owner released, or another thread told
-            // them first. Round again.
-        }
-
-        do {
-            Volatile.Write(ref _deliverState, Running);
-
-            while (ServeStep()) { }
-
-            RefillForWaiters();
-        }
-        while (Interlocked.CompareExchange(ref _deliverState, Idle, Running) != Running);
-    }
-
-    /// <summary>
-    /// One waiter served, or one that had already lost swept away. False when
-    /// there is nothing left to do.
-    /// </summary>
-    private bool ServeStep() {
-        Waiter? chosen = null;
-
-        lock (_lock) {
-            // Another take is tentatively holding the cursor. Whoever it is will
-            // clear it and call back here.
-            if (_taking) return false;
-
-            Waiter? prev = null;
-            var cur = _waiters;
-
-            while (cur is not null) {
-                // Lost elsewhere in its own sync block, and swept the next time
-                // anything walks the list — the way a channel reclaims the ops
-                // of a choose that lost.
-                if (cur.State.IsSynchronized) {
-                    cur = UnlinkLocked(prev, cur);
-                    continue;
-                }
-
-                if (cur.BeginLocked(this)) {
-                    chosen = cur;
-                    UnlinkLocked(prev, cur);
-                    break;
-                }
-
-                prev = cur;
-                cur = cur.Next;
-            }
-
-            if (chosen is null) return false;
-            _taking = true;
-        }
-
-        if (chosen.State.TryCommit(chosen.EventId)) {
-            EndTake();
-            chosen.Handover();
-            return true;
-        }
-
-        // Another branch of that sync won in the window above. Nothing is
-        // consumed: the cursor goes back exactly where it was, and the bytes
-        // stay for the next reader.
-        lock (_lock) { chosen.UndoLocked(this); }
-        EndTake();
-        return true;
-    }
-
-    private void EndTake() {
-        TaskCompletionSource? quiet;
-
-        lock (_lock) {
-            _taking = false;
-            quiet = _quiet;
-            _quiet = null;
-            Monitor.PulseAll(_lock);
-        }
-
-        quiet?.TrySetResult();
-    }
-
-    /// Under the lock: the signal that the tentative take has finished.
-    private Task QuietLocked() {
-        _quiet ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        return _quiet.Task;
-    }
-
-    private void RefillForWaiters() {
-        int want = 0;
-
-        lock (_lock) {
-            if (_refill is not null || _disposed || Finished) return;
-
-            for (var w = _waiters; w is not null; w = w.Next)
-                if (!w.State.IsSynchronized && w.Want > want)
-                    want = w.Want;
-        }
-
-        if (want > 0) EnsureRefill(want);
-    }
-
-    // --- The events' two halves ---------------------------------------------
-
-    /// <summary>
-    /// The <see cref="INowable{T}"/> fast path: the buffer can answer, so the
-    /// read commits without publishing anything at all.
-    ///
-    /// Answering true PERFORMS the rendezvous, so this takes outright and there
-    /// is nothing to undo. It is one locked step, which is why it needs no
-    /// tentative hold — and it refuses while someone else has one, because a
-    /// take it cannot undo must not be interleaved with one that may be.
-    /// </summary>
-    internal bool TryReadNow(int count, out ByteRead value) {
-        lock (_lock) {
-            ThrowIfDisposed();
-
-            if (_taking) {
-                value = default;
-                return false;
-            }
-
-            int n = TakeableLocked(count);
-            if (n < 0) {
-                value = default;
-                return false;
-            }
-
-            value = TakeLocked(n);
-            return true;
-        }
-    }
-
-    internal bool TryEofNow(out Unit value) {
-        value = default;
-
-        lock (_lock) {
-            ThrowIfDisposed();
-            return !_taking && _pos >= _len && Finished;
-        }
-    }
-
-    /// <summary>
-    /// The published form. Parks unconditionally and lets <see cref="Deliver"/>
-    /// decide, so there is one path through the buffer rather than two — and a
-    /// read that could be answered at once still is, synchronously, before this
-    /// returns.
-    /// </summary>
-    internal void PublishRead(int count, SyncState state, int eventId, Action<ByteRead> onSync) {
-        ThrowIfDisposed();
-        Interlocked.Increment(ref _published);
-
-        var w = new ReadWaiter { State = state, EventId = eventId, OnSync = onSync, Count = count };
-        lock (_lock) { AppendLocked(w); }
-        Deliver();
-    }
-
-    internal void PublishEof(SyncState state, int eventId, Action<Unit> onSync) {
-        ThrowIfDisposed();
-        Interlocked.Increment(ref _published);
-
-        var w = new EofWaiter { State = state, EventId = eventId, OnSync = onSync };
-        lock (_lock) { AppendLocked(w); }
-        Deliver();
-    }
-
-    private int _published;
-
-    /// <summary>
-    /// How many reads have gone the published way rather than taking the
-    /// <see cref="INowable{T}"/> fast path.
-    ///
-    /// For the tests, and only for them: "a buffered read commits without
-    /// publishing" is a claim about which path was taken, and nothing else
-    /// about the port can be looked at to see which one it was.
-    /// </summary>
-    internal int PublishCount => Volatile.Read(ref _published);
-
-    // --- The plain reads ----------------------------------------------------
-    //
-    // What `AsStream`, `peek` and the eof question are built on. These are
-    // ordinary waits and not events: nothing about them can lose a `choose`, so
-    // they take outright, and a failure reaches the caller as a throw on the
-    // stack the caller is already standing on.
-    //
-    // They still go through the buffer, and they still respect a tentative take
-    // — `_taking` — because the cursor has one owner at a time whoever is
-    // moving it.
-
-    /// <summary>
-    /// Up to <c>buffer.Length</c> bytes, 0 at end of input. Parks the calling
-    /// thread while a refill is in flight.
-    /// </summary>
-    public int ReadInto(Span<byte> buffer) {
-        if (buffer.IsEmpty) return 0;
-
-        while (true) {
-            lock (_lock) {
-                ThrowIfDisposed();
-
-                if (_taking) {
-                    Monitor.Wait(_lock);
-                    continue;
-                }
-
-                int have = _len - _pos;
-                if (have > 0) {
-                    int n = Math.Min(buffer.Length, have);
-                    _buf.AsSpan(_pos, n).CopyTo(buffer);
-                    _pos += n;
-                    return n;
-                }
-
-                if (_error is not null) throw Rethrow(_error);
-                if (_ended) return 0;
-            }
-
-            EnsureRefill(1).GetAwaiter().GetResult();
-        }
-    }
-
-    /// <summary>The suspending twin of <see cref="ReadInto"/>.</summary>
-    public async ValueTask<int> ReadIntoAsync(Memory<byte> buffer, CancellationToken cancel = default) {
-        if (buffer.IsEmpty) return 0;
-
-        while (true) {
-            Task? quiet = null;
-
-            lock (_lock) {
-                ThrowIfDisposed();
-
-                if (_taking) {
-                    quiet = QuietLocked();
-                } else {
-                    int have = _len - _pos;
-                    if (have > 0) {
-                        int n = Math.Min(buffer.Length, have);
-                        _buf.AsSpan(_pos, n).CopyTo(buffer.Span);
-                        _pos += n;
-                        return n;
-                    }
-
-                    if (_error is not null) throw Rethrow(_error);
-                    if (_ended) return 0;
-                }
-            }
-
-            // `WaitAsync` rather than a cancellable read: the token abandons the
-            // WAIT, not the refill. Whatever the refill brings still lands in
-            // the buffer, for this reader or the next one.
-            if (quiet is not null) await quiet.WaitAsync(cancel).ConfigureAwait(false);
-            else await EnsureRefill(1).WaitAsync(cancel).ConfigureAwait(false);
-        }
-    }
-
-    // --- The eof question ---------------------------------------------------
-
-    /// <summary>
-    /// Whether the port is at end of input. No syscall and no suspension
-    /// whenever the buffer holds anything.
-    ///
-    /// A port that FAILED is not at end of input, and this raises rather than
-    /// answering true — or `(loop (:finish (byte-port-eof? p)) ...)` would end
-    /// normally on a broken socket and return a truncated result as though it
-    /// were the whole thing.
-    /// </summary>
-    public bool Eof() {
-        while (true) {
-            lock (_lock) {
-                ThrowIfDisposed();
-
-                if (_taking) {
-                    Monitor.Wait(_lock);
-                    continue;
-                }
-
-                if (_pos < _len) return false;
-                if (_error is not null) throw Rethrow(_error);
-                if (_ended) return true;
-            }
-
-            EnsureRefill(1).GetAwaiter().GetResult();
-        }
-    }
-
-    public async ValueTask<bool> EofAsync(CancellationToken cancel = default) {
-        while (true) {
-            Task? quiet = null;
-
-            lock (_lock) {
-                ThrowIfDisposed();
-
-                if (_taking) {
-                    quiet = QuietLocked();
-                } else {
-                    if (_pos < _len) return false;
-                    if (_error is not null) throw Rethrow(_error);
-                    if (_ended) return true;
-                }
-            }
-
-            if (quiet is not null) await quiet.WaitAsync(cancel).ConfigureAwait(false);
-            else await EnsureRefill(1).WaitAsync(cancel).ConfigureAwait(false);
-        }
-    }
-
-    // --- Peeking ------------------------------------------------------------
-    //
-    // The same mechanism as a read with the last step — the cursor move — left
-    // out. That is the whole of it, and it is why `peek, decide, convert` works:
-    // the sniffed bytes are still in the buffer, and `AsStream` serves the
-    // buffer first.
-
-    private BjolangRuntime.Option<byte[]> PeekLocked(int skip, int count) {
-        int have = _len - _pos - skip;
-        if (have <= 0) return BjolangRuntime.None<byte[]>();
-
-        int n = Math.Min(count, have);
-        var bytes = new byte[n];
-        Buffer.BlockCopy(_buf, _pos + skip, bytes, 0, n);
-        return BjolangRuntime.Some(bytes);
-    }
-
-    private static void CheckPeek(int skip, int count) {
-        ArgumentOutOfRangeException.ThrowIfNegative(skip);
-        ArgumentOutOfRangeException.ThrowIfNegative(count);
-    }
-
-    /// <summary>
-    /// <paramref name="skip"/> bytes past the cursor, then <paramref name="count"/>
-    /// of them, without moving it. Short at end of input; `None` when there is
-    /// nothing at all beyond the skip.
-    /// </summary>
-    public BjolangRuntime.Option<byte[]> Peek(int skip, int count) {
-        CheckPeek(skip, count);
-        if (count == 0) return BjolangRuntime.Some(Array.Empty<byte>());
-
-        while (true) {
-            lock (_lock) {
-                ThrowIfDisposed();
-
-                if (_taking) {
-                    Monitor.Wait(_lock);
-                    continue;
-                }
-
-                if (_len - _pos >= skip + count) return PeekLocked(skip, count);
-                if (_error is not null && _len - _pos == 0) throw Rethrow(_error);
-                if (Finished) return PeekLocked(skip, count);
-            }
-
-            EnsureRefill(skip + count).GetAwaiter().GetResult();
-        }
-    }
-
-    public async ValueTask<BjolangRuntime.Option<byte[]>> PeekAsync(
-        int skip, int count, CancellationToken cancel = default) {
-
-        CheckPeek(skip, count);
-        if (count == 0) return BjolangRuntime.Some(Array.Empty<byte>());
-
-        while (true) {
-            Task? quiet = null;
-
-            lock (_lock) {
-                ThrowIfDisposed();
-
-                if (_taking) {
-                    quiet = QuietLocked();
-                } else {
-                    if (_len - _pos >= skip + count) return PeekLocked(skip, count);
-                    if (_error is not null && _len - _pos == 0) throw Rethrow(_error);
-                    if (Finished) return PeekLocked(skip, count);
-                }
-            }
-
-            if (quiet is not null) await quiet.WaitAsync(cancel).ConfigureAwait(false);
-            else await EnsureRefill(skip + count).WaitAsync(cancel).ConfigureAwait(false);
-        }
-    }
-
-    // --- The stream view ----------------------------------------------------
-
-    /// <summary>
-    /// The port as a <see cref="Stream"/>: the buffer first, then refills
-    /// through the port.
-    ///
-    /// **This, and never `_inner`, is what a text reader goes over.** A
-    /// `StreamReader` built over the port's own stream would skip whatever the
-    /// buffer held from a peek or from a refill that overshot — silently, as
-    /// wrong output. Over this, nothing is skipped, which is exactly what makes
-    /// "peek, decide, then convert" work.
-    ///
-    /// Reading BYTES again after building a text reader over this does not work
-    /// and is not meant to: a `StreamReader` reads ahead, so by the time it has
-    /// handed out its first line the port is somewhere past it. The conversion
-    /// is one-way.
-    ///
-    /// Disposing the view does not dispose the port. The port is owned by the
-    /// scope that opened it.
-    /// </summary>
-    public Stream AsStream() => new PortStream(this);
-
-    private sealed class PortStream : Stream {
-        private readonly BjoByteInputPort _port;
-
-        public PortStream(BjoByteInputPort port) => _port = port;
-
-        public override bool CanRead => true;
-        public override bool CanSeek => false;
-        public override bool CanWrite => false;
-        public override long Length => throw new NotSupportedException();
-
-        public override long Position {
-            get => throw new NotSupportedException();
-            set => throw new NotSupportedException();
-        }
-
-        public override int Read(byte[] buffer, int offset, int count) {
-            ArgumentNullException.ThrowIfNull(buffer);
-            return _port.ReadInto(buffer.AsSpan(offset, count));
-        }
-
-        public override int Read(Span<byte> buffer) => _port.ReadInto(buffer);
-
-        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancel) {
-            ArgumentNullException.ThrowIfNull(buffer);
-            return _port.ReadIntoAsync(buffer.AsMemory(offset, count), cancel).AsTask();
-        }
-
-        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancel = default) =>
-            _port.ReadIntoAsync(buffer, cancel);
-
-        public override void Flush() { }
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
-
-        public override void Write(byte[] buffer, int offset, int count) =>
-            throw new NotSupportedException("this is the read half of a byte port.");
-
-        /// Deliberately empty. A `StreamReader` disposes the stream it was given,
-        /// and the port is not the text reader's to close.
-        protected override void Dispose(bool disposing) { }
-    }
-
-    // --- Closing ------------------------------------------------------------
-
-    /// <summary>
-    /// Releasing the handle, and nothing else.
-    ///
-    /// A refill in flight is NOT the wakeup: disposing a stream under a read is
-    /// racy across stream types, so a reader parked here is woken by the
-    /// ambient cancellation token, exactly as `BjoPort` arranges. What a dispose
-    /// does to a pending refill is turn it into a failure, which is sticky and
-    /// which the next reader sees.
-    /// </summary>
-    public void Dispose() {
-        lock (_lock) {
-            if (_disposed) return;
-            _disposed = true;
-            Monitor.PulseAll(_lock);
-        }
-
-        // One half of a connection closes a half; the handle goes with the
-        // second one. Anything else disposes what it owns.
-        if (_connection is not null) _connection.HalfClosed();
-        else if (_ownsInner) _inner.Dispose();
-    }
 }
 
 /// <summary>
@@ -1077,10 +154,10 @@ public sealed class BjoByteOutputPort : IDisposable, IAsyncDisposable {
 
     private bool HasPending => _len > 0 || _unflushed;
 
-    /// <summary>See <see cref="BjoPort.Owner"/>.</summary>
+    /// <summary>See <see cref="BjoInputPort.Owner"/>.</summary>
     public BjolangRuntime.Owned? Owner;
 
-    /// See <see cref="BjoByteInputPort"/>'s field of the same name.
+    /// See <see cref="BjoInputPort"/>'s field of the same name.
     private readonly BjoConnection? _connection;
 
     public BjoByteOutputPort(Stream inner) : this(inner, DefaultBufferSize, true, null) { }
@@ -1106,7 +183,7 @@ public sealed class BjoByteOutputPort : IDisposable, IAsyncDisposable {
         _buf = new byte[bufferSize];
     }
 
-    /// <summary>See <see cref="BjoByteInputPort.Peer"/>.</summary>
+    /// <summary>See <see cref="BjoInputPort.Peer"/>.</summary>
     public string? Peer => _connection?.Peer;
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
@@ -1337,11 +414,11 @@ public sealed class BjoBytePipe {
         // WRITER is exactly what the reader sees as end of input, so the output
         // half does. Disposing this stream completes it rather than discarding
         // it, so whatever is queued is still the reader's.
-        Input = new BjoByteInputPort(_stream, ownsInner: false);
+        Input = new BjoInputPort(_stream, BjoInputPort.SmallBufferSize, ownsInner: false);
         Output = new BjoByteOutputPort(_stream, ownsInner: true);
     }
 
-    public BjoByteInputPort Input { get; }
+    public BjoInputPort Input { get; }
 
     public BjoByteOutputPort Output { get; }
 
@@ -1349,7 +426,7 @@ public sealed class BjoBytePipe {
     /// A byte queue with two faces. Writes append and never wait; reads take
     /// from the front and wait for the writer when there is nothing.
     /// </summary>
-    private sealed class BytePipeStream : Stream, IHalfClosable {
+    private sealed class BytePipeStream : Stream, IHalfClosable, ISyncReadable {
         private readonly object _lock = new();
         private readonly Queue<byte[]> _chunks = new();
         private int _offset;
@@ -1499,12 +576,12 @@ public sealed class BjoBytePipe {
 /// <summary>
 /// At most <c>n</c> bytes of what is under it, and then end of input.
 ///
-/// Over the port's <see cref="BjoByteInputPort.AsStream"/> rather than over its
+/// Over the port's <see cref="BjoInputPort.AsStream"/> rather than over its
 /// stream, which is the whole reason the limit is exact: everything the
 /// underlying port had buffered counts towards the bound, and once the bound is
 /// reached the underlying port is positioned exactly where the limit ended.
 /// </summary>
-internal sealed class LimitedStream : Stream {
+internal sealed class LimitedStream : Stream, ISyncReadable {
     private readonly Stream _inner;
     private long _left;
 
@@ -1573,10 +650,10 @@ internal sealed class LimitedStream : Stream {
 /// what <c>(task-&gt;event ...)</c> does, and why it is not this.
 /// </summary>
 internal sealed class ByteReadEvent : IEvent<ByteRead>, INowable<ByteRead> {
-    private readonly BjoByteInputPort _port;
+    private readonly BjoInputPort _port;
     private readonly int _count;
 
-    internal ByteReadEvent(BjoByteInputPort port, int count) {
+    internal ByteReadEvent(BjoInputPort port, int count) {
         _port = port;
         _count = count;
     }
@@ -1589,9 +666,9 @@ internal sealed class ByteReadEvent : IEvent<ByteRead>, INowable<ByteRead> {
 
 /// <summary>The port is finished. See <c>EofWaiter</c>.</summary>
 internal sealed class ByteEofEvent : IEvent<Unit>, INowable<Unit> {
-    private readonly BjoByteInputPort _port;
+    private readonly BjoInputPort _port;
 
-    internal ByteEofEvent(BjoByteInputPort port) => _port = port;
+    internal ByteEofEvent(BjoInputPort port) => _port = port;
 
     public void Publish(SyncState state, int eventId, Action<Unit> onSync) =>
         _port.PublishEof(state, eventId, onSync);
@@ -1606,10 +683,10 @@ internal sealed class ByteEofEvent : IEvent<Unit>, INowable<Unit> {
 /// <summary>
 /// What `(std ports)` imports, one entry per operation.
 ///
-/// A class of its own rather than static members on the two ports the way
-/// `BjoPort` has them, because there are two port types here and one module
-/// above: a single prefix is what keeps the `import/extern` block in
-/// `lib/std/ports.bjo` readable. The shape is `Bjoml.InboxModule`'s.
+/// A class of its own rather than static members on the ports, because there
+/// are two port types here and one module above: a single prefix is what
+/// keeps the `import/extern` block in `lib/std/ports.bjo` readable. The shape
+/// is `Bjoml.InboxModule`'s.
 ///
 /// The suspending halves take a trailing <see cref="CancellationToken"/> and do
 /// not name it in the Bjolang signature: an `#:async` import fills in the
@@ -1620,55 +697,55 @@ public static class BytePorts {
 
     /// The `#:exceptions` on the Bjolang side turns whatever this throws into a
     /// `Result`, which is why nothing is caught here.
-    public static BjoByteInputPort OpenInput(string path) =>
-        BjolangRuntime.OwnByteReader(new BjoByteInputPort(
+    public static BjoInputPort OpenInput(string path) =>
+        BjolangRuntime.OwnInput(new BjoInputPort(
             new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)));
 
     public static BjoByteOutputPort OpenOutput(string path) =>
         BjolangRuntime.OwnByteWriter(new BjoByteOutputPort(
             new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read)));
 
-    public static BjoByteInputPort FromStream(Stream stream) =>
-        BjolangRuntime.OwnByteReader(new BjoByteInputPort(stream));
+    public static BjoInputPort FromStream(Stream stream) =>
+        BjolangRuntime.OwnInput(new BjoInputPort(stream));
 
     public static BjoByteOutputPort ToStream(Stream stream) =>
         BjolangRuntime.OwnByteWriter(new BjoByteOutputPort(stream));
 
     public static BjoBytePipe MakePipe() => new();
 
-    public static BjoByteInputPort PipeInput(BjoBytePipe pipe) => pipe.Input;
+    public static BjoInputPort PipeInput(BjoBytePipe pipe) => pipe.Input;
 
     public static BjoByteOutputPort PipeOutput(BjoBytePipe pipe) => pipe.Output;
 
-    public static BjoByteInputPort Limited(BjoByteInputPort port, int limit) {
+    public static BjoInputPort Limited(BjoInputPort port, int limit) {
         ArgumentOutOfRangeException.ThrowIfNegative(limit);
-        return new BjoByteInputPort(new LimitedStream(port.AsStream(), limit), ownsInner: false);
+        return new BjoInputPort(new LimitedStream(port.AsStream(), limit), ownsInner: false);
     }
 
     // --- Reading, as events -------------------------------------------------
 
-    public static IEvent<ByteRead> ReadSomeEvent(BjoByteInputPort port) => new ByteReadEvent(port, 0);
+    public static IEvent<ByteRead> ReadSomeEvent(BjoInputPort port) => new ByteReadEvent(port, 0);
 
-    public static IEvent<ByteRead> ReadBytesEvent(BjoByteInputPort port, int count) {
+    public static IEvent<ByteRead> ReadBytesEvent(BjoInputPort port, int count) {
         ArgumentOutOfRangeException.ThrowIfLessThan(count, 1);
         return new ByteReadEvent(port, count);
     }
 
-    public static IEvent<Unit> EofEvent(BjoByteInputPort port) => new ByteEofEvent(port);
+    public static IEvent<Unit> EofEvent(BjoInputPort port) => new ByteEofEvent(port);
 
     // --- Reading, without a choice ------------------------------------------
 
-    public static bool Eof(BjoByteInputPort port) => port.Eof();
+    public static bool Eof(BjoInputPort port) => port.Eof();
 
-    public static ValueTask<bool> EofAsync(BjoByteInputPort port, CancellationToken cancel = default) =>
+    public static ValueTask<bool> EofAsync(BjoInputPort port, CancellationToken cancel = default) =>
         port.EofAsync(cancel);
 
-    public static BjolangRuntime.Option<byte[]> PeekBytes(BjoByteInputPort port, int skip, int count) =>
-        port.Peek(skip, count);
+    public static BjolangRuntime.Option<byte[]> PeekBytes(BjoInputPort port, int skip, int count) =>
+        port.PeekBytes(skip, count);
 
     public static ValueTask<BjolangRuntime.Option<byte[]>> PeekBytesAsync(
-        BjoByteInputPort port, int skip, int count, CancellationToken cancel = default) =>
-        port.PeekAsync(skip, count, cancel);
+        BjoInputPort port, int skip, int count, CancellationToken cancel = default) =>
+        port.PeekBytesAsync(skip, count, cancel);
 
     // --- Writing ------------------------------------------------------------
 
@@ -1710,7 +787,7 @@ public static class BytePorts {
 
     // --- Closing ------------------------------------------------------------
 
-    public static Unit CloseInput(BjoByteInputPort port) => BjolangRuntime.CloseByteInput(port);
+    public static Unit CloseInput(BjoInputPort port) => BjolangRuntime.CloseInput(port);
 
     public static Unit CloseOutput(BjoByteOutputPort port) => BjolangRuntime.CloseByteOutput(port);
 
@@ -1723,81 +800,9 @@ public static class BytePorts {
     /// `utf8` in `(std ports)`: UTF-8 that never writes a byte order mark.
     /// `Encoding.UTF8` writes one at the start of every text port over bytes,
     /// which a peer that is not a browser reads as three bytes of junk before
-    /// the text. A text input port still skips one; see
-    /// <see cref="ToTextReader"/>.
+    /// the text.
     /// </summary>
     public static Encoding Utf8 { get; } = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
-
-    /// <summary>
-    /// `bom-encoding`: the encoding a byte order mark at the start of
-    /// <paramref name="head"/> names, or `None` when it starts with none.
-    ///
-    /// Each answer, handed to <see cref="ToTextReader"/>, skips the mark it
-    /// was recognised by: a UTF-8 port skips one whatever its encoding says,
-    /// and `StreamReader` skips the preamble of the others. UTF-32's
-    /// little-endian mark begins with UTF-16's, so it is tested first.
-    /// </summary>
-    public static BjolangRuntime.Option<Encoding> BomEncoding(BjolangRuntime.Option<byte[]> head) {
-        if (!head.IsSome) return BjolangRuntime.None<Encoding>();
-        ReadOnlySpan<byte> bytes = head.Value;
-
-        Encoding? named =
-            bytes.StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF]) ? Utf8
-            : bytes.StartsWith((ReadOnlySpan<byte>)[0xFF, 0xFE, 0x00, 0x00]) ? Encoding.UTF32
-            : bytes.StartsWith((ReadOnlySpan<byte>)[0x00, 0x00, 0xFE, 0xFF]) ? Utf32BigEndian
-            : bytes.StartsWith((ReadOnlySpan<byte>)[0xFF, 0xFE]) ? Encoding.Unicode
-            : bytes.StartsWith((ReadOnlySpan<byte>)[0xFE, 0xFF]) ? Encoding.BigEndianUnicode
-            : null;
-
-        return named is null ? BjolangRuntime.None<Encoding>() : BjolangRuntime.Some(named);
-    }
-
-    private static readonly Encoding Utf32BigEndian = new UTF32Encoding(bigEndian: true, byteOrderMark: true);
-
-    /// <summary>
-    /// A text reader over the byte port, reading THROUGH it rather than past it.
-    /// See <see cref="BjoByteInputPort.AsStream"/> for why that distinction is
-    /// the whole of this function.
-    /// </summary>
-    public static TextReader ToTextReader(BjoByteInputPort port, Encoding encoding) =>
-        TextReaderOver(port.AsStream(), encoding);
-
-    /// <summary>
-    /// A text port over bytes in a declared encoding: the one rule for how
-    /// bytes become text, for a byte port here and for an HTTP body in
-    /// `(std http)`.
-    ///
-    /// The declared encoding is the one used. A byte order mark never
-    /// overrides it, as `StreamReader` lets one do by default: the bytes would
-    /// then be read as something nobody said they were.
-    ///
-    /// UTF-8 that replaces invalid bytes, which is what `utf8` and
-    /// `Encoding.UTF8` both are, is read by a <see cref="BjoUtf8Port"/>, whose
-    /// lines need no transcoding. It skips a UTF-8 mark and refuses a UTF-16
-    /// or UTF-32 one, which contradicts the declaration. Any other encoding,
-    /// including a UTF-8 that throws on invalid bytes, is decoded by a
-    /// `StreamReader` that skips that encoding's own mark and no other.
-    /// </summary>
-    public static TextReader TextReaderOver(Stream stream, Encoding encoding) {
-        ArgumentNullException.ThrowIfNull(stream);
-        ArgumentNullException.ThrowIfNull(encoding);
-        if (encoding is UTF8Encoding && encoding.DecoderFallback is DecoderReplacementFallback { DefaultString: "\uFFFD" })
-            return new BjoUtf8Port(stream);
-        return new BjoPort(new StreamReader(stream, Decoding(encoding), detectEncodingFromByteOrderMarks: false));
-    }
-
-    /// `StreamReader` skips a leading byte order mark only when its encoding
-    /// writes one. A UTF-8 that does not is swapped for one that does, with the
-    /// same decoder fallback, so that reading skips a BOM whichever UTF-8 the
-    /// caller passed. The two differ only in what they write.
-    private static Encoding Decoding(Encoding encoding) {
-        if (encoding is not UTF8Encoding || encoding.Preamble.Length > 0) return encoding;
-
-        // Cloned because a constructed encoding is read-only.
-        var withBom = (Encoding)new UTF8Encoding(encoderShouldEmitUTF8Identifier: true).Clone();
-        withBom.DecoderFallback = encoding.DecoderFallback;
-        return withBom;
-    }
 
     /// <summary>
     /// A text writer over the byte port. Flushing or closing it pushes its

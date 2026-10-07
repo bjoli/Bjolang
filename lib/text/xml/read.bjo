@@ -78,13 +78,14 @@
   (IXmlLineInfo (: System.Xml.IXmlLineInfo))
   (XmlException (: System.Xml.XmlException))
   (Stream (: System.IO.Stream))
-  (ByteInputPort (: Bjolang.Runtime.BjoByteInputPort))
+  (TextReader (: System.IO.TextReader))
   (Object (: System.Object))
   (InvalidOperationException (: System.InvalidOperationException (-> string InvalidOperationException)))
   (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
 
 (import/extern
-  (clr-reader-over-text (: System.Xml.XmlReader.Create (-> TextInputPort XmlReaderSettings XmlReader)))
+  ;; For a string, read as text: there is no encoding to declare.
+  (clr-reader-over-text (: System.Xml.XmlReader.Create (-> TextReader XmlReaderSettings XmlReader)))
   (clr-reader-over-stream (: System.Xml.XmlReader.Create (-> Stream XmlReaderSettings XmlReader)))
   (clr-settings-dtd! (: System.Xml.XmlReaderSettings.DtdProcessing (-> XmlReaderSettings DtdProcessing void) #:set))
   (clr-settings-resolver! (: System.Xml.XmlReaderSettings.XmlResolver (-> XmlReaderSettings XmlResolver void) #:set))
@@ -118,7 +119,7 @@
   (clr-exception-line (: System.Xml.XmlException.LineNumber (-> XmlException int) #:get))
   (clr-exception-column (: System.Xml.XmlException.LinePosition (-> XmlException int) #:get))
   (clr-inner-exception (: System.Exception.InnerException (-> Exception Exception) #:get))
-  (clr-port-stream (: Bjolang.Runtime.BjoByteInputPort.AsStream (-> ByteInputPort Stream))))
+  (clr-port-stream (: Bjolang.Runtime.BjoInputPort.AsStream (-> InputPort Stream))))
 
 ;; Every export is documented there; the module doc is too.
 (:doc #:file "read.bjodoc")
@@ -212,7 +213,7 @@
 ;; The message .NET gives for `text` read with `settings`, or "" if it reads.
 (: reference-message (-> string XmlReaderSettings string))
 (defun (reference-message text settings)
-  (match (try (with-open ((r (clr-reader-over-text (open-input-string text) settings)))
+  (match (try (with-open ((r (clr-reader-over-text (cast TextReader (open-input-string text)) settings)))
                 (let loop () (when (clr-read r) (loop))))
               #:catch (System.Xml.XmlException))
     ((Ok _) "")
@@ -287,7 +288,6 @@
 
 ;; Declared before the trait that names it.
 (type (: XmlInput #:opaque (Union (: InText string)
-                                  (: InPort TextInputPort)
                                   (: InStream Stream)
                                   (: InFile string))))
 
@@ -305,17 +305,14 @@
 (impl (XmlSource string)
   (defun (xml-input s) (InText s)))
 
-(impl (XmlSource TextInputPort)
-  (defun (xml-input p) (InPort p)))
-
 ;; Bytes, whose encoding XmlReader works out: a byte order mark, or the
 ;; encoding the XML declaration names, or UTF-8.
 (impl (XmlSource Stream)
   (defun (xml-input s) (InStream s)))
 
-;; Read through the port's own stream, so bytes it has already buffered are
-;; not lost.
-(impl (XmlSource ByteInputPort)
+;; A port is bytes too, read the same way. Through the port's own stream view,
+;; so bytes it has already buffered are not lost.
+(impl (XmlSource InputPort)
   (defun (xml-input p) (InStream (clr-port-stream p))))
 
 (impl (XmlSource XmlFile)
@@ -555,9 +552,7 @@
   (match input
     ((InText text)
      (def port (open-input-string text))
-     (run-signals (fun (settings) (clr-reader-over-text port settings)) opts proc))
-    ((InPort port)
-     (run-signals (fun (settings) (clr-reader-over-text port settings)) opts proc))
+     (run-signals (fun (settings) (clr-reader-over-text (cast TextReader port) settings)) opts proc))
     ((InStream stream)
      (run-signals (fun (settings) (clr-reader-over-stream stream settings)) opts proc))
     ((InFile path)

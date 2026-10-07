@@ -1,8 +1,8 @@
-;; A file port reads UTF-8 itself, without going through UTF-16, and must read
-;; the same text a decoding reader did: every line ending, characters of every
-;; length, invalid bytes as U+FFFD, a UTF-8 byte order mark skipped. A UTF-16
-;; or UTF-32 mark is refused with a message, rather than read as garbage, and
-;; `bom-encoding` is how such a file is read instead.
+;; A port's text reads decode UTF-8 from its bytes, without going through
+;; UTF-16, and must read the text a decoding reader does: every line ending,
+;; characters of every length, invalid bytes as U+FFFD. A byte order mark is a
+;; character, as it is in Racket and OCaml, and text in another encoding is
+;; read through `reencode-input-port`.
 
 (import (std prelude))
 (import (std ports))
@@ -14,7 +14,7 @@
 (: expected-lines (Vec string))
 (def expected-lines ["räksmörgås" "åäö 漢字" "sista 🎉" "last"])
 
-(: opened (-> string TextInputPort))
+(: opened (-> string InputPort))
 (defun (opened path)
   (match (open-input-file path)
     ((Ok p) p)
@@ -67,32 +67,24 @@
 (defun (codes cs)
   (string-join (list->vec (list-map (fun (c) (int->string (char->integer c))) cs)) " "))
 
-;; --- What a read raised --------------------------------------------------------
+;; --- Another encoding ----------------------------------------------------------
 
-(: first-line (-> string string))
-(defun (first-line path)
+(import/extern
+  (utf16 (: System.Text.Encoding.Unicode #:get)))
+
+;; The way to read a file in another encoding: open it, and re-encode it.
+(: lines-as (-bjo-> string Encoding (Vec string)))
+(defbjo (lines-as path encoding)
   (def p (opened path))
-  (def got
-    (match (try (read-line p) #:catch (System.Exception))
-      ((Ok l) (str "read [" l "]"))
-      ((Err e) (.-Message e))))
+  (def lines (port->lines (reencode-input-port p encoding)))
   (close-input-port p)
-  got)
-
-;; The way to read a file in another encoding: as bytes, through the encoding
-;; its mark names.
-(: first-line-by-bom (-bjo-> string string))
-(defbjo (first-line-by-bom path)
-  (match (open-byte-input-file path)
-    ((Ok bp)
-     (def p (byte->text-input-port bp (option-ref-or (bom-encoding bp) utf8)))
-     (def l (read-line p))
-     (close-byte-input-port! bp)
-     l)
-    ((Err e) (raise e))))
+  lines)
 
 (: replacement string)
 (def replacement (list->string (list (integer->char 65533))))
+
+(: mark string)
+(def mark (list->string (list (integer->char 65279))))
 
 (defbjo (main args)
   (def path (path-combine (current-directory) "314-scratch.txt"))
@@ -105,13 +97,13 @@
   (expect "read-all on a fiber" (all-bjo path) text)
   (expect "file-read-text" (file-read-text path) text)
 
-  ;; A UTF-8 mark is skipped, once; the second one is text.
+  ;; A byte order mark is a character, every time.
   (file-write-bytes path #[239 187 191 239 187 191 104 105 10])
-  (expect "a UTF-8 mark is skipped once"
+  (expect "a UTF-8 mark is a character"
           (codes (string->list (vec-ref (file-read-lines path) 0)))
-          "65279 104 105")
+          "65279 65279 104 105")
   (file-write-bytes path #[239 187 191])
-  (expect "a lone UTF-8 mark is an empty file" (file-read-lines path) [])
+  (expect "a lone mark is a line of one character" (file-read-lines path) [mark])
 
   ;; Invalid bytes, and a character cut off by the end of the file.
   (file-write-bytes path #[104 105 255 10 240 159 152])
@@ -119,15 +111,13 @@
           (file-read-lines path)
           [(str "hi" replacement) replacement])
 
-  ;; UTF-16, little-endian, with its mark: "hi\n".
-  (file-write-bytes path #[255 254 104 0 105 0 10 0])
-  (expect "a UTF-16 file is refused by name"
-          (string-contains? (first-line path) "starts with a UTF-16 (little-endian) byte order mark")
-          #t)
-  (expect "and read through the encoding its mark names" (first-line-by-bom path) "hi")
-
-  (file-write-bytes path #[104 105 10])
-  (expect "bom-encoding without a mark falls back to UTF-8" (first-line-by-bom path) "hi")
+  ;; UTF-16, little-endian, with its mark: "hi\nyo\n". Read as UTF-8 it is
+  ;; replacements and NULs; re-encoded, it is the text, its mark a character.
+  (file-write-bytes path #[255 254 104 0 105 0 10 0 121 0 111 0 10 0])
+  (expect "UTF-16 read as UTF-8 is not text"
+          (codes (string->list (vec-ref (file-read-lines path) 0)))
+          "65533 65533 104 0 105 0")
+  (expect "re-encoded, it is" (lines-as path utf16) [(str mark "hi") "yo"])
 
   (file-delete path)
   0)

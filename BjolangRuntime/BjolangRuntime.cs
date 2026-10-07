@@ -71,33 +71,18 @@ public static partial class BjolangRuntime {
             ? Some(Utf8String.FromUtf16(dir))
             : None<Utf8String>();
 
-    // The failing read. `ReadLine` reports end of input by returning null, and
-    // Bjolang has no null to test against, so the sentinel is converted into an
-    // exception right at the boundary rather than let loose in the program.
-    // The same dispatcher both colours of `read-line` use, so a UTF-8 port
-    // answers its own line here too.
+    // The failing reads, `reader-read-line!` and `reader-read-char!`: the
+    // dispatchers both colours of `read-line` and `read-char` use, so the
+    // blocking builtins ask the port the same question rather than answering
+    // it again. End of input is an exception, raised right at the boundary,
+    // since Bjolang has no null to test against.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Utf8String readersubreadsubline_BANG(System.IO.TextReader reader) =>
-        Bjolang.Runtime.BjoPort.ReadLineOrThrow(reader);
+    public static Utf8String readersubreadsubline_BANG(Bjolang.Runtime.BjoInputPort port) =>
+        Bjolang.Runtime.InputPorts.ReadLineOrThrow(port);
 
-    // The failing char read.
-    //
-    // A Bjolang `char` is a Unicode scalar and `TextReader.Read` answers a
-    // UTF-16 code unit, so this is not a cast: a character outside the BMP
-    // arrives as two units and has to be put back together. `BjoPort` does
-    // that, and both colours of `read-char` go through it, so the blocking
-    // builtin asks it the same question rather than answering it again.
-    //
-    // That is also why there is no `peek-char`. `Peek` gives one unit of
-    // lookahead, one is not always a character, and a peek that could not
-    // promise the same answer `read-char` is about to give would be a trap.
-    // Buying it needs a pushback buffer, and a port is deliberately the bare
-    // .NET object. `port-eof?` answers the question peeking is usually asked
-    // for, and a parser that needs more wants the whole text and a
-    // `StringCursor`.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Bjolang.Runtime.BjoChar readersubreadsubchar_BANG(System.IO.TextReader reader) =>
-        Bjolang.Runtime.BjoPort.ReadCharOrThrow(reader);
+    public static Bjolang.Runtime.BjoChar readersubreadsubchar_BANG(Bjolang.Runtime.BjoInputPort port) =>
+        Bjolang.Runtime.InputPorts.ReadCharOrThrow(port);
 
     // The counterpart, and not a `Write((char)c)` for the same reason: an
     // astral character is two UTF-16 units and both have to go out.
@@ -125,17 +110,15 @@ public static partial class BjolangRuntime {
 
     // Draining a port into a collection, done here rather than as a Bjolang
     // loop so that the builder is used directly and each line is added once.
-    public static SchemeList.SchemeList<Utf8String> readersubgtlist(System.IO.TextReader reader) {
+    public static SchemeList.SchemeList<Utf8String> readersubgtlist(Bjolang.Runtime.BjoInputPort port) {
         var builder = new SchemeList.SchemeListBuilder<Utf8String>();
-        string? line;
-        while ((line = reader.ReadLine()) is not null) builder.Add(Utf8String.FromUtf16(line));
+        while (port.ReadLineUtf8() is { IsSome: true } line) builder.Add(line.Value);
         return builder.ToSchemeList();
     }
 
-    public static Collections.RrbList<Utf8String> readersubgtvec(System.IO.TextReader reader) {
+    public static Collections.RrbList<Utf8String> readersubgtvec(Bjolang.Runtime.BjoInputPort port) {
         var builder = new Collections.RrbBuilder<Utf8String>();
-        string? line;
-        while ((line = reader.ReadLine()) is not null) builder.Add(Utf8String.FromUtf16(line));
+        while (port.ReadLineUtf8() is { IsSome: true } line) builder.Add(line.Value);
         return builder.ToImmutable();
     }
 
@@ -1293,7 +1276,7 @@ public static partial class BjolangRuntime {
     /// </summary>
     public sealed class DynEnv : Bjoml.IFiberContext {
         public readonly System.IO.TextWriter Out;
-        public readonly System.IO.TextReader In;
+        public readonly Bjolang.Runtime.BjoInputPort In;
 
         /// The ambient cancellation token, and null when nothing has bound one.
         ///
@@ -1357,7 +1340,7 @@ public static partial class BjolangRuntime {
 
         internal DynEnv(
             System.IO.TextWriter output,
-            System.IO.TextReader input,
+            Bjolang.Runtime.BjoInputPort input,
             Bjoml.Promise<CancelReason>? cancel,
             Scope? scope,
             Map.Map<int, object> vals,
@@ -1371,7 +1354,7 @@ public static partial class BjolangRuntime {
         }
 
         internal DynEnv WithOut(System.IO.TextWriter w) => new(w, In, Cancel, Scope, Vals, Park);
-        internal DynEnv WithIn(System.IO.TextReader r) => new(Out, r, Cancel, Scope, Vals, Park);
+        internal DynEnv WithIn(Bjolang.Runtime.BjoInputPort r) => new(Out, r, Cancel, Scope, Vals, Park);
 
         /// The cell travels with the environment except where the token changes
         /// under it, which is the one thing it may not outlive.
@@ -1540,19 +1523,19 @@ public static partial class BjolangRuntime {
     /// Standard input, buffered.
     ///
     /// **One instance, and that is the whole reason it is a field.** `Dyn.Root`
-    /// and `current-input-port` both need standard input, and two `BjoPort`s
-    /// over one `Console.In` would each be holding characters the other had
-    /// already taken — the buffer that makes `port-eof?` free is also a claim
-    /// on input nobody else may read.
+    /// and `current-input-port` both need standard input, and two ports over
+    /// it would each be holding input the other had already taken — the
+    /// buffer that makes `port-eof?` free is also a claim on input nobody else
+    /// may read. Nothing is read here: making the port only allocates.
     ///
-    /// Wrapped rather than left bare because stdin is the port every program
-    /// touches, and an unbuffered one is the port whose eof question always
-    /// costs a syscall. Nothing is read here: `Wrap` only allocates.
+    /// Over `Console.In`, and so through the console's encoding, for now. A
+    /// port over standard input's raw bytes is the Racket shape.
     ///
     /// Standard *output* is deliberately not wrapped. A writer has no eof
     /// problem to solve, and a buffer in front of the console would only delay
     /// output past the point a program crashed.
-    public static readonly System.IO.TextReader StdIn = Bjolang.Runtime.BjoPort.Wrap(Console.In);
+    public static readonly Bjolang.Runtime.BjoInputPort StdIn =
+        Bjolang.Runtime.InputPorts.FromTextReader(Console.In);
 
     /// The output port. Bound to a value, not a nullary function: it is read
     /// with `parameter-ref` like every other parameter.
@@ -1560,7 +1543,7 @@ public static partial class BjolangRuntime {
     /// A field parameter takes no id, so it spends none of the 31 hot slots and
     /// a program's own parameters get the whole budget.
     public static readonly Param<System.IO.TextWriter> currentsuboutputsubport = new(0, -1, Console.Out);
-    public static readonly Param<System.IO.TextReader> currentsubinputsubport = new(1, -1, StdIn);
+    public static readonly Param<Bjolang.Runtime.BjoInputPort> currentsubinputsubport = new(1, -1, StdIn);
 
     /// The error port, which is a cold parameter and not a field.
     ///
@@ -1617,7 +1600,7 @@ public static partial class BjolangRuntime {
         var prev = Dyn.Current;
         Dyn.Current = p.Slot switch {
             0 => prev.WithOut((System.IO.TextWriter)(object)value!),
-            1 => prev.WithIn((System.IO.TextReader)(object)value!),
+            1 => prev.WithIn((Bjolang.Runtime.BjoInputPort)(object)value!),
             2 => prev.WithCancel((Bjoml.Promise<CancelReason>)(object)value!),
             _ => prev.WithVal(p.Id, value!)
         };

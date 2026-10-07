@@ -31,10 +31,10 @@
 
 ;; One UTF-16 unit, or -1 at the end. 
 (import/extern
-  (clr-unit       (: Bjolang.Runtime.BjoPort.ReadUnit      (-> TextInputPort int) #:blocking))
-  (clr-unit-await (: Bjolang.Runtime.BjoPort.ReadUnitAsync (-> TextInputPort int) #:async)))
+  (clr-unit       (: Bjolang.Runtime.InputPorts.ReadUnit      (-> InputPort int) #:blocking))
+  (clr-unit-await (: Bjolang.Runtime.InputPorts.ReadUnitAsync (-> InputPort int) #:async)))
 
-(: read-unit (-> TextInputPort int))
+(: read-unit (-> InputPort int))
 (defbjouble (read-unit p)
   (#:sync (clr-unit p))
   (#:bjo  (clr-unit-await p)))
@@ -63,7 +63,7 @@
 (def spent -1)
 
 (type
-  (: Reader (Record (: port TextInputPort)
+  (: Reader (Record (: port InputPort)
                     (: held int #:mutable)
                     (: row int #:mutable)
                     (: col int #:mutable)
@@ -75,7 +75,7 @@
                     (: stack (Array Json) #:mutable)
                     (: top int #:mutable))))
 
-(: reader (-> TextInputPort Reader))
+(: reader (-> InputPort Reader))
 (defun (reader port)
   (Reader (port port)
           (held (read-unit port))
@@ -497,7 +497,7 @@
 ;; ---------------------------------------------------------------------------
 ;; Reading a document
 ;; ---------------------------------------------------------------------------
-(: read-json (-> TextInputPort (Result string Json)))
+(: read-json (-> InputPort (Result string Json)))
 (defun (read-json port)
   (def rd (reader port))
   ;; A byte-order mark ahead of the value is skipped, and does

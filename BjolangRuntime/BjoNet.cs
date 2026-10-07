@@ -91,7 +91,7 @@ public sealed class BjoTcpListener : IDisposable {
 
     /// A take is tentatively holding the slot: it has emptied it and is out at
     /// <c>TryCommit</c>, which may yet fail and put it back. See
-    /// `BjoByteInputPort._taking`, which is the same field for the same reason.
+    /// `BjoInputPort._taking`, which is the same field for the same reason.
     private bool _taking;
 
     private TaskCompletionSource? _quiet;
@@ -118,7 +118,7 @@ public sealed class BjoTcpListener : IDisposable {
     private readonly HashSet<BjoConnection> _live = new();
     private readonly Gate<Unit> _closedGate = new();
 
-    /// <summary>See <see cref="BjoPort.Owner"/>.</summary>
+    /// <summary>See <see cref="BjoInputPort.Owner"/>.</summary>
     public BjolangRuntime.Owned? Owner;
 
     private BjoTcpListener(Socket socket) {
@@ -326,7 +326,7 @@ public sealed class BjoTcpListener : IDisposable {
     /// <summary>
     /// One published accept, parked until the slot can answer it.
     ///
-    /// The three steps are apart for the reason `BjoByteInputPort.Waiter`'s are:
+    /// The three steps are apart for the reason `BjoInputPort.Waiter`'s are:
     /// <c>TryCommit</c> fires the losing branches' nacks and a nack can resume a
     /// fiber, so it must not run under the listener's lock.
     /// </summary>
@@ -412,7 +412,7 @@ public sealed class BjoTcpListener : IDisposable {
     private void Deliver() {
         // Take ownership, or leave a note for whoever has it. The note is a
         // compare-and-swap from `Running` and never a plain write — see
-        // `BjoByteInputPort.Deliver`, where the same plain write left the flag
+        // `BjoInputPort.Deliver`, where the same plain write left the flag
         // set with nobody running and killed the port for good.
         while (true) {
             int state = Volatile.Read(ref _deliverState);
@@ -706,11 +706,11 @@ public static class Net {
 
     // --- A connection's two halves ------------------------------------------
 
-    public static BjoByteInputPort ConnectionInput(BjoConnection connection) => connection.Input();
+    public static BjoInputPort ConnectionInput(BjoConnection connection) => connection.Input();
 
     public static BjoByteOutputPort ConnectionOutput(BjoConnection connection) => connection.Output();
 
-    public static BjolangRuntime.Option<BjoString.Utf8String> PeerAddress(BjoByteInputPort port) =>
+    public static BjolangRuntime.Option<BjoString.Utf8String> PeerAddress(BjoInputPort port) =>
         port.Peer is { } peer
             ? BjolangRuntime.Some(BjoString.Utf8String.FromUtf16(peer))
             : BjolangRuntime.None<BjoString.Utf8String>();

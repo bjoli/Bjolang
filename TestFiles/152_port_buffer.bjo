@@ -1,39 +1,45 @@
 ;; A port owns a buffer, and every read has to go through it.
 ;;
-;; `port-eof?` is `Peek`, and peek is "read one and put it back" — so a port
-;; that could answer it had already read the character, and has to hold it
-;; somewhere. `BjoPort` is that somewhere, which is what makes the eof question
-;; free once anything is buffered, and what makes a suspending read possible at
-;; all: `TextReader` has no async peek and there is no adding one from outside.
+;; `port-eof?` is a peek, and peek is "read one and put it back" — so a port
+;; that could answer it had already read the input, and has to hold it
+;; somewhere. The port's buffer is that somewhere, which is what makes the eof
+;; question free once anything is buffered, and what makes a suspending read
+;; possible at all.
 ;;
 ;; The hazard the whole file is about: **if any read reaches the underlying
-;; reader while the buffer still holds characters, those characters are
-;; skipped.** Nothing throws. The program simply produces the wrong text, which
-;; is the worst way for a bug to present. So every read method is exercised
-;; against the same port, in every order, with the buffer boundary deliberately
-;; placed inside the thing being read.
+;; stream while the buffer still holds bytes, those bytes are skipped.**
+;; Nothing throws. The program simply produces the wrong text, which is the
+;; worst way for a bug to present. So every read method is exercised against
+;; the same port, in every order, with the buffer boundary deliberately placed
+;; inside the thing being read.
 (import (std prelude))
 (import (std ports))
 (import (std simpletest))
 
-;; The two-argument constructor, so a test can choose where the boundary falls.
+;; The constructor with a buffer size, so a test can choose where the boundary
+;; falls.
 ;;
-;; `open-input-file` uses the one-argument form and gets 4096 characters, at
-;; which size none of the cases below would cross a boundary at all — a line
-;; spanning two fills, a `\r\n` split down the middle, a surrogate pair with a
-;; refill between its halves. Those are where the bugs are, so the test buys
-;; the ability to reach them.
+;; `open-input-file` gets a buffer of 16 KiB, at which size none of the cases
+;; below would cross a boundary at all — a line spanning two refills, a `\r\n`
+;; split down the middle, a character with a refill between its bytes. Those
+;; are where the bugs are, so the test buys the ability to reach them.
 (import/class
-  (Port (: Bjolang.Runtime.BjoPort (-> TextInputPort int Port))))
+  (Port (: Bjolang.Runtime.BjoInputPort (-> Stream int bool Port)))
+  (MemStream (: System.IO.MemoryStream (-> (Array byte) MemStream)))
+  (Encoding (: System.Text.Encoding)))
 
-;; A port over `text` whose buffer holds `n` characters.
-(: sized (-> string int TextInputPort))
+(import/extern
+  (utf8-encoding (: System.Text.Encoding.UTF8 #:get))
+  (utf8-bytes (: System.Text.Encoding.GetBytes (-> Encoding string (Array byte)))))
+
+;; A port over the UTF-8 of `text` whose buffer holds `n` bytes.
+(: sized (-> string int InputPort))
 (defun (sized text n)
-  (cast TextInputPort (Port. (open-input-string text) n)))
+  (cast InputPort (Port. (cast Stream (MemStream. (utf8-bytes utf8-encoding text))) n #t)))
 
 ;; Everything still in the port, one character at a time. Used to check what a
 ;; sequence of reads left behind — a skip shows up here as a hole.
-(: rest-by-char (-> TextInputPort string))
+(: rest-by-char (-> InputPort string))
 (defun (rest-by-char p)
   (let loop ((acc ""))
     (match (read-char/opt p)
@@ -56,7 +62,7 @@
   ;; The classic form of the bug: `ReadToEnd` on the underlying reader knows
   ;; nothing about what the buffer is holding, so a port that forwarded it
   ;; would drop everything already read ahead. Here `port-eof?` has filled a
-  ;; two-character buffer, and the answer must still be the whole remainder.
+  ;; two-byte buffer, and the answer must still be the whole remainder.
   (def p2 (sized "hello world" 2))
   (ignore (port-eof? p2))
   (expect "read-all sees what the buffer holds" (read-all p2) "hello world")
@@ -68,7 +74,7 @@
 
   ;; --- Lines that cross a boundary ----------------------------------------
   ;;
-  ;; With a three-character buffer, no line below fits in one fill.
+  ;; With a three-byte buffer, no line below fits in one fill.
   (def p4 (sized "first\nsecond\nthird" 3))
   (expect "a line longer than the buffer" (read-line p4) "first")
   (expect "and the next one" (read-line p4) "second")
@@ -102,10 +108,10 @@
   (expect "then content" (read-line p7) "a")
   (expect "and eof" (if (port-eof? p7) "eof" "more") "eof")
 
-  ;; --- A surrogate pair split by a refill ----------------------------------
+  ;; --- A character split by a refill ---------------------------------------
   ;;
-  ;; U+1F600 is one character and two UTF-16 units. With a two-character buffer
-  ;; and one character in front of it, the halves land in different fills, so
+  ;; U+1F600 is one character and four bytes of UTF-8. With a two-byte buffer
+  ;; and one byte in front of it, its bytes land in different refills, so
   ;; `read-char` has to survive a refill in the middle of a single character.
   (def grin (int->char 128512))
   (def wg (open-output-string))
@@ -174,7 +180,7 @@
   ;;
   ;; `open-input-file` hands back one of these, so the same interleaving has to
   ;; hold over a real file — including that the port is still an ordinary
-  ;; `TextInputPort` to everything above it.
+  ;; `InputPort` to everything above it.
   (def path "152_port_buffer.tmp")
   (match (open-output-file path)
     ((Ok w) (with-open ((out w))
@@ -209,7 +215,7 @@
               (expect "and what was written after it" (read-all in) "three")))
     ((Err e) (println "FAILURE: could not reopen the file")))
 
-  ;; The port is still a plain `TextInputPort`, so a .NET method on it works.
+  ;; The port is still a plain `InputPort`, so a .NET method on it works.
   (match (open-input-file path)
     ((Ok r) (with-open ((in r))
               (expect "a .NET call on the port" (.Peek in) 111)))

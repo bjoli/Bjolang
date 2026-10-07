@@ -67,10 +67,10 @@
 
 ;; One UTF-16 unit, or -1 at the end.
 (import/extern
-  (clr-unit       (: Bjolang.Runtime.BjoPort.ReadUnit      (-> TextInputPort int) #:blocking))
-  (clr-unit-await (: Bjolang.Runtime.BjoPort.ReadUnitAsync (-> TextInputPort int) #:async)))
+  (clr-unit       (: Bjolang.Runtime.InputPorts.ReadUnit      (-> InputPort int) #:blocking))
+  (clr-unit-await (: Bjolang.Runtime.InputPorts.ReadUnitAsync (-> InputPort int) #:async)))
 
-(: read-unit (-> TextInputPort int))
+(: read-unit (-> InputPort int))
 (defbjouble (read-unit p)
   (#:sync (clr-unit p))
   (#:bjo  (clr-unit-await p)))
@@ -192,7 +192,7 @@
 (def spent -1)
 
 (type
-  (: Reader (Record (: port TextInputPort)
+  (: Reader (Record (: port InputPort)
                     (: held int #:mutable)
                     (: row int #:mutable)
                     (: col int #:mutable)
@@ -204,7 +204,7 @@
                     ;; One cache for every name in the document.
                     (: names (Array string)))))
 
-(: reader (-> TextInputPort Reader))
+(: reader (-> InputPort Reader))
 (defun (reader port)
   (Reader (port port)
           (held (read-unit port))
@@ -902,7 +902,7 @@
     (record-set! rd (col 1))))
 
 ;; Exactly one value, and then the end.
-(: read-bjodat (-> TextInputPort (Result string Bjodat)))
+(: read-bjodat (-> InputPort (Result string Bjodat)))
 (defun (read-bjodat port)
   (def rd (reader port))
   (skip-bom! rd)
@@ -920,7 +920,7 @@
 
 ;; Every value in the file, in order. A file is a stream, so an empty one is an
 ;; empty list rather than a refusal.
-(: read-bjodat-all (-> TextInputPort (Result string (List Bjodat))))
+(: read-bjodat-all (-> InputPort (Result string (List Bjodat))))
 (defun (read-bjodat-all port)
   (def rd (reader port))
   (skip-bom! rd)
@@ -1180,7 +1180,7 @@
 ;; its *sync* copy — and then a bjoroutine reading a socket would call the copy
 ;; that parks the thread. The blocking lint says so in as many words, which is
 ;; how this was found.
-(: read-one-pass (-> TextInputPort (-?-> Reader (Result string %a)) (Result string %a)))
+(: read-one-pass (-> InputPort (-?-> Reader (Result string %a)) (Result string %a)))
 (defun (read-one-pass port decode)
   (def rd (reader port))
   (skip-bom! rd)
@@ -1202,7 +1202,7 @@
 ;; once, where a vec would be an RRB append per element. A caller that wants a
 ;; vec can say so in one call; a caller that folds over it once — which is most
 ;; of them — should not pay for a tree it does not index into.
-(: read-one-pass-all (-> TextInputPort (-?-> Reader (Result string %a)) (Result string (List %a))))
+(: read-one-pass-all (-> InputPort (-?-> Reader (Result string %a)) (Result string (List %a))))
 (defun (read-one-pass-all port decode)
   (def rd (reader port))
   (skip-bom! rd)

@@ -12,15 +12,16 @@
 
 ;; std/net.bjo — TCP, as two byte ports.
 ;;
-;; Connecting gives you a `(Tuple ByteInputPort ByteOutputPort)` and nothing
+;; Connecting gives you a `(Tuple InputPort ByteOutputPort)` and nothing
 ;; else — no socket object, which is why this module is `(std net)` and not
 ;; `(std socket)`. That is the whole design: a protocol written against
 ;; `(std ports)` runs over TCP without knowing it is TCP, and `byte-pipe` can
 ;; stand in for a network in a test.
 ;;
-;; Everything you do with a connection comes from `(std ports)`: `read-some`,
-;; `read-bytes-evt`, `write-bytes!`, `flush!`, `shutdown!`, `limited`,
-;; `byte->text-input-port`. Import both.
+;; Everything you do with a connection comes from `(std ports)` and the prelude:
+;; `read-some`, `read-bytes-evt`, `write-bytes!`, `flush!`, `shutdown!`,
+;; `limited`, and `read-line` on the same input port as `read-bytes`. Import
+;; both.
 ;;
 ;;     (match (tcp-connect "127.0.0.1" 8080)
 ;;       ((Ok (Tuple in out))
@@ -88,9 +89,9 @@
   (clr-close-listener (: Bjolang.Runtime.Net.CloseListener  (-> Listener void)))
 
   ;; A connection's two halves, and who is behind them.
-  (clr-conn-in  (: Bjolang.Runtime.Net.ConnectionInput  (-> Connection ByteInputPort)))
+  (clr-conn-in  (: Bjolang.Runtime.Net.ConnectionInput  (-> Connection InputPort)))
   (clr-conn-out (: Bjolang.Runtime.Net.ConnectionOutput (-> Connection ByteOutputPort)))
-  (clr-peer     (: Bjolang.Runtime.Net.PeerAddress (-> ByteInputPort (Option string))))
+  (clr-peer     (: Bjolang.Runtime.Net.PeerAddress (-> InputPort (Option string))))
 
   ;; Ownership. Called from here, on the fiber, and never from inside the
   ;; awaited connect: after an await the continuation is on a pool thread, where
@@ -112,7 +113,7 @@
 ;;
 ;; Closing one half does not close the other — "I have finished listening, now
 ;; let me answer" has to work, and it is the same fact `shutdown!` exists for.
-(: connection->ports (-> Connection (Tuple ByteInputPort ByteOutputPort)))
+(: connection->ports (-> Connection (Tuple InputPort ByteOutputPort)))
 (defun (connection->ports c)
   (Tuple (clr-conn-in c) (clr-conn-out c)))
 
@@ -134,7 +135,7 @@
 ;; own and `flush!` is the program saying "send this now", so leaving Nagle on
 ;; would hold a flushed small write back waiting for an ACK — exactly wrong for
 ;; a request/response protocol.
-(: tcp-connect (-bjo-> string int (Result Exception (Tuple ByteInputPort ByteOutputPort))))
+(: tcp-connect (-bjo-> string int (Result Exception (Tuple InputPort ByteOutputPort))))
 (defbjo (tcp-connect host port)
   ;; Raises here if there is no scope, before a socket exists to leak.
   (ignore (current-scope))
@@ -150,13 +151,13 @@
 ;; connected: the stream an HTTP server hands over after `101 Switching
 ;; Protocols`, or a `NetworkStream`.
 ;;
-;; `stream->byte-input-port` and `stream->byte-output-port` each own the stream
+;; `stream->input-port` and `stream->byte-output-port` each own the stream
 ;; they wrap, so the first half closed would take the stream from the other.
 ;; This shares it the way `tcp-connect` does: the stream is disposed when both
 ;; halves have been closed, or when the ambient scope ends.
 ;;
 ;; `peer` is what `peer-address` answers for the input port; `""` means `None`.
-(: stream->ports (-> Stream (#:peer string) (Tuple ByteInputPort ByteOutputPort)))
+(: stream->ports (-> Stream (#:peer string) (Tuple InputPort ByteOutputPort)))
 (defun (stream->ports s #:peer "")
   (ignore (current-scope))
   (connection->ports (clr-own-connection (Connection. s peer))))
@@ -206,7 +207,7 @@
 ;;         ((Some (Ok conn)) (spawn (handle conn)) (go))
 ;;         ((Some (Err e))   (log (str "accept failed: " (.-Message e))) (go))
 ;;         (None             'stopped)))
-(: accept-evt (-> Listener (Event (Result Exception (Tuple ByteInputPort ByteOutputPort)))))
+(: accept-evt (-> Listener (Event (Result Exception (Tuple InputPort ByteOutputPort)))))
 (defun (accept-evt l)
   (wrap (clr-accept-evt l)
         #(match &
@@ -218,8 +219,8 @@
 (: listener-closed (-> Listener (Event Unit)))
 (defun (listener-closed l) (clr-closed-evt l))
 
-(: accept-or-raise (-> (Result Exception (Tuple ByteInputPort ByteOutputPort))
-                       (Tuple ByteInputPort ByteOutputPort)))
+(: accept-or-raise (-> (Result Exception (Tuple InputPort ByteOutputPort))
+                       (Tuple InputPort ByteOutputPort)))
 (defun (accept-or-raise r)
   (match r
     ((Ok conn) conn)
@@ -232,7 +233,7 @@
 ;; On a closed listener this waits forever, because the event never commits.
 ;; A program that may meet one uses `accept-evt` under a `choose` with
 ;; `listener-closed`.
-(: accept (-> Listener (Tuple ByteInputPort ByteOutputPort)))
+(: accept (-> Listener (Tuple InputPort ByteOutputPort)))
 (defbjouble (accept l)
   (#:sync (accept-or-raise (sync/blocking (accept-evt l))))
   (#:bjo  (accept-or-raise (sync (accept-evt l)))))
@@ -258,7 +259,7 @@
 ;; It hangs off the input port because the tuple is fixed at two and there is
 ;; nowhere else to put it. `None` for a port that is not a connection's — a
 ;; file, a pipe, a `limited` view — and for a `stream->ports` given no peer.
-(: peer-address (-> ByteInputPort (Option string)))
+(: peer-address (-> InputPort (Option string)))
 (defun (peer-address p)
   (match (clr-peer p)
     ((Some "") None)

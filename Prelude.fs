@@ -137,10 +137,10 @@ let ownedType = TCon("Owned", [])
 /// `dyn-restore!`, both of which only ever appear in a `parameterize` desugar.
 let dynEnvType = TCon("DynEnv", [])
 
-/// The port types, as `std/prelude` publishes them. Named here because the
-/// three standard ports are builtin bindings and have to be typed before
-/// `prelude.bjo` exists to say it.
-let textInputPortType = TCon("System.IO.TextReader", [])
+/// The port types, as `std/prelude` publishes them (`InputPort` and
+/// `TextOutputPort`). Named here because the three standard ports are builtin
+/// bindings and have to be typed before `prelude.bjo` exists to say it.
+let inputPortType = TCon("Bjolang.Runtime.BjoInputPort", [])
 let textOutputPortType = TCon("System.IO.TextWriter", [])
 
 /// A piece of syntax: what a macro transformer takes and returns.
@@ -263,7 +263,7 @@ let blockingBuiltins : Set<string> =
           // this is what makes saying so mechanical.
           "sync/blocking"
 
-          // The port reads. Each is a `TextReader` method that waits.
+          // The port reads. Each waits for input when there is none buffered.
           "reader-read-line!"
           "reader-read-char!"
           "reader->list"
@@ -676,7 +676,7 @@ let prelude : Env =
         "current-cancel", {Scheme = Scheme([], [], makeParamType cancelTokenType); IsMutable = false }
 
         "current-output-port", {Scheme = Scheme([], [], makeParamType textOutputPortType); IsMutable = false }
-        "current-input-port", {Scheme = Scheme([], [], makeParamType textInputPortType); IsMutable = false }
+        "current-input-port", {Scheme = Scheme([], [], makeParamType inputPortType); IsMutable = false }
         "current-error-port", {Scheme = Scheme([], [], makeParamType textOutputPortType); IsMutable = false }
 
         /// True while a REPL is running the code, and false in a built program.
@@ -814,19 +814,19 @@ let prelude : Env =
         // pieces of it that cannot be written in Bjolang: a read that fails at
         // end of input, and the two drains, which want the collection builders
         // directly.
-        "reader-read-line!", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextReader", [])] stringType); IsMutable = false }
+        "reader-read-line!", {Scheme = Scheme([], [], makeFunType [inputPortType] stringType); IsMutable = false }
         // Char IO is a builtin pair rather than a `.Read` and a `.Write` at the
         // call site because a Bjolang `char` is a Unicode scalar and .NET's is a
         // UTF-16 code unit: both directions have to handle a surrogate pair, and
         // neither is something a caller should be reassembling by hand.
-        "reader-read-char!", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextReader", [])] charType); IsMutable = false }
+        "reader-read-char!", {Scheme = Scheme([], [], makeFunType [inputPortType] charType); IsMutable = false }
         "writer-write-char!", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextWriter", []); charType] unitType); IsMutable = false }
         // What `get-output-string` is built on. A builtin because the failure it
         // has to report — a port that is not a string port — is a value rather
         // than an exception on the .NET side.
         "writer->string", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextWriter", [])] stringType); IsMutable = false }
-        "reader->list", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextReader", [])] (makeListType stringType)); IsMutable = false }
-        "reader->vec", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextReader", [])] (makeVecType stringType)); IsMutable = false }
+        "reader->list", {Scheme = Scheme([], [], makeFunType [inputPortType] (makeListType stringType)); IsMutable = false }
+        "reader->vec", {Scheme = Scheme([], [], makeFunType [inputPortType] (makeVecType stringType)); IsMutable = false }
 
         // Strings. `string-append` and `string-length` are `std/prelude`'s,
         // being ordinary .NET calls; this one is here to sit with the other

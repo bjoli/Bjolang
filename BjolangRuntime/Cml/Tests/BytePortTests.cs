@@ -11,7 +11,7 @@
  * availability requirements or notice obligations of Section 3 of the MPL 2.0.
  */
 
-// The four claims about `BjoByteInputPort` that Bjolang cannot check from the
+// The four claims about `BjoInputPort` that Bjolang cannot check from the
 // outside, each of them about WHICH PATH was taken rather than about what came
 // back. After them, the claims about closing a `BjoByteOutputPort` over a
 // stream that refuses blocking I/O, which .NET itself has none of.
@@ -183,11 +183,11 @@ public static class BytePortTests
     /// </summary>
     private static void TryNowIsTheFastPath()
     {
-        var port = new BjoByteInputPort(new MemoryStream(new byte[] { 1, 2, 3, 4, 5, 6 }));
+        var port = new BjoInputPort(new MemoryStream(new byte[] { 1, 2, 3, 4, 5, 6 }));
 
         // A peek forces the refill and leaves the cursor alone, so the buffer
         // now holds everything and no read after this needs the stream.
-        var peeked = port.Peek(0, 1);
+        var peeked = port.PeekBytes(0, 1);
         Assert(peeked.IsSome, "the peek brought nothing in");
         AssertEqual(0, port.PublishCount, "a peek published something");
 
@@ -240,7 +240,7 @@ public static class BytePortTests
     private static void LoserConsumesNothing()
     {
         var gate = new GatedStream(new byte[] { 10, 20, 30, 40 });
-        var port = new BjoByteInputPort(gate);
+        var port = new BjoInputPort(gate);
 
         var read = Cml.Wrap(BytePorts.ReadBytesEvent(port, 4), static _ => "read");
         var other = Cml.Always("other");
@@ -292,7 +292,7 @@ public static class BytePortTests
         for (int i = 0; i < total; i++) data[i] = (byte)i;
 
         var stream = new CountingStream(data, chunk: 8);
-        var port = new BjoByteInputPort(stream, bufferSize: 8);
+        var port = new BjoInputPort(stream, bufferSize: 8);
 
         var seen = new int[total];
         var readers = new Thread[4];
@@ -337,7 +337,7 @@ public static class BytePortTests
     private static void CancelledWaitKeepsTheBytes()
     {
         var gate = new GatedStream(new byte[] { 7, 8, 9 });
-        var port = new BjoByteInputPort(gate);
+        var port = new BjoInputPort(gate);
 
         var cancel = new CancellationTokenSource();
         var pending = port.ReadIntoAsync(new byte[3], cancel.Token).AsTask();

@@ -59,7 +59,7 @@
 
 ;; Everything left on the port, as text. Ends at `None`, so the other end has to
 ;; have half-closed or closed.
-(: drain-bytes (-> ByteInputPort string))
+(: drain-bytes (-> InputPort string))
 (defun (drain-bytes p)
   (let loop ((acc ""))
     (match (read-some p)
@@ -99,9 +99,9 @@
     ((Ok answer) answer)
     ((Err e) (str "RAISED " (.-Message e)))))
 
-(: closing (-bjo-> ByteInputPort ByteOutputPort void))
+(: closing (-bjo-> InputPort ByteOutputPort void))
 (defbjo (closing in out)
-  (close-byte-input-port! in)
+  (close-input-port in)
   (close-byte-output-port! out))
 
 ;; ---------------------------------------------------------------------------
@@ -135,7 +135,7 @@
      back)))
 
 ;; Everything that arrives, straight back out again, a chunk at a time.
-(: echo-loop (-bjo-> ByteInputPort ByteOutputPort int))
+(: echo-loop (-bjo-> InputPort ByteOutputPort int))
 (defbjo (echo-loop in out)
   (let go ((n 0))
     (match (read-some in)
@@ -189,7 +189,7 @@
      (write-bytes! out #[1])
      (flush! out)
      ;; Done reading, and the socket must survive it.
-     (close-byte-input-port! in)
+     (close-input-port in)
      (def after
        (match (try (let () (write-bytes! out #[2 3]) (flush! out) "wrote")
                    #:catch (System.Exception))
@@ -230,7 +230,7 @@
 
 ;; Reads until end of input, checking every byte against the pattern it should
 ;; have. Answers how many arrived and how many were wrong.
-(: check-stream (-bjo-> ByteInputPort (Tuple int int)))
+(: check-stream (-bjo-> InputPort (Tuple int int)))
 (defbjo (check-stream in)
   (let go ((seen 0) (bad 0))
     (match (read-some in)
@@ -411,14 +411,14 @@
 ;; Text over a socket
 ;; ---------------------------------------------------------------------------
 ;;
-;; The whole stack composing: `byte->text-input-port` over a connection, and a
+;; The whole stack composing: `read-line` straight off a connection, and a
 ;; line protocol over that.
 
 (: line-server (-bjo-> Listener string))
 (defbjo (line-server l)
   (match (accept l)
     ((Tuple in out)
-     (def reader (byte->text-input-port in utf8))
+     (def reader in)
      (def writer (byte->text-output-port out utf8))
      (def asked (read-line reader))
      (writeln writer (str "hello, " asked))
@@ -435,7 +435,7 @@
      (def writer (byte->text-output-port out utf8))
      (writeln writer name)
      (flush-port writer)
-     (def reader (byte->text-input-port in utf8))
+     (def reader in)
      (def answer (read-line reader))
      (closing in out)
      answer)))
@@ -552,7 +552,7 @@
      (def who (match (peer-address in) ((Some a) a) (None "none")))
      (write-bytes! out #[1])
      (flush! out)
-     (close-byte-input-port! in)
+     (close-input-port in)
      (def after
        (match (try (let () (write-bytes! out #[2 3]) (flush! out) "wrote")
                    #:catch (System.Exception))

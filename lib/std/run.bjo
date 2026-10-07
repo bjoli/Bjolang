@@ -47,13 +47,13 @@
   (Process (: System.Diagnostics.Process))
   (ProcessStartInfo (: System.Diagnostics.ProcessStartInfo (-> ProcessStartInfo)))
   ;; Stream types for Process.
+  (TextReader (: System.IO.TextReader))
   (StreamReader (: System.IO.StreamReader))
   (StreamWriter (: System.IO.StreamWriter (-> string bool StreamWriter)
                    #:exceptions (System.IO.DirectoryNotFoundException
                                  System.UnauthorizedAccessException
                                  System.IO.IOException)))
-  ;; A `TextWriter` joined to a `TextReader`, which .NET has no public pair
-  ;; for. See `BjolangRuntime/BjoProcess.cs`.
+  ;; A `TextWriter` joined to an input port. See `BjolangRuntime/BjoProcess.cs`.
   (BjoPipe (: BjoPipe))
   (InvalidOperationException
     (: System.InvalidOperationException (-> string InvalidOperationException))))
@@ -84,6 +84,8 @@
   (process-stdin (: System.Diagnostics.Process.StandardInput (-> Process StreamWriter) #:get))
   (process-stdout (: System.Diagnostics.Process.StandardOutput (-> Process StreamReader) #:get))
   (process-stderr (: System.Diagnostics.Process.StandardError (-> Process StreamReader) #:get))
+  ;; A child's output as an input port, its characters as UTF-8 bytes.
+  (reader->port   (: Bjolang.Runtime.InputPorts.FromTextReader (-> TextReader InputPort)))
   ;; Killing something that has already exited is the ordinary case when a
   ;; later stage fails to start, so the raise is turned into a value here.
   (process-kill  (: System.Diagnostics.Process.Kill (-> Process void)
@@ -96,7 +98,7 @@
   (shared-writer (: System.IO.TextWriter.Synchronized (-> TextOutputPort TextOutputPort)))
 
   (make-pipe    (: BjoPipe.Create (-> BjoPipe)))
-  (pipe-input   (: BjoPipe.Reader (-> BjoPipe TextInputPort) #:get))
+  (pipe-input   (: BjoPipe.Reader (-> BjoPipe InputPort) #:get))
   (pipe-output  (: BjoPipe.Writer (-> BjoPipe TextOutputPort) #:get))
 
   ;; Not `double->string`, which is `.ToString()` and so follows the machine's
@@ -104,10 +106,10 @@
   (number->argument (: BjoProc.Argument (-> double string)))
 
   ;; Async pumps.
-  (copy-stream  (: BjoProc.PumpAsync (-> TextInputPort TextOutputPort void) #:async))
-  (copy-into    (: BjoProc.PumpIntoAsync (-> TextInputPort TextOutputPort void) #:async))
-  (read-lines   (: BjoProc.ReadLinesAsync (-> TextInputPort (Array string)) #:async))
-  (read-rest    (: System.IO.TextReader.ReadToEndAsync (-> TextInputPort string) #:async)))
+  (copy-stream  (: BjoProc.PumpAsync (-> InputPort TextOutputPort void) #:async))
+  (copy-into    (: BjoProc.PumpIntoAsync (-> InputPort TextOutputPort void) #:async))
+  (read-lines   (: BjoProc.ReadLinesAsync (-> InputPort (Array string)) #:async))
+  (read-rest    (: Bjolang.Runtime.InputPorts.ReadRestAsync (-> InputPort string) #:async)))
 
 ;; Nothing in the language builds an `Exception`, and every rejection below is
 ;; this module's own rather than .NET's, so they need a carrier.
@@ -126,7 +128,7 @@
 (type (: Cmd (Record (: program string) (: arguments (Vec string)))))
 
 ;; A filter stage.
-(type (: Filter (-bjo-> TextInputPort TextOutputPort Unit)))
+(type (: Filter (-bjo-> InputPort TextOutputPort Unit)))
 
 ;; Form elements.
 (type-rec
@@ -325,7 +327,7 @@
 (type
   (: Proc #:opaque
      (Record (: input (Option TextOutputPort))
-             (: output (Option TextInputPort))
+             (: output (Option InputPort))
              (: children (Vec Process))
              (: exits (Vec (Promise Unit)))
              (: waits (Vec (Promise Unit))))))
@@ -336,7 +338,7 @@
 (type
   (: Wired #:opaque
      (Record (: sink (Option TextOutputPort))
-             (: source (Option TextInputPort))
+             (: source (Option InputPort))
              (: children (Vec Process))
              (: exits (Vec (Promise Unit)))
              (: waits (Vec (Promise Unit))))))
@@ -365,12 +367,12 @@
     ((Err e) (Err e))
     ((Ok child)
      (Ok (Wired (sink (Some (cast TextOutputPort (process-stdin child))))
-                (source (Some (cast TextInputPort (process-stdout child))))
+                (source (Some (reader->port (cast TextReader (process-stdout child)))))
                 (children [child])
                 (exits [(bjo (awaiting-exit child))])
                 ;; Handle stderr copying.
                 (waits (match errors
-                         ((Some w) [(bjo (pump-into (cast TextInputPort (process-stderr child)) w))])
+                         ((Some w) [(bjo (pump-into (reader->port (cast TextReader (process-stderr child))) w))])
                          (None (vec-empty)))))))))
 
 ;; Two pipes, because a filter has no ends of its own: one for what is written
@@ -395,13 +397,13 @@
 
 ;; `PumpAsync` closes its target on exhaustion, which is the whole reason it is
 ;; a junction: an unclosed stdin leaves the process downstream waiting forever.
-(: pump (-> TextInputPort TextOutputPort Unit))
+(: pump (-> InputPort TextOutputPort Unit))
 (defbjo (pump from to)
   (copy-stream from to)
   unit)
 
 ;; The shared-destination pump. Closing is `close-when-all-done`'s job.
-(: pump-into (-> TextInputPort TextOutputPort Unit))
+(: pump-into (-> InputPort TextOutputPort Unit))
 (defbjo (pump-into from to)
   (copy-into from to)
   unit)
@@ -456,7 +458,7 @@
              errors))))))))
 
 ;; Creates stream junction.
-(: junction (-> (Option TextInputPort) (Option TextOutputPort) (Result Exception (Promise Unit))))
+(: junction (-> (Option InputPort) (Option TextOutputPort) (Result Exception (Promise Unit))))
 (defun (junction upstream downstream)
   (match upstream
     (None (Err (run-error
@@ -503,7 +505,7 @@
      (redirect-errors inner file))))
 
 ;; The file replaces the caller as the thing writing in, so `sink` goes away.
-(: redirect-input (-> Node (Option TextOutputPort) TextInputPort (Result Exception Wired)))
+(: redirect-input (-> Node (Option TextOutputPort) InputPort (Result Exception Wired)))
 (defun (redirect-input inner errors file)
   (def (Ok w) (wire inner errors) :propagate)
   (match (record-ref w sink)
@@ -555,7 +557,7 @@
 
 ;; Where to read the form's output, unless an `into-file` took it. It has to be
 ;; drained, or the last stage blocks writing and `wait` never returns.
-(: proc-output (-> Proc (Option TextInputPort)))
+(: proc-output (-> Proc (Option InputPort)))
 (defun (proc-output p) (record-ref p output))
 
 ;; ---------------------------------------------------------------------------
@@ -718,7 +720,7 @@
 ;; ===========================================================================
 
 ;; Reader streams items to channel.
-(type (: (Reader %a) (-bjo-> TextInputPort (Chan %a) Unit)))
+(type (: (Reader %a) (-bjo-> InputPort (Chan %a) Unit)))
 
 ;; Runs and streams to channel.
 (: run/channel (-> Form (Reader %a) (Result Exception (Tuple (Chan %a) Proc))))

@@ -1,30 +1,25 @@
 ;; `reader-read-char!`, the blocking char read.
 ;;
-;; A Bjolang char is a Unicode scalar and a port deals in UTF-16 code units, so
-;; a character above the BMP arrives as two reads. What is pinned here is that
-;; it comes back as one character, and that each of the three ways the text can
-;; be broken is refused by name rather than handing out half of one.
+;; A Bjolang char is a Unicode scalar and a port is UTF-8 bytes, so a read
+;; decodes one, two, three or four bytes into one character. What is pinned
+;; here is that a character comes back whole, that bytes that are not UTF-8
+;; read as U+FFFD rather than as half of something, and that the one way left
+;; to stand inside a character — a .NET `Read` on the port, which hands out
+;; UTF-16 units — is refused by name.
 
 (import (std prelude))
+(import (std ports))
 (import (std simpletest))
 
-;; A port over .NET text, which is UTF-16 and so can hold a lone surrogate: a
-;; Bjolang string cannot. The .NET string is kept as one by declaring it.
 (import/class
-  (ClrBuilder (: System.Text.StringBuilder))
-  (ClrReader (: System.IO.StringReader)))
+  (MemStream (: System.IO.MemoryStream (-> (Array byte) MemStream))))
 
-(import/extern
-  (clr-add-unit (: System.Text.StringBuilder.Append (-> ClrBuilder System.Char ClrBuilder)))
-  (clr-text (: System.Text.StringBuilder.ToString (-> ClrBuilder System.String))))
+;; A port over exactly these bytes.
+(: bytes-port (-> (Array byte) InputPort))
+(defun (bytes-port bytes)
+  (stream->input-port (cast Stream (MemStream. bytes))))
 
-(: units (-> (List int) TextInputPort))
-(defun (units codes)
-  (let ((sb (ClrBuilder.)))
-    (loop (:for c codes) (:do (ignore (clr-add-unit sb (cast System.Char c)))))
-    (cast TextInputPort (ClrReader. (clr-text sb)))))
-
-(: first-char-in (-> TextInputPort string))
+(: first-char-in (-> InputPort string))
 (defun (first-char-in p)
   (match (try (reader-read-char! p) #:catch (System.Exception))
     ((Ok c) (str "read " (int->string (char->integer c))))
@@ -33,7 +28,7 @@
 (: first-char (-> string string))
 (defun (first-char s) (first-char-in (open-input-string s)))
 
-;; U+1F600, the pair 0xD83D 0xDE00.
+;; U+1F600, four bytes of UTF-8.
 (: emoji string)
 (def emoji (list->string (list (integer->char 128512))))
 
@@ -41,43 +36,40 @@
   ;; --- what it reads -------------------------------------------------------
   (expect "an ASCII character" (first-char "abc") "read 97")
   ;; The lexer has no \u escape, so é is spelled by its codepoint.
-  (expect "a BMP character above ASCII"
+  (expect "a two-byte character"
           (first-char (list->string (list (integer->char 233) #\x)))
           "read 233")
   ;; Four bytes in, one scalar out.
   (expect "an astral character is one char" (first-char emoji) "read 128512")
   (expect "and it is spelled as four bytes" (string-length emoji) 4)
 
-  ;; --- what it refuses -----------------------------------------------------
+  ;; --- what it is given that is not UTF-8 ----------------------------------
   (expect "the empty port"
           (first-char "")
           "read-char: the port is at end of input. Guard with (port-eof? p), or use read-char/opt.")
 
-  ;; A low surrogate with nothing before it. Refused without reading a second
-  ;; unit, so the character after it is still there for the next read.
-  (expect "a lone low surrogate"
-          (first-char-in (units (list 56320 65)))
-          "read-char: the port holds an unpaired low surrogate, which is not a character.")
+  ;; A continuation byte with nothing before it is a replacement, and costs
+  ;; one byte, so 'A' is the next character.
+  (let ((p (bytes-port #[128 65])))
+    (expect "a lone continuation byte" (first-char-in p) "read 65533")
+    (expect "only that byte was consumed" (first-char-in p) "read 65"))
 
-  ;; A high surrogate with the wrong thing after it.
-  (expect "a high surrogate followed by a letter"
-          (first-char-in (units (list 55296 65)))
-          "read-char: the port holds a high surrogate with no low surrogate after it, which is not a character.")
+  ;; A four-byte lead with two of its three continuations, then a letter.
+  (let ((p (bytes-port #[240 159 152 65])))
+    (expect "a cut-short character is one replacement" (first-char-in p) "read 65533")
+    (expect "and the letter after it is intact" (first-char-in p) "read 65"))
 
-  ;; A high surrogate with nothing after it at all.
-  (expect "a high surrogate at the end of the port"
-          (first-char-in (units (list 55296)))
-          "read-char: the port holds a high surrogate with no low surrogate after it, which is not a character.")
-
-  ;; --- the port is left where it should be ---------------------------------
-  ;; A lone low surrogate costs one unit, so 'A' is the next character.
-  (let ((p (units (list 56320 65))))
-    (match (try (reader-read-char! p) #:catch (System.Exception))
-      ((Ok _) (fail "a lone low surrogate was accepted"))
-      ((Err _)
-       (expect "only the surrogate was consumed"
-               (int->string (char->integer (reader-read-char! p)))
-               "65"))))
+  ;; --- half a character, from .NET ------------------------------------------
+  ;;
+  ;; A port is also a `TextReader`, whose `Read` hands out UTF-16 units: an
+  ;; astral character is two of them. After the first, the port stands inside
+  ;; a character, and `read-char` refuses rather than inventing one.
+  (let ((p (open-input-string (str emoji "A"))))
+    (expect "a .NET read takes the high half" (.Read p) 55357)
+    (expect "read-char then refuses the other half"
+            (first-char-in p)
+            "read-char: the port holds an unpaired low surrogate, which is not a character.")
+    (expect "and moves past it" (first-char-in p) "read 65"))
 
   ;; The colour-aware `read-char` is the same reader underneath.
   (expect "read-char agrees on an astral character"

@@ -22,7 +22,8 @@
   (NameValues     (: System.Collections.Specialized.NameValueCollection))
   (Stream         (: System.IO.Stream))
   (Writer         (: System.IO.StreamWriter (-> Stream Writer)))
-  (Reader         (: System.IO.StreamReader (-> Stream Reader)))
+  ;; An input port over a request's stream, registered on no scope.
+  (StreamPort     (: Bjolang.Runtime.BjoInputPort (-> Stream StreamPort)))
   (Object         (: System.Object)))
 
 (import/extern
@@ -56,9 +57,15 @@
 (defun (header-or-empty req name)
   (name-value (request-headers req) name))
 
+;; A string as its characters' code points, so a test can say exactly which
+;; characters, invisible ones included, a body read as.
+(: codes (-> string string))
+(defun (codes s)
+  (string-join (list->vec (list-map (fun (c) (int->string (char->integer c))) (string->list s))) " "))
+
 (: request-body (-> ServerRequest string))
 (defun (request-body req)
-  (read-all (cast TextInputPort (Reader. (request-stream req)))))
+  (read-all (cast InputPort (StreamPort. (request-stream req)))))
 
 
 ;; ---------------------------------------------------------------------------
@@ -244,9 +251,9 @@
 
        ;; --- The declared charset decides ------------------------------------
        ;;
-       ;; By the rule `byte->text-input-port` follows: the charset the server
-       ;; named is used, a UTF-8 mark is skipped, and a mark that contradicts
-       ;; the declaration is refused rather than obeyed.
+       ;; The charset the server named is used, and a byte order mark is a
+       ;; character like any other: it neither is skipped nor overrides the
+       ;; declaration.
        (match (fetch (http-get (str base "/latin1")))
          ((Err e) (fail "the Latin-1 GET failed"))
          ((Ok r)
@@ -256,19 +263,17 @@
        (match (fetch (http-get (str base "/utf8-bom")))
          ((Err e) (fail "the UTF-8 GET failed"))
          ((Ok r)
-          (expect "a UTF-8 body skips its mark" (response-text r) "grüße")
+          (expect "a UTF-8 body keeps its mark as U+FEFF"
+                  (codes (response-text r)) "65279 103 114 252 223 101")
           (response-close r)))
 
+       ;; Read as the UTF-8 the server said it was: 0xFF and 0xFE cannot start
+       ;; a character, so each is a replacement, and the UTF-16 NULs are NULs.
        (match (fetch (http-get (str base "/utf16-as-utf8")))
          ((Err e) (fail "the UTF-16 GET failed"))
          ((Ok r)
-          (expect "a UTF-16 mark in a body declared UTF-8 is refused"
-                  (match (try (response-text r) #:catch (System.Exception))
-                    ((Ok text) (str "read [" text "]"))
-                    ((Err e) (if (string-contains? (.-Message e) "UTF-16 (little-endian) byte order mark")
-                                 "refused"
-                                 (.-Message e))))
-                  "refused")
+          (expect "a UTF-16 mark does not override a UTF-8 declaration"
+                  (codes (response-text r)) "65533 65533 104 0 105 0")
           (response-close r)))
 
        ;; --- with-response ---------------------------------------------------

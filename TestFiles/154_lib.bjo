@@ -14,10 +14,10 @@
 ;; inference derives that `PortEof` and `PortEofAsync` are the same question
 ;; asked of the same object in two calling conventions.
 (import/extern
-  (clr-eof       (: Bjolang.Runtime.BjoPort.PortEof       (-> TextInputPort bool)))
-  (clr-eof-await (: Bjolang.Runtime.BjoPort.PortEofAsync  (-> TextInputPort bool) #:async))
-  (clr-unit      (: Bjolang.Runtime.BjoPort.ReadUnit      (-> TextInputPort int)))
-  (clr-unit-await(: Bjolang.Runtime.BjoPort.ReadUnitAsync (-> TextInputPort int) #:async)))
+  (clr-eof       (: Bjolang.Runtime.InputPorts.PortEof       (-> InputPort bool)))
+  (clr-eof-await (: Bjolang.Runtime.InputPorts.PortEofAsync  (-> InputPort bool) #:async))
+  (clr-unit      (: Bjolang.Runtime.InputPorts.ReadUnit      (-> InputPort int)))
+  (clr-unit-await(: Bjolang.Runtime.InputPorts.ReadUnitAsync (-> InputPort int) #:async)))
 
 ;; Whether the port is finished.
 ;;
@@ -26,14 +26,14 @@
 ;; different .NET methods do when they fail — so it is a promise the docstring
 ;; makes and the author keeps. A pair where one returned a value and the other
 ;; threw would make the shared name a lie.
-(: port-finished? (-> TextInputPort bool))
+(: port-finished? (-> InputPort bool))
 (defbjouble (port-finished? p)
   (#:sync (clr-eof p))
   (#:bjo  (clr-eof-await p)))
 
 ;; The next UTF-16 code unit, or -1. Same promise: -1 at end of input, from
 ;; both halves, never an exception.
-(: port-next-char (-> TextInputPort int))
+(: port-next-char (-> InputPort int))
 (defbjouble (port-next-char p)
   (#:sync (clr-unit p))
   (#:bjo  (clr-unit-await p)))

@@ -27,8 +27,7 @@ public static class Program
         FiberTests.RunAll();
         SpawnBatchTests.RunAll();
         BytePortTests.RunAll();
-        TextPortTests.RunAll();
-        Utf8PortTests.RunAll();
+        InputPortTextTests.RunAll();
         NetTests.RunAll();
 
         return Harness.Report();

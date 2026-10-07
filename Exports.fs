@@ -402,7 +402,7 @@ let metadata
     /// signature off — so it travels as a `(type ...)` alias pointing straight
     /// at the .NET name. Pointing it at the alias instead would export a name
     /// the importing module cannot resolve, which is the same reason
-    /// `std/prelude` publishes `TextInputPort` as `System.IO.TextReader`.
+    /// `std/prelude` publishes `InputPort` as `Bjolang.Runtime.BjoInputPort`.
     ///
     /// A generic import keeps its parameters, so `(Set %a)` arrives as a type
     /// constructor of arity one rather than as a type.

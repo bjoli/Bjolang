@@ -11,7 +11,7 @@
 
 (import (std prelude))
 
-(: takes-suspending (-> (-bjo-> TextInputPort int) TextInputPort int))
+(: takes-suspending (-> (-bjo-> InputPort int) InputPort int))
 (defbjo (takes-suspending f p) (f p))
 
 ;; --- Lifted ------------------------------------------------------------------
@@ -20,11 +20,11 @@
 ;; it and never was. The delegate is bridged instead: cast to its own type,
 ;; which is what picks the overload family, then wrapped.
 
-;; EXPECT-CS: Colour.Lift\(\(\(Func<System.IO.TextReader, int>\)\(\(fa0\) => .*measure\(fa0\)\)\)\)
-(: measure (-> TextInputPort int))
+;; EXPECT-CS: Colour.Lift\(\(\(Func<Bjolang.Runtime.BjoInputPort, int>\)\(\(fa0\) => .*measure\(fa0\)\)\)\)
+(: measure (-> InputPort int))
 (defun (measure p) 0)
 
-(: lifts (-> TextInputPort int))
+(: lifts (-> InputPort int))
 (defbjo (lifts p) (takes-suspending measure p))
 
 ;; --- Not lifted: a defun that has a copy -------------------------------------
@@ -37,8 +37,8 @@
 ;; So the two mechanisms do not compete. Monomorphisation answers first, and
 ;; lifting is what happens when there is no second body to answer with.
 
-;; EXPECT-CS: takessubsuspending\(\(\(Func<System.IO.TextReader, Bjoml.Fiber<int>>\)\(\(fa0\) => .*drain__bjo\(fa0\)\)\)
-(: drain (-> TextInputPort int))
+;; EXPECT-CS: takessubsuspending\(\(\(Func<Bjolang.Runtime.BjoInputPort, Bjoml.Fiber<int>>\)\(\(fa0\) => .*drain__bjo\(fa0\)\)\)
+(: drain (-> InputPort int))
 (defun (drain p)
   (let loop ((n 0))
     (if (port-eof? p)
@@ -47,16 +47,16 @@
           (ignore (read-line p))
           (loop (+ n 1))))))
 
-(: keeps-the-copy (-> TextInputPort int))
+(: keeps-the-copy (-> InputPort int))
 (defbjo (keeps-the-copy p) (takes-suspending drain p))
 
 ;; --- Not lifted: a bjoroutine ------------------------------------------------
 ;;
 ;; Already the right colour, so it is passed as it is.
 
-;; EXPECT-CS: takessubsuspending\(\(\(Func<System.IO.TextReader, Bjoml.Fiber<int>>\)\(\(fa0\) => .*countsubasync\(fa0\)\)\)
-(: count-async (-bjo-> TextInputPort int))
+;; EXPECT-CS: takessubsuspending\(\(\(Func<Bjolang.Runtime.BjoInputPort, Bjoml.Fiber<int>>\)\(\(fa0\) => .*countsubasync\(fa0\)\)\)
+(: count-async (-bjo-> InputPort int))
 (defbjo (count-async p) 1)
 
-(: passes-a-bjoroutine (-> TextInputPort int))
+(: passes-a-bjoroutine (-> InputPort int))
 (defbjo (passes-a-bjoroutine p) (takes-suspending count-async p))

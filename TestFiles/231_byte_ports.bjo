@@ -10,12 +10,12 @@
 ;; in such object code or executable form without complying with the source code
 ;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
 
-;; Byte ports: the layer under `TextInputPort`.
+;; Byte reads on an input port, and byte output ports.
 ;;
 ;; The property the whole design turns on is the one in the middle of this file
 ;; — a branch of a `choose` that loses consumes nothing. Everything else is
 ;; either ordinary reading and writing, or a consequence of that property:
-;; `peek` is a read with the cursor move left out, and `byte->text-input-port`
+;; `peek` is a read with the cursor move left out, and a text read after it
 ;; works precisely because the bytes a peek looked at are still in the buffer.
 ;;
 ;; Almost every case is over `byte-pipe`, which is a port pair with nothing
@@ -33,7 +33,7 @@
   (int->byte (: System.Convert.ToByte  (-> int byte)))
   (byte->int (: System.Convert.ToInt32 (-> byte int))))
 
-;; A `Stream` somebody else owns, for `stream->byte-input-port`. The byte[]
+;; A `Stream` somebody else owns, for `stream->input-port`. The byte[]
 ;; constructor gives a stream over exactly that array, so a write through a port
 ;; lands somewhere this file can look at afterwards.
 (import/class
@@ -72,7 +72,7 @@
 
 ;; Everything left in the port, as text. Ends at `None`, so the writing side has
 ;; to have been shut down or closed.
-(: drain-bytes (-> ByteInputPort string))
+(: drain-bytes (-> InputPort string))
 (defun (drain-bytes p)
   (let loop ((acc ""))
     (match (read-some p)
@@ -177,7 +177,7 @@
 ;; The two fibers only ever write to *distinct* slots, because a value appears
 ;; once in the stream — which is the property under test, stated as the reason
 ;; the test itself is safe.
-(: tally-reader (-bjo-> ByteInputPort (Array int) int))
+(: tally-reader (-bjo-> InputPort (Array int) int))
 (defbjo (tally-reader p seen)
   (let loop ((n 0))
     (match (read-bytes p 1)
@@ -208,7 +208,7 @@
           (flush! out)
           (loop (+ i 1))))))
 
-(: wait-for-eof (-bjo-> ByteInputPort int))
+(: wait-for-eof (-bjo-> InputPort int))
 (defbjo (wait-for-eof in)
   (sync (eof-evt in))
   1)
@@ -440,7 +440,7 @@
              (- (scope-owned-count (current-scope)) owned-before) 0))
     ((Err e) (println "FAILURE: could not open the byte file for writing")))
 
-  (match (open-byte-input-file fiber-path)
+  (match (open-input-file fiber-path)
     ((Ok r) (with-open ((i r))
               (expect "and the file has everything"
                       (shown (read-bytes i 6)) "104.105.255.128.0.200.")))
@@ -455,7 +455,7 @@
     ((Ok w) (with-open ((o w)) (write-bytes! o raw)))
     ((Err e) (println "FAILURE: could not open the byte file for writing")))
 
-  (match (open-byte-input-file path)
+  (match (open-input-file path)
     ((Ok r) (with-open ((i r))
               (expect "a file round trip, bytes that are not UTF-8 included"
                       (shown (read-bytes i 6)) "104.105.255.128.0.200.")))
@@ -463,7 +463,7 @@
 
   ;; The failure is a value, exactly as `open-input-file`'s is.
   (expect "a missing file is Err"
-          (match (open-byte-input-file "no_such_byte_file_here.bin")
+          (match (open-input-file "no_such_byte_file_here.bin")
             ((Ok p) "opened")
             ((Err (:is System.IO.FileNotFoundException _)) "not-found")
             ((Err e) "other"))
@@ -477,29 +477,29 @@
       ((Ok r) (with-open ((i r)) (vec-fold (fun (l acc) (str acc l "|")) "" (port->lines i))))
       ((Err e) "FAILURE")))
 
-  (def through-bytes
-    (match (open-byte-input-file text-path)
+  ;; Bytes first, then lines, from the same port: one port, two kinds of read.
+  (def after-bytes
+    (match (open-input-file text-path)
       ((Ok r) (with-open ((i r))
-                (vec-fold (fun (l acc) (str acc l "|")) ""
-                          (port->lines (byte->text-input-port i utf8)))))
+                (def two (shown (read-bytes i 2)))
+                (str two " " (vec-fold (fun (l acc) (str acc l "|")) "" (port->lines i)))))
       ((Err e) "FAILURE")))
 
-  (expect "text over bytes agrees with the old path" through-bytes the-old-way)
-  (expect "...and that is what it says it is" through-bytes "alpha|beta|gamma|")
+  (expect "lines off a file port" the-old-way "alpha|beta|gamma|")
+  (expect "lines after bytes, on the same port" after-bytes "97.108. pha|beta|gamma|")
 
   ;; =========================================================================
-  ;; Peek, then convert, loses nothing
+  ;; Peek, then read text, loses nothing
   ;; =========================================================================
   ;;
-  ;; The case this design exists for, and the one that fails against a text
-  ;; layer that reaches past the port to its `Stream`: the sniffed bytes are
-  ;; still in the buffer, and the converted reader serves the buffer first.
-  (match (open-byte-input-file text-path)
+  ;; The case this design exists for: sniff the first bytes, then read lines.
+  ;; The sniffed bytes are still in the buffer, and a line is read from the
+  ;; buffer first.
+  (match (open-input-file text-path)
     ((Ok r) (with-open ((i r))
               (expect "sniff the first bytes" (shown (peek-bytes i 0 2)) "97.108.")
-              (def t (byte->text-input-port i utf8))
-              (expect "the line still includes them" (read-line t) "alpha")
-              (expect "and the reader carries on" (read-line t) "beta")))
+              (expect "the line still includes them" (read-line i) "alpha")
+              (expect "and the reader carries on" (read-line i) "beta")))
     ((Err e) (println "FAILURE: could not reopen the text file")))
 
   ;; The other direction: characters into a byte port.
@@ -515,8 +515,8 @@
     ((Err e) (println "FAILURE: could not open the byte file for writing")))
   (expect "a text port over a byte port" (file-read-text out-path) "hello world")
 
-  ;; `utf8` writes no byte order mark, and reading with it skips one: 239 187
-  ;; 191 is U+FEFF in UTF-8.
+  ;; `utf8` writes no byte order mark, and a port reads one as the character
+  ;; it is: 239 187 191 is U+FEFF in UTF-8.
   (match (byte-pipe)
     ((Tuple in out)
      (def t (byte->text-output-port out utf8))
@@ -529,8 +529,8 @@
     ((Tuple in out)
      (write-bytes! out #[239 187 191 104 105])
      (close-byte-output-port! out)
-     (expect "reading utf8 skips a byte order mark"
-             (read-line (byte->text-input-port in utf8)) "hi")))
+     (expect "a byte order mark is a character" (char->int (read-char in)) 65279)
+     (expect "and the text follows it" (read-line in) "hi")))
 
   ;; =========================================================================
   ;; A port over a stream somebody else handed over
@@ -539,7 +539,7 @@
   ;; The pair `(std net)` and a web framework reach for, and the only way into
   ;; this module from outside it. Owned like a file, because a `Stream` is a
   ;; handle in every case that matters.
-  (with-open ((borrowed (stream->byte-input-port (cast Stream (MemStream. raw)))))
+  (with-open ((borrowed (stream->input-port (cast Stream (MemStream. raw)))))
     (expect "a port over a borrowed stream reads it"
             (shown (read-bytes borrowed 6)) "104.105.255.128.0.200."))
 
@@ -578,7 +578,7 @@
 
   (match (byte-pipe)
     ((Tuple in out)
-     (close-byte-input-port! in)
+     (close-input-port in)
      (expect "reading a closed port is refused"
              (match (try (read-some in) #:catch (System.ObjectDisposedException))
                ((Ok _) "read") ((Err e) "refused"))

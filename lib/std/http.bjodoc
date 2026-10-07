@@ -49,7 +49,7 @@
 
     There is no C# in this module: @code{System.Net.Http} is reached with
     @code{import/extern} and the @code{#:async} machinery, and the response
-    body is an ordinary @code{TextInputPort}.
+    body is an ordinary @code{InputPort}.
 
     Two things are deliberately not what .NET does. A status code is a
     value, never an exception: 404 is an @code{Ok} holding a 404. And
@@ -343,7 +343,7 @@
 (:doc response-port
   (summary "The body as a port, to read as it arrives.")
   (arg r "The response.")
-  (returns "A @code{TextInputPort} over the body.")
+  (returns "A @code{InputPort} over the body.")
   (see response-text)
   (reference """
     So @code{read-line}, @code{port->chan} and @code{read-json} all work on
@@ -357,11 +357,10 @@
     is assumed when it names none, names one that is not installed, or
     names nonsense.
 
-    The declared charset is the one used, by the rule
-    @code{byte->text-input-port} follows: a byte order mark does not
-    override it. A UTF-8 body skips a UTF-8 mark, and a UTF-16 or UTF-32
-    one makes the first read raise, since the body is then not what the
-    server said it was.
+    The declared charset is the one used, and a byte order mark is not
+    treated specially. A UTF-8 body is the port's bytes as they arrived;
+    a body in another charset is transcoded to UTF-8 on the way in, as
+    @code{reencode-input-port} does.
     """))
 
 (:doc response-close

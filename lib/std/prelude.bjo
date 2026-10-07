@@ -20,7 +20,7 @@
   ArraySlice ReverseArraySlice VecSlice ReverseVecSlice
   VecWalkCursor VecBackCursor StringWalk ListTails PortReads UpFrom DownFrom
   Listing Vecing Mapping Stringing Summing Counting Folding
-  TextInputPort TextOutputPort Exception
+  InputPort TextOutputPort Exception
 
   ;; Iterable
   iterable-start iterable-done? iterable-current iterable-next
@@ -1671,15 +1671,12 @@
 ;; ---------------------------------------------------------------------------
 
 (import/class
-  ;; The port types themselves: abstract, so no constructor.
-  (TextReader (: System.IO.TextReader))
+  ;; The output port type itself: abstract, so no constructor.
   (TextWriter (: System.IO.TextWriter))
 
-  ;; Concrete readers and writers. The file ones are built over a `Stream`,
-  ;; which is what the `FS` effect's openers answer.
+  ;; Concrete writers. The file ones are built over a `Stream`, which is what
+  ;; the `FS` effect's openers answer.
   (Stream (: System.IO.Stream))
-  (StreamReader (: System.IO.StreamReader (-> Stream StreamReader)))
-  (StringReader (: System.IO.StringReader (-> string StringReader)))
   (StreamWriter (: System.IO.StreamWriter (-> Stream StreamWriter)))
   ;; `IOException` covers `CreateNew` finding the file already there, as well
   ;; as the not-found exceptions below it.
@@ -1692,16 +1689,18 @@
   ;; StringWriter.
   (StringWriter (: System.IO.StringWriter (-> StringWriter)))
 
-  ;; Buffered pair.
-  (BjoPort (: Bjolang.Runtime.BjoPort (-> TextReader BjoPort)))
-  (BjoUtf8Port (: Bjolang.Runtime.BjoUtf8Port (-> Stream BjoUtf8Port)))
+  ;; The buffered writer.
   (BjoWriter (: Bjolang.Runtime.BjoWriter (-> TextWriter BjoWriter)))
 
   (Exception (: System.Exception)))
 
 ;; Port types.
+;;
+;; One input port type, as in Racket: a port is bytes, and the text reads
+;; decode UTF-8 from them, so byte and text reads mix on one port. It is also
+;; a `System.IO.TextReader`, so a .NET API that takes one takes a port.
 (type
-  (: TextInputPort System.IO.TextReader)
+  (: InputPort Bjolang.Runtime.BjoInputPort)
   (: TextOutputPort System.IO.TextWriter))
 
 ;; --- Opening ---
@@ -1714,23 +1713,20 @@
 ;; put the port in fails without having opened anything.
 
 (import/extern
-  (own-port-in  (: BjolangRuntime.OwnReader  (-> BjoPort BjoPort)))
-  (own-utf8-port-in (: BjolangRuntime.OwnUtf8Reader (-> BjoUtf8Port BjoUtf8Port)))
+  ;; A port over a stream, registered on the ambient scope.
+  (owned-port-over (: Bjolang.Runtime.BytePorts.FromStream (-> Stream InputPort)))
+  (string-port  (: Bjolang.Runtime.InputPorts.FromString (-> string InputPort)))
   (own-port-out (: BjolangRuntime.OwnWriter  (-> BjoWriter BjoWriter)))
-  (close-in     (: BjolangRuntime.CloseInput  (-> TextInputPort void)))
+  (close-in     (: BjolangRuntime.CloseInput  (-> InputPort void)))
   (close-out    (: BjolangRuntime.CloseOutput (-> TextOutputPort void))))
 
-;; A text port over a stream an opener answered, registered on the ambient
+;; An input port over a stream an opener answered, registered on the ambient
 ;; scope. Whatever the stream is - a file, or a `MemoryStream` a fake
 ;; filesystem made - the port is owned the same way.
-;;
-;; The port reads UTF-8 itself rather than through a `StreamReader`, so a line
-;; reaches the program as the bytes the file held, without a round trip
-;; through UTF-16.
-(: stream->input-port (-> (Result Exception Stream) (Result Exception TextInputPort)))
+(: stream->input-port (-> (Result Exception Stream) (Result Exception InputPort)))
 (defun (stream->input-port opened)
   (match opened
-    ((Ok s) (Ok (cast TextInputPort (own-utf8-port-in (BjoUtf8Port. s)))))
+    ((Ok s) (Ok (owned-port-over s)))
     ((Err e) (Err e))))
 
 (: stream->output-port (-> (Result Exception Stream) (Result Exception TextOutputPort)))
@@ -1739,10 +1735,11 @@
     ((Ok s) (Ok (cast TextOutputPort (own-port-out (BjoWriter. (cast TextOutputPort (StreamWriter. s)))))))
     ((Err e) (Err e))))
 
-;; Open input string. Memory only, so nothing registers it.
-(: open-input-string (-> string TextInputPort))
+;; Open input string: a port over the string's own UTF-8 bytes, shared rather
+;; than copied. Memory only, so nothing registers it.
+(: open-input-string (-> string InputPort))
 (defun (open-input-string contents)
-  (cast TextInputPort (StringReader. contents)))
+  (string-port contents))
 
 ;; Open output string. Memory only, so nothing registers it.
 (: open-output-string (-> TextOutputPort))
@@ -1759,7 +1756,7 @@
 ;; On a port nothing owns this disposes, which is what a string port wants. On
 ;; one of the standard ports it flushes and stops: nothing in the language
 ;; should be able to take stdout away from the rest of the program.
-(: close-input-port (-> TextInputPort void))
+(: close-input-port (-> InputPort void))
 (defun (close-input-port p) (close-in p))
 
 (: close-output-port (-> TextOutputPort void))
@@ -1957,7 +1954,7 @@
 ;; The scope is read before the perform, so a program with nowhere to put the
 ;; port fails without having opened anything.
 
-(: open-input-file (-> string (Result Exception TextInputPort)))
+(: open-input-file (-> string (Result Exception InputPort)))
 (defun (open-input-file path)
   (ignore (current-scope))
   (stream->input-port (open-read-stream path)))
@@ -1970,7 +1967,7 @@
   (stream->output-port (open-write-stream path mode)))
 
 ;; The same, past whatever handler is installed. The `/raw` says so.
-(: open-input-file/raw (-> string (Result Exception TextInputPort)))
+(: open-input-file/raw (-> string (Result Exception InputPort)))
 (defun (open-input-file/raw path)
   (ignore (current-scope))
   (stream->input-port (open-read-stream/raw path)))
@@ -1989,7 +1986,7 @@
 ;;
 ;; `proc` is `-?->`, so it may be either colour and both copies are generated.
 ;; A suspending body gets the same closing.
-(: call-with-input-file (-> string (-?-> TextInputPort %a) (Result Exception %a)))
+(: call-with-input-file (-> string (-?-> InputPort %a) (Result Exception %a)))
 (defun (call-with-input-file path proc)
   (match (open-input-file path)
     ((Ok p) (with-open ((it p)) (Ok (proc it))))
@@ -2137,7 +2134,7 @@
 ;; walk ends - at the end of the file, or when the walker stops early. A missing
 ;; file raises on the first pull; `(std ports)`' `file->seq` reports it at the
 ;; call instead.
-(: file-read/seq #:sync (-> (-> TextInputPort %a) string (Seq %a)))
+(: file-read/seq #:sync (-> (-> InputPort %a) string (Seq %a)))
 (defun (file-read/seq reader path)
   (seq
     (def file (raise-err (open-input-file path)))
@@ -2198,56 +2195,56 @@
 ;; --- Input ---
 ;; These are the leaves of our IO. The bottom calls, so to say. 
 (import/extern
-  (clr-eof        (: Bjolang.Runtime.BjoPort.PortEof            (-> TextInputPort bool)   #:blocking))
-  (clr-eof-await  (: Bjolang.Runtime.BjoPort.PortEofAsync       (-> TextInputPort bool)   #:async))
-  (clr-line       (: Bjolang.Runtime.BjoPort.ReadLineOrThrow    (-> TextInputPort string) #:blocking))
-  (clr-line-await (: Bjolang.Runtime.BjoPort.ReadLineOrThrowAsync (-> TextInputPort string) #:async))
-  (clr-char       (: Bjolang.Runtime.BjoPort.ReadCharOrThrow    (-> TextInputPort char)   #:blocking))
-  (clr-char-await (: Bjolang.Runtime.BjoPort.ReadCharOrThrowAsync (-> TextInputPort char) #:async))
-  (clr-rest       (: Bjolang.Runtime.BjoPort.ReadRest           (-> TextInputPort string) #:blocking))
-  (clr-rest-await (: Bjolang.Runtime.BjoPort.ReadRestAsync      (-> TextInputPort string) #:async))
-  (clr-line-opt       (: Bjolang.Runtime.BjoPort.ReadLineOpt      (-> TextInputPort (Option string)) #:blocking))
-  (clr-line-opt-await (: Bjolang.Runtime.BjoPort.ReadLineOptAsync (-> TextInputPort (Option string)) #:async))
-  (clr-char-opt       (: Bjolang.Runtime.BjoPort.ReadCharOpt      (-> TextInputPort (Option char)) #:blocking))
-  (clr-char-opt-await (: Bjolang.Runtime.BjoPort.ReadCharOptAsync (-> TextInputPort (Option char)) #:async)))
+  (clr-eof        (: Bjolang.Runtime.InputPorts.PortEof            (-> InputPort bool)   #:blocking))
+  (clr-eof-await  (: Bjolang.Runtime.InputPorts.PortEofAsync       (-> InputPort bool)   #:async))
+  (clr-line       (: Bjolang.Runtime.InputPorts.ReadLineOrThrow    (-> InputPort string) #:blocking))
+  (clr-line-await (: Bjolang.Runtime.InputPorts.ReadLineOrThrowAsync (-> InputPort string) #:async))
+  (clr-char       (: Bjolang.Runtime.InputPorts.ReadCharOrThrow    (-> InputPort char)   #:blocking))
+  (clr-char-await (: Bjolang.Runtime.InputPorts.ReadCharOrThrowAsync (-> InputPort char) #:async))
+  (clr-rest       (: Bjolang.Runtime.InputPorts.ReadRest           (-> InputPort string) #:blocking))
+  (clr-rest-await (: Bjolang.Runtime.InputPorts.ReadRestAsync      (-> InputPort string) #:async))
+  (clr-line-opt       (: Bjolang.Runtime.InputPorts.ReadLineOpt      (-> InputPort (Option string)) #:blocking))
+  (clr-line-opt-await (: Bjolang.Runtime.InputPorts.ReadLineOptAsync (-> InputPort (Option string)) #:async))
+  (clr-char-opt       (: Bjolang.Runtime.InputPorts.ReadCharOpt      (-> InputPort (Option char)) #:blocking))
+  (clr-char-opt-await (: Bjolang.Runtime.InputPorts.ReadCharOptAsync (-> InputPort (Option char)) #:async)))
 
 ;; Port eof.
-(: port-eof? (-> TextInputPort bool))
+(: port-eof? (-> InputPort bool))
 (defbjouble (port-eof? p)
   (#:sync (clr-eof p))
   (#:bjo  (clr-eof-await p)))
 
-(: read-line (-> TextInputPort string))
+(: read-line (-> InputPort string))
 (defbjouble (read-line p)
   (#:sync (clr-line p))
   (#:bjo  (clr-line-await p)))
 
 ;; One read, not `port-eof?` and then `read-line`: between those two another
 ;; fiber reading the same port can take the last line.
-(: read-line/opt (-> TextInputPort (Option string)))
+(: read-line/opt (-> InputPort (Option string)))
 (defbjouble (read-line/opt p)
   (#:sync (clr-line-opt p))
   (#:bjo  (clr-line-opt-await p)))
 
-(: read-char (-> TextInputPort char))
+(: read-char (-> InputPort char))
 (defbjouble (read-char p)
   (#:sync (clr-char p))
   (#:bjo  (clr-char-await p)))
 
 ;; One read, for the reason `read-line/opt` is.
-(: read-char/opt (-> TextInputPort (Option char)))
+(: read-char/opt (-> InputPort (Option char)))
 (defbjouble (read-char/opt p)
   (#:sync (clr-char-opt p))
   (#:bjo  (clr-char-opt-await p)))
 
 ;; Drains a port
-(: read-all (-> TextInputPort string))
+(: read-all (-> InputPort string))
 (defbjouble (read-all p)
   (#:sync (clr-rest p))
   (#:bjo  (clr-rest-await p)))
 
 ;; Port fold.
-(: port-fold (-> (-?-> TextInputPort %a %a) %a TextInputPort %a))
+(: port-fold (-> (-?-> InputPort %a %a) %a InputPort %a))
 (defun (port-fold f init port)
   (let loop ((acc init))
     (if (port-eof? port)
@@ -2413,7 +2410,7 @@
 ;; here: the walk of a whole collection is what the collection itself is for.
 ;;
 ;; Here rather than beside those implementations because `in-port` names
-;; `TextInputPort`, which the section above introduces.
+;; `InputPort`, which the section above introduces.
 (include "iterators.protobjo")
 
 

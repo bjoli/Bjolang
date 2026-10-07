@@ -24,7 +24,7 @@
 ;; compiler declining to generate a body. Generating it is the fix, and the
 ;; silence is the fix landing.
 
-(: drain (-> TextInputPort int))
+(: drain (-> InputPort int))
 (defun (drain p)
   (let loop ((n 0))
     (if (port-eof? p)
@@ -33,7 +33,7 @@
           (ignore (read-line p))
           (loop (+ n 1))))))
 
-(: worker (-bjo-> TextInputPort int))
+(: worker (-bjo-> InputPort int))
 (defbjo (worker p)
   (drain p))
 
@@ -51,7 +51,7 @@
 ;; EXPECT-WARNING: lazily -> drain -> port-eof?
 ;; EXPECT-WARNING: parks the thread it runs on
 
-(: lazily (-bjo-> TextInputPort (Seq int)))
+(: lazily (-bjo-> InputPort (Seq int)))
 (defbjo (lazily p)
   (seq (yield (drain p))))
 
@@ -74,7 +74,7 @@
 ;; EXPECT-WARNING: lazy-drain -> drain -> port-eof?
 ;; EXPECT-WARNING: write the suspending version by hand with (defbjo ...)
 
-(: lazy-drain (-> TextInputPort (Seq int)))
+(: lazy-drain (-> InputPort (Seq int)))
 (defun (lazy-drain p)
   (ignore (drain p))
   (seq (yield (drain p))))
@@ -127,7 +127,7 @@
 ;; This is the case the lint has to stay quiet about. It is the advice the
 ;; warning above gives, and a lint that fires on its own recommendation is one
 ;; nobody leaves switched on.
-(: polite (-bjo-> TextInputPort int))
+(: polite (-bjo-> InputPort int))
 (defbjo (polite p)
   (match (sync (blocking (fun () (drain p))))
     ((Ok n) n)
@@ -138,7 +138,7 @@
 ;; `counter` parks the thread it is called on, and that thread is whatever
 ;; called it. There is no fiber to starve and nothing to report — this is what
 ;; a `defun` doing IO is supposed to look like.
-(: counter (-> TextInputPort int))
+(: counter (-> InputPort int))
 (defun (counter p)
   (drain p))
 

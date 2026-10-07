@@ -81,9 +81,9 @@
   (decompress-all (: System.Net.DecompressionMethods.All #:get))
   (no-timeout     (: System.Threading.Timeout.InfiniteTimeSpan #:get))
   (utf8           (: System.Text.Encoding.UTF8 #:get))
-  ;; Bytes in a declared encoding as a text port, by the rule
-  ;; `byte->text-input-port` follows.
-  (text-port-over (: Bjolang.Runtime.BytePorts.TextReaderOver (-> Stream Encoding TextInputPort)))
+  ;; Bytes in a declared encoding as an input port: read as they are when
+  ;; they are UTF-8, transcoded to UTF-8 otherwise.
+  (text-port-over (: Bjolang.Runtime.InputPorts.Over (-> Stream Encoding InputPort)))
   ;; Named `span-seconds` rather than `seconds`: `std/prelude` exports a
   ;; `seconds` that answers milliseconds, for a deadline, and two bindings of
   ;; one name that differ only in what they return is the kind of collision
@@ -426,9 +426,9 @@
 ;; outside one, exactly as reading a file does.
 ;;
 ;; Decoded by the charset the server declared, and only by it: a byte order
-;; mark does not override the declaration. A UTF-8 body is read without a
-;; round trip through UTF-16.
-(: response-port (-> Response TextInputPort))
+;; mark is not treated specially. A UTF-8 body is the port's bytes as they
+;; arrived; another charset is transcoded to UTF-8 on the way in.
+(: response-port (-> Response InputPort))
 (defun (response-port r)
   (def body (reply-content (record-ref r raw)))
   (text-port-over (body-stream body) (charset-of r)))

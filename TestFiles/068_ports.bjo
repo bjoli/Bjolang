@@ -1,13 +1,13 @@
 ;; Textual ports: file and string input, file output, EOF, and `with-open`.
 ;;
 ;; The point of the design is that a file port and a string port are the *same
-;; type*. `System.IO.TextReader` is imported as `TextInputPort` and the concrete
+;; type*. `System.IO.TextReader` is imported as `InputPort` and the concrete
 ;; readers are upcast into it inside `open-*`, because Hindley-Milner has no
-;; subtyping — a `StreamReader` does not unify with a `TextInputPort`, and
+;; subtyping — a `StreamReader` does not unify with a `InputPort`, and
 ;; declaring an extern's return type as the base class is rejected rather than
 ;; silently widened.
 ;;
-;; So `count-lines` below takes a `TextInputPort` and does not care where the
+;; So `count-lines` below takes a `InputPort` and does not care where the
 ;; text came from. That is the whole trick.
 (import (std prelude))
 (import (std ports))
@@ -15,7 +15,7 @@
 
 ;; One function, both kinds of port. The base `read-line` throws at end of
 ;; input, so the loop is driven by `port-eof?`.
-(: count-lines (-> TextInputPort int))
+(: count-lines (-> InputPort int))
 (defun (count-lines p)
   (let loop ((n 0))
     (if (port-eof? p)
@@ -50,7 +50,7 @@
 
 ;; The `/opt` variant, where the check and the read are one step. Also pins
 ;; that lines come back without their newline.
-(: join-lines (-> TextInputPort string))
+(: join-lines (-> InputPort string))
 (defun (join-lines p)
   (let loop ((acc ""))
     (match (read-line/opt p)
@@ -265,7 +265,7 @@
             ((Err e) "FAILURE"))
           "first|second|third|")
 
-  ;; The reader is the caller's, not baked in: any `(-> TextInputPort %a)` will
+  ;; The reader is the caller's, not baked in: any `(-> InputPort %a)` will
   ;; do, and the element type follows it rather than being `string` by fiat.
   (expect "file->seq honours the reader procedure"
           (match (file->seq read-all path)
@@ -367,7 +367,7 @@
 
   ;; --- Characters through the drains --------------------------------------
   ;;
-  ;; `read-char` is an ordinary `(-> TextInputPort %a)`, so everything in
+  ;; `read-char` is an ordinary `(-> InputPort %a)`, so everything in
   ;; `std/ports` that takes a reader takes it, and a port becomes a `(Seq char)`
   ;; with nothing new written.
   (expect "port->seq over read-char"
