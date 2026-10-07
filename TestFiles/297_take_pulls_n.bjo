@@ -1,0 +1,44 @@
+;; `take` pulls exactly the elements it answers. The element after the n-th is
+;; never asked for, so a callback upstream runs n times and a port read through
+;; a seq keeps its next item for the next reader. Zero or less is empty and
+;; pulls nothing, as `seq-take` does.
+
+(import (std prelude))
+(import (std ports))
+(import (std simpletest))
+
+(: calls (Array int))
+(def calls (make-array 1))
+
+(: counted (-> int int))
+(defun (counted x)
+  (array-set! calls 0 (+ (array-ref calls 0) 1))
+  x)
+
+;; How many times the callback ran while `take n` was walked to the end.
+(: pulls-for (-> int int))
+(defun (pulls-for n)
+  (array-set! calls 0 0)
+  (ignore (seq->list (take n (map counted (list 1 2 3 4 5)))))
+  (array-ref calls 0))
+
+(defun (main args)
+  (expect "take 2 runs the callback twice" (pulls-for 2) 2)
+  (expect "take 0 runs it not at all" (pulls-for 0) 0)
+  (expect "take -1 runs it not at all" (pulls-for -1) 0)
+  (expect "take past the end runs it once per element" (pulls-for 9) 5)
+  (expect "take -1 is empty" (seq->list (take -1 (list 1 2 3))) Nil)
+  (expect "a fused walk over take pulls n as well"
+          (begin
+            (array-set! calls 0 0)
+            (ignore (loop (:for x (take 3 (map counted (list 1 2 3 4 5))))
+                          (:acc s (summing x))
+                          => s))
+            (array-ref calls 0))
+          3)
+
+  (def p (open-input-string "header1\nheader2\nbody\n"))
+  (def headers {listing l (:for l (take 2 (port->seq read-line p)))})
+  (expect "take reads the lines it answers" headers (list "header1" "header2"))
+  (expect "and leaves the next one in the port" (read-line p) "body")
+  0)
