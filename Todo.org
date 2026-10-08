@@ -93,6 +93,14 @@ out-degree ≤ 1, so copies grow additively; largest demand 722 nodes
   return ~AsyncSeq~, a different function. ~port->chan~ instead.
 - A ~(do ...)~ block cannot suspend: ~:bind~'s lambda colour is fixed. Would
   need ~:bind/bjo~ or a keyword on ~do~.
+- *Parsing a string counts as parking.* The bjodat and JSON readers share
+  one core for strings and ports, and every function in it reaches the
+  ~read-some~ a refill makes, so ~parse-bjodat~ and ~parse-json~ are
+  blocking definitions with suspending copies. Reached through an ordinary
+  lambda from a bjoroutine, the lint reports the parse, which on a string
+  never waits (samizdat's ~generate-docs~ did, fixed there with a loop).
+  A port-free copy of the core, or a way for a library to say a function
+  does not park, would end it.
 
 * Traits and macros
 
