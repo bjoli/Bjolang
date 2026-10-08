@@ -209,30 +209,78 @@ public static class SpawnBatchTests
 
             const int n = 16;
 
-            // Calibrate on this machine rather than hard-coding a duration, so the
-            // test means the same thing on a slow box as on a fast one.
-            int iterations = 3_000_000;
-            var cal = System.Diagnostics.Stopwatch.StartNew();
-            Burn(iterations);
-            cal.Stop();
-            double serialMs = cal.Elapsed.TotalMilliseconds;
+            // Size the work so that one fiber's share takes about TargetMs on this
+            // machine. Starting the batch costs a few milliseconds whatever the work
+            // is (idle pool threads have to wake and take it); with a few
+            // milliseconds of work per fiber that cost alone would halve the
+            // measured speedup. At 30 ms it is small beside the work.
+            const double TargetMs = 30;
+            int iterations = 4_000_000;
+            double probeMs = Math.Min(Time(iterations), Time(iterations));
+            iterations = (int)Math.Clamp(iterations * TargetMs / Math.Max(probeMs, 0.01),
+                                         1_000_000, 500_000_000);
+            double serialMs = Math.Min(Time(iterations), Time(iterations));
 
             int remaining = n;
             var done = new ManualResetEventSlim(false);
+
+            // The control: the same sixteen jobs on sixteen plain threads, just
+            // before and just after the fibers. That is the parallelism the machine
+            // has to give right now, which other processes share, so the fibers
+            // are held to a fraction of it rather than to a fixed number.
+            double before = n * serialMs / OnThreads();
 
             var sw = System.Diagnostics.Stopwatch.StartNew();
             Bjo.Spawn(() => Parent());
             Harness.Await(done, "16 CPU-bound fibers", 60_000);
             sw.Stop();
-
             double speedup = n * serialMs / sw.Elapsed.TotalMilliseconds;
 
-            // Deliberately loose. Ideal is 16x; adaptive measures ~17x and the broken
-            // floor=8 policy measures ~4.3x. A threshold of 4 separates them with a
-            // wide margin while tolerating a loaded or throttled machine.
-            Harness.Assert(speedup >= 4.0,
-                $"16 fibers achieved only {speedup:F1}x speedup (serial {serialMs:F0} ms, " +
-                $"wall {sw.Elapsed.TotalMilliseconds:F0} ms); the batch is being serialised");
+            double after = n * serialMs / OnThreads();
+            double control = Math.Min(before, after);
+
+            // The broken floor=8 policy runs the eight batched fibers one after
+            // another on one thread, so it measures 2.0x however many cores are
+            // free. On an idle 12-core, 24-thread machine plain threads measure
+            // ~9x and the adaptive batch ~8.7x. Below 5x for plain threads the
+            // cores are busy elsewhere and 60% of that could not tell the broken
+            // policy from a working one, so nothing is asserted.
+            if (control < 5.0)
+            {
+                Console.WriteLine($"           not judged: plain threads reached only {control:F1}x, " +
+                                  "so the machine has too few free cores");
+                return;
+            }
+
+            Harness.Assert(speedup >= 0.6 * control,
+                $"16 fibers achieved only {speedup:F1}x speedup where 16 threads achieved " +
+                $"{control:F1}x (serial {serialMs:F0} ms, wall {sw.Elapsed.TotalMilliseconds:F0} ms); " +
+                "the batch is being serialised");
+
+            double OnThreads()
+            {
+                var threads = new Thread[n];
+                using var start = new Barrier(n + 1);
+                for (int i = 0; i < n; i++)
+                {
+                    threads[i] = new Thread(() => { start.SignalAndWait(); Burn(iterations); })
+                    {
+                        IsBackground = true,
+                    };
+                    threads[i].Start();
+                }
+                start.SignalAndWait();
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                foreach (var t in threads) t.Join();
+                return clock.Elapsed.TotalMilliseconds;
+            }
+
+            static double Time(int iterations)
+            {
+                var cal = System.Diagnostics.Stopwatch.StartNew();
+                Burn(iterations);
+                return cal.Elapsed.TotalMilliseconds;
+            }
 
 #pragma warning disable CS1998
             async Fiber Parent()

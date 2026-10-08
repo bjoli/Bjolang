@@ -3,6 +3,22 @@
 
 What each change guarantees, and what it leaves open.
 
+* The spawn batching test judges parallelism against the machine
+
+- *"A batch of 16 CPU-bound fibers actually runs in parallel" failed
+  under load.* Each fiber did about 3.5 ms of work and the batch had to be
+  4x faster than serial; the few milliseconds it takes idle pool threads to
+  wake halved the measured speedup, so other work on the machine (a build
+  finishing, the suite run several times at once) took it under 4x. It
+  failed as often before the output port change as after it.
+- *The work is calibrated to about 30 ms a fiber,* and the same sixteen
+  jobs run on sixteen plain threads just before and after the fibers. The
+  fibers must reach 60% of that. The broken policy the test was written
+  for (a split floor of 8) measures 2.0x and fails; the adaptive batch
+  measures about what plain threads do. When plain threads reach under 5x
+  the machine has no free cores to judge with, and the test says so rather
+  than failing.
+
 * One output port type, which writes UTF-8
 
 - *~OutputPort~ replaces ~TextOutputPort~ and ~ByteOutputPort~,* the mirror
