@@ -820,6 +820,22 @@ crosses the pool, and an idle worker that is spinning picks it up on another
 core, which is where the L1 misses come from. Hopac pushes a woken job onto its
 worker's own stack and keeps going on one core.
 
+**Every thread-static access is a `__tls_get_addr` call.** libcoreclr is loaded
+as a shared library, so its thread-local storage is dynamic, and both a managed
+`[ThreadStatic]` read and the native `Monitor` (which needs the current
+thread) go through the dynamic loader's lookup. About 61% of those calls on the
+ring come from the channel's lock sites (`TryDirectSend`, `ParkReceive`,
+`TryDirectReceive`, `TakeParked`); the rest from `FiberContext` in
+`CalledFiber.Run`, `InlineDepth` in `Dispatch`, and `AmbientRace`.
+
+**`AmbientRace`'s read of the environment — measured, not worth acting on.**
+`perf record` put 7.7% of the ring's instructions in it, which overstates it:
+the samples include the helper it calls for the thread-static. Reading the
+token once into a plain static instead (wrong in general, right for this one
+benchmark) moved the one-core ring from 1698 to 1651 instructions and 630 to 618
+cycles per hop: about 2%. Avoiding the read for real would mean carrying the
+environment through every call that syncs, for that.
+
 ---
 
 ## 6. Known issues
