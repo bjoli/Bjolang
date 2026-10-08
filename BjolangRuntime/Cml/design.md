@@ -922,6 +922,32 @@ benchmark) moved the one-core ring from 1698 to 1651 instructions and 630 to 618
 cycles per hop: about 2%. Avoiding the read for real would mean carrying the
 environment through every call that syncs, for that.
 
+**A smaller awaiter — kept.** `SyncAwaiter<T>`, the struct a bjoroutine's state
+machine stores across an `await`, held five references (the event awaiter, the
+fiber watch, the direct parkable, the operation, the cancel reason) and a value,
+a generation and two flags. Which of the first five were in use depended on the
+path, so they now share one `object` field and a `byte` that says which kind it
+is, read back with `Unsafe.As`: three references and a value. Fewer references
+means less for `InlinedMemmoveGCRefsHelper` to copy into the box, with a write
+barrier each.
+
+    one core, --tc0         instr        cycles
+    Ring (put/get)          1416 -> 1366  534 -> 515
+    Ring (sync)             1557 -> 1509  592 -> 565
+
+The skewed choose did not move outside its noise, which on that row is wide:
+even pinned to one core its runs fall in two groups about 500 instructions
+apart.
+
+The rest of the write barriers are not the box. Barriers are about 9.7% of the
+ring's instructions and copying the awaiter about 2.7 points of that; the others
+are the protocol's own stores of references: installing and restoring the
+`FiberContext` in `CalledFiber.Run`, `FiberWatch.AttachDirect` and
+`AttachResume`, the park lists' links, and recycling an op. A barrier stub has
+no frame, so `perf`'s frame-pointer unwinding charges it to the caller's caller;
+read call graphs through barriers with that in mind. Server and workstation GC
+made no difference to any of this.
+
 ---
 
 ## 6. Known issues

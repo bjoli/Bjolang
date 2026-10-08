@@ -12,6 +12,7 @@
  */
 
 using Bjoml;
+using Unsafe = System.Runtime.CompilerServices.Unsafe;
 
 // A partial of its own so that this file can have `using Bjoml;` at the top
 // without it reaching the rest of the runtime, where `Bjoml.Result<T>` — a
@@ -139,7 +140,7 @@ public static partial class BjolangRuntime {
 
             var side = _ch.SendSide;
             if (_token is null)
-                return new SyncAwaiter<Unit>(side, PutOp<T>.RentDirect(_value), 0, null);
+                return new SyncAwaiter<Unit>(side, PutOp<T>.RentDirect(_value), null);
 
             if (_token.IsCompleted)
                 return SyncAwaiter<Unit>.Cancelled(_token.GetAwaiter().GetResult());
@@ -170,7 +171,7 @@ public static partial class BjolangRuntime {
                 // Nothing to race: a single channel operation parks with the
                 // fiber's resume in it and no claim at all.
                 if (_ev is IDirectSyncable<T> unwatched)
-                    return new SyncAwaiter<T>(unwatched, unwatched.RentPark(), 0, null);
+                    return new SyncAwaiter<T>(unwatched, unwatched.RentPark(), null);
 
                 return new SyncAwaiter<T>(_ev.GetAwaiter(), null);
             }
@@ -272,7 +273,7 @@ public static partial class BjolangRuntime {
                 return SyncAwaiter<T>.Cancelled(token.GetAwaiter().GetResult());
             }
 
-            return new SyncAwaiter<T>(site, op, opGen, cell);
+            return new SyncAwaiter<T>(site, op, cell);
         }
     }
 
@@ -545,42 +546,47 @@ public static partial class BjolangRuntime {
     /// Forwards to whichever awaiter the sync ended up with, or to nothing at
     /// all when the rendezvous already happened.
     public readonly struct SyncAwaiter<T> : System.Runtime.CompilerServices.ICriticalNotifyCompletion {
-        private readonly EventAwaiter<T>? _aw;
-        private readonly FiberWatch? _cell;
-        private readonly T _ready;
-        private readonly CancelReason? _why;
-        private readonly bool _isReady;
+        private const byte Ready_ = 0;
+        private const byte Direct_ = 1;
+        private const byte Event_ = 2;
 
-        /// The direct form: one channel operation, parked with the fiber's own
-        /// resume in it, under the fiber's registration when there is a token.
+        /// What the sync ended up with, told apart by `_kind`: the parked op
+        /// (direct), the `EventAwaiter` (event), or, when the sync was over
+        /// before it began, null or the reason it was cancelled (ready).
+        ///
+        /// One field for the three because this struct is stored into the
+        /// state machine's box at every suspension, and every reference in it
+        /// is a slot the copy has to put through the write barrier.
+        private readonly object? _obj;
+
+        /// Where the direct form's op is parked. The channel, or its send side.
         private readonly IParkable<T>? _direct;
-        private readonly Operation? _op;
 
-        /// The generation the op was watched as, or 0 when no token watches it.
-        private readonly int _opGen;
+        /// The fiber's registration on the token, when the sync races one.
+        private readonly FiberWatch? _cell;
+
+        private readonly T _ready;
+        private readonly byte _kind;
 
         /// A sync through an `EventAwaiter`: an event with no token, or a
         /// `choose` under the fiber's registration, whose park has to be given
         /// back when it ends.
         internal SyncAwaiter(EventAwaiter<T> aw, FiberWatch? cell) {
-            _aw = aw; _cell = cell;
-            _ready = default!; _why = null; _isReady = false;
-            _direct = null; _op = null; _opGen = 0;
+            _obj = aw; _direct = null; _cell = cell;
+            _ready = default!; _kind = Event_;
         }
 
         /// A single channel operation. The op is rented, and armed under the
         /// cell when there is one, but not yet handed to the channel; that
         /// happens in <see cref="UnsafeOnCompleted"/>.
-        internal SyncAwaiter(IParkable<T> direct, Operation op, int opGen, FiberWatch? cell) {
-            _aw = null; _cell = cell;
-            _ready = default!; _why = null; _isReady = false;
-            _direct = direct; _op = op; _opGen = opGen;
+        internal SyncAwaiter(IParkable<T> direct, Operation op, FiberWatch? cell) {
+            _obj = op; _direct = direct; _cell = cell;
+            _ready = default!; _kind = Direct_;
         }
 
         private SyncAwaiter(T ready, CancelReason? why) {
-            _aw = null; _cell = null;
-            _ready = ready; _why = why; _isReady = true;
-            _direct = null; _op = null; _opGen = 0;
+            _obj = why; _direct = null; _cell = null;
+            _ready = ready; _kind = Ready_;
         }
 
         internal static SyncAwaiter<T> Ready(T value) => new SyncAwaiter<T>(value, null);
@@ -591,7 +597,9 @@ public static partial class BjolangRuntime {
         /// The direct form is never complete here: `INowable` has already
         /// answered for a partner that was waiting, and the park itself happens
         /// on suspension.
-        public bool IsCompleted => _isReady || (_aw is not null && _aw.IsCompleted);
+        public bool IsCompleted =>
+            _kind == Ready_
+            || (_kind == Event_ && Unsafe.As<EventAwaiter<T>>(_obj!).IsCompleted);
 
         /// The raise happens here rather than in the event continuation. That
         /// continuation runs on whichever thread completed the rendezvous, and
@@ -599,12 +607,12 @@ public static partial class BjolangRuntime {
         /// whole sync block. `GetResult` runs on the resuming fiber's own stack,
         /// which is where a raise belongs.
         public T GetResult() {
-            if (_isReady) {
-                if (_why is { } already) throw new Bjolang.Runtime.Cancelled(already);
+            if (_kind == Ready_) {
+                if (_obj is not null) throw new Bjolang.Runtime.Cancelled(Unsafe.As<CancelReason>(_obj));
                 return _ready;
             }
 
-            if (_op is not null) {
+            if (_kind == Direct_) {
                 // A withdrawn op belongs to the channel's sweep now and is not
                 // touched again; the reason is on the cell.
                 if (_cell is { } cell) {
@@ -612,7 +620,7 @@ public static partial class BjolangRuntime {
                     cell.End();
                     if (cancelled is CancelReason stopped) throw new Bjolang.Runtime.Cancelled(stopped);
                 }
-                return _direct!.TakeParked(_op);
+                return _direct!.TakeParked(Unsafe.As<Operation>(_obj!));
             }
 
             // Back to idle before anything can throw, so that a cancelled sync
@@ -621,7 +629,7 @@ public static partial class BjolangRuntime {
             T v;
             object? cancelReason;
             try {
-                v = _aw!.TakeResult(out cancelReason);
+                v = Unsafe.As<EventAwaiter<T>>(_obj!).TakeResult(out cancelReason);
             } finally {
                 _cell?.End();
             }
@@ -635,8 +643,8 @@ public static partial class BjolangRuntime {
         /// Never reached in the ready case: `IsCompleted` was true, and the
         /// await contract does not ask for a continuation then.
         public void UnsafeOnCompleted(System.Action k) {
-            if (_op is null) {
-                _aw!.UnsafeOnCompleted(k);
+            if (_kind != Direct_) {
+                Unsafe.As<EventAwaiter<T>>(_obj!).UnsafeOnCompleted(k);
                 return;
             }
 
@@ -645,7 +653,7 @@ public static partial class BjolangRuntime {
             // overwrites the field this awaiter lives in with its next one.
             var cell = _cell;
             var direct = _direct!;
-            var op = _op;
+            var op = Unsafe.As<Operation>(_obj!);
 
             if (cell is null) {
                 // No token: nothing can withdraw the op.
