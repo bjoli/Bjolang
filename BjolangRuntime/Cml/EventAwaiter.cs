@@ -79,7 +79,14 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
 
     private const int MaxCached = 64;
     [ThreadStatic] private static EventAwaiter<T>? _free;
-    [ThreadStatic] private static int _freeCount;
+
+    /// <summary>
+    /// How many awaiters the free list holds from this one down, while this one
+    /// is on it. Kept here rather than in a thread-static count, which would be
+    /// a second `__tls_get_addr` per rent and per return on Linux: a reference
+    /// and an int live in different thread-static blocks.
+    /// </summary>
+    private int _freeDepth;
 
     private EventAwaiter<T>? _next;
     private readonly Action<T> _onSync;
@@ -116,7 +123,6 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
         if (aw is null) return new EventAwaiter<T>(ev);
 
         _free = aw._next;
-        _freeCount--;
         aw._next = null;
 
         // _result/_continuation were cleared when this instance was recycled.
@@ -216,11 +222,13 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
             _continuation = null;
             _deferred = null;
 
-            if (_freeCount < MaxCached)
+            var head = _free;
+            int depth = head is null ? 0 : head._freeDepth;
+            if (depth < MaxCached)
             {
-                _next = _free;
+                _next = head;
+                _freeDepth = depth + 1;
                 _free = this;
-                _freeCount++;
             }
         }
     }
@@ -252,7 +260,6 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
         else
         {
             _free = aw._next;
-            _freeCount--;
             aw._next = null;
         }
 

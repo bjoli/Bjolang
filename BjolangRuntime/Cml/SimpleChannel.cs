@@ -100,7 +100,9 @@ public sealed class SimpleChannel<T>
     {
         private const int MaxCached = 128;
         [ThreadStatic] private static SimpleNode<TValue>? _free;
-        [ThreadStatic] private static int _freeCount;
+        // The free list's depth from this node down, while it is on the list: a
+        // thread-static count would be a second __tls_get_addr per rent and return.
+        private int _freeDepth;
 
         public SimpleNode<TValue>? Next;
         public SimpleChannel<TValue>? Channel;
@@ -114,7 +116,6 @@ public sealed class SimpleChannel<T>
             var item = _free;
             if (item is null) return new SimpleNode<TValue>();
             _free = item.Next;
-            _freeCount--;
             item.Next = null;
             item.IsCompleted = false;
             return item;
@@ -129,11 +130,13 @@ public sealed class SimpleChannel<T>
             IsCompleted = false;
             IsPut = false;
 
-            if (_freeCount < MaxCached)
+            var head = _free;
+            int depth = head is null ? 0 : head._freeDepth;
+            if (depth < MaxCached)
             {
-                Next = _free;
+                Next = head;
+                _freeDepth = depth + 1;
                 _free = this;
-                _freeCount++;
             }
         }
     }

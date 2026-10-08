@@ -253,7 +253,9 @@ internal sealed class ActionWorkItem : IThreadPoolWorkItem
     private const int MaxCached = 32;
 
     [ThreadStatic] private static ActionWorkItem? _free;
-    [ThreadStatic] private static int _freeCount;
+    // The free list's depth from this item down, while it is on the list: a
+    // thread-static count would be a second __tls_get_addr per rent and return.
+    private int _freeDepth;
 
     private ActionWorkItem? _next;
     private Action _action = null!;
@@ -264,7 +266,6 @@ internal sealed class ActionWorkItem : IThreadPoolWorkItem
         if (item is null) return new ActionWorkItem { _action = action };
 
         _free = item._next;
-        _freeCount--;
         item._next = null;
         item._action = action;
         return item;
@@ -278,11 +279,13 @@ internal sealed class ActionWorkItem : IThreadPoolWorkItem
         // normally, and we must never touch our own fields once we are back on a
         // free list.
         _action = null!;
-        if (_freeCount < MaxCached)
+        var head = _free;
+        int depth = head is null ? 0 : head._freeDepth;
+        if (depth < MaxCached)
         {
-            _next = _free;
+            _next = head;
+            _freeDepth = depth + 1;
             _free = this;
-            _freeCount++;
         }
 
         // A pool thread is reused across work items, and a previous item may have
@@ -312,7 +315,9 @@ internal sealed class ActionWorkItem<T> : IThreadPoolWorkItem
     private const int MaxCached = 32;
 
     [ThreadStatic] private static ActionWorkItem<T>? _free;
-    [ThreadStatic] private static int _freeCount;
+    // The free list's depth from this item down, while it is on the list: a
+    // thread-static count would be a second __tls_get_addr per rent and return.
+    private int _freeDepth;
 
     private ActionWorkItem<T>? _next;
     private Action<T> _action = null!;
@@ -324,7 +329,6 @@ internal sealed class ActionWorkItem<T> : IThreadPoolWorkItem
         if (item is null) return new ActionWorkItem<T> { _action = action, _state = state };
 
         _free = item._next;
-        _freeCount--;
         item._next = null;
         item._action = action;
         item._state = state;
@@ -338,11 +342,13 @@ internal sealed class ActionWorkItem<T> : IThreadPoolWorkItem
 
         _action = null!;
         _state = default!;   // drop the reference so a cached item never pins a value
-        if (_freeCount < MaxCached)
+        var head = _free;
+        int depth = head is null ? 0 : head._freeDepth;
+        if (depth < MaxCached)
         {
-            _next = _free;
+            _next = head;
+            _freeDepth = depth + 1;
             _free = this;
-            _freeCount++;
         }
 
         Scheduler.InlineDepth = 0;

@@ -895,6 +895,25 @@ the choose): it identifies its owner by the managed thread id, which is another
 thread-static. The inbox and `SimpleChannel` still lock with `Monitor`; neither
 is on these paths.
 
+**One thread-static per pool — kept.** Each pool (`PutOp`, `GetOp`,
+`EventAwaiter`, the two `ActionWorkItem`s, `SimpleChannel`'s nodes) kept its
+free list and its length as two thread-statics. A reference and an `int` live in
+different thread-static blocks, so the JIT could not share the lookup: every
+rent and every return made two `__tls_get_addr` calls (counted in
+`DOTNET_JitDisasm` output). The length now lives in the pooled objects — each
+knows the depth of the list from itself down while it is on it — and a rent or
+a return makes one.
+
+    one core, --tc0         instr        cycles
+    Ring (put/get)          1441 -> 1416  550 -> 534
+    Skewed choose, put      3527 -> 3343  1121 -> 1042
+
+What is left on a ring hop is one lookup in each of `AmbientRace` (twice),
+`Dispatch` (`InlineDepth`), `CalledFiber.Run` (the fiber context) and the
+pool's rent and return. They are read by different methods, so gathering them
+into one per-thread object would save nothing unless the object were passed
+along rather than looked up.
+
 **`AmbientRace`'s read of the environment — measured, not worth acting on.**
 `perf record` put 7.7% of the ring's instructions in it, which overstates it:
 the samples include the helper it calls for the thread-static. Reading the

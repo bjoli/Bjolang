@@ -147,7 +147,14 @@ public sealed class PutOp<T> : Operation
     // 256 * ~64 B = 16 KB per (T, thread), which is a cache, not a leak.
     private const int MaxCached = 256;
     [ThreadStatic] private static PutOp<T>? _free;
-    [ThreadStatic] private static int _freeCount;
+
+    /// <summary>
+    /// How many ops the free list holds from this one down, while this op is on
+    /// it. Kept in the op rather than in a thread-static count: a reference and
+    /// an int live in different thread-static blocks, and on Linux each block is
+    /// one more `__tls_get_addr` per rent and per recycle.
+    /// </summary>
+    private int _freeDepth;
 
     public T Value = default!;
 
@@ -180,7 +187,6 @@ public sealed class PutOp<T> : Operation
         }
 
         _free = op.Next;
-        _freeCount--;
         op.Next = null;
         op.State = state;
         op.Published = false;
@@ -197,7 +203,6 @@ public sealed class PutOp<T> : Operation
         if (op is null) return new PutOp<T> { Value = value };
 
         _free = op.Next;
-        _freeCount--;
         op.Next = null;
         op.State = null;
         op.Published = false;
@@ -216,11 +221,13 @@ public sealed class PutOp<T> : Operation
         ResumeGive = null;
         EventId = 0;
 
-        if (_freeCount < MaxCached)
+        var head = _free;
+        int depth = head is null ? 0 : head._freeDepth;
+        if (depth < MaxCached)
         {
-            Next = _free;
+            Next = head;
+            _freeDepth = depth + 1;
             _free = this;
-            _freeCount++;
         }
         else
         {
@@ -234,7 +241,9 @@ public sealed class GetOp<T> : Operation
     // See PutOp<T>.MaxCached: sized for the sweep bursts of a wide choose.
     private const int MaxCached = 256;
     [ThreadStatic] private static GetOp<T>? _free;
-    [ThreadStatic] private static int _freeCount;
+
+    /// <summary>See <c>PutOp&lt;T&gt;._freeDepth</c>.</summary>
+    private int _freeDepth;
 
     public Action<T>? ResumeGet;
     public Action? DirectResume;
@@ -255,7 +264,6 @@ public sealed class GetOp<T> : Operation
         }
 
         _free = op.Next;
-        _freeCount--;
         op.Next = null;
         op.State = state;
         op.Published = false;
@@ -282,7 +290,6 @@ public sealed class GetOp<T> : Operation
         }
 
         _free = op.Next;
-        _freeCount--;
         op.Next = null;
         op.State = null;
         op.Published = false;
@@ -303,11 +310,13 @@ public sealed class GetOp<T> : Operation
         DirectValue = default!;
         EventId = 0;
 
-        if (_freeCount < MaxCached)
+        var head = _free;
+        int depth = head is null ? 0 : head._freeDepth;
+        if (depth < MaxCached)
         {
-            Next = _free;
+            Next = head;
+            _freeDepth = depth + 1;
             _free = this;
-            _freeCount++;
         }
         else
         {
