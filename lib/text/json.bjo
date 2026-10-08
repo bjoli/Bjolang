@@ -12,7 +12,7 @@
 
 ;; text/json.bjo
 ;;
-;; RFC 8259, one character at a time.
+;; RFC 8259, read off the document's UTF-8 bytes.
 
 (export
   Json
@@ -20,6 +20,7 @@
   read-json parse-json)
 
 (import (std prelude))
+(import (only (std ports) read-some))
 
 ;; Every export is documented there; the module doc is too.
 (:doc #:file "json.bjodoc")
@@ -46,20 +47,28 @@
 ;; ---------------------------------------------------------------------------
 ;; The reader
 ;; ---------------------------------------------------------------------------
-;; The port is the lookahead: the character being looked at is the one
-;; `peek-char` sees, and stepping past it is a `read-char`. Nothing is taken
-;; from the port that the document does not use. A character is a Unicode
-;; scalar, never half a surrogate pair, and bytes that are not UTF-8 are
-;; U+FFFD.
+;; The reader works on bytes: a chunk of the document in `bytes`, the one it is
+;; looking at at `next`, and `limit` where the chunk ends. Looking is an array
+;; load and stepping is an increment. A chunk comes from the port with
+;; `read-some`; `parse-json` hands over the string's own bytes as the one
+;; chunk there is, and no port.
 ;;
-;; The character is handled as its code, so that the end of the port is a
+;; Everything JSON says outside a string is ASCII, so outside a string a byte
+;; is a character. Inside one, a character of several bytes is checked to be
+;; UTF-8 and copied as it is; one that is not UTF-8 is refused. A column
+;; counts characters: only a byte that starts one moves it.
+;;
+;; The byte is handled as a number, so that the end of the document is a
 ;; value, `spent`, rather than a second case.
 
 (: spent int)
 (def spent -1)
 
 (type
-  (: Reader (Record (: port InputPort)
+  (: Reader (Record (: port (Option InputPort) #:mutable)
+                    (: bytes (Array byte) #:mutable)
+                    (: next int #:mutable)
+                    (: limit int #:mutable)
                     (: row int #:mutable)
                     (: col int #:mutable)
                     ;; One buffer for every string and every number in the
@@ -70,9 +79,13 @@
                     (: stack (Array Json) #:mutable)
                     (: top int #:mutable))))
 
-(: reader (-> InputPort Reader))
-(defun (reader port)
+;; A reader over `bytes`, and then whatever `port` has after them.
+(: reader (-> (Option InputPort) (Array byte) Reader))
+(defun (reader port bytes)
   (Reader (port port)
+          (bytes bytes)
+          (next 0)
+          (limit (array-length bytes))
           (row 1)
           (col 1)
           (scratch (stringbuilder-empty))
@@ -106,39 +119,80 @@
   (stringbuilder-clear! sb)
   sb)
 
-;; The code of the character the reader is looking at, or `spent`.
+;; `count` bytes of `old` from `from`, then `more`: what is left of one chunk
+;; and the next. Almost always nothing is left, and `more` is the answer.
+(: join-bytes (-> (Array byte) int int (Array byte) (Array byte)))
+(defun (join-bytes old from count more)
+  (if (= count 0)
+      more
+      (let ((joined (make-array (+ count (array-length more)))))
+        (loop (:for i (range 0 count))
+              (:do (array-set! joined i (array-ref old (+ from i)))))
+        (loop (:for i (range 0 (array-length more)))
+              (:do (array-set! joined (+ count i) (array-ref more i))))
+        joined)))
+
+;; Whether there are at least `n` bytes from `next` on, reading from the port
+;; until there are or it ends. Bytes not yet looked at are kept, so a
+;; character cut in two by the end of a chunk is whole afterwards.
+(: ensure! (-> Reader int bool))
+(defun (ensure! rd n)
+  (let go ()
+    (def have (- (record-ref rd limit) (record-ref rd next)))
+    (cond
+      ((>= have n) #t)
+      (else
+       (match (record-ref rd port)
+         (None #f)
+         ((Some p)
+          (match (read-some p)
+            (None
+             (record-set! rd (port None))
+             #f)
+            ((Some more)
+             (record-set! rd
+                          (bytes (join-bytes (record-ref rd bytes) (record-ref rd next) have more))
+                          (next 0)
+                          (limit (+ have (array-length more))))
+             (go)))))))))
+
+;; The byte the reader is looking at, or `spent` at the end of the document.
 (: held-code (-> Reader int))
 (defun (held-code rd)
-  (match (peek-char/opt (record-ref rd port))
-    ((Some c) (char->integer c))
-    (None spent)))
+  (def i (record-ref rd next))
+  (cond
+    ((< i (record-ref rd limit)) (cast int (array-ref (record-ref rd bytes) i)))
+    ((ensure! rd 1) (cast int (array-ref (record-ref rd bytes) (record-ref rd next))))
+    (else spent)))
 
 (: at-end? (-> Reader bool))
 (defun (at-end? rd)
   (= (held-code rd) spent))
 
 ;; Every character this is asked about is a json char meaning it is ascii.
-;; Anything else — the end of the port, a letter from a language — answers
-;; #\nul.
+;; Anything else — the end of the document, the first byte of a letter from a
+;; language — answers #\nul.
 (: peek (-> Reader char))
 (defun (peek rd)
   (def c (held-code rd))
   (if (and (>= c 0) (< c 128)) (integer->char c) #\nul))
 
-;; Counts the character being left behind, and takes it from the port.
+;; Moves past the byte being looked at, which is a character of its own.
 ;;
 ;; It does not look at what it is stepping over, because every caller just has:
-;; a digit, a character inside a string, a bracket.
+;; a digit, an ASCII character inside a string, a bracket. A character of
+;; several bytes is taken by `take-character!`.
 (: step! (-> Reader void))
 (defun (step! rd)
-  (ignore (read-char/opt (record-ref rd port)))
-  (record-set! rd (col (+ (record-ref rd col) 1))))
+  (record-set! rd
+               (next (+ (record-ref rd next) 1))
+               (col (+ (record-ref rd col) 1))))
 
 ;; A line ends at the newline whether or not a return came before it.
 (: newline! (-> Reader void))
 (defun (newline! rd)
-  (ignore (read-char/opt (record-ref rd port)))
   (record-set! rd
+               (next (+ (record-ref rd next) 1))
                (row (+ (record-ref rd row) 1))
                (col 1)))
 
@@ -151,6 +205,69 @@
        (if (= c 10) (newline! rd) (step! rd))
        (go))
       (else unit))))
+
+;; ---------------------------------------------------------------------------
+;; Characters of several bytes
+;; ---------------------------------------------------------------------------
+
+(: not-utf-8 string)
+(def not-utf-8 "a byte that is not UTF-8")
+
+;; How many bytes a character starting with `lead` has, by RFC 3629; 0 for a
+;; byte no character starts with: a continuation byte, C0 and C1 (which could
+;; only start an overlong form), and F5 and up.
+(: utf8-length (-> int int))
+(defun (utf8-length lead)
+  (cond
+    ((< lead 128) 1)
+    ((< lead 194) 0)
+    ((< lead 224) 2)
+    ((< lead 240) 3)
+    ((< lead 245) 4)
+    (else 0)))
+
+(: continuation? (-> int bool))
+(defun (continuation? b) (= (bitwise-and b 192) 128))
+
+;; How many bytes the character the reader is looking at has, when they are
+;; UTF-8; 0 when they are not, or the document ends inside them. The second
+;; byte is narrower after E0 and F0, which would otherwise start an overlong
+;; form, after ED, which would start a surrogate, and after F4, which would
+;; go past U+10FFFF.
+(: sequence-length (-> Reader int))
+(defun (sequence-length rd)
+  (def lead (held-code rd))
+  (def n (utf8-length lead))
+  (cond
+    ((<= n 1) n)
+    ((not (ensure! rd n)) 0)
+    (else
+     (def b (record-ref rd bytes))
+     (def i (record-ref rd next))
+     (def second (cast int (array-ref b (+ i 1))))
+     (def low (cond ((= lead 224) 160) ((= lead 240) 144) (else 128)))
+     (def high (cond ((= lead 237) 159) ((= lead 244) 143) (else 191)))
+     (if (and (>= second low)
+              (<= second high)
+              (let check ((k 2))
+                (cond
+                  ((>= k n) #t)
+                  ((continuation? (cast int (array-ref b (+ i k)))) (check (+ k 1)))
+                  (else #f))))
+         n
+         0))))
+
+;; Copies the `n` bytes of the character being looked at into `sb`, and moves
+;; past them: one column.
+(: take-character! (-> Reader StringBuilder int void))
+(defun (take-character! rd sb n)
+  (def b (record-ref rd bytes))
+  (def i (record-ref rd next))
+  (loop (:for k (range 0 n))
+        (:do (stringbuilder-add-code! sb (cast int (array-ref b (+ i k))))))
+  (record-set! rd
+               (next (+ i n))
+               (col (+ (record-ref rd col) 1))))
 
 ;; ---------------------------------------------------------------------------
 ;; Refusals
@@ -168,7 +285,13 @@
   (def c (held-code rd))
   (cond
     ((= c spent) "the document ended")
-    (else (str "'" (list->string (list (integer->char c))) "'"))))
+    ((< c 128) (str "'" (list->string (list (integer->char c))) "'"))
+    (else
+     (def n (sequence-length rd))
+     (def i (record-ref rd next))
+     (if (= n 0)
+         not-utf-8
+         (str "'" (bytes->string (record-ref rd bytes) #:start i #:end (+ i n)) "'")))))
 
 (: too-deep (-> Reader string string))
 (defun (too-deep rd what)
@@ -281,11 +404,15 @@
       (stringbuilder-add-unit! sb c)
       (step! rd)
       (go))
-     ;; A whole character, which may be outside the BMP.
+     ;; The first byte of a character of several, all copied once they are
+     ;; known to be UTF-8.
      (else
-      (stringbuilder-add! sb (integer->char c))
-      (step! rd)
-      (go)))))
+      (def n (sequence-length rd))
+      (cond
+        ((= n 0) (Err (at rd "a string has to be UTF-8, and this byte is not")))
+        (else
+         (take-character! rd sb n)
+         (go)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Numbers
@@ -480,15 +607,21 @@
 ;; ---------------------------------------------------------------------------
 ;; Reading a document
 ;; ---------------------------------------------------------------------------
-(: read-json (-> InputPort (Result string Json)))
-(defun (read-json port)
-  (def rd (reader port))
+;; Whether the reader is looking at a byte order mark: EF BB BF.
+(: at-mark? (-> Reader bool))
+(defun (at-mark? rd)
+  (and (ensure! rd 3)
+       (let ((b (record-ref rd bytes)) (i (record-ref rd next)))
+         (and (= (cast int (array-ref b i)) 239)
+              (= (cast int (array-ref b (+ i 1))) 187)
+              (= (cast int (array-ref b (+ i 2))) 191)))))
+
+(: read-document (-> Reader (Result string Json)))
+(defun (read-document rd)
   ;; A byte order mark ahead of the value is skipped, as RFC 8259 lets a
-  ;; parser do, and does not count as a column. A port hands it over as the
-  ;; character U+FEFF.
-  (when (= (held-code rd) 65279)
-    (step! rd)
-    (record-set! rd (col 1)))
+  ;; parser do, and does not count as a column.
+  (when (at-mark? rd)
+    (record-set! rd (next (+ (record-ref rd next) 3))))
   (def (Ok v) (read-value rd 1)
     :propagate)
   (skip-space! rd)
@@ -496,6 +629,14 @@
       (Ok v)
       (Err (at rd (str "the value ended here, and then there is " (found rd))))))
 
+(: no-bytes (Array byte))
+(def no-bytes (make-array 0))
+
+(: read-json (-> InputPort (Result string Json)))
+(defun (read-json port)
+  (read-document (reader (Some port) no-bytes)))
+
+;; The string's bytes are the document: no port in between.
 (: parse-json (-> string (Result string Json)))
 (defun (parse-json text)
-  (read-json (open-input-string text)))
+  (read-document (reader None (string->bytes text))))

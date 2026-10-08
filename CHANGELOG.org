@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* (text json) reads bytes, and is as fast as before strings were UTF-8
+
+- *The JSON reader reads the document's bytes,* a chunk at a time with
+  ~read-some~, or the string's own bytes for ~parse-json~, and looks at one
+  with an array load. It went to the port for every look (a lock, checks
+  and a UTF-8 decode each time), which made it two to three times slower
+  than when a port was a .NET ~TextReader~. On the usual three documents,
+  at steady state on one machine: canada 96 MB/s, citm_catalog 325,
+  twitter 237; the reader before the switch to UTF-8 strings did 96, 289
+  and 262, and the one just before this 43, 90 and 80.
+- *A document has to be UTF-8.* Bytes that are not are refused, with the
+  line and column, as RFC 8259 lets a reader do: an overlong form, an
+  encoded surrogate, a character cut off by the end. They used to read as
+  U+FFFD. A character of several bytes is checked and copied whole, also
+  when a chunk ends inside it.
+- *Columns still count characters,* and a refused character outside the
+  BMP is still quoted whole.
+
 * (text json) reads characters, with peek-char
 
 - *The JSON reader looks with ~peek-char~ and takes with ~read-char~,*
@@ -13,6 +31,8 @@ What each change guarantees, and what it leaves open.
   it used to be "the code unit 55357".
 - *Nothing else changes:* the same documents are read, and in the same
   time (a 37 MB document: about 1.0-1.2 s before and after).
+
+* peek-char
 
 - *~(peek-char p)~ is the character ~read-char~ would answer, left in the
   port,* as Racket's ~peek-char~. It decodes from the port's buffer, waiting
