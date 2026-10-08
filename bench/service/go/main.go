@@ -206,6 +206,9 @@ func rep(n, clients, requests int) {
 	}
 	runtime.GC()
 
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	a0 := mem.TotalAlloc
 	t0 := time.Now()
 	c0 := cpuMs()
 	outs := make([]clientOut, clients)
@@ -220,6 +223,8 @@ func rep(n, clients, requests int) {
 	wg.Wait()
 	wall := time.Since(t0).Milliseconds()
 	cpu := cpuMs() - c0
+	runtime.ReadMemStats(&mem)
+	alloc := mem.TotalAlloc - a0
 
 	for i := 0; i < shards; i++ {
 		quits[i] <- 0
@@ -241,8 +246,8 @@ func rep(n, clients, requests int) {
 	at := func(per, of int) int64 { return samples[len(samples)*per/of] }
 
 	if n > 0 {
-		fmt.Printf("rep %d wall_ms %d cpu_ms %d p50_ns %d p99_ns %d p999_ns %d timeouts %d checksum %d\n",
-			n, wall, cpu, at(50, 100), at(99, 100), at(999, 1000), timeouts, checksum)
+		fmt.Printf("rep %d wall_ms %d cpu_ms %d p50_ns %d p99_ns %d p999_ns %d timeouts %d checksum %d alloc_b %d\n",
+			n, wall, cpu, at(50, 100), at(99, 100), at(999, 1000), timeouts, checksum, alloc)
 	}
 }
 

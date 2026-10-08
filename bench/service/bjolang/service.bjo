@@ -25,6 +25,7 @@
 
 (import/extern
   (gc-collect (: System.GC.Collect (-> void)))
+  (total-allocated (: System.GC.GetTotalAllocatedBytes (-> bool long)))
   (gc-wait-finalizers (: System.GC.WaitForPendingFinalizers (-> void)))
   (timestamp (: System.Diagnostics.Stopwatch.GetTimestamp (-> long)))
   (stopwatch-frequency (: System.Diagnostics.Stopwatch.Frequency #:get))
@@ -160,6 +161,7 @@
                       (:acc v (vecing (bjo (shard i (vec-ref chans i) (vec-ref quits i)))))))
   (settle)
 
+  (def a0 (total-allocated #t))
   (def t0 (timestamp))
   (def c0 (cpu-ms))
   (def client-ps (loop (:for c (range 0 clients))
@@ -176,6 +178,7 @@
             ((Err e) (go (+ c 1) checksum samples (+ timeouts requests)))))))
   (def wall (/ (ns-since t0) 1000000L))
   (def cpu (- (cpu-ms) c0))
+  (def alloc (- (total-allocated #t) a0))
 
   (loop (:for i (range 0 shards))
         (:do (sync (chan-send (vec-ref quits i) 0))))
@@ -196,7 +199,8 @@
                   " p99_ns " (->str (percentile sorted 99 100))
                   " p999_ns " (->str (percentile sorted 999 1000))
                   " timeouts " (->str timeouts)
-                  " checksum " (->str (+ checksum work))))))
+                  " checksum " (->str (+ checksum work))
+                  " alloc_b " (->str alloc)))))
 
 (defbjo (main args)
   (def argc (vec-length args))

@@ -141,6 +141,7 @@ let rep n clients requests =
     GC.WaitForPendingFinalizers()
     GC.Collect()
 
+    let a0 = GC.GetTotalAllocatedBytes true
     let t0 = Stopwatch.GetTimestamp()
     let c0 = cpuMs ()
     let outs = Array.init clients (fun _ -> IVar<ClientOut>())
@@ -154,6 +155,7 @@ let rep n clients requests =
         return all })
     let wall = nsSince t0 / 1_000_000L
     let cpu = cpuMs () - c0
+    let alloc = GC.GetTotalAllocatedBytes true - a0
 
     run (job { for q in quits do do! Ch.give q 0 })
     let work = run (job {
@@ -173,9 +175,9 @@ let rep n clients requests =
     samples.Sort()
 
     if n > 0 then
-        printfn "rep %d wall_ms %d cpu_ms %d p50_ns %d p99_ns %d p999_ns %d timeouts %d checksum %d"
+        printfn "rep %d wall_ms %d cpu_ms %d p50_ns %d p99_ns %d p999_ns %d timeouts %d checksum %d alloc_b %d"
             n wall cpu (percentile samples 50 100) (percentile samples 99 100)
-            (percentile samples 999 1000) timeouts checksum
+            (percentile samples 999 1000) timeouts checksum alloc
 
 [<EntryPoint>]
 let main argv =

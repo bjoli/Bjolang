@@ -87,7 +87,7 @@ def main():
     requests = a.clients * a.requests
     print(f"{a.clients} clients x {a.requests} requests; {'%d cores' % a.cores if a.cores else 'all cores'}; "
           f"median of {a.trials} x {a.reps} reps")
-    cols = ["wall ms", "req/s", "cpu ms", "cores", "p50 us", "p99 us", "p99.9 us"]
+    cols = ["wall ms", "req/s", "cpu ms", "cores", "p50 us", "p99 us", "p99.9 us", "B/req"]
     print(f"{'':10}" + "".join(f"{c:>11}" for c in cols))
     checksums = set()
     for name in PROGRAMS:
@@ -102,7 +102,8 @@ def main():
         m = {k: statistics.median(r[k] for r in reps) for k in reps[0]}
         row = [f"{m['wall_ms']:.0f}", f"{requests / m['wall_ms'] * 1000 / 1e6:.2f}M",
                f"{m['cpu_ms']:.0f}", f"{m['cpu_ms'] / m['wall_ms']:.1f}",
-               f"{m['p50_ns'] / 1000:.0f}", f"{m['p99_ns'] / 1000:.0f}", f"{m['p999_ns'] / 1000:.0f}"]
+               f"{m['p50_ns'] / 1000:.0f}", f"{m['p99_ns'] / 1000:.0f}", f"{m['p999_ns'] / 1000:.0f}",
+               f"{m['alloc_b'] / requests:.0f}"]
         print(f"{name:10}" + "".join(v.rjust(11) for v in row), flush=True)
     if len(checksums) != 1:
         print(f"CHECKSUMS DISAGREE: {sorted(checksums)}", file=sys.stderr)
