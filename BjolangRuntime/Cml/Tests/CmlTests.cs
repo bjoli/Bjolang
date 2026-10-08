@@ -85,6 +85,7 @@ public static class CmlTests
         Run("a token does not collect a waiter per rendezvous", TokenWaitersStayBounded);
         Run("many waiters racing a completion are each woken once", ManyWaitersRacingCompletion);
         Run("a fiber reuses one registration across its syncs", RegistrationIsReused);
+        Run("a sync in a called bjoroutine reuses its fiber's registration", CalledSyncReusesRegistration);
         Run("every parked fiber raises exactly once when the token fires", AllParkedFibersRaiseOnce);
         Run("cancelling a running ping-pong never hangs or resumes twice", CancelRacesWithParking);
         Run("a cancel that lands while a fiber is parking is not lost", CancelDuringAParkIsNotLost);
@@ -361,6 +362,49 @@ public static class CmlTests
 
         int waiters = token.RawWaiterCount;
         Assert(waiters <= 4, $"4000 rendezvous left {waiters} registrations on the token");
+    }
+
+    /// <summary>
+    /// The same, with the sync inside a called bjoroutine, where a service has
+    /// it: a `request` function the client loop calls. A call restores its
+    /// caller's environment when it returns, so a registration kept in a new
+    /// environment built by the callee would be built, registered and lost on
+    /// every call. All 4000 calls must see the one registration.
+    /// </summary>
+    private static void CalledSyncReusesRegistration()
+    {
+        var token = new Promise<global::BjolangRuntime.CancelReason>();
+        var ch = new Channel<int>();
+        var idle = new Channel<int>();
+        var cells = new HashSet<object?>();
+
+        var receiver = UnderToken(token, async () =>
+        {
+            for (int i = 0; i < 4000; i++) cells.Add(await ReceiveAndShowCell(ch, idle));
+            return default;
+        });
+
+        var sender = UnderToken(token, async () =>
+        {
+            for (int i = 0; i < 4000; i++)
+                await global::BjolangRuntime.sync(global::BjolangRuntime.chansubsend(ch, i));
+            return default;
+        });
+
+        receiver.ToTask().GetAwaiter().GetResult();
+        sender.ToTask().GetAwaiter().GetResult();
+
+        Assert(!cells.Contains(null), "a call's choose ran without a registration");
+        AssertEqual(1, cells.Count, "registrations the receiving fiber's 4000 calls saw");
+    }
+
+    /// A `choose`, because a choose is raced against the token through the
+    /// registration whether or not it parks; a lone receive that finds its
+    /// sender waiting never builds one.
+    private static async Fiber<object?> ReceiveAndShowCell(Channel<int> ch, Channel<int> idle)
+    {
+        await global::BjolangRuntime.sync(Cml.Choose<int>(ch, idle));
+        return global::BjolangRuntime.Dyn.Current.Park;
     }
 
     private static void AllParkedFibersRaiseOnce()

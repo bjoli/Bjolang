@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* A sync inside a called function no longer re-registers its fiber
+
+- *A fiber registers on its scope's cancellation token once, wherever
+  its syncs are.* The registration was kept in an environment that the
+  first parking sync built, and a bjoroutine call restores its caller's
+  environment when it returns. So a ~sync~ inside a called function —
+  a client loop calling ~(request ...)~ — built a registration, put it
+  on the token and lost it on every call. On ~bench/service~ that was
+  one registration and two objects per request: four cores went from
+  548 to 498 ms, level with Go, and allocation from 1810 to 1600 bytes
+  a request.
+- Cancellation is unchanged, and a spawned fiber still starts without
+  its parent's registration.
+
 * Fibers parking in one scope no longer queue on one lock
 
 - *A program whose fibers all live under one scope uses its cores.* Every

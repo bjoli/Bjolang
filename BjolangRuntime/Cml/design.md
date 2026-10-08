@@ -1078,8 +1078,43 @@ Hopac's own profile spends 45% of its cycles in `Worker::Run`, its workers
 looking for work; what it has over the old Bjolang is not less spinning but
 more cores doing useful work.
 
-What is left: on four cores Bjolang is 1.7 times Hopac (548 against 324 ms),
-and its p99.9 there is 42 ms against Hopac's 6 and Go's 3.5. On one core
+**On four cores the scheduler is not the difference.** Profiled side by side
+(four whole cores, each runtime told so), Bjolang spent twice Hopac's cycles,
+and the gap divided like this:
+
+    the program's own code (MoveNext, awaiter code inlined)   21%
+    fiber plumbing (awaiters, builders, promises)              17%
+    the cancellation watch (arm, end, registration)            11%
+    tiering instrumentation                                    11%
+    channels, events, choose                                    9%
+    GC                                                          8%
+    write barriers and __tls_get_addr                          12%
+    scheduler (.NET pool against Hopac's Worker)                1%
+
+So a scheduler of Hopac's would buy about 1%, and putting Hopac.Core under
+Bjolang's builder would keep most of the rest, which is the code a `sync`
+compiles to and the token race it carries. Tiering is not a knob: with it off
+Bjolang loses its profile-guided code and runs slower (602 against 511 ms), and
+the call-counting delay changes nothing at this length. `crunch` compiles to
+the same C# remainder in both.
+
+**A registration per call, found by its allocations.** `bench/service` now
+prints bytes allocated per request (Go 490, Hopac 1860, Bjolang 1810 on four
+cores). By type, from `dotnet-trace --profile gc-verbose`, half of Bjolang's
+were the `choose` being rebuilt each time (wraps, sinks, delegates, the event
+array, a `SyncState`, a timer), which Hopac's alternatives cost as well; but
+`FiberWatch` and `DynEnv` were 11%, one of each per request. The registration
+lived in a new environment that `Cell` installed, and that environment belonged
+to the frame that built it: a bjoroutine call restores its caller's environment
+when it returns, so a `sync` inside a called function (the client's `request`)
+built, registered and dropped a registration on every call. It is now written
+into the environment object, which every frame of the fiber shares, and
+`ForChild` copies an environment that has a token so that no two fibers hold
+the same one. Four cores: 548 -> 498 ms (Go 498, Hopac 336), 1810 -> 1600
+bytes a request. All cores: 412 -> 401 ms, CPU 8.2 -> 7.2 s.
+
+What is left: on four cores Bjolang is 1.5 times Hopac, in the per-sync path
+above, and its p99.9 there is 40 ms against Hopac's 6 and Go's 3.5. On one core
 Hopac lets a few clients starve (p99.9 660 ms) where Bjolang's is 190.
 
 ---

@@ -198,10 +198,10 @@ public static partial class BjolangRuntime {
                 cell = new FiberWatch(token);
                 token.Register(cell);
 
-                // Installed before the suspension, because the state-machine box
-                // re-captures the environment when it suspends and this must be
-                // in the copy it keeps.
-                Dyn.Current = env.WithPark(cell);
+                // Into the environment object, which every frame of this fiber
+                // in this scope shares, rather than into a new one that the
+                // frame calling this would drop when it returns.
+                env.Park = cell;
             }
 
             return cell;

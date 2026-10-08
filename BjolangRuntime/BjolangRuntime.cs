@@ -1260,9 +1260,9 @@ public static partial class BjolangRuntime {
     /// field it vacated went to the ambient cancel token, which a
     /// `(:until-cancelled)` loop reads once per iteration.
     ///
-    /// All readonly, so installing an environment and undoing one are both a
-    /// single reference assignment — which is what makes `parameterize` cheap
-    /// and exception-safe.
+    /// All readonly but the fiber's park cell (see <see cref="Park"/>), so
+    /// installing an environment and undoing one are both a single reference
+    /// assignment — which is what makes `parameterize` cheap and exception-safe.
     /// </summary>
     public sealed class DynEnv : Bjoml.IFiberContext {
         public readonly Bjolang.Runtime.BjoOutputPort Out;
@@ -1312,21 +1312,27 @@ public static partial class BjolangRuntime {
         public readonly Map.Map<int, object> Vals;
 
         /// This fiber's reusable registration on <see cref="Cancel"/>, or null
-        /// until its first `sync` builds one.
+        /// until its first `sync` builds one. The one field that is written
+        /// after construction, and only by the fiber that owns the object.
         ///
         /// The environment is what a fiber has instead of an identity: it is
         /// inherited through nested bjoroutine calls, re-captured at every
-        /// suspension, and replaced wholesale when a scope is entered. A fiber
-        /// that installs one of these on its own environment therefore keeps it
-        /// for as long as it stays in the same scope, which is exactly the
-        /// lifetime a registration on that scope's token wants.
+        /// suspension, and replaced wholesale when a scope is entered. So the
+        /// registration is stored INTO the environment object rather than in a
+        /// new environment installed over it. A new environment would belong to
+        /// the frame that built it, and a bjoroutine call restores its caller's
+        /// environment when it returns: a `sync` inside a called function would
+        /// build, register and lose a registration on every call. Stored in the
+        /// object, it is shared by every frame of the fiber that runs in this
+        /// environment, for as long as the fiber stays in the same scope.
         ///
         /// It belongs to one fiber. Nothing claims it before a park, so two
-        /// fibers holding the same one would overwrite each other's park. The
-        /// two ways an environment reaches another fiber or thread both drop
-        /// it: `Bjo.Spawn` asks for <see cref="ForChild"/>, and `blocking`
-        /// hands its thunk the same copy.
-        internal readonly FiberWatch? Park;
+        /// fibers holding the same one would overwrite each other's park; and
+        /// two fibers holding the same environment object would hold the same
+        /// one. So an environment with a token is never shared: `Bjo.Spawn`
+        /// asks for <see cref="ForChild"/>, which copies it, and `blocking`
+        /// hands its thunk the object of the fiber that is waiting for it.
+        internal FiberWatch? Park;
 
         internal DynEnv(
             Bjolang.Runtime.BjoOutputPort output,
@@ -1346,14 +1352,11 @@ public static partial class BjolangRuntime {
         internal DynEnv WithOut(Bjolang.Runtime.BjoOutputPort w) => new(w, In, Cancel, Scope, Vals, Park);
         internal DynEnv WithIn(Bjolang.Runtime.BjoInputPort r) => new(Out, r, Cancel, Scope, Vals, Park);
 
-        /// The cell travels with the environment except where the token changes
-        /// under it, which is the one thing it may not outlive.
-        internal DynEnv WithPark(FiberWatch? park) => new(Out, In, Cancel, Scope, Vals, park);
-
         /// What a fiber spawned from this environment starts with: everything
         /// but the park cell, which is this fiber's own. The child builds its
-        /// own at its first sync.
-        public object ForChild() => Park is null ? this : WithPark(null);
+        /// own at its first sync, into an object of its own. Without a token
+        /// no sync ever builds one, and the child may share this object.
+        public object ForChild() => Cancel is null ? this : new DynEnv(Out, In, Cancel, Scope, Vals);
 
         /// Binding a token by hand leaves the scope alone. That is the airlock
         /// `parameterize ((current-cancel t))` has always been: a fiber can be
