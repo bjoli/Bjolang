@@ -859,7 +859,8 @@ Which of the two a program wants depends on whether anything else wants those
 cores; a scheduler of its own with Go's spinner cap could in principle have
 both. A continuation in the slot also waits for its thread to unwind, so a
 chain that blocks its thread would strand it, the hazard the spawn batch's
-watchdog exists for.
+watchdog exists for. Measured again after the changes below, with more
+workloads: see "Under load".
 
 **Every thread-static access is a `__tls_get_addr` call.** libcoreclr is loaded
 as a shared library, so its thread-local storage is dynamic, and both a managed
@@ -947,6 +948,80 @@ are the protocol's own stores of references: installing and restoring the
 no frame, so `perf`'s frame-pointer unwinding charges it to the caller's caller;
 read call graphs through barriers with that in mind. Server and workstation GC
 made no difference to any of this.
+
+### Under load
+
+Every row above has one chain runnable at a time on an idle machine, the one
+shape in which pool workers spinning for work cost nobody anything. Three more
+look at scheduling:
+
+    bench/perf/drive.py --rings 1,12,1000     # K rings of 10 at once, ~1M hops
+    bench/perf/drive.py --mixed 0,12          # one ring beside C crunching fibers
+    bench/perf/drive.py --quota 200 --procs 2 --rings 1,12,1000
+    bench/perf/drive.py --cpus 0,2,4,6 --procs 4 --rings 1,12,1000
+
+`--quota` runs in a systemd scope with a `CPUQuota`, as a container would, and
+`--procs` tells the runtime so through `DOTNET_PROCESSOR_COUNT`; `--cpus` pins.
+On the 5900X CPUs 2k and 2k+1 share a core, so `0,2,4,6` is four whole cores.
+
+**The `runnext` slot again — measured, not kept.** Rebuilt behind an
+environment switch at depth 4, after the spin gate, the pool and the awaiter
+changes above. Nanoseconds per hop, all cores unless stated, default tiering
+without the call-counting delay (the next paragraph), median of five:
+
+                                  wall, off -> on   CPU, off -> on
+    1000-node ring (one chain)        64 -> 77         319 -> 94
+    1 / 2 rings of 10            65 -> 65 / 40 -> 37   73 -> 74 / 81 -> 76
+    6 rings of 10                     18 -> 19          94 -> 98
+    12 rings of 10                    16 -> 15         148 -> 131
+    24 rings of 10                    14 -> 14         201 -> 219
+    1000 rings of 10                  27 -> 22         375 -> 316
+    ring beside 12 crunchers         100 -> 72          -
+    quota 200%, 1, 2, 12, 1000 rings  equal            equal
+    4 cores, 1, 2, 12, 1000 rings     equal or within 3 ns
+
+It is the old trade again. The single chain takes 30% of the CPU it did and
+is 20% slower, the overlap of one thread unwinding while another carries the
+chain on being gone. Under load the slot is level or ahead: with work for
+every worker, nobody is idle to spin, and keeping a woken fiber where it was
+woken costs nothing. Beside crunching fibers the ring moved little; on four
+cores the crunchers lost 5.6% to it without the slot and 2.8% with it. Not
+better everywhere, so not kept. Measured first with the call-counting delay on,
+the slot had looked 40% worse at 12 and 24 rings; that was the artefact below.
+
+What a scheduler of its own could add is the case the slot gives up: Go lets
+one spinning worker pick up a woken goroutine while the waker carries on, so a
+single chain keeps its overlap at the cost of one spinner instead of five. That
+is the one row it would win, on an idle machine, and nothing measured under
+load or under a quota points to the pool.
+
+**Tier-up under load — a measuring artefact.** At first 12 rings got only three
+times the throughput of one and 24 got less than 12, at twice the instructions
+per hop. That was tiered compilation, not scheduling. With every hardware
+thread busy, methods were still running instrumented tier-0 code
+(`JIT_CountProfile32` was a fifth of the cycles) well after the warm-up, though
+with four workers they had tiered up; the likeliest reason is that the
+background compilation got too little CPU, which was not confirmed. With
+`DOTNET_TC_CallCountingDelayMs=0`, which promotes a method after its thirtieth
+call instead of after a quiet 100 ms, the rows agree with
+`--tc0`. Nanoseconds per hop, all cores:
+
+                          instr   wall   CPU
+    24 rings, default      2612     30   555
+    24 rings, delay 0      1069     11   177
+    same, 4 workers        1092     21    81
+
+So independent chains do scale: 24 rings move a hop every 11 ns against one
+ring's 63. What CPU they cost beyond the 4-worker run is mostly SMT, which
+counts two threads' time on one core. With `--tc0`, one worker per whole core
+ran 24 rings at 17 ns on 159 CPU-ns, and adding the sibling threads made it 15
+ns on 239. Neither profile showed workers spinning (`ThreadNative_SpinWait` 18
+samples of 45,000) or a migration or context switch. `drive.py` sets the delay
+to 0 for every row.
+
+**The ten-node ring does not spin.** One ring of ten costs 79 CPU-ns per hop
+for 66 wall, close to one core; the thousand-node ring costs 345 for 73. Why the
+shape changes how many workers wake has not been looked into.
 
 ---
 

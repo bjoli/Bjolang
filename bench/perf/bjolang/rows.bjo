@@ -15,12 +15,19 @@
 ;; A rep is a million rendezvous. It prints nothing and times nothing:
 ;; bench/perf/drive.py runs it under `perf stat` at two rep counts and divides
 ;; the difference, so that startup, compilation and the warm-up drop out.
+;;
+;; Three rows take a count, `rows ROW K REPS`, and look at scheduling rather
+;; than at the path: `rings` runs K rings at once, timed like the others;
+;; `mixed` runs one ring beside K fibers of pure computation, and `crunch` the
+;; computation alone. Those two time themselves and print a line per rep.
 
 (import (std prelude))
 
 (import/extern
   (gc-collect (: System.GC.Collect (-> void)))
-  (gc-wait-finalizers (: System.GC.WaitForPendingFinalizers (-> void))))
+  (gc-wait-finalizers (: System.GC.WaitForPendingFinalizers (-> void)))
+  (timestamp (: System.Diagnostics.Stopwatch.GetTimestamp (-> long)))
+  (stopwatch-frequency (: System.Diagnostics.Stopwatch.Frequency #:get)))
 
 (: settle (-> void))
 (defun (settle)
@@ -113,19 +120,104 @@
   (ignore (sync (promise-join (bjo (skewed-receiver chs rounds)))))
   (ignore (sync (promise-join sender))))
 
-(: run-row (-bjo-> string int int void))
-(defbjo (run-row row n size)
+;; Rings of this many put/get nodes, for the rows that run several at once.
+(def ring-width 10)
+
+;; The nodes of K rings of `ring-width`, each ring's last node counting its own
+;; token round `trips` times, all parked on their first receive.
+(: start-rings (-bjo-> int int (Vec (Chan int)) (Vec (Promise void))))
+(defbjo (start-rings k trips channels)
+  (loop (:for i (range 0 (* k ring-width)))
+        (:acc v (vecing
+                  (let ((base (* (/ i ring-width) ring-width))
+                        (j (% i ring-width)))
+                    (bjo (ring-node/put (vec-ref channels i)
+                                        (vec-ref channels (+ base (% (+ j 1) ring-width)))
+                                        (= j (- ring-width 1))
+                                        trips)))))))
+
+;; Send each ring its token and wait for every node.
+(: run-rings (-bjo-> int (Vec (Chan int)) (Vec (Promise void)) void))
+(defbjo (run-rings k channels nodes)
+  (def kicks (loop (:for r (range 0 k))
+                   (:acc v (vecing (bjo (send-one/put (vec-ref channels (* r ring-width)) 0))))))
+  (loop (:for r (range 0 k))
+        (:do (ignore (sync (promise-join (vec-ref kicks r))))))
+  (loop (:for i (range 0 (vec-length nodes)))
+        (:do (ignore (sync (promise-join (vec-ref nodes i)))))))
+
+(: make-channels (-> int (Vec (Chan int))))
+(defun (make-channels n)
+  (loop (:for i (range 0 n))
+        (:acc v (vecing (make-chan)))))
+
+;; K independent rings at once, 100000/K trips each: about a million hops in
+;; all, with K chains runnable at any moment instead of one.
+(: rings (-bjo-> int void))
+(defbjo (rings k)
+  (def channels (make-channels (* k ring-width)))
+  (def nodes (start-rings k (/ 100000 k) channels))
+  (settle)
+  (run-rings k channels nodes))
+
+;; Work that never parks: a fiber running it holds its thread throughout.
+(: crunch (-> int int))
+(defun (crunch n)
+  (let go ((i 0) (x 1))
+    (if (= i n)
+        x
+        (go (+ i 1) (% (+ (* x 31) i) 1000003)))))
+
+(: cruncher (-bjo-> int int))
+(defbjo (cruncher n)
+  (crunch n))
+
+(def crunch-work 60000000)
+
+(: ns-since (-> long long))
+(defun (ns-since t0)
+  (/ (* (- (timestamp) t0) 1000000000L) stopwatch-frequency))
+
+;; One ring of `ring-width` nodes, a million hops, while C fibers each crunch
+;; `crunch-work`; with `ring?` false the crunchers run alone. Prints the
+;; ring's nanoseconds per hop (0 without a ring) and the milliseconds until the
+;; last cruncher was done (0 without crunchers).
+(: mixed (-bjo-> int bool void))
+(defbjo (mixed c ring?)
+  (def channels (make-channels ring-width))
+  (def nodes (if ring?
+                 (start-rings 1 (/ 1000000 ring-width) channels)
+                 (list->vec '())))
+  (settle)
+  (def t0 (timestamp))
+  (def crunchers (loop (:for i (range 0 c))
+                       (:acc v (vecing (bjo (cruncher crunch-work))))))
+  (def ring-ns (if ring?
+                   (let () (run-rings 1 channels nodes) (/ (ns-since t0) 1000000L))
+                   0L))
+  (loop (:for i (range 0 c))
+        (:do (ignore (sync (promise-join (vec-ref crunchers i))))))
+  (def crunch-ms (if (> c 0) (/ (ns-since t0) 1000000L) 0L))
+  (println (str "mixed " (->str ring-ns) " " (->str crunch-ms))))
+
+(: run-row (-bjo-> string int int int void))
+(defbjo (run-row row k n size)
   (loop (:for r (range 0 n))
         (:do (cond
                ((= row "ring") (ring 1000 size #f))
                ((= row "ringput") (ring 1000 size #t))
                ((= row "choose") (skewed (* 1000 size) #f))
+               ((= row "rings") (rings k))
+               ((= row "mixed") (mixed k #t))
+               ((= row "crunch") (mixed k #f))
                (else (skewed (* 1000 size) #t))))))
 
+;; `rows ROW REPS`, or `rows ROW K REPS` for the rows that take a count.
 (defbjo (main args)
   (def row (vec-ref args 0))
-  (def reps (string->int (vec-ref args 1)))
+  (def k (if (= (vec-length args) 3) (string->int (vec-ref args 1)) 0))
+  (def reps (string->int (vec-ref args (- (vec-length args) 1))))
   ;; Warm-up at full size, so every rep after it runs tier-1 code.
-  (run-row row 3 1000)
-  (run-row row reps 1000)
+  (run-row row k 3 1000)
+  (run-row row k reps 1000)
   0)
