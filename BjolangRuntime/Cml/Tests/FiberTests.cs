@@ -35,6 +35,8 @@ public static class FiberTests
         Run("a called fiber's context change stays in the callee", CalleeContextStaysInCallee);
         Run("a failure before the first suspension reaches the caller", CallFailsBeforeSuspending);
         Run("a failure after suspending reaches the caller", CallFailsAfterSuspending);
+        Run("a suspended call's box is reused once its caller has read it", SuspendedCallBoxIsReused);
+        Run("a reused box carries a failure and then a value of its own", ReusedBoxCarriesAFailure);
         Run("AsPromise on a call that did not suspend is already complete", AsPromiseOfCompletedCall);
         Run("a spawn whose body never took its core still lands", SpawnBodyWithoutCore);
 
@@ -122,6 +124,65 @@ public static class FiberTests
     {
         await Cml.Always(0);
         throw new InvalidOperationException("boom");
+    }
+
+    private static async Fiber<int> ReceiveThenFail(Channel<int> ch)
+    {
+        int v = await ch.Receive();
+        if (v < 0) throw new InvalidOperationException("negative");
+        return v;
+    }
+
+    /// Wait for a call to land, then read it the way its awaiter does.
+    private static int Read(Fiber<int> call)
+    {
+        var awaiter = call.GetAwaiter();
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!awaiter.IsCompleted && DateTime.UtcNow < deadline) Thread.Yield();
+        return awaiter.GetResult();
+    }
+
+    /// <summary>
+    /// A call that suspends is a box; once its caller has read the outcome the
+    /// box goes back to the reading thread's free list, and the next suspension
+    /// of the same function there takes it out again, with nothing of the first
+    /// call left in it.
+    /// </summary>
+    private static void SuspendedCallBoxIsReused()
+    {
+        var ch = new Channel<int>();
+
+        var first = ReceiveThenFail(ch);
+        var box = first.Core;
+        Assert(box is not null, "the first call suspended");
+        Cml.Sync(new ChannelSendEvent<int>(ch, 1), _ => { });
+        AssertEqual(1, Read(first), "the first call's value");
+
+        var second = ReceiveThenFail(ch);
+        Assert(ReferenceEquals(second.Core, box), "the second call reused the first call's box");
+        Cml.Sync(new ChannelSendEvent<int>(ch, 2), _ => { });
+        AssertEqual(2, Read(second), "the second call's value");
+    }
+
+    private static void ReusedBoxCarriesAFailure()
+    {
+        var ch = new Channel<int>();
+
+        var failing = ReceiveThenFail(ch);
+        var box = failing.Core;
+        Assert(box is not null, "the failing call suspended");
+        Cml.Sync(new ChannelSendEvent<int>(ch, -1), _ => { });
+        try
+        {
+            Read(failing);
+            throw new AssertionException("expected the call's failure at the read");
+        }
+        catch (InvalidOperationException) { }
+
+        var next = ReceiveThenFail(ch);
+        Assert(ReferenceEquals(next.Core, box), "the failed call's box was reused");
+        Cml.Sync(new ChannelSendEvent<int>(ch, 3), _ => { });
+        AssertEqual(3, Read(next), "a value, not the failure the box carried before");
     }
 
     private static void ExceptionSurfacesAtAwait()

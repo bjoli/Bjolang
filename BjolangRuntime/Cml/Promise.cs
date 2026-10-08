@@ -341,6 +341,23 @@ public class Promise<T> : IEvent<Result<T>>,
     /// </summary>
     protected virtual void OnLanded(ExceptionDispatchInfo? error) { }
 
+    /// <summary>
+    /// The one awaiter of a called bjoroutine has read the outcome. A promise
+    /// that anything else can reach does nothing here; the box of a suspended
+    /// call goes back to its pool (see <c>CalledFiber</c>).
+    /// </summary>
+    internal virtual void ReleaseAfterRead() { }
+
+    /// <summary>Back to a promise that has not landed, for a pooled subclass.</summary>
+    private protected void ResetForReuse()
+    {
+        _waiters = null;
+        _value = default!;
+        _error = null;
+        _pruneAt = 8;
+        _claimed = 0;
+    }
+
     // ---- waiter registration ----------------------------------------------
 
     /// <summary>

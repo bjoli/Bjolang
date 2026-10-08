@@ -139,17 +139,68 @@ internal sealed class FiberStateMachineBox<TStateMachine> : IFiberResume
 /// The same rules as <see cref="FiberStateMachineBox{TStateMachine}"/> apply: the
 /// state machine is copied in once, and <see cref="Context"/> is re-captured at
 /// every suspension.
+///
+/// # Pooled
+///
+/// A call that suspends is a box and its resume delegate, and a service that
+/// waits for every reply suspends on nearly every call. So a box goes back to a
+/// per-thread free list when its caller has read the outcome
+/// (<see cref="ReleaseAfterRead"/>, from <see cref="FiberAwaiter{T}.GetResult"/>),
+/// and comes out again at the next suspension of a call of the same type, its
+/// delegate with it.
+///
+/// Why that is safe. The compiler awaits a fiber once and reads it once, and
+/// only that read releases: a promise reached any other way — a spawn's body
+/// forwarding to it, <c>RunToCompletion</c>, <c>AsPromise</c> — is never
+/// released, and is simply not reused. By the time the outcome can be read the
+/// call has completed, so no await of the call is outstanding and nothing holds
+/// its resume delegate: each await's registration fires once, and the
+/// cancellation watch drops its copy when the park ends. The callee's own
+/// thread may still be returning from <c>TrySetResult</c>, but after
+/// publishing the outcome that path touches nothing of the box but a virtual
+/// no-op.
 /// </summary>
 internal sealed class CalledFiber<TStateMachine, T> : Promise<T>, IFiberResume
     where TStateMachine : IAsyncStateMachine
 {
+    private const int MaxCached = 16;
+
+    [ThreadStatic] private static CalledFiber<TStateMachine, T>? t_free;
+
+    // The free list's link, and its depth from this box down while on it.
+    private CalledFiber<TStateMachine, T>? _nextFree;
+    private int _freeDepth;
+
     public TStateMachine StateMachine = default!;
     public object? Context;
 
     private readonly Action _moveNext;
     public Action MoveNextAction => _moveNext;
 
-    public CalledFiber() => _moveNext = Run;
+    private CalledFiber() => _moveNext = Run;
+
+    internal static CalledFiber<TStateMachine, T> Rent()
+    {
+        var box = t_free;
+        if (box is null) return new CalledFiber<TStateMachine, T>();
+        t_free = box._nextFree;
+        box._nextFree = null;
+        return box;
+    }
+
+    internal override void ReleaseAfterRead()
+    {
+        StateMachine = default!;
+        Context = null;
+        ResetForReuse();
+
+        var head = t_free;
+        int depth = head is null ? 0 : head._freeDepth;
+        if (depth >= MaxCached) return;
+        _nextFree = head;
+        _freeDepth = depth + 1;
+        t_free = this;
+    }
 
     private void Run() => FiberResume.Run(ref StateMachine, Context);
 
@@ -401,7 +452,17 @@ public readonly struct FiberAwaiter<T> : ICriticalNotifyCompletion
 
     // Called from inside MoveNext, so throwing here is converted to SetException by
     // the state machine. This is the correct place for a failure to surface.
-    public T GetResult() => _p is null ? _result : _p.Outcome.Unwrap();
+    //
+    // The compiler awaits a fiber once and reads it once, here, so this is where a
+    // suspended call's box is handed back: after the outcome is read, before it is
+    // returned or thrown.
+    public T GetResult()
+    {
+        if (_p is null) return _result;
+        var outcome = _p.Outcome;
+        _p.ReleaseAfterRead();
+        return outcome.Unwrap();
+    }
 
     public void OnCompleted(Action continuation) => UnsafeOnCompleted(continuation);
 
@@ -441,7 +502,8 @@ internal static class FiberBuilder
 
         if (current is null)
         {
-            var called = new CalledFiber<TStateMachine, T> { Context = FiberContext.Current };
+            var called = CalledFiber<TStateMachine, T>.Rent();
+            called.Context = FiberContext.Current;
             core = called;
             called.StateMachine = stateMachine;   // the one and only copy from the stack
             return called.MoveNextAction;

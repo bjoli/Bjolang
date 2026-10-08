@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* A call that suspends reuses the box of an earlier one
+
+- *A called bjoroutine that suspends no longer allocates a box each
+  time.* A call that suspends needs a heap home for its state machine
+  and something for its caller to wait on, one object that was new
+  every time. It now goes back to a per-thread free list once its
+  caller has read the outcome, and the next call of the same function
+  to suspend there takes it out again. On ~bench/service~, where the
+  client's ~request~ suspends on nearly every call, all cores went
+  from 366 to 350 ms and allocation from 2075 to 1692 bytes a request.
+- Only the caller's own await gives a box back. A call whose promise
+  is reached any other way — a spawn's body handing its call's result
+  on, ~RunToCompletion~ — is not reused, and behaves as before.
+
 * Timeouts no longer cost a .NET timer each
 
 - *An armed ~timeout~ is a node in a timer wheel of the runtime's own.*

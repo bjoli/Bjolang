@@ -1127,6 +1127,21 @@ and one shared 1 ms tick, running only while something is linked, fires what is
 due. On `bench/service`: all cores 408 -> 366 ms (2.73M requests/s; Go 2.27M,
 Hopac 2.42M), four cores 511 -> 483 ms, and 160 bytes a request less.
 
+**A suspended call's box, reused.** A called bjoroutine that suspends is one
+object, `CalledFiber`, its state machine's box and its caller's promise at once,
+with a resume delegate made in its constructor. The client's `request` suspends
+on nearly every call, so that was two objects a request. The box now goes back
+to a per-thread free list (16 deep, per state machine type) when the caller's
+`FiberAwaiter.GetResult` has read the outcome, and the next suspension of the
+same function on that thread takes it out, delegate and all. Only that read
+releases: the compiler awaits a fiber once and reads it once, and a promise
+reached another way (`SpawnSettle`'s forward, `RunToCompletion`, `AsPromise`)
+is never released and so never reused. When the read happens the call has
+completed, nothing holds its resume delegate any more, and the callee's thread,
+if it is still returning from `TrySetResult`, touches only a virtual no-op of
+the box. `bench/service`: all cores 366 -> 350 ms, 2075 -> 1692 bytes a
+request.
+
 ---
 
 ## 6. Known issues
