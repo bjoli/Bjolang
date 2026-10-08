@@ -1207,6 +1207,34 @@ What it gets: the tail under saturation, a third of the CPU for a lone chain,
 and the many-ring rows. Go, against these, is 498 ms and 440 ms on the service,
 Hopac 336 and 413.
 
+**A web server at fixed rates.** `bench/bjoweb-rate.py` loads bjoweb's
+`examples/hello.exe` with oha at a fixed rate over 256 connections, timing each
+request from when it should have been sent. Both schedulers top out near 185k
+requests a second, at the same CPU per rate, and the median is about the same.
+The tail varies a lot from run to run; over four or five runs, p99.9 at 25k a
+second was 14-23 ms for Workers and 16-34 for the pool, which says nothing, and
+at 100k 19-20 ms against 38-56, which does. At 2k a second both have a p99.9
+near 16 ms, so some of every tail here is not the scheduler.
+
+But with bjoweb's defaults — 16 worker fibers, 128 requests queued, the newest
+refused with a 503 past that — Workers refused 0.1% to 2% of the requests from
+25k a second up, and the pool none. These are not stalls. Logged one by one at
+100k, the refusals came in half of all 10 ms windows, windows whose slowest
+answer took about a millisecond. The queue is simply where a burst waits now.
+A request comes in on a pool thread running Kestrel, which posts it to the
+server's inbox, and the post from outside a fiber enqueues the worker fiber
+it wakes. With the pool that went on the posting thread's own LIFO queue, run
+before that thread took any more of Kestrel's work, so arrivals were paced by
+the answering and a burst waited in Kestrel, unbounded. With Workers it goes
+to the global queue for the workers' threads, and Kestrel's threads go on
+admitting. That is what a bounded queue is for, but 128 is short of what 256
+connections can have in flight. `#:workers 64` left 0.1-0.3% refused, and
+`#:queue 1024` none, with Workers' p99.9 at 19 ms at 100k a second against the
+pool's 38 — but for one run at 25k a second in which 0.2% of the answers were
+not 200, which three more runs did not repeat. Queueing the pump that a post from outside wakes on the posting
+thread's own queue, so that it ran as soon as Kestrel's item returned, changed
+nothing; neither did waking a pump for every resume, as Go's `ready` does.
+
 ---
 
 ## 6. Known issues
