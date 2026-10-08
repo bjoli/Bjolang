@@ -740,7 +740,89 @@ stays; it costs nothing it would be worth reasoning away.
 
 ---
 
-## 5. Known issues
+## 5. Hardware counters, against Hopac
+
+Hopac allocates six times what this runtime does on the ring (208 B/op against
+0) and was faster on it, so allocation is not what separates the two. What does
+was measured with hardware counters.
+
+### How
+
+`bench/perf/drive.py` runs one row of `bench/perf/bjolang/rows.bjo` or its Hopac
+twin `bench/perf/hopac` under `perf stat`, at 2 and at 12 reps of a million
+operations, and divides the difference by ten million: startup, JIT compilation
+and the warm-up are in both runs and cancel. The counters are user-space only,
+which is all an unprivileged process may count at `perf_event_paranoid` 2.
+`--one-core` pins the process to one CPU; `--tc0` sets
+`DOTNET_TieredCompilation=0`.
+
+`--tc0` matters. With tiering on, parts of BjolangRuntime were still running
+tier-0 code after fifteen million operations, call counting
+(`JIT_CountProfile32`) was 3-8% of all instructions, and Hopac's numbers carried
+the same residue. Compare with it off.
+
+To attribute, `perf record` needs `DOTNET_PerfMapEnabled=1` and
+`DOTNET_EnableWriteXorExecute=0`. With W^X on, JIT-compiled code runs from a
+file-backed alias, perf never consults the perf map, and every managed frame is
+an unnamed address.
+
+    DOTNET_TieredCompilation=0 DOTNET_PerfMapEnabled=1 DOTNET_EnableWriteXorExecute=0 \
+      taskset -c 2 perf record -e instructions:u -c 100000 -- dotnet rows.exe ringput 12
+    perf report --no-children --stdio --sort sym
+
+### What it says
+
+Per operation, median of three, `--tc0` (5900X, .NET 10):
+
+    one core               instr  cycles  IPC  br-miss  L1d-miss
+    Ring (put/get)          1698     630  2.69   4.88     33.7
+    Hopac ring               841     277  3.03   0.16      8.7
+    Skewed choose, put      4056    1291  3.14   0.86      4.6
+    Hopac choose            2363     725  3.26   0.17      9.1
+
+    all cores              instr  cycles  IPC  br-miss  cpu-ns  wall-ns
+    Ring (put/get)          1894    1465  1.29   6.27     430       85
+    Hopac ring              1096     373  2.94   0.52     118      105
+    Skewed choose, put      2433     794  3.06   0.12     173      170
+    Hopac choose            2561     800  3.20   0.41     202      195
+
+On one core the path is twice Hopac's, and mispredicts thirty times as often. On
+the choose the one-core row is the one that counts: there the sender is never
+already waiting, so every sync takes the full park path, where on many cores the
+receiver mostly finds an offer and commits on the poll.
+
+**The ring's instructions, one core** (`perf record`, share of all user
+instructions; mispredicts follow roughly the same spread):
+
+    Monitor enter and exit on the channel, with the __tls_get_addr
+      they cost inside libcoreclr                                   ~17%
+    the token: AmbientRace (7.7% on its own), Cell, Arm, End, Watched ~14%
+    the two awaiter layers: ChanPut/SyncOp GetAwaiter, GetResult,
+      UnsafeOnCompleted                                              ~14%
+    write barriers, and InlinedMemmoveGCRefsHelper copying an
+      awaiter struct with references into the state machine box     ~8.5%
+    Scheduler.Dispatch and CalledFiber.Run                            ~7%
+    op rent and recycle                                               ~6%
+
+Hopac's hop is mostly allocation and collection — `RhpNewFast`, `memset`, write
+barriers and the GC's plan phase are about 30% of it — and its channel logic is
+a few virtual calls on continuation objects. It takes no `Monitor`: its locks
+are its own `Interlocked` spin locks.
+
+**On many cores the cost is scheduling.** The ring's wall time is Hopac's or
+better, but its CPU time is four to five cores' worth for a chain that has one
+runnable fiber at a time. Its code ran on 68 different threads in one recording,
+and 15% of all cycles were pool workers spin-waiting for work
+(`ThreadNative_SpinWait`). That spinning is what keeps the wall time down:
+with `DOTNET_ThreadPool_UnfairSemaphoreSpinLimit=0` the ring went from 62-79 to
+167-184 ns/op. A resumed fiber runs inline until `MaxInlineDepth` and then
+crosses the pool, and an idle worker that is spinning picks it up on another
+core, which is where the L1 misses come from. Hopac pushes a woken job onto its
+worker's own stack and keeps going on one core.
+
+---
+
+## 6. Known issues
 
 ### Channel ordering is not guaranteed
 

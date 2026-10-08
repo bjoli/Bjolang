@@ -1,0 +1,131 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; One row of bench/bjolang/cmlbench.bjo, chosen by argument, run three times
+;; as a warm-up and then REPS times: `rows ring|ringput|choose|chooseput REPS`.
+;; A rep is a million rendezvous. It prints nothing and times nothing:
+;; bench/perf/drive.py runs it under `perf stat` at two rep counts and divides
+;; the difference, so that startup, compilation and the warm-up drop out.
+
+(import (std prelude))
+
+(import/extern
+  (gc-collect (: System.GC.Collect (-> void)))
+  (gc-wait-finalizers (: System.GC.WaitForPendingFinalizers (-> void))))
+
+(: settle (-> void))
+(defun (settle)
+  (gc-collect)
+  (gc-wait-finalizers)
+  (gc-collect))
+
+(: ring-node (-bjo-> (Chan int) (Chan int) bool int void))
+(defbjo (ring-node in out is-last trips)
+  (let go ()
+    (def msg (sync (chan-recv in)))
+    (if (= msg -1)
+        (if is-last unit (sync (chan-send out -1)))
+        (let ((m (if is-last (+ msg 1) msg)))
+          (if (and is-last (>= m trips))
+              (let () (sync (chan-send out -1)) (go))
+              (let () (sync (chan-send out m)) (go)))))))
+
+(: send-one (-bjo-> (Chan int) int void))
+(defbjo (send-one ch v)
+  (sync (chan-send ch v)))
+
+(: ring-node/put (-bjo-> (Chan int) (Chan int) bool int void))
+(defbjo (ring-node/put in out is-last trips)
+  (let go ()
+    (def msg (chan-get in))
+    (if (= msg -1)
+        (if is-last unit (chan-put out -1))
+        (let ((m (if is-last (+ msg 1) msg)))
+          (if (and is-last (>= m trips))
+              (let () (chan-put out -1) (go))
+              (let () (chan-put out m) (go)))))))
+
+(: send-one/put (-bjo-> (Chan int) int void))
+(defbjo (send-one/put ch v)
+  (chan-put ch v))
+
+(: ring (-bjo-> int int bool void))
+(defbjo (ring workers trips put?)
+  (def channels (loop (:for i (range 0 workers))
+                      (:acc v (vecing (make-chan)))))
+  (def handles (loop (:for i (range 0 workers))
+                     (:acc v (vecing (if put?
+                                         (bjo (ring-node/put (vec-ref channels i)
+                                                             (vec-ref channels (% (+ i 1) workers))
+                                                             (= i (- workers 1))
+                                                             trips))
+                                         (bjo (ring-node (vec-ref channels i)
+                                                         (vec-ref channels (% (+ i 1) workers))
+                                                         (= i (- workers 1))
+                                                         trips)))))))
+  (settle)
+  (if put?
+      (ignore (sync (promise-join (bjo (send-one/put (vec-ref channels 0) 0)))))
+      (ignore (sync (promise-join (bjo (send-one (vec-ref channels 0) 0))))))
+  (loop (:for i (range 0 workers))
+        (:do (ignore (sync (promise-join (vec-ref handles i)))))))
+
+(: skewed-sender (-bjo-> (Chan int) int void))
+(defbjo (skewed-sender ch rounds)
+  (loop (:for i (range 0 rounds))
+        (:do (sync (chan-send ch i)))))
+
+(: skewed-sender/put (-bjo-> (Chan int) int void))
+(defbjo (skewed-sender/put ch rounds)
+  (loop (:for i (range 0 rounds))
+        (:do (chan-put ch i))))
+
+(: skewed-receiver (-bjo-> (Vec (Chan int)) int void))
+(defbjo (skewed-receiver chs rounds)
+  (def ev (choose (chan-recv (vec-ref chs 0))
+                  (chan-recv (vec-ref chs 1))
+                  (chan-recv (vec-ref chs 2))
+                  (chan-recv (vec-ref chs 3))
+                  (chan-recv (vec-ref chs 4))
+                  (chan-recv (vec-ref chs 5))
+                  (chan-recv (vec-ref chs 6))
+                  (chan-recv (vec-ref chs 7))))
+  (loop (:for i (range 0 rounds))
+        (:do (ignore (sync ev)))))
+
+(: skewed (-bjo-> int bool void))
+(defbjo (skewed rounds put?)
+  (def chs (loop (:for i (range 0 8))
+                 (:acc v (vecing (make-chan)))))
+  (def sender (if put?
+                  (bjo (skewed-sender/put (vec-ref chs 0) rounds))
+                  (bjo (skewed-sender (vec-ref chs 0) rounds))))
+  (settle)
+  (ignore (sync (promise-join (bjo (skewed-receiver chs rounds)))))
+  (ignore (sync (promise-join sender))))
+
+(: run-row (-bjo-> string int int void))
+(defbjo (run-row row n size)
+  (loop (:for r (range 0 n))
+        (:do (cond
+               ((= row "ring") (ring 1000 size #f))
+               ((= row "ringput") (ring 1000 size #t))
+               ((= row "choose") (skewed (* 1000 size) #f))
+               (else (skewed (* 1000 size) #t))))))
+
+(defbjo (main args)
+  (def row (vec-ref args 0))
+  (def reps (string->int (vec-ref args 1)))
+  ;; Warm-up at full size, so every rep after it runs tier-1 code.
+  (run-row row 3 1000)
+  (run-row row reps 1000)
+  0)
