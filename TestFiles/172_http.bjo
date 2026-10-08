@@ -12,6 +12,7 @@
 (import (std ports))
 (import (std simpletest))
 (import (std http))
+(import (only (text encodings) iso-8859-1))
 
 (import/class
   (Listener       (: System.Net.HttpListener (-> Listener)))
@@ -125,6 +126,13 @@
         ;; Declared UTF-8, but "hi" in UTF-16 behind its mark.
         ((string-starts-with? path "/utf16-as-utf8")
          (respond-bytes! resp "text/plain; charset=utf-8" #[255 254 104 0 105 0]))
+        ;; "€2" in windows-1252, where € is 0x80: a code page .NET has only
+        ;; once its code page provider is registered.
+        ((string-starts-with? path "/cp1252")
+         (respond-bytes! resp "text/plain; charset=Windows-1252" #[128 50]))
+        ;; "grüße" in Latin-1, under a charset nothing knows.
+        ((string-starts-with? path "/klingon")
+         (respond-bytes! resp "text/plain; charset=x-klingon" #[103 114 252 223 101]))
         ((string-starts-with? path "/echo")
          (respond! resp 200 (str verb " " (request-body req)
                                  " basket=" (header-or-empty req "X-Basket")
@@ -190,9 +198,9 @@
   (match (listen-on listener 8497 20)
     (None (fail "no free port to listen on") 1)
     ((Some port)
-     ;; Eleven requests reach the server below. The fiber is detached: nothing
+     ;; Fourteen requests reach the server below. The fiber is detached: nothing
      ;; joins it, and `Discard`'s impl for a promise is what says so.
-     (ignore (bjo (serve listener 11)))
+     (ignore (bjo (serve listener 14)))
 
      (let ((base (str "http://127.0.0.1:" (int->string port))))
 
@@ -276,6 +284,32 @@
                   (codes (response-text r)) "65533 65533 104 0 105 0")
           (response-close r)))
 
+       (match (fetch (http-get (str base "/cp1252")))
+         ((Err e) (fail "the windows-1252 GET failed"))
+         ((Ok r)
+          (expect "a code page, named in any case" (response-text r) "€2")
+          (response-close r)))
+
+       ;; A charset nothing knows is an error, not a guess at UTF-8.
+       (match (fetch (http-get (str base "/klingon")))
+         ((Err e) (fail "the x-klingon GET failed"))
+         ((Ok r)
+          (expect "an unknown charset raises, naming it"
+                  (match (try (response-text r) #:catch (System.Net.Http.HttpRequestException))
+                    ((Ok text) (str "read as " text))
+                    ((Err e) (.-Message e)))
+                  (str "the response declares charset=x-klingon, which is not an encoding "
+                       "(text encodings) knows. response-bytes-port reads its bytes as they are"))
+          (response-close r)))
+
+       (match (fetch (http-get (str base "/klingon")))
+         ((Err e) (fail "the second x-klingon GET failed"))
+         ((Ok r)
+          (expect "and its bytes are there to decode by what they are"
+                  (read-all (reencode-input-port (response-bytes-port r) iso-8859-1))
+                  "grüße")
+          (response-close r)))
+
        ;; --- with-response ---------------------------------------------------
        (with-response (r (fetch (http-get (str base "/hello"))))
          (match r
@@ -286,7 +320,7 @@
        ;; --- A url that is not http ------------------------------------------
        ;;
        ;; Refused before anything is sent, which is why it does not count
-       ;; against the server's eleven.
+       ;; against the server's fourteen.
        (match (fetch (http-get "ftp://example.com/fruit"))
          ((Ok r) (fail "an ftp url was accepted") (ignore r))
          ((Err e) (expect-true "a non-http url is refused as a value" #t)))

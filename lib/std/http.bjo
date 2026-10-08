@@ -32,7 +32,7 @@
   ;; Reading the answer
   response-status response-ok? response-reason
   response-header response-headers
-  response-text response-port response-close
+  response-text response-port response-bytes-port response-close
 
   ;; Scoped
   with-response
@@ -42,6 +42,7 @@
 
 (import (std prelude))
 (import (std syntax-match))
+(import (only (text encodings) utf-8 encoding-named))
 
 ;; Every export is documented there; the module doc is too.
 (:doc #:file "http.bjodoc")
@@ -66,7 +67,6 @@
   (Completion     (: System.Net.Http.HttpCompletionOption))
   (StatusCode     (: System.Net.HttpStatusCode))
   (Decompression  (: System.Net.DecompressionMethods))
-  (Encoding       (: System.Text.Encoding))
   (Span           (: System.TimeSpan))
   (Stream         (: System.IO.Stream))
   (Url            (: System.Uri (-> string Url) #:exceptions (System.UriFormatException)))
@@ -80,7 +80,6 @@
   (headers-read   (: System.Net.Http.HttpCompletionOption.ResponseHeadersRead #:get))
   (decompress-all (: System.Net.DecompressionMethods.All #:get))
   (no-timeout     (: System.Threading.Timeout.InfiniteTimeSpan #:get))
-  (utf8           (: System.Text.Encoding.UTF8 #:get))
   ;; Bytes in a declared encoding as an input port: read as they are when
   ;; they are UTF-8, transcoded to UTF-8 otherwise.
   (text-port-over (: Bjolang.Runtime.InputPorts.Over (-> Stream Encoding InputPort)))
@@ -90,8 +89,6 @@
   ;; nothing reports usefully.
   (span-seconds   (: System.TimeSpan.FromSeconds (-> double Span)))
   (escape         (: System.Uri.EscapeDataString (-> string string)))
-  (encoding-named (: System.Text.Encoding.GetEncoding (-> string Encoding)
-                     #:exceptions (System.ArgumentException)))
 
   ;; The client and the handler under it.
   (handler-lifetime!   (: System.Net.Http.SocketsHttpHandler.PooledConnectionLifetime
@@ -254,7 +251,7 @@
 
 (: attach! (-> Message string string Content))
 (defun (attach! message text content-type)
-  (def content (cast Content (StringContent. text utf8)))
+  (def content (cast Content (StringContent. text utf-8)))
   (message-content! message content)
   ;; StringContent has already put `text/plain` there.
   (ignore (header-remove! (cast Headers (content-headers content)) "Content-Type"))
@@ -384,20 +381,25 @@
   (#:sync (clr-stream content))
   (#:bjo  (clr-stream-await content)))
 
-;; What the server said the body was encoded as. UTF-8 when it said nothing,
-;; when it said something we do not have, or when it said something silly:
-;; being wrong about the encoding beats refusing to read the body.
+;; What the server said the body was encoded as: any name or alias
+;; `encoding-named` knows, and UTF-8 when it named none. A charset nothing
+;; here knows is an error rather than a guess, since text decoded by the wrong
+;; encoding is wrong without a word; `response-bytes-port` reads such a body.
 (: charset-of (-> Response Encoding))
 (defun (charset-of r)
   (match (response-header r "content-type")
-    (None utf8)
+    (None utf-8)
     ((Some content-type)
      (match (charset-name content-type)
-       (None utf8)
+       (None utf-8)
        ((Some name)
         (match (encoding-named name)
-          ((Ok found) found)
-          ((Err e) utf8)))))))
+          ((Some found) found)
+          (None
+           (raise (http-error
+                   (str "the response declares charset=" name
+                        ", which is not an encoding (text encodings) knows. "
+                        "response-bytes-port reads its bytes as they are"))))))))))
 
 (: charset-name (-> string (Option string)))
 (defun (charset-name content-type)
@@ -427,11 +429,20 @@
 ;;
 ;; Decoded by the charset the server declared, and only by it: a byte order
 ;; mark is not treated specially. A UTF-8 body is the port's bytes as they
-;; arrived; another charset is transcoded to UTF-8 on the way in.
+;; arrived; another charset is transcoded to UTF-8 on the way in. A charset
+;; that no encoding has raises.
 (: response-port (-> Response InputPort))
 (defun (response-port r)
   (def body (reply-content (record-ref r raw)))
   (text-port-over (body-stream body) (charset-of r)))
+
+;; The body's bytes as they arrived, whatever the charset says, as Racket's
+;; HTTP client hands them over: for a body that is not text, or text to decode
+;; yourself with `reencode-input-port` or `bytes->string`.
+(: response-bytes-port (-> Response InputPort))
+(defun (response-bytes-port r)
+  (def body (reply-content (record-ref r raw)))
+  (text-port-over (body-stream body) utf-8))
 
 (: response-text (-> Response string))
 (defun (response-text r)

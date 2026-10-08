@@ -89,10 +89,12 @@
     you cannot afford to lose twice.}
     @item{@strong{Repeated headers are folded with @code{", "}.} That is
     wrong for @code{Set-Cookie} alone, and nothing here reads cookies yet.}
-    @item{@strong{UTF-8 is assumed} when the server names no charset, names
-    one that is not installed, or names nonsense.}
-    @item{@strong{Bodies are text.} There is no bytes story yet, so an image
-    or a zip has no type to arrive as.}
+    @item{@strong{UTF-8 is assumed} when the server names no charset. A
+    charset that is not an encoding @code{(text encodings)} knows raises
+    rather than being guessed at.}
+    @item{@strong{A body is bytes when asked.} @code{response-bytes-port}
+    hands them over as they arrived, for an image, a zip, or text to decode
+    yourself.}
     }
     """))
 
@@ -333,7 +335,8 @@
   (summary "The whole body, as text.")
   (arg r "The response.")
   (returns "The body, decoded by the charset the server named, or UTF-8.")
-  (see response-port)
+  (raises System.Net.Http.HttpRequestException "When the charset the server named is not an encoding (text encodings) knows.")
+  (see response-port response-bytes-port)
   (reference """
     Reads it through @code{response-port}, so it may be called once, and not
     after @code{response-port}. Colourless: reading suspends inside a
@@ -344,23 +347,46 @@
   (summary "The body as a port, to read as it arrives.")
   (arg r "The response.")
   (returns "A @code{InputPort} over the body.")
-  (see response-text)
+  (raises System.Net.Http.HttpRequestException "When the charset the server named is not an encoding (text encodings) knows.")
+  (see response-text response-bytes-port)
   (reference """
     So @code{read-line}, @code{port->chan} and @code{read-json} all work on
     it. Reading suspends inside a bjoroutine and blocks outside one, exactly
     as reading a file does.
 
-    Once per response: a second call hands out a second reader over a stream
-    the first one is already draining.
+    Once per response, and once between this and
+    @code{response-bytes-port}: a second call hands out a second reader
+    over a stream the first one is already draining.
 
-    The text is decoded by the charset the @code{Content-Type} names. UTF-8
-    is assumed when it names none, names one that is not installed, or
-    names nonsense.
+    The text is decoded by the charset the @code{Content-Type} names, by
+    any name or alias @code{encoding-named} knows, and UTF-8 is assumed when
+    it names none. A charset nothing knows raises, since a body decoded by a
+    guess is wrong without saying so; @code{response-bytes-port} still reads
+    it.
 
     The declared charset is the one used, and a byte order mark is not
     treated specially. A UTF-8 body is the port's bytes as they arrived;
     a body in another charset is transcoded to UTF-8 on the way in, as
-    @code{reencode-input-port} does.
+    @code{reencode-input-port} does. Bytes that do not decode read as
+    U+FFFD, as on any port.
+    """))
+
+(:doc response-bytes-port
+  (summary "The body's bytes as they arrived, whatever the charset says.")
+  (arg r "The response.")
+  (returns "A @code{InputPort} over the body, undecoded.")
+  (see response-port bytes->string)
+  (example """
+    ;; A body in a charset the server names wrongly, decoded by the one it is.
+    (def text (reencode-input-port (response-bytes-port r) windows-1252))
+    (read-all text)
+    """)
+  (reference """
+    As Racket's HTTP client hands a body over. For one that is not text, an
+    image or a zip, read with @code{read-some} or @code{read-bytes}; for text
+    in a charset to choose yourself, @code{reencode-input-port} or
+    @code{bytes->string}. Once per response, and not as well as
+    @code{response-port}.
     """))
 
 (:doc response-close

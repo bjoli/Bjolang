@@ -3,6 +3,19 @@
 
 What each change guarantees, and what it leaves open.
 
+* (std http): an unknown charset is an error, and a body can be bytes
+
+- *A charset nothing knows raises.* ~response-port~ and ~response-text~
+  raise an ~HttpRequestException~ naming it, where they used to read the
+  body as UTF-8 regardless: a body decoded by a guess is wrong without
+  saying so. No charset at all is still UTF-8.
+- *A charset is looked up by ~encoding-named~,* so every name and alias
+  ~(text encodings)~ knows works, the code pages included (~windows-1252~
+  was not there before, its provider unregistered).
+- *~(response-bytes-port r)~ is the body as it arrived,* undecoded, as
+  Racket's HTTP client hands one over: for an image, or text to decode with
+  ~reencode-input-port~ or ~bytes->string~.
+
 * (text bjodat) reads bytes too, and is as fast as it was
 
 - *The bjodat reader reads the document's bytes,* as the JSON reader now
