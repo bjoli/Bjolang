@@ -1,0 +1,210 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; A sharded key-value service under load: the Bjolang twin of
+;; bench/service/go/main.go, whose header has the specification. Same counts,
+;; same channels, same work, same checksum.
+;;
+;;     service [REPS [CLIENTS [REQUESTS]]]
+
+(import (std prelude))
+(import (std mutable vec))
+
+(import/class
+  (Process (: System.Diagnostics.Process))
+  (TimeSpan (: System.TimeSpan)))
+
+(import/extern
+  (gc-collect (: System.GC.Collect (-> void)))
+  (gc-wait-finalizers (: System.GC.WaitForPendingFinalizers (-> void)))
+  (timestamp (: System.Diagnostics.Stopwatch.GetTimestamp (-> long)))
+  (stopwatch-frequency (: System.Diagnostics.Stopwatch.Frequency #:get))
+  (current-process (: System.Diagnostics.Process.GetCurrentProcess (-> Process)))
+  (processor-time (: System.Diagnostics.Process.TotalProcessorTime (-> Process TimeSpan) #:get))
+  (timespan-ms (: System.TimeSpan.TotalMilliseconds (-> TimeSpan double) #:get))
+  (processor-count (: System.Environment.ProcessorCount #:get)))
+
+(def shards 16)
+(def slots-per-shard 1024)
+(def key-space (* shards slots-per-shard))
+(def decode-work 100)
+(def serve-work 20)
+(def deadline-ms 1000)
+(def op-get 0)
+(def op-put 1)
+
+(type
+  (: Req (Record (: op int) (: key int) (: value int) (: reply (Chan int))))
+  (: ClientOut (Record (: checksum long) (: samples (List long)) (: timeouts int))))
+
+(: settle (-> void))
+(defun (settle)
+  (gc-collect)
+  (gc-wait-finalizers)
+  (gc-collect))
+
+(: ns-since (-> long long))
+(defun (ns-since t0)
+  (/ (* (- (timestamp) t0) 1000000000L) stopwatch-frequency))
+
+(: cpu-ms (-> long))
+(defun (cpu-ms)
+  (cast System.Int64 (timespan-ms (processor-time (current-process)))))
+
+(: crunch (-> int int int))
+(defun (crunch n seed)
+  (let go ((i 0) (x seed))
+    (if (= i n)
+        x
+        (go (+ i 1) (% (+ (* x 31) i) 1000003)))))
+
+;; Serves its slots until told to stop, and answers the work it did.
+(: shard (-bjo-> int (Chan Req) (Chan int) long))
+(defbjo (shard id requests quit)
+  (def slots (mutablevec-with-capacity slots-per-shard))
+  (loop (:for j (range 0 slots-per-shard))
+        (:do (mutablevec-add! slots (* (+ (* j shards) id) 7))))
+  (let go ((work 0L))
+    (match (sync (choose (wrap (chan-recv requests) (fun (r) (Some r)))
+                         (wrap (chan-recv quit) (fun (q) None))))
+      ((Some r)
+       (let* ((k (record-ref r key))
+              (w (cast System.Int64 (crunch serve-work k)))
+              (slot (/ k shards))
+              (old (mutablevec-ref slots slot)))
+         (when (= (record-ref r op) op-put)
+           (mutablevec-set! slots slot (record-ref r value)))
+         (sync (chan-send (record-ref r reply) old))
+         (go (+ work w))))
+      (None work))))
+
+;; One request and its answer, or None at the deadline.
+(: request (-bjo-> (Vec (Chan Req)) int int int (Option int)))
+(defbjo (request chans op key value)
+  (def reply (make-chan))
+  (sync (chan-send (vec-ref chans (% key shards))
+                   (Req (op op) (key key) (value value) (reply reply))))
+  (sync (choose (wrap (chan-recv reply) (fun (v) (Some v)))
+                (wrap (timeout deadline-ms) (fun (u) None)))))
+
+(: sub-get (-bjo-> (Vec (Chan Req)) int (Chan int) void))
+(defbjo (sub-get chans key results)
+  (def v (match (request chans op-get key 0)
+           ((Some v) v)
+           (None -1)))
+  (sync (chan-send results v)))
+
+;; Four keys from four spawned fibers: the sum of the answers, and how many
+;; missed their deadline.
+(: multi-get (-bjo-> (Vec (Chan Req)) int (Chan int) (Tuple int int)))
+(defbjo (multi-get chans key results)
+  (loop (:for j (range 0 4))
+        (:do (ignore (bjo (sub-get chans (% (+ key j) key-space) results)))))
+  (let go ((j 0) (sum 0) (lost 0))
+    (if (= j 4)
+        (Tuple sum lost)
+        (let ((v (sync (chan-recv results))))
+          (if (< v 0)
+              (go (+ j 1) sum (+ lost 1))
+              (go (+ j 1) (+ sum v) lost))))))
+
+(: single (-bjo-> (Vec (Chan Req)) int int (Tuple int int)))
+(defbjo (single chans op key)
+  (match (request chans op key (* key 7))
+    ((Some v) (Tuple v 0))
+    (None (Tuple 0 1))))
+
+(: client (-bjo-> int int (Vec (Chan Req)) ClientOut))
+(defbjo (client c requests chans)
+  (def results (make-chan))
+  (let go ((i 0)
+           (s (cast System.Int64 (+ c 1)))
+           (checksum 0L)
+           (samples '())
+           (timeouts 0))
+    (if (= i requests)
+        (ClientOut (checksum checksum) (samples samples) (timeouts timeouts))
+        (let* ((sampled (= (% i 8) 0))
+               (t0 (if sampled (timestamp) 0L))
+               (s2 (% (+ (* s 1103515245L) 12345L) 2147483648L))
+               (key (cast System.Int32 (% s2 (cast System.Int64 key-space))))
+               (d (crunch decode-work key)))
+          (def (answer lost)
+            (if (= (% i 10) 9)
+                (multi-get chans key results)
+                (single chans (if (= (% i 5) 0) op-put op-get) key)))
+          (go (+ i 1)
+              s2
+              (+ checksum (cast System.Int64 (+ answer (% d 3))))
+              (if sampled (Cons (ns-since t0) samples) samples)
+              (+ timeouts lost))))))
+
+(: percentile (-> (Vec long) int int long))
+(defun (percentile sorted per of)
+  (vec-ref sorted (/ (* (vec-length sorted) per) of)))
+
+(: run-rep (-bjo-> int int int void))
+(defbjo (run-rep n clients requests)
+  (def chans (loop (:for i (range 0 shards)) (:acc v (vecing (make-chan)))))
+  (def quits (loop (:for i (range 0 shards)) (:acc v (vecing (make-chan)))))
+  (def shard-ps (loop (:for i (range 0 shards))
+                      (:acc v (vecing (bjo (shard i (vec-ref chans i) (vec-ref quits i)))))))
+  (settle)
+
+  (def t0 (timestamp))
+  (def c0 (cpu-ms))
+  (def client-ps (loop (:for c (range 0 clients))
+                       (:acc v (vecing (bjo (client c requests chans))))))
+  (def (checksum samples timeouts)
+    (let go ((c 0) (checksum 0L) (samples '()) (timeouts 0))
+      (if (= c clients)
+          (Tuple checksum samples timeouts)
+          (match (sync (promise-join (vec-ref client-ps c)))
+            ((Ok o) (go (+ c 1)
+                        (+ checksum (record-ref o checksum))
+                        (list-append (record-ref o samples) samples)
+                        (+ timeouts (record-ref o timeouts))))
+            ((Err e) (go (+ c 1) checksum samples (+ timeouts requests)))))))
+  (def wall (/ (ns-since t0) 1000000L))
+  (def cpu (- (cpu-ms) c0))
+
+  (loop (:for i (range 0 shards))
+        (:do (sync (chan-send (vec-ref quits i) 0))))
+  (def work
+    (let go ((i 0) (work 0L))
+      (if (= i shards)
+          work
+          (match (sync (promise-join (vec-ref shard-ps i)))
+            ((Ok w) (go (+ i 1) (+ work w)))
+            ((Err e) (go (+ i 1) work))))))
+
+  (def sorted (list->vec (list-sort samples)))
+  (when (> n 0)
+    (println (str "rep " (->str n)
+                  " wall_ms " (->str wall)
+                  " cpu_ms " (->str cpu)
+                  " p50_ns " (->str (percentile sorted 50 100))
+                  " p99_ns " (->str (percentile sorted 99 100))
+                  " p999_ns " (->str (percentile sorted 999 1000))
+                  " timeouts " (->str timeouts)
+                  " checksum " (->str (+ checksum work))))))
+
+(defbjo (main args)
+  (def argc (vec-length args))
+  (def reps (if (> argc 0) (string->int (vec-ref args 0)) 5))
+  (def clients (if (> argc 1) (string->int (vec-ref args 1)) 1000))
+  (def requests (if (> argc 2) (string->int (vec-ref args 2)) 1000))
+  (println (str "bjolang ProcessorCount=" (->str processor-count)
+                " clients=" (->str clients) " requests=" (->str requests)))
+  (loop (:for n (range 0 (+ reps 1)))
+        (:do (run-rep n clients requests)))
+  0)
