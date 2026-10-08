@@ -820,6 +820,47 @@ crosses the pool, and an idle worker that is spinning picks it up on another
 core, which is where the L1 misses come from. Hopac pushes a woken job onto its
 worker's own stack and keeps going on one core.
 
+**How many workers spin.** Classified by stack, 13% of the ring's cycles were
+pool workers waiting for work (`PortableThreadPool+WorkerThread`,
+`LowLevelLifoSemaphore`, `LowLevelSpinWaiter`) and 0.1% `Monitor` contention.
+In 5 ms windows a median of five threads spun at once (90th percentile six,
+most nine) while one thread had the chain. Go bounds this: a spinning M is
+allowed only while spinners are fewer than half the busy Ps, and `wakep` starts
+one only when none is spinning, so a single chain has at most one. The .NET pool
+has no such cap: every worker that dequeues an item requests another, and each
+spins its budget before it sleeps.
+
+`DOTNET_ThreadPool_UnfairSemaphoreSpinLimit` bounds how long each spins, not how
+many, and it does not help (ring put/get, all cores, `--tc0`; CPU and wall ns
+per hop):
+
+    spin limit   70 (default)   30         10         3          0
+    CPU / wall   448 / 80       417 / 90   409 / 95   536 / 185  — / 167-184
+
+**A `runnext` slot — measured, not kept.** Built as an experiment: past
+`MaxInlineDepth` a continuation went into a one-item thread-local slot instead of
+the pool, run by the outermost `Dispatch` frame once the stack had unwound; a
+second one still went to the pool. The chain then stays on its thread and wakes
+nobody. With the depth as a variable (ring put/get, all cores, `--tc0`):
+
+                       instr  cycles  br-miss  L1d-miss  CPU ns  wall ns
+    no slot, depth 50   1894    1465     6.27      49      430       85
+    slot, depth 1       1908     776     4.19      31      194      170
+    slot, depth 4       1787     662     2.84      21      151      140
+    slot, depth 16      1749     687     4.69      22      157      145
+    slot, depth 50      1732     687     5.26      33      157      145
+
+The slot takes a third of the CPU, and depth 4 halves the mispredicts: unwinding
+fifty nested resumes overflows the return-address predictor. But the single
+chain's wall time goes from 85 to 140 ns. The 85 depends on one thread unwinding
+its fifty frames while another carries the chain on, which is overlap paid for
+with four to five cores. The skewed choose moved within its noise either way.
+Which of the two a program wants depends on whether anything else wants those
+cores; a scheduler of its own with Go's spinner cap could in principle have
+both. A continuation in the slot also waits for its thread to unwind, so a
+chain that blocks its thread would strand it, the hazard the spawn batch's
+watchdog exists for.
+
 **Every thread-static access is a `__tls_get_addr` call.** libcoreclr is loaded
 as a shared library, so its thread-local storage is dynamic, and both a managed
 `[ThreadStatic]` read and the native `Monitor` (which needs the current
