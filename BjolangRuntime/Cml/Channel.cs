@@ -27,7 +27,7 @@ namespace Bjoml;
 /// </summary>
 public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 {
-    private readonly object _lock = new();
+    private readonly SpinGate _lock = new();
     private ChannelSendSide<T>? _sendSide;
     private PutOp<T>? _giversHead;
     private PutOp<T>? _giversTail;
@@ -75,7 +75,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     /// </summary>
     internal Withdrawal CancelParked(Operation op, int gen)
     {
-        lock (_lock)
+        using (_lock.Hold())
         {
             if (op.ParkedGen != gen) return Withdrawal.Refused;
             op.ParkedGen = Operation.Withdrawn;
@@ -121,7 +121,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         T putValue = default!;
         bool matched = false;
 
-        lock (_lock)
+        using (_lock.Hold())
         {
             PutOp<T>? prev = null;
             PutOp<T>? curr = _giversHead;
@@ -248,7 +248,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         int getEventId = 0;
         bool matched = false;
 
-        lock (_lock)
+        using (_lock.Hold())
         {
             GetOp<T>? prev = null;
             GetOp<T>? curr = _takersHead;
@@ -374,7 +374,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     {
         get
         {
-            lock (_lock)
+            using (_lock.Hold())
             {
                 CleanTakers();
                 int count = 0;
@@ -396,7 +396,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     {
         get
         {
-            lock (_lock)
+            using (_lock.Hold())
             {
                 CleanGivers();
                 int count = 0;
@@ -423,7 +423,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     {
         get
         {
-            lock (_lock)
+            using (_lock.Hold())
             {
                 int count = 0;
                 for (var curr = _takersHead; curr != null; curr = curr.Next) count++;
@@ -444,7 +444,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     {
         get
         {
-            lock (_lock)
+            using (_lock.Hold())
             {
                 int count = 0;
                 for (var curr = _takersHead; curr != null; curr = curr.Next)
@@ -459,7 +459,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     {
         get
         {
-            lock (_lock)
+            using (_lock.Hold())
             {
                 int count = 0;
                 for (var curr = _giversHead; curr != null; curr = curr.Next)
@@ -474,7 +474,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     {
         get
         {
-            lock (_lock)
+            using (_lock.Hold())
             {
                 int count = 0;
                 for (var curr = _giversHead; curr != null; curr = curr.Next) count++;
@@ -588,7 +588,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         int getEventId = 0;
         bool matched = false;
 
-        lock (_lock)
+        using (_lock.Hold())
         {
             GetOp<T>? prev = null;
             GetOp<T>? curr = _takersHead;
@@ -740,7 +740,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         T putValue = default!;
         bool matched = false;
 
-        lock (_lock)
+        using (_lock.Hold())
         {
             PutOp<T>? prev = null;
             PutOp<T>? curr = _giversHead;
@@ -888,7 +888,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         int putEventId = 0;
         value = default!;
 
-        lock (_lock)
+        using (_lock.Hold())
         {
             PutOp<T>? prev = null;
             PutOp<T>? curr = _giversHead;
@@ -1012,7 +1012,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         bool matched = false;
         T val = default!;
 
-        lock (_lock)
+        using (_lock.Hold())
         {
             if (op.ParkedGen < 0) return ParkResult.Withdrawn;
 
@@ -1143,7 +1143,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         SyncState? getState = null;
         int getEventId = 0;
 
-        lock (_lock)
+        using (_lock.Hold())
         {
             GetOp<T>? prev = null;
             GetOp<T>? curr = _takersHead;
@@ -1256,7 +1256,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         int getEventId = 0;
         bool matched = false;
 
-        lock (_lock)
+        using (_lock.Hold())
         {
             if (op.ParkedGen < 0) return ParkResult.Withdrawn;
 

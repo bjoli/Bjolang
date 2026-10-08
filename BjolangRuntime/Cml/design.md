@@ -869,6 +869,32 @@ ring come from the channel's lock sites (`TryDirectSend`, `ParkReceive`,
 `TryDirectReceive`, `TakeParked`); the rest from `FiberContext` in
 `CalledFiber.Run`, `InlineDepth` in `Dispatch`, and `AmbientRace`.
 
+**A channel's lock is a spin gate — kept.** `Channel<T>` locked a plain object
+with `lock`, which is `Monitor`: native code, a `__tls_get_addr` on enter and on
+exit for the owning thread, and recursion bookkeeping. `SpinGate` is what Hopac
+uses: one compare-exchange to take, one release store to give back, no owner,
+written `using (_lock.Hold())` where `lock (_lock)` was. It is not re-entrant,
+and need not be: every call made under a channel's lock is a compare-exchange
+on an op's or a `SyncState`'s word, or a walk of that channel's own lists.
+`MarkSynchronized`, which runs nacks, and every resume are called after the lock
+is released. The spins inside (`TrySyncWaiting`, `TryPair`) wait for a
+partner's transient claim, and `TryPair`'s argument that nothing holding a claim
+waits on a lock does not depend on whether a lock blocks or spins.
+
+    one core, --tc0         instr        cycles
+    Ring (put/get)          1698 -> 1441  630 -> 550
+    Skewed choose, put      4056 -> 3527  1291 -> 1121
+
+    all cores, --tc0        instr        cycles        CPU ns     wall ns
+    Ring (put/get)          1894 -> 1633  1465 -> 1290  430 -> 390  85 -> 75
+    Ring (sync)             2028 -> 1760  1546 -> 1370  521 -> 479  110 -> 105
+
+`System.Threading.Lock` was tried first, being re-entrant like `Monitor`, and
+cost more than `Monitor` did (1730 instructions on the one-core ring, 4393 on
+the choose): it identifies its owner by the managed thread id, which is another
+thread-static. The inbox and `SimpleChannel` still lock with `Monitor`; neither
+is on these paths.
+
 **`AmbientRace`'s read of the environment — measured, not worth acting on.**
 `perf record` put 7.7% of the ring's instructions in it, which overstates it:
 the samples include the helper it calls for the thread-static. Reading the

@@ -3,6 +3,18 @@
 
 What each change guarantees, and what it leaves open.
 
+* A channel's lock is a spin gate
+
+- *A rendezvous takes about 13% fewer instructions and cycles.* A channel
+  locked with ~Monitor~, which on Linux looks the current thread up through
+  the dynamic loader on every enter and exit. It now takes a gate of its
+  own: one compare-exchange and one store. On one core the ring went from
+  630 to 550 cycles per hop and the skewed choose from 1291 to 1121.
+- Nothing that runs under a channel's lock can take it again, which the
+  gate relies on: resumes and nacks run after it is released.
+- ~bench/perf/drive.py~ measures this with hardware counters, against
+  Hopac; ~BjolangRuntime/Cml/design.md~ has what it found.
+
 * bjo and the spawn forms take a block
 
 - *~(bjo (let () (work) (more) 1))~ compiles,* and so do ~spawn~,
