@@ -3,6 +3,18 @@
 
 What each change guarantees, and what it leaves open.
 
+* Timeouts no longer cost a .NET timer each
+
+- *An armed ~timeout~ is a node in a timer wheel of the runtime's own.*
+  A ~choose~ with a deadline arms its timeout every time it parks, and
+  each armed timeout created a ~System.Threading.Timer~ and took the
+  runtime timer queue's lock to arm it and again to cancel it. Now the
+  node itself is linked into a per-core wheel of one-millisecond slots
+  and unlinked the moment its branch loses. On ~bench/service~ all
+  cores went from 408 to 366 ms and four cores from 511 to 483 ms.
+- A timeout fires within about a millisecond of its deadline, as
+  before, and one that loses never fires.
+
 * A sync inside a called function no longer re-registers its fiber
 
 - *A fiber registers on its scope's cancellation token once, wherever

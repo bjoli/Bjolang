@@ -64,6 +64,8 @@ public static class CmlTests
         Run("an absolute deadline does not restart on the next sync", AtIsAbsolute);
         Run("a timeout that already passed is available at once", AtInThePastFiresNow);
         Run("a cancelled timeout never fires into a later sync", CancelledTimeoutStaysQuiet);
+        Run("timeouts that lose leave nothing in the timer wheel", LosingTimeoutsLeaveTheWheel);
+        Run("a timeout more than a lap of the wheel away fires on time", TimeoutBeyondALapFires);
         Run("combinator spec: a timeout becomes available on its own", SpecTimeoutFires);
         Run("combinator spec: a timeout loses to something already available", SpecTimeoutLoses);
 
@@ -838,6 +840,52 @@ public static class CmlTests
 
         Thread.Sleep(100);   // let any stray timer callbacks run
         AssertEqual(500, count, "each sync must commit exactly once");
+    }
+
+    /// <summary>
+    /// 2000 parked chooses, each with a ten-second deadline, each answered by a
+    /// send. Every deadline loses, and a losing deadline has to leave the wheel
+    /// then rather than at its due time: a service whose deadlines nearly all
+    /// lose would otherwise hold a second's worth of dead entries.
+    /// </summary>
+    private static void LosingTimeoutsLeaveTheWheel()
+    {
+        const int n = 2000;
+        int before = TimerWheel.LinkedCount;
+        var answered = new CountdownEvent(n);
+
+        for (int i = 0; i < n; i++)
+        {
+            var ch = new Channel<int>();
+            Cml.Sync(
+                Cml.Choose(
+                    Cml.Wrap((IEvent<int>)ch, static v => v),
+                    Cml.Wrap(Cml.Timeout(10_000), static _ => -1)),
+                v => { if (v >= 0) answered.Signal(); });
+            Cml.Sync(new ChannelSendEvent<int>(ch, i), static _ => { });
+        }
+
+        Assert(answered.Wait(5000), "every choose got its value");
+
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (TimerWheel.LinkedCount > before && DateTime.UtcNow < deadline) Thread.Sleep(1);
+        AssertEqual(before, TimerWheel.LinkedCount, "deadlines still in the wheel after losing");
+    }
+
+    /// <summary>
+    /// The wheel has 1024 one-millisecond slots, so a 1300 ms deadline is
+    /// passed over once, 276 ms in, and fires on the second lap.
+    /// </summary>
+    private static void TimeoutBeyondALapFires()
+    {
+        var done = new ManualResetEventSlim(false);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        long at = 0;
+
+        Cml.Sync(Cml.Timeout(1300), _ => { at = clock.ElapsedMilliseconds; done.Set(); });
+
+        Await(done, "a 1300 ms timeout", 5000);
+        Assert(at >= 1290 && at < 1800, $"a 1300 ms timeout fired after {at} ms");
     }
 
     private static void SpecTimeoutFires()

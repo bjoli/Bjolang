@@ -1117,6 +1117,16 @@ What is left: on four cores Bjolang is 1.5 times Hopac, in the per-sync path
 above, and its p99.9 there is 40 ms against Hopac's 6 and Go's 3.5. On one core
 Hopac lets a few clients starve (p99.9 660 ms) where Bjolang's is 190.
 
+**Timeouts on a wheel.** A `choose` with a deadline arms its timeout every time
+it parks, and each armed timeout was a `System.Threading.Timer`: a
+`TimerQueueTimer`, a `Timer` and a `TimerHolder`, and the runtime timer queue's
+lock to arm it and again to cancel it. `TimerWheel` keeps them instead: the
+`TimeoutNode` is its own entry, linked into a wheel of 1024 one-millisecond
+slots, one wheel per core under its own spin lock; a cancel unlinks it at once,
+and one shared 1 ms tick, running only while something is linked, fires what is
+due. On `bench/service`: all cores 408 -> 366 ms (2.73M requests/s; Go 2.27M,
+Hopac 2.42M), four cores 511 -> 483 ms, and 160 bytes a request less.
+
 ---
 
 ## 6. Known issues
