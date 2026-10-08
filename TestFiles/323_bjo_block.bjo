@@ -1,0 +1,49 @@
+;; `bjo` and the spawn forms on a form that is not a call. A call is split into
+;; operands evaluated here and a call made in the new fiber; any other form has
+;; nothing to split and runs in the fiber whole, as the body of a block lambda.
+;; These failed to compile: the body was emitted where C# has no statement.
+
+(import (std prelude))
+(import (std ports))
+(import (std simpletest))
+
+(: work (-> int int))
+(defun (work x) (* x 2))
+
+(: joined (-> (Promise int) int))
+(defun (joined p)
+  (match (sync/blocking (promise-join p))
+    ((Ok n) n)
+    ((Err e) -1)))
+
+(defun (main)
+  (expect "a block with statements before its value"
+          (joined (bjo (let () (ignore (work 1)) (ignore (work 2)) 7)))
+          7)
+
+  (expect "a let with bindings, all of it in the fiber"
+          (joined (bjo (let ((x (work 3)) (y (work 4))) (+ x y))))
+          14)
+
+  (expect "an if"
+          (joined (bjo (if (> (work 1) 1) (work 10) (work 20))))
+          20)
+
+  (expect "a block that suspends"
+          (joined (bjo (let () (sync (timeout 1)) 5)))
+          5)
+
+  ;; A void block, writing to a port and closing it: the close suspends on the
+  ;; fiber.
+  (match (byte-pipe)
+    ((Tuple in out)
+     (def closing (bjo (let () (write-string out "bye") (close-output-port out))))
+     (match (sync/blocking (promise-join closing))
+       ((Ok u) (expect "a void block" (read-all in) "bye"))
+       ((Err e) (fail "the void block raised")))))
+
+  ;; The other spawn forms take a block too.
+  (def done (make-chan))
+  (spawn (let () (ignore (work 1)) (sync (chan-send done 1))))
+  (expect "spawn on a block" (sync/blocking (chan-recv done)) 1)
+  0)

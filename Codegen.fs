@@ -3679,25 +3679,10 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
             generateBindingValue ctx (DeclareAndAssign(typeToString operand.Type, tmp)) operand
             { operand with Node = TIdent(tmp, []) }
 
-        let spawned =
-            match call.Node with
-            | TApply(callee, args, kwArgs) ->
-                let boundCallee =
-                    match callee.Node with
-                    | TIdent _ -> callee
-                    | _ -> bindOperand callee
-
-                let boundArgs = args |> List.map bindOperand
-                let boundKwArgs = kwArgs |> List.map (fun (n, e) -> n, bindOperand e)
-                { call with Node = TApply(boundCallee, boundArgs, boundKwArgs) }
-            // The parser only admits an application, so this is unreachable —
-            // but a spawn of something with nothing to split is still a spawn.
-            | _ -> call
-
         // `Fiber<void>` is not a type. A call that yields nothing yields the
         // unit, which is what the promise then carries.
         let payload =
-            if isVoidType spawned.Type then "Bjoml.Unit" else typeToString spawned.Type
+            if isVoidType call.Type then "Bjoml.Unit" else typeToString call.Type
 
         // One entry point per kind, rather than one entry point and a flag, so
         // that the generated C# says which of the four the source wrote. All
@@ -3714,10 +3699,34 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         // result of an async lambda, and this is exactly that call. The three
         // `Unit`-returning forms still need it, because the payload is the
         // *call's* type and not the form's.
-        emitTerminal ctx target expr.Type (fun c ->
-            append c $"%s{entryPoint}<%s{payload}>(async () => "
-            generateExpr c spawned
-            append c ")")
+        match call.Node with
+        | TApply(callee, args, kwArgs) ->
+            let boundCallee =
+                match callee.Node with
+                | TIdent _ -> callee
+                | _ -> bindOperand callee
+
+            let boundArgs = args |> List.map bindOperand
+            let boundKwArgs = kwArgs |> List.map (fun (n, e) -> n, bindOperand e)
+            let spawned = { call with Node = TApply(boundCallee, boundArgs, boundKwArgs) }
+
+            emitTerminal ctx target expr.Type (fun c ->
+                append c $"%s{entryPoint}<%s{payload}>(async () => "
+                generateExpr c spawned
+                append c ")")
+
+        // Any other form — `(bjo (let () (work) (more) 1))` — has no operands
+        // to split from a call, so the whole of it runs in the fiber, as the
+        // body of a block lambda. It is a method of its own, as a lambda's
+        // body is: its statements have a place to go, and a loop or a `seq`
+        // around the spawn is not its.
+        | _ ->
+            emitTerminal ctx target expr.Type (fun c ->
+                append c $"%s{entryPoint}<%s{payload}>(async () => {{\n"
+                let inner = { c with Prelude = None; Loop = None; InSeq = false; ReturnsVoid = false }
+                withIndent inner (fun b -> generateBlock b Return call)
+                indent c
+                append c "})")
 
     // `(task->event (fetch url))` — the event of making the call, not the call.
     //

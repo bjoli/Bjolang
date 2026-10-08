@@ -709,9 +709,10 @@ let rec parseExpr (s: SExpr) : Expr =
                 | [] -> failwithf $"Invalid seq syntax at %s{Lexer.formatPos r}. Expected: (seq body...)"
                 | bodyExprs -> ESeq(parseBody bodyExprs listRange, listRange)
 
-            // `(bjo (f x y))` and its three siblings. The operand must be a
-            // call: a spawn splits it into operands evaluated here and a call
-            // made over there, and there is nothing to split in anything else.
+            // `(bjo (f x y))` and its three siblings. The operand is a form in
+            // parentheses. A call is split into operands evaluated here and a
+            // call made in the new fiber; any other form, `(let () ...)` or an
+            // `if`, has nothing to split and runs in the fiber whole.
             //
             // All four start a fiber in the same way and differ only in what the
             // enclosing scope does about it afterwards, which is what
@@ -735,7 +736,7 @@ let rec parseExpr (s: SExpr) : Expr =
                 | [ SList(_ :: _, _) as call ] -> EBjo(parseExpr call, kind, listRange)
                 | _ ->
                     failwithf
-                        $"Invalid %s{sym} syntax at %s{Lexer.formatPos r}. Expected: (%s{sym} (f args...)) — one call, whose operands are evaluated here and whose call happens in the new fiber. For a thunk you already have, use spawn-thunk."
+                        $"Invalid %s{sym} syntax at %s{Lexer.formatPos r}. Expected: (%s{sym} (f args...)) — one call, whose operands are evaluated here and whose call happens in the new fiber, or one other form in parentheses, such as (let () ...), which runs in the new fiber whole. For a thunk you already have, use spawn-thunk."
 
             // `(spawn-evt (worker q))` — start this when the event is synced,
             // and cancel it if the branch loses.
