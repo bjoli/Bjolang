@@ -306,8 +306,8 @@ public sealed class BjoTcpListener : IDisposable {
     /// A connected socket as a connection: Nagle off, the peer remembered, and
     /// the stream owning the socket.
     ///
-    /// **Nagle is off deliberately.** A byte port has a write buffer of its own
-    /// and `flush!` is the program saying "send this now"; leaving Nagle on
+    /// **Nagle is off deliberately.** An output port has a write buffer of its own
+    /// and `flush-port` is the program saying "send this now"; leaving Nagle on
     /// would hold a flushed small write back waiting for an ACK, which is
     /// exactly wrong for a request/response protocol.
     /// </summary>
@@ -708,7 +708,7 @@ public static class Net {
 
     public static BjoInputPort ConnectionInput(BjoConnection connection) => connection.Input();
 
-    public static BjoByteOutputPort ConnectionOutput(BjoConnection connection) => connection.Output();
+    public static BjoOutputPort ConnectionOutput(BjoConnection connection) => connection.Output();
 
     public static BjolangRuntime.Option<BjoString.Utf8String> PeerAddress(BjoInputPort port) =>
         port.Peer is { } peer

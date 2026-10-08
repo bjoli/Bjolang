@@ -17,9 +17,6 @@
 (import (std prelude))
 (import (std simpletest))
 
-(import/class
-  (StringWriter (: System.IO.StringWriter (-> StringWriter))))
-
 (import/extern
   (exit-code (: System.Environment.ExitCode (-> int) #:get))
   (set-exit-code! (: System.Environment.ExitCode (-> int void) #:set)))
@@ -28,10 +25,10 @@
 ;; its effect on the console.
 (: printed (-> (-> void) string))
 (defun (printed body)
-  (def w (StringWriter.))
-  (parameterize ((current-output-port (cast TextOutputPort w)))
+  (def w (open-output-string))
+  (parameterize ((current-output-port w))
     (body))
-  (.ToString w))
+  (get-output-string w))
 
 ;; The hand-rolled check this file has to use instead of `expect`.
 ;;

@@ -10,14 +10,11 @@
 ;; where the runtime keeps them — a field on the environment rather than a slot
 ;; in the champ, because `display` reads the output port on every call — and
 ;; nothing about that shows here.
-;; `TextOutputPort` and the port operations come with the prelude, so there is
+;; `OutputPort` and the port operations come with the prelude, so there is
 ;; no `(import (std ports))` here — that module is only the drains that take a
 ;; reader procedure.
 (import (std prelude))
 (import (std simpletest))
-
-(import/class
-  (StringWriter (: System.IO.StringWriter (-> StringWriter))))
 
 ;; A parameter of a user's own. Module-level, and legal there because
 ;; `(Param int)` is closed — the restriction is on *open* types.
@@ -122,13 +119,13 @@
   ;; `displayln` names no port and never did. It goes to whatever the dynamic
   ;; environment says, so redirecting it needs no change at the call site — this
   ;; is the thing keyword arguments could not buy, and why `#:port` was dropped.
-  (def w (StringWriter.))
-  (parameterize ((current-output-port (cast TextOutputPort w)))
+  (def w (open-output-string))
+  (parameterize ((current-output-port w))
     (display "captured")
     (newline)
     (display "twice"))
 
-  (expect "output was captured" (.ToString w) "captured\ntwice")
+  (expect "output was captured" (get-output-string w) "captured\ntwice")
 
   ;; And the console got none of it: this line proves stdout came back, since
   ;; the harness reads it.
@@ -140,28 +137,28 @@
   ;; itself, so it is kept where a program's own parameters are kept rather than
   ;; in a field beside the output port. That is invisible from here, which is
   ;; the case being made: binding, nesting and restoring all read the same.
-  (def e1 (StringWriter.))
-  (def e2 (StringWriter.))
-  (parameterize ((current-error-port (cast TextOutputPort e1)))
+  (def e1 (open-output-string))
+  (def e2 (open-output-string))
+  (parameterize ((current-error-port e1))
     (.Write (parameter-ref current-error-port) "outer")
-    (parameterize ((current-error-port (cast TextOutputPort e2)))
+    (parameterize ((current-error-port e2))
       (.Write (parameter-ref current-error-port) "inner"))
     (.Write (parameter-ref current-error-port) "-again"))
 
-  (expect "error port captured and restored" (.ToString e1) "outer-again")
-  (expect "error port nests" (.ToString e2) "inner")
+  (expect "error port captured and restored" (get-output-string e1) "outer-again")
+  (expect "error port nests" (get-output-string e2) "inner")
 
   ;; The two output ports are stored two different ways now, so this pins down
   ;; that neither binding went to the other's place.
-  (def o3 (StringWriter.))
-  (def e3 (StringWriter.))
-  (parameterize ((current-output-port (cast TextOutputPort o3))
-                 (current-error-port (cast TextOutputPort e3)))
+  (def o3 (open-output-string))
+  (def e3 (open-output-string))
+  (parameterize ((current-output-port o3)
+                 (current-error-port e3))
     (display "to-out")
     (.Write (parameter-ref current-error-port) "to-err"))
 
   (expect "output and error do not alias"
-          (string-append (.ToString o3) (string-append "/" (.ToString e3)))
+          (string-append (get-output-string o3) (string-append "/" (get-output-string e3)))
           "to-out/to-err")
 
   ;; A parameter is an ordinary value, so it can be handed to a function that
@@ -212,10 +209,10 @@
   ;;
   ;; The restore is a `finally`, so an exception on its way out still puts the
   ;; environment back. Without this, one failed call would leave every later
-  ;; `display` writing into a dead StringWriter.
-  (def w2 (StringWriter.))
+  ;; `display` writing into a dead string port.
+  (def w2 (open-output-string))
   (def outcome
-    (try (parameterize ((indent 9) (current-output-port (cast TextOutputPort w2)))
+    (try (parameterize ((indent 9) (current-output-port w2))
            (.Substring "ab" 99))
       #:catch (System.ArgumentOutOfRangeException)))
 
@@ -224,7 +221,7 @@
     ((Err e) (println "ok: the body threw")))
 
   (expect "restored after a throw" (describe) "0/quiet")
-  (expect "port restored after a throw" (.ToString w2) "")
+  (expect "port restored after a throw" (get-output-string w2) "")
 
   ;; --- Tail calls under the restore ---------------------------------------
   (expect "named let inside parameterize" (sum-to 4) 5)

@@ -1,0 +1,101 @@
+;; One output port type, as in Racket: a port is bytes, and text is written to
+;; it as UTF-8. Text, characters and bytes mix on one port; a string port hands
+;; back its bytes or its text; a port can be re-encoded; many fibers can write
+;; to one port without tearing a line.
+
+(import (std prelude))
+(import (std ports))
+(import (only (text encodings) utf-16be))
+(import (text xml))
+(import (text xml write))
+(import (std simpletest))
+
+;; Bytes as text: "104.105." for "hi".
+(: shown (-> (Array byte) string))
+(defun (shown bs)
+  (let loop ((i 0) (acc ""))
+    (if (= i (array-length bs))
+        acc
+        (loop (+ i 1) (str acc (byte->string (array-ref bs i)) ".")))))
+
+(: drained (-> InputPort string))
+(defun (drained in)
+  (let go ((acc ""))
+    (match (read-some in)
+      ((Some bs) (go (str acc (shown bs))))
+      (None acc))))
+
+(: write-lines (-bjo-> OutputPort int int Unit))
+(defbjo (write-lines p who n)
+  (loop (:for i (range 0 n))
+        (:do (writeln p (str "fiber " (int->string who) " line " (int->string i) " ------"))))
+  unit)
+
+(: say-bye (-bjo-> OutputPort int))
+(defbjo (say-bye out)
+  (write-string out "bye")
+  (close-output-port out)
+  1)
+
+(defun (main)
+  ;; --- Text and bytes on one port -------------------------------------------
+  (def s (open-output-string))
+  (write-string s "hé")
+  (write-char s (integer->char 128512))
+  (write-bytes! s #[33])
+  (writeln s "")
+  (expect "the text" (get-output-string s) "hé😀!\n")
+  (expect "its UTF-8, with no byte order mark"
+          (shown (get-output-bytes s)) "104.195.169.240.159.152.128.33.10.")
+
+  ;; Bytes that are not UTF-8 read back as U+FFFD, and as themselves.
+  (def b (open-output-string))
+  (write-bytes! b #[97 255 98])
+  (expect "get-output-string is lenient" (get-output-string b) (str "a" (char->string (integer->char 65533)) "b"))
+  (expect "get-output-bytes is exact" (shown (get-output-bytes b)) "97.255.98.")
+
+  ;; --- A file port takes both -------------------------------------------------
+  (def path "322_output_port.tmp")
+  (match (open-output-file path)
+    ((Ok p) (with-open ((o p))
+              (write-string o "line one\n")
+              (write-bytes! o #[0 1 2])
+              (write-char o #\å)))
+    ((Err e) (fail "could not open the file")))
+  (expect "what the file holds" (shown (file-read-bytes path)) "108.105.110.101.32.111.110.101.10.0.1.2.195.165.")
+  (file-delete path)
+
+  ;; --- Another encoding ---------------------------------------------------------
+  (def under (open-output-string))
+  (def wide (reencode-output-port under utf-16be))
+  (write-string wide "hi")
+  (close-output-port wide)
+  (expect "a re-encoded port writes its encoding into the port under it"
+          (shown (get-output-bytes under)) "0.104.0.105.")
+  (write-string under "!")
+  (expect "and leaves that port open" (shown (get-output-bytes under)) "0.104.0.105.33.")
+
+  ;; --- Closing on a fiber -------------------------------------------------------
+  (match (byte-pipe)
+    ((Tuple in out)
+     (def closing (bjo (say-bye out)))
+     (expect "a close on a fiber writes what was buffered"
+             (match (sync/blocking (promise-join closing)) ((Ok n) (drained in)) ((Err e) "raised"))
+             "98.121.101.")))
+
+  ;; --- Many fibers, one port ------------------------------------------------------
+  (def shared (open-output-string))
+  (def fibers (loop (:for who (range 0 8)) (:acc v (vecing (bjo (write-lines shared who 500))))))
+  (loop (:for f fibers) (:do (ignore (sync/blocking (promise-join f)))))
+  (def lines (string-split (get-output-string shared) "\n"))
+  (expect "every line arrived" (vec-length lines) 4001)
+  (expect "and none was torn"
+          (vec-length (vec-filter (fun (l) (or (= l "") (string-ends-with? l " ------"))) lines))
+          4001)
+
+  ;; --- A .NET API writes to a port directly -----------------------------------------
+  (def x (open-output-string))
+  (match (node->xml (xml-element (xml-name "p") Nil (list (xml-text "räk"))) x)
+    ((Ok _) (expect "XmlWriter wrote UTF-8 into the port" (get-output-string x) "<p>räk</p>"))
+    ((Err e) (fail "the XML could not be written")))
+  0)

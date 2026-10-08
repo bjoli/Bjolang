@@ -52,11 +52,12 @@
   ;; An input port over a stream, registered on no scope: a child's pipes are
   ;; `run`'s to close, not the ambient scope's.
   (PipePort (: Bjolang.Runtime.BjoInputPort (-> Stream PipePort)))
-  (StreamWriter (: System.IO.StreamWriter (-> string bool StreamWriter)
-                   #:exceptions (System.IO.DirectoryNotFoundException
-                                 System.UnauthorizedAccessException
-                                 System.IO.IOException)))
-  ;; A `TextWriter` joined to an input port. See `BjolangRuntime/BjoProcess.cs`.
+  (StreamWriter (: System.IO.StreamWriter))
+  ;; An output port over a stream, registered on no scope, for the same
+  ;; reason: a child's stdin and a redirect's file are `run`'s to close.
+  (PortOver (: Bjolang.Runtime.BjoOutputPort (-> Stream bool PortOver)))
+  (BufferMode (: Bjolang.Runtime.BufferMode))
+  ;; An output port joined to an input port. See `BjolangRuntime/BjoProcess.cs`.
   (BjoPipe (: BjoPipe))
   (InvalidOperationException
     (: System.InvalidOperationException (-> string InvalidOperationException))))
@@ -85,6 +86,14 @@
   (process-await (: System.Diagnostics.Process.WaitForExitAsync (-> Process void) #:async))
   (process-code  (: System.Diagnostics.Process.ExitCode (-> Process int) #:get))
   (process-stdin (: System.Diagnostics.Process.StandardInput (-> Process StreamWriter) #:get))
+  ;; The pipe under a child's input writer, written by nothing yet.
+  (writer-bytes  (: System.IO.StreamWriter.BaseStream (-> StreamWriter Stream) #:get))
+  (port-mode!    (: Bjolang.Runtime.BjoOutputPort.Mode (-> OutputPort BufferMode void) #:set))
+  ;; The synchronous close. What `run` closes on a caller's behalf is a child's
+  ;; stdin or a pipe's writer, both unbuffered, so there is nothing left to
+  ;; write and no reason for the close to suspend.
+  (close-unbuffered (: BjolangRuntime.CloseOutput (-> OutputPort void)))
+  (unbuffered    (: Bjolang.Runtime.BufferMode.None BufferMode #:get))
   (process-stdout (: System.Diagnostics.Process.StandardOutput (-> Process StreamReader) #:get))
   (process-stderr (: System.Diagnostics.Process.StandardError (-> Process StreamReader) #:get))
   ;; The pipe under a child's output reader, read by nothing yet.
@@ -96,21 +105,17 @@
                                   System.NotSupportedException
                                   System.ComponentModel.Win32Exception)))
 
-  ;; Every command under one `errors-into-file` writes to the same file from a
-  ;; fiber of its own, so the writer they share has to be the locking one.
-  (shared-writer (: System.IO.TextWriter.Synchronized (-> TextOutputPort TextOutputPort)))
-
   (make-pipe    (: BjoPipe.Create (-> BjoPipe)))
   (pipe-input   (: BjoPipe.Reader (-> BjoPipe InputPort) #:get))
-  (pipe-output  (: BjoPipe.Writer (-> BjoPipe TextOutputPort) #:get))
+  (pipe-output  (: BjoPipe.Writer (-> BjoPipe OutputPort) #:get))
 
   ;; Not `double->string`, which is `.ToString()` and so follows the machine's
   ;; locale: on a Swedish one `(sleep 0.5)` would ask for `0,5`.
   (number->argument (: BjoProc.Argument (-> double string)))
 
   ;; Async pumps.
-  (copy-stream  (: BjoProc.PumpAsync (-> InputPort TextOutputPort void) #:async))
-  (copy-into    (: BjoProc.PumpIntoAsync (-> InputPort TextOutputPort void) #:async))
+  (copy-stream  (: BjoProc.PumpAsync (-> InputPort OutputPort void) #:async))
+  (copy-into    (: BjoProc.PumpIntoAsync (-> InputPort OutputPort void) #:async))
   (read-lines   (: BjoProc.ReadLinesAsync (-> InputPort (Array string)) #:async))
   (read-rest    (: Bjolang.Runtime.InputPorts.ReadRestAsync (-> InputPort string) #:async)))
 
@@ -137,7 +142,7 @@
 (type (: Cmd (Record (: program string) (: arguments (Vec string)))))
 
 ;; A filter stage.
-(type (: Filter (-bjo-> InputPort TextOutputPort Unit)))
+(type (: Filter (-bjo-> InputPort OutputPort Unit)))
 
 ;; Form elements.
 (type-rec
@@ -335,7 +340,7 @@
 ;; Started process state.
 (type
   (: Proc #:opaque
-     (Record (: input (Option TextOutputPort))
+     (Record (: input (Option OutputPort))
              (: output (Option InputPort))
              (: children (Vec Process))
              (: exits (Vec (Promise Unit)))
@@ -346,7 +351,7 @@
 ;; makes the pipeline loop have no cases in it.
 (type
   (: Wired #:opaque
-     (Record (: sink (Option TextOutputPort))
+     (Record (: sink (Option OutputPort))
              (: source (Option InputPort))
              (: children (Vec Process))
              (: exits (Vec (Promise Unit)))
@@ -358,7 +363,7 @@
   (process-await child)
   unit)
 
-(: start-command (-> Cmd (Option TextOutputPort) (Result Exception Wired)))
+(: start-command (-> Cmd (Option OutputPort) (Result Exception Wired)))
 (defun (start-command c errors)
   (def settings (ProcessStartInfo.))
   (settings-program! settings (record-ref c program))
@@ -375,7 +380,7 @@
   (match (process-start settings)
     ((Err e) (Err e))
     ((Ok child)
-     (Ok (Wired (sink (Some (cast TextOutputPort (process-stdin child))))
+     (Ok (Wired (sink (Some (child-input child)))
                 (source (Some (output-port (process-stdout child))))
                 (children [child])
                 (exits [(bjo (awaiting-exit child))])
@@ -398,7 +403,7 @@
          (waits [(bjo (close-after done (pipe-output out)))])))
 
 ;; Closes and raises errors.
-(: close-after (-> (Promise Unit) TextOutputPort Unit))
+(: close-after (-> (Promise Unit) OutputPort Unit))
 (defbjo (close-after done out)
   (match (sync (promise-join done))
     ((Ok u) (close-output-port out) unit)
@@ -406,18 +411,18 @@
 
 ;; `PumpAsync` closes its target on exhaustion, which is the whole reason it is
 ;; a junction: an unclosed stdin leaves the process downstream waiting forever.
-(: pump (-> InputPort TextOutputPort Unit))
+(: pump (-> InputPort OutputPort Unit))
 (defbjo (pump from to)
   (copy-stream from to)
   unit)
 
 ;; The shared-destination pump. Closing is `close-when-all-done`'s job.
-(: pump-into (-> InputPort TextOutputPort Unit))
+(: pump-into (-> InputPort OutputPort Unit))
 (defbjo (pump-into from to)
   (copy-into from to)
   unit)
 
-(: close-when-all-done (-> (Vec (Promise Unit)) TextOutputPort Unit))
+(: close-when-all-done (-> (Vec (Promise Unit)) OutputPort Unit))
 (defbjo (close-when-all-done ps out)
   ;; The failure is already carried by one of `ps`, which is in this form's
   ;; `waits` too, so it is not re-raised here — only the file is closed.
@@ -432,7 +437,7 @@
 
 ;; Connect wired stages front to back, pumping each one's output into the next
 ;; one's input.
-(: join-stages (-> (List Node) (Option TextOutputPort) (Result Exception Wired)))
+(: join-stages (-> (List Node) (Option OutputPort) (Result Exception Wired)))
 (defun (join-stages nodes errors)
   (match nodes
     (Nil (Err (run-error "a pipeline with no stages")))
@@ -441,7 +446,7 @@
        ((Err e) (Err e))
        ((Ok head) (join-onto head rest errors))))))
 
-(: join-onto (-> Wired (List Node) (Option TextOutputPort) (Result Exception Wired)))
+(: join-onto (-> Wired (List Node) (Option OutputPort) (Result Exception Wired)))
 (defun (join-onto joined nodes errors)
   (match nodes
     (Nil (Ok joined))
@@ -467,7 +472,7 @@
              errors))))))))
 
 ;; Creates stream junction.
-(: junction (-> (Option InputPort) (Option TextOutputPort) (Result Exception (Promise Unit))))
+(: junction (-> (Option InputPort) (Option OutputPort) (Result Exception (Promise Unit))))
 (defun (junction upstream downstream)
   (match upstream
     (None (Err (run-error
@@ -478,13 +483,25 @@
                    "this stage has its input redirected from a file, so nothing can be piped into it")))
        ((Some to) (Ok (bjo (pump from to))))))))
 
-(: open-for-writing (-> string bool (Result Exception TextOutputPort)))
+;; Through the prelude's `FS` effect, as every file is opened, so a handler
+;; that answers for the disk answers for a redirect too.
+(: open-for-writing (-> string bool (Result Exception OutputPort)))
 (defun (open-for-writing path append)
-  (match (StreamWriter. path append)
+  (match (open-write-stream path (if append Append Truncate))
     ((Err e) (Err e))
-    ((Ok w) (Ok (cast TextOutputPort w)))))
+    ((Ok stream) (Ok (cast OutputPort (PortOver. stream #t))))))
 
-(: wire (-> Node (Option TextOutputPort) (Result Exception Wired)))
+;; A child's standard input as a port: unbuffered, as .NET's writer over it
+;; was, because what reads the other end is another process and there is no
+;; later moment at which we would know to flush. Closing it closes the pipe,
+;; which is how the child sees the end of its input.
+(: child-input (-> Process OutputPort))
+(defun (child-input child)
+  (def port (cast OutputPort (PortOver. (writer-bytes (process-stdin child)) #t)))
+  (port-mode! port unbuffered)
+  port)
+
+(: wire (-> Node (Option OutputPort) (Result Exception Wired)))
 (defun (wire node errors)
   (match node
     ((NCmd c) (start-command c errors))
@@ -492,7 +509,7 @@
     ((NPipe nodes) (join-stages nodes errors))
     ((NRedirect r) (wire-redirect r errors))))
 
-(: wire-redirect (-> Redirect (Option TextOutputPort) (Result Exception Wired)))
+(: wire-redirect (-> Redirect (Option OutputPort) (Result Exception Wired)))
 (defun (wire-redirect r errors)
   (def path (record-ref r path))
   (def inner (record-ref r inner))
@@ -514,7 +531,7 @@
      (redirect-errors inner file))))
 
 ;; The file replaces the caller as the thing writing in, so `sink` goes away.
-(: redirect-input (-> Node (Option TextOutputPort) InputPort (Result Exception Wired)))
+(: redirect-input (-> Node (Option OutputPort) InputPort (Result Exception Wired)))
 (defun (redirect-input inner errors file)
   (def (Ok w) (wire inner errors) :propagate)
   (match (record-ref w sink)
@@ -527,7 +544,7 @@
 
 ;; ...and the file replaces the caller as the thing reading out, so `source`
 ;; goes away.
-(: redirect-output (-> Node (Option TextOutputPort) TextOutputPort (Result Exception Wired)))
+(: redirect-output (-> Node (Option OutputPort) OutputPort (Result Exception Wired)))
 (defun (redirect-output inner errors file)
   (def (Ok w) (wire inner errors) :propagate)
   (match (record-ref w source)
@@ -540,9 +557,11 @@
 
 ;; Standard error is not a stream this module wires between stages — every
 ;; command under here writes into the one file — so neither end changes.
-(: redirect-errors (-> Node TextOutputPort (Result Exception Wired)))
+(: redirect-errors (-> Node OutputPort (Result Exception Wired)))
 (defun (redirect-errors inner file)
-  (def shared (shared-writer file))
+  ;; Every command under here writes to the one file from a fiber of its own;
+  ;; a port takes each write whole, so they can share it as it is.
+  (def shared file)
   (def (Ok w) (wire inner (Some shared)) :propagate)
   (Ok (record-set w
                   (waits (vec-add (record-ref w waits)
@@ -561,7 +580,7 @@
 
 ;; Where to write the form's input, unless a `from-file` took it. Closing it is
 ;; what ends the first stage.
-(: proc-input (-> Proc (Option TextOutputPort)))
+(: proc-input (-> Proc (Option OutputPort)))
 (defun (proc-input p) (record-ref p input))
 
 ;; Where to read the form's output, unless an `into-file` took it. It has to be
@@ -643,7 +662,7 @@
 (: close-input (-> Proc void))
 (defun (close-input p)
   (match (proc-input p)
-    ((Some w) (close-output-port w))
+    ((Some w) (close-unbuffered w))
     (None unit)))
 
 (: run/string (-> Form (Result Exception string)))

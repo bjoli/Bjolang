@@ -26,7 +26,6 @@
 
 (import (std prelude))
 (import (std ports))
-(import (only (text encodings) utf-8))
 (import (std net))
 (import (std inbox))
 (import (std simpletest))
@@ -100,10 +99,10 @@
     ((Ok answer) answer)
     ((Err e) (str "RAISED " (.-Message e)))))
 
-(: closing (-bjo-> InputPort ByteOutputPort void))
+(: closing (-bjo-> InputPort OutputPort void))
 (defbjo (closing in out)
   (close-input-port in)
-  (close-byte-output-port! out))
+  (close-output-port out))
 
 ;; ---------------------------------------------------------------------------
 ;; The two ends
@@ -117,7 +116,7 @@
      (def who (match (peer-address in) ((Some a) "peer") (None "nobody")))
      (def got (drain-bytes in))
      (write-bytes! out #[9 9])
-     (flush! out)
+     (flush-port out)
      (shutdown! out)
      (closing in out)
      (str who ":" got))))
@@ -128,7 +127,7 @@
     ((Err e) (str "connect failed: " (.-Message e)))
     ((Ok (Tuple in out))
      (write-bytes! out payload)
-     (flush! out)
+     (flush-port out)
      ;; A FIN, not a close: the answer still has to arrive after this.
      (shutdown! out)
      (def back (drain-bytes in))
@@ -136,13 +135,13 @@
      back)))
 
 ;; Everything that arrives, straight back out again, a chunk at a time.
-(: echo-loop (-bjo-> InputPort ByteOutputPort int))
+(: echo-loop (-bjo-> InputPort OutputPort int))
 (defbjo (echo-loop in out)
   (let go ((n 0))
     (match (read-some in)
       ((Some bs)
        (write-bytes! out bs)
-       (flush! out)
+       (flush-port out)
        (go (+ n (array-length bs))))
       (None (let () (shutdown! out) n)))))
 
@@ -188,16 +187,16 @@
     ((Err e) (str "connect failed: " (.-Message e)))
     ((Ok (Tuple in out))
      (write-bytes! out #[1])
-     (flush! out)
+     (flush-port out)
      ;; Done reading, and the socket must survive it.
      (close-input-port in)
      (def after
-       (match (try (let () (write-bytes! out #[2 3]) (flush! out) "wrote")
+       (match (try (let () (write-bytes! out #[2 3]) (flush-port out) "wrote")
                    #:catch (System.Exception))
          ((Ok what) what)
          ((Err e) (str "refused: " (.-Message e)))))
      (shutdown! out)
-     (close-byte-output-port! out)
+     (close-output-port out)
      after)))
 
 (: scenario-half-closed (-bjo-> string))
@@ -246,10 +245,10 @@
         (go (+ i 1)
             (+ bad (if (= (byte->int (array-ref bs i)) (pattern-at (+ from i))) 0 1))))))
 
-(: send-all (-bjo-> ByteOutputPort (Array byte) int))
+(: send-all (-bjo-> OutputPort (Array byte) int))
 (defbjo (send-all out payload)
   (write-bytes! out payload)
-  (flush! out)
+  (flush-port out)
   (shutdown! out)
   (array-length payload))
 
@@ -299,7 +298,7 @@
     ((Err e) 0)
     ((Ok (Tuple in out))
      (write-bytes! out #[11 22 33 44])
-     (flush! out)
+     (flush-port out)
      (shutdown! out)
      (closing in out)
      1)))
@@ -420,7 +419,7 @@
   (match (accept l)
     ((Tuple in out)
      (def reader in)
-     (def writer (byte->text-output-port out utf-8))
+     (def writer out)
      (def asked (read-line reader))
      (writeln writer (str "hello, " asked))
      (flush-port writer)
@@ -433,7 +432,7 @@
   (match (tcp-connect "127.0.0.1" port)
     ((Err e) (str "connect failed: " (.-Message e)))
     ((Ok (Tuple in out))
-     (def writer (byte->text-output-port out utf-8))
+     (def writer out)
      (writeln writer name)
      (flush-port writer)
      (def reader in)
@@ -483,7 +482,7 @@
      (write-bytes! out #[4])
      (write-bytes! out (byte-run 1 4))
      (write-bytes! out (byte-run 100 3))
-     (flush! out)
+     (flush-port out)
      (shutdown! out)
      (closing in out)
      "sent")))
@@ -552,15 +551,15 @@
     ((Tuple in out)
      (def who (match (peer-address in) ((Some a) a) (None "none")))
      (write-bytes! out #[1])
-     (flush! out)
+     (flush-port out)
      (close-input-port in)
      (def after
-       (match (try (let () (write-bytes! out #[2 3]) (flush! out) "wrote")
+       (match (try (let () (write-bytes! out #[2 3]) (flush-port out) "wrote")
                    #:catch (System.Exception))
          ((Ok what) what)
          ((Err e) (str "refused: " (.-Message e)))))
      (shutdown! out)
-     (close-byte-output-port! out)
+     (close-output-port out)
      (str who "|" after))))
 
 (: scenario-stream-ports (-bjo-> string))

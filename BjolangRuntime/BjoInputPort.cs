@@ -237,6 +237,13 @@ public sealed class BjoInputPort : TextReader {
     /// </summary>
     public BjolangRuntime.Owned? Owner;
 
+    /// <summary>
+    /// Run before every read from the stream underneath, outside the port's
+    /// lock: standard input's flushes standard output, so that a prompt is on
+    /// the screen when the program waits for the answer.
+    /// </summary>
+    public Action? BeforeWait { get; init; }
+
     public BjoInputPort(Stream inner) : this(inner, DefaultBufferSize, true, null) { }
 
     public BjoInputPort(Stream inner, bool ownsInner) : this(inner, DefaultBufferSize, ownsInner, null) { }
@@ -464,7 +471,10 @@ public sealed class BjoInputPort : TextReader {
         if (start is { } s) {
             int n = 0;
             Exception? failure = null;
-            try { n = _inner.Read(s.Into, s.At, s.Room); }
+            try {
+                BeforeWait?.Invoke();
+                n = _inner.Read(s.Into, s.At, s.Room);
+            }
             catch (Exception e) { failure = e; }
             Commit(s, n, failure);
         } else {
@@ -487,6 +497,7 @@ public sealed class BjoInputPort : TextReader {
         Exception? failure = null;
 
         try {
+            BeforeWait?.Invoke();
             n = await _inner.ReadAsync(s.Into.AsMemory(s.At, s.Room), CancellationToken.None).ConfigureAwait(false);
         } catch (Exception e) {
             failure = e;

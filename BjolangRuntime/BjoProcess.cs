@@ -37,19 +37,16 @@
 using System.IO.Pipelines;
 using System.Text;
 
-/// A `TextWriter` and an input port joined end to end, for a pipeline stage
+/// An output port and an input port joined end to end, for a pipeline stage
 /// that is a Bjolang procedure rather than a child process.
 public sealed class BjoPipe {
     private readonly Bjolang.Runtime.BjoInputPort reader;
-    private readonly TextWriter writer;
+    private readonly Bjolang.Runtime.BjoOutputPort writer;
 
     private BjoPipe() {
         var pipe = new Pipe();
-        // Not `Encoding.UTF8`: its preamble would be written into the stream
-        // and read back out of the other end as a character.
-        var encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
         reader = new Bjolang.Runtime.BjoInputPort(pipe.Reader.AsStream());
-        // `AutoFlush`, because whatever reads the other end is a different
+        // Unbuffered, because whatever reads the other end is a different
         // fiber and there is no later moment at which we would know to flush.
         //
         // Disposing either of these completes the underlying `Pipe` end —
@@ -57,13 +54,16 @@ public sealed class BjoPipe {
         // the writer is what makes the reader see end of stream. `std/run`
         // depends on that: it is how a closed stdin reaches the far end of a
         // filter.
-        writer = new StreamWriter(pipe.Writer.AsStream(), encoding) { AutoFlush = true };
+        writer = new Bjolang.Runtime.BjoOutputPort(
+            pipe.Writer.AsStream(), Bjolang.Runtime.BjoOutputPort.SmallBufferSize, ownsInner: true) {
+            Mode = Bjolang.Runtime.BufferMode.None,
+        };
     }
 
     public static BjoPipe Create() => new BjoPipe();
 
     public Bjolang.Runtime.BjoInputPort Reader => reader;
-    public TextWriter Writer => writer;
+    public Bjolang.Runtime.BjoOutputPort Writer => writer;
 }
 
 /// The parts of running a pipeline that have no Bjolang spelling.
@@ -97,15 +97,17 @@ public static class BjoProc {
     /// fails, the copy stops, and closing `from` lets the upstream process see
     /// a broken pipe and exit rather than block on a full one. A write that
     /// fails into anything else, such as a file, is still an error.
-    public static async Task PumpAsync(Bjolang.Runtime.BjoInputPort from, TextWriter to, CancellationToken cancel) {
-        var buffer = new char[8192];
+    public static async Task PumpAsync(
+            Bjolang.Runtime.BjoInputPort from, Bjolang.Runtime.BjoOutputPort to, CancellationToken cancel) {
+        var buffer = new byte[8192];
+        var source = from.AsStream();
         bool readerGone = false;
         try {
             while (true) {
-                int n = await from.ReadAsync(buffer.AsMemory(), cancel).ConfigureAwait(false);
+                int n = await source.ReadAsync(buffer.AsMemory(), cancel).ConfigureAwait(false);
                 if (n == 0) { break; }
                 try {
-                    await to.WriteAsync(buffer.AsMemory(0, n), cancel).ConfigureAwait(false);
+                    await to.WriteBytesAsync(buffer.AsMemory(0, n), cancel).ConfigureAwait(false);
                 } catch (IOException) when (IsProcessInput(to)) {
                     readerGone = true;
                     break;
@@ -113,7 +115,7 @@ public static class BjoProc {
             }
             if (!readerGone) {
                 try {
-                    await to.FlushAsync(cancel).ConfigureAwait(false);
+                    await to.FlushValueAsync(cancel).ConfigureAwait(false);
                 } catch (IOException) when (IsProcessInput(to)) {
                     readerGone = true;
                 }
@@ -130,8 +132,8 @@ public static class BjoProc {
     }
 
     /// Standard input of a started process: a pipe whose reader is the process.
-    static bool IsProcessInput(TextWriter to) =>
-        to is StreamWriter { BaseStream: System.IO.Pipes.PipeStream };
+    static bool IsProcessInput(Bjolang.Runtime.BjoOutputPort to) =>
+        to.Inner is System.IO.Pipes.PipeStream;
 
     /// A number as it has to appear in an argv.
     ///
@@ -150,16 +152,17 @@ public static class BjoProc {
     /// close what the others are still writing to, so closing is somebody
     /// else's job — `std/run` joins all of them and closes once.
     ///
-    /// `to` is expected to be a `TextWriter.Synchronized` wrapper, since the
-    /// pumps run concurrently.
-    public static async Task PumpIntoAsync(Bjolang.Runtime.BjoInputPort from, TextWriter to, CancellationToken cancel) {
-        var buffer = new char[8192];
+    /// The pumps run concurrently into one port, which takes each write whole.
+    public static async Task PumpIntoAsync(
+            Bjolang.Runtime.BjoInputPort from, Bjolang.Runtime.BjoOutputPort to, CancellationToken cancel) {
+        var buffer = new byte[8192];
+        var source = from.AsStream();
         while (true) {
-            int n = await from.ReadAsync(buffer.AsMemory(), cancel).ConfigureAwait(false);
+            int n = await source.ReadAsync(buffer.AsMemory(), cancel).ConfigureAwait(false);
             if (n == 0) { break; }
-            await to.WriteAsync(buffer.AsMemory(0, n), cancel).ConfigureAwait(false);
+            await to.WriteBytesAsync(buffer.AsMemory(0, n), cancel).ConfigureAwait(false);
         }
-        await to.FlushAsync(cancel).ConfigureAwait(false);
+        await to.FlushValueAsync(cancel).ConfigureAwait(false);
     }
 
     /// Every line of `from`, for `run/strings`.

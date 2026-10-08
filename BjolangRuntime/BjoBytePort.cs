@@ -32,7 +32,7 @@ namespace Bjolang.Runtime;
 /// what `shutdown!` needs and what `Stream` has no word for.
 ///
 /// Implemented by <see cref="BjoBytePipe"/> here; a `NetworkStream` is handled
-/// by <see cref="BjoByteOutputPort.Shutdown"/> directly, since it is .NET's and
+/// by <see cref="BjoOutputPort.Shutdown"/> directly, since it is .NET's and
 /// cannot be made to implement this.
 /// </summary>
 public interface IHalfClosable {
@@ -114,282 +114,7 @@ public sealed class BjoConnection : IDisposable {
     public BjoInputPort Input() => new(this);
 
     /// <summary>The writing half.</summary>
-    public BjoByteOutputPort Output() => new(this);
-}
-
-/// <summary>
-/// A buffered byte sink.
-///
-/// Most writes do no I/O and copy into the buffer; a write that fills it drains
-/// immediately, which is a syscall — so writes have suspending twins as well as
-/// flushes, for the reason <see cref="BjoWriter"/>'s do.
-///
-/// Not thread-safe, and neither is <see cref="BjoWriter"/>. A port two fibers
-/// write to concurrently is a program that has not said what it means; the
-/// reading side is where the design is, because that is where a `choose` can
-/// take a read away.
-///
-/// # Closing
-///
-/// A close writes only what is pending: bytes in the buffer, or bytes the
-/// stream has been given since its last flush. Some streams refuse blocking
-/// I/O (Kestrel's do), and a close is blocking, because a scope's release
-/// cannot suspend. After `flush!` a close does no I/O at all, and
-/// <see cref="DisposeAsync"/> is the close that suspends instead.
-/// </summary>
-public sealed class BjoByteOutputPort : IDisposable, IAsyncDisposable {
-    private const int DefaultBufferSize = 4096;
-
-    private readonly Stream _inner;
-    private readonly bool _ownsInner;
-    private readonly byte[] _buf;
-    private int _len;
-    private bool _disposed;
-    private bool _writeClosed;
-
-    /// Bytes have reached `_inner` since it was last flushed. Set before the
-    /// write rather than after, because a write that fails partway may already
-    /// have handed some of them over.
-    private bool _unflushed;
-
-    private bool HasPending => _len > 0 || _unflushed;
-
-    /// <summary>See <see cref="BjoInputPort.Owner"/>.</summary>
-    public BjolangRuntime.Owned? Owner;
-
-    /// See <see cref="BjoInputPort"/>'s field of the same name.
-    private readonly BjoConnection? _connection;
-
-    public BjoByteOutputPort(Stream inner) : this(inner, DefaultBufferSize, true, null) { }
-
-    public BjoByteOutputPort(Stream inner, bool ownsInner) : this(inner, DefaultBufferSize, ownsInner, null) { }
-
-    public BjoByteOutputPort(Stream inner, int bufferSize, bool ownsInner = true)
-        : this(inner, bufferSize, ownsInner, null) { }
-
-    /// The writing half of a connection. See <see cref="BjoConnection"/>.
-    internal BjoByteOutputPort(BjoConnection connection)
-        : this(connection.Stream, DefaultBufferSize, false, connection) { }
-
-    private BjoByteOutputPort(Stream inner, int bufferSize, bool ownsInner, BjoConnection? connection) {
-        ArgumentNullException.ThrowIfNull(inner);
-        ArgumentOutOfRangeException.ThrowIfLessThan(bufferSize, 1);
-        if (!inner.CanWrite)
-            throw new ArgumentException("a byte output port needs a writable stream.", nameof(inner));
-
-        _inner = inner;
-        _ownsInner = ownsInner;
-        _connection = connection;
-        _buf = new byte[bufferSize];
-    }
-
-    /// <summary>See <see cref="BjoInputPort.Peer"/>.</summary>
-    public string? Peer => _connection?.Peer;
-
-    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
-
-    private void ThrowIfShutDown() {
-        if (_writeClosed)
-            throw new InvalidOperationException(
-                "write to a byte output port whose write half was ended by shutdown!.");
-    }
-
-    // --- Writing ------------------------------------------------------------
-
-    public void Write(ReadOnlySpan<byte> bytes) {
-        ThrowIfDisposed();
-        ThrowIfShutDown();
-
-        while (!bytes.IsEmpty) {
-            if (_len == _buf.Length) DrainSync();
-
-            int n = Math.Min(bytes.Length, _buf.Length - _len);
-            bytes[..n].CopyTo(_buf.AsSpan(_len));
-            _len += n;
-            bytes = bytes[n..];
-        }
-    }
-
-    /// The suspending twin. Avoids the `async` keyword in the common case, the
-    /// way <see cref="BjoWriter.WriteValueAsync"/> does: text that fits in the
-    /// buffer must not cost a state machine.
-    public ValueTask WriteAsync(ReadOnlyMemory<byte> bytes, CancellationToken cancel = default) {
-        ThrowIfDisposed();
-        ThrowIfShutDown();
-
-        if (bytes.Length <= _buf.Length - _len) {
-            bytes.Span.CopyTo(_buf.AsSpan(_len));
-            _len += bytes.Length;
-            return default;
-        }
-
-        return SpillAsync(bytes, cancel);
-    }
-
-    private async ValueTask SpillAsync(ReadOnlyMemory<byte> bytes, CancellationToken cancel) {
-        while (!bytes.IsEmpty) {
-            if (_len == _buf.Length) await DrainAsync(cancel).ConfigureAwait(false);
-
-            int n = Math.Min(bytes.Length, _buf.Length - _len);
-            bytes.Span[..n].CopyTo(_buf.AsSpan(_len));
-            _len += n;
-            bytes = bytes[n..];
-        }
-    }
-
-    private void DrainSync() {
-        if (_len == 0) return;
-        int n = _len;
-        _len = 0;
-        _unflushed = true;
-        _inner.Write(_buf, 0, n);
-    }
-
-    private async ValueTask DrainAsync(CancellationToken cancel) {
-        if (_len == 0) return;
-        int n = _len;
-        _len = 0;
-        _unflushed = true;
-        await _inner.WriteAsync(_buf.AsMemory(0, n), cancel).ConfigureAwait(false);
-    }
-
-    // --- Flushing -----------------------------------------------------------
-
-    public void Flush() {
-        ThrowIfDisposed();
-        DrainSync();
-        _inner.Flush();
-        _unflushed = false;
-    }
-
-    public async ValueTask FlushValueAsync(CancellationToken cancel = default) {
-        ThrowIfDisposed();
-        await DrainAsync(cancel).ConfigureAwait(false);
-        await _inner.FlushAsync(cancel).ConfigureAwait(false);
-        _unflushed = false;
-    }
-
-    /// A flush that does no I/O when nothing is pending. A text writer over
-    /// this port uses it, because `StreamWriter.Dispose` always flushes its
-    /// stream, and closing the text writer after an asynchronous flush must not
-    /// block.
-    internal void FlushPending() {
-        if (HasPending) Flush();
-    }
-
-    // --- The half-close -----------------------------------------------------
-
-    /// <summary>
-    /// End the write half and leave the read half alone.
-    ///
-    /// A protocol needs this and `close` cannot say it: "I have finished
-    /// speaking, now answer me" is a TCP FIN in one direction, not a closed
-    /// connection. Everything buffered goes out first, and a write after it is
-    /// refused rather than silently dropped.
-    ///
-    /// A stream with no half-close gets the flush and nothing else, which is the
-    /// most that can honestly be done for a file.
-    /// </summary>
-    public void Shutdown() {
-        ThrowIfDisposed();
-        if (_writeClosed) return;
-
-        DrainSync();
-        _inner.Flush();
-        _unflushed = false;
-        _writeClosed = true;
-
-        switch (_inner) {
-            case IHalfClosable h:
-                h.CloseWrite();
-                break;
-            case System.Net.Sockets.NetworkStream ns:
-                // Here rather than in `(std net)` so that the module above can be
-                // written without reopening this one. `Socket` has been public
-                // on `NetworkStream` since .NET Core 3.0.
-                ns.Socket.Shutdown(System.Net.Sockets.SocketShutdown.Send);
-                break;
-        }
-    }
-
-    public async ValueTask ShutdownAsync(CancellationToken cancel = default) {
-        ThrowIfDisposed();
-        if (_writeClosed) return;
-
-        await DrainAsync(cancel).ConfigureAwait(false);
-        await _inner.FlushAsync(cancel).ConfigureAwait(false);
-        _unflushed = false;
-        _writeClosed = true;
-
-        switch (_inner) {
-            case IHalfClosable h:
-                h.CloseWrite();
-                break;
-            case System.Net.Sockets.NetworkStream ns:
-                ns.Socket.Shutdown(System.Net.Sockets.SocketShutdown.Send);
-                break;
-        }
-    }
-
-    // --- Closing ------------------------------------------------------------
-
-    /// <summary>
-    /// Everything pending goes out, suspending rather than blocking, so that
-    /// the <see cref="Dispose"/> after it has nothing to write.
-    ///
-    /// A failure or a cancellation drops what was pending before it is
-    /// rethrown. Otherwise `Dispose` would retry it with a blocking write, on a
-    /// stream that has just failed or for a fiber that was told to stop.
-    /// </summary>
-    internal async ValueTask SettleAsync(CancellationToken cancel) {
-        if (_disposed || _writeClosed || !HasPending) return;
-
-        try {
-            await DrainAsync(cancel).ConfigureAwait(false);
-            await _inner.FlushAsync(cancel).ConfigureAwait(false);
-            _unflushed = false;
-        } catch {
-            _len = 0;
-            _unflushed = false;
-            throw;
-        }
-    }
-
-    /// The close that suspends. The handle is released even when the flush
-    /// fails. A port its scope owns is closed with
-    /// <see cref="BjolangRuntime.CloseByteOutputAsync"/> instead, which
-    /// releases the registration too.
-    public async ValueTask DisposeAsync() {
-        try {
-            await SettleAsync(CancellationToken.None).ConfigureAwait(false);
-        } finally {
-            Dispose();
-        }
-    }
-
-    public void Dispose() {
-        if (_disposed) return;
-
-        try {
-            // Held bytes go out before the handle does, and `_disposed` is set
-            // only afterwards so that the drain is not refused by its own guard.
-            // With nothing pending there is no I/O at all, which is what makes
-            // a close after `flush!` safe over a stream that refuses blocking
-            // I/O.
-            if (!_writeClosed && HasPending) {
-                DrainSync();
-                _inner.Flush();
-                _unflushed = false;
-            }
-        } finally {
-            _disposed = true;
-            // Drained first, above, and only then is the half given up: if the
-            // reading half has already gone, this is the call that takes the
-            // handle with it.
-            if (_connection is not null) _connection.HalfClosed();
-            else if (_ownsInner) _inner.Dispose();
-        }
-    }
+    public BjoOutputPort Output() => new(this);
 }
 
 // ---------------------------------------------------------------------------
@@ -415,12 +140,12 @@ public sealed class BjoBytePipe {
         // half does. Disposing this stream completes it rather than discarding
         // it, so whatever is queued is still the reader's.
         Input = new BjoInputPort(_stream, BjoInputPort.SmallBufferSize, ownsInner: false);
-        Output = new BjoByteOutputPort(_stream, ownsInner: true);
+        Output = new BjoOutputPort(_stream, BjoOutputPort.SmallBufferSize, ownsInner: true);
     }
 
     public BjoInputPort Input { get; }
 
-    public BjoByteOutputPort Output { get; }
+    public BjoOutputPort Output { get; }
 
     /// <summary>
     /// A byte queue with two faces. Writes append and never wait; reads take
@@ -701,21 +426,14 @@ public static class BytePorts {
         BjolangRuntime.OwnInput(new BjoInputPort(
             new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)));
 
-    public static BjoByteOutputPort OpenOutput(string path) =>
-        BjolangRuntime.OwnByteWriter(new BjoByteOutputPort(
-            new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read)));
-
     public static BjoInputPort FromStream(Stream stream) =>
         BjolangRuntime.OwnInput(new BjoInputPort(stream));
-
-    public static BjoByteOutputPort ToStream(Stream stream) =>
-        BjolangRuntime.OwnByteWriter(new BjoByteOutputPort(stream));
 
     public static BjoBytePipe MakePipe() => new();
 
     public static BjoInputPort PipeInput(BjoBytePipe pipe) => pipe.Input;
 
-    public static BjoByteOutputPort PipeOutput(BjoBytePipe pipe) => pipe.Output;
+    public static BjoOutputPort PipeOutput(BjoBytePipe pipe) => pipe.Output;
 
     public static BjoInputPort Limited(BjoInputPort port, int limit) {
         ArgumentOutOfRangeException.ThrowIfNegative(limit);
@@ -747,112 +465,7 @@ public static class BytePorts {
         BjoInputPort port, int skip, int count, CancellationToken cancel = default) =>
         port.PeekBytesAsync(skip, count, cancel);
 
-    // --- Writing ------------------------------------------------------------
-
-    // `Bjoml.Unit` and not C# `void`, for the reason `BjolangRuntime.unit`
-    // gives: no `void` can stand for a type argument.
-
-    public static Unit WriteBytes(BjoByteOutputPort port, byte[] bytes) {
-        ArgumentNullException.ThrowIfNull(bytes);
-        port.Write(bytes);
-        return default;
-    }
-
-    public static async ValueTask<Unit> WriteBytesAsync(
-        BjoByteOutputPort port, byte[] bytes, CancellationToken cancel = default) {
-        ArgumentNullException.ThrowIfNull(bytes);
-        await port.WriteAsync(bytes, cancel).ConfigureAwait(false);
-        return default;
-    }
-
-    public static Unit Flush(BjoByteOutputPort port) {
-        port.Flush();
-        return default;
-    }
-
-    public static async ValueTask<Unit> FlushAsync(BjoByteOutputPort port, CancellationToken cancel = default) {
-        await port.FlushValueAsync(cancel).ConfigureAwait(false);
-        return default;
-    }
-
-    public static Unit Shutdown(BjoByteOutputPort port) {
-        port.Shutdown();
-        return default;
-    }
-
-    public static async ValueTask<Unit> ShutdownAsync(BjoByteOutputPort port, CancellationToken cancel = default) {
-        await port.ShutdownAsync(cancel).ConfigureAwait(false);
-        return default;
-    }
-
     // --- Closing ------------------------------------------------------------
 
     public static Unit CloseInput(BjoInputPort port) => BjolangRuntime.CloseInput(port);
-
-    public static Unit CloseOutput(BjoByteOutputPort port) => BjolangRuntime.CloseByteOutput(port);
-
-    public static ValueTask<Unit> CloseOutputAsync(BjoByteOutputPort port, CancellationToken cancel = default) =>
-        BjolangRuntime.CloseByteOutputAsync(port, cancel);
-
-    // --- The text layer -----------------------------------------------------
-
-    /// <summary>
-    /// A text writer over the byte port. Flushing or closing it pushes its
-    /// characters into the byte port AND drains the byte port, because the
-    /// view's `Flush` is the port's.
-    /// </summary>
-    public static TextWriter ToTextWriter(BjoByteOutputPort port, Encoding encoding) {
-        ArgumentNullException.ThrowIfNull(encoding);
-        return new BjoWriter(new StreamWriter(new OutPortStream(port), encoding));
-    }
-
-    private sealed class OutPortStream : Stream {
-        private readonly BjoByteOutputPort _port;
-
-        public OutPortStream(BjoByteOutputPort port) => _port = port;
-
-        public override bool CanRead => false;
-        public override bool CanSeek => false;
-        public override bool CanWrite => true;
-        public override long Length => throw new NotSupportedException();
-
-        public override long Position {
-            get => throw new NotSupportedException();
-            set => throw new NotSupportedException();
-        }
-
-        public override void Write(byte[] buffer, int offset, int count) {
-            ArgumentNullException.ThrowIfNull(buffer);
-            _port.Write(buffer.AsSpan(offset, count));
-        }
-
-        public override void Write(ReadOnlySpan<byte> buffer) => _port.Write(buffer);
-
-        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancel = default) =>
-            _port.WriteAsync(buffer, cancel);
-
-        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancel) {
-            ArgumentNullException.ThrowIfNull(buffer);
-            return _port.WriteAsync(buffer.AsMemory(offset, count), cancel).AsTask();
-        }
-
-        /// The port's, so that closing the text writer reaches the stream under
-        /// the byte port rather than stopping in its buffer. Only when something
-        /// is pending, because `StreamWriter.Dispose` calls this even after an
-        /// asynchronous flush has written everything.
-        public override void Flush() => _port.FlushPending();
-
-        public override Task FlushAsync(CancellationToken cancel) => _port.FlushValueAsync(cancel).AsTask();
-
-        public override int Read(byte[] buffer, int offset, int count) =>
-            throw new NotSupportedException("this is the write half of a byte port.");
-
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
-
-        /// The byte port is not the text writer's to close; it is owned by the
-        /// scope that opened it. Its held bytes still go out, because
-        /// `StreamWriter.Dispose` flushes before it disposes.
-        protected override void Dispose(bool disposing) { }
-    }
 }

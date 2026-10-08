@@ -51,13 +51,15 @@
 
 (import/class
   (XmlWriter (: System.Xml.XmlWriter))
+  ;; What `XmlWriter.Create` takes, and what an output port also is.
+  (TextWriter (: System.IO.TextWriter))
   (XmlWriterSettings (: System.Xml.XmlWriterSettings (-> XmlWriterSettings)))
   (ConformanceLevel (: System.Xml.ConformanceLevel))
   (ClrBuilder (: System.Text.StringBuilder (-> ClrBuilder)))
   (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
 
 (import/extern
-  (clr-writer-over-text (: System.Xml.XmlWriter.Create (-> TextOutputPort XmlWriterSettings XmlWriter)))
+  (clr-writer-over-text (: System.Xml.XmlWriter.Create (-> TextWriter XmlWriterSettings XmlWriter)))
   (clr-writer-over-builder (: System.Xml.XmlWriter.Create (-> ClrBuilder XmlWriterSettings XmlWriter)))
   (clr-settings-omit-declaration! (: System.Xml.XmlWriterSettings.OmitXmlDeclaration
                                      (-> XmlWriterSettings bool void) #:set))
@@ -443,11 +445,11 @@
     ((Ok result) result)
     ((Err e) (write-error (.-Message e)))))
 
-(: node->xml (-> Node TextOutputPort (#:indent? bool) (#:prefixes (List (Tuple string string)))
+(: node->xml (-> Node OutputPort (#:indent? bool) (#:prefixes (List (Tuple string string)))
                  (Result XmlWriteError Unit)))
 (defun (node->xml node port #:indent? #f #:prefixes Nil)
   (check-hints prefixes)
-  (run-writer (clr-writer-over-text port (writer-settings #f #f))
+  (run-writer (clr-writer-over-text (cast TextWriter port) (writer-settings #f #f))
               (fun (w) (write-tree w node indent? prefixes))))
 
 (: node->xml-string (-> Node (#:indent? bool) (#:prefixes (List (Tuple string string)))
@@ -462,12 +464,12 @@
 
 ;; #:declaration? writes <?xml version="1.0"?>, with no encoding: which one the
 ;; text ends up in is the port's business.
-(: document->xml (-> Document TextOutputPort (#:indent? bool) (#:prefixes (List (Tuple string string)))
+(: document->xml (-> Document OutputPort (#:indent? bool) (#:prefixes (List (Tuple string string)))
                      (#:declaration? bool)
                      (Result XmlWriteError Unit)))
 (defun (document->xml doc port #:indent? #f #:prefixes Nil #:declaration? #t)
   (check-hints prefixes)
-  (run-writer (clr-writer-over-text port (writer-settings #t declaration?))
+  (run-writer (clr-writer-over-text (cast TextWriter port) (writer-settings #t declaration?))
               (fun (w) (write-document w doc indent? prefixes declaration?))))
 
 (: document->xml-string (-> Document (#:indent? bool) (#:prefixes (List (Tuple string string)))

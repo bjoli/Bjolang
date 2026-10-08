@@ -20,7 +20,7 @@
   ArraySlice ReverseArraySlice VecSlice ReverseVecSlice
   VecWalkCursor VecBackCursor StringWalk ListTails PortReads UpFrom DownFrom
   Listing Vecing Mapping Stringing Summing Counting Folding
-  InputPort TextOutputPort Exception Encoding
+  InputPort OutputPort Exception Encoding
 
   ;; Iterable
   iterable-start iterable-done? iterable-current iterable-next
@@ -155,7 +155,7 @@
   port-eof? read-line read-line/opt LineMode read-char read-char/opt
   peek-char peek-char/opt read-all port-fold
   ;; Ports — output
-  write-string write-char writeln get-output-string
+  write-string write-char writeln get-output-string get-output-bytes
 
   ;; Durations, for a deadline.
   millis seconds minutes
@@ -1710,13 +1710,8 @@
 ;; ---------------------------------------------------------------------------
 
 (import/class
-  ;; The output port type itself: abstract, so no constructor.
-  (TextWriter (: System.IO.TextWriter))
-
-  ;; Concrete writers. The file ones are built over a `Stream`, which is what
-  ;; the `FS` effect's openers answer.
+  ;; What the `FS` effect's openers answer, and what a file port is over.
   (Stream (: System.IO.Stream))
-  (StreamWriter (: System.IO.StreamWriter (-> Stream StreamWriter)))
   ;; `IOException` covers `CreateNew` finding the file already there, as well
   ;; as the not-found exceptions below it.
   (FileStream (: System.IO.FileStream (-> string FileMode FileAccess FileShare FileStream)
@@ -1725,22 +1720,19 @@
   (FileMode (: System.IO.FileMode))
   (FileAccess (: System.IO.FileAccess))
   (FileShare (: System.IO.FileShare))
-  ;; StringWriter.
-  (StringWriter (: System.IO.StringWriter (-> StringWriter)))
-
-  ;; The buffered writer.
-  (BjoWriter (: Bjolang.Runtime.BjoWriter (-> TextWriter BjoWriter)))
 
   (Exception (: System.Exception)))
 
 ;; Port types.
 ;;
-;; One input port type, as in Racket: a port is bytes, and the text reads
-;; decode UTF-8 from them, so byte and text reads mix on one port. It is also
-;; a `System.IO.TextReader`, so a .NET API that takes one takes a port.
+;; One input port type and one output port type, as in Racket: a port is
+;; bytes. Text reads decode UTF-8 from an input port, and text writes encode
+;; UTF-8 into an output port, so byte and text operations mix on one port.
+;; They are also a `System.IO.TextReader` and a `System.IO.TextWriter`, so a
+;; .NET API that takes one takes a port.
 (type
   (: InputPort Bjolang.Runtime.BjoInputPort)
-  (: TextOutputPort System.IO.TextWriter))
+  (: OutputPort Bjolang.Runtime.BjoOutputPort))
 
 ;; What ends a line: Racket's `read-line` modes. `Any` is the default
 ;; everywhere a line is read.
@@ -1759,9 +1751,12 @@
   ;; A port over a stream, registered on the ambient scope.
   (owned-port-over (: Bjolang.Runtime.BytePorts.FromStream (-> Stream InputPort)))
   (string-port  (: Bjolang.Runtime.InputPorts.FromString (-> string InputPort)))
-  (own-port-out (: BjolangRuntime.OwnWriter  (-> BjoWriter BjoWriter)))
+  (owned-port-out (: Bjolang.Runtime.OutputPorts.FromStream (-> Stream OutputPort)))
+  (string-port-out (: Bjolang.Runtime.OutputPorts.OpenString (-> OutputPort)))
+  (output-bytes (: Bjolang.Runtime.OutputPorts.GetBytes (-> OutputPort (Array byte))))
   (close-in     (: BjolangRuntime.CloseInput  (-> InputPort void)))
-  (close-out    (: BjolangRuntime.CloseOutput (-> TextOutputPort void))))
+  (close-out    (: BjolangRuntime.CloseOutput (-> OutputPort void)))
+  (close-out-await (: Bjolang.Runtime.OutputPorts.CloseAsync (-> OutputPort void) #:async)))
 
 ;; An input port over a stream an opener answered, registered on the ambient
 ;; scope. Whatever the stream is - a file, or a `MemoryStream` a fake
@@ -1772,10 +1767,12 @@
     ((Ok s) (Ok (owned-port-over s)))
     ((Err e) (Err e))))
 
-(: stream->output-port (-> (Result Exception Stream) (Result Exception TextOutputPort)))
+;; The same for an output port: a file port is buffered a block at a time, and
+;; closing it, or its scope ending, writes what is left.
+(: stream->output-port (-> (Result Exception Stream) (Result Exception OutputPort)))
 (defun (stream->output-port opened)
   (match opened
-    ((Ok s) (Ok (cast TextOutputPort (own-port-out (BjoWriter. (cast TextOutputPort (StreamWriter. s)))))))
+    ((Ok s) (Ok (owned-port-out s)))
     ((Err e) (Err e))))
 
 ;; Open input string: a port over the string's own UTF-8 bytes, shared rather
@@ -1784,10 +1781,12 @@
 (defun (open-input-string contents)
   (string-port contents))
 
-;; Open output string. Memory only, so nothing registers it.
-(: open-output-string (-> TextOutputPort))
+;; Open output string: a port that keeps what is written to it, read back with
+;; `get-output-string` or `get-output-bytes`. Memory only, so nothing
+;; registers it.
+(: open-output-string (-> OutputPort))
 (defun (open-output-string)
-  (cast TextOutputPort (StringWriter.)))
+  (string-port-out))
 
 ;; --- Closing ---
 ;;
@@ -1802,8 +1801,15 @@
 (: close-input-port (-> InputPort void))
 (defun (close-input-port p) (close-in p))
 
-(: close-output-port (-> TextOutputPort void))
-(defun (close-output-port p) (close-out p))
+;; What is still buffered goes out first. On a fiber that write suspends, so the
+;; close works over a stream that refuses blocking I/O, as Kestrel's do; the
+;; port is closed even when the write fails, and the failure raised after.
+;; `with-open` and a scope ending close with a blocking write, which after a
+;; `flush-port` has nothing left to do.
+(: close-output-port (-> OutputPort void))
+(defbjouble (close-output-port p)
+  (#:sync (close-out p))
+  (#:bjo  (close-out-await p)))
 
 ;; --- The filesystem is an effect ---
 ;;
@@ -2004,7 +2010,7 @@
 
 ;; `(open-output-file path)` truncates; `#:mode Append` or `#:mode CreateNew`
 ;; says otherwise.
-(: open-output-file (-> string (#:mode WriteMode) (Result Exception TextOutputPort)))
+(: open-output-file (-> string (#:mode WriteMode) (Result Exception OutputPort)))
 (defun (open-output-file path #:mode Truncate)
   (ignore (current-scope))
   (stream->output-port (open-write-stream path mode)))
@@ -2015,7 +2021,7 @@
   (ignore (current-scope))
   (stream->input-port (open-read-stream/raw path)))
 
-(: open-output-file/raw (-> string WriteMode (Result Exception TextOutputPort)))
+(: open-output-file/raw (-> string WriteMode (Result Exception OutputPort)))
 (defun (open-output-file/raw path mode)
   (ignore (current-scope))
   (stream->output-port (open-write-stream/raw path mode)))
@@ -2035,7 +2041,7 @@
     ((Ok p) (with-open ((it p)) (Ok (proc it))))
     ((Err e) (Err e))))
 
-(: call-with-output-file (-> string (-?-> TextOutputPort %a) (#:mode WriteMode) (Result Exception %a)))
+(: call-with-output-file (-> string (-?-> OutputPort %a) (#:mode WriteMode) (Result Exception %a)))
 (defun (call-with-output-file path proc #:mode Truncate)
   (match (open-output-file path #:mode mode)
     ((Ok p) (with-open ((it p)) (Ok (proc it))))
@@ -2229,10 +2235,10 @@
 
 ;; Flush.
 (import/extern
-  (clr-flush       (: Bjolang.Runtime.BjoWriter.FlushPort      (-> TextOutputPort void) #:blocking))
-  (clr-flush-await (: Bjolang.Runtime.BjoWriter.FlushPortAsync (-> TextOutputPort void) #:async)))
+  (clr-flush       (: Bjolang.Runtime.OutputPorts.Flush      (-> OutputPort void) #:blocking))
+  (clr-flush-await (: Bjolang.Runtime.OutputPorts.FlushAsync (-> OutputPort void) #:async)))
 
-(: flush-port (-> TextOutputPort void))
+(: flush-port (-> OutputPort void))
 (defbjouble (flush-port p)
   (#:sync (clr-flush p))
   (#:bjo  (clr-flush-await p)))
@@ -2338,32 +2344,37 @@
 ;; reason, string building operations like `vec->str` use a `StringBuilder` 
 ;; instead of a string port to ensure string formatting remains pure and synchronous.
 (import/extern
-  (clr-write         (: Bjolang.Runtime.BjoWriter.WritePort          (-> TextOutputPort string void) #:blocking))
-  (clr-write-await   (: Bjolang.Runtime.BjoWriter.WritePortAsync     (-> TextOutputPort string void) #:async))
-  (clr-writec        (: Bjolang.Runtime.BjoWriter.WriteCharPort      (-> TextOutputPort char void)   #:blocking))
-  (clr-writec-await  (: Bjolang.Runtime.BjoWriter.WriteCharPortAsync (-> TextOutputPort char void)   #:async))
-  (clr-writeln       (: Bjolang.Runtime.BjoWriter.WriteLinePort      (-> TextOutputPort string void) #:blocking))
-  (clr-writeln-await (: Bjolang.Runtime.BjoWriter.WriteLinePortAsync (-> TextOutputPort string void) #:async)))
+  (clr-write         (: Bjolang.Runtime.OutputPorts.Write          (-> OutputPort string void) #:blocking))
+  (clr-write-await   (: Bjolang.Runtime.OutputPorts.WriteAsync     (-> OutputPort string void) #:async))
+  (clr-writec        (: Bjolang.Runtime.OutputPorts.WriteChar      (-> OutputPort char void)   #:blocking))
+  (clr-writec-await  (: Bjolang.Runtime.OutputPorts.WriteCharAsync (-> OutputPort char void)   #:async))
+  (clr-writeln       (: Bjolang.Runtime.OutputPorts.WriteLine      (-> OutputPort string void) #:blocking))
+  (clr-writeln-await (: Bjolang.Runtime.OutputPorts.WriteLineAsync (-> OutputPort string void) #:async)))
 
-(: write-string (-> TextOutputPort string void))
+(: write-string (-> OutputPort string void))
 (defbjouble (write-string p s)
   (#:sync (clr-write p s))
   (#:bjo  (clr-write-await p s)))
 
 ;; Write char.
-(: write-char (-> TextOutputPort char void))
+(: write-char (-> OutputPort char void))
 (defbjouble (write-char p c)
   (#:sync (clr-writec p c))
   (#:bjo  (clr-writec-await p c)))
 
-(: writeln (-> TextOutputPort string void))
+(: writeln (-> OutputPort string void))
 (defbjouble (writeln p s)
   (#:sync (clr-writeln p s))
   (#:bjo  (clr-writeln-await p s)))
 
-;; Gets the accumulated string in the textoutputport
-(: get-output-string (-> TextOutputPort string))
+;; What a string port has been given, as text. Bytes written to it with
+;; `write-bytes!` that are not UTF-8 read as U+FFFD, as Racket's do.
+(: get-output-string (-> OutputPort string))
 (defun (get-output-string p) (writer->string p))
+
+;; What a string port has been given, as bytes.
+(: get-output-bytes (-> OutputPort (Array byte)))
+(defun (get-output-bytes p) (output-bytes p))
 
 
 ;; ---------------------------------------------------------------------------

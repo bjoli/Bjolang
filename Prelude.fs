@@ -138,10 +138,10 @@ let ownedType = TCon("Owned", [])
 let dynEnvType = TCon("DynEnv", [])
 
 /// The port types, as `std/prelude` publishes them (`InputPort` and
-/// `TextOutputPort`). Named here because the three standard ports are builtin
+/// `OutputPort`). Named here because the three standard ports are builtin
 /// bindings and have to be typed before `prelude.bjo` exists to say it.
 let inputPortType = TCon("Bjolang.Runtime.BjoInputPort", [])
-let textOutputPortType = TCon("System.IO.TextWriter", [])
+let textOutputPortType = TCon("Bjolang.Runtime.BjoOutputPort", [])
 
 /// A piece of syntax: what a macro transformer takes and returns.
 ///
@@ -479,7 +479,7 @@ let prelude : Env =
         // uniform reader keeps `(Param %a)` an ordinary type that can be passed,
         // stored and returned.
         //
-        // `(Param TextOutputPort)` is closed, so the three standard ports are
+        // `(Param OutputPort)` is closed, so the three standard ports are
         // module-level values without tripping the open-type restriction — a
         // user's own `(def verbose? (make-parameter #f))` is closed too, and one
         // that is not gets the existing "give it a signature" error.
@@ -820,11 +820,11 @@ let prelude : Env =
         // UTF-16 code unit: both directions have to handle a surrogate pair, and
         // neither is something a caller should be reassembling by hand.
         "reader-read-char!", {Scheme = Scheme([], [], makeFunType [inputPortType] charType); IsMutable = false }
-        "writer-write-char!", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextWriter", []); charType] unitType); IsMutable = false }
+        "writer-write-char!", {Scheme = Scheme([], [], makeFunType [textOutputPortType; charType] unitType); IsMutable = false }
         // What `get-output-string` is built on. A builtin because the failure it
         // has to report — a port that is not a string port — is a value rather
         // than an exception on the .NET side.
-        "writer->string", {Scheme = Scheme([], [], makeFunType [TCon("System.IO.TextWriter", [])] stringType); IsMutable = false }
+        "writer->string", {Scheme = Scheme([], [], makeFunType [textOutputPortType] stringType); IsMutable = false }
         "reader->list", {Scheme = Scheme([], [], makeFunType [inputPortType] (makeListType stringType)); IsMutable = false }
         "reader->vec", {Scheme = Scheme([], [], makeFunType [inputPortType] (makeVecType stringType)); IsMutable = false }
 

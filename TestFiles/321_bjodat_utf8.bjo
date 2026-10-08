@@ -19,7 +19,7 @@
   (match (byte-pipe)
     ((Tuple in out)
      (write-bytes! out bytes)
-     (close-byte-output-port! out)
+     (close-output-port out)
      (shown (read-bjodat in)))))
 
 (: read-on-a-fiber (-bjo-> InputPort string))
@@ -67,10 +67,10 @@
           (match (byte-pipe)
             ((Tuple in out)
              (write-bytes! out #[34 195])
-             (flush! out)
+             (flush-port out)
              (def reading (bjo (read-on-a-fiber in)))
              (write-bytes! out #[169 34])
-             (close-byte-output-port! out)
+             (close-output-port out)
              (match (sync/blocking (promise-join reading)) ((Ok s) s) ((Err e) "raised"))))
           "\"é\"")
 

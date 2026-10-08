@@ -29,6 +29,7 @@ public static class Program
         BytePortTests.RunAll();
         InputPortTextTests.RunAll();
         EncodingsTests.RunAll();
+        OutputPortTests.RunAll();
         NetTests.RunAll();
 
         return Harness.Report();

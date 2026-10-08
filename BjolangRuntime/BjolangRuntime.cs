@@ -46,20 +46,15 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Unit displayln(object o) { Dyn.Current.Out.WriteLine(o); return unit; }
 
-    // A string is written without becoming a .NET string first.
+    // A string is its UTF-8 bytes, copied into the port's buffer as they are.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit display(Utf8String s) { BjoString.Utf8Text.Write(Dyn.Current.Out, s); return unit; }
+    public static Unit display(Utf8String s) { Dyn.Current.Out.WriteText(s); return unit; }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit displayln(Utf8String s) {
-        var w = Dyn.Current.Out;
-        BjoString.Utf8Text.Write(w, s);
-        w.WriteLine();
-        return unit;
-    }
+    public static Unit displayln(Utf8String s) { Dyn.Current.Out.WriteTextLine(s); return unit; }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit newline() { Dyn.Current.Out.WriteLine(); return unit; }
+    public static Unit newline() { Dyn.Current.Out.WriteTextLine(default); return unit; }
 
     // `GetDirectoryName` answers null for a root and for a bare filename, and
     // Bjolang has no null to test against — so the sentinel is turned into the
@@ -84,29 +79,22 @@ public static partial class BjolangRuntime {
     public static Bjolang.Runtime.BjoChar readersubreadsubchar_BANG(Bjolang.Runtime.BjoInputPort port) =>
         Bjolang.Runtime.InputPorts.ReadCharOrThrow(port);
 
-    // The counterpart, and not a `Write((char)c)` for the same reason: an
-    // astral character is two UTF-16 units and both have to go out.
+    // The counterpart: one scalar, encoded as UTF-8.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit writersubwritesubchar_BANG(System.IO.TextWriter writer, Bjolang.Runtime.BjoChar c) {
-        c.WriteTo(writer);
+    public static Unit writersubwritesubchar_BANG(Bjolang.Runtime.BjoOutputPort port, Bjolang.Runtime.BjoChar c) {
+        port.WriteScalar(c);
         return unit;
     }
 
-    // What a string output port has accumulated.
-    //
-    // A builtin for the same reason the failing read is one: the .NET answer for
-    // the wrong receiver is not a failure but a *value*. `TextWriter` does not
-    // override `ToString`, so asking a file port would hand back
-    // "System.IO.StreamWriter" and never say a word — and a port is one type to
-    // every caller by design, so the type checker cannot rule the question out.
+    // What a string output port has accumulated. Asking any other port is an
+    // error rather than an empty answer.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Utf8String writersubgtstring(System.IO.TextWriter writer) =>
-        writer is System.IO.StringWriter sw
-            ? Utf8String.FromUtf16(sw.ToString())
+    public static Utf8String writersubgtstring(Bjolang.Runtime.BjoOutputPort port) =>
+        port.IsMemory
+            ? port.GetString()
             : throw new InvalidOperationException(
-                "get-output-string: this port is a "
-                + writer.GetType().Name
-                + ", not one from (open-output-string). Only a string port accumulates text to hand back.");
+                "get-output-string: this port writes to a stream, not to memory. "
+                + "Only a port from (open-output-string) accumulates text to hand back.");
 
     // Draining a port into a collection, done here rather than as a Bjolang
     // loop so that the builder is used directly and each line is added once.
@@ -1038,6 +1026,8 @@ public static partial class BjolangRuntime {
         if (parametersubref(currentlysubinsubrepl))
             throw new PanicException(message);
 
+        // What the program printed comes before why it stopped.
+        StdOut.FlushAtExit();
         var err = parametersubref(currentsuberrorsubport);
         err.WriteLine(message);
         // `Environment.Exit` runs no finalizers, and a redirected error port
@@ -1275,7 +1265,7 @@ public static partial class BjolangRuntime {
     /// and exception-safe.
     /// </summary>
     public sealed class DynEnv : Bjoml.IFiberContext {
-        public readonly System.IO.TextWriter Out;
+        public readonly Bjolang.Runtime.BjoOutputPort Out;
         public readonly Bjolang.Runtime.BjoInputPort In;
 
         /// The ambient cancellation token, and null when nothing has bound one.
@@ -1339,7 +1329,7 @@ public static partial class BjolangRuntime {
         internal readonly FiberWatch? Park;
 
         internal DynEnv(
-            System.IO.TextWriter output,
+            Bjolang.Runtime.BjoOutputPort output,
             Bjolang.Runtime.BjoInputPort input,
             Bjoml.Promise<CancelReason>? cancel,
             Scope? scope,
@@ -1353,7 +1343,7 @@ public static partial class BjolangRuntime {
             Park = park;
         }
 
-        internal DynEnv WithOut(System.IO.TextWriter w) => new(w, In, Cancel, Scope, Vals, Park);
+        internal DynEnv WithOut(Bjolang.Runtime.BjoOutputPort w) => new(w, In, Cancel, Scope, Vals, Park);
         internal DynEnv WithIn(Bjolang.Runtime.BjoInputPort r) => new(Out, r, Cancel, Scope, Vals, Park);
 
         /// The cell travels with the environment except where the token changes
@@ -1406,7 +1396,7 @@ public static partial class BjolangRuntime {
         /// thread that never parameterizes anything costs nothing and still
         /// finds the standard ports.
         private static readonly DynEnv Root = new(
-            Console.Out,
+            StdOut,
             StdIn,
             null,
             null,
@@ -1534,18 +1524,70 @@ public static partial class BjolangRuntime {
     /// takes over the terminal: on one in canonical mode the kernel edits and
     /// echoes the line, and Ctrl-D at the start of a line is end of input.
     ///
-    /// Standard *output* is deliberately not wrapped. A writer has no eof
-    /// problem to solve, and a buffer in front of the console would only delay
-    /// output past the point a program crashed.
+    /// Before it waits for input it flushes standard output, so that a prompt
+    /// written without a newline is on the screen when the program waits.
     public static readonly Bjolang.Runtime.BjoInputPort StdIn =
-        new(Console.OpenStandardInput(), Bjolang.Runtime.BjoInputPort.SmallBufferSize, ownsInner: false);
+        new(Console.OpenStandardInput(), Bjolang.Runtime.BjoInputPort.SmallBufferSize, ownsInner: false) {
+            BeforeWait = static () => StdOut?.FlushAtExit(),
+        };
+
+    /// Standard output, buffered as Racket buffers it: at each newline on a
+    /// terminal, and a block at a time when it is redirected to a file or a
+    /// pipe. Over standard output's raw bytes, so a string is written as its
+    /// UTF-8 without a detour through UTF-16.
+    ///
+    /// A buffer in front of the console must not keep output from a program
+    /// that stops. It is flushed when `main` returns (the main scope's last
+    /// release), when the process exits by any road (`ProcessExit`), on an
+    /// unhandled exception, in a panic, and before standard input waits.
+    ///
+    /// `Console.Out` is pointed at it too, so that a .NET library writing to the
+    /// console is not reordered against the program's own output by two
+    /// buffers.
+    public static readonly Bjolang.Runtime.BjoOutputPort StdOut = MakeStandardPorts();
+
+    /// Standard error: unbuffered, as Racket's is.
+    public static readonly Bjolang.Runtime.BjoOutputPort StdErr =
+        StandardError ?? new(Console.OpenStandardError(), Bjolang.Runtime.BjoOutputPort.SmallBufferSize, ownsInner: false);
+
+    private static Bjolang.Runtime.BjoOutputPort? StandardError;
+
+    private static Bjolang.Runtime.BjoOutputPort MakeStandardPorts() {
+        var output = new Bjolang.Runtime.BjoOutputPort(
+            Console.OpenStandardOutput(), Bjolang.Runtime.BjoOutputPort.DefaultBufferSize, ownsInner: false) {
+            Mode = Console.IsOutputRedirected ? Bjolang.Runtime.BufferMode.Block : Bjolang.Runtime.BufferMode.Line,
+        };
+        var error = new Bjolang.Runtime.BjoOutputPort(
+            Console.OpenStandardError(), Bjolang.Runtime.BjoOutputPort.SmallBufferSize, ownsInner: false) {
+            Mode = Bjolang.Runtime.BufferMode.None,
+        };
+        StandardError = error;
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => output.FlushAtExit();
+        AppDomain.CurrentDomain.UnhandledException += (_, _) => output.FlushAtExit();
+        return output;
+    }
+
+    private static int s_consoleInstalled;
+
+    /// <summary>
+    /// Points `Console.Out` and `Console.Error` at the standard ports, once.
+    ///
+    /// Called where a Bjolang program starts - `main` and a REPL session - and
+    /// not when the runtime is loaded: the compiler loads it to expand macros,
+    /// and its console is not the program's to take.
+    /// </summary>
+    public static void InstallStandardPorts() {
+        if (Interlocked.Exchange(ref s_consoleInstalled, 1) != 0) return;
+        Console.SetOut(StdOut);
+        Console.SetError(StdErr);
+    }
 
     /// The output port. Bound to a value, not a nullary function: it is read
     /// with `parameter-ref` like every other parameter.
     ///
     /// A field parameter takes no id, so it spends none of the 31 hot slots and
     /// a program's own parameters get the whole budget.
-    public static readonly Param<System.IO.TextWriter> currentsuboutputsubport = new(0, -1, Console.Out);
+    public static readonly Param<Bjolang.Runtime.BjoOutputPort> currentsuboutputsubport = new(0, -1, StdOut);
     public static readonly Param<Bjolang.Runtime.BjoInputPort> currentsubinputsubport = new(1, -1, StdIn);
 
     /// The error port, which is a cold parameter and not a field.
@@ -1554,8 +1596,8 @@ public static partial class BjolangRuntime {
     /// nothing reads it in a loop — a program reaches for it when something has
     /// already gone wrong. So it earns neither a field nor one of the 31 slots
     /// that stay cheap however many parameters exist.
-    public static readonly Param<System.IO.TextWriter> currentsuberrorsubport =
-        new(-1, ParamIds.NextCold(), Console.Error);
+    public static readonly Param<Bjolang.Runtime.BjoOutputPort> currentsuberrorsubport =
+        new(-1, ParamIds.NextCold(), StdErr);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Param<T> makesubparameter<T>(T initial) => new(-1, ParamIds.NextHot(), initial);
@@ -1602,7 +1644,7 @@ public static partial class BjolangRuntime {
     public static DynEnv parametersubpush_BANG<T>(Param<T> p, T value) {
         var prev = Dyn.Current;
         Dyn.Current = p.Slot switch {
-            0 => prev.WithOut((System.IO.TextWriter)(object)value!),
+            0 => prev.WithOut((Bjolang.Runtime.BjoOutputPort)(object)value!),
             1 => prev.WithIn((Bjolang.Runtime.BjoInputPort)(object)value!),
             2 => prev.WithCancel((Bjoml.Promise<CancelReason>)(object)value!),
             _ => prev.WithVal(p.Id, value!)

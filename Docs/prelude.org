@@ -327,7 +327,7 @@ All of these have suspending copies, so a bjoroutine calling one awaits the file
 
 Everything in this section and under Directories below reaches the disk through the ~FS~ effect (see "Files, and the ~FS~ effect"), so a handler — ~with-fake-fs~, say — answers for all of it.
 - ~(file-read-lines/seq path)~ : The lines, pulled lazily.
-- ~(file-read/seq reader path)~ : The same, pulled through any ~(-> TextInputPort %a)~. Opens the file once per walk and closes it when the walk ends — at the end, or when the walker stops early — so the sequence may be walked more than once. What ~(std ports)~' ~file->seq~ is built on. Prefer ~file->seq~, which reports a missing file as a ~Result~ rather than throwing on the first pull.
+- ~(file-read/seq reader path)~ : The same, pulled through any ~(-> InputPort %a)~. Opens the file once per walk and closes it when the walk ends — at the end, or when the walker stops early — so the sequence may be walked more than once. What ~(std ports)~' ~file->seq~ is built on. Prefer ~file->seq~, which reports a missing file as a ~Result~ rather than throwing on the first pull.
 
 *The lazy ones never suspend.* ~file-read/seq~ and ~file-read-lines/seq~ here, ~directory-walk~ below, and ~(std ports)~' ~port->seq~ and ~file->seq~ are ~Seq~s, and a ~seq~ body cannot await: a bjoroutine pulling from one parks its thread on every pull. In a bjoroutine, read the whole file with ~file-read-lines~, or stream it with ~port->chan~.
 
@@ -374,13 +374,19 @@ Opening a file returns a ~Result~ because a missing file is expected; opening a 
 - ~(open-output-string)~ : A port that collects what is written to it. To build a regular string, use a ~StringBuilder~ instead, because writing to ports carries an effect (colour).
 - ~(get-output-string port)~ : Everything written to a string port so far. The port stays open and keeps collecting, so asking twice with writes in between includes the earlier text. *Throws* if called on a non-string port.
 
-Ports directly wrap .NET streams (~TextInputPort~ is ~System.IO.TextReader~ and ~TextOutputPort~ is ~System.IO.TextWriter~). Opening returns a ~Result~ to handle missing files, while operating throws exceptions for mid-stream device errors.
+There is one input port type, ~InputPort~, and one output port type, ~OutputPort~, as in Racket. A port carries bytes; text is read from it and written to it as UTF-8, with no byte order mark, and text, characters and bytes (~write-bytes!~ in ~(std ports)~) mix freely on one port. A port in another encoding is a re-encoding port over it: ~reencode-input-port~ and ~reencode-output-port~ in ~(std ports)~. Opening returns a ~Result~ to handle missing files, while operating throws exceptions for mid-stream device errors.
+
+An ~OutputPort~ is also a ~System.IO.TextWriter~, so a .NET API that writes to a ~TextWriter~ (~XmlWriter.Create~, say) takes the port itself, after a ~(cast TextWriter port)~. Writes are whole: many fibers can write to one port and no write is torn into another.
+
+Standard output is buffered as in Racket: by line when it is a terminal, in blocks when it is redirected to a file or a pipe. Standard error is not buffered. Standard output is flushed when the program exits, when it fails with an exception or a panic, and before the program waits on standard input, so a prompt is always seen before the read. ~(flush-port (current-output-port))~ flushes it at any other time.
+
+- ~(get-output-bytes port)~ : What ~get-output-string~ answers, as the bytes written: exact, where ~get-output-string~ reads bytes that are not UTF-8 as U+FFFD.
 
 Only the drains — ~port->list~, ~port->vec~, ~port->seq~, ~file->seq~ and ~port->lines~ — are in ~(std ports)~ and have to be imported. The first four take the per-item reader as their first argument; ~port->lines~ is ~port->vec~ with ~read-line~ supplied, giving a ~(Vec string)~. Opening, reading, writing and closing are here.
 
-- ~(open-input-file path)~ : ~(Result Exception TextInputPort)~. The ~Err~ carries the real .NET exception, so an arm can say ~(:is System.IO.FileNotFoundException e)~.
+- ~(open-input-file path)~ : ~(Result Exception InputPort)~. The ~Err~ carries the real .NET exception, so an arm can say ~(:is System.IO.FileNotFoundException e)~.
 - ~(open-input-string contents)~ : A string as an input port. Cannot fail, so no ~Result~.
-- ~(open-output-file path)~ : ~(Result Exception TextOutputPort)~, truncating the file if it exists. ~#:mode~ takes a ~WriteMode~:
+- ~(open-output-file path)~ : ~(Result Exception OutputPort)~, truncating the file if it exists. ~#:mode~ takes a ~WriteMode~:
   - ~Truncate~ (the default): create the file, or empty it.
   - ~Append~: create the file, or write after what it holds.
   - ~CreateNew~: create the file, and fail with an ~IOException~ if it exists. The check and the create are one system call, so of two writers racing for a path exactly one wins.
@@ -977,7 +983,7 @@ Everything in the prelude and ~(std ports)~ that reaches the disk goes through t
 | ~(fs-delete-directory path)~      | ~(Result Exception Unit)~              |
 | ~(fs-move from to mode)~          | ~(Result Exception Unit)~              |
 
-The openers answer a ~Stream~, not a port. ~open-input-file~, ~open-output-file~ and ~(std ports)~' ~open-byte-input-file~ and ~open-byte-output-file~ build the port over it and register it on the ambient scope, so one handler serves text and bytes, and a ~MemoryStream~ a handler made is owned exactly as a file is. A handler is installed per operation:
+The openers answer a ~Stream~, not a port. ~open-input-file~ and ~open-output-file~ build the port over it and register it on the ambient scope, so one handler serves text and bytes, and a ~MemoryStream~ a handler made is owned exactly as a file is. A handler is installed per operation:
 
 #+BEGIN_SRC scheme
 (with-handler ((open-write-stream (fun (path mode) ...))

@@ -24,7 +24,6 @@
 
 (import (std prelude))
 (import (std ports))
-(import (only (text encodings) utf-8))
 (import (std inbox))
 (import (std simpletest))
 
@@ -116,10 +115,10 @@
 ;; is long.
 ;; `bjo` takes one expression, so every fiber body in this file is a named
 ;; bjoroutine rather than a block written inline.
-(: write-then-flush (-bjo-> ByteOutputPort (Array byte) int))
+(: write-then-flush (-bjo-> OutputPort (Array byte) int))
 (defbjo (write-then-flush out bytes)
   (write-bytes! out bytes)
-  (flush! out)
+  (flush-port out)
   0)
 
 ;; Whether the read branch won, and every byte that came out of the port.
@@ -199,14 +198,14 @@
 ;; 1..10, 11..20, ... a chunk at a time, so that the two readers meet an empty
 ;; buffer over and over and have to serialize on the refill rather than each
 ;; taking a contiguous half of one bufferful.
-(: write-in-tens (-bjo-> ByteOutputPort int int))
+(: write-in-tens (-bjo-> OutputPort int int))
 (defbjo (write-in-tens out chunks)
   (let loop ((i 0))
     (if (= i chunks)
         (let () (shutdown! out) 0)
         (let ()
           (write-bytes! out (byte-run (+ (* i 10) 1) 10))
-          (flush! out)
+          (flush-port out)
           (loop (+ i 1))))))
 
 (: wait-for-eof (-bjo-> InputPort int))
@@ -214,12 +213,12 @@
   (sync (eof-evt in))
   1)
 
-;; No `flush!`, so the close on the fiber is what writes the bytes.
-(: write-then-close (-bjo-> ByteOutputPort (Array byte) int))
+;; No `flush-port`, so the close on the fiber is what writes the bytes.
+(: write-then-close (-bjo-> OutputPort (Array byte) int))
 (defbjo (write-then-close out bytes)
   (write-bytes! out bytes)
-  (close-byte-output-port! out)
-  (close-byte-output-port! out)
+  (close-output-port out)
+  (close-output-port out)
   0)
 
 ;; ---------------------------------------------------------------------------
@@ -248,7 +247,7 @@
   (match (byte-pipe)
     ((Tuple in out)
      (write-bytes! out raw)
-     (flush! out)
+     (flush-port out)
      (shutdown! out)
      (expect "a pipe carries bytes through unchanged"
              (shown (read-bytes in 6)) "104.105.255.128.0.200.")
@@ -260,7 +259,7 @@
   (match (byte-pipe)
     ((Tuple in out)
      (write-bytes! out raw)
-     (flush! out)
+     (flush-port out)
      (shutdown! out)
      (expect "exactly n" (shown (read-bytes in 2)) "104.105.")
      ;; Four are left and ten are asked for, so this comes back short.
@@ -274,7 +273,7 @@
   (match (byte-pipe)
     ((Tuple in out)
      (write-bytes! out #[7])
-     (flush! out)
+     (flush-port out)
      (shutdown! out)
      (expect "read-some gives what there is" (shown (read-some in)) "7.")
      (expect "None at the end" (shown (read-some in)) "none")
@@ -291,7 +290,7 @@
   (match (byte-pipe)
     ((Tuple in out)
      (write-bytes! out raw)
-     (flush! out)
+     (flush-port out)
      (shutdown! out)
      (expect "peek" (shown (peek-bytes in 0 3)) "104.105.255.")
      (expect "peek again, at an offset" (shown (peek-bytes in 2 2)) "255.128.")
@@ -328,7 +327,7 @@
   (match (byte-pipe)
     ((Tuple in out)
      (write-bytes! out #[1 2 3])
-     (flush! out)
+     (flush-port out)
      (def ev (read-bytes-evt in 1))
      (expect "one event, synced three times, reads successive bytes"
              (str (shown (got (sync/blocking ev)))
@@ -363,7 +362,7 @@
   (match (byte-pipe)
     ((Tuple in out)
      (write-bytes! out (byte-run 1 10))
-     (flush! out)
+     (flush-port out)
      (shutdown! out)
      (def head (limited in 4))
      (expect "limited stops at its bound" (drain-bytes head) "1.2.3.4.")
@@ -374,7 +373,7 @@
   (match (byte-pipe)
     ((Tuple in out)
      (write-bytes! out #[1 2])
-     (flush! out)
+     (flush-port out)
      (shutdown! out)
      (expect "a bound of zero reads nothing" (drain-bytes (limited in 0)) "")
      (expect "and takes nothing from the port" (drain-bytes in) "1.2.")))
@@ -407,7 +406,7 @@
   (match (byte-pipe)
     ((Tuple in out)
      (write-bytes! out #[5 6])
-     (close-byte-output-port! out)
+     (close-output-port out)
      (expect "closing the write half leaves what was written" (shown (read-bytes in 2)) "5.6.")
      (expect "and then ends the read half" (shown (read-some in)) "none")))
 
@@ -430,7 +429,7 @@
 
   (def fiber-path "231_bytes_fiber.tmp")
   (def owned-before (scope-owned-count (current-scope)))
-  (match (open-byte-output-file fiber-path)
+  (match (open-output-file fiber-path)
     ((Ok w)
      (expect "a close on a fiber of an owned port"
              (match (sync/blocking (promise-join (bjo (write-then-close w raw))))
@@ -452,7 +451,7 @@
   ;; =========================================================================
   (def path "231_bytes.tmp")
 
-  (match (open-byte-output-file path)
+  (match (open-output-file path)
     ((Ok w) (with-open ((o w)) (write-bytes! o raw)))
     ((Err e) (println "FAILURE: could not open the byte file for writing")))
 
@@ -503,33 +502,28 @@
               (expect "and the reader carries on" (read-line i) "beta")))
     ((Err e) (println "FAILURE: could not reopen the text file")))
 
-  ;; The other direction: characters into a byte port.
+  ;; The other direction: text and bytes into one output port.
   (def out-path "231_bytes_out.tmp")
-  (match (open-byte-output-file out-path)
+  (match (open-output-file out-path)
     ((Ok w) (with-open ((o w))
-              (def t (byte->text-output-port o utf-8))
-              (write-string t "hello")
-              (write-string t " world")
-              ;; Closing the text port pushes its characters into the byte port
-              ;; *and* drains the byte port, so nothing is stranded between them.
-              (close-output-port t)))
-    ((Err e) (println "FAILURE: could not open the byte file for writing")))
-  (expect "a text port over a byte port" (file-read-text out-path) "hello world")
+              (write-string o "hello")
+              (write-bytes! o #[32])
+              (write-string o "world")))
+    ((Err e) (println "FAILURE: could not open the file for writing")))
+  (expect "text and bytes on one output port" (file-read-text out-path) "hello world")
 
-  ;; `utf-8` writes no byte order mark, and a port reads one as the character
-  ;; it is: 239 187 191 is U+FEFF in UTF-8.
+  ;; A port writes no byte order mark, and reads one as the character it is:
+  ;; 239 187 191 is U+FEFF in UTF-8.
   (match (byte-pipe)
     ((Tuple in out)
-     (def t (byte->text-output-port out utf-8))
-     (write-string t "a")
-     (close-output-port t)
-     (close-byte-output-port! out)
-     (expect "utf-8 writes no byte order mark" (drain-bytes in) "97.")))
+     (write-string out "a")
+     (close-output-port out)
+     (expect "a port writes no byte order mark" (drain-bytes in) "97.")))
 
   (match (byte-pipe)
     ((Tuple in out)
      (write-bytes! out #[239 187 191 104 105])
-     (close-byte-output-port! out)
+     (close-output-port out)
      (expect "a byte order mark is a character" (char->int (read-char in)) 65279)
      (expect "and the text follows it" (read-line in) "hi")))
 
@@ -544,11 +538,11 @@
     (expect "a port over a borrowed stream reads it"
             (shown (read-bytes borrowed 6)) "104.105.255.128.0.200."))
 
-  (def sink (stream->byte-output-port (cast Stream (MemStream. scratch))))
+  (def sink (stream->output-port (cast Stream (MemStream. scratch))))
   (write-bytes! sink four)
-  (flush! sink)
+  (flush-port sink)
   (expect "a port over a borrowed stream writes to it" (bytes->text scratch) "11.22.33.44.")
-  (close-byte-output-port! sink)
+  (close-output-port sink)
 
   ;; =========================================================================
   ;; Errors are diagnostics, never crashes
@@ -584,7 +578,7 @@
              (match (try (read-some in) #:catch (System.ObjectDisposedException))
                ((Ok _) "read") ((Err e) "refused"))
              "refused")
-     (close-byte-output-port! out)
+     (close-output-port out)
      (expect "writing to a closed port is refused"
              (match (try (let () (write-bytes! out #[1]) "written")
                          #:catch (System.ObjectDisposedException))
@@ -601,7 +595,7 @@
     ((Tuple in out)
      (def watcher (bjo (wait-for-eof in)))
      (write-bytes! out #[9])
-     (flush! out)
+     (flush-port out)
      (expect "the byte is there" (shown (read-bytes in 1)) "9.")
      (shutdown! out)
      (expect "eof-evt fires once the writer is done"

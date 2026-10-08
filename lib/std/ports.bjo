@@ -26,8 +26,9 @@
 ;;
 ;; `BjolangRuntime/BjoInputPort.cs` is where that is done.
 ;;
-;; Output is still two types: a `ByteOutputPort` for bytes, with a text port
-;; over it from `byte->text-output-port`.
+;; An `OutputPort` is bytes too: `write-string` and `write-char` write UTF-8
+;; to it, and `write-bytes!` writes bytes as they are, on the same port and in
+;; any order.
 
 (export
   ;; Draining
@@ -39,7 +40,7 @@
   ;; --- Bytes ---------------------------------------------------------------
 
   ;; The types. `Encoding` is the prelude's, its values `(text encodings)`'s.
-  ByteOutputPort Stream
+  Stream
 
   ;; Reading, as events. These are what go in a `choose`.
   read-some-evt read-bytes-evt eof-evt
@@ -49,20 +50,19 @@
   peek-bytes
 
   ;; Writing.
-  write-bytes! flush!
+  write-bytes!
 
-  ;; Closing, and the half-close.
-  close-byte-output-port! shutdown!
+  ;; The half-close.
+  shutdown!
 
   ;; Composition.
   limited byte-pipe
 
   ;; Sources.
-  open-byte-output-file
-  stream->input-port stream->byte-output-port
+  stream->input-port stream->output-port
 
   ;; Encodings.
-  reencode-input-port byte->text-output-port)
+  reencode-input-port reencode-output-port)
 
 (import (std prelude))
 
@@ -168,7 +168,6 @@
 ;; is not a module dependency.
 
 (import/class
-  (ByteOutputPort (: Bjolang.Runtime.BjoByteOutputPort))
   ;; The pipe object, which exists only so that `byte-pipe` can take its two
   ;; halves off it. Not exported: a pipe *is* its two ports.
   (BytePipe       (: Bjolang.Runtime.BjoBytePipe))
@@ -177,10 +176,10 @@
 (import/extern
   ;; Sources.
   (clr-from-stream (: Bjolang.Runtime.BytePorts.FromStream (-> Stream InputPort)))
-  (clr-to-stream   (: Bjolang.Runtime.BytePorts.ToStream   (-> Stream ByteOutputPort)))
+  (clr-to-stream   (: Bjolang.Runtime.OutputPorts.FromStream (-> Stream OutputPort)))
   (clr-make-pipe   (: Bjolang.Runtime.BytePorts.MakePipe   (-> BytePipe)))
   (clr-pipe-in     (: Bjolang.Runtime.BytePorts.PipeInput  (-> BytePipe InputPort)))
-  (clr-pipe-out    (: Bjolang.Runtime.BytePorts.PipeOutput (-> BytePipe ByteOutputPort)))
+  (clr-pipe-out    (: Bjolang.Runtime.BytePorts.PipeOutput (-> BytePipe OutputPort)))
   (clr-limited     (: Bjolang.Runtime.BytePorts.Limited    (-> InputPort int InputPort)))
 
   ;; The events.
@@ -197,22 +196,16 @@
                          (-> InputPort int int (Option (Array byte))) #:async))
 
   ;; Writing.
-  (clr-write-bytes       (: Bjolang.Runtime.BytePorts.WriteBytes
-                            (-> ByteOutputPort (Array byte) void) #:blocking))
-  (clr-write-bytes-await (: Bjolang.Runtime.BytePorts.WriteBytesAsync
-                            (-> ByteOutputPort (Array byte) void) #:async))
-  (clr-flush             (: Bjolang.Runtime.BytePorts.Flush    (-> ByteOutputPort void) #:blocking))
-  (clr-flush-await       (: Bjolang.Runtime.BytePorts.FlushAsync (-> ByteOutputPort void) #:async))
-  (clr-shutdown          (: Bjolang.Runtime.BytePorts.Shutdown (-> ByteOutputPort void) #:blocking))
-  (clr-shutdown-await    (: Bjolang.Runtime.BytePorts.ShutdownAsync (-> ByteOutputPort void) #:async))
-
-  ;; Closing.
-  (clr-close-out (: Bjolang.Runtime.BytePorts.CloseOutput (-> ByteOutputPort void)))
-  (clr-close-out-await (: Bjolang.Runtime.BytePorts.CloseOutputAsync (-> ByteOutputPort void) #:async))
+  (clr-write-bytes       (: Bjolang.Runtime.OutputPorts.WriteBytes
+                            (-> OutputPort (Array byte) void) #:blocking))
+  (clr-write-bytes-await (: Bjolang.Runtime.OutputPorts.WriteBytesAsync
+                            (-> OutputPort (Array byte) void) #:async))
+  (clr-shutdown          (: Bjolang.Runtime.OutputPorts.Shutdown (-> OutputPort void) #:blocking))
+  (clr-shutdown-await    (: Bjolang.Runtime.OutputPorts.ShutdownAsync (-> OutputPort void) #:async))
 
   ;; Encodings.
   (clr-reencode  (: Bjolang.Runtime.InputPorts.Reencode (-> InputPort Encoding InputPort)))
-  (clr-to-writer (: Bjolang.Runtime.BytePorts.ToTextWriter (-> ByteOutputPort Encoding TextOutputPort))))
+  (clr-reencode-out (: Bjolang.Runtime.OutputPorts.Reencode (-> OutputPort Encoding OutputPort))))
 
 ;; ---------------------------------------------------------------------------
 ;; Reading, as events
@@ -301,36 +294,18 @@
 ;; Buffered, so most writes are a copy. A write that fills the buffer drains it,
 ;; and that is a syscall — which is why these have suspending twins at all.
 
-(: write-bytes! (-> ByteOutputPort (Array byte) void))
+(: write-bytes! (-> OutputPort (Array byte) void))
 (defbjouble (write-bytes! p bytes)
   (#:sync (clr-write-bytes p bytes))
   (#:bjo  (clr-write-bytes-await p bytes)))
 
-(: flush! (-> ByteOutputPort void))
-(defbjouble (flush! p)
-  (#:sync (clr-flush p))
-  (#:bjo  (clr-flush-await p)))
+
+;; `flush-port` and `close-output-port` are the prelude's: there is one kind of
+;; output port.
 
 ;; ---------------------------------------------------------------------------
-;; Closing
+;; The half-close
 ;; ---------------------------------------------------------------------------
-;;
-;; Through the owner handle, for the reason `close-input-port` is: a direct
-;; dispose would release the handle and leave the registration on the scope's
-;; list. A port nothing owns is disposed. An input port, whatever it reads, is
-;; closed by the prelude's `close-input-port`.
-
-;; What is still buffered, or written but not yet flushed, goes out first. On a
-;; fiber that write suspends, so the close works over a stream that refuses
-;; blocking I/O, as Kestrel's do. The port is closed even when the write fails
-;; or the fiber is cancelled, and the failure is raised afterwards.
-;;
-;; `with-open` and a scope ending close with a blocking write. After `flush!`
-;; there is nothing left to write, so they do no I/O.
-(: close-byte-output-port! (-> ByteOutputPort void))
-(defbjouble (close-byte-output-port! p)
-  (#:sync (clr-close-out p))
-  (#:bjo  (clr-close-out-await p)))
 
 ;; Ends the write side and leaves the read side open.
 ;;
@@ -339,7 +314,7 @@
 ;; goes out first, and a write after it is refused rather than dropped. A stream
 ;; with no half-close of its own gets the flush and nothing more, which is the
 ;; most that can honestly be done for a file.
-(: shutdown! (-> ByteOutputPort void))
+(: shutdown! (-> OutputPort void))
 (defbjouble (shutdown! p)
   (#:sync (clr-shutdown p))
   (#:bjo  (clr-shutdown-await p)))
@@ -364,7 +339,7 @@
 ;; prices it, nothing registers it on a scope, and a write never waits. Closing
 ;; the output half, or `shutdown!` on it, is what the input half sees as end of
 ;; input.
-(: byte-pipe (-> (Tuple InputPort ByteOutputPort)))
+(: byte-pipe (-> (Tuple InputPort OutputPort)))
 (defun (byte-pipe)
   (def pipe (clr-make-pipe))
   (Tuple (clr-pipe-in pipe) (clr-pipe-out pipe)))
@@ -373,23 +348,9 @@
 ;; Sources
 ;; ---------------------------------------------------------------------------
 ;;
-;; A file port is owned by the ambient scope, exactly as a text one is: when the
-;; scope returns the handle is released, whether the program said so or not. The
-;; scope is read before the file is opened, so a program with nowhere to put the
-;; port fails without having opened anything.
-;;
-;; The file is opened through the prelude's `FS` effect, as the text openers
-;; open theirs, so a handler that answers for the disk answers for these too.
-;; A file to read is opened with the prelude's `open-input-file`: there is one
-;; kind of input port.
-
-;; `#:mode` as for `open-output-file`: `Truncate` unless it says otherwise.
-(: open-byte-output-file (-> string (#:mode WriteMode) (Result Exception ByteOutputPort)))
-(defun (open-byte-output-file path #:mode Truncate)
-  (ignore (current-scope))
-  (match (open-write-stream path mode)
-    ((Ok s) (Ok (clr-to-stream s)))
-    ((Err e) (Err e))))
+;; A file is opened with the prelude's `open-input-file` and `open-output-file`:
+;; there is one kind of input port and one kind of output port, and a file port
+;; takes bytes as readily as text.
 
 ;; A port over a `Stream` somebody else handed over — a `NetworkStream`, a
 ;; request body, a `MemoryStream`. This pair is what `(std net)` and a web
@@ -401,8 +362,8 @@
   (ignore (current-scope))
   (clr-from-stream s))
 
-(: stream->byte-output-port (-> Stream ByteOutputPort))
-(defun (stream->byte-output-port s)
+(: stream->output-port (-> Stream OutputPort))
+(defun (stream->output-port s)
   (ignore (current-scope))
   (clr-to-stream s))
 
@@ -425,9 +386,10 @@
 (defun (reencode-input-port p encoding)
   (clr-reencode p encoding))
 
-;; Output's counterpart, until output is one port type too. Flushing or closing the text port pushes its characters
-;; into the byte port *and* drains the byte port, so nothing is left stranded in
-;; a buffer between the two.
-(: byte->text-output-port (-> ByteOutputPort Encoding TextOutputPort))
-(defun (byte->text-output-port p encoding)
-  (clr-to-writer p encoding))
+;; Output's counterpart, as Racket's `reencode-output-port` makes one: what is
+;; written to the new port is UTF-8 re-encoded as `encoding` on its way into
+;; `p`. A character the encoding lacks is written as its replacement. Closing
+;; the new port flushes it into `p` and leaves `p` open.
+(: reencode-output-port (-> OutputPort Encoding OutputPort))
+(defun (reencode-output-port p encoding)
+  (clr-reencode-out p encoding))

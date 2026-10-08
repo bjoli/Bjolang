@@ -1,9 +1,9 @@
 ;; Writing is a leaf with two colours, the way reading is.
 ;;
 ;; A write that fits in the port's buffer touches no handle, and that is what
-;; made a suspending write look unnecessary — `BjoWriter`'s own comment used to
-;; say so. It is not quite true: `Append` drains when the buffer fills, and that
-;; drain is the same syscall `flush-port` makes. Before `write-string` had a
+;; made a suspending write look unnecessary. It is not quite true: a write
+;; drains when the buffer fills, and that drain is the same syscall `flush-port`
+;; makes. Before `write-string` had a
 ;; `#:bjo` body, a bjoroutine writing more than a bufferful blocked the thread
 ;; it ran on, because every `WriteAsync` override called its synchronous twin
 ;; and returned `Task.CompletedTask`.
@@ -15,19 +15,22 @@
 (import (std prelude))
 (import (std simpletest))
 
-;; The two-argument constructor, so a test can put the boundary where it wants.
-;; `open-output-file` uses the one-argument form and gets 4096 characters, at
-;; which size nothing below would drain at all — and a drain is the whole
-;; subject.
+;; The constructor that takes a buffer size, so a test can put the boundary
+;; where it wants. `open-output-file` gets 16 KiB, at which size nothing below
+;; would drain at all — and a drain is the whole subject.
 (import/class
-  (Writer (: Bjolang.Runtime.BjoWriter (-> TextOutputPort int Writer))))
+  (Stream (: System.IO.Stream))
+  (Sized (: Bjolang.Runtime.BjoOutputPort (-> Stream int bool Sized))))
 
-;; A buffered port over a string port. What was written is read back from the
-;; port *underneath*, because a `BjoWriter` is not a `StringWriter` and only the
-;; one underneath has accumulated anything — and only after a flush.
-(: sized (-> TextOutputPort int TextOutputPort))
+(import/extern
+  (as-stream (: Bjolang.Runtime.BjoOutputPort.AsStream (-> OutputPort Stream))))
+
+;; A port with a tiny buffer over a string port. What was written is read back
+;; from the port *underneath*, which has it only once the small one drains or
+;; is flushed.
+(: sized (-> OutputPort int OutputPort))
 (defun (sized inner n)
-  (cast TextOutputPort (Writer. inner n)))
+  (cast OutputPort (Sized. (as-stream inner) n #f)))
 
 (: repeat-string (-> string int string))
 (defun (repeat-string s n)
@@ -42,7 +45,7 @@
 ;; pick a colour; this one is about whether the two bodies of three
 ;; `defbjouble`s agree, so both have to be named explicitly.
 
-(: writes-sync (-> TextOutputPort string int))
+(: writes-sync (-> OutputPort string int))
 (defun (writes-sync p text)
   (write-string p text)
   (write-char p (int->char 128512))
@@ -51,7 +54,7 @@
   (flush-port p)
   0)
 
-(: writes-bjo (-> TextOutputPort string int))
+(: writes-bjo (-> OutputPort string int))
 (defbjo (writes-bjo p text)
   (write-string p text)
   (write-char p (int->char 128512))
@@ -84,8 +87,7 @@
   ;;
   ;; Buffer of 4 over text far longer than that, so a drain falls between
   ;; almost every pair of writes. The astral character is there because it is
-  ;; two UTF-16 units: the suspending half encodes it before its first await,
-  ;; and a half that got that wrong would put out a lone surrogate.
+  ;; four bytes: a half that split it badly would put out invalid UTF-8.
   (expect "sync and suspending writes agree, tiny buffer"
           (collect-bjo "hello world" 4)
           (collect-sync "hello world" 4))
@@ -132,11 +134,11 @@
 
   ;; --- A real file, both ways ----------------------------------------------
   ;;
-  ;; `open-output-file` hands back a `BjoWriter`, so the suspending path is the
+  ;; `open-output-file` hands back a buffered port, so the suspending path is the
   ;; one that runs here, over a handle with a genuine syscall behind it.
   (def path "174_port_write_colour.tmp")
   (match (open-output-file path)
-    ((Ok w) (ignore (run-int (bjo (writes-bjo (cast TextOutputPort w) "to a file")))))
+    ((Ok w) (ignore (run-int (bjo (writes-bjo (cast OutputPort w) "to a file")))))
     ((Err e) (println "FAILURE: could not open the file for writing")))
 
   (match (open-input-file path)

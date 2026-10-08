@@ -1231,13 +1231,8 @@ public static partial class BjolangRuntime {
         return port;
     }
 
-    public static Bjolang.Runtime.BjoWriter OwnWriter(Bjolang.Runtime.BjoWriter port) {
-        port.Owner = RegisterPort(port);
-        return port;
-    }
-
     /// <summary>See <see cref="OwnInput"/>.</summary>
-    public static Bjolang.Runtime.BjoByteOutputPort OwnByteWriter(Bjolang.Runtime.BjoByteOutputPort port) {
+    public static Bjolang.Runtime.BjoOutputPort OwnOutput(Bjolang.Runtime.BjoOutputPort port) {
         port.Owner = RegisterPort(port);
         return port;
     }
@@ -1310,44 +1305,33 @@ public static partial class BjolangRuntime {
         return default;
     }
 
-    public static Unit CloseOutput(System.IO.TextWriter? port) {
+    public static Unit CloseOutput(Bjolang.Runtime.BjoOutputPort? port) {
         if (port is null) return default;
-        if (port is Bjolang.Runtime.BjoWriter { Owner: { } owned }) return owned.Release();
+        if (port.Owner is { } owned) return owned.Release();
         if (IsStandard(port)) { port.Flush(); return default; }
         port.Dispose();
         return default;
     }
 
     /// <summary>
-    /// `close-byte-output-port!`, and the way out of a `with-open` over one.
-    ///
-    /// Through the owner handle for the same reason <see cref="CloseInput"/>
-    /// is: a direct `.Dispose` would release the handle and leave the node on
-    /// the scope's list, so a long-lived scope would collect one spent entry
-    /// per port it had already finished with. A port nothing owns is disposed.
-    /// </summary>
-    public static Unit CloseByteOutput(Bjolang.Runtime.BjoByteOutputPort? port) {
-        if (port is null) return default;
-        if (port.Owner is { } owned) return owned.Release();
-        port.Dispose();
-        return default;
-    }
-
-    /// <summary>
-    /// `close-byte-output-port!` on a fiber. The pending bytes are written
+    /// `close-output-port` on a fiber. The pending bytes are written
     /// asynchronously first, so the release after it does no I/O. The release
     /// happens even when that write fails or is cancelled.
     ///
     /// Releases through the port's own owner handle, so it does not need the
     /// ambient scope. `Dyn.Current` is not the fiber's after the await.
     /// </summary>
-    public static async System.Threading.Tasks.ValueTask<Unit> CloseByteOutputAsync(
-        Bjolang.Runtime.BjoByteOutputPort? port, System.Threading.CancellationToken cancel = default) {
+    public static async System.Threading.Tasks.ValueTask<Unit> CloseOutputAsync(
+        Bjolang.Runtime.BjoOutputPort? port, System.Threading.CancellationToken cancel = default) {
         if (port is null) return default;
+        if (IsStandard(port)) {
+            await port.FlushValueAsync(cancel).ConfigureAwait(false);
+            return default;
+        }
         try {
             await port.SettleAsync(cancel).ConfigureAwait(false);
         } finally {
-            CloseByteOutput(port);
+            CloseOutput(port);
         }
         return default;
     }
@@ -1380,11 +1364,15 @@ public static partial class BjolangRuntime {
             // A reader from interop. Standard input as .NET hands it over is
             // never the program's to close.
             case System.IO.TextReader r when ReferenceEquals(r, Console.In): return default;
-            case System.IO.TextWriter w: return CloseOutput(w);
             // Before the `IDisposable` arm, and that ordering is the point: a
-            // byte port IS disposable, and the general arm would dispose it
-            // behind its scope's back and leave the registration standing.
-            case Bjolang.Runtime.BjoByteOutputPort bo: return CloseByteOutput(bo);
+            // port IS disposable, and the general arm would dispose it behind
+            // its scope's back and leave the registration standing.
+            case Bjolang.Runtime.BjoOutputPort o: return CloseOutput(o);
+            // A writer from interop. The console's, as .NET hands them over,
+            // are never the program's to close.
+            case System.IO.TextWriter w when ReferenceEquals(w, Console.Out) || ReferenceEquals(w, Console.Error):
+                w.Flush();
+                return default;
             case Bjolang.Runtime.BjoConnection c: return CloseConnection(c);
             case Bjolang.Runtime.BjoTcpListener l: return CloseListener(l);
             case System.IDisposable d: d.Dispose(); return default;
@@ -1392,11 +1380,10 @@ public static partial class BjolangRuntime {
         }
     }
 
-    /// The writers a program must not be able to close. `Console.Out` and
-    /// `Console.Error` as .NET hands them over, and a `BjoWriter` wrapped round
-    /// either.
-    private static bool IsStandard(System.IO.TextWriter w) =>
-        ReferenceEquals(w, Console.Out) || ReferenceEquals(w, Console.Error);
+    /// The ports a program must not be able to close: standard output and
+    /// standard error.
+    private static bool IsStandard(Bjolang.Runtime.BjoOutputPort port) =>
+        ReferenceEquals(port, StdOut) || ReferenceEquals(port, StdErr);
 
     // -----------------------------------------------------------------------
     // `main`
@@ -1462,8 +1449,8 @@ public static partial class BjolangRuntime {
     private static Scope OpenMainScope() {
         var scope = scopesubopen_BANG(0);
         _ = scope.Own(static () => {
-            Console.Out.Flush();
-            Console.Error.Flush();
+            StdOut.Flush();
+            StdErr.Flush();
         });
         return scope;
     }
@@ -1487,6 +1474,7 @@ public static partial class BjolangRuntime {
     /// is the process.
     /// </summary>
     public static Scope OpenReplSession() {
+        InstallStandardPorts();
         var scope = new Scope(0, null, propagate: false);
         _ = scopesubpush_BANG(scope);
         return scope;
@@ -1515,6 +1503,7 @@ public static partial class BjolangRuntime {
     /// for first, and so that a child that also failed is reported with it.
     public static async Fiber<T> RunMainFiber<T>(System.Func<Fiber<T>> body) {
         RunInvariant();
+        InstallStandardPorts();
 
         var scope = OpenMainScope();
         var saved = scopesubpush_BANG(scope);
@@ -1547,6 +1536,7 @@ public static partial class BjolangRuntime {
     /// </summary>
     public static T RunMainSync<T>(System.Func<T> body) {
         RunInvariant();
+        InstallStandardPorts();
 
         var scope = OpenMainScope();
         var saved = scopesubpush_BANG(scope);

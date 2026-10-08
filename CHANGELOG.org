@@ -3,6 +3,41 @@
 
 What each change guarantees, and what it leaves open.
 
+* One output port type, which writes UTF-8
+
+- *~OutputPort~ replaces ~TextOutputPort~ and ~ByteOutputPort~,* the mirror
+  of ~InputPort~ and Racket's design: a port carries bytes, text is written
+  to it as UTF-8 with no byte order mark, and ~write-string~, ~write-char~
+  and ~write-bytes!~ mix on one port. A text write copies the string's own
+  UTF-8 into the port's buffer, with no UTF-16 round trip.
+- *Removed, not aliased:* ~TextOutputPort~, ~ByteOutputPort~,
+  ~close-byte-output-port!~ (use ~close-output-port~), ~flush!~ (use
+  ~flush-port~), ~byte->text-output-port~ (the port is already one),
+  ~open-byte-output-file~ (use ~open-output-file~) and
+  ~stream->byte-output-port~ (now ~stream->output-port~ in ~(std ports)~).
+- *~(get-output-bytes p)~ is new:* a string port's bytes, exact.
+  ~get-output-string~ reads bytes that are not UTF-8 as U+FFFD.
+- *~(reencode-output-port p encoding)~ is new,* as Racket's: what is
+  written is re-encoded into ~p~, and closing it flushes it and leaves ~p~
+  open. A character the encoding lacks is written as its replacement.
+- *Standard output is buffered as in Racket:* by line on a terminal, in
+  blocks when redirected. Standard error is not buffered. Standard output
+  is flushed at exit, on an unhandled exception and on a panic, and before
+  the program waits on standard input, so a prompt is seen before the
+  read. 3 million ~println~ into a file took 5650 ms and take 125.
+- *A port is a ~System.IO.TextWriter~,* so .NET APIs that write to one
+  (~XmlWriter.Create~) take the port itself, and ~Console.Out~ is the
+  standard output port, so .NET code writing to the console is not
+  reordered against the program's own writes.
+- *Many fibers can write to one port:* every write is whole, also on a
+  string or file port, where a ~StringWriter~ or ~StreamWriter~ could
+  interleave or corrupt.
+- *~close-output-port~ suspends on a fiber,* writing what was buffered
+  asynchronously, as ~close-byte-output-port!~ did.
+- Writing to a file: 3 million ~write-string~ 136 → 116 ms; 64 MB of bytes
+  47 → 28 ms. A string port of 1 million writes is a little slower, 67 →
+  74 ms, since ~get-output-string~ decodes the UTF-8 once.
+
 * (std http): an unknown charset is an error, and a body can be bytes
 
 - *A charset nothing knows raises.* ~response-port~ and ~response-text~

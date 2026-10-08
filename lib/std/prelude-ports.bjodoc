@@ -38,15 +38,28 @@
     one takes a port.
     """))
 
-(:doc TextOutputPort
-  (summary "A text output port.")
+(:doc OutputPort
+  (summary "An output port: bytes, and text written to them as UTF-8.")
   (see open-output-file open-output-string write-string flush-port close-output-port)
   (reference """
-    The .NET @code{System.IO.TextWriter}. A file port and a string port are
-    the same type, so a writing function works uniformly across both.
+    One type for every output port, as in Racket: a file, a string, standard
+    output and error, a socket, a pipe. A port is bytes.
+    @code{write-string}, @code{write-char} and @code{writeln} write UTF-8 to
+    it, a string as the bytes it already is, and @code{write-bytes!} from
+    @code{(std ports)} writes bytes as they are; the two mix freely on one
+    port. No byte order mark is ever written. Text in another encoding is
+    @code{reencode-output-port}'s.
 
-    A file port buffers what is written to it. A write that fills the buffer
+    A port buffers what is written to it, and a write that fills the buffer
     drains it, which is why writes have a suspending copy as well as flush.
+    Standard output is buffered as Racket's is: a line at a time on a
+    terminal, a block at a time when redirected, and flushed when the program
+    ends, when it panics and before it reads standard input. Standard error
+    is not buffered.
+
+    Many fibers may write to one port at once: each write goes in whole. It
+    is also a @code{System.IO.TextWriter}, so a .NET API that takes one takes
+    a port, and its writes are UTF-8 on the port too.
     """))
 
 (:doc WriteMode
@@ -95,7 +108,7 @@
     (get-output-string out)   ; "captured"
     """)
   (reference """
-    A @code{(Param TextOutputPort)}. Its default is standard output, which the
+    A @code{(Param OutputPort)}. Its default is standard output, which the
     runtime does not buffer. Binding it with @code{parameterize} redirects
     @code{display}, @code{displayln}, @code{newline}, @code{print} and
     @code{println}.
@@ -108,7 +121,7 @@
   (summary "The port for errors and diagnostics, standard error by default.")
   (see current-output-port warn log)
   (reference """
-    A @code{(Param TextOutputPort)}. The default handlers of @code{warn} and
+    A @code{(Param OutputPort)}. The default handlers of @code{warn} and
     @code{log} write a line to it. @code{close-output-port} on standard error
     flushes it and does nothing more.
     """))
@@ -246,6 +259,23 @@
     (get-output-string out)   ; "a"
     (write-string out "b")
     (get-output-string out)   ; "ab"
+    """)
+  (reference """
+    Bytes written with @code{write-bytes!} that are not UTF-8 read as U+FFFD,
+    as Racket's @code{get-output-string} reads them; @code{get-output-bytes}
+    has them as they are.
+    """))
+
+(:doc get-output-bytes
+  (summary "Everything written to a string port so far, as bytes.")
+  (arg p "A port from open-output-string.")
+  (returns "A copy of the bytes collected: text as UTF-8, and bytes as they were written.")
+  (raises System.InvalidOperationException "When p is not a port from open-output-string.")
+  (see get-output-string open-output-string)
+  (example """
+    (def out (open-output-string))
+    (write-string out "å")
+    (get-output-bytes out)   ; #[195 165]
     """))
 
 (:doc close-input-port
