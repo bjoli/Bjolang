@@ -50,6 +50,8 @@ public static class InputPortTextTests
         Run("a cancelled read-line after a final \\r keeps the line", CancelledLineAfterCr);
         Run("a cancelled read-all keeps what it gathered", CancelledReadAllKeepsText);
         Run("a line longer than the buffer survives a cancellation", LongLineSurvivesCancel);
+        Run("a refill landing after a read looked is noticed", RefillAfterLookAsync);
+        Run("a refill landing after a blocking read looked is noticed", RefillAfterLookBlocking);
         Run("at most one refill is ever in flight", OneRefillAtATime);
         Run("four readers get every line exactly once", ReadersEveryLineOnce);
         Run("a failure is sticky, after the lines before it", FailureIsStickyAfterLines);
@@ -301,6 +303,42 @@ public static class InputPortTextTests
         feed.Feed("ABCDEFGHIJ\nnext\n");
         AssertEqual("0123456789åäöÅÄÖABCDEFGHIJ", Line(port), "the long line");
         AssertEqual("next", Line(port), "the line after it");
+    }
+
+    private static void RefillAfterLookAsync() =>
+        RefillAfterLook(Line, "read-line");
+
+    private static void RefillAfterLookBlocking() =>
+        RefillAfterLook(p => p.ReadLineUtf8() is { IsSome: true } l ? l.Value.ToString() : null,
+            "a blocking read-line");
+
+    /// A cancelled read leaves its refill in flight. The next read looks at the
+    /// buffer, finds half a line, lets go of the lock — and that refill commits
+    /// the rest of the line before the read asks for a refill of its own. The
+    /// read must look again rather than start another refill: there is no more
+    /// input coming, so a fresh refill would wait forever for bytes the buffer
+    /// already holds.
+    private static void RefillAfterLook(Func<BjoInputPort, string?> read, string what)
+    {
+        var feed = new FeedStream();
+        var port = new BjoInputPort(feed);
+
+        feed.Feed("abc");
+        Cancelled(c => port.ReadLineUtf8ValueAsync(c).AsTask(), "read-line with half a line");
+        Assert(port.RefillInFlight, "the cancelled read left its refill in flight");
+
+        int looks = 0;
+        port.AfterShortLook = () =>
+        {
+            if (Interlocked.Increment(ref looks) != 1) return;
+            feed.Feed("def\n");
+            Assert(SpinWait.SpinUntil(() => !port.RefillInFlight, 5000), "the refill in flight committed");
+        };
+
+        var reading = Task.Run(() => read(port));
+        Assert(reading.Wait(2000), $"{what} waited for input the buffer already held");
+        AssertEqual("abcdef", reading.Result, what);
+        AssertEqual(1, Volatile.Read(ref looks), "times the read found the buffer short");
     }
 
     private static void OneRefillAtATime()

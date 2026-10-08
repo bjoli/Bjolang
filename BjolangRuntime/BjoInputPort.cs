@@ -175,6 +175,14 @@ public sealed class BjoInputPort : TextReader {
         return new Held(this);
     }
 
+    /// Taking the lock to look at the buffer: <paramref name="seen"/> is how
+    /// many refills had committed when it looked. See <see cref="_commits"/>.
+    private Held Hold(out int seen) {
+        var held = Hold();
+        seen = _commits;
+        return held;
+    }
+
     private void HoldSlow() {
         var spin = new SpinWait();
         while (Interlocked.CompareExchange(ref _held, 1, 0) != 0) spin.SpinOnce();
@@ -204,6 +212,19 @@ public sealed class BjoInputPort : TextReader {
     /// "at most one": a second reader waits for this rather than starting
     /// another.
     private Task? _refill;
+
+    /// <summary>
+    /// How many refills have committed. Under the lock.
+    ///
+    /// A reader looks at the buffer under the lock, finds too little, lets go,
+    /// and takes the lock again to wait for a refill. A refill that was already
+    /// in flight — one an abandoned read left behind, or another reader's — can
+    /// commit in between. Starting a fresh one then would wait for input the
+    /// buffer already holds, which on a connection may never come. So a reader
+    /// carries this count from its look to <see cref="RefillLocked"/>, and if it
+    /// has moved, looks again instead.
+    /// </summary>
+    private int _commits;
 
     /// A take is tentatively holding the cursor: it has moved <c>_pos</c> and is
     /// out at <c>TryCommit</c>, which may yet fail and put it back. Nothing else
@@ -417,11 +438,14 @@ public sealed class BjoInputPort : TextReader {
     /// <summary>
     /// Under the lock: the refill to wait for, or a fresh one for this caller
     /// to perform, described by <paramref name="start"/>. Null and no start
-    /// when no more input will ever come.
+    /// when no more input will ever come. A completed task and no start when a
+    /// refill has committed since the caller looked at the buffer, which
+    /// <paramref name="seen"/> says: the caller looks again.
     /// </summary>
-    private Task? RefillLocked(int want, out RefillStart? start) {
+    private Task? RefillLocked(int want, int seen, out RefillStart? start) {
         start = null;
         if (_refill is not null) return _refill;
+        if (_commits != seen) return Task.CompletedTask;
         if (_disposed || Finished) return null;
 
         MakeRoomLocked(want);
@@ -439,11 +463,11 @@ public sealed class BjoInputPort : TextReader {
     /// The refill in flight, starting an asynchronous one if there is none.
     /// Never faults, and never cancels.
     /// </summary>
-    private Task EnsureRefill(int want) {
+    private Task EnsureRefill(int want, int seen) {
         Task? pending;
         RefillStart? start;
 
-        using (Hold()) pending = RefillLocked(want, out start);
+        using (Hold()) pending = RefillLocked(want, seen, out start);
 
         // Started outside the lock. A synchronous completion runs `Pump` to its
         // end right here, and its end is `Deliver`, which commits waiters and
@@ -457,16 +481,16 @@ public sealed class BjoInputPort : TextReader {
     /// allows one, otherwise the asynchronous refill waited for. A refill
     /// already in flight is waited for either way.
     /// </summary>
-    private void FillSync(int want) {
+    private void FillSync(int want, int seen) {
         if (!_syncReads) {
-            EnsureRefill(want).GetAwaiter().GetResult();
+            EnsureRefill(want, seen).GetAwaiter().GetResult();
             return;
         }
 
         Task? pending;
         RefillStart? start;
 
-        using (Hold()) pending = RefillLocked(want, out start);
+        using (Hold()) pending = RefillLocked(want, seen, out start);
 
         if (start is { } s) {
             int n = 0;
@@ -486,8 +510,8 @@ public sealed class BjoInputPort : TextReader {
     /// One refill, for a caller that suspends. The read runs with no token;
     /// <paramref name="cancel"/> only ends this caller's wait for it.
     /// </summary>
-    private ValueTask FillAsync(int want, CancellationToken cancel) {
-        var pending = EnsureRefill(want);
+    private ValueTask FillAsync(int want, int seen, CancellationToken cancel) {
+        var pending = EnsureRefill(want, seen);
         if (pending.IsCompleted) return default;
         return new ValueTask(cancel.CanBeCanceled ? pending.WaitAsync(cancel) : pending);
     }
@@ -517,6 +541,7 @@ public sealed class BjoInputPort : TextReader {
             // that still needs more starts a FRESH refill rather than finding
             // this spent one.
             _refill = null;
+            _commits++;
         }
 
         s.Done.TrySetResult();
@@ -538,16 +563,36 @@ public sealed class BjoInputPort : TextReader {
     /// <summary>
     /// Outside the lock, after a section that could not answer: spin while a
     /// tentative take holds the cursor, otherwise bring in more bytes.
+    /// <paramref name="seen"/> is what <c>Hold(out seen)</c> gave that section.
     /// </summary>
-    private void WaitSync(bool busy, int want, ref SpinWait spin) {
-        if (busy) spin.SpinOnce();
-        else FillSync(want);
+    private void WaitSync(bool busy, int seen, int want, ref SpinWait spin) {
+        if (busy) {
+            spin.SpinOnce();
+            return;
+        }
+
+        AfterShortLook?.Invoke();
+        FillSync(want, seen);
     }
 
     /// The suspending twin: <paramref name="quiet"/> is the tentative take to
     /// wait out, or null to bring in more bytes.
-    private ValueTask WaitAsync(Task? quiet, int want, CancellationToken cancel) =>
-        quiet is not null ? new ValueTask(quiet.WaitAsync(cancel)) : FillAsync(want, cancel);
+    private ValueTask WaitAsync(Task? quiet, int seen, int want, CancellationToken cancel) {
+        if (quiet is not null) return new ValueTask(quiet.WaitAsync(cancel));
+
+        AfterShortLook?.Invoke();
+        return FillAsync(want, seen, cancel);
+    }
+
+    /// For the tests: run by a read that found the buffer short, after it has
+    /// let go of the lock and before it asks for a refill. A refill that
+    /// commits here is the one <see cref="_commits"/> exists to notice.
+    internal Action? AfterShortLook;
+
+    /// For the tests: whether a refill is in flight.
+    internal bool RefillInFlight {
+        get { using (Hold()) return _refill is not null; }
+    }
 
     // --- Events -------------------------------------------------------------
 
@@ -768,8 +813,9 @@ public sealed class BjoInputPort : TextReader {
 
     private void RefillForWaiters() {
         int want = 0;
+        int seen;
 
-        using (Hold()) {
+        using (Hold(out seen)) {
             if (_waiters is null || _refill is not null || _disposed || Finished) return;
 
             for (var w = _waiters; w is not null; w = w.Next)
@@ -777,7 +823,9 @@ public sealed class BjoInputPort : TextReader {
                     want = w.Want;
         }
 
-        if (want > 0) EnsureRefill(want);
+        // A refill committing after this look calls `Deliver`, which serves the
+        // waiters again before it gets here, so nothing needs doing then.
+        if (want > 0) EnsureRefill(want, seen);
     }
 
     /// <summary>
@@ -879,12 +927,13 @@ public sealed class BjoInputPort : TextReader {
         var spin = new SpinWait();
         while (true) {
             bool busy = false;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) busy = true;
                 else if (IntoLocked(buffer) is var n and >= 0) return n;
             }
-            WaitSync(busy, 1, ref spin);
+            WaitSync(busy, seen, 1, ref spin);
         }
     }
 
@@ -894,12 +943,13 @@ public sealed class BjoInputPort : TextReader {
 
         while (true) {
             Task? quiet = null;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) quiet = QuietLocked();
                 else if (IntoLocked(buffer.Span) is var n and >= 0) return n;
             }
-            await WaitAsync(quiet, 1, cancel).ConfigureAwait(false);
+            await WaitAsync(quiet, seen, 1, cancel).ConfigureAwait(false);
         }
     }
 
@@ -940,12 +990,13 @@ public sealed class BjoInputPort : TextReader {
         var spin = new SpinWait();
         while (true) {
             bool busy = false;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) busy = true;
                 else if (PeekBytesLocked(skip, count) is { } peeked) return peeked;
             }
-            WaitSync(busy, skip + count, ref spin);
+            WaitSync(busy, seen, skip + count, ref spin);
         }
     }
 
@@ -957,12 +1008,13 @@ public sealed class BjoInputPort : TextReader {
 
         while (true) {
             Task? quiet = null;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) quiet = QuietLocked();
                 else if (PeekBytesLocked(skip, count) is { } peeked) return peeked;
             }
-            await WaitAsync(quiet, skip + count, cancel).ConfigureAwait(false);
+            await WaitAsync(quiet, seen, skip + count, cancel).ConfigureAwait(false);
         }
     }
 
@@ -992,12 +1044,13 @@ public sealed class BjoInputPort : TextReader {
         var spin = new SpinWait();
         while (true) {
             bool busy = false;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) busy = true;
                 else if (EofLocked() is { } known) return known;
             }
-            WaitSync(busy, 1, ref spin);
+            WaitSync(busy, seen, 1, ref spin);
         }
     }
 
@@ -1012,12 +1065,13 @@ public sealed class BjoInputPort : TextReader {
     private async ValueTask<bool> EofSlowAsync(CancellationToken cancel) {
         while (true) {
             Task? quiet = null;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) quiet = QuietLocked();
                 else if (EofLocked() is { } known) return known;
             }
-            await WaitAsync(quiet, 1, cancel).ConfigureAwait(false);
+            await WaitAsync(quiet, seen, 1, cancel).ConfigureAwait(false);
         }
     }
 
@@ -1095,12 +1149,13 @@ public sealed class BjoInputPort : TextReader {
         var spin = new SpinWait();
         while (true) {
             bool busy = false;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) busy = true;
                 else if (ScalarLocked(take, out int scalar)) return scalar;
             }
-            WaitSync(busy, 1, ref spin);
+            WaitSync(busy, seen, 1, ref spin);
         }
     }
 
@@ -1121,12 +1176,13 @@ public sealed class BjoInputPort : TextReader {
     private async ValueTask<int> ScalarSlowAsync(bool take, CancellationToken cancel) {
         while (true) {
             Task? quiet = null;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) quiet = QuietLocked();
                 else if (ScalarLocked(take, out int scalar)) return scalar;
             }
-            await WaitAsync(quiet, 1, cancel).ConfigureAwait(false);
+            await WaitAsync(quiet, seen, 1, cancel).ConfigureAwait(false);
         }
     }
 
@@ -1166,12 +1222,13 @@ public sealed class BjoInputPort : TextReader {
         var spin = new SpinWait();
         while (true) {
             bool busy = false;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) busy = true;
                 else if (UnitLocked(take) is { } unit) return unit;
             }
-            WaitSync(busy, 1, ref spin);
+            WaitSync(busy, seen, 1, ref spin);
         }
     }
 
@@ -1192,12 +1249,13 @@ public sealed class BjoInputPort : TextReader {
     private async ValueTask<int> ReadUnitSlowAsync(CancellationToken cancel) {
         while (true) {
             Task? quiet = null;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) quiet = QuietLocked();
                 else if (UnitLocked(take: true) is { } unit) return unit;
             }
-            await WaitAsync(quiet, 1, cancel).ConfigureAwait(false);
+            await WaitAsync(quiet, seen, 1, cancel).ConfigureAwait(false);
         }
     }
 
@@ -1248,12 +1306,13 @@ public sealed class BjoInputPort : TextReader {
         var spin = new SpinWait();
         while (true) {
             bool busy = false;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) busy = true;
                 else if (CharsLocked(buffer) is var n and >= 0) return n;
             }
-            WaitSync(busy, 1, ref spin);
+            WaitSync(busy, seen, 1, ref spin);
         }
     }
 
@@ -1282,12 +1341,13 @@ public sealed class BjoInputPort : TextReader {
 
         while (true) {
             Task? quiet = null;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) quiet = QuietLocked();
                 else if (CharsLocked(buffer.Span) is var n and >= 0) return n;
             }
-            await WaitAsync(quiet, 1, cancel).ConfigureAwait(false);
+            await WaitAsync(quiet, seen, 1, cancel).ConfigureAwait(false);
         }
     }
 
@@ -1423,12 +1483,13 @@ public sealed class BjoInputPort : TextReader {
         var spin = new SpinWait();
         while (true) {
             bool busy = false;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) busy = true;
                 else if (LineLocked(mode, out var line)) return line;
             }
-            WaitSync(busy, 1, ref spin);
+            WaitSync(busy, seen, 1, ref spin);
         }
     }
 
@@ -1448,12 +1509,13 @@ public sealed class BjoInputPort : TextReader {
         LineMode mode, CancellationToken cancel) {
         while (true) {
             Task? quiet = null;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) quiet = QuietLocked();
                 else if (LineLocked(mode, out var line)) return line;
             }
-            await WaitAsync(quiet, 1, cancel).ConfigureAwait(false);
+            await WaitAsync(quiet, seen, 1, cancel).ConfigureAwait(false);
         }
     }
 
@@ -1469,12 +1531,13 @@ public sealed class BjoInputPort : TextReader {
         var spin = new SpinWait();
         while (true) {
             bool busy = false;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) busy = true;
                 else if (LineStringLocked(out var line)) return line;
             }
-            WaitSync(busy, 1, ref spin);
+            WaitSync(busy, seen, 1, ref spin);
         }
     }
 
@@ -1483,12 +1546,13 @@ public sealed class BjoInputPort : TextReader {
     public override async ValueTask<string?> ReadLineAsync(CancellationToken cancel) {
         while (true) {
             Task? quiet = null;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) quiet = QuietLocked();
                 else if (LineStringLocked(out var line)) return line;
             }
-            await WaitAsync(quiet, 1, cancel).ConfigureAwait(false);
+            await WaitAsync(quiet, seen, 1, cancel).ConfigureAwait(false);
         }
     }
 
@@ -1520,24 +1584,26 @@ public sealed class BjoInputPort : TextReader {
         var spin = new SpinWait();
         while (true) {
             bool busy = false;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) busy = true;
                 else if (RestLocked(out var rest)) return rest;
             }
-            WaitSync(busy, 1, ref spin);
+            WaitSync(busy, seen, 1, ref spin);
         }
     }
 
     public async ValueTask<Utf8String> ReadToEndUtf8Async(CancellationToken cancel = default) {
         while (true) {
             Task? quiet = null;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) quiet = QuietLocked();
                 else if (RestLocked(out var rest)) return rest;
             }
-            await WaitAsync(quiet, 1, cancel).ConfigureAwait(false);
+            await WaitAsync(quiet, seen, 1, cancel).ConfigureAwait(false);
         }
     }
 
@@ -1552,12 +1618,13 @@ public sealed class BjoInputPort : TextReader {
         var spin = new SpinWait();
         while (true) {
             bool busy = false;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) busy = true;
                 else if (RestStringLocked(out var rest)) return rest!;
             }
-            WaitSync(busy, 1, ref spin);
+            WaitSync(busy, seen, 1, ref spin);
         }
     }
 
@@ -1566,12 +1633,13 @@ public sealed class BjoInputPort : TextReader {
     public override async Task<string> ReadToEndAsync(CancellationToken cancel) {
         while (true) {
             Task? quiet = null;
-            using (Hold()) {
+            int seen;
+            using (Hold(out seen)) {
                 ThrowIfDisposed();
                 if (_taking) quiet = QuietLocked();
                 else if (RestStringLocked(out var rest)) return rest!;
             }
-            await WaitAsync(quiet, 1, cancel).ConfigureAwait(false);
+            await WaitAsync(quiet, seen, 1, cancel).ConfigureAwait(false);
         }
     }
 

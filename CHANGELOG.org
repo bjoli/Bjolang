@@ -3,6 +3,22 @@
 
 What each change guarantees, and what it leaves open.
 
+* A read no longer waits for input its port already holds
+
+- *A read after an abandoned read, or beside another reader, answers from
+  what has arrived.* A read that found too little in the buffer started a
+  refill of its own unless one was in flight at that moment. A refill
+  already in flight — left by a read that lost a ~choose~ or hit its
+  deadline, or started by another fiber — could deliver the missing bytes
+  in between, and the read then waited for more input on top of them. On
+  a file that cost an extra read; on a connection, a pipe or standard
+  input it waited until the other end sent something more, which in a
+  request and reply can be never. A read now notices the refill that
+  landed and looks again.
+- The runtime test "a line longer than the buffer survives a
+  cancellation" timed out now and then on this; run on its own, 24 at a
+  time, it hung about once in six hundred.
+
 * A smaller awaiter for a sync
 
 - *The awaiter a bjoroutine keeps across a channel operation holds three
