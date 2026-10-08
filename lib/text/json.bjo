@@ -29,16 +29,6 @@
   (clr-to-long   (: Bjolang.Runtime.BjoNum.ParseLong))
   (clr-to-double (: Bjolang.Runtime.BjoNum.ParseDouble)))
 
-;; One UTF-16 unit, or -1 at the end. 
-(import/extern
-  (clr-unit       (: Bjolang.Runtime.InputPorts.ReadUnit      (-> InputPort int) #:blocking))
-  (clr-unit-await (: Bjolang.Runtime.InputPorts.ReadUnitAsync (-> InputPort int) #:async)))
-
-(: read-unit (-> InputPort int))
-(defbjouble (read-unit p)
-  (#:sync (clr-unit p))
-  (#:bjo  (clr-unit-await p)))
-
 (type
   (: Json (Union
            JsonNull
@@ -56,15 +46,20 @@
 ;; ---------------------------------------------------------------------------
 ;; The reader
 ;; ---------------------------------------------------------------------------
-;; One character of lookahead, held as a code so that the end of the port is a
-;; value rather than a second field.
+;; The port is the lookahead: the character being looked at is the one
+;; `peek-char` sees, and stepping past it is a `read-char`. Nothing is taken
+;; from the port that the document does not use. A character is a Unicode
+;; scalar, never half a surrogate pair, and bytes that are not UTF-8 are
+;; U+FFFD.
+;;
+;; The character is handled as its code, so that the end of the port is a
+;; value, `spent`, rather than a second case.
 
 (: spent int)
 (def spent -1)
 
 (type
   (: Reader (Record (: port InputPort)
-                    (: held int #:mutable)
                     (: row int #:mutable)
                     (: col int #:mutable)
                     ;; One buffer for every string and every number in the
@@ -78,7 +73,6 @@
 (: reader (-> InputPort Reader))
 (defun (reader port)
   (Reader (port port)
-          (held (read-unit port))
           (row 1)
           (col 1)
           (scratch (stringbuilder-empty))
@@ -112,38 +106,39 @@
   (stringbuilder-clear! sb)
   sb)
 
-;; `held` is the character the reader is looking at.
+;; The code of the character the reader is looking at, or `spent`.
 (: held-code (-> Reader int))
 (defun (held-code rd)
-  (record-ref rd held))
+  (match (peek-char/opt (record-ref rd port))
+    ((Some c) (char->integer c))
+    (None spent)))
 
 (: at-end? (-> Reader bool))
 (defun (at-end? rd)
-  (= (record-ref rd held) spent))
+  (= (held-code rd) spent))
 
-;; Every character this is asked about is a json char meaning it is ascii
-;; Anything else — the end of the port, half a surrogate pair, a
-;; letter from a language — answers #\nul.
+;; Every character this is asked about is a json char meaning it is ascii.
+;; Anything else — the end of the port, a letter from a language — answers
+;; #\nul.
 (: peek (-> Reader char))
 (defun (peek rd)
   (def c (held-code rd))
-  (if (< c 128) (integer->char c) #\nul))
+  (if (and (>= c 0) (< c 128)) (integer->char c) #\nul))
 
-;; Counts the character being left behind, then reads the next.
+;; Counts the character being left behind, and takes it from the port.
 ;;
 ;; It does not look at what it is stepping over, because every caller just has:
-;; a digit, a character inside a string, a bracket. 
+;; a digit, a character inside a string, a bracket.
 (: step! (-> Reader void))
 (defun (step! rd)
-  (record-set! rd
-               (held (read-unit (record-ref rd port)))
-               (col (+ (record-ref rd col) 1))))
+  (ignore (read-char/opt (record-ref rd port)))
+  (record-set! rd (col (+ (record-ref rd col) 1))))
 
 ;; A line ends at the newline whether or not a return came before it.
 (: newline! (-> Reader void))
 (defun (newline! rd)
+  (ignore (read-char/opt (record-ref rd port)))
   (record-set! rd
-               (held (read-unit (record-ref rd port)))
                (row (+ (record-ref rd row) 1))
                (col 1)))
 
@@ -173,8 +168,6 @@
   (def c (held-code rd))
   (cond
     ((= c spent) "the document ended")
-    ;; Half a pair is not a character, so there is nothing to quote.
-    ((or (high-surrogate? c) (low-surrogate? c)) (str "the code unit " (int->string c)))
     (else (str "'" (list->string (list (integer->char c))) "'"))))
 
 (: too-deep (-> Reader string string))
@@ -284,23 +277,13 @@
       (go))
      ((< c 32)
       (Err (at rd "a control character in a string has to be written as an escape")))
-     ;; Both units, as they came; the builder pairs them into their scalar.
-     ;; The pair is still checked, because half of one cannot be encoded.
-     ((high-surrogate? c)
-      (step! rd)
-      (def lo (held-code rd))
-      (cond
-       ((low-surrogate? lo)
-        (step! rd)
-        (stringbuilder-add-unit! sb c)
-        (stringbuilder-add-unit! sb lo)
-        (go))
-       (else
-        (Err (at rd "a high surrogate has to be followed by its low surrogate")))))
-     ((low-surrogate? c)
-      (Err (at rd "a low surrogate with no high surrogate before it")))
-     (else
+     ((< c 128)
       (stringbuilder-add-unit! sb c)
+      (step! rd)
+      (go))
+     ;; A whole character, which may be outside the BMP.
+     (else
+      (stringbuilder-add! sb (integer->char c))
       (step! rd)
       (go)))))
 
@@ -500,8 +483,9 @@
 (: read-json (-> InputPort (Result string Json)))
 (defun (read-json port)
   (def rd (reader port))
-  ;; A byte-order mark ahead of the value is skipped, and does
-  ;; not count as a column. Opening a file strips it.
+  ;; A byte order mark ahead of the value is skipped, as RFC 8259 lets a
+  ;; parser do, and does not count as a column. A port hands it over as the
+  ;; character U+FEFF.
   (when (= (held-code rd) 65279)
     (step! rd)
     (record-set! rd (col 1)))

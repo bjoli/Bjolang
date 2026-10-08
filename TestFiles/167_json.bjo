@@ -1,10 +1,12 @@
 ;; Reading JSON off a port.
 ;;
-;; The reader never holds the document: it takes one character at a time and
-;; keeps one of lookahead. Every refusal names the line and column of the
-;; character it refused, which is the whole reason the reader counts them.
+;; The reader never holds the document: it looks at one character at a time
+;; with `peek-char` and takes it with `read-char`. Every refusal names the line
+;; and column of the character it refused, which is the whole reason the reader
+;; counts them; a column is a character, wherever in Unicode it is.
 
 (import (std prelude))
+(import (std ports))
 (import (text json))
 (import (std simpletest))
 
@@ -131,6 +133,21 @@
   (expect "a lone high surrogate" (bad "\"\\uD83D\"")
           "line 1, column 8: a high surrogate has to be followed by \\u and its low surrogate")
   (expect "a bad escape" (bad "\"\\q\"") "line 1, column 3: \\q is not an escape")
+  (expect "a character outside the BMP is one column"
+          (bad (str "[\"" emoji "\" x]"))
+          "line 1, column 6: an array wants ',' or ']' here, and this is 'x'")
+  (expect "and is quoted whole when refused"
+          (bad (str "[" emoji "]"))
+          (str "line 1, column 2: '" emoji "' does not begin a value"))
+
+  ;; Bytes that are not UTF-8 read as U+FFFD, as on any port.
+  (expect "invalid UTF-8 in a string"
+          (match (byte-pipe)
+            ((Tuple in out)
+             (write-bytes! out #[34 97 255 98 34])
+             (close-byte-output-port! out)
+             (match (read-json in) ((Ok j) (shape j)) ((Err e) e))))
+          (str "\"a" (list->string (list (integer->char 65533))) "b\""))
 
   ;; The row is the point of all this.
   (expect "the third line" (bad "[\n  1,\n  @\n]")
