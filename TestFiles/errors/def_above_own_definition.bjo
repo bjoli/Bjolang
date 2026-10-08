@@ -1,0 +1,19 @@
+;; A def that reads an imported name the module defines again further down. The
+;; checker took the use to mean the import, but the emitted code read the
+;; module's own field before it was set: this printed 1, neither the import's
+;; 6 nor anything the local 100 would give.
+
+;; EXPECT-ERROR: `k` is used here, above this module's own definition of it
+
+(import (std prelude))
+(import "../inc/value_k.bjo")
+
+(: t int)
+(def t (+ k 1))
+
+(: k int)
+(def k 100)
+
+(defun (main args)
+  (println (->str t))
+  0)

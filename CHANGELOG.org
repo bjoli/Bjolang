@@ -3,6 +3,23 @@
 
 What each change guarantees, and what it leaves open.
 
+* A name cannot be used above the module's own definition of it
+
+- *A use of a name above the module's own ~def~ of it is refused,* also
+  when an import or a builtin offers the name. Module-level values are in
+  scope from their definition down, and with nothing else of the name such
+  a use was already an unbound variable. With an import of it, the checker
+  took the use to mean the import, while the emitted code named the
+  module's own member, as everywhere else in the module: a ~def~ read that
+  member before it was set (~(def t (+ k 1))~ above ~(def k 100)~, with an
+  imported ~k~ of 5, gave 1), and where the two types differed the C# did
+  not compile. The module's definition now takes the name for the whole
+  module, as in Racket, and the error names the use and the definition.
+- *~(def k (+ k 1))~ over an imported ~k~ is refused too*: a ~def~'s
+  initialiser cannot read its own name. It read 0.
+- A ~defun~ with a signature is unaffected: it is in scope everywhere in
+  its module, and a use above it always meant it.
+
 * An escape cannot leave a named let that is a function
 
 - *A ~with-return~ escape out of a named ~let~ that stays a function is

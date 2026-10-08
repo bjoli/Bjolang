@@ -3293,10 +3293,114 @@ and internal checkDeclGroup
                     addBinding name { Scheme = Scheme([ "a" ], [], TVar "a"); IsMutable = false } acc)
             env
 
+    /// The names a declaration gives the module a definition of: a value or a
+    /// function that becomes a member of the module's class.
+    let ownDefinitions (d: Decl) : string list =
+        match d with
+        | DDef(name, _, _)
+        | DDefMutable(name, _, _)
+        | DDefun(name, _, _, _, _) -> [ name ]
+        | DDefDouble(name, _, _, _, _) -> [ name; Naming.suspendingCopy name ]
+        | DDefTuple(names, _, _) -> names
+        | DDefPattern(pattern, _, _) -> patternBinders pattern
+        | _ -> []
+
+    /// A function with a signature is bound before anything in the group is
+    /// checked, so every use of its name means it wherever the use stands.
+    let forwardDeclared =
+        declaredFunctions
+        |> Map.toSeq
+        |> Seq.map fst
+        |> Seq.filter (fun n -> Map.containsKey n explicitSigs)
+        |> Set.ofSeq
+
+    /// For each declaration, the names the module defines further down, each
+    /// with where its nearest definition is.
+    let definedAfter: Map<string, Range>[] =
+        let arr = Array.ofList decls
+        let result = Array.create arr.Length Map.empty
+        let mutable later = Map.empty
+
+        for i in arr.Length - 1 .. -1 .. 0 do
+            result[i] <- later
+
+            for n in ownDefinitions arr[i] do
+                later <- Map.add n (declRange arr[i]) later
+
+        result
+
+    /// Every name a declaration's expressions read without binding, with the
+    /// occurrence's range. Parameters bind in a body and in keyword defaults.
+    let rec usesOf (d: Decl) : (string * Range) list =
+        let found = ResizeArray<string * Range>()
+        let walk bound e = Ast.freeNamesWith (fun n r _ -> found.Add(n, r)) false bound e
+
+        let walkFunction (args: DefunArg list) (bodies: Expr list) =
+            let bound = Set.ofList (allArgNames args)
+
+            for a in args do
+                match a with
+                | KeywordArg(_, defaultExpr) -> walk bound defaultExpr
+                | _ -> ()
+
+            for b in bodies do
+                walk bound b
+
+        match d with
+        | DDef(_, e, _)
+        | DDefMutable(_, e, _)
+        | DDefTuple(_, e, _) -> walk Set.empty e
+        | DDefPattern(pattern, e, _) ->
+            patternSteps pattern |> List.iter (walk Set.empty)
+            walk Set.empty e
+        | DDefun(_, args, body, _, _) -> walkFunction args [ body ]
+        | DDefDouble(_, args, syncBody, bjoBody, _) -> walkFunction args [ syncBody; bjoBody ]
+        | DTrait(_, _, _, _, _, defaults, _, _) -> defaults |> List.iter (usesOf >> found.AddRange)
+        | DImpl(_, _, _, _, _, methods, _) -> methods |> List.iter (usesOf >> found.AddRange)
+        | _ -> ()
+
+        List.ofSeq found
+
+    /// Refuses a use of a name above the module's own definition of it.
+    ///
+    /// Module-level values are in scope from their definition down, so with
+    /// nothing else of that name the use is an unbound variable. With an import
+    /// or a builtin of the name, inference took the use to mean that one, but
+    /// the module's own member is what the emitted C# then names, as it does
+    /// everywhere else in the module: the use read the member, before the
+    /// static constructor had set it. A module's definition takes the name for
+    /// the whole module, as in Racket, so the use is refused rather than left
+    /// to mean either. A value's own initialiser counts as above it.
+    let refuseUsesAboveDefinitions (env: Env) (index: int) (d: Decl) =
+        let ownValue =
+            match d with
+            | DDef _
+            | DDefMutable _
+            | DDefTuple _
+            | DDefPattern _ -> ownDefinitions d |> List.map (fun n -> n, declRange d) |> Map.ofList
+            | _ -> Map.empty
+
+        let contested =
+            Map.fold (fun acc n r -> Map.add n r acc) definedAfter[index] ownValue
+
+        for (n, r) in usesOf d do
+            match Map.tryFind n contested with
+            | Some defined when not (Set.contains n forwardDeclared) && Map.containsKey n env.Bindings ->
+                let where =
+                    if defined = declRange d then
+                        "is read by its own definition"
+                    else
+                        $"is used here, above this module's own definition of it at %s{Lexer.formatPos defined}"
+
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: `%s{n}` %s{where}. A module-level value is in scope from its definition down, and the definition takes the name from the imported or built-in `%s{n}` for the whole module, so neither can be meant here. Move the use below the definition, or rename one of the two."
+            | _ -> ()
+
     let finalEnv, finalSigs, typedDecls =
         decls
+        |> List.indexed
         |> List.fold
-            (fun (currEnv, currSigs, accDecls) d ->
+            (fun (currEnv, currSigs, accDecls) (index, d) ->
                 // One declaration's failure costs that declaration. The group is
                 // checked left to right and each step reads the environment the
                 // step before it produced, so a failure keeps the previous one
@@ -3308,6 +3412,8 @@ and internal checkDeclGroup
                         (Some(declRange d))
                         (fun () -> poisonFailed currEnv d, currSigs, [])
                         (fun () ->
+                        refuseUsesAboveDefinitions currEnv index d
+
                         match d with
                         // Which implementation a failure came from. A method body
                         // is short, and often nobody wrote it — `type/derive`
