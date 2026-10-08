@@ -1023,6 +1023,65 @@ to 0 for every row.
 for 66 wall, close to one core; the thousand-node ring costs 345 for 73. Why the
 shape changes how many workers wake has not been looked into.
 
+### A service, against Go and Hopac
+
+`bench/service` is one program written three times: a sharded key-value
+service in Go, Hopac and Bjolang (the specification is in `go/main.go`). Sixteen
+shard servers loop on a choice between requests and a quit channel; a thousand
+client connections make a thousand requests each, with a little decoding work
+before each; one request in ten is a multi-get that spawns four tasks and
+collects their answers on a channel; every request makes its own reply channel
+and waits for it under a one-second deadline. All three agree on a checksum.
+`bench/service/drive.py [--cores N]` runs them; `--cores` pins to N whole cores
+and tells each runtime so.
+
+Wall milliseconds per rep of a million client requests (1.3 million shard
+requests), median of fifteen, server GC for both .NET programs:
+
+    cores                1     4     8    12   24 threads
+    Go                1560   495   488   454   447
+    Hopac              770   327   277   270   431
+    Bjolang, before   1365   578   661   731   849
+    Bjolang           1340   548   464   407   412
+
+All cores, after:
+
+                wall ms  req/s   CPU ms  cores  p50 us  p99 us  p99.9 us
+    Go              445  2.25M     6183   13.9      17    5437      5893
+    Hopac           433  2.31M     8428   19.5     104    3112      5697
+    Bjolang         412  2.43M     8173   19.8      16    4219      8081
+
+**Before, more cores made it slower, and the cause was the scope's token.**
+Every fiber that parks in a scope registers on the scope's cancellation token,
+once per fiber (`FiberWatch`), and again after the prune has dropped it while it
+was between parks. Every fiber here lives under `main`'s scope, the multi-gets
+start 400,000 short-lived fibers a rep, and the token kept its waiters in one
+`List` behind one `lock`. On 24 threads 7% of the cycles were in `Monitor`, all
+of it `Promise.RegisterAny` from `SyncOp.Watched` and `SyncOp.Cell`, and the
+threads that lost the lock slept on it: nine cores busy, p50 390 us. With the
+token race switched off (wrong, but it measures the watch) the same run took
+374 ms on 19.7 cores, p50 14 us.
+
+A promise with 32 waiters now moves them to `StripedWaiters`: one stripe per
+core, each with its own spin lock, list and prune, chosen by
+`Thread.GetCurrentProcessorId`. Completion closes each stripe under its lock and
+wakes what it held; a registration that finds its stripe closed signals itself.
+A fiber's join never gets near 32 waiters; a busy scope's token does at once.
+The single-chain and multi-ring rows did not move (ring put/get 1350
+instructions on one core, 65 ns on all), and 12, 24 and 1000 rings improved by
+2-3 ns, because they register on the token too.
+
+Ruled out on the way: the inline depth (0, 1, 4, 16 and 50 all within noise),
+tiering's call-counting delay (no effect on runs this long), and workstation
+GC, which is much worse for both .NET programs (Bjolang 1858 ms, Hopac 674).
+Hopac's own profile spends 45% of its cycles in `Worker::Run`, its workers
+looking for work; what it has over the old Bjolang is not less spinning but
+more cores doing useful work.
+
+What is left: on four cores Bjolang is 1.7 times Hopac (548 against 324 ms),
+and its p99.9 there is 42 ms against Hopac's 6 and Go's 3.5. On one core
+Hopac lets a few clients starve (p99.9 660 ms) where Bjolang's is 190.
+
 ---
 
 ## 6. Known issues

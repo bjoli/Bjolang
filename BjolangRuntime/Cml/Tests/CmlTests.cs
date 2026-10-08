@@ -83,6 +83,7 @@ public static class CmlTests
         Run("a token that fires after the commit loses, and the value survives", LateTokenKeepsTheValue);
         Run("a token that fired first cancels and leaves nothing live parked", FiredTokenLeavesNothingParked);
         Run("a token does not collect a waiter per rendezvous", TokenWaitersStayBounded);
+        Run("many waiters racing a completion are each woken once", ManyWaitersRacingCompletion);
         Run("a fiber reuses one registration across its syncs", RegistrationIsReused);
         Run("every parked fiber raises exactly once when the token fires", AllParkedFibersRaiseOnce);
         Run("cancelling a running ping-pong never hangs or resumes twice", CancelRacesWithParking);
@@ -282,6 +283,53 @@ public static class CmlTests
     {
         AssertEqual(WaitersAfter(500), WaitersAfter(4000),
             "the token's waiter list grew with the number of rendezvous");
+    }
+
+    /// <summary>
+    /// Eight threads register 64 waiters each on one promise while it completes,
+    /// at a different moment each round. A promise with that many waiters moves
+    /// them to per-core stripes part way through, so registrations land on the
+    /// single list, on the list as it is being moved, on stripes, and on stripes
+    /// the completion has already closed. Every waiter must run exactly once.
+    /// </summary>
+    private static void ManyWaitersRacingCompletion()
+    {
+        const int threads = 8, per = 64, total = threads * per;
+
+        for (int round = 0; round < 200; round++)
+        {
+            var p = new Promise<int>();
+            var ran = new int[total];
+            var start = new Barrier(threads + 1);
+            var registrars = new Thread[threads];
+
+            for (int t = 0; t < threads; t++)
+            {
+                int first = t * per;
+                registrars[t] = new Thread(() =>
+                {
+                    start.SignalAndWait();
+                    for (int i = first; i < first + per; i++)
+                    {
+                        int id = i;
+                        p.OnCompleted(() => Interlocked.Increment(ref ran[id]));
+                    }
+                });
+                registrars[t].Start();
+            }
+
+            start.SignalAndWait();
+            Thread.SpinWait(round * 40);
+            p.TrySetResult(round);
+            foreach (var t in registrars) t.Join();
+
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (ran.Sum() < total && DateTime.UtcNow < deadline) Thread.Sleep(1);
+            Thread.Sleep(5);
+
+            for (int i = 0; i < total; i++)
+                AssertEqual(1, Volatile.Read(ref ran[i]), $"round {round}: times waiter {i} ran");
+        }
     }
 
     /// <summary>

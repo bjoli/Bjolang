@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* Fibers parking in one scope no longer queue on one lock
+
+- *A program whose fibers all live under one scope uses its cores.* Every
+  fiber that parks in a scope registers on the scope's cancellation
+  token, and the token kept its registrations behind a single lock. A
+  service whose fibers all ran under ~main~ met at that lock from every
+  core: it got slower the more cores it had, and on 24 threads ran on
+  nine. A promise with many waiters now keeps them per core. On
+  ~bench/service~, a sharded key-value service written in Go, Hopac and
+  Bjolang, Bjolang went from 849 to 412 ms on all cores, where Go takes
+  445 and Hopac 433, and its median latency from 390 to 16 microseconds.
+- Cancellation is unchanged: every sync still races its scope's token,
+  and cancelling a scope wakes every fiber parked in it, exactly once.
+
 * A read no longer waits for input its port already holds
 
 - *A read after an abandoned read, or beside another reader, answers from

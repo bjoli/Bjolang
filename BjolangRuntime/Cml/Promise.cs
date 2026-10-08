@@ -111,6 +111,132 @@ internal abstract class PromiseWaiter : IPromiseWaiter, IThreadPoolWorkItem
 }
 
 /// <summary>
+/// A promise's waiters, split by the core that registered them.
+///
+/// For a promise that many fibers wait on at once: a scope's cancellation
+/// token, on which every fiber that parks in the scope registers. Behind one
+/// lock, every park on every core met at that lock, and a service whose fibers
+/// all lived under `main` ran on half its cores. Here a registration takes only
+/// the lock of the stripe for the core it is running on.
+///
+/// A promise moves its waiters here once it has enough of them (see
+/// <c>Promise.StripeAt</c>) and never moves back. Completion closes each stripe
+/// under its lock and wakes what it held; a registration that finds its stripe
+/// closed was too late for the walk and signals its waiter itself.
+///
+/// Each stripe prunes its own abandoned waiters, as the single list does, when
+/// it grows to twice what survived the last prune.
+/// </summary>
+internal sealed class StripedWaiters
+{
+#pragma warning disable CS0169 // the padding is never read
+    private sealed class Stripe
+    {
+        // The two fields every registration on this core writes, kept off the
+        // cache lines of the stripes either side, which other cores write.
+        private long _pad0, _pad1, _pad2, _pad3, _pad4, _pad5, _pad6;
+
+        /// 1 while held. A spin lock: nothing done under it waits on anything.
+        public int Held;
+        public bool Closed;
+        public int PruneAt = 8;
+        public readonly List<object> Waiters = new();
+
+        private long _pad7, _pad8, _pad9, _pad10, _pad11, _pad12, _pad13;
+
+        public void Enter()
+        {
+            if (Interlocked.CompareExchange(ref Held, 1, 0) == 0) return;
+            var spin = new SpinWait();
+            do spin.SpinOnce(sleep1Threshold: -1);
+            while (Volatile.Read(ref Held) != 0 || Interlocked.CompareExchange(ref Held, 1, 0) != 0);
+        }
+
+        public void Exit() => Volatile.Write(ref Held, 0);
+    }
+#pragma warning restore CS0169
+
+    private readonly Stripe[] _stripes;
+    private readonly int _mask;
+
+    /// The waiters of <paramref name="from"/> go to the first stripe; the
+    /// prune thins them out as registrations on that core arrive.
+    public StripedWaiters(List<object> from)
+    {
+        int n = (int)System.Numerics.BitOperations.RoundUpToPowerOf2(
+            (uint)Math.Clamp(Environment.ProcessorCount, 1, 64));
+        _stripes = new Stripe[n];
+        for (int i = 0; i < n; i++) _stripes[i] = new Stripe();
+        _mask = n - 1;
+        _stripes[0].Waiters.AddRange(from);
+    }
+
+    /// <summary>
+    /// Add <paramref name="waiter"/> to this core's stripe, or answer false
+    /// when the promise has completed and its walk has passed that stripe, in
+    /// which case nobody will wake it and the caller signals it.
+    /// </summary>
+    public bool TryAdd(object waiter)
+    {
+        var s = _stripes[Thread.GetCurrentProcessorId() & _mask];
+        s.Enter();
+        try
+        {
+            if (s.Closed) return false;
+
+            if (s.Waiters.Count >= s.PruneAt)
+            {
+                s.Waiters.RemoveAll(static w => w is PromiseWaiter pw && pw.IsAbandoned);
+                s.PruneAt = Math.Max(8, s.Waiters.Count * 2);
+            }
+
+            s.Waiters.Add(waiter);
+            return true;
+        }
+        finally { s.Exit(); }
+    }
+
+    /// <summary>
+    /// Close every stripe and wake what each held. Run once, by the completion
+    /// that won, after the promise reads as completed. The waking is done
+    /// outside the stripe's lock.
+    /// </summary>
+    public void Drain(Action<object> wake)
+    {
+        foreach (var s in _stripes)
+        {
+            object[] held;
+            s.Enter();
+            try
+            {
+                s.Closed = true;
+                held = s.Waiters.ToArray();
+                s.Waiters.Clear();
+            }
+            finally { s.Exit(); }
+
+            foreach (var w in held) wake(w);
+        }
+    }
+
+    /// Registered waiters, counted without pruning. Test-only.
+    public int Count
+    {
+        get
+        {
+            int n = 0;
+            foreach (var s in _stripes)
+            {
+                s.Enter();
+                n += s.Waiters.Count;
+                s.Exit();
+            }
+            return n;
+        }
+    }
+}
+
+/// <summary>
 /// A write-once cell that is also a PERSISTENT CML event.
 ///
 /// This is the handle type for <c>spawn</c> and the bridge type for C# tasks.
@@ -142,6 +268,15 @@ public class Promise<T> : IEvent<Result<T>>,
 
     /// <summary>EXPERIMENT: amortised prune threshold, guarded by lock(list).</summary>
     private int _pruneAt = 8;
+
+    /// <summary>
+    /// Waiters that, surviving a prune, move the list to <see cref="StripedWaiters"/>.
+    /// A fiber's join has one or two; a scope's token has one per fiber parked
+    /// in the scope, and is what this is for.
+    /// </summary>
+    private const int StripeAt = 32;
+
+    private static readonly Action<object> s_wake = Wake;
 
     public bool IsCompleted => ReferenceEquals(Volatile.Read(ref _waiters), s_completedSentinel);
 
@@ -177,6 +312,10 @@ public class Promise<T> : IEvent<Result<T>>,
                 {
                     foreach (var w in list) Wake(w);
                 }
+            }
+            else if (oldWaiters is StripedWaiters striped)
+            {
+                striped.Drain(s_wake);
             }
             else
             {
@@ -260,6 +399,7 @@ public class Promise<T> : IEvent<Result<T>>,
             var w = Volatile.Read(ref _waiters);
             if (w is null || ReferenceEquals(w, s_completedSentinel)) return 0;
             if (w is List<object> list) { lock (list) return list.Count; }
+            if (w is StripedWaiters striped) return striped.Count;
             return 1;
         }
     }
@@ -286,24 +426,49 @@ public class Promise<T> : IEvent<Result<T>>,
                 if (Interlocked.CompareExchange(ref _waiters, waiter, null) == null)
                     return;
             }
+            else if (current is StripedWaiters striped)
+            {
+                if (!striped.TryAdd(waiter)) SignalInline(waiter);
+                return;
+            }
             else if (current is List<object> list)
             {
                 lock (list)
                 {
-                    if (ReferenceEquals(Volatile.Read(ref _waiters), s_completedSentinel))
+                    var now = Volatile.Read(ref _waiters);
+                    if (ReferenceEquals(now, s_completedSentinel))
                     {
                         SignalInline(waiter);
                         return;
                     }
 
-                    if (list.Count >= _pruneAt)
+                    // Moved to stripes while this waited for the lock, and
+                    // nobody reads this list any more: look again.
+                    if (ReferenceEquals(now, list))
                     {
-                        list.RemoveAll(static w => w is PromiseWaiter pw && pw.IsAbandoned);
-                        _pruneAt = Math.Max(8, list.Count * 2);
-                    }
+                        if (list.Count >= _pruneAt)
+                        {
+                            list.RemoveAll(static w => w is PromiseWaiter pw && pw.IsAbandoned);
+                            _pruneAt = Math.Max(8, list.Count * 2);
+                        }
 
-                    list.Add(waiter);
-                    return;
+                        if (list.Count >= StripeAt)
+                        {
+                            var stripes = new StripedWaiters(list);
+                            if (Interlocked.CompareExchange(ref _waiters, stripes, list) == list)
+                            {
+                                if (!stripes.TryAdd(waiter)) SignalInline(waiter);
+                                return;
+                            }
+
+                            // Only a completion takes the field off a list whose
+                            // lock is held here, and it walks this list once the
+                            // lock is released: adding to it is still right.
+                        }
+
+                        list.Add(waiter);
+                        return;
+                    }
                 }
             }
             else
