@@ -232,33 +232,26 @@ public static class InputPorts {
 
     // --- Characters ---------------------------------------------------------
 
-    private static Exception EndOfChar() =>
+    private static Exception EndOfChar(string op) =>
         new EndOfStreamException(
-            "read-char: the port is at end of input. Guard with (port-eof? p), or use read-char/opt.");
+            $"{op}: the port is at end of input. Guard with (port-eof? p), or use {op}/opt.");
 
-    private static BjoChar CharOrThrow(int scalar) =>
-        scalar < 0 ? throw EndOfChar() : new BjoChar((uint)scalar);
+    private static BjoChar CharOrThrow(int scalar, string op) =>
+        scalar < 0 ? throw EndOfChar(op) : new BjoChar((uint)scalar);
 
     private static BjolangRuntime.Option<BjoChar> CharOption(int scalar) =>
         scalar < 0 ? BjolangRuntime.None<BjoChar>() : BjolangRuntime.Some(new BjoChar((uint)scalar));
 
-    public static BjoChar ReadCharOrThrow(BjoInputPort port) => CharOrThrow(port.ReadScalar());
-
-    public static ValueTask<BjoChar> ReadCharOrThrowAsync(BjoInputPort port, CancellationToken cancel = default) {
-        var pending = port.ReadScalarValueAsync(cancel);
+    private static ValueTask<BjoChar> CharOrThrowAsync(ValueTask<int> pending, string op) {
         return pending.IsCompletedSuccessfully
-            ? new ValueTask<BjoChar>(CharOrThrow(pending.Result))
-            : Awaited(pending);
+            ? new ValueTask<BjoChar>(CharOrThrow(pending.Result, op))
+            : Awaited(pending, op);
 
-        static async ValueTask<BjoChar> Awaited(ValueTask<int> pending) =>
-            CharOrThrow(await pending.ConfigureAwait(false));
+        static async ValueTask<BjoChar> Awaited(ValueTask<int> pending, string op) =>
+            CharOrThrow(await pending.ConfigureAwait(false), op);
     }
 
-    public static BjolangRuntime.Option<BjoChar> ReadCharOpt(BjoInputPort port) => CharOption(port.ReadScalar());
-
-    public static ValueTask<BjolangRuntime.Option<BjoChar>> ReadCharOptAsync(
-        BjoInputPort port, CancellationToken cancel = default) {
-        var pending = port.ReadScalarValueAsync(cancel);
+    private static ValueTask<BjolangRuntime.Option<BjoChar>> CharOptionAsync(ValueTask<int> pending) {
         return pending.IsCompletedSuccessfully
             ? new ValueTask<BjolangRuntime.Option<BjoChar>>(CharOption(pending.Result))
             : Awaited(pending);
@@ -266,4 +259,30 @@ public static class InputPorts {
         static async ValueTask<BjolangRuntime.Option<BjoChar>> Awaited(ValueTask<int> pending) =>
             CharOption(await pending.ConfigureAwait(false));
     }
+
+    public static BjoChar ReadCharOrThrow(BjoInputPort port) => CharOrThrow(port.ReadScalar(), "read-char");
+
+    public static ValueTask<BjoChar> ReadCharOrThrowAsync(BjoInputPort port, CancellationToken cancel = default) =>
+        CharOrThrowAsync(port.ReadScalarValueAsync(cancel), "read-char");
+
+    public static BjolangRuntime.Option<BjoChar> ReadCharOpt(BjoInputPort port) => CharOption(port.ReadScalar());
+
+    public static ValueTask<BjolangRuntime.Option<BjoChar>> ReadCharOptAsync(
+        BjoInputPort port, CancellationToken cancel = default) =>
+        CharOptionAsync(port.ReadScalarValueAsync(cancel));
+
+    // `peek-char`: the character `read-char` would answer, left in the port.
+    // It decodes from the port's buffer, so a peek costs what a read does and
+    // takes nothing; a byte read after it starts at the character's first byte.
+
+    public static BjoChar PeekCharOrThrow(BjoInputPort port) => CharOrThrow(port.PeekScalar(), "peek-char");
+
+    public static ValueTask<BjoChar> PeekCharOrThrowAsync(BjoInputPort port, CancellationToken cancel = default) =>
+        CharOrThrowAsync(port.PeekScalarValueAsync(cancel), "peek-char");
+
+    public static BjolangRuntime.Option<BjoChar> PeekCharOpt(BjoInputPort port) => CharOption(port.PeekScalar());
+
+    public static ValueTask<BjolangRuntime.Option<BjoChar>> PeekCharOptAsync(
+        BjoInputPort port, CancellationToken cancel = default) =>
+        CharOptionAsync(port.PeekScalarValueAsync(cancel));
 }

@@ -403,6 +403,36 @@
     the BMP is taken whole, so two fibers reading one port never split it.
     """))
 
+(:doc peek-char
+  (summary "The next character of a port, left in the port.")
+  (arg p "The port. Not at end of input.")
+  (returns "The character read-char would answer.")
+  (raises System.IO.EndOfStreamException "When the port is at end of input.")
+  (raises System.InvalidOperationException "When a .NET caller's UTF-16 read has left half a character behind.")
+  (see peek-char/opt read-char)
+  (example """
+    (def p (open-input-string "ab"))
+    (peek-char p)   ; #\\a
+    (read-char p)   ; #\\a
+    (peek-char p)   ; #\\b
+    """)
+  (reference """
+    As Racket's @code{peek-char}. Decoded from the port's buffer like
+    @code{read-char}, waiting for as many bytes as the character needs,
+    and taking none of them: the next read, of characters or of bytes,
+    starts at the same place. An invalid sequence peeks as U+FFFD.
+
+    A peek and the read after it are two operations: another fiber reading
+    the same port can take the character between them.
+    """))
+
+(:doc peek-char/opt
+  (summary "The next character of a port, left in the port, or None at end of input.")
+  (arg p "The port.")
+  (returns "Some character, or None at end of input.")
+  (raises System.InvalidOperationException "When the port holds a surrogate that is not half of a pair.")
+  (see peek-char read-char/opt))
+
 (:doc read-all
   (summary "Everything left in a port, as one string.")
   (arg p "The port.")

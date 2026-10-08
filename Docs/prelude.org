@@ -391,13 +391,15 @@ Only the drains — ~port->list~, ~port->vec~, ~port->seq~, ~file->seq~ and ~por
 - ~(read-line/opt p)~ : The next line, or ~None~ at end of input.
 - ~(read-char p)~ : The next character. *Throws at end of input* — guard with ~port-eof?~.
 - ~(read-char/opt p)~ : The next character, or ~None~ at end of input.
+- ~(peek-char p)~ : The character ~read-char~ would answer, left in the port. *Throws at end of input.*
+- ~(peek-char/opt p)~ : The same, or ~None~ at end of input.
 - ~(read-all p)~ : Everything remaining, as one string. Empty at end of input.
 - ~(write-string p s)~ / ~(writeln p s)~ : The port comes first, as it does for every operation here.
 - ~(write-char p c)~ : One character.
 
 ~read-char~ and ~write-char~ deal in *characters* — Unicode scalars — and not in the UTF-16 code units a .NET port is made of. A character outside the BMP is two units in the text and one ~char~ to a program. This is what lets ~(port->seq read-char p)~ and ~(read-all p)~ walked as a string agree about what the characters are.
 
-There is no ~peek-char~. Use ~port-eof?~ to check for the end of a stream, and ~read-all~ with a ~StringCursor~ when significant lookahead is required.
+~peek-char~ decodes the next character from the port's buffer and leaves it there, so it costs what ~read-char~ does and any read after it, of characters or of bytes, starts at that character. For more lookahead than one character, ~peek-bytes~ in ~(std ports)~ looks at bytes without taking them.
 
 An ordinary binding wins over an ~import/extern~ alias of the same name, so a module that aliases ~System.Console.WriteLine~ as ~println~ gets the prelude's ~println~ and not the alias. Pick a name the prelude does not bind — ~console-write-line~ say.
 

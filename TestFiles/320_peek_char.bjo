@@ -1,0 +1,83 @@
+;; `peek-char` and `peek-char/opt`: the character `read-char` would answer,
+;; left in the port, as Racket's `peek-char`. A peek takes nothing, so the
+;; next read - of characters or of bytes - starts where the peek looked.
+
+(import (std prelude))
+(import (std ports))
+(import (std simpletest))
+
+;; Bytes as text: "240.159.152.128." for the four of U+1F600.
+(: shown (-> (Option (Array byte)) string))
+(defun (shown o)
+  (match o
+    ((Some bs) (let loop ((i 0) (acc ""))
+                 (if (= i (array-length bs))
+                     acc
+                     (loop (+ i 1) (str acc (byte->string (array-ref bs i)) ".")))))
+    (None "none")))
+
+;; Peeks twice and reads once, in a defun: the synchronous path.
+(: peek-peek-read (-> InputPort string))
+(defun (peek-peek-read p)
+  (def a (peek-char p))
+  (def b (peek-char p))
+  (def c (read-char p))
+  (list->string (list a b c)))
+
+(: replacement char)
+(def replacement (integer->char 65533))
+
+(defbjo (main args)
+  ;; --- In a defun -----------------------------------------------------------
+  (def s (open-input-string "aö😀"))
+  (expect "a peek does not move the port" (peek-peek-read s) "aaa")
+  (expect "a two-byte character" (peek-peek-read s) "ööö")
+  (expect "one outside the BMP, whole" (peek-peek-read s) "😀😀😀")
+  (expect "then nothing" (peek-char/opt s) None)
+
+  ;; --- On a fiber -----------------------------------------------------------
+  (def t (open-input-string "xy"))
+  (expect "peek-char on a fiber" (peek-char t) #\x)
+  (expect "and again" (peek-char t) #\x)
+  (expect "read-char takes it" (read-char t) #\x)
+  (expect "peek-char/opt sees the next" (peek-char/opt t) (Some #\y))
+  (expect "read-char/opt takes it" (read-char/opt t) (Some #\y))
+  (expect "peek-char/opt at end of input" (peek-char/opt t) None)
+  (expect "port-eof? agrees" (port-eof? t) #t)
+  (expect "peek-char at end of input fails, naming itself"
+          (match (try (peek-char t) #:catch (System.IO.EndOfStreamException))
+            ((Ok c) "no failure")
+            ((Err e) (.-Message e)))
+          "peek-char: the port is at end of input. Guard with (port-eof? p), or use peek-char/opt.")
+
+  ;; --- Bytes after a peek ---------------------------------------------------
+  (def u (open-input-string "😀!"))
+  (expect "a peek at a four-byte character" (peek-char u) #\x1F600)
+  (expect "leaves all four bytes" (shown (read-bytes u 4)) "240.159.152.128.")
+  (expect "and the character after them" (read-char u) #\!)
+
+  ;; --- A peek that waits for the rest of a character -------------------------
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out #[240 159])
+     (flush! out)
+     (def peeked (bjo (peek-char in)))
+     (write-bytes! out #[152 128 33])
+     (close-byte-output-port! out)
+     (expect "a peek waits for the bytes a character needs"
+             (match (sync (promise-join peeked)) ((Ok c) c) ((Err e) #\?))
+             #\x1F600)
+     (expect "and leaves them" (shown (peek-bytes in 0 5)) "240.159.152.128.33.")
+     (expect "for read-char" (read-char in) #\x1F600)
+     (expect "and then the rest" (read-char in) #\!)))
+
+  ;; --- What does not decode -------------------------------------------------
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out #[255 97])
+     (close-byte-output-port! out)
+     (expect "an invalid byte peeks as U+FFFD" (peek-char in) replacement)
+     (expect "and is still there" (shown (peek-bytes in 0 1)) "255.")
+     (expect "read-char takes it" (read-char in) replacement)
+     (expect "and the next is a" (peek-char in) #\a)))
+  0)

@@ -1054,9 +1054,9 @@ public sealed class BjoInputPort : TextReader {
         return Finished;
     }
 
-    private static Exception UnpairedLow() =>
+    private static Exception UnpairedLow(string op) =>
         new InvalidOperationException(
-            "read-char: the port holds an unpaired low surrogate, which is not a character.");
+            $"{op}: the port holds an unpaired low surrogate, which is not a character.");
 
     /// Under the lock: the next character, taken whole, or -1 at end of input.
     /// False when a refill has to come first.
@@ -1065,7 +1065,7 @@ public sealed class BjoInputPort : TextReader {
             // Half a character a UTF-16 read left behind. Taken, so that the
             // port moves on past it, and reported.
             if (take) _pendingLow = -1;
-            throw UnpairedLow();
+            throw UnpairedLow(take ? "read-char" : "peek-char");
         }
 
         if (!PeekScalarLocked(out scalar, out int size)) return false;

@@ -152,7 +152,8 @@
   fs-delete-directory op/fs-delete-directory fs-delete-directory/raw
   fs-move op/fs-move fs-move/raw
   ;; Ports — input
-  port-eof? read-line read-line/opt LineMode read-char read-char/opt read-all port-fold
+  port-eof? read-line read-line/opt LineMode read-char read-char/opt
+  peek-char peek-char/opt read-all port-fold
   ;; Ports — output
   write-string write-char writeln get-output-string
 
@@ -2250,7 +2251,11 @@
   (clr-line-opt       (: Bjolang.Runtime.InputPorts.ReadLineOpt      (-> InputPort int (Option string)) #:blocking))
   (clr-line-opt-await (: Bjolang.Runtime.InputPorts.ReadLineOptAsync (-> InputPort int (Option string)) #:async))
   (clr-char-opt       (: Bjolang.Runtime.InputPorts.ReadCharOpt      (-> InputPort (Option char)) #:blocking))
-  (clr-char-opt-await (: Bjolang.Runtime.InputPorts.ReadCharOptAsync (-> InputPort (Option char)) #:async)))
+  (clr-char-opt-await (: Bjolang.Runtime.InputPorts.ReadCharOptAsync (-> InputPort (Option char)) #:async))
+  (clr-peek-char       (: Bjolang.Runtime.InputPorts.PeekCharOrThrow      (-> InputPort char) #:blocking))
+  (clr-peek-char-await (: Bjolang.Runtime.InputPorts.PeekCharOrThrowAsync (-> InputPort char) #:async))
+  (clr-peek-char-opt       (: Bjolang.Runtime.InputPorts.PeekCharOpt      (-> InputPort (Option char)) #:blocking))
+  (clr-peek-char-opt-await (: Bjolang.Runtime.InputPorts.PeekCharOptAsync (-> InputPort (Option char)) #:async)))
 
 ;; Port eof.
 (: port-eof? (-> InputPort bool))
@@ -2292,6 +2297,19 @@
 (defbjouble (read-char/opt p)
   (#:sync (clr-char-opt p))
   (#:bjo  (clr-char-opt-await p)))
+
+;; The character `read-char` would answer, left in the port, as Racket's
+;; `peek-char`. Decoded from the port's buffer: it waits for the bytes a
+;; character needs and takes none of them.
+(: peek-char (-> InputPort char))
+(defbjouble (peek-char p)
+  (#:sync (clr-peek-char p))
+  (#:bjo  (clr-peek-char-await p)))
+
+(: peek-char/opt (-> InputPort (Option char)))
+(defbjouble (peek-char/opt p)
+  (#:sync (clr-peek-char-opt p))
+  (#:bjo  (clr-peek-char-opt-await p)))
 
 ;; Drains a port
 (: read-all (-> InputPort string))
