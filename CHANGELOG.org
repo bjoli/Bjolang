@@ -3,6 +3,22 @@
 
 What each change guarantees, and what it leaves open.
 
+* (text bjodat) reads bytes too, and is as fast as it was
+
+- *The bjodat reader reads the document's bytes,* as the JSON reader now
+  does: a chunk at a time with ~read-some~, or the string's own bytes for
+  the ~parse-~ readers. It read one UTF-16 unit per character through the
+  port. 20 000 manifest-shaped records, 3.6 MB: the tree in 45 ms and a
+  generated one-pass decoder in 31 ms, where they took 91 and 71; before
+  strings were UTF-8 they took 44 and 28.
+- *The text has to be UTF-8.* Bytes that are not are refused with their
+  line and column, in a string, a raw string, a name or a character
+  literal; they used to read as U+FFFD. A character of several bytes is
+  read whole, also when a chunk ends inside it.
+- *~#\😀~ reads.* A character literal outside the BMP was refused as "not a
+  character", since the reader took half of its surrogate pair.
+- *A column counts characters,* so one outside the BMP is one column.
+
 * (text json) reads bytes, and is as fast as before strings were UTF-8
 
 - *The JSON reader reads the document's bytes,* a chunk at a time with

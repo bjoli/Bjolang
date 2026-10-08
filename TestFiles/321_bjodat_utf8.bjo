@@ -1,0 +1,81 @@
+;; bjodat reads a document's UTF-8 bytes. A character of several bytes can be
+;; in a string, a raw string, a symbol, a keyword or a character literal, and
+;; is read whole there, also when the bytes arrive in two reads. Bytes that are
+;; not UTF-8 are refused where they are, and a column counts characters.
+
+(import (std prelude))
+(import (std ports))
+(import (text bjodat-core))
+(import (std simpletest))
+
+(: shown (-> (Result string Bjodat) string))
+(defun (shown r)
+  (match r
+    ((Ok v) (bjodat->string v))
+    ((Err e) (str "err: " e))))
+
+(: from-bytes (-> (Array byte) string))
+(defun (from-bytes bytes)
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out bytes)
+     (close-byte-output-port! out)
+     (shown (read-bjodat in)))))
+
+(: read-on-a-fiber (-bjo-> InputPort string))
+(defbjo (read-on-a-fiber p) (shown (read-bjodat p)))
+
+(: emoji string)
+(def emoji (list->string (list (integer->char 128512))))
+
+(defun (main)
+  ;; --- Characters of several bytes, everywhere they can be ------------------
+  (expect "a string" (shown (parse-bjodat "\"räksmörgås\"")) "\"räksmörgås\"")
+  (expect "a raw string" (shown (parse-bjodat "\"\"\"blåbär\"\"\"")) "\"blåbär\"")
+  (expect "a symbol" (shown (parse-bjodat "smörgås")) "smörgås")
+  (expect "a keyword" (shown (parse-bjodat ":größe")) ":größe")
+  (expect "a character literal" (shown (parse-bjodat "#\\å")) "#\\å")
+  (expect "one outside the BMP" (shown (parse-bjodat (str "#\\" emoji))) (str "#\\" emoji))
+  (expect "in a map, off a port"
+          (from-bytes (string->bytes "{:namn \"Åsa\" :ort Malmö}"))
+          "{:namn \"Åsa\" :ort Malmö}")
+
+  ;; --- Columns count characters --------------------------------------------
+  (expect "a refusal after them is at the right column"
+          (shown (parse-bjodat (str "[\"" emoji "ö\" )")))
+          "err: line 1, column 7: ')' closes nothing here")
+
+  ;; --- Bytes that are not UTF-8 ----------------------------------------------
+  (expect "in a string"
+          (from-bytes #[34 97 255 34])
+          "err: line 1, column 3: text has to be UTF-8, and this byte is not")
+  (expect "an encoded surrogate in a string"
+          (from-bytes #[34 237 160 128 34])
+          "err: line 1, column 2: text has to be UTF-8, and this byte is not")
+  (expect "where a value begins"
+          (from-bytes #[91 255 93])
+          "err: line 1, column 2: a byte that is not UTF-8 does not begin a value")
+  (expect "after a symbol, which it ends"
+          (from-bytes #[97 98 255])
+          "err: line 1, column 3: the value ended here, and then there is a byte that is not UTF-8")
+  (expect "a character literal"
+          (from-bytes #[35 92 192 128])
+          "err: line 1, column 3: text has to be UTF-8, and this byte is not")
+
+  ;; --- A character whose bytes arrive in two reads ---------------------------
+  (expect "is one character"
+          (match (byte-pipe)
+            ((Tuple in out)
+             (write-bytes! out #[34 195])
+             (flush! out)
+             (def reading (bjo (read-on-a-fiber in)))
+             (write-bytes! out #[169 34])
+             (close-byte-output-port! out)
+             (match (sync/blocking (promise-join reading)) ((Ok s) s) ((Err e) "raised"))))
+          "\"é\"")
+
+  ;; --- A byte order mark -----------------------------------------------------
+  (expect "is skipped, and is not a column"
+          (from-bytes #[239 187 191 40 41 41])
+          "err: line 1, column 3: the value ended here, and then there is ')'")
+  0)

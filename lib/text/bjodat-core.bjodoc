@@ -58,6 +58,8 @@
     @code{\\}, @code{\"}, @code{\0} and @code{\uXXXX}. The named characters
     are @code{#\newline}, @code{#\space}, @code{#\tab}, @code{#\return} and
     @code{#\nul}. A byte order mark at the start of the text is skipped.
+    The text is UTF-8: bytes that are not are refused, at the line and
+    column where they are, and a column counts characters.
 
     A raw string follows the rules in @code{Syntax.org}, "Raw strings",
     margin and all. The writer still writes every string escaped and on one
@@ -271,10 +273,12 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc Reader
-  (summary "A reader over a port, as a generated one-pass decoder drives it. Not an API for people.")
-  (field port "What it reads from.")
-  (field held "The one character of lookahead, as a code; -1 at the end of the port.")
-  (field row "The line the held character is on, from 1.")
+  (summary "A reader over a port or a string, as a generated one-pass decoder drives it. Not an API for people.")
+  (field port "The port the rest of the document comes from; None once it has ended, and for a string.")
+  (field bytes "The chunk of the document's bytes being read.")
+  (field next "The byte being looked at.")
+  (field limit "Where the chunk ends.")
+  (field row "The line the byte being looked at is on, from 1.")
   (field col "Its column, from 1.")
   (field scratch "One buffer for every string, symbol, number and key name in the document.")
   (field stack "One array for every list, vec and map in the document.")

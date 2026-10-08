@@ -1,6 +1,7 @@
 ;; text/bjodat-core.bjo
 ;;
-;; The bjodat value, the reader and the writer. One character at a time.
+;; The bjodat value, the reader and the writer. The reader reads the document's
+;; UTF-8 bytes.
 ;;
 ;; **This is the machinery, not the interface.** `(text bjodat)` is what a
 ;; program imports: it declares a record and generates a decoder that reads the
@@ -47,6 +48,7 @@
   read-one-pass parse-one-pass read-one-pass-all parse-one-pass-all)
 
 (import (std prelude))
+(import (only (std ports) read-some))
 
 ;; Every export is documented there; the module doc is too.
 (:doc #:file "bjodat-core.bjodoc")
@@ -64,16 +66,6 @@
 (import/extern
   (clr-radix-long (: System.Convert.ToInt64 (-> string int long)
                      #:exceptions (System.OverflowException System.FormatException))))
-
-;; One UTF-16 unit, or -1 at the end.
-(import/extern
-  (clr-unit       (: Bjolang.Runtime.InputPorts.ReadUnit      (-> InputPort int) #:blocking))
-  (clr-unit-await (: Bjolang.Runtime.InputPorts.ReadUnitAsync (-> InputPort int) #:async)))
-
-(: read-unit (-> InputPort int))
-(defbjouble (read-unit p)
-  (#:sync (clr-unit p))
-  (#:bjo  (clr-unit-await p)))
 
 ;; ---------------------------------------------------------------------------
 ;; The value
@@ -185,15 +177,28 @@
 ;; ---------------------------------------------------------------------------
 ;; The reader
 ;; ---------------------------------------------------------------------------
-;; One character of lookahead, held as a code so the end of the port is a value
-;; rather than a second field.
+;; The reader works on bytes: a chunk of the document in `bytes`, the one it is
+;; looking at at `next`, and `limit` where the chunk ends. Looking is an array
+;; load and stepping is an increment. A chunk comes from the port with
+;; `read-some`; the `parse-` readers hand over the string's own bytes as the
+;; one chunk there is, and no port.
+;;
+;; All the format's punctuation is ASCII. A character of several bytes - in a
+;; string, a symbol, a keyword or a character literal - is checked to be UTF-8
+;; and copied whole; one that is not UTF-8 is refused. A column counts
+;; characters: only a byte that starts one moves it.
+;;
+;; The byte is handled as a number, so that the end of the document is a
+;; value, `spent`, rather than a second case.
 
 (: spent int)
 (def spent -1)
 
 (type
-  (: Reader (Record (: port InputPort)
-                    (: held int #:mutable)
+  (: Reader (Record (: port (Option InputPort) #:mutable)
+                    (: bytes (Array byte) #:mutable)
+                    (: next int #:mutable)
+                    (: limit int #:mutable)
                     (: row int #:mutable)
                     (: col int #:mutable)
                     ;; One buffer for every string, symbol and number.
@@ -204,10 +209,13 @@
                     ;; One cache for every name in the document.
                     (: names (Array string)))))
 
-(: reader (-> InputPort Reader))
-(defun (reader port)
+;; A reader over `bytes`, and then whatever `port` has after them.
+(: reader (-> (Option InputPort) (Array byte) Reader))
+(defun (reader port bytes)
   (Reader (port port)
-          (held (read-unit port))
+          (bytes bytes)
+          (next 0)
+          (limit (array-length bytes))
           (row 1)
           (col 1)
           (scratch (stringbuilder-empty))
@@ -239,31 +247,162 @@
   (stringbuilder-clear! sb)
   sb)
 
+;; `count` bytes of `old` from `from`, then `more`: what is left of one chunk
+;; and the next. Almost always nothing is left, and `more` is the answer.
+(: join-bytes (-> (Array byte) int int (Array byte) (Array byte)))
+(defun (join-bytes old from count more)
+  (if (= count 0)
+      more
+      (let ((joined (make-array (+ count (array-length more)))))
+        (loop (:for i (range 0 count))
+              (:do (array-set! joined i (array-ref old (+ from i)))))
+        (loop (:for i (range 0 (array-length more)))
+              (:do (array-set! joined (+ count i) (array-ref more i))))
+        joined)))
+
+;; Whether there are at least `n` bytes from `next` on, reading from the port
+;; until there are or it ends. Bytes not yet looked at are kept, so a
+;; character cut in two by the end of a chunk is whole afterwards.
+(: ensure! (-> Reader int bool))
+(defun (ensure! rd n)
+  (let go ()
+    (def have (- (record-ref rd limit) (record-ref rd next)))
+    (cond
+      ((>= have n) #t)
+      (else
+       (match (record-ref rd port)
+         (None #f)
+         ((Some p)
+          (match (read-some p)
+            (None
+             (record-set! rd (port None))
+             #f)
+            ((Some more)
+             (record-set! rd
+                          (bytes (join-bytes (record-ref rd bytes) (record-ref rd next) have more))
+                          (next 0)
+                          (limit (+ have (array-length more))))
+             (go)))))))))
+
+;; The byte the reader is looking at, or `spent` at the end of the document.
 (: held-code (-> Reader int))
-(defun (held-code rd) (record-ref rd held))
+(defun (held-code rd)
+  (def i (record-ref rd next))
+  (cond
+    ((< i (record-ref rd limit)) (cast int (array-ref (record-ref rd bytes) i)))
+    ((ensure! rd 1) (cast int (array-ref (record-ref rd bytes) (record-ref rd next))))
+    (else spent)))
 
 (: at-end? (-> Reader bool))
-(defun (at-end? rd) (= (record-ref rd held) spent))
+(defun (at-end? rd) (= (held-code rd) spent))
 
 ;; Anything that is not ASCII answers #\nul, because every character this is
 ;; asked about is one of the format's own punctuation.
 (: peek (-> Reader char))
 (defun (peek rd)
   (def c (held-code rd))
-  (if (< c 128) (integer->char c) #\nul))
+  (if (and (>= c 0) (< c 128)) (integer->char c) #\nul))
 
+;; Moves past the byte being looked at, which is a character of its own: every
+;; caller has just looked at it and found it ASCII. A character of several
+;; bytes is taken by `take-character!`.
 (: step! (-> Reader void))
 (defun (step! rd)
   (record-set! rd
-               (held (read-unit (record-ref rd port)))
+               (next (+ (record-ref rd next) 1))
                (col (+ (record-ref rd col) 1))))
 
 (: newline! (-> Reader void))
 (defun (newline! rd)
   (record-set! rd
-               (held (read-unit (record-ref rd port)))
+               (next (+ (record-ref rd next) 1))
                (row (+ (record-ref rd row) 1))
                (col 1)))
+
+;; --- characters of several bytes --------------------------------------------
+
+(: not-utf-8 string)
+(def not-utf-8 "a byte that is not UTF-8")
+
+;; How many bytes a character starting with `lead` has, by RFC 3629; 0 for a
+;; byte no character starts with: a continuation byte, C0 and C1 (which could
+;; only start an overlong form), and F5 and up.
+(: utf8-length (-> int int))
+(defun (utf8-length lead)
+  (cond
+    ((< lead 128) 1)
+    ((< lead 194) 0)
+    ((< lead 224) 2)
+    ((< lead 240) 3)
+    ((< lead 245) 4)
+    (else 0)))
+
+(: continuation? (-> int bool))
+(defun (continuation? b) (= (bitwise-and b 192) 128))
+
+;; How many bytes the character the reader is looking at has, when they are
+;; UTF-8; 0 when they are not, or the document ends inside them. The second
+;; byte is narrower after E0 and F0, which would otherwise start an overlong
+;; form, after ED, which would start a surrogate, and after F4, which would
+;; go past U+10FFFF.
+(: sequence-length (-> Reader int))
+(defun (sequence-length rd)
+  (def lead (held-code rd))
+  (def n (utf8-length lead))
+  (cond
+    ((<= n 1) n)
+    ((not (ensure! rd n)) 0)
+    (else
+     (def b (record-ref rd bytes))
+     (def i (record-ref rd next))
+     (def second (cast int (array-ref b (+ i 1))))
+     (def low (cond ((= lead 224) 160) ((= lead 240) 144) (else 128)))
+     (def high (cond ((= lead 237) 159) ((= lead 244) 143) (else 191)))
+     (if (and (>= second low)
+              (<= second high)
+              (let check ((k 2))
+                (cond
+                  ((>= k n) #t)
+                  ((continuation? (cast int (array-ref b (+ i k)))) (check (+ k 1)))
+                  (else #f))))
+         n
+         0))))
+
+;; Copies the `n` bytes of the character being looked at into `sb`, and moves
+;; past them: one column.
+(: take-character! (-> Reader StringBuilder int void))
+(defun (take-character! rd sb n)
+  (def b (record-ref rd bytes))
+  (def i (record-ref rd next))
+  (loop (:for k (range 0 n))
+        (:do (stringbuilder-add-code! sb (cast int (array-ref b (+ i k))))))
+  (record-set! rd
+               (next (+ i n))
+               (col (+ (record-ref rd col) 1))))
+
+;; The character being looked at, of `n` bytes known to be UTF-8.
+(: held-character (-> Reader int char))
+(defun (held-character rd n)
+  (def i (record-ref rd next))
+  (vec-ref (string->vec (bytes->string (record-ref rd bytes) #:start i #:end (+ i n))) 0))
+
+;; The character being looked at, `c`, copied into `sb` and stepped past: an
+;; ASCII byte as it is, a character of several bytes once it is known to be
+;; UTF-8. False, having taken nothing, when it is not.
+(: add-held! (-> Reader StringBuilder int bool))
+(defun (add-held! rd sb c)
+  (cond
+    ((< c 128)
+     (stringbuilder-add-unit! sb c)
+     (step! rd)
+     #t)
+    (else
+     (def n (sequence-length rd))
+     (cond
+       ((= n 0) #f)
+       (else
+        (take-character! rd sb n)
+        #t)))))
 
 ;; --- character classes ------------------------------------------------------
 
@@ -325,9 +464,18 @@
 (: found (-> Reader string))
 (defun (found rd)
   (def c (held-code rd))
-  (if (= c spent)
-      "the document ended"
-      (str "'" (list->string (list (integer->char c))) "'")))
+  (cond
+    ((= c spent) "the document ended")
+    ((< c 128) (str "'" (list->string (list (integer->char c))) "'"))
+    (else
+     (def n (sequence-length rd))
+     (if (= n 0)
+         not-utf-8
+         (str "'" (list->string (list (held-character rd n))) "'")))))
+
+;; The refusal of a string or a name with bytes in it that are not UTF-8.
+(: not-utf-8-here (-> Reader string))
+(defun (not-utf-8-here rd) (at rd "text has to be UTF-8, and this byte is not"))
 
 (: too-deep (-> Reader string string))
 (defun (too-deep rd what)
@@ -452,7 +600,8 @@
          ((= k n) (Ok (stringbuilder->string sb)))
          ((> k n) (Err (too-many-quotes rd n k)))
          (else (add-quotes! sb k) (go))))
-      (else (stringbuilder-add-unit! sb c) (step! rd) (go)))))
+      ((add-held! rd sb c) (go))
+      (else (Err (not-utf-8-here rd))))))
 
 ;; A raw string over several lines. Each line is kept as it was written, with
 ;; the row it is on, until the closing quotes say what the margin is.
@@ -497,7 +646,8 @@
                (Err (at rd (str "a raw string closes only on a line of its own. For " (int->string n)
                                 " quotes in the text, open and close it with more"))))
               (else (add-quotes! sb k) (go))))
-           (else (stringbuilder-add-unit! sb c) (step! rd) (go))))))))
+           ((add-held! rd sb c) (go))
+           (else (Err (not-utf-8-here rd)))))))))
 
 (: blank? (-> string bool))
 (defun (blank? s)
@@ -546,10 +696,12 @@
        ((= c 92) (match (read-escape! rd sb)
                    ((Err e) (Err e))
                    ((Ok _) (go))))
-       (else
+       ((= c 10)
         (stringbuilder-add-unit! sb c)
-        (if (= c 10) (newline! rd) (step! rd))
-        (go)))))))
+        (newline! rd)
+        (go))
+       ((add-held! rd sb c) (go))
+       (else (Err (not-utf-8-here rd))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Numbers
@@ -654,13 +806,12 @@
 ;; ---------------------------------------------------------------------------
 
 (: take-name! (-> Reader StringBuilder int))
+;; A byte that is not UTF-8 ends the name, and is refused by what reads next.
 (defun (take-name! rd sb)
   (let go ((n 0))
-    (if (symbol-code? (held-code rd))
-        (begin
-          (stringbuilder-add-unit! sb (held-code rd))
-          (step! rd)
-          (go (+ n 1)))
+    (def c (held-code rd))
+    (if (and (symbol-code? c) (add-held! rd sb c))
+        (go (+ n 1))
         n)))
 
 ;; NaN and the infinities, spelled as Scheme spells them. They read as names
@@ -715,17 +866,18 @@
   (step! rd)
   (cond
     ((at-end? rd) (Err (at rd "the document ended inside a character")))
+    ((= (sequence-length rd) 0) (Err (not-utf-8-here rd)))
     (else
-     (def first (held-code rd))
+     (def lead (held-code rd))
+     (def first (if (< lead 128) (integer->char lead) (held-character rd (sequence-length rd))))
      (def sb (buffer rd))
-     (stringbuilder-add-unit! sb first)
-     (step! rd)
+     (ignore (add-held! rd sb lead))
      ;; `n` is bound rather than inlined into the test: a name compares
      ;; straight into the `if`, where the call needs a temporary for its
      ;; result and then a second one for the comparison.
      (def n (take-name! rd sb))
      (cond
-       ((= n 0) (Ok (BjoChar (integer->char first))))
+       ((= n 0) (Ok (BjoChar first)))
        (else
         (def name (stringbuilder->string sb))
         (def code (named-char name))
@@ -895,16 +1047,32 @@
 ;; Reading a document
 ;; ---------------------------------------------------------------------------
 
+;; A byte order mark, EF BB BF, is skipped and is not a column.
 (: skip-bom! (-> Reader void))
 (defun (skip-bom! rd)
-  (when (= (held-code rd) 65279)
-    (step! rd)
-    (record-set! rd (col 1))))
+  (when (and (ensure! rd 3)
+             (let ((b (record-ref rd bytes)) (i (record-ref rd next)))
+               (and (= (cast int (array-ref b i)) 239)
+                    (= (cast int (array-ref b (+ i 1))) 187)
+                    (= (cast int (array-ref b (+ i 2))) 191))))
+    (record-set! rd (next (+ (record-ref rd next) 3)))))
+
+(: no-bytes (Array byte))
+(def no-bytes (make-array 0))
+
+;; A reader for a port, and one for a string's own bytes.
+(: port-reader (-> InputPort Reader))
+(defun (port-reader port) (reader (Some port) no-bytes))
+
+(: string-reader (-> string Reader))
+(defun (string-reader text) (reader None (string->bytes text)))
 
 ;; Exactly one value, and then the end.
 (: read-bjodat (-> InputPort (Result string Bjodat)))
-(defun (read-bjodat port)
-  (def rd (reader port))
+(defun (read-bjodat port) (one-value (port-reader port)))
+
+(: one-value (-> Reader (Result string Bjodat)))
+(defun (one-value rd)
   (skip-bom! rd)
   (match (read-value rd 1)
     ((Err e) (Err e))
@@ -915,14 +1083,15 @@
          (Err (at rd (str "the value ended here, and then there is " (found rd))))))))
 
 (: parse-bjodat (-> string (Result string Bjodat)))
-(defun (parse-bjodat text)
-  (read-bjodat (open-input-string text)))
+(defun (parse-bjodat text) (one-value (string-reader text)))
 
 ;; Every value in the file, in order. A file is a stream, so an empty one is an
 ;; empty list rather than a refusal.
 (: read-bjodat-all (-> InputPort (Result string (List Bjodat))))
-(defun (read-bjodat-all port)
-  (def rd (reader port))
+(defun (read-bjodat-all port) (all-values (port-reader port)))
+
+(: all-values (-> Reader (Result string (List Bjodat))))
+(defun (all-values rd)
   (skip-bom! rd)
   (let go ((acc Nil))
     (skip-space! rd)
@@ -933,8 +1102,7 @@
           ((Ok v) (go (Cons v acc)))))))
 
 (: parse-bjodat-all (-> string (Result string (List Bjodat))))
-(defun (parse-bjodat-all text)
-  (read-bjodat-all (open-input-string text)))
+(defun (parse-bjodat-all text) (all-values (string-reader text)))
 
 ;; ---------------------------------------------------------------------------
 ;; Reading a record in one pass
@@ -1181,8 +1349,10 @@
 ;; that parks the thread. The blocking lint says so in as many words, which is
 ;; how this was found.
 (: read-one-pass (-> InputPort (-?-> Reader (Result string %a)) (Result string %a)))
-(defun (read-one-pass port decode)
-  (def rd (reader port))
+(defun (read-one-pass port decode) (one-record (port-reader port) decode))
+
+(: one-record (-> Reader (-?-> Reader (Result string %a)) (Result string %a)))
+(defun (one-record rd decode)
   (skip-bom! rd)
   (match (decode rd)
     ((Err e) (Err e))
@@ -1193,8 +1363,7 @@
          (Err (at rd (str "the value ended here, and then there is " (found rd))))))))
 
 (: parse-one-pass (-> string (-?-> Reader (Result string %a)) (Result string %a)))
-(defun (parse-one-pass text decode)
-  (read-one-pass (open-input-string text) decode))
+(defun (parse-one-pass text decode) (one-record (string-reader text) decode))
 
 ;; A `[...]` of them, which is what a manifest's list of dependencies is.
 ;;
@@ -1203,8 +1372,10 @@
 ;; vec can say so in one call; a caller that folds over it once — which is most
 ;; of them — should not pay for a tree it does not index into.
 (: read-one-pass-all (-> InputPort (-?-> Reader (Result string %a)) (Result string (List %a))))
-(defun (read-one-pass-all port decode)
-  (def rd (reader port))
+(defun (read-one-pass-all port decode) (all-records (port-reader port) decode))
+
+(: all-records (-> Reader (-?-> Reader (Result string %a)) (Result string (List %a))))
+(defun (all-records rd decode)
   (skip-bom! rd)
   (skip-space! rd)
   (if (not (= (held-code rd) 91))
@@ -1222,8 +1393,7 @@
                ((Ok v) (go (Cons v acc))))))))))
 
 (: parse-one-pass-all (-> string (-?-> Reader (Result string %a)) (Result string (List %a))))
-(defun (parse-one-pass-all text decode)
-  (read-one-pass-all (open-input-string text) decode))
+(defun (parse-one-pass-all text decode) (all-records (string-reader text) decode))
 
 ;; ---------------------------------------------------------------------------
 ;; Writing
