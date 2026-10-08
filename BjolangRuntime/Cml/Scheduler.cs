@@ -20,16 +20,18 @@ using System.Runtime.CompilerServices;
 /// <summary>
 /// Work dispatch for BjoML.
 ///
-/// BjoML runs on the .NET thread pool rather than on dedicated worker threads.
-/// The pool already implements per-thread local queues with work stealing, which is
-/// exactly what the old <c>BlockingCollection</c>-per-worker design lacked: a fiber
-/// that spawned 10 000 children pinned all of them to its own queue while every
-/// other worker sat idle in <c>GetConsumingEnumerable()</c>.
+/// BjoML runs on .NET thread pool threads rather than on dedicated worker
+/// threads, so that the pool keeps doing what it is good at: adding threads
+/// when one blocks. The order work runs in is ours. Every enqueue goes to
+/// <see cref="Workers"/>, Go-shaped run queues — FIFO per core, a
+/// <c>runnext</c> slot, stealing, a spinner cap — worked by pumps on pool
+/// threads; see there for why the pool's own LIFO queues were not enough.
 ///
-/// Every enqueue goes through <see cref="ThreadPool.UnsafeQueueUserWorkItem(IThreadPoolWorkItem, bool)"/>
-/// with <c>preferLocal: true</c>, so work produced by a rendezvous lands on the
-/// producing thread's local queue and is picked up without a global handoff, while
-/// remaining stealable when that thread falls behind.
+/// With <c>BJO_SCHEDULER=pool</c> every enqueue goes to the pool instead,
+/// through <see cref="ThreadPool.UnsafeQueueUserWorkItem(IThreadPoolWorkItem, bool)"/>
+/// with <c>preferLocal: true</c>, and spawns are batched (see
+/// <see cref="SpawnBatch"/>), as before the queues were ours. That way back is
+/// kept for a while.
 ///
 /// EXECUTION CONTEXT: nothing here ever captures or restores an
 /// <see cref="ExecutionContext"/>. That is deliberate and load-bearing. The hosted
@@ -51,6 +53,28 @@ public static class Scheduler
 
     [ThreadStatic]
     internal static int InlineDepth;
+
+    /// <summary>
+    /// With <see cref="Workers"/>: how many resumes one work item may run
+    /// inline in all, nested or not. Past it a resume goes to the worker's
+    /// <c>runnext</c>, and the worker's queue gets its turn.
+    ///
+    /// The depth limit alone bounds how deep a chain of inline resumes goes,
+    /// not how long: each time the stack unwinds the chain can go on, and work
+    /// that has waited in the queue waits on. Inline resumes are the newest
+    /// work first; on four saturated cores they left a shard's continuation
+    /// behind client work for tens of milliseconds. 32 kept the median at a
+    /// microsecond and brought `bench/service`'s p99.9 there from about 40 to
+    /// about 6 ms; 8 cost throughput and 128 lost most of the gain. On the
+    /// pool, whose queues are LIFO, a budget would not help, and none applies.
+    /// See BjolangRuntime/Cml/design.md.
+    /// </summary>
+    internal const int WorkerInlineBudget = 32;
+
+    /// What is left of <see cref="WorkerInlineBudget"/> for the work item this
+    /// thread is running. Refilled by <see cref="Workers"/> per item.
+    [ThreadStatic]
+    internal static int InlineBudget;
 
     /// <summary>
     /// Where exceptions escaping a scheduled work item go. Defaults to stderr.
@@ -85,13 +109,18 @@ public static class Scheduler
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void Enqueue(IThreadPoolWorkItem item)
-        => ThreadPool.UnsafeQueueUserWorkItem(item, preferLocal: true);
+    {
+        if (Workers.Enabled) Workers.Push(item);
+        else ThreadPool.UnsafeQueueUserWorkItem(item, preferLocal: true);
+    }
 
-    public static void Enqueue(Action work)
-        => ThreadPool.UnsafeQueueUserWorkItem(ActionWorkItem.Rent(work), preferLocal: true);
+    /// A fiber's resume delegate targets its state-machine box, which is a work
+    /// item whose `Execute` is the resume (see <see cref="IFiberResume"/>), so
+    /// that is queued as it stands, as `Promise.Wake` does, with nothing rented.
+    public static void Enqueue(Action work) =>
+        Enqueue(work.Target is IFiberResume box ? box : ActionWorkItem.Rent(work));
 
-    public static void Enqueue<T>(Action<T> work, T state)
-        => ThreadPool.UnsafeQueueUserWorkItem(ActionWorkItem<T>.Rent(work, state), preferLocal: true);
+    public static void Enqueue<T>(Action<T> work, T state) => Enqueue(ActionWorkItem<T>.Rent(work, state));
 
     // ---- spawn -------------------------------------------------------------
 
@@ -167,6 +196,9 @@ public static class Scheduler
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void EnqueueSpawn(IThreadPoolWorkItem item)
     {
+        // A push onto our own queues costs no thread request, which is the
+        // cost the batch amortises.
+        if (Workers.Enabled) { Workers.Push(item, spawn: true); return; }
         if (!BatchSpawns) { ThreadPool.UnsafeQueueUserWorkItem(item, preferLocal: true); return; }
         SpawnBatch.Current.Add(item);
     }
@@ -198,7 +230,7 @@ public static class Scheduler
     public static void Dispatch(Action action)
     {
         int depth = InlineDepth;
-        if (depth < MaxInlineDepth)
+        if (depth < MaxInlineDepth && (!Workers.Enabled || --InlineBudget >= 0))
         {
             InlineDepth = depth + 1;
             try { action(); }
@@ -213,7 +245,7 @@ public static class Scheduler
     public static void Dispatch<T>(Action<T> action, T state)
     {
         int depth = InlineDepth;
-        if (depth < MaxInlineDepth)
+        if (depth < MaxInlineDepth && (!Workers.Enabled || --InlineBudget >= 0))
         {
             InlineDepth = depth + 1;
             try { action(state); }

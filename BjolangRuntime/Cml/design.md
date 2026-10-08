@@ -1142,6 +1142,71 @@ if it is still returning from `TrySetResult`, touches only a virtual no-op of
 the box. `bench/service`: all cores 366 -> 350 ms, 2075 -> 1692 bytes a
 request.
 
+### Run queues of our own
+
+**The four-core tail was queue order.** With the pool, `bench/service` on four
+cores had a p99.9 near 40 ms against Go's 3.5 and Hopac's 6. Not GC: the
+longest pause in a traced run was 6.2 ms. Logged one by one, the slow requests
+were spread over most clients but bunched in time: hundreds of clients slowed
+in the same 25 ms, several times a rep. The pool's per-thread queues are LIFO
+for their owner, and a thread takes from elsewhere only when its own is empty,
+which under saturation it never is; a shard's continuation pushed under newer
+client work waits, and the shard's sixty clients wait with it. Every item on
+the pool's global FIFO queue instead gave a p99.9 of 4.4 ms and cost a third
+of the throughput. The pool has no setting for the order, and putting some of
+the work on its global queue does not help, since that is read only when the
+local queue is empty.
+
+**`Workers`** puts Go's shape on pool threads: one worker per processor, each
+with a 256-item FIFO queue its owner takes from the head of and others steal
+half of, a `runnext` slot for the item woken last (16 runs in a row at most),
+and a global queue for work from outside a worker, read first every 61st item.
+Pumps — pool work items — bind a worker to their thread and run items until
+there are none; the pool still adds threads when an item blocks one. Spinners
+are capped at half the busy workers, and the lost wake-up is closed as Go
+closes it. A monitor every 10 ms wakes a pump to steal from a worker that has
+run nothing while work waits in its queue, adding a worker, up to four per
+processor, when all are held. The pool path stays behind `BJO_SCHEDULER=pool`
+for a while.
+
+FIFO queues halved the tail (to 17 ms) and no more: inline resume is newest
+work first as well, and one work item could go on resuming fibers inline for as
+long as they kept waking each other. No inline resume at all (depth 1) gave
+Go's profile — p99.9 5 ms, p50 250 us — at 10-15% of the throughput, the
+non-inline resumes making calls suspend and timeouts arm that inline ones
+spared; the timer wheel and the box reuse above came out of finding that. What
+was kept is a budget: 32 inline resumes per work item in all, and past them the
+resume goes to `runnext`. Measured with budgets of 8 (tail 5 ms, slower), 32,
+and 128 (tail 12 ms).
+
+Three rules came from the ring rows. A resume that only fills an empty
+`runnext` wakes nobody, so that a single chain is not carried from core to
+core: before that rule one ring of ten cost four times the CPU. A spawn always
+offers itself to an idle core, as Go's `newproc` does: without that a spawner
+that kept running sat on its child, and `231_byte_ports.bjo`'s race between a
+writer fiber and a ready inbox never raced. A busy worker's `runnext` is
+stolen only after it has run nothing for about 3 us, waited once per search,
+not per victim: per victim, a failed search over 24 workers spun for tens of
+microseconds. Spinning more, or without the cap, measured no better.
+
+Against the pool, after the timer wheel and box reuse, median of fifteen reps,
+`DOTNET_TC_CallCountingDelayMs=0` for both:
+
+                                     pool            Workers
+    service, 4 cores: wall, p99.9    484 ms, 49 ms   505 ms, 5.8 ms
+    service, all cores: wall, p99.9  354 ms, 6.8 ms  350 ms, 7.8 ms
+    service, all cores: p50          13 us           89 us
+    1000-node ring: wall, CPU        62 ns, 299 ns   77 ns, 94 ns
+    1, 12, 1000 rings of 10          67, 15, 28 ns   65, 16, 23 ns
+    one core, ring put/get           1325 instr      1334 instr
+
+What it gives up: a single chain on an idle machine is about a quarter slower,
+having lost the overlap of one core unwinding while another carries the chain
+on, and under load on all cores a request waits its turn, so the median rises.
+What it gets: the tail under saturation, a third of the CPU for a lone chain,
+and the many-ring rows. Go, against these, is 498 ms and 440 ms on the service,
+Hopac 336 and 413.
+
 ---
 
 ## 6. Known issues

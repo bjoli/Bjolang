@@ -3,6 +3,27 @@
 
 What each change guarantees, and what it leaves open.
 
+* Fibers run from run queues of the runtime's own
+
+- *Under sustained load, work that has waited runs before work that has
+  not.* Fibers ran from the .NET thread pool's queues, which give a
+  thread its newest work first and look elsewhere only when its own
+  queue is empty, which on busy cores it never is. A fiber woken early
+  could wait behind everything woken after it: on ~bench/service~ on
+  four cores one request in a thousand took 40 ms or more. Fibers now
+  run from per-core first-in-first-out queues in the shape of Go's,
+  worked by the pool's threads, and a fiber that wakes others runs at
+  most 32 of them on its own stack before the queue gets its turn.
+  That request now takes under 6 ms, about what it takes in Hopac.
+- What it costs: a lone chain of rendezvous on an idle machine runs
+  about a quarter slower (it uses a third of the CPU it did), and on
+  all cores under full load a request's median latency rises from
+  about 13 to about 90 microseconds while throughput stays the same.
+- A spawned fiber is offered to an idle core at once, and a fiber that
+  blocks its thread does not strand the fibers queued behind it.
+- The pool's queues are still there, for a while, with
+  ~BJO_SCHEDULER=pool~ in the environment.
+
 * A call that suspends reuses the box of an earlier one
 
 - *A called bjoroutine that suspends no longer allocates a box each
