@@ -1,0 +1,20 @@
+;; A named `let` that calls itself other than in tail position cannot become a
+;; loop, so it stays a function of its own. An escape in it would return from
+;; the innermost call only, and the additions around the calls would go on:
+;; this printed 103 rather than 100.
+
+;; EXPECT-ERROR: this escape cannot leave `go`
+
+(import (std prelude))
+
+(: f (-> int int))
+(defun (f n)
+  (with-return ret
+    (let go ((i 0))
+      (if (< i n)
+          (+ 1 (go (+ i 1)))
+          (ret 100)))))
+
+(defun (main args)
+  (println (->str (f 3)))
+  0)

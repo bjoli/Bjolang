@@ -1,0 +1,25 @@
+;; A named `let` that is used as a value is a function, not a loop, even when
+;; every call to it is a tail call. An escape in it would return from that
+;; function, and the rest of the block would still run.
+
+;; EXPECT-ERROR: this escape cannot leave `go`
+
+(import (std prelude))
+
+(: f (-> int int))
+(defun (f n)
+  (with-return ret
+    (println
+     (let go ((i 0))
+       (if (< i n)
+           (go (+ i 1))
+           (let ((again go))
+             (when (> i 10) (ignore (again 0)))
+             (ret 100)
+             "never"))))
+    (println "after the loop")
+    5))
+
+(defun (main args)
+  (println (->str (f 3)))
+  0)

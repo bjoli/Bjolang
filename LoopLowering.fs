@@ -747,3 +747,48 @@ let assertLoopsPromoted (decls: TDecl list) : unit =
                 e)
             d
         |> ignore)
+
+// ---------------------------------------------------------------------------
+// Escapes out of a loop that stayed a function
+// ---------------------------------------------------------------------------
+
+/// Refuses a `with-return` escape that would have to leave a loop group the
+/// emitter gives local functions of its own.
+///
+/// `Hygiene.checkEscapeUses` lets an escape cross a named `let` or a `(loop
+/// ...)`, because such a group is entered by an immediate call to one of its
+/// members, which is the shape that becomes a `while` in the enclosing method,
+/// where the escape is a `goto`. Whether it does become one is decided here, by
+/// `isInlinedLoop`: a member that calls itself other than in tail position, or
+/// is used as a value, stays a C# local function. An escape in it would be a
+/// `return` from that function, which leaves one call of it and not the block,
+/// so it is refused as an escape out of a lambda is.
+///
+/// One error for each declaration: the first escape found in it.
+let checkEscapesFromFunctions (decls: TDecl list) : unit =
+    let rec refuseIn (m: TLoopMember) (labels: Set<string>) (e: TypedExpr) =
+        match e.Node with
+        | TWithReturn(label, inner) -> refuseIn m (Set.add label labels) inner
+        | TReturn(label, _) when not (labels.Contains label) ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos e.Range}: this escape cannot leave `%s{m.LoopName}`. `%s{m.LoopName}` calls itself other than in tail position, or is used as a value, so it is a function of its own and not a loop, and the escape would return from one call of it rather than from its `with-return`. Make every call to `%s{m.LoopName}` a tail call, or have it return a Result."
+        | _ -> TypeVisitor.children e |> List.iter (refuseIn m labels)
+
+    let rec walk (e: TypedExpr) =
+        match e.Node with
+        | TLoop(members, Some body) when not (isInlinedLoop members body) ->
+            for m in members do
+                refuseIn m Set.empty m.Body
+
+            TypeVisitor.children e |> List.iter walk
+        | _ -> TypeVisitor.children e |> List.iter walk
+
+    decls
+    |> List.iter (fun d ->
+        Diagnostics.recover "loop" (Some(tdeclRange d)) () (fun () ->
+            TypeVisitor.mapDecl
+                (fun e ->
+                    walk e
+                    e)
+                d
+            |> ignore))

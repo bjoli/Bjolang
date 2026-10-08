@@ -2534,6 +2534,10 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // correct, and unable to iterate deeply. Checked rather than assumed.
         LoopLowering.assertLoopsPromoted loopLoweredAst
 
+        // Only now is it known which named `let`s stayed functions, and an
+        // escape out of one of those cannot be emitted.
+        LoopLowering.checkEscapesFromFunctions loopLoweredAst
+
         // After loop lowering, and for that reason: whether a yield point sits
         // inside a C# member of its own is only decided once a named `let` has
         // either become a `while` or stayed a local function. See the module

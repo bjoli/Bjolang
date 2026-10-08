@@ -150,6 +150,34 @@
 (defbjo (classify-in-fiber o)
   (classify o))
 
+;; A named `let` whose every self-call is a tail call is a loop, emitted in
+;; the function around it, so an escape out of it leaves the block. One that
+;; calls itself elsewhere is a function of its own, and an escape out of it is
+;; refused (errors/ret_out_of_recursive_let.bjo); a block inside it is fine.
+(: first-over (-> (Vec int) int int))
+(defun (first-over xs limit)
+  (with-return ret
+    (let go ((i 0))
+      (when (< i (vec-length xs))
+        (when (> (vec-ref xs i) limit) (ret (vec-ref xs i)))
+        (go (+ i 1))))
+    -1))
+
+(: pair-sum (-> (Vec int) int (Option (Tuple int int))))
+(defun (pair-sum xs target)
+  (with-return ret
+    (loop (:for a xs)
+          (:subloop (:for b xs)
+                    (:do (when (= (+ a b) target) (ret (Some (Tuple a b)))))))
+    None))
+
+(: depth (-> int int))
+(defun (depth n)
+  (let go ((i 0))
+    (if (< i n)
+        (+ 1 (go (+ i 1)))
+        (with-return r (when (= i 3) (r 100)) 0))))
+
 (defun (main)
   (expect "a def at the head of a body, three times over"
           (match (configure (Some (Cfg (port 80) (hosts (list "a")))) (Some "h"))
@@ -221,6 +249,13 @@
   (expect "the sync copy" (classify (Some 3)) "positive")
   (expect "the sync copy, escaping" (classify (Some -3)) "negative")
   (expect "the sync copy, on the def" (classify None) "none")
+
+  (expect "an escape out of a tail-recursive named let" (first-over [1 5 9 12] 6) 9)
+  (expect "and the named let running to its end" (first-over [1 5] 6) -1)
+  (expect "an escape out of a loop's inner level"
+          (match (pair-sum [1 2 3 4] 7) ((Some (Tuple a b)) (str (->str a) "+" (->str b))) (None "none"))
+          "3+4")
+  (expect "a block inside a recursive named let" (depth 3) 103)
 
   (println "219 ok")
   0)

@@ -3,6 +3,21 @@
 
 What each change guarantees, and what it leaves open.
 
+* An escape cannot leave a named let that is a function
+
+- *A ~with-return~ escape out of a named ~let~ that stays a function is
+  refused.* A named ~let~ (or ~loop~) whose every self-call is a tail call
+  becomes a ~while~ in the function around it, and an escape out of it
+  leaves the block, as before. One that calls itself elsewhere, or is used
+  as a value, stays a function of its own, and the escape was emitted as a
+  ~return~ from it: it left one call and the rest of the block ran on.
+  ~(with-return ret (let go ((i 0)) (if (< i 3) (+ 1 (go (+ i 1))) (ret
+  100))))~ answered 103; where the types differed it reached C# as an
+  error. It is now a compile error that names the ~let~ and says why,
+  as an escape out of a lambda is.
+- A ~with-return~ inside such a function, escaping only from within it, is
+  unaffected.
+
 * The spawn batching test judges parallelism against the machine
 
 - *"A batch of 16 CPU-bound fibers actually runs in parallel" failed
