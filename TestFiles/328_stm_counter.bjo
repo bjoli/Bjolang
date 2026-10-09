@@ -1,0 +1,78 @@
+;; (std stm counter): the operations at int, long and double, wrapping at the
+;; int limit, a retry that waits for a count, and sixteen fibers that add to
+;; two counters in the same transactions while a reader checks that the two
+;; sums are equal in each snapshot.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std stm))
+(import (std stm counter))
+
+;; Adds 1 to both counters, in one transaction each time.
+(: add-both (-bjo-> (TCounter long) (TCounter long) int (Loc int) void))
+(defbjo (add-both a b n done)
+  (loop (:for i (range 0 n))
+        (:do (ignore (try-atomically (fun (tx)
+                                       (tcounter-add! tx a 1L)
+                                       (tcounter-add! tx b 1L))))))
+  (ignore (atomically (fun (tx) (tx-update! tx done #(+ & 1))))))
+
+(: compare-sums (-bjo-> (TCounter long) (TCounter long) (Loc int) (Loc int) void))
+(defbjo (compare-sums a b done bad)
+  (let lp ()
+    (when (< (loc-ref done) 16)
+      (when (not (atomically (fun (tx) (= (tcounter-ref tx a) (tcounter-ref tx b)))))
+        (ignore (atomically (fun (tx) (tx-update! tx bad #(+ & 1))))))
+      (lp))))
+
+(: wait-for-three (-bjo-> (TCounter int) (Chan string) void))
+(defbjo (wait-for-three c out)
+  (chan-put out (atomically (fun (tx) (if (>= (tcounter-ref tx c) 3) "three" (tx-retry tx))))))
+
+(defbjo (main args)
+  ;; --- the operations --------------------------------------------------------
+  (def c (make-tcounter 5))
+  (expect "the first value" (atomically (fun (tx) (tcounter-ref tx c))) 5)
+  (atomically (fun (tx) (tcounter-add! tx c 3)))
+  (expect "add" (atomically (fun (tx) (tcounter-ref tx c))) 8)
+  (atomically (fun (tx) (tcounter-sub! tx c 2)))
+  (expect "sub" (atomically (fun (tx) (tcounter-ref tx c))) 6)
+  (atomically (fun (tx) (tcounter-set! tx c 100)))
+  (expect "set" (atomically (fun (tx) (tcounter-ref tx c))) 100)
+  (expect "add and ref in one transaction"
+          (atomically (fun (tx) (tcounter-add! tx c 1) (tcounter-ref tx c)))
+          101)
+
+  (def l (make-tcounter 0L))
+  (atomically (fun (tx) (tcounter-add! tx l 5000000000L)))
+  (expect "a long counter" (atomically (fun (tx) (tcounter-ref tx l))) 5000000000L)
+  (def d (make-tcounter 1.5))
+  (atomically (fun (tx) (tcounter-add! tx d 0.25)))
+  (expect "a double counter" (atomically (fun (tx) (tcounter-ref tx d))) 1.75)
+  (def w (make-tcounter 2147483647))
+  (atomically (fun (tx) (tcounter-add! tx w 1)))
+  (expect "an int counter wraps at the limit" (atomically (fun (tx) (tcounter-ref tx w))) -2147483648)
+
+  ;; --- a retry that waits for a count ---------------------------------------
+  (def three (make-tcounter 0))
+  (def out (make-chan))
+  (with-scope
+    (spawn (wait-for-three three out))
+    (loop (:for i (range 0 3))
+          (:do (sync (timeout 10))
+               (atomically (fun (tx) (tcounter-add! tx three 1)))))
+    (expect "a transaction that waits for a count" (chan-get out) "three"))
+
+  ;; --- sixteen fibers at once -------------------------------------------------
+  (def a (make-tcounter 0L))
+  (def b (make-tcounter 0L))
+  (def done (make-loc 0))
+  (def bad (make-loc 0))
+  (with-scope
+    (loop (:for f (range 0 16))
+          (:do (spawn (add-both a b 20000 done))))
+    (spawn (compare-sums a b done bad)))
+  (expect "sixteen fibers of 20 000 adds" (atomically (fun (tx) (tcounter-ref tx a))) 320000L)
+  (expect "to both counters" (atomically (fun (tx) (tcounter-ref tx b))) 320000L)
+  (expect "and no snapshot saw two different sums" (loc-ref bad) 0)
+  0)

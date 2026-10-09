@@ -43,14 +43,15 @@
     its key, and writes only the branch that changes. So transactions that
     change different keys seldom conflict in a large map. In a small map
     most keys are in the root branch, and transactions that add or remove
-    keys conflict more often. The size is kept in 16 counters, and the
-    hash of the key selects the counter, so adding keys does not make all
-    transactions conflict on one count. This is the design of the StmMap of
-    Haskell's stm-containers.
+    keys conflict more often. The size is a @code{TCounter} from
+    @code{(std stm counter)}, which has one location for each CPU, so
+    adding keys does not make all transactions conflict on one count. This
+    is the design of the StmMap of Haskell's stm-containers.
 
     @strong{Cost.} A lookup, an add and a remove read one branch for each
     5 bits of the hash that are needed to tell the key from the others:
-    O(log n) with base 32. @code{tmap-length} reads the 16 counters.
+    O(log n) with base 32. @code{tmap-length} reads one location for
+    each CPU.
     @code{tmap-fold} and @code{tmap->list} read every branch, so a
     transaction that calls them conflicts with every change to the map.
 
@@ -62,7 +63,7 @@
     not change a key after it is in the map.
 
     @strong{Measured.} Sixteen fibers that each add 50 000 consecutive int
-    keys: 1.2 runs of the transaction for each commit, and 8.4 times the
+    keys: 1.0 runs of the transaction for each commit, and 8.4 times the
     throughput of one fiber, with server GC. One @code{(Loc (Map K V))}
     for the same work took 2.3 times as long. With the default workstation
     GC, the allocation of all fibers is the limit, and neither scales.
@@ -160,8 +161,9 @@
   (arg m "The map.")
   (returns "The number of keys.")
   (reference """
-    Reads the 16 counters of the map, so the transaction conflicts with
-    every transaction that adds or removes a key.
+    Reads the size counter of the map, which has one location for each
+    CPU, so the transaction conflicts with every transaction that adds or
+    removes a key.
     """))
 
 (:doc tmap-empty?

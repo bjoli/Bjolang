@@ -3,6 +3,22 @@
 
 What each change guarantees, and what it leaves open.
 
+* (std stm counter): a counter that transactions add to without conflicts
+
+- *A ~(TCounter T)~ is a number that is the sum of one location for each
+  CPU*, for any T that implements ~Num~. ~tcounter-add!~ and
+  ~tcounter-sub!~ write only the location of the CPU that the
+  transaction runs on, so transactions on different CPUs do not conflict.
+  ~tcounter-ref~ reads all of them, and ~tcounter-set!~ writes all of
+  them. ~(make-tcounter 0L)~ makes a long counter, as ~make-atomic~ does.
+- Measured with 16 fibers of 100 000 adds: 1.0 runs per commit and 57 ms,
+  against 5.9 runs per commit and 584 ms on one location. One add alone
+  costs about twice as much as on one location.
+- This is the Accumulator of kcas_data.
+- ~TMap~ keeps its size in a ~TCounter~ now, and not in 16 counters that
+  the hash selects. With 16 fibers that add keys, 1.0 runs per commit
+  instead of 1.2.
+
 * (std stm map): a hash map for transactions
 
 - *A ~(TMap K V)~ is a hash map whose operations are part of the

@@ -29,12 +29,12 @@
 ;; A branch that becomes empty is removed from its parent. A branch with one
 ;; entry left is not merged into its parent: that would write the parent.
 ;;
-;; The size is kept in `stripes` counters, and the key's hash selects the
-;; counter. One counter would be written by every transaction that adds or
-;; removes a key, so all of them would conflict. `tmap-length` reads all of
-;; them.
+;; The size is a `TCounter`, whose stripes are selected by CPU. One location
+;; would be written by every transaction that adds or removes a key, so all of
+;; them would conflict. `tmap-length` reads all stripes.
 (import (std prelude))
 (import (std stm))
+(import (std stm counter))
 
 (:doc #:file "map.bjodoc")
 
@@ -71,10 +71,7 @@
 
 (type (: (TMap %k %v) #:opaque
          (Record (: root (Loc (TMapBranch %k %v)))
-                 (: counts (Vec (Loc int))))))
-
-;; 16, because `stripe-of` gives the top 4 bits of the hash.
-(def stripes 16)
+                 (: count (TCounter int)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Branches
@@ -87,18 +84,13 @@
 ;; the finaliser of MurmurHash3 (Austin Appleby, public domain). The `eq-hash`
 ;; of an int is the int, so keys that are near each other differ only in their
 ;; low bits. Without the mix, fibers that add such keys at the same time would
-;; write the same branches and the same counter. The mix is a bijection, so
+;; write the same branches. The mix is a bijection, so
 ;; keys with equal hashes still share a bucket.
 (: mix (-> int int))
 (defun (mix h0)
   (def h1 (* (bitwise-xor h0 (shift-right-logical h0 16)) -2048144789))
   (def h2 (* (bitwise-xor h1 (shift-right-logical h1 13)) -1028477387))
   (bitwise-xor h2 (shift-right-logical h2 16)))
-
-;; The counter for hash `h`: the top bits, which the root branch does not use.
-(: stripe-of (-> int int))
-(defun (stripe-of h)
-  (shift-right-logical h 28))
 
 ;; The slot index of hash `h` at `level`: 0 to 31.
 (: index-at (-> int int int))
@@ -253,8 +245,7 @@
 (: make-tmap (-> (TMap %k %v)))
 (defun (make-tmap)
   (TMap (root (make-loc (empty-branch)))
-        (counts (loop (:for i (range 0 stripes))
-                      (:acc v (vecing (make-loc 0)))))))
+        (count (make-tcounter 0))))
 
 (: tmap-try-ref (-> Tx (TMap %k %v) %k (Option %v)) (where (Eq %k)))
 (defun (tmap-try-ref tx m k)
@@ -289,7 +280,7 @@
   (def h (mix (eq-hash k)))
   (def d (change-in tx (record-ref m root) h k f 0))
   (when (not (= d 0))
-    (ignore (tx-update! tx (vec-ref (record-ref m counts) (stripe-of h)) #(+ & d)))))
+    (tcounter-add! tx (record-ref m count) d)))
 
 (: tmap-set! (-> Tx (TMap %k %v) %k %v void) (where (Eq %k)))
 (defun (tmap-set! tx m k v)
@@ -301,8 +292,7 @@
 
 (: tmap-length (-> Tx (TMap %k %v) int))
 (defun (tmap-length tx m)
-  (loop (:for c (in-vec (record-ref m counts)))
-        (:acc n (summing (tx-ref tx c)))))
+  (tcounter-ref tx (record-ref m count)))
 
 ;; Reads only the root: a branch that becomes empty is removed, so the root is
 ;; empty when the map is.

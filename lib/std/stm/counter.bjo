@@ -1,0 +1,81 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/stm/counter.bjo — a counter that transactions add to without
+;; conflicting with each other.
+;;
+;; The value is the sum of several locations, the stripes. An add writes only
+;; the stripe of the CPU that the transaction runs on, so transactions on
+;; different CPUs that add to the counter do not conflict. A read sums all
+;; stripes, so it conflicts with every add. This is the Accumulator of
+;; kcas_data (https://github.com/ocaml-multicore/kcas), which selects the
+;; stripe by OCaml domain.
+;;
+;; A transaction can run again on another CPU, and then adds to another
+;; stripe. That is correct: only the sum has a meaning.
+(import (std prelude))
+(import (std stm))
+
+(:doc #:file "counter.bjodoc")
+
+(export
+  TCounter
+  make-tcounter
+  tcounter-add! tcounter-sub! tcounter-ref tcounter-set!)
+
+(import/extern
+  (processor-id    (: System.Threading.Thread.GetCurrentProcessorId (-> int)))
+  (processor-count (: System.Environment.ProcessorCount int #:get)))
+
+(type (: (TCounter %a) #:opaque
+         (Record (: stripes (Vec (Loc %a))))))
+
+;; One stripe for each CPU, rounded up to a power of two, so that the stripe of
+;; a CPU is a mask of its id.
+(: stripe-count (-> int))
+(defun (stripe-count)
+  (let lp ((n 1))
+    (if (>= n processor-count) n (lp (* n 2)))))
+
+(: make-tcounter (-> %a (TCounter %a)) (where (Num %a)))
+(defun (make-tcounter initial)
+  (def zero (- initial initial))
+  (TCounter (stripes (loop (:for i (range 0 (stripe-count)))
+                           (:acc v (vecing (make-loc (if (= i 0) initial zero))))))))
+
+(: own-stripe (-> (TCounter %a) (Loc %a)))
+(defun (own-stripe c)
+  (def stripes (record-ref c stripes))
+  (vec-ref stripes (bitwise-and (processor-id) (- (vec-length stripes) 1))))
+
+(: tcounter-add! (-> Tx (TCounter %a) %a void) (where (Num %a)))
+(defun (tcounter-add! tx c n)
+  (ignore (tx-update! tx (own-stripe c) #(+ & n))))
+
+(: tcounter-sub! (-> Tx (TCounter %a) %a void) (where (Num %a)))
+(defun (tcounter-sub! tx c n)
+  (ignore (tx-update! tx (own-stripe c) #(- & n))))
+
+(: tcounter-ref (-> Tx (TCounter %a) %a) (where (Num %a)))
+(defun (tcounter-ref tx c)
+  (def stripes (record-ref c stripes))
+  (loop (:for i (range 1 (vec-length stripes)))
+        (:acc sum (folding (tx-ref tx (vec-ref stripes 0))
+                           (+ sum (tx-ref tx (vec-ref stripes i)))))
+        => sum))
+
+(: tcounter-set! (-> Tx (TCounter %a) %a void) (where (Num %a)))
+(defun (tcounter-set! tx c value)
+  (def stripes (record-ref c stripes))
+  (def zero (- value value))
+  (loop (:for i (range 0 (vec-length stripes)))
+        (:do (tx-set! tx (vec-ref stripes i) (if (= i 0) value zero)))))

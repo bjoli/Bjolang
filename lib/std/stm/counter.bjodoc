@@ -1,0 +1,91 @@
+;; Docs for std/stm/counter.bjo, read through (:doc #:file "counter.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "A counter that transactions add to without conflicting with each other.")
+  (see TCounter tcounter-add! tcounter-ref)
+  (example """
+    (import (std stm))
+    (import (std stm counter))
+
+    (def requests (make-tcounter 0L))
+
+    ;; In each request: one location for each CPU, so these do not conflict.
+    (atomically (fun (tx) (tcounter-add! tx requests 1L)))
+
+    ;; Now and then: the sum of all stripes.
+    (atomically (fun (tx) (tcounter-ref tx requests)))
+    """)
+  (reference """
+    A @code{(TCounter T)} holds a number of type T: any type that
+    implements @code{Num}, such as int, long or double. Its value is the
+    sum of several locations, the stripes, one for each CPU. An add writes
+    only the stripe of the CPU that the transaction runs on, so
+    transactions on different CPUs that add to the counter do not make
+    each other run again. A transaction that adds to one location from many
+    fibers does: under contention, it runs many times for each commit.
+
+    @strong{Reads cost more.} @code{tcounter-ref} reads all stripes, so a
+    transaction that reads the value conflicts with every transaction that
+    adds. Use a counter where adds are frequent and reads are not: counts
+    of requests, of errors, of items in a structure. A value that is read
+    as often as it is written is better in one location.
+
+    @strong{Overflow.} An int or a long wraps on overflow, as two's
+    complement does, whichever stripe the overflow is in. The sum is the
+    same.
+
+    This is the Accumulator of kcas_data
+    (@link["https://github.com/ocaml-multicore/kcas"]).
+    """))
+
+(:doc TCounter
+  (summary "A number of type %a that transactions add to without conflicting with each other.")
+  (tparam %a "The type of the number. It must implement Num.")
+  (see make-tcounter))
+
+(:doc make-tcounter
+  (summary "A new counter with the value initial.")
+  (arg initial "The first value. Its type is the type of the counter: write 0L for a long counter.")
+  (returns "A new counter.")
+  (reference """
+    The counter has one stripe for each CPU of the machine, rounded up to a
+    power of two.
+    """))
+
+(:doc tcounter-add!
+  (summary "Adds n to the counter, in the transaction.")
+  (arg tx "The log of the transaction.")
+  (arg c "The counter.")
+  (arg n "The number to add.")
+  (reference """
+    Writes only the stripe of this CPU, and reads nothing else, so it does
+    not return the new value. Read that with @code{tcounter-ref}, which
+    reads all stripes.
+    """))
+
+(:doc tcounter-sub!
+  (summary "Subtracts n from the counter, in the transaction.")
+  (arg tx "The log of the transaction.")
+  (arg c "The counter.")
+  (arg n "The number to subtract."))
+
+(:doc tcounter-ref
+  (summary "The value of the counter: the sum of all stripes.")
+  (arg tx "The log of the transaction.")
+  (arg c "The counter.")
+  (returns "The value.")
+  (reference """
+    Reads all stripes, so the transaction conflicts with every transaction
+    that adds to the counter.
+    """))
+
+(:doc tcounter-set!
+  (summary "Sets the value of the counter, in the transaction.")
+  (arg tx "The log of the transaction.")
+  (arg c "The counter.")
+  (arg value "The new value.")
+  (reference """
+    Writes all stripes, so it conflicts with every transaction that adds to
+    the counter.
+    """))
