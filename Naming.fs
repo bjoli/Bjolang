@@ -47,11 +47,12 @@ let private identifierChar (r: Text.Rune) =
         | Globalization.UnicodeCategory.LetterNumber -> true
         | _ -> false)
 
-/// Anything else, as `_u` and its codepoint: `😀` is `_u1F600_`. The ASCII a
-/// name may hold has its own spellings by then, so this is for the rest of
+/// Anything else, as `_u` and its codepoint: `😀` is `_u1F600_`, and
+/// `radius^2` is `radius_u5E_2`. Most ASCII punctuation has a spelling of its
+/// own in `sanitizeIdent` by then; this catches the rest of ASCII and all of
 /// Unicode, which a Bjolang name may hold and a C# one may not.
 let private escapeUnidentifiable (part: string) =
-    if part |> Seq.forall (fun c -> c < '\u0080') then
+    if part |> Seq.forall (fun c -> Char.IsAsciiLetterOrDigit c || c = '_' || c = '@' || c = '.') then
         part
     else
         let sb = Text.StringBuilder()

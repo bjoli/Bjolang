@@ -1,0 +1,32 @@
+(import (std prelude))
+(import (std simpletest))
+
+;; A self tail call whose argument is a lambda. The call becomes a jump, and
+;; the argument is held in a temporary first, which C# cannot declare with
+;; `var` for a lambda. This is cpstak from the Gabriel benchmarks.
+(: cpstak (-> int int int int))
+(defun (cpstak x y z)
+  (defun (tak (: x int) (: y int) (: z int) (: k (-> int int))) : int
+    (if (not (< y x))
+        (k z)
+        (tak (- x 1) y z
+             (fun (v1)
+               (tak (- y 1) z x
+                    (fun (v2)
+                      (tak (- z 1) x y
+                           (fun (v3) (tak v1 v2 v3 k)))))))))
+  (tak x y z (fun (a) a)))
+
+;; Names with ASCII punctuation that has no spelling of its own in C#.
+(: radius^2 (-> double double))
+(defun (radius^2 r) (* r r))
+
+(defun (main)
+  (expect "a lambda passed to a self tail call" (cpstak 18 12 6) 7)
+  (def zr^2 (radius^2 3.0))
+  (def a$b 1)
+  (def a~b 2)
+  (def a|b 3)
+  (expect "a name with ^" zr^2 9.0)
+  (expect "names with $, ~ and |" (+ a$b a~b a|b) 6)
+  0)

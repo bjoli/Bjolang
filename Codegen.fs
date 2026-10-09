@@ -4483,10 +4483,17 @@ and private generateRecur
     // read a slot that an earlier assignment would already have overwritten.
     let temps = args |> List.map (fun _ -> freshName "__next")
 
+    // A lambda has no natural type in C#, so `var t = (v) => …` is CS8917.
+    // Its temporary is declared with the delegate type instead.
     for arg, tmp in List.zip args temps do
+        let declared =
+            match arg.Node with
+            | TLambda _ -> typeToString arg.Type
+            | _ -> "var"
+
         emitStatement ctx (fun c ->
             indent c
-            append c $"var %s{tmp} = "
+            append c $"%s{declared} %s{tmp} = "
             generateExpr c arg
             appendLine c ";")
 
