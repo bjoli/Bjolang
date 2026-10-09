@@ -669,6 +669,12 @@ let private numericLiteral (where: Lexer.Range) (t: HMType) (text: string) : str
 /// distinction, and every emission site below turns on it.
 let private isVoidType (t: HMType) = typeToString t = "void"
 
+/// A type as an explicit C# type argument. `void` is not a type argument, so a
+/// generic instantiated at void, such as `(tx-retry tx)` in a void position,
+/// is instantiated at the unit.
+let private typeArgToString (t: HMType) =
+    if isVoidType t then "Bjoml.Unit" else typeToString t
+
 /// What a method of this colour actually returns in C#.
 ///
 /// A bjoroutine's declared return type is what it hands back to *its caller in
@@ -1462,7 +1468,7 @@ let private ambientTokenArgument = "BjolangRuntime.AmbientCancellation()"
 let private foreignTypeArguments (meta: DotNetMethodMetadata option) =
     match meta with
     | Some m when not m.TypeArguments.IsEmpty ->
-        "<" + (m.TypeArguments |> List.map typeToString |> String.concat ", ") + ">"
+        "<" + (m.TypeArguments |> List.map typeArgToString |> String.concat ", ") + ">"
     | _ -> ""
 
 /// A view met while a label was emitted.
@@ -1917,7 +1923,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     // type is (`Foldable_Vec<T_a>`), so the arguments cannot be dropped.
     | TIdent (name, tArgs) when name.Contains("::") && not tArgs.IsEmpty && not (isModuleQualified name) ->
         let parts = name.Split("::")
-        let tyArgsStr = tArgs |> List.map typeToString |> String.concat ", "
+        let tyArgsStr = tArgs |> List.map typeArgToString |> String.concat ", "
         append ctx (sanitizeIdent parts[0])
         append ctx $"<%s{tyArgsStr}>"
         for part in parts[1..] do
@@ -1999,7 +2005,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                     if tArgs.IsEmpty || not (Set.contains name ctx.ModuleFunctions) then
                         ""
                     else
-                        "<" + (tArgs |> List.map typeToString |> String.concat ", ") + ">"
+                        "<" + (tArgs |> List.map typeArgToString |> String.concat ", ") + ">"
 
                 if Set.contains name ctx.Methods then
                     let ps = [ for i in 0 .. argTypes.Length - 1 -> $"fa{i}" ] |> String.concat ", "
@@ -3186,7 +3192,7 @@ and private generateApply
                 // implicit conversion inference does not look through, so the
                 // two guesses above reason about the positional arguments alone.
                 if not tArgs.IsEmpty && (uninferable || args.IsEmpty || onlyLambdas) then
-                    let tyArgsStr = tArgs |> List.map typeToString |> String.concat ", "
+                    let tyArgsStr = tArgs |> List.map typeArgToString |> String.concat ", "
                     append ctx $"<%s{tyArgsStr}>"
         | TLambda _ ->
             // A lambda literal has no type of its own. C# infers one from an
