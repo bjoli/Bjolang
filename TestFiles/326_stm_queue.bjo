@@ -1,0 +1,143 @@
+;; (std stm queue): FIFO order across the move from back to front, the
+;; operations in a transaction, a move between two queues as one step, the
+;; capacity of a bounded queue and how pops give places back, events that
+;; lose a choose, and producers and consumers on a bounded queue.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std stm))
+(import (std stm queue))
+
+(: drain (-> (TQueue %a) (List %a)))
+(defun (drain q)
+  (match (try-atomically (fun (tx) (queue-pop-all! tx q)))
+    ((Some xs) xs)
+    (None (list))))
+
+(: push-all (-> (TQueue int) (List int) void))
+(defun (push-all q xs)
+  (loop (:for x xs)
+        (:do (ignore (try-atomically (fun (tx) (queue-push! tx q x)))))))
+
+;; ---------------------------------------------------------------------------
+;; Fibers
+;; ---------------------------------------------------------------------------
+
+(: producer (-bjo-> (TQueue int) int int void))
+(defbjo (producer q from n)
+  (loop (:for i (range from (+ from n)))
+        (:do (queue-put q i))))
+
+(: consumer (-bjo-> (TQueue int) int (Loc int) (Loc int) void))
+(defbjo (consumer q n sum count)
+  (loop (:for i (range 0 n))
+        (:do (let ((x (queue-get q)))
+               (atomically (fun (tx)
+                             (ignore (tx-update! tx sum #(+ & x)))
+                             (ignore (tx-update! tx count #(+ & 1)))))))))
+
+(: late-producer (-bjo-> (TQueue string) void))
+(defbjo (late-producer q)
+  (sync (timeout 30))
+  (queue-put q "late"))
+
+(defbjo (main args)
+  ;; --- order ---------------------------------------------------------------
+  (def q (make-queue))
+  (push-all q (list 1 2 3))
+  (expect "pop takes the first item" (queue-get q) 1)
+  (push-all q (list 4 5))
+  (expect "the rest come in order, also after the move from back to front"
+          (drain q) (list 2 3 4 5))
+  (push-all q (list 6 7))
+  (expect "pop after pop-all" (queue-get q) 6)
+  (push-all q (list 8))
+  (expect "length" (atomically (fun (tx) (queue-length tx q))) 2)
+  (expect "peek does not remove" (atomically (fun (tx) (queue-peek tx q))) 7)
+  (expect "try-peek" (atomically (fun (tx) (queue-try-peek tx q))) (Some 7))
+  (expect "and the items are still there" (drain q) (list 7 8))
+
+  ;; --- empty ---------------------------------------------------------------
+  (expect "empty?" (atomically (fun (tx) (queue-empty? tx q))) #t)
+  (expect "try-pop of an empty queue" (atomically (fun (tx) (queue-try-pop! tx q))) None)
+  (expect "try-peek of an empty queue" (atomically (fun (tx) (queue-try-peek tx q))) None)
+  (expect "pop of an empty queue retries" (try-atomically (fun (tx) (queue-pop! tx q))) None)
+  (expect "pop-all of an empty queue" (drain q) (list))
+
+  ;; --- one transaction -----------------------------------------------------
+  (def a (make-queue))
+  (def b (make-queue))
+  (push-all a (list 1 2))
+  (atomically (fun (tx) (queue-push! tx b (* 10 (queue-pop! tx a)))))
+  (expect "a move between queues: the source" (drain a) (list 2))
+  (expect "a move between queues: the target" (drain b) (list 10))
+  (expect "pushes and pops in one transaction keep the order"
+          (atomically (fun (tx)
+                        (queue-push! tx a 1)
+                        (queue-push! tx a 2)
+                        (let ((x (queue-pop! tx a)))
+                          (queue-push! tx a 3)
+                          (Cons x (queue-pop-all! tx a)))))
+          (list 1 2 3))
+  (push-all a (list 5))
+  (expect "or-else takes from the first queue that has an item"
+          (atomically (fun (tx) (tx-or-else tx (fun (tx) (queue-pop! tx b))
+                                                (fun (tx) (queue-pop! tx a)))))
+          5)
+
+  ;; --- bounded -------------------------------------------------------------
+  (def small (make-bounded-queue 2))
+  (push-all small (list 1 2))
+  (expect "a push to a full queue retries"
+          (try-atomically (fun (tx) (queue-push! tx small 3)))
+          None)
+  (expect "and pushes nothing" (atomically (fun (tx) (queue-length tx small))) 2)
+  (expect "a pop gives a place back" (queue-get small) 1)
+  (expect "which a push can then take"
+          (try-atomically (fun (tx) (queue-push! tx small 3)))
+          (Some unit))
+  (expect "full again" (try-atomically (fun (tx) (queue-push! tx small 4))) None)
+  (expect "pop-all gives all places back" (drain small) (list 2 3))
+  (push-all small (list 5 6))
+  (expect "so two more fit" (drain small) (list 5 6))
+  (expect-true "a capacity under 1 raises"
+               (match (try (make-bounded-queue 0) #:catch (System.ArgumentException))
+                 ((Ok _) #f)
+                 ((Err _) #t)))
+
+  ;; --- events --------------------------------------------------------------
+  (def empty (make-queue))
+  (expect "a timeout wins over a receive from an empty queue"
+          (sync (choose (queue-recv empty) (wrap (timeout 30) (fun (_) "timeout"))))
+          "timeout")
+  (def full (make-bounded-queue 1))
+  (queue-put full 1)
+  (expect "a timeout wins over a send to a full queue"
+          (sync (choose (wrap (queue-send full 2) (fun (_) "sent"))
+                        (wrap (timeout 30) (fun (_) "timeout"))))
+          "timeout")
+  (expect "and the losing send pushed nothing" (drain full) (list 1))
+  (def first (make-queue))
+  (def second (make-queue))
+  (push-all second (list 9))
+  (expect "a choose over two queues takes from the one with an item"
+          (sync (choose (queue-recv first) (queue-recv second)))
+          9)
+  (def later (make-queue))
+  (with-scope
+    (spawn (late-producer later))
+    (expect "queue-get waits for a push" (queue-get later) "late"))
+
+  ;; --- producers and consumers ---------------------------------------------
+  (def work (make-bounded-queue 16))
+  (def sum (make-loc 0))
+  (def count (make-loc 0))
+  (with-scope
+    (loop (:for p (range 0 4))
+          (:do (spawn (producer work (* p 5000) 5000))))
+    (loop (:for c (range 0 4))
+          (:do (spawn (consumer work 5000 sum count)))))
+  (expect "four producers and four consumers: every item arrives" (loc-ref count) 20000)
+  (expect "each one once" (loc-ref sum) (/ (* 19999 20000) 2))
+  (expect "and the queue is empty" (atomically (fun (tx) (queue-length tx work))) 0)
+  0)

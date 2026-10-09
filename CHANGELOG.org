@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* (std stm queue): a FIFO queue for transactions
+
+- *A ~(TQueue T)~ is a queue made of locations,* so its operations are
+  part of the transaction that calls them. A transaction can move an item
+  from one queue to another, take from two queues, or take an item and
+  record it elsewhere, as one step.
+- In a transaction: ~queue-push!~, ~queue-pop!~, ~queue-try-pop!~,
+  ~queue-peek~, ~queue-try-peek~, ~queue-pop-all!~, ~queue-length~ and
+  ~queue-empty?~. ~queue-pop!~ and ~queue-peek~ retry on an empty queue,
+  and ~queue-push!~ retries on a full bounded one.
+- Outside a transaction the names are those of the channel operations:
+  ~queue-send~ and ~queue-recv~ are events, and ~queue-put~ and
+  ~queue-get~ sync them in the caller's colour. A send or a receive that
+  loses its ~choose~ changes nothing.
+- ~make-queue~ has no limit, and ~(make-bounded-queue n)~ holds at most n
+  items.
+- A push writes only the back and a pop only the front, so producers and
+  consumers conflict only when a pop moves the back to an empty front. A
+  bounded queue keeps the places of pushes apart from the places that pops
+  freed, as Haskell's TBQueue does. Every operation is O(1) amortized,
+  ~queue-length~ too.
+- *Left open:* fibers that wait on one queue are not served in a fixed
+  order.
+
 * A generic call at void gets the unit as its type argument
 
 - A generic call whose type arguments are written out in the C#, such as

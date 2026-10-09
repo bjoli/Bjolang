@@ -1,0 +1,198 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/stm/queue.bjo — a FIFO queue for transactions.
+;;
+;; Two locations: `front` holds the front of the queue in order, and `back`
+;; holds the rear reversed. A push writes only `back` and a pop writes only
+;; `front`, so a producer and a consumer conflict only when the front is
+;; empty. Then a pop moves all of `back` to `front`, reversed. Each item is
+;; moved once, so every operation is O(1) amortized.
+;;
+;; Each side keeps its count, so the length is O(1).
+;;
+;; A bounded queue counts its free places in two locations, as the TBQueue of
+;; Haskell's stm package does. `write` is the free places that pushes use,
+;; and `freed` is the places that pops have freed since. A push takes a place
+;; from `write`, and reads `freed` only when `write` is 0. So pushes and pops
+;; do not conflict on the capacity until the producers run out of places.
+(import (std prelude))
+(import (std stm))
+
+(:doc #:file "queue.bjodoc")
+
+(export
+  TQueue
+  make-queue make-bounded-queue
+  ;; In a transaction.
+  queue-push! queue-pop! queue-try-pop! queue-peek queue-try-peek
+  queue-pop-all! queue-length queue-empty?
+  ;; Outside one, as the channel operations are named.
+  queue-send queue-recv queue-put queue-get)
+
+(import/class
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+(type (: (Side %a) (Struct (: count int) (: items (List %a)))))
+
+(type (: Room (Record (: write (Loc int)) (: freed (Loc int)))))
+
+(type (: (TQueue %a) #:opaque
+         (Record (: front (Loc (Side %a)))
+                 (: back (Loc (Side %a)))
+                 (: room (Option Room)))))
+
+;; ---------------------------------------------------------------------------
+;; Making one
+;; ---------------------------------------------------------------------------
+
+(: empty-side (-> (Side %a)))
+(defun (empty-side) (Side (count 0) (items (list))))
+
+(: make-queue (-> (TQueue %a)))
+(defun (make-queue)
+  (TQueue (front (make-loc (empty-side)))
+          (back (make-loc (empty-side)))
+          (room None)))
+
+(: make-bounded-queue (-> int (TQueue %a)))
+(defun (make-bounded-queue capacity)
+  (when (< capacity 1)
+    (raise (cast Exception (ArgumentException. "make-bounded-queue: the capacity must be at least 1"))))
+  (TQueue (front (make-loc (empty-side)))
+          (back (make-loc (empty-side)))
+          (room (Some (Room (write (make-loc capacity)) (freed (make-loc 0)))))))
+
+;; ---------------------------------------------------------------------------
+;; Capacity
+;; ---------------------------------------------------------------------------
+
+;; Takes one free place, or retries when there is none.
+(: take-place! (-> Tx (Option Room) void))
+(defun (take-place! tx room)
+  (match room
+    (None unit)
+    ((Some r)
+     (def w (tx-ref tx (record-ref r write)))
+     (if (> w 0)
+         (tx-set! tx (record-ref r write) (- w 1))
+         (let ((f (tx-ref tx (record-ref r freed))))
+           (if (= f 0)
+               (tx-retry tx)
+               (begin
+                 (tx-set! tx (record-ref r freed) 0)
+                 (tx-set! tx (record-ref r write) (- f 1)))))))))
+
+(: free-places! (-> Tx (Option Room) int void))
+(defun (free-places! tx room n)
+  (match room
+    (None unit)
+    ((Some r) (ignore (tx-update! tx (record-ref r freed) #(+ & n))))))
+
+;; ---------------------------------------------------------------------------
+;; In a transaction
+;; ---------------------------------------------------------------------------
+
+;; The front side, with the back moved to it when it is empty. Moves nothing
+;; when both are empty, so that a pop of an empty queue writes nothing.
+(: stocked-front (-> Tx (TQueue %a) (Side %a)))
+(defun (stocked-front tx q)
+  (def f (tx-ref tx (record-ref q front)))
+  (if (> (struct-ref f count) 0)
+      f
+      (let ((b (tx-ref tx (record-ref q back))))
+        (if (= (struct-ref b count) 0)
+            f
+            (let ((moved (Side (count (struct-ref b count))
+                               (items (list-reverse (struct-ref b items))))))
+              (tx-set! tx (record-ref q back) (empty-side))
+              (tx-set! tx (record-ref q front) moved)
+              moved)))))
+
+(: queue-push! (-> Tx (TQueue %a) %a void))
+(defun (queue-push! tx q x)
+  (take-place! tx (record-ref q room))
+  (def b (tx-ref tx (record-ref q back)))
+  (tx-set! tx (record-ref q back)
+           (Side (count (+ (struct-ref b count) 1))
+                 (items (Cons x (struct-ref b items))))))
+
+(: queue-try-pop! (-> Tx (TQueue %a) (Option %a)))
+(defun (queue-try-pop! tx q)
+  (def f (stocked-front tx q))
+  (match (struct-ref f items)
+    ((Cons x rest)
+     (tx-set! tx (record-ref q front) (Side (count (- (struct-ref f count) 1)) (items rest)))
+     (free-places! tx (record-ref q room) 1)
+     (Some x))
+    (Nil None)))
+
+(: queue-pop! (-> Tx (TQueue %a) %a))
+(defun (queue-pop! tx q)
+  (match (queue-try-pop! tx q)
+    ((Some x) x)
+    (None (tx-retry tx))))
+
+(: queue-try-peek (-> Tx (TQueue %a) (Option %a)))
+(defun (queue-try-peek tx q)
+  (match (struct-ref (stocked-front tx q) items)
+    ((Cons x _) (Some x))
+    (Nil None)))
+
+(: queue-peek (-> Tx (TQueue %a) %a))
+(defun (queue-peek tx q)
+  (match (queue-try-peek tx q)
+    ((Some x) x)
+    (None (tx-retry tx))))
+
+(: queue-pop-all! (-> Tx (TQueue %a) (List %a)))
+(defun (queue-pop-all! tx q)
+  (def f (tx-ref tx (record-ref q front)))
+  (def b (tx-ref tx (record-ref q back)))
+  (def n (+ (struct-ref f count) (struct-ref b count)))
+  (if (= n 0)
+      (list)
+      (begin
+        (tx-set! tx (record-ref q front) (empty-side))
+        (tx-set! tx (record-ref q back) (empty-side))
+        (free-places! tx (record-ref q room) n)
+        (list-append (struct-ref f items) (list-reverse (struct-ref b items))))))
+
+(: queue-length (-> Tx (TQueue %a) int))
+(defun (queue-length tx q)
+  (+ (struct-ref (tx-ref tx (record-ref q front)) count)
+     (struct-ref (tx-ref tx (record-ref q back)) count)))
+
+(: queue-empty? (-> Tx (TQueue %a) bool))
+(defun (queue-empty? tx q) (= (queue-length tx q) 0))
+
+;; ---------------------------------------------------------------------------
+;; Outside a transaction
+;; ---------------------------------------------------------------------------
+
+(: queue-send (-> (TQueue %a) %a (Event Unit)))
+(defun (queue-send q x)
+  (atomically-evt (fun (tx) (queue-push! tx q x))))
+
+(: queue-recv (-> (TQueue %a) (Event %a)))
+(defun (queue-recv q)
+  (atomically-evt (fun (tx) (queue-pop! tx q))))
+
+(: queue-put (-> (TQueue %a) %a void))
+(defbjouble (queue-put q x)
+  (#:sync (sync/blocking (queue-send q x)))
+  (#:bjo  (sync (queue-send q x))))
+
+(: queue-get (-> (TQueue %a) %a))
+(defbjouble (queue-get q)
+  (#:sync (sync/blocking (queue-recv q)))
+  (#:bjo  (sync (queue-recv q))))

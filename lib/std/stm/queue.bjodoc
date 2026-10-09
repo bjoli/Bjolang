@@ -1,0 +1,190 @@
+;; Docs for std/stm/queue.bjo, read through (:doc #:file "queue.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "A FIFO queue for transactions: change it together with other queues and locations, and wait on it as an event.")
+  (see TQueue queue-push! queue-pop! queue-recv queue-get)
+  (example """
+    (import (std stm))
+    (import (std stm queue))
+
+    (def jobs (make-bounded-queue 100))
+    (def done (make-queue))
+
+    ;; Outside a transaction, as with a channel.
+    (queue-put jobs "resize a.png")
+    (queue-get jobs)                       ; "resize a.png"
+
+    ;; In a transaction: take a job and record it as started, as one step.
+    (atomically
+     (fun (tx)
+       (let ((job (queue-pop! tx jobs)))
+         (queue-push! tx done job)
+         job)))
+
+    ;; Wait for a job, but not longer than one second.
+    (sync (choose (wrap (queue-recv jobs) Some)
+                  (wrap (timeout 1000) (fun (_) None))))
+    """)
+  (reference """
+    A @code{(TQueue T)} holds items of type T, first in, first out. It is
+    made of locations from @code{(std stm)}, so its operations are part of
+    the transaction that calls them.
+
+    @strong{Two sets of operations.} In a transaction, the operations take
+    the @code{Tx} first: @code{queue-push!}, @code{queue-pop!},
+    @code{queue-try-pop!}, @code{queue-peek}, @code{queue-try-peek},
+    @code{queue-pop-all!}, @code{queue-length} and @code{queue-empty?}.
+    Outside a transaction, the names are those of the channel operations:
+    @code{queue-send} and @code{queue-recv} are events, and
+    @code{queue-put} and @code{queue-get} sync them.
+
+    @strong{What a queue can do that a channel can not.} A transaction can
+    change a queue together with other queues and locations, as one step:
+    move an item from one queue to another, take from two queues at once,
+    or take an item and record it elsewhere. No other fiber sees the step
+    half done. A channel is a meeting of two fibers and can not do this.
+
+    @strong{Waiting.} @code{queue-pop!} and @code{queue-peek} retry when the
+    queue is empty, and @code{queue-push!} retries when a bounded queue is
+    full. So the transaction waits until another transaction changes the
+    queue. @code{queue-recv} and @code{queue-send} are not available while
+    they wait, so a @code{choose} can wait for a queue and for a timeout, a
+    channel or another queue. A send that loses its @code{choose} pushes
+    nothing, and a receive that loses takes nothing.
+
+    @strong{Order.} Items come out in the order in which the transactions
+    that pushed them committed. Fibers that wait on one queue are not
+    served in a fixed order.
+
+    @strong{Contention.} A push writes the back of the queue and a pop
+    writes the front, so producers and consumers do not make each other run
+    again, except when the front is empty and a pop moves the back to it.
+    Pushes conflict with each other, and pops with each other. A bounded
+    queue keeps the free places of pushes apart from the places that pops
+    have freed, so a push reads what pops wrote only when its own places
+    are used up. This is the method of the TBQueue of Haskell's stm
+    package.
+
+    @strong{Cost.} Every operation is O(1) amortized, and
+    @code{queue-length} is O(1). @code{queue-pop-all!} is O(n).
+    """))
+
+(:doc TQueue
+  (summary "A FIFO queue of items of type %a, for transactions.")
+  (tparam %a "The type of the items.")
+  (see make-queue make-bounded-queue))
+
+(:doc make-queue
+  (summary "A new empty queue with no capacity limit.")
+  (returns "A new queue.")
+  (see make-bounded-queue))
+
+(:doc make-bounded-queue
+  (summary "A new empty queue that holds at most capacity items.")
+  (arg capacity "The most items that the queue holds. At least 1.")
+  (returns "A new queue.")
+  (raises System.ArgumentException "When capacity is less than 1.")
+  (reference """
+    A push to a full queue retries, so a producer waits until a consumer
+    has taken an item. That is backpressure: a fast producer can not grow
+    the queue without limit.
+    """))
+
+(:doc queue-push!
+  (summary "Adds x at the back of the queue, in the transaction.")
+  (arg tx "The log of the transaction.")
+  (arg q "The queue.")
+  (arg x "The item.")
+  (reference """
+    On a full bounded queue, this retries: the transaction runs again when
+    a pop has freed a place.
+    """))
+
+(:doc queue-pop!
+  (summary "Removes and returns the item at the front of the queue, in the transaction. Retries when the queue is empty.")
+  (arg tx "The log of the transaction.")
+  (arg q "The queue.")
+  (returns "The first item.")
+  (see queue-try-pop! queue-recv))
+
+(:doc queue-try-pop!
+  (summary "Removes and returns the item at the front of the queue, or None when it is empty.")
+  (arg tx "The log of the transaction.")
+  (arg q "The queue.")
+  (returns "(Some item), or None when the queue is empty."))
+
+(:doc queue-peek
+  (summary "The item at the front of the queue, which stays there. Retries when the queue is empty.")
+  (arg tx "The log of the transaction.")
+  (arg q "The queue.")
+  (returns "The first item."))
+
+(:doc queue-try-peek
+  (summary "The item at the front of the queue, which stays there, or None when it is empty.")
+  (arg tx "The log of the transaction.")
+  (arg q "The queue.")
+  (returns "(Some item), or None when the queue is empty."))
+
+(:doc queue-pop-all!
+  (summary "Removes all items from the queue, and returns them in order.")
+  (arg tx "The log of the transaction.")
+  (arg q "The queue.")
+  (returns "The items, first item first. Empty when the queue is empty: this does not retry.")
+  (reference """
+    On a bounded queue, all places are free again.
+    """))
+
+(:doc queue-length
+  (summary "The number of items in the queue.")
+  (arg tx "The log of the transaction.")
+  (arg q "The queue.")
+  (returns "The number of items.")
+  (reference """
+    This reads both ends of the queue, so the transaction conflicts with
+    every push and pop. Read it only when it is necessary.
+    """))
+
+(:doc queue-empty?
+  (summary "Whether the queue has no items.")
+  (arg tx "The log of the transaction.")
+  (arg q "The queue.")
+  (returns "#t when the queue is empty."))
+
+(:doc queue-send
+  (summary "The event that adds x at the back of the queue.")
+  (arg q "The queue.")
+  (arg x "The item.")
+  (returns "An event that is available when the push commits.")
+  (reference """
+    On a full bounded queue, the event is not available until a pop frees a
+    place. If another branch of a @code{choose} wins, x is not pushed.
+    """))
+
+(:doc queue-recv
+  (summary "The event that removes and gives the item at the front of the queue.")
+  (arg q "The queue.")
+  (returns "An event that is available when the queue has an item.")
+  (reference """
+    If another branch of a @code{choose} wins, nothing is taken.
+    """))
+
+(:doc queue-put
+  (summary "Adds x at the back of the queue, and waits while a bounded queue is full.")
+  (arg q "The queue.")
+  (arg x "The item.")
+  (reference """
+    @code{(sync (queue-send q x))} in a fiber, and
+    @code{(sync/blocking (queue-send q x))} in a function that is not a
+    fiber.
+    """))
+
+(:doc queue-get
+  (summary "Removes and returns the item at the front of the queue, and waits while it is empty.")
+  (arg q "The queue.")
+  (returns "The first item.")
+  (reference """
+    @code{(sync (queue-recv q))} in a fiber, and
+    @code{(sync/blocking (queue-recv q))} in a function that is not a
+    fiber.
+    """))
