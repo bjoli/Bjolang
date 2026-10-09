@@ -205,6 +205,11 @@
                          ;; packages removed from the manifest leave no file
                          ;; that a timestamp could show.
                          (: nuget string)
+                         ;; For a program: its runtime settings, as
+                         ;; `name=value`, sorted. Compared for the same reason
+                         ;; as `nuget`: they are in the manifest, and a change
+                         ;; to them changes no file that the build read.
+                         (: runtime (List string))
                          ;; For a program: what its resolver loads, as the
                          ;; `link` and `native` lines name them. What
                          ;; `bjo publish` copies.
@@ -281,6 +286,7 @@
           (:acc frameworks (listing value) #:when (= key "framework"))
           (:acc declarations (folding "" (if (= key "frameworks") value declarations)))
           (:acc nuget (folding "" (if (= key "nuget") value nuget)))
+          (:acc runtime (listing value) #:when (= key "runtime"))
           ;; `link <name> <path>` and `native <key> <path>`: the value splits
           ;; at its first space the way a line does, and a path may hold more.
           (:acc links (listing (pair-of value)) #:when (= key "link"))
@@ -300,6 +306,7 @@
                                     (frameworks (list-sort frameworks))
                                     (declaration-file declarations)
                                     (nuget nuget)
+                                    (runtime (list-sort runtime))
                                     (links links)
                                     (natives natives)
                                     (written written)
@@ -334,24 +341,36 @@
 ;;
 ;; `nuget` is the directory of the restored NuGet packages, and `None` unless
 ;; the manifest names some.
+;;
+;; `runtime` is the root manifest's runtime settings, as `name=value`, which a
+;; program is built with. Empty outside a project.
 (type (: Against (Record (: roots (Option string))
                          (: frameworks (Option string))
-                         (: nuget (Option string)))))
+                         (: nuget (Option string))
+                         (: runtime (List string)))))
 
 (: nothing-against Against)
-(def nothing-against (Against (roots None) (frameworks None) (nuget None)))
+(def nothing-against (Against (roots None) (frameworks None) (nuget None) (runtime Nil)))
 
 (: prepared-against (-> Prepared Against))
 (defun (prepared-against ready)
   (Against (roots (Some (prepared-roots-file ready)))
            (frameworks (prepared-frameworks-file ready))
-           (nuget (prepared-nuget-dir ready))))
+           (nuget (prepared-nuget-dir ready))
+           (runtime (prepared-runtime ready))))
 
 (: flag-for (-> string (Option string) (List string)))
 (defun (flag-for flag path)
   (match path
     ((Some p) (Cons flag (Cons p Nil)))
     (None Nil)))
+
+;; `--runtime name=value` for each runtime setting.
+(: runtime-flags (-> (List string) (List string)))
+(defun (runtime-flags settings)
+  (match settings
+    (Nil Nil)
+    ((Cons setting rest) (Cons "--runtime" (Cons setting (runtime-flags rest))))))
 
 ;; The compiler records both files as inputs of what it builds, so a build made
 ;; against other packages — or against another set of declarations — is stale by
@@ -360,7 +379,8 @@
 (defun (against-flags a)
   (list-append (flag-for "--roots" (record-ref a roots))
                (list-append (flag-for "--frameworks" (record-ref a frameworks))
-                            (flag-for "--nuget" (record-ref a nuget)))))
+                            (list-append (flag-for "--nuget" (record-ref a nuget))
+                                         (runtime-flags (record-ref a runtime))))))
 
 ;; What the frameworks file says the package holding `file` declares.
 ;;
@@ -444,7 +464,11 @@
       (not (= (record-ref rec nuget)
               (match (record-ref against nuget)
                 ((Some dir) (path-absolute dir))
-                (None ""))))))
+                (None ""))))
+      ;; Runtime settings changed in the manifest. Only a program has them: a
+      ;; library has no runtimeconfig, and its record no `runtime` lines.
+      (and (string-ends-with? artefact ".exe")
+           (not (= (record-ref rec runtime) (record-ref against runtime))))))
 
 ;; A linked module whose own record vouches for the interface `entry` says the
 ;; build saw: the module and the sources it was built from. Nothing otherwise.

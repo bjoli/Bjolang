@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* Runtime settings: server GC and others, from the manifest
+
+- *~(runtime (gc-server #t))~ in a manifest sets the program's .NET
+  runtime settings*, written into its runtimeconfig as
+  ~configProperties~. The settings are ~gc-server~, ~gc-concurrent~,
+  ~gc-heap-count~, ~tiered-compilation~, ~tiered-pgo~ and
+  ~invariant-globalization~. An unknown name, or a value of the wrong
+  kind, is refused with the list of settings.
+- Which GC a program uses is its own choice. Without settings, a program
+  has the runtimeconfig it always had, and workstation GC.
+- Only the project being built uses its settings: they belong to a
+  process, and a dependency is not one.
+- The settings are in a program's build record, so a change to them
+  rebuilds the program, although no source changed. ~bjo publish~ copies
+  the runtimeconfig with them.
+- The compiler takes them as ~--runtime name=value~, repeated, for a
+  single-file build.
+
 * (std stm counter): a counter that transactions add to without conflicts
 
 - *A ~(TCounter T)~ is a number that is the sum of one location for each

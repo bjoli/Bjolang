@@ -29,6 +29,7 @@
 
 (export
   Prepared prepared-roots-file prepared-frameworks-file prepared-nuget-dir
+  prepared-runtime
   prepared-roots prepared-dependencies
   prepare)
 
@@ -47,9 +48,11 @@
 ;; flag is passed, and the build is exactly the build it was before.
 ;; `nuget-dir` is `None` the same way, when the manifest names no NuGet
 ;; packages.
+;; `runtime` is the root manifest's runtime settings, as `name=value`.
 (type (: Prepared (Record (: roots-file string)
                           (: frameworks-file (Option string))
                           (: nuget-dir (Option string))
+                          (: runtime (List string))
                           (: roots (List Root)))))
 
 ;; A manifest that has been read and whose dependencies have not been walked.
@@ -118,6 +121,9 @@
 
 (: prepared-nuget-dir (-> Prepared (Option string)))
 (defun (prepared-nuget-dir p) (record-ref p nuget-dir))
+
+(: prepared-runtime (-> Prepared (List string)))
+(defun (prepared-runtime p) (record-ref p runtime))
 
 (: prepared-roots (-> Prepared (List Root)))
 (defun (prepared-roots p) (record-ref p roots))
@@ -821,6 +827,7 @@
   (Ok (Prepared (roots-file roots-path)
                 (frameworks-file (if declared? (Some frameworks-path) None))
                 (nuget-dir nuget-dir)
+                (runtime (runtime-settings (record-ref (project-package project) runtime)))
                 (roots roots))))
 
 ;; Writes the lock if it has to, and says what changed.

@@ -64,6 +64,11 @@ type CompilerOptions =
       /// `NuGetRefs`.
       NuGet: string option
 
+      /// `--runtime name=value`, repeatable: a program's .NET runtime
+      /// settings, checked by `Build.parseRuntimeSetting`. The last value
+      /// given for a name is the one used.
+      Runtime: (string * string) list
+
       /// `--build-graph`: build the libraries under the inputs, files or
       /// directories, and everything they import, in parallel. See `BuildGraph`.
       BuildGraph: bool
@@ -98,6 +103,7 @@ let defaultOptions =
       FrameworksFile = None
       Frameworks = []
       NuGet = None
+      Runtime = []
       BuildGraph = false
       Jobs = System.Environment.ProcessorCount
       DryRun = false
@@ -136,6 +142,10 @@ let printUsage () =
     printfn "              A module may only *name* types from a framework its own package"
     printfn "              declares; it may use values of any type that reaches it. Written"
     printfn "              by `bjo`, and left alone when unchanged for the reason above."
+    printfn "  --runtime <name>=<value>"
+    printfn "              A .NET runtime setting of the program, written into its"
+    printfn "              runtimeconfig. Repeatable. The settings are %s." (Build.runtimeSettings |> List.map fst |> String.concat ", ")
+    printfn "              gc-heap-count is a whole number; the others are true or false."
     printfn "  --framework <name>"
     printfn "              A shared framework for every file no --frameworks line covers,"
     printfn "              which is all of them in a single-file build. Repeatable."
@@ -327,6 +337,14 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
     | "--roots" :: path :: rest -> parseArgs rest { opts with Roots = Some path }
     | "--frameworks" :: path :: rest -> parseArgs rest { opts with FrameworksFile = Some path }
     | "--nuget" :: dir :: rest -> parseArgs rest { opts with NuGet = Some dir }
+    | "--runtime" :: setting :: rest ->
+        (match Build.parseRuntimeSetting setting with
+         | Ok(name, value) ->
+             let others = opts.Runtime |> List.filter (fun (n, _) -> n <> name)
+             parseArgs rest { opts with Runtime = (name, value) :: others |> List.sortBy fst }
+         | Error message ->
+             printfn $"Error: %s{message}"
+             exit 1)
     // Repeatable, like an input file and for the same reason: a build declares
     // as many frameworks as it declares, and the last one is not the only one.
     | "--framework" :: name :: rest ->
@@ -454,6 +472,7 @@ let private run (argv: string array) =
 
     let buildOptions: Build.Options =
         { IsLibrary = options.IsLibrary
+          Runtime = options.Runtime
           Debug = options.Debug
           EmitCs = options.EmitCs
           Check = options.Check }

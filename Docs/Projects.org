@@ -78,6 +78,8 @@ are in ~bjo/manifest.bjo~, which is the only reader of it.
   name types from — see below. Optional, allowed in any package.
 - ~packages~ names the *NuGet packages* the project uses — see below. Optional,
   and for now only allowed in the project being built.
+- ~runtime~ gives the program's *.NET runtime settings*, such as server GC —
+  see below. Optional. Only the project being built uses it.
 - ~targets~ and ~(registry ...)~ sources are not implemented. A registry source
   is an error that says so.
 
@@ -215,6 +217,46 @@ Current limitations:
 - *The compiler loads the package assemblies into its own process* to read
   their types. A package assembly with the same name as one the compiler
   already uses, in another version, may not load.
+
+** Runtime settings
+
+#+BEGIN_SRC scheme
+(package
+  (name (myserver))
+  (version "0.1.0")
+  (runtime (gc-server #t) (gc-heap-count 8)))
+#+END_SRC
+
+A setting goes into the program's ~.runtimeconfig.json~, as one of the
+~configProperties~ that the .NET host reads when the program starts:
+
+| Setting                   | Value       | Property                          |
+|---------------------------+-------------+-----------------------------------|
+| ~gc-server~               | ~#t~ ~#f~   | ~System.GC.Server~                |
+| ~gc-concurrent~           | ~#t~ ~#f~   | ~System.GC.Concurrent~            |
+| ~gc-heap-count~           | from 1      | ~System.GC.HeapCount~             |
+| ~tiered-compilation~      | ~#t~ ~#f~   | ~System.Runtime.TieredCompilation~ |
+| ~tiered-pgo~              | ~#t~ ~#f~   | ~System.Runtime.TieredPGO~        |
+| ~invariant-globalization~ | ~#t~ ~#f~   | ~System.Globalization.Invariant~  |
+
+*Which GC to use is the program's choice.* A program gets the default
+workstation GC when it says nothing. Server GC has one heap and one GC thread
+for each CPU. A program in which many fibers allocate at the same time can be
+several times faster with it, and uses more memory. ~(std stm map)~ is an
+example: with workstation GC, sixteen fibers that add keys are no faster than
+one.
+
+*Only the project being built uses its settings.* They are settings of a
+process, and a dependency is not one, so a dependency's ~runtime~ is ignored.
+
+*A change rebuilds the program.* The settings are in the program's build
+record, and a build whose settings differ from the manifest's is stale,
+although no source changed. ~bjo publish~ copies the runtimeconfig, so a
+published program has them too.
+
+*The compiler takes them as ~--runtime name=value~*, repeated, for a
+single-file build: ~--runtime gc-server=true~. ~bjo~ passes the manifest's
+settings that way.
 
 ** Sources: where a dependency comes from
 

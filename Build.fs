@@ -24,10 +24,50 @@ module Bjolang.Build
 open Bjolang
 open System.IO
 
+/// The value a runtime setting takes: `true` or `false`, or a whole number.
+type RuntimeSettingKind =
+    | Flag
+    | Count
+
+/// The .NET runtime settings a program may set, by the name that `--runtime`
+/// and a manifest's `(runtime ...)` give them, with the `configProperties` key
+/// of the runtimeconfig that each one is.
+let runtimeSettings: (string * (string * RuntimeSettingKind)) list =
+    [ "gc-server", ("System.GC.Server", Flag)
+      "gc-concurrent", ("System.GC.Concurrent", Flag)
+      "gc-heap-count", ("System.GC.HeapCount", Count)
+      "tiered-compilation", ("System.Runtime.TieredCompilation", Flag)
+      "tiered-pgo", ("System.Runtime.TieredPGO", Flag)
+      "invariant-globalization", ("System.Globalization.Invariant", Flag) ]
+
+/// `name=value`, as `--runtime` takes it. The value of a flag is `true` or
+/// `false`, and that of a count a whole number from 1. Answers the name and
+/// the value as the runtimeconfig writes it.
+let parseRuntimeSetting (text: string) : Result<string * string, string> =
+    let known = runtimeSettings |> List.map fst |> String.concat ", "
+
+    match text.Split('=', 2) with
+    | [| name; value |] ->
+        match List.tryFind (fun (n, _) -> n = name) runtimeSettings with
+        | None -> Error $"--runtime: '%s{name}' is not a runtime setting. The settings are: %s{known}."
+        | Some(_, (_, Flag)) ->
+            match value with
+            | "true" | "false" -> Ok(name, value)
+            | _ -> Error $"--runtime: %s{name} is true or false, not '%s{value}'."
+        | Some(_, (_, Count)) ->
+            match System.Int32.TryParse value with
+            | true, n when n >= 1 -> Ok(name, string n)
+            | _ -> Error $"--runtime: %s{name} is a whole number from 1, not '%s{value}'."
+    | _ -> Error $"--runtime: '%s{text}' is not name=value. The settings are: %s{known}."
+
 /// What a compilation is told, once the command line has been read.
 type Options =
     { IsLibrary: bool
       Debug: bool
+      /// `--runtime`: the runtime settings of a program, as `parseRuntimeSetting`
+      /// answers them, sorted by name. Written into the program's runtimeconfig
+      /// and its build record. A library has no runtimeconfig, and ignores them.
+      Runtime: (string * string) list
       /// Vart `-d` lägger den genererade C#-koden. AST-dumpen hamnar bredvid.
       ///
       /// `None` ger `out.cs` och `ast_dump.txt` i arbetskatalogen, vilket är
@@ -95,6 +135,8 @@ let private dumpPaths (emitCs: string option) : string * string =
 ///              these and writes the `.bjolinks` table the resolver reads
 ///     native   for an executable: `native <key> <path>`, one per native
 ///              library the program's unmanaged resolver can load
+///     runtime  for an executable: `runtime <name>=<value>`, one per
+///              `--runtime` setting written into its runtimeconfig
 ///     written  the output's last-write time, in ticks. A record whose output
 ///              has been written since belongs to another build, and the
 ///              compiler does not trust it
@@ -174,6 +216,15 @@ let private writeBuildRecord
                 $"nuget %s{dir}" :: (NuGetRefs.listFiles () |> List.map (fun f -> $"nuget-list %s{f}"))
             | _ -> []
 
+        // A program's runtime settings. The build writes them into the
+        // runtimeconfig, and no source changes when a manifest changes them,
+        // so a driver compares these lines to decide that the program is stale.
+        let runtimeLines =
+            if Path.GetExtension(outputFilePath: string) = ".exe" then
+                options.Runtime |> List.map (fun (name, value) -> $"runtime %s{name}=%s{value}")
+            else
+                []
+
         // The interfaces of the linked modules as this build saw them, for
         // `Pipeline`'s staleness check. A module that publishes macros has
         // none, and its code runs inside this compile — so neither it nor
@@ -219,6 +270,7 @@ let private writeBuildRecord
             @ frameworksLine
             @ frameworkLines
             @ nugetLines
+            @ runtimeLines
             @ (sources |> List.map (fun s -> $"source %s{s}"))
             @ (linked |> List.map Path.GetFullPath |> List.distinct |> List.sort |> List.map (fun d -> $"dep %s{d}"))
             @ (links |> List.distinct |> List.sort |> List.map (fun (name, path) -> $"link %s{name} %s{Path.GetFullPath path}"))
@@ -736,10 +788,10 @@ let compile (options: Options) (inputFilePath: string) : int =
                     // What the program's host has to load: the core framework,
                     // plus whatever the entry module turned out to use — its
                     // own resolutions and everything its imports recorded.
-                    let runtimeConfigContent =
+                    let frameworkPart =
                         match Frameworks.usedHere () with
                         | [] ->
-                            "{\n  \"runtimeOptions\": {\n    \"tfm\": \"net10.0\",\n    \"framework\": {\n      \"name\": \"Microsoft.NETCore.App\",\n      \"version\": \"10.0.0\"\n    }\n  }\n}"
+                            "    \"framework\": {\n      \"name\": \"Microsoft.NETCore.App\",\n      \"version\": \"10.0.0\"\n    }"
                         | extra ->
                             let entry (name: string) =
                                 "      { \"name\": \"" + name + "\", \"version\": \"10.0.0\" }"
@@ -750,9 +802,28 @@ let compile (options: Options) (inputFilePath: string) : int =
                                 |> List.map entry
                                 |> String.concat ",\n"
 
-                            "{\n  \"runtimeOptions\": {\n    \"tfm\": \"net10.0\",\n    \"frameworks\": [\n"
-                            + entries
-                            + "\n    ]\n  }\n}"
+                            "    \"frameworks\": [\n" + entries + "\n    ]"
+
+                    // The `--runtime` settings. None gives no `configProperties`
+                    // at all, so a program that sets nothing has the file it had
+                    // before settings existed.
+                    let settingsPart =
+                        match options.Runtime with
+                        | [] -> ""
+                        | settings ->
+                            let property (name, value) =
+                                let key, _ = runtimeSettings |> List.find (fun (n, _) -> n = name) |> snd
+                                "      \"" + key + "\": " + value
+
+                            ",\n    \"configProperties\": {\n"
+                            + (settings |> List.map property |> String.concat ",\n")
+                            + "\n    }"
+
+                    let runtimeConfigContent =
+                        "{\n  \"runtimeOptions\": {\n    \"tfm\": \"net10.0\",\n"
+                        + frameworkPart
+                        + settingsPart
+                        + "\n  }\n}"
 
                     File.WriteAllText(runtimeConfigPath, runtimeConfigContent)
 
@@ -1210,7 +1281,7 @@ let private compileDependencyInProcess (bjoPath: string) : string =
                 // Never `Check`: what the importing module needs from this one
                 // is the `.dll`, and checking it would produce nothing to read.
                 Session.isolated (fun () ->
-                    compile { IsLibrary = true; Debug = false; EmitCs = None; Check = false } bjoPath))
+                    compile { IsLibrary = true; Debug = false; Runtime = []; EmitCs = None; Check = false } bjoPath))
         finally
             Diagnostics.verbose <- narrating
             inFlight.RemoveAt(inFlight.Count - 1)
@@ -1466,7 +1537,7 @@ let runWorker () : int =
                 Diagnostics.reset ()
 
                 try
-                    compile { IsLibrary = true; Debug = false; EmitCs = None; Check = false } fullPath
+                    compile { IsLibrary = true; Debug = false; Runtime = []; EmitCs = None; Check = false } fullPath
                 with ex ->
                     Diagnostics.reportFailure ex
                     1

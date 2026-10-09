@@ -1483,6 +1483,76 @@ def test_publish(work, c):
     c.failed("a library is refused", run_bjo(library, "publish"))
 
 
+# ---------------------------------------------------------------------------
+# Runtime settings
+# ---------------------------------------------------------------------------
+
+GC_MAIN = '''(import (std prelude))
+(import/extern (server-gc? (: System.Runtime.GCSettings.IsServerGC bool #:get)))
+(defun (main) (println (if server-gc? "server" "workstation")) 0)
+'''
+
+
+def runtime_manifest(app, settings):
+    clause = f"\n  (runtime {settings})" if settings else ""
+    write(app / "manifest.bjodat",
+          f'(package\n  (name (rtapp))\n  (version "0.1.0"){clause})\n')
+
+
+@test("runtime settings")
+def test_runtime(work, c):
+    app = work / "app"
+    write(app / "src" / "main.bjo", GC_MAIN)
+    runtime_manifest(app, "(gc-server #t) (tiered-pgo #f)")
+
+    c.says("(runtime (gc-server #t)) gives the program server GC", run_bjo(app, "run"), "server")
+    config = runtimeconfig_of(app)
+    c.that("the runtimeconfig has the settings",
+           '"System.GC.Server": true' in config and '"System.Runtime.TieredPGO": false' in config,
+           config)
+    c.says("a build after that has nothing to do", run_bjo(app, "build"), "Up to date")
+
+    out = work / "out"
+    c.worked("publish", run_bjo(app, "publish", "-o", str(out)))
+    published = (out / "main.runtimeconfig.json")
+    c.that("the published runtimeconfig has the settings",
+           published.exists() and '"System.GC.Server": true' in published.read_text())
+
+    # Only the manifest changes, so no source is newer than the program.
+    runtime_manifest(app, "")
+    rebuilt = run_bjo(app, "build")
+    c.that("taking the settings out rebuilds the program",
+           "Built" in said(rebuilt) and "Up to date" not in said(rebuilt), said(rebuilt)[-300:])
+    c.says("which then has workstation GC", run_bjo(app, "run"), "workstation")
+    c.that("and a runtimeconfig with no settings",
+           "configProperties" not in runtimeconfig_of(app), runtimeconfig_of(app))
+
+    runtime_manifest(app, "(gc-sever #t)")
+    misspelled = run_bjo(app, "build")
+    c.failed("an unknown setting is refused", misspelled)
+    c.says("and the error lists the settings", misspelled, "is not a runtime setting. The settings are:")
+    runtime_manifest(app, "(gc-server \"yes\")")
+    c.says("a flag that is not #t or #f is refused", run_bjo(app, "build"), "is #t or #f")
+    runtime_manifest(app, "(gc-heap-count 0)")
+    c.says("a count under 1 is refused", run_bjo(app, "build"), "is a whole number from 1")
+
+    # The compiler's own flag, in a single-file build.
+    lone = work / "lone"
+    write(lone / "gc.bjo", GC_MAIN)
+    compiler = Path(subprocess.run([str(ROOT / "build_compiler.sh"), "--path"],
+                                   capture_output=True, text=True, check=True).stdout.strip())
+    built = subprocess.run(["dotnet", str(compiler), "--runtime", "gc-server=true", "gc.bjo"],
+                           cwd=str(lone), capture_output=True, text=True, timeout=600)
+    c.worked("--runtime gc-server=true in a single-file build", built)
+    if (lone / "gc.exe").exists():
+        ran = subprocess.run(["dotnet", "gc.exe"], cwd=str(lone),
+                             capture_output=True, text=True, timeout=600)
+        c.says("and the program has server GC", ran, "server")
+    refused = subprocess.run(["dotnet", str(compiler), "--runtime", "gc-server=yes", "gc.bjo"],
+                             cwd=str(lone), capture_output=True, text=True, timeout=600)
+    c.failed("--runtime with a bad value is refused", refused)
+
+
 def run_test(name, fn):
     """One test in its own work directory. Returns its checks and seconds."""
     work = WORK / name.replace(" ", "_")
@@ -1515,6 +1585,15 @@ def main():
 
     if not BJO.exists():
         print(f"{RED}No bjo launcher at {BJO}{NC}")
+        return 1
+
+    # The standard library first, in one process. The tests run at the same
+    # time, and with a stale standard library several of them would rebuild
+    # the same module at once.
+    stdlib = subprocess.run([str(ROOT / "build_std.sh")], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True)
+    if stdlib.returncode != 0:
+        print(f"{RED}The standard library does not build:{NC}\n{said(stdlib)[-2000:]}")
         return 1
 
     # The launcher builds what is missing or stale, so this also says whether

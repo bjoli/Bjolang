@@ -43,6 +43,7 @@
   ;; The manifest
   Dep Package
   NuGetPackage nuget-id nuget-version
+  RuntimeSetting runtime-settings
   module-name->string
   ;; What `def/bjodat-type` generated for the two records people read.
   bjodat-parse-Package bjodat-read-Package bjodat->Package Package->bjodat
@@ -50,6 +51,9 @@
 
 (import (std prelude))
 (import (text bjodat))
+
+(import/extern
+  (string->long (: System.Int64.TryParse (-> string (out long) (Option long)))))
 
 ;; ---------------------------------------------------------------------------
 ;; A module name
@@ -299,6 +303,53 @@
 (: nuget-version (-> NuGetPackage string))
 (defun (nuget-version p) (record-ref p version))
 
+;; One .NET runtime setting of the program, `(gc-server #t)`, as the compiler's
+;; `--runtime` takes it: `name=value`. The names are those of
+;; `Build.runtimeSettings`, and the two lists below must stay the same as it.
+;; They are checked here too, so that a mistake is reported against the
+;; manifest and not against a compiler flag.
+(type (: RuntimeSetting (Record (: name string) (: value string))))
+
+(def flag-settings
+  (list "gc-concurrent" "gc-server" "invariant-globalization" "tiered-compilation" "tiered-pgo"))
+(def count-settings (list "gc-heap-count"))
+
+(: known-settings string)
+(def known-settings (string-join (list->vec (list-sort (list-append flag-settings count-settings))) ", "))
+
+(impl (bjodat-> RuntimeSetting)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoList (Cons (BjoSym h) (Cons value Nil)))
+       (let ((name (symbol->string h)))
+         (cond
+           ((any? #(= & name) flag-settings)
+            (match value
+              ((BjoBool b) (Ok (RuntimeSetting (name name) (value (if b "true" "false")))))
+              (_ (Err (str "(" name " ...) is #t or #f")))))
+           ((any? #(= & name) count-settings)
+            (match value
+              ((BjoInt n) #:when (>= n 1L) (Ok (RuntimeSetting (name name) (value (long->string n)))))
+              (_ (Err (str "(" name " ...) is a whole number from 1")))))
+           (else (Err (str "(" name " ...) is not a runtime setting. The settings are: "
+                           known-settings))))))
+      (_ (Err "a runtime setting is (name value), such as (gc-server #t)")))))
+
+(impl (->bjodat RuntimeSetting)
+  (defun (->bjodat r)
+    (def value (record-ref r value))
+    (BjoList (list (BjoSym (string->symbol (record-ref r name)))
+                   (case value
+                     ("true" (BjoBool #t))
+                     ("false" (BjoBool #f))
+                     (else (BjoInt (match (string->long value) ((Some n) n) (None 0L)))))))))
+
+;; The settings as the compiler's `--runtime` takes them, `name=value`, sorted
+;; by name: also the form of the `runtime` lines of a program's build record.
+(: runtime-settings (-> (List RuntimeSetting) (List string)))
+(defun (runtime-settings settings)
+  (list-sort (list-map #(str (record-ref & name) "=" (record-ref & value)) settings)))
+
 (def/bjodat-type
   (: Package (Record #:tag package
                      (: name (List Symbol))
@@ -331,6 +382,11 @@
                      ;; `import/extern` and `import/class`. Only the root
                      ;; project may declare any, for now.
                      (: packages (List NuGetPackage) #:rest #:default Nil)
+                     ;; The .NET runtime settings of the program that the
+                     ;; project builds: `(runtime (gc-server #t))`. Only the
+                     ;; root project's count: they are settings of a process,
+                     ;; and a dependency is not one.
+                     (: runtime (List RuntimeSetting) #:rest #:default Nil)
                      (: source (Option Source) #:optional)
                      ;; `#:rest`: the clause holds as many packages as it holds,
                      ;; rather than one vec of them. This is the field that made
