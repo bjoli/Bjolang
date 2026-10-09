@@ -1,0 +1,34 @@
+;; PRIMES -- Compute primes less than n, written by Eric Mohr.
+;; Arguments: count n expected-length
+
+(import "common.bjo")
+
+(: interval-list (-> int int (List int)))
+(defun (interval-list m n)
+  (if (> m n)
+      Nil
+      (Cons m (interval-list (+ 1 m) n))))
+
+(: remove-multiples (-> int (List int) (List int)))
+(defun (remove-multiples n l)
+  (if (list-empty? l)
+      Nil
+      (if (= (% (list-head l) n) 0)
+          (remove-multiples n (list-tail l))
+          (Cons (list-head l) (remove-multiples n (list-tail l))))))
+
+(: sieve (-> (List int) (List int)))
+(defun (sieve l)
+  (if (list-empty? l)
+      Nil
+      (Cons (list-head l) (sieve (remove-multiples (list-head l) (list-tail l))))))
+
+(: primes<= (-> int (List int)))
+(defun (primes<= n)
+  (sieve (interval-list 2 n)))
+
+(defun (main args)
+  (def n (arg-int args 1))
+  (def expected (arg-int args 2))
+  (run-benchmark "primes" (arg-int args 0) (fun () (primes<= n))
+                 #(and (= (list-length &) expected) (= (list-head &) 2))))

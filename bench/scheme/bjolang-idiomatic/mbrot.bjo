@@ -1,0 +1,32 @@
+;; MBROT, idiomatic: the iteration is a `loop` with `:with` state, and the
+;; matrix is a vec of vecs built by comprehensions.
+;; Arguments: count n expected
+
+(import "../bjolang/common.bjo")
+
+(: count (-> double double double int int int))
+(defun (count r i step x y)
+  (def max-count 64)
+  (def radius^2 16.0)
+  (def cr (+ r (* (cast System.Double x) step)))
+  (def ci (+ i (* (cast System.Double y) step)))
+  (loop (:with zr cr (+ (- zr^2 zi^2) cr))
+        (:with zi ci (+ (* 2.0 (* zr zi)) ci))
+        (:with c 0 (+ c 1))
+        (:finish (= c max-count) c)
+        (:let zr^2 (* zr zr))
+        (:let zi^2 (* zi zi))
+        (:finish (> (+ zr^2 zi^2) radius^2) c)
+        => max-count))
+
+(: test (-> int int))
+(defun (test n)
+  (def matrix
+    {vecing {vecing (count -1.0 -0.5 0.005 x y) (:for y (range 0 n))}
+            (:for x (range 0 n))})
+  (vec-ref (vec-ref matrix 0) 0))
+
+(defun (main args)
+  (def n (arg-int args 1))
+  (def expected (arg-int args 2))
+  (run-benchmark "mbrot" (arg-int args 0) (fun () (test n)) #(= & expected)))

@@ -1,0 +1,88 @@
+;; GCBENCH -- Boehm's garbage collector benchmark.
+;; Arguments: count stretch-depth
+;;
+;; A node's children are `0` in the original until they are set. Here they
+;; are `(Option Node)`, which is a struct and so allocates nothing.
+
+(import "common.bjo")
+
+(type-rec
+  (: Node (Record (: left (Option Node) #:mutable)
+                  (: right (Option Node) #:mutable)
+                  (: i int #:mutable)
+                  (: j int #:mutable))))
+
+(: make-empty-node (-> Node))
+(defun (make-empty-node)
+  (Node (left None) (right None) (i 0) (j 0)))
+
+(: make-node (-> Node Node Node))
+(defun (make-node l r)
+  (Node (left (Some l)) (right (Some r)) (i 0) (j 0)))
+
+(: tree-size (-> int int))
+(defun (tree-size i)
+  (- (shift-left 1 (+ i 1)) 1))
+
+(: populate (-> int Node void))
+(defun (populate depth this-node)
+  (when (> depth 0)
+    (let ((depth (- depth 1))
+          (l (make-empty-node))
+          (r (make-empty-node)))
+      (record-set! this-node (left (Some l)))
+      (record-set! this-node (right (Some r)))
+      (populate depth l)
+      (populate depth r))))
+
+(: make-tree (-> int Node))
+(defun (make-tree depth)
+  (if (<= depth 0)
+      (make-empty-node)
+      (make-node (make-tree (- depth 1))
+                 (make-tree (- depth 1)))))
+
+(: time-construction (-> int int void))
+(defun (time-construction stretch depth)
+  (def iters (/ (* 2 (tree-size stretch)) (tree-size depth)))
+  (println #"Creating ${iters} trees of depth ${depth}")
+  (println "GCBench: Top down construction")
+  (let loop ((i 0))
+    (when (< i iters)
+      (populate depth (make-empty-node))
+      (loop (+ i 1))))
+  (println "GCBench: Bottom up construction")
+  (let loop ((i 0))
+    (when (< i iters)
+      (ignore (make-tree depth))
+      (loop (+ i 1)))))
+
+(: gcbench (-> int bool))
+(defun (gcbench stretch)
+  (def long-lived-depth (- stretch 2))
+  (def array-size (* 4 (tree-size long-lived-depth)))
+  (def min-depth 4)
+  (def max-depth long-lived-depth)
+  (println "Garbage Collector Test")
+  (println #" Stretching memory with a binary tree of depth ${stretch}")
+  (println "GCBench: Main")
+  (ignore (make-tree stretch))
+  (println #" Creating a long-lived binary tree of depth ${long-lived-depth}")
+  (def long-lived (make-empty-node))
+  (populate long-lived-depth long-lived)
+  (println #" Creating a long-lived array of ${array-size} inexact reals")
+  (def array (make-array array-size))
+  (let loop ((i 0))
+    (when (< i (/ array-size 2))
+      (array-set! array i (/ 1.0 (cast System.Double (+ i 1))))
+      (loop (+ i 1))))
+  (let loop ((d min-depth))
+    (when (<= d max-depth)
+      (time-construction stretch d)
+      (loop (+ d 2))))
+  (def n (min 1000 (- (/ (array-length array) 2) 1)))
+  (= (array-ref array n) (/ 1.0 (cast System.Double (+ n 1)))))
+
+(defun (main args)
+  (def stretch (arg-int args 1))
+  (run-benchmark "gcbench" (arg-int args 0) (fun () (gcbench stretch)) #(= & #t)))

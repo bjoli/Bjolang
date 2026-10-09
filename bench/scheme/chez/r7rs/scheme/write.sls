@@ -1,0 +1,5 @@
+(library (scheme write)
+  (export display write write-shared write-simple)
+  (import (chezscheme))
+  (define write-shared write)
+  (define write-simple write))

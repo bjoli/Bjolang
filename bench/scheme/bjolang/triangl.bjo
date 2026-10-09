@@ -1,0 +1,63 @@
+;; TRIANGL -- Board game benchmark, from Gabriel.
+;; Arguments: count i depth
+
+(import "common.bjo")
+
+(: board (Array int))
+(def board #[1 1 1 1 1 0 1 1 1 1 1 1 1 1 1 1])
+
+(: sequence (Array int))
+(def sequence #[0 0 0 0 0 0 0 0 0 0 0 0 0 0])
+
+(: a (Array int))
+(def a #[1 2 4 3 5 6 1 3 6 2 5 4 11 12
+         13 7 8 4 4 7 11 8 12 13 6 10
+         15 9 14 13 13 14 15 9 10
+         6 6])
+
+(: b (Array int))
+(def b #[2 4 7 5 8 9 3 6 10 5 9 8
+         12 13 14 8 9 5 2 4 7 5 8
+         9 3 6 10 5 9 8 12 13 14
+         8 9 5 5])
+
+(: c (Array int))
+(def c #[4 7 11 8 12 13 6 10 15 9 14 13
+         13 14 15 9 10 6 1 2 4 3 5 6 1
+         3 6 2 5 4 11 12 13 7 8 4 4])
+
+(: answer (List (List int)))
+(def/mutable answer Nil)
+
+(: attempt (-> int int bool))
+(defun (attempt i depth)
+  (cond ((= depth 14)
+         (set! answer (Cons (list-tail (array->list sequence)) answer))
+         #t)
+        ((and (= 1 (array-ref board (array-ref a i)))
+              (= 1 (array-ref board (array-ref b i)))
+              (= 0 (array-ref board (array-ref c i))))
+         (array-set! board (array-ref a i) 0)
+         (array-set! board (array-ref b i) 0)
+         (array-set! board (array-ref c i) 1)
+         (array-set! sequence depth i)
+         (let loop ((j 0))
+           (unless (or (= j 36) (attempt j (+ depth 1)))
+             (loop (+ j 1))))
+         (array-set! board (array-ref a i) 1)
+         (array-set! board (array-ref b i) 1)
+         (array-set! board (array-ref c i) 0)
+         #f)
+        (else #f)))
+
+(: test (-> int int (List int)))
+(defun (test i depth)
+  (set! answer Nil)
+  (ignore (attempt i depth))
+  (list-head answer))
+
+(defun (main args)
+  (def i (arg-int args 1))
+  (def depth (arg-int args 2))
+  (def expected (list 22 34 31 15 7 1 20 17 25 6 5 13 32))
+  (run-benchmark "triangl" (arg-int args 0) (fun () (test i depth)) #(= & expected)))

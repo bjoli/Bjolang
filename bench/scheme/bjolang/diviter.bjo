@@ -1,0 +1,25 @@
+;; DIVITER -- Benchmark which divides by 2 using lists of n ()'s.
+;; Arguments: count n expected-length
+;;
+;; The elements are empty lists, as in the original, so the list is a
+;; (List (List int)).
+
+(import "common.bjo")
+
+(: create-n (-> int (List (List int))))
+(defun (create-n n)
+  (let loop ((n n) (a Nil))
+    (if (= n 0) a (loop (- n 1) (Cons Nil a)))))
+
+(: iterative-div2 (-> (List (List int)) (List (List int))))
+(defun (iterative-div2 l)
+  (let loop ((l l) (a Nil))
+    (if (list-empty? l)
+        a
+        (loop (list-tail (list-tail l)) (Cons (list-head l) a)))))
+
+(defun (main args)
+  (def ll (create-n (arg-int args 1)))
+  (def expected (arg-int args 2))
+  (run-benchmark "diviter" (arg-int args 0) (fun () (iterative-div2 ll))
+                 #(= (list-length &) expected)))

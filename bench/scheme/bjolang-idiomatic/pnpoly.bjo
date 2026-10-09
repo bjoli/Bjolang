@@ -1,0 +1,35 @@
+;; PNPOLY, idiomatic: the polygon is a vec of points, walked backwards with
+;; the previous vertex carried by `:with`. The original indexes two vectors
+;; of coordinates and copies them on each run; an immutable vec needs no copy.
+;; Arguments: count expected
+
+(import "../bjolang/common.bjo")
+
+(: pt-in-poly2 (-> (Vec (Tuple double double)) double double bool))
+(defun (pt-in-poly2 poly x y)
+  (loop (:for (Tuple xi yi) (in-reverse-vec poly))
+        (:with (Tuple xj yj) (vec-ref poly 0) (Tuple xi yi))
+        (:acc c (folding #f
+                         (if (or (and (or (> yi y) (>= y yj))
+                                      (or (> yj y) (>= y yi)))
+                                 (>= x (+ xi (/ (* (- xj xi) (- y yi)) (- yj yi)))))
+                             c
+                             (not c))))
+        => c))
+
+(: points (Vec (Tuple double double)))
+(def points
+  [(0.5 . 0.5) (0.5 . 1.5) (-0.5 . 1.5) (0.75 . 2.25) (0.0 . 2.01) (-0.5 . 2.5)
+   (-1.0 . -0.5) (-1.5 . 0.5) (-2.25 . -1.0) (0.5 . -0.25) (0.5 . -1.25) (-0.5 . -2.5)])
+
+(: run (-> (Vec (Tuple double double)) int))
+(defun (run poly)
+  {counting p :when (pt-in-poly2 poly x y) (:for (Tuple x y) (in-vec points)) (:let p 1)})
+
+(defun (main args)
+  (def poly [(0.0 . 0.0) (1.0 . 0.0) (1.0 . 1.0) (0.0 . 1.0) (0.0 . 2.0) (1.0 . 3.0)
+             (-0.5 . 2.0) (-1.0 . 3.0) (-1.0 . 0.0) (-2.0 . -0.5) (-2.5 . -1.0) (-2.0 . -1.5)
+             (-1.5 . -2.0) (-0.5 . -2.0) (1.0 . -1.5) (1.0 . -1.0) (0.0 . -0.5) (-0.5 . -1.0)
+             (-1.0 . -1.0) (-0.5 . -0.5)])
+  (def expected (arg-int args 1))
+  (run-benchmark "pnpoly" (arg-int args 0) (fun () (run poly)) #(= & expected)))

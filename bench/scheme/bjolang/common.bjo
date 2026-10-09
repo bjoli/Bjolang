@@ -1,0 +1,46 @@
+;; The harness the benchmarks share, a port of the suite's `common.scm`.
+;; The inputs come from the command line, so that the compiler cannot fold
+;; the work away. Only the runs of the thunk are timed, not process start
+;; or JIT compilation of `main`.
+
+(export arg-int arg-double run-benchmark array->list)
+
+(import/extern
+  (timestamp (: System.Diagnostics.Stopwatch.GetTimestamp (-> long)))
+  (ticks-per-second (: System.Diagnostics.Stopwatch.Frequency #:get)))
+
+(: arg-int (-> (Vec string) int int))
+(defun (arg-int args i) (string->int (vec-ref args i)))
+
+(: arg-double (-> (Vec string) int double))
+(defun (arg-double args i) (string->double (vec-ref args i)))
+
+;; Scheme's `vector->list`.
+(: array->list (-> (Array %a) (List %a)))
+(defun (array->list v)
+  (let loop ((i (- (array-length v) 1)) (acc Nil))
+    (if (< i 0)
+        acc
+        (loop (- i 1) (Cons (array-ref v i) acc)))))
+
+;; Runs `thunk` `count` times and checks the last result with `ok?`. The
+;; output line is the suite's `+!CSVLINE!+`, so that `run.py` reads both
+;; implementations the same way. Answers the exit code for `main`.
+(: run-benchmark (-> string int (-> %a) (-> %a bool) int))
+(defun (run-benchmark name count thunk ok?)
+  (println #"Running ${name}")
+  (def t0 (timestamp))
+  (def result
+    (let go ((i 1) (r (thunk)))
+      (if (< i count) (go (+ i 1) (thunk)) r)))
+  (def t1 (timestamp))
+  (def secs (/ (cast System.Double (- t1 t0)) (cast System.Double ticks-per-second)))
+  (if (ok? result)
+      (let ()
+        (println #"Elapsed time: ${secs} seconds for ${name}")
+        (println #"+!CSVLINE!+bjolang,${name},${secs}")
+        0)
+      (let ()
+        (println #"ERROR: returned incorrect result for ${name}")
+        (println #"+!CSVLINE!+bjolang,${name},INCORRECT")
+        1)))

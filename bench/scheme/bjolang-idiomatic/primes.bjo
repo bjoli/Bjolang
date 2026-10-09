@@ -1,0 +1,22 @@
+;; PRIMES, idiomatic: the same sieve by repeated filtering, on vecs. Each
+;; round takes the first candidate as a prime and keeps the candidates it
+;; does not divide.
+;; Arguments: count n expected-length
+
+(import "../bjolang/common.bjo")
+
+(: primes<= (-> int (Vec int)))
+(defun (primes<= n)
+  (let sieve ((candidates {vecing i (:for i (range 2 (+ n 1)))})
+              (primes []))
+    (if (vec-empty? candidates)
+        primes
+        (let ((p (vec-ref candidates 0)))
+          (sieve {vecing x :when (not (= 0 (% x p))) (:for x (in-vec candidates #:from 1))}
+                 (vec-add primes p))))))
+
+(defun (main args)
+  (def n (arg-int args 1))
+  (def expected (arg-int args 2))
+  (run-benchmark "primes" (arg-int args 0) (fun () (primes<= n))
+                 #(and (= (vec-length &) expected) (= (vec-ref & 0) 2))))

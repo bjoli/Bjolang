@@ -1,0 +1,44 @@
+;; ARRAY1 -- One of the Kernighan and Van Wyk benchmarks.
+;; Arguments: count n expected
+;;
+;; As in the original, the harness runs once and `go` repeats `count` times.
+
+(import "common.bjo")
+
+(: create-x (-> int (Array int)))
+(defun (create-x n)
+  (def result (make-array n))
+  (let loop ((i 0))
+    (if (>= i n)
+        result
+        (let ()
+          (array-set! result i i)
+          (loop (+ i 1))))))
+
+(: create-y (-> (Array int) (Array int)))
+(defun (create-y x)
+  (def n (array-length x))
+  (def result (make-array n))
+  (let loop ((i (- n 1)))
+    (if (< i 0)
+        result
+        (let ()
+          (array-set! result i (array-ref x i))
+          (loop (- i 1))))))
+
+(: my-try (-> int int))
+(defun (my-try n)
+  (array-length (create-y (create-x n))))
+
+(: go (-> int int int))
+(defun (go m n)
+  (let loop ((repeat m) (result 0))
+    (if (> repeat 0)
+        (loop (- repeat 1) (my-try n))
+        result)))
+
+(defun (main args)
+  (def m (arg-int args 0))
+  (def n (arg-int args 1))
+  (def expected (arg-int args 2))
+  (run-benchmark "array1" 1 (fun () (go m n)) #(= & expected)))

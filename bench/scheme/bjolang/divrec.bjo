@@ -1,0 +1,24 @@
+;; DIVREC -- Benchmark which divides by 2 using lists of n ()'s.
+;; Arguments: count n expected-length
+;;
+;; The elements are empty lists, as in the original, so the list is a
+;; (List (List int)).
+
+(import "common.bjo")
+
+(: create-n (-> int (List (List int))))
+(defun (create-n n)
+  (let loop ((n n) (a Nil))
+    (if (= n 0) a (loop (- n 1) (Cons Nil a)))))
+
+(: recursive-div2 (-> (List (List int)) (List (List int))))
+(defun (recursive-div2 l)
+  (if (list-empty? l)
+      Nil
+      (Cons (list-head l) (recursive-div2 (list-tail (list-tail l))))))
+
+(defun (main args)
+  (def ll (create-n (arg-int args 1)))
+  (def expected (arg-int args 2))
+  (run-benchmark "divrec" (arg-int args 0) (fun () (recursive-div2 ll))
+                 #(= (list-length &) expected)))

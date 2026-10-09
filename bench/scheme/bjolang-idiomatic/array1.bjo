@@ -1,0 +1,25 @@
+;; ARRAY1, idiomatic: the two vectors are vecs built by comprehensions, and
+;; the second is a copy of the first.
+;; Arguments: count n expected
+
+(import "../bjolang/common.bjo")
+
+(: create-x (-> int (Vec int)))
+(defun (create-x n)
+  {vecing i (:for i (range 0 n))})
+
+(: create-y (-> (Vec int) (Vec int)))
+(defun (create-y x)
+  {vecing e (:for e (in-vec x))})
+
+(: my-try (-> int int))
+(defun (my-try n)
+  (vec-length (create-y (create-x n))))
+
+(defun (main args)
+  (def m (arg-int args 0))
+  (def n (arg-int args 1))
+  (def expected (arg-int args 2))
+  (run-benchmark "array1" 1
+                 (fun () (loop (:for k (range 0 m)) (:acc r (folding 0 (my-try n))) => r))
+                 #(= & expected)))

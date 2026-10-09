@@ -1,0 +1,32 @@
+;; TAKL -- The TAKeuchi function using lists as counters.
+;; Arguments: count len1 len2 len3 expected-length
+
+(import "common.bjo")
+
+(: listn (-> int (List int)))
+(defun (listn n)
+  (if (= n 0)
+      Nil
+      (Cons n (listn (- n 1)))))
+
+(: shorterp (-> (List int) (List int) bool))
+(defun (shorterp x y)
+  (and (not (list-empty? y))
+       (or (list-empty? x)
+           (shorterp (list-tail x) (list-tail y)))))
+
+(: mas (-> (List int) (List int) (List int) (List int)))
+(defun (mas x y z)
+  (if (not (shorterp y x))
+      z
+      (mas (mas (list-tail x) y z)
+           (mas (list-tail y) z x)
+           (mas (list-tail z) x y))))
+
+(defun (main args)
+  (def x (listn (arg-int args 1)))
+  (def y (listn (arg-int args 2)))
+  (def z (listn (arg-int args 3)))
+  (def expected (arg-int args 4))
+  (run-benchmark "takl" (arg-int args 0) (fun () (mas x y z))
+                 #(= (list-length &) expected)))

@@ -1,0 +1,31 @@
+;; CPSTAK -- A continuation-passing version of the TAK benchmark.
+;; Arguments: count x y z expected
+
+(import "common.bjo")
+
+(: cpstak (-> int int int int))
+(defun (cpstak x y z)
+  (defun (tak (: x int) (: y int) (: z int) (: k (-> int int))) : int
+    (if (not (< y x))
+        (k z)
+        (tak (- x 1)
+             y
+             z
+             (fun (v1)
+               (tak (- y 1)
+                    z
+                    x
+                    (fun (v2)
+                      (tak (- z 1)
+                           x
+                           y
+                           (fun (v3)
+                             (tak v1 v2 v3 k)))))))))
+  (tak x y z (fun (a) a)))
+
+(defun (main args)
+  (def x (arg-int args 1))
+  (def y (arg-int args 2))
+  (def z (arg-int args 3))
+  (def expected (arg-int args 4))
+  (run-benchmark "cpstak" (arg-int args 0) (fun () (cpstak x y z)) #(= & expected)))

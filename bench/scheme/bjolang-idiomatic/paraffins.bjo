@@ -1,0 +1,91 @@
+;; PARAFFINS, idiomatic: partitions and radicals are vecs built by nested
+;; comprehensions. The original walks the tails of a radical list where two
+;; partition sizes are equal, so that each combination is made once; here the
+;; inner walk starts at the outer index instead.
+;; Arguments: count n expected
+
+(import "../bjolang/common.bjo")
+
+(type-rec
+  (: Radical (Union H (: C Radical Radical Radical))))
+
+(type
+  (: Paraffin (Union (: BCP Radical Radical)
+                     (: CCP Radical Radical Radical Radical))))
+
+(: three-partitions (-> int (Vec (Tuple int int int))))
+(defun (three-partitions m)
+  {vecing (Tuple nc1 nc2 (- m (+ nc1 nc2)))
+          (:for nc1 (range 0 (+ (/ m 3) 1)))
+          (:subloop)
+          (:for nc2 (range nc1 (+ (/ (- m nc1) 2) 1)))})
+
+(: four-partitions (-> int (Vec (Tuple int int int int))))
+(defun (four-partitions m)
+  {vecing (Tuple nc1 nc2 nc3 (- m (+ nc1 (+ nc2 nc3))))
+          (:for nc1 (range 0 (+ (/ m 4) 1)))
+          (:subloop)
+          (:for nc2 (range nc1 (+ (/ (- m nc1) 3) 1)))
+          (:let start (max nc2 (- (/ (+ m 1) 2) (+ nc1 nc2))))
+          (:subloop)
+          (:for nc3 (range start (+ (/ (- m (+ nc1 nc2)) 2) 1)))})
+
+;; Where a walk over `nc`'s radicals starts: at the outer walk's index when
+;; both walk the same size, else at 0.
+(: from (-> int int int int))
+(defun (from nc outer-nc outer-i) (if (= nc outer-nc) outer-i 0))
+
+(: rads-of-size (-> (Vec (Vec Radical)) int (Vec Radical)))
+(defun (rads-of-size radicals n)
+  {vecing (C (vec-ref rads1 i1) (vec-ref rads2 i2) r3)
+          (:for (Tuple nc1 nc2 nc3) (in-vec (three-partitions (- n 1))))
+          (:let rads1 (vec-ref radicals nc1))
+          (:let rads2 (vec-ref radicals nc2))
+          (:let rads3 (vec-ref radicals nc3))
+          (:subloop)
+          (:for i1 (range 0 (vec-length rads1)))
+          (:subloop)
+          (:for i2 (range (from nc2 nc1 i1) (vec-length rads2)))
+          (:subloop)
+          (:for r3 (in-vec rads3 #:from (from nc3 nc2 i2)))})
+
+(: bcp-generator (-> (Vec (Vec Radical)) int (Vec Paraffin)))
+(defun (bcp-generator radicals j)
+  (if (odd? j)
+      []
+      (let ((rads (vec-ref radicals (/ j 2))))
+        {vecing (BCP (vec-ref rads i1) r2)
+                (:for i1 (range 0 (vec-length rads)))
+                (:subloop)
+                (:for r2 (in-vec rads #:from i1))})))
+
+(: ccp-generator (-> (Vec (Vec Radical)) int (Vec Paraffin)))
+(defun (ccp-generator radicals j)
+  {vecing (CCP (vec-ref rads1 i1) (vec-ref rads2 i2) (vec-ref rads3 i3) r4)
+          (:for (Tuple nc1 nc2 nc3 nc4) (in-vec (four-partitions (- j 1))))
+          (:let rads1 (vec-ref radicals nc1))
+          (:let rads2 (vec-ref radicals nc2))
+          (:let rads3 (vec-ref radicals nc3))
+          (:let rads4 (vec-ref radicals nc4))
+          (:subloop)
+          (:for i1 (range 0 (vec-length rads1)))
+          (:subloop)
+          (:for i2 (range (from nc2 nc1 i1) (vec-length rads2)))
+          (:subloop)
+          (:for i3 (range (from nc3 nc2 i2) (vec-length rads3)))
+          (:subloop)
+          (:for r4 (in-vec rads4 #:from (from nc4 nc3 i3)))})
+
+(: nb (-> int int))
+(defun (nb n)
+  (def radicals
+    (loop (:for i (range 1 (+ (/ n 2) 1)))
+          (:acc rads (folding [[H]] (vec-add rads (rads-of-size rads i))))
+          => rads))
+  (+ (vec-length (bcp-generator radicals n))
+     (vec-length (ccp-generator radicals n))))
+
+(defun (main args)
+  (def n (arg-int args 1))
+  (def expected (arg-int args 2))
+  (run-benchmark "paraffins" (arg-int args 0) (fun () (nb n)) #(= & expected)))

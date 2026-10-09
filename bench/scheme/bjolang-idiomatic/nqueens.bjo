@@ -1,0 +1,30 @@
+;; NQUEENS, idiomatic: the same search tree as the original, with the
+;; remaining rows and the placed queens as vecs. Each candidate that does
+;; not attack a placed queen is placed, and the rest is searched with it.
+;; Arguments: count n expected
+
+(import "../bjolang/common.bjo")
+
+;; The last queen placed is at distance 1, the one before it at 2, and so on.
+(: ok? (-> int (Vec int) bool))
+(defun (ok? row placed)
+  (loop (:for q (in-reverse-vec placed))
+        (:for dist (up-from 1))
+        (:finish (or (= q (+ row dist)) (= q (- row dist))) #f)
+        => #t))
+
+(: queens (-> (Vec int) (Vec int) int))
+(defun (queens remaining placed)
+  (if (vec-empty? remaining)
+      1
+      (loop (:for row (in-vec remaining))
+            (:for i (up-from 0))
+            (:when (ok? row placed))
+            (:acc n (summing (queens (vec-remove-at remaining i) (vec-add placed row))))
+            => n)))
+
+(defun (main args)
+  (def n (arg-int args 1))
+  (def expected (arg-int args 2))
+  (def rows {vecing i (:for i (range 1 (+ n 1)))})
+  (run-benchmark "nqueens" (arg-int args 0) (fun () (queens rows [])) #(= & expected)))

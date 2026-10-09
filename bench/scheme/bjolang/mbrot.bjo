@@ -1,0 +1,47 @@
+;; MBROT -- Generation of Mandelbrot set fractal.
+;; Arguments: count n expected
+
+(import "common.bjo")
+
+(: count (-> double double double int int int))
+(defun (count r i step x y)
+  (def max-count 64)
+  (def radius^2 16.0)
+  (def cr (+ r (* (cast System.Double x) step)))
+  (def ci (+ i (* (cast System.Double y) step)))
+  (let loop ((zr cr) (zi ci) (c 0))
+    (if (= c max-count)
+        c
+        (let ((zr^2 (* zr zr))
+              (zi^2 (* zi zi)))
+          (if (> (+ zr^2 zi^2) radius^2)
+              c
+              (let ((new-zr (+ (- zr^2 zi^2) cr))
+                    (new-zi (+ (* 2.0 (* zr zi)) ci)))
+                (loop new-zr new-zi (+ c 1))))))))
+
+(: mbrot (-> (Array (Array int)) double double double int void))
+(defun (mbrot matrix r i step n)
+  (let loop1 ((y (- n 1)))
+    (when (>= y 0)
+      (let loop2 ((x (- n 1)))
+        (if (>= x 0)
+            (let ()
+              (array-set! (array-ref matrix x) y (count r i step x y))
+              (loop2 (- x 1)))
+            (loop1 (- y 1)))))))
+
+(: test (-> int int))
+(defun (test n)
+  (def matrix (make-array n))
+  (let loop ((i (- n 1)))
+    (when (>= i 0)
+      (array-set! matrix i (make-array n))
+      (loop (- i 1))))
+  (mbrot matrix -1.0 -0.5 0.005 n)
+  (array-ref (array-ref matrix 0) 0))
+
+(defun (main args)
+  (def n (arg-int args 1))
+  (def expected (arg-int args 2))
+  (run-benchmark "mbrot" (arg-int args 0) (fun () (test n)) #(= & expected)))

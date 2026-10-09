@@ -1,0 +1,69 @@
+;; DERIV -- Symbolic derivation.
+;; Arguments: count
+;;
+;; The expressions are S-expressions in the original. Here they are a union
+;; with a case per kind of datum, and quoted lists elaborate into it. A
+;; Scheme symbol is a shared pointer, so the operator atoms are built once.
+
+(import "common.bjo")
+
+(type-rec
+  (: Sexp (Union (: Atom Symbol)
+                 (: Int int)
+                 (: Lst (List Sexp)))))
+
+(def plus (Atom '+))
+(def minus (Atom '-))
+(def times (Atom '*))
+(def divide (Atom '/))
+
+(: deriv (-> Sexp Sexp))
+(defun (deriv a)
+  (match a
+    ((Atom s) (Int (if (eq? s 'x) 1 0)))
+    ((Int _) (Int 0))
+    ((Lst (Cons (Atom op) args))
+     (cond ((eq? op '+)
+            (Lst (Cons plus (list-map deriv args))))
+           ((eq? op '-)
+            (Lst (Cons minus (list-map deriv args))))
+           ((eq? op '*)
+            (Lst (list times
+                       a
+                       (Lst (Cons plus (list-map (fun (a) (Lst (list divide (deriv a) a))) args))))))
+           ((eq? op '/)
+            (let ((x (list-head args))
+                  (y (list-head (list-tail args))))
+              (Lst (list minus
+                         (Lst (list divide (deriv x) y))
+                         (Lst (list divide x (Lst (list times y y (deriv y)))))))))
+           (else (panic! "No derivation method available"))))
+    (_ (panic! "No derivation method available"))))
+
+;; Scheme's `equal?` on S-expressions.
+(: sexp-equal? (-> Sexp Sexp bool))
+(defun (sexp-equal? a b)
+  (match a
+    ((Atom x) (match b ((Atom y) (eq? x y)) (_ #f)))
+    ((Int x) (match b ((Int y) (= x y)) (_ #f)))
+    ((Lst xs)
+     (match b
+       ((Lst ys)
+        (let loop ((xs xs) (ys ys))
+          (cond ((list-empty? xs) (list-empty? ys))
+                ((list-empty? ys) #f)
+                (else (and (sexp-equal? (list-head xs) (list-head ys))
+                           (loop (list-tail xs) (list-tail ys)))))))
+       (_ #f)))))
+
+(: input Sexp)
+(def input '(+ (* 3 x x) (* a x x) (* b x) 5))
+
+(: output Sexp)
+(def output '(+ (* (* 3 x x) (+ (/ 0 3) (/ 1 x) (/ 1 x)))
+                (* (* a x x) (+ (/ 0 a) (/ 1 x) (/ 1 x)))
+                (* (* b x) (+ (/ 0 b) (/ 1 x)))
+                0))
+
+(defun (main args)
+  (run-benchmark "deriv" (arg-int args 0) (fun () (deriv input)) #(sexp-equal? & output)))
