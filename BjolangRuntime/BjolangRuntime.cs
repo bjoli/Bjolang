@@ -746,40 +746,108 @@ public static partial class BjolangRuntime {
 
     // --- Cursors ---
     //
-    // A `Vec` has an allocation-free *struct* enumerator, but a struct in a
-    // Bjolang binding is a value, and `MoveNext` on one copied into a call
-    // advances the copy. So a cursor is a small class holding the enumerator as
-    // a *field*: one allocation per loop entry, none per element, no boxing.
+    // A `Vec` is walked one leaf array at a time, by a struct cursor that
+    // `next` returns advanced. See `VecCursor<T>`.
     //
     // The collections with a project of their own carry their own cursor —
     // `Map.MapCursor`, `Set.SetCursor` — and bind to it through `import/class`.
     // This one is here because `Vec`'s type is a builtin.
-    //
-    // The advancing happens in `done?`, which the `Iterable` protocol allows —
-    // called once per iteration, before `current`, and nothing peeks. `next` is
-    // then the identity.
 
-    public sealed class VecCursor<T> where T : notnull {
-        public Collections.RrbEnumerator<T> E;
-        public VecCursor(Collections.RrbList<T> list) { E = list.GetEnumerator(); }
+    /// <summary>
+    /// A forward walk of part of a vec, one leaf array at a time.
+    ///
+    /// The leaves of an RRB tree are arrays of consecutive elements, so a walk
+    /// reads an element as `Items[I]` and looks up only the next leaf, once per
+    /// leaf. `vec-ref` per index descends the tree for every element.
+    ///
+    /// A struct, and `Next` answers the advanced cursor, as the `Iterable`
+    /// protocol passes cursors by value. So a walk allocates nothing, which is
+    /// what matters for the short walks a loop starts many times. A vec of up to
+    /// 32 elements is all in its tail, and its walk is one array.
+    ///
+    /// `Items[I]` up to `Items[End - 1]` are this leaf's part of the walk.
+    /// `NextIndex` is the vec index after them, and `Stop` the vec index the
+    /// walk ends before.
+    /// </summary>
+    public readonly struct VecCursor<T> {
+        private readonly T[] _items;
+        private readonly int _i;
+        private readonly int _end;
+        private readonly Collections.RrbList<T> _list;
+        private readonly int _nextIndex;
+        private readonly int _stop;
+
+        private VecCursor(T[] items, int i, int end, Collections.RrbList<T> list, int nextIndex, int stop) {
+            _items = items;
+            _i = i;
+            _end = end;
+            _list = list;
+            _nextIndex = nextIndex;
+            _stop = stop;
+        }
+
+        /// The walk of `count` elements from `from`.
+        public static VecCursor<T> Start(Collections.RrbList<T> list, int from, int count) {
+            if (from < 0 || count < 0 || from > list.Count - count)
+                throw new ArgumentOutOfRangeException(nameof(count), $"{from} and {count} are not a run of a vec of {list.Count}.");
+            return count == 0
+                ? new VecCursor<T>(Array.Empty<T>(), 0, 0, list, from, from)
+                : AtLeaf(list, from, from + count);
+        }
+
+        public bool Done {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => _i >= _end;
+        }
+
+        public T Current {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => _items[_i];
+        }
+
+        // The slow path takes and answers values. A method called on the
+        // cursor itself would take its address, and the JIT then keeps the
+        // whole cursor in memory rather than in registers.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public VecCursor<T> Next() {
+            var i = _i + 1;
+            if (i < _end || _nextIndex >= _stop) return new VecCursor<T>(_items, i, _end, _list, _nextIndex, _stop);
+            return AtLeaf(_list, _nextIndex, _stop);
+        }
+
+        /// The cursor on element `index`, with the part of its leaf the walk
+        /// up to `stop` takes.
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static VecCursor<T> AtLeaf(Collections.RrbList<T> list, int index, int stop) {
+            var items = list.LeafAt(index, out var position, out var length);
+            var take = Math.Min(length - position, stop - index);
+            return new VecCursor<T>(items, position, position + take, list, index + take, stop);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static VecCursor<T> vecsubcursor<T>(Collections.RrbList<T> list) where T : notnull =>
-        new VecCursor<T>(list);
+        VecCursor<T>.Start(list, 0, list.Count);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool vecsubcursorsubdone_QMARK<T>(VecCursor<T> cursor) where T : notnull =>
-        !cursor.E.MoveNext();
+    public static VecCursor<T> vecsubcursorsubslice<T>(Collections.RrbList<T> list, int from, int count) where T : notnull =>
+        VecCursor<T>.Start(list, from, count);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static T vecsubcursorsubcurrent<T>(VecCursor<T> cursor) where T : notnull => cursor.E.Current;
+    public static bool vecsubcursorsubdone_QMARK<T>(VecCursor<T> cursor) where T : notnull => cursor.Done;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static T vecsubcursorsubcurrent<T>(VecCursor<T> cursor) where T : notnull => cursor.Current;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static VecCursor<T> vecsubcursorsubnext<T>(VecCursor<T> cursor) where T : notnull => cursor.Next();
 
     /// <summary>
     /// A position in a walk of a `Seq`.
     ///
-    /// Not for the reason `VecCursor` exists — an `IEnumerator&lt;T&gt;` is
-    /// already a class — but for two others.
+    /// A class holding an enumerator, unlike the struct `VecCursor`: an
+    /// `IEnumerator&lt;T&gt;` is already a class, and it is needed for two
+    /// reasons.
     ///
     /// **A `Seq` has no cheap tail.** `IEnumerable` gives out enumerators and
     /// nothing else, so "the rest of this sequence" can only be spelled as "the
@@ -815,8 +883,8 @@ public static partial class BjolangRuntime {
             return true;
         }
 
-        /// Only ever reached after a `Done` that answered false, which is the
-        /// same contract `VecCursor` is read under.
+        /// Only ever reached after a `Done` that answered false. The `Iterable`
+        /// protocol calls `done?` once per iteration, before `current`.
         public T Current => _e!.Current;
     }
 

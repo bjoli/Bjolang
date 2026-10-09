@@ -375,77 +375,64 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc vec-cursor
-  (summary "A cursor at the start of a vec, for walking it front to back.")
+  (summary "A cursor on the first element of a vec, for walking it front to back.")
   (arg v "The vec.")
-  (returns "A cursor before the first element.")
-  (see vec-cursor-done? vec-cursor-current vec-walk-cursor)
+  (returns "A cursor on the first element, or a finished cursor for an empty vec.")
+  (see vec-cursor-done? vec-cursor-current vec-cursor-next vec-cursor-slice)
   (reference """
     What @code{Vec}'s @code{Iterable} implementation walks with. The cursor
-    holds the vec's enumerator, so a walk allocates the cursor and nothing
-    per element. Asking @code{vec-cursor-done?} is what moves it on: call
-    it once per element, before @code{vec-cursor-current}. A cursor is used
-    by one walk.
+    is a value that walks the vec's leaf arrays: an array read per element,
+    a lookup per leaf of 32 elements, and nothing allocated. A vec of up to
+    32 elements is one array.
+
+    @code{vec-cursor-done?} and @code{vec-cursor-current} only read a
+    cursor, and @code{vec-cursor-next} answers the cursor one element on.
     """))
 
-(:doc vec-cursor-done?
-  (summary "Moves a vec cursor to the next element, and says whether there was none.")
-  (arg c "The cursor.")
-  (returns "#t when the walk is over; #f when the cursor is now on an element.")
-  (see vec-cursor vec-cursor-current)
-  (reference """
-    Not a pure question: each call advances the cursor. The first call
-    moves it onto the first element.
-    """))
-
-(:doc vec-cursor-current
-  (summary "The element a vec cursor is on.")
-  (arg c "The cursor, after vec-cursor-done? returned #f.")
-  (returns "The element.")
-  (see vec-cursor vec-cursor-done?))
-
-(:doc VecWalkCursor
-  (summary "A cursor walking part of a vec forwards.")
-  (tparam %a "The element type.")
-  (see vec-walk-cursor VecSlice VecBackCursor)
-  (reference """
-    A class holding the vec's range enumerator, which walks leaf arrays, so
-    a walk allocates the cursor and nothing per element.
-    """))
-
-(:doc vec-walk-cursor
-  (summary "A cursor for walking a run of a vec's elements forwards.")
+(:doc vec-cursor-slice
+  (summary "A cursor for walking a run of a vec's elements front to back.")
   (arg v "The vec.")
   (arg from "The first index walked, from 0.")
   (arg count "How many elements. from plus count is at most the length.")
-  (returns "A cursor before the first element of the run.")
+  (returns "A cursor on the first element of the run, or a finished cursor for an empty run.")
   (raises System.ArgumentOutOfRangeException "When the run is not in v.")
-  (see vec-walk-cursor-done? vec-walk-cursor-current in-vec)
+  (see vec-cursor in-vec)
   (reference """
-    What @code{VecSlice}'s @code{Iterable} implementation calls, and so
-    what @code{in-vec} walks with; it is exported because that
-    implementation's body names it. As with
-    @code{vec-cursor}, asking whether it is done is what moves it on.
+    What @code{VecSlice}'s @code{Iterable} implementation walks with, and so
+    what @code{in-vec} walks with. The cursor is the one @code{vec-cursor}
+    makes, so it is read and moved on with the same functions.
     """))
 
-(:doc vec-walk-cursor-done?
-  (summary "Moves a forward vec cursor to the next element, and says whether there was none.")
+(:doc vec-cursor-done?
+  (summary "Whether a vec cursor has walked past the last element.")
   (arg c "The cursor.")
-  (returns "#t when the run is over; #f when the cursor is now on an element.")
-  (see vec-walk-cursor vec-walk-cursor-current))
+  (returns "#t when the walk is over; #f when the cursor is on an element.")
+  (see vec-cursor vec-cursor-current vec-cursor-next))
 
-(:doc vec-walk-cursor-current
-  (summary "The element a forward vec cursor is on.")
-  (arg c "The cursor, after vec-walk-cursor-done? returned #f.")
+(:doc vec-cursor-current
+  (summary "The element a vec cursor is on.")
+  (arg c "The cursor, when vec-cursor-done? says #f.")
   (returns "The element.")
-  (see vec-walk-cursor vec-walk-cursor-done?))
+  (see vec-cursor vec-cursor-done? vec-cursor-next))
+
+(:doc vec-cursor-next
+  (summary "The cursor one element further on.")
+  (arg c "The cursor, when vec-cursor-done? says #f.")
+  (returns "A cursor on the next element, or a finished cursor after the last.")
+  (see vec-cursor vec-cursor-done? vec-cursor-current)
+  (reference """
+    The cursor given does not change, so it still reads the element it was
+    on.
+    """))
 
 (:doc VecBackCursor
   (summary "A cursor walking part of a vec backwards.")
   (tparam %a "The element type.")
-  (see vec-back-cursor ReverseVecSlice VecWalkCursor)
+  (see vec-back-cursor ReverseVecSlice vec-cursor)
   (reference """
-    A class holding the vec's reverse enumerator, which walks leaf arrays,
-    so a walk allocates the cursor and nothing per element.
+    A value that walks the vec's leaf arrays from the end, as
+    @code{vec-cursor} walks them from the start: nothing is allocated for a
+    walk.
     """))
 
 (:doc vec-back-cursor
@@ -453,27 +440,32 @@
   (arg v "The vec.")
   (arg last "The first index walked, the highest of the run. -1 with a count of 0 is the empty run.")
   (arg count "How many elements, going down from last. last minus count is at least -1.")
-  (returns "A cursor before the first element of the run.")
+  (returns "A cursor on the first element of the run, or a finished cursor for an empty run.")
   (raises System.ArgumentOutOfRangeException "When the run is not in v.")
-  (see vec-back-cursor-done? vec-back-cursor-current in-reverse-vec)
+  (see vec-back-cursor-done? vec-back-cursor-current vec-back-cursor-next in-reverse-vec)
   (reference """
     What @code{ReverseVecSlice}'s @code{Iterable} implementation calls, and
     so what @code{in-reverse-vec} walks with; it is exported because that
-    implementation's body names it. Asking whether it is done
-    is what moves it on.
+    implementation's body names it.
     """))
 
 (:doc vec-back-cursor-done?
-  (summary "Moves a backward vec cursor to the previous element, and says whether there was none.")
+  (summary "Whether a backward vec cursor has walked past the lowest element of its run.")
   (arg c "The cursor.")
-  (returns "#t when the run is over; #f when the cursor is now on an element.")
-  (see vec-back-cursor vec-back-cursor-current))
+  (returns "#t when the run is over; #f when the cursor is on an element.")
+  (see vec-back-cursor vec-back-cursor-current vec-back-cursor-next))
 
 (:doc vec-back-cursor-current
   (summary "The element a backward vec cursor is on.")
-  (arg c "The cursor, after vec-back-cursor-done? returned #f.")
+  (arg c "The cursor, when vec-back-cursor-done? says #f.")
   (returns "The element.")
-  (see vec-back-cursor vec-back-cursor-done?))
+  (see vec-back-cursor vec-back-cursor-done? vec-back-cursor-next))
+
+(:doc vec-back-cursor-next
+  (summary "The backward cursor one element further on, which is one index lower.")
+  (arg c "The cursor, when vec-back-cursor-done? says #f.")
+  (returns "A cursor on the next element, or a finished cursor after the last.")
+  (see vec-back-cursor vec-back-cursor-done? vec-back-cursor-current))
 
 ;; ---------------------------------------------------------------------------
 ;; Walking part of a vec
@@ -524,10 +516,10 @@
   (field items "The vec.")
   (field from "The first index walked.")
   (field count "How many elements are walked.")
-  (see in-vec VecWalkCursor)
+  (see in-vec vec-cursor-slice)
   (reference """
-    Made by @code{in-vec}, which checks the bounds. A value, so a loop over
-    one allocates only its cursor.
+    Made by @code{in-vec}, which checks the bounds. A value, and so is its
+    cursor, so a loop over one allocates nothing.
     """))
 
 (:doc ReverseVecSlice

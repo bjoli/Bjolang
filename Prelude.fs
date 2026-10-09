@@ -1157,10 +1157,9 @@ let prelude : Env =
         "listbuilder-length", {Scheme = Scheme(["a"], [], makeFunType [makeListBuilderType (TVar "a")] intType); IsMutable = false }
         "listbuilder->list", {Scheme = Scheme(["a"], [], makeFunType [makeListBuilderType (TVar "a")] (makeListType (TVar "a"))); IsMutable = false }
 
-        // Cursors over the collections' native struct enumerators. `done?` is
-        // what advances — the iteration protocol allows exactly that, and it is
-        // what lets `next` be the identity and the traversal allocate nothing
-        // after the cursor itself.
+        // A cursor over a Vec: a struct that walks the leaf arrays, so a walk
+        // allocates nothing. `done?` and `current` only read it, and
+        // `vec-cursor-next` answers the cursor one element on.
         "vec-cursor", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a")] (makeVecCursorType (TVar "a"))); IsMutable = false }
         "vec-cursor-done?", {Scheme = Scheme(["a"], [], makeFunType [makeVecCursorType (TVar "a")] boolType); IsMutable = false }
 
@@ -1177,6 +1176,11 @@ let prelude : Env =
         "seq-cursor-done?", {Scheme = Scheme(["a"], [], makeFunType [makeSeqCursorType (TVar "a")] boolType); IsMutable = false }
         "seq-cursor-current", {Scheme = Scheme(["a"], [], makeFunType [makeSeqCursorType (TVar "a")] (TVar "a")); IsMutable = false }
         "vec-cursor-current", {Scheme = Scheme(["a"], [], makeFunType [makeVecCursorType (TVar "a")] (TVar "a")); IsMutable = false }
+        // A vec cursor is a value: `next` answers the cursor one element on,
+        // and the cursor it was given still stands where it stood.
+        "vec-cursor-next", {Scheme = Scheme(["a"], [], makeFunType [makeVecCursorType (TVar "a")] (makeVecCursorType (TVar "a"))); IsMutable = false }
+        // The walk of `count` elements from `from`: what `in-vec` walks with.
+        "vec-cursor-slice", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a"); intType; intType] (makeVecCursorType (TVar "a"))); IsMutable = false }
       ]
       // Filled in by `checkDecl`, from `Bindings`, once per top-level
       // declaration. Empty here because nothing is being checked yet.

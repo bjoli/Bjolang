@@ -17,59 +17,85 @@ using Collections;
 
 namespace Bjolang.Runtime;
 
-// Cursors for walking part of a `Vec`, forwards or backwards.
-//
-// `RrbList<T>` already knows how to do both: `RangeEnumerator` and
-// `ReverseEnumerator` walk leaf arrays, so an element costs an index increment
-// and an array read, where `vec-ref` per index costs a descent of the tree.
-// That is the whole reason these exist rather than an `int` cursor and
-// `vec-ref`, which is what the array iterators use and what an array makes
-// cheap.
-//
-// Shaped like `BjolangRuntime.VecCursor`: the enumerator is a struct, and a
-// struct copied into a call has its `MoveNext` advance the copy, so the cursor
-// is a class holding one as a *field* — one allocation per walk, none per
-// element, no boxing. `done?` is what advances, which the `Iterable` protocol
-// allows: it is called once per iteration, before `current`, and nothing
-// peeks. `next` is then the identity.
+// The cursor for walking part of a `Vec` backwards. It walks one leaf array at
+// a time, as a struct that `next` answers advanced, so a walk allocates
+// nothing. The forward cursor is `BjolangRuntime.VecCursor`, a builtin type,
+// which `in-vec` and plain `(:for x v)` use; see there.
 
-/// A forward walk of `count` elements from `from`.
-public sealed class VecWalkCursor<T> {
-    public RrbEnumerator<T> E;
-
-    public VecWalkCursor(RrbList<T> list, int from, int count) {
-        E = new RrbEnumerator<T>(list, from, count);
-    }
-}
-
-/// A backward walk of `count` elements, starting at `last` and going down.
+/// A backward walk of part of a vec, one leaf array at a time.
 ///
-/// `last` is inclusive and may be -1, which with a count of 0 is the empty
-/// walk — the shape a caller reaches for an empty slice, and the reason this
-/// calls the constructor rather than `RrbList.ReverseEnumerator`, which
-/// refuses a negative index.
-public sealed class VecBackCursor<T> {
-    public RrbReverseEnumerator<T> E;
+/// `Items[I]` down to `Items[Floor]` are this leaf's part of the walk.
+/// `NextIndex` is the vec index below them, and `Stop` the vec index the walk
+/// ends above.
+public readonly struct VecBackCursor<T> {
+    private readonly T[] _items;
+    private readonly int _i;
+    private readonly int _floor;
+    private readonly RrbList<T> _list;
+    private readonly int _nextIndex;
+    private readonly int _stop;
 
-    public VecBackCursor(RrbList<T> list, int last, int count) {
-        E = new RrbReverseEnumerator<T>(list, last, count);
+    private VecBackCursor(T[] items, int i, int floor, RrbList<T> list, int nextIndex, int stop) {
+        _items = items;
+        _i = i;
+        _floor = floor;
+        _list = list;
+        _nextIndex = nextIndex;
+        _stop = stop;
+    }
+
+    /// The walk of `count` elements down from `last`. `last` may be -1, which
+    /// with a count of 0 is the walk of an empty slice.
+    public static VecBackCursor<T> Start(RrbList<T> list, int last, int count) {
+        if (last < -1 || last >= list.Count || count < 0 || last - count < -1)
+            throw new ArgumentOutOfRangeException(nameof(count), $"{count} down from {last} is not a run of a vec of {list.Count}.");
+        return count == 0
+            ? new VecBackCursor<T>(Array.Empty<T>(), -1, 0, list, last, last)
+            : AtLeaf(list, last, last - count);
+    }
+
+    public bool Done {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _i < _floor;
+    }
+
+    public T Current {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _items[_i];
+    }
+
+    // The slow path takes and answers values, as in `BjolangRuntime.VecCursor`,
+    // so that the JIT can keep the cursor in registers.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public VecBackCursor<T> Next() {
+        var i = _i - 1;
+        if (i >= _floor || _nextIndex <= _stop) return new VecBackCursor<T>(_items, i, _floor, _list, _nextIndex, _stop);
+        return AtLeaf(_list, _nextIndex, _stop);
+    }
+
+    /// The cursor on element `index`, with the part of its leaf the walk down
+    /// to above `stop` takes.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static VecBackCursor<T> AtLeaf(RrbList<T> list, int index, int stop) {
+        var items = list.LeafAt(index, out var position, out _);
+        var take = Math.Min(position + 1, index - stop);
+        return new VecBackCursor<T>(items, position, position - take + 1, list, index - take, stop);
     }
 }
 
 public static class VecWalk {
-    public static VecWalkCursor<T> Forward<T>(RrbList<T> list, int from, int count) =>
-        new VecWalkCursor<T>(list, from, count);
-
-    public static bool ForwardDone<T>(VecWalkCursor<T> cursor) => !cursor.E.MoveNext();
-
-    public static T ForwardCurrent<T>(VecWalkCursor<T> cursor) => cursor.E.Current;
-
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static VecBackCursor<T> Backward<T>(RrbList<T> list, int last, int count) =>
-        new VecBackCursor<T>(list, last, count);
+        VecBackCursor<T>.Start(list, last, count);
 
-    public static bool BackwardDone<T>(VecBackCursor<T> cursor) => !cursor.E.MoveNext();
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool BackwardDone<T>(VecBackCursor<T> cursor) => cursor.Done;
 
-    public static T BackwardCurrent<T>(VecBackCursor<T> cursor) => cursor.E.Current;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static T BackwardCurrent<T>(VecBackCursor<T> cursor) => cursor.Current;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static VecBackCursor<T> BackwardNext<T>(VecBackCursor<T> cursor) => cursor.Next();
 }
 
 // The walk `(:for ch s)` takes over a string.

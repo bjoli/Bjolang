@@ -83,20 +83,20 @@
 ;; --- Vecs ---
 ;;
 ;; Not an index cursor: a `Vec` is a tree, so `vec-ref` per element descends it
-;; every time. Its enumerators walk leaf arrays instead, and know both
-;; directions and a range, so a slice costs what the whole of it costs.
+;; every time. The cursors walk the leaf arrays instead: an array read per
+;; element and a lookup per leaf. They are structs, so a walk allocates
+;; nothing, which matters for the short walks a loop starts many times. The
+;; forward one is the builtin `VecCursor`, which a whole vec is walked with too:
+;; `(vec-cursor-slice v from count)` starts it on a slice.
 
 (import/class
-  ((VecWalkCursor %a) (: Bjolang.Runtime.VecWalkCursor))
   ((VecBackCursor %a) (: Bjolang.Runtime.VecBackCursor)))
 
 (import/extern
-  (vec-walk-cursor         (: Bjolang.Runtime.VecWalk.Forward         (-> (Vec %a) int int (VecWalkCursor %a))))
-  (vec-walk-cursor-done?   (: Bjolang.Runtime.VecWalk.ForwardDone     (-> (VecWalkCursor %a) bool)))
-  (vec-walk-cursor-current (: Bjolang.Runtime.VecWalk.ForwardCurrent  (-> (VecWalkCursor %a) %a)))
   (vec-back-cursor         (: Bjolang.Runtime.VecWalk.Backward        (-> (Vec %a) int int (VecBackCursor %a))))
   (vec-back-cursor-done?   (: Bjolang.Runtime.VecWalk.BackwardDone    (-> (VecBackCursor %a) bool)))
-  (vec-back-cursor-current (: Bjolang.Runtime.VecWalk.BackwardCurrent (-> (VecBackCursor %a) %a))))
+  (vec-back-cursor-current (: Bjolang.Runtime.VecWalk.BackwardCurrent (-> (VecBackCursor %a) %a)))
+  (vec-back-cursor-next    (: Bjolang.Runtime.VecWalk.BackwardNext    (-> (VecBackCursor %a) (VecBackCursor %a)))))
 
 (type (: (VecSlice %a) (Struct (: items (Vec %a)) (: from int) (: count int))))
 (type (: (ReverseVecSlice %a) (Struct (: items (Vec %a)) (: last int) (: count int))))
@@ -115,11 +115,11 @@
 
 (impl (Iterable (VecSlice %a))
   (type %elem %a)
-  (type %cursor (VecWalkCursor %a))
-  (defun (iterable-start s) (vec-walk-cursor (record-ref s items) (record-ref s from) (record-ref s count)))
-  (defun (iterable-done? s c) (vec-walk-cursor-done? c))
-  (defun (iterable-current s c) (vec-walk-cursor-current c))
-  (defun (iterable-next s c) c))
+  (type %cursor (VecCursor %a))
+  (defun (iterable-start s) (vec-cursor-slice (record-ref s items) (record-ref s from) (record-ref s count)))
+  (defun (iterable-done? s c) (vec-cursor-done? c))
+  (defun (iterable-current s c) (vec-cursor-current c))
+  (defun (iterable-next s c) (vec-cursor-next c)))
 
 (impl (Iterable (ReverseVecSlice %a))
   (type %elem %a)
@@ -127,7 +127,7 @@
   (defun (iterable-start s) (vec-back-cursor (record-ref s items) (record-ref s last) (record-ref s count)))
   (defun (iterable-done? s c) (vec-back-cursor-done? c))
   (defun (iterable-current s c) (vec-back-cursor-current c))
-  (defun (iterable-next s c) c))
+  (defun (iterable-next s c) (vec-back-cursor-next c)))
 
 ;; --- List tails ---
 ;;

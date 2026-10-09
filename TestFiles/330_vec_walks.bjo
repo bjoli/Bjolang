@@ -1,0 +1,90 @@
+(import (std prelude))
+(import (std simpletest))
+
+;; A vec is walked one leaf array at a time. Each walk here is checked against
+;; `vec-ref`, on vecs that are only a tail, that have full leaves, and that
+;; have relaxed nodes from merges and inserts, and on slices that start and
+;; end inside a leaf.
+
+(: numbers (-> int (Vec int)))
+(defun (numbers n) {vecing i (:for i (range 0 n))})
+
+;; What a walk from `from` up to `to` should read, by `vec-ref`.
+(: by-index (-> (Vec int) int int (List int)))
+(defun (by-index v from to)
+  (loop (:for i (range from to)) (:acc out (listing (vec-ref v i))) => out))
+
+(: by-index-reversed (-> (Vec int) int int (List int)))
+(defun (by-index-reversed v from to)
+  (loop (:for i (down-from (- to 1) #:to from))
+        (:acc out (listing (vec-ref v i)))
+        => out))
+
+(: vecs (-> (List (Tuple string (Vec int)))))
+(defun (vecs)
+  (def merged (vec-merge (numbers 37) (numbers 1000)))
+  (def inserted
+    (loop (:for k (range 0 40))
+          (:acc v (folding (numbers 1500) (vec-insert v (+ 7 (* k 29)) (- 0 k))))
+          => v))
+  (list (Tuple "empty" (numbers 0))
+        (Tuple "1" (numbers 1))
+        (Tuple "31" (numbers 31))
+        (Tuple "32" (numbers 32))
+        (Tuple "33" (numbers 33))
+        (Tuple "100" (numbers 100))
+        (Tuple "1056" (numbers 1056))
+        (Tuple "merged" merged)
+        (Tuple "inserted" inserted)))
+
+;; Bounds that start and end at, beside and inside leaves.
+(: bounds (-> int (List (Tuple int int))))
+(defun (bounds n)
+  (def points (list-filter #(<= & n) (list 0 1 5 31 32 33 63 64 65 500 1000 n)))
+  (loop (:for a points)
+        (:subloop)
+        (:for b points)
+        (:when (<= a b))
+        (:acc out (listing (Tuple a b)))
+        => out))
+
+(defun (main)
+  (def/mutable failures 0)
+  (list-for-each
+    (fun (named)
+      (match named
+        ((Tuple name v)
+         (def n (vec-length v))
+         (when (not (= {listing x (:for x v)} (by-index v 0 n)))
+           (println #"whole walk of ${name}")
+           (set! failures (+ failures 1)))
+         (when (not (= (fold + 0 v) (fold + 0 (by-index v 0 n))))
+           (println #"fold over ${name}")
+           (set! failures (+ failures 1)))
+         (list-for-each
+           (fun (ab)
+             (match ab
+               ((Tuple a b)
+                (when (not (= {listing x (:for x (in-vec v #:from a #:to b))} (by-index v a b)))
+                  (println #"in-vec ${name} ${a} ${b}")
+                  (set! failures (+ failures 1)))
+                (when (not (= {listing x (:for x (in-reverse-vec v #:from a #:to b))}
+                              (by-index-reversed v a b)))
+                  (println #"in-reverse-vec ${name} ${a} ${b}")
+                  (set! failures (+ failures 1))))))
+           (bounds n)))))
+    (vecs))
+  (expect "every walk reads what vec-ref reads" failures 0)
+
+  ;; A cursor is a value: moving on gives a new cursor, and the old one stays.
+  (def c (vec-cursor [10 20 30]))
+  (def d (vec-cursor-next c))
+  (expect "the old cursor stays" (vec-cursor-current c) 10)
+  (expect "the new one is on the next element" (vec-cursor-current d) 20)
+  (expect "past the last" (vec-cursor-done? (vec-cursor-next (vec-cursor-next d))) #t)
+  (expect "an empty vec" (vec-cursor-done? (vec-cursor [])) #t)
+
+  ;; `=` on vecs walks two cursors in step.
+  (expect "equal vecs" (= (numbers 1000) (vec-merge (numbers 37) (vec-slice (numbers 1000) 37 963))) #t)
+  (expect "a difference in the last leaf" (= (numbers 1000) (vec-set (numbers 1000) 999 0)) #f)
+  0)
