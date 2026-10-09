@@ -1553,6 +1553,45 @@ def test_runtime(work, c):
     c.failed("--runtime with a bad value is refused", refused)
 
 
+# ---------------------------------------------------------------------------
+# Builds at the same time
+# ---------------------------------------------------------------------------
+
+@test("builds at once")
+def test_builds_at_once(work, c):
+    # Three projects that share a path dependency. Each round changes the
+    # shared module, so all three builds find it stale at the same moment. A
+    # compiler builds it while it holds the module's lock; the others wait and
+    # find it current. Without the lock and the atomic writes, a build could
+    # read a `.dll` that another one was writing.
+    shared = work / "shared"
+    depends = '  (depends (package (name (shared)) (source (path (dir "../shared")))))\n'
+    apps = [app_with(work / f"app{n}", depends, name=f"app{n}", uses="shared")
+            for n in range(3)]
+
+    waits = 0
+    for n in range(3):
+        make_package(shared, "shared", "0.1.0",
+                     body=f'(import (std prelude))\n(export hello)\n'
+                          f'(: hello (-> string))\n(defun (hello) "round {n}")\n')
+        with ThreadPoolExecutor(max_workers=len(apps)) as pool:
+            results = list(pool.map(lambda app: run_bjo(app, "run"), apps))
+        waits += sum(said(r).count("Waiting for another build") for r in results)
+        c.that(f"round {n}: three programs built at once all run",
+               all(r.returncode == 0 for r in results),
+               " | ".join(said(r)[-300:] for r in results if r.returncode != 0))
+        c.that(f"round {n}: and all three have the new module",
+               all(f"round {n}" in said(r) for r in results),
+               " | ".join(said(r)[-200:] for r in results))
+
+    # Measured: in each round two of the three builds wait. Over three rounds,
+    # none at all would mean that the builds no longer meet at the lock.
+    c.that("builds waited for another's lock on the shared module", waits > 0)
+
+    leftovers = [str(p) for p in work.rglob("*.tmp")]
+    c.that("no temporary file is left", not leftovers, ", ".join(leftovers))
+
+
 def run_test(name, fn):
     """One test in its own work directory. Returns its checks and seconds."""
     work = WORK / name.replace(" ", "_")

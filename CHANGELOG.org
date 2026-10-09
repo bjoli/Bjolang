@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* Compilers that run at the same time do not build one module twice
+
+- *A library module is built while the compiler holds its lock*, a file
+  in ~bjolang-locks~ in the temporary directory, opened with
+  ~FileShare.None~. A compiler that finds the lock held waits, says
+  ~Waiting for another build of <file>~, and then builds the module only
+  if it is still stale. That is what two ~bjo~ commands at once used to
+  do twice: the standard library after a new compiler, or a module that
+  two projects share. Measured with three ~build_std.sh~ at once: one
+  built the 37 stale modules, and the other two waited and built none.
+- The lock is taken for imports built during a compile, in process or
+  out of it, and by the workers of a graph build. Imports are built before
+  the module that imports them, so two compilers can not wait for each
+  other. The system releases the lock when a compiler ends, killed or not.
+- *A ~.dll~, ~.pdb~, build record, runtimeconfig and deps file is written
+  beside its place and renamed into it*, so a reader in another process
+  sees the whole old file or the whole new one. The MSBuild path deleted
+  the old ~.dll~ before it moved the new one in, which left a moment with
+  no file at all.
+- *Left open:* the lock files are never deleted, one small file for each
+  module ever built; deleting one when it is released would let two
+  compilers hold the lock at once. A process killed while it writes leaves
+  a hidden ~.<name>.<guid>.tmp~ file beside the one it wrote.
+
 * Runtime settings: server GC and others, from the manifest
 
 - *~(runtime (gc-server #t))~ in a manifest sets the program's .NET

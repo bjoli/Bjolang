@@ -278,7 +278,7 @@ let private writeBuildRecord
             @ ownLines
             @ interfaceLines
 
-        File.WriteAllLines(Path.ChangeExtension(inputFilePath, ".bjobuild"), lines)
+        AtomicFile.writeLines (Path.ChangeExtension(inputFilePath, ".bjobuild")) lines
     with ex ->
         // A record that could not be written costs a rebuild next time and
         // nothing else, which is not worth failing a build that succeeded.
@@ -825,7 +825,7 @@ let compile (options: Options) (inputFilePath: string) : int =
                         + settingsPart
                         + "\n  }\n}"
 
-                    File.WriteAllText(runtimeConfigPath, runtimeConfigContent)
+                    AtomicFile.writeText runtimeConfigPath runtimeConfigContent
 
                     // The manifest names only the program itself. Listing a
                     // dependency here would make the host demand a copy of it
@@ -843,7 +843,7 @@ let compile (options: Options) (inputFilePath: string) : int =
                         + assemblyBaseName
                         + "/1.0.0\": { \"type\": \"project\", \"serviceable\": false, \"sha512\": \"\" }\n  }\n}"
                     let depsJsonPath = Path.ChangeExtension(targetPath, ".deps.json")
-                    File.WriteAllText(depsJsonPath, depsJson)
+                    AtomicFile.writeText depsJsonPath depsJson
 
             /// Roslyn as a library, in this process.
             ///
@@ -1056,11 +1056,11 @@ let compile (options: Options) (inputFilePath: string) : int =
                                 // Copy both the `.dll` and the `.pdb` (debug symbols) to the final output directory.
                                 // modulen.
                                 if cscOutPath <> targetPath then
-                                    File.Copy(cscOutPath, targetPath, true)
+                                    AtomicFile.copy cscOutPath targetPath
                                     let builtPdb = Path.ChangeExtension(cscOutPath, ".pdb")
 
                                     if File.Exists builtPdb then
-                                        File.Copy(builtPdb, Path.ChangeExtension(targetPath, ".pdb"), true)
+                                        AtomicFile.copy builtPdb (Path.ChangeExtension(targetPath, ".pdb"))
 
                                 // Both configurations emit symbols now, so the
                                 // pdb is kept: it is what carries the `#line`
@@ -1100,14 +1100,12 @@ let compile (options: Options) (inputFilePath: string) : int =
                     if exitCode = 0 then
                         let generatedDll = Path.Combine(outDir, assemblyName + ".dll")
                         if System.IO.File.Exists(generatedDll) && Path.GetFullPath(generatedDll) <> Path.GetFullPath(outputFilePath) then
-                            if System.IO.File.Exists(outputFilePath) then System.IO.File.Delete(outputFilePath)
-                            System.IO.File.Move(generatedDll, outputFilePath)
+                            AtomicFile.move generatedDll outputFilePath
 
                         let genRuntimeConfig = Path.Combine(outDir, assemblyName + ".runtimeconfig.json")
                         let outRuntimeConfig = Path.ChangeExtension(outputFilePath, ".runtimeconfig.json")
                         if System.IO.File.Exists(genRuntimeConfig) && Path.GetFullPath(genRuntimeConfig) <> Path.GetFullPath(outRuntimeConfig) then
-                            if System.IO.File.Exists(outRuntimeConfig) then System.IO.File.Delete(outRuntimeConfig)
-                            System.IO.File.Move(genRuntimeConfig, outRuntimeConfig)
+                            AtomicFile.move genRuntimeConfig outRuntimeConfig
 
                         Diagnostics.progress $"Successfully built %s{outputFilePath}"
                         try Directory.Delete(tmpDir, true) with | _ -> ()
@@ -1293,6 +1291,23 @@ let private compileDependencyInProcess (bjoPath: string) : string =
 
     dllPath
 
+/// After a wait for the lock of a module: whether it still has to be built.
+/// The compiler that held the lock has most likely built it.
+let private stillStale (bjoPath: string) : bool =
+    try not (Pipeline.isCurrent bjoPath) with _ -> true
+
+/// `backend`, while this process holds the lock of the module. Another compiler
+/// can build the same module at the same time; see `ModuleLock`.
+let private underModuleLock (backend: string -> string) (bjoPath: string) : string =
+    let built = ref (Path.ChangeExtension(bjoPath, ".dll"))
+
+    ModuleLock.withLock bjoPath (fun () -> stillStale bjoPath) (fun () ->
+        built.Value <- backend bjoPath
+        0)
+    |> ignore
+
+    built.Value
+
 /// Installs the backend `Pipeline` reaches for when an import names a `.bjo`.
 ///
 /// In-process by default. `BJOLANG_OUT_OF_PROCESS_DEPS=1` puts the process
@@ -1300,10 +1315,12 @@ let private compileDependencyInProcess (bjoPath: string) : string =
 /// that belongs to a compilation and was not moved into `Session`, which shows
 /// up as a module that compiles alone and not after another one.
 let installDependencyBackend () =
-    Pipeline.compileLibrary <-
+    let backend =
         match System.Environment.GetEnvironmentVariable "BJOLANG_OUT_OF_PROCESS_DEPS" with
         | null | "" | "0" -> compileDependencyInProcess
         | _ -> compileDependencyOutOfProcess
+
+    Pipeline.compileLibrary <- underModuleLock backend
 
 // ---------------------------------------------------------------------------
 // Många rotfiler i en process
@@ -1537,7 +1554,8 @@ let runWorker () : int =
                 Diagnostics.reset ()
 
                 try
-                    compile { IsLibrary = true; Debug = false; Runtime = []; EmitCs = None; Check = false } fullPath
+                    ModuleLock.withLock fullPath (fun () -> stillStale fullPath) (fun () ->
+                        compile { IsLibrary = true; Debug = false; Runtime = []; EmitCs = None; Check = false } fullPath)
                 with ex ->
                     Diagnostics.reportFailure ex
                     1

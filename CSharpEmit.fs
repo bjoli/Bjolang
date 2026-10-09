@@ -362,10 +362,10 @@ let emitToFile (options: Options) (source: string) (outputPath: string) : string
     match emit options source with
     | Failed diagnostics -> diagnostics
     | Emitted(assembly, pdb) ->
-        File.WriteAllBytes(outputPath, assembly)
+        AtomicFile.writeBytes outputPath assembly
 
         match pdb with
-        | Some bytes -> File.WriteAllBytes(Path.ChangeExtension(outputPath, ".pdb"), bytes)
+        | Some bytes -> AtomicFile.writeBytes (Path.ChangeExtension(outputPath, ".pdb")) bytes
         | None -> ()
 
         []
