@@ -1,0 +1,51 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/stm.bjo — software transactional memory.
+;;
+;; A `(Loc T)` is a `Bjolang.Runtime.Loc<T>` and a `Tx` is a
+;; `Bjolang.Runtime.Tx`: the log of one run of a transaction. The design is the
+;; one of kcas (https://github.com/ocaml-multicore/kcas), whose licence is in
+;; BjolangRuntime/BjoStm.cs. A transaction that retries is a CML event that is
+;; not available yet; see `AtomicallyEvent` in the same file.
+(import (std prelude))
+
+(:doc #:file "stm.bjodoc")
+
+(export
+  Loc Tx
+  make-loc loc-ref
+  tx-ref tx-set! tx-update! tx-swap! tx-retry tx-or-else
+  atomically-evt atomically try-atomically)
+
+(import/class
+  ((Loc %a) (: Bjolang.Runtime.Loc))
+  (Tx       (: Bjolang.Runtime.Tx)))
+
+(import/extern
+  (make-loc       (: Bjolang.Runtime.StmModule.MakeLoc       (-> %a (Loc %a))))
+  (loc-ref        (: Bjolang.Runtime.StmModule.Ref           (-> (Loc %a) %a)))
+  (tx-ref         (: Bjolang.Runtime.StmModule.Get           (-> Tx (Loc %a) %a)))
+  (tx-set!        (: Bjolang.Runtime.StmModule.Set           (-> Tx (Loc %a) %a void)))
+  (tx-update!     (: Bjolang.Runtime.StmModule.Update        (-> Tx (Loc %a) (-> %a %a) %a)))
+  (tx-swap!       (: Bjolang.Runtime.StmModule.Swap          (-> Tx (Loc %a) %a %a)))
+  (tx-retry       (: Bjolang.Runtime.StmModule.Retry         (-> Tx %a)))
+  (tx-or-else     (: Bjolang.Runtime.StmModule.OrElse        (-> Tx (-> Tx %a) (-> Tx %a) %a)))
+  (atomically-evt (: Bjolang.Runtime.StmModule.AtomicallyEvt (-> (-> Tx %a) (Event %a))))
+  (try-atomically (: Bjolang.Runtime.StmModule.TryAtomically (-> (-> Tx %a) (Option %a)))))
+
+;; Run and commit the transaction, and wait while it retries. Defined by
+;; syncing `atomically-evt`, in the colour of the caller.
+(: atomically (-> (-> Tx %a) %a))
+(defbjouble (atomically f)
+  (#:sync (sync/blocking (atomically-evt f)))
+  (#:bjo  (sync (atomically-evt f))))

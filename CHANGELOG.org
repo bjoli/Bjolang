@@ -3,6 +3,54 @@
 
 What each change guarantees, and what it leaves open.
 
+* (std stm): transactions, and a retry that is a CML event
+
+- *A transaction changes many locations as one atomic step.* A
+  ~(Loc T)~ holds one value. A transaction is a function of a ~Tx~, the
+  log of its run, and reads and writes locations with ~tx-ref~,
+  ~tx-set!~, ~tx-update!~ and ~tx-swap!~. No other thread sees half of a
+  transaction, and a transaction that read a location that another one
+  then wrote runs again.
+- *~atomically-evt~ is a CML event.* While its transaction calls
+  ~tx-retry~, the event is not available, and the transaction runs again
+  when a location that it read changes. So a ~choose~ can wait for a
+  condition on shared state and for a timeout, a channel or the
+  cancellation of the fiber. A transaction whose branch loses has written
+  nothing. ~atomically~ syncs the event in the colour of the caller.
+  ~try-atomically~ never waits, and gives ~None~ when the transaction
+  retries.
+- ~tx-or-else~ runs its second branch if the first retries, and undoes
+  the writes of the first.
+- An exception from a transaction writes nothing, and is raised by the
+  sync, also when the run that raised it was on a pool thread after a
+  wait.
+- A transaction never commits, and never raises, from values that do not
+  belong to one snapshot. While it runs it can see such values, until the
+  log is validated, which is when the count of accesses gets to a power of
+  two.
+- The design and the algorithms are those of kcas
+  (https://github.com/ocaml-multicore/kcas, ISC licence, attributed in
+  ~BjolangRuntime/BjoStm.cs~): the commit is the GKMZ multi-word
+  compare-and-swap, with read-only compares for locations that were only
+  read. Versions are compared by identity, so any T works with no
+  equality.
+- *Contention costs runs, not correctness.* Transactions that conflict
+  run again, so under contention a transaction function runs more than
+  once per commit. Measured with 200 000 transactions per fiber: fibers
+  on locations of their own, 1.00 runs per commit; eight fibers that each
+  read their neighbour's location and write their own, 1.6 runs per
+  commit; sixteen fibers on one location, 6.2 runs per commit.
+- *Left open, by choice:* a transaction that reads and writes is
+  obstruction-free, not lock-free. Two transactions that each read what
+  the other writes can make each other fail, and in theory do so again on
+  each run. kcas has a lock-free mode for this, which installs reads as
+  writes; Bjolang does not, so that a location that is only read is not
+  written and readers do not slow each other down. The measurements above
+  include that pattern, and no livelock was seen.
+- The MCAS has no model checker. ~BjolangRuntime/Cml/Tests/StmTests.cs~
+  stress-tests it, and each of its checks was seen to fail with a part of
+  the algorithm removed.
+
 * (std atomic): atomics without a lock
 
 - *An ~(Atomic T)~ holds one value that threads can read and write

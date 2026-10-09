@@ -1,0 +1,179 @@
+;; (std stm): the operations of a transaction, or-else, try-atomically, a
+;; retry that a write by another fiber wakes, a transaction that loses a
+;; choose, exceptions, both colours of atomically, and transfers between
+;; accounts by eight fibers at the same time.
+;;
+;; The commit algorithm itself is stress-tested in
+;; BjolangRuntime/Cml/Tests/StmTests.cs.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std stm))
+
+(import/class
+  (InvalidOp (: System.InvalidOperationException (-> string InvalidOp))))
+
+(: boom (-> string %a))
+(defun (boom message)
+  (raise (cast Exception (InvalidOp. message))))
+
+;; ---------------------------------------------------------------------------
+;; Accounts
+;; ---------------------------------------------------------------------------
+
+(def account-count 8)
+(def initial 1000)
+
+(: move! (-> (Vec (Loc int)) int int int void))
+(defun (move! accounts from to amount)
+  (ignore (atomically
+   (fun (tx)
+     (ignore (tx-update! tx (vec-ref accounts from) (fun (x) (- x amount))))
+     (ignore (tx-update! tx (vec-ref accounts to) (fun (x) (+ x amount))))
+     0))))
+
+(: total (-> Tx (Vec (Loc int)) int))
+(defun (total tx accounts)
+  (loop (:for a (in-vec accounts))
+        (:acc sum (summing (tx-ref tx a)))))
+
+;; Transfers that never suspend, so each fiber keeps a thread and eight of
+;; them run at the same time.
+(: transfers (-> (Vec (Loc int)) int int void))
+(defun (transfers accounts seed n)
+  (loop (:for i (range 0 n))
+        (:do (move! accounts
+                    (% (+ seed i) account-count)
+                    (% (+ (* seed 3) (* i 5) 1) account-count)
+                    (% i 7)))))
+
+;; ---------------------------------------------------------------------------
+;; Fibers
+;; ---------------------------------------------------------------------------
+
+(: transfer-fiber (-bjo-> (Vec (Loc int)) int (Loc int) void))
+(defbjo (transfer-fiber accounts seed done)
+  (transfers accounts seed 20000)
+  (ignore (atomically (fun (tx) (tx-update! tx done #(+ & 1))))))
+
+;; Reads all accounts in one snapshot until the eight writers are done.
+(: reader-fiber (-bjo-> (Vec (Loc int)) (Loc int) (Loc int) void))
+(defbjo (reader-fiber accounts done bad-reads)
+  (let lp ()
+    (when (< (loc-ref done) 8)
+      (when (not (= (atomically (fun (tx) (total tx accounts)))
+                    (* account-count initial)))
+        (ignore (atomically (fun (tx) (tx-update! tx bad-reads #(+ & 1))))))
+      (lp))))
+
+(: wait-for-flag (-bjo-> (Loc bool) (Chan string) void))
+(defbjo (wait-for-flag flag results)
+  (chan-put results (atomically (fun (tx) (if (tx-ref tx flag) "woken" (tx-retry tx))))))
+
+;; ---------------------------------------------------------------------------
+;; The colour of an ordinary function
+;; ---------------------------------------------------------------------------
+
+;; `atomically` in a function that is not a fiber is the sync/blocking form.
+(: plain-double! (-> (Loc int) int))
+(defun (plain-double! l)
+  (atomically (fun (tx) (tx-update! tx l (fun (x) (* x 2))))))
+
+(: plain-fail (-> (Loc int) (Result Exception int)))
+(defun (plain-fail l)
+  (try (atomically (fun (tx) (tx-set! tx l 99) (boom "plain")))
+       #:catch (System.InvalidOperationException)))
+
+(defbjo (main args)
+  ;; --- the operations ----------------------------------------------------
+  (def a (make-loc 1))
+  (expect "loc-ref" (loc-ref a) 1)
+  (expect "a transaction returns its value"
+          (atomically (fun (tx) (+ (tx-ref tx a) 1)))
+          2)
+  (expect "tx-update! returns the new value"
+          (atomically (fun (tx) (tx-update! tx a (fun (x) (* x 10)))))
+          10)
+  (expect "tx-swap! returns the value from before"
+          (atomically (fun (tx) (tx-swap! tx a 7)))
+          10)
+  (expect "a read after a write in the same transaction sees the write"
+          (atomically (fun (tx) (tx-set! tx a 3) (tx-ref tx a)))
+          3)
+  (expect "the commit is visible" (loc-ref a) 3)
+
+  ;; --- or-else -----------------------------------------------------------
+  (expect "or-else: the second branch runs, and sees no write of the first"
+          (atomically
+           (fun (tx)
+             (tx-or-else tx
+                         (fun (tx) (tx-set! tx a 100) (tx-retry tx))
+                         (fun (tx) (tx-ref tx a)))))
+          3)
+  (expect "and the write of the first is not committed" (loc-ref a) 3)
+  (expect "or-else: a first branch that does not retry wins"
+          (atomically (fun (tx) (tx-or-else tx (fun (tx) 1) (fun (tx) 2))))
+          1)
+
+  ;; --- try-atomically ----------------------------------------------------
+  (expect "try-atomically commits" (try-atomically (fun (tx) (tx-update! tx a #(+ & 1)))) (Some 4))
+  (expect "try-atomically: None when the transaction retries"
+          (try-atomically (fun (tx) (if (> (tx-ref tx a) 100) 1 (tx-retry tx))))
+          None)
+
+  ;; --- a retry that another fiber wakes ----------------------------------
+  (def flag (make-loc #f))
+  (def results (make-chan))
+  (with-scope
+    (spawn (wait-for-flag flag results))
+    (sync (timeout 50))
+    (atomically (fun (tx) (tx-set! tx flag #t)))
+    (expect "a write wakes the transaction that retried" (chan-get results) "woken"))
+
+  ;; --- a choose ----------------------------------------------------------
+  (def never (make-loc #f))
+  (def side (make-loc 0))
+  (expect "a timeout wins over a transaction that retries"
+          (sync (choose (atomically-evt
+                         (fun (tx)
+                           (tx-set! tx side 1)
+                           (if (tx-ref tx never) "tx" (tx-retry tx))))
+                        (wrap (timeout 30) (fun (_) "timeout"))))
+          "timeout")
+  (atomically (fun (tx) (tx-set! tx never #t)))
+  (sync (timeout 50))
+  (expect "the transaction that lost wrote nothing, also after the write" (loc-ref side) 0)
+  (expect "a transaction that commits wins over a later branch"
+          (sync (choose (atomically-evt (fun (tx) "tx"))
+                        (always "always")))
+          "tx")
+
+  ;; --- exceptions --------------------------------------------------------
+  (def e (make-loc 0))
+  (expect-true "an exception from the transaction is raised by atomically"
+               (match (try (atomically (fun (tx) (tx-set! tx e 5) (boom "fiber")))
+                           #:catch (System.InvalidOperationException))
+                 ((Ok _) #f)
+                 ((Err _) #t)))
+  (expect "and the transaction wrote nothing" (loc-ref e) 0)
+
+  ;; --- the colour of an ordinary function --------------------------------
+  (def p (make-loc 21))
+  (expect "atomically in an ordinary function" (plain-double! p) 42)
+  (expect-true "and its exception" (match (plain-fail p) ((Ok _) #f) ((Err _) #t)))
+  (expect "which wrote nothing" (loc-ref p) 42)
+
+  ;; --- eight fibers at once ----------------------------------------------
+  (def accounts (loop (:for i (range 0 account-count))
+                      (:acc v (vecing (make-loc initial)))))
+  (def done (make-loc 0))
+  (def bad-reads (make-loc 0))
+  (with-scope
+    (loop (:for k (range 0 8))
+          (:do (spawn (transfer-fiber accounts k done))))
+    (spawn (reader-fiber accounts done bad-reads)))
+  (expect "eight fibers of 20 000 transfers keep the total"
+          (atomically (fun (tx) (total tx accounts)))
+          (* account-count initial))
+  (expect "and no snapshot saw another total" (loc-ref bad-reads) 0)
+  0)

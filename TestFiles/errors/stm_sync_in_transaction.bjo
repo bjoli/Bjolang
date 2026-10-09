@@ -1,0 +1,9 @@
+;; A transaction is an ordinary function, so it can not sync: it can run more
+;; than once, and on a pool thread while its fiber waits.
+;; EXPECT-ERROR: calling 'sync' is a yield point, and a yield point is not allowed here
+(import (std prelude))
+(import (std stm))
+
+(defbjo (main args)
+  (def l (make-loc 0))
+  (atomically (fun (tx) (sync (timeout 1)) (tx-ref tx l))))

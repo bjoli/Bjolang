@@ -1,0 +1,242 @@
+;; Docs for std/stm.bjo, read through (:doc #:file "stm.bjodoc"). The texts
+;; are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Software transactional memory: change many locations as one atomic step, and wait for a condition as a CML event.")
+  (see atomically atomically-evt tx-retry tx-or-else)
+  (example """
+    (import (std stm))
+
+    (def from (make-loc 100))
+    (def to (make-loc 0))
+
+    ;; Move 30 from one account to the other. No thread sees the money in
+    ;; both accounts or in neither.
+    (atomically
+     (fun (tx)
+       (tx-set! tx from (- (tx-ref tx from) 30))
+       (tx-set! tx to (+ (tx-ref tx to) 30))))
+
+    ;; Wait until there is money, but not longer than one second.
+    (sync (choose (atomically-evt
+                   (fun (tx)
+                     (if (> (tx-ref tx to) 0)
+                         (tx-ref tx to)
+                         (tx-retry tx))))
+                  (wrap (timeout 1000) (fun (_) 0))))
+    """)
+  (reference """
+    A @code{(Loc T)} is a location that holds one value of type T. A
+    transaction is a function of one argument, a @code{Tx}. It reads and
+    writes locations through the @code{Tx} with @code{tx-ref},
+    @code{tx-set!}, @code{tx-update!} and @code{tx-swap!}.
+
+    @strong{Atomic.} The writes of a transaction are kept in its log until
+    it commits. The commit makes all of them visible as one step, and only
+    if no other transaction has written a location that this one read. If
+    another one has, the transaction runs again. So no thread sees half of
+    a transaction, and a transaction does not act on values that were
+    changed under it.
+
+    @strong{Run a transaction} with @code{atomically}, which returns its
+    value, or with @code{atomically-evt}, which is an event. Use
+    @code{try-atomically} where a wait is not possible, for example in a
+    function that .NET calls.
+
+    @strong{Wait for a condition} with @code{tx-retry}. It stops the
+    transaction. The transaction runs again when a location that it read
+    has changed. @code{atomically-evt} is not available while its
+    transaction retries, so a @code{choose} can wait for the condition and
+    for a timeout, a channel or another transaction. If another branch wins,
+    the transaction wrote nothing. A fiber that waits this way can be
+    cancelled, as in any @code{sync}.
+
+    @strong{Alternatives.} @code{(tx-or-else tx a b)} runs @code{a}. If
+    @code{a} retries, its writes are undone and @code{b} runs.
+
+    @strong{Rules for a transaction.}
+
+    @itemlist{
+      @item{It can run more than once, so it must have no side effects
+        other than through its @code{Tx}: no printing, no I/O, and no change
+        to other state. Do these after @code{atomically} returns, or in a
+        @code{wrap} of @code{atomically-evt}.}
+      @item{A transaction can not @code{sync}: it is an ordinary function.}
+      @item{After a wait, a transaction runs on a pool thread while the
+        fiber that waits is suspended. It sees the parameters and effect
+        handlers of that fiber.}
+      @item{A @code{Tx} is for one run only. An operation on a @code{Tx}
+        after its run raises an exception.}
+      @item{Store immutable values in a location. A change inside a mutable
+        object, such as a vec, is not part of the transaction.}
+    }
+
+    @strong{Exceptions.} If a transaction raises an exception, it writes
+    nothing, and @code{atomically} or the @code{sync} raises the
+    exception.
+
+    @strong{Consistency.} While a transaction runs, it can read values that
+    do not belong together, because another transaction committed between
+    two reads. The log is validated from time to time while the transaction
+    runs, and always before it commits or raises an exception. If the
+    values did not belong together, the transaction runs again. So a
+    transaction never commits, and never raises an exception, from values
+    that did not belong together. A transaction that loops forever on
+    such values stops at the next validation.
+
+    @strong{Progress.} Transactions that only read do not slow each other
+    down: a location that a transaction only read is checked at the
+    commit, not written. Transactions that conflict make each other run
+    again, so under contention a transaction function runs more than once
+    for each commit. Many fibers that write one location cost the most.
+    Under heavy contention on a few locations, an @code{(Atomic T)} from
+    @code{(std atomic)}, or one fiber that owns the state, can be faster.
+    A long transaction that reads many locations can run again many times
+    while short transactions write some of them.
+
+    A transaction that reads and writes is obstruction-free, not
+    lock-free. Two transactions that each read a location that the other
+    writes can make each other fail at the same commit. In theory, this can
+    happen again on each run. This is the cost of reads that write
+    nothing. In practice, the timing of threads differs from run to run,
+    and the transactions get through.
+
+    @strong{Credits.} The design and the algorithms are those of kcas, by
+    Vesa Karvonen and others (@link["https://github.com/ocaml-multicore/kcas"]),
+    under the ISC licence. The commit is the multi-word compare-and-swap of
+    Guerraoui, Kogan, Marathe and Zablotskiy, with read-only compares as in
+    kcas. Waiting as a CML event is Bjolang's.
+    """))
+
+(:doc Loc
+  (summary "A location that holds one value of type %a, for transactions.")
+  (tparam %a "The type of the value.")
+  (see make-loc tx-ref loc-ref))
+
+(:doc Tx
+  (summary "The log of one run of a transaction. A transaction gets it as its argument.")
+  (see tx-ref tx-set! atomically))
+
+(:doc make-loc
+  (summary "A new location that holds value.")
+  (arg value "The first value.")
+  (returns "A new location."))
+
+(:doc loc-ref
+  (summary "The value in the location now, outside a transaction.")
+  (arg loc "The location.")
+  (returns "The value of the last commit that wrote the location.")
+  (reference """
+    Two calls of @code{loc-ref} are two separate reads. To read more than
+    one location as one snapshot, read them in a transaction.
+    """))
+
+(:doc tx-ref
+  (summary "The value of the location in the transaction.")
+  (arg tx "The log of the transaction.")
+  (arg loc "The location.")
+  (returns "The value that the transaction wrote to the location, or else the value it read."))
+
+(:doc tx-set!
+  (summary "Writes value to the location in the transaction.")
+  (arg tx "The log of the transaction.")
+  (arg loc "The location.")
+  (arg value "The new value.")
+  (reference """
+    Other threads see the value when the transaction commits, and not
+    before.
+    """))
+
+(:doc tx-update!
+  (summary "Writes f of the value of the location in the transaction, and returns the new value.")
+  (arg tx "The log of the transaction.")
+  (arg loc "The location.")
+  (arg f "Makes the new value from the old value.")
+  (returns "The value that was written."))
+
+(:doc tx-swap!
+  (summary "Writes value to the location in the transaction, and returns the value from before.")
+  (arg tx "The log of the transaction.")
+  (arg loc "The location.")
+  (arg value "The new value.")
+  (returns "The value of the location in the transaction before the call."))
+
+(:doc tx-retry
+  (summary "Stops the transaction, and runs it again when a location that it read has changed.")
+  (arg tx "The log of the transaction.")
+  (returns "Nothing: it does not return.")
+  (example """
+    ;; Take the item, or wait for one.
+    (: take! (-> (Loc (Option string)) string))
+    (defun (take! slot)
+      (atomically
+       (fun (tx)
+         (match (tx-ref tx slot)
+           ((Some item) (tx-set! tx slot None) item)
+           (None (tx-retry tx))))))
+    """)
+  (reference """
+    The writes of the transaction are discarded. A transaction that read no
+    location and retries waits forever, as @code{never} does.
+
+    @code{tx-retry} raises an exception that the transaction must not
+    handle. If a @code{try} in the transaction catches it, the transaction
+    retries all the same when it returns.
+    """))
+
+(:doc tx-or-else
+  (summary "Runs first. If it retries, undoes its writes and runs second.")
+  (arg tx "The log of the transaction.")
+  (arg first "The transaction to try first.")
+  (arg second "The transaction to run if first retries.")
+  (returns "The value of the branch that did not retry.")
+  (example """
+    ;; Take from the first queue that has an item.
+    (tx-or-else tx (fun (tx) (pop! tx high)) (fun (tx) (pop! tx low)))
+    """)
+  (reference """
+    If second retries too, the whole @code{tx-or-else} retries. The
+    transaction then waits for a change to a location that either branch
+    read.
+    """))
+
+(:doc atomically-evt
+  (summary "The event that runs and commits the transaction f, and gives its value.")
+  (arg f "The transaction.")
+  (returns "An event that is available when f commits without a retry.")
+  (example """
+    ;; Wait for the flag, a message, or one second.
+    (sync (choose (atomically-evt
+                   (fun (tx) (if (tx-ref tx flag) "flag" (tx-retry tx))))
+                  (wrap (chan-recv messages) (fun (_) "message"))
+                  (wrap (timeout 1000) (fun (_) "timeout"))))
+    """)
+  (reference """
+    f runs each time the event is synced. While f retries, the event is
+    not available, and f runs again when a location that it read has
+    changed. If another branch of a @code{choose} wins, f has written
+    nothing.
+
+    If f raises an exception, the event is available, and the @code{sync}
+    raises the exception.
+    """))
+
+(:doc atomically
+  (summary "Runs and commits the transaction f, and returns its value. Waits while f retries.")
+  (arg f "The transaction.")
+  (returns "The value of f in the run that committed.")
+  (reference """
+    This is @code{(sync (atomically-evt f))} in a fiber, and
+    @code{(sync/blocking (atomically-evt f))} in a function that is not a
+    fiber, which blocks its thread while it waits.
+    """))
+
+(:doc try-atomically
+  (summary "Runs and commits the transaction f on this thread, with no wait.")
+  (arg f "The transaction.")
+  (returns "(Some value) when f commits, or None when f retries.")
+  (reference """
+    A transaction that conflicts with another one runs again at once; only
+    @code{tx-retry} gives @code{None}. This never blocks the thread, so it
+    is safe in a function that .NET calls.
+    """))

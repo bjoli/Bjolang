@@ -31,6 +31,7 @@ public static class Program
         EncodingsTests.RunAll();
         OutputPortTests.RunAll();
         NetTests.RunAll();
+        StmTests.RunAll();
 
         return Harness.Report();
     }
