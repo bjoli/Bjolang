@@ -711,9 +711,10 @@ let private unitValue = "default(Bjoml.Unit)"
 /// If the type checker couldn't figure out the exact type, we just emit it as
 /// a C# `object`. This prevents the compiler from crashing during the code
 /// generation phase due to an unresolved type.
-let private elementTypeString (t: HMType) =
+let rec private elementTypeString (t: HMType) =
     match t with
     | TCon (_, [ elemT ]) -> typeToString elemT
+    | TMeta { Value = Some inner } -> elementTypeString inner
     | _ -> "object"
 
 /// Every type variable mentioned by `t`, in source spelling.
@@ -1768,6 +1769,76 @@ let private infixOperators =
           "shift-right", ">>"
           "shift-right-logical", ">>>" ]
 
+/// A piece of a builtin's inline C# form. See `inlineBuiltins`.
+type private InlinePart =
+    | Literal of string
+    | Operand of int
+    /// The element type of the call's result: `E` in `(List E)`.
+    | ResultElement
+
+/// Builtins whose call is written as the C# expression that the runtime
+/// wrapper stands for, not as a call to the wrapper.
+///
+/// A wrapper such as `listsubhead<T>` is a generic method that forwards to
+/// another generic method. In concrete code the JIT inlines the chain and the
+/// wrapper costs nothing. In shared generic code, which is a generic function
+/// used at a reference type, each generic method in the chain must look up its
+/// exact type at run time. Each level of wrapping thus adds dependent loads to
+/// each call and allocation. A member of a generic class, such as
+/// `SchemeList<T>.Car`, needs no lookup.
+///
+/// In a template, `$0`, `$1`, … are the operands and `$E` is the element type
+/// of the result. Each operand occurs exactly once and in order, so the
+/// expression evaluates the operands as the call would. A builtin used as a
+/// value, not called, still goes through its wrapper.
+let private inlineBuiltins: Map<string, InlinePart list> =
+    let parse (name: string) (template: string) =
+        let parts = ResizeArray<InlinePart>()
+        let text = StringBuilder()
+        let flush () =
+            if text.Length > 0 then
+                parts.Add(Literal(text.ToString()))
+                text.Clear() |> ignore
+        let mutable i = 0
+        while i < template.Length do
+            if template[i] = '$' && i + 1 < template.Length && template[i + 1] = 'E' then
+                flush ()
+                parts.Add ResultElement
+                i <- i + 2
+            elif template[i] = '$' && i + 1 < template.Length && Char.IsDigit template[i + 1] then
+                flush ()
+                parts.Add(Operand(int template[i + 1] - int '0'))
+                i <- i + 2
+            else
+                text.Append(template[i]) |> ignore
+                i <- i + 1
+        flush ()
+        let operands = parts |> Seq.choose (function Operand n -> Some n | _ -> None) |> List.ofSeq
+        if operands <> [ 0 .. operands.Length - 1 ] then
+            failwith $"internal error: the inline form of '%s{name}' must use each operand once, in order"
+        name, List.ofSeq parts
+
+    let cons = "((SchemeList.SchemeList<$E>)new SchemeList.Cons<$E>($0, $1))"
+    let nil = "SchemeList.SchemeList<$E>.Empty"
+
+    Map [ parse "Cons" cons
+          parse "cons" cons
+          parse "Nil" nil
+          parse "list-empty" nil
+          parse "list-head" "$0.Car"
+          parse "list-tail" "$0.Cdr"
+          parse "list-empty?" "$0.IsEmpty"
+          parse "list-length" "$0.Length"
+          parse "list-reverse" "$0.Reverse()"
+          parse "list-ref" "$0[$1]"
+          parse "listbuilder-length" "$0.Count"
+          parse "array-ref" "$0[$1]"
+          parse "array-length" "$0.Length"
+          parse "vec-ref" "$0[$1]"
+          parse "vec-length" "$0.Count"
+          parse "vec-empty?" "($0.Count == 0)"
+          parse "vecbuilder-length" "$0.Count" ]
+
 /// Whether C# reads this as a constant expression. It evaluates one while it
 /// compiles, and checks it for overflow although the program runs unchecked:
 /// `(* 2147483647 2)` wraps at run time and was CS0220. So arithmetic on
@@ -1932,9 +2003,10 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TIdent (name, tArgs) ->
         // Cons/Nil are now builtins backed by SchemeList, not union cases.
         match name with
+        // The static itself, not the `Nil<T>()` wrapper. See `inlineBuiltins`.
         | "Nil" ->
             let elemTypeStr = elementTypeString expr.Type
-            append ctx $"Nil<%s{elemTypeStr}>()"
+            append ctx $"SchemeList.SchemeList<%s{elemTypeStr}>.Empty"
         // Like `Nil`, a nullary constructor rather than a bare name: written
         // plain it would be a method group.
         | "None" ->
@@ -2910,6 +2982,44 @@ and private prepareOperands (ctx: CodegenContext) (operands: TypedExpr list) : (
             else
                 fun (c: CodegenContext) -> generateExpr c operand)
 
+/// The inline form of the call `expr` to `name`, and the C# spelling of its
+/// `$E`, when `name` is the runtime builtin. A module binding with the name of
+/// a builtin is in `GlobalBindings` under its module, and a local binding with
+/// the name of a builtin has been renamed by `AlphaRename`.
+///
+/// The wrapper call lets C# infer the element type, and the inline form has
+/// to write it. When neither the result type nor a list operand gives a
+/// concrete element type, the call stays a wrapper call.
+and private inlineBuiltinFor
+    (ctx: CodegenContext)
+    (name: string)
+    (expr: TypedExpr)
+    (args: TypedExpr list)
+    : (InlinePart list * string) option =
+    let runtimeName =
+        match Map.tryFind name ctx.GlobalBindings with
+        | Some("", member') -> Some member'
+        | Some _ -> None
+        | None -> if Set.contains name Prelude.builtinNames then Some name else None
+
+    let rec elementOf (t: HMType) =
+        match t with
+        | TCon (_, [ elemT ]) -> Some(typeToString elemT)
+        | TMeta { Value = Some inner } -> elementOf inner
+        | _ -> None
+
+    runtimeName
+    |> Option.bind (fun n -> Map.tryFind n inlineBuiltins)
+    |> Option.filter (fun parts ->
+        parts |> List.filter (function Operand _ -> true | _ -> false) |> List.length = args.Length)
+    |> Option.bind (fun parts ->
+        if List.contains ResultElement parts then
+            elementOf expr.Type
+            |> Option.orElse (args |> List.tryPick (fun a -> elementOf a.Type))
+            |> Option.map (fun e -> parts, e)
+        else
+            Some(parts, ""))
+
 and private generateApply
     (ctx: CodegenContext)
     (expr: TypedExpr)
@@ -2997,6 +3107,19 @@ and private generateApply
         append ctx $"%s{typeToString expr.Type}.%s{name}("
         (prepareOperands ctx args).Head ctx
         append ctx ")"
+
+    | TIdent (name, _) when kwArgs.IsEmpty && (inlineBuiltinFor ctx name expr args).IsSome ->
+        let parts, element = (inlineBuiltinFor ctx name expr args).Value
+        let emitters = prepareOperands ctx args
+
+        for part in parts do
+            match part with
+            | Literal s -> append ctx s
+            | ResultElement -> append ctx element
+            | Operand i ->
+                append ctx "("
+                emitters[i] ctx
+                append ctx ")"
 
     // `clr-eq` is C# `==` and nothing else. `=` never reaches codegen as an
     // identifier — it is a trait method — so this arm is what makes the `Eq`
