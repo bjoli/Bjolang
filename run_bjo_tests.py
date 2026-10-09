@@ -16,7 +16,10 @@
 `run_tests.py` compiles fixtures with the compiler directly and never starts
 `bjo`, so nothing there covers the driver. This does, one command:
 
-    ./run_bjo_tests.py [pattern ...]
+    ./run_bjo_tests.py [-j N] [pattern ...]
+
+The tests run at the same time, as many as there are CPUs unless `-j` says
+otherwise. `-j 1` runs them one after another.
 
 **It never touches the network.** Every git repository a test uses is made
 here with `git init` in a temporary directory and referred to by its absolute
@@ -31,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -1103,8 +1107,6 @@ def make_feed(work):
     feed = work / "feed"
     src = work / "feed-src"
     feed.mkdir(parents=True, exist_ok=True)
-    for version in ("1.0.0", "1.1.0"):
-        pack(src, feed, GREETER, version, GREETER_CS.replace("VERSION", version))
     rid = native_rid()
     suffix = {"linux": ".so", "osx": ".dylib", "win": ".dll"}[rid.split("-")[0]]
     prefix = "" if suffix == ".dll" else "lib"
@@ -1118,9 +1120,19 @@ def make_feed(work):
         write(native_file, "not really a library\n")
     decoy = write(src / "decoy" / "libbjonative.so", "the wrong platform\n")
     decoy_rid = "linux-arm" if rid != "linux-arm" else "linux-x64"
-    pack(src, feed, NATIVE, "1.0.0", NATIVE_CS,
-         items=f'<None Include="{native_file}" Pack="true" PackagePath="runtimes/{rid}/native/" />'
-               f'<None Include="{decoy}" Pack="true" PackagePath="runtimes/{decoy_rid}/native/" />')
+
+    # Three projects in directories of their own, so they are packed at the
+    # same time.
+    with ThreadPoolExecutor() as pool:
+        packed = [pool.submit(pack, src, feed, GREETER, version,
+                              GREETER_CS.replace("VERSION", version))
+                  for version in ("1.0.0", "1.1.0")]
+        packed.append(pool.submit(
+            pack, src, feed, NATIVE, "1.0.0", NATIVE_CS,
+            items=f'<None Include="{native_file}" Pack="true" PackagePath="runtimes/{rid}/native/" />'
+                  f'<None Include="{decoy}" Pack="true" PackagePath="runtimes/{decoy_rid}/native/" />'))
+        for p in packed:
+            p.result()
     return feed, {"NUGET_PACKAGES": str(work / "nuget-cache")}, real
 
 
@@ -1471,8 +1483,35 @@ def test_publish(work, c):
     c.failed("a library is refused", run_bjo(library, "publish"))
 
 
+def run_test(name, fn):
+    """One test in its own work directory. Returns its checks and seconds."""
+    work = WORK / name.replace(" ", "_")
+    work.mkdir(parents=True, exist_ok=True)
+    c = Checks(name)
+    started = time.time()
+    try:
+        fn(work, c)
+    except Exception as e:
+        c.that("the test ran to the end", False, f"{type(e).__name__}: {e}")
+    return c, time.time() - started
+
+
+def parse_args(argv):
+    """Patterns, and `-j N`: how many tests run at the same time."""
+    patterns, jobs = [], os.cpu_count() or 4
+    args = iter(argv)
+    for arg in args:
+        if arg == "-j":
+            jobs = int(next(args))
+        elif arg.startswith("-j"):
+            jobs = int(arg[2:])
+        else:
+            patterns.append(arg)
+    return patterns, max(1, jobs)
+
+
 def main():
-    patterns = sys.argv[1:]
+    patterns, jobs = parse_args(sys.argv[1:])
 
     if not BJO.exists():
         print(f"{RED}No bjo launcher at {BJO}{NC}")
@@ -1493,22 +1532,24 @@ def main():
     total, failed = 0, 0
     started = time.time()
 
-    for name, fn in TESTS:
-        if patterns and not any(p in name for p in patterns):
-            continue
-        work = WORK / name.replace(" ", "_")
-        work.mkdir(parents=True, exist_ok=True)
-        c = Checks(name)
-        try:
-            fn(work, c)
-        except Exception as e:
-            c.that("the test ran to the end", False, f"{type(e).__name__}: {e}")
-        total += c.total
-        failed += len(c.failures)
-        mark = f"{GREEN}PASS{NC}" if not c.failures else f"{RED}FAIL{NC}"
-        print(f"  [{mark}] {name} ({c.total - len(c.failures)}/{c.total})")
-        for failure in c.failures:
-            print(f"         {YELLOW}{failure}{NC}")
+    selected = [(name, fn) for name, fn in TESTS
+                if not patterns or any(p in name for p in patterns)]
+
+    # Each test has its own work directory, and nothing a test runs writes
+    # outside it: `bjo` keeps its state in the project's `.bjo/`, and the
+    # NuGet tests restore into a package cache of their own. So the tests run
+    # at the same time. The results are printed in the order of the file.
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = [pool.submit(run_test, name, fn) for name, fn in selected]
+        for (name, _), future in zip(selected, futures):
+            c, seconds = future.result()
+            total += c.total
+            failed += len(c.failures)
+            mark = f"{GREEN}PASS{NC}" if not c.failures else f"{RED}FAIL{NC}"
+            print(f"  [{mark}] {name} ({c.total - len(c.failures)}/{c.total}, {seconds:.1f}s)",
+                  flush=True)
+            for failure in c.failures:
+                print(f"         {YELLOW}{failure}{NC}")
 
     print(f"\n{BLUE}=== Summary ==={NC}")
     print(f"Checks: {total - failed}/{total} held")
