@@ -1,0 +1,32 @@
+;; What (std atomic)'s integer operations compile to at a known type.
+;;
+;; The trait call is inlined, and the result is a direct call to the
+;; AtomicModule overload for the type. That overload casts to the sealed class,
+;; and its method calls Interlocked. No dictionary and no interface call is
+;; left.
+;;
+;; Each `EXPECT-CS` is an extended regex matched against the generated C#.
+;; `324_atomic.bjo` is what checks the answers.
+
+(import (std prelude))
+(import (std atomic))
+
+(export bump-int bump-uint add-long sub-ulong)
+
+;; EXPECT-CS: return Bjolang\.Runtime\.AtomicModule\.Increment\(a\);
+(: bump-int (-> (Atomic int) int))
+(defun (bump-int a) (atomic-increment! a))
+
+;; EXPECT-CS: return Bjolang\.Runtime\.AtomicModule\.Decrement\(a\);
+(: bump-uint (-> (Atomic uint) uint))
+(defun (bump-uint a) (atomic-decrement! a))
+
+;; EXPECT-CS: return Bjolang\.Runtime\.AtomicModule\.Add\(a, n\);
+(: add-long (-> (Atomic long) long long))
+(defun (add-long a n) (atomic-add! a n))
+
+;; EXPECT-CS: return Bjolang\.Runtime\.AtomicModule\.Sub\(a, n\);
+(: sub-ulong (-> (Atomic ulong) ulong ulong))
+(defun (sub-ulong a n) (atomic-sub! a n))
+
+;; EXPECT-NO-CS: AtomicInteger

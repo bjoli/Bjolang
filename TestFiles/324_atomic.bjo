@@ -1,0 +1,178 @@
+;; (std atomic): every operation at each of the four integer types, wrapping at
+;; their limits, compare-and-swap by identity and by value, a type of the
+;; test's own that implements AtomicInteger, and counters that eight fibers
+;; increment at the same time.
+;;
+;; TestFiles/errors/atomic_add_on_string.bjo checks that the integer operations
+;; refuse an atomic of another type, and TestFiles/codegen/atomic_interlocked.bjo
+;; checks that they compile to direct calls.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std atomic))
+
+;; ---------------------------------------------------------------------------
+;; A type of the test's own
+;; ---------------------------------------------------------------------------
+
+(type (: Score (Struct (: points int))))
+
+;; Through atomic-update!, without the Interlocked path. Wraps on overflow,
+;; as int addition does.
+(impl (AtomicInteger Score)
+  (defun (atomic-increment! a) (atomic-add! a (Score (points 1))))
+  (defun (atomic-decrement! a) (atomic-sub! a (Score (points 1))))
+  (defun (atomic-add! a n)
+    (atomic-update! a (fun (s) (Score (points (+ (struct-ref s points) (struct-ref n points)))))))
+  (defun (atomic-sub! a n)
+    (atomic-update! a (fun (s) (Score (points (- (struct-ref s points) (struct-ref n points))))))))
+
+;; A function over any AtomicInteger: specialised at each type it is called at.
+(: twice-up (-> (Atomic %a) %a) (where (AtomicInteger %a)))
+(defun (twice-up a)
+  (ignore (atomic-increment! a))
+  (atomic-increment! a))
+
+(type (: Cell (Record (: label string))))
+
+;; ---------------------------------------------------------------------------
+;; Fibers
+;; ---------------------------------------------------------------------------
+
+;; `n` increments that never suspend, so each fiber keeps a thread for its
+;; whole run and eight of them run at the same time.
+(: hammer (-> (Atomic %a) int void) (where (AtomicInteger %a)))
+(defun (hammer a n)
+  (loop (:for i (range 0 n))
+        (:do (ignore (atomic-increment! a)))))
+
+(: hammer-update (-> (Atomic (List int)) int void))
+(defun (hammer-update a n)
+  (loop (:for i (range 0 n))
+        (:do (ignore (atomic-update! a (fun (xs) (Cons i xs)))))))
+
+(: eight (-bjo-> (-> void) void))
+(defbjo (eight work)
+  (with-scope
+    (loop (:for k (range 0 8))
+          (:do (spawn (work))))))
+
+(defbjo (main args)
+  ;; --- any T --------------------------------------------------------------
+  (def s (make-atomic "a"))
+  (expect "ref" (atomic-ref s) "a")
+  (atomic-set! s "b")
+  (expect "set" (atomic-ref s) "b")
+  (expect "swap returns the value from before" (atomic-swap! s "c") "b")
+  (expect "and stores the new one" (atomic-ref s) "c")
+  (expect "update returns the new value" (atomic-update! s (fun (x) (str x "d"))) "cd")
+  (expect "and stores it" (atomic-ref s) "cd")
+
+  ;; --- int ------------------------------------------------------------------
+  (def i (make-atomic 5))
+  (expect "int: increment returns the new value" (atomic-increment! i) 6)
+  (expect "int: decrement returns the new value" (atomic-decrement! i) 5)
+  (expect "int: add returns the new value" (atomic-add! i 10) 15)
+  (expect "int: sub returns the new value" (atomic-sub! i 20) -5)
+  (expect "int: and the atomic holds it" (atomic-ref i) -5)
+  (expect "int: swap returns the value from before" (atomic-swap! i 7) -5)
+  (expect "int: update returns the new value" (atomic-update! i (fun (x) (* x 3))) 21)
+  (atomic-set! i 2147483647)
+  (expect "int: the maximum plus 1 is the minimum" (atomic-increment! i) -2147483648)
+  (expect "int: the minimum minus 1 is the maximum" (atomic-decrement! i) 2147483647)
+  (expect "int: add wraps" (atomic-add! i 2) -2147483647)
+  (expect "int: sub wraps" (atomic-sub! i 3) 2147483646)
+
+  ;; --- uint -----------------------------------------------------------------
+  (def u (make-atomic 5u))
+  (expect "uint: increment" (atomic-increment! u) 6u)
+  (expect "uint: decrement" (atomic-decrement! u) 5u)
+  (expect "uint: add" (atomic-add! u 10u) 15u)
+  (expect "uint: sub" (atomic-sub! u 5u) 10u)
+  (expect "uint: swap" (atomic-swap! u 0u) 10u)
+  (expect "uint: 0 minus 1 is the maximum" (atomic-decrement! u) 4294967295u)
+  (expect "uint: the maximum plus 1 is 0" (atomic-increment! u) 0u)
+  (expect "uint: sub wraps" (atomic-sub! u 2u) 4294967294u)
+  (expect "uint: add wraps" (atomic-add! u 3u) 1u)
+
+  ;; --- long -----------------------------------------------------------------
+  (def l (make-atomic 5L))
+  (expect "long: increment" (atomic-increment! l) 6L)
+  (expect "long: decrement" (atomic-decrement! l) 5L)
+  (expect "long: add" (atomic-add! l 10L) 15L)
+  (expect "long: sub" (atomic-sub! l 20L) -5L)
+  (expect "long: swap" (atomic-swap! l 9223372036854775807L) -5L)
+  (expect "long: the maximum plus 1 is the minimum" (atomic-increment! l) -9223372036854775808L)
+  (expect "long: the minimum minus 1 is the maximum" (atomic-decrement! l) 9223372036854775807L)
+  (expect "long: add wraps" (atomic-add! l 2L) -9223372036854775807L)
+  (expect "long: sub wraps" (atomic-sub! l 3L) 9223372036854775806L)
+
+  ;; --- ulong ----------------------------------------------------------------
+  (def ul (make-atomic 5UL))
+  (expect "ulong: increment" (atomic-increment! ul) 6UL)
+  (expect "ulong: decrement" (atomic-decrement! ul) 5UL)
+  (expect "ulong: add" (atomic-add! ul 10UL) 15UL)
+  (expect "ulong: sub" (atomic-sub! ul 5UL) 10UL)
+  (expect "ulong: swap" (atomic-swap! ul 0UL) 10UL)
+  (expect "ulong: 0 minus 1 is the maximum" (atomic-decrement! ul) 18446744073709551615UL)
+  (expect "ulong: the maximum plus 1 is 0" (atomic-increment! ul) 0UL)
+  (expect "ulong: sub wraps" (atomic-sub! ul 2UL) 18446744073709551614UL)
+  (expect "ulong: add wraps" (atomic-add! ul 3UL) 1UL)
+
+  ;; --- compare-and-swap -------------------------------------------------------
+  (def c (make-atomic 5))
+  (expect "int: a swap that happens returns the expected value" (atomic-compare-and-swap! c 5 6) 5)
+  (expect "and stores the new value" (atomic-ref c) 6)
+  (expect "int: a swap that fails returns the value in the atomic" (atomic-compare-and-swap! c 5 7) 6)
+  (expect "and stores nothing" (atomic-ref c) 6)
+  (def cu (make-atomic 1u))
+  (expect "uint: compare-and-swap" (list (atomic-compare-and-swap! cu 1u 2u) (atomic-compare-and-swap! cu 1u 3u) (atomic-ref cu))
+          (list 1u 2u 2u))
+  (def cl (make-atomic 1L))
+  (expect "long: compare-and-swap" (list (atomic-compare-and-swap! cl 1L 2L) (atomic-compare-and-swap! cl 1L 3L) (atomic-ref cl))
+          (list 1L 2L 2L))
+  (def cul (make-atomic 1UL))
+  (expect "ulong: compare-and-swap" (list (atomic-compare-and-swap! cul 1UL 2UL) (atomic-compare-and-swap! cul 1UL 3UL) (atomic-ref cul))
+          (list 1UL 2UL 2UL))
+
+  ;; A record is a class: compare-and-swap compares by identity.
+  (def first-cell (Cell (label "x")))
+  (def cells (make-atomic first-cell))
+  (expect-true "a record equal to the stored one, but another object, does not match"
+               (eq? (atomic-compare-and-swap! cells (Cell (label "x")) (Cell (label "y"))) first-cell))
+  (expect-true "and nothing is stored" (eq? (atomic-ref cells) first-cell))
+  (expect-true "the stored object itself matches"
+               (eq? (atomic-compare-and-swap! cells first-cell (Cell (label "y"))) first-cell))
+  (expect "and the new one is stored" (record-ref (atomic-ref cells) label) "y")
+
+  ;; An Option is a struct: compare-and-swap compares by value.
+  (def o (make-atomic (Some 1)))
+  (expect "an equal Option matches" (atomic-compare-and-swap! o (Some 1) (Some 2)) (Some 1))
+  (expect "and the new value is stored" (atomic-ref o) (Some 2))
+  (expect "a different Option does not" (atomic-compare-and-swap! o (Some 1) None) (Some 2))
+  (expect "and nothing is stored" (atomic-ref o) (Some 2))
+
+  ;; --- a type of the test's own --------------------------------------------------
+  (def sc (make-atomic (Score (points 1))))
+  (expect "Score: increment" (atomic-increment! sc) (Score (points 2)))
+  (expect "Score: add" (atomic-add! sc (Score (points 10))) (Score (points 12)))
+  (expect "Score: sub" (atomic-sub! sc (Score (points 2))) (Score (points 10)))
+  (expect "Score: decrement" (atomic-decrement! sc) (Score (points 9)))
+  (expect "a generic function at int" (twice-up (make-atomic 1)) 3)
+  (expect "a generic function at ulong" (twice-up (make-atomic 1UL)) 3UL)
+  (expect "a generic function at Score" (twice-up sc) (Score (points 11)))
+
+  ;; --- eight fibers at once ----------------------------------------------------
+  (def ci (make-atomic 0))
+  (eight (fun () (hammer ci 100000)))
+  (expect "int: eight fibers of 100 000 increments" (atomic-ref ci) 800000)
+  (def cul2 (make-atomic 0UL))
+  (eight (fun () (hammer cul2 100000)))
+  (expect "ulong: eight fibers of 100 000 increments" (atomic-ref cul2) 800000UL)
+  (def cs (make-atomic (Score (points 0))))
+  (eight (fun () (hammer cs 100000)))
+  (expect "Score, through atomic-update!: eight fibers of 100 000" (atomic-ref cs) (Score (points 800000)))
+  (def xs (make-atomic (list)))
+  (eight (fun () (hammer-update xs 20000)))
+  (expect "a list, through atomic-update!: eight fibers of 20 000" (list-length (atomic-ref xs)) 160000)
+  0)

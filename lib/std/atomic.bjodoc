@@ -1,0 +1,187 @@
+;; Docs for std/atomic.bjo, read through (:doc #:file "atomic.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Atomics: a cell that threads can read and write without a lock, with integer operations for int, uint, long and ulong.")
+  (see make-atomic atomic-update! atomic-compare-and-swap! AtomicInteger)
+  (example """
+    (import (std atomic))
+
+    (def hits (make-atomic 0L))
+    (atomic-increment! hits)                 ; 1L
+    (atomic-add! hits 10L)                   ; 11L
+    (atomic-swap! hits 0L)                   ; 11L, and hits is now 0L
+
+    (def names (make-atomic (list "ada")))
+    (atomic-update! names (fun (ns) (Cons "bea" ns)))   ; ("bea" "ada")
+    """)
+  (reference """
+    An @code{(Atomic T)} holds one value of type T. Every operation on it is
+    atomic: two threads that use the same atomic at the same time see the
+    operations one after the other, never mixed.
+
+    @strong{What the operations return.} @code{atomic-swap!} and
+    @code{atomic-compare-and-swap!} return the value from before the call.
+    @code{atomic-update!}, @code{atomic-increment!},
+    @code{atomic-decrement!}, @code{atomic-add!} and @code{atomic-sub!}
+    return the new value.
+
+    @strong{Equality.} @code{atomic-compare-and-swap!} compares the value in
+    the atomic with the expected value. A reference type, such as a record,
+    a list or a string, compares by identity, as @code{eq?} does: an equal
+    value that is a different object does not match. A value type, such as a
+    struct, an @code{Option} or one of the four integers, compares by value.
+
+    @strong{Only the stored value is atomic.} If the atomic holds a mutable
+    object, such as an array or a mutable vec, a change made inside that
+    object is not protected. Store a new value instead, for example with
+    @code{atomic-update!}.
+
+    @strong{Integers.} The trait @code{AtomicInteger} gives
+    @code{atomic-increment!}, @code{atomic-decrement!}, @code{atomic-add!}
+    and @code{atomic-sub!}. Bjolang implements it for @code{int},
+    @code{uint}, @code{long} and @code{ulong}, with
+    @code{System.Threading.Interlocked}. These wrap on overflow: the int
+    maximum plus 1 is the int minimum, and 0u minus 1u is the uint maximum.
+    On any other type the integer operations are a compile error.
+
+    @strong{The width of an integer} comes from type inference, as it does
+    for any number. @code{(make-atomic 0)} is an @code{(Atomic int)}. Write
+    @code{(make-atomic 0L)} or @code{(make-atomic 0UL)} for a long or a ulong
+    counter, or give the type: @code{(: hits (Atomic ulong))}. A counter of a
+    type that is too narrow wraps.
+    """))
+
+(:doc Atomic
+  (summary "A cell that holds one value of type %a, with atomic operations.")
+  (tparam %a "The type of the value.")
+  (see make-atomic atomic-ref AtomicInteger))
+
+(:doc make-atomic
+  (summary "A new atomic that holds value.")
+  (arg value "The first value.")
+  (returns "A new atomic.")
+  (example """
+    (make-atomic 0)            ; an (Atomic int)
+    (make-atomic 0L)           ; an (Atomic long)
+    (make-atomic 0UL)          ; an (Atomic ulong)
+    (make-atomic (list 1 2))   ; an (Atomic (List int))
+    """)
+  (reference """
+    The type of the atomic is the type of @code{value}, from normal type
+    inference. A number without a suffix is an @code{int} unless something
+    else says. A counter of a type that is too narrow wraps on overflow, so
+    write @code{0L} or @code{0UL}, or annotate the type, for a counter that
+    can pass the int maximum.
+    """))
+
+(:doc atomic-ref
+  (summary "The value in the atomic.")
+  (arg a "The atomic.")
+  (returns "The value that the atomic holds now."))
+
+(:doc atomic-set!
+  (summary "Stores value in the atomic.")
+  (arg a "The atomic.")
+  (arg value "The new value.")
+  (reference """
+    The store is a full fence. Reads and writes after it in the same thread
+    do not move before it.
+    """))
+
+(:doc atomic-swap!
+  (summary "Stores value in the atomic, and returns the value from before.")
+  (arg a "The atomic.")
+  (arg value "The new value.")
+  (returns "The value that the atomic held before the call."))
+
+(:doc atomic-compare-and-swap!
+  (summary "Stores desired if the atomic holds expected, and returns the value from before.")
+  (arg a "The atomic.")
+  (arg expected "The value that the atomic must hold for the store to happen.")
+  (arg desired "The value to store.")
+  (returns "The value that the atomic held before the call. The store happened if and only if this value equals expected.")
+  (example """
+    (def a (make-atomic 5))
+    (atomic-compare-and-swap! a 5 6)   ; 5, and a holds 6
+    (atomic-compare-and-swap! a 5 7)   ; 6, and a still holds 6
+    """)
+  (reference """
+    A reference type compares by identity, as @code{eq?} does. A value type
+    compares by value. So a record that is equal to the stored one, but is a
+    different object, does not match.
+    """))
+
+(:doc atomic-update!
+  (summary "Stores f of the value in the atomic, and returns the new value.")
+  (arg a "The atomic.")
+  (arg f "Makes the new value from the old value.")
+  (returns "The value that was stored.")
+  (example """
+    (def seen (make-atomic (list)))
+    (atomic-update! seen (fun (xs) (Cons 3 xs)))   ; (3)
+    """)
+  (reference """
+    If another thread stores a value between the read and the store, the
+    update tries again with the new value. So under contention f can run
+    more than once. f must have no side effects: no printing, no I/O, and no
+    change to other state.
+    """))
+
+(:doc AtomicInteger
+  (summary "The integer operations of an atomic: increment, decrement, add and subtract.")
+  (tparam %a "The integer type in the atomic.")
+  (see atomic-increment! atomic-add! atomic-update!)
+  (reference """
+    Bjolang implements this trait for @code{int}, @code{uint}, @code{long}
+    and @code{ulong}, with @code{System.Threading.Interlocked}. At those
+    types a call is a direct call to @code{Interlocked}. A call on an atomic
+    of any other type is a compile error.
+
+    The trait is open, so a program can implement it for a type of its own.
+    That implementation does not get the @code{Interlocked} path: write its
+    methods with @code{atomic-update!}.
+
+    Every implementation must follow these laws:
+
+    @itemlist{
+      @item{Increment, decrement, add and subtract are atomic.}
+      @item{They return the new value.}
+      @item{The built-in implementations wrap on overflow, as two's
+        complement does. An implementation of your own must document what
+        it does on overflow.}
+    }
+    """)
+  (example """
+    (type (: Score (Struct (: points int))))
+
+    (impl (AtomicInteger Score)
+      (defun (atomic-increment! a) (atomic-add! a (Score (points 1))))
+      (defun (atomic-decrement! a) (atomic-sub! a (Score (points 1))))
+      (defun (atomic-add! a n)
+        (atomic-update! a (fun (s) (Score (points (+ (.points s) (.points n)))))))
+      (defun (atomic-sub! a n)
+        (atomic-update! a (fun (s) (Score (points (- (.points s) (.points n))))))))
+    """))
+
+(:doc atomic-increment!
+  (summary "Adds 1 to the integer in the atomic, and returns the new value.")
+  (arg a "The atomic.")
+  (returns "The new value. The built-in integers wrap on overflow."))
+
+(:doc atomic-decrement!
+  (summary "Subtracts 1 from the integer in the atomic, and returns the new value.")
+  (arg a "The atomic.")
+  (returns "The new value. The built-in integers wrap on overflow."))
+
+(:doc atomic-add!
+  (summary "Adds n to the integer in the atomic, and returns the new value.")
+  (arg a "The atomic.")
+  (arg n "The number to add.")
+  (returns "The new value. The built-in integers wrap on overflow."))
+
+(:doc atomic-sub!
+  (summary "Subtracts n from the integer in the atomic, and returns the new value.")
+  (arg a "The atomic.")
+  (arg n "The number to subtract.")
+  (returns "The new value. The built-in integers wrap on overflow."))

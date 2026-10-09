@@ -1,0 +1,99 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/atomic.bjo — a cell that threads can read and write without a lock.
+;;
+;; An `(Atomic T)` is a `Bjolang.Runtime.Atomic<T>`. The runtime chooses the
+;; class for T when the atomic is made: one class for each of int, uint, long
+;; and ulong, `AtomicBox<T>` for other reference types and
+;; `AtomicStructBox<T>` for other value types. See BjolangRuntime/BjoAtomic.cs.
+;;
+;; The integer operations are the methods of the trait `AtomicInteger`. A call
+;; at a known integer type is inlined, and becomes a direct call to
+;; `Interlocked`.
+(import (std prelude))
+
+(:doc #:file "atomic.bjodoc")
+
+(export
+  Atomic
+  make-atomic atomic-ref atomic-set! atomic-swap! atomic-compare-and-swap!
+  atomic-update!
+  AtomicInteger atomic-increment! atomic-decrement! atomic-add! atomic-sub!)
+
+(import/class
+  ((Atomic %a) (: Bjolang.Runtime.Atomic)))
+
+;; ---------------------------------------------------------------------------
+;; Any T
+;; ---------------------------------------------------------------------------
+
+(import/extern
+  (make-atomic              (: Bjolang.Runtime.AtomicModule.Make           (-> %a (Atomic %a))))
+  (atomic-ref               (: Bjolang.Runtime.AtomicModule.Ref            (-> (Atomic %a) %a)))
+  (atomic-set!              (: Bjolang.Runtime.AtomicModule.Set            (-> (Atomic %a) %a void)))
+  (atomic-swap!             (: Bjolang.Runtime.AtomicModule.Swap           (-> (Atomic %a) %a %a)))
+  (atomic-compare-and-swap! (: Bjolang.Runtime.AtomicModule.CompareAndSwap (-> (Atomic %a) %a %a %a)))
+  (atomic-update!           (: Bjolang.Runtime.AtomicModule.Update         (-> (Atomic %a) (-> %a %a) %a))))
+
+;; ---------------------------------------------------------------------------
+;; Integers
+;; ---------------------------------------------------------------------------
+
+;; TODO: make this trait closed once Bjolang supports closed traits.
+(def/trait (AtomicInteger %a)
+  (: atomic-increment! (-> (Atomic %a) %a))
+  (: atomic-decrement! (-> (Atomic %a) %a))
+  (: atomic-add! (-> (Atomic %a) %a %a))
+  (: atomic-sub! (-> (Atomic %a) %a %a)))
+
+(import/extern
+  (int-increment!   (: Bjolang.Runtime.AtomicModule.Increment (-> (Atomic int) int)))
+  (int-decrement!   (: Bjolang.Runtime.AtomicModule.Decrement (-> (Atomic int) int)))
+  (int-add!         (: Bjolang.Runtime.AtomicModule.Add       (-> (Atomic int) int int)))
+  (int-sub!         (: Bjolang.Runtime.AtomicModule.Sub       (-> (Atomic int) int int)))
+  (uint-increment!  (: Bjolang.Runtime.AtomicModule.Increment (-> (Atomic uint) uint)))
+  (uint-decrement!  (: Bjolang.Runtime.AtomicModule.Decrement (-> (Atomic uint) uint)))
+  (uint-add!        (: Bjolang.Runtime.AtomicModule.Add       (-> (Atomic uint) uint uint)))
+  (uint-sub!        (: Bjolang.Runtime.AtomicModule.Sub       (-> (Atomic uint) uint uint)))
+  (long-increment!  (: Bjolang.Runtime.AtomicModule.Increment (-> (Atomic long) long)))
+  (long-decrement!  (: Bjolang.Runtime.AtomicModule.Decrement (-> (Atomic long) long)))
+  (long-add!        (: Bjolang.Runtime.AtomicModule.Add       (-> (Atomic long) long long)))
+  (long-sub!        (: Bjolang.Runtime.AtomicModule.Sub       (-> (Atomic long) long long)))
+  (ulong-increment! (: Bjolang.Runtime.AtomicModule.Increment (-> (Atomic ulong) ulong)))
+  (ulong-decrement! (: Bjolang.Runtime.AtomicModule.Decrement (-> (Atomic ulong) ulong)))
+  (ulong-add!       (: Bjolang.Runtime.AtomicModule.Add       (-> (Atomic ulong) ulong ulong)))
+  (ulong-sub!       (: Bjolang.Runtime.AtomicModule.Sub       (-> (Atomic ulong) ulong ulong))))
+
+(impl (AtomicInteger int)
+  (defun (atomic-increment! a) (int-increment! a))
+  (defun (atomic-decrement! a) (int-decrement! a))
+  (defun (atomic-add! a n) (int-add! a n))
+  (defun (atomic-sub! a n) (int-sub! a n)))
+
+(impl (AtomicInteger uint)
+  (defun (atomic-increment! a) (uint-increment! a))
+  (defun (atomic-decrement! a) (uint-decrement! a))
+  (defun (atomic-add! a n) (uint-add! a n))
+  (defun (atomic-sub! a n) (uint-sub! a n)))
+
+(impl (AtomicInteger long)
+  (defun (atomic-increment! a) (long-increment! a))
+  (defun (atomic-decrement! a) (long-decrement! a))
+  (defun (atomic-add! a n) (long-add! a n))
+  (defun (atomic-sub! a n) (long-sub! a n)))
+
+(impl (AtomicInteger ulong)
+  (defun (atomic-increment! a) (ulong-increment! a))
+  (defun (atomic-decrement! a) (ulong-decrement! a))
+  (defun (atomic-add! a n) (ulong-add! a n))
+  (defun (atomic-sub! a n) (ulong-sub! a n)))

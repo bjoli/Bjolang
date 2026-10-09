@@ -3,6 +3,29 @@
 
 What each change guarantees, and what it leaves open.
 
+* (std atomic): atomics without a lock
+
+- *An ~(Atomic T)~ holds one value that threads can read and write
+  without a lock.* ~make-atomic~, ~atomic-ref~, ~atomic-set!~,
+  ~atomic-swap!~, ~atomic-compare-and-swap!~ and ~atomic-update!~ work
+  for any T. ~atomic-swap!~ and ~atomic-compare-and-swap!~ return the
+  value from before the call; ~atomic-update!~ returns the new value, and
+  its function can run more than once under contention.
+- *The integer operations are the trait ~AtomicInteger~*:
+  ~atomic-increment!~, ~atomic-decrement!~, ~atomic-add!~ and
+  ~atomic-sub!~, which return the new value. Bjolang implements it for
+  ~int~, ~uint~, ~long~ and ~ulong~ with ~System.Threading.Interlocked~,
+  and these wrap on overflow. At a known type a call is a direct call to
+  ~Interlocked~, with no dictionary and no virtual call. On an atomic of
+  any other type the integer operations do not compile.
+- Compare-and-swap compares a reference type by identity, as ~eq?~ does,
+  and a value type by value.
+- The trait is open: a program can implement it for a type of its own,
+  with ~atomic-update!~. It is to become closed when Bjolang has closed
+  traits.
+- Only the stored value is atomic. A change inside a mutable object that
+  an atomic holds is not protected.
+
 * Fibers run from run queues of the runtime's own
 
 - *Under sustained load, work that has waited runs before work that has
