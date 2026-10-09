@@ -1475,6 +1475,15 @@ public static partial class BjolangRuntime {
     /// </summary>
     public static Scope OpenReplSession() {
         InstallStandardPorts();
+
+        // The line editor draws the prompt and echoes each key through
+        // `Console.Out`, which is now `StdOut`, and it never flushes. A line
+        // buffer would keep all of it until Enter, and also keep the editor's
+        // question for the cursor position from the terminal, so the editor
+        // waits for an answer that does not come. So a session at a terminal
+        // writes standard output at once.
+        if (!Console.IsOutputRedirected) StdOut.Mode = Bjolang.Runtime.BufferMode.None;
+
         var scope = new Scope(0, null, propagate: false);
         _ = scopesubpush_BANG(scope);
         return scope;

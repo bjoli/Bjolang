@@ -1554,6 +1554,78 @@ def test_runtime(work, c):
 
 
 # ---------------------------------------------------------------------------
+# The REPL at a terminal
+# ---------------------------------------------------------------------------
+
+@test("repl at a terminal")
+def test_repl_terminal(work, c):
+    # The transcript tests in run_tests.py pipe their input, so the REPL reads
+    # line by line there. At a terminal it uses the line editor, which draws
+    # the prompt and echoes each key without a newline and without a flush.
+    # A line-buffered standard output kept all of that until Enter.
+    try:
+        import pty, fcntl, termios, struct, select
+    except ImportError:
+        c.that("SKIPPED: no pseudo-terminals on this system", True)
+        return
+
+    # Made before the fork: the suite runs tests on threads, and the child of
+    # a fork in a threaded process should do nothing but exec.
+    env = {k: v for k, v in os.environ.items() if k not in ("INSIDE_EMACS", "BJOLANG_REPL_PLAIN")}
+    env["TERM"] = "xterm-256color"
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.chdir(str(work))
+        os.execve(str(BJO), [str(BJO), "repl"], env)
+
+    # A size: with none, the editor has no width to lay the prompt out in.
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    seen = bytearray()
+
+    def wait_for(wanted, seconds):
+        """Reads until `wanted` is in what came since the last call, and
+        answers the editor's questions for the cursor position as a terminal
+        does. Whether it came."""
+        start = len(seen)
+        end = time.time() + seconds
+        while time.time() < end:
+            if wanted in seen[start:]:
+                return True
+            ready, _, _ = select.select([fd], [], [], 0.1)
+            if ready:
+                try:
+                    chunk = os.read(fd, 4096)
+                except OSError:
+                    break
+                seen.extend(chunk)
+                for _ in range(chunk.count(b"\x1b[6n")):
+                    os.write(fd, b"\x1b[5;6R")
+        return wanted in seen[start:]
+
+    try:
+        c.that("the prompt is drawn before anything is typed", wait_for(b"bjo>", 60),
+               bytes(seen[-300:]).decode("utf-8", "replace"))
+        os.write(fd, b"(+ 40 2)")
+        c.that("a key is echoed before Enter", wait_for(b"40", 10),
+               bytes(seen[-300:]).decode("utf-8", "replace"))
+        os.write(fd, b"\r")
+        c.that("and Enter evaluates the entry", wait_for(b"42", 60),
+               bytes(seen[-300:]).decode("utf-8", "replace"))
+    finally:
+        try:
+            os.write(fd, b"\x04")
+            wait_for(b"never", 2)
+        except OSError:
+            pass
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+        os.waitpid(pid, 0)
+        os.close(fd)
+
+
+# ---------------------------------------------------------------------------
 # Builds at the same time
 # ---------------------------------------------------------------------------
 
