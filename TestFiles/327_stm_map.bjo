@@ -1,0 +1,184 @@
+;; (std stm map): every operation; ten thousand keys in and out again, and
+;; that the empty branches are taken down; buckets of keys whose hashes are
+;; equal; keys whose hashes differ only in their high bits; a retry that waits
+;; for a key; and eight fibers that add and remove keys while a reader checks
+;; that the size and the entries agree.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std stm))
+(import (std stm map))
+
+;; Keys whose hashes are 0 to 3: most of them share a bucket.
+(type (: Collide (Struct (: n int))))
+(impl (Eq Collide)
+  (defun (= a b) (= (struct-ref a n) (struct-ref b n)))
+  (defun (eq-hash a) (% (struct-ref a n) 4)))
+
+;; Keys whose hashes are 0 in bits 0 to 24. The map mixes the hash, so they
+;; are spread over the trie as other keys are.
+(type (: Deep (Struct (: n int))))
+(impl (Eq Deep)
+  (defun (= a b) (= (struct-ref a n) (struct-ref b n)))
+  (defun (eq-hash a) (shift-left (struct-ref a n) 25)))
+
+(: set-range! (-> (TMap int int) int int void))
+(defun (set-range! m from to)
+  (loop (:for i (range from to))
+        (:do (atomically (fun (tx) (tmap-set! tx m i (* i 10)))))))
+
+(: present (-> (TMap int int) int int int))
+(defun (present m from to)
+  (atomically
+   (fun (tx)
+     (loop (:for i (range from to))
+           (:acc n (summing (if (= (tmap-try-ref tx m i) (Some (* i 10))) 1 0)))))))
+
+(: entry-sum (-> Tx (TMap %k int) int))
+(defun (entry-sum tx m)
+  (tmap-fold tx (fun (k v acc) (+ v acc)) 0 m))
+
+(: size-agrees? (-> Tx (TMap %k %v) bool))
+(defun (size-agrees? tx m)
+  (= (tmap-length tx m) (tmap-fold tx (fun (k v acc) (+ acc 1)) 0 m)))
+
+;; ---------------------------------------------------------------------------
+;; Fibers
+;; ---------------------------------------------------------------------------
+
+;; Adds keys base to base + n - 1, then removes the even ones.
+(: churn (-bjo-> (TMap int int) int int (Loc int) void))
+(defbjo (churn m base n done)
+  (loop (:for i (range base (+ base n)))
+        (:do (atomically (fun (tx) (tmap-set! tx m i i)))))
+  (loop (:for i (range-by base (+ base n) 2))
+        (:do (atomically (fun (tx) (tmap-remove! tx m i)))))
+  (ignore (atomically (fun (tx) (tx-update! tx done #(+ & 1))))))
+
+(: checker (-bjo-> (TMap int int) (Loc int) (Loc int) void))
+(defbjo (checker m done bad)
+  (let lp ()
+    (when (< (loc-ref done) 8)
+      (when (not (atomically (fun (tx) (size-agrees? tx m))))
+        (ignore (atomically (fun (tx) (tx-update! tx bad #(+ & 1))))))
+      (lp))))
+
+(: wait-for-key (-bjo-> (TMap string int) (Chan int) void))
+(defbjo (wait-for-key m out)
+  (chan-put out (atomically (fun (tx) (match (tmap-try-ref tx m "late")
+                                        ((Some v) v)
+                                        (None (tx-retry tx)))))))
+
+(defbjo (main args)
+  ;; --- empty -----------------------------------------------------------------
+  (def m (make-tmap))
+  (expect "a new map is empty" (atomically (fun (tx) (tmap-empty? tx m))) #t)
+  (expect "and has length 0" (atomically (fun (tx) (tmap-length tx m))) 0)
+  (expect "try-ref of a missing key" (atomically (fun (tx) (tmap-try-ref tx m 1))) None)
+  (expect "ref-or of a missing key" (atomically (fun (tx) (tmap-ref-or tx m 1 -1))) -1)
+  (expect "contains? of a missing key" (atomically (fun (tx) (tmap-contains? tx m 1))) #f)
+  (expect-true "ref of a missing key raises"
+               (match (try (atomically (fun (tx) (tmap-ref tx m 1)))
+                           #:catch (System.Collections.Generic.KeyNotFoundException))
+                 ((Ok _) #f)
+                 ((Err _) #t)))
+
+  ;; --- the operations --------------------------------------------------------
+  (atomically (fun (tx) (tmap-set! tx m 1 10) (tmap-set! tx m 2 20)))
+  (expect "ref" (atomically (fun (tx) (tmap-ref tx m 1))) 10)
+  (expect "length" (atomically (fun (tx) (tmap-length tx m))) 2)
+  (atomically (fun (tx) (tmap-set! tx m 1 11)))
+  (expect "set of a present key replaces the value" (atomically (fun (tx) (tmap-ref tx m 1))) 11)
+  (expect "and does not change the length" (atomically (fun (tx) (tmap-length tx m))) 2)
+  (atomically (fun (tx) (tmap-remove! tx m 1)))
+  (expect "remove" (atomically (fun (tx) (tmap-contains? tx m 1))) #f)
+  (atomically (fun (tx) (tmap-remove! tx m 1)))
+  (expect "remove of a missing key changes nothing" (atomically (fun (tx) (tmap-length tx m))) 1)
+  (atomically (fun (tx) (tmap-update! tx m 3 (fun (old) (Some 30)))))
+  (expect "update adds" (atomically (fun (tx) (tmap-ref tx m 3))) 30)
+  (atomically (fun (tx) (tmap-update! tx m 3 (fun (old) (match old ((Some v) (Some (+ v 1))) (None None))))))
+  (expect "update changes" (atomically (fun (tx) (tmap-ref tx m 3))) 31)
+  (atomically (fun (tx) (tmap-update! tx m 3 (fun (old) None))))
+  (expect "update removes" (atomically (fun (tx) (tmap-try-ref tx m 3))) None)
+  (expect "->list" (atomically (fun (tx) (tmap->list tx m))) (list (Tuple 2 20)))
+  (expect "a move of a value between two keys, as one step"
+          (atomically (fun (tx)
+                        (tmap-set! tx m 9 (tmap-ref tx m 2))
+                        (tmap-remove! tx m 2)
+                        (tmap->list tx m)))
+          (list (Tuple 9 20)))
+
+  ;; --- ten thousand keys -----------------------------------------------------
+  (def big (make-tmap))
+  (set-range! big 0 10000)
+  (expect "10 000 keys: length" (atomically (fun (tx) (tmap-length tx big))) 10000)
+  (expect "10 000 keys: every one is there" (present big 0 10000) 10000)
+  (expect "10 000 keys: fold" (atomically (fun (tx) (entry-sum tx big))) (* 10 (/ (* 9999 10000) 2)))
+  (loop (:for i (range-by 0 10000 2))
+        (:do (atomically (fun (tx) (tmap-remove! tx big i)))))
+  (expect "the even keys removed: length" (atomically (fun (tx) (tmap-length tx big))) 5000)
+  (expect "the odd keys are still there" (present big 0 10000) 5000)
+  (loop (:for i (range-by 1 10000 2))
+        (:do (atomically (fun (tx) (tmap-remove! tx big i)))))
+  (expect "all removed: empty?, which reads only the root"
+          (atomically (fun (tx) (tmap-empty? tx big))) #t)
+  (expect "all removed: length" (atomically (fun (tx) (tmap-length tx big))) 0)
+
+  ;; --- buckets ---------------------------------------------------------------
+  (def c (make-tmap))
+  (loop (:for i (range 0 100))
+        (:do (atomically (fun (tx) (tmap-set! tx c (Collide (n i)) i)))))
+  (expect "100 keys in 4 buckets: length" (atomically (fun (tx) (tmap-length tx c))) 100)
+  (expect "every one is found"
+          (atomically (fun (tx) (loop (:for i (range 0 100))
+                                      (:acc k (summing (if (= (tmap-try-ref tx c (Collide (n i))) (Some i)) 1 0))))))
+          100)
+  (loop (:for i (range 0 99))
+        (:do (atomically (fun (tx) (tmap-remove! tx c (Collide (n i)))))))
+  (expect "a bucket emptied to one entry" (atomically (fun (tx) (tmap->list tx c)))
+          (list (Tuple (Collide (n 99)) 99)))
+  (atomically (fun (tx) (tmap-remove! tx c (Collide (n 99)))))
+  (expect "and then to none" (atomically (fun (tx) (tmap-empty? tx c))) #t)
+
+  ;; --- a deep trie -----------------------------------------------------------
+  (def d (make-tmap))
+  (loop (:for i (range 0 64))
+        (:do (atomically (fun (tx) (tmap-set! tx d (Deep (n i)) i)))))
+  (expect "64 keys whose hashes differ only above bit 24: every one is found"
+          (atomically (fun (tx) (loop (:for i (range 0 64))
+                                      (:acc k (summing (if (= (tmap-try-ref tx d (Deep (n i))) (Some i)) 1 0))))))
+          64)
+  (loop (:for i (range 0 64))
+        (:do (atomically (fun (tx) (tmap-remove! tx d (Deep (n i)))))))
+  (expect "and they can all be removed again"
+          (atomically (fun (tx) (tmap-empty? tx d))) #t)
+
+  ;; --- a retry that waits for a key ------------------------------------------
+  (def w (make-tmap))
+  (def out (make-chan))
+  (with-scope
+    (spawn (wait-for-key w out))
+    (sync (timeout 30))
+    (atomically (fun (tx) (tmap-set! tx w "late" 7)))
+    (expect "a transaction that waits for a key" (chan-get out) 7))
+
+  ;; --- eight fibers at once --------------------------------------------------
+  (def shared (make-tmap))
+  (def done (make-loc 0))
+  (def bad (make-loc 0))
+  (with-scope
+    (loop (:for f (range 0 8))
+          (:do (spawn (churn shared (* f 100000) 2000 done))))
+    (spawn (checker shared done bad)))
+  (expect "eight fibers: length" (atomically (fun (tx) (tmap-length tx shared))) 8000)
+  (expect "eight fibers: the size and the entries agree"
+          (atomically (fun (tx) (size-agrees? tx shared))) #t)
+  (expect "eight fibers: the odd keys are there"
+          (atomically (fun (tx) (loop (:for j (range 0 8000))
+                                      (:acc k (summing (if (tmap-contains? tx shared
+                                                                           (+ (* (/ j 1000) 100000)
+                                                                              (+ 1 (* 2 (% j 1000)))))
+                                                           1 0))))))
+          8000)
+  (expect "no snapshot saw a size that did not agree" (loc-ref bad) 0)
+  0)

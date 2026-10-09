@@ -3,6 +3,27 @@
 
 What each change guarantees, and what it leaves open.
 
+* (std stm map): a hash map for transactions
+
+- *A ~(TMap K V)~ is a hash map whose operations are part of the
+  transaction that calls them*: ~tmap-ref~, ~tmap-try-ref~,
+  ~tmap-ref-or~, ~tmap-contains?~, ~tmap-set!~, ~tmap-remove!~,
+  ~tmap-update!~, ~tmap-length~, ~tmap-empty?~, ~tmap-fold~ and
+  ~tmap->list~, named as the prelude's ~Map~ operations are. K must
+  implement ~Eq~. A transaction can wait for a key with ~tx-retry~.
+- It is a hash trie written in Bjolang, in which each branch is a
+  location, as in the StmMap of Haskell's stm-containers. An operation
+  writes only the branch that changes, so transactions that change
+  different keys of a large map seldom conflict. The size is kept in 16
+  counters that the hash selects.
+- The map mixes ~eq-hash~ with the finaliser of MurmurHash3. Consecutive
+  int keys, whose hashes differ only in the low bits, otherwise put the
+  fibers that add them on the same branches: measured with 16 fibers, 4.9
+  runs per commit without the mix and 1.2 with it.
+- *Left open:* with the default workstation GC, the allocation of all
+  fibers limits the throughput, and the map does not scale with fibers.
+  With server GC, 16 fibers had 8.4 times the throughput of one.
+
 * Framework declarations no longer make the standard library stale
 
 - The frameworks file of a project was an input of every module that a

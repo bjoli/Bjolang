@@ -1,0 +1,195 @@
+;; Docs for std/stm/map.bjo, read through (:doc #:file "map.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "A hash map for transactions: change it together with other maps, queues and locations, and wait for a key.")
+  (see TMap tmap-set! tmap-try-ref tmap-update!)
+  (example """
+    (import (std stm))
+    (import (std stm map))
+
+    (def stock (make-tmap))
+    (def orders (make-tmap))
+
+    (atomically (fun (tx) (tmap-set! tx stock "apples" 10)))
+
+    ;; Take three apples for order 17, or wait until there are three.
+    (atomically
+     (fun (tx)
+       (let ((n (tmap-ref-or tx stock "apples" 0)))
+         (if (< n 3)
+             (tx-retry tx)
+             (begin
+               (tmap-set! tx stock "apples" (- n 3))
+               (tmap-set! tx orders 17 "3 apples"))))))
+    """)
+  (reference """
+    A @code{(TMap K V)} maps keys of type K to values of type V. K must
+    implement @code{Eq}: the map uses @code{=} and @code{eq-hash}. Its
+    operations take the @code{Tx} of a transaction first, and are part of
+    that transaction. Run them with @code{atomically} or
+    @code{atomically-evt} from @code{(std stm)}.
+
+    @strong{Names.} The operations are named as those of the prelude's
+    @code{Map}, with @code{tmap-} for @code{map-}: @code{tmap-try-ref},
+    @code{tmap-ref-or}, @code{tmap-set!}, @code{tmap-remove!} and so on.
+
+    @strong{Waiting.} A transaction that does not find what it needs can
+    call @code{tx-retry}. It runs again when the map changes where it
+    looked.
+
+    @strong{Contention.} The map is a hash trie, and each branch is a
+    location of its own. An operation reads the branches on the path to
+    its key, and writes only the branch that changes. So transactions that
+    change different keys seldom conflict in a large map. In a small map
+    most keys are in the root branch, and transactions that add or remove
+    keys conflict more often. The size is kept in 16 counters, and the
+    hash of the key selects the counter, so adding keys does not make all
+    transactions conflict on one count. This is the design of the StmMap of
+    Haskell's stm-containers.
+
+    @strong{Cost.} A lookup, an add and a remove read one branch for each
+    5 bits of the hash that are needed to tell the key from the others:
+    O(log n) with base 32. @code{tmap-length} reads the 16 counters.
+    @code{tmap-fold} and @code{tmap->list} read every branch, so a
+    transaction that calls them conflicts with every change to the map.
+
+    @strong{Keys.} The map mixes the bits of @code{eq-hash}, so keys whose
+    hashes differ in only a few bits, such as consecutive ints, are spread
+    over the trie, and fibers that add them at the same time seldom
+    conflict. Keys with the same @code{eq-hash} are kept in one bucket and
+    compared with @code{=}, so a bad hash makes the map slow, not wrong. Do
+    not change a key after it is in the map.
+
+    @strong{Measured.} Sixteen fibers that each add 50 000 consecutive int
+    keys: 1.2 runs of the transaction for each commit, and 8.4 times the
+    throughput of one fiber, with server GC. One @code{(Loc (Map K V))}
+    for the same work took 2.3 times as long. With the default workstation
+    GC, the allocation of all fibers is the limit, and neither scales.
+    """))
+
+(:doc TMap
+  (summary "A hash map from %k to %v, for transactions.")
+  (tparam %k "The type of the keys. It must implement Eq.")
+  (tparam %v "The type of the values.")
+  (see make-tmap))
+
+(:doc TMapSlot
+  (summary "A part of a TMap. The functions of the map name it, so it is exported; it can not be used outside the map.")
+  (tparam %k "The type of the keys.")
+  (tparam %v "The type of the values."))
+
+(:doc TMapBranch
+  (summary "A part of a TMap. The functions of the map name it, so it is exported; it can not be used outside the map.")
+  (tparam %k "The type of the keys.")
+  (tparam %v "The type of the values."))
+
+(:doc TMapChange
+  (summary "A part of a TMap. The functions of the map name it, so it is exported; it can not be used outside the map.")
+  (tparam %k "The type of the keys.")
+  (tparam %v "The type of the values."))
+
+(:doc make-tmap
+  (summary "A new empty map.")
+  (returns "A new map."))
+
+(:doc tmap-try-ref
+  (summary "The value for k, or None when k is not in the map.")
+  (arg tx "The log of the transaction.")
+  (arg m "The map.")
+  (arg k "The key.")
+  (returns "(Some value), or None."))
+
+(:doc tmap-ref
+  (summary "The value for k.")
+  (arg tx "The log of the transaction.")
+  (arg m "The map.")
+  (arg k "The key.")
+  (returns "The value.")
+  (raises System.Collections.Generic.KeyNotFoundException "When k is not in the map. The transaction writes nothing."))
+
+(:doc tmap-ref-or
+  (summary "The value for k, or default when k is not in the map.")
+  (arg tx "The log of the transaction.")
+  (arg m "The map.")
+  (arg k "The key.")
+  (arg default "The value when k is not in the map.")
+  (returns "The value, or default."))
+
+(:doc tmap-contains?
+  (summary "Whether k is in the map.")
+  (arg tx "The log of the transaction.")
+  (arg m "The map.")
+  (arg k "The key.")
+  (returns "#t when k is in the map."))
+
+(:doc tmap-set!
+  (summary "Sets the value for k, in the transaction.")
+  (arg tx "The log of the transaction.")
+  (arg m "The map.")
+  (arg k "The key.")
+  (arg v "The value. It replaces the value that k had."))
+
+(:doc tmap-remove!
+  (summary "Removes k from the map, in the transaction.")
+  (arg tx "The log of the transaction.")
+  (arg m "The map.")
+  (arg k "The key. When it is not in the map, nothing changes."))
+
+(:doc tmap-update!
+  (summary "Sets or removes the entry for k with f of its value, in the transaction.")
+  (arg tx "The log of the transaction.")
+  (arg m "The map.")
+  (arg k "The key.")
+  (arg f "Gets (Some value), or None when k is not in the map. Gives (Some new-value) to set the value, or None to remove k.")
+  (example """
+    ;; Count a word.
+    (tmap-update! tx counts word
+                  (fun (old) (match old
+                               ((Some n) (Some (+ n 1)))
+                               (None (Some 1)))))
+    """)
+  (reference """
+    One walk down the trie does the lookup and the change. f is called
+    once in each run of the transaction.
+    """))
+
+(:doc tmap-length
+  (summary "The number of keys in the map.")
+  (arg tx "The log of the transaction.")
+  (arg m "The map.")
+  (returns "The number of keys.")
+  (reference """
+    Reads the 16 counters of the map, so the transaction conflicts with
+    every transaction that adds or removes a key.
+    """))
+
+(:doc tmap-empty?
+  (summary "Whether the map has no keys.")
+  (arg tx "The log of the transaction.")
+  (arg m "The map.")
+  (returns "#t when the map is empty.")
+  (reference """
+    Reads only the root branch: a branch that becomes empty is removed.
+    """))
+
+(:doc tmap-fold
+  (summary "Combines all entries of the map with f.")
+  (arg tx "The log of the transaction.")
+  (arg f "Gets a key, its value and the result so far, and gives the next result.")
+  (arg init "The result for an empty map.")
+  (arg m "The map.")
+  (returns "The result.")
+  (reference """
+    The entries come in the order of their hashes, not in the order in
+    which they were added. This reads every branch of the map.
+    """))
+
+(:doc tmap->list
+  (summary "All entries of the map, as a list of key and value.")
+  (arg tx "The log of the transaction.")
+  (arg m "The map.")
+  (returns "The entries, in no fixed order.")
+  (reference """
+    This reads every branch of the map.
+    """))
