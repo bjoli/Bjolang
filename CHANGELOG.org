@@ -3,6 +3,21 @@
 
 What each change guarantees, and what it leaves open.
 
+* Framework declarations no longer make the standard library stale
+
+- The frameworks file of a project was an input of every module that a
+  build compiled, the standard library too. When a manifest changed what
+  it declared, the next build rebuilt the whole standard library, and the
+  next ~bjo~ then rebuilt itself, because its modules were newer. A
+  single-file build with ~--framework~ recorded the framework in the
+  standard library modules, so the next build without it rebuilt them
+  again.
+- Now the declarations, and ~--framework~, apply only to modules outside
+  the standard library, as the NuGet packages of a build already did. A
+  module of the standard library declares no framework.
+- ~run_bjo_tests.py~ checks that its framework builds leave the standard
+  library and ~bjo~ as they were. That test went from 66 s to 11 s.
+
 * (std stm queue): a FIFO queue for transactions
 
 - *A ~(TQueue T)~ is a queue made of locations,* so its operations are

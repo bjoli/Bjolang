@@ -81,8 +81,9 @@ let mutable private declaredByRoot: (string * Set<string>) list = []
 /// What `--framework` said, for a file no root covers: a single-file build.
 let mutable private declaredGlobally: Set<string> = Set.empty
 
-/// The `--frameworks` file, recorded as an input of every build made against
-/// it — the same rule the roots file follows, and for the same reason: a
+/// The `--frameworks` file, recorded as an input of every module built against
+/// it except those of the standard library (see `appliesTo`) — the same rule
+/// the roots file follows, and for the same reason: a
 /// declaration removed from a manifest has to make the modules that used it
 /// stale, and a file is what a timestamp comparison can see.
 let mutable private declarationFile: string option = None
@@ -110,10 +111,28 @@ let setGlobal (names: string list) : unit =
 
 let declarationFilePath () : string option = declarationFile
 
-/// The frameworks the package that owns this source file declared.
+let private inStandardLibrary (sourceFile: string) =
+    match Paths.identityOf sourceFile with
+    | Some identity -> identity.Root.IsStandardLibrary
+    | None -> false
+
+/// Do the declarations of this build count as an input of this module?
+///
+/// Not for the standard library, which declares no framework. It is built
+/// once and shared by every program. If the declarations made it stale,
+/// building a project that declares a framework and then one that does not
+/// would rebuild it each time, and `bjo` after it. `NuGetRefs.appliesTo` keeps
+/// the same rule for packages.
+let appliesTo (sourceFile: string) : bool =
+    String.IsNullOrEmpty sourceFile || not (inStandardLibrary sourceFile)
+
+/// The frameworks the package that owns this source file declared. None for
+/// the standard library, also in a single-file build with `--framework`.
 let declaredFor (sourceFile: string) : Set<string> =
     if String.IsNullOrEmpty sourceFile then
         declaredGlobally
+    elif not (appliesTo sourceFile) then
+        Set.empty
     else
 
     let full =

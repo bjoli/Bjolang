@@ -154,8 +154,8 @@ let private writeBuildRecord
         // than leaving them built against a framework they may no longer name.
         let frameworksLine =
             match Frameworks.declarationFilePath () with
-            | Some path -> [ $"frameworks %s{path}" ]
-            | None -> []
+            | Some path when Frameworks.appliesTo inputFilePath -> [ $"frameworks %s{path}" ]
+            | _ -> []
 
         // What this module's package declared, written down so that a record
         // says what it was built under rather than only which file said so.

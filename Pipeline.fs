@@ -1155,7 +1155,7 @@ let private upToDateAgainst (resolve: ImportSpec -> Result<string, string>) (bjo
     /// error instead of quietly staying built.
     let declarationsWritten =
         match Frameworks.declarationFilePath () with
-        | Some path when File.Exists path -> File.GetLastWriteTimeUtc path
+        | Some path when Frameworks.appliesTo bjoPath && File.Exists path -> File.GetLastWriteTimeUtc path
         | _ -> DateTime.MinValue
 
     // The restored NuGet packages, for the same reason.

@@ -829,6 +829,11 @@ def test_frameworks(work, c):
         c.that(f"SKIPPED: no {ASPNET} runtime or reference pack on this machine", True)
         return
 
+    # The standard library and `bjo` are shared by every build. Checked at the
+    # end: no build here, with a framework or without, may make them stale.
+    shared = [ROOT / "lib" / "std" / "prelude.dll", ROOT / "bjo" / "bjo.exe"]
+    shared_before = [p.stat().st_mtime_ns for p in shared]
+
     # A library that declares ASP.NET, with one module that uses it and one
     # that does not.
     web = work / "web"
@@ -1005,6 +1010,14 @@ def test_frameworks(work, c):
            (quiet / "src" / "main.bjobuild").read_text())
     c.that("and its runtimeconfig is the single-framework one it always was",
            '"framework": {' in runtimeconfig_of(quiet), runtimeconfig_of(quiet))
+
+    # 25. Declarations, and `--framework`, apply to the packages of a build and
+    # never to the standard library. If they did, each build here would
+    # rebuild it, and the next `bjo` would rebuild itself.
+    c.that("no build rebuilt the standard library or bjo",
+           [p.stat().st_mtime_ns for p in shared] == shared_before,
+           ", ".join(str(p) for p, before in zip(shared, shared_before)
+                     if p.stat().st_mtime_ns != before))
 
 
 # ---------------------------------------------------------------------------
