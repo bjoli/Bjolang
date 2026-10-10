@@ -1209,6 +1209,29 @@ Restrictions:
 - **A constraint may only name the implementation's own type variables.**
 - **The constrained trait may not have associated types, and may not be inline-only.**
 
+**** A ~where~ over a .NET interface
+A constraint may also name a trait that is a .NET interface, such as ~Num~. This is how ~summing~ works at every numeric type:
+
+#+BEGIN_SRC scheme
+(type (: (Summing %a) (Union summing)))
+
+(impl (Collector (Summing %a))
+  (where (Num %a))
+  (type %elem %a)
+  (type %acc %a)
+  (type %out %a)
+  (defun (collector-init c) 0)
+  (defun (collector-step c acc x) (+ acc x))
+  (defun (collector-finish c acc) acc))
+#+END_SRC
+
+Such a constraint is not a dictionary. It becomes a C# ~where~ clause on the implementation's class, so the methods can use ~+~ and literals at ~%a~, and the implementation is not conditional: it has one instance, as an implementation with no ~where~ has.
+
+- **The methods need it written down.** A method that adds at ~%a~ without it is an error that asks for the clause on the implementation. A method has no signature of its own to write it in.
+- **A use at a concrete type is checked.** ~{summing x (:for x ["a"])}~ is an error at the loop: ~string~ does not satisfy ~Num~.
+- **A use at a type variable passes the constraint to the function.** A function that sums a ~(Vec %a)~ needs ~(where (Num %a))~ in its own signature.
+- **A type that only such a constraint asks about is a number with nothing to say what it is.** It is an ~int~, as a literal is. The count of a ~(counting x)~ is a ~long~ where its use is one, and an ~int~ where nothing says.
+
 *** ~void~ is the unit type
 ~void~ in a signature is a *value* type (also spelled ~Unit~ or ~System.Void~). It is backed by a one-field struct.
 

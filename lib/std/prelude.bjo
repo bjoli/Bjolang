@@ -573,22 +573,27 @@
   (defun (collector-step c acc x) (stringbuilder-add! acc x) acc)
   (defun (collector-finish c acc) (stringbuilder->string acc)))
 
-(type (: Summing (Union summing)))
+;; Summing and counting work at every numeric type. A sum has the type of what
+;; it adds. A count has the type its use asks for, and is an int when nothing
+;; asks, as a literal is.
+(type (: (Summing %a) (Union summing)))
 
-(impl (Collector Summing)
-  (type %elem int)
-  (type %acc int)
-  (type %out int)
+(impl (Collector (Summing %a))
+  (where (Num %a))
+  (type %elem %a)
+  (type %acc %a)
+  (type %out %a)
   (defun (collector-init c) 0)
   (defun (collector-step c acc x) (+ acc x))
   (defun (collector-finish c acc) acc))
 
-(type (: (Counting %a) (Union counting)))
+(type (: (Counting %a %n) (Union counting)))
 
-(impl (Collector (Counting %a))
+(impl (Collector (Counting %a %n))
+  (where (Num %n))
   (type %elem %a)
-  (type %acc int)
-  (type %out int)
+  (type %acc %n)
+  (type %out %n)
   (defun (collector-init c) 0)
   (defun (collector-step c acc x) (+ acc 1))
   (defun (collector-finish c acc) acc))

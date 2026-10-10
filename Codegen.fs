@@ -5170,6 +5170,50 @@ let private generateMethod
 // for a type declared here is in this module too, so both are in hand at the
 // moment the type is emitted.
 
+/// The C# `where` clauses that the constraints over .NET interfaces among
+/// `constraints` amount to, or `""` when there are none.
+///
+/// For a constrained function, and for an implementation class with a
+/// `(where (Num %a))`. Other constraints are dictionaries and add nothing here.
+let private clrWhereClauses (registry: TraitRegistry) (constraints: TraitConstraint list) : string =
+    let bounds =
+        constraints
+        |> List.choose (fun c ->
+            match Map.tryFind c.TraitName registry.Traits with
+            | Some info ->
+                info.ClrConstraint
+                |> Option.bind (fun clr ->
+                    match c.TargetType with
+                    | TVar _ as target ->
+                        // The interface is written over the trait's own
+                        // implementor variable; the constraint says which
+                        // of *this* declaration's variables stands in for it.
+                        let subst = Map.ofList [ "'" + info.ImplementorVar, target ]
+                        let args = clr.Args |> List.map (substTypeVars subst)
+
+                        let applied =
+                            if args.IsEmpty then
+                                clr.InterfaceName
+                            else
+                                let argsStr = args |> List.map typeToString |> String.concat ", "
+                                $"%s{clr.InterfaceName}<%s{argsStr}>"
+
+                        Some(typeToString target, applied)
+                    | _ -> None)
+            | None -> None)
+
+    // Grouped by type parameter, because C# takes one `where` per parameter
+    // with its bounds comma-separated and rejects a second clause for the
+    // same one. A variable with two constraints is ordinary — `(+ a b)`
+    // beside `(< a b)` is `INumber` and `IComparisonOperators` — so this is
+    // the common case rather than a corner.
+    bounds
+    |> List.groupBy fst
+    |> List.map (fun (param, group) ->
+        let all = group |> List.map snd |> List.distinct |> String.concat ", "
+        $" where %s{param} : %s{all}")
+    |> String.concat ""
+
 /// The traits a materialized implementation's `(where ...)` may ask for: the
 /// ones `standInClass` can build a dictionary for from inside the type.
 let private standInTraits = set [ "Eq"; "Ord" ]
@@ -6180,8 +6224,15 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     else $"%s{targetTypeStr}, %s{assocArgsStr}"
                 $" : %s{sanitizedTraitName}<%s{traitArgsStr}>"
 
+        // A `(where (Num %a))` is a C# `where` clause on the class, which every
+        // method body reads `%a`'s members through.
+        let whereStr =
+            match Map.tryFind (traitName, targetTypeName) ctx.Registry.ImplTargets with
+            | Some target -> clrWhereClauses ctx.Registry (clrConstraints ctx.Registry target)
+            | None -> ""
+
         indent ctx
-        appendLine ctx $"public sealed class %s{className}%s{tyParamsStr}%s{baseClause} {{"
+        appendLine ctx $"public sealed class %s{className}%s{tyParamsStr}%s{baseClause}%s{whereStr} {{"
         withIndent ctx (fun ctx ->
             // An inline trait has no interface to satisfy, so there is nothing
             // for a singleton to be an instance *of*: its landing pads are plain
@@ -6490,46 +6541,8 @@ let private clrConstraintClauses (env: Env) : Map<string, string> =
     |> Map.toSeq
     |> Seq.choose (fun (name, binding) ->
         let (Scheme(_, constraints, _)) = binding.Scheme
-
-        let bounds =
-            constraints
-            |> List.choose (fun c ->
-                match Map.tryFind c.TraitName env.Registry.Traits with
-                | Some info ->
-                    info.ClrConstraint
-                    |> Option.bind (fun clr ->
-                        match c.TargetType with
-                        | TVar _ as target ->
-                            // The interface is written over the trait's own
-                            // implementor variable; the constraint says which
-                            // of *this* function's variables stands in for it.
-                            let subst = Map.ofList [ "'" + info.ImplementorVar, target ]
-                            let args = clr.Args |> List.map (substTypeVars subst)
-
-                            let applied =
-                                if args.IsEmpty then
-                                    clr.InterfaceName
-                                else
-                                    let argsStr = args |> List.map typeToString |> String.concat ", "
-                                    $"%s{clr.InterfaceName}<%s{argsStr}>"
-
-                            Some(typeToString target, applied)
-                        | _ -> None)
-                | None -> None)
-
-        // Grouped by type parameter, because C# takes one `where` per parameter
-        // with its bounds comma-separated and rejects a second clause for the
-        // same one. A variable with two constraints is ordinary — `(+ a b)`
-        // beside `(< a b)` is `INumber` and `IComparisonOperators` — so this is
-        // the common case rather than a corner.
-        let clauses =
-            bounds
-            |> List.groupBy fst
-            |> List.map (fun (param, group) ->
-                let all = group |> List.map snd |> List.distinct |> String.concat ", "
-                $" where %s{param} : %s{all}")
-
-        if clauses.IsEmpty then None else Some(name, String.concat "" clauses))
+        let clauses = clrWhereClauses env.Registry constraints
+        if clauses = "" then None else Some(name, clauses))
     |> Map.ofSeq
 
 let generateProgram

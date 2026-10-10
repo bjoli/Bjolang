@@ -68,74 +68,34 @@ let clrConstraintOf (env: Env) (traitName: string) : ClrConstraintInfo option =
     | Some info -> info.ClrConstraint
     | None -> None
 
-/// Checks a CLR constraint at a concrete implementor, and produces nothing.
+/// Checks the constraints over .NET interfaces of the implementation of
+/// `traitName` that `implType` selects, at the types it is used at.
 ///
-/// There is no evidence to build — that is the point of such a trait — so this
-/// is called for its failure. A type variable is passed over: it becomes a C#
-/// `where` clause, and the check happens again at whatever the caller
-/// instantiates it to.
-///
-/// The message deliberately does not read like the missing-impl one below. That
-/// one invites you to write an implementation; here there is none to write.
-let checkClrConstraint
+/// Such a constraint has no dictionary, so nothing else looks at it before the
+/// class's C# `where` clause would refuse the type in generated code. A type
+/// variable passes here; the enclosing function carries the constraint, which
+/// `leafConstraints` gave it.
+let checkImplClrConstraints
     (env: Env)
-    (clr: ClrConstraintInfo)
     (traitName: string)
     (implType: HMType)
     (range: Lexer.Range)
     (describe: string)
     : unit =
-
-    match prune env.Registry implType with
-    // A rigid variable is the constrained-generic case: it becomes a C# `where`
-    // clause, and the check runs again at whatever a caller instantiates it to.
-    | TVar _ -> ()
-    // A metavariable still unsolved *here* is not that. Inference has run and
-    // generalization has turned every variable it kept into a `TVar`, so what
-    // is left is a type nothing in the program ever said. Left alone it reaches
-    // C# as `object`, which fails there against the interface constraint — a
-    // true report of a real problem, in the wrong language.
-    | TMeta _ ->
-        failwithf
-            $"Type Error at %s{Lexer.formatPos range}: nothing here says what type '%s{traitName}' is needed at, %s{describe}. A constraint has to be discharged at a type, and this expression never says which one — annotate it."
-    | resolved ->
-        // The interface is written over the trait's own implementor variable,
-        // so putting the actual implementor in is what turns
-        // `(INumber %a)` into `INumber<int>`.
-        let implVar =
-            match Map.tryFind traitName env.Registry.Traits with
-            | Some info -> "'" + info.ImplementorVar
-            | None -> "'a"
-
-        let subst = Map.ofList [ implVar, resolved ]
-        let args = clr.Args |> List.map (substTypeVars subst >> prune env.Registry)
-
-        let clrArgs = args |> List.map DotNetInterop.tryClrTypeOf
-
-        let refuse (why: string) =
-            failwithf
-                $"Type Error at %s{Lexer.formatPos range}: '%s{DotNetInterop.showType resolved}' does not satisfy '%s{traitName}', needed %s{describe}. %s{why}"
-
-        if clrArgs |> List.exists Option.isNone then
-            refuse
-                $"'%s{traitName}' is the .NET interface '%s{clr.InterfaceName}', and this type has no .NET counterpart to ask about."
-        else
-
-        let clrArgs = clrArgs |> List.map Option.get
-
-        match DotNetInterop.tryResolveGenericInterface clr.InterfaceName clrArgs.Length with
-        | None ->
-            refuse $"'%s{clr.InterfaceName}' could not be found. The trait naming it will not work anywhere."
-        | Some definition ->
-            let satisfied =
-                DotNetInterop.tryConstructInterface definition clrArgs
-                |> Option.map (fun constructed ->
-                    DotNetInterop.implementsInterface (List.head clrArgs) constructed)
-                |> Option.defaultValue false
-
-            if not satisfied then
-                refuse
-                    $"'%s{traitName}' is the .NET interface '%s{clr.InterfaceName}', which '%s{DotNetInterop.showType resolved}' does not implement — and cannot be made to, since the interface belongs to .NET rather than to this program."
+    match implFor env.Registry traitName (prune env.Registry implType) with
+    | Some(target, subst) ->
+        for c in clrConstraints env.Registry target do
+            match clrConstraintOf env c.TraitName with
+            | Some clr ->
+                Traits.checkClrConstraint
+                    env
+                    clr
+                    c.TraitName
+                    (substTypeVars subst c.TargetType)
+                    range
+                    $"by the implementation of '%s{traitName}' for '%s{DotNetInterop.showType (prune env.Registry implType)}', %s{describe}"
+            | None -> ()
+    | None -> ()
 
 /// Does this implementation stand on a `(where ...)`?
 ///
@@ -144,7 +104,7 @@ let checkClrConstraint
 /// routes through one does not exist for it.
 let isConditional (env: Env) (traitName: string) (ctor: string) =
     match Map.tryFind (traitName, ctor) env.Registry.ImplTargets with
-    | Some target -> not target.Constraints.IsEmpty
+    | Some target -> not (dictionaryConstraints env.Registry target).IsEmpty
     | None -> false
 
 /// What the code being lowered has to prove things with.
@@ -269,8 +229,8 @@ let rec buildEvidence
 
         let constraints =
             let target, subst = selected
-
-            target.Constraints
+            checkImplClrConstraints env traitName resolved range describe
+            dictionaryConstraints env.Registry target
             |> List.map (fun c -> c.TraitName, substTypeVars subst c.TargetType)
 
         // An impl whose target is not all distinct variables — `(Array byte)`,
@@ -392,7 +352,7 @@ module DictionaryLowering =
                         failwithf
                             $"Trait method '%s{tref.Method}' has no implementor to dispatch on at %s{Lexer.formatPos expr.Range}"
 
-                checkClrConstraint env clr tref.Trait hole expr.Range $"to call '%s{tref.Method}'"
+                Traits.checkClrConstraint env clr tref.Trait hole expr.Range $"to call '%s{tref.Method}'"
 
                 if not (Map.containsKey tref.Method clr.Members) then
                     failwithf
@@ -448,6 +408,10 @@ module DictionaryLowering =
                     TInterfaceCall(dict.Type, tref.Method, tref.MethodType, dict, loweredArgs)
 
                 | Some(ctor, tyArgs) ->
+                    match tref.Holes with
+                    | h :: _ -> checkImplClrConstraints env tref.Trait h expr.Range $"to call '%s{tref.Method}'"
+                    | [] -> ()
+
                     // Static dispatch: the landing pad, named directly.
                     let kind =
                         match Map.tryFind tref.Trait env.Registry.Traits with
@@ -603,7 +567,7 @@ module DictionaryLowering =
 
                                         match clrConstraintOf env c.TraitName with
                                         | Some clr ->
-                                            checkClrConstraint
+                                            Traits.checkClrConstraint
                                                 env
                                                 clr
                                                 c.TraitName

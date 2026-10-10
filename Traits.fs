@@ -39,6 +39,12 @@ type Wanted =
 
 let private wantedQueue = ResizeArray<Wanted>()
 
+/// The constraints over .NET interfaces of the implementations that resolution
+/// chose, each with the type it asks it at, where, and why: the `(Num %a)` of
+/// `(Summing %a)` at the `string` a loop sums. Checked in `solvePending`, so
+/// that the error names the use rather than the implementation's body.
+let private clrObligations = ResizeArray<string * HMType * Range * string>()
+
 /// The holes an unresolved obligation of `kind` is still watching.
 ///
 /// For `InlineTrait`: a local helper written without a signature —
@@ -71,7 +77,9 @@ let private heldWanteds (kind: TraitKind) () : Set<int> =
 /// back, such a binding is monomorphic — the only thing it can be, a literal
 /// having exactly one type in the code that comes out.
 let private heldLiterals () : Set<int> =
-    openLiterals |> Seq.collect (fun (t, _, _) -> metaIdsOf t) |> Set.ofSeq
+    Seq.append (openLiterals |> Seq.map (fun (t, _, _) -> t)) openNumbers
+    |> Seq.collect metaIdsOf
+    |> Set.ofSeq
 
 do Unification.heldMetaIds <- fun () -> Set.union (heldWanteds InlineTrait ()) (heldLiterals ())
 do Unification.heldLocalMetaIds <- heldWanteds InterfaceTrait
@@ -92,7 +100,78 @@ let takeWanteds () : Wanted list =
 /// in the same process would try to solve it against an environment it was
 /// never about. That is a diagnostic pointing at another file entirely, which
 /// is the worst shape a state leak can take.
-let clearWanteds () : unit = wantedQueue.Clear()
+let clearWanteds () : unit =
+    wantedQueue.Clear()
+    clrObligations.Clear()
+
+/// Checks a CLR constraint at a concrete implementor, and produces nothing.
+///
+/// There is no evidence to build — that is the point of such a trait — so this
+/// is called for its failure. A type variable is passed over: it becomes a C#
+/// `where` clause, and the check happens again at whatever the caller
+/// instantiates it to.
+///
+/// The message deliberately does not read like the missing-impl one below. That
+/// one invites you to write an implementation; here there is none to write.
+let checkClrConstraint
+    (env: Env)
+    (clr: ClrConstraintInfo)
+    (traitName: string)
+    (implType: HMType)
+    (range: Lexer.Range)
+    (describe: string)
+    : unit =
+
+    match prune env.Registry implType with
+    // A rigid variable is the constrained-generic case: it becomes a C# `where`
+    // clause, and the check runs again at whatever a caller instantiates it to.
+    | TVar _ -> ()
+    // A metavariable still unsolved *here* is not that. Inference has run and
+    // generalization has turned every variable it kept into a `TVar`, so what
+    // is left is a type nothing in the program ever said. Left alone it reaches
+    // C# as `object`, which fails there against the interface constraint — a
+    // true report of a real problem, in the wrong language.
+    | TMeta _ ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos range}: nothing here says what type '%s{traitName}' is needed at, %s{describe}. A constraint has to be discharged at a type, and this expression never says which one — annotate it."
+    | resolved ->
+        // The interface is written over the trait's own implementor variable,
+        // so putting the actual implementor in is what turns
+        // `(INumber %a)` into `INumber<int>`.
+        let implVar =
+            match Map.tryFind traitName env.Registry.Traits with
+            | Some info -> "'" + info.ImplementorVar
+            | None -> "'a"
+
+        let subst = Map.ofList [ implVar, resolved ]
+        let args = clr.Args |> List.map (substTypeVars subst >> prune env.Registry)
+
+        let clrArgs = args |> List.map DotNetInterop.tryClrTypeOf
+
+        let refuse (why: string) =
+            failwithf
+                $"Type Error at %s{Lexer.formatPos range}: '%s{DotNetInterop.showType resolved}' does not satisfy '%s{traitName}', needed %s{describe}. %s{why}"
+
+        if clrArgs |> List.exists Option.isNone then
+            refuse
+                $"'%s{traitName}' is the .NET interface '%s{clr.InterfaceName}', and this type has no .NET counterpart to ask about."
+        else
+
+        let clrArgs = clrArgs |> List.map Option.get
+
+        match DotNetInterop.tryResolveGenericInterface clr.InterfaceName clrArgs.Length with
+        | None ->
+            refuse $"'%s{clr.InterfaceName}' could not be found. The trait naming it will not work anywhere."
+        | Some definition ->
+            let satisfied =
+                DotNetInterop.tryConstructInterface definition clrArgs
+                |> Option.map (fun constructed ->
+                    DotNetInterop.implementsInterface (List.head clrArgs) constructed)
+                |> Option.defaultValue false
+
+            if not satisfied then
+                refuse
+                    $"'%s{traitName}' is the .NET interface '%s{clr.InterfaceName}', which '%s{DotNetInterop.showType resolved}' does not implement — and cannot be made to, since the interface belongs to .NET rather than to this program."
 
 /// Instantiates an impl's target pattern, giving fresh metas to the impl's own
 /// prefix variables.
@@ -101,11 +180,11 @@ let clearWanteds () : unit = wantedQueue.Clear()
 /// standing for the class's *type parameters*. The two are not the same list:
 /// `impl Show for (List int)` has a one-argument prefix and no type parameters
 /// at all, and naming `Show_List<int>` for it is a type error in C#.
-let private instantiateImplPrefix (target: ImplTarget) : HMType list * HMType list =
+let private instantiateImplPrefix (target: ImplTarget) : HMType list * HMType list * Map<string, HMType> =
     let vars = target.FixedPrefix |> List.collect typeVarsOf |> List.distinct
     let subst = vars |> List.map (fun v -> v, freshMeta ()) |> Map.ofList
     let prefix = target.FixedPrefix |> List.map (substTypeVars subst)
-    prefix, vars |> List.map (fun v -> subst[v])
+    prefix, vars |> List.map (fun v -> subst[v]), subst
 
 let private tryResolveWanted (env: Env) (w: Wanted) : bool =
     if w.Ref.Resolved.IsSome then
@@ -176,10 +255,23 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
                 failwithf
                     $"Type Error at %s{Lexer.formatPos w.Range}: no implementation of trait '%s{w.Trait}' for '%s{Naming.showTypeName ctor}', required by '%s{w.Method}'."
         | Some target ->
-            let prefix, classTypeArgs = instantiateImplPrefix target
+            let prefix, classTypeArgs, subst = instantiateImplPrefix target
 
             for (m, occArgs) in w.HoleArgs do
                 unify registry m (implTargetType ctor (prefix @ occArgs))
+
+            // A type that only a `(where (Num %a))` asks anything of is a
+            // number nothing says the type of, as a bare literal is: the count
+            // of a `(counting x)` that is only printed. It is an `int` unless
+            // something else in the declaration says otherwise.
+            for c in clrConstraints registry target do
+                let t = substTypeVars subst c.TargetType
+
+                match prune registry t with
+                | TMeta _ as open' -> openNumbers.Add open'
+                | _ -> ()
+
+                clrObligations.Add(c.TraitName, t, w.Range, $"by the implementation of '%s{w.Trait}' for '%s{Naming.showTypeName ctor}', which '%s{w.Method}' uses")
 
             w.Ref.Resolved <- Some(ctor, classTypeArgs |> List.map (prune registry))
             true
@@ -241,6 +333,13 @@ let private defaultNumericLiterals (env: Env) : unit =
 
     openLiterals.Clear()
 
+    for t in openNumbers do
+        match prune env.Registry t with
+        | TMeta m -> m.Value <- Some TypeConstants.intType
+        | _ -> ()
+
+    openNumbers.Clear()
+
 /// The pin equations a constrained member's instantiation raised — one per
 /// `#:assoc` in its `(where ...)`, per call. Each says "this associated-type
 /// projection equals that type"; both sides may still be metavariables when
@@ -296,6 +395,25 @@ let private solvePinEquations (env: Env) : unit =
 let solvePending (env: Env) : unit =
     defaultNumericLiterals env
     solveWanteds env (takeWanteds ())
+
+    // Resolution may have opened numbers of its own, through an impl's
+    // `(where (Num %a))`. They are settled now, before this declaration
+    // generalizes, and what they let resolve is resolved.
+    if openNumbers.Count > 0 then
+        defaultNumericLiterals env
+        solveWanteds env (takeWanteds ())
+
+    // A type still open here is not checked: a later declaration may settle
+    // it, and `Lowering` checks it again at the type it ends up at.
+    let obligations = List.ofSeq clrObligations
+    clrObligations.Clear()
+
+    for (traitName, t, r, describe) in obligations do
+        match prune env.Registry t, Map.tryFind traitName env.Registry.Traits with
+        | (TVar _ | TMeta _), _ -> ()
+        | _, Some { ClrConstraint = Some clr } -> checkClrConstraint env clr traitName t r describe
+        | _ -> ()
+
     solvePinEquations env
 
 /// Reads an impl's target as a pattern.

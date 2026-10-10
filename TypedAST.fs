@@ -2049,6 +2049,25 @@ let addImplementation
 
     { env with Registry = newRegistry }
 
+/// Whether `traitName` stands for a .NET interface, such as `Num`.
+let isClrTrait (registry: TraitRegistry) (traitName: string) : bool =
+    match Map.tryFind traitName registry.Traits with
+    | Some info -> info.ClrConstraint.IsSome
+    | None -> false
+
+/// The constraints of an implementation's `(where ...)` that are dictionaries.
+///
+/// A constraint over a .NET interface, such as `(where (Num %a))`, is not one:
+/// the implementation class carries it as a C# `where` clause on its type
+/// parameter, so nothing is built or stored for it. An implementation with
+/// only such constraints is therefore not conditional, and has an `Instance`.
+let dictionaryConstraints (registry: TraitRegistry) (target: ImplTarget) : TraitConstraint list =
+    target.Constraints |> List.filter (fun c -> not (isClrTrait registry c.TraitName))
+
+/// The constraints of an implementation's `(where ...)` over .NET interfaces.
+let clrConstraints (registry: TraitRegistry) (target: ImplTarget) : TraitConstraint list =
+    target.Constraints |> List.filter (fun c -> isClrTrait registry c.TraitName)
+
 let addInlineTemplate
     (traitName: string)
     (methodName: string)

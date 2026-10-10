@@ -404,7 +404,9 @@ let private landingPad (env: Env) (tref: TraitRef) (ctor: string) (tyArgs: HMTyp
     // A conditional impl has no singleton to route through: its dictionary has
     // to be built out of the evidence its `(where ...)` demands, and that is
     // `Lowering`'s job. Handing the call back unchanged is what asks for it —
-    // the node still says which implementation was chosen.
+    // the node still says which implementation was chosen. An impl with only a
+    // `(where (Num %a))` is handed back too, because `Lowering` checks that
+    // constraint at the type the call is made at.
     let conditional =
         match Map.tryFind (tref.Trait, ctor) env.Registry.ImplTargets with
         | Some target -> not target.Constraints.IsEmpty

@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~summing~ and ~counting~ at every numeric type
+
+- *An implementation's ~(where ...)~ may name a .NET interface*, such as
+  ~(where (Num %a))~. It becomes a C# ~where~ clause on the implementation's
+  class, not a dictionary, so the implementation keeps its one instance and
+  its methods can use ~+~ and literals at ~%a~.
+- A use at a concrete type is checked at the use: ~{summing x (:for x ["a"])}~
+  says that ~string~ does not satisfy ~Num~, needed by the implementation of
+  ~Collector~. A use at a type variable gives the enclosing function the
+  constraint, which its signature has to declare.
+- A type that only such a constraint asks about is settled at ~int~ when
+  nothing else says what it is, as a bare literal is.
+- A method that needs a .NET-interface constraint the implementation does
+  not declare is an error that asks for it on the implementation, where it
+  can be written.
+- ~summing~ adds numbers of any type, and the sum has their type.
+  ~counting~ counts into the type its use asks for, and into an ~int~ when
+  nothing asks. ~(Summing %a)~ and ~(Counting %a %n)~ have a type parameter
+  more than before, so a signature that names ~Summing~ or ~(Counting %a)~
+  has to add it.
+- Not done: an ~Eq~ or ~Ord~ implementation with such a constraint is not
+  compiled into its type's ~Equals~ and ~CompareTo~. The type keeps the
+  members C# writes, as for a ~(where ...)~ of another trait.
+
 * The REPL's prompt and typing are on the screen again
 
 - At a terminal, the REPL showed neither the prompt nor what was typed

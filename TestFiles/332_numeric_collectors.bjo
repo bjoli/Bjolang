@@ -1,0 +1,63 @@
+(import (std prelude))
+(import (std simpletest))
+
+;; `summing` and `counting` at every numeric type, and an implementation whose
+;; `(where ...)` names a .NET interface.
+
+(: sum-doubles (-> (Vec double) double))
+(defun (sum-doubles xs) {summing x (:for x xs)})
+
+(: sum-longs (-> (List long) long))
+(defun (sum-longs xs) (loop (:for x xs) (:acc s (summing x)) => s))
+
+(: count-long (-> (Vec string) long))
+(defun (count-long xs) {counting x (:for x xs)})
+
+(: count-byte (-> (Vec int) byte))
+(defun (count-byte xs) {counting x :when (even? x) (:for x xs)})
+
+;; Generic: the caller says which number.
+(: sum-any (-> (Vec %a) %a) (where (Num %a)))
+(defun (sum-any xs) {summing x (:for x xs)})
+
+(: count-any (-> (Vec string) %n) (where (Num %n)))
+(defun (count-any xs) {counting x (:for x xs)})
+
+;; An implementation of a trait of this module, with a `(where (Num %a))`.
+(def/trait (Scale %s)
+  (type %elem)
+  (: scale (-> %s %elem %elem)))
+
+(type (: (Times %a) (Union (: times %a))))
+
+(impl (Scale (Times %a))
+  (where (Num %a))
+  (type %elem %a)
+  (defun (scale s x)
+    (match s ((times k) (+ (* k x) 0)))))
+
+;; Called through the dictionary, at a type this function does not know.
+(: scale-twice (-> %s (assoc Scale elem %s) (assoc Scale elem %s)) (where (Scale %s)))
+(defun (scale-twice s x) (scale s (scale s x)))
+
+;; At a type variable of the caller, who carries the `Num`.
+(: scale-all (-> (Times %a) (Vec %a) (Vec %a)) (where (Num %a)))
+(defun (scale-all s xs) (vec-map (fun (x) (scale s x)) xs))
+
+(defun (main args)
+  (expect "summing doubles" (sum-doubles [1.5 2.25]) 3.75)
+  (expect "summing longs" (sum-longs (list 10000000000L 1L)) 10000000001L)
+  (expect "summing ints, as before" {summing x (:for x (range 0 5))} 10)
+  (expect "summing an empty vec" (sum-doubles []) 0.0)
+  (expect "counting into a long" (count-long ["a" "b" "c"]) 3L)
+  (expect "counting into a byte" (count-byte [1 2 3 4]) 2uy)
+  (expect "counting with nothing to say is an int" (+ {counting c (:for c "hello")} 1) 6)
+  (expect "a count used as a double" (/ {counting c (:for c "abcd")} 8.0) 0.5)
+  (expect "generic summing at bytes" (sum-any [1uy 2uy 3uy]) 6uy)
+  (expect "generic summing at doubles" (sum-any [0.5 0.25]) 0.75)
+  (expect "generic counting at a long" (+ (count-any ["x" "y"]) 0L) 2L)
+  (expect "an impl with a Num where, inlined" (scale (times 3) 7) 21)
+  (expect "an impl with a Num where, at a double" (scale (times 0.5) 3.0) 1.5)
+  (expect "an impl with a Num where, through a dictionary" (scale-twice (times 2L) 3L) 12L)
+  (expect "an impl with a Num where, at the caller's variable" (scale-all (times 2L) [1L 2L]) [2L 4L])
+  0)

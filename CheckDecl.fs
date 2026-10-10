@@ -995,6 +995,14 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
 
         let needs = undeclared |> List.map shown |> String.concat " and "
 
+        // A method of an `impl` has no signature of its own to write the
+        // clause in. The implementation's `(where ...)` is where it goes.
+        if env.ImplMethod.IsSome then
+            let wanted = undeclared |> List.map shown |> String.concat " "
+
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: '%s{name}' needs %s{needs}, which the implementation does not declare. A constraint on a .NET interface says which types this *is*, so it is written down. Add it to the implementation:\n  (impl (Trait Type) (where %s{wanted}) ...)"
+
         failwithf
             $"Type Error at %s{Lexer.formatPos r}: '%s{name}' needs %s{needs}, which its signature does not declare. A constraint on a .NET interface says which types this *is* rather than what they can do, and nothing written in Bjolang can ever satisfy one — so it belongs in the signature. Write:\n  (: %s{name} ... (where %s{clause}))"
 
@@ -2495,6 +2503,7 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
     // dictionary's type is the trait applied to the one variable.
     let dictFields =
         implConstraints
+        |> List.filter (fun c -> not (isClrTrait finalEnv.Registry c.TraitName))
         |> List.map (fun c ->
             let varName =
                 match c.TargetType with
@@ -2700,12 +2709,24 @@ and private checkImplMethod
         // Pass instantiatedSig through 'sigs'.
         // This forces DDefun to unify the expected types into the arguments
         // BEFORE inference and generalization.
+        //
+        // The impl's constraints over .NET interfaces go with it, as if the
+        // method had written them. A `(where (Num %a))` on the impl is what
+        // lets a body use `+` or a literal at `%a`, and the class's C# `where`
+        // clause is what makes that compile; there is no dictionary for the
+        // body to take it from.
         let methodSigs =
             Map.add
                 name
                 { Type = instantiatedSig
                   Written = None
-                  Constraints = [] }
+                  Constraints =
+                    implConstraints
+                    |> List.filter (fun c -> isClrTrait regEnv.Registry c.TraitName)
+                    |> List.choose (fun c ->
+                        match c.TargetType with
+                        | TVar v -> Some(c.TraitName, v)
+                        | _ -> None) }
                 Map.empty
 
         // Which method this is, so that the `defun`'s own recursion

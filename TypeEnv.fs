@@ -155,9 +155,20 @@ let inferNumericType (value: string) : HMType =
 /// next one nothing to walk.
 let internal openLiterals = ResizeArray<HMType * string * Range>()
 
+/// The types that an implementation's `(where (Num %a))` asks for and that are
+/// still open, such as the count of a `(counting x)`.
+///
+/// Such a type is settled as a literal is: at `int`, if nothing else in the
+/// declaration says what it is. There is no text to check against the type it
+/// ends up at, so a type that is not a number is left to the check of the
+/// constraint itself, which names the constraint.
+let internal openNumbers = ResizeArray<HMType>()
+
 /// Drops whatever is still open. For the compilation that *failed*: see
 /// `clearWanteds`, which this is the other half of.
-let clearNumericLiterals () : unit = openLiterals.Clear()
+let clearNumericLiterals () : unit =
+    openLiterals.Clear()
+    openNumbers.Clear()
 
 /// Refuses a literal the type it has ended up at cannot hold.
 let internal checkLiteralFits (t: HMType) (text: string) (r: Range) : HMType =
