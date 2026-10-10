@@ -194,6 +194,53 @@ let metadata
     let exportedTypeNames =
         typesToExport |> List.map (fun ((td: Ast.TypeDef), _) -> bare td.Name) |> Set.ofList
 
+    /// The types this module declares and does not export, as (key, name).
+    let withheld =
+        Set.difference ownTypeNames exportedTypeNames
+        |> Set.toList
+        |> List.map (fun n -> Naming.typeKey (Naming.moduleKeyOfPath inputFilePath) n, n)
+
+    /// The first withheld type that `text` names. A key is one token, so a hit
+    /// with a delimiter at both ends is a reference and nothing else.
+    let withheldIn (text: string) : string option =
+        let isDelimiter (c: char) =
+            System.Char.IsWhiteSpace c || c = '(' || c = ')' || c = '"'
+
+        let mentions (key: string) =
+            let rec scan (from: int) =
+                match text.IndexOf(key, from, System.StringComparison.Ordinal) with
+                | -1 -> false
+                | i ->
+                    let before = i = 0 || isDelimiter text[i - 1]
+                    let after = i + key.Length >= text.Length || isDelimiter text[i + key.Length]
+                    if before && after then true else scan (i + 1)
+
+            scan 0
+
+        withheld |> List.tryPick (fun (key, name) -> if mentions key then Some name else None)
+
+    /// Can a published body name `n`? Not when `n` is a binding of this module
+    /// whose type names a withheld type: `n` would be exported with the body,
+    /// and an importer could not resolve its type. Such a body is not
+    /// published, because an importer that does not have it makes a call.
+    let reachableFromBody (n: string) =
+        List.contains n exports
+        || match Map.tryFind n env.Bindings with
+           | Some b ->
+               let (TypedAST.Scheme(_, constraints, t)) = b.Scheme
+
+               let text =
+                   Codegen.serializeHMType t
+                   :: (constraints |> List.map (fun c -> Codegen.serializeHMType c.TargetType))
+                   |> String.concat " "
+
+               (withheldIn text).IsNone
+           | None -> true
+
+    let publishableBody (tpl: TypedAST.InlineTemplate) =
+        Codegen.isSerializableTemplate tpl.Body
+        && tpl.Qualification |> Map.forall (fun n _ -> reachableFromBody n)
+
     
     /// The traits declared *in this module*, exported or not.
     ///
@@ -269,7 +316,7 @@ let metadata
         |> Map.toList
         |> List.filter (fun ((traitName, _, _), (tpl: TypedAST.InlineTemplate)) ->
             Map.containsKey traitName exportedTraits
-            && Codegen.isSerializableTemplate tpl.Body)
+            && publishableBody tpl)
 
     // The body of every exported constrained generic, so that an importer can
     // copy it at a ground instantiation instead of passing a dictionary.
@@ -285,7 +332,7 @@ let metadata
         env.Registry.ConstrainedBodies
         |> Map.toList
         |> List.filter (fun (name, (tpl: TypedAST.InlineTemplate)) ->
-            List.contains name exports && Codegen.isSerializableTemplate tpl.Body)
+            List.contains name exports && publishableBody tpl)
 
     // A body's free variables have to be reachable from the
     // importing module, or re-inference at the splice fails and the call
@@ -991,37 +1038,20 @@ let metadata
             // will not re-infer where it lands falls back to the landing pad,
             // which is always correct and is emitted for every impl method
             // anyway — so a type it cannot reach costs a call, not a program.
-            let withheld =
-                Set.difference ownTypeNames exportedTypeNames
-                |> Set.toList
-                |> List.map (fun n -> Naming.typeKey (Naming.moduleKeyOfPath inputFilePath) n, n)
-
+            // A body that would auto-export a binding whose type names a
+            // withheld type is not published at all (see `publishableBody`),
+            // so the names a body reaches never fail this check.
             if not withheld.IsEmpty then
-                let isDelimiter (c: char) =
-                    System.Char.IsWhiteSpace c || c = '(' || c = ')' || c = '"'
-
-                let mentions (key: string) (text: string) =
-                    let rec scan (from: int) =
-                        match text.IndexOf(key, from, System.StringComparison.Ordinal) with
-                        | -1 -> false
-                        | i ->
-                            let before = i = 0 || isDelimiter text[i - 1]
-                            let after =
-                                i + key.Length >= text.Length || isDelimiter text[i + key.Length]
-
-                            if before && after then true else scan (i + 1)
-
-                    scan 0
-
                 let check (what: string) (text: string) =
-                    for (key, name) in withheld do
-                        if mentions key text then
-                            failwithf
-                                "Export Error: %s names the type '%s', which this module declares and does not export. A type crosses a module boundary only when it is named in an (export ...), so an importer has no way to resolve this. Write (export %s), or (export %s) with the declaration marked #:opaque to keep its representation to this module's code."
-                                what
-                                name
-                                name
-                                name
+                    match withheldIn text with
+                    | Some name ->
+                        failwithf
+                            "Export Error: %s names the type '%s', which this module declares and does not export. A type crosses a module boundary only when it is named in an (export ...), so an importer has no way to resolve this. Write (export %s), or (export %s) with the declaration marked #:opaque to keep its representation to this module's code."
+                            what
+                            name
+                            name
+                            name
+                    | None -> ()
 
                 for d in defs do
                     check $"the exported binding '%s{d.Name}'" (d.TypeText + " " + d.ConstraintsText)

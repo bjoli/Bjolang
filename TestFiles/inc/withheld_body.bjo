@@ -1,0 +1,47 @@
+;; An exported function that takes a function, and whose body calls a helper
+;; whose type names a type this module does not export. Its body is not
+;; published, because publishing it would export the helper, and an importer
+;; cannot resolve the helper's type. An importer calls the function instead.
+;;
+;; `in-field` is published, and its parameter is the target of a
+;; `record-set!`, so the inliner has to rename that target when it substitutes
+;; the argument.
+
+(export Holder make-holder holder-count holder-field defer! in-field field-during)
+
+(type (: Pending (Union (: PendingInt (-> int int)))))
+
+(type (: Holder #:opaque (Record (: items (Vec Pending) #:mutable)
+                        (: field string #:mutable))))
+
+(: make-holder (-> Holder))
+(defun (make-holder) (Holder (items (vec-empty)) (field "start")))
+
+(: holder-count (-> Holder int))
+(defun (holder-count h) (vec-length (record-ref h items)))
+
+(: put! (-> Holder Pending int))
+(defun (put! h p)
+  (record-set! h (items (vec-add (record-ref h items) p)))
+  (vec-length (record-ref h items)))
+
+(: defer! (-> Holder (-> int int) int))
+(defun (defer! h f) (put! h (PendingInt f)))
+
+;; Runs `thunk` with `field` set to `value`, then sets it back.
+(: in-field (-> Holder string (-> %a) %a))
+(defun (in-field h value thunk)
+  (def before (record-ref h field))
+  (record-set! h (field value))
+  (def result (thunk))
+  (record-set! h (field before))
+  result)
+
+(: holder-field (-> Holder string))
+(defun (holder-field h) (record-ref h field))
+
+;; A caller in this module, where the call of `in-field` is spliced.
+(: field-during (-> Holder string string))
+(defun (field-during h value)
+  (in-field h value (fun () (holder-field h))))
+

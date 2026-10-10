@@ -56,10 +56,42 @@ let rec private occurrences (name: string) (expr: TypedExpr) : int =
 /// every binder in it is a name nothing else in the program can mention, so no
 /// binder can capture a free variable of `replacement` and no binder can shadow
 /// `name`.
+///
+/// A `record-set!` or `record-set` names its target, not an expression, so
+/// there the name becomes the replacement's name. `canSubstitute` makes sure
+/// that the replacement is then a variable.
 let rec private substitute (name: string) (replacement: TypedExpr) (expr: TypedExpr) : TypedExpr =
+    let rename n =
+        match replacement.Node with
+        | TIdent(m, _) when n = name -> m
+        | _ -> n
+
     match expr.Node with
     | TIdent(n, _) when n = name -> replacement
+    | TRecordSet(n, fields) when n = name ->
+        { expr with Node = TRecordSet(rename n, fields |> List.map (fun (k, v) -> k, substitute name replacement v)) }
+    | TRecordUpdate(n, fields) when n = name ->
+        { expr with Node = TRecordUpdate(rename n, fields |> List.map (fun (k, v) -> k, substitute name replacement v)) }
     | _ -> TypeVisitor.mapChildren (substitute name replacement) expr
+
+/// Can every reference to `name` in `body` be replaced by `arg`? Not when the
+/// body assigns to `name`: the assignment would change the caller's variable.
+/// The checker refuses a `set!` on a parameter now; this keeps the splice
+/// correct if that changes.
+/// And a `record-set!` or `record-set` on `name` needs `arg` to be a variable,
+/// because its target is a name.
+let rec private canSubstitute (name: string) (arg: TypedExpr) (body: TypedExpr) : bool =
+    let here =
+        match body.Node with
+        | TSet(n, _) when n = name -> false
+        | TRecordSet(n, _)
+        | TRecordUpdate(n, _) when n = name ->
+            match arg.Node with
+            | TIdent _ -> true
+            | _ -> false
+        | _ -> true
+
+    here && (TypeVisitor.children body |> List.forall (canSubstitute name arg))
 
 /// An argument that may be duplicated or reordered without changing what the
 /// program does or how long it takes.
@@ -102,7 +134,9 @@ let rec private bindArguments
     | [] -> body
     | (name, arg) :: rest ->
         let substitutable =
-            if isTrivial arg then
+            if not (canSubstitute name arg body) then
+                false
+            elif isTrivial arg then
                 true
             else
                 match arg.Node with

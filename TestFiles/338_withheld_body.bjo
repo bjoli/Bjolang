@@ -1,0 +1,18 @@
+(import (std prelude))
+(import (std simpletest))
+(import "inc/withheld_body.bjo")
+
+;; The module compiles although `defer!` reaches a helper whose type it does
+;; not export, and a spliced `in-field` sets the field of the caller's record.
+(defun (main args)
+  (def h (make-holder))
+  (expect "a call of a function whose body is not published" (defer! h (fun (x) (+ x 1))) 1)
+  (expect "and again" (defer! h (fun (x) (* x 2))) 2)
+  (expect "the holder has both" (holder-count h) 2)
+  (expect "the thunk sees the field set"
+          (in-field h "inside" (fun () (holder-field h)))
+          "inside")
+  (expect "the field is set back" (holder-field h) "start")
+  (expect "a spliced in-field sets the field" (field-during h "spliced") "spliced")
+  (expect "and sets it back" (holder-field h) "start")
+  0)

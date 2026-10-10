@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* Two faults of the inliner for a function that takes a function
+
+- *A body that reaches a withheld type is not published.* An exported
+  function's body is published so that an importer can inline it, and the
+  names the body reaches are exported with it. When one of those names has a
+  type that the module does not export, the module failed to build with an
+  export error about a binding it never exported. Such a body is now not
+  published, and an importer calls the function.
+- *A ~record-set!~ on a parameter is spliced correctly.* The splice put the
+  argument in place of the parameter, but not as the target of a
+  ~record-set!~ or ~record-set~, so the C# named a variable that did not
+  exist. The target now takes the argument's name. A parameter that is
+  the target of one and is given an expression is bound to a local.
+
 * ~by-colour~: one body for each colour, and ~with-scope~ in ordinary code
 
 - *~(by-colour (#:sync body...) (#:bjo body...))~ is the body for the colour
