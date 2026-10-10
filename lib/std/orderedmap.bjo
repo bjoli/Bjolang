@@ -115,7 +115,8 @@
 
   (orderedmap-cursor         (: OrderedMap.OrderedMapModule.Cursor        (-> (OrderedMap %k %v) (OrderedMapCursor %k %v))))
   (orderedmap-cursor-done?   (: OrderedMap.OrderedMapModule.CursorDone    (-> (OrderedMapCursor %k %v) bool)))
-  (orderedmap-cursor-current (: OrderedMap.OrderedMapModule.CursorCurrent (-> (OrderedMapCursor %k %v) (Tuple %k %v)))))
+  (orderedmap-cursor-current (: OrderedMap.OrderedMapModule.CursorCurrent (-> (OrderedMapCursor %k %v) (Tuple %k %v))))
+  (orderedmap-cursor-next    (: OrderedMap.OrderedMapModule.CursorNext    (-> (OrderedMapCursor %k %v) (OrderedMapCursor %k %v)))))
 
 ;; Alias for contains?.
 (: orderedmap-has-key? (-> (OrderedMap %k %v) %k bool))
@@ -196,66 +197,61 @@
   (#:sync (clr-orderedmap-map f m))
   (#:bjo
     (def b (clr-orderedmapbuilder-empty (clr-orderedmap-comparer m)))
-    (def c (orderedmap-cursor m))
-    (let go ()
+    (let go ((c (orderedmap-cursor m)))
       (cond
         ((orderedmap-cursor-done? c) (orderedmapbuilder->orderedmap b))
         (else
           (def (k v) (orderedmap-cursor-current c))
           (orderedmapbuilder-add! b k (f k v))
-          (go))))))
+          (go (orderedmap-cursor-next c)))))))
 
 (: orderedmap-map-values (-> (-?-> %v %w) (OrderedMap %k %v) (OrderedMap %k %w)))
 (defbjouble (orderedmap-map-values f m)
   (#:sync (clr-orderedmap-map-values f m))
   (#:bjo
     (def b (clr-orderedmapbuilder-empty (clr-orderedmap-comparer m)))
-    (def c (orderedmap-cursor m))
-    (let go ()
+    (let go ((c (orderedmap-cursor m)))
       (cond
         ((orderedmap-cursor-done? c) (orderedmapbuilder->orderedmap b))
         (else
           (def (k v) (orderedmap-cursor-current c))
           (orderedmapbuilder-add! b k (f v))
-          (go))))))
+          (go (orderedmap-cursor-next c)))))))
 
 (: orderedmap-filter (-> (-?-> %k %v bool) (OrderedMap %k %v) (OrderedMap %k %v)))
 (defbjouble (orderedmap-filter keep? m)
   (#:sync (clr-orderedmap-filter keep? m))
   (#:bjo
     (def b (clr-orderedmapbuilder-empty (clr-orderedmap-comparer m)))
-    (def c (orderedmap-cursor m))
-    (let go ()
+    (let go ((c (orderedmap-cursor m)))
       (cond
         ((orderedmap-cursor-done? c) (orderedmapbuilder->orderedmap b))
         (else
           (def (k v) (orderedmap-cursor-current c))
           (when (keep? k v)
             (orderedmapbuilder-add! b k v))
-          (go))))))
+          (go (orderedmap-cursor-next c)))))))
 
 (: orderedmap-fold (-> (-?-> %k %v %s %s) %s (OrderedMap %k %v) %s))
 (defbjouble (orderedmap-fold f init m)
   (#:sync (clr-orderedmap-fold f init m))
   (#:bjo
-    (def c (orderedmap-cursor m))
-    (let go ((acc init))
+    (let go ((c (orderedmap-cursor m)) (acc init))
       (cond
         ((orderedmap-cursor-done? c) acc)
         (else
           (def (k v) (orderedmap-cursor-current c))
-          (go (f k v acc)))))))
+          (go (orderedmap-cursor-next c) (f k v acc)))))))
 
 (: orderedmap-iter (-> (-?-> %k %v bool) (OrderedMap %k %v) bool))
 (defbjouble (orderedmap-iter f m)
   (#:sync (clr-orderedmap-iter f m))
   (#:bjo
-    (def c (orderedmap-cursor m))
-    (let go ()
+    (let go ((c (orderedmap-cursor m)))
       (cond
         ((orderedmap-cursor-done? c) #t)
         (:def (k v) (orderedmap-cursor-current c))
-        ((f k v) (go))
+        ((f k v) (go (orderedmap-cursor-next c)))
         (else #f)))))
 
 ;; ---------------------------------------------------------------------------
@@ -334,7 +330,7 @@
   (defun (iterable-start m) (orderedmap-cursor m))
   (defun (iterable-done? m c) (orderedmap-cursor-done? c))
   (defun (iterable-current m c) (orderedmap-cursor-current c))
-  (defun (iterable-next m c) c))
+  (defun (iterable-next m c) (orderedmap-cursor-next c)))
 
 (: orderedmap-for-each (-> (-?-> %k %v void) (OrderedMap %k %v) void))
 (defun (orderedmap-for-each f m)

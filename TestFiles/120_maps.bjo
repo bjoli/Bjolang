@@ -296,7 +296,15 @@
   (expect "ordered: remove-all" (orderedmap-length (orderedmap-remove-all m (list->seq (list "fig" "pear")))) 1)
 
   (expect "ordered: keys" (seq-length (orderedmap-keys m)) 3)
-  (expect "ordered: values" (seq-fold + 0 (orderedmap-values m)) 6))
+  (expect "ordered: values" (seq-fold + 0 (orderedmap-values m)) 6)
+
+  ;; A map this big has many leaves, which the cursor finds out of line. The
+  ;; walk is in key order, so each key is one more than the one before.
+  (def big (loop (:for i (range 0 5000)) (:acc b (ordered-mapping (Tuple (- 4999 i) i)))))
+  (expect-bool "a big ordered map walks in key order"
+               (loop (:for (Tuple k v) big) (:with prev -1 k) (:finish (not (= k (+ prev 1))) #f) => #t)
+               #t)
+  (expect "ordered: fold over a big map" (orderedmap-fold (fun (k v n) (+ n 1)) 0 big) 5000))
 
 (: test-merge (-> void))
 (defun (test-merge)

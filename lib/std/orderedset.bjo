@@ -106,7 +106,8 @@
 
   (orderedset-cursor         (: OrderedSet.OrderedSetModule.Cursor        (-> (OrderedSet %a) (OrderedSetCursor %a))))
   (orderedset-cursor-done?   (: OrderedSet.OrderedSetModule.CursorDone    (-> (OrderedSetCursor %a) bool)))
-  (orderedset-cursor-current (: OrderedSet.OrderedSetModule.CursorCurrent (-> (OrderedSetCursor %a) %a))))
+  (orderedset-cursor-current (: OrderedSet.OrderedSetModule.CursorCurrent (-> (OrderedSetCursor %a) %a)))
+  (orderedset-cursor-next    (: OrderedSet.OrderedSetModule.CursorNext    (-> (OrderedSetCursor %a) (OrderedSetCursor %a)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Builders and transients
@@ -163,47 +164,43 @@
   (#:sync (clr-orderedset-map f s (ord-comparer)))
   (#:bjo
     (def b (orderedsetbuilder-empty))
-    (def c (orderedset-cursor s))
-    (let go ()
+    (let go ((c (orderedset-cursor s)))
       (cond
         ((orderedset-cursor-done? c) (orderedsetbuilder->orderedset b))
         (else
           (orderedsetbuilder-add! b (f (orderedset-cursor-current c)))
-          (go))))))
+          (go (orderedset-cursor-next c)))))))
 
 (: orderedset-filter (-> (-?-> %a bool) (OrderedSet %a) (OrderedSet %a)))
 (defbjouble (orderedset-filter keep? s)
   (#:sync (clr-orderedset-filter keep? s))
   (#:bjo
     (def b (clr-orderedsetbuilder-empty (clr-orderedset-comparer s)))
-    (def c (orderedset-cursor s))
-    (let go ()
+    (let go ((c (orderedset-cursor s)))
       (cond
         ((orderedset-cursor-done? c) (orderedsetbuilder->orderedset b))
         (:def x (orderedset-cursor-current c))
         (else
           (when (keep? x)
             (orderedsetbuilder-add! b x))
-          (go))))))
+          (go (orderedset-cursor-next c)))))))
 
 (: orderedset-fold (-> (-?-> %a %s %s) %s (OrderedSet %a) %s))
 (defbjouble (orderedset-fold f init s)
   (#:sync (clr-orderedset-fold f init s))
   (#:bjo
-    (def c (orderedset-cursor s))
-    (let go ((acc init))
+    (let go ((c (orderedset-cursor s)) (acc init))
       (if (orderedset-cursor-done? c)
           acc
-          (go (f (orderedset-cursor-current c) acc))))))
+          (go (orderedset-cursor-next c) (f (orderedset-cursor-current c) acc))))))
 
 (: orderedset-iter (-> (-?-> %a bool) (OrderedSet %a) bool))
 (defbjouble (orderedset-iter f s)
   (#:sync (clr-orderedset-iter f s))
   (#:bjo
-    (def c (orderedset-cursor s))
-    (let go ()
+    (let go ((c (orderedset-cursor s)))
       (cond ((orderedset-cursor-done? c) #t)
-            ((f (orderedset-cursor-current c)) (go))
+            ((f (orderedset-cursor-current c)) (go (orderedset-cursor-next c)))
             (else #f)))))
 
 (: list->orderedset (-> (List %a) (OrderedSet %a)) (where (Ord %a)))
@@ -251,17 +248,16 @@
   (defun (iterable-start s) (orderedset-cursor s))
   (defun (iterable-done? s c) (orderedset-cursor-done? c))
   (defun (iterable-current s c) (orderedset-cursor-current c))
-  (defun (iterable-next s c) c))
+  (defun (iterable-next s c) (orderedset-cursor-next c)))
 
 (: orderedset-for-each (-> (-?-> %a void) (OrderedSet %a) void))
 (defun (orderedset-for-each f s)
-  (def c (orderedset-cursor s))
-  (let go ()
+  (let go ((c (orderedset-cursor s)))
     (cond
       ((orderedset-cursor-done? c) unit)
       (else
         (f (orderedset-cursor-current c))
-        (go)))))
+        (go (orderedset-cursor-next c))))))
 
 (impl (Collection (OrderedSet %a))
   (type %content %a)
