@@ -72,8 +72,8 @@ time: below 1 means Bjolang is faster.
 | binary-trees | 21 | 12.87 | 10.46 | 14.43 | 4.23 | 1.23 | 0.89 | 3.04 |
 | mandelbrot | 16,000 | 12.34 | 12.26 | 12.28 | 15.71 | 1.01 | 1.00 | 0.79 |
 | fasta | 25,000,000 | 2.73 | 2.45 | 2.39 | 3.63 | 1.11 | 1.14 | 0.75 |
-| k-nucleotide | 25,000,000 | 9.07 | 8.44 | 12.71 | 29.84 | 1.07 | 0.71 | 0.30 |
-| reverse-complement | 25,000,000 | 1.50 | 1.29 | 0.54 | 19.79 | 1.16 | 2.76 | 0.08 |
+| k-nucleotide | 25,000,000 | 9.04 | 8.52 | 12.68 | 29.88 | 1.06 | 0.71 | 0.30 |
+| reverse-complement | 25,000,000 | 1.39 | 1.29 | 0.56 | 19.72 | 1.08 | 2.47 | 0.07 |
 | pidigits | 10,000 | 2.50 | 2.46 | 2.35 | 2.72 | 1.02 | 1.06 | 0.92 |
 
 | peak memory, MB | Bjolang | C# | Go | Chez |
@@ -84,20 +84,21 @@ time: below 1 means Bjolang is faster.
 | binary-trees | 644 | 612 | 189 | 272 |
 | mandelbrot | 66 | 64 | 33 | 84 |
 | fasta | 35 | 29 | 2 | 47 |
-| k-nucleotide | 513 | 649 | 365 | 1244 |
-| reverse-complement | 1213 | 1248 | 447 | 1961 |
+| k-nucleotide | 416 | 649 | 390 | 1276 |
+| reverse-complement | 743 | 1248 | 447 | 2111 |
 | pidigits | 47 | 45 | 8 | 47 |
 
-pidigits was measured in a later run than the others, with the same
-machine and settings.
+pidigits was measured in a later run than the others, and k-nucleotide and
+reverse-complement again after the string builder changed (see "What was
+changed after the first run" below), with the same machine and settings.
 
 Geometric means of the ratio, over the 9 benchmarks:
 
 | Bjolang against | geometric mean |
 |-----------------|---------------:|
-| C# | 1.07 |
-| Go | 1.07 |
-| Chez Scheme | 0.47 |
+| C# | 1.06 |
+| Go | 1.06 |
+| Chez Scheme | 0.46 |
 
 ### Reading the results
 
@@ -107,17 +108,19 @@ Geometric means of the ratio, over the 9 benchmarks:
   same machine code of both. Go is equal too. Chez is 1.3 to 4 times slower,
   as it boxes a flonum that is stored in a vector or passed to a procedure
   that is not inlined.
-- **Allocation** (binary-trees): Bjolang is 23% slower than C#. A union case
-  is a C# record, and `check` is a `switch` on the type of the case. Chez is
-  3 times faster than both: its pairs are smaller and its collector is made
-  for many short-lived pairs. Go uses the least memory and has the slowest
-  collector here.
-- **Text and output** (fasta, k-nucleotide, reverse-complement): Bjolang is 7
-  to 16% slower than C#. The cause is not measured. Two differences are
-  candidates: a Bjolang string is UTF-8 and a .NET string UTF-16, so a line
-  read from a port is decoded and copied in other places, and `write-bytes!`
-  goes through Bjolang's port, which takes its gate for each write. Go reads bytes and never decodes them, which
-  is why its reverse-complement is 2.8 times faster than both .NET programs.
+- **Allocation** (binary-trees): Bjolang is 23% slower than C#, and the
+  cause is measured. `Empty` is an object, so each leaf stores two references
+  to it, each with a GC write barrier, where a C# leaf stores `null`, which
+  needs none. In C# written both ways, trees with `Empty` leaves take 31% longer
+  to build. Making one case of a union `null` would change how values are
+  represented; it is in `Todo.org`. Chez is 3 times faster than both: its
+  pairs are smaller and its collector is made for many short-lived pairs. Go
+  uses the least memory and has the slowest collector here.
+- **Text and output** (fasta, k-nucleotide, reverse-complement): Bjolang is 6
+  to 10% slower than C# cold. Warm, reverse-complement is faster than C#; see
+  "What was changed after the first run". Go reads bytes and never decodes
+  them, which is why its reverse-complement is 2.5 times faster than both .NET
+  programs cold.
   The Chez programs read text with `get-line` through a UTF-8 transcoder and
   collect the lines in a string port; that is slow, and a Chez program that
   reads bytes would be faster.
@@ -153,11 +156,14 @@ Same machine, minimum of 3 runs, seconds:
 | binary-trees | 12.77 | 10.37 | 14.49 | 4.09 | 1.23 | 0.88 | 3.13 | 1.23 |
 | mandelbrot | 12.14 | 12.07 | 12.27 | 15.52 | 1.01 | 0.99 | 0.78 | 1.01 |
 | fasta | 2.68 | 2.41 | 2.39 | 3.56 | 1.11 | 1.12 | 0.75 | 1.11 |
-| k-nucleotide | 8.15 | 7.89 | 12.40 | 15.45 | 1.03 | 0.66 | 0.53 | 1.07 |
-| reverse-complement | 0.99 | 0.57 | 0.35 | 5.40 | 1.75 | 2.83 | 0.18 | 1.16 |
+| k-nucleotide | 8.21 | 7.94 | 12.43 | 15.82 | 1.03 | 0.66 | 0.52 | 1.06 |
+| reverse-complement | 0.49 | 0.57 | 0.35 | 5.02 | 0.85 | 1.40 | 0.10 | 1.08 |
 | pidigits | 2.37 | 2.33 | 2.43 | 2.67 | 1.01 | 0.97 | 0.89 | 1.02 |
 
-Geometric means: 1.11 against C#, 1.05 against Go, 0.54 against Chez.
+k-nucleotide and reverse-complement are from the run after the string builder
+changed.
+
+Geometric means: 1.02 against C#, 0.97 against Go, 0.51 against Chez.
 
 - **Warming up changes little.** Where the work is the same, the warm times
   are within 0.35 s of the cold ones, mostly below, and every ratio to C#
@@ -165,13 +171,55 @@ Geometric means: 1.11 against C#, 1.05 against Go, 0.54 against Chez.
   already a small part of them. The gaps that remain, binary-trees and fasta,
   are in the code that runs, not in warming it up.
 - **Reverse-complement is the exception**, as the work is not the same:
-  without reading 254 MB from standard input, what is left is converting
-  the lines and writing them. Bjolang takes 0.99 s and C# 0.57 s for that,
-  so the text path is where Bjolang loses, and reading a file hid most of
-  it in the cold run (1.50 s against 1.29 s). The cause is not measured.
-- **Chez reads text slowly.** Its k-nucleotide goes from 29.8 to 15.5 s and
-  its reverse-complement from 19.8 to 5.4 s without reading standard input
-  through a UTF-8 transcoder.
+  without reading 254 MB from standard input, what is left is collecting the
+  lines, converting them and writing them. Before the string builder changed,
+  Bjolang took 0.99 s for that and C# 0.57 s. Now Bjolang takes 0.49 s.
+- **Chez reads text slowly.** Its k-nucleotide goes from about 30 to 16 s
+  and its reverse-complement from about 20 to 5 s without reading standard
+  input through a UTF-8 transcoder.
+
+## What was changed after the first run
+
+**The string builder** (`BjoString`'s `Utf8StringBuilder`, Bjolang's
+`StringBuilder`). Reverse-complement collects each sequence, up to 125 MB, in
+a builder. The builder grew one array by doubling it, so it allocated and
+copied arrays of 16 B, 32 B, up to 256 MB, about 512 MB for one sequence.
+Measured in the second run of the process:
+
+- Each of the large arrays was new memory: the second run took 61,000 page
+  faults in each phase, where C#'s took almost none, and the process held
+  3.3 GB, against C#'s 2.0 GB. The collector does few full collections when a
+  program makes few small objects, so the arrays of one phase were not free
+  when the next phase allocated. With a collection forced before each
+  sequence, the faults went away and two of the copies took 30 and 39 ms in
+  place of 151 and 149 ms.
+- Reading the lines from a port took 82 ms against C#'s 60 ms. Appending them
+  to the builder was the rest: 275 to 350 ms against C#'s 155 to 180 ms.
+
+The builder now keeps one array while the text is short, doubling it up to
+64 KB as before. Past that, it keeps full arrays as chunks and starts a new
+one, all below the size of the large object heap, and copies once, into an
+array of the exact size, when the string is made. The second run, in ms:
+
+| phase | before | after | C# |
+|-------|-------:|------:|---:|
+| read and append the lines | 430 | 214 | 200 to 233 |
+| builder to string | 151 | 29 | 69 |
+| string to bytes | 149 | 55 | 66 |
+| reverse and complement | 279 | 279 | 169 to 185 |
+| all | 1011 | 577 | 520 to 542 |
+
+The process holds 1.2 GB where it held 3.3 GB. In a C# benchmark of the
+builder alone, 2,000,000 appends of 60 bytes take 49 ms where they took
+56 ms and .NET's `StringBuilder` takes 99 ms; short builds take the time they
+took. The loop that reverses and complements is slower than C#'s for a reason
+of its own, the shape the loop is emitted in, which is in `Todo.org`.
+
+**The last clause of a match.** When the clauses of a match on a union cover
+every case but the last clause's, the last clause is the `switch`'s default
+section, with no type test and no throw after it. The JIT then has profile
+data for the method, and the walk of binary-trees is shorter code. It does not
+change binary-trees' time, as the time is in building the trees.
 
 ## What porting found
 
