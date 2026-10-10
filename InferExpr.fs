@@ -1470,6 +1470,29 @@ and private inferRecordConstruct (env: Env) (recordTypeName: string) (args: Expr
     let instantiatedRecordType, expectedFields, expectedFieldsInstantiated =
         instantiateRecord env.Registry recordTypeName
 
+    // A field label is written like a call, so a renaming pass, which cannot
+    // tell one from a call, renames a label together with a local of the same
+    // name: `(Frame (name name))` in a body freshened for inlining gives
+    // `(name__7 name__7)`, and a second renaming `name__7__9`. A label is a
+    // spelling and never a variable, so a label that names no field means the
+    // field its base name names.
+    let rec original (name: string) =
+        let stripped = Gensym.baseName name
+        if stripped = name then name else original stripped
+
+    let writtenFields =
+        writtenFields
+        |> List.map (fun (name, value) ->
+            if Map.containsKey name expectedFieldsInstantiated then
+                name, value
+            else
+                let base' = original name
+
+                if Map.containsKey base' expectedFieldsInstantiated then
+                    base', value
+                else
+                    name, value)
+
     let fieldList = expectedFields |> List.map fst |> String.concat ", "
 
     let provided =
