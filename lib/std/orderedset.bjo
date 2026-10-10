@@ -189,10 +189,11 @@
 (defbjouble (orderedset-fold f init s)
   (#:sync (clr-orderedset-fold f init s))
   (#:bjo
-    (let go ((c (orderedset-cursor s)) (acc init))
+    ;; `f` before the step, as in `map-fold`.
+    (let go ((acc init) (c (orderedset-cursor s)))
       (if (orderedset-cursor-done? c)
           acc
-          (go (orderedset-cursor-next c) (f (orderedset-cursor-current c) acc))))))
+          (go (f (orderedset-cursor-current c) acc) (orderedset-cursor-next c))))))
 
 (: orderedset-iter (-> (-?-> %a bool) (OrderedSet %a) bool))
 (defbjouble (orderedset-iter f s)

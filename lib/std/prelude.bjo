@@ -442,12 +442,15 @@
   (#:bjo
     ;; (loop (:for (k v) m)
     ;;       (:acc acc (folding init (f k v acc))))
-    (let go ((c (map-cursor m)) (acc init))
+    ;; `f` before the step: arguments are evaluated in order, and a value made
+    ;; before a call that may leave the inlined path must live across it. The
+    ;; JIT then keeps it on the stack. The step reads only the cursor.
+    (let go ((acc init) (c (map-cursor m)))
       (if (map-cursor-done? c)
           acc
           (let ()
             (def (k v) (map-cursor-current c))
-            (go (map-cursor-next c) (f k v acc)))))))
+            (go (f k v acc) (map-cursor-next c)))))))
 
 (: map-iter (-> (-?-> %k %v bool) (Map %k %v) bool))
 (defbjouble (map-iter f m)

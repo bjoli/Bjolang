@@ -236,12 +236,13 @@
 (defbjouble (orderedmap-fold f init m)
   (#:sync (clr-orderedmap-fold f init m))
   (#:bjo
-    (let go ((c (orderedmap-cursor m)) (acc init))
+    ;; `f` before the step, as in `map-fold`.
+    (let go ((acc init) (c (orderedmap-cursor m)))
       (cond
         ((orderedmap-cursor-done? c) acc)
         (else
           (def (k v) (orderedmap-cursor-current c))
-          (go (orderedmap-cursor-next c) (f k v acc)))))))
+          (go (f k v acc) (orderedmap-cursor-next c)))))))
 
 (: orderedmap-iter (-> (-?-> %k %v bool) (OrderedMap %k %v) bool))
 (defbjouble (orderedmap-iter f m)

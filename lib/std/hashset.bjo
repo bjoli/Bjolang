@@ -153,10 +153,11 @@
 (defbjouble (hashset-fold f init s)
   (#:sync (clr-hashset-fold f init s))
   (#:bjo
-    (let go ((c (hashset-cursor s)) (acc init))
+    ;; `f` before the step, as in `map-fold`.
+    (let go ((acc init) (c (hashset-cursor s)))
       (if (hashset-cursor-done? c)
           acc
-          (go (hashset-cursor-next c) (f (hashset-cursor-current c) acc))))))
+          (go (f (hashset-cursor-current c) acc) (hashset-cursor-next c))))))
 
 (: hashset-iter (-> (-?-> %a bool) (HashSet %a) bool))
 (defbjouble (hashset-iter f s)
