@@ -969,6 +969,73 @@ let exprChildren (e: Expr) : Expr list =
            | FailDefault value -> [ value ]
            | FailLeave arms -> arms |> List.collect (fun (pat, body) -> patternSteps pat @ [ body ]))
 
+/// `e` with `f` applied to every expression held directly inside it: the
+/// children `exprChildren` lists, and a local `defun`'s keyword defaults.
+///
+/// Wildcard-free for `exprChildren`'s reason: an `Expr` case added later and
+/// missed here would keep whatever this pass is for out of it, silently.
+let mapExprChildren (f: Expr -> Expr) (e: Expr) : Expr =
+    let mapArg (a: DefunArg) =
+        match a with
+        | MandatoryArg _
+        | RestArg _ -> a
+        | KeywordArg(name, defaultExpr) -> KeywordArg(name, f defaultExpr)
+
+    let pat = mapPatternSteps f
+
+    match e with
+    | EInt _
+    | EString _
+    | EChar _
+    | EBool _
+    | EResolved _
+    | EQuotedSymbol _
+    | EKeyword _
+    | EIdent _ -> e
+    | ECast(t, x, r) -> ECast(t, f x, r)
+    | EDynPack(n, x, r) -> EDynPack(n, f x, r)
+    | EGetField(x, n, r) -> EGetField(f x, n, r)
+    | ESeq(x, r) -> ESeq(f x, r)
+    | EBjo(x, k, r) -> EBjo(f x, k, r)
+    | ETaskEvent(x, r) -> ETaskEvent(f x, r)
+    | EYield(x, r) -> EYield(f x, r)
+    | EYieldFrom(x, r) -> EYieldFrom(f x, r)
+    | ESet(n, x, r) -> ESet(n, f x, r)
+    | ETuple(xs, r) -> ETuple(List.map f xs, r)
+    | EList(xs, r) -> EList(List.map f xs, r)
+    | EVec(xs, r) -> EVec(List.map f xs, r)
+    | EArray(xs, r) -> EArray(List.map f xs, r)
+    | ESplice(x, r) -> ESplice(f x, r)
+    | EApp(target, args, r) -> EApp(f target, List.map f args, r)
+    | ELet(n, isFun, args, t, v, b, r) -> ELet(n, isFun, List.map mapArg args, t, f v, f b, r)
+    | ELetMono(n, v, b, r) -> ELetMono(n, f v, f b, r)
+    | ELetTuple(ns, v, b, r) -> ELetTuple(ns, f v, f b, r)
+    | ELetMutable(n, t, v, b, r) -> ELetMutable(n, t, f v, f b, r)
+    | ELetRec(bindings, b, r) ->
+        ELetRec(bindings |> List.map (fun (n, isFun, args, t, v) -> n, isFun, List.map mapArg args, t, f v), f b, r)
+    | EIf(c, t, e', r) -> EIf(f c, f t, f e', r)
+    | EWhen(c, b, negated, r) -> EWhen(f c, f b, negated, r)
+    | EFun(args, b, colour, r) -> EFun(args, f b, colour, r)
+    | ERecordUpdate(n, fields, r) -> ERecordUpdate(n, fields |> List.map (fun (k, v) -> k, f v), r)
+    | ERecordSet(n, fields, r) -> ERecordSet(n, fields |> List.map (fun (k, v) -> k, f v), r)
+    | ETryFinally(b, c, r) -> ETryFinally(f b, f c, r)
+    | ETryCatch(b, types, r) -> ETryCatch(f b, types, r)
+    | EHoist(b, r) -> EHoist(f b, r)
+    | EMatch(target, clauses, r) ->
+        EMatch(f target, clauses |> List.map (fun (p, g, b) -> pat p, Option.map f g, f b), r)
+    | EWithReturn(n, b, r) -> EWithReturn(n, f b, r)
+    | EDefMatch(binder, scrutinee, failure, sequel, r) ->
+        EDefMatch(pat binder, f scrutinee, mapDefFailure f pat failure, f sequel, r)
+
+/// The name `(by-colour (#:sync ...) (#:bjo ...))` is parsed to, applied to
+/// its two bodies. `ColourTwins.resolveByColour` replaces each such call with
+/// one of the two before anything is checked.
+///
+/// An `EResolved` so that every structural pass before that one treats it as
+/// an ordinary call: its bodies are walked, renamed and normalized like any
+/// other operands, and no pass needs a case for it.
+let byColourMarker = "%by-colour"
+
 /// One walk over an untyped expression, calling `reference name range guarded`
 /// at every name it mentions but does not bind.
 ///

@@ -2910,6 +2910,7 @@ and internal checkDeclGroup
                     GeneratedCopies = Set.union env.Registry.GeneratedCopies generated } }
 
     let decls, inferredPairs = ColourTwins.expandReachingDefuns env.Registry decls
+    let decls = ColourTwins.resolveByColour decls
 
     /// Registered as doubles, so that the *existing* enclosing-colour selection
     /// in `EffectGraph.selectDoubles` picks them up with no case of its own.

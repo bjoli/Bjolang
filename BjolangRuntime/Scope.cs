@@ -1167,6 +1167,12 @@ public static partial class BjolangRuntime {
 
     /// `(scope-close! sc failure)` — end the scope. See <see cref="Scope.Close"/>
     /// for the ordering, which is the whole content of it.
+    /// `(scope-close!/blocking sc failure)` — the same close, for code that
+    /// cannot suspend: the thread waits for the children, as a `defun` `main`
+    /// already does at its end (see <see cref="RunMainSync"/>).
+    public static Unit scopesubclose_BANGdivblocking(Scope scope, Option<System.Exception> failure) =>
+        Bjo.RunToCompletion(() => scope.Close(failure));
+
     public static Fiber<Unit> scopesubclose_BANG(Scope scope, Option<System.Exception> failure) =>
         scope.Close(failure);
 

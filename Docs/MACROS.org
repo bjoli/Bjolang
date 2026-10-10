@@ -528,6 +528,24 @@ goes across as written, mark and all, so a template's ~(+ ,a ,b ,c)~ still
 means ~Num~'s ~+~ wherever it lands. In a module that does not import the
 prelude, three operands are an error that names ~#fl~.
 
+** One expansion for both colours: ~by-colour~
+
+A macro does not know the colour of the code it expands into. If the
+expansion has to wait, it writes ~(by-colour (#:sync body...) (#:bjo
+body...))~, and the compiler takes the body for the colour of the definition
+or lambda the expansion lands in. ~with-scope~ closes its scope this way: in a
+bjoroutine the close suspends, and in a ~defun~ it parks the thread.
+
+#+BEGIN_SRC scheme
+(def/macro (await form inject compare)
+  (syntax-match form
+    ((_ ev) #'(by-colour (#:sync (sync/blocking ,ev)) (#:bjo (sync ,ev))))))
+#+END_SRC
+
+A ~defun~ that the expansion lands in gets a suspending copy, and a bjoroutine
+calls that copy. Which body each place takes is in [[file:Syntax.org][Syntax.org]], under
+Colour.
+
 ** What a macro cannot do
 
 - *Appear anywhere but where a whole expression or declaration is expected.* Not

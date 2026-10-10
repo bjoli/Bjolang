@@ -60,6 +60,68 @@ let private callingItself (name: string) (body: Expr) : Expr =
     else
         body
 
+/// Whether a `(by-colour ...)` is written anywhere in `e`.
+let rec containsByColour (e: Expr) : bool =
+    match e with
+    | EApp(EResolved(marker, _), _, _) when marker = byColourMarker -> true
+    | ELet(_, _, args, _, _, _, _) when
+        args
+        |> List.exists (function
+            | KeywordArg(_, d) -> containsByColour d
+            | _ -> false)
+        ->
+        true
+    | _ -> exprChildren e |> List.exists containsByColour
+
+/// `e` with each `(by-colour (#:sync s) (#:bjo b))` replaced by `s` or `b`, for
+/// the colour of the code it stands in. `suspending` is the colour of the
+/// enclosing body.
+///
+/// A lambda has the colour it was written with, a `(bjo ...)` runs on a fiber
+/// of its own, and a `(seq ...)` body is never suspending. A body-local
+/// `defun` takes the colour of the body around it: its own colour is inferred
+/// later, from what its body reaches, and the branch chosen here is what it
+/// reaches.
+///
+/// The inliner also calls it, because a body it splices is source that was
+/// recorded before the declarations were resolved.
+let rec resolveIn (suspending: bool) (e: Expr) : Expr =
+    match e with
+    | EApp(EResolved(marker, _), [ syncBody; bjoBody ], _) when marker = byColourMarker ->
+        resolveIn suspending (if suspending then bjoBody else syncBody)
+    | EFun(args, body, colour, r) -> EFun(args, resolveIn (colour = Suspending) body, colour, r)
+    | EBjo(body, kind, r) -> EBjo(resolveIn true body, kind, r)
+    | ESeq(body, r) -> ESeq(resolveIn false body, r)
+    | _ -> mapExprChildren (resolveIn suspending) e
+
+/// Every `(by-colour ...)` in the declarations replaced by one of its bodies.
+///
+/// Runs after both expansions, because a copy is made from the same source as
+/// the original and has the other colour: the original takes the `#:sync`
+/// body and the copy the `#:bjo` one. A top-level `def` runs at module load,
+/// which is ordinary.
+let rec resolveByColour (decls: Decl list) : Decl list =
+    decls
+    |> List.map (fun d ->
+        match d with
+        | DDefun(name, args, body, colour, r) ->
+            mapDeclExprs (resolveIn (colour = Suspending)) (DDefun(name, args, body, colour, r))
+        | DDefDouble(name, args, syncBody, bjoBody, r) ->
+            let resolved = mapDeclExprs (resolveIn false) (DDefDouble(name, args, syncBody, bjoBody, r))
+
+            match resolved with
+            | DDefDouble(n, a, s, _, r') -> DDefDouble(n, a, s, resolveIn true bjoBody, r')
+            | other -> other
+        | DTrait(name, v, arity, assoc, signatures, defaults, clr, r) ->
+            DTrait(name, v, arity, assoc, signatures, resolveByColour defaults, clr, r)
+        | DImpl(name, target, assoc, constraints, methodWheres, methods, r) ->
+            DImpl(name, target, assoc, constraints, methodWheres, resolveByColour methods, r)
+        // A module's declarations are a group of their own, expanded and
+        // resolved when that group is checked. Resolved here, they would lose
+        // their `by-colour` before their copies are made.
+        | DModule _ -> d
+        | _ -> mapDeclExprs (resolveIn false) d)
+
 /// Every `defun` whose signature declares a `-?->` parameter gets a second
 /// definition, generated from the same body and checked at the suspending
 /// colour. This is monomorphisation: `-?->` promises two copies, and this
@@ -240,7 +302,14 @@ let expandReachingDefuns (registry: TraitRegistry) (decls: Decl list) : Decl lis
 
     // Two points, so a round that adds nothing is the fixpoint and no SCC
     // decomposition is needed — the same argument `EffectGraph` makes.
-    let mutable reaching = Set.empty
+    // A body that writes a `(by-colour ...)` has two bodies already, one per
+    // copy, so it needs its copy whatever it calls.
+    let mutable reaching =
+        candidates
+        |> Map.filter (fun _ (_, body, _) -> containsByColour body)
+        |> Map.keys
+        |> Set.ofSeq
+
     let mutable changed = true
 
     while changed do

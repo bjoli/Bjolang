@@ -370,6 +370,26 @@ A signature declaring ~-?->~ gets two emitted bodies. Which a call means is deci
 **** A copy nobody declares
 A ~defun~ whose call graph reaches a ~defbjouble~ gets a second body too, with nothing written down. A second body that turns out to await nothing — the ~defbjouble~ was handed an ordinary lambda, say — is dropped, and its callers call the first.
 
+**** ~by-colour~ — one body for each colour, in an expression
+~(by-colour (#:sync body...) (#:bjo body...))~ is the body for the colour of the code it is written in. It is for macros: a macro that expands to it works in code of both colours.
+#+BEGIN_SRC scheme
+(: wait-for (-> (Event %a) %a))
+(defun (wait-for ev)
+  (by-colour (#:sync (sync/blocking ev))   ; parks the thread
+             (#:bjo  (sync ev))))          ; suspends
+#+END_SRC
+
+The colour is the one of the innermost of these:
+- a ~defun~: ~#:sync~. Its suspending copy, and a ~defbjo~: ~#:bjo~.
+- a ~defbjouble~: the body it is in.
+- a ~(fun ...)~: ~#:sync~. A ~(bjoroutine ...)~ and a ~(bjo ...)~: ~#:bjo~.
+- a ~(seq ...)~ body and a module-level ~def~: ~#:sync~.
+- a body-local ~(defun ...)~: the colour of the body around it.
+
+A ~defun~ with a ~by-colour~ in it gets a suspending copy, as one that reaches a ~defbjouble~ does, and a bjoroutine calls that copy. If the ~#:bjo~ body awaits nothing, the copy is dropped, and the ~#:sync~ body runs everywhere. So write a ~#:bjo~ body that suspends and a ~#:sync~ body that does the same work without suspending.
+
+A lambda applied in place, ~((fun () body))~, is replaced by its body before colours are found, so its ~by-colour~ takes the colour around it.
+
 **** ~#:sync~ — no copy for this one
 `#:sync` stops the compiler generating an async copy for a function.
 #+BEGIN_SRC scheme

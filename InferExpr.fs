@@ -367,6 +367,11 @@ and private resolveAliasedHead (env: Env) (expr: Expr) : Expr =
 
 and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     match expr with
+    // `ColourTwins.resolveByColour` replaces every one in a declaration before
+    // it is checked. One that gets here is in code checked some other way.
+    | EApp(EResolved(marker, _), _, r) when marker = byColourMarker ->
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: (by-colour ...) chooses a body by the colour of the definition it is in, and this one is not in a definition, or is in a body spliced from another module. Write it in a defun, a defbjo or a defbjouble."
     | EInt(value, r) ->
         let inferredType = numericLiteralType value r
 

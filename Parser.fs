@@ -662,6 +662,32 @@ let rec parseExpr (s: SExpr) : Expr =
             // expressions. Desugaring them into `if` with an empty tuple as the
             // missing arm made every body that was not itself an empty tuple a
             // type error — which is to say every body anyone would write.
+            // `(by-colour (#:sync body...) (#:bjo body...))`: one body for each
+            // colour of the code it stands in, chosen by
+            // `ColourTwins.resolveByColour` before anything is checked. What
+            // a macro writes when a suspending form has a blocking twin, as
+            // `scope-form` does for a scope's close.
+            | "by-colour" ->
+                let clause (want: string) =
+                    args
+                    |> List.tryPick (function
+                        | SList(SAtom { Token = Keyword k } :: body, cr) when k = want -> Some(parseBody body cr)
+                        | _ -> None)
+
+                for a in args do
+                    match a with
+                    | SList(SAtom { Token = Keyword("sync" | "bjo") } :: _, _) -> ()
+                    | _ ->
+                        failwithf
+                            $"Invalid by-colour at %s{Lexer.formatPos r}: every clause is (#:sync body...) or (#:bjo body...), and this is neither."
+
+                match clause "sync", clause "bjo" with
+                | Some syncBody, Some bjoBody when args.Length = 2 ->
+                    EApp(EResolved(byColourMarker, listRange), [ syncBody; bjoBody ], listRange)
+                | _ ->
+                    failwithf
+                        $"Invalid by-colour at %s{Lexer.formatPos r}: it takes one (#:sync body...) and one (#:bjo body...)."
+
             | "when" ->
                 match args with
                 | cond :: bodyExprs when not bodyExprs.IsEmpty ->

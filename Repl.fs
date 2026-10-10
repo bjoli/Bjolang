@@ -1231,7 +1231,7 @@ let private commands = [ ":complete"; ":help"; ":quit"; ":show" ]
 /// leaving out the forms only the reader writes (`vec-literal`, `quoted-list`
 /// and the like). A form added there has to be added here to be offered.
 let private specialForms =
-    [ "->"; "and"; "begin"; "bjo"; "bjoroutine"; "case"; "cast"; "def"; "def*"; "def/hash-extend"
+    [ "->"; "and"; "begin"; "bjo"; "bjoroutine"; "by-colour"; "case"; "cast"; "def"; "def*"; "def/hash-extend"
       "def/macro"; "def/mutable"; "def/pattern"; "def/trait"; "defbjo"; "defbjouble"; "defun"; "dyn"
       "export"; "fun"; "if"; "impl"; "impl/extern"; "import"; "import/class"; "import/extern"; "include"
       "let"; "let/mono"; "letrec"; "loop"; "match"; "module"; "not"; "or"; "parameterize"; "re-export"

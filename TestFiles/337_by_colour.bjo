@@ -1,0 +1,92 @@
+(import (std prelude))
+(import (std simpletest))
+
+;; `(by-colour (#:sync ...) (#:bjo ...))` takes the body for the colour of the
+;; code it stands in: the definition, or the innermost lambda, `bjo` or `seq`.
+;; A `defun` that writes one gets a suspending copy, which a bjoroutine calls,
+;; when its `#:bjo` body awaits something; otherwise the copy is dropped, and
+;; the `#:sync` body runs everywhere. `with-scope` is written with it, so it
+;; works in a `defun` too.
+
+;; The `#:bjo` body awaits, so the copy is kept.
+(: which (-> string))
+(defun (which)
+  (by-colour (#:sync "sync")
+             (#:bjo (sync (always "bjo")))))
+
+;; The `#:bjo` body awaits nothing, so the copy is dropped.
+(: idle (-> string))
+(defun (idle)
+  (by-colour (#:sync "sync") (#:bjo "bjo")))
+
+(: which/bjo (-bjo-> string))
+(defbjo (which/bjo)
+  (by-colour (#:sync "sync") (#:bjo (sync (always "bjo")))))
+
+;; Both copies of a `-?->` function.
+(: apply-which (-> (-?-> string string) string))
+(defun (apply-which f)
+  (f (by-colour (#:sync "sync") (#:bjo (sync (always "bjo"))))))
+
+;; A scope in ordinary code waits for its fibers, parking the thread.
+(: mark (-bjo-> (Box string) int void))
+(defbjo (mark b ms)
+  (sync (timeout ms))
+  (box-set! b "ran"))
+
+(: spawned (-> string))
+(defun (spawned)
+  (def b (make-box "not run"))
+  (with-scope
+    (spawn (mark b 40)))
+  (box-ref b))
+
+;; A failure in the body is raised after the children are waited for.
+(: failing (-> string))
+(defun (failing)
+  (match (try (with-scope (raise-it)) #:catch (System.InvalidOperationException))
+    ((Ok _) "returned")
+    ((Err e) "raised")))
+
+(import/class (Refusal (: System.InvalidOperationException (-> string Refusal))))
+
+(: raise-it (-> string))
+(defun (raise-it) (raise (cast Exception (Refusal. "no"))))
+
+
+(defbjo (main args)
+  (expect "a defun called from a defun" (call-sync) "sync")
+  (expect "a defun called from a bjoroutine" (which) "bjo")
+  (expect "a copy that awaits nothing is dropped" (idle) "sync")
+  (expect "a defbjo" (which/bjo) "bjo")
+  (expect "an ordinary lambda" (call0 (fun () (by-colour (#:sync "sync") (#:bjo (sync (always "bjo")))))) "sync")
+  (expect "a bjoroutine lambda" ((bjoroutine () (by-colour (#:sync "sync") (#:bjo (sync (always "bjo")))))) "bjo")
+  (expect "a bjo block"
+          (match (sync (promise-join (bjo (by-colour (#:sync "sync") (#:bjo (sync (always "bjo")))))))
+            ((Ok s) s)
+            ((Err _) "failed"))
+          "bjo")
+  (expect "a seq body" (seq->list (seq (yield (by-colour (#:sync "sync") (#:bjo "bjo"))))) (list "sync"))
+  (expect "a -?-> function, ordinary copy" (apply-which (fun (s) s)) "sync")
+  (expect "a -?-> function, suspending copy" (apply-which (bjoroutine (s) s)) "bjo")
+  ;; Off the fiber, because the close parks the thread it runs on.
+  (expect "with-scope in a defun waits for its fibers"
+          (sync (blocking (fun () (spawned-in-sync))))
+          (Ok "ran"))
+  (expect "with-scope in a defun raises the body's failure"
+          (sync (blocking (fun () (failing))))
+          (Ok "raised"))
+  0)
+
+;; Calls an ordinary function. A lambda given to it stays a lambda, because
+;; only a lambda that is applied in place is reduced to its body.
+(: call0 (-> (-> string) string))
+(defun (call0 f) (f))
+
+;; Called only from ordinary code, so only the ordinary copy of `which` runs.
+(: call-sync (-> string))
+(defun (call-sync) (call0 (fun () (which))))
+
+;; `spawned`, reached through a lambda so that its ordinary copy runs.
+(: spawned-in-sync (-> string))
+(defun (spawned-in-sync) (call0 (fun () (spawned))))

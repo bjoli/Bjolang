@@ -3,6 +3,26 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~by-colour~: one body for each colour, and ~with-scope~ in ordinary code
+
+- *~(by-colour (#:sync body...) (#:bjo body...))~ is the body for the colour
+  of the code it is in.* A macro writes it, so that its expansion works in a
+  ~defun~ and in a bjoroutine. A ~defun~ and a ~(fun ...)~ take ~#:sync~; a
+  ~defbjo~, a ~(bjoroutine ...)~, a ~(bjo ...)~ and the suspending copy of a
+  ~defun~ take ~#:bjo~; a ~defbjouble~ takes the body it is in.
+- A ~defun~ with a ~by-colour~ in it gets a suspending copy, which a
+  bjoroutine calls. A copy whose ~#:bjo~ body awaits nothing is dropped, as
+  before, and then the ~#:sync~ body runs everywhere.
+- A lambda applied in place, ~((fun () body))~, is replaced by its body, so its
+  ~by-colour~ takes the colour around it.
+- *~with-scope~, ~with-cancel~, ~with-deadline~ and ~with-shield~ work in
+  ordinary code.* There the close parks the thread until the children have
+  ended, through the new ~scope-close!/blocking~. In a bjoroutine the close
+  suspends, as before. The blocking lint reports the parking close when a
+  bjoroutine reaches it, for example through a ~(fun ...)~ written in one.
+- The inliner takes the ~#:sync~ body of a ~by-colour~ in a body it splices,
+  because it splices only calls that do not suspend.
+
 * A write to an output port costs a third of what it did
 
 - *The port's gate is one int.* A write took the gate, a ~SemaphoreSlim~,

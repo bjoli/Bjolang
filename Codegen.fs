@@ -969,6 +969,13 @@ and private serializeExprNode (here: string) (e: Ast.Expr) : string =
     | Ast.EKeyword(k, _) -> "#:" + k
     | Ast.EIdent(n, _) -> n
     | Ast.ETuple(items, _) -> list ("Tuple" :: List.map (serializeExprAt here) items)
+    // Read back as the form it was written as, which the importer resolves for
+    // the colour of wherever the body lands.
+    | Ast.EApp(Ast.EResolved(marker, _), [ syncBody; bjoBody ], _) when marker = Ast.byColourMarker ->
+        list
+            [ "by-colour"
+              list [ "#:sync"; serializeExprAt here syncBody ]
+              list [ "#:bjo"; serializeExprAt here bjoBody ] ]
     | Ast.EApp(target, args, _) -> list (serializeExprAt here target :: List.map (serializeExprAt here) args)
     | Ast.ECast(t, v, _) -> list [ "cast"; serializeFType t; serializeExprAt here v ]
     | Ast.EDynPack(traitName, v, _) -> list [ "dyn"; traitName; serializeExprAt here v ]

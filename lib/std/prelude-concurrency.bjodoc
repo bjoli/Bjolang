@@ -604,7 +604,9 @@
     @code{spawn}, @code{bjo} or @code{spawn-thunk} started in it, then
     releases what was owned in it, newest first.
 
-    It suspends, so only a bjoroutine may write it.
+    In a bjoroutine the wait suspends. In ordinary code, a @code{defun} or a
+    @code{(fun ...)}, it parks the thread, and the blocking lint reports it
+    when a bjoroutine reaches it.
     """))
 
 (:doc with-cancel
@@ -642,7 +644,8 @@
     failed. A @code{bjo} child's failure is its promise's, and the scope does
     not raise it again.
 
-    It suspends, so only a bjoroutine may write it.
+    In a bjoroutine the wait suspends. In ordinary code it parks the thread,
+    as @code{with-scope}'s does.
     """))
 
 (:doc with-deadline
@@ -787,8 +790,8 @@
   (reference """
     Opens the scope, installs it with @code{scope-push!}, binds the thunk from
     @code{scope-canceller}, runs the body, and closes the scope with
-    @code{scope-close!}, telling it about the body's exception if there was
-    one, which is then raised again unless the close raised first. @code{dyn-restore!} puts the old
+    @code{scope-close!} in a bjoroutine and @code{scope-close!/blocking} in
+    ordinary code, telling it about the body's exception if there was one, which is then raised again unless the close raised first. @code{dyn-restore!} puts the old
     environment back however the form is left.
 
     Not meant to be written by hand: use one of the four forms.
@@ -863,6 +866,17 @@
     is not raised here; @code{scope-form} raises it again.
 
     What @code{scope-form} expands to; not meant to be called directly.
+    """))
+
+(:doc scope-close!/blocking
+  (summary "scope-close! for ordinary code: parks the thread until the scope has ended. Internal to the scope forms.")
+  (arg s "The scope.")
+  (arg failure "The exception the body is leaving with, or @code{None}.")
+  (see scope-close! scope-form)
+  (reference """
+    Does what @code{scope-close!} does, and parks the thread while it waits.
+    What @code{scope-form} expands to in a @code{defun} or a
+    @code{(fun ...)}; not meant to be called directly.
     """))
 
 (:doc scope-cancel!

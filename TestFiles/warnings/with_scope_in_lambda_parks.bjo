@@ -1,0 +1,21 @@
+;; `with-scope` in an ordinary lambda closes its scope with the call that parks
+;; the thread, because the lambda is ordinary code. Inside a bjoroutine, the
+;; blocking lint reports that close.
+
+(import (std prelude))
+
+(: call0 (-> (-> int) int))
+(defun (call0 f) (f))
+
+;; EXPECT-WARNING: calling 'scope-close!/blocking'
+(: parks (-bjo-> int))
+(defbjo (parks)
+  (call0 (fun () (with-scope 1))))
+
+;; The same scope in the bjoroutine itself suspends, so it is not reported.
+(: suspends (-bjo-> int))
+(defbjo (suspends)
+  (with-scope 2))
+
+(defbjo (main args)
+  (+ (parks) (suspends) -3))

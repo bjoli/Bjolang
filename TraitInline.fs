@@ -661,8 +661,13 @@ and private spliceTemplate
         // 1. Freshen at the splice. Mandatory, and *not* something the global
         //    uniquifying pass can do afterwards: renaming preserves meaning, it
         //    cannot recover a meaning the splice already destroyed.
+        //    A `(by-colour ...)` takes its `#:sync` body, because only a call
+        //    that does not suspend is spliced.
         let body =
-            AlphaRename.reachHidden (fun n -> Map.containsKey n ctx.Env.Bindings) tpl.Qualification tpl.Body
+            AlphaRename.reachHidden
+                (fun n -> Map.containsKey n ctx.Env.Bindings)
+                tpl.Qualification
+                (ColourTwins.resolveIn false tpl.Body)
 
         let freshBody, subst = AlphaRename.freshen tpl.Params body
         let freshParams = tpl.Params |> List.map (fun p -> Map.tryFind p subst |> Option.defaultValue p)

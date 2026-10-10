@@ -3247,8 +3247,9 @@
 ;; trade. A hang says where it is; a scope that returned while its children ran
 ;; on says nothing at all.
 ;;
-;; All four forms suspend, because waiting is the whole of what they do. They
-;; can only be written inside a bjoroutine.
+;; Waiting is the whole of what the four forms do. In a bjoroutine the wait
+;; suspends; in ordinary code it parks the thread, as the end of a `defun`
+;; `main` does. `scope-form` writes both, with `by-colour`.
 
 ;; The shared expansion of `with-cancel`, `with-deadline` and `with-shield`.
 ;;
@@ -3275,8 +3276,14 @@
          (def ,cancel (scope-canceller scope))
          (try
              (match (try (let () ,first ,@body) #:catch (System.Exception))
-               ((Ok answer) (scope-close! scope None) answer)
-               ((Err failure) (scope-close! scope (Some failure)) (raise failure)))
+               ((Ok answer)
+                (by-colour (#:sync (scope-close!/blocking scope None))
+                           (#:bjo (scope-close! scope None)))
+                answer)
+               ((Err failure)
+                (by-colour (#:sync (scope-close!/blocking scope (Some failure)))
+                           (#:bjo (scope-close! scope (Some failure))))
+                (raise failure)))
            #:finally (dyn-restore! saved))))
     (bad (syntax-error bad "scope-form takes an opener, a cancel thunk name and a body. It is what with-scope, with-cancel, with-deadline and with-shield expand to; write one of those."))))
 

@@ -262,6 +262,8 @@ let blockingBuiltins : Set<string> =
           // The runtime's own docstring says not to call it from a bjoroutine;
           // this is what makes saying so mechanical.
           "sync/blocking"
+          // The close of a scope in code that cannot suspend.
+          "scope-close!/blocking"
 
           // The port reads. Each waits for input when there is none buffered.
           "reader-read-line!"
@@ -734,6 +736,12 @@ let prelude : Env =
         /// The scope needs it to decide whether to cancel before waiting, and
         /// to report it together with any the children raised.
         "scope-close!", {Scheme = Scheme([], [], TFun([scopeType; makeOptionType (TCon("System.Exception", []))], unitType, EAsync)); IsMutable = false }
+
+        /// The same close for code that cannot suspend: it parks the thread
+        /// until the children have finished, as a `defun` `main` does at its
+        /// end. What `scope-form`'s `#:sync` body calls, so that `with-scope`
+        /// can be written in a `defun`.
+        "scope-close!/blocking", {Scheme = Scheme([], [], makeFunType [scopeType; makeOptionType (TCon("System.Exception", []))] unitType); IsMutable = false }
 
         // --- Owned resources --------------------------------------------------
         //
