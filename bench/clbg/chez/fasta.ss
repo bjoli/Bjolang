@@ -1,5 +1,6 @@
 ;; fasta.
 (import (chezscheme))
+(include "harness.ss")
 
 (define line-length 60)
 
@@ -63,16 +64,21 @@
         (loop (fx+ i 1) sum))))
   acc)
 
-(let ((n (string->number (cadr (command-line))))
-      (out (standard-output-port (buffer-mode block))))
-  (put-bytevector out (string->utf8 ">ONE Homo sapiens alu\n"))
-  (repeat-fasta out alu (fx* 2 n))
-  (put-bytevector out (string->utf8 ">TWO IUB ambiguity codes\n"))
-  (random-fasta out (string->utf8 "acgtBDHKMNRSVWY")
-                (cumulative (flvector 0.27 0.12 0.12 0.27 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02))
-                (fx* 3 n))
-  (put-bytevector out (string->utf8 ">THREE Homo sapiens frequency\n"))
-  (random-fasta out (string->utf8 "acgt")
-                (cumulative (flvector 0.3029549426680 0.1979883004921 0.1975473066391 0.3015094502008))
-                (fx* 5 n))
-  (flush-output-port out))
+(define (run args)
+  ;; A warm run runs this twice, from the same seed.
+  (set! seed 42)
+  (let ((n (string->number (car args)))
+        (out (binary-out)))
+    (put-bytevector out (string->utf8 ">ONE Homo sapiens alu\n"))
+    (repeat-fasta out alu (fx* 2 n))
+    (put-bytevector out (string->utf8 ">TWO IUB ambiguity codes\n"))
+    (random-fasta out (string->utf8 "acgtBDHKMNRSVWY")
+                  (cumulative (flvector 0.27 0.12 0.12 0.27 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02))
+                  (fx* 3 n))
+    (put-bytevector out (string->utf8 ">THREE Homo sapiens frequency\n"))
+    (random-fasta out (string->utf8 "acgt")
+                  (cumulative (flvector 0.3029549426680 0.1979883004921 0.1975473066391 0.3015094502008))
+                  (fx* 5 n))
+    (flush-output-port out)))
+
+(bench-main #f run)

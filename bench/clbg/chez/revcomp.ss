@@ -1,5 +1,6 @@
 ;; reverse-complement.
 (import (chezscheme))
+(include "harness.ss")
 
 (define line-length 60)
 
@@ -31,21 +32,24 @@
              (go (fx+ i 1) (fx- from 1) (fx+ col 1)))))
         (put-bytevector out buf)))))
 
-(let ((in (current-input-port))
-      (out (standard-output-port (buffer-mode block)))
-      (table (complements)))
-  (let go ((sp #f) (get #f))
-    (let ((line (get-line in)))
-      (cond
-        ((eof-object? line)
-         (when get (write-reversed out table (get))))
-        ((and (fx> (string-length line) 0) (char=? (string-ref line 0) #\>))
-         (when get (write-reversed out table (get)))
-         (put-bytevector out (string->utf8 line))
-         (put-u8 out 10)
-         (let-values (((sp get) (open-string-output-port)))
-           (go sp get)))
-        (else
-         (put-string sp line)
-         (go sp get)))))
-  (flush-output-port out))
+(define (run args)
+  (let ((in (current-input-port))
+        (out (binary-out))
+        (table (complements)))
+    (let go ((sp #f) (get #f))
+      (let ((line (get-line in)))
+        (cond
+          ((eof-object? line)
+           (when get (write-reversed out table (get))))
+          ((and (fx> (string-length line) 0) (char=? (string-ref line 0) #\>))
+           (when get (write-reversed out table (get)))
+           (put-bytevector out (string->utf8 line))
+           (put-u8 out 10)
+           (let-values (((sp get) (open-string-output-port)))
+             (go sp get)))
+          (else
+           (put-string sp line)
+           (go sp get)))))
+    (flush-output-port out)))
+
+(bench-main #t run)

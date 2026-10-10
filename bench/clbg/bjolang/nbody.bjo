@@ -1,6 +1,7 @@
 ;; n-body: a model of the Jovian planets, with a symplectic integrator.
 ;; Argument: the number of steps.
 
+(import "harness.bjo")
 (import (std fmt))
 
 (type (: Body (Record (: x double #:mutable)
@@ -107,12 +108,14 @@
 (defun (show-energy e)
   (displayln (render->string [(numeric e #:precision 9)])))
 
-(defun (main args)
+(: run (-> (Vec string) void))
+(defun (run args)
   (def n (string->int (vec-ref args 0)))
   (def bodies (make-system))
   (offset-momentum bodies)
   (show-energy (energy bodies))
   (loop (:for i (range 0 n))
         (:do (advance bodies 0.01)))
-  (show-energy (energy bodies))
-  0)
+  (show-energy (energy bodies)))
+
+(defun (main args) (bench-main args #f run))

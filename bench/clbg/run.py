@@ -10,10 +10,16 @@ Benchmarks Game does, with the output going to /dev/null. Before the timed
 runs, each program runs at a small size, and its output must be the same as
 the output of the Go program.
 
+With --warm, each program runs its benchmark twice in one process, the
+first time with its output thrown away, and reports the time of the second
+run only. That leaves out start-up and most JIT compilation, which the
+default measurement includes. Standard input is read before either run.
+
 Usage:
   ./run.py                    every benchmark, 3 runs each, the minimum taken
   ./run.py nbody fasta        only these
   ./run.py --reps 5 --small   the small sizes, for a quick look
+  ./run.py --warm             the second run in each process
 """
 
 import argparse
@@ -59,8 +65,8 @@ def build_all(names):
     for name in names:
         src = HERE / "bjolang" / f"{name}.bjo"
         exe = src.with_suffix(".exe")
-        if not exe.exists() or exe.stat().st_mtime < max(src.stat().st_mtime,
-                                                         Path(compiler).stat().st_mtime):
+        inputs = [src, HERE / "bjolang" / "harness.bjo", Path(compiler)]
+        if not exe.exists() or exe.stat().st_mtime < max(p.stat().st_mtime for p in inputs):
             r = subprocess.run(["dotnet", compiler, src.name], cwd=src.parent,
                                capture_output=True, text=True)
             if r.returncode != 0 or not exe.exists():
@@ -73,13 +79,15 @@ def build_all(names):
     for name in names:
         so = BUILD / "chez" / f"{name}.so"
         src = HERE / "chez" / f"{name}.ss"
-        if not so.exists() or so.stat().st_mtime < src.stat().st_mtime:
+        newest = max(src.stat().st_mtime, (HERE / "chez" / "harness.ss").stat().st_mtime)
+        if not so.exists() or so.stat().st_mtime < newest:
+            # From the directory, where `include` finds harness.ss.
             run(["scheme", "-q", "--optimize-level", "2"],
                 input=f'(compile-program "{src}" "{so}")', text=True,
-                stdout=subprocess.DEVNULL)
+                stdout=subprocess.DEVNULL, cwd=HERE / "chez")
 
 
-def command(lang, name, arg):
+def command(lang, name, arg, warm=False):
     if lang == "bjolang":
         cmd = ["dotnet", str(HERE / "bjolang" / f"{name}.exe")]
     elif lang == "csharp":
@@ -88,7 +96,8 @@ def command(lang, name, arg):
         cmd = [str(BUILD / "go-clbg"), name]
     else:
         cmd = ["scheme", "--program", str(BUILD / "chez" / f"{name}.so")]
-    return cmd if name in STDIN else cmd + [str(arg)]
+    cmd = cmd if name in STDIN else cmd + [str(arg)]
+    return cmd + ["--warm"] if warm else cmd
 
 
 def fasta_input(n):
@@ -100,9 +109,9 @@ def fasta_input(n):
     return path
 
 
-def execute(cmd, stdin_path, stdout):
-    """Runs cmd and answers (seconds, peak RSS in MB), or a string saying why
-    there are none."""
+def execute(cmd, stdin_path, stdout, warm=False):
+    """Runs cmd and answers its seconds, or a string saying why there are
+    none. A warm run's seconds are the ones it reports on standard error."""
     with open(stdin_path) if stdin_path else open(os.devnull) as stdin:
         start = time.perf_counter()
         p = subprocess.Popen(cmd, stdin=stdin, stdout=stdout, stderr=subprocess.PIPE)
@@ -116,6 +125,11 @@ def execute(cmd, stdin_path, stdout):
     if p.returncode != 0:
         print(err.decode(errors="replace")[-1000:], file=sys.stderr)
         return "CRASH"
+    if warm:
+        for line in err.decode(errors="replace").splitlines():
+            if line.startswith("warm-seconds "):
+                return float(line.split()[1])
+        return "NOTIME"
     return secs
 
 
@@ -132,10 +146,10 @@ def peak_rss(cmd, stdin_path):
             return None
 
 
-def output_hash(lang, name, arg):
+def output_hash(lang, name, arg, warm=False):
     stdin_path = fasta_input(arg) if name in STDIN else None
     with tempfile.TemporaryFile() as out:
-        r = execute(command(lang, name, arg), stdin_path, out)
+        r = execute(command(lang, name, arg, warm), stdin_path, out, warm)
         if isinstance(r, str):
             return r
         out.seek(0)
@@ -152,6 +166,8 @@ def main():
     ap.add_argument("names", nargs="*", help="benchmarks to run (default: all)")
     ap.add_argument("--reps", type=int, default=3, help="runs per program; the minimum is reported")
     ap.add_argument("--small", action="store_true", help="time the check sizes instead")
+    ap.add_argument("--warm", action="store_true",
+                    help="time a second run of the benchmark in the same process")
     args = ap.parse_args()
     names = args.names or list(BENCHMARKS)
     unknown = [n for n in names if n not in BENCHMARKS]
@@ -163,7 +179,8 @@ def main():
 
     header = (f"{'benchmark':<14}" + "".join(f"{l:>9}" for l in LANGS)
               + "   bjo/C#   bjo/Go bjo/Chez" + "".join(f"{'MB ' + l[:4]:>10}" for l in LANGS))
-    print(f"wall-clock seconds, minimum of {args.reps} runs\n")
+    what = "the second run in the process" if args.warm else "the whole process"
+    print(f"seconds of {what}, minimum of {args.reps} runs\n")
     print(header)
     print("-" * len(header))
     ratios = {l: [] for l in LANGS[1:]}
@@ -173,17 +190,20 @@ def main():
         expected = output_hash("go", name, small)
         row, mem = {}, {}
         for lang in LANGS:
-            got = output_hash(lang, name, small)
+            got = output_hash(lang, name, small, args.warm)
             if got != expected:
                 row[lang] = "WRONG" if len(got) == 32 else got
                 continue
             stdin_path = fasta_input(arg) if name in STDIN else None
-            results = [execute(command(lang, name, arg), stdin_path, subprocess.DEVNULL)
+            results = [execute(command(lang, name, arg, args.warm), stdin_path,
+                               subprocess.DEVNULL, args.warm)
                        for _ in range(args.reps)]
             nums = [r for r in results if isinstance(r, float)]
             row[lang] = min(nums) if len(nums) == len(results) else \
                 next(r for r in results if not isinstance(r, float))
-            mem[lang] = peak_rss(command(lang, name, arg), stdin_path)
+            # A warm process holds two runs, so its peak says little.
+            if not args.warm:
+                mem[lang] = peak_rss(command(lang, name, arg), stdin_path)
 
         line = f"{name:<14}" + "".join(f" {fmt(row[l])}" for l in LANGS)
         bjo = row["bjolang"]

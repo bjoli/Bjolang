@@ -1,5 +1,6 @@
 ;; k-nucleotide.
 (import (chezscheme))
+(include "harness.ss")
 
 (define (code c)
   (case c
@@ -74,8 +75,11 @@
   (let ((counts (count-kmers sq (string-length name))))
     (printf "~a\t~a\n" (hashtable-ref counts (string->key name) 0) name)))
 
-(let ((sq (read-sequence (current-input-port))))
-  (write-frequencies sq 1)
-  (write-frequencies sq 2)
-  (for-each (lambda (name) (write-count sq name))
-            '("GGT" "GGTA" "GGTATT" "GGTATTTTAATT" "GGTATTTTAATTTATAGT")))
+(define (run args)
+  (let ((sq (read-sequence (current-input-port))))
+    (write-frequencies sq 1)
+    (write-frequencies sq 2)
+    (for-each (lambda (name) (write-count sq name))
+              '("GGT" "GGTA" "GGTATT" "GGTATTTTAATT" "GGTATTTTAATTTATAGT"))))
+
+(bench-main #t run)

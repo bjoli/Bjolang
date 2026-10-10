@@ -1,0 +1,36 @@
+;; What every port's main does: run the benchmark once, or with --warm as the
+;; last argument, twice.
+;;
+;; A warm run first runs the benchmark with its output thrown away, so that
+;; the JIT has compiled and recompiled its code, then runs it again and times
+;; only that second run. The time goes to standard error as
+;; "warm-seconds <s>", which run.py reads. A benchmark that reads standard
+;; input is given the same input both times: it is read once, before either
+;; run, and is not in the time.
+
+(export bench-main)
+
+(: bench-main (-> (Vec string) bool (-> (Vec string) void) int))
+(defun (bench-main args reads-input? run)
+  (def n (vec-length args))
+  (if (and (> n 0) (= (vec-ref args (- n 1)) "--warm"))
+      (warm (vec-slice args 0 (- n 1)) reads-input? run)
+      (run args))
+  0)
+
+(: warm (-> (Vec string) bool (-> (Vec string) void) void))
+(defun (warm args reads-input? run)
+  (def input (if reads-input? (read-all (parameter-ref current-input-port)) ""))
+  (def sink
+    (match (open-output-file "/dev/null")
+      ((Ok port) port)
+      ((Err e) (raise e))))
+  (parameterize ((current-input-port (open-input-string input))
+                 (current-output-port sink))
+    (run args))
+  (def t0 (monotonic-ms))
+  (parameterize ((current-input-port (open-input-string input)))
+    (run args))
+  (flush-port (parameter-ref current-output-port))
+  (def secs (/ (cast System.Double (- (monotonic-ms) t0)) 1000.0))
+  (writeln (parameter-ref current-error-port) #"warm-seconds ${secs}"))

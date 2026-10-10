@@ -1,5 +1,6 @@
 ;; fannkuch-redux.
 (import (chezscheme))
+(include "harness.ss")
 
 (define (count-flips perm1 perm)
   (define n (fxvector-length perm1))
@@ -54,6 +55,9 @@
             (values checksum max-flips)
             (go r max-flips checksum (fx+ perm-count 1)))))))
 
-(let ((n (string->number (cadr (command-line)))))
-  (let-values (((checksum max-flips) (fannkuch n)))
-    (printf "~a\nPfannkuchen(~a) = ~a\n" checksum n max-flips)))
+(define (run args)
+  (let ((n (string->number (car args))))
+    (let-values (((checksum max-flips) (fannkuch n)))
+      (printf "~a\nPfannkuchen(~a) = ~a\n" checksum n max-flips))))
+
+(bench-main #f run)

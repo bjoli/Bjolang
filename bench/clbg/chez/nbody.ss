@@ -1,5 +1,6 @@
 ;; n-body. A body is an flvector: x y z vx vy vz mass.
 (import (chezscheme))
+(include "harness.ss")
 
 (define pi 3.141592653589793)
 (define solar-mass (fl* 4.0 (fl* pi pi)))
@@ -96,9 +97,12 @@
       (set b y (fl+ (ref b y) (fl* dt (ref b vy))))
       (set b z (fl+ (ref b z) (fl* dt (ref b vz)))))))
 
-(let ((n (string->number (cadr (command-line))))
-      (bodies (make-system)))
-  (offset-momentum bodies)
-  (printf "~,9f\n" (energy bodies))
-  (do ((i 0 (fx+ i 1))) ((fx= i n)) (advance bodies 0.01))
-  (printf "~,9f\n" (energy bodies)))
+(define (run args)
+  (let ((n (string->number (car args)))
+        (bodies (make-system)))
+    (offset-momentum bodies)
+    (printf "~,9f\n" (energy bodies))
+    (do ((i 0 (fx+ i 1))) ((fx= i n)) (advance bodies 0.01))
+    (printf "~,9f\n" (energy bodies))))
+
+(bench-main #f run)

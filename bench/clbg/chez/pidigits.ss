@@ -1,5 +1,6 @@
 ;; pidigits, with Chez's own bignums.
 (import (chezscheme))
+(include "harness.ss")
 
 (define (pidigits n)
   (let go ((i 0) (k 0) (acc 0) (den 1) (num 1))
@@ -23,5 +24,7 @@
     (display (make-string (- 10 (remainder n 10)) #\space))
     (printf "\t:~a\n" n)))
 
-(pidigits (string->number (cadr (command-line))))
-(flush-output-port (current-output-port))
+(define (run args)
+  (pidigits (string->number (car args))))
+
+(bench-main #f run)

@@ -10,10 +10,31 @@ using System.Collections.Generic;
 using System.Text;
 
 static class Program {
+    // With --warm as the last argument, the benchmark runs twice: first with
+    // its output thrown away, then again, and only the second run is timed.
+    // The time goes to standard error as "warm-seconds <s>". Standard input is
+    // read once, before either run, and each run reads it from memory.
     static int Main(string[] args) {
+        bool warm = args[^1] == "--warm";
+        var rest = args[1..(warm ? args.Length - 1 : args.Length)];
         var stdout = Console.OpenStandardOutput();
-        var rest = args[1..];
-        switch (args[0]) {
+        if (!warm) return Run(args[0], rest, stdout);
+
+        string input = args[0] is "knucleotide" or "revcomp" ? Console.In.ReadToEnd() : "";
+        var realOut = Console.Out;
+        Console.SetIn(new StringReader(input));
+        Console.SetOut(TextWriter.Null);
+        Run(args[0], rest, Stream.Null);
+        Console.SetIn(new StringReader(input));
+        Console.SetOut(realOut);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        int code = Run(args[0], rest, stdout);
+        Console.Error.WriteLine($"warm-seconds {watch.Elapsed.TotalSeconds.ToString(CultureInfo.InvariantCulture)}");
+        return code;
+    }
+
+    static int Run(string name, string[] rest, Stream stdout) {
+        switch (name) {
             case "nbody": NBody.Run(rest); break;
             case "spectralnorm": SpectralNorm.Run(rest); break;
             case "fannkuchredux": Fannkuch.Run(rest); break;
@@ -23,7 +44,7 @@ static class Program {
             case "knucleotide": KNucleotide.Run(); break;
             case "revcomp": RevComp.Run(stdout); break;
             case "pidigits": PiDigits.Run(rest); break;
-            default: Console.Error.WriteLine($"unknown benchmark {args[0]}"); return 2;
+            default: Console.Error.WriteLine($"unknown benchmark {name}"); return 2;
         }
         stdout.Flush();
         return 0;
@@ -302,6 +323,7 @@ static class Fasta {
 
     public static void Run(string[] args, Stream stdout) {
         int n = int.Parse(args[0]);
+        seed = 42;  // a warm run runs this twice, from the same seed
         var outs = new BufferedStream(stdout, 1 << 16);
         void Header(string s) => outs.Write(Encoding.ASCII.GetBytes(s));
         Header(">ONE Homo sapiens alu\n");

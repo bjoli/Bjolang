@@ -1,6 +1,7 @@
 ;; mandelbrot: the Mandelbrot set as a portable bitmap (PBM P4).
 ;; Argument: the width and height in pixels.
 
+(import "harness.bjo")
 (import (only (std ports) write-bytes!))
 
 ;; Whether the point (cr, ci) stays inside radius 2 for 50 iterations.
@@ -13,7 +14,8 @@
           (go (+ i 1) zr zi (* zr zr) (* zi zi)))
         (<= (+ tr ti) 4.0))))
 
-(defun (main args)
+(: run (-> (Vec string) void))
+(defun (run args)
   (def n (string->int (vec-ref args 0)))
   (def row-bytes (/ (+ n 7) 8))
   (def bitmap (make-array (* row-bytes n)))
@@ -35,5 +37,6 @@
                       (go (+ x 1) bits at)))))))
   (def out (parameter-ref current-output-port))
   (write-string out #"P4\n${n} ${n}\n")
-  (write-bytes! out bitmap)
-  0)
+  (write-bytes! out bitmap))
+
+(defun (main args) (bench-main args #f run))

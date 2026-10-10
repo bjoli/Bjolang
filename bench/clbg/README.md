@@ -4,6 +4,7 @@
 ./run.py                 # all benchmarks, 3 runs each, the minimum is reported
 ./run.py nbody fasta     # only these
 ./run.py --small         # the check sizes, for a quick look
+./run.py --warm          # the second run in each process; see "Warm runs"
 ```
 
 Run it on a machine that does nothing else.
@@ -13,7 +14,7 @@ the repository built as `Docs/Compiling.org` says.
 
 ## What is compared
 
-Eight programs of the
+Nine programs of the
 [Computer Language Benchmarks Game](https://benchmarksgame-team.pages.debian.net/benchmarksgame/):
 n-body, spectral-norm, fannkuch-redux, binary-trees, mandelbrot, fasta,
 k-nucleotide, reverse-complement and pidigits. regex-redux is not included,
@@ -127,6 +128,50 @@ Geometric means of the ratio, over the 9 benchmarks:
   program 0.03 s, a Chez program 0.05 s and a Go program less than 0.01 s.
   Bjolang loads the standard library and its runtime as more assemblies.
   This is in every time above.
+
+## Warm runs
+
+```sh
+./run.py --warm
+```
+
+With `--warm`, each program runs its benchmark twice in one process: first
+with its output thrown away, then again, and only the second run is timed,
+inside the program. Start-up and most of the JIT's work are not in the time.
+k-nucleotide and reverse-complement read standard input once, before either
+run, and each run reads it from memory (a string port in Bjolang and Chez, a
+`StringReader` in C#, a `bytes.Reader` in Go), so reading the file is not in
+the time either. fasta starts each run from the same seed.
+
+Same machine, minimum of 3 runs, seconds:
+
+| benchmark | Bjolang | C# | Go | Chez | / C# | / Go | / Chez | cold Bjolang / C# |
+|-----------|--------:|---:|---:|-----:|-----:|-----:|-------:|------------------:|
+| n-body | 2.44 | 2.44 | 2.81 | 7.82 | 1.00 | 0.87 | 0.31 | 1.02 |
+| spectral-norm | 1.16 | 1.17 | 1.15 | 4.90 | 1.00 | 1.01 | 0.24 | 1.02 |
+| fannkuch-redux | 20.85 | 21.16 | 21.64 | 59.40 | 0.99 | 0.96 | 0.35 | 0.98 |
+| binary-trees | 12.77 | 10.37 | 14.49 | 4.09 | 1.23 | 0.88 | 3.13 | 1.23 |
+| mandelbrot | 12.14 | 12.07 | 12.27 | 15.52 | 1.01 | 0.99 | 0.78 | 1.01 |
+| fasta | 2.68 | 2.41 | 2.39 | 3.56 | 1.11 | 1.12 | 0.75 | 1.11 |
+| k-nucleotide | 8.15 | 7.89 | 12.40 | 15.45 | 1.03 | 0.66 | 0.53 | 1.07 |
+| reverse-complement | 0.99 | 0.57 | 0.35 | 5.40 | 1.75 | 2.83 | 0.18 | 1.16 |
+| pidigits | 2.37 | 2.33 | 2.43 | 2.67 | 1.01 | 0.97 | 0.89 | 1.02 |
+
+Geometric means: 1.11 against C#, 1.05 against Go, 0.54 against Chez.
+
+- **Warming up changes little.** Where the work is the same, the warm times
+  are within 0.35 s of the cold ones, mostly below, and every ratio to C#
+  moves by 0.04 or less. The benchmarks run for seconds, so start-up and JIT compilation were
+  already a small part of them. The gaps that remain, binary-trees and fasta,
+  are in the code that runs, not in warming it up.
+- **Reverse-complement is the exception**, as the work is not the same:
+  without reading 254 MB from standard input, what is left is converting
+  the lines and writing them. Bjolang takes 0.99 s and C# 0.57 s for that,
+  so the text path is where Bjolang loses, and reading a file hid most of
+  it in the cold run (1.50 s against 1.29 s). The cause is not measured.
+- **Chez reads text slowly.** Its k-nucleotide goes from 29.8 to 15.5 s and
+  its reverse-complement from 19.8 to 5.4 s without reading standard input
+  through a UTF-8 transcoder.
 
 ## What porting found
 

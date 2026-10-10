@@ -5,26 +5,62 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
+	"io"
 	"math"
 	"math/big"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
+// Where the benchmarks read standard input from. A warm run reads it once and
+// gives each run the bytes.
+var stdin io.Reader = os.Stdin
+
+// With --warm as the last argument, the benchmark runs twice: first with its
+// output thrown away, then again, and only the second run is timed. The time
+// goes to standard error as "warm-seconds <s>".
 func main() {
+	args := os.Args[1:]
+	if args[len(args)-1] != "--warm" {
+		out := bufio.NewWriterSize(os.Stdout, 1<<16)
+		run(out, args)
+		out.Flush()
+		return
+	}
+	args = args[:len(args)-1]
+	var input []byte
+	if args[0] == "knucleotide" || args[0] == "revcomp" {
+		var err error
+		if input, err = io.ReadAll(os.Stdin); err != nil {
+			panic(err)
+		}
+	}
+	stdin = bytes.NewReader(input)
+	discard := bufio.NewWriterSize(io.Discard, 1<<16)
+	run(discard, args)
+	discard.Flush()
+	stdin = bytes.NewReader(input)
+	start := time.Now()
 	out := bufio.NewWriterSize(os.Stdout, 1<<16)
-	defer out.Flush()
+	run(out, args)
+	out.Flush()
+	fmt.Fprintf(os.Stderr, "warm-seconds %g\n", time.Since(start).Seconds())
+}
+
+func run(out *bufio.Writer, args []string) {
 	arg := func() int {
-		n, err := strconv.Atoi(os.Args[2])
+		n, err := strconv.Atoi(args[1])
 		if err != nil {
 			panic(err)
 		}
 		return n
 	}
-	switch os.Args[1] {
+	switch args[0] {
 	case "nbody":
 		nbody(out, arg())
 	case "spectralnorm":
@@ -44,7 +80,7 @@ func main() {
 	case "pidigits":
 		pidigits(out, arg())
 	default:
-		fmt.Fprintln(os.Stderr, "unknown benchmark", os.Args[1])
+		fmt.Fprintln(os.Stderr, "unknown benchmark", args[0])
 		os.Exit(2)
 	}
 }
@@ -379,6 +415,7 @@ func cumulative(ps []float64) []float64 {
 }
 
 func fasta(out *bufio.Writer, n int) {
+	seed = 42 // a warm run runs this twice, from the same seed
 	out.WriteString(">ONE Homo sapiens alu\n")
 	repeatFasta(out, []byte(alu), 2*n)
 	out.WriteString(">TWO IUB ambiguity codes\n")
@@ -406,7 +443,7 @@ func code(c byte) byte {
 }
 
 func newScanner() *bufio.Scanner {
-	in := bufio.NewScanner(os.Stdin)
+	in := bufio.NewScanner(stdin)
 	in.Buffer(make([]byte, 1<<16), 1<<20)
 	return in
 }

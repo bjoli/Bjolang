@@ -1,6 +1,7 @@
 ;; reverse-complement: reads a fasta file from standard input and writes
 ;; each sequence reversed and complemented, in lines of 60.
 
+(import "harness.bjo")
 (import (only (std ports) write-bytes!))
 
 (def line-length 60)
@@ -39,7 +40,8 @@
          (go (+ i 1) (- from 1) (+ col 1)))))
     (write-bytes! out buf)))
 
-(defun (main args)
+(: run (-> (Vec string) void))
+(defun (run args)
   (def in (parameter-ref current-input-port))
   (def out (parameter-ref current-output-port))
   (def table (complements))
@@ -54,5 +56,6 @@
            (let ()
              (stringbuilder-add-string! sb line)
              (go sb))))
-      (None (write-reversed out table sb))))
-  0)
+      (None (write-reversed out table sb)))))
+
+(defun (main args) (bench-main args #t run))

@@ -1,5 +1,6 @@
 ;; spectral-norm.
 (import (chezscheme))
+(include "harness.ss")
 
 (define (a i j)
   (let ((ij (fx+ i j)))
@@ -31,11 +32,14 @@
         (loop (fx+ i 1) (fl+ s (fl* (flvector-ref x i) (flvector-ref y i))))
         s)))
 
-(let* ((n (string->number (cadr (command-line))))
-       (u (make-flvector n 1.0))
-       (v (make-flvector n 0.0))
-       (tmp (make-flvector n 0.0)))
-  (do ((i 0 (fx+ i 1))) ((fx= i 10))
-    (mul-atav u v tmp)
-    (mul-atav v u tmp))
-  (printf "~,9f\n" (flsqrt (fl/ (dot u v) (dot v v)))))
+(define (run args)
+  (let* ((n (string->number (car args)))
+         (u (make-flvector n 1.0))
+         (v (make-flvector n 0.0))
+         (tmp (make-flvector n 0.0)))
+    (do ((i 0 (fx+ i 1))) ((fx= i 10))
+      (mul-atav u v tmp)
+      (mul-atav v u tmp))
+    (printf "~,9f\n" (flsqrt (fl/ (dot u v) (dot v v))))))
+
+(bench-main #f run)
