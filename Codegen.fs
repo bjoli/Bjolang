@@ -2490,6 +2490,23 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     // holding the value. See `hoistForm`.
     | THoist body -> append ctx (hoistForm ctx expr body)
 
+    // `and` and `or` as C#'s `&&` and `||`. As `c ? (bool)(t) : (bool)(false)`,
+    // the JIT can make the bool a value and test it again (setae, movzx,
+    // test). In a C# copy of fasta's inner loop that shape took 9% longer; in
+    // the compiled Bjolang program the time did not change, as the loop waits
+    // on a division and on mispredicted branches either way.
+    | TIf (cond, t, { Node = TBool false }) ->
+        append ctx "(("
+        generateExpr ctx cond
+        append ctx ") && ("
+        generateExpr ctx t
+        append ctx "))"
+    | TIf (cond, { Node = TBool true }, f) ->
+        append ctx "(("
+        generateExpr ctx cond
+        append ctx ") || ("
+        generateExpr ctx f
+        append ctx "))"
     | TIf (cond, t, f) ->
         // Reached only when nothing inside needs a statement position. Both arms
         // are cast to the conditional's own type: C#'s "best common type" rule

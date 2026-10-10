@@ -3,6 +3,21 @@
 
 What each change guarantees, and what it leaves open.
 
+* A write to an output port costs a third of what it did
+
+- *The port's gate is one int.* A write took the gate, a ~SemaphoreSlim~,
+  which takes a monitor in both ~Wait~ and ~Release~ also when nobody waits:
+  18 ns of the 27 ns a 61-byte ~write-bytes!~ cost. The gate is now taken
+  with one interlocked instruction when it is free; a writer that finds it
+  held waits on a semaphore, blocking or suspending as before. A write costs
+  9 ns, as .NET's ~BufferedStream~ does. ~bench/clbg~'s fasta, which writes
+  4.2 million lines: 2.73 to 2.55 s (C#: 2.51 s).
+- A line written by one fiber is still never torn by another's. The gate is
+  not strictly first come, first served: a writer that arrives as the gate is
+  freed can go before one that was waiting.
+- ~and~ and ~or~ are emitted as C#'s ~&&~ and ~||~, not as a conditional
+  that makes a ~bool~ and tests it again.
+
 * A union of 16 bytes or less is a struct
 
 - *A union whose struct, with a one-byte tag, is 16 bytes or less is a

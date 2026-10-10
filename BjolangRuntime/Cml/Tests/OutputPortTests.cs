@@ -45,6 +45,7 @@ public static class OutputPortTests
         Run("no buffering writes every write", NoBuffering);
         Run("a write larger than the buffer keeps its order", LargeWrite);
         Run("eight threads writing lines never tear one", ThreadsWriteWholeLines);
+        Run("blocking and suspending writers that wait for the gate tear no line", WaitersWriteWholeLines);
         Run("a re-encoded port writes its encoding into the port under it", Reencoded);
         Run("a .NET TextWriter made a port gets whole characters", OverTextWriter);
         Run("a write after shutdown is refused", WriteAfterShutdown);
@@ -149,6 +150,63 @@ public static class OutputPortTests
         port.Flush();
         string expected = "head:" + Encoding.ASCII.GetString(big) + ":tail" + Encoding.ASCII.GetString(big);
         AssertEqual(expected, Encoding.UTF8.GetString(stream.ToArray()), "in order");
+    }
+
+    /// A stream that takes its time, so that a write which drains holds the
+    /// gate across an await and the other writers have to wait for it.
+    private sealed class SlowStream : Stream
+    {
+        public readonly MemoryStream Written = new();
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            Thread.Sleep(1);
+            lock (Written) Written.Write(buffer, offset, count);
+        }
+
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancel = default)
+        {
+            await Task.Delay(1, cancel).ConfigureAwait(false);
+            lock (Written) Written.Write(buffer.Span);
+        }
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+    }
+
+    private static void WaitersWriteWholeLines()
+    {
+        var slow = new SlowStream();
+        var port = new BjoOutputPort(slow, 64, ownsInner: false);
+        const int PerWriter = 200;
+
+        var writers = Enumerable.Range(0, 8).Select(w => Task.Run(async () =>
+        {
+            var line = Encoding.UTF8.GetBytes($"writer {w} {new string((char)('a' + w), 40)}\n");
+            for (int i = 0; i < PerWriter; i++)
+            {
+                if (w % 2 == 0) port.WriteBytes(line);
+                else await port.WriteBytesAsync(line);
+            }
+        })).ToArray();
+
+        Assert(Task.WaitAll(writers, 30000), "every writer finishes");
+        port.Flush();
+
+        var lines = Encoding.UTF8.GetString(slow.Written.ToArray()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        AssertEqual(8 * PerWriter, lines.Length, "every line is written");
+        foreach (var l in lines)
+        {
+            int w = l[7] - '0';
+            AssertEqual($"writer {w} {new string((char)('a' + w), 40)}", l, "a whole line");
+        }
     }
 
     private static void ThreadsWriteWholeLines()

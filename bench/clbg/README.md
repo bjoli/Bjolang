@@ -71,7 +71,7 @@ time: below 1 means Bjolang is faster.
 | fannkuch-redux | 12 | 20.51 | 21.00 | 21.67 | 58.74 | 0.98 | 0.95 | 0.35 |
 | binary-trees | 21 | 10.82 | 10.41 | 14.51 | 4.38 | 1.04 | 0.75 | 2.47 |
 | mandelbrot | 16,000 | 12.34 | 12.26 | 12.28 | 15.71 | 1.01 | 1.00 | 0.79 |
-| fasta | 25,000,000 | 2.73 | 2.45 | 2.39 | 3.63 | 1.11 | 1.14 | 0.75 |
+| fasta | 25,000,000 | 2.55 | 2.51 | 2.39 | 3.62 | 1.01 | 1.07 | 0.71 |
 | k-nucleotide | 25,000,000 | 9.04 | 8.52 | 12.68 | 29.88 | 1.06 | 0.71 | 0.30 |
 | reverse-complement | 25,000,000 | 1.39 | 1.29 | 0.56 | 19.72 | 1.08 | 2.47 | 0.07 |
 | pidigits | 10,000 | 2.50 | 2.46 | 2.35 | 2.72 | 1.02 | 1.06 | 0.92 |
@@ -89,15 +89,16 @@ time: below 1 means Bjolang is faster.
 | pidigits | 47 | 45 | 8 | 47 |
 
 pidigits was measured in a later run than the others, k-nucleotide and
-reverse-complement again after the string builder changed, and binary-trees
-again after the empty case of a union became `null` (see "What was changed
-after the first run" below), with the same machine and settings.
+reverse-complement again after the string builder changed, binary-trees
+again after the empty case of a union became `null`, and fasta again after
+the output port's gate changed (see "What was changed after the first run"
+below), with the same machine and settings.
 
 Geometric means of the ratio, over the 9 benchmarks:
 
 | Bjolang against | geometric mean |
 |-----------------|---------------:|
-| C# | 1.04 |
+| C# | 1.03 |
 | Go | 1.04 |
 | Chez Scheme | 0.45 |
 
@@ -114,8 +115,8 @@ Geometric means of the ratio, over the 9 benchmarks:
   run". Chez is 2.5 times faster than both: its pairs are smaller and its
   collector is made for many short-lived pairs. Go uses the least memory and
   has the slowest collector here.
-- **Text and output** (fasta, k-nucleotide, reverse-complement): Bjolang is 6
-  to 10% slower than C# cold. Warm, reverse-complement is faster than C#; see
+- **Text and output** (fasta, k-nucleotide, reverse-complement): fasta is
+  equal to C#; k-nucleotide and reverse-complement are 6 to 8% slower cold. Warm, reverse-complement is faster than C#; see
   "What was changed after the first run". Go reads bytes and never decodes
   them, which is why its reverse-complement is 2.5 times faster than both .NET
   programs cold.
@@ -153,21 +154,21 @@ Same machine, minimum of 3 runs, seconds:
 | fannkuch-redux | 20.85 | 21.16 | 21.64 | 59.40 | 0.99 | 0.96 | 0.35 | 0.98 |
 | binary-trees | 10.86 | 10.33 | 14.61 | 4.27 | 1.05 | 0.74 | 2.54 | 1.04 |
 | mandelbrot | 12.14 | 12.07 | 12.27 | 15.52 | 1.01 | 0.99 | 0.78 | 1.01 |
-| fasta | 2.68 | 2.41 | 2.39 | 3.56 | 1.11 | 1.12 | 0.75 | 1.11 |
+| fasta | 2.50 | 2.42 | 2.38 | 3.59 | 1.03 | 1.05 | 0.70 | 1.01 |
 | k-nucleotide | 8.21 | 7.94 | 12.43 | 15.82 | 1.03 | 0.66 | 0.52 | 1.06 |
 | reverse-complement | 0.49 | 0.57 | 0.35 | 5.02 | 0.85 | 1.40 | 0.10 | 1.08 |
 | pidigits | 2.37 | 2.33 | 2.43 | 2.67 | 1.01 | 0.97 | 0.89 | 1.02 |
 
 k-nucleotide and reverse-complement are from the run after the string builder
-changed, and binary-trees from the run after its empty case became `null`.
+changed, binary-trees from the run after its empty case became `null`, and
+fasta from the run after the output port's gate changed.
 
-Geometric means: 1.00 against C#, 0.95 against Go, 0.49 against Chez.
+Geometric means: 1.00 against C#, 0.94 against Go, 0.49 against Chez.
 
 - **Warming up changes little.** Where the work is the same, the warm times
   are within 0.35 s of the cold ones, mostly below, and every ratio to C#
   moves by 0.04 or less. The benchmarks run for seconds, so start-up and JIT compilation were
-  already a small part of them. The gap that remains, fasta, is in the code
-  that runs, not in warming it up.
+  already a small part of them.
 - **Reverse-complement is the exception**, as the work is not the same:
   without reading 254 MB from standard input, what is left is collecting the
   lines, converting them and writing them. Before the string builder changed,
@@ -228,6 +229,17 @@ and classes took the same time, so the cost was the stores. A union with
 exactly one case that carries nothing, and at least one that carries
 something, now holds that case as `null`. binary-trees went from 12.80 to
 10.82 s cold (C#: 10.41 s) and from 12.90 to 10.86 s warm (C#: 10.33 s).
+
+**The output port's gate.** fasta writes 4.2 million lines, each a
+`write-bytes!` of 61 bytes. Measured apart, its computing took the same time
+as C#'s (2.36 s for the two random sequences in both); its writing took
+0.20 s against C#'s 0.08 s. A write to a port cost 27 ns, against 8 ns for
+.NET's `BufferedStream`, and 18 ns of it was the port's gate, a
+`SemaphoreSlim`, which takes a monitor in both `Wait` and `Release`. The gate
+is now one int, taken with one interlocked instruction when nobody else holds
+it; only a writer that has to wait goes to a semaphore. A write now costs
+9 ns. fasta went from 2.73 to 2.55 s cold (C#: 2.51 s) and from 2.68 to 2.50 s
+warm (C#: 2.42 s).
 
 ## What porting found
 

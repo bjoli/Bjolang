@@ -54,8 +54,9 @@ public enum BufferMode {
 ///
 /// Standard output is written by fibers on any thread, so every write holds
 /// the port's gate for as long as it takes: a line written by one fiber is
-/// never interleaved with another's. The gate is a semaphore rather than a
-/// lock, because a write that has to drain the buffer may suspend.
+/// never interleaved with another's. The gate is a <see cref="BjoGate"/>
+/// rather than a lock, because a write that has to drain the buffer may
+/// suspend.
 ///
 /// # Closing
 ///
@@ -89,7 +90,7 @@ public sealed class BjoOutputPort : TextWriter {
     private bool _unflushed;
 
     /// Held for the whole of every operation; see the class doc.
-    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly BjoGate _gate = new();
 
     /// For the UTF-16 a .NET caller writes: keeps a high surrogate that arrived
     /// without its low one until the next write.
@@ -160,14 +161,13 @@ public sealed class BjoOutputPort : TextWriter {
                 "write to an output port whose write half was ended by shutdown!.");
     }
 
-    private void Enter() => _gate.Wait();
+    private void Enter() => _gate.Enter();
 
     private ValueTask EnterAsync(CancellationToken cancel) {
-        if (_gate.Wait(0)) return default;
-        return new ValueTask(_gate.WaitAsync(cancel));
+        return _gate.EnterAsync(cancel);
     }
 
-    private void Leave() => _gate.Release();
+    private void Leave() => _gate.Leave();
 
     // --- The buffer, under the gate -------------------------------------------
 
@@ -288,7 +288,7 @@ public sealed class BjoOutputPort : TextWriter {
     /// costs no state machine.
     /// </summary>
     public ValueTask WriteBytesAsync(ReadOnlyMemory<byte> bytes, CancellationToken cancel = default) {
-        if (_gate.Wait(0)) {
+        if (_gate.TryEnter()) {
             bool handedOff = false;
             try {
                 ThrowIfDisposed();
@@ -317,7 +317,7 @@ public sealed class BjoOutputPort : TextWriter {
     }
 
     private async ValueTask WaitedWriteAsync(ReadOnlyMemory<byte> bytes, CancellationToken cancel) {
-        await _gate.WaitAsync(cancel).ConfigureAwait(false);
+        await _gate.EnterAsync(cancel).ConfigureAwait(false);
         try {
             ThrowIfDisposed();
             ThrowIfShutDown();
@@ -513,7 +513,7 @@ public sealed class BjoOutputPort : TextWriter {
     /// one ending the process.
     /// </summary>
     public void FlushAtExit() {
-        if (!_gate.Wait(TimeSpan.FromSeconds(1))) return;
+        if (!_gate.Enter(TimeSpan.FromSeconds(1))) return;
         try {
             if (!_disposed && !_writeClosed && HasPending) FlushLocked();
         } catch (IOException) {
