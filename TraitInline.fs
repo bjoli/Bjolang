@@ -338,7 +338,29 @@ type private Ctx =
       /// In a `match` guard. A guard is emitted as `case ... when`, which has
       /// no place for the statements a spliced loop needs, so a function call
       /// there is not inlined.
-      InGuard: bool }
+      InGuard: bool
+      /// In the body of a loop: a member of a `TLetRec`, which is what a named
+      /// `let` and a `(loop ...)` are until `LoopLowering`.
+      InLoop: bool
+      /// In a body spliced by this traversal.
+      InSplice: bool
+      /// The second of the two passes over a declaration. See `inlineDecl`.
+      SecondPass: bool
+      /// The typed nodes function splices may still add to the declaration
+      /// being inlined. Shared by the two passes and by nested splices.
+      Budget: int ref }
+
+/// How much a declaration may grow by function splices: `GrowthFactor` times
+/// its own size, and at least `GrowthFloor` nodes, so that a small function
+/// can take a few calls. One node is about 1.5 to 2 bytes of IL.
+[<Literal>]
+let private GrowthFactor = 2
+
+[<Literal>]
+let private GrowthFloor = 300
+
+let rec private typedSize (expr: TypedExpr) : int =
+    1 + (TypeVisitor.children expr |> List.sumBy typedSize)
 
 /// The module and name of the top-level function `name` means here, if it
 /// means one.
@@ -422,6 +444,12 @@ let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
         let args = args |> List.map (inlineExpr ctx)
         let kwArgs = kwArgs |> List.map (fun (n, e) -> n, inlineExpr ctx e)
 
+        // The first pass decided this call already. Only a body the second
+        // pass spliced has trait calls it has not seen.
+        if ctx.SecondPass && not ctx.InSplice then
+            { expr with Node = TTraitCall(tref, args, kwArgs) }
+        else
+
         match tref.Resolved with
         // Unresolved: an interface trait at a generic receiver. The dictionary
         // pass owns it from here, exactly as before.
@@ -487,7 +515,27 @@ let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
     | TApply({ Node = TIdent(name, _) } as callee, args, []) ->
         let args = args |> List.map (inlineExpr ctx)
         let call = { expr with Node = TApply(callee, args, []) }
-        if ctx.InGuard then call else inlineFunctionCall ctx name callee args call
+        // Calls in loops in the first pass, the others in the second: what the
+        // budget allows goes to the calls that run most. A body the second
+        // pass splices is new, so all its calls are its own to decide.
+        let thisPass =
+            if ctx.SecondPass then not ctx.InLoop || ctx.InSplice else ctx.InLoop
+
+        if ctx.InGuard || not thisPass then call else inlineFunctionCall ctx name callee args call
+
+    // The members of a group are loops: a named `let` or a `(loop ...)`.
+    | TLetRec(bindings, body) ->
+        let loopCtx = { ctx with InLoop = true }
+
+        let bindings =
+            bindings
+            |> List.map (fun (n, isFun, fn, value) ->
+                let fn =
+                    { fn with KeywordArgs = fn.KeywordArgs |> List.map (fun (k, t, d) -> k, t, inlineExpr ctx d) }
+
+                n, isFun, fn, inlineExpr loopCtx value)
+
+        { expr with Node = TLetRec(bindings, inlineExpr ctx body) }
 
     // A pattern's view step is emitted in the same place as a guard.
     | TMatch(target, clauses) ->
@@ -605,6 +653,8 @@ and private spliceTemplate
     (fallback: unit -> TypedExpr)
     : TypedExpr =
 
+    let budgetAtStart = ctx.Budget.Value
+
     try
         // 1. Freshen at the splice. Mandatory, and *not* something the global
         //    uniquifying pass can do afterwards: renaming preserves meaning, it
@@ -646,8 +696,18 @@ and private spliceTemplate
         // 4. Free names now say which module they came from.
         let qualified = AlphaRename.applyQualification tpl.Qualification typedBody
 
-        let innerCtx = { ctx with Active = Set.add key ctx.Active }
+        let innerCtx =
+            { ctx with
+                Active = Set.add key ctx.Active
+                InSplice = true }
+
         let bindings = List.zip freshParams args
+
+        // A function splice costs the declaration's budget its body's size,
+        // and its own nested splices take theirs from the same budget. If the
+        // splice is given up, what it took is given back.
+        let budgetBefore = ctx.Budget.Value
+        let cost = if onlyIfSubstituted then typedSize typedBody else 0
 
         // Read before step 4: `DoubleDefs` knows a name as written, and the
         // qualification rewrites it. A yield point left in the body would be
@@ -655,10 +715,14 @@ and private spliceTemplate
         // place it was not written.
         if
             onlyIfSubstituted
-            && (callsColourChosenDouble ctx.Env typedBody || hasYieldPoint typedBody)
+            && (callsColourChosenDouble ctx.Env typedBody
+                || hasYieldPoint typedBody
+                || cost > budgetBefore)
         then
             fallback ()
         else
+            ctx.Budget.Value <- budgetBefore - cost
+
             // 5. Recurse, with this key held down for the current path only.
             let inlined = inlineExpr innerCtx qualified
 
@@ -672,6 +736,7 @@ and private spliceTemplate
                     | _ -> false)
 
             if onlyIfSubstituted && lambdaKept then
+                ctx.Budget.Value <- budgetBefore
                 fallback ()
             else
                 // 6. Bind the arguments, then reduce whatever the substitution
@@ -684,6 +749,7 @@ and private spliceTemplate
         warn
             $"could not inline %s{describe} at %s{Lexer.formatPos expr.Range}: %s{ex.Message}. Falling back to a call."
 
+        ctx.Budget.Value <- budgetAtStart
         fallback ()
 
 // ---------------------------------------------------------------------------
@@ -731,11 +797,26 @@ let rec private inlineDecl (ctx: Ctx) (decl: TDecl) : TDecl =
             @ (rest |> Option.map fst |> Option.toList)
             |> List.fold (fun acc n -> Set.add n acc) (localBinders body)
 
-        TypeVisitor.mapDecl (inlineExpr { ctx with Active = active; Shadowed = shadowed }) decl
+        inlineInTwoPasses { ctx with Active = active; Shadowed = shadowed } decl
 
     | _ ->
         let shadowed = TypeVisitor.foldDecl (fun acc e -> Set.union acc (localBinders e)) Set.empty decl
-        TypeVisitor.mapDecl (inlineExpr { ctx with Shadowed = shadowed }) decl
+        inlineInTwoPasses { ctx with Shadowed = shadowed } decl
+
+/// Inlines in one declaration, in two passes over it with one budget.
+///
+/// Function splices grow the declaration, and there is a limit to how much a
+/// method should grow: past some size the JIT optimizes it less, and a copy at
+/// a call that runs once gains nothing. So the declaration may grow by
+/// `GrowthFactor` times its size, at least `GrowthFloor` nodes. The calls in
+/// loops are inlined first, as they run the most, and the other calls take
+/// what is left in the second pass. Trait splices are made in the first pass
+/// and do not count.
+and private inlineInTwoPasses (ctx: Ctx) (decl: TDecl) : TDecl =
+    let size = TypeVisitor.foldDecl (fun n _ -> n + 1) 0 decl
+    let budget = ref (max GrowthFloor (GrowthFactor * size))
+    let first = TypeVisitor.mapDecl (inlineExpr { ctx with Budget = budget; SecondPass = false }) decl
+    TypeVisitor.mapDecl (inlineExpr { ctx with Budget = budget; SecondPass = true }) first
 
 /// Inlines every statically resolvable trait call in the program, and every
 /// call of a published function that is given a known function.
@@ -752,5 +833,9 @@ let run (env: Env) (moduleOf: Map<string, string * string>) (decls: TDecl list) 
           ModuleOf = moduleOf
           Qualified = qualified
           Shadowed = Set.empty
-          InGuard = false }
+          InGuard = false
+          InLoop = false
+          InSplice = false
+          SecondPass = false
+          Budget = ref 0 }
     decls |> List.map (inlineDecl ctx)

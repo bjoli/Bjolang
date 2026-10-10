@@ -1,0 +1,31 @@
+;; A declaration may grow by function splices only up to a budget, and the
+;; calls in loops have it first.
+;;
+;; Ten calls outside any loop come before one in a loop. The one in the loop is
+;; inlined, the first calls outside take what is left, and the last ones stay
+;; calls.
+
+(export many)
+
+;; EXPECT-CS: = \(elem__[0-9]+ \* 100\);
+;; EXPECT-CS: a = loopexit__[0-9_]+\(
+;; EXPECT-CS: f = loopexit__[0-9_]+\(
+;; EXPECT-NO-CS: a = listsubmap\(
+;; EXPECT-CS: j = listsubmap\(
+(: many (-> (List int) int int))
+(defun (many xs n)
+  (def a (list-map (fun (x) (+ x 1)) xs))
+  (def b (list-map (fun (x) (+ x 2)) xs))
+  (def c (list-map (fun (x) (+ x 3)) xs))
+  (def d (list-map (fun (x) (+ x 4)) xs))
+  (def e (list-map (fun (x) (+ x 5)) xs))
+  (def f (list-map (fun (x) (+ x 6)) xs))
+  (def g (list-map (fun (x) (+ x 7)) xs))
+  (def h (list-map (fun (x) (+ x 8)) xs))
+  (def i (list-map (fun (x) (+ x 9)) xs))
+  (def j (list-map (fun (x) (+ x 10)) xs))
+  (+ (list-length (list-append a (list-append b (list-append c (list-append d (list-append e (list-append f (list-append g (list-append h (list-append i j))))))))))
+     (let go ((k 0) (acc 0))
+       (if (< k n)
+           (go (+ k 1) (+ acc (list-length (list-map (fun (x) (* x 100)) xs))))
+           acc))))
