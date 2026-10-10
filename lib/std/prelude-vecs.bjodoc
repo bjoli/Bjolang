@@ -302,6 +302,18 @@
     The @code{vecing} collector is one of these under a loop.
     """))
 
+(:doc vecbuilder-empty/small
+  (summary "A new, empty vec builder for a vec that is likely small.")
+  (returns "A builder to add to in place and freeze with vecbuilder->vec.")
+  (see vecbuilder-empty VecingSmall)
+  (reference """
+    The same as @code{vecbuilder-empty}, except for how it allocates.
+    @code{vecbuilder-empty} gives the builder room for 32 elements at the
+    first add. This one gives it room for 4, and doubles the room up to 32
+    as elements are added. A vec of 4, 8, 16 or 32 elements then takes the
+    builder's array with no copy.
+    """))
+
 (:doc vec->vecbuilder
   (summary "A builder holding a vec's elements, to go on adding to.")
   (arg v "The vec. Changing the builder does not change it.")
@@ -368,6 +380,22 @@
   (reference """
     Its accumulator is a @code{VecBuilder}: each value is added in place,
     and the builder is frozen into a vec when the loop ends.
+    """))
+
+(:doc VecingSmall
+  (summary "The collector that gathers a loop's values into a vec that is likely small.")
+  (tparam %a "The element type.")
+  (case vecing/small "The collector itself, written (vecing/small x) in an :acc clause.")
+  (see Vecing vecbuilder-empty/small)
+  (example """
+    (loop (:for x '(1 2 3))
+          (:acc v (vecing/small (* x x))))   ; [1 4 9]
+    """)
+  (reference """
+    Gives the same vec as @code{vecing}. Its builder is one from
+    @code{vecbuilder-empty/small}, which makes a vec of a few elements with
+    less allocation and copying. For a vec of many elements it is a little
+    slower than @code{vecing}.
     """))
 
 ;; ---------------------------------------------------------------------------

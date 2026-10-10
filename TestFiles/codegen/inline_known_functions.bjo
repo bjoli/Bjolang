@@ -2,7 +2,7 @@
 ;; call, is inlined: the function's loop is in the caller with the lambda's
 ;; body in it, and no delegate is made or called.
 
-(export doubled tripled-vec sum-map twice-used shadow)
+(export doubled filtered-vec tripled-vec sum-map twice-used shadow not-inlined)
 
 (import (std prelude))
 
@@ -14,9 +14,23 @@
 ;; A `defbjouble` that takes a `-?->` is inlined with its Bjolang body, which
 ;; walks with a cursor, and not with the one that calls .NET with a delegate.
 ;; EXPECT-CS: vecsubcursorsubnext\(
-;; EXPECT-NO-CS: clrsubvecsubmap\(
+;; EXPECT-NO-CS: clrsubvecsubfilter\(
+(: filtered-vec (-> (Vec int) (Vec int)))
+(defun (filtered-vec v) (vec-filter (fun (x) (> x 3)) v))
+
+;; `vec-map` is written `#:no-inline`: its .NET version, which copies the
+;; vec's arrays at their exact size, stays the call.
+;; EXPECT-CS: return vecsubmap\(
 (: tripled-vec (-> (Vec int) (Vec int)))
 (defun (tripled-vec v) (vec-map (fun (x) (* x 3)) v))
+
+;; So does a function of this module written `#:no-inline`.
+(: apply-once (-> (-> int int) int int))
+(defun (apply-once f x) #:no-inline (f x))
+
+;; EXPECT-CS: Module\.applysubonce\(
+(: not-inlined (-> int int))
+(defun (not-inlined n) (apply-once (fun (x) (+ x 1)) n))
 
 ;; EXPECT-CS: Map\.MapModule\.CursorNext<int, int>\(
 ;; EXPECT-NO-CS: clrsubmapsubfold\(

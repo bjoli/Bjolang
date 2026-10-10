@@ -208,8 +208,8 @@ let rec private callsColourChosenDouble (env: Env) (expr: TypedExpr) : bool =
 ///
 /// A function is published if it has a parameter of function type, has only
 /// mandatory parameters, has no `(where ...)`, is not a `defbjouble` whose
-/// copy the colour around a call chooses, and its body is at most
-/// `maxInlineBodySize` nodes.
+/// copy the colour around a call chooses, is not written `#:no-inline`, and
+/// its body is at most `maxInlineBodySize` nodes.
 let publishBodies
     (env: Env)
     (moduleOf: Map<string, string * string>)
@@ -244,12 +244,22 @@ let publishBodies
     // callback the `#:bjo` body is ordinary, and does what the `#:sync` body
     // does. Such a function is not in `DoubleDefs`, which holds the ones
     // whose copy the colour around the call chooses.
+    //
+    // A definition written `#:no-inline` is not published.
+    let noInline =
+        ownDecls
+        |> List.choose (function
+            | Ast.DNoInline(name, _) -> Some name
+            | _ -> None)
+        |> Set.ofList
+
     let candidates =
         ownDecls
         |> List.choose (function
             | Ast.DDefun(name, args, body, Ast.Ordinary, _) -> Some(name, args, body)
             | Ast.DDefDouble(name, args, _, bjoBody, _) -> Some(name, args, bjoBody)
             | _ -> None)
+        |> List.filter (fun (name, _, _) -> not (Set.contains name noInline))
 
     let bodies =
         candidates

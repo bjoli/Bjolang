@@ -296,6 +296,19 @@ Type annotations for top-level definitions use ~:~.
 
 A top-level ~defun~ must have a signature — ~main~ is the only exception.
 
+*** Inlining, and ~#:no-inline~
+A call of a function that takes a function is inlined where it is given a lambda or a top-level function written at the call: the function's body goes into the caller with the lambda's body in it, and no delegate is made. ~(list-map (fun (x) (* x 2)) xs)~ compiles to the loop of ~list-map~.
+
+This happens only when the body calls that parameter at most once and the body is small. Otherwise the call stays a call. What the program does is the same either way.
+
+~#:no-inline~ straight after the head keeps every call of a function a call. Use it where the call is cheaper than the body, as for ~vec-map~, whose .NET version copies the vec's arrays at their exact size.
+#+BEGIN_SRC scheme
+(: apply-once (-> (-> int int) int int))
+(defun (apply-once f x) #:no-inline (f x))
+#+END_SRC
+
+It is also accepted on ~defbjo~ and ~defbjouble~.
+
 *** Colour: ~defbjo~, ~defbjouble~ and ~-?->~
 A procedure that may suspend is defined with ~defbjo~ rather than ~defun~, and calling it is a yield point. Everything else about it is the same.
 

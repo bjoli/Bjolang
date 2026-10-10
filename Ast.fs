@@ -688,6 +688,15 @@ type Decl =
     /// metadata about a name. It does not survive type checking.
     | DSyncOnly of string * Range
 
+    /// Records that a function's body is not published for inlining:
+    /// `(defun (name args...) #:no-inline body...)`. For a function whose call
+    /// is cheaper than its inlined body, such as `vec-map`, whose .NET version
+    /// copies the vec's arrays at their exact size.
+    ///
+    /// Carried as its own declaration, as `DSyncOnly` is. It does not survive
+    /// type checking.
+    | DNoInline of string * Range
+
     // DImpl (TraitName, TargetType, AssociatedTypeBindings, Constraints, Methods, Range)
     //
     // The constraints are the impl's `(where (Trait %v) ...)`, spelled exactly
@@ -722,6 +731,7 @@ let declRange (decl: Decl) : Range =
     | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)
     | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) | DPatternMacro(_, r) | DHashMacro(_, r)
     | DSyncOnly(_, r) -> r
+    | DNoInline(_, r) -> r
 
 // ---------------------------------------------------------------------------
 // Macro expansion
@@ -1200,6 +1210,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
         | DPatternMacro _
         | DHashMacro _
         | DSyncOnly _
+        | DNoInline _
         | DImplExtern _
         | DInlineImpl _ -> []
 
@@ -1254,5 +1265,6 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DPatternMacro _
     | DHashMacro _
     | DSyncOnly _
+    | DNoInline _
     | DImplExtern _ -> d
 

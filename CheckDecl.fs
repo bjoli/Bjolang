@@ -416,7 +416,8 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
     | DMacro _
     | DPatternMacro _
     | DHashMacro _
-    | DSyncOnly _ -> env, sigs, []
+    | DSyncOnly _
+    | DNoInline _ -> env, sigs, []
     | DExport(names, r) -> env, sigs, [ TExport(names, r) ]
 
     | DImportClass(specs, r) ->

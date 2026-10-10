@@ -19,7 +19,7 @@
   Range
   ArraySlice ReverseArraySlice VecSlice ReverseVecSlice
   VecBackCursor StringWalk ListTails PortReads UpFrom DownFrom
-  Listing Vecing Mapping Stringing Summing Counting Folding
+  Listing Vecing VecingSmall Mapping Stringing Summing Counting Folding
   InputPort OutputPort Exception Encoding
 
   ;; Iterable
@@ -535,6 +535,18 @@
   (defun (collector-step c acc x) (vecbuilder-add! acc x) acc)
   (defun (collector-finish c acc) (vecbuilder->vec acc)))
 
+;; Vecing into a builder for a vec that is likely small: its tail starts at 4
+;; items and doubles, where `vecing` takes a leaf of 32 at the first item.
+(type (: (VecingSmall %a) (Union vecing/small)))
+
+(impl (Collector (VecingSmall %a))
+  (type %elem %a)
+  (type %acc (VecBuilder %a))
+  (type %out (Vec %a))
+  (defun (collector-init c) (vecbuilder-empty/small))
+  (defun (collector-step c acc x) (vecbuilder-add! acc x) acc)
+  (defun (collector-finish c acc) (vecbuilder->vec acc)))
+
 ;; Mapping.
 (type (: (Mapping %k %v) (Union mapping)))
 
@@ -883,11 +895,16 @@
 
 ;; Vec map.
 (: vec-map (-> (-?-> %a %b) (Vec %a) (Vec %b)))
+;;
+;; Not inlined: `clr-vec-map` copies the vec's arrays at their exact size, and
+;; for the short vecs most programs map that is faster than a loop into a
+;; builder, even with the call through the delegate.
 (defbjouble (vec-map f v)
+  #:no-inline
   (#:sync (clr-vec-map f v))
   (#:bjo
     (loop (:for elem v)
-          (:acc acc (vecing (f elem))))))
+          (:acc acc (vecing/small (f elem))))))
 
 (: vec-filter (-> (-?-> %a bool) (Vec %a) (Vec %a)))
 (defbjouble (vec-filter keep? v)
@@ -895,7 +912,7 @@
   (#:bjo
     (loop (:for elem v)
           (:when (keep? elem))
-          (:acc acc (vecing elem)))))
+          (:acc acc (vecing/small elem)))))
 
 (: vec-fold (-> (-?-> %a %b %b) %b (Vec %a) %b))
 (defbjouble (vec-fold f init v)

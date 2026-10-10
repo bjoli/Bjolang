@@ -676,6 +676,11 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Collections.RrbBuilder<T> vecbuildersubempty<T>() where T : notnull => Collections.RrbBuilderFun.Empty<T>();
 
+    // A builder whose tail starts at 4 items and doubles up to a leaf, for a vec
+    // that is likely small. See `RrbBuilder.Small`.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Collections.RrbBuilder<T> vecbuildersubemptydivsmall<T>() where T : notnull => Collections.RrbBuilderFun.EmptySmall<T>();
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Collections.RrbBuilder<T> vecsubgtvecbuilder<T>(Collections.RrbList<T> list) where T : notnull => Collections.RrbBuilderFun.FromList(list);
 

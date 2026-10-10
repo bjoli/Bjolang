@@ -297,6 +297,7 @@ let declKindName (d: Decl) : string =
     | DPatternMacro _ -> "a pattern macro"
     | DHashMacro _ -> "a hash macro"
     | DSyncOnly _ -> "a #:sync marker"
+    | DNoInline _ -> "a #:no-inline marker"
     | DImpl _ -> "an implementation"
     | DImplExtern _ -> "an imported implementation"
 
@@ -882,6 +883,21 @@ and parseDecl (s: SExpr) : Decl =
 /// other.
 and tryParseDeclGroup (s: SExpr) : Decl list option =
     match stripHeadMark s with
+    // `(defun (name args...) #:no-inline body...)`, and the same on `defbjo`
+    // and `defbjouble`: a marker straight after the head, read as `#:sync` is
+    // on a signature. The definition is parsed with the marker taken out.
+    // First, as the case below takes every `defun`.
+    | SList((SAtom { Token = Symbol("defun" | "defbjo" | "defbjouble") } as definer)
+            :: (SList(SAtom { Token = Symbol name } :: _, _) as head)
+            :: SAtom { Token = Keyword "no-inline" }
+            :: rest,
+            r) ->
+        match tryParseDeclGroup (SList(definer :: head :: rest, r)) with
+        | Some decls -> Some(decls @ [ DNoInline(name, r) ])
+        | None ->
+            failwithf
+                $"Invalid definition of '%s{name}' at %s{Lexer.formatPos r}. #:no-inline goes straight after the head, as in (defun (%s{name} ...) #:no-inline body...)."
+
     | SList(SAtom { Token = Symbol(("defun" | "defbjo") as definer) } :: SList(SAtom { Token = Symbol name } :: args, _) :: rest, _) ->
         Some(parseDefunDecl definer name args rest (getRange s))
 
