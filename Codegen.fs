@@ -460,6 +460,13 @@ let private literalFieldBase (kind: string) (name: string) =
     // an empty one: `Vec`, `Vec_2`, `Vec_3` by the counter below.
     if sb.Length = 0 then kind else $"%s{kind}_%s{sb.ToString()}"
 
+/// The literal types that are structs. A literal of one of these is held in a
+/// `StrongBox`, because the JIT does not inline a method of another assembly
+/// that reads a static field of a struct type. A string literal in a function
+/// of the prelude made every caller in a program call it. A static field of a
+/// class type does not stop the inlining, and the box costs one load more.
+let private structLiteralTypes = set [ "BjoString.Utf8String" ]
+
 /// Lifts a constant literal into a static field and answers how the use site
 /// names it.
 ///
@@ -485,10 +492,19 @@ let private hoistLiteral (ctx: CodegenContext) (kind: string) (name: string) (cs
                 n <- n + 1
 
             table.Fields[init] <- field
-            table.Decls.Add $"public static readonly %s{csType} %s{field} = %s{init};"
+
+            if Set.contains csType structLiteralTypes then
+                let box = $"System.Runtime.CompilerServices.StrongBox<%s{csType}>"
+                table.Decls.Add $"public static readonly %s{box} %s{field} = new(%s{init});"
+            else
+                table.Decls.Add $"public static readonly %s{csType} %s{field} = %s{init};"
+
             field
 
-    $"%s{literalHolderClass}.%s{field}"
+    if Set.contains csType structLiteralTypes then
+        $"%s{literalHolderClass}.%s{field}.Value"
+    else
+        $"%s{literalHolderClass}.%s{field}"
 
 /// Does this type stand on its own, with no type parameter left in it?
 ///
