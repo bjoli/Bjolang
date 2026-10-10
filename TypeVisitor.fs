@@ -290,6 +290,21 @@ and reachesAwaitExcept (idle: string -> bool) (expr: TypedExpr) : bool =
             || List.exists reachesAwait args
             || kwArgs |> List.exists (snd >> reachesAwait)
         | _ -> false
+    // A call to a member of the loop is a jump, or a call into a group whose
+    // colour its bodies decide. It awaits only if some member awaits something
+    // else. The call alone is no evidence: `EffectGraph` grounds the arrow of an
+    // inlined loop's name to the colour of the member around it, so in a
+    // bjoroutine every loop entry reads as suspending.
+    | TLoop(members, bodyOpt) ->
+        // Both spellings: the `TApply` case asks `idle` with the written one.
+        let names =
+            members
+            |> List.collect (fun m -> [ m.LoopName; Naming.writtenName m.LoopName ])
+            |> Set.ofList
+        let exceptMembers = reachesAwaitExcept (fun n -> idle n || Set.contains n names)
+
+        members |> List.exists (fun m -> exceptMembers m.Body)
+        || bodyOpt |> Option.exists exceptMembers
     | TForeignStaticCall(_, _, _, Some meta) when meta.Await -> true
     | TDotMethodCall(_, _, _, Some meta) when meta.Await -> true
     | TApply(target, _, _) when
