@@ -1,0 +1,95 @@
+;; fasta: writes DNA sequences, one copied from a repeated string and two
+;; drawn at random from tables of frequencies, in lines of 60.
+;; Argument: n, the length of the shortest sequence is 2n.
+
+(import (only (std ports) write-bytes!))
+
+(def line-length 60)
+
+(def alu
+  (string->bytes
+   (string-append
+    "GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGGTCAGGAGTTCGAGA"
+    (string-append
+     "CCAGCCTGGCCAACATGGTGAAACCCCGTCTCTACTAAAAATACAAAAATTAGCCGGGCGTGGTGGCGCGCGCCTGTAATCCCA"
+     (string-append
+      "GCTACTCGGGAGGCTGAGGCAGGAGAATCGCTTGAACCCGGGAGGCGGAGGTTGCAGTGAGCCGAGATCGCGCCACTGCACTCC"
+      "AGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAA")))))
+
+;; The linear congruential generator of the original.
+(def im 139968)
+(def ia 3877)
+(def ic 29573)
+(def/mutable seed 42)
+
+(: random (-> double double))
+(defun (random max)
+  (set! seed (% (+ (* seed ia) ic) im))
+  (/ (* max (cast System.Double seed)) (cast System.Double im)))
+
+;; Writes the first count bytes of line, and a newline after them.
+(: write-line (-> OutputPort (Array byte) int void))
+(defun (write-line out line count)
+  (array-set! line count 10uy)
+  (if (= count line-length)
+      (write-bytes! out line)
+      (let ()
+        (def short (make-array (+ count 1)))
+        (loop (:for i (range 0 (+ count 1)))
+              (:do (array-set! short i (array-ref line i))))
+        (write-bytes! out short))))
+
+(: repeat-fasta (-> OutputPort (Array byte) int void))
+(defun (repeat-fasta out source n)
+  (def line (make-array (+ line-length 1)))
+  (def len (array-length source))
+  (let go ((left n) (k 0))
+    (when (> left 0)
+      (def count (min left line-length))
+      (loop (:for i (range 0 count))
+            (:with k k (if (= (+ k 1) len) 0 (+ k 1)))
+            (:do (array-set! line i (array-ref source k))))
+      (write-line out line count)
+      (go (- left count) (% (+ k count) len)))))
+
+;; probs holds the cumulative probabilities of the bytes in codes.
+(: random-fasta (-> OutputPort (Array byte) (Array double) int void))
+(defun (random-fasta out codes probs n)
+  (def line (make-array (+ line-length 1)))
+  (def last (- (array-length probs) 1))
+  (let go ((left n))
+    (when (> left 0)
+      (def count (min left line-length))
+      (loop (:for i (range 0 count))
+            (:let r (random 1.0))
+            (:do (array-set! line i
+                             (array-ref codes
+                                        (let pick ((j 0))
+                                          (if (and (< j last) (>= r (array-ref probs j)))
+                                              (pick (+ j 1))
+                                              j))))))
+      (write-line out line count)
+      (go (- left count)))))
+
+(: cumulative (-> (Array double) (Array double)))
+(defun (cumulative ps)
+  (def acc (make-array (array-length ps)))
+  (loop (:for i (range 0 (array-length ps)))
+        (:with sum 0.0 (+ sum (array-ref ps i)))
+        (:do (array-set! acc i (+ sum (array-ref ps i)))))
+  acc)
+
+(defun (main args)
+  (def n (string->int (vec-ref args 0)))
+  (def out (parameter-ref current-output-port))
+  (write-string out ">ONE Homo sapiens alu\n")
+  (repeat-fasta out alu (* 2 n))
+  (write-string out ">TWO IUB ambiguity codes\n")
+  (random-fasta out (string->bytes "acgtBDHKMNRSVWY")
+                (cumulative #[0.27 0.12 0.12 0.27 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02 0.02])
+                (* 3 n))
+  (write-string out ">THREE Homo sapiens frequency\n")
+  (random-fasta out (string->bytes "acgt")
+                (cumulative #[0.3029549426680 0.1979883004921 0.1975473066391 0.3015094502008])
+                (* 5 n))
+  0)

@@ -1,0 +1,39 @@
+;; pidigits: the first n digits of pi, by Gibbons' unbounded spigot, with
+;; bigint arithmetic. Ten digits a line, each line followed by a tab and the
+;; count so far.
+;; Argument: n.
+
+(: pidigits (-> int string))
+(defun (pidigits n)
+  (def out (stringbuilder-empty))
+  (let go ((i 0) (k 0) (acc 0I) (den 1I) (num 1I))
+    (when (< i n)
+      ;; The next term of the series.
+      (def k (+ k 1))
+      (def k2 (cast System.Numerics.BigInteger (+ (* 2 k) 1)))
+      (def acc (* (+ acc (* num 2)) k2))
+      (def den (* den k2))
+      (def num (* num (cast System.Numerics.BigInteger k)))
+      (cond
+        ((> num acc) (go i k acc den num))
+        (else
+         ;; The digit is known when the third and the fourth agree.
+         (def d (/ (+ (* num 3) acc) den))
+         (cond
+           ((not (= d (/ (+ (* num 4) acc) den))) (go i k acc den num))
+           (else
+            (stringbuilder-add! out (int->char (+ 48 (cast System.Int32 d))))
+            (def i (+ i 1))
+            (when (= 0 (% i 10))
+              (stringbuilder-add-string! out #"\t:${i}\n"))
+            (go i k (* (- acc (* den d)) 10) den (* num 10))))))))
+  ;; A last line that is short is padded with spaces.
+  (when (not (= 0 (% n 10)))
+    (loop (:for j (range (% n 10) 10))
+          (:do (stringbuilder-add! out #\space)))
+    (stringbuilder-add-string! out #"\t:${n}\n"))
+  (stringbuilder->string out))
+
+(defun (main args)
+  (display (pidigits (string->int (vec-ref args 0))))
+  0)

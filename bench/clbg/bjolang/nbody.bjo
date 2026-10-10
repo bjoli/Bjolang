@@ -1,0 +1,118 @@
+;; n-body: a model of the Jovian planets, with a symplectic integrator.
+;; Argument: the number of steps.
+
+(import (std fmt))
+
+(type (: Body (Record (: x double #:mutable)
+                      (: y double #:mutable)
+                      (: z double #:mutable)
+                      (: vx double #:mutable)
+                      (: vy double #:mutable)
+                      (: vz double #:mutable)
+                      (: mass double))))
+
+(def pi 3.141592653589793)
+(def solar-mass (* 4.0 (* pi pi)))
+(def days-per-year 365.24)
+
+(: planet (-> double double double double double double double Body))
+(defun (planet x y z vx vy vz mass)
+  (Body (x x) (y y) (z z)
+        (vx (* vx days-per-year)) (vy (* vy days-per-year)) (vz (* vz days-per-year))
+        (mass (* mass solar-mass))))
+
+(: make-system (-> (Array Body)))
+(defun (make-system)
+  #[(planet 0.0 0.0 0.0 0.0 0.0 0.0 1.0)
+    ;; Jupiter
+    (planet 4.84143144246472090e0 -1.16032004402742839e0 -1.03622044471123109e-1
+            1.66007664274403694e-3 7.69901118419740425e-3 -6.90460016972063023e-5
+            9.54791938424326609e-4)
+    ;; Saturn
+    (planet 8.34336671824457987e0 4.12479856412430479e0 -4.03523417114321381e-1
+            -2.76742510726862411e-3 4.99852801234917238e-3 2.30417297573763929e-5
+            2.85885980666130812e-4)
+    ;; Uranus
+    (planet 1.28943695621391310e1 -1.51111514016986312e1 -2.23307578892655734e-1
+            2.96460137564761618e-3 2.37847173959480950e-3 -2.96589568540237556e-5
+            4.36624404335156298e-5)
+    ;; Neptune
+    (planet 1.53796971148509165e1 -2.59193146099879641e1 1.79258772950371181e-1
+            2.68067772490389322e-3 1.62824170038242295e-3 -9.51592254519715870e-5
+            5.15138902046611451e-5)])
+
+;; Gives the sun the momentum that makes the total zero.
+(: offset-momentum (-> (Array Body) void))
+(defun (offset-momentum bodies)
+  (def (px py pz)
+    (loop (:for b (in-array bodies))
+          (:acc px (summing (* (.vx b) (.mass b))))
+          (:acc py (summing (* (.vy b) (.mass b))))
+          (:acc pz (summing (* (.vz b) (.mass b))))
+          => (Tuple px py pz)))
+  (def sun (array-ref bodies 0))
+  (record-set! sun (vx (/ (- px) solar-mass)) (vy (/ (- py) solar-mass)) (vz (/ (- pz) solar-mass))))
+
+(: energy (-> (Array Body) double))
+(defun (energy bodies)
+  (def n (array-length bodies))
+  (let outer ((i 0) (e 0.0))
+    (if (< i n)
+        (let* ((b (array-ref bodies i))
+               (e (+ e (* 0.5 (* (.mass b) (+ (* (.vx b) (.vx b))
+                                              (+ (* (.vy b) (.vy b))
+                                                 (* (.vz b) (.vz b)))))))))
+          (let inner ((j (+ i 1)) (e e))
+            (if (< j n)
+                (let* ((b2 (array-ref bodies j))
+                       (dx (- (.x b) (.x b2)))
+                       (dy (- (.y b) (.y b2)))
+                       (dz (- (.z b) (.z b2))))
+                  (inner (+ j 1)
+                         (- e (/ (* (.mass b) (.mass b2))
+                                 (sqrt (+ (* dx dx) (+ (* dy dy) (* dz dz))))))))
+                (outer (+ i 1) e))))
+        e)))
+
+(: advance (-> (Array Body) double void))
+(defun (advance bodies dt)
+  (def n (array-length bodies))
+  (let outer ((i 0))
+    (when (< i n)
+      (def b (array-ref bodies i))
+      (let inner ((j (+ i 1)))
+        (when (< j n)
+          (let* ((b2 (array-ref bodies j))
+                 (dx (- (.x b) (.x b2)))
+                 (dy (- (.y b) (.y b2)))
+                 (dz (- (.z b) (.z b2)))
+                 (d2 (+ (* dx dx) (+ (* dy dy) (* dz dz))))
+                 (mag (/ dt (* d2 (sqrt d2))))
+                 (bm (* (.mass b) mag))
+                 (b2m (* (.mass b2) mag)))
+            (record-set! b (vx (- (.vx b) (* dx b2m)))
+                           (vy (- (.vy b) (* dy b2m)))
+                           (vz (- (.vz b) (* dz b2m))))
+            (record-set! b2 (vx (+ (.vx b2) (* dx bm)))
+                            (vy (+ (.vy b2) (* dy bm)))
+                            (vz (+ (.vz b2) (* dz bm)))))
+          (inner (+ j 1))))
+      (outer (+ i 1))))
+  (loop (:for b (in-array bodies))
+        (:do (record-set! b (x (+ (.x b) (* dt (.vx b))))
+                            (y (+ (.y b) (* dt (.vy b))))
+                            (z (+ (.z b) (* dt (.vz b))))))))
+
+(: show-energy (-> double void))
+(defun (show-energy e)
+  (displayln (render->string [(numeric e #:precision 9)])))
+
+(defun (main args)
+  (def n (string->int (vec-ref args 0)))
+  (def bodies (make-system))
+  (offset-momentum bodies)
+  (show-energy (energy bodies))
+  (loop (:for i (range 0 n))
+        (:do (advance bodies 0.01)))
+  (show-energy (energy bodies))
+  0)

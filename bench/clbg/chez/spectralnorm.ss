@@ -1,0 +1,41 @@
+;; spectral-norm.
+(import (chezscheme))
+
+(define (a i j)
+  (let ((ij (fx+ i j)))
+    (fl/ 1.0 (fixnum->flonum (fx+ (fxquotient (fx* ij (fx+ ij 1)) 2) (fx+ i 1))))))
+
+(define (mul-av v out)
+  (define n (flvector-length v))
+  (do ((i 0 (fx+ i 1))) ((fx= i n))
+    (let loop ((j 0) (s 0.0))
+      (if (fx< j n)
+          (loop (fx+ j 1) (fl+ s (fl* (a i j) (flvector-ref v j))))
+          (flvector-set! out i s)))))
+
+(define (mul-atv v out)
+  (define n (flvector-length v))
+  (do ((i 0 (fx+ i 1))) ((fx= i n))
+    (let loop ((j 0) (s 0.0))
+      (if (fx< j n)
+          (loop (fx+ j 1) (fl+ s (fl* (a j i) (flvector-ref v j))))
+          (flvector-set! out i s)))))
+
+(define (mul-atav v out tmp)
+  (mul-av v tmp)
+  (mul-atv tmp out))
+
+(define (dot x y)
+  (let loop ((i 0) (s 0.0))
+    (if (fx< i (flvector-length x))
+        (loop (fx+ i 1) (fl+ s (fl* (flvector-ref x i) (flvector-ref y i))))
+        s)))
+
+(let* ((n (string->number (cadr (command-line))))
+       (u (make-flvector n 1.0))
+       (v (make-flvector n 0.0))
+       (tmp (make-flvector n 0.0)))
+  (do ((i 0 (fx+ i 1))) ((fx= i 10))
+    (mul-atav u v tmp)
+    (mul-atav v u tmp))
+  (printf "~,9f\n" (flsqrt (fl/ (dot u v) (dot v v)))))

@@ -1,0 +1,54 @@
+;; spectral-norm: the largest singular value of the infinite matrix
+;; A(i,j) = 1/((i+j)(i+j+1)/2+i+1), by the power method.
+;; Argument: the size of the matrix.
+
+(import (std fmt))
+
+(: a (-> int int double))
+(defun (a i j)
+  (def ij (+ i j))
+  (/ 1.0 (cast System.Double (+ (/ (* ij (+ ij 1)) 2) (+ i 1)))))
+
+;; out = A v
+(: mul-av (-> (Array double) (Array double) void))
+(defun (mul-av v out)
+  (def n (array-length v))
+  (loop (:for i (range 0 n))
+        (:do (array-set! out i
+                         (loop (:for j (range 0 n))
+                               (:acc s (summing (* (a i j) (array-ref v j))))
+                               => s)))))
+
+;; out = A^T v
+(: mul-atv (-> (Array double) (Array double) void))
+(defun (mul-atv v out)
+  (def n (array-length v))
+  (loop (:for i (range 0 n))
+        (:do (array-set! out i
+                         (loop (:for j (range 0 n))
+                               (:acc s (summing (* (a j i) (array-ref v j))))
+                               => s)))))
+
+;; out = A^T A v
+(: mul-atav (-> (Array double) (Array double) (Array double) void))
+(defun (mul-atav v out tmp)
+  (mul-av v tmp)
+  (mul-atv tmp out))
+
+(: dot (-> (Array double) (Array double) double))
+(defun (dot x y)
+  (loop (:for i (range 0 (array-length x)))
+        (:acc s (summing (* (array-ref x i) (array-ref y i))))
+        => s))
+
+(defun (main args)
+  (def n (string->int (vec-ref args 0)))
+  (def u (make-array n))
+  (def v (make-array n))
+  (def tmp (make-array n))
+  (loop (:for i (range 0 n)) (:do (array-set! u i 1.0)))
+  (loop (:for i (range 0 10))
+        (:do (mul-atav u v tmp)
+             (mul-atav v u tmp)))
+  (displayln (render->string [(numeric (sqrt (/ (dot u v) (dot v v))) #:precision 9)]))
+  0)

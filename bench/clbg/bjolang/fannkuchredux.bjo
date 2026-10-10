@@ -1,0 +1,70 @@
+;; fannkuch-redux: the most pancake flips over all permutations of 1..n, and
+;; a checksum over the permutations in the order they are generated.
+;; Argument: n.
+
+;; The number of flips until the first element is 0. Uses perm as scratch.
+(: count-flips (-> (Array int) (Array int) int))
+(defun (count-flips perm1 perm)
+  (def n (array-length perm1))
+  (loop (:for i (range 0 n))
+        (:do (array-set! perm i (array-ref perm1 i))))
+  (let flip ((flips 0))
+    (def k (array-ref perm 0))
+    (if (= k 0)
+        flips
+        (let ()
+          (let rev ((i 0) (j k))
+            (when (< i j)
+              (def t (array-ref perm i))
+              (array-set! perm i (array-ref perm j))
+              (array-set! perm j t)
+              (rev (+ i 1) (- j 1))))
+          (flip (+ flips 1))))))
+
+;; Rotates perm1[0..r] left by one.
+(: rotate! (-> (Array int) int void))
+(defun (rotate! perm1 r)
+  (def perm0 (array-ref perm1 0))
+  (loop (:for i (range 0 r))
+        (:do (array-set! perm1 i (array-ref perm1 (+ i 1)))))
+  (array-set! perm1 r perm0))
+
+;; The next permutation in the order of the counts, or the r that is n when
+;; there is none.
+(: next-perm! (-> (Array int) (Array int) int int))
+(defun (next-perm! perm1 count r)
+  (def n (array-length perm1))
+  (let go ((r r))
+    (if (= r n)
+        n
+        (let ()
+          (rotate! perm1 r)
+          (array-set! count r (- (array-ref count r) 1))
+          (if (> (array-ref count r) 0)
+              r
+              (go (+ r 1)))))))
+
+(: fannkuch (-> int (Tuple int int)))
+(defun (fannkuch n)
+  (def perm1 (make-array n))
+  (loop (:for i (range 0 n)) (:do (array-set! perm1 i i)))
+  (def perm (make-array n))
+  (def count (make-array n))
+  (let go ((r n) (max-flips 0) (checksum 0) (perm-count 0))
+    (let fill ((r r))
+      (when (> r 1)
+        (array-set! count (- r 1) r)
+        (fill (- r 1))))
+    (def flips (count-flips perm1 perm))
+    (def max-flips (max max-flips flips))
+    (def checksum (if (= 0 (% perm-count 2)) (+ checksum flips) (- checksum flips)))
+    (def r (next-perm! perm1 count 1))
+    (if (= r n)
+        (Tuple checksum max-flips)
+        (go r max-flips checksum (+ perm-count 1)))))
+
+(defun (main args)
+  (def n (string->int (vec-ref args 0)))
+  (def (checksum max-flips) (fannkuch n))
+  (displayln #"${checksum}\nPfannkuchen(${n}) = ${max-flips}")
+  0)

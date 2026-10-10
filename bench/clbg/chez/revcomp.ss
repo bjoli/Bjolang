@@ -1,0 +1,51 @@
+;; reverse-complement.
+(import (chezscheme))
+
+(define line-length 60)
+
+(define (complements)
+  (let ((table (make-bytevector 256)))
+    (do ((i 0 (fx+ i 1))) ((fx= i 256))
+      (bytevector-u8-set! table i i))
+    (let ((from (string->utf8 "ACGTUMRWSYKVHDBN"))
+          (to (string->utf8 "TGCAAKYWSRMBDHVN")))
+      (do ((i 0 (fx+ i 1))) ((fx= i (bytevector-length from)))
+        (bytevector-u8-set! table (bytevector-u8-ref from i) (bytevector-u8-ref to i))
+        (bytevector-u8-set! table (fx+ 32 (bytevector-u8-ref from i)) (bytevector-u8-ref to i))))
+    table))
+
+(define (write-reversed out table s)
+  (let* ((sq (string->utf8 s))
+         (n (bytevector-length sq)))
+    (when (fx> n 0)
+      (let* ((lines (fxquotient (fx+ n (fx- line-length 1)) line-length))
+             (buf (make-bytevector (fx+ n lines))))
+        (let go ((i 0) (from (fx- n 1)) (col 0))
+          (cond
+            ((fx< from 0) (bytevector-u8-set! buf i 10))
+            ((fx= col line-length)
+             (bytevector-u8-set! buf i 10)
+             (go (fx+ i 1) from 0))
+            (else
+             (bytevector-u8-set! buf i (bytevector-u8-ref table (bytevector-u8-ref sq from)))
+             (go (fx+ i 1) (fx- from 1) (fx+ col 1)))))
+        (put-bytevector out buf)))))
+
+(let ((in (current-input-port))
+      (out (standard-output-port (buffer-mode block)))
+      (table (complements)))
+  (let go ((sp #f) (get #f))
+    (let ((line (get-line in)))
+      (cond
+        ((eof-object? line)
+         (when get (write-reversed out table (get))))
+        ((and (fx> (string-length line) 0) (char=? (string-ref line 0) #\>))
+         (when get (write-reversed out table (get)))
+         (put-bytevector out (string->utf8 line))
+         (put-u8 out 10)
+         (let-values (((sp get) (open-string-output-port)))
+           (go sp get)))
+        (else
+         (put-string sp line)
+         (go sp get)))))
+  (flush-output-port out))

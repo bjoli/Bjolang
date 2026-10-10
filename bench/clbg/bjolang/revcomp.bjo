@@ -1,0 +1,58 @@
+;; reverse-complement: reads a fasta file from standard input and writes
+;; each sequence reversed and complemented, in lines of 60.
+
+(import (only (std ports) write-bytes!))
+
+(def line-length 60)
+
+;; The complement of each byte, upper case. A byte not in the table is
+;; its own complement.
+(: complements (-> (Array byte)))
+(defun (complements)
+  (def table (make-array 256))
+  (loop (:for i (range 0 256))
+        (:do (array-set! table i (cast System.Byte i))))
+  (def from (string->bytes "ACGTUMRWSYKVHDBN"))
+  (def to (string->bytes "TGCAAKYWSRMBDHVN"))
+  (loop (:for i (range 0 (array-length from)))
+        (:do (array-set! table (cast System.Int32 (array-ref from i)) (array-ref to i))
+             (array-set! table (+ 32 (cast System.Int32 (array-ref from i))) (array-ref to i))))
+  table)
+
+;; Writes the sequence in sb reversed and complemented, with a newline after
+;; each 60 bytes and after the last.
+(: write-reversed (-> OutputPort (Array byte) StringBuilder void))
+(defun (write-reversed out table sb)
+  (def sq (string->bytes (stringbuilder->string sb)))
+  (def n (array-length sq))
+  (when (> n 0)
+    (def lines (/ (+ n (- line-length 1)) line-length))
+    (def buf (make-array (+ n lines)))
+    (let go ((i 0) (from (- n 1)) (col 0))
+      (cond
+        ((< from 0) (array-set! buf i 10uy))
+        ((= col line-length)
+         (array-set! buf i 10uy)
+         (go (+ i 1) from 0))
+        (else
+         (array-set! buf i (array-ref table (cast System.Int32 (array-ref sq from))))
+         (go (+ i 1) (- from 1) (+ col 1)))))
+    (write-bytes! out buf)))
+
+(defun (main args)
+  (def in (parameter-ref current-input-port))
+  (def out (parameter-ref current-output-port))
+  (def table (complements))
+  (let go ((sb (stringbuilder-empty)))
+    (match (read-line/opt in)
+      ((Some line)
+       (if (string-starts-with? line ">")
+           (let ()
+             (write-reversed out table sb)
+             (writeln out line)
+             (go (stringbuilder-empty)))
+           (let ()
+             (stringbuilder-add-string! sb line)
+             (go sb))))
+      (None (write-reversed out table sb))))
+  0)

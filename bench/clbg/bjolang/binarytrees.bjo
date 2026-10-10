@@ -1,0 +1,38 @@
+;; binary-trees: allocates and walks many perfect binary trees, while one
+;; long-lived tree stays in memory.
+;; Argument: the maximum depth.
+
+;; A node of depth 0 is (Node Empty Empty), so that each node is one
+;; allocation, as in the other programs.
+(type-rec (: Tree (Union Empty (: Node Tree Tree))))
+
+(: bottom-up (-> int Tree))
+(defun (bottom-up depth)
+  (if (> depth 0)
+      (Node (bottom-up (- depth 1)) (bottom-up (- depth 1)))
+      (Node Empty Empty)))
+
+(: check (-> Tree int))
+(defun (check t)
+  (match t
+    ((Node l r) (+ 1 (+ (check l) (check r))))
+    (Empty 0)))
+
+(defun (main args)
+  (def n (string->int (vec-ref args 0)))
+  (def min-depth 4)
+  (def max-depth (max (+ min-depth 2) n))
+  (def stretch-depth (+ max-depth 1))
+  (displayln #"stretch tree of depth ${stretch-depth}\t check: ${(check (bottom-up stretch-depth))}")
+  (def long-lived (bottom-up max-depth))
+  (let go ((depth min-depth))
+    (when (<= depth max-depth)
+      (def iterations (shift-left 1 (+ (- max-depth depth) min-depth)))
+      (def sum
+        (loop (:for i (range 0 iterations))
+              (:acc s (summing (check (bottom-up depth))))
+              => s))
+      (displayln #"${iterations}\t trees of depth ${depth}\t check: ${sum}")
+      (go (+ depth 2))))
+  (displayln #"long lived tree of depth ${max-depth}\t check: ${(check long-lived)}")
+  0)
