@@ -92,35 +92,35 @@ by Chez `-O2` time: below 1 means Bjolang is faster.
 
 | benchmark  | chez -O2 | chez -O3 | bjolang | / chez | idiomatic | / chez |
 |------------|---------:|---------:|--------:|-------:|----------:|-------:|
-| fib        |    2.578 |    2.704 |   1.250 |   0.48 |           |        |
-| fibfp      |    1.656 |    1.557 |   0.308 |   0.19 |           |        |
-| tak        |    1.029 |    1.219 |   1.213 |   1.18 |           |        |
-| takl       |    2.500 |    2.453 |   1.716 |   0.69 |           |        |
-| ack        |    1.721 |    1.725 |   0.691 |   0.40 |           |        |
-| cpstak     |    2.020 |    1.906 | stack overflow | — |         |        |
-| nqueens    |    3.203 |    2.956 |   4.711 |   1.47 |     5.538 |   1.73 |
-| mbrot      |    4.142 |    3.936 |   0.448 |   0.11 |     0.488 |   0.12 |
-| primes     |    0.598 |    0.573 |   1.273 |   2.13 |     0.670 |   1.12 |
-| sum        |    1.660 |    1.453 |   0.455 |   0.27 |     0.498 |   0.30 |
-| sumfp      |    2.407 |    2.590 |   0.364 |   0.15 |     0.391 |   0.16 |
-| diviter    |    0.947 |    0.919 |   2.836 |   2.99 |     1.352 |   1.43 |
-| divrec     |    1.517 |    1.326 |   4.069 |   2.68 |     1.921 |   1.27 |
-| deriv      |    0.729 |    0.646 |   3.977 |   5.45 |     5.335 |   7.32 |
-| array1     |    9.779 |    9.156 |   0.819 |   0.08 |     2.694 |   0.28 |
-| triangl    |    1.325 |    1.046 |   1.072 |   0.81 |           |        |
-| quicksort  |    2.562 |    2.387 |   1.207 |   0.47 |           |        |
-| fft        |    1.358 |    1.277 |   0.169 |   0.12 |           |        |
-| pnpoly     |    2.832 |    2.767 |   0.526 |   0.19 |     0.584 |   0.21 |
-| puzzle     |    1.337 |    0.906 |   0.646 |   0.48 |           |        |
-| paraffins  |    4.218 |    4.203 |   7.812 |   1.85 |     5.720 |   1.36 |
-| gcbench    |    0.555 |    0.559 |   1.368 |   2.46 |           |        |
+| fib        |    2.634 |    2.583 |   1.238 |   0.47 |           |        |
+| fibfp      |    1.611 |    1.619 |   0.301 |   0.19 |           |        |
+| tak        |    1.027 |    1.188 |   1.208 |   1.18 |           |        |
+| takl       |    2.491 |    2.439 |   1.717 |   0.69 |           |        |
+| ack        |    1.721 |    1.720 |   0.690 |   0.40 |           |        |
+| cpstak     |    2.009 |    1.896 | stack overflow | — |         |        |
+| nqueens    |    3.194 |    2.990 |   4.729 |   1.48 |     4.078 |   1.28 |
+| mbrot      |    4.169 |    3.903 |   0.448 |   0.11 |     0.487 |   0.12 |
+| primes     |    0.603 |    0.577 |   1.271 |   2.11 |     0.731 |   1.21 |
+| sum        |    1.660 |    1.457 |   0.454 |   0.27 |     0.497 |   0.30 |
+| sumfp      |    2.397 |    2.413 |   0.363 |   0.15 |     0.392 |   0.16 |
+| diviter    |    0.953 |    0.918 |   2.784 |   2.92 |     1.349 |   1.42 |
+| divrec     |    1.438 |    1.416 |   4.000 |   2.78 |     1.844 |   1.28 |
+| deriv      |    0.765 |    0.653 |   3.992 |   5.22 |     5.227 |   6.83 |
+| array1     |    9.587 |    9.342 |   0.830 |   0.09 |     2.760 |   0.29 |
+| triangl    |    1.318 |    1.057 |   1.065 |   0.81 |           |        |
+| quicksort  |    2.560 |    2.388 |   1.214 |   0.47 |           |        |
+| fft        |    1.355 |    1.287 |   0.170 |   0.13 |           |        |
+| pnpoly     |    2.823 |    2.737 |   0.527 |   0.19 |     0.493 |   0.17 |
+| puzzle     |    1.339 |    0.911 |   0.645 |   0.48 |           |        |
+| paraffins  |    4.184 |    4.172 |   7.694 |   1.84 |     5.597 |   1.34 |
+| gcbench    |    0.547 |    0.536 |   1.369 |   2.50 |           |        |
 
 Geometric means of the ratio:
 
 | programs | benchmarks | geometric mean |
 |----------|-----------:|---------------:|
 | ports | 21 | **0.61** |
-| idiomatic variants | 11 | 0.67 |
+| idiomatic variants | 11 | 0.64 |
 | the faster Bjolang program of each benchmark | 21 | **0.54** |
 
 The Chez figures are about 1.5 times faster than the suite's published
@@ -149,13 +149,13 @@ Chez 10.3.0 results, uniformly, which is the difference in machines.
   idiomatic variants are 1.4 to 2.1 times faster than the list ports. A vec
   is built in leaf arrays, so it makes far fewer objects than a list.
 - **Short vec walks** (`nqueens`, `pnpoly`): a vec walk is a struct cursor
-  over the leaf arrays now, and allocates nothing (see below). Before that,
-  each walk allocated a cursor and started an enumerator, and the idiomatic
-  `nqueens` took 10.5 s and `pnpoly` 0.985 s. What is left is the start of a
-  walk: `in-vec`, `in-reverse-vec` and `up-from` are calls that check their
-  arguments. The check `ok?` in `nqueens` starts two walks hundreds of
-  millions of times; with `(:for k (range 0 n))` and `vec-ref` the same
-  program runs in 3.35 s.
+  over the leaf arrays now, it allocates nothing, and its start inlines into
+  the loop (see below). Before that, each walk allocated a cursor and started
+  an enumerator, and the idiomatic `nqueens` took 10.5 s and `pnpoly`
+  0.985 s. The idiomatic `pnpoly` is now faster than the port. The check
+  `ok?` in `nqueens` starts two walks hundreds of millions of times; with
+  `(:for k (range 0 n))` and `vec-ref` the same program runs in 3.35 s,
+  against 4.08 s with the walks.
 - **Small persistent vecs** (`deriv`): the idiomatic variant rebuilds each
   expression with `vec-insert` and `vec-map` on vecs of two to four elements,
   and that costs more than consing the same lists.
@@ -187,6 +187,24 @@ Chez 10.3.0 results, uniformly, which is the difference in machines.
   `vec-ref` per index. The slow path of the cursor takes and answers values,
   so that the JIT keeps the cursor in registers: with a method that changes
   the cursor in place, the same walk took 7.9 ns per element.
+- **Walks that start without a call.** `in-vec`, `in-reverse-vec` and
+  `up-from` were calls at the start of each walk, because the JIT did not
+  inline them. Two things stopped it:
+  - `check-slice` and `check-step` built their panic messages in their own
+    bodies, which made them too large. The messages are now made in
+    functions of their own, `slice-panic` and `step-panic`, which run only
+    when a check fails. `range-by` has the same change.
+  - Each of these functions reads a string literal, and a string literal was
+    a `static readonly` field of a struct type, `Utf8String`. The .NET JIT
+    does not inline a method of another assembly that reads a static field of
+    a struct type. The code generator now holds a struct literal in a
+    `StrongBox`. This applies to every Bjolang function that uses a string
+    literal: such a function in a library can now be inlined into a program.
+  - The first leaf of a vec that is all tail is now found without a call
+    (`RrbList.LeafAt` inlines its tail case).
+
+  The idiomatic `nqueens` went from 5.54 s to 4.08 s, and `pnpoly` from
+  0.584 s to 0.493 s.
 - **Builtins written as C# expressions** (`Codegen.inlineBuiltins`). A call to
   a builtin that only forwards to a member, such as `list-head` or `vec-ref`,
   is emitted as that member, `l.Car` or `v[i]`, not as a call to the runtime
@@ -198,20 +216,21 @@ Before and after these changes, for the ports (seconds):
 
 | benchmark | before | after |
 |-----------|-------:|------:|
-| takl      |  2.473 | 1.716 |
-| divrec    |  4.881 | 4.069 |
-| nqueens   |  5.083 | 4.711 |
-| deriv     |  4.200 | 3.977 |
-| paraffins |  7.343 | 7.812 |
+| takl      |  2.473 | 1.717 |
+| divrec    |  4.881 | 4.000 |
+| nqueens   |  5.083 | 4.729 |
+| deriv     |  4.200 | 3.992 |
+| paraffins |  7.343 | 7.694 |
 
-And for the idiomatic variants, before and after the leaf cursors:
+And for the idiomatic variants, before the leaf cursors, with them, and with
+walks that start without a call:
 
-| benchmark | before | after |
-|-----------|-------:|------:|
-| nqueens   | 10.485 | 5.538 |
-| pnpoly    |  0.985 | 0.584 |
-| primes    |  0.750 | 0.670 |
-| array1    |  3.018 | 2.694 |
+| benchmark | before | leaf cursors | inlined start |
+|-----------|-------:|-------------:|--------------:|
+| nqueens   | 10.485 |        5.538 |         4.078 |
+| pnpoly    |  0.985 |        0.584 |         0.493 |
+| primes    |  0.750 |        0.670 |         0.731 |
+| array1    |  3.018 |        2.694 |         2.760 |
 
 `paraffins` is slower in all builds made after the first run, also with the
 inline builtins turned off. The cause is not known.
