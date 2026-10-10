@@ -1243,6 +1243,65 @@ let private fitsDefaultSection (c: TMatchClause) =
         | TPIdent _ -> true
         | _ -> false)
 
+/// The last clause of a match on a declared union, when the clauses above it
+/// cover every other case of the union, so that a value that reaches it can
+/// only be of its case.
+///
+/// Such a clause is emitted as the `default:` section, with no type test and
+/// no throw after it: `Exhaustiveness` already refuses a match that does not
+/// cover its type, and this checks the cover again for the shapes it uses
+/// rather than rely on that. The clause must have no guard, and its fields
+/// must be names or `_`, which `Deconstruct` binds.
+///
+/// A switch whose last case is a type test leaves the JIT a test, a null test
+/// and a throw, and the JIT gives such a method synthesized profile data where
+/// the `default:` shape gets dynamic profile data, and is inlined into its own
+/// recursion. A walk of a binary tree with `match` took 1.2 to 1.5 times as
+/// long as with the default.
+let private impliedLastCase (registry: TraitRegistry) (clauses: TMatchClause list) : TMatchClause option =
+    let binderOnly (p: TypedPattern) =
+        match p.Node with
+        | TPIdent _
+        | TPWildcard -> true
+        | _ -> false
+
+    let unionCasesOf (t: HMType) =
+        match t with
+        // The built-in Option and Result are structs with a tag, not a class
+        // per case, so there is no case type to bind fields through.
+        | TCon(("Option" | "Result"), _) -> None
+        | TCon(key, _) ->
+            Map.tryFind key registry.Unions |> Option.map (fun (_, cases) -> cases |> List.map (fun (n, _, _) -> n))
+        | _ -> None
+
+    match List.rev clauses with
+    | last :: revEarlier when last.Guard.IsNone ->
+        match last.Pattern.Node with
+        // Cons and Nil are list classes, not cases of a declared union.
+        | TPConstruct(name, args) when args |> List.forall binderOnly && name <> "Cons" && name <> "Nil" ->
+            match unionCasesOf (NumericLiteral.settled last.Pattern.Type) with
+            | Some cases when List.contains name cases ->
+                let covered =
+                    revEarlier
+                    |> List.filter (fun c -> c.Guard.IsNone)
+                    |> List.collect (fun c ->
+                        match c.Pattern.Node with
+                        | TPOr alts -> alts
+                        | _ -> [ c.Pattern ])
+                    |> List.choose (fun p ->
+                        match p.Node with
+                        | TPConstruct(n, a) when a |> List.forall isIrrefutablePattern -> Some n
+                        | _ -> None)
+                    |> Set.ofList
+
+                if cases |> List.forall (fun n -> n = name || Set.contains n covered) then
+                    Some last
+                else
+                    None
+            | _ -> None
+        | _ -> None
+    | _ -> None
+
 /// Do these clauses cover `bool` between them?
 ///
 /// The one type a program can exhaust by listing its values, and C# knows it:
@@ -1594,6 +1653,19 @@ let private generateStringTest
     views.Add { Name = name; Applied = test; Inner = isTrue }
     append ctx $"var %s{name}"
 
+/// The C# type of a union case, as a pattern on `pat`'s type names it.
+///
+/// Cons and Nil are builtins backed by SchemeList.Cons<T> and SchemeList.Nil<T>,
+/// not cases of a declared union, so they are spelled apart.
+let private caseTypeString (ctx: CodegenContext) (pat: TypedPattern) (name: string) : string =
+    match name with
+    | "Cons" -> $"SchemeList.Cons<%s{elementTypeString pat.Type}>"
+    | "Nil" -> $"SchemeList.Nil<%s{elementTypeString pat.Type}>"
+    | _ ->
+        match Map.tryFind name ctx.UnionCases with
+        | Some info -> $"{getUnionTypeString pat.Type info.ParentTypeName}.{declaredTypeName name}"
+        | None -> $"{typeToString pat.Type}.{declaredTypeName name}"
+
 /// Translates a typed pattern into C# pattern syntax.
 ///
 /// Every view in the pattern is appended to `views` and stands in the label as
@@ -1706,21 +1778,7 @@ let rec generatePattern (ctx: CodegenContext) (views: ResizeArray<ViewFragment>)
         append ctx " }"
 
     | TPConstruct (name, args) ->
-        // Cons/Nil are now builtins backed by SchemeList.Cons<T>/SchemeList.Nil<T>,
-        // not union cases, so they need special-case pattern generation.
-        let caseTypeStr =
-            match name with
-            | "Cons" ->
-                let elemTypeStr = elementTypeString pat.Type
-                $"SchemeList.Cons<%s{elemTypeStr}>"
-            | "Nil" ->
-                let elemTypeStr = elementTypeString pat.Type
-                $"SchemeList.Nil<%s{elemTypeStr}>"
-            | _ ->
-                match Map.tryFind name ctx.UnionCases with
-                | Some info -> $"{getUnionTypeString pat.Type info.ParentTypeName}.{declaredTypeName name}"
-                | None -> $"{typeToString pat.Type}.{declaredTypeName name}"
-        append ctx caseTypeStr
+        append ctx (caseTypeString ctx pat name)
         // A positional record with an empty parameter list gets no Deconstruct
         // method, so nullary cases must be emitted as a bare type pattern.
         if not args.IsEmpty then
@@ -4536,6 +4594,16 @@ and private generateMatch
         | last :: revRest when fitsDefaultSection last -> Some last, List.rev revRest
         | _ -> None, live
 
+    // A last clause that can only meet its own case is the default section
+    // too, with its fields bound from the scrutinee; see `impliedLastCase`.
+    let impliedTail, cases =
+        match irrefutableTail with
+        | Some _ -> None, cases
+        | None ->
+            match impliedLastCase ctx.Registry cases with
+            | Some last -> Some last, cases |> List.take (cases.Length - 1)
+            | None -> None, cases
+
     /// Every label this switch will carry, alternatives flattened.
     let labelsOf (c: TMatchClause) =
         match c.Pattern.Node with
@@ -4552,12 +4620,16 @@ and private generateMatch
     // `default:` carries no pattern, so an irrefutable `TPIdent` clause needs the
     // scrutinee hoisted into a local that it can alias.
     let needsTemp =
-        match irrefutableTail with
-        | Some c ->
+        match irrefutableTail, impliedTail with
+        | Some c, _ ->
             match c.Pattern.Node with
             | TPIdent _ -> true
             | _ -> false
-        | None -> false
+        | None, Some c ->
+            match c.Pattern.Node with
+            | TPConstruct(_, args) -> args |> List.exists (fun a -> a.Node <> TPWildcard)
+            | _ -> false
+        | None, None -> false
 
     let scrutinee =
         if needsTemp then
@@ -4629,6 +4701,30 @@ and private generateMatch
                     match clause.Pattern.Node, scrutinee with
                     | TPIdent name, Some tmp ->
                         indent cb; appendLine cb $"var %s{sanitizeIdent name} = %s{tmp};"
+                    | _ -> ()
+                    generateBlock cb armTarget clause.Body
+                    emitBreak cb)
+                indent c; appendLine c "}"
+            | None ->
+            match impliedTail with
+            | Some clause ->
+                appendLine c "default: {"
+                withIndent c (fun cb ->
+                    // The value is of this case, so it is read as one without a
+                    // second test.
+                    match clause.Pattern.Node, scrutinee with
+                    | TPConstruct(name, args), Some tmp ->
+                        let outs =
+                            args
+                            |> List.map (fun a ->
+                                match a.Node with
+                                | TPIdent n -> $"out var %s{sanitizeIdent n}"
+                                | _ -> "out _")
+                            |> String.concat ", "
+
+                        let caseType = caseTypeString cb clause.Pattern name
+                        indent cb
+                        appendLine cb $"System.Runtime.CompilerServices.Unsafe.As<%s{caseType}>(%s{tmp}).Deconstruct(%s{outs});"
                     | _ -> ()
                     generateBlock cb armTarget clause.Body
                     emitBreak cb)

@@ -1,0 +1,47 @@
+;; The last clause of a match on a union, when the clauses above it cover every
+;; other case, is the switch's default section: no type test and no throw. Its
+;; fields are read through Deconstruct on the value, which is of that case.
+;;
+;; EXPECT-CS: Unsafe\.As<[^>]*Leaf>\(__match__\d+\)\.Deconstruct\(out var v\)
+;; EXPECT-CS: Unsafe\.As<[^>]*Pair>\(__match__\d+\)\.Deconstruct\(out var a, out _\)
+;; EXPECT-NO-CS: Match failure
+
+(import (std prelude))
+
+(export Tree Two size total first guarded)
+
+(type-rec (: Tree (Union Empty (: Leaf int) (: Node Tree Tree))))
+(type (: Two (Union None2 (: Pair int int))))
+
+;; Empty is last, so it is the default and has no label of its own.
+(: size (-> Tree int))
+(defun (size t)
+  (match t
+    ((Node l r) (+ (size l) (size r)))
+    ((Leaf _) 1)
+    (Empty 0)))
+
+;; Empty is first here, so it keeps its label, and Leaf is the default.
+(: total (-> Tree int))
+(defun (total t)
+  (match t
+    (Empty 0)
+    ((Node l r) (+ (total l) (total r)))
+    ((Leaf v) v)))
+
+(: first (-> Two int))
+(defun (first p)
+  (match p
+    (None2 0)
+    ((Pair a _) a)))
+
+;; A guarded clause covers nothing, but it is of the last clause's own case,
+;; and None2 is covered: a value that reaches the default is a Pair whose guard
+;; failed, which is what the last clause takes.
+;; EXPECT-CS: Unsafe\.As<[^>]*Pair>\(__match__\d+\)\.Deconstruct\(out var a__\d+, out var b__\d+\)
+(: guarded (-> Two int))
+(defun (guarded p)
+  (match p
+    ((Pair a b) #:when (> a b) a)
+    (None2 0)
+    ((Pair a b) b)))
