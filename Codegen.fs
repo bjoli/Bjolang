@@ -1659,6 +1659,19 @@ let private isNullCase (registry: TraitRegistry) (t: HMType) (name: string) : bo
     | TCon(key, _) -> nullCaseOf registry key = Some name
     | _ -> false
 
+/// The C# property that reads field `i` (from 0) of the case `caseName` of a
+/// struct union.
+let private structFieldName (caseName: string) (i: int) = $"%s{declaredTypeName caseName}_Item%d{i + 1}"
+
+/// The tag of the case `name` of the union type `t`, if that union is a struct
+/// at run time.
+let private structCaseTag (registry: TraitRegistry) (t: HMType) (name: string) : int option =
+    match NumericLiteral.settled t with
+    | TCon(key, _) ->
+        structUnionLayout registry key
+        |> Option.bind (fun layout -> layout.Cases |> List.tryFindIndex (fun (n, _) -> n = name))
+    | _ -> None
+
 /// The C# type of a union case, as a pattern on `pat`'s type names it.
 ///
 /// Cons and Nil are builtins backed by SchemeList.Cons<T> and SchemeList.Nil<T>,
@@ -1783,6 +1796,16 @@ let rec generatePattern (ctx: CodegenContext) (views: ResizeArray<ViewFragment>)
 
         append ctx " }"
 
+    // A case of a struct union is its tag and the fields that are matched.
+    | TPConstruct (name, args) when (structCaseTag ctx.Registry pat.Type name).IsSome ->
+        append ctx $"{{ Tag: %d{(structCaseTag ctx.Registry pat.Type name).Value}"
+
+        for i, argPat in List.indexed args do
+            if argPat.Node <> TPWildcard then
+                append ctx $", %s{structFieldName name i}: "
+                generatePattern ctx argPat
+
+        append ctx " }"
     // The case that is `null` at run time has no class to test for.
     | TPConstruct (name, []) when isNullCase ctx.Registry pat.Type name -> append ctx "null"
     | TPConstruct (name, args) ->
@@ -2155,6 +2178,22 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             match expr.Type with
             | TFun (_, retType, _) -> append ctx $"(arg0) => {typeToString retType}.{name}(arg0)"
             | _ -> append ctx $"{typeToString expr.Type}.{name}"
+        // A case of a struct union, here or imported: a static member of the
+        // struct.
+        | _ when
+            (structCaseTag
+                ctx.Registry
+                (match expr.Type with
+                 | TFun(_, ret, _) -> ret
+                 | t -> t)
+                name)
+                .IsSome
+            ->
+            match expr.Type with
+            | TFun (argTypes, retType, _) ->
+                let argsStr = String.concat ", " [ for i in 0 .. argTypes.Length - 1 -> $"arg{i}" ]
+                append ctx $"({argsStr}) => {typeToString retType}.{declaredTypeName name}({argsStr})"
+            | t -> append ctx $"{typeToString t}.{declaredTypeName name}"
         // The case that is `null` at run time, here or imported. Cast, so that
         // C# knows the type where it infers one, as in `var`.
         | _ when isNullCase ctx.Registry expr.Type name -> append ctx $"(({typeToString expr.Type})null)"
@@ -3185,6 +3224,15 @@ and private generateApply
     : unit =
 
     match target.Node with
+    | TIdent (name, _) when (structCaseTag ctx.Registry expr.Type name).IsSome ->
+        append ctx $"{typeToString expr.Type}.{declaredTypeName name}"
+
+        if not args.IsEmpty then
+            append ctx "("
+            for i, emit in List.indexed (prepareOperands ctx args) do
+                if i > 0 then append ctx ", "
+                emit ctx
+            append ctx ")"
     | TIdent (name, _) when args.IsEmpty && isNullCase ctx.Registry expr.Type name ->
         append ctx $"(({typeToString expr.Type})null)"
     | TIdent (name, _) when Map.containsKey name ctx.UnionCases ->
@@ -4726,6 +4774,13 @@ and private generateMatch
                     // The value is of this case, so it is read as one without a
                     // second test.
                     match clause.Pattern.Node, scrutinee with
+                    | TPConstruct(name, args), Some tmp when (structCaseTag cb.Registry clause.Pattern.Type name).IsSome ->
+                        for i, a in List.indexed args do
+                            match a.Node with
+                            | TPIdent n ->
+                                indent cb
+                                appendLine cb $"var %s{sanitizeIdent n} = %s{tmp}.%s{structFieldName name i};"
+                            | _ -> ()
                     | TPConstruct(name, args), Some tmp ->
                         let outs =
                             args
@@ -5552,8 +5607,11 @@ let private agreementWithClr
         not (Set.contains key Naming.builtinTypeNames)
         && (Map.containsKey key registry.Records || Map.containsKey key registry.Unions)
         ->
+        // A struct union has no case classes: its `Equals` is the
+        // implementation's alone.
         let crossCase =
             traitName = "Eq"
+            && (structUnionLayout registry key).IsNone
             && (match Map.tryFind key registry.Unions with
                 | Some(_, cases) -> cases.Length > 1
                 | None -> false)
@@ -5753,6 +5811,174 @@ let private appendTypeBody (ctx: CodegenContext) (members: string list) : unit =
                 appendLine c m)
         indent ctx
         appendLine ctx "}"
+
+/// How a union case that carries nothing prints: its name without the module.
+let private shownCaseName (n: string) =
+    match Naming.typeKeyParts n with
+    | Some(_, bare) -> bare
+    | None -> n
+
+/// The members of a union that is a struct at run time (see
+/// `structUnionLayout`).
+///
+/// The struct has one field per slot and the tag. A case is a static member
+/// that builds the struct, and each of its fields is a property that reads
+/// its slot. Cases share a slot of one size: a slot that holds more than one
+/// type is an unsigned integer, and `Unsafe.BitCast` reads and writes it,
+/// which costs nothing. The fields do not overlap, because the JIT keeps the
+/// fields of such a struct in registers, and does not do that for a struct
+/// whose fields overlap (measured: such a struct was slower than a class).
+///
+/// `materialized` is what the type's `Eq` and `Ord` implementations become.
+/// Where `Eq` has none, equality and the hash are written here: per case, over
+/// the case's own fields, because a slot that the case does not use is zero
+/// and an equal `double` can have different bits.
+let private structUnionMembers
+    (unionKey: string)
+    (layout: StructUnionLayout)
+    (materialized: string list)
+    : string list =
+    let self = declaredTypeName unionKey
+    let unsafe = "System.Runtime.CompilerServices.Unsafe"
+    let cat (parts: string list) = String.concat "" parts
+
+    let slots =
+        [ if layout.Ref.IsSome then
+              RefSlot
+          for (size, count) in layout.ValueSlots do
+              for i in 0 .. count - 1 do
+                  ValueSlot(size, i) ]
+
+    let slotName slot =
+        match slot with
+        | RefSlot -> "__ref"
+        | ValueSlot(size, i) -> $"__v%d{size}_%d{i}"
+
+    let slotType slot =
+        match slot with
+        | RefSlot ->
+            match layout.Ref with
+            | Some StringRef -> typeToString TypeConstants.stringType
+            | _ -> "object?"
+        | ValueSlot(size, _) ->
+            let types =
+                layout.Cases
+                |> List.collect (fun (_, fields) ->
+                    fields |> List.filter (fun (_, s) -> s = slot) |> List.map (fst >> typeToString))
+                |> List.distinct
+
+            match types, size with
+            | [ t ], _ -> t
+            | _, 8 -> "ulong"
+            | _, 4 -> "uint"
+            | _, 2 -> "ushort"
+            | _ -> "byte"
+
+    let read (t: string) slot =
+        match slot with
+        | RefSlot when layout.Ref = Some ObjectRef -> $"%s{unsafe}.As<%s{t}>(%s{slotName slot})!"
+        | _ when slotType slot = t -> slotName slot
+        | _ -> $"%s{unsafe}.BitCast<%s{slotType slot}, %s{t}>(%s{slotName slot})"
+
+    let write (t: string) slot (value: string) =
+        match slot with
+        | RefSlot -> value
+        | _ when slotType slot = t -> value
+        | _ -> $"%s{unsafe}.BitCast<%s{t}, %s{slotType slot}>(%s{value})"
+
+    let fields = [ for slot in slots -> $"private readonly %s{slotType slot} %s{slotName slot};" ]
+
+    let constructor =
+        let parameters = slots |> List.map (fun s -> $", %s{slotType s} %s{slotName s}")
+        let assigns = slots |> List.map (fun s -> $" this.%s{slotName s} = %s{slotName s};")
+        $"private %s{self}(byte tag%s{cat parameters}) {{ Tag = tag;%s{cat assigns} }}"
+
+    let cases = layout.Cases |> List.indexed
+
+    let caseMembers =
+        cases
+        |> List.collect (fun (tag, (name, caseFields)) ->
+            let args =
+                slots
+                |> List.map (fun slot ->
+                    match caseFields |> List.tryFindIndex (fun (_, s) -> s = slot) with
+                    | Some i -> write (typeToString (fst caseFields.[i])) slot $"item%d{i + 1}"
+                    | None -> "default")
+
+            let ctorArgs = String.concat ", " (string tag :: args)
+
+            let builder =
+                if caseFields.IsEmpty then
+                    $"public static %s{self} %s{declaredTypeName name} => new(%s{ctorArgs});"
+                else
+                    let parameters =
+                        caseFields
+                        |> List.mapi (fun i (t, _) -> $"%s{typeToString t} item%d{i + 1}")
+                        |> String.concat ", "
+
+                    $"public static %s{self} %s{declaredTypeName name}(%s{parameters}) => new(%s{ctorArgs});"
+
+            let readers =
+                caseFields
+                |> List.mapi (fun i (t, slot) ->
+                    let ts = typeToString t
+                    $"public %s{ts} %s{structFieldName name i} => %s{read ts slot};")
+
+            builder :: readers)
+
+    let hasEq = materialized |> List.exists (fun m -> m.StartsWith "public bool Equals(")
+
+    let equality =
+        if hasEq then
+            []
+        else
+            let arms =
+                cases
+                |> List.filter (fun (_, (_, caseFields)) -> not caseFields.IsEmpty)
+                |> List.map (fun (tag, (name, caseFields)) ->
+                    let tests =
+                        caseFields
+                        |> List.mapi (fun i (t, _) ->
+                            let f = structFieldName name i
+                            $"System.Collections.Generic.EqualityComparer<%s{typeToString t}>.Default.Equals(%s{f}, other.%s{f})")
+
+                    let test = String.concat " && " tests
+                    $"%d{tag} => %s{test}, ")
+
+            let hashCases =
+                cases
+                |> List.filter (fun (_, (_, caseFields)) -> not caseFields.IsEmpty)
+                |> List.map (fun (tag, (name, caseFields)) ->
+                    let adds = caseFields |> List.mapi (fun i _ -> $"h.Add(%s{structFieldName name i}); ")
+                    $"case %d{tag}: %s{cat adds}break; ")
+
+            [ $"public bool Equals(%s{self} other) => Tag == other.Tag && Tag switch {{ %s{cat arms}_ => true }};"
+              $"public override int GetHashCode() {{ var h = new System.HashCode(); h.Add(Tag); switch (Tag) {{ %s{cat hashCases}}} return h.ToHashCode(); }}" ]
+
+    let toString =
+        let arms =
+            cases
+            |> List.map (fun (tag, (name, caseFields)) ->
+                if caseFields.IsEmpty then
+                    $"%d{tag} => \"%s{escapeStringLiteral (shownCaseName name)}\", "
+                else
+                    let parts =
+                        caseFields
+                        |> List.mapi (fun i _ ->
+                            let sep = if i = 0 then "" else ", "
+                            $"\"%s{sep}Item%d{i + 1} = \" + Bjolang.Runtime.BjoNum.ShowField(%s{structFieldName name i})")
+                        |> String.concat " + "
+
+                    $"%d{tag} => \"%s{declaredTypeName name} {{ \" + %s{parts} + \" }}\", ")
+
+        $"public override string ToString() => Tag switch {{ %s{cat arms}_ => \"\" }};"
+
+    fields
+    @ [ "public readonly byte Tag;"; constructor ]
+    @ caseMembers
+    @ materialized
+    @ equality
+    @ [ $"public override bool Equals(object? obj) => obj is %s{self} other && Equals(other);"; toString ]
 
 /// Emits the C# interface, box class, and auto-generated implementation that
 /// make `(dyn Trait ...)` a usable dynamic type.
@@ -6082,16 +6308,21 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     append ctx ")"
                     append ctx (baseClause selfRef)
                     appendTypeBody ctx (support @ members)
+            | Union _ when (structUnionLayout ctx.Registry td.Name).IsSome ->
+                let layout = (structUnionLayout ctx.Registry td.Name).Value
+                let selfRef = declaredTypeName td.Name
+
+                let interfaces =
+                    $"System.IEquatable<%s{selfRef}>" :: materializedInterfaces ctx.Registry td.Name 0 selfRef
+
+                let sep = ", "
+
+                indent ctx
+                append ctx $"public readonly struct %s{selfRef} : %s{interfaces |> String.concat sep}"
+                appendTypeBody ctx (structUnionMembers td.Name layout (materialized selfRef ValueRecord))
             | Union cases ->
                 let selfRef = $"%s{declaredTypeName td.Name}%s{tyArgsStr}"
                 let nullCase = nullCaseOf ctx.Registry td.Name
-
-                // A case that carries nothing prints as its name without the
-                // module.
-                let shownCaseName (n: string) =
-                    match Naming.typeKeyParts n with
-                    | Some(_, bare) -> bare
-                    | None -> n
 
                 // `null` says nothing of its type, so the attribute is what
                 // lets the runtime print the case by its name.
@@ -6599,8 +6830,24 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                             else "<" + (td.TypeArgs |> List.map typeParamName |> String.concat ", ") + ">"
                         match td.Kind with
                         | Union cases ->
+                            let isStruct = (structUnionLayout ctx.Registry td.Name).IsSome
+
                             for c in cases do
                                 match c with
+                                // A struct union's cases are its own static members.
+                                | SimpleCase (n, _)
+                                | DataCase (n, [], _, _) when isStruct ->
+                                    indent ctx
+                                    appendLine ctx $"public static %s{declaredTypeName td.Name} %s{declaredTypeName n}() => %s{declaredTypeName td.Name}.%s{declaredTypeName n};"
+                                | DataCase (n, ftypes, _, _) when isStruct ->
+                                    indent ctx
+                                    append ctx $"public static %s{declaredTypeName td.Name} %s{declaredTypeName n}("
+                                    for i, ft in List.indexed ftypes do
+                                        if i > 0 then append ctx ", "
+                                        append ctx (typeToString (Annotations.resolveTypeAnnotation ctx.Registry ft))
+                                        append ctx $" arg{i}"
+                                    let argsListStr = String.concat ", " [for i in 0 .. ftypes.Length - 1 -> $"arg{i}"]
+                                    appendLine ctx $") => %s{declaredTypeName td.Name}.%s{declaredTypeName n}(%s{argsListStr});"
                                 | SimpleCase (n, _) when nullCaseOf ctx.Registry td.Name = Some n ->
                                     indent ctx
                                     appendLine ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{declaredTypeName n}%s{tyArgsStr}() => null!;"

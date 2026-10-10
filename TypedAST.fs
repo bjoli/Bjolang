@@ -2140,22 +2140,212 @@ let addImplementation
 
     { env with Registry = newRegistry }
 
+/// The built-in unions, which keep the shapes the runtime gives them.
+let private isBuiltinUnion (unionKey: string) =
+    match unionKey with
+    | "Option"
+    | "Result"
+    | "Syntax"
+    | "CancelReason"
+    | "List" -> true
+    | _ -> false
+
+/// Where a field of a struct union is kept.
+type StructUnionSlot =
+    /// The one reference slot.
+    | RefSlot
+    /// The value slot of `size` bytes with this index among the slots of that
+    /// size.
+    | ValueSlot of size: int * index: int
+
+/// What the reference slot of a struct union holds.
+type StructUnionRef =
+    /// `string`, which is a struct around one reference.
+    | StringRef
+    /// Objects of classes, held as `object` and read back with `Unsafe.As`.
+    | ObjectRef
+
+/// How a union that is a struct at run time is laid out.
+type StructUnionLayout =
+    { Ref: StructUnionRef option
+      /// For each value size, largest first, how many slots of that size.
+      ValueSlots: (int * int) list
+      /// Each case in declaration order, which is its tag, with the type and
+      /// the slot of each of its fields.
+      Cases: (string * (HMType * StructUnionSlot) list) list }
+
+/// The largest struct a union becomes, tag included. A struct of 16 bytes or
+/// less is returned in two registers; a larger one goes through memory, and
+/// passing it to a call that is not inlined then cost more than the
+/// allocation it saved (measured).
+let structUnionMaxBytes = 16
+
+/// The size of a value field of a struct union, for the types that have one
+/// fixed size.
+let private structValueSize (t: HMType) : int option =
+    match t with
+    | TCon(("System.Boolean" | "System.Byte" | "System.SByte"), []) -> Some 1
+    | TCon(("System.Int16" | "System.UInt16"), []) -> Some 2
+    | TCon(("System.Int32" | "System.UInt32" | "System.Single" | "Char"), []) -> Some 4
+    | TCon(("System.Int64" | "System.UInt64" | "System.Double"), []) -> Some 8
+    | _ -> None
+
+/// The unions that `unionKey` holds by value: those that a field of one of its
+/// cases names directly.
+let private unionFieldsOf (registry: TraitRegistry) (unionKey: string) : string list =
+    match Map.tryFind unionKey registry.Unions with
+    | Some(_, cases) ->
+        cases
+        |> List.collect (fun (_, args, _) ->
+            args
+            |> List.choose (function
+                | TCon(k, _) when Map.containsKey k registry.Unions -> Some k
+                | _ -> None))
+    | None -> []
+
+/// Whether `unionKey` reaches itself through fields of union type. Such a
+/// union stays a class: a struct cannot contain itself.
+let private inValueCycle (registry: TraitRegistry) (unionKey: string) : bool =
+    let rec reaches (seen: Set<string>) (key: string) =
+        unionFieldsOf registry key
+        |> List.exists (fun k -> k = unionKey || (not (seen.Contains k) && reaches (seen.Add k) k))
+
+    reaches (Set.singleton unionKey) unionKey
+
+/// The layout of `unionKey` if it is a struct at run time.
+///
+/// A declared union is a struct when the struct is at most
+/// `structUnionMaxBytes`: a value of it then needs no allocation, and an array
+/// of it holds the values, not references to them. The conditions:
+///
+/// - It has no type parameters. A struct's size has to be known where the
+///   union is declared, so that every module that imports it agrees.
+/// - It does not contain itself through fields of union type.
+/// - Each case has at most one reference: a `string`, or an object of a class.
+///   The cases share one reference slot, so their references are all strings
+///   or all objects.
+/// - The value fields are `bool`, the integers to 64 bits, `float`, `double`
+///   and `char`. Cases share value slots of the same size.
+///
+/// A field of another union is an object if that union is a class. A record
+/// field or a struct union field makes the union a class, as its size is not
+/// known here.
+let rec structUnionLayout (registry: TraitRegistry) (unionKey: string) : StructUnionLayout option =
+    if isBuiltinUnion unionKey then
+        None
+    else
+        match Map.tryFind unionKey registry.Unions with
+        | Some(tArgs, cases) when tArgs.IsEmpty && not (inValueCycle registry unionKey) ->
+            let refKind (t: HMType) : StructUnionRef option option =
+                match t with
+                | TCon("String", []) -> Some(Some StringRef)
+                | TCon(("Symbol" | "Keyword" | "Vec" | "Array" | "System.String" | "System.Object"), _) ->
+                    Some(Some ObjectRef)
+                | TCon("List", [ _ ]) -> Some(Some ObjectRef)
+                | TFun _ -> Some(Some ObjectRef)
+                | TCon(k, _) when Map.containsKey k registry.Unions && not (isBuiltinUnion k) ->
+                    // A class union is an object; a struct union does not fit.
+                    if (structUnionLayout registry k).IsSome then Some None else Some(Some ObjectRef)
+                | _ -> None
+
+            // Each case's fields, as a slot request: `Choice1Of2 ref` or
+            // `Choice2Of2 size`. `None` when a field fits no slot.
+            let requests =
+                cases
+                |> List.map (fun (name, args, _) ->
+                    let fields =
+                        args
+                        |> List.map (fun t ->
+                            match structValueSize t with
+                            | Some size -> Some(t, Choice2Of2 size)
+                            | None ->
+                                match refKind t with
+                                | Some(Some r) -> Some(t, Choice1Of2 r)
+                                | _ -> None)
+
+                    if fields |> List.forall Option.isSome then Some(name, List.choose id fields) else None)
+
+            if requests |> List.exists Option.isNone then
+                None
+            else
+                let requests = List.choose id requests
+
+                let refsOf fields =
+                    fields
+                    |> List.choose (fun (_, r) ->
+                        match r with
+                        | Choice1Of2 k -> Some k
+                        | Choice2Of2 _ -> None)
+
+                let allRefs = requests |> List.collect (snd >> refsOf) |> List.distinct
+                let oneRefEach = requests |> List.forall (fun (_, fields) -> (refsOf fields).Length <= 1)
+
+                if not oneRefEach || allRefs.Length > 1 then
+                    None
+                else
+                    let sizes = [ 8; 4; 2; 1 ]
+
+                    let countOf size fields =
+                        fields
+                        |> List.filter (fun (_, r) ->
+                            match r with
+                            | Choice2Of2 s -> s = size
+                            | Choice1Of2 _ -> false)
+                        |> List.length
+
+                    let valueSlots =
+                        sizes
+                        |> List.map (fun size -> size, requests |> List.map (snd >> countOf size) |> List.fold max 0)
+                        |> List.filter (fun (_, n) -> n > 0)
+
+                    let hasRef = not allRefs.IsEmpty
+                    let unpadded = (if hasRef then 8 else 0) + (valueSlots |> List.sumBy (fun (s, n) -> s * n)) + 1
+
+                    let align =
+                        if hasRef then 8
+                        else match valueSlots with
+                             | (s, _) :: _ -> s
+                             | [] -> 1
+
+                    let size = (unpadded + align - 1) / align * align
+
+                    if size > structUnionMaxBytes then
+                        None
+                    else
+                        let layoutCase (name, fields) =
+                            let mutable used = Map.empty
+
+                            let placed =
+                                fields
+                                |> List.map (fun (t, r) ->
+                                    match r with
+                                    | Choice1Of2 _ -> t, RefSlot
+                                    | Choice2Of2 s ->
+                                        let i = defaultArg (Map.tryFind s used) 0
+                                        used <- Map.add s (i + 1) used
+                                        t, ValueSlot(s, i))
+
+                            name, placed
+
+                        Some
+                            { Ref = List.tryHead allRefs
+                              ValueSlots = valueSlots
+                              Cases = requests |> List.map layoutCase }
+        | _ -> None
+
 /// The case of the union `unionKey` that is `null` at run time, if it has one.
 ///
 /// A declared union with exactly one case that carries nothing, and at least
 /// one case that carries something, represents that case as `null`. A value
 /// that holds it then stores no reference, which needs no GC write barrier,
 /// and a test for it is a compare with zero. The rule reads only the
-/// declaration, so every module that imports the union agrees on it. The
-/// built-in unions keep the shapes the runtime gives them.
+/// declaration, so every module that imports the union agrees on it. A union
+/// that is a struct (`structUnionLayout`) has no `null` case: an empty case
+/// there is only a tag.
 let nullCaseOf (registry: TraitRegistry) (unionKey: string) : string option =
-    match unionKey with
-    | "Option"
-    | "Result"
-    | "Syntax"
-    | "CancelReason"
-    | "List" -> None
-    | _ ->
+    if isBuiltinUnion unionKey || (structUnionLayout registry unionKey).IsSome then
+        None
+    else
         match Map.tryFind unionKey registry.Unions with
         | Some(_, cases) ->
             match cases |> List.filter (fun (_, args, _) -> List.isEmpty args) with

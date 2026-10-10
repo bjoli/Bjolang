@@ -1,0 +1,50 @@
+;; A union that fits in 16 bytes, tag included, is a struct: a value of it is
+;; not allocated, and an array of it holds the values.
+;;
+;; `Val` has one 8-byte slot, which `I` and `F` share as an unsigned integer,
+;; and one 1-byte slot for `B`.
+;; EXPECT-CS: public readonly struct \S*Val : System\.IEquatable<\S*Val> \{
+;; EXPECT-CS: private readonly ulong __v8_0;
+;; EXPECT-CS: private readonly bool __v1_0;
+;; EXPECT-CS: public readonly byte Tag;
+;; EXPECT-CS: public double \S*F_Item1 => System\.Runtime\.CompilerServices\.Unsafe\.BitCast<ulong, double>\(__v8_0\);
+;; A case that carries nothing is a property, and it is used without a call.
+;; EXPECT-CS: public static \S*Val \S*Missing => new\(3, default, default\);
+;; A match is on the tag and on the properties of the case.
+;; EXPECT-CS: case \{ Tag: 1, \S*F_Item1: var d \}
+;; Construction is a static member of the struct.
+;; EXPECT-CS: \S*Val\.\S*F\(2\.5\)
+;; Equality is per case, over the case's own fields.
+;; EXPECT-CS: public bool Equals\(\S*Val other\) => Tag == other\.Tag && Tag switch
+;;
+;; `Named` holds strings in its one reference slot.
+;; EXPECT-CS: private readonly BjoString\.Utf8String __ref;
+;; `Slot` holds objects of classes, read back with `Unsafe.As`.
+;; EXPECT-CS: private readonly object\? __ref;
+;; EXPECT-CS: Unsafe\.As<BjolangRuntime\.Symbol>\(__ref\)!
+;;
+;; Too large: a reference and an 8-byte value are 24 bytes with the tag.
+;; EXPECT-CS: public abstract record \S*Token
+;; Recursive: a struct cannot contain itself.
+;; EXPECT-CS: public abstract record \S*Tree
+
+(import (std prelude))
+
+(export Val Named Slot Token Tree num make-f)
+
+(type (: Val (Union (: I long) (: F double) (: B bool) Missing)))
+(type (: Named (Union (: Name string) (: Pos string int) Anon)))
+(type (: Slot (Union (: Sym Symbol) (: Key Keyword) Free)))
+(type (: Token (Union (: Num double) (: Ident string) Eof)))
+(type-rec (: Tree (Union Leaf (: Node Tree int Tree))))
+
+(: num (-> Val double))
+(defun (num v)
+  (match v
+    ((I n) (cast double n))
+    ((F d) d)
+    ((B b) (if b 1.0 0.0))
+    (Missing 0.0)))
+
+(: make-f (-> Val))
+(defun (make-f) (F 2.5))

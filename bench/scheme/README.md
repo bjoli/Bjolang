@@ -105,7 +105,7 @@ by Chez `-O2` time: below 1 means Bjolang is faster.
 | sumfp      |    2.397 |    2.413 |   0.363 |   0.15 |     0.392 |   0.16 |
 | diviter    |    0.953 |    0.918 |   2.784 |   2.92 |     1.349 |   1.42 |
 | divrec     |    1.438 |    1.416 |   4.000 |   2.78 |     1.844 |   1.28 |
-| deriv      |    0.765 |    0.653 |   3.992 |   5.22 |     5.227 |   6.83 |
+| deriv      |    0.760 |    0.648 |   3.597 |   4.73 |     4.708 |   6.19 |
 | array1     |    9.587 |    9.342 |   0.830 |   0.09 |     2.760 |   0.29 |
 | triangl    |    1.318 |    1.057 |   1.065 |   0.81 |           |        |
 | quicksort  |    2.560 |    2.388 |   1.214 |   0.47 |           |        |
@@ -120,11 +120,16 @@ Geometric means of the ratio:
 | programs | benchmarks | geometric mean |
 |----------|-----------:|---------------:|
 | ports | 21 | **0.61** |
-| idiomatic variants | 11 | 0.64 |
+| idiomatic variants | 11 | 0.63 |
 | the faster Bjolang program of each benchmark | 21 | **0.54** |
 
 The Chez figures are about 1.5 times faster than the suite's published
 Chez 10.3.0 results, uniformly, which is the difference in machines.
+
+`deriv` was measured again after a union of 16 bytes or less became a
+struct. Its `Sexp` is one: a `Symbol`, an `int` or a list, so an atom or a
+number is no longer an object of its own. The port went from 3.99 to 3.60 s,
+and the idiomatic variant from 5.23 to 4.71 s.
 
 ### Reading the results
 

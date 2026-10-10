@@ -1,6 +1,7 @@
 ;; A nullary union case is one shared instance per closed type, not an
-;; allocation per use. `Red`, `Green` and `Mix` are such cases: `Color` has two
-;; cases that carry nothing, so neither is `null` (see null_case.bjo).
+;; allocation per use. `Red` and `Green` are such cases: `Color` has two cases
+;; that carry nothing, so neither is `null` (see null_case.bjo), and `Mix`
+;; makes it too large to be a struct (see struct_union.bjo).
 ;;
 ;; EXPECT-CS: public static readonly \S*Red Instance = new\(\);
 ;; EXPECT-CS: \S*Red\(\) => \S*Red\.Instance;
@@ -11,11 +12,11 @@
 
 (export Color pick)
 
-(type (: Color (Union Red Green (: Mix int))))
+(type (: Color (Union Red Green (: Mix double string))))
 
 (: pick (-> int Color))
 (defun (pick n)
   (match n
     (0 Red)
     (1 Green)
-    (_ (Mix n))))
+    (_ (Mix 0.5 "mix"))))

@@ -22,7 +22,15 @@
 ;; EXPECT-CS: public bool Equals\(materialization__Circle\? other\) => other is not null && Eq_materialization__Shape\.Instance\.eq\(this, other\);
 ;; EXPECT-CS: public bool Equals\(materialization__Square\? other\) => other is not null && Eq_materialization__Shape\.Instance\.eq\(this, other\);
 (type/derive (Eq)
-  (: Shape (Union (: Circle int) (: Square int))))
+  (: Shape (Union (: Circle double) (: Square string))))
+
+;; A union that fits in 16 bytes is a struct, with no case classes: `Equals`
+;; and `CompareTo` go on the struct, with no null to guard against.
+;; EXPECT-CS: public readonly struct materialization__Grade : System.IEquatable<materialization__Grade>, System.IComparable<materialization__Grade> \{
+;; EXPECT-CS: public bool Equals\(materialization__Grade other\) => Eq_materialization__Grade\.Instance\.eq\(this, other\);
+;; EXPECT-CS: public int CompareTo\(materialization__Grade other\) => Ord_materialization__Grade\.Instance\.compare\(this, other\);
+(type/derive (Eq Ord)
+  (: Grade (Union (: Pass int) Fail)))
 
 ;; A *conditional* implementation — every one a parameterized type derives —
 ;; materializes too. Its `(where (Eq %a))` asks for an `Eq<T_a>` that nothing
@@ -100,7 +108,7 @@
 ;; EXPECT-CS: public int CompareTo\(materialization__Level\? other\) => other is null \? 1 : Ord_materialization__Level\.Instance\.compare\(this, other\);
 ;; EXPECT-NO-CS: CompareTo\(materialization__Low
 (type/derive (Ord)
-  (: Level (Union Low (: Mid int) High)))
+  (: Level (Union Low (: Mid double string) High)))
 
 ;; A conditional `Ord` materializes as a conditional `Eq` does, with a stand-in
 ;; that compares through `T_a`'s own `IComparable<T_a>` — and a string

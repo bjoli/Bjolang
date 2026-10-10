@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* A union of 16 bytes or less is a struct
+
+- *A union whose struct, with a one-byte tag, is 16 bytes or less is a
+  struct.* A value of it is not allocated, and an array or a ~Vec~ of it
+  holds the values. 16 bytes is what .NET returns in two registers. Measured
+  in C#: such a struct was faster than the classes in every workload, 2 times
+  when made and matched in a loop and 8 to 10 times when kept in an array. A
+  larger struct was 25 to 35% slower than the classes when passed through a
+  call that is not inlined, so a larger union stays a class.
+- The conditions: no type parameters; no field of union type through which
+  the union contains itself; at most one reference per case, a ~string~ or
+  an object, and the references of all cases of one kind; the other fields
+  ~bool~, integers to 64 bits, ~float~, ~double~ or ~char~. Cases share the
+  slots of one size. The rule reads only the declaration, so importers agree.
+- A union where every case carries nothing is a struct of one byte, not one
+  object per case.
+- The fields do not overlap in memory. The JIT keeps the fields of the struct
+  in registers, and it does not do that for a struct whose fields overlap:
+  measured, such a struct was slower than the classes.
+- ~=~, ~eq-hash~, ~compare~ and ~->str~ give what they gave for the classes.
+  Equality and the hash are per case, over the case's own fields, so
+  ~(F 0.0)~ equals ~(F -0.0)~ as the ~double~ values do.
+- ~bench/scheme~'s ~deriv~, whose ~Sexp~ is now a struct: 3.99 to 3.60 s.
+
 * The one empty case of a union is ~null~
 
 - *A union with exactly one case that carries nothing, and at least one case
