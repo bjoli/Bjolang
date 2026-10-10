@@ -50,6 +50,19 @@ public static class BjoNum {
 
     public static Utf8String ByteToString(byte n) => Utf8Number.Format(n);
 
+    // `decimal`, `bigint`, `int128` and `uint128`, which have no reader in
+    // Utf8Number. Through .NET's own parsers, in the invariant culture. An
+    // integer takes a sign and digits; a decimal also takes a point and an
+    // exponent, as a double does.
+    public static T ParseInteger<T>(Utf8String s) where T : System.Numerics.IBinaryInteger<T> =>
+        T.Parse(s.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture);
+
+    public static decimal ParseDecimal(Utf8String s) =>
+        decimal.Parse(s.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture);
+
+    public static Utf8String FormatNumber<T>(T n) where T : System.Numerics.INumber<T> =>
+        Utf8String.FromUtf16(n.ToString(null, CultureInfo.InvariantCulture));
+
     /// The `->str` fallback: whatever a type with no implementation of its own
     /// says about itself, asked in the invariant culture. Reaches the numeric
     /// types the prelude names no conversion for, and every `IFormattable`.

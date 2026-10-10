@@ -117,6 +117,8 @@
   ;; Conversions
   int->string long->string double->string byte->string number->string
   string->int string->double
+  decimal->string string->decimal bigint->string string->bigint
+  int128->string string->int128 uint128->string string->uint128
   bytes->string string->bytes
   ;; Math.
   sqrt
@@ -1211,7 +1213,12 @@
   (clr-double-string (: Bjolang.Runtime.BjoNum.DoubleToString))
   (clr-int-string    (: Bjolang.Runtime.BjoNum.IntToString))
   (clr-long-string   (: Bjolang.Runtime.BjoNum.LongToString))
-  (clr-byte-string   (: Bjolang.Runtime.BjoNum.ByteToString)))
+  (clr-byte-string   (: Bjolang.Runtime.BjoNum.ByteToString))
+  (clr-parse-decimal (: Bjolang.Runtime.BjoNum.ParseDecimal))
+  (clr-parse-bigint  (: Bjolang.Runtime.BjoNum.ParseInteger (-> string bigint)))
+  (clr-parse-int128  (: Bjolang.Runtime.BjoNum.ParseInteger (-> string int128)))
+  (clr-parse-uint128 (: Bjolang.Runtime.BjoNum.ParseInteger (-> string uint128)))
+  (clr-format-number (: Bjolang.Runtime.BjoNum.FormatNumber (-> %a string))))
 
 (: string-append (-> string string string))
 (defun (string-append a b) (clr-concat a b))
@@ -1352,6 +1359,33 @@
 
 (: string->double (-> string double))
 (defun (string->double s) (clr-parse-double s))
+
+;; The four numbers past the eight. A decimal is written and read with a point
+;; and no exponent when it has none: (decimal->string 1.50M) is "1.50", as
+;; .NET keeps a decimal's scale.
+(: decimal->string (-> decimal string))
+(defun (decimal->string n) (clr-format-number n))
+
+(: string->decimal (-> string decimal))
+(defun (string->decimal s) (clr-parse-decimal s))
+
+(: bigint->string (-> bigint string))
+(defun (bigint->string n) (clr-format-number n))
+
+(: string->bigint (-> string bigint))
+(defun (string->bigint s) (clr-parse-bigint s))
+
+(: int128->string (-> int128 string))
+(defun (int128->string n) (clr-format-number n))
+
+(: string->int128 (-> string int128))
+(defun (string->int128 s) (clr-parse-int128 s))
+
+(: uint128->string (-> uint128 string))
+(defun (uint128->string n) (clr-format-number n))
+
+(: string->uint128 (-> string uint128))
+(defun (string->uint128 s) (clr-parse-uint128 s))
 
 ;; --- Bytes and strings ---
 ;;

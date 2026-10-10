@@ -325,14 +325,16 @@ module Lexer =
     /// `TypedAST.NumericLiteral` reads.
     ///
     /// Hexadecimal and binary digits take only the `u` and `l` suffixes, since
-    /// the others are hex digits. A real has a digit after its point.
+    /// the others are hex digits. A real has a digit after its point, and an
+    /// exponent may have a sign, `1e-3` or `1e+3`. A real takes `d` for a
+    /// double and `M` for a decimal; an integer also takes `I` for a bigint.
     let private numberSpelling =
         System.Text.RegularExpressions.Regex(
             "^-?(?:"
             + "0[xX][0-9a-fA-F]+(?:[uU][lL]?|[lL])?"
             + "|0[bB][01]+(?:[uU][lL]?|[lL])?"
-            + "|[0-9]+(?:uy|us|[uU][lL]?|s|[lL]|[dD])?"
-            + "|[0-9]+(?:\\.[0-9]+(?:[eE]-?[0-9]+)?|[eE]-?[0-9]+)[dD]?"
+            + "|[0-9]+(?:uy|us|[uU][lL]?|s|[lL]|[dD]|[mM]|I)?"
+            + "|[0-9]+(?:\\.[0-9]+(?:[eE][-+]?[0-9]+)?|[eE][-+]?[0-9]+)[dDmM]?"
             + ")$",
             System.Text.RegularExpressions.RegexOptions.Compiled
         )
@@ -518,7 +520,11 @@ module Lexer =
                     let rec readNumber p =
                         if
                             p < length
-                            && (Char.IsLetterOrDigit input[p] || input[p] = '.' || input[p] = '-')
+                            && (Char.IsLetterOrDigit input[p]
+                                || input[p] = '.'
+                                || input[p] = '-'
+                                // An exponent's sign, `1e+3`, and no other `+`.
+                                || (input[p] = '+' && (input[p - 1] = 'e' || input[p - 1] = 'E')))
                         then
                             readNumber (p + 1)
                         else

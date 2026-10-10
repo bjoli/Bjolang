@@ -459,7 +459,10 @@ let rec checkPattern
             | Some t -> t
             | None ->
                 match prune env.Registry expectedType with
-                | scrutinee when NumericLiteral.isNumeric scrutinee -> scrutinee
+                | scrutinee when NumericLiteral.isBuiltinNumeric scrutinee -> scrutinee
+                | scrutinee when NumericLiteral.isNumeric scrutinee ->
+                    failwithf
+                        $"Pattern Error at %s{Lexer.formatPos r}: '%s{value}' is matched against a '%s{DotNetInterop.showType scrutinee}', and a pattern is a C# constant, which that type has none of. Compare it with = instead."
                 | TVar _ ->
                     failwithf
                         $"Pattern Error at %s{Lexer.formatPos r}: '%s{value}' is matched against a generic type, and a number has no spelling at a type parameter. Compare it instead, or give the function a concrete type."

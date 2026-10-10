@@ -55,3 +55,27 @@
 ;; EXPECT-CS: return 21d;
 (: a-double (-> double))
 (defun (a-double) 21)
+
+;; A decimal has a C# literal, `m`, and is a constant.
+;; EXPECT-CS: return 1\.07m;
+(: a-decimal (-> decimal))
+(defun (a-decimal) 1.07M)
+
+;; A bigint has none. One that fits in a long is converted from one, which the
+;; JIT folds; a larger one is parsed.
+;; EXPECT-CS: return \(\(System\.Numerics\.BigInteger\)\(21L\)\);
+(: a-bigint (-> bigint))
+(defun (a-bigint) 21I)
+
+;; EXPECT-CS: System\.Numerics\.BigInteger\.Parse\("340282366920938463463374607431768211456", System\.Globalization\.CultureInfo\.InvariantCulture\)
+(: a-large-bigint (-> bigint))
+(defun (a-large-bigint) 340282366920938463463374607431768211456I)
+
+;; A conversion operator is not called by name, which C# refuses, but cast.
+;; EXPECT-CS: \(\(long\)\(n\)\)
+;; EXPECT-NO-CS: op_Explicit
+(import/extern
+  (bigint->long (: System.Numerics.BigInteger.op_Explicit (-> bigint long))))
+
+(: narrow (-> bigint long))
+(defun (narrow n) (bigint->long n))

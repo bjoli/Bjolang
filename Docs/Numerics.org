@@ -5,16 +5,23 @@ Everything a program does with numbers, roughly in the order you will need it.
 
 ** The types
 
-Eight, each a .NET primitive under a name a signature can write:
+Twelve, each a .NET type under a name a signature can write:
 
-| ~byte~   | 0 … 255                        | ~uint~   | 0 … 2^32−1        |
-| ~short~  | −32 768 … 32 767               | ~long~   | −2^63 … 2^63−1    |
-| ~ushort~ | 0 … 65 535                     | ~ulong~  | 0 … 2^64−1        |
-| ~int~    | −2 147 483 648 … 2 147 483 647 | ~double~ | IEEE 754 binary64 |
+| ~byte~   | 0 … 255                        | ~uint~    | 0 … 2^32−1                |
+| ~short~  | −32 768 … 32 767               | ~long~    | −2^63 … 2^63−1            |
+| ~ushort~ | 0 … 65 535                     | ~ulong~   | 0 … 2^64−1                |
+| ~int~    | −2 147 483 648 … 2 147 483 647 | ~double~  | IEEE 754 binary64         |
+| ~int128~ | −2^127 … 2^127−1               | ~uint128~ | 0 … 2^128−1               |
+| ~bigint~ | any integer                    | ~decimal~ | 28 digits, exact decimals |
 
-There is no ~float~ and no ~decimal~. Nothing else in the language depends on
-their absence — the constraints below are .NET's own interfaces, so both arrive
-working the day they can be spelled — but today they cannot be written.
+~bigint~ is ~System.Numerics.BigInteger~, ~decimal~ is ~System.Decimal~, and
+~int128~ and ~uint128~ are ~System.Int128~ and ~System.UInt128~. A ~bigint~
+allocates for each result, as it does in C#. A ~decimal~ adds ~0.1M~ and ~0.2M~
+to exactly ~0.3M~, and keeps the scale it was written with: ~1.50M~ is equal to
+~1.5M~ and is written as ~1.50~.
+
+There is no ~float~ and no ~sbyte~ name. Nothing in the language depends on
+their absence: see *A .NET number with no name* below.
 
 ~char~ is not one of these. It is a Unicode scalar value; it can be compared and
 converted (~char->int~, ~int->char~), and it cannot be added.
@@ -23,13 +30,21 @@ converted (~char->int~, ~int->char~), and it cannot be added.
 
 A number written with a suffix is that type and nothing else:
 
-| ~21uy~ | ~byte~   | ~21u~  | ~uint~  |
-| ~21s~  | ~short~  | ~21L~  | ~long~  |
-| ~21us~ | ~ushort~ | ~21UL~ | ~ulong~ |
-| ~21d~  | ~double~ |        |         |
+| ~21uy~ | ~byte~   | ~21u~  | ~uint~    |
+| ~21s~  | ~short~  | ~21L~  | ~long~    |
+| ~21us~ | ~ushort~ | ~21UL~ | ~ulong~   |
+| ~21d~  | ~double~ | ~21M~  | ~decimal~ |
+| ~21I~  | ~bigint~ |        |           |
 
-A decimal point or an exponent makes it a ~double~ — ~2.5~, ~1e10~ — whatever
-else it looks like. ~0x2A~ and ~0b101010~ are 42.
+The suffixes are F#'s. ~int128~ and ~uint128~ have none, in F# as here; a number
+written without a suffix takes either type where it is used as one.
+
+A decimal point or an exponent makes it a ~double~ — ~2.5~, ~1e10~, ~1e+10~ —
+unless it ends in ~M~, which makes it a ~decimal~: ~2.5M~. ~0x2A~ and
+~0b101010~ are 42.
+
+A ~bigint~ literal has no limit: ~340282366920938463463374607431768211456I~ is
+read as written.
 
 Written *without* a suffix, a number says nothing about its type and takes
 whatever surrounds it:
@@ -74,6 +89,9 @@ a bare ~5~ before — and is refused against a type variable.
     (5 "five")
     (_ "other")))
 #+END_SRC
+
+A ~decimal~ has C# constants and can be matched on. A ~bigint~, ~int128~ or
+~uint128~ has none, so matching one on a number is refused; compare it with ~=~.
 
 An argument to a *.NET* method is settled at ~int~ before the overload is
 chosen, then widened as C# would widen it. ~(sqrt 9)~ is 3.0.
@@ -249,7 +267,9 @@ string.
 #+END_SRC
 
 ~int->string~, ~long->string~, ~double->string~ and ~byte->string~ exist under
-those names; the other three types have no wrapper of their own, so use ~->str~.
+those names, and so do ~decimal->string~, ~bigint->string~, ~int128->string~
+and ~uint128->string~ with their ~string->~ inverses. The other three types have
+no wrapper of their own, so use ~->str~.
 ~number->string~ is ~int->string~ under the name R7RS uses.
 
 Conversion to string is .NET's ~ToString()~ in the invariant culture, so ~6.0~
@@ -464,9 +484,41 @@ interface does offer. What is *not* checked is the shape you declared against
 the shape the member has, so a wrong arity survives to be a C# error in
 generated code.
 
+** A .NET number with no name
+
+A .NET type that implements ~INumber<T>~ for itself is a number to Bjolang,
+named or not. ~System.Half~, ~System.Single~ and ~System.SByte~ have no name
+here, and work through ~import/class~: ~Num~ reaches their arithmetic, and a
+number written without a suffix takes their type.
+
+#+BEGIN_SRC scheme
+(import/class (Half (: System.Half)))
+
+(: halve (-> Half Half))
+(defun (halve h) (/ h 2))
+#+END_SRC
+
+A literal at such a type is converted from a ~long~ in the C#, which the JIT
+folds, and a larger one is parsed. ~Eq~ is the type's own ~Equals~. ~Ord~ has
+to be implemented by the module that declares the type, which for a .NET type
+is ~std~: it has one for ~sbyte~.
+
+A conversion operator is imported like any other static method, with the
+declared signature choosing the overload:
+
+#+BEGIN_SRC scheme
+(import/extern
+  (bigint->long (: System.Numerics.BigInteger.op_Explicit (-> bigint long))))
+#+END_SRC
+
+C# does not call an operator by name, so the call is written as the cast or
+the operator it stands for.
+
 ** Rough edges
 
-- *No ~float~, no ~decimal~.* See *The types*.
+- *No ~float~ or ~sbyte~ name.* See *A .NET number with no name*.
+- *A ~bigint~, ~int128~ or ~uint128~ in a pattern is refused*, as C# has no
+  constant of the type.
 - *No digit separators.* ~1_000~ reads as ~1~ followed by the name ~_000~.
 - *A constant that overflows is a C# error rather than a Bjolang one.* Roslyn
   folds constant expressions in checked mode, so ~(+ 2147483647 1)~ and

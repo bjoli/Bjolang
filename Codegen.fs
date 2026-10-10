@@ -317,6 +317,7 @@ let mapPrimitiveType (name: string) =
     | "System.Int64" -> "long"
     | "System.UInt64" -> "ulong"
     | "System.Double" -> "double"
+    | "System.Decimal" -> "decimal"
     | "System.String" -> "string"
     | "String" -> "BjoString.Utf8String"
     | "System.Boolean" -> "bool"
@@ -654,6 +655,48 @@ let rec typeToString (hm: HMType) : string =
         typeToString (TAssoc(traitName, assocName, inner))
     | TAssoc (traitName, assocName, implType) ->
         "object /* unresolved assoc */"
+
+/// How C# writes a call of a user-defined operator, which it refuses to call
+/// by name (CS0571): `BigInteger.op_Implicit(x)` is `((BigInteger)(x))`, and
+/// `op_Addition(a, b)` is `(a + b)`. `None` for any other method.
+///
+/// A conversion is a cast to the method's return type, so C# chooses among
+/// the overloads by the argument, as it would for the cast written by hand.
+let private operatorCall (methodName: string) (returnType: HMType) (args: string list) : string option =
+    let binary =
+        match methodName with
+        | "op_Addition" -> Some "+"
+        | "op_Subtraction" -> Some "-"
+        | "op_Multiply" -> Some "*"
+        | "op_Division" -> Some "/"
+        | "op_Modulus" -> Some "%"
+        | "op_BitwiseAnd" -> Some "&"
+        | "op_BitwiseOr" -> Some "|"
+        | "op_ExclusiveOr" -> Some "^"
+        | "op_LeftShift" -> Some "<<"
+        | "op_RightShift" -> Some ">>"
+        | "op_UnsignedRightShift" -> Some ">>>"
+        | "op_Equality" -> Some "=="
+        | "op_Inequality" -> Some "!="
+        | "op_LessThan" -> Some "<"
+        | "op_GreaterThan" -> Some ">"
+        | "op_LessThanOrEqual" -> Some "<="
+        | "op_GreaterThanOrEqual" -> Some ">="
+        | _ -> None
+
+    let unary =
+        match methodName with
+        | "op_UnaryNegation" -> Some "-"
+        | "op_UnaryPlus" -> Some "+"
+        | "op_OnesComplement" -> Some "~"
+        | "op_LogicalNot" -> Some "!"
+        | _ -> None
+
+    match methodName, args, binary, unary with
+    | ("op_Implicit" | "op_Explicit"), [ a ], _, _ -> Some $"((%s{typeToString returnType})(%s{a}))"
+    | _, [ a; b ], Some op, _ -> Some $"(%s{a} %s{op} %s{b})"
+    | _, [ a ], _, Some op -> Some $"(%s{op}(%s{a}))"
+    | _ -> None
 
 /// A numeric literal, spelled for the type the checker gave it.
 ///
@@ -1280,7 +1323,7 @@ let private csharpConstantDefault (kwType: HMType) (kwDefault: TypedExpr) : stri
     // expression, so `((byte)21)` is a legal default. The types are listed
     // rather than defaulted to eligible because `mapPrimitiveType` is free to
     // grow a case that a bare numeral is not a constant of.
-    | TInt text, ("int" | "byte" | "short" | "ushort" | "uint" | "long" | "ulong" | "double") ->
+    | TInt text, ("int" | "byte" | "short" | "ushort" | "uint" | "long" | "ulong" | "double" | "decimal") ->
         NumericLiteral.csharp kwType text
     | TBool b, "bool" -> Some(if b then "true" else "false")
     | _ -> None
@@ -2250,6 +2293,31 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                 | Some m -> isVoidType m.ReturnType
                 | None -> false)
 
+        // An operator, which C# does not call by name. Its pieces go around
+        // the operands as `operatorCall` places them.
+        let operatorPieces =
+            match meta with
+            | Some m when not awaits && not ambient ->
+                let holes = args |> List.mapi (fun i _ -> $"__operand_%d{i}__")
+
+                operatorCall methodName m.ReturnType holes
+                |> Option.map (fun text -> text, holes)
+            | _ -> None
+
+        match operatorPieces with
+        | Some(text, holes) ->
+            let emitters = prepareOperands ctx args
+            let mutable rest = text
+
+            for hole, emit in List.zip holes emitters do
+                let at = rest.IndexOf(hole, StringComparison.Ordinal)
+                append ctx (rest.Substring(0, at))
+                emit ctx
+                rest <- rest.Substring(at + hole.Length)
+
+            append ctx rest
+        | None ->
+
         if awaits then append ctx (if awaitsVoid then "await " else "(await ")
 
         append ctx $"%s{clrType}.%s{methodName}("
@@ -2686,8 +2754,11 @@ and private generateGuardedCall (ctx: CodegenContext) (target: BlockTarget) (exp
         let methodName = methodName + foreignTypeArguments (Some meta)
 
         generateGuarded ctx target expr (isVoidType meta.ReturnType) meta.Exceptions args (fun c names ->
-            let argList = String.concat ", " (withToken meta names)
-            append c (callText meta $"%s{clrType}.%s{methodName}(%s{argList})"))
+            match operatorCall methodName meta.ReturnType names with
+            | Some call when not meta.Await && not meta.AmbientToken -> append c call
+            | _ ->
+                let argList = String.concat ", " (withToken meta names)
+                append c (callText meta $"%s{clrType}.%s{methodName}(%s{argList})"))
 
     // A constructor always produces a value and is never awaited.
     | TNewObject (clrName, args, Some meta) ->

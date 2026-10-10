@@ -29,6 +29,10 @@ let private typeNameMap =
         "long", TypeConstants.longType
         "ulong", TypeConstants.ulongType
         "double", TypeConstants.doubleType
+        "decimal", TypeConstants.decimalType
+        "bigint", TypeConstants.bigintType
+        "int128", TypeConstants.int128Type
+        "uint128", TypeConstants.uint128Type
         "string", TypeConstants.stringType
         "bool", TypeConstants.boolType
         // `void` in a Bjolang signature is the *unit* type, not C#'s `void`.

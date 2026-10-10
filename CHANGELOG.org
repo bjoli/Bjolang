@@ -3,6 +3,34 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~decimal~, ~bigint~, ~int128~ and ~uint128~
+
+- *Four numeric types more*, each the .NET type under a name a signature can
+  write: ~decimal~ (~System.Decimal~), ~bigint~
+  (~System.Numerics.BigInteger~), ~int128~ and ~uint128~.
+- *F#'s literal suffixes*: ~1.5M~ and ~2M~ are decimals, ~2I~ is a bigint. A
+  bigint literal has no limit. ~int128~ and ~uint128~ have no suffix, as in
+  F#; a number with no suffix takes them where it is used as one. A literal
+  that does not fit an ~int128~, a ~uint128~ or a ~decimal~ is an error, as
+  for the eight.
+- An exponent may have a plus sign: ~4.84e+00~ was a syntax error.
+- ~Ord~ for the four, so ~compare~, ~list-sort~ and the ordered collections
+  take them. Their ~Eq~ is their own ~Equals~.
+- ~decimal->string~, ~bigint->string~, ~int128->string~, ~uint128->string~ and
+  the four ~string->~ inverses, in the invariant culture. ~->str~ writes the
+  same text.
+- A decimal is a C# constant, so it can be matched on and be a keyword
+  default. The other three cannot be matched on, and the error says to
+  compare with ~=~.
+- *Any .NET number is a number.* A type that implements ~INumber<T>~ for
+  itself, such as ~System.Half~ imported with ~import/class~, takes literals
+  written without a suffix. ~Ord~ for ~System.SByte~ is in ~std~.
+- *A .NET operator can be imported.* ~op_Explicit~ and ~op_Implicit~ choose
+  their overload by the declared result type, and every operator is emitted
+  as the cast or the operator C# writes, since C# refuses to call one by name.
+  Before, the overloads that differ only in their result were dropped as
+  duplicates, and the call was a C# error.
+
 * ~summing~ and ~counting~ at every numeric type
 
 - *An implementation's ~(where ...)~ may name a .NET interface*, such as

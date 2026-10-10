@@ -319,6 +319,16 @@ module TypeConstants =
     let UInt64Name = "System.UInt64"
     [<Literal>]
     let DoubleName = "System.Double"
+    /// The four numbers past the eight: `decimal`, `bigint`, `int128` and
+    /// `uint128`. Each is the .NET type, and nothing is wrapped.
+    [<Literal>]
+    let DecimalName = "System.Decimal"
+    [<Literal>]
+    let BigIntegerName = "System.Numerics.BigInteger"
+    [<Literal>]
+    let Int128Name = "System.Int128"
+    [<Literal>]
+    let UInt128Name = "System.UInt128"
     [<Literal>]
     let KeywordName = "Keyword"
     [<Literal>]
@@ -373,6 +383,10 @@ module TypeConstants =
     let longType = TCon(Int64Name, [])
     let ulongType = TCon(UInt64Name, [])
     let doubleType = TCon(DoubleName, [])
+    let decimalType = TCon(DecimalName, [])
+    let bigintType = TCon(BigIntegerName, [])
+    let int128Type = TCon(Int128Name, [])
+    let uint128Type = TCon(UInt128Name, [])
 
 /// A number as it is written, and as C# has to read it back.
 ///
@@ -411,7 +425,16 @@ module NumericLiteral =
           "L", TypeConstants.longType
           "l", TypeConstants.longType
           "d", TypeConstants.doubleType
-          "D", TypeConstants.doubleType ]
+          "D", TypeConstants.doubleType
+          // F#'s suffixes for the two numbers it has a literal for.
+          "M", TypeConstants.decimalType
+          "m", TypeConstants.decimalType
+          "I", TypeConstants.bigintType ]
+
+    /// Whether the literal is a `decimal` written with a fraction or an
+    /// exponent, `1.5M`, which is a decimal and not a double.
+    let private isDecimalReal (text: string) =
+        not (isHex text) && (text.EndsWith "M" || text.EndsWith "m")
 
     /// A hexadecimal literal's digits are letters, so only the suffixes that
     /// are not also hex digits can be read off one: `0xD` is thirteen and not a
@@ -430,8 +453,11 @@ module NumericLiteral =
     let spelledType (text: string) : HMType option =
         // A decimal point or an exponent is a real number however it ends,
         // and it is asked first so that `0.5s` is a malformed double rather
-        // than a short with a fraction in it.
-        if not (isHex text) && (text.Contains "." || text.Contains "e" || text.Contains "E") then
+        // than a short with a fraction in it. The one exception is `M`, which
+        // makes a decimal of a real number.
+        if isDecimalReal text then
+            Some TypeConstants.decimalType
+        elif not (isHex text) && (text.Contains "." || text.Contains "e" || text.Contains "E") then
             Some TypeConstants.doubleType
         else
             applicable text
@@ -484,12 +510,28 @@ module NumericLiteral =
 
         parsed |> Option.map (fun v -> if negative then -v else v)
 
+    /// Whether a type other than the eight is a .NET number: one that
+    /// implements `INumber<T>`, such as `System.Numerics.BigInteger` or
+    /// `System.Int128`. A literal may take such a type, as it takes a `long`.
+    ///
+    /// Answered by `DotNetInterop`, which can ask .NET and is compiled after
+    /// this file; it sets this when it is loaded.
+    let mutable isClrNumber: HMType -> bool = fun _ -> false
+
     let private bounds (t: HMType) =
         let range (lo: System.Numerics.BigInteger) (hi: System.Numerics.BigInteger) = Some(lo, hi)
         let big (n: int64) = System.Numerics.BigInteger n
         let bigu (n: uint64) = System.Numerics.BigInteger n
+        let two = System.Numerics.BigInteger 2
 
         match t with
+        // The .NET numbers outside the eight that have a fixed range.
+        | TCon("System.SByte", []) -> range (big -128L) (big 127L)
+        | TCon("System.Int128", []) -> range (-(System.Numerics.BigInteger.Pow(two, 127))) (System.Numerics.BigInteger.Pow(two, 127) - big 1L)
+        | TCon("System.UInt128", []) -> range (big 0L) (System.Numerics.BigInteger.Pow(two, 128) - big 1L)
+        | TCon("System.IntPtr", []) -> range (big System.Int64.MinValue) (big System.Int64.MaxValue)
+        | TCon("System.UIntPtr", []) -> range (big 0L) (bigu System.UInt64.MaxValue)
+        | TCon("System.Decimal", []) -> range (-(System.Numerics.BigInteger System.Decimal.MaxValue)) (System.Numerics.BigInteger System.Decimal.MaxValue)
         | TCon(TypeConstants.ByteName, []) -> range (big 0L) (big 255L)
         | TCon(TypeConstants.Int16Name, []) -> range (big -32768L) (big 32767L)
         | TCon(TypeConstants.UInt16Name, []) -> range (big 0L) (big 65535L)
@@ -508,6 +550,24 @@ module NumericLiteral =
     /// while the program is still Bjolang, so there is no reason for the
     /// question to be put in the other language.
     let fits (t: HMType) (text: string) : bool =
+        let digitsOnly = digits text
+        let realDecimal =
+            settled t = TypeConstants.decimalType
+            && not (isHex digitsOnly)
+            && (digitsOnly.Contains "." || digitsOnly.Contains "e" || digitsOnly.Contains "E")
+
+        if realDecimal then
+            // Too large a decimal is an overflow to .NET's parser, and CS0594
+            // to C#.
+            fst (
+                System.Decimal.TryParse(
+                    digitsOnly,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture
+                )
+            )
+        else
+
         match bounds (settled t) with
         | None when settled t = TypeConstants.doubleType ->
             // Too large a double is infinity to .NET's parser, and CS0594 to C#.
@@ -547,7 +607,38 @@ module NumericLiteral =
             if real then Some digits
             elif isHex digits then Some $"((double)%s{digits})"
             else Some(digits + "d")
+        // C# has a decimal literal, so a decimal is a constant, and a pattern.
+        | TCon(TypeConstants.DecimalName, []) ->
+            if isHex digits then Some $"((decimal)%s{digits})" else Some(digits + "m")
+        // A .NET number C# has no literal for. A value that fits in a `long`
+        // or a `ulong` is converted from one, which every such type allows and
+        // the JIT folds. A larger one is parsed, once per evaluation: C# has
+        // no other way to write it.
+        | TCon(name, []) as t when isClrNumber t ->
+            let invariant = "System.Globalization.CultureInfo.InvariantCulture"
+
+            if real then
+                Some $"%s{name}.Parse(\"%s{digits}\", %s{invariant})"
+            else
+                match value digits with
+                | Some v when v >= System.Numerics.BigInteger System.Int64.MinValue
+                              && v <= System.Numerics.BigInteger System.Int64.MaxValue ->
+                    Some $"((%s{name})(%s{v.ToString()}L))"
+                | Some v when v >= System.Numerics.BigInteger.Zero
+                              && v <= System.Numerics.BigInteger System.UInt64.MaxValue ->
+                    Some $"((%s{name})(%s{v.ToString()}UL))"
+                | Some v -> Some $"%s{name}.Parse(\"%s{v.ToString()}\", %s{invariant})"
+                | None -> None
         | _ -> None
+
+    /// Is this one of the eight numeric types, which a C# `case` label can
+    /// hold a constant of?
+    let isBuiltinNumeric (t: HMType) : bool =
+        match settled t with
+        | TCon((TypeConstants.Int32Name | TypeConstants.Int64Name | TypeConstants.UInt32Name
+               | TypeConstants.UInt64Name | TypeConstants.ByteName | TypeConstants.Int16Name
+               | TypeConstants.UInt16Name | TypeConstants.DoubleName | TypeConstants.DecimalName), []) -> true
+        | _ -> false
 
     /// Is this a type a number can have?
     ///

@@ -1,0 +1,62 @@
+(import (std prelude))
+(import (std simpletest))
+
+;; decimal, bigint, int128 and uint128: their names, their literals with F#'s
+;; suffixes (M for decimal, I for bigint), arithmetic, comparison, sorting,
+;; collectors, conversions, and the .NET numbers a program imports itself.
+
+(: price (-> decimal decimal))
+(defun (price x) (* x 1.07M))
+
+(: fact (-> bigint bigint))
+(defun (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
+
+(: kind (-> decimal string))
+(defun (kind d) (match d (0M "zero") (1.5M "one and a half") (_ "other")))
+
+(: double-it (-> %a %a) (where (Num %a)))
+(defun (double-it x) (* x 2))
+
+;; A .NET number with no name of its own, imported, with literals.
+(import/class (Half (: System.Half)))
+(: halve (-> Half Half))
+(defun (halve h) (/ h 2))
+
+;; A conversion operator, imported: the overload is chosen by the declared
+;; result, and the call is written as a cast.
+(import/extern
+  (bigint->long (: System.Numerics.BigInteger.op_Explicit (-> bigint long)))
+  (long->bigint (: System.Numerics.BigInteger.op_Implicit (-> long bigint)))
+  (bigint-add   (: System.Numerics.BigInteger.op_Addition (-> bigint bigint bigint))))
+
+(defun (main args)
+  (expect "decimal arithmetic is exact" (+ 0.1M 0.2M) 0.3M)
+  (expect "decimal times a literal" (price 100M) 107M)
+  (expect "a decimal keeps its scale" (decimal->string 1.50M) "1.50")
+  (expect "a decimal pattern" (kind 1.5M) "one and a half")
+  (expect "bigint factorial" (bigint->string (fact 30I)) "265252859812191058636308480000000")
+  (expect "a literal larger than a ulong"
+          (bigint->string 340282366920938463463374607431768211456I)
+          "340282366920938463463374607431768211456")
+  (expect "a bare literal at bigint" (fact 3) 6I)
+  (expect "int128 past a long"
+          (int128->string (* (string->int128 "9223372036854775807") 4))
+          "36893488147419103228")
+  (expect "uint128 round trip" (uint128->string (string->uint128 "340282366920938463463374607431768211455"))
+          "340282366920938463463374607431768211455")
+  (expect "string->decimal" (string->decimal "2.5") 2.5M)
+  (expect "string->bigint" (string->bigint "-12345678901234567890123") -12345678901234567890123I)
+  (expect "compare bigints" (compare 3I 4I) -1)
+  (expect "sort bigints" (list-sort (list 3I 100000000000000000000000I 2I)) (list 2I 3I 100000000000000000000000I))
+  (expect "sort decimals" (list-sort (list 2.5M 1.25M)) (list 1.25M 2.5M))
+  (expect "summing decimals" {summing x (:for x [1.25M 2.5M])} 3.75M)
+  (expect "counting into a bigint" (+ {counting c (:for c "abc")} 0I) 3I)
+  (expect "generic Num at bigint" (double-it 21I) 42I)
+  (expect "generic Num at decimal" (double-it 1.5M) 3.0M)
+  (expect "->str of a decimal" (->str 1.5M) "1.5")
+  (expect "->str of a bigint" (->str -7I) "-7")
+  (expect "a bigint as a map key" (map-ref (map-set (map-empty) 10I "ten") 10I) "ten")
+  (expect "an imported .NET number takes literals" (->str (halve (cast System.Half 3))) "1.5")
+  (expect "an imported conversion operator" (bigint->long (bigint-add (long->bigint 40L) 2I)) 42L)
+  (expect "an exponent with a plus sign" 4.84e+00 4.84)
+  0)

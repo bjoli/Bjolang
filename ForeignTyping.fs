@@ -566,7 +566,13 @@ let internal resolveExternMethod
     (argTypes: HMType list)
     : DotNetInterop.ResolvedCall =
     settleLiterals argTypes
-    DotNetInterop.resolveMethod where (not info.IsInstance) clrType info.MemberName argTypes
+
+    let declaredReturn =
+        match info.DeclaredType with
+        | Some(TFun(_, ret, _)) -> Some ret
+        | _ -> None
+
+    DotNetInterop.resolveMethodReturning where (not info.IsInstance) clrType info.MemberName argTypes declaredReturn
 
 /// Resolve an extern call that threads the ambient cancellation token.
 ///

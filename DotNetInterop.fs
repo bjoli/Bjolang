@@ -353,6 +353,9 @@ let tryConstructInterface (definition: Type) (args: Type list) : Type option =
         with _ ->
             None
 
+/// Answers of `isClrNumber`, by type name. Reflection is asked once per type.
+let private clrNumbers = System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
+
 /// Does `t` implement `iface`?
 ///
 /// Both shapes of `iface` are accepted, because the two questions are asked at
@@ -761,6 +764,26 @@ let rec tryClrTypeOf (t: HMType) : Type option =
             None
     | _ -> None
 
+/// Whether `t` is a .NET type that implements `INumber<T>` for itself:
+/// `System.Numerics.BigInteger`, `System.Int128`, `System.Decimal` and the
+/// others. A literal may take such a type; see `NumericLiteral.isClrNumber`.
+let isClrNumber (t: HMType) : bool =
+    match pruneLocal t with
+    | TCon(name, []) as t ->
+        clrNumbers.GetOrAdd(
+            name,
+            fun _ ->
+                match tryClrTypeOf t, tryResolveGenericInterface "System.Numerics.INumber" 1 with
+                | Some clrType, Some definition ->
+                    match tryConstructInterface definition [ clrType ] with
+                    | Some constructed -> implementsInterface clrType constructed
+                    | None -> false
+                | _ -> false
+        )
+    | _ -> false
+
+do NumericLiteral.isClrNumber <- isClrNumber
+
 /// Is the type still open — a metavariable nothing has pinned down?
 let isUnresolved (t: HMType) : bool =
     match pruneLocal t with
@@ -840,6 +863,10 @@ let showTypesTogether (ts: HMType list) : string list =
             | "System.UInt32" -> "uint"
             | "System.UInt64" -> "ulong"
             | "System.Double" -> "double"
+            | "System.Decimal" -> "decimal"
+            | "System.Numerics.BigInteger" -> "bigint"
+            | "System.Int128" -> "int128"
+            | "System.UInt128" -> "uint128"
             | "String" -> "string"
             | "System.Boolean" -> "bool"
             | "System.Byte" -> "byte"
@@ -1659,11 +1686,16 @@ type ResolvedCall =
 /// A method re-declared with `new` in a derived class — `SqliteConnection`'s
 /// `CreateCommand` hides `DbConnection`'s — is reflected twice, with the same
 /// parameters. C# calls the most derived, so only that one is a candidate.
+///
+/// The return type is part of what makes two the same: the conversion
+/// operators of one type, `op_Explicit` to `byte` and to `long`, take the same
+/// parameter and are different methods.
 let private withoutHidden (methods: MethodInfo list) : MethodInfo list =
     let rec depth (d: Type) = if isNull d then 0 else 1 + depth d.BaseType
 
     methods
-    |> List.groupBy (fun m -> m.GetParameters() |> Array.map (fun p -> p.ParameterType) |> Array.toList)
+    |> List.groupBy (fun m ->
+        m.ReturnType :: (m.GetParameters() |> Array.map (fun p -> p.ParameterType) |> Array.toList))
     |> List.map (fun (_, same) -> same |> List.maxBy (fun m -> depth m.DeclaringType))
 
 let private callableMethods (t: Type) (name: string) (flags: BindingFlags) =
@@ -1797,15 +1829,39 @@ let private accessorSyntax (where: string) (t: Type) (m: MethodInfo) : CallSynta
 
                 failwithf $"Type Error at %s{where}: '%s{m.Name}' is the %s{how}."
 
-let resolveMethod
+let rec resolveMethod
     (where: string)
     (isStatic: bool)
     (t: Type)
     (name: string)
     (argTypes: HMType list)
     : ResolvedCall =
+    resolveMethodReturning where isStatic t name argTypes None
+
+/// `resolveMethod`, where the import declared what the method returns.
+///
+/// The overloads of a conversion operator, `op_Explicit`, can differ in their
+/// return type alone: `BigInteger` has one to `byte`, one to `long` and more,
+/// all taking a `BigInteger`. The arguments cannot choose among them, so the
+/// declared return type does.
+and resolveMethodReturning
+    (where: string)
+    (isStatic: bool)
+    (t: Type)
+    (name: string)
+    (argTypes: HMType list)
+    (declaredReturn: HMType option)
+    : ResolvedCall =
     rejectSyncOverAsync where t name
     let candidates = callableMethods t name (memberFlags isStatic)
+
+    let candidates =
+        match declaredReturn with
+        | Some wanted when name = "op_Explicit" || name = "op_Implicit" ->
+            match candidates |> List.filter (fun (_, m) -> mapClrType m.ReturnType = wanted) with
+            | [] -> candidates
+            | narrowed -> narrowed
+        | _ -> candidates
 
     let note () =
         t.GetMethods(memberFlags isStatic)
