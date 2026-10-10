@@ -748,12 +748,18 @@
 (defun (range lo hi)
   (Range (lo lo) (hi hi) (by 1)))
 
-;; A range counts up, so a step of zero or less would never reach `hi`.
+;; A range counts up, so a step of zero or less would never reach `hi`. The
+;; message is made in `range-by-panic`, so that `range-by` is small enough for
+;; the JIT to inline at the start of a loop.
 (: range-by (-> int int int Range))
 (defun (range-by lo hi by)
   (when (<= by 0)
-    (panic! #"range-by: the step is ${by}, and a range counts up from lo to hi. down-from counts down."))
+    (range-by-panic by))
   (Range (lo lo) (hi hi) (by by)))
+
+(: range-by-panic (-> int void))
+(defun (range-by-panic by)
+  (panic! #"range-by: the step is ${by}, and a range counts up from lo to hi. down-from counts down."))
 
 (impl (Iterable Range)
   (type %elem int)

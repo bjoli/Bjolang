@@ -11,6 +11,7 @@
  * availability requirements or notice obligations of Section 3 of the MPL 2.0.
  */
 
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using BjoString;
 using Collections;
@@ -48,10 +49,9 @@ public readonly struct VecBackCursor<T> {
     /// with a count of 0 is the walk of an empty slice.
     public static VecBackCursor<T> Start(RrbList<T> list, int last, int count) {
         if (last < -1 || last >= list.Count || count < 0 || last - count < -1)
-            throw new ArgumentOutOfRangeException(nameof(count), $"{count} down from {last} is not a run of a vec of {list.Count}.");
-        return count == 0
-            ? new VecBackCursor<T>(Array.Empty<T>(), -1, 0, list, last, last)
-            : AtLeaf(list, last, last - count);
+            NotARun(last, count, list.Count);
+        if (count == 0) return new VecBackCursor<T>(Array.Empty<T>(), -1, 0, list, last, last);
+        return Enter(list, last, last - count);
     }
 
     public bool Done {
@@ -73,14 +73,25 @@ public readonly struct VecBackCursor<T> {
         return AtLeaf(_list, _nextIndex, _stop);
     }
 
+    // Apart from `Start`, so that the message does not make `Start` too large
+    // to inline at the start of each walk.
+    [DoesNotReturn, MethodImpl(MethodImplOptions.NoInlining)]
+    private static void NotARun(int last, int count, int length) =>
+        throw new ArgumentOutOfRangeException(nameof(count), $"{count} down from {last} is not a run of a vec of {length}.");
+
     /// The cursor on element `index`, with the part of its leaf the walk down
-    /// to above `stop` takes.
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static VecBackCursor<T> AtLeaf(RrbList<T> list, int index, int stop) {
+    /// to above `stop` takes. Inlined where a walk starts, so that the walk of
+    /// a vec that is all tail makes no call. `AtLeaf` is the same out of line,
+    /// for the next leaf of a walk.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static VecBackCursor<T> Enter(RrbList<T> list, int index, int stop) {
         var items = list.LeafAt(index, out var position, out _);
         var take = Math.Min(position + 1, index - stop);
         return new VecBackCursor<T>(items, position, position - take + 1, list, index - take, stop);
     }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static VecBackCursor<T> AtLeaf(RrbList<T> list, int index, int stop) => Enter(list, index, stop);
 }
 
 public static class VecWalk {

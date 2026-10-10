@@ -790,9 +790,8 @@ public static partial class BjolangRuntime {
         public static VecCursor<T> Start(Collections.RrbList<T> list, int from, int count) {
             if (from < 0 || count < 0 || from > list.Count - count)
                 throw new ArgumentOutOfRangeException(nameof(count), $"{from} and {count} are not a run of a vec of {list.Count}.");
-            return count == 0
-                ? new VecCursor<T>(Array.Empty<T>(), 0, 0, list, from, from)
-                : AtLeaf(list, from, from + count);
+            if (count == 0) return new VecCursor<T>(Array.Empty<T>(), 0, 0, list, from, from);
+            return Enter(list, from, from + count);
         }
 
         public bool Done {
@@ -816,13 +815,18 @@ public static partial class BjolangRuntime {
         }
 
         /// The cursor on element `index`, with the part of its leaf the walk
-        /// up to `stop` takes.
-        [MethodImpl(MethodImplOptions.NoInlining)]
-        private static VecCursor<T> AtLeaf(Collections.RrbList<T> list, int index, int stop) {
+        /// up to `stop` takes. Inlined where a walk starts, so that the walk of
+        /// a vec that is all tail makes no call. `AtLeaf` is the same out of
+        /// line, for the next leaf of a walk.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static VecCursor<T> Enter(Collections.RrbList<T> list, int index, int stop) {
             var items = list.LeafAt(index, out var position, out var length);
             var take = Math.Min(length - position, stop - index);
             return new VecCursor<T>(items, position, position + take, list, index + take, stop);
         }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static VecCursor<T> AtLeaf(Collections.RrbList<T> list, int index, int stop) => Enter(list, index, stop);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

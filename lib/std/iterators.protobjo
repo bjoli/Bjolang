@@ -42,10 +42,18 @@
 ;; What a bad slice says. One check per walk rather than one per element, and
 ;; it names the bounds that were asked for, which an IndexOutOfRangeException
 ;; from somewhere inside the loop cannot.
+;;
+;; The check runs at the start of every walk, so it has to be small enough for
+;; the JIT to inline it, and `in-vec` and the others with it. The message is
+;; made in `slice-panic`: building it in the check made the check too large.
 (: check-slice (-> string int int int void))
 (defun (check-slice who from to len)
   (when (or (< from 0) (> to len) (> from to))
-    (panic! #"${who}: #:from ${from} #:to ${to} is not a slice of a collection of length ${len}.")))
+    (slice-panic who from to len)))
+
+(: slice-panic (-> string int int int void))
+(defun (slice-panic who from to len)
+  (panic! #"${who}: #:from ${from} #:to ${to} is not a slice of a collection of length ${len}."))
 
 ;; --- Arrays ---
 ;;
@@ -205,10 +213,15 @@
 (type (: UpFrom (Struct (: from int) (: to int) (: by int))))
 (type (: DownFrom (Struct (: from int) (: to int) (: by int))))
 
+;; Small enough to inline, as `check-slice` is, with the message made apart.
 (: check-step (-> string int void))
 (defun (check-step who by)
   (when (<= by 0)
-    (panic! #"${who}: #:by is ${by}, and a step of zero or less is a walk that never gets anywhere. It is a distance; down-from subtracts it.")))
+    (step-panic who by)))
+
+(: step-panic (-> string int void))
+(defun (step-panic who by)
+  (panic! #"${who}: #:by is ${by}, and a step of zero or less is a walk that never gets anywhere. It is a distance; down-from subtracts it."))
 
 (: up-from (-> int (#:to int) (#:by int) UpFrom))
 (defun (up-from from #:to int-max #:by 1)
