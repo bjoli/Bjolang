@@ -200,24 +200,49 @@ let metadata
         |> Set.toList
         |> List.map (fun n -> Naming.typeKey (Naming.moduleKeyOfPath inputFilePath) n, n)
 
+    let isDelimiter (c: char) =
+        System.Char.IsWhiteSpace c || c = '(' || c = ')' || c = '"'
+
+    /// Does `text` hold `token` with a delimiter at both ends?
+    let mentionsToken (text: string) (token: string) =
+        let rec scan (from: int) =
+            match text.IndexOf(token, from, System.StringComparison.Ordinal) with
+            | -1 -> false
+            | i ->
+                let before = i = 0 || isDelimiter text[i - 1]
+                let after = i + token.Length >= text.Length || isDelimiter text[i + token.Length]
+                if before && after then true else scan (i + 1)
+
+        scan 0
+
+    /// Every name source may write for a withheld type: its key, its name, and
+    /// the names of its cases. A record's constructor is its name.
+    let withheldSpellings =
+        let withheldNames = withheld |> List.map snd |> Set.ofList
+
+        ownModuleDecls
+        |> TypedAST.collectDecls (function
+            | TypedAST.TType(defs, _)
+            | TypedAST.TTypeRec(defs, _) -> defs
+            | _ -> [])
+        |> List.filter (fun (td: Ast.TypeDef) -> Set.contains (bare td.Name) withheldNames)
+        |> List.collect (fun td ->
+            let cases =
+                match td.Kind with
+                | Ast.Union cases ->
+                    cases
+                    |> List.map (function
+                        | Ast.SimpleCase(n, _) -> n
+                        | Ast.DataCase(n, _, _, _) -> n)
+                | _ -> []
+
+            td.Name :: bare td.Name :: cases)
+        |> List.distinct
+
     /// The first withheld type that `text` names. A key is one token, so a hit
     /// with a delimiter at both ends is a reference and nothing else.
     let withheldIn (text: string) : string option =
-        let isDelimiter (c: char) =
-            System.Char.IsWhiteSpace c || c = '(' || c = ')' || c = '"'
-
-        let mentions (key: string) =
-            let rec scan (from: int) =
-                match text.IndexOf(key, from, System.StringComparison.Ordinal) with
-                | -1 -> false
-                | i ->
-                    let before = i = 0 || isDelimiter text[i - 1]
-                    let after = i + key.Length >= text.Length || isDelimiter text[i + key.Length]
-                    if before && after then true else scan (i + 1)
-
-            scan 0
-
-        withheld |> List.tryPick (fun (key, name) -> if mentions key then Some name else None)
+        withheld |> List.tryPick (fun (key, name) -> if mentionsToken text key then Some name else None)
 
     /// Can a published body name `n`? Not when `n` is a binding of this module
     /// whose type names a withheld type: `n` would be exported with the body,
@@ -237,9 +262,15 @@ let metadata
                (withheldIn text).IsNone
            | None -> true
 
+    /// A body is published when it can be written out, every name it reaches
+    /// can be exported, and it does not name a withheld type or a constructor
+    /// of one: an importer cannot resolve such a name, so the splice would
+    /// fail and fall back to a call, with a warning.
     let publishableBody (tpl: TypedAST.InlineTemplate) =
         Codegen.isSerializableTemplate tpl.Body
         && tpl.Qualification |> Map.forall (fun n _ -> reachableFromBody n)
+        && (let text = Codegen.serializeExpr tpl.Body
+            withheldSpellings |> List.forall (fun s -> not (mentionsToken text s)))
 
     
     /// The traits declared *in this module*, exported or not.

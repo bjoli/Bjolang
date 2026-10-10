@@ -7,7 +7,7 @@
 ;; `record-set!`, so the inliner has to rename that target when it substitutes
 ;; the argument.
 
-(export Holder make-holder holder-count holder-field defer! in-field field-during)
+(export Holder make-holder holder-count holder-field defer! in-field field-during lazily)
 
 (type (: Pending (Union (: PendingInt (-> int int)))))
 
@@ -45,3 +45,17 @@
 (defun (field-during h value)
   (in-field h value (fun () (holder-field h))))
 
+
+;; Builds a value of a type this module does not export. An importer cannot
+;; name `Cell`, so the body is not published, and a call of `lazily` is a call.
+(type (: (Cell %a) (Record (: value (Option %a) #:mutable))))
+
+(: lazily (-> (-> int) (-> int)))
+(defun (lazily make)
+  (def cell (Cell (value None)))
+  (fun ()
+    (match (record-ref cell value)
+      ((Some v) v)
+      (None (def v (make))
+            (record-set! cell (value (Some v)))
+            v))))
