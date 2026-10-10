@@ -69,7 +69,7 @@ time: below 1 means Bjolang is faster.
 | n-body | 50,000,000 | 2.51 | 2.47 | 2.81 | 7.89 | 1.02 | 0.89 | 0.32 |
 | spectral-norm | 5,500 | 1.22 | 1.20 | 1.14 | 4.82 | 1.02 | 1.07 | 0.25 |
 | fannkuch-redux | 12 | 20.51 | 21.00 | 21.67 | 58.74 | 0.98 | 0.95 | 0.35 |
-| binary-trees | 21 | 12.87 | 10.46 | 14.43 | 4.23 | 1.23 | 0.89 | 3.04 |
+| binary-trees | 21 | 10.82 | 10.41 | 14.51 | 4.38 | 1.04 | 0.75 | 2.47 |
 | mandelbrot | 16,000 | 12.34 | 12.26 | 12.28 | 15.71 | 1.01 | 1.00 | 0.79 |
 | fasta | 25,000,000 | 2.73 | 2.45 | 2.39 | 3.63 | 1.11 | 1.14 | 0.75 |
 | k-nucleotide | 25,000,000 | 9.04 | 8.52 | 12.68 | 29.88 | 1.06 | 0.71 | 0.30 |
@@ -81,24 +81,25 @@ time: below 1 means Bjolang is faster.
 | n-body | 35 | 30 | 2 | 47 |
 | spectral-norm | 34 | 29 | 2 | 47 |
 | fannkuch-redux | 33 | 32 | 2 | 46 |
-| binary-trees | 644 | 612 | 189 | 272 |
+| binary-trees | 605 | 612 | 209 | 272 |
 | mandelbrot | 66 | 64 | 33 | 84 |
 | fasta | 35 | 29 | 2 | 47 |
 | k-nucleotide | 416 | 649 | 390 | 1276 |
 | reverse-complement | 743 | 1248 | 447 | 2111 |
 | pidigits | 47 | 45 | 8 | 47 |
 
-pidigits was measured in a later run than the others, and k-nucleotide and
-reverse-complement again after the string builder changed (see "What was
-changed after the first run" below), with the same machine and settings.
+pidigits was measured in a later run than the others, k-nucleotide and
+reverse-complement again after the string builder changed, and binary-trees
+again after the empty case of a union became `null` (see "What was changed
+after the first run" below), with the same machine and settings.
 
 Geometric means of the ratio, over the 9 benchmarks:
 
 | Bjolang against | geometric mean |
 |-----------------|---------------:|
-| C# | 1.06 |
-| Go | 1.06 |
-| Chez Scheme | 0.46 |
+| C# | 1.04 |
+| Go | 1.04 |
+| Chez Scheme | 0.45 |
 
 ### Reading the results
 
@@ -108,14 +109,11 @@ Geometric means of the ratio, over the 9 benchmarks:
   same machine code of both. Go is equal too. Chez is 1.3 to 4 times slower,
   as it boxes a flonum that is stored in a vector or passed to a procedure
   that is not inlined.
-- **Allocation** (binary-trees): Bjolang is 23% slower than C#, and the
-  cause is measured. `Empty` is an object, so each leaf stores two references
-  to it, each with a GC write barrier, where a C# leaf stores `null`, which
-  needs none. In C# written both ways, trees with `Empty` leaves take 31% longer
-  to build. Making one case of a union `null` would change how values are
-  represented; it is in `Todo.org`. Chez is 3 times faster than both: its
-  pairs are smaller and its collector is made for many short-lived pairs. Go
-  uses the least memory and has the slowest collector here.
+- **Allocation** (binary-trees): Bjolang is 4% slower than C#. It was 23%
+  slower while `Empty` was an object; see "What was changed after the first
+  run". Chez is 2.5 times faster than both: its pairs are smaller and its
+  collector is made for many short-lived pairs. Go uses the least memory and
+  has the slowest collector here.
 - **Text and output** (fasta, k-nucleotide, reverse-complement): Bjolang is 6
   to 10% slower than C# cold. Warm, reverse-complement is faster than C#; see
   "What was changed after the first run". Go reads bytes and never decodes
@@ -153,7 +151,7 @@ Same machine, minimum of 3 runs, seconds:
 | n-body | 2.44 | 2.44 | 2.81 | 7.82 | 1.00 | 0.87 | 0.31 | 1.02 |
 | spectral-norm | 1.16 | 1.17 | 1.15 | 4.90 | 1.00 | 1.01 | 0.24 | 1.02 |
 | fannkuch-redux | 20.85 | 21.16 | 21.64 | 59.40 | 0.99 | 0.96 | 0.35 | 0.98 |
-| binary-trees | 12.77 | 10.37 | 14.49 | 4.09 | 1.23 | 0.88 | 3.13 | 1.23 |
+| binary-trees | 10.86 | 10.33 | 14.61 | 4.27 | 1.05 | 0.74 | 2.54 | 1.04 |
 | mandelbrot | 12.14 | 12.07 | 12.27 | 15.52 | 1.01 | 0.99 | 0.78 | 1.01 |
 | fasta | 2.68 | 2.41 | 2.39 | 3.56 | 1.11 | 1.12 | 0.75 | 1.11 |
 | k-nucleotide | 8.21 | 7.94 | 12.43 | 15.82 | 1.03 | 0.66 | 0.52 | 1.06 |
@@ -161,15 +159,15 @@ Same machine, minimum of 3 runs, seconds:
 | pidigits | 2.37 | 2.33 | 2.43 | 2.67 | 1.01 | 0.97 | 0.89 | 1.02 |
 
 k-nucleotide and reverse-complement are from the run after the string builder
-changed.
+changed, and binary-trees from the run after its empty case became `null`.
 
-Geometric means: 1.02 against C#, 0.97 against Go, 0.51 against Chez.
+Geometric means: 1.00 against C#, 0.95 against Go, 0.49 against Chez.
 
 - **Warming up changes little.** Where the work is the same, the warm times
   are within 0.35 s of the cold ones, mostly below, and every ratio to C#
   moves by 0.04 or less. The benchmarks run for seconds, so start-up and JIT compilation were
-  already a small part of them. The gaps that remain, binary-trees and fasta,
-  are in the code that runs, not in warming it up.
+  already a small part of them. The gap that remains, fasta, is in the code
+  that runs, not in warming it up.
 - **Reverse-complement is the exception**, as the work is not the same:
   without reading 254 MB from standard input, what is left is collecting the
   lines, converting them and writing them. Before the string builder changed,
@@ -220,6 +218,16 @@ every case but the last clause's, the last clause is the `switch`'s default
 section, with no type test and no throw after it. The JIT then has profile
 data for the method, and the walk of binary-trees is shorter code. It does not
 change binary-trees' time, as the time is in building the trees.
+
+**The empty case of a union is `null`.** `Empty` in
+`(Union Empty (: Node Tree Tree))` was one shared object, so each leaf stored
+two references to it, and each store had a GC write barrier. A C# leaf stores
+`null`, which needs none. In C# written both ways, building trees of depth 10
+20,000 times took 251 ms with a shared object and 193 ms with `null`; records
+and classes took the same time, so the cost was the stores. A union with
+exactly one case that carries nothing, and at least one that carries
+something, now holds that case as `null`. binary-trees went from 12.80 to
+10.82 s cold (C#: 10.41 s) and from 12.90 to 10.86 s warm (C#: 10.33 s).
 
 ## What porting found
 

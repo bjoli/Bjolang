@@ -2140,6 +2140,29 @@ let addImplementation
 
     { env with Registry = newRegistry }
 
+/// The case of the union `unionKey` that is `null` at run time, if it has one.
+///
+/// A declared union with exactly one case that carries nothing, and at least
+/// one case that carries something, represents that case as `null`. A value
+/// that holds it then stores no reference, which needs no GC write barrier,
+/// and a test for it is a compare with zero. The rule reads only the
+/// declaration, so every module that imports the union agrees on it. The
+/// built-in unions keep the shapes the runtime gives them.
+let nullCaseOf (registry: TraitRegistry) (unionKey: string) : string option =
+    match unionKey with
+    | "Option"
+    | "Result"
+    | "Syntax"
+    | "CancelReason"
+    | "List" -> None
+    | _ ->
+        match Map.tryFind unionKey registry.Unions with
+        | Some(_, cases) ->
+            match cases |> List.filter (fun (_, args, _) -> List.isEmpty args) with
+            | [ (name, _, _) ] when cases |> List.exists (fun (_, args, _) -> not (List.isEmpty args)) -> Some name
+            | _ -> None
+        | None -> None
+
 /// Whether `traitName` stands for a .NET interface, such as `Num`.
 let isClrTrait (registry: TraitRegistry) (traitName: string) : bool =
     match Map.tryFind traitName registry.Traits with

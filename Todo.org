@@ -85,23 +85,6 @@ out-degree ≤ 1, so copies grow additively; largest demand 722 nodes
   function once: the copies in one place every module links, rather than one
   per caller. Belongs with evidence structs.
 
-* A case that carries nothing is an object
-
-~Empty~ in ~(Union Empty (: Node Tree Tree))~ is a singleton record, so a node
-whose children are ~Empty~ stores a reference to it, and each store has a GC
-write barrier. C#'s ~null~ needs none, and its test is a compare with zero
-rather than a load of the object's type.
-
-- *Measured* in C# shaped like the emitted code: building trees of depth 10
-  and walking them, 362 ms with ~Empty~ leaves against 270 ms with ~null~
-  (build alone, 256 against 195 ms). This is the gap of ~bench/clbg~'s
-  binary-trees to C# (1.23).
-- *Possible fix*: one nullary case of a union is ~null~, as F#'s
-  ~UseNullAsTrueValue~ does for ~Option~. It changes the representation:
-  ~=~, ~eq-hash~ and ~->str~ on the union, a method called on a value that is
-  ~null~, and every pattern that tests for the case. A design decision, not
-  made.
-
 * Loops the JIT does not see as counted loops
 
 A named ~let~ or a ~loop~ is emitted as ~while (true)~, and each jump copies

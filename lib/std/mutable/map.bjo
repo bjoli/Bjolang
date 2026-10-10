@@ -13,7 +13,10 @@
 ;; std/mutable/map.bjo — the hash table, written in place.
 ;;
 ;; A `MutableMap` *is* a .NET `Dictionary<K,V>`: open addressing over buckets,
-;; O(1) expected for every operation below.
+;; O(1) expected for every operation below. `mutablemap` makes a subclass that
+;; also keeps an entry for the key `null`, which a `Dictionary` refuses. The
+;; one case of a union that carries nothing is often `null` at run time, and
+;; this lets it be a key.
 ;;
 ;; **This is the mutable one.** `(mutablemap-set! m k v)` writes `m`; it answers
 ;; nothing, and everyone holding `m` sees the change. `Map` is the persistent
@@ -44,7 +47,8 @@
   mutablemap->str)
 
 ;; The type is .NET's, so a `MutableMap` handed to any other `import/extern`
-;; taking a `Dictionary<K,V>` is accepted as it stands.
+;; taking a `Dictionary<K,V>` is accepted as it stands. Such an extern does not
+;; see the entry for a `null` key.
 (import/class
   ((MutableMap %k %v) (: System.Collections.Generic.Dictionary))
   ((MutableMapCursor %k %v) (: Bjolang.Runtime.MutableMapCursor)))

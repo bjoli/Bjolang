@@ -1259,6 +1259,8 @@ When interfacing with true C# ~void~ methods, the call executes as a statement a
 (type (: (Tree %a) (Union Leaf (: Node (Tree %a) %a (Tree %a)))))
 #+END_SRC
 
+A union with exactly one case that carries nothing, and at least one case that carries something, holds that case as C#'s ~null~. ~Leaf~ above is ~null~, and ~Empty~ in ~Shape~ is too. A node that holds a ~Leaf~ then stores no reference, which needs no GC write barrier, and the test for ~Leaf~ is a compare with zero. Other empty cases are one shared instance each. ~=~, ~eq-hash~, ~compare~, ~->str~ and the collections treat the two kinds the same; ~->str~ writes an empty case as its name. A .NET method called directly on the ~null~ case, such as ~(.ToString Leaf)~, throws.
+
 *** ~#:opaque~ — a type whose representation stays home
 The ~#:opaque~ marker keeps the type's constructors and representation to the code of its own module:
 

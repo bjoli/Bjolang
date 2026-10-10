@@ -1,20 +1,21 @@
 ;; A nullary union case is one shared instance per closed type, not an
-;; allocation per use.
+;; allocation per use. `Red`, `Green` and `Mix` are such cases: `Color` has two
+;; cases that carry nothing, so neither is `null` (see null_case.bjo).
 ;;
-;; EXPECT-CS: public static readonly \S*Leaf Instance = new\(\);
-;; EXPECT-CS: \S*Leaf(<[^>]*>)?\(\) => \S*Leaf\.Instance;
-;; EXPECT-CS: \S*Leaf\.Instance, x, 
-;; EXPECT-NO-CS: new \S*Leaf\(\)
+;; EXPECT-CS: public static readonly \S*Red Instance = new\(\);
+;; EXPECT-CS: \S*Red\(\) => \S*Red\.Instance;
+;; EXPECT-CS: \S*Red\.Instance
+;; EXPECT-NO-CS: new \S*Red\(\)
 
 (import (std prelude))
 
-(export Tree insert)
+(export Color pick)
 
-(type (: (Tree %a) (Union Leaf (: Node (Tree %a) %a (Tree %a)))))
+(type (: Color (Union Red Green (: Mix int))))
 
-(: insert (-> (Tree int) int (Tree int)))
-(defun (insert t x)
-  (match t
-    (Leaf (Node Leaf x Leaf))
-    ((Node l v r)
-     (if (< x v) (Node (insert l x) v r) (Node l v (insert r x))))))
+(: pick (-> int Color))
+(defun (pick n)
+  (match n
+    (0 Red)
+    (1 Green)
+    (_ (Mix n))))

@@ -45,10 +45,11 @@
   (: (Cell %a) (Struct (: v %a))))
 
 ;; A union: the field goes on the abstract base, and every case class reads it
-;; as a private member of the type it is nested in.
+;; as a private member of the type it is nested in. `Nope` is `null` at run
+;; time, so it has no class and no `Equals`.
 ;; EXPECT-CS: public abstract record materialization__Maybe<T_a> \{
 ;; EXPECT-CS: private static readonly Eq_materialization__Maybe<T_a> __Eq_impl = Eq_materialization__Maybe<T_a>\.Make\(new __ClrEq<T_a>\(\)\);
-;; EXPECT-CS: public bool Equals\(materialization__Nope\? other\) => other is not null && __Eq_impl\.eq\(this, other\);
+;; EXPECT-NO-CS: Equals\(materialization__Nope
 ;; EXPECT-CS: public bool Equals\(materialization__Yep\? other\) => other is not null && __Eq_impl\.eq\(this, other\);
 (type/derive (Eq)
   (: (Maybe %a) (Union Nope (: Yep %a))))
@@ -118,10 +119,11 @@
   (: (Deg %a) (Struct (: deg %a))))
 
 ;; A generic union: the field goes on the base beside `CompareTo`, and no case
-;; class gets either.
+;; class gets either. `Bottom` is `null` at run time, and the implementation
+;; orders it, so `null` is passed through and not sorted first.
 ;; EXPECT-CS: public abstract record materialization__Tier<T_a> : System.IComparable<materialization__Tier<T_a>> \{
 ;; EXPECT-CS: private static readonly Ord_materialization__Tier<T_a> __Ord_impl = Ord_materialization__Tier<T_a>\.Make\(new __ClrOrd<T_a>\(\)\);
-;; EXPECT-CS: public int CompareTo\(materialization__Tier<T_a>\? other\) => other is null \? 1 : __Ord_impl\.compare\(this, other\);
+;; EXPECT-CS: public int CompareTo\(materialization__Tier<T_a>\? other\) => __Ord_impl\.compare\(this, other!\);
 ;; EXPECT-NO-CS: CompareTo\(materialization__Bottom
 ;; EXPECT-NO-CS: CompareTo\(materialization__Top
 (type/derive (Ord)

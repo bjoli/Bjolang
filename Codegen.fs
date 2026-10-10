@@ -1653,6 +1653,12 @@ let private generateStringTest
     views.Add { Name = name; Applied = test; Inner = isTrue }
     append ctx $"var %s{name}"
 
+/// Whether the case `name` of the union type `t` is `null` at run time.
+let private isNullCase (registry: TraitRegistry) (t: HMType) (name: string) : bool =
+    match NumericLiteral.settled t with
+    | TCon(key, _) -> nullCaseOf registry key = Some name
+    | _ -> false
+
 /// The C# type of a union case, as a pattern on `pat`'s type names it.
 ///
 /// Cons and Nil are builtins backed by SchemeList.Cons<T> and SchemeList.Nil<T>,
@@ -1777,6 +1783,8 @@ let rec generatePattern (ctx: CodegenContext) (views: ResizeArray<ViewFragment>)
 
         append ctx " }"
 
+    // The case that is `null` at run time has no class to test for.
+    | TPConstruct (name, []) when isNullCase ctx.Registry pat.Type name -> append ctx "null"
     | TPConstruct (name, args) ->
         append ctx (caseTypeString ctx pat name)
         // A positional record with an empty parameter list gets no Deconstruct
@@ -2147,6 +2155,9 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             match expr.Type with
             | TFun (_, retType, _) -> append ctx $"(arg0) => {typeToString retType}.{name}(arg0)"
             | _ -> append ctx $"{typeToString expr.Type}.{name}"
+        // The case that is `null` at run time, here or imported. Cast, so that
+        // C# knows the type where it infers one, as in `var`.
+        | _ when isNullCase ctx.Registry expr.Type name -> append ctx $"(({typeToString expr.Type})null)"
         | _ ->
         match Map.tryFind name ctx.UnionCases with
         | Some info ->
@@ -3174,6 +3185,8 @@ and private generateApply
     : unit =
 
     match target.Node with
+    | TIdent (name, _) when args.IsEmpty && isNullCase ctx.Registry expr.Type name ->
+        append ctx $"(({typeToString expr.Type})null)"
     | TIdent (name, _) when Map.containsKey name ctx.UnionCases ->
         let info = Map.find name ctx.UnionCases
         let typeStr = getUnionTypeString expr.Type info.ParentTypeName
@@ -5545,7 +5558,11 @@ let private agreementWithClr
                 | Some(_, cases) -> cases.Length > 1
                 | None -> false)
 
-        if materializableImpl registry traitName key args.Length && not crossCase then
+        // .NET's comparers settle a `null` themselves and never ask the
+        // implementation, which may order the `null` case elsewhere.
+        let nullCase = (nullCaseOf registry key).IsSome
+
+        if materializableImpl registry traitName key args.Length && not crossCase && not nullCase then
             fromDicts ()
         else
             None
@@ -5582,8 +5599,9 @@ type private MaterializeTarget =
     /// A union's abstract base. `Eq` writes no member here and `Ord` writes
     /// every member here — see the match in `materializedMembers` for why the
     /// two go opposite ways. A conditional implementation's dictionary goes
-    /// here for both; see `materializedSupport`.
-    | UnionBase
+    /// here for both; see `materializedSupport`. True when one case of the
+    /// union is `null` (`nullCaseOf`).
+    | UnionBase of hasNullCase: bool
 
 /// The members `traitName`'s implementation becomes.
 ///
@@ -5603,7 +5621,7 @@ let private materializedMembers
     // `Eq` goes into every case class and never onto a union's base: a derived
     // record synthesizes its own `Equals`, which would silently override one
     // written there. See the union branch of `generateDecl`.
-    | "Eq", UnionBase -> []
+    | "Eq", UnionBase _ -> []
     | "Eq", _ ->
         // A reference type's `Equals` is handed `null` by .NET, which the
         // implementation — an ordinary Bjolang function over two values — has
@@ -5625,7 +5643,11 @@ let private materializedMembers
     | "Ord", ValueRecord ->
         let compareMember = sanitizeIdent "compare"
         [ $"public int CompareTo(%s{selfType} other) => %s{instance}.%s{compareMember}(this, other);" ]
-    | "Ord", (OpenRecord | UnionBase) ->
+    // `null` is a case of the union here, which the implementation orders.
+    | "Ord", UnionBase true ->
+        let compareMember = sanitizeIdent "compare"
+        [ $"public int CompareTo(%s{selfType}? other) => %s{instance}.%s{compareMember}(this, other!);" ]
+    | "Ord", (OpenRecord | UnionBase false) ->
         // Null sorts first, which is `Comparer<T>.Default`'s own convention;
         // the implementation — an ordinary Bjolang function — never sees it.
         let compareMember = sanitizeIdent "compare"
@@ -6062,6 +6084,23 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     appendTypeBody ctx (support @ members)
             | Union cases ->
                 let selfRef = $"%s{declaredTypeName td.Name}%s{tyArgsStr}"
+                let nullCase = nullCaseOf ctx.Registry td.Name
+
+                // A case that carries nothing prints as its name without the
+                // module.
+                let shownCaseName (n: string) =
+                    match Naming.typeKeyParts n with
+                    | Some(_, bare) -> bare
+                    | None -> n
+
+                // `null` says nothing of its type, so the attribute is what
+                // lets the runtime print the case by its name.
+                match nullCase with
+                | Some n ->
+                    indent ctx
+                    appendLine ctx $"[Bjolang.Runtime.NullCase(\"%s{escapeStringLiteral (shownCaseName n)}\")]"
+                | None -> ()
+
                 indent ctx
                 appendLine ctx $"public abstract record %s{selfRef}%s{baseClause selfRef} {{"
                 withIndent ctx (fun ctx ->
@@ -6072,7 +6111,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     // See `materializedMembers`. The dictionaries go here too,
                     // for both: the cases reach them as members of the type
                     // they are nested in.
-                    for m in support @ materialized selfRef UnionBase do
+                    for m in support @ materialized selfRef (UnionBase nullCase.IsSome) do
                         indent ctx
                         appendLine ctx m
 
@@ -6083,22 +6122,41 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                     // what displaces it — the `sealed override Equals(Base?)`
                     // the compiler still synthesizes calls through to it.
                     for c in cases do
-                        indent ctx
                         match c with
+                        // The `null` case has no class: no value is of it.
+                        | SimpleCase (n, _) when nullCase = Some n -> ()
                         | SimpleCase (n, _) ->
+                            indent ctx
                             // One instance per closed type: every use of the
                             // case reads it rather than allocating.
                             let instance = $"public static readonly %s{declaredTypeName n} Instance = new();"
+                            // By its name, as the `null` case prints.
+                            let toString = $"public override string ToString() => \"%s{escapeStringLiteral (shownCaseName n)}\";"
                             append ctx $"public sealed record %s{declaredTypeName n}() : %s{declaredTypeName td.Name}%s{tyArgsStr}"
-                            appendTypeBody ctx (instance :: materialized (declaredTypeName n) SealedCase)
+                            appendTypeBody ctx (instance :: toString :: materialized (declaredTypeName n) SealedCase)
                         | DataCase (n, ftypes, _, _) ->
+                            indent ctx
                             append ctx $"public sealed record %s{declaredTypeName n}("
                             for i, ft in List.indexed ftypes do
                                 if i > 0 then append ctx ", "
                                 append ctx (typeToString (Annotations.resolveTypeAnnotation ctx.Registry ft))
                                 append ctx $" Item%d{i+1}"
                             append ctx $") : %s{declaredTypeName td.Name}%s{tyArgsStr}"
-                            appendTypeBody ctx (materialized (declaredTypeName n) SealedCase)
+
+                            // The record text C# writes, except that a field
+                            // that holds a `null` case is written as its name.
+                            // `ShowField` reads the name off the field's type.
+                            let printMembers =
+                                let fields =
+                                    ftypes
+                                    |> List.mapi (fun i _ ->
+                                        let sep = if i = 0 then "" else ", "
+                                        $"builder.Append(\"%s{sep}Item%d{i + 1} = \").Append(Bjolang.Runtime.BjoNum.ShowField(Item%d{i + 1}));")
+                                    |> String.concat " "
+
+                                $"protected override bool PrintMembers(System.Text.StringBuilder builder) {{ %s{fields} return true; }}"
+
+                            appendTypeBody ctx (printMembers :: materialized (declaredTypeName n) SealedCase)
                 )
                 indent ctx
                 appendLine ctx "}"
@@ -6543,6 +6601,9 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                         | Union cases ->
                             for c in cases do
                                 match c with
+                                | SimpleCase (n, _) when nullCaseOf ctx.Registry td.Name = Some n ->
+                                    indent ctx
+                                    appendLine ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{declaredTypeName n}%s{tyArgsStr}() => null!;"
                                 | SimpleCase (n, _) ->
                                     indent ctx
                                     appendLine ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{declaredTypeName n}%s{tyArgsStr}() => %s{declaredTypeName td.Name}%s{tyArgsStr}.%s{declaredTypeName n}.Instance;"

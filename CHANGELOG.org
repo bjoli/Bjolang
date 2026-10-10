@@ -3,6 +3,32 @@
 
 What each change guarantees, and what it leaves open.
 
+* The one empty case of a union is ~null~
+
+- *A union with exactly one case that carries nothing, and at least one case
+  that carries something, holds that case as ~null~.* ~Empty~ in
+  ~(Union Empty (: Node Tree Tree))~ has no class and no instance. A node
+  that holds ~Empty~ stores no reference, so the store needs no GC write
+  barrier, and the test for ~Empty~ is a compare with zero. binary-trees in
+  ~bench/clbg~ went from 12.80 s to 10.82 s (C#: 10.41 s).
+- The rule reads only the declaration, so a module that imports the union
+  agrees on it. A union with two or more empty cases, and the built-in
+  unions (~Option~, ~Result~, ~List~, ~Syntax~, ~CancelReason~), are as before.
+- ~=~, ~eq-hash~, ~compare~ and the derived implementations treat the case as
+  any other. A derived ~Ord~ puts it where it is declared, not first as .NET
+  puts ~null~: an ordered collection of such a union uses the implementation,
+  not .NET's comparer.
+- *~->str~ writes an empty case by its name*, ~Empty~, whether it is ~null~ or
+  not, and so does the record text of a case that holds one. Before, it wrote
+  C#'s record text, ~p__Empty { }~. A tuple that holds the ~null~ case writes
+  it by name too.
+- *~MutableMap~ takes a ~null~ key.* ~mutablemap~ makes a subclass of
+  ~Dictionary~ that keeps the ~null~ key's entry beside the table, and every
+  ~mutablemap-~ function sees it. An extern that reads the ~Dictionary~
+  directly does not.
+- What is open: a .NET method called directly on a value of such a union
+  (~(.ToString x)~) throws when the value is the empty case.
+
 * ~decimal~, ~bigint~, ~int128~ and ~uint128~
 
 - *Four numeric types more*, each the .NET type under a name a signature can

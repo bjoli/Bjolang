@@ -187,58 +187,165 @@ public static class MutableVecModule {
 // MutableMap — Dictionary<K,V>
 // ---------------------------------------------------------------------------
 
-public static class MutableMapModule {
-    public static Dictionary<K, V> Empty<K, V>() where K : notnull => new();
+/// The `Dictionary<K,V>` that `mutablemap` makes: the table, and a slot beside
+/// it for the key `null`.
+///
+/// <remarks>
+/// .NET's `Dictionary` takes no `null` key, and a union's empty case is `null`
+/// at run time (see <see cref="NullCaseAttribute"/>), so the entry for that key
+/// is kept here. The type is still a `Dictionary<K,V>`, so an extern that takes
+/// one accepts it; such an extern does not see the `null` entry.
+/// </remarks>
+public sealed class NullKeyDictionary<K, V> : Dictionary<K, V> where K : notnull {
+    public bool HasNull;
+    public V NullValue = default!;
 
-    public static Dictionary<K, V> WithCapacity<K, V>(int capacity) where K : notnull => new(capacity);
+    public NullKeyDictionary() { }
+
+    public NullKeyDictionary(int capacity) : base(capacity) { }
+
+    public NullKeyDictionary(Dictionary<K, V> other) : base(other) { }
+}
+
+/// <remarks>
+/// Every function tests for a `null` key before it goes to the table. The test
+/// is `!typeof(K).IsValueType &amp;&amp; key is null`, which the JIT removes
+/// where `K` is a struct, and which is one compare where it is a class.
+/// A `Dictionary` made elsewhere has no slot: it holds no `null` key, and
+/// writing one there is the error .NET gives.
+/// </remarks>
+public static class MutableMapModule {
+    public static Dictionary<K, V> Empty<K, V>() where K : notnull => new NullKeyDictionary<K, V>();
+
+    public static Dictionary<K, V> WithCapacity<K, V>(int capacity) where K : notnull =>
+        new NullKeyDictionary<K, V>(capacity);
 
     /// Later pairs win over earlier ones, so this and repeated `Set` agree.
     public static Dictionary<K, V> FromEnumerable<K, V>(IEnumerable<(K key, V value)> pairs) where K : notnull {
-        var map = new Dictionary<K, V>();
-        foreach (var (key, value) in pairs) map[key] = value;
+        var map = new NullKeyDictionary<K, V>();
+        foreach (var (key, value) in pairs) Set(map, key, value);
         return map;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool IsNull<K>(K key) => !typeof(K).IsValueType && key is null;
+
+    /// The `null` key's entry, if the map holds one.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static bool HasNull<K, V>(Dictionary<K, V> map) where K : notnull =>
+        !typeof(K).IsValueType && map is NullKeyDictionary<K, V> { HasNull: true };
+
+    /// The slot to write the `null` key to.
+    static NullKeyDictionary<K, V> Slot<K, V>(Dictionary<K, V> map) where K : notnull =>
+        map as NullKeyDictionary<K, V>
+        ?? throw new ArgumentNullException("key", "This Dictionary was not made by mutablemap, and it takes no null key.");
 
     /// The entries as pairs. `Dictionary` enumerates `KeyValuePair`, which has
     /// no Bjolang spelling, so the pair is rebuilt as a tuple.
     public static IEnumerable<(K, V)> AsEnumerable<K, V>(Dictionary<K, V> map) where K : notnull {
+        if (HasNull(map)) yield return (default!, ((NullKeyDictionary<K, V>)map).NullValue);
         foreach (var entry in map) yield return (entry.Key, entry.Value);
     }
 
-    public static Dictionary<K, V> Copy<K, V>(Dictionary<K, V> map) where K : notnull => new(map);
+    public static Dictionary<K, V> Copy<K, V>(Dictionary<K, V> map) where K : notnull {
+        var copy = new NullKeyDictionary<K, V>(map);
+        if (map is NullKeyDictionary<K, V> source) {
+            copy.HasNull = source.HasNull;
+            copy.NullValue = source.NullValue;
+        }
+        return copy;
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int Count<K, V>(Dictionary<K, V> map) where K : notnull => map.Count;
+    public static int Count<K, V>(Dictionary<K, V> map) where K : notnull =>
+        HasNull(map) ? map.Count + 1 : map.Count;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool IsEmpty<K, V>(Dictionary<K, V> map) where K : notnull => map.Count == 0;
+    public static bool IsEmpty<K, V>(Dictionary<K, V> map) where K : notnull => Count(map) == 0;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool ContainsKey<K, V>(Dictionary<K, V> map, K key) where K : notnull => map.ContainsKey(key);
+    public static bool ContainsKey<K, V>(Dictionary<K, V> map, K key) where K : notnull =>
+        IsNull(key) ? HasNull(map) : map.ContainsKey(key);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static V Get<K, V>(Dictionary<K, V> map, K key) where K : notnull => map[key];
+    public static V Get<K, V>(Dictionary<K, V> map, K key) where K : notnull {
+        if (IsNull(key)) {
+            return HasNull(map)
+                ? ((NullKeyDictionary<K, V>)map).NullValue
+                : throw new KeyNotFoundException("The null key was not present in the dictionary.");
+        }
+        return map[key];
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool TryGet<K, V>(Dictionary<K, V> map, K key, [MaybeNullWhen(false)] out V value) where K : notnull =>
-        map.TryGetValue(key, out value);
+    public static bool TryGet<K, V>(Dictionary<K, V> map, K key, [MaybeNullWhen(false)] out V value) where K : notnull {
+        if (IsNull(key)) {
+            var found = HasNull(map);
+            value = found ? ((NullKeyDictionary<K, V>)map).NullValue : default;
+            return found;
+        }
+        return map.TryGetValue(key, out value);
+    }
 
     public static V GetOr<K, V>(Dictionary<K, V> map, K key, V fallback) where K : notnull =>
-        map.TryGetValue(key, out var value) ? value : fallback;
+        TryGet(map, key, out var value) ? value : fallback;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void Set<K, V>(Dictionary<K, V> map, K key, V value) where K : notnull => map[key] = value;
+    public static void Set<K, V>(Dictionary<K, V> map, K key, V value) where K : notnull {
+        if (IsNull(key)) {
+            var slot = Slot(map);
+            slot.HasNull = true;
+            slot.NullValue = value;
+            return;
+        }
+        map[key] = value;
+    }
 
     /// Sets the entry only when the key is new, and answers whether it was.
-    public static bool Add<K, V>(Dictionary<K, V> map, K key, V value) where K : notnull => map.TryAdd(key, value);
+    public static bool Add<K, V>(Dictionary<K, V> map, K key, V value) where K : notnull {
+        if (IsNull(key)) {
+            if (HasNull(map)) return false;
+            Set(map, key, value);
+            return true;
+        }
+        return map.TryAdd(key, value);
+    }
 
-    public static bool Remove<K, V>(Dictionary<K, V> map, K key) where K : notnull => map.Remove(key);
+    public static bool Remove<K, V>(Dictionary<K, V> map, K key) where K : notnull {
+        if (IsNull(key)) {
+            if (!HasNull(map)) return false;
+            var slot = (NullKeyDictionary<K, V>)map;
+            slot.HasNull = false;
+            slot.NullValue = default!;
+            return true;
+        }
+        return map.Remove(key);
+    }
 
-    public static void Clear<K, V>(Dictionary<K, V> map) where K : notnull => map.Clear();
+    public static void Clear<K, V>(Dictionary<K, V> map) where K : notnull {
+        map.Clear();
+        if (map is NullKeyDictionary<K, V> slot) {
+            slot.HasNull = false;
+            slot.NullValue = default!;
+        }
+    }
 
-    public static IEnumerable<K> Keys<K, V>(Dictionary<K, V> map) where K : notnull => map.Keys;
+    /// A view: the `null` key is looked for when the walk starts.
+    public static IEnumerable<K> Keys<K, V>(Dictionary<K, V> map) where K : notnull =>
+        typeof(K).IsValueType ? map.Keys : KeysWithNull(map);
 
-    public static IEnumerable<V> Values<K, V>(Dictionary<K, V> map) where K : notnull => map.Values;
+    static IEnumerable<K> KeysWithNull<K, V>(Dictionary<K, V> map) where K : notnull {
+        if (HasNull(map)) yield return default!;
+        foreach (var key in map.Keys) yield return key;
+    }
+
+    public static IEnumerable<V> Values<K, V>(Dictionary<K, V> map) where K : notnull =>
+        typeof(K).IsValueType ? map.Values : ValuesWithNull(map);
+
+    static IEnumerable<V> ValuesWithNull<K, V>(Dictionary<K, V> map) where K : notnull {
+        if (HasNull(map)) yield return ((NullKeyDictionary<K, V>)map).NullValue;
+        foreach (var value in map.Values) yield return value;
+    }
 
     // --- Walking -----------------------------------------------------------
 
@@ -247,13 +354,23 @@ public static class MutableMapModule {
     /// Advances the cursor, and answers whether it ran off the end. The advance
     /// happens here because a walk asks "is there more?" exactly once per
     /// element, which is what lets the whole traversal allocate nothing after
-    /// the cursor itself.
+    /// the cursor itself. The `null` key's entry comes first.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool CursorDone<K, V>(MutableMapCursor<K, V> cursor) where K : notnull =>
-        !cursor.Enumerator.MoveNext();
+    public static bool CursorDone<K, V>(MutableMapCursor<K, V> cursor) where K : notnull {
+        if (!typeof(K).IsValueType && cursor.NullState != MutableMapCursor<K, V>.InTable) {
+            if (cursor.NullState == MutableMapCursor<K, V>.BeforeNull) {
+                cursor.NullState = MutableMapCursor<K, V>.OnNull;
+                return false;
+            }
+            cursor.NullState = MutableMapCursor<K, V>.InTable;
+        }
+        return !cursor.Enumerator.MoveNext();
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static (K, V) CursorCurrent<K, V>(MutableMapCursor<K, V> cursor) where K : notnull {
+        if (!typeof(K).IsValueType && cursor.NullState == MutableMapCursor<K, V>.OnNull)
+            return (default!, cursor.NullValue);
         var entry = cursor.Enumerator.Current;
         return (entry.Key, entry.Value);
     }
@@ -265,10 +382,23 @@ public static class MutableMapModule {
 /// independently — useless to a caller that has to *hold* the position. This is
 /// that struct in a heap cell: one allocation for the walk, none per element.
 public sealed class MutableMapCursor<K, V> where K : notnull {
+    public const byte InTable = 0;
+    public const byte BeforeNull = 1;
+    public const byte OnNull = 2;
+
     public Dictionary<K, V>.Enumerator Enumerator;
+
+    /// Where the walk is relative to the `null` key's entry, which is not in
+    /// the table (see <see cref="NullKeyDictionary{K,V}"/>).
+    public byte NullState;
+    public V NullValue = default!;
 
     public MutableMapCursor(Dictionary<K, V> map) {
         Enumerator = map.GetEnumerator();
+        if (map is NullKeyDictionary<K, V> { HasNull: true } slot) {
+            NullState = BeforeNull;
+            NullValue = slot.NullValue;
+        }
     }
 }
 

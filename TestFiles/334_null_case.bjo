@@ -1,0 +1,87 @@
+(import (std prelude))
+(import (std simpletest))
+(import (std hashset))
+(import (std orderedset))
+(import (std mutable map))
+(import "inc/null_case_shapes.bjo")
+
+;; A union with one case that carries nothing, and at least one that carries
+;; something, holds that case as `null` at run time. These are the places a
+;; `null` could go wrong: printing, equality, hashing, ordering, the
+;; collections, a match, a generic union, and a union from another module.
+
+(type-rec (: Tree (Union Empty (: Node Tree Tree))))
+
+(: depth (-> Tree int))
+(defun (depth t)
+  (match t
+    (Empty 0)
+    ((Node l r) (+ 1 (max (depth l) (depth r))))))
+
+;; `Empty` is the last arm, so it is the `default` of the switch.
+(: leaves (-> Tree int))
+(defun (leaves t)
+  (match t
+    ((Node l r) (+ (leaves l) (leaves r)))
+    (Empty 1)))
+
+(: make (-> int Tree))
+(defun (make d)
+  (if (= d 0) Empty (Node (make (- d 1)) (make (- d 1)))))
+
+;; Two cases that carry nothing: neither is `null`.
+(type/derive (Eq Ord) (: Light (Union Off Dim (: Level int))))
+
+(: size (-> (Box %a) int))
+(defun (size b)
+  (match b
+    (Shut 0)
+    ((Open _ inner) (+ 1 (size inner)))))
+
+(defun (main args)
+  (expect "a null case prints by name" (->str Empty) "Empty")
+  (expect "a null field prints by name"
+          (->str (Node Empty (Node Empty Empty)))
+          "_334_null_case__Node { Item1 = Empty, Item2 = _334_null_case__Node { Item1 = Empty, Item2 = Empty } }")
+  (expect "a null case in a list" (->str (list Empty)) "(Empty)")
+  (expect "a null case in a tuple" (->str (Tuple Empty 1)) "(Empty, 1)")
+  (expect-true "equal trees" (= (make 3) (make 3)))
+  (expect-true "unequal trees" (not (= (make 3) (make 2))))
+  (expect-true "the null case equals itself" (= Empty Empty))
+  (expect "the null case hashes" (eq-hash Empty) (eq-hash Empty))
+  (expect "depth" (depth (make 4)) 4)
+  (expect "leaves, with the null case as the default arm" (leaves (make 4)) 16)
+  (expect "a case that is not null prints by name too" (->str (list Off Dim)) "(Off Dim)")
+
+  ;; `Nothing` is declared last, so the derived order puts it last, though
+  ;; .NET's comparers put a `null` first.
+  (expect "the derived order" (list-sort (list Nothing (Dot 3) (Box 1 2) (Dot 1)))
+          (list (Dot 1) (Dot 3) (Box 1 2) Nothing))
+  (expect "compare" (compare Nothing (Dot 1)) 1)
+  (expect "an ordered set" (orderedset->list (list->orderedset (list Nothing (Dot 2) Nothing (Dot 1))))
+          (list (Dot 1) (Dot 2) Nothing))
+  (expect "a hash set" (hashset-length (list->hashset (list Nothing (Dot 2) Nothing))) 2)
+  (expect "a map" (map-ref (list->map (list (Tuple Nothing 1) (Tuple (Dot 1) 2))) Nothing) 1)
+  (expect "a match in another module" (area Nothing) -1)
+
+  ;; A generic union from another module.
+  (expect "a generic union" (size (Open "a" (Open "b" Shut))) 2)
+  (expect "a generic null case prints" (->str (Open 1 Shut)) "null_case_shapes__Open { Item1 = 1, Item2 = Shut }")
+
+  ;; `Dictionary` takes no `null` key; `mutablemap` keeps it beside the table.
+  (def m (mutablemap))
+  (mutablemap-set! m Nothing "n")
+  (mutablemap-set! m (Dot 1) "d")
+  (expect "a null key" (mutablemap-ref m Nothing) "n")
+  (expect "a null key counts" (mutablemap-length m) 2)
+  (expect-true "a null key is there" (mutablemap-contains? m Nothing))
+  (expect "a null key is walked" (length (mutablemap->list m)) 2)
+  (expect-true "a null key is not added twice" (not (mutablemap-add! m Nothing "x")))
+  (def copy (mutablemap-copy m))
+  (expect-true "a null key is removed" (mutablemap-remove! m Nothing))
+  (expect "after the remove" (mutablemap-ref-or m Nothing "gone") "gone")
+  (expect "a copy keeps the null key" (mutablemap-ref copy Nothing) "n")
+  (expect "the keys of a copy" (length (seq->list (mutablemap-keys copy))) 2)
+  (mutablemap-clear! copy)
+  (expect-true "a clear removes the null key" (mutablemap-empty? copy))
+  0)

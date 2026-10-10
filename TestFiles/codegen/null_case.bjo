@@ -1,0 +1,30 @@
+;; A union with one case that carries nothing, and at least one that carries
+;; something, represents that case as `null`. A node that holds `Leaf` then
+;; stores no reference, which needs no GC write barrier, and the test for
+;; `Leaf` is a compare with zero.
+;;
+;; The base names the case, so that the runtime can print it.
+;; EXPECT-CS: \[Bjolang\.Runtime\.NullCase\("Leaf"\)\]
+;; There is no class for the case, and nothing reads an instance of one.
+;; EXPECT-NO-CS: record \S*Leaf
+;; EXPECT-NO-CS: Leaf\.Instance
+;; The factory an importer calls, and a use here.
+;; EXPECT-CS: \S*Leaf(<[^>]*>)?\(\) => null!;
+;; EXPECT-CS: \(\(\S*Tree<int>\)null\)
+;; A pattern for the case is `null`.
+;; EXPECT-CS: case null
+;; A data case writes its fields itself, so that a `Leaf` field prints by name.
+;; EXPECT-CS: protected override bool PrintMembers\(System\.Text\.StringBuilder builder\) \{ builder\.Append\("Item1 = "\)\.Append\(Bjolang\.Runtime\.BjoNum\.ShowField\(Item1\)\);
+
+(import (std prelude))
+
+(export Tree insert)
+
+(type (: (Tree %a) (Union Leaf (: Node (Tree %a) %a (Tree %a)))))
+
+(: insert (-> (Tree int) int (Tree int)))
+(defun (insert t x)
+  (match t
+    (Leaf (Node Leaf x Leaf))
+    ((Node l v r)
+     (if (< x v) (Node (insert l x) v r) (Node l v (insert r x))))))
