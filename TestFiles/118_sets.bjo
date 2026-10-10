@@ -104,6 +104,11 @@
   ;; Iterable, through an ordinary loop.
   (expect "loop over a set" (loop (:for x s) (:acc total (summing x))) 6)
 
+  ;; A set this big has internal nodes, which the cursor walks out of line.
+  (def big (loop (:for i (range 0 5000)) (:acc b (hash-setting i))))
+  (expect "loop over a big set" (loop (:for x big) (:acc total (summing x))) (/ (* 5000 4999) 2))
+  (expect "hashset-fold over a big set" (hashset-fold (fun (x n) (+ n 1)) 0 big) 5000)
+
   ;; And as an accumulator, through the builder.
   (def evens (loop (:for x (range 0 10)) (:when (= 0 (% x 2))) (:acc s (hash-setting x))))
   (expect "setting collector" (hashset-length evens) 5)

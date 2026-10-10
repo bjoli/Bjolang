@@ -71,7 +71,7 @@
   map-map map-map-values map-filter map-fold
   map-for-each map-iter map-any? map-find map-try-find
   ;; The cursor `Iterable` walks with
-  map-cursor map-cursor-done? map-cursor-current
+  map-cursor map-cursor-done? map-cursor-current map-cursor-next
   ;; Conversions.
   list->map list->vec map->list vec->list vec->map map->vec seq->map map->seq
   map->str map-entry->str
@@ -334,6 +334,7 @@
   (map-cursor         (: Map.MapModule.Cursor        (-> (Map %k %v) (MapCursor %k %v))))
   (map-cursor-done?   (: Map.MapModule.CursorDone    (-> (MapCursor %k %v) bool)))
   (map-cursor-current (: Map.MapModule.CursorCurrent (-> (MapCursor %k %v) (Tuple %k %v))))
+  (map-cursor-next    (: Map.MapModule.CursorNext    (-> (MapCursor %k %v) (MapCursor %k %v))))
 
   ;; --- Builders ---
   ;; Build map.
@@ -396,29 +397,27 @@
   (#:bjo
     ;; (loop (:for (k v) m)
     ;;       (:acc acc (mapping (Tuple k (f k v)))))
-    (let ((b (clr-mapbuilder-empty (clr-map-comparer m)))
-          (c (map-cursor m)))
-      (let go ()
+    (let ((b (clr-mapbuilder-empty (clr-map-comparer m))))
+      (let go ((c (map-cursor m)))
         (if (map-cursor-done? c)
             (mapbuilder->map b)
             (let ()
               (def (k v) (map-cursor-current c))
               (mapbuilder-add! b k (f k v))
-              (go)))))))
+              (go (map-cursor-next c))))))))
 
 (: map-map-values (-> (-?-> %v %w) (Map %k %v) (Map %k %w)))
 (defbjouble (map-map-values f m)
   (#:sync (clr-map-map-values f m))
   (#:bjo
-    (let ((b (clr-mapbuilder-empty (clr-map-comparer m)))
-          (c (map-cursor m)))
-      (let go ()
+    (let ((b (clr-mapbuilder-empty (clr-map-comparer m))))
+      (let go ((c (map-cursor m)))
         (if (map-cursor-done? c)
             (mapbuilder->map b)
             (let ()
               (def (k v) (map-cursor-current c))
               (mapbuilder-add! b k (f v))
-              (go)))))))
+              (go (map-cursor-next c))))))))
 
 (: map-filter (-> (-?-> %k %v bool) (Map %k %v) (Map %k %v)))
 (defbjouble (map-filter keep? m)
@@ -427,16 +426,15 @@
     ;; (loop (:for (k v) m)
     ;;       (:when (keep? k v))
     ;;       (:acc new-map (mapping (Tuple k v))))
-    (let ((b (clr-mapbuilder-empty (clr-map-comparer m)))
-          (c (map-cursor m)))
-      (let go ()
+    (let ((b (clr-mapbuilder-empty (clr-map-comparer m))))
+      (let go ((c (map-cursor m)))
         (if (map-cursor-done? c)
             (mapbuilder->map b)
             (let ()
               (def (k v) (map-cursor-current c))
               (when (keep? k v)
                 (mapbuilder-add! b k v))
-              (go)))))))
+              (go (map-cursor-next c))))))))
 
 (: map-fold (-> (-?-> %k %v %s %s) %s (Map %k %v) %s))
 (defbjouble (map-fold f init m)
@@ -444,13 +442,12 @@
   (#:bjo
     ;; (loop (:for (k v) m)
     ;;       (:acc acc (folding init (f k v acc))))
-    (let ((c (map-cursor m)))
-      (let go ((acc init))
-        (if (map-cursor-done? c)
-            acc
-            (let ()
-              (def (k v) (map-cursor-current c))
-              (go (f k v acc))))))))
+    (let go ((c (map-cursor m)) (acc init))
+      (if (map-cursor-done? c)
+          acc
+          (let ()
+            (def (k v) (map-cursor-current c))
+            (go (map-cursor-next c) (f k v acc)))))))
 
 (: map-iter (-> (-?-> %k %v bool) (Map %k %v) bool))
 (defbjouble (map-iter f m)
@@ -459,28 +456,26 @@
     ;; (loop (:for (k v) m)
     ;;       (:acc acc (folding #t (f k v)))
     ;;       (:finish (not acc)))
-    (def c (map-cursor m))
-    (let go ()
+    (let go ((c (map-cursor m)))
       (if (map-cursor-done? c)
           #t
           (let ()
             (def (k v) (map-cursor-current c))
             (if (f k v)
-                (go)
+                (go (map-cursor-next c))
                 #f))))))
 
 (: map-for-each (-> (-?-> %k %v void) (Map %k %v) void))
 (defun (map-for-each f m)
   ;; (loop (:for (k v) m)
   ;;       (:do (f k v)))
-  (let ((c (map-cursor m)))
-    (let go ()
-      (if (map-cursor-done? c)
-          unit
-          (let ()
-            (def (k v) (map-cursor-current c))
-            (f k v)
-            (go))))))
+  (let go ((c (map-cursor m)))
+    (if (map-cursor-done? c)
+        unit
+        (let ()
+          (def (k v) (map-cursor-current c))
+          (f k v)
+          (go (map-cursor-next c))))))
 
 ;; Two maps are equal when they hold the same entries.
 
@@ -776,7 +771,7 @@
   (defun (iterable-start s) (map-cursor s))
   (defun (iterable-done? s c) (map-cursor-done? c))
   (defun (iterable-current s c) (map-cursor-current c))
-  (defun (iterable-next s c) c))
+  (defun (iterable-next s c) (map-cursor-next c)))
 
 ;; String characters. Not a `StringCursor`, which asks the string at every
 ;; step whether it is a slice: a walk takes its bytes once and decodes each

@@ -46,10 +46,12 @@
   (summary "A cursor for iterating over a map.")
   (tparam %k "The key type of the map.")
   (tparam %v "The value type of the map.")
-  (see map-cursor map-cursor-done? map-cursor-current)
+  (see map-cursor map-cursor-done? map-cursor-current map-cursor-next)
   (reference """
-    Used by @code{Iterable} to traverse a map with a single allocation.
-    The cursor is mutable: calling @code{map-cursor-done?} advances it.
+    Used by @code{Iterable} to walk a map. A cursor is a value:
+    @code{map-cursor-done?} and @code{map-cursor-current} only read it, and
+    @code{map-cursor-next} answers a cursor one entry on. A walk allocates
+    nothing.
     """))
 
 (:doc MapBuilder
@@ -363,33 +365,34 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc map-cursor
-  (summary "A cursor before the first entry of a map.")
+  (summary "A cursor on the first entry of a map.")
   (arg m "The map to walk.")
-  (returns "A cursor; the first map-cursor-done? moves it to the first entry.")
-  (see map-cursor-done? map-cursor-current MapCursor))
+  (returns "A cursor on the first entry, or a done cursor if the map is empty.")
+  (see map-cursor-done? map-cursor-current map-cursor-next MapCursor))
 
 (:doc map-cursor-done?
-  (summary "Moves a cursor to the next entry, returning #t if exhausted.")
-  (arg c "The cursor, which is moved.")
-  (returns "#t when the walk has run past the last entry; #f if an entry is available.")
-  (see map-cursor map-cursor-current)
+  (summary "Tests whether a cursor is past the last entry.")
+  (arg c "The cursor. It does not change.")
+  (returns "#t when the walk has no more entries; #f if the cursor is on an entry.")
+  (see map-cursor map-cursor-current map-cursor-next)
   (example """
-    (let ((c (map-cursor m)))
-      (let go ()
-        (unless (map-cursor-done? c)
-          (displayln (map-entry->str (map-cursor-current c)))
-          (go))))
-    """)
-  (reference """
-    The step and the test are one call: ask once per entry. A second call
-    without reading @code{map-cursor-current} in between skips an entry.
+    (let go ((c (map-cursor m)))
+      (unless (map-cursor-done? c)
+        (displayln (map-entry->str (map-cursor-current c)))
+        (go (map-cursor-next c))))
     """))
 
 (:doc map-cursor-current
-  (summary "The entry a cursor stands on.")
-  (arg c "The cursor, after map-cursor-done? returned #f.")
+  (summary "The entry a cursor is on.")
+  (arg c "The cursor, when map-cursor-done? returns #f.")
   (returns "The entry, as (Tuple key value).")
-  (see map-cursor map-cursor-done?))
+  (see map-cursor map-cursor-done? map-cursor-next))
+
+(:doc map-cursor-next
+  (summary "A cursor on the entry after the entry of a cursor.")
+  (arg c "The cursor, when map-cursor-done? returns #f. It does not change.")
+  (returns "The cursor one entry on.")
+  (see map-cursor map-cursor-done? map-cursor-current))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions

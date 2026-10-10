@@ -85,13 +85,32 @@
   (loop (:for kv m) (:do (set! total (+ total (entry-value kv)))))
   (expect-true "loop sums the values" (= total 6))
 
-  ;; The cursor is the trie's own enumerator in a heap cell, and `done?` is what
-  ;; advances it. Two loops over the same map must each get a fresh one, or the
-  ;; second would find the first one's cursor already at the end.
+  ;; Each loop starts its own cursor, so a second loop over the same map sees
+  ;; all entries again.
   (def/mutable twice 0)
   (loop (:for kv m) (:do (set! twice (+ twice (entry-value kv)))))
   (loop (:for kv m) (:do (set! twice (+ twice (entry-value kv)))))
-  (expect-true "a loop starts a fresh cursor" (= twice 12)))
+  (expect-true "a loop starts a fresh cursor" (= twice 12))
+
+  ;; A cursor is a value: `done?` and `current` do not move it, and `next`
+  ;; answers a new cursor.
+  (def c (map-cursor m))
+  (def c2 (map-cursor-next c))
+  (expect-true "done? does not move a cursor"
+               (and (not (map-cursor-done? c)) (not (map-cursor-done? c))
+                    (= (map-cursor-current c) (map-cursor-current c))))
+  (expect-true "next answers a cursor on another entry"
+               (not (= (entry-key (map-cursor-current c)) (entry-key (map-cursor-current c2)))))
+  (expect-true "the cursor of an empty map is done"
+               (map-cursor-done? (map-cursor (map-remove (map-set (map-empty) "x" 1) "x"))))
+
+  ;; A map this big has internal nodes, which the cursor walks out of line.
+  (def big (loop (:for i (range 0 5000)) (:acc b (mapping (Tuple i (* 2 i))))))
+  (expect-true "a walk of a big map sees every entry once"
+               (= (loop (:for (Tuple k v) big) (:acc s (summing (+ k v))))
+                  (* 3 (/ (* 5000 4999) 2))))
+  (expect-true "map-fold sees every entry once"
+               (= (map-fold (fun (k v acc) (+ acc 1)) 0 big) 5000)))
 
 ;; ---------------------------------------------------------------------------
 ;; 3. The comprehension — Collector (Mapping %k %v), through MapBuilder

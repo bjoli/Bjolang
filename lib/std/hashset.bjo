@@ -72,7 +72,8 @@
   (hashset->seq       (: Set.SetModule.AsEnumerable   (-> (HashSet %a) (Seq %a))))
   (hashset-cursor          (: Set.SetModule.Cursor        (-> (HashSet %a) (HashSetCursor %a))))
   (hashset-cursor-done?    (: Set.SetModule.CursorDone    (-> (HashSetCursor %a) bool)))
-  (hashset-cursor-current  (: Set.SetModule.CursorCurrent (-> (HashSetCursor %a) %a))))
+  (hashset-cursor-current  (: Set.SetModule.CursorCurrent (-> (HashSetCursor %a) %a)))
+  (hashset-cursor-next     (: Set.SetModule.CursorNext    (-> (HashSetCursor %a) (HashSetCursor %a)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Builders
@@ -127,47 +128,43 @@
   (#:sync (clr-hashset-map f s (eq-comparer)))
   (#:bjo
     (def b (hashsetbuilder-empty))
-    (def c (hashset-cursor s))
-    (let go ()
+    (let go ((c (hashset-cursor s)))
       (cond
         ((hashset-cursor-done? c) (hashsetbuilder->hashset b))
         (else
           (hashsetbuilder-add! b (f (hashset-cursor-current c)))
-          (go))))))
+          (go (hashset-cursor-next c)))))))
 
 (: hashset-filter (-> (-?-> %a bool) (HashSet %a) (HashSet %a)))
 (defbjouble (hashset-filter keep? s)
   (#:sync (clr-hashset-filter keep? s))
   (#:bjo
     (def b (clr-hashsetbuilder-empty (clr-hashset-comparer s)))
-    (def c (hashset-cursor s))
-    (let go ()
+    (let go ((c (hashset-cursor s)))
       (cond
         ((hashset-cursor-done? c) (hashsetbuilder->hashset b))
         (else
           (def x (hashset-cursor-current c))
           (when (keep? x)
             (hashsetbuilder-add! b x))
-          (go))))))
+          (go (hashset-cursor-next c)))))))
 
 (: hashset-fold (-> (-?-> %a %s %s) %s (HashSet %a) %s))
 (defbjouble (hashset-fold f init s)
   (#:sync (clr-hashset-fold f init s))
   (#:bjo
-    (def c (hashset-cursor s))
-    (let go ((acc init))
+    (let go ((c (hashset-cursor s)) (acc init))
       (if (hashset-cursor-done? c)
           acc
-          (go (f (hashset-cursor-current c) acc))))))
+          (go (hashset-cursor-next c) (f (hashset-cursor-current c) acc))))))
 
 (: hashset-iter (-> (-?-> %a bool) (HashSet %a) bool))
 (defbjouble (hashset-iter f s)
   (#:sync (clr-hashset-iter f s))
   (#:bjo
-    (def c (hashset-cursor s))
-    (let go ()
+    (let go ((c (hashset-cursor s)))
       (cond ((hashset-cursor-done? c) #t)
-            ((f (hashset-cursor-current c)) (go))
+            ((f (hashset-cursor-current c)) (go (hashset-cursor-next c)))
             (else #f)))))
 
 ;; ---------------------------------------------------------------------------
@@ -206,17 +203,16 @@
   (defun (iterable-start s) (hashset-cursor s))
   (defun (iterable-done? s c) (hashset-cursor-done? c))
   (defun (iterable-current s c) (hashset-cursor-current c))
-  (defun (iterable-next s c) c))
+  (defun (iterable-next s c) (hashset-cursor-next c)))
 
 (: hashset-for-each (-> (-?-> %a void) (HashSet %a) void))
 (defun (hashset-for-each f s)
-  (def c (hashset-cursor s))
-  (let go ()
+  (let go ((c (hashset-cursor s)))
     (cond
       ((hashset-cursor-done? c) unit)
       (else
         (f (hashset-cursor-current c))
-        (go)))))
+        (go (hashset-cursor-next c))))))
 
 (impl (Collection (HashSet %a))
   (type %content %a)
