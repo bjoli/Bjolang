@@ -15,16 +15,14 @@
 (: local-twice (-> int int))
 (defun (local-twice x) (* x 2))
 
-(: pass-all (-> (List (List int))))
+;; Held in a list rather than handed to `list-map`: a call of `list-map` given a
+;; known function is inlined, and the function is then called, not passed.
+(: pass-all (-> (List (-> int int))))
 (defun (pass-all)
-  (list (list-map local-twice (list 1))
-        (list-map tripled (list 1))
-        (list-map f/tripled (list 1))
-        (list-map doubled (list 1))
-        (list-map f/handler (list 1))))
+  (list local-twice tripled f/tripled doubled f/handler))
 
-(: upcase-all (-> (List char) (List char)))
-(defun (upcase-all cs) (list-map char-upcase cs))
+(: upcase-all (-> (List (-> char char))))
+(defun (upcase-all) (list char-upcase))
 
 ;; --- A defun, here, imported, or through a facade ----------------------------
 ;; EXPECT-CS: \(\(fa0\) => function_values_Module\.localsubtwice\(fa0\)\)

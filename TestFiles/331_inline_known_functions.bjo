@@ -1,0 +1,68 @@
+(import (std prelude))
+(import (std simpletest))
+
+;; A call of a function that takes a function is inlined where it is given a
+;; lambda or a top-level function. The program must mean the same: the same
+;; results, the callback called in the same order, the arguments evaluated
+;; once, and a name that a local binds still meaning the local.
+
+(: double (-> int int))
+(defun (double x) (* 2 x))
+
+(: apply-twice (-> (-> int int) int int))
+(defun (apply-twice f x) (f (f x)))
+
+;; A parameter named like a function the prelude publishes.
+(: shadow (-> (-> (-> int int) (List int) (List int)) (List int) (List int)))
+(defun (shadow list-map xs) (list-map (fun (x) (+ x 100)) xs))
+
+;; A `let` named like it. In a function of its own: a name that the
+;; declaration binds anywhere is not taken for the top-level function anywhere
+;; in that declaration, so in `main` it would keep every `list-map` a call.
+(: let-shadow (-> (List int) (List int)))
+(defun (let-shadow xs)
+  (let ((list-map (fun (f ys) ys)))
+    (list-map (fun (x) (* x 1000)) xs)))
+
+;; A record built in an inlined body, with a field label that is also the
+;; name of a local. Inlining renames the local, and the label must keep
+;; naming the field.
+(type (: Named (Record (: name string) (: n int))))
+
+(: name-all (-> (-> int string) (List int) (List Named)))
+(defun (name-all f ns)
+  (list-map (fun (n) (let ((name (f n))) (Named (name name) (n n)))) ns))
+
+(defun (main args)
+  (def xs (list 1 2 3))
+  (def v [1 2 3 4])
+  (def m #map((1 10) (2 20) (3 30)))
+
+  (expect "list-map" (list-map (fun (x) (* x 2)) xs) (list 2 4 6))
+  (expect "vec-map" (vec-map (fun (x) (* x 3)) v) [3 6 9 12])
+  (expect "vec-filter" (vec-filter (fun (x) (> x 2)) v) [3 4])
+  (expect "vec-fold" (vec-fold (fun (x acc) (+ x acc)) 0 v) 10)
+  (expect "map-fold" (map-fold (fun (k x acc) (+ acc (+ k x))) 0 m) 66)
+  (expect "a top-level function" (list-map double xs) (list 2 4 6))
+
+  ;; A lambda that captures and changes a local, called once per element, in
+  ;; order.
+  (def/mutable seen Nil)
+  (ignore (list-map (fun (x) (set! seen (Cons x seen)) x) xs))
+  (expect "called in order" seen (list 3 2 1))
+
+  ;; The list argument is evaluated once.
+  (def/mutable evaluated 0)
+  (ignore (list-map (fun (x) x) (let () (set! evaluated (+ evaluated 1)) xs)))
+  (expect "the argument is evaluated once" evaluated 1)
+
+  (expect "a body that calls its function twice" (apply-twice (fun (x) (+ x 1)) 5) 7)
+  (expect "a parameter named list-map is the parameter"
+          (shadow (fun (f ys) (Cons 0 ys)) xs)
+          (list 0 1 2 3))
+  (expect "a let named list-map is the let" (let-shadow xs) xs)
+
+  (expect "a record label inside an inlined body"
+          (list-map (fun (r) (record-ref r name)) (name-all (fun (n) (int->string n)) xs))
+          (list "1" "2" "3"))
+  0)

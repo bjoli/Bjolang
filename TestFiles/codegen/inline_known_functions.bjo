@@ -1,0 +1,38 @@
+;; A call of a function that takes a function, given a lambda written at the
+;; call, is inlined: the function's loop is in the caller with the lambda's
+;; body in it, and no delegate is made or called.
+
+(export doubled tripled-vec sum-map twice-used shadow)
+
+(import (std prelude))
+
+;; EXPECT-CS: = \(elem__[0-9]+ \* 2\);
+;; EXPECT-NO-CS: listsubmap\(
+(: doubled (-> (List int) (List int)))
+(defun (doubled xs) (list-map (fun (x) (* x 2)) xs))
+
+;; A `defbjouble` that takes a `-?->` is inlined with its Bjolang body, which
+;; walks with a cursor, and not with the one that calls .NET with a delegate.
+;; EXPECT-CS: vecsubcursorsubnext\(
+;; EXPECT-NO-CS: clrsubvecsubmap\(
+(: tripled-vec (-> (Vec int) (Vec int)))
+(defun (tripled-vec v) (vec-map (fun (x) (* x 3)) v))
+
+;; EXPECT-CS: Map\.MapModule\.CursorNext<int, int>\(
+;; EXPECT-NO-CS: clrsubmapsubfold\(
+(: sum-map (-> (Map int int) int))
+(defun (sum-map m) (map-fold (fun (k x acc) (+ acc (+ k x))) 0 m))
+
+;; A body that calls its function twice keeps the call: the lambda would only
+;; be bound to a local, and the call through it would remain.
+(: apply-twice (-> (-> int int) int int))
+(defun (apply-twice f x) (f (f x)))
+
+;; EXPECT-CS: Module\.applysubtwice\(
+(: twice-used (-> int int))
+(defun (twice-used n) (apply-twice (fun (x) (+ x 1)) n))
+
+;; A parameter named like a published function is the parameter.
+;; EXPECT-CS: return listsubmap__[0-9]+\(
+(: shadow (-> (-> (-> int int) (List int) (List int)) (List int) (List int)))
+(defun (shadow list-map xs) (list-map (fun (x) (+ x 100)) xs))

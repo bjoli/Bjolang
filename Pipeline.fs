@@ -2510,7 +2510,12 @@ let runFullFrontendPipeline (mainFilePath: string) =
         // inlined result and handles any interface-trait dispatch inside it with
         // no changes; and before loop lowering, because a `TRecur` carries an
         // index into its enclosing loop and cannot be spliced elsewhere.
-        let inlinedAst = Timing.phase "trait inline" (fun () -> TraitInline.run env typedAst)
+        //
+        // The bodies of this module's functions that take a function are
+        // published first, so that a call in this module can be inlined too,
+        // and so that `Exports` publishes them to importers.
+        let env = TraitInline.publishBodies env moduleOf letrecifiedDecls typedAst
+        let inlinedAst = Timing.phase "trait inline" (fun () -> TraitInline.run env moduleOf typedAst)
 
         Diagnostics.progress "=== Step 5: Seq Fusion ==="
         // Runs after trait inlining because that is what puts a `seql` default

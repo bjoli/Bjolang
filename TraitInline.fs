@@ -147,6 +147,151 @@ let rec betaReduce (expr: TypedExpr) : TypedExpr =
     | _ -> expr
 
 // ---------------------------------------------------------------------------
+// Bodies of functions that take a function
+// ---------------------------------------------------------------------------
+
+/// The largest body, in untyped nodes, that is published for inlining. A call
+/// is inlined only where it is given a function, and the copy is what removes
+/// the call through it; past this size the copy costs more than the call.
+/// The walks of the standard library — `list-map`, `vec-map`, `vec-filter`,
+/// `vec-fold`, `map-fold` — are below it.
+[<Literal>]
+let private maxInlineBodySize = 100
+
+let rec private exprSize (expr: Ast.Expr) : int =
+    1 + (Ast.exprChildren expr |> List.sumBy exprSize)
+
+let rec private solvedType (t: HMType) : HMType =
+    match t with
+    | TMeta { Value = Some inner } -> solvedType inner
+    | _ -> t
+
+let private isFunctionType (t: HMType) =
+    match solvedType t with
+    | TFun _ -> true
+    | _ -> false
+
+/// Does `expr` have a yield point outside the lambdas in it? The same calls
+/// `ColourCheck` reads as one: a call whose callee suspends or is given a
+/// suspending callback, an `#:async` import, and a trait method that
+/// suspends. A lambda in `expr` has its own colour, so it is not looked in.
+let rec private hasYieldPoint (expr: TypedExpr) : bool =
+    let here =
+        match expr.Node with
+        | TApply(target, _, _) -> callSuspends target.Type || wantsSuspendingCopy target.Type
+        | TForeignStaticCall(_, _, _, Some meta) -> meta.Await
+        | TDotMethodCall(_, _, _, Some meta) -> meta.Await
+        | TTraitCall(tref, _, _) -> callSuspends tref.MethodType || wantsSuspendingCopy tref.MethodType
+        | TInterfaceCall(_, _, methodType, _, _) -> callSuspends methodType
+        | _ -> false
+
+    match expr.Node with
+    | TLambda _ -> false
+    | _ -> here || TypeVisitor.children expr |> List.exists hasYieldPoint
+
+/// Does `expr` call a `defbjouble` whose copy the colour around the call
+/// chooses? Such a call in a lambda or in a function's body takes the parking
+/// copy; spliced into a bjoroutine, it would take the suspending one. Inlining
+/// must not change which copy runs, so a body with one is not spliced.
+let rec private callsColourChosenDouble (env: Env) (expr: TypedExpr) : bool =
+    match expr.Node with
+    | TApply({ Node = TIdent(name, _) }, _, _) when Map.containsKey name env.Registry.DoubleDefs -> true
+    | _ -> TypeVisitor.children expr |> List.exists (callsColourChosenDouble env)
+
+/// Publishes the body of every function of this module that takes a function,
+/// so that a call given a known function can be inlined, here and in each
+/// module that imports it. See `inlineFunctionCall`.
+///
+/// The bodies go in `ConstrainedBodies`, which `Exports` and the metadata
+/// already carry. `Monomorphise` copies only the bodies whose function has a
+/// constraint that costs a dictionary, so it does not see these.
+///
+/// A function is published if it has a parameter of function type, has only
+/// mandatory parameters, has no `(where ...)`, is not a `defbjouble` whose
+/// copy the colour around a call chooses, and its body is at most
+/// `maxInlineBodySize` nodes.
+let publishBodies
+    (env: Env)
+    (moduleOf: Map<string, string * string>)
+    (decls: Ast.Decl list)
+    (typed: TDecl list)
+    : Env =
+    let ownModuleName, ownDecls =
+        match List.tryLast decls with
+        | Some(Ast.DModule(name, inner, _)) -> name, inner
+        | _ -> "", decls
+
+    let typedOwn =
+        match List.tryLast typed with
+        | Some(TModule(_, inner, _)) -> inner
+        | _ -> typed
+
+    let takesFunction =
+        typedOwn
+        |> List.choose (function
+            | TDefun(name, _, args, [], None, _, _, _, _) when args |> List.exists (snd >> isFunctionType) -> Some name
+            | _ -> None)
+        |> Set.ofList
+
+    let unconstrained (name: string) =
+        match Map.tryFind name env.Bindings with
+        | Some { Scheme = Scheme(_, [], _) } -> true
+        | _ -> false
+
+    // A `defbjouble` that takes a `-?->` gives its `#:bjo` body: it is the
+    // Bjolang loop, where the `#:sync` body calls a .NET method with a
+    // delegate, and inlining that gains nothing. Re-inferred with an ordinary
+    // callback the `#:bjo` body is ordinary, and does what the `#:sync` body
+    // does. Such a function is not in `DoubleDefs`, which holds the ones
+    // whose copy the colour around the call chooses.
+    let candidates =
+        ownDecls
+        |> List.choose (function
+            | Ast.DDefun(name, args, body, Ast.Ordinary, _) -> Some(name, args, body)
+            | Ast.DDefDouble(name, args, _, bjoBody, _) -> Some(name, args, bjoBody)
+            | _ -> None)
+
+    let bodies =
+        candidates
+        |> List.choose (function
+            | (name, args, body) when
+                Set.contains name takesFunction
+                && name <> "main"
+                && unconstrained name
+                && not (Map.containsKey name env.Registry.ConstrainedBodies)
+                && not (Map.containsKey name env.Registry.DoubleDefs)
+                && not (Set.contains name env.Registry.GeneratedCopies)
+                && not (Set.contains name env.Registry.InferredCopies)
+                && args |> List.forall (function Ast.MandatoryArg _ -> true | _ -> false)
+                && exprSize body <= maxInlineBodySize
+                ->
+                let parameters = Ast.mandatoryNames args
+
+                let qualification =
+                    AlphaRename.freeNames (Set.ofList parameters) body
+                    |> Seq.choose (fun n ->
+                        match Map.tryFind n moduleOf with
+                        | Some(m, original) -> Some(n, Naming.qualifiedBinding m original)
+                        | None -> None)
+                    |> Map.ofSeq
+
+                Some(
+                    name,
+                    ({ Params = parameters
+                       Body = body
+                       Qualification = qualification
+                       OriginModule = ownModuleName }
+                    : InlineTemplate)
+                )
+            | _ -> None)
+
+    { env with
+        Registry =
+            { env.Registry with
+                ConstrainedBodies =
+                    bodies |> List.fold (fun acc (k, v) -> Map.add k v acc) env.Registry.ConstrainedBodies } }
+
+// ---------------------------------------------------------------------------
 // The pass
 // ---------------------------------------------------------------------------
 
@@ -159,12 +304,61 @@ let rec betaReduce (expr: TypedExpr) : TypedExpr =
 let private inlineKey (traitName: string) (methodName: string) (ctor: string) =
     $"%s{traitName}::%s{methodName}::%s{ctor}"
 
+/// The key of a function's body in `Active`, in the namespace of the trait keys
+/// but never equal to one: those hold two `::`, this one starts with `fn`.
+let private functionKey (originModule: string) (originalName: string) =
+    $"fn::%s{originModule}::%s{originalName}"
+
 type private Ctx =
     { Env: Env
       /// Threaded functionally, so it pops on backtracking: a sibling call to
       /// the same method elsewhere in the tree still inlines, and only cycles on
       /// the *current path* fall back to a call.
-      Active: Set<string> }
+      Active: Set<string>
+      /// Top-level name -> the module and name it was written as. A call names a
+      /// function by what this module calls it, and a published body is found
+      /// by what its own module called it.
+      ModuleOf: Map<string, string * string>
+      /// The same, by the qualified name a spliced body calls it by.
+      Qualified: Map<string, string * string>
+      /// Every name the declaration being inlined binds anywhere. A name in it
+      /// may mean the local and not the top-level function of that name, so
+      /// it is not taken for the function.
+      Shadowed: Set<string>
+      /// In a `match` guard. A guard is emitted as `case ... when`, which has
+      /// no place for the statements a spliced loop needs, so a function call
+      /// there is not inlined.
+      InGuard: bool }
+
+/// The module and name of the top-level function `name` means here, if it
+/// means one.
+let private topLevelFunction (ctx: Ctx) (name: string) : (string * string) option =
+    match Map.tryFind name ctx.Qualified with
+    | Some origin -> Some origin
+    | None when Set.contains name ctx.Shadowed -> None
+    | None -> Map.tryFind name ctx.ModuleOf
+
+/// The names `expr` binds anywhere in it: the binders `AlphaRename` renames.
+let private localBinders (expr: TypedExpr) : Set<string> =
+    let here (e: TypedExpr) : string list =
+        match e.Node with
+        | TLet(n, _, fn, _, _) -> n :: fn.Params
+        | TLetRec(bindings, _) -> bindings |> List.collect (fun (n, _, fn, _) -> n :: fn.Params)
+        | TLetTuple(names, _, _) -> names
+        | TLetMutable(n, _, _) -> [ n ]
+        | TLambda(ps, _) -> ps
+        | TMatch(_, clauses) -> clauses |> List.collect (fun c -> AlphaRename.patternNames c.Pattern)
+        | TDefMatch(binder, _, _, arms) ->
+            AlphaRename.patternNames binder
+            @ (arms |> List.collect (fun a -> AlphaRename.patternNames a.Pattern))
+        | TWithReturn(n, _) -> [ n ]
+        | _ -> []
+
+    let rec go (acc: Set<string>) (e: TypedExpr) =
+        let acc = here e |> List.fold (fun s n -> Set.add n s) acc
+        TypeVisitor.children e |> List.fold go acc
+
+    go Set.empty expr
 
 /// The call that stands in for an inlined body: the impl's own method, named
 /// directly. Emitted whenever inlining would recur, whenever the occurrence
@@ -269,23 +463,137 @@ let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
                 && not (callSuspends tref.MethodType)
                 && not (wantsSuspendingCopy tref.MethodType)
                 ->
-                spliceTemplate ctx tref ctor tyArgs tpl args expr
+                spliceTemplate
+                    ctx
+                    key
+                    $"the '%s{tref.Method}' implementation of '%s{tref.Trait}' for '%s{ctor}'"
+                    tpl
+                    args
+                    expr
+                    false
+                    (fun () -> landingPad ctx.Env tref ctor tyArgs args [] expr)
             | _ -> landingPad ctx.Env tref ctor tyArgs args kwArgs expr
+
+    | TApply({ Node = TIdent(name, _) } as callee, args, []) ->
+        let args = args |> List.map (inlineExpr ctx)
+        let call = { expr with Node = TApply(callee, args, []) }
+        if ctx.InGuard then call else inlineFunctionCall ctx name callee args call
+
+    // A pattern's view step is emitted in the same place as a guard.
+    | TMatch(target, clauses) ->
+        let guardCtx = { ctx with InGuard = true }
+
+        let rec mapPattern (p: TypedPattern) =
+            TypeVisitor.mapPatternChildrenWith (inlineExpr guardCtx) mapPattern p
+
+        let clauses =
+            clauses
+            |> List.map (fun c ->
+                { Pattern = mapPattern c.Pattern
+                  Guard = c.Guard |> Option.map (inlineExpr guardCtx)
+                  Body = inlineExpr ctx c.Body })
+
+        { expr with Node = TMatch(inlineExpr ctx target, clauses) }
 
     | _ -> TypeVisitor.mapChildren (inlineExpr ctx) expr
 
+/// Is `arg` a function whose body is known here: a lambda, or a top-level
+/// function? Only such an argument makes inlining the call worth it, because
+/// only then does the call through it become a direct call or the lambda's
+/// body.
+///
+/// A lambda with a yield point in its body is not: it is an error that
+/// `ColourCheck` reports at the lambda, and the lambda's body put into a
+/// bjoroutine would make it no error.
+and private isKnownFunction (ctx: Ctx) (arg: TypedExpr) : bool =
+    match arg.Node with
+    | TLambda(_, body) ->
+        not (callSuspends arg.Type)
+        && not (hasYieldPoint body)
+        && not (callsColourChosenDouble ctx.Env body)
+    // Not a `defbjouble`: the colour around a call chooses its copy, so the
+    // call the substitution makes would choose by a colour the reference did
+    // not have.
+    | TIdent(name, _) ->
+        match topLevelFunction ctx name with
+        | Some(_, original) ->
+            isFunctionType arg.Type
+            && not (Map.containsKey name ctx.Env.Registry.DoubleDefs)
+            && not (Map.containsKey original ctx.Env.Registry.DoubleDefs)
+        | None -> false
+    | _ -> false
+
+/// Inlines a call to a top-level function that is given a known function, if
+/// the function's body is published (see `publishBodies`).
+///
+/// The splice is the one a trait method gets. A lambda argument is then
+/// substituted where the body calls its parameter, and `betaReduce` makes the
+/// call the lambda's body. So `(list-map (fun (x) (* x 2)) xs)` becomes the loop
+/// of `list-map` with `(* elem 2)` in it, and no delegate is made or called.
+///
+/// Conservative, unlike a trait method's splice: the argument has to be a
+/// lambda or a top-level function written at the call, the body has to call a
+/// lambda parameter at most once, and the body has to be small. Otherwise the
+/// call stays a call. A lambda called twice would only be bound to a local,
+/// and the call through it would remain.
+and private inlineFunctionCall
+    (ctx: Ctx)
+    (name: string)
+    (callee: TypedExpr)
+    (args: TypedExpr list)
+    (call: TypedExpr)
+    : TypedExpr =
+    let origin =
+        if args |> List.exists (isKnownFunction ctx) then
+            topLevelFunction ctx name
+        else
+            None
+
+    let template =
+        match origin with
+        | Some(originModule, original) ->
+            match Map.tryFind original ctx.Env.Registry.ConstrainedBodies with
+            | Some tpl when tpl.OriginModule = originModule -> Some(functionKey originModule original, tpl)
+            | _ -> None
+        | None -> None
+
+    // A spliced body calls a function by its qualified name, which is not a
+    // key in `Bindings`; the name the function was written as is.
+    let unconstrained =
+        let binding =
+            match Map.tryFind name ctx.Env.Bindings, origin with
+            | Some b, _ -> Some b
+            | None, Some(_, original) -> Map.tryFind original ctx.Env.Bindings
+            | None, None -> None
+
+        match binding with
+        | Some { Scheme = Scheme(_, [], _) } -> true
+        | _ -> false
+
+    match template with
+    | Some(key, tpl) when
+        not (Set.contains key ctx.Active)
+        && tpl.Params.Length = args.Length
+        && unconstrained
+        // The same rules as for a trait method: a suspending function, or one
+        // given a suspending callback, keeps its call, which is what
+        // `ColourCheck` and `EffectGraph` read.
+        && not (callSuspends callee.Type)
+        && not (wantsSuspendingCopy callee.Type)
+        ->
+        spliceTemplate ctx key $"'%s{name}'" tpl args call true (fun () -> call)
+    | _ -> call
+
 and private spliceTemplate
     (ctx: Ctx)
-    (tref: TraitRef)
-    (ctor: string)
-    (tyArgs: HMType list)
+    (key: string)
+    (describe: string)
     (tpl: InlineTemplate)
     (args: TypedExpr list)
     (expr: TypedExpr)
+    (onlyIfSubstituted: bool)
+    (fallback: unit -> TypedExpr)
     : TypedExpr =
-
-    let key = inlineKey tref.Trait tref.Method ctor
-    let describe = $"the '%s{tref.Method}' implementation of '%s{tref.Trait}' for '%s{ctor}'"
 
     try
         // 1. Freshen at the splice. Mandatory, and *not* something the global
@@ -328,19 +636,45 @@ and private spliceTemplate
         // 4. Free names now say which module they came from.
         let qualified = AlphaRename.applyQualification tpl.Qualification typedBody
 
-        // 5. Recurse, with this key held down for the current path only.
-        let inlined = inlineExpr { ctx with Active = Set.add key ctx.Active } qualified
+        let innerCtx = { ctx with Active = Set.add key ctx.Active }
+        let bindings = List.zip freshParams args
 
-        // 6. Bind the arguments, then reduce whatever the substitution exposed.
-        betaReduce (bindArguments describe (List.zip freshParams args) inlined)
+        // Read before step 4: `DoubleDefs` knows a name as written, and the
+        // qualification rewrites it. A yield point left in the body would be
+        // moved into the caller, where `ColourCheck` would judge it at a
+        // place it was not written.
+        if
+            onlyIfSubstituted
+            && (callsColourChosenDouble ctx.Env typedBody || hasYieldPoint typedBody)
+        then
+            fallback ()
+        else
+            // 5. Recurse, with this key held down for the current path only.
+            let inlined = inlineExpr innerCtx qualified
+
+            // A function call is inlined only for the sake of its lambdas, so
+            // if one of them would only be bound to a local, the call is kept.
+            let lambdaKept =
+                bindings
+                |> List.exists (fun (name, arg) ->
+                    match arg.Node with
+                    | TLambda _ -> occurrences name inlined > 1
+                    | _ -> false)
+
+            if onlyIfSubstituted && lambdaKept then
+                fallback ()
+            else
+                // 6. Bind the arguments, then reduce whatever the substitution
+                //    exposed.
+                betaReduce (bindArguments describe bindings inlined)
     with ex ->
         // A template that will not re-infer here is a compile error waiting to
-        // happen in generated C#, and the landing pad is always a correct
-        // answer. Say so rather than failing the build over an optimization.
+        // happen in generated C#, and the fallback is always a correct answer.
+        // Say so rather than failing the build over an optimization.
         warn
             $"could not inline %s{describe} at %s{Lexer.formatPos expr.Range}: %s{ex.Message}. Falling back to a call."
 
-        landingPad ctx.Env tref ctor tyArgs args [] expr
+        fallback ()
 
 // ---------------------------------------------------------------------------
 // Declarations
@@ -373,9 +707,40 @@ let rec private inlineDecl (ctx: Ctx) (decl: TDecl) : TDecl =
 
         TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods, r)
 
-    | _ -> TypeVisitor.mapDecl (inlineExpr ctx) decl
+    // A function holds its own key over its body, for the reason a method
+    // does: a call to itself stays a call.
+    | TDefun(name, _, args, kwArgs, rest, _, _, body, _) ->
+        let active =
+            match Map.tryFind name ctx.ModuleOf with
+            | Some(m, original) -> Set.add (functionKey m original) ctx.Active
+            | None -> ctx.Active
 
-/// Inlines every statically resolvable trait call in the program.
-let run (env: Env) (decls: TDecl list) : TDecl list =
-    let ctx = { Env = env; Active = Set.empty }
+        let shadowed =
+            (args |> List.map fst)
+            @ (kwArgs |> List.map (fun (n, _, _) -> n))
+            @ (rest |> Option.map fst |> Option.toList)
+            |> List.fold (fun acc n -> Set.add n acc) (localBinders body)
+
+        TypeVisitor.mapDecl (inlineExpr { ctx with Active = active; Shadowed = shadowed }) decl
+
+    | _ ->
+        let shadowed = TypeVisitor.foldDecl (fun acc e -> Set.union acc (localBinders e)) Set.empty decl
+        TypeVisitor.mapDecl (inlineExpr { ctx with Shadowed = shadowed }) decl
+
+/// Inlines every statically resolvable trait call in the program, and every
+/// call of a published function that is given a known function.
+let run (env: Env) (moduleOf: Map<string, string * string>) (decls: TDecl list) : TDecl list =
+    let qualified =
+        moduleOf
+        |> Map.toSeq
+        |> Seq.map (fun (_, (m, original)) -> Naming.qualifiedBinding m original, (m, original))
+        |> Map.ofSeq
+
+    let ctx =
+        { Env = env
+          Active = Set.empty
+          ModuleOf = moduleOf
+          Qualified = qualified
+          Shadowed = Set.empty
+          InGuard = false }
     decls |> List.map (inlineDecl ctx)

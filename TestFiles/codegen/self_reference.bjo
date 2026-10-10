@@ -17,8 +17,10 @@
 (type
   (: Tree (Union (: Leaf int) (: Node (Vec Tree)))))
 
-(: apply-to (-> (-> Tree int) Tree int))
-(defun (apply-to f t) (f t))
+;; Takes the function in a list, so that `walk` stays a value: a call given a
+;; function directly would be inlined, and `walk` would then be called.
+(: apply-to (-> (List (-> Tree int)) Tree int))
+(defun (apply-to fs t) ((list-head fs) t))
 
 ;; --- The tail call is a jump, not a call -------------------------------------
 ;; EXPECT-CS: while \(true\) \{
@@ -37,4 +39,4 @@
     ((Node v)
      (if (= (vec-length v) 1)
          (walk (vec-ref v 0))
-         (vec-fold (fun (x acc) (+ acc (apply-to walk x))) 0 v)))))
+         (vec-fold (fun (x acc) (+ acc (apply-to (list walk) x))) 0 v)))))

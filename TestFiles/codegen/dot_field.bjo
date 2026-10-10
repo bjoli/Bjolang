@@ -13,7 +13,14 @@
 (defun (y-of p) (.y p))
 
 ;; A bare `.brand` is a lambda around the same member access.
-;; EXPECT-CS: return listsubmap\(\(record__[0-9]+\) => \{
+;; EXPECT-CS: return \(record__[0-9]+\) => \{
 ;; EXPECT-CS: return record__[0-9]+\.brand;
+(: brand-reader (-> (-> Car string)))
+(defun (brand-reader) .brand)
+
+;; Given to `list-map`, the lambda is inlined into the walk: the member access
+;; is in the loop, and no delegate is made.
+;; EXPECT-CS: = elem__[0-9]+\.brand;
+;; EXPECT-NO-CS: listsubmap\(
 (: brands (-> (List Car) (List string)))
 (defun (brands cs) (list-map .brand cs))
