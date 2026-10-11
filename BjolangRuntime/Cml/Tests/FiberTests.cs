@@ -55,6 +55,7 @@ public static class FiberTests
         Run("TryCommit spins past a transient claim (B4)", TryCommitSpinsPastClaim);
         Run("a promise completed on a foreign thread wakes a choose", ForeignThreadCompletion);
         Run("losing choose branches do not accumulate waiters", WaitersArePruned);
+        Run("losing inbox-closed branches do not accumulate waiters", ClosedWaitersArePruned);
         Run("the first completion wins the value, not the last", FirstCompletionWins);
 
         Section("Task interop");
@@ -644,6 +645,44 @@ public static class FiberTests
         // sync blocks alive. Completing it must not take a noticeable amount of time
         // or fire anything.
         neverCompletes.TrySetResult(0);
+    }
+
+    /// <summary>
+    /// A worker's loop: a choose of an inbox's receive and its closed event,
+    /// where the receive wins every time. The closed event's gate kept a node
+    /// for each sync until the inbox closed, which in a server is never.
+    /// </summary>
+    private static void ClosedWaitersArePruned()
+    {
+        var inbox = new Inbox<int>(16, dropOldest: false);
+        var gate = (Gate<global::BjolangRuntime.Option<Exception>>)inbox.Closed;
+
+        for (int i = 0; i < 5000; i++)
+        {
+            var done = new ManualResetEventSlim(false);
+            Cml.Sync(
+                Cml.Choose(
+                    Cml.Wrap(inbox.Receive, v => "item"),
+                    Cml.Wrap(inbox.Closed, e => "closed")),
+                _ => done.Set());
+            inbox.Post(i);
+            Await(done, $"iteration {i}", 2000);
+        }
+
+        if (gate.WaiterCount > 64)
+            throw new Exception($"the closed gate holds {gate.WaiterCount} waiters after 5000 lost syncs");
+
+        // A sync still waiting is not pruned: closing wakes it.
+        var closed = new ManualResetEventSlim(false);
+        string? got = null;
+        Cml.Sync(
+            Cml.Choose(
+                Cml.Wrap(inbox.Receive, v => "item"),
+                Cml.Wrap(inbox.Closed, e => "closed")),
+            s => { got = s; closed.Set(); });
+        inbox.Close();
+        Await(closed, "the close", 2000);
+        if (got != "closed") throw new Exception($"the waiting sync got {got}, not the close");
     }
 
     /// <summary>

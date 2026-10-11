@@ -943,6 +943,22 @@ internal sealed class Gate<T> : IEvent<T>, INowable<T>
     private T _value = default!;
     private int _set;
 
+    /// <summary>
+    /// The waiters, and when to prune them. A gate is mostly a losing branch:
+    /// a worker's <c>(choose (inbox-recv ib) (inbox-closed ib))</c> publishes
+    /// here on every sync, and the receive wins. Without a prune, each sync
+    /// left a node, with its <c>SyncState</c> and sink, until the inbox closed:
+    /// about 225 bytes a request in bjoweb, which also made every gen0
+    /// collection copy them. As in <see cref="Promise{T}"/>, a node whose sync
+    /// has committed is dropped once the list reaches twice what survived the
+    /// last prune.
+    /// </summary>
+    private int _count;
+    private int _pruneAt = 8;
+
+    /// <summary>For tests: the nodes on the list.</summary>
+    internal int WaiterCount { get { lock (_lock) return _count; } }
+
     public bool IsSet => Volatile.Read(ref _set) != 0;
 
     public void Signal(T value)
@@ -958,6 +974,7 @@ internal sealed class Gate<T> : IEvent<T>, INowable<T>
 
             woken = _waiters;
             _waiters = null;
+            _count = 0;
         }
 
         while (woken is not null)
@@ -976,7 +993,14 @@ internal sealed class Gate<T> : IEvent<T>, INowable<T>
         {
             if (_set == 0)
             {
+                if (_count >= _pruneAt)
+                {
+                    _count = PruneCommitted();
+                    _pruneAt = Math.Max(8, _count * 2);
+                }
+
                 _waiters = new Node(state, eventId, onSync, _waiters);
+                _count++;
                 return;
             }
 
@@ -998,12 +1022,39 @@ internal sealed class Gate<T> : IEvent<T>, INowable<T>
         return false;
     }
 
+    /// <summary>
+    /// Unlinks the nodes whose sync has committed on another branch, and
+    /// answers how many are left. A committed sync cannot commit again, so
+    /// <see cref="Signal"/> would skip such a node anyway. Called under
+    /// <c>_lock</c>; <see cref="Signal"/> detaches the list under the same lock
+    /// before it walks it, so no walk sees a node being unlinked.
+    /// </summary>
+    private int PruneCommitted()
+    {
+        int live = 0;
+        Node? prev = null;
+        for (var n = _waiters; n is not null; n = n.Next)
+        {
+            if (n.State.IsSynchronized)
+            {
+                if (prev is null) _waiters = n.Next;
+                else prev.Next = n.Next;
+            }
+            else
+            {
+                prev = n;
+                live++;
+            }
+        }
+        return live;
+    }
+
     private sealed class Node
     {
         public readonly SyncState State;
         public readonly int EventId;
         public readonly Action<T> OnSync;
-        public readonly Node? Next;
+        public Node? Next;
 
         public Node(SyncState state, int eventId, Action<T> onSync, Node? next)
         {
