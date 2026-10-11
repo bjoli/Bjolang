@@ -3,6 +3,19 @@
 
 What each change guarantees, and what it leaves open.
 
+* A large append to a string builder stays off the large object heap
+
+- An append that did not fit in the builder's buffer made one buffer as
+  large as the rest of the text: past 85,000 bytes, an array on the large
+  object heap, which only a full collection frees. The rest now goes into
+  buffers of 64 KB each, and every buffer stays below that heap's size.
+- Building 100 MB from 200 KB appends: 58 ms against 63 to 74 ms, and a peak
+  of 710 MB against 1,272 MB. It makes more short collections: about 19 ms
+  of pauses per 100 MB, which the time above includes. Line-sized and short
+  appends take the time they took.
+- The string the builder makes is one array, so a string of 85,000 bytes or
+  more is on the large object heap as before.
+
 * Reading standard input costs a third less
 
 - *A blocking reader fills the standard input port with a plain read.* The
