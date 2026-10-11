@@ -1388,6 +1388,9 @@ and private inferIdent (env: Env) (name: string) (r: Range) : HMType * TypedExpr
     let binding = lookup env name
     let t, tArgs, constraints = instantiate env.Registry binding.Scheme
 
+    for c in constraints do
+        Traits.queueClrObligation env c.TraitName c.TargetType r $"to call '%s{name}'"
+
     // A name with two emitted copies is colour-polymorphic, and its
     // *reference* has to say so, not just its call.
     //

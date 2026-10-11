@@ -3,6 +3,21 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(+ x)~ takes a number, and a dead branch is type-checked
+
+- *~(+ "s")~ compiled and returned ~"s"~.* One-operand ~+~, ~*~,
+  ~bitwise-and~, ~bitwise-ior~ and ~bitwise-xor~ were replaced by their
+  operand before any check. They are now checked as operands of the
+  operator; the value is still the operand, evaluated once, and nothing runs
+  the operator (~(+ -0.0)~ is ~-0.0~).
+- *A constraint over a .NET interface is checked during type checking.* The
+  ~Num~ of ~+~ at ~string~ was checked only when the call's code was made, so
+  a call in a branch that is removed first, such as ~(if #f (+ "a" "b") "c")~,
+  was never checked. It is now checked at the end of the declaration, at the
+  type the use gives it, as well as when the code is made.
+- Still open: a constraint over an ordinary trait, one that has
+  implementations, is checked only when the code is made.
+
 * A call to a local binding named like a special form is refused
 
 - *~(list 1 2)~ under a local ~list~ was the list form, silently.* The parser

@@ -1,0 +1,24 @@
+(import (std prelude))
+(import (std simpletest))
+
+;; `(+ x)`, `(* x)` and the one-operand bitwise forms are their operand, which
+;; still has to be one the operator takes (see `errors/one_operand_plus_string.bjo`).
+;; The operand is evaluated once, and the value is the operand itself, not
+;; arithmetic on it: `(+ -0.0)` keeps the sign that `(+ -0.0 0)` would lose.
+
+(: same (-> %a %a) (where (Num %a)))
+(defun (same x) (+ x))
+
+(defun (main args)
+  (def calls (make-box 0))
+  (expect "evaluated once"
+          (+ (begin (box-set! calls (+ (box-ref calls) 1)) 5))
+          5)
+  (expect "and only once" (box-ref calls) 1)
+  (expect "times" (* 2.5) 2.5)
+  (expect "minus zero keeps its sign" (double->string (+ -0.0)) "-0")
+  (expect "in a generic function" (same 7L) 7L)
+  (expect "bitwise-and" (bitwise-and 6) 6)
+  (expect "bitwise-ior" (bitwise-ior 5) 5)
+  (expect "bitwise-xor" (bitwise-xor 3) 3)
+  0)

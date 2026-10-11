@@ -315,7 +315,8 @@ let private operatorArity =
 /// `(op args...)` at whatever arity it was written.
 ///
 /// Up to two operands are read here. `(+)` is 0 and `(*)` is 1, each
-/// operator's identity as in Scheme; `(+ x)` is `x`; `(- x)` is `negate` and
+/// operator's identity as in Scheme; `(+ x)` is `x`, checked as an operand of
+/// `+`; `(- x)` is `negate` and
 /// `(/ x)` is `recip`, because `-` and `/` are binary trait methods with no
 /// one-operand meaning of their own and `Codegen` emits the unary names. Two
 /// operands are the binary application everything downstream understands, and
@@ -369,11 +370,21 @@ let private desugarOperator
         | _ -> arityError (if folding then "at least one argument" else "at least two arguments")
     | [ single ] ->
         match op with
+        // The operand, which still has to be one the operator takes:
+        // `(+ "s")` is a type error, not "s". Written as `(if #f (op x x) x)`
+        // with x evaluated once, so the checker sees the operator and nothing
+        // runs it. `Simplify` removes the branch after checking. Not
+        // `(+ x 0)` or `(* x 1)`: `-0.0 + 0` is `0.0`, and a type of one's own
+        // may have no literal 0 or 1.
         | "+"
         | "*"
         | "bitwise-and"
         | "bitwise-ior"
-        | "bitwise-xor" -> parseExprFn single
+        | "bitwise-xor" ->
+            let operand = parseExprFn single
+            let tmp = Gensym.fresh "operand"
+            let x = EIdent(tmp, r)
+            ELet(tmp, false, [], None, operand, EIf(EBool(false, r), EApp(opRef, [ x; x ], r), x, r), r)
         | "-" -> EApp(EResolved("negate", r), [ parseExprFn single ], r)
         | "/" -> EApp(EResolved("recip", r), [ parseExprFn single ], r)
         | _ -> arityError "at least two arguments"

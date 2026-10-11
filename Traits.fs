@@ -45,6 +45,11 @@ let private wantedQueue = ResizeArray<Wanted>()
 /// that the error names the use rather than the implementation's body.
 let private clrObligations = ResizeArray<string * HMType * Range * string>()
 
+/// The wanteds of .NET-interface traits whose constraint is already queued in
+/// `clrObligations`, so that the solver's later passes over the same wanted do
+/// not queue it again.
+let private clrChecked = System.Collections.Generic.HashSet<Wanted>(HashIdentity.Reference)
+
 /// The holes an unresolved obligation of `kind` is still watching.
 ///
 /// For `InlineTrait`: a local helper written without a signature —
@@ -103,6 +108,17 @@ let takeWanteds () : Wanted list =
 let clearWanteds () : unit =
     wantedQueue.Clear()
     clrObligations.Clear()
+    clrChecked.Clear()
+
+/// Queues the check of a constraint over a .NET interface at the type a use
+/// instantiated it to: the `(Num %a)` of `+` at the `string` of `(+ "s")`.
+/// `solvePending` checks it once the declaration is inferred. `Lowering` checks
+/// it too, but only in code that `Simplify` has kept: a use in `(if #f ...)`
+/// is gone by then. A constraint on any other trait is passed over here.
+let queueClrObligation (env: Env) (traitName: string) (t: HMType) (range: Range) (describe: string) : unit =
+    match Map.tryFind traitName env.Registry.Traits with
+    | Some { ClrConstraint = Some _ } -> clrObligations.Add(traitName, t, range, describe)
+    | _ -> ()
 
 /// Checks a CLR constraint at a concrete implementor, and produces nothing.
 ///
@@ -203,9 +219,18 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
     // through untouched and `Lowering` turns it into the member call, which is
     // the same emission at a concrete implementor as at a generic one — so
     // there is nothing here for resolution to decide.
+    //
+    // Its constraint is still checked here, at the call's type, when that is
+    // known by the end of the declaration: `solvePending` checks the queued
+    // obligation. Left to `Lowering` alone, a call that `Simplify` removes,
+    // such as one in `(if #f ...)`, was never checked, and `(+ "s")` compiled.
     if (match Map.tryFind w.Trait registry.Traits with
         | Some info -> info.ClrConstraint.IsSome
         | None -> false) then
+        match w.Ref.Holes with
+        | hole :: _ when clrChecked.Add w -> clrObligations.Add(w.Trait, hole, w.Range, $"to call '%s{w.Ref.Method}'")
+        | _ -> ()
+
         false
     else
 
@@ -407,6 +432,7 @@ let solvePending (env: Env) : unit =
     // it, and `Lowering` checks it again at the type it ends up at.
     let obligations = List.ofSeq clrObligations
     clrObligations.Clear()
+    clrChecked.Clear()
 
     for (traitName, t, r, describe) in obligations do
         match prune env.Registry t, Map.tryFind traitName env.Registry.Traits with
