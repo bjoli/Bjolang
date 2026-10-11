@@ -85,7 +85,7 @@ out-degree ≤ 1, so copies grow additively; largest demand 722 nodes
   function once: the copies in one place every module links, rather than one
   per caller. Belongs with evidence structs.
 
-* Loops the JIT does not see as counted loops
+* Reading lines is slower than in C#
 
 A named ~let~ or a ~loop~ is emitted as ~while (true)~. Each iteration copies
 each variable into a local, and each jump assigns the new values through a
@@ -98,17 +98,15 @@ temporary per variable (~__next__~).
   fannkuch's ~rev~, fasta's ~pick~), with all values in registers. Same-compiler
   A/B: revcomp, nbody, spectral-norm and mandelbrot equal within 1.5%, fasta
   and fannkuch-redux 2 to 2.5% slower by code layout. Not kept.
-- *The gap in reverse-complement is the port's loop, not the emitted shape.*
-  The C# program writes the newline and the byte in one iteration, so ~from~
-  decreases on every pass, and the JIT clones the loop and removes the bounds
-  check of ~sq[from]~. The Bjolang port makes the newline an iteration of its
-  own in which ~from~ does not change, so ~from~ is not an induction variable,
-  and no emitted shape (~for~, ~while (cond)~) would let the JIT clone it.
-  The port written as the C# is (one byte per iteration, the newline before
-  it when a line is full) kept all three bounds checks in the JIT's code,
-  which is OSR code, since the method runs once per sequence. It was 5%
-  slower than the port: a flag and an index are computed for every byte. Not
-  kept.
+- *Reverse-complement's loop is as fast as C#'s.* Timed by phase in both
+  programs, on the 25,000,000 input: the loop 278 ms in Bjolang, 275 ms in C#.
+  Two rewrites of the port's loop (one byte per iteration as the C# does it,
+  and one line per step with a counted inner loop) were not faster.
+- *Its gap to C# is reading the lines.* Reading 4.2 million lines into the
+  builder takes 750 ms in Bjolang and 462 ms in C# (~180 against ~110 ns a
+  line), through ~read-line/opt~ and ~stringbuilder-add-string!~. Making the
+  string is faster in Bjolang (133 against 291 ms: the builder is UTF-8, C#'s
+  is UTF-16), and making the bytes slightly slower (146 against 116 ms).
 
 * Colourless concurrency
 
