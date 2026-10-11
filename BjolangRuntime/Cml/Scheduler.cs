@@ -242,6 +242,53 @@ public static class Scheduler
         }
     }
 
+    /// <summary>
+    /// <see cref="Dispatch(Action)"/> for a send that took a parked receiver.
+    /// <paramref name="moreTakers"/> says that other receivers are still
+    /// parked on the channel.
+    ///
+    /// With <see cref="Workers"/>, such a receiver is queued, not run inline.
+    /// Several receivers parked on one channel are workers that wait for work,
+    /// and the sender is a feeder that has more to give. Run inline, each
+    /// receiver's work runs on the feeder's thread, one after another, while
+    /// the other cores are idle: a feeder of 24 workers kept about 10 cores
+    /// busy. Queued, the next resume pushes this one from <c>runnext</c> to the
+    /// queue, which wakes a worker to steal it. A ring, a <c>choose</c> over
+    /// channels with one sender each, and a server's request channel have at
+    /// most one fiber parked on a side, so they still resume inline. See
+    /// BjolangRuntime/Cml/design.md, "A feeder and its workers".
+    /// </summary>
+    public static void DispatchTaken(Action action, bool moreTakers)
+    {
+        int depth = InlineDepth;
+        if (depth < MaxInlineDepth && (!Workers.Enabled || (--InlineBudget >= 0 && !moreTakers)))
+        {
+            InlineDepth = depth + 1;
+            try { action(); }
+            finally { InlineDepth = depth; }
+        }
+        else
+        {
+            Enqueue(action);
+        }
+    }
+
+    /// <see cref="DispatchTaken(Action, bool)"/> with a value.
+    public static void DispatchTaken<T>(Action<T> action, T state, bool moreTakers)
+    {
+        int depth = InlineDepth;
+        if (depth < MaxInlineDepth && (!Workers.Enabled || (--InlineBudget >= 0 && !moreTakers)))
+        {
+            InlineDepth = depth + 1;
+            try { action(state); }
+            finally { InlineDepth = depth; }
+        }
+        else
+        {
+            Enqueue(action, state);
+        }
+    }
+
     public static void Dispatch<T>(Action<T> action, T state)
     {
         int depth = InlineDepth;

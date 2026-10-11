@@ -1,0 +1,14 @@
+;; What the parallel ports share: the number of workers, and joining a fiber.
+
+(export workers join)
+
+;; One worker for each logical CPU, as the Go programs use.
+(import/extern
+  (workers (: System.Environment.ProcessorCount int #:get)))
+
+;; The answer of a fiber. A fiber that failed raises its exception here.
+(: join (-bjo-> (Promise %a) %a))
+(defbjo (join p)
+  (match (sync (promise-join p))
+    ((Ok v) v)
+    ((Err e) (raise e))))

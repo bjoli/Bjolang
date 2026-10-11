@@ -1,0 +1,71 @@
+;; spectral-norm, in parallel: the largest singular value of the infinite
+;; matrix A(i,j) = 1/((i+j)(i+j+1)/2+i+1), by the power method.
+;; Argument: the size of the matrix.
+;;
+;; Each of the 40 products splits its rows into one block for each CPU, each
+;; block in a fiber, and waits for all of them before the next product starts.
+
+(import "par.bjo")
+(import (std fmt))
+
+(: a (-> int int double))
+(defun (a i j)
+  (def ij (+ i j))
+  (/ 1.0 (cast System.Double (+ (/ (* ij (+ ij 1)) 2) (+ i 1)))))
+
+;; out[lo..hi) = (A v)[lo..hi)
+(: av-rows (-> (Array double) (Array double) int int void))
+(defun (av-rows v out lo hi)
+  (def n (array-length v))
+  (loop (:for i (range lo hi))
+        (:do (array-set! out i
+                         (loop (:for j (range 0 n))
+                               (:acc s (summing (* (a i j) (array-ref v j))))
+                               => s)))))
+
+;; out[lo..hi) = (A^T v)[lo..hi)
+(: atv-rows (-> (Array double) (Array double) int int void))
+(defun (atv-rows v out lo hi)
+  (def n (array-length v))
+  (loop (:for i (range lo hi))
+        (:do (array-set! out i
+                         (loop (:for j (range 0 n))
+                               (:acc s (summing (* (a j i) (array-ref v j))))
+                               => s)))))
+
+;; out = A v, or A^T v when transposed?.
+(: mul (-bjo-> bool (Array double) (Array double) void))
+(defbjo (mul transposed? v out)
+  (def n (array-length v))
+  (with-scope
+    (loop (:for w (range 0 workers))
+          (:let lo (/ (* w n) workers))
+          (:let hi (/ (* (+ w 1) n) workers))
+          (:do (if transposed?
+                   (spawn (atv-rows v out lo hi))
+                   (spawn (av-rows v out lo hi)))))))
+
+(: dot (-> (Array double) (Array double) double))
+(defun (dot x y)
+  (loop (:for i (range 0 (array-length x)))
+        (:acc s (summing (* (array-ref x i) (array-ref y i))))
+        => s))
+
+(: power (-bjo-> (Array double) (Array double) (Array double) int void))
+(defbjo (power u v tmp k)
+  (when (< k 10)
+    (mul #f u tmp)
+    (mul #t tmp v)
+    (mul #f v tmp)
+    (mul #t tmp u)
+    (power u v tmp (+ k 1))))
+
+(defbjo (main args)
+  (def n (string->int (vec-ref args 0)))
+  (def u (make-array n))
+  (def v (make-array n))
+  (def tmp (make-array n))
+  (loop (:for i (range 0 n)) (:do (array-set! u i 1.0)))
+  (power u v tmp 0)
+  (displayln (render->string [(numeric (sqrt (/ (dot u v) (dot v v))) #:precision 9)]))
+  0)

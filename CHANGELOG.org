@@ -3,6 +3,25 @@
 
 What each change guarantees, and what it leaves open.
 
+* A feeder of worker fibers uses every core
+
+- A send that takes a parked receiver while other receivers are still parked
+  on the channel queues that receiver; it does not run it inline. Before, a
+  fiber that fed rows to 24 workers through a channel ran each worker's row on
+  its own thread before it could give the next one, and about 10 cores of 24
+  were busy. The parallel mandelbrot of ~bench/clbg/parallel~ went from 1.6 to
+  0.86 s, and fannkuch-redux from 1.6..8.9 to 1.70 s (Go: 0.70 and 1.41 s).
+- A ring, a ~choose~ over channels with one sender each and a server's
+  request channel resume inline as before. The CML suite, the rings and
+  ~bench/service~ measure the same within their noise; a hop of a ring on one
+  core is about 7 instructions longer. See "A feeder and its workers" in
+  ~BjolangRuntime/Cml/design.md~.
+- ~bench/clbg/parallel~: mandelbrot, spectral-norm, fannkuch-redux and
+  binary-trees with fibers, against Go with goroutines, and ~run.py~ to time
+  them with the single-threaded programs.
+- Still open: Bjolang is 1.2 to 1.35 times Go on three of the four, and uses
+  fewer cores than Go on mandelbrot and fannkuch-redux.
+
 * ~(current-module)~, and each module runs only its own tests
 
 - ~(current-module)~ is the key of the module the form is in once macros

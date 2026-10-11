@@ -1235,6 +1235,57 @@ not 200, which three more runs did not repeat. Queueing the pump that a post fro
 thread's own queue, so that it ran as soon as Kestrel's item returned, changed
 nothing; neither did waking a pump for every resume, as Go's `ready` does.
 
+### A feeder and its workers
+
+`bench/clbg/parallel` has Benchmarks Game programs with fibers, against Go
+with goroutines. mandelbrot gives its rows, and fannkuch-redux its blocks of
+permutations, to 24 worker fibers through one channel. Both used the same CPU
+time as Go but about 10 cores of 24: mandelbrot took 1.6 s against Go's 0.70,
+and fannkuch-redux 1.6 to 8.9 s against 1.41. The same mandelbrot with no
+channel, each fiber taking every 24th row, took 0.76 s.
+
+The cause was the inline resume. A worker's `chan-get` found the feeder
+parked and ran it inline. The feeder's next `chan-put` found another worker
+parked and ran that inline, and the worker computed a row before the feeder
+could go on. Up to the budget of 32 resumes, the rows ran one after another on
+one thread while the other workers waited. With `BJO_SCHEDULER=pool` both
+programs ran on one core.
+
+A send that takes a parked receiver while others are still parked on the
+channel now queues it (`Scheduler.DispatchTaken`). The next such resume pushes
+it from `runnext` to the queue, and that wakes a worker to steal it, by the
+rules above. A ring, a `choose` over channels with one sender each and the
+service's request channels have one fiber parked on a side at most, so they
+resume inline as before. mandelbrot takes 0.86 s and fannkuch-redux 1.70 s.
+
+Old and new, run in turn, minimum or median as each tool reports:
+
+    cmlbench, 8 rounds, median ns/op    ring 93 -> 91, put/get 86.5 -> 87,
+                                        skewed 258.5 -> 259, spawn 228 -> 224
+    ring put/get, one core, --tc0       1337 -> 1344 instructions, 1-2 ns
+    1, 12, 1000 rings, all cores        69, 15, 25 -> 67, 15, 23 ns
+    the same on 4 cores                 72, 23, 33 -> 69, 23, 32 ns
+    a ring beside 12 crunchers          crunchers +0.0..1.1% -> +1.6..2.7%
+    service, all cores                  366-367 -> 363-372 ms
+    service, 4 cores, 4 runs each       median 508 -> 512 ms, p99.9 equal
+
+Three other rules were measured and not kept:
+
+- Queue every resume on a worker's thread while a worker is idle. mandelbrot
+  0.84 s, but a hop of a ring of ten cost 200 more instructions, and 12 rings
+  went from 132-144 to 192-216 CPU-ns a hop. Queued at a send only, the
+  skewed choose got faster, 256 -> 171 ns, and the rings did not.
+- Mark the depth while a receive runs the sender it took, so that whatever
+  that sender wakes is queued. The service on 4 cores went from 508 to 533 ms
+  and its p50 from 1 to 260 us: a client's `chan-get` on its reply channel can
+  take the shard that is parked to send the reply, and the shard then queued
+  everything, the next clients too.
+- Queue only when a receive on the same channel is below on the stack. Not
+  enough alone: mandelbrot 1.48 s.
+
+A queued resume counts against the inline budget, as an inline one does. That
+was so in the version measured, and it ends a long inline chain sooner.
+
 ---
 
 ## 6. Known issues

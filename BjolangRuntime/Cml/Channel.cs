@@ -247,6 +247,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         SyncState? getState = null;
         int getEventId = 0;
         bool matched = false;
+        bool moreTakers = false;
 
         using (_lock.Hold())
         {
@@ -350,12 +351,14 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 }
                 return true;
             }
+
+            moreTakers = _takersHead != null;
         }
 
         getState?.MarkSynchronized(getEventId);
 
-        if (getResume != null) Scheduler.Dispatch(getResume, value);
-        else if (directTakerResume != null) Scheduler.Dispatch(directTakerResume);
+        if (getResume != null) Scheduler.DispatchTaken(getResume, value, moreTakers);
+        else if (directTakerResume != null) Scheduler.DispatchTaken(directTakerResume, moreTakers);
 
         Scheduler.Dispatch(onSync, Unit.Value);
         return false;
@@ -587,6 +590,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         SyncState? getState = null;
         int getEventId = 0;
         bool matched = false;
+        bool moreTakers = false;
 
         using (_lock.Hold())
         {
@@ -717,6 +721,8 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 }
                 return;
             }
+
+            moreTakers = _takersHead != null;
         }
 
         // Outside lock:
@@ -725,8 +731,8 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         // Null for a taker that had no state to synchronize.
         getState?.MarkSynchronized(getEventId);
 
-        if (getResume != null) Scheduler.Dispatch(getResume, value);
-        else if (directTakerResume != null) Scheduler.Dispatch(directTakerResume);
+        if (getResume != null) Scheduler.DispatchTaken(getResume, value, moreTakers);
+        else if (directTakerResume != null) Scheduler.DispatchTaken(directTakerResume, moreTakers);
 
         Scheduler.Dispatch(onSync, Unit.Value);
     }
@@ -1142,6 +1148,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         Action? directResume = null;
         SyncState? getState = null;
         int getEventId = 0;
+        bool moreTakers = false;
 
         using (_lock.Hold())
         {
@@ -1225,18 +1232,23 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
                 prev = curr;
                 curr = next;
             }
+
+            // Other receivers wait here too: queue the one taken, do not run
+            // it inline (see Scheduler.DispatchTaken). A dead op on the list
+            // counts as well, until the sweep removes it.
+            moreTakers = _takersHead != null;
         }
 
         if (getResume != null)
         {
             getState?.MarkSynchronized(getEventId);
-            Scheduler.Dispatch(getResume, value);
+            Scheduler.DispatchTaken(getResume, value, moreTakers);
             return true;
         }
 
         if (directResume != null)
         {
-            Scheduler.Dispatch(directResume);
+            Scheduler.DispatchTaken(directResume, moreTakers);
             return true;
         }
 
@@ -1255,6 +1267,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         SyncState? getState = null;
         int getEventId = 0;
         bool matched = false;
+        bool moreTakers = false;
 
         using (_lock.Hold())
         {
@@ -1363,12 +1376,13 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 
             // See ParkReceive: the owner took its own op.
             op.ParkedGen = 0;
+            moreTakers = _takersHead != null;
         }
 
         getState?.MarkSynchronized(getEventId);
 
-        if (getResume != null) Scheduler.Dispatch(getResume, op.Value);
-        else if (directResume != null) Scheduler.Dispatch(directResume);
+        if (getResume != null) Scheduler.DispatchTaken(getResume, op.Value, moreTakers);
+        else if (directResume != null) Scheduler.DispatchTaken(directResume, moreTakers);
 
         if (!linked) Scheduler.Enqueue(op.ResumePut);
         return ParkResult.Matched;

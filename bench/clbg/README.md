@@ -256,6 +256,47 @@ reads asynchronously. Reading the lines takes 476 ms. reverse-complement went
 from 1.39 to 1.15 s cold (C#: 1.31 s), and k-nucleotide from 9.17 to 9.00 s,
 measured against each other in alternating runs.
 
+## In parallel: fibers against goroutines
+
+```sh
+parallel/run.py                # the four, 3 runs each
+parallel/run.py mandelbrot     # only this one
+```
+
+`parallel/` has four programs written twice, with Bjolang fibers and with Go
+goroutines, one worker for each logical CPU. Each part of the work is computed
+as the single-threaded programs compute it, and the output must be the same
+as theirs.
+
+| benchmark | how the work is split |
+|-----------|-----------------------|
+| mandelbrot | rows go to the workers through a channel |
+| spectral-norm | each of the 40 products is cut into one block for each worker, and waited for |
+| fannkuch-redux | 240 blocks of permutations go to the workers through a channel |
+| binary-trees | the iterations of each depth are cut into one block for each worker, all started at once |
+
+The Bjolang programs are built with server GC, as a project that allocates
+on many cores says in its manifest with `(runtime (gc-server #t))`.
+
+Same machine, 24 logical CPUs. Wall seconds, fastest of 3 runs, with the CPU
+seconds of that run:
+
+| benchmark | Bjolang, 1 thread | Go, 1 thread | Bjolang fibers | Go goroutines | / Go |
+|-----------|------------------:|-------------:|---------------:|--------------:|-----:|
+| mandelbrot | 12.12 | 12.29 | 0.86 (15.6 CPU) | 0.70 (15.5 CPU) | 1.23 |
+| spectral-norm | 1.23 | 1.15 | 0.20 (2.6 CPU) | 0.35 (4.2 CPU) | 0.57 |
+| fannkuch-redux | 21.10 | 21.70 | 1.70 (36.4 CPU) | 1.41 (31.7 CPU) | 1.21 |
+| binary-trees | 11.01 | 14.61 | 4.58 (60.6 CPU) | 3.39 (57.2 CPU) | 1.35 |
+
+- spectral-norm waits for its 24 fibers 40 times, and that costs less than
+  Go's goroutines and wait group.
+- mandelbrot and fannkuch-redux took 1.6 s and 1.6 to 8.9 s before a send
+  that takes one of several parked receivers queued it. Before, it ran the
+  receiver inline, and the rows ran one after another on the feeder's thread.
+  See "A feeder and its workers" in `BjolangRuntime/Cml/design.md`.
+- binary-trees took 18.2 s with the default workstation GC, more than the
+  single-threaded program: 24 threads that allocate wait for one collector.
+
 ## What porting found
 
 Things the ports had to go around. None stops a program, but each made the

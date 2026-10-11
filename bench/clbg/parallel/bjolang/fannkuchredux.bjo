@@ -1,0 +1,133 @@
+;; fannkuch-redux, in parallel: the most pancake flips over all permutations
+;; of 1..n, and a checksum over the permutations in the order they are made.
+;; Argument: n.
+;;
+;; The n! permutations are numbered in the order the single-threaded program
+;; makes them. They are cut into blocks of consecutive numbers, and the blocks
+;; go to one fiber for each CPU through a channel; a -1 tells a fiber to stop.
+;; A fiber makes the first permutation of a block from its number, then the
+;; next ones in order. The sign of a permutation's flips in the checksum is
+;; the parity of its number, so the checksum does not depend on which fiber
+;; did which block.
+
+(import "par.bjo")
+
+(def block-count 240)
+
+;; The number of flips until the first element is 0. Uses perm as scratch.
+(: count-flips (-> (Array int) (Array int) int))
+(defun (count-flips perm1 perm)
+  (def n (array-length perm1))
+  (loop (:for i (range 0 n))
+        (:do (array-set! perm i (array-ref perm1 i))))
+  (let flip ((flips 0))
+    (def k (array-ref perm 0))
+    (if (= k 0)
+        flips
+        (let ()
+          (let rev ((i 0) (j k))
+            (when (< i j)
+              (def t (array-ref perm i))
+              (array-set! perm i (array-ref perm j))
+              (array-set! perm j t)
+              (rev (+ i 1) (- j 1))))
+          (flip (+ flips 1))))))
+
+;; Makes permutation number idx in perm1, and the counts that continue from it.
+(: first-permutation! (-> int (Array int) (Array int) (Array int) (Array int) void))
+(defun (first-permutation! idx fact perm1 count scratch)
+  (def n (array-length perm1))
+  (loop (:for i (range 0 n)) (:do (array-set! perm1 i i)))
+  (let go ((i (- n 1)) (idx idx))
+    (when (> i 0)
+      (def d (/ idx (array-ref fact i)))
+      (array-set! count i d)
+      (loop (:for j (range 0 (+ i 1)))
+            (:do (array-set! scratch j (array-ref perm1 j))))
+      (loop (:for j (range 0 (+ i 1)))
+            (:do (array-set! perm1 j (array-ref scratch (if (<= (+ j d) i)
+                                                             (+ j d)
+                                                             (- (+ j d) (+ i 1)))))))
+      (go (- i 1) (% idx (array-ref fact i))))))
+
+(: next-permutation! (-> (Array int) (Array int) void))
+(defun (next-permutation! perm1 count)
+  (def first (array-ref perm1 1))
+  (array-set! perm1 1 (array-ref perm1 0))
+  (array-set! perm1 0 first)
+  (let go ((i 1) (first first))
+    (array-set! count i (+ (array-ref count i) 1))
+    (when (> (array-ref count i) i)
+      (array-set! count i 0)
+      (def i (+ i 1))
+      (def next (array-ref perm1 1))
+      (array-set! perm1 0 next)
+      (loop (:for j (range 1 i))
+            (:do (array-set! perm1 j (array-ref perm1 (+ j 1)))))
+      (array-set! perm1 i first)
+      (go i next))))
+
+;; The checksum and the most flips of the permutations numbered lo..hi-1,
+;; with perm1 and count at permutation lo.
+(: block-flips (-> int int (Array int) (Array int) (Array int) (Tuple int int)))
+(defun (block-flips lo hi perm1 perm count)
+  (let go ((idx lo) (checksum 0) (max-flips 0))
+    (def flips (count-flips perm1 perm))
+    (def checksum (if (= 0 (% idx 2)) (+ checksum flips) (- checksum flips)))
+    (def max-flips (max max-flips flips))
+    (if (= (+ idx 1) hi)
+        (Tuple checksum max-flips)
+        (let ()
+          (next-permutation! perm1 count)
+          (go (+ idx 1) checksum max-flips)))))
+
+(: block-worker (-bjo-> (Chan int) (Array int) int int (Tuple int int)))
+(defbjo (block-worker blocks fact block n)
+  (def perm1 (make-array n))
+  (def perm (make-array n))
+  (def count (make-array n))
+  (def scratch (make-array n))
+  (def total (array-ref fact n))
+  (let next-block ((checksum 0) (max-flips 0))
+    (def b (chan-get blocks))
+    (if (< b 0)
+        (Tuple checksum max-flips)
+        (let ()
+          (def lo (* b block))
+          (first-permutation! lo fact perm1 count scratch)
+          (def (c m) (block-flips lo (min (+ lo block) total) perm1 perm count))
+          (next-block (+ checksum c) (max max-flips m))))))
+
+(: send-blocks (-bjo-> (Chan int) int int void))
+(defbjo (send-blocks ch block total)
+  (let go ((b 0))
+    (when (< (* b block) total)
+      (chan-put ch b)
+      (go (+ b 1))))
+  (let stop ((w 0))
+    (when (< w workers)
+      (chan-put ch -1)
+      (stop (+ w 1)))))
+
+(: join-all (-bjo-> (List (Promise (Tuple int int))) int int (Tuple int int)))
+(defbjo (join-all ps checksum max-flips)
+  (match ps
+    (Nil (Tuple checksum max-flips))
+    ((Cons p rest)
+     (def (c m) (join p))
+     (join-all rest (+ checksum c) (max max-flips m)))))
+
+(defbjo (main args)
+  (def n (string->int (vec-ref args 0)))
+  (def fact (make-array (+ n 1)))
+  (array-set! fact 0 1)
+  (loop (:for i (range 1 (+ n 1)))
+        (:do (array-set! fact i (* i (array-ref fact (- i 1))))))
+  (def total (array-ref fact n))
+  (def block (/ (+ total (- block-count 1)) block-count))
+  (def blocks (make-chan))
+  (def ps {listing (bjo (block-worker blocks fact block n)) (:for w (range 0 workers))})
+  (send-blocks blocks block total)
+  (def (checksum max-flips) (join-all ps 0 0))
+  (displayln #"${checksum}\nPfannkuchen(${n}) = ${max-flips}")
+  0)
