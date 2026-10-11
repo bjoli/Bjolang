@@ -21,14 +21,43 @@ module Bjolang.Gensym
 /// remain distinct across passes.
 let private counter = ref 0
 
-/// `prefix__N`, with `N` unique across the whole compilation.
+/// The names of the shape `fresh` makes that source has written.
+///
+/// `x__1` is an identifier a program may write, so a fresh `x__1` would be a
+/// binder that captures the program's own variable of that name. The lexer
+/// reserves every such name it reads, and `fresh` passes over them.
+let private written = System.Collections.Generic.HashSet<string>()
+
+/// Is `name` of the shape `fresh` makes: a name, `__`, and digits?
+let private isFreshShaped (name: string) : bool =
+    match name.LastIndexOf "__" with
+    | -1 -> false
+    | i ->
+        let suffix = name.Substring(i + 2)
+        suffix.Length > 0 && suffix |> Seq.forall System.Char.IsDigit
+
+/// Reserves a name source has written, so that `fresh` never makes it.
+let reserve (name: string) : unit =
+    if isFreshShaped name then
+        written.Add name |> ignore
+
+/// `prefix__N`, with `N` unique across the whole compilation, and not a name
+/// source has written (see `reserve`).
 ///
 /// The `__N` suffix is not decoration. `Codegen.sanitizeIdent` is not
 /// injective — `a-b` and `asubb` both become `asubb` — so a renamed binder may
 /// not rely on its base name to distinguish it. The counter does.
 let fresh (prefix: string) : string =
-    counter.Value <- counter.Value + 1
-    $"%s{prefix}__%d{counter.Value}"
+    let next () =
+        counter.Value <- counter.Value + 1
+        $"%s{prefix}__%d{counter.Value}"
+
+    let mutable name = next ()
+
+    while written.Contains name do
+        name <- next ()
+
+    name
 
 /// The counter's value, and a way to put it back.
 ///
@@ -42,9 +71,21 @@ let fresh (prefix: string) : string =
 /// counter is *not* put back, so two entries never invent the same name — entry
 /// 4's `tmp__12` and entry 9's would otherwise be one C# member in two
 /// assemblies, and the one loaded second is the one that wins.
-let snapshot () : int = counter.Value
+///
+/// The names source has written go with the counter, for the same reason:
+/// which names `fresh` passes over depends on what was read.
+type State = { Counter: int; Written: Set<string> }
 
-let restore (n: int) : unit = counter.Value <- n
+let emptyState: State = { Counter = 0; Written = Set.empty }
+
+let snapshot () : State =
+    { Counter = counter.Value
+      Written = Set.ofSeq written }
+
+let restore (state: State) : unit =
+    counter.Value <- state.Counter
+    written.Clear()
+    written.UnionWith state.Written
 
 /// The base name a `fresh` name was derived from, for diagnostics.
 let baseName (name: string) : string =

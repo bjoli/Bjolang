@@ -375,6 +375,13 @@ module Lexer =
 
         let rec loop pos line col tokens =
             if pos >= length then
+                // A written name of the shape `Gensym.fresh` makes is one it
+                // must not make again: see `Gensym.reserve`.
+                for t in tokens do
+                    match t.Token with
+                    | Symbol s -> Gensym.reserve s
+                    | _ -> ()
+
                 List.rev tokens
             else
                 let c = input[pos]

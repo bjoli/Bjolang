@@ -26,9 +26,11 @@
 ///
 /// **Per compilation** — captured and restored here:
 ///
-///   * `Gensym.counter`. The reason is determinism: a `.dll` is judged stale by
-///     timestamp, so unchanged source that compiles to a different `tmp__37`
-///     because something else was built first is a cache that starts missing.
+///   * `Gensym.counter`, and the names of its shape that source has written,
+///     which it passes over. The reason is determinism: a `.dll` is judged
+///     stale by timestamp, so unchanged source that compiles to a different
+///     `tmp__37` because something else was built first is a cache that starts
+///     missing.
 ///   * `Unification.nextMetaId`. Ids are compared only within one inference
 ///     run, and one of them can reach a diagnostic.
 ///   * `Unification.currentLevel`. A compilation starts at the top level, and
@@ -70,7 +72,7 @@
 module Bjolang.Session
 
 type Scope =
-    { Gensym: int
+    { Gensym: Gensym.State
       MetaCounter: int
       /// `Unification`'s level counter. A sub-compilation starts at the top level, and
       /// one aborted by a type error leaves the counter elevated — the outer
@@ -88,7 +90,7 @@ type Scope =
 
 /// What a compilation would find in a process that had done nothing else.
 let fresh: Scope =
-    { Gensym = 0
+    { Gensym = Gensym.emptyState
       MetaCounter = 0
       Level = 0
       Macros = Macro.emptyState
