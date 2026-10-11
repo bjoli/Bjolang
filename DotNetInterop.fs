@@ -129,7 +129,29 @@ let private searchFrameworks (fullName: string) : Type option =
             registerAssemblyFile file
             searchLoaded fullName
 
-let private resolveUncached (fullName: string) : Type option =
+let rec private resolveUncached (fullName: string) : Type option =
+    match resolveExact fullName with
+    | Some t -> Some t
+    | None ->
+        // A nested type written as C# writes it, `System.Environment.SpecialFolder`,
+        // is `System.Environment+SpecialFolder` to .NET. The innermost dot is
+        // tried first, and then outward.
+        if fullName.Contains '+' || not (fullName.Contains '.') then
+            None
+        else
+            let rec tryNested (name: string) =
+                match name.LastIndexOf '.' with
+                | -1 -> None
+                | i ->
+                    let nested = name.Substring(0, i) + "+" + name.Substring(i + 1)
+
+                    match resolveExact nested with
+                    | Some t -> Some t
+                    | None -> tryNested nested
+
+            tryNested fullName
+
+and private resolveExact (fullName: string) : Type option =
     match Type.GetType(fullName, false, false) with
     | null ->
         match searchLoaded fullName with
@@ -569,9 +591,14 @@ let compilerTypeNames : Set<string> =
 /// The name a .NET type is known by in a Bjolang type constructor.
 ///
 /// The arity mark goes: a Bjolang constructor carries its arity in the number
-/// of arguments it is applied to, so `Set.Set`1` is `Set.Set`. A nested type's
-/// `+` becomes `.`, which is both what C# writes and what the code generator
-/// emits.
+/// of arguments it is applied to, so `Set.Set`1` is `Set.Set`.
+///
+/// A nested type keeps the name .NET gives its definition, `+` and arity
+/// marks included: ``Dictionary`2+KeyCollection``. Its arguments are the outer
+/// type's and its own in one list, so only the marks say which level each
+/// belongs to, and `Codegen` reads them to write `Dictionary<K, V>.KeyCollection`.
+/// Cut at the first mark, as an outer type is, the nested type was its outer
+/// type.
 let clrTypeName (t: Type) : string =
     // The definition rather than the construction. An *open* constructed
     // generic — `Set<T>` as a method's parameter mentions it — has no
@@ -589,12 +616,47 @@ let clrTypeName (t: Type) : string =
         else
             t.FullName
 
-    let withoutArity =
+    if t.IsNested then
+        full
+    else
         match full.IndexOf '`' with
         | -1 -> full
         | i -> full.Substring(0, i)
 
-    withoutArity.Replace("+", ".")
+/// Whether a type constructor's name is a nested .NET type's, as
+/// `clrTypeName` spells one.
+let isNestedClrName (name: string) = name.Contains '+'
+
+/// A nested .NET type as C# writes it, given its arguments as C# writes them:
+/// ``Dictionary`2+KeyCollection`` at `string, int` is
+/// `Dictionary<string, int>.KeyCollection`. Each level takes as many arguments
+/// as its arity mark says, in order.
+let nestedClrTypeSpelling (name: string) (args: string list) : string =
+    let rest = ref args
+
+    name.Split('+')
+    |> Array.map (fun segment ->
+        let baseName, arity =
+            match segment.IndexOf '`' with
+            | -1 -> segment, 0
+            | i -> segment.Substring(0, i), int (segment.Substring(i + 1))
+
+        let mine = List.truncate arity rest.Value
+        rest.Value <- List.skip mine.Length rest.Value
+
+        if mine.IsEmpty then baseName else baseName + "<" + String.concat ", " mine + ">")
+    |> String.concat "."
+
+/// A nested .NET type's name as a reader writes it, without the marks:
+/// ``System.Text.StringBuilder+ChunkEnumerator`` is
+/// `System.Text.StringBuilder.ChunkEnumerator`.
+let showNestedClrName (name: string) : string =
+    name.Split('+')
+    |> Array.map (fun segment ->
+        match segment.IndexOf '`' with
+        | -1 -> segment
+        | i -> segment.Substring(0, i))
+    |> String.concat "."
 
 /// Is this a `System.Func<...>`? Its last type argument is the return type.
 let private isFuncType (def: Type) =
@@ -701,6 +763,8 @@ let rec tryClrTypeOf (t: HMType) : Type option =
         let clrName =
             match clrOfBjolangGeneric.TryGetValue name with
             | true, full -> full
+            // A nested type's name already carries its marks.
+            | _ when isNestedClrName name -> name
             | _ -> $"%s{name}`%d{args.Length}"
 
         let resolvedArgs = args |> List.map tryClrTypeOf
@@ -824,7 +888,9 @@ let showTypesTogether (ts: HMType list) : string list =
         |> Set.ofSeq
 
     let showName (name: string) =
-        if Set.contains name ambiguous then
+        if isNestedClrName name then
+            showNestedClrName name
+        elif Set.contains name ambiguous then
             Naming.showQualifiedTypeName name
         else
             Naming.showTypeName name
@@ -890,6 +956,15 @@ let showTypesTogether (ts: HMType list) : string list =
 
 let showType (t: HMType) : string =
     showTypesTogether [ t ] |> List.head
+
+/// A .NET type for a diagnostic. A constructed generic's `FullName` names
+/// every argument's assembly, and a nested type's holds `+` and arity marks, so
+/// those are shown as Bjolang writes them.
+let showClrType (t: Type) : string =
+    if t.IsNested || (t.IsGenericType && not t.IsGenericTypeDefinition) then
+        showType (mapClrType t)
+    else
+        t.FullName
 
 /// Which half of a type's surface a member lookup searches. Named here because
 /// both resolvers below ask the question, and they have to ask it the same way.
@@ -1716,7 +1791,7 @@ let private callableMethods (t: Type) (name: string) (flags: BindingFlags) =
     |> withoutHidden
     |> List.map (fun m -> m.GetParameters(), m)
 
-let private describeMethod (t: Type) (name: string) = $"'%s{t.FullName}.%s{name}'"
+let private describeMethod (t: Type) (name: string) = $"'%s{showClrType t}.%s{name}'"
 
 /// Which half of a type's surface a member lookup should search.
 ///
@@ -1881,10 +1956,10 @@ and resolveMethodReturning
         let kind = if isStatic then "static" else "instance"
 
         match note () with
-        | "" -> failwithf $"Type Error at %s{where}: '%s{t.FullName}' has no public %s{kind} method named '%s{name}'."
+        | "" -> failwithf $"Type Error at %s{where}: '%s{showClrType t}' has no public %s{kind} method named '%s{name}'."
         | n ->
             failwithf
-                $"Type Error at %s{where}: every public %s{kind} method named '%s{name}' on '%s{t.FullName}' has an out or ref parameter, so none can be called from its arguments alone.%s{n}"
+                $"Type Error at %s{where}: every public %s{kind} method named '%s{name}' on '%s{showClrType t}' has an out or ref parameter, so none can be called from its arguments alone.%s{n}"
 
     let ps, m =
         try

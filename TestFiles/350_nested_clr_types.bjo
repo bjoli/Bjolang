@@ -1,0 +1,38 @@
+(import (std prelude))
+(import (std simpletest))
+(import (std mutable map))
+(import (std mutable vec))
+
+;; Nested .NET types. A generic one, `Dictionary<K, V>.KeyCollection` or
+;; `List<T>.Enumerator`, used to be typed as its outer type, and a non-generic
+;; one, `StringBuilder.ChunkEnumerator`, reached C# as
+;; `StringBuilderaddChunkEnumerator`. Both are their own types now, and a nested
+;; type can be named in `import/class` as C# writes it.
+
+(import/class
+  (SpecialFolder (: System.Environment.SpecialFolder))
+  (Chunks (: System.Text.StringBuilder.ChunkEnumerator))
+  (StringBuilder (: System.Text.StringBuilder (-> string StringBuilder))))
+
+(import/extern
+  (user-profile (: System.Environment.SpecialFolder.UserProfile #:get))
+  (folder-path (: System.Environment.GetFolderPath (-> SpecialFolder string))))
+
+(defun (main args)
+  (def d (mutablemap))
+  (mutablemap-set! d "a" 1)
+  (def keys (.-Keys d))
+  (expect "a generic nested type's member" (.-Count keys) 1)
+
+  (def v (mutablevec))
+  (mutablevec-add! v 5)
+  (def e (.GetEnumerator v))
+  (expect-true "a generic nested struct's method" (.MoveNext e))
+  (expect "and its property" (.-Current e) 5)
+
+  (def (: chunks Chunks) (.GetChunks (StringBuilder. "abc")))
+  (expect-true "a non-generic nested type" (.MoveNext (.GetEnumerator chunks)))
+
+  (def (: folder SpecialFolder) user-profile)
+  (expect-true "a nested enum named as C# writes it" (>= (string-length (folder-path folder)) 0))
+  0)

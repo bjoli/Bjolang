@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* Nested .NET types are their own types
+
+- *A generic nested type was typed as its outer type.* ~(.-Keys d)~ on a
+  ~Dictionary~ was the dictionary itself, so ~(.ContainsKey (.-Keys d) k)~
+  type-checked and C# refused it, and ~(.MoveNext (.GetEnumerator v))~ on a
+  ~List~ was refused. ~Dictionary<K, V>.KeyCollection~ and ~List<T>.Enumerator~
+  are now their own types, shown as ~(System.Collections.Generic.List.Enumerator int)~
+  and emitted as C# writes them.
+- *A non-generic nested type reached C# as one word.*
+  ~StringBuilder.ChunkEnumerator~ was emitted as
+  ~StringBuilderaddChunkEnumerator~. It is ~System.Text.StringBuilder.ChunkEnumerator~
+  now, in a type, a static member access and a constructor call.
+- *A nested type can be named as C# writes it.* ~(import/class (SpecialFolder
+  (: System.Environment.SpecialFolder)))~ and a static member of it in
+  ~import/extern~ now resolve.
+- A diagnostic about a member of a constructed generic type shows the type as
+  Bjolang writes it, not its .NET name with every assembly in it.
+
 * ~structural-equals~ is right for strings and arrays
 
 - *Two equal strings were unequal, and any two arrays were equal.* Called on

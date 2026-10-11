@@ -388,6 +388,12 @@ let mapPrimitiveType (name: string) =
     | "Char" | "Bjolang.Char" -> "Bjolang.Runtime.BjoChar"
     | _ -> name
 
+/// A .NET type named in a static call, a static member or a constructor, as
+/// C# writes it. A nested type's name holds `+` and arity marks, see
+/// `DotNetInterop.clrTypeName`, and C# writes `Outer.Inner`.
+let private clrTypeSpelling (name: string) =
+    if DotNetInterop.isNestedClrName name then DotNetInterop.showNestedClrName name else name
+
 // Promoted to `Bjolang.Naming`, which the passes that run before code
 // generation also need: an inlined body has to be able to name the module a
 // free variable came from.
@@ -591,6 +597,10 @@ let rec typeToString (hm: HMType) : string =
     match hm with
     | TCon ("Array", [elemType]) ->
         $"{typeToString elemType}[]"
+    // A nested .NET type: each level takes its own arguments, and the levels
+    // are joined with `.` as C# writes them.
+    | TCon (name, args) when DotNetInterop.isNestedClrName name ->
+        DotNetInterop.nestedClrTypeSpelling name (args |> List.map typeToString)
     | TCon (name, args) ->
         let baseName = conBaseName name
         if args.IsEmpty then baseName
@@ -2353,7 +2363,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         append ctx $".%s{propName}"
 
     | TForeignStaticGet (clrType, memberName, _) ->
-        append ctx $"%s{clrType}.%s{memberName}"
+        append ctx $"%s{clrTypeSpelling clrType}.%s{memberName}"
 
     // Through the trait's helper, with the implementor as its type argument.
     // The concrete case and the generic case differ only in what that argument
@@ -2368,7 +2378,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         append ctx ")"
 
     | TNewObject (clrName, args, _) ->
-        append ctx $"new %s{clrName}("
+        append ctx $"new %s{clrTypeSpelling clrName}("
         for i, emit in List.indexed (prepareOperands ctx args) do
             if i > 0 then append ctx ", "
             emit ctx
@@ -2435,7 +2445,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
 
         if awaits then append ctx (if awaitsVoid then "await " else "(await ")
 
-        append ctx $"%s{clrType}.%s{methodName}("
+        append ctx $"%s{clrTypeSpelling clrType}.%s{methodName}("
         for i, emit in List.indexed (prepareOperands ctx args) do
             if i > 0 then append ctx ", "
             emit ctx
@@ -2890,13 +2900,13 @@ and private generateGuardedCall (ctx: CodegenContext) (target: BlockTarget) (exp
             | Some call when not meta.Await && not meta.AmbientToken -> append c call
             | _ ->
                 let argList = String.concat ", " (withToken meta names)
-                append c (callText meta $"%s{clrType}.%s{methodName}(%s{argList})"))
+                append c (callText meta $"%s{clrTypeSpelling clrType}.%s{methodName}(%s{argList})"))
 
     // A constructor always produces a value and is never awaited.
     | TNewObject (clrName, args, Some meta) ->
         generateGuarded ctx target expr false meta.Exceptions args (fun c names ->
             let argList = String.concat ", " names
-            append c $"new %s{clrName}(%s{argList})")
+            append c $"new %s{clrTypeSpelling clrName}(%s{argList})")
 
     | _ -> codegenError expr.Range "internal error: not a guarded call"
 
@@ -2977,7 +2987,7 @@ and private generateOutCall
                 append c $".%s{methodName}("
                 writeArgs c emitters.Tail
             | None ->
-                append c $"%s{clrType}.%s{methodName}("
+                append c $"%s{clrTypeSpelling clrType}.%s{methodName}("
                 writeArgs c emitters
 
             append c ")"
@@ -3004,7 +3014,7 @@ and private generateOutCall
                 append c $"%s{fst temps.Head}.%s{methodName}("
                 writeArgs c tempEmitters.Tail
             | None ->
-                append c $"%s{clrType}.%s{methodName}("
+                append c $"%s{clrTypeSpelling clrType}.%s{methodName}("
                 writeArgs c tempEmitters
 
             append c ")"
@@ -3991,7 +4001,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         dischargeVoid ctx target
 
     | TForeignStaticSet (clrType, memberName, value) ->
-        generateBindingValue ctx (Assign $"%s{clrType}.%s{memberName}") value
+        generateBindingValue ctx (Assign $"%s{clrTypeSpelling clrType}.%s{memberName}") value
         dischargeVoid ctx target
 
     // A void method with outs: the call is a statement, and the outs it wrote
