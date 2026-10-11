@@ -3065,24 +3065,41 @@ and private inferLocalFunBody
         | Some(n, t) -> bind n (TCon("Array", [ t ])) bodyEnv
         | None -> bodyEnv
 
-    // The return type is the body's expectation. With none written, a body
-    // ending in a .NET void call returns the unit, as a lambda's does (see
-    // `functionResult`); a written `: void` already is the unit.
-    let bodyType, typedBody = inferChecked shape.RetType bodyEnv value
-    let bodyType =
-        match prune env.Registry shape.RetType with
-        | TMeta _ -> functionResult env bodyType None
-        | _ -> bodyType
-    unifyExpecting env.Registry shape.RetType bodyType $"what '%s{name}' returns"
+    // The type variables the local function's annotations name are its body's,
+    // as a top-level signature's are (see `scopedTypeVars`): one type for the
+    // whole body. Not scoped, a function nested in this one that mentions
+    // `%b` quantified it, and each call could then use a `%b` value at
+    // another type.
+    let outerScoped = Unification.scopedTypeVars
 
-    let typedKeywords, _ =
-        shape.Keywords
-        |> List.fold
-            (fun (acc, currentEnv) (n, t, defaultExpr) ->
-                let defaultType, typedDefault = infer currentEnv defaultExpr
-                unify env.Registry defaultType t
-                acc @ [ n, t, typedDefault ], bind n t currentEnv)
-            ([], envWithMandatory)
+    Unification.scopedTypeVars <-
+        Set.union outerScoped (Set.ofList (freeTVars env.Registry shape.FunType))
+
+    let typedBody, typedKeywords =
+        try
+            // The return type is the body's expectation. With none written, a
+            // body ending in a .NET void call returns the unit, as a lambda's
+            // does (see `functionResult`); a written `: void` already is the
+            // unit.
+            let bodyType, typedBody = inferChecked shape.RetType bodyEnv value
+            let bodyType =
+                match prune env.Registry shape.RetType with
+                | TMeta _ -> functionResult env bodyType None
+                | _ -> bodyType
+            unifyExpecting env.Registry shape.RetType bodyType $"what '%s{name}' returns"
+
+            let typedKeywords, _ =
+                shape.Keywords
+                |> List.fold
+                    (fun (acc, currentEnv) (n, t, defaultExpr) ->
+                        let defaultType, typedDefault = infer currentEnv defaultExpr
+                        unify env.Registry defaultType t
+                        acc @ [ n, t, typedDefault ], bind n t currentEnv)
+                    ([], envWithMandatory)
+
+            typedBody, typedKeywords
+        finally
+            Unification.scopedTypeVars <- outerScoped
 
     let paramNames = allArgNames args
 

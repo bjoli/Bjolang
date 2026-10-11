@@ -1,0 +1,25 @@
+(import (std prelude))
+(import (std simpletest))
+
+;; An implementation with fixed type arguments is used where they match, also
+;; through a constrained function's dictionary. Where they do not, the call is
+;; a type error: see errors/impl_fixed_argument_mismatch.bjo.
+
+(type (: (Pair %a %b) (Struct (: l %a) (: r %b))))
+
+(def/trait (Describe %a)
+  (: describe (-> %a string)))
+
+(impl (Describe (List int))
+  (defun (describe x) (->str (+ 1 (list-ref x 0)))))
+
+(impl (Describe (Pair %a %a))
+  (defun (describe x) "a pair of one type"))
+
+(: via (-> %a string) (where (Describe %a)))
+(defun (via x) (describe x))
+
+(defun (main args)
+  (expect "a fixed argument that matches" (via (list 41)) "42")
+  (expect "a repeated variable that matches" (via (Pair (l 1) (r 2))) "a pair of one type")
+  0)

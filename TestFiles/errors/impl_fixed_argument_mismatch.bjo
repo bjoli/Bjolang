@@ -1,0 +1,18 @@
+;; An implementation for `(List int)` is not one for `(List string)`, also when
+;; the constraint is discharged through a constrained function's dictionary.
+;; EXPECT-ERROR: no implementation of trait 'Describe' for '(List string)', needed to call 'via'
+
+(import (std prelude))
+
+(def/trait (Describe %a)
+  (: describe (-> %a string)))
+
+(impl (Describe (List int))
+  (defun (describe x) (->str (+ 1 (list-ref x 0)))))
+
+(: via (-> %a string) (where (Describe %a)))
+(defun (via x) (describe x))
+
+(defun (main args)
+  (println (via (list "hello")))
+  0)

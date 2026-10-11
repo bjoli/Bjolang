@@ -223,6 +223,14 @@ let rec buildEvidence
         let selected =
             match implFor env.Registry traitName resolved with
             | Some found -> found
+            | None when hasSpecific ->
+                let written =
+                    match Map.tryFind (traitName, typeName) env.Registry.ImplTargets with
+                    | Some target -> DotNetInterop.showType (implTargetType typeName target.FixedPrefix)
+                    | None -> Naming.showTypeName typeName
+
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType resolved}', needed %s{describe}. The implementation for '%s{Naming.showTypeName typeName}' is written for '%s{written}' only."
             | None ->
                 failwithf
                     $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{Naming.showTypeName typeName}', needed %s{describe}."

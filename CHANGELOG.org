@@ -3,6 +3,27 @@
 
 What each change guarantees, and what it leaves open.
 
+* Three programs the type checker accepted and C# refused are type errors
+
+- *An implementation with fixed type arguments was used at other ones.*
+  ~(impl (Describe (List int)))~ was chosen for ~(List string)~ when the
+  constraint went through a constrained function's dictionary, and
+  ~(Pair %a %a)~ for ~(Pair int string)~. The impl's arguments are now matched
+  against the type, and a mismatch is reported at the call: "no
+  implementation of trait 'Describe' for '(List string)' ... is written for
+  '(List int)' only".
+- *A local function's annotation variable was not one type in its body.* In
+  ~(defun (f (: y %b)) (defun (g z) y) ...)~, ~g~ quantified ~%b~, so each call
+  of ~g~ could use ~y~ at another type. The variables a local function's
+  annotations name are now scoped over its body, as a top-level signature's
+  are. A nested function that mentions one also no longer declares a second
+  C# type parameter of the same name.
+- *A variable held back for one local function was quantified by the next.*
+  ~(defun (mk) Nil)~ is monomorphic in its element type, but a sibling that
+  called ~mk~ quantified it. Such a variable now belongs to the enclosing
+  level, so the sibling shares the one type, and calling it at two types is
+  an error.
+
 * A loop that stops a walk early ends it, and a file it opened closes
 
 - *~find~ over ~file-read-lines/seq~ left the file open.* A loop that

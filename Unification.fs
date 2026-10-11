@@ -208,23 +208,47 @@ let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTar
             | Some target -> Some target
             | None -> Map.tryFind traitName registry.BlanketImpls
 
+        // The impl's prefix is matched against the arguments, not only read
+        // for its variables: `(impl (Describe (List int)))` is keyed by `List`
+        // alone, and must not be selected for `(List string)`, nor
+        // `(Pair %a %a)` for `(Pair int string)`. A metavariable in the
+        // arguments matches anything, since nothing decides it yet.
+        let rec matchInto (subst: Map<string, HMType> option) (pattern: HMType) (actual: HMType) =
+            match subst with
+            | None -> None
+            | Some s ->
+                match pattern, prune registry actual with
+                | TVar v, a ->
+                    match Map.tryFind v s with
+                    | None -> Some(Map.add v a s)
+                    | Some earlier -> if sameType earlier a then subst else None
+                | _, TMeta _ -> subst
+                | TCon(p, ps), TCon(a, as') when p = a && ps.Length = as'.Length -> List.fold2 matchInto subst ps as'
+                | TTuple ps, TTuple as' when ps.Length = as'.Length -> List.fold2 matchInto subst ps as'
+                | TFun(ps, pr, _), TFun(as', ar, _) when ps.Length = as'.Length ->
+                    matchInto (List.fold2 matchInto subst ps as') pr ar
+                | _ -> None
+
+        and sameType (a: HMType) (b: HMType) =
+            match prune registry a, prune registry b with
+            | TMeta _, _
+            | _, TMeta _ -> true
+            | TVar x, TVar y -> x = y
+            | TCon(x, xs), TCon(y, ys) -> x = y && xs.Length = ys.Length && List.forall2 sameType xs ys
+            | TTuple xs, TTuple ys -> xs.Length = ys.Length && List.forall2 sameType xs ys
+            | TFun(xs, x, _), TFun(ys, y, _) -> xs.Length = ys.Length && List.forall2 sameType xs ys && sameType x y
+            | x, y -> x = y
+
         target
-        |> Option.map (fun target ->
+        |> Option.bind (fun target ->
             let bound =
                 if target.Ctor = BlanketCtor then
                     [ implTargetType ctor args ]
                 else
                     args |> List.truncate target.FixedPrefix.Length
 
-            let subst =
-                List.zip (target.FixedPrefix |> List.truncate bound.Length) bound
-                |> List.choose (fun (pattern, actual) ->
-                    match pattern with
-                    | TVar v -> Some(v, actual)
-                    | _ -> None)
-                |> Map.ofList
-
-            target, subst)
+            List.fold2 matchInto (Some Map.empty) (target.FixedPrefix |> List.truncate bound.Length) bound
+            |> Option.map (fun subst -> target, subst))
     | None -> None
 
 /// What a use of `traitName` at `t` still needs from the enclosing function.
@@ -760,6 +784,14 @@ let private generalizeWith (held: Set<int>) (scoped: Set<string>) (env: Env) (t:
     let generalizable =
         tFv
         |> List.filter (fun m -> m.Level > currentLevel && not (Set.contains m.Id held))
+
+    // A cell held back is monomorphic: it belongs to the level the binding
+    // ends up at, as if the environment held it. Left at the inner level, the
+    // next sibling binding, checked one level in, found it above its own
+    // level and quantified it, and that rewrote this binding's type too.
+    for m in tFv do
+        if m.Level > currentLevel && Set.contains m.Id held then
+            m.Level <- currentLevel
     
     // Find all explicitly named TVars that are already in the type
     let explicitTVars =

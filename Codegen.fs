@@ -5331,7 +5331,9 @@ and private generateLocalFunction
     generateParameterList ctx name mandatory fn.KeywordArgs fn.RestArg KeywordParameters
     appendLine ctx ") {"
     // A local function is a new function scope: it cannot jump into the
-    // enclosing loop, nor yield into the enclosing sequence.
+    // enclosing loop, nor yield into the enclosing sequence. Its own type
+    // parameters are in scope in its body, so a function nested in it that
+    // mentions one uses it rather than declaring a second of the same name.
     //
     // A suspending one never returns void, for the reason a bjoroutine does
     // not: `async Fiber<Bjoml.Unit>` owes its builder a `SetResult(value)`, so
@@ -5340,7 +5342,8 @@ and private generateLocalFunction
         { ctx with
             Loop = None
             InSeq = false
-            ReturnsVoid = isVoidType retType && effect <> EAsync }
+            ReturnsVoid = isVoidType retType && effect <> EAsync
+            TypeParams = Set.union ctx.TypeParams (typeParams |> List.map typeParamKey |> Set.ofList) }
         (fun c ->
             generateArgumentPrologue c fn.KeywordArgs fn.RestArg KeywordParameters
             generateBlock (withKeywordLocals c fn.KeywordArgs) Return lambdaBody)
