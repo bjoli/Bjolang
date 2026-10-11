@@ -85,6 +85,17 @@ public sealed class Inbox<T>
     private SendNode? _sendHead;
     private SendNode? _sendTail;
 
+    /// <summary>For tests: the receivers and the senders parked, live or not.</summary>
+    internal int ParkedReceiverCount
+    {
+        get { lock (_gate) { int n = 0; for (var r = _recvHead; r is not null; r = r.Next) n++; return n; } }
+    }
+
+    internal int ParkedSenderCount
+    {
+        get { lock (_gate) { int n = 0; for (var s = _sendHead; s is not null; s = s.Next) n++; return n; } }
+    }
+
     private bool _closed;
     private Exception? _error;
     private int _dropped;
@@ -671,10 +682,72 @@ public sealed class Inbox<T>
         return null;
     }
 
+    // A receiver parked on an empty inbox, or a sender on a full one, that
+    // loses its choose is withdrawn only when a later take walks past it, and
+    // on a quiet inbox none comes: a loop of `(choose (inbox-recv ib)
+    // (timeout ...))` kept one dead node and its sync for each turn. So each
+    // list is also swept by its parks, as a channel's is: when the parks since
+    // the last sweep reach twice what survived it, and at least 32, the nodes
+    // that can no longer commit are unlinked.
+    private int _recvParks, _recvSweepAt = MinSweep;
+    private int _sendParks, _sendSweepAt = MinSweep;
+    private const int MinSweep = 32;
+
     private void ParkReceiverLocked(RecvNode n)
     {
+        if (++_recvParks >= _recvSweepAt) SweepReceiversLocked();
         if (_recvTail is null) _recvHead = _recvTail = n;
         else { _recvTail.Next = n; _recvTail = n; }
+    }
+
+    private void SweepReceiversLocked()
+    {
+        int live = 0;
+        RecvNode? prev = null;
+        for (var n = _recvHead; n is not null;)
+        {
+            var next = n.Next;
+            if (n.State.IsSynchronized)
+            {
+                if (prev is null) _recvHead = next;
+                else prev.Next = next;
+                n.Next = null;
+            }
+            else
+            {
+                prev = n;
+                live++;
+            }
+            n = next;
+        }
+        _recvTail = prev;
+        _recvParks = 0;
+        _recvSweepAt = Math.Max(MinSweep, live * 2);
+    }
+
+    private void SweepSendersLocked()
+    {
+        int live = 0;
+        SendNode? prev = null;
+        for (var n = _sendHead; n is not null;)
+        {
+            var next = n.Next;
+            if (n.IsDead)
+            {
+                if (prev is null) _sendHead = next;
+                else prev.Next = next;
+                n.Next = null;
+            }
+            else
+            {
+                prev = n;
+                live++;
+            }
+            n = next;
+        }
+        _sendTail = prev;
+        _sendParks = 0;
+        _sendSweepAt = Math.Max(MinSweep, live * 2);
     }
 
     private void PushReceiverFrontLocked(RecvNode n)
@@ -686,6 +759,7 @@ public sealed class Inbox<T>
 
     private void ParkSenderLocked(SendNode n)
     {
+        if (++_sendParks >= _sendSweepAt) SweepSendersLocked();
         if (_sendTail is null) _sendHead = _sendTail = n;
         else { _sendTail.Next = n; _sendTail = n; }
     }

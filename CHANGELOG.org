@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* An inbox's receivers and senders that lost are swept too
+
+- A receive parked on an empty inbox, or a send parked on a full one, that
+  lost its ~choose~ was withdrawn only when a later take walked past it. On a
+  quiet inbox none comes, so a loop of ~(choose (inbox-recv ib) (timeout
+  ...))~ kept one dead node and its sync for each turn, and the walk that
+  asks whether a live sender is waiting grew with them. Each list is now
+  swept by its parks, as a channel's is: when the parks since the last sweep
+  reach twice what survived it, and at least 32.
+- Every event's ~Publish~ was checked for a waiter that a losing branch
+  leaves behind. Channels (the park counter), timeouts (the nack unlinks at
+  once), promises and joins (~Register~ prunes), STM ~Loc~s (purged at
+  twice), and a port's reads and end of file and a listener's accepts (swept
+  at every publish) were already bounded; an inbox's closed event was fixed
+  in the entry below; the combinators keep only per-sync state.
+- A test syncs 5000 times where a channel wins against an inbox receive and
+  an inbox send; it fails without either sweep and passes with both.
+
 * An inbox's closed event no longer keeps the syncs it lost
 
 - ~(inbox-closed ib)~ kept a waiter for every sync that offered it and lost,
@@ -16,9 +34,6 @@ What each change guarantees, and what it leaves open.
   list has doubled since the last time, as a promise does. bjoweb at 25,000
   requests a second: gen0 pauses of 1 to 2.5 ms, a 5 MB heap, p99 from 7 ms
   to 2-3 ms (1.2 ms with DATAS off).
-- Still open: other events that only add to a list of waiters have not been
-  checked for the same leak.
-
 * A feeder of worker fibers uses every core
 
 - A send that takes a parked receiver while other receivers are still parked

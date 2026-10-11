@@ -56,6 +56,7 @@ public static class FiberTests
         Run("a promise completed on a foreign thread wakes a choose", ForeignThreadCompletion);
         Run("losing choose branches do not accumulate waiters", WaitersArePruned);
         Run("losing inbox-closed branches do not accumulate waiters", ClosedWaitersArePruned);
+        Run("losing inbox receives and sends do not accumulate", InboxLosersArePruned);
         Run("the first completion wins the value, not the last", FirstCompletionWins);
 
         Section("Task interop");
@@ -683,6 +684,47 @@ public static class FiberTests
         inbox.Close();
         Await(closed, "the close", 2000);
         if (got != "closed") throw new Exception($"the waiting sync got {got}, not the close");
+    }
+
+    /// <summary>
+    /// A receive on an inbox that stays empty, and a send on one that stays
+    /// full, each losing a choose to a channel every time. The losers were
+    /// swept only by a later take, which on a quiet inbox never comes, so a
+    /// loop of <c>(choose (inbox-recv ib) (timeout ...))</c> kept one dead node
+    /// and its sync for every turn.
+    /// </summary>
+    private static void InboxLosersArePruned()
+    {
+        var empty = new Inbox<int>(16, dropOldest: false);
+        var full = new Inbox<int>(1, dropOldest: false);
+        full.Post(0);
+        var ch = new Channel<int>();
+
+        for (int i = 0; i < 5000; i++)
+        {
+            var done = new ManualResetEventSlim(false);
+            Cml.Sync(
+                Cml.Choose(
+                    Cml.Wrap(empty.Receive, v => "inbox"),
+                    Cml.Wrap(full.SendEvent(i), u => "sent"),
+                    Cml.Wrap(new ChannelReceiveEvent<int>(ch), v => "chan")),
+                _ => done.Set());
+            Cml.Sync(new ChannelSendEvent<int>(ch, i), _ => { });
+            Await(done, $"iteration {i}", 2000);
+        }
+
+        if (empty.ParkedReceiverCount > 64)
+            throw new Exception($"the empty inbox holds {empty.ParkedReceiverCount} receivers after 5000 lost syncs");
+        if (full.ParkedSenderCount > 64)
+            throw new Exception($"the full inbox holds {full.ParkedSenderCount} senders after 5000 lost syncs");
+
+        // A receiver still waiting is not swept: an item reaches it.
+        var got = new ManualResetEventSlim(false);
+        int value = -1;
+        Cml.Sync(empty.Receive, v => { value = v; got.Set(); });
+        empty.Post(42);
+        Await(got, "the item", 2000);
+        if (value != 42) throw new Exception($"the waiting receiver got {value}, not 42");
     }
 
     /// <summary>
