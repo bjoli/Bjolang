@@ -24,16 +24,16 @@ loaded for --duration seconds by oha pinned to CPUs 12-23 (on this 5900X 2k
 and 2k+1 share a core: six whole cores each). A server that saw an overload
 would otherwise carry its backlog into the next rate.
 
-bjoweb answers 503 when its request queue (128 by default) is full. The ok
+bjoweb answers 503 when its request queue (1024 by default) is full. The ok
 column is the 200s; the latency columns are of every answer, 503s included.
 With the default scheduler the queue is where a burst waits: Kestrel's threads
-go on reading requests while the workers' threads answer them, and 256
-connections can have more requests in flight than 16 workers and 128 queued
-hold, so a few are refused from 25k requests a second up, in 10 ms windows whose
-slowest answer took a millisecond. With BJO_SCHEDULER=pool a request's fiber is
-queued on the pool thread that posted it, which runs it before it takes more of
-Kestrel's work, so the burst waits in Kestrel instead, unbounded, and nothing is
-refused. With `#:queue 1024` neither refuses anything.
+go on reading requests while the workers' threads answer them. With a queue of
+128, 256 connections could have more requests in flight than 16 workers and
+128 queued hold, so a few were refused from 25k requests a second up, in 10 ms
+windows whose slowest answer took a millisecond. With BJO_SCHEDULER=pool a
+request's fiber is queued on the pool thread that posted it, which runs it
+before it takes more of Kestrel's work, so the burst waits in Kestrel instead,
+unbounded, and nothing is refused. With 1024, neither refuses anything.
 
     (cd ../bjoweb && ../Bjolang/bjo/bjo build -c examples/hello.bjo)
     cargo install oha
