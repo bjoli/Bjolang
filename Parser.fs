@@ -474,6 +474,12 @@ let withLocals (names: (string * Range) list) (read: unit -> 'a) : 'a =
             | _ :: outer -> localBinders[n] <- outer
             | [] -> ()
 
+/// The key of the module being parsed, which `(current-module)` answers. Set
+/// by `Pipeline` around the parse of each module, so that a file it includes
+/// answers the including module. Empty elsewhere, where the file of the form
+/// decides.
+let mutable currentModuleKey: string = ""
+
 /// A parameter written `_` gets a name of its own. C# refuses two parameters
 /// named `_` in one method, and the body cannot read it whatever it is called.
 let private unusedParameter (name: string) =
@@ -867,6 +873,21 @@ and private parseHeaded (s: SExpr) (r: Range) (head: SExpr) (sym: string) (args:
             // A `seq` body is a block like any other, but it is *not* run where
             // it is written: the form evaluates to a sequence, and the body runs
             // a `yield` at a time as that sequence is consumed.
+            // `(current-module)` — the key of the module the form is in once
+            // macros have expanded, as a string. A constant, written here and
+            // not looked up later: a body published for inlining keeps the
+            // answer of the module it was written in, and a template's
+            // `(current-module)` lands in the module that expands it.
+            | "current-module" ->
+                match args with
+                | [] ->
+                    let key =
+                        if currentModuleKey <> "" then currentModuleKey
+                        else Naming.moduleKeyOfPath r.File
+
+                    EString(key, r)
+                | _ -> failwithf $"Invalid current-module at %s{Lexer.formatPos r}: it takes no arguments."
+
             | "seq" ->
                 match args with
                 | [] -> failwithf $"Invalid seq syntax at %s{Lexer.formatPos r}. Expected: (seq body...)"

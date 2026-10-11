@@ -40,8 +40,8 @@
 
 (export deftest run-tests
         check check-match check-raises check-fail
-        Test TestResult registered-tests run-test run-registered-tests
-        test-name test-file test-line test-result-test test-result-failures
+        Test TestResult registered-tests module-tests run-test run-registered-tests
+        test-name test-module test-file test-line test-result-test test-result-failures
         test-failed!
         ;; Named by the templates of the macros above, so they have to be
         ;; reachable where those expand.
@@ -60,6 +60,7 @@
 
 ;; A registered test. `body` is the test's forms, run when the test runs.
 (type (: Test (Record (: name string)
+                      (: module string)
                       (: file string)
                       (: line int)
                       (: within int)
@@ -68,6 +69,9 @@
 
 (: test-name (-> Test string))
 (defun (test-name t) (record-ref t name))
+
+(: test-module (-> Test string))
+(defun (test-module t) (record-ref t module))
 
 (: test-file (-> Test string))
 (defun (test-file t) (record-ref t file))
@@ -82,16 +86,24 @@
 
 ;; Adds a test. It answers a number only so that `deftest` can bind it at the
 ;; top level, which is what makes it run before `main`.
-(: register-test! (-> string string int int bool (-> void) int))
-(defun (register-test! name file line within open-ok body)
+(: register-test! (-> string string string int int bool (-> void) int))
+(defun (register-test! name module file line within open-ok body)
   (box-set! registry
-            (cons (Test (name name) (file file) (line line) (within within) (open-ok open-ok) (body body))
+            (cons (Test (name name) (module module) (file file) (line line)
+                        (within within) (open-ok open-ok) (body body))
                   (box-ref registry)))
   0)
 
 ;; Every test registered so far, in the order they were written.
 (: registered-tests (-> (List Test)))
 (defun (registered-tests) (list-reverse (box-ref registry)))
+
+;; The tests one module registered, by the key `(current-module)` answers
+;; there, in the order they were written. Every module that imports this one
+;; registers into the same list, and each runs only its own.
+(: module-tests (-> string (List Test)))
+(defun (module-tests module)
+  (list-filter (fun (t) (= (record-ref t module) module)) (registered-tests)))
 
 ;; ---------------------------------------------------------------------------
 ;; Failures
@@ -219,7 +231,7 @@
 (: deftest-expansion (-> Syntax Syntax Syntax bool (List Syntax) Syntax))
 (defun (deftest-expansion form name ms open-ok body)
   #'(def registered
-      (register-test! ,name ,(file-of form) ,(line-of form) ,ms ,(if open-ok #'#t #'#f)
+      (register-test! ,name (current-module) ,(file-of form) ,(line-of form) ,ms ,(if open-ok #'#t #'#f)
                       (fun () ,@body unit))))
 
 ;; `(deftest "name" body ...)`, optionally with `#:within ms` and `#:open-ok`
@@ -290,13 +302,13 @@
   (or (vec-empty? filters)
       (any? (fun (f) (string-contains? (record-ref t name) f)) filters)))
 
-;; Runs the registered tests the arguments choose, prints each failure as it
-;; happens and one line at the end, and answers the exit code: 0 when every
-;; test passed, 1 otherwise.
-(: run-registered-tests (-> (Vec string) int))
-(defun (run-registered-tests filters)
+;; Runs the tests `module` registered that the arguments choose, prints each
+;; failure as it happens and one line at the end, and answers the exit code: 0
+;; when every test passed, 1 otherwise.
+(: run-registered-tests (-> string (Vec string) int))
+(defun (run-registered-tests module filters)
   (def started (monotonic-ms))
-  (def tests (list-filter (fun (t) (chosen? filters t)) (registered-tests)))
+  (def tests (list-filter (fun (t) (chosen? filters t)) (module-tests module)))
   (def failed
     (loop (:for t tests)
           (:let result (run-test t))
@@ -314,7 +326,8 @@
     (else (println #"${failed} of ${total} test(s) failed in ${ms} ms.")))
   (if (= failed 0) 0 1))
 
-;; `(run-tests)` — the file's `main`: runs every test registered above it.
+;; `(run-tests)` — the file's `main`: runs every test this module registered.
+;; A module that imports another with tests does not run those.
 (def/macro (run-tests form inject compare)
   (syntax-match form
     ((_)
@@ -322,5 +335,5 @@
      ;; program's entry point has to be the name the compiler looks for.
      #'(begin
          (: ,(inject 'main) (-> (Vec string) int))
-         (defun (,(inject 'main) args) (run-registered-tests args))))
+         (defun (,(inject 'main) args) (run-registered-tests (current-module) args))))
     (bad (syntax-error bad "run-tests takes nothing: (run-tests) at the end of a test file."))))

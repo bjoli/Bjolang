@@ -1,0 +1,19 @@
+;; `(current-module)` answers the module the form is in after macros have
+;; expanded: a library function answers its library, a macro's template the
+;; module it expands in, and an included file the module that includes it.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/current_module_lib.bjo")
+
+(include "inc/current_module_part.bjo")
+
+(defun (main args)
+  (def here (current-module))
+  (expect-true "it names this module" (string-ends-with? here "353_current_module"))
+  (expect "the same everywhere in the module" (current-module) here)
+  (expect-true "a library function answers its library"
+               (string-ends-with? (lib-module) "current_module_lib"))
+  (expect "a template answers the module it expands in" (where-expanded) here)
+  (expect "an included file answers the including module" (included-module) here)
+  0)

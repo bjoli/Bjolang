@@ -6,6 +6,7 @@
 (import (std test))
 (import (std simpletest))
 (import (std effect))
+(import "inc/test_lib.bjo")
 
 (: wait-forever (-bjo-> void))
 (defbjo (wait-forever)
@@ -50,7 +51,7 @@
 
 (: failures-of (-> string (List string)))
 (defun (failures-of name)
-  (match (list-filter (fun (t) (= (test-name t) name)) (registered-tests))
+  (match (list-filter (fun (t) (= (test-name t) name)) (module-tests (current-module)))
     ((Cons t _) (test-result-failures (run-test t)))
     (Nil (list "no such test"))))
 
@@ -59,8 +60,12 @@
   (any? (fun (f) (string-contains? f text)) (failures-of name)))
 
 (defun (main args)
-  (expect "the tests are registered in source order"
-          (list-map test-name (registered-tests))
+  ;; Touched, so that its tests are registered.
+  (expect "the library answers" (lib-answer) 42)
+  (expect-true "a library's tests are registered too"
+               (any? (fun (t) (= (test-name t) "the library's own test")) (registered-tests)))
+  (expect "this module's tests are its own, in source order"
+          (list-map test-name (module-tests (current-module)))
           (list "passes" "a comparison fails" "a predicate fails" "a match fails"
                 "nothing raises" "it raises" "it leaks a fiber" "it leaves a file open"
                 "it may leave a file open"))
@@ -69,7 +74,7 @@
   (expect-true "a comparison shows its operands"
                (reported? "a comparison fails" "(parse \"x\") => (Err not a number)"))
   (expect-true "and the line of the check"
-               (reported? "a comparison fails" "351_std_test.bjo:25: (check (= (parse \"x\") (Ok 3)))"))
+               (reported? "a comparison fails" "351_std_test.bjo:26: (check (= (parse \"x\") (Ok 3)))"))
   (expect-true "a predicate says it was #f"
                (reported? "a predicate fails" "(string-starts-with? \"abc\" \"x\") => #f"))
   (expect-true "a match shows the value" (reported? "a match fails" "(parse \"7\") => (Ok 7)"))

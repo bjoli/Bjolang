@@ -2076,7 +2076,17 @@ let loadModuleGraph
                     Macro.setLocalMacros localMacros
                     Macro.setLocalPatternMacros localPatternMacros
                     Macro.setLocalHashMacros localHashMacros
-                    let parsed = DeclParser.parseModule forms
+                    // Saved and put back: parsing a module can load and parse
+                    // another, and each answers `(current-module)` for itself.
+                    let outerModuleKey = Parser.currentModuleKey
+                    Parser.currentModuleKey <- Naming.moduleKeyOfPath absPath
+
+                    let parsed =
+                        try
+                            DeclParser.parseModule forms
+                        finally
+                            Parser.currentModuleKey <- outerModuleKey
+
                     Macro.setLocalMacros Set.empty
                     Macro.setLocalPatternMacros Set.empty
                     Macro.setLocalHashMacros Set.empty
