@@ -1,0 +1,44 @@
+(import (std prelude))
+(import (std simpletest))
+(import "inc/form_writing_macros.bjo")
+
+;; A local binding may have the name of a special form or a macro. Calling it
+;; by that name is refused (see `errors/local_*_called.bjo`); everything else
+;; it may do, which is what this checks.
+
+;; Used as a value.
+(: total (-> (List int) int))
+(defun (total list) (list-length list))
+
+;; A parameter named `def`, used as a value.
+(: twice-def (-> int int))
+(defun (twice-def def) (* 2 def))
+
+;; A local `loop` called with arguments that are not loop clauses is a call.
+(: shadowed (-> int int))
+(defun (shadowed n)
+  (let loop ((i n))
+    (if (= i 0)
+        0
+        (let ((loop (fun (y) (* y 2))))
+          (loop i)))))
+
+;; A template's `(list ...)` and `(not ...)`, where the caller binds `list` and
+;; `not`: the template's forms are the ones it meant.
+(: from-macros (-> int bool (Tuple (List int) bool)))
+(defun (from-macros list not)
+  (Tuple (both-of list) (negate not)))
+
+;; The special form outside the binding's scope.
+(: after-scope (-> int (List int)))
+(defun (after-scope n)
+  (def doubled (let ((list (* n 2))) list))
+  (list doubled n))
+
+(defun (main args)
+  (expect "a local list used as a value" (total (list 1 2 3)) 3)
+  (expect "a parameter named def" (twice-def 21) 42)
+  (expect "a local loop that is called" (shadowed 21) 42)
+  (expect "a template's list" (from-macros 5 #t) (Tuple (list 5 5) #f))
+  (expect "the form after the scope" (after-scope 4) (list 8 4))
+  0)

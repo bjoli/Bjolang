@@ -3,6 +3,21 @@
 
 What each change guarantees, and what it leaves open.
 
+* A call to a local binding named like a special form is refused
+
+- *~(list 1 2)~ under a local ~list~ was the list form, silently.* The parser
+  chooses a special form or a macro by the name at the head, before scope is
+  known, so a parameter, ~let~, ~def~ or pattern binder named ~list~, ~not~,
+  ~case~, ~get~ and the like was never called by that name. Such a call is
+  now a syntax error that names the binding.
+- The binding itself stays legal, and so does every use of it that is not a
+  call by that name. A ~loop~ whose arguments are not loop clauses is a call,
+  as before. A form a macro's template writes is not affected.
+- The names counted are those of a ~let~, a named ~let~, ~letrec~, ~fun~ and
+  ~bjoroutine~, a ~defun~'s and a ~defbjouble~'s parameters, a body's ~def~
+  forms, ~match~ and ~def~ patterns, ~with-return~ and ~with-open~. Loop
+  variables are not yet counted.
+
 * A large append to a string builder stays off the large object heap
 
 - An append that did not fit in the builder's buffer made one buffer as

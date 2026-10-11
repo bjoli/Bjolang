@@ -420,20 +420,81 @@ type DefTail =
     /// `:default`: the pattern's one binder and the expression it is bound to.
     | Defaults of string * Expr
 
+let private (|Ident|_|) =
+    function
+    | SAtom { Token = Symbol sym } -> Some sym
+    | _ -> None
+
+// ---------------------------------------------------------------------------
+// Local bindings over special forms
+// ---------------------------------------------------------------------------
+//
+// The parser chooses a special form or a macro by the name at the head of a
+// list, before anything is known about scope. So a local binding named `list`,
+// `not` or `get` cannot be called by that name: `(list 1 2)` is the list form
+// whatever `list` is bound to. Such a call is refused, with the binding named,
+// because it otherwise compiles and does something else.
+//
+// The names bound around the code being read, each with where it was bound,
+// innermost last. Every form that binds names over a body adds them while the
+// body is read. Reading is single-threaded, and the names are taken off again
+// however the body is left, so the table is empty between top-level forms.
+
+let private localBinders = System.Collections.Generic.Dictionary<string, Range list>()
+
+/// Reads `read` with `names` bound around it. `_` binds nothing.
+let withLocals (names: (string * Range) list) (read: unit -> 'a) : 'a =
+    let names = names |> List.filter (fun (n, _) -> n <> "_")
+
+    for n, at in names do
+        let outer =
+            match localBinders.TryGetValue n with
+            | true, ats -> ats
+            | _ -> []
+
+        localBinders[n] <- at :: outer
+
+    try
+        read ()
+    finally
+        for n, _ in names do
+            match localBinders[n] with
+            | [ _ ] -> localBinders.Remove n |> ignore
+            | _ :: outer -> localBinders[n] <- outer
+            | [] -> ()
+
+/// Every name an argument list binds, at `at`.
+let private argBinders (args: DefunArg list) (at: Range) =
+    allArgNames args |> List.map (fun n -> n, at)
+
+/// Every name a pattern binds, at the pattern.
+let private patternLocals (p: Pattern) =
+    let at = patternRange p
+    patternBinders p |> List.map (fun n -> n, at)
+
+/// What a head was read as, for the check in `parseHeadedChecked`.
+type private HeadReading =
+    | SpecialForm
+    | Macro
+    | PlainCall
+
+/// Where a local binding gives the name `sym`, when `sym` is a head the author
+/// wrote. A head a macro's template wrote carries a mark, and its special form
+/// or macro is the one the template meant.
+let private localBindingOf (sym: string) : Range option =
+    match localBinders.TryGetValue sym with
+    | true, at :: _ when sym = headName sym -> Some at
+    | _ -> None
+
+/// The error for a special form or a macro whose name a local binding gives.
+let private refuseShadowedHead (sym: string) (reading: HeadReading) (listRange: Range) (boundAt: Range) : 'a =
+    let kind = if reading = Macro then "macro" else "special form"
+
+    failwithf
+        $"Syntax error at %s{Lexer.formatPos listRange}: (%s{sym} ...) is the %s{kind} '%s{sym}', not a call to the local '%s{sym}' bound at %s{Lexer.formatPos boundAt}. A %s{kind} is chosen by its name before what is in scope is known, so a local binding with that name cannot be called. Give the local binding another name."
+
 let rec parseExpr (s: SExpr) : Expr =
     let r = getRange s
-
-    let rec processArgs items =
-        match items with
-        | [] -> []
-        | SAtom { Token = Comma } :: rest -> processArgs rest
-        | item :: rest -> parseExpr item :: processArgs rest
-
-    // Treat specific operator tokens as valid identifiers in expressions
-    let (|Ident|_|) =
-        function
-        | SAtom { Token = Symbol sym } -> Some sym
-        | _ -> None
 
     match s with
     | SAtom { Token = NumberLit n } -> EInt(n, r)
@@ -474,7 +535,50 @@ let rec parseExpr (s: SExpr) : Expr =
                 failwithf
                     $"Unknown hash macro '%s{sym}' at %s{Lexer.formatPos listRange}. A #name(...) form calls a hash macro, which arrives with the import of the module that (def/hash-extend ...)s it — the prelude's are #fl, #fr, #ch and #map."
 
-        | Ident sym ->
+        | Ident sym -> parseHeadedChecked s r head sym args listRange
+
+        | _ ->
+            // Fallback for tuples or unquoted lists
+            EApp(parseExpr head, processArgs args, listRange)
+
+    | SList([], listRange) -> ETuple([], listRange)
+
+    // Explicit token catches for better debugging
+    | SAtom { Token = Comma } -> failwithf $"Unexpected comma at %s{Lexer.formatPos r}"
+    | SAtom { Token = Quote } -> failwithf $"Unexpected quote at %s{Lexer.formatPos r}"
+    | _ -> failwithf $"Unexpected expression at %s{Lexer.formatPos r}"
+
+and private processArgs (items: SExpr list) : Expr list =
+    match items with
+    | [] -> []
+    | SAtom { Token = Comma } :: rest -> processArgs rest
+    | item :: rest -> parseExpr item :: processArgs rest
+
+/// A list whose head is a name: a special form, a macro or a call.
+///
+/// A name a local binding gives, written as the head, is refused when the
+/// list is read as a special form or a macro: see `withLocals`. A plain call
+/// is what the author meant, and goes through. A head a macro's template wrote
+/// is exempt: its special form is the one the template meant.
+and private parseHeadedChecked (s: SExpr) (r: Range) (head: SExpr) (sym: string) (args: SExpr list) (listRange: Range) : Expr =
+    match localBindingOf sym with
+    | None -> parseHeaded s r head sym args listRange (ref SpecialForm)
+    | Some at ->
+        let reading = ref SpecialForm
+
+        // A special form that refuses its arguments refuses them as the form
+        // the author did not mean, so the shadowing is the error to report.
+        let e =
+            try
+                parseHeaded s r head sym args listRange reading
+            with _ when reading.Value <> PlainCall ->
+                refuseShadowedHead sym reading.Value listRange at
+
+        if reading.Value <> PlainCall then refuseShadowedHead sym reading.Value listRange at
+        e
+
+/// The list read by its head, `reading` set to what it was read as.
+and private parseHeaded (s: SExpr) (r: Range) (head: SExpr) (sym: string) (args: SExpr list) (listRange: Range) (reading: HeadReading ref) : Expr =
             // Dispatch sees through a macro's rename; the identifier does not.
             // `sym` is what an application is built from, so a template's call
             // to a binding of its own module keeps the mark that resolves it.
@@ -533,7 +637,19 @@ let rec parseExpr (s: SExpr) : Expr =
             | "let" ->
                 match args with
                 | SList(bindings, _) :: bodyExprs ->
-                    let body = parseBody bodyExprs listRange
+                    // The names the bindings give, which the body sees.
+                    let bound =
+                        bindings
+                        |> List.collect (function
+                            | SList([ Ident k; _ ], at) -> [ k, at ]
+                            | SList([ SList(names, _); _ ], at) ->
+                                names
+                                |> List.choose (function
+                                    | Ident n when n <> "Tuple" -> Some(n, at)
+                                    | _ -> None)
+                            | _ -> [])
+
+                    let body = withLocals bound (fun () -> parseBody bodyExprs listRange)
 
                     // Each binding as (the names it binds, its init, its own range).
                     // A destructuring binding contributes several names, and each
@@ -616,7 +732,11 @@ let rec parseExpr (s: SExpr) : Expr =
 
                     let argNames = parsedBindings |> List.map fst
                     let argVals = parsedBindings |> List.map snd
-                    let body = parseBody bodyExprs listRange
+
+                    let body =
+                        withLocals
+                            ((name :: argNames) |> List.map (fun n -> n, listRange))
+                            (fun () -> parseBody bodyExprs listRange)
                     let funcBinding = (name, true, argNames |> List.map (fun n -> MandatoryArg(n, None)), None, body)
                     ELetRec([funcBinding], EApp(EIdent(name, r), argVals, r), r)
                 | _ -> failwith "Invalid let syntax"
@@ -640,7 +760,8 @@ let rec parseExpr (s: SExpr) : Expr =
                             | SList([ Ident k; v ], _) -> (k, false, [], None, parseExpr v)
                             | _ -> failwith "Invalid letrec binding")
 
-                    ELetRec(parsedBindings, parseBody bodyExprs listRange, r)
+                    let bound = parsedBindings |> List.map (fun (k, _, _, _, _) -> k, listRange)
+                    ELetRec(parsedBindings, withLocals bound (fun () -> parseBody bodyExprs listRange), r)
                 | _ -> failwith "Invalid letrec syntax"
             | "set!" ->
                 match args with
@@ -710,7 +831,7 @@ let rec parseExpr (s: SExpr) : Expr =
             | "with-return" ->
                 match args with
                 | SAtom { Token = Symbol name } :: bodyExprs when not bodyExprs.IsEmpty ->
-                    EWithReturn(name, parseBody bodyExprs listRange, listRange)
+                    EWithReturn(name, withLocals [ name, listRange ] (fun () -> parseBody bodyExprs listRange), listRange)
                 | [ SAtom { Token = Symbol name } ] ->
                     failwithf
                         $"Syntax error at %s{Lexer.formatPos r}: the with-return block named '%s{name}' has no body."
@@ -868,7 +989,12 @@ let rec parseExpr (s: SExpr) : Expr =
                             | SAtom { Token = Comma } -> None
                             | _ -> failwith "Expected arg name")
 
-                    EFun(argNames, parseBody bodyExprs listRange, colour, r)
+                    let body =
+                        withLocals
+                            (argNames |> List.map (fun n -> n, listRange))
+                            (fun () -> parseBody bodyExprs listRange)
+
+                    EFun(argNames, body, colour, r)
                 | _ -> failwithf $"Invalid %s{sym} syntax"
 
             | "match" ->
@@ -884,10 +1010,14 @@ let rec parseExpr (s: SExpr) : Expr =
                             match clause with
                             // Clause with a guard: (pattern #:when guard body...)
                             | SList(pattern :: SAtom { Token = Keyword "when" } :: guard :: bodyExprs, _) ->
-                                (parsePattern pattern, Some(parseExpr guard), parseBody bodyExprs rClause)
+                                let p = parsePattern pattern
+
+                                withLocals (patternLocals p) (fun () ->
+                                    (p, Some(parseExpr guard), parseBody bodyExprs rClause))
                             // Standard clause: (pattern body...)
                             | SList(pattern :: bodyExprs, _) ->
-                                (parsePattern pattern, None, parseBody bodyExprs rClause)
+                                let p = parsePattern pattern
+                                withLocals (patternLocals p) (fun () -> (p, None, parseBody bodyExprs rClause))
                             | _ -> failwithf $"Invalid match clause at %s{Lexer.formatPos rClause}")
 
                     EMatch(target, parsedClauses, r)
@@ -1228,7 +1358,13 @@ let rec parseExpr (s: SExpr) : Expr =
                     if bodyForms.IsEmpty then
                         failwithf $"Invalid with-open at %s{Lexer.formatPos r}: it has no body."
 
-                    let body = parseBody bodyForms listRange
+                    let bound =
+                        bindings
+                        |> List.choose (function
+                            | SList([ Ident name; _ ], at) -> Some(name, at)
+                            | _ -> None)
+
+                    let body = withLocals bound (fun () -> parseBody bodyForms listRange)
 
                     List.foldBack
                         (fun binding acc ->
@@ -1404,6 +1540,7 @@ let rec parseExpr (s: SExpr) : Expr =
                                              | SAtom { Token = Keyword _ } -> true
                                              | _ -> false))
                 ->
+                reading.Value <- PlainCall
                 desugarOperator parseExpr head sym op args listRange
 
             // A macro, tried last so that a special form always wins. Anything
@@ -1411,20 +1548,13 @@ let rec parseExpr (s: SExpr) : Expr =
             // and the head is the only thing that decides which.
             | _ ->
                 match expandHook s with
-                | Some expansion -> expansion.Resolve Set.empty (parseExpr expansion.Form)
-                | None -> EApp(EIdent(sym, getRange head), processArgs args, listRange)
+                | Some expansion ->
+                    reading.Value <- Macro
+                    expansion.Resolve Set.empty (parseExpr expansion.Form)
+                | None ->
+                    reading.Value <- PlainCall
+                    EApp(EIdent(sym, getRange head), processArgs args, listRange)
 
-
-        | _ ->
-            // Fallback for tuples or unquoted lists
-            EApp(parseExpr head, processArgs args, listRange)
-
-    | SList([], listRange) -> ETuple([], listRange)
-
-    // Explicit token catches for better debugging
-    | SAtom { Token = Comma } -> failwithf $"Unexpected comma at %s{Lexer.formatPos r}"
-    | SAtom { Token = Quote } -> failwithf $"Unexpected quote at %s{Lexer.formatPos r}"
-    | _ -> failwithf $"Unexpected expression at %s{Lexer.formatPos r}"
 
 // ---------------------------------------------------------------------------
 // Patterns
@@ -1854,7 +1984,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         | SList(SAtom { Token = Symbol "defun" } :: SList(SAtom { Token = Symbol name } :: args, _) :: rest, r) :: rest' ->
             let parsedArgs = parseDefunArgs args
             let retType, bodyExprs = parseDefunReturn rest
-            let fBody = parseBody bodyExprs r
+            let fBody = withLocals ((name, r) :: argBinders parsedArgs r) (fun () -> parseBody bodyExprs r)
             collectDefs ((name, true, parsedArgs, retType, fBody) :: acc) rest'
 
         | _ -> (List.rev acc, remaining)
@@ -1906,8 +2036,10 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // is the clause after it, and the last one's is the rest of the body.
         | SList(SAtom { Token = Symbol "def*" } :: clauseForms, r) :: rest ->
             let clauses = parseDefStarClauses r clauseForms
+            let bound = clauses |> List.collect (fun (_, binders, cr) -> binders |> List.map (fun n -> n, cr))
+            let sequel = withLocals bound (fun () -> parseItems rest)
 
-            List.foldBack (fun (tail, _, cr) sequel -> bindDefTail tail sequel cr) clauses (parseItems rest)
+            List.foldBack (fun (tail, _, cr) sequel -> bindDefTail tail sequel cr) clauses sequel
 
         // `(def pattern scrutinee)` and `(def pattern scrutinee failure-part)`
         // — a binding that may fail.
@@ -1925,13 +2057,22 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         | SList(SAtom { Token = Symbol "def" } :: binder :: scrutinee :: failureForms, r) :: rest when
             not failureForms.IsEmpty || not (isPlainDefBinder binder)
             ->
-            bindDefTail (parseDefTail r binder scrutinee failureForms) (parseItems rest) r
+            let tail = parseDefTail r binder scrutinee failureForms
+
+            let bound =
+                match tail with
+                | Leaves(pattern, _, _) -> patternLocals pattern
+                | Defaults(name, _) -> [ name, r ]
+
+            bindDefTail tail (withLocals bound (fun () -> parseItems rest)) r
 
         | SList(SAtom { Token = Symbol "def/mutable" } :: SAtom { Token = Symbol name } :: [ expr ], r) :: rest ->
-            ELetMutable(name, None, parseExpr expr, parseItems rest, fallbackRange)
+            let value = parseExpr expr
+            ELetMutable(name, None, value, withLocals [ name, r ] (fun () -> parseItems rest), fallbackRange)
 
         | SList(SAtom { Token = Symbol "def/mutable" } :: SList([ SAtom { Token = Colon }; SAtom { Token = Symbol name }; tType ], _) :: [ expr ], r) :: rest ->
-            ELetMutable(name, Some(parseType tType), parseExpr expr, parseItems rest, fallbackRange)
+            let value = parseExpr expr
+            ELetMutable(name, Some(parseType tType), value, withLocals [ name, r ] (fun () -> parseItems rest), fallbackRange)
 
         // Local tuple destructuring: (def (a b) expr).
         // Recognized before the `def` case below to prevent infinite recursion.
@@ -1953,7 +2094,8 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
                 | "Tuple" :: restNames -> restNames
                 | _ -> rawNames
 
-            ELetTuple(tupleNames, parseExpr expr, parseItems rest, r)
+            let value = parseExpr expr
+            ELetTuple(tupleNames, value, withLocals (tupleNames |> List.map (fun n -> n, r)) (fun () -> parseItems rest), r)
         // `defbjo` is listed so that it reaches `collectDefs`, which rejects it
         // by name; left out, it would fall through to an ordinary application
         // and fail with "Unbound variable: defbjo".
@@ -1971,7 +2113,21 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
                 failwithf
                     $"Invalid def form at %s{Lexer.formatPos r}. Expected (def name expr), (def (: name type) expr), (def (a b ...) expr), (def pattern scrutinee ...) or (defun (name args...) body)."
 
-            groupDefs defs (parseItems rest) fallbackRange
+            // Each name where its own `def` or `defun` is, for the message.
+            let definedAt name =
+                remaining
+                |> List.tryPick (function
+                    | SList(SAtom { Token = Symbol("def" | "defun") } :: binder :: _, at) ->
+                        match binder with
+                        | SAtom { Token = Symbol n }
+                        | SList(SAtom { Token = Symbol n } :: _, _)
+                        | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol n }; _ ], _) when n = name -> Some at
+                        | _ -> None
+                    | _ -> None)
+                |> Option.defaultValue (getRange (List.head remaining))
+
+            let bound = defs |> List.map (fun (name, _, _, _, _) -> name, definedAt name)
+            groupDefs defs (withLocals bound (fun () -> parseItems rest)) fallbackRange
 
         // A macro in body position, expanded here rather than left to
         // `parseExpr`, because it may expand to a definition and `def` and
@@ -1982,6 +2138,10 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // scope, and whether an introduced name is free is only answerable
         // there.
         | (SList(SAtom { Token = Symbol h } :: _, _) as form) :: rest when isMacroName h ->
+            match localBindingOf h with
+            | Some at -> refuseShadowedHead h Macro (getRange form) at
+            | None -> ()
+
             match expandHook form with
             // `Set.empty`: the spliced definitions are inside the expression
             // tree this parses, so `freeNames` already sees them as bound.
@@ -2008,7 +2168,8 @@ and parseDefTail (r: Range) (binder: SExpr) (scrutinee: SExpr) (forms: SExpr lis
     let arm (form: SExpr) =
         match form with
         | SList(armPattern :: bodyForms, ar) when not bodyForms.IsEmpty ->
-            (parsePattern armPattern, parseBody bodyForms ar)
+            let p = parsePattern armPattern
+            (p, withLocals (patternLocals p) (fun () -> parseBody bodyForms ar))
         | bad ->
             failwithf
                 $"Syntax error at %s{Lexer.formatPos (getRange bad)}: what follows :leave is arms, each written (pattern body ...), and :leave comes last in the def."

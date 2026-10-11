@@ -260,6 +260,15 @@ This is what lets a frame like ~Cond~ be written once, generic over its leaves, 
 ** Identifiers
 Identifiers may contain most characters except ~_~ and may not start with a digit: ~my-var~, ~+~, ~string->int~, ~empty?~.
 
+*** A local binding named like a special form or a macro
+A special form (~list~, ~not~, ~loop~, ~match~, ...) and a macro are chosen by the name at the head of a list, before anything is known about scope. So a local binding with such a name cannot be called by that name: ~(list 1 2)~ is the list form whatever ~list~ is bound to. The compiler refuses such a call, and names the binding:
+#+BEGIN_SRC scheme
+(defun (apply2 list) (list 1 2))
+;; Syntax error: (list ...) is the special form 'list', not a call to the
+;; local 'list' bound at ...
+#+END_SRC
+The binding itself is allowed, and so is any use of it that is not a call by that name: ~(defun (total list) (list-length list))~. A ~loop~ whose arguments are not loop clauses is a call, so a local ~loop~ may be called. A special form or a macro that a macro's template writes is the one the template meant, and is not affected.
+
 ** Naming conventions
 Conventions, mostly from Scheme:
 *** Predicates

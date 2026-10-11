@@ -357,7 +357,8 @@ let private parseDefunDecl
     let colour = if definer = "defbjo" then Suspending else Ordinary
     let parsedArgs = parseDefunArgs args
     let retAnn, bodyExprs = parseDefunReturn rest
-    let defun = DDefun(name, parsedArgs, parseBody bodyExprs r, colour, r)
+    let bound = allArgNames parsedArgs |> List.map (fun n -> n, r)
+    let defun = DDefun(name, parsedArgs, withLocals bound (fun () -> parseBody bodyExprs r), colour, r)
 
     match retAnn with
     | None -> [ defun ]
@@ -592,10 +593,13 @@ let rec tryParseDecl (s: SExpr) : Decl option =
         // The two bodies, by keyword rather than by position. Order-independent
         // because there is no reason for it not to be, and because `#:sync`
         // first reads better in some pairs and `#:bjo` first in others.
+        let bound = allArgNames (parseDefunArgs args) |> List.map (fun n -> n, r)
+
         let clauseNamed (want: string) =
             clauses
             |> List.tryPick (function
-                | SList(SAtom { Token = Keyword k } :: body, cr) when k = want -> Some(parseBody body cr)
+                | SList(SAtom { Token = Keyword k } :: body, cr) when k = want ->
+                    Some(withLocals bound (fun () -> parseBody body cr))
                 | _ -> None)
 
         for c in clauses do
@@ -1058,7 +1062,7 @@ and parseDeclForms (s: SExpr) : Decl list =
           DDefun(
               transformerName,
               argNames |> List.map (fun n -> MandatoryArg(n, None)),
-              parseBody body r,
+              withLocals (argNames |> List.map (fun n -> n, r)) (fun () -> parseBody body r),
               Ordinary,
               r
           )
