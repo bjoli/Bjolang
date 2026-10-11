@@ -876,8 +876,9 @@ public static partial class BjolangRuntime {
     /// `End` disposes there. Both may run on one cursor, so each does nothing
     /// after the first.
     ///
-    /// A walk a loop does not stop is still left to the collector: a `seql`
-    /// whose consumer stops early, and a walk that an exception leaves.
+    /// A walk that no loop stops is not ended here: a `seql` whose consumer
+    /// stops early, and a walk that an exception leaves. A file port is still
+    /// closed when the scope it was registered with ends.
     /// </summary>
     public sealed class SeqCursor<T> {
         /// Null once exhausted, which is what makes a second `Done` after the

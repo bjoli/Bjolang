@@ -8,7 +8,8 @@ What each change guarantees, and what it leaves open.
 - *~find~ over ~file-read-lines/seq~ left the file open.* A loop that
   stopped before the end of a ~Seq~ (~find~, ~any?~, ~all?~, ~take~, a
   ~:finish~) did not dispose the enumerator, so the file stayed open until
-  the collector closed it. 50 such ~find~ walks held 50 files open.
+  the enclosing scope ended, which in ~main~ is the end of the program. 50
+  such ~find~ walks held 50 files open.
 - ~Iterable~ has a new method, ~(iterable-end s cursor)~, with a default that
   does nothing. A loop calls it on each cursor that it stops before ~done?~
   answered true: at ~:finish~, ~:abandon~, ~:final~, ~:finish-let~,
@@ -20,7 +21,9 @@ What each change guarantees, and what it leaves open.
   ~find~ stopping ends the cursor of ~s~.
 - Still open: a ~seql~ whose consumer stops early does not end the walks it
   holds, and a walk that an exception leaves is not ended. In both cases the
-  file stays open until the collector closes it.
+  file stays open until the enclosing scope ends: ~open-input-file~ registers
+  the port with the ambient scope. Put the walk in a ~with-scope~ to close
+  it sooner.
 - Cost: none in the 42 benchmark programs, whose generated C# is unchanged.
   An early stop of a ~Seq~ walk now disposes the enumerator. In a loop that
   only stops in-memory walks early, that measured about 6 ns per stop.

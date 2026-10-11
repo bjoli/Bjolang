@@ -108,5 +108,14 @@
     (loop (:for i (range 0 20))
           (:do (ignore (find (fun (l) (= l "1")) (file-read-lines/seq path)))))
     (expect "find closes the file" (- (open-fds) before) 0)
+    ;; `find` stops the `map` iterator, and that does not end the walk over
+    ;; the file. The scope that was ambient at the pull owns the port, and
+    ;; closes it when it ends.
+    (with-scope
+      (loop (:for i (range 0 5))
+            (:do (ignore (find (fun (l) (= l "1!"))
+                               (map (fun (x) (str x "!")) (file-read-lines/seq path))))))
+      (ignore (open-fds)))
+    (expect "a scope closes what a stopped seql left open" (- (open-fds) before) 0)
     (file-delete path))
   0)
