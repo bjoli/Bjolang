@@ -1,0 +1,326 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/test.bjo — tests that are silent unless they fail.
+;;
+;;     (import (std prelude))
+;;     (import (std test))
+;;
+;;     (deftest "parse adds"
+;;       (check (= (parse "1+2") (Ok 3))))
+;;
+;;     (deftest "a bad number is an error"
+;;       (check-match (parse "x") (Err _)))
+;;
+;;     (run-tests)
+;;
+;; `deftest` registers a test where it is written, and `(run-tests)` is the
+;; file's `main`: it runs every test registered above it, in source order. A
+;; test that passes prints nothing. A test that fails prints the test, where it
+;; is, and every check in it that failed, with the values the check saw. The
+;; run ends with one line, and exits 1 if anything failed.
+;;
+;; Arguments to the program choose tests: a test runs when its name contains
+;; one of them. With none, every test runs.
+;;
+;; Each test runs in a scope of its own, as `with-test` in `(std simpletest)`
+;; does: under a deadline (`#:within ms`, 5 seconds by default), waiting for
+;; the fibers it started, and failing if it left a resource open (unless
+;; `#:open-ok`). A test that raises fails with the exception's message, and the
+;; tests after it still run.
+
+(export deftest run-tests
+        check check-match check-raises check-fail
+        Test TestResult registered-tests run-test run-registered-tests
+        test-name test-file test-line test-result-test test-result-failures
+        test-failed!
+        ;; Named by the templates of the macros above, so they have to be
+        ;; reachable where those expand.
+        register-test! check-failed!)
+
+(import (std prelude))
+(import (std syntax-match))
+
+;; A failure makes the program exit 1 even when `main` answers 0.
+(import/extern
+  (set-exit-code! (: System.Environment.ExitCode (-> int void) #:set)))
+
+;; ---------------------------------------------------------------------------
+;; Tests and their registry
+;; ---------------------------------------------------------------------------
+
+;; A registered test. `body` is the test's forms, run when the test runs.
+(type (: Test (Record (: name string)
+                      (: file string)
+                      (: line int)
+                      (: within int)
+                      (: open-ok bool)
+                      (: body (-> void)))))
+
+(: test-name (-> Test string))
+(defun (test-name t) (record-ref t name))
+
+(: test-file (-> Test string))
+(defun (test-file t) (record-ref t file))
+
+(: test-line (-> Test int))
+(defun (test-line t) (record-ref t line))
+
+;; Newest first. A box rather than a `def/mutable`, so that `register-test!`
+;; can be inlined into the module that calls it.
+(: registry (Box (List Test)))
+(def registry (make-box (list)))
+
+;; Adds a test. It answers a number only so that `deftest` can bind it at the
+;; top level, which is what makes it run before `main`.
+(: register-test! (-> string string int int bool (-> void) int))
+(defun (register-test! name file line within open-ok body)
+  (box-set! registry
+            (cons (Test (name name) (file file) (line line) (within within) (open-ok open-ok) (body body))
+                  (box-ref registry)))
+  0)
+
+;; Every test registered so far, in the order they were written.
+(: registered-tests (-> (List Test)))
+(defun (registered-tests) (list-reverse (box-ref registry)))
+
+;; ---------------------------------------------------------------------------
+;; Failures
+;; ---------------------------------------------------------------------------
+
+;; The failures of the test that is running, newest first, or `None` when no
+;; test is running. A check outside a test reports at once.
+(: current-failures (Box (Option (Box (List string)))))
+(def current-failures (make-box None))
+
+;; A source file as a report names it: by its file name, which is enough to
+;; find it and short enough to read.
+(: shown-file (-> string string))
+(defun (shown-file path)
+  (match (path-filename path)
+    ((Some name) name)
+    (None path)))
+
+;; Records a failure of the running test, or prints it and fails the program
+;; when there is none.
+(: test-failed! (-> string void))
+(defun (test-failed! message)
+  (match (box-ref current-failures)
+    ((Some failures) (box-set! failures (cons message (box-ref failures))))
+    (None
+     (println message)
+     (set-exit-code! 1))))
+
+;; The report of one failed check: where it is, what it said, and each value
+;; it saw, as source text and value.
+(: check-failed! (-> string int string (List (Tuple string string)) void))
+(defun (check-failed! file line source seen)
+  (def width
+    (loop (:for (Tuple src _) seen)
+          (:acc w (folding 0 (let ((n (string-length src))) (if (> n w) n w))))))
+  (def lines
+    (loop (:for (Tuple src value) seen)
+          (:acc out (listing #"    ${(string-pad-right src width)} => ${value}"))))
+  (test-failed!
+    (string-join (list->vec (cons #"  ${(shown-file file)}:${line}: ${source}" lines)) "\n")))
+
+;; ---------------------------------------------------------------------------
+;; Checks
+;; ---------------------------------------------------------------------------
+
+;; The source position of a form, as literals a template can splice.
+(: file-of (-> Syntax Syntax))
+(defun (file-of form) (SStr (syntax-file form)))
+
+(: line-of (-> Syntax Syntax))
+(defun (line-of form) (SInt (int->string (syntax-line form))))
+
+(: source-of (-> Syntax Syntax))
+(defun (source-of form) (SStr (syntax->string form)))
+
+;; A comparison, with both operands evaluated once, in order, and shown when
+;; it does not hold.
+(: check-comparison (-> Syntax Syntax Syntax Syntax Syntax))
+(defun (check-comparison form op a b)
+  #'(let ((left ,a)
+          (right ,b))
+      (unless (,op left right)
+        (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
+                       (list (Tuple ,(source-of a) (->str left))
+                             (Tuple ,(source-of b) (->str right)))))))
+
+;; `(check expr)` passes when `expr` is #t. When it is a comparison — `=`, `<`,
+;; `>`, `<=` or `>=` — a failure shows both operands' values; otherwise it says
+;; that the expression was #f. A failed check does not stop the test.
+(def/macro (check form inject compare)
+  (syntax-match form
+    ((_ ('= a b)) (check-comparison form #'= a b))
+    ((_ ('< a b)) (check-comparison form #'< a b))
+    ((_ ('> a b)) (check-comparison form #'> a b))
+    ((_ ('<= a b)) (check-comparison form #'<= a b))
+    ((_ ('>= a b)) (check-comparison form #'>= a b))
+    ((_ expr)
+     #'(unless ,expr
+         (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
+                        (list (Tuple ,(source-of expr) "#f")))))
+    (bad (syntax-error bad "check takes one expression: (check (= (f x) 3))."))))
+
+;; `(check-match expr pattern)` passes when the value matches the pattern. A
+;; failure shows the value.
+(def/macro (check-match form inject compare)
+  (syntax-match form
+    ((_ expr pattern)
+     #'(let ((value ,expr))
+         (match value
+           (,pattern unit)
+           (_ (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
+                             (list (Tuple ,(source-of expr) (->str value))))))))
+    (bad (syntax-error bad "check-match takes an expression and a pattern: (check-match (parse \"x\") (Err _))."))))
+
+;; `(check-raises Type expr)` passes when evaluating `expr` raises a `Type`,
+;; a .NET exception type. A failure shows what it answered instead.
+(def/macro (check-raises form inject compare)
+  (syntax-match form
+    ((_ type expr)
+     #'(match (try ,expr #:catch (,type))
+         ((Ok value)
+          (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
+                         (list (Tuple ,(source-of expr) (str "answered " (->str value) " and raised nothing")))))
+         ((Err _) unit)))
+    (bad (syntax-error bad "check-raises takes an exception type and an expression: (check-raises System.FormatException (parse-int \"x\"))."))))
+
+;; `(check-fail "why")` fails where it stands: for a branch a test must not
+;; reach.
+(def/macro (check-fail form inject compare)
+  (syntax-match form
+    ((_ why)
+     #'(check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
+                      (list (Tuple "reason" ,why))))
+    (bad (syntax-error bad "check-fail takes a reason: (check-fail \"this branch is unreachable\")."))))
+
+;; ---------------------------------------------------------------------------
+;; deftest and run-tests
+;; ---------------------------------------------------------------------------
+
+;; The deadline of a test that gives none. A `deftest` without `#:within`
+;; registers 0, which means this.
+(: default-test-ms int)
+(def default-test-ms 5000)
+
+(: deftest-expansion (-> Syntax Syntax Syntax bool (List Syntax) Syntax))
+(defun (deftest-expansion form name ms open-ok body)
+  #'(def registered
+      (register-test! ,name ,(file-of form) ,(line-of form) ,ms ,(if open-ok #'#t #'#f)
+                      (fun () ,@body unit))))
+
+;; `(deftest "name" body ...)`, optionally with `#:within ms` and `#:open-ok`
+;; after the name. Registers the test; `(run-tests)` runs it.
+(def/macro (deftest form inject compare)
+  (syntax-match form
+    ((_ name #:within ms #:open-ok first body ...)
+     (deftest-expansion form name ms #t (cons first body)))
+    ((_ name #:within ms first body ...)
+     (deftest-expansion form name ms #f (cons first body)))
+    ((_ name #:open-ok first body ...)
+     (deftest-expansion form name #'0 #t (cons first body)))
+    ((_ name first body ...)
+     (deftest-expansion form name #'0 #f (cons first body)))
+    (bad (syntax-error bad "deftest takes a name and a body: (deftest \"name\" body ...), optionally #:within ms and #:open-ok after the name."))))
+
+;; What running one test came to: its failures, in the order they happened.
+(type (: TestResult (Record (: test Test)
+                            (: failures (List string)))))
+
+(: test-result-test (-> TestResult Test))
+(defun (test-result-test r) (record-ref r test))
+
+(: test-result-failures (-> TestResult (List string)))
+(defun (test-result-failures r) (record-ref r failures))
+
+;; Whether the deadline was what ended the scope. A fiber the test leaked is
+;; cancelled by the deadline rather than failing, so the scope closes cleanly
+;; and the test would otherwise pass, slowly.
+(: overran? (-> (Box (Option Scope)) bool))
+(defun (overran? holder)
+  (match (box-ref holder)
+    (None #f)
+    ((Some s)
+     (match (cancel-reason (scope-token s))
+       ((Some Deadline) #t)
+       (_ #f)))))
+
+;; Runs one test in a scope of its own and answers what it came to. Prints
+;; nothing.
+(: run-test (-> Test TestResult))
+(defun (run-test t)
+  (def failures (make-box (list)))
+  (def outer (box-ref current-failures))
+  (box-set! current-failures (Some failures))
+  (def holder (make-box None))
+  (def body (record-ref t body))
+  (def within (if (= (record-ref t within) 0) default-test-ms (record-ref t within)))
+  (match (try (with-deadline within
+                (box-set! holder (Some (current-scope)))
+                (body)
+                (unless (record-ref t open-ok)
+                  (let ((left (scope-owned-count (current-scope))))
+                    (unless (= left 0)
+                      (test-failed! #"  it left ${left} resource(s) open")))))
+         #:catch (System.Exception))
+    ((Ok _)
+     (when (overran? holder)
+       (test-failed! #"  it ran past its deadline of ${within} ms: something it started never finished")))
+    ((Err e) (test-failed! #"  it raised: ${(.-Message e)}")))
+  (box-set! current-failures outer)
+  (TestResult (test t) (failures (list-reverse (box-ref failures)))))
+
+;; Whether a test is chosen by the program's arguments: by a name that
+;; contains one of them, or by there being none.
+(: chosen? (-> (Vec string) Test bool))
+(defun (chosen? filters t)
+  (or (vec-empty? filters)
+      (any? (fun (f) (string-contains? (record-ref t name) f)) filters)))
+
+;; Runs the registered tests the arguments choose, prints each failure as it
+;; happens and one line at the end, and answers the exit code: 0 when every
+;; test passed, 1 otherwise.
+(: run-registered-tests (-> (Vec string) int))
+(defun (run-registered-tests filters)
+  (def started (monotonic-ms))
+  (def tests (list-filter (fun (t) (chosen? filters t)) (registered-tests)))
+  (def failed
+    (loop (:for t tests)
+          (:let result (run-test t))
+          (:let failures (record-ref result failures))
+          (:do (unless (list-empty? failures)
+                 (println #"FAIL ${(record-ref t name)} (${(shown-file (record-ref t file))}:${(record-ref t line)})")
+                 (loop (:for f failures) (:do (println f)))))
+          (:acc n (summing (if (list-empty? failures) 0 1)))))
+  (def ms (- (monotonic-ms) started))
+  (def total (list-length tests))
+  (cond
+    ((= total 0)
+     (println (if (vec-empty? filters) "There are no tests." "No test's name contains any of the names given.")))
+    ((= failed 0) (println #"${total} test(s) passed in ${ms} ms."))
+    (else (println #"${failed} of ${total} test(s) failed in ${ms} ms.")))
+  (if (= failed 0) 0 1))
+
+;; `(run-tests)` — the file's `main`: runs every test registered above it.
+(def/macro (run-tests form inject compare)
+  (syntax-match form
+    ((_)
+     ;; `main` is injected: a template's own names are renamed, and the
+     ;; program's entry point has to be the name the compiler looks for.
+     #'(begin
+         (: ,(inject 'main) (-> (Vec string) int))
+         (defun (,(inject 'main) args) (run-registered-tests args))))
+    (bad (syntax-error bad "run-tests takes nothing: (run-tests) at the end of a test file."))))

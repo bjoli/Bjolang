@@ -642,6 +642,34 @@
                                      (list-append (against-flags roots)
                                                   (list-append batch files)))))))))
   
+;; `bjo test`: builds each test file and runs it, with `filters` as its
+;; arguments, so that a test file ending in `(run-tests)` runs the tests whose
+;; names contain one of them. A test file prints its failures and one line,
+;; so this adds nothing for a single file; for several, one line at the end
+;; says how many failed. Answers 1 if any file failed to build or to pass.
+(: cmd-test #:sync (-> (List string) (List string) bool bool bool int))
+(defun (cmd-test files filters debug? force? locked?)
+  (def statuses
+    (loop (:for file files)
+          (:let status
+                (match (roots-for-file file locked?)
+                  ((Err why) (fail why))
+                  ((Ok roots)
+                   (match (ensure-built file debug? #f force? roots)
+                     ((Err status) status)
+                     ((Ok (Tuple rec _)) #:when (string-ends-with? (record-ref rec output) ".dll")
+                      (fail #"bjo test: ${file} has no main. End a test file with (run-tests)."))
+                     ((Ok (Tuple rec _))
+                      (exec "dotnet" (list->vec (Cons (record-ref rec output) filters))))))))
+          (:do (unless (= status 0) (println #"bjo test: ${file} failed.")))
+          (:acc out (listing status))))
+  (def failed (length (list-filter #(not (= & 0)) statuses)))
+  (when (> (length files) 1)
+    (println (if (= failed 0)
+                 #"bjo test: ${(length files)} files, all passed."
+                 #"bjo test: ${failed} of ${(length files)} files failed.")))
+  (if (= failed 0) 0 1))
+
 ;; The compiler's REPL edits its own lines at a terminal, with completion and
 ;; history, so it is run as it is. Under a wrapper that edits lines itself,
 ;; such as `rlwrap`, set BJOLANG_REPL_PLAIN to have it read line by line.
@@ -958,6 +986,10 @@
   (println "  bjo build [-d] [-c] [--lib] <file.bjo>  Compile one file if it needs it, and stop.")
   (println "  bjo check [<file.bjo>...]               Report errors without building anything.")
   (println "                                          With no file, every module of this project.")
+  (println "  bjo test [-d] [-c] [files...] [names...]")
+  (println "                                          Build and run test files: those named, or")
+  (println "                                          every one under tests/. A name that is not")
+  (println "                                          a file runs only the tests that contain it.")
   (println "  bjo publish [-c] [-o dir] [<file.bjo>]  Build a program for release, and copy it with")
   (println "                                          everything it loads into one directory that")
   (println "                                          runs from anywhere. Default: publish/ beside it.")
@@ -1093,6 +1125,26 @@
          :leave-with (fail "bjo check: no source file. Try 'bjo help'."))
        (def (Ok roots) (roots-for-file first locked?) :leave ((Err why) (fail why)))
        (cmd-check resolved roots)))
+
+    ;; The test files named, or every one under the project's tests/. An
+    ;; argument that is not a file is a filter on test names.
+    ("test"
+     (with-return ret
+       (when lib? (ret (fail "bjo test: a test file is a program, so it takes no --lib.")))
+       (def named (list-filter #(some? (resolve-source &)) rest))
+       (def filters (list-filter #(none? (resolve-source &)) rest))
+       (def found
+         (if (empty? named)
+             (match (project-here "test")
+               ((Err why) (Err why))
+               ((Ok project) (Ok (sources-under (path-combine (project-dir project) "tests")))))
+             (Ok (loop (:for name named)
+                       (:when-let (Some file) (resolve-source name))
+                       (:acc out (listing file))))))
+       (def (Ok files) found :leave ((Err why) (fail why)))
+       (when (empty? files)
+         (ret (fail "bjo test: there are no test files. Put them under tests/, or name them.")))
+       (cmd-test files filters debug? force? locked?)))
 
     ;; A release build of a program, and a copy of everything it loads in one
     ;; directory that can be moved anywhere. See `publish.bjo`.

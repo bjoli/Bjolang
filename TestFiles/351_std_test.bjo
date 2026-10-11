@@ -1,0 +1,81 @@
+;; `(std test)`: what a test comes to, run one at a time with `run-test`,
+;; which prints nothing. Some of these tests fail on purpose; `main` checks
+;; what each one reported, so the file itself passes.
+
+(import (std prelude))
+(import (std test))
+(import (std simpletest))
+(import (std effect))
+
+(: wait-forever (-bjo-> void))
+(defbjo (wait-forever)
+  (ignore (sync (chan-recv (make-chan)))))
+
+(: parse (-> string (Result string int)))
+(defun (parse s)
+  (if (string-starts-with? s "x") (Err "not a number") (Ok (string->int s))))
+
+(deftest "passes"
+  (check (= (parse "12") (Ok 12)))
+  (check-match (parse "x") (Err _))
+  (check-raises System.InvalidOperationException (list-head (list)))
+  (check (string-starts-with? "abc" "a")))
+
+(deftest "a comparison fails"
+  (check (= (parse "x") (Ok 3)))
+  (check (< (+ 1 2) 2)))
+
+(deftest "a predicate fails"
+  (check (string-starts-with? "abc" "x")))
+
+(deftest "a match fails"
+  (check-match (parse "7") (Err _)))
+
+(deftest "nothing raises"
+  (check-raises System.InvalidOperationException (+ 1 2)))
+
+(deftest "it raises"
+  (ignore (list-head (list))))
+
+(deftest "it leaks a fiber" #:within 100
+  (spawn (wait-forever)))
+
+(deftest "it leaves a file open"
+  (with-fake-fs (("a.txt" "x"))
+    (ignore (open-input-file "a.txt"))))
+
+(deftest "it may leave a file open" #:open-ok
+  (with-fake-fs (("a.txt" "x"))
+    (ignore (open-input-file "a.txt"))))
+
+(: failures-of (-> string (List string)))
+(defun (failures-of name)
+  (match (list-filter (fun (t) (= (test-name t) name)) (registered-tests))
+    ((Cons t _) (test-result-failures (run-test t)))
+    (Nil (list "no such test"))))
+
+(: reported? (-> string string bool))
+(defun (reported? name text)
+  (any? (fun (f) (string-contains? f text)) (failures-of name)))
+
+(defun (main args)
+  (expect "the tests are registered in source order"
+          (list-map test-name (registered-tests))
+          (list "passes" "a comparison fails" "a predicate fails" "a match fails"
+                "nothing raises" "it raises" "it leaks a fiber" "it leaves a file open"
+                "it may leave a file open"))
+  (expect "a passing test has no failures" (failures-of "passes") (list))
+  (expect "a failed check does not stop the test" (list-length (failures-of "a comparison fails")) 2)
+  (expect-true "a comparison shows its operands"
+               (reported? "a comparison fails" "(parse \"x\") => (Err not a number)"))
+  (expect-true "and the line of the check"
+               (reported? "a comparison fails" "351_std_test.bjo:25: (check (= (parse \"x\") (Ok 3)))"))
+  (expect-true "a predicate says it was #f"
+               (reported? "a predicate fails" "(string-starts-with? \"abc\" \"x\") => #f"))
+  (expect-true "a match shows the value" (reported? "a match fails" "(parse \"7\") => (Ok 7)"))
+  (expect-true "check-raises says what it answered" (reported? "nothing raises" "answered 3 and raised nothing"))
+  (expect-true "an exception fails the test" (reported? "it raises" "it raised:"))
+  (expect-true "a leaked fiber runs past the deadline" (reported? "it leaks a fiber" "ran past its deadline of 100 ms"))
+  (expect-true "a file left open fails" (reported? "it leaves a file open" "left 1 resource(s) open"))
+  (expect "unless #:open-ok" (failures-of "it may leave a file open") (list))
+  0)

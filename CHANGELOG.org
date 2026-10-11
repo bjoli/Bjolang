@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std test)~ and ~bjo test~: tests that are silent unless they fail
+
+- ~(deftest "name" body ...)~ registers a test where it is written, and
+  ~(run-tests)~ at the end of the file is its ~main~: it runs every test above
+  it in source order. Registration is a top-level ~def~ the macro writes, so
+  the compiler knows nothing about tests.
+- A test that passes prints nothing. One that fails prints its name and
+  place, then every check in it that failed, with the values the check saw.
+  The run ends with one line, and exits 1 if anything failed.
+- ~(check (= a b))~ shows both operands on failure, as do ~<~, ~>~, ~<=~ and
+  ~>=~; any other expression is reported as having been ~#f~.
+  ~(check-match expr pattern)~ shows the value that did not match, and
+  ~(check-raises Type expr)~ what was answered instead. A failed check does not
+  stop the test.
+- Each test runs in a scope of its own, as ~with-test~ does: a deadline
+  (~#:within ms~, 5 s by default), waiting for its fibers, and failing if it
+  left a resource open unless ~#:open-ok~. A test that raises fails with the
+  message, and the tests after it still run.
+- ~bjo test~ builds and runs the test files named, or every one under the
+  project's ~tests/~. A name that is not a file runs only the tests whose
+  names contain it.
+- Still open: values are shown with ~->str~, so a string is not in quotes.
+  ~(std simpletest)~ is unchanged; it is to become a wrapper over this.
+
 * Nested .NET types are their own types
 
 - *A generic nested type was typed as its outer type.* ~(.-Keys d)~ on a
