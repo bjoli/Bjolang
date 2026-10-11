@@ -1000,6 +1000,8 @@ and private parseHeaded (s: SExpr) (r: Range) (head: SExpr) (sym: string) (args:
                             | SAtom { Token = Comma } -> None
                             | _ -> failwith "Expected arg name")
 
+                    refuseRepeatedNames "parameter list" argNames listRange
+
                     let body =
                         withLocals
                             (argNames |> List.map (fun n -> n, listRange))
@@ -1576,6 +1578,11 @@ and private parseHeaded (s: SExpr) (r: Range) (head: SExpr) (sym: string) (args:
 // reader everything else is.
 
 and parsePattern (s: SExpr) : Pattern =
+    let p = parsePatternShape s
+    refuseRepeatedNames "pattern" (patternBinderSites p) (getRange s)
+    p
+
+and private parsePatternShape (s: SExpr) : Pattern =
     let r = getRange s
 
     // The third renaming rule, applied to a pattern's head.
@@ -1786,6 +1793,17 @@ and parseSpreadArgs (r: Range) (args: SExpr list) : Pattern list * Pattern optio
 
 /// The argument list of a `defun`, top-level or body-local.
 and parseDefunArgs (args: SExpr list) : DefunArg list =
+    let parsed = parseDefunArgList args
+
+    match args with
+    | first :: _ -> refuseRepeatedNames "parameter list" (allArgNames parsed) (getRange first)
+    | [] -> ()
+
+    parsed
+
+and private parseDefunArgList (args: SExpr list) : DefunArg list =
+    let parseDefunArgs = parseDefunArgList
+
     match args with
     | [] -> []
     | SAtom { Token = Symbol n } :: rest -> MandatoryArg(n, None) :: parseDefunArgs rest
@@ -2105,6 +2123,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
                 | "Tuple" :: restNames -> restNames
                 | _ -> rawNames
 
+            refuseRepeatedNames "pattern" tupleNames r
             let value = parseExpr expr
             ELetTuple(tupleNames, value, withLocals (tupleNames |> List.map (fun n -> n, r)) (fun () -> parseItems rest), r)
         // `defbjo` is listed so that it reaches `collectDefs`, which rejects it

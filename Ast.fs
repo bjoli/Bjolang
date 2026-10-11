@@ -853,6 +853,32 @@ let rec patternBinders (pat: Pattern) : string list =
     // binds nothing.
     | PView(_, inner, _) -> patternBinders inner
 
+/// The names a pattern binds, once for each place that binds it. An `or`
+/// pattern counts a name once, because only one of its alternatives matches.
+let rec patternBinderSites (p: Pattern) : string list =
+    match p with
+    | POr(alts, _) -> alts |> List.collect patternBinderSites |> List.distinct
+    | PList(items, tailOpt, _)
+    | PVec(items, tailOpt, _)
+    | PArray(items, tailOpt, _) ->
+        (items |> List.collect patternBinderSites)
+        @ (tailOpt |> Option.map patternBinderSites |> Option.defaultValue [])
+    | PTuple(items, _)
+    | PConstruct(_, items, _)
+    | PAnd(items, _) -> items |> List.collect patternBinderSites
+    | PView(_, inner, _) -> patternBinderSites inner
+    | other -> patternBinders other
+
+/// Refuses a parameter list or a pattern that binds one name twice. The second
+/// binding would silently take the first one's place, or reach C# as two
+/// locals of the same name.
+let refuseRepeatedNames (what: string) (names: string list) (at: Range) =
+    match names |> List.filter ((<>) "_") |> List.countBy id |> List.filter (fun (_, n) -> n > 1) with
+    | [] -> ()
+    | (name, _) :: _ ->
+        failwithf
+            $"Syntax error at %s{Lexer.formatPos at}: '%s{name}' is bound twice in this %s{what}. Each name may be bound once; give the second another name."
+
 /// Every view step a pattern holds, outermost first.
 ///
 /// The one place a pattern holds an expression, and the reason every traversal

@@ -406,6 +406,7 @@ and private bindLoopPattern (pat: SExpr) (value: Expr) (body: Expr) (r: Range) :
                 | SAtom { Token = Symbol n } -> Some n
                 | _ -> None)
 
+        refuseRepeatedNames "pattern" names pr
         ELetTuple(names, value, body, pr)
 
     | _ ->

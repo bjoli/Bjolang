@@ -1,0 +1,16 @@
+(import (std prelude))
+(import (std simpletest))
+
+;; Wildcards may repeat, an `or` pattern's alternatives may bind nothing, and a
+;; literal that does fit in an int is one. See errors/repeated_*.bjo for what
+;; is refused.
+
+(defun (main args)
+  (def two-wildcards (fun (_ _) 7))
+  (expect "a lambda with two wildcards" (two-wildcards 1 2) 7)
+  (expect "a pattern with two wildcards" (match (Tuple 1 2 3) ((Tuple _ b _) b)) 2)
+  (expect "an or pattern" (match (Some 1) ((or (Some 1) None) 0) ((Some x) x)) 0)
+  (expect "the smallest int" (->str -2147483648) "-2147483648")
+  (def (: big long) 9999999999)
+  (expect "a literal of a type that holds it" (->str (+ big 1)) "10000000000")
+  0)

@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* A name bound twice, and an int literal that does not fit, are errors
+
+- *A parameter list or a pattern could bind one name twice.* ~(fun (x x) x)~
+  silently used the second argument, and ~(Tuple a a)~ in a ~match~, a
+  ~defun~'s parameters or ~(f x #:x 1)~ reached C# as two locals of one name.
+  Each is now refused where it is written: "'x' is bound twice in this
+  parameter list". The same holds for a ~def~'s and a ~loop~ clause's
+  ~(Tuple ...)~. ~_~ may repeat, and an ~or~ pattern's alternatives count once.
+- *A literal that nothing gave a type was made an ~int~ without a check.*
+  ~(->str 9999999999)~ and ~(def big 3000000000)~ reached C# as a ~long~ or
+  ~uint~ literal where an ~int~ was wanted. They are now "'9999999999' does
+  not fit in a 'int'". Write the type, ~(def (: big long) 9999999999)~, to
+  have a wider one.
+
 * Three programs the type checker accepted and C# refused are type errors
 
 - *An implementation with fixed type arguments was used at other ones.*

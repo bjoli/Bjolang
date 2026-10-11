@@ -345,8 +345,11 @@ let private defaultNumericLiterals (env: Env) : unit =
     for (t, text, r) in openLiterals do
         match prune env.Registry t with
         // Nothing said what it is, so it is an `int` — which is what a literal
-        // written without a suffix has always been.
-        | TMeta m -> m.Value <- Some TypeConstants.intType
+        // written without a suffix has always been. It has to fit there too,
+        // or C# refuses the literal in the generated code.
+        | TMeta m ->
+            m.Value <- Some TypeConstants.intType
+            checkLiteralFits TypeConstants.intType text r |> ignore
         // A type variable. The literal is emitted through the implementor's own
         // `CreateChecked`, and the `Num` that `collectTraitConstraints` reads
         // off it is what makes that legal.
