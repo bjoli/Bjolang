@@ -47,8 +47,15 @@ open Bjolang.TypedAST
 /// Why it is safe: the consumer pulls the producer exactly once and in order,
 /// and the producer runs its clauses only when pulled, so the interleaving of
 /// effects is the same fused or not: producer up to a yield, consumer for that
-/// element, producer's continuation. Disposal gets simpler, not harder: there
-/// is no enumerator left to abandon.
+/// element, producer's continuation.
+///
+/// A consumer that stops early ends its cursor with `iterable-end`, so that a
+/// walk holding a file closes it. Fused, the consumer's cursor is gone and the
+/// walk to stop is the producer's. `LoopDesugar` puts a `loopends` function
+/// around each member that yields, which ends the cursors live there, and the
+/// consumer's `iterable-end` becomes a call to the one around the site. A site
+/// without one does not fuse. Last, `inlineEnds` puts each one's body where it
+/// is called and removes it.
 ///
 /// Why slots become cells: the consumer's level function carries its `:with`s
 /// and accumulators as parameters and advances by tail call, but its body now
@@ -159,6 +166,27 @@ let private isCallTo (name: string) (e: TypedExpr) =
 
 let private size (expr: TypedExpr) : int = TypeVisitor.foldExpr (fun n _ -> n + 1) 0 expr
 
+/// `(seq-cursor-end cursor)`: what the Seq impl's `iterable-end` is once
+/// spliced. A consumer's cursor walks a seq literal, so this is the only form
+/// in which a consumer ends it.
+let private isEndOf (cursor: string) (e: TypedExpr) =
+    match e.Node with
+    | TApply({ Node = TIdent("seq-cursor-end", _) }, [ { Node = TIdent(c, _) } ], []) -> c = cursor
+    | _ -> false
+
+/// `(let ((loopends (fun () ...))) body)`: `LoopDesugar` puts one around each
+/// loop member that yields. Its body ends every cursor live in the member.
+/// `LetRecify` has made it a one-binding `letrec` by the time this runs.
+///
+/// The last part rebuilds the binding around a new body.
+let private (|EndsMarker|_|) (e: TypedExpr) =
+    match e.Node with
+    | TLet(n, true, lf, v, body) when baseIs "loopends" n ->
+        Some(n, v, body, (fun (b: TypedExpr) -> { e with Type = b.Type; Node = TLet(n, true, lf, v, b) }))
+    | TLetRec([ (n, true, _, v) as binding ], body) when baseIs "loopends" n ->
+        Some(n, v, body, (fun (b: TypedExpr) -> { e with Type = b.Type; Node = TLetRec([ binding ], b) }))
+    | _ -> None
+
 /// The `yield`s that belong to a seq body: not those of a nested `seq`, whose
 /// elements are its own, and not anything inside a `bjo`, which is a spawned
 /// scope. Every other sub-expression is looked into, including the lambdas of a
@@ -251,6 +279,9 @@ type private Consumer =
       ExitName: string
       /// The call to it at exhaustion, on the slot names. Reused verbatim
       /// where a `:with`'s `end` holds, since the reads bind those names.
+      /// Without the `iterable-end` that a level of several drivers puts in
+      /// front of it: fused, a test that holds ends the producer's cursors
+      /// instead.
       ExitCall: TypedExpr
       /// The level's other end tests written before its `:for`, as one
       /// `or`-chain, or `None`. Unfused they run before the cursor's `done?`
@@ -311,10 +342,26 @@ let private recognize
                         peelWiths inner (fun x -> wrap { e with Type = x.Type; Node = TLetTuple(names, v, x) })
                     | _ -> e, wrap
 
+                // A consumer that is itself a `seql` has a `loopends` around
+                // that. It ends this consumer's cursor, which fusion removes,
+                // so it is dropped: once fused, the yields of this consumer
+                // are inside the producer's member, under the producer's.
+                let memberBody =
+                    match memberBody with
+                    | EndsMarker(_, _, inner, _) -> inner
+                    | _ -> memberBody
+
                 let core, wrapWiths = peelWiths memberBody id
 
+                // The level's `iterable-end` in front of the exhaustion exit.
+                let rec peelEnds (e: TypedExpr) =
+                    match e.Node with
+                    | TLet("_", false, _, v, inner) when isEndOf cur v -> peelEnds inner
+                    | _ -> e
+
                 match core.Node with
-                | TIf(exhausted, exitCall, elemBind) when isCallTo exitName exitCall ->
+                | TIf(exhausted, exitBranch, elemBind) when isCallTo exitName (peelEnds exitBranch) ->
+                    let exitCall = peelEnds exitBranch
                     // `exhausted` is `anyOf` over the level's tests in clause
                     // order: `(if t1 #t (if t2 #t t3))`. The one that mentions
                     // the cursor is `done?`; the rest are `:with` `end`s.
@@ -579,20 +626,50 @@ let private fuse (c: Consumer) (producerBody: TypedExpr) : TypedExpr option =
 
     // The pre-tests on the slots' current values, ahead of `resume`, which
     // pulls the next element. A test that holds ends the loop there, before
-    // the producer has produced anything more.
-    let beforePulling (resume: TypedExpr) : TypedExpr =
+    // the producer has produced anything more, by `exit`.
+    let beforePulling (exit: TypedExpr) (resume: TypedExpr) : TypedExpr =
         match c.PreTests with
         | None -> resume
-        | Some t -> readSlots (c.WrapWiths(at r resume.Type (TIf(t, c.ExitCall, resume))))
+        | Some t -> readSlots (c.WrapWiths(at r resume.Type (TIf(t, exit, resume))))
 
-    let perSite (x: TypedExpr) (rest: TypedExpr) : TypedExpr =
+    // Where the consumer stops early, it ended its cursor. Fused, that cursor
+    // is gone, and the walk to stop is the producer's: at a yield site, the
+    // call to the `loopends` around the site ends the producer's live
+    // cursors. A site with none cannot stop the producer, so it does not
+    // fuse.
+    let missingEnds = ref false
+    let needsEnds = c.PreTests.IsSome || c.PostTests.IsSome || mentions c.Cursor k1
+
+    let rec endsToCall (call: TypedExpr) (e: TypedExpr) : TypedExpr =
+        if isEndOf c.Cursor e then call else TypeVisitor.mapChildren (endsToCall call) e
+
+    let perSite (ends: (string * TypedExpr) option) (x: TypedExpr) (rest: TypedExpr) : TypedExpr =
+        let call =
+            match ends with
+            | Some(name, fn) when needsEnds ->
+                let ret =
+                    match fn.Type with
+                    | TFun(_, ret, _) -> ret
+                    | _ -> unitT
+
+                Some(at r ret (TApply(at r fn.Type (TIdent(name, [])), [], [])))
+            | Some _ -> None
+            | None ->
+                if needsEnds then missingEnds.Value <- true
+                None
+
+        let exitEnding, body =
+            match call with
+            | Some call -> at r c.ExitCall.Type (TLet("_", false, noParams, call, c.ExitCall)), endsToCall call k1
+            | None -> c.ExitCall, k1
+
         let rec asStores (e: TypedExpr) : TypedExpr =
             match e.Node with
             | TApply({ Node = TIdent(n, _) }, _ :: slotArgs, []) when n = c.Level && slotArgs.Length = cells.Length ->
-                stores r cells (slotArgs |> List.map asStores) (beforePulling rest)
+                stores r cells (slotArgs |> List.map asStores) (beforePulling exitEnding rest)
             | _ -> TypeVisitor.mapChildren asStores e
 
-        let iteration = asStores k1 |> retype
+        let iteration = asStores body |> retype
 
         let tested =
             match c.PostTests with
@@ -602,43 +679,49 @@ let private fuse (c: Consumer) (producerBody: TypedExpr) : TypedExpr option =
                 let heldRef = at x.Range x.Type (TIdent(held, []))
 
                 at r iteration.Type (
-                    TLet(held, false, noParams, x, at r iteration.Type (TIf(t, c.ExitCall, rebindElem heldRef iteration)))
+                    TLet(held, false, noParams, x, at r iteration.Type (TIf(t, exitEnding, rebindElem heldRef iteration)))
                 )
 
         AlphaRename.freshenTyped [] (readSlots (c.WrapWiths tested)) |> fst
 
     // 5. Yields replaced, innermost first, so that a continuation holding a
-    //    later yield is spliced already rewritten.
-    let rec replaceYields (e: TypedExpr) : TypedExpr =
-        match e.Node with
-        | TSeq _
-        | THoist _
-        | TBjo _ -> e
+    //    later yield is spliced already rewritten. `ends` is the innermost
+    //    `loopends` around the expression.
+    let rec replaceYields (ends: (string * TypedExpr) option) (e: TypedExpr) : TypedExpr =
+        match e with
+        | { Node = TSeq _ }
+        | { Node = THoist _ }
+        | { Node = TBjo _ } -> e
+        | EndsMarker(name, fn, body, rebuild) -> rebuild (replaceYields (Some(name, fn)) body)
         | _ ->
-            let e = TypeVisitor.mapChildren replaceYields e
+            let e = TypeVisitor.mapChildren (replaceYields ends) e
 
             match e.Node with
-            | TLet("_", false, _, { Node = TYield x }, rest) -> perSite x rest
+            | TLet("_", false, _, { Node = TYield x }, rest) -> perSite ends x rest
             | _ -> e
 
-    let fusedGroup = replaceYields group'
+    let fusedGroup = replaceYields None group'
 
     // Nothing of the cursor protocol may survive. After the Seq impl's methods
     // were spliced there is nothing left to survive; if they were not — a
     // landing pad — a reference here would be to a name that no longer exists,
     // and the loop is left alone rather than miscompiled.
-    if mentions c.Cursor fusedGroup || mentions c.SeqName fusedGroup || mentions c.Level fusedGroup then
+    if missingEnds.Value
+       || mentions c.Cursor fusedGroup
+       || mentions c.SeqName fusedGroup
+       || mentions c.Level fusedGroup then
         None
     else
 
     // 6. Assemble: cells, then the producer's prologue around its rewritten
     //    group. The consumer's finish member stays where it is, outside. The
     //    pre-tests run on the start values before the prologue, which is the
-    //    first element's pull.
+    //    first element's pull: the producer has no cursor yet, so there is
+    //    nothing to end.
     let producer' =
         match c.PreTests with
         | None -> p.Rebuild fusedGroup
-        | Some _ -> AlphaRename.freshenTyped [] (beforePulling (p.Rebuild fusedGroup)) |> fst
+        | Some _ -> AlphaRename.freshenTyped [] (beforePulling c.ExitCall (p.Rebuild fusedGroup)) |> fst
 
     Some(
         List.foldBack
@@ -742,6 +825,25 @@ let rec private fuseExpr (expr: TypedExpr) : TypedExpr =
     | Some fused -> fused
     | None -> expr
 
+/// Removes every `loopends`, putting its body where it is called. They are
+/// only for `fuse`, and left in place each would be a local function in the
+/// output.
+let rec private inlineEnds (expr: TypedExpr) : TypedExpr =
+    let expr = TypeVisitor.mapChildren inlineEnds expr
+
+    match expr with
+    | EndsMarker(name, fn, body, _) ->
+        match fn.Node with
+        | TLambda([], ends) ->
+            let rec put (e: TypedExpr) =
+                match e.Node with
+                | TApply({ Node = TIdent(n, _) }, [], []) when n = name -> ends
+                | _ -> TypeVisitor.mapChildren put e
+
+            put body
+        | _ -> failwith "internal error: a loopends binding that is not a function of no arguments"
+    | _ -> expr
+
 // ---------------------------------------------------------------------------
 // The pass
 // ---------------------------------------------------------------------------
@@ -749,7 +851,7 @@ let rec private fuseExpr (expr: TypedExpr) : TypedExpr =
 /// Fuses every loop over a seq literal in the program.
 let run (decls: TDecl list) : TDecl list =
     if not (isNull (System.Environment.GetEnvironmentVariable "BJOLANG_NO_FUSION")) then
-        decls
+        decls |> List.map (TypeVisitor.mapDecl inlineEnds)
     else
         fusedCount.Value <- 0
 
@@ -757,6 +859,7 @@ let run (decls: TDecl list) : TDecl list =
             decls
             |> List.map (TypeVisitor.mapDecl propagate)
             |> List.map (TypeVisitor.mapDecl fuseExpr)
+            |> List.map (TypeVisitor.mapDecl inlineEnds)
 
         if fusedCount.Value > 0 then
             Diagnostics.progress $"seq fusion: %d{fusedCount.Value} loop(s) fused"

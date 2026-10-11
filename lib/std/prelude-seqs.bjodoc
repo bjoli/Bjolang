@@ -50,6 +50,24 @@
     advances the position.
     """))
 
+(:doc iterable-end
+  (summary "Ends a traversal that stops before iterable-done? returned #t.")
+  (arg s "The iterable collection or sequence.")
+  (arg c "The cursor.")
+  (see iterable-start iterable-done?)
+  (reference """
+    A @code{loop} calls it on each cursor that it stops early: at a
+    @code{:finish}, at an @code{:abandon}, or when another driver of the same
+    level ends first. So @code{find} and @code{any?} over
+    @code{file-read-lines/seq} close the file when they stop. It may also be
+    called after @code{iterable-done?} returned @code{#t}, and must then do
+    nothing.
+
+    The default does nothing. Implement it for a cursor that holds a resource
+    for the traversal. A traversal that an exception leaves, and a lazy
+    @code{seql} whose consumer stops early, do not call it.
+    """))
+
 (:doc Iterable
   (summary "Trait for sequentially iterable collections, used by (:for x s) loops.")
   (tparam %s "The iterable collection or sequence type.")
@@ -66,7 +84,8 @@
     methods: @code{iterable-start}, @code{iterable-done?},
     @code{iterable-current}, and @code{iterable-next}.
 
-    Default implementations are provided for @code{fold}, @code{map},
+    Default implementations are provided for @code{iterable-end},
+    @code{fold}, @code{map},
     @code{filter}, @code{take}, @code{drop}, @code{take-while},
     @code{drop-while}, @code{enumerate}, @code{flat-map}, @code{any?},
     @code{all?}, @code{find}, @code{for-each}, and @code{->seq}. Methods
@@ -707,3 +726,14 @@
   (arg c "The cursor, after seq-cursor-done? returned #f.")
   (returns "The element.")
   (see seq-cursor-done?))
+
+(:doc seq-cursor-end
+  (summary "Ends a traversal before the sequence is exhausted.")
+  (arg c "The cursor.")
+  (see seq-cursor seq-cursor-done?)
+  (reference """
+    Disposes the underlying enumerator, which closes a file or stream that the
+    sequence opened for this traversal. A loop calls it, through
+    @code{iterable-end}, when it stops before the end. After the first call,
+    and after @code{seq-cursor-done?} returned @code{#t}, it does nothing.
+    """))

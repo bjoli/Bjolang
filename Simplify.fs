@@ -106,6 +106,8 @@ let rec private isPure (ctx: Ctx) (expr: TypedExpr) : bool =
     || (match expr.Node with
         | TIdent _ -> true
         | TTupleMake items -> List.forall (isPure ctx) items
+        // The empty `void`, which a no-op `iterable-end` is once spliced.
+        | TWhen({ Node = TBool false }, _, _) -> true
         | _ ->
             match asCase ctx expr with
             | Some(_, args) -> List.forall (isPure ctx) args
@@ -191,6 +193,10 @@ let rec private simplify (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
     let expr = TypeVisitor.mapChildren (simplify ctx) expr
 
     match expr.Node with
+    // A statement with no effect. `_` is never read, so a `_` bound again
+    // inside `body` does not matter, as it does for the case below.
+    | TLet("_", false, fn, value, body) when fn = noParams && isPure ctx value -> body
+
     | TLet(name, false, fn, value, body) when fn = noParams && not (rebinds name body) ->
         match asCase ctx value with
         | Some(k, args) ->

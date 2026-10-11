@@ -628,6 +628,11 @@
   (: iterable-done? (-> %s %cursor bool))
   (: iterable-current (-> %s %cursor %elem))
   (: iterable-next (-> %s %cursor %cursor))
+  ;; A loop calls this on each cursor it stops before `done?` answered true:
+  ;; at a `:finish`, an `:abandon`, or when another driver of the level ended
+  ;; first. It may also come after `done?` answered true, and must then do
+  ;; nothing. A cursor that holds a resource for the walk releases it here.
+  (: iterable-end (-> %s %cursor void))
   (: ->seq  (-> %s (Seq %elem)))
   (: fold (-> (-> %elem %acc %acc) %acc %s %acc))
   (: map    (-> (-> %elem %b) %s (Seq %b)))
@@ -646,6 +651,8 @@
   (: find (-> (-?-> %elem bool) %s (Option %elem)))
   (: for-each (-> (-?-> %elem void) %s void))
 
+  ;; Most cursors hold nothing that needs release.
+  (defun (iterable-end s c) (when #f ()))
   (defun (->seq s)
     (seql (:for e s)
           (:yield e)))
@@ -730,6 +737,9 @@
   (defun (iterable-done? s c) (seq-cursor-done? c))
   (defun (iterable-current s c) (seq-cursor-current c))
   (defun (iterable-next s c) c)
+  ;; Disposes the enumerator, which closes a file the sequence opened for
+  ;; this walk.
+  (defun (iterable-end s c) (seq-cursor-end c))
 
   (defun (->seq s) s))
 
@@ -2241,8 +2251,10 @@
     ((Err e) (raise e))))
  
 ;; The items `reader` reads, pulled lazily. The file is opened inside the `seq`,
-;; so every walk opens it afresh and reads from t he start, and closed when the
-;; walk ends - at the end of the file, or when the walker stops early. A missing
+;; so every walk opens it afresh and reads from the start, and closed when the
+;; walk ends - at the end of the file, or when a loop walking it stops early,
+;; through `iterable-end`. When the consumer of a `seql` over it stops early,
+;; the file stays open until the collector closes it. A missing
 ;; file raises on the first pull; `(std ports)`' `file->seq` reports it at the
 ;; call instead.
 (: file-read/seq #:sync (-> (-> InputPort %a) string (Seq %a)))

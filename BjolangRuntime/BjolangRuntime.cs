@@ -871,10 +871,13 @@ public static partial class BjolangRuntime {
     /// `Done` therefore disposes as soon as the walk is exhausted, which is
     /// what `foreach` does at the same point.
     ///
-    /// A walk abandoned part-way — a `:finish` — does not reach that, and the
-    /// handle waits for the collector. Closing that would need the `Iterable`
-    /// protocol to have a notion of a walk being over, which today it has not:
-    /// there is no hook between the last `done?` and leaving the loop.
+    /// A loop that stops a walk part-way — a `:finish`, a `find` that found —
+    /// does not reach that point. It calls `iterable-end`, which is `End`, and
+    /// `End` disposes there. Both may run on one cursor, so each does nothing
+    /// after the first.
+    ///
+    /// A walk a loop does not stop is still left to the collector: a `seql`
+    /// whose consumer stops early, and a walk that an exception leaves.
     /// </summary>
     public sealed class SeqCursor<T> {
         /// Null once exhausted, which is what makes a second `Done` after the
@@ -895,6 +898,16 @@ public static partial class BjolangRuntime {
         /// Only ever reached after a `Done` that answered false. The `Iterable`
         /// protocol calls `done?` once per iteration, before `current`.
         public T Current => _e!.Current;
+
+        /// Ends the walk before it is exhausted: disposes the enumerator, which
+        /// closes what the sequence opened for this walk.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void End() {
+            var e = _e;
+            if (e is null) return;
+            _e = null;
+            e.Dispose();
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -905,6 +918,12 @@ public static partial class BjolangRuntime {
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T seqsubcursorsubcurrent<T>(SeqCursor<T> cursor) => cursor.Current;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Unit seqsubcursorsubend<T>(SeqCursor<T> cursor) {
+        cursor.End();
+        return default;
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T[] makesubarray<T>(int length) => new T[length];

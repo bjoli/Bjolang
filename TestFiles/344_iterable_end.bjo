@@ -1,0 +1,112 @@
+(import (std prelude))
+(import (std simpletest))
+
+;; A loop that stops a walk before `done?` answered true calls `iterable-end`
+;; on its cursor, so that a walk holding a resource, as `file-read-lines/seq`
+;; holds the file, releases it. A walk that runs to its end gets no call.
+
+;; Counts its `iterable-end` calls in a one-element array, which a struct can
+;; hold by reference.
+(type (: Probe (Struct (: limit int) (: ends (Array int)))))
+
+(: probe (-> int Probe))
+(defun (probe limit)
+  (def t (make-array 1))
+  (array-set! t 0 0)
+  (Probe (limit limit) (ends t)))
+
+(: ends (-> Probe int))
+(defun (ends p) (array-ref (record-ref p ends) 0))
+
+(impl (Iterable Probe)
+  (type %elem int)
+  (type %cursor int)
+  (defun (iterable-start s) 0)
+  (defun (iterable-done? s c) (>= c (record-ref s limit)))
+  (defun (iterable-current s c) c)
+  (defun (iterable-next s c) (+ c 1))
+  (defun (iterable-end s c)
+    (def t (record-ref s ends))
+    (array-set! t 0 (+ 1 (array-ref t 0)))))
+
+;; The number of `iterable-end` calls that `walk` makes on a fresh probe of
+;; ten elements.
+(: ends-of (-> (-> Probe void) int))
+(defun (ends-of walk)
+  (def p (probe 10))
+  (walk p)
+  (ends p))
+
+(: open-fds (-> int))
+(defun (open-fds)
+  (vec-length (directory-files "/proc/self/fd")))
+
+(defun (main args)
+  (expect "a walk to the end" (ends-of (fun (p) (loop (:for x p)))) 0)
+  (expect ":finish" (ends-of (fun (p) (loop (:for x p) (:finish (= x 3))))) 1)
+  (expect ":finish with a value"
+          (ends-of (fun (p) (ignore (loop (:for x p) (:finish (= x 3) 7) => 0))))
+          1)
+  (expect "find" (ends-of (fun (p) (ignore (find (fun (x) (= x 3)) p)))) 1)
+  (expect "find that finds nothing" (ends-of (fun (p) (ignore (find (fun (x) (= x 30)) p)))) 0)
+  (expect "any?" (ends-of (fun (p) (ignore (any? (fun (x) (= x 3)) p)))) 1)
+  (expect "all?" (ends-of (fun (p) (ignore (all? (fun (x) (< x 3)) p)))) 1)
+  (expect "for-each" (ends-of (fun (p) (for-each (fun (x) (ignore x)) p))) 0)
+  (expect "another driver ends first"
+          (ends-of (fun (p) (loop (:for i (range 0 2)) (:for x p))))
+          1)
+  ;; The probe's own `done?` ended the level. Which driver it was is not known
+  ;; at the exit, so the probe gets the call it must ignore.
+  (expect "the probe ends first, in lockstep"
+          (ends-of (fun (p) (loop (:for i (range 0 20)) (:for x p))))
+          1)
+  (expect "a :with end" (ends-of (fun (p) (loop (:with i 0 (+ i 1) (>= i 2)) (:for x p)))) 1)
+  (expect ":abandon of an inner level"
+          (ends-of (fun (p) (loop (:for i (list 1 2)) (:subloop) (:for x p) (:abandon (= x 3)))))
+          2)
+  (expect ":final" (ends-of (fun (p) (loop (:for x p) (:final (= x 3))))) 1)
+  (expect ":finish-let"
+          (ends-of (fun (p) (loop (:for x p) (:finish-let (Some y) (if (= x 3) None (Some x))))))
+          1)
+  (expect "a named loop that does not continue"
+          (ends-of (fun (p) (loop lp (:for x p) (:do (if (< x 3) (lp) (ignore x))))))
+          1)
+  (expect "take" (ends-of (fun (p) (ignore (seq-length (take 2 p))))) 1)
+  ;; `find` over `map` over `->seq` fuses to one loop over the probe, so the
+  ;; probe's cursor is the one that `find` stops.
+  (expect "find over a fused chain"
+          (ends-of (fun (p) (ignore (find (fun (x) (= x 6)) (map (fun (x) (* x 2)) (->seq p))))))
+          1)
+
+  ;; Stopping inside a level ends that level's cursor and every enclosing one.
+  (def outer (probe 10))
+  (def inner (probe 10))
+  (loop (:for a outer) (:subloop) (:for b inner) (:finish (= b 2)))
+  (expect ":finish from an inner level" (Tuple (ends outer) (ends inner)) (Tuple 1 1))
+
+  (def outer2 (probe 3))
+  (def inner2 (probe 10))
+  (loop (:for a outer2) (:subloop (:for b inner2) (:finish (= b 2))))
+  (expect ":finish from a :subloop form" (Tuple (ends outer2) (ends inner2)) (Tuple 1 1))
+
+  (def outer3 (probe 3))
+  (def inner3 (probe 10))
+  (loop (:for a outer3) (:subloop (:for b inner3) (:finish-subloop (= b 2))))
+  (expect ":finish-subloop ends only the form's walk" (Tuple (ends outer3) (ends inner3)) (Tuple 0 3))
+
+  (def outer4 (probe 3))
+  (def inner4 (probe 10))
+  (loop (:for a outer4) (:subloop (:for b inner4) (:abandon-subloop (= b 2))))
+  (expect ":abandon-subloop ends only the form's walk" (Tuple (ends outer4) (ends inner4)) (Tuple 0 3))
+
+  ;; The file `file-read-lines/seq` opens is closed when `find` stops. Only
+  ;; where the open descriptors can be counted.
+  (when (directory-exists? "/proc/self/fd")
+    (def path "344-scratch-lines.txt")
+    (file-write-text path "1\n2\n3\n")
+    (def before (open-fds))
+    (loop (:for i (range 0 20))
+          (:do (ignore (find (fun (l) (= l "1")) (file-read-lines/seq path)))))
+    (expect "find closes the file" (- (open-fds) before) 0)
+    (file-delete path))
+  0)

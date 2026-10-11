@@ -155,7 +155,11 @@ type private GroupCtx =
       /// The member running the clauses after the form, on the exports.
       Resume: (Range -> Expr) option
       /// The form's `=> (name expr)`.
-      Export: (string * SExpr) option }
+      Export: (string * SExpr) option
+      /// The enclosing loop's cursors that are live while the form runs, as
+      /// (sequence, cursor) pairs. A yield inside the form names them in its
+      /// member's `loopends`, see `levelMembers`.
+      Live: (string * string) list }
 
 /// A group's members, its entering expression, and the bindings to hoist ahead
 /// of the whole loop.
@@ -763,7 +767,8 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
               OuterFinish = None
               AbandonSubloop = None
               Resume = None
-              Export = None }
+              Export = None
+              Live = [] }
             clauses
 
     // The prologue. Everything loop-invariant is evaluated once, outside: the
@@ -1115,6 +1120,26 @@ and private buildGroup
 
     let jump (target: int) (overrides: Map<string, Expr>) (cr: Range) = jumpWith Map.empty target overrides cr
 
+    /// Level `i`'s cursors, as (sequence, cursor) pairs.
+    let levelCursors (i: int) = List.zip levels[i].SeqNames levels[i].CurNames
+
+    /// This group's cursors that are live in an iteration of level `i`: those
+    /// of level `i` and of every level around it.
+    let groupCursors (i: int) =
+        [ for j in 0..i do
+              yield! levelCursors j ]
+
+    /// `iterable-end` on each of `cursors`, then `rest`. An exit that leaves a
+    /// walk before its `done?` answered true goes through this, so that a
+    /// cursor holding a resource for the walk, such as an open file, releases
+    /// it now.
+    let ending (cursors: (string * string) list) (cr: Range) (rest: Expr) =
+        List.foldBack
+            (fun (sn, cn) acc ->
+                ELet("_", false, [], None, call "iterable-end" [ EIdent(sn, cr); EIdent(cn, cr) ] cr, acc, cr))
+            cursors
+            rest
+
     /// Level `i` one step on: its cursors advanced and its `:with` slots
     /// updated.
     ///
@@ -1308,14 +1333,19 @@ and private buildGroup
 
     let ownFinish (cr: Range) = ownFinishAliased Map.empty cr
 
-    /// Leaving the whole loop. Inside a `:subloop` form that is the enclosing
-    /// loop's finish, and the form's accumulators are dropped.
-    let finishBlockAliased (aliases: Map<string, string>) (cr: Range) =
-        match ctx.OuterFinish with
-        | Some outer -> outer aliases cr
-        | None -> ownFinishAliased aliases cr
+    /// Leaving the whole loop from level `level`. Inside a `:subloop` form that
+    /// is the enclosing loop's finish, and the form's accumulators are dropped.
+    /// Every live cursor is ended on the way: this group's here, and the
+    /// enclosing loop's in its own `finishBlockAliased`.
+    let finishBlockAliased (aliases: Map<string, string>) (level: int) (cr: Range) =
+        ending
+            (groupCursors level)
+            cr
+            (match ctx.OuterFinish with
+             | Some outer -> outer aliases cr
+             | None -> ownFinishAliased aliases cr)
 
-    let finishBlock (cr: Range) = finishBlockAliased Map.empty cr
+    let finishBlock (level: int) (cr: Range) = finishBlockAliased Map.empty level cr
 
     /// A `:subloop` form's finish member: its accumulators finished, its export
     /// bound, and then the clauses after the form. Only the accumulators the
@@ -1454,7 +1484,7 @@ and private buildGroup
         // Clauses above it have already run, so an accumulator stepped before
         // this one keeps what it was given — the same as `:when` and `:finish`.
         | LRefutableLet(pat, value, stops, cr) :: tl ->
-            let missed = if stops then finishBlock cr else advanceLevel level cr
+            let missed = if stops then finishBlock level cr else advanceLevel level cr
 
             EMatch(
                 fns.Expr value,
@@ -1481,11 +1511,12 @@ and private buildGroup
                     None
                     None
                     { Carried = carried
-                      OuterFinish = Some finishBlockAliased
+                      OuterFinish = Some(fun aliases fr -> finishBlockAliased aliases level fr)
                       AbandonSubloop = Some(fun ar -> advanceLevel level ar)
                       Resume =
                         Some(fun rr -> EApp(EIdent(resumeName, rr), resumeParams |> List.map (fun n -> EIdent(n, rr)), rr))
-                      Export = export }
+                      Export = export
+                      Live = ctx.Live @ groupCursors level }
                     subClauses
 
             // Members are checked in order, and a slot's type comes from the
@@ -1509,13 +1540,13 @@ and private buildGroup
                 failwithf
                     $"(:finish-subloop ...) at %s{Lexer.formatPos cr} is only allowed inside a (:subloop ...) form. Use (:finish test) to end the loop, or (:abandon test) to end the current level."
 
-            EIf(fns.Expr cond, ownFinish cr, next tl, cr)
+            EIf(fns.Expr cond, ending (groupCursors level) cr (ownFinish cr), next tl, cr)
 
         // Drops the nearest `:subloop` form and its accumulators, and goes to
         // the next iteration of the level holding it.
         | LAbandonSubloop(cond, cr) :: tl ->
             match ctx.AbandonSubloop with
-            | Some abandon -> EIf(fns.Expr cond, abandon cr, next tl, cr)
+            | Some abandon -> EIf(fns.Expr cond, ending (groupCursors level) cr (abandon cr), next tl, cr)
             | None ->
                 failwithf
                     $"(:abandon-subloop ...) at %s{Lexer.formatPos cr} is only allowed inside a (:subloop ...) form. Use (:abandon test) to end the current level, or (:when test) to skip an iteration."
@@ -1572,7 +1603,7 @@ and private buildGroup
                 let instead = if isSub then "`:abandon-subloop`" else "`:finish`"
                 failwithf $"`:%s{spelled}` has no level above here; use %s{instead}.\n  at %s{Lexer.formatPos cr}"
 
-            EIf(fns.Expr cond, exitLevel level cr, next tl, cr)
+            EIf(fns.Expr cond, ending (levelCursors level) cr (exitLevel level cr), next tl, cr)
 
         // Leaves the whole loop from any level. Accumulators stepped earlier in
         // this iteration keep what they were given. With a value, the value is
@@ -1586,8 +1617,9 @@ and private buildGroup
         | LFinish(cond, value, cr) :: tl ->
             let leave =
                 match value with
-                | None -> finishBlock cr
-                | Some v -> EIf(EBool(false, cr), finishBlock cr, fns.Expr v, cr)
+                | None -> finishBlock level cr
+                | Some v ->
+                    EIf(EBool(false, cr), finishBlock level cr, ending (ctx.Live @ groupCursors level) cr (fns.Expr v), cr)
 
             EIf(fns.Expr cond, leave, next tl, cr)
 
@@ -1634,7 +1666,7 @@ and private buildGroup
         // Anything else completes, and then the loop is over.
         | other ->
             rejectLoopName name other
-            ELet("_", false, [], None, other, finishBlockAliased aliases cr, cr)
+            ELet("_", false, [], None, other, finishBlockAliased aliases level cr, cr)
 
     /// `(lp #:name expr ...)` — the slots the call overrides.
     and parseOverrides (name: string) (args: Expr list) (cr: Range) : Map<string, Expr> =
@@ -1719,10 +1751,31 @@ and private buildGroup
             let before = extraMembers.Count
             let accsHere = accInfo |> List.filter (fun slot -> slot.Level = lvl.Index)
 
+            // A level that one driver ends was ended by that driver's `done?`,
+            // so nothing is left to end. With several, the one that ended the
+            // level is not known here, and the others have not reached their
+            // end, so every cursor is ended; `iterable-end` after `done?`
+            // answered true does nothing.
+            let enders =
+                lvl.IterOrder
+                |> List.filter (function
+                    | DWith wi ->
+                        let (_, _, _, endCond, _) = lvl.Withs[wi]
+                        endCond.IsSome
+                    | DFor _
+                    | DTest _ -> true)
+                |> List.length
+
+            let exhaustedExit =
+                if enders > 1 then
+                    ending (levelCursors lvl.Index) r (exitLevel lvl.Index r)
+                else
+                    exitLevel lvl.Index r
+
             let iteration =
                 EIf(
                     exhausted lvl.Index,
-                    exitLevel lvl.Index r,
+                    exhaustedExit,
                     bindCurrents lvl.Index (buildClauses lvl.Index lvl.Others accsHere (levelLocals lvl.Index)),
                     r
                 )
@@ -1742,11 +1795,41 @@ and private buildGroup
             let headed =
                 List.foldBack
                     (fun (slot: AccSlot) rest ->
-                        EIf(EIdent(slot.Name, slot.Range), finishBlock slot.Range, rest, slot.Range))
+                        EIf(EIdent(slot.Name, slot.Range), finishBlock lvl.Index slot.Range, rest, slot.Range))
                     finals
                     iteration
 
-            let body = bindWiths lvl.Index headed
+            let withsBound = bindWiths lvl.Index headed
+
+            // A member that yields is a producer `SeqFusion` may splice a
+            // consumer into, at the yield. A consumer that stops early there
+            // must end this member's live cursors, and after `TraitInline`
+            // nothing can make an `iterable-end` call for them any more. So
+            // the calls are made here, in a local function `SeqFusion` calls
+            // in place of the consumer's own. `SeqFusion` removes every one,
+            // called or not, so none reaches the output.
+            let yields =
+                lvl.Others
+                |> List.exists (fun c ->
+                    let forms =
+                        match c with
+                        | LDo(es, _) -> es
+                        | LLet(_, v, _)
+                        | LRefutableLet(_, v, _, _) -> [ v ]
+                        | _ -> []
+
+                    forms
+                    |> List.exists (fun f ->
+                        let names = sexprSymbols f
+                        Set.contains "yield" names || Set.contains "yield-from" names))
+
+            let body =
+                if yields then
+                    let unitExpr = EWhen(EBool(false, r), ETuple([], r), false, r)
+                    let ends = ending (ctx.Live @ groupCursors lvl.Index) r unitExpr
+                    ELet(Gensym.fresh "loopends", true, [], None, ends, withsBound, r)
+                else
+                    withsBound
 
             (lvl.Member, true, asArgs (slotNames lvl.Index), None, body)
             :: (extraMembers |> Seq.skip before |> List.ofSeq))

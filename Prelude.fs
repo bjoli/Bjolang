@@ -1184,6 +1184,9 @@ let prelude : Env =
         "seq-cursor", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a")] (makeSeqCursorType (TVar "a"))); IsMutable = false }
         "seq-cursor-done?", {Scheme = Scheme(["a"], [], makeFunType [makeSeqCursorType (TVar "a")] boolType); IsMutable = false }
         "seq-cursor-current", {Scheme = Scheme(["a"], [], makeFunType [makeSeqCursorType (TVar "a")] (TVar "a")); IsMutable = false }
+        // Ends a walk that stops before the end: disposes the enumerator, so
+        // that a file the sequence opened for the walk is closed now.
+        "seq-cursor-end", {Scheme = Scheme(["a"], [], makeFunType [makeSeqCursorType (TVar "a")] unitType); IsMutable = false }
         "vec-cursor-current", {Scheme = Scheme(["a"], [], makeFunType [makeVecCursorType (TVar "a")] (TVar "a")); IsMutable = false }
         // A vec cursor is a value: `next` answers the cursor one element on,
         // and the cursor it was given still stands where it stood.

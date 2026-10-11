@@ -3,6 +3,28 @@
 
 What each change guarantees, and what it leaves open.
 
+* A loop that stops a walk early ends it, and a file it opened closes
+
+- *~find~ over ~file-read-lines/seq~ left the file open.* A loop that
+  stopped before the end of a ~Seq~ (~find~, ~any?~, ~all?~, ~take~, a
+  ~:finish~) did not dispose the enumerator, so the file stayed open until
+  the collector closed it. 50 such ~find~ walks held 50 files open.
+- ~Iterable~ has a new method, ~(iterable-end s cursor)~, with a default that
+  does nothing. A loop calls it on each cursor that it stops before ~done?~
+  answered true: at ~:finish~, ~:abandon~, ~:final~, ~:finish-let~,
+  ~:finish-subloop~, ~:abandon-subloop~, a named loop that does not continue,
+  and when another driver of the level ends first. It may also come after
+  ~done?~ answered true, and must then do nothing. ~Seq~'s implementation
+  disposes the enumerator, and that closes the file.
+- Fused chains are covered. ~(find p (map f s))~ is one loop over ~s~, and
+  ~find~ stopping ends the cursor of ~s~.
+- Still open: a ~seql~ whose consumer stops early does not end the walks it
+  holds, and a walk that an exception leaves is not ended. In both cases the
+  file stays open until the collector closes it.
+- Cost: none in the 42 benchmark programs, whose generated C# is unchanged.
+  An early stop of a ~Seq~ walk now disposes the enumerator. In a loop that
+  only stops in-memory walks early, that measured about 6 ns per stop.
+
 * A ~:subloop~ form's collectors are made where it runs
 
 - *A seed in a ~(:subloop clause ...)~ form read the wrong variable.* Its
