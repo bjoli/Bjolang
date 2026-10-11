@@ -87,24 +87,24 @@ out-degree ≤ 1, so copies grow additively; largest demand 722 nodes
 
 * Loops the JIT does not see as counted loops
 
-A named ~let~ or a ~loop~ is emitted as ~while (true)~, and each jump copies
-the new values through a temporary per variable (~__next__~), then assigns
-them. The JIT does not see an induction variable through the copies, so it
-does not clone the loop to remove bounds checks, and it keeps more values on
-the stack.
+A named ~let~ or a ~loop~ is emitted as ~while (true)~. Each iteration copies
+each variable into a local, and each jump assigns the new values through a
+temporary per variable (~__next__~).
 
-- *Measured*: the loop of ~bench/clbg~'s reverse-complement, which reverses
-  and complements 250 MB through a table, takes 242 ms where the same loop in
-  C# takes 169 ms, both with full optimization. Bjolang keeps three bounds
-  checks per byte where C# keeps two (the read of ~sq[from]~ is removed by
-  loop cloning), and reloads ~table~ from the stack each iteration.
-- *Fix*: assign a variable directly when no later update in the same jump
-  reads its old value, so that a jump like ~(go (+ i 1) (- from 1) col)~ is
-  three assignments with no temporaries. Where possible, emit the loop as
-  ~for~ or as ~while (cond)~ with the test at the top, which is the shape the
-  JIT's loop recognition is written for. Check the result with
-  ~DOTNET_JitDisasm~ on that loop, and run the scheme and clbg suites, since
-  every tight loop changes.
+- *The copies and temporaries cost nothing.* Tried and measured: a loop
+  without closures emitted with no copies, and a jump that assigns each
+  variable directly, with a temporary only where a later argument reads the
+  variable. The JIT made the same machine code of the hot loops (revcomp's,
+  fannkuch's ~rev~, fasta's ~pick~), with all values in registers. Same-compiler
+  A/B: revcomp, nbody, spectral-norm and mandelbrot equal within 1.5%, fasta
+  and fannkuch-redux 2 to 2.5% slower by code layout. Not kept.
+- *The gap in reverse-complement is the port's loop, not the emitted shape.*
+  The C# program writes the newline and the byte in one iteration, so ~from~
+  decreases on every pass, and the JIT clones the loop and removes the bounds
+  check of ~sq[from]~. The Bjolang port makes the newline an iteration of its
+  own in which ~from~ does not change, so ~from~ is not an induction variable,
+  and no emitted shape (~for~, ~while (cond)~) would let the JIT clone it. The
+  port written as the C# is would show whether anything is left.
 
 * Colourless concurrency
 
