@@ -870,6 +870,7 @@ let private registerMacros
               ModuleName = entry.ModuleName
               Exports = exports
               TraitMethods = traitMethods
+              Builtins = Prelude.builtinNames
               Method = method }
 
         for entry in entries do

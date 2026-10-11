@@ -1471,6 +1471,10 @@ and private inferRecordConstruct (env: Env) (recordTypeName: string) (args: Expr
         |> List.map (fun arg ->
             match arg with
             | EApp(EIdent(fieldName, _), [ value ], _) -> fieldName, value
+            // A label a macro's template wrote arrives resolved, as every name
+            // a template does not bind does (see `Macro`). It is a spelling all
+            // the same.
+            | EApp(EResolved(fieldName, _), [ value ], _) -> fieldName, value
             | bad ->
                 failwithf
                     $"Type Error at %s{Lexer.formatPos (exprRange bad)}: '%s{recordTypeName}' is a record type, so each argument is one of its fields, written (field-name value).")
@@ -2729,6 +2733,8 @@ and private inferTaskEvent (env: Env) (call: Expr) (r: Range) : HMType * TypedEx
     let name, args =
         match call with
         | EApp(EIdent(n, _), a, _) -> n, a
+        // The import, named by a macro's template.
+        | EApp(EResolved(n, _), a, _) -> n, a
         | _ ->
             failwithf
                 $"Type Error at %s{where}: task->event takes a call to a method imported #:async. To turn a bjoroutine into an event, spawn it and join the promise — (promise-join (bjo (f x))) — though note that losing a choose on a join stops you listening without stopping the work."

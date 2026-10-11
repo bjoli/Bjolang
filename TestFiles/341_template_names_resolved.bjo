@@ -1,0 +1,22 @@
+(import (std prelude))
+(import (std simpletest))
+(import "inc/template_names.bjo")
+
+;; A name a macro's template uses and does not bind means what it means at
+;; module level where the macro is used: a local of the same name there does
+;; not take it over.
+
+(defun (main args)
+  (expect "a local string-append does not capture the template's"
+          (let ((string-append (fun (a b) "captured")))
+            (joined "a" "b"))
+          "ab")
+  (expect "a local string-upcase does not capture the template's"
+          (let ((string-upcase (fun (s) "captured")))
+            (shouted "hej"))
+          "HEJ")
+  (expect "the local is still the local outside the template"
+          (let ((string-append (fun (a b) "captured")))
+            (string-append "a" "b"))
+          "captured")
+  0)

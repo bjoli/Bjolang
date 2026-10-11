@@ -129,6 +129,19 @@ temporary per variable (~__next__~).
 
 * Traits and macros
 
+- *A builtin a macro's template names is still captured by a local.* Every
+  other name a template uses and does not bind is resolved, so a local of the
+  same name at the call site cannot take it over. A builtin (~list-head~,
+  ~list-reverse~) is left bare: its resolved reference has no class to be
+  qualified to and keeps the bare name, and ~AlphaRename~ renames it with the
+  local, so the checker would type the builtin while the code calls the local.
+  The fix is a spelling for a builtin reference that the renaming pass leaves
+  alone and code generation still emits as the builtin.
+- *Constraints over an ordinary trait are checked only when code is made.* One
+  over a .NET interface is checked during type checking too, so dead code is
+  checked; one with implementations is checked in ~Lowering~ when its evidence
+  is built, after ~Simplify~ has removed dead branches.
+
 
 * Equality and hashing
 
