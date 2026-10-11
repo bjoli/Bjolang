@@ -972,6 +972,14 @@ and private buildGroup
 
     let accNames = accInfo |> List.map (fun slot -> slot.Name)
 
+    /// A `:subloop` form's collectors, which are made on each entry to the
+    /// form and carried on its members beside the accumulators: the form is
+    /// `(:let name (loop ...))` run where it stands, so its collectors see the
+    /// enclosing level's variables. A loop's own collectors are made once,
+    /// before it starts, and are not carried. Neither is a bare `(:subloop)`'s
+    /// accumulator's, which belongs to the whole loop.
+    let subCollectors = if isSub then accInfo |> List.map (fun slot -> slot.Collector) else []
+
     /// The accumulators a named loop may override, which are the ones the author
     /// can write: an `:acc` that gave no name has none to put after `#:`, and
     /// `:final`'s is not the author's at all.
@@ -1082,7 +1090,8 @@ and private buildGroup
               yield! levels[j].WithNames
           for j in 0 .. i - 1 do
               yield! levels[j].Bound
-          yield! accNames ]
+          yield! accNames
+          yield! subCollectors ]
 
     /// A jump to level `target`, filling every slot: with `overrides` where one
     /// is given, and with the slot's value otherwise.
@@ -1292,7 +1301,7 @@ and private buildGroup
     let ownFinishAliased (aliases: Map<string, string>) (cr: Range) =
         EApp(
             EIdent(exitName, cr),
-            ctx.Carried @ accNames
+            ctx.Carried @ accNames @ subCollectors
             |> List.map (fun n -> EIdent(Map.tryFind n aliases |> Option.defaultValue n, cr)),
             cr
         )
@@ -1749,28 +1758,37 @@ and private buildGroup
     // level holding the form, so it is a case like any other.
     let exitMember =
         if isSub then
-            (exitName, true, asArgs (ctx.Carried @ accNames), None, subExitBody)
+            (exitName, true, asArgs (ctx.Carried @ accNames @ subCollectors), None, subExitBody)
         else
             (exitName, true, asArgs accNames, None, finishBlockBody)
 
     let members = levelMembers @ [ exitMember ]
 
-    // Collectors are hoisted out of the whole loop, a form's included: their
-    // construction arguments are loop-invariant by definition.
+    // A loop's collectors are made once, before it starts: an accumulator of
+    // the loop, a bare `(:subloop)`'s included, starts once and runs to the
+    // end, so its collector cannot see a loop variable.
     let collectors =
         accInfo |> List.map (fun slot -> slot.Collector, slot.CollectorExpr, slot.Range)
 
     if isSub then
         // A form's level 0 is entered like an inner level, its sequences
-        // evaluated on every entry, and its accumulators start over.
+        // evaluated on every entry, and its accumulators start over, from
+        // collectors made on the entry, where the enclosing level's variables
+        // are in scope. They fill the form's collector slots by name.
         let inits =
             accInfo
             |> List.map (fun slot -> slot.Name, call "collector-init" [ EIdent(slot.Collector, slot.Range) ] slot.Range)
             |> Map.ofList
 
+        let entry =
+            List.foldBack
+                (fun (slot: AccSlot) acc -> ELetMono(slot.Collector, slot.CollectorExpr, acc, slot.Range))
+                accInfo
+                (enterLevelWith 0 inits r)
+
         { Members = members
-          Entry = enterLevelWith 0 inits r
-          Hoisted = collectors @ List.ofSeq extraHoisted }
+          Entry = entry
+          Hoisted = List.ofSeq extraHoisted }
     else
         // In `slotNames 0`'s order: level 0's cursors, then its `:with` slots,
         // then the accumulators.

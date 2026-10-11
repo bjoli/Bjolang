@@ -1657,7 +1657,8 @@ A nested loop inside a level. It runs each time its level reaches it, and what i
 #+END_SRC
 
 - Without `=>`, every named `:acc` of the form is bound after it, to its finished value. With `=> (name expr)`, only `name` is, bound to `expr`, which may use the form's accumulators. The form's `:for` variables and other bindings are never visible after it.
-- The form's accumulators start over on each run. If it runs zero times they keep their initial values. An accumulator of an implicit level, by contrast, persists across the outer iterations.
+- The form is ~(:let name (loop ...))~ where it stands: it runs anew each time its level reaches it, and its exports are bound for the clauses after it.
+- The form's accumulators start over on each run. Their collectors, a ~folding~ seed included, are made on each run too, so ~(:acc m (folding (list-head row) (+ m y)))~ starts from the head of the current ~row~. If it runs zero times they keep their initial values. An accumulator of an implicit level, by contrast, persists across the outer iterations, and its collector is made once, before the loop starts.
 - The form sees the level's variables and everything bound before it in the iteration. Its sequences are evaluated each time it runs.
 - The form has its own levels. `:when`, `:abandon`, `:while` and `:until` inside it work on those levels exactly as in a loop. `:abandon` at the form's topmost level is a compile error, since leaving the form that way is `:abandon-subloop`.
 - `:finish`, with or without a value, ends the whole loop from inside the form; the form's accumulators are dropped.

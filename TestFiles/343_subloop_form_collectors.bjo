@@ -1,0 +1,51 @@
+(import (std prelude))
+(import (std simpletest))
+
+;; A `(:subloop clause ...)` form is `(:let name (loop ...))` where it stands:
+;; its collectors, a `folding` seed included, are made on each run and see the
+;; enclosing level's variables. A seed used to be made once, before the whole
+;; loop, and read an outer binding of the same name, or none.
+
+(defun (main args)
+  ;; An outer `row`, which a seed made before the loop used to read.
+  (def row (list 100))
+  (def rows (list (list 5 1 9) (list 7 3)))
+  (expect "seed from the level's variable, not the outer row"
+          (loop (:for row rows)
+                (:subloop (:for y row) (:acc m (folding (list-head row) (+ m y))))
+                (:acc out (listing m)) => out)
+          (list 20 17))
+  (expect "seed from an earlier :let"
+          (loop (:for row rows)
+                (:let base (* 10 (list-length row)))
+                (:subloop (:for y row) (:acc m (folding base (+ m y))))
+                (:acc out (listing m)) => out)
+          (list 45 30))
+  (expect ":finish-subloop with a per-entry seed"
+          (loop (:for row rows)
+                (:subloop (:for y row)
+                          (:finish-subloop (> y 6))
+                          (:acc m (folding (list-head row) (+ m y))))
+                (:acc out (listing m)) => out)
+          (list 11 7))
+  (expect ":abandon-subloop drops the form"
+          (loop (:for row rows)
+                (:subloop (:for y row)
+                          (:abandon-subloop (= y 3))
+                          (:acc m (folding (list-head row) (+ m y))))
+                (:acc out (listing m)) => out)
+          (list 20))
+  (expect "a form inside a form"
+          (loop (:for k (list 1 2))
+                (:subloop (:for row rows)
+                          (:subloop (:for y row) (:acc m (folding (* k (list-head row)) (+ m y))))
+                          (:acc ms (listing m)))
+                (:acc out (listing ms)) => out)
+          (list (list 20 17) (list 25 24)))
+  (expect "a bare :subloop's accumulator belongs to the whole loop"
+          (loop (:for a (list 1 2))
+                (:subloop)
+                (:for b (list 10 20))
+                (:acc s (summing (* a b))) => s)
+          90)
+  0)
