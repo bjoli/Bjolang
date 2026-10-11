@@ -72,8 +72,8 @@ time: below 1 means Bjolang is faster.
 | binary-trees | 21 | 10.82 | 10.41 | 14.51 | 4.38 | 1.04 | 0.75 | 2.47 |
 | mandelbrot | 16,000 | 12.34 | 12.26 | 12.28 | 15.71 | 1.01 | 1.00 | 0.79 |
 | fasta | 25,000,000 | 2.55 | 2.51 | 2.39 | 3.62 | 1.01 | 1.07 | 0.71 |
-| k-nucleotide | 25,000,000 | 9.04 | 8.52 | 12.68 | 29.88 | 1.06 | 0.71 | 0.30 |
-| reverse-complement | 25,000,000 | 1.39 | 1.29 | 0.56 | 19.72 | 1.08 | 2.47 | 0.07 |
+| k-nucleotide | 25,000,000 | 9.08 | 8.56 | 12.64 | 30.66 | 1.06 | 0.72 | 0.30 |
+| reverse-complement | 25,000,000 | 1.15 | 1.31 | 0.59 | 19.99 | 0.88 | 1.95 | 0.06 |
 | pidigits | 10,000 | 2.50 | 2.46 | 2.35 | 2.72 | 1.02 | 1.06 | 0.92 |
 
 | peak memory, MB | Bjolang | C# | Go | Chez |
@@ -89,18 +89,20 @@ time: below 1 means Bjolang is faster.
 | pidigits | 47 | 45 | 8 | 47 |
 
 pidigits was measured in a later run than the others, k-nucleotide and
-reverse-complement again after the string builder changed, binary-trees
-again after the empty case of a union became `null`, and fasta again after
-the output port's gate changed (see "What was changed after the first run"
-below), with the same machine and settings.
+reverse-complement again after standard input was read with plain reads,
+binary-trees again after the empty case of a union became `null`, and fasta
+again after the output port's gate changed (see "What was changed after the
+first run" below), with the same machine and settings. The peak memory of
+k-nucleotide and reverse-complement is from the run after the string builder
+changed.
 
 Geometric means of the ratio, over the 9 benchmarks:
 
 | Bjolang against | geometric mean |
 |-----------------|---------------:|
-| C# | 1.03 |
-| Go | 1.04 |
-| Chez Scheme | 0.45 |
+| C# | 1.00 |
+| Go | 1.01 |
+| Chez Scheme | 0.44 |
 
 ### Reading the results
 
@@ -116,10 +118,11 @@ Geometric means of the ratio, over the 9 benchmarks:
   collector is made for many short-lived pairs. Go uses the least memory and
   has the slowest collector here.
 - **Text and output** (fasta, k-nucleotide, reverse-complement): fasta is
-  equal to C#; k-nucleotide and reverse-complement are 6 to 8% slower cold. Warm, reverse-complement is faster than C#; see
-  "What was changed after the first run". Go reads bytes and never decodes
-  them, which is why its reverse-complement is 2.5 times faster than both .NET
-  programs cold.
+  equal to C#, k-nucleotide 6% slower, and reverse-complement 12% faster:
+  Bjolang's strings are UTF-8, so collecting the lines and making the bytes
+  is less work than in C#, which goes through UTF-16; see "What was changed
+  after the first run". Go reads bytes and never decodes them, which is why
+  its reverse-complement is about 2 times faster than both .NET programs.
   The Chez programs read text with `get-line` through a UTF-8 transcoder and
   collect the lines in a string port; that is slow, and a Chez program that
   reads bytes would be faster.
@@ -211,8 +214,9 @@ array of the exact size, when the string is made. The second run, in ms:
 The process holds 1.2 GB where it held 3.3 GB. In a C# benchmark of the
 builder alone, 2,000,000 appends of 60 bytes take 49 ms where they took
 56 ms and .NET's `StringBuilder` takes 99 ms; short builds take the time they
-took. The loop that reverses and complements is slower than C#'s for a reason
-of its own, the shape the loop is emitted in, which is in `Todo.org`.
+took. The loop that reverses and complements looked slower than C#'s in this
+second run; timed by phase in a cold run, later, it took as long as C#'s (278
+against 275 ms).
 
 **The last clause of a match.** When the clauses of a match on a union cover
 every case but the last clause's, the last clause is the `switch`'s default
@@ -240,6 +244,17 @@ is now one int, taken with one interlocked instruction when nobody else holds
 it; only a writer that has to wait goes to a semaphore. A write now costs
 9 ns. fasta went from 2.73 to 2.55 s cold (C#: 2.51 s) and from 2.68 to 2.50 s
 warm (C#: 2.42 s).
+
+**Reading standard input.** Timed by phase, reverse-complement read its 4.2
+million lines into the builder in 750 ms, against C#'s 462 ms; the other
+phases took as long as C#'s or less. The standard input port refilled its
+4 KB buffer with an asynchronous read also for a caller that blocks, and the
+asynchronous read of standard input is its plain read run on the thread pool:
+each of the 61,000 refills paid for a task and a thread hop. A blocking caller
+now fills the port with a plain read, into a 16 KB buffer; a fiber still
+reads asynchronously. Reading the lines takes 476 ms. reverse-complement went
+from 1.39 to 1.15 s cold (C#: 1.31 s), and k-nucleotide from 9.17 to 9.00 s,
+measured against each other in alternating runs.
 
 ## What porting found
 

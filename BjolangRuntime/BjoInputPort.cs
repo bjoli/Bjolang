@@ -123,7 +123,7 @@ public enum LineMode {
 /// fragment: the rest of it was lost.
 /// </summary>
 public sealed class BjoInputPort : TextReader {
-    private const int DefaultBufferSize = 16384;
+    internal const int DefaultBufferSize = 16384;
 
     /// For a connection's read half and a pipe: many of them may be open at
     /// once, and each is read a message at a time rather than streamed.
@@ -281,7 +281,16 @@ public sealed class BjoInputPort : TextReader {
     internal BjoInputPort(BjoConnection connection)
         : this(connection.Stream, SmallBufferSize, false, connection) { }
 
-    private BjoInputPort(Stream inner, int bufferSize, bool ownsInner, BjoConnection? connection) {
+    /// A port over a stream that is not one of the kinds the port knows, whose
+    /// synchronous <c>Read</c> the caller says is as good as its asynchronous
+    /// one. Standard input is such a stream: its <c>ReadAsync</c> runs its
+    /// <c>Read</c> on the thread pool, so a blocking caller that waited for it
+    /// paid for a task and a thread hop each refill and gained nothing.
+    internal BjoInputPort(Stream inner, int bufferSize, bool ownsInner, bool syncReads)
+        : this(inner, bufferSize, ownsInner, null, syncReads) { }
+
+    private BjoInputPort(
+        Stream inner, int bufferSize, bool ownsInner, BjoConnection? connection, bool syncReads = false) {
         ArgumentNullException.ThrowIfNull(inner);
         ArgumentOutOfRangeException.ThrowIfLessThan(bufferSize, 1);
         if (!inner.CanRead)
@@ -290,7 +299,7 @@ public sealed class BjoInputPort : TextReader {
         _inner = inner;
         _ownsInner = ownsInner;
         _connection = connection;
-        _syncReads = inner is FileStream or MemoryStream or UnmanagedMemoryStream or ISyncReadable;
+        _syncReads = syncReads || inner is FileStream or MemoryStream or UnmanagedMemoryStream or ISyncReadable;
         _buf = new byte[bufferSize];
     }
 

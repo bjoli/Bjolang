@@ -1606,8 +1606,14 @@ public static partial class BjolangRuntime {
     ///
     /// Before it waits for input it flushes standard output, so that a prompt
     /// written without a newline is on the screen when the program waits.
+    ///
+    /// A blocking caller fills it with a plain read, and a fiber with an
+    /// asynchronous one. The asynchronous read of standard input is its plain
+    /// read on the thread pool, so a blocking caller that waited for one paid a
+    /// task and a thread hop per refill: reading 250 MB of lines took 820 ms
+    /// that way and 530 ms with plain reads into the default buffer.
     public static readonly Bjolang.Runtime.BjoInputPort StdIn =
-        new(Console.OpenStandardInput(), Bjolang.Runtime.BjoInputPort.SmallBufferSize, ownsInner: false) {
+        new(Console.OpenStandardInput(), Bjolang.Runtime.BjoInputPort.DefaultBufferSize, ownsInner: false, syncReads: true) {
             BeforeWait = static () => StdOut?.FlushAtExit(),
         };
 

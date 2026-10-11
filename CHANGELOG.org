@@ -3,6 +3,18 @@
 
 What each change guarantees, and what it leaves open.
 
+* Reading standard input costs a third less
+
+- *A blocking reader fills the standard input port with a plain read.* The
+  port refilled its buffer with an asynchronous read also for a caller that
+  blocks, and the asynchronous read of standard input is its plain read on
+  the thread pool, so each refill paid for a task and a thread hop. The
+  buffer is 16 KB, where it was 4 KB. Reading 250 MB of lines went from
+  750 to 476 ms; reverse-complement from 1.39 to 1.15 s (C#: 1.31 s).
+- A fiber still reads standard input asynchronously. On a terminal, a line
+  is still read as it is typed, standard output is still flushed before the
+  read waits, and Ctrl-D at the start of a line is still end of input.
+
 * Two faults of the inliner for a function that takes a function
 
 - *A body that reaches a withheld type is not published.* An exported

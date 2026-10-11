@@ -102,11 +102,13 @@ temporary per variable (~__next__~).
   programs, on the 25,000,000 input: the loop 278 ms in Bjolang, 275 ms in C#.
   Two rewrites of the port's loop (one byte per iteration as the C# does it,
   and one line per step with a counted inner loop) were not faster.
-- *Its gap to C# is reading the lines.* Reading 4.2 million lines into the
-  builder takes 750 ms in Bjolang and 462 ms in C# (~180 against ~110 ns a
-  line), through ~read-line/opt~ and ~stringbuilder-add-string!~. Making the
-  string is faster in Bjolang (133 against 291 ms: the builder is UTF-8, C#'s
-  is UTF-16), and making the bytes slightly slower (146 against 116 ms).
+- Its gap to C# was reading standard input, and is closed: see
+  ~bench/clbg/README.md~, "Reading standard input".
+- *A port over a pipe or a socket refills asynchronously also for a blocking
+  caller.* Standard input now reads synchronously for one; a pipe's read half
+  (~SmallBufferSize~) and other streams that are not ~ISyncReadable~ still
+  pay a task per refill. Measure before changing them: a socket's
+  ~ReadAsync~ is a real asynchronous read, unlike standard input's.
 
 * Colourless concurrency
 
