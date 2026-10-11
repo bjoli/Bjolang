@@ -1687,16 +1687,24 @@ type ResolvedCall =
 /// `CreateCommand` hides `DbConnection`'s — is reflected twice, with the same
 /// parameters. C# calls the most derived, so only that one is a candidate.
 ///
-/// The return type is part of what makes two the same: the conversion
-/// operators of one type, `op_Explicit` to `byte` and to `long`, take the same
-/// parameter and are different methods.
+/// The return type is not part of what makes two the same, as it is not in
+/// C#. It only keeps apart methods of one type: the conversion operators of
+/// one type, `op_Explicit` to `byte` and to `long`, take the same parameter and
+/// are different methods.
 let private withoutHidden (methods: MethodInfo list) : MethodInfo list =
     let rec depth (d: Type) = if isNull d then 0 else 1 + depth d.BaseType
 
+    // Grouped by parameter types alone, as C# hides by signature: a derived
+    // `new SqliteDataReader ExecuteReader()` hides the base's `DbDataReader
+    // ExecuteReader()` although the return types differ. Within a group every
+    // method of the most derived declaring type stays, so overloads that one
+    // type declares with different return types — the `op_Explicit`s of
+    // `BigInteger` — are all still candidates.
     methods
-    |> List.groupBy (fun m ->
-        m.ReturnType :: (m.GetParameters() |> Array.map (fun p -> p.ParameterType) |> Array.toList))
-    |> List.map (fun (_, same) -> same |> List.maxBy (fun m -> depth m.DeclaringType))
+    |> List.groupBy (fun m -> m.GetParameters() |> Array.map (fun p -> p.ParameterType) |> Array.toList)
+    |> List.collect (fun (_, same) ->
+        let deepest = same |> List.map (fun m -> depth m.DeclaringType) |> List.max
+        same |> List.filter (fun m -> depth m.DeclaringType = deepest))
 
 let private callableMethods (t: Type) (name: string) (flags: BindingFlags) =
     t.GetMethods flags
