@@ -474,6 +474,11 @@ let withLocals (names: (string * Range) list) (read: unit -> 'a) : 'a =
             | _ :: outer -> localBinders[n] <- outer
             | [] -> ()
 
+/// A parameter written `_` gets a name of its own. C# refuses two parameters
+/// named `_` in one method, and the body cannot read it whatever it is called.
+let private unusedParameter (name: string) =
+    if name = "_" then Gensym.fresh "unused" else name
+
 /// Every name an argument list binds, at `at`.
 let private argBinders (args: DefunArg list) (at: Range) =
     allArgNames args |> List.map (fun n -> n, at)
@@ -996,7 +1001,7 @@ and private parseHeaded (s: SExpr) (r: Range) (head: SExpr) (sym: string) (args:
                     let argNames =
                         fargs
                         |> List.choose (function
-                            | Ident n -> Some n
+                            | Ident n -> Some(unusedParameter n)
                             | SAtom { Token = Comma } -> None
                             | _ -> failwith "Expected arg name")
 
@@ -1806,12 +1811,12 @@ and private parseDefunArgList (args: SExpr list) : DefunArg list =
 
     match args with
     | [] -> []
-    | SAtom { Token = Symbol n } :: rest -> MandatoryArg(n, None) :: parseDefunArgs rest
+    | SAtom { Token = Symbol n } :: rest -> MandatoryArg(unusedParameter n, None) :: parseDefunArgs rest
     // `(: name type)` — a parameter's type written at the parameter. A
     // top-level `defun` normally takes its types from the signature declared
     // beside it, and one written here has to agree with that.
     | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol n }; t ], _) :: rest ->
-        MandatoryArg(n, Some(parseType t)) :: parseDefunArgs rest
+        MandatoryArg(unusedParameter n, Some(parseType t)) :: parseDefunArgs rest
     | SAtom { Token = Comma } :: rest -> parseDefunArgs rest
     // A keyword parameter's default is evaluated **sequentially**, with the
     // parameters before it in scope — unchanged by `let` becoming simultaneous.

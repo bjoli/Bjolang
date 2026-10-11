@@ -91,6 +91,12 @@ let private betaReduce
     // a substitution for the body. Sharing it is the point — two
     // implementations of one rule would be one implementation and one latent
     // capture, and the one that fires less often would be the wrong one.
+    // A `_` parameter binds its argument under a name of its own. Bound as `_`
+    // it would read as a statement whose value the body drops, which
+    // `MustUse` refuses, and the lambda left as written takes the argument
+    // without a word.
+    let parameters = parameters |> List.map (fun p -> if p = "_" then Gensym.fresh "unused" else p)
+
     let boundNameLists, bodySubst =
         simultaneous (List.map2 (fun p arg -> [ p ], arg) parameters args)
 

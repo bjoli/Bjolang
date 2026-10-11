@@ -390,6 +390,9 @@ and private bindLoopPattern (pat: SExpr) (value: Expr) (body: Expr) (r: Range) :
     | None ->
 
     match pat with
+    // `_` takes the value under a name of its own: bound as `_` it would read
+    // as a statement whose value is dropped, which `MustUse` refuses.
+    | SAtom { Token = Symbol "_" } -> ELet(Gensym.fresh "unused", false, [], None, value, body, r)
     | SAtom { Token = Symbol name } -> ELet(name, false, [], None, value, body, r)
 
     | SList(SAtom { Token = Symbol "Tuple" } :: parts, pr) when
