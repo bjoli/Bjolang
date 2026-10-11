@@ -176,16 +176,29 @@ public static partial class BjolangRuntime {
             return fields.ToArray();
         });
 
-    // A type .NET defines has no materialized `Equals` to dodge, and reflecting
-    // over `string`'s innards would be both slow and wrong.
+    // Only a type a Bjolang module declares is compared field by field. Every
+    // other type has no materialized `Equals` to dodge, so its own is the
+    // answer: a Bjolang `string` is a `Utf8String` whose fields are a byte
+    // array and offsets, and reading those compared the arrays by reference.
+    // Every Bjolang module's types live under the `BjoMod` namespace.
     private static bool structurallyOpaque(Type t) =>
-        t.IsPrimitive || t.IsEnum || t == typeof(string) || t == typeof(decimal);
+        t.Namespace is not { } ns || !(ns == "BjoMod" || ns.StartsWith("BjoMod.", StringComparison.Ordinal));
+
+    // An array has no fields to walk, and its own `Equals` is identity. It is
+    // compared element by element, each element as a field is.
+    private static bool structuralArrayEquals(Array a, Array b) {
+        if (a.Length != b.Length) return false;
+        for (var i = 0; i < a.Length; i++)
+            if (!Equals(a.GetValue(i), b.GetValue(i))) return false;
+        return true;
+    }
 
     public static bool structuralsubequals<T>(T a, T b) {
         if (a is null || b is null) return a is null && b is null;
         if (!typeof(T).IsValueType && ReferenceEquals(a, b)) return true;
         var type = a.GetType();
         if (type != b.GetType()) return false;
+        if (a is Array arrayA) return structuralArrayEquals(arrayA, (Array)(object)b!);
         if (structurallyOpaque(type)) return a.Equals(b);
         foreach (var f in structuralFieldsOf(type))
             if (!Equals(f.GetValue(a), f.GetValue(b))) return false;
@@ -199,8 +212,13 @@ public static partial class BjolangRuntime {
     public static int structuralsubhash<T>(T a) {
         if (a is null) return 0;
         var type = a.GetType();
-        if (structurallyOpaque(type)) return a.GetHashCode();
         var hash = new HashCode();
+        if (a is Array array) {
+            for (var i = 0; i < array.Length; i++)
+                hash.Add(array.GetValue(i));
+            return hash.ToHashCode();
+        }
+        if (structurallyOpaque(type)) return a.GetHashCode();
         foreach (var f in structuralFieldsOf(type))
             hash.Add(f.GetValue(a));
         return hash.ToHashCode();

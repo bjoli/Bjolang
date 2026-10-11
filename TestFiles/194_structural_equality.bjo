@@ -56,4 +56,27 @@
           (not (= w1 (Wrap (entry e1) (n 6)))))
   (expect-true "the hash composes through the field's implementation"
           (= (eq-hash w1) (eq-hash w2)))
+
+  ;; Called directly on a value of a type no Bjolang module declares, it is
+  ;; that type's own equality. A string built at run time used to compare
+  ;; unequal to an equal literal: its byte arrays were compared by reference.
+  (def built (str "a" "b"))
+  (expect-true "two equal strings" (structural-equals "ab" built))
+  (expect-true "and their hashes" (= (structural-hash "ab") (structural-hash built)))
+  (expect-true "two different strings" (not (structural-equals "ab" "ac")))
+  (expect-true "two equal lists" (structural-equals (list 1 2) (list 1 2)))
+
+  ;; An array is compared element by element. Any two used to be equal.
+  (def x (make-array 2))
+  (array-set! x 0 1)
+  (array-set! x 1 2)
+  (def y (make-array 2))
+  (array-set! y 0 1)
+  (array-set! y 1 2)
+  (def z (make-array 2))
+  (array-set! z 0 1)
+  (array-set! z 1 3)
+  (expect-true "two equal arrays" (structural-equals x y))
+  (expect-true "and their hashes" (= (structural-hash x) (structural-hash y)))
+  (expect-true "two different arrays" (not (structural-equals x z)))
   0)
