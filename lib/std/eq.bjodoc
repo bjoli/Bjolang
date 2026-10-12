@@ -2,7 +2,7 @@
 ;; samizdat markup: code in prose is @code{...}.
 
 (:doc #:module
-  (summary "Equality and hashing (Eq), ordering (Ord), and the sort, min and max built on them.")
+  (summary "Equality (Eq), ordering (Ord), and sorting, minimum, and maximum utilities.")
   (see = eq-hash Ord compare list-sort)
   (example """
     (= (list 1 2 3) (list 1 2 3))      ; #t
@@ -12,38 +12,37 @@
     (list-max (list 3 1 2))            ; (Some 3)
     """)
   (reference """
-    The prelude re-exports every name of this module, so a program that
-    imports @code{(std prelude)} does not import this one.
+    The prelude re-exports all identifiers from this module; importing
+    @code{(std prelude)} makes this module available automatically.
 
-    @strong{Eq.} The trait has two methods: @code{=} and @code{eq-hash}.
-    Every type has an implementation. A type with no implementation of its
-    own uses the default one, which calls the .NET @code{Equals} and
-    @code{GetHashCode} of the value. The integer types, @code{bool},
-    @code{string}, @code{char}, @code{Keyword}, @code{Symbol} and
-    @code{StringCursor} have direct implementations. @code{double} uses
-    @code{Equals}, so @code{NaN} is equal to @code{NaN}. All values of
-    @code{void} are equal.
+    @strong{Eq.} The trait provides two methods: @code{=} and @code{eq-hash}.
+    Every type has an @code{Eq} instance. Types without custom instances use
+    the default implementation delegating to .NET @code{Equals} and
+    @code{GetHashCode}. Primitive types (@code{int}, @code{bool},
+    @code{string}, @code{char}, @code{Keyword}, @code{Symbol},
+    @code{StringCursor}) have specialized implementations. For @code{double},
+    @code{Equals} is used so that @code{NaN} equals @code{NaN}. All @code{void}
+    values are equal.
 
-    @code{List}, @code{Vec}, @code{Option}, @code{Result} and the tuples of
-    two to four items compare their items with their own @code{=}, and hash
-    them with their own @code{eq-hash}. List and vec equality are loops, so
-    a long list does not overflow the stack.
+    Container types (@code{List}, @code{Vec}, @code{Option}, @code{Result}, and
+    tuples with 2 to 4 elements) compare elements structurally using each
+    element's @code{=}, and compute hashes using @code{eq-hash}. List and vector
+    equality checks run iteratively to avoid stack overflows on large
+    collections.
 
-    @strong{Ord.} The trait has one method: @code{compare}. The other
-    functions of this module use only @code{compare}, so a type that
-    implements @code{compare} gets all of them. The numbers, @code{bool}
-    and @code{char} use their .NET @code{CompareTo}. This includes
-    @code{decimal}, @code{bigint}, @code{int128}, @code{uint128} and
-    @code{System.SByte}. @code{string} compares code points, and never uses
-    the culture of the machine. So the order is the same on every machine,
-    and it is the order that an @code{OrderedMap} of strings keeps.
-    @code{(std clr-ord)} adds @code{Ord} for the .NET time types,
-    @code{Guid} and @code{Version}.
+    @strong{Ord.} Defines total ordering via @code{compare}. Derived comparison
+    functions and sorting utilities rely solely on @code{compare}. Numeric
+    types, @code{bool}, and @code{char} delegate to .NET @code{CompareTo}
+    (including @code{decimal}, @code{bigint}, @code{int128}, @code{uint128},
+    and @code{System.SByte}). String comparisons are ordinal (based on Unicode
+    code points) rather than culture-sensitive, ensuring identical cross-platform
+    ordering matching @code{OrderedMap}. @code{(std clr-ord)} provides @code{Ord}
+    for additional .NET types like @code{Guid} and @code{Version}.
 
-    @strong{An implementation of your own.} Make @code{=} and
-    @code{eq-hash} agree: two values that are @code{=} must have the same
-    @code{eq-hash}. Make @code{compare} agree with @code{=}: it returns
-    @code{0} only for values that are @code{=}.
+    @strong{Custom implementations.} Implementations must preserve key
+    invariants: equal values under @code{=} must produce identical @code{eq-hash}
+    values, and @code{compare} must return @code{0} if and only if values are
+    equal under @code{=}.
 
     @codeblock[#:lang "bjolang"]|{
     (impl (Ord Card)
@@ -56,17 +55,16 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc Eq
-  (summary "The trait for equality and hashing.")
+  (summary "Trait for structural equality and hashing.")
   (see = eq-hash)
   (reference """
-    Every type has an implementation. The default one calls the .NET
-    @code{Equals} and @code{GetHashCode} of the value. An implementation
-    must make @code{eq-hash} agree with @code{=}: two values that are
-    @code{=} have the same hash.
+    Every type provides an @code{Eq} instance. The default instance delegates
+    to .NET @code{Equals} and @code{GetHashCode}. Custom instances must ensure
+    that equal values yield identical hash codes.
     """))
 
 (:doc =
-  (summary "Whether two values are equal.")
+  (summary "Returns #t if two values are equal, otherwise #f.")
   (arg a "The first value.")
   (arg b "The second value.")
   (returns "#t when a and b are equal.")
@@ -76,19 +74,18 @@
     (= (Some 1) (Some 2))         ; #f
     """)
   (reference """
-    The method of @code{Eq}. Containers compare their items with the
-    items' own @code{=}. On @code{double}, @code{NaN} is equal to
-    @code{NaN}.
+    Structural equality method of @code{Eq}. Containers compare their items
+    with each item's @code{=}. On @code{double}, @code{NaN} equals @code{NaN}.
     """))
 
 (:doc eq-hash
-  (summary "A hash of a value that agrees with =.")
-  (arg a "The value.")
-  (returns "An int. Values that are = have the same hash.")
+  (summary "Computes a hash code consistent with =.")
+  (arg a "The value to hash.")
+  (returns "An int hash code. Equal values produce identical hash codes.")
   (see =)
   (reference """
-    The method of @code{Eq}. Hash maps and hash sets use it. The hash of a
-    container combines the hashes of its items, in order.
+    Hashing method of @code{Eq}, used by hash sets and hash maps. Container
+    hash codes combine the hashes of their elements in sequence.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -96,8 +93,8 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc Ord
-  (summary "The trait for a total order.")
-  (tparam %a "The type that is ordered.")
+  (summary "Trait for a total order.")
+  (tparam %a "The type to order.")
   (see compare less? list-sort)
   (example """
     (impl (Ord Card)
@@ -106,62 +103,63 @@
     (list-sort hand)   ; sorted by rank
     """)
   (reference """
-    One method, @code{compare}. All other functions of this module use only
-    @code{compare}, so a type that implements it gets them all. Make
-    @code{compare} return @code{0} only for values that are @code{=}.
+    Requires implementing @code{compare}. All relational operators and
+    sorting functions in this module derive from @code{compare}. @code{compare}
+    must return 0 if and only if two values are equal under @code{=}.
     """))
 
 (:doc compare
-  (summary "Compares two values.")
+  (summary "Compares two values for order.")
   (arg a "The first value.")
   (arg b "The second value.")
-  (returns "A negative int when a is before b, 0 when they are equal, and a positive int when a is after b.")
+  (returns "A negative int when a < b, 0 when a = b, and a positive int when a > b.")
   (see less? greater? least)
   (reference """
-    The method of @code{Ord}. Only the sign of the result has a meaning.
-    @code{string} compares code points, not the culture of the machine.
+    Primary method of @code{Ord}. Only the sign of the result is significant.
+    String comparisons are ordinal (based on Unicode code points) and independent
+    of system locale.
     """))
 
 (:doc less?
-  (summary "Whether a is before b.")
+  (summary "Tests if a is strictly less than b.")
   (arg a "The first value.")
   (arg b "The second value.")
   (returns "#t when (compare a b) is negative.")
   (see at-most? greater? compare))
 
 (:doc greater?
-  (summary "Whether a is after b.")
+  (summary "Tests if a is strictly greater than b.")
   (arg a "The first value.")
   (arg b "The second value.")
   (returns "#t when (compare a b) is positive.")
   (see at-least? less? compare))
 
 (:doc at-most?
-  (summary "Whether a is before b or equal to it.")
+  (summary "Tests if a is less than or equal to b.")
   (arg a "The first value.")
   (arg b "The second value.")
   (returns "#t when (compare a b) is not positive.")
   (see less? at-least? compare))
 
 (:doc at-least?
-  (summary "Whether a is after b or equal to it.")
+  (summary "Tests if a is greater than or equal to b.")
   (arg a "The first value.")
   (arg b "The second value.")
   (returns "#t when (compare a b) is not negative.")
   (see greater? at-most? compare))
 
 (:doc least
-  (summary "The smaller of two values.")
+  (summary "Returns the smaller of two values.")
   (arg a "The first value.")
   (arg b "The second value.")
-  (returns "a when a is at most b, else b. When they are equal, a.")
+  (returns "a when a is at most b, else b. When they are equal, returns a.")
   (see greatest list-min))
 
 (:doc greatest
-  (summary "The larger of two values.")
+  (summary "Returns the larger of two values.")
   (arg a "The first value.")
   (arg b "The second value.")
-  (returns "a when a is at least b, else b. When they are equal, a.")
+  (returns "a when a is at least b, else b. When they are equal, returns a.")
   (see least list-max))
 
 ;; ---------------------------------------------------------------------------
@@ -169,28 +167,28 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc list-sort
-  (summary "A sorted copy of a list, in the order of compare. Stable.")
+  (summary "Returns a sorted copy of a list using compare. Stable.")
   (arg xs "The list to sort.")
-  (returns "A list of the same items, from the least to the greatest. Equal items keep their order.")
+  (returns "A list of the same items, in ascending order. Preserves the relative order of equal items.")
   (see compare list-min list-max)
   (example """
     (list-sort (list 3 1 2))   ; (1 2 3)
     """)
   (reference """
-    A merge sort, in O(n log n) time. It copies the list into two arrays,
-    merges runs of width 1, 2, 4 and so on between them, and builds the
-    result list once at the end. So a long list does not overflow the
-    stack. A list of fewer than two items is returned as it is.
+    Performs a stable merge sort in O(n log n) time. Merges iterative runs
+    using temporary array buffers and constructs the resulting list in a single
+    pass to avoid stack overflows. Lists with fewer than two items return
+    unmodified.
     """))
 
 (:doc list-min
-  (summary "The least item of a list, or None when it is empty.")
+  (summary "Finds the minimum item in a list, or None if empty.")
   (arg xs "The list.")
-  (returns "(Some item), or None when xs is empty. When some items are equal and least, the last of them.")
+  (returns "(Some item), or None when xs is empty. When multiple items tie for minimum, returns the last occurrence.")
   (see list-max least list-sort))
 
 (:doc list-max
-  (summary "The greatest item of a list, or None when it is empty.")
+  (summary "Finds the maximum item in a list, or None if empty.")
   (arg xs "The list.")
-  (returns "(Some item), or None when xs is empty. When some items are equal and greatest, the last of them.")
+  (returns "(Some item), or None when xs is empty. When multiple items tie for maximum, returns the last occurrence.")
   (see list-min greatest list-sort))

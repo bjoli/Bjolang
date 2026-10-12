@@ -2,14 +2,14 @@
 ;; texts are samizdat markup: code in prose is @code{...}.
 
 (:doc #:module
-  (summary "Ord for common .NET types: the time types, Guid and Version.")
+  (summary "Provides Ord instances for common .NET types: DateTime, TimeSpan, DateOnly, TimeOnly, Guid, and Version.")
   (see Guid Version)
   (example """
     (import (std prelude))
     (import (std clr-ord))
 
-    ;; An alias of your own, with a constructor. The Ord of this module
-    ;; applies to it, because it names the same .NET type.
+    ;; An alias with a constructor. The Ord instance applies because it
+    ;; refers to the underlying .NET type.
     (import/class
       (Date (: System.DateTime (-> int int int Date))))
 
@@ -17,38 +17,39 @@
     (less? (Date. 2019 1 1) (Date. 2020 1 1))              ; #t
     """)
   (reference """
-    Import this module to sort and compare these .NET types with
-    @code{compare}, @code{less?}, @code{list-sort} and the ordered
-    collections. Each implementation of @code{Ord} calls the
-    @code{CompareTo} of the type. Their equality is the default @code{Eq},
-    which calls their own @code{Equals}.
+    Import this module to sort and compare these .NET types using
+    @code{compare}, @code{less?}, @code{list-sort}, and ordered collections.
+    Each @code{Ord} implementation delegates to the type's @code{CompareTo}
+    method. Equality is handled by default @code{Eq}, which delegates to
+    @code{Equals}.
 
-    The types are @code{System.DateTime}, @code{System.DateTimeOffset},
-    @code{System.TimeSpan}, @code{System.DateOnly},
-    @code{System.TimeOnly}, @code{System.Guid} and @code{System.Version}.
+    Supported types include @code{System.DateTime},
+    @code{System.DateTimeOffset}, @code{System.TimeSpan},
+    @code{System.DateOnly}, @code{System.TimeOnly}, @code{System.Guid}, and
+    @code{System.Version}.
 
-    @strong{Only Guid and Version are exported as names.}
-    @code{(std datetime)} exports a @code{DateTime} of its own, and a
-    module can import both modules. So code that names a .NET time type
-    writes @code{System.DateTime}, or declares an alias with
-    @code{import/class}. The implementations apply to the type under any
-    name. The exported aliases have no constructor: to make a value,
-    declare an alias of your own with one.
+    @strong{Exported aliases.} Only @code{Guid} and @code{Version} are exported
+    as named aliases to avoid collisions with @code{(std datetime)}. To use the
+    other .NET time types, reference their full names (such as
+    @code{System.DateTime}) or declare a local alias via @code{import/class}.
+    The @code{Ord} implementations apply to the underlying .NET type regardless
+    of alias. The exported aliases do not provide constructors; define a local
+    alias with a constructor if you need to instantiate values directly.
 
-    The order is that of .NET. @code{DateTime} compares ticks and ignores
-    @code{Kind}. @code{DateTimeOffset} compares the instants in UTC.
+    Ordering follows .NET semantics: @code{DateTime} compares ticks and ignores
+    @code{Kind}, while @code{DateTimeOffset} compares timestamps in UTC.
     """))
 
 (:doc Guid
-  (summary "System.Guid, ordered by its CompareTo.")
+  (summary "Type alias for System.Guid, implementing Ord via CompareTo.")
   (see Version))
 
 (:doc Version
-  (summary "System.Version, ordered by its CompareTo: major, then minor, build and revision.")
+  (summary "Type alias for System.Version, ordered by major, minor, build, and revision components.")
   (see Guid)
   (example """
     (import/class
       (Ver (: System.Version (-> int int int Ver))))
 
-    (less? (Ver. 1 9 0) (Ver. 1 10 0))   ; #t: by number, not by text
+    (less? (Ver. 1 9 0) (Ver. 1 10 0))   ; #t: compared numerically, not lexically
     """))

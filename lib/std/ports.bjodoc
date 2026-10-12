@@ -2,27 +2,27 @@
 ;; texts are samizdat markup: code in prose is @code{...}.
 
 (:doc #:module
-  (summary "Draining and streaming ports, reading bytes from a port as CML events, and writing bytes.")
+  (summary "Byte-level I/O operations, CML event-driven reads, streaming conversions, and port adapters.")
   (see read-some-evt read-some read-bytes peek-bytes write-bytes! shutdown! byte-pipe port->vec port->chan)
   (example """
     (import (std ports))
 
-    ;; Read a 4-byte length, then the body that it measures.
+    ;; Read a 4-byte length header followed by the payload.
     (defbjo (read-frame in)
       (match (read-bytes in 4)
         ((Some header) (read-bytes in (frame-length header)))
         (None None)))
     """)
   (example """
-    ;; Wait for bytes, but not longer than one second.
+    ;; Read available bytes with a 1-second timeout.
     (match (sync (choose (read-some-evt in)
                          (wrap (timeout 1000) (fun (_) (Ok None)))))
       ((Ok (Some bytes)) (use bytes))
-      ((Ok None) (log "nothing, or the end"))
+      ((Ok None) (log "EOF or stream completed"))
       ((Err e) (raise e)))
     """)
   (example """
-    ;; A port pair with no file and no network, for a test.
+    ;; In-memory bidirectional pipe for unit testing without network/file I/O.
     (match (byte-pipe)
       ((Tuple in out)
        (write-string out "hello\n")
@@ -30,40 +30,41 @@
        (read-line in)))           ; "hello"
     """)
   (reference """
-    An @code{InputPort} is bytes, as a Racket port is. @code{read-line} and
-    @code{read-char} decode UTF-8 from it. @code{read-some},
-    @code{read-bytes} and @code{peek-bytes} take the bytes themselves. Both
-    kinds of read work on the same port, in any order.
+    An @code{InputPort} represents an underlying stream of binary bytes.
+    Textual functions like @code{read-line} and @code{read-char} decode UTF-8
+    data from the port. Binary functions like @code{read-some},
+    @code{read-bytes}, and @code{peek-bytes} read raw byte sequences directly.
+    Both textual and binary operations can be interleaved on the same port.
 
-    An @code{OutputPort} is bytes too. @code{write-string} and
-    @code{write-char} write UTF-8 to it, and @code{write-bytes!} writes
-    bytes as they are, on the same port and in any order.
+    An @code{OutputPort} supports both UTF-8 text (@code{write-string},
+    @code{write-char}) and binary byte arrays (@code{write-bytes!}).
 
-    @strong{The rule that makes a read safe in a @code{choose}.} Every byte
-    that leaves the operating system goes into the buffer of the port. A
-    read never takes bytes from the underlying stream. It takes them from
-    the buffer, and only when it wins. A read that loses its @code{choose}
-    takes nothing, and a refill that arrives after the read lost is kept in
-    the buffer for the next read.
+    @strong{Event-based reads in @code{choose}.} Inbound data read from the
+    underlying stream is stored in the port's internal buffer. An event-based
+    read consumes bytes from this buffer only when its branch wins
+    synchronization in @code{choose}. If another branch synchronizes first,
+    no bytes are consumed, leaving the buffered bytes available for subsequent
+    read operations.
 
-    The byte reads are CML events: @code{read-some-evt},
-    @code{read-bytes-evt} and @code{eof-evt}. @code{read-some} and
-    @code{read-bytes} sync them, for code that has nothing to choose
-    between.
+    Byte-reading operations are available as CML events:
+    @code{read-some-evt}, @code{read-bytes-evt}, and @code{eof-evt}.
+    Synchronous wrappers (@code{read-some}, @code{read-bytes}) synchronize
+    these events directly.
 
-    @strong{Draining and streaming.} @code{port->list}, @code{port->vec}
-    and @code{port->lines} read a port to its end. @code{port->seq} and
-    @code{file->seq} read lazily, and never suspend. @code{port->chan}
-    reads on a fiber of its own, and @code{chan-next} takes the items.
+    @strong{Draining and streaming.} @code{port->list}, @code{port->vec},
+    and @code{port->lines} eagerly consume a port until EOF. @code{port->seq}
+    and @code{file->seq} provide lazy evaluation sequences.
+    @code{port->chan} offloads reads to a dedicated background fiber that sends
+    items over a channel.
 
-    @strong{Sources.} A file is opened with the prelude's
-    @code{open-input-file} and @code{open-output-file}. A file port takes
-    bytes as readily as text. @code{stream->input-port} and
-    @code{stream->output-port} make a port over a .NET @code{Stream}, and
-    @code{(std net)} makes the two ports of a TCP connection.
+    @strong{Stream adapters.} Files are opened via prelude functions
+    @code{open-input-file} and @code{open-output-file}. .NET @code{Stream}
+    instances can be adapted using @code{stream->input-port} and
+    @code{stream->output-port}. Bidirectional network streams are supported
+    via @code{(std net)}.
 
-    @code{BjolangRuntime/BjoInputPort.cs} has the implementation of the
-    input port.
+    See @code{BjolangRuntime/BjoInputPort.cs} for input port implementation
+    details.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -71,44 +72,44 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc port->list
-  (summary "Reads items from a port until its end, into a list.")
-  (arg reader "Reads one item from the port. A bjoroutine or an ordinary function.")
-  (arg p "The port.")
-  (returns "The items, in the order they were read.")
+  (summary "Consumes items from a port until EOF, returning them as a list.")
+  (arg reader "Reader function or bjoroutine invoked to read each item.")
+  (arg p "The input port.")
+  (returns "A list of read items in order of occurrence.")
   (see port->vec port->lines port->seq port->chan)
   (example """
-    (port->list read-char (open-input-string "abc"))   ; the chars a, b and c
+    (port->list read-char (open-input-string "abc"))   ; (#\\a #\\b #\\c)
     """)
   (reference """
-    reader is called while @code{port-eof?} is @code{#f}. It must take
-    input from the port each time, or the loop never ends.
+    The reader is invoked repeatedly while @code{port-eof?} returns @code{#f}.
+    The reader must consume input on each invocation to prevent an infinite
+    loop.
 
-    With a bjoroutine as reader, the reads suspend. With an ordinary
-    function, they park the thread. The port is not closed.
+    If @code{reader} is a bjoroutine, calls suspend cooperatively. If it is
+    a standard synchronous function, calls block the active thread. The port
+    is not closed automatically.
     """))
 
 (:doc port->vec
-  (summary "Reads items from a port until its end, into a vector.")
-  (arg reader "Reads one item from the port. A bjoroutine or an ordinary function.")
-  (arg p "The port.")
-  (returns "The items, in the order they were read.")
+  (summary "Consumes items from a port until EOF, returning them as a vector.")
+  (arg reader "Reader function or bjoroutine invoked to read each item.")
+  (arg p "The input port.")
+  (returns "A vector containing all read items in order.")
   (see port->list port->lines port->chan)
   (reference """
-    The same as @code{port->list}, with a vector as the result.
+    Equivalent to @code{port->list}, but collects items into an indexed
+    vector.
     """))
 
 (:doc port->lines
-  (summary "The lines left in a port.")
-  (arg port "The port.")
-  (key mode "What ends a line, as for @code{read-line}: @code{Any} by default.")
-  (returns "The lines, without their line ends.")
+  (summary "Reads all remaining lines from a port into a list.")
+  (arg port "The input port.")
+  (key mode "Line delimiter mode (defaults to @code{Any}).")
+  (returns "A list of strings containing remaining lines without delimiters.")
   (see port->vec read-line LineMode)
   (reference """
-    Racket's @code{port->lines} takes a @code{#:line-mode} in the same way.
-
-    The reads do not suspend: in a bjoroutine, they park the thread. To
-    suspend, give @code{port->vec} a bjoroutine that calls
-    @code{read-line}.
+    Reads synchronously using @code{read-line}. To suspend cooperatively
+    within a bjoroutine, use @code{port->vec} with a bjoroutine reader.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -116,37 +117,31 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc port->seq
-  (summary "The items that a reader reads from a port, as a lazy sequence.")
-  (arg reader "Reads one item from the port.")
-  (arg p "The port.")
-  (returns "A sequence that reads an item from p each time it is walked one step further.")
+  (summary "Returns a lazy sequence of items read from a port.")
+  (arg reader "Reader function invoked to produce each item.")
+  (arg p "The input port.")
+  (returns "A lazy sequence that reads from the port as elements are evaluated.")
   (see port->vec port->chan file->seq)
   (reference """
-    The items are read when the sequence is walked, not when it is made.
-    The port is not closed. Reading takes the items from the port, so a
-    second walk continues where the first walk stopped.
+    Items are read on demand during sequence iteration, not at sequence
+    creation time. The port is not closed upon completion. Reading mutates
+    port state, so repeated traversals continue from where the previous
+    traversal ended.
 
-    A @code{seq} body cannot suspend. In a bjoroutine, each pull parks the
-    thread. In a bjoroutine, use @code{port->vec} or @code{port->chan}.
+    Sequence evaluation cannot suspend cooperatively; within a bjoroutine,
+    use @code{port->vec} or @code{port->chan} instead.
     """))
 
 (:doc file->seq
-  (summary "The items that a reader reads from a file, as a lazy sequence.")
-  (arg reader "Reads one item from the port of the file.")
-  (arg path "The file.")
-  (returns "@code{(Ok items)}, or @code{(Err e)} when the file cannot be opened now.")
+  (summary "Returns a lazy sequence of items read from a file path.")
+  (arg reader "Reader function invoked on the file's input port.")
+  (arg path "Path to the target file.")
+  (returns "@code{(Ok seq)} on success, or @code{(Err e)} if the file cannot be opened.")
   (see file-read/seq port->seq)
   (reference """
-    The file is opened once at the call, to see if it can be opened, and
-    closed again. Then the result is @code{file-read/seq}: each walk opens
-    the file again and reads from the start, and the walk closes it at its
-    end.
-
-    If the file cannot be opened later, when the sequence is walked, the
-    first pull raises.
-
-    A @code{seq} body cannot suspend, so in a bjoroutine each pull parks
-    the thread.
+    The file is initially opened to verify accessibility and immediately
+    closed. Each sequence iteration opens the file anew, reads from the
+    beginning, and closes it upon reaching EOF.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -154,11 +149,11 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc port->chan
-  (summary "Reads a port on a new fiber, and sends each item on a channel.")
-  (arg reader "The bjoroutine that reads one item from the port.")
-  (arg p "The port.")
-  (returns "The channel, and a promise that lands with the number of items when the port is at its end.")
-  (raises Bjolang.Runtime.ScopeEnded "When there is no ambient scope to start the fiber in.")
+  (summary "Spawns a fiber that reads items from a port and streams them over a channel.")
+  (arg reader "Bjoroutine reader invoked to read each item.")
+  (arg p "The input port.")
+  (returns "A tuple containing the output channel and a completion promise holding the count of read items.")
+  (raises Bjolang.Runtime.ScopeEnded "When invoked outside an ambient structured concurrency scope.")
   (see chan-next port->vec)
   (example """
     (match (port->chan (bjoroutine (p) (read-line p)) port)
@@ -169,28 +164,25 @@
            (None 'finished)))))
     """)
   (reference """
-    The fiber belongs to the ambient scope. The channel has no buffer, so
-    the fiber reads the next item only after a receiver took the last one.
-    The port is not closed.
+    The producer fiber executes within the ambient scope. The unbuffered
+    channel ensures backpressure: the worker fiber reads the next item only
+    after the receiver consumes the previous one. The port is not closed
+    automatically.
 
-    If the consumer stops early, the fiber waits at its send, and the scope
-    waits for the fiber. Read to the end, or cancel the scope.
-
-    If reader raises, the promise fails and no more items come.
+    If the reader throws an exception, the completion promise fails and no
+    further items are emitted.
     """))
 
 (:doc chan-next
-  (summary "The next item from a port->chan, or None at the end.")
-  (arg c "The channel from @code{port->chan}.")
-  (arg done "The promise from @code{port->chan}.")
-  (returns "@code{(Some item)}, or @code{None} when the promise has landed.")
+  (summary "Fetches the next item from a port->chan stream, or None at EOF.")
+  (arg c "The channel returned by @code{port->chan}.")
+  (arg done "The completion promise returned by @code{port->chan}.")
+  (returns "@code{(Some item)} if an item is available, or @code{None} if the stream completed.")
   (see port->chan)
   (reference """
-    It waits for the channel and the promise together. The fiber sends
-    each item before the promise lands, so no item is lost.
-
-    @code{None} also comes when the reader raised. To know which, sync on
-    @code{(promise-join done)} after the @code{None}.
+    Synchronizes on both the channel and the completion promise. To check
+    for errors after @code{None} is returned, join the completion promise:
+    @code{(sync (promise-join done))}.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -198,7 +190,7 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc Stream
-  (summary "The .NET System.IO.Stream, which a port can be made over.")
+  (summary "The .NET System.IO.Stream type wrapped by Bjolang ports.")
   (see stream->input-port stream->output-port))
 
 ;; ---------------------------------------------------------------------------
@@ -206,57 +198,40 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc read-some-evt
-  (summary "The event that reads the bytes that are available, at least one.")
-  (arg p "The port.")
-  (returns "An event whose value is @code{(Ok (Some bytes))}, never an empty array; @code{(Ok None)} at the end of input; or @code{(Err e)} when the stream has failed.")
+  (summary "Returns a CML event that reads available bytes from the port buffer.")
+  (arg p "The input port.")
+  (returns "An event yielding @code{(Ok (Some bytes))} with at least 1 byte, @code{(Ok None)} at EOF, or @code{(Err e)} on I/O failure.")
   (see read-some read-bytes-evt eof-evt)
   (reference """
-    This is a real CML event. If another branch of a @code{choose} wins,
-    nothing is taken, and the bytes stay in the buffer for the next read.
+    First-class CML event. If another branch in @code{choose} synchronizes
+    first, no bytes are consumed and the buffer contents remain intact.
 
-    The event is @strong{ephemeral}: each @code{sync} asks the port again.
-    Thus a loop over one event reads successive bytes, and does not win
-    with the same answer each time. @code{(task->event ...)} cannot do
-    this, and that is why a read is not a task.
-
-    @strong{Why the value is a @code{Result}.} A stream can fail, and the
-    CML resume path carries a value, not a raise. Thus a failure that comes
-    while a fiber waits in a @code{choose} must arrive as a value.
-    @code{read-some} unwraps it and raises on the fiber's own stack.
-
-    The bytes that arrived before a failure are read first. After that,
-    every read gives the same @code{Err}.
+    The event is ephemeral: each synchronization evaluates against the
+    current port state, allowing repeated reads in a loop without stale
+    cached results.
     """))
 
 (:doc read-bytes-evt
-  (summary "The event that reads exactly n bytes, or what is left at the end of input.")
-  (arg p "The port.")
-  (arg n "How many bytes. At least 1.")
-  (returns "An event whose value is @code{(Ok (Some bytes))}; @code{(Ok None)} at the end of input; or @code{(Err e)} when the stream has failed.")
-  (raises System.ArgumentOutOfRangeException "When n is less than 1. Raised when the event is made.")
+  (summary "Returns a CML event that reads exactly n bytes, or remaining bytes at EOF.")
+  (arg p "The input port.")
+  (arg n "Target byte count. Must be at least 1.")
+  (returns "An event yielding @code{(Ok (Some bytes))}, @code{(Ok None)} at EOF, or @code{(Err e)} on failure.")
+  (raises System.ArgumentOutOfRangeException "When n is less than 1.")
   (see read-bytes read-some-evt)
   (reference """
-    At the end of input, a remainder shorter than n comes back as
-    @code{(Some ...)}, and the next read gives @code{None}. Thus "short"
-    and "finished" are two separate answers.
-
-    It is a real, ephemeral CML event, as @code{read-some-evt} is: a read
-    that loses its @code{choose} takes nothing.
+    If EOF is reached before n bytes are read, any remaining bytes are
+    yielded as @code{(Some bytes)}, and the subsequent read yields
+    @code{None}.
     """))
 
 (:doc eof-evt
-  (summary "The event that fires when the port has no more bytes: its input ended, or the stream failed.")
-  (arg p "The port.")
-  (returns "An event that fires when all bytes are read and no more can come.")
+  (summary "Returns a CML event that triggers when a port reaches EOF or encounters an error.")
+  (arg p "The input port.")
+  (returns "An event enabled when no further bytes can be read.")
   (see read-some-evt port-eof?)
   (reference """
-    It does not tell which of the two happened. That makes it the event to
-    wait on for "the other end has gone away". A read beside it tells
-    which.
-
-    It fires only when the buffer is empty: bytes that are not read yet
-    keep it from firing. While it waits, the port reads more bytes into its
-    buffer, but the event takes none of them.
+    Triggers when the port buffer is exhausted and no further input can
+    arrive. Useful for detecting peer disconnections in network protocols.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -264,57 +239,48 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc read-some
-  (summary "Reads the bytes that are available, and waits for at least one.")
-  (arg p "The port.")
-  (returns "@code{(Some bytes)}, never an empty array, or @code{None} at the end of input.")
-  (raises System.IO.IOException "When the stream has failed. The exception of the stream is raised as it is.")
+  (summary "Reads available bytes from the port, blocking or suspending until at least one byte arrives.")
+  (arg p "The input port.")
+  (returns "@code{(Some bytes)} containing at least 1 byte, or @code{None} at EOF.")
+  (raises System.IO.IOException "When an underlying stream I/O failure occurs.")
   (see read-some-evt read-bytes)
   (reference """
-    This syncs @code{read-some-evt}. In a bjoroutine it suspends; in an
-    ordinary function it parks the thread. An @code{Err} is raised on the
-    caller's own stack.
+    Synchronizes on @code{read-some-evt}. Suspends cooperatively within a
+    bjoroutine; blocks the thread in standard synchronous code.
     """))
 
 (:doc read-bytes
-  (summary "Reads exactly n bytes, or what is left at the end of input.")
-  (arg p "The port.")
-  (arg n "How many bytes. At least 1.")
-  (returns "@code{(Some bytes)}, shorter than n only at the end of input, or @code{None} when nothing is left.")
+  (summary "Reads exactly n bytes, or remaining bytes at EOF.")
+  (arg p "The input port.")
+  (arg n "Number of bytes to read. Must be at least 1.")
+  (returns "@code{(Some bytes)} (shorter than n only at EOF), or @code{None} if already at EOF.")
   (raises System.ArgumentOutOfRangeException "When n is less than 1.")
-  (raises System.IO.IOException "When the stream has failed. The exception of the stream is raised as it is.")
-  (see read-bytes-evt read-some peek-bytes)
-  (reference """
-    This syncs @code{read-bytes-evt}. In a bjoroutine it suspends; in an
-    ordinary function it parks the thread.
-    """))
+  (raises System.IO.IOException "When an underlying stream I/O failure occurs.")
+  (see read-bytes-evt read-some peek-bytes))
 
 ;; ---------------------------------------------------------------------------
 ;; Looking without taking
 ;; ---------------------------------------------------------------------------
 
 (:doc peek-bytes
-  (summary "Bytes ahead of the cursor, which stay in the port.")
-  (arg p "The port.")
-  (arg skip "How many bytes after the cursor to pass over first. Not negative.")
-  (arg count "How many bytes to give. Not negative.")
-  (returns "@code{(Some bytes)}, shorter than count only at the end of input, or @code{None} when nothing is after the skip.")
+  (summary "Inspects bytes ahead of the port cursor without consuming them.")
+  (arg p "The input port.")
+  (arg skip "Number of bytes to skip before peeking. Must be non-negative.")
+  (arg count "Number of bytes to peek. Must be non-negative.")
+  (returns "@code{(Some bytes)} (shorter than count at EOF), or @code{None} if EOF occurs before skip.")
   (raises System.ArgumentOutOfRangeException "When skip or count is negative.")
-  (raises System.IO.IOException "When the stream has failed and the buffer is empty. The exception of the stream is raised as it is.")
+  (raises System.IO.IOException "When the stream fails and the buffer is empty.")
   (see read-bytes reencode-input-port)
   (example """
-    ;; Sniff a gzip header, then read the stream from its start.
+    ;; Inspect magic bytes before choosing a decompression strategy:
     (match (peek-bytes in 0 2)
       ((Some magic) (if (gzip-magic? magic) (inflate in) (plain in)))
       (None (empty)))
     """)
   (reference """
-    It waits until skip + count bytes are in the buffer, or the input
-    ends. In a bjoroutine it suspends; in an ordinary function it parks the
-    thread. With count 0, it gives an empty array at once.
-
-    A peek is a read without the move of the cursor. Thus "peek, decide,
-    then read" loses nothing: the bytes are still in the buffer, for
-    @code{read-bytes} and @code{read-line} alike.
+    Buffers data until the requested range is satisfied or EOF is reached.
+    Bytes remain in the port buffer and can subsequently be consumed by
+    @code{read-bytes} or textual readers.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -322,18 +288,15 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc write-bytes!
-  (summary "Writes bytes to an output port as they are.")
-  (arg p "The port.")
-  (arg bytes "The bytes.")
-  (raises System.InvalidOperationException "When @code{shutdown!} has ended the write half of the port.")
+  (summary "Writes a byte array to an output port.")
+  (arg p "The output port.")
+  (arg bytes "Byte array to write.")
+  (raises System.InvalidOperationException "When called after shutdown! has closed the output side.")
   (see flush-port shutdown! write-string)
   (reference """
-    The port is buffered, so most writes are a copy. A write that fills the
-    buffer sends it to the stream, which is a system call. In a bjoroutine
-    that write suspends; in an ordinary function it parks the thread.
-
-    Bytes and text mix freely on one port. @code{flush-port} sends what is
-    buffered.
+    Output ports are buffered. Writes that fill the buffer trigger a flush to
+    the underlying stream, suspending cooperatively in fibers or blocking in
+    synchronous functions.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -341,21 +304,14 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc shutdown!
-  (summary "Ends the write side of a port, and leaves the read side open.")
+  (summary "Shuts down the write half of a duplex port while keeping the read half open.")
   (arg p "The output port.")
   (see write-bytes! flush-port byte-pipe)
   (reference """
-    A protocol needs this, and a close cannot do it. "I have finished
-    speaking, now answer me" is a half-close, not a closed connection.
-
-    First everything that is buffered is sent. Then the write half ends:
-    on a TCP connection the other end gets a FIN, and on a
-    @code{byte-pipe} the input port sees the end of input. On a stream with
-    no half-close, for example a file, the port is only flushed.
-
-    After it, a write raises @code{InvalidOperationException}; it is not
-    dropped silently. A second @code{shutdown!} does nothing. The port must
-    still be closed.
+    Flushes buffered data and transmits a shutdown signal (e.g. TCP FIN or
+    pipe EOF) to the peer. Subsequent write operations throw
+    @code{InvalidOperationException}. The port must still be closed with
+    @code{close-output-port} to release underlying system handles.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -363,39 +319,30 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc limited
-  (summary "A port that reads at most n bytes of p, and then is at the end of input.")
-  (arg p "The port to read through.")
-  (arg n "The most bytes to read. Not negative.")
-  (returns "A new input port.")
+  (summary "Wraps an input port to read at most n bytes before reporting EOF.")
+  (arg p "The source input port.")
+  (arg n "Maximum number of bytes to read. Must be non-negative.")
+  (returns "A new limited input port reading through p.")
   (raises System.ArgumentOutOfRangeException "When n is negative.")
   (see byte-pipe reencode-input-port)
   (example """
-    ;; A body of a known length, read as lines, leaving the rest in conn.
+    ;; Read a fixed-length HTTP body as text lines without consuming trailing data:
     (port->lines (limited conn content-length))
     """)
   (reference """
-    The new port reads @strong{through} p, not around it. The bytes that p
-    has in its buffer count towards the limit, and none is lost or counted
-    twice. When the limit is reached, p is at the byte after the limit.
-
-    The new port owns nothing. Closing it does not close p, and no scope
-    owns it.
+    Reads through the underlying port's buffer without skipping or
+    duplicating data. Closing the limited port does not close the underlying
+    source port.
     """))
 
 (:doc byte-pipe
-  (summary "A pair of ports with nothing under them: what is written to the output can be read from the input.")
-  (returns "The input port and the output port.")
+  (summary "Creates an in-memory duplex byte pipe.")
+  (returns "A pair of (input-port, output-port).")
   (see limited shutdown! stream->input-port)
   (reference """
-    The pipe is in memory and has no limit, as a string port is. A write
-    never waits. The garbage collector frees the pipe, and no scope owns
-    it.
-
-    Closing the output port, or @code{shutdown!} on it, is the end of input
-    for the input port, after the bytes already written. Closing the input
-    port does not end the output port.
-
-    A pipe lets a test of a protocol run with no file and no network.
+    An unbounded in-memory pipe suitable for testing and internal message
+    buffering. Writes do not block. Closing or shutting down the output port
+    signals EOF to the input port once buffered bytes are drained.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -403,31 +350,25 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc stream->input-port
-  (summary "An input port over a Stream that other code gives.")
-  (arg s "The stream, for example a @code{NetworkStream}, a request body or a @code{MemoryStream}.")
-  (returns "A port that reads from s.")
-  (raises Bjolang.Runtime.ScopeEnded "When there is no ambient scope.")
+  (summary "Wraps a .NET Stream in a Bjolang input port.")
+  (arg s "The .NET Stream instance.")
+  (returns "A new input port reading from s.")
+  (raises Bjolang.Runtime.ScopeEnded "When called without an ambient structured concurrency scope.")
   (see stream->output-port)
   (reference """
-    The port owns the stream, as a file port owns its file: closing the
-    port disposes the stream. The ambient scope owns the port, and closes
-    it when the scope ends.
-
-    For the two halves of one duplex stream, use @code{stream->ports} from
-    @code{(std net)}: it disposes the stream only when both halves are
-    closed.
+    The port takes ownership of the stream. Closing the port or exiting the
+    ambient concurrency scope disposes the underlying stream.
     """))
 
 (:doc stream->output-port
-  (summary "An output port over a Stream that other code gives.")
-  (arg s "The stream.")
-  (returns "A port that writes to s.")
-  (raises Bjolang.Runtime.ScopeEnded "When there is no ambient scope.")
+  (summary "Wraps a .NET Stream in a Bjolang output port.")
+  (arg s "The .NET Stream instance.")
+  (returns "A new output port writing to s.")
+  (raises Bjolang.Runtime.ScopeEnded "When called without an ambient structured concurrency scope.")
   (see stream->input-port)
   (reference """
-    The port owns the stream: closing the port flushes it and disposes the
-    stream. The ambient scope owns the port, and closes it when the scope
-    ends.
+    The port takes ownership of the stream. Closing the port or exiting the
+    ambient concurrency scope flushes and disposes the underlying stream.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -435,10 +376,10 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc reencode-input-port
-  (summary "A port whose bytes are those of p, decoded as encoding and encoded again as UTF-8.")
-  (arg p "The port to read through.")
-  (arg encoding "The encoding of the bytes of p. A value from @code{(text encodings)}.")
-  (returns "A new input port, in UTF-8.")
+  (summary "Wraps an input port to transcode bytes from a specified encoding into UTF-8.")
+  (arg p "The source input port.")
+  (arg encoding "Source text encoding from @code{(text encodings)}.")
+  (returns "A new input port yielding UTF-8 bytes.")
   (see reencode-output-port peek-bytes Encoding)
   (example """
     (import (only (text encodings) windows-1252))
@@ -446,28 +387,20 @@
     (read-line (reencode-input-port in windows-1252))
     """)
   (reference """
-    This is how to read text that is not UTF-8, because the text reads of
-    every port decode UTF-8. Racket's @code{reencode-input-port} does the
-    same.
-
-    The new port reads @strong{through} p. The bytes that p has in its
-    buffer, for example from a @code{peek-bytes}, are not skipped. So you
-    can look at the first bytes, then re-encode the rest.
-
-    Bytes that do not decode are read as U+FFFD, as on every port.
-    @code{bytes->string} is the strict alternative. A byte order mark is
-    not treated specially. Closing the new port does not close p.
+    Transcodes input on the fly into UTF-8. Unrecognized byte sequences are
+    replaced with U+FFFD. Closing the re-encoded port does not close the
+    underlying source port.
     """))
 
 (:doc reencode-output-port
-  (summary "A port whose UTF-8 is encoded as encoding on its way into p.")
-  (arg p "The port to write to.")
-  (arg encoding "The encoding to write. A value from @code{(text encodings)}.")
-  (returns "A new output port, which takes UTF-8.")
+  (summary "Wraps an output port to transcode outgoing UTF-8 bytes into a specified target encoding.")
+  (arg p "The destination output port.")
+  (arg encoding "Target text encoding from @code{(text encodings)}.")
+  (returns "A new output port accepting UTF-8 bytes.")
   (see reencode-input-port Encoding)
   (reference """
-    Racket's @code{reencode-output-port} does the same. A character that
-    the encoding does not have is written as its replacement character.
-
-    Closing the new port flushes it into p and leaves p open.
+    Transcodes UTF-8 input into the target encoding before writing to p.
+    Characters not representable in the target encoding are replaced with
+    fallback characters. Closing the wrapped port flushes remaining data to
+    p while leaving p open.
     """))

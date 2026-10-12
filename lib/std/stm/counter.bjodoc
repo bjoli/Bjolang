@@ -2,7 +2,7 @@
 ;; The texts are samizdat markup: code in prose is @code{...}.
 
 (:doc #:module
-  (summary "A counter that transactions add to without conflicting with each other.")
+  (summary "Striped transactional counter that minimizes write conflicts across processor cores.")
   (see TCounter tcounter-add! tcounter-ref)
   (example """
     (import (std stm))
@@ -10,82 +10,78 @@
 
     (def requests (make-tcounter 0L))
 
-    ;; In each request: one location for each CPU, so these do not conflict.
+    ;; Per-request addition: stripes writes by CPU to avoid transaction conflicts
     (atomically (fun (tx) (tcounter-add! tx requests 1L)))
 
-    ;; Now and then: the sum of all stripes.
+    ;; Periodic read: sums across all stripes
     (atomically (fun (tx) (tcounter-ref tx requests)))
     """)
   (reference """
-    A @code{(TCounter T)} holds a number of type T: any type that
-    implements @code{Num}, such as int, long or double. Its value is the
-    sum of several locations, the stripes, one for each CPU. An add writes
-    only the stripe of the CPU that the transaction runs on, so
-    transactions on different CPUs that add to the counter do not make
-    each other run again. A transaction that adds to one location from many
-    fibers does: under contention, it runs many times for each commit.
+    @code{(TCounter T)} stores a numeric counter of type T (implementing
+    @code{Num}, such as int, long, or double). Its value is partitioned across
+    multiple per-CPU striped locations. Add operations write only to the stripe
+    corresponding to the executing CPU, allowing concurrent transactions on
+    different cores to commit without conflicts.
 
-    @strong{Reads cost more.} @code{tcounter-ref} reads all stripes, so a
-    transaction that reads the value conflicts with every transaction that
-    adds. Use a counter where adds are frequent and reads are not: counts
-    of requests, of errors, of items in a structure. A value that is read
-    as often as it is written is better in one location.
+    @strong{Read vs write trade-offs.} @code{tcounter-ref} inspects all stripes
+    to compute the total sum, conflicting with concurrent writes. Use this
+    counter when additions are frequent and reads are infrequent (e.g. request
+    and error metrics). If a value is read as often as it is written, a standard
+    @code{Loc} is preferred.
 
-    @strong{Overflow.} An int or a long wraps on overflow, as two's
-    complement does, whichever stripe the overflow is in. The sum is the
-    same.
+    @strong{Overflow.} Fixed-width integers wrap on overflow using two's
+    complement arithmetic across stripes.
 
-    This is the Accumulator of kcas_data
+    @strong{Credits.} Based on the Accumulator design in kcas_data
     (@link["https://github.com/ocaml-multicore/kcas"]).
     """))
 
 (:doc TCounter
-  (summary "A number of type %a that transactions add to without conflicting with each other.")
-  (tparam %a "The type of the number. It must implement Num.")
+  (summary "Striped transactional counter holding a numeric value of type %a.")
+  (tparam %a "The numeric type (must implement Num).")
   (see make-tcounter))
 
 (:doc make-tcounter
-  (summary "A new counter with the value initial.")
-  (arg initial "The first value. Its type is the type of the counter: write 0L for a long counter.")
-  (returns "A new counter.")
+  (summary "Creates a new striped counter initialized with a value.")
+  (arg initial "Initial value (e.g. 0L for a long counter).")
+  (returns "A new striped transactional counter.")
   (reference """
-    The counter has one stripe for each CPU of the machine, rounded up to a
-    power of two.
+    Allocates one stripe per CPU core, rounded up to the nearest power of two.
     """))
 
 (:doc tcounter-add!
-  (summary "Adds n to the counter, in the transaction.")
-  (arg tx "The log of the transaction.")
+  (summary "Adds n to the counter within a transaction.")
+  (arg tx "The transaction log context.")
   (arg c "The counter.")
-  (arg n "The number to add.")
+  (arg n "The value to add.")
   (reference """
-    Writes only the stripe of this CPU, and reads nothing else, so it does
-    not return the new value. Read that with @code{tcounter-ref}, which
-    reads all stripes.
+    Updates only the stripe assigned to the current CPU core and reads no other
+    stripes. Does not return the updated total; call @code{tcounter-ref} to read
+    the full sum.
     """))
 
 (:doc tcounter-sub!
-  (summary "Subtracts n from the counter, in the transaction.")
-  (arg tx "The log of the transaction.")
+  (summary "Subtracts n from the counter within a transaction.")
+  (arg tx "The transaction log context.")
   (arg c "The counter.")
-  (arg n "The number to subtract."))
+  (arg n "The value to subtract."))
 
 (:doc tcounter-ref
-  (summary "The value of the counter: the sum of all stripes.")
-  (arg tx "The log of the transaction.")
+  (summary "Computes the total sum across all stripes within a transaction.")
+  (arg tx "The transaction log context.")
   (arg c "The counter.")
-  (returns "The value.")
+  (returns "The aggregate sum of all stripes.")
   (reference """
-    Reads all stripes, so the transaction conflicts with every transaction
-    that adds to the counter.
+    Reads all stripes, causing conflicts with any concurrent transactions
+    performing additions.
     """))
 
 (:doc tcounter-set!
-  (summary "Sets the value of the counter, in the transaction.")
-  (arg tx "The log of the transaction.")
+  (summary "Overwrites all counter stripes with a new value within a transaction.")
+  (arg tx "The transaction log context.")
   (arg c "The counter.")
-  (arg value "The new value.")
+  (arg value "The new value to assign.")
   (reference """
-    Writes all stripes, so it conflicts with every transaction that adds to
+    Writes to all stripes, conflicting with concurrent transactions that add to
     the counter.
     """))

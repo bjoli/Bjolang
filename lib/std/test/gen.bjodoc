@@ -68,8 +68,34 @@
     }
 
     A generator made from these with @code{gen-map}, @code{gen-bind},
-    @code{gen-let} and the other combinators obeys the rule too. A generator
-    made with @code{make-gen} must obey it itself.
+    @code{gen-let} and the other combinators obeys the rule too.
+
+    @strong{A generator of your own.} Build it from the generators above
+    when you can: it then obeys the rule without more work. A generator
+    made with @code{make-gen} that calls @code{draw} itself must obey the
+    rule on its own:
+
+    @itemlist{
+      @item{Map a draw of 0 to the simplest value: the origin or identity
+        of the domain, such as 0, the empty list or the base case. A range
+        that does not hold 0 starts at its end nearest 0, so add the draw to
+        the lower bound, @code{(+ lo (draw c n))}, for a range above 0.}
+      @item{Make a larger draw give a value farther from the simplest. For
+        a range across 0, draw the sign first, positive at 0, and then the
+        distance from 0, as @code{gen-int-range} does. A draw over the whole
+        range, added to @code{lo}, makes the most negative value the
+        simplest, and shrinking then goes to it.}
+      @item{When a draw chooses between kinds of value, put the simplest
+        kind at 0, and make a kind that is a shortcut to a value, such as
+        an edge value, cost at least as many draws as the other way to the
+        same value. Shrinking prefers fewer draws, and would otherwise keep
+        the shortcut.}
+      @item{Draw a "one more?" choice, 0 for no, before each element of a
+        collection, so that deleting draws removes elements.}
+    }
+
+    A generator that breaks the rule still works: its values are as random
+    as before. Only its failing cases shrink less well.
 
     @strong{Sizes.} A @code{Choices} has a size, which @code{choices-size}
     gives. Numbers, lists and recursive values grow with it. A property's

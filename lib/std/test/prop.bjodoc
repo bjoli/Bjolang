@@ -91,8 +91,12 @@
         whose elements must add up to a value.}
     }
 
-    A change is kept when the replay fails, with any failure, and the draws
-    that the replay used are smaller than the best so far. Fewer draws are
+    A change is kept when the replay fails the same way as the first failed
+    run, and the draws that the replay used are smaller than the best so
+    far. Two failures are the same when the first check that failed is at
+    the same place, or when the run raised an exception of the same type. A
+    smaller case that fails another way shows another bug, and reporting it
+    would hide the bug that was found. Fewer draws are
     smaller. Of two vectors of the same length, the one that is smaller at
     the first place where they differ is smaller. Every kept change makes
     the draws smaller, so shrinking ends. The rounds repeat until a round
@@ -111,7 +115,8 @@
     stored.
 
     @strong{Seeds.} Each @code{for-all} draws from a source made from the
-    seed of its test and its index in the test. The seed of the test comes
+    seed of its test, the source text of its bindings, and its index among
+    the @code{for-all} forms of the test with the same bindings. The seed of the test comes
     from the seed of the run and the name of the test (see
     @code{test-seed}). So choosing tests with filters, or adding a test,
     does not change what the other tests draw. A report shows the seed of
@@ -125,15 +130,21 @@
 
     @codeblock[#:lang "bjolang"]|{
     (failed
-      (case (test "reverse is not the identity") (index 0) (seed "1234567890") (size 4) (draws [1 0 1 1 0]))
-      (case (test "parse round trip") (index 1) (seed "1234567890") (size 37) (draws [2 -1 0])))
+      (case (test "reverse is not the identity") (bindings "((xs : (List int)))") (index 0) (seed "1234567890") (size 4) (draws [1 0 1 1 0]))
+      (case (test "parse round trip") (bindings "((e gen-expr))") (index 0) (seed "1234567890") (size 37) (draws [2 7 0])))
     }|
 
     @itemlist{
-      @item{@code{test} is the name of the test, and @code{index} the
-        position of the @code{for-all} among the @code{for-all} forms that
-        the test ran, from 0. A case is found by these two, not by a line
-        number, because lines change when the file is edited.}
+      @item{@code{test} is the name of the test, @code{bindings} the source
+        text of the bindings of the @code{for-all}, and @code{index} its
+        position, from 0, among the @code{for-all} forms with the same
+        bindings that the test ran. A case is found by these three, not by a
+        line number, because lines change when the file is edited. A change
+        to the body keeps the case, so that it is tried while the bug is
+        fixed. A change to the bindings drops it, because the draws no
+        longer mean what they meant. A @code{for-all} added to the test does
+        not take over the cases of another, unless its bindings are written
+        the same.}
       @item{@code{seed} is the seed of the run that found the case, for a
         person to read.}
       @item{@code{size} is the size of the run. A replay uses it.}
@@ -142,12 +153,11 @@
         and the others as plain numbers.}
     }
 
-    A @code{for-all} first replays each case that the file has for it.
-    When a case fails, it is shrunk again and reported, its draws are
-    updated, and the random runs do not run. The other cases of the
-    @code{for-all} are then removed. When all the cases pass, they are
-    removed, and the random runs run. A new shrunk failure is added at the
-    end. A @code{for-all} keeps at most 10 cases.
+    A @code{for-all} first replays each case that the file has for it. The
+    cases that pass are removed, and the cases that fail stay. The first
+    that fails is shrunk again and reported, its draws are updated, and the
+    random runs do not run. When no case fails, the random runs run, and a
+    new shrunk failure is added at the end.
 
     The file is read when a @code{for-all} first needs it. It is written at
     the end of @code{(run-tests)}, through @code{at-run-end!}, and only when
@@ -294,6 +304,7 @@
   (arg file "The source file of the for-all.")
   (arg line "The line of the for-all.")
   (arg runs "The number of runs that the form gives, or 0 when it gives none.")
+  (arg bindings "The source text of the bindings, which finds the stored cases of the for-all.")
   (arg names "The names of the bindings, in order, for the report.")
   (arg prop "A function from the choices of a run to the texts of the values and the body of the run.")
   (raises InvalidOperationException "When no test is running.")

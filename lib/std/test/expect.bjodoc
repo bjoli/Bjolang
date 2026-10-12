@@ -61,17 +61,26 @@
     writes the output into the test file in place of each text that
     differed, and prints a line for each file that it changed. The text
     must be a string literal that comes directly after
-    @code{expect-output}, because the run looks for it there. The run
-    prints a line for each text that it could not find.
+    @code{expect-output}, because the run looks for it there.
 
-    The new text is a raw string. Its lines start 2 columns to the right of
-    the column of the @code{(expect-output}, and the closing quotes are on a
-    line of their own, in the same column. A raw string has more quotes
-    than the longest run of quotes in the text, and at least three. Output
-    that has no lines becomes @code{""}.
+    @strong{Finding the text.} A promotion records the line of its
+    @code{expect-output} and the text that the test ran with. The run looks
+    on that line for an @code{(expect-output} whose literal still holds that
+    text, and replaces only that literal. So two forms on one line are each
+    found, and a form that was edited after the test was compiled is left
+    alone: the run prints a line for it, and writes nothing in its place.
 
-    The file is changed from its last line to its first, so that a change
-    does not move the lines of the texts that come before it. When one
+    @strong{The new text.} Output of one line, without a quote, a backslash
+    or a tab, becomes a plain string: @code{"done"}. Other output becomes a
+    raw string. Its lines start 2 columns to the right of the column of the
+    @code{(expect-output}, and the closing quotes are on a line of their
+    own, in the same column. A raw string has more quotes than the longest
+    run of quotes in the text, and at least three. Output that has no lines
+    becomes @code{""}.
+
+    The file is changed from its last line to its first, and the forms on
+    one line from the right, so that a change does not move the texts that
+    are still to come. When one
     @code{expect-output} runs more than once in a run, for example in a
     @code{for-all}, the output of its first mismatch is written.
     @code{run-test} alone does not write the file.

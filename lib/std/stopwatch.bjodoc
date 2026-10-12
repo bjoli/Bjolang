@@ -2,7 +2,7 @@
 ;; The texts are samizdat markup: code in prose is @code{...}.
 
 (:doc #:module
-  (summary "Stopwatches that read the ambient clock, and time-it to measure a body.")
+  (summary "Stopwatches reading ambient monotonic time, and time-it benchmarking utility.")
   (see Stopwatch stopwatch time-it)
   (example """
     (import (std stopwatch))
@@ -12,27 +12,28 @@
     (do-the-work)
     (stopwatch-stop! sw)
     (stopwatch-ms sw)          ; elapsed milliseconds, as a long
-    (ref sw 's)                ; the same, in whole seconds
+    (ref sw 's)                ; elapsed time in whole seconds
 
     (time-it #:times 10 (do-the-work))
     """)
   (reference """
-    A stopwatch reads the prelude's @code{monotonic-ms}, which reads
-    @code{current-clock}. It does not hold a
-    @code{System.Diagnostics.Stopwatch}. Thus a test can bind a clock and get
-    an exact elapsed time instead of a real one:
+    A stopwatch reads monotonic time from the prelude's @code{monotonic-ms},
+    which queries @code{current-clock}. It does not wrap
+    @code{System.Diagnostics.Stopwatch}. This allows tests to bind a deterministic
+    virtual clock and produce predictable timings:
 
     @codeblock[#:lang "bjolang"]|{
     (parameterize ((current-clock (make-clock #:monotonic-ms (fun () 0L))))
       (time-the-thing))   ; every stopwatch inside reads 0
     }|
 
-    A stopwatch is mutable. It is started and stopped, and the time of each
-    run is added to its total. The resolution is one millisecond.
+    Stopwatches are mutable structures. They can be started and stopped
+    repeatedly, accumulating elapsed runtime across active periods with
+    millisecond resolution.
 
-    A stopwatch is @code{Refable} by unit: @code{(ref sw 'ms)} is the elapsed
-    time in milliseconds and @code{(ref sw 's)} is the elapsed time in whole
-    seconds, rounded down. Any other symbol raises
+    Stopwatches implement @code{Refable} using symbol units: @code{(ref sw 'ms)}
+    returns elapsed time in milliseconds, and @code{(ref sw 's)} returns elapsed
+    time in integer seconds (rounded down). Any other symbol raises
     @code{System.ArgumentException}.
     """))
 
@@ -41,56 +42,53 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc Stopwatch
-  (summary "A stopwatch: a total elapsed time, and the reading of the run in progress.")
-  (field started "The clock reading at the last start, or -1 when the watch is not running.")
-  (field elapsed "The milliseconds that the completed runs add up to.")
+  (summary "Stopwatch structure tracking total elapsed time and active run state.")
+  (field started "Timestamp of the current active run, or -1 if stopped.")
+  (field elapsed "Accumulated milliseconds across completed runs.")
   (see stopwatch stopwatch-start! stopwatch-ms)
   (reference """
-    Both fields are mutable, because a stopwatch is started and stopped in
-    place. Use the functions of this module to change them, not
-    @code{record-set!}.
+    Both fields are mutable to support in-place updates. Use this module's API
+    rather than @code{record-set!} directly.
 
-    @code{(ref sw 'ms)} and @code{(ref sw 's)} read the elapsed time, in
-    milliseconds or in whole seconds. Any other symbol raises
-    @code{System.ArgumentException}.
+    @code{(ref sw 'ms)} and @code{(ref sw 's)} read elapsed time in milliseconds
+    or whole seconds. Any other symbol raises @code{System.ArgumentException}.
     """))
 
 (:doc stopwatch
-  (summary "A new stopwatch: stopped, at zero.")
-  (returns "A stopwatch that is not running and has 0 ms elapsed.")
+  (summary "Creates a new stopped stopwatch initialized to zero.")
+  (returns "A stopped stopwatch with 0 ms elapsed.")
   (see stopwatch-start!))
 
 (:doc stopwatch-start!
-  (summary "Starts a stopwatch.")
+  (summary "Starts or resumes a stopwatch.")
   (arg sw "The stopwatch.")
   (see stopwatch-stop! stopwatch-ms)
   (reference """
-    Starting a watch that is running does nothing. This is the same as
-    @code{Start} on a .NET stopwatch.
+    Starting an already-running stopwatch has no effect.
     """))
 
 (:doc stopwatch-stop!
-  (summary "Stops a stopwatch and adds the run to its total.")
-  (arg sw "The stopwatch. Stopping a watch that is not running does nothing.")
+  (summary "Stops a stopwatch and accumulates the current run duration.")
+  (arg sw "The stopwatch. Stopping an already-stopped stopwatch has no effect.")
   (see stopwatch-start! stopwatch-ms))
 
 (:doc stopwatch-ms
-  (summary "The elapsed time of a stopwatch, in milliseconds.")
+  (summary "Returns total elapsed milliseconds for a stopwatch.")
   (arg sw "The stopwatch.")
-  (returns "The total of the completed runs, plus the run in progress if the watch is running.")
+  (returns "Total elapsed time across completed runs, plus the active run if currently running.")
   (see stopwatch-stop!)
   (reference """
-    You can read a running watch. It does not stop.
+    Can be called on running stopwatches without interrupting timing.
     """))
 
 (:doc get-memory-usage
-  (summary "The bytes allocated on the calling thread since it started.")
-  (returns "A long that only increases. Subtract two readings to get what was allocated between them.")
+  (summary "Returns bytes allocated on the current thread since creation.")
+  (returns "A monotonically increasing long. Subtract consecutive readings to measure allocations.")
   (see time-it)
   (reference """
-    @code{System.GC.GetAllocatedBytesForCurrentThread}. It counts the calling
-    thread only, so a reading does not include allocations of other threads
-    or other fibers.
+    Delegates to @code{System.GC.GetAllocatedBytesForCurrentThread}. Measures
+    allocations on the calling thread only; allocations on other threads or fibers
+    are not included.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -98,28 +96,26 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc time-it
-  (summary "Runs a body, then prints the mean time and memory allocated per run.")
+  (summary "Executes a body repeatedly and reports average elapsed time and thread allocations.")
   (form (time-it body ...))
   (form (time-it #:times n body ...))
-  (arg n "How many timed runs. One when it is not given.")
-  (rest body "What to time. At least one form. Its value is dropped.")
+  (arg n "Number of timed iterations. Defaults to 1.")
+  (rest body "Expression(s) to benchmark. Evaluated for side effects; return value is discarded.")
   (see stopwatch get-memory-usage)
   (example """
     (time-it #:times 100 (list-sort big-list))
     ;; prints: Mean of 100 runs: 3ms. 120000B allocated per run.
     """)
   (reference """
-    The body runs once as a warmup before the timed runs, so a body with
-    @code{#:times n} runs n + 1 times. During the warmup,
-    @code{current-output-port} is a string port, and its output is
-    discarded. Other side effects of the warmup occur.
+    Executes one untimed warmup iteration prior to timed runs (total iterations:
+    n + 1). During warmup, @code{current-output-port} is redirected to a string
+    port to suppress console output, though other side effects still occur.
 
-    The time comes from a stopwatch, so it reads @code{current-clock}, and
-    it is in whole milliseconds. The mean is an integer division, so a body
-    that takes less than a millisecond can show 0ms. The memory comes from
-    @code{get-memory-usage}, so it counts only the calling thread. A body
-    that suspends and continues on a different thread gives an incorrect
-    memory value.
+    Timings derive from @code{current-clock} with millisecond resolution. Averages
+    use integer division, so bodies completing in under 1 ms report 0 ms. Memory
+    allocation measurements derive from @code{get-memory-usage} on the executing
+    thread. Operations that suspend and resume across different thread pool
+    threads will report inaccurate allocation values.
 
-    The form returns unit.
+    Returns unit.
     """))

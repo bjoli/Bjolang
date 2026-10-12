@@ -2,7 +2,7 @@
 ;; texts are samizdat markup: code in prose is @code{...}.
 
 (:doc #:module
-  (summary "A bounded queue that .NET threads put items into and fibers take items out of.")
+  (summary "Thread-safe bounded queue bridging external .NET threads and Bjolang fibers with backpressure and request/reply support.")
   (see make-inbox inbox-post! inbox-recv inbox-closed inbox-call)
   (example """
     (import (std inbox))
@@ -10,12 +10,12 @@
     (: changes (Inbox string))
     (def changes (make-inbox 1000 DropOldest))
 
-    ;; The callback that .NET calls on its own thread. It posts, and returns.
+    ;; External callback executed on a .NET thread: posts and returns immediately.
     (: on-change (-> string void))
     (defun (on-change path)
       (ignore (inbox-post! changes path)))
 
-    ;; The fiber takes the items, with its own handlers and parameters.
+    ;; Fiber consumes incoming items within its own execution context.
     (: watch (-bjo-> (Inbox string) int))
     (defbjo (watch ib)
       (let go ((n 0))
@@ -25,68 +25,70 @@
           (None n))))
     """)
   (example """
-    ;; Request and reply: a .NET caller waits on a task, a fiber answers.
+    ;; Request/reply pattern: a .NET caller awaits a Task, handled by a fiber.
     (: requests (Inbox (Call int int)))
     (def requests (make-inbox 64 DropNewest))
 
-    ;; On the .NET thread: (inbox-call requests 21) gives a (Task int).
+    ;; On the .NET thread: (inbox-call requests 21) returns a (Task int).
 
     ;; On the fiber:
     (: serve (-bjo-> (Inbox (Call int int)) void))
     (defbjo (serve ib)
       (let ((c (sync (inbox-recv ib))))
         (try (ignore (call-reply! c (* 2 (call-request c))))
-             ;; Does nothing when the reply above won.
+             ;; Ensure the caller receives a fault if an exception occurs.
              #:finally (ignore (call-fail! c (Exception. "no answer"))))
         (serve ib)))
     """)
   (reference """
-    An inbox is the door that .NET code uses to give work to Bjolang. A
-    thread that is not a fiber, for example a Kestrel thread, a timer thread
-    or the thread of a @code{FileSystemWatcher}, gives an item to an inbox
-    and returns. A fiber takes the item. The fiber has its own dynamic
-    environment: its effect handlers, its parameters and its cancellation
-    scope.
+    An inbox provides a thread-safe communication boundary between external
+    .NET threads and Bjolang fibers. Threads outside the fiber scheduler
+    (such as Kestrel workers, timer threads, or @code{FileSystemWatcher}
+    callbacks) enqueue items without blocking. Receiving fibers consume
+    items within their own dynamic execution environment, maintaining
+    dedicated effect handlers, dynamic parameters, and cancellation scopes.
 
-    @strong{The rule for a lambda that .NET calls.} It may call the functions
-    in this module and nothing else. The functions that a foreign thread uses
-    are ordinary functions, not bjoroutines, and they do not read parameters
-    or effect handlers, because a thread that is not a fiber has none. A
-    @code{(log ...)} in such a lambda does not fail. It goes to the default
-    handler, also inside a @code{with-handler}. So post the work, and do the
-    logging in the fiber.
+    @strong{External callbacks.} Callbacks invoked by external .NET runtimes
+    should interact with Bjolang by posting to an inbox. These foreign
+    callbacks execute as synchronous functions rather than fibers; they do
+    not share active fiber parameters or effect handlers. Calling
+    @code{(log ...)} within foreign callbacks routes directly to the default
+    global logger. Post items to an inbox and perform domain processing
+    within the receiving fiber.
 
-    @strong{Capacity.} Every inbox has a capacity, and there is no default.
-    An event source that is faster than its consumer must not grow memory
-    without limit. @code{make-inbox} takes a @code{WhenFull} policy that
-    tells what @code{inbox-post!} and @code{inbox-call} do when the inbox is
-    full. @code{inbox-send} and @code{inbox-send-evt} wait for room and
-    never drop an item.
+    @strong{Bounded capacity and backpressure.} Every inbox requires an
+    explicit capacity limit to prevent unbounded memory growth when
+    producers outpace consumers. @code{make-inbox} requires a
+    @code{WhenFull} policy governing @code{inbox-post!} and
+    @code{inbox-call}. Synchronous operations like @code{inbox-send} and
+    @code{inbox-send-evt} block until space is available rather than
+    dropping items.
 
-    @strong{Events.} @code{inbox-recv}, @code{inbox-send-evt} and
-    @code{inbox-closed} are CML events. A receive or a send that loses its
-    @code{choose} takes nothing and puts nothing. Items come out in the
-    order they went in. Senders that wait for room get in first in, first
-    out, for the task form and the event form together.
+    @strong{Concurrent ML events.} @code{inbox-recv}, @code{inbox-send-evt},
+    and @code{inbox-closed} are first-class CML events. If an alternative
+    branch in @code{choose} synchronizes first, no items are enqueued or
+    dequeued. Items preserve FIFO ordering. Senders waiting for available
+    space are queued in FIFO order across both tasks and events.
 
-    @strong{Waking.} A post from a thread that is not a fiber does not run
-    the receiving fiber on that thread. That thread can hold a lock of a
-    .NET library, and the fiber could call back into the library and
-    deadlock. So the receiver is queued on the scheduler, at the cost of one
-    thread-pool hop. A post from a fiber wakes the receiver directly.
+    @strong{Thread hopping and fiber scheduling.} Posts from external
+    threads do not immediately run receiving fibers on the caller's thread,
+    preventing deadlocks when foreign threads hold external locks. Instead,
+    the scheduler queues the receiver on the Bjolang fiber pool. Posts
+    originating from fibers wake receivers immediately.
 
-    @strong{The end.} @code{inbox-close!} and @code{inbox-fail!} are a
-    graceful end: what is queued can still be received. @code{inbox-abort!}
-    is a hard stop: it drops what is queued. @code{inbox-closed} fires when
-    the inbox is closed and nothing is left to receive.
+    @strong{Termination and lifecycle.} @code{inbox-close!} and
+    @code{inbox-fail!} initiate graceful shutdown, allowing consumers to
+    drain queued items. @code{inbox-abort!} immediately drains and discards
+    all pending items. @code{inbox-closed} triggers once an inbox is closed
+    and all remaining items have been consumed.
 
-    @strong{Request and reply.} An inbox whose items are @code{Call}s is a
-    request/reply inbox. Capacity, the policy, closing and receiving work as
-    they do for any other inbox. A fiber that takes a @code{Call} must answer
-    it, usually in @code{#:finally}, so that a raise also answers it.
-    Otherwise the .NET caller waits forever.
+    @strong{Request/reply workflows.} Inboxes handling @code{Call} instances
+    support structured request/reply workflows. Fibers receiving a
+    @code{Call} should ensure a response is provided (typically within a
+    @code{#:finally} block) via @code{call-reply!} or @code{call-fail!},
+    preventing external callers from waiting indefinitely.
 
-    @code{BjolangRuntime/Cml/Inbox.cs} has the implementation.
+    See @code{BjolangRuntime/Cml/Inbox.cs} for implementation details.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -94,34 +96,32 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc WhenFull
-  (summary "What a full inbox does with an item from inbox-post! or inbox-call.")
-  (case DropNewest "Refuse the new item. @code{inbox-post!} returns @code{#f}, and the task of a refused call faults.")
-  (case DropOldest "Remove the oldest queued item and queue the new item. The task of a removed call faults.")
+  (summary "Overflow policy determining how a full inbox handles items submitted via inbox-post! or inbox-call.")
+  (case DropNewest "Rejects the incoming item. @code{inbox-post!} returns @code{#f}, and @code{inbox-call} tasks fault.")
+  (case DropOldest "Evicts the oldest queued item to accept the incoming item. The evicted item's task faults if it was a call.")
   (see make-inbox inbox-dropped-count)
   (reference """
-    The policy has no effect on @code{inbox-send}, @code{inbox-send/token}
-    or @code{inbox-send-evt}. They wait for room and never drop an item.
+    This policy does not apply to @code{inbox-send}, @code{inbox-send/token},
+    or @code{inbox-send-evt}, which wait until space is available.
 
-    A faulted task holds a @code{Bjoml.InboxFullException}. Both policies
-    add each item that they drop to @code{inbox-dropped-count}.
+    Faulted tasks fail with @code{Bjoml.InboxFullException}. Discarded items
+    increment @code{inbox-dropped-count}.
     """))
 
 (:doc make-inbox
-  (summary "A new, empty inbox that holds at most capacity queued items.")
-  (arg capacity "The most items that can wait in the queue. At least 1.")
-  (arg policy "What @code{inbox-post!} and @code{inbox-call} do when the inbox is full.")
-  (returns "A new, open inbox.")
+  (summary "Creates an empty inbox with the specified maximum capacity and overflow policy.")
+  (arg capacity "Maximum number of queued items. Must be at least 1.")
+  (arg policy "Overflow policy applied when the inbox is full.")
+  (returns "A new, open inbox instance.")
   (raises System.ArgumentOutOfRangeException "When capacity is less than 1.")
   (see WhenFull inbox-post! inbox-recv)
   (example """
     (def events (make-inbox 1000 DropOldest))
     """)
   (reference """
-    There is no unbounded inbox and no default capacity. An event source
-    that is faster than its consumer must not grow memory without limit: a
-    @code{FileSystemWatcher} fires thousands of events during a large
-    @code{git checkout}. For an HTTP server, the capacity is the number of
-    requests that can wait before the answer is 503.
+    Inboxes require an explicit capacity limit to enforce backpressure and
+    prevent unbounded memory growth from rapid event sources (such as file
+    system notifications or high-throughput HTTP connections).
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -129,80 +129,57 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc inbox-post!
-  (summary "Gives x to the inbox and never waits. Safe from any thread.")
+  (summary "Enqueues an item without blocking. Safe to call from any thread.")
   (arg ib "The inbox.")
-  (arg x "The item.")
-  (returns "@code{#t} when x was queued or given to a waiting receiver. @code{#f} when the inbox is closed, or full under @code{DropNewest}.")
+  (arg x "The item to enqueue.")
+  (returns "@code{#t} if the item was enqueued or handed off to a waiting receiver; @code{#f} if closed, or full under @code{DropNewest}.")
   (see inbox-send inbox-send-evt WhenFull inbox-dropped-count)
   (reference """
-    This is the function for a thread that has no fiber context. When the
-    inbox is full, the @code{WhenFull} policy decides. Under
-    @code{DropOldest} the oldest queued item is removed, x is queued, and
-    the answer is @code{#t}.
-
-    If the item is a @code{Call} and it is refused or removed, its task
-    faults with a @code{Bjoml.InboxFullException}.
-
-    Under @code{DropOldest} the answer can also be @code{#f} for a short
-    time when every place in the queue is promised to a sender that is
-    committing at that moment, because then there is no queued item to
-    remove.
+    Designed for foreign threads without a fiber context. When capacity is
+    reached, behavior follows the configured @code{WhenFull} policy. Under
+    @code{DropOldest}, the oldest item is evicted and @code{#t} is returned.
+    If an evicted item is a @code{Call}, its associated task faults with
+    @code{Bjoml.InboxFullException}.
     """))
 
 (:doc inbox-send
-  (summary "Gives x to the inbox, as a task that completes when x is in. Safe from any thread.")
+  (summary "Enqueues an item, returning a Task that completes when queued. Safe from any thread.")
   (arg ib "The inbox.")
-  (arg x "The item.")
-  (returns "A task that completes when x is queued or given to a receiver.")
+  (arg x "The item to enqueue.")
+  (returns "A Task that completes when the item is enqueued or delivered.")
   (see inbox-send/token inbox-send-evt inbox-post!)
   (reference """
-    When the inbox is full, the task stays pending until a receiver makes
-    room. This is backpressure: each producer that waits holds exactly one
-    item. The @code{WhenFull} policy has no effect here; nothing is
-    dropped.
-
-    On a closed inbox, the task is cancelled at once. If
-    @code{inbox-abort!} comes while the send waits, the task is cancelled
-    and x is not queued. After @code{inbox-close!}, a send that already
-    waits still gets in.
-
-    A fiber uses @code{inbox-send-evt} instead.
+    When the inbox is full, the task remains pending until space is freed.
+    Does not drop items; ignores @code{WhenFull}. Cancels immediately if the
+    inbox is closed or aborted. Fibers should prefer @code{inbox-send-evt}.
     """))
 
 (:doc inbox-send/token
-  (summary "The same as inbox-send, with a cancellation token of the caller.")
+  (summary "Enqueues an item with an external CancellationToken, returning a completion task.")
   (arg ib "The inbox.")
-  (arg x "The item.")
-  (arg token "The caller's token, for example Kestrel's @code{RequestAborted}.")
-  (returns "A task that completes when x is queued or given to a receiver.")
+  (arg x "The item to enqueue.")
+  (arg token "Cancellation token to monitor (e.g. ASP.NET @code{RequestAborted}).")
+  (returns "A Task that completes when the item is enqueued or delivered.")
   (see inbox-send inbox-call/token)
   (reference """
-    If the token fires while the send waits for room, x does not go into
-    the queue and the task is cancelled. When there is room at once, x goes
-    in and the token has no effect.
+    If cancellation is triggered while waiting for capacity, the item is not
+    enqueued and the task is cancelled.
     """))
 
 (:doc inbox-send-evt
-  (summary "The event that puts x in the inbox, for a fiber.")
+  (summary "Returns a CML event that enqueues an item when capacity is available.")
   (arg ib "The inbox.")
-  (arg x "The item.")
-  (returns "An event that commits when x goes in.")
+  (arg x "The item to enqueue.")
+  (returns "An event that synchronizes when the item is enqueued.")
   (see inbox-send inbox-closed)
   (example """
     (sync (choose (inbox-send-evt ib job)
-                  (wrap (inbox-closed ib) (fun (_) (log "nobody takes jobs now")))))
+                  (wrap (inbox-closed ib) (fun (_) (log "inbox closed")))))
     """)
   (reference """
-    The event commits when there is room. If another branch of a
-    @code{choose} wins, x is @strong{not} queued.
-
-    That is why a fiber gets an event and not a task. A task cannot be
-    withdrawn, so @code{(task->event (inbox-send ib x))} in a branch that
-    loses queues x later anyway, and nobody expects it.
-
-    On a closed inbox, the event never commits. After @code{inbox-abort!},
-    a send event that waits never commits. A fiber that can meet a closed
-    inbox chooses this event together with @code{inbox-closed}.
+    The event synchronizes once space is available. If an alternative branch
+    in @code{choose} synchronizes first, the item is not enqueued. Never
+    synchronizes on a closed inbox.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -210,23 +187,20 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc inbox-recv
-  (summary "The event that takes the oldest item from the inbox.")
+  (summary "Returns a CML event that dequeues and yields the oldest item in the inbox.")
   (arg ib "The inbox.")
-  (returns "An event whose value is the item.")
+  (returns "An event yielding the dequeued item.")
   (see inbox-closed inbox-post!)
   (reference """
-    This is a real CML event. If another branch of a @code{choose} wins,
-    nothing is taken, and the item stays at the front for the next
-    receiver, as with a channel receive.
-
-    On an inbox that is closed and empty, it never fires. Use
-    @code{inbox-closed} to see the end.
+    First-class CML event. If another branch in @code{choose} synchronizes
+    first, no item is dequeued. Never synchronizes if the inbox is closed and
+    empty; use @code{inbox-closed} to monitor shutdown.
     """))
 
 (:doc inbox-closed
-  (summary "The event that fires when the inbox is closed and nothing is left to receive.")
+  (summary "Returns a CML event that triggers when the inbox is closed and all items have been consumed.")
   (arg ib "The inbox.")
-  (returns "An event whose value is @code{None} after @code{inbox-close!} or @code{inbox-abort!}, and @code{(Some e)} after @code{(inbox-fail! ib e)}.")
+  (returns "An event yielding @code{None} after normal closure or abort, or @code{(Some e)} after failure.")
   (see inbox-recv inbox-close! inbox-fail! inbox-abort!)
   (example """
     (defbjo (drain ib)
@@ -237,14 +211,9 @@
           (None 'done))))
     """)
   (reference """
-    It fires when the inbox is closed, the queue is empty, and no sender
-    that waited before the close is still to get in. After that, every
-    @code{sync} on it commits at once.
-
-    It is a separate event, and not an @code{Option} from
-    @code{inbox-recv}, so that code which never closes its inbox keeps the
-    simple form. An example is an HTTP worker that stops when its scope is
-    cancelled.
+    Triggers once the inbox is closed, all queued items have been dequeued,
+    and all pending send operations have committed. Subsequent synchronizations
+    complete immediately.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -252,47 +221,37 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc inbox-close!
-  (summary "Closes the inbox gracefully: what is queued can still be received.")
+  (summary "Initiates graceful shutdown of the inbox, allowing remaining queued items to be consumed.")
   (arg ib "The inbox.")
   (see inbox-fail! inbox-abort! inbox-closed)
   (reference """
-    After the close, @code{inbox-post!} returns @code{#f}, and new sends and
-    calls get a cancelled task. A new @code{inbox-send-evt} never commits.
-
-    What is queued stays, and receivers can still take it. A sender that
-    already waits for room still gets in. @code{inbox-closed} fires when all
-    of that is received.
-
-    A second close does nothing.
+    Subsequent calls to @code{inbox-post!} return @code{#f}, and new send or
+    call tasks are cancelled immediately. Queued items remain accessible to
+    receivers. Pending send operations waiting for space are permitted to
+    complete. @code{inbox-closed} triggers once all items are consumed.
+    Idempotent.
     """))
 
 (:doc inbox-fail!
-  (summary "Closes the inbox as inbox-close! does, and inbox-closed then gives (Some e).")
+  (summary "Initiates graceful shutdown with an exception, causing inbox-closed to yield (Some e).")
   (arg ib "The inbox.")
-  (arg e "The error that a receiver gets from @code{inbox-closed}.")
+  (arg e "The exception indicating failure.")
   (see inbox-close! inbox-closed)
   (reference """
-    The error is kept beside the queue, not in it. Thus no
-    @code{WhenFull} policy can drop the item that tells what went wrong.
-
-    The first error is kept. An error that comes after
-    @code{inbox-closed} has fired has no effect.
+    The failure exception is stored separately from queued items so it cannot
+    be dropped by overflow policies. The first failure is preserved; later
+    failures are ignored.
     """))
 
 (:doc inbox-abort!
-  (summary "Closes the inbox and drops everything queued.")
+  (summary "Abruptly closes the inbox and discards all pending items.")
   (arg ib "The inbox.")
   (see inbox-close! inbox-closed)
   (reference """
-    A hard stop. The queued items are dropped. The task of each queued
-    call is cancelled, and each @code{inbox-send} task that waits for room
-    is cancelled. A waiting @code{inbox-send-evt} never commits, so its
-    @code{choose} stays open for its other branches.
-
-    Then @code{inbox-closed} fires with @code{None}, or with the error of
-    an earlier @code{inbox-fail!}.
-
-    The dropped items are not added to @code{inbox-dropped-count}.
+    All queued items are discarded immediately. Pending call and send tasks
+    are cancelled. @code{inbox-closed} triggers with @code{None} or an
+    earlier failure exception. Discarded items do not increment
+    @code{inbox-dropped-count}.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -300,49 +259,44 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc inbox-dropped-count
-  (summary "How many items the WhenFull policy has dropped from this inbox.")
+  (summary "Returns the total number of items discarded by the overflow policy.")
   (arg ib "The inbox.")
-  (returns "The number of items that were refused or removed because the inbox was full.")
+  (returns "Number of dropped items.")
   (see WhenFull inbox-post!)
   (reference """
-    This lets a program report its losses, for example "dropped 37
-    progress updates". Items dropped by @code{inbox-abort!} are not
-    counted: that is the program that stops, not an inbox that overflows.
+    Enables monitoring of dropped message metrics. Items discarded by
+    @code{inbox-abort!} are not included in this count.
     """))
 
 (:doc inbox-observer
-  (summary "The inbox as an IObserver, to subscribe it to an IObservable.")
+  (summary "Adapts the inbox into a .NET IObserver instance for IObservable subscriptions.")
   (arg ib "The inbox.")
-  (returns "An observer whose @code{OnNext} posts, whose @code{OnError} fails the inbox, and whose @code{OnCompleted} closes it.")
+  (returns "An IObserver forwarding OnNext to inbox-post!, OnError to inbox-fail!, and OnCompleted to inbox-close!.")
   (see make-observer inbox-post! inbox-fail! inbox-close!)
   (example """
     (.Subscribe observable (inbox-observer ib))
     """)
   (reference """
-    @code{OnNext} uses @code{inbox-post!}, so the @code{WhenFull} policy of
-    the inbox applies, and an item that is refused is lost.
+    @code{OnNext} invokes @code{inbox-post!}, adhering to the inbox's
+    configured @code{WhenFull} overflow policy.
     """))
 
 (:doc make-observer
-  (summary "An IObserver made of three functions.")
-  (arg on-next "Called with each item.")
-  (arg on-error "Called with the error that ends the stream.")
-  (arg on-completed "Called when the stream ends without an error.")
-  (returns "An observer that calls the three functions.")
+  (summary "Constructs an IObserver from three callback delegates.")
+  (arg on-next "Delegate invoked for each emitted item.")
+  (arg on-error "Delegate invoked when the stream terminates with an error.")
+  (arg on-completed "Delegate invoked when the stream terminates successfully.")
+  (returns "An IObserver delegating to the provided callbacks.")
   (see inbox-observer)
   (reference """
-    To subscribe to an @code{IObservable}, you need an object that
-    implements @code{IObserver}. Bjolang cannot write such an object, and
-    base .NET has no @code{Subscribe(Action<T>)}.
-
-    The three functions run on the thread of the observable. Thus they
-    obey the rule for every callback from .NET: post to an inbox, close it
-    or fail it, and do nothing else.
+    Provides an adapter for @code{IObservable.Subscribe}. The callback
+    delegates execute on the thread of the observable and should adhere to
+    standard foreign callback rules: post to an inbox and avoid blocking.
     """))
 
 (:doc IObserver
-  (summary "The .NET interface System.IObserver, which an IObservable pushes items to.")
-  (tparam %a "The type of the items.")
+  (summary "The .NET System.IObserver interface used to subscribe to IObservable event streams.")
+  (tparam %a "Type of emitted elements.")
   (see make-observer inbox-observer))
 
 ;; ---------------------------------------------------------------------------
@@ -350,72 +304,53 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc inbox-call
-  (summary "Posts a request as a Call, and returns the task that its caller waits on. Safe from any thread.")
+  (summary "Enqueues a request as a Call and returns a task representing the eventual response. Safe from any thread.")
   (arg ib "The request/reply inbox.")
-  (arg request "What the caller asks.")
-  (returns "A task that completes when a fiber answers with @code{call-reply!} or @code{call-fail!}.")
+  (arg request "The request payload.")
+  (returns "A Task completing when a fiber responds via @code{call-reply!} or @code{call-fail!}.")
   (see inbox-call/token inbox-try-call call-request call-reply!)
   (reference """
-    The call is posted as @code{inbox-post!} posts, and never waits. When
-    the inbox is full, the @code{WhenFull} policy decides: a call that is
-    refused or removed faults its task with a
-    @code{Bjoml.InboxFullException}. On a closed inbox, the task is
-    cancelled. @code{inbox-abort!} cancels the task of a call that is still
-    queued.
-
-    A caller that does not await the task cannot see a fault. Such a
-    caller uses @code{inbox-try-call}.
+    Enqueues the request without blocking, adhering to @code{WhenFull}. If
+    rejected or evicted, the task faults with @code{Bjoml.InboxFullException}.
+    On a closed inbox, the task is cancelled immediately.
     """))
 
 (:doc inbox-call/token
-  (summary "The same as inbox-call, with a cancellation token of the caller.")
+  (summary "Enqueues a request as a Call with a cancellation token, returning a response task.")
   (arg ib "The request/reply inbox.")
-  (arg request "What the caller asks.")
-  (arg token "The caller's token, for example Kestrel's @code{RequestAborted}.")
-  (returns "A task that completes when a fiber answers with @code{call-reply!} or @code{call-fail!}.")
+  (arg request "The request payload.")
+  (arg token "Cancellation token to monitor (e.g. ASP.NET @code{RequestAborted}).")
+  (returns "A Task completing when a fiber responds via @code{call-reply!} or @code{call-fail!}.")
   (see inbox-call call-abandoned inbox-try-call/token)
   (reference """
-    What the token does depends on where the call is:
-
+    Cancellation handling depends on the state of the call:
     @itemlist{
-    @item{@strong{Still queued.} The call is removed and the task is
-    cancelled. No fiber sees a call that nobody waits for.}
-    @item{@strong{Already taken by a fiber.} The task is @strong{not}
-    completed. Only @code{call-reply!} and @code{call-fail!} complete it.
-    @code{call-abandoned} fires instead, and the receiver decides what to
-    do.}
+    @item{@strong{Queued:} The call is evicted from the queue and its task
+    is cancelled immediately.}
+    @item{@strong{Dequeued by a fiber:} The task is not cancelled
+    automatically. Instead, @code{call-abandoned} triggers on the fiber,
+    allowing the worker to handle abandonment safely.}
     }
-
-    The second rule keeps an HTTP handler from writing into a context that
-    is already used again for the next request.
     """))
 
 (:doc inbox-try-call
-  (summary "The same as inbox-call, but a refusal is None and not a faulted task.")
+  (summary "Attempts to post a request as a Call, returning None instead of faulting if full or closed.")
   (arg ib "The request/reply inbox.")
-  (arg request "What the caller asks.")
-  (returns "@code{(Some task)} when the call went in. @code{None} when the inbox was closed, or full under @code{DropNewest}, and nothing was posted.")
+  (arg request "The request payload.")
+  (returns "@code{(Some task)} if enqueued successfully; @code{None} if closed or full under @code{DropNewest}.")
   (see inbox-call inbox-try-call/token inbox-post!)
   (reference """
-    This is the @code{#f} of @code{inbox-post!}, for a call. A faulted task
-    is the wrong answer for a .NET callback that returns its task directly
-    and never awaits it, for example an HTTP middleware. That callback
-    cannot see the fault, and the exception goes to the handler of the
-    framework for unhandled exceptions. A web server then answers 500 where
-    it should answer 503: it tells the client to stop, not to come back
-    later.
-
-    Under @code{DropOldest} the answer is @code{(Some ...)}: this call went
-    in, and the task of an @strong{older} call faults. The @code{#t} of
-    @code{inbox-post!} has the same meaning.
+    Useful in HTTP middleware where returning a faulted task would trigger
+    generic 500 error handlers rather than returning an explicit 503
+    Service Unavailable response.
     """))
 
 (:doc inbox-try-call/token
-  (summary "The same as inbox-try-call, with a cancellation token of the caller.")
+  (summary "Attempts to post a request as a Call with a cancellation token, returning None if rejected.")
   (arg ib "The request/reply inbox.")
-  (arg request "What the caller asks.")
-  (arg token "The caller's token. It works as for @code{inbox-call/token}.")
-  (returns "@code{(Some task)} when the call went in. @code{None} when the inbox was closed, or full under @code{DropNewest}, and nothing was posted.")
+  (arg request "The request payload.")
+  (arg token "Cancellation token to monitor.")
+  (returns "@code{(Some task)} if enqueued successfully; @code{None} if closed or full under @code{DropNewest}.")
   (see inbox-try-call inbox-call/token call-abandoned)
   (example """
     (match (inbox-try-call/token requests ctx (request-aborted ctx))
@@ -424,36 +359,34 @@
     """))
 
 (:doc call-request
-  (summary "What the caller of a Call asked.")
-  (arg c "The call.")
-  (returns "The request.")
+  (summary "Returns the request payload associated with a Call.")
+  (arg c "The call instance.")
+  (returns "The request value.")
   (see call-reply! call-fail!))
 
 (:doc call-reply!
-  (summary "Answers a call with a value. The first answer wins.")
-  (arg c "The call.")
-  (arg value "The answer for the caller.")
-  (returns "@code{#t} when this answer completed the task. @code{#f} when the call was already answered or cancelled; then nothing happens.")
+  (summary "Resolves a Call successfully with the provided response value.")
+  (arg c "The call instance.")
+  (arg value "The response value.")
+  (returns "@code{#t} if this response resolved the call; @code{#f} if already completed or cancelled.")
   (see call-fail! call-abandoned)
   (reference """
-    Because a later answer does nothing, a timeout and a handler can race
-    to answer the same call safely.
-
-    The caller's continuation does not run on the thread of the fiber that
-    answers.
+    The first response or failure wins; subsequent resolutions are ignored.
+    Callers awaiting the task resume on their original synchronization
+    context or thread pool, not on the responding fiber's thread.
     """))
 
 (:doc call-fail!
-  (summary "Answers a call with an exception. The first answer wins.")
-  (arg c "The call.")
-  (arg e "The exception that the caller's task faults with.")
-  (returns "@code{#t} when this answer completed the task. @code{#f} when the call was already answered or cancelled; then nothing happens.")
+  (summary "Faults a Call with the provided exception.")
+  (arg c "The call instance.")
+  (arg e "The exception indicating failure.")
+  (returns "@code{#t} if this failure completed the call; @code{#f} if already completed or cancelled.")
   (see call-reply!))
 
 (:doc call-abandoned
-  (summary "The event that fires when the caller's token fires after a fiber took the call.")
-  (arg c "The call.")
-  (returns "An event that fires once, and then commits at once on every @code{sync}.")
+  (summary "Returns a CML event that triggers if the caller's cancellation token cancels after dequeuing.")
+  (arg c "The call instance.")
+  (returns "An event enabled once cancellation is requested.")
   (see inbox-call/token inbox-try-call/token call-reply!)
   (example """
     (sync (choose (wrap (work-evt (call-request c))
@@ -462,12 +395,8 @@
                         (fun (_) (ignore (call-fail! c (System.OperationCanceledException.)))))))
     """)
   (reference """
-    It never fires for a call made without a token. It never fires for a
-    call that was cancelled while it was still queued, because no fiber
-    had that call.
-
-    The task of the call is not completed when the token fires. The fiber
-    that has the call still answers it.
+    Does not trigger for calls created without a cancellation token, nor for
+    calls cancelled while still waiting in the queue.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -475,5 +404,5 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc CancellationToken
-  (summary "The .NET System.Threading.CancellationToken, as a caller of inbox-call/token or inbox-send/token gives it.")
+  (summary "The .NET System.Threading.CancellationToken structure passed to inbox operations.")
   (see inbox-call/token inbox-send/token inbox-try-call/token))

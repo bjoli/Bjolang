@@ -2,72 +2,64 @@
 ;; texts are samizdat markup: code in prose is @code{...}.
 
 (:doc #:module
-  (summary "A hash set that is changed in place: a .NET HashSet<T>.")
+  (summary "In-place hash set backed directly by .NET HashSet<T>.")
   (see MutableSet mutableset mutableset-add! mutableset-contains? mutableset-union!)
   (example """
     (import (std mutable set))
 
     (def seen (mutableset))
-    (mutableset-add! seen "a")       ; #t: it was new
-    (mutableset-add! seen "a")       ; #f
+    (mutableset-add! seen "a")       ; #t: newly added
+    (mutableset-add! seen "a")       ; #f: already existed
     (mutableset-contains? seen "a")  ; #t
 
     (def other (list->mutableset (list "b" "c")))
-    (mutableset-union! seen other)   ; seen is now a, b and c
+    (mutableset-union! seen other)   ; seen now contains "a", "b", and "c"
     (mutableset-length seen)         ; 3
     """)
   (reference """
-    A @code{(MutableSet a)} is a .NET @code{HashSet<T>}, not a wrapper
-    around one. Adding, removing and testing an element are O(1)
-    expected. An @code{import/extern} that takes a @code{HashSet<T>}
-    accepts a @code{MutableSet} as it is.
+    @code{(MutableSet a)} directly aliases .NET @code{HashSet<T>}. Adding,
+    removing, and membership tests run in expected O(1) time. Foreign methods
+    accepting @code{HashSet<T>} accept @code{MutableSet} directly.
 
-    @strong{This is the mutable one.} @code{(mutableset-add! s x)} changes
-    @code{s}. All code that holds @code{s} sees the change.
-    @code{HashSet} is the persistent structure of the same shape. A
-    @code{TransientHashSet} is a @code{HashSet} that is being built: it is
-    made from one, filled, and frozen back. A @code{MutableSet} is never
-    frozen.
+    @strong{Mutability.} Operations such as @code{mutableset-add!} modify the
+    set in place. All references observe modifications immediately. Unlike
+    @code{TransientHashSet} (which is frozen back into an immutable
+    @code{HashSet}), a @code{MutableSet} remains mutable indefinitely.
 
-    @strong{The set algebra changes its first argument.}
-    @code{(mutableset-union! a b)} makes @code{a} the union of @code{a}
-    and @code{b}. It does not make a third set, and @code{b} does not
-    change. To get a new set and keep both, use the persistent
-    @code{hashset-union}, or copy first with @code{mutableset-copy}.
-    @code{mutableset-subset?}, @code{mutableset-superset?} and
-    @code{mutableset-overlaps?} change nothing.
+    @strong{In-place set algebra.} Set algebraic operations
+    (@code{mutableset-union!}, @code{mutableset-intersect!},
+    @code{mutableset-difference!}, @code{mutableset-symmetric-difference!})
+    mutate the first argument in place without modifying the second argument.
+    To produce a new independent set, use persistent @code{hashset-union} or
+    clone the set first with @code{mutableset-copy}. Relational predicates
+    (@code{mutableset-subset?}, @code{mutableset-superset?},
+    @code{mutableset-overlaps?}) do not modify their arguments.
 
-    @strong{Elements are compared with .NET's equality},
-    @code{EqualityComparer<T>.Default}, not with the @code{Eq} trait.
-    @code{Map} and @code{HashSet} use the same equality. The @code{Eq}
-    implementation of a type that a Bjolang module declares is compiled
-    into that type as its .NET equality, so for such a type the two are
-    the same. Do not change an element after it is in the set.
+    @strong{Element comparison.} Elements are compared using .NET's default
+    equality comparer (@code{EqualityComparer<T>.Default}). For types defined in
+    Bjolang, this resolves to the type's @code{Eq} instance. Modifying elements
+    after insertion leads to undefined lookup behavior.
 
-    @strong{Order.} The order of a walk is the order of the table, not a
-    fixed order.
+    @strong{Iteration order.} Sets are unordered; iteration order reflects
+    internal bucket layout.
 
-    @strong{Walks.} @code{mutableset->seq}, the cursor and the
-    @code{Iterable} walk read the set itself, not a copy. A change to the
-    set during a walk can make the walk raise
-    @code{System.InvalidOperationException}. To change the set while you
-    walk it, walk a copy, such as @code{(mutableset->list s)}, or use
-    @code{mutableset-remove-where!}.
+    @strong{Iteration safety.} Iterating over a set (@code{mutableset->seq},
+    @code{for-each}, or cursor loops) reads the live table directly. Mutating
+    the set during traversal raises @code{System.InvalidOperationException}.
+    To mutate during iteration, take a snapshot via @code{mutableset->list} or
+    use @code{mutableset-remove-where!}.
 
-    @strong{Equality.} Two sets are @code{=} when they have the same
-    elements, by .NET's equality. @code{eq-hash} raises an exception,
-    because the contents can change: a set can not be a key of a
-    @code{Map}.
+    @strong{Equality and hashing.} Two sets are @code{=} if they contain
+    identical elements according to .NET equality. @code{eq-hash} raises an
+    exception to prevent using mutable sets as hash table keys.
 
-    @strong{Threads.} A set has no lock. Many threads can read it at the
-    same time when none writes it. Do not write it from one thread or
-    fiber while another uses it.
+    @strong{Thread safety.} Mutable sets are not thread-safe. Concurrent
+    mutations require external locking.
 
-    @strong{Traits.} A @code{MutableSet} implements @code{Refable}, where
-    @code{(ref s x)} tells whether @code{x} is in @code{s},
-    @code{Iterable}, @code{Collection}, @code{Addable!}, @code{Eq} and
-    @code{->str}. The @code{add!} of @code{Addable!} returns nothing, so
-    it does not tell whether the element was new.
+    @strong{Traits.} Implements @code{Refable} (where @code{(ref s x)} tests
+    membership), @code{Iterable}, @code{Collection}, @code{Addable!}, @code{Eq},
+    and @code{->str}. Note that @code{add!} from @code{Addable!} returns unit
+    and does not report whether the element was new.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -75,87 +67,84 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc MutableSet
-  (summary "A hash set of %a, changed in place: the .NET HashSet<T>.")
-  (tparam %a "The type of the elements. Compared with .NET's equality.")
+  (summary "In-place hash set of %a (aliases .NET HashSet<T>).")
+  (tparam %a "The element type (compared with .NET equality).")
   (see mutableset hashset->mutableset HashSet))
 
 (:doc MutableSetCursor
-  (summary "A position in a walk of a MutableSet.")
-  (tparam %a "The type of the elements.")
+  (summary "Stateful cursor for iterating over a MutableSet.")
+  (tparam %a "The element type.")
   (see mutableset-cursor mutableset-cursor-done? mutableset-cursor-current)
   (reference """
-    A .NET @code{HashSet} enumerator is a struct. A copy of it moves on
-    its own, so a caller can not keep its position. The cursor keeps the
-    enumerator in an object, so a walk allocates one object and nothing
-    for each element.
+    Wraps .NET's hash set enumerator struct in an object to provide step-by-step
+    cursor iteration with zero allocations per element.
     """))
 
 (:doc mutableset
-  (summary "A new empty set.")
-  (returns "A new set with no elements.")
+  (summary "Creates an empty mutable set.")
+  (returns "A new empty set.")
   (see list->mutableset))
 
 (:doc mutableset-length
-  (summary "The number of elements in a set.")
+  (summary "Returns the number of elements in the set.")
   (arg s "The set.")
-  (returns "The number of elements.")
+  (returns "The count of elements.")
   (see mutableset-empty?))
 
 (:doc mutableset-empty?
-  (summary "Whether a set has no elements.")
+  (summary "Tests if the set contains no elements.")
   (arg s "The set.")
-  (returns "#t when the set is empty.")
+  (returns "#t if empty, otherwise #f.")
   (see mutableset-length))
 
 (:doc mutableset-add!
-  (summary "Adds an element to a set.")
-  (arg s "The set, which is changed when x is new.")
-  (arg x "The element.")
-  (returns "#t when x was new, #f when it was in the set. Then the set does not change.")
+  (summary "Adds an element to the set, returning #t if it was newly added.")
+  (arg s "The set to modify.")
+  (arg x "The element to add.")
+  (returns "#t if x was newly added, #f if x was already present.")
   (see mutableset-add-all! mutableset-remove!)
   (reference """
-    The result tells what a second lookup would have to find out. Use it
-    to do a thing once for each new element.
+    Indicates whether an insertion occurred in a single hash table lookup.
     """))
 
 (:doc mutableset-add-all!
-  (summary "Adds all elements of a sequence to a set.")
-  (arg s "The set, which is changed.")
-  (arg xs "The elements to add.")
+  (summary "Adds all elements from a sequence into the set.")
+  (arg s "The set to modify.")
+  (arg xs "Sequence of elements to add.")
   (see mutableset-add! mutableset-union!))
 
 (:doc mutableset-remove!
-  (summary "Removes an element from a set.")
-  (arg s "The set, which is changed.")
-  (arg x "The element.")
-  (returns "#t when x was in the set, #f when it was not. Then the set does not change.")
+  (summary "Removes an element from the set, returning #t if found.")
+  (arg s "The set to modify.")
+  (arg x "The element to remove.")
+  (returns "#t if x was present and removed, #f otherwise.")
   (see mutableset-add! mutableset-remove-all! mutableset-remove-where!))
 
 (:doc mutableset-remove-all!
-  (summary "Removes all elements of a sequence from a set.")
-  (arg s "The set, which is changed.")
-  (arg xs "The elements to remove. An element that is not in s is ignored.")
+  (summary "Removes all elements in a sequence from the set.")
+  (arg s "The set to modify.")
+  (arg xs "Sequence of elements to remove.")
   (see mutableset-remove! mutableset-difference!))
 
 (:doc mutableset-remove-where!
-  (summary "Removes all elements for which a predicate is true.")
-  (arg s "The set, which is changed.")
-  (arg pred "Gets an element, and gives #t to remove it.")
-  (returns "The number of elements that were removed.")
+  (summary "Removes all elements satisfying a predicate.")
+  (arg s "The set to modify.")
+  (arg pred "Predicate function returning #t to remove an element.")
+  (returns "The number of elements removed.")
   (see mutableset-remove!)
   (example """
-    (mutableset-remove-where! s (fun (x) (< x 0)))   ; remove the negative numbers
+    (mutableset-remove-where! s (fun (x) (< x 0)))   ; remove negative numbers
     """))
 
 (:doc mutableset-clear!
-  (summary "Removes all elements from a set.")
-  (arg s "The set, which is changed."))
+  (summary "Removes all elements from the set.")
+  (arg s "The set to clear."))
 
 (:doc mutableset-contains?
-  (summary "Whether an element is in a set.")
+  (summary "Tests if an element is in the set.")
   (arg s "The set.")
-  (arg x "The element.")
-  (returns "#t when x is in s.")
+  (arg x "The element to locate.")
+  (returns "#t if x is present, otherwise #f.")
   (see ref))
 
 ;; ---------------------------------------------------------------------------
@@ -163,27 +152,27 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc mutableset-union!
-  (summary "Adds the elements of b to a: a becomes the union.")
-  (arg a "The set, which is changed.")
-  (arg b "The other set. It does not change.")
+  (summary "Adds all elements from b into a, mutating a in place.")
+  (arg a "The target set to mutate.")
+  (arg b "The source set (unmodified).")
   (see mutableset-add-all! mutableset-intersect!))
 
 (:doc mutableset-intersect!
-  (summary "Removes from a the elements that are not in b: a becomes the intersection.")
-  (arg a "The set, which is changed.")
-  (arg b "The other set. It does not change.")
+  (summary "Retains only elements in a that are also in b, mutating a in place.")
+  (arg a "The target set to mutate.")
+  (arg b "The reference set (unmodified).")
   (see mutableset-union! mutableset-difference!))
 
 (:doc mutableset-difference!
-  (summary "Removes from a the elements that are in b: a becomes a minus b.")
-  (arg a "The set, which is changed.")
-  (arg b "The other set. It does not change.")
+  (summary "Removes all elements in b from a, mutating a in place.")
+  (arg a "The target set to mutate.")
+  (arg b "The elements to remove (unmodified).")
   (see mutableset-remove-all! mutableset-symmetric-difference!))
 
 (:doc mutableset-symmetric-difference!
-  (summary "Makes a hold the elements that are in a or in b, but not in both.")
-  (arg a "The set, which is changed.")
-  (arg b "The other set. It does not change.")
+  (summary "Mutates a to contain elements present in either a or b, but not both.")
+  (arg a "The target set to mutate.")
+  (arg b "The other set (unmodified).")
   (see mutableset-difference! mutableset-union!))
 
 ;; ---------------------------------------------------------------------------
@@ -191,40 +180,40 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc mutableset-subset?
-  (summary "Whether every element of a is in b.")
-  (arg a "The set to test.")
-  (arg b "The other set.")
-  (returns "#t when a is a subset of b. Equal sets are subsets of each other.")
+  (summary "Tests if a is a subset of b.")
+  (arg a "The candidate subset.")
+  (arg b "The target set.")
+  (returns "#t if all elements in a are present in b, otherwise #f.")
   (see mutableset-superset?))
 
 (:doc mutableset-superset?
-  (summary "Whether every element of b is in a.")
-  (arg a "The set to test.")
-  (arg b "The other set.")
-  (returns "#t when a is a superset of b. Equal sets are supersets of each other.")
+  (summary "Tests if a is a superset of b.")
+  (arg a "The candidate superset.")
+  (arg b "The target set.")
+  (returns "#t if all elements in b are present in a, otherwise #f.")
   (see mutableset-subset?))
 
 (:doc mutableset-overlaps?
-  (summary "Whether a and b have an element in common.")
-  (arg a "A set.")
-  (arg b "The other set.")
-  (returns "#t when at least one element is in both sets.")
+  (summary "Tests if a and b share at least one common element.")
+  (arg a "First set.")
+  (arg b "Second set.")
+  (returns "#t if a and b intersect, otherwise #f.")
   (see mutableset-intersect!))
 
 (:doc mutableset-copy
-  (summary "A new set with the same elements.")
-  (arg s "The set. It does not change.")
-  (returns "A new set. A change to one does not change the other. The elements are not copied.")
+  (summary "Creates a shallow copy of the set.")
+  (arg s "The set to copy.")
+  (returns "A new mutable set with identical elements. Elements are not cloned.")
   (see mutableset->hashset))
 
 ;; ---------------------------------------------------------------------------
-;; Walks
+;; Traversals
 ;; ---------------------------------------------------------------------------
 
 (:doc mutableset-cursor
-  (summary "A cursor at the start of a walk of a set.")
-  (arg s "The set.")
-  (returns "A new cursor, before the first element.")
+  (summary "Creates an iteration cursor positioned before the first element.")
+  (arg s "The set to traverse.")
+  (returns "A new cursor positioned before the start.")
   (see mutableset-cursor-done? mutableset-cursor-current mutableset-for-each)
   (example """
     (def c (mutableset-cursor s))
@@ -236,42 +225,38 @@
          (loop))))
     """)
   (reference """
-    A walk calls @code{mutableset-cursor-done?} once before each element,
-    then reads the element with @code{mutableset-cursor-current}. A change
-    to the set during the walk can make the walk raise
-    @code{System.InvalidOperationException}. A @code{for-each} or
-    @code{(:for x s)} loop does this for you.
+    Call @code{mutableset-cursor-done?} before each element, then read with
+    @code{mutableset-cursor-current}. Standard @code{for-each} and @code{:for}
+    loops handle this automatically.
     """))
 
 (:doc mutableset-cursor-done?
-  (summary "Moves a cursor to the next element, and tells whether there was none.")
-  (arg c "The cursor, which moves.")
-  (returns "#t when the walk is at its end, #f when the cursor is now on an element.")
+  (summary "Advances the cursor to the next element; returns #t if finished.")
+  (arg c "The cursor to advance.")
+  (returns "#t if iteration is finished, #f if positioned on an element.")
   (see mutableset-cursor-current)
   (reference """
-    This @strong{moves} the cursor. Call it once for each element, before
-    @code{mutableset-cursor-current}. The first call moves the cursor to
-    the first element.
+    Advances cursor position. Call once before reading each element with
+    @code{mutableset-cursor-current}.
     """))
 
 (:doc mutableset-cursor-current
-  (summary "The element that a cursor is on.")
-  (arg c "The cursor. It does not move.")
-  (returns "The element.")
+  (summary "Returns the element at the current cursor position.")
+  (arg c "The cursor.")
+  (returns "The element at the current position.")
   (see mutableset-cursor-done?)
   (reference """
-    Call it only after @code{mutableset-cursor-done?} returned #f.
+    Call only when @code{mutableset-cursor-done?} has returned #f.
     """))
 
 (:doc mutableset-for-each
-  (summary "Calls f on each element of a set.")
-  (arg f "The function to call on each element.")
-  (arg s "The set. Do not change it in f.")
+  (summary "Applies a function to each element in the set.")
+  (arg f "Function to call on each element.")
+  (arg s "The set to iterate over.")
   (see mutableset-cursor for-each)
   (reference """
-    It does what @code{for-each} does on a set. The function comes first,
-    as in @code{hashset-for-each}. A change to the set in f can make the
-    walk raise @code{System.InvalidOperationException}.
+    Applies f to each element in arbitrary order. Mutating the set inside f
+    raises @code{System.InvalidOperationException}.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -279,57 +264,56 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc list->mutableset
-  (summary "A new set with the elements of a list.")
-  (arg xs "The list. Elements that are equal go in once.")
-  (returns "A new set.")
+  (summary "Constructs a new mutable set from a list.")
+  (arg xs "Source list. Duplicate elements are added once.")
+  (returns "A new mutable set.")
   (see mutableset->list))
 
 (:doc mutableset->list
-  (summary "The elements of a set as a list.")
-  (arg s "The set. It does not change.")
-  (returns "A new list, in the order of a walk of s.")
+  (summary "Converts set elements to a list.")
+  (arg s "The source set.")
+  (returns "A new list containing all elements in traversal order.")
   (see list->mutableset))
 
 (:doc vec->mutableset
-  (summary "A new set with the elements of a vec.")
-  (arg v "The vec. Elements that are equal go in once.")
-  (returns "A new set.")
+  (summary "Constructs a new mutable set from a vector.")
+  (arg v "Source vector. Duplicate elements are added once.")
+  (returns "A new mutable set.")
   (see mutableset->vec))
 
 (:doc mutableset->vec
-  (summary "The elements of a set as a vec.")
-  (arg s "The set. It does not change.")
-  (returns "A new vec, in the order of a walk of s.")
+  (summary "Converts set elements to a vector.")
+  (arg s "The source set.")
+  (returns "A new vector containing all elements in traversal order.")
   (see vec->mutableset))
 
 (:doc seq->mutableset
-  (summary "A new set with the elements of a sequence.")
-  (arg xs "The sequence. It is walked once. Elements that are equal go in once.")
-  (returns "A new set.")
+  (summary "Constructs a new mutable set from a sequence.")
+  (arg xs "Source sequence. Duplicate elements are added once.")
+  (returns "A new mutable set.")
   (see mutableset->seq))
 
 (:doc mutableset->seq
-  (summary "A set as a sequence. It is not a copy.")
-  (arg s "The set.")
-  (returns "The set itself, as a Seq.")
+  (summary "Views set elements as a sequence.")
+  (arg s "The source set.")
+  (returns "A Seq iterating over the set.")
   (see seq->mutableset mutableset->list)
   (reference """
-    The sequence is the set, so a walk sees the set as it is during the
-    walk. A change to the set during a walk of it can make the walk raise
-    @code{System.InvalidOperationException}. To keep the elements as they
-    are now, use @code{mutableset->list} or @code{mutableset->vec}.
+    Views the live set. Modifying the set during sequence traversal raises
+    @code{System.InvalidOperationException}. To take an immutable snapshot,
+    use @code{mutableset->list} or @code{mutableset->vec}.
     """))
 
 (:doc hashset->mutableset
-  (summary "A new mutable set with the elements of a persistent HashSet.")
-  (arg s "The persistent set. It does not change.")
-  (returns "A new mutable set.")
+  (summary "Constructs a new mutable set from an immutable persistent HashSet.")
+  (arg s "The source persistent set.")
+  (returns "A new mutable set containing all elements.")
   (see mutableset->hashset))
 
 (:doc mutableset->hashset
-  (summary "The elements of a set as a persistent HashSet.")
-  (arg s "The mutable set. It does not change.")
-  (returns "A new HashSet. Later changes to s do not change it.")
+  (summary "Converts a mutable set into an immutable persistent HashSet.")
+  (arg s "The source mutable set.")
+  (returns "A new persistent HashSet. Subsequent modifications to s do not affect it.")
   (see hashset->mutableset))
 
 ;; ---------------------------------------------------------------------------
@@ -337,13 +321,12 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc mutableset->str
-  (summary "A set as text: #mset(a b c), in the order of a walk.")
-  (arg s "The set. It does not change.")
-  (returns "The text. Each element is written with its own ->str.")
+  (summary "Formats the set as text in the form #mset(a b c).")
+  (arg s "The set to format.")
+  (returns "Formatted string representation using ->str for each element.")
   (example """
     (mutableset->str (list->mutableset (list 1)))   ; "#mset(1)"
     """)
   (reference """
-    This is also the @code{->str} of a set. The text is for people to
-    read: no reader reads it back.
+    Implements @code{->str} for mutable sets. Formatted for display output.
     """))

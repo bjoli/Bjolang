@@ -2,7 +2,7 @@
 ;; texts are samizdat markup: code in prose is @code{...}.
 
 (:doc #:module
-  (summary "A hash map for transactions: change it together with other maps, queues and locations, and wait for a key.")
+  (summary "Transactional hash map (TMap) supporting fine-grained concurrent updates and CML retry.")
   (see TMap tmap-set! tmap-try-ref tmap-update!)
   (example """
     (import (std stm))
@@ -13,7 +13,7 @@
 
     (atomically (fun (tx) (tmap-set! tx stock "apples" 10)))
 
-    ;; Take three apples for order 17, or wait until there are three.
+    ;; Deduct stock for order 17, or retry until sufficient inventory exists:
     (atomically
      (fun (tx)
        (let ((n (tmap-ref-or tx stock "apples" 0)))
@@ -24,176 +24,154 @@
                (tmap-set! tx orders 17 "3 apples"))))))
     """)
   (reference """
-    A @code{(TMap K V)} maps keys of type K to values of type V. K must
-    implement @code{Eq}: the map uses @code{=} and @code{eq-hash}. Its
-    operations take the @code{Tx} of a transaction first, and are part of
-    that transaction. Run them with @code{atomically} or
-    @code{atomically-evt} from @code{(std stm)}.
+    @code{(TMap K V)} is a concurrent hash map designed for software
+    transactional memory. Key type K must implement @code{Eq} (providing
+    @code{=} and @code{eq-hash}). All operations take a @code{Tx} transaction
+    log parameter and execute within transactions via @code{atomically} or
+    @code{atomically-evt}.
 
-    @strong{Names.} The operations are named as those of the prelude's
-    @code{Map}, with @code{tmap-} for @code{map-}: @code{tmap-try-ref},
-    @code{tmap-ref-or}, @code{tmap-set!}, @code{tmap-remove!} and so on.
+    @strong{Naming conventions.} Operations mirror the prelude's @code{Map}
+    API using the @code{tmap-} prefix: @code{tmap-try-ref}, @code{tmap-ref-or},
+    @code{tmap-set!}, @code{tmap-remove!}, and @code{tmap-update!}.
 
-    @strong{Waiting.} A transaction that does not find what it needs can
-    call @code{tx-retry}. It runs again when the map changes where it
-    looked.
+    @strong{Conditional retry.} When a required entry is absent, transactions
+    can call @code{tx-retry} to suspend until the corresponding hash branch is
+    updated.
 
-    @strong{Contention.} The map is a hash trie, and each branch is a
-    location of its own. An operation reads the branches on the path to
-    its key, and writes only the branch that changes. So transactions that
-    change different keys seldom conflict in a large map. In a small map
-    most keys are in the root branch, and transactions that add or remove
-    keys conflict more often. The size is a @code{TCounter} from
-    @code{(std stm counter)}, which has one location for each CPU, so
-    adding keys does not make all transactions conflict on one count. This
-    is the design of the StmMap of Haskell's stm-containers.
+    @strong{Fine-grained concurrency.} Implemented as a hash trie where each
+    branch node is a separate transactional @code{Loc}. Lookups and updates
+    access only the nodes along the key's hash path. Transactions modifying
+    distinct keys rarely conflict. Map size is tracked using a striped
+    @code{TCounter} to avoid bottlenecking concurrent insertions on a shared
+    count (inspired by Haskell's @code{stm-containers}).
 
-    @strong{Cost.} A lookup, an add and a remove read one branch for each
-    5 bits of the hash that are needed to tell the key from the others:
-    O(log n) with base 32. @code{tmap-length} reads one location for
-    each CPU.
-    @code{tmap-fold} and @code{tmap->list} read every branch, so a
-    transaction that calls them conflicts with every change to the map.
-
-    @strong{Keys.} The map mixes the bits of @code{eq-hash}, so keys whose
-    hashes differ in only a few bits, such as consecutive ints, are spread
-    over the trie, and fibers that add them at the same time seldom
-    conflict. Keys with the same @code{eq-hash} are kept in one bucket and
-    compared with @code{=}, so a bad hash makes the map slow, not wrong. Do
-    not change a key after it is in the map.
-
-    @strong{Measured.} Sixteen fibers that each add 50 000 consecutive int
-    keys: 1.0 runs of the transaction for each commit, and 8.4 times the
-    throughput of one fiber, with server GC. One @code{(Loc (Map K V))}
-    for the same work took 2.3 times as long. With the default workstation
-    GC, the allocation of all fibers is the limit, and neither scales. A
-    project sets server GC with @code{(runtime (gc-server #t))} in its
-    manifest.
+    @strong{Performance characteristics.} Lookups, insertions, and removals
+    run in O(log32 n) time. Whole-map operations (@code{tmap-fold},
+    @code{tmap->list}) read all branch locations, conflicting with any
+    concurrent modification.
     """))
 
 (:doc TMap
-  (summary "A hash map from %k to %v, for transactions.")
-  (tparam %k "The type of the keys. It must implement Eq.")
-  (tparam %v "The type of the values.")
+  (summary "Transactional hash map mapping %k to %v.")
+  (tparam %k "The key type (must implement Eq).")
+  (tparam %v "The value type.")
   (see make-tmap))
 
 (:doc TMapSlot
-  (summary "A part of a TMap. The functions of the map name it, so it is exported; it can not be used outside the map.")
-  (tparam %k "The type of the keys.")
-  (tparam %v "The type of the values."))
+  (summary "Internal slot node type for TMap.")
+  (tparam %k "The key type.")
+  (tparam %v "The value type."))
 
 (:doc TMapBranch
-  (summary "A part of a TMap. The functions of the map name it, so it is exported; it can not be used outside the map.")
-  (tparam %k "The type of the keys.")
-  (tparam %v "The type of the values."))
+  (summary "Internal branch node type for TMap.")
+  (tparam %k "The key type.")
+  (tparam %v "The value type."))
 
 (:doc TMapChange
-  (summary "A part of a TMap. The functions of the map name it, so it is exported; it can not be used outside the map.")
-  (tparam %k "The type of the keys.")
-  (tparam %v "The type of the values."))
+  (summary "Internal change descriptor type for TMap.")
+  (tparam %k "The key type.")
+  (tparam %v "The value type."))
 
 (:doc make-tmap
-  (summary "A new empty map.")
-  (returns "A new map."))
+  (summary "Creates an empty transactional hash map.")
+  (returns "A new empty TMap."))
 
 (:doc tmap-try-ref
-  (summary "The value for k, or None when k is not in the map.")
-  (arg tx "The log of the transaction.")
+  (summary "Returns (Some value) for key k within a transaction, or None if absent.")
+  (arg tx "The transaction log context.")
   (arg m "The map.")
-  (arg k "The key.")
-  (returns "(Some value), or None."))
+  (arg k "The key to look up.")
+  (returns "(Some value) if k is present, otherwise None."))
 
 (:doc tmap-ref
-  (summary "The value for k.")
-  (arg tx "The log of the transaction.")
+  (summary "Returns the value for key k within a transaction, raising if missing.")
+  (arg tx "The transaction log context.")
   (arg m "The map.")
-  (arg k "The key.")
-  (returns "The value.")
-  (raises System.Collections.Generic.KeyNotFoundException "When k is not in the map. The transaction writes nothing."))
+  (arg k "The key to look up.")
+  (returns "The value associated with k.")
+  (raises System.Collections.Generic.KeyNotFoundException "When k is not in the map."))
 
 (:doc tmap-ref-or
-  (summary "The value for k, or default when k is not in the map.")
-  (arg tx "The log of the transaction.")
+  (summary "Returns the value for key k within a transaction, or a fallback default.")
+  (arg tx "The transaction log context.")
   (arg m "The map.")
-  (arg k "The key.")
-  (arg default "The value when k is not in the map.")
-  (returns "The value, or default."))
+  (arg k "The key to look up.")
+  (arg default "Fallback value returned if k is absent.")
+  (returns "The value associated with k, or default."))
 
 (:doc tmap-contains?
-  (summary "Whether k is in the map.")
-  (arg tx "The log of the transaction.")
+  (summary "Tests if key k exists in the map within a transaction.")
+  (arg tx "The transaction log context.")
   (arg m "The map.")
-  (arg k "The key.")
-  (returns "#t when k is in the map."))
+  (arg k "The key to locate.")
+  (returns "#t if k is present, otherwise #f."))
 
 (:doc tmap-set!
-  (summary "Sets the value for k, in the transaction.")
-  (arg tx "The log of the transaction.")
+  (summary "Associates key k with value v within a transaction.")
+  (arg tx "The transaction log context.")
   (arg m "The map.")
   (arg k "The key.")
-  (arg v "The value. It replaces the value that k had."))
+  (arg v "The value to associate with k."))
 
 (:doc tmap-remove!
-  (summary "Removes k from the map, in the transaction.")
-  (arg tx "The log of the transaction.")
+  (summary "Removes key k from the map within a transaction.")
+  (arg tx "The transaction log context.")
   (arg m "The map.")
-  (arg k "The key. When it is not in the map, nothing changes."))
+  (arg k "The key to remove."))
 
 (:doc tmap-update!
-  (summary "Sets or removes the entry for k with f of its value, in the transaction.")
-  (arg tx "The log of the transaction.")
+  (summary "Updates or removes key k via transformation function f within a transaction.")
+  (arg tx "The transaction log context.")
   (arg m "The map.")
   (arg k "The key.")
-  (arg f "Gets (Some value), or None when k is not in the map. Gives (Some new-value) to set the value, or None to remove k.")
+  (arg f "Function receiving (Some old-value) or None, returning (Some new-value) to update or None to remove.")
   (example """
-    ;; Count a word.
+    ;; Increment a counter entry:
     (tmap-update! tx counts word
                   (fun (old) (match old
                                ((Some n) (Some (+ n 1)))
                                (None (Some 1)))))
     """)
   (reference """
-    One walk down the trie does the lookup and the change. f is called
-    once in each run of the transaction.
+    Performs lookup and mutation in a single trie descent.
     """))
 
 (:doc tmap-length
-  (summary "The number of keys in the map.")
-  (arg tx "The log of the transaction.")
+  (summary "Returns the number of keys in the map within a transaction.")
+  (arg tx "The transaction log context.")
   (arg m "The map.")
-  (returns "The number of keys.")
+  (returns "The count of key-value pairs.")
   (reference """
-    Reads the size counter of the map, which has one location for each
-    CPU, so the transaction conflicts with every transaction that adds or
-    removes a key.
+    Reads the underlying striped counter, conflicting with transactions that
+    add or remove entries.
     """))
 
 (:doc tmap-empty?
-  (summary "Whether the map has no keys.")
-  (arg tx "The log of the transaction.")
+  (summary "Tests if the map contains no entries within a transaction.")
+  (arg tx "The transaction log context.")
   (arg m "The map.")
-  (returns "#t when the map is empty.")
+  (returns "#t if empty, otherwise #f.")
   (reference """
-    Reads only the root branch: a branch that becomes empty is removed.
+    Inspects only the root trie branch without scanning all stripes.
     """))
 
 (:doc tmap-fold
-  (summary "Combines all entries of the map with f.")
-  (arg tx "The log of the transaction.")
-  (arg f "Gets a key, its value and the result so far, and gives the next result.")
-  (arg init "The result for an empty map.")
+  (summary "Folds over all key-value entries in the map within a transaction.")
+  (arg tx "The transaction log context.")
+  (arg f "Accumulator function called as (f key value acc).")
+  (arg init "Initial accumulator value.")
   (arg m "The map.")
-  (returns "The result.")
+  (returns "The final accumulator value.")
   (reference """
-    The entries come in the order of their hashes, not in the order in
-    which they were added. This reads every branch of the map.
+    Traverses all trie branches in hash order, conflicting with any concurrent
+    modification to the map.
     """))
 
 (:doc tmap->list
-  (summary "All entries of the map, as a list of key and value.")
-  (arg tx "The log of the transaction.")
+  (summary "Converts all entries in the map to a list of (Tuple key value) pairs within a transaction.")
+  (arg tx "The transaction log context.")
   (arg m "The map.")
-  (returns "The entries, in no fixed order.")
+  (returns "A list of (Tuple key value) pairs in arbitrary hash order.")
   (reference """
-    This reads every branch of the map.
+    Traverses all trie branches, conflicting with any concurrent modification.
     """))

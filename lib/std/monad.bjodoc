@@ -2,7 +2,7 @@
 ;; texts are samizdat markup: code in prose is @code{...}.
 
 (:doc #:module
-  (summary "The Monad trait, its instances for List, Option and Result, and the (do ...) block.")
+  (summary "The Monad trait, instances for List, Option, and Result, and do-notation.")
   (see pure bind do)
   (example """
     (import (std prelude))
@@ -16,46 +16,46 @@
           (:return (+ doubled third))))
     """)
   (reference """
-    A monad is a type with two operations: @code{pure} puts a value in it,
-    and @code{bind} gives the value inside it to a function that returns
-    the next one. A @code{(do ...)} block writes a chain of @code{bind}
-    calls as a list of steps.
+    A monad is a type constructor that supports two core operations:
+    @code{pure} lifts a regular value into the monad, and @code{bind} sequences
+    computations by passing an inner value to a function returning the next monad.
+    The @code{(do ...)} macro provides convenient sequential step syntax over
+    chained @code{bind} calls.
 
-    @strong{The instances.}
+    @strong{Standard instances.}
 
     @itemlist{
-      @item{@code{List}: @code{bind} applies the function to each item and
-        appends the lists that it returns. So a block runs once for each
-        combination of items.}
-      @item{@code{Option}: @code{bind} stops at @code{None}. The block
-        returns @code{None} when a step returns @code{None}.}
-      @item{@code{Result}: @code{bind} stops at @code{Err}. The block
-        returns the first @code{Err}, and the steps after it do not run.}
+      @item{@code{List}: @code{bind} applies the function to each element and
+        concatenates the resulting lists in order.}
+      @item{@code{Option}: @code{bind} short-circuits on @code{None}. The block
+        returns @code{None} if any step evaluates to @code{None}.}
+      @item{@code{Result}: @code{bind} short-circuits on @code{Err}. The block
+        returns the first @code{Err} without executing subsequent steps.}
     }
 
-    The type of the block selects the instance, as for any trait method.
+    The return type of the block determines which instance is used.
     """))
 
 (:doc Monad
-  (summary "The trait for a type that can chain computations: pure and bind.")
+  (summary "Trait for sequencing monadic computations via pure and bind.")
   (see pure bind do)
   (reference """
-    An implementation gives @code{pure} and @code{bind} for a type
-    constructor, such as @code{List} or @code{Option}. A @code{(do ...)}
-    block then works for that type.
+    Requires implementing @code{pure} and @code{bind} for a type constructor
+    (such as @code{List} or @code{Option}), enabling @code{(do ...)} syntax for
+    that type.
     """))
 
 (:doc pure
-  (summary "Puts a value in the monad.")
-  (arg x "The value.")
-  (returns "The monad that holds only x: (Cons x Nil), (Some x) or (Ok x).")
+  (summary "Lifts a value into a monadic context.")
+  (arg x "The value to wrap.")
+  (returns "A monad wrapping x: (Cons x Nil), (Some x), or (Ok x).")
   (see bind do))
 
 (:doc bind
-  (summary "Gives the value in a monad to a function that returns the next monad.")
-  (arg m "The monad.")
-  (arg k "The function. It gets each value in m, and may be of either colour.")
-  (returns "The result of k. For List, the results for all items, appended in order. For None or Err, m's None or Err, and k is not called.")
+  (summary "Sequences monadic computations by applying a function to the contained value.")
+  (arg m "The monadic value.")
+  (arg k "Continuation function taking an inner value and returning a monad. May be a fun or bjoroutine.")
+  (returns "The resulting monad from k. For List, concatenates all results in order. For None or Err, returns m unchanged without calling k.")
   (see pure do)
   (example """
     (bind (Some 2) (fun (x) (Some (* x 10))))   ; (Some 20)
@@ -63,32 +63,33 @@
     """))
 
 (:doc do
-  (summary "Writes a chain of bind calls as a block of steps.")
+  (summary "Sequences monadic operations using step-based do-notation.")
   (form (do step ...))
   (rest step """
     A step, one of:
 
-    @code{(:bind name expr)}: binds @code{name} to the value in the monad
-    @code{expr}. @code{name} is a plain identifier.
+    @code{(:bind name expr)}: binds @code{name} to the unwrapped value of
+    monad @code{expr}. @code{name} must be an identifier.
 
-    @code{(:match pattern expr)}: as @code{:bind}, but matches the value
-    against @code{pattern}. A value that does not match raises an
-    exception, as in @code{match}.
+    @code{(:match pattern expr)}: like @code{:bind}, but destructures the
+    unwrapped value against @code{pattern}. Mismatches raise an exception.
 
-    @code{(:let name expr)}: binds @code{name} to @code{expr} itself, with
-    no @code{bind}.
+    @code{(:let name expr)}: binds @code{name} directly to @code{expr} without
+    monadic unwrapping.
 
-    @code{(:then expr)}: binds the monad @code{expr} and ignores its value.
+    @code{(:then expr)}: evaluates the monad @code{expr} for side effects and
+    discards its inner value.
 
-    @code{(:return expr)}: the last step only. The block returns
+    @code{(:return expr)}: valid in final step position only. Returns
     @code{(pure expr)}.
 
-    Any other form: evaluated for its side effects, with no @code{bind}.
-    As the last step, it is the value of the block, and must be a monad.
+    Any other expression: evaluated for side effects without unwrapping. In the
+    final position, it determines the block's return value and must evaluate to
+    a monad.
     """)
   (see bind pure)
   (example """
-    ;; All sums of one item from each list.
+    ;; All sums of pairs from two lists.
     (do (:bind x (list 1 2))
         (:bind y (list 10 20))
         (:return (+ x y)))          ; (11 21 12 22)
@@ -100,15 +101,15 @@
         (:return (* width height)))
     """)
   (reference """
-    The block needs at least one step, and its last step is its value: a
-    @code{:return}, or a form that returns a monad. A @code{:bind},
-    @code{:match}, @code{:let} or @code{:then} can not be last. A
-    keyword-headed form that is not one of these steps is a syntax error.
+    The block requires at least one step. The final step defines the block's
+    result: either an explicit @code{:return} or an expression returning a
+    monad. Binding steps (@code{:bind}, @code{:match}, @code{:let}, or
+    @code{:then}) cannot appear in the final position. Unrecognized keywords in
+    step position produce syntax errors.
 
-    The last step can be a call that returns a monad, so a monadic loop can
-    put its recursive call in tail position.
+    The final step can be a recursive call returning a monad, allowing tail
+    calls in monadic loops.
 
-    The steps after a @code{:bind}, @code{:match} or @code{:then} are the
-    body of a @code{fun} that is given to @code{bind}. So they can not
-    suspend.
+    Steps following @code{:bind}, @code{:match}, or @code{:then} compile into
+    the body of a lambda passed to @code{bind}, and therefore cannot suspend.
     """))

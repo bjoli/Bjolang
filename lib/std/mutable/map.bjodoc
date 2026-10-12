@@ -2,12 +2,12 @@
 ;; texts are samizdat markup: code in prose is @code{...}.
 
 (:doc #:module
-  (summary "A hash table that is changed in place: a .NET Dictionary<K,V>.")
+  (summary "In-place hash table backed directly by .NET Dictionary<K,V>.")
   (see MutableMap mutablemap mutablemap-set! mutablemap-ref mutablemap-try-ref)
   (example """
     (import (std mutable map))
 
-    ;; Count words.
+    ;; Count occurrences of words:
     (def counts (mutablemap))
     (for-each (fun (w) (mutablemap-set! counts w (+ 1 (mutablemap-ref-or counts w 0))))
               (list "a" "b" "a"))
@@ -15,69 +15,53 @@
     (mutablemap-try-ref counts "c")  ; None
     """)
   (reference """
-    A @code{(MutableMap k v)} is a .NET @code{Dictionary<K,V>}, not a
-    wrapper around one. Each operation on one key is O(1) expected. An
-    @code{import/extern} that takes a @code{Dictionary<K,V>} accepts a
-    @code{MutableMap} as it is.
+    @code{(MutableMap k v)} directly aliases .NET @code{Dictionary<K,V>}. Key
+    lookups, insertions, and removals run in expected O(1) time. Foreign
+    methods accepting @code{Dictionary<K,V>} accept @code{MutableMap} directly.
 
-    @strong{This is the mutable one.} @code{(mutablemap-set! m k v)}
-    changes @code{m} and returns nothing. All code that holds @code{m}
-    sees the change. @code{Map} is the persistent structure of the same
-    shape. A @code{TransientMap} is different: it is made from a
-    @code{Map}, filled, and frozen back into a @code{Map}. A
-    @code{MutableMap} is never frozen. Use it for a cache, an index or a
-    counter, where entries go in and out for as long as the program runs.
+    @strong{Mutability.} Operations such as @code{mutablemap-set!} modify the
+    table in place and return unit. Modifications are immediately visible to all
+    holders of the map reference. Unlike @code{TransientMap} (which is frozen back
+    into an immutable @code{Map}), a @code{MutableMap} remains mutable
+    indefinitely. Suitable for long-lived caches, counters, and indices.
 
-    @strong{Keys are compared with .NET's equality},
-    @code{EqualityComparer<K>.Default}, not with the @code{Eq} trait.
-    @code{Map} and @code{HashSet} use the same equality, so the three
-    agree. The @code{Eq} implementation of a type that a Bjolang module
-    declares is compiled into that type as its .NET equality, so for such
-    a type the two are the same. An @code{Eq} implementation that does not
-    agree with .NET's equality is not used here. Do not change a key after
-    it is in the map.
+    @strong{Key comparison.} Keys are compared using .NET's default equality
+    comparer (@code{EqualityComparer<K>.Default}). For types defined in Bjolang,
+    this resolves to the type's @code{Eq} instance. Modifying keys while stored
+    in the map leads to undefined lookup behavior.
 
-    @strong{The key null.} A .NET @code{Dictionary} refuses the key
-    @code{null}. At run time, the case of a union that carries nothing is
-    often @code{null}. So the maps that this module makes keep the entry
-    for @code{null} beside the table, and such a case can be a key. An
-    @code{import/extern} that gets the map as a @code{Dictionary} does not
-    see that entry. A @code{Dictionary} made by other .NET code has no
-    such place: @code{mutablemap-set!} with the key @code{null} on it
-    raises @code{System.ArgumentNullException}.
+    @strong{Null key support.} Standard .NET dictionaries reject null keys.
+    Because empty union cases are represented as null in the runtime, Bjolang's
+    mutable maps maintain an optional slot for null keys beside the dictionary.
+    Dictionaries instantiated outside this module lack this slot, and passing null
+    keys to them raises @code{System.ArgumentNullException}.
 
     @strong{Missing keys.} @code{mutablemap-ref} raises
-    @code{System.Collections.Generic.KeyNotFoundException} when the key is
-    not in the map. @code{mutablemap-try-ref} and
-    @code{mutablemap-ref-or} do not raise.
+    @code{System.Collections.Generic.KeyNotFoundException} if a key is absent.
+    Use @code{mutablemap-try-ref} or @code{mutablemap-ref-or} to avoid
+    exceptions.
 
-    @strong{Order.} The order of a walk is the order of the table, not a
-    fixed order. When the map holds the key @code{null}, its entry comes
-    first.
+    @strong{Iteration order.} Maps are unordered; iteration order reflects
+    internal bucket layout. If a null key is present, it is visited first.
 
-    @strong{Walks.} @code{mutablemap-keys}, @code{mutablemap-values},
-    @code{mutablemap->seq}, the cursor and the @code{Iterable} walk read
-    the map itself, not a copy. A change to the map during a walk can
-    make the walk raise @code{System.InvalidOperationException}. To
-    change the map while you walk it, walk a copy, such as
-    @code{(mutablemap->list m)}.
+    @strong{Iteration safety.} Iterating over keys, values, or entries
+    (@code{mutablemap->seq}, @code{mutablemap-keys}, or cursor loops) reads the
+    live dictionary directly. Modifying the map during iteration raises
+    @code{System.InvalidOperationException}. To mutate during iteration, take a
+    snapshot first via @code{mutablemap->list}.
 
-    @strong{Equality.} Two maps are @code{=} when they hold the same keys
-    and the values of each key are @code{=}. The keys are found with
-    .NET's equality, and the values are compared with @code{Eq}.
-    @code{eq-hash} raises an exception, because the contents can change:
-    a map can not be a key of a @code{Map}.
+    @strong{Equality and hashing.} Two maps are @code{=} if they contain
+    identical keys and equal corresponding values. Because maps are mutable,
+    @code{eq-hash} raises an exception to prevent using mutable maps as keys.
 
-    @strong{Threads.} A map has no lock. Many threads can read it at the
-    same time when none writes it. Do not write it from one thread or
-    fiber while another uses it. For a map that many fibers change, see
-    @code{(std stm map)}.
+    @strong{Thread safety.} Mutable maps are not thread-safe. Concurrent
+    mutations require external locking. For concurrent transactional access
+    across fibers, see @code{(std stm map)}.
 
-    @strong{Traits.} A @code{MutableMap} implements @code{Refable} with the
-    key as index, @code{Iterable} and @code{Collection} over
-    @code{(Tuple k v)}, @code{Addable!} of a @code{(Tuple k v)} (which
-    replaces the value of a key that is there), @code{Eq} and
-    @code{->str}.
+    @strong{Traits.} Implements @code{Refable} with keys as indices,
+    @code{Iterable} and @code{Collection} over @code{(Tuple k v)},
+    @code{Addable!} of @code{(Tuple k v)} (replacing existing values), @code{Eq},
+    and @code{->str}.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -85,146 +69,141 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc MutableMap
-  (summary "A hash table from %k to %v, changed in place: the .NET Dictionary<K,V>.")
-  (tparam %k "The type of the keys. Compared with .NET's equality.")
-  (tparam %v "The type of the values.")
+  (summary "In-place hash table mapping %k to %v (aliases .NET Dictionary<K,V>).")
+  (tparam %k "The key type (compared with .NET equality).")
+  (tparam %v "The value type.")
   (see mutablemap map->mutablemap Map))
 
 (:doc MutableMapCursor
-  (summary "A position in a walk of a MutableMap.")
-  (tparam %k "The type of the keys.")
-  (tparam %v "The type of the values.")
+  (summary "Stateful cursor for iterating over a MutableMap.")
+  (tparam %k "The key type.")
+  (tparam %v "The value type.")
   (see mutablemap-cursor mutablemap-cursor-done? mutablemap-cursor-current)
   (reference """
-    A .NET @code{Dictionary} enumerator is a struct. A copy of it moves on
-    its own, so a caller can not keep its position. The cursor keeps the
-    enumerator in an object, so a walk allocates one object and nothing
-    for each entry.
+    Wraps .NET's dictionary enumerator struct inside an object reference to
+    support cursor-based step iteration with zero allocations per entry.
     """))
 
 (:doc mutablemap
-  (summary "A new empty map.")
-  (returns "A new map with no entries.")
+  (summary "Creates an empty mutable map.")
+  (returns "A new empty mutable map.")
   (see mutablemap-with-capacity list->mutablemap))
 
 (:doc mutablemap-with-capacity
-  (summary "A new empty map with room for a number of entries.")
-  (arg capacity "How many entries fit before the table must grow. Not negative.")
-  (returns "A new map with no entries.")
+  (summary "Creates an empty mutable map with preallocated bucket capacity.")
+  (arg capacity "Initial capacity before rehashing is required. Must be >= 0.")
+  (returns "A new empty mutable map.")
   (raises System.ArgumentOutOfRangeException "When capacity is negative.")
   (see mutablemap)
   (reference """
-    Use this when you know the number of entries. The map then does not
-    rebuild its table while it fills.
+    Preallocates internal hash buckets to avoid resizing overhead when the entry
+    count is known in advance.
     """))
 
 (:doc mutablemap-length
-  (summary "The number of entries in a map.")
+  (summary "Returns the number of entries in the map.")
   (arg m "The map.")
-  (returns "The number of keys.")
+  (returns "The count of key-value pairs.")
   (see mutablemap-empty?))
 
 (:doc mutablemap-empty?
-  (summary "Whether a map has no entries.")
+  (summary "Tests if the map contains no entries.")
   (arg m "The map.")
-  (returns "#t when the map is empty.")
+  (returns "#t if empty, otherwise #f.")
   (see mutablemap-length))
 
 (:doc mutablemap-ref
-  (summary "The value of a key, which must be in the map.")
+  (summary "Returns the value associated with a key, raising KeyNotFoundException if missing.")
   (arg m "The map.")
-  (arg k "The key.")
-  (returns "The value of k.")
+  (arg k "The key to look up.")
+  (returns "The value associated with k.")
   (raises System.Collections.Generic.KeyNotFoundException "When k is not in the map.")
   (see mutablemap-try-ref mutablemap-ref-or ref))
 
 (:doc mutablemap-try-ref
-  (summary "The value of a key, if the key is in the map.")
+  (summary "Returns (Some value) for a key, or None if absent.")
   (arg m "The map.")
-  (arg k "The key.")
-  (returns "(Some v) for the value of k, or None.")
+  (arg k "The key to look up.")
+  (returns "(Some v) if k is present, otherwise None.")
   (see mutablemap-ref mutablemap-ref-or try-ref))
 
 (:doc mutablemap-ref-or
-  (summary "The value of a key, or a default when the key is not in the map.")
+  (summary "Returns the value for a key, or a default fallback if absent.")
   (arg m "The map.")
-  (arg k "The key.")
-  (arg default "The result when k is not in the map.")
-  (returns "The value of k, or default.")
+  (arg k "The key to look up.")
+  (arg default "Fallback value returned if k is absent.")
+  (returns "The value associated with k, or default.")
   (see mutablemap-ref mutablemap-try-ref))
 
 (:doc mutablemap-set!
-  (summary "Sets the value of a key.")
-  (arg m "The map, which is changed.")
+  (summary "Associates a key with a value, overwriting any existing value.")
+  (arg m "The map to modify.")
   (arg k "The key.")
-  (arg v "The value. It replaces the value that k had.")
-  (raises System.ArgumentNullException "When k is null and m is a Dictionary that this module did not make.")
+  (arg v "The value to associate with k.")
+  (raises System.ArgumentNullException "When k is null and m is an external .NET Dictionary.")
   (see mutablemap-add! mutablemap-remove!))
 
 (:doc mutablemap-add!
-  (summary "Sets the value of a key only when the key is not in the map.")
-  (arg m "The map, which is changed when k is new.")
+  (summary "Adds a key-value entry only if the key is not already present.")
+  (arg m "The map to modify.")
   (arg k "The key.")
-  (arg v "The value.")
-  (returns "#t when k was new and the value was set, #f when k was in the map. Then the map does not change.")
-  (raises System.ArgumentNullException "When k is null and m is a Dictionary that this module did not make.")
+  (arg v "The value to associate with k.")
+  (returns "#t if the key was new and inserted, #f if the key already existed.")
+  (raises System.ArgumentNullException "When k is null and m is an external .NET Dictionary.")
   (see mutablemap-set!)
   (reference """
-    One lookup does the test and the write. With
-    @code{mutablemap-contains?} and @code{mutablemap-set!} it takes two.
+    Checks presence and inserts in a single dictionary operation.
     """))
 
 (:doc mutablemap-remove!
-  (summary "Removes a key and its value from a map.")
-  (arg m "The map, which is changed.")
-  (arg k "The key.")
-  (returns "#t when k was in the map, #f when it was not. Then the map does not change.")
+  (summary "Removes a key and its associated value from the map.")
+  (arg m "The map to modify.")
+  (arg k "The key to remove.")
+  (returns "#t if the key was present and removed, #f otherwise.")
   (see mutablemap-set! mutablemap-clear!))
 
 (:doc mutablemap-clear!
-  (summary "Removes all entries from a map.")
-  (arg m "The map, which is changed.")
+  (summary "Removes all entries from the map.")
+  (arg m "The map to clear.")
   (see mutablemap-remove!))
 
 (:doc mutablemap-contains?
-  (summary "Whether a key is in a map.")
+  (summary "Tests if a key exists in the map.")
   (arg m "The map.")
-  (arg k "The key.")
-  (returns "#t when k is in the map.")
+  (arg k "The key to locate.")
+  (returns "#t if k is present, otherwise #f.")
   (see mutablemap-try-ref))
 
 (:doc mutablemap-keys
-  (summary "The keys of a map, as a sequence. It is not a copy.")
-  (arg m "The map.")
-  (returns "A Seq that walks the keys of m.")
+  (summary "Returns a sequence of all keys in the map.")
+  (arg m "The source map.")
+  (returns "A Seq iterating over m's keys.")
   (see mutablemap-values mutablemap->seq)
   (reference """
-    The sequence reads the map when it is walked. A change to the map
-    during a walk can make the walk raise
+    Views the live map. Mutating the map during sequence traversal raises
     @code{System.InvalidOperationException}.
     """))
 
 (:doc mutablemap-values
-  (summary "The values of a map, as a sequence. It is not a copy.")
-  (arg m "The map.")
-  (returns "A Seq that walks the values of m, in the order of mutablemap-keys.")
+  (summary "Returns a sequence of all values in the map.")
+  (arg m "The source map.")
+  (returns "A Seq iterating over m's values in key order.")
   (see mutablemap-keys mutablemap->seq)
   (reference """
-    The sequence reads the map when it is walked. A change to the map
-    during a walk can make the walk raise
+    Views the live map. Mutating the map during sequence traversal raises
     @code{System.InvalidOperationException}.
     """))
 
 (:doc mutablemap-copy
-  (summary "A new map with the same entries.")
-  (arg m "The map. It does not change.")
-  (returns "A new map. A change to one does not change the other. The keys and values are not copied.")
+  (summary "Creates a shallow copy of the map.")
+  (arg m "The map to copy.")
+  (returns "A new mutable map with identical entries. Keys and values are not cloned.")
   (see mutablemap->map))
 
 (:doc mutablemap-cursor
-  (summary "A cursor at the start of a walk of a map.")
-  (arg m "The map.")
-  (returns "A new cursor, before the first entry.")
+  (summary "Creates an iteration cursor positioned before the first entry.")
+  (arg m "The map to traverse.")
+  (returns "A new cursor positioned before the start.")
   (see mutablemap-cursor-done? mutablemap-cursor-current mutablemap-for-each)
   (example """
     (def c (mutablemap-cursor m))
@@ -237,45 +216,41 @@
          (loop))))
     """)
   (reference """
-    A walk calls @code{mutablemap-cursor-done?} once before each entry,
-    then reads the entry with @code{mutablemap-cursor-current}. A change
-    to the map during the walk can make the walk raise
-    @code{System.InvalidOperationException}. A @code{for-each} or
-    @code{(:for entry m)} loop does this for you.
+    Call @code{mutablemap-cursor-done?} before each entry, then read the
+    entry with @code{mutablemap-cursor-current}. Standard @code{for-each} and
+    @code{:for} loops handle this automatically.
     """))
 
 (:doc mutablemap-cursor-done?
-  (summary "Moves a cursor to the next entry, and tells whether there was none.")
-  (arg c "The cursor, which moves.")
-  (returns "#t when the walk is at its end, #f when the cursor is now on an entry.")
+  (summary "Advances the cursor to the next entry; returns #t if finished.")
+  (arg c "The cursor to advance.")
+  (returns "#t if iteration has finished, #f if positioned on an entry.")
   (see mutablemap-cursor-current)
   (reference """
-    This @strong{moves} the cursor. Call it once for each entry, before
-    @code{mutablemap-cursor-current}. The first call moves the cursor to
-    the first entry.
+    Advances cursor position. Call once before reading each entry with
+    @code{mutablemap-cursor-current}.
     """))
 
 (:doc mutablemap-cursor-current
-  (summary "The entry that a cursor is on.")
-  (arg c "The cursor. It does not move.")
-  (returns "The key and value, as a tuple.")
+  (summary "Returns the current entry at the cursor as a (Tuple k v).")
+  (arg c "The cursor.")
+  (returns "The (Tuple key value) pair at the current position.")
   (see mutablemap-cursor-done?)
   (reference """
-    Call it only after @code{mutablemap-cursor-done?} returned #f.
+    Call only when @code{mutablemap-cursor-done?} has returned #f.
     """))
 
 (:doc mutablemap-for-each
-  (summary "Calls f with the key and value of each entry of a map.")
-  (arg f "Gets a key and its value.")
-  (arg m "The map. Do not change it in f.")
+  (summary "Invokes a callback with the key and value of each entry.")
+  (arg f "Callback function taking (key, value) arguments.")
+  (arg m "The map to iterate over.")
   (see mutablemap-cursor for-each)
   (example """
     (mutablemap-for-each (fun (k v) (println (str k ": " v))) counts)
     """)
   (reference """
-    f gets the key and the value as two arguments. The @code{Iterable}
-    walk gives a tuple. A change to the map in f can make the walk raise
-    @code{System.InvalidOperationException}.
+    Passes key and value as two separate arguments to f. Modifying m during
+    callback execution raises @code{System.InvalidOperationException}.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -283,61 +258,60 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc list->mutablemap
-  (summary "A new map with the entries of a list of key and value.")
-  (arg xs "The entries. When a key is in more than one entry, the last value wins.")
-  (returns "A new map.")
+  (summary "Constructs a new mutable map from a list of key-value pairs.")
+  (arg xs "List of (Tuple key value) pairs. Duplicate keys keep the last value.")
+  (returns "A new mutable map.")
   (see mutablemap->list seq->mutablemap))
 
 (:doc mutablemap->list
-  (summary "The entries of a map as a list of key and value.")
-  (arg m "The map. It does not change.")
-  (returns "A new list, in the order of a walk of m.")
+  (summary "Converts map entries to a list of (Tuple key value) pairs.")
+  (arg m "The source map.")
+  (returns "A new list containing all entries in traversal order.")
   (see list->mutablemap))
 
 (:doc vec->mutablemap
-  (summary "A new map with the entries of a vec of key and value.")
-  (arg v "The entries. When a key is in more than one entry, the last value wins.")
-  (returns "A new map.")
+  (summary "Constructs a new mutable map from a vector of key-value pairs.")
+  (arg v "Vector of (Tuple key value) pairs. Duplicate keys keep the last value.")
+  (returns "A new mutable map.")
   (see mutablemap->vec seq->mutablemap))
 
 (:doc mutablemap->vec
-  (summary "The entries of a map as a vec of key and value.")
-  (arg m "The map. It does not change.")
-  (returns "A new vec, in the order of a walk of m.")
+  (summary "Converts map entries to a vector of (Tuple key value) pairs.")
+  (arg m "The source map.")
+  (returns "A new vector containing all entries in traversal order.")
   (see vec->mutablemap))
 
 (:doc seq->mutablemap
-  (summary "A new map with the entries of a sequence of key and value.")
-  (arg xs "The entries. It is walked once. When a key is in more than one entry, the last value wins.")
-  (returns "A new map.")
+  (summary "Constructs a new mutable map from a sequence of key-value pairs.")
+  (arg xs "Sequence of (Tuple key value) pairs. Duplicate keys keep the last value.")
+  (returns "A new mutable map.")
   (see mutablemap->seq)
   (reference """
-    A later entry replaces an earlier one with the same key, as
-    @code{mutablemap-set!} does.
+    Later entries overwrite earlier entries with matching keys, matching
+    @code{mutablemap-set!} semantics.
     """))
 
 (:doc mutablemap->seq
-  (summary "The entries of a map as a sequence of key and value. It is not a copy.")
-  (arg m "The map.")
-  (returns "A Seq that walks the entries of m.")
+  (summary "Views map entries as a sequence of (Tuple key value) pairs.")
+  (arg m "The source map.")
+  (returns "A Seq iterating over entries of m.")
   (see seq->mutablemap mutablemap->list)
   (reference """
-    The sequence reads the map when it is walked. A change to the map
-    during a walk can make the walk raise
-    @code{System.InvalidOperationException}. To keep the entries as they
-    are now, use @code{mutablemap->list} or @code{mutablemap->vec}.
+    Views the live map. Modifying the map during sequence traversal raises
+    @code{System.InvalidOperationException}. To take an immutable snapshot,
+    use @code{mutablemap->list} or @code{mutablemap->vec}.
     """))
 
 (:doc map->mutablemap
-  (summary "A new mutable map with the entries of a persistent Map.")
-  (arg m "The persistent map. It does not change.")
-  (returns "A new mutable map.")
+  (summary "Constructs a new mutable map from a persistent Map.")
+  (arg m "The source persistent map.")
+  (returns "A new mutable map containing all entries.")
   (see mutablemap->map))
 
 (:doc mutablemap->map
-  (summary "The entries of a map as a persistent Map.")
-  (arg m "The mutable map. It does not change.")
-  (returns "A new Map. Later changes to m do not change it.")
+  (summary "Converts a mutable map into an immutable persistent Map.")
+  (arg m "The source mutable map.")
+  (returns "A new persistent Map. Subsequent changes to m do not affect it.")
   (see map->mutablemap))
 
 ;; ---------------------------------------------------------------------------
@@ -345,14 +319,13 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc mutablemap->str
-  (summary "A map as text: #mmap(k v k v), in the order of a walk.")
-  (arg m "The map. It does not change.")
-  (returns "The text. Each key and value is written with its own ->str.")
+  (summary "Formats the map as text in the form #mmap(k v ...).")
+  (arg m "The map to format.")
+  (returns "Formatted string representation using ->str for each key and value.")
   (example """
     (mutablemap->str (list->mutablemap (list (Tuple 1 10))))   ; "#mmap(1 10)"
     """)
   (reference """
-    This is also the @code{->str} of a map. The entries are not in
-    parentheses, as they are in the text of a @code{Map}. The text is for
-    people to read: no reader reads it back.
+    Implements @code{->str} for mutable maps. Formats entries without
+    parentheses around pairs. Provided for display output.
     """))

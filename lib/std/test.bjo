@@ -320,15 +320,17 @@
      (box-set! output-box (Some (Tuple port (string-cursor-end text))))
      (Some (substring text from (string-cursor-end text))))))
 
-;; How many times `next-test-index!` was called in the running test. A
-;; `for-all` takes its position in the test from it, to find its stored cases.
-(: index-box (Box int))
-(def index-box (make-box 0))
+;; How many times `next-test-index!` was called with each key in the running
+;; test. A `for-all` takes its position among those with the same bindings
+;; from it, to find its stored cases.
+(: index-box (Box (Map string int)))
+(def index-box (make-box (map-empty)))
 
-(: next-test-index! (-> int))
-(defun (next-test-index!)
-  (def i (box-ref index-box))
-  (box-set! index-box (+ i 1))
+(: next-test-index! (-> string int))
+(defun (next-test-index! key)
+  (def counts (box-ref index-box))
+  (def i (map-ref-or counts key 0))
+  (box-set! index-box (map-set counts key (+ i 1)))
   i)
 
 ;; Runs `body` with its failures going to `failures` instead of to the running
@@ -735,7 +737,7 @@
   (def outer-clock (box-ref running-clock))
   (def outer-index (box-ref index-box))
   (box-set! running-clock (Tuple (monotonic-ms) within))
-  (box-set! index-box 0)
+  (box-set! index-box (map-empty))
   (def outer-output (box-ref output-box))
   (def port (open-output-string))
   (box-set! output-box (if (record-ref t capture) (Some (Tuple port (string-cursor-start ""))) None))

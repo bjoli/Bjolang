@@ -85,9 +85,13 @@
             ((>= (at (+ i 1) j) (at i (+ j 1))) (go (+ i 1) j (cons (str "-" (vec-ref wanted i)) out)))
             (else (go i (+ j 1) (cons (str "+" (vec-ref got j)) out))))))))
 
-;; The output a run promotes: the file and line of each `expect-output`
-;; whose text differed, and what the test wrote instead.
-(: promotions (Box (List (Tuple string (Tuple int string)))))
+;; One `expect-output` whose text differed: where it is, the text it had when
+;; the test ran, and what the test wrote instead. The old text is how the
+;; promoter finds the form, and how it knows the file has not changed since.
+(type (: Promotion (Record (: line int) (: wanted string) (: got string))))
+
+;; The output a run promotes, by file, newest first.
+(: promotions (Box (List (Tuple string Promotion))))
 (def promotions (make-box (list)))
 
 (: shown-name (-> string string))
@@ -109,7 +113,8 @@
      (unless (= w g)
        (if (record-ref (current-test-options) promote)
            (begin
-             (box-set! promotions (cons (Tuple file (Tuple line got)) (box-ref promotions)))
+             (box-set! promotions (cons (Tuple file (Promotion (line line) (wanted wanted) (got got)))
+                                        (box-ref promotions)))
              (at-run-end! "std test expect: promote" promote-all!))
            (test-failed!
              (string-join
@@ -195,45 +200,127 @@
 (defun (repeat-string s n)
   (string-join (list->vec (loop (:for _ (range 0 n)) (:acc out (listing s)))) ""))
 
-;; The text as a raw string whose lines start at `margin` columns, with the
-;; closing quotes on a line of their own at the margin. Its quotes are one
-;; more than the longest run in the text, and at least three.
+;; The text as a literal for the test file. One line without a quote, a
+;; backslash or a tab is a plain string. Anything else is a raw string whose
+;; lines start at `margin` columns, with the closing quotes on a line of their
+;; own at the margin; its quotes are one more than the longest run in the
+;; text, and at least three.
 (: raw-literal (-> string int string))
 (defun (raw-literal text margin)
   (def lines (compared-lines text))
-  (if (vec-empty? lines)
-      "\"\""
+  (cond
+    ((vec-empty? lines) "\"\"")
+    ((and (= (vec-length lines) 1)
+          (not (string-contains? (vec-ref lines 0) "\""))
+          (not (string-contains? (vec-ref lines 0) "\\"))
+          (not (string-contains? (vec-ref lines 0) "\t")))
+     (str "\"" (vec-ref lines 0) "\""))
+    (else
       (let* ((q (repeat-string "\"" (max 3 (+ 1 (longest-quote-run text)))))
              (pad (repeat-string " " margin)))
         (str q "\n"
              (string-join (vec-map (fun (l) (if (string-empty? l) "" (str pad l))) lines) "\n")
-             "\n" pad q))))
+             "\n" pad q)))))
 
-;; The text with the literal of the `expect-output` on `line` replaced by
-;; `got`, or None when the form is not there any more.
-(: promote-one (-> string int string (Option string)))
-(defun (promote-one text line got)
-  (def cs (string->vec text))
-  (def start (line-start cs line))
+;; What the string literal from i to end holds: a raw string without its
+;; margin, or an escaped string with its escapes undone.
+(: literal-text (-> (Vec char) int int string))
+(defun (literal-text cs i end)
+  (def q (quote-run cs i))
+  (defun (chars from to) (list->string (vec->list (vec-slice cs from (- to from)))))
+  (cond
+    ((= q 2) "")
+    ((= q 1) (unescape (chars (+ i 1) (- end 1))))
+    (else
+     (def inside (chars (+ i q) (- end q)))
+     (if (string-starts-with? inside "\n")
+         ;; Over several lines: the opening quotes end their line, and the
+         ;; closing ones stand at the margin on a line of their own.
+         (let* ((lines (vec->list (string-split inside "\n")))
+                (body (list-tail lines))
+                (margin (string-length (list-head (list-reverse body))))
+                (text (list-reverse (list-tail (list-reverse body)))))
+           (string-join (list->vec (list-map (fun (l) (drop-chars l margin)) text)) "\n"))
+         inside))))
+
+;; The string without its first n characters, or empty when it is shorter.
+(: drop-chars (-> string int string))
+(defun (drop-chars s n)
+  (let go ((left (string->list s)) (k n))
+    (match left
+      ((Cons _ more) #:when (> k 0) (go more (- k 1)))
+      (_ (list->string left)))))
+
+;; An escaped string's text: \n, \t, \r, \0, \\ and \" undone. Other escapes
+;; are kept as written, which is enough to compare texts.
+(: unescape (-> string string))
+(defun (unescape s)
+  (let go ((left (string->list s)) (out (list)))
+    (match left
+      (Nil (list->string (list-reverse out)))
+      ((Cons #\\ (Cons c more))
+       (go more (cons (case c
+                        (#\n #\newline)
+                        (#\t #\tab)
+                        (#\r #\return)
+                        (#\0 (int->char 0))
+                        (else c))
+                      out)))
+      ((Cons c more) (go more (cons c out))))))
+
+;; The places on line `line` (from 1) where an `(expect-output` starts.
+(: forms-on-line (-> (Vec char) int (List int)))
+(defun (forms-on-line cs line)
   (def head (string->vec "(expect-output"))
-  (match (vec-search cs head start)
-    (None None)
-    ((Some at)
-     (def column (- at (line-start cs line)))
-     (let go ((i (+ at (vec-length head))))
-       (cond
-         ((>= i (vec-length cs)) None)
-         ((char-whitespace? (vec-ref cs i)) (go (+ i 1)))
-         (else
-          (match (literal-end cs i)
-            (None None)
-            ((Some end)
-             (Some (str (list->string (vec->list (vec-slice cs 0 i)))
-                        (raw-literal got (+ column 2))
-                        (list->string (vec->list (vec-slice cs end (- (vec-length cs) end))))))))))))))
+  (def start (line-start cs line))
+  (def stop (line-start cs (+ line 1)))
+  (let go ((from start) (out (list)))
+    (match (vec-search cs head from)
+      ((Some at) (if (< at stop) (go (+ at 1) (cons at out)) (list-reverse out)))
+      (None (list-reverse out)))))
+
+;; Where the `expect-output` on `line` that still holds `wanted` is: the
+;; start of the form, and the start and end of its literal. None when no form
+;; there holds it, because the file changed since the test was compiled.
+(: find-form (-> (Vec char) int string (Option (Tuple int (Tuple int int)))))
+(defun (find-form cs line wanted)
+  (def head-length (string-length "(expect-output"))
+  (loop (:for at (forms-on-line cs line))
+        (:acc found
+              (folding None
+                       (match found
+                         ((Some _) found)
+                         (None
+                          (match (literal-after cs (+ at head-length))
+                            (None None)
+                            ((Some (Tuple i end))
+                             (if (= (compared-lines (literal-text cs i end)) (compared-lines wanted))
+                                 (Some (Tuple at (Tuple i end)))
+                                 None)))))))))
+
+;; The text with the literal from i to end replaced by `got`, at the margin of
+;; a form that starts at `at`.
+(: replace-literal (-> (Vec char) int int int int string string))
+(defun (replace-literal cs line at i end got)
+  (str (list->string (vec->list (vec-slice cs 0 i)))
+       (raw-literal got (+ (- at (line-start cs line)) 2))
+       (list->string (vec->list (vec-slice cs end (- (vec-length cs) end))))))
+
+;; Where the literal after i starts and ends, past whitespace.
+(: literal-after (-> (Vec char) int (Option (Tuple int int))))
+(defun (literal-after cs i)
+  (cond
+    ((>= i (vec-length cs)) None)
+    ((char-whitespace? (vec-ref cs i)) (literal-after cs (+ i 1)))
+    (else
+     (match (literal-end cs i)
+       (None None)
+       ((Some end) (Some (Tuple i end)))))))
 
 ;; Writes every promotion into its file, from the last line to the first so
-;; that a replacement does not move the lines of those still to come.
+;; that a replacement does not move the lines of those still to come. Forms on
+;; one line go from the right, for the same reason: a raw string over several
+;; lines moves what follows it on its line.
 (: promote-all! (-> void))
 (defun (promote-all!)
   (def by-file
@@ -244,31 +331,77 @@
                 (box-ref promotions)))
   (map-for-each
     (fun (file entries)
-      (def sorted (list-sort-desc entries))
-      (def text
-        (list-foldl (fun (e t)
-                      (match e
-                        ((Tuple line got)
-                         (match (promote-one t line got)
-                           ((Some new-text) new-text)
-                           (None (println #"promote: no expect-output at ${(shown-name file)}:${line}") t)))))
-                    (file-read-text file)
-                    sorted))
-      (file-write-text file text)
-      (println #"promote: wrote ${(list-length entries)} text(s) into ${(shown-name file)}"))
+      (match (promote-file (file-read-text file) file (list-sort-desc entries))
+        ((Tuple new-text n)
+         (when (> n 0)
+           (file-write-text file new-text)
+           (println #"promote: wrote ${n} text(s) into ${(shown-name file)}")))))
     by-file)
   (box-set! promotions (list)))
 
-;; The entries by line, the last first. A line promoted twice keeps the first.
-(: list-sort-desc (-> (List (Tuple int string)) (List (Tuple int string))))
+;; The text with the promotions written into it, and how many were. The
+;; promotions come by line, the last first.
+(: promote-file (-> string string (List Promotion) (Tuple string int)))
+(defun (promote-file text file sorted)
+  (match sorted
+    (Nil (Tuple text 0))
+    ((Cons p _)
+     (def line (record-ref p line))
+     (def here (list-filter (fun (q) (= (record-ref q line) line)) sorted))
+     (def rest (list-filter (fun (q) (not (= (record-ref q line) line))) sorted))
+     (def cs (string->vec text))
+     ;; Each form found on the line, from the right.
+     (def found
+       (loop (:for q here)
+             (:acc out (listing (Tuple q (find-form cs line (record-ref q wanted)))))))
+     (loop (:for f found)
+           (:do (match f
+                  ((Tuple q None)
+                   (println #"promote: the expect-output at ${(shown-name file)}:${line} no longer holds the text the test ran with, so it was left alone"))
+                  (_ unit))))
+     (def placed (sort-by-start-desc
+                   (loop (:for f found)
+                         (:when-let (Tuple q (Some place)) f)
+                         (:acc out (listing (Tuple q place))))))
+     (def new-text
+       (list-foldl (fun (f t)
+                     (match f
+                       ((Tuple q (Tuple at (Tuple i end)))
+                        (replace-literal (string->vec t) line at i end (record-ref q got)))))
+                   text
+                   placed))
+     (match (promote-file new-text file rest)
+       ((Tuple final n) (Tuple final (+ n (list-length placed))))))))
+
+(: sort-by-start-desc (-> (List (Tuple Promotion (Tuple int (Tuple int int))))
+                          (List (Tuple Promotion (Tuple int (Tuple int int))))))
+(defun (sort-by-start-desc xs)
+  (list-foldl insert-by-start (list) xs))
+
+(: insert-by-start (-> (Tuple Promotion (Tuple int (Tuple int int)))
+                       (List (Tuple Promotion (Tuple int (Tuple int int))))
+                       (List (Tuple Promotion (Tuple int (Tuple int int))))))
+(defun (insert-by-start e sorted)
+  (match sorted
+    (Nil (list e))
+    ((Cons f more)
+     (if (>= (start-of e) (start-of f)) (cons e sorted) (cons f (insert-by-start e more))))))
+
+(: start-of (-> (Tuple Promotion (Tuple int (Tuple int int))) int))
+(defun (start-of e) (match e ((Tuple _ (Tuple at _)) at)))
+
+;; The promotions by line, the last first. A form promoted twice, at the same
+;; line with the same old text, keeps the first.
+(: list-sort-desc (-> (List Promotion) (List Promotion)))
 (defun (list-sort-desc xs)
-  (defun (line-of e) (match e ((Tuple l _) l)))
-  (defun (insert e sorted)
-    (match sorted
-      (Nil (list e))
-      ((Cons f more)
-       (cond
-         ((= (line-of e) (line-of f)) sorted)
-         ((> (line-of e) (line-of f)) (cons e sorted))
-         (else (cons f (insert e more)))))))
-  (list-foldl insert (list) (list-reverse xs)))
+  (list-foldl insert-promotion (list) (list-reverse xs)))
+
+(: insert-promotion (-> Promotion (List Promotion) (List Promotion)))
+(defun (insert-promotion e sorted)
+  (match sorted
+    (Nil (list e))
+    ((Cons f more)
+     (cond
+       ((and (= (record-ref e line) (record-ref f line)) (= (record-ref e wanted) (record-ref f wanted))) sorted)
+       ((>= (record-ref e line) (record-ref f line)) (cons e sorted))
+       (else (cons f (insert-promotion e more)))))))

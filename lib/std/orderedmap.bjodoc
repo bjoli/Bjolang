@@ -2,7 +2,7 @@
 ;; The texts are samizdat markup: code in prose is @code{...}.
 
 (:doc #:module
-  (summary "The sorted map: a persistent B-tree keyed in the keys' natural order, with its builder and transient.")
+  (summary "Persistent sorted map implemented as a B-tree in key order, with builder and transient.")
   (see OrderedMap orderedmap-empty orderedmap-ref orderedmap-set orderedmap-min orderedmap-range OrderedMapBuilder TransientOrderedMap)
   (example """
     (import (std orderedmap))
@@ -16,52 +16,48 @@
     (orderedmap-ref m "fig")                ; 2, m is unchanged
     """)
   (reference """
-    An @code{(OrderedMap k v)} is a persistent map: an update returns a new
-    map and leaves the old one as it was. The two share the nodes that the
-    update did not touch. The map is a B-tree,
-    @code{OrderedMap.OrderedMap} in the runtime. A lookup, a set and a
-    remove are O(log n).
+    An @code{(OrderedMap k v)} is an immutable, persistent sorted map.
+    Updates return a new map sharing untouched nodes with the original.
+    Implemented as a B-tree (@code{OrderedMap.OrderedMap} in the runtime).
+    Lookup, insertion, and deletion operations run in O(log n) time.
 
-    @strong{Key order.} What makes a map out of nothing
-    (@code{orderedmap-empty}, @code{seq->orderedmap},
-    @code{list->orderedmap}, @code{vec->orderedmap},
+    @strong{Key ordering.} Constructors (@code{orderedmap-empty},
+    @code{seq->orderedmap}, @code{list->orderedmap}, @code{vec->orderedmap},
     @code{map->orderedmap}, @code{orderedmapbuilder-empty},
-    @code{transientorderedmap-empty} and the @code{ordered-mapping}
-    collector) asks for the key's @code{Ord}. The tree orders keys by it:
-    the order @code{compare} gives, also where the type has no .NET
-    @code{CompareTo} of its own. Two keys that @code{compare} calls equal
-    are one key. A map made from a map keeps that map's order.
+    @code{transientorderedmap-empty}, and the @code{ordered-mapping} collector)
+    require an @code{Ord} instance for key type @code{%k}. Entries are ordered
+    according to @code{compare}. Keys considered equal by @code{compare}
+    overwrite existing entries. Derived maps retain the source map's ordering
+    comparer.
 
-    @strong{Order.} Every walk, conversion and callback sees the entries in
-    ascending key order. This is what the tree is for:
-    @code{orderedmap-min}, @code{orderedmap-max},
-    @code{orderedmap-successor}, @code{orderedmap-predecessor} and the
-    range walks @code{orderedmap-range}, @code{orderedmap-from} and
-    @code{orderedmap-until}. Where the order does not matter, the
-    prelude's @code{Map} needs only @code{Eq} of its keys.
+    @strong{Order guarantees.} All traversals, conversions, and callbacks
+    visit entries in ascending key order. Provides efficient range and boundary
+    operations: @code{orderedmap-min}, @code{orderedmap-max},
+    @code{orderedmap-successor}, @code{orderedmap-predecessor}, and range slices
+    (@code{orderedmap-range}, @code{orderedmap-from}, @code{orderedmap-until}).
+    If key ordering is not required, use @code{Map}, which requires only
+    @code{Eq}.
 
-    @strong{Entries.} Callbacks for @code{orderedmap-fold},
-    @code{orderedmap-filter}, @code{orderedmap-for-each} and the others get
-    the key and the value as two arguments. An entry that is one value is
-    a @code{(Tuple k v)}: in @code{orderedmap->list},
-    @code{orderedmap->seq}, the range walks, @code{orderedmap-min} and the
-    other answers of one entry, and in an @code{Iterable} loop.
+    @strong{Entry representations.} Callbacks for @code{orderedmap-fold},
+    @code{orderedmap-filter}, and @code{orderedmap-for-each} receive keys and
+    values as separate arguments. Functions returning single entries represent
+    them as @code{(Tuple k v)} pairs (e.g. in @code{orderedmap->list},
+    @code{orderedmap->seq}, @code{orderedmap-min}, and @code{Iterable} loops).
 
-    @strong{Bulk work.} An @code{OrderedMapBuilder} collects entries, sorts
-    them and makes the tree in one pass. A @code{TransientOrderedMap} edits
-    a map in place and gives it back as a persistent map in O(1). Both are
-    faster than many calls to @code{orderedmap-set}.
+    @strong{Batch mutations and construction.} An @code{OrderedMapBuilder}
+    collects entries, sorts them, and constructs the tree in a single pass. A
+    @code{TransientOrderedMap} mutates tree nodes in place and converts to a
+    persistent map in O(1) time. Both outperform repeated calls to
+    @code{orderedmap-set} for bulk updates.
 
-    @strong{Traits.} A map implements @code{Iterable}, @code{Collection},
-    @code{Refable}, @code{Settable}, @code{Addable}, @code{Eq} and
-    @code{->str}. Two maps are @code{=} when they have the same keys with
-    equal values. The @code{add} of @code{Addable} takes a pair and
-    replaces the value of a key that is already there. The builder and the
-    transient implement @code{Addable!} with a pair, and the transient
-    implements @code{Refable}.
+    @strong{Traits.} Implements @code{Iterable}, @code{Collection},
+    @code{Refable}, @code{Settable}, @code{Addable}, @code{Eq}, and
+    @code{->str}. Two maps are @code{=} if they contain identical keys with
+    equal values. Calling @code{add} on a map takes a @code{(Tuple k v)} and
+    overwrites any existing association for key @code{k}.
 
-    @strong{Patterns.} @code{(om-has key p)} matches a map that has
-    @code{key}, with @code{p} matching its value.
+    @strong{Patterns.} The @code{(om-has key p)} pattern matches an ordered map
+    containing @code{key}, matching pattern @code{p} against its value.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -69,18 +65,18 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc OrderedMap
-  (summary "A persistent map, kept in its keys' order.")
-  (tparam %k "The key type. Making a map from nothing asks for its Ord.")
+  (summary "Persistent map sorted by key.")
+  (tparam %k "The key type. Requires an Ord instance.")
   (tparam %v "The value type.")
   (see orderedmap-empty orderedmap-ref orderedmap-set orderedmap-remove OrderedMapBuilder TransientOrderedMap OrderedMapping)
   (example """
     (def m (orderedmap-set (orderedmap-set (orderedmap-empty) 2 "two") 1 "one"))
     (seq->list (orderedmap-keys m))   ; (1 2)
-    (ref m 2)              ; "two"
+    (ref m 2)                         ; "two"
     """))
 
 (:doc OrderedMapBuilder
-  (summary "A mutable buffer that makes an ordered map in one pass.")
+  (summary "Mutable buffer for constructing an ordered map in a single pass.")
   (tparam %k "The key type.")
   (tparam %v "The value type.")
   (see orderedmapbuilder-empty orderedmapbuilder-add! orderedmapbuilder->orderedmap TransientOrderedMap)
@@ -93,16 +89,16 @@
     (orderedmapbuilder->orderedmap b)     ; #map((a 2) (b 3))
     """)
   (reference """
-    An add appends to a flat list. @code{orderedmapbuilder->orderedmap}
-    sorts the list and makes the tree from it in one pass. When the keys
-    came in ascending order, it does not sort. A key added twice keeps the
-    last value. A builder has no lookup and no remove; use a
-    @code{TransientOrderedMap} for those. It implements @code{Addable!}
-    with a pair.
+    Appends entries to a flat buffer. Calling @code{orderedmapbuilder->orderedmap}
+    sorts entries and constructs the B-tree in a single pass. If entries arrive in
+    sorted order, sorting is skipped. Duplicate keys retain the last value
+    added. Builders do not support lookups or removals; use
+    @code{TransientOrderedMap} for mutable map operations. Implements
+    @code{Addable!} with a pair.
     """))
 
 (:doc TransientOrderedMap
-  (summary "A mutable ordered map for batch updates in place.")
+  (summary "Mutable transient ordered map for batch in-place updates.")
   (tparam %k "The key type.")
   (tparam %v "The value type.")
   (see orderedmap->transientorderedmap transientorderedmap->orderedmap transientorderedmap-set! OrderedMapBuilder)
@@ -113,42 +109,38 @@
     (transientorderedmap->orderedmap t)
     """)
   (reference """
-    The functions take the same arguments in the same order as their
-    @code{orderedmap-} counterparts. A write changes the transient and
-    returns nothing.
-
-    A transient changes the tree nodes it owns in place, without a copy.
-    @code{transientorderedmap->orderedmap} returns a persistent map in
-    O(1). The transient stays usable after that, and a later write copies
-    the nodes it gave away. It implements @code{Addable!} with a pair, and
+    Provides in-place mutators mirroring persistent @code{orderedmap-}
+    functions. Mutates owned tree nodes in place without copying. Calling
+    @code{transientorderedmap->orderedmap} yields a persistent map in O(1) time.
+    The transient remains usable afterward; subsequent writes perform
+    copy-on-write on shared nodes. Implements @code{Addable!} with a pair, and
     @code{Refable}.
     """))
 
 (:doc OrderedMapCursor
-  (summary "A position in a walk of an ordered map.")
+  (summary "Cursor for iterating over an ordered map.")
   (tparam %k "The key type of the map.")
   (tparam %v "The value type of the map.")
   (see OrderedMap)
   (reference """
-    What the @code{Iterable} implementation of @code{OrderedMap} walks
-    with, so @code{(loop (:for (k . v) m) ...)} works on a map, in
-    ascending key order. A cursor is a value: the next cursor is a new
-    one, and the old one does not change.
+    Used by the @code{Iterable} implementation of @code{OrderedMap} to iterate
+    in ascending key order. Immutable cursor value: advancing produces a new
+    cursor without mutating the previous one.
     """))
 
 (:doc OrderedMapping
-  (summary "The collector that gathers (key value) pairs into an ordered map.")
-  (tparam %k "The key type. Collecting asks for its Ord.")
+  (summary "Collector for gathering entries into an ordered map via loop.")
+  (tparam %k "The key type. Requires an Ord instance.")
   (tparam %v "The value type.")
-  (case ordered-mapping "The collector. Each element it gets is a @code{(Tuple k v)}.")
+  (case ordered-mapping "The collector constructor, accepting (Tuple k v) pairs.")
   (see list->orderedmap OrderedMapBuilder)
   (example """
     (loop (:for (k v) pairs)
           (:acc m (ordered-mapping (Tuple k (* v 2)))))
     """)
   (reference """
-    It collects through an @code{OrderedMapBuilder}, so a key collected
-    twice keeps the last value.
+    Collects entries through an @code{OrderedMapBuilder}. Duplicate keys retain
+    the last value collected.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -156,161 +148,161 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc orderedmap-empty
-  (summary "An empty ordered map.")
-  (returns "A map with no entries, ordering keys by the key type's Ord.")
+  (summary "Creates an empty ordered map.")
+  (returns "An empty map ordered by the key type's Ord instance.")
   (see orderedmap-clear seq->orderedmap list->orderedmap))
 
 (:doc orderedmap-ref
-  (summary "The value under a key, which must be there.")
+  (summary "Returns the value associated with a key, raising KeyNotFoundException if missing.")
   (arg m "The map.")
-  (arg k "The key.")
-  (returns "The value under k.")
+  (arg k "The key to look up.")
+  (returns "The value associated with k.")
   (raises System.Collections.Generic.KeyNotFoundException "When k is not in the map.")
   (see orderedmap-ref-or orderedmap-try-ref ref))
 
 (:doc orderedmap-ref-or
-  (summary "The value under a key, or a default when it is not there.")
+  (summary "Returns the value for a key, or a default fallback if absent.")
   (arg m "The map.")
-  (arg k "The key.")
-  (arg default "The value to return when k is not there.")
-  (returns "The value under k, or default.")
+  (arg k "The key to look up.")
+  (arg default "Fallback value returned if k is absent.")
+  (returns "The value associated with k, or default.")
   (see orderedmap-ref orderedmap-try-ref))
 
 (:doc orderedmap-try-ref
-  (summary "The value under a key, if it is there.")
+  (summary "Returns (Some value) for a key, or None if absent.")
   (arg m "The map.")
-  (arg k "The key.")
-  (returns "(Some v) for the value under k, or None.")
+  (arg k "The key to look up.")
+  (returns "(Some v) if k is present, otherwise None.")
   (see orderedmap-ref orderedmap-ref-or try-ref om-has))
 
 (:doc orderedmap-set
-  (summary "A map with a key set to a value, replacing or adding it.")
-  (arg m "The map, which is left as it was.")
+  (summary "Returns a new map associating a key with a value.")
+  (arg m "The source map (unmodified).")
   (arg k "The key.")
-  (arg v "Its value.")
-  (returns "A map with k mapped to v.")
+  (arg v "The value.")
+  (returns "A new map with k mapped to v.")
   (see orderedmap-set-all orderedmap-remove ref-set))
 
 (:doc orderedmap-set-all
-  (summary "A map with every entry of a sequence set.")
-  (arg m "The map, which is left as it was.")
-  (arg kvs "The (key value) pairs to set, in order: a later pair wins over an earlier one with the same key.")
-  (returns "The map with every pair set.")
+  (summary "Returns a new map with all entries of a sequence added.")
+  (arg m "The source map (unmodified).")
+  (arg kvs "Sequence of (Tuple key value) pairs. Duplicate keys keep the last value.")
+  (returns "A new map containing all pairs.")
   (see orderedmap-set orderedmap-merge transientorderedmap-set-all!)
   (reference """
-    Through a transient, so the tree is copied once rather than once per
-    entry.
+    Executes through a transient, copying tree nodes once rather than once
+    per entry.
     """))
 
 (:doc orderedmap-remove
-  (summary "A map without a key.")
-  (arg m "The map, which is left as it was.")
+  (summary "Returns a new map with a key removed.")
+  (arg m "The source map (unmodified).")
   (arg k "The key to remove.")
-  (returns "The map without k. When k is not there, m itself.")
+  (returns "A new map without k. If k was absent, returns m directly.")
   (see orderedmap-remove-all orderedmap-filter))
 
 (:doc orderedmap-remove-all
-  (summary "A map without every key of a sequence.")
-  (arg m "The map, which is left as it was.")
-  (arg ks "The keys to remove. A key that is not there is skipped.")
-  (returns "The map without those keys.")
+  (summary "Returns a new map with all specified keys removed.")
+  (arg m "The source map (unmodified).")
+  (arg ks "Sequence of keys to remove.")
+  (returns "A new map without those keys.")
   (see orderedmap-remove transientorderedmap-remove-all!)
   (reference """
-    Through a transient, so the tree is copied once rather than once per
-    key.
+    Executes through a transient, copying tree nodes once rather than once
+    per key.
     """))
 
 (:doc orderedmap-contains?
-  (summary "Whether a map has a key.")
+  (summary "Tests if a key exists in the map.")
   (arg m "The map.")
-  (arg k "The key.")
-  (returns "#t when k is in the map.")
+  (arg k "The key to locate.")
+  (returns "#t if k is present, otherwise #f.")
   (see orderedmap-has-key? orderedmap-try-ref))
 
 (:doc orderedmap-has-key?
-  (summary "Whether a map has a key.")
+  (summary "Tests if a key exists in the map.")
   (arg m "The map.")
-  (arg key "The key.")
-  (returns "#t when key is in the map.")
+  (arg key "The key to locate.")
+  (returns "#t if key is present, otherwise #f.")
   (see orderedmap-contains?)
-  (reference "The same as @code{orderedmap-contains?}."))
+  (reference "Alias for @code{orderedmap-contains?}."))
 
 (:doc orderedmap-length
-  (summary "How many entries a map has.")
+  (summary "Returns the number of entries in the map.")
   (arg m "The map.")
-  (returns "The number of keys.")
+  (returns "The count of key-value pairs.")
   (see orderedmap-empty? length))
 
 (:doc orderedmap-empty?
-  (summary "Whether a map has no entries.")
+  (summary "Tests if the map contains no entries.")
   (arg m "The map.")
-  (returns "#t when the map has no keys.")
+  (returns "#t if empty, otherwise #f.")
   (see orderedmap-length empty?))
 
 (:doc orderedmap-clear
-  (summary "An empty map that orders keys as another does.")
-  (arg m "The map whose order to keep.")
-  (returns "An empty map.")
+  (summary "Returns an empty map retaining the key comparer of the source map.")
+  (arg m "The map whose order is preserved.")
+  (returns "An empty persistent map.")
   (see orderedmap-empty orderedmap-remove-all))
 
 (:doc orderedmap-keys
-  (summary "The keys of a map.")
+  (summary "Returns a sequence of all keys in ascending order.")
   (arg m "The map.")
-  (returns "A sequence of the keys, in ascending order.")
+  (returns "A sequence of keys in ascending order.")
   (see orderedmap-values orderedmap->seq))
 
 (:doc orderedmap-values
-  (summary "The values of a map.")
+  (summary "Returns a sequence of all values in ascending key order.")
   (arg m "The map.")
-  (returns "A sequence of the values, in the ascending order of their keys.")
+  (returns "A sequence of values ordered by their corresponding keys.")
   (see orderedmap-keys orderedmap->seq))
 
 (:doc orderedmap-merge
-  (summary "One map laid over another: where both have a key, the second's value wins.")
-  (arg m "The map underneath.")
-  (arg other "The map laid over it.")
-  (returns "Every key of either, with other's value where both have one.")
+  (summary "Merges two maps, with the second map's values winning on collision.")
+  (arg m "Base map.")
+  (arg other "Map overlaid onto base map.")
+  (returns "A new map containing entries from both maps.")
   (see orderedmap-merge-with orderedmap-set-all)
   (reference """
-    The entries of @code{other} are set in @code{m} through a transient.
-    When one of the maps is empty, the result is the other map itself.
+    Entries from @code{other} are inserted into @code{m} using a transient.
+    If either map is empty, the other map is returned directly.
     """))
 
 (:doc orderedmap-merge-with
-  (summary "Two maps merged, with a function deciding the keys both have.")
-  (arg f "Called as (f key left right) for a key in both maps; returns the value to keep.")
-  (arg m "The left map.")
-  (arg other "The right map.")
-  (returns "A map of every key of either, with f's value where both have one.")
+  (summary "Merges two maps using a resolving function for colliding keys.")
+  (arg f "Resolution function called as (f key left right), returning resolved value.")
+  (arg m "Left map.")
+  (arg other "Right map.")
+  (returns "A new map containing entries from both maps.")
   (see orderedmap-merge)
   (example """
     (orderedmap-merge-with (fun (k a b) (+ a b))
                            (list->orderedmap (list (Tuple "x" 1) (Tuple "y" 2)))
                            (list->orderedmap (list (Tuple "y" 10))))   ; x 1, y 12
     """)
-  (reference "The result orders keys as @code{m} does."))
+  (reference "Retains the key ordering of @code{m}."))
 
 ;; ---------------------------------------------------------------------------
 ;; Order
 ;; ---------------------------------------------------------------------------
 
 (:doc orderedmap-min
-  (summary "The entry with the smallest key.")
+  (summary "Returns the entry with the minimum key, or None if empty.")
   (arg m "The map.")
-  (returns "(Some (Tuple key value)) for the entry, or None when the map is empty.")
+  (returns "(Some (Tuple key value)) for the minimum entry, or None if empty.")
   (see orderedmap-max orderedmap-successor))
 
 (:doc orderedmap-max
-  (summary "The entry with the largest key.")
+  (summary "Returns the entry with the maximum key, or None if empty.")
   (arg m "The map.")
-  (returns "(Some (Tuple key value)) for the entry, or None when the map is empty.")
+  (returns "(Some (Tuple key value)) for the maximum entry, or None if empty.")
   (see orderedmap-min orderedmap-predecessor))
 
 (:doc orderedmap-successor
-  (summary "The entry with the smallest key greater than a value.")
+  (summary "Returns the entry with the smallest key strictly greater than k, or None.")
   (arg m "The map.")
-  (arg k "The value. It need not be a key of the map.")
-  (returns "(Some (Tuple key value)) for the entry, or None when no key is greater than k.")
+  (arg k "Search key (need not exist in map).")
+  (returns "(Some (Tuple key value)) for the next greater key, or None.")
   (see orderedmap-predecessor orderedmap-from)
   (example """
     (def m (list->orderedmap (list (Tuple 10 "a") (Tuple 20 "b"))))
@@ -320,107 +312,107 @@
     """))
 
 (:doc orderedmap-predecessor
-  (summary "The entry with the largest key less than a value.")
+  (summary "Returns the entry with the largest key strictly less than k, or None.")
   (arg m "The map.")
-  (arg k "The value. It need not be a key of the map.")
-  (returns "(Some (Tuple key value)) for the entry, or None when no key is less than k.")
+  (arg k "Search key (need not exist in map).")
+  (returns "(Some (Tuple key value)) for the next smaller key, or None.")
   (see orderedmap-successor orderedmap-until))
 
 (:doc orderedmap-range
-  (summary "The entries of a map with keys from one value to another, both included.")
+  (summary "Returns a sequence of entries with keys in [lo, hi] in ascending order.")
   (arg m "The map.")
-  (arg lo "The smallest key to include. It need not be in the map.")
-  (arg hi "The largest key to include. It need not be in the map.")
-  (returns "A sequence of (Tuple key value), in ascending key order.")
+  (arg lo "Lower bound key (inclusive). Need not exist in map.")
+  (arg hi "Upper bound key (inclusive). Need not exist in map.")
+  (returns "A lazy sequence of (Tuple key value) pairs in ascending key order.")
   (see orderedmap-from orderedmap-until)
   (example """
-    (orderedmap-range log start-time end-time)   ; the entries in a time window
+    (orderedmap-range log start-time end-time)   ; entries in a time window
     """)
   (reference """
-    Lazy: the walk goes down the tree to @code{lo} once and then walks on,
-    so a slice of a large map costs its own size, not the map's.
+    Lazy: descends the B-tree to @code{lo} once and advances sequentially,
+    so slicing a subset runs in time proportional to the range slice size.
     """))
 
 (:doc orderedmap-from
-  (summary "The entries of a map with keys from a value up, the value included.")
+  (summary "Returns a sequence of entries with keys >= lo in ascending order.")
   (arg m "The map.")
-  (arg lo "The smallest key to include. It need not be in the map.")
-  (returns "A sequence of (Tuple key value) for the keys not less than lo, in ascending key order.")
+  (arg lo "Lower bound key (inclusive). Need not exist in map.")
+  (returns "A lazy sequence of (Tuple key value) pairs for keys >= lo.")
   (see orderedmap-range orderedmap-until orderedmap-successor)
-  (reference "Lazy, as @code{orderedmap-range} is."))
+  (reference "Lazy, matching @code{orderedmap-range}."))
 
 (:doc orderedmap-until
-  (summary "The entries of a map with keys up to a value, the value included.")
+  (summary "Returns a sequence of entries with keys <= hi in ascending order.")
   (arg m "The map.")
-  (arg hi "The largest key to include. It need not be in the map.")
-  (returns "A sequence of (Tuple key value) for the keys not greater than hi, in ascending key order.")
+  (arg hi "Upper bound key (inclusive). Need not exist in map.")
+  (returns "A lazy sequence of (Tuple key value) pairs for keys <= hi.")
   (see orderedmap-range orderedmap-from orderedmap-predecessor)
-  (reference "Lazy, as @code{orderedmap-range} is."))
+  (reference "Lazy, matching @code{orderedmap-range}."))
 
 ;; ---------------------------------------------------------------------------
-;; Walking and rebuilding
+;; Traversals and transformations
 ;; ---------------------------------------------------------------------------
 
 (:doc orderedmap-map
-  (summary "A map with every value replaced by a function of its key and value.")
-  (arg f "Called as (f key value); returns the new value.")
+  (summary "Transforms every entry value using a function of key and value.")
+  (arg f "Transformation function called as (f key value), returning new value.")
   (arg m "The map.")
-  (returns "A map of the same keys, ordered as m is, with the new values.")
+  (returns "A new ordered map with identical keys and transformed values.")
   (see orderedmap-map-values orderedmap-filter)
   (reference """
-    The key is what the result is filed under, so @code{f} cannot move it.
+    Keys are preserved in place; f cannot modify key values or relative order.
     """))
 
 (:doc orderedmap-map-values
-  (summary "A map with every value replaced by a function of the value.")
-  (arg f "Called as (f value); returns the new value.")
+  (summary "Transforms every entry value using a function of value alone.")
+  (arg f "Transformation function called as (f value), returning new value.")
   (arg m "The map.")
-  (returns "A map of the same keys, ordered as m is, with the new values.")
+  (returns "A new ordered map with identical keys and transformed values.")
   (see orderedmap-map))
 
 (:doc orderedmap-filter
-  (summary "The entries of a map that a predicate keeps.")
-  (arg keep? "Called as (keep? key value); #t keeps the entry.")
+  (summary "Returns a new map containing only entries satisfying a predicate.")
+  (arg keep? "Predicate function called as (keep? key value); #t keeps entry.")
   (arg m "The map.")
-  (returns "A map of the entries kept, ordered as m is.")
+  (returns "A new map of retained entries in ascending key order.")
   (see orderedmap-remove-all transientorderedmap-filter! orderedmap-find))
 
 (:doc orderedmap-fold
-  (summary "Combines every entry of a map into one value, in ascending key order.")
-  (arg f "Called as (f key value acc); returns the next acc.")
-  (arg init "The acc before the first entry.")
-  (arg m "The map.")
-  (returns "The last acc, or init for an empty map.")
+  (summary "Folds over all entries in ascending key order.")
+  (arg f "Accumulator function called as (f key value acc), returning next acc.")
+  (arg init "Initial accumulator value.")
+  (arg m "The map to fold.")
+  (returns "The final accumulator value, or init if empty.")
   (see orderedmap-for-each fold)
   (example """
-    (orderedmap-fold (fun (k v acc) (+ acc v)) 0 m)   ; the sum of the values
+    (orderedmap-fold (fun (k v acc) (+ acc v)) 0 m)   ; sum of all values
     """))
 
 (:doc orderedmap-for-each
-  (summary "Calls a function on every entry of a map, in ascending key order, for its effect.")
-  (arg f "Called as (f key value).")
+  (summary "Applies a function to each entry in ascending key order.")
+  (arg f "Callback function called as (f key value).")
   (arg m "The map.")
   (see orderedmap-iter orderedmap-fold))
 
 (:doc orderedmap-iter
-  (summary "Walks a map in ascending key order until a function returns #f.")
-  (arg f "Called as (f key value); #f stops the walk.")
+  (summary "Iterates over entries in ascending key order until f returns #f.")
+  (arg f "Callback function called as (f key value); #f stops iteration.")
   (arg m "The map.")
-  (returns "#t when the walk went to the end; #f when f stopped it.")
+  (returns "#t if all entries were visited; #f if stopped early by f.")
   (see orderedmap-for-each orderedmap-any? orderedmap-find))
 
 (:doc orderedmap-any?
-  (summary "Whether a predicate holds of some entry of a map.")
-  (arg pred "Called as (pred key value).")
+  (summary "Tests if any entry satisfies a predicate.")
+  (arg pred "Predicate function called as (pred key value).")
   (arg m "The map.")
-  (returns "#t at the first entry pred holds of; #f when there is none.")
+  (returns "#t on the first entry satisfying pred; #f if none match.")
   (see orderedmap-find orderedmap-iter))
 
 (:doc orderedmap-find
-  (summary "The entry with the smallest key that a predicate holds of.")
-  (arg pred "Called as (pred key value), in ascending key order.")
+  (summary "Returns the first entry satisfying a predicate in ascending key order.")
+  (arg pred "Predicate function called as (pred key value).")
   (arg m "The map.")
-  (returns "(Some (Tuple key value)) for the first entry pred holds of, or None.")
+  (returns "(Some (Tuple key value)) for the first match, or None.")
   (see orderedmap-any? orderedmap-filter))
 
 ;; ---------------------------------------------------------------------------
@@ -428,71 +420,70 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc list->orderedmap
-  (summary "An ordered map of the (key value) pairs of a list.")
-  (arg xs "The pairs, in any order. A later pair wins over an earlier one with the same key.")
-  (returns "The map, ordering keys by the key type's Ord.")
+  (summary "Constructs an ordered map from a list of key-value pairs.")
+  (arg xs "List of (Tuple key value) pairs. Duplicate keys keep the last value.")
+  (returns "A new ordered map sorted by key.")
   (see orderedmap->list vec->orderedmap seq->orderedmap OrderedMapping)
-  (reference "Through a builder, so the tree is made in one pass."))
+  (reference "Constructed through a builder in a single pass."))
 
 (:doc orderedmap->list
-  (summary "The entries of a map, as a list of pairs.")
+  (summary "Converts map entries to a list of (Tuple key value) pairs in ascending key order.")
   (arg m "The map.")
-  (returns "A list of (Tuple key value), in ascending key order.")
+  (returns "A list of (Tuple key value) pairs in ascending key order.")
   (see list->orderedmap orderedmap->vec orderedmap->seq))
 
 (:doc vec->orderedmap
-  (summary "An ordered map of the (key value) pairs of a vec.")
-  (arg v "The pairs, in any order. A later pair wins over an earlier one with the same key.")
-  (returns "The map, ordering keys by the key type's Ord.")
+  (summary "Constructs an ordered map from a vector of key-value pairs.")
+  (arg v "Vector of (Tuple key value) pairs. Duplicate keys keep the last value.")
+  (returns "A new ordered map sorted by key.")
   (see orderedmap->vec list->orderedmap seq->orderedmap)
-  (reference "Through a builder, so the tree is made in one pass."))
+  (reference "Constructed through a builder in a single pass."))
 
 (:doc orderedmap->vec
-  (summary "The entries of a map, as a vec of pairs.")
+  (summary "Converts map entries to a vector of (Tuple key value) pairs in ascending key order.")
   (arg m "The map.")
-  (returns "A vec of (Tuple key value), in ascending key order.")
+  (returns "A vector of (Tuple key value) pairs in ascending key order.")
   (see vec->orderedmap orderedmap->list orderedmap->seq))
 
 (:doc seq->orderedmap
-  (summary "An ordered map of the (key value) pairs of a sequence.")
-  (arg xs "The pairs, in any order. A later pair wins over an earlier one with the same key.")
-  (returns "The map, ordering keys by the key type's Ord.")
+  (summary "Constructs an ordered map from a sequence of key-value pairs.")
+  (arg xs "Sequence of (Tuple key value) pairs. Duplicate keys keep the last value.")
+  (returns "A new ordered map sorted by key.")
   (see orderedmap->seq list->orderedmap vec->orderedmap)
-  (reference "Through a builder, so the tree is made in one pass."))
+  (reference "Constructed through a builder in a single pass."))
 
 (:doc orderedmap->seq
-  (summary "The entries of a map, as a sequence of pairs.")
+  (summary "Views map entries as a sequence in ascending key order.")
   (arg m "The map.")
-  (returns "A sequence of (Tuple key value), in ascending key order.")
+  (returns "A sequence of (Tuple key value) pairs in ascending key order.")
   (see seq->orderedmap orderedmap-range orderedmap-keys orderedmap-values))
 
 (:doc map->orderedmap
-  (summary "An ordered map of the entries of a hash map.")
-  (arg m "The hash map.")
-  (returns "A map of the same entries, ordering keys by the key type's Ord.")
+  (summary "Constructs an ordered map from an unordered hash map.")
+  (arg m "The source hash map.")
+  (returns "A new ordered map with identical entries sorted by key.")
   (see orderedmap->map Map)
-  (reference "Through a builder, so the tree is made in one pass."))
+  (reference "Constructed through a builder in a single pass."))
 
 (:doc orderedmap->map
-  (summary "A hash map of the entries of an ordered map.")
-  (arg m "The ordered map.")
-  (returns "A hash map of the same entries.")
+  (summary "Converts an ordered map into an unordered persistent hash map.")
+  (arg m "The source ordered map.")
+  (returns "A new persistent hash map containing all entries.")
   (see map->orderedmap Map)
-  (reference "Through a map builder, so the trie is made in one pass."))
+  (reference "Constructed through a map builder in a single pass."))
 
 (:doc orderedmap->str
-  (summary "A map written out as text.")
-  (arg m "The map.")
-  (returns "@code{#map(} and @code{)} around the entries in ascending key order, each written as the key's ->str and the value's inside parentheses, separated by spaces.")
+  (summary "Formats an ordered map as text in the form #map((k v) ...).")
+  (arg m "The map to format.")
+  (returns "Formatted string with entries in ascending key order.")
   (see orderedmap->list)
   (example """
     (orderedmap->str (list->orderedmap (list (Tuple 2 "b") (Tuple 1 "a"))))   ; #map((1 a) (2 b))
     """)
   (reference """
-    Also the @code{->str} implementation of a map, so @code{(println m)}
-    prints this. It is the text a prelude @code{Map} gives, so a
-    @code{#map(...)} literal that reads it back makes a hash map, not an
-    ordered map. A string is written without its quotes.
+    Implements @code{->str} for ordered maps. Formatted identically to
+    prelude @code{Map} output. Note that the @code{#map(...)} reader literal
+    constructs a hash map rather than an ordered map.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -500,10 +491,10 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc om-has
-  (summary "A pattern that matches an ordered map that has a key, and matches the key's value.")
+  (summary "Pattern matching an ordered map containing key, matching p against its value.")
   (form (om-has key p))
-  (arg key "An expression for the key to look up.")
-  (arg p "The pattern the value under key must match.")
+  (arg key "Expression evaluating to the key to look up.")
+  (arg p "Pattern to match against the value at key.")
   (see orderedmap-try-ref)
   (example """
     (match config
@@ -511,14 +502,8 @@
       (_ "8080"))
     """)
   (reference """
-    A view over @code{orderedmap-try-ref}: @code{(om-has key p)} is
-    @code{(:view (orderedmap-try-ref & key) (Some p))}. The call site needs
-    no import of @code{orderedmap-try-ref}, because the template names it
-    in this module.
-
-    The lookup runs once for each clause that tries it, as every view does.
-    Three clauses that read three keys do three lookups. That is the cost
-    of the test in the pattern rather than before the @code{match}.
+    Pattern view over @code{orderedmap-try-ref}, expanding to
+    @code{(:view (orderedmap-try-ref & key) (Some p))}.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -526,48 +511,47 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc orderedmapbuilder-empty
-  (summary "An empty ordered map builder.")
-  (returns "A builder whose map will order keys by the key type's Ord.")
+  (summary "Creates an empty ordered map builder.")
+  (returns "A new builder using the key type's Ord instance.")
   (see orderedmap->orderedmapbuilder orderedmapbuilder-add! OrderedMapBuilder))
 
 (:doc orderedmap->orderedmapbuilder
-  (summary "An ordered map builder that starts with the entries of a map.")
-  (arg m "The map, which is left as it was.")
-  (returns "A builder holding m's entries, ordering keys as m does.")
+  (summary "Creates an ordered map builder initialized with entries from a map.")
+  (arg m "The source map (unmodified).")
+  (returns "A new builder containing m's entries.")
   (see orderedmapbuilder-empty orderedmap->transientorderedmap)
   (reference """
-    The map is walked, so this costs its size. A key added afterwards
-    replaces m's value for it when the map is built. To change an existing
-    map, @code{orderedmap->transientorderedmap} costs O(1).
+    Traverses the map to populate the buffer in O(n) time. To mutate an
+    existing map in place, use @code{orderedmap->transientorderedmap} in O(1).
     """))
 
 (:doc orderedmapbuilder-add!
-  (summary "Appends an entry to an ordered map builder.")
+  (summary "Appends an entry to an ordered map builder buffer.")
   (arg b "The builder.")
   (arg k "The key.")
-  (arg v "Its value. A key appended twice keeps the last value.")
+  (arg v "The value. Duplicate keys keep the last value added.")
   (see orderedmapbuilder-add-all! orderedmapbuilder->orderedmap add!))
 
 (:doc orderedmapbuilder-add-all!
-  (summary "Appends every (key value) pair of a sequence to an ordered map builder.")
+  (summary "Appends all entries from a sequence to an ordered map builder buffer.")
   (arg b "The builder.")
-  (arg kvs "The pairs, appended in order.")
+  (arg kvs "Sequence of (Tuple key value) pairs.")
   (see orderedmapbuilder-add!))
 
 (:doc orderedmapbuilder-length
-  (summary "How many entries have been appended to an ordered map builder.")
+  (summary "Returns the number of entries appended to the builder buffer.")
   (arg b "The builder.")
-  (returns "The number of appends, counting a repeated key each time.")
+  (returns "The count of entries appended, including duplicates.")
   (see orderedmapbuilder->orderedmap)
   (reference """
-    Keys appended twice are resolved when the map is built, so this is an
-    upper bound on the size of the map to come, not its size.
+    Duplicate keys are resolved when the map is built, so this represents an
+    upper bound on final map size.
     """))
 
 (:doc orderedmapbuilder->orderedmap
-  (summary "Builds the map a builder holds.")
+  (summary "Constructs a persistent ordered map from the builder buffer.")
   (arg b "The builder.")
-  (returns "The map of the entries appended, the last value winning for a repeated key.")
+  (returns "A new persistent ordered map sorted by key.")
   (see orderedmapbuilder-empty OrderedMapBuilder))
 
 ;; ---------------------------------------------------------------------------
@@ -575,103 +559,103 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc transientorderedmap-empty
-  (summary "An empty transient ordered map.")
-  (returns "A transient ordering keys by the key type's Ord.")
+  (summary "Creates an empty transient ordered map.")
+  (returns "A new transient ordered map using the key type's Ord instance.")
   (see orderedmap->transientorderedmap TransientOrderedMap))
 
 (:doc orderedmap->transientorderedmap
-  (summary "A transient ordered map holding the entries of a map.")
-  (arg m "The map, which is left as it was.")
-  (returns "A transient that writes in place, ordering keys as m does.")
+  (summary "Creates a transient ordered map from an existing persistent map.")
+  (arg m "The source map (unmodified).")
+  (returns "A mutable transient map that updates in place in O(1) time.")
   (see transientorderedmap->orderedmap transientorderedmap-empty)
   (reference """
-    Nothing is copied up front: the transient copies a node the first time
-    it writes to it.
+    Shares nodes with m without copying. The transient performs copy-on-write
+    on individual nodes as they are mutated.
     """))
 
 (:doc transientorderedmap->orderedmap
-  (summary "The map a transient holds, as it stands.")
-  (arg t "The transient, which stays usable.")
-  (returns "A persistent map, made in O(1).")
+  (summary "Converts a transient ordered map into a persistent map in O(1) time.")
+  (arg t "The transient ordered map (remains usable).")
+  (returns "A new immutable persistent ordered map.")
   (see orderedmap->transientorderedmap)
   (reference """
-    The transient gives up the nodes it handed over, so a later write to it
-    copies them rather than changing the returned map.
+    Relinquishes ownership of current nodes to the persistent map. Subsequent
+    writes to t perform copy-on-write without affecting the returned map.
     """))
 
 (:doc transientorderedmap-set!
-  (summary "Sets a key of a transient ordered map to a value, in place.")
-  (arg t "The transient.")
+  (summary "Sets a key to a value in a transient ordered map in place.")
+  (arg t "The transient map to modify.")
   (arg k "The key.")
-  (arg v "Its value, replacing any it had.")
+  (arg v "The value, replacing any previous value.")
   (see transientorderedmap-set-all! orderedmap-set add!))
 
 (:doc transientorderedmap-set-all!
-  (summary "Sets every (key value) pair of a sequence in a transient ordered map, in place.")
-  (arg t "The transient.")
-  (arg kvs "The pairs, set in order: a later pair wins.")
+  (summary "Sets all entries of a sequence in a transient ordered map in place.")
+  (arg t "The transient map to modify.")
+  (arg kvs "Sequence of (Tuple key value) pairs. Later pairs overwrite earlier.")
   (see transientorderedmap-set! orderedmap-set-all))
 
 (:doc transientorderedmap-remove!
-  (summary "Removes a key from a transient ordered map, in place.")
-  (arg t "The transient.")
-  (arg k "The key. When it is not there, nothing happens.")
+  (summary "Removes a key from a transient ordered map in place.")
+  (arg t "The transient map to modify.")
+  (arg k "The key to remove.")
   (see transientorderedmap-remove-all! orderedmap-remove))
 
 (:doc transientorderedmap-remove-all!
-  (summary "Removes every key of a sequence from a transient ordered map, in place.")
-  (arg t "The transient.")
-  (arg ks "The keys. One that is not there is skipped.")
+  (summary "Removes all specified keys from a transient ordered map in place.")
+  (arg t "The transient map to modify.")
+  (arg ks "Sequence of keys to remove.")
   (see transientorderedmap-remove! orderedmap-remove-all))
 
 (:doc transientorderedmap-filter!
-  (summary "Removes the entries of a transient ordered map that a predicate rejects, in place.")
-  (arg keep? "Called as (keep? key value); #f removes the entry.")
-  (arg t "The transient.")
+  (summary "Removes entries rejected by a predicate from a transient ordered map in place.")
+  (arg keep? "Predicate function called as (keep? key value); #f removes entry.")
+  (arg t "The transient map to modify.")
   (see orderedmap-filter transientorderedmap-remove-all!)
   (reference """
-    The keys to remove are all found before any is removed, so the
-    predicate sees the transient as it was.
+    Identifies all keys to remove before performing deletions, ensuring keep?
+    observes the complete transient map state.
     """))
 
 (:doc transientorderedmap-contains?
-  (summary "Whether a transient ordered map has a key.")
-  (arg t "The transient.")
-  (arg k "The key.")
-  (returns "#t when k is there.")
+  (summary "Tests if a key exists in the transient ordered map.")
+  (arg t "The transient map.")
+  (arg k "The key to locate.")
+  (returns "#t if k is present, otherwise #f.")
   (see transientorderedmap-try-ref orderedmap-contains?))
 
 (:doc transientorderedmap-ref
-  (summary "The value under a key of a transient ordered map, which must be there.")
-  (arg t "The transient.")
-  (arg k "The key.")
-  (returns "The value under k.")
-  (raises System.Collections.Generic.KeyNotFoundException "When k is not in the transient.")
+  (summary "Returns the value for a key in a transient ordered map, raising if missing.")
+  (arg t "The transient map.")
+  (arg k "The key to look up.")
+  (returns "The value associated with k.")
+  (raises System.Collections.Generic.KeyNotFoundException "When k is not in the transient map.")
   (see transientorderedmap-ref-or transientorderedmap-try-ref orderedmap-ref))
 
 (:doc transientorderedmap-ref-or
-  (summary "The value under a key of a transient ordered map, or a default.")
-  (arg t "The transient.")
-  (arg k "The key.")
-  (arg default "The value to return when k is not there.")
-  (returns "The value under k, or default.")
+  (summary "Returns the value for a key in a transient ordered map, or a default fallback.")
+  (arg t "The transient map.")
+  (arg k "The key to look up.")
+  (arg default "Fallback value returned if k is absent.")
+  (returns "The value associated with k, or default.")
   (see transientorderedmap-ref transientorderedmap-try-ref))
 
 (:doc transientorderedmap-try-ref
-  (summary "The value under a key of a transient ordered map, if it is there.")
-  (arg t "The transient.")
-  (arg k "The key.")
-  (returns "(Some v) for the value under k, or None.")
+  (summary "Returns (Some value) for a key in a transient ordered map, or None.")
+  (arg t "The transient map.")
+  (arg k "The key to look up.")
+  (returns "(Some v) if k is present, otherwise None.")
   (see transientorderedmap-ref transientorderedmap-ref-or))
 
 (:doc transientorderedmap-length
-  (summary "How many entries a transient ordered map holds.")
-  (arg t "The transient.")
-  (returns "The number of keys, as it stands.")
+  (summary "Returns the number of entries in the transient ordered map.")
+  (arg t "The transient map.")
+  (returns "Current count of keys.")
   (see transientorderedmap-empty? orderedmap-length))
 
 (:doc transientorderedmap-empty?
-  (summary "Whether a transient ordered map holds no entries.")
-  (arg t "The transient.")
-  (returns "#t when it has no keys.")
+  (summary "Tests if the transient ordered map contains no entries.")
+  (arg t "The transient map.")
+  (returns "#t if empty, otherwise #f.")
   (see transientorderedmap-length orderedmap-empty?))
