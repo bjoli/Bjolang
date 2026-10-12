@@ -1,0 +1,439 @@
+;; Docs for std/hashset.bjo, read through (:doc #:file "hashset.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "The unordered hash set: a persistent CHAMP trie of elements, with its builder and transient.")
+  (see HashSet hashset-empty hashset-add hashset-contains? hashset-union HashSetBuilder TransientHashSet)
+  (example """
+    (import (std hashset))
+
+    (def s (list->hashset (list 1 2 3)))
+    (hashset-contains? s 2)                    ; #t
+    (hashset-length (hashset-add s 2))         ; 3, 2 was there
+    (hashset-length (hashset-add s 4))         ; 4
+    (hashset-length s)                         ; 3, s is unchanged
+    (hashset-union s (list->hashset (list 3 4)))   ; 1 2 3 4, in no fixed order
+    """)
+  (reference """
+    A @code{(HashSet a)} is a persistent set: an update returns a new set
+    and leaves the old one as it was. The two share the subtrees that the
+    update did not touch. The trie is a CHAMP trie (Compressed Hash-Array
+    Mapped Prefix-tree), @code{Set.Set} in the runtime. It is the set
+    counterpart of the prelude's @code{Map}.
+
+    @strong{Element equality.} What makes a set out of nothing
+    (@code{hashset-empty}, @code{seq->hashset}, @code{list->hashset},
+    @code{vec->hashset}, @code{hashsetbuilder-empty},
+    @code{transienthashset-empty} and the @code{hash-setting} collector)
+    asks for the element's @code{Eq}. The set compares elements with it: it
+    gives the same answer as @code{=}, also for two cases of a union that
+    @code{=} equates. A set made from a set keeps that set's comparison.
+
+    @strong{Order.} A hash set is unordered. The elements come in the
+    trie's order, which is no order to rely on. For a set in the elements'
+    order, use @code{(std orderedset)}.
+
+    @strong{Bulk work.} A @code{HashSetBuilder} collects elements and makes
+    the trie in one pass. A @code{TransientHashSet} edits a set in place
+    and gives it back as a persistent set in O(1). Both are faster than
+    many calls to @code{hashset-add}.
+
+    @strong{Traits.} A set implements @code{Iterable}, @code{Collection},
+    @code{Refable} (@code{(ref s x)} is @code{hashset-contains?}),
+    @code{Addable}, @code{Eq} and @code{->str}. Two sets are @code{=} when
+    they have the same elements. The builder and the transient implement
+    @code{Addable!}, and the transient implements @code{Refable}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The types
+;; ---------------------------------------------------------------------------
+
+(:doc HashSet
+  (summary "A persistent, unordered hash set.")
+  (tparam %a "The element type. Making a set from nothing asks for its Eq.")
+  (see hashset-empty hashset-add hashset-contains? HashSetBuilder TransientHashSet HashSetting)
+  (example """
+    (def s (hashset-add (hashset-empty) "a"))
+    (hashset-contains? s "a")   ; #t
+    (ref s "b")                 ; #f
+    """))
+
+(:doc HashSetBuilder
+  (summary "A mutable buffer that makes a hash set in one pass.")
+  (tparam %a "The element type.")
+  (see hashsetbuilder-empty hashsetbuilder-add! hashsetbuilder->hashset TransientHashSet)
+  (example """
+    (def b (hashsetbuilder-empty))
+    (hashsetbuilder-add! b 1)
+    (hashsetbuilder-add! b 1)
+    (hashsetbuilder-length b)     ; 2
+    (hashsetbuilder->hashset b)   ; #{1}
+    """)
+  (reference """
+    An add appends to a flat buffer. @code{hashsetbuilder->hashset} makes
+    the trie from the buffer in one pass, so no intermediate trie is
+    copied. A builder has no lookup and no remove; use a
+    @code{TransientHashSet} for those. It implements @code{Addable!}.
+    """))
+
+(:doc TransientHashSet
+  (summary "A mutable hash set for batch updates in place.")
+  (tparam %a "The element type.")
+  (see hashset->transienthashset transienthashset->hashset transienthashset-add! HashSetBuilder)
+  (example """
+    (def t (hashset->transienthashset s))
+    (transienthashset-add! t 4)
+    (transienthashset-remove! t 1)
+    (transienthashset->hashset t)
+    """)
+  (reference """
+    The functions take the same arguments in the same order as their
+    @code{hashset-} counterparts. A write changes the transient and returns
+    nothing.
+
+    A transient changes the trie nodes it owns in place, without a copy.
+    @code{transienthashset->hashset} returns a persistent set in O(1). The
+    transient stays usable after that, and a later write copies the nodes
+    it gave away. It implements @code{Addable!} and @code{Refable}.
+    """))
+
+(:doc HashSetCursor
+  (summary "A position in a walk of a hash set.")
+  (tparam %a "The element type.")
+  (see HashSet)
+  (reference """
+    What the @code{Iterable} implementation of @code{HashSet} walks with,
+    so @code{(loop (:for x s) ...)} works on a set. A cursor is a value:
+    the next cursor is a new one, and the old one does not change.
+    """))
+
+(:doc HashSetting
+  (summary "The collector that gathers elements into a hash set.")
+  (tparam %a "The element type. Collecting asks for its Eq.")
+  (case hash-setting "The collector.")
+  (see list->hashset HashSetBuilder)
+  (example """
+    (loop (:for x (range 0 10))
+          (:when (= 0 (% x 2)))
+          (:acc s (hash-setting x)))   ; #{0 2 4 6 8}, in no fixed order
+    """)
+  (reference "It collects through a @code{HashSetBuilder}."))
+
+;; ---------------------------------------------------------------------------
+;; Sets
+;; ---------------------------------------------------------------------------
+
+(:doc hashset-empty
+  (summary "An empty hash set.")
+  (returns "A set with no elements, comparing them with the element type's Eq.")
+  (see hashset-clear seq->hashset list->hashset))
+
+(:doc hashset-add
+  (summary "A set with an element added.")
+  (arg s "The set, which is left as it was.")
+  (arg x "The element.")
+  (returns "A set that has x. When x is already there, a set with the same elements.")
+  (see hashset-add-all hashset-remove add))
+
+(:doc hashset-add-all
+  (summary "A set with every element of a sequence added.")
+  (arg s "The set, which is left as it was.")
+  (arg xs "The elements to add.")
+  (returns "The set with every element of xs.")
+  (see hashset-add hashset-union transienthashset-add-all!)
+  (reference """
+    Through a transient, so the trie is copied once rather than once per
+    element.
+    """))
+
+(:doc hashset-remove
+  (summary "A set without an element.")
+  (arg s "The set, which is left as it was.")
+  (arg x "The element to remove.")
+  (returns "The set without x. When x is not there, s itself.")
+  (see hashset-remove-all hashset-filter))
+
+(:doc hashset-remove-all
+  (summary "A set without every element of a sequence.")
+  (arg s "The set, which is left as it was.")
+  (arg xs "The elements to remove. An element that is not there is skipped.")
+  (returns "The set without those elements.")
+  (see hashset-remove transienthashset-remove-all!)
+  (reference """
+    Through a transient, so the trie is copied once rather than once per
+    element.
+    """))
+
+(:doc hashset-contains?
+  (summary "Whether a set has an element.")
+  (arg s "The set.")
+  (arg x "The element.")
+  (returns "#t when x is in the set.")
+  (see ref hashset-find))
+
+(:doc hashset-length
+  (summary "How many elements a set has.")
+  (arg s "The set.")
+  (returns "The number of elements.")
+  (see hashset-empty? length))
+
+(:doc hashset-empty?
+  (summary "Whether a set has no elements.")
+  (arg s "The set.")
+  (returns "#t when the set has no elements.")
+  (see hashset-length empty?))
+
+(:doc hashset-clear
+  (summary "An empty set that compares elements as another does.")
+  (arg s "The set whose comparison to keep.")
+  (returns "An empty set.")
+  (see hashset-empty hashset-remove-all))
+
+(:doc hashset-union
+  (summary "The elements of two sets.")
+  (arg s "The first set.")
+  (arg other "The second set.")
+  (returns "A set of every element of either.")
+  (see hashset-add-all)
+  (reference """
+    The result compares elements as @code{s} does. Of two equal elements,
+    the one from @code{s} is kept. When the two sets compare elements the
+    same way, the union is cheap where they share a history: a subtree
+    that both have untouched is taken whole rather than walked.
+    """))
+
+(:doc hashset-map
+  (summary "The set of a function's results on every element of a set.")
+  (arg f "Called as (f x) on each element.")
+  (arg s "The set.")
+  (returns "A set of the results, comparing them with the result type's Eq.")
+  (see hashset-filter hashset-fold)
+  (reference """
+    Two elements with equal results give one element, so the result can
+    have fewer elements than @code{s}.
+    """))
+
+(:doc hashset-filter
+  (summary "The elements of a set that a predicate keeps.")
+  (arg keep? "Called as (keep? x); #t keeps the element.")
+  (arg s "The set.")
+  (returns "A set of the elements kept, comparing them as s does.")
+  (see hashset-remove-all hashset-find))
+
+(:doc hashset-fold
+  (summary "Combines every element of a set into one value.")
+  (arg f "Called as (f x acc); returns the next acc.")
+  (arg init "The acc before the first element.")
+  (arg s "The set.")
+  (returns "The last acc, or init for an empty set.")
+  (see hashset-for-each fold)
+  (example """
+    (hashset-fold + 0 (list->hashset (list 1 2 3)))   ; 6
+    """)
+  (reference "The elements come in the trie's order."))
+
+(:doc hashset-for-each
+  (summary "Calls a function on every element of a set, for its effect.")
+  (arg f "Called as (f x).")
+  (arg s "The set.")
+  (see hashset-iter hashset-fold))
+
+(:doc hashset-iter
+  (summary "Walks a set until a function returns #f.")
+  (arg f "Called as (f x); #f stops the walk.")
+  (arg s "The set.")
+  (returns "#t when the walk went to the end; #f when f stopped it.")
+  (see hashset-for-each hashset-any? hashset-find))
+
+(:doc hashset-any?
+  (summary "Whether a predicate holds of some element of a set.")
+  (arg pred "Called as (pred x).")
+  (arg s "The set.")
+  (returns "#t at the first element pred holds of; #f when there is none.")
+  (see hashset-find hashset-iter))
+
+(:doc hashset-find
+  (summary "The first element of a set that a predicate holds of.")
+  (arg pred "Called as (pred x).")
+  (arg s "The set.")
+  (returns "(Some x) for the element, or None.")
+  (see hashset-any? hashset-filter)
+  (reference """
+    First in the trie's order, which is no order to rely on: when several
+    elements match, which one is found is unspecified.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(:doc list->hashset
+  (summary "A set of the elements of a list.")
+  (arg xs "The elements. A repeated element is kept once.")
+  (returns "The set, comparing elements with the element type's Eq.")
+  (see hashset->list vec->hashset seq->hashset HashSetting))
+
+(:doc hashset->list
+  (summary "The elements of a set, as a list.")
+  (arg s "The set.")
+  (returns "A list of the elements, in the trie's order.")
+  (see list->hashset hashset->vec hashset->seq))
+
+(:doc vec->hashset
+  (summary "A set of the elements of a vec.")
+  (arg v "The elements. A repeated element is kept once.")
+  (returns "The set, comparing elements with the element type's Eq.")
+  (see hashset->vec list->hashset seq->hashset))
+
+(:doc hashset->vec
+  (summary "The elements of a set, as a vec.")
+  (arg s "The set.")
+  (returns "A vec of the elements, in the trie's order.")
+  (see vec->hashset hashset->list hashset->seq))
+
+(:doc seq->hashset
+  (summary "A set of the elements of a sequence.")
+  (arg xs "The elements. A repeated element is kept once.")
+  (returns "The set, comparing elements with the element type's Eq.")
+  (see hashset->seq list->hashset vec->hashset)
+  (reference "Through a builder, so the trie is made in one pass."))
+
+(:doc hashset->seq
+  (summary "The elements of a set, as a sequence.")
+  (arg s "The set.")
+  (returns "A sequence of the elements, in the trie's order.")
+  (see seq->hashset hashset->list))
+
+(:doc hashset->str
+  (summary "A set written out as text.")
+  (arg s "The set.")
+  (returns "The elements inside @code{#{...}}, each written by its ->str, separated by spaces.")
+  (see hashset->list)
+  (example """
+    (hashset->str (list->hashset (list 1)))   ; #{1}
+    """)
+  (reference """
+    Also the @code{->str} implementation of a set, so @code{(println s)}
+    prints this. The elements come in the trie's order. There is no
+    @code{#{...}} literal, so the text does not read back as a set.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Builders
+;; ---------------------------------------------------------------------------
+
+(:doc hashsetbuilder-empty
+  (summary "An empty hash set builder.")
+  (returns "A builder whose set will compare elements with the element type's Eq.")
+  (see hashset->hashsetbuilder hashsetbuilder-add! HashSetBuilder))
+
+(:doc hashset->hashsetbuilder
+  (summary "A hash set builder that starts with the elements of a set.")
+  (arg s "The set, which is left as it was.")
+  (returns "A builder holding s's elements, comparing them as s does.")
+  (see hashsetbuilder-empty hashset->transienthashset)
+  (reference """
+    The set is walked, so this costs its size. To change an existing set,
+    @code{hashset->transienthashset} costs O(1).
+    """))
+
+(:doc hashsetbuilder-add!
+  (summary "Appends an element to a hash set builder.")
+  (arg b "The builder.")
+  (arg x "The element. An element appended twice is kept once.")
+  (see hashsetbuilder-add-all! hashsetbuilder->hashset add!))
+
+(:doc hashsetbuilder-add-all!
+  (summary "Appends every element of a sequence to a hash set builder.")
+  (arg b "The builder.")
+  (arg xs "The elements, appended in order.")
+  (see hashsetbuilder-add!))
+
+(:doc hashsetbuilder-length
+  (summary "How many elements have been appended to a hash set builder.")
+  (arg b "The builder.")
+  (returns "The number of appends, counting a repeated element each time.")
+  (see hashsetbuilder->hashset)
+  (reference """
+    Repeated elements are removed when the set is built, so this is an
+    upper bound on the size of the set to come, not its size.
+    """))
+
+(:doc hashsetbuilder->hashset
+  (summary "Builds the set a builder holds.")
+  (arg b "The builder.")
+  (returns "The set of the elements appended.")
+  (see hashsetbuilder-empty HashSetBuilder))
+
+;; ---------------------------------------------------------------------------
+;; Transients
+;; ---------------------------------------------------------------------------
+
+(:doc transienthashset-empty
+  (summary "An empty transient hash set.")
+  (returns "A transient comparing elements with the element type's Eq.")
+  (see hashset->transienthashset TransientHashSet))
+
+(:doc hashset->transienthashset
+  (summary "A transient hash set holding the elements of a set.")
+  (arg s "The set, which is left as it was.")
+  (returns "A transient that writes in place, comparing elements as s does.")
+  (see transienthashset->hashset transienthashset-empty)
+  (reference """
+    Nothing is copied up front: the transient copies a node the first time
+    it writes to it.
+    """))
+
+(:doc transienthashset->hashset
+  (summary "The set a transient holds, as it stands.")
+  (arg t "The transient, which stays usable.")
+  (returns "A persistent set, made in O(1).")
+  (see hashset->transienthashset)
+  (reference """
+    The transient gives up the nodes it handed over, so a later write to it
+    copies them rather than changing the returned set.
+    """))
+
+(:doc transienthashset-add!
+  (summary "Adds an element to a transient hash set, in place.")
+  (arg t "The transient.")
+  (arg x "The element. When it is already there, nothing changes.")
+  (see transienthashset-add-all! hashset-add add!))
+
+(:doc transienthashset-add-all!
+  (summary "Adds every element of a sequence to a transient hash set, in place.")
+  (arg t "The transient.")
+  (arg xs "The elements.")
+  (see transienthashset-add! hashset-add-all))
+
+(:doc transienthashset-remove!
+  (summary "Removes an element from a transient hash set, in place.")
+  (arg t "The transient.")
+  (arg x "The element. When it is not there, nothing happens.")
+  (see transienthashset-remove-all! hashset-remove))
+
+(:doc transienthashset-remove-all!
+  (summary "Removes every element of a sequence from a transient hash set, in place.")
+  (arg t "The transient.")
+  (arg xs "The elements. One that is not there is skipped.")
+  (see transienthashset-remove! hashset-remove-all))
+
+(:doc transienthashset-contains?
+  (summary "Whether a transient hash set has an element.")
+  (arg t "The transient.")
+  (arg x "The element.")
+  (returns "#t when x is there.")
+  (see hashset-contains? ref))
+
+(:doc transienthashset-length
+  (summary "How many elements a transient hash set holds.")
+  (arg t "The transient.")
+  (returns "The number of elements, as it stands.")
+  (see transienthashset-empty? hashset-length))
+
+(:doc transienthashset-empty?
+  (summary "Whether a transient hash set holds no elements.")
+  (arg t "The transient.")
+  (returns "#t when it has no elements.")
+  (see transienthashset-length hashset-empty?))

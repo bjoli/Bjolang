@@ -133,10 +133,12 @@
         (expect "a builtin's signature" (record-ref d signature) (Some "(-> (List %a) %a)"))
         (expect "a builtin has no definition" (record-ref d definition) None)))))
 
-  ;; A module without docs has none, rather than failing.
-  (match (module-docs standard (list (sym "std") (sym "eq")))
-    ((Err why) (expect "(std eq) reads" why ""))
-    ((Ok docs) (expect "(std eq) has no docs" (vec-length docs) 0)))
+  ;; An assembly without docs has none, rather than failing. Every std module
+  ;; is documented, so the runtime stands in for one that is not.
+  (def runtime-dll (path-combine (current-directory) "BjolangRuntime" "bin" "Release" "net10.0" "BjolangRuntime.dll"))
+  (match (assembly-docs runtime-dll)
+    ((Err why) (expect "the runtime reads" why ""))
+    ((Ok docs) (expect "the runtime has no docs" (vec-length docs) 0)))
 
   ;; Resolving.
   (expect "the longest prefix owns a name"

@@ -1,0 +1,578 @@
+;; Docs for std/orderedset.bjo, read through (:doc #:file "orderedset.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "The sorted set: a persistent B-tree of elements in their natural order, with its builder and transient.")
+  (see OrderedSet orderedset-empty orderedset-add orderedset-min orderedset-range orderedset-union OrderedSetBuilder TransientOrderedSet)
+  (example """
+    (import (std orderedset))
+
+    (def s (list->orderedset (list 5 1 3 9)))
+    (orderedset->list s)                 ; (1 3 5 9)
+    (orderedset-min s)                   ; (Some 1)
+    (orderedset-successor s 3)           ; (Some 5)
+    (orderedset-successor s 4)           ; (Some 5), 4 need not be there
+    (seq->list (orderedset-range s 2 6)) ; (3 5)
+    """)
+  (reference """
+    An @code{(OrderedSet a)} is a persistent set: an update returns a new
+    set and leaves the old one as it was. The two share the nodes that the
+    update did not touch. The set is a B-tree, @code{OrderedSet.OrderedSet}
+    in the runtime. A lookup, an add and a remove are O(log n).
+
+    @strong{Element order.} What makes a set out of nothing
+    (@code{orderedset-empty}, @code{seq->orderedset},
+    @code{list->orderedset}, @code{vec->orderedset},
+    @code{orderedsetbuilder-empty}, @code{transientorderedset-empty} and the
+    @code{ordered-setting} collector) asks for the element's @code{Ord}. The
+    tree orders elements by it: the order @code{compare} gives, also where
+    the type has no .NET @code{CompareTo} of its own. Two elements that
+    @code{compare} calls equal are one element. A set made from a set keeps
+    that set's order.
+
+    @strong{Order.} Every walk, conversion and callback sees the elements
+    in ascending order. This is what the tree is for: @code{orderedset-min},
+    @code{orderedset-max}, @code{orderedset-successor},
+    @code{orderedset-predecessor} and the range walks
+    @code{orderedset-range}, @code{orderedset-from} and
+    @code{orderedset-until}. Where the order does not matter, a
+    @code{HashSet} from @code{(std hashset)} needs only @code{Eq}.
+
+    @strong{Bulk work.} An @code{OrderedSetBuilder} collects elements,
+    sorts them and makes the tree in one pass. A
+    @code{TransientOrderedSet} edits a set in place and gives it back as a
+    persistent set in O(1). Both are faster than many calls to
+    @code{orderedset-add}.
+
+    @strong{Traits.} A set implements @code{Iterable}, @code{Collection},
+    @code{Refable} (@code{(ref s x)} is @code{orderedset-contains?}),
+    @code{Addable}, @code{Eq} and @code{->str}. Two sets are @code{=} when
+    they have the same elements. The builder and the transient implement
+    @code{Addable!}, and the transient implements @code{Refable}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The types
+;; ---------------------------------------------------------------------------
+
+(:doc OrderedSet
+  (summary "A persistent set, kept in its elements' order.")
+  (tparam %a "The element type. Making a set from nothing asks for its Ord.")
+  (see orderedset-empty orderedset-add orderedset-contains? OrderedSetBuilder TransientOrderedSet OrderedSetting)
+  (example """
+    (def s (orderedset-add (orderedset-add (orderedset-empty) "b") "a"))
+    (orderedset->list s)   ; ("a" "b")
+    (ref s "c")            ; #f
+    """))
+
+(:doc OrderedSetBuilder
+  (summary "A mutable buffer that makes an ordered set in one pass.")
+  (tparam %a "The element type.")
+  (see orderedsetbuilder-empty orderedsetbuilder-add! orderedsetbuilder->orderedset TransientOrderedSet)
+  (example """
+    (def b (orderedsetbuilder-empty))
+    (orderedsetbuilder-add! b 3)
+    (orderedsetbuilder-add! b 1)
+    (orderedsetbuilder-add! b 3)
+    (orderedsetbuilder-length b)           ; 3
+    (orderedsetbuilder->orderedset b)      ; #{1 3}
+    """)
+  (reference """
+    An add appends to a flat list. @code{orderedsetbuilder->orderedset}
+    sorts the list and makes the tree from it in one pass. When the
+    elements came in ascending order, it does not sort. A builder has no
+    lookup and no remove; use a @code{TransientOrderedSet} for those. It
+    implements @code{Addable!}.
+    """))
+
+(:doc TransientOrderedSet
+  (summary "A mutable ordered set for batch updates in place.")
+  (tparam %a "The element type.")
+  (see orderedset->transientorderedset transientorderedset->orderedset transientorderedset-add! OrderedSetBuilder)
+  (example """
+    (def t (orderedset->transientorderedset s))
+    (transientorderedset-add! t 4)
+    (transientorderedset-remove! t 1)
+    (transientorderedset->orderedset t)
+    """)
+  (reference """
+    The functions take the same arguments in the same order as their
+    @code{orderedset-} counterparts. A write changes the transient and
+    returns nothing.
+
+    A transient changes the tree nodes it owns in place, without a copy.
+    @code{transientorderedset->orderedset} returns a persistent set in
+    O(1). The transient stays usable after that, and a later write copies
+    the nodes it gave away. It implements @code{Addable!} and
+    @code{Refable}.
+    """))
+
+(:doc OrderedSetCursor
+  (summary "A position in a walk of an ordered set.")
+  (tparam %a "The element type.")
+  (see OrderedSet)
+  (reference """
+    What the @code{Iterable} implementation of @code{OrderedSet} walks
+    with, so @code{(loop (:for x s) ...)} works on a set, in ascending
+    order. A cursor is a value: the next cursor is a new one, and the old
+    one does not change.
+    """))
+
+(:doc OrderedSetting
+  (summary "The collector that gathers elements into an ordered set.")
+  (tparam %a "The element type. Collecting asks for its Ord.")
+  (case ordered-setting "The collector.")
+  (see list->orderedset OrderedSetBuilder)
+  (example """
+    (loop (:for x (range 0 10))
+          (:when (= 0 (% x 2)))
+          (:acc s (ordered-setting x)))   ; #{0 2 4 6 8}
+    """)
+  (reference "It collects through an @code{OrderedSetBuilder}."))
+
+;; ---------------------------------------------------------------------------
+;; Sets
+;; ---------------------------------------------------------------------------
+
+(:doc orderedset-empty
+  (summary "An empty ordered set.")
+  (returns "A set with no elements, ordering them by the element type's Ord.")
+  (see orderedset-clear seq->orderedset list->orderedset))
+
+(:doc orderedset-add
+  (summary "A set with an element added.")
+  (arg s "The set, which is left as it was.")
+  (arg x "The element.")
+  (returns "A set that has x. When x is already there, a set with the same elements.")
+  (see orderedset-add-all orderedset-remove add))
+
+(:doc orderedset-add-all
+  (summary "A set with every element of a sequence added.")
+  (arg s "The set, which is left as it was.")
+  (arg xs "The elements to add.")
+  (returns "The set with every element of xs.")
+  (see orderedset-add orderedset-union transientorderedset-add-all!)
+  (reference """
+    Through a transient, so the tree is copied once rather than once per
+    element.
+    """))
+
+(:doc orderedset-remove
+  (summary "A set without an element.")
+  (arg s "The set, which is left as it was.")
+  (arg x "The element to remove.")
+  (returns "The set without x. When x is not there, s itself.")
+  (see orderedset-remove-all orderedset-filter))
+
+(:doc orderedset-remove-all
+  (summary "A set without every element of a sequence.")
+  (arg s "The set, which is left as it was.")
+  (arg xs "The elements to remove. An element that is not there is skipped.")
+  (returns "The set without those elements.")
+  (see orderedset-remove orderedset-difference transientorderedset-remove-all!)
+  (reference """
+    Through a transient, so the tree is copied once rather than once per
+    element.
+    """))
+
+(:doc orderedset-contains?
+  (summary "Whether a set has an element.")
+  (arg s "The set.")
+  (arg x "The element.")
+  (returns "#t when x is in the set.")
+  (see ref orderedset-find))
+
+(:doc orderedset-length
+  (summary "How many elements a set has.")
+  (arg s "The set.")
+  (returns "The number of elements.")
+  (see orderedset-empty? length))
+
+(:doc orderedset-empty?
+  (summary "Whether a set has no elements.")
+  (arg s "The set.")
+  (returns "#t when the set has no elements.")
+  (see orderedset-length empty?))
+
+(:doc orderedset-clear
+  (summary "An empty set that orders elements as another does.")
+  (arg s "The set whose order to keep.")
+  (returns "An empty set.")
+  (see orderedset-empty orderedset-remove-all))
+
+;; ---------------------------------------------------------------------------
+;; Set algebra
+;; ---------------------------------------------------------------------------
+
+(:doc orderedset-union
+  (summary "The elements of two sets.")
+  (arg s "The first set.")
+  (arg other "The second set.")
+  (returns "A set of every element of either.")
+  (see orderedset-add-all orderedset-intersection)
+  (reference """
+    The elements of @code{other} are added to @code{s} through a transient.
+    When one of the sets is empty, the result is the other set itself.
+    """))
+
+(:doc orderedset-intersection
+  (summary "The elements that two sets both have.")
+  (arg s "The first set.")
+  (arg other "The second set.")
+  (returns "A set of the elements in both, ordered as s is.")
+  (see orderedset-union orderedset-difference)
+  (reference """
+    One walk over both sets, side by side: O(n + m). The walk expects both
+    sets to have the same order, as all sets made from the element type's
+    @code{Ord} do.
+    """))
+
+(:doc orderedset-difference
+  (summary "The elements of a set that another set does not have.")
+  (arg s "The set to take elements from.")
+  (arg other "The elements to leave out.")
+  (returns "A set of the elements of s that are not in other, ordered as s is.")
+  (see orderedset-remove-all orderedset-symmetric-difference)
+  (reference """
+    One walk over both sets, side by side: O(n + m). The walk expects both
+    sets to have the same order, as all sets made from the element type's
+    @code{Ord} do.
+    """))
+
+(:doc orderedset-symmetric-difference
+  (summary "The elements that exactly one of two sets has.")
+  (arg s "The first set.")
+  (arg other "The second set.")
+  (returns "A set of the elements in s or in other but not in both, ordered as s is.")
+  (see orderedset-difference orderedset-intersection)
+  (reference """
+    One walk over both sets, side by side: O(n + m). The walk expects both
+    sets to have the same order, as all sets made from the element type's
+    @code{Ord} do.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Order
+;; ---------------------------------------------------------------------------
+
+(:doc orderedset-min
+  (summary "The smallest element of a set.")
+  (arg s "The set.")
+  (returns "(Some x) for the smallest element, or None when the set is empty.")
+  (see orderedset-max orderedset-successor transientorderedset-min))
+
+(:doc orderedset-max
+  (summary "The largest element of a set.")
+  (arg s "The set.")
+  (returns "(Some x) for the largest element, or None when the set is empty.")
+  (see orderedset-min orderedset-predecessor transientorderedset-max))
+
+(:doc orderedset-successor
+  (summary "The smallest element of a set that is greater than a value.")
+  (arg s "The set.")
+  (arg x "The value. It need not be in the set.")
+  (returns "(Some y) for the smallest element greater than x, or None when there is none.")
+  (see orderedset-predecessor orderedset-from)
+  (example """
+    (def s (list->orderedset (list 10 20 30)))
+    (orderedset-successor s 20)   ; (Some 30)
+    (orderedset-successor s 25)   ; (Some 30)
+    (orderedset-successor s 30)   ; None
+    """))
+
+(:doc orderedset-predecessor
+  (summary "The largest element of a set that is less than a value.")
+  (arg s "The set.")
+  (arg x "The value. It need not be in the set.")
+  (returns "(Some y) for the largest element less than x, or None when there is none.")
+  (see orderedset-successor orderedset-until))
+
+(:doc orderedset-range
+  (summary "The elements of a set from one value to another, both included.")
+  (arg s "The set.")
+  (arg lo "The smallest value to include. It need not be in the set.")
+  (arg hi "The largest value to include. It need not be in the set.")
+  (returns "A sequence of the elements from lo to hi, in ascending order.")
+  (see orderedset-from orderedset-until)
+  (example """
+    (seq->list (orderedset-range (list->orderedset (list 1 3 5 7)) 2 5))   ; (3 5)
+    """)
+  (reference """
+    Lazy: the walk goes down the tree to @code{lo} once and then walks on,
+    so a slice of a large set costs its own size, not the set's.
+    """))
+
+(:doc orderedset-from
+  (summary "The elements of a set from a value up, the value included.")
+  (arg s "The set.")
+  (arg lo "The smallest value to include. It need not be in the set.")
+  (returns "A sequence of the elements not less than lo, in ascending order.")
+  (see orderedset-range orderedset-until orderedset-successor)
+  (reference "Lazy, as @code{orderedset-range} is."))
+
+(:doc orderedset-until
+  (summary "The elements of a set up to a value, the value included.")
+  (arg s "The set.")
+  (arg hi "The largest value to include. It need not be in the set.")
+  (returns "A sequence of the elements not greater than hi, in ascending order.")
+  (see orderedset-range orderedset-from orderedset-predecessor)
+  (reference "Lazy, as @code{orderedset-range} is."))
+
+;; ---------------------------------------------------------------------------
+;; Walking and rebuilding
+;; ---------------------------------------------------------------------------
+
+(:doc orderedset-map
+  (summary "The set of a function's results on every element of a set.")
+  (arg f "Called as (f x) on each element, in ascending order.")
+  (arg s "The set.")
+  (returns "A set of the results, ordered by the result type's Ord.")
+  (see orderedset-filter orderedset-fold)
+  (reference """
+    Two elements with equal results give one element, so the result can
+    have fewer elements than @code{s}.
+    """))
+
+(:doc orderedset-filter
+  (summary "The elements of a set that a predicate keeps.")
+  (arg keep? "Called as (keep? x); #t keeps the element.")
+  (arg s "The set.")
+  (returns "A set of the elements kept, ordered as s is.")
+  (see orderedset-remove-all transientorderedset-filter! orderedset-find))
+
+(:doc orderedset-fold
+  (summary "Combines every element of a set into one value, in ascending order.")
+  (arg f "Called as (f x acc); returns the next acc.")
+  (arg init "The acc before the first element.")
+  (arg s "The set.")
+  (returns "The last acc, or init for an empty set.")
+  (see orderedset-for-each fold)
+  (example """
+    (orderedset-fold (fun (x acc) (+ (* acc 10) x)) 0
+                     (list->orderedset (list 2 1 3)))   ; 123
+    """))
+
+(:doc orderedset-for-each
+  (summary "Calls a function on every element of a set, in ascending order, for its effect.")
+  (arg f "Called as (f x).")
+  (arg s "The set.")
+  (see orderedset-iter orderedset-fold))
+
+(:doc orderedset-iter
+  (summary "Walks a set in ascending order until a function returns #f.")
+  (arg f "Called as (f x); #f stops the walk.")
+  (arg s "The set.")
+  (returns "#t when the walk went to the end; #f when f stopped it.")
+  (see orderedset-for-each orderedset-any? orderedset-find))
+
+(:doc orderedset-any?
+  (summary "Whether a predicate holds of some element of a set.")
+  (arg pred "Called as (pred x).")
+  (arg s "The set.")
+  (returns "#t at the first element pred holds of; #f when there is none.")
+  (see orderedset-find orderedset-iter))
+
+(:doc orderedset-find
+  (summary "The smallest element of a set that a predicate holds of.")
+  (arg pred "Called as (pred x), in ascending order.")
+  (arg s "The set.")
+  (returns "(Some x) for the first element pred holds of, or None.")
+  (see orderedset-any? orderedset-filter))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(:doc list->orderedset
+  (summary "An ordered set of the elements of a list.")
+  (arg xs "The elements, in any order. A repeated element is kept once.")
+  (returns "The set, ordering elements by the element type's Ord.")
+  (see orderedset->list vec->orderedset seq->orderedset OrderedSetting)
+  (reference "Through a builder, so the tree is made in one pass."))
+
+(:doc orderedset->list
+  (summary "The elements of a set, as a list.")
+  (arg s "The set.")
+  (returns "A list of the elements, in ascending order.")
+  (see list->orderedset orderedset->vec orderedset->seq))
+
+(:doc vec->orderedset
+  (summary "An ordered set of the elements of a vec.")
+  (arg v "The elements, in any order. A repeated element is kept once.")
+  (returns "The set, ordering elements by the element type's Ord.")
+  (see orderedset->vec list->orderedset seq->orderedset)
+  (reference "Through a builder, so the tree is made in one pass."))
+
+(:doc orderedset->vec
+  (summary "The elements of a set, as a vec.")
+  (arg s "The set.")
+  (returns "A vec of the elements, in ascending order.")
+  (see vec->orderedset orderedset->list orderedset->seq))
+
+(:doc seq->orderedset
+  (summary "An ordered set of the elements of a sequence.")
+  (arg xs "The elements, in any order. A repeated element is kept once.")
+  (returns "The set, ordering elements by the element type's Ord.")
+  (see orderedset->seq list->orderedset vec->orderedset)
+  (reference "Through a builder, so the tree is made in one pass."))
+
+(:doc orderedset->seq
+  (summary "The elements of a set, as a sequence.")
+  (arg s "The set.")
+  (returns "A sequence of the elements, in ascending order.")
+  (see seq->orderedset orderedset-range orderedset->list))
+
+(:doc orderedset->str
+  (summary "A set written out as text.")
+  (arg s "The set.")
+  (returns "The elements inside @code{#{...}}, in ascending order, each written by its ->str, separated by spaces.")
+  (see orderedset->list)
+  (example """
+    (orderedset->str (list->orderedset (list 3 1 2)))   ; #{1 2 3}
+    """)
+  (reference """
+    Also the @code{->str} implementation of a set, so @code{(println s)}
+    prints this. There is no @code{#{...}} literal, so the text does not
+    read back as a set.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Builders
+;; ---------------------------------------------------------------------------
+
+(:doc orderedsetbuilder-empty
+  (summary "An empty ordered set builder.")
+  (returns "A builder whose set will order elements by the element type's Ord.")
+  (see orderedset->orderedsetbuilder orderedsetbuilder-add! OrderedSetBuilder))
+
+(:doc orderedset->orderedsetbuilder
+  (summary "An ordered set builder that starts with the elements of a set.")
+  (arg s "The set, which is left as it was.")
+  (returns "A builder holding s's elements, ordering them as s does.")
+  (see orderedsetbuilder-empty orderedset->transientorderedset)
+  (reference """
+    The set is walked, so this costs its size. To change an existing set,
+    @code{orderedset->transientorderedset} costs O(1).
+    """))
+
+(:doc orderedsetbuilder-add!
+  (summary "Appends an element to an ordered set builder.")
+  (arg b "The builder.")
+  (arg x "The element. An element appended twice is kept once.")
+  (see orderedsetbuilder-add-all! orderedsetbuilder->orderedset add!))
+
+(:doc orderedsetbuilder-add-all!
+  (summary "Appends every element of a sequence to an ordered set builder.")
+  (arg b "The builder.")
+  (arg xs "The elements, appended in order.")
+  (see orderedsetbuilder-add!))
+
+(:doc orderedsetbuilder-length
+  (summary "How many elements have been appended to an ordered set builder.")
+  (arg b "The builder.")
+  (returns "The number of appends, counting a repeated element each time.")
+  (see orderedsetbuilder->orderedset)
+  (reference """
+    Repeated elements are removed when the set is built, so this is an
+    upper bound on the size of the set to come, not its size.
+    """))
+
+(:doc orderedsetbuilder->orderedset
+  (summary "Builds the set a builder holds.")
+  (arg b "The builder.")
+  (returns "The set of the elements appended. Of equal elements, the last one appended is kept.")
+  (see orderedsetbuilder-empty OrderedSetBuilder))
+
+;; ---------------------------------------------------------------------------
+;; Transients
+;; ---------------------------------------------------------------------------
+
+(:doc transientorderedset-empty
+  (summary "An empty transient ordered set.")
+  (returns "A transient ordering elements by the element type's Ord.")
+  (see orderedset->transientorderedset TransientOrderedSet))
+
+(:doc orderedset->transientorderedset
+  (summary "A transient ordered set holding the elements of a set.")
+  (arg s "The set, which is left as it was.")
+  (returns "A transient that writes in place, ordering elements as s does.")
+  (see transientorderedset->orderedset transientorderedset-empty)
+  (reference """
+    Nothing is copied up front: the transient copies a node the first time
+    it writes to it.
+    """))
+
+(:doc transientorderedset->orderedset
+  (summary "The set a transient holds, as it stands.")
+  (arg t "The transient, which stays usable.")
+  (returns "A persistent set, made in O(1).")
+  (see orderedset->transientorderedset)
+  (reference """
+    The transient gives up the nodes it handed over, so a later write to it
+    copies them rather than changing the returned set.
+    """))
+
+(:doc transientorderedset-add!
+  (summary "Adds an element to a transient ordered set, in place.")
+  (arg t "The transient.")
+  (arg x "The element. When it is already there, the set keeps the same elements.")
+  (see transientorderedset-add-all! orderedset-add add!))
+
+(:doc transientorderedset-add-all!
+  (summary "Adds every element of a sequence to a transient ordered set, in place.")
+  (arg t "The transient.")
+  (arg xs "The elements.")
+  (see transientorderedset-add! orderedset-add-all))
+
+(:doc transientorderedset-remove!
+  (summary "Removes an element from a transient ordered set, in place.")
+  (arg t "The transient.")
+  (arg x "The element. When it is not there, nothing happens.")
+  (see transientorderedset-remove-all! orderedset-remove))
+
+(:doc transientorderedset-remove-all!
+  (summary "Removes every element of a sequence from a transient ordered set, in place.")
+  (arg t "The transient.")
+  (arg xs "The elements. One that is not there is skipped.")
+  (see transientorderedset-remove! orderedset-remove-all))
+
+(:doc transientorderedset-filter!
+  (summary "Removes the elements of a transient ordered set that a predicate rejects, in place.")
+  (arg keep? "Called as (keep? x); #f removes the element.")
+  (arg t "The transient.")
+  (see orderedset-filter transientorderedset-remove-all!)
+  (reference """
+    The elements to remove are all found before any is removed, so the
+    predicate sees the transient as it was.
+    """))
+
+(:doc transientorderedset-contains?
+  (summary "Whether a transient ordered set has an element.")
+  (arg t "The transient.")
+  (arg x "The element.")
+  (returns "#t when x is there.")
+  (see orderedset-contains? ref))
+
+(:doc transientorderedset-length
+  (summary "How many elements a transient ordered set holds.")
+  (arg t "The transient.")
+  (returns "The number of elements, as it stands.")
+  (see transientorderedset-empty? orderedset-length))
+
+(:doc transientorderedset-empty?
+  (summary "Whether a transient ordered set holds no elements.")
+  (arg t "The transient.")
+  (returns "#t when it has no elements.")
+  (see transientorderedset-length orderedset-empty?))
+
+(:doc transientorderedset-min
+  (summary "The smallest element of a transient ordered set.")
+  (arg t "The transient.")
+  (returns "(Some x) for the smallest element, or None when it is empty.")
+  (see transientorderedset-max orderedset-min))
+
+(:doc transientorderedset-max
+  (summary "The largest element of a transient ordered set.")
+  (arg t "The transient.")
+  (returns "(Some x) for the largest element, or None when it is empty.")
+  (see transientorderedset-min orderedset-max))

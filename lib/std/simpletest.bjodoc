@@ -1,0 +1,392 @@
+;; Docs for std/simpletest.bjo, read through (:doc #:file "simpletest.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Assertions that print a line each, with-test for a body under a scope, and a fake filesystem.")
+  (see expect with-test with-fake-fs)
+  (example """
+    (import (std prelude))
+    (import (std simpletest))
+
+    (: main (-> (Vec string) int))
+    (defun (main args)
+      (expect "adds" (+ 1 2) 3)              ; prints: ok: adds
+      (with-test "reads the fixture"
+        (with-fake-fs (("a.txt" "hello"))
+          (expect "read it" (call-with-input-file "a.txt" read-all) (Ok "hello"))))
+      0)
+    """)
+  (reference """
+    @strong{Assertions.} @code{expect}, @code{expect-true} and @code{fail}
+    print one line for each assertion. A passed assertion prints
+    @code{ok: label}. A failed assertion prints a line that starts with
+    @code{FAILURE:}, and sets the exit code of the program to 1, even when
+    @code{main} answers 0. Thus a test file is a command that a shell or CI
+    can check, and the compiler's own test runner looks for the
+    @code{FAILURE:} lines. A failed assertion does not stop the program.
+
+    @strong{(std simpletest) and (std test).} This module has no registry
+    and no runner: a test file is an ordinary program that calls the
+    assertions. @code{(std test)} is the newer harness. Its tests are silent
+    unless they fail, they are registered with @code{deftest}, and
+    @code{bjo test} runs them. Each @code{deftest} runs in a scope as
+    @code{with-test} does. The fake filesystem of this module works in
+    both.
+
+    @strong{with-test} runs a body under a deadline, and fails if the body
+    leaves a resource open. The scope gives four things. A test gets a
+    timeout, so a leaked fiber is a failure that names the test, and the
+    suite does not hang. The scope waits for the fibers that the body
+    spawned, so an assertion inside one is not missed. The resources that
+    the body opened are released. And several failures in one body are all
+    reported, because an assertion does not stop the body.
+
+    @strong{The fake filesystem.} @code{with-fake-fs} installs a handler for
+    each operation of the @code{FS} effect of the prelude. Everything that
+    goes to the disk through it answers from a map instead: the text and
+    byte openers, @code{file-read-text} and its neighbours,
+    @code{file-exists?}, @code{file-delete}, @code{file-move} and the
+    directory functions. See @code{FakeFs} for its rules.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Assertions
+;; ---------------------------------------------------------------------------
+
+(:doc expect
+  (summary "Asserts that two values are equal, and prints the result.")
+  (arg label "What the assertion is about. The printed line shows it.")
+  (arg actual "The value to test.")
+  (arg wanted "The value it must be equal to.")
+  (see expect-true fail)
+  (example """
+    (expect "parse" (parse "12") (Ok 12))
+    ;; prints:  ok: parse
+    ;; or:      FAILURE: parse gave (Ok 13) but wanted (Ok 12)
+    """)
+  (reference """
+    A failure also sets the exit code of the program to 1.
+    """))
+
+(:doc expect-true
+  (summary "Asserts that a condition is #t, and prints the result.")
+  (arg label "What the assertion is about. The printed line shows it.")
+  (arg ok "The condition.")
+  (see expect fail)
+  (reference """
+    Prints @code{ok: label}, or @code{FAILURE: label} and sets the exit
+    code of the program to 1.
+    """))
+
+(:doc fail
+  (summary "Fails at once: for a branch that a test must not reach.")
+  (arg label "Why the branch is wrong.")
+  (see expect expect-true)
+  (reference """
+    Prints @code{FAILURE: label} and sets the exit code of the program to
+    1. It does not stop the program.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; A test body, under a scope
+;; ---------------------------------------------------------------------------
+
+(:doc with-test
+  (summary "Runs a body under a deadline, and fails if it left a resource open.")
+  (form (with-test name body ...))
+  (form (with-test name #:within ms body ...))
+  (form (with-test name #:open-ok body ...))
+  (form (with-test name #:within ms #:open-ok body ...))
+  (arg name "A string: the name of the test. The failure lines show it.")
+  (arg ms "The deadline in milliseconds. @code{(default-test-ms)}, 5 seconds, when it is not given.")
+  (rest body "The forms of the test. At least one form. Their values are dropped.")
+  (see default-test-ms with-fake-fs expect)
+  (example """
+    (with-test "reads the fixture"
+      (with-fake-fs (("a.txt" "hello"))
+        (expect "read it" (call-with-input-file "a.txt" read-all) (Ok "hello"))))
+    """)
+  (reference """
+    The body runs under @code{with-deadline}, so it is a scope. The scope
+    waits for the fibers that the body spawned, and releases the resources
+    that the body opened. When both options are given, @code{#:within}
+    comes first.
+
+    The test fails, with a @code{FAILURE:} line that names it:
+
+    - when the body leaves a resource open. The check is done before the
+      scope closes, because the scope releases the resources when it closes,
+      and a test must fail if it does not close its files. @code{#:open-ok}
+      turns off the check. Use it in a test of what the closing of a scope
+      does.
+    - when the deadline ends the scope. A fiber that the body leaked is
+      cancelled by the deadline, and the scope then closes cleanly, so
+      without this check the test would pass, slowly.
+    - when the body raises an exception, a cancellation included. The
+      failure shows the message.
+
+    It catches every @code{System.Exception}, a cancellation included.
+    Usually, a cancellation must not be caught. But this is the top of a
+    test, and a failure that names the test is better than a stack trace.
+    """))
+
+(:doc default-test-ms
+  (summary "The deadline of a with-test that gives none: 5000 ms.")
+  (returns "5000.")
+  (see with-test)
+  (reference """
+    Exported because the template of @code{with-test} names it.
+    """))
+
+(:doc overran?
+  (summary "Whether a deadline ended a scope.")
+  (arg holder "A box that holds the scope, or @code{None} when the scope did not start.")
+  (returns "#t when the scope was cancelled because of its deadline, else #f.")
+  (see with-test)
+  (reference """
+    A fiber that a body leaked is cancelled by the deadline, and a
+    cancelled child is not a failure, so the scope closes cleanly. The token
+    of the scope keeps the reason for the cancellation, so
+    @code{with-test} keeps the scope in a box and reads the reason after
+    the scope has closed. Exported because the template of
+    @code{with-test} names it.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; A filesystem that is not one
+;; ---------------------------------------------------------------------------
+
+(:doc FakeFs
+  (summary "A filesystem in memory, for with-fake-fs-of.")
+  (see fake-fs with-fake-fs with-fake-fs-of fake-fs-written fake-fs-contents)
+  (example """
+    (def fs (fake-fs (list (Tuple "in.txt" "a b c"))))
+    (with-fake-fs-of fs
+      (ignore (file-write-text "out.txt" "done")))
+    (fake-fs-written fs "out.txt")   ; (Some "done")
+    """)
+  (reference """
+    It is mutable, so that a later read sees a write.
+
+    @strong{Paths.} A seeded path is a file, and every directory above a
+    file exists. A path written in the fake can be read after. Paths are
+    compared as text after one normalization: a backslash becomes a slash,
+    and a leading @code{./} and a trailing @code{/} are removed. @code{""}
+    and @code{"."} are the root. Nothing resolves @code{..}, and a relative
+    path is not made absolute, so @code{"a.txt"} and @code{"/tmp/a.txt"}
+    are different files.
+
+    @strong{Contents.} A write to a path replaces what the path held. A
+    write in @code{Append} mode continues what the path held. Bytes are kept
+    as they were written, also when they are not UTF-8. A read sees what
+    has reached the stream of a writer, also when the writer is still open.
+
+    @strong{Errors.} An operation that fails answers the exception type that
+    the .NET call would raise, so a test that matches on the error matches
+    either way.
+
+    @strong{Time.} The fake has a clock of its own, so that a test about
+    modified times does not depend on how fast it runs. The clock starts at
+    2000-01-01T00:00:00Z, which is the time of every seed. Each write that
+    is opened and each directory that is created moves the clock one second
+    forward and stamps the path with it. Thus a file written later is always
+    newer. A move keeps the times of what it moves, as a rename on a disk
+    does. @code{fake-fs-set-modified!} sets a time.
+
+    @strong{Ports.} The openers answer a @code{MemoryStream}, and the ports
+    on it are made by the same code that makes ports on a file. Thus a fake
+    port is registered on the scope that opened it, and a leak test on a
+    fake filesystem is the same as a leak test on a real one.
+    """))
+
+(:doc fake-fs
+  (summary "A new fake filesystem, seeded with files.")
+  (arg seeds "Pairs of a path and the text of the file at that path.")
+  (returns "The filesystem. Every directory above a seeded file exists.")
+  (see with-fake-fs-of with-fake-fs)
+  (example """
+    (fake-fs (list (Tuple "notes.txt" "a b c")
+                   (Tuple "dir/empty.txt" "")))
+    """))
+
+(:doc fake-fs-written
+  (summary "What was written to a path of a fake filesystem.")
+  (arg fs "The filesystem.")
+  (arg path "The path.")
+  (returns "The text written to the path, decoded as UTF-8. @code{None} when nothing was written to it, also when it is a seeded file.")
+  (see fake-fs-contents with-fake-fs-of)
+  (reference """
+    It works after the port is closed, because it reads the
+    @code{MemoryStream} with @code{ToArray}.
+    """))
+
+(:doc fake-fs-contents
+  (summary "What a file of a fake filesystem holds, whether it was seeded or written.")
+  (arg fs "The filesystem.")
+  (arg path "The path.")
+  (returns "The text of the file, decoded as UTF-8. @code{None} when there is no file at the path.")
+  (see fake-fs-written))
+
+(:doc fake-fs-set-modified!
+  (summary "Sets the modified time of a path of a fake filesystem.")
+  (arg fs "The filesystem.")
+  (arg path "The path.")
+  (arg ms "The time, in Unix milliseconds.")
+  (see FakeFs)
+  (example """
+    ;; for a test such as "skip what was written in the last five seconds"
+    (fake-fs-set-modified! fs "old.txt" 946684800000L)
+    """))
+
+;; --- The handlers --------------------------------------------------------------
+
+(:doc fake-fs-reader
+  (summary "The handler of open-read-stream for a fake filesystem.")
+  (arg fs "The filesystem.")
+  (returns """
+    A function from a path to a stream on what the file holds. A directory
+    answers @code{System.UnauthorizedAccessException}. A missing file
+    answers @code{System.IO.FileNotFoundException}, or
+    @code{System.IO.DirectoryNotFoundException} when its directory is
+    missing too.
+    """)
+  (see with-fake-fs-of)
+  (reference """
+    The handlers are exported because the templates of
+    @code{with-fake-fs-of} name them. Use @code{with-fake-fs-of} to install
+    them.
+    """))
+
+(:doc fake-fs-writer
+  (summary "The handler of open-write-stream for a fake filesystem.")
+  (arg fs "The filesystem.")
+  (returns """
+    A function from a path and a @code{WriteMode} to a stream to write the
+    file through. @code{Append} starts the stream with what the path held.
+    @code{CreateNew} on a file that exists answers
+    @code{System.IO.IOException}. A directory answers
+    @code{System.UnauthorizedAccessException}, and a missing directory above
+    the path answers @code{System.IO.DirectoryNotFoundException}. Each
+    write that opens moves the clock one second forward and stamps the path.
+    """)
+  (see with-fake-fs-of))
+
+(:doc fake-fs-info
+  (summary "The handler of fs-info for a fake filesystem.")
+  (arg fs "The filesystem.")
+  (returns """
+    A function from a path to its @code{FsInfo}, or @code{None} when nothing
+    is at the path. The size is in bytes, and is 0 for a directory. The
+    modified time is the stamp of the path, or the start of the clock.
+    Nothing is a link.
+    """)
+  (see with-fake-fs-of))
+
+(:doc fake-fs-list
+  (summary "The handler of fs-list for a fake filesystem.")
+  (arg fs "The filesystem.")
+  (returns """
+    A function from a directory to the paths of what is directly in it,
+    sorted. The paths are whole, as @code{Directory.GetFileSystemEntries}
+    gives them: @code{"dir/a.txt"}, not @code{"a.txt"}. A path that is not a
+    directory answers @code{System.IO.DirectoryNotFoundException}.
+    """)
+  (see with-fake-fs-of))
+
+(:doc fake-fs-create-directory
+  (summary "The handler of fs-create-directory for a fake filesystem.")
+  (arg fs "The filesystem.")
+  (returns """
+    A function that creates a directory and each missing directory above
+    it, as @code{Directory.CreateDirectory} does. A directory that exists
+    is not an error. A file at the path answers
+    @code{System.IO.IOException}. A new directory moves the clock one second
+    forward and is stamped with it.
+    """)
+  (see with-fake-fs-of))
+
+(:doc fake-fs-delete-file
+  (summary "The handler of fs-delete-file for a fake filesystem.")
+  (arg fs "The filesystem.")
+  (returns """
+    A function that deletes a file. A missing file is not an error, as with
+    @code{File.Delete}. A directory answers
+    @code{System.UnauthorizedAccessException}.
+    """)
+  (see with-fake-fs-of))
+
+(:doc fake-fs-delete-directory
+  (summary "The handler of fs-delete-directory for a fake filesystem.")
+  (arg fs "The filesystem.")
+  (returns """
+    A function that deletes an empty directory. A directory that is not
+    empty, the root, and a file at the path answer
+    @code{System.IO.IOException}. A missing directory answers
+    @code{System.IO.DirectoryNotFoundException}.
+    """)
+  (see with-fake-fs-of))
+
+(:doc fake-fs-move
+  (summary "The handler of fs-move for a fake filesystem.")
+  (arg fs "The filesystem.")
+  (returns """
+    A function that moves a file, or a directory and everything below it,
+    with the modified times. The source is checked first, as
+    @code{File.Move} does: a missing source answers
+    @code{System.IO.FileNotFoundException}. A destination that exists
+    answers @code{System.IO.IOException}, unless the mode is
+    @code{MoveReplace} and a file replaces a file. A missing directory above
+    the destination answers @code{System.IO.DirectoryNotFoundException}.
+    """)
+  (see with-fake-fs-of))
+
+;; --- The forms -----------------------------------------------------------------
+
+(:doc with-fake-fs-of
+  (summary "Runs a body with an existing fake filesystem installed for the FS effect.")
+  (form (with-fake-fs-of fs body ...))
+  (arg fs "A @code{FakeFs}. It is evaluated once.")
+  (rest body "What to run. At least one form. Its last value is the value of the form.")
+  (see with-fake-fs fake-fs fake-fs-written)
+  (example """
+    (def fs (fake-fs (list)))
+    (with-fake-fs-of fs
+      (ignore (file-write-text "out.txt" "done")))
+    (expect "wrote it" (fake-fs-written fs "out.txt") (Some "done"))
+    """)
+  (reference """
+    Use it, not @code{with-fake-fs}, to examine the filesystem after the
+    body.
+
+    It is a handler frame, not a scope: it does not wait for a fiber spawned
+    in the body. The fiber keeps the fake, because a spawn takes the
+    environment as it was at the spawn. But the assertions of the body, and
+    the leak check of @code{with-test}, run before the fiber is done. So put
+    a fiber that reads or writes the fake in a @code{with-scope} of its own,
+    inside this form. This form opens no scope, because a scope would hide
+    from @code{with-test} what the body left open.
+
+    A macro that writes a @code{with-handler} must give the operation names
+    through @code{inject}, as this one does. @code{with-handler} derives the
+    cell it binds from the name it is given, and a renamed name derives a
+    cell that nothing declares.
+    """))
+
+(:doc with-fake-fs
+  (summary "Runs a body with a new fake filesystem, seeded with files, installed for the FS effect.")
+  (form (with-fake-fs ((path contents) ...) body ...))
+  (arg path "The path of a seeded file.")
+  (arg contents "The text of that file.")
+  (rest body "What to run. At least one form. Its last value is the value of the form.")
+  (see with-fake-fs-of FakeFs with-test)
+  (example """
+    (with-fake-fs (("notes.txt" "a b c")
+                   ("empty.txt" ""))
+      (expect "read it back" (call-with-input-file "notes.txt" read-all) (Ok "a b c")))
+    """)
+  (reference """
+    @code{(with-fake-fs-of (fake-fs seeds) body ...)}. Use
+    @code{with-fake-fs-of} to examine the filesystem after the body. A
+    fiber spawned in the body is not waited for: see
+    @code{with-fake-fs-of}.
+    """))

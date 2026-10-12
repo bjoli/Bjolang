@@ -1,0 +1,265 @@
+;; Docs for std/net.bjo, read through (:doc #:file "net.bjodoc"). The texts
+;; are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "TCP connections, each as a pair of byte ports: an InputPort and an OutputPort.")
+  (see tcp-connect tcp-listen accept-evt accept close-listener! peer-address)
+  (example """
+    (import (std net))
+    (import (std ports))
+
+    ;; A client: ask, end the write half, read the answer.
+    (match (tcp-connect "127.0.0.1" 8080)
+      ((Ok (Tuple in out))
+       (write-bytes! out request)
+       (flush-port out)
+       (shutdown! out)              ; a FIN: "I have finished asking"
+       (read-some in))              ; the answer still arrives
+      ((Err e) None))
+    """)
+  (example """
+    ;; A server: accept until the listener is closed.
+    (: serve (-bjo-> Listener Symbol))
+    (defbjo (serve l)
+      (let go ()
+        (match (sync (choose (wrap (accept-evt l) Some)
+                             (wrap (listener-closed l) (fun (_) None))))
+          ((Some (Ok conn)) (spawn (handle conn)) (go))
+          ((Some (Err e))   (log (str "accept failed: " (.-Message e))) 'failed)
+          (None             'stopped))))
+    """)
+  (reference """
+    A connection is a @code{(Tuple InputPort OutputPort)} and nothing more.
+    There is no socket object, which is why this module is
+    @code{(std net)} and not @code{(std socket)}. A protocol written against
+    @code{(std ports)} runs over TCP and does not know that it is TCP, and a
+    @code{byte-pipe} can replace the network in a test.
+
+    Everything you do with a connection comes from @code{(std ports)} and
+    the prelude: @code{read-some}, @code{read-bytes-evt},
+    @code{write-bytes!}, @code{flush-port}, @code{shutdown!},
+    @code{limited}, and @code{read-line} on the same input port as
+    @code{read-bytes}. Import both modules.
+
+    @strong{The socket goes when both halves are closed}, or when the owner
+    of the connection releases it, whichever comes first. So
+    @code{(with-open ((i in) (o out)) ...)} closes the socket at its end.
+    Closing one half does not close the other: "I have finished listening,
+    now I answer" must work.
+
+    @strong{Owners.} A connection from @code{tcp-connect} or
+    @code{stream->ports} is owned by the ambient scope. A connection from an
+    accept is owned by its listener, and the listener is owned by the scope
+    in which @code{tcp-listen} was called. When that scope ends, it closes
+    the listening socket and every accepted connection that is still open.
+
+    @strong{The rule that accepts obey.} A connection that the operating
+    system has given over belongs to the listener, not to the event that
+    asked for it. An accept never takes a connection from the kernel. It
+    takes one from the slot of the listener, and only when it wins. Thus
+    @code{accept-evt} is a real CML event: a branch of a @code{choose} that
+    loses accepts nothing, and the connection stays for the next acceptor.
+
+    Nagle's algorithm is off on every socket. @code{flush-port} sends what
+    is buffered at once.
+
+    @code{BjolangRuntime/BjoNet.cs} has the implementation.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Connecting
+;; ---------------------------------------------------------------------------
+
+(:doc tcp-connect
+  (summary "Connects to host on port, and returns the two ports of the connection.")
+  (arg host "An IP address, such as @code{\"127.0.0.1\"} or @code{\"::1\"}, or a host name.")
+  (arg port "The TCP port, from 0 to 65535.")
+  (returns "@code{(Ok (Tuple in out))}, or @code{(Err e)} when the connection fails, the name does not resolve, or port is out of range.")
+  (raises Bjolang.Runtime.ScopeEnded "When there is no ambient scope. This happens before a socket exists.")
+  (see tcp-listen stream->ports peer-address shutdown!)
+  (example """
+    (with-deadline 5000
+      (tcp-connect "example.com" 80))
+    """)
+  (reference """
+    A host name is resolved, and its addresses are tried in order. The
+    first address that answers is used. There is no "happy eyeballs" race.
+    An address literal does not use the resolver.
+
+    The connection is owned by the ambient scope. If the program does not
+    close it, the scope closes it when the scope ends.
+
+    There is no @code{#:deadline}. The connect watches the ambient
+    cancellation token, so @code{with-deadline} and a cancelled scope stop
+    it. A deadline or a cancellation is a raise and not an @code{Err}, and
+    no other address is tried after it.
+
+    Nagle's algorithm is off on the socket. A byte port has its own write
+    buffer, and @code{flush-port} means "send this now". With Nagle on, a
+    small write after a flush would wait for an ACK, which is wrong for a
+    request/response protocol.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; A connection somebody else made
+;; ---------------------------------------------------------------------------
+
+(:doc stream->ports
+  (summary "The two ports over a duplex Stream that some other code connected.")
+  (arg s "The stream, for example a @code{NetworkStream}, or the stream an HTTP server gives after @code{101 Switching Protocols}.")
+  (key peer "What @code{peer-address} returns for the input port. @code{\"\"}, the default, gives @code{None}.")
+  (returns "The input port and the output port, which share the stream.")
+  (raises Bjolang.Runtime.ScopeEnded "When there is no ambient scope.")
+  (see tcp-connect peer-address stream->input-port stream->output-port)
+  (reference """
+    @code{stream->input-port} and @code{stream->output-port} each own the
+    stream that they wrap. Thus the first half that is closed would take
+    the stream from the other half. This function shares the stream as
+    @code{tcp-connect} does: the stream is disposed when both halves are
+    closed, or when the ambient scope ends.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Listening
+;; ---------------------------------------------------------------------------
+
+(:doc Listener
+  (summary "A listening TCP socket whose accepts are CML events.")
+  (see tcp-listen accept-evt accept close-listener! listener-closed))
+
+(:doc tcp-listen
+  (summary "Binds a TCP socket to host and port, and listens on it.")
+  (arg host "An IP address to bind, such as @code{\"0.0.0.0\"} or @code{\"::1\"}, or a host name.")
+  (arg port "The TCP port, from 0 to 65535. With 0, the operating system picks a port; @code{listener-port} tells which.")
+  (key backlog "How many connections the kernel holds before an accept takes them. At least 1.")
+  (returns "@code{(Ok listener)}, or @code{(Err e)} when the bind fails, the name does not resolve, or an argument is out of range.")
+  (raises Bjolang.Runtime.ScopeEnded "When there is no ambient scope.")
+  (see accept-evt accept listener-port close-listener!)
+  (example """
+    (match (tcp-listen "127.0.0.1" 0)
+      ((Ok l) (log (str "listening on " (int->string (listener-port l)))))
+      ((Err e) (log (.-Message e))))
+    """)
+  (reference """
+    The listener is owned by the ambient scope. When the scope ends, it
+    does the @strong{hard} stop: it closes the listening socket and every
+    accepted connection that is still open. @code{close-listener!} is the
+    graceful stop.
+
+    A host name is resolved synchronously, because a bind happens once, at
+    startup. Only the first address of the name is used. An address
+    literal does not use the resolver.
+    """))
+
+(:doc listener-port
+  (summary "The port that the listener is bound to.")
+  (arg l "The listener.")
+  (returns "The bound port. Useful when @code{tcp-listen} was given 0.")
+  (see tcp-listen)
+  (reference """
+    It is still available after the listener is closed.
+    """))
+
+(:doc accept-evt
+  (summary "The event that accepts the next connection on the listener.")
+  (arg l "The listener.")
+  (returns "An event whose value is @code{(Ok (Tuple in out))}, or @code{(Err e)} when the listening socket has failed.")
+  (see accept listener-closed close-listener! tcp-listen)
+  (reference """
+    This is a real CML event. If another branch of a @code{choose} wins,
+    nothing is accepted, and the connection stays for the next acceptor.
+    The event is also @strong{ephemeral}: each @code{sync} asks the
+    listener again. Thus a server loop accepts one connection after
+    another, and does not win with the same connection each time.
+
+    The listener holds at most one connection that the kernel has given
+    over and no accept has taken. The kernel's backlog is the queue behind
+    it.
+
+    @strong{Why the value is a @code{Result}.} A listening socket can fail,
+    and the CML resume path carries a value, not a raise. Thus a failure
+    that comes while a fiber waits in a @code{choose} must arrive as a
+    value. @code{promise-join}, @code{blocking} and the byte reads of
+    @code{(std ports)} return a @code{Result} for the same reason.
+
+    @strong{A failure is permanent.} After the first failure, the listener
+    accepts nothing more, and every later @code{sync} on this event
+    commits at once with the same @code{Err}. A loop that logs the error
+    and accepts again does not stop. Stop the loop, or make a new listener.
+
+    On a closed listener, the event never commits. Choose it together with
+    @code{listener-closed}, as @code{inbox-recv} is chosen with
+    @code{inbox-closed}. After the scope that owns the listener has ended,
+    a @code{sync} on this event raises @code{ObjectDisposedException}.
+
+    The connection belongs to the listener. The listener's scope closes it
+    when it ends, if both halves are not closed before. A connection that
+    is accepted at the moment the listener closes is not tracked by the
+    listener; its two ports are then the only way to close it.
+    """))
+
+(:doc listener-closed
+  (summary "The event that fires when the listener has stopped accepting.")
+  (arg l "The listener.")
+  (returns "An event that fires once, and then commits at once on every @code{sync}.")
+  (see close-listener! accept-evt)
+  (reference """
+    It fires on @code{close-listener!}, and when the scope that owns the
+    listener ends.
+    """))
+
+(:doc accept
+  (summary "Waits for the next connection on the listener and returns its two ports.")
+  (arg l "The listener.")
+  (returns "The input port and the output port of the connection.")
+  (raises System.Net.Sockets.SocketException "When the listening socket has failed. The failure of the socket is raised as it is.")
+  (see accept-evt listener-closed)
+  (reference """
+    This syncs @code{accept-evt}, and raises the error of an @code{Err} on
+    the caller's stack. In a bjoroutine it suspends; in an ordinary
+    function it parks the thread.
+
+    On a closed listener it waits forever, because the event never
+    commits. A program that can meet a closed listener uses
+    @code{accept-evt} in a @code{choose} with @code{listener-closed}.
+    """))
+
+(:doc close-listener!
+  (summary "Stops accepting connections. Connections already accepted stay open.")
+  (arg l "The listener.")
+  (see listener-closed tcp-listen)
+  (reference """
+    This is the @strong{graceful} stop, and that is the difference from
+    the end of the listener's scope. The listening socket is closed, and
+    @code{listener-closed} fires. An accept that waits never commits. A
+    connection that the kernel gave over but that no accept took is
+    closed.
+
+    Connections that were already accepted are @strong{not} touched. They
+    belong to the code that handles them, and "stop listening" does not
+    mean "stop a request that is half answered". This is what
+    @code{inbox-close!} means for an inbox.
+
+    So a server drains like this: close the listener, let the handlers
+    finish, and leave the scope. The scope then closes what is still open.
+
+    A second call does nothing.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Who is at the other end
+;; ---------------------------------------------------------------------------
+
+(:doc peer-address
+  (summary "The address and port of the other end of a connection, for a log line.")
+  (arg p "The input port of a connection.")
+  (returns "@code{(Some address)}, for example @code{\"127.0.0.1:54321\"}, or @code{None} when the port has no peer.")
+  (see tcp-connect accept-evt stream->ports)
+  (reference """
+    The peer is kept with the input port, because the tuple has two places
+    and there is nowhere else to keep it.
+
+    It is @code{None} for a port that is not the input port of a
+    connection: a file, a pipe or a @code{limited} view. It is also
+    @code{None} for @code{stream->ports} with no @code{#:peer}.
+    """))

@@ -1,0 +1,196 @@
+;; Docs for std/eq.bjo, read through (:doc #:file "eq.bjodoc"). The texts are
+;; samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Equality and hashing (Eq), ordering (Ord), and the sort, min and max built on them.")
+  (see = eq-hash Ord compare list-sort)
+  (example """
+    (= (list 1 2 3) (list 1 2 3))      ; #t
+    (compare "apple" "banana")         ; a negative int
+    (less? 2 3)                        ; #t
+    (list-sort (list 3 1 2))           ; (1 2 3)
+    (list-max (list 3 1 2))            ; (Some 3)
+    """)
+  (reference """
+    The prelude re-exports every name of this module, so a program that
+    imports @code{(std prelude)} does not import this one.
+
+    @strong{Eq.} The trait has two methods: @code{=} and @code{eq-hash}.
+    Every type has an implementation. A type with no implementation of its
+    own uses the default one, which calls the .NET @code{Equals} and
+    @code{GetHashCode} of the value. The integer types, @code{bool},
+    @code{string}, @code{char}, @code{Keyword}, @code{Symbol} and
+    @code{StringCursor} have direct implementations. @code{double} uses
+    @code{Equals}, so @code{NaN} is equal to @code{NaN}. All values of
+    @code{void} are equal.
+
+    @code{List}, @code{Vec}, @code{Option}, @code{Result} and the tuples of
+    two to four items compare their items with their own @code{=}, and hash
+    them with their own @code{eq-hash}. List and vec equality are loops, so
+    a long list does not overflow the stack.
+
+    @strong{Ord.} The trait has one method: @code{compare}. The other
+    functions of this module use only @code{compare}, so a type that
+    implements @code{compare} gets all of them. The numbers, @code{bool}
+    and @code{char} use their .NET @code{CompareTo}. This includes
+    @code{decimal}, @code{bigint}, @code{int128}, @code{uint128} and
+    @code{System.SByte}. @code{string} compares code points, and never uses
+    the culture of the machine. So the order is the same on every machine,
+    and it is the order that an @code{OrderedMap} of strings keeps.
+    @code{(std clr-ord)} adds @code{Ord} for the .NET time types,
+    @code{Guid} and @code{Version}.
+
+    @strong{An implementation of your own.} Make @code{=} and
+    @code{eq-hash} agree: two values that are @code{=} must have the same
+    @code{eq-hash}. Make @code{compare} agree with @code{=}: it returns
+    @code{0} only for values that are @code{=}.
+
+    @codeblock[#:lang "bjolang"]|{
+    (impl (Ord Card)
+      (defun (compare a b) (compare (card-rank a) (card-rank b))))
+    }|
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Eq
+;; ---------------------------------------------------------------------------
+
+(:doc Eq
+  (summary "The trait for equality and hashing.")
+  (see = eq-hash)
+  (reference """
+    Every type has an implementation. The default one calls the .NET
+    @code{Equals} and @code{GetHashCode} of the value. An implementation
+    must make @code{eq-hash} agree with @code{=}: two values that are
+    @code{=} have the same hash.
+    """))
+
+(:doc =
+  (summary "Whether two values are equal.")
+  (arg a "The first value.")
+  (arg b "The second value.")
+  (returns "#t when a and b are equal.")
+  (see eq-hash compare)
+  (example """
+    (= "abc" "abc")               ; #t
+    (= (Some 1) (Some 2))         ; #f
+    """)
+  (reference """
+    The method of @code{Eq}. Containers compare their items with the
+    items' own @code{=}. On @code{double}, @code{NaN} is equal to
+    @code{NaN}.
+    """))
+
+(:doc eq-hash
+  (summary "A hash of a value that agrees with =.")
+  (arg a "The value.")
+  (returns "An int. Values that are = have the same hash.")
+  (see =)
+  (reference """
+    The method of @code{Eq}. Hash maps and hash sets use it. The hash of a
+    container combines the hashes of its items, in order.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Ord
+;; ---------------------------------------------------------------------------
+
+(:doc Ord
+  (summary "The trait for a total order.")
+  (tparam %a "The type that is ordered.")
+  (see compare less? list-sort)
+  (example """
+    (impl (Ord Card)
+      (defun (compare a b) (compare (card-rank a) (card-rank b))))
+
+    (list-sort hand)   ; sorted by rank
+    """)
+  (reference """
+    One method, @code{compare}. All other functions of this module use only
+    @code{compare}, so a type that implements it gets them all. Make
+    @code{compare} return @code{0} only for values that are @code{=}.
+    """))
+
+(:doc compare
+  (summary "Compares two values.")
+  (arg a "The first value.")
+  (arg b "The second value.")
+  (returns "A negative int when a is before b, 0 when they are equal, and a positive int when a is after b.")
+  (see less? greater? least)
+  (reference """
+    The method of @code{Ord}. Only the sign of the result has a meaning.
+    @code{string} compares code points, not the culture of the machine.
+    """))
+
+(:doc less?
+  (summary "Whether a is before b.")
+  (arg a "The first value.")
+  (arg b "The second value.")
+  (returns "#t when (compare a b) is negative.")
+  (see at-most? greater? compare))
+
+(:doc greater?
+  (summary "Whether a is after b.")
+  (arg a "The first value.")
+  (arg b "The second value.")
+  (returns "#t when (compare a b) is positive.")
+  (see at-least? less? compare))
+
+(:doc at-most?
+  (summary "Whether a is before b or equal to it.")
+  (arg a "The first value.")
+  (arg b "The second value.")
+  (returns "#t when (compare a b) is not positive.")
+  (see less? at-least? compare))
+
+(:doc at-least?
+  (summary "Whether a is after b or equal to it.")
+  (arg a "The first value.")
+  (arg b "The second value.")
+  (returns "#t when (compare a b) is not negative.")
+  (see greater? at-most? compare))
+
+(:doc least
+  (summary "The smaller of two values.")
+  (arg a "The first value.")
+  (arg b "The second value.")
+  (returns "a when a is at most b, else b. When they are equal, a.")
+  (see greatest list-min))
+
+(:doc greatest
+  (summary "The larger of two values.")
+  (arg a "The first value.")
+  (arg b "The second value.")
+  (returns "a when a is at least b, else b. When they are equal, a.")
+  (see least list-max))
+
+;; ---------------------------------------------------------------------------
+;; Lists
+;; ---------------------------------------------------------------------------
+
+(:doc list-sort
+  (summary "A sorted copy of a list, in the order of compare. Stable.")
+  (arg xs "The list to sort.")
+  (returns "A list of the same items, from the least to the greatest. Equal items keep their order.")
+  (see compare list-min list-max)
+  (example """
+    (list-sort (list 3 1 2))   ; (1 2 3)
+    """)
+  (reference """
+    A merge sort, in O(n log n) time. It copies the list into two arrays,
+    merges runs of width 1, 2, 4 and so on between them, and builds the
+    result list once at the end. So a long list does not overflow the
+    stack. A list of fewer than two items is returned as it is.
+    """))
+
+(:doc list-min
+  (summary "The least item of a list, or None when it is empty.")
+  (arg xs "The list.")
+  (returns "(Some item), or None when xs is empty. When some items are equal and least, the last of them.")
+  (see list-max least list-sort))
+
+(:doc list-max
+  (summary "The greatest item of a list, or None when it is empty.")
+  (arg xs "The list.")
+  (returns "(Some item), or None when xs is empty. When some items are equal and greatest, the last of them.")
+  (see list-min greatest list-sort))

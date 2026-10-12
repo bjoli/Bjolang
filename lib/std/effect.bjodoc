@@ -1,0 +1,200 @@
+;; Docs for std/effect.bjo, read through (:doc #:file "effect.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Tail-resumptive effect handlers: declare operations, perform them, and install handlers for an extent.")
+  (see defeffect with-handler handler-of)
+  (example """
+    (import (std prelude))
+    (import (std effect))
+
+    (defeffect Console
+      (say (-> string void))
+      #:default ((say (fun (s) (println s)))))
+
+    (defun (greet who) (say (str "hello " who)))
+
+    (greet "world")                          ; the default: prints it
+    (with-handler ((say (fun (s) (ignore s))))
+      (greet "nobody"))                      ; says nothing
+    """)
+  (reference """
+    An effect operation is a parameter that holds a function, the
+    @strong{handler}. To perform the operation, call it as a function: the
+    call reads the parameter and calls the handler. @code{with-handler}
+    is @code{parameterize} on the parameters of the operations. Code that
+    performs an operation does not know which handler is installed, so a
+    caller decides what the operation does. A test, for example, can
+    install a handler that collects what the code logs.
+
+    @strong{A handler returns once, or raises.} The handler runs on the
+    stack of the code that performs the operation, and no continuation is
+    captured. So a handler can return a value, which is resuming the
+    operation, or raise an exception, which aborts it. Nothing else is
+    possible. Generators, backtracking and resuming an operation two times
+    are not possible with these effects, and can not be added to them on
+    this backend.
+
+    @strong{What a declaration makes.} For each operation @code{op},
+    @code{defeffect} defines two ordinary names in the module:
+    @code{op/op}, the parameter, and @code{op}, a function that calls the
+    handler. A module that lets other modules handle its operation exports
+    both.
+
+    @strong{Colour.} An operation declared @code{(-> ...)} takes
+    @code{fun} handlers and can be performed anywhere, also in a
+    @code{defun}. An operation declared @code{(-bjo-> ...)} takes
+    @code{bjoroutine} handlers and can be performed only from a
+    bjoroutine. A @code{fun} is not accepted where a
+    @code{(-bjo-> ...)} handler is needed. Prefer @code{(-> ...)}: an
+    operation that a @code{defun} performs must be one. An operation that
+    must give something that suspends can return a value whose own methods
+    can suspend, such as a port.
+
+    @strong{Dependencies.} This module does not import the prelude, so the
+    prelude can declare effects of its own. The parameter functions that
+    an expansion uses are built in, so the expansion works in any module.
+    """))
+
+(:doc unhandled-effect
+  (summary "Raises Unhandled for an operation that has no handler.")
+  (arg operation "The name of the operation, for the message.")
+  (returns "Nothing. It always raises.")
+  (raises Unhandled "Always. The message names the operation.")
+  (see defeffect)
+  (reference """
+    The handler of an operation that @code{defeffect} declares with no
+    @code{#:default}. The expansion calls it, so it is exported.
+    """))
+
+(:doc defeffect
+  (summary "Declares the operations of an effect, with their types and optional default handlers.")
+  (form (defeffect name operation ...))
+  (form (defeffect name operation ... #:default (default ...) #:cold (cold ...) #:adopt (adopt ...)))
+  (arg name "The name of the effect. It is documentation only: no definition is made for it.")
+  (rest operation """
+    @code{(op arrow)}: the name of an operation and its type, which is an
+    arrow: @code{(-> ...)} or @code{(-bjo-> ...)}.
+    """)
+  (rest default """
+    @code{(op handler)}: the handler that @code{op} uses when no
+    @code{with-handler} installs one. An operation without a default
+    raises @code{Bjolang.Runtime.Unhandled} when it is performed.
+    """)
+  (rest cold """
+    An operation that uses a cold parameter. See below.
+    """)
+  (rest adopt """
+    @code{(op fn)}: a function that gets each value that the handler of
+    @code{op} returns, before the caller gets it. See below.
+    """)
+  (see with-handler handler-of unhandled-effect)
+  (example """
+    (defeffect Log
+      (log   (-> string void))
+      (audit (-bjo-> string void))
+      #:default ((log (fun (s) (println s))))
+      #:cold (audit))
+    """)
+  (reference """
+    The @code{#:default}, @code{#:cold} and @code{#:adopt} clauses are each
+    optional, and can be in any order. Each operation defines a parameter,
+    @code{op/op}, and a function, @code{op}, that calls the handler in
+    the parameter. Handlers are installed one operation at a time, with
+    @code{with-handler}. No form installs a whole effect.
+
+    @strong{Default.} Give a default when the operation has one sensible
+    meaning. Leave it out when a program that runs with no handler must
+    fail. The default must have the colour of the operation: a
+    @code{bjoroutine} for a @code{(-bjo-> ...)} operation.
+
+    @strong{Cold.} Each operation uses one of the 31 cheap parameter ids of
+    the dynamic environment. @code{#:cold} makes the parameter of the
+    operation a cold parameter, which uses no id. Use it for an operation
+    that is not performed in a loop, so that operations which are
+    performed often keep the cheap ids.
+
+    @strong{Adopt.} Use @code{#:adopt} for an operation that returns a
+    resource, when a handler can make a resource that nothing owns, such
+    as a string port. The function can register the resource on the
+    current scope, so that it is released as a real one is. If the
+    operation returns the raw material instead, and the caller makes the
+    resource, @code{#:adopt} is not necessary. The @code{FS} openers of
+    the prelude return a @code{Stream} for this reason.
+    """))
+
+(:doc with-handler
+  (summary "Runs body with handlers installed for some operations.")
+  (form (with-handler ((op handler) ...) body ...))
+  (arg op "The name of an operation, as defeffect declared it. Give at least one pair.")
+  (arg handler "The handler for that operation. Its colour is the operation's.")
+  (rest body "What to run. At least one form. Its last value is the value of the form.")
+  (see defeffect handler-of)
+  (example """
+    (def buf (make-box ""))
+    (with-handler ((log (fun (s) (box-set! buf (str (box-ref buf) s)))))
+      (run-job))
+    """)
+  (reference """
+    This is @code{parameterize} on the parameters of the operations. The
+    bindings are made at the same time, and the earlier handlers come back
+    however the body ends. A handler runs on the stack of the code that
+    performs the operation. So a handler that raises unwinds that code,
+    not the code that installed the handler. In a spawned fiber, that is a
+    failure of the child, as any other.
+
+    @strong{A handler frame is not a scope.} @code{with-handler} does not
+    wait for the fibers that its body spawns. A spawned fiber keeps the
+    handler, because a spawn takes the environment as it is at the spawn.
+    But @code{with-handler} can return before the fiber has performed its
+    operations:
+
+    @codeblock[#:lang "bjolang"]|{
+    (with-cancel (cancel)
+      (with-handler ((log (collect-into buf)))
+        (spawn (work)))
+      (report buf))   ; too early: the child still writes to buf
+    }|
+
+    So put a handler that collects outside the scope that owns the fibers,
+    and read what it collected after both have returned.
+    @code{parameterize} works the same way.
+
+    @strong{Forwarding.} A handler runs with itself installed. So a handler
+    that performs its own operation calls itself, and loops. Use
+    @code{handler-of} to get the handler that was installed before. The
+    bindings are evaluated before any of them is installed, so the binding
+    itself can read it:
+
+    @codeblock[#:lang "bjolang"]|{
+    (with-handler ((log (let ((outer (handler-of log)))
+                          (fun (s) (outer (str "[app] " s))))))
+      body)
+    }|
+
+    @strong{The parameter is found by its spelling.} @code{with-handler}
+    makes the name of the parameter from the written name of the
+    operation: @code{log} gives @code{op/log}. An operation imported with a
+    prefix or a rename has no parameter with that spelling, so
+    @code{with-handler} can not find it. Use @code{parameterize} on the
+    parameter itself:
+    @code{(parameterize ((p:op/log collect)) body)}.
+
+    For the same reason, a macro that writes a @code{with-handler} must
+    @code{inject} the name of the operation, as in
+    @code{(inject (string->symbol "log"))}. A template renames the names
+    that it introduces, and the renamed name gives a parameter that is not
+    declared. A name that comes from the input of the macro is not renamed.
+    @code{with-fake-fs} in @code{(std simpletest)} is an example.
+    """))
+
+(:doc handler-of
+  (summary "The handler that is installed for an operation here.")
+  (form (handler-of op))
+  (arg op "The name of an operation, as defeffect declared it.")
+  (see with-handler)
+  (reference """
+    @code{(parameter-ref op/op)}, with the name of the parameter made as
+    @code{with-handler} makes it. Use it in a @code{with-handler} binding
+    to forward to the handler that the binding replaces.
+    """))

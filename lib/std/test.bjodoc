@@ -1,0 +1,340 @@
+;; Docs for std/test.bjo, read through (:doc #:file "test.bjodoc"). The texts
+;; are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Tests that are silent unless they fail: deftest, check, and run-tests as the file's main.")
+  (see deftest check run-tests)
+  (example """
+    (import (std prelude))
+    (import (std test))
+
+    (deftest "parse adds"
+      (check (= (parse "1+2") (Ok 3))))
+
+    (deftest "a bad number is an error"
+      (check-match (parse "x") (Err _)))
+
+    (run-tests)
+    """)
+  (reference """
+    @code{deftest} registers a test where it is written. @code{(run-tests)}
+    is the @code{main} of the file: it runs every test that the module
+    registered, in source order. A test that passes prints nothing. A test
+    that fails prints its name, its file and line, and each check in it that
+    failed, with the values that the check saw. The run ends with one line,
+    and the program exits with 1 if a test failed:
+
+    @codeblock[#:lang "text"]|{
+    FAIL parse adds (parse_test.bjo:4)
+      parse_test.bjo:5: (check (= (parse "1+2") (Ok 3)))
+        (parse "1+2") => (Ok 4)
+        (Ok 3)        => (Ok 3)
+    1 of 2 test(s) failed in 12 ms.
+    }|
+
+    @strong{Choosing tests.} The arguments of the program choose the tests.
+    A test runs when its name contains one of the arguments. With no
+    arguments, every test runs. @code{bjo test} builds and runs the test
+    files that it is given, or every file under @code{tests/} in the
+    project. It gives its other arguments to each file as these filters.
+
+    @strong{Each test runs in a scope of its own}, as @code{with-test} in
+    @code{(std simpletest)} does. The scope has a deadline: 5 seconds, or
+    @code{#:within ms}. The scope waits for the fibers that the test
+    started. The test fails if it leaves a resource open, unless it has
+    @code{#:open-ok}. A test that raises an exception fails with the message
+    of the exception, and the tests after it still run. A failed check does
+    not stop its test, so one run shows all the failed checks.
+
+    @strong{Each module runs only its own tests.} Every module that imports
+    this one registers into the same list. A test records the module it was
+    written in, from @code{(current-module)}, and @code{(run-tests)} runs
+    only the tests of its module. Thus a test file can import a library that
+    has tests of its own, and it does not run them.
+
+    @strong{(std test) and (std simpletest).} @code{(std simpletest)} is the
+    older harness. Its @code{expect} prints a line for each assertion, and a
+    failure is a line that starts with @code{FAILURE:}, which is what the
+    compiler's own test runner looks for. It has no registry: a test file is
+    an ordinary program that calls the assertions from @code{main}. Use
+    @code{(std test)} for new tests and with @code{bjo test}. The two can be
+    used together: @code{with-fake-fs} from @code{(std simpletest)} works
+    inside a @code{deftest}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Tests and their registry
+;; ---------------------------------------------------------------------------
+
+(:doc Test
+  (summary "A registered test: its name, where it is, its options and its body.")
+  (field name "The name given to @code{deftest}. The filters of a run match against it.")
+  (field module "The key of the module that registered it, as @code{(current-module)} gives it.")
+  (field file "The path of the source file that it is written in.")
+  (field line "The line of the @code{deftest}.")
+  (field within "The deadline in milliseconds. 0 means the default, 5000.")
+  (field open-ok "#t when the test can leave resources open.")
+  (field body "The forms of the test, as a function. @code{run-test} calls it.")
+  (see deftest run-test registered-tests))
+
+(:doc test-name
+  (summary "The name of a test.")
+  (arg t "The test.")
+  (returns "The name given to @code{deftest}."))
+
+(:doc test-module
+  (summary "The module that registered a test.")
+  (arg t "The test.")
+  (returns "The key of the module, as @code{(current-module)} gives it.")
+  (see module-tests))
+
+(:doc test-file
+  (summary "The source file of a test.")
+  (arg t "The test.")
+  (returns "The path of the file, as the compiler read it.")
+  (see test-line))
+
+(:doc test-line
+  (summary "The line of a test's deftest.")
+  (arg t "The test.")
+  (returns "The line number.")
+  (see test-file))
+
+(:doc register-test!
+  (summary "Adds a test to the registry. deftest writes calls to it.")
+  (arg name "The name of the test.")
+  (arg module "The key of the module, from @code{(current-module)}.")
+  (arg file "The source file.")
+  (arg line "The line of the test.")
+  (arg within "The deadline in milliseconds, or 0 for the default.")
+  (arg open-ok "#t when the test can leave resources open.")
+  (arg body "The body of the test.")
+  (returns "Always 0.")
+  (see deftest)
+  (reference """
+    It answers a number so that @code{deftest} can bind the result with a
+    top-level @code{def}. A top-level @code{def} runs before @code{main},
+    so all the tests are registered before @code{(run-tests)} runs them.
+    It is exported because the template of @code{deftest} names it. Call
+    @code{deftest}, not this function.
+    """))
+
+(:doc registered-tests
+  (summary "Every test registered so far, by every module, in the order they were registered.")
+  (returns "The tests, oldest first.")
+  (see module-tests))
+
+(:doc module-tests
+  (summary "The tests that one module registered, in the order they were written.")
+  (arg module "The key of the module, as @code{(current-module)} gives it in that module.")
+  (returns "The tests of that module, oldest first.")
+  (see registered-tests run-registered-tests)
+  (example """
+    (module-tests (current-module))   ; the tests of this module
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Failures
+;; ---------------------------------------------------------------------------
+
+(:doc test-failed!
+  (summary "Records a failure of the running test, or prints it and fails the program when no test runs.")
+  (arg message "The text of the failure, printed as it is given.")
+  (see check-failed! run-test)
+  (reference """
+    Use it to write a check of your own. In a test, the message is added to
+    the failures of the test, and the test goes on. Outside a test, the
+    message is printed at once, and the exit code of the program is set to
+    1, so that the program fails even when @code{main} answers 0.
+
+    The run prints a failure under the @code{FAIL} line of its test, so
+    start the message with two spaces to align it with the other failures.
+    """))
+
+(:doc check-failed!
+  (summary "Records the failure of a check: where it is, its source, and the values it saw.")
+  (arg file "The source file of the check.")
+  (arg line "The line of the check.")
+  (arg source "The source text of the check.")
+  (arg seen "Pairs of source text and value, one pair for each value to show.")
+  (see test-failed! check)
+  (reference """
+    The checks of this module call it. It is exported because their
+    templates name it. It formats the failure as below, with the source
+    texts padded to the same width, and gives it to @code{test-failed!}.
+    Only the file name of @code{file} is shown.
+
+    @codeblock[#:lang "text"]|{
+      file.bjo:12: (check (= a b))
+        a => 1
+        b => 2
+    }|
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Checks
+;; ---------------------------------------------------------------------------
+
+(:doc check
+  (summary "Passes when the expression is #t. A failed comparison shows both operands.")
+  (form (check expr))
+  (arg expr "The expression to test.")
+  (see check-match check-raises check-fail)
+  (example """
+    (check (= (parse "12") (Ok 12)))
+    (check (< (length xs) 10))
+    (check (string-starts-with? s "a"))
+    """)
+  (reference """
+    When @code{expr} is a call to @code{=}, @code{<}, @code{>}, @code{<=}
+    or @code{>=} with two operands, each operand is evaluated once, in
+    order, and a failure shows the source and the value of both. For any
+    other expression, a failure shows that the expression was @code{#f}.
+
+    A failed check does not stop the test. Outside a test, a failure is
+    printed at once and the program exits with 1.
+    """))
+
+(:doc check-match
+  (summary "Passes when the value of the expression matches the pattern. A failure shows the value.")
+  (form (check-match expr pattern))
+  (arg expr "The expression. It is evaluated once.")
+  (arg pattern "A @code{match} pattern. The names that it binds are not available after the check.")
+  (see check)
+  (example """
+    (check-match (parse "x") (Err _))
+    (check-match (lookup m "k") (Some (Tuple _ 3)))
+    """))
+
+(:doc check-raises
+  (summary "Passes when the expression raises an exception of the type.")
+  (form (check-raises type expr))
+  (arg type "A .NET exception type, by its name or by an @code{import/class} alias.")
+  (arg expr "The expression to evaluate.")
+  (see check)
+  (example """
+    (check-raises System.FormatException (string->int "x"))
+    """)
+  (reference """
+    When @code{expr} answers a value, the check fails and shows the value.
+    Only exceptions of @code{type} are caught. An exception of a different
+    type is not caught, so the test fails as a test that raises does, and
+    the checks after it in the same test do not run.
+    """))
+
+(:doc check-fail
+  (summary "Fails where it is: for a branch that a test must not reach.")
+  (form (check-fail why))
+  (arg why "A string that tells why the branch is wrong. The failure shows it.")
+  (see check)
+  (example """
+    (match (parse "12")
+      ((Ok n) (check (= n 12)))
+      ((Err e) (check-fail e)))
+    """))
+
+;; ---------------------------------------------------------------------------
+;; deftest and run-tests
+;; ---------------------------------------------------------------------------
+
+(:doc deftest
+  (summary "Registers a test. (run-tests) runs it.")
+  (form (deftest name body ...))
+  (form (deftest name #:within ms body ...))
+  (form (deftest name #:open-ok body ...))
+  (form (deftest name #:within ms #:open-ok body ...))
+  (arg name "A string: the name of the test. The filters of a run match against it.")
+  (arg ms "The deadline of the test, in milliseconds. 5000 when it is not given.")
+  (rest body "The forms of the test. At least one form. Their values are dropped.")
+  (see run-tests check run-test)
+  (example """
+    (deftest "parse adds"
+      (check (= (parse "1+2") (Ok 3))))
+
+    (deftest "the server answers" #:within 1000
+      (check-match (fetch url) (Ok _)))
+
+    (deftest "the scope closes the file" #:open-ok
+      (with-fake-fs (("a.txt" "x"))          ; from (std simpletest)
+        (ignore (open-input-file "a.txt"))))
+    """)
+  (reference """
+    Write it at the top level of a module: it expands to a top-level
+    @code{def}, so the test is registered before @code{main} runs. When both
+    options are given, @code{#:within} comes first.
+
+    The test runs in a scope with a deadline, as @code{run-test} tells.
+    @code{#:open-ok} turns off the check for open resources. Use it in a
+    test of what the closing of a scope does.
+    """))
+
+(:doc TestResult
+  (summary "What running one test came to.")
+  (field test "The test that ran.")
+  (field failures "The messages of its failures, in the order they occurred. Empty when it passed.")
+  (see run-test))
+
+(:doc test-result-test
+  (summary "The test that a result is for.")
+  (arg r "The result.")
+  (returns "The test."))
+
+(:doc test-result-failures
+  (summary "The failures of a test run.")
+  (arg r "The result.")
+  (returns "The failure messages, in the order they occurred. Empty when the test passed."))
+
+(:doc run-test
+  (summary "Runs one test in a scope of its own, and answers what it came to. Prints nothing.")
+  (arg t "The test.")
+  (returns "Its result, with each failure as the run prints it.")
+  (see run-registered-tests TestResult)
+  (reference """
+    The body runs under @code{with-deadline}, with the deadline of the test.
+    The failures of the checks in the body are collected, not printed. The
+    test also fails:
+
+    - when the body leaves a resource open at its end, unless the test has
+      @code{#:open-ok}. The check is done before the scope closes, because
+      the scope releases the resources when it closes.
+    - when the deadline ends the scope. A fiber that the test leaked is
+      cancelled by the deadline, and the scope then closes cleanly, so
+      without this the test would pass, slowly.
+    - when the body raises an exception. The failure shows the message.
+
+    Use it to run tests and examine the results, for example to test a
+    check that must fail.
+    """))
+
+(:doc run-registered-tests
+  (summary "Runs the tests of a module that the filters choose, prints the failures, and answers an exit code.")
+  (arg module "The key of the module, as @code{(current-module)} gives it.")
+  (arg filters "Parts of names. A test runs when its name contains one of them. When empty, every test runs.")
+  (returns "0 when every test passed, else 1. 0 also when no test was chosen.")
+  (see run-tests run-test)
+  (reference """
+    For each test that fails, it prints a line @code{FAIL name (file:line)}
+    and then the failures. At the end it prints one line: how many tests
+    passed or failed, and the time the run took, or that there were no
+    tests to run. @code{(run-tests)} writes a @code{main} that calls it.
+    """))
+
+(:doc run-tests
+  (summary "Writes the main of a test file: it runs every test that this module registered.")
+  (form (run-tests))
+  (see deftest run-registered-tests)
+  (example """
+    (deftest "one" (check (= 1 1)))
+    (run-tests)
+    """)
+  (reference """
+    It defines @code{main}, which takes the arguments of the program as
+    name filters and answers the exit code of
+    @code{run-registered-tests}. Thus a test file is a program, and it can
+    have no other @code{main}.
+
+    All the tests of the module run, also the tests written after
+    @code{(run-tests)}, because every @code{deftest} is registered before
+    @code{main} starts. The tests of other modules, also of modules that
+    this one imports, do not run.
+    """))

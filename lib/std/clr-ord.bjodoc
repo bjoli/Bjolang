@@ -1,0 +1,54 @@
+;; Docs for std/clr-ord.bjo, read through (:doc #:file "clr-ord.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Ord for common .NET types: the time types, Guid and Version.")
+  (see Guid Version)
+  (example """
+    (import (std prelude))
+    (import (std clr-ord))
+
+    ;; An alias of your own, with a constructor. The Ord of this module
+    ;; applies to it, because it names the same .NET type.
+    (import/class
+      (Date (: System.DateTime (-> int int int Date))))
+
+    (list-sort (list (Date. 2021 1 1) (Date. 2019 6 5)))   ; 2019 first
+    (less? (Date. 2019 1 1) (Date. 2020 1 1))              ; #t
+    """)
+  (reference """
+    Import this module to sort and compare these .NET types with
+    @code{compare}, @code{less?}, @code{list-sort} and the ordered
+    collections. Each implementation of @code{Ord} calls the
+    @code{CompareTo} of the type. Their equality is the default @code{Eq},
+    which calls their own @code{Equals}.
+
+    The types are @code{System.DateTime}, @code{System.DateTimeOffset},
+    @code{System.TimeSpan}, @code{System.DateOnly},
+    @code{System.TimeOnly}, @code{System.Guid} and @code{System.Version}.
+
+    @strong{Only Guid and Version are exported as names.}
+    @code{(std datetime)} exports a @code{DateTime} of its own, and a
+    module can import both modules. So code that names a .NET time type
+    writes @code{System.DateTime}, or declares an alias with
+    @code{import/class}. The implementations apply to the type under any
+    name. The exported aliases have no constructor: to make a value,
+    declare an alias of your own with one.
+
+    The order is that of .NET. @code{DateTime} compares ticks and ignores
+    @code{Kind}. @code{DateTimeOffset} compares the instants in UTC.
+    """))
+
+(:doc Guid
+  (summary "System.Guid, ordered by its CompareTo.")
+  (see Version))
+
+(:doc Version
+  (summary "System.Version, ordered by its CompareTo: major, then minor, build and revision.")
+  (see Guid)
+  (example """
+    (import/class
+      (Ver (: System.Version (-> int int int Ver))))
+
+    (less? (Ver. 1 9 0) (Ver. 1 10 0))   ; #t: by number, not by text
+    """))

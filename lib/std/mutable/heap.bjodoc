@@ -1,0 +1,231 @@
+;; Docs for std/mutable/heap.bjo, read through (:doc #:file "heap.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "A priority queue that is changed in place: a .NET PriorityQueue<T,P>, least priority first.")
+  (see MutableHeap mutableheap mutableheap-by mutableheap-add! mutableheap-pop!)
+  (example """
+    (import (std mutable heap))
+
+    (def tasks (mutableheap))
+    (mutableheap-add! tasks "write" 2)
+    (mutableheap-add! tasks "plan" 1)
+    (mutableheap-add! tasks "test" 3)
+    (mutableheap-peek tasks)   ; (Some (Tuple "plan" 1))
+    (mutableheap-pop! tasks)   ; (Some (Tuple "plan" 1))
+    (mutableheap-pop! tasks)   ; (Some (Tuple "write" 2))
+
+    ;; Largest first: reverse the comparison.
+    (def big-first (mutableheap-by (fun (a b) (compare b a))))
+    """)
+  (reference """
+    A @code{(MutableHeap a p)} is a .NET @code{PriorityQueue<T,P>}, not a
+    wrapper around one. It is a min-heap with four children for each
+    node, in an array. Add and pop are O(log n). Peek is O(1). An
+    @code{import/extern} that takes a @code{PriorityQueue<T,P>} accepts a
+    @code{MutableHeap} as it is.
+
+    @strong{An element and a priority.} @code{(mutableheap-add! h task 3)}
+    adds @code{task} with the priority 3. The heap orders the priorities,
+    not the elements, so the element type does not need an order. Peek
+    and pop return the element and its priority together.
+
+    @strong{Least first.} @code{mutableheap-pop!} removes the element with
+    the smallest priority. For the largest first, make the heap with
+    @code{mutableheap-by} and a reversed comparison. Elements with equal
+    priorities come out in no fixed order: it is not always the order in
+    which they were added.
+
+    @strong{The order of priorities.} @code{mutableheap},
+    @code{seq->mutableheap} and @code{list->mutableheap} use .NET's
+    default order, @code{Comparer<P>.Default}. This is the usual order of
+    numbers and strings. For a type that a Bjolang module declares with an
+    @code{Ord} implementation, it is that implementation. For a type with
+    no .NET order, the first comparison raises an exception.
+    @code{mutableheap-by} takes the comparison as a function: use it for
+    another order, or to order by @code{compare}.
+
+    @strong{Empty heaps.} @code{mutableheap-peek} and
+    @code{mutableheap-pop!} return @code{None} on an empty heap. No
+    operation raises an exception for an empty heap.
+
+    @strong{No ordered walk.} A heap is not @code{Iterable}: its order can
+    be seen only by popping. @code{mutableheap->unordered-seq} and
+    @code{mutableheap->unordered-list} give the contents in no order,
+    and their names say so. A heap is not @code{Addable!}, because
+    @code{add!} takes no priority.
+
+    @strong{No structural equality.} A heap has no @code{Eq}
+    implementation, so @code{=} on two heaps is true only when they are
+    the same object. To compare the contents, you must pop both heaps,
+    which changes them.
+
+    @strong{Threads.} A heap has no lock. Many threads can read it at the
+    same time when none writes it. Do not write it from one thread or
+    fiber while another uses it.
+
+    @strong{Traits.} A @code{MutableHeap} implements @code{Collection}
+    over @code{(Tuple a p)}, and @code{->str}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The heap
+;; ---------------------------------------------------------------------------
+
+(:doc MutableHeap
+  (summary "A priority queue of %a with priorities %p, changed in place: the .NET PriorityQueue<T,P>.")
+  (tparam %a "The type of the elements. It needs no order.")
+  (tparam %p "The type of the priorities. The least comes out first.")
+  (see mutableheap mutableheap-by))
+
+(:doc mutableheap
+  (summary "A new empty heap, ordered by .NET's default order of the priorities.")
+  (returns "A new heap with no elements. It uses Comparer<P>.Default.")
+  (see mutableheap-by))
+
+(:doc mutableheap-by
+  (summary "A new empty heap, ordered by a comparison function.")
+  (arg cmp "Gets two priorities, and gives a negative number when the first comes out first, 0 when they are equal, and a positive number when the second comes out first.")
+  (returns "A new heap with no elements.")
+  (see mutableheap mutableheap-copy)
+  (example """
+    (mutableheap-by (fun (a b) (compare a b)))   ; least first, by Ord
+    (mutableheap-by (fun (a b) (compare b a)))   ; largest first
+    """))
+
+(:doc mutableheap-length
+  (summary "The number of elements in a heap.")
+  (arg h "The heap.")
+  (returns "The number of elements.")
+  (see mutableheap-empty?))
+
+(:doc mutableheap-empty?
+  (summary "Whether a heap has no elements.")
+  (arg h "The heap.")
+  (returns "#t when the heap is empty.")
+  (see mutableheap-length))
+
+(:doc mutableheap-clear!
+  (summary "Removes all elements from a heap.")
+  (arg h "The heap, which is changed. It keeps its order."))
+
+(:doc mutableheap-add!
+  (summary "Adds an element with a priority.")
+  (arg h "The heap, which is changed.")
+  (arg x "The element.")
+  (arg priority "Its priority.")
+  (see mutableheap-add-all! mutableheap-add-pop! mutableheap-pop!)
+  (reference """
+    O(log n).
+    """))
+
+(:doc mutableheap-add-all!
+  (summary "Adds all pairs of element and priority from a sequence.")
+  (arg h "The heap, which is changed.")
+  (arg xs "The elements, each with its priority.")
+  (see mutableheap-add!))
+
+(:doc mutableheap-add-pop!
+  (summary "Adds an element with a priority, then removes the least element and returns it.")
+  (arg h "The heap, which is changed. Its length does not change.")
+  (arg x "The element to add.")
+  (arg priority "Its priority.")
+  (returns "The element that came out. It is x when the heap is empty or when priority is not more than the least priority in the heap. Its priority is not returned.")
+  (see mutableheap-add! mutableheap-pop!)
+  (example """
+    ;; Keep the 10 largest scores: the heap holds the least of them on top.
+    (if (< (mutableheap-length top) 10)
+        (mutableheap-add! top name score)
+        (ignore (mutableheap-add-pop! top name score)))
+    """)
+  (reference """
+    One rebalance does the add and the pop, so this costs less than
+    @code{mutableheap-add!} then @code{mutableheap-pop!}. Use it to keep
+    a heap to a fixed size.
+    """))
+
+(:doc mutableheap-peek
+  (summary "The least element and its priority, which stay in the heap.")
+  (arg h "The heap. It does not change.")
+  (returns "(Some (Tuple x priority)) for the element with the least priority, or None when the heap is empty.")
+  (see mutableheap-pop!))
+
+(:doc mutableheap-pop!
+  (summary "Removes the least element and returns it with its priority.")
+  (arg h "The heap, which is changed.")
+  (returns "(Some (Tuple x priority)) for the element with the least priority, or None when the heap is empty. When it is None, the heap does not change.")
+  (see mutableheap-peek mutableheap-add!)
+  (example """
+    ;; Take the tasks in order of priority.
+    (let loop ()
+      (match (mutableheap-pop! tasks)
+        (None unit)
+        ((Some (Tuple task _)) (run task) (loop))))
+    """)
+  (reference """
+    O(log n).
+    """))
+
+(:doc mutableheap-copy
+  (summary "A new heap with the same elements, priorities and order.")
+  (arg h "The heap. It does not change.")
+  (returns "A new heap. A change to one does not change the other. The elements are not copied.")
+  (reference """
+    The copy uses the same comparison as h, so a copy of a heap from
+    @code{mutableheap-by} has the same order.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(:doc list->mutableheap
+  (summary "A new heap with the pairs of element and priority in a list.")
+  (arg xs "The elements, each with its priority.")
+  (returns "A new heap, ordered by .NET's default order of the priorities.")
+  (see mutableheap->unordered-list seq->mutableheap))
+
+(:doc mutableheap->unordered-list
+  (summary "The elements of a heap and their priorities as a list, in no order.")
+  (arg h "The heap. It does not change.")
+  (returns "A new list of pairs of element and priority. The order is not the order of the priorities.")
+  (see list->mutableheap mutableheap-pop!))
+
+(:doc seq->mutableheap
+  (summary "A new heap with the pairs of element and priority in a sequence.")
+  (arg xs "The elements, each with its priority. It is walked once.")
+  (returns "A new heap, ordered by .NET's default order of the priorities.")
+  (see mutableheap->unordered-seq mutableheap-add-all!)
+  (reference """
+    To use another order, make the heap with @code{mutableheap-by} and
+    fill it with @code{mutableheap-add-all!}.
+    """))
+
+(:doc mutableheap->unordered-seq
+  (summary "The elements of a heap and their priorities as a sequence, in no order.")
+  (arg h "The heap.")
+  (returns "A Seq of pairs of element and priority. The order is not the order of the priorities.")
+  (see seq->mutableheap mutableheap->unordered-list)
+  (reference """
+    The sequence reads the heap when it is walked, not a copy. A change to
+    the heap during a walk can make the walk raise
+    @code{System.InvalidOperationException}. To get the elements in the
+    order of their priorities, pop them.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Printing
+;; ---------------------------------------------------------------------------
+
+(:doc mutableheap->str
+  (summary "A heap as text: #mheap(x priority x priority), in no order.")
+  (arg h "The heap. It does not change.")
+  (returns "The text. Each element and priority is written with its own ->str.")
+  (example """
+    (mutableheap->str (list->mutableheap (list (Tuple 7 1))))   ; "#mheap(7 1)"
+    """)
+  (reference """
+    This is also the @code{->str} of a heap. The order of the pairs is not
+    the order of the priorities. The text is for people to read: no reader
+    reads it back.
+    """))

@@ -1,0 +1,219 @@
+;; Docs for std/mutable/deque.bjo, read through (:doc #:file "deque.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "A double-ended queue that is changed in place: push and pop at both ends in O(1) amortized time.")
+  (see Deque deque deque-push-back! deque-pop-front!)
+  (example """
+    (import (std mutable deque))
+
+    ;; A worklist: a walk pushes onto it, a loop pops from it.
+    (def work (deque))
+    (deque-push-back! work 1)
+    (deque-push-back! work 2)
+    (deque-push-front! work 0)
+    (deque-pop-front! work)    ; (Some 0)
+    (deque-pop-back! work)     ; (Some 2)
+    (deque->list work)         ; (1)
+    """)
+  (reference """
+    @strong{This is the mutable one.} @code{(deque-push-back! d x)}
+    changes @code{d} and returns nothing. All code that holds @code{d}
+    sees the change. Use a deque as a worklist that a recursive walk
+    pushes onto and a loop pops from: neither of them has to return a new
+    deque. If you must keep old versions, use a @code{List} or a
+    @code{Vec} instead.
+
+    @strong{Representation.} A deque is two lists. @code{front} holds the
+    front of the deque in order. @code{back} holds the rear in reverse
+    order. A push at either end is a cons. A pop takes the head of the
+    list at that end. When that list is empty, the deque first moves half
+    of the other list to it. It moves half, not all: if it moved all,
+    pops at alternate ends would move the whole deque each time, and the
+    cost would be quadratic. Because it moves half, push and pop at
+    either end are O(1) amortized. @code{deque-length} is O(1), because
+    the deque keeps its size.
+
+    @strong{Peeks change the storage.} @code{deque-peek-front!} and
+    @code{deque-peek-back!} can move elements from one list to the other,
+    as a pop does. This does not change the contents. It changes only how
+    they are stored, so the names end in @code{!}.
+
+    @strong{Walks do not change the storage.} @code{deque->list},
+    @code{deque-fold}, @code{deque-for-each} and @code{deque->str} read
+    the two lists as they are.
+
+    @strong{Empty deques.} A pop or a peek on an empty deque returns
+    @code{None} and does not change the deque. No operation raises an
+    exception for an empty deque.
+
+    @strong{Equality.} Two deques are @code{=} when they hold equal
+    elements in the same order, whichever list each element is in. This
+    @code{Eq} implementation is also the deque's .NET @code{Equals}.
+    @code{eq-hash} raises an exception, because the contents can change:
+    a deque can not be a key of a @code{Map} or an element of a
+    @code{HashSet}.
+
+    @strong{Threads.} A deque has no lock. Do not use one deque from more
+    than one thread or fiber at the same time. This includes a peek,
+    which can write.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The deque
+;; ---------------------------------------------------------------------------
+
+(:doc Deque
+  (summary "A double-ended queue of %a, changed in place.")
+  (tparam %a "The type of the elements.")
+  (see deque list->deque)
+  (reference """
+    The record is opaque: its fields are not part of the interface. The
+    functions of this module are the only way to read or change a deque.
+    """))
+
+(:doc deque
+  (summary "A new empty deque.")
+  (returns "A new deque with no elements.")
+  (see list->deque))
+
+(:doc deque-length
+  (summary "The number of elements in a deque.")
+  (arg d "The deque.")
+  (returns "The number of elements. O(1).")
+  (see deque-empty?))
+
+(:doc deque-empty?
+  (summary "Whether a deque has no elements.")
+  (arg d "The deque.")
+  (returns "#t when the deque is empty.")
+  (see deque-length))
+
+(:doc deque-clear!
+  (summary "Removes all elements from a deque.")
+  (arg d "The deque, which is changed."))
+
+;; ---------------------------------------------------------------------------
+;; The ends
+;; ---------------------------------------------------------------------------
+
+(:doc deque-push-front!
+  (summary "Adds an element at the front of a deque.")
+  (arg d "The deque, which is changed.")
+  (arg x "The element. It becomes the first element.")
+  (see deque-push-back! deque-pop-front!))
+
+(:doc deque-push-back!
+  (summary "Adds an element at the back of a deque.")
+  (arg d "The deque, which is changed.")
+  (arg x "The element. It becomes the last element.")
+  (see deque-push-front! deque-pop-back!))
+
+(:doc deque-pop-front!
+  (summary "Removes the first element of a deque and returns it.")
+  (arg d "The deque, which is changed.")
+  (returns "(Some x) for the first element, or None when the deque is empty. When it is None, the deque does not change.")
+  (see deque-pop-back! deque-peek-front!)
+  (example """
+    (let loop ()
+      (match (deque-pop-front! work)
+        (None unit)
+        ((Some job) (run job) (loop))))
+    """)
+  (reference """
+    O(1) amortized. When the front list is empty, half of the elements
+    move from the back list to the front list first.
+    """))
+
+(:doc deque-pop-back!
+  (summary "Removes the last element of a deque and returns it.")
+  (arg d "The deque, which is changed.")
+  (returns "(Some x) for the last element, or None when the deque is empty. When it is None, the deque does not change.")
+  (see deque-pop-front! deque-peek-back!)
+  (reference """
+    O(1) amortized. When the back list is empty, half of the elements
+    move from the front list to the back list first.
+    """))
+
+(:doc deque-peek-front!
+  (summary "The first element of a deque, which stays in the deque.")
+  (arg d "The deque. Its contents do not change, but its storage can.")
+  (returns "(Some x) for the first element, or None when the deque is empty.")
+  (see deque-pop-front! deque-peek-back!)
+  (reference """
+    When the front list is empty, half of the elements move from the back
+    list to the front list, as in @code{deque-pop-front!}. Without this,
+    the peek would have to walk the whole back list. The move is a write,
+    so the name ends in @code{!}.
+    """))
+
+(:doc deque-peek-back!
+  (summary "The last element of a deque, which stays in the deque.")
+  (arg d "The deque. Its contents do not change, but its storage can.")
+  (returns "(Some x) for the last element, or None when the deque is empty.")
+  (see deque-pop-back! deque-peek-front!)
+  (reference """
+    When the back list is empty, half of the elements move from the front
+    list to the back list, as in @code{deque-pop-back!}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Conversions and walks
+;; ---------------------------------------------------------------------------
+
+(:doc list->deque
+  (summary "A new deque that holds the elements of a list, in the same order.")
+  (arg xs "The list. Its first element becomes the front of the deque.")
+  (returns "A new deque.")
+  (see deque->list deque)
+  (reference """
+    The list becomes the front list of the deque without a copy. A list is
+    immutable, so this is safe. Counting the elements is O(n).
+    """))
+
+(:doc deque->list
+  (summary "The elements of a deque as a list, front first.")
+  (arg d "The deque. It does not change.")
+  (returns "A new list of the elements, from front to back.")
+  (see list->deque deque-fold))
+
+(:doc deque-fold
+  (summary "Combines the elements of a deque with f, from front to back.")
+  (arg f "Gets an element and the result so far, and gives the next result.")
+  (arg init "The result for an empty deque.")
+  (arg d "The deque. It does not change.")
+  (returns "The result.")
+  (see deque-for-each deque->list)
+  (example """
+    (deque-fold (fun (x sum) (+ x sum)) 0 (list->deque (list 1 2 3)))   ; 6
+    """)
+  (reference """
+    Do not change the deque in f: the fold can see a part of the change.
+    """))
+
+(:doc deque-for-each
+  (summary "Calls f on each element of a deque, from front to back.")
+  (arg f "The function to call on each element.")
+  (arg d "The deque. It does not change.")
+  (see deque-fold)
+  (reference """
+    The walk reads the front list when it starts, and the back list when
+    it has walked the front list. Do not change the deque in f: the walk
+    can see a part of the change.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Printing
+;; ---------------------------------------------------------------------------
+
+(:doc deque->str
+  (summary "A deque as text: #<a b c>, front first.")
+  (arg d "The deque. It does not change.")
+  (returns "The text. Each element is written with its own ->str.")
+  (example """
+    (deque->str (list->deque (list 1 2 3)))   ; "#<1 2 3>"
+    """)
+  (reference """
+    This is also the @code{->str} of a deque. The text is for people to
+    read: no reader reads it back.
+    """))

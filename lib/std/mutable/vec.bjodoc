@@ -1,0 +1,334 @@
+;; Docs for std/mutable/vec.bjo, read through (:doc #:file "vec.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "A growable array that is changed in place: a .NET List<T>.")
+  (see MutableVec mutablevec mutablevec-add! mutablevec-ref mutablevec-pop!)
+  (example """
+    (import (std mutable vec))
+
+    (def v (mutablevec))
+    (mutablevec-add! v 3)
+    (mutablevec-add! v 1)
+    (mutablevec-add! v 2)
+    (mutablevec-sort! v)
+    (mutablevec-ref v 0)       ; 1
+    (mutablevec-set! v 0 10)
+    (mutablevec-pop! v)        ; (Some 3)
+    (mutablevec->list v)       ; (10 2)
+    """)
+  (reference """
+    A @code{(MutableVec a)} is a .NET @code{List<T>}, not a wrapper around
+    one. It is a contiguous array that doubles its size when it is full.
+    Reading, writing and adding at the end are O(1). Inserting and
+    removing at an index are O(n) in the number of elements after that
+    index. An @code{import/extern} that takes a @code{List<T>} accepts a
+    @code{MutableVec} as it is.
+
+    @strong{This is the mutable one.} @code{(mutablevec-add! v x)} changes
+    @code{v} and returns nothing. All code that holds @code{v} sees the
+    change. @code{Vec} is the persistent structure of the same shape. Use
+    it when you must keep old versions.
+
+    @strong{Not a builder.} @code{VecBuilder} and @code{ListBuilder} only
+    add at the end, and give nothing back until the collection is
+    finished. A @code{MutableVec} can be written at an index, sorted, and
+    have elements removed from the middle. Use it as a scratch buffer.
+
+    @strong{Indexes.} An index is from 0. @code{mutablevec-ref},
+    @code{mutablevec-set!}, @code{mutablevec-insert!} and
+    @code{mutablevec-remove-at!} raise
+    @code{System.ArgumentOutOfRangeException} for an index out of range.
+    @code{mutablevec-try-ref} returns @code{None} instead.
+    @code{mutablevec-pop!} returns @code{None} on an empty vector and does
+    not raise.
+
+    @strong{Equality.} @code{mutablevec-contains?},
+    @code{mutablevec-index-of} and @code{mutablevec-remove!} compare
+    elements with .NET's equality, @code{EqualityComparer<T>.Default}.
+    For a type that a Bjolang module declares, this is its @code{Eq}
+    implementation. Two vectors are @code{=} when they hold elements that are @code{=}, in
+    the same order. @code{eq-hash} raises an exception, because the
+    contents can change: a vector can not be a key of a @code{Map}.
+
+    @strong{Walks.} The @code{Iterable} walk, as in @code{for-each} and
+    @code{(:for x v)}, reads the length at each step. A walk sees the
+    vector as it is at that step. If the walk adds an element at each
+    step, it does not stop. If it removes elements after the cursor, it
+    stops earlier. The @code{Seq} from @code{mutablevec->seq} is the
+    vector itself: a change to the vector during a walk of it makes the
+    walk raise @code{System.InvalidOperationException}.
+
+    @strong{Threads.} A vector has no lock. Many threads can read it at
+    the same time when none writes it. Do not write it from one thread or
+    fiber while another uses it.
+
+    @strong{Traits.} A @code{MutableVec} implements @code{Refable} with an
+    int index, @code{Iterable}, @code{Collection}, @code{Addable!},
+    @code{Eq} and @code{->str}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The vector
+;; ---------------------------------------------------------------------------
+
+(:doc MutableVec
+  (summary "A growable array of %a, changed in place: the .NET List<T>.")
+  (tparam %a "The type of the elements.")
+  (see mutablevec vec->mutablevec Vec))
+
+(:doc mutablevec
+  (summary "A new empty vector.")
+  (returns "A new vector with no elements.")
+  (see mutablevec-with-capacity list->mutablevec))
+
+(:doc mutablevec-with-capacity
+  (summary "A new empty vector with room for a number of elements.")
+  (arg capacity "How many elements fit before the array must grow. Not negative.")
+  (returns "A new vector with no elements.")
+  (raises System.ArgumentOutOfRangeException "When capacity is negative.")
+  (see mutablevec)
+  (reference """
+    Use this when you know the number of elements. The vector then does
+    not copy its array while it fills.
+    """))
+
+(:doc mutablevec-length
+  (summary "The number of elements in a vector.")
+  (arg v "The vector.")
+  (returns "The number of elements.")
+  (see mutablevec-empty?))
+
+(:doc mutablevec-empty?
+  (summary "Whether a vector has no elements.")
+  (arg v "The vector.")
+  (returns "#t when the vector is empty.")
+  (see mutablevec-length))
+
+(:doc mutablevec-ref
+  (summary "The element at an index.")
+  (arg v "The vector.")
+  (arg i "The index, from 0. Less than the length.")
+  (returns "The element at i.")
+  (raises System.ArgumentOutOfRangeException "When i is negative or not less than the length.")
+  (see mutablevec-try-ref mutablevec-set! ref))
+
+(:doc mutablevec-try-ref
+  (summary "The element at an index, if the index is in range.")
+  (arg v "The vector.")
+  (arg i "The index, from 0.")
+  (returns "(Some x) for the element at i, or None when i is out of range.")
+  (see mutablevec-ref try-ref))
+
+(:doc mutablevec-set!
+  (summary "Replaces the element at an index.")
+  (arg v "The vector, which is changed.")
+  (arg i "The index, from 0. Less than the length.")
+  (arg x "The new element.")
+  (raises System.ArgumentOutOfRangeException "When i is negative or not less than the length.")
+  (see mutablevec-ref mutablevec-insert!)
+  (reference """
+    This does not make the vector longer. To add an element, use
+    @code{mutablevec-add!} or @code{mutablevec-insert!}.
+    """))
+
+(:doc mutablevec-add!
+  (summary "Adds an element at the end of a vector.")
+  (arg v "The vector, which is changed.")
+  (arg x "The element. It becomes the last element.")
+  (see mutablevec-add-all! mutablevec-insert! mutablevec-pop!)
+  (reference """
+    O(1) amortized. When the array is full, it is copied to an array of
+    double the size.
+    """))
+
+(:doc mutablevec-add-all!
+  (summary "Adds all elements of a sequence at the end of a vector, in order.")
+  (arg v "The vector, which is changed.")
+  (arg xs "The elements to add.")
+  (see mutablevec-add!))
+
+(:doc mutablevec-insert!
+  (summary "Inserts an element at an index.")
+  (arg v "The vector, which is changed.")
+  (arg i "The index, from 0 to the length, both included. At the length, this adds at the end.")
+  (arg x "The element. It goes to index i, and the elements from i move one place up.")
+  (raises System.ArgumentOutOfRangeException "When i is negative or more than the length.")
+  (see mutablevec-add! mutablevec-remove-at!)
+  (reference """
+    O(n) in the number of elements after i.
+    """))
+
+(:doc mutablevec-remove-at!
+  (summary "Removes the element at an index.")
+  (arg v "The vector, which is changed.")
+  (arg i "The index, from 0. Less than the length. The elements after i move one place down.")
+  (raises System.ArgumentOutOfRangeException "When i is negative or not less than the length.")
+  (see mutablevec-insert! mutablevec-remove! mutablevec-pop!)
+  (reference """
+    O(n) in the number of elements after i.
+    """))
+
+(:doc mutablevec-remove!
+  (summary "Removes the first element that is equal to a value.")
+  (arg v "The vector, which is changed.")
+  (arg x "The value. Elements are compared with .NET's equality.")
+  (returns "#t when an element was removed, #f when no element is equal to x.")
+  (see mutablevec-remove-at! mutablevec-remove-where! mutablevec-index-of))
+
+(:doc mutablevec-remove-where!
+  (summary "Removes all elements for which a predicate is true.")
+  (arg v "The vector, which is changed.")
+  (arg pred "Gets an element, and gives #t to remove it.")
+  (returns "The number of elements that were removed.")
+  (see mutablevec-remove!)
+  (example """
+    (mutablevec-remove-where! v (fun (x) (< x 0)))   ; remove the negative numbers
+    """)
+  (reference """
+    One pass over the vector. The elements that stay keep their order.
+    """))
+
+(:doc mutablevec-pop!
+  (summary "Removes the last element of a vector and returns it.")
+  (arg v "The vector, which is changed.")
+  (returns "(Some x) for the last element, or None when the vector is empty. When it is None, the vector does not change.")
+  (see mutablevec-add!)
+  (example """
+    ;; Use the vector as a stack.
+    (let loop ()
+      (match (mutablevec-pop! stack)
+        (None unit)
+        ((Some x) (visit x) (loop))))
+    """))
+
+(:doc mutablevec-clear!
+  (summary "Removes all elements from a vector.")
+  (arg v "The vector, which is changed.")
+  (reference """
+    The array stays the same size, so the vector can fill again without
+    a new array.
+    """))
+
+(:doc mutablevec-contains?
+  (summary "Whether a vector holds an element equal to a value.")
+  (arg v "The vector.")
+  (arg x "The value. Elements are compared with .NET's equality.")
+  (returns "#t when an element is equal to x.")
+  (see mutablevec-index-of)
+  (reference """
+    O(n): a walk from the front that stops at the first match.
+    """))
+
+(:doc mutablevec-index-of
+  (summary "The index of the first element equal to a value, or -1.")
+  (arg v "The vector.")
+  (arg x "The value. Elements are compared with .NET's equality.")
+  (returns "The index of the first element equal to x, or -1 when there is none.")
+  (see mutablevec-contains? mutablevec-remove-at!)
+  (reference """
+    The result is -1 and not an @code{Option}, so the search does not
+    allocate.
+    """))
+
+(:doc mutablevec-reverse!
+  (summary "Reverses the order of the elements of a vector, in place.")
+  (arg v "The vector, which is changed."))
+
+(:doc mutablevec-sort!
+  (summary "Sorts a vector in place, by the Ord of its elements.")
+  (arg xs "The vector, which is changed.")
+  (see mutablevec-sort-by! compare)
+  (reference """
+    The sort is stable: equal elements keep their order, as in
+    @code{list-sort}.
+    """))
+
+(:doc mutablevec-sort-by!
+  (summary "Sorts a vector in place, by a comparison function.")
+  (arg v "The vector, which is changed.")
+  (arg cmp "Gets two elements, and gives a negative number when the first comes first, 0 when they are equal, and a positive number when the second comes first.")
+  (see mutablevec-sort!)
+  (example """
+    (mutablevec-sort-by! v (fun (a b) (compare b a)))   ; largest first
+    """)
+  (reference """
+    The sort is stable: equal elements keep their order. It is an
+    insertion sort of runs of 16 elements, then merges of the runs. It
+    uses a buffer of the same length as the vector.
+    """))
+
+(:doc mutablevec-copy
+  (summary "A new vector with the same elements.")
+  (arg v "The vector. It does not change.")
+  (returns "A new vector. A change to one does not change the other. The elements are not copied.")
+  (see mutablevec->vec))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+
+(:doc list->mutablevec
+  (summary "A new vector with the elements of a list, in order.")
+  (arg xs "The list.")
+  (returns "A new vector.")
+  (see mutablevec->list))
+
+(:doc mutablevec->list
+  (summary "The elements of a vector as a list, in order.")
+  (arg xs "The vector. It does not change.")
+  (returns "A new list.")
+  (see list->mutablevec))
+
+(:doc vec->mutablevec
+  (summary "A new vector with the elements of a Vec, in order.")
+  (arg v "The persistent vec. It does not change.")
+  (returns "A new mutable vector.")
+  (see mutablevec->vec))
+
+(:doc mutablevec->vec
+  (summary "The elements of a vector as a persistent Vec, in order.")
+  (arg xs "The vector. It does not change.")
+  (returns "A new Vec. Later changes to xs do not change it.")
+  (see vec->mutablevec))
+
+(:doc seq->mutablevec
+  (summary "A new vector with the elements of a sequence, in order.")
+  (arg xs "The sequence. It is walked once.")
+  (returns "A new vector.")
+  (see mutablevec->seq))
+
+(:doc mutablevec->seq
+  (summary "A vector as a sequence. It is not a copy.")
+  (arg v "The vector.")
+  (returns "The vector itself, as a Seq.")
+  (see seq->mutablevec mutablevec->list)
+  (reference """
+    The sequence is the vector, so a walk sees the vector as it is during
+    the walk. A change to the vector during a walk of it makes the walk
+    raise @code{System.InvalidOperationException}. To keep the elements
+    as they are now, use @code{mutablevec->list} or
+    @code{mutablevec->vec}.
+    """))
+
+(:doc mutablevec->array
+  (summary "The elements of a vector as a new .NET array, in order.")
+  (arg v "The vector. It does not change.")
+  (returns "A new array. A change to one does not change the other.")
+  (see mutablevec->vec))
+
+;; ---------------------------------------------------------------------------
+;; Printing
+;; ---------------------------------------------------------------------------
+
+(:doc mutablevec->str
+  (summary "A vector as text: #mvec(a b c), in order.")
+  (arg xs "The vector. It does not change.")
+  (returns "The text. Each element is written with its own ->str.")
+  (example """
+    (mutablevec->str (list->mutablevec (list 1 2 3)))   ; "#mvec(1 2 3)"
+    """)
+  (reference """
+    This is also the @code{->str} of a vector. The text is for people to
+    read: no reader reads it back.
+    """))

@@ -1,0 +1,104 @@
+;; Docs for std/syntax-match.bjo, read through (:doc #:file "syntax-match.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Pattern matching on syntax, to write macros with.")
+  (see syntax-match all-of)
+  (example """
+    (import (std syntax-match))
+
+    (def/macro (my-let form inject compare)
+      (syntax-match form
+        ((_ ((name value) ...) body ...)
+         #'((fun (,@name) ,@body) ,@value))
+        (bad (syntax-error bad "my-let takes a binding list and a body."))))
+    """)
+  (reference """
+    @code{#'} builds a form and @code{syntax-match} takes one apart. Write a
+    macro transformer with it, not with a @code{match} on @code{Syntax}.
+
+    A @code{syntax-match} expands to one @code{match}. A pattern becomes the
+    pattern of an arm. A test that a shape cannot express becomes the
+    @code{#:when} of the arm. An ellipsis over a compound pattern becomes a
+    fold through @code{all-of}, which this module exports for that reason.
+    See @code{Docs/MACROS.org}, "syntax-match takes one apart".
+    """))
+
+(:doc all-of
+  (summary "Applies f to each item, and answers all the results, or None if f answers None for one.")
+  (arg items "The items.")
+  (arg f "The function to apply. It answers @code{None} to reject an item.")
+  (returns "@code{(Some results)} in the order of @code{items} when f accepts every item, else @code{None}.")
+  (see syntax-match)
+  (example """
+    (all-of (list 1 2 3) (fun (n) (if (> n 0) (Some (* n 2)) None)))   ; (Some (list 2 4 6))
+    (all-of (list 1 -2 3) (fun (n) (if (> n 0) (Some n) None)))        ; None
+    """)
+  (reference """
+    The expansion of @code{syntax-match} calls it for an ellipsis over a
+    compound pattern, such as @code{((name value) ...)}. It stops at the
+    first item that f rejects. On an empty list it answers
+    @code{(Some (list))}.
+    """))
+
+(:doc syntax-match
+  (summary "Matches a piece of syntax against patterns, and runs the body of the first clause that matches.")
+  (form (syntax-match subject clause ...))
+  (arg subject "An expression that evaluates to @code{Syntax}, usually the form a macro was given.")
+  (rest clause """
+    @code{(pattern body ...)}. At least one clause. Each clause needs at
+    least one body form. The variables of the pattern are in scope in the
+    body, and the value of the last body form is the value of the
+    @code{syntax-match}.
+    """)
+  (see all-of)
+  (example """
+    (def/macro (swap! form inject compare)
+      (syntax-match form
+        ((_ a b)
+         #'(let ((tmp ,a)) (set! ,a ,b) (set! ,b tmp)))
+        (bad (syntax-error bad "swap! takes two variables: (swap! a b)."))))
+
+    ;; 'else matches the identifier else; a keyword matches that keyword
+    (syntax-match clause
+      (('else body ...) #'(begin ,@body))
+      ((#:when test body ...) #'(when ,test ,@body))
+      ((test body ...) #'(if ,test (begin ,@body) unit)))
+    """)
+  (reference """
+    A pattern is one of these:
+
+    @code{_} matches anything and binds nothing.
+
+    @code{name} matches anything and binds it to @code{name}. A variable is
+    lowercase. An uppercase name is an error, because it looks like a union
+    case: write @code{'Cons} to match the identifier @code{Cons}.
+
+    @code{'name} matches the identifier @code{name}. It compares with
+    @code{syntax-ident=?}, so hygiene marks are ignored.
+
+    An integer, a string, a character or a keyword matches the same literal.
+
+    @code{(p q)} matches a form with exactly that many items, each against
+    its pattern.
+
+    @code{(p q ...)} matches a form with at least the items before
+    @code{q}, and each remaining item must match @code{q}. When @code{q} is
+    a variable, it binds the remaining items as a @code{(List Syntax)}.
+    When @code{q} is a compound pattern, each variable in it binds a list of
+    what it matched, one entry for each item. Ellipses nest:
+    @code{((head arg ...) ...)} binds @code{head} to a list and @code{arg}
+    to a list of lists.
+
+    A form can have only one @code{...}, and it must be the last item. A
+    pattern must not bind the same name two times. These are syntax errors
+    at the pattern.
+
+    The clauses are tried in order. When a clause does not match, the next
+    clause is tried. When the pattern of the last clause is a variable or
+    @code{_}, it matches everything. Otherwise, @code{syntax-match} adds an
+    arm that answers a syntax error, "No clause of this syntax-match
+    matched.", at the subject. Write a last clause such as
+    @code{(bad (syntax-error bad "..."))} to give a message that names the
+    macro.
+    """))
