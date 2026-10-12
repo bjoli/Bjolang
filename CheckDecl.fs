@@ -59,7 +59,8 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                         { OriginModule = env.CurrentModule
                           OriginalName = keyed
                           Kind = kind
-                          IsMethod = false }
+                          IsMethod = false
+                          IsMutable = false }
                         registry.ImportAliases }
 
     // The whole group's type names before any of its bodies: a `type-rec` names
@@ -484,7 +485,8 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
                             { OriginModule = env.CurrentModule
                               OriginalName = original
                               Kind = kind
-                              IsMethod = false }
+                              IsMethod = false
+                              IsMutable = false }
                             env.Registry.ImportAliases } },
         sigs,
         []
@@ -1227,7 +1229,7 @@ and private checkAlias (env: Env) (sigs: Sigs) (newName: string) (oldName: strin
         let resolution =
             match Map.tryFind oldName env.Registry.ImportAliases with
             | Some a -> { a with Kind = AliasDef }
-            | None -> { OriginModule = ""; OriginalName = oldName; Kind = AliasDef; IsMethod = false }
+            | None -> { OriginModule = ""; OriginalName = oldName; Kind = AliasDef; IsMethod = false; IsMutable = false }
 
         // `addBinding` for the reason `DExtern` uses it — a second spelling
         // is a binder, and one that lands on a trait method's name shadows
@@ -1723,7 +1725,15 @@ and private checkExtern (env: Env) (sigs: Sigs) (name: string) (declaredOrigin: 
     // importer resolved and then never called: every `(sign x)` over there
     // went on dispatching `Num`. That is the bug shadowing was supposed to
     // have fixed, surviving across a module boundary.
-    let newEnv = addBinding name { Scheme = schemeWithConstraints; IsMutable = false } env
+    // Assignable only in a REPL entry, whose earlier entries are other modules
+    // of the same session. In a file only the defining module writes a
+    // `def/mutable`; `InferExpr`'s `ESet` says so when it is tried.
+    let newEnv =
+        addBinding
+            name
+            { Scheme = schemeWithConstraints
+              IsMutable = origin.IsMutable && TypeEnv.compilingReplEntry }
+            env
 
     // Every imported binding gets a table entry, whether or not a modifier
     // renamed it. The degenerate one carries no new spelling but does carry
@@ -2994,7 +3004,8 @@ and internal checkDeclGroup
                                         { OriginModule = acc.CurrentModule
                                           OriginalName = original
                                           Kind = kind
-                                          IsMethod = false }
+                                          IsMethod = false
+                                          IsMutable = false }
                                         acc.Registry.ImportAliases } }
                 // Provisionally register traits for associated types and dyn-safety:
                 // signature annotations may reference `(dyn LocalTrait #:item int)`

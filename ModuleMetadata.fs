@@ -90,7 +90,9 @@ open System.Text
 /// of 16 would read the list as the blocking definitions.
 /// 18: `TraitOrigins`, the module that declared each trait a module re-exports.
 /// A reader of 17 would read the list as the impl declarations.
-let currentVersion = 18
+/// 19: an exported binding says whether it is a `def/mutable`. A reader of 18
+/// would read that flag as the next binding's name.
+let currentVersion = 19
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -106,6 +108,8 @@ type ExportedDef = {
     /// A `defun`, at its origin. A reference to one may be passed as a lambda
     /// calling it; a `def` holding a function has to be read once.
     IsMethod: bool
+    /// A `def/mutable`, which a REPL entry after it may `set!`.
+    IsMutable: bool
 }
 
 /// A method body an importing module may splice at a call site.
@@ -368,6 +372,7 @@ let private putDef (sb: StringBuilder) (d: ExportedDef) =
     putStr sb d.ConstraintsText
     putOpt sb putPair d.Origin
     putStr sb (if d.IsMethod then "1" else "0")
+    putStr sb (if d.IsMutable then "1" else "0")
 
 let private getDef (c: Cursor) : ExportedDef =
     let name = getStr c
@@ -375,12 +380,14 @@ let private getDef (c: Cursor) : ExportedDef =
     let constraintsText = getStr c
     let origin = getOpt getPair c
     let isMethod = getStr c = "1"
+    let isMutable = getStr c = "1"
 
     { Name = name
       TypeText = typeText
       ConstraintsText = constraintsText
       Origin = origin
-      IsMethod = isMethod }
+      IsMethod = isMethod
+      IsMutable = isMutable }
 
 let private putTemplate (sb: StringBuilder) (t: InlineTemplateEntry) =
     putStr sb t.TraitName

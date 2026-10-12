@@ -43,6 +43,14 @@
   (for-all ((n (gen-int-range 0 10)))
     (when (> n 5) (ignore (list-head (list))))))
 
+;; Two bugs: values from 1000 up raise, and values up to 10 fail a check. A
+;; run finds the first almost always, and shrinking must not slide into the
+;; second, which is a different failure.
+(deftest "two bugs"
+  (for-all ((n (gen-int-range 0 100000)))
+    (when (>= n 1000) (ignore (list-head (list))))
+    (check (> n 10))))
+
 (: calls (Box int))
 (def calls (make-box 0))
 
@@ -101,6 +109,10 @@
   (def raise-report (report-of "an exception fails a run"))
   (expect-true "an exception fails a run" (shows? raise-report "it raised:"))
   (expect-true "and shrinks to the smallest value that raises" (shows? raise-report "n = 6"))
+
+  (def two-report (report-of "two bugs"))
+  (expect-true "shrinking keeps to the failure it found" (shows? two-report "n = 1000"))
+  (expect-true "and reports that failure" (shows? two-report "it raised:"))
 
   (box-set! calls 0)
   (def flaky-report (report-of "flaky"))

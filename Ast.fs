@@ -476,7 +476,11 @@ type ImportAlias =
       Kind: AliasKind
       /// The origin is a `defun`, so its member is a method rather than a field
       /// holding a function. False when not known, which is always safe.
-      IsMethod: bool }
+      IsMethod: bool
+      /// The origin is a `def/mutable`, so its member is a field `set!` can
+      /// write. Only a REPL entry may write it from another module (see
+      /// `TypeEnv.compilingReplEntry`). False when not known.
+      IsMutable: bool }
 
 /// An import with nothing done to it, which is what most of them are.
 let plainImport (path: ImportPath) = { Path = path; Modifiers = [] }

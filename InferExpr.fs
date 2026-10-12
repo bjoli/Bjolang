@@ -646,7 +646,12 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         let binding = lookup env name
 
         if not binding.IsMutable then
-            failwithf $"Type Error: Cannot mutate immutable variable '%s{name}' at %s{Lexer.formatPos r}"
+            match Map.tryFind name env.Registry.ImportAliases with
+            | Some alias when alias.IsMutable ->
+                failwithf
+                    $"Type Error: Cannot mutate '%s{name}' at %s{Lexer.formatPos r}. It is a def/mutable of the module '%s{Naming.moduleNameOfPath alias.OriginModule}', and only that module may write it. Give that module a function that sets it, and export the function."
+            | _ ->
+                failwithf $"Type Error: Cannot mutate immutable variable '%s{name}' at %s{Lexer.formatPos r}"
 
         let targetType, _, _ = instantiate env.Registry binding.Scheme
         unify env.Registry valType targetType

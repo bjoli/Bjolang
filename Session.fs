@@ -43,6 +43,8 @@
 ///   * `Hygiene.introducedNames`. Correct if leaked, but it only grows.
 ///   * `Traits.wantedQueue` and `TypeEnv.openLiterals`. Both empty after a
 ///     compilation that succeeded, and neither after one that threw.
+///   * `TypeEnv.compilingReplEntry`. True for a REPL entry only, and not for a
+///     dependency built while the entry compiles.
 ///
 /// **Per process** — intentionally not cleared between runs:
 ///
@@ -86,7 +88,10 @@ type Scope =
       /// its own again afterwards — without this, a module that declared a
       /// framework would be judged by the declarations of the last dependency
       /// it happened to build.
-      Frameworks: Frameworks.State }
+      Frameworks: Frameworks.State
+      /// Whether this compilation is a REPL entry: see
+      /// `TypeEnv.compilingReplEntry`.
+      ReplEntry: bool }
 
 /// What a compilation would find in a process that had done nothing else.
 let fresh: Scope =
@@ -95,7 +100,8 @@ let fresh: Scope =
       Level = 0
       Macros = Macro.emptyState
       Introduced = Set.empty
-      Frameworks = Frameworks.emptyState }
+      Frameworks = Frameworks.emptyState
+      ReplEntry = false }
 
 let capture () : Scope =
     { Gensym = Gensym.snapshot ()
@@ -103,7 +109,8 @@ let capture () : Scope =
       Level = Unification.snapshotLevel ()
       Macros = Macro.snapshot ()
       Introduced = Hygiene.snapshotIntroduced ()
-      Frameworks = Frameworks.snapshot () }
+      Frameworks = Frameworks.snapshot ()
+      ReplEntry = TypeEnv.compilingReplEntry }
 
 let restore (scope: Scope) : unit =
     Gensym.restore scope.Gensym
@@ -112,6 +119,7 @@ let restore (scope: Scope) : unit =
     Macro.restore scope.Macros
     Hygiene.restoreIntroduced scope.Introduced
     Frameworks.restore scope.Frameworks
+    TypeEnv.compilingReplEntry <- scope.ReplEntry
     // Not part of the scope value: the queue is either empty or garbage, and
     // there is never a reason to put a previous compilation's obligations back.
     // The same goes for the numeric literals still waiting to be settled.
@@ -149,6 +157,9 @@ let isolated (f: unit -> 'a) : 'a =
 ///
 /// Determinism is not lost by this: a REPL entry produces an assembly nothing
 /// keeps and no staleness check ever looks at.
+///
+/// The entry is also marked as one, which lets it `set!` a `def/mutable` an
+/// earlier entry made: see `TypeEnv.compilingReplEntry`.
 let replEntry (f: unit -> 'a) : 'a =
-    restore { fresh with Gensym = Gensym.snapshot () }
+    restore { fresh with Gensym = Gensym.snapshot (); ReplEntry = true }
     f ()

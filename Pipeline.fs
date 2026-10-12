@@ -1916,12 +1916,14 @@ let loadModuleGraph
                                             { OriginModule = originModule
                                               OriginalName = originalName
                                               Kind = AliasDef
-                                              IsMethod = d.IsMethod }
+                                              IsMethod = d.IsMethod
+                                              IsMutable = d.IsMutable }
                                         | None ->
                                             { OriginModule = ""
                                               OriginalName = name
                                               Kind = AliasDef
-                                              IsMethod = d.IsMethod }
+                                              IsMethod = d.IsMethod
+                                              IsMutable = d.IsMutable }
 
                                     DExtern(name, origin, t, constraints, r)
                                 | other -> other))

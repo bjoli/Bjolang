@@ -281,6 +281,28 @@ session, growing with session length, which is the property the import rules
 above exist to avoid. It would also re-run every top-level initializer, so a
 ~(def log (open-file ...))~ four entries back would be silently re-executed.
 
+** A ~def/mutable~ can be assigned from a later entry
+
+#+BEGIN_EXAMPLE
+bjo> (def/mutable count 5)
+bjo> (set! count 3)
+bjo> count
+3
+#+END_EXAMPLE
+
+In a file only the module that defines a ~def/mutable~ can ~set!~ it, and an
+importer that tries is refused. Entry N+1 imports entry N, so by that rule no
+entry could assign what an earlier one defined. The entries are one session,
+so the rule is lifted for them: a module's metadata says which of its bindings
+are ~def/mutable~, and a REPL entry binds such an import as mutable
+(~TypeEnv.compilingReplEntry~, set by ~Session.replEntry~ and false for a
+dependency built on the way). The write goes to the earlier entry's static
+field, so every entry sees it.
+
+It follows shadowing as everything else does. After ~(def/mutable count 100)~
+in a later entry, ~count~ is the new one, and a function compiled against the
+old one goes on writing the old one.
+
 ** An impl reaches forward only
 
 An impl written at entry 9 reaches entries 10 and after, because an entry

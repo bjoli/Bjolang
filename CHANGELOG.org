@@ -3,6 +3,21 @@
 
 What each change guarantees, and what it leaves open.
 
+* At the REPL, a ~def/mutable~ from an earlier entry can be assigned
+
+- ~(def/mutable count 5)~ and then ~(set! count 3)~ as the next entry failed
+  with "Cannot mutate immutable variable": each entry is a module of its own,
+  and an imported binding was always immutable. A REPL entry now binds an
+  imported ~def/mutable~ as mutable, and the write reaches the earlier entry's
+  field, so every entry sees it.
+- In a file nothing changes: only the module that defines a ~def/mutable~ can
+  write it. The error now says so, and suggests exporting a function that
+  sets it. ~Docs/Syntax.org~ states the rule.
+- Module metadata is at version 19: an exported binding says whether it is a
+  ~def/mutable~. Libraries built by an earlier compiler have to be rebuilt.
+- ~repl/mutable_across_entries.in~ and ~errors/set_imported_mutable.bjo~ test
+  the two sides.
+
 * A small ~choose~ has no array, and a written send is a ~chan-put~
 
 - A ~choose~ of two or three branches compiles to the runtime's two- and

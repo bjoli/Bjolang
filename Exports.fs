@@ -823,7 +823,11 @@ let metadata
                        TypeText = serializeSignature name t
                        ConstraintsText = constraintsText
                        Origin = originOf name
-                       IsMethod = isMethod name }
+                       IsMethod = isMethod name
+                       // This module's own `def/mutable`. An imported one is
+                       // bound immutable outside a REPL entry, and a facade
+                       // republishing it says no more than it was given.
+                       IsMutable = b.IsMutable }
                     : ModuleMetadata.ExportedDef))
                 
             // A field or payload type is written as the type it resolves to,

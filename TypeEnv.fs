@@ -166,6 +166,18 @@ let internal openNumbers = ResizeArray<HMType>()
 
 /// Drops whatever is still open. For the compilation that *failed*: see
 /// `clearWanteds`, which this is the other half of.
+/// Is the module being compiled a REPL entry?
+///
+/// Each entry at the prompt is a module of its own, and a later entry sees an
+/// earlier entry's bindings by importing it. In a file, a binding imported from
+/// another module cannot be assigned, `def/mutable` or not: only the module that
+/// defines it writes it. At the prompt the entries are one session, so an
+/// entry may `set!` a `def/mutable` an earlier entry made. Set by
+/// `Session.replEntry`, and false for a dependency built on the way.
+let mutable compilingReplEntry = false
+
+/// Drops whatever is still open. For the compilation that *failed*: see
+/// `clearWanteds`, which this is the other half of.
 let clearNumericLiterals () : unit =
     openLiterals.Clear()
     openNumbers.Clear()
