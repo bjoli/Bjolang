@@ -93,16 +93,34 @@ let rec private canSubstitute (name: string) (arg: TypedExpr) (body: TypedExpr) 
 
     here && (TypeVisitor.children body |> List.forall (canSubstitute name arg))
 
-/// An argument that may be duplicated or reordered without changing what the
-/// program does or how long it takes.
-let rec private isTrivial (expr: TypedExpr) : bool =
+/// What the program can write after it has read it: the names of variables and
+/// of record fields. A substituted argument is read where the body uses the
+/// parameter, not at the call, so it must not be one of these.
+type private Writable =
+    { Variables: Set<string>
+      Fields: Set<string> }
+
+let private writtenHere (acc: Set<string>) (expr: TypedExpr) : Set<string> =
     match expr.Node with
-    | TIdent _
+    | TLetMutable(n, _, _)
+    | TSet(n, _) -> Set.add n acc
+    | _ -> acc
+
+/// The names of the variables that `expr` declares mutable or assigns.
+let private writtenIn (expr: TypedExpr) : Set<string> =
+    TypeVisitor.foldExpr writtenHere Set.empty expr
+
+/// An argument that may be duplicated or reordered without changing what the
+/// program does or how long it takes. A variable or field that the program
+/// can write is not: the body could write it before it reads the parameter.
+let rec private isTrivial (writable: Writable) (expr: TypedExpr) : bool =
+    match expr.Node with
+    | TIdent(n, _) -> not (Set.contains n writable.Variables)
     | TInt _
     | TString _
     | TKeyword _
     | TSymbol _ -> true
-    | TGetField(target, _) -> isTrivial target
+    | TGetField(target, field) -> not (Set.contains field writable.Fields) && isTrivial writable target
     | _ -> false
 
 /// Binds `parameters` to `args` inside `body`.
@@ -125,6 +143,7 @@ let rec private isTrivial (expr: TypedExpr) : bool =
 /// innermost, which preserves left-to-right evaluation and evaluates each
 /// argument exactly once.
 let rec private bindArguments
+    (writable: Writable)
     (describe: string)
     (parameters: (string * TypedExpr) list)
     (body: TypedExpr)
@@ -136,7 +155,7 @@ let rec private bindArguments
         let substitutable =
             if not (canSubstitute name arg body) then
                 false
-            elif isTrivial arg then
+            elif isTrivial writable arg then
                 true
             else
                 match arg.Node with
@@ -153,9 +172,9 @@ let rec private bindArguments
                 | _ -> false
 
         if substitutable then
-            bindArguments describe rest (substitute name arg body)
+            bindArguments writable describe rest (substitute name arg body)
         else
-            let inner = bindArguments describe rest body
+            let inner = bindArguments writable describe rest body
 
             { Type = inner.Type
               Range = arg.Range
@@ -166,8 +185,8 @@ let rec private bindArguments
 /// Substituting a continuation is only half of the trick; without this the
 /// result is a genuine closure call, which C# will not turn into a jump and
 /// which `LoopLowering` cannot see through.
-let rec betaReduce (expr: TypedExpr) : TypedExpr =
-    let expr = TypeVisitor.mapChildren betaReduce expr
+let rec private betaReduce (writable: Writable) (expr: TypedExpr) : TypedExpr =
+    let expr = TypeVisitor.mapChildren (betaReduce writable) expr
 
     match expr.Node with
     | TApply({ Node = TLambda(parameters, lambdaBody) }, args, [])
@@ -177,7 +196,7 @@ let rec betaReduce (expr: TypedExpr) : TypedExpr =
         // otherwise capture one of their free variables.
         let freshBody, subst = AlphaRename.freshenTyped parameters lambdaBody
         let renamed = parameters |> List.map (fun p -> Map.tryFind p subst |> Option.defaultValue p)
-        betaReduce (bindArguments "this lambda" (List.zip renamed args) freshBody)
+        betaReduce writable (bindArguments writable "this lambda" (List.zip renamed args) freshBody)
     | _ -> expr
 
 // ---------------------------------------------------------------------------
@@ -380,6 +399,8 @@ type private Ctx =
       InSplice: bool
       /// The second of the two passes over a declaration. See `inlineDecl`.
       SecondPass: bool
+      /// The variables and fields an argument is not substituted for.
+      Writable: Writable
       /// The typed nodes function splices may still add to the declaration
       /// being inlined. Shared by the two passes and by nested splices.
       Budget: int ref }
@@ -737,10 +758,15 @@ and private spliceTemplate
         // 4. Free names now say which module they came from.
         let qualified = AlphaRename.applyQualification tpl.Qualification typedBody
 
+        // The body's own mutable locals are new names. A call in it can give
+        // one of them as an argument.
         let innerCtx =
             { ctx with
                 Active = Set.add key ctx.Active
-                InSplice = true }
+                InSplice = true
+                Writable =
+                    { ctx.Writable with
+                        Variables = Set.union ctx.Writable.Variables (writtenIn qualified) } }
 
         let bindings = List.zip freshParams args
 
@@ -782,7 +808,13 @@ and private spliceTemplate
             else
                 // 6. Bind the arguments, then reduce whatever the substitution
                 //    exposed.
-                betaReduce (bindArguments describe bindings inlined)
+                //    Nested splices in `inlined` added mutable locals that
+                //    `innerCtx` does not know of.
+                let writable =
+                    { ctx.Writable with
+                        Variables = Set.union innerCtx.Writable.Variables (writtenIn inlined) }
+
+                betaReduce writable (bindArguments writable describe bindings inlined)
     with ex ->
         // A template that will not re-infer here is a compile error waiting to
         // happen in generated C#, and the fallback is always a correct answer.
@@ -868,6 +900,46 @@ let run (env: Env) (moduleOf: Map<string, string * string>) (decls: TDecl list) 
         |> Seq.map (fun (_, (m, original)) -> Naming.qualifiedBinding m original, (m, original))
         |> Map.ofSeq
 
+    // A module's `def/mutable` is named in three ways: as its module wrote it,
+    // as an import made it visible, and qualified in a spliced body. An
+    // imported one from a compiled library has no declaration here, but its
+    // binding says that it is mutable.
+    let mutableOrigins =
+        let declared =
+            decls
+            |> collectDecls (function
+                | TModule(m, inner, _) ->
+                    inner
+                    |> List.choose (function
+                        | TDefMutable(n, _, _, _) -> Some(m, n)
+                        | _ -> None)
+                | _ -> [])
+
+        let imported =
+            moduleOf
+            |> Map.toList
+            |> List.choose (fun (visible, origin) ->
+                match Map.tryFind visible env.Bindings with
+                | Some { IsMutable = true } -> Some origin
+                | _ -> None)
+
+        Set.ofList (declared @ imported)
+
+    let mutableNames (names: Map<string, string * string>) =
+        names
+        |> Map.toSeq
+        |> Seq.choose (fun (n, origin) -> if Set.contains origin mutableOrigins then Some n else None)
+        |> Set.ofSeq
+
+    let writable =
+        { Variables =
+            Set.unionMany
+                [ decls |> List.fold (TypeVisitor.foldDecl writtenHere) Set.empty
+                  mutableNames moduleOf
+                  mutableNames qualified
+                  mutableOrigins |> Set.map (fun (m, n) -> Naming.qualifiedBinding m n) ]
+          Fields = env.Registry.MutableRecordFields |> Map.values |> Seq.concat |> Set.ofSeq }
+
     let ctx =
         { Env = env
           Active = Set.empty
@@ -878,5 +950,7 @@ let run (env: Env) (moduleOf: Map<string, string * string>) (decls: TDecl list) 
           InLoop = false
           InSplice = false
           SecondPass = false
+          Writable = writable
           Budget = ref 0 }
+
     decls |> List.map (inlineDecl ctx)

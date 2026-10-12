@@ -1,0 +1,62 @@
+;; An inlined call reads its arguments as a call does: once, when it is made.
+;;
+;; `twice-arg` reads its parameter after it has called `f`. Given a variable
+;; that `f` writes, a call reads the value the variable had at the call. The
+;; inliner substitutes an argument it counts as trivial for the parameter. When
+;; `isTrivial` counted every variable and every field read, the spliced body
+;; read the variable again after the lambda had written it: 200, where the
+;; call gives 10. The same holds for the lambda's own parameter `v`.
+;;
+;; A `def/mutable`, local or in the module, and a `#:mutable` field are what
+;; can change between two reads. Each is compared with the same call through a
+;; box, which is not inlined.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Counter (Record (: n long #:mutable))))
+
+(: twice-arg (-> (-> long long) long long))
+(defun (twice-arg f x) (+ (f x) x))
+
+(: boxed (Box (-> (-> long long) long long)))
+(def boxed (make-box twice-arg))
+
+(def/mutable top 5L)
+
+(: local-inlined (-> long))
+(defun (local-inlined)
+  (def/mutable k 5L)
+  (twice-arg (fun (v) (set! k 100L) v) k))
+
+(: local-called (-> long))
+(defun (local-called)
+  (def/mutable k 5L)
+  ((box-ref boxed) (fun (v) (set! k 100L) v) k))
+
+(: module-inlined (-> long))
+(defun (module-inlined)
+  (set! top 5L)
+  (twice-arg (fun (v) (set! top 100L) v) top))
+
+(: module-called (-> long))
+(defun (module-called)
+  (set! top 5L)
+  ((box-ref boxed) (fun (v) (set! top 100L) v) top))
+
+(: field-inlined (-> long))
+(defun (field-inlined)
+  (def c (Counter (n 5L)))
+  (twice-arg (fun (v) (record-set! c (n 100L)) v) (record-ref c n)))
+
+(: field-called (-> long))
+(defun (field-called)
+  (def c (Counter (n 5L)))
+  ((box-ref boxed) (fun (v) (record-set! c (n 100L)) v) (record-ref c n)))
+
+(defun (main args)
+  (expect "the call reads the value at the call" (local-called) 10L)
+  (expect "a local def/mutable" (local-inlined) 10L)
+  (expect "a module's def/mutable" (module-inlined) (module-called))
+  (expect "a #:mutable field" (field-inlined) (field-called))
+  0)
