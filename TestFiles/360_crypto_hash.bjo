@@ -1,0 +1,146 @@
+;; `(std crypto hash)`: digests and HMACs against published test vectors, and
+;; password hashes against PHC strings made by Python's hashlib.pbkdf2_hmac.
+;; `main` is a bjoroutine, so the file and password functions are tried in both
+;; colours: from `main`, and from the plain `defun`s below.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std random))
+(import (std crypto hash))
+
+(import/extern
+  (temp-file (: System.IO.Path.GetTempFileName (-> string))))
+
+(: hex (-> (Array byte) string))
+(defun (hex b) (bytes->hex b))
+
+(: raises? (-> (-> %a) bool))
+(defun (raises? thunk)
+  (match (try (thunk) #:catch (System.ArgumentException))
+    ((Ok _) #f)
+    ((Err _) #t)))
+
+;; The non-bjoroutine versions, called from `main` through these.
+(: verify/sync (-> string string bool))
+(defun (verify/sync password stored) (password-verify password stored))
+
+(: hash/sync (-> string string))
+(defun (hash/sync password) (password-hash password #:iterations 1000))
+
+(: hash-file/sync (-> string string))
+(defun (hash-file/sync path) (hex (hash-file path)))
+
+;; RFC 6070-style vectors for PBKDF2-HMAC-SHA256, P = "password", S = "salt".
+(def phc-c1 "$pbkdf2-sha256$i=1$c2FsdA$Eg+2z/z4syxD5yJSVsT4N6hlSMkszDVICAWYfLcL4Xs")
+(def phc-c2 "$pbkdf2-sha256$i=2$c2FsdA$rk0Mla9rRtMtCt/5KPBt0CowP47zwlHf1uLYWpVHTEM")
+;; SHA-512, a password outside ASCII.
+(def phc-512 "$pbkdf2-sha512$i=3$c2FsdHNhbHQ$yoRiEU+SyTkJccX4ORXQWThg/qjms6ZsdU9Bys1N96mqR4M8uFL+R9yzfCRpbznaarmtSWDJcFDY8Af5wIDflA")
+
+(defbjo (main args)
+  ;; ---- Digests ------------------------------------------------------------
+  (expect "sha256 of nothing" (hex (hash-string ""))
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+  (expect "sha256 of abc" (hex (hash-string "abc"))
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+  (expect "a string is hashed as UTF-8" (hex (hash-string "blåbär"))
+          "d27b7c9b2f74f9433bfa9edc3a98a96bfb39ce25402b9836f96a98928567a7f4")
+  (expect "bytes and string agree" (hex (hash-bytes (string->bytes "abc"))) (hex (hash-string "abc")))
+  (expect "md5" (hex (hash-string "abc" #:algorithm Md5)) "900150983cd24fb0d6963f7d28e17f72")
+  (expect "sha1" (hex (hash-string "abc" #:algorithm Sha1)) "a9993e364706816aba3e25717850c26c9cd0d89d")
+  (expect "sha512" (hex (hash-string "abc" #:algorithm Sha512))
+          (str "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
+               "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"))
+  (when (hash-algorithm-supported? Sha3-256)
+    (expect "sha3-256" (hex (hash-string "abc" #:algorithm Sha3-256))
+            "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532"))
+  (expect "digest lengths match what is computed"
+          (vec-map (fun (a) (= (array-length (hash-string "x" #:algorithm a)) (digest-length a)))
+                   [Md5 Sha1 Sha256 Sha384 Sha512])
+          [#t #t #t #t #t])
+
+  ;; ---- HMAC, RFC 4231 test case 2 -------------------------------------------
+  (def jefe (string->bytes "Jefe"))
+  (expect "hmac-sha256" (hex (hmac-string jefe "what do ya want for nothing?"))
+          "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+  (expect "hmac over bytes agrees"
+          (hex (hmac-bytes jefe (string->bytes "what do ya want for nothing?")))
+          "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+
+  ;; ---- Incremental ----------------------------------------------------------
+  (def h (make-hasher))
+  (hasher-add-string! h "a")
+  (hasher-add! h (string->bytes "b"))
+  (hasher-add-string! h "c")
+  (expect "a hasher given abc in parts" (hex (hasher-finish! h))
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+  (expect "a finished hasher starts again empty" (hex (hasher-finish! h))
+          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+  (def m (make-hmac-hasher jefe))
+  (hasher-add-string! m "what do ya want ")
+  (hasher-add-string! m "for nothing?")
+  (expect "an hmac hasher" (hex (hasher-finish! m))
+          "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+  (hasher-add-string! m "what do ya want for nothing?")
+  (expect "an hmac hasher keeps its key" (hex (hasher-finish! m))
+          "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+
+  ;; ---- Files ----------------------------------------------------------------
+  (def path (temp-file))
+  (file-write-text path "abc")
+  (expect "a file, from a bjoroutine" (hex (hash-file path))
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+  (expect "a file, from a plain function" (hash-file/sync path)
+          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+  (file-delete path)
+
+  ;; ---- Comparing and hex ----------------------------------------------------
+  (expect "equal arrays" (constant-time-equal? (hash-string "a") (hash-string "a")) #t)
+  (expect "different arrays" (constant-time-equal? (hash-string "a") (hash-string "b")) #f)
+  (expect "different lengths" (constant-time-equal? (string->bytes "ab") (string->bytes "abc")) #f)
+  (expect "hex there and back"
+          (match (hex->bytes "BA7816bf") ((Some b) (hex b)) (None "none"))
+          "ba7816bf")
+  (expect "odd hex" (match (hex->bytes "abc") ((Some _) #t) (None #f)) #f)
+  (expect "not hex" (match (hex->bytes "zz") ((Some _) #t) (None #f)) #f)
+  (expect "empty hex" (match (hex->bytes "") ((Some b) (array-length b)) (None -1)) 0)
+
+  ;; ---- Passwords ------------------------------------------------------------
+  (expect "a hash from hashlib, one iteration" (password-verify "password" phc-c1) #t)
+  (expect "a hash from hashlib, two iterations" (password-verify "password" phc-c2) #t)
+  (expect "the wrong password" (password-verify "Password" phc-c2) #f)
+  (expect "sha512 and a password outside ASCII" (password-verify "blåbär" phc-512) #t)
+  (expect "verified from a plain function" (verify/sync "password" phc-c1) #t)
+
+  (def stored (password-hash "hunter2" #:iterations 1000))
+  (expect "a new hash has the PHC shape"
+          (string-starts-with? stored "$pbkdf2-sha256$i=1000$") #t)
+  (expect "a new hash verifies" (password-verify "hunter2" stored) #t)
+  (expect "and not with another password" (password-verify "hunter3" stored) #f)
+  (expect "each hash has its own salt"
+          (= stored (password-hash "hunter2" #:iterations 1000)) #f)
+  (expect "hashed from a plain function" (password-verify "pw" (hash/sync "pw")) #t)
+  (expect "sha512 hash"
+          (password-verify "x" (password-hash "x" #:algorithm Sha512 #:iterations 10)) #t)
+  (expect "a seeded source gives the same salt"
+          (= (with-random-seed 7UL (password-hash "x" #:iterations 10))
+             (with-random-seed 7UL (password-hash "x" #:iterations 10)))
+          #t)
+
+  (expect "fewer iterations need a rehash" (password-needs-rehash? stored) #t)
+  (expect "the same parameters need none" (password-needs-rehash? stored #:iterations 1000) #f)
+  (expect "more iterations than asked need none" (password-needs-rehash? stored #:iterations 500) #f)
+  (expect "another algorithm needs a rehash"
+          (password-needs-rehash? stored #:algorithm Sha512 #:iterations 1000) #t)
+
+  (expect "md5 is not a password hash" (raises? #(password-hash "x" #:algorithm Md5 #:iterations 1)) #t)
+  (expect "zero iterations are refused" (raises? #(password-hash "x" #:iterations 0)) #t)
+  (expect "a stored string that is not a hash" (raises? #(verify/sync "x" "hunter2")) #t)
+  (expect "an unknown algorithm" (raises? #(verify/sync "x" "$pbkdf2-md5$i=1$c2FsdA$AAAA")) #t)
+  (expect "a bad iteration count" (raises? #(verify/sync "x" "$pbkdf2-sha256$i=-1$c2FsdA$AAAA")) #t)
+  (expect "bad base64" (raises? #(verify/sync "x" "$pbkdf2-sha256$i=1$c2F*dA$AAAA")) #t)
+  (expect "a malformed hash raises in a bjoroutine too"
+          (match (try (password-verify "x" "nonsense") #:catch (System.ArgumentException))
+            ((Ok _) "answered")
+            ((Err _) "raised"))
+          "raised")
+  0)

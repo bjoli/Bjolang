@@ -1,0 +1,263 @@
+;; Docs for std/crypto/hash.bjo, read through (:doc #:file "hash.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Hashes, HMAC and password hashing, from .NET's System.Security.Cryptography.")
+  (see hash-bytes hmac-bytes make-hasher password-hash constant-time-equal?)
+  (example """
+    (import (std crypto hash))
+
+    (bytes->hex (hash-string "hello"))                ; SHA-256, as hex
+    (hash-file "/srv/big.iso" #:algorithm Sha512)     ; read a buffer at a time
+    (hmac-string key "message")                       ; HMAC-SHA256
+
+    (def stored (password-hash "hunter2"))            ; "$pbkdf2-sha256$i=600000$..."
+    (password-verify "hunter2" stored)                ; #t
+    """)
+  (reference """
+    All functions take @code{#:algorithm}. The default is @code{Sha256}. A
+    string is hashed as its UTF-8 bytes.
+
+    @strong{MD5 and SHA-1 are broken.} Use them only for a protocol or a
+    checksum that needs them. Do not use them to make a signature or to
+    find out if data was changed by an attacker.
+
+    @strong{A digest is not a password hash.} A digest is fast, so an
+    attacker who has the digests can try many passwords each second. Use
+    @code{password-hash} for passwords. It is slow on purpose.
+
+    @strong{Passwords.} @code{password-hash} uses PBKDF2-HMAC with a random
+    16-byte salt from @code{(std random)}. The result is a PHC string:
+
+    @codeblock|{
+    $pbkdf2-sha256$i=600000$<salt>$<hash>
+    }|
+
+    The salt and the hash are base64 without padding. The string holds the
+    algorithm and the iteration count, so @code{password-verify} needs only
+    the password and the string. When you increase the iteration count, old
+    hashes still verify. @code{password-needs-rehash?} tells you which ones
+    to replace after the next correct login.
+
+    The password is hashed as its UTF-8 bytes, and it is not normalized. Two
+    strings that look the same, but use different Unicode code points, give
+    different hashes.
+
+    @strong{Password hashing takes time.} At 600000 iterations, one hash
+    takes a few hundred milliseconds of one core. In a bjoroutine,
+    @code{password-hash} and @code{password-verify} run on a thread of
+    their own, so the fiber pool continues to run. A login page must limit
+    the number of attempts, because each attempt costs this time.
+
+    @strong{The salt comes from @code{current-random}.} A salt must be
+    unique, but it need not be secret. In a @code{with-random-seed}, two
+    runs make the same salts. This is correct for a test, but do not hash
+    real passwords there.
+
+    @strong{Compare secrets with @code{constant-time-equal?}.} The
+    @code{=} on arrays stops at the first difference. An attacker who can
+    measure the time can then find a token one byte at a time.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Algorithms
+;; ---------------------------------------------------------------------------
+
+(:doc HashAlgorithm
+  (summary "Md5, Sha1, Sha256, Sha384, Sha512, Sha3-256, Sha3-384 or Sha3-512.")
+  (see hash-algorithm-supported? digest-length)
+  (reference """
+    MD5 and SHA-1 are for protocols and checksums only. SHA-3 is not
+    available on all platforms: see @code{hash-algorithm-supported?}.
+    """))
+
+(:doc hash-algorithm-supported?
+  (summary "True when this platform can compute the algorithm.")
+  (arg a "The algorithm.")
+  (returns "False only for SHA-3 on a platform without it: OpenSSL older than 1.1.1, or Windows older than 11."))
+
+(:doc digest-length
+  (summary "The length of the algorithm's digest, in bytes.")
+  (arg a "The algorithm.")
+  (returns "16 for MD5, 20 for SHA-1, and 32, 48 or 64 for the others."))
+
+;; ---------------------------------------------------------------------------
+;; One-shot
+;; ---------------------------------------------------------------------------
+
+(:doc hash-bytes
+  (summary "The digest of a byte array.")
+  (arg data "The bytes to hash.")
+  (key #:algorithm "The algorithm. The default is Sha256.")
+  (returns "A new array of @code{(digest-length algorithm)} bytes.")
+  (see hash-string bytes->hex))
+
+(:doc hash-string
+  (summary "The digest of a string's UTF-8 bytes.")
+  (arg text "The string to hash.")
+  (key #:algorithm "The algorithm. The default is Sha256.")
+  (returns "A new array of @code{(digest-length algorithm)} bytes.")
+  (see hash-bytes bytes->hex)
+  (example """
+    (bytes->hex (hash-string "abc"))
+    ;; "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    """))
+
+(:doc hash-file
+  (summary "The digest of a file, read a buffer at a time.")
+  (arg path "The path of the file.")
+  (key #:algorithm "The algorithm. The default is Sha256.")
+  (returns "A new array of @code{(digest-length algorithm)} bytes.")
+  (reference """
+    In a bjoroutine, the read suspends the fiber. Elsewhere, it blocks the
+    thread. A file that is not there raises
+    @code{System.IO.FileNotFoundException}.
+    """))
+
+(:doc hmac-bytes
+  (summary "The HMAC of a byte array.")
+  (arg key "The secret key. Use at least as many bytes as the digest has.")
+  (arg data "The bytes to authenticate.")
+  (key #:algorithm "The algorithm. The default is Sha256.")
+  (returns "The tag: a new array of @code{(digest-length algorithm)} bytes.")
+  (see hmac-string constant-time-equal?)
+  (reference """
+    To check a tag that you received, compute the tag again and compare
+    the two with @code{constant-time-equal?}.
+    """))
+
+(:doc hmac-string
+  (summary "The HMAC of a string's UTF-8 bytes.")
+  (arg key "The secret key.")
+  (arg text "The string to authenticate.")
+  (key #:algorithm "The algorithm. The default is Sha256.")
+  (returns "The tag: a new array of @code{(digest-length algorithm)} bytes.")
+  (see hmac-bytes constant-time-equal?))
+
+;; ---------------------------------------------------------------------------
+;; Incremental
+;; ---------------------------------------------------------------------------
+
+(:doc Hasher
+  (summary "A hash or an HMAC that you give data to in parts.")
+  (see make-hasher make-hmac-hasher hasher-add! hasher-finish!)
+  (reference """
+    A hasher is mutable. Do not use one from two fibers at the same time.
+    It is .NET's @code{IncrementalHash}.
+    """))
+
+(:doc make-hasher
+  (summary "A new, empty hasher.")
+  (key #:algorithm "The algorithm. The default is Sha256.")
+  (returns "A hasher that has no data yet.")
+  (see hasher-add! hasher-finish!)
+  (example """
+    (def h (make-hasher))
+    (hasher-add-string! h "hello, ")
+    (hasher-add-string! h "world")
+    (hasher-finish! h)   ; the same as (hash-string "hello, world")
+    """))
+
+(:doc make-hmac-hasher
+  (summary "A new, empty HMAC hasher with a key.")
+  (arg key "The secret key.")
+  (key #:algorithm "The algorithm. The default is Sha256.")
+  (returns "A hasher that has no data yet. It keeps the key after each @code{hasher-finish!}.")
+  (see hasher-add! hasher-finish! hmac-bytes))
+
+(:doc hasher-add!
+  (summary "Gives bytes to a hasher.")
+  (arg h "The hasher.")
+  (arg data "The bytes."))
+
+(:doc hasher-add-string!
+  (summary "Gives a string's UTF-8 bytes to a hasher.")
+  (arg h "The hasher.")
+  (arg text "The string."))
+
+(:doc hasher-finish!
+  (summary "The digest of all the data given since the hasher was made or last finished.")
+  (arg h "The hasher.")
+  (returns "A new array of digest bytes.")
+  (reference """
+    The hasher is then empty, and you can use it again. An HMAC hasher
+    keeps its key.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Comparing and printing
+;; ---------------------------------------------------------------------------
+
+(:doc constant-time-equal?
+  (summary "Compares two byte arrays in a time that does not depend on their contents.")
+  (arg a "One array.")
+  (arg b "The other.")
+  (returns "True when the arrays have the same length and the same bytes.")
+  (reference """
+    Use this to compare a secret: an HMAC tag, a token, a digest of a
+    token. The time depends on the lengths, so an attacker can find the
+    length. That is not a problem when the length is fixed, as it is for a
+    digest.
+    """))
+
+(:doc bytes->hex
+  (summary "The bytes as lower-case hex, two digits each.")
+  (arg bytes "The bytes.")
+  (returns "A string of two lower-case hex digits for each byte.")
+  (see hex->bytes))
+
+(:doc hex->bytes
+  (summary "The bytes that a hex string gives.")
+  (arg text "Hex digits, upper or lower case, two for each byte.")
+  (returns "@code{None} when the length is odd or a character is not a hex digit.")
+  (see bytes->hex))
+
+;; ---------------------------------------------------------------------------
+;; Passwords
+;; ---------------------------------------------------------------------------
+
+(:doc default-password-iterations
+  (summary "600000: the OWASP recommendation for PBKDF2-HMAC-SHA256 in 2023."))
+
+(:doc password-hash
+  (summary "A slow, salted hash of a password, as a PHC string to store.")
+  (arg password "The password.")
+  (key #:algorithm "Sha256, Sha384 or Sha512. The default is Sha256. Other algorithms raise @code{ArgumentException}.")
+  (key #:iterations "The PBKDF2 iteration count. The default is @code{default-password-iterations}.")
+  (returns "A string such as @code{$pbkdf2-sha256$i=600000$<salt>$<hash>}.")
+  (see password-verify password-needs-rehash?)
+  (reference """
+    Each call uses a new salt, so two hashes of the same password are
+    different. In a bjoroutine, the hash is computed on a thread of its own.
+    """))
+
+(:doc password-verify
+  (summary "True when the password gives the stored hash.")
+  (arg password "The password to check.")
+  (arg stored "A string from @code{password-hash}.")
+  (returns "True or false. The hashes are compared in constant time.")
+  (see password-hash password-needs-rehash?)
+  (reference """
+    A @code{stored} string that is not a PHC string from
+    @code{password-hash} raises @code{ArgumentException}. That is an error
+    in the stored data, not a wrong password.
+
+    In a bjoroutine, the hash is computed on a thread of its own.
+    """))
+
+(:doc password-needs-rehash?
+  (summary "True when a stored hash uses another algorithm or fewer iterations.")
+  (arg stored "A string from @code{password-hash}.")
+  (key #:algorithm "The algorithm that hashes must use now. The default is Sha256.")
+  (key #:iterations "The iteration count that hashes must have now. The default is @code{default-password-iterations}.")
+  (returns "True when you must replace @code{stored} with a new hash. A @code{stored} string that is not a PHC string raises @code{ArgumentException}.")
+  (example """
+    (when (password-verify password stored)
+      (when (password-needs-rehash? stored)
+        (save-hash! user (password-hash password)))
+      (log-in user))
+    """)
+  (reference """
+    Use it after a correct @code{password-verify}. Only then do you have the
+    password to make a new hash.
+    """))

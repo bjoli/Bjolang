@@ -1,0 +1,215 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/crypto/hash.bjo — digests, HMAC and password hashing.
+;;
+;; The work is done by .NET's System.Security.Cryptography, through
+;; Bjolang.Runtime.CryptoModule. A string is hashed as its UTF-8 bytes.
+;;
+;; Passwords are hashed with PBKDF2, because it is the password hash that .NET
+;; has. The result is a PHC string that holds the algorithm, the iteration
+;; count and the salt, so a hash made with old parameters still verifies.
+;; PBKDF2 at 600000 iterations takes a core for a few hundred milliseconds. In
+;; a bjoroutine, the password functions run on a thread of their own, so the
+;; fiber pool is not blocked.
+
+(export
+  ;; Transparent: Md5, Sha1, Sha256, Sha384, Sha512, Sha3-256, Sha3-384, Sha3-512.
+  HashAlgorithm
+  hash-algorithm-supported? digest-length
+  ;; One-shot
+  hash-bytes hash-string hash-file
+  hmac-bytes hmac-string
+  ;; Incremental
+  Hasher make-hasher make-hmac-hasher hasher-add! hasher-add-string! hasher-finish!
+  ;; Comparing and printing
+  constant-time-equal? bytes->hex hex->bytes
+  ;; Passwords
+  password-hash password-verify password-needs-rehash?
+  default-password-iterations)
+
+(import (std prelude))
+(import (only (std random) random-bytes!))
+
+(:doc #:file "hash.bjodoc")
+
+;; MD5 and SHA-1 are broken for collision resistance. They are here for
+;; protocols and checksums that need them.
+(type (: HashAlgorithm (Union Md5 Sha1 Sha256 Sha384 Sha512 Sha3-256 Sha3-384 Sha3-512)))
+
+(import/class
+  (Hasher (: System.Security.Cryptography.IncrementalHash)))
+
+(import/extern
+  (shim-supported      (: Bjolang.Runtime.CryptoModule.IsSupported     (-> string bool)))
+  (shim-hash           (: Bjolang.Runtime.CryptoModule.Hash            (-> string (Array byte) (Array byte))))
+  (shim-hash-string    (: Bjolang.Runtime.CryptoModule.HashString      (-> string string (Array byte))))
+  (shim-hash-file      (: Bjolang.Runtime.CryptoModule.HashFile        (-> string string (Array byte)) #:blocking))
+  (shim-hash-file-await (: Bjolang.Runtime.CryptoModule.HashFileAsync  (-> string string (Array byte)) #:async))
+  (shim-hmac           (: Bjolang.Runtime.CryptoModule.Hmac            (-> string (Array byte) (Array byte) (Array byte))))
+  (shim-hmac-string    (: Bjolang.Runtime.CryptoModule.HmacString      (-> string (Array byte) string (Array byte))))
+  (shim-make-hasher    (: Bjolang.Runtime.CryptoModule.MakeHasher      (-> string Hasher)))
+  (shim-make-hmac      (: Bjolang.Runtime.CryptoModule.MakeHmacHasher  (-> string (Array byte) Hasher)))
+  (shim-hasher-add     (: Bjolang.Runtime.CryptoModule.HasherAdd       (-> Hasher (Array byte) void)))
+  (shim-hasher-add-str (: Bjolang.Runtime.CryptoModule.HasherAddString (-> Hasher string void)))
+  (shim-hasher-finish  (: Bjolang.Runtime.CryptoModule.HasherFinish    (-> Hasher (Array byte))))
+  (shim-fixed-equal    (: Bjolang.Runtime.CryptoModule.FixedTimeEquals (-> (Array byte) (Array byte) bool)))
+  (shim-to-hex         (: Bjolang.Runtime.CryptoModule.ToHex           (-> (Array byte) string)))
+  (shim-from-hex       (: Bjolang.Runtime.CryptoModule.TryFromHex
+                         (-> string (out (Array byte)) (Option (Array byte)))))
+  (shim-password-hash  (: Bjolang.Runtime.CryptoModule.PasswordHash
+                         (-> string (Array byte) string int string)))
+  (shim-password-verify (: Bjolang.Runtime.CryptoModule.PasswordVerify (-> string string bool)))
+  (shim-needs-rehash   (: Bjolang.Runtime.CryptoModule.PasswordNeedsRehash (-> string string int bool))))
+
+;; The name .NET knows the algorithm by.
+(: algorithm-name (-> HashAlgorithm string))
+(defun (algorithm-name a)
+  (match a
+    (Md5      "MD5")
+    (Sha1     "SHA1")
+    (Sha256   "SHA256")
+    (Sha384   "SHA384")
+    (Sha512   "SHA512")
+    (Sha3-256 "SHA3-256")
+    (Sha3-384 "SHA3-384")
+    (Sha3-512 "SHA3-512")))
+
+;; SHA-3 needs OpenSSL 1.1.1 or later, or Windows 11. The others are always there.
+(: hash-algorithm-supported? (-> HashAlgorithm bool))
+(defun (hash-algorithm-supported? a) (shim-supported (algorithm-name a)))
+
+;; In bytes.
+(: digest-length (-> HashAlgorithm int))
+(defun (digest-length a)
+  (match a
+    (Md5      16)
+    (Sha1     20)
+    (Sha256   32)
+    (Sha384   48)
+    (Sha512   64)
+    (Sha3-256 32)
+    (Sha3-384 48)
+    (Sha3-512 64)))
+
+;; ---------------------------------------------------------------------------
+;; One-shot
+;; ---------------------------------------------------------------------------
+
+(: hash-bytes (-> (Array byte) (#:algorithm HashAlgorithm) (Array byte)))
+(defun (hash-bytes data #:algorithm Sha256)
+  (shim-hash (algorithm-name algorithm) data))
+
+(: hash-string (-> string (#:algorithm HashAlgorithm) (Array byte)))
+(defun (hash-string text #:algorithm Sha256)
+  (shim-hash-string (algorithm-name algorithm) text))
+
+;; The file is read a buffer at a time, so a large file is never all in memory.
+(: hash-file (-> string (#:algorithm HashAlgorithm) (Array byte)))
+(defbjouble (hash-file path #:algorithm Sha256)
+  (#:sync (shim-hash-file (algorithm-name algorithm) path))
+  (#:bjo  (shim-hash-file-await (algorithm-name algorithm) path)))
+
+(: hmac-bytes (-> (Array byte) (Array byte) (#:algorithm HashAlgorithm) (Array byte)))
+(defun (hmac-bytes key data #:algorithm Sha256)
+  (shim-hmac (algorithm-name algorithm) key data))
+
+(: hmac-string (-> (Array byte) string (#:algorithm HashAlgorithm) (Array byte)))
+(defun (hmac-string key text #:algorithm Sha256)
+  (shim-hmac-string (algorithm-name algorithm) key text))
+
+;; ---------------------------------------------------------------------------
+;; Incremental
+;; ---------------------------------------------------------------------------
+;;
+;; A hasher is mutable. Do not share one between fibers without a lock.
+
+(: make-hasher (-> (#:algorithm HashAlgorithm) Hasher))
+(defun (make-hasher #:algorithm Sha256)
+  (shim-make-hasher (algorithm-name algorithm)))
+
+(: make-hmac-hasher (-> (Array byte) (#:algorithm HashAlgorithm) Hasher))
+(defun (make-hmac-hasher key #:algorithm Sha256)
+  (shim-make-hmac (algorithm-name algorithm) key))
+
+(: hasher-add! (-> Hasher (Array byte) void))
+(defun (hasher-add! h data) (shim-hasher-add h data))
+
+(: hasher-add-string! (-> Hasher string void))
+(defun (hasher-add-string! h text) (shim-hasher-add-str h text))
+
+;; The digest of all that was added. The hasher is then empty, and can be used
+;; again. An HMAC hasher keeps its key.
+(: hasher-finish! (-> Hasher (Array byte)))
+(defun (hasher-finish! h) (shim-hasher-finish h))
+
+;; ---------------------------------------------------------------------------
+;; Comparing and printing
+;; ---------------------------------------------------------------------------
+
+;; Use this to compare a secret, such as an HMAC tag or a token. The time does
+;; not depend on where the arrays differ. Arrays of different lengths are not
+;; equal, and the time can show the lengths.
+(: constant-time-equal? (-> (Array byte) (Array byte) bool))
+(defun (constant-time-equal? a b) (shim-fixed-equal a b))
+
+;; Lower case.
+(: bytes->hex (-> (Array byte) string))
+(defun (bytes->hex bytes) (shim-to-hex bytes))
+
+;; Either case. `None` for an odd length or a character that is not a hex digit.
+(: hex->bytes (-> string (Option (Array byte))))
+(defun (hex->bytes text) (shim-from-hex text))
+
+;; ---------------------------------------------------------------------------
+;; Passwords
+;; ---------------------------------------------------------------------------
+
+;; The OWASP recommendation for PBKDF2-HMAC-SHA256 in 2023.
+(: default-password-iterations int)
+(def default-password-iterations 600000)
+
+;; 16 bytes is the size that NIST SP 800-132 recommends as a minimum.
+(: salt-length int)
+(def salt-length 16)
+
+(: password-hash-now (-> string HashAlgorithm int string))
+(defun (password-hash-now password algorithm iterations)
+  (def salt (make-array salt-length))
+  (random-bytes! salt)
+  (shim-password-hash password salt (algorithm-name algorithm) iterations))
+
+;; The value of a thread's result, or its exception raised again.
+(: unwrap-thread (-> (Result Exception %a) %a))
+(defun (unwrap-thread r)
+  (match r
+    ((Ok v) v)
+    ((Err e) (raise e))))
+
+(: password-hash (-> string (#:algorithm HashAlgorithm) (#:iterations int) string))
+(defbjouble (password-hash password #:algorithm Sha256 #:iterations default-password-iterations)
+  (#:sync (password-hash-now password algorithm iterations))
+  (#:bjo  (unwrap-thread (sync (spawn/thread #(password-hash-now password algorithm iterations))))))
+
+;; Raises `ArgumentException` when `stored` is not a hash from `password-hash`.
+;; This is an error in the stored data, not a wrong password.
+(: password-verify (-> string string bool))
+(defbjouble (password-verify password stored)
+  (#:sync (shim-password-verify password stored))
+  (#:bjo  (unwrap-thread (sync (spawn/thread #(shim-password-verify password stored))))))
+
+;; True when `stored` was made with another algorithm or with fewer iterations.
+;; Check this after a correct `password-verify`, and store a new hash of the
+;; password if it is true.
+(: password-needs-rehash? (-> string (#:algorithm HashAlgorithm) (#:iterations int) bool))
+(defun (password-needs-rehash? stored #:algorithm Sha256 #:iterations default-password-iterations)
+  (shim-needs-rehash stored (algorithm-name algorithm) iterations))
