@@ -19,11 +19,15 @@ namespace Bjoml;
 /// <summary>
 /// An intrusive singly-linked record for negative acknowledgements (NACKs).
 /// Follows Hopac's interval-based choice tracking: each NACK guards an index interval [I0, I1).
+///
+/// A subclass can be its own nack by overriding <see cref="Fire"/>, as
+/// <see cref="TimeoutNode"/> does: one object per armed timeout, where a
+/// delegate and a node were two more.
 /// </summary>
-public sealed class NackNode
+public class NackNode
 {
-    public readonly Action Action;
-    public readonly int I0;
+    public readonly Action? Action;
+    public int I0;
     public int I1;
     public NackNode? Next;
 
@@ -34,6 +38,15 @@ public sealed class NackNode
         I1 = int.MaxValue;
         Next = next;
     }
+
+    /// For a subclass that is its own nack: no delegate, no separate node.
+    protected NackNode()
+    {
+        I1 = int.MaxValue;
+    }
+
+    /// The branch lost. Must not run user code; see MarkSynchronized.
+    public virtual void Fire() => Action!();
 }
 
 /// <summary>
@@ -256,7 +269,17 @@ public class SyncState
     public void MarkSynchronized(int winningEventId)
     {
         _winningEventId = winningEventId;
-        Volatile.Write(ref _value, S);
+
+        // A block with no nacks, which is most of them, takes no lock here.
+        //
+        // That is safe against a nack being registered at the same moment
+        // because each side stores, then fences, then reads the other's word:
+        // this exchange stores S and fences, then reads the list; RegisterNack
+        // stores into the list and fences, then its caller reads the state
+        // (TimeoutNode.Arm, WithNackEvent.Publish). So if this read finds no
+        // nack, the caller sees S and fires its nack itself.
+        Interlocked.Exchange(ref _value, S);
+        if (Volatile.Read(ref _nacks) is null) return;
 
         NackNode? toFireHead = null;
 
@@ -296,7 +319,7 @@ public class SyncState
             // The try/catch is load-bearing: this runs inside the rendezvous
             // commit path, and a throwing nack must not unwind into a channel
             // matching loop.
-            try { toFireHead.Action(); }
+            try { toFireHead.Fire(); }
             catch (Exception ex) { Scheduler.ReportUnhandled(ex); }
             toFireHead = toFireHead.Next;
         }
@@ -309,14 +332,24 @@ public class SyncState
     /// </summary>
     public NackNode? RegisterNack(int i0, Action nack)
     {
+        NackNode? registered = null;
         lock (this)
         {
             if (!IsSynchronized)
             {
                 var node = new NackNode(nack, i0, _nacks);
                 _nacks = node;
-                return node;
+                registered = node;
             }
+        }
+
+        if (registered is not null)
+        {
+            // The store into the list is fenced before the caller looks at
+            // IsSynchronized, which MarkSynchronized's check without the lock
+            // depends on (see there).
+            Interlocked.MemoryBarrier();
+            return registered;
         }
 
         // Another branch won before we finished publishing this one.
@@ -327,5 +360,35 @@ public class SyncState
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// <see cref="RegisterNack(int, Action)"/> for a node that is its own nack.
+    /// False when the block synchronised first; the node's nack is then queued
+    /// if the winner is an earlier branch.
+    /// </summary>
+    internal bool RegisterNack(NackNode node, int i0)
+    {
+        node.I0 = i0;
+        bool registered = false;
+        lock (this)
+        {
+            if (!IsSynchronized)
+            {
+                node.Next = _nacks;
+                _nacks = node;
+                registered = true;
+            }
+        }
+
+        if (registered)
+        {
+            // As in the other overload.
+            Interlocked.MemoryBarrier();
+            return true;
+        }
+
+        if (_winningEventId < i0) Scheduler.Enqueue(node.Fire);
+        return false;
     }
 }

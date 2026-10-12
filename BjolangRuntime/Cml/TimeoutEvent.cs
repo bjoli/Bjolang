@@ -25,8 +25,9 @@ namespace Bjoml;
 /// measured at ~1.4 µs and 1360 B per ARMED sync — of which the actual
 /// <see cref="System.Threading.Timer"/> arm+dispose is only ~98 ns and 144 B.
 /// The composition was the cost, so this class does directly what the sandwich
-/// did indirectly, for one node, one cancel delegate and one NackNode per armed
-/// sync. The node is its own entry in <see cref="TimerWheel"/>; a
+/// did indirectly, for one object per armed sync: the node is its own nack and
+/// its own entry in <see cref="TimerWheel"/>. A separate cancel delegate and
+/// <see cref="NackNode"/> were 104 B more per armed sync. A
 /// <see cref="System.Threading.Timer"/> each was three more objects and a lock on
 /// the runtime's timer queue to arm and another to cancel.
 ///
@@ -85,7 +86,7 @@ internal sealed class AtEvent : IEvent<Unit>
 /// unlinked the node already; the nack that made it lose has already run or will
 /// run, and both find the gate Done.
 /// </summary>
-internal sealed class TimeoutNode
+internal sealed class TimeoutNode : NackNode
 {
     private const int Pending = 0;
     private const int Done = 1;
@@ -127,9 +128,12 @@ internal sealed class TimeoutNode
 
         var node = new TimeoutNode(state, eventId, onSync);
 
+        // A leaf's subtree is exactly one branch index wide. Set before the
+        // node is registered, so that no commit can read it unset.
+        node.I1 = eventId + 1;
+
         // From this call on, Cancel can run concurrently on another thread.
-        var nack = state.RegisterNack(eventId, node.Cancel);
-        if (nack == null)
+        if (!state.RegisterNack(node, eventId))
         {
             // The block synchronised before we registered. RegisterNack enqueued
             // Cancel iff the winner is an earlier branch — always true here, since
@@ -137,9 +141,6 @@ internal sealed class TimeoutNode
             // is a no-op: it wins the gate and finds nothing linked. Nothing to undo.
             return;
         }
-
-        // A leaf's subtree is exactly one branch index wide.
-        nack.I1 = eventId + 1;
 
         // Into the wheel, and then look at the gate. A concurrent Cancel flips
         // the gate and then unlinks: if it looked before the node was linked,
@@ -153,13 +154,15 @@ internal sealed class TimeoutNode
             return;
         }
 
-        // Mirror of WithNackEvent's post-publish check. nack.I1 above is written
-        // without the SyncState lock, so a MarkSynchronized that raced us may have
-        // read I1 = MaxValue, judged the winner inside our interval, and skipped
-        // our nack. If the block is synchronized now, we lost (only Fire can make
-        // us win, and it has not committed) — cancel by hand. Idempotent.
+        // Mirror of WithNackEvent's post-publish check. A MarkSynchronized that
+        // raced the registration may have found no nack and skipped its list
+        // (see there). If the block is synchronized now, we lost (only Fire can
+        // make us win, and it has not committed), so cancel by hand. Idempotent.
         if (state.IsSynchronized) node.Cancel();
     }
+
+    /// <summary>This node's nack: the branch lost.</summary>
+    public override void Fire() => Cancel();
 
     /// <summary>The nack action: this branch lost, take it out of the wheel.</summary>
     private void Cancel()

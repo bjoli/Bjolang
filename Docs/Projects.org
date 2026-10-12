@@ -235,6 +235,7 @@ A setting goes into the program's ~.runtimeconfig.json~, as one of the
 | ~gc-server~               | ~#t~ ~#f~   | ~System.GC.Server~                |
 | ~gc-concurrent~           | ~#t~ ~#f~   | ~System.GC.Concurrent~            |
 | ~gc-heap-count~           | from 1      | ~System.GC.HeapCount~             |
+| ~gc-dynamic-adaptation~   | ~#t~ ~#f~   | ~System.GC.DynamicAdaptationMode~ |
 | ~tiered-compilation~      | ~#t~ ~#f~   | ~System.Runtime.TieredCompilation~ |
 | ~tiered-pgo~              | ~#t~ ~#f~   | ~System.Runtime.TieredPGO~        |
 | ~invariant-globalization~ | ~#t~ ~#f~   | ~System.Globalization.Invariant~  |
@@ -245,6 +246,16 @@ for each CPU. A program in which many fibers allocate at the same time can be
 several times faster with it, and uses more memory. ~(std stm map)~ is an
 example: with workstation GC, sixteen fibers that add keys are no faster than
 one.
+
+*With server GC, ~gc-dynamic-adaptation~ is ~#f~ unless the program says
+~#t~.* .NET's own default is on. The adaptation (DATAS) chooses the number of
+GC heaps while the program runs, from the share of time it spends in GC. A
+program with many fibers allocates fast, gets many heaps, and every pause then
+waits for more GC threads. A service of fibers on 24 hardware threads had a
+p99 latency of 3.1 ms with it and 1.9 ms without it. The cost is memory: the
+same service used 370 MB in place of 120 MB. Say ~(gc-dynamic-adaptation #t)~
+when memory matters more than latency, or set ~gc-heap-count~ to fix the
+number of heaps.
 
 *Only the project being built uses its settings.* They are settings of a
 process, and a dependency is not one, so a dependency's ~runtime~ is ignored.

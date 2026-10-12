@@ -146,6 +146,7 @@ let printUsage () =
     printfn "              A .NET runtime setting of the program, written into its"
     printfn "              runtimeconfig. Repeatable. The settings are %s." (Build.runtimeSettings |> List.map fst |> String.concat ", ")
     printfn "              gc-heap-count is a whole number; the others are true or false."
+    printfn "              With gc-server=true, gc-dynamic-adaptation is false unless given."
     printfn "  --framework <name>"
     printfn "              A shared framework for every file no --frameworks line covers,"
     printfn "              which is all of them in a single-file build. Repeatable."

@@ -803,6 +803,14 @@ public static partial class BjolangRuntime {
     /// waiting for a message that will never be read.
     public static IEvent<T> choose<T>(params IEvent<T>[] events) => Cml.Choose(events);
 
+    /// `(choose a b)`, which the compiler emits as this rather than with an
+    /// array: one object where the array form makes the array and a
+    /// `ChooseEvent`. Same publish order, same random rotation.
+    public static IEvent<T> choose<T>(IEvent<T> a, IEvent<T> b) => new PairChooseEvent<T>(a, b);
+
+    /// `(choose a b c)`. See the two-branch form.
+    public static IEvent<T> choose<T>(IEvent<T> a, IEvent<T> b, IEvent<T> c) => new TripleChooseEvent<T>(a, b, c);
+
     /// `(wrap ev f)` — `f` runs *after* the commit, on the syncing fiber, so it
     /// is safe to do real work in it. This is `map` for events, and it is the
     /// only lawful piece of a monad they have: a `bind` would give a composite

@@ -3,6 +3,42 @@
 
 What each change guarantees, and what it leaves open.
 
+* A small ~choose~ has no array, and a written send is a ~chan-put~
+
+- A ~choose~ of two or three branches compiles to the runtime's two- and
+  three-branch events: one object, where it was an array and a
+  ~ChooseEvent~. Four or more still use the array. Publish order, random
+  rotation and withdrawal are the same.
+- ~(sync (chan-send ch v))~, written as such, compiles to ~(chan-put ch v)~,
+  which waits and is cancelled in the same way and builds no event. A send
+  event that reaches ~sync~ in any other way is built as before.
+- Both apply only where the names are the builtins. ~bench/service~ on four
+  cores: 6% less wall time, 11% fewer bytes per request. ~cmlbench~'s ring:
+  91 to 78 ns and 32 to 0 bytes a hop.
+- ~TestFiles/359_small_choose_and_put.bjo~ checks the branch counts, nesting,
+  mixed event kinds, and a send to a parked receive, to one in a ~choose~,
+  from a variable and inside a ~choose~.
+
+* Server GC without dynamic adaptation, and a cheaper armed timeout
+
+- *A program with ~(gc-server #t)~ gets ~System.GC.DynamicAdaptationMode~ 0
+  in its runtimeconfig*, unless it says ~(gc-dynamic-adaptation #t)~, a new
+  runtime setting (~--runtime gc-dynamic-adaptation=true~ to the compiler).
+  .NET's dynamic adaptation chose 22 GC heaps for a service of fibers on 24
+  hardware threads, and its pauses were a quarter of the wall time. Without
+  it, p99 latency went from 3.1 to 1.9 ms. The cost is memory: 370 MB in
+  place of 120 MB for that service. A program without server GC is not
+  changed, and neither is one that gets server GC from the environment.
+- An armed timeout is one object, not three, and a commit with no nack to
+  fire takes no lock. 34 to 85 bytes less per request on ~bench/service~,
+  and 1-2% less CPU.
+- ~bench/service~ prints each program's collections and pause time, runs
+  both .NET programs with dynamic adaptation off, and the Bjolang client
+  keeps its samples in an array made at full size, as the other two do.
+- ~bench/service~ has an open loop: ~drive.py --rates~ sends requests on a
+  fixed schedule, and a request's latency counts from when it was due. The
+  three programs are then compared at the same load, not at saturation.
+
 * An inbox's receivers and senders that lost are swept too
 
 - A receive parked on an empty inbox, or a send parked on a full one, that

@@ -47,7 +47,26 @@
 // last join, in wall time and in process CPU time; the latencies go to
 // p50/p99/p99.9. One rep is a warm-up and is not printed.
 //
-//	go run . -reps 5 [-clients 1000] [-requests 1000]
+// That is a closed loop: a client sends its next request as soon as it has
+// the answer to the last, so the machine is always saturated and a slower
+// runtime has every request wait longer. With a rate R (requests a second,
+// over all clients) the loop is open instead. The schedule starts 100 ms
+// after the clients are spawned, at t0, and request i of client c is due at
+// t0 + (i*clients + c)/R. The wall time is then taken from t0. A client that is early sleeps until then, in
+// whole milliseconds rounded up, as the three runtimes' timers all can; one
+// that is late sends at once. Its latency is taken from the due time, so a
+// backlog counts, or from when the client woke, if it slept: how late a
+// timer fires is not a property of the service. With 10000 clients a client
+// sends every 10000/R seconds, which at a million a second is 10 ms, well
+// above the timers' resolution.
+//
+// The requests due in the schedule's first 200 ms are not sampled. Every rep
+// starts its clients afresh, and the first request of each found the heap
+// and the scheduler cold: in Go, every client's first request took until
+// about 50 ms into the schedule, which at 10000 clients is 8% of the samples.
+// A service that runs for longer than a rep has no such moment.
+//
+//	go run . -reps 5 [-clients 1000] [-requests 1000] [-rate R]
 
 package main
 
@@ -70,6 +89,8 @@ const (
 	deadline      = time.Second
 	opGet         = 0
 	opPut         = 1
+	lead          = 100 * time.Millisecond
+	warm          = 200 * time.Millisecond
 )
 
 type Req struct {
@@ -129,7 +150,12 @@ type clientOut struct {
 	timeouts int
 }
 
-func client(c, requests int, chans []chan Req) clientOut {
+// When request i of client c is due, measured from the rep's start.
+func due(c, i, clients, rate int) time.Duration {
+	return time.Duration(int64(i*clients+c) * 1_000_000_000 / int64(rate))
+}
+
+func client(c, clients, requests, rate int, start time.Time, chans []chan Req) clientOut {
 	s := int64(c + 1)
 	var checksum int64
 	samples := make([]int64, 0, requests/8+1)
@@ -139,7 +165,17 @@ func client(c, requests int, chans []chan Req) clientOut {
 	for i := 0; i < requests; i++ {
 		sampled := i%8 == 0
 		var t0 time.Time
-		if sampled {
+		if rate > 0 {
+			offset := due(c, i, clients, rate)
+			sampled = sampled && offset >= warm
+			at := start.Add(offset)
+			if wait := time.Until(at); wait > 0 {
+				time.Sleep((wait + time.Millisecond - 1).Truncate(time.Millisecond))
+				t0 = time.Now()
+			} else {
+				t0 = at
+			}
+		} else if sampled {
 			t0 = time.Now()
 		}
 
@@ -193,7 +229,7 @@ func cpuMs() int64 {
 	return (ru.Utime.Nano() + ru.Stime.Nano()) / 1_000_000
 }
 
-func rep(n, clients, requests int) {
+func rep(n, clients, requests, rate int) {
 	chans := make([]chan Req, shards)
 	quits := make([]chan int, shards)
 	works := make([]int64, shards)
@@ -209,14 +245,21 @@ func rep(n, clients, requests int) {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	a0 := mem.TotalAlloc
+	gc0, pause0 := mem.NumGC, mem.PauseTotalNs
+	// In an open loop the schedule starts a moment after the clients are
+	// spawned, so that spawning them is not a backlog, and the wall time is
+	// taken from there.
 	t0 := time.Now()
+	if rate > 0 {
+		t0 = t0.Add(lead)
+	}
 	c0 := cpuMs()
 	outs := make([]clientOut, clients)
 	var wg sync.WaitGroup
 	wg.Add(clients)
 	for c := 0; c < clients; c++ {
 		go func() {
-			outs[c] = client(c, requests, chans)
+			outs[c] = client(c, clients, requests, rate, t0, chans)
 			wg.Done()
 		}()
 	}
@@ -225,6 +268,7 @@ func rep(n, clients, requests int) {
 	cpu := cpuMs() - c0
 	runtime.ReadMemStats(&mem)
 	alloc := mem.TotalAlloc - a0
+	gcs, pause := mem.NumGC-gc0, (mem.PauseTotalNs-pause0)/1_000_000
 
 	for i := 0; i < shards; i++ {
 		quits[i] <- 0
@@ -246,8 +290,8 @@ func rep(n, clients, requests int) {
 	at := func(per, of int) int64 { return samples[len(samples)*per/of] }
 
 	if n > 0 {
-		fmt.Printf("rep %d wall_ms %d cpu_ms %d p50_ns %d p99_ns %d p999_ns %d timeouts %d checksum %d alloc_b %d\n",
-			n, wall, cpu, at(50, 100), at(99, 100), at(999, 1000), timeouts, checksum, alloc)
+		fmt.Printf("rep %d wall_ms %d cpu_ms %d p50_ns %d p99_ns %d p999_ns %d timeouts %d checksum %d alloc_b %d gcs %d pause_ms %d\n",
+			n, wall, cpu, at(50, 100), at(99, 100), at(999, 1000), timeouts, checksum, alloc, gcs, pause)
 	}
 }
 
@@ -255,11 +299,12 @@ func main() {
 	reps := flag.Int("reps", 5, "measured reps, after one warm-up")
 	clients := flag.Int("clients", 1000, "client connections")
 	requests := flag.Int("requests", 1000, "requests per client")
+	rate := flag.Int("rate", 0, "requests a second over all clients; 0 for a closed loop")
 	flag.Parse()
 
-	fmt.Printf("go %s GOMAXPROCS=%d clients=%d requests=%d\n",
-		runtime.Version(), runtime.GOMAXPROCS(0), *clients, *requests)
+	fmt.Printf("go %s GOMAXPROCS=%d clients=%d requests=%d rate=%d\n",
+		runtime.Version(), runtime.GOMAXPROCS(0), *clients, *requests, *rate)
 	for n := 0; n <= *reps; n++ {
-		rep(n, *clients, *requests)
+		rep(n, *clients, *requests, *rate)
 	}
 }

@@ -14,7 +14,10 @@
 ;; bench/service/go/main.go, whose header has the specification. Same counts,
 ;; same channels, same work, same checksum.
 ;;
-;;     service [REPS [CLIENTS [REQUESTS]]]
+;;     service [REPS [CLIENTS [REQUESTS [RATE]]]]
+;;
+;; RATE, in requests a second, makes the loop open; 0 or none keeps it closed.
+;; The schedule, and which latencies are sampled, are specified in go/main.go.
 
 (import (std prelude))
 (import (std mutable vec))
@@ -32,7 +35,9 @@
   (current-process (: System.Diagnostics.Process.GetCurrentProcess (-> Process)))
   (processor-time (: System.Diagnostics.Process.TotalProcessorTime (-> Process TimeSpan) #:get))
   (timespan-ms (: System.TimeSpan.TotalMilliseconds (-> TimeSpan double) #:get))
-  (processor-count (: System.Environment.ProcessorCount #:get)))
+  (processor-count (: System.Environment.ProcessorCount #:get))
+  (gc-count (: System.GC.CollectionCount (-> int int)))
+  (gc-pause (: System.GC.GetTotalPauseDuration (-> TimeSpan))))
 
 (def shards 16)
 (def slots-per-shard 1024)
@@ -45,7 +50,7 @@
 
 (type
   (: Req (Record (: op int) (: key int) (: value int) (: reply (Chan int))))
-  (: ClientOut (Record (: checksum long) (: samples (List long)) (: timeouts int))))
+  (: ClientOut (Record (: checksum long) (: samples (MutableVec long)) (: timeouts int))))
 
 (: settle (-> void))
 (defun (settle)
@@ -124,18 +129,47 @@
     ((Some v) (Tuple v 0))
     (None (Tuple 0 1))))
 
-(: client (-bjo-> int int (Vec (Chan Req)) ClientOut))
-(defbjo (client c requests chans)
+(def lead-ticks (/ stopwatch-frequency 10L))
+(def warm-ticks (/ stopwatch-frequency 5L))
+
+;; Request i of client c is due this many Stopwatch ticks after the
+;; schedule's start.
+(: due (-> int int int int long))
+(defun (due c i clients rate)
+  (/ (* (cast System.Int64 (+ (* i clients) c)) stopwatch-frequency)
+     (cast System.Int64 rate)))
+
+;; Waits for request i's due time, if it has not come, and answers when its
+;; latency counts from: the due time if it had come, the wake-up if not.
+(: pace (-bjo-> int int int int long long))
+(defbjo (pace c i clients rate start)
+  (def at (+ start (due c i clients rate)))
+  (def now (timestamp))
+  (if (>= now at)
+      at
+      (let ((ms (+ (cast System.Int32 (/ (* (- at now) 1000L) stopwatch-frequency)) 1)))
+        (sync (timeout ms))
+        (timestamp))))
+
+(: client (-bjo-> int int int int long (Vec (Chan Req)) ClientOut))
+(defbjo (client c clients requests rate start chans)
   (def results (make-chan))
+  ;; Made at its full size, as the Go and Hopac twins make theirs: a list
+  ;; would allocate a cell per sample, and keep it until the rep ends, so the
+  ;; GC would have more to promote here than there.
+  (def samples (mutablevec-with-capacity (+ (/ requests 8) 1)))
   (let go ((i 0)
            (s (cast System.Int64 (+ c 1)))
            (checksum 0L)
-           (samples '())
            (timeouts 0))
     (if (= i requests)
         (ClientOut (checksum checksum) (samples samples) (timeouts timeouts))
-        (let* ((sampled (= (% i 8) 0))
-               (t0 (if sampled (timestamp) 0L))
+        (let* ((every-eighth (= (% i 8) 0))
+               (t0 (cond ((> rate 0) (pace c i clients rate start))
+                         (every-eighth (timestamp))
+                         (else 0L)))
+               (sampled (and every-eighth
+                             (or (= rate 0) (>= (due c i clients rate) warm-ticks))))
                (s2 (% (+ (* s 1103515245L) 12345L) 2147483648L))
                (key (cast System.Int32 (% s2 (cast System.Int64 key-space))))
                (d (crunch decode-work key)))
@@ -143,18 +177,18 @@
             (if (= (% i 10) 9)
                 (multi-get chans key results)
                 (single chans (if (= (% i 5) 0) op-put op-get) key)))
+          (when sampled (mutablevec-add! samples (ns-since t0)))
           (go (+ i 1)
               s2
               (+ checksum (cast System.Int64 (+ answer (% d 3))))
-              (if sampled (Cons (ns-since t0) samples) samples)
               (+ timeouts lost))))))
 
 (: percentile (-> (Vec long) int int long))
 (defun (percentile sorted per of)
   (vec-ref sorted (/ (* (vec-length sorted) per) of)))
 
-(: run-rep (-bjo-> int int int void))
-(defbjo (run-rep n clients requests)
+(: run-rep (-bjo-> int int int int void))
+(defbjo (run-rep n clients requests rate)
   (def chans (loop (:for i (range 0 shards)) (:acc v (vecing (make-chan)))))
   (def quits (loop (:for i (range 0 shards)) (:acc v (vecing (make-chan)))))
   (def shard-ps (loop (:for i (range 0 shards))
@@ -162,10 +196,14 @@
   (settle)
 
   (def a0 (total-allocated #t))
-  (def t0 (timestamp))
+  ;; In an open loop the schedule starts 100 ms after this, and the wall time
+  ;; is taken from there: see go/main.go.
+  (def t0 (+ (timestamp) (if (> rate 0) lead-ticks 0L)))
   (def c0 (cpu-ms))
+  (def gc0 (gc-count 0))
+  (def pause0 (timespan-ms (gc-pause)))
   (def client-ps (loop (:for c (range 0 clients))
-                       (:acc v (vecing (bjo (client c requests chans))))))
+                       (:acc v (vecing (bjo (client c clients requests rate t0 chans))))))
   (def (checksum samples timeouts)
     (let go ((c 0) (checksum 0L) (samples '()) (timeouts 0))
       (if (= c clients)
@@ -173,12 +211,14 @@
           (match (sync (promise-join (vec-ref client-ps c)))
             ((Ok o) (go (+ c 1)
                         (+ checksum (record-ref o checksum))
-                        (list-append (record-ref o samples) samples)
+                        (list-append (mutablevec->list (record-ref o samples)) samples)
                         (+ timeouts (record-ref o timeouts))))
             ((Err e) (go (+ c 1) checksum samples (+ timeouts requests)))))))
   (def wall (/ (ns-since t0) 1000000L))
   (def cpu (- (cpu-ms) c0))
   (def alloc (- (total-allocated #t) a0))
+  (def gcs (- (gc-count 0) gc0))
+  (def pause (cast System.Int64 (- (timespan-ms (gc-pause)) pause0)))
 
   (loop (:for i (range 0 shards))
         (:do (sync (chan-send (vec-ref quits i) 0))))
@@ -200,15 +240,19 @@
                   " p999_ns " (->str (percentile sorted 999 1000))
                   " timeouts " (->str timeouts)
                   " checksum " (->str (+ checksum work))
-                  " alloc_b " (->str alloc)))))
+                  " alloc_b " (->str alloc)
+                  " gcs " (->str gcs)
+                  " pause_ms " (->str pause)))))
 
 (defbjo (main args)
   (def argc (vec-length args))
   (def reps (if (> argc 0) (string->int (vec-ref args 0)) 5))
   (def clients (if (> argc 1) (string->int (vec-ref args 1)) 1000))
   (def requests (if (> argc 2) (string->int (vec-ref args 2)) 1000))
+  (def rate (if (> argc 3) (string->int (vec-ref args 3)) 0))
   (println (str "bjolang ProcessorCount=" (->str processor-count)
-                " clients=" (->str clients) " requests=" (->str requests)))
+                " clients=" (->str clients) " requests=" (->str requests)
+                " rate=" (->str rate)))
   (loop (:for n (range 0 (+ reps 1)))
-        (:do (run-rep n clients requests)))
+        (:do (run-rep n clients requests rate)))
   0)

@@ -15,7 +15,10 @@
 // bench/service/go/main.go, whose header has the specification. Same counts,
 // same channels, same work, same checksum.
 //
-//     dotnet bin/Release/net10.0/ServiceHopac.dll [REPS [CLIENTS [REQUESTS]]]
+//     dotnet bin/Release/net10.0/ServiceHopac.dll [REPS [CLIENTS [REQUESTS [RATE]]]]
+//
+// RATE, in requests a second, makes the loop open; 0 or none keeps it closed.
+// The schedule, and which latencies are sampled, are specified in go/main.go.
 
 module ServiceHopac.Program
 
@@ -109,15 +112,37 @@ let single chans op key : Job<struct (int * int)> =
         | Some v -> struct (v, 0)
         | None -> struct (0, 1)
 
-let client c requests chans : Job<ClientOut> =
+/// Request i of client c is due this many Stopwatch ticks after the
+/// schedule's start.
+let due c i clients rate =
+    int64 (i * clients + c) * Stopwatch.Frequency / int64 rate
+
+let leadTicks = Stopwatch.Frequency / 10L
+let warmTicks = Stopwatch.Frequency / 5L
+
+/// Wait for request i's due time, if it has not come, and answer when its
+/// latency counts from: the due time if it had come, the wake-up if not.
+let pace c i clients rate (start: int64) : Job<int64> =
+    let at = start + due c i clients rate
+    let now = Stopwatch.GetTimestamp()
+    if now >= at then Job.result at
+    else
+        let ms = int ((at - now) * 1000L / Stopwatch.Frequency) + 1
+        timeOutMillis ms >>- fun () -> Stopwatch.GetTimestamp()
+
+let client c clients requests rate start chans : Job<ClientOut> =
     let results = Ch<int>()
     let samples = ResizeArray<int64>(requests / 8 + 1)
     let rec go i (s: int64) (checksum: int64) timeouts : Job<ClientOut> =
         if i = requests then
             Job.result { Checksum = checksum; Samples = samples; Timeouts = timeouts }
+        elif rate > 0 then
+            pace c i clients rate start >>= fun t0 ->
+                step i s checksum timeouts (i % 8 = 0 && due c i clients rate >= warmTicks) t0
         else
             let sampled = i % 8 = 0
-            let t0 = if sampled then Stopwatch.GetTimestamp() else 0L
+            step i s checksum timeouts sampled (if sampled then Stopwatch.GetTimestamp() else 0L)
+    and step i (s: int64) (checksum: int64) timeouts sampled t0 : Job<ClientOut> =
             let s2 = (s * 1103515245L + 12345L) % 2147483648L
             let key = int (s2 % int64 KeySpace)
             let d = crunch DecodeWork key
@@ -131,7 +156,7 @@ let client c requests chans : Job<ClientOut> =
 
 let percentile (sorted: ResizeArray<int64>) per over = sorted.[sorted.Count * per / over]
 
-let rep n clients requests =
+let rep n clients requests rate =
     let chans = Array.init Shards (fun _ -> Ch<Req>())
     let quits = Array.init Shards (fun _ -> Ch<int>())
     let works = Array.init Shards (fun _ -> IVar<int64>())
@@ -142,11 +167,15 @@ let rep n clients requests =
     GC.Collect()
 
     let a0 = GC.GetTotalAllocatedBytes true
-    let t0 = Stopwatch.GetTimestamp()
+    // In an open loop the schedule starts 100 ms after this, and the wall
+    // time is taken from there: see go/main.go.
+    let t0 = Stopwatch.GetTimestamp() + (if rate > 0 then leadTicks else 0L)
     let c0 = cpuMs ()
+    let gc0 = GC.CollectionCount 0
+    let pause0 = GC.GetTotalPauseDuration()
     let outs = Array.init clients (fun _ -> IVar<ClientOut>())
     for c in 0 .. clients - 1 do
-        queue (client c requests chans >>= IVar.fill outs.[c])
+        queue (client c clients requests rate t0 chans >>= IVar.fill outs.[c])
     let gathered = run (job {
         let all = ResizeArray<ClientOut>(clients)
         for iv in outs do
@@ -156,6 +185,8 @@ let rep n clients requests =
     let wall = nsSince t0 / 1_000_000L
     let cpu = cpuMs () - c0
     let alloc = GC.GetTotalAllocatedBytes true - a0
+    let gcs = GC.CollectionCount 0 - gc0
+    let pause = int64 (GC.GetTotalPauseDuration() - pause0).TotalMilliseconds
 
     run (job { for q in quits do do! Ch.give q 0 })
     let work = run (job {
@@ -175,9 +206,9 @@ let rep n clients requests =
     samples.Sort()
 
     if n > 0 then
-        printfn "rep %d wall_ms %d cpu_ms %d p50_ns %d p99_ns %d p999_ns %d timeouts %d checksum %d alloc_b %d"
+        printfn "rep %d wall_ms %d cpu_ms %d p50_ns %d p99_ns %d p999_ns %d timeouts %d checksum %d alloc_b %d gcs %d pause_ms %d"
             n wall cpu (percentile samples 50 100) (percentile samples 99 100)
-            (percentile samples 999 1000) timeouts checksum alloc
+            (percentile samples 999 1000) timeouts checksum alloc gcs pause
 
 [<EntryPoint>]
 let main argv =
@@ -185,7 +216,8 @@ let main argv =
     let reps = arg 0 5
     let clients = arg 1 1000
     let requests = arg 2 1000
-    printfn "hopac ProcessorCount=%d clients=%d requests=%d" Environment.ProcessorCount clients requests
+    let rate = arg 3 0
+    printfn "hopac ProcessorCount=%d clients=%d requests=%d rate=%d" Environment.ProcessorCount clients requests rate
     for n in 0 .. reps do
-        rep n clients requests
+        rep n clients requests rate
     0

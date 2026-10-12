@@ -276,6 +276,9 @@ public sealed class PairChooseEvent<T> : IEvent<T>
         var b = _ev2;
         if (Cml.RandomizeChoice && (ChoiceRng.Next() & 1) != 0) (a, b) = (b, a);
 
+        // As ChooseEvent: an outer branch may have committed already, and a
+        // branch published now could only be left behind in a channel.
+        if (sharedState.IsSynchronized) return;
         a.Publish(sharedState, sharedState.NextEventId(), onSync);
         if (sharedState.IsSynchronized) return;
         b.Publish(sharedState, sharedState.NextEventId(), onSync);
@@ -315,6 +318,7 @@ public sealed class TripleChooseEvent<T> : IEvent<T>
             }
         }
 
+        if (sharedState.IsSynchronized) return;
         a.Publish(sharedState, sharedState.NextEventId(), onSync);
         if (sharedState.IsSynchronized) return;
         b.Publish(sharedState, sharedState.NextEventId(), onSync);

@@ -25,9 +25,12 @@ open Bjolang
 open System.IO
 
 /// The value a runtime setting takes: `true` or `false`, or a whole number.
+/// A `Mode` is given as `true` or `false` too, and written as 1 or 0, which
+/// is what its property takes.
 type RuntimeSettingKind =
     | Flag
     | Count
+    | Mode
 
 /// The .NET runtime settings a program may set, by the name that `--runtime`
 /// and a manifest's `(runtime ...)` give them, with the `configProperties` key
@@ -36,6 +39,7 @@ let runtimeSettings: (string * (string * RuntimeSettingKind)) list =
     [ "gc-server", ("System.GC.Server", Flag)
       "gc-concurrent", ("System.GC.Concurrent", Flag)
       "gc-heap-count", ("System.GC.HeapCount", Count)
+      "gc-dynamic-adaptation", ("System.GC.DynamicAdaptationMode", Mode)
       "tiered-compilation", ("System.Runtime.TieredCompilation", Flag)
       "tiered-pgo", ("System.Runtime.TieredPGO", Flag)
       "invariant-globalization", ("System.Globalization.Invariant", Flag) ]
@@ -50,7 +54,7 @@ let parseRuntimeSetting (text: string) : Result<string * string, string> =
     | [| name; value |] ->
         match List.tryFind (fun (n, _) -> n = name) runtimeSettings with
         | None -> Error $"--runtime: '%s{name}' is not a runtime setting. The settings are: %s{known}."
-        | Some(_, (_, Flag)) ->
+        | Some(_, (_, (Flag | Mode))) ->
             match value with
             | "true" | "false" -> Ok(name, value)
             | _ -> Error $"--runtime: %s{name} is true or false, not '%s{value}'."
@@ -59,6 +63,29 @@ let parseRuntimeSetting (text: string) : Result<string * string, string> =
             | true, n when n >= 1 -> Ok(name, string n)
             | _ -> Error $"--runtime: %s{name} is a whole number from 1, not '%s{value}'."
     | _ -> Error $"--runtime: '%s{text}' is not name=value. The settings are: %s{known}."
+
+/// The settings the runtimeconfig gets: those given, and the defaults that
+/// differ from .NET's own, sorted by name.
+///
+/// One default: a program with server GC gets `gc-dynamic-adaptation` off,
+/// unless it says otherwise. The adaptation (DATAS) picks the number of GC
+/// heaps at run time from the share of time spent in GC. A program with many
+/// fibers allocates fast, so DATAS gives it many heaps, and each pause then
+/// waits for more GC threads. On `bench/service` on 24 hardware threads it
+/// chose 22 heaps, every fourth millisecond was a pause, and p99.9 latency
+/// was 6.5 ms. Off, p99 went from 3.1 to 1.9 ms. The cost is memory: the
+/// heaps have a fixed size, and the process took 370 MB in place of 120 MB.
+/// See BjolangRuntime/Cml/design.md, "GC pauses are the tail".
+let withRuntimeDefaults (settings: (string * string) list) : (string * string) list =
+    let says name = settings |> List.exists (fun (n, _) -> n = name)
+
+    let serverGc =
+        settings |> List.exists (fun (n, v) -> n = "gc-server" && v = "true")
+
+    if serverGc && not (says "gc-dynamic-adaptation") then
+        ("gc-dynamic-adaptation", "false") :: settings |> List.sortBy fst
+    else
+        settings
 
 /// What a compilation is told, once the command line has been read.
 type Options =
@@ -808,12 +835,17 @@ let compile (options: Options) (inputFilePath: string) : int =
                     // at all, so a program that sets nothing has the file it had
                     // before settings existed.
                     let settingsPart =
-                        match options.Runtime with
+                        match withRuntimeDefaults options.Runtime with
                         | [] -> ""
                         | settings ->
                             let property (name, value) =
-                                let key, _ = runtimeSettings |> List.find (fun (n, _) -> n = name) |> snd
-                                "      \"" + key + "\": " + value
+                                let key, kind = runtimeSettings |> List.find (fun (n, _) -> n = name) |> snd
+                                let written =
+                                    match kind, value with
+                                    | Mode, "true" -> "1"
+                                    | Mode, _ -> "0"
+                                    | _ -> value
+                                "      \"" + key + "\": " + written
 
                             ",\n    \"configProperties\": {\n"
                             + (settings |> List.map property |> String.concat ",\n")

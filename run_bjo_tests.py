@@ -1510,6 +1510,8 @@ def test_runtime(work, c):
     c.that("the runtimeconfig has the settings",
            '"System.GC.Server": true' in config and '"System.Runtime.TieredPGO": false' in config,
            config)
+    c.that("server GC turns the GC's dynamic adaptation off by default",
+           '"System.GC.DynamicAdaptationMode": 0' in config, config)
     c.says("a build after that has nothing to do", run_bjo(app, "build"), "Up to date")
 
     out = work / "out"
@@ -1526,6 +1528,11 @@ def test_runtime(work, c):
     c.says("which then has workstation GC", run_bjo(app, "run"), "workstation")
     c.that("and a runtimeconfig with no settings",
            "configProperties" not in runtimeconfig_of(app), runtimeconfig_of(app))
+
+    runtime_manifest(app, "(gc-server #t) (gc-dynamic-adaptation #t)")
+    c.worked("build with the adaptation asked for", run_bjo(app, "build"))
+    c.that("a program that asks for the adaptation keeps it",
+           '"System.GC.DynamicAdaptationMode": 1' in runtimeconfig_of(app), runtimeconfig_of(app))
 
     runtime_manifest(app, "(gc-sever #t)")
     misspelled = run_bjo(app, "build")

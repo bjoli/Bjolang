@@ -1286,6 +1286,189 @@ Three other rules were measured and not kept:
 A queued resume counts against the inline budget, as an inline one does. That
 was so in the version measured, and it ends a long inline chain sooner.
 
+### GC pauses are the tail
+
+On all cores, `bench/service`'s p99 and p99.9 were set by the GC more than by
+anything in this layer. With counters added, a rep of about 340 ms had 33
+collections and 80-100 ms of pauses: for a quarter of the wall time, no
+thread ran. Hopac had 57 collections and 65 ms.
+
+The cause is .NET's dynamic adaptation of the server GC (DATAS), on by default
+since .NET 9. It chooses the number of heaps while the program runs, from the
+share of time spent in GC. A GC trace (`dotnet-trace`, the GC keyword, read
+with TraceEvent's `TraceLoadedDotNetRuntime`) showed 22 heaps for Bjolang and
+12 for Hopac. The two promote about the same per collection (1.7 and 1.8 MB),
+but a gen0 pause took 3.1 ms on average against 1.6, because each phase of a
+collection waits for every GC thread (`t_join::join` was 11% of all samples
+against 4%). Suspending the threads took 20-50 us and was not the cost.
+
+Same session, all cores, median of 15 reps:
+
+                                     wall   p99      p99.9    memory
+    Bjolang, DATAS on (.NET default)  342   3093 us  6474 us  120 MB
+    Bjolang, GCHeapCount 12           280   2354     5283     210
+    Bjolang, DATAS off                266   1875     5369     370
+    Hopac, GCHeapCount 12             402   3195     6570     206
+
+So a program with server GC now gets `System.GC.DynamicAdaptationMode` 0 in
+its runtimeconfig unless it says `(gc-dynamic-adaptation #t)`
+(`Build.withRuntimeDefaults`). Memory is the cost. A fixed heap count is not
+the default because the right count depends on the machine that runs the
+program, not the one that builds it.
+
+`bench/service/drive.py` now prints the collections and the pause time of
+each program, and runs both .NET programs with DATAS off, so that they are
+compared on the same GC (`--datas` turns it on for both). The Bjolang client
+kept its samples in a list, which put 125,000 cells a rep through promotion
+that the Go and Hopac clients, with arrays made at full size, did not have;
+it makes its array at full size now. That alone took the pause time from 97
+to 80 ms and p99.9 from 7.6 to 6.2 ms, with DATAS on.
+
+`drive.py` after both changes, median of 3 x 5 reps:
+
+                 wall ms  cpu ms  p50 us  p99 us  p99.9 us  gcs  pause ms
+    all cores
+      Go             437    6062      18    5373      5732  140        16
+      Hopac          385    8565     118    2659      5733    7        18
+      Bjolang        271    5738     118    1947      6903    7        19
+    4 cores
+      Go             491    1853     184    2532      3429  143         7
+      Hopac          282    1098       1    2258      4137   44        32
+      Bjolang        437    1722       1    3155      4496   39        36
+
+With almost no collections at all (a 64 MB gen0 per heap, 1.6 GB of memory)
+the all-core p99 was 1.28 ms for Bjolang and 2.20 for Hopac. What is left of
+the all-core tail is the GC.
+
+**Four cores are a matter of CPU.** The clients are a closed loop, so the mean
+latency is clients x wall / requests: 437 us for Bjolang, 282 for Hopac.
+Bjolang's latencies are less spread than Hopac's (p99 7.2 times the mean
+against 8.0), so its tail is longer only because a request costs 1.6 times the
+CPU. With the GC taken out of both, the difference is about 600 ns a request:
+the runtime's own methods, 770 ns against Hopac's 440; runtime code inlined
+into the state machines, about 200 ns more; write barriers, 113 ns against 43.
+The program's own work costs the same in both. No one item is large.
+
+Measured on four cores and not kept:
+
+- No pooling at all (ops, awaiters, called boxes, work items). Allocation
+  went from 1611 to 2399 B a request and gen1 collections doubled; slower.
+  Pooled objects are old, so storing young references into them marks cards,
+  but allocating is the greater cost.
+- A send that takes a receiver queues it and continues, as Hopac does, where
+  it ran the receiver inline. On four cores p99 went from 3.43 to 2.78 ms but
+  the wall time from 472 to 598 ms; on all cores both were worse. The client
+  then always parks in its `choose` and arms its timeout, which the inline
+  order mostly spares it.
+- The token race switched off: about 7% faster. That is what structured
+  cancellation costs, and it stays.
+
+**A timeout node is its own nack — kept.** An armed timeout was a
+`TimeoutNode`, a cancel delegate and a `NackNode`. `NackNode.Fire` is virtual
+now, and `TimeoutNode` derives from it, so it is one object. And
+`MarkSynchronized` took the state's `Monitor` on every commit to walk the
+nack list, which is empty for most syncs. It now stores S with an exchange
+and reads the list without the lock; `RegisterNack` fences after it stores,
+and its callers look at the state after that, so one of the two always sees
+the other (the argument is in `MarkSynchronized`). Old and new runtimes in
+turn, median of 30 reps on four cores and 20 on all:
+
+    4 cores    wall 449 -> 444 ms   cpu 1756 -> 1726 ms   1611 -> 1578 B/req
+    all cores  wall 266 -> 266 ms   cpu 5746 -> 5623 ms   1782 -> 1697 B/req
+
+**A small `choose` without its array, and a written send as `chan-put` —
+kept.** Two things from an allocation trace of the service. The compiler
+gathers a `choose`'s branches into an array, as it does for every rest
+parameter, so `PairChooseEvent` and `TripleChooseEvent` were never reached
+from Bjolang: each `choose` was an array and a `ChooseEvent`. And
+`(sync (chan-send ...))` written as such built the send event, which hack 3b
+above found worth no time; with the tail set by the GC, bytes are worth more
+than they were.
+
+`Codegen.generateApply` now emits a `choose` of two or three branches as the
+runtime's `choose(a, b)` and `choose(a, b, c)`, and `(sync (chan-send ch v))`
+as `chan-put`. Both are recognised only when the names are the builtins
+(`builtinNamed`), and only in that spelling: a send event in a variable is
+still an event, as `chan-put` itself had decided. The pair and the triple now
+also look at the state before their first branch, as `ChooseEvent` does.
+
+`bench/service`, old and new programs in turn on the same runtime, median of
+30 reps on four cores and 20 on all:
+
+    4 cores    wall 442 -> 416 ms   cpu 1721 -> 1628 ms   p99 3237 -> 3113 us
+               1579 -> 1398 B/req
+    all cores  wall 261 -> 255 ms   cpu 5696 -> 5438 ms   1695 -> 1517 B/req
+
+`bench/bjolang/cmlbench.bjo`, old and new in turn, three runs each (minimum
+ns/op and B/op). `Ring` now is `Ring (put/get)`, and `Skewed choose(8)` is
+its `put` row:
+
+    Ring                  90-92, 32 B  -> 77-79, 0 B
+    Ring (nested scope)   79-88, 32 B  -> 70-77, 0 B
+    Skewed choose(8)      248-252, 88 B -> 221-233, 56 B
+    Spawn burst             unchanged
+
+### At a fixed rate
+
+A closed loop at saturation mostly measures throughput: on four cores
+Bjolang's latencies were less spread than Hopac's, and its p99 was higher
+only because each request cost more CPU. `bench/service` therefore has an
+open loop as well (`drive.py --rates`, schedule in `go/main.go`): 10000
+clients send on a fixed schedule, and latency is taken from when a request
+was due, so a backlog counts.
+
+`drive.py --rates ...`, median of 2 x 3 reps of 3 s. Only the rows below
+saturation are shown; near it, all three built a backlog and the numbers
+changed a lot from run to run:
+
+                     cores   p50 us   p99 us   p99.9 us   GC pause / rep
+    4 cores, 0.25M/s
+      Go               1.3        9     2657      11699        10 ms
+      Hopac            1.7        2    18281      26123       200
+      Bjolang          1.4        2       55        324        44
+    4 cores, 0.5M/s
+      Go               2.7      758    66933      75456        49
+      Hopac            2.4     3963    88007     100267       359
+      Bjolang          2.2        2     9974      17038       131
+    all cores, 0.5M/s
+      Go               3.6        4     6092       8743        22
+      Hopac           19.9     7538    30024      37906       200
+      Bjolang          5.1        5       60        134        84
+    all cores, 1M/s
+      Go               8.4      377    34640      41155       102
+      Hopac           18.8     8925    38664      48897       406
+      Bjolang          9.2       13    19231      24242       260
+
+Below saturation, Bjolang had the lowest tail of the three at every rate.
+Hopac's workers kept every core busy and its median was in milliseconds; its
+GC pauses were not the cause (with three collections a rep it was the same).
+Why it does badly here was not looked into.
+
+**Bjolang's open-loop tail is GC pauses.** All cores at 1M/s: 23 gen0
+collections a rep of about 7 ms each. With 10000 clients between requests,
+more is alive at each collection: 7.4 MB promoted against 1.7 MB in the
+closed loop. A pause of 7 ms at 1M/s leaves 7000 requests waiting, and p99
+moved from 1.2 to 22 ms from rep to rep, depending on how the pauses fell.
+With a larger gen0 (`DOTNET_GCgen0size=0x4000000`, 64 MB a heap, 1.5 GB in
+all) there were 3 collections a rep, and p99 was 0.17-0.21 ms and p99.9
+0.46-1.1 ms. A pause is about as long either way, because what it costs
+follows what is alive, not the size of gen0. So the lever is how often the GC
+runs, which allocation per request and the gen0 budget set. The budget is a
+trade of memory against tail, and only the program can choose it; a runtime
+setting for it would be the place.
+
+**What would cut more allocation**, from the same trace (not done):
+
+- Delegates are about 20% of the bytes: an `Action<T>` for every published
+  wrap sink. A sink class with a virtual `Commit`, in place of `Action<T>` in
+  `IEvent<T>.Publish`, would remove them; every event implements `Publish`.
+  Pooling showed what bytes are worth here: 790 B more per request cost 2-3%,
+  so this would be worth 1-2%.
+- Events built inside a loop from values that do not change in it, such as
+  the shard's `choose`, about 8%.
+- A spawn is emitted as `ScopeSpawn(async () => await f(...))`, one state
+  machine more than `ScopeSpawn(() => f(...))`.
+
 ---
 
 ## 6. Known issues

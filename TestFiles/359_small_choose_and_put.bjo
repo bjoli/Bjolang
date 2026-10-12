@@ -1,0 +1,86 @@
+;; A `choose` of two or three branches is emitted without an array, and
+;; `(sync (chan-send ch v))` as `(chan-put ch v)`. Neither may change what a
+;; program does: these check that the branches still compete, nest and convert
+;; as before, and that a send synced where it is written still meets every
+;; kind of receiver.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Got (Union (: FromA int) (: FromB int) (: FromC int) Late)))
+
+(: give (-> (Chan int) int void))
+(defbjo (give ch v) (sync (chan-send ch v)))
+
+;; A receiver that offers its channel in a `choose`, so that the send takes a
+;; published receive rather than a parked one.
+(: take-in-choose (-> (Chan int) (Chan int) int))
+(defbjo (take-in-choose ch other)
+  (sync (choose (chan-recv ch) (chan-recv other))))
+
+(: label (-> Got string))
+(defun (label g)
+  (match g
+    ((FromA v) (str "a" (->str v)))
+    ((FromB v) (str "b" (->str v)))
+    ((FromC v) (str "c" (->str v)))
+    (Late "late")))
+
+(defbjo (main args)
+  (expect "two branches, the second ready" (sync (choose (never) (always 2))) 2)
+  (expect "three branches, the third ready" (sync (choose (never) (never) (always 3))) 3)
+  (expect "four branches still work" (sync (choose (never) (never) (never) (always 4))) 4)
+  (expect "a pair inside a triple"
+          (sync (choose (never) (choose (never) (always 5)) (never)))
+          5)
+
+  ;; Branches whose events are of different classes: a channel, a promise's
+  ;; join, a timeout.
+  (def a (make-chan))
+  (def done (bjo (+ 20 1)))
+  (expect "a join among three"
+          (label (sync (choose (wrap (chan-recv a) (fun (v) (FromA v)))
+                               (wrap (promise-join done)
+                                     (fun (r) (match r ((Ok v) (FromB v)) ((Err e) Late))))
+                               (wrap (timeout 30000) (fun (u) Late)))))
+          "b21")
+
+  (def b (make-chan))
+  (def sender (bjo (give b 7)))
+  (expect "a parked sender in a three-way choose"
+          (label (sync (choose (wrap (chan-recv a) (fun (v) (FromA v)))
+                               (wrap (chan-recv b) (fun (v) (FromB v)))
+                               (wrap (timeout 30000) (fun (u) Late)))))
+          "b7")
+
+  ;; The send forms: to a parked receive, to a receive published in a choose,
+  ;; and a send event that reaches sync through a variable.
+  (def c (make-chan))
+  (def plain (bjo (sync (chan-recv c))))
+  (sync (chan-send c 11))
+  (expect "a direct send meets a parked receive"
+          (match (sync (promise-join plain)) ((Ok v) v) ((Err e) -1))
+          11)
+
+  (def chosen (bjo (take-in-choose c (make-chan))))
+  (sync (chan-send c 12))
+  (expect "a direct send meets a receive in a choose"
+          (match (sync (promise-join chosen)) ((Ok v) v) ((Err e) -1))
+          12)
+
+  (def later (bjo (sync (chan-recv c))))
+  (def ev (chan-send c 13))
+  (sync ev)
+  (expect "a send event in a variable is still an event"
+          (match (sync (promise-join later)) ((Ok v) v) ((Err e) -1))
+          13)
+
+  (def last (bjo (sync (chan-recv c))))
+  (expect "a send in a choose still competes"
+          (sync (choose (wrap (chan-send c 14) (fun (u) "sent"))
+                        (wrap (timeout 30000) (fun (u) "timed out"))))
+          "sent")
+  (expect "and it was received"
+          (match (sync (promise-join last)) ((Ok v) v) ((Err e) -1))
+          14)
+  0)

@@ -2004,6 +2004,40 @@ let private inlineBuiltins: Map<string, InlinePart list> =
           parse "vec-empty?" "($0.Count == 0)"
           parse "vecbuilder-length" "$0.Count" ]
 
+/// The runtime builtin that `name` calls, or None when it names something
+/// else. A module binding with the name of a builtin is in `GlobalBindings`
+/// under its module, and a local binding with the name of a builtin has been
+/// renamed by `AlphaRename`.
+let private builtinNamed (ctx: CodegenContext) (name: string) : string option =
+    match Map.tryFind name ctx.GlobalBindings with
+    | Some("", member') -> Some member'
+    | Some _ -> None
+    | None -> if Set.contains name Prelude.builtinNames then Some name else None
+
+/// The branches of a `choose` call with two or three of them: its one
+/// argument is the rest array, written out.
+let private smallChoice (args: TypedExpr list) : TypedExpr list option =
+    match args with
+    | [ { Node = TArrayMake items } ] when items.Length = 2 || items.Length = 3 -> Some items
+    | _ -> None
+
+/// `a` in `(Event a)`.
+let rec private eventElement (t: HMType) : HMType option =
+    match t with
+    | TCon(_, [ element ]) -> Some element
+    | TMeta { Value = Some inner } -> eventElement inner
+    | _ -> None
+
+/// The `chan-send` call that is the whole argument of a `sync`: its callee,
+/// the channel and the value.
+let private directSend (ctx: CodegenContext) (args: TypedExpr list) : (TypedExpr * TypedExpr * TypedExpr) option =
+    match args with
+    | [ { Node = TApply({ Node = TIdent(send, _) } as callee, [ ch; value ], []) } ] when
+        builtinNamed ctx send = Some "chan-send"
+        ->
+        Some(callee, ch, value)
+    | _ -> None
+
 /// Whether C# reads this as a constant expression. It evaluates one while it
 /// compiles, and checks it for overflow although the program runs unchecked:
 /// `(* 2147483647 2)` wraps at run time and was CS0220. So arithmetic on
@@ -3225,11 +3259,7 @@ and private inlineBuiltinFor
     (expr: TypedExpr)
     (args: TypedExpr list)
     : (InlinePart list * string) option =
-    let runtimeName =
-        match Map.tryFind name ctx.GlobalBindings with
-        | Some("", member') -> Some member'
-        | Some _ -> None
-        | None -> if Set.contains name Prelude.builtinNames then Some name else None
+    let runtimeName = builtinNamed ctx name
 
     let rec elementOf (t: HMType) =
         match t with
@@ -3360,6 +3390,51 @@ and private generateApply
                 append ctx "("
                 emitters[i] ctx
                 append ctx ")"
+
+    // `(choose a b)` and `(choose a b c)`: the runtime's two- and three-branch
+    // overloads, with no array. The rest parameter arrives as one array
+    // (`Inference` gathers it), and the array form costs the array and a
+    // `ChooseEvent` where these cost one object. The type argument is written
+    // because C# infers it badly from events whose static types are classes
+    // that implement more than one `IEvent`.
+    | TIdent (name, _) when
+        kwArgs.IsEmpty
+        && builtinNamed ctx name = Some "choose"
+        && (smallChoice args).IsSome
+        && (eventElement expr.Type).IsSome
+        ->
+        let items = (smallChoice args).Value
+        let emitters = prepareOperands ctx items
+        append ctx $"%s{qualifiedName ctx name}<%s{typeArgToString (eventElement expr.Type).Value}>("
+
+        for i, emit in List.indexed emitters do
+            if i > 0 then append ctx ", "
+            emit ctx
+
+        append ctx ")"
+
+    // `(sync (chan-send ch v))` is `(chan-put ch v)`: the same handover,
+    // raced against the same token, without the send event that `sync` would
+    // only take apart again. Written this way, a program gets that without
+    // having to know `chan-put`. A send event that reaches `sync` any other
+    // way (a variable, a `wrap`, a `choose`) is an event as before.
+    | TIdent (name, _) when
+        kwArgs.IsEmpty
+        && builtinNamed ctx name = Some "sync"
+        && builtinNamed ctx "chan-put" = Some "chan-put"
+        && (directSend ctx args).IsSome
+        ->
+        let sendTarget, ch, value = (directSend ctx args).Value
+
+        let putTarget =
+            { sendTarget with
+                Node =
+                    (match sendTarget.Node with
+                     | TIdent(_, tArgs) -> TIdent("chan-put", tArgs)
+                     | other -> other)
+                Type = TFun([ ch.Type; value.Type ], expr.Type, EAsync) }
+
+        generateApply ctx expr putTarget [ ch; value ] []
 
     // `clr-eq` is C# `==` and nothing else. `=` never reaches codegen as an
     // identifier — it is a trait method — so this arm is what makes the `Eq`
