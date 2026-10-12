@@ -1,0 +1,112 @@
+;; `(std test)`: deftest's options, the newer checks, and the arguments of a
+;; run. Some tests fail on purpose; `main` checks what each one reported, so
+;; the file itself passes.
+
+(import (std prelude))
+(import (std test))
+(import (std simpletest))
+
+(: parse-int (-> string (Result string int)))
+(defun (parse-int s)
+  (match (try (string->int s) #:catch (System.FormatException))
+    ((Ok n) (Ok n))
+    ((Err _) (Err "not a number"))))
+
+(deftest "skipped" #:skip "not today"
+  (check (= 1 2)))
+
+(deftest "todo that fails" #:todo "later"
+  (check (= 1 2)))
+
+(deftest "todo that passes" #:todo "later"
+  (check (= 1 1)))
+
+(deftest "options in any order" #:slow #:within 2000 #:open-ok
+  (check (= 1 1)))
+
+(deftest "approx"
+  (check-approx (sqrt 2.0) 1.4142135623730951)
+  (check-approx 1e12 (+ 1e12 1.0))
+  (check-approx 1.0 1.001 #:eps 0.01)
+  (check-approx 1.0 1.1))
+
+(deftest "output"
+  (check-output (display "hi") "hi")
+  (check-output (display "ho") "hi"))
+
+(deftest "raises with a message"
+  (check-raises System.FormatException (string->int "x") #:message "format")
+  (check-raises System.FormatException (string->int "x") #:message "nope"))
+
+(deftest "cases" #:cases ((input expected)
+                          ("1" (Ok 1))
+                          ("2" (Ok 3))
+                          ("x" (Err _)))
+  (check-match (parse-int input) expected))
+
+(deftest "cases of values" #:cases ((a b sum) (1 2 3) (2 2 5) (0 0 0))
+  (check (= (+ a b) sum)))
+
+(: result-of (-> string TestResult))
+(defun (result-of name)
+  (match (list-filter (fun (t) (= (test-name t) name)) (module-tests (current-module)))
+    ((Cons t _) (run-test t))
+    (Nil (panic! #"no test ${name}"))))
+
+(: status-text (-> string string))
+(defun (status-text name)
+  (match (test-result-status (result-of name))
+    (Passed "passed")
+    (Failed "failed")
+    (Skipped "skipped")
+    (Todo "todo")
+    (Fixed "fixed")))
+
+(: reported? (-> string string bool))
+(defun (reported? name text)
+  (any? (fun (f) (string-contains? f text)) (test-result-failures (result-of name))))
+
+(: options-of (-> (List string) (Result string TestOptions)))
+(defun (options-of args) (parse-test-args (list->vec args)))
+
+(defun (main args)
+  (expect "a skipped test does not run" (status-text "skipped") "skipped")
+  (expect "a todo test that fails" (status-text "todo that fails") "todo")
+  (expect "a todo test that passes is fixed" (status-text "todo that passes") "fixed")
+  (expect "options come in any order" (status-text "options in any order") "passed")
+
+  (expect "check-approx: one failure" (list-length (test-result-failures (result-of "approx"))) 1)
+  (expect-true "check-approx shows both" (reported? "approx" "1.1 => 1.1"))
+  (expect-true "check-output shows what was written" (reported? "output" "it wrote => ho"))
+  (expect "check-raises #:message: one failure"
+          (list-length (test-result-failures (result-of "raises with a message"))) 1)
+  (expect-true "and it shows the message" (reported? "raises with a message" "should contain => nope"))
+
+  (expect "a failed row is one failure" (list-length (test-result-failures (result-of "cases"))) 1)
+  (expect-true "it names the row" (reported? "cases" "case 2:"))
+  (expect-true "and its values" (reported? "cases" "expected = (Ok 3)"))
+  (expect-true "a column used as a pattern is put into the pattern"
+               (reported? "cases" "(check-match (parse-int input) (Ok 3))"))
+  (expect-true "a column of values is bound" (reported? "cases of values" "sum     => 5"))
+
+  (match (options-of (list "--seed" "0x10" "--runs" "7" "--quick" "--no-store" "name" "--stats"))
+    ((Ok o)
+     (expect "--seed in hex" (record-ref o seed) 16UL)
+     (expect "--runs" (record-ref o runs) 7)
+     (expect "--quick" (record-ref o quick) #t)
+     (expect "--no-store" (record-ref o store) #f)
+     (expect "--stats" (record-ref o stats) #t)
+     (expect "the rest are filters" (vec->list (record-ref o filters)) (list "name")))
+    ((Err why) (fail why)))
+  (expect "--seed in decimal"
+          (match (options-of (list "--seed" "42")) ((Ok o) (record-ref o seed)) ((Err _) 0UL))
+          42UL)
+  (expect-true "an unknown flag is an error"
+               (match (options-of (list "--bogus")) ((Err why) (string-contains? why "unknown flag --bogus")) ((Ok _) #f)))
+  (expect-true "a flag without its value is an error"
+               (match (options-of (list "--runs")) ((Err why) (string-contains? why "needs a value")) ((Ok _) #f)))
+
+  ;; A seed has to be the same in every process.
+  (expect "string-hash is FNV-1a" (string-hash "a") 12638187200555641996UL)
+  (expect-true "mix-seed separates seeds one bit apart" (not (= (mix-seed 1UL 0UL) (mix-seed 0UL 0UL))))
+  0)

@@ -945,8 +945,11 @@
 ;; begins with a dash. The first thing that is not a flag ends them too, and
 ;; everything from there on is positional — so `bjo run prog.bjo -d` passes `-d`
 ;; to the program rather than to the compiler.
-(: parse-flags (-> (List string) (Result string Cmdline)))
-(defun (parse-flags argv)
+;;
+;; With `pass-unknown?`, a flag bjo does not know ends bjo's flags instead of
+;; being an error: `bjo test --seed 7` gives `--seed 7` to the test files.
+(: parse-flags (-> (List string) bool (Result string Cmdline)))
+(defun (parse-flags argv pass-unknown?)
   (let go ((left argv) (debug #f) (force #f) (lib #f) (locked #f) (output None) (whole-stdlib #f))
     (defun (done rest)
       (Cmdline (debug debug) (force force) (lib lib) (locked locked)
@@ -966,7 +969,7 @@
             ((Cons dir after) (go after debug force lib locked (Some dir) whole-stdlib))
             (Nil (Err "bjo: -o needs a directory"))))
          (else
-          (if (string-starts-with? a "-")
+          (if (and (string-starts-with? a "-") (not pass-unknown?))
               (Err #"bjo: unknown flag '${a}'")
               (Ok (done left)))))))))
 
@@ -1195,7 +1198,7 @@
   ;; are what follows it.
   (def (Cons command rest) (vec->list args)
     :leave (Nil (usage) 1))
-  (match (parse-flags rest)
+  (match (parse-flags rest (= command "test"))
     ((Err message) (fail message))
     ((Ok line) #:when (and (some? (record-ref line output)) (not (= command "publish")))
      (fail #"bjo ${command}: -o is for publish, which writes a directory; ${command} does not."))

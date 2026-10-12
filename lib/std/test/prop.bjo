@@ -1,0 +1,710 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/test/prop.bjo — property tests.
+;;
+;;     (deftest "reverse twice is the identity"
+;;       (for-all ((xs : (List int)))
+;;         (check (= (list-reverse (list-reverse xs)) xs))))
+;;
+;; `for-all` runs its body many times with generated values. When a run
+;; fails, it shrinks the run: it makes the recorded draws of the generators
+;; smaller and replays them, and keeps each change that still fails. What is
+;; left is reported, and stored beside the test file in NAME.failed.bjodat,
+;; where the next run of the test tries it first.
+
+(export for-all label assume classify collect
+        ;; Named by the templates of the macros above, so they have to be
+        ;; reachable where those expand.
+        run-for-all! with-label prop-draw prop-arbitrary)
+
+(import (std prelude))
+(import (std syntax-match))
+(import (std random))
+(import (std test))
+(import (std test gen))
+(import (text bjodat-core))
+
+(import/class
+  (InvalidOperationException (: System.InvalidOperationException (-> string InvalidOperationException))))
+
+(:doc #:file "prop.bjodoc")
+
+
+;; ---------------------------------------------------------------------------
+;; Running one case
+;; ---------------------------------------------------------------------------
+
+;; What `for-all` writes: given the choices, it draws the bindings and answers
+;; their values as text, for a report, and the body as a function.
+(type (: Property (-> Choices (Tuple (List string) (-> void)))))
+
+;; How one run came out. A failed run has its failures, as the test would
+;; print them, and the values of its bindings as text.
+(type (: Outcome (Union Pass Discard (: Fail (List string) (List string)))))
+
+;; The choices of the run in progress, for `assume`. `None` outside a run.
+(: choices-box (Box (Option Choices)))
+(def choices-box (make-box None))
+
+;; The labels of `classify` and `collect` in the run in progress, when the
+;; run counts them. Only the random runs count them, not the replays of
+;; shrinking.
+(: labels-box (Box (Option (Box (List string)))))
+(def labels-box (make-box None))
+
+(: prop-draw (-> (Gen %a) Choices %a))
+(defun (prop-draw g c) (gen-run g c))
+
+(: prop-arbitrary (-> Choices %a) (where (Arbitrary %a)))
+(defun (prop-arbitrary c) (gen-run (arbitrary) c))
+
+;; Runs the body of one case in a scope of its own: the scope waits for the
+;; fibers the case started, so the next case does not share them. A case that
+;; leaves a resource open fails, unless the test has `#:open-ok`.
+(: run-case (-> Property Choices bool Outcome))
+(defun (run-case prop c open-ok)
+  (def failures (make-box (list)))
+  (def saved (box-ref choices-box))
+  (box-set! choices-box (Some c))
+  (def outcome
+    (match (try (prop c) #:catch (System.Exception))
+      ((Err e)
+       (if (choices-discarded? c)
+           Discard
+           (Fail (list #"  the generator raised: ${(.-Message e)}") (list))))
+      ((Ok (Tuple shown body))
+       (match (try (with-scope
+                     (failures-into failures body)
+                     (unless open-ok
+                       (let ((left (scope-owned-count (current-scope))))
+                         (unless (= left 0)
+                           (box-set! failures (cons #"  it left ${left} resource(s) open"
+                                                    (box-ref failures)))))))
+                   #:catch (System.Exception))
+         ((Err e)
+          (if (choices-discarded? c)
+              Discard
+              (Fail (list-reverse (cons #"  it raised: ${(.-Message e)}" (box-ref failures))) shown)))
+         ((Ok _)
+          (if (list-empty? (box-ref failures))
+              Pass
+              (Fail (list-reverse (box-ref failures)) shown)))))))
+  (box-set! choices-box saved)
+  outcome)
+
+;; ---------------------------------------------------------------------------
+;; Shrinking
+;; ---------------------------------------------------------------------------
+
+;; The order shrinking makes a case smaller in: a shorter vector is smaller,
+;; and of two as long, the one smaller at the first place they differ. Every
+;; kept change makes the vector smaller in this order, so shrinking ends.
+(: shortlex< (-> (Vec ulong) (Vec ulong) bool))
+(defun (shortlex< a b)
+  (def n (vec-length a))
+  (cond
+    ((< n (vec-length b)) #t)
+    ((> n (vec-length b)) #f)
+    (else
+     (let go ((i 0))
+       (cond
+         ((= i n) #f)
+         ((< (vec-ref a i) (vec-ref b i)) #t)
+         ((> (vec-ref a i) (vec-ref b i)) #f)
+         (else (go (+ i 1))))))))
+
+;; The state of one shrink: the smallest failing case so far and what it
+;; failed with, and what the shrink has spent.
+(type (: Shrink (Record (: prop Property)
+                        (: size int)
+                        (: open-ok bool)
+                        (: best (Vec ulong) #:mutable)
+                        (: failures (List string) #:mutable)
+                        (: shown (List string) #:mutable)
+                        (: replays int #:mutable)
+                        (: shrinks int #:mutable)
+                        (: limit int)
+                        (: reserve long)
+                        (: cut-short bool #:mutable))))
+
+;; Whether the shrink may replay once more: within its limit, and with more
+;; than a fifth of the test's deadline left.
+(: may-replay? (-> Shrink bool))
+(defun (may-replay? s)
+  (def ok (and (< (record-ref s replays) (record-ref s limit))
+               (> (test-time-left) (record-ref s reserve))))
+  (unless ok (record-set! s (cut-short #t)))
+  ok)
+
+;; Replays `candidate`, and keeps it when it fails and is smaller than the
+;; best so far. What is kept is the part of the vector the replay used.
+(: try! (-> Shrink (Vec ulong) bool))
+(defun (try! s candidate)
+  (cond
+    ((not (shortlex< candidate (record-ref s best))) #f)
+    ((not (may-replay? s)) #f)
+    (else
+     (record-set! s (replays (+ (record-ref s replays) 1)))
+     (def c (replaying-choices candidate (record-ref s size)))
+     (match (run-case (record-ref s prop) c (record-ref s open-ok))
+       ((Fail failures shown)
+        (def used (choices-draws c))
+        (if (shortlex< used (record-ref s best))
+            (begin
+              (record-set! s (best used) (failures failures) (shown shown)
+                           (shrinks (+ (record-ref s shrinks) 1)))
+              #t)
+            #f))
+       (_ #f)))))
+
+(: vec-without (-> (Vec ulong) int int (Vec ulong)))
+(defun (vec-without v i k)
+  (loop (:for j (range 0 (vec-length v)))
+        (:when (or (< j i) (>= j (+ i k))))
+        (:acc out (vecing (vec-ref v j)))))
+
+(: vec-zeroed (-> (Vec ulong) int int (Vec ulong)))
+(defun (vec-zeroed v i k)
+  (loop (:for j (range 0 (vec-length v)))
+        (:acc out (vecing (if (and (>= j i) (< j (+ i k))) 0UL (vec-ref v j))))))
+
+(: vec-with (-> (Vec ulong) int ulong (Vec ulong)))
+(defun (vec-with v i x) (vec-set v i x))
+
+(: vec-swapped (-> (Vec ulong) int (Vec ulong)))
+(defun (vec-swapped v i)
+  (vec-set (vec-set v i (vec-ref v (+ i 1))) (+ i 1) (vec-ref v i)))
+
+;; Deletes blocks of k draws, from every place.
+(: delete-blocks! (-> Shrink int bool))
+(defun (delete-blocks! s k)
+  (let go ((i 0) (any #f))
+    (if (> (+ i k) (vec-length (record-ref s best)))
+        any
+        (if (try! s (vec-without (record-ref s best) i k))
+            (go i #t)
+            (go (+ i 1) any)))))
+
+;; Sets blocks of k draws to 0, from every place.
+(: zero-blocks! (-> Shrink int bool))
+(defun (zero-blocks! s k)
+  (let go ((i 0) (any #f))
+    (if (> (+ i k) (vec-length (record-ref s best)))
+        any
+        (go (+ i 1) (or (try! s (vec-zeroed (record-ref s best) i k)) any)))))
+
+;; Makes each draw smaller: 0 if that fails, else the smallest value that
+;; fails, found by halving the distance between a value that passed and one
+;; that failed. A property need not fail for every value above the smallest,
+;; so this finds a small failing value, not always the smallest.
+(: minimize-draws! (-> Shrink bool))
+(defun (minimize-draws! s)
+  (let go ((i 0) (any #f))
+    (if (>= i (vec-length (record-ref s best)))
+        any
+        (let ((v (vec-ref (record-ref s best) i)))
+          (cond
+            ((= v 0UL) (go (+ i 1) any))
+            ((try! s (vec-with (record-ref s best) i 0UL)) (go (+ i 1) #t))
+            (else (go (+ i 1) (or (search-down! s i 0UL v) any))))))))
+
+;; Draw i fails at `hi` and passed at `lo`. Tries the middle until the two
+;; meet, and answers whether it kept a smaller value.
+(: search-down! (-> Shrink int ulong ulong bool))
+(defun (search-down! s i lo hi)
+  (if (or (<= (- hi lo) 1UL) (>= i (vec-length (record-ref s best))))
+      #f
+      (let ((mid (+ lo (/ (- hi lo) 2UL))))
+        (if (try! s (vec-with (record-ref s best) i mid))
+            (begin (ignore (search-down! s i lo mid)) #t)
+            (search-down! s i mid hi)))))
+
+;; The draws near i that a step pairs with draw i: up to 8 on each side.
+(: neighbours (-> int int (List int)))
+(defun (neighbours i n)
+  (loop (:for j (range (if (< i 8) 0 (- i 8)) (if (> (+ i 9) n) n (+ i 9))))
+        (:when (not (= j i)))
+        (:acc out (listing j))))
+
+;; Deletes a block of k draws and adds their sum to a draw near it. A list
+;; whose elements must add up to something loses an element this way, which
+;; deleting alone cannot do: the others have to grow to make up for it.
+(: delete-and-shift! (-> Shrink int bool))
+(defun (delete-and-shift! s k)
+  (let go ((i 0) (any #f))
+    (def best (record-ref s best))
+    (if (> (+ i k) (vec-length best))
+        any
+        (let* ((removed (loop (:for j (range i (+ i k))) (:acc t (summing (vec-ref best j)))))
+               (rest (vec-without best i k))
+               (kept (any? (fun (j) (try! s (vec-with rest j (+ (vec-ref rest j) removed))))
+                           (neighbours (if (< i (vec-length rest)) i (- (vec-length rest) 1))
+                                       (vec-length rest)))))
+          (if kept (go i #t) (go (+ i 1) any))))))
+
+;; Moves value from a draw to a later one near it: the earlier draw gets
+;; smaller, which makes the vector smaller, and the later one makes up for
+;; it. Tries moving all of the earlier draw, then half of it.
+(: redistribute! (-> Shrink bool))
+(defun (redistribute! s)
+  (let go ((i 0) (any #f))
+    (def best (record-ref s best))
+    (if (>= i (vec-length best))
+        any
+        (let* ((v (vec-ref best i))
+               (moved (and (> v 0UL)
+                           (any? (fun (j)
+                                   (and (> j i)
+                                        (let ((b (record-ref s best)))
+                                          (or (try! s (vec-with (vec-with b i 0UL) j (+ (vec-ref b j) v)))
+                                              (try! s (vec-with (vec-with b i (- v (/ v 2UL))) j
+                                                                (+ (vec-ref b j) (/ v 2UL))))))))
+                                 (neighbours i (vec-length best))))))
+          (go (+ i 1) (or moved any))))))
+
+;; Swaps adjacent draws that are out of order.
+(: sort-pairs! (-> Shrink bool))
+(defun (sort-pairs! s)
+  (let go ((i 0) (any #f))
+    (if (>= (+ i 1) (vec-length (record-ref s best)))
+        any
+        (let ((b (record-ref s best)))
+          (if (and (> (vec-ref b i) (vec-ref b (+ i 1))) (try! s (vec-swapped b i)))
+              (go (+ i 1) #t)
+              (go (+ i 1) any))))))
+
+;; Shrinks until a whole round of the steps changes nothing, or the shrink is
+;; out of replays or time.
+(: shrink! (-> Shrink void))
+(defun (shrink! s)
+  (let round ()
+    (def deleted
+      (loop (:for k (list 8 4 2 1))
+            (:acc any (folding #f (let ((c (delete-blocks! s k))) (or c any))))))
+    (def zeroed
+      (loop (:for k (list 8 4 2 1))
+            (:acc any (folding #f (let ((c (zero-blocks! s k))) (or c any))))))
+    (def minimized (minimize-draws! s))
+    (def sorted (sort-pairs! s))
+    ;; The two steps that move value between draws cost many replays each,
+    ;; so they run only when the cheap steps above found nothing.
+    (def moved
+      (if (or deleted zeroed minimized sorted)
+          #f
+          (let* ((a (delete-and-shift! s 2))
+                 (b (delete-and-shift! s 1))
+                 (c (redistribute! s)))
+            (or a b c))))
+    (def changed (or deleted zeroed minimized sorted moved))
+    (when (and changed (not (record-ref s cut-short)))
+      (round))))
+
+;; ---------------------------------------------------------------------------
+;; The failure file
+;; ---------------------------------------------------------------------------
+
+;; A stored case: which `for-all` it is for, the seed of the run that found
+;; it, for a person to read, the size the draws were made at, and the draws.
+;; In the file, a case is
+;;
+;;     (case (test "name") (index 0) (seed "123") (size 37) (draws [1 0 5]))
+;;
+;; with a draw above long-max written as a ulong, 18446744073709551615UL, and
+;; the others as plain numbers.
+(type (: StoredCase (Record (: test string)
+                            (: index int)
+                            (: seed string)
+                            (: size int)
+                            (: draws (Vec ulong)))))
+
+(: clause (-> string Bjodat Bjodat))
+(defun (clause name value) (BjoList (list (BjoSym (string->symbol name)) value)))
+
+(: case->bjodat (-> StoredCase Bjodat))
+(defun (case->bjodat c)
+  (BjoList
+    (list (BjoSym (string->symbol "case"))
+          (clause "test" (BjoStr (record-ref c test)))
+          (clause "index" (BjoInt (cast System.Int64 (record-ref c index))))
+          (clause "seed" (BjoStr (record-ref c seed)))
+          (clause "size" (BjoInt (cast System.Int64 (record-ref c size))))
+          (clause "draws" (BjoVec (vec-map draw->bjodat (record-ref c draws)))))))
+
+(: draw->bjodat (-> ulong Bjodat))
+(defun (draw->bjodat d)
+  (if (<= d 9223372036854775807UL) (BjoInt (cast System.Int64 d)) (BjoULong d)))
+
+;; The value of the clause `(name value)` in a form's clauses.
+(: clause-value (-> string (List Bjodat) (Option Bjodat)))
+(defun (clause-value name clauses)
+  (match clauses
+    (Nil None)
+    ((Cons (BjoList (Cons (BjoSym s) (Cons v Nil))) more)
+     (if (= (symbol->string s) name) (Some v) (clause-value name more)))
+    ((Cons _ more) (clause-value name more))))
+
+(: bjodat->case (-> Bjodat (Option StoredCase)))
+(defun (bjodat->case d)
+  (match d
+    ((BjoList (Cons (BjoSym head) clauses))
+     (match (Tuple (clause-value "test" clauses) (clause-value "index" clauses)
+                   (clause-value "seed" clauses) (clause-value "size" clauses)
+                   (clause-value "draws" clauses))
+       ((Tuple (Some (BjoStr test)) (Some (BjoInt index)) (Some (BjoStr seed))
+               (Some (BjoInt size)) (Some (BjoVec draws)))
+        (if (= (symbol->string head) "case")
+            (Some (StoredCase (test test) (index (cast System.Int32 index)) (seed seed)
+                              (size (cast System.Int32 size))
+                              (draws (vec-map (fun (x) (match x
+                                                         ((BjoInt n) (cast System.UInt64 n))
+                                                         ((BjoULong n) n)
+                                                         (_ 0UL)))
+                                              draws))))
+            None))
+       (_ None)))
+    (_ None)))
+
+;; The cases of a failure file: `(failed case ...)`. What does not read as a
+;; case is left out.
+(: parse-stored (-> string (List StoredCase)))
+(defun (parse-stored text)
+  (match (parse-bjodat text)
+    ((Ok (BjoList (Cons (BjoSym head) cases)))
+     (if (= (symbol->string head) "failed")
+         (loop (:for c cases)
+               (:when-let (Some sc) (bjodat->case c))
+               (:acc out (listing sc)))
+         (list)))
+    (_ (list))))
+
+;; The cases of each file that was read, by its path: the text it had, and the
+;; cases now.
+(: store-box (Box (Map string (Tuple string (List StoredCase)))))
+(def store-box (make-box (map-empty)))
+
+;; The failure file of a test file: beside it, NAME.failed.bjodat.
+(: store-path (-> string string))
+(defun (store-path test-file)
+  (if (string-ends-with? test-file ".bjo")
+      (str (substring/slice-prefix test-file) ".failed.bjodat")
+      (str test-file ".failed.bjodat")))
+
+(: substring/slice-prefix (-> string string))
+(defun (substring/slice-prefix path)
+  (list->string (list-reverse (list-tail (list-tail (list-tail (list-tail (list-reverse (string->list path)))))))))
+
+(: stored-text (-> (List StoredCase) string))
+(defun (stored-text cases)
+  (if (list-empty? cases)
+      ""
+      (str "(failed\n"
+           (string-join (list->vec (list-map (fun (c) (str "  " (bjodat->string (case->bjodat c)))) cases)) "\n")
+           ")\n")))
+
+;; The cases of a file, read on first use. A file that does not read is
+;; treated as empty, and written over when the run changes it.
+(: stored-cases (-> string (List StoredCase)))
+(defun (stored-cases path)
+  (match (map-try-ref (box-ref store-box) path)
+    ((Some (Tuple _ cases)) cases)
+    (None
+     (def text (if (file-exists? path) (file-read-text path) ""))
+     (def cases (parse-stored text))
+     (box-set! store-box (map-set (box-ref store-box) path (Tuple text cases)))
+     (at-run-end! "std test prop: store" write-stores!)
+     cases)))
+
+(: set-stored-cases! (-> string (List StoredCase) void))
+(defun (set-stored-cases! path cases)
+  (ignore (stored-cases path))
+  (match (map-try-ref (box-ref store-box) path)
+    ((Some (Tuple text _)) (box-set! store-box (map-set (box-ref store-box) path (Tuple text cases))))
+    (None unit)))
+
+(: case-for? (-> string int StoredCase bool))
+(defun (case-for? test index c)
+  (and (= (record-ref c test) test) (= (record-ref c index) index)))
+
+;; Writes each file whose cases changed, and deletes it when none is left. A
+;; run without filters also drops the cases of tests that no longer exist.
+(: write-stores! (-> void))
+(defun (write-stores!)
+  (def o (current-test-options))
+  (when (record-ref o store)
+    (def names (list-map test-name (registered-tests)))
+    (map-for-each
+      (fun (path entry)
+        (match entry
+          ((Tuple text cases)
+           (def kept
+             (if (vec-empty? (record-ref o filters))
+                 (list-filter (fun (c) (any? (fun (n) (= n (record-ref c test))) names)) cases)
+                 cases))
+           (def new-text (stored-text kept))
+           (unless (= new-text text)
+             (if (string-empty? new-text)
+                 (when (file-exists? path) (file-delete path))
+                 (file-write-text path new-text))))))
+      (box-ref store-box))))
+
+;; ---------------------------------------------------------------------------
+;; for-all
+;; ---------------------------------------------------------------------------
+
+(: shown-lines (-> (List string) (List string) (List string)))
+(defun (shown-lines names shown)
+  (match (Tuple names shown)
+    ((Tuple (Cons n nm) (Cons v vm)) (cons #"    ${n} = ${v}" (shown-lines nm vm)))
+    (_ (list))))
+
+(: where-text (-> string int string))
+(defun (where-text file line)
+  (def name (match (path-filename file) ((Some n) n) (None file)))
+  #"${name}:${line}")
+
+;; Shrinks a failing case and reports the smallest one found. Answers the
+;; draws of that case, to store.
+(: shrink-and-report! (-> Property int bool (List string) (Vec ulong) (List string) (List string)
+                          string (Vec ulong)))
+(defun (shrink-and-report! prop size open-ok names draws failures shown heading)
+  (def o (current-test-options))
+  (def limit (if (> (record-ref o shrink-limit) 0) (record-ref o shrink-limit) 2000))
+  (def within (match (running-test) ((Some _) (test-time-left)) (None 86400000L)))
+  (def s (Shrink (prop prop) (size size) (open-ok open-ok) (best draws) (failures failures)
+                 (shown shown) (replays 0) (shrinks 0) (limit limit)
+                 (reserve (/ within 5L)) (cut-short #f)))
+  (shrink! s)
+  (def shrinks (record-ref s shrinks))
+  (def how
+    (cond
+      ((record-ref s cut-short)
+       #"  shrunk ${shrinks} time(s), then stopped, out of time or replays, at:")
+      ((= shrinks 0) "  with:")
+      (else #"  shrunk ${shrinks} time(s) to:")))
+  (test-failed!
+    (string-join
+      (list->vec (list-append (cons heading (cons how (shown-lines names (record-ref s shown))))
+                              (record-ref s failures)))
+      "\n"))
+  (record-ref s best))
+
+(: print-stats (-> string int (Map string int) void))
+(defun (print-stats where runs counts)
+  (println #"for-all at ${where}: ${runs} run(s)")
+  (loop (:for (Tuple label n) (list-sort-by-count (map->list counts)))
+        (:do (println #"  ${(/ (* n 100) (if (= runs 0) 1 runs))}% ${label}"))))
+
+(: list-sort-by-count (-> (List (Tuple string int)) (List (Tuple string int))))
+(defun (list-sort-by-count xs)
+  (defun (insert p sorted)
+    (match sorted
+      (Nil (list p))
+      ((Cons q more)
+       (if (> (count-of p) (count-of q)) (cons p sorted) (cons q (insert p more))))))
+  (list-foldl insert (list) xs))
+
+(: count-of (-> (Tuple string int) int))
+(defun (count-of p) (match p ((Tuple _ n) n)))
+
+(: count-labels (-> (Map string int) (List string) (Map string int)))
+(defun (count-labels counts labels)
+  (list-foldl (fun (l m) (map-set m l (+ 1 (map-ref-or m l 0)))) counts labels))
+
+;; Whether `sc` is one of the stored cases that still fail.
+(: failing-case? (-> (List (Tuple StoredCase (Tuple (List string) (List string)))) StoredCase bool))
+(defun (failing-case? failing sc)
+  (any? (fun (f) (match f ((Tuple fc _) (eq? fc sc)))) failing))
+
+;; What `for-all` expands to. `runs` is 0 when the form gives no `#:runs`.
+(: run-for-all! (-> string int int (List string) Property void))
+(defun (run-for-all! file line runs names prop)
+  (def t
+    (match (running-test)
+      ((Some t) t)
+      (None (raise (cast Exception (InvalidOperationException.
+                                     #"for-all at ${(where-text file line)} runs only inside a deftest."))))))
+  (def o (current-test-options))
+  (def where (where-text file line))
+  (def total (cond ((> runs 0) runs) ((> (record-ref o runs) 0) (record-ref o runs)) (else 100)))
+  (def index (next-test-index!))
+  (def test (test-name t))
+  (def open-ok (record-ref t open-ok))
+  (def path (store-path (test-file t)))
+  (def seed-text (->str (record-ref o seed)))
+  (def stored
+    (if (record-ref o store)
+        (list-filter (fun (c) (case-for? test index c)) (stored-cases path))
+        (list)))
+  ;; Every stored case is tried first. Those that pass are dropped, and those
+  ;; that still fail stay. The first that fails is shrunk again and reported,
+  ;; and the random runs are skipped.
+  (def failing
+    (loop (:for c stored)
+          (:let outcome (run-case prop (replaying-choices (record-ref c draws) (record-ref c size)) open-ok))
+          (:when-let (Fail failures shown) outcome)
+          (:acc out (listing (Tuple c (Tuple failures shown))))))
+  (unless (= (list-length failing) (list-length stored))
+    (set-stored-cases! path (list-filter (fun (sc) (or (not (case-for? test index sc)) (failing-case? failing sc)))
+                                         (stored-cases path))))
+  (match failing
+    ((Cons (Tuple c (Tuple failures shown)) _)
+     (def best (shrink-and-report! prop (record-ref c size) open-ok names (record-ref c draws) failures shown
+                                   #"  for-all at ${where} failed on a case stored in ${(where-text path 1)} (seed ${(record-ref c seed)})"))
+     ;; The case keeps its place in the file, so a run that changes nothing
+     ;; writes nothing.
+     (set-stored-cases! path (list-map (fun (sc) (if (eq? sc c) (record-set c (draws best)) sc))
+                                       (stored-cases path))))
+    (Nil (random-runs! t o where total index names prop open-ok path seed-text))))
+
+(: random-runs! (-> Test TestOptions string int int (List string) Property bool string string void))
+(defun (random-runs! t o where total index names prop open-ok path seed-text)
+  (def root (make-random/seed64 (mix-seed (test-seed t) (cast System.UInt64 index))))
+  (def counts (make-box (map-empty)))
+  (def labels (make-box (list)))
+  (let go ((i 0) (ran 0) (discarded 0))
+    (cond
+      ((= ran total) (finish-stats o where ran (box-ref counts)))
+      ((> discarded (* 10 total))
+       (finish-stats o where ran (box-ref counts))
+       (test-failed! #"  for-all at ${where} ran only ${ran} of ${total} run(s): ${discarded} were discarded, by assume or gen-such-that, so the property was hardly tested"))
+      (else
+       (def size (gen-size-of-run ran total))
+       (def c (recording-choices (random-split root) size))
+       (box-set! labels (list))
+       (def saved-labels (box-ref labels-box))
+       (box-set! labels-box (Some labels))
+       (def outcome (run-case prop c open-ok))
+       (box-set! labels-box saved-labels)
+       (match outcome
+         (Pass
+          (box-set! counts (count-labels (box-ref counts) (box-ref labels)))
+          (go (+ i 1) (+ ran 1) discarded))
+         (Discard (go (+ i 1) ran (+ discarded 1)))
+         ((Fail failures shown)
+          (finish-stats o where (+ ran 1) (box-ref counts))
+          (def draws (choices-draws c))
+          (def heading #"  for-all at ${where} failed on run ${(+ ran 1)} of ${total} (seed ${seed-text})")
+          ;; A case that passes when replayed depends on something other than
+          ;; its draws, and shrinking it would chase noise.
+          (match (run-case prop (replaying-choices draws size) open-ok)
+            ((Fail _ _)
+             (def best (shrink-and-report! prop size open-ok names draws failures shown heading))
+             (when (record-ref o store)
+               (set-stored-cases! path
+                                  (list-append (stored-cases path)
+                                               (list (StoredCase (test (test-name t)) (index index)
+                                                                 (seed seed-text) (size size)
+                                                                 (draws best)))))))
+            (_
+             (test-failed!
+               (string-join
+                 (list->vec (list-append (cons heading
+                                               (cons "  and passed when run again with the same values, so it depends on something besides them:"
+                                                     (shown-lines names shown)))
+                                         failures))
+                 "\n"))))))))))
+
+(: finish-stats (-> TestOptions string int (Map string int) void))
+(defun (finish-stats o where ran counts)
+  (when (and (record-ref o stats) (not (map-empty? counts)))
+    (print-stats where ran counts)))
+
+;; The size of run i of n: 1 at the first run, 100 at the last.
+(: gen-size-of-run (-> int int int))
+(defun (gen-size-of-run i n)
+  (if (<= n 1) 100 (+ 1 (/ (* i 99) (- n 1)))))
+
+;; ---------------------------------------------------------------------------
+;; In a body
+;; ---------------------------------------------------------------------------
+
+;; `discard!` at void, which is what a statement position wants.
+(: discard-run! (-> Choices void))
+(defun (discard-run! c) (discard! c "assume"))
+
+;; Discards the run when `ok` is #f. A discarded run is not counted.
+(: assume (-> bool void))
+(defun (assume ok)
+  (unless ok
+    (match (box-ref choices-box)
+      ((Some c) (discard-run! c))
+      (None (raise (cast Exception (InvalidOperationException. "assume is for the body of a for-all.")))))))
+
+;; Counts the run under `name` when `ok` is #t. `--stats` prints the counts.
+(: classify (-> string bool void))
+(defun (classify name ok)
+  (when ok
+    (match (box-ref labels-box)
+      ((Some b) (box-set! b (cons name (box-ref b))))
+      (None unit))))
+
+;; Counts the run under the value as text. `--stats` prints the counts.
+(: collect (-> %a void))
+(defun (collect value) (classify (->str value) #t))
+
+;; Runs `body`, and puts `name` above each failure in it.
+(: with-label (-> string (-> void) void))
+(defun (with-label name body)
+  (def failures (make-box (list)))
+  (match (try (failures-into failures body) #:catch (System.Exception))
+    ((Ok _) unit)
+    ((Err e) (box-set! failures (cons #"  it raised: ${(.-Message e)}" (box-ref failures)))))
+  (loop (:for f (list-reverse (box-ref failures)))
+        (:do (test-failed! #"  in ${name}:\n${f}"))))
+
+;; `(label "name" body ...)` — a failure in the body is reported under the
+;; name.
+(def/macro (label form inject compare)
+  (syntax-match form
+    ((_ name first body ...) #'(with-label ,name (fun () ,first ,@body unit)))
+    (bad (syntax-error bad "label takes a name and a body: (label \"after insert\" body ...)."))))
+
+;; The definition of one binding of a `for-all`: `(name gen)`, or
+;; `(name : Type)` for the type's `arbitrary`.
+(: binding-def (-> Syntax Syntax Syntax))
+(defun (binding-def choices b)
+  (match b
+    ((SList (Cons name (Cons colon (Cons type Nil))))
+     (if (= (syntax->string colon) ":")
+         #'(def (: ,name ,type) (prop-arbitrary ,choices))
+         (syntax-error b "A binding of for-all is (name generator) or (name : Type).")))
+    ((SList (Cons name (Cons g Nil))) #'(def ,name (prop-draw ,g ,choices)))
+    (_ (syntax-error b "A binding of for-all is (name generator) or (name : Type)."))))
+
+(: binding-name (-> Syntax Syntax))
+(defun (binding-name b)
+  (match b
+    ((SList (Cons name _)) name)
+    (_ b)))
+
+(: for-all-expansion (-> Syntax Syntax (List Syntax) (List Syntax) Syntax))
+(defun (for-all-expansion form runs bindings body)
+  (when (list-empty? bindings)
+    (ignore (syntax-error form "for-all takes at least one binding: (for-all ((x gen-int)) body ...).")))
+  (def names (list-map binding-name bindings))
+  #'(run-for-all! ,(SStr (syntax-file form)) ,(SInt (int->string (syntax-line form))) ,runs
+                  (list ,@(list-map (fun (n) (SStr (syntax->string n))) names))
+                  (fun (choices)
+                    ,@(list-map (fun (b) (binding-def #'choices b)) bindings)
+                    (Tuple (list ,@(list-map (fun (n) #'(->str ,n)) names))
+                           (fun () ,@body unit)))))
+
+;; `(for-all ((name gen) ...) body ...)`, or with `#:runs n` before the
+;; bindings. A binding is `(name generator)` or `(name : Type)`.
+(def/macro (for-all form inject compare)
+  (syntax-match form
+    ((_ #:runs n (binding ...) first body ...)
+     (for-all-expansion form n binding (cons first body)))
+    ((_ (binding ...) first body ...)
+     (for-all-expansion form #'0 binding (cons first body)))
+    (bad (syntax-error bad "for-all takes bindings and a body: (for-all ((xs (gen-list gen-int))) (check ...)), optionally #:runs n before the bindings."))))

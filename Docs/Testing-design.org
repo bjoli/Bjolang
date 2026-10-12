@@ -1,0 +1,498 @@
+* Design: property tests and more for ~(std test)~
+
+Status: built, except ~(std test model)~. The modules are
+~lib/std/test.bjo~, ~lib/std/test/gen.bjo~, ~lib/std/test/prop.bjo~ and
+~lib/std/test/expect.bjo~; their ~.bjodoc~ files are the reference. The tests
+are ~TestFiles/354_test_options.bjo~ to ~357_test_expect.bjo~.
+
+Where the code came out different from the design below:
+
+- ~Gen~ is not a ~Monad~: the callback of ~bind~ may be a bjoroutine, and a
+  generator runs inside an ordinary function. ~(gen-let ((x g) ...) body)~
+  takes the place of ~(do ...)~. It binds as ~let*~ does, so a later
+  generator may use an earlier value.
+- ~for-all~ outside a test is an error at run time, not at compile time: a
+  macro can not see the ~deftest~ around it.
+- The failure file names a case's ~for-all~ with ~(index n)~, holds its size
+  as ~(size n)~. A draw above ~long-max~ is written as a bjodat ulong,
+  ~18446744073709551615UL~, and the others as plain numbers. A ~for-all~ keeps every stored
+  case that still fails, and drops the others; there is no limit of 10.
+- An edge value, such as ~int-max~, records the draws that the full-range
+  path would record for the same value. With a draw of its own, shrinking
+  could not get from an edge to a smaller failing value, because that needs
+  a draw to grow.
+- Shrinking has two more steps, run only when the four below find nothing:
+  delete a block and add its value to a draw near it, and move value from a
+  draw to a later one. Without them a list whose elements must add up to
+  something keeps more elements than it needs.
+- Shrinking stops when less than a fifth of the time that was left when it
+  started remains, and after ~--shrink-limit~ replays, 2000 by default.
+- A seed is printed in decimal. ~--seed~ takes decimal or ~0x~ hex.
+- A test captures its output only when its ~deftest~ body names
+  ~expect-output~. ~deftest~ looks for the name in its body.
+- ~bjo test~ gives a flag it does not know, with what follows it, to the test
+  files.
+
+This document describes how ~(std test)~ grows: property tests with
+shrinking, stored counterexamples, default generators by type, table tests,
+skipped and expected-to-fail tests, snapshot tests and, later, model-based
+tests. The inspiration is FsCheck, OCaml's QCheck and Alcotest, Racket's
+rackunit, and Python's Hypothesis for the shrinking.
+
+** What stays as it is
+
+~(std test)~ today (~lib/std/test.bjo~):
+
+- ~deftest~ registers a closure, and ~(run-tests)~ is the file's ~main~.
+- A failed ~check~ adds a message to the running test's failures and does not
+  stop the test.
+- Each test runs in a scope with a deadline. The scope waits for the fibers
+  the test started, and the test fails if it leaves a resource open.
+- A passing test prints nothing.
+- Program arguments are filters on test names.
+
+All of this stays. The new features are forms in a test body and options of
+~deftest~. There is no second way to define a test, so every new feature
+gets the deadline, the scope, the leak check and the name filters.
+
+** Modules
+
+| module               | holds                                                     |
+|----------------------+-----------------------------------------------------------|
+| ~(std test)~         | ~deftest~ and its new options, checks, flags, the runner   |
+| ~(std test gen)~     | ~Gen~, the recorder, the generators, the ~Arbitrary~ trait |
+| ~(std test prop)~    | ~for-all~, ~assume~, ~classify~, shrinking, the failure file |
+| ~(std test expect)~  | ~expect-output~ and promotion                              |
+| ~(std test model)~   | later: model-based and linearizability tests               |
+
+~(std test gen)~ does not import ~(std test)~, so a program can use the
+generators without the test runner, for example to make fixtures.
+
+** Example
+
+#+BEGIN_SRC scheme
+(import (std prelude))
+(import (std test))
+(import (std test gen))
+(import (std test prop))
+
+(deftest "reverse twice is the identity"
+  (for-all ((xs : (List int)))
+    (check (= (list-reverse (list-reverse xs)) xs))))
+
+(deftest "a die roll is in range"
+  (for-all ((n (gen-int-range 1 6)))
+    (def r (roll-with n))
+    (check (>= r 1))
+    (check (<= r 6))))
+
+(deftest "orderedmap-set then ref"
+  (for-all #:runs 500 ((m : (OrderedMap string int)) (k : string) (v : int))
+    (check (= (orderedmap-ref (orderedmap-set m k v) k) v))))
+
+(run-tests)
+#+END_SRC
+
+A failure:
+
+#+BEGIN_SRC text
+FAIL reverse is the identity (list_test.bjo:6)
+  for-all at list_test.bjo:7 failed on run 3 of 100 (seed 6782170327520441105)
+  shrunk 4 time(s) to:
+    xs = (0 1)
+  list_test.bjo:8: (check (= (list-reverse xs) xs))
+    (list-reverse xs) => (1 0)
+    xs                => (0 1)
+1 of 3 test(s) failed in 41 ms.
+#+END_SRC
+
+* Generators
+
+** The recorder
+
+A generator does not read a ~RandomSource~ itself. It asks a ~Choices~ value
+for numbers. A ~Choices~ is in one of two modes:
+
+- *Recording.* It answers from a ~RandomSource~ and appends each answer to a
+  list.
+- *Replaying.* It answers from a given vector of numbers. When the vector is
+  used up, every further answer is 0.
+
+#+BEGIN_SRC scheme
+(type (: Choices ...))                          ; opaque
+(type (: (Gen %a) (Record (: run (-> Choices %a)))))   ; opaque
+
+;; A number in [0, bound). The one primitive every generator is built on.
+(: draw (-> Choices ulong ulong))
+
+;; The size of this run: small in early runs, larger in later ones.
+(: choices-size (-> Choices int))
+#+END_SRC
+
+~draw~ maps the random number into the bound itself, and records the result,
+not the raw random number. So a recorded vector replays to the same value, and
+an edited vector replays to a value that is still in range.
+
+~gen-let~ builds a generator out of others, as ~let*~ binds:
+
+#+BEGIN_SRC scheme
+(: gen-card (Gen Card))
+(def gen-card
+  (gen-let ((rank (gen-int-range 1 13))
+            (suit (gen-element (list Hearts Spades Clubs Diamonds))))
+    (Card (rank rank) (suit suit))))
+#+END_SRC
+
+** The rule every generator follows
+
+*Smaller numbers give simpler values.* Shrinking (below) makes the recorded
+vector smaller and replays it. That makes the value simpler only if the
+generators obey this rule:
+
+- An integer generator maps 0 to the value nearest 0 (or to the lower bound),
+  and larger draws to values farther from it.
+- ~gen-list~ draws a "one more element?" choice before each element, and 0
+  means "no more". Deleting draws therefore makes the list shorter.
+- ~gen-one-of~ and ~gen-frequency~ map 0 to their first alternative. Put the
+  simplest alternative first.
+- A generator for a recursive type takes the base case at 0.
+
+The generators in ~(std test gen)~ obey the rule. A generator built from
+them with ~gen-map~, ~gen-bind~ or ~(do ...)~ obeys it too, without extra
+work.
+
+** The generators
+
+Combinators:
+
+| ~gen-pure~, ~gen-map~, ~gen-bind~       | and ~Monad~, for ~(do ...)~                           |
+| ~gen-such-that~ pred g                  | retries until pred holds; gives up after 100 tries   |
+| ~gen-one-of~ gens                       | one of the generators                                |
+| ~gen-frequency~ ((weight gen) ...)      | one of the generators, by weight                     |
+| ~gen-element~ xs                        | one of the values                                    |
+| ~gen-sized~ f                           | f gets the run's size                                |
+| ~gen-resize~ n g                        | g with size n                                        |
+| ~gen-recursive~ f                       | a recursive generator that halves the size each level |
+
+Values:
+
+| numbers  | ~gen-int~, ~gen-int-range~, ~gen-long~, ~gen-ulong~, ~gen-double~, ~gen-bigint~ |
+| text     | ~gen-char~, ~gen-ascii-char~, ~gen-string~, ~gen-ascii-string~, ~gen-string-of~ |
+| shapes   | ~gen-option~, ~gen-result~, ~gen-tuple2~ to ~gen-tuple4~                        |
+| sequences | ~gen-list~, ~gen-list-of-length~, ~gen-vec~, ~gen-array~                       |
+| maps, sets | ~gen-map-of~, ~gen-hashset~, ~gen-orderedmap~, ~gen-orderedset~              |
+
+~gen-map~ is the combinator that applies a function to a generator's values,
+so the generator of a prelude ~Map~ is ~gen-map-of~.
+| misc     | ~gen-bool~, ~gen-unit~, ~gen-shuffle~                                           |
+
+Edge values come with small draws. ~gen-int~ gives 0, 1 and -1 often, and
+~int-max~ and ~int-min~ sometimes. ~gen-double~ gives NaN and the infinities
+only with ~#:special #t~. ~gen-string~ gives the empty string, surrogate pairs
+and combining characters sometimes, because they find bugs in string code.
+
+** Default generators by type: ~Arbitrary~
+
+#+BEGIN_SRC scheme
+(def/trait (Arbitrary %a)
+  (: arbitrary (-> (Gen %a))))
+
+(impl (Arbitrary int) (defun (arbitrary) gen-int))
+(impl (Arbitrary (List %a)) (where (Arbitrary %a))
+  (defun (arbitrary) (gen-list (arbitrary))))
+#+END_SRC
+
+~(std test gen)~ has instances for the number types, ~bool~, ~char~,
+~string~, ~Option~, ~Result~, tuples, ~List~, ~Vec~, ~Map~, ~HashSet~,
+~OrderedMap~ and ~OrderedSet~. A program adds instances for its own types.
+
+An instance is only a ~Gen~. It has no shrinker, because shrinking does not
+need one. This is the difference from FsCheck's ~Arbitrary~, which carries a
+generator and a shrinker.
+
+~arbitrary~ takes no arguments, and the type of the result chooses the
+instance. Traits dispatch on the return type, as ~pure~ does. No trait in the
+standard library has a method without arguments yet, so this is the first
+thing to try. If it does not work, ~arbitrary~ takes an argument that only
+carries the type.
+
+* Properties
+
+** ~for-all~
+
+#+BEGIN_SRC scheme
+(for-all (binding ...) body ...)
+(for-all #:runs n (binding ...) body ...)
+
+binding = (name generator)     ; an explicit generator
+        | (name : Type)        ; (arbitrary) at Type
+#+END_SRC
+
+~for-all~ is a form in a ~deftest~ body. Outside a test it raises an
+exception when it runs, because it needs the test's name to store its
+failures.
+
+It runs the body ~#:runs~ times, 100 by default, each time with new values.
+A run fails when a ~check~ in it fails or when the body raises. Then
+~for-all~ shrinks the failing run, reports the smallest failing case, and
+stores it (see "The failure file"). A test can hold more than one ~for-all~.
+A failed ~for-all~ does not stop the test, as a failed ~check~ does not.
+
+The bindings draw in order, all from one ~Choices~. A later generator can not
+see an earlier value. For a dependent value, use ~(do ...)~ in one binding.
+
+** Each run
+
+- A run gets its own ~Choices~, recording from ~(random-split root)~, where
+  ~root~ is the test's source (see "Seeds").
+- The size of run i of n grows from 1 at the first run to 100 at the last.
+  So the first runs try small values, which fail fast and are easy to read.
+- The body runs in a scope of its own inside the test's scope. The scope
+  waits for the fibers the run started, so the next run does not share them.
+  A run that leaves a resource open fails, unless the test has ~#:open-ok~.
+- The failures of a run go to a box of the run, not to the test. Only the
+  failures of the reported (shrunk) run go to the test.
+
+** Discarding runs
+
+~(assume expr)~ in a body discards the run when ~expr~ is false. A discarded
+run is not counted as a run. ~gen-such-that~ that gives up also discards the
+run. When more than 10 times ~#:runs~ runs are discarded, the ~for-all~ fails
+with "too many runs were discarded", because the property was not tested.
+
+** Labels and statistics
+
+- ~(label "after insert" body ...)~: a check that fails in the body is
+  reported under the label. This is FsCheck's ~|@~.
+- ~(classify "empty" (list-empty? xs))~ and ~(collect (list-length xs))~
+  count runs. The counts are printed only with ~--stats~, because a passing
+  test prints nothing.
+
+** Shrinking
+
+When a run fails, ~for-all~ has its recorded vector of draws. It makes the
+vector smaller, step by step, and keeps each change that still fails:
+
+1. Delete a block of draws: blocks of 8, then 4, 2 and 1, from each position.
+2. Set a block of draws to 0.
+3. Make one draw smaller: try 0, then halve it, then subtract 1.
+4. Sort a block of adjacent draws into ascending order.
+
+A change is kept when the property fails on the replayed vector. Any failure
+counts. It does not have to be the same failure: this is what Hypothesis does,
+and it rarely matters in practice. The steps repeat until none of them makes
+progress. Each candidate is a replay of the generators and a run of the body.
+
+A vector is smaller than another when it is shorter, or when it has the same
+length and is smaller at the first position where they differ. Every kept
+change makes the vector smaller in this order, so shrinking ends.
+
+Shrinking stops early when the test's deadline is near: when less than a
+fifth of the time left at its start remains, ~for-all~ reports the smallest
+failing case found so far and says that shrinking was cut short.
+~--shrink-limit n~ caps the number of replays, 2000 by default.
+
+** Flaky failures
+
+When the run that failed passes on replay, before any shrinking, the property
+depends on something other than the draws: time, a shared state, the
+scheduler. ~for-all~ then reports the failure without shrinking, and says that
+it did not repeat.
+
+** Seeds
+
+- The run's seed is ~--seed~, else the environment variable ~BJO_TEST_SEED~,
+  else 64 bits from the OS.
+- Each test's source is made from the run's seed and a hash of the test's
+  name. So filtering tests, or adding one, does not change what the others
+  draw.
+- A failure report prints the run's seed. ~--seed~ with that number and the
+  test's name as a filter repeats the run.
+
+* The failure file
+
+A shrunk failure is stored beside the test file, and is tried first on the
+next run. The draws are what is stored, not the value: they are a vector of
+numbers whatever the value's type, so no value has to be serialized.
+
+** Where
+
+~list_test.bjo~ stores to ~list_test.failed.bjodat~ in the same directory.
+There is one file for each test file, so two test files that run at the same
+time never write the same file. The test file's path comes from
+~syntax-file~, as the reports' file names do today.
+
+** What
+
+#+BEGIN_SRC scheme
+(failed
+  (case (test "reverse twice is the identity") (index 0) (seed "6782170327520441105") (size 3) (draws [1 0 0 0 1 0 0 1 0])))
+#+END_SRC
+
+| ~test~  | the test's name                                                  |
+| ~index~ | which ~for-all~ in the test, from 0 in the order they run         |
+| ~seed~  | the run's seed when it was found, for a person to read           |
+| ~size~  | the size the draws were made at                                  |
+| ~draws~ | the shrunk vector; a draw above ~long-max~ is written with ~UL~   |
+
+A case is found by the test's name and the ~for-all~'s position, not by line
+number, because line numbers change when the file is edited. The file is read
+and written with ~(text bjodat)~ through ~def/bjodat-type~.
+
+** When it is read and written
+
+1. Before its random runs, a ~for-all~ replays each stored case that is its
+   own.
+   - If the case fails, it stays. The first that fails is shrunk again and
+     reported, and the random runs are skipped for this ~for-all~.
+   - If it passes, the bug is fixed, or the generators changed so that the
+     draws give another value. Either way the case is removed.
+2. A new shrunk failure is added.
+3. At the end of ~(run-tests)~ the file is written, but only when its contents
+   changed. When no case is left, the file is deleted.
+
+Cases of tests that the filters did not run are kept as they are. Cases of
+tests that no longer exist are removed, but only by a run without filters.
+
+Whether to commit the file is the project's choice. Committed, it makes CI
+retry every counterexample anyone found.
+
+* More in ~deftest~
+
+** ~#:cases~: table tests
+
+#+BEGIN_SRC scheme
+(deftest "parse-int" #:cases ((input expected)
+                              ("1"  (Ok 1))
+                              ("-0" (Ok 0))
+                              ("x"  (Err _)))
+  (check-match (parse-int input) expected))
+#+END_SRC
+
+The first list names the columns. Each row binds them and runs the body. A
+column is bound with ~let~, so it holds a value, except where the body uses it
+as a pattern: ~expected~ above is spliced into ~check-match~. Each row is
+reported on its own, and the other rows still run:
+
+#+BEGIN_SRC text
+FAIL parse-int (parse_test.bjo:4)
+  case 2:
+    input = "-0"
+    expected = (Ok 0)
+  parse_test.bjo:8: (check-match (parse-int input) (Ok 0))
+    (parse-int input) => (Err "...")
+#+END_SRC
+
+** ~#:skip~, ~#:todo~ and ~#:slow~
+
+- ~#:skip "why"~: the test does not run. The final line counts it:
+  ~12 test(s) passed, 1 skipped in 40 ms.~
+- ~#:todo "why"~: the test runs, and its failure does not fail the program. If
+  it passes, that is reported, so the mark can be removed.
+- ~#:slow~: ~--quick~ skips the test. For property tests with many runs.
+
+** New checks
+
+| ~(check-approx a b)~, ~#:eps e~           | doubles within e, 1e-9 by default, relative for large values |
+| ~(check-raises T expr #:message "s")~     | also checks that the message contains s                       |
+| ~(check-output expr "text")~              | what expr writes to ~current-output-port~                     |
+
+* Snapshot tests: ~(std test expect)~
+
+#+BEGIN_SRC scheme
+(deftest "printing a card"
+  (print-value (Card (rank 12) (suit Hearts)))
+  (expect-output """
+    (Card (rank 12) (suit Hearts))
+    """))
+#+END_SRC
+
+~expect-output~ compares what the test wrote to ~current-output-port~ since
+the test started, or since the previous ~expect-output~, with the text. On a
+mismatch the test fails and the report shows a line diff.
+
+With ~--promote~, the runner writes the output that was seen into the test
+file, in place of the text, and does not fail. It knows where the text is:
+the macro records the string's file, line and column. The file is rewritten
+once, at the end, with every promotion in it, from the last line to the first
+so that earlier positions stay valid. The text is always written as a raw
+string at the margin of the ~expect-output~ form.
+
+This is the most work of the features here, because it edits source. It
+comes after the property tests.
+
+* Later: model-based tests: ~(std test model)~
+
+A model test describes a set of commands, a generator of commands, a simple
+sequential model, and how to run each command on the real implementation. The
+runner generates command lists, runs them, and checks the results against the
+model. Shrinking makes the command list shorter, through the same draws.
+
+Run on two or more fibers at once, the same description tests concurrent
+code: the runner records each result and checks that some order of the
+commands, one at a time, gives the same results. This is OCaml's qcheck-lin
+and qcheck-stm. ~(std inbox)~, ~(std stm)~ and ~(std atomic)~ are what it is
+for. It needs everything above first.
+
+* Flags
+
+Arguments that start with ~--~ are flags. The other arguments are name
+filters, as today.
+
+| ~--seed n~          | the run's seed (decimal or 0x hex)                 |
+| ~--runs n~          | the number of runs of a ~for-all~ without ~#:runs~ |
+| ~--shrink-limit n~  | at most n replays when shrinking                   |
+| ~--stats~           | print ~classify~ and ~collect~ counts              |
+| ~--quick~           | skip ~#:slow~ tests                                |
+| ~--promote~         | write the output seen into ~expect-output~ texts   |
+| ~--no-store~        | do not read or write the failure file              |
+| ~--junit file~      | also write the results as JUnit XML, for CI        |
+
+~bjo test~ gives every argument that is not a file to each test file. It has
+to give the flags too, with their values, so ~bjo test --seed 7 tests/a.bjo~
+does what it says.
+
+* Changes inside ~(std test)~
+
+- *The running test.* ~run-test~ keeps the running ~Test~ in a box beside
+  ~current-failures~, so ~for-all~ can find its name and file.
+- *Where failures go.* ~for-all~ swaps ~current-failures~ for a box of its own
+  for each run, as ~run-test~ does for each test.
+- *A per-run scope.* A run's scope is a ~with-scope~ inside the test's
+  deadline scope.
+- *Options.* ~deftest~'s options are parsed in any order, as a list, instead
+  of one ~syntax-match~ arm per combination.
+- *Results.* ~TestResult~ gets a status: passed, failed, skipped, todo.
+- *Store.* ~(run-tests)~ loads the failure file before the first test and
+  writes it after the last.
+
+* Order of work
+
+Steps 1 to 8 are done.
+
+1. Flags, ~#:skip~, ~#:todo~, ~#:slow~, options in any order, the running test
+   in a box, and ~bjo test~ passing flags on.
+2. ~(std test gen)~: ~Choices~, ~draw~, the combinators, the generators, with
+   tests that check the "smaller draws, simpler values" rule.
+3. ~(std test prop)~: ~for-all~, ~assume~, runs, the report, seeds, shrinking.
+4. The failure file.
+5. ~Arbitrary~ and ~(name : Type)~ bindings.
+6. ~label~, ~classify~, ~collect~, ~--stats~.
+7. ~#:cases~ and the new checks.
+8. ~(std test expect)~ and ~--promote~.
+9. ~(std test model)~.
+
+* Open questions
+
+- *A trait method with no arguments.* Resolved: ~arbitrary~ is chosen by its
+  result type alone.
+- *Large numbers in bjodat.* Resolved: bjodat reads and writes ulongs
+  (~12UL~), decimals (~1.50M~) and bigints (~123I~).
+- *Fibers in a property.* A run's scope waits for the fibers it started. A
+  body that leaks a fiber which never ends will use up the deadline on the
+  first run. The report should then say which run.
+- *The cost of shrinking.* Each candidate runs the body again. A slow body
+  with a large failing case can shrink for a long time; the deadline and
+  ~--shrink-limit~ bound it. Measure on real tests before tuning the steps.
+- *~#:cases~ columns as patterns.* The rule above is narrow on purpose. A
+  wider one, such as a ~#:patterns~ list of columns, can come later.

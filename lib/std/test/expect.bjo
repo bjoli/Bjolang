@@ -1,0 +1,274 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/test/expect.bjo — output compared with a text in the test.
+;;
+;;     (deftest "printing a card"
+;;       (print-value (Card (rank 12) (suit Hearts)))
+;;       (expect-output """
+;;         (Card (rank 12) (suit Hearts))
+;;         """))
+;;
+;; A test whose body names `expect-output` writes its output to a string port
+;; (see `take-test-output!` in `(std test)`). Each `expect-output` compares
+;; what was written since the test started, or since the previous one, with
+;; its text. With `--promote`, a text that differs is not a failure: the run
+;; writes the output into the test file in its place, when it ends.
+
+(export expect-output
+        ;; Named by the template of the macro above, so it has to be
+        ;; reachable where that expands.
+        expect-output-check!)
+
+(import (std prelude))
+(import (std syntax-match))
+(import (std test))
+
+(:doc #:file "expect.bjodoc")
+
+;; ---------------------------------------------------------------------------
+;; Comparing
+;; ---------------------------------------------------------------------------
+
+;; Text as it is compared: its lines, without a carriage return or other
+;; whitespace at their ends, and without empty lines at its start and end. A
+;; raw string drops the line breaks next to its quotes, so this keeps a
+;; printed final newline from being a difference.
+(: compared-lines (-> string (Vec string)))
+(defun (compared-lines text)
+  (def lines (vec->list (vec-map string-trim-right (string-split text "\n"))))
+  (defun (drop-empty xs)
+    (match xs
+      ((Cons "" more) (drop-empty more))
+      (_ xs)))
+  (list->vec (list-reverse (drop-empty (list-reverse (drop-empty lines))))))
+
+;; A line diff of two texts: a line only in `wanted` starts with -, one only
+;; in `got` with +, and one in both with a space. The longest common
+;; subsequence decides which lines are in both.
+(: diff-lines (-> (Vec string) (Vec string) (List string)))
+(defun (diff-lines wanted got)
+  (def n (vec-length wanted))
+  (def m (vec-length got))
+  (if (> (* n m) 1000000)
+      ;; Too large to diff in reasonable time: both, in full.
+      (list-append (list-map (fun (l) (str "-" l)) (vec->list wanted))
+                   (list-map (fun (l) (str "+" l)) (vec->list got)))
+      (let ((table (make-array (* (+ n 1) (+ m 1)))))
+        (defun (at i j) (array-ref table (+ (* i (+ m 1)) j)))
+        ;; table[i][j] is the length of the common subsequence of the lines
+        ;; from i on and from j on.
+        (loop (:for back-i (range 0 (+ n 1)))
+              (:let i (- n back-i))
+              (:do (loop (:for back-j (range 0 (+ m 1)))
+                         (:let j (- m back-j))
+                         (:do (array-set! table (+ (* i (+ m 1)) j)
+                                          (cond
+                                            ((or (= i n) (= j m)) 0)
+                                            ((= (vec-ref wanted i) (vec-ref got j)) (+ 1 (at (+ i 1) (+ j 1))))
+                                            (else (max (at (+ i 1) j) (at i (+ j 1))))))))))
+        (let go ((i 0) (j 0) (out (list)))
+          (cond
+            ((and (= i n) (= j m)) (list-reverse out))
+            ((= i n) (go i (+ j 1) (cons (str "+" (vec-ref got j)) out)))
+            ((= j m) (go (+ i 1) j (cons (str "-" (vec-ref wanted i)) out)))
+            ((= (vec-ref wanted i) (vec-ref got j)) (go (+ i 1) (+ j 1) (cons (str " " (vec-ref wanted i)) out)))
+            ((>= (at (+ i 1) j) (at i (+ j 1))) (go (+ i 1) j (cons (str "-" (vec-ref wanted i)) out)))
+            (else (go i (+ j 1) (cons (str "+" (vec-ref got j)) out))))))))
+
+;; The output a run promotes: the file and line of each `expect-output`
+;; whose text differed, and what the test wrote instead.
+(: promotions (Box (List (Tuple string (Tuple int string)))))
+(def promotions (make-box (list)))
+
+(: shown-name (-> string string))
+(defun (shown-name path)
+  (match (path-filename path)
+    ((Some name) name)
+    (None path)))
+
+;; What `expect-output` expands to.
+(: expect-output-check! (-> string int string void))
+(defun (expect-output-check! file line wanted)
+  (def where #"${(shown-name file)}:${line}")
+  (match (take-test-output!)
+    (None
+     (test-failed! #"  ${where}: expect-output has no output to read. It reads the output of a test whose deftest body names it."))
+    ((Some got)
+     (def w (compared-lines wanted))
+     (def g (compared-lines got))
+     (unless (= w g)
+       (if (record-ref (current-test-options) promote)
+           (begin
+             (box-set! promotions (cons (Tuple file (Tuple line got)) (box-ref promotions)))
+             (at-run-end! "std test expect: promote" promote-all!))
+           (test-failed!
+             (string-join
+               (list->vec (cons #"  ${where}: the output is not the expected text (- expected, + written; --promote updates the text):"
+                                (list-map (fun (l) (str "    " l)) (diff-lines w g))))
+               "\n")))))))
+
+;; `(expect-output text)` — the output since the test started, or since the
+;; previous `expect-output`, is the text.
+(def/macro (expect-output form inject compare)
+  (syntax-match form
+    ((_ text)
+     #'(expect-output-check! ,(SStr (syntax-file form)) ,(SInt (int->string (syntax-line form))) ,text))
+    (bad (syntax-error bad "expect-output takes a string: (expect-output \"\"\" ... \"\"\")."))))
+
+;; ---------------------------------------------------------------------------
+;; Promoting
+;; ---------------------------------------------------------------------------
+
+;; The index in `cs` of the first occurrence of `needle` at or after `from`.
+(: vec-search (-> (Vec char) (Vec char) int (Option int)))
+(defun (vec-search cs needle from)
+  (def n (vec-length cs))
+  (def k (vec-length needle))
+  (let go ((i from))
+    (cond
+      ((> (+ i k) n) None)
+      ((loop (:for j (range 0 k)) (:acc ok (folding #t (and ok (char=? (vec-ref cs (+ i j)) (vec-ref needle j))))))
+       (Some i))
+      (else (go (+ i 1))))))
+
+;; The index where line `line` (from 1) starts.
+(: line-start (-> (Vec char) int int))
+(defun (line-start cs line)
+  (let go ((i 0) (l 1))
+    (cond
+      ((= l line) i)
+      ((>= i (vec-length cs)) i)
+      ((char=? (vec-ref cs i) #\newline) (go (+ i 1) (+ l 1)))
+      (else (go (+ i 1) l)))))
+
+;; How many quotes stand in a row from i.
+(: quote-run (-> (Vec char) int int))
+(defun (quote-run cs i)
+  (let go ((j i))
+    (if (and (< j (vec-length cs)) (char=? (vec-ref cs j) #\")) (go (+ j 1)) (- j i))))
+
+;; Where the string literal that starts at i ends: the index after its
+;; closing quotes. A run of three or more quotes is a raw string, closed by a
+;; run as long.
+(: literal-end (-> (Vec char) int (Option int)))
+(defun (literal-end cs i)
+  (def q (quote-run cs i))
+  (def n (vec-length cs))
+  (cond
+    ((= q 0) None)
+    ((= q 2) (Some (+ i 2)))
+    ((= q 1)
+     (let go ((j (+ i 1)))
+       (cond
+         ((>= j n) None)
+         ((char=? (vec-ref cs j) #\\) (go (+ j 2)))
+         ((char=? (vec-ref cs j) #\") (Some (+ j 1)))
+         (else (go (+ j 1))))))
+    (else
+     (let go ((j (+ i q)))
+       (cond
+         ((>= j n) None)
+         ((>= (quote-run cs j) q) (Some (+ j q)))
+         (else (go (+ j 1))))))))
+
+;; The longest run of quotes in a text.
+(: longest-quote-run (-> string int))
+(defun (longest-quote-run text)
+  (def cs (string->vec text))
+  (let go ((i 0) (best 0))
+    (if (>= i (vec-length cs))
+        best
+        (let ((q (quote-run cs i)))
+          (if (> q 0) (go (+ i q) (max q best)) (go (+ i 1) best))))))
+
+(: repeat-string (-> string int string))
+(defun (repeat-string s n)
+  (string-join (list->vec (loop (:for _ (range 0 n)) (:acc out (listing s)))) ""))
+
+;; The text as a raw string whose lines start at `margin` columns, with the
+;; closing quotes on a line of their own at the margin. Its quotes are one
+;; more than the longest run in the text, and at least three.
+(: raw-literal (-> string int string))
+(defun (raw-literal text margin)
+  (def lines (compared-lines text))
+  (if (vec-empty? lines)
+      "\"\""
+      (let* ((q (repeat-string "\"" (max 3 (+ 1 (longest-quote-run text)))))
+             (pad (repeat-string " " margin)))
+        (str q "\n"
+             (string-join (vec-map (fun (l) (if (string-empty? l) "" (str pad l))) lines) "\n")
+             "\n" pad q))))
+
+;; The text with the literal of the `expect-output` on `line` replaced by
+;; `got`, or None when the form is not there any more.
+(: promote-one (-> string int string (Option string)))
+(defun (promote-one text line got)
+  (def cs (string->vec text))
+  (def start (line-start cs line))
+  (def head (string->vec "(expect-output"))
+  (match (vec-search cs head start)
+    (None None)
+    ((Some at)
+     (def column (- at (line-start cs line)))
+     (let go ((i (+ at (vec-length head))))
+       (cond
+         ((>= i (vec-length cs)) None)
+         ((char-whitespace? (vec-ref cs i)) (go (+ i 1)))
+         (else
+          (match (literal-end cs i)
+            (None None)
+            ((Some end)
+             (Some (str (list->string (vec->list (vec-slice cs 0 i)))
+                        (raw-literal got (+ column 2))
+                        (list->string (vec->list (vec-slice cs end (- (vec-length cs) end))))))))))))))
+
+;; Writes every promotion into its file, from the last line to the first so
+;; that a replacement does not move the lines of those still to come.
+(: promote-all! (-> void))
+(defun (promote-all!)
+  (def by-file
+    (list-foldl (fun (p m)
+                  (match p
+                    ((Tuple file entry) (map-set m file (cons entry (map-ref-or m file (list)))))))
+                (map-empty)
+                (box-ref promotions)))
+  (map-for-each
+    (fun (file entries)
+      (def sorted (list-sort-desc entries))
+      (def text
+        (list-foldl (fun (e t)
+                      (match e
+                        ((Tuple line got)
+                         (match (promote-one t line got)
+                           ((Some new-text) new-text)
+                           (None (println #"promote: no expect-output at ${(shown-name file)}:${line}") t)))))
+                    (file-read-text file)
+                    sorted))
+      (file-write-text file text)
+      (println #"promote: wrote ${(list-length entries)} text(s) into ${(shown-name file)}"))
+    by-file)
+  (box-set! promotions (list)))
+
+;; The entries by line, the last first. A line promoted twice keeps the first.
+(: list-sort-desc (-> (List (Tuple int string)) (List (Tuple int string))))
+(defun (list-sort-desc xs)
+  (defun (line-of e) (match e ((Tuple l _) l)))
+  (defun (insert e sorted)
+    (match sorted
+      (Nil (list e))
+      ((Cons f more)
+       (cond
+         ((= (line-of e) (line-of f)) sorted)
+         ((> (line-of e) (line-of f)) (cons e sorted))
+         (else (cons f (insert e more)))))))
+  (list-foldl insert (list) (list-reverse xs)))

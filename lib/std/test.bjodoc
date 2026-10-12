@@ -34,9 +34,21 @@
 
     @strong{Choosing tests.} The arguments of the program choose the tests.
     A test runs when its name contains one of the arguments. With no
-    arguments, every test runs. @code{bjo test} builds and runs the test
-    files that it is given, or every file under @code{tests/} in the
-    project. It gives its other arguments to each file as these filters.
+    arguments, every test runs. Arguments that start with @code{--} are
+    flags, such as @code{--seed} and @code{--quick}: see
+    @code{parse-test-args}. @code{bjo test} builds and runs the test files
+    that it is given, or every file under @code{tests/} in the project. It
+    gives its other arguments to each file.
+
+    @strong{Options.} A test can be skipped (@code{#:skip}), expected to
+    fail (@code{#:todo}), left out of quick runs (@code{#:slow}), or run
+    once for each row of a table (@code{#:cases}). See @code{deftest}.
+
+    @strong{More kinds of tests.} @code{(std test prop)} has property tests:
+    @code{for-all} runs a body with many generated values, and shrinks a
+    failing case to a small one. @code{(std test gen)} has the generators.
+    @code{(std test expect)} compares output with a text in the test, and
+    @code{--promote} updates the text.
 
     @strong{Each test runs in a scope of its own}, as @code{with-test} in
     @code{(std simpletest)} does. The scope has a deadline: 5 seconds, or
@@ -74,6 +86,10 @@
   (field line "The line of the @code{deftest}.")
   (field within "The deadline in milliseconds. 0 means the default, 5000.")
   (field open-ok "#t when the test can leave resources open.")
+  (field skip "The reason given with @code{#:skip}, or empty. A test with a reason does not run.")
+  (field todo "The reason given with @code{#:todo}, or empty. A failure of such a test does not fail the run.")
+  (field slow "#t for a @code{#:slow} test, which @code{--quick} leaves out.")
+  (field capture "#t when the body uses @code{expect-output}. The output of the test then goes to a string port that @code{take-test-output!} reads.")
   (field body "The forms of the test, as a function. @code{run-test} calls it.")
   (see deftest run-test registered-tests))
 
@@ -108,6 +124,10 @@
   (arg line "The line of the test.")
   (arg within "The deadline in milliseconds, or 0 for the default.")
   (arg open-ok "#t when the test can leave resources open.")
+  (arg skip "The reason of @code{#:skip}, or empty.")
+  (arg todo "The reason of @code{#:todo}, or empty.")
+  (arg slow "#t for @code{#:slow}.")
+  (arg capture "#t when the body uses @code{expect-output}.")
   (arg body "The body of the test.")
   (returns "Always 0.")
   (see deftest)
@@ -134,8 +154,127 @@
     """))
 
 ;; ---------------------------------------------------------------------------
+;; The options of a run
+;; ---------------------------------------------------------------------------
+
+(:doc TestOptions
+  (summary "What the arguments of a test program asked for.")
+  (field filters "Parts of names. A test runs when its name contains one of them. When empty, every test runs.")
+  (field seed "The seed of the run: from @code{--seed}, from the environment variable BJO_TEST_SEED, or from the operating system.")
+  (field runs "The number of runs of a @code{for-all} that does not give @code{#:runs}, from @code{--runs}. 0 when not given.")
+  (field shrink-limit "The most replays that shrinking does, from @code{--shrink-limit}. 0 when not given.")
+  (field stats "#t with @code{--stats}: print the counts of @code{classify} and @code{collect}.")
+  (field quick "#t with @code{--quick}: leave out the @code{#:slow} tests.")
+  (field promote "#t with @code{--promote}: write the output that was seen into the texts of @code{expect-output}.")
+  (field store "#f with @code{--no-store}: do not read or write the failure file of @code{(std test prop)}.")
+  (field junit "The file of @code{--junit}, to write the results to as JUnit XML.")
+  (see parse-test-args current-test-options))
+
+(:doc parse-test-args
+  (summary "Reads the arguments of a test program: flags, and name filters.")
+  (arg args "The arguments.")
+  (returns "The options, or why the arguments are wrong.")
+  (see TestOptions run-registered-tests)
+  (reference """
+    An argument that starts with @code{--} is a flag. The other arguments
+    are name filters.
+
+    @itemlist{
+      @item{@code{--seed n}: the seed of the run, in decimal or as
+        @code{0x} hex. A failed property prints the seed, so that the run
+        can be repeated.}
+      @item{@code{--runs n}: the number of runs of a @code{for-all} that
+        gives no @code{#:runs}.}
+      @item{@code{--shrink-limit n}: the most replays that shrinking does.}
+      @item{@code{--junit file}: also write the results to the file as
+        JUnit XML.}
+      @item{@code{--stats}: print the counts of @code{classify} and
+        @code{collect}.}
+      @item{@code{--quick}: leave out @code{#:slow} tests.}
+      @item{@code{--promote}: write the output that was seen into the texts
+        of @code{expect-output}.}
+      @item{@code{--no-store}: do not read or write the failure file.}
+    }
+
+    Without @code{--seed}, the seed comes from the environment variable
+    BJO_TEST_SEED, and else from the operating system. @code{bjo test}
+    gives these flags to each test file: @code{bjo test --seed 7}.
+    """))
+
+(:doc current-test-options
+  (summary "The options of the run in progress.")
+  (returns "The options that @code{run-registered-tests} read, or the options of a run without arguments when no run is in progress.")
+  (see TestOptions))
+
+(:doc test-seed
+  (summary "The seed of one test: the seed of the run, mixed with the test's name.")
+  (arg t "The test.")
+  (returns "The seed.")
+  (see mix-seed string-hash)
+  (reference """
+    Because the name is part of the seed, choosing tests with filters, or
+    adding a test, does not change what the other tests draw.
+    """))
+
+(:doc mix-seed
+  (summary "Two seeds mixed into one, so that seeds that differ in one bit give unrelated results.")
+  (arg a "A seed.")
+  (arg b "Another seed.")
+  (returns "The finalizer of SplitMix64, applied to a xor b."))
+
+(:doc string-hash
+  (summary "A 64-bit hash of a string that is the same in every process.")
+  (arg s "The string.")
+  (returns "FNV-1a over the characters of s.")
+  (reference """
+    .NET's own string hash is different in each process, so it can not make
+    a seed that has to be the same in every run.
+    """))
+
+;; ---------------------------------------------------------------------------
 ;; Failures
 ;; ---------------------------------------------------------------------------
+
+(:doc running-test
+  (summary "The test that is running.")
+  (returns "The test, or None when no test runs.")
+  (see run-test))
+
+(:doc test-time-left
+  (summary "The milliseconds left before the running test's deadline.")
+  (returns "The time left, or a day when no test runs.")
+  (see running-test))
+
+(:doc take-test-output!
+  (summary "What the running test wrote since it started, or since the last call.")
+  (returns "The text, or None when the test does not capture its output.")
+  (see test-time-left)
+  (reference """
+    A test captures its output when its body uses @code{expect-output}:
+    @code{current-output-port} is then a string port while the test runs.
+    What no call took is printed when the test ends, so that the prints of
+    a test are not lost.
+    """))
+
+(:doc next-test-index!
+  (summary "The number of times this was called before in the running test.")
+  (returns "0 at the first call in a test, then 1, 2 and so on.")
+  (reference """
+    @code{for-all} takes its position in its test from it, to find the cases
+    that the failure file holds for it.
+    """))
+
+(:doc failures-into
+  (summary "Runs a function with the failures of its checks going to a box instead of to the running test.")
+  (arg failures "The box. Each failure is added at its front.")
+  (arg body "The function.")
+  (returns "What the function answers.")
+  (see test-failed!)
+  (reference """
+    The failures of the running test are put back afterwards, also when
+    the function raises an exception. @code{for-all} runs each case this
+    way, to decide which failures to keep.
+    """))
 
 (:doc test-failed!
   (summary "Records a failure of the running test, or prints it and fails the program when no test runs.")
@@ -209,11 +348,14 @@
 (:doc check-raises
   (summary "Passes when the expression raises an exception of the type.")
   (form (check-raises type expr))
+  (form (check-raises type expr #:message part))
   (arg type "A .NET exception type, by its name or by an @code{import/class} alias.")
   (arg expr "The expression to evaluate.")
+  (arg part "A string that the message of the exception has to contain.")
   (see check)
   (example """
     (check-raises System.FormatException (string->int "x"))
+    (check-raises System.ArgumentException (make-inbox 0 DropNewest) #:message "capacity")
     """)
   (reference """
     When @code{expr} answers a value, the check fails and shows the value.
@@ -233,6 +375,67 @@
       ((Err e) (check-fail e)))
     """))
 
+(:doc check-raises-message
+  (summary "The message part of check-raises: fails when the message does not contain the part.")
+  (arg file "The source file of the check.")
+  (arg line "The line of the check.")
+  (arg source "The source text of the check.")
+  (arg message "The message of the exception.")
+  (arg part "What it has to contain.")
+  (see check-raises)
+  (reference """
+    It is exported because the template of @code{check-raises} names it.
+    Write @code{check-raises} with @code{#:message}, not this function.
+    """))
+
+(:doc approx-close?
+  (summary "Whether two doubles are near each other, as check-approx tells.")
+  (arg a "A double.")
+  (arg b "Another double.")
+  (arg eps "The bound.")
+  (returns "#t when they are equal, or differ by at most eps times the larger of 1 and their sizes.")
+  (see check-approx)
+  (reference """
+    It is exported because the template of @code{check-approx} names it.
+    """))
+
+(:doc check-approx
+  (summary "Passes when two doubles are near each other. A failure shows both.")
+  (form (check-approx a b))
+  (form (check-approx a b #:eps eps))
+  (arg a "A double. It is evaluated once.")
+  (arg b "A double. It is evaluated once.")
+  (arg eps "The bound. 1e-9 when it is not given.")
+  (see check)
+  (example """
+    (check-approx (sqrt 2.0) 1.4142135623730951)
+    (check-approx (mean xs) 2.5 #:eps 1e-6)
+    """)
+  (reference """
+    Two values are near when they are equal, or when they differ by at most
+    @code{eps}, for values at most 1 in size, or by at most @code{eps}
+    times the larger of the two sizes, for larger values. So the bound is
+    absolute near 0 and relative away from it. Equal infinities are near.
+    NaN is near nothing, also NaN.
+    """))
+
+(:doc check-output
+  (summary "Passes when what the expression writes to current-output-port is the text.")
+  (form (check-output expr text))
+  (arg expr "The expression. Its value is dropped.")
+  (arg text "A string: what it has to write.")
+  (see check)
+  (example """
+    (check-output (display "hi") "hi")
+    (check-output (print-report r) "total: 3\n")
+    """)
+  (reference """
+    The expression writes to a string port instead of the real output, so
+    nothing is printed. A failure shows what it wrote and what was wanted.
+    For longer output, @code{expect-output} from @code{(std test expect)}
+    shows a diff, and @code{--promote} updates the text.
+    """))
+
 ;; ---------------------------------------------------------------------------
 ;; deftest and run-tests
 ;; ---------------------------------------------------------------------------
@@ -242,9 +445,15 @@
   (form (deftest name body ...))
   (form (deftest name #:within ms body ...))
   (form (deftest name #:open-ok body ...))
-  (form (deftest name #:within ms #:open-ok body ...))
+  (form (deftest name #:skip why body ...))
+  (form (deftest name #:todo why body ...))
+  (form (deftest name #:slow body ...))
+  (form (deftest name #:cases ((column ...) row ...) body ...))
   (arg name "A string: the name of the test. The filters of a run match against it.")
   (arg ms "The deadline of the test, in milliseconds. 5000 when it is not given.")
+  (arg why "A string: the reason, which the run shows.")
+  (rest column "The names that each row binds.")
+  (rest row "A list of values, one for each column.")
   (rest body "The forms of the test. At least one form. Their values are dropped.")
   (see run-tests check run-test)
   (example """
@@ -254,23 +463,57 @@
     (deftest "the server answers" #:within 1000
       (check-match (fetch url) (Ok _)))
 
-    (deftest "the scope closes the file" #:open-ok
-      (with-fake-fs (("a.txt" "x"))          ; from (std simpletest)
-        (ignore (open-input-file "a.txt"))))
+    (deftest "parse-int" #:cases ((input expected)
+                                  ("1"  (Ok 1))
+                                  ("-0" (Ok 0))
+                                  ("x"  (Err _)))
+      (check-match (parse-int input) expected))
+
+    (deftest "unicode case folding" #:todo "needs full case folding"
+      (check (string-ci=? "STRASSE" "straße")))
     """)
   (reference """
     Write it at the top level of a module: it expands to a top-level
-    @code{def}, so the test is registered before @code{main} runs. When both
-    options are given, @code{#:within} comes first.
+    @code{def}, so the test is registered before @code{main} runs. The
+    options come after the name, in any order.
 
     The test runs in a scope with a deadline, as @code{run-test} tells.
-    @code{#:open-ok} turns off the check for open resources. Use it in a
-    test of what the closing of a scope does.
+
+    @itemlist{
+      @item{@code{#:within ms} sets the deadline.}
+      @item{@code{#:open-ok} turns off the check for open resources. Use it
+        in a test of what the closing of a scope does.}
+      @item{@code{#:skip why}: the test does not run. The last line of the
+        run counts it.}
+      @item{@code{#:todo why}: the test runs, and a failure does not fail
+        the run. When it passes, the run prints a @code{FIXED} line, so
+        that the mark can be removed.}
+      @item{@code{#:slow}: @code{--quick} leaves the test out.}
+      @item{@code{#:cases}: a table. The first list names the columns, and
+        each list after it is a row of values. The body runs once for each
+        row, with the columns bound to the row's values. A failure is
+        reported with the row's number and values, and the other rows still
+        run. A column that the body uses as the pattern of a
+        @code{check-match} is put into the pattern instead, so a row can
+        hold a pattern such as @code{(Err _)}. The rows end at the first
+        form that is not a list as long as the columns, or at the last
+        form, which is always the body.}
+    }
     """))
+
+(:doc TestStatus
+  (summary "How a test came out.")
+  (case Passed "It ran, and nothing failed.")
+  (case Failed "Something in it failed.")
+  (case Skipped "It has @code{#:skip}, so it did not run.")
+  (case Todo "It has @code{#:todo}, and it failed, as expected. The run does not fail.")
+  (case Fixed "It has @code{#:todo}, and it passed. The run says so, so that the mark can be removed.")
+  (see TestResult run-test))
 
 (:doc TestResult
   (summary "What running one test came to.")
   (field test "The test that ran.")
+  (field status "How it came out.")
   (field failures "The messages of its failures, in the order they occurred. Empty when it passed.")
   (see run-test))
 
@@ -278,6 +521,11 @@
   (summary "The test that a result is for.")
   (arg r "The result.")
   (returns "The test."))
+
+(:doc test-result-status
+  (summary "How a test run came out.")
+  (arg r "The result.")
+  (returns "The status."))
 
 (:doc test-result-failures
   (summary "The failures of a test run.")
@@ -309,14 +557,37 @@
 (:doc run-registered-tests
   (summary "Runs the tests of a module that the filters choose, prints the failures, and answers an exit code.")
   (arg module "The key of the module, as @code{(current-module)} gives it.")
-  (arg filters "Parts of names. A test runs when its name contains one of them. When empty, every test runs.")
-  (returns "0 when every test passed, else 1. 0 also when no test was chosen.")
+  (arg args "The arguments of the program: flags, and parts of names. See @code{parse-test-args}.")
+  (returns "0 when no test failed, 1 when one failed, 2 when the arguments are wrong. 0 also when no test was chosen.")
   (see run-tests run-test)
   (reference """
     For each test that fails, it prints a line @code{FAIL name (file:line)}
-    and then the failures. At the end it prints one line: how many tests
-    passed or failed, and the time the run took, or that there were no
+    and then the failures. For a @code{#:todo} test that passes, it prints
+    a line @code{FIXED name (file:line)}. At the end it runs the hooks given
+    to @code{at-run-end!}, writes the JUnit file when @code{--junit} asks
+    for one, and prints one line: how many tests passed or failed, how many
+    were skipped or todo, and the time the run took, or that there were no
     tests to run. @code{(run-tests)} writes a @code{main} that calls it.
+    """))
+
+(:doc at-run-end!
+  (summary "Adds a function to what runs when a run of tests ends.")
+  (arg key "A name for the hook. A second hook with the same key is ignored.")
+  (arg hook "The function.")
+  (see run-registered-tests)
+  (reference """
+    @code{run-registered-tests} runs the hooks after the last test, oldest
+    first, before it prints its last line. @code{(std test prop)} writes its
+    failure file this way, and @code{(std test expect)} its promotions.
+    """))
+
+(:doc deftest-cases-row
+  (summary "The heading of a failed row of a #:cases test.")
+  (arg i "The number of the row, from 1.")
+  (arg seen "The column names, each with the source text of its value.")
+  (returns "The heading, and a line for each column.")
+  (reference """
+    It is exported because the template of @code{deftest} names it.
     """))
 
 (:doc run-tests

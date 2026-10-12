@@ -1,0 +1,52 @@
+;; `(std test expect)`: expect-output compares what a test wrote with a text
+;; in the test. Some tests fail on purpose; `main` checks what each reported,
+;; so the file itself passes. `--promote` rewrites the test file, so it is
+;; not tried here.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std test))
+(import (std test expect))
+
+(deftest "matches"
+  (println "hello")
+  (println "world")
+  (expect-output """
+    hello
+    world
+    """)
+  (println "again")
+  (expect-output "again"))
+
+(deftest "differs"
+  (println "one")
+  (println "two!")
+  (println "three")
+  (expect-output """
+    one
+    two
+    three
+    """))
+
+(deftest "nothing written"
+  (expect-output ""))
+
+(: result-of (-> string TestResult))
+(defun (result-of name)
+  (match (list-filter (fun (t) (= (test-name t) name)) (module-tests (current-module)))
+    ((Cons t _) (run-test t))
+    (Nil (panic! #"no test ${name}"))))
+
+(: report-of (-> string string))
+(defun (report-of name) (string-join (list->vec (test-result-failures (result-of name))) "\n"))
+
+(defun (main args)
+  (expect "output that matches passes" (test-result-failures (result-of "matches")) (list))
+  (def differs (report-of "differs"))
+  (expect-true "a difference is reported where it is"
+               (string-contains? differs "357_test_expect.bjo:25: the output is not the expected text"))
+  (expect-true "the lines both have are shown with a space" (string-contains? differs "     one"))
+  (expect-true "an expected line with -" (string-contains? differs "    -two"))
+  (expect-true "a written line with +" (string-contains? differs "    +two!"))
+  (expect "an empty text matches no output" (test-result-failures (result-of "nothing written")) (list))
+  0)

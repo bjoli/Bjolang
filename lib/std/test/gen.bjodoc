@@ -1,0 +1,773 @@
+;; Docs for std/test/gen.bjo, read through (:doc #:file "gen.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Generators of test values that draw through a recorder, so that a failing case shrinks by replaying fewer and smaller draws.")
+  (see Gen draw gen-let Arbitrary gen-sample)
+  (example """
+    (import (std prelude))
+    (import (std test gen))
+
+    (type (: Suit (Union Hearts Spades Clubs Diamonds)))
+    (type (: Card (Record (: rank int) (: suit Suit))))
+
+    (: gen-card (Gen Card))
+    (def gen-card
+      (gen-let ((rank (gen-int-range 1 13))
+                (suit (gen-element (list Hearts Spades Clubs Diamonds))))
+        (Card (rank rank) (suit suit))))
+
+    (impl (Arbitrary Card) (defun (arbitrary) gen-card))
+
+    (gen-sample gen-card)                ; one card
+    (gen-samples (gen-list gen-int) 5)   ; five lists, small ones first
+    """)
+  (reference """
+    A @code{(Gen T)} makes values of type T. Property tests in
+    @code{(std test prop)} use generators, but this module does not import
+    @code{(std test)}. A program can use the generators without the test
+    runner, for example to make fixtures.
+
+    @strong{The recorder.} A generator does not read a @code{RandomSource}
+    itself. It asks a @code{Choices} for numbers with @code{draw}. A
+    @code{Choices} has one of two modes:
+
+    @itemlist{
+      @item{@strong{Recording} (@code{recording-choices}): it draws each
+        number from a random source and records it.}
+      @item{@strong{Replaying} (@code{replaying-choices}): it answers the
+        numbers of a vector, in order. When the vector is used up, each
+        further draw answers 0.}
+    }
+
+    @code{draw} records the number after it puts it into its bound, not the
+    raw random number. So a recorded vector replays to the same value, and a
+    changed vector replays to a value that is still in range.
+
+    @strong{Smaller draws give simpler values.} @code{(std test prop)}
+    shrinks a failing case: it makes the recorded vector smaller and replays
+    it. This gives a simpler value only when each generator obeys this rule:
+    0 is the simplest choice at every draw, and a larger draw gives a value
+    farther from the simplest. Because a used-up vector answers 0, a shorter
+    vector also gives a simpler value. Thus no generator needs a shrinker of
+    its own. Every generator in this module obeys the rule:
+
+    @itemlist{
+      @item{A number generator gives the value nearest 0 at a draw of 0:
+        the lower bound of a range above 0, the upper bound of a range
+        below 0, and 0 itself otherwise.}
+      @item{@code{gen-list} draws "one more element?" before each element,
+        and 0 means "no more". So deleting draws makes the list shorter.}
+      @item{@code{gen-one-of}, @code{gen-frequency} and
+        @code{gen-element} take their first alternative at 0. Put the
+        simplest alternative first.}
+      @item{@code{gen-recursive} takes the base case at 0.}
+      @item{@code{gen-bool} gives #f, @code{gen-option} None,
+        @code{gen-result} Ok, @code{gen-char} #\a, @code{gen-string} the
+        empty string, and @code{gen-shuffle} the order it was given.}
+    }
+
+    A generator made from these with @code{gen-map}, @code{gen-bind},
+    @code{gen-let} and the other combinators obeys the rule too. A generator
+    made with @code{make-gen} must obey it itself.
+
+    @strong{Sizes.} A @code{Choices} has a size, which @code{choices-size}
+    gives. Numbers, lists and recursive values grow with it. A property's
+    first runs have small sizes and its last runs large ones, so small
+    cases are tried first. @code{gen-sized} reads the size, and
+    @code{gen-resize} changes it.
+
+    @strong{Edge values.} The number and text generators give values that
+    often find bugs: @code{int-max}, -1, NaN when asked for, surrogate
+    pairs, combining characters. An edge of an integer is recorded as the
+    draws that the full-range way to the same value would record. So
+    shrinking can change the draw that chose the edge, keep the value, and
+    then make the value smaller.
+
+    @strong{Discarded runs.} A generator can give up: @code{gen-such-that}
+    after 100 tries, and any generator after 10000 draws. It then calls
+    @code{discard!}, which marks the @code{Choices} and raises an exception.
+    @code{(std test prop)} does not count a discarded run.
+
+    @strong{Gen is not a Monad.} The callback of the bind of a
+    @code{Monad} can be a bjoroutine, but a generator runs inside an
+    ordinary function. Use @code{gen-let} to draw values in order, or
+    @code{gen-bind}.
+
+    @strong{Defaults by type.} The trait @code{Arbitrary} gives a generator
+    for a type. @code{(for-all ((xs : (List int))) ...)} uses it. An
+    instance is only a generator, because shrinking needs nothing more.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The recorder
+;; ---------------------------------------------------------------------------
+
+(:doc Choices
+  (summary "Where a generator gets its numbers: from a random source, recorded, or from a recorded vector, replayed.")
+  (see recording-choices replaying-choices draw choices-draws)
+  (reference """
+    A @code{Choices} records every number that it answers, in both modes.
+    After a replay, the record is the part of the vector that the replay
+    used, followed by the zeros it answered after the vector was used up.
+    A @code{Choices} also holds the size of the run, and whether the run
+    was discarded.
+
+    A @code{Choices} is for one run of a generator. Make a new one for each
+    run.
+    """))
+
+(:doc recording-choices
+  (summary "A Choices that draws from a random source and records each number.")
+  (arg rng "The source to draw from.")
+  (arg size "The size of the run. Numbers, lists and recursive values grow with it.")
+  (returns "A new Choices, with nothing recorded.")
+  (see replaying-choices choices-draws)
+  (example """
+    (def c (recording-choices (make-random/seed64 3UL) 60))
+    (def v (gen-run (gen-list gen-int) c))
+    (choices-draws c)   ; the draws that replay to v
+    """))
+
+(:doc replaying-choices
+  (summary "A Choices that answers the numbers of a vector in order, and 0 after the vector is used up.")
+  (arg draws "The numbers to answer, usually from @code{choices-draws}.")
+  (arg size "The size of the run. Give the size of the recording, or a replay can give a different value.")
+  (returns "A new Choices, with nothing recorded.")
+  (see recording-choices choices-draws)
+  (example """
+    (gen-run g (replaying-choices (choices-draws c) 60))   ; the value again
+    (gen-run g (replaying-choices (vec-empty) 60))         ; the simplest value of g
+    """)
+  (reference """
+    A number of the vector is put into the bound of its draw. So a vector
+    that was changed, for example by shrinking, still gives a value in
+    range.
+    """))
+
+(:doc draw
+  (summary "A number from 0, included, to bound, not included. Every generator is made from this.")
+  (arg c "The choices to draw from.")
+  (arg bound "The bound. 0 means every ulong.")
+  (returns "A number in [0, bound). A replay answers the next number of its vector, put into the bound, or 0 when the vector is used up.")
+  (raises ArgumentException "When the run drew 10000 numbers before. The run is then discarded: see @code{discard!}.")
+  (see choices-size discard!)
+  (example """
+    ;; A die. A draw of 0 gives 1, the simplest value.
+    (def gen-die (make-gen (fun (c) (+ 1 (cast System.Int32 (draw c 6UL))))))
+    """)
+  (reference """
+    The number is recorded after it is put into the bound. Map 0 to the
+    simplest value, and larger numbers to values farther from it, so that
+    shrinking makes values simpler.
+
+    A recording puts a random number into the bound with a remainder, so a
+    bound that is not a power of 2 makes small numbers slightly more likely.
+    """))
+
+(:doc choices-size
+  (summary "The size of the run.")
+  (arg c "The choices.")
+  (returns "The size given when the choices were made, or the size that @code{gen-resize} set.")
+  (see gen-sized gen-resize))
+
+(:doc choices-draws
+  (summary "Every number that the choices answered, in order.")
+  (arg c "The choices.")
+  (returns "The record. Replayed with @code{replaying-choices}, at the same size, it gives the same value.")
+  (see replaying-choices)
+  (reference """
+    After a replay, the record is the part of the vector that was used, and
+    a 0 for each draw after the vector was used up.
+    """))
+
+(:doc choices-discarded?
+  (summary "Whether the run was discarded.")
+  (arg c "The choices.")
+  (returns "#t after @code{discard!}.")
+  (see discard!)
+  (reference """
+    A discarded run ends with an exception. The code that ran the generator
+    examines this flag, not the exception, to tell a discard from a
+    failure.
+    """))
+
+(:doc discard!
+  (summary "Marks the run as discarded and leaves it with an exception.")
+  (arg c "The choices of the run.")
+  (arg why "Why the run is discarded. It is the message of the exception, after @code{discarded: }.")
+  (returns "Nothing: it always raises. The result type fits any position.")
+  (raises ArgumentException "Always.")
+  (see choices-discarded? gen-such-that)
+  (reference """
+    Use it in a generator that can not make a good value from its draws.
+    @code{(std test prop)} does not count a discarded run, and fails a
+    property when more than 10 times its runs are discarded.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Generators, and running one
+;; ---------------------------------------------------------------------------
+
+(:doc Gen
+  (summary "A generator of values of type %a.")
+  (tparam %a "The type of the values.")
+  (see make-gen gen-run gen-let Arbitrary)
+  (reference """
+    A generator is a function from a @code{Choices} to a value. Make one
+    from the generators and combinators of this module, or with
+    @code{make-gen}.
+    """))
+
+(:doc make-gen
+  (summary "A generator from a function that draws from a Choices.")
+  (arg f "The function. It gets the choices of the run, and answers a value.")
+  (returns "The generator.")
+  (see draw gen-run)
+  (example """
+    (: gen-even (Gen int))
+    (def gen-even
+      (make-gen (fun (c) (* 2 (cast System.Int32 (draw c 1000UL))))))
+    """)
+  (reference """
+    The function must get all its numbers from the choices, through
+    @code{draw} or other generators. It must map a draw of 0 to the
+    simplest value, or shrinking does not make its values simpler.
+    """))
+
+(:doc gen-run
+  (summary "Runs a generator with the choices of a run.")
+  (arg g "The generator.")
+  (arg c "The choices.")
+  (returns "The value that g makes from the draws of c.")
+  (see make-gen gen-sample)
+  (example """
+    (gen-run gen-int (replaying-choices (vec-empty) 50))   ; 0
+    """))
+
+(:doc gen-sample
+  (summary "One value of a generator.")
+  (arg g "The generator.")
+  (key size "The size of the run.")
+  (key rng "The source to draw from. A new source each call when not given.")
+  (returns "A value that g makes.")
+  (see gen-samples)
+  (example """
+    (gen-sample (gen-list gen-int))
+    (gen-sample gen-string #:size 5 #:rng (make-random/seed64 1UL))
+    """))
+
+(:doc gen-samples
+  (summary "Values of a generator, at sizes that grow as the runs of a property do.")
+  (arg g "The generator.")
+  (arg n "How many values.")
+  (key size "The size of the last value.")
+  (key rng "The source to draw from. A new source each call when not given.")
+  (returns "n values. The first is made at size 1 and the last at size, with sizes evenly between.")
+  (see gen-sample)
+  (example """
+    (gen-samples (gen-list gen-int) 20 #:rng (make-random/seed64 1UL))
+    """)
+  (reference """
+    Each value draws from its own source, split from rng. The same seed
+    gives the same values.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Combinators
+;; ---------------------------------------------------------------------------
+
+(:doc gen-pure
+  (summary "A generator that always makes x and draws nothing.")
+  (arg x "The value.")
+  (returns "The generator.")
+  (see gen-element))
+
+(:doc gen-map
+  (summary "A generator whose values are those of another, with a function applied.")
+  (arg f "The function.")
+  (arg g "The generator.")
+  (returns "A generator of the results of f.")
+  (see gen-bind gen-let)
+  (example """
+    (def gen-even (gen-map (fun (n) (* 2 n)) gen-int))
+    """)
+  (reference """
+    @code{gen-map} applies a function to values. The generator of a prelude
+    @code{Map} is @code{gen-map-of}.
+    """))
+
+(:doc gen-bind
+  (summary "A generator that draws a value, and then draws from the generator that a function makes from it.")
+  (arg g "The first generator.")
+  (arg f "A function from the first value to the next generator. It must be an ordinary function, not a bjoroutine.")
+  (returns "The generator.")
+  (see gen-let gen-map)
+  (example """
+    ;; A list and an index into it.
+    (gen-bind (gen-such-that (fun (xs) (not (list-empty? xs))) (gen-list gen-int))
+              (fun (xs) (gen-map (fun (i) (Tuple xs i))
+                                 (gen-int-range 0 (- (list-length xs) 1)))))
+    """)
+  (reference """
+    Both generators draw from the same choices, so shrinking makes both
+    values simpler. @code{gen-let} writes the same thing with names.
+    """))
+
+(:doc gen-let
+  (summary "A generator that draws each binding in order, as let* binds, and makes the value of the body.")
+  (form (gen-let ((name gen) ...) body ...))
+  (arg name "The name of the value.")
+  (arg gen "The generator of the value. It can use the names of the bindings before it.")
+  (rest body "The forms that make the value from the names. At least one form.")
+  (see gen-bind gen-map)
+  (example """
+    (: gen-card (Gen Card))
+    (def gen-card
+      (gen-let ((rank (gen-int-range 1 13))
+                (suit (gen-element (list Hearts Spades Clubs Diamonds))))
+        (Card (rank rank) (suit suit))))
+
+    ;; A later generator uses an earlier value.
+    (gen-let ((n (gen-int-range 0 10))
+              (xs (gen-list-of-length n gen-int)))
+      (Tuple n xs))
+    """)
+  (reference """
+    @code{Gen} is not a @code{Monad}, so @code{(do ...)} does not make
+    generators. @code{gen-let} is the way to draw values in order. All the
+    bindings draw from the same choices.
+    """))
+
+(:doc gen-such-that
+  (summary "A generator of the values of g for which pred holds.")
+  (arg pred "The condition.")
+  (arg g "The generator.")
+  (returns "A generator that runs g until pred holds.")
+  (see discard!)
+  (example """
+    (gen-such-that even? gen-int)
+    """)
+  (reference """
+    After 100 values for which pred does not hold, the run is discarded.
+    A condition that few values satisfy tests little, so a property whose
+    runs are discarded too often fails. Prefer a generator that makes good
+    values directly, for example @code{(gen-map (fun (n) (* 2 n)) gen-int)}
+    instead of @code{(gen-such-that even? gen-int)}.
+    """))
+
+(:doc gen-one-of
+  (summary "A generator that makes a value with one of the generators, each equally likely.")
+  (arg gens "The generators. The first is the simplest: a draw of 0 chooses it.")
+  (returns "The generator.")
+  (raises ArgumentException "When gens is empty.")
+  (see gen-frequency gen-element)
+  (example """
+    (gen-one-of (list (gen-pure 0) (gen-int-range 1 9) gen-int))
+    """))
+
+(:doc gen-frequency
+  (summary "A generator that makes a value with one of the generators, chosen by weight.")
+  (arg choices "Pairs of a weight and a generator. A generator is chosen with a probability of its weight divided by the sum of the weights. The first is the simplest.")
+  (returns "The generator.")
+  (raises ArgumentException "When the sum of the weights is not above 0.")
+  (see gen-one-of)
+  (example """
+    (gen-frequency (list (Tuple 1 (gen-pure None))
+                         (Tuple 3 (gen-map Some gen-int))))
+    """)
+  (reference """
+    A generator with a weight of 0 is never chosen. Give no weight less
+    than 0.
+    """))
+
+(:doc gen-element
+  (summary "A generator that makes one of the values, each equally likely.")
+  (arg xs "The values. The first is the simplest: a draw of 0 chooses it.")
+  (returns "The generator.")
+  (raises ArgumentException "When xs is empty.")
+  (see gen-one-of gen-shuffle)
+  (example """
+    (gen-element (list Hearts Spades Clubs Diamonds))
+    """))
+
+(:doc gen-sized
+  (summary "A generator that a function makes from the size of the run.")
+  (arg f "A function from the size to a generator.")
+  (returns "The generator.")
+  (see choices-size gen-resize)
+  (example """
+    ;; A list of exactly size elements.
+    (gen-sized (fun (n) (gen-list-of-length n gen-int)))
+    """))
+
+(:doc gen-resize
+  (summary "A generator that runs g at another size.")
+  (arg n "The size for g.")
+  (arg g "The generator.")
+  (returns "The generator. After g, the size is again what it was.")
+  (see gen-sized)
+  (example """
+    (gen-resize 5 (gen-list gen-int))   ; short lists at every size
+    """))
+
+(:doc gen-recursive
+  (summary "A generator of a recursive type, which halves the size at each level so that its values end.")
+  (arg base "The generator of the base case, such as a leaf.")
+  (arg step "A function from a generator of the smaller parts to a generator of one level.")
+  (returns "The generator.")
+  (see gen-sized)
+  (example """
+    (type (: Tree (Union Leaf (: Node Tree int Tree))))
+
+    (: gen-tree (Gen Tree))
+    (def gen-tree
+      (gen-recursive (gen-pure Leaf)
+                     (fun (self) (gen-let ((l self) (x gen-int) (r self))
+                                   (Node l x r)))))
+    """)
+  (reference """
+    At size 0 or less, it makes the base case. At a larger size, a draw
+    chooses: a draw of 0 makes the base case, and the others call step with
+    this generator at half the size. Thus a case shrinks toward the base
+    case. The base case comes at one draw in four, and always when the size
+    reaches 0.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Numbers
+;; ---------------------------------------------------------------------------
+
+(:doc gen-bool
+  (summary "#t or #f, equally likely. #f is the simplest.")
+  (see gen-element))
+
+(:doc gen-int
+  (summary "An int that grows with the size, with edge values now and then. 0 is the simplest.")
+  (see gen-int-range gen-long)
+  (reference """
+    A first draw chooses the kind of value:
+
+    @itemlist{
+      @item{8 times in 10, a value from -size² to size². So a size of 100
+        reaches 10000.}
+      @item{1 time in 10, any int.}
+      @item{1 time in 10, an edge: 0, 1, -1, @code{int-max},
+        @code{int-min}, 255, 256 or 65535.}
+    }
+
+    An edge is recorded as the draws for "any int" that give it. So
+    shrinking changes the kind of an edge to "any int", keeps the value, and
+    can then make the value smaller.
+    """))
+
+(:doc gen-int-range
+  (summary "An int from lo to hi, both included, each equally likely.")
+  (arg lo "The smallest value.")
+  (arg hi "The largest value. Not less than lo.")
+  (returns "The generator.")
+  (raises ArgumentException "When lo is above hi.")
+  (see gen-int gen-long-range)
+  (example """
+    (gen-int-range 1 6)   ; a die
+    """)
+  (reference """
+    The simplest value is the one nearest 0: lo when the range is above 0,
+    hi when it is below 0, and 0 when the range contains 0. A range that
+    contains 0 draws the sign first, then the distance from 0. So a value
+    shrinks toward 0.
+    """))
+
+(:doc gen-long
+  (summary "A long that grows with the size, with edge values now and then. 0 is the simplest.")
+  (see gen-long-range gen-int)
+  (reference """
+    As @code{gen-int}, but over the longs. The edges are 0, 1, -1,
+    @code{long-max}, @code{long-min}, @code{int-max}, @code{int-min} and
+    2³².
+    """))
+
+(:doc gen-long-range
+  (summary "A long from lo to hi, both included, each equally likely.")
+  (arg lo "The smallest value.")
+  (arg hi "The largest value. Not less than lo.")
+  (returns "The generator.")
+  (raises ArgumentException "When lo is above hi.")
+  (see gen-long gen-int-range)
+  (reference """
+    The simplest value is the one nearest 0, as for @code{gen-int-range}.
+    The range can be all the longs.
+    """))
+
+(:doc gen-ulong
+  (summary "A ulong that grows with the size, with edge values now and then. 0 is the simplest.")
+  (see gen-long)
+  (reference """
+    8 times in 10, a value from 0 to size². 1 time in 10, any ulong. 1
+    time in 10, an edge: 0, 1, the largest ulong, 2⁶³ or 2³². An edge is
+    recorded as the draws for "any ulong" that give it, as for
+    @code{gen-int}.
+    """))
+
+(:doc gen-double
+  (summary "A double that grows with the size, with edge values now and then. 0.0 is the simplest.")
+  (key special "#t to add NaN, positive infinity and negative infinity to the edges.")
+  (returns "The generator.")
+  (see gen-int)
+  (example """
+    (gen-double)
+    (gen-double #:special #t)   ; also NaN and the infinities
+    """)
+  (reference """
+    9 times in 10, a whole part from -size² to size², with a fraction of 53
+    bits added away from 0. 1 time in 10, an edge: 0.0, 1.0, -1.0, the
+    largest and the smallest doubles, the smallest double above 0, and
+    -0.0. NaN and the infinities find bugs, but many properties do not hold
+    for them, so they come only with @code{#:special #t}.
+    """))
+
+(:doc gen-bigint
+  (summary "A bigint: usually a long, and sometimes a value beyond the range of a long. 0 is the simplest.")
+  (see gen-long)
+  (reference """
+    3 times in 4, a value of @code{gen-long}. 1 time in 4, that value
+    multiplied by a number from 0 to 2⁶⁴, so most such values are beyond
+    the range of a long.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Text
+;; ---------------------------------------------------------------------------
+
+(:doc gen-char
+  (summary "Any Unicode scalar value, mostly printable ASCII, with characters that find bugs now and then. #\\a is the simplest.")
+  (see gen-ascii-char gen-string)
+  (reference """
+    A first draw chooses the kind of character:
+
+    @itemlist{
+      @item{8 times in 10, a printable ASCII character, as
+        @code{gen-ascii-char} makes.}
+      @item{1 time in 10, a character that often finds bugs in text code:
+        the NUL character, a combining acute accent, an emoji outside the
+        BMP (two UTF-16 units), the Hebrew letter alef (right to left), the
+        replacement character, a non-breaking space, the final sigma, or
+        the capital I with a dot.}
+      @item{1 time in 10, any scalar value: 0 to 0x10FFFF, without the
+        surrogates.}
+    }
+    """))
+
+(:doc gen-ascii-char
+  (summary "A printable ASCII character, from space to ~. #\\a is the simplest.")
+  (see gen-char gen-ascii-string)
+  (reference """
+    The 95 characters are put in an order that starts at #\a: the letters
+    come before the digits and the punctuation. A case shrinks toward a
+    letter, which is easy to read.
+    """))
+
+(:doc gen-string
+  (summary "A string of gen-char characters, whose length grows with the size. The empty string is the simplest.")
+  (see gen-ascii-string gen-string-of gen-char)
+  (reference """
+    The length is as for @code{gen-list}. Because of @code{gen-char}, it
+    sometimes has surrogate pairs, combining characters and other
+    characters that find bugs.
+    """))
+
+(:doc gen-ascii-string
+  (summary "A string of printable ASCII characters, whose length grows with the size. The empty string is the simplest.")
+  (see gen-string gen-ascii-char))
+
+(:doc gen-string-of
+  (summary "A string of the characters of a generator, whose length grows with the size.")
+  (arg g "The generator of the characters.")
+  (returns "The generator. The empty string is the simplest.")
+  (see gen-string gen-list)
+  (example """
+    (gen-string-of (gen-element (string->list "ACGT")))   ; DNA
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Shapes
+;; ---------------------------------------------------------------------------
+
+(:doc gen-unit
+  (summary "Always unit. It draws nothing.")
+  (see gen-pure))
+
+(:doc gen-option
+  (summary "None, or Some value of g. None is the simplest.")
+  (arg g "The generator of the value.")
+  (returns "The generator. It makes None 1 time in 4.")
+  (see gen-result))
+
+(:doc gen-result
+  (summary "Ok with a value of ga, or Err with a value of ge, equally likely. Ok is the simplest.")
+  (arg ge "The generator of the error.")
+  (arg ga "The generator of the value.")
+  (returns "The generator.")
+  (see gen-option))
+
+(:doc gen-tuple2
+  (summary "A pair of values, the first drawn first.")
+  (arg ga "The generator of the first value.")
+  (arg gb "The generator of the second value.")
+  (returns "The generator.")
+  (see gen-tuple3 gen-tuple4 gen-let))
+
+(:doc gen-tuple3
+  (summary "A tuple of three values, drawn in order.")
+  (arg ga "The generator of the first value.")
+  (arg gb "The generator of the second value.")
+  (arg gc "The generator of the third value.")
+  (returns "The generator.")
+  (see gen-tuple2 gen-tuple4))
+
+(:doc gen-tuple4
+  (summary "A tuple of four values, drawn in order.")
+  (arg ga "The generator of the first value.")
+  (arg gb "The generator of the second value.")
+  (arg gc "The generator of the third value.")
+  (arg gd "The generator of the fourth value.")
+  (returns "The generator.")
+  (see gen-tuple2 gen-tuple3)
+  (reference """
+    @code{Arbitrary} has no instance for tuples of four. Name this
+    generator in the binding.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Sequences
+;; ---------------------------------------------------------------------------
+
+(:doc gen-list
+  (summary "A list of values of g, whose length grows with the size. The empty list is the simplest.")
+  (arg g "The generator of the elements.")
+  (returns "The generator.")
+  (see gen-list-of-length gen-vec gen-array)
+  (example """
+    (gen-list gen-int)
+    (gen-list (gen-int-range 0 20))
+    """)
+  (reference """
+    Before each element, a draw tells whether there is one more element,
+    and 0 tells that there is not. So shrinking makes a list shorter when it
+    deletes draws, and ends it when it sets such a draw to 0.
+
+    The length is 1 + size / 5 on average: 1 at size 0, and 21 at size 100.
+    A list has at most 1000 elements, at any size.
+    """))
+
+(:doc gen-list-of-length
+  (summary "A list of exactly n values of g.")
+  (arg n "The length.")
+  (arg g "The generator of the elements.")
+  (returns "The generator.")
+  (see gen-list)
+  (reference """
+    The length does not shrink. Use @code{gen-list} when the length is part
+    of what to test.
+    """))
+
+(:doc gen-vec
+  (summary "A vec of values of g, as gen-list makes.")
+  (arg g "The generator of the elements.")
+  (returns "The generator. The empty vec is the simplest.")
+  (see gen-list gen-array))
+
+(:doc gen-array
+  (summary "A new array of values of g, as gen-list makes.")
+  (arg g "The generator of the elements.")
+  (returns "The generator. The empty array is the simplest. Each value is a new array.")
+  (see gen-list gen-vec))
+
+(:doc gen-shuffle
+  (summary "A permutation of the values. The order of xs is the simplest.")
+  (arg xs "The values.")
+  (returns "The generator.")
+  (see gen-element)
+  (reference """
+    Fisher-Yates from the front: element i changes places with an element
+    at i or after it, and a draw of 0 keeps it at i. So a case shrinks
+    toward the order of xs.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Maps and sets
+;; ---------------------------------------------------------------------------
+
+(:doc gen-map-of
+  (summary "A prelude Map, made from a gen-list of keys and values.")
+  (arg gk "The generator of the keys.")
+  (arg gv "The generator of the values.")
+  (returns "The generator. The empty map is the simplest.")
+  (see gen-orderedmap gen-list)
+  (reference """
+    The map shrinks as its list of entries does. When the list has a key
+    more than once, the last value wins. So the map can have fewer entries
+    than the list.
+    """))
+
+(:doc gen-hashset
+  (summary "A HashSet, made from a gen-list of its elements.")
+  (arg g "The generator of the elements.")
+  (returns "The generator. The empty set is the simplest.")
+  (see gen-orderedset gen-list))
+
+(:doc gen-orderedmap
+  (summary "An OrderedMap, made from a gen-list of keys and values.")
+  (arg gk "The generator of the keys.")
+  (arg gv "The generator of the values.")
+  (returns "The generator. The empty map is the simplest.")
+  (see gen-map-of gen-list)
+  (reference """
+    When the list has a key more than once, the last value wins.
+    """))
+
+(:doc gen-orderedset
+  (summary "An OrderedSet, made from a gen-list of its elements.")
+  (arg g "The generator of the elements.")
+  (returns "The generator. The empty set is the simplest.")
+  (see gen-hashset gen-list))
+
+;; ---------------------------------------------------------------------------
+;; Defaults by type
+;; ---------------------------------------------------------------------------
+
+(:doc Arbitrary
+  (summary "The generator that a type has when a property names no generator.")
+  (tparam %a "The type that the generator makes.")
+  (see arbitrary Gen)
+  (example """
+    (impl (Arbitrary Card) (defun (arbitrary) gen-card))
+
+    ;; In (std test prop): (xs : (List Card)) uses it.
+    (for-all ((xs : (List Card)))
+      (check (= (list-length (list-sort xs)) (list-length xs))))
+    """)
+  (reference """
+    This module has instances for bool, int, long, ulong, bigint, double
+    (without NaN and the infinities), char, string, void, @code{Option},
+    @code{Result}, tuples of two and three, @code{List}, @code{Vec},
+    @code{Map}, @code{HashSet}, @code{OrderedMap} and @code{OrderedSet}.
+    An instance for a container needs instances for the types in it.
+
+    An instance is only a generator. It has no shrinker, because shrinking
+    replays smaller draws. A generator in an instance must obey the rule
+    that smaller draws give simpler values.
+    """))
+
+(:doc arbitrary
+  (summary "The generator of a type. The type of the result chooses the instance.")
+  (returns "The generator of the instance for that type.")
+  (see Arbitrary)
+  (example """
+    (def (: g (Gen (List int))) (arbitrary))
+    (def (: cards (List Card)) (gen-samples (arbitrary) 10))
+    """)
+  (reference """
+    It takes no arguments. Write the type where the result goes, for
+    example with @code{(def (: name Type) ...)}.
+    """))

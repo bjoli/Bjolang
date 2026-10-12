@@ -1,0 +1,335 @@
+;; Docs for std/test/prop.bjo, read through (:doc #:file "prop.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Property tests: for-all runs a body with many generated values, shrinks a failing case, and stores it for the next run.")
+  (see for-all assume classify label)
+  (example """
+    (import (std prelude))
+    (import (std test))
+    (import (std test gen))
+    (import (std test prop))
+
+    (deftest "reverse twice is the identity"
+      (for-all ((xs : (List int)))
+        (check (= (list-reverse (list-reverse xs)) xs))))
+
+    (deftest "a die roll is in range"
+      (for-all ((n (gen-int-range 1 6)))
+        (def r (roll-with n))
+        (check (>= r 1))
+        (check (<= r 6))))
+
+    (deftest "orderedmap-set then ref"
+      (for-all #:runs 500 ((m : (OrderedMap string int)) (k : string) (v : int))
+        (check (= (orderedmap-ref (orderedmap-set m k v) k) v))))
+
+    (run-tests)
+    """)
+  (reference """
+    @code{for-all} is a form in the body of a @code{deftest}. It runs its
+    body many times, each time with new values from the generators of
+    @code{(std test gen)}. The checks of @code{(std test)} in the body tell
+    whether a run passes. When a run fails, @code{for-all} shrinks it to a
+    small case, reports that case under the test, and stores it beside the
+    test file. The next run of the test tries the stored case first.
+
+    @strong{Runs.} A @code{for-all} runs its body 100 times, or
+    @code{--runs n} times, or @code{#:runs n} times. Each run has a size,
+    from 1 at the first run to 100 at the last, so the first runs try small
+    values. A run fails when a check in it fails, when it raises an
+    exception, or when it leaves a resource open. The body of each run runs
+    in a scope of its own, inside the scope of the test. The scope waits for
+    the fibers that the run started, so the next run does not share them.
+    The test has @code{#:open-ok} to allow open resources.
+
+    The first run that fails stops the random runs. A failed
+    @code{for-all} does not stop its test, as a failed @code{check} does not.
+    A test can have more than one @code{for-all}.
+
+    @strong{The report.} A failure shows where the @code{for-all} is, which
+    run failed and the seed of the run, the values of the bindings after
+    shrinking, and the failures of the shrunk case:
+
+    @codeblock[#:lang "text"]|{
+    FAIL reverse is not the identity (list_test.bjo:6)
+      for-all at list_test.bjo:7 failed on run 4 of 100 (seed 1234567890)
+      shrunk 9 time(s) to:
+        xs = (0 1)
+      list_test.bjo:8: (check (= (list-reverse xs) xs))
+        (list-reverse xs) => (1 0)
+        xs                => (0 1)
+    }|
+
+    The second line says @code{with:} when shrinking found no smaller
+    case. It says @code{shrunk n time(s), then stopped, out of time or
+    replays, at:} when a limit stopped shrinking. When the generators raise
+    an exception that is not a discard, the report shows the message and no
+    values.
+
+    @strong{Discarded runs.} @code{assume} discards a run, and so does a
+    generator that gives up, such as @code{gen-such-that}. A discarded run
+    is not counted. When more than 10 times the runs are discarded, the
+    @code{for-all} fails, because the property was hardly tested.
+
+    @strong{Shrinking.} Shrinking does not change the values. It changes the
+    draws that the generators recorded, and replays them. Because a smaller
+    draw gives a simpler value (see @code{(std test gen)}), a smaller vector
+    of draws gives a simpler case. One round of shrinking does these steps,
+    in this order:
+
+    @itemlist{
+      @item{Delete blocks of 8, then 4, 2 and 1 draws, at each place.}
+      @item{Set blocks of 8, then 4, 2 and 1 draws to 0, at each place.}
+      @item{Make each draw smaller: try 0, and else search by halving for
+        the smallest value that fails between 0 and the draw.}
+      @item{Swap adjacent draws that are out of order.}
+      @item{Only when the steps above found nothing, two steps that cost
+        more replays: delete a block of 2 or 1 draws and add their sum to a
+        draw near it, and move all or half of a draw to a later draw near
+        it. "Near" is at most 8 places away. These steps shrink a list
+        whose elements must add up to a value.}
+    }
+
+    A change is kept when the replay fails, with any failure, and the draws
+    that the replay used are smaller than the best so far. Fewer draws are
+    smaller. Of two vectors of the same length, the one that is smaller at
+    the first place where they differ is smaller. Every kept change makes
+    the draws smaller, so shrinking ends. The rounds repeat until a round
+    keeps nothing.
+
+    Two limits stop shrinking early: @code{--shrink-limit n} replays, 2000
+    when not given, and the deadline of the test. Shrinking stops when the
+    time left is not more than a fifth of the time that was left when
+    shrinking started. The report then shows the smallest case found.
+
+    @strong{Flaky properties.} Before it shrinks, @code{for-all} replays the
+    failed run. When the replay passes, the property depends on something
+    other than its draws, such as the time, a shared state or the
+    scheduler. The report then says that the case passed when it ran again,
+    and shows the values and the failures without shrinking. Nothing is
+    stored.
+
+    @strong{Seeds.} Each @code{for-all} draws from a source made from the
+    seed of its test and its index in the test. The seed of the test comes
+    from the seed of the run and the name of the test (see
+    @code{test-seed}). So choosing tests with filters, or adding a test,
+    does not change what the other tests draw. A report shows the seed of
+    the run. Run the test file again with @code{--seed} and that seed, and
+    the name of the test as a filter, to repeat the run.
+
+    @strong{The failure file.} A shrunk failure is stored in a file beside
+    the test file: @code{list_test.bjo} stores to
+    @code{list_test.failed.bjodat}. The file holds the draws, not the
+    values, so no value has to be written as text:
+
+    @codeblock[#:lang "bjolang"]|{
+    (failed
+      (case (test "reverse is not the identity") (index 0) (seed "1234567890") (size 4) (draws [1 0 1 1 0]))
+      (case (test "parse round trip") (index 1) (seed "1234567890") (size 37) (draws [2 -1 0])))
+    }|
+
+    @itemlist{
+      @item{@code{test} is the name of the test, and @code{index} the
+        position of the @code{for-all} among the @code{for-all} forms that
+        the test ran, from 0. A case is found by these two, not by a line
+        number, because lines change when the file is edited.}
+      @item{@code{seed} is the seed of the run that found the case, for a
+        person to read.}
+      @item{@code{size} is the size of the run. A replay uses it.}
+      @item{@code{draws} are the shrunk draws. A draw above
+        @code{long-max} is written as a ulong, @code{18446744073709551615UL},
+        and the others as plain numbers.}
+    }
+
+    A @code{for-all} first replays each case that the file has for it.
+    When a case fails, it is shrunk again and reported, its draws are
+    updated, and the random runs do not run. The other cases of the
+    @code{for-all} are then removed. When all the cases pass, they are
+    removed, and the random runs run. A new shrunk failure is added at the
+    end. A @code{for-all} keeps at most 10 cases.
+
+    The file is read when a @code{for-all} first needs it. It is written at
+    the end of @code{(run-tests)}, through @code{at-run-end!}, and only when
+    its text changed. When it has no case left, it is deleted. A run
+    without filters also removes the cases of tests that no longer exist.
+    @code{run-test} alone does not write the file: the cases stay in
+    memory, and a later run in the same program sees them. With
+    @code{--no-store}, the file is not read or written.
+
+    A file that does not read as cases is treated as empty. Whether to
+    commit the file is the choice of the project. When it is committed, CI
+    tries every case that anyone found.
+
+    @strong{Statistics.} @code{classify} and @code{collect} count the runs
+    that passed. With @code{--stats}, each @code{for-all} prints its counts
+    when it ends:
+
+    @codeblock[#:lang "text"]|{
+    for-all at list_test.bjo:7: 100 run(s)
+      23% empty
+      4% long
+    }|
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Properties
+;; ---------------------------------------------------------------------------
+
+(:doc for-all
+  (summary "Runs the body with many generated values. A failing case is shrunk, reported and stored.")
+  (form (for-all ((name gen) ...) body ...))
+  (form (for-all ((name : Type) ...) body ...))
+  (form (for-all #:runs n ((name gen) ...) body ...))
+  (arg name "The name that the body sees the value by. The report shows the value under this name.")
+  (arg gen "A generator, a @code{(Gen T)}, that makes the value.")
+  (arg Type "A type with an @code{Arbitrary} instance. Its @code{arbitrary} makes the value.")
+  (arg n "The number of runs. When not given, @code{--runs}, and else 100.")
+  (rest body "The forms of a run. At least one form. Their values are dropped.")
+  (see assume classify collect label deftest)
+  (example """
+    (deftest "sort keeps the length"
+      (for-all ((xs : (List int)))
+        (check (= (list-length (list-sort xs)) (list-length xs)))))
+
+    (deftest "a sum of small numbers"
+      (for-all #:runs 1000 ((a (gen-int-range 0 100)) (b (gen-int-range 0 100)))
+        (check (<= (+ a b) 200))))
+    """)
+  (reference """
+    Write it in the body of a @code{deftest}. It finds its test when it
+    runs. Outside a test it raises @code{System.InvalidOperationException}.
+
+    The two kinds of bindings can be mixed in one @code{for-all}. All
+    bindings draw in order, from the choices of the run. To make values
+    that depend on each other, use @code{gen-let} in one binding.
+
+    For each run, the bindings are drawn, and then the body runs in a scope
+    of its own. A run passes when no check in it fails, it raises no
+    exception, and it leaves no resource open. The failures of a run are not
+    added to the test. Only the failures of the shrunk case are added. See
+    the module for the runs, the report, shrinking and the failure file.
+
+    The report shows each value with @code{->str}.
+    """))
+
+(:doc assume
+  (summary "Discards the run when ok is #f. A discarded run is not counted.")
+  (arg ok "The condition that the values of the run must satisfy.")
+  (raises InvalidOperationException "When it is not in a run of a for-all.")
+  (see for-all gen-such-that)
+  (example """
+    (for-all ((xs : (List int)))
+      (assume (not (list-empty? xs)))
+      (check (= (list-length (list-tail xs)) (- (list-length xs) 1))))
+    """)
+  (reference """
+    It leaves the run with an exception. Do not catch
+    @code{System.Exception} around it, or the run goes on.
+
+    When more than 10 times the runs of a @code{for-all} are discarded, the
+    @code{for-all} fails. A condition that most values do not satisfy tests
+    little. Prefer a generator that makes good values directly.
+    """))
+
+(:doc classify
+  (summary "Counts the run under name when ok is #t. --stats prints the counts.")
+  (arg name "The name of the class.")
+  (arg ok "Whether the run is in the class.")
+  (see collect for-all)
+  (example """
+    (for-all ((xs : (List int)))
+      (classify "empty" (list-empty? xs))
+      (classify "long" (> (list-length xs) 10))
+      (check (= (list-reverse (list-reverse xs)) xs)))
+    """)
+  (reference """
+    Only the random runs that pass are counted, not the replays of shrinking
+    or of stored cases. Outside a run, it does nothing.
+
+    The counts show whether the generators make the values that the
+    property is meant to test. A passing test prints nothing, so the counts
+    are printed only with @code{--stats}, as a percentage of the runs, the
+    largest first.
+    """))
+
+(:doc collect
+  (summary "Counts the run under the value, as text. --stats prints the counts.")
+  (arg value "The value. Runs with equal texts are counted together.")
+  (see classify)
+  (example """
+    (for-all ((xs : (List int)))
+      (collect (list-length xs))
+      (check (= (list-reverse (list-reverse xs)) xs)))
+    """)
+  (reference """
+    @code{(collect v)} is @code{(classify (->str v) #t)}.
+    """))
+
+(:doc label
+  (summary "Runs the body, and reports each failure in it under the name.")
+  (form (label name body ...))
+  (arg name "A string: the name that the report puts above each failure.")
+  (rest body "The forms. At least one form. Their values are dropped.")
+  (see for-all with-label)
+  (example """
+    (for-all ((m : (OrderedMap string int)) (k : string) (v : int))
+      (def m2 (orderedmap-set m k v))
+      (label "after insert"
+        (check (= (orderedmap-ref m2 k) v))))
+    """)
+  (reference """
+    A failure in the body is reported as @code{in name:} and then the
+    failure. When the body raises an exception, the exception is reported
+    under the name as a failure, and the forms after the @code{label} still
+    run. It works in any test, also outside a @code{for-all}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Named by the templates
+;; ---------------------------------------------------------------------------
+
+(:doc run-for-all!
+  (summary "Runs a property: the stored cases first, then the random runs, then shrinking and the report.")
+  (arg file "The source file of the for-all.")
+  (arg line "The line of the for-all.")
+  (arg runs "The number of runs that the form gives, or 0 when it gives none.")
+  (arg names "The names of the bindings, in order, for the report.")
+  (arg prop "A function from the choices of a run to the texts of the values and the body of the run.")
+  (raises InvalidOperationException "When no test is running.")
+  (see for-all)
+  (reference """
+    It is exported because the template of @code{for-all} names it. Write
+    @code{for-all}, not a call to this function.
+    """))
+
+(:doc with-label
+  (summary "Runs a function, and reports each failure in it under a name.")
+  (arg name "The name that the report puts above each failure.")
+  (arg body "The function.")
+  (see label)
+  (reference """
+    It is exported because the template of @code{label} names it. Write
+    @code{label}, not a call to this function.
+    """))
+
+(:doc prop-draw
+  (summary "The value of a generator, drawn from the choices of a run.")
+  (arg g "The generator.")
+  (arg c "The choices.")
+  (returns "What @code{(gen-run g c)} answers.")
+  (see for-all)
+  (reference """
+    It is exported because the template of @code{for-all} names it, for a
+    binding @code{(name gen)}.
+    """))
+
+(:doc prop-arbitrary
+  (summary "The value of the Arbitrary generator of the result type, drawn from the choices of a run.")
+  (arg c "The choices.")
+  (returns "What @code{(gen-run (arbitrary) c)} answers. The type of the result chooses the instance.")
+  (see for-all Arbitrary)
+  (reference """
+    It is exported because the template of @code{for-all} names it, for a
+    binding @code{(name : Type)}.
+    """))

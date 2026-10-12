@@ -1,0 +1,650 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/test/gen.bjo — generators of test values.
+;;
+;; A generator does not read a RandomSource. It asks a `Choices` for numbers
+;; with `draw`, and the `Choices` either takes them from a source and records
+;; them, or replays a recorded vector. `(std test prop)` shrinks a failing
+;; case by making the recorded vector smaller and replaying it, so no
+;; generator needs a shrinker of its own.
+;;
+;; That works only when a smaller number gives a simpler value. Every
+;; generator here keeps to that rule: 0 is the simplest choice at every draw.
+;; A replayed vector that runs out answers 0 for every further draw, so a
+;; shorter vector gives a simpler value too.
+
+(export
+  ;; The recorder
+  Choices recording-choices replaying-choices
+  draw choices-size choices-draws choices-discarded? discard!
+  ;; Generators, and running one
+  Gen make-gen gen-run gen-sample gen-samples
+  ;; Combinators
+  gen-pure gen-map gen-bind gen-let gen-such-that gen-one-of gen-frequency
+  gen-element gen-sized gen-resize gen-recursive
+  ;; Numbers
+  gen-bool gen-int gen-int-range gen-long gen-long-range gen-ulong gen-double
+  gen-bigint
+  ;; Text
+  gen-char gen-ascii-char gen-string gen-ascii-string gen-string-of
+  ;; Shapes
+  gen-unit gen-option gen-result gen-tuple2 gen-tuple3 gen-tuple4
+  ;; Sequences
+  gen-list gen-list-of-length gen-vec gen-array gen-shuffle
+  ;; Maps and sets
+  gen-map-of gen-hashset gen-orderedmap gen-orderedset
+  ;; Defaults by type
+  Arbitrary arbitrary)
+
+(import (std prelude))
+(import (std random))
+(import (std syntax-match))
+(import (std hashset))
+(import (std orderedset))
+(import (std orderedmap))
+
+(import/class
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+(:doc #:file "gen.bjodoc")
+
+;; ---------------------------------------------------------------------------
+;; The recorder
+;; ---------------------------------------------------------------------------
+
+;; `source` is the source a recording draws from, `None` when replaying.
+;; `replay` is the vector a replay reads, and `pos` how far it has read.
+;; `recorded` holds every answer given, in both modes: after a replay it is
+;; the part of the vector that was used, and the zeros answered after the
+;; vector ran out. That is what a shrinker keeps.
+(type
+  (: Choices #:opaque
+     (Record (: source (Option RandomSource))
+             (: replay (Vec ulong))
+             (: pos int #:mutable)
+             (: recorded (VecBuilder ulong))
+             (: size int #:mutable)
+             (: discarded bool #:mutable))))
+
+;; A generator that draws more than this many numbers is stopped, and its run
+;; is discarded. A generator that never stops drawing would otherwise run
+;; until the test's deadline.
+(: max-draws int)
+(def max-draws 10000)
+
+(: recording-choices (-> RandomSource int Choices))
+(defun (recording-choices rng size)
+  (Choices (source (Some rng)) (replay (vec-empty)) (pos 0)
+           (recorded (vecbuilder-empty)) (size size) (discarded #f)))
+
+(: replaying-choices (-> (Vec ulong) int Choices))
+(defun (replaying-choices draws size)
+  (Choices (source None) (replay draws) (pos 0)
+           (recorded (vecbuilder-empty)) (size size) (discarded #f)))
+
+(: choices-size (-> Choices int))
+(defun (choices-size c) (record-ref c size))
+
+(: choices-draws (-> Choices (Vec ulong)))
+(defun (choices-draws c) (vecbuilder->vec (record-ref c recorded)))
+
+(: choices-discarded? (-> Choices bool))
+(defun (choices-discarded? c) (record-ref c discarded))
+
+;; Marks the run as discarded and leaves it. The exception is only the way
+;; out: whoever runs the generator looks at `choices-discarded?`, not at the
+;; exception.
+(: discard! (-> Choices string %a))
+(defun (discard! c why)
+  (record-set! c (discarded #t))
+  (raise (cast Exception (ArgumentException. (str "discarded: " why)))))
+
+;; A number in [0, bound). A bound of 0 means every ulong.
+(: draw (-> Choices ulong ulong))
+(defun (draw c bound) (draw/forced c bound None))
+
+;; `draw`, except that a recording records `forced` instead of drawing, when
+;; it is given. A replay reads the vector as `draw` does. A generator uses it
+;; to record a value it chose itself in the draws another way to that value
+;; would make, so that a replay, and so shrinking, sees no difference.
+(: draw/forced (-> Choices ulong (Option ulong) ulong))
+(defun (draw/forced c bound forced)
+  (def recorded (record-ref c recorded))
+  (when (>= (vecbuilder-length recorded) max-draws)
+    (discard! c "the generator drew too many numbers"))
+  (def raw
+    (match (record-ref c source)
+      ((Some rng)
+       (match forced
+         ((Some v) v)
+         (None (random-u64 #:rng rng))))
+      (None
+       (def replay (record-ref c replay))
+       (def pos (record-ref c pos))
+       (record-set! c (pos (+ pos 1)))
+       (if (< pos (vec-length replay)) (vec-ref replay pos) 0UL))))
+  (def value (if (= bound 0UL) raw (% raw bound)))
+  (vecbuilder-add! recorded value)
+  value)
+
+;; A number in [0, n) from the source of a recording, not recorded. Only a
+;; choice that a forced draw records may be made this way. A replay answers 0.
+(: unrecorded-below (-> Choices int int))
+(defun (unrecorded-below c n)
+  (match (record-ref c source)
+    ((Some rng) (cast System.Int32 (% (random-u64 #:rng rng) (cast System.UInt64 n))))
+    (None 0)))
+
+;; A number in [0, n), for an n above 0.
+(: draw-below (-> Choices int int))
+(defun (draw-below c n)
+  (cast System.Int32 (draw c (cast System.UInt64 n))))
+
+;; ---------------------------------------------------------------------------
+;; Generators
+;; ---------------------------------------------------------------------------
+
+(type (: (Gen %a) #:opaque (Record (: run (-> Choices %a)))))
+
+(: make-gen (-> (-> Choices %a) (Gen %a)))
+(defun (make-gen f) (Gen (run f)))
+
+(: gen-run (-> (Gen %a) Choices %a))
+(defun (gen-run g c) ((record-ref g run) c))
+
+;; One value, drawn from a fresh source unless `rng` is given.
+(: gen-sample (-> (Gen %a) (#:size int) (#:rng RandomSource) %a))
+(defun (gen-sample g #:size 30 #:rng (make-random))
+  (gen-run g (recording-choices rng size)))
+
+;; `n` values, at sizes that grow from 1 to `size`, as a property's runs do.
+(: gen-samples (-> (Gen %a) int (#:size int) (#:rng RandomSource) (List %a)))
+(defun (gen-samples g n #:size 100 #:rng (make-random))
+  (loop (:for i (range 0 n))
+        (:acc out (listing (gen-run g (recording-choices (random-split rng)
+                                                         (size-of-run i n size)))))))
+
+;; The size of run i of n: 1 at the first run, `top` at the last.
+(: size-of-run (-> int int int int))
+(defun (size-of-run i n top)
+  (if (<= n 1) top (+ 1 (/ (* i (- top 1)) (- n 1)))))
+
+;; ---------------------------------------------------------------------------
+;; Combinators
+;; ---------------------------------------------------------------------------
+
+(: gen-pure (-> %a (Gen %a)))
+(defun (gen-pure x) (make-gen (fun (c) x)))
+
+(: gen-map (-> (-> %a %b) (Gen %a) (Gen %b)))
+(defun (gen-map f g) (make-gen (fun (c) (f (gen-run g c)))))
+
+(: gen-bind (-> (Gen %a) (-> %a (Gen %b)) (Gen %b)))
+(defun (gen-bind g f) (make-gen (fun (c) (gen-run (f (gen-run g c)) c))))
+
+;; `(gen-let ((name gen) ...) body ...)` — a generator that draws each
+;; binding in order, as `let*` binds, and answers the body. A later generator
+;; may use an earlier value. `Gen` is not a `Monad`: `bind`'s callback may be a
+;; bjoroutine, and a generator runs inside an ordinary function.
+(def/macro (gen-let form inject compare)
+  (syntax-match form
+    ((_ ((name g) ...) first body ...)
+     #'(make-gen
+         (fun (choices)
+           (let* ,(SList (list-map (fun (pair)
+                                     (syntax-match pair
+                                       ((n x) #'(,n (gen-run ,x choices)))
+                                       (bad (syntax-error bad "a binding is (name generator)."))))
+                                   (match form
+                                     ((SList (Cons _ (Cons (SList bindings) _))) bindings)
+                                     (_ (list)))))
+             ,first
+             ,@body))))
+    (bad (syntax-error bad "gen-let takes bindings and a body: (gen-let ((x gen-int) (y (gen-int-range 0 x))) (Tuple x y))."))))
+
+;; Retries until `pred` holds. After 100 tries the run is discarded, since a
+;; generator that rarely satisfies `pred` tests little.
+(: gen-such-that (-> (-> %a bool) (Gen %a) (Gen %a)))
+(defun (gen-such-that pred g)
+  (make-gen
+    (fun (c)
+      (let go ((tries 0))
+        (if (= tries 100)
+            (discard! c "gen-such-that found no value in 100 tries")
+            (let ((x (gen-run g c)))
+              (if (pred x) x (go (+ tries 1)))))))))
+
+;; One of the generators. The first is the simplest.
+(: gen-one-of (-> (List (Gen %a)) (Gen %a)))
+(defun (gen-one-of gens)
+  (when (list-empty? gens)
+    (raise (cast Exception (ArgumentException. "gen-one-of was given no generators."))))
+  (def v (list->vec gens))
+  (make-gen (fun (c) (gen-run (vec-ref v (draw-below c (vec-length v))) c))))
+
+;; One of the generators, by weight. The first is the simplest.
+(: gen-frequency (-> (List (Tuple int (Gen %a))) (Gen %a)))
+(defun (gen-frequency choices)
+  (def total (loop (:for (Tuple w _) choices) (:acc n (summing w))))
+  (when (any? (fun (p) (match p ((Tuple w _) (< w 0)))) choices)
+    (raise (cast Exception (ArgumentException. "gen-frequency was given a weight below 0."))))
+  (when (<= total 0)
+    (raise (cast Exception (ArgumentException. "gen-frequency needs a weight above 0."))))
+  (make-gen
+    (fun (c)
+      (let go ((left choices) (n (draw-below c total)))
+        (match left
+          ((Cons (Tuple w g) more) (if (< n w) (gen-run g c) (go more (- n w))))
+          ;; Not reached: the draw is below the total of the weights, and
+          ;; none of them is below 0.
+          (Nil (raise (cast Exception (ArgumentException. "gen-frequency ran out of weights.")))))))))
+
+;; One of the values. The first is the simplest.
+(: gen-element (-> (List %a) (Gen %a)))
+(defun (gen-element xs)
+  (when (list-empty? xs)
+    (raise (cast Exception (ArgumentException. "gen-element was given no values."))))
+  (def v (list->vec xs))
+  (make-gen (fun (c) (vec-ref v (draw-below c (vec-length v))))))
+
+(: gen-sized (-> (-> int (Gen %a)) (Gen %a)))
+(defun (gen-sized f) (make-gen (fun (c) (gen-run (f (choices-size c)) c))))
+
+;; `g` with the size `n`. The size goes back to what it was afterwards.
+(: gen-resize (-> int (Gen %a) (Gen %a)))
+(defun (gen-resize n g)
+  (make-gen
+    (fun (c)
+      (def outer (choices-size c))
+      (record-set! c (size n))
+      (def x (gen-run g c))
+      (record-set! c (size outer))
+      x)))
+
+;; A generator of a recursive type. At size 0 it is `base`. Above, a draw
+;; chooses `base` or `(step self)`, where `self` is this generator at half the
+;; size. 0 chooses `base`, so a case shrinks toward it.
+(: gen-recursive (-> (Gen %a) (-> (Gen %a) (Gen %a)) (Gen %a)))
+(defun (gen-recursive base step)
+  (make-gen
+    (fun (c)
+      (def n (choices-size c))
+      (if (or (<= n 0) (= (draw c 4UL) 0UL))
+          (gen-run base c)
+          (gen-run (step (gen-resize (/ n 2) (gen-recursive base step))) c)))))
+
+;; ---------------------------------------------------------------------------
+;; Numbers
+;; ---------------------------------------------------------------------------
+
+(: gen-bool (Gen bool))
+(def gen-bool (make-gen (fun (c) (= (draw c 2UL) 1UL))))
+
+;; A long in [lo, hi]. 0 gives the value nearest 0: lo when the range is all
+;; above 0, hi when it is all below, and 0 itself otherwise. A range across 0
+;; draws the sign first, positive at 0, then the distance from 0.
+(: draw-long-range (-> Choices long long long))
+(defun (draw-long-range c lo hi) (draw-long-range/forced c lo hi None))
+
+;; The draw that records `target`, as `f` turns it into a draw.
+(: forced-by (-> (Option long) (-> long long) (Option ulong)))
+(defun (forced-by target f)
+  (match target
+    ((Some t) (Some (cast System.UInt64 (f t))))
+    (None None)))
+
+;; `draw-long-range`, recording `target` when given: the draws it records are
+;; those that give `target` when replayed.
+(: draw-long-range/forced (-> Choices long long (Option long) long))
+(defun (draw-long-range/forced c lo hi target)
+  (defun (forced f) (forced-by target f))
+  (cond
+    ((> lo hi)
+     (raise (cast Exception (ArgumentException. #"An empty range: ${lo} to ${hi}."))))
+    ((>= lo 0L)
+     ;; hi - lo + 1 as a ulong, which is 0, meaning every ulong, only when
+     ;; the range is all of them.
+     (+ lo (cast System.Int64 (draw/forced c (+ (cast System.UInt64 (- hi lo)) 1UL)
+                                           (forced (fun (t) (- t lo)))))))
+    ((<= hi 0L)
+     (- hi (cast System.Int64 (draw/forced c (+ (cast System.UInt64 (- hi lo)) 1UL)
+                                           (forced (fun (t) (- hi t)))))))
+    ((= (draw/forced c 2UL (forced (fun (t) (if (>= t 0L) 0L 1L)))) 0UL)
+     (cast System.Int64 (draw/forced c (+ (cast System.UInt64 hi) 1UL) (forced (fun (t) t)))))
+    (else
+     ;; -(lo + 1) does not overflow, even at long-min.
+     (- -1L (cast System.Int64 (draw/forced c (+ (cast System.UInt64 (- -1L lo)) 1UL)
+                                            (forced (fun (t) (- -1L t)))))))))
+
+(: gen-long-range (-> long long (Gen long)))
+(defun (gen-long-range lo hi)
+  (when (> lo hi)
+    (raise (cast Exception (ArgumentException. #"gen-long-range: ${lo} is above ${hi}."))))
+  (make-gen (fun (c) (draw-long-range c lo hi))))
+
+(: gen-int-range (-> int int (Gen int)))
+(defun (gen-int-range lo hi)
+  (when (> lo hi)
+    (raise (cast Exception (ArgumentException. #"gen-int-range: ${lo} is above ${hi}."))))
+  (make-gen (fun (c) (cast System.Int32 (draw-long-range c (cast System.Int64 lo) (cast System.Int64 hi))))))
+
+;; The distance from 0 that a value of size n reaches: n * n, so a size of 100
+;; reaches 10000. A size at or below 0 reaches 0.
+(: reach (-> int long))
+(defun (reach n)
+  (if (<= n 0) 0L (* (cast System.Int64 n) (cast System.Int64 n))))
+
+;; An edge value: one of `edges`, drawn with `pad` more draws of 0 after it.
+;; An edge has to cost as many draws as the longest other way to a value, or
+;; shrinking, which prefers fewer draws, would turn a value such as 1000 into
+;; an edge such as int-max.
+(: draw-edge (-> Choices (Vec %a) int %a))
+(defun (draw-edge c edges pad)
+  (def x (vec-ref edges (draw-below c (vec-length edges))))
+  (loop (:for _ (range 0 pad)) (:do (ignore (draw c 1UL))))
+  x)
+
+;; A sized whole number, with the edges of its type now and then. The first
+;; draw chooses: 0 to 7 a value within the size's reach, 8 any value of the
+;; type, 9 an edge. An edge is recorded as kind 8 would record it, so the two
+;; replay alike: shrinking turns the 9 into an 8 and keeps the value, and can
+;; then make the value smaller.
+(: draw-sized-long (-> Choices long long (List long) long))
+(defun (draw-sized-long c lo hi edges)
+  (def kind (draw c 10UL))
+  (cond
+    ((< kind 8UL)
+     (def r (reach (choices-size c)))
+     (draw-long-range c (if (< (- 0L r) lo) lo (- 0L r)) (if (> r hi) hi r)))
+    ((= kind 8UL) (draw-long-range c lo hi))
+    (else
+     (def v (list->vec edges))
+     (draw-long-range/forced c lo hi (Some (vec-ref v (unrecorded-below c (vec-length v))))))))
+
+(: gen-long (Gen long))
+(def gen-long
+  (make-gen
+    (fun (c)
+      (draw-sized-long c -9223372036854775808L 9223372036854775807L
+                       (list 0L 1L -1L 9223372036854775807L -9223372036854775808L
+                             2147483647L -2147483648L 4294967296L)))))
+
+(: gen-int (Gen int))
+(def gen-int
+  (make-gen
+    (fun (c)
+      (cast System.Int32
+            (draw-sized-long c -2147483648L 2147483647L
+                             (list 0L 1L -1L 2147483647L -2147483648L 255L 256L 65535L))))))
+
+;; Any ulong. 0 to 7 within the size's reach, 8 any, 9 an edge.
+(: gen-ulong (Gen ulong))
+(def gen-ulong
+  (make-gen
+    (fun (c)
+      (def kind (draw c 10UL))
+      (cond
+        ((< kind 8UL) (draw c (+ (cast System.UInt64 (reach (choices-size c))) 1UL)))
+        ((= kind 8UL) (draw c 0UL))
+        (else
+         ;; Recorded as kind 8 records a value: see draw-sized-long.
+         (def v (list->vec (list 0UL 1UL 18446744073709551615UL 9223372036854775808UL 4294967296UL)))
+         (draw/forced c 0UL (Some (vec-ref v (unrecorded-below c (vec-length v))))))))))
+
+;; A bigint: a long most of the time, and a product of longs beyond the range
+;; of a long otherwise.
+(: gen-bigint (Gen bigint))
+(def gen-bigint
+  (make-gen
+    (fun (c)
+      (def low (cast System.Numerics.BigInteger (gen-run gen-long c)))
+      (if (= (draw c 4UL) 3UL)
+          (* low (+ (cast System.Numerics.BigInteger (gen-run gen-long c)) 9223372036854775808I))
+          low))))
+
+;; A double. Most draws give a whole part within the size's reach and a
+;; fraction; 0 gives 0.0. An edge now and then: 0.0, ±1, the largest and
+;; smallest values, the smallest above 0. `#:special` adds NaN and the
+;; infinities to the edges.
+(: gen-double (-> (#:special bool) (Gen double)))
+(defun (gen-double #:special #f)
+  (def edges
+    (list->vec
+      (list-append (list 0.0 1.0 -1.0 1.7976931348623157e308 -1.7976931348623157e308 5e-324 -0.0)
+                   (if special (list (/ 0.0 0.0) (/ 1.0 0.0) (/ -1.0 0.0)) (list)))))
+  (make-gen
+    (fun (c)
+      (def kind (draw c 10UL))
+      (if (= kind 9UL)
+          ;; Padded to the four draws of the other way: sign, distance and
+          ;; fraction after the kind.
+          (draw-edge c edges 2)
+          (let* ((r (reach (choices-size c)))
+                 (whole (draw-long-range c (- 0L r) r))
+                 ;; 53 bits, so every fraction is a double exactly.
+                 (frac (/ (cast System.Double (draw c 9007199254740992UL)) 9007199254740992.0)))
+            (if (< whole 0L)
+                (- (cast System.Double whole) frac)
+                (+ (cast System.Double whole) frac)))))))
+
+;; ---------------------------------------------------------------------------
+;; Text
+;; ---------------------------------------------------------------------------
+
+;; Printable ASCII, from #\a: the 95 characters from space to ~, turned so
+;; that 0 is a letter, the character a case most often shrinks to.
+(: draw-ascii (-> Choices char))
+(defun (draw-ascii c)
+  (def d (cast System.Int32 (draw c 95UL)))
+  (int->char (+ 32 (% (+ d 65) 95))))
+
+(: gen-ascii-char (Gen char))
+(def gen-ascii-char (make-gen draw-ascii))
+
+;; Characters that find bugs in text code: the empty character, a combining
+;; accent, a character outside the BMP (two UTF-16 units), a right-to-left
+;; letter, the replacement character, a non-breaking space, a final sigma,
+;; and a capital I with a dot, whose lower case is two characters.
+(: odd-chars (Vec char))
+(def odd-chars
+  (list->vec (list (int->char 0) (int->char 0x301) (int->char 0x1F600) (int->char 0x5D0)
+                   (int->char 0xFFFD) (int->char 0xA0) (int->char 0x3C2) (int->char 0x130))))
+
+;; Any Unicode scalar value. 0 to 7 printable ASCII, 8 one of the odd
+;; characters above, 9 any scalar value.
+(: gen-char (Gen char))
+(def gen-char
+  (make-gen
+    (fun (c)
+      (def kind (draw c 10UL))
+      (cond
+        ((< kind 8UL) (draw-ascii c))
+        ((= kind 8UL) (vec-ref odd-chars (draw-below c (vec-length odd-chars))))
+        (else
+         ;; Every scalar value: 0 to 0x10FFFF without the surrogates.
+         (def n (draw-below c 1112064))
+         (int->char (if (< n 0xD800) n (+ n 2048))))))))
+
+(: gen-string-of (-> (Gen char) (Gen string)))
+(defun (gen-string-of g) (gen-map list->string (gen-list g)))
+
+(: gen-string (Gen string))
+(def gen-string (gen-string-of gen-char))
+
+(: gen-ascii-string (Gen string))
+(def gen-ascii-string (gen-string-of gen-ascii-char))
+
+;; ---------------------------------------------------------------------------
+;; Shapes
+;; ---------------------------------------------------------------------------
+
+(: gen-unit (Gen void))
+(def gen-unit (make-gen (fun (c) unit)))
+
+;; None at 0, and a quarter of the time.
+(: gen-option (-> (Gen %a) (Gen (Option %a))))
+(defun (gen-option g)
+  (make-gen (fun (c) (if (= (draw c 4UL) 0UL) None (Some (gen-run g c))))))
+
+;; Ok at 0, and half of the time.
+(: gen-result (-> (Gen %e) (Gen %a) (Gen (Result %e %a))))
+(defun (gen-result ge ga)
+  (make-gen (fun (c) (if (= (draw c 2UL) 0UL) (Ok (gen-run ga c)) (Err (gen-run ge c))))))
+
+(: gen-tuple2 (-> (Gen %a) (Gen %b) (Gen (Tuple %a %b))))
+(defun (gen-tuple2 ga gb)
+  (make-gen (fun (c) (let* ((a (gen-run ga c)) (b (gen-run gb c))) (Tuple a b)))))
+
+(: gen-tuple3 (-> (Gen %a) (Gen %b) (Gen %c) (Gen (Tuple %a %b %c))))
+(defun (gen-tuple3 ga gb gc)
+  (make-gen (fun (c) (let* ((a (gen-run ga c)) (b (gen-run gb c)) (x (gen-run gc c)))
+                       (Tuple a b x)))))
+
+(: gen-tuple4 (-> (Gen %a) (Gen %b) (Gen %c) (Gen %d) (Gen (Tuple %a %b %c %d))))
+(defun (gen-tuple4 ga gb gc gd)
+  (make-gen (fun (c) (let* ((a (gen-run ga c)) (b (gen-run gb c))
+                            (x (gen-run gc c)) (d (gen-run gd c)))
+                       (Tuple a b x d)))))
+
+;; ---------------------------------------------------------------------------
+;; Sequences
+;; ---------------------------------------------------------------------------
+
+;; The longest list a generator makes, whatever the size.
+(: max-length int)
+(def max-length 1000)
+
+;; A list whose length grows with the size: 1 + size / 5 on average. Before
+;; each element a draw says whether there is one more, and 0 says no. So
+;; deleting draws makes the list shorter, and setting one to 0 ends it there.
+(: gen-list (-> (Gen %a) (Gen (List %a))))
+(defun (gen-list g)
+  (make-gen
+    (fun (c)
+      (def mean (cast System.UInt64 (+ 1 (/ (choices-size c) 5))))
+      (def out (listbuilder-empty))
+      (let go ((n 0))
+        (if (and (< n max-length) (> (draw c (+ mean 1UL)) 0UL))
+            (begin
+              (listbuilder-add! out (gen-run g c))
+              (go (+ n 1)))
+            (listbuilder->list out))))))
+
+(: gen-list-of-length (-> int (Gen %a) (Gen (List %a))))
+(defun (gen-list-of-length n g)
+  (make-gen
+    (fun (c)
+      (loop (:for _ (range 0 n))
+            (:acc out (listing (gen-run g c)))))))
+
+(: gen-vec (-> (Gen %a) (Gen (Vec %a))))
+(defun (gen-vec g) (gen-map list->vec (gen-list g)))
+
+(: gen-array (-> (Gen %a) (Gen (Array %a))))
+(defun (gen-array g)
+  (gen-map (fun (xs)
+             (def v (list->vec xs))
+             (def a (make-array (vec-length v)))
+             (loop (:with i 0 (+ i 1))
+                   (:for x v)
+                   (:do (array-set! a i x)))
+             a)
+           (gen-list g)))
+
+;; A permutation of `xs`. Fisher-Yates from the front: element i swaps with
+;; one at or after it, and a draw of 0 leaves it where it is. So the order
+;; shrinks toward the order `xs` has.
+(: gen-shuffle (-> (List %a) (Gen (List %a))))
+(defun (gen-shuffle xs)
+  (make-gen
+    (fun (c)
+      (def v (list->vec xs))
+      (def n (vec-length v))
+      (def a (make-array n))
+      (loop (:with i 0 (+ i 1))
+            (:for x v)
+            (:do (array-set! a i x)))
+      (loop (:for i (range 0 n))
+            (:do (let* ((j (+ i (draw-below c (- n i))))
+                        (x (array-ref a i)))
+                   (array-set! a i (array-ref a j))
+                   (array-set! a j x))))
+      (vec->list (array->vec a)))))
+
+;; ---------------------------------------------------------------------------
+;; Maps and sets
+;; ---------------------------------------------------------------------------
+
+;; Each is made from a list of entries, so it shrinks as the list does. A
+;; later entry wins over an earlier one with the same key.
+
+(: gen-map-of (-> (Gen %k) (Gen %v) (Gen (Map %k %v))) (where (Eq %k)))
+(defun (gen-map-of gk gv) (gen-map list->map (gen-list (gen-tuple2 gk gv))))
+
+(: gen-hashset (-> (Gen %a) (Gen (HashSet %a))) (where (Eq %a)))
+(defun (gen-hashset g) (gen-map list->hashset (gen-list g)))
+
+(: gen-orderedmap (-> (Gen %k) (Gen %v) (Gen (OrderedMap %k %v))) (where (Ord %k)))
+(defun (gen-orderedmap gk gv) (gen-map list->orderedmap (gen-list (gen-tuple2 gk gv))))
+
+(: gen-orderedset (-> (Gen %a) (Gen (OrderedSet %a))) (where (Ord %a)))
+(defun (gen-orderedset g) (gen-map list->orderedset (gen-list g)))
+
+;; ---------------------------------------------------------------------------
+;; Defaults by type
+;; ---------------------------------------------------------------------------
+
+;; The generator a type has when a property does not name one. An instance is
+;; only a generator: shrinking needs nothing more.
+(def/trait (Arbitrary %a)
+  (: arbitrary (-> (Gen %a))))
+
+(impl (Arbitrary bool) (defun (arbitrary) gen-bool))
+(impl (Arbitrary int) (defun (arbitrary) gen-int))
+(impl (Arbitrary long) (defun (arbitrary) gen-long))
+(impl (Arbitrary ulong) (defun (arbitrary) gen-ulong))
+(impl (Arbitrary bigint) (defun (arbitrary) gen-bigint))
+(impl (Arbitrary double) (defun (arbitrary) (gen-double)))
+(impl (Arbitrary char) (defun (arbitrary) gen-char))
+(impl (Arbitrary string) (defun (arbitrary) gen-string))
+(impl (Arbitrary void) (defun (arbitrary) gen-unit))
+
+(impl (Arbitrary (Option %a)) (where (Arbitrary %a))
+  (defun (arbitrary) (gen-option (arbitrary))))
+
+(impl (Arbitrary (Result %e %a)) (where (Arbitrary %e) (Arbitrary %a))
+  (defun (arbitrary) (gen-result (arbitrary) (arbitrary))))
+
+(impl (Arbitrary (Tuple %a %b)) (where (Arbitrary %a) (Arbitrary %b))
+  (defun (arbitrary) (gen-tuple2 (arbitrary) (arbitrary))))
+
+(impl (Arbitrary (Tuple %a %b %c)) (where (Arbitrary %a) (Arbitrary %b) (Arbitrary %c))
+  (defun (arbitrary) (gen-tuple3 (arbitrary) (arbitrary) (arbitrary))))
+
+(impl (Arbitrary (List %a)) (where (Arbitrary %a))
+  (defun (arbitrary) (gen-list (arbitrary))))
+
+(impl (Arbitrary (Vec %a)) (where (Arbitrary %a))
+  (defun (arbitrary) (gen-vec (arbitrary))))
+
+(impl (Arbitrary (Map %k %v)) (where (Arbitrary %k) (Eq %k) (Arbitrary %v))
+  (defun (arbitrary) (gen-map-of (arbitrary) (arbitrary))))
+
+(impl (Arbitrary (HashSet %a)) (where (Arbitrary %a) (Eq %a))
+  (defun (arbitrary) (gen-hashset (arbitrary))))
+
+(impl (Arbitrary (OrderedMap %k %v)) (where (Arbitrary %k) (Ord %k) (Arbitrary %v))
+  (defun (arbitrary) (gen-orderedmap (arbitrary) (arbitrary))))
+
+(impl (Arbitrary (OrderedSet %a)) (where (Arbitrary %a) (Ord %a))
+  (defun (arbitrary) (gen-orderedset (arbitrary))))

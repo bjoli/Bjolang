@@ -24,31 +24,41 @@
 ;;     (run-tests)
 ;;
 ;; `deftest` registers a test where it is written, and `(run-tests)` is the
-;; file's `main`: it runs every test registered above it, in source order. A
+;; file's `main`: it runs every test the module registered, in source order. A
 ;; test that passes prints nothing. A test that fails prints the test, where it
 ;; is, and every check in it that failed, with the values the check saw. The
 ;; run ends with one line, and exits 1 if anything failed.
 ;;
 ;; Arguments to the program choose tests: a test runs when its name contains
-;; one of them. With none, every test runs.
+;; one of them. With none, every test runs. Arguments that start with `--` are
+;; flags; see `parse-test-args`.
 ;;
 ;; Each test runs in a scope of its own, as `with-test` in `(std simpletest)`
 ;; does: under a deadline (`#:within ms`, 5 seconds by default), waiting for
 ;; the fibers it started, and failing if it left a resource open (unless
 ;; `#:open-ok`). A test that raises fails with the exception's message, and the
 ;; tests after it still run.
+;;
+;; Property tests are in `(std test prop)`, generators in `(std test gen)`,
+;; and output snapshots in `(std test expect)`. They hook into a run through
+;; `running-test`, `current-test-options`, `test-seed` and `at-run-end!`.
 
 (export deftest run-tests
-        check check-match check-raises check-fail
-        Test TestResult registered-tests module-tests run-test run-registered-tests
+        check check-match check-raises check-fail check-approx check-output
+        Test TestResult TestStatus registered-tests module-tests run-test run-registered-tests
         test-name test-module test-file test-line test-result-test test-result-failures
-        test-failed!
+        test-result-status test-failed!
+        ;; What the extensions of a run read
+        TestOptions parse-test-args current-test-options running-test test-seed
+        test-time-left next-test-index! take-test-output!
+        mix-seed string-hash at-run-end! failures-into
         ;; Named by the templates of the macros above, so they have to be
         ;; reachable where those expand.
-        register-test! check-failed!)
+        register-test! check-failed! deftest-cases-row check-raises-message approx-close?)
 
 (import (std prelude))
 (import (std syntax-match))
+(import (std random))
 
 (:doc #:file "test.bjodoc")
 
@@ -61,12 +71,20 @@
 ;; ---------------------------------------------------------------------------
 
 ;; A registered test. `body` is the test's forms, run when the test runs.
+;; `skip` and `todo` are the reasons given with `#:skip` and `#:todo`, and
+;; empty when the test has none. `capture` is #t when the body uses
+;; `expect-output`: its output then goes to a string port that
+;; `take-test-output!` reads.
 (type (: Test (Record (: name string)
                       (: module string)
                       (: file string)
                       (: line int)
                       (: within int)
                       (: open-ok bool)
+                      (: skip string)
+                      (: todo string)
+                      (: slow bool)
+                      (: capture bool)
                       (: body (-> void)))))
 
 (: test-name (-> Test string))
@@ -88,11 +106,12 @@
 
 ;; Adds a test. It answers a number only so that `deftest` can bind it at the
 ;; top level, which is what makes it run before `main`.
-(: register-test! (-> string string string int int bool (-> void) int))
-(defun (register-test! name module file line within open-ok body)
+(: register-test! (-> string string string int int bool string string bool bool (-> void) int))
+(defun (register-test! name module file line within open-ok skip todo slow capture body)
   (box-set! registry
             (cons (Test (name name) (module module) (file file) (line line)
-                        (within within) (open-ok open-ok) (body body))
+                        (within within) (open-ok open-ok) (skip skip) (todo todo)
+                        (slow slow) (capture capture) (body body))
                   (box-ref registry)))
   0)
 
@@ -108,6 +127,153 @@
   (list-filter (fun (t) (= (record-ref t module) module)) (registered-tests)))
 
 ;; ---------------------------------------------------------------------------
+;; The options of a run
+;; ---------------------------------------------------------------------------
+
+;; What the arguments of a test program asked for. `seed` is always set: from
+;; `--seed`, from BJO_TEST_SEED, or from the OS. `runs` and `shrink-limit` are
+;; 0 when not given, which means each `for-all`'s own default.
+(type (: TestOptions (Record (: filters (Vec string))
+                             (: seed ulong)
+                             (: runs int)
+                             (: shrink-limit int)
+                             (: stats bool)
+                             (: quick bool)
+                             (: promote bool)
+                             (: store bool)
+                             (: junit (Option string)))))
+
+;; A number in decimal, or in hex after 0x.
+(: parse-ulong (-> string (Option ulong)))
+(defun (parse-ulong s)
+  (def chars (string->list s))
+  (def hex? (match chars ((Cons #\0 (Cons (or #\x #\X) _)) #t) (_ #f)))
+  (def digits (if hex? (list-tail (list-tail chars)) chars))
+  (def base (if hex? 16UL 10UL))
+  (if (list-empty? digits)
+      None
+      (let go ((left digits) (acc 0UL))
+        (match left
+          (Nil (Some acc))
+          ((Cons ch more)
+           (def d (char->int ch))
+           (def v (cond ((and (>= d 48) (<= d 57)) (- d 48))
+                        ((and hex? (>= d 97) (<= d 102)) (- d 87))
+                        ((and hex? (>= d 65) (<= d 70)) (- d 55))
+                        (else -1)))
+           (if (< v 0)
+               None
+               (go more (+ (* acc base) (cast System.UInt64 v)))))))))
+
+(: parse-count (-> string string (Result string int)))
+(defun (parse-count flag s)
+  (match (parse-ulong s)
+    ((Some n) #:when (< n 1000000000UL) (Ok (cast System.Int32 n)))
+    (_ (Err #"${flag} takes a number, and this is not one: ${s}"))))
+
+;; The seed of a run that gives none: BJO_TEST_SEED, else 64 bits from the OS.
+(: fresh-seed (-> (Result string ulong)))
+(defun (fresh-seed)
+  (match (get-environment-variable "BJO_TEST_SEED")
+    ((Some s)
+     (match (parse-ulong s)
+       ((Some n) (Ok n))
+       (None (Err #"BJO_TEST_SEED is not a number: ${s}"))))
+    (None (Ok (random-u64 #:rng (make-random))))))
+
+;; The arguments of a test program: flags, and name filters. Flags start with
+;; `--`: `--seed n`, `--runs n`, `--shrink-limit n`, `--junit file`, and
+;; `--stats`, `--quick`, `--promote`, `--no-store`.
+(: parse-test-args (-> (Vec string) (Result string TestOptions)))
+(defun (parse-test-args args)
+  (def (Ok seed0) (fresh-seed) :propagate)
+  (let go ((left (vec->list args)) (filters (list)) (seed seed0) (runs 0) (shrink 0)
+           (stats #f) (quick #f) (promote #f) (store #t) (junit None))
+    (defun (value-of flag more k)
+      (match more
+        ((Cons v after) (k v after))
+        (Nil (Err #"${flag} needs a value."))))
+    (match left
+      (Nil
+       (Ok (TestOptions (filters (list->vec (list-reverse filters))) (seed seed) (runs runs)
+                        (shrink-limit shrink) (stats stats) (quick quick) (promote promote)
+                        (store store) (junit junit))))
+      ((Cons a more)
+       (case a
+         ("--seed"
+          (value-of a more
+            (fun (v after)
+              (match (parse-ulong v)
+                ((Some n) (go after filters n runs shrink stats quick promote store junit))
+                (None (Err #"--seed takes a number, in decimal or 0x hex: ${v}"))))))
+         ("--runs"
+          (value-of a more
+            (fun (v after)
+              (match (parse-count a v)
+                ((Ok n) (go after filters seed n shrink stats quick promote store junit))
+                ((Err e) (Err e))))))
+         ("--shrink-limit"
+          (value-of a more
+            (fun (v after)
+              (match (parse-count a v)
+                ((Ok n) (go after filters seed runs n stats quick promote store junit))
+                ((Err e) (Err e))))))
+         ("--junit"
+          (value-of a more
+            (fun (v after) (go after filters seed runs shrink stats quick promote store (Some v)))))
+         ("--stats" (go more filters seed runs shrink #t quick promote store junit))
+         ("--quick" (go more filters seed runs shrink stats #t promote store junit))
+         ("--promote" (go more filters seed runs shrink stats quick #t store junit))
+         ("--no-store" (go more filters seed runs shrink stats quick promote #f junit))
+         (else
+          (if (string-starts-with? a "--")
+              (Err #"unknown flag ${a}. The flags are --seed, --runs, --shrink-limit, --junit, --stats, --quick, --promote and --no-store.")
+              (go more (cons a filters) seed runs shrink stats quick promote store junit))))))))
+
+;; The options of a run with no arguments, for tests run with `run-test`
+;; outside `(run-tests)`.
+(: default-options (-> TestOptions))
+(defun (default-options)
+  (match (parse-test-args (vec-empty))
+    ((Ok o) o)
+    ((Err why) (panic! why))))
+
+(: options-box (Box TestOptions))
+(def options-box (make-box (default-options)))
+
+;; The options of the run in progress.
+(: current-test-options (-> TestOptions))
+(defun (current-test-options) (box-ref options-box))
+
+;; ---------------------------------------------------------------------------
+;; Seeds
+;; ---------------------------------------------------------------------------
+
+;; FNV-1a over the string's characters. Not `GetHashCode`, which .NET
+;; randomizes per process: a test's seed has to be the same in every run.
+(: string-hash (-> string ulong))
+(defun (string-hash s)
+  (string-fold (fun (ch h)
+                 (* (bitwise-xor h (cast System.UInt64 (char->int ch))) 1099511628211UL))
+               14695981039346656037UL
+               s))
+
+;; SplitMix64's finalizer over a xor b: two seeds that differ in one bit give
+;; unrelated results.
+(: mix-seed (-> ulong ulong ulong))
+(defun (mix-seed a b)
+  (def z0 (bitwise-xor a b))
+  (def z1 (* (bitwise-xor z0 (shift-right z0 30)) 13787848793156543929UL))
+  (def z2 (* (bitwise-xor z1 (shift-right z1 27)) 10723151780598845931UL))
+  (bitwise-xor z2 (shift-right z2 31)))
+
+;; The seed of one test: the run's seed and the test's name. So choosing
+;; tests, or adding one, does not change what the others draw.
+(: test-seed (-> Test ulong))
+(defun (test-seed t)
+  (mix-seed (record-ref (current-test-options) seed) (string-hash (record-ref t name))))
+
+;; ---------------------------------------------------------------------------
 ;; Failures
 ;; ---------------------------------------------------------------------------
 
@@ -115,6 +281,66 @@
 ;; test is running. A check outside a test reports at once.
 (: current-failures (Box (Option (Box (List string)))))
 (def current-failures (make-box None))
+
+;; The test that is running, or `None`.
+(: running-box (Box (Option Test)))
+(def running-box (make-box None))
+
+(: running-test (-> (Option Test)))
+(defun (running-test) (box-ref running-box))
+
+;; When the running test started, and its deadline in milliseconds.
+(: running-clock (Box (Tuple long int)))
+(def running-clock (make-box (Tuple 0L 0)))
+
+;; The milliseconds left before the running test's deadline, or a day when no
+;; test runs. Shrinking stops early when this gets low.
+(: test-time-left (-> long))
+(defun (test-time-left)
+  (match (box-ref running-box)
+    (None 86400000L)
+    ((Some _)
+     (match (box-ref running-clock)
+       ((Tuple started within)
+        (- (+ started (cast System.Int64 within)) (monotonic-ms)))))))
+
+;; The port a capturing test writes to, and how far `take-test-output!` has
+;; read it.
+(: output-box (Box (Option (Tuple OutputPort StringCursor))))
+(def output-box (make-box None))
+
+;; What the running test wrote since it started, or since the last call. None
+;; when the test does not capture its output.
+(: take-test-output! (-> (Option string)))
+(defun (take-test-output!)
+  (match (box-ref output-box)
+    (None None)
+    ((Some (Tuple port from))
+     (def text (get-output-string port))
+     (box-set! output-box (Some (Tuple port (string-cursor-end text))))
+     (Some (substring text from (string-cursor-end text))))))
+
+;; How many times `next-test-index!` was called in the running test. A
+;; `for-all` takes its position in the test from it, to find its stored cases.
+(: index-box (Box int))
+(def index-box (make-box 0))
+
+(: next-test-index! (-> int))
+(defun (next-test-index!)
+  (def i (box-ref index-box))
+  (box-set! index-box (+ i 1))
+  i)
+
+;; Runs `body` with its failures going to `failures` instead of to the running
+;; test, and puts the running test's back afterwards, also when `body` raises.
+;; `for-all` runs each case this way, to decide which failures to keep.
+(: failures-into (-> (Box (List string)) (-> %a) %a))
+(defun (failures-into failures body)
+  (def outer (box-ref current-failures))
+  (box-set! current-failures (Some failures))
+  (match (try (body) #:catch (System.Exception))
+    ((Ok v) (box-set! current-failures outer) v)
+    ((Err e) (box-set! current-failures outer) (raise e))))
 
 ;; A source file as a report names it: by its file name, which is enough to
 ;; find it and short enough to read.
@@ -200,17 +426,32 @@
                              (list (Tuple ,(source-of expr) (->str value))))))))
     (bad (syntax-error bad "check-match takes an expression and a pattern: (check-match (parse \"x\") (Err _))."))))
 
+;; The part of `check-raises` that `#:message` adds: the exception was of the
+;; right type, and now its message has to contain `part`.
+(: check-raises-message (-> string int string string string void))
+(defun (check-raises-message file line source message part)
+  (unless (string-contains? message part)
+    (check-failed! file line source
+                   (list (Tuple "message" message) (Tuple "should contain" part)))))
+
 ;; `(check-raises Type expr)` passes when evaluating `expr` raises a `Type`,
-;; a .NET exception type. A failure shows what it answered instead.
+;; a .NET exception type. A failure shows what it answered instead. With
+;; `#:message "part"`, the exception's message has to contain `part` too.
 (def/macro (check-raises form inject compare)
   (syntax-match form
+    ((_ type expr #:message part)
+     #'(match (try ,expr #:catch (,type))
+         ((Ok value)
+          (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
+                         (list (Tuple ,(source-of expr) (str "answered " (->str value) " and raised nothing")))))
+         ((Err e) (check-raises-message ,(file-of form) ,(line-of form) ,(source-of form) (.-Message e) ,part))))
     ((_ type expr)
      #'(match (try ,expr #:catch (,type))
          ((Ok value)
           (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
                          (list (Tuple ,(source-of expr) (str "answered " (->str value) " and raised nothing")))))
          ((Err _) unit)))
-    (bad (syntax-error bad "check-raises takes an exception type and an expression: (check-raises System.FormatException (parse-int \"x\"))."))))
+    (bad (syntax-error bad "check-raises takes an exception type and an expression: (check-raises System.FormatException (parse-int \"x\")), optionally #:message \"part\" after them."))))
 
 ;; `(check-fail "why")` fails where it stands: for a branch a test must not
 ;; reach.
@@ -221,8 +462,49 @@
                       (list (Tuple "reason" ,why))))
     (bad (syntax-error bad "check-fail takes a reason: (check-fail \"this branch is unreachable\")."))))
 
+;; Whether two doubles are within `eps` of each other: absolutely near 0, and
+;; relative to the larger of the two away from it. Equal infinities are close;
+;; NaN is close to nothing.
+(: approx-close? (-> double double double bool))
+(defun (approx-close? a b eps)
+  (or (= a b)
+      (let* ((diff (abs (- a b)))
+             (scale (max 1.0 (max (abs a) (abs b)))))
+        (<= diff (* eps scale)))))
+
+;; `(check-approx a b)` passes when two doubles are within 1e-9 of each other,
+;; relative to their size when that is above 1. `#:eps e` changes the bound.
+(: check-approx-expansion (-> Syntax Syntax Syntax Syntax Syntax))
+(defun (check-approx-expansion form a b eps)
+  #'(let ((left ,a) (right ,b))
+      (unless (approx-close? left right ,eps)
+        (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
+                       (list (Tuple ,(source-of a) (->str left))
+                             (Tuple ,(source-of b) (->str right)))))))
+
+(def/macro (check-approx form inject compare)
+  (syntax-match form
+    ((_ a b #:eps eps) (check-approx-expansion form a b eps))
+    ((_ a b) (check-approx-expansion form a b #'1e-9))
+    (bad (syntax-error bad "check-approx takes two doubles: (check-approx (sqrt 2.0) 1.4142135623730951), optionally #:eps 1e-6 after them."))))
+
+;; `(check-output expr "text")` passes when what `expr` writes to
+;; `current-output-port` is the text.
+(def/macro (check-output form inject compare)
+  (syntax-match form
+    ((_ expr text)
+     #'(let* ((port (open-output-string))
+              (ignored (parameterize ((current-output-port port)) ,expr unit))
+              (written (get-output-string port))
+              (wanted ,text))
+         (unless (= written wanted)
+           (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
+                          (list (Tuple "it wrote" (->str written))
+                                (Tuple "wanted" (->str wanted)))))))
+    (bad (syntax-error bad "check-output takes an expression and a string: (check-output (display \"hi\") \"hi\")."))))
+
 ;; ---------------------------------------------------------------------------
-;; deftest and run-tests
+;; deftest
 ;; ---------------------------------------------------------------------------
 
 ;; The deadline of a test that gives none. A `deftest` without `#:within`
@@ -230,32 +512,192 @@
 (: default-test-ms int)
 (def default-test-ms 5000)
 
-(: deftest-expansion (-> Syntax Syntax Syntax bool (List Syntax) Syntax))
-(defun (deftest-expansion form name ms open-ok body)
+;; What the options of one `deftest` came to. `cases` is the `#:cases` table:
+;; the column names, then the rows.
+(type (: DeftestOptions (Record (: within Syntax)
+                                (: open-ok bool)
+                                (: skip Syntax)
+                                (: todo Syntax)
+                                (: slow bool)
+                                (: cases (Option (Tuple (List Syntax) (List Syntax))))
+                                (: body (List Syntax)))))
+
+(: no-options (-> (List Syntax) DeftestOptions))
+(defun (no-options body)
+  (DeftestOptions (within #'0) (open-ok #f) (skip #'"") (todo #'"") (slow #f)
+                  (cases None) (body body)))
+
+;; Reads the options after a test's name, in any order, up to the body.
+(: deftest-options (-> Syntax (List Syntax) DeftestOptions))
+(defun (deftest-options form items) (options-from form items (no-options (list))))
+
+(: options-from (-> Syntax (List Syntax) DeftestOptions DeftestOptions))
+(defun (options-from form items o)
+  (let ((go (fun (more o2) (options-from form more o2))))
+    (syntax-match (SList items)
+      ((#:within ms more ...) (go more (record-set o (within ms))))
+      ((#:open-ok more ...) (go more (record-set o (open-ok #t))))
+      ((#:skip why more ...) (go more (record-set o (skip why))))
+      ((#:todo why more ...) (go more (record-set o (todo why))))
+      ((#:slow more ...) (go more (record-set o (slow #t))))
+      ((#:cases ((column ...) row ...) more ...) (go more (with-cases form column row o)))
+      ((first more ...) (record-set o (body (cons first more))))
+      (_ (ignore (syntax-error form "deftest takes a name and a body: (deftest \"name\" body ...), with options such as #:within ms, #:open-ok, #:skip \"why\", #:todo \"why\", #:slow and #:cases after the name."))
+         o))))
+
+;; `#:cases ((a b) row ...)`: the first list names the columns, and each row
+;; after it gives them values.
+(: with-cases (-> Syntax (List Syntax) (List Syntax) DeftestOptions DeftestOptions))
+(defun (with-cases form columns rows o)
+  (def width (list-length columns))
+  (when (list-empty? rows)
+    (ignore (syntax-error form "#:cases has no rows. It is the column names, then rows of as many values: #:cases ((input expected) (\"1\" 1) (\"2\" 2)).")))
+  (loop (:for row rows)
+        (:do (match row
+               ((SList items)
+                (unless (= (list-length items) width)
+                  (ignore (syntax-error row #"This row of #:cases has ${(list-length items)} values, and there are ${width} columns."))))
+               (_ (ignore (syntax-error row "A row of #:cases is a list of values, one for each column."))))))
+  (record-set o (cases (Some (Tuple columns rows)))))
+
+;; The name of one row of a `#:cases` test, and its values, for its report.
+(: deftest-cases-row (-> int (List (Tuple string string)) string))
+(defun (deftest-cases-row i seen)
+  (string-join
+    (list->vec (cons #"  case ${i}:"
+                     (list-map (fun (p) (match p ((Tuple n v) #"    ${n} = ${v}"))) seen)))
+    "\n"))
+
+;; One row's body: the columns bound to the row's values. A column that the
+;; body uses as the pattern of a `check-match` is spliced in instead, so a row
+;; can hold a pattern such as `(Err _)`.
+(: case-body (-> Syntax int (List Syntax) Syntax (List Syntax) Syntax))
+(defun (case-body form i columns row body)
+  (def values (syntax-match row ((v ...) v) (_ (list))))
+  (def pairs (zip-syntax columns values))
+  (def pattern-columns (list-filter (fun (p) (used-as-pattern? (fst p) body)) pairs))
+  (def value-columns (list-filter (fun (p) (not (used-as-pattern? (fst p) body))) pairs))
+  (def spliced (list-map (fun (b) (splice-patterns pattern-columns b)) body))
+  #'(let ((case-failures (make-box (list))))
+      (failures-into case-failures
+                     (fun ()
+                       (let* ,(SList (list-map (fun (p) #'(,(fst p) ,(snd p))) value-columns))
+                         ,@spliced
+                         unit)))
+      (unless (list-empty? (box-ref case-failures))
+        (test-failed!
+          (string-join
+            (list->vec
+              (cons (deftest-cases-row ,(SInt (int->string i))
+                                       (list ,@(list-map (fun (p) #'(Tuple ,(SStr (syntax->string (fst p)))
+                                                                           ,(SStr (syntax->string (snd p)))))
+                                                         pairs)))
+                    (list-reverse (box-ref case-failures))))
+            "\n")))))
+
+(: fst (-> (Tuple Syntax Syntax) Syntax))
+(defun (fst p) (match p ((Tuple a _) a)))
+
+(: snd (-> (Tuple Syntax Syntax) Syntax))
+(defun (snd p) (match p ((Tuple _ b) b)))
+
+(: zip-syntax (-> (List Syntax) (List Syntax) (List (Tuple Syntax Syntax))))
+(defun (zip-syntax xs ys)
+  (match (Tuple xs ys)
+    ((Tuple (Cons x xm) (Cons y ym)) (cons (Tuple x y) (zip-syntax xm ym)))
+    (_ (list))))
+
+;; Whether `name` stands in the pattern position of a `check-match` anywhere
+;; in the forms.
+(: used-as-pattern? (-> Syntax (List Syntax) bool))
+(defun (used-as-pattern? name forms)
+  (any? (fun (f)
+          (or (match (check-match-pattern f)
+                ((Some p) (syntax-ident=? p name))
+                (None #f))
+              (match f
+                ((SList items) (used-as-pattern? name items))
+                (_ #f))))
+        forms))
+
+;; The pattern of a `(check-match expr pattern)` whose pattern is a name.
+(: check-match-pattern (-> Syntax (Option Syntax)))
+(defun (check-match-pattern f)
+  (match f
+    ((SList (Cons (SSym head) (Cons _ (Cons (SSym p) Nil))))
+     (if (= (symbol->string head) "check-match") (Some (SSym p)) None))
+    (_ None)))
+
+;; The forms with each pattern column in a `check-match` replaced by its
+;; row's value.
+(: splice-patterns (-> (List (Tuple Syntax Syntax)) Syntax Syntax))
+(defun (splice-patterns columns form)
+  (match (check-match-pattern form)
+    ((Some p)
+     (match form
+       ((SList (Cons head (Cons e _)))
+        (match (list-filter (fun (c) (syntax-ident=? (fst c) p)) columns)
+          ((Cons c _) (syntax-at (SList (list head (splice-patterns columns e) (snd c))) form))
+          (Nil form)))
+       (_ form)))
+    (None
+     (match form
+       ((SList items) (syntax-at (SList (list-map (fun (x) (splice-patterns columns x)) items)) form))
+       (_ form)))))
+
+(: deftest-expansion (-> Syntax Syntax DeftestOptions Syntax))
+(defun (deftest-expansion form name o)
+  (def body
+    (match (record-ref o cases)
+      (None (record-ref o body))
+      ((Some (Tuple columns rows))
+       (loop (:with i 1 (+ i 1))
+             (:for row rows)
+             (:acc out (listing (case-body form i columns row (record-ref o body))))))))
   #'(def registered
-      (register-test! ,name (current-module) ,(file-of form) ,(line-of form) ,ms ,(if open-ok #'#t #'#f)
+      (register-test! ,name (current-module) ,(file-of form) ,(line-of form)
+                      ,(record-ref o within) ,(if (record-ref o open-ok) #'#t #'#f)
+                      ,(record-ref o skip) ,(record-ref o todo) ,(if (record-ref o slow) #'#t #'#f)
+                      ,(if (mentions? "expect-output" body) #'#t #'#f)
                       (fun () ,@body unit))))
 
-;; `(deftest "name" body ...)`, optionally with `#:within ms` and `#:open-ok`
-;; after the name. Registers the test; `(run-tests)` runs it.
+;; Whether a name appears anywhere in the forms.
+(: mentions? (-> string (List Syntax) bool))
+(defun (mentions? name forms)
+  (any? (fun (f)
+          (match f
+            ((SSym s) (= (symbol->string s) name))
+            ((SList items) (mentions? name items))
+            (_ #f)))
+        forms))
+
+;; `(deftest "name" body ...)`, with options after the name in any order:
+;; `#:within ms`, `#:open-ok`, `#:skip "why"`, `#:todo "why"`, `#:slow` and
+;; `#:cases ((column ...) row ...)`. Registers the test; `(run-tests)` runs it.
 (def/macro (deftest form inject compare)
   (syntax-match form
-    ((_ name #:within ms #:open-ok first body ...)
-     (deftest-expansion form name ms #t (cons first body)))
-    ((_ name #:within ms first body ...)
-     (deftest-expansion form name ms #f (cons first body)))
-    ((_ name #:open-ok first body ...)
-     (deftest-expansion form name #'0 #t (cons first body)))
-    ((_ name first body ...)
-     (deftest-expansion form name #'0 #f (cons first body)))
-    (bad (syntax-error bad "deftest takes a name and a body: (deftest \"name\" body ...), optionally #:within ms and #:open-ok after the name."))))
+    ((_ name first more ...)
+     (deftest-expansion form name (deftest-options form (cons first more))))
+    (bad (syntax-error bad "deftest takes a name and a body: (deftest \"name\" body ...)."))))
+
+;; ---------------------------------------------------------------------------
+;; Running
+;; ---------------------------------------------------------------------------
+
+;; How a test came out. `Todo` is a `#:todo` test that failed, as it was
+;; expected to, and `Fixed` one that passed.
+(type (: TestStatus (Union Passed Failed Skipped Todo Fixed)))
 
 ;; What running one test came to: its failures, in the order they happened.
 (type (: TestResult (Record (: test Test)
+                            (: status TestStatus)
                             (: failures (List string)))))
 
 (: test-result-test (-> TestResult Test))
 (defun (test-result-test r) (record-ref r test))
+
+(: test-result-status (-> TestResult TestStatus))
+(defun (test-result-status r) (record-ref r status))
 
 (: test-result-failures (-> TestResult (List string)))
 (defun (test-result-failures r) (record-ref r failures))
@@ -273,18 +715,35 @@
        (_ #f)))))
 
 ;; Runs one test in a scope of its own and answers what it came to. Prints
-;; nothing.
+;; nothing. A `#:skip` test does not run.
 (: run-test (-> Test TestResult))
 (defun (run-test t)
+  (if (not (string-empty? (record-ref t skip)))
+      (TestResult (test t) (status Skipped) (failures (list)))
+      (run-test-body t)))
+
+(: run-test-body (-> Test TestResult))
+(defun (run-test-body t)
   (def failures (make-box (list)))
   (def outer (box-ref current-failures))
+  (def outer-test (box-ref running-box))
   (box-set! current-failures (Some failures))
+  (box-set! running-box (Some t))
   (def holder (make-box None))
   (def body (record-ref t body))
   (def within (if (= (record-ref t within) 0) default-test-ms (record-ref t within)))
+  (def outer-clock (box-ref running-clock))
+  (def outer-index (box-ref index-box))
+  (box-set! running-clock (Tuple (monotonic-ms) within))
+  (box-set! index-box 0)
+  (def outer-output (box-ref output-box))
+  (def port (open-output-string))
+  (box-set! output-box (if (record-ref t capture) (Some (Tuple port (string-cursor-start ""))) None))
   (match (try (with-deadline within
                 (box-set! holder (Some (current-scope)))
-                (body)
+                (if (record-ref t capture)
+                    (parameterize ((current-output-port port)) (body))
+                    (body))
                 (unless (record-ref t open-ok)
                   (let ((left (scope-owned-count (current-scope))))
                     (unless (= left 0)
@@ -295,37 +754,145 @@
        (test-failed! #"  it ran past its deadline of ${within} ms: something it started never finished")))
     ((Err e) (test-failed! #"  it raised: ${(.-Message e)}")))
   (box-set! current-failures outer)
-  (TestResult (test t) (failures (list-reverse (box-ref failures)))))
+  (box-set! running-box outer-test)
+  (box-set! running-clock outer-clock)
+  (box-set! index-box outer-index)
+  ;; What no `expect-output` took is printed, so that a test's prints are
+  ;; not lost.
+  (when (record-ref t capture)
+    (match (take-test-output!)
+      ((Some text) (unless (string-empty? text) (display text)))
+      (None unit)))
+  (box-set! output-box outer-output)
+  (def failed (list-reverse (box-ref failures)))
+  (def todo? (not (string-empty? (record-ref t todo))))
+  (TestResult (test t)
+              (status (cond ((and todo? (list-empty? failed)) Fixed)
+                            (todo? Todo)
+                            ((list-empty? failed) Passed)
+                            (else Failed)))
+              (failures failed)))
 
-;; Whether a test is chosen by the program's arguments: by a name that
-;; contains one of them, or by there being none.
-(: chosen? (-> (Vec string) Test bool))
-(defun (chosen? filters t)
-  (or (vec-empty? filters)
-      (any? (fun (f) (string-contains? (record-ref t name) f)) filters)))
+;; Whether a test is chosen by the filters: by a name that contains one of
+;; them, or by there being none. `--quick` leaves out `#:slow` tests.
+(: chosen? (-> TestOptions Test bool))
+(defun (chosen? o t)
+  (def filters (record-ref o filters))
+  (and (not (and (record-ref o quick) (record-ref t slow)))
+       (or (vec-empty? filters)
+           (any? (fun (f) (string-contains? (record-ref t name) f)) filters))))
+
+;; What extensions run when a run ends, oldest first: `(std test prop)` writes
+;; its failure file, `(std test expect)` its promotions.
+(: run-end-hooks (Box (List (Tuple string (-> void)))))
+(def run-end-hooks (make-box (list)))
+
+(: hook-key (-> (Tuple string (-> void)) string))
+(defun (hook-key h) (match h ((Tuple k _) k)))
+
+;; Adds `hook` to what runs when `run-registered-tests` ends, once for each
+;; `key`: a second hook with the same key is ignored.
+(: at-run-end! (-> string (-> void) void))
+(defun (at-run-end! key hook)
+  (unless (any? (fun (h) (= (hook-key h) key)) (box-ref run-end-hooks))
+    (box-set! run-end-hooks (cons (Tuple key hook) (box-ref run-end-hooks)))))
+
+;; Text for an XML attribute or element.
+(: xml-escape (-> string string))
+(defun (xml-escape s)
+  (string-replace (string-replace (string-replace (string-replace s "&" "&amp;") "<" "&lt;")
+                                  ">" "&gt;")
+                  "\"" "&quot;"))
+
+;; The results as JUnit XML, the format CI servers read.
+(: junit-xml (-> string (List TestResult) long string))
+(defun (junit-xml module results ms)
+  (def failed (list-length (list-filter (fun (r) (match (record-ref r status) (Failed #t) (_ #f))) results)))
+  (def skipped (list-length (list-filter (fun (r) (match (record-ref r status) ((or Skipped Todo) #t) (_ #f))) results)))
+  (def cases
+    (list-map
+      (fun (r)
+        (def t (record-ref r test))
+        (def head #"    <testcase name=\"${(xml-escape (record-ref t name))}\" classname=\"${(xml-escape module)}\" file=\"${(xml-escape (record-ref t file))}\" line=\"${(record-ref t line)}\"")
+        (match (record-ref r status)
+          (Failed
+           (str head ">\n      <failure message=\"failed\">"
+                (xml-escape (string-join (list->vec (record-ref r failures)) "\n"))
+                "</failure>\n    </testcase>"))
+          (Skipped (str head ">\n      <skipped message=\"" (xml-escape (record-ref t skip)) "\"/>\n    </testcase>"))
+          (Todo (str head ">\n      <skipped message=\"todo: " (xml-escape (record-ref t todo)) "\"/>\n    </testcase>"))
+          (_ (str head "/>"))))
+      results))
+  (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+       "<testsuites>\n"
+       "  <testsuite name=\"" (xml-escape module) "\" tests=\"" (int->string (list-length results))
+       "\" failures=\"" (int->string failed) "\" skipped=\"" (int->string skipped) "\" time=\""
+       (double->string (/ (cast System.Double ms) 1000.0)) "\">\n"
+       (string-join (list->vec cases) "\n")
+       (if (list-empty? cases) "" "\n")
+       "  </testsuite>\n</testsuites>\n"))
+
+(: status-is? (-> TestStatus TestResult bool))
+(defun (status-is? s r)
+  (match (Tuple s (record-ref r status))
+    ((Tuple Passed Passed) #t)
+    ((Tuple Failed Failed) #t)
+    ((Tuple Skipped Skipped) #t)
+    ((Tuple Todo Todo) #t)
+    ((Tuple Fixed Fixed) #t)
+    (_ #f)))
+
+;; The last line of a run.
+(: summary-line (-> (List TestResult) long string))
+(defun (summary-line results ms)
+  (def total (list-length results))
+  (def failed (list-length (list-filter (fun (r) (status-is? Failed r)) results)))
+  (def skipped (list-length (list-filter (fun (r) (status-is? Skipped r)) results)))
+  (def todo (list-length (list-filter (fun (r) (or (status-is? Todo r) (status-is? Fixed r))) results)))
+  (def extra
+    (str (if (> skipped 0) #", ${skipped} skipped" "")
+         (if (> todo 0) #", ${todo} todo" "")))
+  (if (= failed 0)
+      #"${(- total (+ skipped todo))} test(s) passed${extra} in ${ms} ms."
+      #"${failed} of ${total} test(s) failed${extra} in ${ms} ms."))
 
 ;; Runs the tests `module` registered that the arguments choose, prints each
 ;; failure as it happens and one line at the end, and answers the exit code: 0
-;; when every test passed, 1 otherwise.
+;; when every test passed, 1 when one failed, 2 when the arguments are wrong.
 (: run-registered-tests (-> string (Vec string) int))
-(defun (run-registered-tests module filters)
+(defun (run-registered-tests module args)
+  (match (parse-test-args args)
+    ((Err why) (println #"test: ${why}") 2)
+    ((Ok o) (run-with-options module o))))
+
+(: run-with-options (-> string TestOptions int))
+(defun (run-with-options module o)
+  (box-set! options-box o)
   (def started (monotonic-ms))
-  (def tests (list-filter (fun (t) (chosen? filters t)) (module-tests module)))
-  (def failed
+  (def tests (list-filter (fun (t) (chosen? o t)) (module-tests module)))
+  (def results
     (loop (:for t tests)
           (:let result (run-test t))
-          (:let failures (record-ref result failures))
-          (:do (unless (list-empty? failures)
-                 (println #"FAIL ${(record-ref t name)} (${(shown-file (record-ref t file))}:${(record-ref t line)})")
-                 (loop (:for f failures) (:do (println f)))))
-          (:acc n (summing (if (list-empty? failures) 0 1)))))
+          (:do (match (record-ref result status)
+                 (Failed
+                  (println #"FAIL ${(record-ref t name)} (${(shown-file (record-ref t file))}:${(record-ref t line)})")
+                  (loop (:for f (record-ref result failures)) (:do (println f))))
+                 (Fixed
+                  (println #"FIXED ${(record-ref t name)} (${(shown-file (record-ref t file))}:${(record-ref t line)}): it passes, so its #:todo can go"))
+                 (_ unit)))
+          (:acc out (listing result))))
+  (loop (:for h (list-reverse (box-ref run-end-hooks)))
+        (:do (match h ((Tuple _ hook) (hook)))))
   (def ms (- (monotonic-ms) started))
-  (def total (list-length tests))
-  (cond
-    ((= total 0)
-     (println (if (vec-empty? filters) "There are no tests." "No test's name contains any of the names given.")))
-    ((= failed 0) (println #"${total} test(s) passed in ${ms} ms."))
-    (else (println #"${failed} of ${total} test(s) failed in ${ms} ms.")))
+  (match (record-ref o junit)
+    ((Some path) (file-write-text path (junit-xml module results ms)))
+    (None unit))
+  (def failed (list-length (list-filter (fun (r) (status-is? Failed r)) results)))
+  (if (list-empty? tests)
+      (println (if (vec-empty? (record-ref o filters))
+                   "There are no tests."
+                   "No test's name contains any of the names given."))
+      (println (summary-line results ms)))
   (if (= failed 0) 0 1))
 
 ;; `(run-tests)` — the file's `main`: runs every test this module registered.

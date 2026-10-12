@@ -1,0 +1,131 @@
+;; Docs for std/test/expect.bjo, read through (:doc #:file "expect.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Snapshot tests: expect-output compares what a test wrote with a text in the test, and --promote updates the text.")
+  (see expect-output deftest)
+  (example """"
+    (import (std prelude))
+    (import (std test))
+    (import (std test expect))
+
+    (deftest "printing a card"
+      (print-value (Card (rank 12) (suit Hearts)))
+      (expect-output """
+        (Card (rank 12) (suit Hearts))
+        """))
+
+    (run-tests)
+    """")
+  (reference """
+    @code{expect-output} compares the output of a test with a text that is
+    written in the test. When they differ, the test fails, and the report
+    shows a line diff. With @code{--promote}, the run writes the output into
+    the test file in place of the text, and the test does not fail.
+
+    @strong{Which tests capture their output.} @code{deftest} examines its
+    body. When the body has the name @code{expect-output} anywhere in it,
+    the output of the test goes to a string port, and
+    @code{current-output-port} does not print it. A function that is
+    defined outside the test and calls @code{expect-output} does not make
+    the test capture its output. Then @code{expect-output} has no output to
+    read, and the test fails.
+
+    @strong{What is compared.} Each @code{expect-output} reads what the test
+    wrote since the test started, or since the previous
+    @code{expect-output}. Both texts are split into lines. Whitespace at the
+    end of each line is removed, and empty lines at the start and the end of
+    the text are removed. So a final newline, or a carriage return, is not a
+    difference.
+
+    @strong{The diff.} A line that only the expected text has starts with
+    -, a line that only the output has starts with +, and a line that both
+    have starts with a space:
+
+    @codeblock[#:lang "text"]|{
+    FAIL printing two cards (cards_test.bjo:10)
+      cards_test.bjo:13: the output is not the expected text (- expected, + written; --promote updates the text):
+         (Card (rank 12) (suit Hearts))
+        -(Card (rank 1) (suit Spades))
+        +(Card (rank 1) (suit Clubs))
+    }|
+
+    The longest common subsequence of the lines decides which lines both
+    texts have. When the product of the two numbers of lines is more than
+    a million, the diff shows all the expected lines with - and all the
+    written lines with +.
+
+    @strong{Promotion.} With @code{--promote}, an @code{expect-output}
+    whose text differs records the output, and the test does not fail. At
+    the end of @code{(run-tests)}, through @code{at-run-end!}, the run
+    writes the output into the test file in place of each text that
+    differed, and prints a line for each file that it changed. The text
+    must be a string literal that comes directly after
+    @code{expect-output}, because the run looks for it there. The run
+    prints a line for each text that it could not find.
+
+    The new text is a raw string. Its lines start 2 columns to the right of
+    the column of the @code{(expect-output}, and the closing quotes are on a
+    line of their own, in the same column. A raw string has more quotes
+    than the longest run of quotes in the text, and at least three. Output
+    that has no lines becomes @code{""}.
+
+    The file is changed from its last line to its first, so that a change
+    does not move the lines of the texts that come before it. When one
+    @code{expect-output} runs more than once in a run, for example in a
+    @code{for-all}, the output of its first mismatch is written.
+    @code{run-test} alone does not write the file.
+
+    @strong{Output that no expect-output reads.} What the test wrote after
+    its last @code{expect-output} is printed when the test ends, so that the
+    prints of a test are not lost.
+    """))
+
+(:doc expect-output
+  (summary "Passes when what the test wrote since it started, or since the previous expect-output, is the text.")
+  (form (expect-output text))
+  (arg text "A string: the expected output. Write it as a string literal, so that @code{--promote} can replace it.")
+  (see deftest check-output)
+  (example """"
+    (deftest "a greeting"
+      (println "hello")
+      (println "world")
+      (expect-output """
+        hello
+        world
+        """)
+      (println "again")
+      (expect-output "again"))
+
+    (deftest "prints nothing"
+      (expect-output ""))
+    """")
+  (reference """
+    Write it in the body of a @code{deftest}, not in a function that the
+    body calls: @code{deftest} captures the output of the test only when its
+    body has the name @code{expect-output}.
+
+    Lines are compared without the whitespace at their ends, and without
+    the empty lines at the start and the end of the text. On a mismatch,
+    the test fails with a line diff. With @code{--promote}, the output is
+    written into the test file in place of the text when the run ends, and
+    the test does not fail. The module tells more.
+
+    For the output of one expression, @code{check-output} from
+    @code{(std test)} is shorter. It captures the output also in a test
+    whose body does not have the name @code{expect-output}.
+    """))
+
+(:doc expect-output-check!
+  (summary "Compares the output of the running test with a text, and fails the test or records a promotion.")
+  (arg file "The source file of the expect-output.")
+  (arg line "The line of the expect-output.")
+  (arg wanted "The expected text.")
+  (see expect-output)
+  (reference """
+    It is exported because the template of @code{expect-output} names it.
+    Write @code{expect-output}, not a call to this function.
+
+    When the running test does not capture its output, it fails the test
+    with a message that says so.
+    """))

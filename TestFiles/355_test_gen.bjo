@@ -1,0 +1,101 @@
+;; `(std test gen)`: generators draw through a recorder, replay what it
+;; recorded, give the simplest value for an empty vector, and keep to their
+;; bounds.
+
+(import (std prelude))
+(import (std random))
+(import (std simpletest))
+(import (std test gen))
+
+(type (: Suit (Union Hearts Spades Clubs Diamonds)))
+(type (: Card (Record (: rank int) (: suit Suit))))
+
+(: gen-card (Gen Card))
+(def gen-card
+  (gen-let ((rank (gen-int-range 1 13))
+            (suit (gen-element (list Hearts Spades Clubs Diamonds))))
+    (Card (rank rank) (suit suit))))
+
+(impl (Arbitrary Card) (defun (arbitrary) gen-card))
+
+;; A tree, to try gen-recursive.
+(type (: Tree (Union Leaf (: Node Tree int Tree))))
+
+(: depth (-> Tree int))
+(defun (depth t)
+  (match t
+    (Leaf 0)
+    ((Node l _ r) (+ 1 (max (depth l) (depth r))))))
+
+(: gen-tree (Gen Tree))
+(def gen-tree
+  (gen-recursive (gen-pure Leaf)
+                 (fun (self) (gen-let ((l self) (x gen-int) (r self)) (Node l x r)))))
+
+(: simplest (-> (Gen %a) %a))
+(defun (simplest g) (gen-run g (replaying-choices (vec-empty) 50)))
+
+(: samples (-> (Gen %a) int (List %a)))
+(defun (samples g n) (gen-samples g n #:rng (make-random/seed64 7UL)))
+
+(defun (main args)
+  ;; The same seed draws the same values.
+  (expect "a seed replays"
+          (gen-samples (gen-list gen-int) 20 #:rng (make-random/seed64 1UL))
+          (gen-samples (gen-list gen-int) 20 #:rng (make-random/seed64 1UL)))
+
+  ;; What a recording drew, replayed, is the same value.
+  (def c (recording-choices (make-random/seed64 3UL) 60))
+  (def v (gen-run (gen-list gen-string) c))
+  (expect "a recording replays" (gen-run (gen-list gen-string) (replaying-choices (choices-draws c) 60)) v)
+
+  ;; An empty vector is all zeros: the simplest value of each generator.
+  (expect "the simplest int" (simplest gen-int) 0)
+  (expect "the simplest range starts nearest 0" (simplest (gen-int-range 5 10)) 5)
+  (expect "a range below 0 starts at its top" (simplest (gen-int-range -10 -3)) -3)
+  (expect "the simplest list" (simplest (gen-list gen-int)) (list))
+  (expect "the simplest string" (simplest gen-string) "")
+  (expect "the simplest bool" (simplest gen-bool) #f)
+  (expect "the simplest option" (simplest (gen-option gen-int)) None)
+  (expect "the simplest char" (simplest gen-char) #\a)
+  (expect "the simplest double" (simplest (gen-double)) 0.0)
+  (expect "the simplest card" (simplest gen-card) (Card (rank 1) (suit Hearts)))
+  (expect "the simplest tree" (simplest gen-tree) Leaf)
+  (expect "the simplest shuffle keeps the order" (simplest (gen-shuffle (list 1 2 3))) (list 1 2 3))
+
+  ;; Bounds.
+  (expect-true "a range keeps to its bounds"
+               (all? (fun (n) (and (>= n -3) (<= n 4))) (samples (gen-int-range -3 4) 500)))
+  (expect-true "and reaches both"
+               (and (any? (fun (n) (= n -3)) (samples (gen-int-range -3 4) 500))
+                    (any? (fun (n) (= n 4)) (samples (gen-int-range -3 4) 500))))
+  (expect-true "a full long range works"
+               (all? (fun (n) #t) (samples (gen-long-range -9223372036854775808L 9223372036854775807L) 100)))
+  (expect-true "gen-such-that holds"
+               (all? even? (samples (gen-such-that even? gen-int) 200)))
+  (expect-true "a shuffle is a permutation"
+               (all? (fun (xs) (= (list-sort xs) (list 1 2 3 4 5))) (samples (gen-shuffle (list 1 2 3 4 5)) 100)))
+  (expect-true "a list of a length has that length"
+               (all? (fun (xs) (= (list-length xs) 4)) (samples (gen-list-of-length 4 gen-bool) 50)))
+  (expect-true "gen-frequency never picks a weight of 0"
+               (all? (fun (x) (not (= x 2)))
+                     (samples (gen-frequency (list (Tuple 3 (gen-pure 1)) (Tuple 0 (gen-pure 2)) (Tuple 1 (gen-pure 3)))) 200)))
+  (expect-true "a recursive generator ends, and grows with the size"
+               (any? (fun (t) (> (depth t) 1)) (samples gen-tree 100)))
+  (expect-true "sizes grow: the first samples are small"
+               (<= (list-length (list-head (samples (gen-list gen-int) 50))) 2))
+
+  ;; Arbitrary is found by the type alone.
+  (def (: cards (List Card)) (samples (arbitrary) 10))
+  (expect "an Arbitrary of your own" (list-length cards) 10)
+  (def (: pairs (List (Tuple int (Option string)))) (samples (arbitrary) 10))
+  (expect "instances compose" (list-length pairs) 10)
+
+  ;; A generator that draws too much has its run discarded.
+  (def endless (make-gen (fun (c) (let go () (ignore (draw c 2UL)) (go)))))
+  (def c2 (recording-choices (make-random/seed64 1UL) 10))
+  (expect-true "a run that draws too much is discarded"
+               (match (try (gen-run endless c2) #:catch (System.Exception))
+                 ((Err _) (choices-discarded? c2))
+                 ((Ok _) #f)))
+  0)

@@ -1,0 +1,125 @@
+;; `(std test prop)`: for-all runs a body with generated values, and shrinks a
+;; failing case. Some properties fail on purpose; `main` checks what each
+;; reported, so the file itself passes. `run-test` does not end a run, so no
+;; failure file is written.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std test))
+(import (std test gen))
+(import (std test prop))
+
+(deftest "holds"
+  (for-all ((xs : (List int)))
+    (check (= (list-reverse (list-reverse xs)) xs))))
+
+(deftest "reverse is not the identity"
+  (for-all ((xs : (List int)))
+    (check (= (list-reverse xs) xs))))
+
+(deftest "not every int is below 1000"
+  (for-all ((n gen-int))
+    (check (< n 1000))))
+
+(deftest "three elements can add up to 50"
+  (for-all ((xs (gen-list (gen-int-range 0 20))))
+    (check (< (list-foldl + 0 xs) 50))))
+
+(deftest "two bindings"
+  (for-all ((a (gen-int-range 0 100)) (b (gen-int-range 0 100)))
+    (check (< (+ a b) 150))))
+
+(deftest "assume discards"
+  (for-all ((n gen-int))
+    (assume (> n 0))
+    (check (> n 0))))
+
+(deftest "assume discards everything"
+  (for-all ((n gen-int))
+    (assume #f)
+    (check #t)))
+
+(deftest "an exception fails a run"
+  (for-all ((n (gen-int-range 0 10)))
+    (when (> n 5) (ignore (list-head (list))))))
+
+(: calls (Box int))
+(def calls (make-box 0))
+
+(deftest "flaky"
+  (for-all ((n gen-int))
+    (box-set! calls (+ 1 (box-ref calls)))
+    (check (not (= (box-ref calls) 3)))))
+
+(deftest "labelled"
+  (for-all ((n (gen-int-range 0 10)))
+    (label "small" (check (< n 5)))))
+
+(deftest "runs"
+  (for-all #:runs 7 ((n gen-int))
+    (box-set! calls (+ 1 (box-ref calls)))))
+
+(: result-of (-> string TestResult))
+(defun (result-of name)
+  (match (list-filter (fun (t) (= (test-name t) name)) (module-tests (current-module)))
+    ((Cons t _) (run-test t))
+    (Nil (panic! #"no test ${name}"))))
+
+(: report-of (-> string string))
+(defun (report-of name) (string-join (list->vec (test-result-failures (result-of name))) "\n"))
+
+(: shows? (-> string string bool))
+(defun (shows? report text) (string-contains? report text))
+
+(defun (main args)
+  (expect "a property that holds passes" (test-result-failures (result-of "holds")) (list))
+
+  (def reverse-report (report-of "reverse is not the identity"))
+  (expect-true "a failing property names where it is"
+               (shows? reverse-report "for-all at 356_test_prop.bjo:17 failed on run"))
+  (expect-true "and the seed" (shows? reverse-report "(seed "))
+  (expect-true "it shrinks the case to two elements" (shows? reverse-report "xs = (0 1)"))
+  (expect-true "and shows the failed check"
+               (shows? reverse-report "(check (= (list-reverse xs) xs))"))
+
+  (expect-true "an int shrinks to the smallest that fails"
+               (shows? (report-of "not every int is below 1000") "n = 1000"))
+
+  (def sum-report (report-of "three elements can add up to 50"))
+  (expect-true "a list shrinks to as few elements as fail"
+               (any? (fun (line) (and (string-contains? line "xs = (")
+                                      (= (list-length (vec->list (string-split (string-trim line) " "))) 5)))
+                     (string-split sum-report "\n")))
+
+  (def two-report (report-of "two bindings"))
+  (expect-true "each binding is shown" (and (shows? two-report "a = ") (shows? two-report "b = ")))
+
+  (expect "assume leaves the runs that hold" (test-result-failures (result-of "assume discards")) (list))
+  (expect-true "a property whose runs are all discarded fails"
+               (shows? (report-of "assume discards everything") "were discarded"))
+
+  (def raise-report (report-of "an exception fails a run"))
+  (expect-true "an exception fails a run" (shows? raise-report "it raised:"))
+  (expect-true "and shrinks to the smallest value that raises" (shows? raise-report "n = 6"))
+
+  (box-set! calls 0)
+  (def flaky-report (report-of "flaky"))
+  (expect-true "a case that passes when run again is reported as flaky"
+               (shows? flaky-report "passed when run again with the same values"))
+
+  (expect-true "a label is shown above its failures" (shows? (report-of "labelled") "in small:"))
+
+  (box-set! calls 0)
+  (ignore (result-of "runs"))
+  (expect "#:runs sets the number of runs" (box-ref calls) 7)
+
+  ;; The failure of the run above is stored in memory, so the next run of the
+  ;; test tries it first.
+  (expect-true "a stored case is tried first"
+               (shows? (report-of "reverse is not the identity") "failed on a case stored in 356_test_prop.failed.bjodat"))
+
+  (expect-true "for-all outside a test is an error"
+               (match (try (for-all ((n gen-int)) (check #t)) #:catch (System.InvalidOperationException))
+                 ((Err e) (string-contains? (.-Message e) "runs only inside a deftest"))
+                 ((Ok _) #f)))
+  0)
