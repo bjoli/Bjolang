@@ -3245,6 +3245,60 @@ and private prepareOperands (ctx: CodegenContext) (operands: TypedExpr list) : (
             else
                 fun (c: CodegenContext) -> generateExpr c operand)
 
+/// The positional operands of a call to `target`, each ordinary function that
+/// fills a suspending parameter wrapped in `Colour.Lift`.
+///
+/// `unifyEffect` allowed it: a procedure that never suspends is usable
+/// wherever one that may is expected. But the two are still different C#
+/// types, `Func<A,B>` against `Func<A,Fiber<B>>`, so the delegate has to be
+/// wrapped. `Colour.Lift` is an overload family, so the arity and the void
+/// case are chosen by C#'s own overload resolution rather than by anything
+/// here counting parameters.
+///
+/// Only positional arguments, because they are what `target`'s arrow lists
+/// in order. A keyword argument, a record field and a return value are
+/// wrapped in inference instead, by `InferExpr.bridgeToSuspending`.
+and private liftedOperands
+    (target: TypedExpr)
+    (args: TypedExpr list)
+    (emitters: (CodegenContext -> unit) list)
+    : (CodegenContext -> unit) list =
+    let paramTypes =
+        match target.Type with
+        | TFun(ps, _, _) -> ps
+        | _ -> []
+
+    emitters
+    |> List.mapi (fun i emit ->
+        match List.tryItem i paramTypes, List.tryItem i args with
+        | Some wanted, Some arg when TypeVisitor.liftsToSuspending wanted arg.Type ->
+            // A lambda is cast to its own delegate type on the way in,
+            // because it has none for the overload to be resolved from:
+            // `Lift(x => x + 1)` cannot choose between `Func<T,R>` and
+            // `Action<T>`. That is the same answer `generateApply` gives a
+            // lambda in callee position, for the same reason.
+            //
+            // Everything else already carries a type — a method group is
+            // emitted cast, a local is declared — so adding a second cast
+            // would only be noise in the emitted file.
+            let cast =
+                match arg.Node with
+                | TLambda _ -> Some(typeToString arg.Type)
+                | _ -> None
+
+            fun c ->
+                append c "Bjolang.Runtime.Colour.Lift("
+
+                match cast with
+                | Some t ->
+                    append c $"(%s{t})("
+                    emit c
+                    append c ")"
+                | None -> emit c
+
+                append c ")"
+        | _ -> emit)
+
 /// The inline form of the call `expr` to `name`, and the C# spelling of its
 /// `$E`, when `name` is the runtime builtin. A module binding with the name of
 /// a builtin is in `GlobalBindings` under its module, and a local binding with
@@ -3293,7 +3347,7 @@ and private generateApply
 
         if not args.IsEmpty then
             append ctx "("
-            for i, emit in List.indexed (prepareOperands ctx args) do
+            for i, emit in List.indexed (prepareOperands ctx args |> liftedOperands target args) do
                 if i > 0 then append ctx ", "
                 emit ctx
             append ctx ")"
@@ -3316,7 +3370,7 @@ and private generateApply
         // C#'s generics are invariant. `(wrap ev (fun (j) (Job j)))` is the
         // same shape, and it is the idiomatic way to write a `choose` branch.
         append ctx $"({typeStr})new {typeStr}.{declaredTypeName name}("
-        for i, emit in List.indexed (prepareOperands ctx args) do
+        for i, emit in List.indexed (prepareOperands ctx args |> liftedOperands target args) do
             if i > 0 then append ctx ", "
             emit ctx
         append ctx ")"
@@ -3375,7 +3429,7 @@ and private generateApply
         not (Map.containsKey name ctx.UnionCases) && args.Length = 1 && kwArgs.IsEmpty
         ->
         append ctx $"%s{typeToString expr.Type}.%s{name}("
-        (prepareOperands ctx args).Head ctx
+        (prepareOperands ctx args |> liftedOperands target args).Head ctx
         append ctx ")"
 
     | TIdent (name, _) when kwArgs.IsEmpty && (inlineBuiltinFor ctx name expr args).IsSome ->
@@ -3464,56 +3518,8 @@ and private generateApply
         let calleeEmitters, argEmitters =
             if calleeIsIdent then [], emitters else [ emitters.Head ], emitters.Tail
 
-        // An ordinary function accepted into a suspending slot, bridged.
-        //
-        // `unifyEffect` allowed it — a procedure that never suspends is usable
-        // wherever one that may is expected — but the two are still different
-        // C# types, `Func<A,B>` against `Func<A,Fiber<B>>`, so the delegate has
-        // to be wrapped. `Colour.Lift` is an overload family, so the arity and
-        // the void case are chosen by C#'s own overload resolution rather than
-        // by anything here counting parameters.
-        //
-        // Only positional arguments. A keyword parameter's declared type is not
-        // positional in `TFun`, so there is nothing here to match it against —
-        // the same reason `ColourCheck` cannot name what pinned a lambda passed
-        // by keyword.
-        let paramTypes =
-            match target.Type with
-            | TFun(ps, _, _) -> ps
-            | _ -> []
-
-        let lifted (i: int) (emit: CodegenContext -> unit) : CodegenContext -> unit =
-            match List.tryItem i paramTypes with
-            | Some wanted when TypeVisitor.liftsToSuspending wanted args[i].Type ->
-                // A lambda is cast to its own delegate type on the way in,
-                // because it has none for the overload to be resolved from:
-                // `Lift(x => x + 1)` cannot choose between `Func<T,R>` and
-                // `Action<T>`. That is the same answer `generateApply` gives a
-                // lambda in callee position, for the same reason.
-                //
-                // Everything else already carries a type — a method group is
-                // emitted cast, a local is declared — so adding a second cast
-                // would only be noise in the emitted file.
-                let cast =
-                    match args[i].Node with
-                    | TLambda _ -> Some(typeToString args[i].Type)
-                    | _ -> None
-
-                fun c ->
-                    append c "Bjolang.Runtime.Colour.Lift("
-
-                    match cast with
-                    | Some t ->
-                        append c $"(%s{t})("
-                        emit c
-                        append c ")"
-                    | None -> emit c
-
-                    append c ")"
-            | _ -> emit
-
         let positionalEmitters =
-            argEmitters |> List.truncate args.Length |> List.mapi lifted
+            argEmitters |> List.truncate args.Length |> liftedOperands target args
 
         // A lambda is cast to its own delegate type, as `lifted` casts one. A
         // keyword parameter whose default C# cannot hold as a constant is an

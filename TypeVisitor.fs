@@ -241,11 +241,13 @@ let rec mapDeclWithContext (f: TDecl -> TypedExpr -> TypedExpr) (decl: TDecl) : 
 ///
 /// True exactly where subeffecting was allowed by `unifyEffect` and the two
 /// types are still spelled differently in C#: an ordinary arrow accepted into a
-/// suspending one. `Codegen` wraps such an argument in `Colour.Lift`, and the
-/// blocking lint reads the same question to decide whether a fiber has reached
-/// ordinary code through a value.
+/// suspending one. `Codegen` wraps such a positional argument in
+/// `Colour.Lift`, `InferExpr.bridgeToSuspending` wraps such a record field,
+/// keyword argument or return value in a bjoroutine, and the blocking lint
+/// reads the same question to decide whether a fiber has reached ordinary code
+/// through a value.
 ///
-/// Two callers and one definition, for the reason `reachesAwait` has one: the
+/// One definition for all of them, for the reason `reachesAwait` has one: the
 /// lint deciding differently from the emitter would mean either a wrapper with
 /// no edge — a fiber parking with nothing to say so — or an edge with no
 /// wrapper, which is a warning about a call that is not there.

@@ -902,6 +902,7 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
             // in is elaborated against it.
             let bodyType, typedBody = inferChecked expectedRetType bodyEnv body
             unifyExpecting env.Registry expectedRetType bodyType $"what '%s{name}' returns"
+            let typedBody = bridgeToSuspending env expectedRetType typedBody
 
             // Type-check keyword default expressions, each against its parameter's
             // declared type, so `#:mode 'fast` elaborates as an argument would.
@@ -914,6 +915,7 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
                         unifyExpecting env.Registry kwType defaultType $"the default of #:%s{kwName}"
                     with ex when Diagnostics.needsLocation ex ->
                         raise (Diagnostics.withLocation (exprRange defaultExpr) ex)
+                    let typedDefault = bridgeToSuspending env kwType typedDefault
                     let nextEnv = addBinding kwName { Scheme = Scheme([], [], kwType); IsMutable = false } currentEnv
                     (typedArgs @ [kwName, kwType, typedDefault], nextEnv)
                 ) ([], envWithMandatory)

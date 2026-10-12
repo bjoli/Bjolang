@@ -309,6 +309,58 @@ let private shieldLocal (name: string) (env: Env) (args: Expr list) : Env * Expr
         args |> List.map (AlphaRename.renameFree (Map.ofList [ name, hidden ])),
         AlphaRename.applyQualification (Map.ofList [ hidden, name ])
 
+/// A value of an ordinary function type in a place that expects a bjoroutine,
+/// wrapped in a bjoroutine that calls it. Call this after `expected` and the
+/// value's type were unified.
+///
+/// `unifyEffect` accepts the pair: a function that never suspends can be used
+/// where one that can suspend is expected. But in C# the two are different
+/// delegate types, `Func<A,B>` and `Func<A,Fiber<B>>`. For a positional
+/// argument, `Codegen` wraps the value in `Colour.Lift`, because the call
+/// gives it the parameter type. A record field, a keyword argument or a
+/// return value has no such type in `Codegen`, so these are wrapped here,
+/// where the expected type is known.
+///
+/// The value is evaluated once, where it is written. A name or a lambda is
+/// called directly from the wrapper. Any other expression is bound to a
+/// local first, because the wrapper runs it again at each call.
+///
+/// The lambda keeps its own colour: a `fun` that suspends is still refused by
+/// `ColourCheck`, as it is in any other place.
+let bridgeToSuspending (env: Env) (expected: HMType) (typed: TypedExpr) : TypedExpr =
+    match prune env.Registry expected, prune env.Registry typed.Type with
+    | TFun(paramTypes, ret, _) as wanted, supplied when TypeVisitor.liftsToSuspending wanted supplied ->
+        let r = typed.Range
+        let names = paramTypes |> List.map (fun _ -> Gensym.fresh "__lift_arg")
+
+        let args: TypedExpr list =
+            List.map2 (fun name t -> { Type = t; Range = r; Node = TIdent(name, []) }) names paramTypes
+
+        let callee, bind =
+            match typed.Node with
+            | TIdent _
+            | TLambda _ -> typed, id
+            | _ ->
+                let local = Gensym.fresh "__lifted"
+
+                { typed with Node = TIdent(local, []) },
+                fun (body: TypedExpr) ->
+                    { Type = wanted
+                      Range = r
+                      Node = TLet(local, false, noParams, typed, body) }
+
+        bind
+            { Type = wanted
+              Range = r
+              Node =
+                TLambda(
+                    names,
+                    { Type = ret
+                      Range = r
+                      Node = TApply(callee, args, []) }
+                ) }
+    | _ -> typed
+
 /// Infers a type, attaching a source location to any diagnostic that lacks one.
 ///
 /// `unify` is where most type errors are raised and it is given two types and
@@ -1531,11 +1583,11 @@ and private inferRecordConstruct (env: Env) (recordTypeName: string) (args: Expr
                         $"the field '%s{name}' of '%s{Naming.showTypeName recordTypeName}'"
                 with ex when Diagnostics.needsLocation ex ->
                     raise (Diagnostics.withLocation (exprRange expr) ex)
+
+                Map.add name (bridgeToSuspending env expectedType typedExpr) acc
             | None ->
                 failwithf
-                    $"Type Error at %s{Lexer.formatPos (exprRange expr)}: '%s{recordTypeName}' has no field '%s{name}'. Its fields are: %s{fieldList}."
-
-            Map.add name typedExpr acc)
+                    $"Type Error at %s{Lexer.formatPos (exprRange expr)}: '%s{recordTypeName}' has no field '%s{name}'. Its fields are: %s{fieldList}.")
 
     // Declaration order, not the order the fields were written in: the
     // constructor a record compiles to takes them positionally, so writing
@@ -2375,8 +2427,26 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
         let allFlatTypes = (mandatoryArgs |> List.map fst) @ kwArgTypes @ restArgTypes
         unify env.Registry targetType (TFun(allFlatTypes, retType, demandedEffect env targetType))
 
+        // A keyword argument has no parameter type in `Codegen` to be lifted
+        // against, so an ordinary function given to a `-bjo->` keyword is
+        // wrapped here. The callee's arrow has the keywords after the
+        // mandatory parameters, in declaration order.
+        let declaredParams =
+            match prune env.Registry targetType with
+            | TFun(ps, _, _) -> ps
+            | _ -> []
+
         let typedKwArgs =
-            keywordArgs |> List.map (fun (n, (_, te)) -> (n, te))
+            keywordArgs
+            |> List.map (fun (n, (_, te)) ->
+                let declared =
+                    meta.KeywordParams
+                    |> List.tryFindIndex (fun (kwName, _) -> kwName = n)
+                    |> Option.bind (fun k -> List.tryItem (meta.MandatoryCount + k) declaredParams)
+
+                match declared with
+                | Some wanted -> n, bridgeToSuspending env wanted te
+                | None -> n, te)
 
         // Positional args in TApply = mandatory + the rest array (keyword
         // args are separate)
@@ -2902,8 +2972,9 @@ and private inferRecordUpdate (env: Env) (targetName: string) (fields: (string *
                         $"the field '%s{name}' of '%s{Naming.showTypeName recordTypeName}'"
                 with ex when Diagnostics.needsLocation ex ->
                     raise (Diagnostics.withLocation (exprRange expr) ex)
-            | None -> failwithf $"Type Error: Field '%s{name}' does not belong to record '%s{recordTypeName}' at %s{Lexer.formatPos r}"
-            name, typedExpr)
+
+                name, bridgeToSuspending env expectedType typedExpr
+            | None -> failwithf $"Type Error: Field '%s{name}' does not belong to record '%s{recordTypeName}' at %s{Lexer.formatPos r}")
 
     targetType,
     { Type = targetType
@@ -2947,19 +3018,22 @@ and private inferRecordSet (env: Env) (targetName: string) (fields: (string * Ex
         fields |> List.map (fun (name, expr) ->
             let exprType, typedExpr = infer env expr
 
-            match Map.tryFind name expectedFieldsInstantiated with
-            | Some expectedType ->
-                try
-                    unifyExpecting
-                        env.Registry
-                        expectedType
-                        exprType
-                        $"the field '%s{name}' of '%s{Naming.showTypeName recordTypeName}'"
-                with ex when Diagnostics.needsLocation ex ->
-                    raise (Diagnostics.withLocation (exprRange expr) ex)
-            | None ->
-                failwithf
-                    $"Type Error at %s{formatPos r}: field '%s{name}' does not belong to record '%s{Naming.showTypeName recordTypeName}'."
+            let typedExpr =
+                match Map.tryFind name expectedFieldsInstantiated with
+                | Some expectedType ->
+                    try
+                        unifyExpecting
+                            env.Registry
+                            expectedType
+                            exprType
+                            $"the field '%s{name}' of '%s{Naming.showTypeName recordTypeName}'"
+                    with ex when Diagnostics.needsLocation ex ->
+                        raise (Diagnostics.withLocation (exprRange expr) ex)
+
+                    bridgeToSuspending env expectedType typedExpr
+                | None ->
+                    failwithf
+                        $"Type Error at %s{formatPos r}: field '%s{name}' does not belong to record '%s{Naming.showTypeName recordTypeName}'."
 
             if not (List.contains name mutableFields) then
                 let writable =

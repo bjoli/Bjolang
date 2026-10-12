@@ -1,0 +1,78 @@
+;; An ordinary function where a bjoroutine is expected, in each place that is
+;; not a positional argument. Each one used to pass the type checker and fail
+;; in C#, because only a positional argument was wrapped in `Colour.Lift`.
+;; `InferExpr.bridgeToSuspending` wraps the others, and the constructor
+;; branches of `Codegen` now lift their arguments as a call does.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Ops (Record (: run (-bjo-> int int))
+                     (: name string)
+                     (: hook (-bjo-> int int) #:mutable))))
+
+(type (: Op (Union (: Run (-bjo-> int int)) Stop)))
+
+(: inc (-> int int))
+(defun (inc x) (+ x 1))
+
+(: made (Box int))
+(def made (make-box 0))
+
+;; A function value made by a call, which must be made once.
+(: make-adder (-> int (-> int int)))
+(defun (make-adder n)
+  (box-set! made (+ (box-ref made) 1))
+  (fun (x) (+ x n)))
+
+;; A return value.
+(: make-run (-> (-bjo-> int int)))
+(defun (make-run) (fun (x) (* x 2)))
+
+;; A return value that is computed.
+(: make-run/adder (-> int (-bjo-> int int)))
+(defun (make-run/adder n) (make-adder n))
+
+;; A keyword argument, and a keyword default.
+(: apply-kw (-bjo-> int (#:f (-bjo-> int int)) int))
+(defbjo (apply-kw x #:f (fun (y) (- y 1))) (f x))
+
+(: run-op (-bjo-> Op int int))
+(defbjo (run-op op x)
+  (match op
+    ((Run f) (f x))
+    (Stop 0)))
+
+(defbjo (main args)
+  ;; ---- Record fields ------------------------------------------------------
+  (def ops (Ops (run (fun (x) (+ x 10))) (name "ops") (hook inc)))
+  (expect "a lambda in a field" ((record-ref ops run) 1) 11)
+  (expect "a named function in a field" ((record-ref ops hook) 1) 2)
+  (def copied (record-set ops (run (fun (x) (+ x 20)))))
+  (expect "a lambda in record-set" ((record-ref copied run) 1) 21)
+  (expect "the original is unchanged" ((record-ref ops run) 1) 11)
+  (record-set! ops (hook (fun (x) (+ x 30))))
+  (expect "a lambda in record-set!" ((record-ref ops hook) 1) 31)
+
+  ;; ---- Evaluated once -----------------------------------------------------
+  (def adder (Ops (run (make-adder 100)) (name "adder") (hook inc)))
+  (def run-adder (record-ref adder run))
+  (expect "a computed function, called twice" (+ (run-adder 1) (run-adder 2)) 203)
+  (expect "and made once" (box-ref made) 1)
+
+  ;; ---- Return values ------------------------------------------------------
+  (expect "a lambda returned" ((make-run) 4) 8)
+  (expect "a computed function returned" ((make-run/adder 5) 1) 6)
+  (expect "made once more" (box-ref made) 2)
+
+  ;; ---- Keyword arguments --------------------------------------------------
+  (expect "a lambda as a keyword argument" (apply-kw 5 #:f (fun (y) (* y 3))) 15)
+  (expect "a named function as a keyword argument" (apply-kw 5 #:f inc) 6)
+  (expect "a lambda as a keyword default" (apply-kw 5) 4)
+  (expect "a bjoroutine as a keyword argument is left as it is"
+          (apply-kw 5 #:f (bjoroutine (y) (+ y 100))) 105)
+
+  ;; ---- Union payloads -----------------------------------------------------
+  (expect "a lambda in a union case" (run-op (Run (fun (x) (+ x 7))) 1) 8)
+  (expect "a named function in a union case" (run-op (Run inc) 1) 2)
+  0)
