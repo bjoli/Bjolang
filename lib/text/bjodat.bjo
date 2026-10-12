@@ -113,6 +113,9 @@
 (impl (->bjodat long)   (defun (->bjodat n) (BjoInt n)))
 (impl (->bjodat int)    (defun (->bjodat n) (BjoInt (cast System.Int64 n))))
 (impl (->bjodat double) (defun (->bjodat n) (BjoFloat n)))
+(impl (->bjodat ulong)  (defun (->bjodat n) (BjoULong n)))
+(impl (->bjodat decimal) (defun (->bjodat n) (BjoDecimal n)))
+(impl (->bjodat bigint) (defun (->bjodat n) (BjoBigInt n)))
 (impl (->bjodat bool)   (defun (->bjodat b) (BjoBool b)))
 (impl (->bjodat string) (defun (->bjodat s) (BjoStr s)))
 (impl (->bjodat char)   (defun (->bjodat c) (BjoChar c)))
@@ -146,6 +149,32 @@
       ;; An integer is a perfectly good double.
       ((BjoInt n) (Ok (cast System.Double n)))
       (_ (Err "expected a number")))))
+
+;; A plain integer that is not negative is a ulong too, so a file need not
+;; write the suffix.
+(impl (bjodat-> ulong)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoULong n) (Ok n))
+      ((BjoInt n) (if (>= n 0L) (Ok (cast System.UInt64 n)) (Err "expected an integer that is not negative")))
+      (_ (Err "expected an integer")))))
+
+;; An integer is a decimal exactly. A double is not: 0.1 has no exact binary
+;; form, so it is refused rather than rounded.
+(impl (bjodat-> decimal)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoDecimal d) (Ok d))
+      ((BjoInt n) (Ok (cast System.Decimal n)))
+      (_ (Err "expected a decimal, such as 1.50M")))))
+
+(impl (bjodat-> bigint)
+  (defun (bjodat-> v)
+    (match v
+      ((BjoBigInt n) (Ok n))
+      ((BjoInt n) (Ok (cast System.Numerics.BigInteger n)))
+      ((BjoULong n) (Ok (cast System.Numerics.BigInteger n)))
+      (_ (Err "expected an integer")))))
 
 (impl (bjodat-> bool)
   (defun (bjodat-> v)

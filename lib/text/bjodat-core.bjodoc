@@ -39,7 +39,8 @@
     }
 
     @codeblock[#:lang "bjolang"]|{
-    42  -100  3.14159  1e10  0x2A  0b101010   ;; integer or double, and nothing else
+    42  -100  3.14159  1e10  0x2A  0b101010   ;; integer or double
+    12UL  0xFFUL  1.50M  123I                 ;; a ulong, a decimal, a bigint
     +inf.0  -inf.0  +nan.0                    ;; the doubles that are not numbers, as Scheme spells them
     #t  #f                                    ;; the booleans; `true` is a symbol
     #\a  #\newline  #\space                   ;; characters, as in source
@@ -66,10 +67,17 @@
     line: a raw string written back out would need a margin to fit into the
     text around it, and @code{bjodat->string} writes a value on its own.
 
-    A number has no width suffix. @code{21uy} and @code{21L} name a .NET
-    type, and which type a field holds is the record's to say, not the file's.
-    A number is a @code{long} unless it has a fraction or an exponent, or is
-    too wide for a @code{long}, and then it is a @code{double}. @code{-} is a
+    A number has no width suffix, with three exceptions. @code{21uy} and
+    @code{21L} name a .NET type, and which type a field holds is the
+    record's to say, not the file's. But a @code{long} and a @code{double}
+    can not hold every @code{ulong}, @code{decimal} and @code{bigint}, so
+    these three have the suffixes of Bjolang's own literals: @code{12UL} is
+    a ulong, also after @code{0x} or @code{0b}; @code{1.50M} is a decimal,
+    which keeps the scale it was written with and has no exponent; and
+    @code{123I} is a bigint. A ulong is not negative, and a ulong and a
+    bigint have no decimal point. Without a suffix, a number is a
+    @code{long} unless it has a fraction or an exponent, or is too wide for
+    a @code{long}, and then it is a @code{double}. @code{-} is a
     symbol of its own, and the start of a number when a digit follows it.
     @code{+inf.0}, @code{-inf.0} and @code{+nan.0} are the infinities and
     NaN, spelled as Scheme spells them; @code{-nan.0} reads as NaN too.
@@ -140,6 +148,9 @@
   (case BjoBool "@code{#t} or @code{#f}.")
   (case BjoInt "An integer, always a @code{long}.")
   (case BjoFloat "A number with a fraction or an exponent, or one too wide for a @code{long}; or @code{+inf.0}, @code{-inf.0}, @code{+nan.0}.")
+  (case BjoULong "A ulong, written with the suffix @code{UL}: @code{12UL}, @code{0xFFUL}.")
+  (case BjoDecimal "A decimal, written with the suffix @code{M}: @code{1.50M}. It keeps the scale it was written with.")
+  (case BjoBigInt "A bigint, written with the suffix @code{I}: @code{123I}. It has no limit.")
   (case BjoStr "A string, raw or escaped.")
   (case BjoChar "A character, @code{#\\a} or @code{#\\newline}.")
   (case BjoSym "A bare identifier. It is data, so it needs no quote.")
@@ -222,7 +233,9 @@
     always with a fraction or an exponent, so that it reads back as a
     @code{BjoFloat}: @code{2.0} is written @code{2.0}, and @code{1e20}
     @code{1E+20}. NaN and the infinities are written @code{+nan.0},
-    @code{+inf.0} and @code{-inf.0}. Symbols
+    @code{+inf.0} and @code{-inf.0}. A ulong, a decimal and a bigint are
+    written with their suffixes, @code{UL}, @code{M} and @code{I}, so that
+    they read back as what they were; a decimal keeps its scale. Symbols
     and keywords are written as their names, unchecked.
     """))
 

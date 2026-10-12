@@ -64,6 +64,8 @@
 
 ;; Hex and binary, which have no reader of their own.
 (import/extern
+  (clr-to-ulong (: System.UInt64.Parse (-> string ulong)))
+  (clr-radix-ulong (: System.Convert.ToUInt64 (-> string int ulong)))
   (clr-radix-long (: System.Convert.ToInt64 (-> string int long)
                      #:exceptions (System.OverflowException System.FormatException))))
 
@@ -76,6 +78,11 @@
              (: BjoBool bool)
              (: BjoInt long)
              (: BjoFloat double)
+             ;; Written with the suffixes of Bjolang's own literals: 12UL,
+             ;; 1.50M, 123I.
+             (: BjoULong ulong)
+             (: BjoDecimal decimal)
+             (: BjoBigInt bigint)
              (: BjoStr string #:literal)
              (: BjoChar char)
              (: BjoSym Symbol)
@@ -728,9 +735,27 @@
         (if (= n 0)
             (Err (at rd (str "this number has no digits after its radix, and there is "
                              (found rd))))
-            (match (clr-radix-long (stringbuilder->string sb) radix)
-              ((Err _) (Err (at rd "this number does not fit in a long")))
-              ((Ok v) (Ok (BjoInt (if neg (- 0L v) v)))))))))
+            (if (ulong-suffix? rd)
+                (if neg
+                    (Err (at rd "a ulong is not negative"))
+                    (match (try (clr-radix-ulong (stringbuilder->string sb) radix) #:catch (System.OverflowException))
+                      ((Err _) (Err (at rd "this number does not fit in a ulong")))
+                      ((Ok v) (Ok (BjoULong v)))))
+                (match (clr-radix-long (stringbuilder->string sb) radix)
+                  ((Err _) (Err (at rd "this number does not fit in a long")))
+                  ((Ok v) (Ok (BjoInt (if neg (- 0L v) v))))))))))
+
+;; Steps over `UL` when it is held. A `U` without the `L` is refused by what
+;; reads next, as any other character after a number is.
+(: ulong-suffix? (-> Reader bool))
+(defun (ulong-suffix? rd)
+  (cond
+    ((and (= (held-code rd) 85) (ensure! rd 2)
+          (= (cast int (array-ref (record-ref rd bytes) (+ (record-ref rd next) 1))) 76))
+     (step! rd)
+     (step! rd)
+     #t)
+    (else #f)))
 
 (: scan-fraction! (-> Reader StringBuilder (Result string bool)))
 (defun (scan-fraction! rd sb)
@@ -789,7 +814,30 @@
   (ignore (take-digits! rd sb))
   (def (Ok frac?) (scan-fraction! rd sb) :propagate)
   (def (Ok exp?) (scan-exponent! rd sb) :propagate)
+  (def sign (if neg "-" ""))
   (cond
+    ;; 1.50M: a decimal keeps the scale it was written with.
+    ((= (held-code rd) 77)
+     (step! rd)
+     (if exp?
+         (Err (at rd "a decimal is written without an exponent"))
+         (match (try (string->decimal (str sign (stringbuilder->string sb)))
+                     #:catch (System.OverflowException))
+           ((Ok d) (Ok (BjoDecimal d)))
+           ((Err _) (Err (at rd "this number does not fit in a decimal"))))))
+    ((= (held-code rd) 73)
+     (step! rd)
+     (if (or frac? exp?)
+         (Err (at rd "a bigint is a whole number: it has no decimal point and no exponent"))
+         (Ok (BjoBigInt (string->bigint (str sign (stringbuilder->string sb)))))))
+    ((ulong-suffix? rd)
+     (cond
+       ((or frac? exp?) (Err (at rd "a ulong is a whole number: it has no decimal point and no exponent")))
+       (neg (Err (at rd "a ulong is not negative")))
+       (else
+        (match (try (clr-to-ulong (stringbuilder->string sb)) #:catch (System.OverflowException))
+          ((Ok n) (Ok (BjoULong n)))
+          ((Err _) (Err (at rd "this number does not fit in a ulong")))))))
     ((or frac? exp?)
      (def d (clr-to-double sb))
      (Ok (BjoFloat (if neg (- 0.0 d) d))))
@@ -1448,6 +1496,9 @@
     ((BjoBool b) (stringbuilder-add-string! sb (if b "#t" "#f")))
     ((BjoInt n) (stringbuilder-add-string! sb (long->string n)))
     ((BjoFloat d) (stringbuilder-add-string! sb (double-text d)))
+    ((BjoULong n) (stringbuilder-add-string! sb (str (->str n) "UL")))
+    ((BjoDecimal d) (stringbuilder-add-string! sb (str (decimal->string d) "M")))
+    ((BjoBigInt n) (stringbuilder-add-string! sb (str (bigint->string n) "I")))
     ((BjoStr s) (escape-into! sb s))
     ((BjoChar c) (char-into! sb c))
     ((BjoSym s) (stringbuilder-add-string! sb (symbol->string s)))

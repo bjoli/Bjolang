@@ -1,0 +1,61 @@
+;; bjodat reads and writes ulongs, decimals and bigints with the suffixes of
+;; Bjolang's literals, and records hold them through their instances.
+
+(import (std prelude))
+(import (std simpletest))
+(import (text bjodat))
+(import (text bjodat-core))
+
+(def/bjodat-type
+  (: Amounts (Record (: id ulong) (: price decimal) (: big bigint))))
+
+(: round-trip (-> string string))
+(defun (round-trip text)
+  (match (parse-bjodat text)
+    ((Ok v) (bjodat->string v))
+    ((Err e) (str "ERR " e))))
+
+(: refused? (-> string string bool))
+(defun (refused? text why)
+  (match (parse-bjodat text)
+    ((Ok _) #f)
+    ((Err e) (string-contains? e why))))
+
+(defun (main args)
+  (expect "a ulong" (parse-bjodat "18446744073709551615UL") (Ok (BjoULong 18446744073709551615UL)))
+  (expect "a hex ulong" (parse-bjodat "0xFFUL") (Ok (BjoULong 255UL)))
+  (expect "a decimal" (parse-bjodat "-0.25M") (Ok (BjoDecimal -0.25M)))
+  (expect "a bigint" (parse-bjodat "123456789012345678901234567890I")
+          (Ok (BjoBigInt 123456789012345678901234567890I)))
+  (expect "a plain number is still a long" (parse-bjodat "12") (Ok (BjoInt 12L)))
+
+  (expect "a decimal keeps its scale" (round-trip "1.50M") "1.50M")
+  (expect "the writer writes the suffixes" (round-trip "[1UL 2M -3I]") "[1UL 2M -3I]")
+
+  (expect-true "a ulong too large" (refused? "18446744073709551616UL" "does not fit in a ulong"))
+  (expect-true "a negative ulong" (refused? "-1UL" "a ulong is not negative"))
+  (expect-true "a ulong with a fraction" (refused? "1.5UL" "a ulong is a whole number"))
+  (expect-true "a bigint with a fraction" (refused? "1.5I" "a bigint is a whole number"))
+  (expect-true "a decimal with an exponent" (refused? "1e3M" "without an exponent"))
+  (expect-true "a U without its L" (refused? "12U" "and then there is 'U'"))
+
+  (match (bjodat-parse-Amounts "{:id 18446744073709551615UL :price 9.99M :big 12I}")
+    ((Ok a)
+     (expect "a record reads a ulong" (record-ref a id) 18446744073709551615UL)
+     (expect "a decimal" (record-ref a price) 9.99M)
+     (expect "a bigint" (record-ref a big) 12I)
+     (expect "and writes them back" (bjodat->string (Amounts->bjodat a))
+             "{:id 18446744073709551615UL :price 9.99M :big 12I}"))
+    ((Err e) (fail e)))
+  (expect "a plain integer is a ulong, a decimal and a bigint"
+          (match (bjodat-parse-Amounts "{:id 1 :price 2 :big 3}")
+            ((Ok a) (list (->str (record-ref a id)) (->str (record-ref a price)) (->str (record-ref a big))))
+            ((Err e) (list e)))
+          (list "1" "2" "3"))
+  (expect "a negative integer is not a ulong"
+          (bjodat-parse-Amounts "{:id -1 :price 2 :big 3}")
+          (Err "Amounts.id: expected an integer that is not negative"))
+  (expect "a double is not a decimal"
+          (bjodat-parse-Amounts "{:id 1 :price 2.5 :big 3}")
+          (Err "Amounts.price: expected a decimal, such as 1.50M"))
+  0)
