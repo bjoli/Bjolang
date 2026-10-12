@@ -51,8 +51,13 @@
     @code{json-max-depth} is refused the same way rather than exhausting the
     stack.
 
-    @strong{Not here yet.} There is no writer: a @code{Json} cannot yet be
-    turned back into text by this module.
+    @strong{Writing.} @code{json->string} and @code{write-json} write a
+    @code{Json} as text, and @code{->str} does too. What they write reads
+    back as the same value: a @code{JsonFloat} always has a point or an
+    exponent, so @code{2.0} stays a float, and a double is written with the
+    fewest digits that read back as the same double. The keys of an object
+    are written in sorted order, because a @code{Map} does not keep the order
+    they were read in. So the same value always gives the same text.
     """))
 
 (:doc Json
@@ -78,6 +83,40 @@
   (reference """
     A byte order mark before the value is skipped and does not count as a
     column. On a bjoroutine the port is read without blocking the thread.
+    """))
+
+(:doc json->string
+  (summary "JSON text for a value: compact, or indented.")
+  (arg j "The value.")
+  (key #:indent "Spaces for each level. 0, the default, writes everything on one line.")
+  (key #:ascii "When @code{#t}, each character outside ASCII is written as a @code{\\u} escape, and a character outside the BMP as a surrogate pair of them.")
+  (returns "The text. @code{parse-json} reads it back as the same value.")
+  (see write-json parse-json)
+  (example """
+    (json->string (JsonObj (map-set (map-set (map-empty) "b" (JsonInt 1)) "a" (JsonFloat 2.0))))
+    ;; "{\"a\":2.0,\"b\":1}"
+
+    (json->string (JsonArr [(JsonStr "knee") JsonNull]) #:indent 2)
+    ;; "[\n  \"knee\",\n  null\n]"
+    """)
+  (reference """
+    @code{"}, @code{\\} and the control characters are escaped in a string,
+    as RFC 8259 requires. Nothing else is, unless @code{#:ascii #t}.
+
+    A @code{JsonFloat} that is NaN or infinite has no JSON form, and raises
+    @code{ArgumentException}: that is a mistake in the program that made it.
+    """))
+
+(:doc write-json
+  (summary "Writes the text @code{json->string} gives to a port.")
+  (arg port "The port.")
+  (arg j "The value.")
+  (key #:indent "As for @code{json->string}.")
+  (key #:ascii "As for @code{json->string}.")
+  (see json->string read-json)
+  (reference """
+    The text is made first, and written in one piece. On a bjoroutine the
+    write does not block the thread.
     """))
 
 (:doc parse-json

@@ -1,0 +1,111 @@
+;; `(text json)`'s writer: scalars, floats that stay floats, escapes, sorted
+;; keys, indentation, ASCII output, the numbers JSON does not have, a port, and
+;; documents that read back as the value they were written from.
+
+(import (std prelude))
+(import (std simpletest))
+(import (text json))
+
+(import/class
+  (Exception (: System.Exception)))
+
+(: obj (-> (List (Tuple string Json)) Json))
+(defun (obj fields)
+  (JsonObj (let go ((left fields) (m (map-empty)))
+             (match left
+               (Nil m)
+               ((Cons (Tuple k v) more) (go more (map-set m k v)))))))
+
+;; A string of the characters with these code points.
+(: chars (-> (List int) string))
+(defun (chars codes) (list->string (list-map integer->char codes)))
+
+(: w (-> Json string))
+(defun (w j) (json->string j))
+
+(: parsed (-> string Json))
+(defun (parsed text)
+  (match (parse-json text)
+    ((Ok j) j)
+    ((Err why) (panic! why))))
+
+;; Written, read back and written again: the same text.
+(: stable? (-> string bool))
+(defun (stable? text)
+  (def once (w (parsed text)))
+  (= (w (parsed once)) once))
+
+(: refused? (-> Json bool))
+(defun (refused? j)
+  (match (try (json->string j) #:catch (System.ArgumentException))
+    ((Ok _) #f)
+    ((Err _) #t)))
+
+(defun (main args)
+  ;; ---- scalars ------------------------------------------------------------
+  (expect "null, true and false" (list (w JsonNull) (w (JsonBool #t)) (w (JsonBool #f))) (list "null" "true" "false"))
+  (expect "integers" (list (w (JsonInt -5L)) (w (JsonInt 9223372036854775807L)))
+          (list "-5" "9223372036854775807"))
+
+  ;; ---- floats -------------------------------------------------------------
+  (expect "a float keeps a point or an exponent"
+          (list-map (fun (d) (w (JsonFloat d))) (list 2.0 1.5 -0.0 1e20 1e-7 0.1 (/ 1.0 3.0)))
+          (list "2.0" "1.5" "-0.0" "1E+20" "1E-07" "0.1" "0.3333333333333333"))
+  (expect "and reads back as a float"
+          (list-map (fun (d) (match (parsed (w (JsonFloat d))) ((JsonFloat x) (= x d)) (_ #f)))
+                    (list 2.0 1e20 1e-7 5e-324 1.7976931348623157e308))
+          (list #t #t #t #t #t))
+  (expect "NaN and infinity have no JSON"
+          (list (refused? (JsonFloat (/ 0.0 0.0))) (refused? (JsonFloat (/ 1.0 0.0))) (refused? (JsonFloat (/ -1.0 0.0))))
+          (list #t #t #t))
+
+  ;; ---- strings ---------------------------------------------------------------
+  (expect "the escapes RFC 8259 requires"
+          (w (JsonStr (str "a\"b\\c\nd\te\r" (chars (list 8 12 1)))))
+          "\"a\\\"b\\\\c\\nd\\te\\r\\b\\f\\u0001\"")
+  (expect "everything else as it is" (w (JsonStr "blåbär 😀 /")) "\"blåbär 😀 /\"")
+  (expect "#:ascii escapes the rest, outside the BMP as a pair"
+          (json->string (JsonStr "blåbär 😀") #:ascii #t)
+          "\"bl\\u00e5b\\u00e4r \\ud83d\\ude00\"")
+  (expect "and it reads back"
+          (match (parsed (json->string (JsonStr "blåbär 😀") #:ascii #t)) ((JsonStr s) s) (_ "?"))
+          "blåbär 😀")
+  (expect "a key is escaped as a string is"
+          (w (obj (list (Tuple "a\"b" JsonNull))))
+          "{\"a\\\"b\":null}")
+
+  ;; ---- arrays and objects -------------------------------------------------------
+  (expect "keys in sorted order"
+          (w (obj (list (Tuple "b" (JsonInt 1L)) (Tuple "a" (JsonArr [(JsonInt 1L) (JsonFloat 2.5) JsonNull])))))
+          "{\"a\":[1,2.5,null],\"b\":1}")
+  (expect "empty ones" (list (w (JsonArr [])) (w (obj Nil)) (w (obj (list (Tuple "x" (JsonArr []))))))
+          (list "[]" "{}" "{\"x\":[]}"))
+  (expect "indented"
+          (json->string (obj (list (Tuple "b" (JsonStr "c"))
+                                   (Tuple "a" (JsonArr [(JsonInt 1L) (obj Nil)]))))
+                        #:indent 2)
+          "{\n  \"a\": [\n    1,\n    {}\n  ],\n  \"b\": \"c\"\n}")
+  (expect "indented empty ones stay on one line"
+          (json->string (JsonArr [(JsonArr []) (obj Nil)]) #:indent 4)
+          "[\n    [],\n    {}\n]")
+  (expect "->str is the compact text" (->str (JsonArr [(JsonBool #t) (JsonStr "x")])) "[true,\"x\"]")
+
+  ;; ---- read back ------------------------------------------------------------------
+  (expect "documents that are written, read and written again give the same text"
+          (list-map stable?
+                    (list "{\"name\": \"http\", \"tags\": [\"net\", \"web\"], \"port\": 8080}"
+                          "[1, -0.5, 1e300, \"\\u00e5\\ud83d\\ude00\", {\"z\": {}, \"a\": [[]]}]"
+                          "\"\\\" \\\\ \\/ \\b \\f \\n \\r \\t \\u0000\""
+                          "{\"deep\": [[[[[[{\"x\": null}]]]]]]}"
+                          "-9223372036854775808"
+                          "123456789012345678901234567890"))
+          (list #t #t #t #t #t #t))
+  (expect "the same value from text in another order"
+          (= (w (parsed "{\"b\": 2, \"a\": 1}")) (w (parsed "{\"a\": 1, \"b\": 2}")))
+          #t)
+
+  ;; ---- a port --------------------------------------------------------------------
+  (def out (open-output-string))
+  (write-json out (JsonArr [(JsonInt 1L) (JsonInt 2L)]) #:indent 1)
+  (expect "written to a port" (get-output-string out) "[\n 1,\n 2\n]")
+  0)

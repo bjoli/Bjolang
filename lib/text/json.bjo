@@ -17,7 +17,8 @@
 (export
   Json
   json-max-depth
-  read-json parse-json)
+  read-json parse-json
+  json->string write-json)
 
 (import (std prelude))
 (import (only (std ports) read-some))
@@ -640,3 +641,125 @@
 (: parse-json (-> string (Result string Json)))
 (defun (parse-json text)
   (read-document (reader None (string->bytes text))))
+
+;; ---------------------------------------------------------------------------
+;; The writer
+;; ---------------------------------------------------------------------------
+;; One `StringBuilder` for the whole document. The keys of an object are
+;; written in sorted order: a `Map` does not keep the order they were read in,
+;; and sorted keys make the same value give the same text in every run.
+
+(import/class
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+(import/extern
+  (clr-finite? (: System.Double.IsFinite (-> double bool))))
+
+(: hex-digits (Vec char))
+(def hex-digits (string->vec "0123456789abcdef"))
+
+(: add-hex4! (-> StringBuilder int void))
+(defun (add-hex4! sb n)
+  (stringbuilder-add-string! sb "\\u")
+  (loop (:for shift (list 12 8 4 0))
+        (:do (stringbuilder-add! sb (vec-ref hex-digits (bitwise-and (shift-right n shift) 15))))))
+
+;; A string, quoted. `"`, `\` and the control characters are escaped, as RFC
+;; 8259 requires. With `ascii`, every character outside ASCII is escaped too,
+;; as one `\u` escape or, outside the BMP, as a surrogate pair of them.
+(: add-string! (-> StringBuilder string bool void))
+(defun (add-string! sb s ascii)
+  (stringbuilder-add! sb #\")
+  (string-for-each
+    (fun (c)
+      (def n (char->integer c))
+      (cond
+        ((= n 34) (stringbuilder-add-string! sb "\\\""))
+        ((= n 92) (stringbuilder-add-string! sb "\\\\"))
+        ((= n 10) (stringbuilder-add-string! sb "\\n"))
+        ((= n 13) (stringbuilder-add-string! sb "\\r"))
+        ((= n 9) (stringbuilder-add-string! sb "\\t"))
+        ((= n 8) (stringbuilder-add-string! sb "\\b"))
+        ((= n 12) (stringbuilder-add-string! sb "\\f"))
+        ((< n 32) (add-hex4! sb n))
+        ((and ascii (> n 126) (< n 65536)) (add-hex4! sb n))
+        ((and ascii (>= n 65536))
+         (def v (- n 65536))
+         (add-hex4! sb (+ 55296 (shift-right v 10)))
+         (add-hex4! sb (+ 56320 (bitwise-and v 1023))))
+        (else (stringbuilder-add! sb c))))
+    s)
+  (stringbuilder-add! sb #\"))
+
+;; The shortest text that reads back as the same double, with `.0` added when
+;; it has neither a point nor an exponent, so that it reads back as a
+;; `JsonFloat` and not a `JsonInt`.
+(: add-float! (-> StringBuilder double void))
+(defun (add-float! sb d)
+  (unless (clr-finite? d)
+    (raise (cast Exception (ArgumentException. (str "JSON has no number for " (double->string d))))))
+  (def text (double->string d))
+  (stringbuilder-add-string! sb text)
+  (unless (or (string-contains? text ".") (string-contains? text "E") (string-contains? text "e"))
+    (stringbuilder-add-string! sb ".0")))
+
+(: add-newline! (-> StringBuilder int int void))
+(defun (add-newline! sb indent level)
+  (when (> indent 0)
+    (stringbuilder-add! sb #\newline)
+    (loop (:for i (range 0 (* indent level)))
+          (:do (stringbuilder-add! sb #\space)))))
+
+(: add-value! (-> StringBuilder Json int bool int void))
+(defun (add-value! sb j indent ascii level)
+  (match j
+    (JsonNull (stringbuilder-add-string! sb "null"))
+    ((JsonBool b) (stringbuilder-add-string! sb (if b "true" "false")))
+    ((JsonInt n) (stringbuilder-add-string! sb (long->string n)))
+    ((JsonFloat d) (add-float! sb d))
+    ((JsonStr s) (add-string! sb s ascii))
+    ((JsonArr items)
+     (cond
+       ((= (vec-length items) 0) (stringbuilder-add-string! sb "[]"))
+       (else
+        (stringbuilder-add! sb #\[)
+        (loop (:for item items)
+              (:with first? #t #f)
+              (:do (unless first? (stringbuilder-add! sb #\,))
+                   (add-newline! sb indent (+ level 1))
+                   (add-value! sb item indent ascii (+ level 1))))
+        (add-newline! sb indent level)
+        (stringbuilder-add! sb #\]))))
+    ((JsonObj fields)
+     (def keys (list-sort (list-map (fun (kv) (def (k _) kv) k) (map->list fields))))
+     (cond
+       ((empty? keys) (stringbuilder-add-string! sb "{}"))
+       (else
+        (stringbuilder-add! sb #\{)
+        (loop (:for k keys)
+              (:with first? #t #f)
+              (:do (unless first? (stringbuilder-add! sb #\,))
+                   (add-newline! sb indent (+ level 1))
+                   (add-string! sb k ascii)
+                   (stringbuilder-add-string! sb (if (> indent 0) ": " ":"))
+                   (add-value! sb (map-ref fields k) indent ascii (+ level 1))))
+        (add-newline! sb indent level)
+        (stringbuilder-add! sb #\}))))))
+
+;; JSON text for a value. Compact unless `#:indent` is more than 0, which puts
+;; each element and field on a line of its own, indented that many spaces a
+;; level. With `#:ascii #t`, the text is ASCII.
+(: json->string (-> Json (#:indent int) (#:ascii bool) string))
+(defun (json->string j #:indent 0 #:ascii #f)
+  (def sb (stringbuilder-empty))
+  (add-value! sb j indent ascii 0)
+  (stringbuilder->string sb))
+
+;; The text `json->string` gives, written to `port`. The text is made first,
+;; and written in one piece.
+(: write-json (-> OutputPort Json (#:indent int) (#:ascii bool) void))
+(defun (write-json port j #:indent 0 #:ascii #f)
+  (write-string port (json->string j #:indent indent #:ascii ascii)))
+
+(impl (->str Json)
+  (defun (->str j) (json->string j)))
