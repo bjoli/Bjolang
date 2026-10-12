@@ -1,0 +1,56 @@
+;; A loop in a body-local function of a bjoroutine has the colour of the
+;; local function.
+;;
+;; A local function takes the suspending colour only if its body reaches a
+;; yield point. Its body is first selected as though it may suspend. A loop
+;; that becomes a `while` in the local function had its name grounded to the
+;; suspending colour then, and kept it when the local function became
+;; ordinary. So the ordinary function awaited its own loop, and `ColourCheck`
+;; refused the program.
+;;
+;; A loop that the inliner makes from `vec-fold` and a loop written by hand
+;; are tested, in a local function called directly and in one given where an
+;; ordinary function is wanted. A local function whose loop suspends must
+;; still be a bjoroutine.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: call-it (-> (-> bool) bool))
+(defun (call-it f) (f))
+
+(: folded (-bjo-> (Vec int) bool))
+(defbjo (folded xs)
+  (defun (any-small?)
+    (vec-fold (fun (e acc) (or acc (< e 3))) #f xs))
+  (sync (timeout 1))
+  (any-small?))
+
+(: folded-as-value (-bjo-> (Vec int) bool))
+(defbjo (folded-as-value xs)
+  (defun (any-small?)
+    (vec-fold (fun (e acc) (or acc (< e 3))) #f xs))
+  (sync (timeout 1))
+  (call-it any-small?))
+
+(: summed (-bjo-> (Vec int) int))
+(defbjo (summed xs)
+  (defun (total)
+    (loop (:for e (in-vec xs)) (:acc n (summing e))))
+  (sync (timeout 1))
+  (total))
+
+(: summed-slowly (-bjo-> (Vec int) int))
+(defbjo (summed-slowly xs)
+  (defun (total)
+    (loop (:for e (in-vec xs))
+          (:do (sync (timeout 1)))
+          (:acc n (summing e))))
+  (total))
+
+(defbjo (main args)
+  (expect "an inlined vec-fold, called" (folded [1 5 7]) #t)
+  (expect "an inlined vec-fold, given as an ordinary function" (folded-as-value [4 5 7]) #f)
+  (expect "a hand-written loop" (summed [1 2 3]) 6)
+  (expect "a loop that suspends" (summed-slowly [1 2 3]) 6)
+  0)

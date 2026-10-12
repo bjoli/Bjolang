@@ -508,6 +508,21 @@ let rec private bindCallsTo (names: Set<string>) (colour: Effect) (expr: TypedEx
 
     TypeVisitor.children expr |> List.iter (bindCallsTo names colour)
 
+/// The names of the loops that become a `while` in the member that `expr` is
+/// written in. A lambda, a `seq` body and a hoisted body are members of their
+/// own, so their loops are not counted.
+let rec private inlinedLoopNames (expr: TypedExpr) : Set<string> =
+    let inner () =
+        TypeVisitor.children expr |> List.map inlinedLoopNames |> Set.unionMany
+
+    match expr.Node with
+    | TLambda _
+    | TSeq _
+    | THoist _ -> Set.empty
+    | TLoop(members, Some body) when LoopLowering.isInlinedLoop members body ->
+        members |> List.map (fun m -> m.LoopName) |> Set.ofList |> Set.union (inner ())
+    | _ -> inner ()
+
 let rec private selectIn (registry: TraitRegistry) (allowed: bool) (expr: TypedExpr) : TypedExpr =
     let descend = selectIn registry allowed
     let sealed_ = selectIn registry false
@@ -734,6 +749,13 @@ and private localFun (registry: TraitRegistry) (allowed: bool) (value: TypedExpr
         // is: a reference walked before this decision was grounded to the
         // enclosing member's colour, and this is the answer it should have got.
         setColour colour value.Type
+
+        // A loop that becomes a `while` in this function has this function's
+        // colour. The body was selected as though it suspends, so the loop's
+        // name was grounded to the suspending colour, and an ordinary function
+        // must not await its own `while`.
+        if colour = ESync then
+            bindCallsTo (inlinedLoopNames selected) ESync selected
 
         // Grounded in the colour just decided rather than the enclosing one:
         // whatever is still open in this arrow belongs to *this* member, and it
