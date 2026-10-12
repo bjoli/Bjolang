@@ -37,6 +37,14 @@ noted.
   elsewhere (~Traits.fs~).
 - A ~loop~'s ~:finish~ value against the loop's result reads as "two
   branches": the message is the expansion's ~if~, not the clause.
+- *An annotated local ~def~ unifies its two types the wrong way round.*
+  ~(def (: g (-bjo-> int int)) (fun (x) (+ x 1)))~ in a body is refused
+  with "a bjoroutine cannot be used where an ordinary function is expected",
+  which is the opposite mistake. ~unifyEffect~ reads its first argument as
+  the expected type, and this path gives the value's type first. The same
+  annotation on a top-level ~def~ is accepted. The fix is to give the
+  annotation first, and then to call ~bridgeToSuspending~ on the value, as
+  for a record field.
 
 * Characters and strings
 
@@ -126,6 +134,20 @@ temporary per variable (~__next__~).
   never waits (samizdat's ~generate-docs~ did, fixed there with a loop).
   A port-free copy of the core, or a way for a library to say a function
   does not park, would end it.
+- *An ordinary function inside another type passes the checker and fails in
+  C#.* ~(def (: fs (Vec (-bjo-> int int))) [(fun (x) x)])~, and
+  ~(list (fun ...))~ given to a ~(List (-bjo-> ...))~ parameter, are CS0029.
+  ~unifyEffect~ accepts an ordinary arrow for a suspending one at any depth,
+  but only a value that is itself the function can be wrapped:
+  ~Codegen~ lifts a positional argument, and ~bridgeToSuspending~ a field,
+  a keyword argument or a return value. Inside a ~Vec~, a ~List~, an
+  ~Option~ or another arrow there is no value to wrap. The fix is to accept
+  the subeffect only at the top of the two types and refuse it below, with a
+  message that says to write ~bjoroutine~. A depth flag in ~unifyIn~ is not
+  enough by itself: ~inferGeneralApp~ unifies each argument with its
+  parameter and then the whole callee arrow with the arrow of the arguments,
+  so a lifted positional argument is met again one level down. That second
+  unification must accept what the first one accepted.
 
 * Traits and macros
 
@@ -141,7 +163,25 @@ temporary per variable (~__next__~).
   over a .NET interface is checked during type checking too, so dead code is
   checked; one with implementations is checked in ~Lowering~ when its evidence
   is built, after ~Simplify~ has removed dead branches.
+- *A field label is expanded as a macro call.* A field is written like a
+  call, ~(Ops (get f))~, so a field whose name is a macro is expanded before
+  ~inferRecordConstruct~ reads the label. ~get~ is a prelude macro, and
+  ~(get f)~ arrives as ~(deref f)~: the error is "Ops has no field 'deref'",
+  a name that is not in the source. ~record-set~ and ~record-set!~ have the
+  same shape. A label is a spelling and not a call, so the expander must not
+  expand the field forms of a record constructor, ~record-set~ or
+  ~record-set!~. Only the value in each field form must be expanded. The
+  head of a constructor call is known to be a record type only in inference,
+  so the expander needs the record type names, or the parser must mark the
+  field forms.
 
+
+* Libraries
+
+- *~(text json)~ has no writer.* A ~Json~ can be read, but not written as
+  text. bjosql therefore stores a JSON column as ~JsonDoc~, a wrapper around
+  the text, and has ~FromSql Json~ but no ~ToSql Json~. With a writer, a
+  ~Json~ column can be declared directly.
 
 * Equality and hashing
 
