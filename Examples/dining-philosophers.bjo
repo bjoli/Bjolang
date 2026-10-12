@@ -1,0 +1,113 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; The dining philosophers problem, solved with software transactional memory.
+;;
+;; This is the solution in the README of kcas
+;; (https://github.com/ocaml-multicore/kcas#the-dining-philosophers-problem),
+;; which (std stm) is modelled on.
+;;
+;; Five philosophers sit at a round table with one fork between each two of
+;; them. A philosopher must hold the fork on the left and the fork on the right
+;; to eat. If each philosopher takes one fork and then waits for the other, no
+;; philosopher can eat: a deadlock.
+;;
+;; A transaction removes the problem. A philosopher takes both forks in one
+;; transaction, so a philosopher holds both forks or none. When a fork is not
+;; on the table, the transaction retries: the fiber waits until another
+;; philosopher puts a fork back, and then tries again.
+;;
+;; No philosopher must starve. Each philosopher counts its meals, and the
+;; dinner ends when each philosopher has eaten some minimum number of times.
+;;
+;; This prints how many times each philosopher ate, for example:
+;; Philosopher 0 ate 1013 times
+;; Philosopher 1 ate 1000 times
+;; ...
+
+(import (std prelude))
+(import (std stm))
+
+;; ---------------------------------------------------------------------------
+;; A synchronizing variable
+;; ---------------------------------------------------------------------------
+
+;; kcas uses an `Mvar` for a fork: a location that is full or empty. Taking
+;; from an empty one, or putting into a full one, waits. Here it is a
+;; `(Loc (Option a))`, and `tx-retry` does the wait.
+
+(: mvar-take (-> Tx (Loc (Option %a)) %a))
+(defun (mvar-take tx mvar)
+  (match (tx-ref tx mvar)
+    ((Some x)
+     (tx-set! tx mvar None)
+     x)
+    (None (tx-retry tx))))
+
+(: mvar-put (-> Tx (Loc (Option %a)) %a void))
+(defun (mvar-put tx mvar x)
+  (match (tx-ref tx mvar)
+    ((Some _) (tx-retry tx))
+    (None (tx-set! tx mvar (Some x)))))
+
+;; ---------------------------------------------------------------------------
+;; A philosopher
+;; ---------------------------------------------------------------------------
+
+;; Takes both forks in one transaction, eats, and puts the forks back. Only
+;; the take must be one transaction. The put is one transaction too because
+;; that is shorter than two.
+(: eat (-bjo-> (Loc (Option int)) (Loc (Option int)) (Loc int) void))
+(defbjo (eat fork-lhs fork-rhs eaten)
+  (def (lhs rhs)
+    (atomically (fun (tx) (Tuple (mvar-take tx fork-lhs) (mvar-take tx fork-rhs)))))
+  (ignore (atomically (fun (tx) (tx-update! tx eaten #(+ & 1)))))
+  (atomically (fun (tx)
+                (mvar-put tx fork-lhs lhs)
+                (mvar-put tx fork-rhs rhs))))
+
+(: philosopher (-bjo-> (Loc (Option int)) (Loc (Option int)) (Loc int) (-> bool) void))
+(defbjo (philosopher fork-lhs fork-rhs eaten continue?)
+  (loop (:while (continue?))
+        (:do (eat fork-lhs fork-rhs eaten))))
+
+;; ---------------------------------------------------------------------------
+;; The dinner
+;; ---------------------------------------------------------------------------
+
+;; Makes the forks and the meal counts, and runs one fiber for each
+;; philosopher. `with-scope` returns when all of them have stopped.
+;; Returns the number of meals of each philosopher.
+(: dining-philosophers (-bjo-> int int (Vec int)))
+(defbjo (dining-philosophers philosophers min-rounds)
+  (def eaten (loop (:for i (range 0 philosophers))
+                   (:acc v (vecing (make-loc 0)))))
+  (def forks (loop (:for i (range 0 philosophers))
+                   (:acc v (vecing (make-loc (Some i))))))
+
+  ;; The dinner continues while some philosopher has eaten too few times.
+  (defun (continue?)
+    (vec-fold (fun (e hungry) (or hungry (< (loc-ref e) min-rounds))) #f eaten))
+
+  (with-scope
+    (loop (:for i (range 0 philosophers))
+          (:do (spawn (philosopher (vec-ref forks i)
+                                   (vec-ref forks (% (+ i 1) philosophers))
+                                   (vec-ref eaten i)
+                                   continue?)))))
+  (vec-map loc-ref eaten))
+
+(defbjo (main args)
+  (def meals (dining-philosophers 5 1000))
+  (loop (:for i (range 0 (vec-length meals)))
+        (:do (println #"Philosopher ${i} ate ${(vec-ref meals i)} times")))
+  0)
