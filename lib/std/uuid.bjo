@@ -1,0 +1,206 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/uuid.bjo — uuids, as RFC 9562 specifies them.
+;;
+;; A `Uuid` is 16 bytes, held as two `ulong`s in network byte order. Two uuids
+;; compare as their bytes compare, which is also how their text compares and
+;; how Postgres orders its `uuid` type. A version 7 uuid starts with the time,
+;; so version 7 uuids sort by the time they were made.
+;;
+;; The random bits come from `(std random)`, and the time of a version 7 uuid
+;; from `current-clock`. Both are parameters, so a test can fix them.
+
+(export
+  Uuid
+  ;; Making one
+  uuid-v4 uuid-v7 uuid-v5 uuid-v3
+  uuid-nil uuid-max
+  uuid-ns-dns uuid-ns-url uuid-ns-oid uuid-ns-x500
+  ;; Text and bytes
+  uuid->string string->uuid uuid-string?
+  uuid->bytes bytes->uuid
+  ;; What is in one
+  uuid-version uuid-v7-time
+  ;; .NET
+  uuid->guid guid->uuid)
+
+(import (std prelude))
+(import (only (std random) current-random random-u64))
+(import (only (std datetime) now instant->unix-milliseconds unix-milliseconds->instant))
+(import (only (std crypto hash) make-hasher hasher-add! hasher-add-string! hasher-finish!))
+
+(:doc #:file "uuid.bjodoc")
+
+(import/class
+  (Guid (: System.Guid)))
+
+(import/extern
+  (shim-v4          (: Bjolang.Runtime.UuidModule.V4 (-> ulong ulong (out ulong) (Tuple ulong ulong))))
+  (shim-v7          (: Bjolang.Runtime.UuidModule.V7 (-> long ulong ulong (out ulong) (Tuple ulong ulong))))
+  (shim-from-digest (: Bjolang.Runtime.UuidModule.FromDigest (-> (Array byte) int (out ulong) (Tuple ulong ulong))))
+  (shim-to-bytes    (: Bjolang.Runtime.UuidModule.ToBytes (-> ulong ulong (Array byte))))
+  (shim-from-bytes  (: Bjolang.Runtime.UuidModule.TryFromBytes
+                       (-> (Array byte) (out ulong) (out ulong) (Option (Tuple ulong ulong)))))
+  (shim-format      (: Bjolang.Runtime.UuidModule.Format (-> ulong ulong bool string)))
+  (shim-parse       (: Bjolang.Runtime.UuidModule.TryParse
+                       (-> string (out ulong) (out ulong) (Option (Tuple ulong ulong)))))
+  (shim-to-guid     (: Bjolang.Runtime.UuidModule.ToGuid (-> ulong ulong Guid)))
+  (shim-from-guid   (: Bjolang.Runtime.UuidModule.FromGuid (-> Guid (out ulong) (Tuple ulong ulong)))))
+
+;; `hi` is the first 8 bytes, `lo` the last 8. Opaque, so every `Uuid` is one
+;; that a function here made. `type/derive` does not take `#:opaque`, so `Eq`
+;; and `Ord` are written out: `hi` first, then `lo`, which is the order of the
+;; bytes.
+(type (: Uuid #:opaque (Struct (: hi ulong) (: lo ulong))))
+
+(impl (Eq Uuid)
+  (defun (= a b) (and (= (struct-ref a hi) (struct-ref b hi)) (= (struct-ref a lo) (struct-ref b lo))))
+  (defun (eq-hash u) (bitwise-xor (eq-hash (struct-ref u hi)) (* 31 (eq-hash (struct-ref u lo))))))
+
+(impl (Ord Uuid)
+  (defun (compare a b)
+    (def by-hi (compare (struct-ref a hi) (struct-ref b hi)))
+    (if (= by-hi 0) (compare (struct-ref a lo) (struct-ref b lo)) by-hi)))
+
+(: from-halves (-> (Tuple ulong ulong) Uuid))
+(defun (from-halves halves)
+  (def (hi lo) halves)
+  (Uuid (hi hi) (lo lo)))
+
+(: hi-of (-> Uuid ulong))
+(defun (hi-of u) (struct-ref u hi))
+
+(: lo-of (-> Uuid ulong))
+(defun (lo-of u) (struct-ref u lo))
+
+;; ---------------------------------------------------------------------------
+;; Making one
+;; ---------------------------------------------------------------------------
+
+;; 122 random bits.
+(: uuid-v4 (-> (#:rng RandomSource) Uuid))
+(defun (uuid-v4 #:rng (parameter-ref current-random))
+  (from-halves (shim-v4 (random-u64 #:rng rng) (random-u64 #:rng rng))))
+
+;; The Unix time in milliseconds, then 74 random bits. The uuids that this
+;; process makes always increase, also when two are made in one millisecond
+;; and when the clock steps back.
+(: uuid-v7 (-> (#:clock Clock) (#:rng RandomSource) Uuid))
+(defun (uuid-v7 #:clock (parameter-ref current-clock) #:rng (parameter-ref current-random))
+  (from-halves (shim-v7 (instant->unix-milliseconds (now #:clock clock))
+                        (random-u64 #:rng rng)
+                        (random-u64 #:rng rng))))
+
+;; A digest of the namespace's 16 bytes and the name's UTF-8 bytes.
+(: name-based (-> HashAlgorithm int Uuid string Uuid))
+(defun (name-based algorithm version namespace name)
+  (def h (make-hasher #:algorithm algorithm))
+  (hasher-add! h (uuid->bytes namespace))
+  (hasher-add-string! h name)
+  (from-halves (shim-from-digest (hasher-finish! h) version)))
+
+;; The same namespace and name always give the same uuid. SHA-1.
+(: uuid-v5 (-> Uuid string Uuid))
+(defun (uuid-v5 namespace name) (name-based Sha1 5 namespace name))
+
+;; As `uuid-v5`, with MD5. For a system that already uses version 3.
+(: uuid-v3 (-> Uuid string Uuid))
+(defun (uuid-v3 namespace name) (name-based Md5 3 namespace name))
+
+(: uuid-nil Uuid)
+(def uuid-nil (Uuid (hi 0UL) (lo 0UL)))
+
+(: uuid-max Uuid)
+(def uuid-max (Uuid (hi 18446744073709551615UL) (lo 18446744073709551615UL)))
+
+;; The namespaces of RFC 9562, section 6.6.
+(: known (-> string Uuid))
+(defun (known text)
+  (match (string->uuid text)
+    ((Some u) u)
+    (None (panic! (str "(std uuid): not a uuid: " text)))))
+
+(: uuid-ns-dns Uuid)
+(def uuid-ns-dns (known "6ba7b810-9dad-11d1-80b4-00c04fd430c8"))
+
+(: uuid-ns-url Uuid)
+(def uuid-ns-url (known "6ba7b811-9dad-11d1-80b4-00c04fd430c8"))
+
+(: uuid-ns-oid Uuid)
+(def uuid-ns-oid (known "6ba7b812-9dad-11d1-80b4-00c04fd430c8"))
+
+(: uuid-ns-x500 Uuid)
+(def uuid-ns-x500 (known "6ba7b814-9dad-11d1-80b4-00c04fd430c8"))
+
+;; ---------------------------------------------------------------------------
+;; Text and bytes
+;; ---------------------------------------------------------------------------
+
+;; 8-4-4-4-12 hex digits, lower case unless `#:upper #t`.
+(: uuid->string (-> Uuid (#:upper bool) string))
+(defun (uuid->string u #:upper #f) (shim-format (hi-of u) (lo-of u) upper))
+
+;; Only the 36-character form, in upper or lower case.
+(: string->uuid (-> string (Option Uuid)))
+(defun (string->uuid text)
+  (match (shim-parse text)
+    ((Some halves) (Some (from-halves halves)))
+    (None None)))
+
+(: uuid-string? (-> string bool))
+(defun (uuid-string? text) (some? (shim-parse text)))
+
+;; 16 bytes, in network byte order.
+(: uuid->bytes (-> Uuid (Array byte)))
+(defun (uuid->bytes u) (shim-to-bytes (hi-of u) (lo-of u)))
+
+;; `None` unless there are exactly 16 bytes.
+(: bytes->uuid (-> (Array byte) (Option Uuid)))
+(defun (bytes->uuid bytes)
+  (match (shim-from-bytes bytes)
+    ((Some halves) (Some (from-halves halves)))
+    (None None)))
+
+(impl (->str Uuid)
+  (defun (->str u) (uuid->string u)))
+
+;; ---------------------------------------------------------------------------
+;; What is in one
+;; ---------------------------------------------------------------------------
+
+;; The 4 version bits: 4 for `uuid-v4`, 7 for `uuid-v7`. 0 for `uuid-nil` and
+;; 15 for `uuid-max`.
+(: uuid-version (-> Uuid int))
+(defun (uuid-version u)
+  (cast int (bitwise-and (shift-right-logical (hi-of u) 12) 15UL)))
+
+;; When a version 7 uuid was made, to the millisecond. `None` for any other
+;; version.
+(: uuid-v7-time (-> Uuid (Option Instant)))
+(defun (uuid-v7-time u)
+  (if (= (uuid-version u) 7)
+      (unix-milliseconds->instant (cast long (shift-right-logical (hi-of u) 16)))
+      None))
+
+;; ---------------------------------------------------------------------------
+;; .NET
+;; ---------------------------------------------------------------------------
+
+;; A `System.Guid` with the same 16 bytes, for a .NET library such as Npgsql.
+;; A Guid keeps its first three fields in the machine's byte order, and its
+;; `CompareTo` does not compare the bytes in order. Compare the `Uuid`.
+(: uuid->guid (-> Uuid Guid))
+(defun (uuid->guid u) (shim-to-guid (hi-of u) (lo-of u)))
+
+(: guid->uuid (-> Guid Uuid))
+(defun (guid->uuid g) (from-halves (shim-from-guid g)))

@@ -1,0 +1,152 @@
+;; Docs for std/uuid.bjo, read through (:doc #:file "uuid.bjodoc"). The texts
+;; are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Uuids as RFC 9562 specifies them: random, time-ordered and name-based.")
+  (see Uuid uuid-v4 uuid-v7 uuid-v5 string->uuid)
+  (example """
+    (import (std uuid))
+
+    (uuid-v4)                                  ; random
+    (uuid-v7)                                  ; starts with the time, so it sorts by time
+    (uuid-v5 uuid-ns-dns "www.example.com")    ; the same input, the same uuid
+    (uuid->string (uuid-v4))                   ; "3f2c9b1e-..."
+    (string->uuid "6ba7b810-9dad-11d1-80b4-00c04fd430c8")   ; (Some ...)
+    """)
+  (reference """
+    A @code{Uuid} is 16 bytes. Two uuids compare as their bytes compare.
+    That is also the order of their text in lower case, and the order of the
+    @code{uuid} type in Postgres.
+
+    @strong{Which version.} Use @code{uuid-v4} for an identifier that must
+    tell nothing. Use @code{uuid-v7} for a database key: it starts with the
+    time, so new keys go at the end of an index, and keys sort by the time
+    they were made. A version 7 uuid tells when it was made. Use
+    @code{uuid-v5} when the same input must give the same uuid.
+
+    @strong{Version 7 uuids from one process always increase.} When two are
+    made in the same millisecond, or the clock steps back, the second is the
+    first plus one, as RFC 9562 section 6.2 allows.
+
+    @strong{The random bits come from @code{current-random}}, and the time from
+    @code{current-clock}. In a @code{with-random-seed}, the same uuids are made
+    again in each run, which is correct for a test and wrong for a real key.
+
+    @strong{The text has one form}: 36 characters, 8-4-4-4-12 hex digits.
+    @code{string->uuid} reads it in either case, and nothing else: no braces,
+    no @code{urn:uuid:} and no form without hyphens.
+    """))
+
+(:doc Uuid
+  (summary "A uuid: 16 bytes, compared as bytes.")
+  (see uuid->string uuid->bytes uuid-version)
+  (reference """
+    Opaque. Make one with @code{uuid-v4}, @code{uuid-v7}, @code{uuid-v5},
+    @code{uuid-v3}, @code{string->uuid} or @code{bytes->uuid}.
+    @code{=}, @code{compare} and @code{->str} work on it.
+    """))
+
+(:doc uuid-v4
+  (summary "A random uuid: 122 random bits.")
+  (key #:rng "The source of the random bits. The default is @code{current-random}.")
+  (returns "A version 4 uuid.")
+  (see uuid-v7))
+
+(:doc uuid-v7
+  (summary "A uuid that starts with the time, so it sorts by the time it was made.")
+  (key #:clock "The clock to read the time from. The default is @code{current-clock}.")
+  (key #:rng "The source of the 74 random bits. The default is @code{current-random}.")
+  (returns "A version 7 uuid, greater than every other version 7 uuid this process made.")
+  (see uuid-v7-time uuid-v4))
+
+(:doc uuid-v5
+  (summary "A uuid from a namespace and a name, with SHA-1.")
+  (arg namespace "A uuid that names the kind of name, such as @code{uuid-ns-dns}.")
+  (arg name "The name. Its UTF-8 bytes are hashed.")
+  (returns "A version 5 uuid. The same namespace and name always give the same uuid.")
+  (see uuid-v3 uuid-ns-dns)
+  (example """
+    (uuid->string (uuid-v5 uuid-ns-dns "www.example.com"))
+    ;; "2ed6657d-e927-568b-95e1-2665a8aea6a2"
+    """))
+
+(:doc uuid-v3
+  (summary "As @code{uuid-v5}, with MD5 in place of SHA-1.")
+  (arg namespace "A uuid that names the kind of name.")
+  (arg name "The name. Its UTF-8 bytes are hashed.")
+  (returns "A version 3 uuid. Use @code{uuid-v5} unless a system already uses version 3.")
+  (see uuid-v5))
+
+(:doc uuid-nil
+  (summary "The uuid with all 128 bits zero."))
+
+(:doc uuid-max
+  (summary "The uuid with all 128 bits one. No uuid is greater."))
+
+(:doc uuid-ns-dns
+  (summary "The namespace for a DNS name, for @code{uuid-v5}."))
+
+(:doc uuid-ns-url
+  (summary "The namespace for a URL, for @code{uuid-v5}."))
+
+(:doc uuid-ns-oid
+  (summary "The namespace for an ISO OID, for @code{uuid-v5}."))
+
+(:doc uuid-ns-x500
+  (summary "The namespace for an X.500 DN, for @code{uuid-v5}."))
+
+(:doc uuid->string
+  (summary "The 36-character text: 8-4-4-4-12 hex digits.")
+  (arg u "The uuid.")
+  (key #:upper "Upper case when @code{#t}. The default is lower case.")
+  (returns "A string such as @code{\"6ba7b810-9dad-11d1-80b4-00c04fd430c8\"}.")
+  (see string->uuid))
+
+(:doc string->uuid
+  (summary "The uuid that a 36-character text gives.")
+  (arg text "8-4-4-4-12 hex digits, in either case.")
+  (returns "@code{None} for any other text.")
+  (see uuid->string uuid-string?))
+
+(:doc uuid-string?
+  (summary "True when @code{string->uuid} reads the text.")
+  (arg text "The text.")
+  (returns "True or false."))
+
+(:doc uuid->bytes
+  (summary "The 16 bytes, in network byte order.")
+  (arg u "The uuid.")
+  (returns "A new array of 16 bytes.")
+  (see bytes->uuid))
+
+(:doc bytes->uuid
+  (summary "The uuid that 16 bytes give.")
+  (arg bytes "The bytes, in network byte order.")
+  (returns "@code{None} unless there are exactly 16 bytes.")
+  (see uuid->bytes))
+
+(:doc uuid-version
+  (summary "The 4 version bits.")
+  (arg u "The uuid.")
+  (returns "4 for @code{uuid-v4}, 7 for @code{uuid-v7}, 5 and 3 for the name-based ones, 0 for @code{uuid-nil}."))
+
+(:doc uuid-v7-time
+  (summary "When a version 7 uuid was made, to the millisecond.")
+  (arg u "The uuid.")
+  (returns "@code{None} when the uuid is not version 7.")
+  (see uuid-v7))
+
+(:doc uuid->guid
+  (summary "A @code{System.Guid} with the same 16 bytes, for a .NET library.")
+  (arg u "The uuid.")
+  (returns "The Guid.")
+  (reference """
+    A Guid keeps its first three fields in the byte order of the machine,
+    and its @code{CompareTo} does not compare the bytes in order. Compare
+    the @code{Uuid}, not the Guid.
+    """))
+
+(:doc guid->uuid
+  (summary "The uuid with the same 16 bytes as a @code{System.Guid}.")
+  (arg g "The Guid.")
+  (returns "The uuid."))

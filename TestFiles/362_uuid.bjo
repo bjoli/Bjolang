@@ -1,0 +1,123 @@
+;; `(std uuid)`: name-based uuids against values from Python's uuid module, the
+;; version 7 example of RFC 9562, the version and variant bits, the text and the
+;; bytes, the order, and Guid interop.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std random))
+(import (std datetime))
+(import (std uuid))
+
+(import/class
+  (Guid (: System.Guid)))
+
+(import/extern
+  (guid-text (: System.Guid.ToString (-> Guid string))))
+
+(: text (-> Uuid string))
+(defun (text u) (uuid->string u))
+
+(: parsed (-> string Uuid))
+(defun (parsed s)
+  (match (string->uuid s)
+    ((Some u) u)
+    (None (panic! (str "not a uuid: " s)))))
+
+;; The variant bits of RFC 9562: the top two bits of byte 8 are 10.
+(: rfc-variant? (-> Uuid bool))
+(defun (rfc-variant? u)
+  (= (bitwise-and (array-ref (uuid->bytes u) 8) 192uy) 128uy))
+
+(: increasing? (-> (Vec Uuid) bool))
+(defun (increasing? us)
+  (loop (:for i (range 1 (vec-length us)))
+        (:finish (not (less? (vec-ref us (- i 1)) (vec-ref us i))) #f)
+        => #t))
+
+(defun (main args)
+  ;; ---- Name-based ---------------------------------------------------------
+  (expect "version 5, the RFC's example" (text (uuid-v5 uuid-ns-dns "www.example.com"))
+          "2ed6657d-e927-568b-95e1-2665a8aea6a2")
+  (expect "version 3, the RFC's example" (text (uuid-v3 uuid-ns-dns "www.example.com"))
+          "5df41881-3aed-3515-88a7-2f4a814cf09e")
+  (expect "a name outside ASCII is hashed as UTF-8"
+          (text (uuid-v5 uuid-ns-url "https://bjolang.org/blåbär"))
+          "049dcdbc-e710-50f8-87e3-bd2a1b932da8")
+  (expect "the namespaces" (vec-map text [uuid-ns-dns uuid-ns-url uuid-ns-oid uuid-ns-x500])
+          ["6ba7b810-9dad-11d1-80b4-00c04fd430c8" "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
+           "6ba7b812-9dad-11d1-80b4-00c04fd430c8" "6ba7b814-9dad-11d1-80b4-00c04fd430c8"])
+
+  ;; ---- Version 4 ----------------------------------------------------------
+  (def v4 (uuid-v4))
+  (expect "version 4" (uuid-version v4) 4)
+  (expect "version 4 has the RFC variant" (rfc-variant? v4) #t)
+  (expect "two are different" (= (uuid-v4) (uuid-v4)) #f)
+  (expect "a seeded source makes the same one"
+          (= (with-random-seed 7UL (uuid-v4)) (with-random-seed 7UL (uuid-v4))) #t)
+
+  ;; ---- Version 7 ----------------------------------------------------------
+  (def rfc-v7 (parsed "017F22E2-79B0-7CC3-98C4-DC0C0C07398F"))
+  (expect "the RFC's version 7 example" (uuid-version rfc-v7) 7)
+  (expect "its time"
+          (match (uuid-v7-time rfc-v7) ((Some i) (instant->unix-milliseconds i)) (None -1L))
+          1645557742000L)
+  (expect "no time in version 4" (some? (uuid-v7-time v4)) #f)
+
+  (def later (match (unix-milliseconds->instant 1893456000000L) ((Some i) i) (None (panic! "time"))))
+  (def stopped (fixed-clock later utc))
+  (def made (uuid-v7 #:clock stopped))
+  (expect "version 7" (uuid-version made) 7)
+  (expect "version 7 has the RFC variant" (rfc-variant? made) #t)
+  (expect "the time is the clock's"
+          (match (uuid-v7-time made) ((Some i) (instant->unix-milliseconds i)) (None -1L))
+          1893456000000L)
+  (def burst (loop (:for i (range 0 1000)) (:acc out (vecing (uuid-v7 #:clock stopped))) => out))
+  (expect "a thousand in one millisecond increase" (increasing? burst) #t)
+  (def earlier (match (unix-milliseconds->instant 1600000000000L) ((Some i) i) (None (panic! "time"))))
+  (expect "a clock that steps back still gives a greater one"
+          (less? (vec-ref burst 999) (uuid-v7 #:clock (fixed-clock earlier utc))) #t)
+
+  ;; ---- Text ----------------------------------------------------------------
+  (expect "upper case" (uuid->string uuid-ns-dns #:upper #t) "6BA7B810-9DAD-11D1-80B4-00C04FD430C8")
+  (expect "read in upper case" (= (parsed "6BA7B810-9DAD-11D1-80B4-00C04FD430C8") uuid-ns-dns) #t)
+  (expect "what is not read"
+          (vec-map uuid-string?
+                   ["6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+                    "{6ba7b810-9dad-11d1-80b4-00c04fd430c8}"
+                    "urn:uuid:6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+                    "6ba7b8109dad11d180b400c04fd430c8"
+                    "6ba7b810-9dad-11d1-80b4-00c04fd430cg"
+                    "6ba7b810-9dad-11d1-80b4_00c04fd430c8"
+                    ""])
+          [#t #f #f #f #f #f #f])
+  (expect "->str" (->str uuid-ns-dns) "6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+  (expect "nil and max" (vec-map text [uuid-nil uuid-max])
+          ["00000000-0000-0000-0000-000000000000" "ffffffff-ffff-ffff-ffff-ffffffffffff"])
+  (expect "the version of nil and max" (vec-map uuid-version [uuid-nil uuid-max]) [0 15])
+
+  ;; ---- Bytes --------------------------------------------------------------
+  (expect "the bytes, in network order" (array->vec (uuid->bytes uuid-ns-dns))
+          [107uy 167uy 184uy 16uy 157uy 173uy 17uy 209uy 128uy 180uy 0uy 192uy 79uy 212uy 48uy 200uy])
+  (expect "the bytes there and back"
+          (match (bytes->uuid (uuid->bytes v4)) ((Some u) (= u v4)) (None #f)) #t)
+  (expect "15 bytes are not a uuid" (some? (bytes->uuid (make-array 15))) #f)
+
+  ;; ---- Order ----------------------------------------------------------------
+  (def many (loop (:for i (range 0 200)) (:acc out (listing (uuid-v4))) => out))
+  (expect "uuids sort as their text sorts"
+          (list-map text (list-sort many))
+          (list-sort (list-map text many)))
+  (expect "the high bytes decide first"
+          (less? (parsed "00000000-0000-0000-ffff-ffffffffffff") (parsed "00000000-0000-0001-0000-000000000000"))
+          #t)
+  (expect "an unsigned order: a high bit is greater"
+          (less? (parsed "7fffffff-ffff-ffff-ffff-ffffffffffff") (parsed "80000000-0000-0000-0000-000000000000"))
+          #t)
+  (expect "equal ones" (= (parsed "6ba7b810-9dad-11d1-80b4-00c04fd430c8") uuid-ns-dns) #t)
+  (expect "equal ones hash the same"
+          (= (eq-hash (parsed "6ba7b810-9dad-11d1-80b4-00c04fd430c8")) (eq-hash uuid-ns-dns)) #t)
+
+  ;; ---- Guid -----------------------------------------------------------------
+  (expect "a Guid has the same text" (guid-text (uuid->guid uuid-ns-dns)) "6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+  (expect "a Guid there and back" (= (guid->uuid (uuid->guid v4)) v4) #t)
+  0)
