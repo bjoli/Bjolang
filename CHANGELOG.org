@@ -3,6 +3,26 @@
 
 What each change guarantees, and what it leaves open.
 
+* A lone ~(sync (timeout ms))~ parks in the timer wheel
+
+- A ~sync~ on one ~timeout~ or ~at~ event with a delay above 0 ms parks one
+  ~SleepNode~ in the timer wheel, with the fiber's resume in it. The
+  general way built a ~SyncState~, an ~EventAwaiter~ with its delegate, and
+  a ~TimeoutNode~. A sleeping fiber keeps 96 B in place of 288 B, so a
+  parked client in ~bench/service~ keeps 808 B in place of 1000 B.
+- Cancellation is the same: the fiber's watch withdraws the sleep as it
+  withdraws a parked channel operation, and the sync raises ~Cancelled~. A
+  delay of 0 ms or less, and a timer inside a ~choose~ or a ~wrap~, go the
+  general way as before. Eight runtime tests cover the sleep, its
+  cancellation before, during and after the park, and the race between the
+  tick and the token.
+- At 0.25M/s on 4 cores the program uses 6% less CPU and allocates 6.5%
+  less. The server GC then picks a smaller gen0 budget and makes 16
+  collections a rep in place of 9, with 30% more pause time and a p99 0.8 us
+  higher. With the gen0 budget fixed the new runtime pauses 24% less, with
+  the same tail. See ~BjolangRuntime/Cml/design.md~, "A lone sleep parks in
+  the timer wheel".
+
 * A spawned bjoroutine keeps one box, not two
 
 - ~(bjo (f a b))~, where ~f~ is a module bjoroutine, is emitted as

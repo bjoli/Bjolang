@@ -23,7 +23,8 @@ namespace Bjoml;
 /// A <see cref="Timer"/> per armed timeout was three objects and a lock on the
 /// runtime's timer queue to arm it and another to cancel it, and a `choose`
 /// with a deadline arms one every time it parks. Here an armed
-/// <see cref="TimeoutNode"/> is itself the entry: linked into a wheel of 1 ms
+/// <see cref="WheelNode"/> (a <see cref="TimeoutNode"/> of a `choose`, or the
+/// <see cref="SleepNode"/> of a lone sync) is itself the entry: linked into a wheel of 1 ms
 /// slots, one wheel per core so that arming and cancelling on different cores
 /// do not meet, each wheel under its own spin lock. Cancelling unlinks the node
 /// at once, so a service whose deadlines nearly all lose keeps no dead entries
@@ -54,7 +55,7 @@ internal static class TimerWheel
         /// The next millisecond the tick has not walked.
         public long Cursor;
 
-        public readonly TimeoutNode?[] Heads = new TimeoutNode?[Slots];
+        public readonly WheelNode?[] Heads = new WheelNode?[Slots];
 
         private long _pad7, _pad8, _pad9, _pad10, _pad11, _pad12, _pad13;
 
@@ -102,7 +103,7 @@ internal static class TimerWheel
     }
 
     /// <summary>Link <paramref name="node"/> to fire in <paramref name="ms"/> ms.</summary>
-    internal static void Add(TimeoutNode node, int ms)
+    internal static void Add(WheelNode node, int ms)
     {
         long now = NowMs();
         var w = s_wheels[Thread.GetCurrentProcessorId() & (s_wheels.Length - 1)];
@@ -131,7 +132,7 @@ internal static class TimerWheel
     }
 
     /// <summary>Unlink <paramref name="node"/> if it is still linked.</summary>
-    internal static void Remove(TimeoutNode node)
+    internal static void Remove(WheelNode node)
     {
         var w = Volatile.Read(ref node.Wheel);
         if (w is null) return;
@@ -141,7 +142,7 @@ internal static class TimerWheel
         w.Exit();
     }
 
-    private static void Unlink(Wheel w, TimeoutNode node)
+    private static void Unlink(Wheel w, WheelNode node)
     {
         if (node.WheelPrev is { } prev) prev.WheelNext = node.WheelNext;
         else w.Heads[(int)(node.Due & SlotMask)] = node.WheelNext;
@@ -187,7 +188,7 @@ internal static class TimerWheel
         {
             if (Volatile.Read(ref w.Count) == 0) continue;
 
-            TimeoutNode? due = null;
+            WheelNode? due = null;
             w.Enter();
             long from = w.Cursor;
             long to = now - from >= Slots ? from + Slots - 1 : now;

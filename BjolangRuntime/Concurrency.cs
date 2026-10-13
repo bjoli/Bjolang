@@ -173,6 +173,10 @@ public static partial class BjolangRuntime {
                 if (_ev is IDirectSyncable<T> unwatched)
                     return new SyncAwaiter<T>(unwatched, unwatched.RentPark(), null);
 
+                // A lone timer parks in the wheel, the node in place of an op.
+                if (_ev is ISleepEvent lone && lone.SleepMs() is > 0 and var loneMs)
+                    return new SyncAwaiter<T>(SleepSite(loneMs), null!, null);
+
                 return new SyncAwaiter<T>(_ev.GetAwaiter(), null);
             }
 
@@ -180,6 +184,11 @@ public static partial class BjolangRuntime {
             // claim, so cancellation is a claim on that op rather than a second
             // published branch: no `SyncState`, no closure, no awaiter.
             if (_ev is IDirectSyncable<T> direct) return Direct(direct, _token);
+
+            // A lone timer is a single park too, in the wheel, and the token
+            // withdraws it as it withdraws an op. See `SleepNode`.
+            if (_ev is ISleepEvent sleep && sleep.SleepMs() is > 0 and var ms)
+                return Sleeping(SleepSite(ms), _token);
 
             // A `choose` has branches to arbitrate between, so the token is one
             // more branch of its `SyncState` rather than a claim on one op.
@@ -252,6 +261,31 @@ public static partial class BjolangRuntime {
                 return SyncAwaiter<T>.Cancelled(token.GetAwaiter().GetResult());
 
             return Watched(ev, ev.RentPark(), token);
+        }
+
+        /// A sleep's node as the park site of this sync. `T` is `Unit` for
+        /// every timer event, so the cast always holds.
+        private static IParkable<T> SleepSite(int ms) => (IParkable<T>)(object)new SleepNode(ms);
+
+        /// A sleep, watched by this fiber's registration: `Watched` with the
+        /// node as its site and no op. The node is not in the wheel yet; that
+        /// happens in `UnsafeOnCompleted`, as an op's park does.
+        private static SyncAwaiter<T> Sleeping(IParkable<T> node, Promise<CancelReason> token) {
+            if (token.IsCompleted)
+                return SyncAwaiter<T>.Cancelled(token.GetAwaiter().GetResult());
+
+            var cell = Cell(token);
+            cell.AttachDirect(node, null!, 0);
+            int gen = cell.Arm();
+
+            // Fired between the check and the arm. Nothing is linked, so taking
+            // the cell back is all there is to cancelling.
+            if (token.IsCompleted && cell.TryTake(gen)) {
+                cell.End();
+                return SyncAwaiter<T>.Cancelled(token.GetAwaiter().GetResult());
+            }
+
+            return new SyncAwaiter<T>(node, null!, cell);
         }
 
         /// The watched park of an op already rented, which is `Direct` once
@@ -529,12 +563,13 @@ public static partial class BjolangRuntime {
             }
 
             // Cleared by the owner ending the park as the reads were made.
-            if (site is null || op is null) return;
+            // A sleep's site is its node, and it has no op.
+            if (site is null || (op is null && site is not SleepNode)) return;
 
             // Refused: a partner took the op, and the value it delivered
             // stands. Unpublished: the owner has not parked it yet, and its
             // `Park` finds it withdrawn and resumes the fiber itself.
-            if (site.CancelParked(op, opGen) != Withdrawal.Published) return;
+            if (site.CancelParked(op!, opGen) != Withdrawal.Published) return;
 
             // Stored before the resume runs, which is what publishes it to the
             // fiber. The op stays where it is; the channel's sweep drops it.

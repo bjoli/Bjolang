@@ -35,7 +35,7 @@ namespace Bjoml;
 /// the deadline starts when the event is published, which is what a timeout
 /// inside a choose loop has to mean.
 /// </summary>
-internal sealed class TimeoutEvent : IEvent<Unit>
+internal sealed class TimeoutEvent : IEvent<Unit>, ISleepEvent
 {
     private readonly int _ms;
 
@@ -43,6 +43,22 @@ internal sealed class TimeoutEvent : IEvent<Unit>
 
     public void Publish(SyncState state, int eventId, Action<Unit> onSync)
         => TimeoutNode.Arm(state, eventId, onSync, _ms);
+
+    int ISleepEvent.SleepMs() => _ms;
+}
+
+/// <summary>
+/// A timer event that a lone `sync` can wait for as a sleep: see
+/// <see cref="SleepNode"/>.
+/// </summary>
+internal interface ISleepEvent
+{
+    /// <summary>
+    /// How long a sync started now waits. Zero or less means that the event is
+    /// available now, and the sync then goes the general way, which commits it
+    /// at once.
+    /// </summary>
+    int SleepMs();
 }
 
 /// <summary>
@@ -51,18 +67,47 @@ internal sealed class TimeoutEvent : IEvent<Unit>
 /// fixed at construction and only the remaining interval is computed per publish,
 /// which is what makes it usable as an overall budget for a loop.
 /// </summary>
-internal sealed class AtEvent : IEvent<Unit>
+internal sealed class AtEvent : IEvent<Unit>, ISleepEvent
 {
     private readonly DateTime _utcDeadline;
 
     public AtEvent(DateTime utcDeadline) => _utcDeadline = utcDeadline;
 
     public void Publish(SyncState state, int eventId, Action<Unit> onSync)
+        => TimeoutNode.Arm(state, eventId, onSync, Remaining());
+
+    int ISleepEvent.SleepMs() => Remaining();
+
+    private int Remaining()
     {
         var remaining = (_utcDeadline - DateTime.UtcNow).TotalMilliseconds;
-        var ms = remaining <= 0 ? 0 : (remaining > int.MaxValue ? int.MaxValue : (int)remaining);
-        TimeoutNode.Arm(state, eventId, onSync, ms);
+        return remaining <= 0 ? 0 : (remaining > int.MaxValue ? int.MaxValue : (int)remaining);
     }
+}
+
+/// <summary>
+/// An entry in <see cref="TimerWheel"/>: when it is due, where it is linked,
+/// and what to do when it is due.
+///
+/// A <see cref="NackNode"/>, because a <see cref="TimeoutNode"/> is its own
+/// nack and C# has one base class. A <see cref="SleepNode"/> does not use the
+/// nack fields, and pays 24 B for them.
+/// </summary>
+internal abstract class WheelNode : NackNode
+{
+    // Where this node is in the timer wheel: the millisecond it is due, the
+    // wheel it is linked into (null once unlinked), its neighbours in its slot,
+    // and its place in the list of nodes a tick is about to fire. All but
+    // FireNext are written only under the wheel's lock. See TimerWheel.
+    internal long Due;
+    internal TimerWheel.Wheel? Wheel;
+    internal WheelNode? WheelPrev, WheelNext, FireNext;
+
+    /// <summary>
+    /// The deadline arrived. Called by the wheel's tick, which has already
+    /// unlinked this node, outside the wheel's lock.
+    /// </summary>
+    internal abstract void FireFromWheel();
 }
 
 /// <summary>
@@ -86,7 +131,7 @@ internal sealed class AtEvent : IEvent<Unit>
 /// unlinked the node already; the nack that made it lose has already run or will
 /// run, and both find the gate Done.
 /// </summary>
-internal sealed class TimeoutNode : NackNode
+internal sealed class TimeoutNode : WheelNode
 {
     private const int Pending = 0;
     private const int Done = 1;
@@ -95,14 +140,6 @@ internal sealed class TimeoutNode : NackNode
     private readonly int _eventId;
     private readonly Action<Unit> _onSync;
     private int _gate;
-
-    // Where this node is in the timer wheel: the millisecond it is due, the
-    // wheel it is linked into (null once unlinked), its neighbours in its slot,
-    // and its place in the list of nodes a tick is about to fire. All but
-    // FireNext are written only under the wheel's lock. See TimerWheel.
-    internal long Due;
-    internal TimerWheel.Wheel? Wheel;
-    internal TimeoutNode? WheelPrev, WheelNext, FireNext;
 
     private TimeoutNode(SyncState state, int eventId, Action<Unit> onSync)
     {
@@ -175,7 +212,7 @@ internal sealed class TimeoutNode : NackNode
     /// The deadline arrived first; try to win the sync. Called by the wheel's
     /// tick, which has already unlinked this node.
     /// </summary>
-    internal void FireFromWheel()
+    internal override void FireFromWheel()
     {
         if (Interlocked.Exchange(ref _gate, Done) == Done) return;
 
@@ -183,5 +220,95 @@ internal sealed class TimeoutNode : NackNode
         // Publish returned and may find the state transiently Claimed by a
         // sibling — the same argument as Promise.Deliver.
         if (_state.TryCommit(_eventId)) Scheduler.Dispatch(_onSync, default);
+    }
+}
+
+/// <summary>
+/// A lone `(sync (timeout ms))`: a sleep. The fiber's resume goes into the
+/// timer wheel, and nothing else is built.
+///
+/// The general way builds a <see cref="SyncState"/>, an
+/// <see cref="EventAwaiter{T}"/> with its delegate, and a
+/// <see cref="TimeoutNode"/>, and a sleeping fiber keeps all of them: 288 B.
+/// A sync with one timer has no branches to arbitrate, so this is the
+/// <see cref="IDirectSyncable{T}"/> park of a lone channel operation, with the
+/// wheel as the channel. <see cref="BjolangRuntime.SyncOp{T}"/> parks it
+/// through the same <see cref="BjolangRuntime.SyncAwaiter{T}"/> path, and the
+/// fiber's cancellation watch withdraws it as it withdraws an op, through
+/// <see cref="IParkSite.CancelParked"/>. The op argument of that path is null
+/// here: the node is the op and the site at once.
+///
+/// One node per sleep, not pooled, for the reason <see cref="TimeoutNode"/>
+/// is not: a late cancel or fire must find this node's gate closed, not a
+/// later sleep's.
+///
+/// The gate decides who resumes the fiber, once:
+/// <list type="bullet">
+/// <item><see cref="Unpublished"/>: the fiber has not parked yet. A cancel
+/// that closes the gate now leaves the resuming to <see cref="Park"/>.</item>
+/// <item><see cref="Published"/>: parked, with the resume set. Whoever closes
+/// the gate, the tick or the cancel, resumes the fiber.</item>
+/// <item><see cref="Done"/>: closed.</item>
+/// </list>
+/// </summary>
+internal sealed class SleepNode : WheelNode, IParkable<Unit>
+{
+    private const int Unpublished = 0;
+    private const int Published = 1;
+    private const int Done = 2;
+
+    private readonly int _ms;
+    private int _gate;
+    private Action? _resume;
+
+    internal SleepNode(int ms) => _ms = ms;
+
+    /// <summary>
+    /// Into the wheel, with the fiber's resume. The op is null; see above.
+    ///
+    /// The resume is written before the gate opens, and the gate opens before
+    /// the node is linked, so a tick that finds the node finds the resume.
+    /// </summary>
+    public ParkResult Park(Operation op, Action resume)
+    {
+        _resume = resume;
+
+        // Closed already: the token withdrew this sleep before it parked.
+        if (Interlocked.CompareExchange(ref _gate, Published, Unpublished) != Unpublished)
+            return ParkResult.Withdrawn;
+
+        // A cancel can close the gate between the exchange and the link. It
+        // then resumes the fiber, and its unlink found nothing, so the node is
+        // unlinked here. Both sides are fenced (the exchange there, the
+        // wheel's lock here), as in TimeoutNode.Arm.
+        TimerWheel.Add(this, _ms);
+        if (Volatile.Read(ref _gate) == Done) TimerWheel.Remove(this);
+        return ParkResult.Parked;
+    }
+
+    /// <summary>A sleep carries no value.</summary>
+    public Unit TakeParked(Operation op) => default;
+
+    /// <summary>The token's withdrawal. Called once, by the fiber's watch.</summary>
+    public Withdrawal CancelParked(Operation op, int gen)
+    {
+        switch (Interlocked.Exchange(ref _gate, Done))
+        {
+            case Published:
+                TimerWheel.Remove(this);
+                return Withdrawal.Published;
+            case Unpublished:
+                return Withdrawal.Unpublished;
+            default:
+                // The tick resumed the fiber first. The sleep ended normally.
+                return Withdrawal.Refused;
+        }
+    }
+
+    internal override void FireFromWheel()
+    {
+        // Only a published node is linked, so the gate is Published or Done.
+        if (Interlocked.CompareExchange(ref _gate, Done, Published) == Published)
+            Scheduler.Dispatch(_resume!);
     }
 }

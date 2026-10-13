@@ -1606,7 +1606,60 @@ Not done, in order of size:
 - `(sync (timeout ms))` goes the general way: an awaiter, its delegate and a
   `SyncState`, 248 B with the `TimeoutNode`. A sleep that parks the fiber's
   resume in the timer wheel, and that the watch can withdraw, would need only
-  the node.
+  the node. Done; see the next section.
+
+### A lone sleep parks in the timer wheel
+
+A `sync` on one `timeout` or `at` event, with a delay above 0 ms, now parks
+a `SleepNode` (`TimeoutEvent.cs`) in place of the general way. The node is
+the wheel's entry, the fiber's resume and the park site at once: it
+implements `IParkable<Unit>`, so `SyncOp` parks it through the same
+`SyncAwaiter` path as a lone channel operation, and the fiber's
+`FiberWatch` withdraws it through `CancelParked`. A gate of three states
+(unpublished, published, done) decides who resumes the fiber: the tick, the
+token, or `Park` itself when the token came first. A delay of 0 ms or less
+keeps the general way, which commits at once. The wheel takes a `WheelNode`,
+the base class of `TimeoutNode` and `SleepNode`.
+
+The gcdump at 4 cores and 0.25M/s, as in the section above:
+
+    a sleeping client, before         a sleeping client, now
+      TimeoutNode           104         SleepNode            96
+      EventAwaiter           64
+      Action<Unit>           64
+      SyncState              56
+
+A parked client keeps 808 B in place of 1000 B, and the live heap went from
+164,795 to 130,875 objects. Allocation fell 6.5% a request.
+
+The A/B, as above: 30 rounds at 0.25M/s on 4 cores, 90 reps a build, old
+and new runtime under one `service.exe`:
+
+                 old     new    new - old, 95% interval
+    cpu ms      3388    3197    -214 .. -159
+    p99 us      35.1    35.9    +0.0 .. +1.2
+    p99.9 us    66.4    62.7    -10.1 .. +9.0
+    gcs            9      16    +7 .. +8
+    pause ms    35.5    46.0    +9 .. +12
+
+The closed loops, which do not sleep, did not change (10 rounds each).
+
+**Twice the collections, from less allocation.** Counters for one rep:
+
+                 gen0   gen1   gen2   gen1 after GC   committed
+    old            69     62      6         24.9 MB      193 MB
+    new           213     10      4          8.6 MB      162 MB
+
+Before, every sleeping fiber kept four objects alive, so much survived each
+gen0 collection, and gen1 collections were frequent. Now less survives, and
+the server GC sizes gen0 by what survives, so it picks a smaller budget and
+runs more, cheaper gen0 collections: 3.2 ms each in place of 4.3. With the
+budget fixed (`DOTNET_GCgen0size=0x2000000`, 10 rounds), both make 5
+collections a rep, and the new runtime pauses 19 ms in place of 25 (-24%),
+uses 7% less CPU, and has the same p99 and p99.9. So the change itself
+costs nothing. The 0.8 us at p99 with the default budget is the GC's choice
+of memory against collections, and the gen0 budget is the lever for it, as
+in "Bjolang's open-loop tail is GC pauses" above.
 
 ---
 

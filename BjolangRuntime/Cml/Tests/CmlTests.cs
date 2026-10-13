@@ -16,6 +16,7 @@
 using System;
 using System.Threading;
 using static Bjoml.Tests.Harness;
+using Global = global::BjolangRuntime;
 
 namespace Bjoml.Tests;
 
@@ -68,6 +69,16 @@ public static class CmlTests
         Run("a timeout more than a lap of the wheel away fires on time", TimeoutBeyondALapFires);
         Run("combinator spec: a timeout becomes available on its own", SpecTimeoutFires);
         Run("combinator spec: a timeout loses to something already available", SpecTimeoutLoses);
+
+        Section("A lone sleep: (sync (timeout ms)) parks in the timer wheel");
+        Run("a sleep with no token wakes, and leaves the wheel", UnwatchedSleepWakes);
+        Run("a sleep under a token wakes, and leaves the wheel", WatchedSleepWakes);
+        Run("a sleep until an absolute deadline wakes then", SleepUntilDeadlineWakes);
+        Run("a sleep of 0 ms under a token is available at once", ZeroSleepIsAvailable);
+        Run("a token fired during a sleep raises at once and unlinks it", SleepIsCancelled);
+        Run("a token fired before the sleep raises and links nothing", SleepUnderFiredToken);
+        Run("cancels racing short sleeps resume each fiber once", SleepCancelRace);
+        Run("a sleep's gate has one winner", SleepGateHasOneWinner);
 
         Section("Choice order");
         Run("choose is deterministic left-to-right by default", ChooseIsDeterministicByDefault);
@@ -886,6 +897,239 @@ public static class CmlTests
 
         Await(done, "a 1300 ms timeout", 5000);
         Assert(at >= 1290 && at < 1800, $"a 1300 ms timeout fired after {at} ms");
+    }
+
+    // -----------------------------------------------------------------------
+    // A lone sleep
+    // -----------------------------------------------------------------------
+    //
+    // `(sync (timeout ms))` with nothing to choose between parks a SleepNode in
+    // the wheel, with the fiber's resume in it. The wheel is shared by every
+    // test, so these compare its count with what it was before.
+
+    private static Global.CancelReason Reason(string why) =>
+        new Global.CancelReason.Requested(BjoString.Utf8String.FromUtf16(why));
+
+    /// Wait until the wheel holds no more than <paramref name="count"/> nodes.
+    private static void AwaitWheelAt(int count, string what)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (TimerWheel.LinkedCount > count && DateTime.UtcNow < deadline) Thread.Sleep(1);
+        AssertEqual(count, TimerWheel.LinkedCount, what);
+    }
+
+    /// `Bjo.Spawn` outside a scope races no token, so this is the unwatched park.
+    private static void UnwatchedSleepWakes()
+    {
+        int before = TimerWheel.LinkedCount;
+        var done = new ManualResetEventSlim(false);
+        long waited = 0;
+
+        _ = Bjo.Spawn<Unit>(async () =>
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            await Global.sync(Global.timeout(50));
+            waited = clock.ElapsedMilliseconds;
+            done.Set();
+            return default;
+        });
+
+        Await(done, "a 50 ms sleep");
+        Assert(waited >= 45, $"a 50 ms sleep woke after {waited} ms");
+        AwaitWheelAt(before, "nodes in the wheel after the sleep");
+    }
+
+    private static void WatchedSleepWakes()
+    {
+        int before = TimerWheel.LinkedCount;
+        var token = new Promise<Global.CancelReason>();
+        var done = new ManualResetEventSlim(false);
+        long waited = 0;
+        bool cancelled = false;
+
+        _ = UnderToken(token, async () =>
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            try { await Global.sync(Global.timeout(50)); }
+            catch (Bjolang.Runtime.Cancelled) { cancelled = true; }
+            waited = clock.ElapsedMilliseconds;
+
+            // The cell is idle again, so the next park can arm it.
+            await Global.sync(Global.timeout(5));
+            done.Set();
+            return default;
+        });
+
+        Await(done, "two sleeps under a token");
+        Assert(!cancelled, "a sleep under a token that never fired raised");
+        Assert(waited >= 45, $"a 50 ms sleep woke after {waited} ms");
+        AwaitWheelAt(before, "nodes in the wheel after the sleeps");
+    }
+
+    private static void SleepUntilDeadlineWakes()
+    {
+        var token = new Promise<Global.CancelReason>();
+        var done = new ManualResetEventSlim(false);
+        var at = DateTime.UtcNow.AddMilliseconds(80);
+        DateTime woke = default;
+
+        _ = UnderToken(token, async () =>
+        {
+            await Global.sync(Cml.At(at));
+            woke = DateTime.UtcNow;
+            done.Set();
+            return default;
+        });
+
+        Await(done, "a sleep until a deadline");
+        Assert(woke >= at.AddMilliseconds(-5), $"woke {(at - woke).TotalMilliseconds:F0} ms before the deadline");
+    }
+
+    /// A deadline that has come goes the general way, which commits it at once.
+    private static void ZeroSleepIsAvailable()
+    {
+        var token = new Promise<Global.CancelReason>();
+        var done = new ManualResetEventSlim(false);
+
+        _ = UnderToken(token, async () =>
+        {
+            await Global.sync(Global.timeout(0));
+            await Global.sync(Cml.At(DateTime.UtcNow.AddSeconds(-1)));
+            done.Set();
+            return default;
+        });
+
+        Await(done, "two syncs on timers that are due", 1000);
+    }
+
+    private static void SleepIsCancelled()
+    {
+        int before = TimerWheel.LinkedCount;
+        var token = new Promise<Global.CancelReason>();
+        var done = new ManualResetEventSlim(false);
+        bool cancelled = false;
+        long waited = 0;
+
+        _ = UnderToken(token, async () =>
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            try { await Global.sync(Global.timeout(10_000)); }
+            catch (Bjolang.Runtime.Cancelled) { cancelled = true; }
+            waited = clock.ElapsedMilliseconds;
+            done.Set();
+            return default;
+        });
+
+        AwaitPark(() => TimerWheel.LinkedCount - before, "the sleep to enter the wheel");
+        token.TrySetResult(Reason("wake up"));
+
+        Await(done, "the cancelled sleep to resume");
+        Assert(cancelled, "a sleep under a fired token did not raise Cancelled");
+        Assert(waited < 5000, $"the cancelled sleep resumed after {waited} ms");
+        AwaitWheelAt(before, "nodes in the wheel after the cancel");
+    }
+
+    private static void SleepUnderFiredToken()
+    {
+        int before = TimerWheel.LinkedCount;
+        var token = new Promise<Global.CancelReason>();
+        token.TrySetResult(Reason("already cancelled"));
+        var done = new ManualResetEventSlim(false);
+        bool cancelled = false;
+
+        _ = UnderToken(token, async () =>
+        {
+            try { await Global.sync(Global.timeout(10_000)); }
+            catch (Bjolang.Runtime.Cancelled) { cancelled = true; }
+            done.Set();
+            return default;
+        });
+
+        Await(done, "the sleep under a fired token", 1000);
+        Assert(cancelled, "a sleep under a token that had already fired did not raise");
+        AssertEqual(before, TimerWheel.LinkedCount, "nodes in the wheel");
+    }
+
+    /// <summary>
+    /// The token fires while fibers are sleeping 1-3 ms, so it lands before the
+    /// park, during it, and as the tick fires it. Each fiber must resume exactly
+    /// once, whether it woke or raised: a lost resume is a fiber that never
+    /// comes back, and a double one is a count above N.
+    /// </summary>
+    private static void SleepCancelRace()
+    {
+        const int Trials = 200;
+        const int N = 8;
+        int before = TimerWheel.LinkedCount;
+
+        for (int trial = 0; trial < Trials; trial++)
+        {
+            var token = new Promise<Global.CancelReason>();
+            var done = new CountdownEvent(N);
+            int resumed = 0;
+
+            for (int i = 0; i < N; i++)
+            {
+                int ms = 1 + (trial + i) % 3;
+                int spin = (trial * 7 + i * 13) % 97;
+
+                _ = UnderToken(token, async () =>
+                {
+                    for (int s = 0; s < spin; s++) Thread.SpinWait(1);
+
+                    try { await Global.sync(Global.timeout(ms)); }
+                    catch (Bjolang.Runtime.Cancelled) { }
+
+                    Interlocked.Increment(ref resumed);
+                    done.Signal();
+                    return default;
+                });
+            }
+
+            Thread.SpinWait((trial * 31) % 4096);
+            token.TrySetResult(Reason($"trial {trial}"));
+
+            Assert(done.Wait(5000), $"trial {trial}: {done.CurrentCount} of {N} fibers never resumed");
+            AssertEqual(N, Volatile.Read(ref resumed), $"trial {trial}: resumes");
+        }
+
+        AwaitWheelAt(before, "nodes in the wheel after the race");
+    }
+
+    /// <summary>
+    /// The gate driven by hand, so that each order happens for certain: a cancel
+    /// before the park, a cancel of a parked sleep, and a cancel after the tick.
+    /// </summary>
+    private static void SleepGateHasOneWinner()
+    {
+        int before = TimerWheel.LinkedCount;
+        int resumed = 0;
+        Action resume = () => Interlocked.Increment(ref resumed);
+
+        // Withdrawn before it parked: the owner's park finds it so, links
+        // nothing, and leaves the resume to its caller.
+        var early = new SleepNode(10_000);
+        AssertEqual(Withdrawal.Unpublished, early.CancelParked(null!, 0), "a cancel before the park");
+        AssertEqual(ParkResult.Withdrawn, early.Park(null!, resume), "parking a withdrawn sleep");
+        AssertEqual(before, TimerWheel.LinkedCount, "nodes in the wheel after a withdrawn park");
+
+        // Withdrawn while parked: once only, and the node leaves the wheel.
+        var parked = new SleepNode(10_000);
+        AssertEqual(ParkResult.Parked, parked.Park(null!, resume), "a sleep");
+        AssertEqual(before + 1, TimerWheel.LinkedCount, "nodes in the wheel while it sleeps");
+        AssertEqual(Withdrawal.Published, parked.CancelParked(null!, 0), "a cancel of a parked sleep");
+        AssertEqual(Withdrawal.Refused, parked.CancelParked(null!, 0), "a second cancel");
+        AssertEqual(before, TimerWheel.LinkedCount, "nodes in the wheel after the cancel");
+
+        // Fired first: the tick resumes it, and a later cancel is refused.
+        var fired = new SleepNode(1);
+        AssertEqual(ParkResult.Parked, fired.Park(null!, resume), "a short sleep");
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (Volatile.Read(ref resumed) == 0 && DateTime.UtcNow < deadline) Thread.Sleep(1);
+        AssertEqual(Withdrawal.Refused, fired.CancelParked(null!, 0), "a cancel after the tick");
+
+        Thread.Sleep(20);
+        AssertEqual(1, Volatile.Read(ref resumed), "resumes: only the tick's");
     }
 
     private static void SpecTimeoutFires()
