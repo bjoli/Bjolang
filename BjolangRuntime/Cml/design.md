@@ -1799,6 +1799,64 @@ What a parked client keeps now, from the gcdump:
     FiberWatch                      64   its cancellation watch
     DynEnv                          64   its environment, which holds the watch
 
+### Inlining a bjoroutine is the author's choice
+
+A called bjoroutine that suspends keeps a `CalledFiber` for its state machine
+until it returns; the copy of its body in the caller has none, and its locals
+become fields of the caller's frame. `TraitInline` can now make that copy
+(`inlineOptedIn`), but only for a function written `#:inline`.
+
+It was tried first without asking: every bjoroutine of at most 50 nodes,
+called from another bjoroutine, with a fixed budget per caller. In
+bench/service that copied `pace` and `single` into `client`, and `request`
+into `single` and `sub-get`. Memory fell as it should (616 B to 504 B a
+parked client), but the A/B against the build without it found:
+
+                                       old       new
+    all cores, closed loop, wall ms    251.5     269.5   (+7%; CPU +7%, p99 +34%)
+    all cores, 1M/s, p99 us             3837     10690   (p99.9 7514 to 14904)
+    4 cores, closed loop, wall ms      397.5     388.0   (-2.4%)
+
+The copy changes where the caller goes on. A called bjoroutine that
+finishes wakes its caller through `Promise.Wake`, which queues it. The copy
+has no promise: the caller goes on inline on whatever thread resumed the
+copy. After `request`'s receive of a shard's reply, that is the shard's
+thread, which then ran the client's whole next request before it served
+anyone else. With all cores, the shards are the bottleneck. A build that
+copied only `pace` (the others written `#:no-inline`) had no slowdown, and
+used 4% less CPU at 1M/s.
+
+So nothing is copied without being asked, and the measurements say which
+calls to ask for: a wait whose resumer is not a busy fiber, such as a sleep.
+`pace` is written `#:inline`; `request` is not. The rules a copy keeps:
+only at a call where a yield point is allowed, never a spawned call, not a
+call given a function (an ordinary function given where a bjoroutine is
+expected is bridged where it is given), only a body that has a yield point
+of its own, and not a function that names itself. See `Docs/Syntax.org`.
+
+`pace` written `#:inline`, against the build before, as in the A/Bs above:
+
+                                   old       new    new - old, 95% interval
+    4 cores, 0.25M/s, 90 reps
+      cpu ms                      3119    2989.5    -150 .. -93.5
+      p99 us                      33.6       7.4    -26.5 .. -25.7
+      p99.9 us                    50.4      19.1    -33.2 .. -29.9
+    all cores, 1M/s, 30 reps
+      cpu ms                     26458     25243    -1472 .. -879
+      alloc MB                    4876      4778    -100 .. -87
+    the closed loops, 50 reps each: no difference
+
+The tail fell for the reason the slowdown above rose. A client woke in
+`pace`, and `pace`'s promise then queued the client: a hop through the
+scheduler inside every measured latency. The copy goes on where the timer
+woke it. A parked client keeps 488 B in place of 616 B: `CalledFiber<pace>`
+(144 B) is gone, and the client's frame grew by 16 B.
+
+The same change halved the size up to which an ordinary function that takes
+a function is inlined by itself, from 100 nodes to 50. The walks of the
+prelude past it (`list-filter`, `list-foldl`, `list-foldr`, `vec-filter`,
+`vec-fold`, `vec-iter`) are written `#:inline`, so they are still inlined.
+
 ---
 
 ## 6. Known issues

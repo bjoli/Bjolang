@@ -329,7 +329,8 @@ let private constrainedBodyTemplate
     { Params = entry.Params
       Body = LetRecify.letrecifyExpr (Parser.parseExpr form)
       Qualification = Map.ofList entry.Qualification
-      OriginModule = entry.OriginModule }
+      OriginModule = entry.OriginModule
+      Inline = entry.Inline }
 
 /// Reads one metadata entry back into a declaration.
 ///

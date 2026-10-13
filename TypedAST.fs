@@ -1422,7 +1422,10 @@ type InlineTemplate =
       /// Free name -> the name to emit for it. Computed where the origin
       /// module's environment is available, applied after inference.
       Qualification: Map<string, string>
-      OriginModule: string }
+      OriginModule: string
+      /// Written `#:inline`: copied at every plain call that may take a copy,
+      /// not only at a call given a known function. See `TraitInline`.
+      Inline: bool }
 
 /// A trait that *is* a .NET interface.
 ///

@@ -714,6 +714,13 @@ type Decl =
     /// Carried as its own declaration, as `DSyncOnly` is. It does not survive
     /// type checking.
     | DNoInline of string * Range
+    /// `(defun (name args...) #:inline body...)`, and the same on `defbjo`.
+    /// The function is copied at its plain calls, which nothing else is: an
+    /// ordinary function is copied by itself only where it is given a known
+    /// function, and a bjoroutine not at all. See `TraitInline`.
+    ///
+    /// Carried as `DNoInline` is.
+    | DInline of string * Range
 
     // DImpl (TraitName, TargetType, AssociatedTypeBindings, Constraints, Methods, Range)
     //
@@ -750,6 +757,7 @@ let declRange (decl: Decl) : Range =
     | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) | DPatternMacro(_, r) | DHashMacro(_, r)
     | DSyncOnly(_, r) -> r
     | DNoInline(_, r) -> r
+    | DInline(_, r) -> r
 
 // ---------------------------------------------------------------------------
 // Macro expansion
@@ -1365,6 +1373,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
         | DHashMacro _
         | DSyncOnly _
         | DNoInline _
+        | DInline _
         | DImplExtern _
         | DInlineImpl _ -> []
 
@@ -1420,5 +1429,6 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DHashMacro _
     | DSyncOnly _
     | DNoInline _
+    | DInline _
     | DImplExtern _ -> d
 

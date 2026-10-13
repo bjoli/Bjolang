@@ -418,7 +418,8 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
     | DPatternMacro _
     | DHashMacro _
     | DSyncOnly _
-    | DNoInline _ -> env, sigs, []
+    | DNoInline _
+    | DInline _ -> env, sigs, []
     | DExport(names, r) -> env, sigs, [ TExport(names, r) ]
 
     | DImportClass(specs, r) ->
@@ -462,7 +463,8 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
                 { Params = parameters
                   Body = body
                   Qualification = Map.ofList qualification
-                  OriginModule = originModule }
+                  OriginModule = originModule
+                  Inline = false }
                 env
 
         env, sigs, []
@@ -2498,7 +2500,8 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
                               // Filled in after inference, where a
                               // name-to-module map exists.
                               Qualification = Map.empty
-                              OriginModule = acc.CurrentModule }
+                              OriginModule = acc.CurrentModule
+                              Inline = false }
                             acc
                     else
                         acc

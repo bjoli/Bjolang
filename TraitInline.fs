@@ -203,13 +203,13 @@ let rec private betaReduce (writable: Writable) (expr: TypedExpr) : TypedExpr =
 // Bodies of functions that take a function
 // ---------------------------------------------------------------------------
 
-/// The largest body, in untyped nodes, that is published for inlining. A call
-/// is inlined only where it is given a function, and the copy is what removes
-/// the call through it; past this size the copy costs more than the call.
-/// The walks of the standard library — `list-map`, `vec-map`, `vec-filter`,
-/// `vec-fold`, `map-fold` — are below it.
+/// The largest body, in untyped nodes, that is published for inlining without
+/// being asked. A call is then inlined only where it is given a function, and
+/// the copy is what removes the call through it; past this size the copy
+/// costs more than the call. It was 100. A function written `#:inline` has no
+/// such limit: its author asked for the copy.
 [<Literal>]
-let private maxInlineBodySize = 100
+let private maxInlineBodySize = 50
 
 let rec private exprSize (expr: Ast.Expr) : int =
     1 + (Ast.exprChildren expr |> List.sumBy exprSize)
@@ -242,6 +242,27 @@ let rec private hasYieldPoint (expr: TypedExpr) : bool =
     | TLambda _ -> false
     | _ -> here || TypeVisitor.children expr |> List.exists hasYieldPoint
 
+/// Does a function value flow out of `expr`: a lambda, or a function named as a
+/// value rather than called? Somewhere in it, not only at the top: a union case
+/// or a record can carry one.
+///
+/// An ordinary function given where a bjoroutine is expected is bridged when
+/// the code is emitted, at the place it is given (`Colour.Lift`). A bjoroutine
+/// copied over a call that is given one would call it as the callee's own
+/// parameter, past the bridge, and await what an ordinary function returns.
+/// So such a call is not copied.
+let rec private passesFunction (expr: TypedExpr) : bool =
+    match expr.Node with
+    | TLambda _ -> true
+    | TIdent _ -> isFunctionType expr.Type
+    | TApply(target, args, kwArgs) ->
+        (match target.Node with
+         | TIdent _ -> false
+         | _ -> passesFunction target)
+        || args |> List.exists passesFunction
+        || kwArgs |> List.exists (snd >> passesFunction)
+    | _ -> TypeVisitor.children expr |> List.exists passesFunction
+
 /// Does `expr` call a `defbjouble` whose copy the colour around the call
 /// chooses? Such a call in a lambda or in a function's body takes the parking
 /// copy; spliced into a bjoroutine, it would take the suspending one. Inlining
@@ -263,6 +284,12 @@ let rec private callsColourChosenDouble (env: Env) (expr: TypedExpr) : bool =
 /// mandatory parameters, has no `(where ...)`, is not a `defbjouble` whose
 /// copy the colour around a call chooses, is not written `#:no-inline`, and
 /// its body is at most `maxInlineBodySize` nodes.
+///
+/// A function written `#:inline`, ordinary or a bjoroutine, is published on
+/// the same terms with no limit on its size and no parameter of function type
+/// needed, if it does not name itself: a copy of a recursive body still holds
+/// the call. It is copied at its plain calls (see `inlineOptedIn`). Where it
+/// cannot be published, a warning says why, since its author asked.
 let publishBodies
     (env: Env)
     (moduleOf: Map<string, string * string>)
@@ -306,28 +333,54 @@ let publishBodies
             | _ -> None)
         |> Set.ofList
 
+    let optedIn =
+        ownDecls
+        |> List.choose (function
+            | Ast.DInline(name, r) -> Some(name, r)
+            | _ -> None)
+        |> Map.ofList
+
+    // An ordinary function or a `defbjouble`'s `#:bjo` body, for a call given
+    // a known function; and any function written `#:inline`.
     let candidates =
         ownDecls
         |> List.choose (function
-            | Ast.DDefun(name, args, body, Ast.Ordinary, _) -> Some(name, args, body)
-            | Ast.DDefDouble(name, args, _, bjoBody, _) -> Some(name, args, bjoBody)
+            | Ast.DDefun(name, args, body, _, _) when Map.containsKey name optedIn -> Some(name, args, body, true)
+            | Ast.DDefDouble(name, args, _, bjoBody, _) when Map.containsKey name optedIn ->
+                Some(name, args, bjoBody, true)
+            | Ast.DDefun(name, args, body, Ast.Ordinary, _) when Set.contains name takesFunction ->
+                Some(name, args, body, false)
+            | Ast.DDefDouble(name, args, _, bjoBody, _) when Set.contains name takesFunction ->
+                Some(name, args, bjoBody, false)
             | _ -> None)
-        |> List.filter (fun (name, _, _) -> not (Set.contains name noInline))
+        |> List.filter (fun (name, _, _, _) -> not (Set.contains name noInline))
+
+    // Why a function cannot be published, or None.
+    let refusal (name: string) (args: Ast.DefunArg list) (body: Ast.Expr) (isInline: bool) : string option =
+        if name = "main" then Some "it is main"
+        elif not (unconstrained name) then Some "it has a (where ...), and its calls pass a dictionary"
+        elif Map.containsKey name env.Registry.ConstrainedBodies then Some "its body is published already, for a copy at each type"
+        elif Map.containsKey name env.Registry.DoubleDefs then Some "the colour around each call chooses which of its bodies runs"
+        elif Set.contains name env.Registry.GeneratedCopies || Set.contains name env.Registry.InferredCopies then
+            Some "it is a generated copy"
+        elif not (args |> List.forall (function Ast.MandatoryArg _ -> true | _ -> false)) then
+            Some "it has a keyword or a rest parameter"
+        elif isInline && Set.contains name (AlphaRename.freeNames (Set.ofList (Ast.mandatoryNames args)) body) then
+            Some "it calls itself, and a copy would still hold the call"
+        elif not isInline && exprSize body > maxInlineBodySize then Some "it is too large"
+        else None
 
     let bodies =
         candidates
-        |> List.choose (function
-            | (name, args, body) when
-                Set.contains name takesFunction
-                && name <> "main"
-                && unconstrained name
-                && not (Map.containsKey name env.Registry.ConstrainedBodies)
-                && not (Map.containsKey name env.Registry.DoubleDefs)
-                && not (Set.contains name env.Registry.GeneratedCopies)
-                && not (Set.contains name env.Registry.InferredCopies)
-                && args |> List.forall (function Ast.MandatoryArg _ -> true | _ -> false)
-                && exprSize body <= maxInlineBodySize
-                ->
+        |> List.choose (fun (name, args, body, isInline) ->
+            match refusal name args body isInline with
+            | Some why ->
+                if isInline then
+                    let r = optedIn[name]
+                    Diagnostics.warn $"'%s{name}' is written #:inline, but is not inlined: %s{why}.
+  at %s{Lexer.formatPos r}"
+                None
+            | None ->
                 let parameters = Ast.mandatoryNames args
 
                 let qualification =
@@ -343,10 +396,10 @@ let publishBodies
                     ({ Params = parameters
                        Body = body
                        Qualification = qualification
-                       OriginModule = ownModuleName }
+                       OriginModule = ownModuleName
+                       Inline = isInline }
                     : InlineTemplate)
-                )
-            | _ -> None)
+                ))
 
     { env with
         Registry =
@@ -371,6 +424,19 @@ let private inlineKey (traitName: string) (methodName: string) (ctor: string) =
 /// but never equal to one: those hold two `::`, this one starts with `fn`.
 let private functionKey (originModule: string) (originalName: string) =
     $"fn::%s{originModule}::%s{originalName}"
+
+/// What a splice is made for, which decides what it costs and when it is
+/// given up.
+type private SpliceKind =
+    /// A trait method's implementation, resolved statically. Free.
+    | TraitMethod
+    /// A function given a known function, for the sake of that function: given
+    /// up when the function would only be bound to a local.
+    | GivenFunction
+    /// A function written `#:inline`, at a plain call. `suspending` is its
+    /// colour: a bjoroutine's copy must keep a yield point, an ordinary one's
+    /// must have none.
+    | OptedIn of suspending: bool
 
 type private Ctx =
     { Env: Env
@@ -403,7 +469,12 @@ type private Ctx =
       Writable: Writable
       /// The typed nodes function splices may still add to the declaration
       /// being inlined. Shared by the two passes and by nested splices.
-      Budget: int ref }
+      Budget: int ref
+      /// The code here runs where a yield point is allowed: the body of a
+      /// bjoroutine, or of a lambda whose type suspends. A bjoroutine's call
+      /// is spliced only here, so that the splice moves no yield point to a
+      /// place `ColourCheck` would refuse it, which runs after this pass.
+      CanSuspend: bool }
 
 /// How much a declaration may grow by function splices: `GrowthFactor` times
 /// its own size, and at least `GrowthFloor` nodes, so that a small function
@@ -413,6 +484,7 @@ let private GrowthFactor = 2
 
 [<Literal>]
 let private GrowthFloor = 300
+
 
 let rec private typedSize (expr: TypedExpr) : int =
     1 + (TypeVisitor.children expr |> List.sumBy typedSize)
@@ -565,7 +637,7 @@ let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
                     tpl
                     args
                     expr
-                    false
+                    TraitMethod
                     (fun () -> landingPad ctx.Env tref ctor tyArgs args [] expr)
             | _ -> landingPad ctx.Env tref ctor tyArgs args kwArgs expr
 
@@ -578,7 +650,45 @@ let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
         let thisPass =
             if ctx.SecondPass then not ctx.InLoop || ctx.InSplice else ctx.InLoop
 
-        if ctx.InGuard || not thisPass then call else inlineFunctionCall ctx name callee args call
+        if ctx.InGuard || not thisPass then call
+        else
+            match inlineOptedIn ctx name callee args call with
+            | Some inlined -> inlined
+            | None -> inlineFunctionCall ctx name callee args call
+
+    // A lambda has the colour of its own type, whatever the code around it
+    // has: an ordinary lambda in a bjoroutine runs where nothing may suspend.
+    // One whose colour is not decided yet is taken as ordinary.
+    | TLambda(parameters, body) ->
+        { expr with Node = TLambda(parameters, inlineExpr { ctx with CanSuspend = callSuspends expr.Type } body) }
+
+    // A body-local function.
+    | TLet(name, true, fn, ({ Node = TLambda _ } as value), body) ->
+        let fn = { fn with KeywordArgs = fn.KeywordArgs |> List.map (fun (k, t, d) -> k, t, inlineExpr ctx d) }
+        { expr with Node = TLet(name, true, fn, inlineBoundFunction ctx value, inlineExpr ctx body) }
+
+    // A `seq` body is never suspending, and a hoisted form runs in a method of
+    // its own.
+    | TSeq body -> { expr with Node = TSeq(inlineExpr { ctx with CanSuspend = false } body) }
+    | THoist body -> { expr with Node = THoist(inlineExpr { ctx with CanSuspend = false } body) }
+
+    // The spawned call stays a call: its operands are evaluated in the parent,
+    // and only a call can be split from them (see `TBjo`). A copy of the body
+    // would run all of it in the child, operands included. The operands
+    // themselves are the parent's, and are inlined as anything else there is.
+    | TBjo({ Node = TApply(callee, args, kwArgs) } as call, kind) ->
+        let callee =
+            match callee.Node with
+            | TIdent _ -> callee
+            | _ -> inlineExpr ctx callee
+
+        let args = args |> List.map (inlineExpr ctx)
+        let kwArgs = kwArgs |> List.map (fun (n, e) -> n, inlineExpr ctx e)
+        { expr with Node = TBjo({ call with Node = TApply(callee, args, kwArgs) }, kind) }
+
+    // A spawned block runs on a fiber of its own. Left without bjoroutine
+    // splices, which are for a call made where it is written.
+    | TBjo(body, kind) -> { expr with Node = TBjo(inlineExpr { ctx with CanSuspend = false } body, kind) }
 
     // The members of a group are loops: a named `let` or a `(loop ...)`.
     | TLetRec(bindings, body) ->
@@ -590,7 +700,7 @@ let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
                 let fn =
                     { fn with KeywordArgs = fn.KeywordArgs |> List.map (fun (k, t, d) -> k, t, inlineExpr ctx d) }
 
-                n, isFun, fn, inlineExpr loopCtx value)
+                n, isFun, fn, (if isFun then inlineBoundFunction loopCtx value else inlineExpr loopCtx value))
 
         { expr with Node = TLetRec(bindings, inlineExpr ctx body) }
 
@@ -611,6 +721,36 @@ let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
         { expr with Node = TMatch(inlineExpr ctx target, clauses) }
 
     | _ -> TypeVisitor.mapChildren (inlineExpr ctx) expr
+
+/// The lambda of a function-shaped binding: a body-local function, a named
+/// `let`, or a `(loop ...)`.
+///
+/// Its colour may not be decided yet. `EffectGraph` decides it later, and
+/// `LoopLowering` decides whether a loop becomes a `while` in the enclosing
+/// member. One that is decided is used as it is. One that is not takes the
+/// colour of the code around it: as a `while` it is that code, and as a
+/// function it may suspend if it is given the suspending colour, which is
+/// what a call to a bjoroutine in it asks for.
+///
+/// If it is given the ordinary colour after all, the call was an error there,
+/// and so is its copy: a copy is made only of a body with a yield point of its
+/// own (see `spliceTemplate`). The copy cannot turn an error into a program
+/// that compiles, and it leaves the code around it reaching a yield point
+/// where the call did.
+and private inlineBoundFunction (ctx: Ctx) (value: TypedExpr) : TypedExpr =
+    match value.Node with
+    | TLambda(parameters, body) ->
+        let canSuspend =
+            match solvedType value.Type with
+            | TFun(_, _, eff) ->
+                match pruneEffect eff with
+                | EAsync -> true
+                | EMeta _ -> ctx.CanSuspend
+                | _ -> false
+            | _ -> false
+
+        { value with Node = TLambda(parameters, inlineExpr { ctx with CanSuspend = canSuspend } body) }
+    | _ -> inlineExpr ctx value
 
 /// Is `arg` a function whose body is known here: a lambda, or a top-level
 /// function? Only such an argument makes inlining the call worth it, because
@@ -696,8 +836,67 @@ and private inlineFunctionCall
         && not (callSuspends callee.Type)
         && not (wantsSuspendingCopy callee.Type)
         ->
-        spliceTemplate ctx key $"'%s{name}'" tpl args call true (fun () -> call)
+        spliceTemplate ctx key $"'%s{name}'" tpl args call GivenFunction (fun () -> call)
     | _ -> call
+
+/// Inlines a plain call to a function written `#:inline`, here or in a
+/// module it was imported from. None when the function was not, and the call
+/// then goes the way of any other.
+///
+/// A bjoroutine is copied only where a yield point is allowed
+/// (`Ctx.CanSuspend`): the call was a yield point there, so the copy may have
+/// its own, and `ColourCheck`, which runs later, finds them where it would
+/// have found the call. Nor when a function value is given to it: an ordinary
+/// function given where a bjoroutine is expected is bridged where it is given
+/// (see `passesFunction`).
+///
+/// Opting in is the author's call to make, because a copy changes more than
+/// the code's size. A bjoroutine's call that suspends keeps a box for the
+/// callee's state machine, and the copy has none; but it also changes where
+/// the caller goes on. A called bjoroutine that finishes wakes its caller
+/// through the scheduler's queue, and a copy wakes inline on whatever thread
+/// resumed it: after a channel receive, the sender's. Measured on
+/// bench/service, copying the call that waits for a shard's reply ran the
+/// client's next request on the shard's thread, and cost 7 to 9% of the
+/// throughput on all cores.
+and private inlineOptedIn
+    (ctx: Ctx)
+    (name: string)
+    (callee: TypedExpr)
+    (args: TypedExpr list)
+    (call: TypedExpr)
+    : TypedExpr option =
+    let template =
+        match topLevelFunction ctx name with
+        | Some(originModule, original) ->
+            match Map.tryFind original ctx.Env.Registry.ConstrainedBodies with
+            | Some tpl when tpl.Inline && tpl.OriginModule = originModule ->
+                Some(functionKey originModule original, original, tpl)
+            | _ -> None
+        | None -> None
+
+    match template with
+    | None -> None
+    | Some(key, original, tpl) ->
+        let suspending = callSuspends callee.Type
+
+        let unconstrained =
+            match Map.tryFind name ctx.Env.Bindings with
+            | Some { Scheme = Scheme(_, [], _) } -> true
+            | _ -> false
+
+        if
+            not (Set.contains key ctx.Active)
+            && tpl.Params.Length = args.Length
+            && unconstrained
+            && not (wantsSuspendingCopy callee.Type)
+            && not (Map.containsKey name ctx.Env.Registry.DoubleDefs)
+            && not (Map.containsKey original ctx.Env.Registry.DoubleDefs)
+            && (not suspending || (ctx.CanSuspend && not (args |> List.exists passesFunction)))
+        then
+            Some(spliceTemplate ctx key $"'%s{name}'" tpl args call (OptedIn suspending) (fun () -> call))
+        else
+            Some call
 
 and private spliceTemplate
     (ctx: Ctx)
@@ -706,23 +905,28 @@ and private spliceTemplate
     (tpl: InlineTemplate)
     (args: TypedExpr list)
     (expr: TypedExpr)
-    (onlyIfSubstituted: bool)
+    (kind: SpliceKind)
     (fallback: unit -> TypedExpr)
     : TypedExpr =
 
     let budgetAtStart = ctx.Budget.Value
 
+    let suspending =
+        match kind with
+        | OptedIn s -> s
+        | _ -> false
+
     try
         // 1. Freshen at the splice. Mandatory, and *not* something the global
         //    uniquifying pass can do afterwards: renaming preserves meaning, it
         //    cannot recover a meaning the splice already destroyed.
-        //    A `(by-colour ...)` takes its `#:sync` body, because only a call
-        //    that does not suspend is spliced.
+        //    A `(by-colour ...)` takes the body of the colour of the call: its
+        //    `#:sync` one, unless the call is a bjoroutine's.
         let body =
             AlphaRename.reachHidden
                 (fun n -> Map.containsKey n ctx.Env.Bindings)
                 tpl.Qualification
-                (ColourTwins.resolveIn false tpl.Body)
+                (ColourTwins.resolveIn suspending tpl.Body)
 
         let freshBody, subst = AlphaRename.freshen tpl.Params body
         let freshParams = tpl.Params |> List.map (fun p -> Map.tryFind p subst |> Option.defaultValue p)
@@ -774,18 +978,38 @@ and private spliceTemplate
         // and its own nested splices take theirs from the same budget. If the
         // splice is given up, what it took is given back.
         let budgetBefore = ctx.Budget.Value
-        let cost = if onlyIfSubstituted then typedSize typedBody else 0
+
+        let cost =
+            match kind with
+            | TraitMethod -> 0
+            | GivenFunction
+            | OptedIn _ -> typedSize typedBody
 
         // Read before step 4: `DoubleDefs` knows a name as written, and the
         // qualification rewrites it. A yield point left in the body would be
         // moved into the caller, where `ColourCheck` would judge it at a
-        // place it was not written.
-        if
-            onlyIfSubstituted
-            && (callsColourChosenDouble ctx.Env typedBody
+        // place it was not written. A bjoroutine's call was a yield point at
+        // that place already, so its copy may keep its own.
+        //
+        // A bjoroutine whose body never suspends is only a warning. Its copy
+        // would take a yield point away from the code around the call, whose
+        // colour may be decided by that yield point: a body-local function
+        // that reached a yield point only through the call would become
+        // ordinary, and its callers would still await it. So a bjoroutine's
+        // copy must have a yield point, and an ordinary function's none.
+        let refused =
+            match kind with
+            | TraitMethod -> false
+            | GivenFunction ->
+                callsColourChosenDouble ctx.Env typedBody
                 || hasYieldPoint typedBody
-                || cost > budgetBefore)
-        then
+                || cost > budgetBefore
+            | OptedIn s ->
+                callsColourChosenDouble ctx.Env typedBody
+                || hasYieldPoint typedBody <> s
+                || cost > budgetBefore
+
+        if refused then
             fallback ()
         else
             ctx.Budget.Value <- budgetBefore - cost
@@ -802,7 +1026,7 @@ and private spliceTemplate
                     | TLambda _ -> occurrences name inlined > 1
                     | _ -> false)
 
-            if onlyIfSubstituted && lambdaKept then
+            if kind = GivenFunction && lambdaKept then
                 ctx.Budget.Value <- budgetBefore
                 fallback ()
             else
@@ -858,7 +1082,7 @@ let rec private inlineDecl (ctx: Ctx) (decl: TDecl) : TDecl =
 
     // A function holds its own key over its body, for the reason a method
     // does: a call to itself stays a call.
-    | TDefun(name, _, args, kwArgs, rest, _, _, body, _) ->
+    | TDefun(name, _, args, kwArgs, rest, _, effect, body, _) ->
         let active =
             match Map.tryFind name ctx.ModuleOf with
             | Some(m, original) -> Set.add (functionKey m original) ctx.Active
@@ -870,11 +1094,16 @@ let rec private inlineDecl (ctx: Ctx) (decl: TDecl) : TDecl =
             @ (rest |> Option.map fst |> Option.toList)
             |> List.fold (fun acc n -> Set.add n acc) (localBinders body)
 
-        inlineInTwoPasses { ctx with Active = active; Shadowed = shadowed } decl
+        inlineInTwoPasses
+            { ctx with
+                Active = active
+                Shadowed = shadowed
+                CanSuspend = pruneEffect effect = EAsync }
+            decl
 
     | _ ->
         let shadowed = TypeVisitor.foldDecl (fun acc e -> Set.union acc (localBinders e)) Set.empty decl
-        inlineInTwoPasses { ctx with Shadowed = shadowed } decl
+        inlineInTwoPasses { ctx with Shadowed = shadowed; CanSuspend = false } decl
 
 /// Inlines in one declaration, in two passes over it with one budget.
 ///
@@ -888,11 +1117,13 @@ let rec private inlineDecl (ctx: Ctx) (decl: TDecl) : TDecl =
 and private inlineInTwoPasses (ctx: Ctx) (decl: TDecl) : TDecl =
     let size = TypeVisitor.foldDecl (fun n _ -> n + 1) 0 decl
     let budget = ref (max GrowthFloor (GrowthFactor * size))
-    let first = TypeVisitor.mapDecl (inlineExpr { ctx with Budget = budget; SecondPass = false }) decl
-    TypeVisitor.mapDecl (inlineExpr { ctx with Budget = budget; SecondPass = true }) first
+    let ctx = { ctx with Budget = budget }
+    let first = TypeVisitor.mapDecl (inlineExpr { ctx with SecondPass = false }) decl
+    TypeVisitor.mapDecl (inlineExpr { ctx with SecondPass = true }) first
 
-/// Inlines every statically resolvable trait call in the program, and every
-/// call of a published function that is given a known function.
+/// Inlines every statically resolvable trait call in the program, every call
+/// of a published function that is given a known function, and every plain
+/// call of a function written `#:inline` that may take a copy.
 let run (env: Env) (moduleOf: Map<string, string * string>) (decls: TDecl list) : TDecl list =
     let qualified =
         moduleOf
@@ -951,6 +1182,7 @@ let run (env: Env) (moduleOf: Map<string, string * string>) (decls: TDecl list) 
           InSplice = false
           SecondPass = false
           Writable = writable
-          Budget = ref 0 }
+          Budget = ref 0
+          CanSuspend = false }
 
     decls |> List.map (inlineDecl ctx)

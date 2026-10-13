@@ -53,6 +53,12 @@
 /// reason: a method that suspends, or one whose `-?->` was handed a suspending
 /// callback, becomes a landing pad instead.
 ///
+/// The one exception is a bjoroutine written `#:inline`, called where a yield
+/// point is already allowed (`TraitInline.inlineOptedIn`). The call was a
+/// yield point at that place, and the copy is made only if it has one of its
+/// own, so this pass finds yield points only where it would have found the
+/// call.
+///
 /// This is the opposite of the argument for running must-use checking *before*
 /// `TraitInline` (§8.3): that check would see the same body once per call site,
 /// whereas this one cannot see a body it did not already see.

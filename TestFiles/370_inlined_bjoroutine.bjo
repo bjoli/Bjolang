@@ -1,0 +1,68 @@
+;; A bjoroutine written `#:inline` is copied over its calls (see
+;; `TraitInline.inlineOptedIn`). The copy has to behave as the call did. Each
+;; test checks one thing a call does that a careless copy would not.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: depth (Param int))
+(def depth (make-parameter 0))
+
+;; A binding made inside the callee ends with it.
+(: nested-depth (-bjo-> int int))
+(defbjo (nested-depth n) #:inline
+  (parameterize ((depth n))
+    (sync (timeout 1))
+    (parameter-ref depth)))
+
+;; A failure inside the callee reaches the caller as the call's failure.
+(: fails-after (-bjo-> int int))
+(defbjo (fails-after zero) #:inline
+  (sync (timeout 1))
+  (/ 10 zero))
+
+;; Parks until its scope is cancelled.
+(: waits (-bjo-> (Chan int) int))
+(defbjo (waits ch) #:inline
+  (sync (chan-recv ch)))
+
+;; A caller that parks inside a copy of `waits`.
+(: caller (-bjo-> (Chan int) int))
+(defbjo (caller ch)
+  (+ 1 (waits ch)))
+
+(defbjo (main args)
+  (def zero (string-length ""))
+
+  (expect "the callee's binding is seen inside it" (nested-depth 7) 7)
+  (expect "and is gone after it" (parameter-ref depth) 0)
+
+  (def failed
+    (try (fails-after zero)
+         #:catch (System.DivideByZeroException)))
+  (expect "a failure in the callee is the call's"
+          (match failed ((Ok v) "returned") ((Err e) "raised"))
+          "raised")
+
+  ;; The scope waits for `p`, so it has ended when the scope has; the join
+  ;; is outside, where a sync is not cancelled.
+  (def ch (make-chan))
+  (def p
+    (with-cancel (cancel)
+      (def p (bjo (caller ch)))
+      (sync (timeout 20))
+      (def stopped (cancel (Requested "stop")))
+      p))
+  (expect "a fiber parked in a copy is cancelled"
+          (match (sync (promise-join p)) ((Ok v) "returned") ((Err e) "cancelled"))
+          "cancelled")
+
+  (def ch2 (make-chan))
+  (def answer (bjo (caller ch2)))
+  (sync (chan-send ch2 41))
+  (expect "and one that is answered returns the value"
+          (match (sync (promise-join answer)) ((Ok v) v) ((Err e) -1))
+          42)
+
+  (println "370 ok")
+  0)

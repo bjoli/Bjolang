@@ -1197,7 +1197,8 @@ let metadata
                    OriginModule = tpl.OriginModule
                    Params = tpl.Params
                    Body = Codegen.serializeExprFrom tpl.OriginModule body
-                   Qualification = tpl.Qualification |> Map.toList }
+                   Qualification = tpl.Qualification |> Map.toList
+                   Inline = tpl.Inline }
                 : ModuleMetadata.ConstrainedBodyEntry))
         else []
 

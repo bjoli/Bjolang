@@ -145,8 +145,13 @@
 
 ;; Waits for request i's due time, if it has not come, and answers when its
 ;; latency counts from: the due time if it had come, the wake-up if not.
+;;
+;; Inlined, so that a client parked in the wait keeps no frame for it: a
+;; client spends most of its time here. `request` is not, though as small: it
+;; waits for a shard's reply, and its copy would resume the client on the
+;; shard's thread (see BjolangRuntime/Cml/design.md).
 (: pace (-bjo-> int int int int long long))
-(defbjo (pace c i clients rate start)
+(defbjo (pace c i clients rate start) #:inline
   (def at (+ start (due c i clients rate)))
   (def now (timestamp))
   (if (>= now at)

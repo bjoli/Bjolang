@@ -92,7 +92,9 @@ open System.Text
 /// A reader of 17 would read the list as the impl declarations.
 /// 19: an exported binding says whether it is a `def/mutable`. A reader of 18
 /// would read that flag as the next binding's name.
-let currentVersion = 19
+/// 20: a published body says whether it was written `#:inline`. A reader of 19
+/// would read that flag as the next body's name.
+let currentVersion = 20
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -142,6 +144,8 @@ type ConstrainedBodyEntry = {
     /// A serialized Bjolang expression.
     Body: string
     Qualification: (string * string) list
+    /// Written `#:inline`, so an importer copies it at every plain call.
+    Inline: bool
 }
 
 /// A type another module declared, published under a spelling of this one's.
@@ -421,6 +425,7 @@ let private putConstrainedBody (sb: StringBuilder) (b: ConstrainedBodyEntry) =
     putList sb putStr b.Params
     putStr sb b.Body
     putList sb putPair b.Qualification
+    putStr sb (if b.Inline then "1" else "0")
 
 let private getConstrainedBody (c: Cursor) : ConstrainedBodyEntry =
     let name = getStr c
@@ -428,12 +433,14 @@ let private getConstrainedBody (c: Cursor) : ConstrainedBodyEntry =
     let params' = getList getStr c
     let body = getStr c
     let qualification = getList getPair c
+    let isInline = getStr c = "1"
 
     { Name = name
       OriginModule = originModule
       Params = params'
       Body = body
-      Qualification = qualification }
+      Qualification = qualification
+      Inline = isInline }
 
 let private putReExportedType (sb: StringBuilder) (t: ReExportedType) =
     putStr sb t.Name

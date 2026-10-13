@@ -358,6 +358,7 @@ let rec normalizeDecl (decl: Decl) : Decl =
     | DHashMacro _
     | DSyncOnly _
     | DNoInline _
+    | DInline _
     | DImplExtern _ -> decl
 
 and normalizeModule (decls: Decl list) : Decl list = List.map normalizeDecl decls

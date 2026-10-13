@@ -818,7 +818,8 @@ let private publish
             { Params = params'
               Body = c.Body
               Qualification = qualification
-              OriginModule = ownModuleName }
+              OriginModule = ownModuleName
+              Inline = false }
             : InlineTemplate)
 
     { env with

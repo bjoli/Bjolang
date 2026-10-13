@@ -3,6 +3,32 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~#:inline~: inlining a function at its plain calls is asked for
+
+- ~(defun (name args...) #:inline body...)~, and the same on ~defbjo~ and
+  ~defbjouble~, copies the function's body at each plain call, with no limit
+  on its size. Its copies take from the definition's room to grow. A
+  function that calls itself, or has a keyword or rest parameter, a
+  ~(where ...)~, or two bodies the call's colour chooses between, is not
+  inlined, with a warning. ~#:inline~ and ~#:no-inline~ together are refused.
+- A bjoroutine is inlined only when written ~#:inline~, and only at a call
+  where a yield point is allowed. Not a spawned call, not a call given a
+  function, and only if its body has a yield point. The copy saves the
+  frame of the suspended call, but the caller then goes on where the copy
+  was woken, not through the scheduler's queue: copying a wait for a busy
+  server's reply moved the clients of ~bench/service~ onto its thread and
+  cost 7-9% of the throughput on all cores. A sleep is a good case.
+- An ordinary function that takes a function is inlined by itself only up
+  to 50 nodes, not 100. ~list-filter~, ~list-foldl~, ~list-foldr~,
+  ~vec-filter~, ~vec-fold~ and ~vec-iter~ are written ~#:inline~ and are
+  still inlined.
+- ~bench/service~'s ~pace~ is written ~#:inline~. At 0.25M/s on 4 cores:
+  p99 33.6 to 7.4 us, p99.9 50 to 19 us, CPU -4%. A parked client keeps
+  488 B in place of 616 B. See ~BjolangRuntime/Cml/design.md~, "Inlining a
+  bjoroutine is the author's choice".
+- The module metadata is version 20: a published body says whether it was
+  written ~#:inline~. Libraries have to be rebuilt.
+
 * Smaller fiber objects
 
 - Fields that are never used at the same time now share a slot:

@@ -298,6 +298,7 @@ let declKindName (d: Decl) : string =
     | DHashMacro _ -> "a hash macro"
     | DSyncOnly _ -> "a #:sync marker"
     | DNoInline _ -> "a #:no-inline marker"
+    | DInline _ -> "an #:inline marker"
     | DImpl _ -> "an implementation"
     | DImplExtern _ -> "an imported implementation"
 
@@ -896,11 +897,36 @@ and tryParseDeclGroup (s: SExpr) : Decl list option =
             :: SAtom { Token = Keyword "no-inline" }
             :: rest,
             r) ->
+        match rest with
+        | SAtom { Token = Keyword "inline" } :: _ ->
+            failwithf $"Invalid definition of '%s{name}' at %s{Lexer.formatPos r}. A definition is #:inline or #:no-inline, not both."
+        | _ -> ()
+
         match tryParseDeclGroup (SList(definer :: head :: rest, r)) with
         | Some decls -> Some(decls @ [ DNoInline(name, r) ])
         | None ->
             failwithf
                 $"Invalid definition of '%s{name}' at %s{Lexer.formatPos r}. #:no-inline goes straight after the head, as in (defun (%s{name} ...) #:no-inline body...)."
+
+    // `(defun (name args...) #:inline body...)`, and the same on `defbjo` and
+    // `defbjouble`: the opposite marker, in the same place. A `defbjouble`
+    // whose copy the colour around a call chooses is refused later, with a
+    // warning, where that is known (`TraitInline.publishBodies`).
+    | SList((SAtom { Token = Symbol("defun" | "defbjo" | "defbjouble") } as definer)
+            :: (SList(SAtom { Token = Symbol name } :: _, _) as head)
+            :: SAtom { Token = Keyword "inline" }
+            :: rest,
+            r) ->
+        match rest with
+        | SAtom { Token = Keyword "no-inline" } :: _ ->
+            failwithf $"Invalid definition of '%s{name}' at %s{Lexer.formatPos r}. A definition is #:inline or #:no-inline, not both."
+        | _ -> ()
+
+        match tryParseDeclGroup (SList(definer :: head :: rest, r)) with
+        | Some decls -> Some(decls @ [ DInline(name, r) ])
+        | None ->
+            failwithf
+                $"Invalid definition of '%s{name}' at %s{Lexer.formatPos r}. #:inline goes straight after the head, as in (defun (%s{name} ...) #:inline body...)."
 
     | SList(SAtom { Token = Symbol(("defun" | "defbjo") as definer) } :: SList(SAtom { Token = Symbol name } :: args, _) :: rest, _) ->
         Some(parseDefunDecl definer name args rest (getRange s))
