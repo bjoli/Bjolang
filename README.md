@@ -133,17 +133,16 @@ They could just as well be regular macros: (fl compose f1 f2 f3), but i kind of 
 and it is extensible.
 
 ```scheme
-;; In (std orderedmap):
-(def/pattern (om-has form inject compare)
+;; In the prelude:
+(def/pattern (Has form inject compare)
   (syntax-match form
-    ((_ key p)
-     #'(:view (orderedmap-try-ref & ,key) (Some ,p)))
-    (_ (syntax-error form "(om-has key p) matches a map that has key."))))
+    ((_ key p) #'(:view (try-ref & ,key) (Some ,p)))
+    (bad (syntax-error bad "(Has key pattern) matches a Refable that holds key."))))
 
 ;; Anywhere that imports it:
 (match config
-  ;; This checks if (orderedmap-try-ref config "port") matches (Some p).
-  ((om-has "port" p) p)
+  ;; This checks if (try-ref config "port") matches (Some p).
+  ((Has "port" p) p)
   (_ "8080"))
 ```
 

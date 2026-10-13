@@ -435,16 +435,15 @@ transformer runs when the name heads a *pattern*, and what it answers is read
 as one:
 
 #+BEGIN_SRC scheme
-;; In (std orderedmap):
-(def/pattern (om-has form inject compare)
-  (match form
-    ((SList (Cons _ (Cons key (Cons p Nil))))
-     #'(:view (orderedmap-try-ref & ,key) (Some ,p)))
-    (_ (syntax-error form "(om-has key p) matches a map that has key."))))
+;; In the prelude:
+(def/pattern (Has form inject compare)
+  (syntax-match form
+    ((_ key p) #'(:view (try-ref & ,key) (Some ,p)))
+    (bad (syntax-error bad "(Has key pattern) matches a Refable that holds key."))))
 
 ;; Anywhere that imports it:
 (match config
-  ((om-has "port" p) p)
+  ((Has "port" p) p)
   (_ "8080"))
 #+END_SRC
 

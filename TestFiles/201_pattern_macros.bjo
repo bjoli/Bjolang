@@ -64,13 +64,20 @@
     ((Some _) "odd")
     (None "none")))
 
-;; The standard library's own, over an exported view: `(om-has key p)` matches a
-;; map that has `key`.
+;; The prelude's own, over a trait method: `(Has key p)` matches a Refable that
+;; holds `key`, here an ordered map.
 (: port-of (-> (OrderedMap string string) string))
 (defun (port-of config)
   (match config
-    ((om-has "port" p) p)
+    ((Has "port" p) p)
     (_ "8080")))
+
+;; `(Has* (key p) ...)` is an `and` of `Has`.
+(: address-of (-> (OrderedMap string string) string))
+(defun (address-of config)
+  (match config
+    ((Has* ("host" h) ("port" p)) (string-append h (string-append ":" p)))
+    (_ "none")))
 
 ;; A pattern macro in a `:for`. `(Both a b)` rewrites to a tuple, which is one
 ;; of the two shapes a loop pattern may be.
@@ -116,8 +123,12 @@
 
   (expect "loop-for" (sum-pairs [(Tuple 2 3) (Tuple 4 5)]) 26)
 
-  (expect "std-om-has" (port-of (orderedmap-set (orderedmap-empty) "port" "9000")) "9000")
-  (expect "std-om-has-miss" (port-of (orderedmap-empty)) "8080")
+  (expect "std-has" (port-of (orderedmap-set (orderedmap-empty) "port" "9000")) "9000")
+  (expect "std-has-miss" (port-of (orderedmap-empty)) "8080")
+  (expect "std-has*"
+          (address-of (orderedmap-set (orderedmap-set (orderedmap-empty) "host" "h") "port" "1"))
+          "h:1")
+  (expect "std-has*-miss" (address-of (orderedmap-set (orderedmap-empty) "host" "h")) "none")
 
   (println "201 ok")
   0)

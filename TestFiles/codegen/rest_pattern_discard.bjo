@@ -1,0 +1,39 @@
+;; A rest that is not bound is a discard, so the match makes no slice.
+;;
+;; `[a b _ ...]` is emitted as the C# list pattern `[var a, var b, .. _]`.
+;; For a slice pattern whose subpattern is a discard, the C# compiler does
+;; not call `Slice`: the IL reads the count and the two elements only. A
+;; named rest, `[a b rest ...]`, must be `.. var rest`, and that calls `Slice`,
+;; which for a Vec builds a new vec and for an array copies one.
+;;
+;; So the guarantee is that `_ ...` is emitted as `.. _` and never as a
+;; binding. The IL was checked once by reading the calls in it; this test
+;; keeps the C# that gives that IL.
+;;
+;; Each `EXPECT-CS` is a regex matched against the generated C#.
+
+(import (std prelude))
+
+;; EXPECT-CS: case \[var va, var vb, \.\. _\]:
+;; EXPECT-NO-CS: case \[var va, var vb, \.\. var
+(: vec-wild (-> (Vec int) int))
+(defun (vec-wild v)
+  (match v
+    ([va vb _ ...] (+ va vb))
+    (_ 0)))
+
+;; EXPECT-CS: case \[var aa, var ab, \.\. _\]:
+;; EXPECT-NO-CS: case \[var aa, var ab, \.\. var
+(: array-wild (-> (Array int) int))
+(defun (array-wild v)
+  (match v
+    (#[aa ab _ ...] (+ aa ab))
+    (_ 0)))
+
+;; The named rest, for contrast: here the slice is wanted.
+;; EXPECT-CS: case \[var na, var nb, \.\. var rest\]:
+(: vec-named (-> (Vec int) int))
+(defun (vec-named v)
+  (match v
+    ([na nb rest ...] (+ na (vec-length rest)))
+    (_ 0)))
