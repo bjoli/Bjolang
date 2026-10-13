@@ -159,7 +159,7 @@ public sealed class PutOp<T> : Operation
     public T Value = default!;
 
     /// <summary>Resume for a DIRECT send (awaiter path); null for choose givers.</summary>
-    public Action ResumePut = null!;
+    internal IResume ResumePut = null!;
 
     /// <summary>
     /// Resume for a send under a sync block. Typed <c>Action&lt;Unit&gt;</c> so
@@ -246,7 +246,7 @@ public sealed class GetOp<T> : Operation
     private int _freeDepth;
 
     public Action<T>? ResumeGet;
-    public Action? DirectResume;
+    internal IResume? DirectResume;
     public T DirectValue = default!;
     public GetOp<T>? Next;
 

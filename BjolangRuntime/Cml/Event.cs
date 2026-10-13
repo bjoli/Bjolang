@@ -77,7 +77,7 @@ internal interface IParkable<T> : IParkSite
     /// scheduled. On <see cref="ParkResult.Withdrawn"/> the token withdrew the
     /// op first and nothing was done. The caller resumes the fiber in both.
     /// </summary>
-    ParkResult Park(Operation op, Action resume);
+    ParkResult Park(Operation op, IResume resume);
 
     /// <summary>The value a completed park carried. Recycles the op.</summary>
     T TakeParked(Operation op);
@@ -607,7 +607,7 @@ public class ChannelSendEvent<T> : IEvent<Unit>, INowable<Unit>, IDirectSyncable
 
     Withdrawal IParkSite.CancelParked(Operation op, int gen) => _channel.CancelParked(op, gen);
 
-    ParkResult IParkable<Unit>.Park(Operation op, Action resume) => _channel.SendSide.Park(op, resume);
+    ParkResult IParkable<Unit>.Park(Operation op, IResume resume) => _channel.SendSide.Park(op, resume);
 
     Unit IParkable<Unit>.TakeParked(Operation op) => _channel.SendSide.TakeParked(op);
 }
@@ -623,7 +623,7 @@ internal sealed class ChannelSendSide<T> : IParkable<Unit>
 
     internal ChannelSendSide(Channel<T> channel) => _channel = channel;
 
-    public ParkResult Park(Operation op, Action resume)
+    public ParkResult Park(Operation op, IResume resume)
     {
         var put = (PutOp<T>)op;
         put.ResumePut = resume;

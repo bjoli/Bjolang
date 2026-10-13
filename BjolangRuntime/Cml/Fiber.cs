@@ -22,19 +22,96 @@ namespace Bjoml;
 // ---------------------------------------------------------------------------
 
 /// <summary>
-/// Marker for "this work item's <c>Execute</c> is equivalent to invoking its
-/// resume <c>Action</c>". Implemented ONLY by <see cref="FiberStateMachineBox{T}"/>
-/// and <see cref="CalledFiber{TStateMachine, T}"/>.
+/// A fiber's box: <c>Execute</c>, <c>Resume</c> and invoking
+/// <see cref="MoveNextAction"/> are the same thing. Implemented ONLY by
+/// <see cref="FiberStateMachineBox{T}"/> and <see cref="CalledFiber{TStateMachine, T}"/>.
 ///
-/// <c>Promise.Complete</c> uses it to wake a parked fiber by enqueuing the box
-/// itself instead of routing the fiber's resume delegate through a pooled
-/// <c>ActionWorkItem</c>. The marker is what makes the target-sniff sound: a
-/// delegate can wrap ANY method of an object that happens to implement
+/// The runtime's own awaiters take the box itself (<see cref="IFiberAwaiter"/>).
+/// A delegate is made only for an awaiter from outside, and where one comes
+/// back, <c>Promise.Wake</c>, <c>Scheduler.Enqueue</c> and <see cref="Resumes.Of"/>
+/// find the box again through its target. The marker is what makes that sniff
+/// sound: a delegate can wrap ANY method of an object that happens to implement
 /// <see cref="IThreadPoolWorkItem"/>, and enqueuing such an object would run the
 /// wrong code. Only mark a type with this if invoking <c>Execute</c> and
 /// invoking the only <c>Action</c> the type ever hands out are the same thing.
 /// </summary>
-internal interface IFiberResume : IThreadPoolWorkItem { }
+internal interface IFiberResume : IResume
+{
+    /// <summary>
+    /// The resume as a delegate, for an awaiter outside this runtime, which
+    /// takes only an <see cref="Action"/>. Made at the first such await, so a
+    /// fiber that awaits only this runtime's awaiters never has one.
+    /// </summary>
+    Action MoveNextAction { get; }
+}
+
+/// <summary>
+/// What a parked fiber, or any other waiter, is resumed through: run it here,
+/// or queue it as the work item it is.
+///
+/// A fiber's box is one, so the runtime's own awaiters store and run the box
+/// and need no delegate. Each box used to carry an <see cref="Action"/> for
+/// this, 64 B that a parked fiber kept for each frame. A delegate from outside
+/// the runtime is wrapped in <see cref="ActionResume"/>.
+/// </summary>
+internal interface IResume : IThreadPoolWorkItem
+{
+    /// <summary>Resume on this thread. The caller owns the inline budget.</summary>
+    void Resume();
+}
+
+/// <summary>
+/// An awaiter of this runtime: it takes the box of the fiber that awaits it,
+/// in place of an <see cref="Action"/>.
+///
+/// The fiber builders test for this as the BCL's builders test for
+/// <c>IStateMachineBoxAwareAwaiter</c>. The awaiters are structs, and the JIT
+/// removes the box of the test and of the call, since the awaiter's type is
+/// known in each instantiation.
+/// </summary>
+internal interface IFiberAwaiter
+{
+    void ParkFiber(IFiberResume box);
+}
+
+internal static class Resumes
+{
+    /// <summary>
+    /// A continuation from outside as a resume. A fiber's own delegate
+    /// (<see cref="IFiberResume.MoveNextAction"/>) becomes its box again, so
+    /// that only a foreign continuation costs a wrapper.
+    /// </summary>
+    internal static IResume Of(Action continuation) =>
+        continuation.Target is IFiberResume box ? box : new ActionResume(continuation);
+}
+
+/// <summary>A delegate as a resume: a continuation from outside the runtime.</summary>
+internal sealed class ActionResume : IResume
+{
+    private readonly Action _action;
+
+    internal ActionResume(Action action) => _action = action;
+
+    public void Resume() => _action();
+
+    /// <summary>The obligations of <see cref="ActionWorkItem.Execute"/>.</summary>
+    public void Execute()
+    {
+        Scheduler.InlineDepth = 0;
+        try
+        {
+            _action();
+        }
+        catch (Exception ex)
+        {
+            Scheduler.ReportUnhandled(ex);
+        }
+        finally
+        {
+            Scheduler.OnWorkItemComplete();
+        }
+    }
+}
 
 /// <summary>What resuming a boxed state machine does, for both kinds of box.</summary>
 internal static class FiberResume
@@ -117,12 +194,14 @@ internal sealed class FiberStateMachineBox<TStateMachine> : IFiberResume
     /// </summary>
     public object? Context;
 
-    private readonly Action _moveNext;
-    public Action MoveNextAction => _moveNext;
+    private Action? _moveNext;
 
-    public FiberStateMachineBox() => _moveNext = Run;
+    /// <summary>Made at the first await outside the runtime; see <see cref="IFiberResume"/>.</summary>
+    public Action MoveNextAction => _moveNext ??= Run;
 
     private void Run() => FiberResume.Run(ref StateMachine, Context);
+
+    public void Resume() => FiberResume.Run(ref StateMachine, Context);
 
     public void Execute() => FiberResume.Execute(ref StateMachine, Context);
 }
@@ -142,19 +221,18 @@ internal sealed class FiberStateMachineBox<TStateMachine> : IFiberResume
 ///
 /// # Pooled
 ///
-/// A call that suspends is a box and its resume delegate, and a service that
-/// waits for every reply suspends on nearly every call. So a box goes back to a
-/// per-thread free list when its caller has read the outcome
-/// (<see cref="ReleaseAfterRead"/>, from <see cref="FiberAwaiter{T}.GetResult"/>),
-/// and comes out again at the next suspension of a call of the same type, its
-/// delegate with it.
+/// A call that suspends needs a box, and a service that waits for every reply
+/// suspends on nearly every call. So a box goes back to a per-thread free list
+/// when its caller has read the outcome (<see cref="ReleaseAfterRead"/>, from
+/// <see cref="FiberAwaiter{T}.GetResult"/>), and comes out again at the next
+/// suspension of a call of the same type, with its delegate if it has one.
 ///
 /// Why that is safe. The compiler awaits a fiber once and reads it once, and
 /// only that read releases: a promise reached any other way — a spawn's body
 /// forwarding to it, <c>RunToCompletion</c>, <c>AsPromise</c> — is never
 /// released, and is simply not reused. By the time the outcome can be read the
 /// call has completed, so no await of the call is outstanding and nothing holds
-/// its resume delegate: each await's registration fires once, and the
+/// the box as a resume: each await's registration fires once, and the
 /// cancellation watch drops its copy when the park ends. The callee's own
 /// thread may still be returning from <c>TrySetResult</c>, but after
 /// publishing the outcome that path touches nothing of the box but a virtual
@@ -174,10 +252,16 @@ internal sealed class CalledFiber<TStateMachine, T> : Promise<T>, IFiberResume
     public TStateMachine StateMachine = default!;
     public object? Context;
 
-    private readonly Action _moveNext;
-    public Action MoveNextAction => _moveNext;
+    /// <summary>
+    /// Kept across reuse, like the box itself: a delegate targets this box,
+    /// and the box is the same object after it is rented again.
+    /// </summary>
+    private Action? _moveNext;
 
-    private CalledFiber() => _moveNext = Run;
+    /// <summary>Made at the first await outside the runtime; see <see cref="IFiberResume"/>.</summary>
+    public Action MoveNextAction => _moveNext ??= Run;
+
+    private CalledFiber() { }
 
     internal static CalledFiber<TStateMachine, T> Rent()
     {
@@ -203,6 +287,8 @@ internal sealed class CalledFiber<TStateMachine, T> : Promise<T>, IFiberResume
     }
 
     private void Run() => FiberResume.Run(ref StateMachine, Context);
+
+    public void Resume() => FiberResume.Run(ref StateMachine, Context);
 
     public void Execute() => FiberResume.Execute(ref StateMachine, Context);
 }
@@ -280,10 +366,10 @@ public class FiberCore<T> : Promise<T>, IThreadPoolWorkItem
     }
 
     /// <summary>
-    /// Get the delegate that resumes this fiber, boxing the state machine on first
+    /// Get the box that resumes this fiber, boxing the state machine on first
     /// use and re-capturing the dynamic context on every subsequent suspension.
     /// </summary>
-    internal Action GetMoveNextAction<TStateMachine>(ref TStateMachine stateMachine)
+    internal IFiberResume GetResumeBox<TStateMachine>(ref TStateMachine stateMachine)
         where TStateMachine : IAsyncStateMachine
     {
         if (_box is FiberStateMachineBox<TStateMachine> existing)
@@ -291,7 +377,7 @@ public class FiberCore<T> : Promise<T>, IThreadPoolWorkItem
             // Re-capture: the fiber may have changed its own context since the last
             // suspension, e.g. by entering a (parameterize ...).
             existing.Context = FiberContext.Current;
-            return existing.MoveNextAction;
+            return existing;
         }
 
         var box = new FiberStateMachineBox<TStateMachine>
@@ -300,7 +386,7 @@ public class FiberCore<T> : Promise<T>, IThreadPoolWorkItem
             Context = FiberContext.Current,
         };
         _box = box;
-        return box.MoveNextAction;
+        return box;
     }
 
     /// <summary>The boxed resume, usable as a work item with no wrapper allocation.</summary>
@@ -437,7 +523,7 @@ public readonly struct Fiber
 /// Awaiter for both fiber types: the result itself when the call completed without
 /// suspending, otherwise the call's promise.
 /// </summary>
-public readonly struct FiberAwaiter<T> : ICriticalNotifyCompletion
+public readonly struct FiberAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter
 {
     private readonly Promise<T>? _p;
     private readonly T _result;
@@ -472,17 +558,58 @@ public readonly struct FiberAwaiter<T> : ICriticalNotifyCompletion
         if (_p is null) continuation();
         else _p.OnCompleted(continuation);
     }
+
+    void IFiberAwaiter.ParkFiber(IFiberResume box)
+    {
+        if (_p is null) box.Resume();
+        else _p.OnCompleted(box);
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Builders
 // ---------------------------------------------------------------------------
 
-/// <summary>What the two builders share: finding the delegate that resumes a fiber.</summary>
+/// <summary>What the two builders share: finding the box that resumes a fiber, and parking it.</summary>
 internal static class FiberBuilder
 {
     /// <summary>
-    /// The resume delegate for a fiber about to suspend, with the dynamic context
+    /// Park the fiber on <paramref name="awaiter"/>. An awaiter of this runtime
+    /// takes the box; any other takes the box's delegate, made then.
+    ///
+    /// The test and the cast box nothing for a struct awaiter: the JIT knows the
+    /// awaiter's type in each instantiation, as in the BCL's builders.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void AwaitUnsafe<TAwaiter, TStateMachine, T>(
+        ref TAwaiter awaiter, ref Promise<T>? core, ref TStateMachine stateMachine)
+        where TAwaiter : ICriticalNotifyCompletion
+        where TStateMachine : IAsyncStateMachine
+    {
+        if (awaiter is IFiberAwaiter)
+            ((IFiberAwaiter)awaiter).ParkFiber(GetResumeBox(ref core, ref stateMachine));
+        else
+            awaiter.UnsafeOnCompleted(GetResumeBox(ref core, ref stateMachine).MoveNextAction);
+    }
+
+    /// <summary>
+    /// <see cref="AwaitUnsafe"/> for an awaiter with only the safe method.
+    /// BjoML never flows ExecutionContext, so the two differ in nothing else.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void Await<TAwaiter, TStateMachine, T>(
+        ref TAwaiter awaiter, ref Promise<T>? core, ref TStateMachine stateMachine)
+        where TAwaiter : INotifyCompletion
+        where TStateMachine : IAsyncStateMachine
+    {
+        if (awaiter is IFiberAwaiter)
+            ((IFiberAwaiter)awaiter).ParkFiber(GetResumeBox(ref core, ref stateMachine));
+        else
+            awaiter.OnCompleted(GetResumeBox(ref core, ref stateMachine).MoveNextAction);
+    }
+
+    /// <summary>
+    /// The resume box for a fiber about to suspend, with the dynamic context
     /// captured for it.
     ///
     /// <paramref name="core"/> is the builder's own field, and the builder lives
@@ -494,7 +621,7 @@ internal static class FiberBuilder
     /// builder is where <c>Task</c> is read, which needs the promise too.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static Action GetMoveNextAction<TStateMachine, T>(
+    internal static IFiberResume GetResumeBox<TStateMachine, T>(
         ref Promise<T>? core, ref TStateMachine stateMachine)
         where TStateMachine : IAsyncStateMachine
     {
@@ -506,7 +633,7 @@ internal static class FiberBuilder
             called.Context = FiberContext.Current;
             core = called;
             called.StateMachine = stateMachine;   // the one and only copy from the stack
-            return called.MoveNextAction;
+            return called;
         }
 
         if (current is CalledFiber<TStateMachine, T> existing)
@@ -514,10 +641,10 @@ internal static class FiberBuilder
             // Re-capture: the fiber may have changed its own context since the last
             // suspension, e.g. by entering a (parameterize ...).
             existing.Context = FiberContext.Current;
-            return existing.MoveNextAction;
+            return existing;
         }
 
-        return ((FiberCore<T>)current).GetMoveNextAction(ref stateMachine);
+        return ((FiberCore<T>)current).GetResumeBox(ref stateMachine);
     }
 
     /// <summary>
@@ -598,13 +725,13 @@ public struct FiberMethodBuilder<T>
         ref TAwaiter awaiter, ref TStateMachine stateMachine)
         where TAwaiter : INotifyCompletion
         where TStateMachine : IAsyncStateMachine
-        => awaiter.OnCompleted(FiberBuilder.GetMoveNextAction(ref _core, ref stateMachine));
+        => FiberBuilder.Await(ref awaiter, ref _core, ref stateMachine);
 
     public void AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>(
         ref TAwaiter awaiter, ref TStateMachine stateMachine)
         where TAwaiter : ICriticalNotifyCompletion
         where TStateMachine : IAsyncStateMachine
-        => awaiter.UnsafeOnCompleted(FiberBuilder.GetMoveNextAction(ref _core, ref stateMachine));
+        => FiberBuilder.AwaitUnsafe(ref awaiter, ref _core, ref stateMachine);
 }
 
 public struct FiberMethodBuilder
@@ -636,11 +763,11 @@ public struct FiberMethodBuilder
         ref TAwaiter awaiter, ref TStateMachine stateMachine)
         where TAwaiter : INotifyCompletion
         where TStateMachine : IAsyncStateMachine
-        => awaiter.OnCompleted(FiberBuilder.GetMoveNextAction(ref _core, ref stateMachine));
+        => FiberBuilder.Await(ref awaiter, ref _core, ref stateMachine);
 
     public void AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>(
         ref TAwaiter awaiter, ref TStateMachine stateMachine)
         where TAwaiter : ICriticalNotifyCompletion
         where TStateMachine : IAsyncStateMachine
-        => awaiter.UnsafeOnCompleted(FiberBuilder.GetMoveNextAction(ref _core, ref stateMachine));
+        => FiberBuilder.AwaitUnsafe(ref awaiter, ref _core, ref stateMachine);
 }

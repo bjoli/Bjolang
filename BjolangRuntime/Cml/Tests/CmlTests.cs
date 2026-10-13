@@ -52,6 +52,7 @@ public static class CmlTests
         Run("a choose branch never parks directly", ChooseNeverParksDirectly);
         Run("a directly parked receive pairs with a choose send", DirectPairsWithChooseSend);
         Run("a directly parked send pairs with a choose receive", DirectSendPairsWithChooseReceive);
+        Run("a Task awaits the runtime's awaiters through a delegate", TaskAwaitsRuntimeAwaiters);
 
         Section("Baseline combinator behaviour");
         Run("wrap maps the value", WrapMapsValue);
@@ -648,7 +649,7 @@ public static class CmlTests
         var ch = new Channel<int>();
         IDirectSyncable<int> direct = ch;
         int resumed = 0;
-        Action resume = () => Interlocked.Increment(ref resumed);
+        IResume resume = Resumes.Of(() => Interlocked.Increment(ref resumed));
 
         // A sender takes the park first: the token's withdrawal is refused, and
         // the value is the receiver's.
@@ -1104,7 +1105,7 @@ public static class CmlTests
     {
         int before = TimerWheel.LinkedCount;
         int resumed = 0;
-        Action resume = () => Interlocked.Increment(ref resumed);
+        IResume resume = Resumes.Of(() => Interlocked.Increment(ref resumed));
 
         // Withdrawn before it parked: the owner's park finds it so, links
         // nothing, and leaves the resume to its caller.
@@ -1640,6 +1641,41 @@ public static class CmlTests
 
         // And it still pairs.
         Cml.Sync(new ChannelSendEvent<int>(ch, 7), _ => { });
+    }
+
+    /// <summary>
+    /// A fiber's builder hands the runtime's awaiters its box. A builder from
+    /// outside, here a Task's, hands them a delegate, which they wrap. Each
+    /// awaiter must resume it: a sync on a receive, on a choose, on a sleep,
+    /// and an await of a promise and of a channel.
+    /// </summary>
+    private static void TaskAwaitsRuntimeAwaiters()
+    {
+        var a = new Channel<int>();
+        var b = new Channel<int>();
+        var never = new Channel<int>();
+        var d = new Channel<int>();
+        var p = new Promise<int>();
+
+        async System.Threading.Tasks.Task<int> Body()
+        {
+            int x = await Global.sync((IEvent<int>)a);
+            int y = await Global.sync(Cml.Choose<int>(never, b));
+            await Global.sync(Global.timeout(5));
+            int z = await p;
+            int w = await d;
+            return x + y + z + w;
+        }
+
+        var task = System.Threading.Tasks.Task.Run(Body);
+
+        Cml.Sync(new ChannelSendEvent<int>(a, 1), _ => { });
+        Cml.Sync(new ChannelSendEvent<int>(b, 2), _ => { });
+        p.TrySetResult(3);
+        Cml.Sync(new ChannelSendEvent<int>(d, 4), _ => { });
+
+        Assert(task.Wait(5000), "the Task did not finish");
+        AssertEqual(10, task.Result, "the sum the Task received");
     }
 
     private static void ChooseNeverParksDirectly()

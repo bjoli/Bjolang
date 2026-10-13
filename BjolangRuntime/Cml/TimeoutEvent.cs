@@ -259,7 +259,7 @@ internal sealed class SleepNode : WheelNode, IParkable<Unit>
 
     private readonly int _ms;
     private int _gate;
-    private Action? _resume;
+    private IResume? _resume;
 
     internal SleepNode(int ms) => _ms = ms;
 
@@ -269,7 +269,7 @@ internal sealed class SleepNode : WheelNode, IParkable<Unit>
     /// The resume is written before the gate opens, and the gate opens before
     /// the node is linked, so a tick that finds the node finds the resume.
     /// </summary>
-    public ParkResult Park(Operation op, Action resume)
+    public ParkResult Park(Operation op, IResume resume)
     {
         _resume = resume;
 

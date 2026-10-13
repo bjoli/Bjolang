@@ -72,10 +72,10 @@ internal interface ICancellableAwaiter
 /// <see cref="Cml.Sync"/> publishes, because the instant an op is parked, a thread
 /// on the other side of the channel can call <see cref="OnSync"/> concurrently.
 /// </summary>
-public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwaiter, IWrapHost
+public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwaiter, IWrapHost, IFiberAwaiter
 {
     /// <summary>Marks "already completed" so a late continuation runs immediately.</summary>
-    private static readonly Action Sentinel = () => { };
+    private static readonly IResume Sentinel = new ActionResume(static () => { });
 
     private const int MaxCached = 64;
     [ThreadStatic] private static EventAwaiter<T>? _free;
@@ -91,7 +91,7 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
     private EventAwaiter<T>? _next;
     private readonly Action<T> _onSync;
     private T _result = default!;
-    private Action? _continuation;
+    private IResume? _continuation;
 
     /// <summary>
     /// Why this sync was cancelled, or null when the event completed normally.
@@ -176,7 +176,7 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
         // Sentinel -> already woken: this is a deferred wrap delivering its
         //             value from TakeResult, on the resumed fiber.
         // anything else -> the fiber parked; resume it.
-        if (c != null && !ReferenceEquals(c, Sentinel)) c();
+        if (c != null && !ReferenceEquals(c, Sentinel)) c.Resume();
     }
 
     public bool IsCompleted => ReferenceEquals(Volatile.Read(ref _continuation), Sentinel);
@@ -275,13 +275,18 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
     /// BjoML wants: the fiber carries its own dynamic environment and the builder
     /// reinstates it on resume.
     /// </summary>
-    public void UnsafeOnCompleted(Action continuation)
+    public void UnsafeOnCompleted(Action continuation) => Park(Resumes.Of(continuation));
+
+    void IFiberAwaiter.ParkFiber(IFiberResume box) => Park(box);
+
+    /// <summary>The resume to run when the event completes.</summary>
+    internal void Park(IResume continuation)
     {
         var prev = Interlocked.CompareExchange(ref _continuation, continuation, null);
 
         // The event completed in the gap between IsCompleted returning false and us
         // registering. Nobody will call us, so run it here.
-        if (ReferenceEquals(prev, Sentinel)) continuation();
+        if (ReferenceEquals(prev, Sentinel)) continuation.Resume();
     }
 }
 

@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* A parked fiber's box has no delegate
+
+- The runtime's awaiters (a fiber's, a promise's, a channel's, ~sync~'s and
+  an event's) take the fiber's state machine box in place of an ~Action~,
+  and every place that stores a resume holds the box. Each box made an
+  ~Action~ before, and a parked fiber kept one for each frame: in
+  ~bench/service~ a parked client keeps 680 B in place of 808 B.
+- An awaiter from outside the runtime, such as a ~Task~'s, still gets a
+  delegate, made at the first such await. A ~Task~ that awaits the runtime's
+  awaiters gets its delegate wrapped; a new runtime test covers that path.
+- At 0.25M/s on 4 cores: CPU -2.4%, p99 35.6 to 33.0 us, p99.9 63.1 to 49.6
+  us, over 90 reps a build. The closed loop on 4 cores went from 423 to 411.5
+  ms. See ~BjolangRuntime/Cml/design.md~, "A box needs no delegate".
+
 * A lone ~(sync (timeout ms))~ parks in the timer wheel
 
 - A ~sync~ on one ~timeout~ or ~at~ event with a delay above 0 ms parks one

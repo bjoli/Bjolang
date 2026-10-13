@@ -363,9 +363,10 @@ public class Promise<T> : IEvent<Result<T>>,
     /// <summary>
     /// Wake one registered waiter after completion.
     ///
-    /// A waiter is either a <see cref="PromiseWaiter"/> — enqueued directly, it is
-    /// its own work item — or a bare <see cref="Action"/> stored unwrapped by
-    /// <see cref="OnCompleted"/>. For a bare action there is one more save: a
+    /// A waiter is a <see cref="PromiseWaiter"/> — enqueued directly, it is its
+    /// own work item — or a parked fiber's box (<see cref="IResume"/>), which is
+    /// one too, or a bare <see cref="Action"/> stored unwrapped by
+    /// <see cref="OnCompleted(Action)"/>. For a bare action there is one more save: a
     /// parked FIBER's resume delegate targets its state-machine box, which is
     /// itself a work item whose <c>Execute</c> is equivalent to invoking the
     /// delegate (that equivalence is what <see cref="IFiberResume"/> asserts; do
@@ -378,6 +379,11 @@ public class Promise<T> : IEvent<Result<T>>,
         if (waiter is PromiseWaiter pw)
         {
             if (!pw.IsAbandoned) Scheduler.Enqueue(pw);
+        }
+        else if (waiter is IResume resume)
+        {
+            // A parked fiber's box, registered with no delegate (see IResume).
+            Scheduler.Enqueue(resume);
         }
         else
         {
@@ -393,6 +399,10 @@ public class Promise<T> : IEvent<Result<T>>,
         if (waiter is PromiseWaiter pw)
         {
             if (!pw.IsAbandoned) pw.Signal();
+        }
+        else if (waiter is IResume resume)
+        {
+            resume.Resume();
         }
         else
         {
@@ -425,6 +435,13 @@ public class Promise<T> : IEvent<Result<T>>,
 
     /// <summary>Run <paramref name="k"/> now if already complete, else on completion.</summary>
     internal void OnCompleted(Action k) => RegisterAny(k);
+
+    /// <summary>
+    /// <see cref="OnCompleted(Action)"/> for a parked fiber's box. A box can be
+    /// a promise itself (<c>CalledFiber</c>), but never a <see cref="PromiseWaiter"/>,
+    /// so <see cref="Wake"/> tells the three kinds apart.
+    /// </summary>
+    internal void OnCompleted(IResume k) => RegisterAny(k);
 
     private void RegisterAny(object waiter)
     {
@@ -793,7 +810,7 @@ internal sealed class PromiseValue<T> : IEvent<T>, INowable<T>
     }
 }
 
-public readonly struct PromiseAwaiter<T> : ICriticalNotifyCompletion
+public readonly struct PromiseAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter
 {
     private readonly Promise<T> _p;
     public PromiseAwaiter(Promise<T> p) => _p = p;
@@ -808,4 +825,6 @@ public readonly struct PromiseAwaiter<T> : ICriticalNotifyCompletion
 
     // No ExecutionContext capture, by design. See FiberContext.
     public void UnsafeOnCompleted(Action continuation) => _p.OnCompleted(continuation);
+
+    void IFiberAwaiter.ParkFiber(IFiberResume box) => _p.OnCompleted(box);
 }

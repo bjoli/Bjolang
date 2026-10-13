@@ -1602,7 +1602,8 @@ Not done, in order of size:
 
 - Each box has its own resume `Action`, 64 B. An awaiter that takes the box
   (`IFiberResume`) in place of an `Action` would remove it, but every
-  awaiter, op and the cancellation watch store an `Action` now.
+  awaiter, op and the cancellation watch store an `Action` now. Done; see
+  "A box needs no delegate" below.
 - `(sync (timeout ms))` goes the general way: an awaiter, its delegate and a
   `SyncState`, 248 B with the `TimeoutNode`. A sleep that parks the fiber's
   resume in the timer wheel, and that the watch can withdraw, would need only
@@ -1660,6 +1661,52 @@ uses 7% less CPU, and has the same p99 and p99.9. So the change itself
 costs nothing. The 0.8 us at p99 with the default budget is the GC's choice
 of memory against collections, and the gen0 budget is the lever for it, as
 in "Bjolang's open-loop tail is GC pauses" above.
+
+### A box needs no delegate
+
+Every state machine box (`FiberStateMachineBox`, `CalledFiber`) made an
+`Action` for its `MoveNext` when it was made, because an awaiter takes an
+`Action`. A parked fiber kept one for each frame: two a client here, 128 B.
+
+The runtime's awaiters now take the box. `IResume` is what a parked fiber
+is resumed through: `Resume()` here, or `Execute()` as a queued work item.
+A box is one, and every store of a resume (a channel op, `FiberWatch`,
+`SleepNode`, `EventAwaiter`, a promise's waiters) holds an `IResume`. The
+fiber builders test the awaiter for `IFiberAwaiter`, as the BCL's builders
+test for `IStateMachineBoxAwareAwaiter`, and hand it the box. The JIT
+removes the box of that test and cast for a struct awaiter, since the
+awaiter's type is known in each instantiation; allocation a request did not
+rise, which a box a park would have shown as about 40 B. An awaiter from
+outside, such as a `Task`'s, still gets a delegate, made at the first such
+await (`MoveNextAction`). A delegate that comes back to the runtime from a
+builder outside it is wrapped in an `ActionResume`, unless it is a box's
+own (`Resumes.Of`).
+
+The gcdump at 4 cores and 0.25M/s: 20,344 `System.Action` before, 7 after.
+A parked client keeps 680 B in place of 808 B.
+
+The A/B as above, old and new runtime under one `service.exe`:
+
+                                  old      new    new - old, 95% interval
+    4 cores, 0.25M/s, 90 reps
+      cpu ms                     3198     3122    -97 .. -41
+      p99 us                     35.6     33.0    -3.0 .. -2.1
+      p99.9 us                   63.1     49.6    -20.6 .. -7.4
+      gcs                          16       18    +1 .. +2
+      pause ms                     46       47    -1 .. +2
+    4 cores, closed loop, 50 reps
+      wall ms                     423    411.5    -19 .. -6
+      cpu ms                     1645     1615    -54 .. -18
+      pause ms                     32       27    -5 .. -4
+    all cores, closed loop, 50 reps
+      wall ms                     245      247    -12 .. +11
+      alloc MB                   1512     1481    -33 .. -28
+
+With the gen0 budget fixed at 32 MB a heap (30 reps), the open loop used 2%
+less CPU and had a p99 1.4 us lower. Allocation fell only a little in the
+open loop, since a pooled `CalledFiber` kept its delegate across reuse. What
+the cut saves there is the delegate's work: making it once per box, and the
+indirect call of every resume.
 
 ---
 

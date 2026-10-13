@@ -243,6 +243,41 @@ public static class Scheduler
     }
 
     /// <summary>
+    /// <see cref="Dispatch(Action)"/> for a parked fiber's resume: run here if
+    /// the inline budget allows, otherwise queued as the work item it is.
+    /// </summary>
+    internal static void Dispatch(IResume resume)
+    {
+        int depth = InlineDepth;
+        if (depth < MaxInlineDepth && (!Workers.Enabled || --InlineBudget >= 0))
+        {
+            InlineDepth = depth + 1;
+            try { resume.Resume(); }
+            finally { InlineDepth = depth; }
+        }
+        else
+        {
+            Enqueue(resume);
+        }
+    }
+
+    /// <summary><see cref="DispatchTaken(Action, bool)"/> for a parked fiber's resume.</summary>
+    internal static void DispatchTaken(IResume resume, bool moreTakers)
+    {
+        int depth = InlineDepth;
+        if (depth < MaxInlineDepth && (!Workers.Enabled || (--InlineBudget >= 0 && !moreTakers)))
+        {
+            InlineDepth = depth + 1;
+            try { resume.Resume(); }
+            finally { InlineDepth = depth; }
+        }
+        else
+        {
+            Enqueue(resume);
+        }
+    }
+
+    /// <summary>
     /// <see cref="Dispatch(Action)"/> for a send that took a parked receiver.
     /// <paramref name="moreTakers"/> says that other receivers are still
     /// parked on the channel.

@@ -83,7 +83,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         }
     }
 
-    ParkResult IParkable<T>.Park(Operation op, Action resume)
+    ParkResult IParkable<T>.Park(Operation op, IResume resume)
     {
         var get = (GetOp<T>)op;
         get.DirectResume = resume;
@@ -114,7 +114,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     /// </summary>
     internal bool SyncDirectReceive(Action<T> onSync)
     {
-        Action? putResume = null;
+        IResume? putResume = null;
         Action<Unit>? putResumeGive = null;
         SyncState? putState = null;
         int putEventId = 0;
@@ -243,7 +243,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     internal bool SyncDirectSend(T value, Action<Unit> onSync)
     {
         Action<T>? getResume = null;
-        Action? directTakerResume = null;
+        IResume? directTakerResume = null;
         SyncState? getState = null;
         int getEventId = 0;
         bool matched = false;
@@ -586,7 +586,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     public void PublishSend(SyncState state, int eventId, T value, Action<Unit> onSync)
     {
         Action<T>? getResume = null;
-        Action? directTakerResume = null;
+        IResume? directTakerResume = null;
         SyncState? getState = null;
         int getEventId = 0;
         bool matched = false;
@@ -739,7 +739,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 
     public void PublishReceive(SyncState state, int eventId, Action<T> resumeGet)
     {
-        Action? putResume = null;           // a direct giver's continuation
+        IResume? putResume = null;          // a direct giver's continuation
         Action<Unit>? putResumeGive = null; // a choose giver's onSync
         SyncState? putState = null;
         int putEventId = 0;
@@ -888,7 +888,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 
     public bool TryDirectReceive(out T value)
     {
-        Action? putResume = null;
+        IResume? putResume = null;
         Action<Unit>? putResumeGive = null;
         SyncState? putState = null;
         int putEventId = 0;
@@ -1011,7 +1011,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 
     private ParkResult ParkReceive(GetOp<T> op, bool linked)
     {
-        Action? putResume = null;
+        IResume? putResume = null;
         Action<Unit>? putResumeGive = null;
         SyncState? putState = null;
         int putEventId = 0;
@@ -1145,7 +1145,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     public bool TryDirectSend(T value)
     {
         Action<T>? getResume = null;
-        Action? directResume = null;
+        IResume? directResume = null;
         SyncState? getState = null;
         int getEventId = 0;
         bool moreTakers = false;
@@ -1263,7 +1263,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     private ParkResult ParkSend(PutOp<T> op, bool linked)
     {
         Action<T>? getResume = null;
-        Action? directResume = null;
+        IResume? directResume = null;
         SyncState? getState = null;
         int getEventId = 0;
         bool matched = false;
@@ -1389,7 +1389,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     }
 }
 
-public readonly struct ChannelReceiveAwaiter<T> : ICriticalNotifyCompletion
+public readonly struct ChannelReceiveAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter
 {
     private readonly Channel<T> _channel;
     private readonly T _result;
@@ -1428,12 +1428,18 @@ public readonly struct ChannelReceiveAwaiter<T> : ICriticalNotifyCompletion
 
     public void UnsafeOnCompleted(Action continuation)
     {
-        _op!.DirectResume = continuation;
+        _op!.DirectResume = Resumes.Of(continuation);
+        _channel.ParkDirectReceive(_op);
+    }
+
+    void IFiberAwaiter.ParkFiber(IFiberResume box)
+    {
+        _op!.DirectResume = box;
         _channel.ParkDirectReceive(_op);
     }
 }
 
-public readonly struct ChannelSendAwaiter<T> : ICriticalNotifyCompletion
+public readonly struct ChannelSendAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter
 {
     private readonly Channel<T> _channel;
     private readonly bool _isCompleted;
@@ -1465,7 +1471,13 @@ public readonly struct ChannelSendAwaiter<T> : ICriticalNotifyCompletion
 
     public void UnsafeOnCompleted(Action continuation)
     {
-        _op!.ResumePut = continuation;
+        _op!.ResumePut = Resumes.Of(continuation);
+        _channel.ParkDirectSend(_op);
+    }
+
+    void IFiberAwaiter.ParkFiber(IFiberResume box)
+    {
+        _op!.ResumePut = box;
         _channel.ParkDirectSend(_op);
     }
 }

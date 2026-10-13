@@ -398,7 +398,7 @@ public static partial class BjolangRuntime {
         /// The parked fiber's resume. Written before the op is handed to the
         /// channel, and read by the token only after a withdrawal under the
         /// channel's lock found the op on the list, so the lock publishes it.
-        private System.Action? _resume;
+        private IResume? _resume;
 
         /// For a parked `choose`: its awaiter, its state, and the event id the
         /// token commits under. Written before arming.
@@ -425,7 +425,7 @@ public static partial class BjolangRuntime {
         }
 
         /// The resume the token runs if it withdraws the op from the list.
-        internal void AttachResume(System.Action resume) => _resume = resume;
+        internal void AttachResume(IResume resume) => _resume = resume;
 
         /// A `choose`, whose token branch commits through its state.
         internal void AttachChoose(ICancellableAwaiter aw, SyncState state, int tokenBranch) {
@@ -580,7 +580,7 @@ public static partial class BjolangRuntime {
 
     /// Forwards to whichever awaiter the sync ended up with, or to nothing at
     /// all when the rendezvous already happened.
-    public readonly struct SyncAwaiter<T> : System.Runtime.CompilerServices.ICriticalNotifyCompletion {
+    public readonly struct SyncAwaiter<T> : System.Runtime.CompilerServices.ICriticalNotifyCompletion, IFiberAwaiter {
         private const byte Ready_ = 0;
         private const byte Direct_ = 1;
         private const byte Event_ = 2;
@@ -675,11 +675,17 @@ public static partial class BjolangRuntime {
 
         public void OnCompleted(System.Action k) => UnsafeOnCompleted(k);
 
+        /// From a builder outside this runtime, whose continuation is a
+        /// delegate. A fiber's builder calls `ParkFiber` with its box.
+        public void UnsafeOnCompleted(System.Action k) => Park(Resumes.Of(k));
+
+        void IFiberAwaiter.ParkFiber(IFiberResume box) => Park(box);
+
         /// Never reached in the ready case: `IsCompleted` was true, and the
         /// await contract does not ask for a continuation then.
-        public void UnsafeOnCompleted(System.Action k) {
+        private void Park(IResume k) {
             if (_kind != Direct_) {
-                Unsafe.As<EventAwaiter<T>>(_obj!).UnsafeOnCompleted(k);
+                Unsafe.As<EventAwaiter<T>>(_obj!).Park(k);
                 return;
             }
 
