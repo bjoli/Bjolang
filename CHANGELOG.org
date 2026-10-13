@@ -3,6 +3,18 @@
 
 What each change guarantees, and what it leaves open.
 
+* Smaller fiber objects
+
+- Fields that are never used at the same time now share a slot:
+  ~FiberWatch~ 88 to 64 B, ~FiberCore~ 88 to 72 B, ~CalledFiber~ 16 B less,
+  ~FiberStateMachineBox~ 8 B less. A spawn's runner delegate is a virtual
+  method, and a box no longer keeps a delegate for awaiters from outside the
+  runtime; one is made at each such await.
+- A parked client in ~bench/service~ keeps 616 B in place of 680 B.
+  Allocation fell 0.5-0.8%, and wall time, CPU and the tail did not change.
+  See ~BjolangRuntime/Cml/design.md~, "Fields that are never used together
+  share a slot".
+
 * A finished fiber's cancellation watch goes to the next fiber
 
 - When a spawned fiber ends, its watch (its registration on the scope's

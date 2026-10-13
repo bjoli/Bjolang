@@ -53,7 +53,7 @@ public static class Bjo
     public static Promise<T> Spawn<T>(Func<Fiber<T>> body, IFiberLanding? landing)
     {
         var inherited = FiberContext.ForChild();
-        var core = new FiberCore<T>(SpawnRunners<T>.FuncRunner, body, inherited);
+        var core = new FiberCore<T>(body, inherited);
         core.Landing = landing;
         Scheduler.EnqueueSpawn(core);
         return core;
@@ -68,7 +68,7 @@ public static class Bjo
     public static Promise<TResult> Spawn<TState, TResult>(Func<TState, Fiber<TResult>> body, TState state)
     {
         var inherited = FiberContext.ForChild();
-        var core = new StatefulFiberCore<TState, TResult>(SpawnStateRunners<TState, TResult>.StateRunner, body, state, inherited);
+        var core = new StatefulFiberCore<TState, TResult>(body, state, inherited);
         Scheduler.EnqueueSpawn(core);
         return core;
     }
@@ -77,7 +77,7 @@ public static class Bjo
     public static Promise<Unit> Spawn(Func<Fiber> body)
     {
         var inherited = FiberContext.ForChild();
-        var core = new FiberCore<Unit>(SpawnUnitRunners.FuncRunner, body, inherited);
+        var core = new FiberCore<Unit>(body, inherited);
         Scheduler.EnqueueSpawn(core);
         return core;
     }
@@ -89,7 +89,7 @@ public static class Bjo
     public static Promise<Unit> Spawn<TState>(Func<TState, Fiber> body, TState state)
     {
         var inherited = FiberContext.ForChild();
-        var core = new StatefulFiberCore<TState, Unit>(SpawnStateRunners<TState, Unit>.UnitStateRunner, body, state, inherited);
+        var core = new StatefulFiberCore<TState, Unit>(body, state, inherited);
         Scheduler.EnqueueSpawn(core);
         return core;
     }
@@ -173,45 +173,6 @@ internal static class SpawnSettle
         if (p is null) core.TrySetResult(default);
         else if (!ReferenceEquals(p, core)) p.Forward(core);
     }
-}
-
-internal static class SpawnRunners<T>
-{
-    public static readonly Action<FiberCore<T>> FuncRunner = static core =>
-    {
-        var func = (Func<Fiber<T>>)core._spawnBody!;
-        SpawnSettle.Settle(func(), core);
-    };
-}
-
-internal static class SpawnUnitRunners
-{
-    public static readonly Action<FiberCore<Unit>> FuncRunner = static core =>
-    {
-        var func = (Func<Fiber>)core._spawnBody!;
-        SpawnSettle.Settle(func(), core);
-    };
-}
-
-internal static class SpawnStateRunners<TState, TResult>
-{
-    public static readonly Action<FiberCore<TResult>> StateRunner = static core =>
-    {
-        var stateful = (StatefulFiberCore<TState, TResult>)core;
-        var func = (Func<TState, Fiber<TResult>>)core._spawnBody!;
-        var state = stateful.SpawnState;
-        stateful.SpawnState = default!;   // the promise handle must not pin the args
-        SpawnSettle.Settle(func(state), core);
-    };
-
-    public static readonly Action<FiberCore<Unit>> UnitStateRunner = static core =>
-    {
-        var stateful = (StatefulFiberCore<TState, Unit>)core;
-        var func = (Func<TState, Fiber>)core._spawnBody!;
-        var state = stateful.SpawnState;
-        stateful.SpawnState = default!;
-        SpawnSettle.Settle(func(state), core);
-    };
 }
 
 public static class TaskInterop

@@ -1764,6 +1764,41 @@ it can be pruned while it waits; the next arm then registers it again. A
 scope that ends with many fibers still running drops what does not fit
 under the cap, as before, onto a token that is about to complete.
 
+### Fields that are never used together share a slot
+
+Four objects held fields for two uses that never overlap:
+
+- `FiberWatch` held a channel park (site, op, generation) and a `choose`
+  park (awaiter, state, branch id) side by side. A park is one or the
+  other, so two object slots and one number hold either; a `SyncState` in
+  the second slot is what says it is a `choose`. 88 B to 64 B.
+- `FiberCore` kept a runner delegate, the body and the inherited context
+  until the fiber starts, and the state machine box after. The body is
+  cleared before it runs and the box is made while it runs, so the two
+  share one slot, and the runner is a virtual method: the body's delegate
+  type says what to call, and only a spawn with state is a subclass.
+  88 B to 72 B.
+- `CalledFiber` kept a free-list link that is used only while the box is
+  on the list, when its `Context` is always null. The link is `Context`
+  now. Both boxes also kept a field for the lazy `MoveNextAction`; the
+  delegate is now made at each await outside the runtime and not kept, since
+  such an await (a `Task`'s) allocates more than it. `CalledFiber<pace>`
+  160 B to 144 B, `FiberStateMachineBox<client>` 184 B to 176 B.
+
+A parked client in bench/service keeps 616 B in place of 680 B. The A/B, as
+above (90 reps at 0.25M/s on 4 cores, 50 of each closed loop), found 0.5 to
+0.8% less allocation and no difference in wall time, CPU, pauses or the
+tail.
+
+What a parked client keeps now, from the gcdump:
+
+    FiberStateMachineBox<client>   176   the spawned fiber's frame
+    CalledFiber<pace>              144   the call that waits
+    SleepNode                       96   the sleep
+    FiberCore<ClientOut>            72   the spawned fiber's promise
+    FiberWatch                      64   its cancellation watch
+    DynEnv                          64   its environment, which holds the watch
+
 ---
 
 ## 6. Known issues

@@ -432,22 +432,27 @@ public static partial class BjolangRuntime {
         /// (generation &lt;&lt; 3) | status. The generation counts arms.
         private int _state;
 
-        /// For a parked channel operation: where it is parked, which op it is,
-        /// and the generation the op was watched as. Written before arming.
-        private IParkSite? _site;
-        private Operation? _op;
-        private int _opGen;
+        /// What is parked, in two slots and a number, because a park is one of
+        /// two kinds and never both. Written before arming.
+        ///
+        /// For a channel operation: where it is parked (`IParkSite`), which op
+        /// it is, and the generation the op was watched as. A sleep is its own
+        /// site and has no op.
+        ///
+        /// For a `choose`: its awaiter (`ICancellableAwaiter`), its state, and
+        /// the event id the token commits under. A `SyncState` in the second
+        /// slot is what says the park is a `choose`.
+        ///
+        /// Six fields used to hold the two kinds side by side, and every fiber
+        /// that syncs under a token keeps one of these.
+        private object? _parked;
+        private object? _detail;
+        private int _number;
 
         /// The parked fiber's resume. Written before the op is handed to the
         /// channel, and read by the token only after a withdrawal under the
         /// channel's lock found the op on the list, so the lock publishes it.
         private IResume? _resume;
-
-        /// For a parked `choose`: its awaiter, its state, and the event id the
-        /// token commits under. Written before arming.
-        private ICancellableAwaiter? _aw;
-        private SyncState? _choice;
-        private int _tokenBranch;
 
         /// Why the park in progress was cancelled. Here rather than on the op,
         /// because a withdrawn op stays on the channel's list until the sweep
@@ -550,11 +555,9 @@ public static partial class BjolangRuntime {
 
         /// The channel operation this park is about to hand over.
         internal void AttachDirect(IParkSite site, Operation op, int opGen) {
-            _site = site;
-            _op = op;
-            _opGen = opGen;
-            _aw = null;
-            _choice = null;
+            _parked = site;
+            _detail = op;
+            _number = opGen;
         }
 
         /// The resume the token runs if it withdraws the op from the list.
@@ -562,11 +565,9 @@ public static partial class BjolangRuntime {
 
         /// A `choose`, whose token branch commits through its state.
         internal void AttachChoose(ICancellableAwaiter aw, SyncState state, int tokenBranch) {
-            _aw = aw;
-            _choice = state;
-            _tokenBranch = tokenBranch;
-            _site = null;
-            _op = null;
+            _parked = aw;
+            _detail = state;
+            _number = tokenBranch;
         }
 
         /// Publish the park to the token, and answer the generation it is
@@ -639,10 +640,8 @@ public static partial class BjolangRuntime {
                 System.Threading.Volatile.Write(ref _state, (s & ~StatusMask) | Idle);
 
             _resume = null;
-            _site = null;
-            _op = null;
-            _aw = null;
-            _choice = null;
+            _parked = null;
+            _detail = null;
         }
 
         /// An idle cell is droppable and says so, marking itself unregistered in
@@ -675,34 +674,33 @@ public static partial class BjolangRuntime {
             // Read before the take and used only if it succeeds: the state was
             // this park, armed, both before and after the reads, and the fields
             // are written before arming.
-            var site = _site;
-            var op = _op;
-            int opGen = _opGen;
-            var aw = _aw;
-            var choice = _choice;
-            int tokenBranch = _tokenBranch;
+            var parked = _parked;
+            var detail = _detail;
+            int number = _number;
 
             if (System.Threading.Interlocked.CompareExchange(
                     ref _state, (s & ~StatusMask) | Done, s) != s) return;
 
-            if (aw is not null && choice is not null) {
+            if (detail is SyncState choice) {
                 // `TryCommit`, not `TryClaim`: the state may be transiently
                 // claimed by a branch being paired, and treating that as a loss
                 // would drop a cancellation that did happen. False means a
                 // branch won, and the value it delivered stands.
-                if (choice.TryCommit(tokenBranch))
-                    aw.OnCancelled(_token.GetAwaiter().GetResult());
+                if (choice.TryCommit(number))
+                    ((ICancellableAwaiter)parked!).OnCancelled(_token.GetAwaiter().GetResult());
                 return;
             }
 
             // Cleared by the owner ending the park as the reads were made.
             // A sleep's site is its node, and it has no op.
-            if (site is null || (op is null && site is not SleepNode)) return;
+            if (parked is not IParkSite site) return;
+            var op = detail as Operation;
+            if (op is null && site is not SleepNode) return;
 
             // Refused: a partner took the op, and the value it delivered
             // stands. Unpublished: the owner has not parked it yet, and its
             // `Park` finds it withdrawn and resumes the fiber itself.
-            if (site.CancelParked(op!, opGen) != Withdrawal.Published) return;
+            if (site.CancelParked(op!, number) != Withdrawal.Published) return;
 
             // Stored before the resume runs, which is what publishes it to the
             // fiber. The op stays where it is; the channel's sweep drops it.

@@ -39,8 +39,9 @@ internal interface IFiberResume : IResume
 {
     /// <summary>
     /// The resume as a delegate, for an awaiter outside this runtime, which
-    /// takes only an <see cref="Action"/>. Made at the first such await, so a
-    /// fiber that awaits only this runtime's awaiters never has one.
+    /// takes only an <see cref="Action"/>. Made at each such await and not
+    /// kept: a field for it cost every box 8 B, and an await outside the
+    /// runtime (a <c>Task</c>'s) allocates more than the delegate anyway.
     /// </summary>
     Action MoveNextAction { get; }
 }
@@ -194,10 +195,8 @@ internal sealed class FiberStateMachineBox<TStateMachine> : IFiberResume
     /// </summary>
     public object? Context;
 
-    private Action? _moveNext;
-
-    /// <summary>Made at the first await outside the runtime; see <see cref="IFiberResume"/>.</summary>
-    public Action MoveNextAction => _moveNext ??= Run;
+    /// <summary>See <see cref="IFiberResume.MoveNextAction"/>.</summary>
+    public Action MoveNextAction => Run;
 
     private void Run() => FiberResume.Run(ref StateMachine, Context);
 
@@ -245,21 +244,21 @@ internal sealed class CalledFiber<TStateMachine, T> : Promise<T>, IFiberResume
 
     [ThreadStatic] private static CalledFiber<TStateMachine, T>? t_free;
 
-    // The free list's link, and its depth from this box down while on it.
-    private CalledFiber<TStateMachine, T>? _nextFree;
+    // The free list's depth from this box down while on it. Its link is
+    // `Context`, which is null while the box is on the list.
     private int _freeDepth;
 
     public TStateMachine StateMachine = default!;
-    public object? Context;
 
     /// <summary>
-    /// Kept across reuse, like the box itself: a delegate targets this box,
-    /// and the box is the same object after it is rented again.
+    /// The fiber's dynamic environment while the box is in use, and the next
+    /// box on the free list while it is not. One field, because a box on the
+    /// list has no environment, and every suspended call keeps its box.
     /// </summary>
-    private Action? _moveNext;
+    public object? Context;
 
-    /// <summary>Made at the first await outside the runtime; see <see cref="IFiberResume"/>.</summary>
-    public Action MoveNextAction => _moveNext ??= Run;
+    /// <summary>See <see cref="IFiberResume.MoveNextAction"/>.</summary>
+    public Action MoveNextAction => Run;
 
     private CalledFiber() { }
 
@@ -267,8 +266,8 @@ internal sealed class CalledFiber<TStateMachine, T> : Promise<T>, IFiberResume
     {
         var box = t_free;
         if (box is null) return new CalledFiber<TStateMachine, T>();
-        t_free = box._nextFree;
-        box._nextFree = null;
+        t_free = Unsafe.As<CalledFiber<TStateMachine, T>?>(box.Context);
+        box.Context = null;
         return box;
     }
 
@@ -281,7 +280,7 @@ internal sealed class CalledFiber<TStateMachine, T> : Promise<T>, IFiberResume
         var head = t_free;
         int depth = head is null ? 0 : head._freeDepth;
         if (depth >= MaxCached) return;
-        _nextFree = head;
+        Context = head;
         _freeDepth = depth + 1;
         t_free = this;
     }
@@ -353,16 +352,32 @@ public class FiberCore<T> : Promise<T>, IThreadPoolWorkItem
         return null;
     }
 
-    private object? _box;
-    internal Action<FiberCore<T>>? _runner;
-    internal object? _spawnBody;
-    internal object? _spawnInherited;
+    /// <summary>
+    /// The body until the fiber starts, and its state machine box from its
+    /// first suspension. One slot, because the body is read and cleared before
+    /// it runs, and the box is made while it runs.
+    /// </summary>
+    private object? _bodyOrBox;
 
-    internal FiberCore(Action<FiberCore<T>> runner, object body, object? inherited)
+    /// <summary>The context the fiber starts with. Cleared when it starts.</summary>
+    private object? _inherited;
+
+    internal FiberCore(object body, object? inherited)
     {
-        _runner = runner;
-        _spawnBody = body;
-        _spawnInherited = inherited;
+        _bodyOrBox = body;
+        _inherited = inherited;
+    }
+
+    /// <summary>
+    /// Run the body, and settle this promise from the fiber it returns (see
+    /// <c>SpawnSettle</c>). A virtual call in place of a runner delegate in a
+    /// field, which every spawned fiber kept: the kind of body says what to
+    /// call, and only the stateful kind is a subclass.
+    /// </summary>
+    private protected virtual void RunBody(object body)
+    {
+        if (body is Func<Fiber<T>> func) SpawnSettle.Settle(func(), this);
+        else SpawnSettle.Settle(((Func<Fiber>)body)(), (FiberCore<Unit>)(object)this);
     }
 
     /// <summary>
@@ -372,7 +387,7 @@ public class FiberCore<T> : Promise<T>, IThreadPoolWorkItem
     internal IFiberResume GetResumeBox<TStateMachine>(ref TStateMachine stateMachine)
         where TStateMachine : IAsyncStateMachine
     {
-        if (_box is FiberStateMachineBox<TStateMachine> existing)
+        if (_bodyOrBox is FiberStateMachineBox<TStateMachine> existing)
         {
             // Re-capture: the fiber may have changed its own context since the last
             // suspension, e.g. by entering a (parameterize ...).
@@ -385,20 +400,19 @@ public class FiberCore<T> : Promise<T>, IThreadPoolWorkItem
             StateMachine = stateMachine,   // the one and only copy from the stack
             Context = FiberContext.Current,
         };
-        _box = box;
+        _bodyOrBox = box;
         return box;
     }
 
-    /// <summary>The boxed resume, usable as a work item with no wrapper allocation.</summary>
-    internal IThreadPoolWorkItem? WorkItem => _box as IThreadPoolWorkItem;
-
     void IThreadPoolWorkItem.Execute()
     {
-        var runner = _runner;
-        var inherited = _spawnInherited;
+        var body = _bodyOrBox;
+        var inherited = _inherited;
 
-        _runner = null;
-        _spawnInherited = null;
+        // Cleared before the body runs: the box goes into the same slot at the
+        // first suspension, and a long-lived promise must not pin the body.
+        _bodyOrBox = null;
+        _inherited = null;
 
         var prev = FiberContext.Current;
         bool hasContextChange = !ReferenceEquals(prev, inherited);
@@ -407,7 +421,7 @@ public class FiberCore<T> : Promise<T>, IThreadPoolWorkItem
         CurrentSpawning = this;
         try
         {
-            runner?.Invoke(this);
+            if (body is not null) RunBody(body);
         }
         catch (Exception e)
         {
@@ -415,7 +429,6 @@ public class FiberCore<T> : Promise<T>, IThreadPoolWorkItem
         }
         finally
         {
-            _spawnBody = null;
             CurrentSpawning = null;
             if (hasContextChange) FiberContext.Current = prev;
             Scheduler.OnWorkItemComplete();
@@ -430,19 +443,28 @@ public class FiberCore<T> : Promise<T>, IThreadPoolWorkItem
 /// which boxed every value-typed state — and the idiomatic state for a static
 /// spawn lambda is exactly a value tuple, so the common case paid a 32 B box per
 /// spawn (measured on the Spawn+send benchmark). A generic subclass keeps the
-/// tuple inline and lets the runner read it without a cast-unbox.
+/// tuple inline and lets <c>RunBody</c> read it without a cast-unbox.
 ///
-/// The runner clears the slot immediately after starting the body, so a
+/// <c>RunBody</c> clears the slot before it starts the body, so a
 /// long-lived promise handle does not pin the spawn arguments.
 /// </summary>
 internal sealed class StatefulFiberCore<TState, T> : FiberCore<T>
 {
     internal TState SpawnState;
 
-    internal StatefulFiberCore(Action<FiberCore<T>> runner, object body, TState state, object? inherited)
-        : base(runner, body, inherited)
+    internal StatefulFiberCore(object body, TState state, object? inherited)
+        : base(body, inherited)
     {
         SpawnState = state;
+    }
+
+    private protected override void RunBody(object body)
+    {
+        var state = SpawnState;
+        SpawnState = default!;   // the promise handle must not pin the args
+
+        if (body is Func<TState, Fiber<T>> func) SpawnSettle.Settle(func(state), this);
+        else SpawnSettle.Settle(((Func<TState, Fiber>)body)(state), (FiberCore<Unit>)(object)this);
     }
 }
 
