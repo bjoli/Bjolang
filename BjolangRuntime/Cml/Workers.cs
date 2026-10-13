@@ -237,6 +237,11 @@ internal static class Workers
         finally
         {
             t_worker = null;
+
+            // The pool gives this thread other work next, such as the timer
+            // wheel's tick. With budget left over, that work would run fibers
+            // inline, outside any worker.
+            Scheduler.InlineBudget = 0;
         }
     }
 
@@ -290,21 +295,23 @@ internal static class Workers
     /// </summary>
     private static IThreadPoolWorkItem? Steal(Worker me)
     {
+        // Only the workers below the limit: no pump binds one above it, and
+        // the limit never goes down, so those are always empty. Looking at
+        // all of them made each failed search four times as long.
         var all = s_workers;
         int n = Volatile.Read(ref s_limit);
         int start = me.Index + 1;
-        for (int k = 0; k < all.Length; k++)
+        for (int k = 0; k < n; k++)
         {
-            var v = all[(start + k) % all.Length];
+            var v = all[(start + k) % n];
             if (ReferenceEquals(v, me)) continue;
-            if (v.Index >= n && v.IsEmpty) continue;
             var got = me.StealHalf(v);
             if (got is not null) return got;
         }
 
-        Span<long> seen = stackalloc long[all.Length];
+        Span<long> seen = stackalloc long[n];
         bool candidates = false;
-        for (int i = 0; i < all.Length; i++)
+        for (int i = 0; i < n; i++)
         {
             var v = all[i];
             if (ReferenceEquals(v, me) || Volatile.Read(ref v.Next) is null) continue;
@@ -315,9 +322,9 @@ internal static class Workers
 
         Thread.SpinWait(RunnextGraceSpins);
 
-        for (int k = 0; k < all.Length; k++)
+        for (int k = 0; k < n; k++)
         {
-            int i = (start + k) % all.Length;
+            int i = (start + k) % n;
             var v = all[i];
             if (ReferenceEquals(v, me)) continue;
             var next = Volatile.Read(ref v.Next);
@@ -352,8 +359,10 @@ internal static class Workers
     private static bool AnyWork()
     {
         if (!s_global.IsEmpty) return true;
-        foreach (var w in s_workers)
-            if (!w.IsEmpty) return true;
+        int n = Volatile.Read(ref s_limit);
+        var all = s_workers;
+        for (int i = 0; i < n; i++)
+            if (!all[i].IsEmpty) return true;
         return false;
     }
 
@@ -398,7 +407,7 @@ internal static class Workers
         bool stuckWithWork = false;
         int n = Volatile.Read(ref s_limit);
         var all = s_workers;
-        for (int i = 0; i < all.Length; i++)
+        for (int i = 0; i < n; i++)
         {
             var w = all[i];
             long ticks = Volatile.Read(ref w.Ticks);

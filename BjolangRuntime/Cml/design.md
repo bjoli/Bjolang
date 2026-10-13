@@ -1857,6 +1857,53 @@ a function is inlined by itself, from 100 nodes to 50. The walks of the
 prelude past it (`list-filter`, `list-foldl`, `list-foldr`, `vec-filter`,
 `vec-fold`, `vec-iter`) are written `#:inline`, so they are still inlined.
 
+### Three findings of a review of the runtime
+
+A review of the runtime's code listed about thirty points. Most were small
+costs on paths that `bench/service` does not use, or were not true (a
+`SpinGate` is a class, so a `readonly` field of it makes no copy). Three were
+changed.
+
+**A with-nack fired for the branch that won.** A partner that pairs with a
+parked op makes the state synchronized under the channel's lock, and writes
+the winner's id in `MarkSynchronized`, after it lets go of the lock. A
+`WithNackEvent` that looked at the state in that gap, just after it
+published its subtree, read the id as -1. It took -1 for a branch before
+its own and fired the nack, and the branch inside it won. The test "nack
+silent when its subtree wins while it publishes" sends on the channel from
+a thread without pause: before the change it failed in 3 runs of 5, with 2
+to 6 false nacks in 200,000 rounds. Now an id of -1 leaves the decision to
+`MarkSynchronized`, which still comes and finds the node. The node's `I1`
+is written with a fence, so that `MarkSynchronized` reads it if the id
+read was -1: each side writes, fences, and then reads what the other wrote.
+
+**A timer tick could run fibers.** `Workers.RunItem` fills the inline
+budget for each item, and nothing emptied it when a pump gave its thread
+back to the pool. The pool then ran the timer wheel's tick on that thread,
+and `FireFromWheel` resumed up to 32 fibers inline, outside any worker,
+while the due nodes after them waited. With `BJO_SCHEDULER=pool` there was
+no budget at all. Now `Workers.Run` empties the budget when it returns, and
+`FireFromWheel` queues the resume.
+
+**A search for work looked at four times too many workers.** `Steal`,
+`AnyWork` and `Monitor` went over all `4 * procs` workers. Only the first
+`s_limit` are ever bound, and the limit only grows, so the others are
+always empty. Now they look at those only.
+
+Old and new runtime, same `service.exe`, 50 reps each, order flipped each
+round:
+
+                                   old       new    new - old, 95% interval
+    4 cores, 0.25M/s
+      cpu ms                    3013.5    2955.5    -94 .. -16.5
+      p99 us                       7.5       6.6    -1.3 .. -0.5
+      p99.9 us                    18.8      16.9    -2.9 .. -1.0
+    all cores, 1M/s: no difference (cpu -0.7%, p=0.10)
+    all cores, closed loop: no difference
+
+The gain at 4 cores is from the tick: `pace`'s sleep ends there, and every
+request starts from it.
+
 ---
 
 ## 6. Known issues

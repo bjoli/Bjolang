@@ -530,11 +530,18 @@ public class WithNackEvent<T> : IEvent<T>
         int i1 = Math.Max(sharedState.CurrentEventId, i0 + 1);
         if (nackNode != null)
         {
-            nackNode.I1 = i1;
+            // Fenced, because MarkSynchronized may still come, and it must read
+            // this interval if the winner's id below reads as not written.
+            Interlocked.Exchange(ref nackNode.I1, i1);
             if (sharedState.IsSynchronized)
             {
+                // A partner that paired with a parked op marks the state
+                // synchronized under the channel's lock and writes the
+                // winner's id after it lets go. An id of -1 means that the
+                // partner has not written it yet; its MarkSynchronized then
+                // finds this node, with its interval, and decides.
                 int winner = sharedState.WinningEventId;
-                if (winner < i0 || i1 <= winner)
+                if (winner >= 0 && (winner < i0 || i1 <= winner))
                 {
                     nack.TrySetResult(default);
                 }

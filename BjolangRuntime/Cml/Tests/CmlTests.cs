@@ -33,6 +33,7 @@ public static class CmlTests
         Section("B1 - nack must not fire when a nested choose under it wins");
         Run("nack silent when its own subtree wins", NackSilentWhenSubtreeWins);
         Run("nack fires when an outside branch wins", NackFiresWhenOutsideBranchWins);
+        Run("nack silent when its subtree wins while it publishes", NackSilentWhenSubtreeWinsDuringPublish);
 
         Section("B2 - colliding nack ids must not overwrite each other");
         Run("two nested withNacks both fire", NestedNacksBothFire);
@@ -1535,6 +1536,60 @@ public static class CmlTests
         Await(done, "the choose to commit");
         AssertEqual("c9", result, "wrong branch won");
         Await(nackFired, "the losing withNack subtree's nack");
+    }
+
+    /// <summary>
+    /// A partner that pairs with a parked op marks the state synchronized under
+    /// the channel's lock, and writes the winner's id after it lets go. A
+    /// withNack that looks at the state in that gap, just after it published,
+    /// read the id as -1, took it for a branch before its own, and fired its
+    /// nack for the branch that won. A thread that sends without pause hits
+    /// the gap.
+    /// </summary>
+    private static void NackSilentWhenSubtreeWinsDuringPublish()
+    {
+        const int Rounds = 200_000;
+        var a = new Channel<int>();
+        var idle = new Channel<int>();
+        int falseFires = 0;
+        int committed = 0;
+        bool stop = false;
+
+        var sender = new Thread(() =>
+        {
+            while (!Volatile.Read(ref stop)) a.TryDirectSend(1);
+        }) { IsBackground = true };
+        sender.Start();
+
+        try
+        {
+            for (int i = 0; i < Rounds; i++)
+            {
+                int before = Volatile.Read(ref committed);
+                Cml.Sync(
+                    Cml.Choose(
+                        Cml.WithNack(nack =>
+                        {
+                            Cml.Sync(nack, _ => Interlocked.Increment(ref falseFires));
+                            return new ChannelReceiveEvent<int>(a);
+                        }),
+                        new ChannelReceiveEvent<int>(idle)),
+                    _ => Interlocked.Increment(ref committed));
+
+                var spin = new SpinWait();
+                while (Volatile.Read(ref committed) == before) spin.SpinOnce();
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref stop, true);
+            sender.Join();
+        }
+
+        // A nack is completed on the committing side, and its waiter may run a
+        // moment later.
+        Thread.Sleep(100);
+        AssertEqual(0, Volatile.Read(ref falseFires), "nacks fired for a withNack whose subtree won");
     }
 
     // -----------------------------------------------------------------------

@@ -219,7 +219,9 @@ internal sealed class TimeoutNode : WheelNode
         // TryCommit, not TryClaim: this runs on the tick's thread long after
         // Publish returned and may find the state transiently Claimed by a
         // sibling — the same argument as Promise.Deliver.
-        if (_state.TryCommit(_eventId)) Scheduler.Dispatch(_onSync, default);
+        // Queued, not run here: the tick fires every due node in turn, and a
+        // fiber run here would delay all the nodes after it.
+        if (_state.TryCommit(_eventId)) Scheduler.Enqueue(_onSync, default);
     }
 }
 
@@ -308,7 +310,8 @@ internal sealed class SleepNode : WheelNode, IParkable<Unit>
     internal override void FireFromWheel()
     {
         // Only a published node is linked, so the gate is Published or Done.
+        // Queued, as in TimeoutNode.FireFromWheel.
         if (Interlocked.CompareExchange(ref _gate, Done, Published) == Published)
-            Scheduler.Dispatch(_resume!);
+            Scheduler.Enqueue(_resume!);
     }
 }

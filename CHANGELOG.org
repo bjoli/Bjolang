@@ -3,6 +3,19 @@
 
 What each change guarantees, and what it leaves open.
 
+* A with-nack no longer fires for the branch that won
+
+- A ~with-nack~ whose subtree won just as it finished publishing could
+  read the winner as not yet known and fire its nack. Now it leaves that
+  case to the side that commits, which finds the nack and decides.
+- A timer that ends a sleep or a ~timeout~ queues the fiber in place of
+  running it on the timer's thread, and a thread that leaves the scheduler
+  keeps no inline budget. At 0.25M/s on 4 cores, ~bench/service~ used 2%
+  less CPU and its p99.9 fell from 18.8 to 16.9 us. All cores: no change.
+- A worker that looks for work to steal looks only at the workers in use.
+  See ~BjolangRuntime/Cml/design.md~, "Three findings of a review of the
+  runtime".
+
 * ~#:inline~: inlining a function at its plain calls is asked for
 
 - ~(defun (name args...) #:inline body...)~, and the same on ~defbjo~ and
