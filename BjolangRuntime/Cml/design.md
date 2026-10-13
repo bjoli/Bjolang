@@ -1904,6 +1904,39 @@ round:
 The gain at 4 cores is from the tick: `pace`'s sleep ends there, and every
 request starts from it.
 
+### A sync that commits at once still yields past the budget — rejected
+
+When a `choose` commits as it publishes, the channel resumes the partner and
+then calls the syncing fiber's own sink, both through `Scheduler.Dispatch`.
+With the inline budget spent, both are queued: the partner goes to
+`runnext`, the sink goes there after it and pushes the partner to the queue,
+and the fiber parks although its sync is done, until its sink comes round. A
+second review called that a false suspension, and both `choose`s of
+`bench/service` (the shard's loop and `request`) go that way.
+
+The sink of an awaiter whose fiber has not parked only stores the value, so
+it was called directly, outside the budget (`Scheduler.DispatchOwn`, for an
+`EventAwaiter` and for a wrap with a host). Against the runtime before it,
+50 reps each:
+
+                                       old       new
+    4 cores, closed loop, p99 us      3141      4998   (p99.9 4690 to 6090)
+    all cores, 1M/s, p99 us           1600      6152   (p99.9 4834 to 9131, CPU +2.7%)
+    4 cores, closed loop, cpu ms      1551.5    1520.5
+    all cores closed, 4 cores 0.25M/s: no difference
+
+The suspension is the budget at work. A fiber that has used up the budget
+of its work item has to let the queue run, and a sync is where it can.
+Called directly, the sink let the fiber go on: a shard that had spent its
+budget went on to the next request, and the clients in the queue behind it
+waited. The CPU and allocation saved by not parking is real (2% and 2.7% at
+4 cores), but the tail pays for it.
+
+The same review found that a spinning pump that finds work on its last look
+before it stops does not spin again, so the work it then finds wakes nobody.
+Go's spins again. Made to spin again and measured alone, 50 reps each, on
+the closed loops and at 1M/s: no difference, so it was not kept.
+
 ---
 
 ## 6. Known issues
