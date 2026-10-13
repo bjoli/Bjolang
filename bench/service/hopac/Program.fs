@@ -55,8 +55,12 @@ type Req = { Op: int; Key: int; Value: int; Reply: Ch<int> }
 
 type ClientOut = { Checksum: int64; Samples: ResizeArray<int64>; Timeouts: int }
 
+/// Whole seconds and the rest apart, because ticks times 10^9 overflows an
+/// int64 after about 9.2 s at a frequency of 10^9 a second.
 let nsSince (t0: int64) =
-    (Stopwatch.GetTimestamp() - t0) * 1_000_000_000L / Stopwatch.Frequency
+    let ticks = Stopwatch.GetTimestamp() - t0
+    let f = Stopwatch.Frequency
+    (ticks / f) * 1_000_000_000L + (ticks % f) * 1_000_000_000L / f
 
 let cpuMs () =
     int64 (Process.GetCurrentProcess().TotalProcessorTime.TotalMilliseconds)

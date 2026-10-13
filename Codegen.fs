@@ -4257,10 +4257,65 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
             let boundKwArgs = kwArgs |> List.map (fun (n, e) -> n, bindOperand e)
             let spawned = { call with Node = TApply(boundCallee, boundArgs, boundKwArgs) }
 
+            // A module bjoroutine is an `async` method with the fiber builder,
+            // so its builder takes the spawn's promise when it starts. The
+            // lambda can then return the call's fiber as it is, and the fiber
+            // keeps one state machine box and no promise of its own; an
+            // `async` lambda around the call keeps a second box and the
+            // callee's promise as long as the fiber is parked.
+            //
+            // This is only correct when the callee's builder is the first one
+            // to start in the lambda, because the first one takes the promise.
+            // A builtin or a `def` that holds a function can run other
+            // bjoroutines first, so those keep the `async` lambda. The emitted
+            // call must also be only `(await f(a, b))` over the bound locals.
+            let direct =
+                match boundCallee.Node with
+                | TIdent(name, _) when
+                    Set.contains name ctx.Methods
+                    && Set.contains name ctx.ModuleFunctions
+                    && builtinNamed ctx name = None
+                    && (match Map.tryFind name ctx.GlobalBindings with
+                        | Some(modName, _) -> modName <> ""
+                        | None -> false)
+                    ->
+                    let scratch = StringBuilder()
+                    generateExpr { ctx with Builder = scratch; Prelude = None } spawned
+                    let text = scratch.ToString()
+                    let prefix = "(await "
+
+                    // The first parenthesis must close at the last character,
+                    // so that the await is the whole of the expression.
+                    let closesAtEnd () =
+                        let mutable depth = 0
+                        let mutable firstClose = -1
+                        for i in 0 .. text.Length - 1 do
+                            if firstClose < 0 then
+                                match text[i] with
+                                | '(' -> depth <- depth + 1
+                                | ')' ->
+                                    depth <- depth - 1
+                                    if depth = 0 then firstClose <- i
+                                | _ -> ()
+                        firstClose = text.Length - 1
+
+                    if text.StartsWith prefix
+                       && text.EndsWith ")"
+                       && not (text.Substring(prefix.Length).Contains "await")
+                       && closesAtEnd ()
+                    then
+                        Some(text.Substring(prefix.Length, text.Length - prefix.Length - 1))
+                    else
+                        None
+                | _ -> None
+
             emitTerminal ctx target expr.Type (fun c ->
-                append c $"%s{entryPoint}<%s{payload}>(async () => "
-                generateExpr c spawned
-                append c ")")
+                match direct with
+                | Some call -> append c $"%s{entryPoint}<%s{payload}>(() => %s{call})"
+                | None ->
+                    append c $"%s{entryPoint}<%s{payload}>(async () => "
+                    generateExpr c spawned
+                    append c ")")
 
         // Any other form — `(bjo (let () (work) (more) 1))` — has no operands
         // to split from a call, so the whole of it runs in the fiber, as the

@@ -58,9 +58,13 @@
   (gc-wait-finalizers)
   (gc-collect))
 
+;; Whole seconds and the rest apart, because ticks times 10^9 overflows a
+;; long after about 9.2 s at a frequency of 10^9 a second.
 (: ns-since (-> long long))
 (defun (ns-since t0)
-  (/ (* (- (timestamp) t0) 1000000000L) stopwatch-frequency))
+  (def ticks (- (timestamp) t0))
+  (+ (* (/ ticks stopwatch-frequency) 1000000000L)
+     (/ (* (% ticks stopwatch-frequency) 1000000000L) stopwatch-frequency)))
 
 (: cpu-ms (-> long))
 (defun (cpu-ms)

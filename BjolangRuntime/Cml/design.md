@@ -1467,7 +1467,8 @@ setting for it would be the place.
 - Events built inside a loop from values that do not change in it, such as
   the shard's `choose`, about 8%.
 - A spawn is emitted as `ScopeSpawn(async () => await f(...))`, one state
-  machine more than `ScopeSpawn(() => f(...))`.
+  machine more than `ScopeSpawn(() => f(...))`. Done for a module
+  bjoroutine; see "What a parked fiber keeps" below.
 
 ### Memory, and Go with as much of it
 
@@ -1548,6 +1549,64 @@ them:
   all cores at 1M/s Go with 720 MiB had a p99 of 101 ms against 32 ms with
   its default. Its timers (a `time.Sleep` per paced request and a
   `time.NewTimer` per request) are where to look first.
+
+### What a parked fiber keeps
+
+The open loop parks 10000 clients between requests, and a parked client
+keeps its objects until it wakes. `dotnet-gcdump` at 4 cores and 0.25M/s,
+halfway through a 30 s rep, gave these live objects for each client. The
+client's own data (its samples and its channel) is left out.
+
+    spawned fiber, as it was emitted
+      CalledFiber<client>              232   the callee's box and promise
+      FiberStateMachineBox<lambda>      80   the async lambda's box
+      closure of the lambda             48
+      Action of the lambda's box        64
+      FiberCore<ClientOut>              88   the spawn's promise
+    spawned fiber, now
+      FiberStateMachineBox<client>     184   box only: FiberCore is the promise
+      FiberCore<ClientOut>              88
+    the same either way
+      CalledFiber<pace>, 2 Actions     288   the call that waits; the resume
+                                             of its box and of the client's
+      EventAwaiter, Action<Unit>       128   `(sync (timeout ms))`
+      SyncState, TimeoutNode           160
+      FiberWatch, DynEnv               152   the cancellation watch
+
+A spawn of a module bjoroutine is now `ScopeSpawn(() => f(...))`. The
+callee's builder takes the spawn's promise (`FiberCore.CurrentSpawning`)
+when it starts, so the fiber has one box and one promise. This cut 240 B and
+3 objects from each parked client, from 1240 B to 1000 B: the live heap went from
+192,613 to 168,619 objects. The codegen does this only when the callee is a
+module function compiled as an `async` method. A builtin or a function value
+can start another bjoroutine before the one it returns, and that one would
+take the promise, so those keep the `async` lambda.
+
+Wall time, alternating the two builds, 3 trials: closed loop on all cores
+311 to 291 ms (CPU 6681 to 6047 ms); on 4 cores 418 ms both, after the
+first rep.
+
+The tail, at 0.25M/s on 4 cores: 30 rounds, each running both builds in
+turn with the order flipped every round, 3 reps of 3 s each, so 90 reps a
+build:
+
+                 old     new    new - old, 95% interval   rounds new lower/higher
+    p99 us      35.0    35.3    -0.3 .. +0.9                14 / 16
+    p99.9 us    67.0    66.8    -9.4 .. +10.6               15 / 15
+
+No difference at p99 larger than 1 us, and none found at p99.9. The tail of
+the all-cores open loop at 1M/s is too noisy for 9 reps to show a
+difference either way.
+
+Not done, in order of size:
+
+- Each box has its own resume `Action`, 64 B. An awaiter that takes the box
+  (`IFiberResume`) in place of an `Action` would remove it, but every
+  awaiter, op and the cancellation watch store an `Action` now.
+- `(sync (timeout ms))` goes the general way: an awaiter, its delegate and a
+  `SyncState`, 248 B with the `TimeoutNode`. A sleep that parks the fiber's
+  resume in the timer wheel, and that the watch can withdraw, would need only
+  the node.
 
 ---
 

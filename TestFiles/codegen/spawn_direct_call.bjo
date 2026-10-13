@@ -1,0 +1,33 @@
+;; A spawn of a module bjoroutine returns the call's fiber, with no `async`
+;; lambda around it.
+;;
+;; The callee's builder takes the spawn's promise when it starts, so the
+;; spawned fiber is one state machine box. An `async` lambda around the call
+;; adds a second box, a closure, a resume delegate, and the callee's own
+;; promise, and a parked fiber keeps all of them.
+;;
+;; The direct form is only correct when the callee's builder is the first to
+;; start in the lambda. A function held in a local can be any function, so a
+;; spawn of one keeps the `async` lambda.
+;;
+;; Each `EXPECT-CS` is a regex matched against the generated C#.
+
+(import (std prelude))
+
+(: work (-bjo-> int int int))
+(defbjo (work x y) (+ x y))
+
+(: nothing (-bjo-> int void))
+(defbjo (nothing x) (ignore x))
+
+;; EXPECT-CS: ScopeSpawn<int>\(\(\) => [\w.]+\.work\(__bjo__\d+, __bjo__\d+\)\)
+;; EXPECT-CS: ScopeSpawn<Bjoml\.Unit>\(\(\) => [\w.]+\.nothing\(__bjo__\d+\)\)
+(: start-module (-> int (Promise int)))
+(defun (start-module x)
+  (ignore (bjo (nothing x)))
+  (bjo (work x 1)))
+
+;; EXPECT-CS: ScopeSpawn<int>\(async \(\) => \(await
+(: start-local (-> (-bjo-> int int) int (Promise int)))
+(defun (start-local f x)
+  (bjo (f x)))

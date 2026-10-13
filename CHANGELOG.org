@@ -3,6 +3,25 @@
 
 What each change guarantees, and what it leaves open.
 
+* A spawned bjoroutine keeps one box, not two
+
+- ~(bjo (f a b))~, where ~f~ is a module bjoroutine, is emitted as
+  ~ScopeSpawn(() => f(a, b))~ and not as ~ScopeSpawn(async () => await f(a, b))~.
+  The callee's builder takes the spawn's promise, so the fiber has one state
+  machine box and one promise. A parked client in ~bench/service~ kept 240 B
+  and 3 objects less, 1000 B in place of 1240 B. The closed loop on all
+  cores went from 311 to 291 ms; on 4 cores it is the same.
+- A spawn of a builtin or of a function value keeps the ~async~ lambda,
+  because such a callee can start another bjoroutine first, and that one
+  would take the promise. ~TestFiles/codegen/spawn_direct_call.bjo~ checks
+  both forms.
+- ~bench/service~: the time since a request's start no longer overflows
+  after about 9 s, in the Bjolang and the Hopac program. The ticks are split
+  into whole seconds and a remainder before they are scaled to ns.
+- What a parked fiber still keeps, and the two next cuts (a resume ~Action~
+  per box, and a ~SyncState~ and an awaiter for ~(sync (timeout ms))~), are
+  in ~BjolangRuntime/Cml/design.md~, "What a parked fiber keeps".
+
 * ~bench/service~ shows memory, and runs Go with as much as .NET took
 
 - ~drive.py~ prints each program's peak resident memory, read from the
