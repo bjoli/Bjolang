@@ -421,6 +421,11 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     match expr with
     // `ColourTwins.resolveByColour` replaces every one in a declaration before
     // it is checked. One that gets here is in code checked some other way.
+    // A field or a call, where the head was not a record type: so it is the
+    // call. `inferRecordConstruct` takes the field.
+    | EApp(EResolved(marker, _), [ _; _; call ], _) when marker = fieldOrCallMarker -> infer env call
+    | EApp(EResolved(marker, _), [ EString(message, _) ], _) when marker = callErrorMarker -> failwith message
+
     | EApp(EResolved(marker, _), _, r) when marker = byColourMarker ->
         failwithf
             $"Type Error at %s{Lexer.formatPos r}: (by-colour ...) chooses a body by the colour of the definition it is in, and this one is not in a definition, or is in a body spliced from another module. Write it in a defun, a defbjo or a defbjouble."
@@ -1532,6 +1537,10 @@ and private inferRecordConstruct (env: Env) (recordTypeName: string) (args: Expr
             // a template does not bind does (see `Macro`). It is a spelling all
             // the same.
             | EApp(EResolved(fieldName, _), [ value ], _) -> fieldName, value
+            // A label that is also a macro or a special form: the field is
+            // the reading for a record. See `Parser.processConstructorArgs`.
+            | EApp(EResolved(marker, _), [ EQuotedSymbol(fieldName, _); value; _ ], _) when marker = fieldOrCallMarker ->
+                fieldName, value
             | bad ->
                 failwithf
                     $"Type Error at %s{Lexer.formatPos (exprRange bad)}: '%s{recordTypeName}' is a record type, so each argument is one of its fields, written (field-name value).")
@@ -3239,6 +3248,9 @@ and private inferCheckedNode (expected: HMType) (env: Env) (expr: Expr) : HMType
     let expr = fieldAccessorLambda env expr
 
     match expr, prune env.Registry expected with
+    // The call, as in `inferNode`, and checked against what is expected.
+    | EApp(EResolved(marker, _), [ _; _; call ], _), _ when marker = fieldOrCallMarker ->
+        inferChecked expected env call
     | EList(exprs, r), TCon("List", [ elemTy ]) ->
         inferCheckedLiteral env "List" "list" TListMake elemTy exprs r
     | EVec(exprs, r), TCon("Vec", [ elemTy ]) ->

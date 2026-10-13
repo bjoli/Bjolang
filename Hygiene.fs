@@ -398,6 +398,7 @@ let rec private renamePattern
     | POr(alts, r) -> POr(List.map go alts, r)
     | PAnd(alts, r) -> PAnd(List.map go alts, r)
     | PView(step, inner, r) -> PView(renameStep step, go inner, r)
+    | PFieldOr(label, field, other, r) -> PFieldOr(label, go field, Result.map go other, r)
     | PTypeTest(t, binder, r) ->
         PTypeTest(t, binder |> Option.map (fun n -> Map.tryFind n subst |> Option.defaultValue n), r)
     | leaf -> leaf

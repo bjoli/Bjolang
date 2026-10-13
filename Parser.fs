@@ -515,6 +515,14 @@ let private refuseShadowedHead (sym: string) (reading: HeadReading) (listRange: 
     failwithf
         $"Syntax error at %s{Lexer.formatPos listRange}: (%s{sym} ...) is the %s{kind} '%s{sym}', not a call to the local '%s{sym}' bound at %s{Lexer.formatPos boundAt}. A %s{kind} is chosen by its name before what is in scope is known, so a local binding with that name cannot be called. Give the local binding another name."
 
+/// Whether a call's head may be a record type or a union case: its name,
+/// after any module prefix, begins with a capital. `Foo.` is a .NET
+/// constructor and is not one.
+let private isConstructorName (sym: string) : bool =
+    let name = headName sym
+    let afterPrefix = name.Substring(name.LastIndexOfAny([| ':'; '.' |]) + 1)
+    afterPrefix.Length > 0 && System.Char.IsUpper afterPrefix[0]
+
 let rec parseExpr (s: SExpr) : Expr =
     let r = getRange s
 
@@ -559,6 +567,23 @@ let rec parseExpr (s: SExpr) : Expr =
 
         | Ident sym -> parseHeadedChecked s r head sym args listRange
 
+        // The two readings of a field or a call, as `Codegen` writes them into
+        // a published body. See `processConstructorArgs`.
+        | SAtom { Token = QuotedSymbol marker } when "%" + marker = fieldOrCallMarker ->
+            match args with
+            | [ label; value; call ] ->
+                match parseExpr label with
+                | EQuotedSymbol _ as quoted ->
+                    EApp(EResolved(fieldOrCallMarker, listRange), [ quoted; parseExpr value; parseExpr call ], listRange)
+                | _ -> failwithf $"Invalid %s{fieldOrCallMarker} at %s{Lexer.formatPos listRange}: the label is a quoted symbol."
+            | _ -> failwithf $"Invalid %s{fieldOrCallMarker} at %s{Lexer.formatPos listRange}: expected a label, a value and a call."
+
+        | SAtom { Token = QuotedSymbol marker } when "%" + marker = callErrorMarker ->
+            match args with
+            | [ SAtom { Token = StringLit message; Range = mr } ] ->
+                EApp(EResolved(callErrorMarker, listRange), [ EString(message, mr) ], listRange)
+            | _ -> failwithf $"Invalid %s{callErrorMarker} at %s{Lexer.formatPos listRange}: expected a message."
+
         // A body reads a declaration before it gets here. So this one is not
         // in a run of definitions: it is last in a body, or an argument.
         | SAtom { Token = Colon } ->
@@ -581,6 +606,58 @@ and private processArgs (items: SExpr list) : Expr list =
     | [] -> []
     | SAtom { Token = Comma } :: rest -> processArgs rest
     | item :: rest -> parseExpr item :: processArgs rest
+
+/// The arguments of a call whose head may be a record type.
+///
+/// A field is written `(label value)`, which is also how a call is written.
+/// Where `label` is an ordinary name the two readings are one expression, and
+/// inference reads it as a field or as a call. Where `label` is a macro or a
+/// special form they are not, because the call reading expands. Then both are
+/// kept, under `fieldOrCallMarker`, and inference takes one. The call reading
+/// may fail, as `(cast 1)` does. Its error is kept, and is an error only if
+/// the head is not a record type.
+and private processConstructorArgs (items: SExpr list) : Expr list =
+    items
+    |> List.choose (fun item ->
+        match item with
+        | SAtom { Token = Comma } -> None
+        | SList([ SAtom({ Token = Symbol label } as labelAtom); value ], ar) ->
+            let asCall =
+                try
+                    Ok(parseExpr item)
+                with ex ->
+                    Error ex.Message
+
+            match asCall with
+            | Ok(EApp(EIdent(name, _), [ _ ], _) as call) when name = label -> Some call
+            | _ ->
+                // A value that cannot be read means that this is not a field:
+                // `#'(,a ,b)` has the shape, and is a syntax quote.
+                let asField =
+                    try
+                        Ok(parseExpr value)
+                    with ex ->
+                        Error ex.Message
+
+                match asField, asCall with
+                | Error _, Ok call -> Some call
+                // Neither reading: the call's error, which is what was
+                // reported before there were two readings.
+                | Error _, Error message -> failwith message
+                | Ok field, _ ->
+                    let call =
+                        match asCall with
+                        | Ok call -> call
+                        | Error message -> EApp(EResolved(callErrorMarker, ar), [ EString(message, ar) ], ar)
+
+                    Some(
+                        EApp(
+                            EResolved(fieldOrCallMarker, ar),
+                            [ EQuotedSymbol(label, labelAtom.Range); field; call ],
+                            ar
+                        )
+                    )
+        | _ -> Some(parseExpr item))
 
 /// A list whose head is a name: a special form, a macro or a call.
 ///
@@ -1598,7 +1675,11 @@ and private parseHeaded (s: SExpr) (r: Range) (head: SExpr) (sym: string) (args:
                     expansion.Resolve Set.empty (parseExpr expansion.Form)
                 | None ->
                     reading.Value <- PlainCall
-                    EApp(EIdent(sym, getRange head), processArgs args, listRange)
+
+                    let parsedArgs =
+                        if isConstructorName sym then processConstructorArgs args else processArgs args
+
+                    EApp(EIdent(sym, getRange head), parsedArgs, listRange)
 
 
 // ---------------------------------------------------------------------------
@@ -1640,6 +1721,21 @@ and private parsePatternShape (s: SExpr) : Pattern =
 
     match s with
     | SAtom { Token = Symbol "_" } -> PWildcard r
+
+    // A `PFieldOr` as `Codegen` writes it into a published body.
+    | SList([ SAtom { Token = QuotedSymbol marker }; SList([ SAtom { Token = Symbol label }; fieldForm ], _); otherForm ], _) when
+        "%" + marker = fieldOrPatternMarker
+        ->
+        let other =
+            match otherForm with
+            | SList([ SAtom { Token = QuotedSymbol errorMarker }; SAtom { Token = StringLit message } ], _) when
+                "%" + errorMarker = patternErrorMarker
+                ->
+                Error message
+            | _ -> Ok(parsePattern otherForm)
+
+        PFieldOr(label, parsePattern fieldForm, other, r)
+
     // A hash macro expands to an expression, and a pattern is not one.
     | SList(SAtom { Token = Symbol name } :: _, _) when name.StartsWith "#" ->
         failwithf
@@ -1764,11 +1860,51 @@ and private parsePatternShape (s: SExpr) : Pattern =
     | SList(SAtom { Token = Symbol name } :: args, _) ->
         match expandPatternMacro s with
         | Some expanded -> expanded
-        | None -> PConstruct(name, List.map parsePattern args, r)
+        | None ->
+            let parseArg = if isConstructorName name then parseConstructorPatternArg else parsePattern
+            PConstruct(name, List.map parseArg args, r)
 
     | SList([], _) -> PList([], None, r) // Empty list pattern
 
     | _ -> failwithf $"Invalid pattern at %s{Lexer.formatPos r}"
+
+/// An argument of a constructor pattern, which is a field if the constructor
+/// is a record type: `(label p)`, or a bare `label` for `(label label)`.
+///
+/// As for `processConstructorArgs`: where the argument read as a pattern is
+/// the field's shape anyway, that is the answer. Where `label` is `or`, `and`
+/// or a pattern macro it is not, and both readings are kept in a `PFieldOr`.
+and private parseConstructorPatternArg (arg: SExpr) : Pattern =
+    let readOther () =
+        try
+            Ok(parsePattern arg)
+        with ex ->
+            Error ex.Message
+
+    match arg with
+    | SList([ SAtom { Token = Symbol label }; inner ], ar) ->
+        let field = headName label
+
+        match readOther () with
+        | Ok(PConstruct(name, [ _ ], _) as plain) when name = field -> plain
+        | other ->
+            // As for an expression: an inner form that is no pattern means
+            // that this is not a field.
+            let asField =
+                try
+                    Ok(parsePattern inner)
+                with ex ->
+                    Error ex.Message
+
+            match asField, other with
+            | Error _, Ok p -> p
+            | Error _, Error message -> failwith message
+            | Ok fieldPattern, _ -> PFieldOr(field, fieldPattern, other, ar)
+    | SAtom { Token = Symbol label; Range = ar } when label <> "_" && not (System.Char.IsUpper label[0]) ->
+        match readOther () with
+        | Ok(PIdent _ as plain) -> plain
+        | other -> PFieldOr(Gensym.baseName label, PIdent(label, ar), other, ar)
+    | _ -> parsePattern arg
 
 /// A pattern macro's expansion, read back as a pattern.
 ///

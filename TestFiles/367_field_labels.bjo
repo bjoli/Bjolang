@@ -1,0 +1,53 @@
+;; A field label is a spelling, not a call, also when it is the name of a
+;; macro or a special form.
+;;
+;; A field is written (label value), which is also how a call is written, and
+;; the parser cannot know if the head is a record type. It used to read the
+;; field as a call: (Ops (get 1)) became (Ops (deref 1)), and the error said
+;; that Ops has no field 'deref'. (Ops (cast 1)) and (Ops (when 1)) were syntax
+;; errors of cast and when. Now the parser keeps both readings where they
+;; differ, and inference takes the field for a record type and the call for a
+;; union case or a function.
+;;
+;; The same in patterns, where or, and and a pattern macro are the forms a
+;; label can collide with. And the same in a body published for inlining and
+;; read again by the importer, and in one a macro writes.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/field_label_lib.bjo")
+
+(type (: Local (Record (: get int #:mutable) (: when int) (: or int))))
+
+(defun (main args)
+  ;; --- construction, record-set and record-set! -------------------------
+  (def l (Local (get 1) (when 2) (or 3)))
+  (expect "construction" (+ (record-ref l get) (+ (record-ref l when) (record-ref l or))) 6)
+  (record-set! l (get 10))
+  (expect "record-set!" (record-ref l get) 10)
+  (expect "record-set" (record-ref (record-set l (when 20)) when) 20)
+
+  ;; --- the other reading, where the head is not a record -----------------
+  (def b (make-box 7))
+  (expect "a macro under a union case" (Some (get b)) (Some 7))
+  (expect "a special form under a union case"
+          (match (Ok (cast long 5)) ((Ok n) n) ((Err _) 0L))
+          5L)
+
+  ;; --- patterns ------------------------------------------------------------
+  (expect "fields in a pattern"
+          (match l ((Local (get g) (when w) or) (+ g (+ w or))))
+          15)
+  (expect "and under a union case is the pattern"
+          (match (Some 4) ((Some (and n)) n) (None 0))
+          4)
+
+  ;; --- published bodies, inlined here --------------------------------------
+  (def o (make-ops (fun (x) (* x 2)) 5))
+  (expect "a published construction" (sum-ops (fun (x) x) o) 16)
+  (expect "a published union case with a macro" (boxed (fun (opt) (match opt ((Some n) n) (None 0))) b) 7)
+  (expect "a published pattern with or and and" (pair-sum (fun (x) x) (Pair (or 1) (and 2))) 3)
+
+  ;; --- a macro that writes the labels -------------------------------------
+  (expect "labels a macro wrote" (sum-ops (fun (x) x) (ops-of 9)) 9)
+  0)

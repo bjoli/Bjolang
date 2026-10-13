@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* A field may have the name of a macro or a special form
+
+- A field is written ~(label value)~, which is also how a call is written,
+  and the parser cannot know if a capitalized head is a record type. It read
+  the field as a call: ~(Ops (get 1))~ became ~(Ops (deref 1))~ and the error
+  said that ~Ops~ has no field ~deref~, and ~(Ops (cast 1))~ and
+  ~(Ops (when 1))~ were syntax errors of ~cast~ and ~when~.
+- Under a capitalized head, where ~(label value)~ read as a call is not a
+  plain call to ~label~, the parser now keeps both readings, and the type
+  checker takes the field for a record type and the call for anything else.
+  ~(Some (get b))~ is still the ~get~ macro. A call reading that cannot be
+  read, such as ~(cast 1)~, is an error only if the call is taken.
+- Patterns are read the same way, where a label can be ~or~, ~and~ or a
+  pattern macro: ~(Pair (or a) (and b))~ matches two fields of a record, and
+  ~(Some (and n))~ is still the ~and~ pattern.
+- A published body keeps both readings, as ~(%field-or-call 'label value
+  call)~ and ~(%field-or (label p) other)~, so an importer takes the reading
+  the exporter took, also without the macro in scope.
+- ~record-set~, ~record-set!~ and ~record-ref~ already read a label as a
+  name.
+- ~TestFiles/367_field_labels.bjo~ tests construction, the two set forms,
+  patterns, the other reading, published bodies and labels a macro wrote.
+  ~errors/field_label_call_error.bjo~ tests the kept error.
+
 * A body can declare the type of a local definition
 
 - ~(: name type)~ in a body gives the type of the ~def~, ~def/mutable~ or

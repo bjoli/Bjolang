@@ -1,0 +1,37 @@
+;; Record fields named as a macro (get), as special forms (when, cast) and as
+;; pattern forms (or, and), for 367_field_labels.bjo.
+;;
+;; The functions take a function, so their bodies are published and inlined
+;; where they are called. A published body is written back as source and read
+;; again by the importer, so each reading of a field label must survive that.
+
+(import (std prelude))
+(import (std syntax-match))
+
+(export Ops Pair make-ops boxed sum-ops pair-sum ops-of)
+
+(type (: Ops (Record (: get int) (: when int) (: cast int))))
+(type (: Pair (Record (: or int) (: and int))))
+
+(: make-ops (-> (-> int int) int Ops))
+(defun (make-ops f n) (Ops (get (f n)) (when (f 1)) (cast (f 2))))
+
+;; `(get b)` under a union case is the macro.
+(: boxed (-> (-> (Option int) int) (Box int) int))
+(defun (boxed f b) (f (Some (get b))))
+
+(: sum-ops (-> (-> int int) Ops int))
+(defun (sum-ops f o)
+  (match o
+    ((Ops (get g) (when w) cast) (f (+ g (+ w cast))))))
+
+(: pair-sum (-> (-> int int) Pair int))
+(defun (pair-sum f p)
+  (match p
+    ((Pair (or a) (and b)) (f (+ a b)))))
+
+;; A macro that writes the labels.
+(def/macro (ops-of form inject compare)
+  (syntax-match form
+    ((_ v) #'(Ops (get ,v) (when 0) (cast 0)))
+    (bad (syntax-error bad "ops-of takes one value."))))

@@ -429,6 +429,10 @@ let rec checkPattern
     let checkPattern env expectedType pat = checkPattern inferStep env expectedType pat
 
     match pat with
+    // Not the field of a record, which the record case below reads: so it is
+    // the other reading. See `Parser.parseConstructorPatternArg`.
+    | PFieldOr(_, _, Ok other, _) -> checkPattern env expectedType other
+    | PFieldOr(_, _, Error message, _) -> failwith message
     | PWildcard r ->
         { Type = expectedType
           Range = r
@@ -675,6 +679,12 @@ let rec checkPattern
         let fieldAndPattern (arg: Pattern) : string * Pattern * Range =
             match arg with
             | PConstruct(field, [ inner ], fr) when field.Length > 0 && not (System.Char.IsUpper field[0]) ->
+                field, inner, fr
+            | PFieldOr(field, inner, _, fr) ->
+                let field =
+                    if Map.containsKey field fieldTypes then field
+                    else Gensym.baseName field
+
                 field, inner, fr
             | PIdent(binder, br) ->
                 let field =

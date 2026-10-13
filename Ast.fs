@@ -232,6 +232,14 @@ type Pattern =
     /// value — the tests become one `&&` chain, so a later one is not run when
     /// an earlier one fails.
     | PAnd of Pattern list * Range
+    /// `(label p)` as an argument of a constructor pattern, where `label` also
+    /// names a pattern form: `or`, `and` or a pattern macro. The parser cannot
+    /// know if the constructor is a record type, so it keeps both readings.
+    /// The first pattern is `p`, the pattern of the field `label`. The second
+    /// is the whole form read as a pattern, or the error that reading gave.
+    /// `checkPattern` takes the field for a record type and the second
+    /// reading for anything else.
+    | PFieldOr of string * Pattern * Result<Pattern, string> * Range
 
 and Expr =
     | EInt of string * Range
@@ -787,7 +795,15 @@ let patternRange (p: Pattern) : Range =
     | PTypeTest(_, _, r)
     | PView(_, _, r)
     | POr(_, r)
-    | PAnd(_, r) -> r
+    | PAnd(_, r)
+    | PFieldOr(_, _, _, r) -> r
+
+/// The readings of a `PFieldOr`: the field's pattern, and the other one if
+/// it could be read.
+let fieldOrReadings (field: Pattern) (other: Result<Pattern, string>) : Pattern list =
+    match other with
+    | Ok p -> [ field; p ]
+    | Error _ -> [ field ]
 
 /// An expression's own range.
 let exprRange (e: Expr) : Range =
@@ -856,6 +872,9 @@ let rec patternBinders (pat: Pattern) : string list =
     // A view binds what its inner pattern binds. The step is an expression and
     // binds nothing.
     | PView(_, inner, _) -> patternBinders inner
+    // Only one reading is used, so a name either one binds is bound once.
+    | PFieldOr(_, field, other, _) ->
+        fieldOrReadings field other |> List.collect patternBinders |> List.distinct
 
 /// The names a pattern binds, once for each place that binds it. An `or`
 /// pattern counts a name once, because only one of its alternatives matches.
@@ -871,6 +890,10 @@ let rec patternBinderSites (p: Pattern) : string list =
     | PConstruct(_, items, _)
     | PAnd(items, _) -> items |> List.collect patternBinderSites
     | PView(_, inner, _) -> patternBinderSites inner
+    // Each reading was checked on its own when it was read, and only one is
+    // used, as for `or`.
+    | PFieldOr(_, field, other, _) ->
+        fieldOrReadings field other |> List.collect patternBinderSites |> List.distinct
     | other -> patternBinders other
 
 /// Refuses a parameter list or a pattern that binds one name twice. The second
@@ -910,6 +933,7 @@ let rec patternSteps (pat: Pattern) : Expr list =
     | POr(alts, _) -> alts |> List.collect patternSteps
     | PAnd(alts, _) -> alts |> List.collect patternSteps
     | PView(step, inner, _) -> step :: patternSteps inner
+    | PFieldOr(_, field, other, _) -> fieldOrReadings field other |> List.collect patternSteps
 
 /// `f` applied to every view step in a pattern.
 let rec mapPatternSteps (f: Expr -> Expr) (pat: Pattern) : Pattern =
@@ -924,6 +948,7 @@ let rec mapPatternSteps (f: Expr -> Expr) (pat: Pattern) : Pattern =
     | POr(alts, r) -> POr(List.map go alts, r)
     | PAnd(alts, r) -> PAnd(List.map go alts, r)
     | PView(step, inner, r) -> PView(f step, go inner, r)
+    | PFieldOr(label, field, other, r) -> PFieldOr(label, go field, Result.map go other, r)
     | leaf -> leaf
 
 /// A `def` failure part rebuilt with `onExpr` over its expressions and
@@ -1065,6 +1090,29 @@ let mapExprChildren (f: Expr -> Expr) (e: Expr) : Expr =
 /// an ordinary call: its bodies are walked, renamed and normalized like any
 /// other operands, and no pass needs a case for it.
 let byColourMarker = "%by-colour"
+
+/// `(label value)` as an argument of a call whose head is capitalized, where
+/// `label` is a macro or a special form. The parser cannot know if the head is
+/// a record type, so it keeps both readings, applied to this name:
+/// `(%field-or-call 'label value call)`. `value` is the field's value and
+/// `call` is the whole form read as a call. Inference takes the field for a
+/// record type and the call for anything else.
+///
+/// An `EResolved` for the reason `byColourMarker` is: every structural pass
+/// walks both readings as ordinary operands. The label is an `EQuotedSymbol`,
+/// which no pass renames, because a label is a spelling and not a name.
+let fieldOrCallMarker = "%field-or-call"
+
+/// The call reading of a `fieldOrCallMarker` form that could not be read:
+/// `(%call-error "message")`. It is an error only if inference takes it.
+let callErrorMarker = "%call-error"
+
+/// How `Codegen` writes a `PFieldOr` into a published body:
+/// `(%field-or (label p) other)`, and `(%pattern-error "message")` in the
+/// place of an `other` that could not be read.
+let fieldOrPatternMarker = "%field-or"
+
+let patternErrorMarker = "%pattern-error"
 
 /// One walk over an untyped expression, calling `reference name range guarded`
 /// at every name it mentions but does not bind.

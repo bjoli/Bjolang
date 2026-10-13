@@ -1161,6 +1161,15 @@ and private serializePatternNode (here: string) (p: Ast.Pattern) : string =
     // without the `&` form being re-derived.
     | Ast.PView(step, inner, _) ->
         "(:view " + serializeExprAt here step + " " + serializePatternAt here inner + ")"
+    // Both readings, so that the importer, which may not have the pattern
+    // macro, takes the one this module took.
+    | Ast.PFieldOr(label, field, other, _) ->
+        let otherText =
+            match other with
+            | Ok p -> serializePatternAt here p
+            | Error message -> $"(%s{Ast.patternErrorMarker} \"%s{escapeSexpr message}\")"
+
+        $"(%s{Ast.fieldOrPatternMarker} (%s{label} %s{serializePatternAt here field}) %s{otherText})"
 
 and private serializeSeqPattern (here: string) (head: string) items tailOpt =
     let itemStrs = items |> List.map (serializePatternAt here)
