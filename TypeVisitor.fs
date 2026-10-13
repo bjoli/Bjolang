@@ -46,6 +46,8 @@ let mapPatternChildrenWith (f: TypedExpr -> TypedExpr) (fp: TypedPattern -> Type
         | TPConstruct(name, args) -> TPConstruct(name, List.map fp args)
         | TPRecord(name, fields) -> TPRecord(name, fields |> List.map (fun (f, p) -> f, fp p))
         | TPTypeTest _ as leaf -> leaf
+        // The bounds are literals, not subpatterns of the value.
+        | TPCompare _ as leaf -> leaf
         | TPApp(expr, inner) -> TPApp(f expr, fp inner)
         | TPAs(inner, name) -> TPAs(fp inner, name)
         | TPOr alts -> TPOr(List.map fp alts)

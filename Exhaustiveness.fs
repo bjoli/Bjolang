@@ -65,6 +65,22 @@ type private Ctor =
     /// A `Vec` or `Array` of at least this many elements. Its last field is the
     /// remainder, so its arity is one more than the number.
     | CLenGe of int
+    /// The integers from `Lo` to `Hi`, both included, of an integer or char
+    /// column. A literal is a range of one value, and a comparison is the
+    /// range its bounds leave. See `Ranged`.
+    | CRange of IntRange
+
+/// A range of an integer or char column.
+///
+/// `Shown` is set for a class of the column whose value is worth printing in
+/// a counterexample: one value, or a gap between two ranges that were
+/// written. A class that runs to the end of the type prints as `_`, as the
+/// counterexample of an `int` column always did.
+and private IntRange =
+    { Lo: System.Numerics.BigInteger
+      Hi: System.Numerics.BigInteger
+      IsChar: bool
+      Shown: bool }
 
 /// Whether a sequence column is a `Vec` or an `Array`, which is only ever asked
 /// in order to spell a counterexample.
@@ -82,6 +98,12 @@ type private Signature =
     /// A sequence of these elements. Its classes are read off the column,
     /// because a rest pattern is what makes them finite.
     | Sequence of SeqKind * HMType
+    /// An integer type or `Char`, its values from the first to the second. Its
+    /// classes are read off the column too: the ranges written in it split
+    /// the type into intervals, and each interval is matched by a range or by
+    /// none. This is what C# itself proves of the same patterns, so a clause
+    /// it would call unreachable is reported here first.
+    | Ranged of System.Numerics.BigInteger * System.Numerics.BigInteger * bool
 
 /// A pattern's head, as the algorithm reads it.
 type private Head =
@@ -135,6 +157,9 @@ let private substitute (typeParams: string list) (typeArgs: HMType list) (t: HMT
 
     go t
 
+/// The highest Unicode scalar value, the last value of a `Char`.
+let private charMax = System.Numerics.BigInteger 0x10FFFF
+
 /// What a column of this type is made of.
 ///
 /// A declared union wins over a builtin of the same name: a module that
@@ -162,14 +187,19 @@ let private signatureOf (registry: TraitRegistry) (t: HMType) : Signature =
             | "List", [ a ] -> Closed [ CCase "Nil", []; CCase "Cons", [ a; TCon("List", [ a ]) ] ]
             | "Vec", [ a ] -> Sequence(VecSeq, a)
             | "Array", [ a ] -> Sequence(ArraySeq, a)
-            | _ -> Open
+            | TypeConstants.CharName, [] -> Ranged(System.Numerics.BigInteger.Zero, charMax, true)
+            | _ ->
+                match NumericLiteral.integerRange (TCon(name, args)) with
+                | Some(lo, hi) -> Ranged(lo, hi, false)
+                | None -> Open
     | _ -> Open
 
 /// The types of a constructor's fields, in a column of this type.
 let private fieldsOf (registry: TraitRegistry) (t: HMType) (c: Ctor) : HMType list =
     match c, signatureOf registry t with
     | CConst _, _
-    | CBool _, _ -> []
+    | CBool _, _
+    | CRange _, _ -> []
     | CLen n, Sequence(_, elem) -> List.replicate n elem
     | CLenGe n, Sequence(_, elem) -> List.replicate n elem @ [ t ]
     | _, Closed cases ->
@@ -201,7 +231,58 @@ let rec private normalize (pat: TypedPattern) : TypedPattern =
     | TPAs(inner, _) -> normalize inner
     | _ -> TypeVisitor.mapPatternChildrenWith id normalize pat
 
+/// The range of an integer or char column a literal or a comparison matches,
+/// or `None` for a column of any other type.
+let private rangeOf (pat: TypedPattern) : IntRange option =
+    let domain =
+        match NumericLiteral.settled pat.Type with
+        | TCon(TypeConstants.CharName, []) -> Some(System.Numerics.BigInteger.Zero, charMax, true)
+        | t -> NumericLiteral.integerRange t |> Option.map (fun (lo, hi) -> lo, hi, false)
+
+    let valueOf (bound: TypedPattern) =
+        match bound.Node with
+        | TPChar c -> Some(System.Numerics.BigInteger c)
+        | TPInt v -> NumericLiteral.integerValue v
+        | _ -> None
+
+    let one = System.Numerics.BigInteger.One
+
+    match domain with
+    | None -> None
+    | Some(lo, hi, isChar) ->
+        let range lo hi =
+            Some { Lo = lo; Hi = hi; IsChar = isChar; Shown = false }
+
+        match pat.Node with
+        | TPInt _
+        | TPChar _ ->
+            match valueOf pat with
+            | Some v -> range v v
+            | None -> None
+        | TPCompare bounds ->
+            let narrowed =
+                bounds
+                |> List.fold
+                    (fun acc (op, bound) ->
+                        match acc, valueOf bound with
+                        | Some(l, h), Some b ->
+                            match op with
+                            | ">=" -> Some(max l b, h)
+                            | ">" -> Some(max l (b + one), h)
+                            | "<=" -> Some(l, min h b)
+                            | "<" -> Some(l, min h (b - one))
+                            | _ -> None
+                        | _ -> None)
+                    (Some(lo, hi))
+
+            narrowed |> Option.bind (fun (l, h) -> range l h)
+        | _ -> None
+
 let rec private headOf (pat: TypedPattern) : Head =
+    match rangeOf pat with
+    | Some r -> HCtor(CRange r, [])
+    | None ->
+
     match pat.Node with
     | TPWildcard
     | TPIdent _ -> HWild
@@ -216,7 +297,10 @@ let rec private headOf (pat: TypedPattern) : Head =
     | TPRecord(name, fields) -> HCtor(CRecord(name, List.map fst fields), List.map snd fields)
     | TPOr alts -> HOr alts
     | TPTypeTest _
-    | TPApp _ -> HNever
+    | TPApp _
+    // A comparison of a `double` or a `decimal`, whose ranges are not
+    // modelled. It is emitted as a guard, so it covers nothing, as a view does.
+    | TPCompare _ -> HNever
     // An `and` matches the *intersection* of its conjuncts, and a matrix column
     // holds one head constructor. A conjunct that cannot fail rules nothing
     // out, so it is dropped; one that can and stands alone is the whole of what
@@ -304,12 +388,65 @@ let private lengthClasses (matrix: Row list) : Ctor list option =
 
         Some([ for n in 0 .. bound - 1 -> CLen n ] @ [ CLenGe bound ])
 
+/// The intervals an integer or char column splits into, or `None` when no
+/// range is written in it and a binder is all that covers it.
+///
+/// Every written range starts a class at its first value and another after its
+/// last, so each class is inside a written range or outside it, never across
+/// one. The classes run from the type's first value to its last.
+let private rangeClasses
+    (lo: System.Numerics.BigInteger)
+    (hi: System.Numerics.BigInteger)
+    (isChar: bool)
+    (matrix: Row list)
+    : Ctor list option =
+    let written =
+        columnCtors matrix
+        |> List.choose (function
+            | CRange r when r.Lo <= r.Hi -> Some r
+            | _ -> None)
+
+    if written.IsEmpty then
+        None
+    else
+        let one = System.Numerics.BigInteger.One
+
+        let starts =
+            lo
+            :: (written |> List.collect (fun r -> [ r.Lo; r.Hi + one ]))
+            |> List.filter (fun p -> p >= lo && p <= hi)
+            |> List.distinct
+            |> List.sort
+
+        let ends = (starts |> List.tail |> List.map (fun p -> p - one)) @ [ hi ]
+
+        // The classes worth printing first, so that the counterexample is a gap
+        // between written ranges rather than `_` where both would do.
+        List.zip starts ends
+        |> List.map (fun (l, h) ->
+            { Lo = l
+              Hi = h
+              IsChar = isChar
+              Shown = l = h || (l > lo && h < hi) })
+        |> List.sortBy (fun r -> not r.Shown)
+        |> List.map CRange
+        |> Some
+
+/// Does the written constructor match every value of the class `c`? Equality
+/// for every constructor but a range, which matches each class inside it.
+let private covers (written: Ctor) (c: Ctor) : bool =
+    match written, c with
+    // An empty range, such as `(:between 9 0)`, matches nothing.
+    | CRange w, CRange r -> w.Lo <= w.Hi && w.Lo <= r.Lo && r.Hi <= w.Hi
+    | _ -> written = c
+
 /// The constructors to recurse on when the column is completely covered by
 /// what is written in it, or `None` when it is not.
 let private completeSignature (registry: TraitRegistry) (t: HMType) (matrix: Row list) : Ctor list option =
     match signatureOf registry t with
     | Open -> None
     | Sequence _ -> lengthClasses matrix
+    | Ranged(lo, hi, isChar) -> rangeClasses lo hi isChar matrix
     | Closed cases ->
         let written = columnCtors matrix
         let all = cases |> List.map fst
@@ -339,7 +476,7 @@ let rec private specializeRow (asQuery: bool) (c: Ctor) (fields: HMType list) (r
         | HWild -> [ wilds () @ rest ]
         | HNever -> if asQuery then [ wilds () @ rest ] else []
         | HOr alts -> alts |> List.collect (fun alt -> specializeRow asQuery c fields (alt :: rest))
-        | HCtor(written, args) -> if written = c then [ args @ rest ] else []
+        | HCtor(written, args) -> if covers written c then [ args @ rest ] else []
         | HSeq(items, tailOpt) ->
             let elemWilds n =
                 if n <= 0 then [] else List.replicate n (wildcard (List.head fields))
@@ -433,6 +570,8 @@ type private Witness =
     | WRecord of string * (string * Witness) list
     /// Elements, and whether the last of them stands for a remainder.
     | WSeq of SeqKind * Witness list * bool
+    /// A value of an integer or char column, as source writes it.
+    | WValue of string
 
 /// A constructor as source writes it. A declared one is keyed by the module
 /// that declared it, and the key is not a pattern anybody can write.
@@ -444,6 +583,7 @@ let private writtenCase (name: string) =
 let rec private showWitness (w: Witness) : string =
     match w with
     | WAny -> "_"
+    | WValue v -> v
     | WBool b -> if b then "#t" else "#f"
     | WCase(name, []) -> writtenCase name
     | WCase(name, args) ->
@@ -471,6 +611,9 @@ let private applyCtor (kind: SeqKind) (c: Ctor) (args: Witness list) : Witness =
     | CTuple _ -> WTuple args
     | CRecord(name, fields) -> WRecord(name, List.zip fields args)
     | CConst _ -> WAny
+    | CRange r when not r.Shown -> WAny
+    | CRange r when r.IsChar -> WValue $"#\\x%X{int r.Lo}"
+    | CRange r -> WValue(r.Lo.ToString())
     | CLen _ -> WSeq(kind, args, false)
     | CLenGe _ -> WSeq(kind, args, true)
 
@@ -485,7 +628,9 @@ let private seqKindOf (registry: TraitRegistry) (t: HMType) : SeqKind =
 /// spelled `_` rather than by picking one arbitrarily.
 let private missingCtor (registry: TraitRegistry) (t: HMType) (matrix: Row list) : Witness =
     match signatureOf registry t with
-    | Open -> WAny
+    | Open
+    // Reached only with no range in the column: see `rangeClasses`.
+    | Ranged _ -> WAny
     | Sequence(kind, _) ->
         let fixedLengths, _ = columnLengths matrix
 
@@ -551,10 +696,35 @@ let rec private runsCode (pat: TypedPattern) : bool =
 /// The sentence that explains a counterexample nobody expected, for a match
 /// that has one of the three clause shapes covering nothing.
 let private coverageNote (clauses: TMatchClause list) =
-    if clauses |> List.exists (fun c -> c.Guard.IsSome || runsCode c.Pattern) then
-        "\n  A clause with a #:when guard, a (:view ...) or a (:is ...) covers nothing: whether it matches is only known when it runs."
-    else
-        ""
+    let rec compares (pat: TypedPattern) =
+        match pat.Node with
+        | TPCompare _ -> (rangeOf pat).IsNone
+        | _ ->
+            let mutable found = false
+
+            pat
+            |> TypeVisitor.mapPatternChildrenWith
+                id
+                (fun child ->
+                    found <- found || compares child
+                    child)
+            |> ignore
+
+            found
+
+    let runs =
+        if clauses |> List.exists (fun c -> c.Guard.IsSome || runsCode c.Pattern) then
+            "\n  A clause with a #:when guard, a (:view ...) or a (:is ...) covers nothing: whether it matches is only known when it runs."
+        else
+            ""
+
+    let ranges =
+        if clauses |> List.exists (fun c -> compares c.Pattern) then
+            "\n  A comparison of a double or a decimal, such as (:at-least 0.0), covers nothing: their ranges are not added up, and a double can be NaN, which no comparison matches. End the match with a clause that covers the rest, such as _."
+        else
+            ""
+
+    runs + ranges
 
 /// A `#:when` guard may fail, so a guarded clause covers nothing — but it is
 /// still checked for being reachable.

@@ -240,6 +240,12 @@ type Pattern =
     /// `checkPattern` takes the field for a record type and the second
     /// reading for anything else.
     | PFieldOr of string * Pattern * Result<Pattern, string> * Range
+    /// `(:at-least lo)`, `(:at-most hi)`, `(:between lo hi)`,
+    /// `(:greater-than lo)` and `(:less-than hi)`: the value compared with
+    /// bounds that are number or char literals. Each pair is a C# relational
+    /// operator (`>=`, `<=`, `>` or `<`) and its bound, and all of them must
+    /// hold. `:between` is `>=` and `<=`, so both of its ends are inclusive.
+    | PCompare of (string * Pattern) list * Range
 
 and Expr =
     | EInt of string * Range
@@ -796,7 +802,8 @@ let patternRange (p: Pattern) : Range =
     | PView(_, _, r)
     | POr(_, r)
     | PAnd(_, r)
-    | PFieldOr(_, _, _, r) -> r
+    | PFieldOr(_, _, _, r)
+    | PCompare(_, r) -> r
 
 /// The readings of a `PFieldOr`: the field's pattern, and the other one if
 /// it could be read.
@@ -857,7 +864,8 @@ let rec patternBinders (pat: Pattern) : string list =
     | PChar _
     | PBool _
     | PKeyword _
-    | PQuotedSymbol _ -> []
+    | PQuotedSymbol _
+    | PCompare _ -> []
     | PIdent(n, _) -> [ n ]
     | PTypeTest(_, binder, _) -> Option.toList binder
     | PList(items, tailOpt, _)
@@ -922,7 +930,8 @@ let rec patternSteps (pat: Pattern) : Expr list =
     | PKeyword _
     | PQuotedSymbol _
     | PIdent _
-    | PTypeTest _ -> []
+    | PTypeTest _
+    | PCompare _ -> []
     | PList(items, tailOpt, _)
     | PVec(items, tailOpt, _)
     | PArray(items, tailOpt, _) ->

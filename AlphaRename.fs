@@ -87,7 +87,8 @@ let rec private typedPatternBinders (pat: TypedPattern) : string list =
     | TPChar _
     | TPBool _
     | TPKeyword _
-    | TPSymbol _ -> []
+    | TPSymbol _
+    | TPCompare _ -> []
     | TPIdent n -> [ n ]
     | TPTypeTest(_, binder) -> Option.toList binder
     | TPList(items, tailOpt)

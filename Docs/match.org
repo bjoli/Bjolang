@@ -145,6 +145,28 @@ You can combine patterns using =or= and =and=.
   ((and (:is int n) n) #"an integer: ${n}"))
 #+END_SRC
 
+*** Comparisons
+
+=(:at-least lo)=, =(:at-most hi)=, =(:between lo hi)=, =(:greater-than lo)= and =(:less-than hi)= compare a number or a char with bounds. =:between= includes both ends: it is =:at-least= and =:at-most= together, as =version-between= is in a manifest. The bounds are number or char literals.
+
+A comparison is a pattern like any other, so it may stand inside a constructor, a record field, a sequence pattern, =or= and =and=:
+
+#+BEGIN_SRC scheme
+(match points
+  ((:less-than 0) "invalid")
+  ((:between 0 59) "fail")
+  ((:at-least 60) "pass"))
+
+(match reading
+  ((Some (and n (:greater-than 100))) #"too high: ${n}")
+  ((Some n) #"ok: ${n}")
+  (None "no reading"))
+#+END_SRC
+
+For an integer type or =Char= the comparison is a C# relational pattern in the =case= label, and the exhaustiveness check adds up the ranges: the first match above covers every =int= and needs no =_=, a clause whose range is already matched above it is an error, and a counterexample is a value in a gap, such as =0=. A match that holds a comparison is emitted as a =switch= statement, because C# proves the same ranges and refuses an arm of a switch expression it can prove unreachable.
+
+For a =double= or a =decimal= the comparison is a binding and a =when= guard, and it covers nothing. A =double= can be NaN, which no comparison matches, so a match on one ends in a catch-all.
+
 ** The =case= Form
 
 For simple dispatch against sets of literals, Bjolang provides the =case= macro. It takes a key expression and matches it against lists of literal data. It desugars into a =match= with =or= patterns.

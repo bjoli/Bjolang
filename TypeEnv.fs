@@ -433,6 +433,16 @@ let rec checkPattern
     // the other reading. See `Parser.parseConstructorPatternArg`.
     | PFieldOr(_, _, Ok other, _) -> checkPattern env expectedType other
     | PFieldOr(_, _, Error message, _) -> failwith message
+    // Each bound is checked as the literal pattern it is, against the matched
+    // value's type, so a bound takes the type of the value and must fit it.
+    | PCompare(bounds, r) ->
+        let typedBounds =
+            bounds |> List.map (fun (op, bound) -> op, fst (checkPattern env expectedType bound))
+
+        { Type = expectedType
+          Range = r
+          Node = TPCompare typedBounds },
+        Map.empty
     | PWildcard r ->
         { Type = expectedType
           Range = r

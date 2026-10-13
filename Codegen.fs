@@ -1161,6 +1161,18 @@ and private serializePatternNode (here: string) (p: Ast.Pattern) : string =
     // without the `&` form being re-derived.
     | Ast.PView(step, inner, _) ->
         "(:view " + serializeExprAt here step + " " + serializePatternAt here inner + ")"
+    // Back as the form it was written as.
+    | Ast.PCompare(bounds, _) ->
+        let form =
+            match bounds with
+            | [ ">=", lo; "<=", hi ] -> [ ":between"; serializePatternAt here lo; serializePatternAt here hi ]
+            | [ ">=", b ] -> [ ":at-least"; serializePatternAt here b ]
+            | [ "<=", b ] -> [ ":at-most"; serializePatternAt here b ]
+            | [ ">", b ] -> [ ":greater-than"; serializePatternAt here b ]
+            | [ "<", b ] -> [ ":less-than"; serializePatternAt here b ]
+            | _ -> failwith "Internal error: a comparison the parser does not write"
+
+        "(" + String.concat " " form + ")"
     // Both readings, so that the importer, which may not have the pattern
     // macro, takes the one this module took.
     | Ast.PFieldOr(label, field, other, _) ->
@@ -1354,6 +1366,30 @@ let private coversBool (clauses: TMatchClause list) =
             | _ -> false)
 
     has true && has false
+
+/// Does the pattern hold a comparison, such as `(:at-least 0)`, anywhere?
+///
+/// C# proves from relational patterns which values they cover, and in a
+/// switch *expression* it refuses an arm it can prove unreachable (CS8510),
+/// also the fallback arm this emitter adds. `Exhaustiveness` reports what
+/// Bjolang's own check sees of the same ranges, but the two checks are not the
+/// same code. A match that holds a comparison is therefore emitted as a switch
+/// statement, which accepts a `default:` after cases that cover everything.
+let rec private holdsComparison (pat: TypedPattern) : bool =
+    match pat.Node with
+    | TPCompare _ -> true
+    | _ ->
+        let mutable found = false
+
+        pat
+        |> TypeVisitor.mapPatternChildrenWith
+            id
+            (fun child ->
+                found <- found || holdsComparison child
+                child)
+        |> ignore
+
+        found
 
 /// Every clause, having checked that none of them is dead.
 ///
@@ -1569,6 +1605,7 @@ let rec isStatementShaped (expr: TypedExpr) : bool =
     // position of their own.
     | TMatch (_, clauses) ->
         isVoidType expr.Type
+        || clauses |> List.exists (fun c -> holdsComparison c.Pattern)
         || liveClauses clauses
            |> List.exists (fun c ->
                containsHoist c.Body
@@ -1767,6 +1804,57 @@ let rec generatePattern (ctx: CodegenContext) (views: ResizeArray<ViewFragment>)
             generatePattern ctx alt)
 
         append ctx ")"
+    // C#'s relational patterns, joined with `and`. A char is a `BjoChar`
+    // record struct, so its comparison is on the property that holds the
+    // code point, as its literal pattern is.
+    // A `double` or a `decimal` is tested as a string literal is: the label
+    // binds the value and a guard compares it. C# then proves nothing about
+    // the ranges, which is what `Exhaustiveness` assumes of them: it does not
+    // model NaN or the ends of a real range, so it counts such a comparison as
+    // covering nothing.
+    | TPCompare bounds when (NumericLiteral.integerRange pat.Type).IsNone
+                            && NumericLiteral.settled pat.Type <> TypeConstants.charType ->
+        let name = freshName "__cmp"
+        let at node t : TypedExpr = { Type = t; Range = pat.Range; Node = node }
+        let bool = TypeConstants.boolType
+        let value = at (TIdent(name, [])) pat.Type
+
+        let compare (op: string, b: TypedPattern) =
+            let literal =
+                match b.Node with
+                | TPInt digits -> at (TInt digits) b.Type
+                | _ -> failwith "Internal error: a comparison bound of a real number is not a number literal"
+
+            let operator = at (TIdent(op, [])) (TFun([ pat.Type; pat.Type ], bool, ESync))
+            at (TApply(operator, [ value; literal ], [])) bool
+
+        let test =
+            bounds
+            |> List.map compare
+            |> List.reduceBack (fun a rest -> at (TIf(a, rest, at (TBool false) bool)) bool)
+
+        let isTrue: TypedPattern = { Type = bool; Range = pat.Range; Node = TPBool true }
+
+        views.Add { Name = name; Applied = test; Inner = isTrue }
+        append ctx $"var %s{name}"
+    | TPCompare bounds ->
+        let isChar =
+            bounds
+            |> List.forall (fun (_, b) ->
+                match b.Node with
+                | TPChar _ -> true
+                | _ -> false)
+
+        let bound (b: TypedPattern) =
+            match b.Node with
+            | TPChar c -> string c
+            | TPInt value -> numericLiteral b.Range b.Type value
+            | _ -> failwith "Internal error: a comparison bound is not a literal"
+
+        let tests = bounds |> List.map (fun (op, b) -> $"%s{op} %s{bound b}") |> String.concat " and "
+
+        if isChar then append ctx $"Bjolang.Runtime.BjoChar {{ Value: %s{tests} }}"
+        else append ctx $"(%s{tests})"
     | TPKeyword k -> append ctx $"BjolangRuntime.Keyword {{ Name: \"{escapeStringLiteral k}\" }}"
     | TPSymbol s -> append ctx $"BjolangRuntime.Symbol {{ Name: \"{escapeStringLiteral s}\" }}"
     // `Option` is the runtime's `Option<T>` struct — a flag and a value rather

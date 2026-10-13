@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* Comparison patterns: ~:at-least~, ~:at-most~, ~:between~, ~:greater-than~, ~:less-than~
+
+- ~(:at-least lo)~, ~(:at-most hi)~, ~(:between lo hi)~, ~(:greater-than lo)~
+  and ~(:less-than hi)~ match a number or a char against literal bounds.
+  ~:between~ includes both ends, as ~version-between~ does in a manifest.
+  They are patterns, so they stand inside constructors, record fields,
+  sequence patterns, ~or~ and ~and~.
+- For an integer type or ~Char~ a comparison is a C# relational pattern in
+  the ~case~ label. ~Exhaustiveness~ now splits an integer or char column
+  into intervals at the bounds and literals written in it: ranges that cover
+  the type need no ~_~, a clause inside the ranges above it can never run,
+  and a counterexample names a value in a gap, ~0~ or ~#\x7B~. Literal
+  patterns of these types take part, so ~5~ after ~(:between 0 9)~ is a dead
+  clause. A column with no literal or comparison is as before.
+- A match that holds a comparison is a ~switch~ statement also where a match
+  is otherwise a switch expression. C# proves the same ranges, and refuses
+  an arm of a switch expression it can prove unreachable (CS8510), also the
+  fallback arm.
+- For ~double~ and ~decimal~ a comparison is a binding and a guard, as a
+  string literal is, and covers nothing: a ~double~ can be NaN. A match on
+  one ends in ~_~, and the error says why.
+- A bound must be a literal; a computed one is refused, with ~#:when~ as the
+  answer.
+- ~TestFiles/368_comparison_patterns.bjo~ with ~inc/comparison_lib.bjo~,
+  ~codegen/comparison_patterns.bjo~, and ~errors/comparison_*.bjo~. The
+  manual has a section in its chapter on pattern matching.
+
 * ~om-has~ is gone from ~(std orderedmap)~
 
 - The prelude's ~(Has key p)~ and ~(Has* (key p) ...)~ do the same for every

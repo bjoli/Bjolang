@@ -1,0 +1,52 @@
+;; What a comparison pattern compiles to.
+;;
+;; An integer or a char comparison is a C# relational pattern in the label, so
+;; it stays part of the pattern it is in, and C# can search the ranges. A
+;; char's is on the property of BjoChar that holds the code point.
+;;
+;; A double's is a binding in the label and a guard, as a string literal's is.
+;; C# then proves nothing of it, which agrees with Exhaustiveness: it does not
+;; model the ranges of a double, which can be NaN.
+;;
+;; A match that holds a comparison is a switch statement also in argument
+;; position, where a match is otherwise a switch expression. C# refuses an arm
+;; of a switch expression it can prove unreachable, and with ranges it can
+;; prove more than it can of other patterns.
+;;
+;; Each `EXPECT-CS` is a regex matched against the generated C#.
+
+(import (std prelude))
+
+;; EXPECT-CS: case \(>= 0 and <= 9\):
+;; EXPECT-CS: case \(< 0\):
+(: digit (-> int string))
+(defun (digit n)
+  (match n
+    ((:less-than 0) "negative")
+    ((:between 0 9) "digit")
+    (_ "other")))
+
+;; EXPECT-CS: case Bjolang\.Runtime\.BjoChar \{ Value: >= 97 and <= 122 \}:
+(: lower? (-> Char bool))
+(defun (lower? c)
+  (match c
+    ((:between #\a #\z) #t)
+    (_ #f)))
+
+;; EXPECT-CS: case var __cmp\S* when \(__cmp\S* < 0\.0\) is true:
+;; EXPECT-NO-CS: case \(< 0\.0\)
+(: below-zero (-> double string))
+(defun (below-zero x)
+  (match x
+    ((:less-than 0.0) "below")
+    (_ "not below")))
+
+;; In argument position, and covering every int with no fallback written.
+;; EXPECT-CS: case \(>= 60\):
+;; EXPECT-NO-CS: \(>= 60\) =>
+(: grade (-> int string))
+(defun (grade n)
+  (string-append "grade "
+                 (match n
+                   ((:less-than 60) "fail")
+                   ((:at-least 60) "pass"))))

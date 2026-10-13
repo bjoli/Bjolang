@@ -1773,6 +1773,9 @@ and private parsePatternShape (s: SExpr) : Pattern =
             $"Invalid :is pattern at %s{Lexer.formatPos r}. Expected (:is Fully.Qualified.Type) or (:is Fully.Qualified.Type binding-name)."
 
     // `(:view step p)` — run `step` on the value and match what it answers.
+    | SList(SAtom { Token = Keyword(("at-least" | "at-most" | "greater-than" | "less-than" | "between") as form) } :: bounds, _) ->
+        parseComparison form bounds r
+
     | SList([ SAtom { Token = Keyword "view" }; step; inner ], _) ->
         PView(parseViewStep step r, parsePattern inner, r)
     | SList(SAtom { Token = Keyword "view" } :: _, _) ->
@@ -1867,6 +1870,35 @@ and private parsePatternShape (s: SExpr) : Pattern =
     | SList([], _) -> PList([], None, r) // Empty list pattern
 
     | _ -> failwithf $"Invalid pattern at %s{Lexer.formatPos r}"
+
+/// `(:at-least lo)`, `(:at-most hi)`, `(:greater-than lo)`, `(:less-than hi)`
+/// and `(:between lo hi)`. All but the strict two are inclusive, as the
+/// version constraints of a manifest are, and `:between` is `:at-least` and
+/// `:at-most` together.
+///
+/// A bound is a number or a char literal. The comparison is emitted as a C#
+/// relational pattern, and C# allows only a constant there. That is what lets
+/// it stand inside any other pattern and stay in the `case` label.
+and private parseComparison (form: string) (bounds: SExpr list) (r: Range) : Pattern =
+    let bound (s: SExpr) =
+        match parsePattern s with
+        | PInt _
+        | PChar _ as literal -> literal
+        | _ ->
+            failwithf
+                $"Invalid (:%s{form} ...) at %s{Lexer.formatPos (getRange s)}: a bound is a number or a char literal, because the comparison is a constant pattern. To compare with a value that is computed, use a #:when guard."
+
+    match form, bounds with
+    | "at-least", [ lo ] -> PCompare([ ">=", bound lo ], r)
+    | "at-most", [ hi ] -> PCompare([ "<=", bound hi ], r)
+    | "greater-than", [ lo ] -> PCompare([ ">", bound lo ], r)
+    | "less-than", [ hi ] -> PCompare([ "<", bound hi ], r)
+    | "between", [ lo; hi ] -> PCompare([ ">=", bound lo; "<=", bound hi ], r)
+    | "between", _ ->
+        failwithf
+            $"Invalid (:between ...) at %s{Lexer.formatPos r}: it takes two bounds, (:between lo hi), and matches a value from lo to hi with both ends included."
+    | _ ->
+        failwithf $"Invalid (:%s{form} ...) at %s{Lexer.formatPos r}: it takes one bound, as in (:%s{form} 10)."
 
 /// An argument of a constructor pattern, which is a field if the constructor
 /// is a record type: `(label p)`, or a bare `label` for `(label label)`.

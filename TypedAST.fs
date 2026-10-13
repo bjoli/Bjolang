@@ -543,6 +543,20 @@ module NumericLiteral =
         // and a type variable is answered at run time by `CreateChecked`.
         | _ -> None
 
+    /// The values of an integer type a pattern can match, lowest and highest.
+    /// `Exhaustiveness` reasons about ranges of them. `None` for every other
+    /// type, also `double` and `decimal`, whose ranges are not modelled.
+    let integerRange (t: HMType) : (System.Numerics.BigInteger * System.Numerics.BigInteger) option =
+        match settled t with
+        | TCon((TypeConstants.Int32Name | TypeConstants.Int64Name | TypeConstants.UInt32Name
+               | TypeConstants.UInt64Name | TypeConstants.ByteName | TypeConstants.Int16Name
+               | TypeConstants.UInt16Name), []) as t -> bounds t
+        | _ -> None
+
+    /// What an integer literal is worth, suffix and all, or `None` when it is
+    /// not an integer.
+    let integerValue (text: string) : System.Numerics.BigInteger option = value (digits text)
+
     /// Does this literal fit the type it ended up at?
     ///
     /// Asked here because C# asks it too, and answers `CS0221` in generated
@@ -912,6 +926,10 @@ and TPatternNode =
     /// C# `and` chain, which is one label — so a clause carrying one keeps its
     /// place in the section but not, if it holds a view, in the jump table.
     | TPAnd of TypedPattern list
+    /// `(:at-least lo)` and the other comparisons: each pair is a C#
+    /// relational operator and a bound, a `TPInt` or a `TPChar`, all of which
+    /// must hold. Emitted as a C# relational pattern.
+    | TPCompare of (string * TypedPattern) list
 
 and TExprNode =
     | TInt of string
