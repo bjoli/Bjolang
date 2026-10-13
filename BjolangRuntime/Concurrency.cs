@@ -204,8 +204,14 @@ public static partial class BjolangRuntime {
             // A scope entered since the last sync brings a different token with
             // it, and a registration belongs to one token.
             if (cell is null || !ReferenceEquals(cell.Token, token)) {
-                cell = new FiberWatch(token);
-                token.Register(cell);
+                // The cell of a fiber that ended under the same token is still
+                // registered, so it costs neither an object nor a
+                // registration. See `FiberWatch.Retire`.
+                cell = FiberWatch.TakeRetired(token, env.Scope);
+                if (cell is null) {
+                    cell = new FiberWatch(token);
+                    token.Register(cell);
+                }
 
                 // Into the environment object, which every frame of this fiber
                 // in this scope shares, rather than into a new one that the
@@ -308,6 +314,43 @@ public static partial class BjolangRuntime {
             }
 
             return new SyncAwaiter<T>(site, op, cell);
+        }
+    }
+
+    /// The park cells of a scope's ended fibers that no thread had room for,
+    /// for fibers on other threads to take. See `FiberWatch.Retire`.
+    ///
+    /// A lock, because it is reached only when a thread's own slots are full
+    /// or empty. Capped, because a cell kept here is still registered on the
+    /// token: past the cap a cell is dropped, as every cell used to be.
+    internal sealed class RetiredWatches {
+        private const int Cap = 1024;
+
+        private readonly object _gate = new();
+        private FiberWatch[] _items = new FiberWatch[16];
+        private int _count;
+
+        internal bool TryPush(FiberWatch cell) {
+            lock (_gate) {
+                if (_count == _items.Length) {
+                    if (_count == Cap) return false;
+                    System.Array.Resize(ref _items, _count * 2);
+                }
+                _items[_count++] = cell;
+                return true;
+            }
+        }
+
+        internal FiberWatch? TryPop() {
+            // Read without the lock first: a thread with no cells of its own
+            // asks at every first sync of a fiber, and is mostly told no.
+            if (System.Threading.Volatile.Read(ref _count) == 0) return null;
+            lock (_gate) {
+                if (_count == 0) return null;
+                var cell = _items[--_count];
+                _items[_count] = null!;
+                return cell;
+            }
         }
     }
 
@@ -414,6 +457,96 @@ public static partial class BjolangRuntime {
         internal FiberWatch(Promise<CancelReason> token) { _token = token; }
 
         internal Promise<CancelReason> Token => _token;
+
+        /// Cells of fibers that ended on this thread, for the next fiber here
+        /// that syncs under the same token. A few, because a thread runs fibers
+        /// of more than one scope.
+        private const int RetiredSlots = 4;
+        [System.ThreadStatic] private static FiberWatch?[]? t_retired;
+        [System.ThreadStatic] private static int t_retiredNext;
+
+        /// <summary>
+        /// Keep the cell of a fiber that has ended, for reuse by another.
+        ///
+        /// A short fiber that syncs once used to build a cell, register it on
+        /// the token, and leave it there when it ended. Nothing removes a
+        /// waiter from a promise; the prune drops it later, when a stripe has
+        /// grown to twice what the last prune kept. So a token carried up to
+        /// one dead cell for each live one, and every spawn that synced paid
+        /// for an object and a registration under the stripe's lock.
+        ///
+        /// A cell is already used by one fiber for park after park, and the
+        /// protocol does not care which fiber that is: every park has a
+        /// generation of its own, and a stale take or signal names an old one
+        /// and fails. What it needs is one owner at a time. The fiber that owned
+        /// this one has ended, and its environment no longer holds it, so the
+        /// next owner is whoever takes it from here.
+        ///
+        /// Only an idle cell is kept: the fiber ended between syncs, so its
+        /// cell is idle, or gone if the prune dropped it, in which case the
+        /// next arm registers it again. Anything else is not reused.
+        ///
+        /// # Where it is kept
+        ///
+        /// On this thread first, where nothing is shared. But fibers do not
+        /// end where the next ones start: a fiber waiting for a reply is
+        /// resumed inline by whoever sends it, so it ends on the sender's
+        /// thread, while new fibers start on the threads of those that spawn
+        /// them. One thread then fills its slots and another finds none, and a
+        /// cell that no slot takes stays registered with no owner until a
+        /// prune drops it. Measured on bench/service, about one fiber in fifty
+        /// overflowed so, and the token carried thousands of such cells. So a
+        /// cell that this thread has no room for goes to its scope
+        /// (<paramref name="scope"/>), and a thread that has none takes one from
+        /// there. That costs a lock, but only on overflow.
+        /// </summary>
+        internal static void Retire(FiberWatch cell, Scope? scope) {
+            int status = System.Threading.Volatile.Read(ref cell._state) & StatusMask;
+            if (status != Idle && status != Gone) return;
+
+            var slots = t_retired ??= new FiberWatch?[RetiredSlots];
+            for (int i = 0; i < slots.Length; i++) {
+                if (slots[i] is null) {
+                    slots[i] = cell;
+                    return;
+                }
+            }
+
+            if (scope is not null && ReferenceEquals(scope.Token, cell._token)) {
+                var shared = scope.Retired;
+                if (shared is null) {
+                    System.Threading.Interlocked.CompareExchange(ref scope.Retired, new RetiredWatches(), null);
+                    shared = scope.Retired!;
+                }
+                if (shared.TryPush(cell)) return;
+            }
+
+            // Nowhere to keep it: replace the oldest here. The one replaced
+            // stays registered until a prune drops it, as every cell used to.
+            int at = t_retiredNext;
+            slots[at] = cell;
+            t_retiredNext = (at + 1) % RetiredSlots;
+        }
+
+        /// A retired cell registered on <paramref name="token"/>, or null:
+        /// this thread's first, then its scope's.
+        internal static FiberWatch? TakeRetired(Promise<CancelReason> token, Scope? scope) {
+            var slots = t_retired;
+            if (slots is not null) {
+                for (int i = 0; i < slots.Length; i++) {
+                    var cell = slots[i];
+                    if (cell is not null && ReferenceEquals(cell._token, token)) {
+                        slots[i] = null;
+                        return cell;
+                    }
+                }
+            }
+
+            if (scope is not null && ReferenceEquals(scope.Token, token))
+                return scope.Retired?.TryPop();
+
+            return null;
+        }
 
         /// The channel operation this park is about to hand over.
         internal void AttachDirect(IParkSite site, Operation op, int opGen) {

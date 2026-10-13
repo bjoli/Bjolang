@@ -1,0 +1,66 @@
+;; A fiber that ends hands its cancellation watch to the next fiber on the same
+;; thread that syncs under the same token.
+;;
+;; A watch is a fiber's registration on its scope's token, built at its first
+;; sync. Short fibers used to build one each and leave it registered when they
+;; ended. Now the next one reuses it, so what this tests is that a reused watch
+;; still does its work: the fibers parked at the end run on watches that
+;; earlier fibers retired, and cancelling the scope must reach every one.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; One rendezvous, then the fiber ends and retires its watch.
+(: echo (-bjo-> (Chan int) int void))
+(defbjo (echo ch v)
+  (sync (chan-send ch v)))
+
+;; Parks until the scope is cancelled.
+(: patient (-bjo-> (Chan int) void))
+(defbjo (patient never)
+  (ignore (sync (chan-recv never))))
+
+;; How many of the promises failed, which for these is how many were cancelled.
+(: count-failed (-bjo-> (Vec (Promise void)) int))
+(defbjo (count-failed ps)
+  (let go ((i 0) (n 0))
+    (if (= i (vec-length ps))
+        n
+        (match (sync (promise-join (vec-ref ps i)))
+          ((Ok u) (go (+ i 1) n))
+          ((Err e) (go (+ i 1) (+ n 1)))))))
+
+(defbjo (main args)
+  (def never (make-chan))
+  (def short-fibers 2000)
+  (def parked-fibers 200)
+
+  (def results
+    (with-cancel (cancel)
+      ;; Spawned one after another, so each can reuse the watch of the one
+      ;; before it when they run on the same thread.
+      (def ch (make-chan))
+      (def total
+        (let go ((i 0) (acc 0))
+          (if (= i short-fibers)
+              acc
+              (let ()
+                (spawn (echo ch i))
+                (go (+ i 1) (+ acc (sync (chan-recv ch))))))))
+
+      ;; Parked on watches the short fibers retired, as far as threads allow.
+      (def ps (loop (:for i (range 0 parked-fibers))
+                    (:acc v (vecing (bjo (patient never))))))
+      (sync (timeout 50))
+      (def stopped (cancel (Requested "stop")))
+      (Tuple total ps)))
+
+  (match results
+    ((Tuple total ps)
+     (expect "every short fiber handed its value over"
+             total (/ (* short-fibers (- short-fibers 1)) 2))
+     (expect "cancelling the scope reached every parked fiber"
+             (count-failed ps) parked-fibers)))
+
+  (println "369 ok")
+  0)

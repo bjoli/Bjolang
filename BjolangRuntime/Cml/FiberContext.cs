@@ -106,6 +106,16 @@ public static class FiberContext
     /// <see cref="IFiberContext"/>.
     /// </summary>
     public static object? ForChild() => _current is IFiberContext c ? c.ForChild() : _current;
+
+    /// <summary>
+    /// Tell the current context that the spawned fiber it belongs to has
+    /// finished. Called by the fiber's root frame, on its own thread, with its
+    /// own context installed, just before its promise lands.
+    /// </summary>
+    internal static void FiberEnded()
+    {
+        if (_current is IFiberContext c) c.FiberEnded();
+    }
 }
 
 /// <summary>
@@ -117,4 +127,11 @@ public interface IFiberContext
 {
     /// <summary>This context as a fiber spawned from it starts with.</summary>
     object ForChild();
+
+    /// <summary>
+    /// The spawned fiber this context belongs to has finished, and will run
+    /// nothing more in it. Whatever the context holds for that one fiber can be
+    /// given up or handed on. The default holds nothing.
+    /// </summary>
+    void FiberEnded() { }
 }

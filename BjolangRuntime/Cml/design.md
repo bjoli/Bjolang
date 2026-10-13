@@ -1708,6 +1708,62 @@ open loop, since a pooled `CalledFiber` kept its delegate across reuse. What
 the cut saves there is the delegate's work: making it once per box, and the
 indirect call of every resume.
 
+### A finished fiber's watch goes to the next
+
+A fiber builds its `FiberWatch` at its first `sync` and registers it on the
+scope's token. Nothing removes a waiter from a promise: when the fiber
+ended, its watch stayed on the token until a prune dropped it, and a stripe
+prunes when it has grown to twice what the last prune kept. So a token
+carried up to one dead watch for each live one, and every short fiber that
+synced paid for a new watch and a registration under a stripe's lock. The
+gcdumps of bench/service showed 10,500 to 18,200 watches for 10,000 clients,
+depending on where the prune cycle was.
+
+Now the root frame of a spawned fiber, when it ends, tells its environment
+(`IFiberContext.FiberEnded`, called by the fiber builder on its own thread
+with its own environment installed). `DynEnv` gives up its watch, and
+`FiberWatch.Retire` keeps it, still registered, for the next fiber that
+syncs under the same token. A watch already serves one fiber across park
+after park, and the protocol does not care which fiber that is: each park
+has a generation, so a stale take or signal names an old one and fails. It
+needs one owner at a time, and the fiber that owned this one has ended. Only
+an idle watch is kept.
+
+Kept where. Each thread has four slots. But fibers do not end where the next
+ones start: a fiber waiting for a reply is resumed inline by the sender, so
+it ends on the sender's thread, while new fibers start on the threads of
+those that spawn them. Counted on bench/service, 2.4 million watches were
+retired in a rep and 49,000 overflowed a thread's slots, and each of those
+was a dead registration. So a watch that a thread has no room for goes to
+its scope (`Scope.Retired`, a capped stack under a lock), and a thread with
+none takes one from there. Only those overflows touch the lock.
+
+The gcdump, five times in one run of each build:
+
+    old   16,169  12,785  10,541  15,314  13,075  watches
+    new   10,320  10,320  10,320  10,320  10,320
+
+The A/B, as above, old and new runtime under one `service.exe`:
+
+                                  old      new    new - old, 95% interval
+    4 cores, 0.25M/s, 90 reps
+      alloc MB                 1062.8   1037.6    -25.4 .. -25.1
+      pause ms                   46.5     43.0    -5 .. -2
+      gcs                          18       19    +0.5 .. +1
+      p99, p99.9, cpu         no difference
+    4 cores, closed loop, 50 reps
+      wall ms                   416.5    401.5    -21 .. -7.5
+      cpu ms                     1635   1575.5    -84 .. -40
+      alloc MB                 1376.8   1340.6    -37.7 .. -34.9
+    all cores, closed loop, 50 reps
+      alloc MB                 1480.2   1444.1    -38.6 .. -33.9
+      wall, cpu, tail         no difference
+
+A cell kept in a slot or in the scope is still registered on the token, so
+it can be pruned while it waits; the next arm then registers it again. A
+scope that ends with many fibers still running drops what does not fit
+under the cap, as before, onto a token that is about to complete.
+
 ---
 
 ## 6. Known issues

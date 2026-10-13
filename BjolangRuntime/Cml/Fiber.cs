@@ -710,13 +710,22 @@ public struct FiberMethodBuilder<T>
 
     public void SetResult(T result)
     {
-        if (_core is null) _result = result;
-        else _core.TrySetResult(result);
+        if (_core is null)
+        {
+            _result = result;
+            return;
+        }
+
+        if (_core is FiberCore<T>) FiberContext.FiberEnded();
+        _core.TrySetResult(result);
     }
 
     /// <summary>A call that fails before it suspends gets a promise here to carry the failure.</summary>
     public void SetException(Exception exception)
-        => (_core ??= new Promise<T>()).TrySetException(exception);
+    {
+        if (_core is FiberCore<T>) FiberContext.FiberEnded();
+        (_core ??= new Promise<T>()).TrySetException(exception);
+    }
 
     /// <summary>
     /// Routed to the unsafe path on purpose: BjoML never flows ExecutionContext.
@@ -754,10 +763,18 @@ public struct FiberMethodBuilder
 
     public void SetStateMachine(IAsyncStateMachine stateMachine) { }
 
-    public void SetResult() => _core?.TrySetResult(default);
+    public void SetResult()
+    {
+        if (_core is null) return;
+        if (_core is FiberCore<Unit>) FiberContext.FiberEnded();
+        _core.TrySetResult(default);
+    }
 
     public void SetException(Exception exception)
-        => (_core ??= new Promise<Unit>()).TrySetException(exception);
+    {
+        if (_core is FiberCore<Unit>) FiberContext.FiberEnded();
+        (_core ??= new Promise<Unit>()).TrySetException(exception);
+    }
 
     public void AwaitOnCompleted<TAwaiter, TStateMachine>(
         ref TAwaiter awaiter, ref TStateMachine stateMachine)

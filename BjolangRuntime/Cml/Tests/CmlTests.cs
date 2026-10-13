@@ -105,6 +105,7 @@ public static class CmlTests
         Run("a cancel that lands while a fiber is parking is not lost", CancelDuringAParkIsNotLost);
         Run("a spawned child builds a cell of its own, and both cancel", SpawnedChildHasACellOfItsOwn);
         Run("a watched park has one winner, and a stale withdrawal finds nothing", OpClaimHasOneWinner);
+        Run("a finished fiber's idle watch is reused under its own token only", RetiredWatchIsReused);
     }
 
     // -----------------------------------------------------------------------
@@ -898,6 +899,57 @@ public static class CmlTests
 
         Await(done, "a 1300 ms timeout", 5000);
         Assert(at >= 1290 && at < 1800, $"a 1300 ms timeout fired after {at} ms");
+    }
+
+    /// <summary>
+    /// What `DynEnv` does when its fiber ends: retire the watch, for the next
+    /// fiber on this thread that syncs under the same token. A watch is kept
+    /// only when idle, and handed out once.
+    /// </summary>
+    private static void RetiredWatchIsReused()
+    {
+        var token = new Promise<Global.CancelReason>();
+        var other = new Promise<Global.CancelReason>();
+
+        var idle = new Global.FiberWatch(token);
+        Global.FiberWatch.Retire(idle, null);
+        AssertEqual(null, Global.FiberWatch.TakeRetired(other, null), "a watch taken under another token");
+        Assert(ReferenceEquals(idle, Global.FiberWatch.TakeRetired(token, null)), "the retired watch was not handed out");
+        AssertEqual(null, Global.FiberWatch.TakeRetired(token, null), "a watch handed out twice");
+
+        // Armed: a park is in progress, so it has an owner and is not kept.
+        var armed = new Global.FiberWatch(token);
+        armed.Arm();
+        Global.FiberWatch.Retire(armed, null);
+        AssertEqual(null, Global.FiberWatch.TakeRetired(token, null), "an armed watch was kept");
+        armed.End();
+
+        // More than this thread has room for: the rest go to the scope, and
+        // every one comes back once, whichever thread asks.
+        var scope = new Global.Scope(0, null, propagate: false);
+        var cells = new System.Collections.Generic.HashSet<object>();
+        for (int i = 0; i < 10; i++)
+        {
+            var cell = new Global.FiberWatch(scope.Token);
+            cells.Add(cell);
+            Global.FiberWatch.Retire(cell, scope);
+        }
+
+        var taken = new System.Collections.Generic.HashSet<object>();
+        var elsewhere = System.Threading.Tasks.Task.Run(() =>
+        {
+            // Another thread has no slots of its own, so it reaches the scope.
+            var cell = Global.FiberWatch.TakeRetired(scope.Token, scope);
+            return (object?)cell;
+        }).Result;
+        Assert(elsewhere is not null, "another thread found nothing in the scope");
+        taken.Add(elsewhere!);
+
+        while (Global.FiberWatch.TakeRetired(scope.Token, scope) is { } cell)
+            Assert(taken.Add(cell), "a watch handed out twice");
+
+        AssertEqual(10, taken.Count, "watches handed back of the 10 retired");
+        Assert(taken.SetEquals(cells), "a watch came back that was never retired");
     }
 
     // -----------------------------------------------------------------------

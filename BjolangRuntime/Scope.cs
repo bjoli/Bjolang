@@ -211,6 +211,13 @@ public static partial class BjolangRuntime {
         public readonly Promise<CancelReason> Token = new();
 
         /// <summary>
+        /// Park cells of fibers that ended under <see cref="Token"/>, that no
+        /// thread had room for. Null until the first; see
+        /// <c>FiberWatch.Retire</c>.
+        /// </summary>
+        internal RetiredWatches? Retired;
+
+        /// <summary>
         /// Guards <see cref="_failures"/> only, and the moments where
         /// <see cref="_outstanding"/> has to be read together with it. A spawn
         /// never takes it at all, and no user code runs while it is held.

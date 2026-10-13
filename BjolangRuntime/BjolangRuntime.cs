@@ -1473,6 +1473,18 @@ public static partial class BjolangRuntime {
         /// no sync ever builds one, and the child may share this object.
         public object ForChild() => Cancel is null ? this : new DynEnv(Out, In, Cancel, Scope, Vals);
 
+        /// The fiber that owns this environment has finished, so its park cell
+        /// has no owner. It is handed to the next fiber on this thread that
+        /// syncs under the same token, still registered: see
+        /// `FiberWatch.Retire`. Cleared here so that nothing which still holds
+        /// this object can reach a cell another fiber now owns.
+        void Bjoml.IFiberContext.FiberEnded() {
+            var cell = Park;
+            if (cell is null) return;
+            Park = null;
+            FiberWatch.Retire(cell, Scope);
+        }
+
         /// Binding a token by hand leaves the scope alone. That is the airlock
         /// `parameterize ((current-cancel t))` has always been: a fiber can be
         /// given a token to stop on without being taken out of the group its

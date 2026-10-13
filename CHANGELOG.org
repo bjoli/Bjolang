@@ -3,6 +3,23 @@
 
 What each change guarantees, and what it leaves open.
 
+* A finished fiber's cancellation watch goes to the next fiber
+
+- When a spawned fiber ends, its watch (its registration on the scope's
+  token) is kept, still registered, for the next fiber that syncs under the
+  same token: on the same thread, or through the scope when that thread has
+  no room. A short fiber used to build a watch and leave it on the token
+  until a prune, so a token carried up to one dead watch per live one.
+- In ~bench/service~ the watches held went from 10,500-16,200 to a steady
+  10,320 for 10,000 clients, and allocation fell 2.4-2.6%. The closed loop
+  on 4 cores went from 416.5 to 401.5 ms with 3.6% less CPU; the tail did
+  not change. See ~BjolangRuntime/Cml/design.md~, "A finished fiber's watch
+  goes to the next".
+- ~TestFiles/369_reused_watch.bjo~ checks that cancelling a scope still
+  reaches every fiber parked on a reused watch, and a runtime test checks
+  that a watch is kept only when idle, only for its own token, and handed
+  out once.
+
 * A parked fiber's box has no delegate
 
 - The runtime's awaiters (a fiber's, a promise's, a channel's, ~sync~'s and
