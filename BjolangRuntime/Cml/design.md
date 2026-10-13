@@ -1469,6 +1469,86 @@ setting for it would be the place.
 - A spawn is emitted as `ScopeSpawn(async () => await f(...))`, one state
   machine more than `ScopeSpawn(() => f(...))`.
 
+### Memory, and Go with as much of it
+
+The tables above compare Go with its default collector against two .NET
+programs with the server GC and DATAS off, and they do not show memory. The
+two make different trades. Go keeps the heap small and collects often: about
+140 collections a rep, at a peak of about 20 MB. The server GC keeps hundreds
+of megabytes and collects rarely: 6 or 7 collections a rep, at a peak of
+about 380 MB on all cores and 100 MB on four. So Go was compared on a
+nineteenth of the memory on all cores and a fifth on four, and its wall
+time, CPU time and tail all paid for that.
+
+`drive.py` now shows each program's peak resident memory (`peak MB`, from
+`os.wait4`), and runs Go a second time with `GOGC=off` and `GOMEMLIMIT` at
+the larger .NET peak (`Go, N MiB`; `--no-matched` leaves it out). A
+comparison with Go should give both Go rows, and say which it means.
+
+`drive.py`, closed loop, median of 3 x 5 reps:
+
+                   wall ms  cpu ms  p50 us  p99 us  p99.9 us  gcs  peak MB
+    all cores
+      Go               444    6082      16    5437      5858  141       21
+      Hopac            392    8797     109    2671      6610    7      382
+      Bjolang          259    5445     107    1889      7114    6      368
+      Go, 382 MiB      259    4001      14    2954      3312    1      358
+    4 cores
+      Go               496    1871     186    2510      3522  142       22
+      Hopac            290    1137       1    2442      4290   46      102
+      Bjolang          424    1650       1    3183      4994   34      106
+      Go, 106 MiB      417    1647     186    2029      3322    5      103
+
+With as much memory, Go was as fast as Bjolang on all cores, on three
+quarters of its CPU time and with half its p99.9. On four cores the .NET
+programs peak at about 100 MB, and Go with that much was as fast as Bjolang
+and had a lower tail. Hopac stays the fastest on four cores.
+
+**The open loop again, with more reps.** `drive.py --rates`, median of 3 x 5
+reps of 3 s, so two and a half times the reps of the table above:
+
+                          cores  p50 us  p99 us  p99.9 us  pause ms  peak MB
+    4 cores, 0.25M/s
+      Go                    1.0       2    1721      6265         5      160
+      Hopac                 1.5       2      11        29        49      214
+      Bjolang               1.2       1      35        67        36      347
+      Go, 347 MiB           0.8       2     169       268         0      369
+    4 cores, 0.5M/s
+      Go                    1.9     116   24729     30862        27      178
+      Hopac                 2.3       2       8        17        83      212
+      Bjolang               1.8       1      30       169        77      381
+      Go, 380 MiB           1.8     101   22824     33264         6      487
+    all cores, 0.5M/s
+      Go                    3.5       3    6774      9521        21      174
+      Hopac                21.9    5578   20316     24968       100      399
+      Bjolang               5.0       5      63       131        57      411
+      Go, 410 MiB           2.8       3     138       447         1      434
+    all cores, 1M/s
+      Go                    8.2      43   32199     36485        80      189
+      Hopac                22.5    7059   21003     27853       207      720
+      Bjolang               9.7      14    2315      5201       133      493
+      Go, 720 MiB           6.3      19  101409    107333         6      821
+
+This replaces the conclusion of the table above, that Bjolang had the lowest
+tail of the three at every rate below saturation. That is so on all cores,
+against Go with either memory and against Hopac. On four cores it is not:
+Hopac had the lowest tail there, 8-11 us at p99, where the earlier table gave
+it 18-88 ms. Those rows of the earlier table do not reproduce, and the
+reason is not known.
+
+Two things are still not explained, and a comparison should not lean on
+them:
+
+- Hopac on all cores keeps all 24 threads busy at 0.5M/s, where the other
+  two use 3 to 5, and its median is in milliseconds. On four cores, with as
+  many threads as cores, it is the best of the three. Its spinning workers
+  against the timer thread and the GC threads is a guess, not a finding.
+- Go's open-loop tail does not follow its memory. On four cores at 0.5M/s it
+  is 23-25 ms with either memory, on 1.9 cores, so not for want of CPU. On
+  all cores at 1M/s Go with 720 MiB had a p99 of 101 ms against 32 ms with
+  its default. Its timers (a `time.Sleep` per paced request and a
+  `time.NewTimer` per request) are where to look first.
+
 ---
 
 ## 6. Known issues

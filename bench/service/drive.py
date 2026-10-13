@@ -35,6 +35,15 @@ that were most of the difference in the tail. `--datas` turns it on for both.
 `gcs` is the number of collections in a rep and `pause` the time the GC held
 every thread, in total. A tail that moves with them is the GC's.
 
+`peak MB` is the most resident memory a program held at any time in its run.
+The two GCs make different trades: Go's default keeps the heap small and
+collects often, and the .NET server GC with DATAS off keeps hundreds of
+megabytes and collects rarely. On all cores Go peaks at about 20 MB and the
+two .NET programs at about 380. So Go also runs a second time, as
+`Go, N MiB`, with GOGC off and GOMEMLIMIT at the larger .NET peak, so that
+it has as much memory as they took. Compare against both Go rows, and say
+which. `--no-matched` leaves the second row out.
+
 Without `--rates` the loop is closed: each client sends its next request as
 soon as it has the answer to the last. The machine is then saturated, the
 mean latency is about clients x wall / requests, and the tail mostly says
@@ -45,7 +54,7 @@ rate x seconds / 10000 requests, and `req/s` says whether a program kept up.
 
     bench/service/drive.py --rates 200000,500000,1000000 --cores 4
 """
-import argparse, os, statistics, subprocess, sys
+import argparse, os, statistics, subprocess, sys, tempfile, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -70,14 +79,39 @@ def build():
 
 
 def run(name, args, env, prefix):
+    """The reps of one run, each with the run's peak resident memory in
+    `rss_kb`: the most the process held at any time, over all its reps.
+
+    The peak is read from the process's own resource usage (`os.wait4`), so
+    the programs need not measure themselves. `taskset` executes the program
+    in its own process, and so does `dotnet`, so the number is the
+    program's."""
     cwd, cmd = PROGRAMS[name]
-    out = subprocess.run(prefix + cmd(args), cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                         capture_output=True, text=True, check=True, timeout=1200).stdout
+    # The output goes to files rather than pipes, so that nothing here waits
+    # for the child but `os.wait4`, which reaps it and gives its usage.
+    # `Popen.wait` and `communicate` would reap it first and lose the usage.
+    with tempfile.TemporaryFile("w+") as out_file, tempfile.TemporaryFile("w+") as err_file:
+        proc = subprocess.Popen(prefix + cmd(args), cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                stdout=out_file, stderr=err_file, text=True)
+        killer = threading.Timer(1200, proc.kill)
+        killer.start()
+        try:
+            _, status, usage = os.wait4(proc.pid, 0)
+        finally:
+            killer.cancel()
+        proc.returncode = os.waitstatus_to_exitcode(status)
+        out_file.seek(0)
+        err_file.seek(0)
+        out, err = out_file.read(), err_file.read()
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, proc.args, out, err)
     reps = []
     for line in out.splitlines():
         if line.startswith("rep "):
             f = line.split()
-            reps.append({f[i]: int(f[i + 1]) for i in range(2, len(f), 2)})
+            rep = {f[i]: int(f[i + 1]) for i in range(2, len(f), 2)}
+            rep["rss_kb"] = usage.ru_maxrss  # kilobytes on Linux
+            reps.append(rep)
     return reps
 
 
@@ -94,6 +128,8 @@ def main():
     ap.add_argument("--env", action="append", default=[], help="K=V for every program")
     ap.add_argument("--no-build", action="store_true")
     ap.add_argument("--datas", action="store_true", help="the GC's dynamic adaptation on, for both .NET programs")
+    ap.add_argument("--no-matched", action="store_true",
+                    help="do not run Go a second time with the memory that the .NET programs took")
     a = ap.parse_args()
     if not a.no_build:
         build()
@@ -119,29 +155,52 @@ def main():
         print(f"{clients} clients, open loop, {a.seconds:g} s a rep; {where}; median of {trials} x {reps_n} reps")
     else:
         print(f"{clients} clients x {a.requests} requests; {where}; median of {trials} x {reps_n} reps")
-    cols = ["wall ms", "req/s", "cpu ms", "cores", "p50 us", "p99 us", "p99.9 us", "B/req", "gcs", "pause ms"]
-    print(f"{'':18}" + "".join(f"{c:>11}" for c in cols))
+    cols = ["wall ms", "req/s", "cpu ms", "cores", "p50 us", "p99 us", "p99.9 us", "B/req", "gcs", "pause ms",
+            "peak MB"]
+    print(f"{'':22}" + "".join(f"{c:>11}" for c in cols))
     ok = True
     for rate in rates:
         per_client = max(1, int(rate * a.seconds / clients)) if rate else a.requests
         requests = clients * per_client
         checksums = set()
-        for name in PROGRAMS:
-            if a.only and name not in a.only.split(","):
-                continue
+        peaks = {}
+
+        def measure(name, label, run_env):
             reps = []
             for _ in range(trials):
-                reps += run(name, [str(reps_n), str(clients), str(per_client), str(rate)], env, prefix)
-            checksums |= {r["checksum"] for r in reps}
+                reps += run(name, [str(reps_n), str(clients), str(per_client), str(rate)], run_env, prefix)
+            checksums.update(r["checksum"] for r in reps)
             if any(r["timeouts"] for r in reps):
-                print(f"{name}: {sum(r['timeouts'] for r in reps)} timeouts", file=sys.stderr)
+                print(f"{label}: {sum(r['timeouts'] for r in reps)} timeouts", file=sys.stderr)
             m = {k: statistics.median(r[k] for r in reps) for k in reps[0]}
+            peaks[name] = m["rss_kb"]
             row = [f"{m['wall_ms']:.0f}", f"{requests / m['wall_ms'] * 1000 / 1e6:.2f}M",
                    f"{m['cpu_ms']:.0f}", f"{m['cpu_ms'] / m['wall_ms']:.1f}",
                    f"{m['p50_ns'] / 1000:.0f}", f"{m['p99_ns'] / 1000:.0f}", f"{m['p999_ns'] / 1000:.0f}",
-                   f"{m['alloc_b'] / requests:.0f}", f"{m['gcs']:.0f}", f"{m['pause_ms']:.0f}"]
-            label = f"{name} @{rate / 1e6:g}M" if rate else name
-            print(f"{label:18}" + "".join(v.rjust(11) for v in row), flush=True)
+                   f"{m['alloc_b'] / requests:.0f}", f"{m['gcs']:.0f}", f"{m['pause_ms']:.0f}",
+                   f"{m['rss_kb'] / 1024:.0f}"]
+            label = f"{label} @{rate / 1e6:g}M" if rate else label
+            print(f"{label:22}" + "".join(v.rjust(11) for v in row), flush=True)
+
+        def wanted(name):
+            return not a.only or name in a.only.split(",")
+
+        for name in PROGRAMS:
+            if wanted(name):
+                measure(name, name, env)
+
+        # Go again, given the memory that the .NET programs took. Go's
+        # default collector keeps the heap small and collects often; the
+        # server GC that both .NET programs run with keeps hundreds of
+        # megabytes and collects rarely. With GOGC off and GOMEMLIMIT at the
+        # larger .NET peak, Go collects only when it reaches that much.
+        dotnet_peaks = [peaks[n] for n in ("Hopac", "Bjolang") if n in peaks]
+        if wanted("Go") and dotnet_peaks and not a.no_matched:
+            # A median of an even number of reps is a float, and GOMEMLIMIT
+            # takes an integer.
+            limit_mib = int(max(dotnet_peaks) // 1024)
+            matched = dict(env, GOGC="off", GOMEMLIMIT=f"{limit_mib}MiB")
+            measure("Go", f"Go, {limit_mib} MiB", matched)
         if len(checksums) > 1:
             print(f"CHECKSUMS DISAGREE at rate {rate}: {sorted(checksums)}", file=sys.stderr)
             ok = False
