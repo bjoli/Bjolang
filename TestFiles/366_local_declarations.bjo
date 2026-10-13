@@ -1,0 +1,104 @@
+;; A declaration in a body: (: name type) before the def, def/mutable or
+;; defun of name, in the same run of definitions.
+;;
+;; It means what an annotation in the definition means. For a defun the types
+;; of the arrow go to the parameters and to the return type. The colour of a
+;; local function is still read off its body: its arrow is written ->, and it
+;; suspends when its body calls a bjoroutine.
+;;
+;; An annotated local value is checked with the annotation as the expected
+;; type. So an ordinary function is accepted for a -bjo-> annotation, as it is
+;; for a top-level def.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: shout (-> string string))
+(defbjouble (shout s)
+  (#:sync (string-append "sync " s))
+  (#:bjo (sync (timeout 1)) (string-append "bjo " s)))
+
+(: declared (-> int int))
+(defun (declared n)
+  (: twice (-> int int))
+  (defun (twice x) (* x 2))
+  (twice n))
+
+;; A declaration after another definition, and in a recursive function.
+(: sum-to (-> int int))
+(defun (sum-to n)
+  (def start 0)
+  (: go (-> int int int))
+  (defun (go i acc) (if (> i n) acc (go (+ i 1) (+ acc i))))
+  (go start 0))
+
+;; Two declarations, then the two functions, which call each other.
+(: parity (-> int string))
+(defun (parity n)
+  (: even? (-> int bool))
+  (: odd? (-> int bool))
+  (defun (even? k) (if (= k 0) #t (odd? (- k 1))))
+  (defun (odd? k) (if (= k 0) #f (even? (- k 1))))
+  (if (even? n) "even" "odd"))
+
+;; A type variable, as in a parameter annotation.
+(: first-of (-> string))
+(defun (first-of)
+  (: pick (-> %a %a %a))
+  (defun (pick a b) a)
+  (pick "first" "second"))
+
+(: values (-> long))
+(defun (values)
+  (: k long)
+  (def k 40)
+  (: m long)
+  (def/mutable m 1)
+  (set! m (+ m 1))
+  (+ k m))
+
+;; The arrow is ->, and the function suspends because its body needs it to.
+(: in-bjoroutine (-bjo-> string))
+(defbjo (in-bjoroutine)
+  (: loud (-> string string))
+  (defun (loud s) (shout s))
+  (sync (timeout 1))
+  (loud "local"))
+
+(: in-function (-> string))
+(defun (in-function)
+  (: loud (-> string string))
+  (defun (loud s) (shout s))
+  (loud "local"))
+
+;; `main` is a bjoroutine, so a call there takes the suspending copy of
+;; `in-function`. A call in an ordinary lambda takes the ordinary copy.
+(: call-it (-> (-> string) string))
+(defun (call-it f) (f))
+
+;; Ordinary functions for -bjo-> annotations: a declaration, an annotation in
+;; the def, and a def/mutable.
+(: lifted (-bjo-> int))
+(defbjo (lifted)
+  (def (: g (-bjo-> int int)) (fun (x) (+ x 1)))
+  (: h (-bjo-> int int))
+  (def h (fun (x) (* x 2)))
+  (: m (-bjo-> int int))
+  (def/mutable m (fun (x) (- x 1)))
+  (+ (g 1) (h 20) (m 20)))
+
+(defbjo (main args)
+  (expect "a declared local function" (declared 21) 42)
+  (expect "a declaration after a def" (sum-to 10) 55)
+  (expect "two declarations before two functions" (parity 7) "odd")
+  (expect "a type variable" (first-of) "first")
+  (expect "a def and a def/mutable" (values) 42L)
+  (expect "a local function in a bjoroutine takes the suspending copy"
+          (in-bjoroutine)
+          "bjo local")
+  (expect "a local function in a function takes the ordinary copy"
+          (call-it (fun () (in-function)))
+          "sync local")
+  (expect "and the suspending copy where it is called from a bjoroutine" (in-function) "bjo local")
+  (expect "an ordinary function for a -bjo-> annotation" (lifted) 61)
+  0)

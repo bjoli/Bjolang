@@ -559,6 +559,12 @@ let rec parseExpr (s: SExpr) : Expr =
 
         | Ident sym -> parseHeadedChecked s r head sym args listRange
 
+        // A body reads a declaration before it gets here. So this one is not
+        // in a run of definitions: it is last in a body, or an argument.
+        | SAtom { Token = Colon } ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos listRange}: a declaration (: name type) is not an expression. Put it in a body, before the def, def/mutable or defun of name."
+
         | _ ->
             // Fallback for tuples or unquoted lists
             EApp(parseExpr head, processArgs args, listRange)
@@ -2001,7 +2007,96 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
 
         clauses
 
-    let rec collectDefs acc remaining =
+    // A declaration in a body, `(: name type)`, gives the type of the `def`,
+    // `def/mutable` or `defun` of `name` that comes after it in the same run
+    // of definitions. It means what an annotation written in the definition
+    // means. A local function's colour is still read off its body, so the
+    // arrow of a `defun` must be `->`.
+    let parseDeclaration (form: SExpr) : string * SExpr * Range =
+        match form with
+        | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol name }; tType ], r) -> name, tType, r
+        | SList(SAtom { Token = Colon } :: SAtom { Token = Symbol name } :: _ :: SList(SAtom { Token = Symbol "where" } :: _, _) :: _, r) ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos r}: the declaration of '%s{name}' has a (where ...), and a definition in a body cannot have one. A local function cannot take trait dictionaries of its own. Move the function to the top level, or remove the constraint."
+        | _ ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos (getRange form)}: a declaration in a body is written (: name type), before the def, def/mutable or defun of name."
+
+    // `-?->` in a local type would need a copy for each colour, and a local
+    // definition has one body.
+    let rec refuseEitherColour (name: string) (r: Range) (t: FType) =
+        match t with
+        | TApp("-?->", _, _) ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos r}: the type of '%s{name}' has a -?-> arrow, and a definition in a body cannot have one. -?-> makes a copy of the function for each colour, and a local definition has one body."
+        | TApp(_, args, _) -> args |> List.iter (refuseEitherColour name r)
+        | TArrow(ps, kws, rest, ret, _, _) ->
+            ps @ List.map snd kws @ Option.toList rest @ [ ret ] |> List.iter (refuseEitherColour name r)
+        | TName _ -> ()
+
+    let declaredValueType (name: string) (tType: SExpr) (r: Range) : FType =
+        let t = parseType tType
+        refuseEitherColour name r t
+        t
+
+    // Moves the types of a declared arrow onto the parameters and the return
+    // type of a local `defun`, where `localFunShape` reads them.
+    let applySignature (name: string) (tType: SExpr) (r: Range) (args: DefunArg list) (retType: FType option) =
+        let refuse (why: string) : 'a =
+            failwithf $"Syntax error at %s{Lexer.formatPos r}: the declaration of the local function '%s{name}' %s{why}"
+
+        match parseType tType with
+        | TArrow(_, _, _, _, Suspending, _) ->
+            refuse
+                "has the arrow -bjo->. A local function has the colour that its body needs: it suspends if its body calls a bjoroutine. Write the arrow ->."
+        | TArrow(paramTypes, keywords, rest, ret, Ordinary, _) as t ->
+            refuseEitherColour name r t
+
+            let positional =
+                args
+                |> List.forall (function
+                    | MandatoryArg _ -> true
+                    | _ -> false)
+
+            if not keywords.IsEmpty || rest.IsSome || not positional then
+                refuse
+                    "has keyword or rest parameters, and a local declaration cannot give their types. Give the types in the parameter list, as in (defun (f (: x int) #:by 2) : int ...)."
+
+            if paramTypes.Length <> args.Length then
+                let count n word = if n = 1 then $"1 %s{word}" else $"%d{n} %s{word}s"
+                let declaredCount = count paramTypes.Length "parameter type"
+                let writtenCount = count args.Length "parameter"
+
+                refuse $"has %s{declaredCount}, and the function has %s{writtenCount}."
+
+            if retType.IsSome then
+                refuse "is given, and the function also has a return type after its parameters. Give the type in one place."
+
+            let typed =
+                List.map2
+                    (fun arg t ->
+                        match arg with
+                        | MandatoryArg(n, None) -> MandatoryArg(n, Some t)
+                        | MandatoryArg(n, Some _) ->
+                            refuse
+                                $"is given, and the parameter '%s{n}' also has a type in the parameter list. Give the type in one place."
+                        | other -> other)
+                    args
+                    paramTypes
+
+            typed, Some ret
+        | _ -> refuse "is not an arrow, and a defun is a function. Write its type as (-> parameter-types ... return-type)."
+
+    let rec collectDefs acc (declared: Map<string, SExpr * Range>) remaining =
+        // The run ends here. A declaration that no definition used is an error,
+        // because the declaration would otherwise do nothing.
+        let close () =
+            match Map.toList declared with
+            | (name, (_, r)) :: _ ->
+                failwithf
+                    $"Syntax error at %s{Lexer.formatPos r}: '%s{name}' is declared, but no definition of '%s{name}' comes after the declaration in the same run of definitions. In a body, put the declaration directly before the def, def/mutable or defun of '%s{name}'. A declaration cannot give the type of a tuple or a pattern def."
+            | [] -> (List.rev acc, remaining)
+
         match unmarkedHead remaining with
         // A non-empty splice does not close the group. Without this case a
         // `begin` between two mutually recursive definitions would put them in
@@ -2013,14 +2108,37 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // normal expression, hitting a statement signals the end of the current
         // block of definitions.
         | SList(SAtom { Token = Symbol "begin" } :: (_ :: _ as inner), _) :: rest ->
-            collectDefs acc (inner @ rest)
+            collectDefs acc declared (inner @ rest)
+
+        // A declaration directly before a `def/mutable` ends the run, and
+        // `parseItems` reads the two together.
+        | (SList(SAtom { Token = Colon } :: SAtom { Token = Symbol name } :: _, _)) :: SList(SAtom { Token = Symbol "def/mutable" } :: SAtom { Token = Symbol mutName } :: _, _) :: _ when
+            name = mutName
+            ->
+            close ()
+
+        | (SList(SAtom { Token = Colon } :: _, _) as form) :: rest ->
+            let name, tType, r = parseDeclaration form
+
+            match Map.tryFind name declared with
+            | Some(_, earlier) ->
+                failwithf
+                    $"Syntax error at %s{Lexer.formatPos r}: '%s{name}' is declared a second time. The first declaration is at %s{Lexer.formatPos earlier}."
+            | None -> collectDefs acc (Map.add name (tType, r) declared) rest
 
         | SList(SAtom { Token = Symbol "def" } :: SAtom { Token = Symbol name } :: [ expr ], _) :: rest ->
             // isFun = false, args = []
-            collectDefs ((name, false, [], None, parseExpr expr) :: acc) rest
+            let typeAnn =
+                Map.tryFind name declared |> Option.map (fun (t, r) -> declaredValueType name t r)
+
+            collectDefs ((name, false, [], typeAnn, parseExpr expr) :: acc) (Map.remove name declared) rest
 
         | SList(SAtom { Token = Symbol "def" } :: SList([ SAtom { Token = Colon }; SAtom { Token = Symbol name }; tType ], _) :: [ expr ], _) :: rest ->
-            collectDefs ((name, false, [], Some(parseType tType), parseExpr expr) :: acc) rest
+            match Map.tryFind name declared with
+            | Some(_, r) ->
+                failwithf
+                    $"Syntax error at %s{Lexer.formatPos r}: '%s{name}' is declared, and its def also has a type. Give the type in one place."
+            | None -> collectDefs ((name, false, [], Some(parseType tType), parseExpr expr) :: acc) declared rest
 
         // A body-local `defbjo`. Still rejected, and no longer for the reason it
         // used to be: a body-local function may suspend now, emitted as an
@@ -2039,10 +2157,16 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         | SList(SAtom { Token = Symbol "defun" } :: SList(SAtom { Token = Symbol name } :: args, _) :: rest, r) :: rest' ->
             let parsedArgs = parseDefunArgs args
             let retType, bodyExprs = parseDefunReturn rest
-            let fBody = withLocals ((name, r) :: argBinders parsedArgs r) (fun () -> parseBody bodyExprs r)
-            collectDefs ((name, true, parsedArgs, retType, fBody) :: acc) rest'
 
-        | _ -> (List.rev acc, remaining)
+            let parsedArgs, retType =
+                match Map.tryFind name declared with
+                | Some(tType, dr) -> applySignature name tType dr parsedArgs retType
+                | None -> parsedArgs, retType
+
+            let fBody = withLocals ((name, r) :: argBinders parsedArgs r) (fun () -> parseBody bodyExprs r)
+            collectDefs ((name, true, parsedArgs, retType, fBody) :: acc) (Map.remove name declared) rest'
+
+        | _ -> close ()
 
     and parseItems remaining =
         match unmarkedHead remaining with
@@ -2121,6 +2245,19 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
 
             bindDefTail tail (withLocals bound (fun () -> parseItems rest)) r
 
+        | (SList(SAtom { Token = Colon } :: SAtom { Token = Symbol name } :: _, _) as form) :: SList(SAtom { Token = Symbol "def/mutable" } :: SAtom { Token = Symbol mutName } :: [ expr ], r) :: rest when
+            name = mutName
+            ->
+            let _, tType, dr = parseDeclaration form
+            let value = parseExpr expr
+            ELetMutable(name, Some(declaredValueType name tType dr), value, withLocals [ name, r ] (fun () -> parseItems rest), fallbackRange)
+
+        | SList(SAtom { Token = Colon } :: SAtom { Token = Symbol name } :: _, _) :: SList(SAtom { Token = Symbol "def/mutable" } :: SList(SAtom { Token = Colon } :: SAtom { Token = Symbol mutName } :: _, _) :: _, r) :: _ when
+            name = mutName
+            ->
+            failwithf
+                $"Syntax error at %s{Lexer.formatPos r}: '%s{name}' is declared, and its def/mutable also has a type. Give the type in one place."
+
         | SList(SAtom { Token = Symbol "def/mutable" } :: SAtom { Token = Symbol name } :: [ expr ], r) :: rest ->
             let value = parseExpr expr
             ELetMutable(name, None, value, withLocals [ name, r ] (fun () -> parseItems rest), fallbackRange)
@@ -2157,8 +2294,9 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // and fail with "Unbound variable: defbjo".
         | (SList(SAtom { Token = Symbol "def" } :: _, _)) :: _
         | (SList(SAtom { Token = Symbol "defbjo" } :: _, _)) :: _
-        | (SList(SAtom { Token = Symbol "defun" } :: _, _)) :: _ ->
-            let defs, rest = collectDefs [] remaining
+        | (SList(SAtom { Token = Symbol "defun" } :: _, _)) :: _
+        | (SList(SAtom { Token = Colon } :: _, _)) :: _ ->
+            let defs, rest = collectDefs [] Map.empty remaining
 
             // Nothing recognized means nothing consumed, and recursing on an
             // unchanged list does not terminate. Whatever shape this is, saying

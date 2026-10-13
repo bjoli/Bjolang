@@ -2567,16 +2567,17 @@ and private inferLet (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (name:
                 // pass it down as the expected type.  For list / vec literals
                 // this enables per-element constructor injection before any
                 // element-level unification can fail.
+                // The annotation is the expected type and the value is what is
+                // supplied, so an ordinary function is accepted for a `-bjo->`
+                // annotation and is wrapped to have that type.
                 let t, typed =
                     match typeAnn with
                     | Some tAnn ->
                         let expectedType = resolveTypeAnnotation env.Registry tAnn
-                        inferChecked expectedType env value
+                        let t, typed = inferChecked expectedType env value
+                        unify env.Registry expectedType t
+                        expectedType, bridgeToSuspending env expectedType typed
                     | None -> infer env value
-
-                match typeAnn with
-                | Some tAnn -> unify env.Registry t (resolveTypeAnnotation env.Registry tAnn)
-                | None -> ()
 
                 t, typed, noParams
 
@@ -2680,12 +2681,14 @@ and private inferLetRec (tail: Env -> Expr -> HMType * TypedExpr) (env: Env) (bi
 
                     // A value binding's annotation is its own type. A
                     // function's is its return type, and the shape has
-                    // already unified it with the body.
+                    // already unified it with the body. The annotation is the
+                    // expected type, as in `inferLet`.
                     match typeAnn with
-                    | Some tAnn -> unify env.Registry t (resolveTypeAnnotation env.Registry tAnn)
-                    | None -> ()
-
-                    t, typed, noParams
+                    | Some tAnn ->
+                        let expectedType = resolveTypeAnnotation env.Registry tAnn
+                        unify env.Registry expectedType t
+                        expectedType, bridgeToSuspending env expectedType typed, noParams
+                    | None -> t, typed, noParams
 
             unify env.Registry valType expectedType
             name, isFun, localFun, typedVal)
@@ -2724,8 +2727,8 @@ and private inferLetMutable (tail: Env -> Expr -> HMType * TypedExpr) (env: Env)
         | Some tAnn ->
             let expectedType = resolveTypeAnnotation env.Registry tAnn
             let t, typed = inferChecked expectedType env value
-            unify env.Registry t expectedType
-            t, typed
+            unify env.Registry expectedType t
+            expectedType, bridgeToSuspending env expectedType typed
         | None -> infer env value
 
     // Deliberately not generalized. A mutable binding is a cell, and a

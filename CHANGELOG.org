@@ -3,6 +3,35 @@
 
 What each change guarantees, and what it leaves open.
 
+* A body can declare the type of a local definition
+
+- ~(: name type)~ in a body gives the type of the ~def~, ~def/mutable~ or
+  ~defun~ of ~name~ that comes after it in the same run of definitions. It
+  means what an annotation in the definition means: for a ~defun~, the
+  parameter types of the arrow go to the parameters and its result type is
+  the return type. Several declarations can come before several functions
+  that call each other.
+- A local function's colour is still read off its body, with or without a
+  declaration. Its arrow is written ~->~, and the function suspends when its
+  body calls a bjoroutine or the suspending copy of a ~defbjouble~.
+- Refused, each with an error that says why: ~-bjo->~ as the arrow of a local
+  function, ~-?->~ anywhere in a local type, a ~(where ...)~, keyword or rest
+  parameters (give their types in the parameter list), a type given both in
+  the declaration and in the definition, a name declared twice, a
+  declaration with no definition after it (also before a tuple or pattern
+  ~def~), and a declaration where an expression is wanted.
+- ~%a~ in a local declaration means what it means in a parameter annotation.
+  It is not a promise that the function works for every type, as it is at
+  the top level.
+- An annotated local ~def~ or ~def/mutable~ is checked with the annotation as
+  the expected type, as a top-level ~def~ is. An ordinary function is now
+  accepted for a ~-bjo->~ annotation, and is wrapped to have that type; it
+  was refused as "a bjoroutine cannot be used where an ordinary function is
+  expected".
+- ~TestFiles/366_local_declarations.bjo~ tests the forms, and
+  ~TestFiles/errors/local_declaration_*.bjo~ the refusals and that the
+  declared types are checked.
+
 * At the REPL, a ~def/mutable~ from an earlier entry can be assigned
 
 - ~(def/mutable count 5)~ and then ~(set! count 3)~ as the next entry failed
