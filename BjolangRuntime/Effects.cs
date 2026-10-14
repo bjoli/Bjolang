@@ -31,6 +31,25 @@ public static partial class BjolangRuntime {
     /// zero and the division throw.
     private static readonly long TicksPerMs =
         System.Math.Max(1L, System.Diagnostics.Stopwatch.Frequency / 1000L);
+
+    /// <summary>
+    /// The prelude's `system-clock` reads `monotonic-ns` here: nanoseconds on
+    /// the same monotonic clock as `ClockMs`, at the resolution the timer has.
+    /// The origin is arbitrary: only differences mean anything.
+    /// </summary>
+    /// <remarks>
+    /// On Linux the timer counts nanoseconds, and its reading is returned as it
+    /// is. A timer with another frequency is converted in 128 bits, because the
+    /// reading times a billion overflows a long.
+    /// </remarks>
+    public static long ClockNs() {
+        var ticks = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (TimerCountsNs) return ticks;
+        return (long)((System.Int128)ticks * 1_000_000_000L / System.Diagnostics.Stopwatch.Frequency);
+    }
+
+    private static readonly bool TimerCountsNs =
+        System.Diagnostics.Stopwatch.Frequency == 1_000_000_000L;
 }
 
 namespace Bjolang.Runtime {

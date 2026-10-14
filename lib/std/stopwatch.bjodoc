@@ -12,12 +12,14 @@
     (do-the-work)
     (stopwatch-stop! sw)
     (stopwatch-ms sw)          ; elapsed milliseconds, as a long
+    (stopwatch-ns sw)          ; elapsed nanoseconds
     (ref sw 's)                ; elapsed time in whole seconds
+    (ns->string (stopwatch-ns sw))   ; e.g. "12.5 us"
 
     (time-it #:times 10 (do-the-work))
     """)
   (reference """
-    A stopwatch reads monotonic time from the prelude's @code{monotonic-ms},
+    A stopwatch reads monotonic time from the prelude's @code{monotonic-ns},
     which queries @code{current-clock}. It does not wrap
     @code{System.Diagnostics.Stopwatch}. This allows tests to bind a deterministic
     virtual clock and produce predictable timings:
@@ -28,13 +30,13 @@
     }|
 
     Stopwatches are mutable structures. They can be started and stopped
-    repeatedly, accumulating elapsed runtime across active periods with
-    millisecond resolution.
+    repeatedly, accumulating elapsed runtime across active periods in
+    nanoseconds, at the resolution the clock has. The other units are read from
+    the nanoseconds and rounded down.
 
-    Stopwatches implement @code{Refable} using symbol units: @code{(ref sw 'ms)}
-    returns elapsed time in milliseconds, and @code{(ref sw 's)} returns elapsed
-    time in integer seconds (rounded down). Any other symbol raises
-    @code{System.ArgumentException}.
+    Stopwatches implement @code{Refable} using symbol units: @code{(ref sw 'ns)},
+    @code{'us}, @code{'ms} and @code{'s} return elapsed time in that unit,
+    rounded down. Any other symbol raises @code{System.ArgumentException}.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -43,20 +45,20 @@
 
 (:doc Stopwatch
   (summary "Stopwatch structure tracking total elapsed time and active run state.")
-  (field started "Timestamp of the current active run, or -1 if stopped.")
-  (field elapsed "Accumulated milliseconds across completed runs.")
-  (see stopwatch stopwatch-start! stopwatch-ms)
+  (field started "Timestamp in nanoseconds of the current active run, or -1 if stopped.")
+  (field elapsed "Accumulated nanoseconds across completed runs.")
+  (see stopwatch stopwatch-start! stopwatch-ns stopwatch-ms)
   (reference """
     Both fields are mutable to support in-place updates. Use this module's API
     rather than @code{record-set!} directly.
 
-    @code{(ref sw 'ms)} and @code{(ref sw 's)} read elapsed time in milliseconds
-    or whole seconds. Any other symbol raises @code{System.ArgumentException}.
+    @code{(ref sw 'ns)}, @code{'us}, @code{'ms} and @code{'s} read elapsed time
+    in that unit. Any other symbol raises @code{System.ArgumentException}.
     """))
 
 (:doc stopwatch
   (summary "Creates a new stopped stopwatch initialized to zero.")
-  (returns "A stopped stopwatch with 0 ms elapsed.")
+  (returns "A stopped stopwatch with nothing elapsed.")
   (see stopwatch-start!))
 
 (:doc stopwatch-start!
@@ -72,13 +74,41 @@
   (arg sw "The stopwatch. Stopping an already-stopped stopwatch has no effect.")
   (see stopwatch-start! stopwatch-ms))
 
-(:doc stopwatch-ms
-  (summary "Returns total elapsed milliseconds for a stopwatch.")
+(:doc stopwatch-ns
+  (summary "Returns total elapsed nanoseconds for a stopwatch.")
   (arg sw "The stopwatch.")
   (returns "Total elapsed time across completed runs, plus the active run if currently running.")
-  (see stopwatch-stop!)
+  (see stopwatch-stop! stopwatch-us stopwatch-ms ns->string)
+  (reference """
+    Can be called on running stopwatches without interrupting timing. The
+    resolution is the clock's: on @code{system-clock}, that of
+    @code{System.Diagnostics.Stopwatch}.
+    """))
+
+(:doc stopwatch-us
+  (summary "Returns total elapsed microseconds for a stopwatch, rounded down.")
+  (arg sw "The stopwatch.")
+  (returns "What stopwatch-ns returns, divided by 1000.")
+  (see stopwatch-ns))
+
+(:doc stopwatch-ms
+  (summary "Returns total elapsed milliseconds for a stopwatch, rounded down.")
+  (arg sw "The stopwatch.")
+  (returns "Total elapsed time across completed runs, plus the active run if currently running.")
+  (see stopwatch-stop! stopwatch-ns)
   (reference """
     Can be called on running stopwatches without interrupting timing.
+    """))
+
+(:doc ns->string
+  (summary "A duration in nanoseconds as text, in a unit that fits it.")
+  (arg ns "The duration, in nanoseconds.")
+  (returns "The duration in ns, us, ms or s: the largest unit it is at least 1 of, with one decimal under 100.")
+  (see stopwatch-ns time-it)
+  (example """
+    (ns->string 850L)        ; "850 ns"
+    (ns->string 12500L)      ; "12.5 us"
+    (ns->string 3210000L)    ; "3.2 ms"
     """))
 
 (:doc get-memory-usage
@@ -104,15 +134,15 @@
   (see stopwatch get-memory-usage)
   (example """
     (time-it #:times 100 (list-sort big-list))
-    ;; prints: Mean of 100 runs: 3ms. 120000B allocated per run.
+    ;; prints: Mean of 100 runs: 3.2 ms. 120000B allocated per run.
     """)
   (reference """
     Executes one untimed warmup iteration prior to timed runs (total iterations:
     n + 1). During warmup, @code{current-output-port} is redirected to a string
     port to suppress console output, though other side effects still occur.
 
-    Timings derive from @code{current-clock} with millisecond resolution. Averages
-    use integer division, so bodies completing in under 1 ms report 0 ms. Memory
+    Timings derive from @code{current-clock} in nanoseconds, and the mean is
+    printed with @code{ns->string}. Memory
     allocation measurements derive from @code{get-memory-usage} on the executing
     thread. Operations that suspend and resume across different thread pool
     threads will report inaccurate allocation values.

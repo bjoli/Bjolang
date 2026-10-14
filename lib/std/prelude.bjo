@@ -168,7 +168,7 @@
   getenv op/getenv
 
   ;; The clock
-  Clock make-clock system-clock current-clock monotonic-ms
+  Clock make-clock system-clock current-clock monotonic-ms monotonic-ns
 
   promise-join/sync panic!)
 
@@ -2513,23 +2513,29 @@
 ;; ---------------------------------------------------------------------------
 ;;
 ;; A `Clock` is a record of functions, so a program can make its own.
-;; `monotonic-ms` reads it here, and (std datetime)'s `now` and `today` read
-;; the same one, so binding `current-clock` moves both.
+;; `monotonic-ms` and `monotonic-ns` read it here, and (std datetime)'s `now`
+;; and `today` read the same one, so binding `current-clock` moves both.
 ;;
 ;; - `read-monotonic-ms`: milliseconds from an unspecified start. Never
 ;;   decreases; only differences mean anything.
+;; - `read-monotonic-ns`: the same clock in nanoseconds, at the resolution
+;;   the clock has. A clock made with only `#:monotonic-ms` reads it as its
+;;   milliseconds times a million, so a fake clock gives the same exact
+;;   elapsed time in both units.
 ;; - `read-utc-ticks`: the wall clock, in .NET ticks since 0001-01-01 UTC. May
 ;;   step back.
 ;; - `read-zone`: the zone (std datetime)'s `today` is in.
 ;; - `advance-ticks`: what (std datetime)'s `clock-advance!` calls, with a
 ;;   number of ticks. `None` for a clock that cannot be moved.
 (type (: Clock (Record (: read-monotonic-ms (-> long))
+                       (: read-monotonic-ns (-> long))
                        (: read-utc-ticks (-> long))
                        (: read-zone (-> System.TimeZoneInfo))
                        (: advance-ticks (Option (-> long void))))))
 
 (import/extern
   (clock-ms (: BjolangRuntime.ClockMs (-> long)))
+  (clock-ns (: BjolangRuntime.ClockNs (-> long)))
   (clr-utc-now (: System.DateTime.UtcNow #:get))
   (clr-local-zone (: System.TimeZoneInfo.Local #:get)))
 
@@ -2539,22 +2545,28 @@
 (: system-zone (-> System.TimeZoneInfo))
 (defun (system-zone) clr-local-zone)
 
-;; Each part not given is the system clock's.
+;; Each part not given is the system clock's, but for the nanoseconds: when
+;; `#:monotonic-ns` is not given, they are read from the milliseconds, so that
+;; a clock given only `#:monotonic-ms` agrees with itself.
 (: make-clock (-> (#:monotonic-ms (-> long))
+                  (#:monotonic-ns (Option (-> long)))
                   (#:utc-ticks (-> long))
                   (#:zone (-> System.TimeZoneInfo))
                   (#:advance (Option (-> long void)))
                   Clock))
-(defun (make-clock #:monotonic-ms clock-ms #:utc-ticks system-utc-ticks
+(defun (make-clock #:monotonic-ms clock-ms #:monotonic-ns None #:utc-ticks system-utc-ticks
                    #:zone system-zone #:advance None)
   (Clock (read-monotonic-ms monotonic-ms)
+         (read-monotonic-ns (match monotonic-ns
+                              ((Some ns) ns)
+                              (None (fun () (* (monotonic-ms) 1000000L)))))
          (read-utc-ticks utc-ticks)
          (read-zone zone)
          (advance-ticks advance)))
 
 ;; The machine's clock, in the machine's zone.
 (: system-clock Clock)
-(def system-clock (make-clock))
+(def system-clock (make-clock #:monotonic-ns (Some clock-ns)))
 
 ;; Cold: nothing reads the time in a loop.
 (: current-clock (Param Clock))
@@ -2564,6 +2576,12 @@
 (: monotonic-ms (-> (#:clock Clock) long))
 (defun (monotonic-ms #:clock (parameter-ref current-clock))
   ((record-ref clock read-monotonic-ms)))
+
+;; Nanoseconds on the same clock: for timing what takes less than a
+;; millisecond.
+(: monotonic-ns (-> (#:clock Clock) long))
+(defun (monotonic-ns #:clock (parameter-ref current-clock))
+  ((record-ref clock read-monotonic-ns)))
 
 
 ;; ---------------------------------------------------------------------------

@@ -961,18 +961,21 @@
 (:doc Clock
   (summary "Where the time comes from: a record of functions, so a program can make its own.")
   (field read-monotonic-ms "Milliseconds from an unspecified start. Never decreases; only differences mean anything.")
+  (field read-monotonic-ns "The same clock in nanoseconds, at the resolution the clock has.")
   (field read-utc-ticks "The wall clock, in .NET ticks since 0001-01-01 UTC. May step back when the machine's time is corrected.")
   (field read-zone "The zone @code{(std datetime)}'s @code{today} is in.")
   (field advance-ticks "What @code{(std datetime)}'s @code{clock-advance!} calls, with a number of ticks. @code{None} for a clock that cannot be moved.")
-  (see make-clock current-clock monotonic-ms)
+  (see make-clock current-clock monotonic-ms monotonic-ns)
   (reference """
-    @code{monotonic-ms} reads @code{current-clock}, and @code{(std datetime)}'s
-    @code{now} and @code{today} read the same one, so binding it moves both.
+    @code{monotonic-ms} and @code{monotonic-ns} read @code{current-clock}, and
+    @code{(std datetime)}'s @code{now} and @code{today} read the same one, so
+    binding it moves both.
     """))
 
 (:doc make-clock
   (summary "A clock, with each part not given taken from the system's.")
   (key #:monotonic-ms "Reads the monotonic milliseconds.")
+  (key #:monotonic-ns "Reads the monotonic nanoseconds, or @code{None}: then they are the milliseconds times a million.")
   (key #:utc-ticks "Reads the wall clock in .NET ticks, UTC.")
   (key #:zone "Function returning the local time zone.")
   (key #:advance "Moves the clock on by a number of ticks, or @code{None}.")
@@ -985,6 +988,12 @@
   (reference """
     @code{(std datetime)} has @code{fixed-clock}, @code{manual-clock} and
     @code{clock-in} for the clocks a test wants.
+
+    A clock given only @code{#:monotonic-ms} reads its nanoseconds from those
+    milliseconds, so a fake clock gives the same exact elapsed time in both
+    units. Any other clock given no @code{#:monotonic-ns}, such as one given
+    only @code{#:utc-ticks}, therefore has nanoseconds of millisecond
+    resolution. @code{system-clock} has the timer's own.
     """))
 
 (:doc system-clock
@@ -1006,9 +1015,20 @@
   (returns "Milliseconds from an unspecified start. Only differences mean anything.")
   (see current-clock Clock)
   (reference """
-    For measuring how long something took; @code{(std stopwatch)} measures
-    with it. Not the wall-clock time, which is @code{(std datetime)}'s
-    @code{now}.
+    For measuring how long something took. Not the wall-clock time, which is
+    @code{(std datetime)}'s @code{now}. For what takes less than a
+    millisecond, use @code{monotonic-ns}.
+    """))
+
+(:doc monotonic-ns
+  (summary "The clock's monotonic reading, in nanoseconds.")
+  (key #:clock "The clock to read.")
+  (returns "Nanoseconds from an unspecified start. Only differences mean anything.")
+  (see monotonic-ms current-clock Clock)
+  (reference """
+    The same clock as @code{monotonic-ms}, at the resolution the clock has: on
+    @code{system-clock}, the resolution of @code{System.Diagnostics.Stopwatch}.
+    @code{(std stopwatch)} measures with it.
     """))
 
 ;; ---------------------------------------------------------------------------

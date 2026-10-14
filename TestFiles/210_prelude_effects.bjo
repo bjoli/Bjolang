@@ -150,6 +150,30 @@
         (str (->str (ref sw 'ms)) "/" (->str (ref sw 's))))))
   (expect "a stopwatch is read by unit name" named "7000/7")
 
+  ;; A clock given only milliseconds reads its nanoseconds from them, so a fake
+  ;; clock gives the same exact elapsed time in both units.
+  (def clock5 (make-box (list 3L 5L)))
+  (def derived (make-clock #:monotonic-ms (ticking clock5)))
+  (def ns-start (monotonic-ns #:clock derived))
+  (expect "a clock given only milliseconds reads nanoseconds from them"
+          (- (monotonic-ns #:clock derived) ns-start) 2000000L)
+
+  ;; A clock given nanoseconds reads them as they are.
+  (def clock6 (make-box (list 100L 1350L)))
+  (def fine
+    (parameterize ((current-clock (make-clock #:monotonic-ns (Some (ticking clock6)))))
+      (let ((sw (stopwatch)))
+        (stopwatch-start! sw)
+        (stopwatch-stop! sw)
+        (str (->str (stopwatch-ns sw)) "/" (->str (stopwatch-us sw)) "/"
+             (->str (ref sw 'ns)) "/" (->str (ref sw 'us)) "/" (->str (stopwatch-ms sw))))))
+  (expect "a stopwatch keeps nanoseconds" fine "1250/1/1250/1/0")
+
+  (expect "ns->string picks the unit"
+          (str (ns->string 850L) ", " (ns->string 12500L) ", " (ns->string 3210000L) ", "
+               (ns->string 1500000000L) ", " (ns->string 250000000000L))
+          "850 ns, 12.5 us, 3.2 ms, 1.5 s, 250 s")
+
   ;; The real clock is monotonic, so the same watch never goes backwards.
   (def real (stopwatch))
   (stopwatch-start! real)
