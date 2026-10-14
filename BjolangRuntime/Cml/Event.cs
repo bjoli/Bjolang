@@ -563,7 +563,7 @@ public class AlwaysEvent<T> : IEvent<T>
         // a transient C (some other branch mid-pairing) as "already lost" and
         // silently drops an event that is always enabled.
         if (sharedState.TryCommit(eventId))
-            Scheduler.Dispatch(onSync, _value);
+            Scheduler.DispatchOwn(onSync, _value);
     }
 }
 

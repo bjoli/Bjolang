@@ -421,7 +421,7 @@ public sealed class Inbox<T>
 
         if (state.TryCommit(eventId))
         {
-            Scheduler.Dispatch(onSync, value);
+            Scheduler.DispatchOwn(onSync, value);
             return;
         }
 
@@ -1081,7 +1081,7 @@ internal sealed class Gate<T> : IEvent<T>, INowable<T>
             value = _value;
         }
 
-        if (state.TryCommit(eventId)) Scheduler.Dispatch(onSync, value);
+        if (state.TryCommit(eventId)) Scheduler.DispatchOwn(onSync, value);
     }
 
     bool INowable<T>.TryNow(out T value)

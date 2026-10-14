@@ -324,6 +324,40 @@ public static class Scheduler
         }
     }
 
+    /// <summary>
+    /// Complete the sync that is publishing on this thread, from inside its
+    /// own publish: a branch that committed at once.
+    ///
+    /// Within the inline budget, as <see cref="Dispatch{T}(Action{T}, T)"/>.
+    /// Past it, the fiber yields: its sink is queued, and it parks although
+    /// its sync is done. That yield is the budget at work, and is kept (see
+    /// design.md, "A sync that commits at once still yields past the budget
+    /// — rejected"). What differs is the queueing. The partner that the
+    /// channel resumed just before went to <c>runnext</c>, and the sink
+    /// pushes it out to the back of the queue without waking another core
+    /// (<see cref="Workers.PushYield"/>). Woken, that core stole the partner,
+    /// and a chain of two fibers went on between two cores: on a choose that
+    /// fires one branch, three times the CPU of the chain on one core.
+    /// </summary>
+    internal static void DispatchOwn<T>(Action<T> onSync, T value)
+    {
+        int depth = InlineDepth;
+        if (depth < MaxInlineDepth && (!Workers.Enabled || --InlineBudget >= 0))
+        {
+            InlineDepth = depth + 1;
+            try { onSync(value); }
+            finally { InlineDepth = depth; }
+        }
+        else if (Workers.Enabled)
+        {
+            Workers.PushYield(ActionWorkItem<T>.Rent(onSync, value));
+        }
+        else
+        {
+            Enqueue(onSync, value);
+        }
+    }
+
     public static void Dispatch<T>(Action<T> action, T state)
     {
         int depth = InlineDepth;

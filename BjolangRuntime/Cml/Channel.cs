@@ -235,7 +235,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         if (putResumeGive != null) Scheduler.Dispatch(putResumeGive, Unit.Value);
         else Scheduler.Dispatch(putResume!);
 
-        Scheduler.Dispatch(onSync, putValue);
+        Scheduler.DispatchOwn(onSync, putValue);
         return false;
     }
 
@@ -360,7 +360,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         if (getResume != null) Scheduler.DispatchTaken(getResume, value, moreTakers);
         else if (directTakerResume != null) Scheduler.DispatchTaken(directTakerResume, moreTakers);
 
-        Scheduler.Dispatch(onSync, Unit.Value);
+        Scheduler.DispatchOwn(onSync, Unit.Value);
         return false;
     }
 
@@ -734,7 +734,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         if (getResume != null) Scheduler.DispatchTaken(getResume, value, moreTakers);
         else if (directTakerResume != null) Scheduler.DispatchTaken(directTakerResume, moreTakers);
 
-        Scheduler.Dispatch(onSync, Unit.Value);
+        Scheduler.DispatchOwn(onSync, Unit.Value);
     }
 
     public void PublishReceive(SyncState state, int eventId, Action<T> resumeGet)
@@ -879,7 +879,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
         if (putResumeGive != null) Scheduler.Dispatch(putResumeGive, Unit.Value);
         else Scheduler.Dispatch(putResume!);
 
-        Scheduler.Dispatch(resumeGet, putValue);
+        Scheduler.DispatchOwn(resumeGet, putValue);
     }
 
     // -----------------------------------------------------------------------

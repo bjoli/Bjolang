@@ -2074,6 +2074,42 @@ The first 50 reps at 1M/s put the new build's p99 10% higher with p=0.004,
 and the next 50 put it 16% lower: the tail at that rate moves with where the
 GC pauses fall, and one A/B of it can mislead.
 
+### A yield does not wake a core for its partner
+
+`cmlbench`'s skewed choose, a chain of two fibers, took 230 ns a round with
+Workers and 105 with the pool, on 5.4 s of CPU against 2.0. Unlimited inline
+budget brought it to 96 ns and 1.2 s, so the budget was the cause, though
+the budget is wanted (see "Run queues of our own").
+
+Counters in a copy of the runtime, over 5 million rounds, gave the
+mechanism. Of 313,000 pushes to a worker, 105,000 displaced the item in
+`runnext`, and each woke a pump: 85,000 wake-ups and 26,000 steals. Past
+the budget, a `choose` that commits as it publishes queues two things, the
+partner that the channel resumed and then its own sink. The sink, the
+fiber yielding, went to `runnext` after the partner, pushed the partner to
+the back of the queue, and woke a pump, which stole the partner. The chain
+then ran between two cores, each handover a cross-core one, and the pumps
+spun in between: the cycles were spread evenly over six threads, and
+`SpinWait` was a third of them.
+
+Three ways to queue that sink, against the build before:
+
+                                 choose, ns   CPU, s   bench/service
+    as before                       235        5.4
+    sink to the back, no wake        93        1.2    p99 at 1M/s 6.1 to 12.2 ms,
+                                                       4 cores closed 3.1 to 4.8
+    sink to runnext, partner         188        1.7    no difference, all four
+      to the back, no wake
+
+The sink at the back of the queue keeps the chain whole, but in
+`bench/service` the fiber yielding is the shard, the bottleneck, and every
+client waits behind it, as when the sink ran inline. The third keeps the
+sink first and only stops the partner from waking a core: a fiber that
+yields is no new work for another core, and its partner is the other half
+of a chain this core runs. `Scheduler.DispatchOwn` queues such a sink
+through `Workers.PushYield`. The A/B against the build before, 50 reps each,
+found no difference in wall, CPU, p99 or p99.9 in any of the four runs.
+
 ---
 
 ## 6. Known issues

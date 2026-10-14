@@ -155,7 +155,7 @@ internal sealed class TimeoutNode : WheelNode
         // of taking a pointless trip through the wheel.
         if (ms <= 0)
         {
-            if (state.TryCommit(eventId)) Scheduler.Dispatch(onSync, default);
+            if (state.TryCommit(eventId)) Scheduler.DispatchOwn(onSync, default);
             return;
         }
 

@@ -155,6 +155,18 @@ internal static class Workers
         Wake();
     }
 
+    /// A sync's own sink, queued because the inline budget ran out: a yield.
+    /// Into runnext, as any resume, but what it displaces goes to the back of
+    /// the queue without waking anybody: the partner it displaces is the
+    /// other half of a chain that this core is running.
+    internal static void PushYield(IThreadPoolWorkItem item)
+    {
+        var w = t_worker;
+        if (w is null) { Push(item); return; }
+        var old = Interlocked.Exchange(ref w.Next, item);
+        if (old is not null) w.PushTail(old);
+    }
+
     /// <summary>
     /// Start a spinning pump if a worker is idle and nobody is looking for work
     /// already. The spinning count is taken here, before the pump exists, so

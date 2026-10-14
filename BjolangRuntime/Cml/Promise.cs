@@ -614,7 +614,8 @@ public class Promise<T> : IEvent<Result<T>>,
     {
         if (IsCompleted)
         {
-            Deliver(state, eventId, onSync);
+            // From inside the publish, so this sync's own sink; see Deliver.
+            if (state.TryCommit(eventId)) Scheduler.DispatchOwn(onSync, Outcome);
             return;
         }
 
@@ -695,7 +696,7 @@ public class Promise<T> : IEvent<Result<T>>,
     {
         if (IsCompleted)
         {
-            DeliverJoin(state, eventId, onSync);
+            if (state.TryCommit(eventId)) Scheduler.DispatchOwn(onSync, ForJoin(Outcome));
             return;
         }
 
@@ -780,7 +781,7 @@ internal sealed class PromiseValue<T> : IEvent<T>, INowable<T>
     {
         if (_promise.IsCompleted)
         {
-            Deliver(state, eventId, onSync);
+            if (state.TryCommit(eventId)) Scheduler.DispatchOwn(onSync, _promise.Outcome.Value);
             return;
         }
 

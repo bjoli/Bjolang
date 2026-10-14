@@ -3,6 +3,17 @@
 
 What each change guarantees, and what it leaves open.
 
+* A fiber that yields keeps its partner on its core
+
+- A sync that commits as it publishes, past the inline budget, queues the
+  syncing fiber's sink and so yields, as before. The partner its channel
+  resumed just before is now moved to the back of the queue without waking
+  another core. Woken, that core took the partner, and a chain of two
+  fibers ran between two cores. ~cmlbench~'s skewed choose uses a third of
+  the CPU (5.4 to 1.7 s) and takes 190 ns a round in place of 230.
+  ~bench/service~ did not change. See ~BjolangRuntime/Cml/design.md~, "A
+  yield does not wake a core for its partner".
+
 * Two type checks fewer on the scheduler's paths
 
 - A worker's run queue stores its items in a struct, so that copying half a
