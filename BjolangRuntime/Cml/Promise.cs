@@ -306,8 +306,13 @@ public class Promise<T> : IEvent<Result<T>>,
 
         if (oldWaiters != null)
         {
-            if (oldWaiters is List<object> list)
+            // The exact type: List<T> is not sealed, so `is List<object>`
+            // calls a helper that walks the type's parents, and the waiter is
+            // usually a single fiber's box, which is no list. The lists here
+            // are all made by this class.
+            if (oldWaiters.GetType() == typeof(List<object>))
             {
+                var list = Unsafe.As<List<object>>(oldWaiters);
                 lock (list)
                 {
                     foreach (var w in list) Wake(w);
@@ -376,14 +381,16 @@ public class Promise<T> : IEvent<Result<T>>,
     /// </summary>
     private static void Wake(object waiter)
     {
-        if (waiter is PromiseWaiter pw)
+        // A parked fiber's box first, registered with no delegate (see
+        // IResume): it is the common waiter, and no PromiseWaiter is one, so
+        // the order does not change which branch a waiter takes.
+        if (waiter is IResume resume)
+        {
+            Scheduler.Enqueue(resume);
+        }
+        else if (waiter is PromiseWaiter pw)
         {
             if (!pw.IsAbandoned) Scheduler.Enqueue(pw);
-        }
-        else if (waiter is IResume resume)
-        {
-            // A parked fiber's box, registered with no delegate (see IResume).
-            Scheduler.Enqueue(resume);
         }
         else
         {
@@ -396,13 +403,14 @@ public class Promise<T> : IEvent<Result<T>>,
     /// <summary>Run a waiter inline; the already-completed registration path.</summary>
     private static void SignalInline(object waiter)
     {
-        if (waiter is PromiseWaiter pw)
-        {
-            if (!pw.IsAbandoned) pw.Signal();
-        }
-        else if (waiter is IResume resume)
+        // In the order of Wake, for the same reason.
+        if (waiter is IResume resume)
         {
             resume.Resume();
+        }
+        else if (waiter is PromiseWaiter pw)
+        {
+            if (!pw.IsAbandoned) pw.Signal();
         }
         else
         {

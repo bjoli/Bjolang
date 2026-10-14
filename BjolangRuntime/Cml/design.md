@@ -2040,6 +2040,40 @@ whenever its tail is long, so Go's delays fall while requests run. Which
 runtime is better depends on the latency, and the service time says where
 the time goes.
 
+### Where the cycles go, and two type checks fewer
+
+`perf` on `bench/service`'s closed loop on all cores, with the perf map on,
+ReadyToRun and tiering off so that every method has a name and its final
+code (`DOTNET_PerfMapEnabled=1 DOTNET_ReadyToRun=0
+DOTNET_TieredCompilation=0 DOTNET_EnableWriteXorExecute=0`; without the
+last, JIT code shows as `memfd:doublemapper`):
+
+    channels, events, sync              26%
+    TLS, casts, stubs, write barriers   20%
+    the program's own code              14%   (crunch 7%)
+    GC                                  13%   (server GC threads joining 6%)
+    fibers and scopes                   12%
+    scheduler: spin, steal, find work    7%
+    channel locks, contended             1%
+
+Two of the casts were ours. `StealHalf` copied items between arrays of
+`IThreadPoolWorkItem`, and a store into an array of a reference type checks
+the element's type: 2.8%. A worker's ring is now an array of a struct around
+the item. `Promise.Complete` asked `is List<object>` and then `is
+PromiseWaiter`; neither type is sealed, so both are calls that walk the
+type's parents, and the waiter is nearly always a fiber's box, which is
+neither: 2.9%. It now compares the list's exact type, and asks for
+`IResume` first.
+
+A/B against the build before, 50 reps each, the open loop at 1M/s 100:
+
+    all cores, closed loop, cpu ms    5290 to 5141   (-2.8%, p=0.04)
+    the rest of wall, tail and cpu:   no difference
+
+The first 50 reps at 1M/s put the new build's p99 10% higher with p=0.004,
+and the next 50 put it 16% lower: the tail at that rate moves with where the
+GC pauses fall, and one A/B of it can mislead.
+
 ---
 
 ## 6. Known issues
