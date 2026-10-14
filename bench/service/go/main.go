@@ -52,13 +52,20 @@
 // runtime has every request wait longer. With a rate R (requests a second,
 // over all clients) the loop is open instead. The schedule starts 100 ms
 // after the clients are spawned, at t0, and request i of client c is due at
-// t0 + (i*clients + c)/R. The wall time is then taken from t0. A client that is early sleeps until then, in
-// whole milliseconds rounded up, as the three runtimes' timers all can; one
-// that is late sends at once. Its latency is taken from the due time, so a
-// backlog counts, or from when the client woke, if it slept: how late a
-// timer fires is not a property of the service. With 10000 clients a client
-// sends every 10000/R seconds, which at a million a second is 10 ms, well
-// above the timers' resolution.
+// t0 + (i*clients + c)/R. The wall time is then taken from t0. A client that
+// is early sleeps until then, in whole milliseconds rounded up, as the three
+// runtimes' timers all can; one that is late sends at once. With 10000
+// clients a client sends every 10000/R seconds, which at a million a second
+// is 10 ms, well above the timers' resolution.
+//
+// Two latencies are taken of each sampled request. The latency (p50, p99,
+// p99.9) counts from the due time: what a caller of the service sees, with
+// a late wake-up, a wait in a run queue and a GC pause while the client
+// slept all in it. It also has the sleep's rounding to whole milliseconds in
+// it, the same in all three, so below about 2 ms it says little. The service
+// time (svc) counts from when the client ran, and leaves all of that out.
+// It used to be the only one, and it made a runtime whose delays fall while
+// clients sleep look better than it is. In a closed loop the two are the same.
 //
 // The requests due in the schedule's first 200 ms are not sampled. Every rep
 // starts its clients afresh, and the first request of each found the heap
@@ -146,7 +153,8 @@ func request(chans []chan Req, op, key, value int) (int, bool) {
 
 type clientOut struct {
 	checksum int64
-	samples  []int64
+	samples  []int64 // from the due time
+	svc      []int64 // from when the client ran
 	timeouts int
 }
 
@@ -159,16 +167,18 @@ func client(c, clients, requests, rate int, start time.Time, chans []chan Req) c
 	s := int64(c + 1)
 	var checksum int64
 	samples := make([]int64, 0, requests/8+1)
+	svc := make([]int64, 0, requests/8+1)
 	timeouts := 0
 	results := make(chan int)
 
 	for i := 0; i < requests; i++ {
 		sampled := i%8 == 0
-		var t0 time.Time
+		// The due time, and when the client ran.
+		var at, t0 time.Time
 		if rate > 0 {
 			offset := due(c, i, clients, rate)
 			sampled = sampled && offset >= warm
-			at := start.Add(offset)
+			at = start.Add(offset)
 			if wait := time.Until(at); wait > 0 {
 				time.Sleep((wait + time.Millisecond - 1).Truncate(time.Millisecond))
 				t0 = time.Now()
@@ -177,6 +187,7 @@ func client(c, clients, requests, rate int, start time.Time, chans []chan Req) c
 			}
 		} else if sampled {
 			t0 = time.Now()
+			at = t0
 		}
 
 		s = (s*1103515245 + 12345) % 2147483648
@@ -217,10 +228,12 @@ func client(c, clients, requests, rate int, start time.Time, chans []chan Req) c
 
 		checksum += int64(answer) + int64(d%3)
 		if sampled {
-			samples = append(samples, int64(time.Since(t0)))
+			done := time.Now()
+			samples = append(samples, int64(done.Sub(at)))
+			svc = append(svc, int64(done.Sub(t0)))
 		}
 	}
-	return clientOut{checksum, samples, timeouts}
+	return clientOut{checksum, samples, svc, timeouts}
 }
 
 func cpuMs() int64 {
@@ -277,21 +290,25 @@ func rep(n, clients, requests, rate int) {
 
 	var checksum int64
 	timeouts := 0
-	var samples []int64
+	var samples, svc []int64
 	for _, o := range outs {
 		checksum += o.checksum
 		timeouts += o.timeouts
 		samples = append(samples, o.samples...)
+		svc = append(svc, o.svc...)
 	}
 	for _, w := range works {
 		checksum += w
 	}
 	slices.Sort(samples)
-	at := func(per, of int) int64 { return samples[len(samples)*per/of] }
+	slices.Sort(svc)
+	at := func(s []int64, per, of int) int64 { return s[len(s)*per/of] }
 
 	if n > 0 {
-		fmt.Printf("rep %d wall_ms %d cpu_ms %d p50_ns %d p99_ns %d p999_ns %d timeouts %d checksum %d alloc_b %d gcs %d pause_ms %d\n",
-			n, wall, cpu, at(50, 100), at(99, 100), at(999, 1000), timeouts, checksum, alloc, gcs, pause)
+		fmt.Printf("rep %d wall_ms %d cpu_ms %d p50_ns %d p99_ns %d p999_ns %d timeouts %d checksum %d alloc_b %d gcs %d pause_ms %d svc_p50_ns %d svc_p99_ns %d svc_p999_ns %d\n",
+			n, wall, cpu, at(samples, 50, 100), at(samples, 99, 100), at(samples, 999, 1000),
+			timeouts, checksum, alloc, gcs, pause,
+			at(svc, 50, 100), at(svc, 99, 100), at(svc, 999, 1000))
 	}
 }
 

@@ -53,6 +53,16 @@ schedule, at each rate in turn, so the three are compared at the same load
 rate x seconds / 10000 requests, and `req/s` says whether a program kept up.
 
     bench/service/drive.py --rates 200000,500000,1000000 --cores 4
+
+In an open loop, p50, p99 and p99.9 count from when a request was due: what
+a caller sees. A client that sleeps until its request is due wakes in whole
+milliseconds, rounded up, in all three programs, so these have up to about
+a millisecond of that in them, and below about 2 ms they say little. `svc
+p99` and `svc p99.9` count from when the client ran instead. They leave out
+everything that held the client back: a late timer, a wait in a run queue,
+and a GC pause while it slept. A runtime whose delays fall there looks
+better on them than it is, so compare on the latency and read the service
+time as the part of it that the request itself took.
 """
 import argparse, os, statistics, subprocess, sys, tempfile, threading
 
@@ -157,6 +167,9 @@ def main():
         print(f"{clients} clients x {a.requests} requests; {where}; median of {trials} x {reps_n} reps")
     cols = ["wall ms", "req/s", "cpu ms", "cores", "p50 us", "p99 us", "p99.9 us", "B/req", "gcs", "pause ms",
             "peak MB"]
+    # In a closed loop the service time is the latency; see the header.
+    if is_open:
+        cols += ["svc p99", "svc p99.9"]
     print(f"{'':22}" + "".join(f"{c:>11}" for c in cols))
     ok = True
     for rate in rates:
@@ -179,6 +192,8 @@ def main():
                    f"{m['p50_ns'] / 1000:.0f}", f"{m['p99_ns'] / 1000:.0f}", f"{m['p999_ns'] / 1000:.0f}",
                    f"{m['alloc_b'] / requests:.0f}", f"{m['gcs']:.0f}", f"{m['pause_ms']:.0f}",
                    f"{m['rss_kb'] / 1024:.0f}"]
+            if is_open:
+                row += [f"{m['svc_p99_ns'] / 1000:.0f}", f"{m['svc_p999_ns'] / 1000:.0f}"]
             label = f"{label} @{rate / 1e6:g}M" if rate else label
             print(f"{label:22}" + "".join(v.rjust(11) for v in row), flush=True)
 

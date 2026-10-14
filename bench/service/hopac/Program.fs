@@ -53,14 +53,17 @@ let OpPut = 1
 
 type Req = { Op: int; Key: int; Value: int; Reply: Ch<int> }
 
-type ClientOut = { Checksum: int64; Samples: ResizeArray<int64>; Timeouts: int }
+/// Samples from the due time, and Svc from when the client ran: see
+/// go/main.go.
+type ClientOut = { Checksum: int64; Samples: ResizeArray<int64>; Svc: ResizeArray<int64>; Timeouts: int }
 
 /// Whole seconds and the rest apart, because ticks times 10^9 overflows an
 /// int64 after about 9.2 s at a frequency of 10^9 a second.
-let nsSince (t0: int64) =
-    let ticks = Stopwatch.GetTimestamp() - t0
+let ticksToNs (ticks: int64) =
     let f = Stopwatch.Frequency
     (ticks / f) * 1_000_000_000L + (ticks % f) * 1_000_000_000L / f
+
+let nsSince (t0: int64) = ticksToNs (Stopwatch.GetTimestamp() - t0)
 
 let cpuMs () =
     int64 (Process.GetCurrentProcess().TotalProcessorTime.TotalMilliseconds)
@@ -124,8 +127,8 @@ let due c i clients rate =
 let leadTicks = Stopwatch.Frequency / 10L
 let warmTicks = Stopwatch.Frequency / 5L
 
-/// Wait for request i's due time, if it has not come, and answer when its
-/// latency counts from: the due time if it had come, the wake-up if not.
+/// Wait for request i's due time, if it has not come, and answer when the
+/// client ran: the due time if it had come, the wake-up if not.
 let pace c i clients rate (start: int64) : Job<int64> =
     let at = start + due c i clients rate
     let now = Stopwatch.GetTimestamp()
@@ -137,16 +140,19 @@ let pace c i clients rate (start: int64) : Job<int64> =
 let client c clients requests rate start chans : Job<ClientOut> =
     let results = Ch<int>()
     let samples = ResizeArray<int64>(requests / 8 + 1)
+    let svc = ResizeArray<int64>(requests / 8 + 1)
     let rec go i (s: int64) (checksum: int64) timeouts : Job<ClientOut> =
         if i = requests then
-            Job.result { Checksum = checksum; Samples = samples; Timeouts = timeouts }
+            Job.result { Checksum = checksum; Samples = samples; Svc = svc; Timeouts = timeouts }
         elif rate > 0 then
             pace c i clients rate start >>= fun t0 ->
-                step i s checksum timeouts (i % 8 = 0 && due c i clients rate >= warmTicks) t0
+                step i s checksum timeouts (i % 8 = 0 && due c i clients rate >= warmTicks)
+                    (start + due c i clients rate) t0
         else
             let sampled = i % 8 = 0
-            step i s checksum timeouts sampled (if sampled then Stopwatch.GetTimestamp() else 0L)
-    and step i (s: int64) (checksum: int64) timeouts sampled t0 : Job<ClientOut> =
+            let t0 = if sampled then Stopwatch.GetTimestamp() else 0L
+            step i s checksum timeouts sampled t0 t0
+    and step i (s: int64) (checksum: int64) timeouts sampled (at: int64) (t0: int64) : Job<ClientOut> =
             let s2 = (s * 1103515245L + 12345L) % 2147483648L
             let key = int (s2 % int64 KeySpace)
             let d = crunch DecodeWork key
@@ -154,7 +160,10 @@ let client c clients requests rate start chans : Job<ClientOut> =
                 if i % 10 = 9 then multiGet chans key results
                 else single chans (if i % 5 = 0 then OpPut else OpGet) key
             outcome >>= fun (struct (answer, lost)) ->
-                if sampled then samples.Add(nsSince t0)
+                if sampled then
+                    let finished = Stopwatch.GetTimestamp()
+                    samples.Add(ticksToNs (finished - at))
+                    svc.Add(ticksToNs (finished - t0))
                 go (i + 1) s2 (checksum + int64 (answer + d % 3)) (timeouts + lost)
     go 0 (int64 (c + 1)) 0L 0
 
@@ -201,18 +210,22 @@ let rep n clients requests rate =
         return total })
 
     let samples = ResizeArray<int64>()
+    let svc = ResizeArray<int64>()
     let mutable checksum = work
     let mutable timeouts = 0
     for o in gathered do
         checksum <- checksum + o.Checksum
         timeouts <- timeouts + o.Timeouts
         samples.AddRange o.Samples
+        svc.AddRange o.Svc
     samples.Sort()
+    svc.Sort()
 
     if n > 0 then
-        printfn "rep %d wall_ms %d cpu_ms %d p50_ns %d p99_ns %d p999_ns %d timeouts %d checksum %d alloc_b %d gcs %d pause_ms %d"
+        printfn "rep %d wall_ms %d cpu_ms %d p50_ns %d p99_ns %d p999_ns %d timeouts %d checksum %d alloc_b %d gcs %d pause_ms %d svc_p50_ns %d svc_p99_ns %d svc_p999_ns %d"
             n wall cpu (percentile samples 50 100) (percentile samples 99 100)
             (percentile samples 999 1000) timeouts checksum alloc gcs pause
+            (percentile svc 50 100) (percentile svc 99 100) (percentile svc 999 1000)
 
 [<EntryPoint>]
 let main argv =

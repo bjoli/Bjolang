@@ -50,7 +50,9 @@
 
 (type
   (: Req (Record (: op int) (: key int) (: value int) (: reply (Chan int))))
-  (: ClientOut (Record (: checksum long) (: samples (MutableVec long)) (: timeouts int))))
+  ;; samples from the due time, svc from when the client ran: see go/main.go.
+  (: ClientOut (Record (: checksum long) (: samples (MutableVec long)) (: svc (MutableVec long))
+                       (: timeouts int))))
 
 (: settle (-> void))
 (defun (settle)
@@ -60,11 +62,14 @@
 
 ;; Whole seconds and the rest apart, because ticks times 10^9 overflows a
 ;; long after about 9.2 s at a frequency of 10^9 a second.
-(: ns-since (-> long long))
-(defun (ns-since t0)
-  (def ticks (- (timestamp) t0))
+(: ticks->ns (-> long long))
+(defun (ticks->ns ticks)
   (+ (* (/ ticks stopwatch-frequency) 1000000000L)
      (/ (* (% ticks stopwatch-frequency) 1000000000L) stopwatch-frequency)))
+
+(: ns-since (-> long long))
+(defun (ns-since t0)
+  (ticks->ns (- (timestamp) t0)))
 
 (: cpu-ms (-> long))
 (defun (cpu-ms)
@@ -143,8 +148,8 @@
   (/ (* (cast System.Int64 (+ (* i clients) c)) stopwatch-frequency)
      (cast System.Int64 rate)))
 
-;; Waits for request i's due time, if it has not come, and answers when its
-;; latency counts from: the due time if it had come, the wake-up if not.
+;; Waits for request i's due time, if it has not come, and answers when the
+;; client ran: the due time if it had come, the wake-up if not.
 ;;
 ;; Inlined, so that a client parked in the wait keeps no frame for it: a
 ;; client spends most of its time here. `request` is not, though as small: it
@@ -167,16 +172,18 @@
   ;; would allocate a cell per sample, and keep it until the rep ends, so the
   ;; GC would have more to promote here than there.
   (def samples (mutablevec-with-capacity (+ (/ requests 8) 1)))
+  (def svc (mutablevec-with-capacity (+ (/ requests 8) 1)))
   (let go ((i 0)
            (s (cast System.Int64 (+ c 1)))
            (checksum 0L)
            (timeouts 0))
     (if (= i requests)
-        (ClientOut (checksum checksum) (samples samples) (timeouts timeouts))
+        (ClientOut (checksum checksum) (samples samples) (svc svc) (timeouts timeouts))
         (let* ((every-eighth (= (% i 8) 0))
                (t0 (cond ((> rate 0) (pace c i clients rate start))
                          (every-eighth (timestamp))
                          (else 0L)))
+               (at (if (> rate 0) (+ start (due c i clients rate)) t0))
                (sampled (and every-eighth
                              (or (= rate 0) (>= (due c i clients rate) warm-ticks))))
                (s2 (% (+ (* s 1103515245L) 12345L) 2147483648L))
@@ -186,7 +193,10 @@
             (if (= (% i 10) 9)
                 (multi-get chans key results)
                 (single chans (if (= (% i 5) 0) op-put op-get) key)))
-          (when sampled (mutablevec-add! samples (ns-since t0)))
+          (when sampled
+            (def finished (timestamp))
+            (mutablevec-add! samples (ticks->ns (- finished at)))
+            (mutablevec-add! svc (ticks->ns (- finished t0))))
           (go (+ i 1)
               s2
               (+ checksum (cast System.Int64 (+ answer (% d 3))))
@@ -213,16 +223,17 @@
   (def pause0 (timespan-ms (gc-pause)))
   (def client-ps (loop (:for c (range 0 clients))
                        (:acc v (vecing (bjo (client c clients requests rate t0 chans))))))
-  (def (checksum samples timeouts)
-    (let go ((c 0) (checksum 0L) (samples '()) (timeouts 0))
+  (def (checksum samples svc timeouts)
+    (let go ((c 0) (checksum 0L) (samples '()) (svc '()) (timeouts 0))
       (if (= c clients)
-          (Tuple checksum samples timeouts)
+          (Tuple checksum samples svc timeouts)
           (match (sync (promise-join (vec-ref client-ps c)))
             ((Ok o) (go (+ c 1)
                         (+ checksum (record-ref o checksum))
                         (list-append (mutablevec->list (record-ref o samples)) samples)
+                        (list-append (mutablevec->list (record-ref o svc)) svc)
                         (+ timeouts (record-ref o timeouts))))
-            ((Err e) (go (+ c 1) checksum samples (+ timeouts requests)))))))
+            ((Err e) (go (+ c 1) checksum samples svc (+ timeouts requests)))))))
   (def wall (/ (ns-since t0) 1000000L))
   (def cpu (- (cpu-ms) c0))
   (def alloc (- (total-allocated #t) a0))
@@ -240,6 +251,7 @@
             ((Err e) (go (+ i 1) work))))))
 
   (def sorted (list->vec (list-sort samples)))
+  (def svc-sorted (list->vec (list-sort svc)))
   (when (> n 0)
     (println (str "rep " (->str n)
                   " wall_ms " (->str wall)
@@ -251,7 +263,10 @@
                   " checksum " (->str (+ checksum work))
                   " alloc_b " (->str alloc)
                   " gcs " (->str gcs)
-                  " pause_ms " (->str pause)))))
+                  " pause_ms " (->str pause)
+                  " svc_p50_ns " (->str (percentile svc-sorted 50 100))
+                  " svc_p99_ns " (->str (percentile svc-sorted 99 100))
+                  " svc_p999_ns " (->str (percentile svc-sorted 999 1000))))))
 
 (defbjo (main args)
   (def argc (vec-length args))

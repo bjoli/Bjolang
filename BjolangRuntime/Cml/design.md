@@ -1203,6 +1203,17 @@ Against the pool, after the timer wheel and box reuse, median of fifteen reps,
 What it gives up: a single chain on an idle machine is about a quarter slower,
 having lost the overlap of one core unwinding while another carries the chain
 on, and under load on all cores a request waits its turn, so the median rises.
+Two rows of `bench/bjolang/cmlbench.bjo` were not measured then, and cost
+about twice as much (min of 5, all cores, measured later at d3ec31a):
+
+                                  Workers   pool
+    spawn burst, ns a spawn         226      105
+    skewed choose(8), ns a choose   230      113
+    ring, ns a message               71       59-63
+
+Why has not been looked into. A burst of spawns from one fiber goes to its
+worker's queue, and other workers have to steal it; the pool's own spawn
+batching (`SpawnBatch`) is not used with Workers.
 What it gets: the tail under saturation, a third of the CPU for a lone chain,
 and the many-ring rows. Go, against these, is 498 ms and 440 ms on the service,
 Hopac 336 and 413.
@@ -1414,8 +1425,19 @@ A closed loop at saturation mostly measures throughput: on four cores
 Bjolang's latencies were less spread than Hopac's, and its p99 was higher
 only because each request cost more CPU. `bench/service` therefore has an
 open loop as well (`drive.py --rates`, schedule in `go/main.go`): 10000
-clients send on a fixed schedule, and latency is taken from when a request
-was due, so a backlog counts.
+clients send on a fixed schedule.
+
+**Correction.** The latencies of this section, and of every open-loop table
+after it up to "Latency from the due time", are not what they were said to
+be. A client that was late counted from the due time, but a client that
+slept until its request was due counted from when it woke, and at these
+rates nearly every client sleeps. So they leave out everything that held a
+client back before it ran: a late timer, a wait in a run queue, and a GC
+pause while it slept. They are service times. The comparisons of one
+Bjolang build against another still hold as comparisons of service time.
+The comparisons with Go and Hopac do not hold as latency: the delays that
+were left out are not the same in the three runtimes. "Latency from the due
+time" below has the three measured from the due time.
 
 `drive.py --rates ...`, median of 2 x 3 reps of 3 s. Only the rows below
 saturation are shown; near it, all three built a backlog and the numbers
@@ -1439,10 +1461,11 @@ changed a lot from run to run:
       Hopac           18.8     8925    38664      48897       406
       Bjolang          9.2       13    19231      24242       260
 
-Below saturation, Bjolang had the lowest tail of the three at every rate.
-Hopac's workers kept every core busy and its median was in milliseconds; its
-GC pauses were not the cause (with three collections a rep it was the same).
-Why it does badly here was not looked into.
+Below saturation, Bjolang had the lowest service time of the three at every
+rate. (This said "tail"; see the correction above.) Hopac's workers kept
+every core busy and its median was in milliseconds; its GC pauses were not
+the cause (with three collections a rep it was the same). Why it does badly
+here was not looked into.
 
 **Bjolang's open-loop tail is GC pauses.** All cores at 1M/s: 23 gen0
 collections a rep of about 7 ms each. With 10000 clients between requests,
@@ -1506,7 +1529,8 @@ programs peak at about 100 MB, and Go with that much was as fast as Bjolang
 and had a lower tail. Hopac stays the fastest on four cores.
 
 **The open loop again, with more reps.** `drive.py --rates`, median of 3 x 5
-reps of 3 s, so two and a half times the reps of the table above:
+reps of 3 s, so two and a half times the reps of the table above. Service
+times, not latencies: see the correction in "At a fixed rate".
 
                           cores  p50 us  p99 us  p99.9 us  pause ms  peak MB
     4 cores, 0.25M/s
@@ -1531,7 +1555,7 @@ reps of 3 s, so two and a half times the reps of the table above:
       Go, 720 MiB           6.3      19  101409    107333         6      821
 
 This replaces the conclusion of the table above, that Bjolang had the lowest
-tail of the three at every rate below saturation. That is so on all cores,
+service time of the three at every rate below saturation. That is so on all cores,
 against Go with either memory and against Hopac. On four cores it is not:
 Hopac had the lowest tail there, 8-11 us at p99, where the earlier table gave
 it 18-88 ms. Those rows of the earlier table do not reproduce, and the
@@ -1936,6 +1960,85 @@ The same review found that a spinning pump that finds work on its last look
 before it stops does not spin again, so the work it then finds wakes nobody.
 Go's spins again. Made to spin again and measured alone, 50 reps each, on
 the closed loops and at 1M/s: no difference, so it was not kept.
+
+### Latency from the due time
+
+The open-loop tables before this section count a request's latency from
+when its client woke, if the client slept until the request was due (see
+the correction in "At a fixed rate"). Bjolang's p99 at 0.25M/s on 4 cores
+was 6 us by that measure, against 13 for Hopac and 1013 for Go: less than
+the time a GC pause or a timer tick takes, at a rate where both happen
+many times a second. The delays before a client runs were not in the
+number.
+
+All three programs now take two latencies of each sampled request. The
+latency (`p50`, `p99`, `p99.9`) counts from when the request was due, as a
+caller of the service would see it. The service time (`svc`) counts from
+when the client ran, which is what the tables before measured. A client
+that is early sleeps in whole milliseconds, rounded up, in all three
+programs, so every latency has up to a millisecond of that in it, and the
+medians are 0.75-1.1 ms. Below about 2 ms the latency says little.
+
+`drive.py`, all four runs as in "Memory, and Go with as much of it", median
+of 3 x 5 reps. The closed loop has no sleep, and its latency and service
+time are the same thing:
+
+                   wall ms  cpu ms  p50 us  p99 us  p99.9 us  gcs  peak MB
+    all cores
+      Go               400    5542      13    4487      5838  108       27
+      Hopac            436    8854     113    2995     12653    7      387
+      Bjolang          256    5194     103    1531      5617    6      427
+      Go, 426 MiB      259    4057      16    2855      3227    1      402
+    4 cores
+      Go               479    1847     175    2489      3393  107       24
+      Hopac            294    1146       1    2357      3790   46      109
+      Bjolang          411    1587       1    3077      4659   32      186
+      Go, 186 MiB      425    1680     187    2149      3052    3      179
+
+                          cores  p99 us  p99.9 us   svc p99  svc p99.9  peak MB
+    4 cores, 0.25M/s
+      Go                    0.9    5024      8077      1268       6087      162
+      Hopac                 1.4    2702      4725        10         31      233
+      Bjolang               1.0    2507      2987         5         15      260
+      Go, 259 MiB           0.9    2128      4948       255       2625      323
+    4 cores, 0.5M/s
+      Go                    1.9   33116     38042     32534      37568      174
+      Hopac                 2.3    7288      8660         7         19      237
+      Bjolang               1.5    2990      4212         6         18      283
+      Go, 282 MiB           1.8   24958     31099     24957      31099      374
+    all cores, 0.5M/s
+      Go                    3.4    9227     12320      6741       9321      177
+      Hopac                21.5   23538     30542     21112      24905      407
+      Bjolang               4.2    4964      6727        58        369      425
+      Go, 425 MiB           2.9    6592     11032      5905      10918      448
+    all cores, 1M/s
+      Go                    8.4   31095     34804     30817      34755      203
+      Hopac                22.2   27145     34484     24506      30076     1033
+      Bjolang               8.3    7438     11654      1769       5977      464
+      Go, 1033 MiB          6.1   32234     40023     31645      40023     1084
+
+What holds, measured from the due time:
+
+- On 4 cores at 0.25M/s the three are close, with p99 between 2.1 and 2.7
+  ms (default Go: 5.0). That is mostly the sleep's rounding and a timer
+  tick. Bjolang has the lowest p99.9, 3.0 ms against 4.7-4.9.
+- At 0.5M/s on 4 cores Bjolang has the lowest tail, 3.0 ms at p99 against
+  7.3 for Hopac. Go's is 25-33 ms with either memory, and its service time
+  is as long, so that delay is in the run of a request, not before it.
+- On all cores, Bjolang has the lowest tail at both rates: 5.0 ms p99 at
+  0.5M/s against 6.6 for Go with as much memory, and 7.4 ms at 1M/s
+  against 27-32 for the others. An earlier run of the same, with the
+  programs changed by hand, gave Bjolang 3.6 ms and Go with as much
+  memory 2.1 at 0.5M/s, so that pair is not settled.
+
+The service time and the latency differ most for the two .NET programs:
+Bjolang's p99 is 5-58 us of service time in milliseconds of latency, below
+1M/s. A request that has started finishes fast; the time goes before it
+starts, in the sleep's rounding, a timer, the run queue and the GC pauses
+that fall while clients sleep. Go's service time is close to its latency
+whenever its tail is long, so Go's delays fall while requests run. Which
+runtime is better depends on the latency, and the service time says where
+the time goes.
 
 ---
 

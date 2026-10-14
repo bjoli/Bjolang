@@ -3,6 +3,22 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~bench/service~ takes latency from when a request was due
+
+- In the open loop, a client that slept until its request was due took its
+  latency from when it woke. That left out everything that held it back
+  before it ran: a late timer, a wait in a run queue, a GC pause while it
+  slept. The open-loop tails given before this, in microseconds for Bjolang
+  and Hopac, were service times, not latencies.
+- All three programs now report the latency from the due time (~p50~, ~p99~,
+  ~p99.9~) and the service time from when the client ran (~svc_*~), and
+  ~drive.py~ shows both in an open loop. Measured from the due time,
+  Bjolang's p99 is 2.5-7.4 ms, not 5 us-1.8 ms. Its p99.9 is still the
+  lowest of the three at every rate, and at 1M/s on all cores its tail is a
+  quarter to a third of Go's and Hopac's.
+- ~BjolangRuntime/Cml/design.md~ has a correction in "At a fixed rate", and
+  the new tables in "Latency from the due time".
+
 * A with-nack no longer fires for the branch that won
 
 - A ~with-nack~ whose subtree won just as it finished publishing could
