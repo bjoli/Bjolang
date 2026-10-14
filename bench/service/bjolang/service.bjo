@@ -202,9 +202,9 @@
               (+ checksum (cast System.Int64 (+ answer (% d 3))))
               (+ timeouts lost))))))
 
-(: percentile (-> (Vec long) int int long))
+(: percentile (-> (MutableVec long) int int long))
 (defun (percentile sorted per of)
-  (vec-ref sorted (/ (* (vec-length sorted) per) of)))
+  (mutablevec-ref sorted (/ (* (mutablevec-length sorted) per) of)))
 
 (: run-rep (-bjo-> int int int int void))
 (defbjo (run-rep n clients requests rate)
@@ -223,17 +223,18 @@
   (def pause0 (timespan-ms (gc-pause)))
   (def client-ps (loop (:for c (range 0 clients))
                        (:acc v (vecing (bjo (client c clients requests rate t0 chans))))))
-  (def (checksum samples svc timeouts)
-    (let go ((c 0) (checksum 0L) (samples '()) (svc '()) (timeouts 0))
+  ;; Only the clients' records while the clock runs, as in the Go and Hopac
+  ;; twins; their samples are gathered after it stops.
+  (def (checksum outs timeouts)
+    (let go ((c 0) (checksum 0L) (outs '()) (timeouts 0))
       (if (= c clients)
-          (Tuple checksum samples svc timeouts)
+          (Tuple checksum outs timeouts)
           (match (sync (promise-join (vec-ref client-ps c)))
             ((Ok o) (go (+ c 1)
                         (+ checksum (record-ref o checksum))
-                        (list-append (mutablevec->list (record-ref o samples)) samples)
-                        (list-append (mutablevec->list (record-ref o svc)) svc)
+                        (Cons o outs)
                         (+ timeouts (record-ref o timeouts))))
-            ((Err e) (go (+ c 1) checksum samples svc (+ timeouts requests)))))))
+            ((Err e) (go (+ c 1) checksum outs (+ timeouts requests)))))))
   (def wall (/ (ns-since t0) 1000000L))
   (def cpu (- (cpu-ms) c0))
   (def alloc (- (total-allocated #t) a0))
@@ -250,8 +251,18 @@
             ((Ok w) (go (+ i 1) (+ work w)))
             ((Err e) (go (+ i 1) work))))))
 
-  (def sorted (list->vec (list-sort samples)))
-  (def svc-sorted (list->vec (list-sort svc)))
+  ;; Into one vector each, made at its full size and sorted in place, as the
+  ;; twins do: a list of every sample and a sorted copy of it doubled the
+  ;; program's peak memory.
+  (def per-client (+ (/ requests 8) 1))
+  (def sorted (mutablevec-with-capacity (* clients per-client)))
+  (def svc-sorted (mutablevec-with-capacity (* clients per-client)))
+  (list-for-each (fun (o)
+                   (mutablevec-add-all! sorted (mutablevec->seq (record-ref o samples)))
+                   (mutablevec-add-all! svc-sorted (mutablevec->seq (record-ref o svc))))
+                 outs)
+  (mutablevec-sort! sorted)
+  (mutablevec-sort! svc-sorted)
   (when (> n 0)
     (println (str "rep " (->str n)
                   " wall_ms " (->str wall)

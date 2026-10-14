@@ -2040,6 +2040,18 @@ whenever its tail is long, so Go's delays fall while requests run. Which
 runtime is better depends on the latency, and the service time says where
 the time goes.
 
+**Bjolang's peak memory in these tables is too high.** Taking the service
+time as well, the Bjolang program gathered every client's samples into a
+second list and sorted it, while the Go and Hopac programs gather into
+one array each. Its peak went from 104 to about 200 MB on four cores with
+nothing else changed. It now gathers as they do, after the clock stops,
+into two vectors sorted in place. Its peak, measured again: closed loop
+369 MB on all cores and 111 on four; open loop on four cores 216 and 235
+MB, on all cores 435 and 460. "Go, N MiB" was given the larger .NET peak,
+which with this was Bjolang's inflated one. Given the larger of the
+corrected peaks, Hopac's (387 MiB on all cores, 112 on four), Go's closed
+loop peaked at 364 and 108 MB.
+
 ### Where the cycles go, and two type checks fewer
 
 `perf` on `bench/service`'s closed loop on all cores, with the perf map on,
