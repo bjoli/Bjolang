@@ -1548,7 +1548,7 @@ public static class CmlTests
     /// </summary>
     private static void NackSilentWhenSubtreeWinsDuringPublish()
     {
-        const int Rounds = 200_000;
+        const int Rounds = 1_000_000;
         var a = new Channel<int>();
         var idle = new Channel<int>();
         int falseFires = 0;
@@ -1576,8 +1576,11 @@ public static class CmlTests
                         new ChannelReceiveEvent<int>(idle)),
                     _ => Interlocked.Increment(ref committed));
 
+                // No Sleep(1) fallback: a commit that waits for a worker to
+                // wake would cost a full millisecond, and some thousand of
+                // them took the test past its timeout.
                 var spin = new SpinWait();
-                while (Volatile.Read(ref committed) == before) spin.SpinOnce();
+                while (Volatile.Read(ref committed) == before) spin.SpinOnce(sleep1Threshold: -1);
             }
         }
         finally
