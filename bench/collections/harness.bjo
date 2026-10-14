@@ -1,0 +1,152 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; Times two ways of doing one thing side by side, for the tables of
+;; list-vs-vec.bjo and map-vs-orderedmap.bjo.
+;;
+;; A case is a function that does the work once and returns a long made from
+;; its result. The results are added up and kept, so that the work cannot be
+;; dropped as unused.
+;;
+;; Each case is first run with a doubling number of calls until one round takes
+;; at least `round-ns`. That warms it up, and gives the number of calls a round
+;; makes. Then `rounds` rounds are timed, and the fastest gives the time per
+;; call: the others differ from it by what else the machine did. The bytes per
+;; call are the bytes the round allocated on this thread, divided by its calls.
+
+(import (std prelude))
+(import (std stopwatch))
+
+(import/extern
+  (gc-collect (: System.GC.Collect (-> void)))
+  (gc-wait-finalizers (: System.GC.WaitForPendingFinalizers (-> void)))
+  (framework (: System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription #:get))
+  (os (: System.Runtime.InteropServices.RuntimeInformation.OSDescription #:get))
+  (processor-count (: System.Environment.ProcessorCount #:get)))
+
+(export header section versus)
+
+(def op-width 44)
+(def cell-width 22)
+(def ratio-width 16)
+
+(def round-ns 20000000L)
+(def rounds 5)
+
+;; What the results add up to. A store to the heap, which the JIT may not drop,
+;; so the work that made the results is not dropped either.
+(def sink (make-box 0L))
+
+;; A heap with nothing left over from the case before, so that its collections
+;; are not counted in this one.
+(: settle (-> void))
+(defun (settle)
+  (gc-collect)
+  (gc-wait-finalizers)
+  (gc-collect))
+
+;; `calls` calls of the case, their results added up and kept.
+(: run-calls (-> (-> long) long void))
+(defun (run-calls work calls)
+  (let go ((i 0L) (acc 0L))
+    (if (< i calls)
+        (go (+ i 1L) (+ acc (work)))
+        (box-set! sink (+ (box-ref sink) acc)))))
+
+;; Nanoseconds that `calls` calls take.
+(: time-calls (-> (-> long) long long))
+(defun (time-calls work calls)
+  (def sw (stopwatch))
+  (stopwatch-start! sw)
+  (run-calls work calls)
+  (stopwatch-stop! sw)
+  (stopwatch-ns sw))
+
+;; The number of calls in a round of at least round-ns.
+(: calibrate (-> (-> long) long))
+(defun (calibrate work)
+  (let go ((calls 1L))
+    (if (or (>= (time-calls work calls) round-ns) (>= calls 1000000000L))
+        calls
+        (go (* calls 2L)))))
+
+;; The fastest round's nanoseconds per call, and its bytes per call.
+(: measure (-> (-> long) (Tuple long long)))
+(defun (measure work)
+  (settle)
+  (def calls (calibrate work))
+  (let go ((round 0) (best-ns 9223372036854775807L) (best-bytes 0L))
+    (if (= round rounds)
+        (Tuple best-ns best-bytes)
+        (let ()
+          (def before (get-memory-usage))
+          (def ns (/ (time-calls work calls) calls))
+          (def bytes (/ (- (get-memory-usage) before) calls))
+          (if (< ns best-ns)
+              (go (+ round 1) ns bytes)
+              (go (+ round 1) best-ns best-bytes))))))
+
+;; What a call costs that does nothing: the floor under every case.
+(: floor-ns (-> long))
+(defun (floor-ns)
+  (match (measure (fun () 1L))
+    ((Tuple ns bytes) ns)))
+
+;; What the table is, where it was made, and the floor.
+(: header (-> string void))
+(defun (header title)
+  (println title)
+  (println (str framework ", " os ", " (->str processor-count) " logical processors."))
+  (println "Each cell is the time per call, the fastest of 5 rounds, and the bytes")
+  (println "allocated per call where there are any.")
+  (def floor (floor-ns))
+  (println (str "A call that does nothing takes "
+                (if (= floor 0L) "less than 1 ns" (ns->string floor)) ".")))
+
+;; b / a with two decimals.
+(: ratio (-> long long string))
+(defun (ratio a b)
+  (if (= a 0L)
+      "-"
+      (let ()
+        (def hundredths (/ (+ (* b 100L) (/ a 2L)) a))
+        (str (->str (/ hundredths 100L)) "."
+             (string-pad-left (->str (% hundredths 100L)) 2 #:with #\0)))))
+
+;; A cell: time per call, and bytes per call when there are any.
+(: cell (-> (Tuple long long) string))
+(defun (cell m)
+  (match m
+    ((Tuple ns bytes)
+     (string-pad-left (str (ns->string ns)
+                           (if (= bytes 0L) "" (str " " (->str bytes) " B")))
+                      cell-width))))
+
+;; The heading of a table: what it compares, and the names of its two columns.
+(: section (-> string string string void))
+(defun (section title a b)
+  (println "")
+  (println title)
+  (println (str (string-pad-right "operation" op-width) (string-pad-left "n" 8)
+                (string-pad-left a cell-width) (string-pad-left b cell-width)
+                (string-pad-left (str b "/" a) ratio-width))))
+
+;; One row: `op` on collections of n items, done the first way and the second.
+(: versus (-> string int (-> long) (-> long) void))
+(defun (versus op n a b)
+  (def ma (measure a))
+  (def mb (measure b))
+  (match (Tuple ma mb)
+    ((Tuple (Tuple a-ns a-bytes) (Tuple b-ns b-bytes))
+     (println (str (string-pad-right op op-width) (string-pad-left (->str n) 8)
+                   (cell ma) (cell mb)
+                   (string-pad-left (ratio a-ns b-ns) ratio-width))))))

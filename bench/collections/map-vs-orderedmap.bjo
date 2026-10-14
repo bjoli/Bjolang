@@ -1,0 +1,192 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; Map against OrderedMap: the same operations on both, at sizes from 10 to
+;; 100,000 entries. See README.md for how to read the table, and run.sh to run
+;; it.
+;;
+;; The keys 0 .. n-1 go in scrambled, as (i * 7919) mod n: 7919 is a prime that
+;; divides none of the sizes, so that is every key once. An ordered map given
+;; its keys in order is a best case, and this is not it.
+
+(import (std prelude))
+(import (std orderedmap))
+(import "harness.bjo")
+
+(type (: Data (Record (: n int)
+                      (: m (Map int int))
+                      (: om (OrderedMap int int))
+                      (: sm (Map string int))
+                      (: som (OrderedMap string int))
+                      ;; 64 keys in the maps, spread over them.
+                      (: hits (Vec int))
+                      (: string-hits (Vec string))
+                      ;; 64 keys not in the maps.
+                      (: misses (Vec int)))))
+
+(: long (-> int long))
+(defun (long x) (cast System.Int64 x))
+
+(: key (-> int int int))
+(defun (key n i) (% (* i 7919) n))
+
+(: string-key (-> int string))
+(defun (string-key k) (str "key-" (->str k)))
+
+(: data-of (-> int Data))
+(defun (data-of n)
+  (Data (n n)
+        (m (loop (:for i (range 0 n)) (:acc m (mapping (Tuple (key n i) i)))))
+        (om (loop (:for i (range 0 n)) (:acc m (ordered-mapping (Tuple (key n i) i)))))
+        (sm (loop (:for i (range 0 n)) (:acc m (mapping (Tuple (string-key (key n i)) i)))))
+        (som (loop (:for i (range 0 n)) (:acc m (ordered-mapping (Tuple (string-key (key n i)) i)))))
+        (hits (loop (:for i (range 0 64)) (:acc v (vecing (key n (* i 13))))))
+        (string-hits (loop (:for i (range 0 64)) (:acc v (vecing (string-key (key n (* i 13)))))))
+        (misses (loop (:for i (range 0 64)) (:acc v (vecing (+ n i)))))))
+
+(: each (-> (Vec Data) (-> Data void) void))
+(defun (each data f)
+  (loop (:for d data) (:do (f d))))
+
+(: present (-> (Option int) int))
+(defun (present o)
+  (match o ((Some v) 1) (None 0)))
+
+(defun (main args)
+  (def data (loop (:for n [10 100 1000 10000 100000]) (:acc v (vecing (data-of n)))))
+
+  (header "Map against OrderedMap, int keys unless the row says otherwise.")
+
+  ;; --- Building -------------------------------------------------------------
+
+  (section "Building" "Map" "OrderedMap")
+  (each data
+    (fun (d)
+      (def n (record-ref d n))
+      (versus "loop with mapping / ordered-mapping" n
+              (fun () (long (map-length (loop (:for i (range 0 n))
+                                              (:acc m (mapping (Tuple (key n i) i)))))))
+              (fun () (long (orderedmap-length (loop (:for i (range 0 n))
+                                                     (:acc m (ordered-mapping (Tuple (key n i) i))))))))))
+  (each data
+    (fun (d)
+      (def n (record-ref d n))
+      (versus "one at a time: map-set / orderedmap-set" n
+              (fun () (long (map-length (let go ((i 0) (m (map-empty)))
+                                          (if (= i n) m (go (+ i 1) (map-set m (key n i) i)))))))
+              (fun () (long (orderedmap-length (let go ((i 0) (m (orderedmap-empty)))
+                                                 (if (= i n) m (go (+ i 1) (orderedmap-set m (key n i) i))))))))))
+
+  ;; --- Looking up -----------------------------------------------------------
+
+  (section "Looking up" "Map" "OrderedMap")
+  (each data
+    (fun (d)
+      (def m (record-ref d m))
+      (def om (record-ref d om))
+      (def hits (record-ref d hits))
+      (versus "64 lookups, found" (record-ref d n)
+              (fun () (long (loop (:for k hits) (:acc s (summing (map-ref m k))))))
+              (fun () (long (loop (:for k hits) (:acc s (summing (orderedmap-ref om k)))))))))
+  (each data
+    (fun (d)
+      (def m (record-ref d m))
+      (def om (record-ref d om))
+      (def misses (record-ref d misses))
+      (versus "64 lookups, not found" (record-ref d n)
+              (fun () (long (loop (:for k misses) (:acc s (summing (present (map-try-ref m k)))))))
+              (fun () (long (loop (:for k misses) (:acc s (summing (present (orderedmap-try-ref om k))))))))))
+  (each data
+    (fun (d)
+      (def sm (record-ref d sm))
+      (def som (record-ref d som))
+      (def hits (record-ref d string-hits))
+      (versus "64 lookups, found, string keys" (record-ref d n)
+              (fun () (long (loop (:for k hits) (:acc s (summing (map-ref sm k))))))
+              (fun () (long (loop (:for k hits) (:acc s (summing (orderedmap-ref som k)))))))))
+
+  ;; --- Changing -------------------------------------------------------------
+
+  (section "Changing" "Map" "OrderedMap")
+  (each data
+    (fun (d)
+      (def m (record-ref d m))
+      (def om (record-ref d om))
+      (def hits (record-ref d hits))
+      (versus "64 updates of present keys" (record-ref d n)
+              (fun () (long (map-length (loop (:for k hits) (:acc acc (folding m (map-set acc k 0)))))))
+              (fun () (long (orderedmap-length (loop (:for k hits) (:acc acc (folding om (orderedmap-set acc k 0))))))))))
+  (each data
+    (fun (d)
+      (def m (record-ref d m))
+      (def om (record-ref d om))
+      (def misses (record-ref d misses))
+      (versus "64 inserts of new keys" (record-ref d n)
+              (fun () (long (map-length (loop (:for k misses) (:acc acc (folding m (map-set acc k 0)))))))
+              (fun () (long (orderedmap-length (loop (:for k misses) (:acc acc (folding om (orderedmap-set acc k 0))))))))))
+  (each data
+    (fun (d)
+      (def m (record-ref d m))
+      (def om (record-ref d om))
+      (def hits (record-ref d hits))
+      (versus "64 removals" (record-ref d n)
+              (fun () (long (map-length (loop (:for k hits) (:acc acc (folding m (map-remove acc k)))))))
+              (fun () (long (orderedmap-length (loop (:for k hits) (:acc acc (folding om (orderedmap-remove acc k))))))))))
+
+  ;; --- Reading every entry --------------------------------------------------
+
+  (section "Reading every entry" "Map" "OrderedMap")
+  (each data
+    (fun (d)
+      (def m (record-ref d m))
+      (def om (record-ref d om))
+      (versus "loop (:for (k . v) ...) summing" (record-ref d n)
+              (fun () (long (loop (:for (k . v) m) (:acc s (summing v)))))
+              (fun () (long (loop (:for (k . v) om) (:acc s (summing v))))))))
+  (each data
+    (fun (d)
+      (def m (record-ref d m))
+      (def om (record-ref d om))
+      (versus "map-fold / orderedmap-fold" (record-ref d n)
+              (fun () (long (map-fold (fun (k v acc) (+ v acc)) 0 m)))
+              (fun () (long (orderedmap-fold (fun (k v acc) (+ v acc)) 0 om))))))
+
+  ;; --- What order makes cheap -----------------------------------------------
+
+  (section "What order makes cheap (Map has to read every entry)" "Map" "OrderedMap")
+  (each data
+    (fun (d)
+      (def m (record-ref d m))
+      (def om (record-ref d om))
+      (versus "smallest key" (record-ref d n)
+              (fun () (long (map-fold (fun (k v acc) (min k acc)) 2147483647 m)))
+              (fun () (long (match (orderedmap-min om)
+                              ((Some (Tuple k v)) k)
+                              (None -1)))))))
+  (each data
+    (fun (d)
+      (def n (record-ref d n))
+      (def m (record-ref d m))
+      (def om (record-ref d om))
+      (def lo (/ n 3))
+      (def hi (+ lo (min 63 (- n lo 1))))
+      (versus "the entries with keys in a range of 64" n
+              (fun () (long (map-fold (fun (k v acc) (if (and (>= k lo) (<= k hi)) (+ acc v) acc)) 0 m)))
+              (fun () (long (loop (:for (k . v) (orderedmap-range om lo hi)) (:acc s (summing v))))))))
+  (each data
+    (fun (d)
+      (def m (record-ref d m))
+      (def om (record-ref d om))
+      (versus "every key, in order" (record-ref d n)
+              (fun () (long (list-head (list-sort (loop (:for (k . v) m) (:acc l (listing k)))))))
+              (fun () (long (list-head (loop (:for (k . v) om) (:acc l (listing k)))))))))
+  0)

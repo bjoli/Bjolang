@@ -1,0 +1,231 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; List against Vec: the same operations on both, at sizes from 10 to 100,000
+;; ints. See README.md for how to read the table, and run.sh to run it.
+;;
+;; The collections a case reads are made before it is timed. A case that makes
+;; a collection returns something read from it, so the collection is used.
+
+(import (std prelude))
+(import "harness.bjo")
+
+(type (: Data (Record (: n int)
+                      (: xs (List int))
+                      (: v (Vec int))
+                      ;; 64 indices in [0, n), spread over the collection.
+                      (: idx (Vec int)))))
+
+(: long (-> int long))
+(defun (long x) (cast System.Int64 x))
+
+(: data-of (-> int Data))
+(defun (data-of n)
+  (Data (n n)
+        (xs (loop (:for i (range 0 n)) (:acc l (listing i))))
+        (v (loop (:for i (range 0 n)) (:acc v (vecing i))))
+        (idx (loop (:for i (range 0 64)) (:acc v (vecing (% (* i 7919) n)))))))
+
+(: each (-> (Vec Data) (-> Data void) void))
+(defun (each data f)
+  (loop (:for d data) (:do (f d))))
+
+;; Sums by matching the first item off the rest, as a recursive function over
+;; a sequence is usually written.
+(: list-sum-match (-> (List int) int int))
+(defun (list-sum-match xs acc)
+  (match xs
+    ((Cons h t) (list-sum-match t (+ acc h)))
+    (Nil acc)))
+
+(: vec-sum-match (-> (Vec int) int int))
+(defun (vec-sum-match v acc)
+  (match v
+    ([a rest ...] (vec-sum-match rest (+ acc a)))
+    (_ acc)))
+
+(defun (main args)
+  (def data (loop (:for n [10 100 1000 10000 100000]) (:acc v (vecing (data-of n)))))
+
+  (header "List against Vec, of ints.")
+
+  ;; --- Building -------------------------------------------------------------
+
+  (section "Building" "List" "Vec")
+  (each data
+    (fun (d)
+      (def n (record-ref d n))
+      (versus "loop with listing / vecing" n
+               (fun () (long (list-head (loop (:for i (range 0 n)) (:acc l (listing i))))))
+               (fun () (long (vec-length (loop (:for i (range 0 n)) (:acc v (vecing i)))))))))
+  (each data
+    (fun (d)
+      (def n (record-ref d n))
+      (versus "one at a time: cons / vec-add" n
+               (fun () (long (list-head (let go ((i 0) (acc Nil))
+                                          (if (= i n) acc (go (+ i 1) (Cons i acc)))))))
+               (fun () (long (vec-length (let go ((i 0) (acc (vec-empty)))
+                                           (if (= i n) acc (go (+ i 1) (vec-add acc i))))))))))
+  (each data
+    (fun (d)
+      (def n (record-ref d n))
+      (versus "at the front: cons / vec-insert 0" n
+               (fun () (long (list-head (let go ((i 0) (acc Nil))
+                                          (if (= i n) acc (go (+ i 1) (Cons i acc)))))))
+               (fun () (long (vec-length (let go ((i 0) (acc (vec-empty)))
+                                           (if (= i n) acc (go (+ i 1) (vec-insert acc 0 i))))))))))
+
+  ;; --- Reading every item ---------------------------------------------------
+
+  (section "Reading every item" "List" "Vec")
+  (each data
+    (fun (d)
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "loop (:for x ...) summing" (record-ref d n)
+               (fun () (long (loop (:for x xs) (:acc s (summing x)))))
+               (fun () (long (loop (:for x v) (:acc s (summing x))))))))
+  (each data
+    (fun (d)
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "list-foldl / vec-fold" (record-ref d n)
+               (fun () (long (list-foldl (fun (x acc) (+ x acc)) 0 xs)))
+               (fun () (long (vec-fold (fun (x acc) (+ x acc)) 0 v))))))
+  (each data
+    (fun (d)
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "recursive match (Cons h t) / [a rest ...]" (record-ref d n)
+               (fun () (long (list-sum-match xs 0)))
+               (fun () (long (vec-sum-match v 0))))))
+
+  ;; --- Reading some items ---------------------------------------------------
+
+  (section "Reading some items" "List" "Vec")
+  (each data
+    (fun (d)
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "first item" (record-ref d n)
+               (fun () (long (list-head xs)))
+               (fun () (long (vec-ref v 0))))))
+  (each data
+    (fun (d)
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "match the first two, ignore the rest" (record-ref d n)
+              (fun () (long (match xs ((Cons a (Cons b _)) (+ a b)) (_ -1))))
+              (fun () (long (match v ([a b _ ...] (+ a b)) (_ -1)))))))
+  (each data
+    (fun (d)
+      (def n (record-ref d n))
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "last item" n
+               (fun () (long (list-ref xs (- n 1))))
+               (fun () (long (vec-ref v (- n 1)))))))
+  (each data
+    (fun (d)
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (def idx (record-ref d idx))
+      (versus "64 reads at spread-out indices" (record-ref d n)
+               (fun () (long (loop (:for i idx) (:acc s (summing (list-ref xs i))))))
+               (fun () (long (loop (:for i idx) (:acc s (summing (vec-ref v i)))))))))
+  (each data
+    (fun (d)
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "length" (record-ref d n)
+               (fun () (long (list-length xs)))
+               (fun () (long (vec-length v))))))
+
+  ;; --- Changing the ends ----------------------------------------------------
+
+  (section "Changing the ends" "List" "Vec")
+  (each data
+    (fun (d)
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "drop the first: list-tail / vec-pop-first" (record-ref d n)
+               (fun () (long (list-head (list-tail xs))))
+               (fun () (long (vec-ref (vec-pop-first v) 0))))))
+  (each data
+    (fun (d)
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "add one at the front: cons / vec-insert 0" (record-ref d n)
+               (fun () (long (list-head (Cons -1 xs))))
+               (fun () (long (vec-ref (vec-insert v 0 -1) 0))))))
+  (each data
+    (fun (d)
+      (def n (record-ref d n))
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "add one at the back: list-append / vec-add" n
+               (fun () (long (list-head (list-append xs (list -1)))))
+               (fun () (long (vec-ref (vec-add v -1) n))))))
+  (each data
+    (fun (d)
+      (def n (record-ref d n))
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "change the middle item" n
+               (fun () (long (list-head (loop (:for x xs)
+                                              (:with i 0 (+ i 1))
+                                              (:acc l (listing (if (= i (/ n 2)) -1 x)))))))
+               (fun () (long (vec-ref (vec-set v (/ n 2) -1) 0))))))
+
+  ;; --- Whole-collection operations ------------------------------------------
+
+  (section "Whole-collection operations" "List" "Vec")
+  (each data
+    (fun (d)
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "list-map / vec-map (+ 1)" (record-ref d n)
+               (fun () (long (list-head (list-map (fun (x) (+ x 1)) xs))))
+               (fun () (long (vec-ref (vec-map (fun (x) (+ x 1)) v) 0))))))
+  (each data
+    (fun (d)
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "list-filter / vec-filter (even)" (record-ref d n)
+               (fun () (long (list-head (list-filter (fun (x) (= (% x 2) 0)) xs))))
+               (fun () (long (vec-ref (vec-filter (fun (x) (= (% x 2) 0)) v) 0))))))
+  (each data
+    (fun (d)
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "reverse" (record-ref d n)
+               (fun () (long (list-head (list-reverse xs))))
+               (fun () (long (vec-ref (loop (:for x (in-reverse-vec v)) (:acc r (vecing x))) 0))))))
+  (each data
+    (fun (d)
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "append to itself" (record-ref d n)
+               (fun () (long (list-head (list-append xs xs))))
+               (fun () (long (vec-length (vec-merge v v)))))))
+  (each data
+    (fun (d)
+      (def n (record-ref d n))
+      (def xs (record-ref d xs))
+      (def v (record-ref d v))
+      (versus "the middle half: loop / vec-slice" n
+               (fun () (long (list-head (loop (:for x xs)
+                                              (:with i 0 (+ i 1))
+                                              (:when (and (>= i (/ n 4)) (< i (+ (/ n 4) (/ n 2)))))
+                                              (:acc l (listing x))))))
+               (fun () (long (vec-length (vec-slice v (/ n 4) (/ n 2))))))))
+  0)

@@ -1,0 +1,207 @@
+List against Vec, of ints.
+.NET 10.0.4, Fedora Linux 43 (Container Image), 24 logical processors.
+Each cell is the time per call, the fastest of 5 rounds, and the bytes
+allocated per call where there are any.
+A call that does nothing takes less than 1 ns.
+
+Building
+operation                                          n                  List                   Vec        Vec/List
+loop with listing / vecing                        10           50 ns 320 B           39 ns 376 B            0.78
+loop with listing / vecing                       100         483 ns 3200 B         216 ns 1400 B            0.45
+loop with listing / vecing                      1000        4.8 us 32000 B         1.1 us 7536 B            0.24
+loop with listing / vecing                     10000      52.0 us 320000 B       10.1 us 72416 B            0.20
+loop with listing / vecing                    100000      831 us 3200000 B       103 us 667256 B            0.12
+one at a time: cons / vec-add                     10           43 ns 320 B         132 ns 1120 B            3.07
+one at a time: cons / vec-add                    100         419 ns 3200 B        1.5 us 15680 B            3.70
+one at a time: cons / vec-add                   1000        4.1 us 32000 B      16.5 us 162976 B            3.96
+one at a time: cons / vec-add                  10000      46.2 us 320000 B      176 us 1668112 B            3.82
+one at a time: cons / vec-add                 100000      778 us 3200000 B     2.3 ms 17183488 B            3.04
+at the front: cons / vec-insert 0                 10           43 ns 320 B         133 ns 1120 B            3.09
+at the front: cons / vec-insert 0                100         418 ns 3200 B        1.8 us 15680 B            4.44
+at the front: cons / vec-insert 0               1000        4.1 us 32000 B      20.2 us 162976 B            4.86
+at the front: cons / vec-insert 0              10000      45.9 us 320000 B      215 us 1762424 B            4.69
+at the front: cons / vec-insert 0             100000      790 us 3200000 B     2.6 ms 18449216 B            3.37
+
+Reading every item
+operation                                          n                  List                   Vec        Vec/List
+loop (:for x ...) summing                         10                  7 ns                  7 ns            1.00
+loop (:for x ...) summing                        100                105 ns                 70 ns            0.67
+loop (:for x ...) summing                       1000                1.0 us                602 ns            0.59
+loop (:for x ...) summing                      10000                9.9 us                6.0 us            0.60
+loop (:for x ...) summing                     100000               99.5 us               64.0 us            0.64
+list-foldl / vec-fold                             10                  7 ns                  7 ns            1.00
+list-foldl / vec-fold                            100                 94 ns                 69 ns            0.73
+list-foldl / vec-fold                           1000                1.0 us                603 ns            0.60
+list-foldl / vec-fold                          10000                9.9 us                6.0 us            0.61
+list-foldl / vec-fold                         100000               97.9 us               64.0 us            0.65
+recursive match (Cons h t) / [a rest ...]         10                  8 ns          125 ns 992 B           15.63
+recursive match (Cons h t) / [a rest ...]        100                114 ns        3.3 us 30832 B           29.49
+recursive match (Cons h t) / [a rest ...]       1000                1.1 us      30.6 us 226640 B           27.43
+recursive match (Cons h t) / [a rest ...]      10000               11.1 us      318 us 2256160 B           28.62
+recursive match (Cons h t) / [a rest ...]     100000                113 us     3.3 ms 23461112 B           29.48
+
+Reading some items
+operation                                          n                  List                   Vec        Vec/List
+first item                                        10                  2 ns                  1 ns            0.50
+first item                                       100                  1 ns                  2 ns            2.00
+first item                                      1000                  1 ns                  2 ns            2.00
+first item                                     10000                  1 ns                  2 ns            2.00
+first item                                    100000                  1 ns                  2 ns            2.00
+match the first two, ignore the rest              10                  3 ns                  2 ns            0.67
+match the first two, ignore the rest             100                  2 ns                  2 ns            1.00
+match the first two, ignore the rest            1000                  2 ns                  2 ns            1.00
+match the first two, ignore the rest           10000                  2 ns                  2 ns            1.00
+match the first two, ignore the rest          100000                  2 ns                  2 ns            1.00
+last item                                         10                  5 ns                  2 ns            0.40
+last item                                        100                 81 ns                  2 ns            0.02
+last item                                       1000                933 ns                  2 ns            0.00
+last item                                      10000                9.3 us                  2 ns            0.00
+last item                                     100000               93.4 us                  2 ns            0.00
+64 reads at spread-out indices                    10                327 ns                 61 ns            0.19
+64 reads at spread-out indices                   100                3.0 us                128 ns            0.04
+64 reads at spread-out indices                  1000               30.1 us                158 ns            0.01
+64 reads at spread-out indices                 10000                299 us                198 ns            0.00
+64 reads at spread-out indices                100000            3.0 ms 4 B                252 ns            0.00
+length                                            10                  6 ns                  2 ns            0.33
+length                                           100                 76 ns                  1 ns            0.01
+length                                          1000                841 ns                  1 ns            0.00
+length                                         10000                8.3 us                  1 ns            0.00
+length                                        100000               82.4 us                  1 ns            0.00
+
+Changing the ends
+operation                                          n                  List                   Vec        Vec/List
+drop the first: list-tail / vec-pop-first         10                  2 ns           14 ns 128 B            7.00
+drop the first: list-tail / vec-pop-first        100                  1 ns           21 ns 216 B           21.00
+drop the first: list-tail / vec-pop-first       1000                  1 ns           21 ns 216 B           21.00
+drop the first: list-tail / vec-pop-first      10000                  1 ns           21 ns 216 B           21.00
+drop the first: list-tail / vec-pop-first     100000                  1 ns           21 ns 216 B           21.00
+add one at the front: cons / vec-insert 0         10                  1 ns           15 ns 136 B           15.00
+add one at the front: cons / vec-insert 0        100                  1 ns           42 ns 232 B           42.00
+add one at the front: cons / vec-insert 0       1000                  1 ns           56 ns 456 B           56.00
+add one at the front: cons / vec-insert 0      10000                  1 ns         167 ns 1448 B          167.00
+add one at the front: cons / vec-insert 0     100000                  1 ns         197 ns 1776 B          197.00
+add one at the back: list-append / vec-add        10           98 ns 672 B            10 ns 72 B            0.10
+add one at the back: list-append / vec-add       100         924 ns 6432 B             9 ns 48 B            0.01
+add one at the back: list-append / vec-add      1000        9.1 us 64032 B            10 ns 64 B            0.00
+add one at the back: list-append / vec-add     10000      99.7 us 640032 B            11 ns 96 B            0.00
+add one at the back: list-append / vec-add    100000      2.0 ms 6400034 B          100 ns 560 B            0.00
+change the middle item                            10           51 ns 320 B           16 ns 128 B            0.31
+change the middle item                           100         477 ns 3200 B           47 ns 344 B            0.10
+change the middle item                          1000        4.8 us 32000 B           56 ns 568 B            0.01
+change the middle item                         10000      54.4 us 320000 B           77 ns 736 B            0.00
+change the middle item                        100000      880 us 3200001 B         105 ns 1016 B            0.00
+
+Whole-collection operations
+operation                                          n                  List                   Vec        Vec/List
+list-map / vec-map (+ 1)                          10           51 ns 320 B           18 ns 128 B            0.35
+list-map / vec-map (+ 1)                         100         486 ns 3200 B          129 ns 728 B            0.27
+list-map / vec-map (+ 1)                        1000        4.8 us 32000 B         960 ns 6344 B            0.20
+list-map / vec-map (+ 1)                       10000      54.1 us 320000 B        9.6 us 63376 B            0.18
+list-map / vec-map (+ 1)                      100000      844 us 3200001 B       105 us 633200 B            0.13
+list-filter / vec-filter (even)                   10           28 ns 160 B           58 ns 304 B            2.07
+list-filter / vec-filter (even)                  100         267 ns 1600 B         287 ns 1248 B            1.07
+list-filter / vec-filter (even)                 1000        2.6 us 16000 B         1.9 us 4288 B            0.75
+list-filter / vec-filter (even)                10000      27.9 us 160000 B       16.9 us 36816 B            0.60
+list-filter / vec-filter (even)               100000      365 us 1600000 B       163 us 338432 B            0.45
+reverse                                           10           45 ns 320 B           44 ns 376 B            0.98
+reverse                                          100         439 ns 3200 B         292 ns 1400 B            0.67
+reverse                                         1000        4.3 us 32000 B         1.6 us 7536 B            0.38
+reverse                                        10000      48.1 us 320000 B       15.7 us 72416 B            0.33
+reverse                                       100000      822 us 3200001 B       160 us 667256 B            0.20
+append to itself                                  10           93 ns 640 B           19 ns 168 B            0.20
+append to itself                                 100         898 ns 6400 B          173 ns 992 B            0.19
+append to itself                                1000        8.8 us 64000 B         885 ns 3720 B            0.10
+append to itself                               10000       100 us 640000 B         1.0 us 4160 B            0.01
+append to itself                              100000      2.0 ms 6400002 B         1.3 us 5552 B            0.00
+the middle half: loop / vec-slice                 10           30 ns 160 B           13 ns 112 B            0.43
+the middle half: loop / vec-slice                100         295 ns 1600 B           65 ns 576 B            0.22
+the middle half: loop / vec-slice               1000        3.0 us 16000 B           68 ns 448 B            0.02
+the middle half: loop / vec-slice              10000      32.2 us 160000 B          142 ns 928 B            0.00
+the middle half: loop / vec-slice             100000      398 us 1600000 B         223 ns 1392 B            0.00
+
+Map against OrderedMap, int keys unless the row says otherwise.
+.NET 10.0.4, Fedora Linux 43 (Container Image), 24 logical processors.
+Each cell is the time per call, the fastest of 5 rounds, and the bytes
+allocated per call where there are any.
+A call that does nothing takes less than 1 ns.
+
+Building
+operation                                          n                   Map            OrderedMap  OrderedMap/Map
+loop with mapping / ordered-mapping               10          143 ns 512 B         263 ns 1664 B            1.84
+loop with mapping / ordered-mapping              100         2.4 us 6360 B         2.2 us 8912 B            0.90
+loop with mapping / ordered-mapping             1000       11.5 us 45936 B       26.9 us 75144 B            2.34
+loop with mapping / ordered-mapping            10000       248 us 635888 B       577 us 842000 B            2.33
+loop with mapping / ordered-mapping           100000      2.8 ms 6507384 B      7.6 ms 7883290 B            2.65
+one at a time: map-set / orderedmap-set           10         188 ns 1160 B         544 ns 7128 B            2.89
+one at a time: map-set / orderedmap-set          100        4.5 us 33280 B        7.4 us 81032 B            1.62
+one at a time: map-set / orderedmap-set         1000      66.6 us 488016 B      119 us 1050184 B            1.79
+one at a time: map-set / orderedmap-set        10000      966 us 6692720 B     1.5 ms 14124904 B            1.64
+one at a time: map-set / orderedmap-set       100000    20.0 ms 86698656 B   26.4 ms 176903112 B            1.32
+
+Looking up
+operation                                          n                   Map            OrderedMap  OrderedMap/Map
+64 lookups, found                                 10                182 ns                288 ns            1.58
+64 lookups, found                                100                268 ns                534 ns            1.99
+64 lookups, found                               1000                259 ns                630 ns            2.43
+64 lookups, found                              10000                338 ns                954 ns            2.82
+64 lookups, found                             100000                511 ns                1.2 us            2.37
+64 lookups, not found                             10                163 ns                320 ns            1.96
+64 lookups, not found                            100                219 ns                636 ns            2.90
+64 lookups, not found                           1000                241 ns                721 ns            2.99
+64 lookups, not found                          10000                296 ns                745 ns            2.52
+64 lookups, not found                         100000                464 ns                1.0 us            2.16
+64 lookups, found, string keys                    10                628 ns                1.2 us            1.91
+64 lookups, found, string keys                   100                547 ns                2.3 us            4.33
+64 lookups, found, string keys                  1000                793 ns                3.5 us            4.47
+64 lookups, found, string keys                 10000                824 ns                5.5 us            6.77
+64 lookups, found, string keys                100000                1.3 us                7.1 us            5.43
+
+Changing
+operation                                          n                   Map            OrderedMap  OrderedMap/Map
+64 updates of present keys                        10         500 ns 1368 B        2.7 us 41472 B            5.52
+64 updates of present keys                       100        2.9 us 24776 B        5.6 us 68096 B            1.90
+64 updates of present keys                      1000        3.6 us 38928 B        6.5 us 68096 B            1.80
+64 updates of present keys                     10000        5.0 us 46752 B        9.4 us 94720 B            1.86
+64 updates of present keys                    100000        6.9 us 62000 B      11.8 us 121344 B            1.70
+64 inserts of new keys                            10        2.9 us 22344 B        3.3 us 46240 B            1.16
+64 inserts of new keys                           100        3.0 us 25920 B        5.3 us 68704 B            1.74
+64 inserts of new keys                          1000        4.4 us 43136 B        5.7 us 68704 B            1.29
+64 inserts of new keys                         10000        5.0 us 47616 B        8.1 us 95328 B            1.60
+64 inserts of new keys                        100000        7.0 us 63488 B      10.4 us 121952 B            1.48
+64 removals                                       10         274 ns 1008 B        2.3 us 39312 B            8.52
+64 removals                                      100        3.6 us 24000 B        6.4 us 68096 B            1.75
+64 removals                                     1000        4.0 us 38720 B        7.4 us 68096 B            1.83
+64 removals                                    10000        5.5 us 46984 B       10.5 us 94720 B            1.90
+64 removals                                   100000        7.2 us 62480 B      13.0 us 121344 B            1.78
+
+Reading every entry
+operation                                          n                   Map            OrderedMap  OrderedMap/Map
+loop (:for (k . v) ...) summing                   10                  7 ns                  7 ns            1.00
+loop (:for (k . v) ...) summing                  100                250 ns                 65 ns            0.26
+loop (:for (k . v) ...) summing                 1000                647 ns                628 ns            0.97
+loop (:for (k . v) ...) summing                10000               12.4 us                5.5 us            0.45
+loop (:for (k . v) ...) summing               100000                341 us               59.2 us            0.17
+map-fold / orderedmap-fold                        10                  7 ns                  7 ns            1.00
+map-fold / orderedmap-fold                       100                250 ns                 71 ns            0.28
+map-fold / orderedmap-fold                      1000                640 ns                624 ns            0.98
+map-fold / orderedmap-fold                     10000               12.6 us                6.5 us            0.52
+map-fold / orderedmap-fold                    100000                341 us               60.8 us            0.18
+
+What order makes cheap (Map has to read every entry)
+operation                                          n                   Map            OrderedMap  OrderedMap/Map
+smallest key                                      10                 11 ns                  1 ns            0.09
+smallest key                                     100                271 ns                  2 ns            0.01
+smallest key                                    1000                1.0 us                  2 ns            0.00
+smallest key                                   10000               15.9 us                  2 ns            0.00
+smallest key                                  100000                379 us                  2 ns            0.00
+the entries with keys in a range of 64            10                  8 ns           91 ns 312 B           11.38
+the entries with keys in a range of 64           100                266 ns          395 ns 312 B            1.48
+the entries with keys in a range of 64          1000                955 ns          396 ns 312 B            0.41
+the entries with keys in a range of 64         10000               15.5 us          388 ns 312 B            0.02
+the entries with keys in a range of 64        100000                375 us          400 ns 312 B            0.00
+every key, in order                               10          158 ns 768 B           56 ns 320 B            0.35
+every key, in order                              100         2.1 us 7248 B         580 ns 3200 B            0.27
+every key, in order                             1000       23.0 us 72048 B        5.6 us 32000 B            0.24
+every key, in order                            10000       309 us 720048 B      62.6 us 320000 B            0.20
+every key, in order                           100000      4.1 ms 7200052 B      945 us 3200001 B            0.23
+
