@@ -1,6 +1,6 @@
 # Correctness audit of the Bjolang repository
 
-This report covers the code in the repository itself: the compiler (`*.fs`), the runtime (`BjolangRuntime/*.cs`, `BjolangRuntime/Cml`), the libraries (`lib/std`, `lib/text`, `lib/janitor`) and the `bjo` tool. The submodules (BjoRx, BjoString, Map, OrderedMap, OrderedSet, RrbList, SchemeList, Set, bjolang_rand) are not covered.
+This report covers the code in the repository itself: the compiler (`*.fs`), the runtime (`BjolangRuntime/*.cs`, `BjolangRuntime/Cml`), the libraries (`lib/std`, `lib/text`, `lib/janitor`) and the `bjo` tool. The submodules (BjoRx, BjoString, Map, OrderedMap, OrderedSet, RrbList, SchemeList, Set) are not covered.
 
 The audit covers correctness only: wrong results, unsound programs accepted, valid programs rejected, invalid C# emitted, crashes, hangs, races, leaks and documentation that contradicts the code. Style and performance are not covered.
 

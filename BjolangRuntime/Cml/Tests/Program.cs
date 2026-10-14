@@ -32,6 +32,7 @@ public static class Program
         OutputPortTests.RunAll();
         NetTests.RunAll();
         StmTests.RunAll();
+        RandomTests.RunAll();
 
         return Harness.Report();
     }

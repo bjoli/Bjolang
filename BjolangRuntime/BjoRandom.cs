@@ -13,7 +13,7 @@
 
 using System;
 using System.Runtime.CompilerServices;
-using Randbjom;
+using Utf8String = BjoString.Utf8String;
 
 namespace Bjolang.Runtime;
 
@@ -203,7 +203,7 @@ public static class RandomModule {
     /// The generator's own alphabet, `[A-Za-z0-9-_]`. A string over an
     /// alphabet of the caller's own is built in `(std random)` instead:
     /// Bjolang's `char` is `BjoChar` and does not cross as `char[]`.
-    public static string Str(RandomSource r, int length) {
+    public static Utf8String Str(RandomSource r, int length) {
         using var g = r.Borrow();
         return g.Rng.RandomString(length);
     }
