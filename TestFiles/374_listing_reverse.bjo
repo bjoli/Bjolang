@@ -1,0 +1,22 @@
+;; listing/reverse: a loop's values consed into a list, the last first.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: main (-> (Vec string) int))
+(defun (main args)
+  (expect "in an :acc clause"
+          (loop (:for x (list 1 2 3)) (:acc out (listing/reverse (* x 10))))
+          (list 30 20 10))
+  (expect "as a comprehension"
+          {listing/reverse x (:for x (range 0 4))}
+          (list 3 2 1 0))
+  (expect "with :when"
+          {listing/reverse x :when (> x 2) (:for x (range 0 6))}
+          (list 5 4 3))
+  (expect-true "nothing collected is the empty list"
+               (list-empty? (loop (:for x (list)) (:acc out (listing/reverse (+ x 1))))))
+  (expect "the reverse of listing"
+          (loop (:for x (range 0 100)) (:acc out (listing/reverse x)))
+          (list-reverse (loop (:for x (range 0 100)) (:acc out (listing x)))))
+  0)

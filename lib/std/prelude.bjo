@@ -19,7 +19,7 @@
   Range
   ArraySlice ReverseArraySlice VecSlice ReverseVecSlice
   VecBackCursor StringWalk ListTails PortReads UpFrom DownFrom
-  Listing Vecing VecingSmall Mapping Stringing Summing Counting Folding
+  Listing ListingReverse Vecing VecingSmall Mapping Stringing Summing Counting Folding
   InputPort OutputPort Exception Encoding
 
   ;; Iterable
@@ -553,6 +553,18 @@
   (defun (collector-init c) (listbuilder-empty))
   (defun (collector-step c acc x) (listbuilder-add! acc x) acc)
   (defun (collector-finish c acc) (listbuilder->list acc)))
+
+;; Listing in reverse: each value consed onto the list so far, so the list is
+;; the values last first, and there is no builder to finish.
+(type (: (ListingReverse %a) (Union listing/reverse)))
+
+(impl (Collector (ListingReverse %a))
+  (type %elem %a)
+  (type %acc (List %a))
+  (type %out (List %a))
+  (defun (collector-init c) Nil)
+  (defun (collector-step c acc x) (Cons x acc))
+  (defun (collector-finish c acc) acc))
 
 ;; Vecing.
 (type (: (Vecing %a) (Union vecing)))
