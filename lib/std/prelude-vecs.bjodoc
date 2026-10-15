@@ -365,6 +365,129 @@
     """))
 
 ;; ---------------------------------------------------------------------------
+;; The transient
+;; ---------------------------------------------------------------------------
+
+(:doc TransientVec
+  (summary "A vec that is changed in place at either end and at any index, and turned back into a vec in O(1).")
+  (tparam %a "The element type.")
+  (see vec->transientvec transientvec->vec transientvec-add! transientvec-pop!
+       transientvec-add-first! transientvec-pop-first! vecbuilder-empty)
+  (example """
+    (def t (vec->transientvec [1 2 3]))
+    (transientvec-add-first! t 0)
+    (transientvec-add! t 4)
+    (transientvec-pop-first! t)    ; 0
+    (transientvec-set! t 0 10)
+    (transientvec->vec t)          ; [10 2 3 4]
+    """)
+  (reference """
+    A transient is for many changes in a row to one vec, where each
+    persistent @code{vec-add} or @code{vec-pop-first} would copy a part of
+    the vec. It holds the vec's head and tail, a leaf's worth at each end, in
+    arrays of its own, and adds and removes there in place. Once in a leaf's
+    worth of operations at an end, that end runs out or fills, and the
+    transient moves a leaf between it and the tree, as a vec does.
+
+    @strong{Sharing.} @code{vec->transientvec} shares the vec's tree, and
+    copies a part of it the first time it changes it, so the vec is not
+    changed. @code{transientvec->vec} hands what the transient holds to a
+    vec in O(1), and the transient copies what it handed over before it
+    changes it again. The transient stays usable.
+
+    @strong{Against a builder.} A transient is the same structure as a vec
+    builder. A builder is for making a vec by adding at its end; a
+    transient for changing one at both ends.
+
+    A transient is not safe to use from two threads at once.
+
+    @strong{Traits.} Implements @code{Collection} and @code{Addable!}, which
+    adds at the end.
+    """))
+
+(:doc transientvec-empty
+  (summary "An empty transient.")
+  (returns "A new transient holding nothing.")
+  (see vec->transientvec))
+
+(:doc vec->transientvec
+  (summary "A transient holding what a vec holds. O(1).")
+  (arg v "The vec, which no change to the transient affects.")
+  (returns "A new transient.")
+  (see transientvec->vec))
+
+(:doc transientvec->vec
+  (summary "A vec of what a transient holds. O(1).")
+  (arg t "The transient, which may go on being used.")
+  (returns "A new vec, which no later change to t affects.")
+  (see vec->transientvec))
+
+(:doc transientvec-length
+  (summary "How many elements a transient holds. O(1).")
+  (arg t "The transient.")
+  (returns "The number of elements."))
+
+(:doc transientvec-empty?
+  (summary "Whether a transient holds nothing.")
+  (arg t "The transient.")
+  (returns "#t when it is empty."))
+
+(:doc transientvec-ref
+  (summary "The element at an index.")
+  (arg t "The transient.")
+  (arg i "The index, from 0.")
+  (returns "The element.")
+  (raises System.IndexOutOfRangeException "When i is negative or not less than the length.")
+  (see transientvec-set!))
+
+(:doc transientvec-set!
+  (summary "Replaces the element at an index, in place.")
+  (arg t "The transient.")
+  (arg i "The index, from 0.")
+  (arg x "The new element.")
+  (raises System.IndexOutOfRangeException "When i is negative or not less than the length.")
+  (see transientvec-ref))
+
+(:doc transientvec-add!
+  (summary "Adds an element at the end, in place.")
+  (arg t "The transient.")
+  (arg x "The element.")
+  (see transientvec-add-all! transientvec-add-first! transientvec-pop!))
+
+(:doc transientvec-add-all!
+  (summary "Adds the elements of a sequence at the end, in order, in place.")
+  (arg t "The transient.")
+  (arg xs "The elements.")
+  (see transientvec-add!))
+
+(:doc transientvec-add-first!
+  (summary "Adds an element before the first, in place.")
+  (arg t "The transient.")
+  (arg x "The element.")
+  (see transientvec-pop-first! transientvec-add!))
+
+(:doc transientvec-pop!
+  (summary "Removes the last element, in place, and answers it.")
+  (arg t "The transient.")
+  (returns "The element that was last.")
+  (raises System.InvalidOperationException "When the transient is empty.")
+  (see transientvec-add! transientvec-pop-first!))
+
+(:doc transientvec-pop-first!
+  (summary "Removes the first element, in place, and answers it.")
+  (arg t "The transient.")
+  (returns "The element that was first.")
+  (raises System.InvalidOperationException "When the transient is empty.")
+  (see transientvec-add-first! transientvec-pop!)
+  (example """
+    ;; A queue: add at the end, take from the front.
+    (def q (transientvec-empty))
+    (transientvec-add! q "a")
+    (transientvec-add! q "b")
+    (transientvec-pop-first! q)    ; "a"
+    """))
+
+;; ---------------------------------------------------------------------------
 ;; Collecting into a vec
 ;; ---------------------------------------------------------------------------
 

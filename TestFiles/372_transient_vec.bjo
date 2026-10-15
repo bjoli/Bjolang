@@ -1,0 +1,123 @@
+;; TransientVec: both ends and indices in place, the vec it came from and the
+;; vecs it hands out left alone, the errors, and random runs against a list.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: drain (-> (TransientVec %a) (List %a)))
+(defun (drain t)
+  (let go ((out Nil))
+    (if (transientvec-empty? t)
+        (list-reverse out)
+        (go (Cons (transientvec-pop-first! t) out)))))
+
+(: list-take (-> (List %a) int (List %a)))
+(defun (list-take xs n) (seq->list (take n xs)))
+
+(: list-drop (-> (List %a) int (List %a)))
+(defun (list-drop xs n) (seq->list (drop n xs)))
+
+;; A linear congruential generator: the runs are the same each time.
+(: step (-> long long))
+(defun (step s) (% (+ (* s 1103515245L) 12345L) 2147483648L))
+
+(: below (-> long int int))
+(defun (below s n) (cast int (% (/ s 65536L) (cast long n))))
+
+;; Runs of adds and removes at both ends, against a list of what it should
+;; hold, which is slow but plainly right. Runs of up to 70 cross leaves.
+(: random-run (-> long int bool))
+(defun (random-run seed ops)
+  (def t (transientvec-empty))
+  (let go ((i 0) (s seed) (model Nil) (next 0) (ok #t))
+    (if (>= i ops)
+        (and ok (= (vec->list (transientvec->vec t)) model))
+        (let ((n (+ 1 (below (step s) 70))))
+          (case (below s 4)
+            ((0)
+             (loop (:for k (range 0 n)) (:do (transientvec-add! t (+ next k))))
+             (go (+ i 1) (step (step s))
+                 (list-append model (loop (:for k (range 0 n)) (:acc (listing (+ next k)))))
+                 (+ next n) ok))
+            ((1)
+             (loop (:for k (range 0 n)) (:do (transientvec-add-first! t (+ next k))))
+             (go (+ i 1) (step (step s))
+                 (list-append (loop (:for k (range 0 n)) (:acc (listing (- (+ next n) 1 k)))) model)
+                 (+ next n) ok))
+            ((2)
+             (def m (min n (list-length model)))
+             (def got (loop (:for k (range 0 m)) (:acc (listing (transientvec-pop! t)))))
+             (def kept (list-take model (- (list-length model) m)))
+             (go (+ i 1) (step (step s)) kept next
+                 (and ok (= got (list-reverse (list-drop model (- (list-length model) m)))))))
+            (else
+             (def m (min n (list-length model)))
+             (def got (loop (:for k (range 0 m)) (:acc (listing (transientvec-pop-first! t)))))
+             (go (+ i 1) (step (step s)) (list-drop model m) next
+                 (and ok (= got (list-take model m))))))))))
+
+(: main (-> (Vec string) int))
+(defun (main args)
+  ;; --- the ends ---------------------------------------------------------------
+  (def t (vec->transientvec [1 2 3]))
+  (transientvec-add-first! t 0)
+  (transientvec-add! t 4)
+  (expect "add at both ends" (vec->list (transientvec->vec t)) (list 0 1 2 3 4))
+  (expect "pop-first!" (transientvec-pop-first! t) 0)
+  (expect "pop!" (transientvec-pop! t) 4)
+  (transientvec-set! t 0 10)
+  (expect "set! and ref" (transientvec-ref t 0) 10)
+  (expect "length" (transientvec-length t) 3)
+  (transientvec-add-all! t (vec->seq [7 8]))
+  (expect "add-all!" (vec->list (transientvec->vec t)) (list 10 2 3 7 8))
+
+  ;; --- what it shares -------------------------------------------------------
+  (def source (loop (:for i (range 0 1000)) (:acc (vecing i))))
+  (def ts (vec->transientvec source))
+  (loop (:for i (range 0 100)) (:do (transientvec-add-first! ts (- 0 i))))
+  (loop (:for i (range 0 300)) (:do (ignore (transientvec-pop! ts))))
+  (loop (:for k (range 0 115)) (:do (transientvec-set! ts (* k 7) -1)))
+  (expect "the vec it came from is as it was"
+          (vec->list source) (loop (:for i (range 0 1000)) (:acc (listing i))))
+  (def taken (transientvec->vec ts))
+  (def taken-list (vec->list taken))
+  (loop (:for i (range 0 500)) (:do (transientvec-add! ts i) (transientvec-add-first! ts i)))
+  (loop (:for i (range 0 200)) (:do (transientvec-set! ts i 99)))
+  (loop (:for i (range 0 300)) (:do (ignore (transientvec-pop-first! ts))))
+  (expect "a vec it handed out is as it was" (vec->list taken) taken-list)
+  (expect "and the transient went on" (transientvec-length ts) (+ (vec-length taken) 700))
+
+  ;; --- a queue ----------------------------------------------------------------
+  (def q (transientvec-empty))
+  (loop (:for i (range 0 10000)) (:do (transientvec-add! q i)))
+  (def front (loop (:for i (range 0 5000)) (:acc (listing (transientvec-pop-first! q)))))
+  (expect "first in, first out" front (loop (:for i (range 0 5000)) (:acc (listing i))))
+  (expect "and the rest" (drain q) (loop (:for i (range 5000 10000)) (:acc (listing i))))
+
+  ;; --- errors -----------------------------------------------------------------
+  (def e (transientvec-empty))
+  (expect-true "pop! on empty raises"
+               (match (try (transientvec-pop! e) #:catch (System.InvalidOperationException))
+                 ((Ok _) #f) ((Err _) #t)))
+  (expect-true "pop-first! on empty raises"
+               (match (try (transientvec-pop-first! e) #:catch (System.InvalidOperationException))
+                 ((Ok _) #f) ((Err _) #t)))
+  (transientvec-add! e 1)
+  (expect-true "ref past the end raises"
+               (match (try (transientvec-ref e 1) #:catch (System.IndexOutOfRangeException))
+                 ((Ok _) #f) ((Err _) #t)))
+  (expect-true "set! past the end raises"
+               (match (try (transientvec-set! e 5 0) #:catch (System.IndexOutOfRangeException))
+                 ((Ok _) #f) ((Err _) #t)))
+
+  ;; --- traits -----------------------------------------------------------------
+  (def c (transientvec-empty))
+  (add! c "a")
+  (expect "Addable! adds at the end" (transientvec-ref c 0) "a")
+  (expect "Collection" (length c) 1)
+
+  ;; --- random runs ------------------------------------------------------------
+  (expect-true "random runs agree with a list"
+               (loop (:for seed (range 1 30))
+                     (:acc ok (folding #t (and ok (random-run (cast long seed) 200))))))
+  0)

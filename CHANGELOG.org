@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~TransientVec~: a vec changed in place at both ends
+
+- ~vec->transientvec~, ~transientvec->vec~, and ~transientvec-add!~,
+  ~-pop!~, ~-add-first!~, ~-pop-first!~, ~-set!~, ~-ref~, ~-add-all!~,
+  ~-length~ and ~-empty?~, named as the other collections' transients are.
+  It implements ~Collection~ and ~Addable!~. Both conversions are O(1): the
+  transient shares the vec's tree and copies a part before it changes it,
+  and stays usable after it hands a vec out.
+- It is the vec builder, which already added at the end and set in place,
+  with the other ends. The head is a leaf's worth of the builder's own with
+  its items at the end, so adding in front and taking the first are a write
+  and a step; a head shared with a vec is copied before it changes, as the
+  tail is. Taking the last takes from the tail, then from the leaves
+  waiting for the tree. When an end runs out, or the head is full, the
+  builder becomes a vec, the vec's own operation runs, and the builder is
+  loaded from the result: once in a leaf's worth of operations at that end.
+- At 100,000 ints, each operation at an end allocates 6 to 31 bytes,
+  against 171 to 188 for the persistent ~vec-add~, ~vec-insert~ at 0,
+  ~vec-pop-first~ and ~vec-pop~.
+- ~TransientVec~ is ~Collections.RrbTransient~, a subclass of the builder
+  with nothing added, as a .NET type stands for one Bjolang type and
+  ~RrbBuilder~ is ~VecBuilder~'s. ~VecBuilder~ gains the ends in .NET only.
+- ~BjolangRuntime/RrbList~'s ~BuilderEndsFuzz~ runs random runs at both
+  ends, sets and handed-out lists against a ~List<int>~, and checks every
+  list handed out again at the end. ~TestFiles/372_transient_vec.bjo~ does
+  the same from Bjolang.
+
 * A doc's ~(form ...)~ is published as a string, and ~for-all~ declares as ~def~ does
 
 - A typed binding of ~for-all~ is ~(: name Type)~, as a ~def~ declares one.

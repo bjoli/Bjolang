@@ -15,7 +15,7 @@
 ;; Macros defined here CANNOT be used in this file.
 (export
   ;; Types.
-  Map MapBuilder TransientMap MapCursor
+  Map MapBuilder TransientMap MapCursor TransientVec
   Range
   ArraySlice ReverseArraySlice VecSlice ReverseVecSlice
   VecBackCursor StringWalk ListTails PortReads UpFrom DownFrom
@@ -78,6 +78,11 @@
   ;; Builders.
   mapbuilder-empty map->mapbuilder mapbuilder-add! mapbuilder-add-all!
   mapbuilder-length mapbuilder->map
+  ;; The vec's transient.
+  transientvec-empty vec->transientvec transientvec->vec
+  transientvec-length transientvec-empty? transientvec-ref transientvec-set!
+  transientvec-add! transientvec-add-all! transientvec-pop!
+  transientvec-add-first! transientvec-pop-first!
   ;; Transients.
   transientmap-empty map->transientmap transientmap->map
   transientmap-set! transientmap-set-all! transientmap-remove!
@@ -278,6 +283,28 @@
 (defun (println x)
   (displayln (->str x)))
 
+
+;; ---------------------------------------------------------------------------
+;; TransientVec — a vec changed in place
+;; ---------------------------------------------------------------------------
+;; The builder a `VecBuilder` is, under its own name, with the ends a builder
+;; has no use for.
+(import/class
+  ((TransientVec %a) (: Collections.RrbTransient)))
+
+(import/extern
+  (transientvec-empty      (: Collections.TransientVecModule.Empty    (-> (TransientVec %a))))
+  (vec->transientvec       (: Collections.TransientVecModule.FromList (-> (Vec %a) (TransientVec %a))))
+  (transientvec->vec       (: Collections.TransientVecModule.ToList   (-> (TransientVec %a) (Vec %a))))
+  (transientvec-length     (: Collections.TransientVecModule.Count    (-> (TransientVec %a) int)))
+  (transientvec-empty?     (: Collections.TransientVecModule.IsEmpty  (-> (TransientVec %a) bool)))
+  (transientvec-ref        (: Collections.TransientVecModule.Ref      (-> (TransientVec %a) int %a)))
+  (transientvec-set!       (: Collections.TransientVecModule.Set      (-> (TransientVec %a) int %a void)))
+  (transientvec-add!       (: Collections.TransientVecModule.Add      (-> (TransientVec %a) %a void)))
+  (transientvec-add-all!   (: Collections.TransientVecModule.AddRange (-> (TransientVec %a) (Seq %a) void)))
+  (transientvec-add-first! (: Collections.TransientVecModule.Prepend  (-> (TransientVec %a) %a void)))
+  (transientvec-pop!       (: Collections.TransientVecModule.Pop      (-> (TransientVec %a) %a)))
+  (transientvec-pop-first! (: Collections.TransientVecModule.PopFirst (-> (TransientVec %a) %a))))
 
 ;; ---------------------------------------------------------------------------
 ;; Map — the unordered map
@@ -2637,6 +2664,13 @@
   (defun (empty? vb)
     (= (vecbuilder-length vb) 0)))
 
+(impl (Collection (TransientVec %a))
+  (type %content %a)
+  (defun (length t)
+    (transientvec-length t))
+  (defun (empty? t)
+    (transientvec-empty? t)))
+
 (impl (Collection (ListBuilder %a))
   (type %content %a)
   (defun (length lb)
@@ -2725,6 +2759,11 @@
   (type %elem %a)
   (defun (add! vb elem)
     (vecbuilder-add! vb elem)))
+
+(impl (Addable! (TransientVec %a))
+  (type %elem %a)
+  (defun (add! t elem)
+    (transientvec-add! t elem)))
 
 (impl (Addable! (TransientMap %k %v))
   (type %elem (%k . %v))
