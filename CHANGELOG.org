@@ -3,6 +3,29 @@
 
 What each change guarantees, and what it leaves open.
 
+* A doc's ~(form ...)~ is published as a string, and ~for-all~ declares as ~def~ does
+
+- A typed binding of ~for-all~ is ~(: name Type)~, as a ~def~ declares one.
+  ~(name : Type)~ is refused, with a message saying which to write. A case
+  stored in a ~NAME.failed.bjodat~ under the old spelling has other bindings
+  text, and is dropped once.
+- A ~(form ...)~ holds source, and bjodat is not a reader of source: the
+  lone ~:~ of ~(: name Type)~, or ~'x~ and ~#'x~, published as written, made
+  the module's docs unreadable. ~(std test prop)~'s did not read back. The
+  compiler now publishes a form as the string of its text, ~(form "(for-all
+  ...)")~, as it does a signature. ~(janitor docs)~'s ~DocForm~ holds a
+  ~string~, and still reads a form published as a list by an earlier
+  compiler. samizdat's ~form-text~ takes the string.
+- The other clauses hold only what bjodat reads as source does, but for an
+  escape in a string that source does not define: source keeps ~\q~ as two
+  characters, and bjodat refuses it, or reads a character for ~\0~ and
+  ~\u0041~. The compiler reports such a string in a doc
+  (~TestFiles/errors/doc_string_escape.bjo~). None in the standard library
+  had one.
+- Left open: a samizdat built against the old ~DocForm~ does not compile
+  against this ~(janitor docs)~; the copies under ~glasnost/.bjo/pkg~ are of
+  those.
+
 * A fiber that yields keeps its partner on its core
 
 - A sync that commits as it publishes, past the inline budget, queues the

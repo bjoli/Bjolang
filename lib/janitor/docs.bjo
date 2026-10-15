@@ -72,7 +72,7 @@
   (case DocKey "A keyword parameter's name, without #:, and text.")
   (case DocRaises "The exception's type as written, and when.")
   (case DocTparam "The type parameter as written, %a, and its text.")
-  (case DocForm "How a macro is written, as data.")
+  (case DocForm "How a macro is written, as source text: (with-x name body ...).")
   (case DocOther "A clause this version does not know: its head and the rest."))
 (type (: DocClause (Union
                     (: DocSummary string)
@@ -87,7 +87,7 @@
                     (: DocField Symbol string)
                     (: DocCase Symbol string)
                     (: DocTparam Symbol string)
-                    (: DocForm Bjodat)
+                    (: DocForm string)
                     (: DocLiteral (List Symbol))
                     (: DocOther Symbol (List Bjodat)))))
 
@@ -156,7 +156,9 @@
        ((Tuple "field" (Cons (BjoSym n) (Cons (BjoStr t) Nil))) (Ok (DocField n t)))
        ((Tuple "case" (Cons (BjoSym n) (Cons (BjoStr t) Nil))) (Ok (DocCase n t)))
        ((Tuple "tparam" (Cons (BjoSym n) (Cons (BjoStr t) Nil))) (Ok (DocTparam n t)))
-       ((Tuple "form" (Cons shape Nil)) (Ok (DocForm shape)))
+       ((Tuple "form" (Cons (BjoStr t) Nil)) (Ok (DocForm t)))
+       ;; As compilers before the string published it.
+       ((Tuple "form" (Cons (BjoList shape) Nil)) (Ok (DocForm (bjodat->string (BjoList shape)))))
        ((Tuple "see" names)
         (match (symbol-list names)
           ((Some ns) (Ok (DocSee ns)))

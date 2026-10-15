@@ -13,7 +13,7 @@
 ;; std/test/prop.bjo — property tests.
 ;;
 ;;     (deftest "reverse twice is the identity"
-;;       (for-all ((xs : (List int)))
+;;       (for-all ((: xs (List int)))
 ;;         (check (= (list-reverse (list-reverse xs)) xs))))
 ;;
 ;; `for-all` runs its body many times with generated values. When a run
@@ -348,7 +348,7 @@
 ;; it, for a person to read, the size the draws were made at, and the draws.
 ;; In the file, a case is
 ;;
-;;     (case (test "name") (bindings "((xs : (List int)))") (index 0)
+;;     (case (test "name") (bindings "((: xs (List int)))") (index 0)
 ;;           (seed "123") (size 37) (draws [1 0 5]))
 ;;
 ;; A `for-all` is found by its test, the source text of its bindings, and its
@@ -714,21 +714,30 @@
     ((_ name first body ...) #'(with-label ,name (fun () ,first ,@body unit)))
     (bad (syntax-error bad "label takes a name and a body: (label \"after insert\" body ...)."))))
 
+;; Whether a form is the bare `:` that a type declaration begins with.
+(: colon? (-> Syntax bool))
+(defun (colon? s)
+  (match s
+    ((SList _) #f)
+    (_ (= (syntax->string s) ":"))))
+
 ;; The definition of one binding of a `for-all`: `(name gen)`, or
-;; `(name : Type)` for the type's `arbitrary`.
+;; `(: name Type)` for the type's `arbitrary`, declared as a `def` is.
 (: binding-def (-> Syntax Syntax Syntax))
 (defun (binding-def choices b)
   (match b
-    ((SList (Cons name (Cons colon (Cons type Nil))))
+    ((SList (Cons colon (Cons name (Cons type Nil))))
      (cond
-       ((not (= (syntax->string colon) ":"))
-        (syntax-error b "A binding of for-all is (name generator) or (name : Type)."))
+       ((not (colon? colon))
+        (if (colon? name)
+            (syntax-error b "A typed binding of for-all is declared as a def is: (: name Type), not (name : Type).")
+            (syntax-error b "A binding of for-all is (name generator) or (: name Type).")))
        ;; The compiler would say only that a dictionary is missing.
        ((type-variable-in? type)
         (syntax-error type "for-all draws values of a type it knows, and this type has a type variable, such as %a, in it. Write a type such as (List int), or give a generator: (name gen)."))
        (else #'(def (: ,name ,type) (prop-arbitrary ,choices)))))
     ((SList (Cons name (Cons g Nil))) #'(def ,name (prop-draw ,g ,choices)))
-    (_ (syntax-error b "A binding of for-all is (name generator) or (name : Type)."))))
+    (_ (syntax-error b "A binding of for-all is (name generator) or (: name Type)."))))
 
 ;; Whether a type, as written, names a type variable: %a, alone or inside.
 (: type-variable-in? (-> Syntax bool))
@@ -741,6 +750,7 @@
 (: binding-name (-> Syntax Syntax))
 (defun (binding-name b)
   (match b
+    ((SList (Cons colon (Cons name (Cons _ Nil)))) (if (colon? colon) name colon))
     ((SList (Cons name _)) name)
     (_ b)))
 
@@ -758,7 +768,7 @@
                            (fun () ,@body unit)))))
 
 ;; `(for-all ((name gen) ...) body ...)`, or with `#:runs n` before the
-;; bindings. A binding is `(name generator)` or `(name : Type)`.
+;; bindings. A binding is `(name generator)` or `(: name Type)`.
 (def/macro (for-all form inject compare)
   (syntax-match form
     ((_ #:runs n (binding ...) first body ...)

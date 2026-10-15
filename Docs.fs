@@ -871,7 +871,7 @@ let private sourceOf (file: string) : (string[] * LexedToken[]) option =
 /// the end is found here by counting brackets in the file's tokens. A string,
 /// raw ones included, is one token, and a comment none, so neither upsets
 /// the count.
-let private formText (file: string) (start: Position) : string option =
+let private formTokens (file: string) (start: Position) : (string[] * LexedToken[]) option =
     sourceOf file
     |> Option.bind (fun (lines, tokens) ->
         match tokens |> Array.tryFindIndex (fun t -> t.Range.Start = start) with
@@ -886,15 +886,19 @@ let private formText (file: string) (start: Position) : string option =
                     | LBrace -> close (j + 1) (depth + 1)
                     | RParen
                     | RBracket
-                    | RBrace when depth = 1 -> Some tokens[j].Range.End
+                    | RBrace when depth = 1 -> Some j
                     | RParen
                     | RBracket
                     | RBrace -> close (j + 1) (depth - 1)
                     | _ -> close (j + 1) depth
 
-            close i 0
-            |> Option.bind (fun stop -> slice lines { tokens[i].Range with Start = start; End = stop })
+            close i 0 |> Option.map (fun stop -> lines, tokens[i..stop])
         | None -> None)
+
+let private formText (file: string) (start: Position) : string option =
+    formTokens file start
+    |> Option.bind (fun (lines, span) ->
+        slice lines { span[0].Range with End = span[span.Length - 1].Range.End })
 
 /// The text of a bracketed form, given its range.
 let private sourceText (r: Range) = formText r.File r.Start
@@ -904,6 +908,35 @@ let private quoted (s: string) =
     "\""
     + s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\t", "\\t").Replace("\r", "\\r")
     + "\""
+
+/// A clause is published as written, and what `parseClause` lets one hold is
+/// what bjodat reads too, except in a string: source keeps an unknown escape
+/// such as `\q` as the two characters, where bjodat refuses it, or, for `\0`
+/// and `\u0041`, reads a character. A string that writes one is reported,
+/// rather than published as text that does not read or reads differently.
+let private checkPublishable (clause: Range) =
+    match formTokens clause.File clause.Start with
+    | None -> ()
+    | Some(lines, span) ->
+        for t in span do
+            match t.Token with
+            | StringLit _ ->
+                match slice lines t.Range with
+                | Some written when not (written.StartsWith "\"\"\"") ->
+                    let rec scan (i: int) =
+                        if i + 1 < written.Length then
+                            if written[i] <> '\\' then
+                                scan (i + 1)
+                            elif "ntr\"\\".Contains written[i + 1] then
+                                scan (i + 2)
+                            else
+                                reportAt
+                                    t.Range
+                                    $"this string writes \\%c{written[i + 1]}, which source keeps as a backslash and %c{written[i + 1]} but a published doc cannot. Write \\\\%c{written[i + 1]}, or use a raw string."
+
+                    scan 1
+                | _ -> ()
+            | _ -> ()
 
 /// A type as source writes it: `%a` for a variable, `(#:k T)` for a keyword.
 let rec private typeText (t: FType) : string =
@@ -1014,9 +1047,17 @@ let publish (decls: Decl list) (entries: Entry list) : string =
 
                     [ $"(kind %s{kind})" ] @ signature @ definition
 
+            // A form is source, which bjodat is not a reader of: `(: name
+            // Type)`, `'x` and `#'x` are not data. It is published as a
+            // string of its text, as a signature is.
             let clauses =
                 e.Clauses
-                |> List.choose (fun (_, r) -> sourceText r)
+                |> List.choose (fun (c, r) ->
+                    match c with
+                    | Form shape -> sourceText (getRange shape) |> Option.map (fun t -> $"(form %s{quoted t})")
+                    | _ ->
+                        checkPublishable r
+                        sourceText r)
 
             "(:doc " + subjectText e.Subject + "\n  " + String.concat "\n  " (added @ clauses) + ")"
 
