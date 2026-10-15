@@ -55,6 +55,45 @@ What each change guarantees, and what it leaves open.
   list handed out again at the end. ~TestFiles/372_transient_vec.bjo~ does
   the same from Bjolang.
 
+* ~(std priority-queue)~: a persistent priority queue, with a transient
+
+- ~(PriorityQueue a p)~ holds elements under priorities and gives back the
+  least priority first, as ~(std mutable heap)~ does, but as a value: adding
+  and removing answer a new queue. It is a pairing heap: peeking, adding and
+  merging are O(1), and removing the least is O(log n) amortised. A queue
+  from n entries at once (~list->priorityqueue~, ~priorityqueue-add-all~, a
+  builder) takes O(n), and is balanced.
+- The amortised bound holds when each queue is used once. n adds leave a
+  root with n children, and a queue kept and removed from again walks them
+  each time. ~priorityqueue-balance~ rebuilds a queue in O(n) as a
+  tournament, so that removing from it is O(log n) however often;
+  ~priorityqueue-balanced?~ says whether it is.
+- Equal priorities come out in the order they were added: each entry has a
+  number from its queue's counter, which breaks a tie, and keeps it through
+  a balance. After a merge, equal priorities from the two queues come out in
+  an order that is fixed but not specified.
+- A ~TransientPriorityQueue~ changes cells it owns in place, and copies a
+  cell of the queue it came from once. A cell's children are a chain of
+  ~child~ and ~sibling~ fields, so a link changes two fields: a transient
+  allocates a cell for an entry when it is added, and nothing when it takes
+  the least. With the children in a list, each link consed onto an old
+  cell, and promoting those conses made a transient drain of 100,000 take
+  320 ms; it takes 28 ms, against 92 ms by persistent removal. A persistent
+  operation has an owner of its own while it runs, so it copies a cell at
+  most once too. Freezing is O(1), gives the transient a new owner, and does
+  not balance.
+- ~bench/collections/priority-queues.bjo~ times it against
+  ~Playground/pairingheap.bjo~, which keeps no priority apart, no tie
+  number and no owner. The persistent queue is 10 to 40% slower for those,
+  and builds from a list faster; a leftist heap, tried first, added 4 to 8
+  times slower than either. ~(std mutable heap)~ is 4 times faster than the
+  transient for work in one place.
+- Left open: each cell is two objects, the union case and the record with
+  the mutable fields, as a union case cannot hold a mutable field itself.
+  ~Playground/pairingheap.bjo~ does not compile: its ~heap-fold~ and the
+  ~eq-hash~ of ~Heap~ pass ~list-foldl~ a function that takes the
+  accumulator first. The copy in ~bench/collections~ is fixed.
+
 * A doc's ~(form ...)~ is published as a string, and ~for-all~ declares as ~def~ does
 
 - A typed binding of ~for-all~ is ~(: name Type)~, as a ~def~ declares one.

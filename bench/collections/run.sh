@@ -11,8 +11,9 @@
 # in such object code or executable form without complying with the source code
 # availability requirements or notice obligations of Section 3 of the MPL 2.0.
 #
-# Builds and runs the collection tables: `run.sh` for both, or
-# `run.sh list-vs-vec` / `run.sh map-vs-orderedmap` for one.
+# Builds and runs the collection tables: `run.sh` for every table, or
+# `run.sh list-vs-vec`, `run.sh map-vs-orderedmap` or `run.sh priority-queues`
+# for one.
 #
 # `DOTNET_TC_CallCountingDelayMs=0`: the runtime waits to optimise a method
 # until it has stopped compiling new ones for a while, and every case is a new
@@ -26,7 +27,7 @@ root=../..
 compiler="$("$root/build_compiler.sh" --path)"
 
 programs=("$@")
-[ ${#programs[@]} -eq 0 ] && programs=(list-vs-vec map-vs-orderedmap)
+[ ${#programs[@]} -eq 0 ] && programs=(list-vs-vec map-vs-orderedmap priority-queues)
 
 for p in "${programs[@]}"; do
     dotnet "$compiler" "$p.bjo" >/dev/null

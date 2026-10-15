@@ -1,23 +1,26 @@
-# List against Vec, Map against OrderedMap
+# List against Vec, Map against OrderedMap, and priority queues
 
-Two tables that time the same operations on both collections of a pair, from
+Three tables that time the same operations on both collections of a pair, from
 10 to 100,000 items, written in Bjolang:
 
 - `list-vs-vec.bjo`: building, reading every item, reading some items,
   changing the ends, and whole-collection operations, on ints.
 - `map-vs-orderedmap.bjo`: building, looking up, changing, reading every entry,
   and what an order makes cheap. Int keys, and string keys for one lookup row.
+- `priority-queues.bjo`: `(std priority-queue)` against the pairing heap in
+  `pairingheap.bjo` (a copy of `Playground/pairingheap.bjo`), and its
+  transient against `(std mutable heap)`. Int priorities.
 
 `results.txt` is the output of the last run. The numbers below are from it.
 
 ## Running
 
 ```
-./run.sh                      # both tables
+./run.sh                      # every table
 ./run.sh list-vs-vec          # one
 ```
 
-Both tables together take about ten minutes.
+The first two tables together take about ten minutes.
 
 ## Reading a table
 
@@ -97,6 +100,37 @@ largest key, the entries between two keys, the next key after one, or the
 entries in key order. A Map can only get those by reading every entry. An
 OrderedMap is also faster to read in full, which a program that iterates a
 large map more than it looks up in it may prefer.
+
+## Priority queues
+
+`(std priority-queue)` is a pairing heap, as `Playground/pairingheap.bjo` is.
+It keeps an element apart from its priority, a number that puts equal
+priorities in the order they were added, and an owner for its transient, and
+its children are a chain of fields rather than a list.
+
+| 100,000 entries | Std | Playground |
+|---|---|---|
+| add one at a time | 12.9 ms | 7.5 ms |
+| build from a list | 7.2 ms | 11.3 ms |
+| drain | 92–109 ms | 69–88 ms |
+| half added, then one added per least taken | 60 ms | 47 ms |
+| remove the least from one queue built one at a time, again and again | 2.4 ms | 2.2 ms |
+| the same after balancing | 201 ns | 135 ns |
+
+The extra fields cost the persistent queue 10–40%, and building from a list
+is faster. A queue built one add at a time has a root with a child for each
+add, and taking its least walks all of them: a queue used again pays that
+each time. `priorityqueue-balance` (`heap-balance` in the playground) removes
+the cost.
+
+| 100,000 entries | Transient | `(std mutable heap)` |
+|---|---|---|
+| add all, then take all | 29.3 ms, 80 B an entry | 7.3 ms, 21 B an entry |
+
+The transient allocates one cell for an entry when it is added, and nothing
+when it takes the least. Draining a queue through a transient takes 27.8 ms,
+against 92 ms by persistent removal. For a queue used in one place and never
+shared, the mutable heap, an array, is 4 times faster.
 
 ## What the numbers are
 

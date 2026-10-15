@@ -1,0 +1,218 @@
+;; (std priority-queue): the persistent queue, old versions, ties, the
+;; transient and its freeze, the builder, merging, a reversed order, and
+;; random runs of each against a sorted list.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std priority-queue))
+
+;; A sorted list as the model: `entry` goes after every entry whose priority
+;; is at most its own, so equal priorities stay in the order they came.
+(: model-add (-> (List (Tuple string int)) (Tuple string int) (List (Tuple string int))))
+(defun (model-add xs entry)
+  (def (Tuple _ p) entry)
+  (match xs
+    (Nil (list entry))
+    ((Cons (Tuple y q) rest)
+     (if (<= q p)
+         (Cons (Tuple y q) (model-add rest entry))
+         (Cons entry xs)))))
+
+;; A linear congruential generator: the tests are the same each run.
+(: step (-> long long))
+(defun (step s) (% (+ (* s 1103515245L) 12345L) 2147483648L))
+
+(: below (-> long int int))
+(defun (below s n) (cast int (% (/ s 65536L) (cast long n))))
+
+(: drain (-> (TransientPriorityQueue %a %p) (List (Tuple %a %p))))
+(defun (drain t)
+  (let go ((out Nil))
+    (match (transientpriorityqueue-pop! t)
+      (None (list-reverse out))
+      ((Some e) (go (Cons e out))))))
+
+;; Random adds and pops on a persistent queue, a transient and the model,
+;; which have to agree at every pop. Priorities are drawn from a few values,
+;; so that there are many ties.
+(: random-run (-> long int bool))
+(defun (random-run seed ops)
+  (def t (transientpriorityqueue-empty))
+  (let go ((i 0) (s seed) (q (priorityqueue-empty)) (model Nil) (ok #t))
+    (cond
+      ((>= i ops)
+       (and ok
+            (= (priorityqueue->list q) model)
+            (= (drain t) model)))
+      ((< (below s 3) 2)
+       (def p (below (step s) 8))
+       (def name (str "e" (int->string i)))
+       (transientpriorityqueue-add! t name p)
+       (go (+ i 1) (step (step s)) (priorityqueue-add q name p) (model-add model (Tuple name p)) ok))
+      (else
+       (def wanted (match model
+                     (Nil None)
+                     ((Cons e _) (Some e))))
+       (def from-t (transientpriorityqueue-pop! t))
+       (def from-q (priorityqueue-peek q))
+       (go (+ i 1) (step s) (priorityqueue-remove-min q)
+           (match model
+             (Nil Nil)
+             ((Cons _ rest) rest))
+           (and ok (= from-t wanted) (= from-q wanted)))))))
+
+(: main (-> (Vec string) int))
+(defun (main args)
+  ;; --- the persistent queue -------------------------------------------------
+  (def empty (priorityqueue-empty))
+  (expect "an empty queue has nothing to peek" (priorityqueue-peek empty) None)
+  (expect "and no length" (priorityqueue-length empty) 0)
+  (expect-true "and is empty" (priorityqueue-empty? empty))
+  (expect-true "pop on empty is None"
+               (match (priorityqueue-pop empty) (None #t) (_ #f)))
+  (expect-true "remove-min on empty is empty" (priorityqueue-empty? (priorityqueue-remove-min empty)))
+
+  (def q (priorityqueue-add (priorityqueue-add (priorityqueue-add empty "write" 2) "plan" 1) "test" 3))
+  (expect "least priority first" (priorityqueue-peek q) (Some (Tuple "plan" 1)))
+  (expect "length" (priorityqueue-length q) 3)
+  (expect "in the order they come out" (priorityqueue->list q)
+          (list (Tuple "plan" 1) (Tuple "write" 2) (Tuple "test" 3)))
+  (expect-true "pop answers the entry and the rest"
+               (match (priorityqueue-pop q)
+                 ((Some (Tuple x p rest)) (and (= x "plan") (= p 1) (= (priorityqueue-length rest) 2)))
+                 (None #f)))
+  (expect "unordered-list has every entry"
+          (list-length (priorityqueue->unordered-list q)) 3)
+
+  ;; --- old versions -----------------------------------------------------------
+  (def q2 (priorityqueue-add q "first" 0))
+  (expect "a new version" (priorityqueue-peek q2) (Some (Tuple "first" 0)))
+  (expect "leaves the old one" (priorityqueue->list q)
+          (list (Tuple "plan" 1) (Tuple "write" 2) (Tuple "test" 3)))
+  (def r1 (priorityqueue-remove-min q))
+  (def r2 (priorityqueue-remove-min q))
+  (expect "remove-min twice from one version" (priorityqueue->list r1) (priorityqueue->list r2))
+  (expect "and the version is unchanged" (priorityqueue-length q) 3)
+
+  ;; --- ties -------------------------------------------------------------------
+  (def tied (loop (:for name (list "a" "b" "c" "d" "e"))
+                  (:acc acc (folding empty (priorityqueue-add acc name 5)))))
+  (expect "equal priorities in the order they were added"
+          (list-map (fun (e) (match e ((Tuple x _) x))) (priorityqueue->list tied))
+          (list "a" "b" "c" "d" "e"))
+
+  ;; --- order ------------------------------------------------------------------
+  (def big-first (priorityqueue-add (priorityqueue-add (priorityqueue-by (fun (a b) (compare b a))) "low" 1) "high" 9))
+  (expect "a reversed order" (priorityqueue-peek big-first) (Some (Tuple "high" 9)))
+
+  ;; --- building and merging -------------------------------------------------
+  (def listed (list->priorityqueue (list (Tuple "c" 3) (Tuple "a" 1) (Tuple "b" 2) (Tuple "a2" 1))))
+  (expect "list->priorityqueue" (priorityqueue->list listed)
+          (list (Tuple "a" 1) (Tuple "a2" 1) (Tuple "b" 2) (Tuple "c" 3)))
+  (expect "add-all onto a queue"
+          (priorityqueue->list (priorityqueue-add-all q (list (Tuple "z" 0) (Tuple "y" 4))))
+          (list (Tuple "z" 0) (Tuple "plan" 1) (Tuple "write" 2) (Tuple "test" 3) (Tuple "y" 4)))
+  (def merged (priorityqueue-merge q listed))
+  (expect "merge has both" (priorityqueue-length merged) 7)
+  (expect "in order" (list-map (fun (e) (match e ((Tuple _ p) p))) (priorityqueue->list merged))
+          (list 1 1 1 2 2 3 3))
+  (expect-true "merge with empty" (= (priorityqueue-merge empty q) q))
+
+  ;; --- the transient ----------------------------------------------------------
+  (def t (priorityqueue->transientpriorityqueue q))
+  (transientpriorityqueue-add! t "urgent" 0)
+  (expect "a transient adds" (transientpriorityqueue-peek t) (Some (Tuple "urgent" 0)))
+  (expect "without changing the queue it came from" (priorityqueue-length q) 3)
+  (expect "pop!" (transientpriorityqueue-pop! t) (Some (Tuple "urgent" 0)))
+  (expect "pop! again" (transientpriorityqueue-pop! t) (Some (Tuple "plan" 1)))
+  (expect "the queue it came from still has plan" (priorityqueue-peek q) (Some (Tuple "plan" 1)))
+  (def frozen (transientpriorityqueue->priorityqueue t))
+  (expect "freeze" (priorityqueue->list frozen) (list (Tuple "write" 2) (Tuple "test" 3)))
+  (transientpriorityqueue-add! t "later" 1)
+  (ignore (transientpriorityqueue-pop! t))
+  (ignore (transientpriorityqueue-pop! t))
+  (expect "changing the transient after a freeze leaves the frozen queue"
+          (priorityqueue->list frozen) (list (Tuple "write" 2) (Tuple "test" 3)))
+  (expect "and the transient went on" (transientpriorityqueue-length t) 1)
+  (transientpriorityqueue-add-all! t (list (Tuple "x" 7) (Tuple "w" 6)))
+  (expect "add-all!" (drain t) (list (Tuple "test" 3) (Tuple "w" 6) (Tuple "x" 7)))
+  (expect "pop! on empty" (transientpriorityqueue-pop! t) None)
+  (expect-true "and it stays empty" (transientpriorityqueue-empty? t))
+
+  ;; --- the builder ------------------------------------------------------------
+  (def b (priorityqueuebuilder-empty))
+  (loop (:for i (range 0 10))
+        (:do (priorityqueuebuilder-add! b (int->string i) (- 9 i))))
+  (expect "builder length" (priorityqueuebuilder-length b) 10)
+  (def built (priorityqueuebuilder->priorityqueue b))
+  (expect "built" (priorityqueue-peek built) (Some (Tuple "9" 0)))
+  (priorityqueuebuilder-add! b "neg" -1)
+  (expect "the builder goes on" (priorityqueue-peek (priorityqueuebuilder->priorityqueue b)) (Some (Tuple "neg" -1)))
+  (expect "and the first build is as it was" (priorityqueue-length built) 10)
+
+  ;; --- balancing --------------------------------------------------------------
+  (def added (loop (:for i (range 0 1000))
+                   (:acc acc (folding empty (priorityqueue-add acc (int->string i) (% (* i 37) 1000))))))
+  (expect "adds leave a queue that is not balanced" (priorityqueue-balanced? added) #f)
+  (def balanced (priorityqueue-balance added))
+  (expect-true "balance balances" (priorityqueue-balanced? balanced))
+  (expect "with the same entries in the same order"
+          (priorityqueue->list balanced) (priorityqueue->list added))
+  (expect-true "and is free on a balanced queue" (eq? (priorityqueue-balance balanced) balanced))
+  (expect-true "a queue from a list is balanced" (priorityqueue-balanced? listed))
+  (expect-true "and from a builder"
+               (priorityqueue-balanced? (priorityqueuebuilder->priorityqueue
+                                         (priorityqueuebuilder-by (fun (a b) (- a b))))))
+  (def tied-balanced (priorityqueue-balance tied))
+  (expect "ties keep their order through a balance"
+          (list-map (fun (e) (match e ((Tuple x _) x))) (priorityqueue->list tied-balanced))
+          (list "a" "b" "c" "d" "e"))
+  (expect "removing from one version again and again"
+          (loop (:for i (range 0 50))
+                (:acc acc (folding 0 (+ acc (priorityqueue-length (priorityqueue-remove-min balanced))))))
+          (* 50 999))
+
+  ;; --- the transient adds to what it owns ------------------------------------
+  (def owned (transientpriorityqueue-empty))
+  (transientpriorityqueue-add! owned "root" 0)
+  (loop (:for i (range 1 100)) (:do (transientpriorityqueue-add! owned (int->string i) i)))
+  (def owned-frozen (transientpriorityqueue->priorityqueue owned))
+  (transientpriorityqueue-add! owned "later" 50)
+  (expect "a freeze keeps what was added before it" (priorityqueue-length owned-frozen) 100)
+  (expect "and not what came after"
+          (list-length (list-filter (fun (e) (match e ((Tuple x _) (= x "later"))))
+                                    (priorityqueue->list owned-frozen)))
+          0)
+  (expect "the transient has both" (transientpriorityqueue-length owned) 101)
+
+  ;; --- walking and printing -------------------------------------------------
+  (expect "loop :for in order"
+          (loop (:for e q) (:acc (listing (match e ((Tuple x _) x)))))
+          (list "plan" "write" "test"))
+  (expect "->str" (->str (list->priorityqueue (list (Tuple "b" 2) (Tuple "a" 1))))
+          "#priorityqueue(a 1 b 2)")
+  (expect-true "equal when the same entries come out the same way"
+               (= (list->priorityqueue (list (Tuple "a" 1) (Tuple "b" 2)))
+                  (priorityqueue-add (priorityqueue-add empty "b" 2) "a" 1)))
+
+  ;; --- many entries -----------------------------------------------------------
+  (def n 100000)
+  (def nb (priorityqueuebuilder-empty))
+  (loop (:for i (range 0 n))
+        (:do (priorityqueuebuilder-add! nb i (% (* i 7919) n))))
+  (def large (priorityqueuebuilder->priorityqueue nb))
+  (expect "a large build" (priorityqueue-length large) n)
+  (expect "drains in order"
+          (list-map (fun (e) (match e ((Tuple _ p) p))) (priorityqueue->list large))
+          (loop (:for i (range 0 n)) (:acc (listing i))))
+  (def lt (transientpriorityqueue-empty))
+  (loop (:for i (range 0 n)) (:do (transientpriorityqueue-add! lt i (- n i))))
+  (expect "a large transient, added one at a time"
+          (match (transientpriorityqueue-peek lt) ((Some (Tuple _ p)) p) (None -1))
+          1)
+
+  ;; --- random runs ------------------------------------------------------------
+  (expect-true "random runs agree with a sorted list"
+               (loop (:for seed (range 1 40))
+                     (:acc ok (folding #t (and ok (random-run (cast long seed) 300))))))
+  0)

@@ -1,0 +1,204 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; Priority queues: (std priority-queue), a pairing heap with a transient,
+;; against the pairing heap in pairingheap.bjo, a copy of
+;; Playground/pairingheap.bjo, and its transient against (std mutable heap). See README.md for how to read the tables, and run.sh to
+;; run them.
+;;
+;; The priorities are the ints 0 to n-1 in a scattered order. The pairing heap
+;; orders the ints themselves; the priority queue holds each int as both the
+;; element and the priority, so it carries an element, and the number that
+;; breaks ties, that the pairing heap does not.
+
+(import (std prelude))
+(import (std priority-queue))
+(import (std mutable heap))
+(import "harness.bjo")
+(import "pairingheap.bjo")
+
+(type (: Data (Record (: n int)
+                      (: keys (List int))
+                      (: entries (List (Tuple int int)))
+                      ;; Built one at a time, so the pairing heap's root has
+                      ;; n-1 children.
+                      (: pq-added (PriorityQueue int int))
+                      (: heap-added (Heap int))
+                      ;; Built from a list, which balances the pairing heap.
+                      (: pq-built (PriorityQueue int int))
+                      (: heap-built (Heap int)))))
+
+(: long (-> int long))
+(defun (long x) (cast System.Int64 x))
+
+(: data-of (-> int Data))
+(defun (data-of n)
+  (def keys (loop (:for i (range 0 n)) (:acc l (listing (% (* i 7919) n)))))
+  (def entries (list-map (fun (k) (Tuple k k)) keys))
+  (Data (n n) (keys keys) (entries entries)
+        (pq-added (list-foldl (fun (k q) (priorityqueue-add q k k)) (priorityqueue-empty) keys))
+        (heap-added (list-foldl (fun (k h) (heap-insert h k)) (heap-empty) keys))
+        (pq-built (list->priorityqueue entries))
+        (heap-built (list->heap keys))))
+
+(: each (-> (Vec Data) (-> Data void) void))
+(defun (each data f)
+  (loop (:for d data) (:do (f d))))
+
+;; Every entry removed, least first; the sum of what came out.
+(: pq-drain (-> (PriorityQueue int int) long))
+(defun (pq-drain q)
+  (let go ((q q) (acc 0L))
+    (match (priorityqueue-peek q)
+      (None acc)
+      ((Some (Tuple x _)) (go (priorityqueue-remove-min q) (+ acc (long x)))))))
+
+(: heap-drain (-> (Heap int) long))
+(defun (heap-drain h)
+  (let go ((h h) (acc 0L))
+    (match (heap-min h)
+      (None acc)
+      ((Some x) (go (heap-delete-min h) (+ acc (long x)))))))
+
+;; A scheduler's pattern: half the keys added, then each of the others added
+;; as the least is taken off.
+(: pq-churn (-> (List int) int long))
+(defun (pq-churn keys n)
+  (def half (/ n 2))
+  (let go ((rest keys) (i 0) (q (priorityqueue-empty)) (acc 0L))
+    (match rest
+      (Nil (+ acc (long (priorityqueue-length q))))
+      ((Cons k more)
+       (if (< i half)
+           (go more (+ i 1) (priorityqueue-add q k k) acc)
+           (match (priorityqueue-peek q)
+             ((Some (Tuple x _)) (go more (+ i 1) (priorityqueue-add (priorityqueue-remove-min q) k k) (+ acc (long x))))
+             (None acc)))))))
+
+(: heap-churn (-> (List int) int long))
+(defun (heap-churn keys n)
+  (def half (/ n 2))
+  (let go ((rest keys) (i 0) (h (heap-empty)) (acc 0L))
+    (match rest
+      (Nil (+ acc (long (heap-length h))))
+      ((Cons k more)
+       (if (< i half)
+           (go more (+ i 1) (heap-insert h k) acc)
+           (match (heap-min h)
+             ((Some x) (go more (+ i 1) (heap-insert (heap-delete-min h) k) (+ acc (long x))))
+             (None acc)))))))
+
+(defun (main args)
+  (def data (loop (:for n [10 100 1000 10000 100000]) (:acc v (vecing (data-of n)))))
+
+  (header "Priority queues of ints: (std priority-queue) against Playground/pairingheap.bjo.")
+
+  ;; --- Building -------------------------------------------------------------
+
+  (section "Building" "Std" "Playground")
+  (each data
+    (fun (d)
+      (def keys (record-ref d keys))
+      (versus "one at a time: priorityqueue-add / heap-insert" (record-ref d n)
+               (fun () (long (priorityqueue-length (list-foldl (fun (k q) (priorityqueue-add q k k)) (priorityqueue-empty) keys))))
+               (fun () (long (heap-length (list-foldl (fun (k h) (heap-insert h k)) (heap-empty) keys)))))))
+  (each data
+    (fun (d)
+      (def entries (record-ref d entries))
+      (def keys (record-ref d keys))
+      (versus "from a list: list->priorityqueue / list->heap" (record-ref d n)
+               (fun () (long (priorityqueue-length (list->priorityqueue entries))))
+               (fun () (long (heap-length (list->heap keys)))))))
+
+  ;; --- Taking the least -----------------------------------------------------
+
+  (section "Taking the least" "Std" "Playground")
+  (each data
+    (fun (d)
+      (def q (record-ref d pq-built))
+      (def h (record-ref d heap-built))
+      (versus "drain one built from a list" (record-ref d n)
+               (fun () (pq-drain q))
+               (fun () (heap-drain h)))))
+  (each data
+    (fun (d)
+      (def q (record-ref d pq-added))
+      (def h (record-ref d heap-added))
+      (versus "drain one built one at a time" (record-ref d n)
+               (fun () (pq-drain q))
+               (fun () (heap-drain h)))))
+  (each data
+    (fun (d)
+      (def keys (record-ref d keys))
+      (def n (record-ref d n))
+      (versus "half added, then add one per least taken" n
+               (fun () (pq-churn keys n))
+               (fun () (heap-churn keys n)))))
+
+  ;; --- Using one version again ----------------------------------------------
+
+  (section "Using one version again" "Std" "Playground")
+  (each data
+    (fun (d)
+      (def q (record-ref d pq-added))
+      (def h (record-ref d heap-added))
+      (versus "remove the least from one built one at a time" (record-ref d n)
+               (fun () (long (priorityqueue-length (priorityqueue-remove-min q))))
+               (fun () (long (heap-length (heap-delete-min h)))))))
+  (each data
+    (fun (d)
+      (def q (priorityqueue-balance (record-ref d pq-added)))
+      (def h (heap-balance (record-ref d heap-added)))
+      (versus "the same after balancing" (record-ref d n)
+               (fun () (long (priorityqueue-length (priorityqueue-remove-min q))))
+               (fun () (long (heap-length (heap-delete-min h)))))))
+  (each data
+    (fun (d)
+      (def q (record-ref d pq-built))
+      (def h (record-ref d heap-built))
+      (versus "add one and remove the least" (record-ref d n)
+               (fun () (long (priorityqueue-length (priorityqueue-remove-min (priorityqueue-add q -1 -1)))))
+               (fun () (long (heap-length (heap-delete-min (heap-insert h -1))))))))
+
+  ;; --- In place -------------------------------------------------------------
+
+  (section "In place" "Transient" "MutableHeap")
+  (each data
+    (fun (d)
+      (def keys (record-ref d keys))
+      (versus "add all, then take all" (record-ref d n)
+               (fun ()
+                 (def t (transientpriorityqueue-empty))
+                 (loop (:for k keys) (:do (transientpriorityqueue-add! t k k)))
+                 (let go ((acc 0L))
+                   (match (transientpriorityqueue-pop! t)
+                     (None acc)
+                     ((Some (Tuple x _)) (go (+ acc (long x)))))))
+               (fun ()
+                 (def h (mutableheap))
+                 (loop (:for k keys) (:do (mutableheap-add! h k k)))
+                 (let go ((acc 0L))
+                   (match (mutableheap-pop! h)
+                     (None acc)
+                     ((Some (Tuple x _)) (go (+ acc (long x))))))))))
+  (each data
+    (fun (d)
+      (def q (record-ref d pq-built))
+      (versus "drain: persistent / transient" (record-ref d n)
+               (fun () (pq-drain q))
+               (fun ()
+                 (def t (priorityqueue->transientpriorityqueue q))
+                 (let go ((acc 0L))
+                   (match (transientpriorityqueue-pop! t)
+                     (None acc)
+                     ((Some (Tuple x _)) (go (+ acc (long x))))))))))
+  0)

@@ -205,3 +205,71 @@ every key, in order                             1000       23.0 us 72048 B      
 every key, in order                            10000       309 us 720048 B      62.6 us 320000 B            0.20
 every key, in order                           100000      4.1 ms 7200052 B      945 us 3200001 B            0.23
 
+
+Priority queues of ints: (std priority-queue) against Playground/pairingheap.bjo.
+.NET 10.0.4, Fedora Linux 43 (Container Image), 24 logical processors.
+Each cell is the time per call, the fastest of 5 rounds, and the bytes
+allocated per call where there are any.
+A call that does nothing takes less than 1 ns.
+
+Building
+operation                                          n                   Std            Playground  Playground/Std
+one at a time: priorityqueue-add / heap-insert      10         300 ns 2288 B         212 ns 1424 B            0.71
+one at a time: priorityqueue-add / heap-insert     100        3.0 us 23168 B        2.0 us 13664 B            0.68
+one at a time: priorityqueue-add / heap-insert    1000      31.7 us 231968 B      21.3 us 136064 B            0.67
+one at a time: priorityqueue-add / heap-insert   10000      429 us 2319968 B      265 us 1360064 B            0.62
+one at a time: priorityqueue-add / heap-insert  100000    12.9 ms 23199968 B     7.5 ms 13600064 B            0.58
+from a list: list->priorityqueue / list->heap      10         300 ns 1544 B         342 ns 2008 B            1.14
+from a list: list->priorityqueue / list->heap     100        2.7 us 14536 B        3.3 us 19352 B            1.20
+from a list: list->priorityqueue / list->heap    1000      28.5 us 144104 B      33.8 us 192088 B            1.19
+from a list: list->priorityqueue / list->heap   10000      376 us 1440232 B      440 us 1920344 B            1.17
+from a list: list->priorityqueue / list->heap  100000     7.2 ms 14400264 B    11.3 ms 19200408 B            1.57
+
+Taking the least
+operation                                          n                   Std            Playground  Playground/Std
+drain one built from a list                       10         343 ns 2240 B         257 ns 1360 B            0.75
+drain one built from a list                      100       10.3 us 58960 B        9.0 us 48864 B            0.87
+drain one built from a list                     1000       190 us 852960 B       174 us 771040 B            0.92
+drain one built from a list                    10000     3.9 ms 12517200 B     3.3 ms 11655808 B            0.84
+drain one built from a list                   100000   92.1 ms 151858400 B   69.4 ms 142964960 B            0.75
+drain one built one at a time                     10         371 ns 2400 B         315 ns 1584 B            0.85
+drain one built one at a time                    100       12.2 us 69120 B       11.6 us 60448 B            0.95
+drain one built one at a time                   1000      225 us 1011200 B       213 us 923424 B            0.95
+drain one built one at a time                  10000     4.5 ms 14132960 B     4.0 ms 13253440 B            0.89
+drain one built one at a time                 100000    109 ms 167723280 B   88.0 ms 158923808 B            0.80
+half added, then add one per least taken          10         480 ns 3288 B         328 ns 1968 B            0.68
+half added, then add one per least taken         100        9.6 us 55168 B        7.5 us 41448 B            0.78
+half added, then add one per least taken        1000       149 us 720688 B       121 us 581720 B            0.81
+half added, then add one per least taken       10000      2.6 ms 8938368 B      2.2 ms 7551608 B            0.84
+half added, then add one per least taken      100000    59.9 ms 99739088 B    46.7 ms 85862360 B            0.78
+
+Using one version again
+operation                                          n                   Std            Playground  Playground/Std
+remove the least from one built one at a time      10          142 ns 744 B          125 ns 672 B            0.88
+remove the least from one built one at a time     100         1.6 us 7944 B         1.4 us 7872 B            0.88
+remove the least from one built one at a time    1000       16.5 us 79944 B       14.5 us 79872 B            0.88
+remove the least from one built one at a time   10000       187 us 799944 B       169 us 799872 B            0.90
+remove the least from one built one at a time  100000      2.4 ms 7999944 B      2.2 ms 7999872 B            0.92
+the same after balancing                          10           49 ns 264 B            21 ns 96 B            0.43
+the same after balancing                         100           78 ns 424 B           49 ns 256 B            0.63
+the same after balancing                        1000          141 ns 744 B          106 ns 576 B            0.75
+the same after balancing                       10000          173 ns 904 B          106 ns 576 B            0.61
+the same after balancing                      100000         201 ns 1064 B          135 ns 736 B            0.67
+add one and remove the least                      10           40 ns 288 B           25 ns 128 B            0.63
+add one and remove the least                     100           40 ns 288 B           24 ns 128 B            0.60
+add one and remove the least                    1000           40 ns 288 B           24 ns 128 B            0.60
+add one and remove the least                   10000           40 ns 288 B           24 ns 128 B            0.60
+add one and remove the least                  100000           40 ns 288 B           24 ns 128 B            0.60
+
+In place
+operation                                          n             Transient           MutableHeapMutableHeap/Transient
+add all, then take all                            10          236 ns 872 B           85 ns 344 B            0.36
+add all, then take all                           100         5.2 us 8072 B         1.0 us 2208 B            0.21
+add all, then take all                          1000       95.1 us 80072 B       15.5 us 16616 B            0.16
+add all, then take all                         10000       1.8 ms 800074 B       558 us 262473 B            0.30
+add all, then take all                        100000     29.3 ms 8000104 B      7.3 ms 2097560 B            0.25
+drain: persistent / transient                     10         350 ns 2240 B          171 ns 744 B            0.49
+drain: persistent / transient                    100       10.4 us 58960 B         4.6 us 7944 B            0.44
+drain: persistent / transient                   1000       192 us 852960 B       90.9 us 79944 B            0.47
+drain: persistent / transient                  10000     3.9 ms 12517204 B       1.7 ms 799946 B            0.45
+drain: persistent / transient                 100000   91.8 ms 151858432 B     27.8 ms 7999976 B            0.30

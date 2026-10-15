@@ -1,0 +1,347 @@
+;; Docs for std/priority-queue.bjo, read through (:doc #:file
+;; "priority-queue.bjodoc"). The texts are samizdat markup: code in prose is
+;; @code{...}.
+
+(:doc #:module
+  (summary "A persistent priority queue, least priority first, with a transient and a builder.")
+  (see PriorityQueue priorityqueue-empty priorityqueue-add priorityqueue-pop
+       TransientPriorityQueue PriorityQueueBuilder)
+  (example """
+    (import (std priority-queue))
+
+    (def q (priorityqueue-add (priorityqueue-add (priorityqueue-empty) "write" 2) "plan" 1))
+    (priorityqueue-peek q)                     ; (Some (Tuple "plan" 1))
+    (priorityqueue-peek (priorityqueue-remove-min q))   ; (Some (Tuple "write" 2))
+    (priorityqueue-peek q)                     ; still (Some (Tuple "plan" 1))
+    """)
+  (reference """
+    A @code{(PriorityQueue a p)} holds elements of type @code{a} under
+    priorities of type @code{p}, and gives back the least priority first. A
+    queue is a value: adding to it or removing from it answers a new queue,
+    and the old one is unchanged.
+
+    @strong{The structure.} A pairing heap. Peeking, adding and merging two
+    queues are O(1). Removing the least is O(log n) amortised. A queue made
+    from n entries at once, by @code{list->priorityqueue},
+    @code{priorityqueue-add-all} or a builder, takes O(n).
+
+    @strong{Using a queue again.} The amortised bound holds when each queue
+    is used once: you go on with the result and drop the queue you had. n
+    adds leave a queue whose next removal walks all n entries, and that
+    removal pays for the adds. A queue kept and removed from again pays it
+    again each time. @code{priorityqueue-balance} rebuilds a queue in O(n)
+    so that every removal from it is O(log n), and is the thing to call
+    before a queue is kept as the start of many others. A queue made from
+    many entries at once is balanced already.
+
+    @strong{Elements and priorities.} The queue orders priorities, not
+    elements, so the element type needs no order. @code{priorityqueue-empty}
+    orders priorities by their @code{Ord}; @code{priorityqueue-by} takes a
+    comparison, for any other order or a type without @code{Ord}.
+
+    @strong{Equal priorities} come out in the order they were added to the
+    queue. After @code{priorityqueue-merge}, entries of the two queues with
+    equal priorities come out in an order that is fixed but not specified.
+
+    @strong{A transient} is a queue that changes in place, for many changes
+    in a row: @code{priorityqueue->transientpriorityqueue} makes one, and
+    @code{transientpriorityqueue->priorityqueue} gives a queue of what it
+    holds in O(1). It copies a cell of the queue it came from once, the first
+    time an operation reaches it, and changes its own cells without copying:
+    adding allocates one cell, and taking the least allocates nothing. Freezing does not balance: call @code{priorityqueue-balance} on
+    the queue before using it again many times. A transient is not safe to
+    use from two threads at once.
+
+    @strong{A builder} collects entries and makes a queue of them in O(n).
+
+    For a queue used in one place and never shared, @code{(std mutable heap)}
+    is faster: it is an array, and has no cells to allocate.
+
+    @strong{Traits.} @code{PriorityQueue} implements @code{Collection} and
+    @code{Iterable} over @code{(Tuple a p)}, in the order the entries come
+    out; @code{Eq}, by the entries in that order; and @code{->str}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The types
+;; ---------------------------------------------------------------------------
+
+(:doc PriorityQueue
+  (summary "A persistent priority queue of elements %a under priorities %p, least first.")
+  (tparam %a "The element type, which needs no order.")
+  (tparam %p "The priority type.")
+  (see priorityqueue-empty priorityqueue-by TransientPriorityQueue))
+
+(:doc TransientPriorityQueue
+  (summary "A priority queue that changes in place, made from a PriorityQueue and turned back into one in O(1).")
+  (tparam %a "The element type.")
+  (tparam %p "The priority type.")
+  (see priorityqueue->transientpriorityqueue transientpriorityqueue->priorityqueue
+       transientpriorityqueue-add! transientpriorityqueue-pop!)
+  (example """
+    (def t (priorityqueue->transientpriorityqueue q))
+    (transientpriorityqueue-add! t "urgent" 0)
+    (transientpriorityqueue-pop! t)            ; (Some (Tuple "urgent" 0))
+    (transientpriorityqueue->priorityqueue t)
+    """))
+
+(:doc PriorityQueueBuilder
+  (summary "Collects entries one at a time, and makes a PriorityQueue of them in O(n).")
+  (tparam %a "The element type.")
+  (tparam %p "The priority type.")
+  (see priorityqueuebuilder-empty priorityqueuebuilder-add! priorityqueuebuilder->priorityqueue))
+
+(:doc PriorityQueueTree
+  (summary "The tree of a queue. Opaque; exported because functions an importer inlines name it.")
+  (tparam %a "The element type.")
+  (tparam %p "The priority type."))
+
+(:doc PriorityQueueCell
+  (summary "One entry of a queue's tree. Opaque; exported because functions an importer inlines name it.")
+  (tparam %a "The element type.")
+  (tparam %p "The priority type."))
+
+(:doc PriorityQueueOwner
+  (summary "What a transient owns its cells by. Opaque; exported because functions an importer inlines name it."))
+
+;; ---------------------------------------------------------------------------
+;; The persistent queue
+;; ---------------------------------------------------------------------------
+
+(:doc priorityqueue-empty
+  (summary "An empty queue, ordering priorities by their Ord.")
+  (returns "An empty queue.")
+  (see priorityqueue-by list->priorityqueue))
+
+(:doc priorityqueue-by
+  (summary "An empty queue, ordering priorities by a comparison.")
+  (arg order "Negative when its first argument comes out first, 0 for equal, positive otherwise.")
+  (returns "An empty queue. Every queue made from it orders the same way.")
+  (see priorityqueue-empty)
+  (example """
+    (priorityqueue-by (fun (a b) (compare b a)))   ; the greatest priority first
+    """))
+
+(:doc priorityqueue-length
+  (summary "How many entries a queue holds. O(1).")
+  (arg q "The queue.")
+  (returns "The number of entries.")
+  (see priorityqueue-empty?))
+
+(:doc priorityqueue-empty?
+  (summary "Whether a queue holds nothing.")
+  (arg q "The queue.")
+  (returns "#t when it is empty.")
+  (see priorityqueue-length))
+
+(:doc priorityqueue-peek
+  (summary "The entry that comes out first, left in the queue. O(1).")
+  (arg q "The queue.")
+  (returns "(Some (Tuple element priority)), or None when the queue is empty.")
+  (see priorityqueue-pop priorityqueue-remove-min))
+
+(:doc priorityqueue-add
+  (summary "A queue with one more entry. O(1).")
+  (arg q "The queue, which is left as it was.")
+  (arg x "The element.")
+  (arg p "Its priority.")
+  (returns "A new queue.")
+  (see priorityqueue-add-all transientpriorityqueue-add!))
+
+(:doc priorityqueue-add-all
+  (summary "A queue with the entries of a list added. O(n) for n entries.")
+  (arg q "The queue, which is left as it was.")
+  (arg entries "(Tuple element priority) pairs. Equal priorities come out in this order, after those already in q.")
+  (returns "A new queue.")
+  (see priorityqueue-add list->priorityqueue))
+
+(:doc priorityqueue-merge
+  (summary "One queue with the entries of two. O(1).")
+  (arg a "A queue, whose order the result has.")
+  (arg b "A queue with the same order as a.")
+  (returns "A new queue. Neither argument is changed.")
+  (reference """
+    The result orders by @code{a}'s comparison, and @code{b} must have been
+    made with the same one: a comparison is a function, and two functions
+    cannot be compared, so this is not checked. When they differ, add the
+    entries of @code{b} instead:
+    @code{(priorityqueue-add-all a (priorityqueue->unordered-list b))}.
+    """))
+
+(:doc priorityqueue-pop
+  (summary "The entry that comes out first, and the queue without it. O(log n) amortised.")
+  (arg q "The queue, which is left as it was.")
+  (returns "(Some (Tuple element priority rest)), or None when the queue is empty.")
+  (see priorityqueue-peek priorityqueue-remove-min)
+  (example """
+    (match (priorityqueue-pop q)
+      ((Some (Tuple task priority rest)) (run task) rest)
+      (None q))
+    """))
+
+(:doc priorityqueue-remove-min
+  (summary "The queue without the entry that comes out first. O(log n) amortised.")
+  (arg q "The queue, which is left as it was.")
+  (returns "A new queue, or q itself when it is empty.")
+  (see priorityqueue-pop priorityqueue-peek priorityqueue-balance)
+  (reference """
+    The cost is that of linking the children of the entry removed: one for
+    each entry added since the last removal. On a queue that is removed from
+    only once, the adds have paid for it. On a queue removed from again and
+    again, call @code{priorityqueue-balance} first.
+    """))
+
+(:doc priorityqueue-balance
+  (summary "The same queue, rebuilt so that removing the least is O(log n) from it however often it is used. O(n).")
+  (arg q "The queue, which is left as it was.")
+  (returns "A balanced queue with the same entries, which come out in the same order. q itself when it is balanced already.")
+  (see priorityqueue-balanced? priorityqueue-remove-min)
+  (example """
+    ;; A queue kept as the start of many searches:
+    (def start (priorityqueue-balance (loop (:for job jobs)
+                                            (:acc q (folding (priorityqueue-empty)
+                                                             (priorityqueue-add q job (cost job)))))))
+    """)
+  (reference """
+    The cells are rebuilt as a tournament: neighbours linked, then the
+    results linked in pairs, until one is left. The root then has about
+    log2(n) children, and so has every cell below it.
+    """))
+
+(:doc priorityqueue-balanced?
+  (summary "Whether a queue came out of priorityqueue-balance or a build from many entries, and is unchanged since.")
+  (arg q "The queue.")
+  (returns "#t when it is balanced. #f says only that it may not be.")
+  (see priorityqueue-balance))
+
+(:doc list->priorityqueue
+  (summary "A queue of the entries of a list, ordering priorities by their Ord. O(n).")
+  (arg entries "(Tuple element priority) pairs. Equal priorities come out in this order.")
+  (returns "A new queue.")
+  (see priorityqueue-add-all priorityqueue->list)
+  (reference """
+    For another order, add the entries to an empty queue with that order:
+    @code{(priorityqueue-add-all (priorityqueue-by order) entries)}.
+    """))
+
+(:doc priorityqueue->list
+  (summary "Every entry, in the order they come out. O(n log n).")
+  (arg q "The queue, which is left as it was.")
+  (returns "A list of (Tuple element priority) pairs.")
+  (see priorityqueue->unordered-list))
+
+(:doc priorityqueue->unordered-list
+  (summary "Every entry, in no particular order. O(n).")
+  (arg q "The queue.")
+  (returns "A list of (Tuple element priority) pairs.")
+  (see priorityqueue->list))
+
+(:doc priorityqueue->str
+  (summary "A queue as text: #priorityqueue(element priority ...), in the order the entries come out.")
+  (arg q "The queue.")
+  (returns "The text.")
+  (example """
+    (priorityqueue->str (list->priorityqueue (list (Tuple "b" 2) (Tuple "a" 1))))
+    ; "#priorityqueue(a 1 b 2)"
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The transient
+;; ---------------------------------------------------------------------------
+
+(:doc transientpriorityqueue-empty
+  (summary "An empty transient, ordering priorities by their Ord.")
+  (returns "An empty transient.")
+  (see transientpriorityqueue-by priorityqueue->transientpriorityqueue))
+
+(:doc transientpriorityqueue-by
+  (summary "An empty transient, ordering priorities by a comparison.")
+  (arg order "Negative when its first argument comes out first, 0 for equal, positive otherwise.")
+  (returns "An empty transient.")
+  (see transientpriorityqueue-empty priorityqueue-by))
+
+(:doc priorityqueue->transientpriorityqueue
+  (summary "A transient holding what a queue holds. O(1).")
+  (arg q "The queue, which no change to the transient affects.")
+  (returns "A new transient with q's order.")
+  (see transientpriorityqueue->priorityqueue))
+
+(:doc transientpriorityqueue->priorityqueue
+  (summary "A queue of what a transient holds. O(1).")
+  (arg t "The transient, which may go on being used.")
+  (returns "A new queue, which no later change to t affects.")
+  (see priorityqueue->transientpriorityqueue)
+  (reference """
+    The transient goes on with a new owner, so its next changes copy what
+    they reach before changing it, as they did when it was made. The queue
+    is not balanced, which would make this O(n): call
+    @code{priorityqueue-balance} on it before using it again many times.
+    """))
+
+(:doc transientpriorityqueue-length
+  (summary "How many entries a transient holds. O(1).")
+  (arg t "The transient.")
+  (returns "The number of entries."))
+
+(:doc transientpriorityqueue-empty?
+  (summary "Whether a transient holds nothing.")
+  (arg t "The transient.")
+  (returns "#t when it is empty."))
+
+(:doc transientpriorityqueue-peek
+  (summary "The entry that comes out first, left in the transient. O(1).")
+  (arg t "The transient.")
+  (returns "(Some (Tuple element priority)), or None when it is empty.")
+  (see transientpriorityqueue-pop!))
+
+(:doc transientpriorityqueue-add!
+  (summary "Adds an entry to a transient, in place. O(1).")
+  (arg t "The transient.")
+  (arg x "The element.")
+  (arg p "Its priority.")
+  (see transientpriorityqueue-add-all! transientpriorityqueue-pop!))
+
+(:doc transientpriorityqueue-add-all!
+  (summary "Adds the entries of a list to a transient, in place. O(n) for n entries.")
+  (arg t "The transient.")
+  (arg entries "(Tuple element priority) pairs. Equal priorities come out in this order, after those already in t.")
+  (see transientpriorityqueue-add!))
+
+(:doc transientpriorityqueue-pop!
+  (summary "Removes the entry that comes out first from a transient, in place. O(log n) amortised.")
+  (arg t "The transient.")
+  (returns "(Some (Tuple element priority)), or None when it is empty, which leaves it as it was.")
+  (see transientpriorityqueue-peek transientpriorityqueue-add!))
+
+;; ---------------------------------------------------------------------------
+;; The builder
+;; ---------------------------------------------------------------------------
+
+(:doc priorityqueuebuilder-empty
+  (summary "An empty builder, ordering priorities by their Ord.")
+  (returns "An empty builder.")
+  (see priorityqueuebuilder-by))
+
+(:doc priorityqueuebuilder-by
+  (summary "An empty builder, ordering priorities by a comparison.")
+  (arg order "Negative when its first argument comes out first, 0 for equal, positive otherwise.")
+  (returns "An empty builder.")
+  (see priorityqueuebuilder-empty))
+
+(:doc priorityqueuebuilder-add!
+  (summary "Adds an entry to a builder. O(1).")
+  (arg b "The builder.")
+  (arg x "The element.")
+  (arg p "Its priority.")
+  (see priorityqueuebuilder->priorityqueue))
+
+(:doc priorityqueuebuilder-length
+  (summary "How many entries a builder has been given.")
+  (arg b "The builder.")
+  (returns "The number of entries."))
+
+(:doc priorityqueuebuilder->priorityqueue
+  (summary "A queue of a builder's entries. O(n).")
+  (arg b "The builder, which keeps its entries and may be added to and built again.")
+  (returns "A new, balanced queue. Equal priorities come out in the order they were added.")
+  (see priorityqueuebuilder-add!))
