@@ -85,7 +85,8 @@ let private closerOf (opener: Lexer.Token) =
     | _ -> RParen
 
 /// Reads the forms in `tokens` up to the bracket that closes `opener`, and
-/// returns them with the tokens after it. With no opener it reads to the end.
+/// returns them with the tokens from that bracket on. With no opener it reads
+/// to the end.
 ///
 /// Every bracket has to be closed, by its own kind, and nothing may be closed
 /// that was not opened. Each of those is an error rather than something to
@@ -114,8 +115,15 @@ let rec private readIn (opener: LexedToken option) (tokens: LexedToken list) : S
         rest
         =
         let startRange = bracket.Range
-        let innerNodes, afterList = readIn (Some bracket) rest
-        let endRange = if List.isEmpty afterList then startRange else (List.head afterList).Range
+
+        // The tokens after the form begin with its closing bracket, which is
+        // where its range ends.
+        let endRange, afterList =
+            match readIn (Some bracket) rest with
+            | innerNodes, closer :: after -> closer.Range, (innerNodes, after)
+            | innerNodes, [] -> startRange, (innerNodes, [])
+
+        let innerNodes, afterList = afterList
         let listRange = unionLexerRanges rangeFrom endRange
 
         let finalNodes =
@@ -144,7 +152,9 @@ let rec private readIn (opener: LexedToken option) (tokens: LexedToken list) : S
                     $"Syntax error at %s{Lexer.formatPos o.Range}: the '%s{bracketText o.Token}' opened here is never closed. The file ends first."
         | ({ Token = (RParen | RBracket | RBrace) } as closer) :: rest ->
             match opener with
-            | Some o when closerOf o.Token = closer.Token -> collapseSynQuote (List.rev acc), rest
+            // The closer is handed back with the rest, for `readForm` to end
+            // the form's range at.
+            | Some o when closerOf o.Token = closer.Token -> collapseSynQuote (List.rev acc), closer :: rest
             | Some o ->
                 failwithf
                     $"Syntax error at %s{Lexer.formatPos o.Range}: the '%s{bracketText o.Token}' opened here is closed by the '%s{bracketText closer.Token}' at %s{Lexer.formatPos closer.Range}. A form opened with '%s{bracketText o.Token}' is closed with '%s{bracketText (closerOf o.Token)}'."
@@ -272,7 +282,7 @@ let rec private expandIncludes
                         (includedFrom r)
                         target
 
-                let source = File.ReadAllText(target)
+                let source = Paths.readSource target
                 let innerForms, _ = Lexer.tokenize target source |> read
                 let inner, innerVisited = expandIncludes (target :: activeFiles) target innerForms
                 visited <- Set.union visited innerVisited
@@ -297,7 +307,7 @@ let rec private expandIncludes
                         rel
                         target
 
-                let innerForms, _ = Lexer.tokenize target (File.ReadAllText target) |> read
+                let innerForms, _ = Lexer.tokenize target (Paths.readSource target) |> read
 
                 for inner in innerForms do
                     if not (Docs.isDocForm inner) || (Docs.fileForm inner).IsSome then
@@ -1071,7 +1081,11 @@ type private SourceFacts =
     { /// Filen själv och allt den drar in med `include`, transitivt.
       Sources: Set<string>
       /// Importerna, med den underförstådda preluden inräknad.
-      Imports: (ImportSpec * Lexer.Range) list }
+      Imports: (ImportSpec * Lexer.Range) list
+      /// The import forms as written, the implicit prelude's not among them:
+      /// what `Imports` is read from, and what a build record keeps so that
+      /// the facts can be had without reading the source again.
+      ImportForms: SExpr list }
 
 /// Vad varje `.bjo` sade om sig själv, och vid vilken tidsstämpel.
 ///
@@ -1099,21 +1113,94 @@ let private sourceFacts = System.Collections.Generic.Dictionary<string * int64, 
 
 let private factsOf (bjoPath: string) : SourceFacts =
     let key = bjoPath, File.GetLastWriteTimeUtc(bjoPath).Ticks
+    // Text a host holds changes without the file's timestamp, so it is read
+    // again each time rather than cached under one.
+    let held = Paths.sourceOverrides.ContainsKey(Path.GetFullPath bjoPath)
 
     match sourceFacts.TryGetValue key with
-    | true, hit -> hit
+    | true, hit when not held -> hit
     | _ ->
-        let forms, _ = Lexer.tokenize bjoPath (File.ReadAllText bjoPath) |> read
+      Timing.phase "import: source facts" (fun () ->
+        let forms, _ = Lexer.tokenize bjoPath (Paths.readSource bjoPath) |> read
         let expanded, sources = expandIncludes [ bjoPath ] bjoPath forms
 
         // The imports of the expanded forms, as `loadModuleGraph` reads them:
         // an import written in an included file is this module's dependency.
         let facts =
             { Sources = sources
-              Imports = importsOf (withImplicitPrelude bjoPath expanded) }
+              Imports = importsOf (withImplicitPrelude bjoPath expanded)
+              ImportForms =
+                expanded
+                |> List.filter (function
+                    | SList(SAtom { Token = Lexer.Symbol "import" } :: _, _) -> true
+                    | _ -> false) }
 
-        sourceFacts[key] <- facts
-        facts
+        // Not under the file's timestamp when the text was the host's: the
+        // file on disk says something else.
+        if not held then sourceFacts[key] <- facts
+        facts)
+
+/// An import form on one line, as source writes it, for a build record. `None`
+/// for a form holding something other than names, keywords, strings and
+/// lists, which no import does today; such a module's record keeps no facts,
+/// and its source is read instead.
+let rec private importText (s: SExpr) : string option =
+    match s with
+    | SAtom { Token = Lexer.Symbol n } -> Some n
+    | SAtom { Token = Lexer.Keyword k } -> Some("#:" + k)
+    | SAtom { Token = Lexer.StringLit v } ->
+        Some("\"" + v.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n") + "\"")
+    | SList(items, _) ->
+        let parts = items |> List.map importText
+
+        if parts |> List.forall Option.isSome then
+            Some("(" + (parts |> List.choose id |> String.concat " ") + ")")
+        else
+            None
+    | _ -> None
+
+/// The lines of a build record that carry `bjoPath`'s facts: a `facts` line,
+/// a `fact-source` for each file of its closure, and a `fact-import` for each
+/// import form. With them the staleness check knows a current module's
+/// imports without tokenizing its source, which for the prelude is most of
+/// what an import of it costs. Empty when an import form cannot be written on
+/// a line.
+let factLines (bjoPath: string) : string list =
+    let facts = factsOf bjoPath
+    let imports = facts.ImportForms |> List.map importText
+
+    if imports |> List.forall Option.isSome then
+        [ yield "facts"
+          for source in facts.Sources do
+              yield "fact-source " + Path.GetFullPath source
+          for text in imports |> List.choose id do
+              yield "fact-import " + text ]
+    else
+        []
+
+/// `bjoPath`'s facts as its build record kept them, when the record can be
+/// trusted for them: it is the record of the `.dll` on disk, which is `built`,
+/// and no file of the closure is newer than it or held by a host. A file of
+/// the closure can only change by being written, and a written one is newer,
+/// so the closure and its import forms are what they were when it was built.
+let private recordedFacts (bjoPath: string) (built: DateTime) (record: BuildRecord.Record option) : SourceFacts option =
+    match record |> Option.bind (fun r -> r.Facts) with
+    | Some(sources, importTexts) when
+        not sources.IsEmpty
+        && sources
+           |> List.forall (fun s ->
+               not (Paths.sourceOverrides.ContainsKey s) && File.Exists s && File.GetLastWriteTimeUtc s <= built)
+        ->
+        try
+            let forms = importTexts |> List.collect (fun text -> Lexer.tokenize bjoPath text |> read |> fst)
+
+            Some
+                { Sources = Set.ofList sources
+                  Imports = importsOf (withImplicitPrelude bjoPath forms)
+                  ImportForms = forms }
+        with _ ->
+            None
+    | _ -> None
 
 /// Every file `bjoPath` is made of: itself and what it pulls in with `include`,
 /// transitively.
@@ -1139,7 +1226,7 @@ let private upToDateAgainst (resolve: ImportSpec -> Result<string, string>) (bjo
     let dllPath = Path.ChangeExtension(bjoPath, ".dll")
 
     let compilerBuilt =
-        let loc = System.Reflection.Assembly.GetExecutingAssembly().Location
+        let loc = Paths.compilerAssembly
         if loc <> "" && File.Exists loc then File.GetLastWriteTimeUtc loc else DateTime.MinValue
 
     /// The runtime assemblies, for the reason the compiler is an input: a
@@ -1172,8 +1259,12 @@ let private upToDateAgainst (resolve: ImportSpec -> Result<string, string>) (bjo
 
     File.Exists dllPath
     && (let built = File.GetLastWriteTimeUtc dllPath
-        let facts = factsOf bjoPath
         let record = BuildRecord.ofArtefact dllPath
+
+        let facts =
+            match recordedFacts bjoPath built record with
+            | Some recorded -> recorded
+            | None -> factsOf bjoPath
 
         /// A linked module that was rebuilt after this one is still no reason
         /// to rebuild this one if its interface is the one this build saw.
@@ -1642,7 +1733,7 @@ let loadModuleGraph
                     // publishes may call into any of these, and the resolver is
                     // what makes that possible.
                     noteAssemblyPath absPath
-                    let asm = loadForMetadata absPath
+                    let asm = Timing.phase "import: load assembly" (fun () -> loadForMetadata absPath)
                     let attr = asm.GetCustomAttributes(typeof<System.Reflection.AssemblyMetadataAttribute>, false)
 
                     let metadataValue (key: string) : string option =
@@ -1660,7 +1751,7 @@ let loadModuleGraph
                     // meant to export as unbound.
                     let meta =
                         match metadataValue "BjolangMetadata" with
-                        | Some text -> ModuleMetadata.deserialize absPath text
+                        | Some text -> Timing.phase "import: read metadata" (fun () -> ModuleMetadata.deserialize absPath text)
                         | None ->
                             let legacyKeys =
                                 [ "BjolangExports"; "BjolangDeps"; "BjolangInlineImpls"; "BjolangMacros" ]
@@ -1745,8 +1836,9 @@ let loadModuleGraph
                           // the body a copy would be made from is still the one
                           // it reaches.
                           Bodies =
-                            meta.ConstrainedBodies
-                            |> List.map (fun entry -> entry.Name, constrainedBodyTemplate absPath entry)
+                            Timing.phase "import: constrained bodies" (fun () ->
+                                meta.ConstrainedBodies
+                                |> List.map (fun entry -> entry.Name, constrainedBodyTemplate absPath entry))
                           TraitOrigins =
                             meta.TraitOrigins
                             |> List.map (fun (t, origin) -> Naming.moduleKeyOfPath absPath, t, origin) }
@@ -1757,7 +1849,8 @@ let loadModuleGraph
                     // Without them everything that would have been inlined
                     // calls the landing pad instead.
                     let inlineImplDecls =
-                        meta.InlineTemplates |> List.map (inlineImplDecl absPath)
+                        Timing.phase "import: inline templates" (fun () ->
+                            meta.InlineTemplates |> List.map (inlineImplDecl absPath))
 
                     // Foreign imports precede the traits: a trait's own
                     // signature may name a type an `import/class` alias
@@ -1775,11 +1868,12 @@ let loadModuleGraph
                             // A trait's default bodies are in here, and are
                             // code: they are spliced at every impl that leaves
                             // the method out.
-                            Lexer.tokenize absPath declText
-                            |> read
-                            |> fst
-                            |> List.map (readOrigins (Naming.moduleKeyOfPath absPath))
-                            |> DeclParser.parseModule
+                            Timing.phase "import: declarations" (fun () ->
+                                Lexer.tokenize absPath declText
+                                |> read
+                                |> fst
+                                |> List.map (readOrigins (Naming.moduleKeyOfPath absPath))
+                                |> DeclParser.parseModule)
 
                     // The bare spellings of the types this assembly declares.
                     //
@@ -1888,6 +1982,7 @@ let loadModuleGraph
                     // type is stored as the syntax it was written in, and there
                     // is one parser for that.
                     let externDecls =
+                      Timing.phase "import: signatures" (fun () ->
                         meta.Defs
                         |> List.collect (fun d ->
                             let text =
@@ -1927,7 +2022,7 @@ let loadModuleGraph
                                               IsMutable = d.IsMutable }
 
                                     DExtern(name, origin, t, constraints, r)
-                                | other -> other))
+                                | other -> other)))
 
                     let parsedDecls =
                         typeSpellingDecls @ reExportedSpellings @ declsFromText @ externDecls
@@ -1966,7 +2061,7 @@ let loadModuleGraph
                             "Import Error: cannot find '%s'. Paths in an (import \"...\") resolve relative to the file doing the importing."
                             absPath
 
-                    let sourceCode = File.ReadAllText(absPath)
+                    let sourceCode = Paths.readSource absPath
                     let forms, _ = Lexer.tokenize absPath sourceCode |> read
                     // Includes are spliced before anything looks at the forms, so
                     // an included file's own imports are picked up as this
@@ -2331,7 +2426,14 @@ let private importOrigins (decls: Decl list) : Map<string, string * string> =
             | _ -> acc)
         Map.empty
 
-let runFullFrontendPipeline (mainFilePath: string) =
+/// The frontend, from the source file to the tree code generation emits.
+///
+/// `codegen` false is a check, which wants the diagnostics and not the tree:
+/// the passes that only make the tree fit to emit, which cannot report
+/// anything, are left out. Every pass that can report is still run, the
+/// lowerings included, since the colour check reads the program as it will be
+/// emitted.
+let runFrontend (codegen: bool) (mainFilePath: string) =
     try
         Diagnostics.progress "=== Step 1: Parsing & Module Resolution ==="
         let parsedModuleDecls, dllDeps, importedBlocking, importedDoubles, importedBodies, reExportedTraits, docEntries =
@@ -2591,8 +2693,13 @@ let runFullFrontendPipeline (mainFilePath: string) =
         EffectGraph.lint env.Registry loopLoweredAst
 
         // Last, and a cleanup pass only: C# rejects a local that shadows an
-        // enclosing one, and every pass above is free to produce that.
-        let uniquifiedAst = Timing.phase "alpha rename" (fun () -> AlphaRename.uniquifyProgram Prelude.builtinNames loopLoweredAst)
+        // enclosing one, and every pass above is free to produce that. A check
+        // emits no C#.
+        let uniquifiedAst =
+            if codegen then
+                Timing.phase "alpha rename" (fun () -> AlphaRename.uniquifyProgram Prelude.builtinNames loopLoweredAst)
+            else
+                loopLoweredAst
 
         Diagnostics.progress "=== Frontend pipeline complete ==="
         // The gates above answer `None` for a program that had an error, so a
@@ -2616,3 +2723,5 @@ let runFullFrontendPipeline (mainFilePath: string) =
         Diagnostics.report ()
         None
 
+/// The frontend for code generation, every pass run.
+let runFullFrontendPipeline (mainFilePath: string) = runFrontend true mainFilePath

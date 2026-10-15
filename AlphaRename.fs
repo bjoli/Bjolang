@@ -480,8 +480,20 @@ let freshenTyped (roots: string list) (expr: TypedExpr) : TypedExpr * Map<string
 /// happen: `Naming.sanitizeIdent` is not injective, so `a-b` and `asubb` are one
 /// C# name — `(let ((a-b 1) (asubb 2)) ...)` declared `asubb` twice — and two
 /// names C# cannot tell apart have to be told apart here.
-let private shadowing (used: System.Collections.Generic.HashSet<string>) (_scope: Set<string>) (name: string) : string option =
-    if used.Add(Naming.sanitizeIdent name) then
+///
+/// The names are in two layers: the program's globals, emitted once for the
+/// whole program, and the ones this member has used. Seeding each member's set
+/// with every global meant emitting every global's spelling again for each
+/// member, which in a module of thousands of functions was most of the pass.
+let private shadowing
+    (globals: System.Collections.Generic.HashSet<string>)
+    (used: System.Collections.Generic.HashSet<string>)
+    (_scope: Set<string>)
+    (name: string)
+    : string option =
+    let emitted = Naming.sanitizeIdent name
+
+    if not (globals.Contains emitted) && used.Add emitted then
         None
     else
         // Fresh, so it needs no checking against `used` itself.
@@ -516,18 +528,33 @@ let rec private topLevelNames (decls: TDecl list) : Set<string> =
 /// The inliner freshens at the splice, because by the time this runs the wrong
 /// binding would already have been made and would merely be preserved
 /// faithfully.
-let rec uniquifyDeclWith (globals: Set<string>) (decl: TDecl) : TDecl =
+let rec private uniquifyDeclWith
+    (globals: Set<string>)
+    (emittedGlobals: System.Collections.Generic.HashSet<string>)
+    (decl: TDecl)
+    : TDecl =
     /// One emitted method, and one set of names it has already used. Everything
     /// that goes into the same C# member shares it — a keyword parameter's
     /// default is evaluated in the method that declares it, not somewhere else.
-    let inFunction (scope: Set<string>) (subst: Map<string, string>) =
-        let used = System.Collections.Generic.HashSet<string>(scope |> Seq.map Naming.sanitizeIdent)
-        fun (body: TypedExpr) -> renameCore (shadowing used) scope subst body
+    /// `scope` is the globals and `own`, the names the member itself already
+    /// binds, which are all its set starts with.
+    let inFunction (scope: Set<string>) (own: string seq) (subst: Map<string, string>) =
+        let used = System.Collections.Generic.HashSet<string>(own |> Seq.map Naming.sanitizeIdent)
+        fun (body: TypedExpr) -> renameCore (shadowing emittedGlobals used) scope subst body
 
     match decl with
-    | TModule(name, decls, r) -> TModule(name, decls |> List.map (uniquifyDeclWith globals), r)
+    | TModule(name, decls, r) -> TModule(name, decls |> List.map (uniquifyDeclWith globals emittedGlobals), r)
     | TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods, r) ->
-        TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods |> List.map (uniquifyDeclWith globals), r)
+        TImpl(
+            traitName,
+            kind,
+            holeArity,
+            targetType,
+            assoc,
+            dicts,
+            methods |> List.map (uniquifyDeclWith globals emittedGlobals),
+            r
+        )
 
     | TDefun(name, tyArgs, args, kwArgs, restArg, retType, effect, body, r) ->
         // A positional parameter may be renamed; a keyword parameter may not,
@@ -554,17 +581,17 @@ let rec uniquifyDeclWith (globals: Set<string>) (decl: TDecl) : TDecl =
         let args' = args |> List.map (fun (n, t) -> spell n, t)
         let restArg' = restArg |> Option.map (fun (n, t) -> spell n, t)
 
-        let scope =
-            Set.unionMany
-                [ globals
-                  args' |> List.map fst |> Set.ofList
-                  kwArgs |> List.map (fun (n, _, _) -> n) |> Set.ofList
-                  restArg' |> Option.map fst |> Option.toList |> Set.ofList ]
+        let own =
+            (args' |> List.map fst)
+            @ (kwArgs |> List.map (fun (n, _, _) -> n))
+            @ (restArg' |> Option.map fst |> Option.toList)
+
+        let scope = List.fold (fun acc n -> Set.add n acc) globals own
 
         // One set of used names for the whole method: a keyword parameter's
         // default is evaluated inside the member that declares it, so a local it
         // introduces shares a declaration space with the body's.
-        let inMethod = inFunction scope paramSubst
+        let inMethod = inFunction scope own paramSubst
 
         TDefun(
             name,
@@ -578,17 +605,18 @@ let rec uniquifyDeclWith (globals: Set<string>) (decl: TDecl) : TDecl =
             r
         )
 
-    | TDef(name, value, t, r) -> TDef(name, inFunction globals Map.empty value, t, r)
-    | TDefTuple(names, value, t, r) -> TDefTuple(names, inFunction globals Map.empty value, t, r)
+    | TDef(name, value, t, r) -> TDef(name, inFunction globals [] Map.empty value, t, r)
+    | TDefTuple(names, value, t, r) -> TDefTuple(names, inFunction globals [] Map.empty value, t, r)
     // The pattern is left alone: what it binds is a module-level name, already
     // in `globals`, and the scrutinee is the only expression here.
     | TDefPattern(pattern, value, binders, r) ->
-        TDefPattern(pattern, inFunction globals Map.empty value, binders, r)
-    | TDefMutable(name, value, t, r) -> TDefMutable(name, inFunction globals Map.empty value, t, r)
+        TDefPattern(pattern, inFunction globals [] Map.empty value, binders, r)
+    | TDefMutable(name, value, t, r) -> TDefMutable(name, inFunction globals [] Map.empty value, t, r)
     | _ -> decl
 
 /// `builtins` are renamed around too: `Codegen` passes a builtin by name as a
 /// lambda calling it, which would capture a local of the same name instead.
 let uniquifyProgram (builtins: Set<string>) (decls: TDecl list) : TDecl list =
     let globals = Set.union (topLevelNames decls) builtins
-    decls |> List.map (uniquifyDeclWith globals)
+    let emittedGlobals = System.Collections.Generic.HashSet<string>(globals |> Seq.map Naming.sanitizeIdent)
+    decls |> List.map (uniquifyDeclWith globals emittedGlobals)

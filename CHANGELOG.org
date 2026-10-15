@@ -3,6 +3,34 @@
 
 What each change guarantees, and what it leaves open.
 
+* Hooks for a language server, a lighter check, and less repeated work
+
+- Hooks for a host that runs the compiler in-process, such as
+  ~BjolangLsp~. ~Diagnostics.snapshot~ hands over the collected diagnostics
+  as values. ~Paths.compilerAssembly~ names the compiler the builds belong
+  to, so that a host's own copy does not make every module stale.
+  ~Paths.sourceOverrides~ holds text in place of what is on disk, read
+  through ~Paths.readSource~, which is how an unsaved buffer is checked.
+  ~Macro.observe~ is told of every expansion, which is how one is shown.
+- The reader ends a list's range at its closing bracket. It ended at the
+  token after it, which nothing printed but anything slicing a form by its
+  range had to work around.
+- A check (~--check~) leaves out alpha renaming, the one pass after type
+  checking that makes the tree fit for C# and can report nothing.
+  ~Pipeline.runFrontend codegen~ is the choice; ~runFullFrontendPipeline~
+  is ~runFrontend true~.
+- Alpha renaming no longer emits every global's spelling again for each
+  function, and ~Naming.sanitizeIdent~ is memoized. The pass took 957 ms of
+  the prelude's build and takes 114.
+- A build record keeps the module's facts: the files it is made of and its
+  import forms. While none of those files is newer than the ~.dll~, the
+  staleness check reads them from the record rather than tokenizing the
+  source, which for an import of the prelude was 86 ms of every compile. A
+  record without them, from an earlier compiler, is read as before.
+- With ~BJOLANG_TIMING~, loading an import is timed in its parts.
+- Left open: parsing an import's inline templates and constrained bodies is
+  eager, about 110 ms of every import of the prelude, although few are used.
+
 * A split vec, mapped and merged back, is dense again
 
 - ~vec-merge~ of two vecs whose leaves line up makes a dense tree, with no

@@ -1108,6 +1108,29 @@ def run_staleness():
             stale_check("an edit to what an included file imports reaches the program", "101\n", app_res2.stdout)
         else:
             stale_check("an edit to what an included file imports reaches the program", "101\n", "it did not compile")
+
+        # The library's build record keeps what its source imports, and while
+        # no file of it is newer the check reads that instead of the source.
+        record = (STALE_DIR / "inclib.bjobuild").read_text()
+        stale_check("a build record keeps the imports of an included file", True,
+                    'fact-import (import "incdep.bjo")' in record or record)
+
+        def edit_dep_and_run(old, new):
+            dep.write_text(dep.read_text().replace(old, new))
+            built = subprocess.run(["dotnet", COMPILER_DLL, str(STALE_DIR / "incapp.bjo")], capture_output=True, text=True)
+            if built.returncode != 0:
+                return "it did not compile"
+            return subprocess.run(["dotnet", str(STALE_DIR / "incapp.exe")], capture_output=True, text=True).stdout
+
+        stale_check("an edit reaches the program through the recorded imports", "1001\n",
+                    edit_dep_and_run("(+ x 100)", "(+ x 1000)"))
+
+        # A record written before records kept them: the source is read.
+        lines = (STALE_DIR / "inclib.bjobuild").read_text().split("\n")
+        (STALE_DIR / "inclib.bjobuild").write_text(
+            "\n".join(l for l in lines if l != "facts" and not l.startswith("fact-")))
+        stale_check("an edit reaches the program past a record without them", "10001\n",
+                    edit_dep_and_run("(+ x 1000)", "(+ x 10000)"))
     else:
         stale_check("an import in an included file builds", "2\n", "it did not compile")
 

@@ -37,7 +37,11 @@ type Record =
       Deps: string list
       /// The interface digest of each linked module as this build saw it. A
       /// linked module missing here is judged by its timestamp.
-      InterfaceOf: Map<string, string> }
+      InterfaceOf: Map<string, string>
+      /// What the staleness check reads the source for, as the build found it:
+      /// the files the module is made of, and its import forms as text. `None`
+      /// for a record written without them.
+      Facts: (string list * string list) option }
 
 /// The record beside a source or an artefact: they share a directory and a
 /// stem.
@@ -55,7 +59,15 @@ let private parse (lines: string seq) : Record =
           Written = None
           Interface = None
           Deps = []
-          InterfaceOf = Map.empty }
+          InterfaceOf = Map.empty
+          Facts = None }
+
+    // A `fact-` line before the `facts` line that opens them has nothing to
+    // belong to, and is ignored.
+    let addFact (r: Record) (add: string list * string list -> string list * string list) =
+        match r.Facts with
+        | Some facts -> { r with Facts = Some(add facts) }
+        | None -> r
 
     lines
     |> Seq.fold
@@ -72,8 +84,14 @@ let private parse (lines: string seq) : Record =
                 match v.Split(' ', 2) with
                 | [| hash; dll |] -> { r with InterfaceOf = Map.add dll hash r.InterfaceOf }
                 | _ -> r
+            | [| "facts" |] -> { r with Facts = Some([], []) }
+            | [| "fact-source"; v |] -> addFact r (fun (sources, imports) -> v :: sources, imports)
+            | [| "fact-import"; v |] -> addFact r (fun (sources, imports) -> sources, v :: imports)
             | _ -> r)
         empty
+    |> fun r ->
+        { r with
+            Facts = r.Facts |> Option.map (fun (sources, imports) -> List.rev sources, List.rev imports) }
 
 /// The record of the build that produced `artefact`, if that is what is on
 /// disk now: a record left from an earlier build, or one whose write failed

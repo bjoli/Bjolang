@@ -443,6 +443,16 @@ let private resolveIntroduced
 /// nesting happens in the parser rather than inside the call this module makes.
 let private expansions = Dictionary<string * Range, int>()
 
+/// Called with every expansion as it is made: the macro's name, the call
+/// site, the form expanded, what it expanded to, and each name hygiene renamed
+/// in it, fresh spelling to the one the template wrote. For a host that shows
+/// expansions, such as a language server; unset, nothing is kept.
+///
+/// An expansion that is itself a macro call expands again at the same call
+/// site, since a template's nodes carry the site's range, so one call can be
+/// observed several times, each a step further.
+let mutable observe: (string -> Range -> SExpr -> SExpr -> Map<string, string> -> unit) option = None
+
 /// Expands one form against one table.
 ///
 /// `what` names the kind in a diagnostic, and is the whole of the difference
@@ -512,6 +522,12 @@ let private expandIn
         // head symbol, and only these: `x__1` is a name a program may
         // define for itself.
         Hygiene.noteIntroduced memo.Values
+
+        match observe with
+        | Some f ->
+            let renamed = memo |> Seq.map (fun kv -> kv.Value, kv.Key) |> Map.ofSeq
+            f binding.Name callSite form expanded renamed
+        | None -> ()
 
         Some
             { Form = expanded

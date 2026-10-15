@@ -848,18 +848,25 @@ let private slice (lines: string[]) (r: Range) : string option =
             let last = lastLine.Substring(0, min lastLine.Length r.End.Column)
             Some(String.concat "\n" ([ first.Substring r.Start.Column ] @ middle @ [ last ]))
 
-/// A source file's lines and its tokens, read once per file.
-let private sources = Collections.Generic.Dictionary<string, string[] * LexedToken[]>()
+/// A source file's text, lines and tokens, read once per text: every doc in a
+/// module asks for its file, and tokenizing the file for each would cost a
+/// module of many docs seconds.
+let private sources = Collections.Generic.Dictionary<string, string * string[] * LexedToken[]>()
 
 let private sourceOf (file: string) : (string[] * LexedToken[]) option =
-    match sources.TryGetValue file with
-    | true, source -> Some source
+    // Text a host holds changes under the same path, so it is kept with the
+    // text it was read from and read again when that differs.
+    let held = Paths.sourceOverrides.TryFind(IO.Path.GetFullPath file)
+
+    match sources.TryGetValue file, held with
+    | (true, (_, lines, tokens)), None -> Some(lines, tokens)
+    | (true, (text, lines, tokens)), Some current when String.Equals(text, current) -> Some(lines, tokens)
     | _ when IO.File.Exists file ->
         try
-            let text = IO.File.ReadAllText file
-            let source = linesOf text, Array.ofList (Lexer.tokenize file text)
-            sources[file] <- source
-            Some source
+            let text = Paths.readSource file
+            let lines, tokens = linesOf text, Array.ofList (Lexer.tokenize file text)
+            sources[file] <- (text, lines, tokens)
+            Some(lines, tokens)
         with _ ->
             None
     | _ -> None
@@ -867,8 +874,7 @@ let private sourceOf (file: string) : (string[] * LexedToken[]) option =
 /// The bracketed form that opens at `start`, from its opening bracket to its
 /// closing one.
 ///
-/// A form's range ends at the token after it, which is the reader's doing, so
-/// the end is found here by counting brackets in the file's tokens. A string,
+/// The end is found by counting brackets in the file's tokens. A string,
 /// raw ones included, is one token, and a comment none, so neither upsets
 /// the count.
 let private formTokens (file: string) (start: Position) : (string[] * LexedToken[]) option =

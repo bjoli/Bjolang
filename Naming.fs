@@ -65,18 +65,8 @@ let private escapeUnidentifiable (part: string) =
 
         sb.ToString()
 
-/// How a Bjolang name is spelled in C#.
-///
-/// Deliberately **not** injective: `a-b` and `asubb` both come out as `asubb`.
-/// Anything that invents a binder therefore has to distinguish it by something
-/// other than its base name — which is what `Gensym`'s `__N` suffix is for.
-///
-/// The name may be a path, and `::` is normalized to `.` here, so the escaping
-/// and the leading-digit fix are applied to each segment: both are about what
-/// makes an *identifier*, and a path is a sequence of them.
-///
-/// `#` is only ever the first character of a hash macro's transformer, `#fl`.
-let sanitizeIdent (s: string) =
+/// `sanitizeIdent` without the memo.
+let private sanitizeUncached (s: string) =
     let s = s.Replace("::", ".").Replace("-", "sub").Replace("?", "_QMARK").Replace("!", "_BANG").Replace("+", "add").Replace("*", "mul").Replace("/", "div").Replace("<", "lt").Replace(">", "gt").Replace("=", "eq").Replace("'", "").Replace("&", "arg_").Replace("#", "hash__")
 
     let segment (part: string) =
@@ -88,6 +78,24 @@ let sanitizeIdent (s: string) =
         s.Split('.') |> Array.map segment |> String.concat "."
     else
         segment s
+
+/// Every name sanitized so far. The same names are asked about again and
+/// again — by every pass that compares emitted spellings and by codegen at
+/// every reference — and each answer takes a dozen string replacements.
+let private sanitized = System.Collections.Concurrent.ConcurrentDictionary<string, string>()
+
+/// How a Bjolang name is spelled in C#.
+///
+/// Deliberately **not** injective: `a-b` and `asubb` both come out as `asubb`.
+/// Anything that invents a binder therefore has to distinguish it by something
+/// other than its base name — which is what `Gensym`'s `__N` suffix is for.
+///
+/// The name may be a path, and `::` is normalized to `.` here, so the escaping
+/// and the leading-digit fix are applied to each segment: both are about what
+/// makes an *identifier*, and a path is a sequence of them.
+///
+/// `#` is only ever the first character of a hash macro's transformer, `#fl`.
+let sanitizeIdent (s: string) = sanitized.GetOrAdd(s, sanitizeUncached)
 
 /// The C# parameter a keyword argument arrives in.
 ///

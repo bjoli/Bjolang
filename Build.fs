@@ -171,6 +171,12 @@ let private dumpPaths (emitCs: string option) : string * string =
 ///              against. See `BuildRecord`
 ///     interface-of  `interface-of <digest> <path>`, one per linked module, as
 ///              this build saw it. The compiler's early cutoff
+///     facts    alone on its line, and then `fact-source <path>` for each file
+///              the module itself is made of and `fact-import <form>` for each
+///              import form it writes, on one line. What the staleness check
+///              otherwise tokenizes the source for: while no `fact-source` is
+///              newer than the output, the source cannot say anything else.
+///              Absent when an import form cannot be written on one line
 ///
 /// The mode is first and alone on its line so that reading just the head of the
 /// file answers the cheapest question.
@@ -205,7 +211,7 @@ let private writeBuildRecord
             |> List.sort
 
         let compilerPath =
-            match System.Reflection.Assembly.GetExecutingAssembly().Location with
+            match Paths.compilerAssembly with
             | "" -> []
             | loc -> [ $"compiler %s{Path.GetFullPath loc}" ]
 
@@ -304,6 +310,7 @@ let private writeBuildRecord
             @ (natives |> List.distinct |> List.sort |> List.map (fun (key, path) -> $"native %s{key} %s{Path.GetFullPath path}"))
             @ ownLines
             @ interfaceLines
+            @ Pipeline.factLines inputFilePath
 
         AtomicFile.writeLines (Path.ChangeExtension(inputFilePath, ".bjobuild")) lines
     with ex ->
@@ -417,7 +424,7 @@ let compile (options: Options) (inputFilePath: string) : int =
         // a batch, a dependency, a REPL entry — and each answers for itself.
         Frameworks.startModule inputFilePath
 
-        let result = Pipeline.runFullFrontendPipeline inputFilePath
+        let result = Pipeline.runFrontend (not options.Check) inputFilePath
 
         // Anything the frontend collected after its own last report, printed
         // before a line of C# is generated.
@@ -1249,7 +1256,7 @@ let private compileDependencyOutOfProcess (bjoPath: string) : string =
 
     printfn $"Building imported module %s{Path.GetFileName bjoPath}"
 
-    let self = System.Reflection.Assembly.GetEntryAssembly().Location
+    let self = Paths.compilerAssembly
 
     // What this process was told about packages and frameworks, forwarded.
     let inherited =

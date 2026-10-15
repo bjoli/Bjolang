@@ -325,6 +325,19 @@ module Diagnostics =
             if hidden > 0 then
                 printfn $"... and %d{hidden} more errors."
 
+    /// Everything collected since the last `reset`, as `report` prints it but
+    /// as values: cascades dropped, exact duplicates dropped, in position
+    /// order. For a caller that shows diagnostics itself, such as a language
+    /// server, which needs each one's range rather than its printed line.
+    let snapshot () : Diagnostic list =
+        collected
+        |> Seq.indexed
+        |> Seq.filter (fun (i, d) -> not (suppressedAt i d))
+        |> Seq.map snd
+        |> Seq.toList
+        |> List.sortWith (fun a b -> compare (sortKey a) (sortKey b))
+        |> List.distinctBy (fun d -> d.Severity, render d)
+
     /// Runs `f`, and answers `fallback ()` if it raised a diagnostic.
     ///
     /// The `when` filter is load-bearing: it runs before the stack unwinds, so

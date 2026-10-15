@@ -69,6 +69,30 @@ let libDir: string =
 /// The installation root: the directory `lib` sits in.
 let root: string = Path.GetFullPath(Path.Combine(libDir, ".."))
 
+/// The compiler binary the builds belong to. A build record names it, a
+/// module built before it was written is stale, and a dependency built out of
+/// process is built by running it. Empty for a compiler published as a native
+/// host, which is its own process.
+///
+/// The running compiler, unless a host that embeds it, such as a language
+/// server, names the installed one instead: the host's copy is a different
+/// file, newer than every module, and judged by it the whole library would be
+/// stale and rebuilt under a compiler the command line does not use.
+let mutable compilerAssembly: string =
+    Reflection.Assembly.GetExecutingAssembly().Location
+
+/// Source text a host holds in place of what is on disk, by full path. A
+/// language server checks an editor's unsaved buffer this way, under the
+/// file's own path, so that its module name, its includes and its imports
+/// resolve as they will once it is saved. Empty for the command line.
+let mutable sourceOverrides: Map<string, string> = Map.empty
+
+/// A source file's text: the host's, if it holds the file, else the disk's.
+let readSource (path: string) : string =
+    match Map.tryFind (Path.GetFullPath path) sourceOverrides with
+    | Some text -> text
+    | None -> File.ReadAllText path
+
 // ---------------------------------------------------------------------------
 // Packages
 // ---------------------------------------------------------------------------
