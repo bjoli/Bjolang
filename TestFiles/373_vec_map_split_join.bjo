@@ -1,0 +1,61 @@
+;; vec-map with a callback that suspends keeps the vec's shape, as the
+;; ordinary one does: a vec split, its halves mapped in two bjoroutines, and
+;; merged back holds what one map of the whole would. That the merge is dense
+;; is the RRB tree's to show (BjolangRuntime/RrbList, AlignedMergeFuzz and
+;; MapShapeTests); this is the Bjolang path to it.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; The yield point: `read-line` from a bjoroutine.
+(: slow-double (-bjo-> int int))
+(defbjo (slow-double n)
+  (ignore (read-line (open-input-string "tick\n")))
+  (* n 2))
+
+(: halves-doubled (-bjo-> (Vec int) int (Vec int)))
+(defbjo (halves-doubled v at)
+  (def (Tuple l r) (vec-split v at))
+  (def pl (bjo (vec-map (bjoroutine (x) (slow-double x)) l)))
+  (def pr (bjo (vec-map (bjoroutine (x) (slow-double x)) r)))
+  (match (Tuple (sync (promise-join pl)) (sync (promise-join pr)))
+    ((Tuple (Ok a) (Ok b)) (vec-merge a b))
+    (_ (vec-empty))))
+
+(: run-vec (-> (Promise (Vec int)) (Vec int)))
+(defun (run-vec p)
+  (match (sync/blocking (promise-join p))
+    ((Ok v) v)
+    ((Err e) (vec-empty))))
+
+;; The order the callback was called in.
+(: seen (Box (List int)))
+(def seen (make-box Nil))
+
+(: noting (-bjo-> int int))
+(defbjo (noting n)
+  (ignore (read-line (open-input-string "tick\n")))
+  (box-set! seen (Cons n (box-ref seen)))
+  (+ n 1))
+
+(: noted (-bjo-> (Vec int) (Vec int)))
+(defbjo (noted v) (vec-map (bjoroutine (x) (noting x)) v))
+
+(: main (-> (Vec string) int))
+(defun (main args)
+  (loop (:for n (list 0 1 31 32 33 100 1025 5000 40000))
+        (:let v (loop (:for i (range 0 n)) (:acc (vecing i))))
+        (:let want (vec-map (fun (x) (* x 2)) v))
+        (:do
+          (loop (:for at (list 0 1 (/ n 3) (/ n 2) n))
+                (:do (expect (str "split " (int->string n) " at " (int->string at) ", mapped in two bjoroutines, merged")
+                             (run-vec (bjo (halves-doubled v at)))
+                             want)))))
+
+  (def v (loop (:for i (range 0 70)) (:acc (vecing i))))
+  (def mapped (run-vec (bjo (noted v))))
+  (expect "the suspending vec-map gives what the ordinary one does"
+          mapped (vec-map (fun (x) (+ x 1)) v))
+  (expect "and calls the function in order"
+          (list-reverse (box-ref seen)) (loop (:for i (range 0 70)) (:acc (listing i))))
+  0)

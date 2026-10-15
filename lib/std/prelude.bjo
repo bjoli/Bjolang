@@ -928,6 +928,10 @@
 
 (import/extern
   (clr-vec-map            (: BjolangRuntime.RrbMap          (-> (-> %a %b) (Vec %a) (Vec %b))))
+  ;; A vec of the same shape as the first, holding the array's items in
+  ;; order: what `clr-vec-map` makes, for items made by a function that may
+  ;; suspend, which no extern can call.
+  (clr-vec-map-shape      (: Collections.RrbFun.MapShape    (-> (Vec %a) (Array %b) (Vec %b))))
   (clr-vec-filter         (: BjolangRuntime.RrbFilter       (-> (-> %a bool) (Vec %a) (Vec %a))))
   (clr-vec-fold           (: BjolangRuntime.RrbFold         (-> (-> %a %b %b) %b (Vec %a) %b)))
   (clr-vec-reduce         (: BjolangRuntime.RrbReduce       (-> (-> %a %a %a) (Vec %a) %a)))
@@ -948,12 +952,19 @@
 ;; Not inlined: `clr-vec-map` copies the vec's arrays at their exact size, and
 ;; for the short vecs most programs map that is faster than a loop into a
 ;; builder, even with the call through the delegate.
+;;
+;; The suspending copy keeps the vec's shape too: the items go into an array
+;; in order, and `clr-vec-map-shape` lays them out as `v` is laid out. So the
+;; halves of a split, mapped in bjoroutines, merge back into a dense vec.
 (defbjouble (vec-map f v)
   #:no-inline
   (#:sync (clr-vec-map f v))
   (#:bjo
+    (def out (make-array (vec-length v)))
     (loop (:for elem v)
-          (:acc acc (vecing/small (f elem))))))
+          (:with i 0 (+ i 1))
+          (:do (array-set! out i (f elem))))
+    (clr-vec-map-shape v out)))
 
 (: vec-filter (-> (-?-> %a bool) (Vec %a) (Vec %a)))
 (defbjouble (vec-filter keep? v)

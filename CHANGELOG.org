@@ -3,6 +3,31 @@
 
 What each change guarantees, and what it leaves open.
 
+* A split vec, mapped and merged back, is dense again
+
+- ~vec-merge~ of two vecs whose leaves line up makes a dense tree, with no
+  size tables: the halves of a ~vec-split~, mapped or not, and anything
+  merged from such pieces, in order, left to right or in pairs. Each node
+  of either tree that lands on a block of its size is kept as it is, and
+  the split leaf is made whole again from the left tail and the right
+  head. Before, the merge gave the seam 3 to 5 size tables. When a split
+  has moved a piece's positions by whole leaves, as it does when it lowers
+  a small piece's root, the nodes above the leaves of the smaller tree are
+  made again: at most its leaves over 32. Leaves that do not line up go
+  through Concat, as before. In ~BjolangRuntime/RrbList~,
+  ~RrbList.Join.cs~; ~AlignedMergeFuzz~ checks the merges.
+- A piece cut from far into a large vec has a Gap many times its size, and
+  a split gives it size tables instead (~NormalizeGap~), so a merge of
+  such pieces is not dense. Equal chunks, up to 32 of a vec, are not cut
+  that way.
+- ~vec-map~ with a callback that suspends keeps the vec's shape, as the
+  ordinary one does: the items go into an array in order, and
+  ~RrbList.MapShape~ lays them out as the vec is laid out. Before, it
+  built a new vec, and its halves of a split could not merge dense. An
+  extern cannot take a ~-bjo->~ callback, so the walk stays in Bjolang
+  and the tree work in C#. ~TestFiles/373_vec_map_split_join.bjo~ maps
+  the halves in two bjoroutines.
+
 * ~TransientVec~: a vec changed in place at both ends
 
 - ~vec->transientvec~, ~transientvec->vec~, and ~transientvec-add!~,
