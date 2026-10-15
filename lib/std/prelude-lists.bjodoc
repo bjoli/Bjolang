@@ -199,6 +199,31 @@
   (arg xs "The list, walked from the first element.")
   (see list-map list-foldl))
 
+(:doc list-unfold
+  (summary "A list generated from a state.")
+  (arg f "Maps a state to (Some (Tuple x next-state)), the next element and the state after it, or to None to end. May suspend.")
+  (arg state "The first state.")
+  (returns "A list of the elements f produces, in order, until it returns None.")
+  (see seq-unfold list-foldl)
+  (example """
+    (list-unfold (fun (n) (if (< n 5) (Some (Tuple (* n n) (+ n 1))) None)) 0)
+    ; (0 1 4 9 16)
+
+    ;; Pairs from a list, the odd one left over on its own.
+    (list-unfold (fun (xs)
+                   (match xs
+                     ((Cons a (Cons b more)) (Some (Tuple (list a b) more)))
+                     ((Cons a Nil) (Some (Tuple (list a) Nil)))
+                     (Nil None)))
+                 (list 1 2 3 4 5))
+    ; ((1 2) (3 4) (5))
+    """)
+  (reference """
+    Eager: f is called until it returns None, so an f that never does never
+    returns. For an endless or partly read generation, use
+    @code{seq-unfold}.
+    """))
+
 ;; ---------------------------------------------------------------------------
 ;; Conversions
 ;; ---------------------------------------------------------------------------

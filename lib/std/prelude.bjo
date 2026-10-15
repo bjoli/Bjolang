@@ -52,7 +52,7 @@
   list-append
 
   ;; List operations.
-  list-map list-filter list-foldl list-foldr list-for-each
+  list-map list-filter list-foldl list-foldr list-for-each list-unfold
 
   ;; Vec operations.
   vec-add
@@ -927,6 +927,14 @@
 (defun (list-for-each f xs)
   (loop (:for elem xs)
         (:do (f elem))))
+
+;; The list seq-unfold would make, without the lazy seq. The update is
+;; evaluated after the iteration, so it reads the state the :finish-let bound.
+(: list-unfold (-> (-?-> %s (Option (Tuple %a %s))) %s (List %a)))
+(defun (list-unfold f state)
+  (loop (:with step (f state) (f next))
+        (:finish-let (Some (Tuple x next)) step)
+        (:acc out (listing x))))
 
 (: nil? (-> (List %a) bool))
 (defun (nil? lst)
