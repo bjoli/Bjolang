@@ -1,0 +1,36 @@
+;; list-unfold: a list generated from a state, eagerly.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; Pairs from a list, the odd one left over on its own: f takes two elements
+;; of the state at a time, which is what a :for over the list cannot do.
+(: pairs (-> (List int) (List (List int))))
+(defun (pairs xs)
+  (list-unfold (fun (rest)
+                 (match rest
+                   ((Cons a (Cons b more)) (Some (Tuple (list a b) more)))
+                   ((Cons a Nil) (Some (Tuple (list a) Nil)))
+                   (Nil None)))
+               xs))
+
+(: squares-below (-> int (List int)))
+(defun (squares-below n)
+  (list-unfold (fun (i) (if (< i n) (Some (Tuple (* i i) (+ i 1))) None)) 0))
+
+(: main (-> (Vec string) int))
+(defun (main args)
+  (expect "squares" (squares-below 5) (list 0 1 4 9 16))
+  (expect-true "None at once is the empty list" (list-empty? (squares-below 0)))
+  (expect "pairs, an odd one left over" (pairs (list 1 2 3 4 5)) (list (list 1 2) (list 3 4) (list 5)))
+  (expect "pairs, none left over" (pairs (list 1 2 3 4)) (list (list 1 2) (list 3 4)))
+  (expect "the element and the state differ in type"
+          (list-unfold (fun (n) (if (< n 3) (Some (Tuple (->str n) (+ n 1))) None)) 0)
+          (list "0" "1" "2"))
+  (expect "the list seq-unfold makes"
+          (list-unfold (fun (n) (if (> n 1000) None (Some (Tuple n (* 2 n))))) 1)
+          (seq->list (seq-unfold (fun (n) (if (> n 1000) None (Some (Tuple n (* 2 n))))) 1)))
+  (expect "a long list, in order"
+          (list-unfold (fun (i) (if (< i 100000) (Some (Tuple i (+ i 1))) None)) 0)
+          {listing i (:for i (range 0 100000))})
+  0)
