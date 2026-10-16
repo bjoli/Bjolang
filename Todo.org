@@ -228,29 +228,42 @@ what was meant. Confirmed by running it where it says so.
   the header saying which was counted.
 - *No ~#:teardown~*: a setup that opens a file, a socket or a scope has
   nowhere to close it, and a run of many cases leaks them until the process
-  ends. Bindings like ~#:setup~'s, or forms run once after the case's last
-  sample with the setup's names in scope; and ~#:teardown-every~ after each
-  call of a ~#:setup-every~ benchmark, outside the time. ~CaseRun~ gains a
-  ~done~, which ~measure-case~ and ~--serve~ (a ~(finish i)~ command, and on
-  ~(quit)~) call, also when the body raised.
+  ends. First, run each case in a scope of its own: scopes already track
+  open ports (it is how a ~deftest~ fails when it leaves a file open), so
+  that may close most of what a setup opens with nothing written. Then
+  ~#:teardown~, forms with the setup's names in scope, for what a scope
+  cannot see, and ~#:teardown-every~ after each call of a ~#:setup-every~
+  benchmark, outside the time. A teardown pairs with a ~prepare~, and a
+  case can be prepared more than once: again by ~--compare-within~, and once
+  per process by ~--serve~. So ~CaseRun~ gains a ~done~ that whoever
+  prepared it calls, also when the body raised; ~--serve~ gets a
+  ~(finish i)~ command and finishes what is left on ~(quit)~.
 - *Only time per call is reported.* A body that processes n items or bytes
   wants items/s or MB/s, which compare across sizes where ns/op does not:
   ~#:throughput ((bytes (vec-length data)))~, an expression of the setup's
   names giving the work one call does, and a column of it divided by the
   median. With ~--scaling~, the column that should stay flat for a linear
   body.
-- *Nothing fails a run on allocation.* Allocation per call barely varies
-  from run to run or between processes, unlike time, so it is the check a
-  CI job can be strict about: ~--fail-alloc PCT~ (or bytes) against
-  ~--compare FILE~ or ~--against REF~ exits 1 when a benchmark allocates
-  more by that much. A comparison would show the change in ~alloc/op~ next
-  to the time's, without the statistics: a difference in bytes is either
-  there or not.
-- *~#:setup-every~ times one call at a time*, so each sample is one call
-  with two clock reads around it, and a body under a microsecond is marked
-  "below resolution" rather than measured. Batch it instead: make ~k~ inputs
-  ahead, outside the time, then time ~k~ calls over them as an ordinary
-  batch, so calibration, samples and precision are what they are for any
-  benchmark. The cost is ~k~ inputs alive at once, so ~k~ wants a cap by
-  memory (the setup's allocation is measurable while making them), falling
-  back to single calls for an input too large to hold ~k~ of.
+- *Nothing fails a run on allocation.* Allocation per call is much steadier
+  than time, so it is the check a CI job can be strict about: ~--fail-alloc~
+  against ~--compare FILE~ or ~--against REF~, exiting 1 when a benchmark
+  allocates more by more than a threshold. Not exact, though, so the
+  threshold is in bytes and in percent, both: .NET 10's optimized code can
+  put objects on the stack, and whether it does can differ between tiers
+  and, with profile-guided optimization, between processes; and ~alloc/op~
+  is an average over ~k~ calls, so growth now and then (a buffer doubling)
+  is a fraction of a byte. The comparison shows the change in ~alloc/op~
+  beside the time's.
+- *~#:setup-every~ times one call at a time*, with two clock reads around
+  each call, so their cost is in every sample and a body under a microsecond
+  is marked "below resolution" rather than measured. Measure that cost and
+  take it off, as BenchmarkDotNet does with its overhead run: during
+  calibration, time an empty body the same way, its setup made before it and
+  the clock read around it, and subtract the median of that from each
+  sample. Each call still gets a fresh input
+  that is hot in the cache, which is what ~#:setup-every~ is for. Batching
+  ~k~ inputs made ahead would remove the clock reads too, but it changes
+  what is measured: the inputs are cold in the cache by the time the body
+  reaches them, and survive collections into older generations, where a body
+  that writes into them pays for it. If wanted, an opt-in for a body meant
+  to be measured on cold data.
