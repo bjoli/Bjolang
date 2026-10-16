@@ -1029,7 +1029,11 @@ let prelude : Env =
 
         // Array
         // Array operations
-        "make-array",   { Scheme = Scheme(["a"], [], makeFunType [intType] (makeArrayType (TVar "a"))); IsMutable = false }
+        // `(make-array n)`, or `(make-array n #:fill x)` with every element `x`.
+        // The flat type has the keyword after the length, as a `defun`'s has;
+        // `FunMetas` below says it is one. Without `#:fill` the call is the
+        // runtime's one-argument overload, `new T[n]`, and costs what it did.
+        "make-array",   { Scheme = Scheme(["a"], [], makeFunType [intType; TVar "a"] (makeArrayType (TVar "a"))); IsMutable = false }
         "array-ref",    { Scheme = Scheme(["a"], [], makeFunType [makeArrayType (TVar "a"); intType] (TVar "a")); IsMutable = false }
         "array-set!",   { Scheme = Scheme(["a"], [], makeFunType [makeArrayType (TVar "a"); intType; TVar "a"] unitType); IsMutable = false }
         "array-length", { Scheme = Scheme(["a"], [], makeFunType [makeArrayType (TVar "a")] intType); IsMutable = false }
@@ -1213,6 +1217,9 @@ let prelude : Env =
           // the array itself: the flat type takes one `(Array (Event %a))` and
           // would refuse the shorter argument list.
           ("choose", { MandatoryCount = 0; KeywordParams = []; RestParam = Some (TCon("Event", [ TVar "a" ])) })
+          // `(make-array n #:fill x)`. The runtime has an overload for each:
+          // C# picks the filling one only when `__kw_fill:` is passed.
+          ("make-array", { MandatoryCount = 1; KeywordParams = [ ("fill", TVar "a") ]; RestParam = None })
       ]
       CurrentModule = ""
       // A `with-return` is the only thing that puts one of these in scope, and

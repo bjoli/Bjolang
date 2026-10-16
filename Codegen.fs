@@ -1499,12 +1499,21 @@ let rec private funArgTypes (t: HMType) : HMType list option =
 /// parameter — a pre-existing limit of reading the shape off the type, and
 /// harmless while such a function has no keyword parameters, which is the only
 /// case where the two are treated differently.
-let private calleeHasRest (target: TypedExpr) : bool =
-    match funArgTypes target.Type with
-    | Some argTypes when not argTypes.IsEmpty ->
-        match List.last argTypes with
+///
+/// The call's last argument has to be an array too: `Inference` always passes
+/// the rest arguments as one, so a call whose last argument is anything else
+/// has none. Without that, a keyword parameter that comes last and happens to
+/// be an array — `make-array`'s `#:fill`, for an array of arrays — reads as a
+/// rest parameter, and the last mandatory argument is passed as the array.
+let private calleeHasRest (target: TypedExpr) (args: TypedExpr list) : bool =
+    let isArray t =
+        match t with
         | TCon ("Array", _) -> true
         | _ -> false
+
+    match funArgTypes target.Type with
+    | Some argTypes when not argTypes.IsEmpty && not args.IsEmpty ->
+        isArray (List.last argTypes) && isArray (List.last args).Type
     | _ -> false
 
 /// Whether the callee *declares* keyword parameters — which is a different
@@ -3758,7 +3767,7 @@ and private generateApply
             // so the last positional emitter is the array, and the rest are the
             // mandatory arguments.
             let mandatoryEmitters, restEmitters =
-                if calleeHasRest target && not positionalEmitters.IsEmpty then
+                if calleeHasRest target args && not positionalEmitters.IsEmpty then
                     positionalEmitters |> List.splitAt (positionalEmitters.Length - 1)
                 else
                     positionalEmitters, []

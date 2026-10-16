@@ -947,6 +947,15 @@ public static partial class BjolangRuntime {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T[] makesubarray<T>(int length) => new T[length];
 
+    // `(make-array n #:fill x)`. The parameter is named as every keyword
+    // parameter is, since the call names it; without it the call is the
+    // overload above.
+    public static T[] makesubarray<T>(int length, T __kw_fill) {
+        var array = new T[length];
+        Array.Fill(array, __kw_fill);
+        return array;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T arraysubref<T>(T[] arr, int index) => arr[index];
 

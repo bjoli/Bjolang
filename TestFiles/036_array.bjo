@@ -96,4 +96,23 @@
   (expect "a generic pair" (vec-ref (pair->vec 7 8) 1) 8)
   (expect "a generic pair of strings" (vec-ref (pair->vec "a" "b") 0) "a")
   (expect "a generic slice" (first-of str-arr) "hello")
+
+  ;; --- make-array #:fill ---------------------------------------------------
+  (expect "#:fill gives every element" (vec-ref (array->vec (make-array 4 #:fill 9)) 3) 9)
+  (expect "#:fill of a reference type" (array-ref (make-array 2 #:fill "x") 1) "x")
+  (expect "#:fill of nothing is nothing" (array-length (make-array 0 #:fill 1)) 0)
+  (expect "without #:fill, the element's default" (array-ref (make-array 3) 2) 0)
+  ;; An array of arrays: the keyword's type is an array, which is not a rest
+  ;; parameter, filled or not.
+  (def grid (make-array 2 #:fill (make-array 3 #:fill 1)))
+  (expect "#:fill with an array" (array-length (array-ref grid 1)) 3)
+  (def rows (make-array 2))
+  (array-set! rows 0 (make-array 1 #:fill 5))
+  (expect "an unfilled array of arrays" (array-ref (array-ref rows 0) 0) 5)
+  ;; One value in every element, not a copy of it in each.
+  (array-set! (array-ref grid 0) 0 7)
+  (expect "#:fill shares the value" (array-ref (array-ref grid 1) 0) 7)
+  ;; As a value, the keyword is the second argument, as a defun's would be.
+  (def make make-array)
+  (expect "make-array as a value" (array-ref (make 2 6) 1) 6)
   0)
