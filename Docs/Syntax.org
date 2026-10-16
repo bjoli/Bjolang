@@ -1718,6 +1718,24 @@ The name in `(:acc name (coll ...))` may be omitted; one is invented:
 
 Name it when something reads it back — a later clause, a `=>`, or a named loop's `#:name` — since an anonymous name is a gensym nothing can read. Several in one loop deliver a tuple of the finished values in clause order: `(:acc (summing x)) (:acc (counting x))` answers the sum and the count.
 
+**** Starting from a collection: `#:into`
+A collector given `#:into` starts from that collection instead of from empty:
+
+#+BEGIN_SRC scheme
+(loop (:for x (range 4 7))
+      (:acc out (vecing x #:into [1 2 3]))       ;; [1 2 3 4 5 6]
+  => out)
+
+{listing x #:into xs (:for x ys)}                ;; xs, then ys
+{listing/reverse x #:into xs (:for x ys)}        ;; ys reversed, consed onto xs
+{mapping (Tuple k v) #:into m (:for (Tuple k v) pairs)}  ;; m, with pairs added
+#+END_SRC
+
+- `vecing`, `vecing/small` and `listing` add to the back, `listing/reverse` conses onto the front, and `mapping` adds, a key already there taking the new value.
+- The collection is not changed: the builder is made from it, once, where the loop makes its collectors. Each step costs what it does without `#:into`. A vec's builder starts from the vec's own tree; a list is copied, since a list only grows at the front; a map's entries are copied into the builder. `listing/reverse` copies nothing.
+- In a `:subloop` form the collectors are made on every run, so each run starts from the collection again.
+- A collector takes `#:into` by implementing `CollectorInto`, which names what it starts from (`%seed`) and the collector that makes (`%into`). One that does not, such as `summing`, is a type error naming it.
+
 **** `:when-let` and `:finish-let`
 A `:let` binds by destructuring and its pattern must always match — a pattern that could fail has nowhere to go. These two say where it goes.
 
@@ -1762,6 +1780,7 @@ Monitors a cancellation token and exits via a `:finish`.
 #+END_SRC
 
 **Rules**:
+- A collector's arguments, `#:into` included, go with it before the first clause: `{vecing x #:into v (:for x xs)}`.
 - All `loop` clauses (`:when`, `:finish`, `:let`, `:with`, etc.) are supported inside comprehensions.
 - A loose `:when` (without parentheses) may appear immediately before the first clause to gate the accumulator step: `{listing a :when (even? a) (:for a xs)}`.
 - `{seqing ...}` acts lazily and generates a `seql` instead of a fold.
@@ -1844,8 +1863,8 @@ Loop levels implicitly structure iteration blocks. A new level opens when an ite
 `(:for x xs)` walks all of `xs` from the front. These say something else: part of it, backwards, the tails rather than the elements, or a count with no collection under it at all.
 
 | `(range lo hi)`, `(range-by lo hi by)` | ints, `lo` inclusive to `hi` exclusive                |
-| `(up-from n #:to t #:by b)`            | counts up from `n`, stopping *before* `t`            |
-| `(down-from n #:to t #:by b)`          | counts down from `n`, stopping *at* `t`              |
+| `(up-from n #:to t #:by b)`            | counts up from `n`, stopping *before* `t`, any number type |
+| `(down-from n #:to t #:by b)`          | counts down from `n`, stopping *at* `t`, any number type   |
 | `(in-array a #:from f #:to t)`         | part of an array                                     |
 | `(in-reverse-array a #:from f #:to t)` | the same slice, walked backwards                     |
 | `(in-vec v #:from f #:to t)`           | part of a vec                                        |
@@ -1872,7 +1891,9 @@ Loop levels implicitly structure iteration blocks. A new level opens when an ite
 - A reverse form takes the *same* slice as the forward one and walks it the other way: `(in-reverse-array a #:from 2 #:to 5)` is elements 4, 3, 2.
 - A slice that is not one — a negative `#:from`, a `#:to` past the end, a `#:from` above the `#:to` — is a panic naming the bounds, raised once when the walk is built rather than as an index failure somewhere inside the loop. A `#:by` of zero or less is refused for the same reason.
 - `up-from`'s `#:to` is exclusive and `down-from`'s is inclusive: `(up-from 0 #:to n)` is the indices of something of length `n`, and `(down-from n #:to 0)` counts down to zero and says zero. `#:by` is a distance in both, and `down-from` subtracts it; zero or less is refused.
-- `up-from` and `down-from` without a `#:to` never end on their own. `:finish`, `:final` and `:until-cancelled` are what ends them.
+- `up-from` and `down-from` count in any number type: `(up-from 0L)` in longs, `(up-from 0.0 #:by 0.25)` in doubles, `(up-from 1I)` in bigints. The type is whatever the start, `#:to` and `#:by` agree on, and an `int` where none of them says. The loop is the same at every type: one comparison and one addition, at the type's own operators.
+- `up-from` and `down-from` without a `#:to` never end on their own. `:finish`, `:final` and `:until-cancelled` are what ends them. What they stop at is the type's largest (or smallest) value: `int-max` for an `int`, an infinity for a `double`, and for a `bigint`, which has neither, a number past any count.
+- The count is not checked for overflow, so a step past the type's end wraps, as `+` does. `down-from` stops at the first count *below* its `#:to`, which an unsigned type cannot have below zero: `(down-from 3u #:to 0u)`, or any step that would take an unsigned count under zero, wraps and never ends. Stop an unsigned count above zero.
 - Each of these is a value, not an allocation: the walk lands in the loop's prologue and compiles to the same code the hand-written loop does. A vec slice walks by the vec's own enumerator, so an element costs an array read rather than a descent of the tree.
 - They are ordinary `Iterable`s, so `fold`, `map`, `filter`, `enumerate`, `any?`, `find` and the rest apply to them: `(fold + 0 (in-array a #:from 7))`.
 - `in-port` reads one element ahead, because `done?` has to know before `current` is asked — so a loop left by `:finish` has consumed the element it did not look at. It also *blocks*: `Iterable`'s methods are synchronous, so the reader's sync copy is what runs even inside a bjoroutine. A port that should suspend wants `port->seq`, or `port-fold`, whose callback carries either colour.

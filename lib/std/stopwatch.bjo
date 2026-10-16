@@ -113,15 +113,27 @@
 
 ;; (time-it body ...) — prints elapsed time and allocated memory.
 ;; Drops body's value.
-;; Runs a warmup that redirects the output to a different output port.
+;;
+;; Runs `#:warm-up-rounds` untimed rounds first, none unless it says so, with
+;; the output going to a string port nobody reads. Without one the first timed
+;; run includes the JIT compiling the body, and the body runs exactly as often
+;; as `#:times` says: what a body too big to run twice wants, and what a
+;; reader of `(time-it (f))` expects.
+;;
+;; The full form is the one with both keywords; the others are it with the
+;; defaults filled in.
 (def/macro (time-it form inject compare)
   (syntax-match form
-    ((_ #:times n first body ...)
-     #'(let ((ignored-port (open-output-string)))
-         (ignore (parameterize ((current-output-port ignored-port))
-                   ,first
-                   ,@body
-                   (get-output-string ignored-port)))
+    ((_ #:times n #:warm-up-rounds w first body ...)
+     #'(let ()
+         (let warm ((w ,w))
+           (when (> w 0)
+             (let ((ignored-port (open-output-string)))
+               (ignore (parameterize ((current-output-port ignored-port))
+                         ,first
+                         ,@body
+                         (get-output-string ignored-port))))
+             (warm (- w 1))))
          (def sw (stopwatch))
          (def/mutable bytes-used 0L)
          (let lp ((n ,n))
@@ -135,5 +147,11 @@
              (lp (- n 1))))
          (println (str "Mean of "  (->str ,n) " runs: " (ns->string (/ (stopwatch-ns sw) ,n)) ". "
                        (->str (/ bytes-used ,n)) "B allocated per run."))))
-    ((_ first body ...) #'(time-it #:times 1 ,first ,@body)) 
-    (bad (syntax-error bad "time-it takes a body: (time-it expr ...)"))))
+    ((_ #:warm-up-rounds w #:times n first body ...)
+     #'(time-it #:times ,n #:warm-up-rounds ,w ,first ,@body))
+    ((_ #:times n first body ...)
+     #'(time-it #:times ,n #:warm-up-rounds 0 ,first ,@body))
+    ((_ #:warm-up-rounds w first body ...)
+     #'(time-it #:times 1 #:warm-up-rounds ,w ,first ,@body))
+    ((_ first body ...) #'(time-it #:times 1 #:warm-up-rounds 0 ,first ,@body))
+    (bad (syntax-error bad "time-it takes a body: (time-it [#:times n] [#:warm-up-rounds n] expr ...)"))))

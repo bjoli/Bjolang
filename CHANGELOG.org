@@ -3,6 +3,37 @@
 
 What each change guarantees, and what it leaves open.
 
+* A collector can start from a collection: ~#:into~
+
+- ~(vecing x #:into v)~ adds to the back of ~v~, and so do ~vecing/small~,
+  ~listing~ to a list and ~mapping~ to a map; ~listing/reverse~ conses onto
+  the front of its list. In a ~loop~'s ~:acc~ and in a comprehension, where
+  ~{vecing x #:into v (:for ...)}~ keeps the keyword with the collector.
+- ~splitCollector~ makes the collector ~(collector-into base seed)~, and
+  ~CollectorInto~ in the prelude turns it into one that seeds its builder
+  from the collection once, where the loop makes its collectors. Each step
+  is the plain collector's: ~vecbuilder-add!~ on the same builder type. The
+  collection itself is not changed.
+- A collector of a program's own takes ~#:into~ by implementing
+  ~CollectorInto~; one that does not is a type error naming it.
+
+* ~up-from~ and ~down-from~ count in any number type
+
+- ~(UpFrom %n)~ and ~(DownFrom %n)~, with their ~Iterable~ implementations
+  under ~(where (Num %n) (Ordered %n))~, which is a C# ~where~ clause and no
+  dictionary: ~(up-from 0L)~, ~(up-from 0.0 #:by 0.25)~, ~(up-from 1I)~.
+  The type is what the start, ~#:to~ and ~#:by~ agree on, and an ~int~ where
+  none says. At an ~int~ the loop is the one it was: ~loopcur >=
+  loopseq.to~ and ~loopcur + loopseq.by~, over ~prelude__UpFrom<int>~. The
+  sieve of 10⁹ took 6.9 s before and 6.3 s after.
+- Without ~#:to~, a walk runs to the type's end, from ~NumBounds<T>~ in the
+  runtime: ~MaxValue~ and ~MinValue~, read once per type, an infinity for a
+  ~double~, and for a ~bigint~ 2^(2^20), which no count reaches. An ~int~
+  still runs to ~int-max~.
+- Left open: a count is not checked for overflow. ~down-from~ ends at the
+  first count below its stop, and an unsigned count below zero wraps
+  instead, so ~(down-from 3u #:to 0u)~ never ends.
+
 * ~(make-array n #:fill x)~
 
 - ~make-array~ takes ~#:fill~, which every element is set to. It is a

@@ -129,17 +129,27 @@
   (summary "Executes a body repeatedly and reports average elapsed time and thread allocations.")
   (form (time-it body ...))
   (form (time-it #:times n body ...))
+  (form (time-it #:warm-up-rounds w body ...))
+  (form (time-it #:times n #:warm-up-rounds w body ...))
   (arg n "Number of timed iterations. Defaults to 1.")
+  (arg w "Number of untimed warm-up iterations before them. Defaults to 0.")
   (rest body "Expression(s) to benchmark. Evaluated for side effects; return value is discarded.")
   (see stopwatch get-memory-usage)
   (example """
-    (time-it #:times 100 (list-sort big-list))
+    (time-it #:times 100 #:warm-up-rounds 3 (list-sort big-list))
     ;; prints: Mean of 100 runs: 3.2 ms. 120000B allocated per run.
+
+    (time-it (sieve 2000000000))
+    ;; one run, timed from a cold start: the body runs once
     """)
   (reference """
-    Executes one untimed warmup iteration prior to timed runs (total iterations:
-    n + 1). During warmup, @code{current-output-port} is redirected to a string
-    port to suppress console output, though other side effects still occur.
+    Executes @code{w} untimed warm-up iterations prior to the timed runs (total
+    iterations: n + w), none unless @code{#:warm-up-rounds} says so. During a
+    warm-up, @code{current-output-port} is redirected to a string port to
+    suppress console output, though other side effects still occur. Without a
+    warm-up the first timed run includes the JIT compiling the body, which a
+    short body run few times will show; a warm-up round or two keeps it out of
+    the mean. The keywords may come in either order.
 
     Timings derive from @code{current-clock} in nanoseconds, and the mean is
     printed with @code{ns->string}. Memory
