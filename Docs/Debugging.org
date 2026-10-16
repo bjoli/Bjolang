@@ -1,0 +1,98 @@
+#+TITLE: Debugging Bjolang programs
+#+STARTUP: showall
+
+What a .NET debugger can do with a Bjolang program today, how to set it up,
+and what is known about what it cannot do yet.
+
+* What the compiler gives a debugger
+
+- The generated C# carries ~#line~ directives with full spans, line and
+  column, back to the ~.bjo~ source. Code with no source of its own is
+  ~#line hidden~.
+- Every build writes a portable PDB beside its assembly, and the mapping is
+  in it: the ~.bjo~ files are its documents, by full path, and its sequence
+  points are their lines and columns. A stack trace's lines come from it.
+- ~-d~ builds unoptimized (~DisableOptimizations~ in the assembly), which is
+  what stepping wants. It writes nothing else; ~--emit-cs FILE~ writes the
+  generated C#, ~--dump-ast FILE~ the typed AST, and ~--emit-cs-beside~ each
+  input's C# beside it, which is what a batch takes.
+- The locals in the PDB are renamed after the build (~PdbNames.fs~): a local
+  the program wrote is shown under the name it wrote, ~is-big?~ rather than
+  ~is_subbig_QMARK__4~, and the compiler's temporaries (~loopcur__75~,
+  ~__init__65~, ~_dict_...~) are marked ~DebuggerHidden~. A local is the
+  program's if its name, read back through the sanitizing and without its
+  ~__N~ suffixes, was written in source the compilation read; an inlined
+  library body's locals, ~elem~ from ~list-map~, count. The assembly's
+  ~PdbChecksum~ is computed again over the patched PDB. Every build, not
+  only ~-d~, since a debugged program steps into imports built without it.
+  A patch that does not read back with the same tables and sequence points
+  leaves Roslyn's files as they are; ~BJOLANG_RAW_PDB=1~ turns it off.
+  ~TestFiles/pdb~ and the suite's debug-symbols phase check it.
+
+* Setting it up
+
+- [[https://github.com/Samsung/netcoredbg/releases][netcoredbg]], unpacked to ~~/.local/share/netcoredbg~. It speaks the Debug
+  Adapter Protocol.
+- In Emacs, ~dape~ with ~emacs/bjolang-dape.el~ from BjolangLsp. ~M-x dape
+  RET bjolang RET~ in a file with a ~main~ builds it with ~-d~ and runs it
+  under netcoredbg.
+- A Bjolang program's ~app.exe~ is a managed assembly, not a native host,
+  so netcoredbg is told to launch ~dotnet~ with the program as its argument.
+  Launched as the program itself it fails with ~0x80070002~, file not found.
+- netcoredbg's ~--interpreter=cli~ cannot be driven by piping commands into
+  it: they do not wait for the program to stop. Its DAP mode is what works.
+
+* What works
+
+Checked with netcoredbg 3.2.0, through a DAP client and through ~dape~ in a
+batch Emacs, on a small program:
+
+- A breakpoint set in the ~.bjo~ file is pending, and binds when the module
+  loads.
+- A stop is at the right ~.bjo~ line and column, and the call stack names
+  them: ~totalsubof() app.bjo:7~ above ~main() app.bjo:11~.
+- Stepping goes by ~.bjo~ lines.
+- The locals are the program's, under its names: ~xs~, ~doubled~, and in an
+  inlined loop ~acc~, ~elem~, ~x~. A value expands into its fields, so a list
+  can be walked one cell at a time.
+
+* What does not, yet
+
+- *Stepping enters the runtime.* Under Just My Code netcoredbg counts every
+  module whose PDB is loaded as user code, optimized or not; Visual Studio
+  would leave the optimized runtime out, netcoredbg does not. The runtime's
+  PDBs are beside its assemblies, so a step from the end of a function, which
+  lands in hidden code of its caller and keeps stepping for a source line,
+  stops in ~BjoNum.cs~. With the runtime's PDBs moved aside the same steps
+  stay in the ~.bjo~ file, and netcoredbg does honour
+  ~[DebuggerNonUserCode]~: a test library's marked class is stepped over
+  and its unmarked one entered. The attribute cannot be put on an assembly,
+  and the runtime has some 800 types. Ways out:
+  1. stamp the attribute on every type of each runtime assembly after its
+     build, with Mono.Cecil, keeping the PDBs and their line numbers;
+  2. ship the release runtime without PDBs, which loses the line numbers of
+     runtime frames in a stack trace;
+  3. write the attribute in the source, on every type, in two repositories.
+  The standard library has the same question: its modules are optimized
+  and have PDBs, so step-into enters ~prelude.bjo~. The compiler could emit
+  the attribute on a module's class when the module is the standard
+  library's; whether netcoredbg applies it to closures, which C# puts in
+  nested compiler-generated classes, is not known.
+- *Values are their C# structure.* A list is ~{SchemeList.Cons<int>}~ and
+  expands to ~_car~, ~_cdr~, ~Head~, ~Tail~, each value twice. netcoredbg
+  reads neither ~DebuggerDisplay~ nor ~DebuggerTypeProxy~; SharpDbg, a DAP
+  debugger written in C#, reads both, and so does Rider. With one of those,
+  the generated union and record classes could carry a ~DebuggerDisplay~
+  in their Bjolang form, and the runtime collections a ~DebuggerTypeProxy~.
+- *Function and parameter names are C#'s:* ~totalsubof~, ~intsubgtstring~.
+  A parameter is named in the assembly's metadata, not in the PDB, so the
+  rename does not reach it.
+- *Some sequence points have impossible columns,* such as column 61 on a
+  line of 20 characters, probably from inlined or monomorphised code
+  carrying another range's columns. None was seen to cause a wrong stop.
+- *Frames of the prelude show no source* (~?:0~), possibly because the code
+  at that point is optimized or hidden.
+- *The watch and the REPL evaluate C#,* not Bjolang, so they take C#
+  spellings of names.
+- *A suspended bjoroutine's stack* is in its continuations, so the call stack
+  ends at the scheduler.

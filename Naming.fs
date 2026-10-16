@@ -97,6 +97,23 @@ let private sanitized = System.Collections.Concurrent.ConcurrentDictionary<strin
 /// `#` is only ever the first character of a hash macro's transformer, `#fl`.
 let sanitizeIdent (s: string) = sanitized.GetOrAdd(s, sanitizeUncached)
 
+/// The Bjolang name each C# spelling was sanitized from, for every name this
+/// process has sanitized. A spelling two names share is left out: the
+/// sanitizing is not injective, and of two names it could have been, neither
+/// is the answer. For a debugger's view of the locals, which sees only C#
+/// names; built once for a whole PDB rather than searched for each local.
+let originals () : System.Collections.Generic.Dictionary<string, string> =
+    let table = System.Collections.Generic.Dictionary<string, string>()
+    let shared = System.Collections.Generic.HashSet<string>()
+
+    for KeyValue(original, emitted) in sanitized do
+        if table.ContainsKey emitted then shared.Add emitted |> ignore else table[emitted] <- original
+
+    for emitted in shared do
+        table.Remove emitted |> ignore
+
+    table
+
 /// The C# parameter a keyword argument arrives in.
 ///
 /// Keyword arguments are passed as C# *named* arguments, so this name is the

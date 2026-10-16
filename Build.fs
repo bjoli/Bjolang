@@ -95,13 +95,18 @@ type Options =
       /// answers them, sorted by name. Written into the program's runtimeconfig
       /// and its build record. A library has no runtimeconfig, and ignores them.
       Runtime: (string * string) list
-      /// Vart `-d` lägger den genererade C#-koden. AST-dumpen hamnar bredvid.
-      ///
-      /// `None` ger `out.cs` och `ast_dump.txt` i arbetskatalogen, vilket är
-      /// vad en enstaka kompilering alltid har gjort. En batch måste säga
-      /// något: två filer i samma process skriver annars över varandras dump,
-      /// och den som läser den får svar om fel fil.
+      /// `--emit-cs`: where the generated C# is written, or nowhere. Apart
+      /// from `Debug`, which only decides how the C# is compiled: reading the
+      /// C# of an optimized build is as useful as of a debug one, and a debug
+      /// build to step through wants no files left in the working directory.
       EmitCs: string option
+      /// `--dump-ast`: where the typed AST that code generation was given is
+      /// written, or nowhere.
+      DumpAst: string option
+      /// `--emit-cs-beside`: each input's C# beside it, as `<name>.out.cs`.
+      /// What a batch says instead of `EmitCs`, which names one file for
+      /// inputs that each have their own.
+      EmitCsBeside: bool
 
       /// Run the frontend and stop, without generating or emitting anything.
       ///
@@ -110,15 +115,19 @@ type Options =
       /// `.dll`. What is skipped is the checked file's own backend.
       Check: bool }
 
-/// Vad `-d` skriver till när ingen har sagt något annat.
-let private defaultCsDump = "out.cs"
-let private defaultAstDump = "ast_dump.txt"
+/// A build of a library on the way to something else: nothing dumped, nothing
+/// checked only, optimized.
+let dependencyOptions: Options =
+    { IsLibrary = true
+      Debug = false
+      Runtime = []
+      EmitCs = None
+      DumpAst = None
+      EmitCsBeside = false
+      Check = false }
 
-/// De två filerna `-d` skriver, givet vart C#-koden ska.
-let private dumpPaths (emitCs: string option) : string * string =
-    match emitCs with
-    | None -> defaultCsDump, defaultAstDump
-    | Some path -> path, Path.ChangeExtension(path, ".ast.txt")
+/// Where `--emit-cs-beside` puts an input's C#.
+let besidePath (inputFilePath: string) = Path.ChangeExtension(Path.GetFullPath inputFilePath, ".out.cs")
 
 
 /// What a finished build was built from, written beside the source as
@@ -466,10 +475,15 @@ let compile (options: Options) (inputFilePath: string) : int =
             let csCode =
                 generateSource env typedAst dllDeps declaredMacros declaredPatternMacros declaredHashMacros inputFilePath isLibrary
 
-            let csDumpPath, astDumpPath = dumpPaths options.EmitCs
+            // `--emit-cs-beside` on its own, without a batch to turn it into a
+            // path, is the same for one input.
+            let csDumpPath =
+                match options.EmitCs with
+                | Some path -> Some path
+                | None when options.EmitCsBeside -> Some(besidePath inputFilePath)
+                | None -> None
 
-            if options.Debug then
-                File.WriteAllText(astDumpPath, sprintf "%A" typedAst)
+            options.DumpAst |> Option.iter (fun path -> File.WriteAllText(path, sprintf "%A" typedAst))
             
             /// Does the entry point have to drive a fiber to call `main`?
             ///
@@ -789,8 +803,7 @@ let compile (options: Options) (inputFilePath: string) : int =
 </Project>"""
             File.WriteAllText(Path.Combine(tmpDir, "Project.csproj"), csprojContent)
             File.WriteAllText(Path.Combine(tmpDir, "Program.cs"), fullCode)
-            if options.Debug then
-                File.WriteAllText(csDumpPath, fullCode)
+            csDumpPath |> Option.iter (fun path -> File.WriteAllText(path, fullCode))
             
             let outDir = Path.GetFullPath(if System.String.IsNullOrWhiteSpace(Path.GetDirectoryName(outputFilePath)) then "." else Path.GetDirectoryName(outputFilePath))
 
@@ -1175,6 +1188,9 @@ let compile (options: Options) (inputFilePath: string) : int =
 
                         resolvedByName @ runtime, nativeLibraries
 
+                // Before the record, which keeps the assembly's timestamp: a
+                // new checksum in it is a write.
+                PdbNames.rewrite (Path.GetFullPath outputFilePath)
                 writeBuildRecord options inputFilePath outputFilePath linkedAssemblies links natives lastInterface
 
             buildStatus
@@ -1318,7 +1334,7 @@ let private compileDependencyInProcess (bjoPath: string) : string =
                 // Never `Check`: what the importing module needs from this one
                 // is the `.dll`, and checking it would produce nothing to read.
                 Session.isolated (fun () ->
-                    compile { IsLibrary = true; Debug = false; Runtime = []; EmitCs = None; Check = false } bjoPath))
+                    compile dependencyOptions bjoPath))
         finally
             Diagnostics.verbose <- narrating
             inFlight.RemoveAt(inFlight.Count - 1)
@@ -1482,14 +1498,9 @@ let batch (options: Options) (ifStale: bool) (files: string list) : BatchResult 
     |> List.map (fun file ->
         let fullPath = Path.GetFullPath file
 
-        // `-d` skriver dumparna bredvid indatafilen istället för i
-        // arbetskatalogen. Annars skriver batchens filer över varandras, och
-        // den som läser `out.cs` får svar om den sist kompilerade.
-        let fileOptions =
-            if options.Debug && options.EmitCs.IsNone then
-                { options with EmitCs = Some(Path.ChangeExtension(fullPath, ".out.cs")) }
-            else
-                options
+        // A batch is given no file to dump into — `--emit-cs-beside` puts each
+        // input's C# beside it — so the options hold for every file as they are.
+        let fileOptions = options
 
         let compileOne () =
             // Varje fil börjar med en tom uppsamlare. Den är processglobal och
@@ -1594,7 +1605,7 @@ let runWorker () : int =
 
                 try
                     ModuleLock.withLock fullPath (fun () -> stillStale fullPath) (fun () ->
-                        compile { IsLibrary = true; Debug = false; Runtime = []; EmitCs = None; Check = false } fullPath)
+                        compile dependencyOptions fullPath)
                 with ex ->
                     Diagnostics.reportFailure ex
                     1

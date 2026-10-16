@@ -130,8 +130,8 @@ def compile_one(bjo_file, lib=False, debug=False):
     if lib:
         cmd.append("--lib")
     if debug:
-        # Samma placering som batchen väljer åt sig själv, så att den som
-        # läser den genererade C#-koden hittar den på ett ställe.
+        # The place the batch's --emit-cs-beside chooses, so that whoever
+        # reads the generated C# finds it in one place.
         cmd += ["--debug", "--emit-cs", str(path.with_suffix(".out.cs"))]
     cmd.append(str(path))
 
@@ -172,7 +172,8 @@ def batch_compile(files, lib=False, debug=False, if_stale=False, tag="batch"):
     if lib:
         cmd.append("--lib")
     if debug:
-        cmd.append("--debug")
+        # Each input's C# beside it, for the codegen tests to read.
+        cmd += ["--debug", "--emit-cs-beside"]
     if if_stale:
         cmd.append("--if-stale")
 
@@ -890,7 +891,7 @@ if warning_files:
 def run_codegen_tests():
     """Läser den genererade C#-koden.
 
-    `--debug` lägger den bredvid indatafilen som `<namn>.out.cs`, en per fil,
+    `--emit-cs-beside` lägger den bredvid indatafilen som `<namn>.out.cs`, en per fil,
     vilket är vad som gör att de kan byggas i en batch: förut skrev varje
     kompilering `out.cs` i arbetskatalogen, så de fick köras en i taget i var
     sin katalog.
@@ -914,7 +915,7 @@ def run_codegen_tests():
 
         out_cs = bjo_file.with_suffix(".out.cs")
         out_cs_content = out_cs.read_text() if out_cs.exists() else ""
-        remove_artifacts(bjo_file, extra=(".out.cs", ".out.ast.txt"))
+        remove_artifacts(bjo_file, extra=(".out.cs",))
 
         if entry["status"] != 0:
             c_failed += 1
@@ -1222,6 +1223,57 @@ def run_check_tests():
 
     return "check", c_total, c_failed, c_failures
 
+def run_pdb_tests():
+    # The locals a debugger shows of a build: the ones the program wrote,
+    # under the names it wrote, and none of the compiler's; the PDB still the
+    # one the assembly names. Read by `TestFiles/pdb/locals.fsx`.
+    SOURCE = Path("TestFiles/pdb/locals.bjo")
+    READER = Path("TestFiles/pdb/locals.fsx")
+    p_total, p_failed = 0, 0
+    p_failures = []
+
+    def check_that(label, condition, detail=""):
+        nonlocal p_total, p_failed
+        p_total += 1
+        if not condition:
+            p_failed += 1
+            p_failures.append(f"{label}{': ' + str(detail) if detail else ''}")
+
+    def build_and_read(env=None):
+        built = subprocess.run(["dotnet", COMPILER_DLL, "-d", str(SOURCE)], capture_output=True, text=True,
+                               env={**os.environ, **(env or {})})
+        if built.returncode != 0:
+            return None, built.stdout
+        read = subprocess.run(["dotnet", "fsi", str(READER), str(SOURCE.with_suffix(".exe"))],
+                              capture_output=True, text=True)
+        facts = [line.split(" ", 1) for line in read.stdout.splitlines() if " " in line]
+        return facts, read.stdout + read.stderr
+
+    facts, output = build_and_read()
+    if facts is None:
+        check_that("the program builds", False, output)
+    else:
+        ran = subprocess.run(["dotnet", str(SOURCE.with_suffix(".exe"))], capture_output=True, text=True)
+        check_that("the program runs", ran.stdout == "big 2\n", ran.stdout + ran.stderr)
+
+        shown = [v for k, v in facts if k == "shown"]
+        hidden = [v for k, v in facts if k == "hidden"]
+        check_that("a name C# cannot spell is shown as written", "is-big?" in shown, shown)
+        check_that("both of two bindings of one name are shown", shown.count("first-one") == 2, shown)
+        check_that("a pattern variable is shown", "head" in shown, shown)
+        check_that("no local is shown under a compiler's name",
+                   not [n for n in shown if "__" in n or n.startswith("_")], shown)
+        check_that("the compiler's temporaries are hidden", any("loopcur" in n for n in hidden), hidden)
+        check_that("the assembly's checksum is of the PDB", ["checksum", "true"] in facts, output)
+        check_that("the assembly names the PDB's ID", ["id", "true"] in facts, output)
+
+        raw, output = build_and_read({"BJOLANG_RAW_PDB": "1"})
+        check_that("BJOLANG_RAW_PDB=1 leaves Roslyn's names",
+                   raw is not None and any("__" in v for k, v in raw if k == "shown"), output)
+
+    remove_artifacts(SOURCE)
+    return "pdb", p_total, p_failed, p_failures
+
 
 
 
@@ -1478,6 +1530,10 @@ with ThreadPoolExecutor(max_workers=6) as executor:
     phases.append(executor.submit(run_check_tests))
 
     print("-" * 50)
+    print_color(BLUE, "Checking debug symbols...")
+    phases.append(executor.submit(run_pdb_tests))
+
+    print("-" * 50)
     print_color(BLUE, "Checking packages and roots...")
     phases.append(packages_future)
 
@@ -1494,6 +1550,8 @@ with ThreadPoolExecutor(max_workers=6) as executor:
     repro_total = repro_failed = 0
     stale_total = stale_failed = 0
     check_total = check_failed = 0
+    pdb_total = pdb_failed = 0
+    pdb_failures = []
     codegen_failures, repl_failures, repro_failures, stale_failures = [], [], [], []
     check_failures = []
     
@@ -1536,6 +1594,13 @@ with ThreadPoolExecutor(max_workers=6) as executor:
             else:
                 for f in check_failures:
                     print(f"  [{RED}FAIL{NC}] {f}")
+        elif name == "pdb":
+            pdb_total, pdb_failed, pdb_failures = total, failed, failures
+            if failed == 0:
+                print(f"  [{GREEN}PASS{NC}] debug symbols")
+            else:
+                for f in pdb_failures:
+                    print(f"  [{RED}FAIL{NC}] {f}")
         elif name == "packages":
             package_total, package_failed, package_failures = total, failed, failures
             if failed == 0:
@@ -1574,6 +1639,8 @@ if stale_total > 0:
     print(f"Staleness:          {stale_total - stale_failed}/{stale_total} rebuilt as expected")
 if check_total > 0:
     print(f"--check:            {check_total - check_failed}/{check_total} checks behaved")
+if pdb_total > 0:
+    print(f"Debug symbols:      {pdb_total - pdb_failed}/{pdb_total} as a debugger should see them")
 if package_total > 0:
     print(f"Packages:           {package_total - package_failed}/{package_total} package rules held")
 if graph_total > 0:
@@ -1595,10 +1662,11 @@ print_failures("Reproducibility Failures", repro_failures)
 print_failures("Staleness Failures", stale_failures)
 print_failures("Codegen Test Failures", codegen_failures)
 print_failures("--check Failures", check_failures)
+print_failures("Debug Symbol Failures", pdb_failures)
 print_failures("Package Failures", package_failures)
 print_failures("Graph Build Failures", graph_failures)
 
-if (error_failed or codegen_failed or repl_failed or repro_failed or stale_failed or warning_failed or check_failed or package_failed or graph_failed) and not compiled_failed and not run_failed:
+if (error_failed or codegen_failed or repl_failed or repro_failed or stale_failed or warning_failed or check_failed or pdb_failed or package_failed or graph_failed) and not compiled_failed and not run_failed:
     sys.exit(1)
     
 if compiled_failed or run_failed:

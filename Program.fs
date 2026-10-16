@@ -39,8 +39,12 @@ type CompilerOptions =
       FilesFrom: string option
       /// File to write the batch's report to. `-` means stdout.
       Report: string option
-      /// Where `-d` puts the generated C# code.
+      /// `--emit-cs`: where the generated C# goes.
       EmitCs: string option
+      /// `--dump-ast`: where the typed AST goes.
+      DumpAst: string option
+      /// `--emit-cs-beside`: each input's C# beside it.
+      EmitCsBeside: bool
       /// Run the frontend over each input and stop, generating nothing.
       Check: bool
 
@@ -98,6 +102,8 @@ let defaultOptions =
       FilesFrom = None
       Report = None
       EmitCs = None
+      DumpAst = None
+      EmitCsBeside = false
       Check = false
       Roots = None
       FrameworksFile = None
@@ -120,11 +126,15 @@ let printUsage () =
     printfn "  --repl      Read, evaluate and print Bjolang forms until end of input."
     printfn "              At a terminal, with line editing, completion and history."
     printfn "  --lib       Compile the source as a library (.dll) instead of an executable"
-    printfn "  -d, --debug Build unoptimized, with debug symbols, and dump the typed AST to"
-    printfn "              ast_dump.txt and the generated C# to out.cs"
+    printfn "  -d, --debug Build unoptimized, for a debugger: the program steps through"
+    printfn "              its .bjo lines. Writes nothing else."
     printfn "  --emit-cs <file>"
-    printfn "              Under -d, write the generated C# here instead of out.cs. The AST"
-    printfn "              dump goes beside it."
+    printfn "              Write the generated C# to <file>, in a debug build or not."
+    printfn "  --emit-cs-beside"
+    printfn "              Write each input's C# beside it, as <name>.out.cs. What a"
+    printfn "              batch takes instead of --emit-cs."
+    printfn "  --dump-ast <file>"
+    printfn "              Write the typed AST that code generation is given to <file>."
     printfn "  --check     Check for errors without generating code. Reports every error"
     printfn "              the frontend finds and writes no assembly."
     printfn "  --roots <file>"
@@ -334,7 +344,23 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
     | "--if-stale" :: rest -> parseArgs rest { opts with IfStale = true; IsLibrary = true }
     | "--files-from" :: path :: rest -> parseArgs rest { opts with FilesFrom = Some path }
     | "--report" :: path :: rest -> parseArgs rest { opts with Report = Some path }
-    | "--emit-cs" :: path :: rest -> parseArgs rest { opts with EmitCs = Some path }
+    // A source file where the dump's file should be is the dump's file left
+    // out, and taken as it stands it would be written over.
+    | ("--emit-cs" | "--dump-ast" as flag) :: path :: _ when
+        [ ".bjo"; ".bjodoc"; ".protobjo" ] |> List.contains (Path.GetExtension(path: string))
+        ->
+        let example = if flag = "--emit-cs" then "out.cs" else "ast.txt"
+        printfn $"Error: %s{flag} would write over %s{path}. It takes the file to write to, as in %s{flag} %s{example}, before the source."
+        exit 1
+    | "--emit-cs" :: path :: rest when not (path.StartsWith "-") -> parseArgs rest { opts with EmitCs = Some path }
+    | "--dump-ast" :: path :: rest when not (path.StartsWith "-") -> parseArgs rest { opts with DumpAst = Some path }
+    // The file is not optional: a dump into a name nobody chose is a file
+    // left in whatever directory the compiler happened to run in.
+    | ("--emit-cs" | "--dump-ast" as flag) :: _ ->
+        let example = if flag = "--emit-cs" then "out.cs" else "ast.txt"
+        printfn $"Error: %s{flag} needs the file to write to, as in %s{flag} %s{example}."
+        exit 1
+    | "--emit-cs-beside" :: rest -> parseArgs rest { opts with EmitCsBeside = true }
     | "--roots" :: path :: rest -> parseArgs rest { opts with Roots = Some path }
     | "--frameworks" :: path :: rest -> parseArgs rest { opts with FrameworksFile = Some path }
     | "--nuget" :: dir :: rest -> parseArgs rest { opts with NuGet = Some dir }
@@ -463,8 +489,13 @@ let private run (argv: string array) =
     // Both of these ask for a build product from a mode that produces none.
     // Refused rather than ignored: silently dropping one of the two would leave
     // whoever passed them waiting for a file that is never written.
-    if options.Check && options.EmitCs.IsSome then
-        printfn "Error: --check generates no C#, so there is nothing for --emit-cs to write."
+    if options.Check && (options.EmitCs.IsSome || options.EmitCsBeside || options.DumpAst.IsSome) then
+        printfn "Error: --check generates no code, so there is nothing for --emit-cs, --emit-cs-beside or --dump-ast to write."
+        exit 1
+
+    // One file for many inputs would hold whichever was compiled last.
+    if options.Batch && (options.EmitCs.IsSome || options.DumpAst.IsSome) then
+        printfn "Error: --emit-cs and --dump-ast name one file, and a batch compiles many. Use --emit-cs-beside for each input's C# beside it."
         exit 1
 
     if options.Check && options.IfStale then
@@ -476,6 +507,8 @@ let private run (argv: string array) =
           Runtime = options.Runtime
           Debug = options.Debug
           EmitCs = options.EmitCs
+          DumpAst = options.DumpAst
+          EmitCsBeside = options.EmitCsBeside
           Check = options.Check }
 
     if options.Batch then

@@ -36,10 +36,22 @@ let private isFreshShaped (name: string) : bool =
         let suffix = name.Substring(i + 2)
         suffix.Length > 0 && suffix |> Seq.forall System.Char.IsDigit
 
+/// Every name the source of this compilation has written, of any shape.
+///
+/// What tells a program's own local from one the compiler invented, once both
+/// are C# locals in a PDB: `loopcur__75` and `__init__65` are names nobody
+/// writes, and `x__23` is the `x` somebody did (see `PdbNames`).
+let private sourceNames = System.Collections.Generic.HashSet<string>()
+
 /// Reserves a name source has written, so that `fresh` never makes it.
 let reserve (name: string) : unit =
+    sourceNames.Add name |> ignore
+
     if isFreshShaped name then
         written.Add name |> ignore
+
+/// Whether source this compilation read has written `name`.
+let isWritten (name: string) : bool = sourceNames.Contains name
 
 /// `prefix__N`, with `N` unique across the whole compilation, and not a name
 /// source has written (see `reserve`).
@@ -74,18 +86,27 @@ let fresh (prefix: string) : string =
 ///
 /// The names source has written go with the counter, for the same reason:
 /// which names `fresh` passes over depends on what was read.
-type State = { Counter: int; Written: Set<string> }
+type State =
+    { Counter: int
+      Written: Set<string>
+      SourceNames: Set<string> }
 
-let emptyState: State = { Counter = 0; Written = Set.empty }
+let emptyState: State =
+    { Counter = 0
+      Written = Set.empty
+      SourceNames = Set.empty }
 
 let snapshot () : State =
     { Counter = counter.Value
-      Written = Set.ofSeq written }
+      Written = Set.ofSeq written
+      SourceNames = Set.ofSeq sourceNames }
 
 let restore (state: State) : unit =
     counter.Value <- state.Counter
     written.Clear()
     written.UnionWith state.Written
+    sourceNames.Clear()
+    sourceNames.UnionWith state.SourceNames
 
 /// The base name a `fresh` name was derived from, for diagnostics.
 let baseName (name: string) : string =
