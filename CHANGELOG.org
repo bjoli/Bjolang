@@ -3,6 +3,26 @@
 
 What each change guarantees, and what it leaves open.
 
+* A debug build is only that, and a debugger sees the program's locals
+
+- ~-d~ builds unoptimized, with symbols, and writes nothing else. The
+  generated C# is ~--emit-cs FILE~, in a debug build or not, the typed AST
+  ~--dump-ast FILE~, and each input's C# beside it ~--emit-cs-beside~,
+  which is what a batch takes: one file names nothing for many inputs. The
+  file is not optional, and a Bjolang source in its place is refused rather
+  than written over.
+- Every build's PDB has its locals renamed (~PdbNames~): the program's under
+  the names it wrote, read back through ~Naming.originals~, and the
+  compiler's temporaries ~DebuggerHidden~. A local is the program's if
+  source the compilation read wrote its name, which ~Gensym~ now records.
+  The assembly's ~PdbChecksum~ is computed again. A patch that does not read
+  back with the same tables and sequence points keeps Roslyn's files;
+  ~BJOLANG_RAW_PDB=1~ keeps them always. 35 ms of the prelude's build.
+- ~Docs/Debugging.org~ is the state of debugging with netcoredbg and dape.
+- Left open: parameters keep their C# names, which are in the assembly
+  rather than the PDB; and stepping enters the runtime, whose PDBs
+  netcoredbg counts as user code. See ~Docs/Debugging.org~.
+
 * Hooks for a language server, a lighter check, and less repeated work
 
 - Hooks for a host that runs the compiler in-process, such as
