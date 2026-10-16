@@ -1679,7 +1679,7 @@ BENCH_A = """(import (std bench))
 (defun (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
 
 (def/bench "work" (fib 12))
-(def/bench "sized" #:params ((n [8 10])) (fun (n) (fib n)))
+(def/bench "sized" #:params ((n [8 10])) (fib n))
 (def/bench "gone" (fib 5))
 
 (run-benches)

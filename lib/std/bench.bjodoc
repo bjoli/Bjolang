@@ -10,8 +10,8 @@
 
     (def/bench "list-sort"
       #:params ((n [1000 100000]))
-      #:setup (fun (n) {listing (% (* i 7919) n) (:for i (range 0 n))})
-      (fun (xs) (list-sort xs)))
+      #:setup ((xs {listing (% (* i 7919) n) (:for i (range 0 n))}))
+      (list-sort xs))
 
     (def/bench "vecing" (vec-length {vecing i (:for i (range 0 1000))}))
 
@@ -93,40 +93,42 @@
 (:doc def/bench
   (summary "Registers a benchmark. (run-benches) runs it.")
   (form (def/bench name body ...))
-  (form (def/bench name #:setup setup function))
-  (form (def/bench name #:setup-every setup function))
-  (form (def/bench name #:params ((param values) ...) function))
-  (form (def/bench name #:params ((param values) ...) #:setup setup function))
+  (form (def/bench name #:setup ((setup-name setup-expr) ...) body ...))
+  (form (def/bench name #:setup-every ((every-name every-expr) ...) body ...))
+  (form (def/bench name #:params ((param values) ...) body ...))
   (form (def/bench name #:once n body ...))
   (form (def/bench name #:group group body ...))
   (form (def/bench name #:skip why body ...))
   (arg name "A string: the benchmark's name, which the filters of a run match.")
-  (arg setup "Run once before the benchmark, outside its time; with #:params, a function of the parameters.")
-  (arg function "The body: a function of what the setup made, or of the parameters when there is no setup.")
+  (arg setup-name "A name the setup binds, which the body and the bindings after it can use.")
+  (arg setup-expr "Its value: made once, before the benchmark is warmed up, outside the time.")
+  (arg every-name "A name bound before every call.")
+  (arg every-expr "Its value, made again before every call, outside the time and the allocation.")
+  (arg param "The name of a parameter, which the setups and the body can use.")
+  (arg values "A vec literal of the parameter's values, evaluated once when the benchmark is registered.")
   (arg n "How many cold runs of a #:once benchmark.")
   (arg group "A string: a heading in the menu, and what --compare-within compares within.")
   (arg why "A string: why the benchmark is skipped, which the run shows.")
-  (arg param "The name of a parameter, bound in the function or the setup.")
-  (arg values "A vec literal of the parameter's values, evaluated once when the benchmark is registered.")
-  (rest body "Forms run as one call, the value of the last kept alive.")
+  (rest body "Forms run as one call, the value of the last kept alive. The parameters and the setups' names are in scope.")
   (see run-benches time-it)
   (example """
     (def/bench "fib 20" (fib 20))
 
     (def/bench "sum"
-      #:setup {listing i (:for i (range 0 1000))}
-      (fun (xs) (fold + 0 xs)))
+      #:setup ((xs {listing i (:for i (range 0 1000))}))
+      (fold + 0 xs))
 
     (def/bench "sort"
       #:params ((n [1000 100000])
                 (order ['sorted 'random]))
-      #:setup (fun (n order) (make-list n order))
-      (fun (xs) (list-sort xs)))
+      #:setup ((xs (make-list n order)))
+      (list-sort xs))
 
-    ;; The input is consumed: a fresh copy before every call, out of the time.
+    ;; The input is used up: a fresh copy before every call, out of the time.
     (def/bench "sort!"
-      #:setup-every (array-copy unsorted)
-      (fun (a) (array-sort! a)))
+      #:setup ((unsorted (random-array 10000)))
+      #:setup-every ((a (array-copy unsorted)))
+      (array-sort! a))
 
     (def/bench "sieve" #:once 3 (sieve 2000000000))
     """)
@@ -135,12 +137,14 @@
     come after the name, in any order.
 
     @itemlist{
-      @item{@code{#:setup} runs once per benchmark and combination of
-        parameters. What it makes is the function's argument.}
-      @item{@code{#:setup-every} runs before every call. Each call is then
-        timed on its own, the setup outside the time and the allocation;
-        the collection counts include it. A body below the clock's
-        resolution is marked.}
+      @item{@code{#:setup} binds names once per benchmark and combination
+        of parameters, in order as @code{let*} does, so a binding can use
+        the parameters and the bindings before it.}
+      @item{@code{#:setup-every} binds names again before every call. Each
+        call is then timed on its own, the setup outside the time and the
+        allocation; the collection counts include it. Its bindings can use
+        those of @code{#:setup}, which are made once. A body below the
+        clock's resolution is marked.}
       @item{@code{#:params} makes a row for each combination of values,
         the last parameter varying fastest. @code{--params n=10,20}
         replaces a parameter's values for a run; a value is read as the

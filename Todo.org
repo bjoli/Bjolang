@@ -215,3 +215,42 @@ what was meant. Confirmed by running it where it says so.
 - *Nothing locks ~.bjo~* against two ~bjo~ processes; the second fails loudly.
 - *A version requirement on a path dependency is ignored*: a path source is an
   override.
+
+* Benchmarks (~(std bench)~, ~bjo bench~)
+
+- *Allocation is counted on the measuring thread only*
+  (~GC.GetAllocatedBytesForCurrentThread~), so a body that spawns fibers or
+  hands work to the pool allocates more than ~alloc/op~ says. ~BjoBench~ has
+  ~AllocatedInProcess~ (~GC.GetTotalAllocatedBytes(precise: true)~), which
+  counts every thread, but also the JIT's background compiles, timers and
+  anything else running: noisier, and the precise read is not free. Wants a
+  choice per benchmark or run (~#:alloc 'process~, ~--alloc process~), and
+  the header saying which was counted.
+- *No ~#:teardown~*: a setup that opens a file, a socket or a scope has
+  nowhere to close it, and a run of many cases leaks them until the process
+  ends. Bindings like ~#:setup~'s, or forms run once after the case's last
+  sample with the setup's names in scope; and ~#:teardown-every~ after each
+  call of a ~#:setup-every~ benchmark, outside the time. ~CaseRun~ gains a
+  ~done~, which ~measure-case~ and ~--serve~ (a ~(finish i)~ command, and on
+  ~(quit)~) call, also when the body raised.
+- *Only time per call is reported.* A body that processes n items or bytes
+  wants items/s or MB/s, which compare across sizes where ns/op does not:
+  ~#:throughput ((bytes (vec-length data)))~, an expression of the setup's
+  names giving the work one call does, and a column of it divided by the
+  median. With ~--scaling~, the column that should stay flat for a linear
+  body.
+- *Nothing fails a run on allocation.* Allocation per call barely varies
+  from run to run or between processes, unlike time, so it is the check a
+  CI job can be strict about: ~--fail-alloc PCT~ (or bytes) against
+  ~--compare FILE~ or ~--against REF~ exits 1 when a benchmark allocates
+  more by that much. A comparison would show the change in ~alloc/op~ next
+  to the time's, without the statistics: a difference in bytes is either
+  there or not.
+- *~#:setup-every~ times one call at a time*, so each sample is one call
+  with two clock reads around it, and a body under a microsecond is marked
+  "below resolution" rather than measured. Batch it instead: make ~k~ inputs
+  ahead, outside the time, then time ~k~ calls over them as an ordinary
+  batch, so calibration, samples and precision are what they are for any
+  benchmark. The cost is ~k~ inputs alive at once, so ~k~ wants a cap by
+  memory (the setup's allocation is measurable while making them), falling
+  back to single calls for an input too large to hold ~k~ of.

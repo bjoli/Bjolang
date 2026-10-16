@@ -7,10 +7,14 @@ What each change guarantees, and what it leaves open.
 
 - ~(def/bench "name" body ...)~ registers a benchmark and ~(run-benches)~ is
   the file's ~main~, as ~deftest~ and ~(run-tests)~ are. Options:
-  ~#:setup~ (once, outside the time), ~#:setup-every~ (before every call,
-  each call timed on its own), ~#:params ((n [10 1000]) ...)~ (a row per
-  combination, ~--params n=5~ replacing the values), ~#:once n~ (cold runs
-  of a body of seconds), ~#:group~ and ~#:skip~.
+  ~#:setup ((deck (full-deck)))~ (bindings made once, outside the time),
+  ~#:setup-every ((cards (vec->list deck)))~ (bindings made again before
+  every call, each call timed on its own), ~#:params ((n [10 1000]) ...)~
+  (a row per combination, ~--params n=5~ replacing the values), ~#:once n~
+  (cold runs of a body of seconds), ~#:group~ and ~#:skip~. The body is
+  forms, with the parameters and the setups' names in scope: no ~fun~ to
+  write. A setup that is an expression rather than bindings is refused, and
+  the message says what to write.
 - A run calibrates to samples of 10 ms, warms up until two windows of five
   batches agree within 2% (for at least half a second, so that the JIT's
   recompilation is in the warm-up and not in the samples), and takes at

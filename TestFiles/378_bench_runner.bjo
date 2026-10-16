@@ -30,23 +30,26 @@
 (def/bench "grid"
   #:params ((n [1 2 3])
             (kind ['a 'b]))
-  (fun (n kind) (+ n 1)))
+  (+ n 1))
 
 (def/bench "with setup"
-  #:setup (list 1 2 3)
-  (fun (xs) (list-length xs)))
+  #:setup ((xs (list 1 2 3)))
+  (list-length xs))
 
+(def/mutable seen 0)
 (def/bench "params and setup"
   #:params ((n [4 5]))
-  #:setup (fun (n) (* n 10))
-  (fun (x) (+ x 1)))
+  #:setup ((x (* n 10))
+           (y (+ x 1)))
+  (set! seen (+ x y))
+  (tick))
 
 ;; The setup runs before every call and takes no time and allocates nothing
 ;; that counts: only the body's tick does.
 (def/mutable setups 0)
 (def/bench "every"
-  #:setup-every (let () (set! setups (+ setups 1)) (make-array 1000 #:fill 0))
-  (fun (a) (tick)))
+  #:setup-every ((a (let () (set! setups (+ setups 1)) (make-array 1000 #:fill 0))))
+  (tick))
 
 (def/bench "skipped" #:skip "why not" (tick))
 (def/bench "grouped" #:group "g" #:once 3 (tick))
@@ -54,7 +57,17 @@
 (def/bench "grouped too" #:group "g" (ignore (tick)) (tick))
 ;; `n` ticks a call: time in proportion to the parameter, for --scaling.
 (def/bench "linear" #:params ((n [1 2 4]))
-  (fun (n) (loop (:for i (up-from 0 #:to n)) (:do (ignore (tick))))))
+  (loop (:for i (up-from 0 #:to n)) (:do (ignore (tick)))))
+
+;; The once-made setup and the every-call setup together: each call gets a
+;; copy of what was made once.
+(def/mutable made-once 0)
+(def/mutable seen-length 0)
+(def/bench "once and every"
+  #:setup ((base (let () (set! made-once (+ made-once 1)) (list 1 2 3))))
+  #:setup-every ((xs (cons 0 base)))
+  (set! seen-length (list-length xs))
+  (tick))
 
 (: name-of (-> Bench string))
 (defun (name-of b) (record-ref b name))
@@ -130,9 +143,24 @@
   (check (record-ref m per-call))
   (check (> setups 0)))
 
-(deftest "a setup of the parameters"
+(deftest "a setup's bindings see the parameters and each other"
   (def b (bench-named "params and setup"))
-  (check (= (list-length ((record-ref b cases))) 2)))
+  (def cases ((record-ref b cases)))
+  (check (= (list-length cases) 2))
+  ;; n = 4: x is 40, y is 41.
+  (ignore (parameterize ((current-clock (driven-clock)))
+            (measure-case (list-head cases) 0 (bench-settings (options ["--quick"])))))
+  (check (= seen 81)))
+
+(deftest "#:setup once, #:setup-every before every call, outside the time"
+  (def b (bench-named "once and every"))
+  (set! made-once 0)
+  (def m (parameterize ((current-clock (driven-clock)))
+           (measure-case (list-head ((record-ref b cases))) 0 (bench-settings (options ["--quick"])))))
+  (check (= made-once 1))
+  (check (= seen-length 4))
+  (check (record-ref m per-call))
+  (check (vec-iter (fun (x) (= x 1000.0)) (record-ref m samples))))
 
 (deftest "a skipped benchmark says why"
   (check (= (record-ref (bench-named "skipped") skip) "why not")))
@@ -345,9 +373,9 @@
   (check (not (string-contains? (get-output-string out) "ticks")))
   (def out2 (open-output-string))
   (check (= (parameterize ((current-output-port out2))
-              (run-with-options (current-module) (options ["--cases" "17"])))
+              (run-with-options (current-module) (options ["--cases" "18"])))
             2))
-  (check (string-contains? (get-output-string out2) "there is no case 17: there are 17"))
+  (check (string-contains? (get-output-string out2) "there is no case 18: there are 18"))
   (check-match (parse-bench-args ["--cases" "1,x"]) (Err _)))
 
 (deftest "the listing gives each case's group"

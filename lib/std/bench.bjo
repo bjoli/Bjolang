@@ -12,15 +12,13 @@
 
 ;; std/bench.bjo — benchmarks.
 ;;
-;;     ;; Every export is documented there; the module doc is too.
-(:doc #:file "bench.bjodoc")
-
-(import (std prelude))
+;;     (import (std prelude))
 ;;     (import (std bench))
 ;;
 ;;     (def/bench "list-sort"
-;;       #:setup (random-list 100000)
-;;       (fun (xs) (list-sort xs)))
+;;       #:params ((n [1000 100000]))
+;;       #:setup ((xs (random-list n)))
+;;       (list-sort xs))
 ;;
 ;;     (run-benches)
 ;;
@@ -45,6 +43,9 @@
         ;; where those expand.
         register-bench! bench-keep! bench-param-values bench-now bench-allocated
         run-registered-benches time-it-run time-it-fixed time-it-expansion time-it-keep)
+
+;; Every export is documented there; the module doc is too.
+(:doc #:file "bench.bjodoc")
 
 (import (std prelude))
 (import (std maths))
@@ -236,9 +237,10 @@
 ;; def/bench
 ;; ---------------------------------------------------------------------------
 
-;; What the options of one `def/bench` came to.
-(type (: BenchSyntax (Record (: setup (Option Syntax))
-                             (: setup-every (Option Syntax))
+;; What the options of one `def/bench` came to. The setups are bindings,
+;; `(name expr)`, made in order as `let*` makes them.
+(type (: BenchSyntax (Record (: setup (List Syntax))
+                             (: setup-every (List Syntax))
                              (: params (List (Tuple Syntax Syntax)))
                              (: once Syntax)
                              (: group Syntax)
@@ -247,15 +249,23 @@
 
 (: no-bench-options (-> BenchSyntax))
 (defun (no-bench-options)
-  (BenchSyntax (setup None) (setup-every None) (params (list)) (once #'0) (group #'"")
+  (BenchSyntax (setup (list)) (setup-every (list)) (params (list)) (once #'0) (group #'"")
                (skip #'"") (body (list))))
 
 (: bench-options (-> Syntax (List Syntax) BenchSyntax BenchSyntax))
 (defun (bench-options form items o)
   (let ((go (fun (more o2) (bench-options form more o2))))
     (syntax-match (SList items)
-      ((#:setup e more ...) (go more (record-set o (setup (Some e)))))
-      ((#:setup-every e more ...) (go more (record-set o (setup-every (Some e)))))
+      ((#:setup ((name e) ...) more ...)
+       (go more (record-set o (setup (zip-bindings name e)))))
+      ((#:setup bad more ...)
+       (ignore (syntax-error bad "#:setup takes bindings, made once before the benchmark runs: #:setup ((deck (full-deck))). The body then names them."))
+       o)
+      ((#:setup-every ((name e) ...) more ...)
+       (go more (record-set o (setup-every (zip-bindings name e)))))
+      ((#:setup-every bad more ...)
+       (ignore (syntax-error bad "#:setup-every takes bindings, made again before every call: #:setup-every ((cards (vec->list deck)))."))
+       o)
       ((#:params ((name values) ...) more ...)
        (go more (record-set o (params (zip-syntax name values)))))
       ((#:once n more ...) (go more (record-set o (once n))))
@@ -271,83 +281,45 @@
     ((Tuple (Cons x xm) (Cons y ym)) (cons (Tuple x y) (zip-syntax xm ym)))
     (_ (list))))
 
-;; The function a body is, applied to `args`. A literal `(fun (x ...) body ...)`
-;; is not called but bound, so a call in a batch costs no delegate call.
-(: apply-body (-> Syntax (List Syntax) (List Syntax) Syntax))
-(defun (apply-body form body args)
-  (match body
-    ((Cons only Nil)
-     (syntax-match only
-       (('fun (param ...) inner ...)
-        (if (= (list-length param) (list-length args))
-            #'(let ,(SList (zip-bindings param args)) ,@inner)
-            (syntax-error only #"This body takes ${(list-length param)} argument(s), and it is given ${(list-length args)}.")))
-       (_ #'(,only ,@args))))
-    (_ #'((begin ,@body) ,@args))))
-
 (: zip-bindings (-> (List Syntax) (List Syntax) (List Syntax)))
 (defun (zip-bindings names values)
   (list-map (fun (p) (match p ((Tuple n v) #'(,n ,v)))) (zip-syntax names values)))
 
-;; What one call of the body is: the body itself, or the body applied to what
-;; it is given, the input or the parameters.
-(: body-call (-> Syntax BenchSyntax (List Syntax) (Option Syntax) Syntax))
-(defun (body-call form o params input)
-  (match input
-    ((Some x) (apply-body form (record-ref o body) (list x)))
-    (None
-     (if (list-empty? params)
-         #'(begin ,@(record-ref o body))
-         (apply-body form (record-ref o body) params)))))
-
-;; The setup applied to the parameters, when there are any.
-(: with-params (-> Syntax (List Syntax) Syntax))
-(defun (with-params e params)
-  (if (list-empty? params) e #'(,e ,@params)))
-
-;; `prepare` of one case: the setup, then the runs.
-(: prepare-expansion (-> Syntax BenchSyntax (List Syntax) Syntax))
-(defun (prepare-expansion form o params)
-  (match (Tuple (record-ref o setup) (record-ref o setup-every))
-    ((Tuple None None)
+;; `prepare` of one case: the setup's bindings, made once, and the runs. The
+;; parameters are bound already, by the loop the cases are made in, so the
+;; setup and the body name them as they are.
+(: prepare-expansion (-> Syntax BenchSyntax Syntax))
+(defun (prepare-expansion form o)
+  (def body #'(begin ,@(record-ref o body)))
+  (def setup (SList (record-ref o setup)))
+  (match (record-ref o setup-every)
+    (Nil
      #'(fun ()
-         (CaseRun (batch (fun (k)
-                           (let lp ((i 0L))
-                             (when (< i k)
-                               (bench-keep! ,(body-call form o params None))
-                               (lp (+ i 1L))))))
-                  (call None))))
-    ((Tuple (Some setup) None)
-     #'(fun ()
-         (let ((input ,(with-params setup params)))
+         (let* ,setup
            (CaseRun (batch (fun (k)
                              (let lp ((i 0L))
                                (when (< i k)
-                                 (bench-keep! ,(body-call form o params (Some #'input)))
+                                 (bench-keep! ,body)
                                  (lp (+ i 1L))))))
                     (call None)))))
-    ((Tuple setup (Some every))
-     ;; With `#:setup` too, the per-call setup is a function of its value;
-     ;; without, of the parameters when there are any.
-     (def made
-       (match setup
-         ((Some s) #'(let ((base ,(with-params s params))) (fun () (,every base))))
-         (None (if (list-empty? params) #'(fun () ,every) #'(fun () ,(with-params every params))))))
+    (every-bindings
+     ;; Made again before every call, outside the time and the allocation:
+     ;; each call is timed on its own.
+     (def every (SList every-bindings))
      #'(fun ()
-         (let ((make ,made))
+         (let* ,setup
            (CaseRun (batch (fun (k)
                              (let lp ((i 0L))
                                (when (< i k)
-                                 (let ((input (make)))
-                                   (bench-keep! ,(body-call form o params (Some #'input))))
+                                 (let* ,every (bench-keep! ,body))
                                  (lp (+ i 1L))))))
                     (call (Some (fun ()
-                                  (let* ((input (make))
-                                         (b0 (bench-allocated))
-                                         (t0 (bench-now)))
-                                    (bench-keep! ,(body-call form o params (Some #'input)))
-                                    (let ((t1 (bench-now)))
-                                      (Tuple (- t1 t0) (- (bench-allocated) b0)))))))))))))
+                                  (let* ,every
+                                    (let* ((b0 (bench-allocated))
+                                           (t0 (bench-now)))
+                                      (bench-keep! ,body)
+                                      (let ((t1 (bench-now)))
+                                        (Tuple (- t1 t0) (- (bench-allocated) b0))))))))))))))
 
 ;; The cases: one per combination of the parameters' values, the last varying
 ;; fastest.
@@ -357,7 +329,7 @@
   (def names (list-map (fun (p) (match p ((Tuple n _) n))) params))
   (def case-form
     #'(BenchCase (labels (list ,@(list-map (fun (n) #'(Tuple ,(SStr (syntax->string n)) (->str ,n))) names)))
-                 (prepare ,(prepare-expansion form o names))))
+                 (prepare ,(prepare-expansion form o))))
   (if (list-empty? params)
       #'(fun () (list ,case-form))
       (let ()
@@ -394,9 +366,10 @@
                        ,(cases-expansion form o))))
 
 ;; `(def/bench "name" body ...)`, with options after the name in any order:
-;; `#:setup e`, `#:setup-every e`, `#:params ((p values) ...)`, `#:once n`,
-;; `#:group "g"` and `#:skip "why"`. Registers the benchmark;
-;; `(run-benches)` runs it.
+;; `#:setup ((name e) ...)`, `#:setup-every ((name e) ...)`,
+;; `#:params ((p values) ...)`, `#:once n`, `#:group "g"` and `#:skip "why"`.
+;; The body is forms, which the parameters and the setups' names are in
+;; scope for. Registers the benchmark; `(run-benches)` runs it.
 (def/macro (def/bench form inject compare)
   (syntax-match form
     ((_ name first more ...)
