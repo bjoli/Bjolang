@@ -1,0 +1,75 @@
+;; `#:into` on a collector: the accumulation starts from a collection rather
+;; than from empty. `vecing`, `vecing/small`, `listing` and `mapping` add to
+;; it as they would to nothing; `listing/reverse` conses onto its front.
+(import (std prelude))
+(import (std simpletest))
+
+;; A collector of the caller's own takes `#:into` by implementing
+;; `CollectorInto`: here a count that starts from a number.
+(type (: Tally (Union tally)))
+(type (: TallyFrom (Struct (: start int))))
+
+(impl (Collector TallyFrom)
+  (type %elem bool)
+  (type %acc int)
+  (type %out int)
+  (defun (collector-init c) (record-ref c start))
+  (defun (collector-step c acc x) (if x (+ acc 1) acc))
+  (defun (collector-finish c acc) acc))
+
+(impl (CollectorInto Tally)
+  (type %seed int)
+  (type %into TallyFrom)
+  (defun (collector-into c seed) (TallyFrom (start seed))))
+
+(: appended (-> (Vec int) int (Vec int)))
+(defun (appended v n)
+  (loop (:for x (range 0 n))
+        (:acc out (vecing x #:into v))
+    => out))
+
+(defun (main)
+  (def v [1 2 3])
+
+  ;; --- in a loop and in a comprehension ------------------------------------
+  (expect "vecing #:into adds to the back" (appended v 2) [1 2 3 0 1])
+  (expect "in a comprehension" {vecing (* x 10) #:into v (:for x (range 1 3))} [1 2 3 10 20])
+  (expect "vecing/small" {vecing/small x #:into v (:for x (range 9 11))} [1 2 3 9 10])
+  (expect "the vec it started from is as it was" v [1 2 3])
+  (expect "from an empty vec" {vecing x #:into (vec-empty) (:for x (range 0 2))} [0 1])
+  (expect "nothing added" (appended v 0) [1 2 3])
+
+  ;; --- lists ---------------------------------------------------------------
+  (def xs (list 1 2))
+  (expect "listing #:into adds to the back" {listing x #:into xs (:for x (range 3 5))} (list 1 2 3 4))
+  (expect "listing/reverse #:into conses onto the front"
+          {listing/reverse x #:into xs (:for x (range 3 5))} (list 4 3 1 2))
+  (expect "the list it started from is as it was" xs (list 1 2))
+
+  ;; --- maps ----------------------------------------------------------------
+  ;; A key already there takes the new value, as `mapbuilder-add!` gives it.
+  (expect "mapping #:into adds, and replaces"
+          {mapping (Tuple k (* k k)) #:into #map((1 100) (5 500)) (:for k (range 4 7))}
+          #map((1 100) (4 16) (5 25) (6 36)))
+
+  ;; --- with the accumulator's #:when and a comprehension's loose :when -----
+  (expect "the loose :when gates the step"
+          {vecing x #:into v :when (even? x) (:for x (range 0 7))} [1 2 3 0 2 4 6])
+  (expect "#:when on the :acc"
+          (loop (:for x (range 0 3))
+                (:acc out (listing x #:into (list 9)) #:when (> x 0))
+            => out)
+          (list 9 1 2))
+
+  ;; --- in a :subloop form, which makes its collectors on every run ---------
+  (expect "each run starts from the seed again"
+          (loop (:for row [[1] [2 3]])
+                (:subloop (:for x row)
+                          (:acc got (vecing x #:into [0])))
+                (:acc out (listing got))
+            => out)
+          (list [0 1] [0 2 3]))
+
+  ;; --- a collector of the program's own ------------------------------------
+  (expect "a collector of one's own" {tally (even? x) #:into 100 (:for x (range 0 5))} 103)
+  0)

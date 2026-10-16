@@ -424,6 +424,12 @@ and private bindLoopPattern (pat: SExpr) (value: Expr) (body: Expr) (r: Range) :
 /// everything before it — plus every keyword argument — constructs the
 /// collector. `(listing b)` is `listing` stepping `b`; `(folding #f test)` is
 /// `(folding #f)` stepping `test`.
+///
+/// `#:into` is the one keyword the loop reads itself: the collector starts from
+/// that collection rather than from empty. `(vecing x #:into v)` is the
+/// collector `(collector-into vecing v)`, which `CollectorInto` in the prelude
+/// turns into one that seeds its builder from `v` — once, where the loop makes
+/// its collectors, so a step costs what it did.
 and private splitCollector (fns: ParseFns) (s: SExpr) : Expr * SExpr =
     match s with
     | SList(SAtom { Token = Symbol head } :: args, r) ->
@@ -436,7 +442,19 @@ and private splitCollector (fns: ParseFns) (s: SExpr) : Expr * SExpr =
             | SAtom { Token = Comma } :: tl -> split positional keywords tl
             | x :: tl -> split (x :: positional) keywords tl
 
-        let positional, keywords = split [] [] args
+        let positional, allKeywords = split [] [] args
+
+        let into, keywords =
+            allKeywords
+            |> List.partition (function
+                | SAtom { Token = Keyword "into" }, _ -> true
+                | _ -> false)
+
+        let into =
+            match into with
+            | [] -> None
+            | [ (_, seed) ] -> Some seed
+            | _ -> failwithf $"Collector at %s{Lexer.formatPos r} has #:into twice. It starts from one collection."
 
         match List.rev positional with
         | [] ->
@@ -453,6 +471,11 @@ and private splitCollector (fns: ParseFns) (s: SExpr) : Expr * SExpr =
                         keywords |> List.collect (fun (k, v) -> [ fns.Expr k; fns.Expr v ])
 
                     EApp(EIdent(head, r), (construction |> List.map fns.Expr) @ kwArgs, r)
+
+            let collector =
+                match into with
+                | Some seed -> EApp(EIdent("collector-into", r), [ collector; fns.Expr seed ], r)
+                | None -> collector
 
             collector, stepForm
 
@@ -591,8 +614,21 @@ and internal desugarComprehension (fns: ParseFns) (allForms: SExpr list) (r: Ran
     // Everything up to the first clause is the accumulator form, verbatim. A
     // clause is keyword-*headed*, which is what tells the `(:for ...)` ending
     // the form apart from the `(* a a)` inside it.
+    //
+    // `#:into` and the value after it belong to the accumulator form too:
+    // `{vecing x #:into v (:for x xs)}` is the collector `(vecing x #:into v)`.
+    // Only that keyword: the lexer reads `:for` and `#:for` alike, so any other
+    // loose keyword is a clause written without its parentheses, which the
+    // check below explains.
+    let rec firstClause i forms =
+        match forms with
+        | [] -> None
+        | SAtom { Token = Keyword "into" } :: value :: rest when not (opensClauses value) ->
+            firstClause (i + 2) rest
+        | f :: rest -> if opensClauses f then Some i else firstClause (i + 1) rest
+
     let accParts, tail =
-        match allForms |> List.tryFindIndex opensClauses with
+        match firstClause 0 allForms with
         | Some i -> List.take i allForms, List.skip i allForms
         | None -> allForms, []
 

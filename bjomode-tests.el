@@ -158,12 +158,41 @@
 ")
 
 (bjo-deftest-indent loop-clauses
-  "`loop' and `seql' align their clauses, keyword-headed or not."
+  "`loop' aligns its clauses, and its `=>' is two in from the paren."
   "(defun (mean ys)
   (loop (:for y ys)
         (:acc s (summing y))
         (:acc n (counting y))
-        => (if (= n 0) 0 (/ s n))))
+    => (if (= n 0) 0 (/ s n))))
+")
+
+(bjo-deftest-indent loop-result-nested
+  "A `=>' goes with its own `loop', inner or outer."
+  "(defun (pairs xss)
+  (loop (:for xs xss)
+        (:acc out (folding Nil
+                           (loop (:for x xs)
+                                 (:acc inner (listing x))
+                             => inner)))
+    => out))
+")
+
+(bjo-deftest-indent subloop-result
+  "A `:subloop''s `=>' is two in from its own paren."
+  "(defun (averages rows)
+  (loop (:for row rows)
+        (:subloop (:for y row)
+                  (:acc s (summing y))
+          => (avg s))
+        (:acc out (listing avg))
+    => out))
+")
+
+(bjo-deftest-indent arrow-elsewhere
+  "A `=>' outside a `loop' is an argument like any other."
+  "(defun (f)
+  (g 1
+     => 2))
 ")
 
 (bjo-deftest-indent with-return

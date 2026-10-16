@@ -20,6 +20,7 @@
   ArraySlice ReverseArraySlice VecSlice ReverseVecSlice
   VecBackCursor StringWalk ListTails PortReads UpFrom DownFrom
   Listing ListingReverse Vecing VecingSmall Mapping Stringing Summing Counting Folding
+  VecingInto ListingInto ListingReverseInto MappingInto
   InputPort OutputPort Exception Encoding
 
   ;; Iterable
@@ -30,6 +31,8 @@
   cursor-start cursor-end cursor-end? cursor-ref cursor-next cursor-prev
   ;; Collector
   collector-init collector-step collector-finish
+  ;; `#:into` on a collector
+  collector-into
   ;; Collection
   length empty?
   ;; Addable! and Addable
@@ -603,6 +606,94 @@
     (mapbuilder-add! acc k v)
     acc)
   (defun (collector-finish c acc) (mapbuilder->map acc)))
+
+;; --- Starting from a collection: `#:into` ---
+;;
+;; `(vecing x #:into v)` adds to the back of `v` rather than to an empty vec,
+;; and so do `listing` to a list and `mapping` to a map; `listing/reverse`
+;; conses onto the front of its list, which costs nothing at all. The loop
+;; makes the collector as `(collector-into vecing v)`, and the builder is made
+;; from `v` once, before the first element: every step is the step it was.
+;;
+;; A collector takes `#:into` by implementing this, which says what it can
+;; start from and what collector that makes. One that does not is a type error
+;; naming it.
+(def/trait (CollectorInto %c)
+  (type %seed)
+  (type %into)
+  (: collector-into (-> %c %seed %into)))
+
+(type (: (VecingInto %a) (Struct (: seed (Vec %a)))))
+
+(impl (Collector (VecingInto %a))
+  (type %elem %a)
+  (type %acc (VecBuilder %a))
+  (type %out (Vec %a))
+  (defun (collector-init c) (vec->vecbuilder (record-ref c seed)))
+  (defun (collector-step c acc x) (vecbuilder-add! acc x) acc)
+  (defun (collector-finish c acc) (vecbuilder->vec acc)))
+
+(impl (CollectorInto (Vecing %a))
+  (type %seed (Vec %a))
+  (type %into (VecingInto %a))
+  (defun (collector-into c seed) (VecingInto (seed seed))))
+
+;; The vec it starts from says how big it is, so `/small' has nothing to add.
+(impl (CollectorInto (VecingSmall %a))
+  (type %seed (Vec %a))
+  (type %into (VecingInto %a))
+  (defun (collector-into c seed) (VecingInto (seed seed))))
+
+;; A list grows only at the front, so adding to its back copies it, once.
+(type (: (ListingInto %a) (Struct (: seed (List %a)))))
+
+(impl (Collector (ListingInto %a))
+  (type %elem %a)
+  (type %acc (ListBuilder %a))
+  (type %out (List %a))
+  (defun (collector-init c) (list->listbuilder (record-ref c seed)))
+  (defun (collector-step c acc x) (listbuilder-add! acc x) acc)
+  (defun (collector-finish c acc) (listbuilder->list acc)))
+
+(impl (CollectorInto (Listing %a))
+  (type %seed (List %a))
+  (type %into (ListingInto %a))
+  (defun (collector-into c seed) (ListingInto (seed seed))))
+
+;; Consing onto the front shares the list it starts from: nothing is copied.
+(type (: (ListingReverseInto %a) (Struct (: seed (List %a)))))
+
+(impl (Collector (ListingReverseInto %a))
+  (type %elem %a)
+  (type %acc (List %a))
+  (type %out (List %a))
+  (defun (collector-init c) (record-ref c seed))
+  (defun (collector-step c acc x) (Cons x acc))
+  (defun (collector-finish c acc) acc))
+
+(impl (CollectorInto (ListingReverse %a))
+  (type %seed (List %a))
+  (type %into (ListingReverseInto %a))
+  (defun (collector-into c seed) (ListingReverseInto (seed seed))))
+
+;; The map's own key comparer goes with it, so no `Eq' is asked for.
+(type (: (MappingInto %k %v) (Struct (: seed (Map %k %v)))))
+
+(impl (Collector (MappingInto %k %v))
+  (type %elem (Tuple %k %v))
+  (type %acc (MapBuilder %k %v))
+  (type %out (Map %k %v))
+  (defun (collector-init c) (map->mapbuilder (record-ref c seed)))
+  (defun (collector-step c acc kv)
+    (def (k v) kv)
+    (mapbuilder-add! acc k v)
+    acc)
+  (defun (collector-finish c acc) (mapbuilder->map acc)))
+
+(impl (CollectorInto (Mapping %k %v))
+  (type %seed (Map %k %v))
+  (type %into (MappingInto %k %v))
+  (defun (collector-into c seed) (MappingInto (seed seed))))
 
 ;; Stringing.
 (type (: Stringing (Union stringing)))

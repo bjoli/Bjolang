@@ -35,6 +35,9 @@
 ;;   - `if' indents its arms four;
 ;;   - anything else lines its arguments up under the first one.
 ;;
+;; And one that is Bjolang's own: a `loop''s or a `:subloop''s `=>' is two
+;; spaces in from the paren, out of line with the clauses it follows.
+;;
 ;; The third is the default, so a form only appears in `bjo-indent-forms' below
 ;; if it has a body. A call, a `loop' clause list, a `def*' clause list and a
 ;; comprehension all align.
@@ -238,6 +241,27 @@ arm. Nil for any other line, which indents as it would anyway."
                                       first-arm
                                     leave))))))))))))
 
+(defun bjo--result-form-p (open)
+  "Whether the list opening at OPEN is a `loop' or a `:subloop'.
+Those are the forms whose result a `=>' introduces."
+  (save-excursion
+    (goto-char open)
+    (looking-at "(\\s-*:?\\(?:loop\\|subloop\\)\\_>")))
+
+(defun bjo--result-indent (indent-point state)
+  "The column for a `=>' at INDENT-POINT in a `loop' or a `:subloop'.
+
+Two columns in from the form's open paren, out of line with the
+clauses, so that where the result starts stands out. Nil for any
+other line."
+  (let ((open (elt state 1)))
+    (when (and open (bjo--result-form-p open))
+      (save-excursion
+        (goto-char indent-point)
+        (skip-chars-forward " \t")
+        (when (looking-at "=>\\_>")
+          (+ (bjo--column-at open) 2))))))
+
 ;; `calculate-lisp-indent' asks `lisp-indent-function' only about a line whose
 ;; previous form starts on the list's first line. The second arm after a
 ;; `:leave' follows one that does not, so the failure part is decided here,
@@ -247,22 +271,25 @@ arm. Nil for any other line, which indents as it would anyway."
 ;; Inside a clause the answer is (COLUMN START) rather than a column:
 ;; `lisp-indent-region' reuses a plain column for every following line at the
 ;; same depth without asking again, and in a clause the next line may be a
-;; failure keyword or an arm that indents differently.
+;; failure keyword or an arm that indents differently. The same goes for a
+;; `loop', whose `=>' is out of line with the clauses above it.
 (defun bjo--calculate-indent (calculate &rest args)
-  "Answer the failure part's column, or call CALCULATE with ARGS."
+  "Answer the failure part's or the `=>''s column, or call CALCULATE with ARGS."
   (if (not (derived-mode-p 'bjo-mode))
       (apply calculate args)
     (let* ((state (save-excursion (beginning-of-line) (syntax-ppss)))
            (open (nth 1 state))
-           (in-clause (and open
-                           (bjo--clause-elements open (save-excursion
-                                                        (beginning-of-line)
-                                                        (point)))))
+           (no-reuse (and open
+                          (or (bjo--clause-elements open (save-excursion
+                                                           (beginning-of-line)
+                                                           (point)))
+                              (bjo--result-form-p open))))
            (indent (or (save-excursion
                          (beginning-of-line)
-                         (bjo--failure-indent (point) state))
+                         (or (bjo--failure-indent (point) state)
+                             (bjo--result-indent (point) state)))
                        (apply calculate args))))
-      (if (and in-clause (integerp indent))
+      (if (and no-reuse (integerp indent))
           (list indent open)
         indent))))
 

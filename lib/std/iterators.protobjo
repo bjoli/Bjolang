@@ -203,6 +203,11 @@
 ;; indices of something of length `n`, and `(down-from n #:to 0)` counts down
 ;; to zero and says zero. Both spell the bound they stop at.
 
+;; Both count in any number type: `(up-from 0)` in ints, `(up-from 0L)` in
+;; longs, `(up-from 0.0 #:by 0.25)` in doubles, `(up-from 1I)` in bigints. The
+;; type is whatever `from`, `#:to` and `#:by` agree on, and an int where none
+;; of them says, as for any literal.
+;;
 ;; The ends of `int`, which is what a walk with no `#:to` runs to. A default is
 ;; evaluated where the call is written, so these are exported for the same
 ;; reason `current-random` is.
@@ -210,40 +215,53 @@
   (int-max (: System.Int32.MaxValue #:get))
   (int-min (: System.Int32.MinValue #:get)))
 
-(type (: UpFrom (Struct (: from int) (: to int) (: by int))))
-(type (: DownFrom (Struct (: from int) (: to int) (: by int))))
+;; The ends of any number type, which is what a walk with no `#:to` runs to:
+;; `int-max` for an int, as before, and an infinity for a double. A bigint has
+;; no end and gets one past any count (see `NumBounds` in the runtime). Read
+;; once per type, so the loop compares against a constant, as it did when the
+;; end was always `int-max`.
+(import/extern
+  (num-top    (: Bjolang.Runtime.BjoNum.Top    (-> %n)))
+  (num-bottom (: Bjolang.Runtime.BjoNum.Bottom (-> %n))))
+
+(type (: (UpFrom %n) (Struct (: from %n) (: to %n) (: by %n))))
+(type (: (DownFrom %n) (Struct (: from %n) (: to %n) (: by %n))))
 
 ;; Small enough to inline, as `check-slice` is, with the message made apart.
-(: check-step (-> string int void))
+(: check-step (-> string %n void) (where (Num %n) (Ordered %n)))
 (defun (check-step who by)
   (when (<= by 0)
     (step-panic who by)))
 
-(: step-panic (-> string int void))
+;; `clr-show' and not `${by}': interpolating would need `->str' at `%n', a
+;; dictionary every call of `up-from' would pass for the sake of this message.
+(: step-panic (-> string %n void))
 (defun (step-panic who by)
-  (panic! #"${who}: #:by is ${by}, and a step of zero or less is a walk that never gets anywhere. It is a distance; down-from subtracts it."))
+  (panic! #"${who}: #:by is ${(clr-show by)}, and a step of zero or less is a walk that never gets anywhere. It is a distance; down-from subtracts it."))
 
-(: up-from (-> int (#:to int) (#:by int) UpFrom))
-(defun (up-from from #:to int-max #:by 1)
+(: up-from (-> %n (#:to %n) (#:by %n) (UpFrom %n)) (where (Num %n) (Ordered %n)))
+(defun (up-from from #:to (num-top) #:by 1)
   (check-step "up-from" by)
   (UpFrom (from from) (to to) (by by)))
 
-(: down-from (-> int (#:to int) (#:by int) DownFrom))
-(defun (down-from from #:to int-min #:by 1)
+(: down-from (-> %n (#:to %n) (#:by %n) (DownFrom %n)) (where (Num %n) (Ordered %n)))
+(defun (down-from from #:to (num-bottom) #:by 1)
   (check-step "down-from" by)
   (DownFrom (from from) (to to) (by by)))
 
-(impl (Iterable UpFrom)
-  (type %elem int)
-  (type %cursor int)
+(impl (Iterable (UpFrom %n))
+  (where (Num %n) (Ordered %n))
+  (type %elem %n)
+  (type %cursor %n)
   (defun (iterable-start s) (record-ref s from))
   (defun (iterable-done? s c) (>= c (record-ref s to)))
   (defun (iterable-current s c) c)
   (defun (iterable-next s c) (+ c (record-ref s by))))
 
-(impl (Iterable DownFrom)
-  (type %elem int)
-  (type %cursor int)
+(impl (Iterable (DownFrom %n))
+  (where (Num %n) (Ordered %n))
+  (type %elem %n)
+  (type %cursor %n)
   (defun (iterable-start s) (record-ref s from))
   (defun (iterable-done? s c) (< c (record-ref s to)))
   (defun (iterable-current s c) c)

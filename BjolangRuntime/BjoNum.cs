@@ -57,7 +57,46 @@ public static class NullCase<T> {
         (Attribute.GetCustomAttribute(typeof(T), typeof(NullCaseAttribute), false) as NullCaseAttribute)?.Name;
 }
 
+/// The largest and the smallest value of a number type, which is where
+/// `up-from` and `down-from` stop when no `#:to` says otherwise. Read once per
+/// type, so a walk pays a static field — which the JIT reads as a constant —
+/// and not a lookup.
+///
+/// `MaxValue` and `MinValue`, which every number type has but `BigInteger`. A
+/// `double` runs to its infinities instead, past its `MaxValue`, which is
+/// where a walk with no end is going anyway. A
+/// `BigInteger` has no end, so it gets one no count can reach: 2^(2^20), a
+/// number of 128 KiB, made once. `BigInteger` compares lengths before digits,
+/// so a walk's test against it is as cheap as against a small one.
+public static class NumBounds<T> {
+    public static readonly T Top = Find(true);
+    public static readonly T Bottom = Find(false);
+
+    static T Find(bool top) {
+        var t = typeof(T);
+        if (t == typeof(double)) return (T)(object)(top ? double.PositiveInfinity : double.NegativeInfinity);
+        if (t == typeof(float)) return (T)(object)(top ? float.PositiveInfinity : float.NegativeInfinity);
+        if (t == typeof(System.Numerics.BigInteger)) {
+            var far = System.Numerics.BigInteger.One << (1 << 20);
+            return (T)(object)(top ? far : -far);
+        }
+        var bound = t.GetField(top ? "MaxValue" : "MinValue",
+                               System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+                    ?? throw new InvalidOperationException($"{t} has no {(top ? "largest" : "smallest")} value to count to.");
+        // A `const` on the primitives, and a `static readonly` on `Int128`,
+        // `UInt128` and `decimal`: `GetValue` reads either.
+        return (T)bound.GetValue(null)!;
+    }
+}
+
 public static class BjoNum {
+    // The ends of a number type: see `NumBounds`.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static T Top<T>() => NumBounds<T>.Top;
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public static T Bottom<T>() => NumBounds<T>.Bottom;
+
     public static double ParseDouble(Utf8String s) => Utf8Number.ParseDouble(s);
 
     public static Utf8String DoubleToString(double d) => Utf8Number.Format(d);

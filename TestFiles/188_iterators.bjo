@@ -117,6 +117,36 @@
                 => got)
           '(3 2 1))
 
+  ;; Any number type: whatever the start, the stop and the step agree on.
+  (expect "longs" {listing i (:for i (up-from 0L #:to 5L #:by 2L))} '(0L 2L 4L))
+  (expect "doubles" {listing i (:for i (up-from 0.0 #:to 1.0 #:by 0.25))} '(0.0 0.25 0.5 0.75))
+  (expect "bigints" {listing i (:for i (up-from 1I #:to 4I))} '(1I 2I 3I))
+  (expect "decimals, down" {listing i (:for i (down-from 3M #:to 1M #:by 0.5M))}
+          '(3M 2.5M 2M 1.5M 1M))
+  ;; The walk ends at the first count below the stop, so that count has to be
+  ;; one an unsigned number can be: 6, 4, 2 and then 0. A step that would go
+  ;; below zero wraps instead and never ends — `(down-from 3u #:to 0u)` does.
+  ;; See `Docs/Syntax.org`.
+  (expect "unsigned, down to a stop it can pass" {listing i (:for i (down-from 6u #:to 2u #:by 2u))}
+          '(6u 4u 2u))
+  (def (: stop long) 3)
+  (expect "an int start takes a long stop's type" {listing i (:for i (up-from 0 #:to stop))} '(0L 1L 2L))
+  ;; Without a stop: a bigint has no largest value and walks on, and a double
+  ;; walks to infinity.
+  (expect "an eternal bigint count"
+          (loop (:for i (up-from 10I #:by 10I))
+                (:acc got (listing i))
+                (:finish (= i 30I))
+                => got)
+          '(10I 20I 30I))
+  (expect "an eternal double count"
+          (loop (:for i (up-from 0.5))
+                (:acc got (listing i))
+                (:finish (= i 2.5))
+                => got)
+          '(0.5 1.5 2.5))
+  (expect "fold over a double count" (fold + 0.0 (up-from 0.5 #:to 2.0)) 2.0)
+
   ;; --- in-port -------------------------------------------------------------
   (let ((p (open-input-string "one\ntwo\nthree")))
     (expect "the lines of a port" {listing l (:for l (in-port p (fun (q) (read-line/opt q))))} '("one" "two" "three")))
