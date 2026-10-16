@@ -594,6 +594,134 @@ is how font-lock is told the region moved."
   (put 'let 'bjo-indent-function #'bjo-let-indent)
   (put 'def* 'bjo-indent-function #'bjo-def-star-indent))
 
+;;; ---------------------------------------------------------------------------
+;;; Running
+;;
+;; `bjo-run' runs the file with `bjo run FILE', and `bjo-run-project' runs the
+;; project around it with `bjo run'. Either way `bjo' decides what is stale and
+;; builds it, so there is nothing for Emacs to work out first.
+;;
+;; The output goes to a comint buffer, which is also the program's stdin: what is
+;; typed there is sent a line at a time, and `C-c C-d' sends end of file. The
+;; compiler's `at file.bjo:LINE' is a link to the line, as in a compilation.
+
+(require 'comint)
+(require 'compile)
+
+(defcustom bjo-program
+  (or (executable-find "bjo")
+      (expand-file-name "bjo/bjo"
+                        (file-name-directory (or load-file-name
+                                                 buffer-file-name
+                                                 default-directory))))
+  "The `bjo' command: on the PATH, or else the one in this checkout."
+  :type 'file
+  :group 'bjolang)
+
+(defconst bjo-manifest-name "manifest.bjodat"
+  "The file that makes the directory it is in a project.")
+
+(defvar bjo-run-arguments-history nil
+  "Arguments given to programs run by `bjo-run' and `bjo-run-project'.")
+
+(defvar-local bjo-run--command nil
+  "How the program in this buffer was started, as (DIRECTORY ARGS).
+What `bjo-run-again' starts it with.")
+
+(add-to-list 'compilation-error-regexp-alist-alist
+             '(bjolang "\\_<at \\([^ \t\n:]+\\.\\(?:bjo\\|protobjo\\)\\):\\([0-9]+\\)" 1 2))
+
+(defvar bjo-run-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-r") #'bjo-run-again)
+    map)
+  "Keymap for `bjo-run-mode'.")
+
+(define-derived-mode bjo-run-mode comint-mode "Bjo-Run"
+  "Major mode for the output of a Bjolang program, and its input.
+\\<bjo-run-mode-map>\\[bjo-run-again] runs it again; \\[comint-send-eof] sends end of file."
+  :group 'bjolang
+  (setq-local comint-prompt-read-only nil)
+  ;; The program runs on a pty, which echoes what is sent to it, and comint has
+  ;; already shown it.
+  (setq-local comint-process-echoes t)
+  (setq-local compilation-error-regexp-alist '(bjolang))
+  (compilation-shell-minor-mode 1))
+
+(defun bjo--read-arguments (ask)
+  "The program's arguments, as a list: read when ASK, and none otherwise."
+  (when ask
+    (split-string-and-unquote
+     (read-string "Arguments: " (car bjo-run-arguments-history)
+                  'bjo-run-arguments-history))))
+
+(defun bjo--save-before-run ()
+  "Save the current buffer, and offer to save every other Bjolang buffer.
+A file the program imports is compiled from disk, not from its buffer."
+  (when (and (buffer-file-name) (buffer-modified-p))
+    (save-buffer))
+  (save-some-buffers nil (lambda () (derived-mode-p 'bjo-mode))))
+
+(defun bjo--start (name directory args)
+  "Run `bjo' with ARGS in DIRECTORY, in the buffer `*bjo: NAME*'."
+  (let* ((buffer (get-buffer-create (format "*bjo: %s*" name)))
+         (process (get-buffer-process buffer)))
+    (when (process-live-p process)
+      (if (yes-or-no-p (format "%s is still running; kill it? " name))
+          (progn (delete-process process)
+                 ;; The sentinel writes into the buffer this is about to clear.
+                 (sit-for 0.1))
+        (user-error "Still running")))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer))
+      (setq default-directory (file-name-as-directory directory))
+      (bjo-run-mode)
+      (setq bjo-run--command (list directory args))
+      (insert (propertize (format "$ bjo %s\n" (combine-and-quote-strings args))
+                          'face 'font-lock-comment-face))
+      (comint-exec buffer "bjo" (expand-file-name bjo-program) nil args))
+    (display-buffer buffer)
+    buffer))
+
+(defun bjo-run (&optional ask)
+  "Run the current file with `bjo run', its output in a buffer of its own.
+The buffer is the program's stdin too. With a prefix argument ASK, read
+arguments to pass to the program."
+  (interactive "P")
+  (let ((file (or (buffer-file-name) (user-error "Not visiting a file"))))
+    (bjo--save-before-run)
+    (bjo--start (file-name-nondirectory file)
+                (file-name-directory file)
+                (append (list "run" (file-name-nondirectory file))
+                        (bjo--read-arguments ask)))))
+
+(defun bjo-run-project (&optional ask)
+  "Build the project around the current file and run its entry.
+The project is the nearest directory above with a `manifest.bjodat'.
+With a prefix argument ASK, read arguments to pass to the program."
+  (interactive "P")
+  (let ((root (or (locate-dominating-file default-directory bjo-manifest-name)
+                  (user-error "Not in a project: no %s here or above"
+                              bjo-manifest-name)))
+        (args (bjo--read-arguments ask)))
+    (bjo--save-before-run)
+    (bjo--start (file-name-nondirectory (directory-file-name root))
+                root
+                ;; `bjo run .' is how a project's program is given arguments.
+                (if args (append (list "run" ".") args) (list "run")))))
+
+(defun bjo-run-again ()
+  "Run the program in this buffer again, as it was started."
+  (interactive)
+  (pcase bjo-run--command
+    (`(,directory ,args)
+     (bjo--start (substring (buffer-name) 6 -1) directory args))
+    (_ (user-error "Nothing was run in this buffer"))))
+
+(define-key bjo-mode-map (kbd "C-c C-c") #'bjo-run)
+(define-key bjo-mode-map (kbd "C-c C-p") #'bjo-run-project)
+
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.\\(bjo\\|protobjo\\)\\'" . bjo-mode))
 
