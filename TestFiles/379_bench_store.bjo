@@ -1,0 +1,175 @@
+;; (std bench store): a run written and read back, and runs compared, on
+;; samples made up so that every verdict is known in advance.
+(import (std prelude))
+(import (std test))
+(import (std maths))
+(import (std bench store))
+
+;; `n` samples around `centre`, spread evenly over ±0.5%, in an order that
+;; is not sorted.
+(: around (-> double int (Vec double)))
+(defun (around centre n)
+  {vecing (* centre (+ 1.0 (* 0.01 (- (/ (cast System.Double (% (* i 37) n)) (cast System.Double n)) 0.5))))
+          (:for i (range 0 n))})
+
+(: case-of (-> string (List (Tuple string string)) (Vec double) SavedCase))
+(defun (case-of name labels samples)
+  (SavedCase (name name) (labels labels) (k 100L) (once #f) (bytes 24.0) (samples samples)))
+
+(: run-of (-> string (List SavedCase) SavedRun))
+(defun (run-of machine cases)
+  (SavedRun (saved "2026-10-16T12:00:00Z") (machine machine)
+            (header (list (Tuple "build" "Release") (Tuple "dotnet" ".NET 10.0.4") (Tuple "cpu" "Some CPU")))
+            (cases cases)))
+
+(: saved-cases (-> SavedRun (List SavedCase)))
+(defun (saved-cases r) (record-ref r cases))
+
+(: verdict-name (-> Verdict string))
+(defun (verdict-name v)
+  (match v (Faster "faster") (Slower "slower") (SmallChange "small") (NoChange "none")))
+
+(: comparison-verdicts (-> CompareResult (List string)))
+(defun (comparison-verdicts r)
+  (list-map (fun (c) (verdict-name (comparison-verdict c))) (record-ref r comparisons)))
+
+(: comparison-verdict (-> Comparison Verdict))
+(defun (comparison-verdict c) (record-ref c verdict))
+
+(: comparison-change (-> Comparison double))
+(defun (comparison-change c) (record-ref c change))
+
+(def before
+  (run-of "machine-a"
+          (list (case-of "sort" (list (Tuple "n" "10")) (around 1000.0 60))
+                (case-of "sort" (list (Tuple "n" "1000")) (around 50000.0 60))
+                (case-of "parse" (list) (around 2000.0 60))
+                (case-of "gone" (list) (around 10.0 60)))))
+
+(deftest "a saved run reads back as it was written"
+  (def text (saved-run->string before))
+  (check (string-starts-with? text "(bench-run\n  (version 1)\n"))
+  (match (parse-saved-run text)
+    ((Ok r)
+     (check (= (record-ref r saved) "2026-10-16T12:00:00Z"))
+     (check (= (record-ref r machine) "machine-a"))
+     (check (= (record-ref r header) (record-ref before header)))
+     (check (= (list-length (saved-cases r)) 4))
+     (def c (list-head (saved-cases r)))
+     (def b (list-head (saved-cases before)))
+     (check (= (record-ref c name) "sort"))
+     (check (= (record-ref c labels) (list (Tuple "n" "10"))))
+     (check (= (record-ref c k) 100L))
+     (check (= (record-ref c bytes) 24.0))
+     ;; Every double reads back as the same double.
+     (check (= (record-ref c samples) (record-ref b samples))))
+    ((Err e) (test-failed! e))))
+
+(deftest "a file through the disk"
+  (def path "379_bench_store.tmp.bjodat")
+  (write-saved-run! path before)
+  (check-match (read-saved-run path) (Ok _))
+  (file-delete path)
+  (check-match (read-saved-run path) (Err _)))
+
+(deftest "what is not a saved run says so"
+  (check-match (parse-saved-run "(something-else)") (Err _))
+  (check-match (parse-saved-run "[1 2 3]") (Err _))
+  (check-match (parse-saved-run "(bench-run (version 99) (saved \"x\") (machine \"m\"))") (Err _))
+  (check-match (parse-saved-run "(bench-run (version 1) (saved \"x\"))") (Err _))
+  (check-match (parse-saved-run "(bench-run (version 1) (saved \"x\") (machine \"m\") (case (name \"a\")))") (Err _))
+  (check-match (parse-saved-run "(bench-run (version 1) (saved \"x\") (machine \"m\")") (Err _)))
+
+(deftest "case keys are the name and the parameters"
+  (check (= (case-key (case-of "sort" (list (Tuple "n" "10") (Tuple "kind" "a")) [1.0])) "sort n=10 kind=a"))
+  (check (= (case-key (case-of "parse" (list) [1.0])) "parse")))
+
+(def after
+  (run-of "machine-a"
+          (list (case-of "sort" (list (Tuple "n" "10")) (around 1000.0 60))       ; the same
+                (case-of "sort" (list (Tuple "n" "1000")) (around 55000.0 60))    ; 10% slower
+                (case-of "parse" (list) (around 1980.0 60))                       ; 1% faster
+                (case-of "new" (list) (around 10.0 60)))))
+
+(deftest "the verdicts: same, slower, and real but below the threshold"
+  (def r (compare-runs before after 0.05 0.02))
+  (check (= (comparison-verdicts r) (list "none" "slower" "small")))
+  (def changes (list-map comparison-change (record-ref r comparisons)))
+  (check-approx (list-ref changes 1) 0.10 #:eps 1e-9)
+  (check-approx (list-ref changes 2) -0.01 #:eps 1e-9)
+  (check (= (record-ref r only-now) (list "new")))
+  (check (= (record-ref r only-saved) (list "gone")))
+  (check (not (record-ref r other-machine)))
+  (check (list-empty? (record-ref r warnings))))
+
+(deftest "the interval holds the change, and the corrected p is not below the raw one"
+  (def r (compare-runs before after 0.05 0.02))
+  (loop (:for c (record-ref r comparisons))
+        (:do (check (interval-holds? c))
+             (check (corrected-not-lower? c)))))
+
+(: interval-holds? (-> Comparison bool))
+(defun (interval-holds? c) (and (<= (record-ref c lo) (record-ref c change)) (<= (record-ref c change) (record-ref c hi))))
+
+(: corrected-not-lower? (-> Comparison bool))
+(defun (corrected-not-lower? c) (>= (record-ref c p) (record-ref c p-raw)))
+
+(deftest "a lower threshold makes the small change a verdict"
+  (check (= (comparison-verdicts (compare-runs before after 0.05 0.005)) (list "none" "slower" "faster"))))
+
+(deftest "another machine, and facts that differ"
+  (def elsewhere
+    (SavedRun (saved "2026-10-17T00:00:00Z") (machine "machine-b")
+              (header (list (Tuple "build" "Debug") (Tuple "dotnet" ".NET 10.0.4") (Tuple "cpu" "Other CPU")))
+              (cases (saved-cases after))))
+  (def r (compare-runs before elsewhere 0.05 0.02))
+  (check (record-ref r other-machine))
+  ;; The CPU is in the machine key, and not said again; the build is not.
+  (check (= (list-length (record-ref r warnings)) 1))
+  (check (string-contains? (list-head (record-ref r warnings)) "the build differs")))
+
+;; --- A/B in rounds -----------------------------------------------------------
+
+(: scaled (-> (Vec double) double (Vec double)))
+(defun (scaled xs by) (vec-map (fun (x) (* x by)) xs))
+
+(: paired (-> string (Vec (Vec double)) (Vec (Vec double)) PairedCase))
+(defun (paired name a b) (PairedCase (name name) (labels (list)) (a a) (b b)))
+
+(: comparison-spread (-> Comparison double))
+(defun (comparison-spread c) (record-ref c spread))
+
+(: comparison-p (-> Comparison double))
+(defun (comparison-p c) (record-ref c p))
+
+(deftest "one process pair: the rounds are the pairs"
+  (def a (around 1000.0 40))
+  ;; Each round 10% slower than its partner, and a case unchanged.
+  (def r (compare-paired (list (paired "slower" [a] [(scaled a 1.10)])
+                               (paired "same" [a] [a]))
+                         (list "only-a") (list "only-b") 0.05 0.02))
+  (check (= (comparison-verdicts r) (list "slower" "none")))
+  (def cs (record-ref r comparisons))
+  (check-approx (comparison-change (list-head cs)) 0.10 #:eps 1e-9)
+  (check (< (comparison-p (list-head cs)) 0.001))
+  (check (= (comparison-p (list-ref cs 1)) 1.0))
+  ;; One pair measures no spread between processes.
+  (check (= (comparison-spread (list-head cs)) -1.0))
+  (check (= (record-ref r only-saved) (list "only-a")))
+  (check (= (record-ref r only-now) (list "only-b"))))
+
+(deftest "several process pairs: a t-test on their log ratios"
+  (def a (around 1000.0 20))
+  ;; Three pairs that agree on +10%, and three that disagree.
+  (def r (compare-paired (list (paired "agree" [a a a] [(scaled a 1.10) (scaled a 1.11) (scaled a 1.09)])
+                               (paired "disagree" [a a a] [(scaled a 1.10) (scaled a 0.95) (scaled a 1.02)]))
+                         (list) (list) 0.05 0.02))
+  (check (= (comparison-verdicts r) (list "slower" "none")))
+  (def cs (record-ref r comparisons))
+  ;; The geometric mean of the three ratios.
+  (check-approx (comparison-change (list-head cs)) (- (exp (/ (+ (loge 1.10) (loge 1.11) (loge 1.09)) 3.0)) 1.0) #:eps 1e-9)
+  (check (interval-holds? (list-head cs)))
+  (check (> (comparison-spread (list-head cs)) 0.0))
+  (check (> (comparison-spread (list-ref cs 1)) (comparison-spread (list-head cs)))))
+
+(run-tests)

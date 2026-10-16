@@ -1,0 +1,158 @@
+;; Docs for std/bench/stats.bjo, read through (:doc #:file "stats.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "The statistics of benchmark samples: medians and spreads, bootstrap intervals, and the tests a comparison is decided by.")
+  (see median bootstrap-ratio wilcoxon-p mann-whitney-p t-test-p holm)
+  (example """
+    (import (std bench stats))
+
+    (def before [41.2 41.0 41.9 40.8 41.3])
+    (def after  [44.1 44.6 43.9 44.0 44.8])
+    (median after)                       ; 44.1
+    (bootstrap-ratio before after)       ; an interval around 1.07
+    (mann-whitney-p before after)        ; below 0.05
+    (holm [0.01 0.04 0.03])              ; [0.03 0.06 0.06]
+    """)
+  (reference """
+    Pure functions over @code{(Vec double)}, for @code{(std bench)} and
+    @code{(std bench store)}, and for anyone with samples of their own.
+    Nothing here assumes the shape of a distribution except
+    @code{t-test-p} and @code{t-critical}, which are for a few values that
+    are each a median of many.
+
+    Each test is checked against SciPy with its defaults:
+    @code{wilcoxon}, @code{mannwhitneyu(method="asymptotic")},
+    @code{ttest_1samp} and @code{t.ppf}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; One set of samples
+;; ---------------------------------------------------------------------------
+
+(:doc median
+  (summary "The median: the middle value, or the mean of the two middle values.")
+  (arg xs "The samples, in any order. Not changed.")
+  (returns "The median; 0 for no samples.")
+  (see quantile mad))
+
+(:doc quantile
+  (summary "The value below which a fraction q of the samples lie, interpolated between neighbours.")
+  (arg xs "The samples, in any order. Not changed.")
+  (arg q "The fraction, from 0 to 1.")
+  (returns "The quantile, as NumPy's default (linear) method gives it.")
+  (see median))
+
+(:doc mean
+  (summary "The arithmetic mean.")
+  (arg xs "The samples.")
+  (returns "The mean; 0 for no samples."))
+
+(:doc std-dev
+  (summary "The sample standard deviation, over n - 1.")
+  (arg xs "The samples.")
+  (returns "The standard deviation; 0 for fewer than two samples."))
+
+(:doc mad
+  (summary "The median absolute deviation from the median, unscaled.")
+  (arg xs "The samples.")
+  (returns "The median of the distances from the median.")
+  (reference """
+    What @code{(std bench)} shows as @code{±}, as a percentage of the median.
+    One slow sample moves it by at most one place, where it can move a
+    standard deviation arbitrarily far.
+    """))
+
+(:doc tukey-outliers
+  (summary "How many samples lie beyond Tukey's fences, 1.5 inter-quartile ranges outside the quartiles.")
+  (arg xs "The samples.")
+  (returns "The count."))
+
+;; ---------------------------------------------------------------------------
+;; Intervals
+;; ---------------------------------------------------------------------------
+
+(:doc bootstrap-ratio
+  (summary "A 95% interval of median(b) / median(a), from resampling each set on its own.")
+  (arg a "The samples of the first side.")
+  (arg b "The samples of the second side.")
+  (key resamples "How many resamplings. 10 000 unless given.")
+  (key seed "The seed of the resampling, so that a run is repeatable. 1 unless given.")
+  (returns "The 2.5th and the 97.5th percentiles of the resampled ratios.")
+  (see bootstrap-ratio/paired))
+
+(:doc bootstrap-ratio/paired
+  (summary "A 95% interval of median(b) / median(a) for paired samples, resampling whole pairs.")
+  (arg a "The first side's samples; a[i] goes with b[i].")
+  (arg b "The second side's samples.")
+  (key resamples "How many resamplings. 10 000 unless given.")
+  (key seed "The seed of the resampling. 1 unless given.")
+  (returns "The 2.5th and the 97.5th percentiles of the resampled ratios.")
+  (see bootstrap-ratio)
+  (reference """
+    For an A/B run's rounds: a drift that moved both samples of a round
+    stays in the round, rather than being spread over both sides.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Tests
+;; ---------------------------------------------------------------------------
+
+(:doc wilcoxon-p
+  (summary "The two-sided p-value of the Wilcoxon signed-rank test that the differences are centred on 0.")
+  (arg ds "The differences of paired samples; zeros are dropped.")
+  (returns "The p-value; 1 when nothing is left to test.")
+  (see mann-whitney-p t-test-p)
+  (reference """
+    Exact, from the distribution of the signed-rank sum, when at most 50
+    differences are left and none are tied; otherwise the normal
+    approximation, its variance corrected for ties, without a continuity
+    correction. SciPy's @code{wilcoxon} with its defaults gives the same.
+    """))
+
+(:doc mann-whitney-p
+  (summary "The two-sided p-value of the Mann-Whitney U test that two sets of samples come from one distribution.")
+  (arg xs "The first set.")
+  (arg ys "The second set.")
+  (returns "The p-value; 1 when either set is empty.")
+  (see wilcoxon-p)
+  (reference """
+    The normal approximation with a continuity correction and the variance
+    corrected for ties, as SciPy's @code{mannwhitneyu} with
+    @code{method="asymptotic"} computes it.
+    """))
+
+(:doc t-test-p
+  (summary "The two-sided p-value of a one-sample t-test that the values' mean is 0.")
+  (arg xs "The values: for an A/B run, the logs of the process pairs' ratios.")
+  (returns "The p-value; 1 for fewer than two values.")
+  (see t-critical wilcoxon-p)
+  (reference """
+    For a handful of values that are each a median of many samples: too few
+    for a rank test to reach a small p, which with n values is 2/2^n at
+    best, and close enough to normal for the t-test to be fair. SciPy's
+    @code{ttest_1samp(xs, 0)} gives the same.
+    """))
+
+(:doc t-critical
+  (summary "The t with P(|T| > t) = alpha for Student's T: what a mean's standard error is multiplied by for its interval.")
+  (arg alpha "The two-sided level: 0.05 for a 95% interval.")
+  (arg df "The degrees of freedom.")
+  (returns "The critical value, as SciPy's @code{t.ppf(1 - alpha/2, df)}.")
+  (see t-test-p))
+
+(:doc holm
+  (summary "Holm's step-down correction of p-values for the number of comparisons made at once.")
+  (arg ps "The p-values.")
+  (returns "The corrected p-values, in the order given.")
+  (reference """
+    The smallest is multiplied by m, the next by m - 1, and so on, each at
+    least the one before it and none above 1. A run that compares 40
+    benchmarks at 0.05 expects two to look different when nothing changed;
+    these are what keeps it from saying so.
+    """))
+
+(:doc normal-sf
+  (summary "P(Z > z) for a standard normal Z.")
+  (arg z "The point.")
+  (returns "The upper tail probability, to a relative error below 1.2e-7."))

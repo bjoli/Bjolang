@@ -14,7 +14,7 @@
 (import (std prelude))
 (export
   ;; Exported types.
-  Disp Sink Block
+  Disp Sink Block Align TableLayout
 
   ;; Layer 1 — interpolation
   println*
@@ -38,7 +38,8 @@
   ;; Numbers
   numeric numeric/comma
   ;; Paragraphs and tables
-  wrapped justified columnar tabular)
+  wrapped justified columnar tabular tabular/rows
+  table-layout table-widths table-row)
 
 ;; Every export is documented there; the module doc is too.
 (:doc #:file "fmt.bjodoc")
@@ -583,65 +584,134 @@
       (vec-slice parts 0 (- n 1))
       parts))
 
-(: laid-out (-> (Vec (Vec string)) (Vec int) string bool Block))
-(defun (laid-out cells widths sep cut?)
-  ;; this can be rewritten using both def ... and loop.
-  (BRun (fun (out col)
-          (let ((rows (vec-fold (fun (ls acc) (max acc (vec-length ls))) 0 cells)))
-            (let lp ((r 0) (c (run-block out col fl)))
-              (if (>= r rows)
-                  c
-                  (lp (+ r 1)
-                      (run-block out
-                                 (run-block out c (BStr (row-of cells widths sep cut? r)))
-                                 nl))))))))
+;; Where a cell sits in its column.
+(type (: Align (Union AlignLeft AlignRight AlignCentre)))
 
-;; Formats row string.
-(: row-of (-> (Vec (Vec string)) (Vec int) string bool int string))
-(defun (row-of cells widths sep cut? r)
+;; The alignment of column `i`: left unless said otherwise.
+(: align-at (-> (Vec Align) int Align))
+(defun (align-at aligns i)
+  (if (< i (vec-length aligns)) (vec-ref aligns i) AlignLeft))
+
+;; A cell fitted to its column. A cut keeps the end an alignment leans on,
+;; as `fitted/left` and the rest do. The last column is not padded on the
+;; right: there is nothing after it to line up.
+(: fit-cell (-> Align int bool bool string string))
+(defun (fit-cell a w cut? last? text)
+  (def s (if cut?
+             (match a
+               (AlignLeft (trim/right w text))
+               (AlignRight (trim/left w text))
+               (AlignCentre (trim/both w text)))
+             text))
+  (match a
+    (AlignLeft (if last? s (pad/right w s)))
+    (AlignRight (pad/left w s))
+    (AlignCentre (if last?
+                     (string-append (padding (/ (- w (width-of s)) 2)) s)
+                     (pad/both w s)))))
+
+(: laid-out (-> (Vec (Vec string)) (Vec int) (Vec Align) string bool Block))
+(defun (laid-out cells widths aligns sep cut?)
+  (BRun (fun (out col)
+          (def rows (vec-fold (fun (ls acc) (max acc (vec-length ls))) 0 cells))
+          (let lp ((r 0) (c (run-block out col fl)))
+            (if (>= r rows)
+                c
+                (lp (+ r 1)
+                    (run-block out
+                               (run-block out c (BStr (row-of cells widths aligns sep cut? r)))
+                               nl)))))))
+
+;; Line `r` of a row. Empty cells at the end of it are left out, separators
+;; and all, so that no line ends in blanks.
+(: row-of (-> (Vec (Vec string)) (Vec int) (Vec Align) string bool int string))
+(defun (row-of cells widths aligns sep cut? r)
   (def* (b (stringbuilder-empty))
-        (n (vec-length cells)))
+        (texts (vec-map (fun (ls) (if (< r (vec-length ls)) (vec-ref ls r) "")) cells))
+        (n (let lp ((n (vec-length texts)))
+             (if (and (> n 0) (string-empty? (vec-ref texts (- n 1)))) (lp (- n 1)) n))))
   (let lp ((i 0))
     (when (< i n)
       (when (> i 0) (stringbuilder-add-string! b sep))
-      (def* (ls (vec-ref cells i))
-            (text (if (< r (vec-length ls)) (vec-ref ls r) ""))
-            (w (vec-ref widths i))
-            (last? (= i (- n 1))))
-        (stringbuilder-add-string!
-         b
-         (cond (last? (if cut? (trim/right w text) text))
-               (cut? (pad/right w (trim/right w text)))
-               (else (pad/right w text))))
+      (stringbuilder-add-string!
+       b
+       (fit-cell (align-at aligns i) (vec-ref widths i) cut? (= i (- n 1)) (vec-ref texts i)))
       (lp (+ i 1))))
   (stringbuilder->string b))
- 
-(: rendered-columns (-> (Vec (Vec Block)) (Vec (Vec string))))
-(defun (rendered-columns cols)
-  (vec-map (fun (c) (lines-of (render->string c))) cols))
+
+;; Each cell's lines.
+(: rendered-cells (-> (Vec (Vec Block)) (Vec (Vec string))))
+(defun (rendered-cells cells)
+  (vec-map (fun (c) (lines-of (render->string c))) cells))
+
+;; The lines of a row's cells, a block each.
+(: rendered-row (-> (Vec Block) (Vec (Vec string))))
+(defun (rendered-row row)
+  (vec-map (fun (c) (lines-of (render->string [c]))) row))
+
+(: widest (-> (Vec string) int))
+(defun (widest ls) (vec-fold (fun (l acc) (max acc (width-of l))) 0 ls))
 
 ;; Renders columns.
-(: columnar (-> (Vec (Vec Block)) (#:sep string) Block))
-(defun (columnar cols #:sep " ")
+(: columnar (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) Block))
+(defun (columnar cols #:sep " " #:align [])
   (BRun (fun (out col)
-          (let* ((cells (rendered-columns cols))
+          (let* ((cells (rendered-cells cols))
                  (n (vec-length cells))
                  (room (- (parameter-ref current-width)
                           (* (width-of sep) (max (- n 1) 0))))
                  (each-width (if (> n 0) (max (/ room n) 0) 0)))
             (run-block out
                        col
-                       (laid-out cells (vec-map (fun (ls) each-width) cells) sep #t))))))
+                       (laid-out cells (vec-map (fun (ls) each-width) cells) align sep #t))))))
 
-(: tabular (-> (Vec (Vec Block)) (#:sep string) Block))
-(defun (tabular cols #:sep " ")
+(: tabular (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) Block))
+(defun (tabular cols #:sep " " #:align [])
   (BRun (fun (out col)
-          (let ((cells (rendered-columns cols)))
-            (run-block
-             out
-             col
-             (laid-out cells
-                       (vec-map (fun (ls) (vec-fold (fun (l acc) (max acc (width-of l))) 0 ls))
-                                cells)
-                       sep
-                       #f))))))
+          (def cells (rendered-cells cols))
+          (run-block out col (laid-out cells (vec-map widest cells) align sep #f)))))
+
+;; --- Tables a row at a time --------------------------------------------------
+;;
+;; A table whose rows are known one by one: the widths are settled first,
+;; and each row is then laid out on its own, so it can be written the moment
+;; it is known.
+
+(type (: TableLayout (Record (: widths (Vec int))
+                             (: aligns (Vec Align))
+                             (: sep string))))
+
+(: table-layout (-> (Vec int) (#:sep string) (#:align (Vec Align)) TableLayout))
+(defun (table-layout widths #:sep " " #:align [])
+  (TableLayout (widths widths) (aligns align) (sep sep)))
+
+;; The width each column of these rows asks for: its widest line.
+(: table-widths (-> (Vec (Vec Block)) (Vec int)))
+(defun (table-widths rows)
+  (vec-fold (fun (row acc)
+              (def ws (vec-map widest (rendered-row row)))
+              (def n (max (vec-length acc) (vec-length ws)))
+              {vecing (max (if (< i (vec-length acc)) (vec-ref acc i) 0)
+                           (if (< i (vec-length ws)) (vec-ref ws i) 0))
+                      (:for i (range 0 n))})
+            [] rows))
+
+;; One row, laid out to `layout`. A cell wider than its column is not cut:
+;; it pushes the rest of its row out. Cells past the layout's columns get
+;; no width and are left as they are.
+(: table-row (-> TableLayout (Vec Block) Block))
+(defun (table-row layout row)
+  (BRun (fun (out col)
+          (def cells (rendered-row row))
+          (def ws (record-ref layout widths))
+          (def widths {vecing (if (< i (vec-length ws)) (vec-ref ws i) 0)
+                              (:for i (range 0 (vec-length cells)))})
+          (run-block out col (laid-out cells widths (record-ref layout aligns) (record-ref layout sep) #f)))))
+
+;; `tabular`, given rows rather than columns.
+(: tabular/rows (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) Block))
+(defun (tabular/rows rows #:sep " " #:align [])
+  ;; Measured when it runs, where the settings it is run under are bound.
+  (BRun (fun (out col)
+          (def layout (table-layout (table-widths rows) #:sep sep #:align align))
+          (run-blocks out col (vec-map (fun (row) (table-row layout row)) rows)))))

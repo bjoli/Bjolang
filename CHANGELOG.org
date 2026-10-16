@@ -3,6 +3,78 @@
 
 What each change guarantees, and what it leaves open.
 
+* Benchmarks: ~(std bench)~, ~bjo bench~ and A/B runs
+
+- ~(def/bench "name" body ...)~ registers a benchmark and ~(run-benches)~ is
+  the file's ~main~, as ~deftest~ and ~(run-tests)~ are. Options:
+  ~#:setup~ (once, outside the time), ~#:setup-every~ (before every call,
+  each call timed on its own), ~#:params ((n [10 1000]) ...)~ (a row per
+  combination, ~--params n=5~ replacing the values), ~#:once n~ (cold runs
+  of a body of seconds), ~#:group~ and ~#:skip~.
+- A run calibrates to samples of 10 ms, warms up until two windows of five
+  batches agree within 2% (for at least half a second, so that the JIT's
+  recompilation is in the warm-up and not in the samples), and takes at
+  least 20 samples and 2 s, more while the median is not known to ±1%. The
+  table gives the median per call, its spread, the minimum, the allocation
+  and the collections, a row as each is measured; ~noisy~, ~unsteady~ and
+  outliers are marked. ~--detail~ adds the samples in order and a
+  histogram, ~--scaling~ the growth against a numeric parameter.
+- At a terminal with nothing named, a menu asks what to run: numbers,
+  ranges, names, ~*~, and ~n=1000~ after a benchmark for some of its
+  values; Enter repeats. The progress line is rewritten in place at a
+  terminal, and not under ~INSIDE_EMACS~ or ~CI~ or into a pipe.
+- ~--save FILE~ writes every sample as bjodat, and ~--compare FILE~
+  compares with it: the change in the median, a bootstrap interval, the
+  Mann–Whitney p corrected by Holm's method, and a verdict that needs both
+  the p below ~--alpha~ (0.05) and the change above ~--threshold~ (2%).
+  ~--fail-slower PCT~ makes it exit 1. A run from another machine is
+  compared under a warning, every verdict marked. A saved run is never
+  written unasked.
+- ~bjo bench [files] [names] [flags]~ builds in Release whatever ~-d~ says,
+  runs every file under ~benches/~ without files, and makes one menu over
+  several files. ~bjo bench FILE --against REF~ runs the file against
+  itself at a git ref (a temporary worktree) or another path: both sides
+  driven over ~--serve~, the same batch size on both, ~-N~ rounds with the
+  sides' order alternating and the cases shuffled from ~--seed~. One
+  process a side is the default and says what it leaves out: two processes
+  of one program can differ by a few percent. ~--processes P~ spreads the
+  rounds over ~P~ pairs and tests their ratios with a t-test, showing how
+  far the processes differ.
+- ~--compare-within~ compares the cases of each ~#:group~ with its first, in
+  ~-N~ interleaved rounds in the one process, as a ratio.
+- ~time-it~ is now in ~(std bench)~ and still re-exported from ~(std
+  stopwatch)~: one line with the median, spread, minimum and allocation,
+  measured as a benchmark is with ~--quick~'s targets. A body whose first
+  run takes over a second is that one run. ~#:times~ and ~#:warm-up-rounds~
+  keep their meaning, an exact number of runs.
+- ~(std bench stats)~: median, quantiles, MAD, bootstrap intervals of a ratio
+  of medians (paired and not), the Wilcoxon, Mann–Whitney and one-sample t
+  tests, the t distribution's critical values and Holm's correction, each
+  checked against SciPy. ~(std bench store)~: saved runs as data, and both
+  kinds of comparison.
+- Left open: comparing with a saved run is unpaired, so it cannot tell a
+  change from a difference between processes; a short ~--against-warmup~
+  can believe a body steady before the JIT recompiles it.
+
+* ~(std fmt)~ tables: alignment, rows, and a row at a time
+
+- ~Align~ is ~AlignLeft~, ~AlignRight~ or ~AlignCentre~, and ~columnar~ and
+  ~tabular~ take ~#:align~, a vec with one for each column from the first;
+  a column without one is left-aligned, as every column was. When
+  ~columnar~ cuts a cell it keeps the side the cell is aligned to, as
+  ~fitted/left~ and the rest do.
+- ~tabular/rows~ is ~tabular~ given rows rather than columns, a block per
+  cell. ~table-widths~ is the widest cell of each column of some rows, and
+  ~table-layout~ makes a ~TableLayout~ of widths, alignments and separator,
+  which ~table-row~ lays one row out to. That is a table whose widths are
+  settled first and whose rows are written as they become known: a cell
+  wider than its column is not cut, and pushes the rest of its own row
+  out.
+- No table line ends in blanks any more: empty cells at the end of a line
+  are left out, separators and all. ~(tabular [["a" nl "bb"] ["1"]])~ was
+  ~"a  1\nbb \n"~ and is ~"a  1\nbb\n"~.
+- ~(std bench)~ lays its tables out with these, numbers right-aligned.
+
 * A collector can start from a collection: ~#:into~
 
 - ~(vecing x #:into v)~ adds to the back of ~v~, and so do ~vecing/small~,

@@ -1671,6 +1671,99 @@ def test_builds_at_once(work, c):
     c.that("no temporary file is left", not leftovers, ", ".join(leftovers))
 
 
+# --- bjo bench ----------------------------------------------------------------
+
+BENCH_A = """(import (std bench))
+
+(: fib (-> int int))
+(defun (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+
+(def/bench "work" (fib 12))
+(def/bench "sized" #:params ((n [8 10])) (fun (n) (fib n)))
+(def/bench "gone" (fib 5))
+
+(run-benches)
+"""
+
+BENCH_B = """(import (std bench))
+
+(def/bench "other" #:group "g" (+ 1 2))
+
+(run-benches)
+"""
+
+# A benchmark's time is not something to check: only what each command runs
+# and what it says, with the targets made as small as the flags allow.
+QUICK = ["--quick", "--min-samples", "2", "--max-time", "0.05"]
+
+
+@test("bench")
+def test_bench(work, c):
+    app = work / "benchy"
+    app.mkdir(parents=True)
+    c.worked("init", run_bjo(app, "init"))
+    write(app / "benches" / "a.bjo", BENCH_A)
+    write(app / "benches" / "b.bjo", BENCH_B)
+
+    listed = run_bjo(app, "bench", "--list")
+    c.worked("bench --list runs every file under benches/", listed)
+    c.says("and names each file", listed, "bjo bench: a.bjo")
+    c.says("and lists their benchmarks", listed, "sized   n")
+    c.says("of both files", listed, "other")
+
+    one = run_bjo(app, "bench", "benches/a.bjo", "work", *QUICK)
+    c.worked("bench one file with a name", one)
+    c.says("prints the table", one, "median")
+    c.that("and runs only what is named", "sized" not in said(one), said(one)[-300:])
+
+    debug = run_bjo(app, "bench", "-d", "benches/b.bjo", *QUICK)
+    c.says("-d is said to be ignored", debug, "always built in Release")
+    c.says("and the build is Release", debug, "Release build")
+
+    c.failed("--save with two files is refused",
+             run_bjo(app, "bench", "benches/a.bjo", "benches/b.bjo", "--save", "x.bjodat"))
+
+    # One menu over both files, its choice run by each file with --cases.
+    menu = subprocess.run([str(BJO), "bench", "benches/a.bjo", "benches/b.bjo", *QUICK],
+                          cwd=str(app), env={**os.environ, "BJO_BENCH_MENU": "1"},
+                          input="1 n=8 3\nq\n", capture_output=True, text=True, timeout=600)
+    c.worked("the menu over two files", menu)
+    c.says("numbers them across the files", menu, "#3  other")
+    c.says("under a heading per file and group", menu, "b.bjo: g")
+    c.says("runs the narrowed case in its file", menu, "sized   8")
+    c.that("and only it", "sized   10" not in said(menu), said(menu)[-400:])
+    c.says("and the other file's case in its", menu, "other")
+
+    # A/B against the last commit, in which `gone` was still there.
+    make_repo(app, "with gone")
+    write(app / "benches" / "a.bjo",
+          BENCH_A.replace('(def/bench "gone" (fib 5))', '(def/bench "new" (fib 6))'))
+    git(app, "commit", "--quiet", "-am", "gone is new")
+    ab = run_bjo(app, "bench", "benches/a.bjo", "--against", "HEAD~1", "-N", "4", "--seed", "3",
+                 "--against-warmup", "0.1", "--against-sample", "1", "--save", "ab.bjodat")
+    c.worked("bench --against HEAD~1", ab)
+    c.says("says what it compared", ab, "A/B against HEAD~1, 4 rounds, paired")
+    c.says("and with which seed", ab, "seed 3")
+    c.says("compares what both have", ab, "sized   10")
+    c.says("lists what only this code has", ab, "only in this run: new")
+    c.says("and what only the other side has", ab, "only in A (HEAD~1): gone")
+    c.that("saves both sides", (app / "ab.bjodat").exists() and (app / "ab.against.bjodat").exists())
+    c.that("and leaves no worktree behind", git(app, "worktree", "list").count("\n") == 1,
+           git(app, "worktree", "list"))
+
+    pairs = run_bjo(app, "bench", "benches/a.bjo", "work", "--against", "HEAD~1", "-N", "4",
+                    "--processes", "2", "--against-warmup", "0.1", "--against-sample", "1")
+    c.worked("--processes 2", pairs)
+    c.says("tests the pairs' ratios", pairs, "2 process pairs (t-test on their log ratios)")
+    c.says("and shows how far the processes differ", pairs, "between processes")
+
+    c.failed("a ref that is nothing is refused",
+             run_bjo(app, "bench", "benches/a.bjo", "--against", "no-such-ref"))
+    c.that("and leaves no worktree behind either", git(app, "worktree", "list").count("\n") == 1)
+    c.failed("--against with two files is refused",
+             run_bjo(app, "bench", "benches/a.bjo", "benches/b.bjo", "--against", "HEAD"))
+
+
 def run_test(name, fn):
     """One test in its own work directory. Returns its checks and seconds."""
     work = WORK / name.replace(" ", "_")

@@ -1,0 +1,561 @@
+;; Docs for std/bench.bjo, read through (:doc #:file "bench.bjodoc"). The texts
+;; are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Benchmarks: def/bench, run-benches as the file's main, and time-it for one line at the REPL.")
+  (see def/bench run-benches time-it parse-bench-args)
+  (example """
+    (import (std prelude))
+    (import (std bench))
+
+    (def/bench "list-sort"
+      #:params ((n [1000 100000]))
+      #:setup (fun (n) {listing (% (* i 7919) n) (:for i (range 0 n))})
+      (fun (xs) (list-sort xs)))
+
+    (def/bench "vecing" (vec-length {vecing i (:for i (range 0 1000))}))
+
+    (run-benches)
+    """)
+  (reference """
+    @code{def/bench} registers a benchmark where it is written, and
+    @code{(run-benches)} is the file's @code{main}, as @code{deftest} and
+    @code{(run-tests)} are. @code{bjo bench FILE} builds the file in Release
+    and runs it.
+
+    @strong{A run} measures each benchmark in turn:
+
+    @itemlist{
+      @item{It calibrates how many calls make a sample of 10 ms.}
+      @item{It warms up until the medians of the last two windows of five
+        batches agree within 2%, for at least half and at most all of a
+        second. A row whose warm-up ran out is marked @code{unsteady}.}
+      @item{It takes samples, after a collection each, for at least 20 and
+        2 s, and more while the median's 95% interval is wider than ±1%, up
+        to 100 samples or three times the time.}
+    }
+
+    The table has a row per benchmark and combination of parameters, and
+    each row is printed as soon as it is measured:
+
+    @codeblock[#:lang "text"]|{
+    bench: 3 benchmarks, Release build, .NET 10.0.4, X64, 24 cores, gcServer=false
+    bench: AMD Ryzen 9 5900X 12-Core Processor, Fedora Linux 43
+
+    name        n          median        ±         min    alloc/op   gc/1k 0/1/2
+    list-sort   1000      41.2 µs     0.6%     40.8 µs     39.1 KB      3.33/0/0
+    list-sort   100000    8.31 ms     1.1%     8.12 ms     3.91 MB       333/0/0   noisy
+    vecing                1.24 µs     0.4%     1.22 µs     7.36 KB      0.88/0/0   2 outliers
+    }|
+
+    The median per call, its median absolute deviation as a percentage
+    (@code{±}), the fastest sample, the bytes allocated per call, and the
+    collections per thousand calls of each generation. The marks are
+    @code{noisy} (± above 3%), @code{unsteady}, outliers (beyond Tukey's
+    fences and 2% from the median), and for @code{#:setup-every} a body
+    below the clock's resolution.
+
+    @strong{Choosing.} With names, the benchmarks whose names contain one
+    of them run, and a name may be a parameter as the table shows it,
+    @code{n=1000}. With none, at a terminal, a menu asks; @code{--all}
+    runs everything without asking, and is what a run that is not at a
+    terminal does.
+
+    @strong{Flags.} @code{--quick} and @code{--long} halve and quadruple
+    the time targets; @code{--min-samples N}, @code{--max-time S},
+    @code{--params P=V,...} (replacing a parameter's values),
+    @code{--detail} (more statistics, the samples in order and a histogram)
+    and @code{--scaling} (how the time grows with a numeric parameter).
+    @code{--save FILE} keeps every sample, and @code{--compare FILE}
+    compares with what was kept: see @code{(std bench store)}.
+    @code{--compare-within} compares the benchmarks of each @code{#:group}
+    with its first, in @code{-N} interleaved rounds. @code{parse-bench-args}
+    lists them all.
+
+    @strong{Two versions.} @code{bjo bench FILE --against REF} runs the
+    file against itself at a git ref, or against another path, in
+    interleaved rounds: the way to ask whether a change made something
+    slower. Two processes of one program can differ by a few percent, more
+    than the 2% a verdict asks for; @code{--processes P} measures that
+    difference rather than leaving it out.
+
+    @strong{Not in the time.} The body's value is kept alive by a sink the
+    JIT cannot remove, so a body that computes a value is not optimized
+    away. A benchmark program runs everything in one process, one benchmark
+    after another, and the collection before each sample is what keeps one
+    benchmark's garbage out of the next one's time.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Writing benchmarks
+;; ---------------------------------------------------------------------------
+
+(:doc def/bench
+  (summary "Registers a benchmark. (run-benches) runs it.")
+  (form (def/bench name body ...))
+  (form (def/bench name #:setup setup function))
+  (form (def/bench name #:setup-every setup function))
+  (form (def/bench name #:params ((param values) ...) function))
+  (form (def/bench name #:params ((param values) ...) #:setup setup function))
+  (form (def/bench name #:once n body ...))
+  (form (def/bench name #:group group body ...))
+  (form (def/bench name #:skip why body ...))
+  (arg name "A string: the benchmark's name, which the filters of a run match.")
+  (arg setup "Run once before the benchmark, outside its time; with #:params, a function of the parameters.")
+  (arg function "The body: a function of what the setup made, or of the parameters when there is no setup.")
+  (arg n "How many cold runs of a #:once benchmark.")
+  (arg group "A string: a heading in the menu, and what --compare-within compares within.")
+  (arg why "A string: why the benchmark is skipped, which the run shows.")
+  (arg param "The name of a parameter, bound in the function or the setup.")
+  (arg values "A vec literal of the parameter's values, evaluated once when the benchmark is registered.")
+  (rest body "Forms run as one call, the value of the last kept alive.")
+  (see run-benches time-it)
+  (example """
+    (def/bench "fib 20" (fib 20))
+
+    (def/bench "sum"
+      #:setup {listing i (:for i (range 0 1000))}
+      (fun (xs) (fold + 0 xs)))
+
+    (def/bench "sort"
+      #:params ((n [1000 100000])
+                (order ['sorted 'random]))
+      #:setup (fun (n order) (make-list n order))
+      (fun (xs) (list-sort xs)))
+
+    ;; The input is consumed: a fresh copy before every call, out of the time.
+    (def/bench "sort!"
+      #:setup-every (array-copy unsorted)
+      (fun (a) (array-sort! a)))
+
+    (def/bench "sieve" #:once 3 (sieve 2000000000))
+    """)
+  (reference """
+    Write it at the top level of a module, as @code{deftest}. The options
+    come after the name, in any order.
+
+    @itemlist{
+      @item{@code{#:setup} runs once per benchmark and combination of
+        parameters. What it makes is the function's argument.}
+      @item{@code{#:setup-every} runs before every call. Each call is then
+        timed on its own, the setup outside the time and the allocation;
+        the collection counts include it. A body below the clock's
+        resolution is marked.}
+      @item{@code{#:params} makes a row for each combination of values,
+        the last parameter varying fastest. @code{--params n=10,20}
+        replaces a parameter's values for a run; a value is read as the
+        parameter's type, through @code{BenchParam}.}
+      @item{@code{#:once n} is for bodies of seconds: no warm-up and no
+        calibration, @code{n} runs timed one at a time, the first cold.
+        Each is shown under the row.}
+    }
+    """))
+
+(:doc run-benches
+  (summary "Ends a benchmark file: becomes its main, which runs the benchmarks the module registered.")
+  (form (run-benches))
+  (see def/bench run-registered-benches parse-bench-args)
+  (reference """
+    The arguments of the program are names and flags, as
+    @code{parse-bench-args} reads them. The exit code is 0, 1 when
+    @code{--fail-slower} fails the run, and 2 for wrong arguments or a file
+    that @code{--compare} cannot read.
+    """))
+
+(:doc time-it
+  (summary "Measures a body where it is written and prints one line: the median per call, its spread, the minimum and the allocation.")
+  (form (time-it body ...))
+  (form (time-it #:times n body ...))
+  (form (time-it #:warm-up-rounds w body ...))
+  (form (time-it #:times n #:warm-up-rounds w body ...))
+  (arg n "With #:times, exactly n timed runs: no calibration.")
+  (arg w "With #:warm-up-rounds, exactly w untimed runs first. 0 unless given.")
+  (rest body "The forms, run as one call; the value of the last is kept alive.")
+  (see def/bench)
+  (example """
+    (time-it (list-sort big-list))
+    ;; (list-sort big-list): 8.31 ms ± 1.1% (min 8.12 ms), 2.40 MB/call, 120 samples
+
+    (time-it (sieve 2000000000))
+    ;; (sieve 2000000000): 10.0 s (one cold run: a body over a second is run once)
+
+    (time-it #:times 100 #:warm-up-rounds 3 (list-sort big-list))
+    """)
+  (reference """
+    An anonymous benchmark, run at once with @code{--quick}'s targets:
+    warmed up, calibrated and sampled. The label is the body's source text,
+    cut short. A body whose first run takes more than a second is not run
+    again: that run is the measurement. @code{#:times} and
+    @code{#:warm-up-rounds} keep their old meaning, a known number of runs,
+    for a program that depends on the body running that many times.
+
+    @code{(std stopwatch)} re-exports it, so an @code{(import (std
+    stopwatch))} that uses it goes on working.
+    """))
+
+(:doc BenchParam
+  (summary "A type a parameter's value can be read as from --params: int, long, double, string, Symbol and bool.")
+  (see bench-param-read def/bench)
+  (reference """
+    Implement it for a type of your own to let @code{--params} give values
+    of it.
+    """))
+
+(:doc bench-param-read
+  (summary "Reads a parameter's value from its text on the command line.")
+  (arg s "The text: 10, 2.5, sorted, 'sorted, #t, true.")
+  (returns "The value, or None when the text is not one."))
+
+;; ---------------------------------------------------------------------------
+;; What is registered
+;; ---------------------------------------------------------------------------
+
+(:doc Bench
+  (summary "A registered benchmark.")
+  (field name "Its name.")
+  (field module "The key of the module that registered it, from (current-module).")
+  (field file "The source file.")
+  (field line "Its line.")
+  (field group "Its #:group, or empty.")
+  (field skip "Why it is skipped, or empty.")
+  (field once "The number of cold runs of a #:once benchmark; 0 for a calibrated one.")
+  (field param-names "The names of its parameters, in order.")
+  (field cases "Makes its cases: a function, so that the values are read after --params.")
+  (see BenchCase registered-benches))
+
+(:doc BenchCase
+  (summary "A benchmark at one combination of its parameters: a row of the table.")
+  (field labels "The parameters' names and values, as the table shows them.")
+  (field prepare "Runs the setup, and answers what to run.")
+  (see Bench CaseRun))
+
+(:doc CaseRun
+  (summary "What a prepared case runs.")
+  (field batch "Runs the body k times, its value kept alive each time.")
+  (field call "For #:setup-every: one call after its setup, answering the call's nanoseconds and bytes.")
+  (see measure-case))
+
+(:doc registered-benches
+  (summary "Every benchmark registered so far, in the order they were written.")
+  (returns "The benchmarks.")
+  (see module-benches))
+
+(:doc module-benches
+  (summary "The benchmarks one module registered.")
+  (arg module "The key of the module, as (current-module) gives it.")
+  (returns "Its benchmarks, in the order they were written."))
+
+;; ---------------------------------------------------------------------------
+;; Options and settings
+;; ---------------------------------------------------------------------------
+
+(:doc BenchOptions
+  (summary "What the arguments of a benchmark program asked for.")
+  (field filters "The names: a benchmark runs when its name, or a parameter as n=10, contains one.")
+  (field all "--all: everything, without a menu.")
+  (field list "--list: the names, nothing run.")
+  (field scale "What the time targets are multiplied by: 0.5 for --quick, 4 for --long.")
+  (field min-samples "--min-samples: at least this many samples. 20.")
+  (field max-time-ns "--max-time: the most time a benchmark may sample for, or 0 for three times the target.")
+  (field detail "--detail: the mean, the deviation, the quartiles, the samples in order and a histogram.")
+  (field params "--params: parameters whose values replace the file's.")
+  (field save "--save: the file to save the run to.")
+  (field compare "--compare: the saved run to compare with.")
+  (field alpha "--alpha: the significance level of a verdict. 0.05.")
+  (field threshold "--threshold: the smallest change a verdict counts, as a fraction. 0.02.")
+  (field p-raw "--p-raw: the uncorrected p-values too.")
+  (field fail-slower "--fail-slower: exit 1 when something is SLOWER by more than this fraction.")
+  (field serve "--serve: driven over standard input and output.")
+  (field cases "--cases: exactly these cases, numbered as --serve lists them.")
+  (field scaling "--scaling: how the time grows with a numeric parameter.")
+  (field compare-within "--compare-within: each #:group's cases against its first, in rounds.")
+  (field rounds "-N: the rounds of --compare-within. 20.")
+  (field seed "--seed: the order of the rounds; from the clock unless given.")
+  (see parse-bench-args bench-settings))
+
+(:doc parse-bench-args
+  (summary "Reads the arguments of a benchmark program.")
+  (arg args "The arguments: names, and the flags.")
+  (returns "The options, or what is wrong with the arguments.")
+  (see BenchOptions run-registered-benches)
+  (reference """
+    The flags are @code{--all}, @code{--list}, @code{--quick},
+    @code{--long}, @code{--detail}, @code{--scaling}, @code{--min-samples
+    N}, @code{--max-time S}, @code{--params P=V,...}, @code{--save FILE},
+    @code{--compare FILE}, @code{--alpha P}, @code{--threshold PCT},
+    @code{--p-raw}, @code{--fail-slower PCT}, @code{--compare-within},
+    @code{-N ROUNDS}, @code{--seed N}, @code{--serve} and @code{--cases
+    I,J,...}. A percentage is written @code{2} or @code{2%}. Anything else
+    that starts with @code{--} is an error; the rest are names.
+    """))
+
+(:doc Settings
+  (summary "The targets of a run, in nanoseconds, from its options.")
+  (field sample-ns "What a sample is calibrated to: 10 ms.")
+  (field time-ns "How long a benchmark samples for at least: 2 s, scaled.")
+  (field warmup-ns "The most a warm-up may take: 1 s, scaled. It takes at least half.")
+  (field max-ns "The most a benchmark may sample for, taking more samples for a precise median.")
+  (field min-samples "The fewest samples.")
+  (field max-samples "The most samples.")
+  (see bench-settings))
+
+(:doc bench-settings
+  (summary "The targets that options ask for.")
+  (arg o "The options.")
+  (returns "The settings."))
+
+(:doc bench-params-set!
+  (summary "Replaces parameters' values for the benchmarks' cases made after it: what --params does.")
+  (arg overrides "Each parameter's name, and its values as text.")
+  (see bench-param-values))
+
+;; ---------------------------------------------------------------------------
+;; Measuring and showing
+;; ---------------------------------------------------------------------------
+
+(:doc Measured
+  (summary "What measuring one case came to.")
+  (field samples "Nanoseconds per call, in the order taken; for #:once, one per cold run.")
+  (field k "The calls in a sample.")
+  (field calls "Every call the samples timed, which the allocation and the collections are per.")
+  (field bytes "The bytes the samples allocated.")
+  (field gc0 "Generation 0 collections during the samples.")
+  (field gc1 "Generation 1 collections.")
+  (field gc2 "Generation 2 collections.")
+  (field steady "Whether the warm-up got steady.")
+  (field once "#t for single cold runs.")
+  (field per-call "#t when each call was timed on its own, for #:setup-every.")
+  (see measure-case))
+
+(:doc measure-case
+  (summary "Measures one case: calibrates, warms up and samples it, or times its cold runs.")
+  (arg c "The case.")
+  (arg once "The number of cold runs of a #:once benchmark, or 0.")
+  (arg s "The targets.")
+  (returns "What it measured.")
+  (see Measured run-selection))
+
+(:doc time-text
+  (summary "Nanoseconds in the unit that reads best, to three digits.")
+  (arg ns "The nanoseconds.")
+  (returns "@code{\"41.2 µs\"}, @code{\"999 ns\"}, @code{\"9.88 s\"}."))
+
+(:doc bytes-text
+  (summary "Bytes in the unit that reads best, to three digits.")
+  (arg b "The bytes.")
+  (returns "@code{\"512 B\"}, @code{\"1.50 KB\"}, @code{\"10.0 MB\"}."))
+
+(:doc header-lines
+  (summary "The lines a run begins with: the build, the runtime and the machine, and warnings about them.")
+  (arg count "How many benchmarks the run has.")
+  (returns "The lines.")
+  (reference """
+    A Debug build, an attached debugger and a CPU frequency governor that is
+    not @code{performance} are warnings.
+    """))
+
+(:doc header-facts
+  (summary "The facts of this machine and build, by name, as a saved run keeps them.")
+  (returns "build, dotnet, arch, cores, gc-server, cpu, os and governor."))
+
+(:doc this-run
+  (summary "Measured cases as a saved run of this machine, saved now.")
+  (arg cases "The cases.")
+  (returns "The run.")
+  (see header-facts))
+
+;; ---------------------------------------------------------------------------
+;; Running
+;; ---------------------------------------------------------------------------
+
+(:doc Selection
+  (summary "What a run is asked to measure: a benchmark, and the cases of it chosen.")
+  (field bench "The benchmark.")
+  (field cases "Its chosen cases.")
+  (see parse-choice run-selection))
+
+(:doc sel-bench
+  (summary "A selection's benchmark.")
+  (arg p "The selection.")
+  (returns "The benchmark."))
+
+(:doc sel-cases
+  (summary "A selection's cases.")
+  (arg p "The selection.")
+  (returns "The cases."))
+
+(:doc case-labels
+  (summary "A case's parameters, name and value.")
+  (arg c "The case.")
+  (returns "The labels."))
+
+(:doc run-selection
+  (summary "Measures what is chosen and prints the table, a row as each case is done.")
+  (arg chosen "What to measure.")
+  (arg o "The options.")
+  (returns "What was measured, as a saved run's cases; a skipped case is not among them.")
+  (see run-and-report))
+
+(:doc run-and-report
+  (summary "Measures what is chosen, then saves, compares and compares within groups, as the options say.")
+  (arg chosen "What to measure.")
+  (arg o "The options.")
+  (returns "The exit code: 1 when --fail-slower fails the run, 2 when the file to compare with cannot be used, else 0.")
+  (see run-selection run-with-options))
+
+(:doc run-with-options
+  (summary "What a benchmark program does with its options: lists, serves, asks, or runs what they choose.")
+  (arg module "The key of the module whose benchmarks to run.")
+  (arg o "The options.")
+  (returns "The exit code.")
+  (see run-registered-benches))
+
+(:doc run-registered-benches
+  (summary "The main of a benchmark file: reads the arguments and runs the module's benchmarks. (run-benches) writes a call to it.")
+  (arg module "The key of the module, from (current-module).")
+  (arg args "The program's arguments.")
+  (returns "The exit code; 2 for wrong arguments.")
+  (see run-benches parse-bench-args))
+
+(:doc parse-choice
+  (summary "Reads a choice made in the menu.")
+  (arg text "What was typed: numbers (0), ranges (2-4), parts of names (sort), * for all, and after a benchmark p=v,w for some of its parameter's values.")
+  (arg benches "The benchmarks, numbered from 0.")
+  (returns "What it chooses, or why it chooses nothing."))
+
+(:doc menu-lines
+  (summary "The menu: the benchmarks numbered, under their groups, each with its parameters' values, and how to choose.")
+  (arg file "What the menu is of, for its first line.")
+  (arg benches "The benchmarks.")
+  (returns "The lines."))
+
+(:doc menu-loop
+  (summary "Shows the menu and asks until q, the end of the input, or nothing chosen with nothing to repeat.")
+  (arg lines "What to show first.")
+  (arg benches "The benchmarks a choice numbers.")
+  (arg read "Reads a line of input, None at its end.")
+  (arg run "What to do with a choice.")
+  (see bench-menu parse-choice)
+  (reference """
+    Enter repeats the last choice. @code{bjo bench} uses it over several
+    files, running each file with the cases of a choice that are its own.
+    """))
+
+(:doc bench-menu
+  (summary "The menu of a benchmark program: asks what to run, runs it, and asks again.")
+  (arg file "The file's name, for the menu's first line.")
+  (arg benches "The benchmarks.")
+  (arg o "The options every choice runs with.")
+  (arg read "Reads a line of input, None at its end.")
+  (see menu-loop))
+
+(:doc bench-serve
+  (summary "Driven over standard input and output, a command and a reply a line, in bjodat: what --serve does.")
+  (arg benches "The benchmarks.")
+  (arg read "Reads a command line, None at the end of the input.")
+  (reference """
+    The cases are numbered from 0 in the order @code{(list)} gives them.
+
+    @codeblock[#:lang "text"]|{
+    (list)                               → (cases (case 0 (name "sort") (labels ("n" "10")) (group "") (once 0) (skip "")) ...)
+    (prepare 3 :warmup 1000 :sample 10)  → (prepared 3 :k 4096 :steady #t)
+    (sample 3 :k 4096)                   → (sample 3 :ns 41213 :bytes 0 :gc (0 0 0))
+    (quit)
+    }|
+
+    @code{:warmup} and @code{:sample} are milliseconds; a sample's
+    @code{:ns} is the whole sample's, @code{k} calls. @code{prepare} runs
+    the case's setup and warms it up as a run would. Anything wrong is
+    @code{(error "why")}, and the next command is read; @code{(quit)} or
+    the end of the input ends it. This is what @code{bjo bench --against}
+    drives two programs with.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Comparisons
+;; ---------------------------------------------------------------------------
+
+(:doc print-comparison-table
+  (summary "Prints a comparison: its warnings, the table, and the cases one side has alone.")
+  (arg result "The comparison.")
+  (arg o "The options: the threshold, --p-raw and --fail-slower.")
+  (arg was-head "The heading of the earlier side's medians.")
+  (arg now-head "The heading of the later side's.")
+  (arg other-side "What the earlier side is called, for the cases only it has.")
+  (arg ratio? "#t for a column of the ratio, ×2.10, as --compare-within shows.")
+  (see comparisons-text fails-slower?))
+
+(:doc comparisons-text
+  (summary "How many comparisons a run made, and that they were corrected.")
+  (arg n "The number.")
+  (returns "@code{\"3 comparisons, Holm-corrected\"}."))
+
+(:doc fails-slower?
+  (summary "Whether --fail-slower fails a run: something SLOWER by more than its percentage, against a run of this machine.")
+  (arg result "The comparison.")
+  (arg o "The options.")
+  (returns "#t to exit 1."))
+
+;; ---------------------------------------------------------------------------
+;; For the macros
+;; ---------------------------------------------------------------------------
+
+(:doc register-bench!
+  (summary "Adds a benchmark to the registry. def/bench writes calls to it.")
+  (arg name "The name.")
+  (arg module "The key of the module, from (current-module).")
+  (arg file "The source file.")
+  (arg line "The line.")
+  (arg group "The #:group, or empty.")
+  (arg skip "The #:skip reason, or empty.")
+  (arg once "The #:once count, or 0.")
+  (arg param-names "The parameters' names.")
+  (arg cases "Makes the cases.")
+  (returns "0, so that the call is a top-level def.")
+  (reference """
+    It is exported because the template of @code{def/bench} names it.
+    """))
+
+(:doc bench-keep!
+  (summary "Keeps a value alive: a write the JIT cannot remove, which allocates nothing.")
+  (arg x "The value.")
+  (reference """
+    The runtime's @code{BjoBench.Consume}: a write to a volatile static field
+    of a generic class, one per type, so nothing is boxed. A benchmark's
+    batch loop writes each call's value to it.
+    """))
+
+(:doc bench-param-values
+  (summary "A parameter's values: the file's, or those --params gave, read as the parameter's type. def/bench writes calls to it.")
+  (arg name "The parameter's name.")
+  (arg values "The values the file gives.")
+  (returns "The values to run with."))
+
+(:doc bench-now
+  (summary "The clock, in nanoseconds: current-clock's monotonic time, which a test can replace.")
+  (returns "The nanoseconds."))
+
+(:doc bench-allocated
+  (summary "The bytes this thread has allocated so far.")
+  (returns "The bytes."))
+
+(:doc time-it-run
+  (summary "What time-it expands to: measures a batch with --quick's targets and prints its line.")
+  (arg label "The body's source text.")
+  (arg batch "Runs the body k times."))
+
+(:doc time-it-fixed
+  (summary "What time-it with #:times or #:warm-up-rounds expands to: exactly that many runs.")
+  (arg label "The body's source text.")
+  (arg times "The timed runs.")
+  (arg warm "The untimed runs first.")
+  (arg batch "Runs the body k times."))
+
+(:doc time-it-expansion
+  (summary "The expansion of a time-it form, shared by (std bench) and (std stopwatch).")
+  (arg form "The form.")
+  (returns "Its expansion."))
+
+(:doc time-it-keep
+  (summary "Keeps a time-it body's value alive, as bench-keep! does.")
+  (arg x "The value."))

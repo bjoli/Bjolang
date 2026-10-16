@@ -569,8 +569,9 @@
   (summary "Columns side by side, dividing current-width evenly and cutting what does not fit.")
   (arg cols "The columns, each a vec of blocks; a newline in one starts its next row.")
   (key sep "Written between the columns. A space unless given.")
+  (key align "The alignment of each column, from the first; a column not given one is AlignLeft.")
   (returns "A block.")
-  (see tabular current-width)
+  (see tabular Align current-width)
   (example """
     (show [(with-fmt current-width 11
              [(columnar [["abc" nl "def"]
@@ -582,16 +583,20 @@
     Each column is rendered on its own and the lines are laid out together.
     The width left once the separators are taken out is shared equally, and
     every cell is cut and padded to its share, the last column cut but not
-    padded. A column with fewer lines than the others contributes blanks.
-    The table starts on a fresh line, and every row ends with a newline.
+    padded on the right. A cut keeps the side the cell is aligned to: the
+    start of a left-aligned cell, the end of a right-aligned one, the middle
+    of a centred one. A column with fewer lines than the others contributes
+    blanks, and blanks at the end of a line are left out, separators and
+    all. The table starts on a fresh line, and every row ends with a newline.
     """))
 
 (:doc tabular
   (summary "Columns side by side, each as wide as its widest line, cutting nothing.")
   (arg cols "The columns, each a vec of blocks; a newline in one starts its next row.")
   (key sep "Written between the columns. A space unless given.")
+  (key align "The alignment of each column, from the first; a column not given one is AlignLeft.")
   (returns "A block.")
-  (see columnar)
+  (see tabular/rows columnar Align)
   (example """
     (show [(tabular [["a" nl "bbb"]
                      ["1" nl "2"]])])
@@ -606,7 +611,90 @@
     """)
   (reference """
     Laid out as @code{columnar} lays them out, but with each column padded
-    to the width its own content asks for, the last not padded at all. A
-    column with fewer lines than the others contributes blanks. The table
-    starts on a fresh line, and every row ends with a newline.
+    to the width its own content asks for, and nothing cut. A left-aligned
+    last column is not padded at all. A column with fewer lines than the
+    others contributes blanks, and blanks at the end of a line are left out,
+    separators and all. The table starts on a fresh line, and every row ends
+    with a newline.
+    """))
+
+(:doc tabular/rows
+  (summary "A table given as rows, each column as wide as its widest cell.")
+  (arg rows "The rows, each a vec of cells, a block per cell; a newline in a cell gives its row another line.")
+  (key sep "Written between the columns. A space unless given.")
+  (key align "The alignment of each column, from the first; a column not given one is AlignLeft.")
+  (returns "A block.")
+  (see tabular table-row)
+  (example """
+    (show [(tabular/rows [["name" "n" "time"]
+                          ["sort" 10 "1.2 µs"]
+                          ["sort" 1000 "210 µs"]]
+                         #:sep "  "
+                         #:align [AlignLeft AlignRight AlignRight])])
+    ;; name     n    time
+    ;; sort    10  1.2 µs
+    ;; sort  1000  210 µs
+    """)
+  (reference """
+    The same table as @code{tabular} makes of the columns these rows are
+    made of. It is @code{table-row} on each row, with the layout that
+    @code{table-widths} gives them; rows of different lengths are fine, a
+    short one ending early.
+    """))
+
+(:doc Align
+  (summary "Where a cell sits in its table column.")
+  (case AlignLeft "Against the left edge, padded on the right. The default.")
+  (case AlignRight "Against the right edge, padded on the left: what numbers want.")
+  (case AlignCentre "In the middle, the odd column of padding on the right.")
+  (see tabular tabular/rows table-layout columnar))
+
+(:doc TableLayout
+  (summary "The widths, alignments and separator of a table laid out a row at a time.")
+  (field widths "The width of each column.")
+  (field aligns "The alignment of each column, from the first; a column not given one is AlignLeft.")
+  (field sep "Written between the columns.")
+  (see table-layout table-row))
+
+(:doc table-layout
+  (summary "A layout for table-row: the width of each column, settled before any row is written.")
+  (arg widths "The width of each column, in columns as current-string-width counts them.")
+  (key sep "Written between the columns. A space unless given.")
+  (key align "The alignment of each column, from the first; a column not given one is AlignLeft.")
+  (returns "A TableLayout.")
+  (see table-row table-widths))
+
+(:doc table-widths
+  (summary "The width each column of some rows asks for: its widest cell.")
+  (arg rows "The rows, each a vec of cells, a block per cell.")
+  (returns "A vec with a width for every column any of the rows has.")
+  (see table-layout tabular/rows)
+  (example """
+    (table-widths [["name" "median"] ["fib 20" "14.9 µs" "note"]])
+    ;; [6 7 4]
+    """))
+
+(:doc table-row
+  (summary "One row of a table, laid out to a layout fixed beforehand, so that it can be written as soon as it is known.")
+  (arg layout "The widths, alignments and separator, from table-layout.")
+  (arg row "The cells, a block each; a newline in a cell gives the row another line.")
+  (returns "A block.")
+  (see table-layout table-widths tabular/rows)
+  (example """
+    ;; Each result printed when it is measured, under a heading printed first.
+    (def layout (table-layout [8 8] #:sep "  " #:align [AlignLeft AlignRight]))
+    (show [(table-row layout ["name" "time"])])
+    (loop (:for (Tuple name t) results)
+          (:do (show [(table-row layout [name t])])))
+    ;; name          time
+    ;; sort        1.2 µs
+    """)
+  (reference """
+    Every cell is padded to its column's width as its alignment says, and a
+    left-aligned last cell is not padded at all. A cell wider than its column
+    is not cut: it pushes the rest of its row to the right, and the rows
+    after it are not affected. Cells past the columns of the layout are
+    written as they are, with the separator before each. Empty cells at the
+    end of a line are left out, separators and all. The row starts on a
+    fresh line and ends with a newline.
     """))

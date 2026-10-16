@@ -1,0 +1,113 @@
+;; (std bench stats) against values computed by NumPy and SciPy 1.18:
+;;
+;;   np.median, np.quantile (linear), np.mean, np.std(ddof=1)
+;;   stats.wilcoxon(d, method="exact")
+;;   stats.wilcoxon(d, method="approx", correction=False)      ties, zeros, n > 50
+;;   stats.mannwhitneyu(x, y, method="asymptotic")             with continuity
+;;   stats.norm.sf
+;;
+;; A p-value is compared relatively, since the normal tail it comes from is
+;; good to about 1.2e-7 of itself, and a small one would pass any absolute
+;; tolerance worth having.
+(import (std prelude))
+(import (std test))
+(import (std bench stats))
+
+(: close? (-> double double double bool))
+(defun (close? got wanted rel)
+  (if (= wanted 0.0)
+      (< (abs got) rel)
+      (< (abs (- (/ got wanted) 1.0)) rel)))
+
+(def a [10.2 11.5 9.8 12.1 10.9 11.0 10.4 13.2 9.5 10.8 11.7 10.1])
+(def b [10.9 12.3 10.1 12.8 11.6 11.2 10.9 14.0 9.9 11.5 12.2 10.6])
+(def ties-x [1.0 2.0 2.0 3.0 3.0 3.0 4.0 5.0 5.0 6.0 7.0 7.0 8.0 9.0 10.0 10.0 11.0 12.0 12.0 13.0 14.0])
+(def ties-y [3.0 4.0 4.0 5.0 6.0 6.0 7.0 8.0 8.0 9.0 9.0 10.0 11.0 12.0 13.0 13.0 14.0 15.0 16.0 16.0 17.0 18.0])
+
+(deftest "order statistics"
+  (check-approx (median a) 10.85 #:eps 1e-12)
+  (check-approx (quantile a 0.25) 10.175 #:eps 1e-12)
+  (check-approx (quantile a 0.9) 12.06 #:eps 1e-12)
+  (check-approx (median [3.0]) 3.0 #:eps 1e-12)
+  (check-approx (median [2.0 1.0]) 1.5 #:eps 1e-12))
+
+(deftest "mean, deviation, MAD"
+  (check-approx (mean a) 10.933333333333332 #:eps 1e-12)
+  (check-approx (std-dev a) 1.0568678711029569 #:eps 1e-12)
+  (check-approx (mad a) 0.7 #:eps 1e-12))
+
+(deftest "Tukey's fences"
+  (check (= (tukey-outliers [1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0 10.0]) 0))
+  (check (= (tukey-outliers [10.0 10.1 10.2 9.9 9.8 10.0 10.1 30.0 -5.0]) 2)))
+
+(deftest "Wilcoxon, exact"
+  ;; Twelve untied differences, all positive: 2 / 2^12.
+  (check (close? (wilcoxon-p [0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0 1.1 1.2]) 0.00048828125 1e-12)))
+
+(deftest "Wilcoxon, ties take the approximation"
+  ;; b - a in doubles: 0.7000000000000011 twice, 0.5 three times, and so on.
+  (def d (vec-map (fun (i) (- (vec-ref b i) (vec-ref a i))) {vecing i (:for i (range 0 12))}))
+  (check (close? (wilcoxon-p d) 0.0021572604979440573 1e-6)))
+
+(deftest "Wilcoxon, normal approximation"
+  (def big {vecing (+ (/ (cast System.Double (- (% (* i 37) 101) 50)) 10.0) 0.8) (:for i (range 0 60))})
+  (check (close? (wilcoxon-p big) 0.06226697048836304 1e-6))
+  ;; Zeros are dropped; what is left is 8 untied, so this one is exact.
+  (check (close? (wilcoxon-p (vec-map (fun (x) (- x 3.0)) ties-x)) 0.000850069482605579 1e-6)))
+
+(deftest "Wilcoxon, zeros dropped"
+  ;; Eight differences remain, untied, so this takes the exact path, and is
+  ;; SciPy's exact value for the eight.
+  (check (close? (wilcoxon-p [0.0 1.5 -0.5 2.0 0.0 3.1 -1.2 0.7 2.2 -0.3]) 0.1484375 1e-12)))
+
+(deftest "Mann-Whitney"
+  (check (close? (mann-whitney-p a b) 0.23597203516722953 1e-6))
+  (check (close? (mann-whitney-p ties-x ties-y) 0.02846465432521847 1e-6))
+  (def sep-a {vecing (cast System.Double x) (:for x (range 0 30))})
+  (def sep-b {vecing (+ (cast System.Double x) 100.0) (:for x (range 0 30))})
+  (check (close? (mann-whitney-p sep-a sep-b) 3.019859359162157e-11 1e-5)))
+
+(deftest "the normal tail"
+  (check (close? (normal-sf 3.0) 0.0013498980316300933 1e-6))
+  (check (close? (normal-sf 6.0) 9.865876450376946e-10 1e-6))
+  (check (close? (normal-sf 0.0) 0.5 1e-6)))
+
+(deftest "Holm"
+  (def adjusted (holm [0.01 0.04 0.03 0.005 0.5]))
+  (check-approx (vec-ref adjusted 0) 0.04 #:eps 1e-12)
+  (check-approx (vec-ref adjusted 1) 0.09 #:eps 1e-12)
+  (check-approx (vec-ref adjusted 2) 0.09 #:eps 1e-12)
+  (check-approx (vec-ref adjusted 3) 0.025 #:eps 1e-12)
+  (check-approx (vec-ref adjusted 4) 0.5 #:eps 1e-12))
+
+(deftest "the bootstrap"
+  ;; b is a scaled by exactly 1.05: every paired resampling has that ratio.
+  (def scaled (vec-map (fun (x) (* x 1.05)) a))
+  (def (Tuple lo hi) (bootstrap-ratio/paired a scaled #:resamples 2000))
+  (check-approx lo 1.05 #:eps 1e-9)
+  (check-approx hi 1.05 #:eps 1e-9)
+  ;; Unpaired, the interval is wide, and holds the ratio of the medians.
+  (def (Tuple ulo uhi) (bootstrap-ratio a scaled #:resamples 2000))
+  (check (< ulo 1.05))
+  (check (> uhi 1.05))
+  ;; The same seed, the same interval.
+  (check (= (bootstrap-ratio a b #:resamples 500 #:seed 7UL)
+            (bootstrap-ratio a b #:resamples 500 #:seed 7UL))))
+
+;; scipy.stats.ttest_1samp(xs, 0.0).pvalue, and t.ppf(1 - a/2, df).
+(deftest "the one-sample t-test and its critical values, against SciPy"
+  (check-approx (t-test-p [0.01 0.02 -0.005 0.015 0.03 0.0]) 0.07775208077043505 #:eps 1e-10)
+  (check-approx (t-test-p [0.1 0.12 0.09]) 0.007205446408459768 #:eps 1e-10)
+  (check-approx (t-test-p [-0.02 0.01 0.0 0.005 -0.01 0.02 0.003 -0.004]) 0.9112310388839276 #:eps 1e-10)
+  (check-approx (t-critical 0.05 5) 2.5705818356363146 #:eps 1e-9)
+  (check-approx (t-critical 0.05 1) 12.706204736174694 #:eps 1e-8)
+  (check-approx (t-critical 0.05 30) 2.0422724563012378 #:eps 1e-9)
+  (check-approx (t-critical 0.01 2) 9.924843200918287 #:eps 1e-8)
+  ;; One value has no spread to test; all the same and not 0 is certain.
+  (check (= (t-test-p [0.5]) 1.0))
+  ;; (Their mean is a rounding away from 0.2, so the spread is not quite 0.)
+  (check (< (t-test-p [0.2 0.2 0.2]) 1e-20))
+  (check (= (t-test-p [0.25 0.25 0.25]) 0.0))
+  (check (= (t-test-p [0.0 0.0]) 1.0)))
+
+(run-tests)

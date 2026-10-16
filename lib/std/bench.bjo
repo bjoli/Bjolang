@@ -1,0 +1,1867 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/bench.bjo — benchmarks.
+;;
+;;     ;; Every export is documented there; the module doc is too.
+(:doc #:file "bench.bjodoc")
+
+(import (std prelude))
+;;     (import (std bench))
+;;
+;;     (def/bench "list-sort"
+;;       #:setup (random-list 100000)
+;;       (fun (xs) (list-sort xs)))
+;;
+;;     (run-benches)
+;;
+;; `def/bench` registers a benchmark where it is written, and `(run-benches)`
+;; is the file's `main`, as `deftest` and `(run-tests)` are. A run warms each
+;; benchmark up until its times are steady, calibrates how many calls make a
+;; sample, takes samples until the median is known well enough, and prints a
+;; table: the median per call, its spread, the minimum, allocation, and
+;; collections. See `Docs/Benchmark-design.org`, which this follows.
+;;
+;; The statistics are `(std bench stats)`; the runtime's part, the sink and
+;; the collector's counters, is `BjoBench`.
+
+(export def/bench run-benches time-it
+        Bench BenchCase CaseRun BenchOptions Measured Settings BenchParam bench-param-read
+        registered-benches module-benches parse-bench-args measure-case bench-params-set!
+        bench-settings time-text bytes-text
+        Selection parse-choice bench-menu menu-loop menu-lines run-selection run-and-report run-with-options bench-serve
+        print-comparison-table comparisons-text fails-slower? header-lines header-facts this-run
+        sel-bench sel-cases case-labels
+        ;; Named by the templates of the macros, so they have to be reachable
+        ;; where those expand.
+        register-bench! bench-keep! bench-param-values bench-now bench-allocated
+        run-registered-benches time-it-run time-it-fixed time-it-expansion time-it-keep)
+
+(import (std prelude))
+(import (std maths))
+(import (std syntax-match))
+(import (std bench stats))
+(import (std fmt))
+(import (std bench store))
+(import (std random))
+(import (text bjodat-core))
+
+(import/extern
+  (bench-keep!      (: Bjolang.Runtime.BjoBench.Consume (-> %a void)))
+  (collect!         (: Bjolang.Runtime.BjoBench.Collect (-> void)))
+  (gc-count         (: Bjolang.Runtime.BjoBench.Collections (-> int int)))
+  (allocated        (: Bjolang.Runtime.BjoBench.AllocatedOnThread (-> long)))
+  (cpu-model        (: Bjolang.Runtime.BjoBench.CpuModel (-> string)))
+  (core-count       (: Bjolang.Runtime.BjoBench.Cores (-> int)))
+  (os-name          (: Bjolang.Runtime.BjoBench.OperatingSystemName (-> string)))
+  (arch-name        (: Bjolang.Runtime.BjoBench.Architecture (-> string)))
+  (dotnet-version   (: Bjolang.Runtime.BjoBench.DotnetVersion (-> string)))
+  (server-gc?       (: Bjolang.Runtime.BjoBench.ServerGc (-> bool)))
+  (governor         (: Bjolang.Runtime.BjoBench.Governor (-> string)))
+  (debugger?        (: Bjolang.Runtime.BjoBench.DebuggerAttached (-> bool)))
+  (debug-build?     (: Bjolang.Runtime.BjoBench.DebugBuild (-> bool)))
+  (output-terminal? (: Bjolang.Runtime.BjoBench.OutputIsTerminal (-> bool)))
+  (input-terminal?  (: Bjolang.Runtime.BjoBench.InputIsTerminal (-> bool)))
+  (machine-key      (: Bjolang.Runtime.BjoBench.MachineKey (-> string)))
+  (now-utc          (: Bjolang.Runtime.BjoBench.NowUtc (-> string)))
+  (set-exit-code!   (: System.Environment.ExitCode (-> int void) #:set)))
+
+;; ---------------------------------------------------------------------------
+;; Small helpers
+;; ---------------------------------------------------------------------------
+
+(: parse-int (-> string (Option int)))
+(defun (parse-int s)
+  (match (try (string->int s) #:catch (System.Exception))
+    ((Ok n) (Some n))
+    (_ None)))
+
+(: parse-long (-> string (Option long)))
+(defun (parse-long s)
+  (match (try (cast System.Int64 (string->bigint s)) #:catch (System.Exception))
+    ((Ok n) (Some n))
+    (_ None)))
+
+(: parse-double (-> string (Option double)))
+(defun (parse-double s)
+  (match (try (string->double s) #:catch (System.Exception))
+    ((Ok n) (Some n))
+    (_ None)))
+
+;; The text before and after the first `sep`, when it is there and has text
+;; before it.
+(: split-once (-> string string (Option (Tuple string string))))
+(defun (split-once s sep)
+  (match (string-search s sep)
+    ((Some at) #:when (not (string-cursor=? at (string-cursor-start s)))
+     (Some (Tuple (substring s (string-cursor-start s) at)
+                  (substring s (skip-chars s at (string-count sep)) (string-cursor-end s)))))
+    (_ None)))
+
+(: skip-chars (-> string StringCursor int StringCursor))
+(defun (skip-chars s at n)
+  (if (= n 0) at (skip-chars s (string-cursor-next s at) (- n 1))))
+
+(: list-zip (-> (List %a) (List %b) (List (Tuple %a %b))))
+(defun (list-zip xs ys)
+  (match (Tuple xs ys)
+    ((Tuple (Cons x xm) (Cons y ym)) (cons (Tuple x y) (list-zip xm ym)))
+    (_ (list))))
+
+(: index-list (-> int (List int)))
+(defun (index-list n) {listing i (:for i (range 0 n))})
+
+;; The clock, read as a stopwatch reads it, so that a test can bind
+;; `current-clock` and get exact numbers.
+(: bench-now (-> long))
+(defun (bench-now) (monotonic-ns))
+
+;; The sink as an ordinary function, for `time-it`: `(std stopwatch)`
+;; re-exports what its expansion names, and a foreign import cannot be.
+(: time-it-keep (-> %a void))
+(defun (time-it-keep x) (bench-keep! x))
+
+(: bench-allocated (-> long))
+(defun (bench-allocated) (allocated))
+
+;; ---------------------------------------------------------------------------
+;; Benchmarks and their registry
+;; ---------------------------------------------------------------------------
+
+;; What running one case comes to: `batch` runs the body `k` times; `call`,
+;; for a `#:setup-every` benchmark, runs the setup and then one timed call, and
+;; answers the call's nanoseconds and the bytes it allocated, the setup's
+;; left out of both.
+(type (: CaseRun (Record (: batch (-> long void))
+                         (: call (Option (-> (Tuple long long)))))))
+
+;; One row: a benchmark at one combination of its parameters. `labels` are the
+;; parameters' names and values as the report shows them; `prepare` runs the
+;; setup and answers what to run.
+(type (: BenchCase (Record (: labels (List (Tuple string string)))
+                           (: prepare (-> CaseRun)))))
+
+;; A registered benchmark. `once` is the number of cold runs of a `#:once`
+;; benchmark, and 0 for a calibrated one. `cases` makes its rows; it is a
+;; function so that the parameters' values are read when the run starts,
+;; after the flags that may replace them.
+(type (: Bench (Record (: name string)
+                       (: module string)
+                       (: file string)
+                       (: line int)
+                       (: group string)
+                       (: skip string)
+                       (: once int)
+                       (: param-names (List string))
+                       (: cases (-> (List BenchCase))))))
+
+;; Newest first, as `(std test)`'s registry.
+(: bench-registry (Box (List Bench)))
+(def bench-registry (make-box (list)))
+
+(: register-bench! (-> string string string int string string int (List string) (-> (List BenchCase)) int))
+(defun (register-bench! name module file line group skip once param-names cases)
+  (box-set! bench-registry
+            (cons (Bench (name name) (module module) (file file) (line line) (group group)
+                         (skip skip) (once once) (param-names param-names) (cases cases))
+                  (box-ref bench-registry)))
+  0)
+
+(: registered-benches (-> (List Bench)))
+(defun (registered-benches) (list-reverse (box-ref bench-registry)))
+
+(: module-benches (-> string (List Bench)))
+(defun (module-benches module)
+  (list-filter (fun (b) (= (record-ref b module) module)) (registered-benches)))
+
+;; ---------------------------------------------------------------------------
+;; Parameters
+;; ---------------------------------------------------------------------------
+
+;; `--params n=10,100` replaces a parameter's values for the run, as text,
+;; read in the parameter's own type.
+(: param-overrides (Box (Map string (Vec string))))
+(def param-overrides (make-box (map-empty)))
+
+;; How a parameter's value is read from `--params`.
+(def/trait (BenchParam %a)
+  (: bench-param-read (-> string (Option %a))))
+
+(impl (BenchParam int) (defun (bench-param-read s) (parse-int s)))
+(impl (BenchParam long) (defun (bench-param-read s) (parse-long s)))
+(impl (BenchParam double) (defun (bench-param-read s) (parse-double s)))
+(impl (BenchParam string) (defun (bench-param-read s) (Some s)))
+(impl (BenchParam Symbol) (defun (bench-param-read s) (Some (string->symbol (string-trim-quote s)))))
+(impl (BenchParam bool)
+  (defun (bench-param-read s)
+    (case s
+      (("#t" "true") (Some #t))
+      (("#f" "false") (Some #f))
+      (else None))))
+
+;; A symbol may be written 'sorted or sorted.
+(: string-trim-quote (-> string string))
+(defun (string-trim-quote s)
+  (if (string-starts-with? s "'")
+      (substring s (string-cursor-next s (string-cursor-start s)) (string-cursor-end s))
+      s))
+
+;; Replaces parameters' values for the benchmarks run after it, as
+;; `--params` does.
+(: bench-params-set! (-> (Map string (Vec string)) void))
+(defun (bench-params-set! overrides) (box-set! param-overrides overrides))
+
+;; The values of parameter `name`: its own, or those `--params` gave.
+(: bench-param-values (-> string (Vec %a) (Vec %a)) (where (BenchParam %a)))
+(defun (bench-param-values name values)
+  (match (map-try-ref (box-ref param-overrides) name)
+    (None values)
+    ((Some texts)
+     (vec-map (fun (t)
+                (match (bench-param-read t)
+                  ((Some v) v)
+                  (None (panic! #"--params: ${name}=${t} is not a value of the parameter's type."))))
+              texts))))
+
+;; ---------------------------------------------------------------------------
+;; def/bench
+;; ---------------------------------------------------------------------------
+
+;; What the options of one `def/bench` came to.
+(type (: BenchSyntax (Record (: setup (Option Syntax))
+                             (: setup-every (Option Syntax))
+                             (: params (List (Tuple Syntax Syntax)))
+                             (: once Syntax)
+                             (: group Syntax)
+                             (: skip Syntax)
+                             (: body (List Syntax)))))
+
+(: no-bench-options (-> BenchSyntax))
+(defun (no-bench-options)
+  (BenchSyntax (setup None) (setup-every None) (params (list)) (once #'0) (group #'"")
+               (skip #'"") (body (list))))
+
+(: bench-options (-> Syntax (List Syntax) BenchSyntax BenchSyntax))
+(defun (bench-options form items o)
+  (let ((go (fun (more o2) (bench-options form more o2))))
+    (syntax-match (SList items)
+      ((#:setup e more ...) (go more (record-set o (setup (Some e)))))
+      ((#:setup-every e more ...) (go more (record-set o (setup-every (Some e)))))
+      ((#:params ((name values) ...) more ...)
+       (go more (record-set o (params (zip-syntax name values)))))
+      ((#:once n more ...) (go more (record-set o (once n))))
+      ((#:group g more ...) (go more (record-set o (group g))))
+      ((#:skip why more ...) (go more (record-set o (skip why))))
+      ((first more ...) (record-set o (body (cons first more))))
+      (_ (ignore (syntax-error form "def/bench takes a name and a body: (def/bench \"name\" body ...), with options such as #:setup, #:setup-every, #:params, #:once, #:group and #:skip after the name."))
+         o))))
+
+(: zip-syntax (-> (List Syntax) (List Syntax) (List (Tuple Syntax Syntax))))
+(defun (zip-syntax xs ys)
+  (match (Tuple xs ys)
+    ((Tuple (Cons x xm) (Cons y ym)) (cons (Tuple x y) (zip-syntax xm ym)))
+    (_ (list))))
+
+;; The function a body is, applied to `args`. A literal `(fun (x ...) body ...)`
+;; is not called but bound, so a call in a batch costs no delegate call.
+(: apply-body (-> Syntax (List Syntax) (List Syntax) Syntax))
+(defun (apply-body form body args)
+  (match body
+    ((Cons only Nil)
+     (syntax-match only
+       (('fun (param ...) inner ...)
+        (if (= (list-length param) (list-length args))
+            #'(let ,(SList (zip-bindings param args)) ,@inner)
+            (syntax-error only #"This body takes ${(list-length param)} argument(s), and it is given ${(list-length args)}.")))
+       (_ #'(,only ,@args))))
+    (_ #'((begin ,@body) ,@args))))
+
+(: zip-bindings (-> (List Syntax) (List Syntax) (List Syntax)))
+(defun (zip-bindings names values)
+  (list-map (fun (p) (match p ((Tuple n v) #'(,n ,v)))) (zip-syntax names values)))
+
+;; What one call of the body is: the body itself, or the body applied to what
+;; it is given, the input or the parameters.
+(: body-call (-> Syntax BenchSyntax (List Syntax) (Option Syntax) Syntax))
+(defun (body-call form o params input)
+  (match input
+    ((Some x) (apply-body form (record-ref o body) (list x)))
+    (None
+     (if (list-empty? params)
+         #'(begin ,@(record-ref o body))
+         (apply-body form (record-ref o body) params)))))
+
+;; The setup applied to the parameters, when there are any.
+(: with-params (-> Syntax (List Syntax) Syntax))
+(defun (with-params e params)
+  (if (list-empty? params) e #'(,e ,@params)))
+
+;; `prepare` of one case: the setup, then the runs.
+(: prepare-expansion (-> Syntax BenchSyntax (List Syntax) Syntax))
+(defun (prepare-expansion form o params)
+  (match (Tuple (record-ref o setup) (record-ref o setup-every))
+    ((Tuple None None)
+     #'(fun ()
+         (CaseRun (batch (fun (k)
+                           (let lp ((i 0L))
+                             (when (< i k)
+                               (bench-keep! ,(body-call form o params None))
+                               (lp (+ i 1L))))))
+                  (call None))))
+    ((Tuple (Some setup) None)
+     #'(fun ()
+         (let ((input ,(with-params setup params)))
+           (CaseRun (batch (fun (k)
+                             (let lp ((i 0L))
+                               (when (< i k)
+                                 (bench-keep! ,(body-call form o params (Some #'input)))
+                                 (lp (+ i 1L))))))
+                    (call None)))))
+    ((Tuple setup (Some every))
+     ;; With `#:setup` too, the per-call setup is a function of its value;
+     ;; without, of the parameters when there are any.
+     (def made
+       (match setup
+         ((Some s) #'(let ((base ,(with-params s params))) (fun () (,every base))))
+         (None (if (list-empty? params) #'(fun () ,every) #'(fun () ,(with-params every params))))))
+     #'(fun ()
+         (let ((make ,made))
+           (CaseRun (batch (fun (k)
+                             (let lp ((i 0L))
+                               (when (< i k)
+                                 (let ((input (make)))
+                                   (bench-keep! ,(body-call form o params (Some #'input))))
+                                 (lp (+ i 1L))))))
+                    (call (Some (fun ()
+                                  (let* ((input (make))
+                                         (b0 (bench-allocated))
+                                         (t0 (bench-now)))
+                                    (bench-keep! ,(body-call form o params (Some #'input)))
+                                    (let ((t1 (bench-now)))
+                                      (Tuple (- t1 t0) (- (bench-allocated) b0)))))))))))))
+
+;; The cases: one per combination of the parameters' values, the last varying
+;; fastest.
+(: cases-expansion (-> Syntax BenchSyntax Syntax))
+(defun (cases-expansion form o)
+  (def params (record-ref o params))
+  (def names (list-map (fun (p) (match p ((Tuple n _) n))) params))
+  (def case-form
+    #'(BenchCase (labels (list ,@(list-map (fun (n) #'(Tuple ,(SStr (syntax->string n)) (->str ,n))) names)))
+                 (prepare ,(prepare-expansion form o names))))
+  (if (list-empty? params)
+      #'(fun () (list ,case-form))
+      (let ()
+        (def fors
+          (list-map (fun (p)
+                      (match p
+                        ((Tuple n vs) #'(:for ,n (bench-param-values ,(SStr (syntax->string n)) ,vs)))))
+                    params))
+        ;; `(:subloop)` between the drivers, so that each is a level of its own
+        ;; and they nest rather than walk in step.
+        (def clauses (interleave-subloop fors))
+        ;; One unnamed accumulator is the loop's value: a `=>` written in a
+        ;; template would be renamed by hygiene, and no longer read as one.
+        #'(fun ()
+            (loop ,@clauses
+                  (:acc (listing ,case-form)))))))
+
+(: interleave-subloop (-> (List Syntax) (List Syntax)))
+(defun (interleave-subloop fors)
+  (match fors
+    (Nil (list))
+    ((Cons f Nil) (list f))
+    ((Cons f more) (cons f (cons #'(:subloop) (interleave-subloop more))))))
+
+(: def-bench-expansion (-> Syntax Syntax BenchSyntax Syntax))
+(defun (def-bench-expansion form name o)
+  (when (list-empty? (record-ref o body))
+    (ignore (syntax-error form "def/bench has no body: (def/bench \"name\" body ...).")))
+  (def param-names (list-map (fun (p) (match p ((Tuple n _) (SStr (syntax->string n))))) (record-ref o params)))
+  #'(def registered
+      (register-bench! ,name (current-module) ,(SStr (syntax-file form)) ,(SInt (int->string (syntax-line form)))
+                       ,(record-ref o group) ,(record-ref o skip) ,(record-ref o once)
+                       (list ,@param-names)
+                       ,(cases-expansion form o))))
+
+;; `(def/bench "name" body ...)`, with options after the name in any order:
+;; `#:setup e`, `#:setup-every e`, `#:params ((p values) ...)`, `#:once n`,
+;; `#:group "g"` and `#:skip "why"`. Registers the benchmark;
+;; `(run-benches)` runs it.
+(def/macro (def/bench form inject compare)
+  (syntax-match form
+    ((_ name first more ...)
+     (def-bench-expansion form name (bench-options form (cons first more) (no-bench-options))))
+    (bad (syntax-error bad "def/bench takes a name and a body: (def/bench \"name\" body ...)."))))
+
+;; ---------------------------------------------------------------------------
+;; The options of a run
+;; ---------------------------------------------------------------------------
+
+;; What the arguments of a benchmark program asked for. `scale` multiplies the
+;; time targets: 0.5 for `--quick`, 4 for `--long`.
+(type (: BenchOptions (Record (: filters (Vec string))
+                              (: all bool)
+                              (: list bool)
+                              (: scale double)
+                              (: min-samples int)
+                              (: max-time-ns long)
+                              (: detail bool)
+                              (: params (Map string (Vec string)))
+                              ;; Saving and comparing.
+                              (: save (Option string))
+                              (: compare (Option string))
+                              (: alpha double)
+                              ;; A fraction: 0.02 for 2%.
+                              (: threshold double)
+                              (: p-raw bool)
+                              (: fail-slower (Option double))
+                              ;; Driven over standard input and output.
+                              (: serve bool)
+                              ;; Exactly these cases, numbered as `--serve`'s
+                              ;; `(list)` numbers them: what `bjo bench` asks
+                              ;; for after a menu over several files.
+                              (: cases (Option (Vec int)))
+                              ;; How time grows with a numeric parameter.
+                              (: scaling bool)
+                              ;; The cases of each `#:group` compared, in
+                              ;; `rounds` interleaved rounds shuffled from
+                              ;; `seed`.
+                              (: compare-within bool)
+                              (: rounds int)
+                              (: seed (Option ulong)))))
+
+;; `2`, `2%` or `0.5` as a fraction of one: a percentage.
+(: parse-percent (-> string (Option double)))
+(defun (parse-percent s)
+  (def digits (if (string-ends-with? s "%")
+                  (substring s (string-cursor-start s) (string-cursor-prev s (string-cursor-end s)))
+                  s))
+  (match (parse-double digits)
+    ((Some x) #:when (>= x 0.0) (Some (/ x 100.0)))
+    (_ None)))
+
+(: parse-bench-args (-> (Vec string) (Result string BenchOptions)))
+(defun (parse-bench-args args)
+  (let go ((left (vec->list args)) (o (BenchOptions (filters (vec-empty)) (all #f) (list #f) (scale 1.0)
+                                                    (min-samples 20) (max-time-ns 0L) (detail #f)
+                                                    (params (map-empty))
+                                                    (save None) (compare None) (alpha 0.05)
+                                                    (threshold 0.02) (p-raw #f) (fail-slower None) (serve #f)
+                                                    (cases None) (scaling #f) (compare-within #f)
+                                                    (rounds 20) (seed None))))
+    (defun (value-of flag more k)
+      (match more
+        ((Cons v after) (k v after))
+        (Nil (Err #"${flag} needs a value."))))
+    (match left
+      (Nil (Ok o))
+      ((Cons a more)
+       (case a
+         ("--all" (go more (record-set o (all #t))))
+         ("--list" (go more (record-set o (list #t))))
+         ("--quick" (go more (record-set o (scale 0.5))))
+         ("--long" (go more (record-set o (scale 4.0))))
+         ("--detail" (go more (record-set o (detail #t))))
+         ("--p-raw" (go more (record-set o (p-raw #t))))
+         ("--serve" (go more (record-set o (serve #t))))
+         ("--scaling" (go more (record-set o (scaling #t))))
+         ("--compare-within" (go more (record-set o (compare-within #t))))
+         ("-N"
+          (value-of a more
+            (fun (v after)
+              (match (parse-int v)
+                ((Some n) #:when (> n 1) (go after (record-set o (rounds n))))
+                (_ (Err #"-N takes a number of rounds above 1: ${v}"))))))
+         ("--seed"
+          (value-of a more
+            (fun (v after)
+              (match (parse-long v)
+                ((Some n) (go after (record-set o (seed (Some (cast System.UInt64 n))))))
+                (_ (Err #"--seed takes a whole number: ${v}"))))))
+         ("--cases"
+          (value-of a more
+            (fun (v after)
+              (match (all-ints (string-split v ","))
+                ((Some is) (go after (record-set o (cases (Some is)))))
+                (None (Err #"--cases takes case numbers, 0,3,4: ${v}"))))))
+         ("--save" (value-of a more (fun (v after) (go after (record-set o (save (Some v)))))))
+         ("--compare" (value-of a more (fun (v after) (go after (record-set o (compare (Some v)))))))
+         ("--alpha"
+          (value-of a more
+            (fun (v after)
+              (match (parse-double v)
+                ((Some p) #:when (and (> p 0.0) (< p 1.0)) (go after (record-set o (alpha p))))
+                (_ (Err #"--alpha takes a level between 0 and 1: ${v}"))))))
+         ("--threshold"
+          (value-of a more
+            (fun (v after)
+              (match (parse-percent v)
+                ((Some t) (go after (record-set o (threshold t))))
+                (_ (Err #"--threshold takes a percentage: ${v}"))))))
+         ("--fail-slower"
+          (value-of a more
+            (fun (v after)
+              (match (parse-percent v)
+                ((Some t) (go after (record-set o (fail-slower (Some t)))))
+                (_ (Err #"--fail-slower takes a percentage: ${v}"))))))
+         ("--min-samples"
+          (value-of a more
+            (fun (v after)
+              (match (parse-int v)
+                ((Some n) #:when (> n 1) (go after (record-set o (min-samples n))))
+                (_ (Err #"--min-samples takes a number above 1: ${v}"))))))
+         ("--max-time"
+          (value-of a more
+            (fun (v after)
+              (match (parse-double v)
+                ((Some s) #:when (> s 0.0)
+                 (go after (record-set o (max-time-ns (cast System.Int64 (* s 1e9))))))
+                (_ (Err #"--max-time takes seconds: ${v}"))))))
+         ("--params"
+          (value-of a more
+            (fun (v after)
+              (match (parse-param-override v)
+                ((Ok (Tuple name values))
+                 (go after (record-set o (params (map-set (record-ref o params) name values)))))
+                ((Err e) (Err e))))))
+         (else
+          (if (string-starts-with? a "--")
+              (Err #"unknown flag ${a}. The flags are --all, --list, --quick, --long, --detail, --min-samples N, --max-time S, --params P=V,..., --save FILE, --compare FILE, --alpha P, --threshold PCT, --p-raw, --fail-slower PCT, --serve, --cases I,J,..., --scaling, --compare-within, -N ROUNDS and --seed N")
+              (go more (record-set o (filters (vec-add (record-ref o filters) a)))))))))))
+
+;; Every text a number, or none of them.
+(: all-ints (-> (Vec string) (Option (Vec int))))
+(defun (all-ints texts)
+  (def parsed (vec-map parse-int texts))
+  (if (vec-iter some? parsed)
+      (Some (vec-map (fun (x) (match x ((Some n) n) (None 0))) parsed))
+      None))
+
+;; `n=10,100` as `n` and its values.
+(: parse-param-override (-> string (Result string (Tuple string (Vec string)))))
+(defun (parse-param-override s)
+  (match (split-once s "=")
+    ((Some (Tuple name values)) (Ok (Tuple name (string-split values ","))))
+    (None (Err #"--params takes NAME=VALUE,VALUE...: ${s}"))))
+
+;; The targets of a run, in nanoseconds, from its options.
+(type (: Settings (Record (: sample-ns long)
+                          (: time-ns long)
+                          (: warmup-ns long)
+                          (: max-ns long)
+                          (: min-samples int)
+                          (: max-samples int))))
+
+(: bench-settings (-> BenchOptions Settings))
+(defun (bench-settings o)
+  (def scale (record-ref o scale))
+  (def time-ns (cast System.Int64 (* 2e9 scale)))
+  (Settings (sample-ns 10000000L)
+            (time-ns time-ns)
+            (warmup-ns (cast System.Int64 (* 1e9 scale)))
+            (max-ns (if (> (record-ref o max-time-ns) 0L) (record-ref o max-time-ns) (* 3L time-ns)))
+            (min-samples (record-ref o min-samples))
+            (max-samples (max 100 (record-ref o min-samples)))))
+
+;; ---------------------------------------------------------------------------
+;; Measuring
+;; ---------------------------------------------------------------------------
+
+;; What measuring one case came to. `samples` are nanoseconds per call, in the
+;; order they were taken; for a `#:once` benchmark, one per cold run.
+;; `calls` is every call the samples timed, which the collections and the
+;; allocation are per.
+(type (: Measured (Record (: samples (Vec double))
+                          (: k long)
+                          (: calls long)
+                          (: bytes long)
+                          (: gc0 long)
+                          (: gc1 long)
+                          (: gc2 long)
+                          (: steady bool)
+                          (: once bool)
+                          (: per-call bool))))
+
+;; Where measuring says how far it has come: a phase, such as "warming up" or
+;; "sampling 14/20 · median 6.21 ms". Nothing, unless the runner sets it: at a
+;; terminal it rewrites one line.
+(: progress-box (Box (-> string void)))
+(def progress-box (make-box (fun (what) unit)))
+
+(: progress (-> string void))
+(defun (progress what) ((box-ref progress-box) what))
+
+;; The nanoseconds of one batch of `k` calls.
+(: time-batch (-> CaseRun long long))
+(defun (time-batch run k)
+  (def t0 (bench-now))
+  ((record-ref run batch) k)
+  (- (bench-now) t0))
+
+;; One sample of `k` calls, after a collection: its nanoseconds, bytes and
+;; collections.
+(type (: Sample (Record (: ns long) (: bytes long) (: gc0 long) (: gc1 long) (: gc2 long))))
+
+(: take-sample (-> CaseRun long Sample))
+(defun (take-sample run k)
+  (collect!)
+  (def g0 (gc-count 0))
+  (def g1 (gc-count 1))
+  (def g2 (gc-count 2))
+  (def b0 (allocated))
+  (def (Tuple ns bytes)
+    (match (record-ref run call)
+      ;; `#:setup-every`: each call on its own, its setup outside the time
+      ;; and the allocation.
+      ((Some call)
+       (let go ((i 0L) (total 0L) (bytes 0L))
+         (if (< i k)
+             (match (call) ((Tuple t b) (go (+ i 1L) (+ total t) (+ bytes b))))
+             (Tuple total bytes))))
+      (None (let ((t (time-batch run k))) (Tuple t (- (allocated) b0))))))
+  (Sample (ns ns) (bytes bytes)
+          (gc0 (cast System.Int64 (- (gc-count 0) g0)))
+          (gc1 (cast System.Int64 (- (gc-count 1) g1)))
+          (gc2 (cast System.Int64 (- (gc-count 2) g2)))))
+
+(: per-call-ns (-> long long double))
+(defun (per-call-ns ns k) (/ (cast System.Double ns) (cast System.Double k)))
+
+;; The batch size whose batch takes `target` nanoseconds: start at 1, and
+;; multiply by what the last batch says is missing, at most by 10.
+(: calibrate (-> CaseRun long long))
+(defun (calibrate run target)
+  (let go ((k 1L))
+    (def t (time-batch run k))
+    (cond
+      ((>= t target) k)
+      ((> k 1000000000000L) k)
+      (else
+       (def factor
+         (if (<= t 0L)
+             10L
+             (min 10L (max 2L (cast System.Int64 (ceiling (/ (* 1.1 (cast System.Double target)) (cast System.Double t))))))))
+       (go (* k factor))))))
+
+;; Runs batches of `k` until the medians of the last two windows of five
+;; batches agree within 2%, or the warm-up has had `limit` nanoseconds.
+;; Answers whether it got steady.
+(: warm-up (-> CaseRun long long bool))
+(defun (warm-up run k limit)
+  (def started (bench-now))
+  (let go ((times (vec-empty)))
+    (def t (cast System.Double (time-batch run k)))
+    (def now-times (vec-add times t))
+    (def n (vec-length now-times))
+    (cond
+      ;; Not before half the limit: the JIT recompiles a hot method only
+      ;; once no new method has needed compiling for 100 ms, and then after
+      ;; 30 more calls, so a body can be steady at its first tier for a
+      ;; while before it gets faster.
+      ((and (>= n 10)
+            (>= (- (bench-now) started) (/ limit 2L))
+            (let ((recent (median (vec-slice now-times (- n 5) 5)))
+                  (before (median (vec-slice now-times (- n 10) 5))))
+              (and (> before 0.0) (< (abs (- recent before)) (* 0.02 before)))))
+       #t)
+      ((>= (- (bench-now) started) limit) #f)
+      (else (go now-times)))))
+
+;; The half-width of a 95% interval of the median of sorted samples, from
+;; the order statistics around it, as a fraction of the median.
+(: median-precision (-> (Vec double) double))
+(defun (median-precision samples)
+  (def n (vec-length samples))
+  (if (< n 5)
+      1.0
+      (let ()
+        (def half (* 0.98 (sqrt (cast System.Double n))))
+        (def lo (quantile samples (max 0.0 (- 0.5 (/ half (cast System.Double n))))))
+        (def hi (quantile samples (min 1.0 (+ 0.5 (/ half (cast System.Double n))))))
+        (def m (median samples))
+        (if (<= m 0.0) 0.0 (/ (- hi lo) (* 2.0 m))))))
+
+;; Measures one case, a calibrated one or `once` cold runs of one call.
+(: measure-case (-> BenchCase int Settings Measured))
+(defun (measure-case c once s)
+  (def run ((record-ref c prepare)))
+  (if (> once 0)
+      (measure-once run once)
+      (measure-calibrated run s)))
+
+(: measure-once (-> CaseRun int Measured))
+(defun (measure-once run n)
+  (def taken
+    (loop (:for i (up-from 0 #:to n))
+          (:do (progress #"cold run ${(+ i 1)}/${n}"))
+          (:acc out (vecing (take-sample run 1L)))
+      => out))
+  (summed taken 1L #t #t (record-ref run call)))
+
+;; Calibrates to samples of `sample-ns` and warms up for at most `warmup-ns`:
+;; the batch size, and whether the times got steady.
+(: prepare-run (-> CaseRun long long (Tuple long bool)))
+(defun (prepare-run run sample-ns warmup-ns)
+  (progress "calibrating")
+  (def k0 (calibrate run sample-ns))
+  (progress "warming up")
+  (def steady (warm-up run k0 warmup-ns))
+  ;; The JIT may have made the body much faster while it warmed up.
+  (def k (let ((t (time-batch run k0)))
+           (if (and (> t 0L) (< (* 2L t) sample-ns))
+               (calibrate-from run k0 sample-ns)
+               k0)))
+  (Tuple k steady))
+
+(: measure-calibrated (-> CaseRun Settings Measured))
+(defun (measure-calibrated run s)
+  ;; A `#:setup-every` call is timed on its own, so a sample is k such calls,
+  ;; and calibration counts them the same way.
+  (def (Tuple k steady) (prepare-run run (record-ref s sample-ns) (record-ref s warmup-ns)))
+  (def taken
+    (let go ((samples (vec-empty)) (spent 0L))
+      (def one (take-sample run k))
+      (def now (vec-add samples one))
+      (def spent2 (+ spent (record-ref one ns)))
+      (def n (vec-length now))
+      (def times (vec-map (fun (x) (per-call-ns (record-ref x ns) k)) now))
+      ;; What is left, at the time the last sample took: the samples still
+      ;; owed to the minimum, or the time still owed to the target.
+      (def owed-ns (max (* (cast System.Int64 (max 0 (- (record-ref s min-samples) n))) (record-ref one ns))
+                        (- (record-ref s time-ns) spent2)))
+      (progress (str "sampling " (int->string n) "/" (int->string (record-ref s min-samples))
+                     "   median " (time-text (median times))
+                     (if (> owed-ns 0L) (str "   ~" (time-text (cast System.Double owed-ns)) " left") "")))
+      (cond
+        ((>= n (record-ref s max-samples)) now)
+        ((>= spent2 (record-ref s max-ns)) now)
+        ((or (< n (record-ref s min-samples)) (< spent2 (record-ref s time-ns))) (go now spent2))
+        ;; Enough of both: more only while the median is not known to ±1%.
+        ((> (median-precision times) 0.01) (go now spent2))
+        (else now))))
+  (summed taken k steady #f (record-ref run call)))
+
+(: calibrate-from (-> CaseRun long long long))
+(defun (calibrate-from run k target)
+  (let go ((k k))
+    (def t (time-batch run k))
+    (if (or (>= t target) (> k 1000000000000L))
+        k
+        (go (* k (if (<= t 0L) 10L (min 10L (max 2L (cast System.Int64 (ceiling (/ (* 1.1 (cast System.Double target)) (cast System.Double t))))))))))))
+
+(: summed (-> (Vec Sample) long bool bool (Option (-> (Tuple long long))) Measured))
+(defun (summed taken k steady once call)
+  (Measured (samples (vec-map (fun (x) (per-call-ns (record-ref x ns) k)) taken))
+            (k k)
+            (calls (* k (cast System.Int64 (vec-length taken))))
+            (bytes (vec-fold (fun (x acc) (+ acc (record-ref x bytes))) 0L taken))
+            (gc0 (vec-fold (fun (x acc) (+ acc (record-ref x gc0))) 0L taken))
+            (gc1 (vec-fold (fun (x acc) (+ acc (record-ref x gc1))) 0L taken))
+            (gc2 (vec-fold (fun (x acc) (+ acc (record-ref x gc2))) 0L taken))
+            (steady steady)
+            (once once)
+            (per-call (some? call))))
+
+;; ---------------------------------------------------------------------------
+;; Reporting
+;; ---------------------------------------------------------------------------
+
+;; `v` with `digits` digits after the point.
+(: fixed (-> double int string))
+(defun (fixed v digits)
+  (def scale (pow 10.0 (cast System.Double digits)))
+  (def n (cast System.Int64 (round (* (abs v) scale))))
+  (def whole (/ n (cast System.Int64 scale)))
+  (def frac (- n (* whole (cast System.Int64 scale))))
+  (def sign (if (and (< v 0.0) (> n 0L)) "-" ""))
+  (if (= digits 0)
+      (str sign (long->string whole))
+      (str sign (long->string whole) "." (string-pad-left (long->string frac) digits #:with #\0))))
+
+;; Three significant digits.
+(: three (-> double string))
+(defun (three v)
+  (cond ((>= (abs v) 100.0) (fixed v 0))
+        ((>= (abs v) 10.0) (fixed v 1))
+        (else (fixed v 2))))
+
+;; Nanoseconds, in the unit that reads best.
+(: time-text (-> double string))
+(defun (time-text ns)
+  (cond ((>= ns 1e9) (str (three (/ ns 1e9)) " s"))
+        ((>= ns 1e6) (str (three (/ ns 1e6)) " ms"))
+        ((>= ns 1e3) (str (three (/ ns 1e3)) " µs"))
+        (else (str (three ns) " ns"))))
+
+(: bytes-text (-> double string))
+(defun (bytes-text b)
+  (cond ((>= b 1073741824.0) (str (three (/ b 1073741824.0)) " GB"))
+        ((>= b 1048576.0) (str (three (/ b 1048576.0)) " MB"))
+        ((>= b 1024.0) (str (three (/ b 1024.0)) " KB"))
+        (else (str (fixed b 0) " B"))))
+
+;; One row of the report: the cells, and the marks after them.
+(type (: Row (Record (: name string)
+                     (: labels (List (Tuple string string)))
+                     (: cells (List string))
+                     (: notes (List string))
+                     (: extra (List string)))))
+
+;; The samples outside Tukey's fences and also more than 2% from the median.
+;; On a quiet machine the fences of a tight benchmark are a fraction of a
+;; percent apart, and a sample past them is no news.
+(: far-outliers (-> (Vec double) double int))
+(defun (far-outliers xs med)
+  (def q1 (quantile xs 0.25))
+  (def q3 (quantile xs 0.75))
+  (def fence (max (* 1.5 (- q3 q1)) (* 0.02 med)))
+  (loop (:for x xs)
+        (:acc (counting x) #:when (or (< x (- q1 fence)) (> x (+ q3 fence))))))
+
+;; ---------------------------------------------------------------------------
+;; Pictures of samples, for --detail
+;; ---------------------------------------------------------------------------
+
+(def spark-levels "▁▂▃▄▅▆▇█")
+
+;; The level of `x` between `lo` and `hi`, as one of the eight blocks.
+(: spark-char (-> double double double string))
+(defun (spark-char x lo hi)
+  (def i (if (<= hi lo)
+             3
+             (min 7 (max 0 (cast System.Int32 (floor (* 8.0 (/ (- x lo) (- hi lo)))))))))
+  (substring spark-levels (string-cursor-at spark-levels i) (string-cursor-at spark-levels (+ i 1))))
+
+(: string-cursor-at (-> string int StringCursor))
+(defun (string-cursor-at s i)
+  (let go ((c (string-cursor-start s)) (n i))
+    (if (or (= n 0) (string-cursor-end? s c)) c (go (string-cursor-next s c) (- n 1)))))
+
+;; The samples in the order they were taken, at most `width` of them: more
+;; are averaged in runs. What shows a drift, such as a body that slows down
+;; as its heap grows.
+(: sparkline (-> (Vec double) int string))
+(defun (sparkline xs width)
+  (def n (vec-length xs))
+  (def shown
+    (if (<= n width)
+        xs
+        {vecing (mean (vec-slice xs (/ (* i n) width) (max 1 (- (/ (* (+ i 1) n) width) (/ (* i n) width)))))
+                (:for i (range 0 width))}))
+  (def lo (vec-fold min (vec-ref shown 0) shown))
+  (def hi (vec-fold max (vec-ref shown 0) shown))
+  (string-join (vec-map (fun (x) (spark-char x lo hi)) shown) ""))
+
+;; How many samples fall in each of `bins` equal steps from the lowest to the
+;; highest, a block each, a space for none. What shows two values rather
+;; than a spread around one.
+(: histogram (-> (Vec double) int string))
+(defun (histogram xs bins)
+  (def lo (vec-fold min (vec-ref xs 0) xs))
+  (def hi (vec-fold max (vec-ref xs 0) xs))
+  (def counts (make-array bins #:fill 0))
+  (loop (:for x xs)
+        (:let i (if (<= hi lo) 0 (min (- bins 1) (cast System.Int32 (floor (* (cast System.Double bins) (/ (- x lo) (- hi lo))))))))
+        (:do (array-set! counts i (+ 1 (array-ref counts i)))))
+  (def most (cast System.Double (loop (:for i (up-from 0 #:to bins)) (:acc m (folding 0 (max m (array-ref counts i)))) => m)))
+  (string-join {vecing (if (= (array-ref counts i) 0)
+                           " "
+                           (spark-char (cast System.Double (array-ref counts i)) 0.0 most))
+                       (:for i (range 0 bins))}
+               ""))
+
+;; Collections per 1000 calls, or per call for a run of single calls.
+(: gc-text (-> Measured string))
+(defun (gc-text m)
+  (def calls (cast System.Double (record-ref m calls)))
+  (def per (if (record-ref m once) 1.0 1000.0))
+  (defun (one (: n long)) : string
+    (if (= n 0L) "0" (three (* per (/ (cast System.Double n) calls)))))
+  (if (= 0L (+ (record-ref m gc0) (+ (record-ref m gc1) (record-ref m gc2))))
+      "-"
+      (str (one (record-ref m gc0)) "/" (one (record-ref m gc1)) "/" (one (record-ref m gc2)))))
+
+(: measured-row (-> string (List (Tuple string string)) Measured bool Row))
+(defun (measured-row name labels m detail)
+  (def xs (record-ref m samples))
+  (def med (median xs))
+  (def spread (if (> med 0.0) (* 100.0 (/ (mad xs) med)) 0.0))
+  (def lowest (vec-fold min (vec-ref xs 0) xs))
+  (def outliers (far-outliers xs med))
+  (def calls (cast System.Double (record-ref m calls)))
+  (def notes
+    (list-filter (fun (n) (not (string-empty? n)))
+                 (list (if (and (not (record-ref m once)) (> spread 3.0)) "noisy" "")
+                       (if (and (not (record-ref m once)) (not (record-ref m steady))) "unsteady" "")
+                       (if (and (not (record-ref m once)) (> outliers 0))
+                           (str (int->string outliers) (if (= outliers 1) " outlier" " outliers")) "")
+                       (if (and (record-ref m per-call) (< med 1000.0)) "setup-every: below resolution" ""))))
+  (def extra
+    (if (record-ref m once)
+        (list (str "(" (string-join (vec-map time-text xs) ", ") ")"))
+        (if detail
+            (list (str "mean " (time-text (mean xs)) ", sd " (time-text (std-dev xs))
+                       ", q1 " (time-text (quantile xs 0.25)) ", q3 " (time-text (quantile xs 0.75))
+                       ", " (int->string (vec-length xs)) " samples of " (long->string (record-ref m k)) " calls")
+                  (str "in order   " (sparkline xs 60))
+                  (str "histogram  " (time-text lowest) " " (histogram xs 24) " "
+                       (time-text (vec-fold max (vec-ref xs 0) xs))))
+            (list))))
+  (Row (name name) (labels labels)
+       (cells (list (time-text med)
+                    (if (record-ref m once) "-" (str (fixed spread 1) "%"))
+                    (time-text lowest)
+                    (bytes-text (/ (cast System.Double (record-ref m bytes)) calls))
+                    (gc-text m)))
+       (notes notes)
+       (extra extra)))
+
+(: header-lines (-> int (List string)))
+(defun (header-lines count)
+  (def facts
+    (str "bench: " (int->string count) (if (= count 1) " benchmark, " " benchmarks, ")
+         (if (debug-build?) "Debug build, " "Release build, ")
+         (dotnet-version) ", " (arch-name) ", " (int->string (core-count)) " cores, gcServer="
+         (if (server-gc?) "true" "false")))
+  (def gov (governor))
+  (list-filter (fun (l) (not (string-empty? l)))
+               (list facts
+                     (str "bench: " (cpu-model) ", " (os-name))
+                     (if (debug-build?) "bench: warning: a Debug build measures code the JIT did not optimize" "")
+                     (if (debugger?) "bench: warning: a debugger is attached" "")
+                     (if (and (not (string-empty? gov)) (not (= gov "performance")))
+                         #"bench: warning: CPU frequency governor is '${gov}'; results will be noisy" ""))))
+
+;; What a run is asked to measure: benchmarks, each with the cases chosen.
+(type (: Selection (Record (: bench Bench) (: cases (List BenchCase)))))
+
+(: sel-bench (-> Selection Bench))
+(defun (sel-bench p) (record-ref p bench))
+
+(: sel-cases (-> Selection (List BenchCase)))
+(defun (sel-cases p) (record-ref p cases))
+
+;; The layout of a table: the parameters it has columns for, and the widths
+;; and alignments of its columns, from `(std fmt)`. Fixed before the first
+;; row, so that a row can be printed the moment it is measured and a long
+;; run read while it goes.
+(type (: Layout (Record (: params (List string))
+                        (: heads (List string))
+                        (: table TableLayout))))
+
+;; The cells after the parameters are numbers, right-aligned, of a width
+;; known in advance; a longer one pushes its row out rather than the column.
+;; After them come the notes, unaligned.
+(def number-heads (list "median" "±" "min" "alloc/op" "gc/1k 0/1/2"))
+(def number-widths (list 9 6 9 9 11))
+
+(: table-sep string)
+(def table-sep "   ")
+
+;; The label of parameter `p` among a case's, or nothing.
+(: label-of (-> (List (Tuple string string)) string string))
+(defun (label-of labels p)
+  (match (find (fun (l) (= (fst l) p)) labels)
+    ((Some l) (snd l))
+    (None "")))
+
+(: blocks (-> (List string) (Vec Block)))
+(defun (blocks cells) (list->vec (list-map BStr cells)))
+
+(: layout-for (-> (List Selection) bool Layout))
+(defun (layout-for chosen scaling)
+  (def params (selection-params chosen))
+  (def heads (if scaling (list-append number-heads (list "scaling")) number-heads))
+  (def head-widths (if scaling (list-append number-widths (list 14)) number-widths))
+  ;; The name and parameter columns are as wide as their widest cell.
+  (def label-rows
+    (cons (blocks (cons "name" params))
+          (fold (fun (p acc)
+                  (list-append acc
+                               (list-map (fun (c)
+                                           (blocks (cons (record-ref (sel-bench p) name)
+                                                         (list-map (fun (n) (label-of (case-labels c) n))
+                                                                   params))))
+                                         (sel-cases p))))
+                (list) chosen)))
+  (def widths
+    (list->vec (list-append (vec->list (table-widths (list->vec label-rows)))
+                            (list-map (fun (p) (match p ((Tuple h w) (max w (string-count h)))))
+                                      (list-zip heads head-widths)))))
+  (def aligns
+    (list->vec (list-append (list-map (fun (n) AlignLeft) (cons "name" params))
+                            (list-map (fun (h) AlignRight) heads))))
+  (Layout (params params) (heads heads) (table (table-layout widths #:sep table-sep #:align aligns))))
+
+(: print-head (-> Layout void))
+(defun (print-head l)
+  (println "")
+  (show [(table-row (record-ref l table)
+                    (blocks (list-append (cons "name" (record-ref l params)) (record-ref l heads))))]))
+
+(: print-row (-> Layout Row void))
+(defun (print-row l r)
+  (def notes (record-ref r notes))
+  (def cells
+    (list-append (cons (record-ref r name)
+                       (list-map (fun (p) (label-of (record-ref r labels) p)) (record-ref l params)))
+                 (list-append (record-ref r cells)
+                              (if (list-empty? notes) (list) (list (string-join (list->vec notes) ", "))))))
+  (show [(table-row (record-ref l table) (blocks cells))])
+  ;; Extra lines start under the first column after the name.
+  (def indent (+ (vec-ref (record-ref (record-ref l table) widths) 0) (string-count table-sep)))
+  (loop (:for e (record-ref r extra))
+        (:do (println (str (string-pad-right "" indent) e)))))
+
+(: fst (-> (Tuple string string) string))
+(defun (fst p) (match p ((Tuple a _) a)))
+
+(: snd (-> (Tuple string string) string))
+(defun (snd p) (match p ((Tuple _ b) b)))
+
+;; ---------------------------------------------------------------------------
+;; Running
+;; ---------------------------------------------------------------------------
+
+;; The parameters of what is chosen, each once, in the order first met.
+(: selection-params (-> (List Selection) (List string)))
+(defun (selection-params chosen)
+  (fold (fun (p acc)
+          (list-append acc (list-filter (fun (n) (not (any? (fun (m) (= m n)) acc)))
+                                        (record-ref (sel-bench p) param-names))))
+        (list) chosen))
+
+(: case-count (-> (List Selection) int))
+(defun (case-count chosen) (fold (fun (p n) (+ n (list-length (sel-cases p)))) 0 chosen))
+
+;; Whether a filter chooses a benchmark's case: its name, or its parameters as
+;; the report shows them, `n=1000`.
+(: chosen? (-> (Vec string) Bench BenchCase bool))
+(defun (chosen? filters b c)
+  (or (vec-empty? filters)
+      (any? (fun (f)
+              (or (string-contains? (record-ref b name) f)
+                  (any? (fun (l) (= (str (fst l) "=" (snd l)) f)) (case-labels c))))
+            filters)))
+
+;; The benchmarks the filters choose, with their cases.
+(: filtered (-> (List Bench) (Vec string) (List Selection)))
+(defun (filtered benches filters)
+  (loop (:for b benches)
+        (:let picked (list-filter (fun (c) (chosen? filters b c)) ((record-ref b cases))))
+        (:when (not (list-empty? picked)))
+        (:acc (listing (Selection (bench b) (cases picked))))))
+
+;; Whether there is someone to show a progress line to: a terminal, and not
+;; a comint buffer, which would show every rewrite as a line of its own.
+(: progress-line? (-> bool))
+(defun (progress-line?)
+  (and (output-terminal?)
+       (none? (get-environment-variable "INSIDE_EMACS"))
+       (none? (get-environment-variable "CI"))))
+
+;; Measures what is chosen and prints the table, a row as each case is done.
+;; Answers what was measured, as a saved run holds it; a skipped case is not
+;; in it.
+(: run-selection (-> (List Selection) BenchOptions (List SavedCase)))
+(defun (run-selection chosen o)
+  (def s (bench-settings o))
+  (def count (case-count chosen))
+  (loop (:for l (header-lines count)) (:do (println l)))
+  (def layout (layout-for chosen (record-ref o scaling)))
+  (print-head layout)
+  (flush-port (parameter-ref current-output-port))
+  (def live (progress-line?))
+  (def/mutable done 0)
+  (def/mutable measured (list))
+  ;; For --scaling: the benchmark, parameter value and median of the row
+  ;; before.
+  (: previous (Box (Option (Tuple string (Tuple double double)))))
+  (def previous (make-box None))
+  (loop (:for p chosen)
+        (:let b (sel-bench p))
+        (:subloop (:for c (sel-cases p))
+                  (:do (set! done (+ done 1)))
+                  (:let prefix
+                        (str "[" (int->string done) "/" (int->string count) "] " (record-ref b name)
+                             (string-join (list->vec (list-map (fun (l) (str " " (fst l) "=" (snd l)))
+                                                               (case-labels c)))
+                                          "")
+                             "   "))
+                  (:do (when live
+                         (box-set! progress-box
+                                   (fun (what)
+                                     (print (str "\r" prefix what "\u001b[K"))
+                                     (flush-port (parameter-ref current-output-port))))))
+                  (:let m (if (string-empty? (record-ref b skip))
+                              (Some (measure-case c (record-ref b once) s))
+                              None))
+                  (:let row
+                         (match m
+                           ((Some m)
+                            (def r (measured-row (record-ref b name) (case-labels c) m (record-ref o detail)))
+                            (if (record-ref o scaling)
+                                (record-set r (cells (list-append (record-ref r cells)
+                                                                  (list (scaling-text previous b c (median (record-ref m samples)))))))
+                                r))
+                           (None
+                            (Row (name (record-ref b name)) (labels (case-labels c))
+                                 (cells (list))
+                                 (notes (list (str "skipped: " (record-ref b skip)))) (extra (list))))))
+                  (:do (when live (print "\r\u001b[K"))
+                       (print-row layout row)
+                       (flush-port (parameter-ref current-output-port))
+                       (match m
+                         ((Some m) (set! measured (cons (saved-case (record-ref b name) (case-labels c) m) measured)))
+                         (None unit)))))
+  (box-set! progress-box (fun (what) unit))
+  (list-reverse measured))
+
+(: saved-case (-> string (List (Tuple string string)) Measured SavedCase))
+(defun (saved-case name labels m)
+  (SavedCase (name name) (labels labels) (k (record-ref m k)) (once (record-ref m once))
+             (bytes (/ (cast System.Double (record-ref m bytes)) (cast System.Double (max 1L (record-ref m calls)))))
+             (samples (record-ref m samples))))
+
+;; `×98.2 for ×100`: how the median grew from the row before, against how
+;; the benchmark's one numeric parameter did. Nothing for the first row of a
+;; benchmark, or one whose parameters are not one number.
+(: scaling-text (-> (Box (Option (Tuple string (Tuple double double)))) Bench BenchCase double string))
+(defun (scaling-text previous b c med)
+  (def value
+    (match (case-labels c)
+      ((Cons (Tuple _ v) Nil) (parse-double v))
+      (_ None)))
+  (match value
+    (None (box-set! previous None) "")
+    ((Some x)
+     (def text
+       (match (box-ref previous)
+         ((Some (Tuple name (Tuple x0 m0))) #:when (= name (record-ref b name))
+          (if (and (> x0 0.0) (> m0 0.0))
+              (str "×" (three (/ med m0)) " for ×" (three (/ x x0)))
+              ""))
+         (_ "")))
+     (box-set! previous (Some (Tuple (record-ref b name) (Tuple x med))))
+     text)))
+
+;; The facts of this machine and build, as a saved run keeps them.
+(: header-facts (-> (List (Tuple string string))))
+(defun (header-facts)
+  (list (Tuple "build" (if (debug-build?) "Debug" "Release"))
+        (Tuple "dotnet" (dotnet-version))
+        (Tuple "arch" (arch-name))
+        (Tuple "cores" (int->string (core-count)))
+        (Tuple "gc-server" (if (server-gc?) "true" "false"))
+        (Tuple "cpu" (cpu-model))
+        (Tuple "os" (os-name))
+        (Tuple "governor" (governor))))
+
+(: this-run (-> (List SavedCase) SavedRun))
+(defun (this-run cases)
+  (SavedRun (saved (now-utc)) (machine (machine-key)) (header (header-facts)) (cases cases)))
+
+;; `+8.9%`: a change, signed, to a tenth of a percent.
+(: change-text (-> double string))
+(defun (change-text x)
+  (def t (fixed (* 100.0 x) 1))
+  (str (if (string-starts-with? t "-") "" "+") t "%"))
+
+;; A percentage as it was given: `2%`, `1.5%`.
+(: percent-text (-> double string))
+(defun (percent-text x)
+  (def v (* 100.0 x))
+  (str (if (= v (round v)) (fixed v 0) (fixed v 1)) "%"))
+
+(: p-text (-> double string))
+(defun (p-text p)
+  (cond ((< p 0.001) "<0.001")
+        ((< p 0.1) (fixed p 3))
+        (else (fixed p 2))))
+
+(: verdict-text (-> Verdict double string))
+(defun (verdict-text v threshold)
+  (match v
+    (Faster "faster")
+    (Slower "SLOWER")
+    (SmallChange #"no change (< ${(percent-text threshold)})")
+    (NoChange "no change")))
+
+(: comparison-row (-> Comparison (List string) BenchOptions bool bool bool (List string)))
+(defun (comparison-row c params o other spread? ratio?)
+  (def labels (record-ref c labels))
+  (list-append
+    (cons (record-ref c name) (list-map (fun (p) (label-of labels p)) params))
+    (list-append
+      (list (time-text (record-ref c was))
+            (time-text (record-ref c now))
+            (change-text (record-ref c change))
+            (str (change-text (record-ref c lo)) " .. " (change-text (record-ref c hi)))
+            (p-text (record-ref c p)))
+      (list-append
+        (list-append
+          (if ratio? (list (str "×" (fixed (+ 1.0 (record-ref c change)) 2))) (list))
+          (if (record-ref o p-raw) (list (p-text (record-ref c p-raw))) (list)))
+        (list-append
+          (if spread? (list (str (fixed (* 100.0 (record-ref c spread)) 1) "%")) (list))
+          (list (str (verdict-text (record-ref c verdict) (record-ref o threshold))
+                     (if other " (other machine)" ""))))))))
+
+(: comparison-labels (-> Comparison (List (Tuple string string))))
+(defun (comparison-labels c) (record-ref c labels))
+
+(: comparison-spread (-> Comparison double))
+(defun (comparison-spread c) (record-ref c spread))
+
+;; The comparison with a saved run, after the run's own table.
+(: print-comparison (-> (Option string) SavedRun CompareResult BenchOptions void))
+(defun (print-comparison file saved result o)
+  (def path (match file ((Some p) p) (None "")))
+  (def n (list-length (record-ref result comparisons)))
+  (println "")
+  (println (str "bench: compared with " path ", saved " (record-ref saved saved)
+                "; unpaired (Mann-Whitney U); " (comparisons-text n)))
+  (println "bench: one process each: a difference between processes is not in the p-values")
+  (print-comparison-table result o "was" "now" path #f))
+
+;; `3 comparisons, Holm-corrected`.
+(: comparisons-text (-> int string))
+(defun (comparisons-text n)
+  (str (int->string n) (if (= n 1) " comparison" " comparisons") (if (> n 1) ", Holm-corrected" "")))
+
+;; A comparison's warnings, its table and what one side has alone, under the
+;; header its caller printed: `was` and `now` name the two medians' columns,
+;; and `other-side` is what the side `was` is from is called, for a case
+;; only it has.
+(: print-comparison-table (-> CompareResult BenchOptions string string string bool void))
+(defun (print-comparison-table result o was-head now-head other-side ratio?)
+  (def comparisons (record-ref result comparisons))
+  (def other (record-ref result other-machine))
+  (def n (list-length comparisons))
+  (when other
+    (println "bench: warning: the saved run is from another machine: the numbers are shown, and no verdict is to be believed"))
+  (loop (:for w (record-ref result warnings))
+        (:do (println (str "bench: warning: " w))))
+  (when (> n 0)
+    (def params
+      (fold (fun (c acc)
+              (list-append acc (list-filter (fun (p) (not (has-string? acc p)))
+                                            (list-map fst (comparison-labels c)))))
+            (list) comparisons))
+    (def spread? (any? (fun (c) (>= (comparison-spread c) 0.0)) comparisons))
+    (def heads
+      (list-append (cons "name" params)
+                   (list-append (list was-head now-head "change" "95% interval" "p")
+                                (list-append (list-append (if ratio? (list "ratio") (list))
+                                                          (if (record-ref o p-raw) (list "p raw") (list)))
+                                             (list-append (if spread? (list "between processes") (list))
+                                                          (list "verdict"))))))
+    (def numbers (+ 5 (if ratio? 1 0) (if (record-ref o p-raw) 1 0) (if spread? 1 0)))
+    (def aligns
+      (list->vec (list-append (list-map (fun (h) AlignLeft) (cons "name" params))
+                              (list-append (list-map (fun (i) AlignRight) (index-list numbers))
+                                           (list AlignLeft)))))
+    (println "")
+    (show [(tabular/rows (list->vec (cons (blocks heads)
+                                          (list-map (fun (c) (blocks (comparison-row c params o other spread? ratio?)))
+                                                    comparisons)))
+                         #:sep table-sep #:align aligns)]))
+  (unless (list-empty? (record-ref result only-now))
+    (println (str "bench: only in this run: " (string-join (list->vec (record-ref result only-now)) ", "))))
+  (unless (list-empty? (record-ref result only-saved))
+    (println (str "bench: only in " other-side ": " (string-join (list->vec (record-ref result only-saved)) ", "))))
+  (match (record-ref o fail-slower)
+    ((Some _) #:when other
+     (println "bench: --fail-slower does not apply: the saved run is from another machine"))
+    (_ unit)))
+
+;; Whether `--fail-slower PCT` fails the run: something SLOWER by more than
+;; PCT, against a run from this machine.
+(: fails-slower? (-> CompareResult BenchOptions bool))
+(defun (fails-slower? result o)
+  (match (record-ref o fail-slower)
+    ((Some limit)
+     (and (not (record-ref result other-machine))
+          (any? (fun (c) (and (match (record-ref c verdict) (Slower #t) (_ #f))
+                              (> (record-ref c change) limit)))
+                (record-ref result comparisons))))
+    (None #f)))
+
+;; Runs what is chosen, then saves and compares as the options say. Answers
+;; the exit code: 1 when `--fail-slower` is exceeded, 2 when the file to
+;; compare with cannot be used, 0 otherwise.
+(: run-and-report (-> (List Selection) BenchOptions int))
+(defun (run-and-report chosen o)
+  ;; A comparison file that cannot be read is known before anything is run.
+  (def baseline
+    (match (record-ref o compare)
+      ((Some path) (Some (read-saved-run path)))
+      (None None)))
+  (match baseline
+    ((Some (Err why)) (println #"bench: --compare: ${why}") 2)
+    (_
+     (def run (this-run (run-selection chosen o)))
+     (match (record-ref o save)
+       ((Some path)
+        (match (try (write-saved-run! path run) #:catch (System.Exception))
+          ((Ok _) (println #"bench: saved to ${path}"))
+          (_ (println #"bench: --save: ${path} could not be written"))))
+       (None unit))
+     (when (record-ref o compare-within) (compare-within chosen o))
+     (match baseline
+       ((Some (Ok saved))
+        (def result (compare-runs saved run (record-ref o alpha) (record-ref o threshold)))
+        (print-comparison (record-ref o compare) saved result o)
+        (if (fails-slower? result o) 1 0))
+       (_ 0)))))
+
+;; ---------------------------------------------------------------------------
+;; --compare-within: the cases of a group against its first, in rounds
+;; ---------------------------------------------------------------------------
+
+;; The groups of what is chosen, in the order first met, each with its cases
+;; that are not skipped: a benchmark's cases one after another.
+(: chosen-groups (-> (List Selection) (List (Tuple string (List (Tuple Bench BenchCase))))))
+(defun (chosen-groups chosen)
+  (fold (fun (p acc)
+          (def b (sel-bench p))
+          (def g (record-ref b group))
+          (def cases (list-map (fun (c) (Tuple b c)) (sel-cases p)))
+          (cond
+            ((or (string-empty? g) (not (string-empty? (record-ref b skip)))) acc)
+            ((has-group? acc g)
+             (list-map (fun (e) (if (= (fst-of e) g) (Tuple g (list-append (snd-of e) cases)) e)) acc))
+            (else (list-append acc (list (Tuple g cases))))))
+        (list) chosen))
+
+(: has-group? (-> (List (Tuple string (List (Tuple Bench BenchCase)))) string bool))
+(defun (has-group? groups g) (any? (fun (e) (= (fst-of e) g)) groups))
+
+(: fst-of (-> (Tuple string (List (Tuple Bench BenchCase))) string))
+(defun (fst-of e) (match e ((Tuple a _) a)))
+
+(: snd-of (-> (Tuple string (List (Tuple Bench BenchCase))) (List (Tuple Bench BenchCase))))
+(defun (snd-of e) (match e ((Tuple _ b) b)))
+
+;; `sort n=1000`: a case as a comparison names it.
+(: case-key-of (-> Bench BenchCase string))
+(defun (case-key-of b c)
+  (string-join (list->vec (cons (record-ref b name)
+                                (list-map (fun (l) (str (fst l) "=" (snd l))) (case-labels c))))
+               " "))
+
+;; Every group of two cases or more, measured again in `-N` rounds in this
+;; process: each case prepared, and each round a sample of every case, in an
+;; order shuffled from `--seed`. Each case is compared with the group's first
+;; one, paired by round, as A/B pairs its sides; there is one process, so a
+;; difference between processes is not in it to hide.
+(: compare-within (-> (List Selection) BenchOptions void))
+(defun (compare-within chosen o)
+  (def s (bench-settings o))
+  (def seed (match (record-ref o seed) ((Some n) n) (None (cast System.UInt64 (bench-now)))))
+  (def rng (make-random/seed64 seed))
+  (def rounds (record-ref o rounds))
+  (def live (progress-line?))
+  (loop (:for g (chosen-groups chosen))
+        (:let (Tuple name members) g)
+        (:when (>= (list-length members) 2))
+        (:let cases (list->vec members))
+        (:let n (vec-length cases))
+        (:let runs
+              (vec-map (fun (bc)
+                         (match bc
+                           ((Tuple b c)
+                            (def run ((record-ref c prepare)))
+                            (def k (if (> (record-ref b once) 0)
+                                       1L
+                                       (match (prepare-run run (record-ref s sample-ns) (record-ref s warmup-ns))
+                                         ((Tuple k _) k))))
+                            (Tuple run k))))
+                       cases))
+        (:let taken (make-array n #:fill (vec-empty)))
+        (:do (loop (:for r (up-from 0 #:to rounds))
+                   (:do (when live
+                          (print (str "\r[" name "] round " (int->string (+ r 1)) "/" (int->string rounds) "\u001b[K"))
+                          (flush-port (parameter-ref current-output-port))))
+                   (:subloop (:for i (shuffle-vec (list->vec (index-list n)) #:rng rng))
+                             (:let (Tuple run k) (vec-ref runs i))
+                             (:let x (take-sample run k))
+                             (:do (array-set! taken i (vec-add (array-ref taken i)
+                                                               (per-call-ns (record-ref x ns) k))))))
+             (when live (print "\r\u001b[K")))
+        (:let (Tuple b0 c0) (vec-ref cases 0))
+        (:let base (case-key-of b0 c0))
+        (:let paired
+              (loop (:for i (up-from 1 #:to n))
+                    (:let (Tuple b c) (vec-ref cases i))
+                    (:acc out (listing (PairedCase (name (record-ref b name)) (labels (case-labels c))
+                                                   (a [(array-ref taken 0)]) (b [(array-ref taken i)]))))))
+        (:let result (compare-paired paired (list) (list) (record-ref o alpha) (record-ref o threshold)))
+        (:do (println "")
+             (println (str "bench: within " name ", against " base ": " (int->string rounds)
+                           " rounds in this process, paired (Wilcoxon signed-rank); "
+                           (comparisons-text (list-length paired))))
+             (println (str "bench: seed " (->str seed) " (--seed repeats the order of the cases)"))
+             (print-comparison-table result o base "this" base #t))))
+
+;; ---------------------------------------------------------------------------
+;; The menu
+;; ---------------------------------------------------------------------------
+
+;; The menu's lines: the benchmarks numbered from 0, under their groups, each
+;; with its parameters and their values.
+(: menu-lines (-> string (List Bench) (List string)))
+(defun (menu-lines file benches)
+  (def/mutable last-group "")
+  (def lines
+    (loop (:for b benches)
+          (:with i 0 (+ i 1))
+          (:let group (record-ref b group))
+          (:let heading
+                (if (and (not (string-empty? group)) (not (= group last-group)))
+                    (list (str "  " group))
+                    (list)))
+          (:do (set! last-group group))
+          (:let indent (if (string-empty? group) "  " "    "))
+          (:let params (param-summary b))
+          (:acc out (folding (list) (list-append out (list-append heading
+                                                                (list (string-trim-right
+                                                                       (str indent "#" (int->string i) "  "
+                                                                            (string-pad-right (record-ref b name) 18)
+                                                                            params)))))))
+      => out))
+  (list-append (cons (str "Benchmarks in " file ":") (cons "" lines))
+               (list ""
+                     "Choose by number (0 2-4), by name (sort), with parameters (2 n=1000),"
+                     "or * for all. Nothing quits, or repeats the last choice once there is one.")))
+
+;; `n: 10 1000   order: sorted random`.
+(: has-string? (-> (List string) string bool))
+(defun (has-string? xs s) (any? (fun (x) (= x s)) xs))
+
+(: case-labels (-> BenchCase (List (Tuple string string))))
+(defun (case-labels c) (record-ref c labels))
+
+(: param-summary (-> Bench string))
+(defun (param-summary b)
+  (: cases (List BenchCase))
+  (def cases ((record-ref b cases)))
+  (: values-of (-> string (List string)))
+  (defun (values-of n)
+    (fold (fun (c acc)
+            (match (find (fun (l) (= (fst l) n)) (case-labels c))
+              ((Some l) (if (has-string? acc (snd l)) acc (list-append acc (list (snd l)))))
+              (None acc)))
+          (list) cases))
+  (string-join
+    (list->vec
+      (list-map (fun (n) (str n ": " (string-join (list->vec (values-of n)) " ")))
+                (record-ref b param-names)))
+    "   "))
+
+;; A menu choice: numbers, ranges of them, names, `*`, and after a benchmark,
+;; `p=v,w` to narrow its cases to those values of parameter `p`.
+(: parse-choice (-> string (List Bench) (Result string (List Selection))))
+(defun (parse-choice text benches)
+  (def indexed (list-zip (index-list (list-length benches)) benches))
+  (def tokens (list-filter (fun (t) (not (string-empty? t))) (vec->list (string-split (string-trim text) " "))))
+  (defun (all-of (: b Bench)) : Selection (Selection (bench b) (cases ((record-ref b cases)))))
+  (let go ((left tokens) (acc (list)) (last (list)))
+    ;; `acc` is what is chosen so far, `last` the selections the most recent
+    ;; token made, which a `p=v` narrows.
+    (match left
+      (Nil (Ok (list-append acc last)))
+      ((Cons t more)
+       (cond
+         ((= t "*") (go more (list-append acc last) (list-map all-of benches)))
+         ((some? (split-once t "="))
+          (def (Some (Tuple p vs)) (split-once t "=") :leave-with (Err t))
+          (def wanted (vec->list (string-split vs ",")))
+          (if (list-empty? last)
+              (Err #"${t} narrows the benchmark before it, and there is none.")
+              (go more acc
+                  (list-map (fun (sel)
+                              (Selection (bench (sel-bench sel))
+                                         (cases (list-filter (fun (c)
+                                                               (any? (fun (l) (and (= (fst l) p)
+                                                                                   (any? (fun (w) (= w (snd l))) wanted)))
+                                                                     (case-labels c)))
+                                                             (sel-cases sel)))))
+                            last))))
+         (else
+          (match (choice-indices t (list-length benches))
+            ((Some is)
+             (go more (list-append acc last)
+                 (list-map (fun (i) (all-of (list-ref benches i))) is)))
+            (None
+             (def named (list-filter (fun (b) (string-contains? (record-ref b name) t)) benches))
+             (cond
+               ((some? (parse-int t))
+                (Err #"There is no benchmark ${t}: they are numbered 0 to ${(- (list-length benches) 1)}."))
+               ((list-empty? named)
+                (Err #"Nothing is called ${t}, and it is not a number of one."))
+               (else
+                (go more (list-append acc last) (list-map all-of named))))))))))))
+
+;; `3` or `2-4`, as indices below `n`.
+(: choice-indices (-> string int (Option (List int))))
+(defun (choice-indices t n)
+  (match (split-once t "-")
+    ((Some (Tuple a b))
+     (match (Tuple (parse-int a) (parse-int b))
+       ((Tuple (Some lo) (Some hi)) #:when (and (<= 0 lo) (<= lo hi) (< hi n))
+        (Some {listing i (:for i (range lo (+ hi 1)))}))
+       (_ None)))
+    (None
+     (match (parse-int t)
+       ((Some i) #:when (and (<= 0 i) (< i n)) (Some (list i)))
+       (_ None)))))
+
+;; The menu: ask, run, and ask again, until nothing is chosen with nothing to
+;; repeat, `q`, or the end of the input.
+(: bench-menu (-> string (List Bench) BenchOptions (-> (Option string)) void))
+(defun (bench-menu file benches o read)
+  (menu-loop (menu-lines file benches) benches read
+             (fun (chosen) (ignore (run-and-report chosen o)))))
+
+;; The menu's asking, with the lines to show first and what to do with a
+;; choice: `bench-menu` runs it here, and `bjo bench`, over several files,
+;; runs each file with the cases that fall in it.
+(: menu-loop (-> (List string) (List Bench) (-> (Option string)) (-> (List Selection) void) void))
+(defun (menu-loop lines benches read run)
+  (loop (:for l lines) (:do (println l)))
+  (let ask ((previous None))
+    (print "bench> ")
+    (flush-port (parameter-ref current-output-port))
+    (match (read)
+      (None (println ""))
+      ((Some line)
+       (def text (string-trim line))
+       (cond
+         ((= text "q") unit)
+         ((string-empty? text)
+          (match previous
+            (None unit)
+            ((Some chosen) (run chosen) (ask previous))))
+         (else
+          (match (parse-choice text benches)
+            ((Err why) (println why) (ask previous))
+            ((Ok chosen)
+             (if (= (case-count chosen) 0)
+                 (let () (println "That chooses nothing.") (ask previous))
+                 (let () (run chosen) (ask (Some chosen))))))))))))
+
+;; Whether to ask what to run: with no names and no `--all`, at a terminal,
+;; and not in CI. `BJO_BENCH_MENU=1` asks anyway, which is how it is tested.
+(: menu? (-> BenchOptions bool))
+(defun (menu? o)
+  (and (vec-empty? (record-ref o filters))
+       (not (record-ref o all))
+       (none? (record-ref o cases))
+       (or (= (get-environment-variable "BJO_BENCH_MENU") (Some "1"))
+           (and (input-terminal?) (output-terminal?)
+                (none? (get-environment-variable "CI"))))))
+
+;; ---------------------------------------------------------------------------
+;; --serve: driven by another program
+;; ---------------------------------------------------------------------------
+;;
+;; A command a line on standard input, a reply a line on standard output,
+;; both bjodat. Cases are numbered from 0 in the order `(list)` gives them.
+;;
+;;   (list)                               → (cases (case 0 (name "sort") (labels ("n" "10")) (once 0) (skip "")) ...)
+;;   (prepare 3 :warmup 1000 :sample 10)   → (prepared 3 :k 4096 :steady #t)
+;;   (sample 3 :k 4096)                    → (sample 3 :ns 41213 :bytes 0 :gc (0 0 0))
+;;   (quit)                                → nothing; the program ends
+;;
+;; Keywords are bjodat's, `:k`; `#:k` reads as the same keyword. `:warmup`
+;; and `:sample` are milliseconds, 1000 and 10 unless given. A sample's `:ns`
+;; is the whole sample's, `k` calls. Anything wrong is `(error "why")`, and
+;; the next command is read. `prepare`
+;; runs the case's setup; a case is sampled only once it is prepared.
+
+(: sym (-> string Bjodat))
+(defun (sym s) (BjoSym (string->symbol s)))
+
+(: kw (-> string Bjodat))
+(defun (kw s) (BjoKey (string->keyword s)))
+
+(: form (-> string (List Bjodat) Bjodat))
+(defun (form head xs) (BjoList (cons (sym head) xs)))
+
+(: long-of (-> int Bjodat))
+(defun (long-of n) (BjoInt (cast System.Int64 n)))
+
+;; The value after keyword `name` in a command's arguments.
+(: keyword-arg (-> (List Bjodat) string (Option Bjodat)))
+(defun (keyword-arg args name)
+  (match args
+    ((Cons (BjoKey k) (Cons v more)) (if (= (keyword->string k) name) (Some v) (keyword-arg more name)))
+    ((Cons _ more) (keyword-arg more name))
+    (Nil None)))
+
+(: long-arg (-> (List Bjodat) string long (Option long)))
+(defun (long-arg args name default)
+  (match (keyword-arg args name)
+    (None (Some default))
+    ((Some (BjoInt n)) (Some n))
+    (_ None)))
+
+(: serve-error (-> string Bjodat))
+(defun (serve-error why) (form "error" (list (BjoStr why))))
+
+(: case-listing (-> int Bench BenchCase Bjodat))
+(defun (case-listing i b c)
+  (form "case" (list (long-of i)
+                     (form "name" (list (BjoStr (record-ref b name))))
+                     (form "labels" (list-map (fun (l) (BjoList (list (BjoStr (fst l)) (BjoStr (snd l)))))
+                                              (case-labels c)))
+                     (form "group" (list (BjoStr (record-ref b group))))
+                     (form "once" (list (long-of (record-ref b once))))
+                     (form "skip" (list (BjoStr (record-ref b skip)))))))
+
+;; Answers one command. `runs` holds the prepared cases.
+(: serve-reply (-> Bjodat (Vec (Tuple Bench BenchCase)) (Array (Option CaseRun)) Bjodat))
+(defun (serve-reply command cases runs)
+  (def n (vec-length cases))
+  (defun (case-at (: i long)) : (Option (Tuple Bench BenchCase))
+    (if (and (>= i 0L) (< i (cast System.Int64 n))) (Some (vec-ref cases (cast System.Int32 i))) None))
+  (match command
+    ((BjoList (Cons (BjoSym head) args))
+     (case (symbol->string head)
+       ("list"
+        (form "cases" (loop (:for p cases) (:with i 0 (+ i 1))
+                            (:acc (listing (match p ((Tuple b c) (case-listing i b c))))))))
+       ("prepare"
+        (match (Tuple args (long-arg args "warmup" 1000L) (long-arg args "sample" 10L))
+          ((Tuple (Cons (BjoInt i) _) (Some warmup-ms) (Some sample-ms))
+           (match (case-at i)
+             (None (serve-error #"there is no case ${i}"))
+             ((Some (Tuple b c))
+              (if (not (string-empty? (record-ref b skip)))
+                  (serve-error #"case ${i} is skipped: ${(record-ref b skip)}")
+                  (match (try (let ()
+                                (def run ((record-ref c prepare)))
+                                (array-set! runs (cast System.Int32 i) (Some run))
+                                (if (> (record-ref b once) 0)
+                                    (Tuple 1L #t)
+                                    (prepare-run run (* sample-ms 1000000L) (* warmup-ms 1000000L))))
+                              #:catch (System.Exception))
+                    ((Ok (Tuple k steady))
+                     (form "prepared" (list (BjoInt i) (kw "k") (BjoInt k) (kw "steady") (BjoBool steady))))
+                    ((Err e) (serve-error #"case ${i} failed to prepare: ${(.-Message e)}")))))))
+          (_ (serve-error "prepare takes a case number, and :warmup and :sample in milliseconds"))))
+       ("sample"
+        (match (Tuple args (long-arg args "k" 1L))
+          ((Tuple (Cons (BjoInt i) _) (Some k))
+           (match (if (some? (case-at i)) (array-ref runs (cast System.Int32 i)) None)
+             (None (serve-error #"case ${i} is not prepared"))
+             ((Some run)
+              (match (try (take-sample run k) #:catch (System.Exception))
+                ((Ok x)
+                 (form "sample" (list (BjoInt i) (kw "ns") (BjoInt (record-ref x ns))
+                                      (kw "bytes") (BjoInt (record-ref x bytes))
+                                      (kw "gc") (BjoList (list (BjoInt (record-ref x gc0)) (BjoInt (record-ref x gc1))
+                                                               (BjoInt (record-ref x gc2)))))))
+                ((Err e) (serve-error #"case ${i} failed: ${(.-Message e)}"))))))
+          (_ (serve-error "sample takes a case number, and :k"))))
+       (else (serve-error #"unknown command ${(symbol->string head)}: the commands are list, prepare, sample and quit"))))
+    (_ (serve-error "a command is a form: (list), (prepare i ...), (sample i ...) or (quit)"))))
+
+(: cases-of (-> Bench (List BenchCase)))
+(defun (cases-of b) ((record-ref b cases)))
+
+;; Whether a command is `(quit)`.
+(: quit? (-> Bjodat bool))
+(defun (quit? command)
+  (match command
+    ((BjoList (Cons (BjoSym head) _)) (= (symbol->string head) "quit"))
+    (_ #f)))
+
+;; Reads commands until `(quit)` or the end of the input.
+(: bench-serve (-> (List Bench) (-> (Option string)) void))
+(defun (bench-serve benches read)
+  (def cases
+    (list->vec (fold (fun (b acc) (list-append acc (list-map (fun (c) (Tuple b c)) (cases-of b))))
+                     (list) benches)))
+  (def runs (make-array (vec-length cases) #:fill None))
+  (let go ()
+    (match (read)
+      (None unit)
+      ((Some line)
+       (match (parse-bjodat line)
+         ((Ok command)
+          (unless (quit? command)
+            (println (bjodat->string (serve-reply command cases runs)))
+            (flush-port (parameter-ref current-output-port))
+            (go)))
+         ((Err why)
+          (println (bjodat->string (serve-error why)))
+          (flush-port (parameter-ref current-output-port))
+          (go)))))))
+
+(: run-registered-benches (-> string (Vec string) int))
+(defun (run-registered-benches module args)
+  (match (parse-bench-args args)
+    ((Err why) (println #"bench: ${why}") 2)
+    ((Ok o) (run-with-options module o))))
+
+(: run-with-options (-> string BenchOptions int))
+(defun (run-with-options module o)
+  (bench-params-set! (record-ref o params))
+  (def benches (module-benches module))
+  (cond
+    ((record-ref o serve)
+     (bench-serve benches (fun () (read-line/opt (parameter-ref current-input-port))))
+     0)
+    ((record-ref o list)
+     (loop (:for b benches)
+           (:do (println (str (record-ref b name)
+                              (if (list-empty? (record-ref b param-names))
+                                  ""
+                                  (str "   " (string-join (list->vec (record-ref b param-names)) " ")))))))
+     0)
+    ((list-empty? benches) (println "There are no benchmarks.") 0)
+    ((menu? o)
+     (def file (match benches ((Cons b _) (shown-file (record-ref b file))) (Nil module)))
+     (bench-menu file benches o (fun () (read-line/opt (parameter-ref current-input-port))))
+     0)
+    ((some? (record-ref o cases))
+     (def wanted (match (record-ref o cases) ((Some is) is) (None [])))
+     (match (cases-numbered benches wanted)
+       ((Ok chosen) (run-and-report chosen o))
+       ((Err why) (println #"bench: --cases: ${why}") 2)))
+    (else
+     (def chosen (filtered benches (record-ref o filters)))
+     (if (= (case-count chosen) 0)
+         (let () (println "No benchmark's name contains any of the names given.") 0)
+         (run-and-report chosen o)))))
+
+;; The cases numbered `wanted`, in `(list)`'s numbering, as selections: a
+;; benchmark's chosen cases together, in the order the file has them.
+(: cases-numbered (-> (List Bench) (Vec int) (Result string (List Selection))))
+(defun (cases-numbered benches wanted)
+  (def total (fold (fun (b n) (+ n (list-length (cases-of b)))) 0 benches))
+  (match (find (fun (i) (or (< i 0) (>= i total))) (vec->list wanted))
+    ((Some i) (Err #"there is no case ${i}: there are ${total}"))
+    (None
+     (Ok (loop (:for b benches)
+               (:with first 0 (+ first (list-length (cases-of b))))
+               (:let picked
+                     (loop (:for c (cases-of b))
+                           (:with i first (+ i 1))
+                           (:acc (listing c) #:when (any? (fun (w) (= w i)) wanted))))
+               (:acc (listing (Selection (bench b) (cases picked)))
+                     #:when (not (list-empty? picked))))))))
+
+;; A path as a person reads it: its last part.
+(: shown-file (-> string string))
+(defun (shown-file path)
+  (match (string-search-backward path "/")
+    ((Some at) (substring path (string-cursor-next path at) (string-cursor-end path)))
+    (None path)))
+
+;; `(run-benches)` — the file's `main`: runs the benchmarks this module
+;; registered.
+(def/macro (run-benches form inject compare)
+  (syntax-match form
+    ((_)
+     #'(begin
+         (: ,(inject 'main) (-> (Vec string) int))
+         (defun (,(inject 'main) args) (run-registered-benches (current-module) args))))
+    (bad (syntax-error bad "run-benches takes nothing: (run-benches) at the end of a benchmark file."))))
+
+;; ---------------------------------------------------------------------------
+;; time-it
+;; ---------------------------------------------------------------------------
+
+;; `(time-it body ...)`: the body as an anonymous benchmark, measured at once
+;; with `--quick`'s targets, and one line. A body whose first run takes more
+;; than a second is not run again: that run is the measurement.
+(: time-it-run (-> string (-> long void) void))
+(defun (time-it-run label batch)
+  (def run (CaseRun (batch batch) (call None)))
+  (def first (time-batch run 1L))
+  (if (>= first 1000000000L)
+      (println (str label ": " (time-text (cast System.Double first))
+                    " (one cold run: a body over a second is run once)"))
+      (let ()
+        (def o (match (parse-bench-args (vec-empty)) ((Ok o) o) ((Err e) (panic! e))))
+        (def m (measure-calibrated run (bench-settings (record-set o (scale 0.5)))))
+        (def xs (record-ref m samples))
+        (def med (median xs))
+        (println (str label ": " (time-text med)
+                      " ± " (fixed (if (> med 0.0) (* 100.0 (/ (mad xs) med)) 0.0) 1) "%"
+                      " (min " (time-text (vec-fold min (vec-ref xs 0) xs)) "), "
+                      (bytes-text (/ (cast System.Double (record-ref m bytes)) (cast System.Double (record-ref m calls))))
+                      "/call, " (int->string (vec-length xs)) " samples")))))
+
+;; The label of a `time-it`: the body as it was written, cut short.
+(: time-it-label (-> (List Syntax) Syntax))
+(defun (time-it-label forms)
+  (def text (string-join (list->vec (list-map syntax->string forms)) " "))
+  (SStr (if (> (string-count text) 50) (str (list->string (list-take (string->list text) 47)) "...") text)))
+
+(: list-take (-> (List %a) int (List %a)))
+(defun (list-take xs n)
+  (match xs
+    ((Cons x more) #:when (> n 0) (cons x (list-take more (- n 1))))
+    (_ (list))))
+
+;; A batch: the body `k` times, its value kept.
+(: time-it-batch (-> (List Syntax) Syntax))
+(defun (time-it-batch forms)
+  #'(fun (k)
+      (let lp ((i 0L))
+        (when (< i k)
+          (time-it-keep (begin ,@forms))
+          (lp (+ i 1L))))))
+
+;; `(time-it body ...)`: the body measured as an anonymous benchmark, on one
+;; line. `#:times n` and `#:warm-up-rounds w` ask for exactly that many runs
+;; instead, untimed then timed, as `time-it` always did.
+;;
+;; A function, so that `(std stopwatch)`'s `time-it` is this one too: a macro
+;; is only seen by the modules that import its own, and programs import
+;; `time-it` from `(std stopwatch)`.
+(def/macro (time-it form inject compare)
+  (time-it-expansion form))
+
+(: time-it-expansion (-> Syntax Syntax))
+(defun (time-it-expansion form)
+  (syntax-match form
+    ((_ #:times n #:warm-up-rounds w first body ...)
+     #'(time-it-fixed ,(time-it-label (cons first body)) ,n ,w ,(time-it-batch (cons first body))))
+    ((_ #:warm-up-rounds w #:times n first body ...)
+     #'(time-it-fixed ,(time-it-label (cons first body)) ,n ,w ,(time-it-batch (cons first body))))
+    ((_ #:times n first body ...)
+     #'(time-it-fixed ,(time-it-label (cons first body)) ,n 0 ,(time-it-batch (cons first body))))
+    ((_ #:warm-up-rounds w first body ...)
+     #'(time-it-fixed ,(time-it-label (cons first body)) 1 ,w ,(time-it-batch (cons first body))))
+    ((_ first body ...)
+     #'(time-it-run ,(time-it-label (cons first body)) ,(time-it-batch (cons first body))))
+    (bad (syntax-error bad "time-it takes a body: (time-it [#:times n] [#:warm-up-rounds w] expr ...)"))))
+
+;; `(time-it #:times n #:warm-up-rounds w body ...)`: exactly `w` untimed runs
+;; and `n` timed ones, as `time-it` always did, reported on the new line.
+(: time-it-fixed (-> string int int (-> long void) void))
+(defun (time-it-fixed label times warm batch)
+  (def run (CaseRun (batch batch) (call None)))
+  (loop (:for i (up-from 0 #:to warm)) (:do ((record-ref run batch) 1L)))
+  (def taken (loop (:for i (up-from 0 #:to times)) (:acc out (vecing (take-sample run 1L))) => out))
+  (def xs (vec-map (fun (x) (cast System.Double (record-ref x ns))) taken))
+  (def bytes (vec-fold (fun (x acc) (+ acc (record-ref x bytes))) 0L taken))
+  (println (str label ": " (time-text (median xs))
+                (if (> times 1) (str " (min " (time-text (vec-fold min (vec-ref xs 0) xs)) ")") "")
+                ", " (bytes-text (/ (cast System.Double bytes) (cast System.Double times))) "/call, "
+                (int->string times) (if (= times 1) " run" " runs"))))

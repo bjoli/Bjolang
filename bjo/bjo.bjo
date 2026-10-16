@@ -26,9 +26,10 @@
 ;; itself could disagree with the compiler about what a file depends on.
 ;;
 ;; Children inherit this process's console, which is why `(std run)` is not used
-;; here: it redirects stdin and stdout in order to read them, and the output of
-;; a program run under `bjo` belongs to whoever ran it. The REPL needs a
-;; terminal on both ends for the same reason.
+;; to run them: it redirects stdin and stdout in order to read them, and the
+;; output of a program run under `bjo` belongs to whoever ran it. The REPL needs
+;; a terminal on both ends for the same reason. The one child whose output `bjo`
+;; reads is a benchmark program asked for its list, which nobody watches.
 ;;
 ;; Everything that waits for a child is `#:sync`, down from `dispatch`. Waiting
 ;; is what this command does and it has one thread to do it on, so a suspending
@@ -55,6 +56,7 @@
 (import "project.bjo")
 (import "resolve.bjo")
 (import "publish.bjo")
+(import "bench.bjo")
 
 ;; ---------------------------------------------------------------------------
 ;; Interop
@@ -670,6 +672,26 @@
                  #"bjo test: ${failed} of ${(length files)} files failed.")))
   (if (= failed 0) 0 1))
 
+;; `bjo bench` is `bench.bjo`'s. What it needs from here is lent to it: a
+;; benchmark file built in Release, whatever `-d` says; a program run on the
+;; console; and a source file found.
+(: build-bench #:sync (-> string bool bool (Result int BenchProgram)))
+(defun (build-bench file force? locked?)
+  (match (roots-for-file file locked?)
+    ((Err why) (Err (fail why)))
+    ((Ok roots)
+     (match (ensure-built file #f #f force? roots)
+       ((Err status) (Err status))
+       ((Ok (Tuple rec _)) #:when (string-ends-with? (record-ref rec output) ".dll")
+        (Err (fail #"bjo bench: ${file} has no main. End a benchmark file with (run-benches).")))
+       ((Ok (Tuple rec _)) (Ok (BenchProgram (source file) (exe (record-ref rec output)))))))))
+
+(: bench-tools (-> bool bool BenchTools))
+(defun (bench-tools force? locked?)
+  (BenchTools (build (fun (file) (build-bench file force? locked?)))
+              (exec exec)
+              (resolve resolve-source)))
+
 ;; The compiler's REPL edits its own lines at a terminal, with completion and
 ;; history, so it is run as it is. Under a wrapper that edits lines itself,
 ;; such as `rlwrap`, set BJOLANG_REPL_PLAIN to have it read line by line.
@@ -993,6 +1015,12 @@
   (println "                                          Build and run test files: those named, or")
   (println "                                          every one under tests/. A name that is not")
   (println "                                          a file runs only the tests that contain it.")
+  (println "  bjo bench [-c] [files...] [names...] [flags...]")
+  (println "                                          Build benchmark files in Release and run them:")
+  (println "                                          those named, or every one under benches/.")
+  (println "                                          At a terminal with nothing named, a menu asks")
+  (println "                                          what to run. The flags are the benchmark")
+  (println "                                          programs': --all, --quick, --save FILE, ...")
   (println "  bjo publish [-c] [-o dir] [<file.bjo>]  Build a program for release, and copy it with")
   (println "                                          everything it loads into one directory that")
   (println "                                          runs from anywhere. Default: publish/ beside it.")
@@ -1149,6 +1177,25 @@
          (ret (fail "bjo test: there are no test files. Put them under tests/, or name them.")))
        (cmd-test files filters debug? force? locked?)))
 
+;; The benchmark files named, or every one under the project's benches/.
+    ;; Always a Release build: a Debug one measures code the JIT did not
+    ;; optimise.
+    ("bench"
+     (with-return ret
+       (when lib? (ret (fail "bjo bench: a benchmark file is a program, so it takes no --lib.")))
+       (when debug? (println "bjo bench: -d is ignored: benchmarks are always built in Release."))
+       (def (Tuple named passed) (split-bench-args resolve-source rest))
+       (def found
+         (if (empty? named)
+             (match (project-here "bench")
+               ((Err why) (Err why))
+               ((Ok project) (Ok (sources-under (path-combine (project-dir project) "benches")))))
+             (Ok named)))
+       (def (Ok files) found :leave ((Err why) (fail why)))
+       (when (empty? files)
+         (ret (fail "bjo bench: there are no benchmark files. Put them under benches/, or name them.")))
+       (cmd-bench (bench-tools force? locked?) files passed)))
+
     ;; A release build of a program, and a copy of everything it loads in one
     ;; directory that can be moved anywhere. See `publish.bjo`.
     ("publish"
@@ -1198,7 +1245,7 @@
   ;; are what follows it.
   (def (Cons command rest) (vec->list args)
     :leave (Nil (usage) 1))
-  (match (parse-flags rest (= command "test"))
+  (match (parse-flags rest (or (= command "test") (= command "bench")))
     ((Err message) (fail message))
     ((Ok line) #:when (and (some? (record-ref line output)) (not (= command "publish")))
      (fail #"bjo ${command}: -o is for publish, which writes a directory; ${command} does not."))

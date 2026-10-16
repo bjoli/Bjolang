@@ -121,41 +121,24 @@
     are not included.
     """))
 
-;; ---------------------------------------------------------------------------
-;; time-it
-;; ---------------------------------------------------------------------------
-
 (:doc time-it
-  (summary "Executes a body repeatedly and reports average elapsed time and thread allocations.")
+  (summary "Measures a body and prints one line: (std bench)'s time-it, which this module has too.")
   (form (time-it body ...))
   (form (time-it #:times n body ...))
   (form (time-it #:warm-up-rounds w body ...))
   (form (time-it #:times n #:warm-up-rounds w body ...))
-  (arg n "Number of timed iterations. Defaults to 1.")
-  (arg w "Number of untimed warm-up iterations before them. Defaults to 0.")
-  (rest body "Expression(s) to benchmark. Evaluated for side effects; return value is discarded.")
-  (see stopwatch get-memory-usage)
+  (arg n "With #:times, exactly n timed runs: no calibration.")
+  (arg w "With #:warm-up-rounds, exactly w untimed runs first. 0 unless given.")
+  (rest body "The forms, run as one call; the value of the last is kept alive.")
+  (see stopwatch)
   (example """
-    (time-it #:times 100 #:warm-up-rounds 3 (list-sort big-list))
-    ;; prints: Mean of 100 runs: 3.2 ms. 120000B allocated per run.
-
-    (time-it (sieve 2000000000))
-    ;; one run, timed from a cold start: the body runs once
+    (time-it (list-sort big-list))
+    ;; (list-sort big-list): 8.31 ms ± 1.1% (min 8.12 ms), 2.40 MB/call, 120 samples
     """)
   (reference """
-    Executes @code{w} untimed warm-up iterations prior to the timed runs (total
-    iterations: n + w), none unless @code{#:warm-up-rounds} says so. During a
-    warm-up, @code{current-output-port} is redirected to a string port to
-    suppress console output, though other side effects still occur. Without a
-    warm-up the first timed run includes the JIT compiling the body, which a
-    short body run few times will show; a warm-up round or two keeps it out of
-    the mean. The keywords may come in either order.
-
-    Timings derive from @code{current-clock} in nanoseconds, and the mean is
-    printed with @code{ns->string}. Memory
-    allocation measurements derive from @code{get-memory-usage} on the executing
-    thread. Operations that suspend and resume across different thread pool
-    threads will report inaccurate allocation values.
-
-    Returns unit.
+    The same macro as @code{(std bench)}'s @code{time-it}, which documents
+    it in full: a body measured as a benchmark is, warmed up, calibrated
+    and sampled, or run once when its first run takes more than a second.
+    It is here so that an @code{(import (std stopwatch))} that used it goes
+    on working.
     """))

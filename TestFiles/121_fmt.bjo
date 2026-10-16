@@ -267,12 +267,59 @@
   (expect "a separator of one's own"
           (render->string [(tabular [["a" nl "bbb"] ["1" nl "2"]] #:sep " | ")])
           "a   | 1\nbbb | 2\n")
-  (expect "a column that runs out contributes blanks"
+  (expect "a column that runs out contributes blanks, and no line ends in them"
           (render->string [(tabular [["a" nl "bb"] ["1"]])])
-          "a  1\nbb \n")
+          "a  1\nbb\n")
   (expect "and a table always starts on a fresh line"
           (render->string ["x" (tabular [["a"] ["1"]])])
           "x\na 1\n")
+  (expect "columns aligned right and centred"
+          (render->string [(tabular [["a" nl "bbb"] ["1" nl "222"] ["x" nl "yyy"] ["e"]]
+                                    #:align [AlignRight AlignCentre AlignCentre])])
+          "  a  1   x  e\nbbb 222 yyy\n")
+  (expect "a cut keeps the side a column is aligned to"
+          (render->string [(with-fmt current-width 9
+                                 [(columnar [["abcdef"] ["123456"]] #:align [AlignLeft AlignRight])])])
+          "abcd 3456\n")
+
+  ;; --- Tables given as rows, and a row at a time ---------------------------
+  (expect "tabular/rows: the same table, given as rows"
+          (render->string [(tabular/rows [["name" "n" "time"]
+                                          ["sort" 10 "1.2 µs"]
+                                          ["sort" 1000 "210 µs"]]
+                                         #:sep "  "
+                                         #:align [AlignLeft AlignRight AlignRight])])
+          "name     n    time\nsort    10  1.2 µs\nsort  1000  210 µs\n")
+  (expect "rows of different lengths"
+          (render->string [(tabular/rows [["a" "1"] ["bbb"] ["cc" "22" "x"]])])
+          "a   1\nbbb\ncc  22 x\n")
+  (expect "a cell of two lines gives its row two"
+          (render->string [(tabular/rows [[(each ["a" nl "b"]) "1"] ["c" "2"]])])
+          "a 1\nb\nc 2\n")
+  (expect "table-widths: the widest cell of each column"
+          (table-widths [["name" "median"] ["fib 20" "14.9 µs" "note"]])
+          [6 7 4])
+  (def layout (table-layout [8 8] #:sep "  " #:align [AlignLeft AlignRight]))
+  (expect "table-row lays out one row to a fixed layout"
+          (render->string [(table-row layout ["name" "time"]) (table-row layout ["sort" "1.2 µs"])])
+          "name          time\nsort        1.2 µs\n")
+  (expect "a cell too wide pushes its row out, uncut"
+          (render->string [(table-row layout ["a long name" "1 s"])])
+          "a long name       1 s\n")
+  (expect "cells past the layout are written as they are"
+          (render->string [(table-row layout ["x" "1 s" "note"])])
+          "x              1 s  note\n")
+  (expect "a row starts on a fresh line"
+          (render->string ["..." (table-row layout ["x"])])
+          "...\nx\n")
+  (expect "padding comes from current-pad"
+          (render->string [(with-pad #\. [(table-row layout ["x" "1"])])])
+          "x.......  .......1\n")
+  (expect "widths are measured with current-string-width"
+          (render->string [(with-fmt current-string-width (fun (s) (* 2 (string-count s)))
+                                 [(tabular/rows [["ab" "c"] ["d" "e"]])])])
+          ;; "d" is two columns wide, and so is the one space that pads it.
+          "ab c\nd  e\n")
 
   (println "121 ok")
   0)

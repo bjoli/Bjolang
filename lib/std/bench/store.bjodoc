@@ -1,0 +1,163 @@
+;; Docs for std/bench/store.bjo, read through (:doc #:file "store.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Benchmark runs as data: written to a file and read back, and compared, with a saved run or in A/B rounds.")
+  (see SavedRun write-saved-run! read-saved-run compare-runs compare-paired)
+  (example """
+    (import (std bench store))
+
+    (match (read-saved-run "base.bjodat")
+      ((Ok saved) (compare-runs saved this-run 0.05 0.02))
+      ((Err why) (println why)))
+    """)
+  (reference """
+    What @code{--save FILE}, @code{--compare FILE} and @code{bjo bench
+    --against} are made of. @code{(std bench)} measures and prints; this
+    module knows runs only as data, so that the two do not import each
+    other.
+
+    @strong{The file} is one bjodat form, a case to a line, so that a diff
+    of two saved runs says which cases changed:
+
+    @codeblock[#:lang "text"]|{
+    (bench-run
+      (version 1)
+      (saved "2026-10-16T12:00:00Z")
+      (machine "95c59c6948245e2e")
+      (header (build "Release") (dotnet ".NET 10.0.4") (cpu "...") ...)
+      (case (name "sort") (labels ("n" "1000")) (k 512) (once #f) (bytes 0.0) (samples [41213.0 ...])))
+    }|
+
+    Every sample is kept, in nanoseconds per call and in the order taken,
+    rather than a summary: a comparison needs the distribution.
+
+    @strong{A comparison} reports, per case, the change in the median, its
+    95% interval, a p-value corrected for the number of comparisons by
+    Holm's method, and a verdict. The verdict is @code{Faster} or
+    @code{Slower} only when the corrected p is below the level @em{and}
+    the change is larger than the threshold; a real change smaller than the
+    threshold is @code{SmallChange}.
+
+    A comparison with a saved run is unpaired, and treats the samples of
+    each run as independent. Two processes of one program can differ by
+    more than a threshold of 2%, so such a comparison can call a difference
+    between processes a change; @code{compare-paired} with several process
+    pairs measures that difference instead.
+    """))
+
+(:doc SavedCase
+  (summary "One benchmark at one combination of its parameters, as a saved run keeps it.")
+  (field name "The benchmark's name.")
+  (field labels "Its parameters, name and value, as the report shows them.")
+  (field k "The calls in each sample.")
+  (field once "#t for a benchmark of single cold runs.")
+  (field bytes "Bytes allocated per call.")
+  (field samples "Nanoseconds per call, in the order the samples were taken.")
+  (see SavedRun case-key))
+
+(:doc SavedRun
+  (summary "A benchmark run: when and where it was taken, and its cases.")
+  (field saved "When it was saved: UTC, ISO 8601, to the second.")
+  (field machine "The machine key: a hash of the CPU, the core count, the memory and the operating system.")
+  (field header "The facts of the machine and the build, by name: build, dotnet, arch, cores, gc-server, cpu, os and governor.")
+  (field cases "What was measured.")
+  (see SavedCase write-saved-run! compare-runs))
+
+(:doc case-key
+  (summary "What a case is known by across runs: its name and parameters, as the report shows them.")
+  (arg c "The case.")
+  (returns "@code{\"sort n=1000 order=random\"}, or the name alone without parameters."))
+
+(:doc saved-run->string
+  (summary "The text of a saved run: one (bench-run ...) form, a case to a line.")
+  (arg r "The run.")
+  (returns "The text, ending in a newline.")
+  (see parse-saved-run write-saved-run!))
+
+(:doc parse-saved-run
+  (summary "Reads a saved run from its text.")
+  (arg text "The text.")
+  (returns "The run, or what is wrong with the text: not bjodat, not a (bench-run ...), a newer version of the format, or a case that lacks something.")
+  (see saved-run->string read-saved-run))
+
+(:doc write-saved-run!
+  (summary "Writes a run to a file, replacing what was there.")
+  (arg path "The file.")
+  (arg r "The run.")
+  (see read-saved-run))
+
+(:doc read-saved-run
+  (summary "Reads the run saved in a file.")
+  (arg path "The file.")
+  (returns "The run, or a sentence saying what is wrong: no such file, unreadable, or not a saved run.")
+  (see write-saved-run! compare-runs))
+
+(:doc Verdict
+  (summary "What a comparison concludes about one case.")
+  (case Faster "Significant after the correction, and faster by more than the threshold.")
+  (case Slower "Significant after the correction, and slower by more than the threshold.")
+  (case SmallChange "Significant, and smaller than the threshold: there, and decided not to matter.")
+  (case NoChange "Not significant.")
+  (see Comparison))
+
+(:doc Comparison
+  (summary "One case compared: the medians, the change and its interval, the p-values and the verdict.")
+  (field name "The benchmark's name.")
+  (field labels "Its parameters.")
+  (field was "The median per call of the earlier side, A or the saved run, in nanoseconds.")
+  (field now "The median per call of the later side, B or this run.")
+  (field change "The ratio of now to was, less one: 0.05 is 5% slower.")
+  (field lo "The low end of the change's 95% interval.")
+  (field hi "The high end.")
+  (field p-raw "The p-value as the test gave it.")
+  (field p "The p-value corrected by Holm's method for the comparisons of the run.")
+  (field verdict "What it comes to, with the run's level and threshold.")
+  (field spread "With several process pairs, the standard deviation of their log ratios; -1 when it was not measured.")
+  (see CompareResult Verdict))
+
+(:doc CompareResult
+  (summary "Two runs compared.")
+  (field comparisons "The cases both have, compared, in the later run's order.")
+  (field only-now "The keys of the cases only the later side has.")
+  (field only-saved "The keys of the cases only the earlier side has.")
+  (field warnings "The facts of the two runs that differ and move times: the build, the .NET version, server GC, the governor.")
+  (field other-machine "#t when the machine keys differ: the numbers mean little and no verdict is to be believed.")
+  (see compare-runs compare-paired))
+
+(:doc compare-runs
+  (summary "A run compared with a saved one, case by case: unpaired, by the Mann-Whitney U test and a bootstrap of the ratio of the medians.")
+  (arg saved "The earlier run.")
+  (arg now "The later run.")
+  (arg alpha "The significance level of a verdict: 0.05.")
+  (arg threshold "The smallest change a verdict counts, as a fraction: 0.02.")
+  (returns "The comparison.")
+  (see compare-paired CompareResult))
+
+(:doc PairedCase
+  (summary "One case of an A/B run: each process pair's samples of A and of B, a sample of each a round.")
+  (field name "The benchmark's name.")
+  (field labels "Its parameters.")
+  (field a "For each process pair, A's nanoseconds per call in the order of the rounds.")
+  (field b "The same for B, round for round.")
+  (see compare-paired))
+
+(:doc compare-paired
+  (summary "An A/B run compared, A as was and B as now, paired by round or by process pair.")
+  (arg cases "The cases both sides have.")
+  (arg only-a "The keys of the cases only A has.")
+  (arg only-b "The keys of the cases only B has.")
+  (arg alpha "The significance level of a verdict.")
+  (arg threshold "The smallest change a verdict counts, as a fraction.")
+  (returns "The comparison.")
+  (see compare-runs PairedCase)
+  (reference """
+    With one process pair, the rounds are the pairs: the Wilcoxon
+    signed-rank test on each round's log ratio, and the paired bootstrap.
+    A drift that moved both of a round's samples moves neither. What it
+    cannot see is a difference between the two processes as a whole.
+
+    With several, each pair gives one ratio of medians, and the test is a
+    t-test on their logs, with a t-interval: the difference between
+    processes is then in the test, and its size is @code{spread}.
+    """))
