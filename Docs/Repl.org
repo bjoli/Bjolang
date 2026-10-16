@@ -251,6 +251,37 @@ name rather than the ones continuing a word. A command is a line of its own
 whatever it holds, so the brackets an unfinished entry leaves open do not make
 the REPL wait for more.
 
+* In Emacs
+
+~bjomode.el~ runs the REPL in a comint buffer, one per project, started at the
+project's root (or in the file's directory outside a project), which is where
+a relative ~(import "x.bjo")~ in an entry is read from.
+
+| Key       | In a ~.bjo~ buffer                                                |
+|-----------+-------------------------------------------------------------------|
+| ~C-c C-z~ | Switch to the REPL, starting it if need be; in the REPL, back     |
+| ~C-M-x~   | Send the top-level form at point, with the signature written above |
+| ~C-x C-e~ | Send the form before point                                         |
+| ~C-c C-r~ | Send the region's forms, each an entry                            |
+| ~C-c C-l~ | Send the whole buffer's forms                                     |
+
+What is sent is shown in the REPL as if it were typed there, and kept in its
+history. A ~defun~ is sent together with a ~(: name ...)~ written just above
+it, so that it arrives with its signature. Top-level comments are left out,
+since on its own a comment is an empty entry.
+
+In the REPL buffer, what is typed is coloured and indented (~TAB~) as in a
+~.bjo~ buffer, and ~completion-at-point~ asks the REPL itself through
+~:complete~, so it offers a name an earlier entry defined. It answers only at
+~bjo>~: in the middle of an entry, a ~:complete~ line would be read as more of
+it.
+
+The REPL prints a prompt before every line it reads. Several lines sent at
+once — a definition of five lines, or a buffer of entries — would print their
+prompts before the answers, so the buffer leaves out every prompt but one that
+waits: it counts the lines sent and the prompts printed, and a prompt waits
+only while there have been more prompts than lines.
+
 * Semantics
 
 ** Redefinition shadows

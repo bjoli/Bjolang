@@ -1,3 +1,5 @@
+;;; bjomode.el --- Major mode for Bjolang -*- lexical-binding: t; -*-
+
 ;; This Source Code Form is subject to the terms of the Mozilla Public
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -10,8 +12,23 @@
 ;; in such object code or executable form without complying with the source code
 ;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
 
-;;; bjomode.el --- Major mode for Bjolang -*- lexical-binding: t; -*-
+;;; Commentary:
 
+;; Keys:
+;;
+;;   C-c C-c  run the file (`bjo run'), C-u first for arguments
+;;   C-c C-p  run the project around it
+;;   C-c C-z  switch to the REPL, starting it; and back again from it
+;;   C-M-x    send the definition at point to the REPL, with its signature
+;;   C-x C-e  send the form before point
+;;   C-c C-r  send the region
+;;   C-c C-l  send the buffer
+;;
+;; The tests are in bjomode-tests.el:
+;;
+;;   emacs -Q --batch -l bjomode.el -l bjomode-tests.el \
+;;         -f ert-run-tests-batch-and-exit
+;;
 ;; Indentation follows Scheme's rules, which is what Bjolang's syntax is:
 ;;
 ;;   - a form with a body indents it two spaces;
@@ -195,9 +212,9 @@ or a parenthesised clause of a `def*'."
 (defun bjo--failure-indent (indent-point state)
   "The column for the line at INDENT-POINT in a `def' clause's failure part.
 
-A failure keyword lines up under the clause's pattern, and the
-arms after `:leave' under the first arm. Nil for any other line,
-which indents as it would anyway."
+A failure keyword is two columns in from the clause's open paren,
+as a body is, and the arms after `:leave' line up under the first
+arm. Nil for any other line, which indents as it would anyway."
   (let ((open (elt state 1)))
     (when open
       (save-excursion
@@ -214,7 +231,7 @@ which indents as it would anyway."
                                    elements)))
               (cond
                ((looking-at bjo--failure-keyword-re)
-                (bjo--column-at (car elements)))
+                (+ (bjo--column-at open) 2))
                (leave
                 (let ((first-arm (seq-find (lambda (p) (> p leave)) elements)))
                   (bjo--column-at (if (and first-arm (< first-arm here))
@@ -295,10 +312,17 @@ is not decided here; see `bjo--calculate-indent'."
           (scan-error head-column))))
 
      (t
-      (let* ((function (buffer-substring (point)
+      (let* ((head-column (current-column))
+             (function (buffer-substring (point)
                                          (progn (forward-sexp 1) (point))))
              (method (get (intern-soft function) 'bjo-indent-function)))
         (cond
+         ;; `(:match pattern value body ...)' is a `cond' clause, and its body
+         ;; goes under the keyword: one column in, as an ordinary clause's
+         ;; goes under its test. Every other keyword-headed list, a loop
+         ;; clause or a `(:doc ...)', is a call or a form like any other.
+         ((equal function ":match")
+          head-column)
          ((or (eq method 'defun)
               (and (null method)
                    (> (length function) 3)
@@ -721,6 +745,253 @@ With a prefix argument ASK, read arguments to pass to the program."
 
 (define-key bjo-mode-map (kbd "C-c C-c") #'bjo-run)
 (define-key bjo-mode-map (kbd "C-c C-p") #'bjo-run-project)
+
+;;; ---------------------------------------------------------------------------
+;;; The REPL
+;;
+;; `bjo repl' in a comint buffer, one per project, or per directory outside one:
+;; it is started where `bjo repl' finds the project's packages, and a relative
+;; `(import "x.bjo")' in an entry is relative to there. Under Emacs the REPL
+;; reads plain lines (it sees INSIDE_EMACS), and a form still open at the end
+;; of a line makes it wait for the next.
+;;
+;; From a source buffer, forms are sent as entries and shown in the REPL as if
+;; typed there. A definition is sent with the signature written just above it,
+;; which is what an entry needs of a `defun' that does not write its own types.
+;; In the REPL buffer, `completion-at-point' asks the REPL itself, through
+;; `:complete', so a name an earlier entry defined is offered too.
+
+(defconst bjo-repl-prompt-regexp "^\\(?:bjo\\|\\.\\.\\.\\)> "
+  "The REPL's prompts: `bjo> ' for an entry, `...> ' for more of one.")
+
+(defvar-local bjo-repl--source nil
+  "The source buffer this REPL was last switched to from.")
+
+(defun bjo-repl--root ()
+  "Where the REPL for the current buffer runs: its project, or its directory."
+  (let ((dir (if buffer-file-name
+                 (file-name-directory buffer-file-name)
+               default-directory)))
+    (file-name-as-directory
+     (expand-file-name (or (locate-dominating-file dir bjo-manifest-name) dir)))))
+
+(defun bjo-repl--buffer-name (root)
+  "The name of the REPL buffer for ROOT."
+  (format "*bjo repl: %s*" (abbreviate-file-name (directory-file-name root))))
+
+(defvar-local bjo-repl--lines-sent 0
+  "How many lines have been sent to the REPL.")
+
+(defvar-local bjo-repl--prompts-seen 0
+  "How many prompts the REPL has printed.")
+
+(defun bjo-repl--input-sender (process input)
+  "Send INPUT to PROCESS, counting its lines for `bjo-repl--tidy'."
+  (setq bjo-repl--lines-sent
+        (+ bjo-repl--lines-sent 1 (seq-count (lambda (c) (eq c ?\n)) input)))
+  (comint-simple-send process input))
+
+(defun bjo-repl--tidy (output)
+  "OUTPUT without the prompts that wait for nothing.
+
+The REPL prints a prompt before each line it reads, and one more to
+begin with. So a prompt waits for a line only while there have been
+more prompts than lines sent; the rest are for lines that were sent
+already, together: the `...> ' of every line of a definition after
+the first, and the `bjo> ' of every entry sent at once but the first.
+Shown, they would come before the answers, each on the line of the
+next."
+  (let ((prompt "\\(?:bjo\\|\\.\\.\\.\\)> ")
+        (start 0)
+        (kept ""))
+    (while (string-match prompt output start)
+      (setq kept (concat kept (substring output start (match-beginning 0))))
+      (setq bjo-repl--prompts-seen (1+ bjo-repl--prompts-seen))
+      ;; Only the last prompt of the output can be one that waits.
+      (when (and (= (match-end 0) (length output))
+                 (> bjo-repl--prompts-seen bjo-repl--lines-sent))
+        (setq kept (concat kept (match-string 0 output))))
+      (setq start (match-end 0)))
+    (concat kept (substring output start))))
+
+(defun bjo-repl--indirect-setup ()
+  "Set up the buffer that fontifies and indents what is typed in the REPL.
+It is in `bjo-mode', without the mode's hooks: one of them may start a
+language server, and this buffer is no file."
+  (let ((bjo-mode-hook nil))
+    (bjo-mode)))
+
+(defvar bjo-repl-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-z") #'bjo-repl-switch-back)
+    map)
+  "Keymap for `bjo-repl-mode'.")
+
+(define-derived-mode bjo-repl-mode comint-mode "Bjo-REPL"
+  "Major mode for a Bjolang REPL.
+\\<bjo-repl-mode-map>\\[bjo-repl-switch-back] goes back to the source buffer; \
+\\[comint-send-eof] leaves the REPL."
+  :group 'bjolang
+  :syntax-table bjo-mode-syntax-table
+  (setq-local comint-prompt-regexp bjo-repl-prompt-regexp)
+  (setq-local comint-prompt-read-only t)
+  (setq-local comint-process-echoes nil)
+  (setq-local comint-input-sender #'bjo-repl--input-sender)
+  (add-hook 'comint-preoutput-filter-functions #'bjo-repl--tidy nil t)
+  (add-hook 'completion-at-point-functions #'bjo-repl-completion-at-point nil t)
+  (setq-local comment-start ";")
+  ;; What is typed is coloured, and indented with TAB, by `bjo-mode' itself.
+  (setq-local comint-indirect-setup-function #'bjo-repl--indirect-setup)
+  (when (fboundp 'comint-fontify-input-mode)
+    (comint-fontify-input-mode 1)))
+
+(defun bjo-repl--process (buffer)
+  "The live REPL process of BUFFER, or nil."
+  (let ((process (and buffer (get-buffer-process buffer))))
+    (and (process-live-p process) process)))
+
+(defun bjo-repl--waiting-p (buffer)
+  "Whether the REPL in BUFFER waits at its prompt for an entry.
+The prompt may follow output on its line: `(print \"x\")' leaves `xbjo> '."
+  (with-current-buffer buffer
+    (let ((mark (process-mark (get-buffer-process buffer))))
+      (and (> bjo-repl--prompts-seen bjo-repl--lines-sent)
+           (save-excursion
+             (goto-char mark)
+             ;; `pos-bol', not `line-beginning-position': the prompt is a
+             ;; field of its own, and that one stops at the field's edge.
+             (looking-back "bjo> " (pos-bol)))))))
+
+(defun bjo-repl--start (root)
+  "The REPL buffer for ROOT, with the REPL started in it if it was not."
+  (let ((buffer (get-buffer-create (bjo-repl--buffer-name root))))
+    (unless (bjo-repl--process buffer)
+      (with-current-buffer buffer
+        (setq default-directory root)
+        (bjo-repl-mode)
+        ;; A pipe, not a pty: what is sent is not echoed back, and there is
+        ;; no line discipline between the REPL and what it reads.
+        (let ((process-connection-type nil))
+          (comint-exec buffer "bjo-repl" (expand-file-name bjo-program) nil '("repl")))
+        ;; The first prompt, so that what is sent next comes after the banner.
+        (let ((process (get-buffer-process buffer))
+              (deadline (+ (float-time) 30)))
+          (while (and (process-live-p process)
+                      (< (float-time) deadline)
+                      (not (bjo-repl--waiting-p buffer)))
+            (accept-process-output process 0.1)))))
+    buffer))
+
+(defun bjo-repl ()
+  "Switch to the REPL for this buffer's project, starting it if need be."
+  (interactive)
+  (let ((source (current-buffer))
+        (buffer (bjo-repl--start (bjo-repl--root))))
+    (with-current-buffer buffer
+      (setq bjo-repl--source source))
+    (pop-to-buffer buffer)
+    (goto-char (point-max))))
+
+(defun bjo-repl-switch-back ()
+  "Go back to the source buffer the REPL was last switched to from."
+  (interactive)
+  (if (buffer-live-p bjo-repl--source)
+      (pop-to-buffer bjo-repl--source)
+    (user-error "No source buffer to go back to")))
+
+(defun bjo-repl--send (text)
+  "Send TEXT to the REPL for this buffer, shown there as if typed.
+Anything typed in the REPL and not yet sent is kept, after it."
+  (let* ((buffer (bjo-repl--start (bjo-repl--root)))
+         (process (or (bjo-repl--process buffer)
+                      (user-error "The REPL did not start; see %s" (buffer-name buffer)))))
+    (with-current-buffer buffer
+      (let* ((mark (process-mark process))
+             (pending (buffer-substring mark (point-max))))
+        (delete-region mark (point-max))
+        (goto-char (point-max))
+        (insert (string-trim text))
+        (comint-send-input)
+        (insert pending)))
+    (unless (get-buffer-window buffer 0)
+      (display-buffer buffer))))
+
+(defun bjo--forms-in (start end)
+  "The top-level forms between START and END, each as its text.
+Comments and blank lines between them are left out: on its own a
+comment is an entry with nothing in it."
+  (save-excursion
+    (goto-char start)
+    (let ((forms nil))
+      (condition-case nil
+          (while (progn (forward-comment (buffer-size)) (< (point) end))
+            (let ((form-start (point)))
+              (forward-sexp 1)
+              (push (buffer-substring-no-properties form-start (min (point) end))
+                    forms)))
+        (scan-error (user-error "The region begins or ends inside a form")))
+      (nreverse forms))))
+
+(defun bjo-send-region (start end)
+  "Send the forms between START and END to the REPL, each as an entry."
+  (interactive "r")
+  (let ((forms (bjo--forms-in start end)))
+    (if forms
+        (bjo-repl--send (string-join forms "\n"))
+      (user-error "No form in the region"))))
+
+(defun bjo-send-buffer ()
+  "Send every form in the buffer to the REPL, each as an entry."
+  (interactive)
+  (bjo-send-region (point-min) (point-max)))
+
+(defun bjo-send-definition ()
+  "Send the top-level form around point to the REPL.
+A signature written just above it, `(: name ...)', goes with it."
+  (interactive)
+  (save-excursion
+    (let ((end (progn (end-of-defun) (point)))
+          (start (progn (beginning-of-defun) (point))))
+      (let ((signature
+             (save-excursion
+               (forward-comment (- (buffer-size)))
+               (when (eq (char-before) ?\))
+                 (let ((sig-end (point)))
+                   (backward-sexp 1)
+                   (and (looking-at "(:\\s-")
+                        (point)
+                        (cons (point) sig-end)))))))
+        (bjo-send-region (if signature (car signature) start) end)))))
+
+(defun bjo-send-last-sexp ()
+  "Send the form before point to the REPL."
+  (interactive)
+  (bjo-send-region (save-excursion (backward-sexp 1) (point)) (point)))
+
+(defun bjo-repl--complete (process text)
+  "What the REPL at PROCESS offers at the end of TEXT, as a list of names."
+  (comint-redirect-results-list-from-process
+   process (concat ":complete " text) "^\\([^\t\n]+\\)\t" 1))
+
+(defun bjo-repl-completion-at-point ()
+  "Complete the word before point from what the REPL says could go there.
+Only at the REPL's prompt: in the middle of an entry, a `:complete' line
+would be read as more of it."
+  (let* ((process (bjo-repl--process (current-buffer)))
+         (mark (and process (process-mark process))))
+    (when (and mark (>= (point) mark) (bjo-repl--waiting-p (current-buffer)))
+      (let* ((end (point))
+             (start (max mark (save-excursion (skip-syntax-backward "w_") (point))))
+             (text (replace-regexp-in-string
+                    "\n" " " (buffer-substring-no-properties mark end)))
+             (names (bjo-repl--complete process text)))
+        (list start end names :exclusive 'no)))))
+
+(define-key bjo-mode-map (kbd "C-c C-z") #'bjo-repl)
+(define-key bjo-mode-map (kbd "C-M-x") #'bjo-send-definition)
+(define-key bjo-mode-map (kbd "C-x C-e") #'bjo-send-last-sexp)
+(define-key bjo-mode-map (kbd "C-c C-r") #'bjo-send-region)
+(define-key bjo-mode-map (kbd "C-c C-l") #'bjo-send-buffer)
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.\\(bjo\\|protobjo\\)\\'" . bjo-mode))

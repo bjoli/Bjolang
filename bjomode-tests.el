@@ -1,0 +1,273 @@
+;;; bjomode-tests.el --- Tests for bjomode.el -*- lexical-binding: t; -*-
+
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+;;; Commentary:
+
+;; Indentation and the failure-part face. Run from the checkout:
+;;
+;;   emacs -Q --batch -l bjomode.el -l bjomode-tests.el \
+;;         -f ert-run-tests-batch-and-exit
+;;
+;; An indentation test is a snippet indented as it should be. The test takes
+;; every line's indentation away and indents the result again, so the mode has
+;; to arrive at the snippet from nothing rather than leave it be.
+
+;;; Code:
+
+(require 'ert)
+(require 'bjo-mode)
+
+(defconst bjo-tests--dir
+  (file-name-directory (or load-file-name buffer-file-name))
+  "The checkout, where the files of `bjo-tests--corpus' are.")
+
+(defmacro bjo-tests--in-buffer (text &rest body)
+  "Evaluate BODY in a `bjo-mode' buffer holding TEXT, without its hooks."
+  (declare (indent 1))
+  `(with-temp-buffer
+     (insert ,text)
+     (let ((bjo-mode-hook nil))
+       (bjo-mode))
+     ,@body))
+
+(defun bjo-tests--reindented (text)
+  "TEXT with every line's indentation taken away and indented again."
+  (bjo-tests--in-buffer
+      (replace-regexp-in-string "^[ \t]+" "" text)
+    (indent-region (point-min) (point-max))
+    (buffer-string)))
+
+(defmacro bjo-deftest-indent (name doc text)
+  "Define test NAME, with DOC, that TEXT indents as it is written."
+  (declare (indent 1) (doc-string 2))
+  `(ert-deftest ,(intern (format "bjo-indent/%s" name)) ()
+     ,doc
+     (should (equal (bjo-tests--reindented ,text) ,text))))
+
+;;; ---------------------------------------------------------------------------
+;;; Indentation
+
+(bjo-deftest-indent defun
+  "A `defun' indents its body two spaces."
+  "(defun (double x)
+  (println x)
+  (* x 2))
+")
+
+(bjo-deftest-indent call-alignment
+  "A call lines its arguments up under the first."
+  "(defun (f x)
+  (string-append \"a\"
+                 (->str x)
+                 \"b\"))
+")
+
+(bjo-deftest-indent if
+  "Both arms of an `if' are four spaces in."
+  "(defun (f x)
+  (if (> x 0)
+      \"positive\"
+      \"not\"))
+")
+
+(bjo-deftest-indent let
+  "A `let' binds, then its body is two spaces in."
+  "(defun (f)
+  (let ((a 1)
+        (b 2))
+    (+ a b)))
+")
+
+(bjo-deftest-indent named-let
+  "A named `let' has its name and bindings before the body."
+  "(defun (count-down n)
+  (let loop ((i n)
+             (acc Nil))
+    (if (= i 0)
+        acc
+        (loop (- i 1) (Cons i acc)))))
+")
+
+(bjo-deftest-indent match
+  "`match' arms are a body, and an arm's forms line up after its pattern."
+  "(defun (describe xs)
+  (match xs
+    (Nil \"empty\")
+    ((Cons head _) (println head)
+                   \"some\")))
+")
+
+(bjo-deftest-indent def-leave
+  "A failure keyword is two in from the `def', and its arms line up."
+  "(defun (explain s)
+  (def (Ok n) (parse-int s)
+    :leave ((Err \"zero\") \"a zero is not a number here\")
+           ((Err why) (str \"refused (\" why \")\")))
+  (str \"accepted \" (int->string n)))
+")
+
+(bjo-deftest-indent def-propagate
+  "A failure keyword alone on its line, after a long scrutinee."
+  "(defun (read rd)
+  (def (Ok v) (read-value rd 1)
+    :propagate)
+  v)
+")
+
+(bjo-deftest-indent def-star
+  "A `def*' lines its clauses up, and each clause's failure is two in."
+  "(defun (greet key number)
+  (def* ((Some found) (lookup key) :leave-with (Err \"no such key\"))
+        ((Ok n) (parse-int number)
+          :leave ((Err why) (Err why))))
+  (Ok (str found \"/\" (int->string n))))
+")
+
+(bjo-deftest-indent cond
+  "`cond' clauses: a test's body under the test, a `:match' body under it."
+  "(defun (classify text env)
+  (cond
+    ((string-empty? text) \"empty\")
+    (:def first (string-first text))
+    (:def (Some port) (map-try-ref env \"PORT\")
+      :leave-with 8080)
+    (:match (Some n) (string->int text)
+     (println \"a number\")
+     n)
+    ((char-upper-case? first)
+     \"capital\")
+    (else \"word\")))
+")
+
+(bjo-deftest-indent defbjouble
+  "A `defbjouble' branch, `(#:sync ...)', has a body two spaces in."
+  "(defbjouble (port-eof? p)
+  (#:sync
+    (clr-eof p))
+  (#:bjo (clr-eof-await p)))
+")
+
+(bjo-deftest-indent comprehension
+  "Braces pair like parens, and a comprehension aligns its clauses."
+  "(defun (evens xs)
+  {(* x 2) (:for x xs)
+           (:when (even? x))})
+")
+
+(bjo-deftest-indent loop-clauses
+  "`loop' and `seql' align their clauses, keyword-headed or not."
+  "(defun (mean ys)
+  (loop (:for y ys)
+        (:acc s (summing y))
+        (:acc n (counting y))
+        => (if (= n 0) 0 (/ s n))))
+")
+
+(bjo-deftest-indent with-return
+  "`with-return' names its escape, then has a body."
+  "(defun (first-even xs)
+  (with-return ret
+    (for-each (fun (x) (when (even? x) (ret x))) xs)
+    0))
+")
+
+(bjo-deftest-indent doc-form
+  "A `(:doc ...)' form is a call: its clauses line up under the first."
+  "(:doc clamp-all
+      (summary \"Clamps every number.\")
+      (arg lo \"The least it may answer.\"))
+")
+
+(bjo-deftest-indent character-literal
+  "A delimiter in a character literal opens and closes nothing."
+  "(defun (f c)
+  (if (= c #\\()
+      #\\;
+      #\\)))
+")
+
+;;; ---------------------------------------------------------------------------
+;;; Real files, which are indented as the mode indents them
+
+(defconst bjo-tests--corpus
+  '("TestFiles/007_named_let.bjo"
+    "TestFiles/085_comprehension.bjo"
+    "TestFiles/154_lib.bjo"
+    "TestFiles/220_def.bjo"
+    "TestFiles/226_cond_clauses.bjo"
+    "TestFiles/270_loop_subloop_form.bjo"
+    "Examples/traits.bjo"
+    "bjo/git.bjo")
+  "Files the mode leaves as they are, from every corner of the language.")
+
+(ert-deftest bjo-indent/corpus ()
+  "Indenting a file written in the house style changes no line of it."
+  (dolist (file bjo-tests--corpus)
+    (let ((path (expand-file-name file bjo-tests--dir)))
+      (when (file-exists-p path)
+        (let ((text (with-temp-buffer
+                      (insert-file-contents path)
+                      (buffer-string))))
+          (bjo-tests--in-buffer text
+            (indent-region (point-min) (point-max))
+            (should (equal (cons file (buffer-string)) (cons file text)))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; The failure part's face
+
+(defun bjo-tests--failure-text (text)
+  "The parts of TEXT that `bjo-mode' gives the `bjo-failure' face, in order."
+  (bjo-tests--in-buffer text
+    (font-lock-ensure)
+    (let ((parts nil)
+          (pos (point-min)))
+      (while (< pos (point-max))
+        (let ((next (next-single-property-change pos 'face nil (point-max)))
+              (face (get-text-property pos 'face)))
+          (when (memq 'bjo-failure (ensure-list face))
+            (if (and parts (= (cdar parts) pos))
+                (setcdr (car parts) next)
+              (push (cons pos next) parts)))
+          (setq pos next)))
+      (mapcar (lambda (p) (buffer-substring-no-properties (car p) (cdr p)))
+              (nreverse parts)))))
+
+(ert-deftest bjo-failure/def ()
+  "A `def''s failure part has the face, and the binding has not."
+  (should (equal (bjo-tests--failure-text
+                  "(def (Some x) (lookup k) :leave-with 0)")
+                 '(":leave-with 0"))))
+
+(ert-deftest bjo-failure/plain-def ()
+  "A `def' that cannot fail has nothing in the face."
+  (should (equal (bjo-tests--failure-text "(def x (+ 1 2))") nil)))
+
+(ert-deftest bjo-failure/multi-line ()
+  "A failure part over several lines is one part, arms and all."
+  (should (equal (bjo-tests--failure-text
+                  "(def (Ok n) (parse-int s)
+  :leave ((Err e) e)
+         (_ 0))")
+                 '(":leave ((Err e) e)
+         (_ 0)"))))
+
+(ert-deftest bjo-failure/def-star ()
+  "Each clause of a `def*' that has a failure part has its own."
+  (should (equal (bjo-tests--failure-text
+                  "(def* ((Some a) (f) :propagate)
+      (b (g))
+      ((Ok c) (h) :default 0))")
+                 '(":propagate" ":default 0"))))
+
+(ert-deftest bjo-failure/comment ()
+  "A `def' in a comment heads nothing."
+  (should (equal (bjo-tests--failure-text
+                  ";; (def (Some x) y :propagate)\n(f 1)")
+                 nil)))
+
+(provide 'bjomode-tests)
+
+;;; bjomode-tests.el ends here
