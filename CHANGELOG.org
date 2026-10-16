@@ -3,6 +3,26 @@
 
 What each change guarantees, and what it leaves open.
 
+* A debugger sees a seql's and a closure's locals as the program wrote them
+
+- A local that is a field is renamed in the assembly by the rule the PDB's
+  locals follow (~PdbNames~): a closure's captured local, and an iterator's
+  hoisted ~<name>5__N~, which in a debug build is every local of a ~seql~.
+  The program's are shown as written, ~is-big?~ and ~<next-pair>5__3~; the
+  compiler's become ~<>h__N~ and ~<>v__N~, which a debugger hides as it
+  hides Roslyn's own. Inside a ~seql~ netcoredbg showed ~_hgh__90~,
+  ~__init__97~ and ~__next__99~ beside ~hgh~, ~s~ and ~v~, and now only the
+  three.
+- The assembly's string heap cannot grow, so a name is written over the old
+  one, and only where it is no longer and no other name shares its bytes.
+  A generic closure's or state machine's fields are reached through a
+  reference by name, which is the same string and is renamed with them;
+  the patch checks that each such reference still names its field, and
+  keeps Roslyn's assembly otherwise. ~BJOLANG_RAW_PDB=1~ turns this off
+  too.
+- Left open: a captured parameter keeps its C# name, since its field and
+  the parameter are one string.
+
 * A debug build is only that, and a debugger sees the program's locals
 
 - ~-d~ builds unoptimized, with symbols, and writes nothing else. The

@@ -28,6 +28,16 @@ and what is known about what it cannot do yet.
   A patch that does not read back with the same tables and sequence points
   leaves Roslyn's files as they are; ~BJOLANG_RAW_PDB=1~ turns it off.
   ~TestFiles/pdb~ and the suite's debug-symbols phase check it.
+- A local that is a field is renamed in the assembly by the same rule. A
+  closure's captured locals are fields of a ~<>c__DisplayClass~, and an
+  iterator's are fields of its state machine, ~<name>5__N~ — every local
+  of a ~seql~, in a debug build, where Roslyn hoists them all. netcoredbg
+  reads the name between ~<~ and ~>~, and leaves out a field whose name
+  begins ~<>~; so the program's become ~is-big?~ and ~<next-pair>5__3~, and
+  the compiler's ~<>v__N~ and ~<>h__N~. The assembly's string heap cannot
+  grow, so a name is written over the old one, and only where it is no
+  longer and shares its bytes with no other name. A captured parameter
+  keeps its C# name: its field and the parameter are one string.
 
 * Setting it up
 
@@ -96,3 +106,9 @@ batch Emacs, on a small program:
   spellings of names.
 - *A suspended bjoroutine's stack* is in its continuations, so the call stack
   ends at the scheduler.
+- *A breakpoint on a seql's last clause* can bind in the loop's exit
+  function, ~<main>g__loopexit__N~, rather than in the iterator, and there
+  netcoredbg fails to list the locals (~variables~ answers ~0x80004005~). A
+  breakpoint on an earlier clause stops in the iterator. Seen too: a
+  breakpoint on a line below a lambda stopping in the lambda, as if its
+  sequence points ran a line long.

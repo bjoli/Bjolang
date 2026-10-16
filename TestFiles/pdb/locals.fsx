@@ -22,6 +22,18 @@ for h in reader.LocalVariables do
 
 let pe = new PEReader(File.OpenRead assembly)
 
+// The fields of the types Roslyn makes to hold locals, closures and state
+// machines, which a debugger shows as locals too: `field <name>` as stored.
+let metadata = pe.GetMetadataReader()
+
+for th in metadata.TypeDefinitions do
+    let t = metadata.GetTypeDefinition th
+    let name = metadata.GetString t.Name
+
+    if name.StartsWith "<" && name <> "<Module>" && name <> "<PrivateImplementationDetails>" then
+        for f in t.GetFields() do
+            printfn "field %s" (metadata.GetString(metadata.GetFieldDefinition(f).Name))
+
 for e in pe.ReadDebugDirectory() do
     match e.Type with
     | DebugDirectoryEntryType.PdbChecksum ->

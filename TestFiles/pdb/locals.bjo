@@ -1,6 +1,10 @@
 ;; The locals of a debug build, as a debugger sees them in the PDB: the names
 ;; written here, spelled as written, and none of the compiler's. Read by
 ;; `locals.fsx`, from `run_tests.py`.
+;;
+;; And the locals that are fields, as a debugger sees them in the assembly:
+;; those a closure captures, in `scaled`, and those of a `seql`, which in a
+;; debug build are every one of them, in the generic `unfold`.
 
 (: classify (-> (List int) string))
 (defun (classify numbers)
@@ -13,7 +17,21 @@
           (string-append "big " (->str first-one))
           (string-append "small " (->str first-one))))))
 
+(: scaled (-> int (List int) (Vec int)))
+(defun (scaled by-how-much numbers)
+  (def is-big? (> by-how-much 10))
+  (def scale (fun (x) (if is-big? x (* x by-how-much))))
+  (list->vec (list-map scale numbers)))
+
+(: unfold (-> (-> %a (Option (Tuple %a %b))) %a (Seq %b)))
+(defun (unfold step seed)
+  (seql (:with next-pair (step seed) (step state))
+        (:finish-let (Some (Tuple state value)) next-pair)
+        (:yield value)))
+
 (: main (-> (Vec string) int))
 (defun (main args)
   (println (classify (list 1 2 3 4 5)))
+  (println (scaled 2 (list 1 2 3)))
+  (println (seq->vec (unfold (fun (n) (if (> n 0) (Some (Tuple (- n 1) (* n 10))) None)) 3)))
   0)

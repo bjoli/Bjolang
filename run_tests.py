@@ -1254,22 +1254,53 @@ def run_pdb_tests():
         check_that("the program builds", False, output)
     else:
         ran = subprocess.run(["dotnet", str(SOURCE.with_suffix(".exe"))], capture_output=True, text=True)
-        check_that("the program runs", ran.stdout == "big 2\n", ran.stdout + ran.stderr)
+        check_that("the program runs", ran.stdout == "big 2\n[2 4 6]\n[30 20 10]\n", ran.stdout + ran.stderr)
 
         shown = [v for k, v in facts if k == "shown"]
         hidden = [v for k, v in facts if k == "hidden"]
         check_that("a name C# cannot spell is shown as written", "is-big?" in shown, shown)
         check_that("both of two bindings of one name are shown", shown.count("first-one") == 2, shown)
         check_that("a pattern variable is shown", "head" in shown, shown)
+        # `CS$<>8__locals0` is Roslyn's: a closure's captured locals, which a
+        # debugger shows as the fields below rather than under that name.
         check_that("no local is shown under a compiler's name",
-                   not [n for n in shown if "__" in n or n.startswith("_")], shown)
+                   not [n for n in shown
+                        if ("__" in n or n.startswith("_")) and "$" not in n and "<" not in n], shown)
         check_that("the compiler's temporaries are hidden", any("loopcur" in n for n in hidden), hidden)
         check_that("the assembly's checksum is of the PDB", ["checksum", "true"] in facts, output)
         check_that("the assembly names the PDB's ID", ["id", "true"] in facts, output)
 
+        # The fields of closures and state machines, which a debugger shows as
+        # locals: `<name>5__N` under the name, anything else beginning `<>`
+        # hidden, and a plain name as it is.
+        def field_locals(facts):
+            names = []
+            for k, v in facts:
+                if k != "field" or v.startswith("<>"):
+                    continue
+                m = re.fullmatch(r"<([^<>]+)>5__\d+", v)
+                names.append(m.group(1) if m else v)
+            return names
+
+        fields = [v for k, v in facts if k == "field"]
+        field_names = field_locals(facts)
+        check_that("a captured local is shown as written", "is-big?" in field_names, fields)
+        check_that("a seql's locals are shown as written",
+                   all(n in field_names for n in ("next-pair", "state", "value")), fields)
+        check_that("a seql's temporaries are hidden", any(v.startswith("<>h__") for v in fields), fields)
+        # A captured parameter is the exception: its field and the parameter are
+        # one string, and a parameter's name is how a keyword argument arrives.
+        check_that("no field local is shown under a compiler's name",
+                   not [n for n in field_names
+                        if (re.search(r"__\d+$", n) or n.startswith("_")) and n != "bysubhowsubmuch"],
+                   fields)
+
         raw, output = build_and_read({"BJOLANG_RAW_PDB": "1"})
         check_that("BJOLANG_RAW_PDB=1 leaves Roslyn's names",
                    raw is not None and any("__" in v for k, v in raw if k == "shown"), output)
+        check_that("BJOLANG_RAW_PDB=1 leaves Roslyn's field names",
+                   raw is not None and "<>h__1" not in [v for k, v in raw if k == "field"]
+                   and any("__init__" in v for k, v in raw if k == "field"), output)
 
     remove_artifacts(SOURCE)
     return "pdb", p_total, p_failed, p_failures
