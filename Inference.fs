@@ -218,11 +218,49 @@ let checkAddendum (initialEnv: Env) (decls: Decl list) : Env * TDecl list =
         solvePending env
         env, typedDecls)
 
+/// Refuses a prefixed spelling of a trait that another module's trait of the
+/// same name took the place of.
+///
+/// A trait has no key, so the later of two traits of one name shadows the
+/// earlier, and that is allowed. But a prefix says that a module's trait has
+/// a name of its own: `A/Pretty` is `ta`'s `Pretty`. If `tb`'s `Pretty` took
+/// its place, `A/Pretty` and `A/pretty` are `tb`'s, and a call through them
+/// fails in the C# compiler. So a program with a prefixed spelling of a
+/// shadowed trait, or of one of its methods, is refused.
+let private checkShadowedTraitSpellings (registry: TraitRegistry) : unit =
+    for KeyValue(traitName, shadowedModules) in registry.ShadowedTraits do
+        let methods =
+            match Map.tryFind traitName registry.Traits with
+            | Some info -> Set.union (info.Signatures |> Map.keys |> Set.ofSeq) (info.Templates |> Map.keys |> Set.ofSeq)
+            | None -> Set.empty
+
+        let prefixed =
+            registry.ImportAliases
+            |> Map.toList
+            |> List.tryFind (fun (visible, alias) ->
+                alias.Kind = AliasTrait
+                && visible <> alias.OriginalName
+                && (alias.OriginalName = traitName || methods.Contains alias.OriginalName))
+
+        match prefixed with
+        | Some(visible, _) ->
+            let shown (key: string) = Naming.emittedTypeName key
+
+            let winner =
+                Map.tryFind traitName registry.TraitOrigins |> Option.map shown |> Option.defaultValue "this module"
+
+            let others = shadowedModules |> List.distinct |> List.map shown |> String.concat " and "
+
+            failwithf
+                $"Trait Error: two different traits are named %s{traitName}, one from %s{others} and one from %s{winner}, and %s{visible} is a prefixed name for one of them. A trait is known by its name alone, so the trait of %s{winner} takes the place of the other, also under a prefix: %s{visible} can not keep them apart. Import only one of the two modules, or rename one of the traits."
+        | None -> ()
+
 let checkProgram (initialEnv: Env) (program: Decl list) : Env * TDecl list =
     let finalEnv, _, typedDecls = checkDeclGroup initialEnv Map.empty program
     // Anything raised outside a declaration that generalizes still has to be
     // answered for.
     solvePending finalEnv
+    checkShadowedTraitSpellings finalEnv.Registry
     checkModuleValuesAreConcrete finalEnv.Registry typedDecls
     warnAboutShadowedMethods finalEnv.Registry typedDecls
 
