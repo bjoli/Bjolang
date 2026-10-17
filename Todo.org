@@ -75,23 +75,6 @@ out-degree ≤ 1, so copies grow additively; largest demand 722 nodes
 - *A body that will not serialize is not published* (~try~, bare list literal,
   tuple destructuring, local function with keyword/rest parameters): calls keep
   their dictionary.
-- *What a published body names is exported under its own name, and the body
-  is checked in the importer's scope by that name.* Two consequences:
-  - A private helper becomes public: a program importing ~(std bench)~ can
-    call bench's ~parse-int~ (~doubled~ in ~193_lib.bjo~ too).
-  - Two libraries' helpers of one name clash. ~(std test)~ and ~(std bench)~
-    both had a box called ~registry~; in a file importing both,
-    ~register-test!~'s body was checked against bench's, failed, and fell back
-    to a call (worked around by renaming bench's to ~bench-registry~). Code
-    generation was not wrong: ~applyQualification~ points the names at their
-    origin after the check. Only the check, and the inlining, were.
-  - *Fix*: what ~Exports.fs~ already does for ~import/extern~ aliases
-    (~clr_import__<module>__<name>~). Publish each auto-exported binding under
-    a name no source can write, ~auto__<origin-module>__<name>~, named for
-    the module that defines it so that two bodies naming one prelude function
-    share it, and rewrite the published body to use it. Explicit exports keep
-    their names. Tests: two libraries auto-exporting one name, an importer
-    defining it, and a leaked helper no longer callable.
 - *Each module makes its own copies.* An importer specialises a published body
   where it calls it, so ~f~ at ~int~ is copied into every module that calls it
   at ~int~. A project should collect its instantiations and monomorphise each

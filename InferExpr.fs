@@ -1554,8 +1554,14 @@ and private inferRecordConstruct (env: Env) (recordTypeName: string) (args: Expr
     // `(name__7 name__7)`, and a second renaming `name__7__9`. A label is a
     // spelling and never a variable, so a label that names no field means the
     // field its base name names.
+    //
+    // A body spliced from another module also has its free names pointed at
+    // their qualified references (`AlphaRename.reachHidden`), and a label that
+    // spells a binding of that module goes with them: `(Dep (version v))`
+    // in a module that binds a `version` gives `Module::version`. The
+    // qualifier comes off too.
     let rec original (name: string) =
-        let stripped = Gensym.baseName name
+        let stripped = Gensym.baseName (Naming.writtenName name)
         if stripped = name then name else original stripped
 
     let writtenFields =

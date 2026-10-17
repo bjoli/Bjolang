@@ -370,18 +370,40 @@ let metadata
     // falls back to one. Anything an exported template names is
     // therefore exported too — including a helper this module itself
     // imported from a third one, which is where the qualification points.
-    let autoExports =
+    //
+    // Published as *implicit*: an importer binds such a name only under its
+    // qualified reference, which source cannot write, so a private helper does
+    // not become callable by whoever imports the body, and two libraries'
+    // helpers of one name do not meet in the importer's scope.
+    //
+    // Each is the name the body writes, and the key its binding is found under
+    // here. They differ for a body this module republishes, a facade's: the
+    // helper it names may be bound here under its qualified reference alone,
+    // because it reached this module implicitly too, and it is passed on the
+    // same way.
+    let autoExportKeys =
         (inlineTemplatesToExport
-         |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) ->
-             tpl.Qualification |> Map.toList |> List.map fst))
+         |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) -> Map.toList tpl.Qualification))
         @ (constrainedBodiesToExport
-           |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) ->
-               tpl.Qualification |> Map.toList |> List.map fst))
-        |> List.filter (fun n ->
-            not (List.contains n exports)
-            && not (Set.contains n exportedTraitMethods)
-            && Map.containsKey n env.Bindings)
-        |> List.distinct
+           |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) -> Map.toList tpl.Qualification))
+        |> List.filter (fun (n, _) ->
+            not (List.contains n exports) && not (Set.contains n exportedTraitMethods))
+        |> List.choose (fun (n, qualified) ->
+            if Map.containsKey n env.Bindings then Some(n, n)
+            elif Map.containsKey qualified env.Bindings then Some(n, qualified)
+            else None)
+        |> List.distinctBy fst
+
+    let autoExports = autoExportKeys |> List.map fst
+
+    /// The suspending copies of implicit exports, which are published beside
+    /// them and are no more callable than they are.
+    let implicitTwins =
+        autoExportKeys
+        |> List.choose (fun (n, key) ->
+            if n = key then Map.tryFind n env.Registry.DoubleDefs else None)
+        |> List.filter (fun twin -> not (List.contains twin exports))
+        |> Set.ofList
 
     if isLibrary && not autoExports.IsEmpty then
         Diagnostics.progress (
@@ -803,8 +825,18 @@ let metadata
                 | Some alias -> Set.contains alias.OriginalName ownDefuns
                 | None -> Set.contains name ownDefuns
 
-            let exportedDef name : ModuleMetadata.ExportedDef option =
-                Map.tryFind name env.Bindings
+            /// `name` published as itself, or, for an implicit export, as the
+            /// name its body writes while its binding is read under `key`.
+            let rec exportedDef name : ModuleMetadata.ExportedDef option =
+                match List.tryFind (fun (n, _) -> n = name) autoExportKeys with
+                | Some(_, key) when not (List.contains name exports) ->
+                    exportedDefAs name key true
+                // The suspending copy of an implicit one is as implicit.
+                | _ when Set.contains name implicitTwins -> exportedDefAs name name true
+                | _ -> exportedDefAs name name false
+
+            and exportedDefAs (name: string) (key: string) (implicit: bool) : ModuleMetadata.ExportedDef option =
+                Map.tryFind key env.Bindings
                 |> Option.map (fun b ->
                     let (TypedAST.Scheme(_, constraints, t)) = b.Scheme
 
@@ -820,14 +852,15 @@ let metadata
                             "(where " + String.concat " " constraintStrs + ")"
 
                     ({ Name = name
-                       TypeText = serializeSignature name t
+                       TypeText = serializeSignature key t
                        ConstraintsText = constraintsText
-                       Origin = originOf name
-                       IsMethod = isMethod name
+                       Origin = originOf key
+                       IsMethod = isMethod key
                        // This module's own `def/mutable`. An imported one is
                        // bound immutable outside a REPL entry, and a facade
                        // republishing it says no more than it was given.
-                       IsMutable = b.IsMutable }
+                       IsMutable = b.IsMutable
+                       IsImplicit = implicit }
                     : ModuleMetadata.ExportedDef))
                 
             // A field or payload type is written as the type it resolves to,

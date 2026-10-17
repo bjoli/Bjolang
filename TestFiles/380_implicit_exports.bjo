@@ -1,0 +1,37 @@
+;; Implicit exports stay apart.
+;;
+;; `implicit_a.bjo` and `implicit_b.bjo` both have a private `registry` and a
+;; private `helper`, of different types, and both publish bodies that name
+;; them. This module defines a `helper` and a `registry` of its own too. Each
+;; inlined or specialised body must reach its own module's binding, and a
+;; call written here must reach the one written here.
+
+(import (std prelude))
+(import "inc/implicit_a.bjo")
+(import "inc/implicit_b.bjo")
+
+(def registry "mine")
+
+(: helper (-> int string))
+(defun (helper n) (str "local " (->str n)))
+
+(: check (-> string string string bool))
+(defun (check what got want)
+  (if (= got want)
+      #t
+      (begin (println (str what ": got '" got "', want '" want "'"))
+          #f)))
+
+(defun (main args)
+  (a-register! 5)
+  (a-register! 6)
+  (b-register! "hej")
+  (if (and (check "a-count" (->str (a-count)) "2")
+           (check "b-first" (b-first) "hej!")
+           (check "a-twice" (->str (a-twice 123)) "6")
+           (check "b-shout" (b-shout 7) "7!")
+           (check "a-tagged" (->str (a-tagged 3)) "6")
+           (check "own helper" (helper 1) "local 1")
+           (check "own registry" registry "mine"))
+      0
+      1))

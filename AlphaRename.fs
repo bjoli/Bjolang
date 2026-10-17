@@ -120,13 +120,19 @@ let patternNames = typedPatternBinders
 /// `Pipeline.applyDefRenaming`), and a body naming it is checked against that.
 /// A name the importer kept is left as written; `applyQualification` deals
 /// with it after the check.
+///
+/// An implicit export (a name the body uses that its module did not export)
+/// is also bound only under its qualified reference. The importer can bind the
+/// bare name to something different, or another library can. Thus the body
+/// goes to the qualified reference when that reference is bound, also when the
+/// bare name is bound.
 let reachHidden (isBound: string -> bool) (qualification: Map<string, string>) (body: Expr) : Expr =
-    // Only a name this module cannot reach as written. One it can — a builtin
-    // most of all, which binds no import edge keeps — is left to mean what it
-    // means here, as it always did.
+    // Only a name bound here under its qualified reference. A name with no
+    // such binding — a builtin most of all, which binds no import edge
+    // keeps — is left to mean what it means here, as it always did.
     let hidden =
         qualification
-        |> Map.filter (fun bare qualified -> not (isBound bare) && isBound qualified)
+        |> Map.filter (fun _ qualified -> isBound qualified)
 
     renameFree hidden body
 

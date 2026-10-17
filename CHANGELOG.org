@@ -3,6 +3,35 @@
 
 What each change guarantees, and what it leaves open.
 
+* Implicit exports are not callable, and do not clash
+
+- A published body (an inline template or a constrained function) can name
+  a binding its module does not export. That binding is published too, as
+  an /implicit/ export. Before, an importer bound it under its own name: a
+  program that imported ~(std bench)~ could call bench's private
+  ~parse-int~, and two libraries with private helpers of one name clashed in
+  a module that imported both. The body was then checked against the wrong
+  helper, and the call was not inlined ("could not inline ... Falling back
+  to a call").
+- Now an importer binds an implicit export only under its qualified
+  reference (~Module_Module::name~), which source cannot write. A body
+  spliced from another module goes to that reference whenever it is bound,
+  also when the importer binds the bare name. Thus each body reaches its
+  own module's helper, and a name the importer defines stays its own.
+- The qualified reference of a binding now has the keyword and rest
+  metadata of the binding. Before, a spliced body that called a rest
+  function, such as ~str~, through the qualified reference did not check.
+- A record constructor's field label that spells a bound name, such as
+  ~(Dep (version v))~ where ~version~ is a function, is renamed with the
+  free names, and the constructor now takes the qualifier off again, as it
+  already took off a hygiene suffix.
+- Explicit exports are as before. The metadata format is version 21, so
+  every library is built again.
+- Tests: ~380_implicit_exports.bjo~ (two libraries, the same private names
+  at different types, and an importer that defines them too),
+  ~warnings/implicit_exports_apart.bjo~ (no fallback warning), and
+  ~errors/implicit_export_not_callable.bjo~.
+
 * Benchmarks: ~(std bench)~, ~bjo bench~ and A/B runs
 
 - ~(def/bench "name" body ...)~ registers a benchmark and ~(run-benches)~ is

@@ -1183,8 +1183,22 @@ and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Dec
                 | None -> acc)
             finalEnv.Bindings
 
+    // The keyword and rest metadata goes with the qualified spelling. A body
+    // spliced from another module names the binding by that spelling (see
+    // `AlphaRename.reachHidden`), and without the metadata a call with a rest
+    // or a keyword argument does not check.
+    let qualifiedMetas =
+        definedHere
+        |> List.fold
+            (fun acc (visible, qualifiedSpelling) ->
+                match Map.tryFind visible finalEnv.FunMetas with
+                | Some meta -> Map.add qualifiedSpelling meta acc
+                | None -> acc)
+            finalEnv.FunMetas
+
     { finalEnv with
         Bindings = qualified
+        FunMetas = qualifiedMetas
         CurrentModule = env.CurrentModule },
     finalSigs,
     [ TModule(moduleName, typedDecls, r) ]

@@ -358,6 +358,9 @@ let qualifiedBinding (moduleName: string) (name: string) =
 
     $"%s{cls}::%s{name}"
 
+/// Whether a name is one `qualifiedBinding` made: no source spells `::`.
+let isQualifiedBinding (name: string) = name.Contains "::"
+
 /// The types that belong to no module.
 ///
 /// `List`, `Option`, `Syntax` and the rest are the runtime's, declared by no

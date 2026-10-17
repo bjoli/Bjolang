@@ -1,0 +1,28 @@
+;; Two libraries publish bodies that name a private `registry` and a private
+;; `helper` of different types, and this module binds both names too. Each
+;; body still inlines or specialises against its own module's binding.
+;; 380_implicit_exports.bjo runs the same calls and checks what they answer.
+;;
+;; EXPECT-NO-WARNING: could not inline
+;; EXPECT-NO-WARNING: could not specialise
+
+(import (std prelude))
+(import "../inc/implicit_a.bjo")
+(import "../inc/implicit_b.bjo")
+
+(def registry "mine")
+
+(: helper (-> int string))
+(defun (helper n) (str "local " (->str n)))
+
+(defun (main args)
+  (a-register! 5)
+  (b-register! "hej")
+  (println (->str (a-count)))
+  (println (b-first))
+  (println (->str (a-twice 123)))
+  (println (b-shout 7))
+  (println (->str (a-tagged 3)))
+  (println (helper 1))
+  (println registry)
+  0)

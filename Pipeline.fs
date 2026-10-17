@@ -430,6 +430,9 @@ let private surfaceOf
     { Defs =
         (decls
          |> List.collect (function
+             // An implicit export, declared under its qualified reference: not
+             // a name an import edge offers, or that a modifier may filter.
+             | DExtern(visible, _, _, _, _) when Naming.isQualifiedBinding visible -> []
              | DExtern(visible, _, _, _, _) -> [ visible ]
              | DImportExtern(specs, _) ->
                  specs
@@ -2021,7 +2024,26 @@ let loadModuleGraph
                                               IsMethod = d.IsMethod
                                               IsMutable = d.IsMutable }
 
-                                    DExtern(name, origin, t, constraints, r)
+                                    // An implicit export is declared under its
+                                    // qualified reference, which no import edge
+                                    // offers and source cannot write: it is
+                                    // there for the published bodies naming it,
+                                    // and `AlphaRename.reachHidden` points them
+                                    // at it, whatever the importer calls its
+                                    // own things.
+                                    let declared =
+                                        if d.IsImplicit then
+                                            let home =
+                                                if origin.OriginModule = "" then
+                                                    Naming.moduleKeyOfPath absPath
+                                                else
+                                                    origin.OriginModule
+
+                                            Naming.qualifiedBinding home origin.OriginalName
+                                        else
+                                            name
+
+                                    DExtern(declared, origin, t, constraints, r)
                                 | other -> other)))
 
                     let parsedDecls =

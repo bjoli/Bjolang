@@ -1,0 +1,30 @@
+;; For 380_implicit_exports.bjo. The published bodies here name `registry` and
+;; `helper`, which this module does not export. They are implicit exports: an
+;; importer binds them only under a name source cannot write.
+;; `implicit_b.bjo` has a `registry` and a `helper` of other types.
+
+(export a-register! a-count a-twice Tagged a-tagged)
+(import (std prelude))
+
+(: registry (Box (List int)))
+(def registry (make-box (list)))
+
+(: helper (-> int int))
+(defun (helper n) (* n 2))
+
+(: a-register! (-> int void))
+(defun (a-register! n) #:inline (box-set! registry (cons (helper n) (box-ref registry))))
+
+(: a-count (-> int))
+(defun (a-count) #:inline (list-length (box-ref registry)))
+
+;; A field label that spells the private `helper`. The label is not a
+;; variable, and it stays the field's name where the body is inlined.
+(type (: Tagged (Record (: helper int))))
+
+(: a-tagged (-> int int))
+(defun (a-tagged n) #:inline (record-ref (Tagged (helper (helper n))) helper))
+
+;; A constrained body, which an importer specialises.
+(: a-twice (-> %a int) (where (->str %a)))
+(defun (a-twice x) (helper (string-length (->str x))))
