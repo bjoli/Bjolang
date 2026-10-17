@@ -56,9 +56,13 @@
     }|
 
     The escapes are those source has: @code{\n}, @code{\t}, @code{\r},
-    @code{\\}, @code{\"}, @code{\0} and @code{\uXXXX}. The named characters
+    @code{\\}, @code{\"}, @code{\0} and @code{\uXXXX}. A character outside
+    the BMP is two @code{\u} escapes, a high surrogate and then its low
+    surrogate. A surrogate alone is refused. The named characters
     are @code{#\newline}, @code{#\space}, @code{#\tab}, @code{#\return} and
-    @code{#\nul}. A byte order mark at the start of the text is skipped.
+    @code{#\nul}. A name is a run of symbol characters, as in source, so
+    @code{#\(x} is the character @code{(} and then the symbol @code{x}.
+    A byte order mark at the start of the text is skipped.
     The text is UTF-8: bytes that are not are refused, at the line and
     column where they are, and a column counts characters.
 
@@ -77,8 +81,14 @@
     @code{123I} is a bigint. A ulong is not negative, and a ulong and a
     bigint have no decimal point. Without a suffix, a number is a
     @code{long} unless it has a fraction or an exponent, or is too wide for
-    a @code{long}, and then it is a @code{double}. @code{-} is a
+    a @code{long}, and then it is a @code{double}. A hex or binary number
+    without @code{UL} is a @code{long} too, and one that is too wide for a
+    @code{long} is refused: @code{0xFFFFFFFFFFFFFFFF} is not -1. A number
+    ends at whitespace, at a delimiter or at the end of the text, so
+    @code{1abc} and @code{1.2.3} are refused, and are not two values. @code{-} is a
     symbol of its own, and the start of a number when a digit follows it.
+    The sign is part of the number: @code{-9223372036854775808} is a
+    @code{long}, and @code{-0.0} is a negative zero.
     @code{+inf.0}, @code{-inf.0} and @code{+nan.0} are the infinities and
     NaN, spelled as Scheme spells them; @code{-nan.0} reads as NaN too.
 
@@ -401,6 +411,20 @@
     The owner and the field name arrive apart and are joined only on the way
     to refusing: joined by the caller they would be a string built per field
     per record.
+    """))
+
+(:doc clause-value
+  (summary "Reads the value of a clause that holds one. Not an API for people.")
+  (arg rd "The reader, after the clause's name.")
+  (arg owner "The record's name, for messages.")
+  (arg name "The field's name, for messages.")
+  (returns "The value, or a refusal. A clause with no value is refused in the words of the tree decoder.")
+  (see next-field! end-clause!)
+  (reference """
+    @code{(name)} holds no value. @code{read-value} would refuse its
+    @code{)} as closing nothing, and the tree decoder says that a clause
+    holds a field name and one value. This says what the tree decoder says,
+    with a position.
     """))
 
 (:doc skip-clause!

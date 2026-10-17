@@ -1,0 +1,193 @@
+;; The bjodat reader at its edges: surrogate escapes, the end of a number, the
+;; range of a hex or binary long, the sign of a number, a character literal
+;; and the line count. And the one-pass and the tree decoders, which have to
+;; agree on a repeated key, a `#:key` key and a clause that does not begin
+;; with a field name.
+
+(import (text bjodat))
+(import (text bjodat-core))
+(import (std simpletest))
+
+(def/bjodat-type (: M (Record (: name string) (: n int #:default 0))))
+(def/bjodat-type (: F (Record #:tag f (: name string) (: n int #:default 0))))
+
+;; The value read back, written again; or the refusal.
+(: read (-> string string))
+(defun (read text)
+  (match (parse-bjodat text)
+    ((Ok v) (bjodat->string v))
+    ((Err e) (str "err: " e))))
+
+(: m-one-pass (-> string string))
+(defun (m-one-pass text)
+  (match (bjodat-parse-M text)
+    ((Ok m) (bjodat->string (M->bjodat m)))
+    ((Err e) (str "err: " e))))
+
+(: m-tree (-> string string))
+(defun (m-tree text)
+  (match (parse-bjodat text)
+    ((Ok v) (match (bjodat->M v)
+              ((Ok m) (bjodat->string (M->bjodat m)))
+              ((Err e) (str "err: " e))))
+    ((Err e) (str "err: " e))))
+
+(: f-one-pass (-> string string))
+(defun (f-one-pass text)
+  (match (bjodat-parse-F text)
+    ((Ok m) (bjodat->string (F->bjodat m)))
+    ((Err e) (str "err: " e))))
+
+(: f-tree (-> string string))
+(defun (f-tree text)
+  (match (parse-bjodat text)
+    ((Ok v) (match (bjodat->F v)
+              ((Ok m) (bjodat->string (F->bjodat m)))
+              ((Err e) (str "err: " e))))
+    ((Err e) (str "err: " e))))
+
+(defun (main args)
+  ;; --- surrogates in a \u escape ---------------------------------------
+  ;; Added as they were, they made text that is not UTF-8, and
+  ;; `stringbuilder->string` raised out of the reader.
+  (expect "a low surrogate alone is refused"
+          (read "\"\\uDC00\"")
+          "err: line 1, column 8: a low surrogate with no high surrogate before it")
+  (expect "a high surrogate alone is refused"
+          (read "\"\\uD83D\"")
+          "err: line 1, column 8: a high surrogate has to be followed by \\u and its low surrogate")
+  (expect "a high surrogate and a character that is not its low one"
+          (read "\"\\uD83Dx\"")
+          "err: line 1, column 8: a high surrogate has to be followed by \\u and its low surrogate")
+  (expect "two high surrogates"
+          (read "\"\\uD83D\\uD83D\"")
+          "err: line 1, column 14: a high surrogate has to be followed by \\u and its low surrogate")
+  (expect "through a decoder too, as a refusal"
+          (m-one-pass "{:name \"\\uDC00\"}")
+          "err: line 1, column 15: a low surrogate with no high surrogate before it")
+  (expect "a pair is one character"
+          (match (parse-bjodat "\"\\uD83D\\uDE00\"")
+            ((Ok (BjoStr s)) (->str (string-length s)))
+            (_ "not a string"))
+          "4")
+  (expect "and the character it is"
+          (read "\"\\uD83D\\uDE00\"")
+          (bjodat->string (BjoStr (list->string (list (integer->char 128512))))))
+
+  ;; --- a number ends at a delimiter ------------------------------------
+  ;; Each of these was read as two values.
+  (expect "1abc" (read "(1abc)")
+          "err: line 1, column 3: a number ends at a space or a delimiter, and this is 'a'")
+  (expect "1.2.3" (read "(1.2.3)")
+          "err: line 1, column 5: a number ends at a space or a delimiter, and this is '.'")
+  (expect "1-2" (read "(1-2)")
+          "err: line 1, column 3: a number ends at a space or a delimiter, and this is '-'")
+  (expect "0x1g" (read "(0x1g)")
+          "err: line 1, column 5: a number ends at a space or a delimiter, and this is 'g'")
+  (expect "1e5x" (read "(1e5x)")
+          "err: line 1, column 5: a number ends at a space or a delimiter, and this is 'x'")
+  (expect "a suffix ends a number" (read "(1.5M 2I 3UL 0x1F)") "(1.5M 2I 3UL 31)")
+  (expect "and so do a delimiter, a comment and a string"
+          (read "[1 (2) {:a 3};c\n4\"s\"]") "[1 (2) {:a 3} 4 \"s\"]")
+
+  ;; --- hex and binary longs --------------------------------------------
+  ;; `Convert.ToInt64` read 16 hex digits as a bit pattern.
+  (expect "0xFFFFFFFFFFFFFFFF does not fit in a long"
+          (read "0xFFFFFFFFFFFFFFFF")
+          "err: line 1, column 19: this number does not fit in a long")
+  (expect "nor does 0x8000000000000000"
+          (read "0x8000000000000000")
+          "err: line 1, column 19: this number does not fit in a long")
+  (expect "but its negative does" (read "-0x8000000000000000") "-9223372036854775808")
+  (expect "the largest hex long" (read "0x7FFFFFFFFFFFFFFF") "9223372036854775807")
+  (expect "64 binary digits"
+          (read "0b1111111111111111111111111111111111111111111111111111111111111111")
+          "err: line 1, column 67: this number does not fit in a long")
+  (expect "a hex ulong" (read "0xFFFFFFFFFFFFFFFFUL") "18446744073709551615UL")
+  (expect "a binary number with a 2 in it"
+          (read "0b102")
+          "err: line 1, column 5: a binary number has the digits 0 and 1, and this is '2'")
+  (expect "a binary number with a letter after it"
+          (read "0b1a")
+          "err: line 1, column 4: a number ends at a space or a delimiter, and this is 'a'")
+
+  ;; --- the sign is read with the digits --------------------------------
+  (expect "the smallest long is a long"
+          (match (parse-bjodat "-9223372036854775808")
+            ((Ok (BjoInt n)) (->str n))
+            ((Ok v) (str "not an int: " (bjodat->string v)))
+            ((Err e) e))
+          "-9223372036854775808")
+  (expect "and round-trips"
+          (read (bjodat->string (BjoInt (- -9223372036854775807L 1L))))
+          "-9223372036854775808")
+  (expect "a negative zero keeps its sign"
+          (match (parse-bjodat (bjodat->string (BjoFloat (* -1.0 0.0))))
+            ((Ok (BjoFloat d)) (if (< (/ 1.0 d) 0.0) "negative" "positive"))
+            (_ "not a float"))
+          "negative")
+  (expect "a negative decimal" (read "-1.50M") "-1.50M")
+  (expect "a negative bigint" (read "-99999999999999999999I") "-99999999999999999999I")
+
+  ;; --- character literals ----------------------------------------------
+  (expect "a character outside the BMP round-trips"
+          (read (bjodat->string (BjoChar (integer->char 128512))))
+          (bjodat->string (BjoChar (integer->char 128512))))
+  (expect "#\\ and a line feed is the line feed, and the line count goes on"
+          (read "(#\\\n x)\n)")
+          "err: line 3, column 1: the value ended here, and then there is ')'")
+  (expect "#\\( is the character, and what follows is the next value"
+          (read "(#\\(x)")
+          "(#\\( x)")
+
+  ;; --- the two decoders agree ------------------------------------------
+  (expect "a repeated key of the wrong type: the first wins, one pass"
+          (m-one-pass "{:name \"a\" :name 5}") "{:name \"a\" :n 0}")
+  (expect "and through the tree"
+          (m-tree "{:name \"a\" :name 5}") "{:name \"a\" :n 0}")
+  (expect "a repeated clause of the wrong type: the first wins, one pass"
+          (f-one-pass "(f (name \"a\") (name 5))") "(f (name \"a\") (n 0))")
+  (expect "and through the tree"
+          (f-tree "(f (name \"a\") (name 5))") "(f (name \"a\") (n 0))")
+  (expect "a repeated clause of no value is skipped"
+          (f-one-pass "(f (name \"a\") (name))") "(f (name \"a\") (n 0))")
+  (expect "a #:key key, one pass"
+          (m-one-pass "{#:name \"a\" #:n 2}") "{:name \"a\" :n 2}")
+  (expect "and through the tree"
+          (m-tree "{#:name \"a\" #:n 2}") "{:name \"a\" :n 2}")
+  (expect "a #:key key in the parenthesised form"
+          (m-one-pass "{(#:name \"a\")}") "{:name \"a\" :n 0}")
+
+  ;; A structural refusal has a position in one pass, and the same sentence.
+  (expect "a clause that begins with #t, one pass"
+          (f-one-pass "(f (name \"a\") (#t 1))")
+          "err: line 1, column 16: F: a clause begins with a field name")
+  (expect "and through the tree"
+          (f-tree "(f (name \"a\") (#t 1))") "err: F: a clause begins with a field name")
+  (expect "a clause that begins with a number"
+          (f-one-pass "(f (name \"a\") (123 1))")
+          "err: line 1, column 16: F: a clause begins with a field name")
+  (expect "or with a negative number"
+          (f-one-pass "(f (name \"a\") (-1 1))")
+          "err: line 1, column 16: F: a clause begins with a field name")
+  (expect "or with +inf.0"
+          (f-one-pass "(f (name \"a\") (+inf.0 1))")
+          "err: line 1, column 16: F: a clause begins with a field name")
+  (expect "and through the tree"
+          (f-tree "(f (name \"a\") (+inf.0 1))") "err: F: a clause begins with a field name")
+  (expect "a symbol that starts with - is a name"
+          (f-one-pass "(f (name \"a\") (-x 1))") "(f (name \"a\") (n 0))")
+  (expect "an empty clause, one pass"
+          (f-one-pass "(f (name \"a\") ())")
+          "err: line 1, column 16: F: a clause begins with a field name")
+  (expect "a field's clause with no value, one pass"
+          (f-one-pass "(f (name \"a\") (n))")
+          "err: line 1, column 17: F.n: a clause holds a field name and one value")
+  (expect "and through the tree"
+          (f-tree "(f (name \"a\") (n))") "err: F.n: a clause holds a field name and one value")
+  (expect "a field's clause with two values, one pass"
+          (f-one-pass "(f (name \"a\") (n 1 2))")
+          "err: line 1, column 20: F.n: a clause holds a field name and one value")
+  (expect "and through the tree"
+          (f-tree "(f (name \"a\") (n 1 2))") "err: F.n: a clause holds a field name and one value")
+  0)

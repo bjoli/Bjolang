@@ -455,7 +455,7 @@
 
 (: bjodat-read-clause (-> string string Reader (Result string %a)) (where (bjodat-> %a)))
 (defun (bjodat-read-clause owner name rd)
-  (def* ((Ok v) (field-value rd) :propagate)
+  (def* ((Ok v) (clause-value rd owner name) :propagate)
         ((Ok x) (bjodat-> v) :leave ((Err e) (Err (str owner "." name ": " e))))
         ((Ok y) (end-clause! rd owner name) :propagate))
   (Ok x))
@@ -864,21 +864,20 @@
      (def name (jb-field-name f))
      (def x (jb-sym "__jb-x"))
      (def e (jb-sym "__jb-e"))
-     (Cons #'((key=? rd ,(jb-key-name name markers))
+     ;; The *first* entry under a key wins, which is what `bjodat-ref` does
+     ;; for the tree decoder: it answers the first match and stops. So a key
+     ;; whose slot is filled is not this field's any more. It goes to the
+     ;; `else` branch, which skips its value as it skips an unknown key's.
+     ;; Decoded, a later value of the wrong type was refused here and not by
+     ;; the tree decoder, which never looks at it.
+     (Cons #'((and (none? ,(jb-slot i)) (key=? rd ,(jb-key-name name markers)))
               (match (bjodat-read-field ,owner ,(jb-key name markers) rd)
                 ((Err ,e) (Err ,e))
                 ((Ok ,x)
                  (match (end-entry! rd ,owner ,paired)
                    ((Err ,e) (Err ,e))
                    ((Ok _)
-                    ;; The *first* entry under a key wins, which is what
-                    ;; `bjodat-ref` does for the tree decoder — it answers the
-                    ;; first match and stops. Without this test the one-pass
-                    ;; decoder took the last, and two decoders that disagree
-                    ;; about the same document are worse than either rule.
-                    ;; The value still has to be read to get past it.
-                    (,go ,@(jb-slot-args/hit all 0 i
-                             #'(if (some? ,(jb-slot i)) ,(jb-slot i) (Some ,x)))))))))
+                    (,go ,@(jb-slot-args/hit all 0 i #'(Some ,x))))))))
            (jb-clauses owner paired go all (list-tail fields) (+ i 1))))))
 
 ;; Every slot answered for, innermost first, ending in the constructor. A
@@ -954,15 +953,14 @@
      (def read (if (jb-rest? markers)
                    #'(bjodat-read-rest ,owner ,nm rd)
                 #'(bjodat-read-clause ,owner ,nm rd)))
-  (Cons #'((key=? rd ,nm)
+     ;; The first clause under a name wins, as the first entry under a key
+     ;; does. A later one goes to the `else` branch and is skipped as an
+     ;; unknown clause is, at any arity, as the tree decoder ignores it.
+     (Cons #'((and (none? ,(jb-slot i)) (key=? rd ,nm))
               (match ,read
                 ((Err ,e) (Err ,e))
                 ((Ok ,x)
-                 ;; The first clause under a name wins, as the first entry
-                 ;; under a key does. The later one is still read, because
-                 ;; finding where it ends means parsing it.
-                 (,go ,@(jb-slot-args/hit all 0 i
-                          #'(if (some? ,(jb-slot i)) ,(jb-slot i) (Some ,x)))))))
+                 (,go ,@(jb-slot-args/hit all 0 i #'(Some ,x))))))
            (jb-form-clauses owner go all (list-tail fields) (+ i 1))))))
 
 (: jb-form-settle (-> Syntax Syntax (List Syntax) (List Syntax) int Syntax))

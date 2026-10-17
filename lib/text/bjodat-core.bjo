@@ -44,7 +44,7 @@
   Reader
   open-map! next-key! end-entry! key=? field-value skip-value!
   ;; The same, for a record written as a tagged form: `(tag (field value) ...)`.
-  open-form! next-field! end-clause! skip-clause! clause-values!
+  open-form! next-field! end-clause! clause-value skip-clause! clause-values!
   read-one-pass parse-one-pass read-one-pass-all parse-one-pass-all)
 
 (import (std prelude))
@@ -65,9 +65,7 @@
 ;; Hex and binary, which have no reader of their own.
 (import/extern
   (clr-to-ulong (: System.UInt64.Parse (-> string ulong)))
-  (clr-radix-ulong (: System.Convert.ToUInt64 (-> string int ulong)))
-  (clr-radix-long (: System.Convert.ToInt64 (-> string int long)
-                     #:exceptions (System.OverflowException System.FormatException))))
+  (clr-radix-ulong (: System.Convert.ToUInt64 (-> string int ulong))))
 
 ;; ---------------------------------------------------------------------------
 ;; The value
@@ -519,12 +517,12 @@
        ((char=? c #\u) (read-unicode-escape! rd sb))
        (else (Err (at rd (str "\\" (list->string (list c)) " is not an escape"))))))))
 
-(: read-unicode-escape! (-> Reader StringBuilder (Result string bool)))
-(defun (read-unicode-escape! rd sb)
-  (step! rd)
+;; The four hex digits of a `\u` escape. The `u` has been stepped over.
+(: read-hex4 (-> Reader (Result string int)))
+(defun (read-hex4 rd)
   (let go ((k 0) (acc 0))
     (cond
-      ((= k 4) (stringbuilder-add-unit! sb acc) (Ok #t))
+      ((= k 4) (Ok acc))
       ((at-end? rd) (Err (at rd "the document ended inside a \\u escape")))
       (else
        (def d (hex-digit (peek rd)))
@@ -532,6 +530,35 @@
          ((< d 0) (Err (at rd (str "a \\u escape wants four hex digits, and this is "
                                    (found rd)))))
          (else (step! rd) (go (+ k 1) (+ (* acc 16) d))))))))
+
+(: high-surrogate? (-> int bool))
+(defun (high-surrogate? n) (and (>= n 55296) (<= n 56319)))
+
+(: low-surrogate? (-> int bool))
+(defun (low-surrogate? n) (and (>= n 56320) (<= n 57343)))
+
+;; `\uXXXX`. A surrogate is half of a character: a high one must have a
+;; `\u` escape of a low one right after it, and the two are one character. A
+;; surrogate alone is refused. Added to the string as it is, it would make text
+;; that is not UTF-8, and `stringbuilder->string` would raise.
+(: read-unicode-escape! (-> Reader StringBuilder (Result string bool)))
+(defun (read-unicode-escape! rd sb)
+  (def incomplete "a high surrogate has to be followed by \\u and its low surrogate")
+  (step! rd)
+  (def (Ok n) (read-hex4 rd) :propagate)
+  (cond
+    ((low-surrogate? n) (Err (at rd "a low surrogate with no high surrogate before it")))
+    ((not (high-surrogate? n)) (stringbuilder-add-unit! sb n) (Ok #t))
+    ((not (= (held-code rd) 92)) (Err (at rd incomplete)))
+    (:do (step! rd))
+    ((not (= (held-code rd) 117)) (Err (at rd incomplete)))
+    (:do (step! rd))
+    (:def (Ok lo) (read-hex4 rd) :propagate)
+    ((not (low-surrogate? lo)) (Err (at rd incomplete)))
+    (else
+     (stringbuilder-add-unit! sb n)
+     (stringbuilder-add-unit! sb lo)
+     (Ok #t))))
 
 ;; A string, raw or escaped. `""` is the empty string, and a third quote after
 ;; it opens a raw one.
@@ -724,26 +751,55 @@
           (go (+ n 1)))
         n)))
 
+;; The largest magnitude a long holds, and the one a negative long holds.
+(: long-max-magnitude ulong)
+(def long-max-magnitude 9223372036854775807UL)
+
+(: long-min-magnitude ulong)
+(def long-min-magnitude 9223372036854775808UL)
+
+;; A digit of `radix`, or -1.
+(: radix-digit (-> int char int))
+(defun (radix-digit radix c)
+  (def d (hex-digit c))
+  (if (< d radix) d -1))
+
 ;; `0x` and `0b`. The `0` has been stepped over and the marker is held.
+;;
+;; The digits are a magnitude, read as a ulong. `Convert.ToInt64` reads 16 hex
+;; digits as a bit pattern, so `0xFFFFFFFFFFFFFFFF` was -1. Here a magnitude
+;; above `long-max-magnitude` does not fit in a long, except as the magnitude
+;; of `-0x8000000000000000`.
 (: read-radix (-> Reader bool int (Result string Bjodat)))
 (defun (read-radix rd neg radix)
   (step! rd)
   (def sb (buffer rd))
   (let go ((n 0))
-    (if (and (not (at-end? rd)) (>= (hex-digit (peek rd)) 0))
+    (if (and (not (at-end? rd)) (>= (radix-digit radix (peek rd)) 0))
         (begin (stringbuilder-add-unit! sb (held-code rd)) (step! rd) (go (+ n 1)))
-        (if (= n 0)
-            (Err (at rd (str "this number has no digits after its radix, and there is "
-                             (found rd))))
-            (if (ulong-suffix? rd)
-                (if neg
-                    (Err (at rd "a ulong is not negative"))
-                    (match (try (clr-radix-ulong (stringbuilder->string sb) radix) #:catch (System.OverflowException))
-                      ((Err _) (Err (at rd "this number does not fit in a ulong")))
-                      ((Ok v) (Ok (BjoULong v)))))
-                (match (clr-radix-long (stringbuilder->string sb) radix)
-                  ((Err _) (Err (at rd "this number does not fit in a long")))
-                  ((Ok v) (Ok (BjoInt (if neg (- 0L v) v))))))))))
+        (cond
+          ((= n 0)
+           (Err (at rd (str "this number has no digits after its radix, and there is "
+                            (found rd)))))
+          ((and (= radix 2) (digit-code? (held-code rd)))
+           (Err (at rd (str "a binary number has the digits 0 and 1, and this is "
+                            (found rd)))))
+          (else
+           (def unsigned? (ulong-suffix? rd))
+           (match (try (clr-radix-ulong (stringbuilder->string sb) radix)
+                       #:catch (System.OverflowException))
+             ((Err _)
+              (Err (at rd (if unsigned?
+                              "this number does not fit in a ulong"
+                              "this number does not fit in a long"))))
+             ((Ok v)
+              (cond
+                ((and unsigned? neg) (Err (at rd "a ulong is not negative")))
+                (unsigned? (Ok (BjoULong v)))
+                ((and neg (= v long-min-magnitude)) (Ok (BjoInt (- -9223372036854775807L 1L))))
+                ((> v long-max-magnitude) (Err (at rd "this number does not fit in a long")))
+                (neg (Ok (BjoInt (- 0L (cast long v)))))
+                (else (Ok (BjoInt (cast long v))))))))))))
 
 ;; Steps over `UL` when it is held. A `U` without the `L` is refused by what
 ;; reads next, as any other character after a number is.
@@ -794,8 +850,19 @@
 ;; A digit is held. The sign, if there was one, has been stepped over already —
 ;; which is what tells `-` the symbol apart from `-1` the number, since deciding
 ;; needs a character of lookahead the reader does not have until it has moved.
+;;
+;; A number ends at whitespace, at a delimiter or at the end, as source
+;; tokenises it. `1abc`, `1.2.3` and `0x1g` are refused. Before, each was read
+;; as two values.
 (: read-magnitude (-> Reader bool (Result string Bjodat)))
 (defun (read-magnitude rd neg)
+  (def (Ok v) (read-number rd neg) :propagate)
+  (if (symbol-code? (held-code rd))
+      (Err (at rd (str "a number ends at a space or a delimiter, and this is " (found rd))))
+      (Ok v)))
+
+(: read-number (-> Reader bool (Result string Bjodat)))
+(defun (read-number rd neg)
   (cond
     ((= (held-code rd) 48)
      (step! rd)
@@ -804,24 +871,32 @@
        ((or (= c 120) (= c 88)) (read-radix rd neg 16))
        ((or (= c 98) (= c 66)) (read-radix rd neg 2))
        (else
-        (def sb (buffer rd))
+        (def sb (signed-buffer rd neg))
         (stringbuilder-add-code! sb 48)
         (finish-number rd neg sb))))
-    (else (finish-number rd neg (buffer rd)))))
+    (else (finish-number rd neg (signed-buffer rd neg)))))
+
+;; The buffer, with the `-` in it for a negative number. The sign is parsed
+;; with the digits: `-9223372036854775808` fits in a long and its magnitude
+;; does not, and `-0.0` is a zero with a sign, which subtracting from 0.0 loses.
+(: signed-buffer (-> Reader bool StringBuilder))
+(defun (signed-buffer rd neg)
+  (def sb (buffer rd))
+  (when neg (stringbuilder-add-code! sb 45))
+  sb)
 
 (: finish-number (-> Reader bool StringBuilder (Result string Bjodat)))
 (defun (finish-number rd neg sb)
   (ignore (take-digits! rd sb))
   (def (Ok frac?) (scan-fraction! rd sb) :propagate)
   (def (Ok exp?) (scan-exponent! rd sb) :propagate)
-  (def sign (if neg "-" ""))
   (cond
     ;; 1.50M: a decimal keeps the scale it was written with.
     ((= (held-code rd) 77)
      (step! rd)
      (if exp?
          (Err (at rd "a decimal is written without an exponent"))
-         (match (try (string->decimal (str sign (stringbuilder->string sb)))
+         (match (try (string->decimal (stringbuilder->string sb))
                      #:catch (System.OverflowException))
            ((Ok d) (Ok (BjoDecimal d)))
            ((Err _) (Err (at rd "this number does not fit in a decimal"))))))
@@ -829,7 +904,7 @@
      (step! rd)
      (if (or frac? exp?)
          (Err (at rd "a bigint is a whole number: it has no decimal point and no exponent"))
-         (Ok (BjoBigInt (string->bigint (str sign (stringbuilder->string sb)))))))
+         (Ok (BjoBigInt (string->bigint (stringbuilder->string sb))))))
     ((ulong-suffix? rd)
      (cond
        ((or frac? exp?) (Err (at rd "a ulong is a whole number: it has no decimal point and no exponent")))
@@ -838,16 +913,12 @@
         (match (try (clr-to-ulong (stringbuilder->string sb)) #:catch (System.OverflowException))
           ((Ok n) (Ok (BjoULong n)))
           ((Err _) (Err (at rd "this number does not fit in a ulong")))))))
-    ((or frac? exp?)
-     (def d (clr-to-double sb))
-     (Ok (BjoFloat (if neg (- 0.0 d) d))))
+    ((or frac? exp?) (Ok (BjoFloat (clr-to-double sb))))
     ;; Wider than a long is still a number.
     (else
      (match (try (clr-to-long sb) #:catch (System.OverflowException))
-       ((Ok n) (Ok (BjoInt (if neg (- 0L n) n))))
-       ((Err _)
-        (def d (clr-to-double sb))
-        (Ok (BjoFloat (if neg (- 0.0 d) d))))))))
+       ((Ok n) (Ok (BjoInt n)))
+       ((Err _) (Ok (BjoFloat (clr-to-double sb))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Symbols, keywords, and what a `#` begins
@@ -919,11 +990,17 @@
      (def lead (held-code rd))
      (def first (if (< lead 128) (integer->char lead) (held-character rd (sequence-length rd))))
      (def sb (buffer rd))
-     (ignore (add-held! rd sb lead))
+     ;; `#\` and a line feed is the line feed, and the next line begins.
+     (if (= lead 10)
+         (begin (stringbuilder-add-unit! sb lead) (newline! rd))
+         (ignore (add-held! rd sb lead)))
+     ;; A name is a run of symbol characters, as in the compiler's lexer. After
+     ;; `#\(`, `#\ ` or `#\` and a line feed the literal is that one
+     ;; character, and what follows is the next value.
      ;; `n` is bound rather than inlined into the test: a name compares
      ;; straight into the `if`, where the call needs a temporary for its
      ;; result and then a second one for the comparison.
-     (def n (take-name! rd sb))
+     (def n (if (symbol-code? lead) (take-name! rd sb) 0))
      (cond
        ((= n 0) (Ok (BjoChar first)))
        (else
@@ -1198,9 +1275,15 @@
 ;; — which no field name can equal, so it takes the same path an unknown key
 ;; does. That matches the tree decoder, where `bjodat-ref` only ever matches a
 ;; `BjoKey` and a key of any other shape is simply never found.
+;;
+;; A key written `#:name` is the same keyword as `:name`, as `read-keyword`
+;; reads it, so it takes the same path.
 (: take-key! (-> Reader string (Result string bool)))
 (defun (take-key! rd owner)
   (skip-space! rd)
+  (when (and (= (held-code rd) 35) (ensure! rd 2)
+             (= (cast int (array-ref (record-ref rd bytes) (+ (record-ref rd next) 1))) 58))
+    (step! rd))
   (cond
     ((= (held-code rd) 58)
      (step! rd)
@@ -1329,11 +1412,35 @@
     (else
      (step! rd)
      (skip-space! rd)
-     (def sb (buffer rd))
-     (if (= (take-name! rd sb) 0)
-         (Err (at rd (str owner ": a clause begins with a field name, and this is "
-                          (found rd))))
-         (Ok #t)))))
+     ;; Where the head begins, which is where a refusal points.
+     (def row (record-ref rd row))
+     (def col (record-ref rd col))
+     (if (field-name! rd)
+         (Ok #t)
+         ;; The tree decoder's sentence, `bjodat-clause-shape`'s, so that the
+         ;; two decoders refuse the same document in the same words.
+         (begin
+           (record-set! rd (row row) (col col))
+           (Err (at rd (str owner ": a clause begins with a field name"))))))))
+
+;; Takes the name of a clause into the buffer, and answers whether it is one: a
+;; name that `read-value` reads as a symbol. `#t`, `123`, `-1` and `+inf.0` are
+;; runs of symbol characters too, and they are not symbols. The tree decoder
+;; refuses a clause that does not begin with a symbol, and so does this.
+(: field-name! (-> Reader bool))
+(defun (field-name! rd)
+  (def c (held-code rd))
+  (def sb (buffer rd))
+  (cond
+    ((or (= c 35) (digit-code? c)) #f)
+    ((and (= c 45) (ensure! rd 2)
+          (digit-code? (cast int (array-ref (record-ref rd bytes) (+ (record-ref rd next) 1)))))
+     #f)
+    ((= (take-name! rd sb) 0) #f)
+    ((or (= c 43) (= c 45))
+     (not (or (stringbuilder=? sb "+inf.0") (stringbuilder=? sb "-inf.0")
+              (stringbuilder=? sb "+nan.0") (stringbuilder=? sb "-nan.0"))))
+    (else #t)))
 
 ;; The `)` that closes a clause holding one value.
 ;;
@@ -1347,9 +1454,17 @@
   (skip-space! rd)
   (if (= (held-code rd) 41)
       (begin (step! rd) (Ok #t))
-      (Err (at rd (str owner "." name
-                       ": a clause holds a field name and one value, and then there is "
-                       (found rd))))))
+      (Err (at rd (str owner "." name ": a clause holds a field name and one value")))))
+
+;; The value of a clause that holds one. A clause with no value, `(name)`, is
+;; refused in `bjodat-one-value`'s words: `read-value` would refuse its `)` as
+;; closing nothing.
+(: clause-value (-> Reader string string (Result string Bjodat)))
+(defun (clause-value rd owner name)
+  (skip-space! rd)
+  (if (= (held-code rd) 41)
+      (Err (at rd (str owner "." name ": a clause holds a field name and one value")))
+      (read-value rd 1)))
 
 ;; An unknown clause, read and dropped: the name has been taken, the values have
 ;; not. **Any arity**, and that is the point of it. A flat map's unknown key is
