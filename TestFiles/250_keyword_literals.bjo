@@ -1,15 +1,15 @@
-;; A literal passed by keyword is checked against the keyword parameter's type,
-;; as a positional one is against its parameter's, so a quoted symbol or list
-;; elaborates into the union the parameter names: `(f #:mode 'fast)` is the
-;; `Fast` case, as `(g 'fast)` is.
+;; A literal passed by keyword has the type of the keyword parameter as its
+;; expected type, as a positional literal has the type of its parameter. Thus
+;; the grammar of that type reads a quoted symbol or list: `(f #:mode 'fast)`
+;; is the `Fast` case, as `(g 'fast)` is.
 
 (import (std prelude))
 (import (std simpletest))
 
-(type (: Mode (Union (: Fast #:tag fast) (: Safe #:tag safe))))
+(def/grammar Mode (:or (: Fast 'fast) (: Safe 'safe)))
 
-(type-rec
-  (: Item (Union (: ISym Symbol) (: IStr string) (: ISub (List Item)))))
+(def/grammar Item
+  (:or (: ISym symbol) (: IStr string) (: ISub (Item ...))))
 
 (: mode-name (-> Mode string))
 (defun (mode-name m)
@@ -22,12 +22,12 @@
     ((IStr s) (str "\"" s "\""))
     ((ISub xs) (str "(" (string-join (list->vec (list-map render xs)) " ") ")"))))
 
-;; A keyword whose default is a constructor, so the parameter is the union.
+;; A keyword whose default is a constructor, so the parameter is a Mode.
 (: run (-> string (#:mode Mode) string))
 (defun (run name #:mode Safe)
   (str name ":" (mode-name mode)))
 
-;; A list literal at a keyword, elaborated element by element.
+;; A list literal at a keyword. The grammar reads each element.
 (: show (-> (#:form Item) string))
 (defun (show #:form (ISub Nil))
   (render form))

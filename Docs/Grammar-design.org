@@ -1,0 +1,423 @@
+* Design: grammars for quoted literals
+
+Status: built. The code is ~Grammar.fs~ (the reader and the types), the
+grammar part of ~InferExpr.fs~ (the matcher and the checks of a grammar), and
+~registerGrammar~ in ~CheckDecl.fs~. The tests are ~TestFiles/387_grammar.bjo~
+to ~389_grammar_checks.bjo~ and ~TestFiles/errors/grammar_*.bjo~.
+
+Where the code came out different from the design below:
+
+- A literal of a checked atom is not a constant. The compiler runs the check
+  when it compiles the literal and refuses an ~Err~. The program calls the
+  check again, and ~grammar-checked~ in the prelude takes out the ~Ok~ value.
+- A literal of a checked atom can not be in the module that declares the
+  check, because the compiler runs a check from a compiled module.
+- The production of a checked atom declares no type. Its name is the name of
+  the type that the check gives, and the program declares that type.
+- A grammar can name only grammars that the module declares before it, as a
+  ~type~ can.
+- In ~std/url~, the productions are ~QueryParam~, ~UrlText~ and ~UrlPiece~:
+  ~Param~ is a prelude type.
+- ~(:list item ...)~ is a list without a keyword, said explicitly.
+  ~(:keyword kw)~ and ~(:keyword-list kw item ...)~ are keywords said
+  explicitly. Module metadata writes the grammar with these forms.
+- The case markers remain in the AST as an empty record, ~CaseMarkers~. The
+  parser refuses each marker.
+
+This design replaces the elaboration of a quoted literal into a union. A
+grammar declares the literal syntax. The grammar also declares the type that
+a literal of it becomes. The compiler checks a literal against its grammar
+where the literal is written.
+
+This is a breaking change. ~#:tag~, ~#:rest~, ~#:literal~ and delegation go
+away. A union is a type only. It does not give a literal syntax.
+
+** Why
+
+A union gives a quoted literal one rule per case: the case that has the same
+shape, or the case that has the same tag. These rules can not say:
+
+- An order. "A scheme, then a host, then the parts" is not a union. So
+  ~'(url "https" "example.com")~ reads two hosts.
+- How many times. "At most one port" and "a host is necessary" are not
+  types. ~make-url~ makes these checks at run time.
+- A rule about a value. A port is any ~int~. A host is any ~string~.
+- An arity choice. "A parameter is ~(key)~ or ~(key value)~" needs two
+  list cases. A union can have only one list case.
+
+So ~std/url~ checks most of its literal at run time and raises
+~ArgumentException~. The message often does not tell the real mistake.
+
+A grammar can say all four. The compiler can then refuse a bad literal with a
+message about the grammar position.
+
+** The grammar language
+
+#+BEGIN_SRC scheme
+(def/grammar Name
+  (Production item)
+  (Production item)
+  ...)
+#+END_SRC
+
+The first production is the start. If a grammar has only one production, you
+can write the item directly: ~(def/grammar Disp (:or ...))~.
+
+*** Items
+
+| Item                     | Matches                                              |
+|--------------------------+------------------------------------------------------|
+| ~string~ ~symbol~ ~int~ ~double~ ~char~ ~bool~ | a literal atom of that type, or a splice of that type |
+| ~,T~                     | a splice of type ~T~ only. Use it for a function, a record or a ~Vec~ |
+| ~Production~             | what that production matches                         |
+| ~(T #:check f)~          | a checked terminal. See "Checks" below               |
+| ~(kw item ...)~          | a nested list whose head is the symbol ~kw~          |
+| ~'kw~                    | the symbol ~kw~ alone, as ~distinct~ in a select. In ~(:? 'kw)~ it is a ~bool~ |
+| ~(item ...)~             | a nested list with no keyword                        |
+| ~[item ...]~             | a nested vec                                         |
+| ~item ...~               | zero or more, in a sequence                          |
+| ~item ...+~              | one or more, in a sequence                           |
+| ~(:? item)~               | zero or one                                          |
+| ~(:or (: Case item) ...)~ | one of the alternatives                              |
+| ~(:each (: field item) ...)~ | each item at most once, in any order              |
+| ~(: name item)~          | a label. In ~:or~ it is a case name. In ~:each~ and in a sequence it is a field name |
+
+~...~ and ~...+~ are each one symbol. They apply to the item before them.
+
+A list item always matches a nested list. A reference to a sequence
+production matches its items in place. It does not match a nested list.
+
+*** Keywords
+
+A symbol at the head of a list item is a keyword, as ~port~ is in
+~(port Port)~. A keyword matches only that symbol. The literal does not keep
+it.
+
+The combinators ~:or~, ~:each~ and ~:?~ start with a colon, as the clauses of
+~loop~ do. Thus a keyword can not look like a combinator. bjosql has the
+keywords ~or~ and ~not~: ~(or (Cond %test) ...)~ is a list item with the
+keyword ~or~, and ~(:or ...)~ is a choice. A keyword can not start with a
+colon.
+
+A keyword has priority over the ~symbol~ terminal at the same position. So
+~(:or (: FPipe (pipe Form ...)) (: FCmd (Word ...+)))~ is not ambiguous:
+~'(pipe ...)~ is a pipe and ~'(sort)~ is a command. To run a program with the
+name ~pipe~, write ~"pipe"~. This is the only rule where order decides.
+
+*** Splices
+
+~,x~ matches a terminal of the type of ~x~. It also matches a production
+whose type is the type of ~x~. ~,@xs~ matches a sequence of ~item ...~ or
+~item ...+~. The type of ~xs~ must be a list or a vec of what ~item~ matches.
+
+** The type a grammar declares
+
+The grammar declares one type for each production. The rules:
+
+- An ~:or~ production is a union. Each ~(: Case item)~ is a case.
+- An ~:each~ production, or a sequence production, is a record. Each label is
+  a field. An ~:each~ inside a sequence adds its fields to the same record.
+- A terminal production is the terminal's type. For a checked terminal it is
+  the type that the check returns.
+
+The payload of a case:
+
+- A keyword is not kept.
+- Each item that is not a keyword is one argument of the constructor, in
+  order. ~(: FFrom (from-file string Form))~ is the case ~(FFrom string Form)~.
+- ~item ...~ and ~item ...+~ are a ~List~.
+- ~(:? item)~ is an ~Option~.
+- In ~:each~, a field ~(: port (:? (port Port)))~ is an ~(Option Port)~. A
+  keyword form with one item in it is that item's type.
+
+Because labels are constructor names, code that uses ~match~ on the type does
+not change when a union becomes a grammar.
+
+** Checks
+
+A check is a rule that a type can not express: a port range, the syntax of a
+host, a non-empty name.
+
+#+BEGIN_SRC scheme
+(: port (-> int (Result string Port)))
+(def/grammar ... (Port (int #:check port)) ...)
+#+END_SRC
+
+The type of a check is ~(-> T (Result string U))~. ~T~ is the type of the
+literal atom. ~U~ is the type of the terminal. ~U~ is usually a type of its
+own, as ~Port~ or ~Host~ is.
+
+- A literal atom: the compiler runs the check when it compiles the literal.
+  An ~Err~ is a compile error at that atom. The message is the ~Err~ text and
+  the grammar position. An ~Ok~ value goes into the program as a constant.
+- A splice: ~,x~ must be of type ~U~. A splice of type ~T~ is a type error.
+  To make a ~U~ from untrusted text, call the check yourself and handle the
+  ~Result~.
+
+So a literal never fails at run time. The failure is where the untrusted
+value enters the program, and the type tells you about it.
+
+A check can also normalise. ~host~ returns the IDNA form of a name and puts
+brackets around an IPv6 address. A literal gets the normal form at compile
+time.
+
+Rules for a check:
+
+- It must come from a module that the compiler compiled before, as a
+  ~def/macro~ transformer must.
+- It must give the same result for the same value. It must not read files,
+  settings, the clock or the network. The compiler can not prove this. Thus
+  it is a documented rule.
+- If it raises when the compiler runs it, the compiler reports an error at
+  that literal. The message says that the check failed, and gives the
+  exception.
+
+** Generic grammars
+
+A grammar can have parameters. A parameter is a grammar or a type.
+
+The example is the condition of a bjosql query, ~(Cond %test)~ in
+~bjosql/src/core.bjo~. It is a type, not the ~cond~ macro. Now it is a union
+that passes the tags it does not have to ~%test~:
+
+#+BEGIN_SRC scheme
+(type-rec
+  (: (Cond %test) (Union (: And (List (Cond %test)) #:tag and #:rest)
+                         (: Or (List (Cond %test)) #:tag or #:rest)
+                         (: Not (Cond %test) #:tag not)
+                         (: RawCond Sql)
+                         (: Leaf %test))))
+#+END_SRC
+
+As a grammar:
+
+#+BEGIN_SRC scheme
+(def/grammar (Cond %test)
+  (:or (: And     (and (Cond %test) ...))
+       (: Or      (or (Cond %test) ...))
+       (: Not     (not (Cond %test)))
+       (: RawCond ,Sql)
+       (: Leaf    %test)))
+
+;; The tests of one table, as the def/table macro makes them:
+(def/grammar UserTest
+  (:or (: TId   (id (NTest int)))
+       (: TName (name (NTest string)))))
+
+;; at (Cond UserTest):
+'(and (id (> 3)) (not (name (= "x"))))
+;; (And (list (Leaf (TId ...)) (Not (Leaf (TName ...)))))
+#+END_SRC
+
+This replaces delegation. ~%test~ is an ordinary production. The keywords
+~and~, ~or~ and ~not~ come before ~Leaf~ by the rule for ~:or~: the next item
+decides. A column with the name ~and~ is thus an error where the table
+grammar is used with ~Cond~, not a silent choice.
+
+The clauses of a select are "in any order, each at most once". That is
+~:each~:
+
+#+BEGIN_SRC scheme
+(def/grammar (Select %col %test)
+  (Select (select (: clauses (SelectClauses %col %test))))
+  (SelectClauses
+    (:each (: columns  (:? (%col ...+)))
+           (: all      (:? '*))
+           (: distinct (:? 'distinct))
+           (: where    (:? (where (Cond %test))))
+           (: order-by (:? (order-by (Order %col) ...)))
+           (: limit    (:? (limit int)))
+           (: offset   (:? (offset int))))))
+#+END_SRC
+
+Today ~Clause~ is a union, and a select is a list of clauses. A second
+~where~ is not refused. With ~:each~, it is a compile error, and the code that
+makes the SQL reads fields, not a list.
+
+** Checks of a grammar
+
+The compiler checks a grammar where it is declared:
+
+- At each ~:or~, ~...~, ~...+~, ~(:? ...)~ and ~:each~, the next item, or the end
+  of the list, must decide the choice. The kind of an atom, a keyword, the
+  type of a splice and the end of a list can decide it. If two alternatives
+  can start with the same thing, it is an error. The exception is the keyword
+  priority above.
+- No production refers to itself before it reads an item.
+- An ~:each~ item that is not optional is necessary. The compiler refuses a
+  literal that does not have it.
+- Each check has the type ~(-> T (Result string U))~, and ~T~ is the type of
+  its atom.
+
+** Error messages
+
+An error tells the grammar position and what can come next:
+
+| Literal                                     | Message                                          |
+|---------------------------------------------+--------------------------------------------------|
+| ~'(url https "example.com" (prot 80))~      | url, after the host: expected port, user, path, query or fragment; found prot |
+| ~'(url https "example.com" (port 1) (port 2))~ | url: port is given twice                      |
+| ~'(url "https" "example.com")~              | url: expected a scheme, a symbol such as https; found the string "https" |
+| ~'(path "a" (query (k v w)))~               | a query parameter is (key) or (key value); this has 3 items |
+| ~'(url https "example.com" (port 99999))~   | url, the port: a port is from 0 to 65535, and this is 99999 |
+| ~'(url https ,h)~ with ~h : string~         | url, the host: expected a Host; found a string. Use (host h) to make one |
+
+** Examples
+
+*** ~std/url~
+
+#+BEGIN_SRC scheme
+(def/grammar Link
+  (Link      (:or (: LinkUrl  (url Scheme Host UrlParts))
+                 (: LinkPath (path PathParts))))
+
+  (UrlParts  (:each (: port     (:? (port Port)))
+                   (: user     (:? (user Text)))
+                   (: path     (:? (path Piece ...)))
+                   (: query    (:? (query Param ...)))
+                   (: fragment (:? (fragment Text)))))
+
+  (PathParts (: segments Piece ...)
+             (:each (: query    (:? (query Param ...)))
+                   (: fragment (:? (fragment Text)))))
+
+  (Param     (:or (: ParamForm (Text (:? Piece)))
+                 (: ParamPair ,(Tuple string string))))
+
+  ;; One text, and a text or several.
+  (Text      (:or (: TextStr string) (: TextSym symbol) (: TextInt int)))
+  (Piece     (:or (: One Text) (: Many ,(Vec string))))
+
+  (Scheme    (symbol #:check scheme))
+  (Host      (string #:check host))
+  (Port      (int #:check port)))
+#+END_SRC
+
+Changes from today:
+
+- A path inside ~(url ...)~ has only segments. The query and the fragment are
+  parts of the URL. Before, both places could have a query, and ~make-url~
+  refused the second one at run time.
+- A user and a fragment are one text. A ~,(Vec string)~ there is now a type
+  error, not a run-time error.
+- ~scheme~, ~host~ and ~port~ are exported. They are the only way to make a
+  ~Scheme~, a ~Host~ or a ~Port~ from a computed value.
+- ~make-url~ does not fail. ~Parts~, ~once~, ~add-url-part~, ~add-path~,
+  ~piece-text~ and most uses of ~refuse~ go away.
+
+*** ~std/run~
+
+#+BEGIN_SRC scheme
+(def/grammar Form
+  (Form (:or (: FPipe       (pipe Form ...))
+            (: FFrom       (from-file string Form))
+            (: FInto       (into-file string Form))
+            (: FAppend     (append-to-file string Form))
+            (: FErrInto    (errors-into-file string Form))
+            (: FErrAppend  (errors-append-to-file string Form))
+            (: FSym        symbol)
+            (: FStr        string)
+            (: FArgv       ,(Vec string))
+            (: FCmdValue   ,Cmd)
+            (: FFilter     ,Filter)
+            (: FCmd        (Word ...+))))
+  (Word (:or (: WSym symbol) (: WStr string) (: WInt int) (: WDouble double)
+            (: WArgv ,(Vec string)) (: WCmd ,Cmd) (: WFilter ,Filter)
+            (: WForm (Word ...)))))
+#+END_SRC
+
+The cases have the same names and payloads, so the code of ~run.bjo~ that
+uses them does not change. ~'()~ as a command is now a compile error. The
+file names are not checked: a computed file name is usual, and a check would
+make each one a ~Result~.
+
+*** ~std/fmt~
+
+#+BEGIN_SRC scheme
+(def/grammar Disp
+  (:or (: DStr string) (: DInt int) (: DDouble double) (: DChar char) (: DBool bool)))
+
+(def/grammar Block
+  (:or (: BStr string) (: BInt int) (: BChar char) (: BRun ,(-> Sink int int))))
+#+END_SRC
+
+Each is as long as the union it replaces.
+
+** What goes away
+
+- ~#:tag~, ~#:rest~ and ~#:literal~ on a union case.
+- Delegation through an untagged case.
+- Elaboration of a quoted literal into a union. Where no grammar is
+  expected, a quoted literal is data as before: ~'(a b c)~ is a
+  ~(List Symbol)~.
+
+A union that had a literal syntax becomes a ~def/grammar~. A union without
+one does not change.
+
+** Migration
+
+Modules that use ~#:tag~ or ~#:literal~ now, with the number of uses:
+
+| Module                     | Uses |
+|----------------------------+------|
+| ~bjosql/src/core.bjo~      |   37 |
+| ~lib/std/datetime.bjo~     |   26 |
+| ~lib/text/xml/read.bjo~    |    9 |
+| ~lib/std/url.bjo~          |    9 |
+| ~lib/std/run.bjo~          |    7 |
+| ~lib/text/bjodat.bjo~      |    2 |
+| ~samizdat/src/gfm.bjo~     |    2 |
+| ~samizdat/src/doc.bjo~     |    1 |
+| ~lib/std/prelude.bjo~      |    1 |
+| ~lib/text/json.bjo~        |    1 |
+| ~lib/text/bjodat-core.bjo~ |    1 |
+
+Unions without tags that a literal elaborates into, as in ~std/fmt~, also
+need a grammar. Find them when the old elaboration is removed: each literal
+that used one becomes a type error.
+
+34 files in ~TestFiles/~ use the old marks. The error tests for literals get
+new expected messages.
+
+samizdat and bjosql need new releases after the change, and the packages that
+use them need new locks.
+
+** Implementation
+
+The parts of the compiler that this changes:
+
+- ~Ast.fs~: the case options ~IsLiteral~, ~Tag~ and ~IsRest~ go away. A new
+  declaration holds a grammar.
+- ~TypeSyntax.fs~: the parser of ~#:tag~ goes away. A parser for
+  ~def/grammar~ comes in.
+- ~InferExpr.fs~: ~inferCheckedLiteral~ and the code near it elaborate a
+  literal into a union now. They are replaced by a matcher that reads a
+  literal against a grammar and builds the constructors.
+- ~Exports.fs~: a module publishes its grammars, so that an importer can
+  check a literal. The ~#:tag~ output goes away.
+- ~Macro.fs~: the code that loads and runs a transformer also runs a check.
+
+The steps:
+
+1. Parse ~def/grammar~. Declare its types. Check the grammar.
+2. Match a literal against a grammar, without checks. Build the same
+   constructors as the old elaboration builds.
+3. Change ~std/run~, ~std/fmt~ and the test files to grammars. All tests must
+   pass.
+4. Add checks: run them at compile time, and type a splice by the check's
+   result type.
+5. Change ~std/url~ to the grammar above, with ~Scheme~, ~Host~ and ~Port~.
+6. Change the other modules in the table. Remove the old elaboration.
+7. Update ~Docs/Syntax.org~, BjoManual and the ~.bjodoc~ files. Release
+   samizdat and bjosql.
+
+** Open questions
+
+- A splice of an untrusted value at a checked terminal. Now it is a type
+  error, and you call the check yourself. A later form, such as ~,?x~, could
+  accept a ~T~ and make the literal a ~Result~. Add it only if a program needs
+  it.
+- Can a field of ~:each~ repeat, for example two ~(query ...)~ forms that
+  join? Now: no.
+- The text of a check's ~Err~ is a full sentence or a phrase? The examples
+  above use a phrase after the grammar position.

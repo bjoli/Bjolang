@@ -148,114 +148,41 @@ The prelude's four:
 
 Define one with ~def/hash-extend~; it arrives with an import, prefixed if the import is (~#s/fl(...)~). See [[file:MACROS.org]].
 
-*** Quoted lists, and the constructors they elaborate into
-~'(...)~ is data. A symbol inside one is a ~Symbol~ value rather than a reference, ~,x~ splices the value of an expression, and ~[...]~ is a vec:
+*** Quoted lists, and the grammars that read them
+~'(...)~ is data. A symbol inside one is a ~Symbol~ value rather than a reference, ~,x~ splices the value of an expression, ~,@xs~ splices the values of a list, and ~[...]~ is a vec:
 #+BEGIN_SRC scheme
-'(a b c)          ;; (List Symbol) — three symbols
-'(,x ,y)          ;; (List int)    — when x, y : int
+'(a b c)          ;; (List Symbol): three symbols
+'(,x ,y)          ;; (List int), when x and y are ints
 #+END_SRC
 
-A list is homogeneous. Where a union is expected, each piece is elaborated into the case that can hold it:
-#+BEGIN_SRC scheme
-(type-rec
-  (: ProcItem (Union (: ProcSym Symbol)
-                     (: ProcStr string)
-                     (: ProcFn  (-> string string))
-                     (: ProcSub (List ProcItem))))
-  (: ProcList (Alias (List ProcItem))))
-
-(: run/lines (-> ProcList (List string)))
-
-(run/lines '(pipe (ls "-l") ,my-rot-13))
-;; elaborates to
-(run/lines (list (ProcSym 'pipe)
-                 (ProcSub (list (ProcSym 'ls) (ProcStr "-l")))
-                 (ProcFn  my-rot-13)))
-#+END_SRC
-
-Nesting works at any depth. A literal is matched by the *head* of a case's payload: ~(...)~ wants a ~List~, ~[...]~ a ~Vec~, ~#[...]~ an ~Array~, and a string, symbol or number the type it already has. An unquoted ~,value~ is selected by its type.
-
-A literal is elaborated wherever a union is expected, the top of a form included:
+A list is homogeneous. A literal with a different shape at each place is read by a grammar. ~def/grammar~ declares the grammar and the types its literals become:
 
 #+BEGIN_SRC scheme
-(def (: one Form) '(pipe (ls "-l")))    ;; the annotation says so
-(parse '(pipe (ls "-l")))               ;; and so does the parameter
-(: f (-> bool Form))
-(defun (f b) (if b '(ls) '(pwd)))       ;; and a return type, through if/let/match
+(def/grammar Form
+  (Form (:or (: FPipe  (pipe Form ...))          ;; a list with the keyword pipe
+             (: FInto  (into-file string Form))
+             (: FSym   symbol)
+             (: FFn    ,(-> string string))      ;; only a spliced value
+             (: FCmd   (Word ...+))))            ;; a list without a keyword
+  (Word (:or (: WSym symbol) (: WStr string) (: WSub (Word ...)))))
+
+(def (: f Form) '(pipe (ls "-l") ,shout))
+;; (FPipe (list (FCmd (list (WSym 'ls) (WStr "-l"))) (FFn shout)))
 #+END_SRC
 
-A union carries exactly *one* case per shape (one ~List~, one ~Vec~, one ~string~); a grammar with two list productions needs ~#:tag~.
+A literal is read by a grammar only where a production's type is expected: by an annotation, a parameter, a return type, or an element of a collection of the type. Elsewhere it is data, as above.
 
-A generic parameter provides no expected type. Name the type first:
-#+BEGIN_SRC scheme
-(def (: procs (List ProcList)) (list '(pipe (ls))))
-#+END_SRC
+- Each production is a type. An ~:or~ is a union whose labels are the constructors. A list with labels ~(: name item)~, or an ~(:each ...)~, is a record. A single type is an alias.
+- A case keeps the values of its list in order, without the keywords. ~item ...~ and ~item ...+~ keep a ~List~, and ~(:? item)~ keeps an ~Option~.
+- ~(:each (: port (:? (port int))) ...)~ takes each item at most once, in any order. An item without ~(:? ...)~ is necessary.
+- ~'kw~ is the symbol alone. ~(:? 'distinct)~ keeps whether it is there, as a ~bool~.
+- A keyword has priority over a list without a keyword and over the ~symbol~ terminal. Any other overlap between alternatives is an error where the grammar is declared.
+- A spliced value goes where its type fits. ~,@~ is allowed only where the grammar repeats an item.
+- A grammar can have parameters: ~(def/grammar (Cond %leaf) (:or (: And (and (Cond %leaf) ...)) (: Leaf %leaf)))~. At ~(Cond UserTest)~, the keywords of ~UserTest~ are read through ~Leaf~.
+- ~(Port (int #:check port))~ is a checked atom: the compiler runs ~port~, a function of a compiled module, on each literal atom and refuses an ~Err~. A spliced value must already have the type that ~port~ gives.
+- A grammar can name only grammars that the module declares before it.
 
-**** ~#:literal~ — which case a literal means
-Only the payload's head is compared. Marking one settles ambiguity:
-#+BEGIN_SRC scheme
-(type-rec
-  (: Item (Union (: Sym Symbol)
-                 (: Str string)
-                 (: Sub (List Item) #:literal)   ;; nested (...) means this
-                 (: Args (List string)))))       ;; written out by hand
-#+END_SRC
-
-**** ~#:tag name~ — which case a form names
-~#:tag~ puts a name on a case, and a quoted list whose head is that name *is* that case:
-
-#+BEGIN_SRC scheme
-(type-rec
-  (: Form (Union (: FPipe (List Form) #:tag pipe #:rest)
-                 (: FInto string Form #:tag into-file)
-                 (: FCmd (List Word)))))         ;; not tagged: shape decides
-
-'(pipe (cat "a") (wc -l))   ;; (FPipe (list …))
-'(into-file "o" (ls))       ;; (FInto "o" …)
-'(sort)                     ;; (FCmd …) — and `sort` is data
-#+END_SRC
-
-The tag is matched before any shape and is *consumed*, so what the case declares describes the form's *arguments*, not the whole form. A case carrying nothing is named by the symbol alone: ~'asc~ at a union with ~(: Asc #:tag asc)~. A head that is not a tag is still data, so a bare tag can sit beside the ordinary commands of ~(std run)~, and a tagged case takes no part in shape selection, so the untagged case handling `(sort)` stays reachable.
-
-Two cases of one union may not share a tag. No literal's shape can select a payload that is *itself* a union, so a tag is how one is reached: ~(: CWhere (Cond %row) #:tag where)~ is a sub-grammar. The other way is an untagged case, below.
-
-**** ~#:rest~ — how many arguments a tag takes
-A tagged case takes as many arguments as it declares payload types, so ~#:rest~ says "any number": the arguments are the payload, and the case's one type is the collection they are the elements of.
-
-#+BEGIN_SRC scheme
-(type (: Q (Union (: CSelect (Vec Col) #:tag select #:rest)
-                  (: CFrom Symbol #:tag from))))
-
-'(select id name email)     ;; (CSelect [(Col id) (Col name) (Col email)])
-'(select)                   ;; (CSelect [])
-'(from users)               ;; (CFrom 'users)
-'(from a b)                 ;; a type error: `from` takes 1 argument
-#+END_SRC
-
-The arguments are read as that collection, so ~,@~ splices into a tagged form as anywhere else; a ~#:rest~ case whose type is not a collection is refused where it is declared, not at each use.
-
-**** Delegation — a tag found through an untagged case
-An untagged case with one payload that is itself a union passes on the tags it does not have: a tag that is not a tag of the expected union is looked up in that union, and the literal is its case wrapped in the carrying one.
-
-#+BEGIN_SRC scheme
-(type-rec
-  (: (Cond %leaf) (Union (: And (List (Cond %leaf)) #:tag and #:rest)
-                         (: Not (Cond %leaf) #:tag not)
-                         (: Leaf %leaf))))          ;; untagged, carries a union
-
-(type (: UserTest (Union (: TId int #:tag id) (: TName string #:tag name))))
-
-;; at (Cond UserTest):
-'(id 3)                          ;; (Leaf (TId 3))
-'(and (id 3) (not (name "x")))   ;; (And (list (Leaf (TId 3)) (Not (Leaf (TName "x")))))
-#+END_SRC
-
-This is what lets a frame like ~Cond~ be written once, generic over its leaves, instead of repeating ~and~ and ~not~ in every union that needs them.
-
-- The expected union's own tags come first, so a tag it has is never passed on.
-- Delegation is tried before shape, like any tag, and works through as many levels as there are. A union already on the way down is not entered again, so a recursive union cannot loop.
-- Two untagged cases whose unions both have the tag is an ambiguity, reported rather than decided by order.
-- An unquoted ~,value~ of the leaf's type is still wrapped by its type: ~Leaf~ is the one case whose payload it matches.
+The design, with all the rules, is in [[file:Grammar-design.org]].
 
 ** Identifiers
 Identifiers may contain any character that is not white space, a parenthesis, a bracket, a brace, ~"~, ~'~, ~:~, ~;~ or ~,~, and may not start with a digit: ~my-var~, ~+~, ~string->int~, ~empty?~, ~x__1~. A name ending in ~__~ and digits is the shape of the names the compiler makes up, and the compiler makes sure it never makes up one that the program writes.
@@ -1318,7 +1245,7 @@ When interfacing with true C# ~void~ methods, the call executes as a statement a
 #+END_SRC
 
 *** Unions
-~(: Name (Union case ...))~ defines a sum type. A case that carries nothing is its bare name. A case with a payload is written like a record field, ~(: Case type ...)~, followed by any markers (~#:literal~, ~#:tag name~, ~#:rest~):
+~(: Name (Union case ...))~ defines a sum type. A case that carries nothing is its bare name. A case with a payload is written like a record field, ~(: Case type ...)~. A quoted literal is not read into a union; declare the type with ~def/grammar~ for that:
 
 #+BEGIN_SRC scheme
 (type (: Shape (Union (: Circle double) (: Rect double double) Empty)))

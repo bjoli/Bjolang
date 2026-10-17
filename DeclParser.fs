@@ -287,6 +287,7 @@ let declKindName (d: Decl) : string =
     | DDefDouble _ -> "a function with a body per colour"
     | DType _
     | DTypeRec _ -> "a type declaration"
+    | DGrammar _ -> "a grammar"
     | DTrait _ -> "a trait"
     | DExtern _ -> "an imported binding"
     | DImportAlias _ -> "an imported spelling"
@@ -1039,6 +1040,17 @@ and parseDeclForms (s: SExpr) : Decl list =
     let s = stripHeadMark s
 
     match s with
+    // A grammar declares its types and its rules. Module metadata publishes the
+    // types as ordinary declarations, and the rules with `#:rules-only`, so
+    // that an importer does not declare the types twice.
+    | SList(SAtom { Token = Symbol "def/grammar" } :: SAtom { Token = Keyword "rules-only" } :: head :: forms, r) ->
+        let g = Grammar.parse true head forms r
+        [ DGrammar(g, r) ]
+    | SList(SAtom { Token = Symbol "def/grammar" } :: head :: forms, r) ->
+        let g = Grammar.parse false head forms r
+        [ DTypeRec(Grammar.deriveTypes g, r); DGrammar(g, r) ]
+    | SList([ SAtom { Token = Symbol "def/grammar" } ], r) ->
+        failwithf $"Grammar Error at %s{Lexer.formatPos r}: def/grammar needs a name and its productions."
     // `def/pattern` is the same declaration in the other table. Its transformer
     // is invoked when the name heads a *pattern*, and what it answers is read
     // by `parsePattern` — so it is tried before the constructor fallback and

@@ -66,6 +66,76 @@ let private dropImportedTypeSpelling (currentModule: string) (alias: string) (re
         { registry with ImportAliases = Map.remove alias registry.ImportAliases }
     | _ -> registry
 
+/// Registers the rules of a grammar, after its types.
+///
+/// The types are already registered: `DeclParser` puts them in a `DTypeRec`
+/// before the `DGrammar`, and module metadata publishes them as ordinary
+/// declarations. Here each item's type is resolved as a case payload is, and
+/// each case name is keyed as `registerTypeDefs` keys it.
+let registerGrammar (g: Grammar) (env: Env) : Env =
+    let key (name: string) = Naming.typeKey env.CurrentModule name
+
+    let resolve (t: FType) =
+        resolveTypeAnnotation env.Registry (qualifyFTypeNames env.Registry (Grammar.applyProductions g t))
+
+    let rec item (i: GItem) : GrammarItem =
+        match i with
+        | GType(t, _) -> GrType(resolve t)
+        | GSpliceOnly(t, _) -> GrSpliceOnly(resolve t)
+        | GKeyword(kw, _) -> GrKeyword kw
+        | GList(kw, elements, _) -> GrList(kw, List.map element elements)
+        | GVec(elements, _) -> GrVec(List.map element elements)
+        | GOpt(inner, _) -> GrOpt(item inner)
+        | GOr(alternatives, _) -> GrOr(alternatives |> List.map (fun (case, i, _) -> key case, item i))
+        | GEach(fields, _) -> GrEach(fields |> List.map (fun (name, i, _) -> name, item i))
+        | GChecked(_, _, _, r) -> failwithf $"internal: a checked item at %s{Lexer.formatPos r} outside its production"
+
+    and element (e: GElem) : GrammarElement =
+        { Label = e.Label
+          Item = item e.Item
+          Rep = e.Rep
+          Range = e.Range }
+
+    let typeParams = g.TypeArgs |> List.map (fun a -> if a.StartsWith "'" then a else "'" + a)
+
+    let productions =
+        g.Productions
+        |> List.map (fun p ->
+            let shape =
+                match Grammar.shapeOf p with
+                | Grammar.ShapeUnion alternatives ->
+                    GsUnion(alternatives |> List.map (fun (case, i, _) -> key case, item i))
+                | Grammar.ShapeAlias i -> GsAlias(item i)
+                | Grammar.ShapeNested i -> GsNested(item i)
+                | Grammar.ShapeEach fields ->
+                    GsSequence
+                        [ { Label = None
+                            Item = GrEach(fields |> List.map (fun (name, i, _) -> name, item i))
+                            Rep = GOne
+                            Range = p.Range } ]
+                | Grammar.ShapeSequence elements -> GsSequence(List.map element elements)
+                // In the module that declares the grammar the check is the
+                // name source wrote. Read back from metadata it is the
+                // check's module and name, and an importer has the function
+                // bound under its qualified reference: the module publishes it
+                // implicitly for this.
+                | Grammar.ShapeChecked(t, f, m) ->
+                    let home = m |> Option.defaultValue env.CurrentModule
+                    let reference = if g.RulesOnly then Naming.qualifiedBinding home f else f
+                    GsChecked(resolve t, reference, home)
+
+            key p.Name,
+            { Name = Naming.bareTypeName env.CurrentModule p.Name
+              Grammar = Naming.bareTypeName env.CurrentModule g.Name
+              TypeParams = typeParams
+              Shape = shape
+              Range = p.Range })
+
+    { env with
+        Registry =
+            { env.Registry with
+                Grammars = productions |> List.fold (fun acc (k, p) -> Map.add k p acc) env.Registry.Grammars } }
+
 let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * TypeDef list =
     let key (name: string) = Naming.typeKey env.CurrentModule name
 
@@ -469,6 +539,10 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
     | DTypeRec(typeDefs, r) ->
         let newEnv, keyed = registerTypeDefs true typeDefs env
         newEnv, sigs, [ TTypeRec(keyed, r) ]
+    | DGrammar(g, _) ->
+        let newEnv = registerGrammar g env
+        checkGrammar newEnv g
+        newEnv, sigs, []
     | DImpl(traitName, targetTypeExpr, assocBindings, whereClause, implMethodWheres, methods, r) ->
         checkImpl env sigs traitName targetTypeExpr assocBindings whereClause implMethodWheres methods r
 

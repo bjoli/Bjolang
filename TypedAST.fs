@@ -1500,35 +1500,54 @@ type TraitInfo =
       /// trait creation and import.
       DynSafe: Result<unit, string> }
 
-/// A declared union payload with the union's type arguments put in.
-///
-/// Shared by the two case-selection members of `TraitRegistry`, which differ
-/// only in how they compare a payload once it is concrete: by matching against
-/// an inferred type, or by its head constructor against a literal's shape.
-///
-/// A length mismatch substitutes nothing rather than failing. The payload is
-/// then still written in terms of the declaration's own variables, which both
-/// callers treat as wildcards — over-reporting a candidate is recoverable,
-/// while raising from a speculative lookup is not.
-let private withTypeArgs (typeParams: string list) (typeArgs: HMType list) (payload: HMType) : HMType =
-    let subst =
-        if typeParams.Length = typeArgs.Length then
-            List.zip typeParams typeArgs |> Map.ofList
-        else
-            Map.empty
 
-    let rec go t =
-        match t with
-        | TVar n ->
-            match Map.tryFind n subst with
-            | Some concrete -> concrete
-            | None -> t
-        | TCon(n, args) -> TCon(n, List.map go args)
-        | TFun(args, ret, eff) -> TFun(List.map go args, go ret, eff)
-        | TTuple args -> TTuple(List.map go args)
-        | _ -> t
+/// An item of a grammar, with its types resolved. See `Ast.GItem`, which this
+/// mirrors, and `Docs/Grammar-design.org`.
+///
+/// A type here can hold the grammar's parameters as `TVar`. The matcher puts
+/// the type arguments of the expected type in their place.
+type GrammarItem =
+    | GrType of HMType
+    | GrSpliceOnly of HMType
+    | GrKeyword of string
+    | GrList of string option * GrammarElement list
+    | GrVec of GrammarElement list
+    | GrOpt of GrammarItem
+    /// The case names are keys.
+    | GrOr of (string * GrammarItem) list
+    | GrEach of (string * GrammarItem) list
 
-    go payload
+and GrammarElement =
+    { Label: string option
+      Item: GrammarItem
+      Rep: Ast.GRep
+      Range: Range }
+
+/// What a production is read as.
+type GrammarShape =
+    /// A union. Each alternative is a case, by key.
+    | GsUnion of (string * GrammarItem) list
+    /// An alias: a literal of the production is a literal of the item.
+    | GsAlias of GrammarItem
+    /// A record read from a nested list or vec: the item is that list.
+    | GsNested of GrammarItem
+    /// A record read in place, from the elements around it.
+    | GsSequence of GrammarElement list
+    /// `(T #:check f)`: an atom of type `T`, given to `f` when the literal is
+    /// compiled. The check's binding as the code that uses the grammar reaches
+    /// it, and the module that declares it.
+    | GsChecked of HMType * string * string
+
+/// One production of a grammar, by the key of its type.
+type GrammarProduction =
+    { /// The name source wrote, for messages.
+      Name: string
+      /// The grammar it is part of, as source wrote it.
+      Grammar: string
+      /// The parameters, as `'a`.
+      TypeParams: string list
+      Shape: GrammarShape
+      Range: Range }
 
 /// Code that may use an `#:opaque` type's representation, by the key of the
 /// module that wrote it.
@@ -1658,6 +1677,10 @@ type TraitRegistry =
       /// selects by its head symbol, and such a case takes no part in shape
       /// selection; `#:rest` says a tagged case's arguments are its payload.
       Unions: Map<string, string list * (string * HMType list * CaseMarkers) list>
+      /// The productions of every grammar, by the key of the type each one
+      /// declares. A quoted literal where one of these types is expected is
+      /// read by the production. See `InferExpr.matchGrammar`.
+      Grammars: Map<string, GrammarProduction>
       /// Classes brought in by `import/class`, keyed by alias.
       ///
       /// Each one is *also* registered in `Aliases`, so that a signature may
@@ -1770,246 +1793,6 @@ type TraitRegistry =
 
     member this.IsTraitDefinedLocally(name) = Set.contains name this.LocalTraits
     member this.IsTypeDefinedLocally(name) = Set.contains name this.LocalTypes
-
-    /// Cases of `unionName` carrying exactly one payload field that could hold
-    /// `payload`, with the union's type arguments already substituted in.
-    ///
-    /// This runs *speculatively*, while looking for a constructor to inject
-    /// around a literal, so it must never bind a `MetaVar`: the answer is
-    /// structural yes/no rather than a unification. `unify` would corrupt the
-    /// inference state for the candidates it rejected on the way.
-    ///
-    /// An unbound metavariable on either side matches anything. That wildcard
-    /// is what makes a nested list literal work at all — at expected
-    /// `ProcItem` a nested `'(…)` arrives as `TCon("List",[?m])` with `?m`
-    /// still unbound, and it has to match a declared payload of
-    /// `(List ProcItem)`. The cost is over-reporting: a union carrying both
-    /// `ProcSub of (List ProcItem)` and `ProcNums of (List Int)` calls every
-    /// nested literal ambiguous, because `(List ?m)` matches both. That is a
-    /// deliberate trade — an ambiguity error is honest, and `#:literal` or an
-    /// explicit constructor resolves it.
-    ///
-    /// `#:literal` is applied here rather than by the caller: when more than
-    /// one case matches and exactly one is marked, that one wins. The caller's
-    /// rule is then simply zero / one / many.
-    member this.CandidateCases (unionName: string) (typeArgs: HMType list) (payload: HMType) : (string * HMType list) list =
-        // A local dereference, because `prune` lives in `Unification`, which is
-        // compiled after this file.
-        let rec deref t =
-            match t with
-            | TMeta { Value = Some inner } -> deref inner
-            | _ -> t
-
-        let rec matches pat conc =
-            match deref pat, deref conc with
-            // An unbound meta is a hole nothing has decided yet, and a leftover
-            // rigid variable is a slot that takes anything. Neither is written
-            // to here.
-            | TMeta _, _
-            | _, TMeta _
-            | TVar _, _
-            | _, TVar _ -> true
-            | TCon(n1, a1), TCon(n2, a2) ->
-                n1 = n2 && a1.Length = a2.Length && List.forall2 matches a1 a2
-            | TFun(a1, r1, e1), TFun(a2, r2, e2) ->
-                e1 = e2 && a1.Length = a2.Length && List.forall2 matches a1 a2 && matches r1 r2
-            | TTuple a1, TTuple a2 ->
-                a1.Length = a2.Length && List.forall2 matches a1 a2
-            | p, c -> p = c
-
-        match Map.tryFind unionName this.Unions with
-        | None -> []
-        | Some (typeParams, cases) ->
-            let matching =
-                cases
-                |> List.choose (fun (caseName, payloadTypes, markers) ->
-                    match payloadTypes with
-                    | [ single ] ->
-                        let substituted = withTypeArgs typeParams typeArgs single
-
-                        // A tagged case is reached by its tag and never by a
-                        // payload's type, so it is not a candidate here either.
-                        if matches substituted payload && markers.Tag.IsNone then
-                            Some(caseName, [ substituted ], markers)
-                        else
-                            None
-                    // A nullary case carries nothing, and a multi-field case
-                    // cannot be built from one payload. Neither is a candidate.
-                    | _ -> None)
-
-            match matching with
-            | [ (name, payloads, _) ] -> [ (name, payloads) ]
-            | many ->
-                match many |> List.filter (fun (_, _, markers) -> markers.IsLiteral) with
-                | [ (name, payloads, _) ] -> [ (name, payloads) ]
-                | _ -> many |> List.map (fun (name, payloads, _) -> (name, payloads))
-
-    /// Cases of `unionName` carrying exactly one payload field whose *head
-    /// constructor* is one of `heads`, with the union's type arguments already
-    /// substituted in.
-    ///
-    /// The shape-directed sibling of `CandidateCases`, and the one a quoted
-    /// literal is selected by. `CandidateCases` needs the payload's inferred
-    /// type, and inferring is exactly what fails for the literals this feature
-    /// exists for: a nested `(ls "-l")` allocates one element metavariable and
-    /// unifies `Symbol` against `string` before any constructor is consulted.
-    /// So the only thing left to choose by is the literal's syntax — `'(...)`
-    /// wants a `List` payload, `[...]` a `Vec`, a string a `string` — and the
-    /// payload's arguments are not looked at at all. Whatever they are, the
-    /// chosen payload is then pushed back down into the literal, and the
-    /// elements are checked against it there.
-    ///
-    /// Ignoring the arguments is what makes `#:literal` matter. Two cases with
-    /// the same head — `(ProcSub (List ProcItem))` beside
-    /// `(ProcArgs (List string))` — are one question no literal can answer, so
-    /// when several match and exactly one is marked, that one wins. Otherwise
-    /// all of them are returned and the caller reports the ambiguity.
-    member this.CasesByPayloadShape
-        (unionName: string)
-        (typeArgs: HMType list)
-        (heads: string list)
-        : (string * HMType) list =
-        // As in `CandidateCases`: `prune` lives in `Unification`, which is
-        // compiled after this file, and nothing here may bind a `MetaVar`
-        // anyway — the lookup is speculative.
-        let rec deref t =
-            match t with
-            | TMeta { Value = Some inner } -> deref inner
-            | _ -> t
-
-        let headMatches payload =
-            match deref payload with
-            | TCon(name, _) -> List.contains name heads
-            // A hole nothing has decided yet, and a slot that takes anything.
-            // Both match, for the same reason they do in `CandidateCases`.
-            | TMeta _
-            | TVar _ -> true
-            | _ -> false
-
-        match Map.tryFind unionName this.Unions with
-        | None -> []
-        | Some (typeParams, cases) ->
-            let matching =
-                cases
-                |> List.choose (fun (caseName, payloadTypes, markers) ->
-                    match payloadTypes with
-                    | [ single ] ->
-                        let substituted = withTypeArgs typeParams typeArgs single
-
-                        // Tagged cases are excluded, and that exclusion is what
-                        // makes `#:tag` additive: `(: FPipe (List Form) #:tag
-                        // pipe)` beside `(: FCmd (List Word))` would otherwise be
-                        // an ambiguity for every untagged list.
-                        if headMatches substituted && markers.Tag.IsNone then
-                            Some(caseName, substituted, markers)
-                        else
-                            None
-                    | _ -> None)
-
-            match matching with
-            | [ (name, payload, _) ] -> [ (name, payload) ]
-            | many ->
-                match many |> List.filter (fun (_, _, markers) -> markers.IsLiteral) with
-                | [ (name, payload, _) ] -> [ (name, payload) ]
-                | _ -> many |> List.map (fun (name, payload, _) -> (name, payload))
-
-    /// The case of `unionName` tagged `tag`, with the union's type arguments
-    /// substituted into its payload, and whether its arguments are a rest list.
-    ///
-    /// This is what a tagged form is looked up by, and it is asked before any
-    /// shape is. A tag is a name the *declaration* chose, so the number of cases
-    /// a literal can reach stops being the handful of shapes the compiler knows
-    /// — which is what lets one union carry several cases with a single payload
-    /// head, and a case whose payload is a union of its own.
-    member this.CaseByTag
-        (unionName: string)
-        (typeArgs: HMType list)
-        (tag: string)
-        : (string * HMType list * bool) option =
-        match Map.tryFind unionName this.Unions with
-        | None -> None
-        | Some(typeParams, cases) ->
-            cases
-            |> List.tryPick (fun (caseName, payloadTypes, markers) ->
-                if markers.Tag = Some tag then
-                    Some(caseName, payloadTypes |> List.map (withTypeArgs typeParams typeArgs), markers.IsRest)
-                else
-                    None)
-
-    /// The untagged cases of `unionName` that a tag not found in it is handed
-    /// on to: each carries one payload that is itself a union offering `tag`,
-    /// directly or through a case of its own like this one.
-    ///
-    /// No literal can reach such a case by its shape, since a union's head is
-    /// never `List`, `string` or the like. Delegation is what makes it
-    /// reachable: `(Leaf %test)` in a generic `(Cond %test)` takes every tag of
-    /// the column tests a table supplies, so the table does not have to repeat
-    /// `and`, `or` and `not` to sit beside them.
-    ///
-    /// More than one answer is an ambiguity for the caller to report. A union
-    /// already on the path is not entered again, which is what stops a
-    /// recursive union from delegating to itself.
-    member this.TagDelegates (unionName: string) (typeArgs: HMType list) (tag: string) : (string * HMType) list =
-        let rec deref t =
-            match t with
-            | TMeta { Value = Some inner } -> deref inner
-            | _ -> t
-
-        let rec offers (visited: Set<string>) (name: string) (args: HMType list) : bool =
-            (this.CaseByTag name args tag).IsSome || not (delegates visited name args).IsEmpty
-
-        and delegates (visited: Set<string>) (name: string) (args: HMType list) : (string * HMType) list =
-            if Set.contains name visited then
-                []
-            else
-                let visited = Set.add name visited
-
-                match Map.tryFind name this.Unions with
-                | None -> []
-                | Some(typeParams, cases) ->
-                    cases
-                    |> List.choose (fun (caseName, payloadTypes, markers) ->
-                        match payloadTypes with
-                        | [ single ] when markers.Tag.IsNone ->
-                            match deref (withTypeArgs typeParams args single) with
-                            | TCon(inner, innerArgs) as payload when
-                                Map.containsKey inner this.Unions && offers visited inner innerArgs
-                                ->
-                                Some(caseName, payload)
-                            | _ -> None
-                        | _ -> None)
-
-        delegates Set.empty unionName typeArgs
-
-    /// The untagged single-payload cases of `unionName` whose payload is a
-    /// union, with that union's name: where a tag not found here is looked
-    /// for, one level down. For a diagnostic that has to say which names were
-    /// on offer.
-    member this.DelegateUnions (unionName: string) (typeArgs: HMType list) : (string * string) list =
-        let rec deref t =
-            match t with
-            | TMeta { Value = Some inner } -> deref inner
-            | _ -> t
-
-        match Map.tryFind unionName this.Unions with
-        | None -> []
-        | Some(typeParams, cases) ->
-            cases
-            |> List.choose (fun (caseName, payloadTypes, markers) ->
-                match payloadTypes with
-                | [ single ] when markers.Tag.IsNone ->
-                    match deref (withTypeArgs typeParams typeArgs single) with
-                    | TCon(inner, _) when Map.containsKey inner this.Unions && inner <> unionName ->
-                        Some(caseName, inner)
-                    | _ -> None
-                | _ -> None)
-
-    /// The tags of `unionName`, in declaration order, for a diagnostic that has
-    /// to say which names were on offer.
-    member this.UnionTags (unionName: string) : string list =
-        match Map.tryFind unionName this.Unions with
-        | None -> []
-        | Some(_, cases) -> cases |> List.choose (fun (_, _, markers) -> markers.Tag)
 
     member this.ResolveAssociatedType (traitName: string) (assocName: string) (implType: HMType) : HMType option =
         // Pattern-match a stored generic type against a concrete type to build

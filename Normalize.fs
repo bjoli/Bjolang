@@ -349,6 +349,7 @@ let rec normalizeDecl (decl: Decl) : Decl =
     | DReExport _
     | DType _
     | DTypeRec _
+    | DGrammar _
     | DExtern _
     | DImportAlias _
     | DImportExtern _

@@ -178,7 +178,10 @@
   ;; The clock
   Clock make-clock system-clock current-clock monotonic-ms monotonic-ns
 
-  promise-join/sync panic!)
+  promise-join/sync panic!
+
+  ;; What a grammar's checked literal calls. See (def/grammar ...).
+  grammar-checked)
 
 
 (import/extern (clr-panic (: BjolangRuntime.Panic (-> string int %a))))
@@ -187,6 +190,15 @@
 (: panic! (-> string (#:exit-code int) %a))
 (defun (panic! msg #:exit-code 1)
   (clr-panic msg exit-code))
+
+;; The value of a grammar's check on a literal. The compiler ran the same
+;; check on the same literal and refused an Err, so the Err case is not
+;; reached unless the check gives different results for one value.
+(: grammar-checked (-> (Result string %a) %a))
+(defun (grammar-checked r)
+  (match r
+    ((Ok v) v)
+    ((Err e) (panic! (str "a check of a grammar gave Err for a literal it gave Ok for when compiled: " e)))))
 
 
 ;; The `->str` fallback, invariant. `System.Convert.ToString` reads the ambient

@@ -1,21 +1,21 @@
-;; Literal elaboration against a union that came out of a compiled module.
+;; A quoted literal read by a grammar from a compiled module.
 ;;
-;; Selection reads the union's cases out of the registry, and an imported one is
-;; rebuilt from the metadata `proclit` published. `#:literal` is part of that:
-;; without it two of `Item`'s cases carry a list, and every nested literal below
-;; would be ambiguous here while compiling fine where the type is declared.
+;; The compiler reads the grammar of `Item` from the metadata that
+;; inc/proclit.bjo publishes. Two cases of `Item` carry a list. The grammar
+;; says that only a written list is a `Sub`, so the nested literals below
+;; are read here as in the declaring module.
 (import (std prelude))
 (import "inc/proclit.bjo")
 (import (std simpletest))
 
 (defun (main args)
-  (expect "imported union, nested literal"
+  (expect "imported grammar, nested literal"
           (show-items '(a (b "c") d))
           "a (b c) d")
 
-  ;; The unmarked case, written out. Its own payload type is pushed into the
-  ;; literal the same way a function's parameter type is.
-  (expect "imported union, explicit case"
+  ;; The splice-only case, written out. Its payload type is the expected
+  ;; type of the literal inside it, as for a function's parameter.
+  (expect "imported grammar, explicit case"
           (show-items (list (Sym 'x) (Args (list "y" "z"))))
           "x args:2")
   0)

@@ -1,21 +1,22 @@
-;; Tag delegation: a tag that is not found in the expected union is looked up
-;; in the unions its untagged single-payload cases carry, and the literal is
-;; that union's case wrapped in the carrying one.
+;; A generic grammar and grammars inside grammars: the keywords of a leaf
+;; grammar are read through the alternative that holds it.
 ;;
-;; No shape can reach such a case, since a union's head is never `List`,
-;; `string` or the like, so delegation gives a meaning to literals that had
-;; none. What it makes possible is a generic frame written once, `Cond` here,
-;; around leaves each user supplies.
+;; `Cond` in inc/delegating.bjo is a frame with the parameter `%leaf`. Each
+;; user gives the grammar of the leaves. An alternative whose item is another
+;; grammar reads the literal by that grammar, and the result is that
+;; grammar's case in the case of the outer one. This replaces delegation
+;; through an untagged union case.
 
 (import (std prelude))
 (import (std simpletest))
 (import "inc/delegating.bjo")
 
-;; The leaves: a column test, with a nullary tag and a rest tag among them.
-(type (: Leaf1 (Union (: LId int #:tag id)
-                      (: LName string #:tag name)
-                      (: LNull #:tag nothing)
-                      (: LIn (List int) #:tag in #:rest))))
+;; The leaves: a column test, with a bare keyword and a repeat among them.
+(def/grammar Leaf1
+  (:or (: LId (id int))
+       (: LName (name string))
+       (: LNull 'nothing)
+       (: LIn (in int ...))))
 
 (: leaf1 (-> Leaf1 string))
 (defun (leaf1 l)
@@ -28,9 +29,9 @@
 (: show (-> (Cond Leaf1) string))
 (defun (show c) (render-cond leaf1 c))
 
-;; Two levels: `Outer` delegates to `Middle`, which delegates to `Leaf1`.
-(type (: Middle (Union (: MLeaf Leaf1) (: MSkip #:tag skip))))
-(type (: Outer (Union (: OMid Middle) (: OStop #:tag stop))))
+;; Two levels: Outer holds Middle, and Middle holds Leaf1.
+(def/grammar Middle (:or (: MLeaf Leaf1) (: MSkip 'skip)))
+(def/grammar Outer (:or (: OMid Middle) (: OStop 'stop)))
 
 (: outer (-> Outer string))
 (defun (outer o)
@@ -39,50 +40,22 @@
     ((OMid (MSkip)) "skip")
     ((OStop) "stop")))
 
-;; A tag of the outer union wins over a delegated one of the same name.
-(type (: Shadow (Union (: SId int #:tag id) (: SLeaf Leaf1))))
-
-(: shadow (-> Shadow string))
-(defun (shadow s)
-  (match s
-    ((SId n) (str "own " (int->string n)))
-    ((SLeaf l) (str "leaf " (leaf1 l)))))
-
-;; A union whose untagged case carries the union itself is not entered twice:
-;; the lookup ends, and the tag is found or reported as missing.
-(type-rec
-  (: Loop (Union (: LoopSelf Loop) (: LoopLeaf Leaf1) (: LoopEnd #:tag end))))
-
-(: loop->str (-> Loop string))
-(defun (loop->str l)
-  (match l
-    ((LoopSelf inner) (str "self " (loop->str inner)))
-    ((LoopLeaf x) (leaf1 x))
-    ((LoopEnd) "end")))
-
 (: named (-> string Leaf1))
 (defun (named s) '(name ,s))
 
 (defun (main args)
   (expect "a leaf through the generic frame" (show '(id 3)) "id=3")
-  (expect "the frame's own tags beside it"
+  (expect "the frame's own keywords beside it"
           (show '(and (id 1) (not (name "x")) nothing)) "and(id=1 not(name=x) nothing)")
-  (expect "a delegated rest tag" (show '(in 1 2 3)) "in3")
-  (expect "a delegated nullary tag, as a bare symbol" (show 'nothing) "nothing")
+  (expect "a repeat in a leaf" (show '(in 1 2 3)) "in3")
+  (expect "a bare keyword of a leaf" (show 'nothing) "nothing")
 
   (expect "two levels down" (outer '(id 7)) "mid(id=7)")
   (expect "one level down" (outer 'skip) "skip")
-  (expect "the outer union's own" (outer 'stop) "stop")
+  (expect "the outer grammar's own" (outer 'stop) "stop")
 
-  (expect "an own tag wins over a delegated one" (shadow '(id 1)) "own 1")
-  (expect "and the rest still delegate" (shadow '(name "n")) "leaf name=n")
-
-  (expect "a self-carrying case does not loop" (loop->str '(id 2)) "id=2")
-  (expect "and its own tag is found" (loop->str 'end) "end")
-
-  ;; `,x` of the leaf's type is wrapped by its type, as before: `Leaf` is the
-  ;; one untagged case whose payload it matches.
-  (expect "an unquoted leaf value is wrapped in Leaf"
+  ;; `,x` of the leaf's type goes into Leaf: its type selects the case.
+  (expect "a spliced leaf value goes into Leaf"
           (show '(and ,(named "ada") (id 1))) "and(name=ada id=1)")
   (def (: c (Cond Leaf1)) '(not (id 4)))
   (expect "an annotated binding" (show c) "not(id=4)")

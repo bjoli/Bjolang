@@ -1000,20 +1000,65 @@ let private metadataAssemblies =
 /// its exports, macros and inline bodies are read from. The first version of a
 /// file still goes through `LoadFile`, which keeps its location for stack
 /// traces out of a macro.
+/// The loaded assembly of each module, by module key: where a grammar's check
+/// is run from when a literal is compiled.
+let private assembliesByModule =
+    System.Collections.Concurrent.ConcurrentDictionary<string, System.Reflection.Assembly>()
+
+/// Runs a grammar's check, a function of a compiled module, on an atom. See
+/// `InferExpr.runGrammarCheck`.
+let private runGrammarCheck (moduleKey: string) (name: string) (atom: obj) : Result<unit, string> =
+    match assembliesByModule.TryGetValue moduleKey with
+    | false, _ ->
+        Error $"the module %s{moduleKey} that declares the check %s{name} is not loaded, so the check can not run"
+    | true, asm ->
+        let className = $"%s{Naming.namespaceOfKey moduleKey}.%s{Naming.moduleClassName moduleKey}"
+
+        match asm.GetType className with
+        | null -> Error $"the module %s{moduleKey} has no class %s{className}"
+        | clrType ->
+            match clrType.GetMethod(Prelude.moduleClrMemberName name) with
+            | null ->
+                let names = clrType.GetMethods() |> Array.map (fun m -> m.Name) |> String.concat ", "
+                Error $"the module %s{moduleKey} has no method for the check %s{name} (%s{Prelude.moduleClrMemberName name}): %s{names}"
+            | m ->
+                let result =
+                    try
+                        Ok(m.Invoke(null, [| atom |]))
+                    with :? System.Reflection.TargetInvocationException as ex when not (isNull ex.InnerException) ->
+                        Error $"the check %s{name} failed: %s{ex.InnerException.Message}"
+
+                match result with
+                | Error e -> Error e
+                | Ok null -> Error $"the check %s{name} gave no value"
+                | Ok value ->
+                    let t = value.GetType()
+                    let isOk = t.GetField("IsOk").GetValue(value) :?> bool
+
+                    if isOk then
+                        Ok()
+                    else
+                        Error(string (t.GetField("ErrValue").GetValue(value)))
+
 let private loadForMetadata (absPath: string) : System.Reflection.Assembly =
+    InferExpr.runGrammarCheck <- runGrammarCheck
     let ticks = File.GetLastWriteTimeUtc(absPath).Ticks
 
-    match metadataAssemblies.TryGetValue absPath with
-    | true, (seen, asm) when seen = ticks -> asm
-    | known, _ ->
-        let asm =
-            if known then
-                System.Reflection.Assembly.Load(File.ReadAllBytes absPath)
-            else
-                System.Reflection.Assembly.LoadFile absPath
+    let asm =
+        match metadataAssemblies.TryGetValue absPath with
+        | true, (seen, asm) when seen = ticks -> asm
+        | known, _ ->
+            let asm =
+                if known then
+                    System.Reflection.Assembly.Load(File.ReadAllBytes absPath)
+                else
+                    System.Reflection.Assembly.LoadFile absPath
 
-        metadataAssemblies[absPath] <- (ticks, asm)
-        asm
+            metadataAssemblies[absPath] <- (ticks, asm)
+            asm
+
+    assembliesByModule[Naming.moduleKeyOfPath absPath] <- asm
+    asm
 
 let mutable private resolverInstalled = false
 
@@ -1995,6 +2040,8 @@ let loadModuleGraph
                     Frameworks.noteImported hit.Frameworks
                     noteFacts hit.Facts
 
+                    InferExpr.runGrammarCheck <- runGrammarCheck
+                    assembliesByModule[Naming.moduleKeyOfPath absPath] <- hit.Assembly
                     hit.Decls, hit.Carried, [], hit.Macros, hit.PatternMacros, hit.HashMacros, Some hit.Assembly
                 | None ->
 

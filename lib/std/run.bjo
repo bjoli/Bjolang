@@ -18,9 +18,8 @@
 (:doc #:file "run.bjodoc")
 
 (export
-  ;; The types. `Word` and `Form` are transparent because a literal written in
-  ;; another module elaborates into their constructors there, so the cases have
-  ;; to be visible.
+  ;; The types. `Form` is a grammar. Its export also exports `Word`, and a
+  ;; literal in another module is read by the grammar there.
   Word Form Cmd Filter Proc
 
   ;; Writing a form
@@ -144,37 +143,30 @@
 ;; A filter stage.
 (type (: Filter (-bjo-> InputPort OutputPort Unit)))
 
-;; Form elements.
-(type-rec
-  (: Word (Union (: WSym Symbol)
-                 (: WStr string)
-                 (: WInt int)
-                 (: WDouble double)
-                 (: WArgv (Vec string))
-                 (: WCmd Cmd)
-                 (: WFilter Filter)
-                 (: WForm (List Word))))
-
-  ;; A form is one thing to run, written as a quoted literal. The head of that
-  ;; literal names its case: `pipe`, `from-file` and the four beside them carry
-  ;; `#:tag`, so the name, the number of arguments and every position are
-  ;; checked where the form is written rather than by `run` at start-up. What
-  ;; no tag names is a command, the untagged cases that keep `'(sort)` and
-  ;; `'(echo "x")` meaning what they always did. `#:rest` is why a pipeline
-  ;; takes any number of stages and why the tag is consumed rather than read as
-  ;; a word.
-  (: Form (Union (: FSym Symbol)                     ;; a bare program name
-                 (: FStr string)                     ;; ...written as a string
-                 (: FArgv (Vec string))              ;; ...or a computed argv
-                 (: FCmdValue Cmd)                   ;; a bare ,(cmd ...)
-                 (: FFilter Filter)                  ;; a bare ,filter
-                 (: FCmd (List Word))                ;; (echo "x")
-                 (: FPipe (List Form) #:tag pipe #:rest)
-                 (: FFrom string Form #:tag from-file)
-                 (: FInto string Form #:tag into-file)
-                 (: FAppend string Form #:tag append-to-file)
-                 (: FErrInto string Form #:tag errors-into-file)
-                 (: FErrAppend string Form #:tag errors-append-to-file))))
+;; A form is one thing to run. You write it as a quoted literal, and this
+;; grammar reads it. The keywords `pipe`, `from-file` and the four after them
+;; name a case. The compiler checks the keyword, the number of items and each
+;; item where you write the form. A list without one of these keywords is a
+;; command, so `'(sort)` and `'(echo "x")` are commands. A keyword has
+;; priority over a program name. To run a program with the name `pipe`, write
+;; `"pipe"`.
+(def/grammar Form
+  (Form (:or (: FPipe      (pipe Form ...))
+             (: FFrom      (from-file string Form))
+             (: FInto      (into-file string Form))
+             (: FAppend    (append-to-file string Form))
+             (: FErrInto   (errors-into-file string Form))
+             (: FErrAppend (errors-append-to-file string Form))
+             (: FSym       symbol)         ;; a bare program name
+             (: FStr       string)         ;; ...written as a string
+             (: FArgv      (Vec string))  ;; ...or a computed argv
+             (: FCmdValue  ,Cmd)           ;; a bare ,(cmd ...)
+             (: FFilter    ,Filter)        ;; a bare ,filter
+             (: FCmd       (Word ...+))))  ;; (echo "x")
+  ;; The words of a command.
+  (Word (:or (: WSym symbol) (: WStr string) (: WInt int) (: WDouble double)
+             (: WArgv (Vec string)) (: WCmd ,Cmd) (: WFilter ,Filter)
+             (: WForm (Word ...)))))
 
 (: cmd (-> string #:rest string Cmd))
 (defun (cmd program #:rest arguments)
@@ -215,9 +207,9 @@
       (Ok (NCmd (Cmd (program (vec-ref argv 0))
                      (arguments (vec-slice argv 1 (- (vec-length argv) 1))))))))
 
-;; One form, translated to a node. Every tag was matched where the form was
-;; written, so what is left is the shape of the pipeline and the words of a
-;; command — the one part of a form the elaborator hands over as a flat list.
+;; One form, translated to a node. The grammar read each keyword where the
+;; form was written. What is left is the shape of the pipeline and the words
+;; of a command, which the grammar gives as a flat list.
 (: form->node (-> Form (Result Exception Node)))
 (defun (form->node form)
   (match form
@@ -266,13 +258,13 @@
 (defun (tag-names)
   "pipe, from-file, into-file, append-to-file, errors-into-file, errors-append-to-file")
 
-;; Adds tag hint to error.
+;; Adds a hint about the keywords to an error.
 (: with-tag-hint (-> (List Word) Exception Exception))
 (defun (with-tag-hint ws original)
   (match ws
     ((Cons (WSym s) rest)
      (run-error (str (.-Message original)
-                     " If `" (symbol->string s) "` was meant as a tag, the tags are: "
+                     " If `" (symbol->string s) "` was meant as a keyword, the keywords are: "
                      (tag-names) ".")))
     (_ original)))
 
@@ -301,8 +293,8 @@
 
 
 ;; A form written as a list is a command, or one thing that is a whole stage on
-;; its own: `'(,my-filter)` and `'(,(cmd ...))`. The tags were matched on the
-;; union before this runs, so a list's head is never one here — `'(sort)` and
+;; its own: `'(,my-filter)` and `'(,(cmd ...))`. The grammar read the keywords
+;; before this runs, so a list's head is never one here — `'(sort)` and
 ;; `'(echo "x")` are commands, and `'(pipe ...)` never reaches this at all.
 (: parse-words (-> (List Word) (Result Exception Node)))
 (defun (parse-words ws)

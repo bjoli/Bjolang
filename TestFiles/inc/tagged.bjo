@@ -1,22 +1,21 @@
-;; A union whose cases a quoted literal finds by tag, published from a library.
+;; For 237_tags.bjo: a grammar with keyword lists, published from a library.
 ;;
-;; Both markers have to travel with the type into the metadata, or the importing
-;; side would read the same literal as the declaring one does not: without
-;; `#:tag` a tagged form would fall to the untagged case, and without `#:rest`
-;; a rest case's arguments would have to be one bracketed argument.
+;; The grammar travels with the type into the metadata. The importing module
+;; must read a keyword list the same way as this module does. A keyword list
+;; beats the list without a keyword, so `'(from t)` is a CFrom and
+;; `'(plain a)` is a CPlain.
 
 (import (std prelude))
 
 (export Q Item render-q)
 
-(type-rec
-  (: Item (Union (: ISym Symbol) (: ISub (List Item))))
-  ;; An untagged case for a list, so a head that names no tag is still data —
-  ;; the shape the tag has to be told apart from.
-  (: Q (Union (: CPlain (List Item))
-              (: CFrom Symbol #:tag from)
-              (: CSelect (List Item) #:tag select #:rest)
-              (: CEsc #:tag esc))))
+(def/grammar Q
+  (Q (:or (: CFrom (from symbol))
+          (: CSelect (select Item ...))
+          (: CEsc 'esc)
+          ;; A list without a keyword. Its head is data.
+          (: CPlain (Item ...))))
+  (Item (:or (: ISym symbol) (: ISub (Item ...)))))
 
 (: render-item (-> Item string))
 (defun (render-item i)

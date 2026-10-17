@@ -1,21 +1,19 @@
-;; A tag written where a stage belongs.
+;; A keyword form with an item of the wrong kind.
 ;;
-;; `into-file` is a `#:tag` of `run/Form`, so a stage position holding it names
-;; that case — and the case takes a file name and one form, which a bare symbol
-;; is not. The tag is matched where the literal is written, so this is a type
-;; error rather than the `Err` it used to be, and it says which case the symbol
-;; named and how many arguments one takes.
+;; `(into-file string Form)` takes a file name as a string. Here the file name
+;; is a symbol, so the compiler refuses the literal where you write it.
 ;;
-;; `'(pipe (echo "x") ("into-file" "out.txt"))` is how a program of that name
-;; still reads, since a string is no tag.
+;; A keyword is a keyword only at the head of a list. A bare `into-file` is a
+;; program name.
 
-;; EXPECT-ERROR: run/FInto` takes 2 arguments
+;; EXPECT-ERROR: (into-file ...): expected a string
 
 (import (std prelude))
 (import (std run))
 
 (defun (main args)
-  (match (run/string '(pipe (echo "x") into-file "out.txt"))
-    ((Ok s) 0)
-    ((Err e) 0))
+  (ignore
+   (match (run/string '(pipe (echo "x") (into-file out.txt (cat))))
+     ((Ok s) 0)
+     ((Err e) 0)))
   0)

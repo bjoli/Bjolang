@@ -42,10 +42,12 @@
   encode-segment encode-query-part encode-fragment encode-userinfo encode-form
   percent-decode form-decode
 
-  ;; A URL written as a quoted literal. The types are transparent because a
-  ;; literal written in another module elaborates into their cases there.
-  Link UrlPart PathPart QueryParam UrlPiece
-  make-url link)
+  ;; A URL written as a quoted literal. `Link` is a grammar. Its export also
+  ;; exports UrlParts, PathParts, QueryParam, UrlText and UrlPiece.
+  Link make-url link
+
+  ;; The checked parts of a literal, and the checks that make them.
+  Scheme Host Port scheme host port scheme->string host->string port->int)
 
 ;; ===========================================================================
 ;; Interop
@@ -53,8 +55,7 @@
 
 (import/class
   (IPAddress (: System.Net.IPAddress))
-  (IdnMapping (: System.Globalization.IdnMapping (-> IdnMapping)))
-  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+  (IdnMapping (: System.Globalization.IdnMapping (-> IdnMapping))))
 
 (import/extern
   (clr-parse-ip (: System.Net.IPAddress.Parse (-> string IPAddress)
@@ -632,141 +633,39 @@
 ;;           (query (page 2) (tag ,t)) (fragment "top"))
 ;;     '(path "users" ,id "edit" (query (q ,text)))
 ;;
-;; Each value is encoded for the part it is in: a segment as a segment, a query
-;; key or value as one. So a `/` in a computed segment does not make two
-;; segments, and a `&` in a computed value does not begin a parameter. The tags
-;; and their arity are checked where the literal is written.
+;; The grammar `Link` reads the literal. Each value is encoded for the part it
+;; is in: a segment as a segment, a query key or value as one. So a `/` in a
+;; computed segment does not make two segments, and a `&` in a computed value
+;; does not begin a parameter. The compiler checks the keywords, the order and
+;; the number of each part where you write the literal. It also runs the
+;; checks `scheme`, `host` and `port` on a literal scheme, host and port.
 
-(type-rec
-  ;; One segment of a path, or a key or a value of a query. A `(Vec string)`
-  ;; is several: several segments, or one key with several values.
-  (: UrlPiece (Union (: PieceStr string)
-                  (: PieceSym Symbol)
-                  (: PieceInt int)
-                  (: PieceMany (Vec string))))
+;; A scheme that `scheme` accepted, such as `https`.
+(type (: Scheme #:opaque (Record (: name string))))
 
-  ;; One parameter of a query: `(key value)`, `(key)` with no value, or a pair
-  ;; that was computed, `,(Tuple k v)`.
-  (: QueryParam (Union (: ParamForm (List UrlPiece))
-                  (: ParamPair (Tuple string string))))
+;; A host that `host` accepted, in the form a URL writes it.
+(type (: Host #:opaque (Record (: name string))))
 
-  ;; What `(path ...)` holds: the segments, then a query and a fragment if
-  ;; they are there.
-  (: PathPart (Union (: SegStr string)
-                     (: SegSym Symbol)
-                     (: SegInt int)
-                     (: SegMany (Vec string))
-                     (: SegQuery (List QueryParam) #:tag query #:rest)
-                     (: SegFragment UrlPiece #:tag fragment)))
+;; A port that `port` accepted: from 0 to 65535.
+(type (: Port #:opaque (Record (: number int))))
 
-  ;; What `(url ...)` holds: the scheme as a symbol, the host as a string, and
-  ;; the tagged parts.
-  (: UrlPart (Union (: UrlScheme Symbol)
-                    (: UrlHost string)
-                    (: UrlPort int #:tag port)
-                    (: UrlUser UrlPiece #:tag user)
-                    (: UrlPath (List PathPart) #:tag path #:rest)
-                    (: UrlQuery (List QueryParam) #:tag query #:rest)
-                    (: UrlFragment UrlPiece #:tag fragment)))
-
-  ;; A URL with a scheme and a host, or a path on this site.
-  (: Link (Union (: LinkUrl (List UrlPart) #:tag url #:rest)
-                 (: LinkPath (List PathPart) #:tag path #:rest))))
-
-(: refuse (-> string %a))
-(defun (refuse what)
-  (raise (cast Exception (ArgumentException. (str "make-url: " what)))))
-
-(: piece-texts (-> UrlPiece (List string)))
-(defun (piece-texts p)
-  (match p
-    ((PieceStr s) (list s))
-    ((PieceSym s) (list (symbol->string s)))
-    ((PieceInt n) (list (int->string n)))
-    ((PieceMany v) (vec->list v))))
-
-;; One text, where several are not allowed.
-(: piece-text (-> string UrlPiece string))
-(defun (piece-text where p)
-  (match (piece-texts p)
-    ((Cons t Nil) t)
-    (_ (refuse (str where " is one value, and this is " (->str (list-length (piece-texts p))))))))
-
-;; `key=value` texts, encoded, for one parameter.
-(: param-texts (-> QueryParam (List string)))
-(defun (param-texts p)
-  (match p
-    ((ParamPair (Tuple k v)) (list (str (encode-query-part k) "=" (encode-query-part v))))
-    ((ParamForm (Cons key Nil)) (list (encode-query-part (piece-text "a query key" key))))
-    ((ParamForm (Cons key (Cons value Nil)))
-     (def k (encode-query-part (piece-text "a query key" key)))
-     (list-map (fun (v) (str k "=" (encode-query-part v))) (piece-texts value)))
-    ((ParamForm _) (refuse "a query parameter is (key value) or (key)"))))
-
-(: query-text (-> (List QueryParam) string))
-(defun (query-text params)
-  (string-join (list->vec (list-foldr (fun (p acc) (list-append (param-texts p) acc))
-                                      (list) params))
-               "&"))
-
-;; Where the parts of a literal go while it is read.
-(type (: Parts (Record (: scheme (Option string))
-                       (: host (Option string))
-                       (: port (Option int))
-                       (: user (Option string))
-                       (: segments (Option (List string)))
-                       (: query (Option string))
-                       (: fragment (Option string)))))
-
-(: no-parts Parts)
-(def no-parts (Parts (scheme None) (host None) (port None) (user None)
-                     (segments None) (query None) (fragment None)))
-
-(: once (-> string (Option %a) %a (Option %a)))
-(defun (once what old new)
-  (match old
-    ((Some _) (refuse (str "a URL has one " what)))
-    (None (Some new))))
-
-(: add-path-part (-> Parts PathPart Parts))
-(defun (add-path-part ps part)
-  (def segs (match (record-ref ps segments) ((Some s) s) (None (list))))
-  (def (: add (-> (List string) Parts))
-       (fun (more) (record-set ps (segments (Some (list-append segs more))))))
-  (match part
-    ((SegStr s) (add (list s)))
-    ((SegSym s) (add (list (symbol->string s))))
-    ((SegInt n) (add (list (int->string n))))
-    ((SegMany v) (add (vec->list v)))
-    ((SegQuery params) (record-set ps (query (once "query" (record-ref ps query) (query-text params)))))
-    ((SegFragment p)
-     (record-set ps (fragment (once "fragment" (record-ref ps fragment)
-                                    (encode-fragment (piece-text "a fragment" p))))))))
-
-;; `(path ...)`: its segments, and a query or a fragment in it.
-(: add-path (-> Parts (List PathPart) Parts))
-(defun (add-path ps parts)
-  (match (record-ref ps segments)
-    ((Some _) (refuse "a URL has one path"))
-    (None (list-foldl (fun (part acc) (add-path-part acc part))
-                      (record-set ps (segments (Some (list))))
-                      parts))))
-
-(: valid-scheme (-> string string))
-(defun (valid-scheme s)
-  (def bytes (string->bytes s))
+;; A letter, then letters, digits, `+`, `-` and `.`.
+(: scheme (-> Symbol (Result string Scheme)))
+(defun (scheme s)
+  (def text (symbol->string s))
+  (def bytes (string->bytes text))
   (def n (array-length bytes))
   (if (and (> n 0) (alpha? (byte-at bytes 0))
            (= (find-any bytes 1 n (fun (b) (not (scheme-char? b)))) n))
-      s
-      (refuse (str "'" s "' is not a scheme"))))
+      (Ok (Scheme (name text)))
+      (Err (str "'" text "' is not a scheme"))))
 
-;; A host as a URL writes it. An IPv6 address gets its brackets, a name that
-;; is not ASCII is written as IDNA writes it (`bücher.example` is
-;; `xn--bcher-kva.example`), and what is neither a name nor an address is
-;; refused.
-(: valid-host (-> string string))
-(defun (valid-host h)
+;; A host as a URL writes it. An IPv6 address gets its brackets. A name that
+;; is not ASCII becomes the IDNA form (`bücher.example` is
+;; `xn--bcher-kva.example`). Text that is not a name or an address is an
+;; error.
+(: host (-> string (Result string Host)))
+(defun (host h)
   (def bytes (string->bytes h))
   (def n (array-length bytes))
   (cond
@@ -774,69 +673,138 @@
      (match (if (= (byte-at bytes (- n 1)) 93)
                 (check-ip-literal bytes 1 (- n 1))
                 (Err "it has no ']'"))
-       ((Ok _) h)
-       ((Err e) (refuse (str "'" h "' is not a host: " e)))))
+       ((Ok _) (Ok (Host (name h))))
+       ((Err e) (Err (str "'" h "' is not a host: " e)))))
     ((< (find-any bytes 0 n (fun (b) (= b 58))) n)
      (match (check-ip-literal bytes 0 n)
-       ((Ok _) (str "[" h "]"))
-       ((Err e) (refuse (str "'" h "' is not a host: " e)))))
-    ((= (find-any bytes 0 n (fun (b) (not (reg-name-char? b)))) n) h)
+       ((Ok _) (Ok (Host (name (str "[" h "]")))))
+       ((Err e) (Err (str "'" h "' is not a host: " e)))))
+    ((= (find-any bytes 0 n (fun (b) (not (reg-name-char? b)))) n) (Ok (Host (name h))))
     ((< (find-any bytes 0 n (fun (b) (>= b 128))) n)
      (match (clr-idn-ascii (IdnMapping.) h)
-       ((Ok ascii) (valid-host ascii))
-       ((Err _) (refuse (str "'" h "' is not a host name")))))
-    (else (refuse (str "'" h "' is not a host name")))))
+       ((Ok ascii) (host ascii))
+       ((Err _) (Err (str "'" h "' is not a host name")))))
+    (else (Err (str "'" h "' is not a host name")))))
 
-(: add-url-part (-> Parts UrlPart Parts))
-(defun (add-url-part ps part)
-  (match part
-    ((UrlScheme s) (record-set ps (scheme (once "scheme" (record-ref ps scheme)
-                                                (valid-scheme (symbol->string s))))))
-    ((UrlHost h) (record-set ps (host (once "host" (record-ref ps host) (valid-host h)))))
-    ((UrlPort p)
-     (if (and (>= p 0) (<= p 65535))
-         (record-set ps (port (once "port" (record-ref ps port) p)))
-         (refuse (str "a port is from 0 to 65535, and this is " (int->string p)))))
-    ((UrlUser p) (record-set ps (user (once "user" (record-ref ps user)
-                                            (encode-userinfo (piece-text "a user" p))))))
-    ((UrlPath parts) (add-path ps parts))
-    ((UrlQuery params) (record-set ps (query (once "query" (record-ref ps query) (query-text params)))))
-    ((UrlFragment p)
-     (record-set ps (fragment (once "fragment" (record-ref ps fragment)
-                                    (encode-fragment (piece-text "a fragment" p))))))))
+(: port (-> int (Result string Port)))
+(defun (port n)
+  (if (and (>= n 0) (<= n 65535))
+      (Ok (Port (number n)))
+      (Err (str "a port is from 0 to 65535, and this is " (int->string n)))))
+
+(: scheme->string (-> Scheme string))
+(defun (scheme->string s) (record-ref s name))
+
+(: host->string (-> Host string))
+(defun (host->string h) (record-ref h name))
+
+(: port->int (-> Port int))
+(defun (port->int p) (record-ref p number))
+
+(def/grammar Link
+  ;; A URL with a scheme and a host, or a path on this site.
+  (Link (:or (: LinkUrl  (url Scheme Host UrlParts))
+             (: LinkPath (path PathParts))))
+
+  ;; The parts of a URL after the host, in any order, each at most once.
+  (UrlParts (:each (: port     (:? (port Port)))
+                   (: user     (:? (user UrlText)))
+                   (: path     (:? (path UrlPiece ...)))
+                   (: query    (:? (query QueryParam ...)))
+                   (: fragment (:? (fragment UrlText)))))
+
+  ;; The segments of a path on this site, then its query and its fragment.
+  (PathParts (: segments UrlPiece ...)
+             (:each (: query    (:? (query QueryParam ...)))
+                    (: fragment (:? (fragment UrlText)))))
+
+  ;; One parameter of a query: `(key value)`, `(key)` with no value, or a
+  ;; computed pair, `,(Tuple k v)`.
+  (QueryParam (:or (: ParamForm (UrlText (:? UrlPiece)))
+                   (: ParamPair ,(Tuple string string))))
+
+  ;; One text: a string, a symbol as its name, or an int.
+  (UrlText (:or (: TextStr string) (: TextSym symbol) (: TextInt int)))
+
+  ;; One text, or a computed `(Vec string)`: several segments, or several
+  ;; values of one key.
+  (UrlPiece (:or (: PieceOne UrlText) (: PieceMany ,(Vec string))))
+
+  (Scheme (symbol #:check scheme))
+  (Host (string #:check host))
+  (Port (int #:check port)))
+
+;; `f` of the value in `o`, if there is one.
+(: opt-map (-> (-> %a %b) (Option %a) (Option %b)))
+(defun (opt-map f o)
+  (match o
+    ((Some x) (Some (f x)))
+    (None None)))
+
+(: text-of (-> UrlText string))
+(defun (text-of t)
+  (match t
+    ((TextStr s) s)
+    ((TextSym s) (symbol->string s))
+    ((TextInt n) (int->string n))))
+
+(: piece-texts (-> UrlPiece (List string)))
+(defun (piece-texts p)
+  (match p
+    ((PieceOne t) (list (text-of t)))
+    ((PieceMany v) (vec->list v))))
+
+(: pieces-texts (-> (List UrlPiece) (List string)))
+(defun (pieces-texts ps)
+  (list-foldr (fun (p acc) (list-append (piece-texts p) acc)) (list) ps))
+
+;; `key=value` texts, encoded, for one parameter.
+(: param-texts (-> QueryParam (List string)))
+(defun (param-texts p)
+  (match p
+    ((ParamPair (Tuple k v)) (list (str (encode-query-part k) "=" (encode-query-part v))))
+    ((ParamForm key None) (list (encode-query-part (text-of key))))
+    ((ParamForm key (Some value))
+     (def k (encode-query-part (text-of key)))
+     (list-map (fun (v) (str k "=" (encode-query-part v))) (piece-texts value)))))
+
+(: query-text (-> (List QueryParam) string))
+(defun (query-text params)
+  (string-join (list->vec (list-foldr (fun (p acc) (list-append (param-texts p) acc))
+                                      (list) params))
+               "&"))
 
 (: path-text (-> (List string) string))
 (defun (path-text segs)
-  (string-join (list->vec (list-map (fun (s) (str "/" (encode-segment s))) segs)) ""))
+  (if (list-empty? segs)
+      "/"
+      (string-join (list->vec (list-map (fun (s) (str "/" (encode-segment s))) segs)) "")))
 
-;; The `Url` a literal stands for. Raises `ArgumentException` for what its
-;; shape cannot say: a computed host or scheme that is not one, a port out of
-;; range, a part given twice, a `(url ...)` with no scheme or no host.
+(: fragment-text (-> (Option UrlText) (Option string)))
+(defun (fragment-text f) (opt-map (fun (t) (encode-fragment (text-of t))) f))
+
+;; The `Url` that a literal stands for. The grammar and the checks refused
+;; each bad literal, so this does not fail.
 (: make-url (-> Link Url))
 (defun (make-url l)
   (match l
     ((LinkPath parts)
-     (def ps (add-path no-parts parts))
-     (def segs (match (record-ref ps segments) ((Some s) s) (None (list))))
      (Url (scheme None) (authority None)
-          (path (if (list-empty? segs) "/" (path-text segs)))
-          (query (record-ref ps query))
-          (fragment (record-ref ps fragment))))
-    ((LinkUrl parts)
-     (def ps (list-foldl (fun (part acc) (add-url-part acc part)) no-parts parts))
-     (def (Some scheme) (record-ref ps scheme)
-       :leave-with (refuse "a (url ...) begins with its scheme, a symbol such as https"))
-     (def (Some host) (record-ref ps host)
-       :leave-with (refuse "a (url ...) has a host, a string such as \"example.com\""))
-     (Url (scheme (Some scheme))
-          (authority (Some (Authority (userinfo (record-ref ps user))
-                                      (host host)
-                                      (port (record-ref ps port)))))
-          (path (match (record-ref ps segments)
-                  ((Some segs) (if (list-empty? segs) "/" (path-text segs)))
+          (path (path-text (pieces-texts (record-ref parts segments))))
+          (query (opt-map query-text (record-ref parts query)))
+          (fragment (fragment-text (record-ref parts fragment)))))
+    ((LinkUrl s h parts)
+     (Url (scheme (Some (scheme->string s)))
+          (authority (Some (Authority
+                            (userinfo (opt-map (fun (t) (encode-userinfo (text-of t)))
+                                                  (record-ref parts user)))
+                            (host (host->string h))
+                            (port (opt-map port->int (record-ref parts port))))))
+          (path (match (record-ref parts path)
+                  ((Some pieces) (path-text (pieces-texts pieces)))
                   (None "")))
-          (query (record-ref ps query))
-          (fragment (record-ref ps fragment))))))
+          (query (opt-map query-text (record-ref parts query)))
+          (fragment (fragment-text (record-ref parts fragment)))))))
 
 ;; The text of a literal: `(url->string (make-url l))`.
 (: link (-> Link string))

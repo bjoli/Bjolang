@@ -1,8 +1,9 @@
 ;; A lambda's result is what its context expects of it.
 ;;
-;; The body is checked against the expected result, as a defun's body is
-;; checked against its declared one, so a literal it ends in is elaborated:
-;; (fun (x) 'fast) is a Mode where a function answering one is wanted.
+;; The expected result is the expected type of the body, as the declared
+;; result is for a defun's body. Thus a grammar reads a literal at the end of
+;; the body: (fun (x) 'fast) is a Mode where a function that gives a Mode is
+;; expected.
 ;;
 ;; A body that ends in a call to a .NET method returning void has System.Void
 ;; for a type, which C# has no value of. A lambda or a local function like that
@@ -22,10 +23,10 @@
   (clr-clear (: System.Text.StringBuilder.Clear (-> ClrBuilder ClrBuilder)))
   (clr-sleep (: System.Threading.Thread.Sleep (-> int void))))
 
-(type (: Mode (Union (: Fast #:tag fast) (: Safe #:tag safe))))
+(def/grammar Mode (:or (: Fast 'fast) (: Safe 'safe)))
 
-(type-rec
-  (: Item (Union (: ISym Symbol) (: IStr string) (: ISub (List Item)))))
+(def/grammar Item
+  (:or (: ISym symbol) (: IStr string) (: ISub (Item ...))))
 
 (: mode-name (-> Mode string))
 (defun (mode-name m) (match m (Fast "fast") (Safe "safe")))

@@ -35,11 +35,12 @@
      (string-join (list->vec (list-map (fun (p) (match p ((Tuple k v) (str k "=" v)))) ps))
                   " | "))))
 
-(: raised (-> Link string))
-(defun (raised l)
-  (match (try (link l) #:catch (System.ArgumentException))
-    ((Ok s) (str "no raise: " s))
-    ((Err e) (.-Message e))))
+;; The refusal of a check, or the text of what it accepted.
+(: refused (-> (-> %a string) (Result string %a) string))
+(defun (refused text r)
+  (match r
+    ((Ok x) (str "accepted: " (text x)))
+    ((Err e) e)))
 
 (defun (main args)
   ;; --- percent-encoding ------------------------------------------------
@@ -163,7 +164,6 @@
   (def tags ["x y" "z"])
   (def segs ["docs" "a b"])
   (def input "100% + more")
-  (def host "bücher.example")
   (expect "a whole URL, and nothing in a value escapes its part"
           (link '(url https "example.com" (path "users" ,name "posts")
                       (query (page "2") (tag ,t) (tag "new"))
@@ -179,7 +179,8 @@
   (expect "a vec is several segments, or several values"
           (link '(url https "example.com" (path ,segs) (query (tag ,tags))))
           "https://example.com/docs/a%20b?tag=x%20y&tag=z")
-  (expect "a host that is not ASCII" (link '(url https ,host (path "ö")))
+  (def (Ok idn-host) (host "bücher.example") :leave-with 1)
+  (expect "a host that is not ASCII" (link '(url https ,idn-host (path "ö")))
           "https://xn--bcher-kva.example/%C3%B6")
   (expect "an IPv6 host gets brackets" (link '(url http "::1" (port 80) (path "a")))
           "http://[::1]:80/a")
@@ -196,19 +197,25 @@
           (again (link '(url https "example.com" (path ,name) (query (t ,t)))))
           (link '(url https "example.com" (path ,name) (query (t ,t)))))
 
-  (expect "a host with a space" (raised '(url https "exa mple.com"))
-          "make-url: 'exa mple.com' is not a host name")
-  (expect "a port out of range" (raised '(url https "example.com" (port ,(+ 70000 0))))
-          "make-url: a port is from 0 to 65535, and this is 70000")
-  (expect "a query given twice"
-          (raised '(url https "a.com" (query (k "1")) (path "x" (query (j "2")))))
-          "make-url: a URL has one query")
-  (expect "two values in a parameter" (raised '(url https "a.com" (query (k "1" "2"))))
-          "make-url: a query parameter is (key value) or (key)")
-  (expect "no scheme" (raised '(url "a.com"))
-          "make-url: a (url ...) begins with its scheme, a symbol such as https")
-  (expect "no host" (raised '(url https))
-          "make-url: a (url ...) has a host, a string such as \"example.com\"")
-  (expect "a scheme that is not one" (raised '(url ,(string->symbol "ht tp") "a.com"))
-          "make-url: 'ht tp' is not a scheme")
+  ;; A computed scheme, host or port is made by its check.
+  (def (Ok h) (host "Example.COM") :leave-with 1)
+  (def (Ok s) (scheme (string->symbol "http")) :leave-with 1)
+  (def (Ok p) (port (+ 8000 80)) :leave-with 1)
+  (expect "computed checked parts"
+          (link '(url ,s ,h (port ,p) (path "a")))
+          "http://Example.COM:8080/a")
+  (expect "the parts after the host in any order"
+          (link '(url https "example.com" (fragment "f") (query (k "1")) (path "x")))
+          "https://example.com/x?k=1#f")
+
+  (expect "a host with a space" (refused host->string (host "exa mple.com"))
+          "'exa mple.com' is not a host name")
+  (expect "a host check normalises" (refused host->string (host "bücher.example"))
+          "accepted: xn--bcher-kva.example")
+  (expect "an IPv6 host check adds brackets" (refused host->string (host "::1"))
+          "accepted: [::1]")
+  (expect "a port out of range" (refused #(int->string (port->int &1)) (port (+ 70000 0)))
+          "a port is from 0 to 65535, and this is 70000")
+  (expect "a scheme that is not one" (refused scheme->string (scheme (string->symbol "ht tp")))
+          "'ht tp' is not a scheme")
   0)

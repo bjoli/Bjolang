@@ -1,0 +1,45 @@
+;; For 388_grammar_across_dll.bjo: grammars that cross into another module.
+;; Only Query and Cond are exported. Their other productions cross with them.
+
+(export Query Cond render-query cond->text)
+(import (std prelude))
+
+(def/grammar (Cond %leaf)
+  (:or (: And (and (Cond %leaf) ...))
+       (: Or (or (Cond %leaf) ...))
+       (: Not (not (Cond %leaf)))
+       (: Raw ,string)
+       (: Leaf %leaf)))
+
+(def/grammar Query
+  (Query (from (: table symbol) (: clauses Clauses)))
+  (Clauses (:each (: columns (:? (columns Column ...+)))
+                  (: limit (:? (limit int)))
+                  (: all (:? '*))))
+  (Column (:or (: Plain symbol) (: Renamed (as symbol string)))))
+
+(: cond->text (-> (-> %leaf string) (Cond %leaf) string))
+(defun (cond->text leaf c)
+  (def join (fun (op cs) (str "(" (string-join (list->vec (list-map #(cond->text leaf &1) cs)) op) ")")))
+  (match c
+    ((And cs) (join " AND " cs))
+    ((Or cs) (join " OR " cs))
+    ((Not inner) (str "NOT " (cond->text leaf inner)))
+    ((Raw s) s)
+    ((Leaf l) (leaf l))))
+
+(: column-text (-> Column string))
+(defun (column-text c)
+  (match c
+    ((Plain s) (symbol->string s))
+    ((Renamed s label) (str (symbol->string s) " AS " label))))
+
+(: render-query (-> Query string))
+(defun (render-query q)
+  (def clauses (record-ref q clauses))
+  (str "SELECT "
+       (match (record-ref clauses columns)
+         ((Some cols) (string-join (list->vec (list-map column-text cols)) ", "))
+         (None (if (record-ref clauses all) "*" "1")))
+       " FROM " (symbol->string (record-ref q table))
+       (match (record-ref clauses limit) ((Some n) (str " LIMIT " (int->string n))) (None ""))))

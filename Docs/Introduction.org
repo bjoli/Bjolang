@@ -176,50 +176,48 @@ function call. That is also what lets a trait range over a type /constructor/
 ~loop~ will almost always be as fast as any named let you write. There is a
 seq version as well, seql. See *Loops* in [[file:Syntax.org][Syntax.org]].
 
-** Elaboration: a literal takes the type it is given
+** Grammars: a literal takes the type it is given
 
-Where a union is expected, each piece of a ~'(...)~ or ~[...]~ literal becomes
-the case that can hold it: a string, a number or a symbol by its own type, a
-nested ~(...)~ by the case whose payload is a ~List~, an unquoted expression by
-its type. So a union declared like this
+A grammar says how a quoted literal of a type is written. Each production is a
+type, and a literal where the type is expected becomes its constructors:
 
 #+BEGIN_SRC scheme
-(type-rec
-  (: Item (Union (: Name string)
-                 (: Count int)
-                 (: Group (List Item)))))
+(def/grammar Item
+  (:or (: Name string)
+       (: Count int)
+       (: Group (Item ...))))
 
 (: inventory (List Item))
 (def inventory '("apples" 3 ("pears" 2)))
 ;; = (list (Name "apples") (Count 3) (Group (list (Name "pears") (Count 2))))
 #+END_SRC
 
-is written without its constructors, at any depth, and is still an ordinary
-union to ~match~ on. Nothing about the type says so — the expected type at the
-literal is what decides, so ~inventory~ needs its signature. ~(std run)~'s shell
-notation, ~(run/lines '(pipe (ls "-l") ,my-rot-13))~, is one of these. See
-*Quoted lists* in [[file:Syntax.org][Syntax.org]].
+The constructors are not written, at any depth, and ~Item~ is an ordinary union
+to ~match~ on. The expected type at the literal decides the grammar, so
+~inventory~ needs its signature.
 
-A shape reaches only as far as a case's payload head, so two clauses that are
-both lists are one question no literal can answer. ~#:tag~ answers it by name
-instead — the case declares the name its form is written under, and ~#:rest~
-says the form's arguments are its payload:
+A keyword at the head of a list names an alternative, and it has priority over
+a list without a keyword:
 
 #+BEGIN_SRC scheme
-(type (: Form (Union (: FPipe (List Form) #:tag pipe #:rest)
-                     (: FCmd (List Word)))))
+(def/grammar Form
+  (Form (:or (: FPipe (pipe Form ...))
+             (: FCmd (Word ...+))))
+  (Word (:or (: WSym symbol) (: WStr string))))
 
 '(pipe (cat "a") (wc -l))                  ;; (FPipe (list …))
-'(cat "a")                                 ;; (FCmd …) — `cat` names no tag
+'(cat "a")                                 ;; (FCmd …)
 #+END_SRC
 
-A misspelled tag is a type error that lists the tags — unless the union keeps
-an untagged case for the shape, as ~(std run)~ does for a command, and then the
-name is just data.
+~(std run)~'s shell notation, ~(run/lines '(pipe (ls "-l") ,my-rot-13))~, is
+one of these. A grammar can also take each item at most once in any order, a
+keyword alone, an optional item, and atoms that a function checks when the
+literal is compiled. See *Quoted lists* in [[file:Syntax.org][Syntax.org]],
+and [[file:Grammar-design.org][Grammar-design.org]].
 
 ** A DSL on top of it: ~(std fmt)~
 
-~(std fmt)~ lays text out with a ~Block~ union whose cases hold a string, an
+~(std fmt)~ lays text out with a ~Block~ grammar whose cases hold a string, an
 int, a char, or a layout combinator. A ~(Vec Block)~ is therefore written as a
 plain vector of the things themselves:
 

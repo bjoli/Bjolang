@@ -37,19 +37,21 @@
     | @code{'(errors-append-to-file "e" (make))}  | the same, appending              |
     | @code{'(,(cmd program "-l"))}               | a computed program name          |
     | @code{'(pipe (cat "x") ,my-filter)}         | a stage written in Bjolang       |
-    | @code{'(grep ["-i" "bomb"])}                | splice a computed argv           |
+    | @code{'(grep ,argv)}                        | splice a computed argv (a @code{Vec string}) |
     | @code{'("pipe" "-x")}                       | the @em{program} called @code{pipe} |
     }
 
     Redirections nest:
     @code{(into-file "out" (from-file "in" (pipe (tr "a" "b") sort)))}.
 
-    @code{pipe}, @code{from-file} and the rest are tags: the head of a form
-    names its case, and the name, the arity and every argument are checked at
-    compile time. A head that names no tag is a command.
+    @code{Form} is a grammar (see @code{def/grammar}). @code{pipe},
+    @code{from-file} and the rest are keywords. The head of a form names its
+    case. The compiler checks the keyword, the number of items and each item
+    where you write the form. A list without a keyword is a command. An empty
+    form @code{'()} is a compile error.
 
-    A word is a symbol, string, int, double, @code{[...]} argv vector, nested
-    form, unquoted @code{Cmd} or unquoted @code{Filter}: eight cases, and
+    A word is a symbol, string, int, double, spliced @code{Vec string} argv,
+    nested form, unquoted @code{Cmd} or unquoted @code{Filter}: eight cases, and
     nothing else. A character is a type error where it is written. One word is
     one argument, spaces and all; nothing re-splits it. A double is written
     the same on every machine, @code{0.5} and never @code{0,5}.
@@ -71,8 +73,9 @@
     sees end of file and @code{wait} never returns.}
     @item{A form is one thing: @code{'((cat "a") (wc -l))} is refused. Say
     @code{pipe}.}
-    @item{A bare tag in stage position is a type error;
-    @code{'("into-file" ...)} is the program of that name.}
+    @item{A keyword is a keyword only at the head of a list. A bare
+    @code{into-file} in stage position is a program name.
+    @code{'("into-file" ...)} is also the program of that name.}
     @item{Piping out of a redirect, or redirecting an end twice, is
     refused.}
     @item{After @code{into-file}, @code{run/string} gives @code{""}. Use
@@ -97,14 +100,14 @@
   (case WStr "A string, as it is.")
   (case WInt "An int.")
   (case WDouble "A double, written the same on every machine.")
-  (case WArgv "A computed argv, @code{[...]}, spliced in as several arguments.")
+  (case WArgv "A computed argv, a spliced @code{Vec string}. It gives several arguments.")
   (case WCmd "An unquoted @code{Cmd}.")
   (case WFilter "An unquoted @code{Filter}.")
   (case WForm "A nested form.")
   (see Form cmd)
   (reference """
-    A form's words are elaborated into these cases where the literal is
-    written, which is why the type is transparent. Only symbols, strings,
+    The grammar of @code{Form} reads the words of a form into these cases
+    where the literal is written. Only symbols, strings,
     ints, doubles and argv vectors are plain words; the rest stand for a whole
     stage, and among a command's arguments they are an @code{Err} from
     @code{run}.
@@ -127,10 +130,10 @@
   (see run Word)
   (reference """
     Written as a quoted literal; the module's documentation has the grammar.
-    The tagged cases are checked where the form is written: the name, the
-    number of arguments and every position. What no tag names is a command,
-    so @code{'(sort)} and @code{'(echo "x")} are commands. A pipeline takes
-    any number of stages.
+    @code{Form} is a grammar. The compiler checks the keyword cases where the
+    form is written: the keyword, the number of items and each item. A list
+    without a keyword is a command, so @code{'(sort)} and @code{'(echo "x")}
+    are commands. A pipeline takes any number of stages.
     """))
 
 (:doc Cmd

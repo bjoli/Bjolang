@@ -1,0 +1,139 @@
+;; def/grammar: a quoted literal read by a grammar.
+;;
+;; A production is a type: an :or is a union, a list or an :each is a record,
+;; and one type is an alias. A literal where the type is expected is read by
+;; the production. See Docs/Grammar-design.org.
+
+(import (std prelude))
+
+;; Keywords, a list without one, symbols, repeats and splices.
+(def/grammar Form
+  (Form (:or (: FPipe   (pipe Form ...))
+             (: FInto   (into-file string Form))
+             (: FSym    symbol)
+             (: FStr    string)
+             (: FFn     ,(-> string string))
+             (: FCmd    (Word ...+))))
+  (Word (:or (: WSym symbol) (: WStr string) (: WInt int) (: WSub (Word ...)))))
+
+(: show-word (-> Word string))
+(defun (show-word w)
+  (match w
+    ((WSym s) (symbol->string s))
+    ((WStr s) (str "\"" s "\""))
+    ((WInt n) (int->string n))
+    ((WSub ws) (str "(" (string-join (list->vec (list-map show-word ws)) " ") ")"))))
+
+(: show-form (-> Form string))
+(defun (show-form f)
+  (match f
+    ((FPipe fs) (str "pipe[" (string-join (list->vec (list-map show-form fs)) " | ") "]"))
+    ((FInto path inner) (str "into[" path " " (show-form inner) "]"))
+    ((FSym s) (str "sym:" (symbol->string s)))
+    ((FStr s) (str "str:" s))
+    ((FFn f) (str "fn:" (f "x")))
+    ((FCmd ws) (str "cmd:" (string-join (list->vec (list-map show-word ws)) " ")))))
+
+;; Records: a nested list with labels, an :each in any order, options and a
+;; bool for a keyword that may be there.
+(def/grammar Select
+  (Select (select (: columns Col ...+) (: rest Clauses)))
+  (Clauses (:each (: where    (:? (where Test)))
+                  (: limit    (:? (limit int)))
+                  (: distinct (:? 'distinct))))
+  (Col (:or (: ColName symbol) (: ColAs (as symbol string))))
+  (Test (:or (: TEq (= symbol int)) (: TRaw ,string))))
+
+(: show-col (-> Col string))
+(defun (show-col c)
+  (match c
+    ((ColName s) (symbol->string s))
+    ((ColAs s label) (str (symbol->string s) " AS " label))))
+
+(: show-test (-> Test string))
+(defun (show-test t)
+  (match t
+    ((TEq s n) (str (symbol->string s) " = " (int->string n)))
+    ((TRaw raw) raw)))
+
+(: show-select (-> Select string))
+(defun (show-select s)
+  (def clauses (record-ref s rest))
+  (str "SELECT "
+       (if (record-ref clauses distinct) "DISTINCT " "")
+       (string-join (list->vec (list-map show-col (record-ref s columns))) ", ")
+       (match (record-ref clauses where) ((Some t) (str " WHERE " (show-test t))) (None ""))
+       (match (record-ref clauses limit) ((Some n) (str " LIMIT " (int->string n))) (None ""))))
+
+;; A generic grammar: the leaves are another grammar.
+(def/grammar (Cond %leaf)
+  (:or (: And (and (Cond %leaf) ...))
+       (: Not (not (Cond %leaf)))
+       (: Leaf %leaf)))
+
+(def/grammar UserTest
+  (:or (: TId (id int))
+       (: TName (name string))))
+
+(: show-user (-> UserTest string))
+(defun (show-user t)
+  (match t
+    ((TId n) (str "id=" (int->string n)))
+    ((TName s) (str "name=" s))))
+
+(: show-cond (-> (Cond UserTest) string))
+(defun (show-cond c)
+  (match c
+    ((And cs) (str "and(" (string-join (list->vec (list-map show-cond cs)) ",") ")"))
+    ((Not c) (str "not(" (show-cond c) ")"))
+    ((Leaf t) (show-user t))))
+
+;; A sequence read in place, and a vec.
+(def/grammar Path
+  (Path (path (: segments string ...) (: tail Tail)))
+  (Tail (:each (: query    (:? (query Pair ...)))
+               (: fragment (:? (fragment string)))))
+  (Pair [(: key symbol) (: value string)]))
+
+(: show-path (-> Path string))
+(defun (show-path p)
+  (def tail (record-ref p tail))
+  (str (string-join (list->vec (list-map #(str "/" &1) (record-ref p segments))) "")
+       (match (record-ref tail query)
+         ((Some pairs)
+          (str "?" (string-join (list->vec (list-map (fun (pair) (str (symbol->string (record-ref pair key)) "=" (record-ref pair value))) pairs)) "&")))
+         (None ""))
+       (match (record-ref tail fragment) ((Some f) (str "#" f)) (None ""))))
+
+(: check (-> string string string bool))
+(defun (check what got want)
+  (if (= got want)
+      #t
+      (begin (println (str what ": got '" got "', want '" want "'"))
+          #f)))
+
+(defun (main args)
+  (def shout (fun (s) (string-upcase s)))
+  (def name "eve")
+  (def more (list "a" "b"))
+  (def (: f1 Form) '(pipe (ls -l "x") (sort) ,shout))
+  (def (: f2 Form) '(into-file "out" (grep 3 (sub "y"))))
+  (def (: f3 Form) 'pipe)
+  (def (: s1 Select) '(select id (as name "n") (limit 10) distinct (where (= id 3))))
+  (def (: s2 Select) '(select id))
+  (def raw "x > 1")
+  (def (: s3 Select) '(select id (where ,raw)))
+  (def (: c1 (Cond UserTest)) '(and (id 3) (not (name ,name))))
+  (def (: p1 Path) '(path "users" ,name (fragment "top") (query [q "x y"] [n "2"])))
+  (def (: p2 Path) '(path "a" ,@more))
+  (if (and (check "pipe" (show-form f1) "pipe[cmd:ls -l \"x\" | cmd:sort | fn:X]")
+           (check "into" (show-form f2) "into[out cmd:grep 3 (sub \"y\")]")
+           (check "bare symbol" (show-form f3) "sym:pipe")
+           (check "select" (show-select s1) "SELECT DISTINCT id, name AS n WHERE id = 3 LIMIT 10")
+           (check "select alone" (show-select s2) "SELECT id")
+           (check "spliced test" (show-select s3) "SELECT id WHERE x > 1")
+           (check "cond" (show-cond c1) "and(id=3,not(name=eve))")
+           (check "path" (show-path p1) "/users/eve?q=x y&n=2#top")
+           (check "path splice" (show-path p2) "/a/a/b"))
+      0
+      1))

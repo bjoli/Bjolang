@@ -1,0 +1,19 @@
+;; A misspelt keyword inside a generic grammar. The leaves come from the
+;; grammar parameter. `(nmae "x")` is not a Cond, so the repeat of `and`
+;; stops there, and the message tells what could come.
+;; EXPECT-ERROR: (and ...): expected Cond or the end of the list; found (nmae ...)
+(import (std prelude))
+
+(def/grammar Test
+  (:or (: TId (id int))
+       (: TName (name string))))
+
+(def/grammar (Cond %leaf)
+  (:or (: And (and (Cond %leaf) ...))
+       (: Leaf %leaf)))
+
+(: f (-> (Cond Test) int))
+(defun (f c) 0)
+
+(defun (main args)
+  (f '(and (id 1) (nmae "x"))))

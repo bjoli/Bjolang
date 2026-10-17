@@ -44,17 +44,6 @@ let private literalPayloadHeads (expr: Expr) : string list option =
         | _ -> None
     | _ -> None
 
-/// How a literal is named in a diagnostic about it.
-let private literalShapeName (expr: Expr) : string =
-    match expr with
-    | EList _ -> "list"
-    | EVec _ -> "vec"
-    | EArray _ -> "array"
-    | EString _ -> "string"
-    | EQuotedSymbol _ -> "symbol"
-    | EInt _ -> "number"
-    | _ -> "value"
-
 /// `a`, `a or b`, `a, b or c`.
 let private orList (names: string list) : string =
     match List.rev names with
@@ -62,22 +51,266 @@ let private orList (names: string list) : string =
     | [ one ] -> one
     | last :: earlier -> String.concat ", " (List.rev earlier) + " or " + last
 
-/// A union's cases as they were declared, for a diagnostic that has to say what
-/// was on offer.
-let private describeUnionCases (registry: TraitRegistry) (unionName: string) : string =
-    match Map.tryFind unionName registry.Unions with
-    | None -> ""
-    | Some(_, cases) ->
-        cases
-        |> List.map (fun (caseName, payloads, _) ->
-            let caseName = Naming.showTypeName caseName
+// ---------------------------------------------------------------------------
+// Grammars: the questions that need no inference
+// ---------------------------------------------------------------------------
 
-            if payloads.IsEmpty then
-                caseName
-            else
-                let types = payloads |> List.map DotNetInterop.showType |> String.concat " "
-                $"(%s{caseName} %s{types})")
-        |> String.concat ", "
+/// Runs a grammar's check on the atom of a literal, while the literal is
+/// compiled: the module key, the function's name in that module, and the atom
+/// as the runtime holds it. `Error` is the check's `Err` text, or why the check
+/// could not run.
+///
+/// A hook because the compiled module is loaded by `Pipeline`, which is
+/// compiled after this file. `Pipeline` sets it when it loads an assembly.
+let mutable runGrammarCheck: string -> string -> obj -> Result<unit, string> =
+    fun moduleKey name _ -> Error $"the module %s{moduleKey} that declares %s{name} is not loaded, so the check can not run"
+
+/// The atom of a literal as the runtime holds it, for `runGrammarCheck`.
+let private grammarAtomValue (atomType: HMType) (expr: Expr) : obj option =
+    let invariant = System.Globalization.CultureInfo.InvariantCulture
+
+    match expr, atomType with
+    | EString(s, _), _ -> Some(box (BjoString.Utf8String.FromUtf16 s))
+    | EQuotedSymbol(s, _), _ -> Some(box (BjolangRuntime.Symbol.Intern s))
+    | EBool(b, _), _ -> Some(box b)
+    | EInt(n, _), TCon(name, []) when name = TypeConstants.Int32Name -> Some(box (System.Int32.Parse(n, invariant)))
+    | EInt(n, _), TCon(name, []) when name = TypeConstants.Int64Name -> Some(box (System.Int64.Parse(n, invariant)))
+    | EInt(n, _), TCon(name, []) when name = TypeConstants.DoubleName -> Some(box (System.Double.Parse(n, invariant)))
+    | _ -> None
+
+/// Whether an element of a quoted literal is written data. Anything else is a
+/// value spliced in with `,`: the reader puts the expression itself in the
+/// literal, so its kind of node is the only thing that tells the two apart.
+let private isWrittenLiteral (expr: Expr) =
+    match expr with
+    | EList _
+    | EVec _
+    | EArray _
+    | EString _
+    | EQuotedSymbol _
+    | EInt _
+    | EChar _
+    | EBool _
+    | EKeyword _ -> true
+    | _ -> false
+
+/// The production a type is, with its type arguments, if it is one.
+let private grammarOf (registry: TraitRegistry) (t: HMType) : (string * HMType list * GrammarProduction) option =
+    match prune registry t with
+    | TCon(key, args) -> Map.tryFind key registry.Grammars |> Option.map (fun p -> key, args, p)
+    | _ -> None
+
+/// A production's item types with the expected type's arguments put in for
+/// the grammar's parameters.
+let private grammarInstance (p: GrammarProduction) (args: HMType list) : HMType -> HMType =
+    if p.TypeParams.Length = args.Length && not args.IsEmpty then
+        substTypeVars (List.zip p.TypeParams args |> Map.ofList)
+    else
+        id
+
+/// Whether an item keeps a value. The rules are `Grammar.itemValueType`'s.
+let rec private grammarKeeps (item: GrammarItem) =
+    match item with
+    | GrType _
+    | GrSpliceOnly _
+    | GrOpt _
+    | GrEach _ -> true
+    | GrKeyword _ -> false
+    | GrList(_, elements)
+    | GrVec elements -> elements |> List.exists (fun e -> e.Rep <> GOne || grammarKeeps e.Item)
+    | GrOr _ -> true
+
+/// Whether an element can match nothing, so that what follows it can come
+/// first.
+let private grammarCanBeEmpty (e: GrammarElement) =
+    e.Rep = GStar
+    || (match e.Item with
+        | GrOpt _ -> true
+        | GrEach fields ->
+            fields
+            |> List.forall (fun (_, i) ->
+                match i with
+                | GrOpt _ -> true
+                | _ -> false)
+        | _ -> false)
+
+/// What a literal can start with, as far as a grammar decides by it.
+type private GrammarStart =
+    /// `'kw`: the symbol alone.
+    | StartKeyword of string
+    /// `(kw ...)`: a list with the keyword at its head.
+    | StartKeywordList of string
+    | StartList
+    | StartVec
+    | StartArray
+    | StartAtom of string
+    | StartSplice of string
+    /// A type the grammar does not decide by: a parameter, or a type outside
+    /// any grammar that a literal is elaborated into by its own rules.
+    | StartAny
+
+/// The starts of an item. Used to check a grammar where it is declared: two
+/// alternatives with a start in common can not be told apart.
+let rec private grammarStarts
+    (registry: TraitRegistry)
+    (inst: HMType -> HMType)
+    (visited: Set<string>)
+    (item: GrammarItem)
+    : Set<GrammarStart> =
+    match item with
+    | GrKeyword kw -> Set.singleton (StartKeyword kw)
+    | GrList(Some kw, _) -> Set.singleton (StartKeywordList kw)
+    | GrList(None, _) -> Set.singleton StartList
+    | GrVec _ -> Set.singleton StartVec
+    | GrOpt inner -> grammarStarts registry inst visited inner
+    | GrSpliceOnly t -> Set.singleton (StartSplice(DotNetInterop.showType (inst t)))
+    | GrOr alternatives -> alternatives |> List.map (snd >> grammarStarts registry inst visited) |> Set.unionMany
+    | GrEach fields -> fields |> List.map (snd >> grammarStarts registry inst visited) |> Set.unionMany
+    | GrType t ->
+        let t = inst t
+
+        match grammarOf registry t with
+        | Some(key, _, _) when visited.Contains key -> Set.empty
+        | Some(key, args, p) -> productionStarts registry (Set.add key visited) args p
+        | None ->
+            match prune registry t with
+            | TVar _
+            | TMeta _ -> Set.singleton StartAny
+            | TCon(name, _) when Map.containsKey name registry.Unions -> Set.singleton StartAny
+            | TCon("List", _) -> Set.singleton StartList
+            | TCon("Vec", _) -> Set.singleton StartVec
+            | TCon("Array", _) -> Set.singleton StartArray
+            | TCon(name, []) -> Set.singleton (StartAtom name)
+            | other -> Set.singleton (StartSplice(DotNetInterop.showType other))
+
+and private productionStarts registry visited args (p: GrammarProduction) : Set<GrammarStart> =
+    let inst = grammarInstance p args
+
+    match p.Shape with
+    | GsUnion alternatives -> alternatives |> List.map (snd >> grammarStarts registry inst visited) |> Set.unionMany
+    | GsAlias item
+    | GsNested item -> grammarStarts registry inst visited item
+    | GsSequence elements -> sequenceStarts registry inst visited elements
+    | GsChecked(atom, _, _) -> grammarStarts registry inst visited (GrType atom)
+
+and private sequenceStarts registry inst visited (elements: GrammarElement list) : Set<GrammarStart> =
+    match elements with
+    | [] -> Set.empty
+    | e :: rest ->
+        let own = grammarStarts registry inst visited e.Item
+
+        if grammarCanBeEmpty e then
+            Set.union own (sequenceStarts registry inst visited rest)
+        else
+            own
+
+/// Whether `expr` can start `item`, decided without inferring anything.
+///
+/// A spliced value is not decided here: its type is what says where it goes,
+/// so it fits every item that can hold a value.
+let rec private grammarFits
+    (registry: TraitRegistry)
+    (inst: HMType -> HMType)
+    (visited: Set<string>)
+    (item: GrammarItem)
+    (expr: Expr)
+    : bool =
+    let starts = grammarStarts registry inst visited item
+
+    let fitsStart (s: GrammarStart) =
+        match s, expr with
+        | StartAny, _ -> true
+        | StartKeyword kw, EQuotedSymbol(sym, _) -> sym = kw
+        | StartKeywordList kw, EList(EQuotedSymbol(sym, _) :: _, _) -> sym = kw
+        | StartList, EList _ -> true
+        | StartVec, EVec _ -> true
+        | StartArray, EArray _ -> true
+        | StartAtom name, _ ->
+            match literalPayloadHeads expr with
+            | Some heads -> List.contains name heads
+            | None ->
+                match expr with
+                | EChar _ -> name = TypeConstants.CharName
+                | EBool _ -> name = TypeConstants.BooleanName
+                | EKeyword _ -> name = TypeConstants.KeywordName
+                | _ -> false
+        | StartSplice _, _ -> not (isWrittenLiteral expr)
+        | _ -> false
+
+    if not (isWrittenLiteral expr) then
+        // Any item that keeps a value can take one spliced in: a type, also
+        // a production whose alternatives all start with keywords, since a
+        // value of the production itself is one.
+        let rec takesSplice (item: GrammarItem) =
+            match item with
+            | GrType _
+            | GrSpliceOnly _ -> true
+            | GrOpt inner -> takesSplice inner
+            | GrOr alternatives -> alternatives |> List.exists (snd >> takesSplice)
+            | GrEach fields -> fields |> List.exists (snd >> takesSplice)
+            | GrKeyword _
+            | GrList _
+            | GrVec _ -> false
+
+        takesSplice item
+    else
+        starts |> Set.exists fitsStart
+
+/// The start a literal has as a keyword: the head of a list, or a symbol
+/// alone.
+let private literalKeywordStart (expr: Expr) : GrammarStart option =
+    match expr with
+    | EList(EQuotedSymbol(kw, _) :: _, _) -> Some(StartKeywordList kw)
+    | EQuotedSymbol(kw, _) -> Some(StartKeyword kw)
+    | _ -> None
+
+/// Whether an item starts with the keyword the literal starts with. A keyword
+/// has priority over any other item at the same place: `'(pipe ...)` is a
+/// pipe even where a list of symbols could also be read.
+let private grammarClaims registry inst (item: GrammarItem) (expr: Expr) =
+    match literalKeywordStart expr with
+    | Some start -> grammarStarts registry inst Set.empty item |> Set.contains start
+    | None -> false
+
+/// How a diagnostic names what an item expects.
+let rec private describeGrammarItem (registry: TraitRegistry) (inst: HMType -> HMType) (item: GrammarItem) : string =
+    match item with
+    | GrKeyword kw -> $"`%s{kw}`"
+    | GrList(Some kw, _) -> $"(%s{kw} ...)"
+    | GrList(None, _) -> "a list"
+    | GrVec _ -> "a vec"
+    | GrOpt inner -> describeGrammarItem registry inst inner
+    | GrSpliceOnly t -> $"a %s{DotNetInterop.showType (inst t)} spliced in with ,"
+    | GrOr alternatives -> alternatives |> List.map (snd >> describeGrammarItem registry inst) |> orList
+    | GrEach fields -> fields |> List.map (snd >> describeGrammarItem registry inst) |> orList
+    | GrType t ->
+        match grammarOf registry (inst t) with
+        | Some(_, _, p) -> p.Name
+        | None ->
+            match prune registry (inst t) with
+            | TCon(name, []) when name = TypeConstants.SymbolName -> "a symbol"
+            | TCon(name, []) when name = TypeConstants.StringName -> "a string"
+            | other -> $"a %s{DotNetInterop.showType other}"
+
+/// How a diagnostic names what a literal holds at the place it went wrong.
+let private describeFound (expr: Expr) : string =
+    match expr with
+    | EList(EQuotedSymbol(kw, _) :: _, _) -> $"(%s{kw} ...)"
+    | EList([], _) -> "an empty list"
+    | EList _ -> "a list"
+    | EVec _ -> "a vec"
+    | EArray _ -> "an array"
+    | EQuotedSymbol(s, _) -> $"the symbol `%s{s}`"
+    | EString(s, _) -> $"the string \"%s{s}\""
+    | EInt(n, _) -> $"the number %s{n}"
+    | EChar _ -> "a character"
+    | EBool _ -> "a boolean"
+    | EKeyword(k, _) -> $"the keyword #:%s{k}"
+    | ESplice _ -> "a splice ,@"
+    | _ -> "a value spliced in with ,"
+
+let private grammarError (r: Range) (context: string) (message: string) : 'a =
+    failwithf $"Type Error at %s{Lexer.formatPos r}: %s{context}: %s{message}"
 
 /// Whether any element of a literal is itself a list or vec literal.
 ///
@@ -148,7 +381,7 @@ let private joinLiteralElement
             DotNetInterop.showTypesTogether [ prune env.Registry elemTy; prune env.Registry elementType ]
 
         failwithf
-            $"Type Error at %s{Lexer.formatPos r}: nothing here says what this %s{kind} literal holds, and its elements do not agree on a type by themselves:\n  %s{shown[0]}\n  %s{shown[1]}\nA literal with a nested list among its elements stands for a union, and which union it stands for comes from the type expected where it is written. A generic parameter expects nothing in particular, so there is none: annotate the value and pass that, as in (def (: procs (List ProcList)) (list '(...)))."
+            $"Type Error at %s{Lexer.formatPos r}: nothing here says what this %s{kind} literal holds, and its elements do not agree on a type by themselves:\n  %s{shown[0]}\n  %s{shown[1]}\nA literal with a nested list among its elements is read by a grammar, and which grammar reads it comes from the type expected where it is written. A generic parameter expects nothing in particular, so there is none: annotate the value and pass that, as in (def (: procs (List ProcList)) (list '(...)))."
 
 // ---------------------------------------------------------------------------
 // `def` propagation
@@ -3296,10 +3529,12 @@ and private inferCheckedNode (expected: HMType) (env: Env) (expr: Expr) : HMType
     // …))` is. Only the nodes `literalPayloadHeads` can name a shape for are
     // routed here, because the type-directed path below asks this function the
     // same question again and would otherwise come straight back.
-    | (EList _ | EVec _ | EArray _ | EString _ | EQuotedSymbol _ | EInt _), TCon(unionName, _) when
-        Map.containsKey unionName env.Registry.Unions
-        ->
-        let typed = inferAndMaybeInject expected env expr
+    // A literal where a production of a grammar is expected is read by the
+    // grammar. This comes before the union below, because a production that
+    // is an `:or` is also a union.
+    | (EList _ | EVec _ | EArray _ | EString _ | EQuotedSymbol _ | EInt _ | EChar _ | EBool _ | EKeyword _),
+      TCon(key, _) when Map.containsKey key env.Registry.Grammars ->
+        let typed = matchGrammar env expected expr
         typed.Type, typed
 
     // A lambda whose parameters and result the expectation already names.
@@ -3393,291 +3628,705 @@ and private inferLambda
       Range = r
       Node = TLambda(args, typedBody) }
 
-/// Check one element of a literal against the type its position expects,
-/// injecting a union constructor around it where the expectation is a union.
+/// Check one element of a literal against the type its position expects.
 ///
-/// Three ways to pick that constructor, in this order, and which applies is
-/// decided by the element:
-///
-/// *Tag* first. A quoted list whose head symbol names one of the union's
-/// `#:tag` cases is that case, and the tag is *consumed*: what the case
-/// declares describes its arguments, not the whole form. A case that carries
-/// nothing is named by the symbol alone, which is what lets `(select id name)`
-/// read its columns as names. A tag is the only thing that can tell two cases
-/// with one payload head apart, so it is asked before the shape is.
-///
-/// *Shape* next. A literal — a nested list, a string, a symbol, a number —
-/// selects by what it is written as, against the *head* of each case's
-/// payload. This has to happen before the element is inferred, because for a
-/// nested heterogeneous literal inferring is what fails. The chosen payload is
-/// then pushed back down through `inferChecked`, which calls this function
-/// again for each of that literal's own elements. Recursion terminates because
-/// the expression strictly shrinks — a tag consumes the head, a shape
-/// consumes the literal — and mutually recursive unions need nothing extra,
-/// since every step is a fresh lookup in `Registry.Unions`.
-///
-/// *Type* otherwise. An unquoted `,value` has no shape to be read — a
-/// `(-> string string)` is a candidate for `ProcFn` because of its type and
-/// nothing else — so it is inferred first and matched against the payloads
-/// afterwards.
+/// Where a production of a grammar is expected, the grammar reads the element.
+/// Anything else is checked as the value it is: a quoted literal is
+/// elaborated by a grammar only, never by a union's cases.
 and private inferAndMaybeInject (expectedElem: HMType) (env: Env) (expr: Expr) : TypedExpr =
-    // A literal is elaborated into a case the way a constructor call builds
-    // one, so an `#:opaque` union whose representation this code may not use is
-    // taken out of the registry here. Every lookup below, delegation included,
-    // then finds no cases for it, and the literal is checked as the value it is
-    // written as and refused there, as it was when the cases did not cross.
-    let env =
-        let hidden =
-            env.Registry.OpaqueTypes
-            |> Map.filter (fun key _ -> not (representationVisible env.Registry (codeModule env (exprRange expr)) key))
+    match grammarOf env.Registry expectedElem with
+    | Some _ -> matchGrammar env expectedElem expr
+    | None ->
+        let elemTy, te = inferChecked expectedElem env expr
 
-        if hidden.IsEmpty then
-            env
-        else
-            { env with
-                Registry =
-                    { env.Registry with
-                        Unions = hidden |> Map.fold (fun acc key _ -> Map.remove key acc) env.Registry.Unions } }
-
-    let pe = prune env.Registry expectedElem
-
-    /// The element against what its siblings have to be, reported at the
-    /// element.
-    let fitElement (elemTy: HMType) =
         try
             unifyExpecting env.Registry expectedElem elemTy "this element"
         with ex when Diagnostics.needsLocation ex ->
             raise (Diagnostics.withLocation (exprRange expr) ex)
 
-    /// The typed constructor application, around already typed payloads.
-    let wrapInCtor (ctorName: string) (payloadTys: HMType list) (args: TypedExpr list) (r: Range) : TypedExpr =
-        let ctorType = tfun payloadTys pe
-        let ctorExpr: TypedExpr = { Type = ctorType; Range = r; Node = TIdent(ctorName, []) }
-        { Type = pe; Range = r; Node = TApply(ctorExpr, args, []) }
+        te
 
-    // The literal's own range, not the range of whatever list it is written
-    // in: the constructor that cannot be chosen is this one's.
+// ---------------------------------------------------------------------------
+// Grammars: reading a literal by its grammar
+// ---------------------------------------------------------------------------
+
+/// A quoted literal, or a value spliced into one, where a production of a
+/// grammar is expected. See `Docs/Grammar-design.org`.
+///
+/// A literal is read by the production: an `:or` picks its alternative by
+/// the literal's keyword first and its shape second, a record reads its
+/// fields from the list, and an alias reads the literal as its item. A
+/// spliced value is put where its type fits.
+///
+/// The result is the typed constructor calls the literal stands for. Nothing
+/// is rewritten into source and inferred again: every value is checked against
+/// the type its place in the grammar gives it, as it is read.
+and internal matchGrammar (env: Env) (expected: HMType) (expr: Expr) : TypedExpr =
+    match grammarOf env.Registry expected with
+    | None -> inferAndMaybeInject expected env expr
+    | Some(key, args, p) ->
+        if isWrittenLiteral expr then
+            matchProduction env key args p expr
+        else
+            let ty, typed = inferChecked (TCon(key, args)) env expr
+            spliceIntoGrammar env key args p ty typed
+
+/// A spliced value where a production is expected. A value of the
+/// production's own type is the production. Otherwise, for an `:or`, the
+/// alternative whose type the value has: `,raw` is a `RawCond` because it is a
+/// `Sql`. An alternative that is itself a production is looked into, as far as
+/// it goes.
+and private spliceIntoGrammar
+    (env: Env)
+    (key: string)
+    (args: HMType list)
+    (p: GrammarProduction)
+    (ty: HMType)
+    (typed: TypedExpr)
+    : TypedExpr =
+    let pe = TCon(key, args)
+
+    match prune env.Registry ty with
+    | TCon(k, _) when k = key ->
+        unify env.Registry ty pe
+        typed
+    | found ->
+        let inst = grammarInstance p args
+
+        match p.Shape, found with
+        | GsUnion alternatives, (TCon _ | TFun _ | TTuple _) ->
+            let fits =
+                alternatives
+                |> List.filter (fun (_, item) ->
+                    match item with
+                    | GrType t
+                    | GrSpliceOnly t -> spliceFitsType env.Registry Set.empty (inst t) found
+                    | _ -> false)
+
+            match fits with
+            | [ (case, (GrType t | GrSpliceOnly t)) ] ->
+                let payloadTy = inst t
+
+                let value =
+                    match grammarOf env.Registry payloadTy with
+                    | Some(k2, a2, p2) -> spliceIntoGrammar env k2 a2 p2 ty typed
+                    | None ->
+                        unifyExpecting env.Registry payloadTy ty "this value"
+                        typed
+
+                let built = applyConstructor env case [ value ] typed.Range
+                unify env.Registry built.Type pe
+                built
+            | [] ->
+                unifyExpecting env.Registry pe ty "this value"
+                typed
+            | many ->
+                let names = many |> List.map (fst >> Naming.showTypeName) |> orList
+
+                grammarError
+                    typed.Range
+                    p.Name
+                    $"a %s{DotNetInterop.showType found} fits %s{names}, and nothing here says which."
+        | _ ->
+            unifyExpecting env.Registry pe ty "this value"
+            typed
+
+/// Whether a spliced value of type `found` fits where `t` is expected,
+/// decided without binding anything: a type that is a production takes the
+/// values its alternatives take.
+and private spliceFitsType (registry: TraitRegistry) (visited: Set<string>) (t: HMType) (found: HMType) : bool =
+    let rec matches pat conc =
+        match prune registry pat, prune registry conc with
+        | TMeta _, _
+        | _, TMeta _
+        | TVar _, _
+        | _, TVar _ -> true
+        | TCon(n1, a1), TCon(n2, a2) -> n1 = n2 && a1.Length = a2.Length && List.forall2 matches a1 a2
+        | TFun(a1, r1, _), TFun(a2, r2, _) -> a1.Length = a2.Length && List.forall2 matches a1 a2 && matches r1 r2
+        | TTuple a1, TTuple a2 -> a1.Length = a2.Length && List.forall2 matches a1 a2
+        | a, b -> a = b
+
+    match grammarOf registry t, prune registry found with
+    | Some(key, _, _), TCon(k, _) when k = key -> true
+    | Some(key, _, _), _ when visited.Contains key -> false
+    | Some(key, args, p), _ ->
+        let inst = grammarInstance p args
+
+        match p.Shape with
+        | GsUnion alternatives ->
+            alternatives
+            |> List.exists (fun (_, item) ->
+                match item with
+                | GrType t
+                | GrSpliceOnly t -> spliceFitsType registry (Set.add key visited) (inst t) found
+                | _ -> false)
+        | _ -> false
+    | None, _ -> matches t found
+
+/// A constructor applied to its typed arguments, or alone when it takes none.
+and private applyConstructor (env: Env) (name: string) (args: TypedExpr list) (r: Range) : TypedExpr =
+    let fnTy, fnExpr = inferIdent env name r
+
+    match args with
+    | [] -> { fnExpr with Range = r }
+    | _ ->
+        let result = freshMeta ()
+        unify env.Registry fnTy (tfun (args |> List.map (fun a -> a.Type)) result)
+
+        { Type = result
+          Range = r
+          Node = TApply(fnExpr, args, []) }
+
+/// `#t` or `#f`, for an optional keyword: whether it was there.
+and private grammarBool (env: Env) (value: bool) (r: Range) : TypedExpr = snd (infer env (EBool(value, r)))
+
+/// A written literal where the production `p` is expected.
+and private matchProduction
+    (env: Env)
+    (key: string)
+    (args: HMType list)
+    (p: GrammarProduction)
+    (expr: Expr)
+    : TypedExpr =
+    let pe = TCon(key, args)
+    let inst = grammarInstance p args
     let r = exprRange expr
-    let reportAt () = Lexer.formatPos r
-    let shape = literalShapeName expr
-    // Shown by key, like every other type name in a diagnostic: which module's
-    // union this is may be the whole of what the reader is missing.
-    let shown unionName = Naming.showTypeName unionName
 
-    /// The tag this literal names, if any. A tagged form is a quoted list whose
-    /// head is a symbol; a case that carries nothing is named by a symbol on
-    /// its own.
-    let tagOf (expr: Expr) : string option =
+    match p.Shape with
+    | GsUnion alternatives ->
+        let case, item = chooseAlternative env inst p alternatives expr
+
+        let values =
+            match item with
+            | GrList(_, elements)
+            | GrVec elements ->
+                let kept = matchListItem env inst p.Name item expr
+                ignore elements
+                kept |> List.map snd
+            | GrKeyword _ ->
+                ignore (matchItem env inst p.Name item expr)
+                []
+            | _ -> matchItem env inst p.Name item expr |> Option.toList
+
+        let built = applyConstructor env case values r
+        unify env.Registry built.Type pe
+        built
+    | GsAlias item ->
+        match matchItem env inst p.Name item expr with
+        | Some value -> value
+        | None -> failwithf $"internal: the alias production %s{p.Name} keeps nothing"
+    | GsNested item -> buildGrammarRecord env key args (matchListItem env inst p.Name item expr) r
+    | GsSequence elements ->
         match expr with
-        | EList(EQuotedSymbol(tag, _) :: _, _) -> Some tag
-        | EQuotedSymbol(tag, _) -> Some tag
+        | EList(items, lr) -> buildGrammarRecord env key args (matchWholeSequence env inst p.Name elements items lr) r
+        | _ -> grammarError r p.Name $"expected a list; found %s{describeFound expr}."
+    | GsChecked(atom, check, home) ->
+        // The atom is checked as its type first, so a wrong kind of literal
+        // is reported as that.
+        ignore (inferChecked atom env expr)
+
+        if home = env.CurrentModule then
+            grammarError
+                r
+                p.Name
+                $"a literal of %s{p.Name} is checked by %s{check}, which this module declares. The compiler runs a check from a compiled module, so write the literal in a module that imports this one, or call %s{check} here."
+
+        match grammarAtomValue (prune env.Registry atom) expr with
+        | None ->
+            grammarError
+                r
+                p.Name
+                $"the compiler can not give %s{describeFound expr} to a check. A checked atom is a string, a symbol, a bool, an int, a long or a double."
+        | Some value ->
+            match runGrammarCheck home (Naming.writtenName check) value with
+            | Error message -> grammarError r p.Name message
+            | Ok() ->
+                // The check passed. The program calls it again, and takes the
+                // value out of its Ok, which can not be an Err now.
+                let call = EApp(EIdent(check, r), [ expr ], r)
+                let t, typed = infer env (EApp(EResolved("grammar-checked", r), [ call ], r))
+                unify env.Registry t pe
+                typed
+
+/// Which alternative of an `:or` a written literal is. A keyword decides
+/// first, and the literal's shape second.
+and private chooseAlternative
+    (env: Env)
+    (inst: HMType -> HMType)
+    (p: GrammarProduction)
+    (alternatives: (string * GrammarItem) list)
+    (expr: Expr)
+    : string * GrammarItem =
+    let r = exprRange expr
+
+    let ambiguous (many: (string * GrammarItem) list) =
+        let names = many |> List.map (fst >> Naming.showTypeName) |> orList
+        grammarError r p.Name $"%s{describeFound expr} can be %s{names}, and nothing here says which."
+
+    match alternatives |> List.filter (fun (_, item) -> grammarClaims env.Registry inst item expr) with
+    | [ one ] -> one
+    | _ :: _ :: _ as many -> ambiguous many
+    | [] ->
+        match alternatives |> List.filter (fun (_, item) -> grammarFits env.Registry inst Set.empty item expr) with
+        | [ one ] -> one
+        | [] ->
+            let expected = alternatives |> List.map (snd >> describeGrammarItem env.Registry inst) |> List.distinct
+
+            grammarError r p.Name $"expected %s{orList expected}; found %s{describeFound expr}."
+        | many -> ambiguous many
+
+/// One written literal or spliced value against one item. The value the item
+/// keeps, or `None` for an item that keeps nothing.
+and private matchItem
+    (env: Env)
+    (inst: HMType -> HMType)
+    (context: string)
+    (item: GrammarItem)
+    (expr: Expr)
+    : TypedExpr option =
+    let r = exprRange expr
+
+    let expectedHere () =
+        grammarError r context $"expected %s{describeGrammarItem env.Registry inst item}; found %s{describeFound expr}."
+
+    match item with
+    | GrType t ->
+        let t = inst t
+
+        match grammarOf env.Registry t with
+        | Some _ -> Some(matchGrammar env t expr)
+        | None -> Some(inferAndMaybeInject t env expr)
+    | GrSpliceOnly t ->
+        if isWrittenLiteral expr then
+            expectedHere ()
+
+        Some(inferAndMaybeInject (inst t) env expr)
+    | GrKeyword kw ->
+        match expr with
+        | EQuotedSymbol(sym, _) when sym = kw -> None
+        | _ -> expectedHere ()
+    | GrList _
+    | GrVec _ ->
+        match matchListItem env inst context item expr with
+        | [] -> None
+        | [ (_, value) ] -> Some value
+        | _ -> failwithf "internal: a list item of a grammar keeps more than one value"
+    | GrOpt inner ->
+        match matchItem env inst context inner expr with
+        | Some value -> Some(applyConstructor env "Some" [ value ] r)
+        | None -> Some(grammarBool env true r)
+    | GrOr _
+    | GrEach _ -> failwithf "internal: an :or or :each item outside its own production"
+
+/// A nested list or vec item: the values it keeps, by label.
+and private matchListItem
+    (env: Env)
+    (inst: HMType -> HMType)
+    (context: string)
+    (item: GrammarItem)
+    (expr: Expr)
+    : (string option * TypedExpr) list =
+    let r = exprRange expr
+
+    let expectedHere () =
+        grammarError r context $"expected %s{describeGrammarItem env.Registry inst item}; found %s{describeFound expr}."
+
+    match item, expr with
+    | GrList(Some kw, elements), EList(EQuotedSymbol(sym, _) :: rest, lr) when sym = kw ->
+        matchWholeSequence env inst $"(%s{kw} ...)" elements rest lr
+    | GrList(None, elements), EList(items, lr) -> matchWholeSequence env inst context elements items lr
+    | GrVec elements, EVec(items, vr) -> matchWholeSequence env inst context elements items vr
+    | _ -> expectedHere ()
+
+/// A sequence that has to use up the whole list it is read from.
+and private matchWholeSequence
+    (env: Env)
+    (inst: HMType -> HMType)
+    (context: string)
+    (elements: GrammarElement list)
+    (items: Expr list)
+    (r: Range)
+    : (string option * TypedExpr) list =
+    let kept, left, could = matchSequence env inst context elements items r
+
+    match left with
+    | [] -> kept
+    | extra :: _ ->
+        let expected =
+            match could with
+            | [] -> "the end of the list"
+            | _ -> orList (List.distinct could @ [ "the end of the list" ])
+
+        grammarError (exprRange extra) context $"expected %s{expected}; found %s{describeFound extra}."
+
+/// The elements of a sequence, read from the front of `items`.
+///
+/// Gives back the values kept, by label and in order; the items not used; and
+/// what else could have come where the reading stopped, for the message if
+/// what is left is wrong. Each choice is made by the next item alone, which a
+/// grammar is checked for where it is declared.
+and private matchSequence
+    (env: Env)
+    (inst: HMType -> HMType)
+    (context: string)
+    (elements: GrammarElement list)
+    (items: Expr list)
+    (r: Range)
+    : (string option * TypedExpr) list * Expr list * string list =
+    let describe item = describeGrammarItem env.Registry inst item
+    let fits item expr = grammarFits env.Registry inst Set.empty item expr
+
+    let notSplice (expr: Expr) =
+        match expr with
+        | ESplice _ -> false
+        | _ -> true
+
+    /// The production an item names, when it is a sequence read in place.
+    let inPlace (item: GrammarItem) =
+        match item with
+        | GrType t ->
+            match grammarOf env.Registry (inst t) with
+            | Some(key, args, ({ Shape = GsSequence elements } as p)) -> Some(key, args, p, elements)
+            | _ -> None
         | _ -> None
 
-    /// What a tagged case's payload describes: everything after the tag.
-    let tailOf (expr: Expr) : Expr list =
-        match expr with
-        | EList(_ :: tail, _) -> tail
-        | _ -> []
-
-    /// The type-directed path. The element is inferred first, and
-    /// `CandidateCases` then asked — speculatively, so it may not bind anything
-    /// — whether one constructor's payload matches what came back.
-    ///
-    /// `inferChecked` rather than `infer`, because the expectation is worth
-    /// pushing even when it names no union: at `(List ProcList)` the element is
-    /// a list of its own, and its elements are what the unions are at.
-    let typeDirected () : TypedExpr =
-        let elemTy, te = inferChecked pe env expr
-        let pg = prune env.Registry elemTy
-
-        match pe with
-        // A value of the union already is an element, never a payload, however
-        // its type arguments stand. Asked, `CandidateCases` would say yes to a
-        // case whose payload is a bare type variable, `(Unnamed %a)`, or the
-        // union itself, `(Wrap T)` — and wrap `b` in `(list a b)` once more.
-        | TCon(unionName, _) when Map.containsKey unionName env.Registry.Unions
-                                 && (match pg with
-                                     | TCon(elemHead, _) -> elemHead = unionName
-                                     | _ -> false) ->
-            fitElement elemTy
-            te
-        | TCon(unionName, typeArgs) when Map.containsKey unionName env.Registry.Unions ->
-            match env.Registry.CandidateCases unionName typeArgs pg with
-            | [ (ctorName, [ payloadTy ]) ] ->
-                // Exactly one constructor's payload matches. Unify the element
-                // against it — which resolves any metavariable left on either
-                // side — and wrap.
-                unify env.Registry elemTy payloadTy
-                wrapInCtor ctorName [ payloadTy ] [ te ] te.Range
-            | _ ->
-                // Zero or ambiguous matches — unify directly and let the type
-                // error (if any) be reported normally.
-                fitElement elemTy
-                te
+    let present (item: GrammarItem) (expr: Expr) : TypedExpr =
+        match item with
+        | GrOpt inner ->
+            match matchItem env inst context inner expr with
+            | Some value -> applyConstructor env "Some" [ value ] (exprRange expr)
+            | None -> grammarBool env true (exprRange expr)
         | _ ->
-            fitElement elemTy
-            te
+            match matchItem env inst context item expr with
+            | Some value -> value
+            | None -> failwithf "internal: a field of a grammar keeps nothing"
 
-    /// The shape-directed path, and the reports it can end in. `headTag` is the
-    /// head symbol this literal carried when it named no case: a misspelled tag
-    /// is by far the likeliest reason to be here with nothing on offer, so it
-    /// is worth saying so rather than only naming the shapes.
-    let shaped (unionName: string) (typeArgs: HMType list) (heads: string list) (headTag: string option) : TypedExpr =
-        match env.Registry.CasesByPayloadShape unionName typeArgs heads with
-        | [ (ctorName, payloadTy) ] ->
-            let elaborate () =
-                let payloadType, typedPayload = inferChecked payloadTy env expr
-                unify env.Registry payloadType payloadTy
-                wrapInCtor ctorName [ payloadTy ] [ typedPayload ] typedPayload.Range
+    let absent (inner: GrammarItem) : TypedExpr =
+        if grammarKeeps inner then
+            applyConstructor env "None" [] r
+        else
+            grammarBool env false r
 
-            let tags = env.Registry.UnionTags unionName
+    let rec go (elements: GrammarElement list) (items: Expr list) kept (could: string list) =
+        match elements with
+        | [] -> List.rev kept, items, could
+        | e :: rest ->
+            match e.Item, e.Rep with
+            | GrEach fields, GOne ->
+                let mutable given: Map<string, TypedExpr> = Map.empty
+                let mutable left = items
 
-            match headTag with
-            // The head was not a tag, so the list was taken as data. If that
-            // fails, a misspelled tag is the likelier mistake than the data,
-            // so the error says the list was not read as a tagged form. Only
-            // the innermost such literal adds the note.
-            | Some tag when not tags.IsEmpty ->
-                try
-                    elaborate ()
-                with ex when Diagnostics.isDiagnostic ex && not (ex.Message.Contains "\n  note: ") ->
-                    raise (
-                        System.Exception(
-                            ex.Message
-                            + $"\n  note: `%s{tag}` is not a tag of %s{shown unionName} either, so this list was read as %s{Naming.showTypeName ctorName}. The tags of %s{shown unionName} are %s{orList tags}."
-                        )
-                    )
-            | _ -> elaborate ()
-        | [] ->
-            let tags = env.Registry.UnionTags unionName
+                let pick (next: Expr) =
+                    match fields |> List.filter (fun (_, i) -> grammarClaims env.Registry inst i next) with
+                    | [] -> fields |> List.filter (fun (_, i) -> fits i next)
+                    | claimed -> claimed
 
-            // The tags a case hands on to, one level down, which are as much
-            // on offer as the union's own.
-            let delegated =
-                env.Registry.DelegateUnions unionName typeArgs
-                |> List.choose (fun (caseName, inner) ->
-                    match env.Registry.UnionTags inner with
-                    | [] -> None
-                    | innerTags ->
-                        Some $" Through %s{Naming.showTypeName caseName}, those of %s{shown inner}: %s{orList innerTags}.")
-                |> String.concat ""
+                let mutable reading = true
 
-            match headTag with
-            | Some tag when not tags.IsEmpty || delegated <> "" ->
-                let own = if tags.IsEmpty then "It has no tags of its own." else $"Its tags are %s{orList tags}."
+                while reading do
+                    match left with
+                    | next :: more when notSplice next ->
+                        match pick next with
+                        | [ (name, i) ] ->
+                            if given.ContainsKey name then
+                                grammarError (exprRange next) context $"%s{describe i} is given twice."
 
-                failwithf
-                    $"Type Error at %s{reportAt ()}: `%s{tag}` is not a tag of the union %s{shown unionName} and no case of it carries a %s{shape}, so this literal cannot be one. %s{own}%s{delegated}"
-            | _ ->
-                failwithf
-                    $"Type Error at %s{reportAt ()}: no case of the union %s{shown unionName} carries a %s{shape}, so this literal cannot be one. A literal written where a union is expected is elaborated into the case that holds it, and %s{shown unionName} has %s{describeUnionCases env.Registry unionName}."
-        | many ->
-            let names = many |> List.map (fst >> Naming.showTypeName) |> orList
+                            given <- Map.add name (present i next) given
+                            left <- more
+                        | [] -> reading <- false
+                        | many ->
+                            let names = many |> List.map (snd >> describe) |> orList
+                            grammarError (exprRange next) context $"%s{describeFound next} can be %s{names}."
+                    | _ -> reading <- false
+
+                let values =
+                    fields
+                    |> List.map (fun (name, i) ->
+                        match Map.tryFind name given, i with
+                        | Some value, _ -> Some name, value
+                        | None, GrOpt inner -> Some name, absent inner
+                        | None, _ ->
+                            let at =
+                                match left with
+                                | next :: _ -> exprRange next
+                                | [] -> r
+
+                            grammarError at context $"%s{describe i} is missing.")
+
+                let open' =
+                    fields |> List.filter (fun (name, _) -> not (given.ContainsKey name)) |> List.map (snd >> describe)
+
+                go rest left (List.rev values @ kept) (if given.IsEmpty then could @ open' else open')
+            | item, GOne when (inPlace item).IsSome ->
+                let key, args, p, inner = (inPlace item).Value
+                let innerInst = grammarInstance p args
+                let innerKept, left, innerCould = matchSequence env innerInst p.Name inner items r
+                let record = buildGrammarRecord env key args innerKept r
+                let used = List.length items - List.length left
+                go rest left ((e.Label, record) :: kept) (if used = 0 then could @ innerCould else innerCould)
+            | GrOpt inner, GOne ->
+                match items with
+                | next :: more when notSplice next && fits inner next ->
+                    go rest more ((e.Label, present e.Item next) :: kept) []
+                | _ -> go rest items ((e.Label, absent inner) :: kept) (could @ [ describe inner ])
+            | item, GOne ->
+                let expected () = orList (List.distinct (could @ [ describe item ]))
+
+                match items with
+                | [] -> grammarError r context $"expected %s{expected ()}; found the end of the list."
+                | (ESplice(_, sr)) :: _ ->
+                    grammarError
+                        sr
+                        context
+                        $",@ puts several values where one is expected: %s{describe item}. Use ,@ where the grammar repeats an item, with ... or ...+."
+                | next :: more ->
+                    if not (fits item next) then
+                        grammarError (exprRange next) context $"expected %s{expected ()}; found %s{describeFound next}."
+
+                    let kept =
+                        match matchItem env inst context item next with
+                        | Some value -> (e.Label, value) :: kept
+                        | None -> kept
+
+                    go rest more kept []
+            | item, rep ->
+                let elemTy = freshMeta ()
+
+                let rec take (items: Expr list) acc =
+                    match items with
+                    | ESplice(inner, sr) :: more -> take more (Choice2Of2(inner, sr) :: acc)
+                    | next :: more when fits item next ->
+                        match matchItem env inst context item next with
+                        | Some value ->
+                            unify env.Registry value.Type elemTy
+                            take more (Choice1Of2 value :: acc)
+                        | None -> failwithf "internal: a repeat of an item that keeps nothing"
+                    | _ -> List.rev acc, items
+
+                let taken, left = take items []
+
+                if rep = GPlus && taken.IsEmpty then
+                    let at =
+                        match left with
+                        | next :: _ -> exprRange next
+                        | [] -> r
+
+                    grammarError at context $"expected at least one %s{describe item}."
+
+                let listTy = TCon("List", [ elemTy ])
+
+                let run (values: TypedExpr list) : TypedExpr =
+                    { Type = listTy
+                      Range = r
+                      Node = TListMake values }
+
+                // Runs of read values, and the splices between them, as
+                // `inferCheckedLiteral` builds a literal with a splice in it.
+                let rec pieces (taken: Choice<TypedExpr, Expr * Range> list) (run': TypedExpr list) acc =
+                    match taken with
+                    | [] -> List.rev (if run'.IsEmpty then acc else run (List.rev run') :: acc)
+                    | Choice1Of2 value :: more -> pieces more (value :: run') acc
+                    | Choice2Of2(inner, sr) :: more ->
+                        let acc = if run'.IsEmpty then acc else run (List.rev run') :: acc
+                        pieces more [] (spliceIntoRepeat env listTy inner sr :: acc)
+
+                let value =
+                    match pieces taken [] [] with
+                    | [] -> run []
+                    | [ one ] -> one
+                    | several -> snd (assembleSplicedLiteral "List" elemTy several r)
+
+                go rest left ((e.Label, value) :: kept) [ describe item ]
+
+    go elements items [] []
+
+/// A `,@xs` where a grammar repeats an item. The values of a list or of a vec
+/// go in, and a vec is made a list first.
+and private spliceIntoRepeat (env: Env) (listTy: HMType) (inner: Expr) (sr: Range) : TypedExpr =
+    let innerType, typedInner = infer env inner
+
+    match prune env.Registry innerType, prune env.Registry listTy with
+    | TCon("Vec", [ elem ]), TCon("List", [ wanted ]) ->
+        unifyExpecting env.Registry wanted elem "an element of this ,@"
+        let fnTy, fnExpr = infer env (EResolved("vec->list", sr))
+        unify env.Registry fnTy (tfun [ innerType ] listTy)
+
+        { Type = listTy
+          Range = sr
+          Node = TApply(fnExpr, [ typedInner ], []) }
+    | _ ->
+        try
+            unify env.Registry innerType listTy
+        with ex when Diagnostics.isDiagnostic ex ->
+            let shown = DotNetInterop.showTypesTogether [ prune env.Registry listTy; prune env.Registry innerType ]
 
             failwithf
-                $"Type Error at %s{reportAt ()}: this %s{shape} literal could be injected into %s{names}, and nothing here says which. They are all cases of %s{shown unionName} that carry a %s{shape}, and only the payload's head constructor is compared against the literal — never its arguments — so the literal itself cannot tell them apart. Mark the case a literal means with #:literal where %s{shown unionName} is declared, or write the constructor around it here."
+                $"Type Error at %s{Lexer.formatPos sr}: ,@ puts the values of a list or a vec where the grammar repeats an item:\n  expected %s{shown[0]} or a vec of the same\n  got      %s{shown[1]}\nWrite ,x instead to place one value."
 
-    /// A tagged form, with the case already looked up.
-    let tagged (ctorName: string) (payloads: HMType list) (isRest: bool) : TypedExpr =
-        let tail = tailOf expr
+        typedInner
 
-        if isRest then
-            // The arguments *are* the payload, so they are wrapped back up in
-            // the collection node they describe. That is the node `,@` is
-            // lowered against and the node the elements are elaborated in, so a
-            // splice inside a tagged form needs nothing of its own. What the
-            // tag's arguments are read as does not change the case's type: it
-            // is the collection, and that is what they are checked against.
-            match payloads with
-            | [ payloadTy ] ->
-                let node =
-                    match prune env.Registry payloadTy with
-                    | TCon("Vec", _) -> EVec(tail, r)
-                    | TCon("Array", _) -> EArray(tail, r)
-                    | _ -> EList(tail, r)
+/// The record a production declares, from the values read for its fields.
+and private buildGrammarRecord
+    (env: Env)
+    (key: string)
+    (args: HMType list)
+    (kept: (string option * TypedExpr) list)
+    (r: Range)
+    : TypedExpr =
+    let pe = TCon(key, args)
 
-                let payloadType, typedPayload = inferChecked payloadTy env node
-                unify env.Registry payloadType payloadTy
-                wrapInCtor ctorName [ payloadTy ] [ typedPayload ] r
-            | _ ->
-                // Refused where the case is declared: a bug in this file rather
-                // than in the program.
-                failwithf $"internal: the #:rest case %s{ctorName} declares no single payload type"
-        else
-            match payloads, tail with
-            | [], [] ->
-                // A case that carries nothing: the tag is the whole value, and
-                // it is an ordinary reference to the constructor the
-                // declaration registered.
-                let ctorTy, ctorExpr = inferIdent env ctorName r
-                unify env.Registry ctorTy pe
-                { ctorExpr with Range = r }
-            | [ payloadTy ], [ only ] ->
-                // `inferAndMaybeInject` rather than `inferChecked`: an argument
-                // is elaborated exactly as an element of a literal is, so an
-                // unquoted `,value` is selected by its *type* and a nested form
-                // by its tag. A tag's arguments are the pieces of the form, and
-                // nothing about them is a special case.
-                let typed = inferAndMaybeInject payloadTy env only
-                wrapInCtor ctorName [ payloadTy ] [ typed ] r
-            | _ ->
-                let wanted = payloads.Length
+    match Map.tryFind key env.Registry.Records with
+    | None -> failwithf $"internal: the grammar record %s{key} is not registered"
+    | Some(typeParams, fields) ->
+        let subst =
+            if typeParams.Length = args.Length then
+                List.zip typeParams args |> Map.ofList
+            else
+                Map.empty
 
-                if wanted <> tail.Length then
-                    let want =
-                        if wanted = 0 then "no argument"
-                        elif wanted = 1 then "1 argument"
-                        else $"%d{wanted} arguments"
+        let values =
+            fields
+            |> List.map (fun (name, fieldTy) ->
+                match kept |> List.tryFind (fun (label, _) -> label = Some name) with
+                | Some(_, value) ->
+                    unify env.Registry (substTypeVars subst fieldTy) value.Type
+                    name, value
+                | None -> failwithf $"internal: no value was read for the field %s{name} of %s{key}")
 
-                    let got =
-                        match expr with
-                        | EQuotedSymbol _ ->
-                            "a bare symbol here, and a case that carries nothing is the one a bare symbol names"
-                        | _ when tail.IsEmpty -> "no argument"
-                        | _ when tail.Length = 1 -> "1 argument"
-                        | _ -> $"%d{tail.Length} arguments"
+        { Type = pe
+          Range = r
+          Node = TRecordMake values }
 
-                    failwithf
-                        $"Type Error at %s{reportAt ()}: `%s{Naming.showTypeName ctorName}` takes %s{want}, and this form has %s{got}."
+/// Checks a grammar where it is declared: at each choice, the next item
+/// decides. Two alternatives of an `:or`, two items of an `:each`, or an
+/// optional or repeated element and what can follow it, must not start with
+/// the same thing. A keyword is never in conflict with a list or a symbol: it
+/// has priority.
+///
+/// A grammar parameter starts with anything and is not checked here. The
+/// grammar it is given is checked where that grammar is declared.
+let checkGrammar (env: Env) (g: Grammar) : unit =
+    let registry = env.Registry
 
-                let typedArgs =
-                    List.map2 (fun (payloadTy: HMType) (arg: Expr) -> inferAndMaybeInject payloadTy env arg) payloads tail
+    let show (s: GrammarStart) =
+        match s with
+        | StartKeyword kw -> $"the symbol %s{kw}"
+        | StartKeywordList kw -> $"(%s{kw} ...)"
+        | StartList -> "a list"
+        | StartVec -> "a vec"
+        | StartArray -> "an array"
+        | StartAtom name -> $"a %s{DotNetInterop.showType (TCon(name, []))}"
+        | StartSplice t -> $"a spliced %s{t}"
+        | StartAny -> "anything"
 
-                wrapInCtor ctorName payloads typedArgs r
+    let conflict (a: Set<GrammarStart>) (b: Set<GrammarStart>) =
+        Set.intersect a b |> Set.remove StartAny |> Set.toList |> List.tryHead
 
-    match pe with
-    | TCon(unionName, typeArgs) when Map.containsKey unionName env.Registry.Unions ->
-        match tagOf expr with
-        | Some tag ->
-            match env.Registry.CaseByTag unionName typeArgs tag with
-            | Some(ctorName, payloads, isRest) -> tagged ctorName payloads isRest
-            | None ->
-                // A tag of a union that an untagged case carries: the literal
-                // is that union's case, wrapped in this one. See
-                // `TagDelegates`.
-                match env.Registry.TagDelegates unionName typeArgs tag with
-                | [ (ctorName, payloadTy) ] ->
-                    let inner = inferAndMaybeInject payloadTy env expr
-                    wrapInCtor ctorName [ payloadTy ] [ inner ] r
-                | (_ :: _ :: _) as many ->
-                    let names = many |> List.map (fun (c, _) -> Naming.showTypeName c) |> orList
+    for production in g.Productions do
+        let key = Naming.typeKey env.CurrentModule production.Name
+        let p = registry.Grammars[key]
+        let inst = id
+        let starts item = grammarStarts registry inst (Set.singleton key) item
+        let fail (message: string) = failwithf $"Grammar Error at %s{Lexer.formatPos p.Range}: in %s{p.Name}, %s{message}"
+        let describe item = describeGrammarItem registry inst item
 
-                    failwithf
-                        $"Type Error at %s{reportAt ()}: `%s{tag}` is not a tag of %s{shown unionName}, and more than one of its cases carries a union that has it: %s{names}. Nothing here says which is meant. Tag the case on %s{shown unionName} itself, or write the constructor around the literal."
-                // A head symbol that is not a tag is only wrong if nothing else
-                // can hold the literal: a union with an untagged case for a
-                // list — how `(std run)` writes a plain command — takes it as
-                // data, and that is what keeps a program that named no case
-                // meaning what it did.
-                | [] ->
-                    match literalPayloadHeads expr with
-                    | Some heads -> shaped unionName typeArgs heads (Some tag)
-                    | None -> typeDirected ()
-        | None ->
-            match literalPayloadHeads expr with
-            | Some heads -> shaped unionName typeArgs heads None
-            | None -> typeDirected ()
-    | _ -> typeDirected ()
+        let checkPairs (what: string) (named: (string * GrammarItem) list) =
+            let rec go (items: (string * GrammarItem) list) =
+                match items with
+                | [] -> ()
+                | (a, ai) :: rest ->
+                    for (b, bi) in rest do
+                        match conflict (starts ai) (starts bi) with
+                        | Some s ->
+                            fail
+                                $"the %s{what} %s{Naming.bareTypeName env.CurrentModule a} and %s{Naming.bareTypeName env.CurrentModule b} can both start with %s{show s}, so a literal can not say which it is. Make them start differently, for example with a keyword."
+                        | None -> ()
+
+                    go rest
+
+            go named
+
+        let rec checkItem (item: GrammarItem) =
+            match item with
+            | GrList(_, elements)
+            | GrVec elements -> checkSequence elements
+            | GrOpt inner -> checkItem inner
+            | GrOr alternatives ->
+                checkPairs "alternatives" alternatives
+                alternatives |> List.iter (snd >> checkItem)
+            | GrEach fields ->
+                checkPairs "items" fields
+                fields |> List.iter (snd >> checkItem)
+            | GrType _
+            | GrSpliceOnly _
+            | GrKeyword _ -> ()
+
+        and checkSequence (elements: GrammarElement list) =
+            let rec go (elements: GrammarElement list) =
+                match elements with
+                | [] -> ()
+                | e :: rest ->
+                    checkItem e.Item
+
+                    if e.Rep <> GOne || grammarCanBeEmpty e then
+                        let after = sequenceStarts registry inst (Set.singleton key) rest
+
+                        match conflict (starts e.Item) after with
+                        | Some s ->
+                            fail
+                                $"%s{describe e.Item} can be left out or repeated, and what comes after it can also start with %s{show s}. A literal can not say where the one ends. Make them start differently, for example with a keyword."
+                        | None -> ()
+
+                    go rest
+
+            go elements
+
+        match p.Shape with
+        | GsUnion alternatives ->
+            for (case, item) in alternatives do
+                match item with
+                | GrType t when (match grammarOf registry t with
+                                 | Some(k, _, _) -> k = key
+                                 | None -> false) ->
+                    fail $"the alternative %s{Naming.bareTypeName env.CurrentModule case} is %s{p.Name} itself, so reading it never ends."
+                | _ -> ()
+
+            // A spliced value goes to the alternative of its type, so two
+            // alternatives may not take a spliced value of one type: `string`
+            // and `,string`, say. A parameter, or a production, is checked
+            // where its own alternatives are.
+            let spliceType (item: GrammarItem) =
+                match item with
+                | GrType t
+                | GrSpliceOnly t ->
+                    match grammarOf registry t, prune registry t with
+                    | Some _, _ -> None
+                    | None, (TVar _ | TMeta _) -> None
+                    | None, t -> Some t
+                | _ -> None
+
+            let rec pairs (items: (string * GrammarItem) list) =
+                match items with
+                | [] -> ()
+                | (a, ai) :: rest ->
+                    match spliceType ai with
+                    | Some ta ->
+                        for (b, bi) in rest do
+                            match spliceType bi with
+                            | Some tb when spliceFitsType registry Set.empty ta tb ->
+                                fail
+                                    $"the alternatives %s{Naming.bareTypeName env.CurrentModule a} and %s{Naming.bareTypeName env.CurrentModule b} can both take a spliced %s{DotNetInterop.showType ta}, so a value spliced in with , can not say which it is."
+                            | _ -> ()
+                    | None -> ()
+
+                    pairs rest
+
+            pairs alternatives
+            checkItem (GrOr alternatives)
+        | GsAlias item
+        | GsNested item -> checkItem item
+        | GsSequence elements -> checkSequence elements
+        | GsChecked _ -> ()
 
 // --- DECLARATION CHECKING ---
 

@@ -1,0 +1,34 @@
+;; A grammar read in another module: inc/grammar_lib.bjo publishes Query and
+;; the generic Cond, and the literals here are read by them. The leaves of
+;; Cond are a grammar of this module.
+
+(import (std prelude))
+(import "inc/grammar_lib.bjo")
+
+(def/grammar Test
+  (:or (: Eq (= symbol int))
+       (: Like (like symbol string))))
+
+(: test-text (-> Test string))
+(defun (test-text t)
+  (match t
+    ((Eq s n) (str (symbol->string s) " = " (int->string n)))
+    ((Like s pattern) (str (symbol->string s) " LIKE '" pattern "'"))))
+
+(: check (-> string string string bool))
+(defun (check what got want)
+  (if (= got want)
+      #t
+      (begin (println (str what ": got '" got "', want '" want "'"))
+          #f)))
+
+(defun (main args)
+  (def raw "x IS NULL")
+  (def (: q1 Query) '(from users (limit 5) (columns id (as name "n"))))
+  (def (: q2 Query) '(from users *))
+  (def (: c (Cond Test)) '(or (= id 3) (and (like name "a%") (not ,raw))))
+  (if (and (check "query" (render-query q1) "SELECT id, name AS n FROM users LIMIT 5")
+           (check "star" (render-query q2) "SELECT * FROM users")
+           (check "cond" (cond->text test-text c) "(id = 3 OR (name LIKE 'a%' AND NOT x IS NULL))"))
+      0
+      1))

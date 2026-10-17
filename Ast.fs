@@ -173,6 +173,70 @@ type RecordField =
       Mutable: bool
       Range: Range }
 
+/// How many times an element of a grammar sequence occurs.
+type GRep =
+    /// Once.
+    | GOne
+    /// `item ...`: zero or more times.
+    | GStar
+    /// `item ...+`: one or more times.
+    | GPlus
+
+/// One item of a `def/grammar`. See `Docs/Grammar-design.org`.
+///
+/// The types here are as written. `CheckDecl` resolves them into the
+/// `TypedAST.GrammarItem` that a literal is matched against.
+type GItem =
+    /// A type: a terminal such as `string`, a production of a grammar, a
+    /// grammar parameter, or any other type. A literal atom or a spliced value
+    /// of the type matches it.
+    | GType of FType * Range
+    /// `,T`: only a spliced value of the type matches it.
+    | GSpliceOnly of FType * Range
+    /// `'kw`: the symbol `kw` alone. It holds no value.
+    | GKeyword of string * Range
+    /// `(kw elem ...)` or `(elem ...)`: a nested list, with the keyword at its
+    /// head if there is one.
+    | GList of string option * GElem list * Range
+    /// `[elem ...]`: a nested vec.
+    | GVec of GElem list * Range
+    /// `(:? item)`: the item, or nothing.
+    | GOpt of GItem * Range
+    /// `(:or (: Case item) ...)`: one of the alternatives.
+    | GOr of (string * GItem * Range) list * Range
+    /// `(:each (: field item) ...)`: each item at most once, in any order.
+    | GEach of (string * GItem * Range) list * Range
+    /// `(T #:check f)`: an atom of type `T`, which the function `f` turns into
+    /// the production's type or refuses. Only the whole body of a production.
+    /// The module is the one that declares `f`, when module metadata names
+    /// it: `#:module`.
+    | GChecked of FType * string * string option * Range
+
+/// One element of a sequence: an item, its label if it has one, and how many
+/// times it occurs.
+and GElem =
+    { Label: string option
+      Item: GItem
+      Rep: GRep
+      Range: Range }
+
+/// One production: its name, and the sequence it is made of.
+type GProduction =
+    { Name: string
+      Body: GElem list
+      Range: Range }
+
+/// A `def/grammar`. `TypeArgs` are the grammar's parameters, without the `'`.
+/// Each production is a type that takes all of them.
+type Grammar =
+    { Name: string
+      TypeArgs: string list
+      Productions: GProduction list
+      /// Read back from module metadata: the types are declared already, and
+      /// every name is a key.
+      RulesOnly: bool
+      Range: Range }
+
 type TypeDefKind =
     | Alias of FType
     | Union of UnionCase list
@@ -616,6 +680,9 @@ type Decl =
     | DDefDouble of string * DefunArg list * Expr * Expr * Range
     | DType of TypeDef list * Range
     | DTypeRec of TypeDef list * Range
+    /// A `def/grammar`: the rules a quoted literal of its types is read by.
+    /// The types themselves arrive as a `DTypeRec` before it. See `Grammar`.
+    | DGrammar of Grammar * Range
     // DTrait (Name, ImplementorVar, HoleArity, AssociatedTypes, Signatures, Defaults, ClrConstraint, Range)
     //
     // `HoleArity` is how many arguments the implementor was written applied to.
@@ -750,7 +817,7 @@ let declRange (decl: Decl) : Range =
     match decl with
     | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefDouble(_, _, _, _, r) | DDefTuple(_, _, r) | DDefPattern(_, _, r)
     | DDefMutable(_, _, r)
-    | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DTrait(_, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, _, r)
+    | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DGrammar(_, r) | DTrait(_, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, _, r)
     | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
     | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
     | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)
@@ -1368,6 +1435,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
         | DImport _
         | DExport _
         | DReExport _
+        | DGrammar _
         | DMacro _
         | DPatternMacro _
         | DHashMacro _
@@ -1420,6 +1488,7 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DReExport _
     | DType _
     | DTypeRec _
+    | DGrammar _
     | DExtern _
     | DImportAlias _
     | DImportExtern _

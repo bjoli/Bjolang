@@ -482,15 +482,12 @@
                (failed? (run/string '(pipe (echo "x") ,broken (cat)))))
 
   ;; ---- failure at parse time ---------------------------------------------
-  ;; The tags are matched where the form is written, so a misspelled one, a
-  ;; redirection missing an argument and a stage that is no form at all are type
-  ;; errors now — see TestFiles/errors/run_tag_bare_stage.bjo and its
-  ;; neighbours. What is left for `run` is what a type cannot say: a `#:rest`
-  ;; case may be empty, a command's words are one flat list, and the wiring
-  ;; between stages is only looked at once there is a tree to wire.
-  (expect-true "an empty form is an Err"
-               (failed? (run/string '())))
-
+  ;; The grammar of `Form` reads the form where you write it. Thus a misspelled
+  ;; keyword, a redirection without an argument, an empty form `'()` and a
+  ;; stage that is not a form are compile errors. See
+  ;; TestFiles/errors/run_tag_bare_stage.bjo and the tests near it. `run`
+  ;; checks only what the grammar can not: a pipe can be empty, and a word of
+  ;; a command can be a nested form.
   (expect-true "a pipe with no stages is an Err"
                (failed? (run/string '(pipe))))
 
@@ -511,13 +508,12 @@
   (expect-true "a nested form among a command's arguments is an Err"
                (failed? (run/string '(echo "x" (wc -l)))))
 
-  ;; A misspelled tag reads as a command of that name, and the first thing wrong
-  ;; is then a stage among its arguments — true, and no help at all unless the
-  ;; tags are named.
-  (expect-true "a misspelled tag names the tags"
+  ;; A misspelled keyword reads as a command of that name, and the first thing
+  ;; wrong is then a stage among its arguments. The error names the keywords.
+  (expect-true "a misspelled keyword names the keywords"
                (match (run/string '(input-from-file "x" ,shout))
                  ((Ok s) #f)
-                 ((Err e) (string-contains? (.-Message e) "the tags are"))))
+                 ((Err e) (string-contains? (.-Message e) "the keywords are"))))
 
   ;; Piping out of something whose output is already in a file would be a
   ;; silent empty stage, so it is refused.

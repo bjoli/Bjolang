@@ -1237,7 +1237,7 @@ let private specialForms =
       "let"; "let/mono"; "letrec"; "loop"; "match"; "module"; "not"; "or"; "parameterize"; "re-export"
       "record"; "record-ref"; "record-set"; "record-set!"; "seq"; "seql"; "set!"; "spawn"; "spawn-evt"
       "spawn/daemon"; "spawn/detached"; "struct"; "struct-ref"; "struct-set"; "struct-set!"; "task->event"
-      "try"; "type"; "type-rec"; "unless"; "when"; "with-open"; "with-return"; "yield"; "yield-from" ]
+      "try"; "type"; "type-rec"; "def/grammar"; "unless"; "when"; "with-open"; "with-return"; "yield"; "yield-from" ]
 
 /// What an import may wrap a module path in, as `DeclParser.parseImportForm`
 /// reads them.

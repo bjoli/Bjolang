@@ -148,26 +148,17 @@ let rec parseType (s: SExpr) : FType =
 let parseUnionCase (s: SExpr) : UnionCase =
     let r = getRange s
 
-    // Markers are read in one pass over the case rather than partitioned out of
-    // it, because `#:tag` takes the item after it: partitioning would leave the
-    // tag's name among the payload types, where `parseType` would read it as a
-    // type. A keyword is not a type anywhere else, and admitting one there
-    // would make `(-> #:literal int)` parse too.
+    // A case takes no markers. A keyword is not a type anywhere else, and
+    // admitting one here would make `(-> #:literal int)` parse too.
     let takeMarkers (name: string) (items: SExpr list) : SExpr list * CaseMarkers =
         let rec go (types: SExpr list) (markers: CaseMarkers) (rest: SExpr list) =
             match rest with
             | [] -> List.rev types, markers
-            | SAtom { Token = Keyword "literal" } :: tl -> go types { markers with IsLiteral = true } tl
-            | SAtom { Token = Keyword "rest" } :: tl -> go types { markers with IsRest = true } tl
-            | SAtom { Token = Keyword "tag" } :: SAtom { Token = Symbol tag } :: tl ->
-                match markers.Tag with
-                | Some written ->
-                    failwithf
-                        $"#:tag on the union case %s{name} at %s{Lexer.formatPos r}: the case is already tagged #:tag %s{written}, and a case carries one name."
-                | None -> go types { markers with Tag = Some tag } tl
-            | SAtom { Token = Keyword "tag" } :: _ ->
+            // The markers a quoted literal was once selected by. A grammar
+            // does that now.
+            | SAtom { Token = Keyword(("literal" | "rest" | "tag") as marker) } :: _ ->
                 failwithf
-                    $"#:tag on the union case %s{name} at %s{Lexer.formatPos r} takes the name of the tag, as in (: CFrom TableRef #:tag from)."
+                    $"#:%s{marker} on the union case %s{name} at %s{Lexer.formatPos r} is gone. A quoted literal is read by a grammar now: declare the type with def/grammar, where (:or (: Case item) ...) is a union and (kw item ...) is a list with a keyword. See Docs/Grammar-design.org."
             // Named separately from the unknown markers because it is a thing
             // someone may reasonably expect to work: a record field can be
             // mutable and a case payload cannot. A payload is positional and
@@ -177,24 +168,10 @@ let parseUnionCase (s: SExpr) : UnionCase =
                     $"#:mutable on the union case %s{name} at %s{Lexer.formatPos r}: a case payload is positional, so there is no field name for a write to use. Give the case a Record that has the mutable field instead."
             | SAtom { Token = Keyword bad } :: _ ->
                 failwithf
-                    $"Unknown marker #:%s{bad} on the union case %s{name} at %s{Lexer.formatPos r}. A case takes #:literal, #:tag name and #:rest."
+                    $"Unknown marker #:%s{bad} on the union case %s{name} at %s{Lexer.formatPos r}. A case takes no markers."
             | item :: tl -> go (item :: types) markers tl
 
-        let types, markers = go [] noCaseMarkers items
-
-        if markers.IsRest && types.Length <> 1 then
-            failwithf
-                $"#:rest on the union case %s{name} at %s{Lexer.formatPos r}: the tag's arguments are its payload, so the case declares exactly one type — the type every argument is checked against."
-
-        if markers.IsRest && markers.Tag.IsNone then
-            failwithf
-                $"#:rest on the union case %s{name} at %s{Lexer.formatPos r} says that a *tag's* arguments are its payload. An untagged case's payload already describes the whole literal, so (List T) is how a case of many is written."
-
-        if markers.IsLiteral && types.IsEmpty then
-            failwithf
-                $"#:literal on %s{name} at %s{Lexer.formatPos r} marks a case that carries nothing. It says which case a literal is injected into, so it belongs on one with a payload."
-
-        types, markers
+        go [] noCaseMarkers items
 
     // A case with a payload is written `(: Name type ...)`, like a record
     // field, so that a parenthesized form in a type is always a type

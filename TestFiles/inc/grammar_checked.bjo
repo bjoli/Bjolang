@@ -1,0 +1,38 @@
+;; For 389_grammar_checks.bjo and errors/grammar_check_err.bjo: a grammar
+;; with checked atoms. The checks run when a literal in an importer is
+;; compiled.
+
+(export Endpoint Port Host port host port->int host->string endpoint->string)
+(import (std prelude))
+
+(type (: Port #:opaque (Record (: number int))))
+(type (: Host #:opaque (Record (: name string))))
+
+(: port (-> int (Result string Port)))
+(defun (port n)
+  (if (and (>= n 0) (<= n 65535))
+      (Ok (Port (number n)))
+      (Err (str "a port is from 0 to 65535, and this is " (int->string n)))))
+
+;; A host is lower case, so the check also normalises.
+(: host (-> string (Result string Host)))
+(defun (host s)
+  (if (or (= s "") (string-contains? s " "))
+      (Err (str "'" s "' is not a host name"))
+      (Ok (Host (name (string-downcase s))))))
+
+(: port->int (-> Port int))
+(defun (port->int p) (record-ref p number))
+
+(: host->string (-> Host string))
+(defun (host->string h) (record-ref h name))
+
+(def/grammar Endpoint
+  (Endpoint (endpoint (: host Host) (: port (:? Port))))
+  (Host (string #:check host))
+  (Port (int #:check port)))
+
+(: endpoint->string (-> Endpoint string))
+(defun (endpoint->string e)
+  (str (host->string (record-ref e host))
+       (match (record-ref e port) ((Some p) (str ":" (int->string (port->int p)))) (None ""))))

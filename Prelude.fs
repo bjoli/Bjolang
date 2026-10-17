@@ -309,6 +309,7 @@ let emptyRegistry : TraitRegistry =
       RecordFields = Map.empty
       MutableRecordFields = Map.empty
       Unions = Map.empty
+      Grammars = Map.empty
       ClrClasses = Map.empty
       ClrExterns = Map.empty
       ExternOrigins = Map.empty

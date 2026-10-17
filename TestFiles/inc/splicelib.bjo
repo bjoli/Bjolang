@@ -14,20 +14,16 @@
 
 (export Tag decorate show-tags)
 
-(type-rec
-  (: Tag (Union (: TSym Symbol)
-                (: TStr string)
-                (: TSub (List Tag) #:literal))))
+(def/grammar Tag
+  (:or (: TSym symbol)
+       (: TStr string)
+       (: TSub (Tag ...))))
 
-;; The body this file exists for: a splice between two injected elements,
-;; compiled where the union is declared and called from where it is not.
+;; The body this file exists for: a splice between two elements that the
+;; grammar reads. This module declares the grammar. Another module calls it.
 ;;
-;; The annotated binding is not ceremony. A declared *return* type is not one of
-;; the places an expected type is pushed from — it is unified with the body
-;; afterwards, by which time the literal has already had to decide what it holds
-;; — so `'(head ...)` written directly as the body is the same error
-;; `errors/literal_no_expected_type.bjo` records. Annotating the value is the
-;; way past that, with or without a splice in it.
+;; The literal is in an annotated binding. The declared return type also
+;; gives the expected type, so the literal can also be the body itself.
 (: decorate (-> (List Tag) (List Tag)))
 (defun (decorate rest)
   (def (: decorated (List Tag)) '(head ,@rest (tail)))

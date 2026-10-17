@@ -6,6 +6,8 @@ Just some small infos to get you started:
 
 To build and run all tests, ./run_tests.py . This runs all the files in TestFiles that start with 3 digits. Tests are reported as failed if compilation fails, or a test outputs "FAILURE: ..." or "FAIL_COMPILE"
 
+A full test run takes just over 2 minutes. Run it in the foreground with a timeout of about 300 seconds, and read the result when it finishes. Do not start it in the background and then wait for it with sleep loops. If a run takes much longer than 2-3 minutes, something is wrong: stop and find out why.
+
 If you change anything in bjolangruntime you need to rebuild it. It is a different c# project in BjolangRuntime
 
 To rebuild the standard library, please use ./build_std.sh

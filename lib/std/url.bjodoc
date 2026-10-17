@@ -42,20 +42,34 @@
     | @code{(fragment "x")}                  | the fragment; in @code{url} or in @code{path} |
     }
 
+    In a @code{(url ...)}, the parts after the host come in any order, each
+    at most once. A @code{(path ...)} in a @code{(url ...)} has only
+    segments. In a @code{(path ...)} on this site, the query and the
+    fragment come after the segments.
+
     A segment, a key and a value is a string, a symbol or an int, written
     or computed with @code{,}. A computed @code{(Vec string)} is several:
     several segments in a path, or one key with several values in a query,
-    @code{tag=a&tag=b}. A computed pair is @code{,(Tuple key value)}, and
-    many pairs are @code{,@"@"(list-map ParamPair pairs)}.
+    @code{tag=a&tag=b}. A key, a user and a fragment are one text. A
+    computed pair is @code{,(Tuple key value)}, and many pairs are
+    @code{,@"@"(list-map ParamPair pairs)}.
 
-    The compiler checks the tags and their arity where the literal is
-    written. @code{(qeury ...)} and @code{(port 1 2)} are type errors.
-    What the shape cannot show, @code{make-url} checks when it runs, and
-    raises @code{ArgumentException}: a computed host or scheme that is not
-    one, a port that is not from 0 to 65535, a part given two times, a
-    parameter with more than one value, and a @code{(url ...)} with no
-    scheme or no host. A host that is not ASCII is written as IDNA writes it,
-    and an IPv6 address gets its brackets.
+    @code{Link} is a grammar (see @code{def/grammar}). The compiler reads the
+    literal where you write it. @code{(qeury ...)}, @code{(port 1 2)}, a part
+    given two times, a parameter with more than one value, and a
+    @code{(url ...)} without a scheme or a host are compile errors.
+
+    The scheme, the host and the port are checked parts. The compiler runs
+    @code{scheme}, @code{host} and @code{port} on a literal one, and refuses
+    a scheme that is not one, a host that is not one, and a port that is not
+    from 0 to 65535. A host that is not ASCII is written as IDNA writes it,
+    and an IPv6 address gets its brackets. A computed scheme, host or port
+    must be a @code{Scheme}, a @code{Host} or a @code{Port}. Call the check
+    to make one, and handle the @code{Err}:
+
+    @code{(match (host text) ((Ok h) (link '(url https ,h))) ((Err why) why))}
+
+    Thus @code{make-url} and @code{link} do not fail.
 
     A number in a literal has a type only when it is written there or has
     one already. @code{(def id 42)} has none yet, and the literal refuses
@@ -354,31 +368,28 @@
   (summary "A URL written as a quoted literal: @code{'(url ...)} or @code{'(path ...)}.")
   (case LinkUrl "@code{(url scheme host part ...)}: a URL with a scheme and a host.")
   (case LinkPath "@code{(path segment ... (query ...) (fragment ...))}: a path on this site.")
-  (see link make-url UrlPart PathPart)
+  (see link make-url UrlParts PathParts Scheme Host Port)
   (reference """
-    The module's documentation has the grammar. The types are transparent
-    because a literal elaborates into their cases where it is written.
+    @code{Link} is a grammar (see @code{def/grammar}). The module's
+    documentation has the parts. The export of @code{Link} also exports
+    @code{UrlParts}, @code{PathParts}, @code{QueryParam}, @code{UrlText} and
+    @code{UrlPiece}.
     """))
 
-(:doc UrlPart
-  (summary "One part of a @code{(url ...)} literal.")
-  (case UrlScheme "The scheme, a symbol: @code{https}.")
-  (case UrlHost "The host, a string: @code{\"example.com\"}.")
-  (case UrlPort "@code{(port 8080)}.")
-  (case UrlUser "@code{(user \"ada\")}.")
-  (case UrlPath "@code{(path segment ...)}.")
-  (case UrlQuery "@code{(query (key value) ...)}.")
-  (case UrlFragment "@code{(fragment \"top\")}.")
+(:doc UrlParts
+  (summary "The parts of a @code{(url ...)} after the host. Each part is there at most once, in any order.")
+  (field port "@code{(port 8080)}.")
+  (field user "@code{(user \"ada\")}.")
+  (field path "@code{(path segment ...)}.")
+  (field query "@code{(query (key value) ...)}.")
+  (field fragment "@code{(fragment \"top\")}.")
   (see Link))
 
-(:doc PathPart
-  (summary "One part of a @code{(path ...)}: a segment, or the query or the fragment.")
-  (case SegStr "A segment, a string.")
-  (case SegSym "A segment, a symbol.")
-  (case SegInt "A segment, an int.")
-  (case SegMany "A computed @code{(Vec string)}: several segments.")
-  (case SegQuery "@code{(query (key value) ...)}.")
-  (case SegFragment "@code{(fragment \"top\")}.")
+(:doc PathParts
+  (summary "The parts of a @code{(path ...)}: the segments, then the query and the fragment.")
+  (field segments "The segments.")
+  (field query "@code{(query (key value) ...)}.")
+  (field fragment "@code{(fragment \"top\")}.")
   (see Link))
 
 (:doc QueryParam
@@ -387,26 +398,105 @@
   (case ParamPair "A computed pair: @code{,(Tuple key value)}.")
   (see Link params->query))
 
+(:doc UrlText
+  (summary "A key, a user or a fragment in a literal: one text.")
+  (case TextStr "A string.")
+  (case TextSym "A symbol, as its name.")
+  (case TextInt "An int.")
+  (see Link UrlPiece))
+
 (:doc UrlPiece
-  (summary "A key, a value, a user or a fragment in a literal.")
-  (case PieceStr "A string.")
-  (case PieceSym "A symbol, as its name.")
-  (case PieceInt "An int.")
-  (case PieceMany "A computed @code{(Vec string)}: one key with several values.")
-  (see Link))
+  (summary "A segment or a query value in a literal: one text, or several.")
+  (case PieceOne "One text.")
+  (case PieceMany "A computed @code{(Vec string)}: several segments, or one key with several values.")
+  (see Link UrlText))
+
+(:doc Scheme
+  (summary "The scheme of a URL literal, such as @code{https}, that @code{scheme} accepted.")
+  (see scheme scheme->string Link))
+
+(:doc Host
+  (summary "The host of a URL literal, that @code{host} accepted, in the form a URL writes it.")
+  (see host host->string Link))
+
+(:doc Port
+  (summary "The port of a URL literal, from 0 to 65535, that @code{port} accepted.")
+  (see port port->int Link))
+
+(:doc scheme
+  (summary "Checks a scheme: a letter, then letters, digits, @code{+}, @code{-} and @code{.}.")
+  (arg s "The scheme, a symbol such as @code{'https}.")
+  (returns "The @code{Scheme}, or why it is not one.")
+  (see Scheme Link)
+  (example """
+    (match (scheme (string->symbol text))
+      ((Ok s) (link '(url ,s "example.com")))
+      ((Err why) why))
+    """)
+  (reference """
+    The compiler runs this check on a literal scheme in a @code{(url ...)}.
+    A computed scheme must be a @code{Scheme}, so call this function to make
+    one.
+    """))
+
+(:doc host
+  (summary "Checks a host, and gives the form a URL writes it in.")
+  (arg h "The host: a name, an IPv4 address, or an IPv6 address with or without brackets.")
+  (returns "The @code{Host}, or why it is not one.")
+  (see Host Link)
+  (example """
+    (host "bücher.example")   ;; => (Ok ...), written xn--bcher-kva.example
+    (host "::1")              ;; => (Ok ...), written [::1]
+    """)
+  (reference """
+    An IPv6 address gets its brackets. A name that is not ASCII becomes its
+    IDNA form. The compiler runs this check on a literal host in a
+    @code{(url ...)}. A computed host must be a @code{Host}, so call this
+    function to make one.
+    """))
+
+(:doc port
+  (summary "Checks a port: from 0 to 65535.")
+  (arg n "The port.")
+  (returns "The @code{Port}, or why it is not one.")
+  (see Port Link)
+  (reference """
+    The compiler runs this check on a literal port in a @code{(port ...)}. A
+    computed port must be a @code{Port}, so call this function to make one.
+    """))
+
+(:doc scheme->string
+  (summary "The text of a scheme.")
+  (arg s "The scheme.")
+  (returns "The scheme as text, without its @code{:}.")
+  (see scheme))
+
+(:doc host->string
+  (summary "The text of a host, as a URL writes it.")
+  (arg h "The host.")
+  (returns "The host as text.")
+  (see host))
+
+(:doc port->int
+  (summary "The number of a port.")
+  (arg p "The port.")
+  (returns "The port as an int.")
+  (see port))
 
 (:doc make-url
   (summary "The @code{Url} that a literal stands for.")
   (arg l "The literal.")
   (returns "The URL, with each value encoded for its part.")
-  (raises System.ArgumentException "When a computed host or scheme is not one, a port is not from 0 to 65535, a part is there two times, a parameter has more than one value, or a (url ...) has no scheme or no host.")
-  (see link Link))
+  (see link Link)
+  (reference """
+    This function does not fail. The grammar refuses a bad literal at compile
+    time, and the checks refuse a bad scheme, host or port.
+    """))
 
 (:doc link
   (summary "The text of a URL written as a literal.")
   (arg l "The literal.")
   (returns "@code{(url->string (make-url l))}.")
-  (raises System.ArgumentException "When make-url raises it.")
   (see make-url Link)
   (example """
     (link '(path "search" (query (q ,text))))   ;; => "/search?q=a%20%26%20b"

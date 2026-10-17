@@ -1,26 +1,25 @@
-;; A quoted literal passed to a *generic* parameter.
+;; A quoted literal given to a generic parameter.
 ;;
-;; `list-length`'s element type is a variable, so nothing expects a `ProcItem`
-;; here and there is no union to elaborate the literal into. It cannot be
-;; inferred on its own either — a symbol beside a list is two types, not one —
-;; so this is an error, and the useful thing to say is that the expected type is
-;; missing rather than that `Symbol` will not unify with `(List Symbol)`.
+;; The element type of `list-length` is a variable. Thus no grammar is
+;; expected here, and no grammar reads the literal. The literal also has no
+;; type by itself: a symbol and a list are two types. The error says that the
+;; expected type is missing. It does not say that `Symbol` does not unify
+;; with `(List Symbol)`.
 ;;
 ;; The fix is an annotation: (def (: procs (List ProcList)) (list '(pipe (ls)))).
-;; Another argument in the same call naming the type works too, since a call
-;; site pins its parameters from the arguments that are not lambdas before the
-;; rest are inferred — `(list-map run/lines (list '(pipe (ls))))` compiles.
+;; Another argument of the same call that gives the type also works:
+;; `(list-map run/lines (list '(pipe (ls))))` compiles.
 
 ;; EXPECT-ERROR: nothing here says what this list literal holds
-;; EXPECT-ERROR: A literal with a nested list among its elements stands for a union
+;; EXPECT-ERROR: A literal with a nested list among its elements is read by a grammar
 
 (import (std prelude))
 
-(type-rec
-  (: ProcItem (Union (: ProcSym Symbol)
-                     (: ProcStr string)
-                     (: ProcSub (List ProcItem))))
-  (: ProcList (Alias (List ProcItem))))
+(def/grammar ProcList
+  (ProcList (: items ProcItem ...))
+  (ProcItem (:or (: ProcSym symbol)
+                 (: ProcStr string)
+                 (: ProcSub (ProcItem ...)))))
 
 (: run/lines (-> ProcList string))
 (defun (run/lines items) "ran")

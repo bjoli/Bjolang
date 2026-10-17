@@ -24,14 +24,14 @@
               ""
               (list-map int->string xs)))
 
-;; The union a quoted literal is elaborated into, so that splicing can be shown
-;; not to disturb injection.
-(type-rec
-  (: Node (Union (: NSym Symbol)
-                 (: NText string)
-                 (: NArgv (Vec string))
-                 (: NSub (List Node))))
-  (: Nodes (Alias (List Node))))
+;; A grammar that reads a quoted literal. It shows that a splice does not
+;; change how the grammar reads the written elements.
+(def/grammar Nodes
+  (Nodes (List Node))
+  (Node (:or (: NSym symbol)
+             (: NText string)
+             (: NArgv (Vec string))
+             (: NSub (Node ...)))))
 
 (: render (-> Node string))
 (defun (render n)
@@ -83,14 +83,14 @@
   (expect "empty splice alone" (ints '(,@empty)) "")
   (expect "a literal with no splice is unchanged" (ints '(1 2)) "|1|2")
 
-  ;; --- 3. Injection survives ------------------------------------------------
+  ;; --- 3. The grammar still reads the written elements -----------------------
   ;;
-  ;; The one that matters. `head` and `(tail)` are written, so they are
-  ;; elaborated by shape into `NSym` and `NSub`; `rest` is spliced, so it is
-  ;; not elaborated at all — it is already a `(List Node)`, which is exactly
-  ;; what the splice demands of it.
+  ;; This is the important part. `pipe` and `(wc)` are written, so the
+  ;; grammar reads them as an `NSym` and an `NSub`. `rest` is spliced, so the
+  ;; grammar does not read it. It is a `(List Node)` already, and that is the
+  ;; type the splice must have.
   (def (: rest Nodes) '((ls) "x"))
-  (expect "injection either side of a splice"
+  (expect "written elements on each side of a splice"
           (render-all '(pipe ,@rest (wc)))
           "pipe (ls) \"x\" (wc)")
   (expect "splice with nothing written beside it"
@@ -102,9 +102,9 @@
           (render-all '(a (b ,@rest) c))
           "a (b (ls) \"x\") c")
 
-  ;; A spliced list *of* nested nodes: every element of `rest` is itself a
-  ;; `NSub` or an `NText`, and they arrive one level down without being
-  ;; re-elaborated.
+  ;; A spliced list of nested nodes. Each element of `branches` is an `NSub`
+  ;; already. They go one level down, and the grammar does not read them
+  ;; again.
   (def (: branches Nodes) '((a "1") (b "2")))
   (expect "a spliced list of nested nodes"
           (render-all '(top ,@branches))
@@ -127,9 +127,9 @@
 
   ;; --- 11. Across a module boundary -----------------------------------------
   ;;
-  ;; `decorate` splices in `inc/splicelib.bjo`, against a union declared there.
-  ;; A body with a literal in it is not published as an inline template — see
-  ;; that file — so this is the compiled method answering.
+  ;; `decorate` in `inc/splicelib.bjo` has a splice in a literal of a grammar
+  ;; that the module declares. A body with a literal in it is not published
+  ;; as an inline template (see that file), so the compiled method runs here.
   (expect "a spliced literal inside an imported function"
           (show-tags (decorate '((b "x"))))
           "head (b x) (tail)")

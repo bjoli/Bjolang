@@ -1,0 +1,16 @@
+;; A head that is not a keyword makes the literal a list without a keyword,
+;; if the grammar has one. A misspelt keyword thus goes to that list, and the
+;; error is about the first element of the list: `form` is not a Col.
+;; EXPECT-ERROR: Clause: expected Col or the end of the list; found the symbol `form`
+(import (std prelude))
+
+(def/grammar Clause
+  (Clause (:or (: Columns (Col ...))
+               (: From (from symbol))))
+  (Col (:or (: CId 'id) (: CName 'name))))
+
+(: f (-> (List Clause) int))
+(defun (f c) 0)
+
+(defun (main args)
+  (f (list '(id name) '(form users))))

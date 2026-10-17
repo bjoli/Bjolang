@@ -3,6 +3,37 @@
 
 What each change guarantees, and what it leaves open.
 
+* Grammars read quoted literals
+
+- ~def/grammar~ declares how a quoted literal of a type is written, and the
+  types themselves: an ~:or~ is a union, a list with labels or an ~:each~ is
+  a record, and one type is an alias. A literal is read by a grammar only
+  where a production's type is expected. See ~Docs/Grammar-design.org~.
+- A grammar says what a union could not: an order of items, ~:each~ (each
+  item at most once, in any order), necessary and optional items, a keyword
+  alone, two list alternatives told apart by their keywords, and parameters
+  (~(Cond %leaf)~), which replace delegation.
+- ~(T #:check f)~ is a checked atom. The compiler runs ~f~ on each literal
+  atom and refuses an ~Err~ with its text. A spliced value must have the type
+  that ~f~ gives. The program calls ~f~ again through ~grammar-checked~.
+- A grammar is checked where it is declared: two alternatives that start the
+  same way, or take a spliced value of one type, are an error, and so is an
+  optional or repeated item that what follows it could also start.
+- Breaking: ~#:tag~, ~#:rest~ and ~#:literal~ on a union case are refused,
+  and a quoted literal is no longer elaborated into a union's cases, nor a
+  spliced value wrapped into a case by its type. A union is a type only.
+- ~std/run~, ~std/fmt~, ~std/url~, ~std/datetime~ and ~text/xml/read~ declare
+  grammars. ~std/url~ has new opaque types ~Scheme~, ~Host~ and ~Port~ with
+  the checks ~scheme~, ~host~ and ~port~; a computed host, scheme or port is
+  made with its check, and ~make-url~ does not raise. In ~std/run~, ~'()~ is
+  a compile error. In ~std/datetime~, the text of a format is in the parts
+  only, and the fields are productions of their own.
+- A grammar can name only grammars declared before it in its module.
+- Tests: ~387_grammar.bjo~, ~388_grammar_across_dll.bjo~,
+  ~389_grammar_checks.bjo~ and ~errors/grammar_*.bjo~. The error tests of
+  the removed markers are replaced by grammar error tests, and
+  ~errors/tag_marker_gone.bjo~ shows the refusal of ~#:tag~.
+
 * ~only~ and ~except~ filter types
 
 - ~(only m f Node)~ gives the type ~Node~ and its constructors under their

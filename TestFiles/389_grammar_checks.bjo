@@ -1,0 +1,24 @@
+;; Checked atoms of a grammar: the compiler runs the check on a literal atom,
+;; and the program gets the value the check gives. A spliced value has the
+;; check's type already, made by calling the check.
+
+(import (std prelude))
+(import "inc/grammar_checked.bjo")
+
+(: check (-> string string string bool))
+(defun (check what got want)
+  (if (= got want)
+      #t
+      (begin (println (str what ": got '" got "', want '" want "'"))
+          #f)))
+
+(defun (main args)
+  (def (: e1 Endpoint) '(endpoint "Example.COM" 8443))
+  (def (: e2 Endpoint) '(endpoint "localhost"))
+  (def (Ok h) (host "Computed.Example") :leave-with 1)
+  (def (: e3 Endpoint) '(endpoint ,h 80))
+  (if (and (check "literal" (endpoint->string e1) "example.com:8443")
+           (check "no port" (endpoint->string e2) "localhost")
+           (check "spliced host" (endpoint->string e3) "computed.example:80"))
+      0
+      1))

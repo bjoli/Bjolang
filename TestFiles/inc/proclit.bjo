@@ -1,18 +1,19 @@
-;; A union whose cases a quoted literal is elaborated into, published from a
-;; library.
+;; For 101_literal_across_dll.bjo: a grammar that reads quoted literals,
+;; published from a library.
 ;;
-;; Two of its cases carry a list, so it is ambiguous for a nested literal unless
-;; the `#:literal` marker travels with the type into the metadata. The importing
-;; side never sees this source.
+;; Two of its cases carry a list. A written list is a Sub. An Args is only a
+;; spliced (List string). The grammar travels with the type into the
+;; metadata, so the importer reads a nested literal as this module does. The
+;; importing module never sees this source.
 (import (std prelude))
 
 (export Item show-items)
 
-(type-rec
-  (: Item (Union (: Sym Symbol)
-                 (: Str string)
-                 (: Sub (List Item) #:literal)
-                 (: Args (List string)))))
+(def/grammar Item
+  (:or (: Sym symbol)
+       (: Str string)
+       (: Sub (Item ...))
+       (: Args ,(List string))))
 
 (: show-item (-> Item string))
 (defun (show-item i)

@@ -177,13 +177,34 @@ let metadata
     /// `#:opaque` is published whole, marker included: the bodies this module
     /// publishes have to check where they are spliced, and the importer is what
     /// keeps the representation to this module's code.
+    /// This module's grammars that cross: those with a production named in an
+    /// `(export ...)`. A grammar crosses whole, with every production's type,
+    /// because a literal of one production is read through the others.
+    /// By grammar name, each with its productions by key, the first one the
+    /// grammar's own.
+    let grammarsToExport: (string * (string * TypedAST.GrammarProduction) list) list =
+        let own = Naming.moduleKeyOfPath inputFilePath
+
+        env.Registry.Grammars
+        |> Map.toList
+        |> List.filter (fun (key, p) -> Naming.typeKey own p.Name = key)
+        |> List.groupBy (fun (_, p) -> p.Grammar)
+        |> List.filter (fun (_, productions) -> productions |> List.exists (fun (_, p) -> List.contains p.Name exports))
+        |> List.map (fun (grammar, productions) ->
+            let first, rest = productions |> List.partition (fun (_, p) -> p.Name = grammar)
+            grammar, first @ rest)
+
+    let grammarTypeKeys =
+        grammarsToExport |> List.collect (fun (_, productions) -> List.map fst productions) |> Set.ofList
+
     let typesToExport =
         ownModuleDecls
         |> TypedAST.collectDecls (function
             | TypedAST.TType(defs, _) -> defs |> List.map (fun d -> d, false)
             | TypedAST.TTypeRec(defs, _) -> defs |> List.map (fun d -> d, true)
             | _ -> [])
-        |> List.filter (fun ((td: Ast.TypeDef), _) -> List.contains (bare td.Name) exports)
+        |> List.filter (fun ((td: Ast.TypeDef), _) ->
+            List.contains (bare td.Name) exports || grammarTypeKeys.Contains td.Name)
 
     /// The types that crossed under their own name.
     ///
@@ -1016,12 +1037,87 @@ let metadata
                     | Some twin -> [ name; twin ]
                     | None -> [ name ])
                 |> List.choose exportedDef
+                // The checks of the grammars that cross. A literal in an
+                // importer calls one, and it is published implicitly for that,
+                // as a name an inlined body calls is: also when the module
+                // exports it, because an importer may rename or leave out what
+                // it imports.
+                |> fun published ->
+                    let checks =
+                        grammarsToExport
+                        |> List.collect (fun (_, productions) ->
+                            productions
+                            |> List.choose (fun (_, p) ->
+                                match p.Shape with
+                                | TypedAST.GsChecked(_, check, _) -> Some check
+                                | _ -> None))
+                        |> List.distinct
+                        |> List.filter (fun n -> not (autoExportKeys |> List.exists (fun (a, _) -> a = n)))
+                        |> List.choose (fun n -> exportedDefAs n n true)
+
+                    published @ checks
 
             let externDecls = externsToExport |> List.map serializeExtern
 
+            // A grammar's rules, after its types. Written with every name as a
+            // key and every type as it resolved, as a type declaration is, and
+            // marked `#:rules-only`: the types travel as their own declarations.
+            let serializeGrammar (grammar: string, productions: (string * TypedAST.GrammarProduction) list) =
+                let rep (r: Ast.GRep) =
+                    match r with
+                    | Ast.GOne -> ""
+                    | Ast.GStar -> " ..."
+                    | Ast.GPlus -> " ...+"
+
+                let rec item (i: TypedAST.GrammarItem) : string =
+                    match i with
+                    | TypedAST.GrType t -> Codegen.serializeHMType t
+                    | TypedAST.GrSpliceOnly t -> ", " + Codegen.serializeHMType t
+                    | TypedAST.GrKeyword kw -> $"(:keyword %s{kw})"
+                    | TypedAST.GrList(Some kw, elements) -> $"(:keyword-list %s{kw}%s{elementsText elements})"
+                    | TypedAST.GrList(None, elements) -> $"(:list%s{elementsText elements})"
+                    | TypedAST.GrVec elements -> $"[%s{(elementsText elements).TrimStart()}]"
+                    | TypedAST.GrOpt inner -> $"(:? %s{item inner})"
+                    | TypedAST.GrOr alternatives ->
+                        let alts = alternatives |> List.map (fun (case, i) -> $"(: %s{case} %s{item i})")
+                        "(:or " + String.concat " " alts + ")"
+                    | TypedAST.GrEach fields ->
+                        let fs = fields |> List.map (fun (name, i) -> $"(: %s{name} %s{item i})")
+                        "(:each " + String.concat " " fs + ")"
+
+                and element (e: TypedAST.GrammarElement) : string =
+                    match e.Label with
+                    | Some label -> $"(: %s{label} %s{item e.Item}%s{rep e.Rep})"
+                    | None -> item e.Item + rep e.Rep
+
+                and elementsText (elements: TypedAST.GrammarElement list) =
+                    elements |> List.map (fun e -> " " + element e) |> String.concat ""
+
+                let body (p: TypedAST.GrammarProduction) =
+                    match p.Shape with
+                    | TypedAST.GsUnion alternatives -> " " + item (TypedAST.GrOr alternatives)
+                    | TypedAST.GsAlias i
+                    | TypedAST.GsNested i -> " " + item i
+                    | TypedAST.GsSequence elements -> elementsText elements
+                    | TypedAST.GsChecked(t, check, home) ->
+                        $" (%s{Codegen.serializeHMType t} #:check %s{check} #:module %s{home})"
+
+                let own = Naming.moduleKeyOfPath inputFilePath
+                let typeParams = (snd productions.Head).TypeParams
+                let grammarKey = Naming.typeKey own grammar
+
+                let head =
+                    if typeParams.IsEmpty then grammarKey else $"""(%s{grammarKey} %s{String.concat " " typeParams})"""
+
+                let rules = productions |> List.map (fun (key, p) -> $"(%s{key}%s{body p})")
+                $"(def/grammar #:rules-only %s{head}\n  " + String.concat "\n  " rules + ")"
+
             // The class aliases first: an extern's declared signature may
             // mention one, and a declaration is read in the order it is written.
-            let typeDecls = classTypeDecls @ (typesToExport |> List.map serializeTypeDef)
+            let typeDecls =
+                classTypeDecls
+                @ (typesToExport |> List.map serializeTypeDef)
+                @ (grammarsToExport |> List.map serializeGrammar)
 
             // Dependency order, not map order. A member-level `(where ...)`
             // names another trait, and the reader resolves the clause when it

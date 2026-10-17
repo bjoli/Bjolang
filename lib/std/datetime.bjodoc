@@ -309,11 +309,11 @@
         @code{YYYY} is the week-based year where @code{yyyy} is the year, so
         @code{YYYY-MM-dd} writes 2025-12-29 as 2026-12-29, and @code{mm} is
         minutes where @code{MM} is months. Here a field has a name, a wrong
-        name is a compile error that lists the right ones, and text needs no
+        name is a compile error, and text needs no
         escaping, being a string of its own. The cost: a format is longer
         than @code{yyyy-MM-dd}, and cannot arrive as text from a
         configuration file; a program chooses among formats it holds.}
-      @item{@strong{One format union and one function per type.} That is what
+      @item{@strong{One format and one function per type.} That is what
         makes @code{hours} in a date's format a compile error. A moment's
         date is written with @code{(date->text (->date m) ...)}, which says
         whose date it is, as a calendar difference asks for @code{->date}
@@ -1534,19 +1534,34 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc DateNumber
-  (summary "The numbers of a date, as a format names them: year, month, day and the others.")
-  (case NumYear "year, the year.")
-  (case NumMonth "month, 1 to 12.")
-  (case NumDay "day, the day of the month.")
-  (case NumWeekday "weekday, 1 for Monday to 7 for Sunday.")
-  (case NumYday "yday, the day of the year.")
-  (case NumWeek "week, the ISO week.")
-  (case NumWeekYear "week-year, the year the ISO week is in.")
-  (see DatePart date->text)
+  (summary "The numbers of a date with a width, as a format names them: (year 4) and the others.")
+  (case NumYear "(year n), the year.")
+  (case NumMonth "(month n), 1 to 12.")
+  (case NumDay "(day n), the day of the month.")
+  (case NumWeekday "(weekday n), 1 for Monday to 7 for Sunday.")
+  (case NumYday "(yday n), the day of the year.")
+  (case NumWeek "(week n), the ISO week.")
+  (case NumWeekYear "(week-year n), the year the ISO week is in.")
+  (see DateBareNumber DateField date->text)
   (reference """
-    Each is written by its tag, alone or with a width: @code{year} and
-    @code{(year)} are the same, and @code{(year 4)} fills with zeros to
-    four digits.
+    @code{(year 4)} fills with zeros to four digits. @code{(year)} is the
+    same as a bare @code{year}, which is a @code{DateBareNumber}.
+    """))
+
+(:doc DateBareNumber
+  (summary "The numbers of a date without a width: year, month, day and the others.")
+  (case BareYear "year.")
+  (case BareMonth "month.")
+  (case BareDay "day.")
+  (case BareWeekday "weekday.")
+  (case BareYday "yday.")
+  (case BareWeek "week.")
+  (case BareWeekYear "week-year.")
+  (see DateNumber DateField)
+  (reference """
+    A bare number takes the digits it needs. It is the same as the
+    @code{DateNumber} with an empty width list: @code{year} is
+    @code{(year)}.
     """))
 
 (:doc RomanNumber
@@ -1554,7 +1569,7 @@
   (case RomanYear "(roman year).")
   (case RomanMonth "(roman month).")
   (case RomanDay "(roman day).")
-  (see DatePart)
+  (see DateField)
   (reference """
     No width, as a numeral has no zeros to fill with:
     @code{(roman (year 4))} is a compile error.
@@ -1562,39 +1577,82 @@
 
 (:doc DatePart
   (summary "A part of a date's format, for date->text and text->date.")
-  (case DateNum "A number: year, month, day, weekday, yday, week or week-year.")
+  (case DateOf "A field of a date.")
+  (case DateText "A string, written as it stands.")
+  (case DateChar "A character, written as it stands.")
+  (see date->text text->date DateField)
+  (reference """
+    @code{DatePart} is a grammar (see @code{def/grammar}). It reads a quoted
+    format, such as @code{'((year 4) "-" (month 2))}, where you write it.
+    The export of @code{DatePart} also exports the other productions of the
+    grammar: @code{DateField}, @code{DateNumber}, @code{DateBareNumber},
+    @code{RomanNumber}, @code{TimePart}, @code{TimeField},
+    @code{TimeBareNumber}, @code{DateTimePart}, @code{DateTimeField},
+    @code{MomentPart} and @code{InstantPart}.
+
+    The text and the characters are in the parts. The fields are in
+    @code{DateField}, @code{TimeField} and @code{DateTimeField}, which have
+    no text.
+    """))
+
+(:doc DateField
+  (summary "A field of a date: a number, a Roman numeral or a name.")
+  (case DateNum "A number with a width: (year 4), (month 2) and the others.")
+  (case DateBare "A number without a width: year, month, day, weekday, yday, week or week-year.")
   (case DateRoman "(roman year), (roman month) or (roman day).")
   (case MonthName "month-name, from the names table.")
   (case MonthAbbr "month-abbr, from the names table.")
   (case WeekdayName "weekday-name, from the names table.")
   (case WeekdayAbbr "weekday-abbr, from the names table.")
-  (case DateText "A string, written as it stands.")
-  (case DateChar "A character, written as it stands.")
-  (see date->text text->date DateNumber RomanNumber))
+  (see DatePart DateNumber DateBareNumber RomanNumber))
 
 (:doc TimePart
   (summary "A part of a time's format, for time->text and text->time.")
-  (case TimeHours "hours, 0 to 23.")
-  (case TimeHours12 "hours12, 1 to 12: 12 for midnight's and noon's hour.")
-  (case TimeMinutes "minutes.")
-  (case TimeSeconds "seconds.")
-  (case TimeFraction "fraction: bare, ISO 8601's, point included; (fraction n), n digits.")
-  (case TimeAmPm "am-pm, the names table's word for the morning or the afternoon.")
+  (case TimeOf "A field of a time.")
   (case TimeText "A string, written as it stands.")
   (case TimeChar "A character, written as it stands.")
-  (see time->text text->time))
+  (see time->text text->time TimeField))
+
+(:doc TimeField
+  (summary "A field of a time: a number or am-pm.")
+  (case TimeHours "(hours n), 0 to 23.")
+  (case TimeHours12 "(hours12 n), 1 to 12: 12 for midnight's and noon's hour.")
+  (case TimeMinutes "(minutes n).")
+  (case TimeSeconds "(seconds n).")
+  (case TimeFraction "(fraction n), n digits of the second's fraction. (fraction) is ISO 8601's, point included.")
+  (case TimeAmPm "am-pm, the names table's word for the morning or the afternoon.")
+  (case TimeBare "A number without a width: hours, hours12, minutes, seconds or fraction.")
+  (see TimePart TimeBareNumber))
+
+(:doc TimeBareNumber
+  (summary "The numbers of a time without a width: hours, minutes and the others.")
+  (case BareHours "hours.")
+  (case BareHours12 "hours12.")
+  (case BareMinutes "minutes.")
+  (case BareSeconds "seconds.")
+  (case BareFraction "fraction: ISO 8601's, point included.")
+  (see TimeField)
+  (reference """
+    A bare number is the same as the @code{TimeField} with an empty width
+    list: @code{hours} is @code{(hours)}.
+    """))
 
 (:doc DateTimePart
   (summary "A part of a datetime's format: the fields of a date's and of a time's.")
-  (case DateTimeDate "A field of a DatePart.")
-  (case DateTimeTime "A field of a TimePart.")
+  (case DateTimeOf "A field of a date or of a time.")
   (case DateTimeText "A string, written as it stands.")
   (case DateTimeChar "A character, written as it stands.")
-  (see datetime->text text->datetime))
+  (see datetime->text text->datetime DateTimeField))
+
+(:doc DateTimeField
+  (summary "A field of a date or of a time.")
+  (case DateTimeDate "A field of a date.")
+  (case DateTimeTime "A field of a time.")
+  (see DateTimePart MomentPart InstantPart))
 
 (:doc MomentPart
   (summary "A part of a moment's format: a datetime's fields, offset, zone, unix and unix-ms.")
-  (case MomentDateTime "A field of a DateTimePart, of the local time.")
+  (case MomentDateTime "A field of a date or of a time, of the local time.")
   (case MomentOffset "offset, as ISO 8601 writes it: +01:00.")
   (case MomentZone "zone, the zone's id: Europe/Stockholm.")
   (case MomentUnix "unix, the Unix time in seconds, rounded toward the past.")
@@ -1605,7 +1663,7 @@
 
 (:doc InstantPart
   (summary "A part of an instant's format: a datetime's fields in UTC, offset, unix and unix-ms.")
-  (case InstantDateTime "A field of a DateTimePart, in UTC.")
+  (case InstantDateTime "A field of a date or of a time, in UTC.")
   (case InstantOffset "offset, which for an instant is Z.")
   (case InstantUnix "unix, the Unix time in seconds, rounded toward the past.")
   (case InstantUnixMs "unix-ms, the Unix time in milliseconds, rounded toward the past.")
@@ -1666,8 +1724,10 @@
     with zeros: @code{(month 2)} is @code{03}. Without one, a number takes
     the digits it needs, and @code{day} and @code{(day)} are the same.
 
-    There is one format union and one writer per type, so the writers and
-    their formats are:
+    The formats are productions of the grammar @code{DatePart} (see
+    @code{def/grammar}). The compiler reads a format where you write it.
+    There is one format and one writer per type, so the writers and their
+    formats are:
 
     @read-table{
     | Writer                  | Format              | Fields |
@@ -1698,12 +1758,12 @@
         @code{(def (: stamp (List DateTimePart)) '(...))}.}
     }
 
-    The mistakes are compile errors, with the list of the fields there are:
+    The mistakes are compile errors where the format is written:
 
     @codeblock[#:lang "bjolang"]|{
-    (date->text d '((year 4) (hours 2)))        ;; `hours` is not a tag of the union DatePart …
-    (datetime->text dt '((hours 2) offset))     ;; `offset` is not a tag of the union DateTimePart …
-    (date->text d '((roman (year 4))))          ;; RomanYear takes no argument …
+    (date->text d '((year 4) (hours 2)))        ;; DatePart: expected DateField, a string or a char …
+    (datetime->text dt '((hours 2) offset))     ;; DateTimePart: expected DateTimeField, … found offset
+    (date->text d '((roman (year 4))))          ;; (roman ...): expected RomanNumber …
     (datetime->text some-moment '(year))        ;; a type error: write (->datetime some-moment)
     }|
 

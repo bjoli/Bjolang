@@ -142,7 +142,10 @@
   iso8601->duration iso8601->date-period iso8601->period
   instant->http-date http-date->instant
   ;; Text of your own
-  DateNumber RomanNumber DatePart TimePart DateTimePart MomentPart InstantPart DateNames
+  ;; DatePart is a grammar. Its export also exports DateField, DateNumber,
+  ;; DateBareNumber, RomanNumber, TimePart, TimeField, TimeBareNumber,
+  ;; DateTimePart, DateTimeField, MomentPart and InstantPart.
+  DatePart DateNames
   date->text time->text datetime->text moment->text instant->text
   text->date text->time text->datetime text->instant text->moment text->moment/resolver
   english-names swedish-names current-date-names)
@@ -1716,73 +1719,121 @@
 ;; Text of your own
 ;; ===========================================================================
 ;;
-;; A format is a quoted list, which elaborates into the parts below: a tag
-;; names a field, and a string or a character is written as it is.
+;; A format is a quoted list. The grammar `DatePart` reads it into the parts
+;; below. A keyword names a field, and a string or a character is written as
+;; it is.
 ;;
 ;;   (date->text d '((year 4) "-" (month 2) "-" (day 2)))      ;; 2026-03-05
 ;;
-;; A number after a field's name is a width, filled with zeros. There is one
-;; union per kind of value, so a format that asks a date for its hours is a
-;; type error where it is written.
+;; A number after the name of a field is a width, filled with zeros. A bare
+;; name, such as `year`, has no width. There is one production for each kind
+;; of value, so a format that asks a date for its hours is a compile error
+;; where it is written.
+;;
+;; The text and the characters are in the parts only: `DatePart`,
+;; `TimePart`, `DateTimePart`, `MomentPart` and `InstantPart`. The fields are
+;; in `DateField`, `TimeField` and `DateTimeField`, which have no text. Thus
+;; the grammar knows the part that a string goes in.
+(def/grammar DatePart
+  (DatePart (:or (: DateOf DateField) (: DateText string) (: DateChar char)))
 
-;; The numbers of a date.
-(type (: DateNumber (Union (: NumYear (List int) #:tag year #:rest)
-                           (: NumMonth (List int) #:tag month #:rest)
-                           (: NumDay (List int) #:tag day #:rest)
-                           (: NumWeekday (List int) #:tag weekday #:rest)
-                           (: NumYday (List int) #:tag yday #:rest)
-                           (: NumWeek (List int) #:tag week #:rest)
-                           (: NumWeekYear (List int) #:tag week-year #:rest))))
+  ;; A date's numbers, its Roman numerals and its names, from a DateNames.
+  (DateField (:or (: DateNum DateNumber)
+                  (: DateBare DateBareNumber)
+                  (: DateRoman (roman RomanNumber))
+                  (: MonthName 'month-name)
+                  (: MonthAbbr 'month-abbr)
+                  (: WeekdayName 'weekday-name)
+                  (: WeekdayAbbr 'weekday-abbr)))
 
-;; What (roman ...) writes. No width, as a numeral has no zeros to fill with.
-(type (: RomanNumber (Union (: RomanYear #:tag year) (: RomanMonth #:tag month) (: RomanDay #:tag day))))
+  ;; The numbers of a date, with a width: (year 4). A width list that is
+  ;; empty, (year), is the same as a bare year.
+  (DateNumber (:or (: NumYear (year int ...))
+                   (: NumMonth (month int ...))
+                   (: NumDay (day int ...))
+                   (: NumWeekday (weekday int ...))
+                   (: NumYday (yday int ...))
+                   (: NumWeek (week int ...))
+                   (: NumWeekYear (week-year int ...))))
 
-;; A date's numbers, through DateNumber's tags, and its names, from a
-;; DateNames.
-(type (: DatePart (Union (: DateNum DateNumber)
-                         (: DateRoman RomanNumber #:tag roman)
-                         (: MonthName #:tag month-name)
-                         (: MonthAbbr #:tag month-abbr)
-                         (: WeekdayName #:tag weekday-name)
-                         (: WeekdayAbbr #:tag weekday-abbr)
-                         (: DateText string)
-                         (: DateChar char))))
+  ;; The numbers of a date without a width: year.
+  (DateBareNumber (:or (: BareYear 'year)
+                       (: BareMonth 'month)
+                       (: BareDay 'day)
+                       (: BareWeekday 'weekday)
+                       (: BareYday 'yday)
+                       (: BareWeek 'week)
+                       (: BareWeekYear 'week-year)))
 
-;; (fraction n) is n digits of the second's fraction, cut rather than rounded,
-;; with zeros past the seventh. A bare fraction is ISO 8601's, point included:
-;; .5, and nothing for a whole second.
-(type (: TimePart (Union (: TimeHours (List int) #:tag hours #:rest)
-                         (: TimeHours12 (List int) #:tag hours12 #:rest)
-                         (: TimeMinutes (List int) #:tag minutes #:rest)
-                         (: TimeSeconds (List int) #:tag seconds #:rest)
-                         (: TimeFraction (List int) #:tag fraction #:rest)
-                         (: TimeAmPm #:tag am-pm)
-                         (: TimeText string)
-                         (: TimeChar char))))
+  ;; What (roman ...) writes. No width, as a numeral has no zeros to fill
+  ;; with.
+  (RomanNumber (:or (: RomanYear 'year) (: RomanMonth 'month) (: RomanDay 'day)))
 
-;; The tags of both, found through the two unions.
-(type (: DateTimePart (Union (: DateTimeDate DatePart)
-                             (: DateTimeTime TimePart)
-                             (: DateTimeText string)
-                             (: DateTimeChar char))))
+  (TimePart (:or (: TimeOf TimeField) (: TimeText string) (: TimeChar char)))
 
-;; A date and a time, the offset as ISO 8601 writes it (+02:00), the zone's
-;; id, and the Unix time in seconds or milliseconds, rounded toward the past.
-(type (: MomentPart (Union (: MomentDateTime DateTimePart)
-                           (: MomentOffset #:tag offset)
-                           (: MomentZone #:tag zone)
-                           (: MomentUnix #:tag unix)
-                           (: MomentUnixMs #:tag unix-ms)
-                           (: MomentText string)
-                           (: MomentChar char))))
+  ;; (fraction n) is n digits of the second's fraction, cut, not rounded,
+  ;; with zeros past the seventh. A bare fraction is ISO 8601's, point
+  ;; included: .5, and nothing for a whole second.
+  (TimeField (:or (: TimeHours (hours int ...))
+                  (: TimeHours12 (hours12 int ...))
+                  (: TimeMinutes (minutes int ...))
+                  (: TimeSeconds (seconds int ...))
+                  (: TimeFraction (fraction int ...))
+                  (: TimeAmPm 'am-pm)
+                  (: TimeBare TimeBareNumber)))
 
-;; A date and a time in UTC, whose offset is written Z, and the Unix time.
-(type (: InstantPart (Union (: InstantDateTime DateTimePart)
-                            (: InstantOffset #:tag offset)
-                            (: InstantUnix #:tag unix)
-                            (: InstantUnixMs #:tag unix-ms)
-                            (: InstantText string)
-                            (: InstantChar char))))
+  ;; The numbers of a time without a width: hours.
+  (TimeBareNumber (:or (: BareHours 'hours)
+                       (: BareHours12 'hours12)
+                       (: BareMinutes 'minutes)
+                       (: BareSeconds 'seconds)
+                       (: BareFraction 'fraction)))
+
+  (DateTimePart (:or (: DateTimeOf DateTimeField) (: DateTimeText string) (: DateTimeChar char)))
+
+  ;; The fields of a date and of a time.
+  (DateTimeField (:or (: DateTimeDate DateField) (: DateTimeTime TimeField)))
+
+  ;; A date and a time, the offset as ISO 8601 writes it (+02:00), the zone's
+  ;; id, and the Unix time in seconds or milliseconds, rounded toward the
+  ;; past.
+  (MomentPart (:or (: MomentDateTime DateTimeField)
+                   (: MomentOffset 'offset)
+                   (: MomentZone 'zone)
+                   (: MomentUnix 'unix)
+                   (: MomentUnixMs 'unix-ms)
+                   (: MomentText string)
+                   (: MomentChar char)))
+
+  ;; A date and a time in UTC, whose offset is written Z, and the Unix time.
+  (InstantPart (:or (: InstantDateTime DateTimeField)
+                    (: InstantOffset 'offset)
+                    (: InstantUnix 'unix)
+                    (: InstantUnixMs 'unix-ms)
+                    (: InstantText string)
+                    (: InstantChar char))))
+
+;; A bare number of a date is the number without a width.
+(: bare-date-number (-> DateBareNumber DateNumber))
+(defun (bare-date-number b)
+  (match b
+    (BareYear (NumYear Nil))
+    (BareMonth (NumMonth Nil))
+    (BareDay (NumDay Nil))
+    (BareWeekday (NumWeekday Nil))
+    (BareYday (NumYday Nil))
+    (BareWeek (NumWeek Nil))
+    (BareWeekYear (NumWeekYear Nil))))
+
+;; A bare number of a time is the number without a width.
+(: bare-time-field (-> TimeBareNumber TimeField))
+(defun (bare-time-field b)
+  (match b
+    (BareHours (TimeHours Nil))
+    (BareHours12 (TimeHours12 Nil))
+    (BareMinutes (TimeMinutes Nil))
+    (BareSeconds (TimeSeconds Nil))
+    (BareFraction (TimeFraction Nil))))
 
 ;; Twelve months from January and seven weekdays from Monday, and what am-pm
 ;; writes. A table of other lengths raises when a name is taken from it.
@@ -1881,10 +1932,11 @@
     ((NumWeek w) (add-padded! sb (long-of (->week d)) (part-width w "week")))
     ((NumWeekYear w) (add-padded! sb (long-of (->week-year d)) (part-width w "week-year")))))
 
-(: add-date-part! (-> TextBuilder Date DateNames DatePart void))
-(defun (add-date-part! sb d names p)
+(: add-date-field! (-> TextBuilder Date DateNames DateField void))
+(defun (add-date-field! sb d names p)
   (match p
     ((DateNum n) (add-date-number! sb d n))
+    ((DateBare b) (add-date-number! sb d (bare-date-number b)))
     ((DateRoman RomanYear) (add-roman! sb (->year d)))
     ((DateRoman RomanMonth) (add-roman! sb (->month d)))
     ((DateRoman RomanDay) (add-roman! sb (->day d)))
@@ -1892,13 +1944,18 @@
     (MonthAbbr (add-text! sb (name-at (record-ref names months-short) 12 (->month d) "months")))
     (WeekdayName (add-text! sb (name-at (record-ref names weekdays) 7 (->weekday d) "weekdays")))
     (WeekdayAbbr
-     (add-text! sb (name-at (record-ref names weekdays-short) 7 (->weekday d) "weekdays")))
+     (add-text! sb (name-at (record-ref names weekdays-short) 7 (->weekday d) "weekdays")))))
+
+(: add-date-part! (-> TextBuilder Date DateNames DatePart void))
+(defun (add-date-part! sb d names p)
+  (match p
+    ((DateOf f) (add-date-field! sb d names f))
     ((DateText s) (add-text! sb s))
     ((DateChar c) (add-text! sb (char->string c)))))
 
 ;; t is the ticks since midnight.
-(: add-time-part! (-> TextBuilder long DateNames TimePart void))
-(defun (add-time-part! sb t names p)
+(: add-time-field! (-> TextBuilder long DateNames TimeField void))
+(defun (add-time-field! sb t names p)
   (def h (/ t ticks-per-hour))
   (match p
     ((TimeHours w) (add-padded! sb h (part-width w "hours")))
@@ -1910,15 +1967,28 @@
          (add-fraction! sb (% t ticks-per-second))
          (add-fraction-digits! sb (% t ticks-per-second) (part-width w "fraction"))))
     (TimeAmPm (add-text! sb (if (< h 12L) (record-ref names am) (record-ref names pm))))
+    ((TimeBare b) (add-time-field! sb t names (bare-time-field b)))))
+
+;; t is the ticks since midnight.
+(: add-time-part! (-> TextBuilder long DateNames TimePart void))
+(defun (add-time-part! sb t names p)
+  (match p
+    ((TimeOf f) (add-time-field! sb t names f))
     ((TimeText s) (add-text! sb s))
     ((TimeChar c) (add-text! sb (char->string c)))))
+
+;; t is local ticks.
+(: add-datetime-field! (-> TextBuilder long DateNames DateTimeField void))
+(defun (add-datetime-field! sb t names p)
+  (match p
+    ((DateTimeDate df) (add-date-field! sb (day-number->date (/ t ticks-per-day)) names df))
+    ((DateTimeTime tf) (add-time-field! sb (% t ticks-per-day) names tf))))
 
 ;; t is local ticks.
 (: add-datetime-part! (-> TextBuilder long DateNames DateTimePart void))
 (defun (add-datetime-part! sb t names p)
   (match p
-    ((DateTimeDate dp) (add-date-part! sb (day-number->date (/ t ticks-per-day)) names dp))
-    ((DateTimeTime tp) (add-time-part! sb (% t ticks-per-day) names tp))
+    ((DateTimeOf f) (add-datetime-field! sb t names f))
     ((DateTimeText s) (add-text! sb s))
     ((DateTimeChar c) (add-text! sb (char->string c)))))
 
@@ -1931,7 +2001,7 @@
 (: add-moment-part! (-> TextBuilder Moment DateNames MomentPart void))
 (defun (add-moment-part! sb m names p)
   (match p
-    ((MomentDateTime dtp) (add-datetime-part! sb (moment-local-ticks m) names dtp))
+    ((MomentDateTime dtf) (add-datetime-field! sb (moment-local-ticks m) names dtf))
     (MomentOffset (add-offset! sb (moment-offset-ticks m)))
     (MomentZone (add-text! sb (timezone-id (struct-ref m zone))))
     (MomentUnix
@@ -1944,7 +2014,7 @@
 (: add-instant-part! (-> TextBuilder Instant DateNames InstantPart void))
 (defun (add-instant-part! sb i names p)
   (match p
-    ((InstantDateTime dtp) (add-datetime-part! sb (instant-ticks i) names dtp))
+    ((InstantDateTime dtf) (add-datetime-field! sb (instant-ticks i) names dtf))
     (InstantOffset (add-text! sb "Z"))
     (InstantUnix (add-signed! sb (instant->unix-seconds i)))
     (InstantUnixMs (add-signed! sb (instant->unix-milliseconds i)))
@@ -2051,12 +2121,11 @@
     ((NumWeek w) (number-field FWeek 2 (part-width w "week")))
     ((NumWeekYear w) (number-field FWeekYear 4 (part-width w "week-year")))))
 
-(: date-part-field (-> DatePart Field))
-(defun (date-part-field p)
+(: date-field-field (-> DateField Field))
+(defun (date-field-field p)
   (match p
-    ((DateText s) (text-field s))
-    ((DateChar c) (char-field c))
     ((DateNum n) (date-number-field n))
+    ((DateBare b) (date-number-field (bare-date-number b)))
     ((DateRoman RomanYear) (field FRomanYear 0))
     ((DateRoman RomanMonth) (field FRomanMonth 0))
     ((DateRoman RomanDay) (field FRomanDay 0))
@@ -2065,33 +2134,51 @@
     (WeekdayName (field FWeekdayName 0))
     (WeekdayAbbr (field FWeekdayAbbr 0))))
 
-(: time-part-field (-> TimePart Field))
-(defun (time-part-field p)
+(: date-part-field (-> DatePart Field))
+(defun (date-part-field p)
   (match p
-    ((TimeText s) (text-field s))
-    ((TimeChar c) (char-field c))
+    ((DateText s) (text-field s))
+    ((DateChar c) (char-field c))
+    ((DateOf f) (date-field-field f))))
+
+(: time-field-field (-> TimeField Field))
+(defun (time-field-field p)
+  (match p
     ((TimeHours w) (number-field FHours 2 (part-width w "hours")))
     ((TimeHours12 w) (number-field FHours12 2 (part-width w "hours12")))
     ((TimeMinutes w) (number-field FMinutes 2 (part-width w "minutes")))
     ((TimeSeconds w) (number-field FSeconds 2 (part-width w "seconds")))
     ((TimeFraction w)
      (field FFraction (if (list-empty? w) -1 (max (part-width w "fraction") 0))))
-    (TimeAmPm (field FAmPm 0))))
+    (TimeAmPm (field FAmPm 0))
+    ((TimeBare b) (time-field-field (bare-time-field b)))))
+
+(: time-part-field (-> TimePart Field))
+(defun (time-part-field p)
+  (match p
+    ((TimeText s) (text-field s))
+    ((TimeChar c) (char-field c))
+    ((TimeOf f) (time-field-field f))))
+
+(: datetime-field-field (-> DateTimeField Field))
+(defun (datetime-field-field p)
+  (match p
+    ((DateTimeDate df) (date-field-field df))
+    ((DateTimeTime tf) (time-field-field tf))))
 
 (: datetime-part-field (-> DateTimePart Field))
 (defun (datetime-part-field p)
   (match p
     ((DateTimeText s) (text-field s))
     ((DateTimeChar c) (char-field c))
-    ((DateTimeDate dp) (date-part-field dp))
-    ((DateTimeTime tp) (time-part-field tp))))
+    ((DateTimeOf f) (datetime-field-field f))))
 
 (: moment-part-field (-> MomentPart Field))
 (defun (moment-part-field p)
   (match p
     ((MomentText s) (text-field s))
     ((MomentChar c) (char-field c))
-    ((MomentDateTime dtp) (datetime-part-field dtp))
+    ((MomentDateTime dtf) (datetime-field-field dtf))
     (MomentOffset (field FOffset 0))
     (MomentZone (field FZone 0))
     (MomentUnix (field FUnix 0))
@@ -2102,7 +2189,7 @@
   (match p
     ((InstantText s) (text-field s))
     ((InstantChar c) (char-field c))
-    ((InstantDateTime dtp) (datetime-part-field dtp))
+    ((InstantDateTime dtf) (datetime-field-field dtf))
     (InstantOffset (field FOffset 0))
     (InstantUnix (field FUnix 0))
     (InstantUnixMs (field FUnixMs 0))))
