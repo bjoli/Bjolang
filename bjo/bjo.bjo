@@ -649,27 +649,34 @@
 ;; names contain one of them. A test file prints its failures and one line,
 ;; so this adds nothing for a single file; for several, one line at the end
 ;; says how many failed. Answers 1 if any file failed to build or to pass.
-(: cmd-test #:sync (-> (List string) (List string) bool bool bool int))
-(defun (cmd-test files filters debug? force? locked?)
+;;
+;; `named?` says that the files were named on the command line. A file found
+;; under tests/ that has no main is a module that the tests import, such as a
+;; fixture, and is not run. A named file without a main is an error.
+(: cmd-test #:sync (-> (List string) bool (List string) bool bool bool int))
+(defun (cmd-test files named? filters debug? force? locked?)
   (def statuses
     (loop (:for file files)
           (:let status
                 (match (roots-for-file file locked?)
-                  ((Err why) (fail why))
+                  ((Err why) (Some (fail why)))
                   ((Ok roots)
                    (match (ensure-built file debug? #f force? roots)
-                     ((Err status) status)
+                     ((Err status) (Some status))
                      ((Ok (Tuple rec _)) #:when (string-ends-with? (record-ref rec output) ".dll")
-                      (fail #"bjo test: ${file} has no main. End a test file with (run-tests)."))
+                      (if named?
+                          (Some (fail #"bjo test: ${file} has no main. End a test file with (run-tests)."))
+                          None))
                      ((Ok (Tuple rec _))
-                      (exec "dotnet" (list->vec (Cons (record-ref rec output) filters))))))))
-          (:do (unless (= status 0) (println #"bjo test: ${file} failed.")))
-          (:acc out (listing status))))
+                      (Some (exec "dotnet" (list->vec (Cons (record-ref rec output) filters)))))))))
+          (:when-let (Some code) status)
+          (:do (unless (= code 0) (println #"bjo test: ${file} failed.")))
+          (:acc out (listing code))))
   (def failed (length (list-filter #(not (= & 0)) statuses)))
-  (when (> (length files) 1)
+  (when (> (length statuses) 1)
     (println (if (= failed 0)
-                 #"bjo test: ${(length files)} files, all passed."
-                 #"bjo test: ${failed} of ${(length files)} files failed.")))
+                 #"bjo test: ${(length statuses)} files, all passed."
+                 #"bjo test: ${failed} of ${(length statuses)} files failed.")))
   (if (= failed 0) 0 1))
 
 ;; `bjo bench` is `bench.bjo`'s. What it needs from here is lent to it: a
@@ -1175,7 +1182,7 @@
        (def (Ok files) found :leave ((Err why) (fail why)))
        (when (empty? files)
          (ret (fail "bjo test: there are no test files. Put them under tests/, or name them.")))
-       (cmd-test files filters debug? force? locked?)))
+       (cmd-test files (not (empty? named)) filters debug? force? locked?)))
 
 ;; The benchmark files named, or every one under the project's benches/.
     ;; Always a Release build: a Debug one measures code the JIT did not
