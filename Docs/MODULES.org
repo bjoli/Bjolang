@@ -61,8 +61,8 @@ twice][Importing one module twice]]).
 
 | Modifier                        | Applies to                                                    |
 |---------------------------------+---------------------------------------------------------------|
-| ~(only m a b ...)~              | defs and macros: keeps these and drops the rest               |
-| ~(except m a b ...)~            | defs and macros: drops these and keeps the rest               |
+| ~(only m a b ...)~              | defs, macros and types: keeps these and drops the rest        |
+| ~(except m a b ...)~            | defs, macros and types: drops these and keeps the rest        |
 | ~(prefix m "s")~                | everything but impls                                          |
 | ~(postfix m "s")~               | everything but impls                                          |
 | ~(prefix-defs m "s")~           | defs and macros                                               |
@@ -73,14 +73,31 @@ twice][Importing one module twice]]).
 
 *** What a modifier may and may not touch
 
-*Whatever types a module exports always arrive.* An imported signature is source
-text that has to resolve the types it mentions, so there is no view of a module
-in which its own signatures do not typecheck. ~only~ and ~except~ therefore
-filter defs and macros only, and naming a type in one is an error rather than a
-silent no-op. What decides which types there are to arrive is the exporting
-module's ~(export ...)~ (see [[*Exporting a type][Exporting a type]]) and its
-~(re-export ...)~ (see [[*Re-exporting a type][Re-exporting a type]]) — a
-modifier narrows the *spelling* of a surface, never the surface.
+*~only~ and ~except~ filter types as they filter defs.* ~(only (text xml)
+xml-element Node)~ gives ~xml-element~ and the type ~Node~ with its
+constructors, and no other type of ~(text xml)~. ~(except m Banana)~ leaves out
+~Banana~ and its constructors. A constructor follows its type, so it is not
+named on its own: ~(only m MkBanana)~ is refused, and names the type to write.
+
+What is left out is the *name*, not the type. An imported signature names a
+type by its key, and so does a body the module published, so both work whatever
+an import calls the type or does not call it. A function of ~m~ that returns a
+~Banana~ can be called, its result held and passed to another function of ~m~,
+with ~Banana~ left out. What the program cannot do is write ~Banana~ itself; the
+refusal says which import left it out:
+
+#+BEGIN_SRC text
+Type Error at app.bjo:10: there is no type named 'Figure'. It is a type of same_a, and the (only ...) or (except ...) on every import of same_a here leaves it out. Name it in the (only ...) list, or take it out of the (except ...).
+#+END_SRC
+
+It used to be that every type arrived: an imported signature was source text
+with bare type names in it. A type nobody asked for then took part in the
+contest for its name, so ~(only (text xml) xml-element)~ next to another module
+with a ~Document~ made ~Document~ ambiguous.
+
+What decides which types there are to arrive at all is the exporting module's
+~(export ...)~ (see [[*Exporting a type][Exporting a type]]) and its
+~(re-export ...)~ (see [[*Re-exporting a type][Re-exporting a type]]).
 
 A re-exported type is in that surface like any other, and the ~-types~ variants
 reach it: a prefix falls on the spelling this module publishes, and what it
@@ -97,7 +114,8 @@ to rename. It travels with its module unconditionally, and a trait method
 called by its bare — or prefixed — name still finds it.
 
 *A constructor follows its type.* It is renamed by the ~-types~ variants, never
-by the ~-defs~ ones, and ~only~ and ~except~ cannot name it. It is also
+by the ~-defs~ ones, and it arrives when ~only~ or ~except~ lets its type
+arrive. It is also
 published with its type and withheld with it: exporting a union exports its
 cases, and marking one ~#:opaque~ keeps them to the declaring module's code.
 
@@ -657,9 +675,10 @@ Three rules, in the order they are decided:
    what the name stands for, not on who offers it: a facade and the module it
    re-exports offer one thing, and so do two imports of one module.
 
-   For a *type* or a constructor, ~except~ cannot help, because a type always
-   arrives with its module. ~prefix-types~ gives one of them a name of its own
-   (see [[*What ~prefix-types~ is for][What ~prefix-types~ is for]]).
+   For a *type* or a constructor, leave the type out of one import with
+   ~except~, or name only what is used with ~only~, or give one a name of its
+   own with ~prefix-types~ (see [[*What ~prefix-types~ is for][What
+   ~prefix-types~ is for]]).
 3. A spelling a *modifier or an alias produced* may not collide with anything —
    with another such spelling, or with a name the module defines for itself. It
    is a compile error naming both sources.

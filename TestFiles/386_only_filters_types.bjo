@@ -1,0 +1,27 @@
+;; `only` and `except` filter types, as they filter defs. A type arrives under
+;; its bare name when the import names it in `only`, or does not name it in
+;; `except`, and its constructors arrive with it.
+;;
+;; An imported signature and a published body name a type by key, so a type
+;; that is left out still works: `make-pt` returns a `Figure` and `area` takes
+;; one, and the value passes between them. What is left out is the bare name,
+;; and with it the clash: same_b's `Figure` and `Pt` do not arrive here, so
+;; same_a's are not ambiguous.
+
+(import (std prelude))
+(import (only "inc/same_a.bjo" make-pt area Figure))
+(import (only "inc/same_b.bjo" helper))
+(import (except "inc/banana_a.bjo" Banana))
+
+(: unwrap (-> Figure int))
+(defun (unwrap f)
+  (match f
+    ((Pt n) n)))
+
+(defun (main)
+  (cond
+    ((not (= (unwrap (Pt 3)) 3)) (println "a listed type and its constructor") 1)
+    ((not (= (area (make-pt 4)) 4)) (println "a listed function over it") 1)
+    ((not (= (helper 1) 10)) (println "same_b's helper, without its types") 1)
+    ((not (= (peel-a (make-a 5)) 5)) (println "a type left out by except, through functions") 1)
+    (else 0)))

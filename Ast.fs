@@ -445,9 +445,9 @@ type ImportPath =
 /// `(prefix (except (std strings) trim) "s/")` drops `trim` and then prefixes
 /// what is left.
 type ImportModifier =
-    /// Defs and macros only. Types, constructors, traits and impls always
-    /// arrive, because an imported signature is source text that has to
-    /// resolve the types it mentions.
+    /// Defs, macros and types; a type brings its constructors. Traits and
+    /// impls always arrive. A type left out loses its bare name only: an
+    /// imported signature and a published body name a type by key.
     | Only of string list
     | Except of string list
     /// Everything but impls: defs, macros, types, constructors, traits and

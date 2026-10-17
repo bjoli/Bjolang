@@ -412,6 +412,13 @@ let internal instantiateRecord
 
     instantiatedRecordType, expectedFields, expectedFieldsInstantiated
 
+/// What a refusal of an unknown constructor in a pattern adds: the spelling an
+/// import gives it, or the `only` or `except` that left it out.
+let private patternNote (env: Env) (r: Range) (name: string) : string =
+    match hiddenSpellingNote env.Registry name with
+    | "" -> Diagnostics.withheldNote r.Module name
+    | spelled -> spelled
+
 /// Checks a pattern against the type of the value it will meet, answering the
 /// typed pattern and what it binds.
 ///
@@ -766,7 +773,7 @@ let rec checkPattern
             | Some b -> b
             | None ->
                 failwithf
-                    $"Pattern Error: Unknown constructor '%s{name}' at %s{Lexer.formatPos r}%s{hiddenSpellingNote env.Registry name}."
+                    $"Pattern Error: Unknown constructor '%s{name}' at %s{Lexer.formatPos r}%s{patternNote env r name}."
 
         let consType, _, _ = instantiate env.Registry binding.Scheme
 

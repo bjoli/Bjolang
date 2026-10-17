@@ -513,7 +513,22 @@ module Diagnostics =
                     | ValueName when not arrivesWithModule ->
                         $"Import it from one of them only, with (except ... %s{name}) on the other, or give one a name of its own with (rename ...) or (prefix ...)."
                     | _ ->
-                        "Give one of them a name of its own with (prefix-types ...): a type and its constructors always arrive with their module, so (except ...) cannot leave them out."
+                        "Leave the type out of one import with (except ...), name only what is used with (only ...), or give one a name of its own with (prefix-types ...). A constructor goes with its type."
 
                 failwithf
                     $"Ambiguous name at %s{Lexer.formatPos r}: '%s{name}' is imported from %s{modules}, and they are two different things. %s{advice}"
+
+    /// For each module being compiled, the bare type and constructor names that
+    /// its imports offer and its `only` and `except` leave out: the module that
+    /// offers each, and for a constructor the name of its type.
+    let mutable withheldNames: Map<string, Map<string, string * string option>> = Map.empty
+
+    /// What a refusal of an unknown type or constructor adds when an `only` or
+    /// an `except` left the name out: `. It is a type of xml, ...`, or `""`.
+    let withheldNote (moduleKey: string) (name: string) : string =
+        match Map.tryFind moduleKey withheldNames |> Option.bind (Map.tryFind name) with
+        | None -> ""
+        | Some(provider, None) ->
+            $". It is a type of %s{provider}, and the (only ...) or (except ...) on every import of %s{provider} here leaves it out. Name it in the (only ...) list, or take it out of the (except ...)"
+        | Some(provider, Some typeName) ->
+            $". It is a constructor of the type '%s{typeName}' of %s{provider}, and the (only ...) or (except ...) on every import of %s{provider} here leaves that type out. Name '%s{typeName}' in the (only ...) list, or take it out of the (except ...)"

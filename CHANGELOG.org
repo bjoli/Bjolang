@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~only~ and ~except~ filter types
+
+- ~(only m f Node)~ gives the type ~Node~ and its constructors under their
+  bare names, and no other type of ~m~; ~(except m Banana)~ leaves ~Banana~
+  and its constructors out. A constructor follows its type, and naming one on
+  its own is refused with the name of its type. Traits are not filtered.
+- What is left out is the name, not the type: an imported signature and a
+  published body name a type by key, so functions over a type that was left
+  out still work, and their values pass between them.
+- A type nobody named no longer takes part in the contest for its name. With
+  ~(only (text xml) xml-element)~, xml's ~Document~ does not arrive, so it is
+  not ambiguous beside another module's ~Document~.
+- A name that was left out is refused with where it went: "there is no type
+  named 'Figure'. It is a type of same_a, and the (only ...) or (except ...)
+  on every import of same_a here leaves it out. Name it in the (only ...)
+  list …", for a type, a constructor in a value and one in a pattern.
+- Code that writes a type of a module it imports with ~(only ...)~ has to
+  name the type there. In the standard library, ~(std uuid)~ did.
+- Tests: ~386_only_filters_types.bjo~, ~errors/only_leaves_type_out.bjo~,
+  ~errors/except_leaves_constructor_out.bjo~,
+  ~errors/only_leaves_pattern_out.bjo~, ~errors/only_names_a_constructor.bjo~,
+  and ~errors/import_only_trait.bjo~ (it replaces ~import_only_type.bjo~,
+  which asserted the old refusal).
+
 * Using a name two imports offer as different things is an error
 
 - Two imports other than the prelude that offer one name as two different

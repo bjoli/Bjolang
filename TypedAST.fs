@@ -2679,7 +2679,7 @@ let representationVisible (registry: TraitRegistry) (moduleKey: string) (typeKey
 /// or `""` when no import gives `name` a spelling of its own.
 ///
 /// A modifier that spells an import's types its own way replaces their bare
-/// names (`Pipeline.keepsBareTypes`), so a program that wrote the bare name is
+/// names (`Pipeline.keptTypes`), so a program that wrote the bare name is
 /// told the one it has.
 let hiddenSpellingNote (registry: TraitRegistry) (name: string) : string =
     let spellings =

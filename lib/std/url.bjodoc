@@ -36,7 +36,7 @@
     | @code{'(url https "example.com" ...)}  | a URL with a scheme and a host            |
     | @code{'(path "a" ,b ...)}              | a path on this site: @code{/a/b}          |
     | @code{(port 8080)}                     | in @code{url}: the port                   |
-    | @code{(user "ada")}                    | in @code{url}: the user before @code{@}   |
+    | @code{(user "ada")}                    | in @code{url}: the user before @code{@"@"}   |
     | @code{(path seg ...)}                  | in @code{url}: the path                   |
     | @code{(query (key value) (key) ...)}   | the query; in @code{url} or in @code{path} |
     | @code{(fragment "x")}                  | the fragment; in @code{url} or in @code{path} |
@@ -46,7 +46,7 @@
     or computed with @code{,}. A computed @code{(Vec string)} is several:
     several segments in a path, or one key with several values in a query,
     @code{tag=a&tag=b}. A computed pair is @code{,(Tuple key value)}, and
-    many pairs are @code{,@(list-map ParamPair pairs)}.
+    many pairs are @code{,@"@"(list-map ParamPair pairs)}.
 
     The compiler checks the tags and their arity where the literal is
     written. @code{(qeury ...)} and @code{(port 1 2)} are type errors.
@@ -96,8 +96,8 @@
     """))
 
 (:doc Authority
-  (summary "The part of a URL after @code{//}: @code{userinfo@host:port}.")
-  (field userinfo "The user info, percent-encoded, without its @code{@}; @code{None} when there is none.")
+  (summary "The part of a URL after @code{//}: the user info, the host and the port.")
+  (field userinfo "The user info, percent-encoded, without the at sign after it; @code{None} when there is none.")
   (field host "The host as written. An IP literal keeps its brackets: @code{[::1]}.")
   (field port "The port; @code{None} when there is none.")
   (see url-authority url-host url-port))
@@ -133,7 +133,7 @@
 (:doc authority-userinfo
   (summary "The user info of an authority, percent-encoded.")
   (arg a "The authority.")
-  (returns "The user info without its @code{@}, or @code{None}."))
+  (returns "The user info without the at sign after it, or @code{None}."))
 
 (:doc authority-host
   (summary "The host of an authority, as written.")
@@ -162,7 +162,7 @@
 (:doc url-absolute?
   (summary "Whether a URL has a scheme.")
   (arg u "The URL.")
-  (returns "@code{#t} for @code{https://h/} and @code{mailto:a@b}; @code{#f} for @code{/a} and @code{//h/a}."))
+  (returns "@code{#t} for @code{https://h/} and @code{urn:isbn:0451450523}; @code{#f} for @code{/a} and @code{//h/a}."))
 
 ;; --- text, both ways -----------------------------------------------------
 
@@ -297,7 +297,7 @@
     """)
   (reference """
     What RFC 3986 lets a segment hold stays as it is: letters, digits,
-    @code{- . _ ~}, @code{! $ & ' ( ) * + , ; =}, @code{:} and @code{@}.
+    @code{- . _ ~}, @code{! $ & ' ( ) * + , ; =}, @code{:} and @code{@"@"}.
     Every other byte of the UTF-8 is @code{%XX}.
     """))
 
@@ -320,7 +320,7 @@
 (:doc encode-userinfo
   (summary "Percent-encodes text as a user name or a password.")
   (arg s "The text.")
-  (returns "The text, with @code{:} and @code{@} encoded."))
+  (returns "The text, with @code{:} and the at sign encoded."))
 
 (:doc encode-form
   (summary "Encodes text as @code{application/x-www-form-urlencoded} writes it.")

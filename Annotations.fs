@@ -71,7 +71,12 @@ let private typeNameKnown (registry: TraitRegistry) (name: string) =
 let private unknownType (registry: TraitRegistry) (r: Range) (name: string) : 'a =
     let shown = Naming.showTypeName name
 
-    match hiddenSpellingNote registry name with
+    let note =
+        match hiddenSpellingNote registry name with
+        | "" -> Diagnostics.withheldNote r.Module name
+        | spelled -> spelled
+
+    match note with
     | "" ->
         let hint =
             match DotNetInterop.tryResolveType ("System." + name) with

@@ -403,6 +403,9 @@ type private ImportSurface =
       /// The same, for the constructors. A record is built by its own name, so
       /// its type name is in here too.
       Constructors: Map<string, string>
+      /// A constructor's key -> its type's key. A constructor follows its
+      /// type, so `(only m Figure)` keeps `Figure`'s cases and no others.
+      TypeOfCase: Map<string, string>
       Traits: Set<string>
       /// Method name -> the trait that declares it.
       TraitMethods: Map<string, string> }
@@ -414,11 +417,20 @@ type private ImportSurface =
 let private surfaceOf
     (moduleName: string)
     (decls: Decl list)
+    (carried: Decl list)
     (macros: ModuleMetadata.MacroEntry list)
     (patternMacros: ModuleMetadata.MacroEntry list)
     (hashMacros: ModuleMetadata.MacroEntry list)
     : ImportSurface =
     let bare = Naming.bareTypeName moduleName
+
+    let rec typeDefsIn (ds: Decl list) =
+        ds
+        |> List.collect (function
+            | DType(tds, _)
+            | DTypeRec(tds, _) -> tds
+            | DModule(_, inner, _) -> typeDefsIn inner
+            | _ -> [])
 
     let typeDefs =
         decls
@@ -426,6 +438,21 @@ let private surfaceOf
             | DType(tds, _)
             | DTypeRec(tds, _) -> tds
             | _ -> [])
+
+    // Over what the module carries too: a re-exported type's declaration is
+    // there, and its cases are offered beside it.
+    let typeOfCase =
+        typeDefsIn (decls @ carried)
+        |> List.collect (fun td ->
+            match td.Kind with
+            | Union cases ->
+                cases
+                |> List.map (function
+                    | SimpleCase(n, _) -> n, td.Name
+                    | DataCase(n, _, _, _) -> n, td.Name)
+            | Record _ -> [ td.Name, td.Name ]
+            | Alias _ -> [])
+        |> Map.ofList
 
     { Defs =
         (decls
@@ -474,6 +501,8 @@ let private surfaceOf
                | _ -> None))
         |> Map.ofList
 
+      TypeOfCase = typeOfCase
+
       Traits =
         decls
         |> List.choose (function
@@ -512,12 +541,29 @@ let private defRenaming
             if form = "rename" then
                 $"(rename ...) applies to defs and macros. Write (prefix-types ...) to rename a module's types, constructors and traits together, or a local (type (: new-name %s{name})) for one of them."
             else
-                "Types, constructors and traits always arrive with their module — an imported signature is source text that has to resolve the types it mentions — so (only ...) and (except ...) filter defs and macros only."
+                "A trait always arrives with its module, so (only ...) and (except ...) do not name one."
 
         let refuse (what: string) : unit =
             failwithf $"Invalid (%s{form} ...) at %s{where}: '%s{name}' %s{what}. %s{advice}"
 
-        if Map.containsKey name surface.Types then refuse "is a type"
+        // A type may be named by `only` and `except`: they decide whether its
+        // bare name arrives (see `keptTypes`). A constructor follows its type
+        // and is not named on its own.
+        let filtersTypes = form = "only" || form = "except"
+
+        if Map.containsKey name surface.Types && filtersTypes then ()
+        elif Map.containsKey name surface.Types then refuse "is a type"
+        elif Map.containsKey name surface.Constructors && filtersTypes then
+            let owner =
+                Map.tryFind surface.Constructors[name] surface.TypeOfCase
+                |> Option.bind (fun key ->
+                    surface.Types |> Map.tryFindKey (fun _ k -> k = key))
+
+            match owner with
+            | Some typeName ->
+                failwithf
+                    $"Invalid (%s{form} ...) at %s{where}: '%s{name}' is a constructor of '%s{typeName}', and a constructor follows its type. Name '%s{typeName}' in (%s{form} ...) to have or leave out the type and all its constructors."
+            | None -> refuse "is a constructor"
         elif Map.containsKey name surface.Constructors then refuse "is a constructor"
         elif Set.contains name surface.Traits then refuse "is a trait"
         else
@@ -636,12 +682,34 @@ let private typeRenaming
         // the reason rule 4 refuses an individual rename and points here.
         @ (surface.TraitMethods |> Map.toList |> List.map (fun (m, _) -> m, m, m, AliasTrait))
 
+    // The type's own name, for a type and for one of its constructors: what
+    // `only` and `except` name.
+    let typeNameOf (key: string) (kind: AliasKind) =
+        let typeKey =
+            match kind with
+            | AliasConstructor -> Map.tryFind key surface.TypeOfCase
+            | _ -> Some key
+
+        typeKey
+        |> Option.bind (fun tk -> surface.Types |> Map.tryFindKey (fun _ k -> k = tk))
+
+    let named (names: string list) (key: string, _: string, _: string, kind: AliasKind) =
+        match kind with
+        | AliasType
+        | AliasConstructor ->
+            match typeNameOf key kind with
+            | Some n -> Some(List.contains n names)
+            | None -> None
+        | _ -> None
+
     let step (visible: (string * string * string * AliasKind) list) (m: ImportModifier) =
         match m with
         | Prefix a
         | PrefixTypes a -> visible |> List.map (fun (key, o, v, k) -> key, o, a + v, k)
         | Postfix a
         | PostfixTypes a -> visible |> List.map (fun (key, o, v, k) -> key, o, v + a, k)
+        | Only names -> visible |> List.filter (fun e -> named names e |> Option.defaultValue true)
+        | Except names -> visible |> List.filter (fun e -> named names e |> Option.map not |> Option.defaultValue true)
         | _ -> visible
 
     List.fold step start modifiers
@@ -651,23 +719,64 @@ let private typeRenaming
     |> List.distinctBy (fun (key, _, visible, _) -> key, visible)
     |> List.map (fun (key, _, visible, kind) -> key, visible, kind)
 
-/// Whether an import edge leaves the types of its module under their own
-/// names: no modifier spells them differently.
-///
-/// A modifier that does spell them differently replaces the name, as a prefix
-/// replaces a def's name. `(prefix-types m "T/")` gives `T/Crate`, and `Crate`
-/// is then no name for it, unless another import of `m` keeps it. A prefix
-/// that left the bare name in place did not keep the type out of the way: the
-/// bare name still took part in "the later import wins", so a later prefixed
-/// import took the bare name from an earlier plain one.
-let private keepsBareTypes (modifiers: ImportModifier list) : bool =
+/// The types one import edge offers, as keys, after its `only` and `except`.
+/// A spelling of a type, bare or prefixed, arrives only for these, and a
+/// constructor only with its type.
+let private offeredTypes (surface: ImportSurface) (modifiers: ImportModifier list) : Set<string> =
+    let keyOf (n: string) = Map.tryFind n surface.Types
+
     modifiers
-    |> List.forall (function
-        | Prefix _
-        | Postfix _
-        | PrefixTypes _
-        | PostfixTypes _ -> false
-        | _ -> true)
+    |> List.fold
+        (fun (kept: Set<string>) m ->
+            match m with
+            | Only names -> names |> List.choose keyOf |> Set.ofList |> Set.intersect kept
+            | Except names -> Set.difference kept (names |> List.choose keyOf |> Set.ofList)
+            | _ -> kept)
+        (surface.Types |> Map.toSeq |> Seq.map snd |> Set.ofSeq)
+
+/// The types, as keys, whose bare names one import edge keeps.
+///
+/// A modifier that spells the types differently replaces the bare name, as a
+/// prefix replaces a def's name. `(prefix-types m "T/")` gives `T/Crate`, and
+/// `Crate` is then no name for it, unless another import of `m` keeps it. A
+/// prefix that left the bare name in place did not keep the type out of the
+/// way: the bare name still took part in "the later import wins", so a later
+/// prefixed import took the bare name from an earlier plain one.
+///
+/// `only` and `except` decide which types there are to keep (`offeredTypes`).
+/// A type a module does not name does not crowd its scope: an imported
+/// signature names a type by key, and so does a published body, so neither
+/// needs the bare name.
+let private keptTypes (surface: ImportSurface) (modifiers: ImportModifier list) : Set<string> =
+    let respelled =
+        modifiers
+        |> List.exists (function
+            | Prefix _
+            | Postfix _
+            | PrefixTypes _
+            | PostfixTypes _ -> true
+            | _ -> false)
+
+    if respelled then Set.empty else offeredTypes surface modifiers
+
+/// The keys whose bare spellings one import edge keeps: the kept types, and
+/// the constructors of those types. A constructor whose type is not known
+/// here goes with the edge's types as a whole.
+let private keptSpellings (surface: ImportSurface) (modifiers: ImportModifier list) : Set<string> =
+    let kept = keptTypes surface modifiers
+    let anyKept = not kept.IsEmpty
+
+    let constructors =
+        surface.Constructors
+        |> Map.toSeq
+        |> Seq.map snd
+        |> Seq.filter (fun key ->
+            match Map.tryFind key surface.TypeOfCase with
+            | Some owner -> Set.contains owner kept
+            | None -> anyKept)
+        |> Set.ofSeq
+
+    Set.union kept constructors
 
 /// What one import edge offers its importer, as `(namespace, the name the
 /// importer sees, what the name stands for, the module that offers it)`.
@@ -702,14 +811,17 @@ let private offeredNames
             let thing = Map.tryFind original origins |> Option.defaultValue (moduleName + "::" + original)
             Diagnostics.ValueName, visible, thing, provider, false)
 
+    let kept = keptSpellings surface modifiers
+
     let bare =
-        if keepsBareTypes modifiers then
-            (surface.Types |> Map.toList |> List.map (fun (n, key) -> Diagnostics.TypeName, n, key, provider, true))
-            @ (surface.Constructors
-               |> Map.toList
-               |> List.map (fun (n, key) -> Diagnostics.ValueName, n, key, provider, true))
-        else
-            []
+        (surface.Types
+         |> Map.toList
+         |> List.filter (fun (_, key) -> Set.contains key kept)
+         |> List.map (fun (n, key) -> Diagnostics.TypeName, n, key, provider, true))
+        @ (surface.Constructors
+           |> Map.toList
+           |> List.filter (fun (_, key) -> Set.contains key kept)
+           |> List.map (fun (n, key) -> Diagnostics.ValueName, n, key, provider, true))
 
     let spelled =
         typeRenaming surface modifiers
@@ -720,6 +832,43 @@ let private offeredNames
             | _ -> None)
 
     defs @ bare @ spelled
+
+/// The bare type and constructor names an `only` or an `except` left out of
+/// every import of their module, with the module and, for a constructor, the
+/// name of its type. A module some import spells its own way is left to
+/// `hiddenSpellingNote`, which names that spelling.
+let private withheldNames
+    (edges: (string * ImportSurface * ImportModifier list) seq)
+    : Map<string, string * string option> =
+    edges
+    |> Seq.groupBy (fun (moduleName, _, _) -> moduleName)
+    |> Seq.collect (fun (moduleName, group) ->
+        let group = List.ofSeq group
+        let respelled = group |> List.exists (fun (_, s, ms) -> (keptTypes s ms).IsEmpty && not (offeredTypes s ms).IsEmpty)
+
+        if respelled then
+            Seq.empty
+        else
+            let (_, surface, _) = List.head group
+            let kept = group |> List.map (fun (_, s, ms) -> keptSpellings s ms) |> Set.unionMany
+            let provider = Naming.moduleNameOfPath moduleName
+            let typeName (key: string) = surface.Types |> Map.tryFindKey (fun _ k -> k = key)
+
+            let types =
+                surface.Types
+                |> Map.toSeq
+                |> Seq.filter (fun (_, key) -> not (Set.contains key kept))
+                |> Seq.map (fun (n, _) -> n, (provider, None))
+
+            let constructors =
+                surface.Constructors
+                |> Map.toSeq
+                |> Seq.filter (fun (n, key) -> not (Set.contains key kept) && not (Map.containsKey n surface.Types))
+                |> Seq.map (fun (n, key) ->
+                    n, (provider, Map.tryFind key surface.TypeOfCase |> Option.bind typeName))
+
+            Seq.append types constructors)
+    |> Map.ofSeq
 
 /// The names offered as two or more different things, who offers each, and
 /// whether one of them is a type or a constructor.
@@ -1804,8 +1953,9 @@ let loadModuleGraph
             reExportedTraits.Add entry |> ignore
 
     /// Every import edge that reaches a given module, as the renaming it
-    /// produces, the type spellings it adds, whether it keeps the types' bare
-    /// names, and the position of the form that wrote it.
+    /// produces, the type spellings it adds, the keys of the types and
+    /// constructors whose bare names it keeps, and the position of the form
+    /// that wrote it.
     ///
     /// Keyed by path, like the module cache, but a *list* — the cache holds
     /// what a module says about itself, and this holds what each importer made
@@ -1813,7 +1963,7 @@ let loadModuleGraph
     let edges =
         System.Collections.Generic.Dictionary<
             string,
-            ResizeArray<Map<string, string> * (string * string * AliasKind) list * bool * Lexer.Range>
+            ResizeArray<Map<string, string> * (string * string * AliasKind) list * Set<string> * Lexer.Range>
          >()
 
     let rec load (filePath: string) : unit =
@@ -2265,6 +2415,9 @@ let loadModuleGraph
                     // What each import offers this module under each name, as
                     // the thing the name stands for. For the ambiguity check.
                     let offers = ResizeArray<Diagnostics.NameSpace * string * string * string * bool>()
+                    // Each edge's module, surface and modifiers, for the names
+                    // an `only` or an `except` leaves out.
+                    let edgeSurfaces = ResizeArray<string * ImportSurface * ImportModifier list>()
 
                     for (dep, spec, r) in importEdges do
                         load dep
@@ -2273,12 +2426,15 @@ let loadModuleGraph
                         // computed here rather than inside `load`, which is
                         // keyed by path and shared by every importer.
                         let m = resolvedModules[dep]
-                        let surface = surfaceOf m.ModuleName m.ParsedDecls m.Macros m.PatternMacros m.HashMacros
+                        let surface =
+                            surfaceOf m.ModuleName m.ParsedDecls m.Carried m.Macros m.PatternMacros m.HashMacros
                         let renaming = defRenaming r (Path.GetFileName dep) surface spec.Modifiers
 
                         if spec.Path <> preludePath then
                             for offer in offeredNames m.ModuleName m.ParsedDecls surface renaming spec.Modifiers do
                                 offers.Add offer
+
+                        edgeSurfaces.Add((m.ModuleName, surface, spec.Modifiers))
 
                         if not (edges.ContainsKey dep) then
                             edges[dep] <- ResizeArray()
@@ -2286,7 +2442,7 @@ let loadModuleGraph
                         edges[dep].Add(
                             renaming,
                             typeRenaming surface spec.Modifiers,
-                            keepsBareTypes spec.Modifiers,
+                            keptSpellings surface spec.Modifiers,
                             r
                         )
 
@@ -2349,6 +2505,11 @@ let loadModuleGraph
                                 Map.add ownKey kept Diagnostics.ambiguousImports
 
                     setAmbiguous (Set.unionMany [ localMacros; localPatternMacros; localHashMacros ])
+
+                    Diagnostics.withheldNames <-
+                        match withheldNames edgeSurfaces with
+                        | w when w.IsEmpty -> Map.remove ownKey Diagnostics.withheldNames
+                        | w -> Map.add ownKey w Diagnostics.withheldNames
 
                     let parsed =
                         try
@@ -2474,17 +2635,16 @@ let loadModuleGraph
                 |> List.map (fun (original, visible, kind, r) -> DImportAlias(visible, original, kind, r))
 
             // The bare names of the module's types, which the `.dll` reader
-            // offers as spellings of their keys. Kept when an edge keeps the
-            // bare names; when every edge spells the types its own way, the
-            // bare name is no name for them here.
+            // offers as spellings of their keys. A bare name is kept when an
+            // edge keeps it: no edge spells the types its own way, and no
+            // `only` or `except` leaves the type out.
+            let keptKeys = edgeList |> Seq.map (fun (_, _, kept, _) -> kept) |> Set.unionMany
+
             let keptDecls =
-                if edgeList |> Seq.exists (fun (_, _, keepsBare, _) -> keepsBare) then
-                    m.ParsedDecls
-                else
-                    m.ParsedDecls
-                    |> List.filter (function
-                        | DImportAlias(_, _, (AliasType | AliasConstructor), _) -> false
-                        | _ -> true)
+                m.ParsedDecls
+                |> List.filter (function
+                    | DImportAlias(_, key, (AliasType | AliasConstructor), _) -> Set.contains key keptKeys
+                    | _ -> true)
 
             aliasDecls @ applyDefRenaming m.ModuleName byOriginal keptDecls
         | _ -> m.ParsedDecls
