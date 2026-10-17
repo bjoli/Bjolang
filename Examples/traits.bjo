@@ -10,76 +10,83 @@
 ;; in such object code or executable form without complying with the source code
 ;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
 
-;; a trait is a function that can be defined for different datatypes
+(import (std prelude))
+
+;; A trait is a function that can be defined for different datatypes.
 ;; Take the Gettable trait:
 
 (def/trait (Gettable %a)
   ;; The type of the position argument
-  (type pos)
-  ;; the item type it returns
-  (type item)
-  (: item-at (-> %a pos item)))
+  (type %pos)
+  ;; The item type it returns
+  (type %item)
+  (: item-at (-> %a %pos %item)))
 
 (impl (Gettable (Vec %a))
-  ;; for a Vec the position is always int
-  (type pos int)
-  ;; the item is %a, the same %a as in (Vec %a) above
-  (type item %a)
+  ;; For a Vec the position is always int
+  (type %pos int)
+  ;; The item is %a, the same %a as in (Vec %a) above
+  (type %item %a)
   (defun (item-at v i)
     (vec-ref v i)))
 
-
-;; For cases where types are known, the trait is inlined
-;; which is why it is a good thing to keep the trait body short
+;; Where the types are known, the trait is inlined. That is why it is a good
+;; thing to keep the trait body short:
+;;
+;;   (item-at myvec 2)
+;;   ;; inlines to
+;;   (vec-ref myvec 2)
+;;   ;; which returns 3
 (: myvec (Vec int))
 (def myvec [1 2 3 4 5])
 
-(item-at myvec 2)
-;; inlines to ->
-(vec-ref myvec 2)
-;; which returns =>
-3
-
-;; Traits inlining do not matter above, but for some traits it does
-;; take the map trait (or the functor trait for you wonks). Imagine we want
-;; the map function to be a trait. We want to say it takes a collection
-;; and returns a different collection. For that we borrow the syntax from
-;; higher kinded types:
+;; Inlining does not matter above, but for some traits it does. Take the map
+;; trait (or the functor trait, for you wonks). We want to say that map takes
+;; a collection and returns a different collection. For that we borrow the
+;; syntax of higher-kinded types:
 (def/trait (Mappable (%f %a))
-  (: map (-> (-> %a %b) (%f %a)  (%f %b))))
+  (: map-all (-> (-> %a %b) (%f %a) (%f %b))))
 
 (impl (Mappable (List %a))
-  (defun (map fun lst) (list-map fun lst)))
+  (defun (map-all fun lst) (list-map fun lst)))
 
-;; Mappable is a function on collection (%f %a) and it takes a function (-> %a %b).
-;; and returns (%f %b). That is all fine and dandy. But what happens when we try to
-;; map it to a c# interface?
-
-;; public interface IFunctor<F>
-;; {
-;;     // F<A> and F<B> are invalid becaus F is treated as a concrete type
-;;     // instead of a generic type constructor
-;;     F<B> Map<A,B>(F<A> sourc, Func<A, B> func);
-;; }
+;; Mappable is a function on a collection (%f %a). It takes a function
+;; (-> %a %b) and returns (%f %b). That is fine. But what happens when we try
+;; to map it to a C# interface?
 ;;
-;; even with c#11 it breaks, because you cannot enforce F<B>: F<B> and F<A> are distinct types.
-;; since bjolang compiles to c#, and traits compile to interfaces, this cannot be
-;; expressed. If we call map on an option or list or whatever, 
+;;   public interface IFunctor<F>
+;;   {
+;;       // F<A> and F<B> are invalid, because F is treated as a concrete
+;;       // type instead of a generic type constructor
+;;       F<B> Map<A,B>(F<A> source, Func<A, B> func);
+;;   }
 ;;
-;; Here is where inlining comes in! Inlining the trait body makes it a regular function call.
-;; The downside is that you cannot use map in generic places, regardless of interface constraints.
-(: doIt (-> %a %a))
-(defun (doIt something)
-  (map add1 something))
-
-;; because we first and foremost dont know what to inline.
-;; A trait like Foldable is however expressible and can be used dynamically (dispatch cost, people!)
+;; Even with C# 11 it breaks, because you cannot say F<B>: F<B> and F<A> are
+;; distinct types. Bjolang compiles to C#, and traits compile to interfaces,
+;; so this cannot be expressed.
 ;;
+;; Here is where inlining comes in. Inlining the trait body makes the call a
+;; regular function call. The cost is that you cannot use map-all where the
+;; collection type is generic, whatever the constraints, because the compiler
+;; does not know what to inline. This does not compile:
+;;
+;;   (: do-it (-> %a %a))
+;;   (defun (do-it something)
+;;     (map-all #(+ & 1) something))
+;;
+;; A trait like Foldable can however be an interface, and it can be used
+;; where the type is generic, at the cost of a dynamic dispatch:
 (def/trait (Foldable %col)
   (type %item)
-  (: fold (-> (-> %item %acc %acc) %acc %col %acc)))
+  (: fold-all (-> (-> %item %acc %acc) %acc %col %acc)))
 
 (impl (Foldable (List %a))
   (type %item %a)
-  (defun (fold f acc col)
+  (defun (fold-all f acc col)
     (list-foldl f acc col)))
+
+(defun (main args)
+  (println (item-at myvec 2))
+  (println (map-all #(+ & 1) (list 1 2 3)))
+  (println (fold-all + 0 (list 1 2 3)))
+  0)
