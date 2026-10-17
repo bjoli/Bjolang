@@ -43,6 +43,29 @@ let private recordMemberNames =
         [ "ToString"; "Equals"; "GetHashCode"; "GetType"; "MemberwiseClone"
           "Deconstruct"; "EqualityContract"; "PrintMembers" ]
 
+/// Takes an imported type's spelling of `alias` out of `ImportAliases`, for an
+/// `import/class` alias of that name.
+///
+/// A type name this module defines wins over an imported one (rule 1 of
+/// MODULES.org). A `type` declaration wins because `registerTypeDefs` files
+/// its own spelling over the import's. An `import/class` alias goes in
+/// `Aliases`, and `originalName` reads `ImportAliases` first, so the import's
+/// spelling turned the alias's name into the imported type's key. Then an
+/// `(import/class (Url (: System.Uri ...)))` in a module that imported a `Url`
+/// type made every `Url` in the module mean the imported type.
+///
+/// A record's constructor has the record's name, and goes with it. A spelling
+/// of this module's own type is left: that is a clash of two declarations, not
+/// an import that a declaration shadows.
+let private dropImportedTypeSpelling (currentModule: string) (alias: string) (registry: TraitRegistry) =
+    match Map.tryFind alias registry.ImportAliases with
+    | Some a when
+        (a.Kind = AliasType || a.Kind = AliasConstructor)
+        && a.OriginalName <> Naming.typeKey currentModule alias
+        ->
+        { registry with ImportAliases = Map.remove alias registry.ImportAliases }
+    | _ -> registry
+
 let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * TypeDef list =
     let key (name: string) = Naming.typeKey env.CurrentModule name
 
@@ -1295,6 +1318,7 @@ and private checkImportClass (env: Env) (sigs: Sigs) (specs: ClassImportSpec lis
         |> List.fold
             (fun (reg: TraitRegistry) info ->
                 let aliasTarget = classAliasTarget info
+                let reg = dropImportedTypeSpelling env.CurrentModule info.Alias reg
 
                 { reg with
                     ClrClasses = Map.add info.Alias info reg.ClrClasses
@@ -3004,9 +3028,12 @@ and internal checkDeclGroup
                     |> List.map classInfoOfSpec
                     |> List.fold
                         (fun (inner: Env) info ->
+                            let registry =
+                                dropImportedTypeSpelling inner.CurrentModule info.Alias inner.Registry
+
                             { inner with
                                 Registry =
-                                    { inner.Registry with
+                                    { registry with
                                         Aliases =
                                             Map.add
                                                 info.Alias

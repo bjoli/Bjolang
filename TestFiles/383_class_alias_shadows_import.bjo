@@ -1,0 +1,31 @@
+;; An `import/class` alias is a name this module defines, so it wins over an
+;; imported type of the same name, as a `type` declaration does (rule 1 of
+;; Docs/MODULES.org, "Which name wins").
+;;
+;; `inc/exported_url.bjo` exports a record type `Url`. Here `Url` is also
+;; System.Uri's alias. Before, the import's spelling sent every `Url` in this
+;; module to the record, so the alias's constructor and the extern below did
+;; not check. The record is still reached by its prefixed spelling.
+
+(import (std prelude))
+(import "inc/exported_url.bjo")
+(import (prefix-types "inc/exported_url.bjo" "lib/"))
+
+(import/class (Url (: System.Uri (-> string Url))))
+(import/extern (uri-host (: System.Uri.Host (-> Url string) #:get)))
+
+(: page Url)
+(def page (Url. "http://example.com/a"))
+
+(: record lib/Url)
+(def record (url-record "x"))
+
+(defun (main args)
+  (cond
+    ((not (= (uri-host page) "example.com"))
+     (println (str "the alias: " (uri-host page)))
+     1)
+    ((not (= (url-text record) "x"))
+     (println (str "the record: " (url-text record)))
+     1)
+    (else 0)))
