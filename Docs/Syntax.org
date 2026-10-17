@@ -422,6 +422,15 @@ Keyword parameters with defaults, a ~#:rest~ parameter, a type written at a para
 
 Local functions with keyword or rest parameters are not tail-call promoted; deep tail recursion needs a plain positional local ~defun~ or an explicit ~loop~. A top-level ~defun~ is promoted regardless.
 
+*** A function with keyword parameters as a value
+As a value, a function with keyword parameters takes them as positional parameters after the mandatory ones: ~(def g greet)~ is a function of two arguments. Where a function of only its mandatory parameters is expected, by a parameter or an annotation, the name is the function that calls it with those, and the keywords take their defaults:
+#+BEGIN_SRC scheme
+(port->list read-line p)          ;; read-line with the default #:mode
+(list-map greet (list "a" "b"))   ;; ("hello, a" "hello, b")
+#+END_SRC
+
+The function that the compiler makes has the colour that the parameter asks for. In a bjoroutine, a ~-?->~ reader such as ~port->list~'s gets the suspending copy of ~read-line~, as a bare name does. To give a keyword, write the function: ~(fun (p) (read-line p #:mode Linefeed))~.
+
 *** A declaration in a body
 ~(: name type)~ in a body gives the type of the ~def~, ~def/mutable~ or ~defun~ of ~name~ that comes after it in the same run of definitions. It means what an annotation written in the definition means: for a ~defun~, the parameter types of the arrow go to the parameters and its result type is the return type.
 #+BEGIN_SRC scheme

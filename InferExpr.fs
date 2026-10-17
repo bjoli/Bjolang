@@ -2578,6 +2578,12 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
         | (EIf _ | ELet _ | ELetMono _ | ELetRec _ | ELetMutable _ | ELetTuple _ | EMatch _ | EDefMatch _),
           Some paramTy when not (awaitsImplementor env.Registry paramTy) ->
             inferChecked paramTy env arg
+        // A function with keyword parameters, passed where a function of
+        // its mandatory ones is expected. See `keywordFreeReference`.
+        | EIdent(name, r), Some paramTy ->
+            match keywordFreeReference env paramTy name r with
+            | Some typed -> typed
+            | None -> infer env arg
         | _ -> infer env arg
 
     /// A lambda argument, inferred once the other arguments have pinned
@@ -3556,6 +3562,13 @@ and private inferCheckedNode (expected: HMType) (env: Env) (expr: Expr) : HMType
     | EDefMatch(binder, scrutinee, failure, sequel, r), _ ->
         inferDefMatch (inferChecked expected) env binder scrutinee failure sequel r
 
+    // A function with keyword parameters, where a function of its mandatory
+    // ones is expected. See `keywordFreeReference`.
+    | EIdent(name, r), TFun _ ->
+        match keywordFreeReference env expected name r with
+        | Some typed -> typed
+        | None -> infer env expr
+
     | _ ->
         infer env expr
 
@@ -3573,6 +3586,63 @@ and private functionResult (env: Env) (bodyType: HMType) (expected: HMType optio
     | TCon(TypeConstants.VoidName, []), Some(TCon(TypeConstants.VoidName, [])) -> bodyType
     | TCon(TypeConstants.VoidName, []), _ -> TypeConstants.unitType
     | _ -> bodyType
+
+/// A bare name of a function with keyword parameters, where a function of only
+/// its mandatory parameters is expected: `read-line` in
+/// `(port->seq read-line p)`.
+///
+/// As a value, such a function has its keyword parameters as positional
+/// ones after the mandatory ones, so it does not fit. Where the expected
+/// function takes exactly the mandatory parameters, the name is the function
+/// that calls it with only those, and the keywords take their defaults: the
+/// lambda `(fun (p) (read-line p))`, built here.
+///
+/// The lambda is built typed, because its colour is not `fun`'s. It takes the
+/// effect of the bare name: the callee's own for an ordinary function or a
+/// `defbjo`, and an open cell for a function with two copies, which the
+/// parameter it fills then decides. Thus `(port->chan read-line p)` reads
+/// with the suspending copy of `read-line`, as a bare name would.
+///
+/// `None` when the rule does not apply, and the name is inferred as before.
+and private keywordFreeReference (env: Env) (expected: HMType) (name: string) (r: Range) : (HMType * TypedExpr) option =
+    match Map.tryFind name env.FunMetas, prune env.Registry expected with
+    | Some meta, TFun(expectedParams, _, _) when
+        not meta.KeywordParams.IsEmpty
+        && expectedParams.Length = meta.MandatoryCount
+        && not (Set.contains name env.TraitMethodNames)
+        && Map.containsKey name env.Bindings
+        ->
+        let effect =
+            match prune env.Registry (fst (inferIdent env name r)) with
+            | TFun(_, _, e) -> e
+            | _ -> ESync
+
+        let names = expectedParams |> List.map (fun _ -> Gensym.fresh "kwfree")
+        let paramTypes = expectedParams |> List.map (fun _ -> freshMeta ())
+
+        let bodyEnv =
+            List.zip names paramTypes
+            |> List.fold
+                (fun acc (n, t) ->
+                    addBinding
+                        n
+                        { Scheme = Scheme([], [], t)
+                          IsMutable = false }
+                        acc)
+                env
+
+        let callType, call =
+            infer bodyEnv (EApp(EIdent(name, r), names |> List.map (fun n -> EIdent(n, r)), r))
+
+        let funType = TFun(paramTypes, callType, effect)
+
+        Some(
+            funType,
+            { Type = funType
+              Range = r
+              Node = TLambda(names, call) }
+        )
+    | _ -> None
 
 /// A lambda. `expected` is the parameter and result types the context
 /// expects, when it expects any. Unifying the parameters before the body is

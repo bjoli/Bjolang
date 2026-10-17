@@ -1,0 +1,20 @@
+;; A bare read-line where a reader of one argument is expected is a lambda that
+;; calls it with the port, and its copy follows the parameter it fills.
+;;
+;; In a bjoroutine, port->list's -?-> reader takes the suspending copy, as a
+;; bare name does. port->seq's -> reader takes the ordinary copy.
+;;
+;; Each `EXPECT-CS` line is an extended regex matched against the output; an
+;; `EXPECT-NO-CS` line must match nothing.
+;; EXPECT-CS: await readsubline__bjo\(kwfree__[0-9]+\)
+;; EXPECT-CS: return readsubline\(kwfree__[0-9]+\);
+(import (std prelude))
+(import (std ports))
+
+(: lines-async (-> InputPort (List string)))
+(defbjo (lines-async p)
+  (port->list read-line p))
+
+(: lines-seq (-> InputPort (Seq string)))
+(defun (lines-seq p)
+  (port->seq read-line p))

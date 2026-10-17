@@ -1,0 +1,59 @@
+;; A function with keyword parameters, used as a value where a function of only
+;; its mandatory parameters is expected, is the function that calls it with
+;; those: the keywords take their defaults. `(port->list read-line p)` reads
+;; lines, as `(port->list (fun (p) (read-line p)) p)` does.
+;;
+;; Where the expected function also takes the keywords, or nothing says what
+;; is expected, the name is the function with its keywords as positional
+;; parameters, as before.
+
+(import (std prelude))
+(import (std ports))
+
+(: greet (-> string (#:greeting string) string))
+(defun (greet name #:greeting "hej") (str greeting ", " name))
+
+(: input string)
+(def input "a\nb\r\nc")
+
+(: check (-> string string string bool))
+(defun (check what got want)
+  (if (= got want)
+      #t
+      (begin (println (str what ": got '" got "', want '" want "'"))
+          #f)))
+
+;; In a bjoroutine, the -?-> parameter of port->list takes the suspending copy
+;; of read-line, as the bare name does.
+(: lines-async (-> string (List string)))
+(defbjo (lines-async text)
+  (port->list read-line (open-input-string text)))
+
+;; With the keywords as positional parameters: an unannotated def keeps the
+;; whole function.
+(: shout (-> string string))
+(defun (shout s)
+  (def whole greet)
+  (whole s "HEJ"))
+
+;; port->seq takes a -> reader, so read-line is its ordinary copy here.
+(: lines-seq (-> string (List string)))
+(defun (lines-seq text)
+  (seq->list (port->seq read-line (open-input-string text))))
+
+;; An annotation gives the expected type too.
+(: first-line (-> string string))
+(defun (first-line text)
+  (def (: one-line (-> InputPort string)) read-line)
+  (one-line (open-input-string text)))
+
+(defbjo (main args)
+  (if (and (check "port->list" (->str (port->list read-line (open-input-string input))) "(a b c)")
+           (check "port->vec" (->str (vec->list (port->vec read-line (open-input-string input)))) "(a b c)")
+           (check "port->seq" (->str (lines-seq input)) "(a b c)")
+           (check "an annotated def" (first-line input) "a")
+           (check "a keyword of your own" (->str (list-map greet (list "Ada" "Bo"))) "(hej, Ada hej, Bo)")
+           (check "with the keyword positional" (shout "Ada") "HEJ, Ada")
+           (check "in a bjoroutine" (->str (lines-async input)) "(a b c)"))
+      0
+      1))
