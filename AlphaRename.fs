@@ -475,7 +475,15 @@ let rec private renameCore
                     // both lists are rebuilt in place — never reordered, never
                     // filtered.
                     let slotNames', s1, sb1 = bindSlots (m.Slots |> List.map fst) gScope gSubst
-                    let locals', s2, sb2 = bind m.Locals s1 sb1
+
+                    // A body that reads its slots directly has `Locals` equal
+                    // to the slot names. They stay equal, so that `Codegen`
+                    // still emits no copies.
+                    let locals', s2, sb2 =
+                        if m.Locals = (m.Slots |> List.map fst) then
+                            slotNames', s1, sb1
+                        else
+                            bind m.Locals s1 sb1
 
                     { m with
                         LoopName = name'

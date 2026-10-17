@@ -1150,7 +1150,8 @@ and TLoopMember =
       Slots: (string * HMType) list
       /// Per-iteration copies of `Slots`, parallel by index. `Body` reads these
       /// rather than the slots so that a closure escaping one iteration cannot
-      /// observe the next iteration's values.
+      /// observe the next iteration's values. When the body forms no closure,
+      /// each local has its slot's name, and the body reads the slots.
       Locals: string list
       RetType: HMType
       /// The colour this member is emitted in, when the group is emitted as C#

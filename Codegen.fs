@@ -5180,13 +5180,14 @@ and private generateRecur
     else
         indent ctx; appendLine ctx "continue;"
 
-/// Copies each slot into a fresh per-iteration local. Done unconditionally: the
-/// JIT elides the copy when nothing captures it, whereas an escape analysis
-/// would be a correctness liability to maintain.
+/// Copies each slot into its per-iteration local. A local with the slot's own
+/// name needs no copy: `LoopLowering` gives it that name when the body forms no
+/// closure (`LoopLowering.formsClosure`).
 and private emitIterationCopies (ctx: CodegenContext) (member_: TLoopMember) : unit =
     for (slot, _), local in List.zip member_.Slots member_.Locals do
-        indent ctx
-        appendLine ctx $"var %s{sanitizeIdent local} = %s{sanitizeIdent slot};"
+        if local <> slot then
+            indent ctx
+            appendLine ctx $"var %s{sanitizeIdent local} = %s{sanitizeIdent slot};"
 
 /// Emits `TLoop (_, None)`: the loop *is* this function's body, so the
 /// `while (true)` lives in the function's own block and its slots are the

@@ -1,0 +1,28 @@
+;; A loop body that forms no closure reads its slots and gets no copies. A body
+;; with a lambda keeps a per-iteration copy of each slot, so that the lambda
+;; does not see the next iteration's values.
+;;
+;; sum-to and count-up read their slots: no `var` copies a slot.
+;; EXPECT-NO-CS: var _(i|acc|n|k)_+[0-9]+ =
+;; adders copies its slots for the lambda.
+;; EXPECT-CS: var _j_+[0-9]+ = j;
+(import (std prelude))
+
+(: sum-to (-> int int int int))
+(defun (sum-to i n acc)
+  (if (> i n) acc (sum-to (+ i 1) n (+ acc i))))
+
+(: count-up (-> int int))
+(defun (count-up n)
+  (let lp ((k 0) (acc 0))
+    (if (= k n) acc (lp (+ k 1) (+ acc 2)))))
+
+(: adders (-> int (List (-> int int)) (List (-> int int))))
+(defun (adders j fs)
+  (if (= j 0) fs (adders (- j 1) (cons (fun (x) (+ x j)) fs))))
+
+(defun (main)
+  (println (sum-to 1 10 0))
+  (println (count-up 5))
+  (println (list-map (fun (f) (f 100)) (adders 3 '())))
+  0)

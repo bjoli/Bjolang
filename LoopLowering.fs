@@ -35,6 +35,8 @@ open Bjolang.TypedAST
 ///   closures capture by reference, so a lambda created in one iteration would
 ///   otherwise observe the next iteration's values. Each member's body is
 ///   alpha-renamed to read fresh per-iteration locals instead of the slots.
+///   A body that forms no closure (`formsClosure`) reads the slots directly
+///   and gets no copies.
 
 // ---------------------------------------------------------------------------
 // Fresh names
@@ -308,6 +310,31 @@ let mergedLoopEntry (members: TLoopMember list) (body: TypedExpr) : (int * Typed
 let isInlinedLoop (members: TLoopMember list) (body: TypedExpr) : bool =
     (flatLoopEntry members body).IsSome || (mergedLoopEntry members body).IsSome
 
+/// Whether `body` makes something that can capture a variable and outlive the
+/// iteration: a lambda, a local function, a sequence, a hoisted body, a spawned
+/// call, a task event, or a nested loop group that stays local functions.
+///
+/// A loop member whose body makes none of these reads its slots directly. It
+/// needs no per-iteration copies, because nothing can observe a slot after the
+/// next jump writes it. The answer is conservative: it is `true` also for a
+/// local function that only runs inside the iteration.
+let formsClosure (body: TypedExpr) : bool =
+    body
+    |> TypeVisitor.foldExpr
+        (fun found (e: TypedExpr) ->
+            found
+            || (match e.Node with
+                | TLambda _
+                | TSeq _
+                | THoist _
+                | TBjo _
+                | TTaskEvent _
+                | TLetRec _ -> true
+                | TLet(_, isFun, _, _, _) -> isFun
+                | TLoop(members, Some entry) -> not (isInlinedLoop members entry)
+                | _ -> false))
+        false
+
 // ---------------------------------------------------------------------------
 // Expressions
 // ---------------------------------------------------------------------------
@@ -541,16 +568,26 @@ and private lowerLetRec
                     let visible =
                         outward |> List.filter (fun t -> not (t.Names |> List.exists (fun n -> List.contains n lambdaArgs)))
 
+                    let loweredBody = lowerExpr (loopTargets @ visible) true lambdaBody
+
+                    // With no closure to capture them, the body reads the
+                    // slots and needs no copies.
+                    let locals, body =
+                        if formsClosure loweredBody then
+                            lambdaArgs, loweredBody
+                        else
+                            slots, renameExpr (List.zip lambdaArgs slots |> Map.ofList) loweredBody
+
                     { LoopName = name
                       Slots = List.zip slots argTypes
-                      Locals = lambdaArgs
+                      Locals = locals
                       RetType = retType
                       // Ordinary until `EffectGraph` says otherwise. It decides
                       // per group, having seen the bodies and knowing which C#
                       // member the group lands in — neither of which is
                       // available here.
                       Effect = ESync
-                      Body = lowerExpr (loopTargets @ visible) true lambdaBody })
+                      Body = body })
                 names
                 slotNames
 
@@ -609,9 +646,20 @@ let private lowerFunctionBody
         lowered
     else
         let slots = slotsOf target
-        let locals = slots |> List.map (fun (n, _) -> fresh ("_" + n))
 
-        let toLocals = List.zip (slots |> List.map fst) locals |> Map.ofList
+        // With no closure to capture them, the body reads the parameters and
+        // needs no copies. A keyword parameter keeps its copy: `Codegen` may
+        // bind it to a local of another name (`renamedKeywordLocals`).
+        let locals =
+            if kwArgs.IsEmpty && not (formsClosure lowered) then
+                slots |> List.map fst
+            else
+                slots |> List.map (fun (n, _) -> fresh ("_" + n))
+
+        let toLocals =
+            List.zip (slots |> List.map fst) locals
+            |> List.filter (fun (slot, local) -> slot <> local)
+            |> Map.ofList
 
         { body with
             Node =
