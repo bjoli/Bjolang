@@ -1,0 +1,20 @@
+;; Two libraries, each declaring a `Banana`, imported plainly.
+;;
+;; That is legal: they are two types, and importing both costs nothing. Writing
+;; the bare `Banana` is not, because it could be either. It used to mean the
+;; later import's, and this file then failed further on, handing `banana_b`'s
+;; `Banana` to `peel-a`. The fix is to give one a name of its own with
+;; `prefix-types` (108_type_identity.bjo).
+
+;; EXPECT-ERROR: Ambiguous name at ambiguous_import_type.bjo:14: 'Banana' is imported from banana_a and banana_b
+;; EXPECT-ERROR: (prefix-types ...)
+
+(import "../inc/banana_a.bjo" "../inc/banana_b.bjo")
+
+(: twice (-> Banana int))
+(defun (twice b)
+  (+ (peel-a b) (peel-a b)))
+
+(defun (main)
+  (println (int->string (twice (make-a 3))))
+  0)

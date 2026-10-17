@@ -2,11 +2,12 @@
 ;;
 ;; A type's identity is the module that declared it plus its name, so these are
 ;; two types and both are usable in one program. What they are *called* is a
-;; separate question, and the two answers are here: the bare name follows the
-;; ordinary import order — the later import wins, silently — and `prefix-types`
-;; reaches either of them by a spelling of its own. Each module is also
-;; imported plainly, which is what keeps its bare names: a prefix alone
-;; replaces them (384_prefix_replaces_bare.bjo).
+;; separate question. Both are imported plainly, so the bare `Banana` could be
+;; either, and a use of it is refused as ambiguous
+;; (errors/ambiguous_import_type.bjo). `prefix-types` gives each a spelling of
+;; its own, and that is what this file writes. A prefix alone would replace the
+;; bare names (384_prefix_replaces_bare.bjo); the plain imports keep them, so
+;; that the constructors with names of their own are still bare.
 (import (std simpletest))
 
 (import "inc/banana_a.bjo"
@@ -25,13 +26,11 @@
 (defun (from-b s)
   (peel-b (MkBananaB s)))
 
-;; The bare `Banana` is `banana_b`'s: it is the later import, which is the
-;; shadowing rule imports have always had.
-(: shout (-> Banana string))
+;; Each `Banana` by its own spelling.
+(: shout (-> B/Banana string))
 (defun (shout b)
   (string-append (peel-b b) "!"))
 
-;; ...and the earlier one is still reachable, which is what changed.
 (: twice (-> A/Banana int))
 (defun (twice b)
   (+ (peel-a b) (peel-a b)))
@@ -46,8 +45,8 @@
 (defun (main)
   (expect "a's constructor and a's peeler" (from-a 3) 3)
   (expect "b's constructor and b's peeler" (from-b "yes") "yes")
-  (expect "the bare name is the later import's" (shout (make-b "ripe")) "ripe!")
-  (expect "the earlier one is reachable under a prefix" (twice (make-a 4)) 8)
+  (expect "b's under its prefix" (shout (make-b "ripe")) "ripe!")
+  (expect "and a's under its own" (twice (make-a 4)) 8)
   (expect "one type in, the other out" (peel-b (relabel (A/MkBananaA 7))) "7")
   (println "108 ok")
   0)

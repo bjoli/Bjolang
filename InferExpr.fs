@@ -408,11 +408,28 @@ and private resolveAliasedHead (env: Env) (expr: Expr) : Expr =
         else
             originalName env.Registry name
 
+    // A name two imports offer as different things, used where it reaches the
+    // module level. A local of that name is a name of its own.
+    //
+    // By reference, not by value: a parameter `f` of the imported `f`'s type is
+    // a binding equal to the import's, and it is still a local.
+    let checkAmbiguous (name: string) (r: Range) =
+        let isLocal =
+            match Map.tryFind name env.Bindings, Map.tryFind name env.Resolved with
+            | Some here, Some atModule -> not (obj.ReferenceEquals(here, atModule))
+            | Some _, None -> true
+            | None, _ -> false
+
+        if not isLocal then
+            Diagnostics.refuseAmbiguous Diagnostics.ValueName r name
+
     match expr with
     | EIdent(name, r) ->
+        checkAmbiguous name r
         let original = resolve name
         if original = name then expr else EIdent(original, r)
     | EApp(EIdent(name, ir), args, r) ->
+        checkAmbiguous name ir
         let original = resolve name
         if original = name then expr else EApp(EIdent(original, ir), args, r)
     | _ -> expr

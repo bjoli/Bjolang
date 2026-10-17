@@ -667,6 +667,8 @@ let rec checkPattern
         Map.containsKey name env.Registry.Records
         || Map.containsKey (originalName env.Registry name) env.Registry.Records
         ->
+        Diagnostics.refuseAmbiguous Diagnostics.ValueName r name
+
         let recordTypeName =
             if Map.containsKey name env.Registry.Records then name
             else originalName env.Registry name
@@ -750,6 +752,7 @@ let rec checkPattern
     | PConstruct(name, args, r) ->
         // A prefixed constructor is a spelling: the typed pattern carries the
         // name the union declared, which is what codegen emits a case class for.
+        Diagnostics.refuseAmbiguous Diagnostics.ValueName r name
         let name = originalName env.Registry name
 
         match Map.tryFind name env.Registry.OpaqueCases with

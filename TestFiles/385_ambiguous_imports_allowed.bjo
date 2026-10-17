@@ -1,0 +1,35 @@
+;; Two imports may offer one name as two different things. Only a *use* of the
+;; name is refused (errors/ambiguous_import_*.bjo). These are not uses of an
+;; ambiguous name, and compile:
+;;
+;;   - a name both offer that the program never writes (`Figure`, `Pt`)
+;;   - a name the module defines itself, which wins (rule 1): `helper`
+;;   - a local that shadows the name: the parameter `area`
+;;   - a name one import leaves out with `except`: `twice-of` is same_a's
+;;   - the other's thing under a prefix: `b/helper`
+;;   - one thing that two imports offer, a facade and its source: `shape-size`
+;;   - a name the prelude also offers: the prelude does not count
+
+(import (std prelude))
+(import "inc/same_a.bjo")
+(import (except "inc/same_b.bjo" twice-of))
+(import (prefix "inc/same_b.bjo" "b/"))
+(import "inc/reexport_origin.bjo")
+(import "inc/reexport_facade.bjo")
+(import "inc/prelude_shadow_b.bjo")
+
+(: helper (-> int int))
+(defun (helper n) (- n))
+
+(: apply-area (-> (-> int int) int))
+(defun (apply-area area) (area 4))
+
+(defun (main)
+  (cond
+    ((not (= (helper 1) -1)) (println "own helper") 1)
+    ((not (= (apply-area (fun (n) (* n n))) 16)) (println "local area") 1)
+    ((not (= (twice-of 3) 6)) (println "twice-of from same_a") 1)
+    ((not (= (b/helper 1) 10)) (println "b/helper") 1)
+    ((not (= (shape-size (Line 1 2)) 2)) (println "shape-size") 1)
+    ((not (= (twice 1) 200)) (println "over the prelude") 1)
+    (else 0)))

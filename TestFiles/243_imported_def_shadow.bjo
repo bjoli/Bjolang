@@ -8,12 +8,14 @@
 ;; own type that compiled and quietly ran the wrong function; at any other type
 ;; the C# compile failed.
 ;;
-;; Two imports binding one name at one type are the same hazard one level down:
-;; both modules are a `using static` in the generated C#, so a bare call reaches
-;; both. The later import wins, as it does in inference.
+;; Two imports binding one name at one type were the same hazard one level
+;; down: both modules are a `using static` in the generated C#, so a bare call
+;; reached both, and the later import won. A use of such a name is now refused
+;; as ambiguous (errors/ambiguous_import_value.bjo); here `twice` is reached
+;; through the one import that keeps it.
 (import (std prelude))
 (import (std simpletest))
-(import "inc/prelude_shadow.bjo")
+(import (except "inc/prelude_shadow.bjo" twice))
 (import "inc/prelude_shadow_b.bjo")
 
 (defun (main)
@@ -26,5 +28,5 @@
 
   (expect "an import over an effect operation" (getenv "HOME") "no HOME")
 
-  (expect "two imports of one name at one type: the later wins" (twice 1) 200)
+  (expect "one name at one type in two modules, kept from one" (twice 1) 200)
   0)

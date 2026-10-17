@@ -3,6 +3,31 @@
 
 What each change guarantees, and what it leaves open.
 
+* Using a name two imports offer as different things is an error
+
+- Two imports other than the prelude that offer one name as two different
+  things no longer let "the later import win" in silence. Importing both is
+  allowed; a *use* of the name is refused, with the modules and the way out:
+  "Ambiguous name at app.bjo:11: 'helper' is imported from same_a and
+  same_b, and they are two different things. Import it from one of them only,
+  with (except ... helper) on the other, or give one a name of its own with
+  (rename ...) or (prefix ...)."
+- A use is a reference or call that reaches the import (a local of that name
+  is its own), a type in a signature, a constructor in an expression or a
+  pattern, and a macro call. For a type or a constructor the advice is
+  ~prefix-types~, since a type always arrives with its module.
+- "Different things" is decided on what the name stands for: a def's origin,
+  a foreign alias's .NET member, a type's or constructor's key. A facade and
+  the module it re-exports offer one thing, and are not ambiguous.
+- Not changed: an import overriding a prelude name, and a module's own
+  definition winning over an import.
+- Code that relied on the later import winning has to choose: ~except~,
+  ~rename~, ~prefix~ or ~prefix-types~. In this repository three tests did,
+  and they now say which they mean.
+- Tests: ~385_ambiguous_imports_allowed.bjo~ and
+  ~errors/ambiguous_import_{value,type,pattern,macro}.bjo~ (the type one
+  replaces ~errors/type_of_the_later_import.bjo~).
+
 * A type prefix replaces the bare names, and published bodies name types by key
 
 - ~(prefix-types m "T/")~, ~prefix~, ~postfix~ and ~postfix-types~ now

@@ -485,6 +485,11 @@ let private expandIn
     match key with
     | None -> None
     | Some key ->
+        // Written as it is, so written by the program. A call another macro
+        // wrote arrives renamed, and means the macro its author meant.
+        if key = head then
+            Diagnostics.refuseAmbiguous Diagnostics.ValueName callSite head
+
         let binding = tbl[key]
 
         // A macro *may* expand to a call to itself — that is how a form of

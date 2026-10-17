@@ -144,10 +144,10 @@ program that writes the bare name is told the one it has:
 Type Error at app.bjo:10: there is no type named 'Crate'. It is imported as 'T/Crate': the modifier that gave it that name replaces the bare one. Import the module without it as well to have both.
 #+END_SRC
 
-Before, the bare name stayed. That was a trap with rule 2 of [[*Which name
-wins][Which name wins]]: with ~(import "a.bjo")~ and then ~(import (prefix-types
-"b.bjo" "B/"))~, the bare ~Banana~ was ~b~'s, because ~b~ was the later import.
-The prefix gave ~b~'s type a second name and did not keep it out of the way.
+Before, the bare name stayed. With ~(import "a.bjo")~ and then ~(import
+(prefix-types "b.bjo" "B/"))~, the bare ~Banana~ was ~b~'s, because ~b~ was the
+later import. The prefix gave ~b~'s type a second name and did not keep it out
+of the way.
 
 A body a module publishes, an inline function or a constrained one or a trait
 default, names its types and constructors by key. So it is spliced into an
@@ -187,12 +187,11 @@ Type error: the 1st argument to 'peel' has the wrong type.
   its types a spelling of their own.
 #+END_SRC
 
-Without the modifier both are still there and still distinct — the bare
-~Banana~ simply means the later import's, which is rule 2 of [[*Which name
-wins][Which name wins]]. The prefix is how the other one gets a name, and it
-takes that import's types out of the contest for the bare one: with
-~(import "a.bjo" (prefix-types "b.bjo" "B/"))~, ~Banana~ is ~a~'s in whichever
-order they are written.
+Without the modifier both are still there and still distinct, but the bare
+~Banana~ could be either, and writing it is refused as ambiguous: rule 2 of
+[[*Which name wins][Which name wins]]. The prefix is how each gets a name, and
+it takes that import's types out of the contest for the bare one: with
+~(import "a.bjo" (prefix-types "b.bjo" "B/"))~, ~Banana~ is ~a~'s.
 
 **** How a type is keyed
 
@@ -232,9 +231,10 @@ A spelling that a modifier or an alias *invents* may not be one that something
 else already produces. Two renames landing on one name, or two modules prefixed
 into the same spelling, is a compile error naming both sources.
 
-Unlike un-modified imports where the later import silently wins, modified imports 
-and aliases are strictly checked. An error is raised if two manual renames or 
-prefixes produce the same spelling, as this indicates an ambiguous manual request.
+This is checked at the import, where two plain imports that offer one name are
+checked only where the name is used (rule 2 of [[*Which name wins][Which name
+wins]]): two manual renames or prefixes that produce one spelling are an
+ambiguous request in themselves.
 
 *** Importing one module twice
 
@@ -637,22 +637,39 @@ Three rules, in the order they are decided:
    ~(import/class (Url (: System.Uri ...)))~, ~Url~ is ~System.Uri~ although an
    import brings in a type ~Url~. The imported type is then reached with
    ~prefix-types~.
-2. Between two imports offering the same name, the *later import* wins.
-   Silently: this is what makes the implicit prelude a background that anything
-   can override, and it is what several modules in this repository rely on.
+2. A name the *prelude* offers is overridden by any other import's, silently:
+   that is what makes the implicit prelude a background that anything can
+   override.
 
-   For a *type* this decides the spelling and nothing else. Both types are
-   still there and still distinct, and the one the bare name does not reach is
-   reached with ~prefix-types~ (see [[*What ~prefix-types~ is for][What
-   ~prefix-types~ is for]]).
+   Between two other imports that offer one name as *two different things*, a
+   *use* of the name is an error. Importing both is not: two libraries that each
+   export a ~helper~ cost nothing until the program writes ~helper~. Then it has
+   to say which it means, because "the later import wins" would choose for it,
+   and the choice would change when an import is added or moved:
+
+   #+BEGIN_SRC text
+   Ambiguous name at app.bjo:11: 'helper' is imported from same_a and same_b, and they are two different things. Import it from one of them only, with (except ... helper) on the other, or give one a name of its own with (rename ...) or (prefix ...).
+   #+END_SRC
+
+   A use is a reference or a call that reaches the import (a local of the name
+   is a name of its own), a type in a signature, a constructor in an
+   expression or a pattern, and a macro. "Two different things" is decided on
+   what the name stands for, not on who offers it: a facade and the module it
+   re-exports offer one thing, and so do two imports of one module.
+
+   For a *type* or a constructor, ~except~ cannot help, because a type always
+   arrives with its module. ~prefix-types~ gives one of them a name of its own
+   (see [[*What ~prefix-types~ is for][What ~prefix-types~ is for]]).
 3. A spelling a *modifier or an alias produced* may not collide with anything —
    with another such spelling, or with a name the module defines for itself. It
    is a compile error naming both sources.
 
-The boundary between 2 and 3 is deliberate. Rule 2 covers what falls out of the
-order imports happen to be written in, where an error would reject working
-programs; rule 3 covers a name somebody asked for by hand, where two answers
-mean the request was ambiguous.
+The boundary between 2 and 3 is deliberate. Rule 3 is decided at the import: a
+name somebody asked for by hand, where two answers mean the request was
+ambiguous. Rule 2 is decided at the use: two imports offering one name is not a
+mistake until the program writes the name, and refusing it earlier would make
+every new export of a library a possible break for every program that imports
+it beside another.
 
 ** Linking is not importing
 

@@ -669,6 +669,105 @@ let private keepsBareTypes (modifiers: ImportModifier list) : bool =
         | PostfixTypes _ -> false
         | _ -> true)
 
+/// What one import edge offers its importer, as `(namespace, the name the
+/// importer sees, what the name stands for, the module that offers it)`.
+///
+/// "What it stands for" is the thing, not the name: a def's origin module and
+/// name, so that a facade and the module it re-exports offer one thing; a
+/// foreign alias's .NET member; a type's or constructor's key. Two offers of a
+/// name are an ambiguity only when these differ.
+let private offeredNames
+    (moduleName: string)
+    (decls: Decl list)
+    (surface: ImportSurface)
+    (renaming: Map<string, string>)
+    (modifiers: ImportModifier list)
+    : (Diagnostics.NameSpace * string * string * string * bool) list =
+    let provider = Naming.moduleNameOfPath moduleName
+
+    let origins =
+        decls
+        |> List.collect (function
+            | DExtern(visible, origin, _, _, _) ->
+                let home = if origin.OriginModule = "" then moduleName else origin.OriginModule
+                [ visible, home + "::" + origin.OriginalName ]
+            | DImportExtern(specs, _) -> specs |> List.map (fun s -> s.Alias, "clr:" + s.ClrTarget)
+            | _ -> [])
+        |> Map.ofList
+
+    let defs =
+        renaming
+        |> Map.toList
+        |> List.map (fun (original, visible) ->
+            let thing = Map.tryFind original origins |> Option.defaultValue (moduleName + "::" + original)
+            Diagnostics.ValueName, visible, thing, provider, false)
+
+    let bare =
+        if keepsBareTypes modifiers then
+            (surface.Types |> Map.toList |> List.map (fun (n, key) -> Diagnostics.TypeName, n, key, provider, true))
+            @ (surface.Constructors
+               |> Map.toList
+               |> List.map (fun (n, key) -> Diagnostics.ValueName, n, key, provider, true))
+        else
+            []
+
+    let spelled =
+        typeRenaming surface modifiers
+        |> List.choose (fun (key, visible, kind) ->
+            match kind with
+            | AliasType -> Some(Diagnostics.TypeName, visible, key, provider, true)
+            | AliasConstructor -> Some(Diagnostics.ValueName, visible, key, provider, true)
+            | _ -> None)
+
+    defs @ bare @ spelled
+
+/// The names offered as two or more different things, who offers each, and
+/// whether one of them is a type or a constructor.
+let private ambiguousNames
+    (offers: (Diagnostics.NameSpace * string * string * string * bool) seq)
+    : Map<Diagnostics.NameSpace * string, string list * bool> =
+    offers
+    |> Seq.groupBy (fun (space, name, _, _, _) -> space, name)
+    |> Seq.choose (fun (key, group) ->
+        let things = group |> Seq.map (fun (_, _, thing, _, _) -> thing) |> Seq.distinct |> Seq.length
+
+        if things > 1 then
+            let providers = group |> Seq.map (fun (_, _, _, provider, _) -> provider) |> Seq.distinct |> List.ofSeq
+            Some(key, (providers, group |> Seq.exists (fun (_, _, _, _, withModule) -> withModule)))
+        else
+            None)
+    |> Map.ofSeq
+
+/// The names a module's own top-level declarations give, which win over an
+/// import's (rule 1).
+let private ownNames (decls: Decl list) : Set<string> =
+    decls
+    |> List.collect (function
+        | DDef(n, _, _)
+        | DDefMutable(n, _, _) -> [ n ]
+        | DDefun(n, _, _, _, _) -> [ n ]
+        | DDefDouble(n, _, _, _, _) -> [ n ]
+        | DDefTuple(ns, _, _) -> ns
+        | DDefPattern(pattern, _, _) -> patternBinders pattern
+        | DType(tds, _)
+        | DTypeRec(tds, _) ->
+            tds
+            |> List.collect (fun td ->
+                td.Name
+                :: (match td.Kind with
+                    | Union cases ->
+                        cases
+                        |> List.map (function
+                            | SimpleCase(n, _) -> n
+                            | DataCase(n, _, _, _) -> n)
+                    | _ -> []))
+        | DTrait(n, _, _, _, signatures, _, _, _) -> n :: (signatures |> List.map (fun (m, _, _) -> m))
+        | DAlias(visible, _, _) -> [ visible ]
+        | DImportExtern(specs, _) -> specs |> List.map (fun s -> s.Alias)
+        | DImportClass(specs, _) -> specs |> List.map (fun s -> s.Alias)
+        | _ -> [])
+    |> Set.ofList
+
 /// A dependency's declarations as every edge that reaches it sees them.
 ///
 /// The spellings are a list rather than one name, which is rule 10: a module
@@ -2163,6 +2262,10 @@ let loadModuleGraph
                     // has to know that at the moment it meets one in head
                     // position. Parsing first and collecting `DImport`s
                     // afterwards cannot work, however the expander is written.
+                    // What each import offers this module under each name, as
+                    // the thing the name stands for. For the ambiguity check.
+                    let offers = ResizeArray<Diagnostics.NameSpace * string * string * string * bool>()
+
                     for (dep, spec, r) in importEdges do
                         load dep
 
@@ -2172,6 +2275,10 @@ let loadModuleGraph
                         let m = resolvedModules[dep]
                         let surface = surfaceOf m.ModuleName m.ParsedDecls m.Macros m.PatternMacros m.HashMacros
                         let renaming = defRenaming r (Path.GetFileName dep) surface spec.Modifiers
+
+                        if spec.Path <> preludePath then
+                            for offer in offeredNames m.ModuleName m.ParsedDecls surface renaming spec.Modifiers do
+                                offers.Add offer
 
                         if not (edges.ContainsKey dep) then
                             edges[dep] <- ResizeArray()
@@ -2225,11 +2332,33 @@ let loadModuleGraph
                     let outerModuleKey = Parser.currentModuleKey
                     Parser.currentModuleKey <- Naming.moduleKeyOfPath absPath
 
+                    // The names two imports offer as different things, before
+                    // parsing, because a macro is expanded while the module is
+                    // parsed. This module's own macros are its own.
+                    let ownKey = Naming.moduleKeyOfPath absPath
+                    let ambiguous = ambiguousNames offers
+
+                    let setAmbiguous (own: Set<string>) =
+                        let kept =
+                            ambiguous |> Map.filter (fun (_, name) _ -> not (Set.contains name own))
+
+                        Diagnostics.ambiguousImports <-
+                            if kept.IsEmpty then
+                                Map.remove ownKey Diagnostics.ambiguousImports
+                            else
+                                Map.add ownKey kept Diagnostics.ambiguousImports
+
+                    setAmbiguous (Set.unionMany [ localMacros; localPatternMacros; localHashMacros ])
+
                     let parsed =
                         try
                             DeclParser.parseModule forms
                         finally
                             Parser.currentModuleKey <- outerModuleKey
+
+                    // And a name this module defines wins over an import (rule
+                    // 1), so it is no ambiguity.
+                    setAmbiguous (Set.unionMany [ localMacros; localPatternMacros; localHashMacros; ownNames parsed ])
 
                     Macro.setLocalMacros Set.empty
                     Macro.setLocalPatternMacros Set.empty

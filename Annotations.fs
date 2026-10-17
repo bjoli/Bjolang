@@ -93,6 +93,7 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
             TVar name
         else
 
+        Diagnostics.refuseAmbiguous Diagnostics.TypeName nameRange name
         let name = originalName registry name
 
         match Map.tryFind name registry.Aliases with
@@ -235,6 +236,7 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
             $"Kind Error at %s{Lexer.formatPos r}: the type variable %%%s{name.TrimStart('\'')} is applied to arguments here. Bjolang has no higher-kinded type variables: only the constructor variable of an inline trait may be written applied, and only inside that trait's own signatures. A function cannot be generic over a type constructor."
 
     | TApp(name, args, appRange) ->
+        Diagnostics.refuseAmbiguous Diagnostics.TypeName appRange name
         let name = originalName registry name
         let resolvedArgs = args |> List.map (resolveWith checkNames registry)
         DotNetInterop.checkNameableAnnotation appRange name resolvedArgs.Length

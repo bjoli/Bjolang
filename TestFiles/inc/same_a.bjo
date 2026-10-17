@@ -1,0 +1,21 @@
+;; For the ambiguous-import tests. `same_b.bjo` exports the same names as
+;; different things: a def, a type, a constructor and a macro.
+
+(export helper Figure area make-pt)
+(import (std prelude))
+
+(type (: Figure (Union (: Pt int))))
+
+(: helper (-> int int))
+(defun (helper n) (+ n 1))
+
+(: area (-> Figure int))
+(defun (area f) (match f ((Pt n) n)))
+
+(: make-pt (-> int Figure))
+(defun (make-pt n) (Pt n))
+
+(def/macro (twice-of form inject compare)
+  (match form
+    ((SList (Cons _ (Cons x Nil))) #'(* 2 ,x))
+    (_ (syntax-error form "twice-of takes one argument"))))

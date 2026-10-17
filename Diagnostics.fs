@@ -468,3 +468,52 @@ module Diagnostics =
         finally
             System.Console.SetOut previousOut
             System.Console.SetError previousError
+
+    // ---------------------------------------------------------------------------
+    // Names two imports offer as different things
+    // ---------------------------------------------------------------------------
+
+    /// Which namespace an ambiguous name is in. A value, a constructor and a macro
+    /// share one; a type has its own.
+    type NameSpace =
+        | ValueName
+        | TypeName
+
+    /// For each module being compiled, the names that two of its imports offer as
+    /// two different things, and the modules that offer each. The prelude does
+    /// not count: overriding a prelude name is what "the later import wins" is
+    /// for. A name the module defines itself does not count either (rule 1).
+    ///
+    /// Set by `Pipeline` when a module's imports are known, before the module is
+    /// parsed, because a macro is expanded while it is parsed. Keyed by module, so
+    /// a body spliced from another module, whose ranges carry that module, is not
+    /// asked about the importer's imports.
+    ///
+    /// Each entry is the modules that offer the name, and whether it is a type
+    /// or a constructor, which arrives with its module and cannot be left out.
+    let mutable ambiguousImports: Map<string, Map<NameSpace * string, string list * bool>> = Map.empty
+
+    /// Refuses a use of `name` that two imports offer as different things.
+    ///
+    /// A use, not an import: two libraries that each export a `helper` cost
+    /// nothing until the program writes `helper`. Then the program has to say
+    /// which it means, because "the later import wins" would choose for it, and
+    /// the choice changes whenever an import is added or moved.
+    let refuseAmbiguous (space: NameSpace) (r: Lexer.Range) (name: string) : unit =
+        match Map.tryFind r.Module ambiguousImports with
+        | None -> ()
+        | Some names ->
+            match Map.tryFind (space, name) names with
+            | None -> ()
+            | Some(offeredBy, arrivesWithModule) ->
+                let modules = offeredBy |> String.concat " and "
+
+                let advice =
+                    match space with
+                    | ValueName when not arrivesWithModule ->
+                        $"Import it from one of them only, with (except ... %s{name}) on the other, or give one a name of its own with (rename ...) or (prefix ...)."
+                    | _ ->
+                        "Give one of them a name of its own with (prefix-types ...): a type and its constructors always arrive with their module, so (except ...) cannot leave them out."
+
+                failwithf
+                    $"Ambiguous name at %s{Lexer.formatPos r}: '%s{name}' is imported from %s{modules}, and they are two different things. %s{advice}"
