@@ -249,7 +249,7 @@ let run (env: Env) (decls: TDecl list) : TDecl list =
     let cases =
         env.Registry.Unions
         |> Map.toSeq
-        |> Seq.collect (fun (_, (_, cases)) -> cases |> Seq.map (fun (n, _, _) -> n))
+        |> Seq.collect (fun (_, (_, cases)) -> cases |> Seq.map (fun (n, _) -> n))
         |> Set.ofSeq
 
     let ctx = { Cases = cases }

@@ -121,41 +121,10 @@ type FType =
     // has no definition to read the colour off.
     | TArrow of FType list * (string * FType) list * FType option * FType * Colour * Range
 
-/// How a union case is found by a quoted literal.
-///
-/// `#:literal` names the case a *shape*-selected literal is injected into when
-/// several cases carry the same payload head. Selection for a quoted literal
-/// goes by that head constructor, so `(ProcSub (List ProcItem))` and
-/// `(ProcArgs (List string))` are indistinguishable to it; this is how the
-/// program says which was meant.
-///
-/// `#:tag name` names the case a *tagged* form selects. A tag is read from the
-/// head symbol of a quoted list — or from the symbol alone, for a case that
-/// carries nothing — and it is matched before any shape is looked at, so a
-/// tagged case takes no part in shape selection. That is what lets a union hold
-/// several cases with one payload head, which no shape can tell apart.
-///
-/// `#:rest` says a tagged case's arguments are its payload rather than a fixed
-/// list of positions: with `(: CSelect (Vec Col) #:tag select #:rest)`,
-/// `(select id name)` is a `(Vec Col)` and `(select [id name])` is not. The
-/// case's own type is unchanged — it is already the collection — so the marker
-/// decides how the form's arguments are read and nothing else.
-type CaseMarkers =
-    { IsLiteral: bool
-      Tag: string option
-      IsRest: bool }
-
-/// A case with no markers on it: what a plain `(Case T ...)` reads as.
-let noCaseMarkers: CaseMarkers =
-    { IsLiteral = false
-      Tag = None
-      IsRest = false }
-
 type UnionCase =
     | SimpleCase of string * Range
-    /// A case with payload types and whatever markers were written on it. See
-    /// `CaseMarkers` for what each decides.
-    | DataCase of string * FType list * CaseMarkers * Range
+    /// A case with payload types.
+    | DataCase of string * FType list * Range
 
 type RecordField =
     { Name: string
@@ -1418,7 +1387,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
                         cases
                         |> List.map (function
                             | SimpleCase(n, _) -> n
-                            | DataCase(n, _, _, _) -> n)
+                            | DataCase(n, _, _) -> n)
                     | Alias _
                     | Record _ -> []))
         | DTrait(name, _, _, _, signatures, defaults, _, _) ->

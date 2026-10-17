@@ -1664,19 +1664,12 @@ type TraitRegistry =
       /// unification, and none of these three want to disturb it.
       MutableRecordFields: Map<string, string list>
       /// Union type name -> (type parameters, cases as (caseName, payload
-      /// types, markers)).
+      /// types)).
       ///
-      /// `registerTypeDefs` otherwise registers each case as an ordinary
-      /// constructor binding and throws the union structure away. Literal
-      /// elaboration needs it back: given an expected type and a payload, it
-      /// has to ask which case of that union could carry the payload.
-      ///
-      /// The markers are what a quoted literal is selected by. `#:literal`
-      /// designates the injection target when two cases of the same union
-      /// carry the same payload type; `#:tag` names a case that a tagged form
-      /// selects by its head symbol, and such a case takes no part in shape
-      /// selection; `#:rest` says a tagged case's arguments are its payload.
-      Unions: Map<string, string list * (string * HMType list * CaseMarkers) list>
+      /// `registerTypeDefs` registers each case as a constructor binding,
+      /// which gives the constructor's type and not which cases a union has.
+      /// Code generation and the exhaustiveness check need the cases.
+      Unions: Map<string, string list * (string * HMType list) list>
       /// The productions of every grammar, by the key of the type each one
       /// declares. A quoted literal where one of these types is expected is
       /// read by the production. See `InferExpr.matchGrammar`.
@@ -2000,7 +1993,7 @@ let private unionFieldsOf (registry: TraitRegistry) (unionKey: string) : string 
     match Map.tryFind unionKey registry.Unions with
     | Some(_, cases) ->
         cases
-        |> List.collect (fun (_, args, _) ->
+        |> List.collect (fun (_, args) ->
             args
             |> List.choose (function
                 | TCon(k, _) when Map.containsKey k registry.Unions -> Some k
@@ -2056,7 +2049,7 @@ let rec structUnionLayout (registry: TraitRegistry) (unionKey: string) : StructU
             // `Choice2Of2 size`. `None` when a field fits no slot.
             let requests =
                 cases
-                |> List.map (fun (name, args, _) ->
+                |> List.map (fun (name, args) ->
                     let fields =
                         args
                         |> List.map (fun t ->
@@ -2152,8 +2145,8 @@ let nullCaseOf (registry: TraitRegistry) (unionKey: string) : string option =
     else
         match Map.tryFind unionKey registry.Unions with
         | Some(_, cases) ->
-            match cases |> List.filter (fun (_, args, _) -> List.isEmpty args) with
-            | [ (name, _, _) ] when cases |> List.exists (fun (_, args, _) -> not (List.isEmpty args)) -> Some name
+            match cases |> List.filter (fun (_, args) -> List.isEmpty args) with
+            | [ (name, _) ] when cases |> List.exists (fun (_, args) -> not (List.isEmpty args)) -> Some name
             | _ -> None
         | None -> None
 

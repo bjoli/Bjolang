@@ -183,7 +183,7 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
             for case in cases do
                 match case with
                 | SimpleCase(n, r)
-                | DataCase(n, _, _, r) when n = td.Name ->
+                | DataCase(n, _, r) when n = td.Name ->
                     failwithf
                         $"Type Error at %s{Lexer.formatPos r}: the case %s{n} has the name of its type, which is a class its cases are nested in, and .NET does not let a member share it. Rename the case or the type."
                 | _ -> ()
@@ -199,7 +199,7 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                 let caseName =
                     match case with
                     | SimpleCase(n, _) -> n
-                    | DataCase(n, _, _, _) -> n
+                    | DataCase(n, _, _) -> n
 
                 finalRegistry <- withSpelling AliasConstructor caseName finalRegistry
         | _ -> ()
@@ -215,8 +215,8 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                 cases
                 |> List.map (function
                     | SimpleCase(n, r) -> SimpleCase(key n, r)
-                    | DataCase(n, types, marked, r) ->
-                        DataCase(key n, types |> List.map (qualifyFTypeNames finalRegistry), marked, r))
+                    | DataCase(n, types, r) ->
+                        DataCase(key n, types |> List.map (qualifyFTypeNames finalRegistry), r))
                 |> Union
 
         let td = { td with Name = name; Kind = keyedKind }
@@ -250,60 +250,29 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                     { finalRegistry with
                         RecordFields = Map.add fName (owners @ [ td.Name ]) finalRegistry.RecordFields }
         | Union cases ->
-            // Collected alongside the constructor bindings so that literal
-            // elaboration can ask the inverse question the bindings cannot
-            // answer: not "what is this constructor's type?" but "which case of
-            // this union could carry this payload?".
+            // The cases with their payloads, which code generation and the
+            // exhaustiveness check read: the constructor bindings give each
+            // constructor's type, and not which cases a union has.
             let mutable caseTable = []
 
-            // A tag names the case a tagged form selects, and there is no
-            // second question to ask when it is ambiguous, so two cases of one
-            // union may not share one.
-            let mutable tagsSeen: Map<string, Range> = Map.empty
-
             for case in cases do
-                let caseName, resolvedArgs, markers, caseRange =
+                let caseName, resolvedArgs, caseRange =
                     match case with
-                    | SimpleCase(n, cr) -> n, [], noCaseMarkers, cr
-                    | DataCase(n, types, m, cr) ->
-                        let resolved = types |> List.map (resolveTypeAnnotation finalRegistry)
-
-                        // `#:rest` says a tag's arguments are its payload, so
-                        // the case's one type is the collection they are the
-                        // elements of. There is no element type to read off a
-                        // scalar, and saying so here is a great deal better than
-                        // one type error at every use.
-                        if m.IsRest then
-                            match resolved with
-                            | [ TCon(("List" | "Vec" | "Array"), [ _ ]) ] -> ()
-                            | [ other ] ->
-                                failwithf
-                                    $"#:rest on the union case %s{Naming.showTypeName n} at %s{Lexer.formatPos cr}: the tag's arguments are its payload, so the case's one type is the collection of them — (List T), (Vec T) or (Array T) — and it is '%s{DotNetInterop.showType other}'."
-                            | _ -> ()
-
-                        n, resolved, m, cr
-
-                match markers.Tag with
-                | Some tag ->
-                    match Map.tryFind tag tagsSeen with
-                    | Some first ->
-                        failwithf
-                            $"Tag Error at %s{Lexer.formatPos caseRange}: the tag `%s{tag}` is already on a case of %s{Naming.showTypeName td.Name} at %s{Lexer.formatPos first}, and a tag selects one case. Give this one a name of its own."
-                    | None -> tagsSeen <- Map.add tag caseRange tagsSeen
-                | None -> ()
+                    | SimpleCase(n, cr) -> n, [], cr
+                    | DataCase(n, types, cr) -> n, types |> List.map (resolveTypeAnnotation finalRegistry), cr
 
                 // A case is a constructor bound at module level and a class
                 // nested in its union, so its name can only be used once per
                 // module. Keys carry the module, so a union from another
                 // module never collides here.
-                if caseTable |> List.exists (fun (c, _, _) -> c = caseName) then
+                if caseTable |> List.exists (fun (c, _) -> c = caseName) then
                     failwithf
                         $"Type Error at %s{Lexer.formatPos caseRange}: %s{Naming.showTypeName td.Name} lists the case %s{Naming.bareTypeName env.CurrentModule caseName} twice. Remove one of them."
 
                 let otherOwner =
                     finalRegistry.Unions
                     |> Map.tryPick (fun unionKey (_, table) ->
-                        if unionKey <> td.Name && table |> List.exists (fun (c, _, _) -> c = caseName) then
+                        if unionKey <> td.Name && table |> List.exists (fun (c, _) -> c = caseName) then
                             Some unionKey
                         else
                             None)
@@ -321,7 +290,7 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                     else
                         Scheme(schemeArgs, [], tfun resolvedArgs parentType)
                 finalBindings <- Map.add caseName { Scheme = consScheme; IsMutable = false } finalBindings
-                caseTable <- caseTable @ [ (caseName, resolvedArgs, markers) ]
+                caseTable <- caseTable @ [ (caseName, resolvedArgs) ]
 
             finalRegistry <- { finalRegistry with Unions = Map.add td.Name (tArgs, caseTable) finalRegistry.Unions }
 
@@ -337,7 +306,7 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                     cases
                     |> List.map (function
                         | SimpleCase(n, _)
-                        | DataCase(n, _, _, _) -> n)
+                        | DataCase(n, _, _) -> n)
                 | _ -> []
 
             finalRegistry <-
@@ -1317,7 +1286,7 @@ and private checkAlias (env: Env) (sigs: Sigs) (newName: string) (oldName: strin
 
     let isConstructor =
         env.Registry.Unions
-        |> Map.exists (fun _ (_, cases) -> cases |> List.exists (fun (c, _, _) -> c = target))
+        |> Map.exists (fun _ (_, cases) -> cases |> List.exists (fun (c, _) -> c = target))
 
     if Map.containsKey target env.Registry.Traits then
         failwithf

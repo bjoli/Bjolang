@@ -464,7 +464,7 @@ let rec checkPattern
             let keyed = originalName env.Registry name
 
             match Map.tryFind unionName env.Registry.Unions with
-            | Some(_, cases) when cases |> List.exists (fun (c, payload, _) -> payload.IsEmpty && (c = keyed || c = name)) ->
+            | Some(_, cases) when cases |> List.exists (fun (c, payload) -> payload.IsEmpty && (c = keyed || c = name)) ->
                 let shown =
                     match Naming.typeKeyParts unionName with
                     | Some(_, bare) -> bare

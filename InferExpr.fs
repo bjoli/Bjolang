@@ -397,7 +397,7 @@ let private unionCasesOf (registry: TraitRegistry) (t: HMType) : (string * int) 
     match t with
     | TCon(name, args) ->
         match Map.tryFind name registry.Unions with
-        | Some(_, cases) -> Some(cases |> List.map (fun (caseName, payloads, _) -> caseName, payloads.Length))
+        | Some(_, cases) -> Some(cases |> List.map (fun (caseName, payloads) -> caseName, payloads.Length))
         | None ->
             match name, args with
             | "Option", [ _ ] -> Some [ "None", 0; "Some", 1 ]

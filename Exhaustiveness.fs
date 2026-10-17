@@ -176,7 +176,7 @@ let private signatureOf (registry: TraitRegistry) (t: HMType) : Signature =
         match Map.tryFind name registry.Unions with
         | Some(typeParams, cases) ->
             cases
-            |> List.map (fun (caseName, payloads, _) ->
+            |> List.map (fun (caseName, payloads) ->
                 CCase caseName, payloads |> List.map (substitute typeParams args))
             |> Closed
         | None ->

@@ -449,7 +449,7 @@ let private surfaceOf
                 cases
                 |> List.map (function
                     | SimpleCase(n, _) -> n, td.Name
-                    | DataCase(n, _, _, _) -> n, td.Name)
+                    | DataCase(n, _, _) -> n, td.Name)
             | Record _ -> [ td.Name, td.Name ]
             | Alias _ -> [])
         |> Map.ofList
@@ -491,7 +491,7 @@ let private surfaceOf
                  cases
                  |> List.map (function
                      | SimpleCase(n, _) -> bare n, n
-                     | DataCase(n, _, _, _) -> bare n, n)
+                     | DataCase(n, _, _) -> bare n, n)
              // A record is constructed by its own name.
              | Record _ -> [ bare td.Name, td.Name ]
              | Alias _ -> []))
@@ -908,7 +908,7 @@ let private ownNames (decls: Decl list) : Set<string> =
                         cases
                         |> List.map (function
                             | SimpleCase(n, _) -> n
-                            | DataCase(n, _, _, _) -> n)
+                            | DataCase(n, _, _) -> n)
                     | _ -> []))
         | DTrait(n, _, _, _, signatures, _, _, _) -> n :: (signatures |> List.map (fun (m, _, _) -> m))
         | DAlias(visible, _, _) -> [ visible ]
@@ -2223,7 +2223,7 @@ let loadModuleGraph
                                            cases
                                            |> List.collect (function
                                                | SimpleCase(n, _)
-                                               | DataCase(n, _, _, _) -> spellingOf AliasConstructor r n)
+                                               | DataCase(n, _, _) -> spellingOf AliasConstructor r n)
                                        | _ -> []))
                             | _ -> [])
 
@@ -2270,7 +2270,7 @@ let loadModuleGraph
                                                 cs
                                                 |> List.map (function
                                                     | SimpleCase(n, _)
-                                                    | DataCase(n, _, _, _) -> n)
+                                                    | DataCase(n, _, _) -> n)
                                             | _ -> [])
                                     | _ -> [])
 

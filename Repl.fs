@@ -227,7 +227,7 @@ let private providedNames (decl: Ast.Decl) : string list =
                     cases
                     |> List.map (function
                         | Ast.SimpleCase(n, _) -> n
-                        | Ast.DataCase(n, _, _, _) -> n)
+                        | Ast.DataCase(n, _, _) -> n)
                 // A record is constructed by its own name, and an opaque type
                 // and an alias offer no constructor at all.
                 | _ -> []))

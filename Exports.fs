@@ -254,7 +254,7 @@ let metadata
                     cases
                     |> List.map (function
                         | Ast.SimpleCase(n, _) -> n
-                        | Ast.DataCase(n, _, _, _) -> n)
+                        | Ast.DataCase(n, _, _) -> n)
                 | _ -> []
 
             td.Name :: bare td.Name :: cases)
@@ -916,25 +916,11 @@ let metadata
                 match td.Kind with
                 | Ast.Alias(ft) -> $"({head} (: {headStr} {serializeFType ft}))"
                 | Ast.Union(cases) ->
-                    // The markers travel with the case: `#:literal` decides
-                    // which case a shape-selected literal is injected into, and
-                    // `#:tag`/`#:rest` which case a tagged form selects and how
-                    // many arguments it takes. A union that is unambiguous
-                    // where it was declared has to stay unambiguous where it is
-                    // imported.
                     let serializeCase c =
                         match c with
                         | Ast.SimpleCase(n, _) -> n
-                        | Ast.DataCase(n, args, markers, _) ->
-                            let parts =
-                                List.map serializeFType args
-                                @ (if markers.IsLiteral then [ "#:literal" ] else [])
-                                @ (match markers.Tag with
-                                   | Some tag -> [ "#:tag"; tag ]
-                                   | None -> [])
-                                @ (if markers.IsRest then [ "#:rest" ] else [])
-
-                            $"(: {n} " + String.concat " " parts + ")"
+                        | Ast.DataCase(n, args, _) ->
+                            $"(: {n} " + String.concat " " (List.map serializeFType args) + ")"
                     $"({head} (: {headStr}{opaqueStr} (Union\n  " + String.concat "\n  " (List.map serializeCase cases) + ")))"
                 // A record's *fields* are the part worth publishing.
                 // Without them an importer knows the name and nothing

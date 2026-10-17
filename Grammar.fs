@@ -444,7 +444,7 @@ let deriveTypes (g: Grammar) : TypeDef list =
                 |> List.map (fun (case, item, r) ->
                     match casePayload g item with
                     | [] -> SimpleCase(case, r)
-                    | payload -> DataCase(case, payload, noCaseMarkers, r))
+                    | payload -> DataCase(case, payload, r))
                 |> Union
             | ShapeAlias item -> Alias(itemValueType g item |> Option.get)
             | ShapeNested(GList(_, elements, _))

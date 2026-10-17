@@ -1309,7 +1309,7 @@ let private impliedLastCase (registry: TraitRegistry) (clauses: TMatchClause lis
         // per case, so there is no case type to bind fields through.
         | TCon(("Option" | "Result"), _) -> None
         | TCon(key, _) ->
-            Map.tryFind key registry.Unions |> Option.map (fun (_, cases) -> cases |> List.map (fun (n, _, _) -> n))
+            Map.tryFind key registry.Unions |> Option.map (fun (_, cases) -> cases |> List.map (fun (n, _) -> n))
         | _ -> None
 
     match List.rev clauses with
@@ -6653,7 +6653,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                             let toString = $"public override string ToString() => \"%s{escapeStringLiteral (shownCaseName n)}\";"
                             append ctx $"public sealed record %s{declaredTypeName n}() : %s{declaredTypeName td.Name}%s{tyArgsStr}"
                             appendTypeBody ctx (instance :: toString :: materialized (declaredTypeName n) SealedCase)
-                        | DataCase (n, ftypes, _, _) ->
+                        | DataCase (n, ftypes, _) ->
                             indent ctx
                             append ctx $"public sealed record %s{declaredTypeName n}("
                             for i, ft in List.indexed ftypes do
@@ -7124,10 +7124,10 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                                 match c with
                                 // A struct union's cases are its own static members.
                                 | SimpleCase (n, _)
-                                | DataCase (n, [], _, _) when isStruct ->
+                                | DataCase (n, [], _) when isStruct ->
                                     indent ctx
                                     appendLine ctx $"public static %s{declaredTypeName td.Name} %s{declaredTypeName n}() => %s{declaredTypeName td.Name}.%s{declaredTypeName n};"
-                                | DataCase (n, ftypes, _, _) when isStruct ->
+                                | DataCase (n, ftypes, _) when isStruct ->
                                     indent ctx
                                     append ctx $"public static %s{declaredTypeName td.Name} %s{declaredTypeName n}("
                                     for i, ft in List.indexed ftypes do
@@ -7142,7 +7142,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                                 | SimpleCase (n, _) ->
                                     indent ctx
                                     appendLine ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{declaredTypeName n}%s{tyArgsStr}() => %s{declaredTypeName td.Name}%s{tyArgsStr}.%s{declaredTypeName n}.Instance;"
-                                | DataCase (n, ftypes, _, _) ->
+                                | DataCase (n, ftypes, _) ->
                                     indent ctx
                                     append ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{declaredTypeName n}%s{tyArgsStr}("
                                     for i, ft in List.indexed ftypes do
@@ -7328,7 +7328,7 @@ let generateProgram
                         cases |> List.map (fun c ->
                             match c with
                             | SimpleCase (name, _) -> name, { ParentTypeName = td.Name; IsDataCase = false }
-                            | DataCase (name, _, _, _) -> name, { ParentTypeName = td.Name; IsDataCase = true }
+                            | DataCase (name, _, _) -> name, { ParentTypeName = td.Name; IsDataCase = true }
                         )
                     | _ -> []
                 )

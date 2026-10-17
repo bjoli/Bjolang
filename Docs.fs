@@ -417,7 +417,7 @@ let private kindsOf (decls: Decl list) : Map<string, Kind> * Set<string> =
                                 cases
                                 |> List.map (function
                                     | SimpleCase(c, _)
-                                    | DataCase(c, _, _, _) -> c)
+                                    | DataCase(c, _, _) -> c)
 
                             KUnion(names, td.IsOpaque, td.TypeArgs)
                         | Alias _ -> KAlias td.TypeArgs
@@ -428,7 +428,7 @@ let private kindsOf (decls: Decl list) : Map<string, Kind> * Set<string> =
                             cases
                             |> List.map (function
                                 | SimpleCase(c, _)
-                                | DataCase(c, _, _, _) ->
+                                | DataCase(c, _, _) ->
                                     c,
                                     KRefused
                                         $"%s{c} is a case of the union %s{td.Name}, and is documented in that union's doc: (case %s{c} \"...\").")
@@ -478,7 +478,7 @@ let private typeKnown (env: Env) (moduleKey: string) (name: string) =
 
 let private caseKnown (env: Env) (name: string) =
     env.Registry.Unions
-    |> Map.exists (fun _ (_, cases) -> cases |> List.exists (fun (c, _, _) -> c = name))
+    |> Map.exists (fun _ (_, cases) -> cases |> List.exists (fun (c, _) -> c = name))
 
 let private clrTypeKnown (name: string) =
     name.Contains '.' && (DotNetInterop.tryResolveType name).IsSome

@@ -150,10 +150,10 @@ let parseUnionCase (s: SExpr) : UnionCase =
 
     // A case takes no markers. A keyword is not a type anywhere else, and
     // admitting one here would make `(-> #:literal int)` parse too.
-    let takeMarkers (name: string) (items: SExpr list) : SExpr list * CaseMarkers =
-        let rec go (types: SExpr list) (markers: CaseMarkers) (rest: SExpr list) =
+    let takeMarkers (name: string) (items: SExpr list) : SExpr list =
+        let rec go (types: SExpr list) (rest: SExpr list) =
             match rest with
-            | [] -> List.rev types, markers
+            | [] -> List.rev types
             // The markers a quoted literal was once selected by. A grammar
             // does that now.
             | SAtom { Token = Keyword(("literal" | "rest" | "tag") as marker) } :: _ ->
@@ -169,9 +169,9 @@ let parseUnionCase (s: SExpr) : UnionCase =
             | SAtom { Token = Keyword bad } :: _ ->
                 failwithf
                     $"Unknown marker #:%s{bad} on the union case %s{name} at %s{Lexer.formatPos r}. A case takes no markers."
-            | item :: tl -> go (item :: types) markers tl
+            | item :: tl -> go (item :: types) tl
 
-        go [] noCaseMarkers items
+        go [] items
 
     // A case with a payload is written `(: Name type ...)`, like a record
     // field, so that a parenthesized form in a type is always a type
@@ -181,10 +181,9 @@ let parseUnionCase (s: SExpr) : UnionCase =
     | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol name } ], _) ->
         failwithf
             $"Invalid union case at %s{Lexer.formatPos r}: (: %s{name}) declares no payload. A case that carries nothing is written as its bare name, %s{name}."
-    // `(: Name #:tag t)` is a tagged case that carries nothing.
     | SList(SAtom { Token = Colon } :: SAtom { Token = Symbol name } :: tTypes, _) ->
-        let types, markers = takeMarkers name tTypes
-        DataCase(name, List.map parseType types, markers, r)
+        let types = takeMarkers name tTypes
+        DataCase(name, List.map parseType types, r)
     | SList([ SAtom { Token = Symbol name } ], _) ->
         failwithf
             $"Invalid union case at %s{Lexer.formatPos r}: a case that carries nothing is written as its bare name, %s{name}, not (%s{name})."
@@ -454,7 +453,7 @@ let private deriveEqForUnion (r: Range) (cases: UnionCase list) : Decl list =
     let parts =
         function
         | SimpleCase(n, cr) -> n, 0, cr
-        | DataCase(n, types, _, cr) -> n, types.Length, cr
+        | DataCase(n, types, cr) -> n, types.Length, cr
 
     let binders (side: string) (arity: int) (cr: Range) =
         List.init arity (fun i -> PIdent($"__d_%s{side}%d{i}", cr))
