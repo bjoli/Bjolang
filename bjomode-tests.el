@@ -228,7 +228,6 @@
     "TestFiles/220_def.bjo"
     "TestFiles/226_cond_clauses.bjo"
     "TestFiles/270_loop_subloop_form.bjo"
-    "Examples/traits.bjo"
     "bjo/git.bjo")
   "Files the mode leaves as they are, from every corner of the language.")
 
