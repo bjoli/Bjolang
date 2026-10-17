@@ -237,6 +237,15 @@
                   (response-text r) "/query?q=banana%20split&n=2")
           (response-close r)))
 
+       ;; The query goes before a fragment. After the `#` it was part of the
+       ;; fragment, which is not sent, so the server got no query.
+       (match (fetch (http-get (str base "/query#top") #:query [("q" . "a&b")]))
+         ((Err e) (fail "a query GET with a fragment failed"))
+         ((Ok r)
+          (expect "a query goes before the fragment"
+                  (response-text r) "/query?q=a%26b")
+          (response-close r)))
+
        ;; --- A POST, with a body and a header on each end ---------------------
        ;;
        ;; `X-Basket` belongs on the request and `Content-Type` on the content,

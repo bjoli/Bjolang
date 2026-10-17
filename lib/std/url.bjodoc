@@ -1,0 +1,413 @@
+;; Docs for std/url.bjo, read through (:doc #:file "url.bjodoc"). The texts
+;; are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "URLs: read, written, resolved and percent-encoded, by RFC 3986.")
+  (see link parse-url url-resolve url-params encode-segment)
+  (example """
+    (import (std url))
+
+    ;; Write one. Each value is encoded for the part that it is in.
+    (link '(url https "example.com" (path "users" ,name)
+                (query (page 2) (tag ,tag))
+                (fragment "top")))
+    ;; => "https://example.com/users/Ada%20L?page=2&tag=a%26b#top"
+
+    (link '(path "users" ,id "edit"))       ;; => "/users/42/edit"
+    """)
+  (example """
+    ;; Read one, and find a link on its page.
+    (match (parse-url "https://example.com/a/b?q=1")
+      ((Err why) why)
+      ((Ok page)
+       (def (Ok ref) (parse-url "../c") :propagate)
+       (url->string (url-resolve page ref))))   ;; => "https://example.com/c"
+    """)
+  (reference """
+    @strong{Writing a URL.} A URL is written as a quoted literal, and the
+    shape of the literal says which part each value is in. A value in
+    @code{(path ...)} is one segment, so a @code{/} in it is encoded and does
+    not make a second segment. A value in @code{(query ...)} is a key or a
+    value, so a @code{&} or a @code{=} in it is encoded and does not make a
+    second parameter. You do not choose an encoder, so you cannot choose the
+    wrong one.
+
+    @read-table{
+    | @code{'(url https "example.com" ...)}  | a URL with a scheme and a host            |
+    | @code{'(path "a" ,b ...)}              | a path on this site: @code{/a/b}          |
+    | @code{(port 8080)}                     | in @code{url}: the port                   |
+    | @code{(user "ada")}                    | in @code{url}: the user before @code{@}   |
+    | @code{(path seg ...)}                  | in @code{url}: the path                   |
+    | @code{(query (key value) (key) ...)}   | the query; in @code{url} or in @code{path} |
+    | @code{(fragment "x")}                  | the fragment; in @code{url} or in @code{path} |
+    }
+
+    A segment, a key and a value is a string, a symbol or an int, written
+    or computed with @code{,}. A computed @code{(Vec string)} is several:
+    several segments in a path, or one key with several values in a query,
+    @code{tag=a&tag=b}. A computed pair is @code{,(Tuple key value)}, and
+    many pairs are @code{,@(list-map ParamPair pairs)}.
+
+    The compiler checks the tags and their arity where the literal is
+    written. @code{(qeury ...)} and @code{(port 1 2)} are type errors.
+    What the shape cannot show, @code{make-url} checks when it runs, and
+    raises @code{ArgumentException}: a computed host or scheme that is not
+    one, a port that is not from 0 to 65535, a part given two times, a
+    parameter with more than one value, and a @code{(url ...)} with no
+    scheme or no host. A host that is not ASCII is written as IDNA writes it,
+    and an IPv6 address gets its brackets.
+
+    A number in a literal has a type only when it is written there or has
+    one already. @code{(def id 42)} has none yet, and the literal refuses
+    @code{,id}. Write @code{(def (: id int) 42)}, or @code{,(int->string n)}.
+
+    @strong{Reading a URL.} @code{parse-url} reads RFC 3986 strictly: a URL,
+    or a relative reference such as @code{../a?b}. A space, a character that
+    is not ASCII and a @code{%} without two hex digits are refused, with the
+    column. Such text has to be percent-encoded before it is a URL. A browser
+    accepts more and corrects it (the WHATWG URL standard). This module does
+    not.
+
+    A @code{Url} keeps each part as it was written, percent-encoding
+    included, so @code{url->string} gives back the same text. There is one
+    exception: an empty port, @code{http://h:/}, is written without its
+    @code{:}, as RFC 3986 6.2.3 recommends. The scheme and the host keep
+    their case. The decoded forms are functions: @code{url-segments} and
+    @code{url-params}.
+
+    @strong{Not here.} Normalisation beyond @code{remove-dot-segments},
+    comparison of URLs, IRIs, and a zone in an IPv6 address
+    (@code{fe80::1%25eth0}), which this module refuses.
+    """))
+
+;; --- the value -------------------------------------------------------------
+
+(:doc Url
+  (summary "A URL, or a relative reference, with each part as it was written.")
+  (field scheme "The scheme without its @code{:}, such as @code{\"https\"}; @code{None} for a relative reference.")
+  (field authority "The user info, the host and the port; @code{None} when there is no @code{//}.")
+  (field path "The path, percent-encoded. It can be empty.")
+  (field query "The query without its @code{?}, percent-encoded; @code{None} when there is no @code{?}.")
+  (field fragment "The fragment without its @code{#}, percent-encoded; @code{None} when there is no @code{#}.")
+  (see parse-url url->string make-url)
+  (reference """
+    @code{None} is a part that is not there. That is not the same as a part
+    that is empty: @code{http://h/?} has the query @code{""}.
+    """))
+
+(:doc Authority
+  (summary "The part of a URL after @code{//}: @code{userinfo@host:port}.")
+  (field userinfo "The user info, percent-encoded, without its @code{@}; @code{None} when there is none.")
+  (field host "The host as written. An IP literal keeps its brackets: @code{[::1]}.")
+  (field port "The port; @code{None} when there is none.")
+  (see url-authority url-host url-port))
+
+(:doc url-scheme
+  (summary "The scheme of a URL, without its @code{:}.")
+  (arg u "The URL.")
+  (returns "@code{(Some \"https\")}, or @code{None} for a relative reference."))
+
+(:doc url-authority
+  (summary "The authority of a URL: user info, host and port.")
+  (arg u "The URL.")
+  (returns "The @code{Authority}, or @code{None} when the URL has no @code{//}."))
+
+(:doc url-path
+  (summary "The path of a URL, percent-encoded as written.")
+  (arg u "The URL.")
+  (returns "The path. It can be empty.")
+  (see url-segments))
+
+(:doc url-query
+  (summary "The query of a URL, percent-encoded, without its @code{?}.")
+  (arg u "The URL.")
+  (returns "The query, or @code{None} when there is no @code{?}.")
+  (see url-params))
+
+(:doc url-fragment
+  (summary "The fragment of a URL, percent-encoded, without its @code{#}.")
+  (arg u "The URL.")
+  (returns "The fragment, or @code{None} when there is no @code{#}.")
+  (see percent-decode))
+
+(:doc authority-userinfo
+  (summary "The user info of an authority, percent-encoded.")
+  (arg a "The authority.")
+  (returns "The user info without its @code{@}, or @code{None}."))
+
+(:doc authority-host
+  (summary "The host of an authority, as written.")
+  (arg a "The authority.")
+  (returns "The host. An IP literal keeps its brackets."))
+
+(:doc authority-port
+  (summary "The port of an authority.")
+  (arg a "The authority.")
+  (returns "The port, or @code{None} when there is none."))
+
+(:doc url-host
+  (summary "The host of a URL, as written.")
+  (arg u "The URL.")
+  (returns "The host, or @code{None} when the URL has no authority."))
+
+(:doc url-port
+  (summary "The port of a URL.")
+  (arg u "The URL.")
+  (returns "The port, or @code{None} when the URL has no port written.")
+  (reference """
+    A scheme's default port is not filled in: @code{https://h/} has no port,
+    not 443.
+    """))
+
+(:doc url-absolute?
+  (summary "Whether a URL has a scheme.")
+  (arg u "The URL.")
+  (returns "@code{#t} for @code{https://h/} and @code{mailto:a@b}; @code{#f} for @code{/a} and @code{//h/a}."))
+
+;; --- text, both ways -----------------------------------------------------
+
+(:doc parse-url
+  (summary "Reads a URL or a relative reference, by RFC 3986.")
+  (arg s "The text.")
+  (returns "The @code{Url}, or why it is not one, with the column.")
+  (see url->string url-resolve)
+  (example """
+    (parse-url "https://ada@example.com:8443/a/b%2Fc?x=1#top")
+    (parse-url "../a?b")              ;; a relative reference
+    (parse-url "http://h/a b")
+    ;; => (Err "column 11: a space is not allowed in the path, and has to be percent-encoded")
+    """)
+  (reference """
+    Refused: a byte that the part does not allow (a space, a character that
+    is not ASCII, a control character), a @code{%} without two hex digits,
+    a port that is not digits or is more than 65535, a @code{[} with no
+    @code{]}, an IP literal that is not an IPv6 address or an IPvFuture
+    address, and a relative reference with a @code{:} in its first segment.
+    @code{a:b} is the scheme @code{a}, so RFC 3986 writes that reference
+    @code{./a:b}.
+    """))
+
+(:doc url->string
+  (summary "Writes a URL as text.")
+  (arg u "The URL.")
+  (returns "The text. For a URL from @code{parse-url} it is the text that was read, except an empty port.")
+  (see parse-url link))
+
+;; --- resolving ----------------------------------------------------------
+
+(:doc url-resolve
+  (summary "Reads a reference where a base URL is, as a browser reads a link on a page.")
+  (arg base "The URL of the page. It should have a scheme.")
+  (arg ref "The reference, such as @code{../a}, @code{?q} or @code{//h/x}.")
+  (returns "The URL that @code{ref} points to.")
+  (see remove-dot-segments parse-url)
+  (example """
+    ;; base: http://a/b/c/d;p?q
+    ;; "g"        => http://a/b/c/g
+    ;; "../g"     => http://a/b/g
+    ;; "?y"       => http://a/b/c/d;p?y
+    ;; "//g"      => http://g
+    """)
+  (reference """
+    The algorithm of RFC 3986 5.2.2. A reference with a scheme is a URL of
+    its own, and only its dot segments are removed.
+    """))
+
+(:doc remove-dot-segments
+  (summary "Takes the @code{.} and @code{..} segments out of a path.")
+  (arg path "A path, percent-encoded.")
+  (returns "The path without dot segments.")
+  (example """
+    (remove-dot-segments "/a/b/../c/./d")   ;; => "/a/c/d"
+    (remove-dot-segments "/a/..")           ;; => "/"
+    """)
+  (reference """
+    RFC 3986 5.2.4. A @code{..} above the root is dropped, so
+    @code{/a/../../b} is @code{/b}. A path that ends in @code{.} or
+    @code{..} ends in @code{/}.
+    """))
+
+;; --- decoded parts ------------------------------------------------------
+
+(:doc url-segments
+  (summary "The segments of a URL's path, decoded.")
+  (arg u "The URL.")
+  (returns "The segments, or why one does not decode.")
+  (example """
+    ;; /a/b%2Fc/  =>  (Ok ("a" "b/c" ""))
+    """)
+  (reference """
+    The @code{/} at the start of the path begins the first segment. A
+    @code{/} at the end leaves an empty last segment. An encoded @code{/}
+    is part of its segment, which is why the segments are decoded one by
+    one and not the path as one string. The empty path has no segments.
+    """))
+
+(:doc url-params
+  (summary "The parameters of a URL's query, decoded, in order.")
+  (arg u "The URL.")
+  (returns "The pairs, as @code{query->params} reads them; no pairs when there is no query.")
+  (see query->params param-ref param-ref-all))
+
+(:doc query->params
+  (summary "Reads a query as key and value pairs, in order.")
+  (arg q "The query, without its @code{?}.")
+  (returns "The pairs, decoded, or why one does not decode.")
+  (example """
+    (query->params "a=1&b=two+words&b=%C3%A4&flag")
+    ;; => (Ok (list (Tuple "a" "1") (Tuple "b" "two words") (Tuple "b" "ä") (Tuple "flag" "")))
+    """)
+  (reference """
+    A @code{+} is a space, as a form writes it. A parameter with no
+    @code{=} has the value @code{""}. An empty parameter,
+    @code{a=1&&b=2}, is no parameter. A key that is there two times is in
+    the list two times, so @code{param-ref-all} can find every value.
+    """))
+
+(:doc params->query
+  (summary "Writes key and value pairs as a query.")
+  (arg params "The pairs, in order.")
+  (returns "The query, without the @code{?}.")
+  (see encode-query-part link)
+  (example """
+    (params->query (list (Tuple "q" "a&b") (Tuple "page" "2")))   ;; => "q=a%26b&page=2"
+    """))
+
+(:doc param-ref
+  (summary "The first value of a key.")
+  (arg params "The pairs.")
+  (arg key "The key.")
+  (returns "@code{(Some value)}, or @code{None} when the key is not there."))
+
+(:doc param-ref-all
+  (summary "Every value of a key, in order.")
+  (arg params "The pairs.")
+  (arg key "The key.")
+  (returns "The values; empty when the key is not there."))
+
+;; --- percent-encoding ---------------------------------------------------
+
+(:doc encode-segment
+  (summary "Percent-encodes text as one segment of a path.")
+  (arg s "The text.")
+  (returns "The segment. A @code{/}, @code{?} and @code{#} are encoded.")
+  (see percent-decode link)
+  (example """
+    (encode-segment "a/b c")   ;; => "a%2Fb%20c"
+    """)
+  (reference """
+    What RFC 3986 lets a segment hold stays as it is: letters, digits,
+    @code{- . _ ~}, @code{! $ & ' ( ) * + , ; =}, @code{:} and @code{@}.
+    Every other byte of the UTF-8 is @code{%XX}.
+    """))
+
+(:doc encode-query-part
+  (summary "Percent-encodes text as a key or a value of a query.")
+  (arg s "The text.")
+  (returns "The key or the value. A @code{&}, @code{=}, @code{+}, @code{;} and @code{#} are encoded, and a space is @code{%20}.")
+  (see params->query encode-form)
+  (reference """
+    A @code{+} is encoded because a server reads it as a space. A space is
+    @code{%20}, which every server reads as a space. So the value comes back
+    the same, whichever way the server reads a query.
+    """))
+
+(:doc encode-fragment
+  (summary "Percent-encodes text as a fragment.")
+  (arg s "The text.")
+  (returns "The fragment. A @code{#} and a space are encoded."))
+
+(:doc encode-userinfo
+  (summary "Percent-encodes text as a user name or a password.")
+  (arg s "The text.")
+  (returns "The text, with @code{:} and @code{@} encoded."))
+
+(:doc encode-form
+  (summary "Encodes text as @code{application/x-www-form-urlencoded} writes it.")
+  (arg s "The text.")
+  (returns "The text: letters, digits and @code{* - . _} as they are, a space as @code{+}, every other byte @code{%XX}.")
+  (see form-decode encode-query-part)
+  (reference """
+    This is what a browser sends for a form. For a link, use
+    @code{encode-query-part} or a literal.
+    """))
+
+(:doc percent-decode
+  (summary "Decodes percent-encoded text.")
+  (arg s "The text.")
+  (returns "The decoded text, or why it does not decode: a @code{%} without two hex digits, or bytes that are not UTF-8.")
+  (see form-decode)
+  (reference """
+    A @code{+} stays a @code{+}. Use @code{form-decode} for a form, where it
+    is a space.
+    """))
+
+(:doc form-decode
+  (summary "Decodes text that a form encoded: @code{+} is a space.")
+  (arg s "The text.")
+  (returns "The decoded text, or why it does not decode.")
+  (see percent-decode encode-form))
+
+;; --- the literal ----------------------------------------------------------
+
+(:doc Link
+  (summary "A URL written as a quoted literal: @code{'(url ...)} or @code{'(path ...)}.")
+  (case LinkUrl "@code{(url scheme host part ...)}: a URL with a scheme and a host.")
+  (case LinkPath "@code{(path segment ... (query ...) (fragment ...))}: a path on this site.")
+  (see link make-url UrlPart PathPart)
+  (reference """
+    The module's documentation has the grammar. The types are transparent
+    because a literal elaborates into their cases where it is written.
+    """))
+
+(:doc UrlPart
+  (summary "One part of a @code{(url ...)} literal.")
+  (case UrlScheme "The scheme, a symbol: @code{https}.")
+  (case UrlHost "The host, a string: @code{\"example.com\"}.")
+  (case UrlPort "@code{(port 8080)}.")
+  (case UrlUser "@code{(user \"ada\")}.")
+  (case UrlPath "@code{(path segment ...)}.")
+  (case UrlQuery "@code{(query (key value) ...)}.")
+  (case UrlFragment "@code{(fragment \"top\")}.")
+  (see Link))
+
+(:doc PathPart
+  (summary "One part of a @code{(path ...)}: a segment, or the query or the fragment.")
+  (case SegStr "A segment, a string.")
+  (case SegSym "A segment, a symbol.")
+  (case SegInt "A segment, an int.")
+  (case SegMany "A computed @code{(Vec string)}: several segments.")
+  (case SegQuery "@code{(query (key value) ...)}.")
+  (case SegFragment "@code{(fragment \"top\")}.")
+  (see Link))
+
+(:doc QueryParam
+  (summary "One parameter of a @code{(query ...)}.")
+  (case ParamForm "@code{(key value)}, or @code{(key)} with no value.")
+  (case ParamPair "A computed pair: @code{,(Tuple key value)}.")
+  (see Link params->query))
+
+(:doc UrlPiece
+  (summary "A key, a value, a user or a fragment in a literal.")
+  (case PieceStr "A string.")
+  (case PieceSym "A symbol, as its name.")
+  (case PieceInt "An int.")
+  (case PieceMany "A computed @code{(Vec string)}: one key with several values.")
+  (see Link))
+
+(:doc make-url
+  (summary "The @code{Url} that a literal stands for.")
+  (arg l "The literal.")
+  (returns "The URL, with each value encoded for its part.")
+  (raises System.ArgumentException "When a computed host or scheme is not one, a port is not from 0 to 65535, a part is there two times, a parameter has more than one value, or a (url ...) has no scheme or no host.")
+  (see link Link))
+
+(:doc link
+  (summary "The text of a URL written as a literal.")
+  (arg l "The literal.")
+  (returns "@code{(url->string (make-url l))}.")
+  (raises System.ArgumentException "When make-url raises it.")
+  (see make-url Link)
+  (example """
+    (link '(path "search" (query (q ,text))))   ;; => "/search?q=a%20%26%20b"
+    """))

@@ -1,0 +1,214 @@
+;; (std url): percent-encoding for each part, RFC 3986 read strictly, a URL
+;; written back as it was read, references resolved as RFC 3986 5.4 says, the
+;; query as ordered pairs, and the quoted literal, which encodes each value for
+;; the part it is in.
+
+(import (std url))
+(import (std simpletest))
+
+;; The text again, or the refusal.
+(: again (-> string string))
+(defun (again s)
+  (match (parse-url s)
+    ((Ok u) (url->string u))
+    ((Err e) (str "err: " e))))
+
+(: resolve (-> string string string))
+(defun (resolve base ref)
+  (match (parse-url base)
+    ((Err e) (str "base: " e))
+    ((Ok b) (match (parse-url ref)
+              ((Err e) (str "ref: " e))
+              ((Ok r) (url->string (url-resolve b r)))))))
+
+(: decoded (-> (Result string string) string))
+(defun (decoded r)
+  (match r
+    ((Ok s) s)
+    ((Err e) (str "err: " e))))
+
+(: params-text (-> (Result string (List (Tuple string string))) string))
+(defun (params-text r)
+  (match r
+    ((Err e) (str "err: " e))
+    ((Ok ps)
+     (string-join (list->vec (list-map (fun (p) (match p ((Tuple k v) (str k "=" v)))) ps))
+                  " | "))))
+
+(: raised (-> Link string))
+(defun (raised l)
+  (match (try (link l) #:catch (System.ArgumentException))
+    ((Ok s) (str "no raise: " s))
+    ((Err e) (.-Message e))))
+
+(defun (main args)
+  ;; --- percent-encoding ------------------------------------------------
+  (expect "a segment encodes / ? # and a space"
+          (encode-segment "a/b c?d#e&f=g+h:i@j") "a%2Fb%20c%3Fd%23e&f=g+h:i@j")
+  (expect "a query part encodes & = + ; #, and a space as %20"
+          (encode-query-part "a/b c?d#e&f=g+h:i@j;k") "a/b%20c?d%23e%26f%3Dg%2Bh:i@j%3Bk")
+  (expect "a form writes a space as +, and UTF-8 as bytes"
+          (encode-form "a/b c&ä*") "a%2Fb+c%26%C3%A4*")
+  (expect "a fragment encodes # and a space" (encode-fragment "a/b c?d#e") "a/b%20c?d%23e")
+  (expect "user info encodes : and @" (encode-userinfo "us:er@x") "us%3Aer%40x")
+  (expect "percent-decode keeps +" (decoded (percent-decode "a%20b%C3%A4+c")) "a bä+c")
+  (expect "form-decode reads + as a space" (decoded (form-decode "a%20b+c")) "a b c")
+  (expect "half a UTF-8 character is refused"
+          (decoded (percent-decode "%C3")) "err: the percent-encoded bytes are not UTF-8")
+  (expect "a % without two hex digits is refused"
+          (decoded (percent-decode "a%2")) "err: column 2: a '%' begins an escape of two hex digits")
+  (expect "and with a digit that is not hex"
+          (decoded (percent-decode "%zz")) "err: column 1: a '%' begins an escape of two hex digits")
+
+  ;; --- reading, and writing back ---------------------------------------
+  (loop (:for s (list "https://user:pw@example.com:8080/a/b%2Fc/?x=1&y=two+w#frag"
+                      "http://[::1]:80/" "http://[v1.fe:x]/" "mailto:a@b.c"
+                      "urn:isbn:0451450523" "//host" "/a?" "a/b" "" "#f" "?" "x/a:b"
+                      "file:///etc/passwd" "HTTP://Example.COM/A" "a:b:c" "./a:b"))
+        (:do (expect (str "read and written back: " s) (again s) s)))
+  (expect "an empty port is written without its colon" (again "http://h:/") "http://h/")
+
+  (expect "a space" (again "http://h/a b")
+          "err: column 11: a space is not allowed in the path, and has to be percent-encoded")
+  (expect "a bad escape" (again "http://h/%zz")
+          "err: column 10: a '%' begins an escape of two hex digits")
+  (expect "a [ with no ]" (again "http://[::1")
+          "err: column 8: a '[' begins an IP address, and there is no ']'")
+  (expect "a port too big" (again "http://h:99999/") "err: column 10: a port is at most 65535")
+  (expect "a port that is not digits" (again "http://h:8a/")
+          "err: column 11: a port is digits, and this is 'a'")
+  (expect "a ':' in a relative reference's first segment" (again "1a:b")
+          "err: column 3: a relative reference cannot have a ':' in its first segment; write './' before it")
+  (expect "a character that is not ASCII" (again "http://h/ä")
+          "err: column 10: a character that is not ASCII is not allowed in the path, and has to be percent-encoded")
+  (expect "a zone in an IPv6 address" (again "http://[fe80::1%25eth0]/")
+          "err: column 16: an IPv6 address in a URL has no zone")
+  (expect "an IP literal that is not IPv6" (again "http://[::g]/")
+          "err: column 9: this is not an IPv6 address")
+  (expect "an '@' in the host" (again "http://h@@/")
+          "err: column 10: '@' is not allowed in the host, and has to be percent-encoded")
+  (expect "a '#' in the fragment" (again "/a#b#c")
+          "err: column 5: '#' is not allowed in the fragment, and has to be percent-encoded")
+
+  (match (parse-url "https://ada@Example.com:8443/a?q#f")
+    ((Err e) (fail e))
+    ((Ok u)
+     (expect "the scheme" (url-scheme u) (Some "https"))
+     (expect "the host, as written" (url-host u) (Some "Example.com"))
+     (expect "the port" (url-port u) (Some 8443))
+     (expect "the user info"
+             (match (url-authority u) ((Some a) (authority-userinfo a)) (None None))
+             (Some "ada"))
+     (expect "the path" (url-path u) "/a")
+     (expect "the query" (url-query u) (Some "q"))
+     (expect "the fragment" (url-fragment u) (Some "f"))
+     (expect-true "absolute" (url-absolute? u))))
+  (expect "a relative reference is not absolute"
+          (match (parse-url "//h/a") ((Ok u) (url-absolute? u)) (_ #t)) #f)
+  (expect "no port written is no port, not the scheme's"
+          (match (parse-url "https://h/") ((Ok u) (url-port u)) (_ (Some 0))) None)
+
+  ;; --- RFC 3986 5.4, normal and abnormal --------------------------------
+  (def base "http://a/b/c/d;p?q")
+  (let go ((cs (list
+    "g:h" "g:h"  "g" "http://a/b/c/g"  "./g" "http://a/b/c/g"  "g/" "http://a/b/c/g/"
+    "/g" "http://a/g"  "//g" "http://g"  "?y" "http://a/b/c/d;p?y"  "g?y" "http://a/b/c/g?y"
+    "#s" "http://a/b/c/d;p?q#s"  "g#s" "http://a/b/c/g#s"  "g?y#s" "http://a/b/c/g?y#s"
+    ";x" "http://a/b/c/;x"  "g;x" "http://a/b/c/g;x"  "g;x?y#s" "http://a/b/c/g;x?y#s"
+    "" "http://a/b/c/d;p?q"  "." "http://a/b/c/"  "./" "http://a/b/c/"  ".." "http://a/b/"
+    "../" "http://a/b/"  "../g" "http://a/b/g"  "../.." "http://a/"  "../../" "http://a/"
+    "../../g" "http://a/g"
+    "../../../g" "http://a/g"  "../../../../g" "http://a/g"  "/./g" "http://a/g"
+    "/../g" "http://a/g"  "g." "http://a/b/c/g."  ".g" "http://a/b/c/.g"  "g.." "http://a/b/c/g.."
+    "..g" "http://a/b/c/..g"  "./../g" "http://a/b/g"  "./g/." "http://a/b/c/g/"
+    "g/./h" "http://a/b/c/g/h"  "g/../h" "http://a/b/c/h"  "g;x=1/./y" "http://a/b/c/g;x=1/y"
+    "g;x=1/../y" "http://a/b/c/y"  "g?y/./x" "http://a/b/c/g?y/./x"
+    "g?y/../x" "http://a/b/c/g?y/../x"  "g#s/./x" "http://a/b/c/g#s/./x"
+    "g#s/../x" "http://a/b/c/g#s/../x"  "http:g" "http:g")))
+    (match cs
+      ((Cons r (Cons want rest))
+       (expect (str "resolve " r) (resolve base r) want)
+       (go rest))
+      (_ unit)))
+  (expect "remove-dot-segments" (remove-dot-segments "/a/b/../c/./d") "/a/c/d")
+  (expect "and at the root" (remove-dot-segments "/a/..") "/")
+  (expect "a base with an authority and no path" (resolve "http://h" "g") "http://h/g")
+
+  ;; --- the decoded parts -----------------------------------------------
+  (match (parse-url "https://h/a/b%2Fc/?x=1&y=two+w&y=%C3%A4&z&&k=")
+    ((Err e) (fail e))
+    ((Ok u)
+     (expect "segments keep an encoded /" (url-segments u) (Ok (list "a" "b/c" "")))
+     (expect "params in order, decoded"
+             (params-text (url-params u)) "x=1 | y=two w | y=ä | z= | k=")
+     (match (url-params u)
+       ((Err e) (fail e))
+       ((Ok ps)
+        (expect "the first value" (param-ref ps "y") (Some "two w"))
+        (expect "every value" (param-ref-all ps "y") (list "two w" "ä"))
+        (expect "a key not there" (param-ref ps "nope") None)))))
+  (expect "the empty path has no segments"
+          (match (parse-url "http://h") ((Ok u) (url-segments u)) (_ (Ok (list "?")))) (Ok (list)))
+  (expect "no query has no params"
+          (params-text (match (parse-url "/a") ((Ok u) (url-params u)) ((Err e) (Err e)))) "")
+  (expect "a param that does not decode"
+          (params-text (query->params "a=%C3")) "err: the percent-encoded bytes are not UTF-8")
+  (expect "pairs written as a query"
+          (params->query (list (Tuple "q" "a&b=c") (Tuple "s p" "x+y"))) "q=a%26b%3Dc&s%20p=x%2By")
+
+  ;; --- the literal -----------------------------------------------------
+  (def name "Ada L/x")
+  (def t "a&b=c#d")
+  (def (: id int) 42)
+  (def tags ["x y" "z"])
+  (def segs ["docs" "a b"])
+  (def input "100% + more")
+  (def host "bücher.example")
+  (expect "a whole URL, and nothing in a value escapes its part"
+          (link '(url https "example.com" (path "users" ,name "posts")
+                      (query (page "2") (tag ,t) (tag "new"))
+                      (fragment "top")))
+          "https://example.com/users/Ada%20L%2Fx/posts?page=2&tag=a%26b%3Dc%23d&tag=new#top")
+  (expect "a path on this site" (link '(path "users" ,id "edit")) "/users/42/edit")
+  (expect "a query in a path" (link '(path "search" (query (q ,input)))) "/search?q=100%25%20%2B%20more")
+  (expect "the root" (link '(path)) "/")
+  (expect "a port and no path" (link '(url http "localhost" (port 8080))) "http://localhost:8080")
+  (expect "ints, symbols and a key with no value"
+          (link '(url https "example.com" (query (page 2) (sort asc) (flag))))
+          "https://example.com?page=2&sort=asc&flag")
+  (expect "a vec is several segments, or several values"
+          (link '(url https "example.com" (path ,segs) (query (tag ,tags))))
+          "https://example.com/docs/a%20b?tag=x%20y&tag=z")
+  (expect "a host that is not ASCII" (link '(url https ,host (path "ö")))
+          "https://xn--bcher-kva.example/%C3%B6")
+  (expect "an IPv6 host gets brackets" (link '(url http "::1" (port 80) (path "a")))
+          "http://[::1]:80/a")
+  (expect "a user" (link '(url https "example.com" (user "us:er") (path users)))
+          "https://us%3Aer@example.com/users")
+  (expect "a computed pair, and a fragment"
+          (link '(path "a" (query ,(Tuple "k" "v w") (x "1")) (fragment "s p")))
+          "/a?k=v%20w&x=1#s%20p")
+  (expect "pairs spliced in"
+          (link '(path "a" (query ,@(list-map ParamPair (list (Tuple "a" "1") (Tuple "b" "2"))))))
+          "/a?a=1&b=2")
+  (expect "make-url makes a Url" (url->string (make-url '(path "a" "b"))) "/a/b")
+  (expect "and it reads back as itself"
+          (again (link '(url https "example.com" (path ,name) (query (t ,t)))))
+          (link '(url https "example.com" (path ,name) (query (t ,t)))))
+
+  (expect "a host with a space" (raised '(url https "exa mple.com"))
+          "make-url: 'exa mple.com' is not a host name")
+  (expect "a port out of range" (raised '(url https "example.com" (port ,(+ 70000 0))))
+          "make-url: a port is from 0 to 65535, and this is 70000")
+  (expect "a query given twice"
+          (raised '(url https "a.com" (query (k "1")) (path "x" (query (j "2")))))
+          "make-url: a URL has one query")
+  (expect "two values in a parameter" (raised '(url https "a.com" (query (k "1" "2"))))
+          "make-url: a query parameter is (key value) or (key)")
+  (expect "no scheme" (raised '(url "a.com"))
+          "make-url: a (url ...) begins with its scheme, a symbol such as https")
+  (expect "no host" (raised '(url https))
+          "make-url: a (url ...) has a host, a string such as \"example.com\"")
+  (expect "a scheme that is not one" (raised '(url ,(string->symbol "ht tp") "a.com"))
+          "make-url: 'ht tp' is not a scheme")
+  0)

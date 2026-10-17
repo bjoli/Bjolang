@@ -3,6 +3,34 @@
 
 What each change guarantees, and what it leaves open.
 
+* ~(std url)~: URLs read, written, resolved and percent-encoded
+
+- ~(link '(url https "example.com" (path "users" ,name) (query (tag ,t))
+  (fragment "top")))~ writes a URL from a quoted literal, as ~(std run)~
+  writes a pipeline. Each value is encoded for the part it is in: a ~/~ in
+  a computed segment does not make a second segment, and a ~&~ or ~=~ in a
+  computed value does not make a second parameter. ~'(path ...)~ is a path
+  on this site. A computed ~(Vec string)~ is several segments or several
+  values of one key. The compiler checks the tags and their arity where the
+  literal is written; ~make-url~ raises ~ArgumentException~ for what the
+  shape cannot show (a bad computed host or scheme, a port out of range, a
+  part given two times). A host that is not ASCII is written as IDNA writes
+  it, and an IPv6 host gets its brackets.
+- ~parse-url~ reads RFC 3986 strictly, a URL or a relative reference, and
+  refuses with the column. A ~Url~ keeps each part as written, so
+  ~url->string~ gives the same text back (an empty port excepted).
+  ~url-resolve~ is RFC 3986 5.2, and passes every example of 5.4.
+- ~url-segments~ and ~url-params~ decode the path and the query. The query
+  is ordered pairs, with ~param-ref~ and ~param-ref-all~. Encoders for each
+  part: ~encode-segment~, ~encode-query-part~, ~encode-fragment~,
+  ~encode-userinfo~ and ~encode-form~; ~percent-decode~ and ~form-decode~
+  refuse a bad escape and bytes that are not UTF-8.
+- ~(std http)~ encodes a query with ~encode-query-part~ and a form with
+  ~encode-form~. A query added to a url with a ~#fragment~ goes before the
+  ~#~; it went after it, into the fragment, and was not sent.
+- Tests: ~382_url.bjo~, ~errors/url_literal_misspelt_tag.bjo~, and a check
+  in ~172_http.bjo~.
+
 * bjodat: the reader's edges, and the two decoders agree
 
 - A surrogate alone in a ~\u~ escape is refused with a position. Before,

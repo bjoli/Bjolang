@@ -43,6 +43,7 @@
 (import (std prelude))
 (import (std syntax-match))
 (import (only (text encodings) utf-8 encoding-named))
+(import (only (std url) encode-query-part encode-form))
 
 ;; Every export is documented there; the module doc is too.
 (:doc #:file "http.bjodoc")
@@ -56,7 +57,7 @@
   (MessageHandler (: System.Net.Http.HttpMessageHandler))
   (Client         (: System.Net.Http.HttpClient (-> MessageHandler Client)))
   (Verb           (: System.Net.Http.HttpMethod (-> string Verb)))
-  (Message        (: System.Net.Http.HttpRequestMessage (-> Verb Url Message)))
+  (Message        (: System.Net.Http.HttpRequestMessage (-> Verb Uri Message)))
   (Reply          (: System.Net.Http.HttpResponseMessage))
   (Content        (: System.Net.Http.HttpContent))
   (StringContent  (: System.Net.Http.StringContent (-> string Encoding StringContent)))
@@ -69,7 +70,7 @@
   (Decompression  (: System.Net.DecompressionMethods))
   (Span           (: System.TimeSpan))
   (Stream         (: System.IO.Stream))
-  (Url            (: System.Uri (-> string Url) #:exceptions (System.UriFormatException)))
+  (Uri            (: System.Uri (-> string Uri) #:exceptions (System.UriFormatException)))
   (Failure        (: System.Net.Http.HttpRequestException (-> string Failure)))
   (Object         (: System.Object))
   ;; How .NET hands over a header collection: one name, several values.
@@ -88,7 +89,6 @@
   ;; one name that differ only in what they return is the kind of collision
   ;; nothing reports usefully.
   (span-seconds   (: System.TimeSpan.FromSeconds (-> double Span)))
-  (escape         (: System.Uri.EscapeDataString (-> string string)))
 
   ;; The client and the handler under it.
   (handler-lifetime!   (: System.Net.Http.SocketsHttpHandler.PooledConnectionLifetime
@@ -105,7 +105,7 @@
   (send (: System.Net.Http.HttpClient.SendAsync (-> Client Message Completion Reply) #:async))
 
   ;; Building a request.
-  (url-scheme       (: System.Uri.Scheme (-> Url string) #:get))
+  (url-scheme       (: System.Uri.Scheme (-> Uri string) #:get))
   (message-headers  (: System.Net.Http.HttpRequestMessage.Headers (-> Message RequestHeaders) #:get))
   (message-content! (: System.Net.Http.HttpRequestMessage.Content (-> Message Content void) #:set))
   (content-headers  (: System.Net.Http.HttpContent.Headers (-> Content ContentHeaders) #:get))
@@ -218,23 +218,33 @@
 ;; Turning one into an HttpRequestMessage
 ;; ===========================================================================
 
-(: encode-pair (-> Pair string))
-(defun (encode-pair pair)
-  (match pair
-    ((Tuple name value) (str (escape name) "=" (escape value)))))
-
-(: encode-pairs (-> (Vec Pair) string))
-(defun (encode-pairs pairs)
-  (string-join (vec-map encode-pair pairs) "&"))
+;; Pairs as `encode` writes each name and value, joined with `&`. A query is
+;; encoded by `encode-query-part` and a form by `encode-form`, from (std url):
+;; both encode `&`, `=` and `+`, so a value cannot begin another pair.
+(: encode-pairs (-> (-> string string) (Vec Pair) string))
+(defun (encode-pairs encode pairs)
+  (string-join (vec-map (fun (pair)
+                          (match pair
+                            ((Tuple name value) (str (encode name) "=" (encode value)))))
+                        pairs)
+               "&"))
 
 (: full-url (-> Request string))
 (defun (full-url req)
   (def base (record-ref req url))
   (def query (record-ref req query))
-  (if (empty? query)
-      base
-      ;; A url may already carry a query, in which case ours is more of it.
-      (str base (if (string-contains? base "?") "&" "?") (encode-pairs query))))
+  (cond
+    ((empty? query) base)
+    (else
+     ;; The query goes before a fragment. After the `#` it would be part of
+     ;; the fragment, which is not sent.
+     (def parts (string-split base "#"))
+     (def head (vec-ref parts 0))
+     (def fragment (if (> (vec-length parts) 1) (str "#" (string-join (vec-slice parts 1 (- (vec-length parts) 1)) "#")) ""))
+     ;; A url may already carry a query, in which case ours is more of it.
+     (str head (if (string-contains? head "?") "&" "?")
+          (encode-pairs encode-query-part query)
+          fragment))))
 
 ;; Attaches a body. Helper function for the header functions below
 (: attach-body! (-> Message Body (Option Content)))
@@ -243,7 +253,7 @@
     (Empty None)
     ((Text text) (Some (attach! message text "text/plain; charset=utf-8")))
     ((JsonText text) (Some (attach! message text "application/json; charset=utf-8")))
-    ((Form fields) (Some (attach! message (encode-pairs fields)
+    ((Form fields) (Some (attach! message (encode-pairs encode-form fields)
                                   "application/x-www-form-urlencoded")))
     ((Other custom) (Some (attach! message
                                    (record-ref custom text)
@@ -285,14 +295,14 @@
                                  ((Err e) (Err e))
                                  ((Ok done) (add-header! message content pair)))))))
 
-(: web-url? (-> Url bool))
+(: web-url? (-> Uri bool))
 (defun (web-url? url)
   (def scheme (url-scheme url))
   (or (= scheme "http") (= scheme "https")))
 
 (: message-of (-> Request (Result Exception Message)))
 (defun (message-of req)
-  (match (Url. (full-url req))
+  (match (Uri. (full-url req))
     ((Err e) (Err (http-error (str "not a url: " (record-ref req url)))))
     ((Ok url)
      ;; `new Uri` is happy with `file:///etc/passwd`, which is not something an

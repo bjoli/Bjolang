@@ -1,0 +1,843 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/url.bjo — URLs: parse, write, resolve, and percent-encoding.
+;;
+;; The grammar is RFC 3986's, read strictly. A URL holds each part as it is
+;; written, percent-encoding included, so that a URL read and written again is
+;; the same text. The decoded forms are functions over it.
+
+(import (std prelude))
+
+;; Every export is documented there; the module doc is too.
+(:doc #:file "url.bjodoc")
+
+(export
+  ;; The value.
+  Url Authority
+  url-scheme url-authority url-path url-query url-fragment
+  authority-userinfo authority-host authority-port
+  url-host url-port url-absolute?
+
+  ;; Text, both ways.
+  parse-url url->string
+
+  ;; A reference against a base.
+  url-resolve remove-dot-segments
+
+  ;; The decoded parts.
+  url-segments url-params
+  query->params params->query param-ref param-ref-all
+
+  ;; Percent-encoding, one function for each part.
+  encode-segment encode-query-part encode-fragment encode-userinfo encode-form
+  percent-decode form-decode
+
+  ;; A URL written as a quoted literal. The types are transparent because a
+  ;; literal written in another module elaborates into their cases there.
+  Link UrlPart PathPart QueryParam UrlPiece
+  make-url link)
+
+;; ===========================================================================
+;; Interop
+;; ===========================================================================
+
+(import/class
+  (IPAddress (: System.Net.IPAddress))
+  (IdnMapping (: System.Globalization.IdnMapping (-> IdnMapping)))
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+(import/extern
+  (clr-parse-ip (: System.Net.IPAddress.Parse (-> string IPAddress)
+                   #:exceptions (System.FormatException)))
+  (clr-idn-ascii (: System.Globalization.IdnMapping.GetAscii (-> IdnMapping string string)
+                    #:exceptions (System.ArgumentException))))
+
+;; ===========================================================================
+;; The value
+;; ===========================================================================
+
+;; `//userinfo@host:port`. The user info and the host are as written: the host
+;; of an IP literal keeps its brackets, `[::1]`.
+(type (: Authority (Record (: userinfo (Option string))
+                           (: host string)
+                           (: port (Option int)))))
+
+;; A URL, or a relative reference, as RFC 3986 calls one that has no scheme.
+;; Each part is as written, percent-encoding included, and without the
+;; punctuation that separates it: no `:` after the scheme, no `?` before the
+;; query, no `#` before the fragment. `None` is a part that is not there,
+;; which is not the same as one that is empty: `http://h/?` has a query, `""`.
+(type (: Url (Record (: scheme (Option string))
+                     (: authority (Option Authority))
+                     (: path string)
+                     (: query (Option string))
+                     (: fragment (Option string)))))
+
+(: url-scheme (-> Url (Option string)))
+(defun (url-scheme u) (record-ref u scheme))
+
+(: url-authority (-> Url (Option Authority)))
+(defun (url-authority u) (record-ref u authority))
+
+(: url-path (-> Url string))
+(defun (url-path u) (record-ref u path))
+
+(: url-query (-> Url (Option string)))
+(defun (url-query u) (record-ref u query))
+
+(: url-fragment (-> Url (Option string)))
+(defun (url-fragment u) (record-ref u fragment))
+
+(: authority-userinfo (-> Authority (Option string)))
+(defun (authority-userinfo a) (record-ref a userinfo))
+
+(: authority-host (-> Authority string))
+(defun (authority-host a) (record-ref a host))
+
+(: authority-port (-> Authority (Option int)))
+(defun (authority-port a) (record-ref a port))
+
+(: url-host (-> Url (Option string)))
+(defun (url-host u)
+  (match (record-ref u authority)
+    ((Some a) (Some (record-ref a host)))
+    (None None)))
+
+(: url-port (-> Url (Option int)))
+(defun (url-port u)
+  (match (record-ref u authority)
+    ((Some a) (record-ref a port))
+    (None None)))
+
+;; Has a scheme: `https://example.com/`, `mailto:a@b`, and not `/a` or `//h/a`.
+(: url-absolute? (-> Url bool))
+(defun (url-absolute? u) (some? (record-ref u scheme)))
+
+;; ===========================================================================
+;; Bytes and their classes
+;; ===========================================================================
+
+(: byte-at (-> (Array byte) int int))
+(defun (byte-at bytes i) (cast int (array-ref bytes i)))
+
+(: alpha? (-> int bool))
+(defun (alpha? b) (or (and (>= b 65) (<= b 90)) (and (>= b 97) (<= b 122))))
+
+(: digit? (-> int bool))
+(defun (digit? b) (and (>= b 48) (<= b 57)))
+
+(: hex-value (-> int int))
+(defun (hex-value b)
+  (cond
+    ((digit? b) (- b 48))
+    ((and (>= b 65) (<= b 70)) (- b 55))
+    ((and (>= b 97) (<= b 102)) (- b 87))
+    (else -1)))
+
+;; ALPHA DIGIT - . _ ~
+(: unreserved? (-> int bool))
+(defun (unreserved? b)
+  (or (alpha? b) (digit? b) (= b 45) (= b 46) (= b 95) (= b 126)))
+
+;; ! $ & ' ( ) * + , ; =
+(: sub-delim? (-> int bool))
+(defun (sub-delim? b)
+  (case b
+    ((33 36 38 39 40 41 42 43 44 59 61) #t)
+    (else #f)))
+
+;; What a path segment holds as it is: unreserved, sub-delims, `:` and `@`.
+(: pchar? (-> int bool))
+(defun (pchar? b) (or (unreserved? b) (sub-delim? b) (= b 58) (= b 64)))
+
+(: path-char? (-> int bool))
+(defun (path-char? b) (or (pchar? b) (= b 47)))
+
+;; A query and a fragment hold `/` and `?` too.
+(: query-char? (-> int bool))
+(defun (query-char? b) (or (pchar? b) (= b 47) (= b 63)))
+
+(: userinfo-char? (-> int bool))
+(defun (userinfo-char? b) (or (unreserved? b) (sub-delim? b) (= b 58)))
+
+(: reg-name-char? (-> int bool))
+(defun (reg-name-char? b) (or (unreserved? b) (sub-delim? b)))
+
+(: scheme-char? (-> int bool))
+(defun (scheme-char? b) (or (alpha? b) (digit? b) (= b 43) (= b 45) (= b 46)))
+
+;; ===========================================================================
+;; Percent-encoding
+;; ===========================================================================
+
+(: hex-bytes (Array byte))
+(def hex-bytes (string->bytes "0123456789ABCDEF"))
+
+(: add-escape! (-> StringBuilder int void))
+(defun (add-escape! sb b)
+  (stringbuilder-add-code! sb 37)
+  (stringbuilder-add-code! sb (byte-at hex-bytes (/ b 16)))
+  (stringbuilder-add-code! sb (byte-at hex-bytes (% b 16))))
+
+;; `s` as UTF-8, with each byte that `keep?` refuses written `%XX`. With `plus`,
+;; a space is `+`, as a form writes it.
+(: encode-with (-> (-> int bool) bool string string))
+(defun (encode-with keep? plus s)
+  (def bytes (string->bytes s))
+  (def sb (stringbuilder-empty))
+  (loop (:for i (range 0 (array-length bytes)))
+        (:do (let ((b (byte-at bytes i)))
+               (cond
+                 ((keep? b) (stringbuilder-add-code! sb b))
+                 ((and plus (= b 32)) (stringbuilder-add-code! sb 43))
+                 (else (add-escape! sb b))))))
+  (stringbuilder->string sb))
+
+;; One segment of a path. A `/` is encoded, so it cannot begin a segment.
+(: encode-segment (-> string string))
+(defun (encode-segment s) (encode-with pchar? #f s))
+
+;; A key or a value of a query. `&`, `=`, `+`, `;` and `#` are encoded, so a
+;; value cannot begin another parameter or end the query, and a space is
+;; `%20`, which every server reads as a space.
+(: query-part-char? (-> int bool))
+(defun (query-part-char? b)
+  (or (unreserved? b)
+      (case b
+        ((33 36 39 40 41 42 44 58 64 47 63) #t)
+        (else #f))))
+
+(: encode-query-part (-> string string))
+(defun (encode-query-part s) (encode-with query-part-char? #f s))
+
+(: encode-fragment (-> string string))
+(defun (encode-fragment s) (encode-with query-char? #f s))
+
+;; A user name or a password. `:` and `@` are encoded.
+(: encode-userinfo (-> string string))
+(defun (encode-userinfo s) (encode-with reg-name-char? #f s))
+
+;; As `application/x-www-form-urlencoded` writes it, which is what a browser
+;; sends for a form: letters, digits and `* - . _` as they are, a space as
+;; `+`, and every other byte `%XX`.
+(: form-char? (-> int bool))
+(defun (form-char? b)
+  (or (alpha? b) (digit? b) (= b 42) (= b 45) (= b 46) (= b 95)))
+
+(: encode-form (-> string string))
+(defun (encode-form s) (encode-with form-char? #t s))
+
+;; The text that `s` encodes. With `plus`, a `+` is a space. Refused: a `%`
+;; that two hex digits do not follow, and bytes that are not UTF-8.
+(: decode-with (-> bool string (Result string string)))
+(defun (decode-with plus s)
+  (def bytes (string->bytes s))
+  (def n (array-length bytes))
+  (def sb (stringbuilder-empty))
+  (let go ((i 0))
+    (cond
+      ((>= i n)
+       (match (try (stringbuilder->string sb) #:catch (System.InvalidOperationException))
+         ((Ok text) (Ok text))
+         ((Err _) (Err "the percent-encoded bytes are not UTF-8"))))
+      (else
+       (def b (byte-at bytes i))
+       (cond
+         ((= b 37)
+          (def hi (if (< (+ i 1) n) (hex-value (byte-at bytes (+ i 1))) -1))
+          (def lo (if (< (+ i 2) n) (hex-value (byte-at bytes (+ i 2))) -1))
+          (if (and (>= hi 0) (>= lo 0))
+              (begin (stringbuilder-add-code! sb (+ (* hi 16) lo)) (go (+ i 3)))
+              (Err (str "column " (int->string (+ i 1))
+                        ": a '%' begins an escape of two hex digits"))))
+         ((and plus (= b 43)) (stringbuilder-add-code! sb 32) (go (+ i 1)))
+         (else (stringbuilder-add-code! sb b) (go (+ i 1))))))))
+
+(: percent-decode (-> string (Result string string)))
+(defun (percent-decode s) (decode-with #f s))
+
+(: form-decode (-> string (Result string string)))
+(defun (form-decode s) (decode-with #t s))
+
+;; ===========================================================================
+;; Reading a URL
+;; ===========================================================================
+
+(: slice (-> (Array byte) int int string))
+(defun (slice bytes from to) (bytes->string bytes #:start from #:end to))
+
+;; The first index from `i` before `end` whose byte is one of `stops`, or `end`.
+(: find-any (-> (Array byte) int int (-> int bool) int))
+(defun (find-any bytes i end stop?)
+  (cond
+    ((>= i end) end)
+    ((stop? (byte-at bytes i)) i)
+    (else (find-any bytes (+ i 1) end stop?))))
+
+;; What a refusal calls the byte at `i`.
+(: what-byte (-> int string))
+(defun (what-byte b)
+  (cond
+    ((= b 32) "a space")
+    ((>= b 128) "a character that is not ASCII")
+    ((< b 32) "a control character")
+    (else (str "'" (list->string (list (integer->char b))) "'"))))
+
+(: refuse-at (-> int string (Result string %a)))
+(defun (refuse-at i what) (Err (str "column " (int->string (+ i 1)) ": " what)))
+
+;; Every byte from `i` to `end` is one `ok?` allows, or a `%XX`.
+(: check-part (-> (Array byte) int int (-> int bool) string (Result string bool)))
+(defun (check-part bytes i end ok? part)
+  (if (>= i end)
+      (Ok #t)
+      (let ((b (byte-at bytes i)))
+        (cond
+          ((= b 37)
+           (if (and (< (+ i 2) end)
+                    (>= (hex-value (byte-at bytes (+ i 1))) 0)
+                    (>= (hex-value (byte-at bytes (+ i 2))) 0))
+               (check-part bytes (+ i 3) end ok? part)
+               (refuse-at i "a '%' begins an escape of two hex digits")))
+          ((ok? b) (check-part bytes (+ i 1) end ok? part))
+          (else
+           (refuse-at i (str (what-byte b) " is not allowed in the " part
+                             ", and has to be percent-encoded")))))))
+
+;; Every byte from `i` to `end` is a hex digit.
+(: all-hex? (-> (Array byte) int int bool))
+(defun (all-hex? bytes i end)
+  (cond
+    ((>= i end) #t)
+    ((< (hex-value (byte-at bytes i)) 0) #f)
+    (else (all-hex? bytes (+ i 1) end))))
+
+;; The digits of a port, `None` for none.
+(: read-port (-> (Array byte) int int (Result string (Option int))))
+(defun (read-port bytes i end)
+  (let go ((k i) (n 0))
+    (cond
+      ((>= k end) (if (= k i) (Ok None) (Ok (Some n))))
+      ((not (digit? (byte-at bytes k)))
+       (refuse-at k (str "a port is digits, and this is " (what-byte (byte-at bytes k)))))
+      ((> (+ (* n 10) (- (byte-at bytes k) 48)) 65535)
+       (refuse-at i "a port is at most 65535"))
+      (else (go (+ k 1) (+ (* n 10) (- (byte-at bytes k) 48)))))))
+
+;; `[...]`: an IPv6 address, or `v1.x`, the IPvFuture of RFC 3986. A zone, the
+;; `%` of `fe80::1%eth0`, is not part of a URL's address.
+(: check-ip-literal (-> (Array byte) int int (Result string bool)))
+(defun (check-ip-literal bytes i end)
+  (def first (if (< i end) (byte-at bytes i) -1))
+  (cond
+    ((or (= first 118) (= first 86))
+     (def dot (find-any bytes (+ i 1) end (fun (b) (= b 46))))
+     (cond
+       ((or (= dot (+ i 1)) (>= dot end) (not (all-hex? bytes (+ i 1) dot)))
+        (refuse-at i "an IPvFuture address is v, hex digits, '.' and then its text"))
+       ((= (+ dot 1) end) (refuse-at dot "an IPvFuture address has text after its '.'"))
+       (else (check-part bytes (+ dot 1) end userinfo-char? "address"))))
+    ((< (find-any bytes i end (fun (b) (= b 37))) end)
+     (refuse-at (find-any bytes i end (fun (b) (= b 37))) "an IPv6 address in a URL has no zone"))
+    (else
+     (match (clr-parse-ip (slice bytes i end))
+       ((Ok _) (Ok #t))
+       ((Err _) (refuse-at i "this is not an IPv6 address"))))))
+
+;; `userinfo@host:port`, from `i` to `end`.
+(: read-authority (-> (Array byte) int int (Result string Authority)))
+(defun (read-authority bytes i end)
+  (def at (find-any bytes i end (fun (b) (= b 64))))
+  (def host-start (if (< at end) (+ at 1) i))
+  (def (Ok userinfo)
+       (if (< at end)
+           (result-map (fun (_) (Some (slice bytes i at)))
+                       (check-part bytes i at userinfo-char? "user info"))
+           (Ok None))
+       :propagate)
+  (def (Ok host-end)
+       (cond
+         ((and (< host-start end) (= (byte-at bytes host-start) 91))
+          (def close (find-any bytes host-start end (fun (b) (= b 93))))
+          (cond
+            ((>= close end) (refuse-at host-start "a '[' begins an IP address, and there is no ']'"))
+            (else
+             (def (Ok _) (check-ip-literal bytes (+ host-start 1) close) :propagate)
+             (if (or (= (+ close 1) end) (= (byte-at bytes (+ close 1)) 58))
+                 (Ok (+ close 1))
+                 (refuse-at (+ close 1) "after ']' comes ':' and the port, or the end of the host")))))
+         (else
+          (def colon (find-any bytes host-start end (fun (b) (= b 58))))
+          (result-map (fun (_) colon)
+                      (check-part bytes host-start colon reg-name-char? "host"))))
+       :propagate)
+  (def (Ok port)
+       (if (< host-end end) (read-port bytes (+ host-end 1) end) (Ok None))
+       :propagate)
+  (Ok (Authority (userinfo userinfo) (host (slice bytes host-start host-end)) (port port))))
+
+;; A URL, or a relative reference, read by RFC 3986. What the grammar does not
+;; allow is refused, with the column where it is: a space, a character that
+;; is not ASCII, a `%` without two hex digits, a port that is not a number.
+;; Such text has to be percent-encoded first.
+(: parse-url (-> string (Result string Url)))
+(defun (parse-url s)
+  (def bytes (string->bytes s))
+  (def n (array-length bytes))
+  ;; A scheme is a letter and scheme characters, and then a ':'.
+  (def scheme-end
+    (if (and (> n 0) (alpha? (byte-at bytes 0)))
+        (let ((k (find-any bytes 1 n (fun (b) (not (scheme-char? b))))))
+          (if (and (< k n) (= (byte-at bytes k) 58)) k -1))
+        -1))
+  (def scheme (if (>= scheme-end 0) (Some (slice bytes 0 scheme-end)) None))
+  (def after-scheme (if (>= scheme-end 0) (+ scheme-end 1) 0))
+  (def has-authority?
+    (and (< (+ after-scheme 1) n)
+         (= (byte-at bytes after-scheme) 47)
+         (= (byte-at bytes (+ after-scheme 1)) 47)))
+  (def authority-end
+    (if has-authority?
+        (find-any bytes (+ after-scheme 2) n (fun (b) (or (= b 47) (= b 63) (= b 35))))
+        after-scheme))
+  (def (Ok authority)
+       (if has-authority?
+           (result-map Some (read-authority bytes (+ after-scheme 2) authority-end))
+           (Ok None))
+       :propagate)
+  (def path-end (find-any bytes authority-end n (fun (b) (or (= b 63) (= b 35)))))
+  (def (Ok _) (check-part bytes authority-end path-end path-char? "path") :propagate)
+  ;; `a:b` is the scheme `a`. A relative reference whose first segment has a
+  ;; ':' would read as one, so RFC 3986 does not allow it: `./a:b` does.
+  (def first-slash (find-any bytes authority-end path-end (fun (b) (= b 47))))
+  (def first-colon (find-any bytes authority-end first-slash (fun (b) (= b 58))))
+  (def (Ok _)
+       (if (and (none? scheme) (not has-authority?) (< first-colon first-slash))
+           (refuse-at first-colon
+                      "a relative reference cannot have a ':' in its first segment; write './' before it")
+           (Ok #t))
+       :propagate)
+  (def has-query? (and (< path-end n) (= (byte-at bytes path-end) 63)))
+  (def query-end
+    (if has-query? (find-any bytes (+ path-end 1) n (fun (b) (= b 35))) path-end))
+  (def (Ok query)
+       (if has-query?
+           (result-map (fun (_) (Some (slice bytes (+ path-end 1) query-end)))
+                       (check-part bytes (+ path-end 1) query-end query-char? "query"))
+           (Ok None))
+       :propagate)
+  (def (Ok fragment)
+       (if (< query-end n)
+           (result-map (fun (_) (Some (slice bytes (+ query-end 1) n)))
+                       (check-part bytes (+ query-end 1) n query-char? "fragment"))
+           (Ok None))
+       :propagate)
+  (Ok (Url (scheme scheme)
+           (authority authority)
+           (path (slice bytes authority-end path-end))
+           (query query)
+           (fragment fragment))))
+
+;; ===========================================================================
+;; Writing a URL
+;; ===========================================================================
+
+(: url->string (-> Url string))
+(defun (url->string u)
+  (def sb (stringbuilder-empty))
+  (match (record-ref u scheme)
+    ((Some s) (stringbuilder-add-string! sb s) (stringbuilder-add! sb #\:))
+    (None unit))
+  (match (record-ref u authority)
+    ((Some a)
+     (stringbuilder-add-string! sb "//")
+     (match (record-ref a userinfo)
+       ((Some ui) (stringbuilder-add-string! sb ui) (stringbuilder-add! sb #\@))
+       (None unit))
+     (stringbuilder-add-string! sb (record-ref a host))
+     (match (record-ref a port)
+       ((Some p) (stringbuilder-add! sb #\:) (stringbuilder-add-string! sb (int->string p)))
+       (None unit)))
+    (None unit))
+  (stringbuilder-add-string! sb (record-ref u path))
+  (match (record-ref u query)
+    ((Some q) (stringbuilder-add! sb #\?) (stringbuilder-add-string! sb q))
+    (None unit))
+  (match (record-ref u fragment)
+    ((Some f) (stringbuilder-add! sb #\#) (stringbuilder-add-string! sb f))
+    (None unit))
+  (stringbuilder->string sb))
+
+;; ===========================================================================
+;; Resolving a reference
+;; ===========================================================================
+
+;; RFC 3986 5.2.4: `.` and `..` segments taken out of a path. A `..` above the
+;; root is dropped, so `/a/../../b` is `/b`. A path that ended in `.` or `..`
+;; ends in `/`.
+(: remove-dot-segments (-> string string))
+(defun (remove-dot-segments path)
+  (def absolute? (string-starts-with? path "/"))
+  (def parts (vec->list (string-split path "/")))
+  (def segments (if absolute? (list-tail parts) parts))
+  (def kept
+    (let go ((rest segments) (out (list)))
+      (match rest
+        (Nil (list-reverse out))
+        ((Cons s more)
+         (def last? (list-empty? more))
+         (cond
+           ((= s ".") (go more (if last? (cons "" out) out)))
+           ((= s "..")
+            (def popped (if (list-empty? out) out (list-tail out)))
+            (go more (if last? (cons "" popped) popped)))
+           (else (go more (cons s out))))))))
+  (str (if absolute? "/" "") (string-join (list->vec kept) "/")))
+
+;; RFC 3986 5.2.3: a relative path against the base's.
+(: merge-paths (-> Url string string))
+(defun (merge-paths base path)
+  (def base-path (record-ref base path))
+  (cond
+    ((and (some? (record-ref base authority)) (string-empty? base-path)) (str "/" path))
+    (else
+     (def bytes (string->bytes base-path))
+     (def last-slash
+       (let go ((k (- (array-length bytes) 1)))
+         (cond ((< k 0) -1)
+               ((= (byte-at bytes k) 47) k)
+               (else (go (- k 1))))))
+     (if (< last-slash 0)
+         path
+         (str (slice bytes 0 (+ last-slash 1)) path)))))
+
+;; `ref` read where `base` is, as a browser reads a link on a page: RFC 3986
+;; 5.2.2. A reference with a scheme stands for itself. `base` should be
+;; absolute, as the RFC asks.
+(: url-resolve (-> Url Url Url))
+(defun (url-resolve base ref)
+  (def r-path (record-ref ref path))
+  (cond
+    ((some? (record-ref ref scheme))
+     (record-set ref (path (remove-dot-segments r-path))))
+    ((some? (record-ref ref authority))
+     (record-set ref (scheme (record-ref base scheme)) (path (remove-dot-segments r-path))))
+    ((string-empty? r-path)
+     (Url (scheme (record-ref base scheme))
+          (authority (record-ref base authority))
+          (path (record-ref base path))
+          (query (match (record-ref ref query)
+                   ((Some q) (Some q))
+                   (None (record-ref base query))))
+          (fragment (record-ref ref fragment))))
+    (else
+     (Url (scheme (record-ref base scheme))
+          (authority (record-ref base authority))
+          (path (remove-dot-segments
+                 (if (string-starts-with? r-path "/") r-path (merge-paths base r-path))))
+          (query (record-ref ref query))
+          (fragment (record-ref ref fragment))))))
+
+;; ===========================================================================
+;; The decoded parts
+;; ===========================================================================
+
+;; The path's segments, decoded. `/a/b%2Fc/` is `("a" "b/c" "")`: the leading
+;; `/` begins the first segment, a `/` that ends the path leaves an empty one,
+;; and an encoded `/` is part of its segment. The empty path has none.
+(: url-segments (-> Url (Result string (List string))))
+(defun (url-segments u)
+  (def path (record-ref u path))
+  (cond
+    ((string-empty? path) (Ok (list)))
+    (else
+     (def parts (vec->list (string-split path "/")))
+     (def raw (if (string-starts-with? path "/") (list-tail parts) parts))
+     (result-map list-reverse
+                 (list-foldl (fun (seg acc)
+                               (def (Ok done) acc :propagate)
+                               (result-map (fun (d) (Cons d done)) (percent-decode seg)))
+                             (Ok (list))
+                             raw)))))
+
+;; `a=1&b=two+words&b` as pairs, in order, decoded, with `+` read as a space as
+;; a form writes it. A parameter with no `=` has the value `""`, and an empty
+;; one, `a=1&&b=2`, is no parameter. A key that comes twice is there twice.
+(: query->params (-> string (Result string (List (Tuple string string)))))
+(defun (query->params q)
+  (def pieces (list-filter (fun (p) (not (string-empty? p))) (vec->list (string-split q "&"))))
+  (result-map list-reverse
+              (list-foldl (fun (piece acc)
+                            (def (Ok done) acc :propagate)
+                            (def bytes (string->bytes piece))
+                            (def n (array-length bytes))
+                            (def eq (find-any bytes 0 n (fun (b) (= b 61))))
+                            (def (Ok k) (form-decode (slice bytes 0 eq)) :propagate)
+                            (def (Ok v)
+                                 (if (< eq n) (form-decode (slice bytes (+ eq 1) n)) (Ok ""))
+                                 :propagate)
+                            (Ok (Cons (Tuple k v) done)))
+                          (Ok (list))
+                          pieces)))
+
+;; The query's parameters, as `query->params` reads them. No query has none.
+(: url-params (-> Url (Result string (List (Tuple string string)))))
+(defun (url-params u)
+  (match (record-ref u query)
+    ((Some q) (query->params q))
+    (None (Ok (list)))))
+
+;; Pairs written as a query, without the `?`. Each key and value is encoded
+;; with `encode-query-part`, so it cannot begin another parameter.
+(: params->query (-> (List (Tuple string string)) string))
+(defun (params->query params)
+  (string-join
+   (list->vec
+    (list-map (fun (p)
+                (match p
+                  ((Tuple k v) (str (encode-query-part k) "=" (encode-query-part v)))))
+              params))
+   "&"))
+
+;; The first value of `key`.
+(: param-ref (-> (List (Tuple string string)) string (Option string)))
+(defun (param-ref params key)
+  (match params
+    (Nil None)
+    ((Cons (Tuple k v) rest) (if (= k key) (Some v) (param-ref rest key)))))
+
+;; Every value of `key`, in order.
+(: param-ref-all (-> (List (Tuple string string)) string (List string)))
+(defun (param-ref-all params key)
+  (match params
+    (Nil (list))
+    ((Cons (Tuple k v) rest)
+     (if (= k key) (Cons v (param-ref-all rest key)) (param-ref-all rest key)))))
+
+;; ===========================================================================
+;; A URL written as a quoted literal
+;; ===========================================================================
+;;
+;;     '(url https "example.com" (port 8443) (path "users" ,name)
+;;           (query (page 2) (tag ,t)) (fragment "top"))
+;;     '(path "users" ,id "edit" (query (q ,text)))
+;;
+;; Each value is encoded for the part it is in: a segment as a segment, a query
+;; key or value as one. So a `/` in a computed segment does not make two
+;; segments, and a `&` in a computed value does not begin a parameter. The tags
+;; and their arity are checked where the literal is written.
+
+(type-rec
+  ;; One segment of a path, or a key or a value of a query. A `(Vec string)`
+  ;; is several: several segments, or one key with several values.
+  (: UrlPiece (Union (: PieceStr string)
+                  (: PieceSym Symbol)
+                  (: PieceInt int)
+                  (: PieceMany (Vec string))))
+
+  ;; One parameter of a query: `(key value)`, `(key)` with no value, or a pair
+  ;; that was computed, `,(Tuple k v)`.
+  (: QueryParam (Union (: ParamForm (List UrlPiece))
+                  (: ParamPair (Tuple string string))))
+
+  ;; What `(path ...)` holds: the segments, then a query and a fragment if
+  ;; they are there.
+  (: PathPart (Union (: SegStr string)
+                     (: SegSym Symbol)
+                     (: SegInt int)
+                     (: SegMany (Vec string))
+                     (: SegQuery (List QueryParam) #:tag query #:rest)
+                     (: SegFragment UrlPiece #:tag fragment)))
+
+  ;; What `(url ...)` holds: the scheme as a symbol, the host as a string, and
+  ;; the tagged parts.
+  (: UrlPart (Union (: UrlScheme Symbol)
+                    (: UrlHost string)
+                    (: UrlPort int #:tag port)
+                    (: UrlUser UrlPiece #:tag user)
+                    (: UrlPath (List PathPart) #:tag path #:rest)
+                    (: UrlQuery (List QueryParam) #:tag query #:rest)
+                    (: UrlFragment UrlPiece #:tag fragment)))
+
+  ;; A URL with a scheme and a host, or a path on this site.
+  (: Link (Union (: LinkUrl (List UrlPart) #:tag url #:rest)
+                 (: LinkPath (List PathPart) #:tag path #:rest))))
+
+(: refuse (-> string %a))
+(defun (refuse what)
+  (raise (cast Exception (ArgumentException. (str "make-url: " what)))))
+
+(: piece-texts (-> UrlPiece (List string)))
+(defun (piece-texts p)
+  (match p
+    ((PieceStr s) (list s))
+    ((PieceSym s) (list (symbol->string s)))
+    ((PieceInt n) (list (int->string n)))
+    ((PieceMany v) (vec->list v))))
+
+;; One text, where several are not allowed.
+(: piece-text (-> string UrlPiece string))
+(defun (piece-text where p)
+  (match (piece-texts p)
+    ((Cons t Nil) t)
+    (_ (refuse (str where " is one value, and this is " (->str (list-length (piece-texts p))))))))
+
+;; `key=value` texts, encoded, for one parameter.
+(: param-texts (-> QueryParam (List string)))
+(defun (param-texts p)
+  (match p
+    ((ParamPair (Tuple k v)) (list (str (encode-query-part k) "=" (encode-query-part v))))
+    ((ParamForm (Cons key Nil)) (list (encode-query-part (piece-text "a query key" key))))
+    ((ParamForm (Cons key (Cons value Nil)))
+     (def k (encode-query-part (piece-text "a query key" key)))
+     (list-map (fun (v) (str k "=" (encode-query-part v))) (piece-texts value)))
+    ((ParamForm _) (refuse "a query parameter is (key value) or (key)"))))
+
+(: query-text (-> (List QueryParam) string))
+(defun (query-text params)
+  (string-join (list->vec (list-foldr (fun (p acc) (list-append (param-texts p) acc))
+                                      (list) params))
+               "&"))
+
+;; Where the parts of a literal go while it is read.
+(type (: Parts (Record (: scheme (Option string))
+                       (: host (Option string))
+                       (: port (Option int))
+                       (: user (Option string))
+                       (: segments (Option (List string)))
+                       (: query (Option string))
+                       (: fragment (Option string)))))
+
+(: no-parts Parts)
+(def no-parts (Parts (scheme None) (host None) (port None) (user None)
+                     (segments None) (query None) (fragment None)))
+
+(: once (-> string (Option %a) %a (Option %a)))
+(defun (once what old new)
+  (match old
+    ((Some _) (refuse (str "a URL has one " what)))
+    (None (Some new))))
+
+(: add-path-part (-> Parts PathPart Parts))
+(defun (add-path-part ps part)
+  (def segs (match (record-ref ps segments) ((Some s) s) (None (list))))
+  (def (: add (-> (List string) Parts))
+       (fun (more) (record-set ps (segments (Some (list-append segs more))))))
+  (match part
+    ((SegStr s) (add (list s)))
+    ((SegSym s) (add (list (symbol->string s))))
+    ((SegInt n) (add (list (int->string n))))
+    ((SegMany v) (add (vec->list v)))
+    ((SegQuery params) (record-set ps (query (once "query" (record-ref ps query) (query-text params)))))
+    ((SegFragment p)
+     (record-set ps (fragment (once "fragment" (record-ref ps fragment)
+                                    (encode-fragment (piece-text "a fragment" p))))))))
+
+;; `(path ...)`: its segments, and a query or a fragment in it.
+(: add-path (-> Parts (List PathPart) Parts))
+(defun (add-path ps parts)
+  (match (record-ref ps segments)
+    ((Some _) (refuse "a URL has one path"))
+    (None (list-foldl (fun (part acc) (add-path-part acc part))
+                      (record-set ps (segments (Some (list))))
+                      parts))))
+
+(: valid-scheme (-> string string))
+(defun (valid-scheme s)
+  (def bytes (string->bytes s))
+  (def n (array-length bytes))
+  (if (and (> n 0) (alpha? (byte-at bytes 0))
+           (= (find-any bytes 1 n (fun (b) (not (scheme-char? b)))) n))
+      s
+      (refuse (str "'" s "' is not a scheme"))))
+
+;; A host as a URL writes it. An IPv6 address gets its brackets, a name that
+;; is not ASCII is written as IDNA writes it (`bücher.example` is
+;; `xn--bcher-kva.example`), and what is neither a name nor an address is
+;; refused.
+(: valid-host (-> string string))
+(defun (valid-host h)
+  (def bytes (string->bytes h))
+  (def n (array-length bytes))
+  (cond
+    ((and (> n 0) (= (byte-at bytes 0) 91))
+     (match (if (= (byte-at bytes (- n 1)) 93)
+                (check-ip-literal bytes 1 (- n 1))
+                (Err "it has no ']'"))
+       ((Ok _) h)
+       ((Err e) (refuse (str "'" h "' is not a host: " e)))))
+    ((< (find-any bytes 0 n (fun (b) (= b 58))) n)
+     (match (check-ip-literal bytes 0 n)
+       ((Ok _) (str "[" h "]"))
+       ((Err e) (refuse (str "'" h "' is not a host: " e)))))
+    ((= (find-any bytes 0 n (fun (b) (not (reg-name-char? b)))) n) h)
+    ((< (find-any bytes 0 n (fun (b) (>= b 128))) n)
+     (match (clr-idn-ascii (IdnMapping.) h)
+       ((Ok ascii) (valid-host ascii))
+       ((Err _) (refuse (str "'" h "' is not a host name")))))
+    (else (refuse (str "'" h "' is not a host name")))))
+
+(: add-url-part (-> Parts UrlPart Parts))
+(defun (add-url-part ps part)
+  (match part
+    ((UrlScheme s) (record-set ps (scheme (once "scheme" (record-ref ps scheme)
+                                                (valid-scheme (symbol->string s))))))
+    ((UrlHost h) (record-set ps (host (once "host" (record-ref ps host) (valid-host h)))))
+    ((UrlPort p)
+     (if (and (>= p 0) (<= p 65535))
+         (record-set ps (port (once "port" (record-ref ps port) p)))
+         (refuse (str "a port is from 0 to 65535, and this is " (int->string p)))))
+    ((UrlUser p) (record-set ps (user (once "user" (record-ref ps user)
+                                            (encode-userinfo (piece-text "a user" p))))))
+    ((UrlPath parts) (add-path ps parts))
+    ((UrlQuery params) (record-set ps (query (once "query" (record-ref ps query) (query-text params)))))
+    ((UrlFragment p)
+     (record-set ps (fragment (once "fragment" (record-ref ps fragment)
+                                    (encode-fragment (piece-text "a fragment" p))))))))
+
+(: path-text (-> (List string) string))
+(defun (path-text segs)
+  (string-join (list->vec (list-map (fun (s) (str "/" (encode-segment s))) segs)) ""))
+
+;; The `Url` a literal stands for. Raises `ArgumentException` for what its
+;; shape cannot say: a computed host or scheme that is not one, a port out of
+;; range, a part given twice, a `(url ...)` with no scheme or no host.
+(: make-url (-> Link Url))
+(defun (make-url l)
+  (match l
+    ((LinkPath parts)
+     (def ps (add-path no-parts parts))
+     (def segs (match (record-ref ps segments) ((Some s) s) (None (list))))
+     (Url (scheme None) (authority None)
+          (path (if (list-empty? segs) "/" (path-text segs)))
+          (query (record-ref ps query))
+          (fragment (record-ref ps fragment))))
+    ((LinkUrl parts)
+     (def ps (list-foldl (fun (part acc) (add-url-part acc part)) no-parts parts))
+     (def (Some scheme) (record-ref ps scheme)
+       :leave-with (refuse "a (url ...) begins with its scheme, a symbol such as https"))
+     (def (Some host) (record-ref ps host)
+       :leave-with (refuse "a (url ...) has a host, a string such as \"example.com\""))
+     (Url (scheme (Some scheme))
+          (authority (Some (Authority (userinfo (record-ref ps user))
+                                      (host host)
+                                      (port (record-ref ps port)))))
+          (path (match (record-ref ps segments)
+                  ((Some segs) (if (list-empty? segs) "/" (path-text segs)))
+                  (None "")))
+          (query (record-ref ps query))
+          (fragment (record-ref ps fragment))))))
+
+;; The text of a literal: `(url->string (make-url l))`.
+(: link (-> Link string))
+(defun (link l) (url->string (make-url l)))
