@@ -202,6 +202,15 @@ let writtenName (name: string) =
     | Some(_, bare) -> bare
     | None -> name
 
+/// Whether a set of binding names holds `name`, as it is or as written.
+///
+/// An implicit export is bound in the importer under its qualified reference,
+/// `BjoMod.bjosql.core_Module::expected`, so a set made from the importer's
+/// bindings holds that spelling and not the bare one. A name bound under its
+/// written name holds the bare one. Ask with both.
+let namedIn (names: Set<string>) (name: string) =
+    Set.contains name names || Set.contains (writtenName name) names
+
 /// Puts `name`'s module qualifier, if it had one, onto `replacement`.
 /// This ensures we don't accidentally drop the qualifier after looking up 
 /// an unqualified name in a registry.

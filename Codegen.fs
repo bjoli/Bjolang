@@ -3731,8 +3731,8 @@ and private generateApply
                             | _ -> false))
 
                 let uninferable =
-                    Set.contains (Naming.writtenName name) ctx.Registry.ReturnOnlyGenerics
-                    || Set.contains (Naming.writtenName name) ctx.Registry.KeywordOnlyGenerics
+                    Naming.namedIn ctx.Registry.ReturnOnlyGenerics name
+                    || Naming.namedIn ctx.Registry.KeywordOnlyGenerics name
 
                 // Keyword arguments do not stop C# reading type arguments —
                 // `f<int>(a, __kw_b: c)` is an ordinary call — and a diverging

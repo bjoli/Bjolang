@@ -70,7 +70,7 @@ let private describe = DotNetInterop.showType
 let private neverReturns (registry: TraitRegistry) (expr: TypedExpr) =
     match expr.Node with
     | TApply({ Node = TIdent(name, _) }, _, _) ->
-        Set.contains (Naming.writtenName name) registry.ReturnOnlyGenerics
+        Naming.namedIn registry.ReturnOnlyGenerics name
     // `(ret e)` leaves its block, so it yields nothing here to be dropped. Its
     // type is a fresh metavariable precisely because it never produces a value,
     // and without this every `(when c (ret x))` — which is what the form is

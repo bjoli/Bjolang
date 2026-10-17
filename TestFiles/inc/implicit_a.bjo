@@ -3,7 +3,7 @@
 ;; importer binds them only under a name source cannot write.
 ;; `implicit_b.bjo` has a `registry` and a `helper` of other types.
 
-(export a-register! a-count a-twice Tagged a-tagged)
+(export a-register! a-count a-twice Tagged a-tagged a-positive)
 (import (std prelude))
 
 (: registry (Box (List int)))
@@ -24,6 +24,15 @@
 
 (: a-tagged (-> int int))
 (defun (a-tagged n) #:inline (record-ref (Tagged (helper (helper n))) helper))
+
+;; A private function whose type variable only its result names. C# cannot
+;; infer that variable from the arguments, so a call to it in an inlined body
+;; must give the type argument, also under the implicit export's name.
+(: refuse (-> string (Result string %a)))
+(defun (refuse what) (Err (str "not " what)))
+
+(: a-positive (-> int (Result string int)))
+(defun (a-positive n) #:inline (if (> n 0) (Ok n) (refuse "positive")))
 
 ;; A constrained body, which an importer specialises.
 (: a-twice (-> %a int) (where (->str %a)))
