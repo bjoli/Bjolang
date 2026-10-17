@@ -2749,19 +2749,28 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         append ctx "))"
 
     | TListMake items ->
-        // Desugar to nested SchemeList.Cons / SchemeList.Empty calls.
+        // Nested `new Cons<T>` around `SchemeList<T>.Empty`, as `inlineBuiltins`
+        // writes `Cons` and `Nil`: the static wrapper methods are generic
+        // methods, which shared generic code looks up at run time. The cast
+        // gives the whole literal the list type, not `Cons<T>`.
         let elemTypeStr = elementTypeString expr.Type
         let emitters = prepareOperands ctx items
         let rec emitCons remaining =
             match remaining with
-            | [] -> append ctx $"SchemeList.SchemeList.Empty<%s{elemTypeStr}>()"
+            | [] -> append ctx $"SchemeList.SchemeList<%s{elemTypeStr}>.Empty"
             | emit :: rest ->
-                append ctx "SchemeList.SchemeList.Cons("
+                append ctx $"new SchemeList.Cons<%s{elemTypeStr}>("
                 emit ctx
                 append ctx ", "
                 emitCons rest
                 append ctx ")"
-        emitCons emitters
+
+        match emitters with
+        | [] -> emitCons emitters
+        | _ ->
+            append ctx $"((SchemeList.SchemeList<%s{elemTypeStr}>)"
+            emitCons emitters
+            append ctx ")"
 
     // `#[1 2 3]`, and the rest array a call packs its trailing arguments into.
     | TArrayMake items ->
@@ -2845,7 +2854,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                 appendLine armCtx ","
             if not (live |> List.exists isIrrefutable) && not (coversBool live) then
                 indent armCtx
-                appendLine armCtx $"_ => throw new Exception(\"Match failure at %s{Lexer.formatPos expr.Range}\")"
+                appendLine armCtx $"_ => throw BjolangRuntime.MatchFailure(\"%s{Lexer.formatPos expr.Range}\")"
         )
         indent ctx; append ctx "}"
 
@@ -4667,7 +4676,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
 
             withIndent ctx (fun c ->
                 indent c
-                appendLine c $"throw new Exception(\"Match failure at %s{Lexer.formatPos expr.Range}\");")
+                appendLine c $"throw BjolangRuntime.MatchFailure(\"%s{Lexer.formatPos expr.Range}\");")
 
             indent ctx
             appendLine ctx "}"
@@ -5074,7 +5083,7 @@ and private generateMatch
                     emitBreak cb)
                 indent c; appendLine c "}"
             | None ->
-                appendLine c $"default: throw new Exception(\"Match failure at %s{Lexer.formatPos expr.Range}\");")
+                appendLine c $"default: throw BjolangRuntime.MatchFailure(\"%s{Lexer.formatPos expr.Range}\");")
 
         indent ctx; appendLine ctx "}"
 
@@ -7234,7 +7243,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 
                             withIndent c (fun inner ->
                                 indent inner
-                                appendLine inner $"throw new Exception(\"Match failure at %s{Lexer.formatPos r}\");")
+                                appendLine inner $"throw BjolangRuntime.MatchFailure(\"%s{Lexer.formatPos r}\");")
 
                             indent c
                             appendLine c "}")

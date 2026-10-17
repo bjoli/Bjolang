@@ -20,11 +20,11 @@
 ;; --- A literal with no splice is untouched ----------------------------------
 ;;
 ;; The invariant this change is held to: a program written before `,@` existed
-;; has to compile to the same C# it did. The whole of `100_literal_elaboration`,
+;; has to compile to the same C# as a literal without a splice. The whole of `100_literal_elaboration`,
 ;; `151_vec_literals` and `187_array_literals` was compared byte for byte; this
 ;; keeps one example of it in the suite, where a future rewrite of the literal
 ;; path will trip over it.
-;; EXPECT-CS: return SchemeList\.SchemeList\.Cons\(1, SchemeList\.SchemeList\.Cons\(2, SchemeList\.SchemeList\.Cons\(3, SchemeList\.SchemeList\.Empty<int>\(\)\)\)\);
+;; EXPECT-CS: return \(\(SchemeList\.SchemeList<int>\)new SchemeList\.Cons<int>\(1, new SchemeList\.Cons<int>\(2, new SchemeList\.Cons<int>\(3, SchemeList\.SchemeList<int>\.Empty\)\)\)\);
 (: plain (-> (List int)))
 (defun (plain) '(1 2 3))
 
@@ -33,7 +33,7 @@
 ;; Not one piece per element: the two ints before the splice are built by the
 ;; same `Cons` chain they would be built by on their own, and only the join
 ;; between the run and the splice is new.
-;; EXPECT-CS: listsubgtseq\(SchemeList\.SchemeList\.Cons\(1, SchemeList\.SchemeList\.Cons\(2, SchemeList\.SchemeList\.Empty<int>\(\)\)\)\)
+;; EXPECT-CS: listsubgtseq\(\(\(SchemeList\.SchemeList<int>\)new SchemeList\.Cons<int>\(1, new SchemeList\.Cons<int>\(2, SchemeList\.SchemeList<int>\.Empty\)\)\)\)
 (: run-of-two (-> (List int) (List int)))
 (defun (run-of-two xs)
   (def (: out (List int)) '(1 2 ,@xs))
@@ -44,7 +44,7 @@
 ;; No copy, no wrapper, no element-by-element walk: `xs` is already a `(List
 ;; int)`, which is exactly what the splice demanded of it, so it goes to
 ;; `list->seq` as it stands.
-;; EXPECT-CS: seqsubgtlist\(seqsubappend\(listsubgtseq\(SchemeList\.SchemeList\.Cons\(0, SchemeList\.SchemeList\.Empty<int>\(\)\)\), listsubgtseq\(xs\)\)\)
+;; EXPECT-CS: seqsubgtlist\(seqsubappend\(listsubgtseq\(\(\(SchemeList\.SchemeList<int>\)new SchemeList\.Cons<int>\(0, SchemeList\.SchemeList<int>\.Empty\)\)\), listsubgtseq\(xs\)\)\)
 (: spliced (-> (List int) (List int)))
 (defun (spliced xs)
   (def (: out (List int)) '(0 ,@xs))

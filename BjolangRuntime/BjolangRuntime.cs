@@ -1130,6 +1130,15 @@ public static partial class BjolangRuntime {
         return default!;   // unreachable: Throw() does not return
     }
 
+    /// The exception of a match that no arm took, at `position`. Generated code
+    /// writes `throw BjolangRuntime.MatchFailure("file.bjo:12")`: the throw
+    /// stays in the method, so the C# compiler sees that the arm does not
+    /// return, and the construction of the exception is here, out of the IL of
+    /// every match.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static Exception MatchFailure(string position) =>
+        new Exception("Match failure at " + position);
+
     /// What a panic is at a prompt: an exception, and nothing else.
     ///
     /// A panic means the program cannot go on.
