@@ -68,16 +68,19 @@ let private typeNameKnown (registry: TraitRegistry) (name: string) =
 
 /// A name C# would have found in `System` worked by accident before, so the
 /// error says how to bring that type in.
-let private unknownType (r: Range) (name: string) : 'a =
+let private unknownType (registry: TraitRegistry) (r: Range) (name: string) : 'a =
     let shown = Naming.showTypeName name
 
-    let hint =
-        match DotNetInterop.tryResolveType ("System." + name) with
-        | Some _ -> $" For .NET's, write (import/class (%s{shown} (: System.%s{shown})))."
-        | None -> ""
+    match hiddenSpellingNote registry name with
+    | "" ->
+        let hint =
+            match DotNetInterop.tryResolveType ("System." + name) with
+            | Some _ -> $" For .NET's, write (import/class (%s{shown} (: System.%s{shown})))."
+            | None -> ""
 
-    failwithf
-        $"Type Error at %s{Lexer.formatPos r}: there is no type named '%s{shown}'. A type is declared with (type ...), brought in by import/class, or imported from the module that declares it.%s{hint}"
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: there is no type named '%s{shown}'. A type is declared with (type ...), brought in by import/class, or imported from the module that declares it.%s{hint}"
+    | note -> failwithf $"Type Error at %s{Lexer.formatPos r}: there is no type named '%s{shown}'%s{note}."
 
 /// A .NET type written in an annotation is a type *named in source*, so it is
 /// subject to the same rule an `import/class` is: the package writing it has to
@@ -101,7 +104,7 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
                 | Some t -> t
                 | None ->
                     DotNetInterop.checkNameableAnnotation nameRange name 0
-                    if checkNames && not (typeNameKnown registry name) then unknownType nameRange name
+                    if checkNames && not (typeNameKnown registry name) then unknownType registry nameRange name
                     TCon(name, [])
     | TApp("->", args, _) ->
         let resolvedArgs = args |> List.map (resolveWith checkNames registry)
@@ -246,7 +249,7 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
             let subst = List.zip (typeParams |> List.map normalizeParam) resolvedArgs |> Map.ofList
             substTypeVars subst t
         | None ->
-            if checkNames && not (typeNameKnown registry name) then unknownType appRange name
+            if checkNames && not (typeNameKnown registry name) then unknownType registry appRange name
             TCon(name, resolvedArgs)
 
 let resolveTypeAnnotation (registry: TraitRegistry) (ptype: FType) : HMType = resolveWith true registry ptype

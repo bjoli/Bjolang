@@ -455,6 +455,21 @@ let metadata
         |> List.map (fun n -> n, publishedAliasOf n)
         |> Map.ofList
 
+    /// The key a spelling of a declared type or constructor stands for here.
+    let typeKeyOf (n: string) =
+        match Map.tryFind n env.Registry.ImportAliases with
+        | Some a when (a.Kind = Ast.AliasType || a.Kind = Ast.AliasConstructor) && a.OriginalName.Contains "." ->
+            Some a.OriginalName
+        | _ -> None
+
+    /// A body as it is published: the foreign aliases it names under the
+    /// names they are published as, and its types and constructors as their
+    /// keys (see `AlphaRename.keyTypeSpellings`), so that where it is spliced
+    /// it does not depend on what the importer calls them.
+    let publishBody (parameters: string list) (body: Ast.Expr) =
+        let body = AlphaRename.renameFree (bodyExternSubst (Set.ofList parameters) body) body
+        AlphaRename.keyTypeSpellings typeKeyOf (fun n -> Map.containsKey n env.Bindings) parameters body
+
     // A trait's defaults are published with it, and are spliced into an
     // importing module's own implementations, so they are bodies in
     // exactly the same sense as a template.
@@ -639,10 +654,7 @@ let metadata
                             else
                                 let paramsStr = String.concat " " paramNames
 
-                                let body =
-                                    AlphaRename.renameFree
-                                        (bodyExternSubst (Set.ofList paramNames) body)
-                                        body
+                                let body = publishBody paramNames body
 
                                 // Read back as this module's code, by
                                 // `Ast.readOrigins`, whatever module the trait
@@ -1202,10 +1214,7 @@ let metadata
                 // names they were published under, so that the splice
                 // resolves them where they were written rather than
                 // wherever it lands.
-                let body =
-                    AlphaRename.renameFree
-                        (bodyExternSubst (Set.ofList tpl.Params) tpl.Body)
-                        tpl.Body
+                let body = publishBody tpl.Params tpl.Body
 
                 ({ TraitName = traitName
                    MethodName = methodName
@@ -1221,10 +1230,7 @@ let metadata
         if isLibrary then
             constrainedBodiesToExport
             |> List.map (fun (name, (tpl: TypedAST.InlineTemplate)) ->
-                let body =
-                    AlphaRename.renameFree
-                        (bodyExternSubst (Set.ofList tpl.Params) tpl.Body)
-                        tpl.Body
+                let body = publishBody tpl.Params tpl.Body
 
                 ({ Name = name
                    OriginModule = tpl.OriginModule

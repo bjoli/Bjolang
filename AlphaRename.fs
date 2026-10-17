@@ -136,6 +136,88 @@ let reachHidden (isBound: string -> bool) (qualification: Map<string, string>) (
 
     renameFree hidden body
 
+/// A body to be published, with each type and constructor it names written as
+/// its key: `BjoMod.inc.kitchen__MkCrate` for `MkCrate`.
+///
+/// The body is checked again where it is spliced, and the names there are the
+/// importer's. A type's bare name may not be one: `(prefix-types m "T/")` spells
+/// it `T/Crate` and nothing else, and an importer's own `Crate`, or a later
+/// import's, is a different type. A key resolves to itself everywhere, so the
+/// body means where it lands what it meant where it was written.
+///
+/// `keyOf` answers a spelling's key, or `None` for a name that is no spelling
+/// of a declared type or constructor. A name `isBound` answers for is a binding
+/// of this module, which wins over a spelling, and is left. Constructors and
+/// record types are rewritten where they are named: as a free name, as the head
+/// of a pattern, and in the type annotations the body writes.
+let keyTypeSpellings
+    (keyOf: string -> string option)
+    (isBound: string -> bool)
+    (parameters: string list)
+    (body: Expr)
+    : Expr =
+    let key (n: string) = keyOf n |> Option.defaultValue n
+
+    let subst =
+        freeNames (Set.ofList parameters) body
+        |> Seq.filter (isBound >> not)
+        |> Seq.choose (fun n -> keyOf n |> Option.map (fun k -> n, k))
+        |> Map.ofSeq
+
+    let rec ftype (t: FType) : FType =
+        match t with
+        | TName(n, r) when not (n.StartsWith "'") -> TName(key n, r)
+        | TName _ -> t
+        | TApp(n, args, r) -> TApp(key n, List.map ftype args, r)
+        | TArrow(mandatory, keywords, rest, ret, colour, r) ->
+            TArrow(
+                List.map ftype mandatory,
+                keywords |> List.map (fun (k, kt) -> k, ftype kt),
+                Option.map ftype rest,
+                ftype ret,
+                colour,
+                r
+            )
+
+    let rec pattern (p: Pattern) : Pattern =
+        match p with
+        | PConstruct(n, args, r) -> PConstruct(key n, List.map pattern args, r)
+        | PList(items, tailOpt, r) -> PList(List.map pattern items, Option.map pattern tailOpt, r)
+        | PVec(items, tailOpt, r) -> PVec(List.map pattern items, Option.map pattern tailOpt, r)
+        | PArray(items, tailOpt, r) -> PArray(List.map pattern items, Option.map pattern tailOpt, r)
+        | PTuple(items, r) -> PTuple(List.map pattern items, r)
+        | POr(alts, r) -> POr(List.map pattern alts, r)
+        | PAnd(alts, r) -> PAnd(List.map pattern alts, r)
+        | PView(step, inner, r) -> PView(step, pattern inner, r)
+        | PFieldOr(label, field, other, r) -> PFieldOr(label, pattern field, Result.map pattern other, r)
+        | leaf -> leaf
+
+    let arg (a: DefunArg) =
+        match a with
+        | MandatoryArg(n, Some t) -> MandatoryArg(n, Some(ftype t))
+        | other -> other
+
+    // Children first, then the node's own patterns and annotations.
+    let rec go (e: Expr) : Expr =
+        match mapExprChildren go e with
+        | ECast(t, x, r) -> ECast(ftype t, x, r)
+        | ELet(n, isFun, args, ann, v, b, r) -> ELet(n, isFun, List.map arg args, Option.map ftype ann, v, b, r)
+        | ELetRec(bindings, b, r) ->
+            ELetRec(
+                bindings
+                |> List.map (fun (n, isFun, args, ann, v) -> n, isFun, List.map arg args, Option.map ftype ann, v),
+                b,
+                r
+            )
+        | ELetMutable(n, ann, v, b, r) -> ELetMutable(n, Option.map ftype ann, v, b, r)
+        | EMatch(target, clauses, r) ->
+            EMatch(target, clauses |> List.map (fun (p, g, b) -> pattern p, g, b), r)
+        | EDefMatch(binder, scrutinee, failure, sequel, r) ->
+            EDefMatch(pattern binder, scrutinee, mapDefFailure id pattern failure, sequel, r)
+        | other -> other
+
+    go (renameFree subst body)
+
 /// Rewrites the free names of a body that was written somewhere else to name
 /// the module they actually came from — `Origin_Module::helper`.
 ///

@@ -763,7 +763,7 @@ let rec checkPattern
             | Some b -> b
             | None ->
                 failwithf
-                    $"Pattern Error: Unknown constructor '%s{name}' at %s{Lexer.formatPos r}."
+                    $"Pattern Error: Unknown constructor '%s{name}' at %s{Lexer.formatPos r}%s{hiddenSpellingNote env.Registry name}."
 
         let consType, _, _ = instantiate env.Registry binding.Scheme
 

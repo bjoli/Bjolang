@@ -651,6 +651,24 @@ let private typeRenaming
     |> List.distinctBy (fun (key, _, visible, _) -> key, visible)
     |> List.map (fun (key, _, visible, kind) -> key, visible, kind)
 
+/// Whether an import edge leaves the types of its module under their own
+/// names: no modifier spells them differently.
+///
+/// A modifier that does spell them differently replaces the name, as a prefix
+/// replaces a def's name. `(prefix-types m "T/")` gives `T/Crate`, and `Crate`
+/// is then no name for it, unless another import of `m` keeps it. A prefix
+/// that left the bare name in place did not keep the type out of the way: the
+/// bare name still took part in "the later import wins", so a later prefixed
+/// import took the bare name from an earlier plain one.
+let private keepsBareTypes (modifiers: ImportModifier list) : bool =
+    modifiers
+    |> List.forall (function
+        | Prefix _
+        | Postfix _
+        | PrefixTypes _
+        | PostfixTypes _ -> false
+        | _ -> true)
+
 /// A dependency's declarations as every edge that reaches it sees them.
 ///
 /// The spellings are a list rather than one name, which is rule 10: a module
@@ -1687,7 +1705,8 @@ let loadModuleGraph
             reExportedTraits.Add entry |> ignore
 
     /// Every import edge that reaches a given module, as the renaming it
-    /// produces and the position of the form that wrote it.
+    /// produces, the type spellings it adds, whether it keeps the types' bare
+    /// names, and the position of the form that wrote it.
     ///
     /// Keyed by path, like the module cache, but a *list* — the cache holds
     /// what a module says about itself, and this holds what each importer made
@@ -1695,7 +1714,7 @@ let loadModuleGraph
     let edges =
         System.Collections.Generic.Dictionary<
             string,
-            ResizeArray<Map<string, string> * (string * string * AliasKind) list * Lexer.Range>
+            ResizeArray<Map<string, string> * (string * string * AliasKind) list * bool * Lexer.Range>
          >()
 
     let rec load (filePath: string) : unit =
@@ -2157,7 +2176,12 @@ let loadModuleGraph
                         if not (edges.ContainsKey dep) then
                             edges[dep] <- ResizeArray()
 
-                        edges[dep].Add(renaming, typeRenaming surface spec.Modifiers, r)
+                        edges[dep].Add(
+                            renaming,
+                            typeRenaming surface spec.Modifiers,
+                            keepsBareTypes spec.Modifiers,
+                            r
+                        )
 
                         // A macro has to be in the table under the name this
                         // import gives it before the form using it is read.
@@ -2280,7 +2304,7 @@ let loadModuleGraph
         | true, edgeList ->
             let merged =
                 edgeList
-                |> Seq.collect (fun (renaming, _, r) ->
+                |> Seq.collect (fun (renaming, _, _, r) ->
                     renaming |> Map.toSeq |> Seq.map (fun (original, visible) -> original, visible, r))
                 |> Seq.distinctBy (fun (original, visible, _) -> original, visible)
                 |> List.ofSeq
@@ -2290,7 +2314,7 @@ let loadModuleGraph
             // introduces the name has to keep it.
             let typeSpellings =
                 edgeList
-                |> Seq.collect (fun (_, types, r) ->
+                |> Seq.collect (fun (_, types, _, r) ->
                     types |> Seq.map (fun (original, visible, kind) -> original, visible, kind, r))
                 |> Seq.distinctBy (fun (original, visible, _, _) -> original, visible)
                 |> List.ofSeq
@@ -2320,7 +2344,20 @@ let loadModuleGraph
                 typeSpellings
                 |> List.map (fun (original, visible, kind, r) -> DImportAlias(visible, original, kind, r))
 
-            aliasDecls @ applyDefRenaming m.ModuleName byOriginal m.ParsedDecls
+            // The bare names of the module's types, which the `.dll` reader
+            // offers as spellings of their keys. Kept when an edge keeps the
+            // bare names; when every edge spells the types its own way, the
+            // bare name is no name for them here.
+            let keptDecls =
+                if edgeList |> Seq.exists (fun (_, _, keepsBare, _) -> keepsBare) then
+                    m.ParsedDecls
+                else
+                    m.ParsedDecls
+                    |> List.filter (function
+                        | DImportAlias(_, _, (AliasType | AliasConstructor), _) -> false
+                        | _ -> true)
+
+            aliasDecls @ applyDefRenaming m.ModuleName byOriginal keptDecls
         | _ -> m.ParsedDecls
 
     let allDecls =

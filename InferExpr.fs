@@ -1560,8 +1560,17 @@ and private inferRecordConstruct (env: Env) (recordTypeName: string) (args: Expr
     // spells a binding of that module goes with them: `(Dep (version v))`
     // in a module that binds a `version` gives `Module::version`. The
     // qualifier comes off too.
+    //
+    // And a published body writes its types and constructors as their keys
+    // (`AlphaRename.keyTypeSpellings`), which reaches a label that spells a
+    // constructor as well. The key's module comes off too.
     let rec original (name: string) =
-        let stripped = Gensym.baseName (Naming.writtenName name)
+        let unkeyed =
+            match (if name.Contains "." then Naming.typeKeyParts name else None) with
+            | Some(_, bare) -> bare
+            | None -> name
+
+        let stripped = Gensym.baseName (Naming.writtenName unkeyed)
         if stripped = name then name else original stripped
 
     let writtenFields =

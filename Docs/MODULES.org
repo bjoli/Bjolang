@@ -134,8 +134,31 @@ The two halves resolve differently, and the difference matters:
   *to* is the declaring module's own name for it: a trait's bare name, and a
   type's key.
 
-One consequence of the second: a prefixed type does not *hide* the unprefixed
-one. ~(prefix-types (m) "T/")~ makes ~T/Crate~ a name; ~Crate~ stays one.
+*A prefixed type replaces the bare name*, as a prefixed def does.
+~(prefix-types (m) "T/")~ makes ~T/Crate~ and ~T/MkCrate~ names, and ~Crate~
+and ~MkCrate~ are no names for them. If another import of ~m~ keeps the bare
+names, ~(import (m) (prefix-types (m) "T/"))~, both spellings are there. A
+program that writes the bare name is told the one it has:
+
+#+BEGIN_SRC text
+Type Error at app.bjo:10: there is no type named 'Crate'. It is imported as 'T/Crate': the modifier that gave it that name replaces the bare one. Import the module without it as well to have both.
+#+END_SRC
+
+Before, the bare name stayed. That was a trap with rule 2 of [[*Which name
+wins][Which name wins]]: with ~(import "a.bjo")~ and then ~(import (prefix-types
+"b.bjo" "B/"))~, the bare ~Banana~ was ~b~'s, because ~b~ was the later import.
+The prefix gave ~b~'s type a second name and did not keep it out of the way.
+
+A body a module publishes, an inline function or a constrained one or a trait
+default, names its types and constructors by key. So it is spliced into an
+importer whatever the importer calls them: under a prefix, and beside an
+importer's own type of the same name.
+
+*Traits are different.* A trait has no key: it is filed under its bare name,
+so two modules' traits of one name are one entry, whatever the prefixes. So
+~prefix-types~ gives a trait and its methods a second spelling and does not take
+the bare one away. An impl is written with the bare method names in any case.
+Hiding a trait's bare name needs traits keyed as types are first.
 
 *** What ~prefix-types~ is for
 
@@ -166,7 +189,10 @@ Type error: the 1st argument to 'peel' has the wrong type.
 
 Without the modifier both are still there and still distinct — the bare
 ~Banana~ simply means the later import's, which is rule 2 of [[*Which name
-wins][Which name wins]]. The prefix is how the other one gets a name.
+wins][Which name wins]]. The prefix is how the other one gets a name, and it
+takes that import's types out of the contest for the bare one: with
+~(import "a.bjo" (prefix-types "b.bjo" "B/"))~, ~Banana~ is ~a~'s in whichever
+order they are written.
 
 **** How a type is keyed
 

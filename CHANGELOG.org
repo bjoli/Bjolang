@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* A type prefix replaces the bare names, and published bodies name types by key
+
+- ~(prefix-types m "T/")~, ~prefix~, ~postfix~ and ~postfix-types~ now
+  replace the bare names of ~m~'s types and constructors, as ~prefix~
+  already replaced a def's name. ~T/Crate~ is a name and ~Crate~ is not,
+  unless another import of ~m~ keeps the bare names. Before, the bare name
+  stayed, and with "the later import wins" a prefixed later import took a
+  bare name from an earlier plain one: ~(import "a.bjo" (prefix-types
+  "b.bjo" "B/"))~ made ~Banana~ ~b~'s. Now it is ~a~'s.
+- A bare name that a prefix replaced is refused with the name it has: "there
+  is no type named 'Crate'. It is imported as 'T/Crate' …", and the same for
+  a constructor in a value and in a pattern.
+- A published body (an inline function, a constrained one, a trait default)
+  names its types and constructors by key. So it is spliced into an importer
+  whatever the importer calls them. Before, it named them by the bare name,
+  which reached the importer's own type of that name, or a later import's,
+  and the call fell back from inlining.
+- Not changed: a trait and its methods. A trait has no key, so a prefix gives
+  it a second spelling and the bare one stays. ~Docs/MODULES.org~ says why.
+- Code that wrote the bare name of a type imported only under a prefix has to
+  write the prefixed one, or import the module plainly too.
+- Tests: ~384_prefix_replaces_bare.bjo~,
+  ~warnings/published_body_names_by_key.bjo~, and three ~errors/prefixed_*~.
+
 * An ~import/class~ alias wins over an imported type of its name
 
 - A name the module defines wins over an imported one (rule 1 of

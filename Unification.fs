@@ -111,7 +111,9 @@ let lookup (env: Env) (name: string) : Binding =
         if Map.containsKey name env.Registry.OpaqueTypes then
             failwithf $"Unbound variable: %s{shown}. %s{opaqueTypeNote env.Registry name}"
         else
-            failwithf $"Unbound variable: %s{shown}"
+            match hiddenSpellingNote env.Registry name with
+            | "" -> failwithf $"Unbound variable: %s{shown}"
+            | note -> failwithf $"Unbound variable: %s{shown}%s{note}."
 
 /// Introduce `name`, shadowing whatever it named before.
 ///

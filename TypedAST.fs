@@ -2674,6 +2674,36 @@ let representationVisible (registry: TraitRegistry) (moduleKey: string) (typeKey
 
 /// Why the representation of `typeKey` is not visible here, to follow the
 /// sentence that says what was refused.
+/// What an import calls a type or constructor whose bare name it does not
+/// give, for a refusal of the bare name: `. It is imported as 'T/Crate' ...`,
+/// or `""` when no import gives `name` a spelling of its own.
+///
+/// A modifier that spells an import's types its own way replaces their bare
+/// names (`Pipeline.keepsBareTypes`), so a program that wrote the bare name is
+/// told the one it has.
+let hiddenSpellingNote (registry: TraitRegistry) (name: string) : string =
+    let spellings =
+        registry.ImportAliases
+        |> Map.toList
+        |> List.choose (fun (visible, alias) ->
+            if
+                (alias.Kind = AliasType || alias.Kind = AliasConstructor)
+                && visible <> name
+                && alias.OriginalName.Contains "."
+            then
+                match Naming.typeKeyParts alias.OriginalName with
+                | Some(_, bare) when bare = name -> Some visible
+                | _ -> None
+            else
+                None)
+        |> List.distinct
+
+    match spellings with
+    | [] -> ""
+    | _ ->
+        let quoted = spellings |> List.map (fun s -> $"'%s{s}'") |> String.concat " or "
+        $". It is imported as %s{quoted}: the modifier that gave it that name replaces the bare one. Import the module without it as well to have both"
+
 let opaqueTypeNote (registry: TraitRegistry) (typeKey: string) : string =
     let whose =
         match Map.tryFind typeKey registry.OpaqueTypes |> Option.defaultValue [] with

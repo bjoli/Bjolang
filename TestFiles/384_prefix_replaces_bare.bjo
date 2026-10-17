@@ -1,0 +1,38 @@
+;; A modifier that spells an import's types its own way replaces their bare
+;; names, as a prefix replaces a def's name.
+;;
+;; `banana_a` is imported plainly and `banana_b` later under `prefix-types`.
+;; The bare `Banana` is `banana_a`'s. Before, `banana_b` kept its bare names,
+;; and as the later import it took `Banana` from `banana_a`.
+;;
+;; `ripe_inline` publishes inline bodies that name its own `Ripe` and `MkRipe`,
+;; and this module declares a `Ripe` and a `MkRipe` of its own. A published
+;; body names its types and constructors by key, so where it is spliced it
+;; still means the module that wrote it.
+
+(import (std prelude))
+(import "inc/banana_a.bjo")
+(import (prefix-types "inc/banana_b.bjo" "B/"))
+(import "inc/ripe_inline.bjo")
+
+;; The bare name, at `banana_a`'s type.
+(: from-a (-> int Banana))
+(defun (from-a n) (MkBananaA n))
+
+;; The prefixed one, at `banana_b`'s.
+(: from-b (-> string B/Banana))
+(defun (from-b s) (B/MkBananaB s))
+
+;; This module's own `Ripe` wins the bare name here (rule 1).
+(type (: Ripe (Union (: MkRipe string))))
+
+(: own (-> Ripe string))
+(defun (own r) (match r ((MkRipe s) s)))
+
+(defun (main)
+  (cond
+    ((not (= (peel-a (from-a 3)) 3)) (println "the bare name") 1)
+    ((not (= (peel-b (from-b "x")) "x")) (println "the prefixed name") 1)
+    ((not (= (ripe-value (ripe 5)) 5)) (println "the spliced bodies") 1)
+    ((not (= (own (MkRipe "mine")) "mine")) (println "this module's own type") 1)
+    (else 0)))
