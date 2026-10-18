@@ -104,6 +104,11 @@
   (when (directory-exists? "/proc/self/fd")
     (def path "344-scratch-lines.txt")
     (file-write-text path "1\n2\n3\n")
+    ;; An empty scope first, so that the assemblies a scope loads are loaded
+    ;; before the count. A precompiled (ReadyToRun) assembly holds open
+    ;; descriptors of its file, and `System.Threading.ThreadPool` is first
+    ;; loaded by a scope.
+    (with-scope (ignore (open-fds)))
     (def before (open-fds))
     (loop (:for i (range 0 20))
           (:do (ignore (find (fun (l) (= l "1")) (file-read-lines/seq path)))))

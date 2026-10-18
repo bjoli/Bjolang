@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* ReadyToRun for the standard library and the runtime
+
+- A module of the standard library is precompiled with crossgen2 after it is
+  built, before its build record is written. Programs link the runtime's
+  assemblies from ~bin/compiler~, where the compiler's ReadyToRun publish has
+  already precompiled them.
+- Measured on 17 Advent of Code days: 2.53 s became 2.27 s in total, and each
+  short program starts 11 to 20 ms sooner. A program that runs for a second
+  runs as fast as before. A full rebuild of the standard library takes about
+  0.8 s longer.
+- ~BJOLANG_NO_R2R=1~ turns it off, for work on the compiler. A change to it
+  moves the runtime, and the staleness check now sees that a module was built
+  against the runtime in another directory, so the first build after it
+  rebuilds the standard library.
+- A program built with ~(runtime (tiered-compilation #f))~ runs the
+  precompiled code for the whole run and is slower (1.1 s became 1.4 s on one
+  program), and the compiler warns about it.
+- ~bjo publish~ copies the runtime from the same directory as the compiler
+  links it from.
+- ~344_iterable_end.bjo~ opens one scope before it counts file descriptors: a
+  precompiled assembly holds descriptors of its file, and a scope loads
+  ~System.Threading.ThreadPool~ the first time.
+- Tests: the ~runtime settings~ test of ~run_bjo_tests.py~ checks the warning.
+
 * Lane types
 
 - A new module, ~(std simd)~. ~(Simd128 %a)~ and ~(Simd256 %a)~ are .NET's

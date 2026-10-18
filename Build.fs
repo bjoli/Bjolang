@@ -439,6 +439,117 @@ let private runProcess (fileName: string) (args: string) (env: (string * string)
     p.WaitForExit()
     p.ExitCode, stdout, stderr
 
+// ---------------------------------------------------------------------------
+// ReadyToRun
+// ---------------------------------------------------------------------------
+//
+// A module of the standard library is precompiled with crossgen2 after it is
+// built, so that a program JIT-compiles less of it at start. Measured on 17
+// Advent of Code days: 2.53 s became 2.27 s in total, 11 to 20 ms on each
+// short program, and a program that ran for a second ran as fast as before.
+// With tiered compilation on, the JIT compiles a hot method again with full
+// optimization, so the precompiled code only replaces the first tier.
+//
+// Each assembly is compiled alone, not as one version bubble with the others.
+// A bubble lets them inline each other, but its code is only valid with the
+// exact assemblies it was compiled with, and it was no faster when measured.
+//
+// The runtime's assemblies need no step here: the compiler is published with
+// ReadyToRun, and its directory has precompiled copies of them, which
+// `Paths.runtimeDir` names.
+//
+// `BJOLANG_NO_R2R=1` turns both off (see `Paths.readyToRun`).
+
+/// The crossgen2 that the compiler's own ReadyToRun publish restored, if it
+/// is there: the package for this machine, at the version of the running
+/// runtime, or else the newest one of the same major version.
+let private crossgen2: Lazy<string option> =
+    lazy
+        (let packages =
+            match System.Environment.GetEnvironmentVariable "NUGET_PACKAGES" with
+            | null | "" ->
+                Path.Combine(System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile, ".nuget", "packages")
+            | dir -> dir
+
+         let dir = Path.Combine(packages, "microsoft.netcore.app.crossgen2." + portableRid ())
+         let running = System.Environment.Version
+
+         let versions =
+             if Directory.Exists dir then
+                 Directory.GetDirectories dir
+                 |> Array.choose (fun d ->
+                     match System.Version.TryParse(Path.GetFileName d) with
+                     | true, v when v.Major = running.Major -> Some(v, d)
+                     | _ -> None)
+                 |> Array.sortByDescending fst
+                 |> Array.toList
+             else
+                 []
+
+         let chosen =
+             match versions |> List.tryFind (fun (v, _) -> v = running) with
+             | Some found -> Some found
+             | None -> List.tryHead versions
+
+         chosen
+         |> Option.bind (fun (_, d) ->
+             [ "crossgen2"; "crossgen2.exe" ]
+             |> List.map (fun name -> Path.Combine(d, "tools", name))
+             |> List.tryFind File.Exists))
+
+/// Precompiles `dll` in place, against `references` and the shared framework.
+/// A failure leaves the IL assembly as it is, which runs the same, and says
+/// why.
+let private precompile (dll: string) (references: string list) : unit =
+    match crossgen2.Value with
+    | None -> ()
+    | Some exe ->
+        let output = dll + ".r2r"
+
+        // The implementation of the framework, not its reference assemblies:
+        // crossgen2 needs `System.Private.CoreLib`, which only the runtime has.
+        let frameworkDir = Path.GetDirectoryName(typeof<obj>.Assembly.Location)
+
+        let os =
+            if System.OperatingSystem.IsWindows() then "windows"
+            elif System.OperatingSystem.IsMacOS() then "osx"
+            else "linux"
+
+        let arch = (portableRid ()).Split('-') |> Array.last
+
+        let refs =
+            references
+            |> List.filter File.Exists
+            |> List.map (fun r -> $"-r \"%s{r}\"")
+            |> String.concat " "
+
+        let framework = Path.Combine(frameworkDir, "*.dll")
+
+        let args =
+            $"\"%s{dll}\" -o \"%s{output}\" -O --targetos %s{os} --targetarch %s{arch} -r \"%s{framework}\" %s{refs}"
+
+        let exitCode, stdout, stderr =
+            Timing.phase "readytorun" (fun () -> runProcess exe args [])
+
+        if exitCode = 0 && File.Exists output then
+            AtomicFile.move output dll
+        else
+            try File.Delete output with _ -> ()
+
+            let said =
+                (stderr + "\n" + stdout).Split('\n')
+                |> Array.map (fun l -> l.Trim())
+                |> Array.filter (fun l -> l <> "")
+                |> Array.tryHead
+                |> Option.defaultValue $"exit code %d{exitCode}"
+
+            Diagnostics.progress $"Note: %s{Path.GetFileName dll} is not precompiled with ReadyToRun: %s{said}"
+
+/// Whether `outputFilePath` is a module of the installed standard library.
+let private isStandardLibraryOutput (outputFilePath: string) =
+    let lib = Paths.libDir.TrimEnd Path.DirectorySeparatorChar + string Path.DirectorySeparatorChar
+    Path.GetFullPath(outputFilePath).StartsWith(lib, System.StringComparison.Ordinal)
+
 
 /// The C# for a checked program, with the metadata attribute an importer reads
 /// it back through.
@@ -556,6 +667,17 @@ let compile (options: Options) (inputFilePath: string) : int =
             let isLibrary = options.IsLibrary || not (Map.containsKey "main" env.Bindings)
             let extension = if isLibrary then ".dll" else ".exe"
             let outputFilePath = Path.ChangeExtension(inputFilePath, extension)
+
+            // Without tiered compilation, the precompiled code of the runtime
+            // and the standard library is never compiled again, so a hot loop
+            // in them runs it for the whole run. Measured: a program that ran
+            // for 1.1 s with the JIT alone took 1.4 s. The host can not be
+            // told to skip only these assemblies' precompiled code.
+            if not isLibrary
+               && Paths.readyToRun
+               && options.Runtime |> List.contains ("tiered-compilation", "false") then
+                eprintfn
+                    "Warning: tiered-compilation is off, so this program runs the precompiled (ReadyToRun) code of the runtime and the standard library without compiling it again, and is slower: 1.1 s became 1.4 s on one program. Build the standard library with BJOLANG_NO_R2R=1 for this program, or leave tiered compilation on."
 
             Diagnostics.progress (sprintf "Compilation succeeded. %d declarations." typedAst.Length)
             
@@ -1402,6 +1524,13 @@ let compile (options: Options) (inputFilePath: string) : int =
                 // Before the record, which keeps the assembly's timestamp: a
                 // new checksum in it is a write.
                 PdbNames.rewrite (Path.GetFullPath outputFilePath)
+
+                // After the PDB patch, which renames fields in the assembly:
+                // crossgen2 compiles that assembly, and keeps its pointer to
+                // the PDB. Not a debug build, which is for stepping through.
+                if isLibrary && not options.Debug && Paths.readyToRun && isStandardLibraryOutput outputFilePath then
+                    precompile (Path.GetFullPath outputFilePath) linkedAssemblies
+
                 writeBuildRecord options inputFilePath outputFilePath linkedAssemblies links natives lastInterface
 
             buildStatus

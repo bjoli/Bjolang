@@ -1602,7 +1602,27 @@ let private upToDateAgainst (resolve: ImportSpec -> Result<string, string>) (bjo
                 r.Deps |> List.filter (runtime.Contains >> not)
             | None -> []
 
+        // Built against the runtime's assemblies in another directory: the
+        // precompiled ones in `bin/compiler` or MSBuild's, which
+        // `BJOLANG_NO_R2R` chooses between. Both are older than the module,
+        // so the timestamps above can not see the change. A directory counts
+        // as the runtime's when it holds `BjolangRuntime.dll`, so that a
+        // module of the same file name elsewhere is not mistaken for one.
+        let runtimeMoved =
+            match record with
+            | Some r ->
+                let names = Paths.runtimeAssemblies |> List.map Path.GetFileName |> Set.ofList
+                let current = Paths.runtimeAssemblies |> List.map Path.GetFullPath |> Set.ofList
+
+                r.Deps
+                |> List.exists (fun dep ->
+                    names.Contains(Path.GetFileName dep)
+                    && not (current.Contains(Path.GetFullPath dep))
+                    && File.Exists(Path.Combine(Path.GetDirectoryName dep, "BjolangRuntime.dll")))
+            | None -> false
+
         compilerBuilt <= built
+        && not runtimeMoved
         && runtimeBuilt <= built
         && declarationsWritten <= built
         && packagesWritten <= built

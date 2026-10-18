@@ -306,11 +306,31 @@ let private runtimeAssemblyNames =
       "BjoString"
       "BjoRx" ]
 
+/// Whether programs use precompiled (ReadyToRun) code for the runtime and the
+/// standard library. On unless `BJOLANG_NO_R2R` is set to something other
+/// than `0`. Turning it off, or on again, changes `runtimeDir`, so every
+/// module and program built against the other one is stale and is rebuilt.
+let readyToRun: bool =
+    match Environment.GetEnvironmentVariable "BJOLANG_NO_R2R" with
+    | null | "" | "0" -> true
+    | _ -> false
+
 /// Directory holding the runtime support assemblies every compiled program
 /// links against.
+///
+/// With `readyToRun`, the compiler's own directory, `bin/compiler`: the
+/// compiler is published with ReadyToRun, so its copies of these assemblies
+/// are precompiled. They are built from the same project as the ones in
+/// `BjolangRuntime/bin/Release`, which MSBuild owns and which are left as it
+/// wrote them: a precompiled file there would be copied over again by the
+/// next `dotnet build` of anything that references the project.
 let runtimeDir: string =
+    let precompiled =
+        if readyToRun then [ Path.Combine(root, "bin", "compiler") ] else []
+
     let candidates =
-        [ for dir in ancestorsOf AppContext.BaseDirectory do
+        [ yield! precompiled
+          for dir in ancestorsOf AppContext.BaseDirectory do
               yield Path.Combine(dir, "BjolangRuntime", "bin", "Release", "net10.0")
           yield Path.Combine(root, "BjolangRuntime", "bin", "Release", "net10.0")
           yield Path.Combine(Environment.CurrentDirectory, "BjolangRuntime", "bin", "Release", "net10.0") ]

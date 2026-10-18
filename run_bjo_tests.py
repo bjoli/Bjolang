@@ -1537,8 +1537,17 @@ def test_runtime(work, c):
            '"System.Runtime.TieredCompilation.CallCountingDelayMs": 100' in runtimeconfig_of(app),
            runtimeconfig_of(app))
 
+    # The standard library is precompiled, and without tiering its code is
+    # never compiled again.
+    runtime_manifest(app, "(tiered-compilation #f)")
+    untiered = run_bjo(app, "build")
+    c.worked("build with tiered compilation off", untiered)
+    c.says("which warns that the precompiled code stays", untiered, "Warning: tiered-compilation is off")
+
     runtime_manifest(app, "(gc-server #t) (gc-dynamic-adaptation #t)")
-    c.worked("build with the adaptation asked for", run_bjo(app, "build"))
+    adapted = run_bjo(app, "build")
+    c.worked("build with the adaptation asked for", adapted)
+    c.that("a build with tiering on does not warn", "tiered-compilation is off" not in said(adapted))
     c.that("a program that asks for the adaptation keeps it",
            '"System.GC.DynamicAdaptationMode": 1' in runtimeconfig_of(app), runtimeconfig_of(app))
 

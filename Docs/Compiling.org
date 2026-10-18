@@ -357,6 +357,7 @@ Diagnostic and escape-hatch settings, all off by default.
 | ~BJOLANG_NO_CSC_SERVER=1~       | Do not hand the C# build to a VBCSCompiler server         |
 | ~BJOLANG_OUT_OF_PROCESS_DEPS=1~ | Build each imported module in a compiler process of its own |
 | ~BJOLANG_REPL_DIR=<dir>~        | Keep a REPL session's generated sources there             |
+| ~BJOLANG_NO_R2R=1~              | Do not use precompiled (ReadyToRun) code for std and the runtime |
 
 ~BJOLANG_OUT_OF_PROCESS_DEPS~ resolves issues where builds fail only when modules 
 are compiled together. It isolates module-level state by compiling imported modules 
@@ -365,6 +366,10 @@ in separate processes, preventing state leakage between them.
 ~BJOLANG_NO_CSC_SERVER~ is for a VBCSCompiler server that has gone wrong, which
 is a failure with no good diagnostic. A build takes several times longer
 without it.
+
+~BJOLANG_NO_R2R~ is for work on the compiler or the standard library. See
+"ReadyToRun" below. A change to it makes every module stale, so the first
+build after it rebuilds the standard library.
 
 ** The REPL
 
@@ -434,6 +439,10 @@ once in ~Paths.runtimeAssemblyNames~:
 | ~BjoOrderedMap~  | ~(OrderedMap %k %v)~, bound by =(std orderedmap)=         |
 | ~Bjoml~          | the concurrency runtime: fibers, promises, channels, CML events |
 
+Programs link them from ~Paths.runtimeDir~: the compiler's directory,
+~bin/compiler~, whose copies are precompiled, or ~BjolangRuntime/bin/Release~
+under ~BJOLANG_NO_R2R=1~. See "ReadyToRun" below.
+
 The last four carry no builtin type: their types reach Bjolang through
 ~import/class~ and their operations through ~import/extern~, ~Map~'s in
 =(std prelude)= and the rest in a library of their own.
@@ -459,6 +468,44 @@ three:
    searches the core library and the compiler's own assembly and nothing else,
    so without this a linked assembly is reachable at run time but not nameable
    at compile time.
+
+** ReadyToRun
+
+The standard library and the runtime are precompiled with crossgen2, so that a
+program JIT-compiles less of them when it starts:
+
+- *A module of the standard library* is precompiled after its C# is compiled,
+  before its build record is written. Not a debug build, and not a module
+  outside ~lib/~. crossgen2 is the package that the compiler's own ReadyToRun
+  publish restores; without it, a module stays IL and runs the same.
+- *The runtime assemblies* need no step of their own. The compiler is
+  published with ReadyToRun, and ~bin/compiler~ has precompiled copies of
+  them, so programs link those (~Paths.runtimeDir~). MSBuild's
+  ~BjolangRuntime/bin/Release~ is left as it wrote it: a precompiled file there
+  would be copied over again by the next ~dotnet build~ of anything that
+  references the project.
+
+Each assembly is compiled alone. Compiling them as one version bubble lets
+them inline each other, but its code is only valid with the exact assemblies
+it was compiled with, and it was no faster when measured.
+
+Measured on 17 Advent of Code days, with ~call-counting-delay~ 0: the total
+went from 2.53 s to 2.27 s, and each short program started 11 to 20 ms
+sooner. A program that ran for a second ran as fast as before, because tiered
+compilation compiles a hot method again with full optimization. A full
+rebuild of the standard library takes about 0.8 s longer, out of 12 s.
+
+*Without tiered compilation* the precompiled code is never compiled again, so
+a hot loop in the runtime or the standard library runs it for the whole run:
+one program went from 1.1 s to 1.4 s. The compiler warns when a program is
+built with ~(runtime (tiered-compilation #f))~. Such a program is faster with a
+standard library built under ~BJOLANG_NO_R2R=1~. The host can not be told to
+skip only these assemblies' precompiled code: ~DOTNET_ReadyToRun=0~ turns off
+.NET's own as well.
+
+~BJOLANG_NO_R2R=1~ turns both off: modules are not precompiled, and programs
+link MSBuild's runtime assemblies. A change to it changes where the runtime is,
+so every module and program built before it is stale.
 
 ** Optimization
 

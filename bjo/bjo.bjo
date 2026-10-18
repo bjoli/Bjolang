@@ -912,9 +912,18 @@
 ;; ---------------------------------------------------------------------------
 
 ;; The runtime the compiler links programs against, where the compiler finds
-;; it: the Release build of BjolangRuntime in the installation.
+;; it (`Paths.runtimeDir`): the compiler's own directory, whose copies are
+;; precompiled, or the Release build of BjolangRuntime when BJOLANG_NO_R2R
+;; turns the precompiled code off.
 (: runtime-dir string)
-(def runtime-dir (path-combine root "BjolangRuntime" "bin" "Release" target-framework))
+(def runtime-dir
+  (let ((precompiled (path-combine root "bin" "compiler"))
+        (off? (match (get-environment-variable "BJOLANG_NO_R2R")
+                ((Some v) (not (or (= v "") (= v "0"))))
+                (None #f))))
+    (if (and (not off?) (file-exists? (path-combine precompiled "BjolangRuntime.dll")))
+        precompiled
+        (path-combine root "BjolangRuntime" "bin" "Release" target-framework))))
 
 ;; The packages a project was built from, with the resources their manifests
 ;; declare. The project itself is the one whose files go under `app/`.
