@@ -8,11 +8,11 @@
 (type (: Sheet (Record (: rows (Vec (Vec char))) (: width int))))
 
 (: cell (-> Sheet int int char))
-(defun (cell s r c) (vec-ref (vec-ref (.rows s) r) c))
+(defun (cell s r c) (ref (ref (.rows s) r) c))
 
 (: blank-column? (-> Sheet int bool))
 (defun (blank-column? s c)
-  (all? (fun (row) (char=? (vec-ref row c) #\space)) (.rows s)))
+  (all? (fun (row) (char=? (ref row c) #\space)) (.rows s)))
 
 ;; The digits of row r in columns [from, to), as a number. 0 when none.
 (: row-number (-> Sheet int int int long))
@@ -26,7 +26,7 @@
 ;; The digits of column c above the operator row, as a number.
 (: column-number (-> Sheet int long))
 (defun (column-number s c)
-  (loop (:for r (range 0 (- (vec-length (.rows s)) 1)))
+  (loop (:for r (range 0 (- (length (.rows s)) 1)))
         (:let ch (cell s r c))
         (:when (char-numeric? ch))
         (:acc n (folding 0L (+ (* n 10L) (cast System.Int64 (digit ch)))))
@@ -48,9 +48,9 @@
 
 (defun (main args)
   (def lines (input-lines args))
-  (def width (loop (:for l lines) (:acc w (folding 0 (max w (string-length l)))) => w))
+  (def width (loop (:for l lines) (:acc w (folding 0 (max w (length l)))) => w))
   (def s (Sheet (rows {vecing (string->vec (string-pad-right l width)) (:for l lines)}) (width width)))
-  (def last (- (vec-length (.rows s)) 1))
+  (def last (- (length (.rows s)) 1))
   (def ps (list-filter (fun ((Tuple from to)) (< from to)) (problems s)))
   (defun (op-of from to)
     (loop (:for c (range from to))

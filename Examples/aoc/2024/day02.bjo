@@ -6,12 +6,12 @@
 
 (: safe? (-> (Vec int) bool))
 (defun (safe? levels)
-  (def n (vec-length levels))
-  (def rising? (and (> n 1) (< (vec-ref levels 0) (vec-ref levels 1))))
+  (def n (length levels))
+  (def rising? (and (> n 1) (< (ref levels 0) (ref levels 1))))
   (loop (:for i (range 1 n))
         (:let d (if rising?
-                    (- (vec-ref levels i) (vec-ref levels (- i 1)))
-                    (- (vec-ref levels (- i 1)) (vec-ref levels i))))
+                    (- (ref levels i) (ref levels (- i 1)))
+                    (- (ref levels (- i 1)) (ref levels i))))
         (:acc ok (folding #t (and (>= d 1) (<= d 3))))
         (:finish (not ok))
         => ok))
@@ -19,12 +19,12 @@
 ;; The levels with the one at index i taken out.
 (: without (-> (Vec int) int (Vec int)))
 (defun (without levels i)
-  {vecing (vec-ref levels j) (:for j (range 0 (vec-length levels))) (:when (not (= i j)))})
+  {vecing (ref levels j) (:for j (range 0 (length levels))) (:when (not (= i j)))})
 
 (: dampened-safe? (-> (Vec int) bool))
 (defun (dampened-safe? levels)
   (or (safe? levels)
-      (any? (fun (i) (safe? (without levels i))) (range 0 (vec-length levels)))))
+      (any? (fun (i) (safe? (without levels i))) (range 0 (length levels)))))
 
 (defun (main args)
   (def reports {vecing (vec-map string->int (string-split line " ")) (:for line (input-lines args))})

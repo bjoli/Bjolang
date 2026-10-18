@@ -20,7 +20,7 @@
 ;; Union-find over box indices.
 (: find-root (-> (Array int) int int))
 (defun (find-root parent i)
-  (def p (array-ref parent i))
+  (def p (ref parent i))
   (if (= p i)
       i
       (let ()
@@ -30,16 +30,16 @@
 
 (defun (main args)
   (def boxes {vecing (let ((p (vec-map parse-long (string-split l ","))))
-                       (Box (x (vec-ref p 0)) (y (vec-ref p 1)) (z (vec-ref p 2))))
+                       (Box (x (ref p 0)) (y (ref p 1)) (z (ref p 2))))
                      (:for l (input-lines args))})
-  (def n (vec-length boxes))
+  (def n (length boxes))
   (def k (if (< n 100) 10 1000))
   ;; Each pair as distance, i, j packed in one long: 10 bits per index.
   (def pairs (mutablevec))
   (loop (:for i (range 0 n))
         (:subloop)
         (:for j (range (+ i 1) n))
-        (:do (mutablevec-add! pairs (bitwise-ior (shift-left (dist2 (vec-ref boxes i) (vec-ref boxes j)) 20)
+        (:do (mutablevec-add! pairs (bitwise-ior (shift-left (dist2 (ref boxes i) (ref boxes j)) 20)
                                                  (cast System.Int64 (+ (* i 1024) j))))))
   (mutablevec-sort! pairs)
   (def parent (make-array n))
@@ -56,13 +56,13 @@
         #f
         (let ()
           (array-set! parent a b)
-          (array-set! size b (+ (array-ref size a) (array-ref size b)))
+          (array-set! size b (+ (ref size a) (ref size b)))
           #t)))
   (loop (:for p (range 0 k)) (:do (ignore (join! p))))
   ;; The circuits' sizes, largest first.
   (def sizes (vec-sort-by (fun (a b) (compare b a))
-                          {vecing (array-ref size i) (:for i (range 0 n)) (:when (= (find-root parent i) i))}))
-  (println (* (vec-ref sizes 0) (* (vec-ref sizes 1) (vec-ref sizes 2))))
+                          {vecing (ref size i) (:for i (range 0 n)) (:when (= (find-root parent i) i))}))
+  (println (* (ref sizes 0) (* (ref sizes 1) (ref sizes 2))))
   ;; Part 2 goes on from where part 1 stopped, counting circuits down to one.
   (def circuits {summing (if (= (find-root parent i) i) 1 0) (:for i (range 0 n))})
   (def last
@@ -73,5 +73,5 @@
   (def key (mutablevec-ref pairs last))
   (def i (cast System.Int32 (bitwise-and (shift-right key 10) 1023L)))
   (def j (cast System.Int32 (bitwise-and key 1023L)))
-  (println (* (.x (vec-ref boxes i)) (.x (vec-ref boxes j))))
+  (println (* (.x (ref boxes i)) (.x (ref boxes j))))
   0)
