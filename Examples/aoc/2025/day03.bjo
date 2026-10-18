@@ -5,14 +5,13 @@
 (: joltage (-> (Vec int) int long))
 (defun (joltage ds k)
   (let pick ((j 0) (from 0) (acc 0L))
-    (if (= j k)
-        acc
-        (let ()
-          ;; Leave room for the k - j - 1 digits still to pick.
-          (def i (loop (:for x (range from (- (length ds) (- k j 1))))
-                       (:acc i (folding from (if (> (ref ds x) (ref ds i)) x i)))
-                       => i))
-          (pick (+ j 1) (+ i 1) (+ (* acc 10L) (cast System.Int64 (ref ds i))))))))
+    (cond ((= j k) acc)
+          (else
+           ;; Leave room for the k - j - 1 digits still to pick.
+           (def i (loop (:for x (range from (- (length ds) (- k j 1))))
+                        (:acc i (folding from (if (> (ref ds x) (ref ds i)) x i)))
+                        => i))
+           (pick (+ j 1) (+ i 1) (+ (* acc 10L) (cast System.Int64 (ref ds i))))))))
 
 (defun (main args)
   (def banks {vecing (vec-map digit (string->vec line)) (:for line (input-lines args))})
