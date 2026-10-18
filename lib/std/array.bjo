@@ -1,0 +1,85 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/array.bjo — whole-array operations on numbers.
+;;
+;; Each operation is one loop in the runtime (`BjoArray.cs`). The loop uses
+;; the CPU's vector instructions when the element is a primitive number, so
+;; one instruction does 4 doubles or 8 ints with AVX2. Other numbers, such as
+;; `BigInteger`, go through an ordinary loop.
+;;
+;; Every function that needs arithmetic asks for `Num`, whose CLR constraint is
+;; `INumber`. That is what the runtime's kernels ask for, so the C# call is
+;; legal in a generic function too.
+(import (std prelude))
+
+(:doc #:file "array.bjodoc")
+
+(export
+  array-sum array-dot array-min array-max
+  array-add! array-scale!
+  array-count array-index-of
+  array-fill!)
+
+(import/extern
+  (clr-sum      (: Bjolang.Runtime.BjoArray.Sum          (-> (Array %a) %a)))
+  (clr-dot      (: Bjolang.Runtime.BjoArray.Dot          (-> (Array %a) (Array %a) %a)))
+  (clr-min      (: Bjolang.Runtime.BjoArray.Min          (-> (Array %a) %a)))
+  (clr-max      (: Bjolang.Runtime.BjoArray.Max          (-> (Array %a) %a)))
+  (clr-add!     (: Bjolang.Runtime.BjoArray.AddInPlace   (-> (Array %a) (Array %a) void)))
+  (clr-scale!   (: Bjolang.Runtime.BjoArray.ScaleInPlace (-> (Array %a) %a void)))
+  (clr-count    (: Bjolang.Runtime.BjoArray.Count        (-> (Array %a) %a int)))
+  (clr-index-of (: Bjolang.Runtime.BjoArray.IndexOf      (-> (Array %a) %a int)))
+  (clr-fill!    (: Bjolang.Runtime.BjoArray.Fill         (-> (Array %a) %a void))))
+
+;; ---------------------------------------------------------------------------
+;; Reductions
+;; ---------------------------------------------------------------------------
+
+(: array-sum (-> (Array %a) %a) (where (Num %a)))
+(defun (array-sum a) (clr-sum a))
+
+(: array-dot (-> (Array %a) (Array %a) %a) (where (Num %a)))
+(defun (array-dot a b) (clr-dot a b))
+
+(: array-min (-> (Array %a) %a) (where (Num %a)))
+(defun (array-min a) (clr-min a))
+
+(: array-max (-> (Array %a) %a) (where (Num %a)))
+(defun (array-max a) (clr-max a))
+
+;; ---------------------------------------------------------------------------
+;; In place
+;; ---------------------------------------------------------------------------
+
+(: array-add! (-> (Array %a) (Array %a) void) (where (Num %a)))
+(defun (array-add! dst src) (clr-add! dst src))
+
+(: array-scale! (-> (Array %a) %a void) (where (Num %a)))
+(defun (array-scale! a k) (clr-scale! a k))
+
+;; Any element type: `Array.Fill` needs no arithmetic.
+(: array-fill! (-> (Array %a) %a void))
+(defun (array-fill! a x) (clr-fill! a x))
+
+;; ---------------------------------------------------------------------------
+;; Search
+;; ---------------------------------------------------------------------------
+
+;; Equality is the number's `==`, as `=` is. `Eq` is not asked for: the kernel
+;; cannot call a Bjolang implementation.
+(: array-count (-> (Array %a) %a int) (where (Num %a)))
+(defun (array-count a x) (clr-count a x))
+
+;; -1 when no element matches, as `mutablevec-index-of` answers.
+(: array-index-of (-> (Array %a) %a int) (where (Num %a)))
+(defun (array-index-of a x) (clr-index-of a x))

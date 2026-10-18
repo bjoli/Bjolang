@@ -76,6 +76,9 @@ type CompilerOptions =
       /// `--aot`: a program is also published as a Native AOT executable.
       Aot: bool
 
+      /// `--aot-cpu <set>`: the instruction sets of the native executable.
+      AotCpu: string option
+
       /// `--build-graph`: build the libraries under the inputs, files or
       /// directories, and everything they import, in parallel. See `BuildGraph`.
       BuildGraph: bool
@@ -114,6 +117,7 @@ let defaultOptions =
       NuGet = None
       Runtime = []
       Aot = false
+      AotCpu = None
       BuildGraph = false
       Jobs = System.Environment.ProcessorCount
       DryRun = false
@@ -136,6 +140,11 @@ let printUsage () =
     printfn "              the source (<name>.native.exe on Windows). It starts in a few"
     printfn "              milliseconds and needs no .NET installed. The build takes"
     printfn "              about 10 s more, and needs clang or gcc. A library ignores it."
+    printfn "  --aot-cpu <set>"
+    printfn "              The CPU that --aot builds for: native (this machine), or a"
+    printfn "              level such as x86-64-v3 (AVX2). The default is a baseline"
+    printfn "              CPU, so vectors have 128 bits. The executable fails to start"
+    printfn "              on a CPU without the instructions."
     printfn "  --emit-cs <file>"
     printfn "              Write the generated C# to <file>, in a debug build or not."
     printfn "  --emit-cs-beside"
@@ -389,6 +398,11 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
     | "-d" :: rest
     | "--debug" :: rest -> parseArgs rest { opts with Debug = true }
     | "--aot" :: rest -> parseArgs rest { opts with Aot = true }
+    | "--aot-cpu" :: cpu :: rest when not (System.String.IsNullOrWhiteSpace cpu) && not (cpu.StartsWith "-") ->
+        parseArgs rest { opts with AotCpu = Some cpu }
+    | "--aot-cpu" :: _ ->
+        printfn "Error: --aot-cpu takes the instruction sets to build for: native, or a level such as x86-64-v3."
+        exit 1
     | "--build-graph" :: rest -> parseArgs rest { opts with BuildGraph = true }
     | "--dry-run" :: rest -> parseArgs rest { opts with DryRun = true }
     | "--deps-only" :: rest -> parseArgs rest { opts with DepsOnly = true }
@@ -517,6 +531,7 @@ let private run (argv: string array) =
         { IsLibrary = options.IsLibrary
           Runtime = options.Runtime
           Aot = options.Aot
+          AotCpu = options.AotCpu
           Debug = options.Debug
           EmitCs = options.EmitCs
           DumpAst = options.DumpAst

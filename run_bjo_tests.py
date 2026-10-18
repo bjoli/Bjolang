@@ -1581,8 +1581,10 @@ AOT_MAIN = '''(import (std prelude))
 '''
 
 
-def aot_manifest(app, aot, runtime=""):
-    clauses = ("\n  (aot #t)" if aot else "") + (f"\n  (runtime {runtime})" if runtime else "")
+def aot_manifest(app, aot, runtime="", cpu=""):
+    clauses = (("\n  (aot #t)" if aot else "")
+               + (f'\n  (aot-cpu "{cpu}")' if cpu else "")
+               + (f"\n  (runtime {runtime})" if runtime else ""))
     write(app / "manifest.bjodat", f'(package\n  (name (aotapp))\n  (version "0.1.0"){clauses})\n')
 
 
@@ -1603,6 +1605,15 @@ def test_native_aot(work, c):
     native.unlink()
     c.that("a build without the native executable rebuilds it",
            "Built" in said(run_bjo(app, "build")) and native.exists())
+
+    # The CPU is not in any file the build reads, so the record says it.
+    aot_manifest(app, True, "(gc-server #t)", "native")
+    c.says("(aot-cpu ...) rebuilds the program", run_bjo(app, "build"), "Built")
+    record = app / "src" / "main.bjobuild"
+    c.that("whose record names the CPU",
+           record.exists() and "aot-cpu native" in record.read_text(errors="replace").splitlines())
+    c.says("and a build after that has nothing to do", run_bjo(app, "build"), "Up to date")
+    c.says("the program built for this CPU runs", run_bjo(app, "run"), "server")
 
     out = work / "out"
     c.worked("publish", run_bjo(app, "publish", "-o", str(out)))

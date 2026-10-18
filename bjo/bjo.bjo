@@ -215,6 +215,9 @@
                          ;; For a program built with `--aot`: its native
                          ;; executable. "" otherwise.
                          (: aot string)
+                         ;; With `--aot-cpu`: the CPU it was built for. ""
+                         ;; otherwise.
+                         (: aot-cpu string)
                          ;; For a program: what its resolver loads, as the
                          ;; `link` and `native` lines name them. What
                          ;; `bjo publish` copies.
@@ -293,6 +296,7 @@
           (:acc nuget (folding "" (if (= key "nuget") value nuget)))
           (:acc runtime (listing value) #:when (= key "runtime"))
           (:acc aot (folding "" (if (= key "aot") value aot)))
+          (:acc aot-cpu (folding "" (if (= key "aot-cpu") value aot-cpu)))
           ;; `link <name> <path>` and `native <key> <path>`: the value splits
           ;; at its first space the way a line does, and a path may hold more.
           (:acc links (listing (pair-of value)) #:when (= key "link"))
@@ -314,6 +318,7 @@
                                     (nuget nuget)
                                     (runtime (list-sort runtime))
                                     (aot aot)
+                                    (aot-cpu aot-cpu)
                                     (links links)
                                     (natives natives)
                                     (written written)
@@ -350,16 +355,18 @@
 ;; the manifest names some.
 ;;
 ;; `runtime` is the root manifest's runtime settings, as `name=value`, which a
-;; program is built with, and `aot` whether it is built as a Native AOT
-;; executable too. Empty and #f outside a project.
+;; program is built with, `aot` whether it is built as a Native AOT
+;; executable too, and `aot-cpu` the CPU that executable is for, or "". Empty,
+;; #f and "" outside a project.
 (type (: Against (Record (: roots (Option string))
                          (: frameworks (Option string))
                          (: nuget (Option string))
                          (: runtime (List string))
-                         (: aot bool))))
+                         (: aot bool)
+                         (: aot-cpu string))))
 
 (: nothing-against Against)
-(def nothing-against (Against (roots None) (frameworks None) (nuget None) (runtime Nil) (aot #f)))
+(def nothing-against (Against (roots None) (frameworks None) (nuget None) (runtime Nil) (aot #f) (aot-cpu "")))
 
 (: prepared-against (-> Prepared Against))
 (defun (prepared-against ready)
@@ -367,7 +374,8 @@
            (frameworks (prepared-frameworks-file ready))
            (nuget (prepared-nuget-dir ready))
            (runtime (prepared-runtime ready))
-           (aot (prepared-aot ready))))
+           (aot (prepared-aot ready))
+           (aot-cpu (prepared-aot-cpu ready))))
 
 (: flag-for (-> string (Option string) (List string)))
 (defun (flag-for flag path)
@@ -382,6 +390,13 @@
     (Nil Nil)
     ((Cons setting rest) (Cons "--runtime" (Cons setting (runtime-flags rest))))))
 
+;; `--aot`, and `--aot-cpu` with it when the manifest names a CPU.
+(: aot-flags (-> Against (List string)))
+(defun (aot-flags a)
+  (cond ((not (record-ref a aot)) Nil)
+        ((= (record-ref a aot-cpu) "") (list "--aot"))
+        (else (list "--aot" "--aot-cpu" (record-ref a aot-cpu)))))
+
 ;; The compiler records both files as inputs of what it builds, so a build made
 ;; against other packages — or against another set of declarations — is stale by
 ;; the same comparison every other change is.
@@ -390,7 +405,7 @@
   (list-append (flag-for "--roots" (record-ref a roots))
                (list-append (flag-for "--frameworks" (record-ref a frameworks))
                             (list-append (flag-for "--nuget" (record-ref a nuget))
-                                         (list-append (if (record-ref a aot) (list "--aot") Nil)
+                                         (list-append (aot-flags a)
                                                       (runtime-flags (record-ref a runtime)))))))
 
 ;; What the frameworks file says the package holding `file` declares.
@@ -483,6 +498,10 @@
       ;; `(aot ...)` changed in the manifest, or the native executable is gone.
       (and (string-ends-with? artefact ".exe")
            (not (= (not (= (record-ref rec aot) "")) (record-ref against aot))))
+      ;; `(aot-cpu ...)` changed, for a program that is built as AOT.
+      (and (string-ends-with? artefact ".exe")
+           (record-ref against aot)
+           (not (= (record-ref rec aot-cpu) (record-ref against aot-cpu))))
       (and (record-ref against aot)
            (not (file-exists? (record-ref rec aot))))))
 

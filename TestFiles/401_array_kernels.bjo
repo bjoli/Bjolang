@@ -1,0 +1,117 @@
+;; Whole-array operations from `(std array)`.
+;;
+;; Each runs a vector loop over whole registers and a scalar loop over the
+;; rest. The lengths below are chosen so that both loops run: 0, 1, a few
+;; less than a register, and lengths that leave a tail after the unrolled
+;; loop. Each answer is checked against a plain fold over the same array.
+(import (std prelude))
+(import (std simpletest))
+(import (std array))
+(import (std maths))
+
+;; 0, 1, 2, ..., n-1 times k, plus c. At k = 3 and c = -50 no element is 2.
+(: ramp (-> int int int (Array int)))
+(defun (ramp n k c)
+  (def a (make-array n))
+  (let go ((i 0))
+    (when (< i n)
+      (array-set! a i (+ c (* i k)))
+      (go (+ i 1))))
+  a)
+
+(: ramp-double (-> int (Array double)))
+(defun (ramp-double n)
+  (def a (make-array n))
+  (let go ((i 0))
+    (when (< i n)
+      (array-set! a i (* 0.5 (cast System.Double i)))
+      (go (+ i 1))))
+  a)
+
+(: fold-array (-> (-> %a %b %b) %b (Array %a) %b))
+(defun (fold-array f acc a)
+  (let go ((i 0) (acc acc))
+    (if (= i (array-length a)) acc (go (+ i 1) (f (array-ref a i) acc)))))
+
+(: plain-dot (-> (Array int) (Array int) int))
+(defun (plain-dot a b)
+  (let go ((i 0) (acc 0))
+    (if (= i (array-length a)) acc (go (+ i 1) (+ acc (* (array-ref a i) (array-ref b i)))))))
+
+;; A generic caller: the `Num` constraint travels to the C# kernel.
+(: mean (-> (Array %a) %a) (where (Num %a)))
+(defun (mean a) (/ (array-sum a) (array-sum (make-array (array-length a) #:fill 1))))
+
+(: check-length (-> int void))
+(defun (check-length n)
+  (def a (ramp n 3 -50))
+  (def b (ramp n -2 7))
+  (expect #"sum, length ${n}" (array-sum a) (fold-array + 0 a))
+  (expect #"dot, length ${n}" (array-dot a b) (plain-dot a b))
+  (when (> n 0)
+    (expect #"min, length ${n}" (array-min b) (fold-array min (array-ref b 0) b))
+    (expect #"max, length ${n}" (array-max a) (fold-array max (array-ref a 0) a)))
+  (expect #"count, length ${n}" (array-count (ramp n 0 4) 4) n)
+  (expect #"index-of the last, length ${n}"
+          (array-index-of a (+ -50 (* 3 (- n 1))))
+          (- n 1))
+  (expect #"index-of nothing, length ${n}" (array-index-of a 2) -1))
+
+(defun (main)
+  (for-each check-length (list 0 1 3 7 8 9 31 32 33 100 1001))
+
+  ;; Integer sums wrap, in every lane, as `+` does.
+  (def big (make-array 100 #:fill 2147483647))
+  (expect "a sum that wraps" (array-sum big) (fold-array + 0 big))
+
+  ;; A byte vector has 32 lanes with AVX2, which is the widest lane mask.
+  (def bytes (make-array 100 #:fill (cast System.Byte 3)))
+  (expect "bytes wrap at 256" (byte->string (array-sum bytes)) "44")
+  (array-set! bytes 77 (cast System.Byte 9))
+  (expect "a byte's index" (array-index-of bytes (cast System.Byte 9)) 77)
+  (expect "byte count" (array-count bytes (cast System.Byte 3)) 99)
+
+  ;; Doubles: these sums are exact, so the order of additions cannot show.
+  (def ds (ramp-double 1000))
+  (expect "double sum" (double->string (array-sum ds)) "249750")
+  (expect "double dot" (double->string (array-dot ds ds)) (double->string (fold-array (fun (x acc) (+ acc (* x x))) 0.0 ds)))
+  (expect "double max" (double->string (array-max ds)) "499.5")
+  (expect "double min" (double->string (array-min ds)) "0")
+
+  ;; NaN wins `min` and matches nothing, as `min` and `=` say.
+  (array-set! ds 500 (/ 0.0 0.0))
+  (expect "NaN wins min" (nan? (array-min ds)) #t)
+  (expect "NaN wins max" (nan? (array-max ds)) #t)
+  (expect "NaN is never found" (array-index-of ds (/ 0.0 0.0)) -1)
+  (expect "NaN is never counted" (array-count ds (/ 0.0 0.0)) 0)
+  ;; And -0.0 matches 0.0.
+  (expect "-0.0 finds 0.0" (array-index-of ds -0.0) 0)
+
+  ;; In place.
+  (def xs (ramp 37 1 0))
+  (array-add! xs xs)
+  (expect "add! to itself doubles" (array-ref xs 36) 72)
+  (array-scale! xs 3)
+  (expect "scale!" (array-sum xs) (* 6 (fold-array + 0 (ramp 37 1 0))))
+  (array-fill! xs 5)
+  (expect "fill!" (array-sum xs) 185)
+  (def names (make-array 3 #:fill ""))
+  (array-fill! names "x")
+  (expect "fill! of any type" (array-ref names 2) "x")
+
+  ;; A type no vector holds goes through the scalar loop.
+  (def bigs (make-array 50 #:fill 100000000000000000000I))
+  (expect "bigint sum" (array-sum bigs) 5000000000000000000000I)
+  (expect "decimal max" (array-max (make-array 9 #:fill 1.5M)) 1.5M)
+
+  (expect "generic caller at int" (mean (ramp 11 2 0)) 10)
+  (expect "generic caller at double" (double->string (mean (ramp-double 5))) "1")
+
+  ;; The errors.
+  (match (try (array-dot (ramp 3 1 0) (ramp 4 1 0)) #:catch (System.ArgumentException))
+    ((Ok v) (println "FAILURE: dot of different lengths answered"))
+    ((Err e) (println "ok: dot of different lengths raises")))
+  (match (try (array-min (ramp 0 1 0)) #:catch (System.InvalidOperationException))
+    ((Ok v) (println "FAILURE: min of nothing answered"))
+    ((Err e) (println "ok: min of an empty array raises")))
+  0)

@@ -30,7 +30,7 @@
 (export
   Prepared prepared-roots-file prepared-frameworks-file prepared-nuget-dir
   prepared-runtime
-  prepared-aot
+  prepared-aot prepared-aot-cpu
   prepared-roots prepared-dependencies
   prepare)
 
@@ -50,12 +50,14 @@
 ;; `nuget-dir` is `None` the same way, when the manifest names no NuGet
 ;; packages.
 ;; `runtime` is the root manifest's runtime settings, as `name=value`, and
-;; `aot` whether it asks for a Native AOT build.
+;; `aot` whether it asks for a Native AOT build, and `aot-cpu` the CPU that
+;; build is for, or "" for the baseline.
 (type (: Prepared (Record (: roots-file string)
                           (: frameworks-file (Option string))
                           (: nuget-dir (Option string))
                           (: runtime (List string))
                           (: aot bool)
+                          (: aot-cpu string)
                           (: roots (List Root)))))
 
 ;; A manifest that has been read and whose dependencies have not been walked.
@@ -130,6 +132,9 @@
 
 (: prepared-aot (-> Prepared bool))
 (defun (prepared-aot p) (record-ref p aot))
+
+(: prepared-aot-cpu (-> Prepared string))
+(defun (prepared-aot-cpu p) (record-ref p aot-cpu))
 
 (: prepared-roots (-> Prepared (List Root)))
 (defun (prepared-roots p) (record-ref p roots))
@@ -837,6 +842,9 @@
                 (aot (match (record-ref (project-package project) aot)
                        ((Some aot?) aot?)
                        (None #f)))
+                (aot-cpu (match (record-ref (project-package project) aot-cpu)
+                           ((Some cpu) cpu)
+                           (None "")))
                 (roots roots))))
 
 ;; Writes the lock if it has to, and says what changed.

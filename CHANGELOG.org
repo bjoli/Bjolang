@@ -3,6 +3,31 @@
 
 What each change guarantees, and what it leaves open.
 
+* Whole-array operations, the CPU of a native build, and mixed generic imports
+
+- A new module, ~(std array)~: ~array-sum~, ~array-dot~, ~array-min~,
+  ~array-max~, ~array-add!~, ~array-scale!~, ~array-count~, ~array-index-of~
+  and ~array-fill!~. Each is one loop in the runtime (~BjoArray.cs~) that uses
+  ~System.Numerics.Vector~ when the element is a primitive number, and an
+  ordinary loop otherwise. All but ~array-fill!~ ask for ~Num~.
+- At ~double~, ~array-sum~ and ~array-dot~ add lane by lane, so the last bits
+  can differ from a left fold. Comparisons use the number's operators: NaN
+  matches nothing and wins ~array-min~, as with ~=~ and ~min~.
+- Measured on 4 million elements with AVX2: a sum of doubles 2.6 ms → 0.8 ms,
+  of ints 0.88 ms → 0.21 ms, against a loop in Bjolang.
+- ~--aot-cpu~, and ~(aot-cpu "native")~ in a manifest, set the CPU that a
+  Native AOT executable is built for (ILCompiler's ~IlcInstructionSet~). The
+  default is a baseline x86-64 CPU, with 128-bit vectors. The build record has
+  an ~aot-cpu~ line, so a change to it rebuilds the program.
+- An import of a method group with both generic definitions and ordinary
+  overloads can name a generic one. ~(-> %a (V256 %a))~ on
+  ~Vector256.Create~ now means ~Create<T>(T)~; before, a call at an int picked
+  ~Create(int)~ and failed against the ~%a~. ~(-> (Array %a) int (V256 %a))~
+  now finds ~Create<T>(T[], int)~, which no call site could. A signature that
+  one ordinary overload has exactly still resolves at each call, as before.
+- Tests: ~401_array_kernels.bjo~, ~402_mixed_generic_import.bjo~, and the
+  ~native aot~ test of ~run_bjo_tests.py~.
+
 * Native AOT, and no call-counting delay
 
 - ~--aot~, and ~(aot #t)~ in a manifest, also build a program as one Native

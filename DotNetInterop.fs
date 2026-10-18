@@ -1296,6 +1296,51 @@ let resolveGenericMethod
         failwithf
             $"Type Error at %s{where}: '%s{t.FullName}.%s{name}' is ambiguous — the declared signature fits more than one of its overloads:\n%s{shapes}"
 
+/// For a method group that has both generic definitions and ordinary
+/// overloads: the generic definition the declared signature names, if it
+/// names one.
+///
+/// `Vector256.Create` is such a group. It has `Create(double)` and the other
+/// concrete overloads, and `Create<T>(T)` and `Create<T>(T[], int)`. A call
+/// site resolves only among the ordinary overloads, so without this an
+/// import of `(-> %a (Vector256 %a))` met `Create(int)` at an int argument,
+/// and `(-> (Array double) int (Vector256 double))` met nothing at all.
+///
+/// An ordinary overload whose parameters and return are exactly the declared
+/// ones keeps the import on the call-site path, as before. Otherwise the
+/// generic definition is used when exactly one fits the signature.
+let tryResolveMixedGenericMethod
+    (where: string)
+    (isStatic: bool)
+    (t: Type)
+    (name: string)
+    (declaredParams: HMType list)
+    (declaredReturn: HMType)
+    : ResolvedGenericMethod option =
+
+    let flags = if isStatic then staticFlags else instanceFlags
+    let all = t.GetMethods flags |> Array.filter (fun m -> m.Name = name)
+    let generic, ordinary = all |> Array.partition (fun m -> m.IsGenericMethodDefinition)
+
+    let sameType (fromMethod: HMType) (declared: HMType) =
+        fromMethod = declared || clrStringViewOf fromMethod = Some declared
+
+    let exactOrdinary (m: MethodInfo) =
+        let ps = m.GetParameters() |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList
+        let ret = mapClrType m.ReturnType
+
+        ps.Length = declaredParams.Length
+        && List.forall2 sameType ps declaredParams
+        && (sameType ret declaredReturn || (ret = voidType && declaredReturn = unitType))
+
+    if generic.Length = 0 || ordinary.Length = 0 || ordinary |> Array.exists exactOrdinary then
+        None
+    else
+        try
+            Some(resolveGenericMethod where isStatic t name declaredParams declaredReturn)
+        with _ ->
+            None
+
 // ---------------------------------------------------------------------------
 // Out parameters
 // ---------------------------------------------------------------------------

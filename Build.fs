@@ -158,6 +158,11 @@ type Options =
       /// `--aot`: a program is also published as a Native AOT executable, at
       /// `nativePath`. A library ignores it.
       Aot: bool
+      /// `--aot-cpu`: the instruction sets the native executable may use, as
+      /// ILCompiler's `IlcInstructionSet` takes them: `native`, or a level such
+      /// as `x86-64-v3`. `None` is ILCompiler's baseline CPU. Only `--aot`
+      /// reads it.
+      AotCpu: string option
       /// `--emit-cs`: where the generated C# is written, or nowhere. Apart
       /// from `Debug`, which only decides how the C# is compiled: reading the
       /// C# of an optimized build is as useful as of a debug one, and a debug
@@ -185,6 +190,7 @@ let dependencyOptions: Options =
       Debug = false
       Runtime = []
       Aot = false
+      AotCpu = None
       EmitCs = None
       DumpAst = None
       EmitCsBeside = false
@@ -239,6 +245,8 @@ let besidePath (inputFilePath: string) = Path.ChangeExtension(Path.GetFullPath i
 ///              `--runtime` setting written into its runtimeconfig
 ///     aot      for an executable built with `--aot`: the path of its native
 ///              executable
+///     aot-cpu  for an executable built with `--aot` and `--aot-cpu`: the
+///              instruction sets it was built for
 ///     written  the output's last-write time, in ticks. A record whose output
 ///              has been written since belongs to another build, and the
 ///              compiler does not trust it
@@ -338,7 +346,10 @@ let private writeBuildRecord
         // runtime lines, and runs the native file when it is there.
         let aotLines =
             if options.Aot && Path.GetExtension(outputFilePath: string) = ".exe" then
-                [ $"aot %s{nativePath (Path.GetFullPath outputFilePath)}" ]
+                [ $"aot %s{nativePath (Path.GetFullPath outputFilePath)}"
+                  match options.AotCpu with
+                  | Some cpu -> $"aot-cpu %s{cpu}"
+                  | None -> () ]
             else
                 []
 
@@ -1305,6 +1316,13 @@ let compile (options: Options) (inputFilePath: string) : int =
 
                 let hostOptions = gcOptions @ switches |> String.concat "\n"
 
+                // Without it ILCompiler targets a baseline CPU: on x86-64 that
+                // has SSE2 and no AVX, so `Vector<T>` is 128 bits wide.
+                let instructionSet =
+                    match options.AotCpu with
+                    | Some cpu -> $"    <IlcInstructionSet>%s{cpu}</IlcInstructionSet>"
+                    | None -> ""
+
                 // The trim analysis warns about the resolver, which an AOT
                 // program does not use. Its output is shown only when the
                 // publish fails, so that a working build stays quiet.
@@ -1319,6 +1337,7 @@ let compile (options: Options) (inputFilePath: string) : int =
     <SuppressTrimAnalysisWarnings>true</SuppressTrimAnalysisWarnings>
     <AssemblyName>{assemblyName}</AssemblyName>
 {serverGc}
+{instructionSet}
   </PropertyGroup>
   <ItemGroup>
 {frameworkReferences}

@@ -1035,6 +1035,15 @@ Generic methods require signatures to resolve type parameters:
   (set-fold  (: Set.SetModule.Fold   (-> (-> %a %s %s) %s (Set %a) %s))))
 #+END_SRC
 
+Some method groups have both generic definitions and ordinary overloads, as ~Vector256.Create~ has ~Create(double)~ and ~Create<T>(T[], int)~. The signature picks between them. If one ordinary overload has exactly the declared parameter and return types, each call resolves among the ordinary overloads, as before. Otherwise the import uses the one generic definition that fits the signature:
+#+BEGIN_SRC scheme
+(import/class ((V256 %a) (: System.Runtime.Intrinsics.Vector256)))
+(import/extern
+  (splat-double (: System.Runtime.Intrinsics.Vector256.Create (-> double (V256 double))))   ; Create(double)
+  (splat        (: System.Runtime.Intrinsics.Vector256.Create (-> %a (V256 %a))))           ; Create<T>(T)
+  (load         (: System.Runtime.Intrinsics.Vector256.Create (-> (Array %a) int (V256 %a))))) ; Create<T>(T[], int)
+#+END_SRC
+
 **** What crosses, and how
 | .NET                 | Bjolang            |
 |----------------------+--------------------|

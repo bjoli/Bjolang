@@ -1615,12 +1615,42 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
             // from its argument types, exactly as before. Which of the two a
             // name gets is a property of the .NET method group rather than
             // of anything written in the clause.
+            //
+            // A group with both kinds is resolved here too when the signature
+            // names one of its generic definitions and none of its ordinary
+            // overloads: see `tryResolveMixedGenericMethod`.
+            let mixedGeneric () =
+                match declaredType with
+                | Some(TFun(declaredParams, declaredReturn, _)) when not spec.IsAsync && not spec.Cancellable ->
+                    let methodParams =
+                        if not isInstance then Some declaredParams
+                        else
+                            match declaredParams with
+                            | _ :: rest -> Some rest
+                            | [] -> None
+
+                    methodParams
+                    |> Option.bind (fun ps ->
+                        DotNetInterop.tryResolveMixedGenericMethod where (not isInstance) clrType memberName ps declaredReturn)
+                    |> Option.map (fun resolved ->
+                        let normalized =
+                            if resolved.ReturnType = declaredReturn then
+                                declaredType
+                            else
+                                Some(TFun(declaredParams, resolved.ReturnType, ESync))
+
+                        Some resolved.TypeArguments, normalized)
+                | _ -> None
+
             let genericTypeArgs, declaredType =
                 if outImport.IsSome then
                     outImport |> Option.map (fun (_, typeArgs, _) -> typeArgs), declaredType
-                elif kind <> ExternMethod
-                   || not (DotNetInterop.isGenericOnlyMethod (not isInstance) clrType memberName) then
+                elif kind <> ExternMethod then
                     None, declaredType
+                elif not (DotNetInterop.isGenericOnlyMethod (not isInstance) clrType memberName) then
+                    match mixedGeneric () with
+                    | Some resolved -> resolved
+                    | None -> None, declaredType
                 else
                     if spec.IsAsync || spec.Cancellable then
                         failwithf

@@ -89,6 +89,8 @@ are in ~bjo/manifest.bjo~, which is the only reader of it.
   see below. Optional. Only the project being built uses it.
 - ~(aot #t)~ builds the program as a *Native AOT* executable too — see below.
   Optional, ~#f~ by default. Only the project being built uses it.
+- ~(aot-cpu "native")~ says which CPU that executable is for — see below.
+  Optional. Only ~(aot #t)~ reads it.
 - ~targets~ and ~(registry ...)~ sources are not implemented. A registry source
   is an error that says so.
 
@@ -323,6 +325,33 @@ needs no .NET to run.
 
 Only the project being built uses ~aot~, as with ~runtime~. The compiler takes
 it as ~--aot~.
+
+*** The CPU
+
+#+BEGIN_SRC scheme
+  (aot #t)
+  (aot-cpu "native")
+#+END_SRC
+
+By default the native executable runs on any x86-64 CPU. So it uses only the
+instructions that every x86-64 CPU has: SSE2, and not AVX. A ~Vector<T>~ is
+then 128 bits wide, and the kernels of ~(std array)~ do half the work per
+instruction that they do on .NET with AVX2. ~aot-cpu~ names the CPU to build
+for:
+
+- ~"native"~ is the CPU of the machine that builds.
+- A level, such as ~"x86-64-v3"~, is every CPU that has its instructions:
+  ~x86-64-v3~ has AVX2, and ~x86-64-v4~ has AVX-512.
+- Any value that ILCompiler's ~IlcInstructionSet~ takes, such as
+  ~"avx2,bmi2,lzcnt"~.
+
+An executable built for a CPU stops at start on a CPU that does not have the
+instructions. Use ~"native"~ for a program that runs where it is built. A
+program that runs on .NET is not affected: the JIT always uses what the CPU
+has.
+
+The compiler takes it as ~--aot-cpu~. The build record says the CPU, so a
+change to ~aot-cpu~ rebuilds the program.
 
 ** Sources: where a dependency comes from
 

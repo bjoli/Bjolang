@@ -1,0 +1,107 @@
+;; Docs for std/array.bjo, read through (:doc #:file "array.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Whole-array operations on numbers, with the CPU's vector instructions where it has them.")
+  (see array-sum array-dot array-min array-max array-add! array-scale! array-count array-index-of array-fill!)
+  (example """
+    (import (std array))
+
+    (def xs (make-array 1000 #:fill 1.5))
+    (array-sum xs)                  ; 1500
+    (array-dot xs xs)               ; 2250
+    (array-scale! xs 2.0)           ; every element is now 3
+    (array-index-of xs 3.0)         ; 0
+    """)
+  (reference """
+    Each function is one loop in the runtime. When the element type is a
+    primitive number (@code{int}, @code{long}, @code{double}, @code{byte} and
+    the other fixed-size integers and floats), the loop uses
+    @code{System.Numerics.Vector}: one instruction works on as many elements
+    as a vector register holds. With AVX2 that is 4 doubles, 8 ints or 32
+    bytes. The elements that do not fill a whole register go through an
+    ordinary loop at the end. Other numbers, such as @code{BigInteger} and
+    @code{decimal}, go through the ordinary loop only.
+
+    @strong{Order of additions.} @code{array-sum} and @code{array-dot} add
+    lane by lane and add the lanes at the end. At an integer type the result
+    is the same as a left fold, because addition wraps and the order does not
+    matter. At @code{double} the order is different, so the last bits of the
+    result can differ from @code{(foldl + 0.0 xs)}.
+
+    @strong{Equality.} @code{array-count} and @code{array-index-of} use the
+    number's @code{==}, as @code{=} does. NaN matches nothing, and
+    @code{-0.0} matches @code{0.0}.
+
+    @strong{Native AOT.} An ahead-of-time build targets a baseline x86-64 CPU
+    unless the project says otherwise, so a vector there has 128 bits. Set
+    @code{(aot-cpu "native")} in the manifest to build for the CPU of the
+    machine that builds.
+    """))
+
+(:doc array-sum
+  (summary "Returns the sum of the elements.")
+  (arg a "The array.")
+  (returns "The sum. Zero for an empty array.")
+  (example """
+    (array-sum (make-array 4 #:fill 2))   ; 8
+    """))
+
+(:doc array-dot
+  (summary "Returns the sum of the products of the elements at the same index.")
+  (arg a "The first array.")
+  (arg b "The second array. It must have the same length as @code{a}.")
+  (returns "The dot product. Zero for empty arrays.")
+  (reference """
+    Raises @code{ArgumentException} when the lengths differ.
+    """))
+
+(:doc array-min
+  (summary "Returns the least element.")
+  (arg a "The array. It must not be empty.")
+  (returns "The least element, as @code{min} picks it.")
+  (reference """
+    Raises @code{InvalidOperationException} for an empty array. At
+    @code{double} a NaN anywhere gives NaN, and @code{-0.0} is less than
+    @code{0.0}, as @code{min} says.
+    """))
+
+(:doc array-max
+  (summary "Returns the greatest element.")
+  (arg a "The array. It must not be empty.")
+  (returns "The greatest element, as @code{max} picks it.")
+  (reference """
+    Raises @code{InvalidOperationException} for an empty array. At
+    @code{double} a NaN anywhere gives NaN.
+    """))
+
+(:doc array-add!
+  (summary "Adds each element of @code{src} to the element of @code{dst} at the same index.")
+  (arg dst "The array to change.")
+  (arg src "The array to add. It must have the same length as @code{dst}.")
+  (reference """
+    Raises @code{ArgumentException} when the lengths differ. @code{dst} and
+    @code{src} can be the same array, which doubles every element.
+    """))
+
+(:doc array-scale!
+  (summary "Multiplies each element by @code{k}.")
+  (arg a "The array to change.")
+  (arg k "The factor."))
+
+(:doc array-count
+  (summary "Returns how many elements are equal to @code{x}.")
+  (arg a "The array.")
+  (arg x "The value to count.")
+  (returns "The number of elements @code{=} to @code{x}."))
+
+(:doc array-index-of
+  (summary "Returns the index of the first element equal to @code{x}.")
+  (arg a "The array.")
+  (arg x "The value to find.")
+  (returns "The index, or -1 when no element is @code{=} to @code{x}."))
+
+(:doc array-fill!
+  (summary "Writes @code{x} to every element.")
+  (arg a "The array to change. Any element type.")
+  (arg x "The value to write."))

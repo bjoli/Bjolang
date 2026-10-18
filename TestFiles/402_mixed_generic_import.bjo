@@ -1,0 +1,46 @@
+;; An import of a method group that has both generic definitions and ordinary
+;; overloads.
+;;
+;; `Vector256.Create` has `Create(double)`, `Create(int)` and the other
+;; concrete overloads, and `Create<T>(T)` and `Create<T>(T[], int)`. A
+;; signature that one ordinary overload has exactly still picks it at each
+;; call. A signature that names a generic definition is resolved against it at
+;; the import, as a group of generic definitions only would be.
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  ((V256 %a) (: System.Runtime.Intrinsics.Vector256)))
+
+(import/extern
+  ;; Exactly `Create(double)`: the ordinary overload.
+  (splat-double (: System.Runtime.Intrinsics.Vector256.Create (-> double (V256 double))))
+  ;; `Create<T>(T)`, at any T. The call site used to pick `Create(int)` for
+  ;; an int, which the declared `%a` did not match.
+  (splat (: System.Runtime.Intrinsics.Vector256.Create (-> %a (V256 %a))))
+  ;; `Create<T>(T[], int)`, which no call site could find, because only the
+  ;; ordinary overloads were candidates there.
+  (load (: System.Runtime.Intrinsics.Vector256.Create (-> (Array %a) int (V256 %a))))
+  ;; And at a concrete type: no ordinary overload takes an array.
+  (load-double (: System.Runtime.Intrinsics.Vector256.Create (-> (Array double) int (V256 double))))
+  (v-add (: System.Runtime.Intrinsics.Vector256.Add (-> (V256 %a) (V256 %a) (V256 %a))))
+  (v-sum (: System.Runtime.Intrinsics.Vector256.Sum (-> (V256 %a) %a))))
+
+;; A generic caller: the type argument is the caller's own.
+(: lanes-of (-> %a (V256 %a)))
+(defun (lanes-of x) (splat x))
+
+(defun (main)
+  (expect "the ordinary overload" (double->string (v-sum (splat-double 1.5))) "6")
+  (expect "the generic one at int" (v-sum (splat 2)) 16)
+  (expect "the generic one at long" (long->string (v-sum (splat 3L))) "12")
+  (expect "through a generic caller" (v-sum (lanes-of 1)) 8)
+
+  (def xs (make-array 10 #:fill 1))
+  (array-set! xs 9 100)
+  (expect "a load from an array" (v-sum (load xs 2)) 107)
+  (expect "two loads added" (v-sum (v-add (load xs 1) (load xs 2))) 115)
+
+  (def ds (make-array 4 #:fill 0.25))
+  (expect "a load at a concrete type" (double->string (v-sum (load-double ds 0))) "1")
+  0)
