@@ -9,10 +9,9 @@
 (import (std eq))
 (import "common.bjo")
 
-;; A shape as the (x, y) of its cells, sorted by row and then column, so that
-;; the first cell is the one a search places at the first empty square.
-(type (: Shape (Record (: cells (List (Tuple int int))))))
-
+;; A shape is the (x, y) of its cells. `normalise` moves it to the origin and
+;; sorts the cells, so that the first cell is the one a search places at the
+;; first empty square.
 (: normalise (-> (List (Tuple int int)) (List (Tuple int int))))
 (defun (normalise cells)
   (def x0 (list-foldl (fun (c m) (min (fst c) m)) 1000 cells))
@@ -45,43 +44,46 @@
 
 ;; Fills the region square by square. The first empty square is covered by
 ;; the first cell of some present, or left empty, which spends one square of
-;; slack.
+;; slack. Each try marks the grid, searches on, and undoes the mark.
 (: search (-> (Vec (List (List (Tuple int int)))) int int (Array int) int bool))
 (defun (search orients w h counts slack)
   (def grid (make-array (* w h)))
-  (defun (free? x y) (and (>= x 0) (< x w) (>= y 0) (< y h) (not (array-ref grid (+ x (* y w))))))
+  (defun (free? x y)
+    (and (>= x 0) (< x w) (>= y 0) (< y h) (not (array-ref grid (+ x (* y w))))))
   (defun (mark! o x0 y0 v)
     (list-for-each (fun ((Tuple dx dy)) (array-set! grid (+ (+ x0 dx) (* (+ y0 dy) w)) v)) o))
+  (defun (take! i n) (array-set! counts i (- (array-ref counts i) n)))
+
   (defun (go (: at int) (: slack int))
-    (cond ((loop (:for c counts) (:acc z (folding #t (and z (= c 0)))) => z) #t)
+    (def x (% at w))
+    (def y (/ at w))
+    ;; Puts orientation o of shape i with its first cell on (x, y).
+    (defun (place? i o)
+      (def ax (- x (fst (list-head o))))
+      (and (all? (fun ((Tuple dx dy)) (free? (+ ax dx) (+ y dy))) o)
+           (let ()
+             (mark! o ax y #t) (take! i 1)
+             (def ok (go (+ at 1) slack))
+             (mark! o ax y #f) (take! i -1)
+             ok)))
+    (defun (skip?)
+      (and (> slack 0)
+           (let ()
+             (array-set! grid at #t)
+             (def ok (go (+ at 1) (- slack 1)))
+             (array-set! grid at #f)
+             ok)))
+    (cond ((all? (fun (c) (= c 0)) counts) #t)
           ((>= at (* w h)) #f)
           ((array-ref grid at) (go (+ at 1) slack))
           (else
-           (def x (% at w))
-           (def y (/ at w))
            (or (loop (:for i (range 0 (vec-length orients)))
                      (:when (> (array-ref counts i) 0))
                      (:subloop)
                      (:for o (vec-ref orients i))
-                     ;; The shape's first cell goes on (x, y).
-                     (:let ax (- x (match o ((Cons (Tuple fx _) _) fx) (Nil 0))))
-                     (:when (all? (fun ((Tuple dx dy)) (free? (+ ax dx) (+ y dy))) o))
-                     (:acc found (folding #f
-                                          (let ()
-                                            (mark! o ax y #t)
-                                            (array-set! counts i (- (array-ref counts i) 1))
-                                            (def ok (go (+ at 1) slack))
-                                            (array-set! counts i (+ (array-ref counts i) 1))
-                                            (mark! o ax y #f)
-                                            ok)))
-                     (:finish found)
-                     => found)
-               (and (> slack 0)
-                    (let ()
-                      (array-set! grid at #t)
-                      (def ok (go (+ at 1) (- slack 1)))
-                      (array-set! grid at #f)
-                      ok))))))
+                     (:finish (place? i o) #t)
+                     => #f)
+               (skip?)))))
   (go 0 slack))
 
 (defun (main args)
