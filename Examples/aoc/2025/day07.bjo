@@ -1,0 +1,30 @@
+;; Day 7: Laboratories. A tachyon beam enters at S and falls straight down. A
+;; splitter (^) stops it and starts two beams, one column to each side. Part 1
+;; counts the splitters a beam reaches. Part 2 counts the timelines: each
+;; split makes one particle take both ways.
+(import (std prelude))
+(import "common.bjo")
+
+(defun (main args)
+  (def rows {vecing (string->vec l) (:for l (input-lines args))})
+  (def w (vec-length (vec-ref rows 0)))
+  ;; How many timelines have a particle in each column.
+  (def beams (make-array w))
+  (loop (:for x (range 0 w))
+        (:do (array-set! beams x (if (char=? (vec-ref (vec-ref rows 0) x) #\S) 1L 0L))))
+  (def/mutable splits 0)
+  (loop (:for row rows)
+        (:do (def next (make-array w))
+             (loop (:for x (range 0 w))
+                   (:let n (array-ref beams x))
+                   (:when (> n 0L))
+                   (:do (if (char=? (vec-ref row x) #\^)
+                            (let ()
+                              (set! splits (+ splits 1))
+                              (when (> x 0) (array-set! next (- x 1) (+ n (array-ref next (- x 1)))))
+                              (when (< (+ x 1) w) (array-set! next (+ x 1) (+ n (array-ref next (+ x 1))))))
+                            (array-set! next x (+ n (array-ref next x))))))
+             (loop (:for x (range 0 w)) (:do (array-set! beams x (array-ref next x))))))
+  (println splits)
+  (println {summing n (:for n beams)})
+  0)

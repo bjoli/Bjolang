@@ -1,0 +1,41 @@
+;; Day 2: Gift Shop. The input is comma-separated ID ranges. An ID is invalid
+;; when its digits are one block repeated: exactly twice in part 1, at least
+;; twice in part 2. The answer is the sum of the invalid IDs in the ranges.
+(import (std prelude))
+(import "common.bjo")
+
+;; Whether the digits ds are the first k digits repeated.
+(: repeats? (-> (Vec char) int bool))
+(defun (repeats? ds k)
+  (loop (:for i (range k (vec-length ds)))
+        (:acc same (folding #t (char=? (vec-ref ds i) (vec-ref ds (- i k)))))
+        (:finish (not same))
+        => same))
+
+(: twice? (-> (Vec char) bool))
+(defun (twice? ds)
+  (def n (vec-length ds))
+  (and (= 0 (% n 2)) (repeats? ds (/ n 2))))
+
+(: some-repeat? (-> (Vec char) bool))
+(defun (some-repeat? ds)
+  (def n (vec-length ds))
+  (loop (:for k (range 1 (+ (/ n 2) 1)))
+        (:acc found (folding #f (and (= 0 (% n k)) (repeats? ds k))))
+        (:finish found)
+        => found))
+
+(defun (main args)
+  (def ranges (string-split (string-trim (vec-ref (input-lines args) 0)) ","))
+  (def (part1 part2)
+    (loop (:for r ranges)
+          (:let bounds (string-split r "-"))
+          (:subloop)
+          (:for id (up-from (parse-long (vec-ref bounds 0)) #:to (+ 1L (parse-long (vec-ref bounds 1)))))
+          (:let ds (string->vec (long->string id)))
+          (:acc part1 (summing (if (twice? ds) id 0L)))
+          (:acc part2 (summing (if (some-repeat? ds) id 0L)))
+          => (Tuple part1 part2)))
+  (println part1)
+  (println part2)
+  0)

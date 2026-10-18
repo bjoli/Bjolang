@@ -1,0 +1,32 @@
+;; Day 5: Print Queue. Ordering rules X|Y (page X before page Y), a blank
+;; line, then updates. Part 1 sums the middle page of each update already in
+;; order. Part 2 puts the others in order and sums their middle pages.
+(import (std prelude))
+(import (std mutable set))
+(import (std mutable vec))
+(import "common.bjo")
+
+(defun (main args)
+  (def lines (input-lines args))
+  ;; The rules as "X|Y" strings, which is how a pair is looked up.
+  (def rules (mutableset))
+  (loop (:for l lines)
+        (:finish (= l ""))
+        (:do (ignore (mutableset-add! rules l))))
+  (defun (before? a b) (mutableset-contains? rules (str (int->string a) "|" (int->string b))))
+  (defun (compare-pages a b) (cond ((before? a b) -1) ((before? b a) 1) (else 0)))
+  (def updates {vecing (vec-map string->int (string-split l ","))
+                       (:for l lines)
+                       (:when (string-contains? l ","))})
+  (defun (in-order? u)
+    (loop (:for i (range 1 (vec-length u)))
+          (:acc ok (folding #t (and ok (not (before? (vec-ref u i) (vec-ref u (- i 1)))))))
+          => ok))
+  (defun (middle u) (vec-ref u (/ (vec-length u) 2)))
+  (println {summing (middle u) (:for u updates) (:when (in-order? u))})
+  (println {summing (mutablevec-ref m (/ (mutablevec-length m) 2))
+            (:for u updates)
+            (:when (not (in-order? u)))
+            (:let m (vec->mutablevec u))
+            (:do (mutablevec-sort-by! m compare-pages))})
+  0)

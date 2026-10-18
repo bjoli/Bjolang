@@ -1,0 +1,101 @@
+;; Day 10: Factory. Each machine has indicator lights, buttons that each act
+;; on some of them, and joltage targets. Part 1: the fewest presses that turn
+;; on exactly the lights shown, where a press toggles each light it names.
+;; Part 2: the fewest presses that make each counter reach its target, where a
+;; press adds one to each counter it names. The answers are summed over the
+;; machines.
+(import (std prelude))
+(import (std maths))
+(import (std mutable map))
+(import "common.bjo")
+
+(type (: Machine (Record (: lights int) (: buttons (Vec (Vec int))) (: targets (Vec int)))))
+
+;; The text between the first and last characters of a token: "(1,3)" is "1,3".
+(: inner (-> string string))
+(defun (inner tok) (string-drop (string-drop-right tok 1) 1))
+
+(: parse-machine (-> string Machine))
+(defun (parse-machine line)
+  (def toks (string-split line " "))
+  (def n (vec-length toks))
+  (def lights
+    {summing (if (char=? c #\#) bit 0) (:for c (inner (vec-ref toks 0))) (:with bit 1 (* bit 2))})
+  (Machine (lights lights)
+           (buttons {vecing (vec-map string->int (string-split (inner (vec-ref toks i)) ","))
+                            (:for i (range 1 (- n 1)))})
+           (targets (vec-map string->int (string-split (inner (vec-ref toks (- n 1))) ",")))))
+
+(: button-mask (-> (Vec int) int))
+(defun (button-mask b)
+  {summing (shift-left 1 i) (:for i b)})
+
+;; The fewest presses that toggle the lights from off to the pattern.
+(: fewest-toggles (-> Machine int))
+(defun (fewest-toggles m)
+  (def masks (vec-map button-mask (.buttons m)))
+  (def nb (vec-length masks))
+  (loop (:for s (range 0 (shift-left 1 nb)))
+        (:let lit (loop (:for i (range 0 nb))
+                        (:when (= 1 (bitwise-and (shift-right s i) 1)))
+                        (:acc x (folding 0 (bitwise-xor x (vec-ref masks i))))
+                        => x))
+        (:when (= lit (.lights m)))
+        (:acc best (folding 1000000 (min best (popcount s))))
+        => best))
+
+;; One subset of the buttons pressed once each: what it adds to the counters,
+;; and how many presses that is.
+(type (: Press (Record (: adds (Array int)) (: count int))))
+
+(def none 1000000000)
+
+;; The fewest presses that reach the targets. The buttons pressed an odd
+;; number of times must give the targets' parity; what is left is even, and is
+;; reached by pressing every button half as many times, twice.
+(: fewest-presses (-> Machine int))
+(defun (fewest-presses m)
+  (def k (vec-length (.targets m)))
+  (def nb (vec-length (.buttons m)))
+  ;; Every subset, grouped by the parity of what it adds.
+  (def by-parity (mutablemap))
+  (loop (:for s (range 0 (shift-left 1 nb)))
+        (:let adds (make-array k))
+        (:do (let ()
+               (loop (:for i (range 0 nb))
+                     (:when (= 1 (bitwise-and (shift-right s i) 1)))
+                     (:subloop)
+                     (:for c (vec-ref (.buttons m) i))
+                     (:do (array-set! adds c (+ 1 (array-ref adds c)))))
+               (def parity {summing (shift-left (bitwise-and (array-ref adds c) 1) c)
+                            (:for c (range 0 k))})
+               (mutablemap-set! by-parity parity
+                                (Cons (Press (adds adds) (count (popcount s)))
+                                      (mutablemap-ref-or by-parity parity Nil))))))
+  (def memo (mutablemap))
+  (defun (solve (: t (Array int)))
+    (def key (string-join {vecing (int->string x) (:for x t)} ","))
+    (cond ((loop (:for x t) (:acc z (folding #t (and z (= x 0)))) => z) 0)
+          ((mutablemap-contains? memo key) (mutablemap-ref memo key))
+          (else
+           (def parity {summing (shift-left (bitwise-and (array-ref t c) 1) c) (:for c (range 0 k))})
+           (def best
+             (loop (:for p (mutablemap-ref-or by-parity parity Nil))
+                   (:when (loop (:for c (range 0 k)) (:acc ok (folding #t (and ok (<= (array-ref (.adds p) c) (array-ref t c))))) => ok))
+                   (:let half (make-array k))
+                   (:do (loop (:for c (range 0 k))
+                              (:do (array-set! half c (/ (- (array-ref t c) (array-ref (.adds p) c)) 2)))))
+                   (:let rest (solve half))
+                   (:acc best (folding none (if (< rest none) (min best (+ (.count p) (* 2 rest))) best)))
+                   => best))
+           (mutablemap-set! memo key best)
+           best)))
+  (def t (make-array k))
+  (loop (:for c (range 0 k)) (:do (array-set! t c (vec-ref (.targets m) c))))
+  (solve t))
+
+(defun (main args)
+  (def machines (vec-map parse-machine (input-lines args)))
+  (println {summing (fewest-toggles m) (:for m machines)})
+  (println {summing (fewest-presses m) (:for m machines)})
+  0)

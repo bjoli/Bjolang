@@ -1,0 +1,33 @@
+;; Day 2: Red-Nosed Reports. A report is safe when its levels all rise or all
+;; fall, by 1 to 3 at each step. Part 1 counts the safe reports. Part 2 also
+;; counts a report that is safe with one level removed.
+(import (std prelude))
+(import "common.bjo")
+
+(: safe? (-> (Vec int) bool))
+(defun (safe? levels)
+  (def n (vec-length levels))
+  (def rising? (and (> n 1) (< (vec-ref levels 0) (vec-ref levels 1))))
+  (loop (:for i (range 1 n))
+        (:let d (if rising?
+                    (- (vec-ref levels i) (vec-ref levels (- i 1)))
+                    (- (vec-ref levels (- i 1)) (vec-ref levels i))))
+        (:acc ok (folding #t (and (>= d 1) (<= d 3))))
+        (:finish (not ok))
+        => ok))
+
+;; The levels with the one at index i taken out.
+(: without (-> (Vec int) int (Vec int)))
+(defun (without levels i)
+  {vecing (vec-ref levels j) (:for j (range 0 (vec-length levels))) (:when (not (= i j)))})
+
+(: dampened-safe? (-> (Vec int) bool))
+(defun (dampened-safe? levels)
+  (or (safe? levels)
+      (any? (fun (i) (safe? (without levels i))) (range 0 (vec-length levels)))))
+
+(defun (main args)
+  (def reports {vecing (vec-map string->int (string-split line " ")) (:for line (input-lines args))})
+  (println {counting r :when (safe? r) (:for r reports)})
+  (println {counting r :when (dampened-safe? r) (:for r reports)})
+  0)

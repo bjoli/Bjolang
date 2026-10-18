@@ -1,0 +1,109 @@
+;; Day 12: Christmas Tree Farm. Present shapes on a 3x3 grid, then regions
+;; under trees with how many presents of each shape must go there. Presents
+;; may be turned and flipped, and may not overlap. The answer is the number of
+;; regions all their presents fit in.
+;;
+;; Most regions are settled by area: too little room, or room for every
+;; present in its own 3x3 square. The rest are searched.
+(import (std prelude))
+(import (std eq))
+(import "common.bjo")
+
+;; A shape as the (x, y) of its cells, sorted by row and then column, so that
+;; the first cell is the one a search places at the first empty square.
+(type (: Shape (Record (: cells (List (Tuple int int))))))
+
+(: normalise (-> (List (Tuple int int)) (List (Tuple int int))))
+(defun (normalise cells)
+  (def x0 (list-foldl (fun (c m) (min (fst c) m)) 1000 cells))
+  (def y0 (list-foldl (fun (c m) (min (snd c) m)) 1000 cells))
+  (list-sort (list-map (fun ((Tuple x y)) (Tuple (- x x0) (- y y0))) cells)))
+
+;; The eight turns and flips of a shape, without repeats.
+(: orientations (-> (List (Tuple int int)) (List (List (Tuple int int)))))
+(defun (orientations cells)
+  (defun (turn cs) (list-map (fun ((Tuple x y)) (Tuple (- 0 y) x)) cs))
+  (defun (flip cs) (list-map (fun ((Tuple x y)) (Tuple (- 0 x) y)) cs))
+  (def all
+    (let go ((i 0) (cs cells) (acc Nil))
+      (if (= i 4)
+          acc
+          (go (+ i 1) (turn cs) (Cons (normalise cs) (Cons (normalise (flip cs)) acc))))))
+  (loop (:for o all)
+        (:acc kept (folding Nil (if (any? (fun (p) (= p o)) kept) kept (Cons o kept))))
+        => kept))
+
+;; Whether the presents in counts fit a w by h region.
+(: fits? (-> (Vec (List (List (Tuple int int)))) (Vec int) int int (Array int) bool))
+(defun (fits? orients sizes w h counts)
+  (def needed {summing (* (array-ref counts i) (vec-ref sizes i))
+               (:for i (range 0 (array-length counts)))})
+  (def presents {summing c (:for c counts)})
+  (cond ((> needed (* w h)) #f)
+        ((<= presents (* (/ w 3) (/ h 3))) #t)
+        (else (search orients w h counts (- (* w h) needed)))))
+
+;; Fills the region square by square. The first empty square is covered by
+;; the first cell of some present, or left empty, which spends one square of
+;; slack.
+(: search (-> (Vec (List (List (Tuple int int)))) int int (Array int) int bool))
+(defun (search orients w h counts slack)
+  (def grid (make-array (* w h)))
+  (defun (free? x y) (and (>= x 0) (< x w) (>= y 0) (< y h) (not (array-ref grid (+ x (* y w))))))
+  (defun (mark! o x0 y0 v)
+    (list-for-each (fun ((Tuple dx dy)) (array-set! grid (+ (+ x0 dx) (* (+ y0 dy) w)) v)) o))
+  (defun (go (: at int) (: slack int))
+    (cond ((loop (:for c counts) (:acc z (folding #t (and z (= c 0)))) => z) #t)
+          ((>= at (* w h)) #f)
+          ((array-ref grid at) (go (+ at 1) slack))
+          (else
+           (def x (% at w))
+           (def y (/ at w))
+           (or (loop (:for i (range 0 (vec-length orients)))
+                     (:when (> (array-ref counts i) 0))
+                     (:subloop)
+                     (:for o (vec-ref orients i))
+                     ;; The shape's first cell goes on (x, y).
+                     (:let ax (- x (match o ((Cons (Tuple fx _) _) fx) (Nil 0))))
+                     (:when (all? (fun ((Tuple dx dy)) (free? (+ ax dx) (+ y dy))) o))
+                     (:acc found (folding #f
+                                          (let ()
+                                            (mark! o ax y #t)
+                                            (array-set! counts i (- (array-ref counts i) 1))
+                                            (def ok (go (+ at 1) slack))
+                                            (array-set! counts i (+ (array-ref counts i) 1))
+                                            (mark! o ax y #f)
+                                            ok)))
+                     (:finish found)
+                     => found)
+               (and (> slack 0)
+                    (let ()
+                      (array-set! grid at #t)
+                      (def ok (go (+ at 1) (- slack 1)))
+                      (array-set! grid at #f)
+                      ok))))))
+  (go 0 slack))
+
+(defun (main args)
+  (def lines (input-lines args))
+  ;; Shapes: a line "N:" and three rows under it.
+  (def shapes
+    {vecing {listing (Tuple x y)
+                     (:for y (range 0 3))
+                     (:subloop)
+                     (:for x (range 0 3))
+                     (:when (char=? #\# (vec-ref (string->vec (vec-ref lines (+ i (+ 1 y)))) x)))}
+            (:for i (range 0 (vec-length lines)))
+            (:when (and (string-ends-with? (vec-ref lines i) ":") (not (string-contains? (vec-ref lines i) "x"))))})
+  (def orients (vec-map (fun (s) (orientations s)) shapes))
+  (def sizes (vec-map list-length shapes))
+  (println
+   {summing (if (fits? orients sizes (string->int (vec-ref dims 0)) (string->int (vec-ref dims 1)) arr) 1 0)
+    (:for line lines)
+    (:when (string-contains? line "x"))
+    (:let halves (string-split line ": "))
+    (:let dims (string-split (vec-ref halves 0) "x"))
+    (:let counts (vec-map string->int (string-split (vec-ref halves 1) " ")))
+    (:let arr (make-array (vec-length counts)))
+    (:do (loop (:for i (range 0 (vec-length counts))) (:do (array-set! arr i (vec-ref counts i)))))})
+  0)

@@ -1,0 +1,27 @@
+;; Day 3: Mull It Over. Corrupted memory with mul(X,Y) instructions in it, X
+;; and Y of one to three digits. Part 1 sums the products. Part 2 obeys do()
+;; and don't(), which turn the multiplications on and off.
+(import (std prelude))
+(import (std rx))
+(import "common.bjo")
+
+;; An instruction: a multiplication with its two numbers named, or a switch.
+(def instruction
+  #rx(or (seq "mul(" (=> :x (** 1 3 :ascii-digit)) "," (=> :y (** 1 3 :ascii-digit)) ")")
+         "do()"
+         "don't()"))
+
+(defun (main args)
+  (def memory (string-join (input-lines args) "\n"))
+  (def (all enabled)
+    (loop (:for m (rx-matches instruction memory))
+          (:with on? #t (case (rx-text m) (("do()") #t) (("don't()") #f) (else on?)))
+          (:let product (match (rx-group m :x)
+                          ((Some x) (* (parse-long x) (parse-long (option-ref (rx-group m :y)))))
+                          (None 0L)))
+          (:acc all (summing product))
+          (:acc enabled (summing (if on? product 0L)))
+          => (Tuple all enabled)))
+  (println all)
+  (println enabled)
+  0)

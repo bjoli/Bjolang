@@ -1,0 +1,31 @@
+;; Day 5: Cafeteria. Ranges of fresh ingredient IDs, a blank line, then the
+;; IDs on hand. Part 1 counts the IDs on hand that are fresh; part 2 counts
+;; every ID the ranges cover.
+(import (std prelude))
+(import (std eq))
+(import "common.bjo")
+
+(: parse-range (-> string (Tuple long long)))
+(defun (parse-range line)
+  (def parts (string-split line "-"))
+  (Tuple (parse-long (vec-ref parts 0)) (parse-long (vec-ref parts 1))))
+
+(: fresh? (-> (Vec (Tuple long long)) long bool))
+(defun (fresh? ranges id)
+  (any? (fun ((Tuple lo hi)) (and (<= lo id) (<= id hi))) ranges))
+
+;; The number of IDs in the union of ranges, which are sorted by start.
+(: covered (-> (Vec (Tuple long long)) long))
+(defun (covered sorted)
+  {summing (let ((from (if (> lo next) lo next)))
+             (if (> (+ hi 1L) from) (- (+ hi 1L) from) 0L))
+   (:for (Tuple lo hi) sorted)
+   (:with next 0L (if (> (+ hi 1L) next) (+ hi 1L) next))})
+
+(defun (main args)
+  (def lines (input-lines args))
+  (def ranges {vecing (parse-range l) (:for l lines) (:finish (= l ""))})
+  (def ids {vecing (parse-long l) (:for l lines) (:when (and (not (= l "")) (not (string-contains? l "-"))))})
+  (println {summing (if (fresh? ranges id) 1 0) (:for id ids)})
+  (println (covered (vec-sort ranges)))
+  0)

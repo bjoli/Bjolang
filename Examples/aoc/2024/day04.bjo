@@ -1,0 +1,45 @@
+;; Day 4: Ceres Search. A word search. Part 1 counts XMAS in all eight
+;; directions. Part 2 counts the MAS crosses: two MAS on the diagonals of a
+;; 3x3 square, each forwards or backwards.
+(import (std prelude))
+(import "common.bjo")
+
+(type (: Grid (Record (: rows (Vec (Vec char))) (: w int) (: h int))))
+
+(: at (-> Grid int int char))
+(defun (at g x y)
+  (if (and (>= x 0) (< x (.w g)) (>= y 0) (< y (.h g)))
+      (vec-ref (vec-ref (.rows g) y) x)
+      #\.))
+
+(: word? (-> Grid int int int int string bool))
+(defun (word? g x y dx dy word)
+  (loop (:for c word)
+        (:with i 0 (+ i 1))
+        (:acc ok (folding #t (and ok (char=? c (at g (+ x (* i dx)) (+ y (* i dy)))))))
+        (:finish (not ok))
+        => ok))
+
+;; Whether the diagonal through (x, y) from (x - dx, y - dy) reads MAS or SAM.
+(: mas? (-> Grid int int int int bool))
+(defun (mas? g x y dx dy)
+  (def a (at g (- x dx) (- y dy)))
+  (def b (at g (+ x dx) (+ y dy)))
+  (or (and (char=? a #\M) (char=? b #\S)) (and (char=? a #\S) (char=? b #\M))))
+
+(defun (main args)
+  (def rows {vecing (string->vec l) (:for l (input-lines args))})
+  (def g (Grid (rows rows) (w (vec-length (vec-ref rows 0))) (h (vec-length rows))))
+  (println {counting x :when (word? g x y dx dy "XMAS")
+            (:for y (range 0 (.h g)))
+            (:subloop)
+            (:for x (range 0 (.w g)))
+            (:subloop)
+            (:for dy (range -1 2))
+            (:subloop)
+            (:for dx (range -1 2))})
+  (println {counting x :when (and (char=? (at g x y) #\A) (mas? g x y 1 1) (mas? g x y 1 -1))
+            (:for y (range 0 (.h g)))
+            (:subloop)
+            (:for x (range 0 (.w g)))})
+  0)
