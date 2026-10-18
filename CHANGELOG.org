@@ -3,6 +3,24 @@
 
 What each change guarantees, and what it leaves open.
 
+* An associated type can wait for its implementor
+
+- ~(ref row c)~ is accepted where the type of ~row~ is not known yet: in a
+  lambda that ~all?~ or ~list-foldl~ is given, or in a local function whose
+  parameter only the call says the type of. Before, the index type
+  ~(assoc Refable index ?a)~ met ~int~ and was reported as a mismatch.
+- Such an equation waits until the implementor is known, and is checked then.
+  If it does not hold, the error names the place it came from. The
+  metavariables it waits on are not generalized, so a local function like
+  this one is monomorphic and its call says the type.
+- A projection that the tree keeps after its implementor is known is reduced
+  in the C#. Before, it came out as ~object~.
+- A number literal that is the index of a collection of no known type says
+  that nothing gives the type, instead of a mismatch against the projection.
+- Tests: ~400_deferred_projection.bjo~,
+  ~errors/deferred_projection_mismatch.bjo~,
+  ~errors/deferred_projection_never_known.bjo~.
+
 * Taking and dropping characters and elements, and ~popcount~
 
 - The prelude takes and drops characters from either end of a string:

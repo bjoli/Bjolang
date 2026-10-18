@@ -606,10 +606,17 @@ let bridgeToSuspending (env: Env) (expected: HMType) (typed: TypedExpr) : TypedE
 /// The `when` is doing real work: a filter runs before the stack unwinds, so an
 /// exception that is not a diagnostic is never caught here and keeps its trace.
 let rec infer (env: Env) (expr: Expr) : HMType * TypedExpr =
+    // The site an equation deferred in here reports, if it fails later.
+    let outer = Unification.inferenceSite
+    Unification.inferenceSite <- Some(exprRange expr)
+
     try
-        inferNode env (resolveAliasedHead env expr)
-    with ex when Diagnostics.needsLocation ex ->
-        raise (Diagnostics.withLocation (exprRange expr) ex)
+        try
+            inferNode env (resolveAliasedHead env expr)
+        with ex when Diagnostics.needsLocation ex ->
+            raise (Diagnostics.withLocation (exprRange expr) ex)
+    finally
+        Unification.inferenceSite <- outer
 
 /// Rewrites a head identifier that is a prefixed spelling of a constructor, a
 /// record type or a trait method back to the name it stands for.

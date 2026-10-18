@@ -1,0 +1,37 @@
+;; An associated type whose implementor is not known yet.
+;;
+;; `ref`'s index type is `(assoc Refable index %c)`. When the type of the
+;; collection is still open where `ref` is called, the projection can not be
+;; reduced yet. The checker waits for the type, and does not report the
+;; projection against `int` as a mismatch.
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Sheet (Record (: rows (Vec (Vec char))))))
+
+;; The type of `row` comes from `all?`'s element type, which is itself a
+;; projection when the lambda's body is checked.
+(: blank-column? (-> Sheet int bool))
+(defun (blank-column? s c)
+  (all? (fun (row) (char=? (ref row c) #\space)) (.rows s)))
+
+;; A fold whose accumulator only the initial value and the result say the
+;; type of.
+(: distinct (-> (List (Tuple int int)) (List (Tuple int int))))
+(defun (distinct all)
+  (list-foldl (fun (o acc) (if (any? (fun (p) (= p o)) acc) acc (Cons o acc))) Nil all))
+
+(defun (main args)
+  (def s (Sheet (rows [(string->vec "a b") (string->vec "c d")])))
+  (expect "the lambda's parameter is a vec" (blank-column? s 1) #t)
+  (expect "and the other column is not blank" (blank-column? s 0) #f)
+
+  ;; Only the call says what `u` is. `middle` returns the projection
+  ;; `(assoc Refable out %c)`, which has to come out as an int.
+  (defun (middle u) (ref u (/ (length u) 2)))
+  (expect "a local function's projection" (+ 1 (middle [10 20 30])) 21)
+
+  (expect "the fold keeps one of each"
+          (list-length (distinct (list (Tuple 1 2) (Tuple 3 4) (Tuple 1 2))))
+          2)
+  0)

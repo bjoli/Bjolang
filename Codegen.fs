@@ -427,6 +427,13 @@ let moduleClassName = Naming.moduleClassName
 /// since `using` both makes the bare name ambiguous. Set per file.
 let mutable private ambiguousModuleClasses: Set<string> = Set.empty
 
+/// Reduces an associated-type projection whose implementor is concrete by now.
+/// Inference can record a projection while its implementor is still open, as
+/// in a local function whose parameter type only its call site says. The tree
+/// then keeps the projection after the implementor is known. Set per file,
+/// because only the file's registry knows the implementations.
+let mutable private reduceProjection: HMType -> HMType option = fun _ -> None
+
 /// Every keyword default emitted as a C# constant, as `owner #:name = value`.
 /// The C# compiler copies these into callers, so they are part of what an
 /// importer is compiled against without being in the metadata. Set per file.
@@ -663,8 +670,11 @@ let rec typeToString (hm: HMType) : string =
     | TAssoc (_, assocName, TVar implVar) -> typeParamName (assocTypeVar implVar assocName)
     | TAssoc (traitName, assocName, TMeta { Value = Some inner }) ->
         typeToString (TAssoc(traitName, assocName, inner))
-    | TAssoc (traitName, assocName, implType) ->
-        "object /* unresolved assoc */"
+    | TAssoc _ as projection ->
+        match reduceProjection projection with
+        | Some(TAssoc _)
+        | None -> "object /* unresolved assoc */"
+        | Some reduced -> typeToString reduced
 
 /// How C# writes a call of a user-defined operator, which it refuses to call
 /// by name (CS0571): `BigInteger.op_Implicit(x)` is `((BigInteger)(x))`, and
@@ -7318,6 +7328,10 @@ let generateProgram
     : string =
     let registry = env.Registry
     emittedConstantDefaults <- []
+
+    // `prune` raises when the implementor has no implementation. That was
+    // reported during checking, so here it only means "not reducible".
+    reduceProjection <- fun t -> try Some(Unification.prune registry t) with _ -> None
 
     let unionCases =
         decls

@@ -405,6 +405,34 @@ let rec awaitsImplementor (registry: TraitRegistry) (t: HMType) : bool =
         || awaitsImplementor registry ret
     | _ -> false
 
+/// Whether `t` is itself a projection that waits on a metavariable, perhaps
+/// through other projections: `(assoc Refable index ?a)`, or
+/// `(assoc Refable index (assoc Iterable elem ?s))`.
+let rec private projectionWaits (registry: TraitRegistry) (t: HMType) : bool =
+    match prune registry t with
+    | TAssoc(_, _, impl) ->
+        match prune registry impl with
+        | TMeta _ -> true
+        | TAssoc _ as inner -> projectionWaits registry inner
+        | _ -> false
+    | _ -> false
+
+/// Equations between a projection that waits on a metavariable and the type it
+/// met, with where inference was when they met.
+///
+/// In `(fun (row) (ref row c))` the type of `row` is not known when the body is
+/// checked, so `ref`'s index type is `(assoc Refable index ?a)`, and it meets
+/// the `int` of `c`. Until something says what `?a` is, the equation can not
+/// hold or fail, so unification records it and goes on. `Traits.solvePending`
+/// checks it when the implementor is known. Until then, the metavariables it
+/// waits on are not generalized (see `Traits.heldProjections`), so that the
+/// use site can pin them.
+let deferredProjections = ResizeArray<HMType * HMType * Lexer.Range option>()
+
+/// The expression that inference is in, for the location of a deferred
+/// equation that fails later. `InferExpr.infer` sets it.
+let mutable inferenceSite: Lexer.Range option = None
+
 /// Two arrows meet only at the same effect.
 ///
 /// The type checker strictly prevents passing a bjoroutine (coroutine) into a
@@ -608,6 +636,10 @@ let rec private unifyIn (registry: TraitRegistry) (t1: HMType) (t2: HMType) =
     | TTuple args1, TTuple args2 when args1.Length = args2.Length ->
         List.iteri2 (fun i a b -> within $"in the %s{ordinal (i + 1)} element of the tuple" (fun () -> unifyIn registry a b)) args1 args2
     | TAssoc(tn1, an1, impl1), TAssoc(tn2, an2, impl2) when tn1 = tn2 && an1 = an2 -> unifyIn registry impl1 impl2
+    // A projection whose implementor is not known yet can not be compared now.
+    // The equation waits; see `deferredProjections`.
+    | TAssoc _, _ when projectionWaits registry t1 -> deferredProjections.Add(t1, t2, inferenceSite)
+    | _, TAssoc _ when projectionWaits registry t2 -> deferredProjections.Add(t2, t1, inferenceSite)
     | _ ->
         // Arity is called out because it is the common case and the hardest to
         // read off two arrows printed one above the other.

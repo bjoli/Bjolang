@@ -86,7 +86,18 @@ let private heldLiterals () : Set<int> =
     |> Seq.collect metaIdsOf
     |> Set.ofSeq
 
-do Unification.heldMetaIds <- fun () -> Set.union (heldWanteds InlineTrait ()) (heldLiterals ())
+/// The metavariables a deferred projection equation waits on. Generalizing one
+/// would make the equation's implementor rigid, and it could then never be
+/// known. Held back, the binding stays monomorphic and its use site says what
+/// the implementor is.
+let private heldProjections () : Set<int> =
+    Unification.deferredProjections
+    |> Seq.collect (fun (projection, _, _) -> metaIdsOf projection)
+    |> Set.ofSeq
+
+do
+    Unification.heldMetaIds <-
+        fun () -> Set.unionMany [ heldWanteds InlineTrait (); heldLiterals (); heldProjections () ]
 do Unification.heldLocalMetaIds <- heldWanteds InterfaceTrait
 
 let internal pushWanted (w: Wanted) = wantedQueue.Add w
@@ -107,6 +118,7 @@ let takeWanteds () : Wanted list =
 /// is the worst shape a state leak can take.
 let clearWanteds () : unit =
     wantedQueue.Clear()
+    Unification.deferredProjections.Clear()
     clrObligations.Clear()
     clrChecked.Clear()
 
@@ -362,6 +374,11 @@ let private defaultNumericLiterals (env: Env) : unit =
         // off it is what makes that legal.
         | TVar _ -> ()
         | numeric when NumericLiteral.isNumeric numeric -> checkLiteralFits numeric text r |> ignore
+        // The literal is the index or key of a collection that nothing says the
+        // type of: a local function that takes the collection is never called.
+        | TAssoc(traitName, assocName, impl) as projection when not (List.isEmpty (metaIdsOf impl)) ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: nothing says what type '%s{text}' has. Its type is '%s{DotNetInterop.showType projection}': the %%%s{assocName} of an implementation of '%s{traitName}', and nothing says which implementation. Give the value it goes with a type, for example with a parameter annotation."
         | other ->
             failwithf
                 $"Type Error at %s{Lexer.formatPos r}: these types do not match. '%s{text}' is a number, and it is being used where a '%s{DotNetInterop.showType other}' is wanted.%s{dynPackHintFor other}"
@@ -419,6 +436,33 @@ let private solvePinEquations (env: Env) : unit =
                 failwithf
                     $"Type Error at %s{Lexer.formatPos r}: %s{context}, does not hold at this call. %s{ex.Message}"
 
+/// Checks each deferred projection equation whose implementor is now known.
+/// Answers whether it checked any, since a check can bind metavariables that
+/// other obligations wait on.
+///
+/// One that still waits stays queued. A check can defer new equations, so the
+/// queue is taken before the checks run.
+let private solveDeferredProjections (env: Env) : bool =
+    let pending = List.ofSeq Unification.deferredProjections
+    Unification.deferredProjections.Clear()
+    let mutable progress = false
+
+    for (projection, other, site) as entry in pending do
+        match prune env.Registry projection with
+        | TAssoc(_, _, impl) when not (List.isEmpty (metaIdsOf impl)) ->
+            Unification.deferredProjections.Add entry
+        | settled ->
+            progress <- true
+
+            try
+                unify env.Registry settled other
+            with ex when Diagnostics.needsLocation ex ->
+                match site with
+                | Some r -> raise (Diagnostics.withLocation r ex)
+                | None -> reraise ()
+
+    progress
+
 /// Solves everything raised since the last call. Used at every point that is
 /// about to generalize, since a scheme must not be built over a constructor
 /// that resolution would still have pinned down.
@@ -436,6 +480,11 @@ let solvePending (env: Env) : unit =
     // generalizes, and what they let resolve is resolved.
     if openNumbers.Count > 0 then
         defaultNumericLiterals env
+        solveWanteds env (takeWanteds ())
+
+    // A deferred projection that holds can tell an obligation its implementor,
+    // and a resolved obligation can tell a projection its own.
+    while solveDeferredProjections env do
         solveWanteds env (takeWanteds ())
 
     // A type still open here is not checked: a later declaration may settle
