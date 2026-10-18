@@ -494,6 +494,42 @@ let private patternLocals (p: Pattern) =
     let at = patternRange p
     patternBinders p |> List.map (fun n -> n, at)
 
+/// The pattern of each parameter written as a pattern, by the fresh name that
+/// stands for it in the parameter list. Filled where a parameter list is read,
+/// and read where the body after it is read.
+let private parameterPatterns = System.Collections.Generic.Dictionary<string, Pattern>()
+
+/// Whether a name is the fresh name of a parameter written as a pattern.
+let isPatternParameter (name: string) = parameterPatterns.ContainsKey name
+
+/// Reads the body after a parameter list, with the parameters in scope.
+///
+/// A parameter written as a pattern, `(Tuple a b)`, is a fresh name in the
+/// parameter list, and the body is `(def (Tuple a b) fresh)` around what was
+/// written. So the pattern has to match every value, as a `def` with no
+/// failure part does, and `Exhaustiveness` refuses one that can fail. `extra`
+/// is what else is in scope, as a local function's own name.
+let withParameters (extra: (string * Range) list) (args: DefunArg list) (at: Range) (read: unit -> Expr) : Expr =
+    let patterns =
+        mandatoryNames args
+        |> List.choose (fun n ->
+            match parameterPatterns.TryGetValue n with
+            | true, p -> Some(n, p)
+            | _ -> None)
+
+    let patternNames = patterns |> List.collect (fun (_, p) -> patternLocals p)
+    let plainNames = allArgNames args |> List.filter (fun n -> not (parameterPatterns.ContainsKey n))
+    refuseRepeatedNames "parameter list" (plainNames @ List.map fst patternNames) at
+
+    let body = withLocals (extra @ argBinders args at @ patternNames) read
+
+    List.foldBack
+        (fun (n, p) acc ->
+            let pr = patternRange p
+            EDefMatch(p, EIdent(n, pr), FailNone, acc, pr))
+        patterns
+        body
+
 /// What a head was read as, for the check in `parseHeadedChecked`.
 type private HeadReading =
     | SpecialForm
@@ -1107,13 +1143,21 @@ and private parseHeaded (s: SExpr) (r: Range) (head: SExpr) (sym: string) (args:
                         |> List.choose (function
                             | Ident n -> Some(unusedParameter n)
                             | SAtom { Token = Comma } -> None
-                            | _ -> failwith "Expected arg name")
+                            // A pattern that cannot fail, as in `match`.
+                            | SList(SAtom { Token = Symbol head } :: _, _) as form when isPatternHead head ->
+                                Some(patternParameter form)
+                            | bad ->
+                                failwithf
+                                    $"Syntax error at %s{Lexer.formatPos (getRange bad)}: a parameter of %s{sym} is a name, or a pattern that cannot fail written as in match, such as (Tuple a b)."
+                        )
 
                     refuseRepeatedNames "parameter list" argNames listRange
 
                     let body =
-                        withLocals
-                            (argNames |> List.map (fun n -> n, listRange))
+                        withParameters
+                            []
+                            (argNames |> List.map (fun n -> MandatoryArg(n, None)))
+                            listRange
                             (fun () -> parseBody bodyExprs listRange)
 
                     EFun(argNames, body, colour, r)
@@ -2012,6 +2056,12 @@ and private parseDefunArgList (args: SExpr list) : DefunArg list =
     // beside it, and one written here has to agree with that.
     | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol n }; t ], _) :: rest ->
         MandatoryArg(unusedParameter n, Some(parseType t)) :: parseDefunArgs rest
+    // A parameter written as a pattern, as in `match`: `(Tuple a b)`. And with
+    // its type, `(: (Tuple a b) (Tuple int int))`.
+    | (SList(SAtom { Token = Symbol head } :: _, _) as form) :: rest when isPatternHead head ->
+        MandatoryArg(patternParameter form, None) :: parseDefunArgs rest
+    | SList([ SAtom { Token = Colon }; (SList _ as form); t ], _) :: rest ->
+        MandatoryArg(patternParameter form, Some(parseType t)) :: parseDefunArgs rest
     | SAtom { Token = Comma } :: rest -> parseDefunArgs rest
     // A keyword parameter's default is evaluated **sequentially**, with the
     // parameters before it in scope — unchanged by `let` becoming simultaneous.
@@ -2028,6 +2078,20 @@ and private parseDefunArgList (args: SExpr list) : DefunArg list =
     | SAtom { Token = Keyword name } :: defaultExpr :: rest ->
         KeywordArg(name, parseExpr defaultExpr) :: parseDefunArgs rest
     | bad :: _ -> failwithf $"Invalid defun argument at %s{Lexer.formatPos (getRange bad)}"
+
+/// Whether a list with this head, in a parameter list, is a pattern: a
+/// constructor's name, which is capitalized.
+and private isPatternHead (head: string) =
+    let h = headName head
+    h.Length > 0 && System.Char.IsUpper h[0]
+
+/// A parameter written as a pattern: a fresh name for the parameter list, with
+/// the pattern recorded for `withParameters`.
+and private patternParameter (form: SExpr) : string =
+    let pattern = parsePattern form
+    let name = Gensym.fresh "param"
+    parameterPatterns[name] <- pattern
+    name
 
 /// The optional `: type` between a `defun`'s arguments and its body.
 and parseDefunReturn (rest: SExpr list) : FType option * SExpr list =
@@ -2331,7 +2395,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
                 | Some(tType, dr) -> applySignature name tType dr parsedArgs retType
                 | None -> parsedArgs, retType
 
-            let fBody = withLocals ((name, r) :: argBinders parsedArgs r) (fun () -> parseBody bodyExprs r)
+            let fBody = withParameters [ name, r ] parsedArgs r (fun () -> parseBody bodyExprs r)
             collectDefs ((name, true, parsedArgs, retType, fBody) :: acc) (Map.remove name declared) rest'
 
         | _ -> close ()
@@ -2608,7 +2672,8 @@ and parseDefTail (r: Range) (binder: SExpr) (scrutinee: SExpr) (forms: SExpr lis
 /// parser and can only reach them through this record.
 and private parseFns () : ParseFns =
     { Expr = parseExpr
-      Pattern = parsePattern }
+      Pattern = parsePattern
+      Body = parseBody }
 
 
 

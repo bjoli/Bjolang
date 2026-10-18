@@ -1714,11 +1714,26 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                     ExternOrigins = Map.add info.Alias env.CurrentModule reg.ExternOrigins })
             env.Registry
 
+    // The alias takes its name over from an import, as a `defun` does (rule 1
+    // of MODULES.org). A call reaches an extern only where no binding has the
+    // name, so that a local shadows it; an imported binding left in place
+    // would shadow this module's own import instead. A prelude that gains a
+    // function of the same name then broke the module.
+    let shadowing =
+        infos
+        |> List.fold
+            (fun (acc: Env) info ->
+                { acc with
+                    Bindings = Map.remove info.Alias acc.Bindings
+                    FunMetas = Map.remove info.Alias acc.FunMetas
+                    TraitMethodNames = Set.remove info.Alias acc.TraitMethodNames })
+            { env with Registry = newRegistry }
+
     let withPlaceholders =
         failed
         |> List.fold
             (fun (acc: Env) alias -> addBinding alias { Scheme = Scheme([ "a" ], [], TVar "a"); IsMutable = false } acc)
-            { env with Registry = newRegistry }
+            shadowing
 
     withPlaceholders, sigs, (if infos.IsEmpty then [] else [ TImportExtern(infos, r) ])
 

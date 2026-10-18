@@ -1,0 +1,55 @@
+;; A parameter of a fun or a defun may be a pattern that cannot fail, written
+;; as in match: (Tuple a b). It binds what the pattern binds, in the body.
+
+(import (std prelude))
+
+(type (: Size (Union (: WxH int int))))
+
+(: check (-> string string string bool))
+(defun (check what got want)
+  (if (= got want)
+      #t
+      (let ()
+        (println (str what ": got " got ", wanted " want))
+        #f)))
+
+;; Two pattern parameters and a plain one, with the types in the signature.
+(: manhattan (-> (Tuple int int) (Tuple int int) int int))
+(defun (manhattan (Tuple x1 y1) (Tuple x2 y2) scale)
+  (* scale (+ (abs-int (- x1 x2)) (abs-int (- y1 y2)))))
+
+(: abs-int (-> int int))
+(defun (abs-int n) (if (< n 0) (- n) n))
+
+;; A nested pattern and a wildcard.
+(: middle (-> (Tuple string (Tuple int int)) int))
+(defun (middle (Tuple _ (Tuple m _))) m)
+
+;; A single-case union.
+(: area (-> Size int))
+(defun (area (WxH w h)) (* w h))
+
+;; A typed pattern, with no signature.
+(defun (swap (: (Tuple a b) (Tuple int string))) : (Tuple string int) (Tuple b a))
+
+;; Recursion through a pattern parameter: a loop whose slot is the pair.
+(: fib (-> int (Tuple long long) long))
+(defun (fib n (Tuple a b))
+  (if (= n 0) a (fib (- n 1) (Tuple b (+ a b)))))
+
+(defun (main args)
+  (def pairs (list (Tuple 1 "a") (Tuple 2 "b")))
+  ;; A local defun.
+  (defun (label (Tuple n s)) (str s (int->string n)))
+  (if (and (check "fun" (->str (list-map (fun ((Tuple n _)) n) pairs)) "(1 2)")
+           (check "fun, two patterns" (int->string ((fun ((Tuple a b) (Tuple c d)) (+ a (+ b (+ c d))))
+                                                    (Tuple 1 2) (Tuple 3 4)))
+                  "10")
+           (check "defun" (int->string (manhattan (Tuple 1 2) (Tuple 4 6) 2)) "14")
+           (check "nested" (int->string (middle (Tuple "x" (Tuple 5 6)))) "5")
+           (check "union case" (int->string (area (WxH 3 4))) "12")
+           (check "typed" (->str (swap (Tuple 1 "one"))) "(one, 1)")
+           (check "recursion" (long->string (fib 50 (Tuple 0L 1L))) "12586269025")
+           (check "local defun" (->str (list-map label pairs)) "(a1 b2)"))
+      0
+      1))

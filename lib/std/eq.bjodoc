@@ -36,8 +36,11 @@
     (including @code{decimal}, @code{bigint}, @code{int128}, @code{uint128},
     and @code{System.SByte}). String comparisons are ordinal (based on Unicode
     code points) rather than culture-sensitive, ensuring identical cross-platform
-    ordering matching @code{OrderedMap}. @code{(std clr-ord)} provides @code{Ord}
-    for additional .NET types like @code{Guid} and @code{Version}.
+    ordering matching @code{OrderedMap}. Tuples with 2 to 4 elements whose
+    elements are ordered are ordered lexicographically: by the first element,
+    then by the second when the first are equal, and so on.
+    @code{(std clr-ord)} provides @code{Ord} for additional .NET types like
+    @code{Guid} and @code{Version}.
 
     @strong{Custom implementations.} Implementations must preserve key
     invariants: equal values under @code{=} must produce identical @code{eq-hash}
@@ -179,6 +182,36 @@
     using temporary array buffers and constructs the resulting list in a single
     pass to avoid stack overflows. Lists with fewer than two items return
     unmodified.
+    """))
+
+(:doc vec-sort
+  (summary "Returns a sorted copy of a vec using compare. Stable.")
+  (arg v "The vec to sort.")
+  (returns "A vec of the same items, in ascending order. Equal items keep their order.")
+  (see vec-sort-by list-sort compare)
+  (example """
+    (vec-sort [3 1 2])                           ; [1 2 3]
+    (vec-sort [(Tuple 2 "b") (Tuple 1 "z")])     ; [(1, z) (2, b)]
+    """)
+  (reference """
+    The merge sort of @code{list-sort}, over an array: O(n log n), and
+    O(n) extra space. A vec of fewer than two items is returned as it is.
+    """))
+
+(:doc vec-sort-by
+  (summary "Returns a copy of a vec sorted by a comparison function. Stable.")
+  (arg cmp "The comparison: negative when its first argument comes first, zero when the two tie, positive otherwise.")
+  (arg v "The vec to sort.")
+  (returns "A vec of the same items, in the order cmp gives. Items that tie keep their order.")
+  (see vec-sort compare)
+  (example """
+    (vec-sort-by (fun (a b) (compare b a)) [1 3 2])               ; [3 2 1]
+    (vec-sort-by (fun (a b) (compare (string-length a) (string-length b)))
+                 ["ccc" "a" "bb"])                                 ; ["a" "bb" "ccc"]
+    """)
+  (reference """
+    A comparison that is not a total order gives some order of the items,
+    and no error.
     """))
 
 (:doc list-min

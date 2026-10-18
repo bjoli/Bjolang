@@ -1,0 +1,81 @@
+;; A (:do ...) clause is a body, as a let's is: a def, a defun or a
+;; def/mutable in it scopes over the forms after it in the same :do. In a named
+;; loop's last :do, the jump may follow such definitions and read them.
+
+(import (std prelude))
+
+(: check (-> string string string bool))
+(defun (check what got want)
+  (if (= got want)
+      #t
+      (let ()
+        (println (str what ": got " got ", wanted " want))
+        #f)))
+
+;; A def and a defun before the work.
+(: squares (-> int (List int)))
+(defun (squares n)
+  (def out (listbuilder-empty))
+  (loop (:for i (range 0 n))
+        (:do (def sq (* i i))
+             (defun (add! x) (listbuilder-add! out x))
+             (add! sq)))
+  (listbuilder->list out))
+
+;; A def/mutable, set in the same :do.
+(: doubled-sum (-> (List int) int))
+(defun (doubled-sum xs)
+  (def/mutable total 0)
+  (loop (:for x xs)
+        (:do (def/mutable y x)
+             (set! y (* y 2))
+             (set! total (+ total y))))
+  total)
+
+;; A tuple def, and a def that shadows the loop variable.
+(: pair-sums (-> (List (Tuple int int)) int))
+(defun (pair-sums ps)
+  (def/mutable total 0)
+  (loop (:for p ps)
+        (:do (def (a b) p)
+             (def p (+ a b))
+             (set! total (+ total p))))
+  total)
+
+;; A named loop whose jump reads a def made before it.
+(: tenfold-after-two (-> (List int) int))
+(defun (tenfold-after-two xs)
+  (loop lp (:for x xs)
+           (:acc total (summing x))
+           (:do (def big? (> x 2))
+                (def scaled (* total 10))
+                (if big? (lp #:total scaled) (lp)))
+           => total))
+
+;; A def that shadows an accumulator: the jump still carries the slot.
+(: shadowed (-> (List int) int))
+(defun (shadowed xs)
+  (loop lp (:for x xs)
+           (:acc total (summing x))
+           (:do (def total 1000)
+                (lp))
+           => total))
+
+;; A named loop that stops when its last :do does not jump.
+(: until-negative (-> (List int) int))
+(defun (until-negative xs)
+  (loop lp (:for x xs)
+           (:acc n (summing x))
+           (:do (def keep? (>= x 0))
+                (if keep? (lp) (display "")))
+           => n))
+
+(defun (main args)
+  (if (and (check "def and defun" (->str (squares 4)) "(0 1 4 9)")
+           (check "def/mutable" (int->string (doubled-sum (list 1 2 3))) "12")
+           (check "tuple def" (int->string (pair-sums (list (Tuple 1 2) (Tuple 3 4)))) "10")
+           (check "named jump" (int->string (tenfold-after-two (list 1 2 3 4))) "640")
+           (check "shadowed slot" (int->string (shadowed (list 1 2 3))) "6")
+           (check "named stop" (int->string (until-negative (list 1 2 -5 7))) "-2"))
+      0
+      1))

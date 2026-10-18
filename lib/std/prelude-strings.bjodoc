@@ -648,7 +648,7 @@
   (summary "Parses a string into an int.")
   (arg s "Decimal digits, with an optional sign.")
   (returns "The parsed integer value.")
-  (see string->double int->string)
+  (see string->long string->double int->string)
   (example """
     (string->int "-42")   ; -42
     """)
@@ -658,6 +658,22 @@
     number throws, as .NET's @code{int.Parse} does: a
     @code{FormatException}, or an @code{OverflowException} when the number
     does not fit.
+    """))
+
+(:doc string->long
+  (summary "Parses a string into a long.")
+  (arg s "Decimal digits, with an optional sign.")
+  (returns "The parsed integer value.")
+  (see string->int long->string)
+  (example """
+    (string->long "-9000000000")   ; -9000000000
+    """)
+  (reference """
+    As @code{string->int}, for 64 bits. Invariant culture, so it reads what
+    @code{long->string} writes on any machine. Whitespace at either end is
+    allowed. Text that is not such a number throws a
+    @code{FormatException}, and a number that does not fit throws an
+    @code{OverflowException}.
     """))
 
 (:doc string->double
@@ -779,3 +795,141 @@
     one character, even one that UTF-16 would write as two units. To UTF-8
     this is a copy of the string's own bytes.
     """))
+
+;; ---------------------------------------------------------------------------
+;; Taking and dropping characters
+;; ---------------------------------------------------------------------------
+
+(:doc string-take
+  (summary "The first n characters of a string.")
+  (arg s "The string.")
+  (arg n "How many characters, 0 or more.")
+  (returns "The first n characters, with bytes of their own; all of s when it has fewer.")
+  (see string-drop string-take-right string-take/slice substring)
+  (example """
+    (string-take "hello" 2)    ; "he"
+    (string-take "hi" 10)      ; "hi"
+    """)
+  (reference """
+    Characters, not bytes: @code{(string-take "héllo" 2)} is @code{"hé"}.
+    The cursors walk n characters from the start, so the cost is in n, not
+    in the length of s. A negative n is refused with a panic.
+    """))
+
+(:doc string-drop
+  (summary "A string without its first n characters.")
+  (arg s "The string.")
+  (arg n "How many characters, 0 or more.")
+  (returns "The characters after the first n, with bytes of their own; the empty string when s has n or fewer.")
+  (see string-take string-drop-right string-drop/slice)
+  (example """
+    (string-drop "L68" 1)              ; "68"
+    (string->int (string-drop "L68" 1)) ; 68
+    """)
+  (reference """
+    The cost is in n, as for @code{string-take}. A negative n is refused
+    with a panic.
+    """))
+
+(:doc string-take-right
+  (summary "The last n characters of a string.")
+  (arg s "The string.")
+  (arg n "How many characters, 0 or more.")
+  (returns "The last n characters, with bytes of their own; all of s when it has fewer.")
+  (see string-drop-right string-take)
+  (example """
+    (string-take-right "file.txt" 3)   ; "txt"
+    """)
+  (reference "The cursors walk n characters back from the end. A negative n is refused with a panic."))
+
+(:doc string-drop-right
+  (summary "A string without its last n characters.")
+  (arg s "The string.")
+  (arg n "How many characters, 0 or more.")
+  (returns "The characters before the last n, with bytes of their own; the empty string when s has n or fewer.")
+  (see string-take-right string-drop)
+  (example """
+    (string-drop (string-drop-right "(1,3)" 1) 1)   ; "1,3"
+    """)
+  (reference "The cursors walk n characters back from the end. A negative n is refused with a panic."))
+
+(:doc string-take/slice
+  (summary "The first n characters of a string, sharing its bytes.")
+  (arg s "The string.")
+  (arg n "How many characters, 0 or more.")
+  (returns "The first n characters, as a slice of s.")
+  (see string-take substring/slice)
+  (reference "As @code{string-take}, without a copy. The slice keeps all of s alive."))
+
+(:doc string-drop/slice
+  (summary "A string without its first n characters, sharing its bytes.")
+  (arg s "The string.")
+  (arg n "How many characters, 0 or more.")
+  (returns "The characters after the first n, as a slice of s.")
+  (see string-drop substring/slice)
+  (reference "As @code{string-drop}, without a copy. The slice keeps all of s alive."))
+
+(:doc string-take-right/slice
+  (summary "The last n characters of a string, sharing its bytes.")
+  (arg s "The string.")
+  (arg n "How many characters, 0 or more.")
+  (returns "The last n characters, as a slice of s.")
+  (see string-take-right substring/slice)
+  (reference "As @code{string-take-right}, without a copy. The slice keeps all of s alive."))
+
+(:doc string-drop-right/slice
+  (summary "A string without its last n characters, sharing its bytes.")
+  (arg s "The string.")
+  (arg n "How many characters, 0 or more.")
+  (returns "The characters before the last n, as a slice of s.")
+  (see string-drop-right substring/slice)
+  (reference "As @code{string-drop-right}, without a copy. The slice keeps all of s alive."))
+
+(:doc string-cursor-forward
+  (summary "The cursor n characters after another.")
+  (arg s "The string.")
+  (arg c "A cursor of s.")
+  (arg n "How many characters, 0 or more.")
+  (returns "The cursor after the n characters from c.")
+  (raises System.ArgumentOutOfRangeException "When there are fewer than n characters after c.")
+  (see string-cursor-back string-cursor-next)
+  (reference """
+    @code{string-cursor-next} n times. It raises where that does, at the
+    end of s; @code{string-drop} is the form that stops at the end instead.
+    A negative n is refused with a panic.
+    """))
+
+(:doc string-cursor-back
+  (summary "The cursor n characters before another.")
+  (arg s "The string.")
+  (arg c "A cursor of s.")
+  (arg n "How many characters, 0 or more.")
+  (returns "The cursor n characters before c.")
+  (raises System.ArgumentOutOfRangeException "When there are fewer than n characters before c.")
+  (see string-cursor-forward string-cursor-prev)
+  (reference "@code{string-cursor-prev} n times. A negative n is refused with a panic."))
+
+(:doc string-split-once
+  (summary "The text before and after the first occurrence of a separator.")
+  (arg s "The string.")
+  (arg sep "The separator.")
+  (returns "(Some (Tuple before after)), each with bytes of its own, or None when sep is not in s.")
+  (see string-split string-search string-split-once/slice)
+  (example """
+    (string-split-once "key: value" ": ")   ; (Some (key, value))
+    (string-split-once "10-20-30" "-")      ; (Some (10, 20-30))
+    (string-split-once "none" "-")          ; None
+    """)
+  (reference """
+    Ordinal, as @code{string-search}. Only the first occurrence splits: the
+    rest of s, separators and all, is the second part. An empty separator is
+    found at the start, so the first part is empty.
+    """))
+
+(:doc string-split-once/slice
+  (summary "The text before and after the first occurrence of a separator, sharing the string's bytes.")
+  (arg s "The string.")
+  (arg sep "The separator.")
+  (returns "(Some (Tuple before after)), as slices of s, or None when sep is not in s.")
+  (see string-split-once string-split/slice)
+  (reference "As @code{string-split-once}, without a copy. The slices keep all of s alive."))

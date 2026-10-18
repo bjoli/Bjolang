@@ -277,8 +277,15 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
                 w.Ref.Resolved <- Some(BlanketCtor, [ hole ])
                 true
             | None ->
+                // The type as the program writes it: `(Tuple long long)`, not
+                // the key `Tuple2` the lookup used.
+                let shown =
+                    match w.HoleArgs with
+                    | (m, _) :: _ -> DotNetInterop.showType (prune registry m)
+                    | [] -> Naming.showTypeName ctor
+
                 failwithf
-                    $"Type Error at %s{Lexer.formatPos w.Range}: no implementation of trait '%s{w.Trait}' for '%s{Naming.showTypeName ctor}', required by '%s{w.Method}'."
+                    $"Type Error at %s{Lexer.formatPos w.Range}: no implementation of trait '%s{w.Trait}' for '%s{shown}', required by '%s{w.Method}'."
         | Some target ->
             let prefix, classTypeArgs, subst = instantiateImplPrefix target
 

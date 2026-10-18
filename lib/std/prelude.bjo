@@ -58,6 +58,7 @@
   list-map list-filter list-foldl list-foldr list-for-each list-unfold
 
   ;; Vec operations.
+  vec-take vec-drop vec-reverse vec->array
   vec-add
   vec-map vec-filter vec-fold vec-reduce
   vec-for-each vec-for-each/range vec-iter
@@ -96,6 +97,8 @@
   ;; Results
   ok? err? result-map
   option-value
+  ;; Pairs
+  fst snd
 
   ;; Box
   Box
@@ -114,6 +117,11 @@
   string-trim/slice string-trim-left/slice string-trim-right/slice string-copy
   string-pad-left string-pad-right
   string-split string-split/slice string-join
+  string-split-once string-split-once/slice
+  ;; Taking and dropping characters.
+  string-take string-drop string-take-right string-drop-right
+  string-take/slice string-drop/slice string-take-right/slice string-drop-right/slice
+  string-cursor-forward string-cursor-back
   ;; Characters.
   char->integer integer->char
   char=? char<? char>? char<=? char>=?
@@ -124,7 +132,7 @@
   string->list list->string string->vec string-reverse
   ;; Conversions
   int->string long->string double->string byte->string number->string
-  string->int string->double
+  string->int string->long string->double
   decimal->string string->decimal bigint->string string->bigint
   int128->string string->int128 uint128->string string->uint128
   bytes->string string->bytes
@@ -230,7 +238,7 @@
 ;; re-export ord and eq traits
 (re-export = eq-hash
            compare less? greater? at-most? at-least?
-           least greatest list-sort list-min list-max)
+                       least greatest list-sort vec-sort vec-sort-by list-min list-max)
 
 
 ;; List append.
@@ -903,11 +911,13 @@
   (defun (iterable-current s c) (vec-cursor-current c))
   (defun (iterable-next s c) (vec-cursor-next c)))
 
+;; `>=` rather than `=`: the JIT drops the bounds check on `array-ref` only
+;; when the loop test is `index < length`.
 (impl (Iterable (Array %a))
   (type %elem %a)
   (type %cursor int)
   (defun (iterable-start s) 0)
-  (defun (iterable-done? s index) (= index (array-length s)))
+  (defun (iterable-done? s index) (>= index (array-length s)))
   (defun (iterable-current s index) (array-ref s index))
   (defun (iterable-next s index) (+ index 1)))
 
@@ -1240,6 +1250,16 @@
     ((Some v) v)
     (None fallback)))
 
+;; --- Pairs ---
+
+(: fst (-> (Tuple %a %b) %a))
+(defun (fst p)
+  (match p ((Tuple a _) a)))
+
+(: snd (-> (Tuple %a %b) %b))
+(defun (snd p)
+  (match p ((Tuple _ b) b)))
+
 
 ;; --------------------------------------------------------------------------
 ;; Boxes - a 1-width array
@@ -1388,6 +1408,7 @@
   (clr-concat        (: BjoString.Utf8String.Concat))
   (clr-concat-all    (: BjolangRuntime.StringConcat))
   (clr-parse-int     (: Bjolang.Runtime.BjoNum.ParseInt))
+  (clr-parse-long    (: Bjolang.Runtime.BjoNum.ParseLong))
   (clr-parse-double  (: Bjolang.Runtime.BjoNum.ParseDouble))
   (clr-double-string (: Bjolang.Runtime.BjoNum.DoubleToString))
   (clr-int-string    (: Bjolang.Runtime.BjoNum.IntToString))
@@ -1466,6 +1487,108 @@
 (: string-copy (-> string string))
 (defun (string-copy s) (.Copy s))
 
+;; --- Taking and dropping characters ----------------------------------------
+;; A count of characters from one end of a string. The cursors walk the count,
+;; so the cost is in the count and not in the length of the string. A count
+;; past the end takes or drops the whole string; a negative count is refused.
+;; The /slice forms share the string's bytes, as the trims' do.
+
+(: check-count (-> string int void))
+(defun (check-count who n)
+  (when (< n 0)
+    (count-panic who n)))
+
+(: count-panic (-> string int void))
+(defun (count-panic who n)
+  (panic! #"${who}: the count is ${n}, and a count of characters or elements is 0 or more."))
+
+;; The cursor n characters after c, or the end when there are fewer.
+(: forward-at-most (-> string StringCursor int StringCursor))
+(defun (forward-at-most s c n)
+  (let go ((c c) (k n))
+    (if (or (= k 0) (string-cursor-end? s c))
+        c
+        (go (string-cursor-next s c) (- k 1)))))
+
+;; The cursor n characters before c, or the start when there are fewer.
+(: back-at-most (-> string StringCursor int StringCursor))
+(defun (back-at-most s c n)
+  (def start (string-cursor-start s))
+  (let go ((c c) (k n))
+    (if (or (= k 0) (string-cursor=? c start))
+        c
+        (go (string-cursor-prev s c) (- k 1)))))
+
+(: string-cursor-forward (-> string StringCursor int StringCursor))
+(defun (string-cursor-forward s c n)
+  (check-count "string-cursor-forward" n)
+  (let go ((c c) (k n))
+    (if (= k 0) c (go (string-cursor-next s c) (- k 1)))))
+
+(: string-cursor-back (-> string StringCursor int StringCursor))
+(defun (string-cursor-back s c n)
+  (check-count "string-cursor-back" n)
+  (let go ((c c) (k n))
+    (if (= k 0) c (go (string-cursor-prev s c) (- k 1)))))
+
+(: string-take (-> string int string))
+(defun (string-take s n)
+  (check-count "string-take" n)
+  (substring s (string-cursor-start s) (forward-at-most s (string-cursor-start s) n)))
+
+(: string-drop (-> string int string))
+(defun (string-drop s n)
+  (check-count "string-drop" n)
+  (substring s (forward-at-most s (string-cursor-start s) n) (string-cursor-end s)))
+
+(: string-take-right (-> string int string))
+(defun (string-take-right s n)
+  (check-count "string-take-right" n)
+  (substring s (back-at-most s (string-cursor-end s) n) (string-cursor-end s)))
+
+(: string-drop-right (-> string int string))
+(defun (string-drop-right s n)
+  (check-count "string-drop-right" n)
+  (substring s (string-cursor-start s) (back-at-most s (string-cursor-end s) n)))
+
+(: string-take/slice (-> string int string))
+(defun (string-take/slice s n)
+  (check-count "string-take/slice" n)
+  (substring/slice s (string-cursor-start s) (forward-at-most s (string-cursor-start s) n)))
+
+(: string-drop/slice (-> string int string))
+(defun (string-drop/slice s n)
+  (check-count "string-drop/slice" n)
+  (substring/slice s (forward-at-most s (string-cursor-start s) n) (string-cursor-end s)))
+
+(: string-take-right/slice (-> string int string))
+(defun (string-take-right/slice s n)
+  (check-count "string-take-right/slice" n)
+  (substring/slice s (back-at-most s (string-cursor-end s) n) (string-cursor-end s)))
+
+(: string-drop-right/slice (-> string int string))
+(defun (string-drop-right/slice s n)
+  (check-count "string-drop-right/slice" n)
+  (substring/slice s (string-cursor-start s) (back-at-most s (string-cursor-end s) n)))
+
+;; The text before the first sep and the text after it, or None when sep is
+;; not in s.
+(: string-split-once (-> string string (Option (Tuple string string))))
+(defun (string-split-once s sep)
+  (match (string-search s sep)
+    ((Some c)
+     (Some (Tuple (substring s (string-cursor-start s) c)
+                  (substring s (string-cursor-forward s c (string-count sep)) (string-cursor-end s)))))
+    (None None)))
+
+(: string-split-once/slice (-> string string (Option (Tuple string string))))
+(defun (string-split-once/slice s sep)
+  (match (string-search s sep)
+    ((Some c)
+     (Some (Tuple (substring/slice s (string-cursor-start s) c)
+                  (substring/slice s (string-cursor-forward s c (string-count sep)) (string-cursor-end s)))))
+    (None None)))
+
 ;; Pad width.
 (: string-pad-left (-> string int (#:with char) string))
 (defun (string-pad-left s width #:with #\space)
@@ -1535,6 +1658,9 @@
 
 (: string->int (-> string int))
 (defun (string->int s) (clr-parse-int s))
+
+(: string->long (-> string long))
+(defun (string->long s) (clr-parse-long s))
 
 (: string->double (-> string double))
 (defun (string->double s) (clr-parse-double s))
@@ -4128,3 +4254,32 @@
     ((_ (key pat) ...)
      #'(and ,@{listing #'(Has ,k ,p) (:for k key) (:for p pat)}))
     (bad (syntax-error bad "(Has* (key pattern) ...) pairs each key with a pattern for its value."))))
+
+;; ---------------------------------------------------------------------------
+;; Taking, dropping and reversing a vec
+;; ---------------------------------------------------------------------------
+;;
+;; A count past the end takes or drops the whole vec, as for a string; a
+;; negative count is refused.
+
+(: vec-take (-> (Vec %a) int (Vec %a)))
+(defun (vec-take v n)
+  (check-count "vec-take" n)
+  (def len (vec-length v))
+  (vec-slice v 0 (if (< n len) n len)))
+
+(: vec-drop (-> (Vec %a) int (Vec %a)))
+(defun (vec-drop v n)
+  (check-count "vec-drop" n)
+  (def len (vec-length v))
+  (def k (if (< n len) n len))
+  (vec-slice v k (- len k)))
+
+(: vec-reverse (-> (Vec %a) (Vec %a)))
+(defun (vec-reverse v)
+  {vecing x (:for x (in-reverse-vec v))})
+
+;; The elements in a new array, which the vec does not share. The runtime's,
+;; which copies the leaves in one pass.
+(import/extern
+  (vec->array (: BjolangRuntime.vecsubgtarray (-> (Vec %a) (Array %a)))))

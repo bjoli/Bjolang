@@ -1,0 +1,37 @@
+;; vec-sort orders a vec by Ord, and vec-sort-by by a comparison. Both are
+;; stable: items that tie keep their order.
+
+(import (std prelude))
+
+(: check (-> string string string bool))
+(defun (check what got want)
+  (if (= got want)
+      #t
+      (let ()
+        (println (str what ": got " got ", wanted " want))
+        #f)))
+
+;; Enough items for several merge passes, in a scrambled order.
+(: scrambled (Vec int))
+(def scrambled {vecing (% (* i 7919) 1000) (:for i (range 0 1000))})
+
+(: ascending? (-> (Vec int) bool))
+(defun (ascending? v)
+  (loop (:for i (range 1 (vec-length v)))
+        (:acc ok (folding #t (and ok (<= (vec-ref v (- i 1)) (vec-ref v i)))))
+        => ok))
+
+(defun (main args)
+  (def by-length (fun (a b) (compare (string-length a) (string-length b))))
+  (def (: none (Vec int)) (vec-empty))
+  (if (and (check "ints" (->str (vec-sort [3 1 2])) "[1 2 3]")
+           (check "empty" (->str (vec-sort none)) "[]")
+           (check "one" (->str (vec-sort [7])) "[7]")
+           (check "tuples" (->str (vec-sort [(Tuple 2 "b") (Tuple 1 "z") (Tuple 2 "a")])) "[(1, z) (2, a) (2, b)]")
+           (check "many" (if (ascending? (vec-sort scrambled)) "sorted" "not sorted") "sorted")
+           (check "all kept" (int->string (vec-length (vec-sort scrambled))) "1000")
+           (check "descending" (->str (vec-sort-by (fun (a b) (compare b a)) [1 3 2])) "[3 2 1]")
+           (check "stable" (->str (vec-sort-by by-length ["bb" "a" "cc" "d" "eee"])) "[a d bb cc eee]")
+           (check "unchanged" (->str scrambled) (->str {vecing (% (* i 7919) 1000) (:for i (range 0 1000))})))
+      0
+      1))

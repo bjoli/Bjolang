@@ -1,0 +1,17 @@
+;; A local function defined in a named loop's last :do may not jump: a call
+;; to the loop from inside it is not in the :do's tail position.
+;; EXPECT-ERROR: 'lp' at loop_name_in_do_defun.bjo:10 is a loop name
+(import (std prelude))
+
+(: f (-> (List int) int))
+(defun (f xs)
+  (loop lp (:for x xs)
+           (:acc total (summing x))
+           (:do (defun (again) (lp))
+                ;; The jump is in the function above, not here.
+                (again))
+           => total))
+
+(defun (main args)
+  (println (f (list 1 2 3)))
+  0)

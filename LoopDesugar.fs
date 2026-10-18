@@ -1503,6 +1503,8 @@ and private buildGroup
         | EIf(_, t, f, _) -> edgeBinders t @ edgeBinders f
         | ELet(n, _, _, _, _, body, _) -> n :: edgeBinders body
         | ELetTuple(names, _, body, _) -> names @ edgeBinders body
+        | ELetRec(bindings, body, _) -> (bindings |> List.map (fun (n, _, _, _, _) -> n)) @ edgeBinders body
+        | ELetMutable(n, _, _, body, _) -> n :: edgeBinders body
         | _ -> []
 
     let rec buildClauses (level: int) (cs: LoopClause list) (accsLeft: AccSlot list) (locals: string list) =
@@ -1599,35 +1601,28 @@ and private buildGroup
         // names — `(let ((total 1000)) (lp))` — and a slot the call does not
         // override has to carry the iteration's value, not that binding. Each
         // such name is read through an alias bound before the user code.
+        //
+        // The `:do` is a body, so a `def` in it binds over the forms after it,
+        // the jump included. `continueEdge` follows the body's lets to the
+        // jump, and refuses the loop name in any form that is not the jump.
         | [ LDo(exprs, cr) ] when userLoopName.IsSome && level = maxLevel ->
             let name = userLoopName.Value
-            let statements = exprs |> List.take (exprs.Length - 1)
-            let final = fns.Expr(List.last exprs)
+            let body = fns.Body exprs cr
 
             let aliases =
-                Set.intersect (Set.ofList (edgeBinders final)) (Set.ofList (slotNames level))
+                Set.intersect (Set.ofList (edgeBinders body)) (Set.ofList (slotNames level))
                 |> Seq.map (fun n -> n, Gensym.fresh n)
                 |> Map.ofSeq
 
-            let edge =
-                Map.foldBack
-                    (fun slot alias acc -> ELet(alias, false, [], None, EIdent(slot, cr), acc, cr))
-                    aliases
-                    (continueEdge aliases level name final cr)
+            Map.foldBack
+                (fun slot alias acc -> ELet(alias, false, [], None, EIdent(slot, cr), acc, cr))
+                aliases
+                (continueEdge aliases level name body cr)
 
-            List.foldBack
-                (fun e acc ->
-                    let parsed = fns.Expr e
-                    rejectLoopName name parsed
-                    ELet("_", false, [], None, parsed, acc, cr))
-                statements
-                edge
-
-        | LDo(exprs, cr) :: tl ->
-            List.foldBack
-                (fun e acc -> ELet("_", false, [], None, fns.Expr e, acc, cr))
-                exprs
-                (next tl)
+        // A body, as a `let`'s is: a `def` in it scopes over the forms after
+        // it in the same `:do`, and no further.
+        | LDo([], _) :: tl -> next tl
+        | LDo(exprs, cr) :: tl -> ELet("_", false, [], None, fns.Body exprs cr, next tl, cr)
 
         // Skips the rest of *this* iteration of *this* level. Clauses above it
         // have already run, so an accumulator stepped before it keeps what it
@@ -1703,7 +1698,20 @@ and private buildGroup
             rejectLoopName name value
             ELetTuple(names, value, continueEdge aliases level name body cr, ir)
 
-        // Anything else completes, and then the loop is over.
+        // The definitions of a body in the `:do`.
+        | ELetRec(bindings, body, ir) ->
+            for (_, _, _, _, value) in bindings do
+                rejectLoopName name value
+
+            ELetRec(bindings, continueEdge aliases level name body cr, ir)
+
+        | ELetMutable(n, ann, value, body, ir) ->
+            rejectLoopName name value
+            ELetMutable(n, ann, value, continueEdge aliases level name body cr, ir)
+
+        // Anything else completes, and then the loop is over. That includes a
+        // `def` whose pattern can fail: its failure part gives the body a value
+        // of its own, which would not reach the finish block.
         | other ->
             rejectLoopName name other
             ELet("_", false, [], None, other, finishBlockAliased aliases level cr, cr)

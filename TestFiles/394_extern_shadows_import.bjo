@@ -1,0 +1,24 @@
+;; A module's own import/extern takes its name over from an import, as a defun
+;; does. Here the prelude's string-trim and string->long give way. A local
+;; binding still shadows the extern.
+
+(import (std prelude))
+
+(import/extern
+  (string-trim  (: System.Int64.TryParse (-> string (out long) (Option long))))
+  (string->long (: System.Int64.TryParse (-> string (out long) (Option long)))))
+
+(: check (-> string string string bool))
+(defun (check what got want)
+  (if (= got want)
+      #t
+      (let ()
+        (println (str what ": got " got ", wanted " want))
+        #f)))
+
+(defun (main args)
+  (if (and (check "string-trim" (->str (string-trim "42")) "(Some 42)")
+           (check "string->long" (->str (string->long "x")) "None")
+           (check "a local" (let ((string-trim (fun (s) (str "[" s "]")))) (string-trim "a")) "[a]"))
+      0
+      1))

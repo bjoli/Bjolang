@@ -773,6 +773,7 @@ let private checkDefMatch
     (scrutinee: HMType)
     (binder: TypedPattern)
     (arms: TDefMatchArm list)
+    (parameter: bool)
     =
     try
         let binderRow = [ normalize binder ]
@@ -799,6 +800,9 @@ let private checkDefMatch
             covered <- covered @ [ row ]
 
         match missing registry [ scrutinee ] covered with
+        | Some [ witness ] when parameter ->
+            failwithf
+                $"Pattern Error at %s{formatPos binder.Range}: a parameter's pattern has to match every value, and this one does not: %s{showWitness witness} reaches nothing. Take the parameter as a name, and match on it in the body."
         | Some [ witness ] when arms.IsEmpty ->
             failwithf
                 $"Pattern Error at %s{formatPos range}: this def's pattern does not match every value. %s{showWitness witness} reaches nothing, and a def with no failure part has nowhere to send it. Give it a failure part: :leave-with, :leave, :default or :propagate."
@@ -858,7 +862,14 @@ let rec private checkExpr (registry: TraitRegistry) (expr: TypedExpr) : unit =
     match expr.Node with
     | TMatch(target, clauses) -> checkMatch (seenFrom registry expr.Range) expr.Range target.Type clauses
     | TDefMatch(binder, scrutinee, _, arms) ->
-        checkDefMatch (seenFrom registry expr.Range) expr.Range scrutinee.Type binder arms
+        // A parameter written as a pattern is read as such a def. Its
+        // message speaks of the parameter, which is what the program wrote.
+        let parameter =
+            match scrutinee.Node with
+            | TIdent(n, _) -> Parser.isPatternParameter n
+            | _ -> false
+
+        checkDefMatch (seenFrom registry expr.Range) expr.Range scrutinee.Type binder arms parameter
     | _ -> ()
 
     TypeVisitor.children expr |> List.iter (checkExpr registry)

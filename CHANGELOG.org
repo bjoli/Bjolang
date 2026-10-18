@@ -3,6 +3,105 @@
 
 What each change guarantees, and what it leaves open.
 
+* Taking and dropping characters and elements, and ~popcount~
+
+- The prelude takes and drops characters from either end of a string:
+  ~string-take~, ~string-drop~, ~string-take-right~ and ~string-drop-right~,
+  each with a ~/slice~ form that shares the string's bytes. The count is of
+  characters, the cost is in the count, and a count past the end takes or
+  drops the whole string. A negative count is refused with a panic.
+- ~(string-split-once s sep)~ and its ~/slice~ form give the text before and
+  after the first ~sep~, or ~None~.
+- ~(string-cursor-forward s c n)~ and ~(string-cursor-back s c n)~ move a
+  cursor by a count, and raise at the end as ~string-cursor-next~ does.
+- ~vec-take~, ~vec-drop~ and ~vec-reverse~ give new vecs, and ~vec->array~ a
+  new array. ~vec->array~ is the runtime's own copy, which the prelude did
+  not bind before.
+- ~(std maths)~ has ~popcount~ at every integer type, through .NET's
+  ~IBinaryInteger~, in a trait ~Bits~.
+- Tests: ~398_string_take_drop.bjo~, ~399_vec_take_drop.bjo~.
+
+* ~vec-sort~ and ~vec-sort-by~
+
+- ~(std eq)~, and so the prelude, sorts a vec: ~(vec-sort v)~ by ~Ord~, and
+  ~(vec-sort-by cmp v)~ by a comparison that answers a negative, zero or
+  positive ~int~. Both are stable merge sorts, as ~list-sort~ is, and give a
+  new vec.
+- Test: ~397_vec_sort.bjo~.
+
+* A parameter may be a pattern
+
+- A positional parameter of a ~fun~ or a ~defun~, top-level or local, and
+  of a ~defbjo~ or ~defbjouble~, may be a pattern written as in ~match~:
+  ~(fun ((Tuple n _)) n)~, ~(defun (area (Rect w h)) ...)~. With its type,
+  it is ~(: (Tuple a b) (Tuple int string))~.
+- The pattern has to match every value. One that can fail is refused, and
+  the message says to take the parameter as a name and match in the body.
+- It is a ~def~ at the top of the body, so a recursive call is still a jump.
+- A ~fun~ parameter that is neither a name nor a pattern is refused at the
+  parameter. Before, the message was "Expected arg name", at the enclosing
+  definition.
+- Tests: ~396_pattern_parameters.bjo~, ~errors/pattern_parameter_refutable.bjo~,
+  ~errors/pattern_parameter_repeated.bjo~, ~errors/fun_parameter_not_a_name.bjo~.
+
+* ~fst~ and ~snd~
+
+- The prelude takes a pair apart with ~(fst p)~ and ~(snd p)~, at any item
+  types, as F# does. They pass as values: ~(list-map fst pairs)~. A longer
+  tuple is taken apart with a pattern. ~(std test)~ and ~(std bench)~ lose
+  their private copies.
+- The comprehension docs show that any collector works:
+  ~{summing (* x x) (:for x xs)}~, ~{counting x :when (even? x) (:for x xs)}~.
+- Test: ~395_fst_snd.bjo~.
+
+* Tuples are ordered
+
+- ~(std eq)~ has ~Ord~ for tuples of two, three and four items whose items
+  are ordered. The order is lexicographic: the first items decide, and a
+  later item is compared only when the items before it are equal.
+  ~list-sort~, ~list-min~ and ~list-max~ take a list of tuples.
+- A missing implementation is named by the type as the program writes it:
+  ~(List int)~, ~string~, ~int~, not ~List~, ~String~ or ~System.Int32~.
+- Tests: ~393_tuple_ord.bjo~, ~errors/no_ord_shows_type.bjo~.
+
+* ~string->long~
+
+- The prelude reads a ~long~ as ~string->int~ reads an ~int~: a sign,
+  digits, and white space at either end, in the invariant culture.
+- Test: ~391_string_to_long.bjo~.
+
+* A ~:do~ is a body
+
+- A ~def~, a ~defun~ or a ~def/mutable~ in a ~(:do ...)~ clause is in scope
+  in the rest of that ~:do~, as in a ~let~ body. Before, the clause refused
+  it.
+- In a named loop's last ~:do~, the jump may follow such definitions and
+  read them. A call to the loop name in a local function or in the value of
+  a ~def~ is not a jump, and is refused. So is a jump after a ~def~ whose
+  pattern can fail.
+- Tests: ~392_def_in_do.bjo~, ~errors/loop_name_in_do_def.bjo~,
+  ~errors/loop_name_in_do_defun.bjo~.
+
+* A module's own ~import/extern~ takes its name over from an import
+
+- An ~import/extern~ alias shadows an imported binding of the same name, as
+  a ~defun~ does. Before, the import won, so a function added to the prelude
+  broke a module that imported a .NET method under that name: ~bjo~ itself
+  imports its own ~string->long~. A local binding still shadows the alias.
+- Test: ~394_extern_shadows_import.bjo~.
+
+* A loop with no closure makes no copies of its variables
+
+- A loop body that makes no lambda, local function, ~seq~, hoisted body,
+  spawned call or task event, and no nested loop group that stays local
+  functions, reads its slots directly. The per-iteration copies are gone
+  from the C#. A body that makes one of these keeps its copies, so a closure
+  sees the values of its own iteration.
+- A function with keyword parameters keeps its copies.
+- Such a slot has the source's name, so a debugger shows the loop variable
+  under the name the program wrote.
+- Test: ~codegen/loop_copies.bjo~.
+
 * A function with keyword parameters fits where they are not expected
 
 - Where a function of only its mandatory parameters is expected, by a

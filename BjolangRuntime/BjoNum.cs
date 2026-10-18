@@ -106,6 +106,11 @@ public static class BjoNum {
     // even ASCII.
     public static int ParseInt(Utf8String s) => Utf8Number.ParseInt(s);
 
+    // The same styles as `ParseInt`: a sign, digits, and white space at
+    // either end.
+    public static long ParseLong(Utf8String s) =>
+        long.Parse(s.AsSpan(), NumberStyles.Integer, CultureInfo.InvariantCulture);
+
     public static Utf8String IntToString(int n) => Utf8Number.Format(n);
 
     public static Utf8String LongToString(long n) => Utf8Number.Format(n);

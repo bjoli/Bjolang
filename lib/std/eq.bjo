@@ -13,7 +13,7 @@
 ;; std/eq.bjo — equality and hashing.
 (export = eq-hash
         Ord compare less? greater? at-most? at-least?
-        least greatest list-sort list-min list-max)
+        least greatest list-sort vec-sort vec-sort-by list-min list-max)
 
 (:doc #:file "eq.bjodoc")
 
@@ -109,6 +109,59 @@
           (go (- i 1) (Cons (array-ref done i) acc)))))
 
   (if (< n 2) xs (sorted)))
+
+;; The same merge sort over an array, with the comparison passed in: negative
+;; when the first comes first, zero when they tie, positive otherwise. Stable,
+;; since ties take the left run. Answers the array that holds the result, which
+;; is arr or one of the same length.
+(: sort-array-by (-> (-> %a %a int) (Array %a) (Array %a)))
+(defun (sort-array-by cmp arr)
+  (def n (array-length arr))
+
+  (defun (smaller (: a int) b) (if (< a b) a b))
+
+  (defun (merge-runs (: src (Array %a)) dst lo mid hi)
+    (let go ((l lo) (r mid) (k lo))
+      (if (< k hi)
+          (if (if (< l mid)
+                  (if (< r hi) (<= (cmp (array-ref src l) (array-ref src r)) 0) #t)
+                  #f)
+              (let ()
+                (array-set! dst k (array-ref src l))
+                (go (+ l 1) r (+ k 1)))
+              (let ()
+                (array-set! dst k (array-ref src r))
+                (go l (+ r 1) (+ k 1))))
+          k)))
+
+  (defun (merge-pass src dst width)
+    (let go ((lo 0))
+      (if (< lo n)
+          (go (merge-runs src dst lo (smaller (+ lo width) n) (smaller (+ lo (* 2 width)) n)))
+          dst)))
+
+  (let go ((src arr) (dst (make-array n)) (width 1))
+    (if (< width n)
+        (go (merge-pass src dst width) src (* width 2))
+        src)))
+
+;; A vec in order of a comparison, as `sort-array-by` orders an array.
+(: vec-sort-by (-> (-> %a %a int) (Vec %a) (Vec %a)))
+(defun (vec-sort-by cmp v)
+  (def n (vec-length v))
+  (if (< n 2)
+      v
+      (let ()
+        (def arr (make-array n))
+        (let fill ((i 0))
+          (when (< i n)
+            (array-set! arr i (vec-ref v i))
+            (fill (+ i 1))))
+        (array->vec (sort-array-by cmp arr)))))
+
+;; A vec in the order of its elements' Ord. Stable.
+(: vec-sort (-> (Vec %a) (Vec %a)) (where (Ord %a)))
+(defun (vec-sort v) (vec-sort-by (fun (a b) (compare a b)) v))
 
 ;; Private left fold for list min/max.
 (: fold-left (-> (-> %a %b %b) %b (List %a) %b))
@@ -332,6 +385,41 @@
     (def (a b c d) x)
     (hash-combine (hash-combine (eq-hash a) (eq-hash b))
                   (hash-combine (eq-hash c) (eq-hash d)))))
+
+;; Ord for Tuples: lexicographic. The first items decide, and a later item is
+;; compared only when every item before it is equal.
+(impl (Ord (Tuple %a %b))
+  (where (Ord %a) (Ord %b))
+  (defun (compare x y)
+    (def (a1 b1) x)
+    (def (a2 b2) y)
+    (def c (compare a1 a2))
+    (if (= c 0) (compare b1 b2) c)))
+
+(impl (Ord (Tuple %a %b %c))
+  (where (Ord %a) (Ord %b) (Ord %c))
+  (defun (compare x y)
+    (def (a1 b1 c1) x)
+    (def (a2 b2 c2) y)
+    (def ca (compare a1 a2))
+    (if (= ca 0)
+        (let ((cb (compare b1 b2)))
+          (if (= cb 0) (compare c1 c2) cb))
+        ca)))
+
+(impl (Ord (Tuple %a %b %c %d))
+  (where (Ord %a) (Ord %b) (Ord %c) (Ord %d))
+  (defun (compare x y)
+    (def (a1 b1 c1 d1) x)
+    (def (a2 b2 c2 d2) y)
+    (def ca (compare a1 a2))
+    (if (= ca 0)
+        (let ((cb (compare b1 b2)))
+          (if (= cb 0)
+              (let ((cc (compare c1 c2)))
+                (if (= cc 0) (compare d1 d2) cc))
+              cb))
+        ca)))
 
 (impl (Eq (Result %e %a))
   (where (Eq %e) (Eq %a))

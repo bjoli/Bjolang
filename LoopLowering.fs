@@ -571,12 +571,18 @@ and private lowerLetRec
                     let loweredBody = lowerExpr (loopTargets @ visible) true lambdaBody
 
                     // With no closure to capture them, the body reads the
-                    // slots and needs no copies.
-                    let locals, body =
+                    // slots and needs no copies. The slots then hold the
+                    // program's own variables, so they take the source's
+                    // names: `PdbNames` shows a `next-pair__12` to a debugger
+                    // as `next-pair`, and hides a `_next-pair__12`. The jump
+                    // targets above read no slot name, since a loop member
+                    // has no keyword parameters.
+                    let slots, locals, body =
                         if formsClosure loweredBody then
-                            lambdaArgs, loweredBody
+                            slots, lambdaArgs, loweredBody
                         else
-                            slots, renameExpr (List.zip lambdaArgs slots |> Map.ofList) loweredBody
+                            let named = lambdaArgs |> List.map fresh
+                            named, named, renameExpr (List.zip lambdaArgs named |> Map.ofList) loweredBody
 
                     { LoopName = name
                       Slots = List.zip slots argTypes

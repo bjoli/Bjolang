@@ -1,0 +1,35 @@
+;; Taking, dropping and reversing a vec, a vec in a new array, and popcount at
+;; several integer types.
+
+(import (std prelude))
+(import (std maths))
+
+(: check (-> string string string bool))
+(defun (check what got want)
+  (if (= got want)
+      #t
+      (let ()
+        (println (str what ": got " got ", wanted " want))
+        #f)))
+
+(defun (main args)
+  (def v [1 2 3 4])
+  (def (: none (Vec int)) (vec-empty))
+  (def arr (vec->array v))
+  (array-set! arr 0 99)
+  (if (and (check "take" (->str (vec-take v 2)) "[1 2]")
+           (check "take past the end" (->str (vec-take v 10)) "[1 2 3 4]")
+           (check "take none" (->str (vec-take v 0)) "[]")
+           (check "drop" (->str (vec-drop v 1)) "[2 3 4]")
+           (check "drop past the end" (->str (vec-drop v 9)) "[]")
+           (check "reverse" (->str (vec-reverse v)) "[4 3 2 1]")
+           (check "reverse empty" (->str (vec-reverse none)) "[]")
+           (check "reverse a long one" (int->string (vec-ref (vec-reverse {vecing i (:for i (range 0 1000))}) 0)) "999")
+           (check "to an array" (int->string (array-length arr)) "4")
+           (check "the array is its own" (->str v) "[1 2 3 4]")
+           (check "popcount" (int->string (popcount 13)) "3")
+           (check "popcount long" (long->string (popcount 1099511627775L)) "40")
+           (check "popcount byte" (byte->string (popcount 255uy)) "8")
+           (check "popcount -1" (int->string (popcount -1)) "32"))
+      0
+      1))

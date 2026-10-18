@@ -359,8 +359,7 @@ let private parseDefunDecl
     let colour = if definer = "defbjo" then Suspending else Ordinary
     let parsedArgs = parseDefunArgs args
     let retAnn, bodyExprs = parseDefunReturn rest
-    let bound = allArgNames parsedArgs |> List.map (fun n -> n, r)
-    let defun = DDefun(name, parsedArgs, withLocals bound (fun () -> parseBody bodyExprs r), colour, r)
+    let defun = DDefun(name, parsedArgs, withParameters [] parsedArgs r (fun () -> parseBody bodyExprs r), colour, r)
 
     match retAnn with
     | None -> [ defun ]
@@ -595,13 +594,15 @@ let rec tryParseDecl (s: SExpr) : Decl option =
         // The two bodies, by keyword rather than by position. Order-independent
         // because there is no reason for it not to be, and because `#:sync`
         // first reads better in some pairs and `#:bjo` first in others.
-        let bound = allArgNames (parseDefunArgs args) |> List.map (fun n -> n, r)
+        // Read once, so that both bodies name the same fresh parameter for a
+        // parameter written as a pattern.
+        let parsedArgs = parseDefunArgs args
 
         let clauseNamed (want: string) =
             clauses
             |> List.tryPick (function
                 | SList(SAtom { Token = Keyword k } :: body, cr) when k = want ->
-                    Some(withLocals bound (fun () -> parseBody body cr))
+                    Some(withParameters [] parsedArgs r (fun () -> parseBody body cr))
                 | _ -> None)
 
         for c in clauses do
@@ -612,7 +613,7 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                     $"Syntax error in defbjouble '%s{name}' at %s{where}: every clause is (#:sync body...) or (#:bjo body...), and this is neither."
 
         match clauseNamed "sync", clauseNamed "bjo" with
-        | Some syncBody, Some bjoBody -> Some(DDefDouble(name, parseDefunArgs args, syncBody, bjoBody, r))
+        | Some syncBody, Some bjoBody -> Some(DDefDouble(name, parsedArgs, syncBody, bjoBody, r))
         | None, _ ->
             failwithf
                 $"Syntax error in defbjouble '%s{name}' at %s{where}: it has no (#:sync ...) body. A defbjouble is written when the two colours call *different* .NET methods, so both halves have to be here. If there is only one implementation, this is a defun."

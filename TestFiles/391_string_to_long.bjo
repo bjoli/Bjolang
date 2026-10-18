@@ -1,0 +1,29 @@
+;; string->long reads 64-bit numbers, with the styles string->int takes: a
+;; sign, digits, and white space at either end. What does not fit throws.
+
+(import (std prelude))
+
+(: check (-> string string string bool))
+(defun (check what got want)
+  (if (= got want)
+      #t
+      (let ()
+        (println (str what ": got " got ", wanted " want))
+        #f)))
+
+(: parse (-> string string))
+(defun (parse s)
+  (match (try (string->long s) #:catch (System.FormatException System.OverflowException))
+    ((Ok n) (long->string n))
+    ((Err e) "throws")))
+
+(defun (main args)
+  (if (and (check "beyond int" (parse "-9000000000") "-9000000000")
+           (check "the largest" (parse "9223372036854775807") "9223372036854775807")
+           (check "white space" (parse " 42 ") "42")
+           (check "a plus sign" (parse "+7") "7")
+           (check "round trip" (parse (long->string -9223372036854775808L)) "-9223372036854775808")
+           (check "too large" (parse "9223372036854775808") "throws")
+           (check "not a number" (parse "12a") "throws"))
+      0
+      1))

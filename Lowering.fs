@@ -233,7 +233,7 @@ let rec buildEvidence
                     $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType resolved}', needed %s{describe}. The implementation for '%s{Naming.showTypeName typeName}' is written for '%s{written}' only."
             | None ->
                 failwithf
-                    $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{Naming.showTypeName typeName}', needed %s{describe}."
+                    $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType resolved}', needed %s{describe}."
 
         let constraints =
             let target, subst = selected

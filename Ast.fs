@@ -824,7 +824,10 @@ type Expansion =
 /// with its `parseExprFn` parameter.
 type ParseFns =
     { Expr: SExpr -> Expr
-      Pattern: SExpr -> Pattern }
+      Pattern: SExpr -> Pattern
+      /// A sequence of forms where a definition scopes over the forms after
+      /// it, as in a `let` body. The range is for a body with no forms.
+      Body: SExpr list -> Range -> Expr }
 
 /// A pattern's own range.
 let patternRange (p: Pattern) : Range =

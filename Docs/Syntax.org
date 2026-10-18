@@ -422,6 +422,24 @@ Keyword parameters with defaults, a ~#:rest~ parameter, a type written at a para
 
 Local functions with keyword or rest parameters are not tail-call promoted; deep tail recursion needs a plain positional local ~defun~ or an explicit ~loop~. A top-level ~defun~ is promoted regardless.
 
+*** A parameter may be a pattern
+A positional parameter of a ~fun~ or a ~defun~, top-level or local, may be a pattern, written as in ~match~. It binds what the pattern binds, in the body:
+#+BEGIN_SRC scheme
+(list-map (fun ((Tuple n _)) n) pairs)
+
+(: manhattan (-> (Tuple int int) (Tuple int int) int))
+(defun (manhattan (Tuple x1 y1) (Tuple x2 y2))
+  (+ (abs (- x1 x2)) (abs (- y1 y2))))
+
+(defun (area (Rect w h)) (* w h))      ;; a union of one case
+(defun (swap (: (Tuple a b) (Tuple int string))) : (Tuple string int)
+  (Tuple b a))                          ;; a pattern with its type
+#+END_SRC
+
+The pattern has to match every value, as the pattern of a ~def~ with no failure part does. ~(defun (f (Some x)) ...)~ is refused: take the parameter as a name and match on it in the body. The names a pattern binds share one scope with the other parameters, so none of them may repeat. A keyword or rest parameter is a name only.
+
+A pattern parameter is the same as a ~def~ at the top of the body: ~(defun (f (Tuple a b)) body)~ is ~(defun (f p) (def (Tuple a b) p) body)~. A recursive call still becomes a jump.
+
 *** A function with keyword parameters as a value
 As a value, a function with keyword parameters takes them as positional parameters after the mandatory ones: ~(def g greet)~ is a function of two arguments. Where a function of only its mandatory parameters is expected, by a parameter or an annotation, the name is the function that calls it with those, and the keywords take their defaults:
 #+BEGIN_SRC scheme
@@ -1550,7 +1568,7 @@ A macro is a function the compiler runs while parsing. It takes the form written
 | `(:let pat expr)`               | Per-iteration local binding. The pattern must always match. |
 | `(:when-let pat expr)`          | The same, for a pattern that may fail: skips the rest of the iteration when it does not match. |
 | `(:finish-let pat expr)`        | The same, but a pattern that does not match ends the loop. |
-| `(:do expr ...)`                | Executes for side-effects, discarding result.      |
+| `(:do expr ...)`                | Executes for side-effects, discarding result. A body: a `def` in it is in scope in the rest of the `:do`. |
 | `(:when cond)`                  | Skips the rest of the current iteration unless `cond` holds. |
 | `(:acc [name] (coll ...) #:when c)`| Accumulates values into `coll`; optionally gated by `#:when`. The name is optional. |
 | `(:finish test [value])`        | Ends the whole loop when `test` holds. With `value`, that is the result and `=>` does not run. |
@@ -1715,6 +1733,18 @@ Monitors a cancellation token and exits via a `:finish`.
       => g)
 #+END_SRC
 
+Any collector works, not only the ones that build a collection:
+
+#+BEGIN_SRC scheme
+{summing (* x x) (:for x xs)}                    ;; the sum of the squares
+{vecing (string->int s) (:for s fields)}          ;; a vec
+{counting x :when (even? x) (:for x xs)}          ;; how many are even
+#+END_SRC
+
+A `folding` step reads the accumulator by its name, and a comprehension's accumulator has none, so a fold is written as a `loop` with a named `(:acc ...)`.
+
+`counting` adds one at every step, whatever its value is. `{counting (even? x) (:for x xs)}` counts every element. To count the elements that pass a test, gate the step with a loose `:when`, as above, or skip the iteration with `(:when ...)`.
+
 **Rules**:
 - A collector's arguments, `#:into` included, go with it before the first clause: `{vecing x #:into v (:for x xs)}`.
 - All `loop` clauses (`:when`, `:finish`, `:let`, `:with`, etc.) are supported inside comprehensions.
@@ -1737,6 +1767,7 @@ A named loop binds a continue target to its final `:do` block, allowing manual i
 - Invoke `(lp #:slot val)` to overwrite accumulator or `:with` values.
 - You cannot override `:for` cursors via named loop arguments.
 - Tail calls to the loop name are required; returning without calling it proceeds to the finish block.
+- A `def` before the jump in the same `:do` is in scope in the jump: `(:do (def scaled (* total 10)) (lp #:total scaled))`. A call to the loop name inside a local function or a `def`'s value is not a jump, and is refused.
 
 *** `:with` — state carried across iterations
 Behaves similarly to `:for`, but provides its own sequence of state updates.

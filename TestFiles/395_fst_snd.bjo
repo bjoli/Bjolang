@@ -1,0 +1,25 @@
+;; fst and snd take a pair apart, at any item types, and pass as values. A
+;; definition of the program's own takes the name over.
+
+(import (std prelude))
+
+(: check (-> string string string bool))
+(defun (check what got want)
+  (if (= got want)
+      #t
+      (let ()
+        (println (str what ": got " got ", wanted " want))
+        #f)))
+
+(: pairs (List (Tuple int string)))
+(def pairs (list (Tuple 1 "a") (Tuple 2 "b")))
+
+(defun (main args)
+  (if (and (check "fst" (int->string (fst (Tuple 1 "a"))) "1")
+           (check "snd" (snd (Tuple 1 "a")) "a")
+           (check "as values" (->str (list-map fst pairs)) "(1 2)")
+           (check "snd as a value" (->str (list-map snd pairs)) "(a b)")
+           (check "nested" (int->string (fst (snd (Tuple "x" (Tuple 7 8))))) "7")
+           (check "shadowed" (let () (defun (fst p) "mine") (fst (Tuple 1 2))) "mine"))
+      0
+      1))

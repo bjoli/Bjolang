@@ -141,6 +141,7 @@ An ~Ord~ of the first two shapes leaves the type with no ~CompareTo~ at all, sin
   (: Version (Record (: major int) (: minor int))))
 
 (list-sort versions)    ;; and every other thing written against Ord
+(vec-sort versions)     ;; a vec, the same way
 #+END_SRC
 
 Ordering has no law to break where hashing does: a sorted collection going stale under a write is the write's doing.
@@ -190,7 +191,7 @@ The pad is a ~char~, so an astral one counts as the single character it is.
 - ~(string-split/slice s sep)~ : the same fields as slices of ~s~.
 
 *** Slices =(std prelude)=
-A slice is a string that shares the bytes of the string it was taken from instead of copying them. It is a ~string~ like any other — it equals, hashes and orders by its text, finds a map key with that text, and goes anywhere a string goes — and only the forms named ~/slice~ make one: ~substring/slice~, ~string-trim/slice~, ~string-trim-left/slice~, ~string-trim-right/slice~ and ~string-split/slice~.
+A slice is a string that shares the bytes of the string it was taken from instead of copying them. It is a ~string~ like any other — it equals, hashes and orders by its text, finds a map key with that text, and goes anywhere a string goes — and only the forms named ~/slice~ make one: ~substring/slice~, ~string-trim/slice~, ~string-trim-left/slice~, ~string-trim-right/slice~, ~string-split/slice~, ~string-split-once/slice~, and the four ~string-take~ and ~string-drop~ forms with ~/slice~.
 
 - *Its cursors are its source's.* A cursor found in a slice, by ~string-search~, ~string-index~ or a regex, is a position in the string it was taken from, and ~(string-cursor-start sl)~ is where the slice begins in it.
 - *It keeps all of its source alive.* A ten-byte slice of a megabyte keeps the megabyte. That is why the plain forms copy: a slice is for a scanner that cuts many short pieces out of one text and lets them go, not for keeping a piece.
@@ -227,6 +228,13 @@ All four use the invariant culture. ~char-foldcase~ is Unicode *simple* case fol
 - ~(char-general-category c)~ : The Unicode general category as a ~Symbol~ — ~'Lu~, ~'Ll~, ~'Nd~, ~'Zs~ and the rest.
 
 ~char-numeric?~ is the Nd/Nl/No categories, not Nd alone, so it answers true for ½ and Ⅶ.
+
+** Taking and dropping characters
+A count of characters from one end. The cost is in the count, not in the length of the string. A count past the end takes or drops the whole string; a negative count is refused with a panic. Each has a ~/slice~ form that shares the string's bytes.
+- ~(string-take s n)~, ~(string-drop s n)~ : The first ~n~ characters, or all but them.
+- ~(string-take-right s n)~, ~(string-drop-right s n)~ : The last ~n~ characters, or all but them.
+- ~(string-split-once s sep)~ : ~(Some (Tuple before after))~ at the first ~sep~, or ~None~. Also as ~string-split-once/slice~.
+- ~(string-cursor-forward s c n)~, ~(string-cursor-back s c n)~ : A cursor moved ~n~ characters. These raise at the end, as ~string-cursor-next~ does.
 
 ** String Cursors
 A cursor represents a position within a string, replacing index-based access (like ~string-ref~) for $O(1)$ linear traversal. It is lightweight and costs as much as an ~int~.
@@ -300,9 +308,10 @@ The numeric ones are =(std prelude)=; the keyword and symbol ones are builtin, s
 - ~(long->string l)~
 - ~(double->string d)~
 - ~(string->int s)~
+- ~(string->long s)~
 - ~(string->double s)~
 
-All six are *invariant*, for the reason the string comparisons are ordinal: they round-trip, so a number written by one machine reads on the next. .NET's own take the ambient culture, under which ~1.5~ writes as ~1,5~, ~(string->double "1.5")~ throws, and ~-100~ comes back with a U+2212 MINUS SIGN. ~->str~ is invariant for the same reason. A program that wants a number in the reader's own culture sets ~CultureInfo.CurrentCulture~ and formats through .NET; see ~Todo.org~.
+All seven are *invariant*, for the reason the string comparisons are ordinal: they round-trip, so a number written by one machine reads on the next. .NET's own take the ambient culture, under which ~1.5~ writes as ~1,5~, ~(string->double "1.5")~ throws, and ~-100~ comes back with a U+2212 MINUS SIGN. ~->str~ is invariant for the same reason. A program that wants a number in the reader's own culture sets ~CultureInfo.CurrentCulture~ and formats through .NET; see ~Todo.org~.
 - ~(keyword->string kw)~ : Returns the string name of a keyword.
 - ~(string->keyword s)~ : Interns a string as a ~Keyword~.
 - ~(symbol->string sym)~ : Returns the string name of a symbol.
@@ -456,6 +465,11 @@ Persistent immutable vectors.
 - ~(vec-empty? vec)~ : Returns true if the vector has no elements. O(1), off the same stored count. Note the pair: ~vec-empty~ *constructs* an empty vector, ~vec-empty?~ *asks*.
 - ~(vec-contains vec item)~ : Checks if ~item~ is in the vector.
 - ~(vec-compact vec)~ : Compacts the vector's internal structure.
+- ~(vec-take vec n)~, ~(vec-drop vec n)~ : The first ~n~ elements, or all but them. A count past the end takes or drops the whole vec.
+- ~(vec-reverse vec)~ : The elements, last first.
+- ~(vec->array vec)~ : The elements in a new array.
+- ~(vec-sort vec)~ : A sorted copy, by ~compare~. Stable. From =(std eq)=, as ~list-sort~ is.
+- ~(vec-sort-by cmp vec)~ : A sorted copy, by ~cmp~, which answers a negative, zero or positive ~int~. Stable.
 
 ** Vector Builders
 Mutable builders for efficiently constructing vectors.
@@ -1039,6 +1053,12 @@ Four forms, differing only in what the enclosing scope does about the fiber.
 In all four the operands are evaluated where the form is written and only the call happens in the new fiber, so ~(spawn (handle (next-job!)))~ runs ~next-job!~ here. A form that is not a call has no operands to split off, and runs in the new fiber whole: ~(bjo (let () (write-string out "bye") (close-output-port out) 1))~.
 
 Spawning into a scope that has already started closing does nothing at all: no fiber, no error, and the spawning code carries on. ~bjo~ has to answer *something*, and answers a promise that has already failed with ~Cancelled~.
+
+** Pairs =(std prelude)=
+- ~(fst p)~ : The first item of a pair.
+- ~(snd p)~ : The second item of a pair.
+
+For a longer tuple, use a pattern: ~(def (a b c) t)~.
 
 ** Options (~Option~)
 Optional value type representing presence (~Some~) or absence (~None~).
