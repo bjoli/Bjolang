@@ -5,7 +5,7 @@
 
 (defun (main args)
   (def* (lines (input-lines args))
-        (width (vec-fold #(max (length &1) &2) 0 lines))
+        (width (fold #(max (length &1) &2) 0 lines))
         (rows {vecing (string->vec (string-pad-right l width)) (:for l lines)})
         (last (- (length rows) 1)))
   (defun (cell r c) (ref (ref rows r) c))
@@ -17,7 +17,7 @@
           (:acc n (folding 0L (+ (* n 10L) (cast System.Int64 (digit ch)))))
           => n))
   (defun (combine op xs)
-    (if (char=? op #\*) (list-foldl * 1L xs) (list-foldl + 0L xs)))
+    (if (char=? op #\*) (fold * 1L xs) (fold + 0L xs)))
   ;; The problems, as column ranges [from, to).
   (def ps
     (list-filter (fun ((Tuple from to)) (< from to))
@@ -27,9 +27,7 @@
                           (go (- c 1) c (Cons (Tuple (+ c 1) to) acc)))
                          (else (go (- c 1) to acc))))))
   (defun (op-of from to)
-    (loop (:for c (range from to))
-          (:acc op (folding #\+ (if (char=? (cell last c) #\space) op (cell last c))))
-          => op))
+    (fold #(if (char=? (cell last &1) #\space) &2 (cell last &1)) #\+ (range from to)))
   (defun (solve nums)
     {summing (combine (op-of from to) (nums from to)) (:for (Tuple from to) ps)})
   (println (solve (fun (from to) {listing (number from to #(cell r &)) (:for r (range 0 last))})))

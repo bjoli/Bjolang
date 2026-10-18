@@ -8,8 +8,8 @@
 ;; first empty square.
 (: normalise (-> (List (Tuple int int)) (List (Tuple int int))))
 (defun (normalise cells)
-  (def* (x0 (list-foldl #(min (fst &1) &2) 1000 cells))
-        (y0 (list-foldl #(min (snd &1) &2) 1000 cells)))
+  (def* (x0 (fold #(min (fst &1) &2) 1000 cells))
+        (y0 (fold #(min (snd &1) &2) 1000 cells)))
   (list-sort (list-map (fun ((Tuple x y)) (Tuple (- x x0) (- y y0))) cells)))
 
 ;; The eight turns and flips of a shape, without repeats.
@@ -22,9 +22,7 @@
           (go (+ i 1)
               (list-map (fun ((Tuple x y)) (Tuple (- 0 y) x)) cs)
               (Cons (normalise cs) (Cons (normalise (list-map (fun ((Tuple x y)) (Tuple (- 0 x) y)) cs)) acc))))))
-  (loop (:for o all)
-        (:acc kept (folding Nil (if (any? #(= & o) kept) kept (Cons o kept))))
-        => kept))
+  (fold (fun (o kept) (if (any? #(= & o) kept) kept (Cons o kept))) Nil all))
 
 ;; Fills the region square by square. The first empty square is covered by
 ;; the first cell of some present, or left empty, which spends one square of
