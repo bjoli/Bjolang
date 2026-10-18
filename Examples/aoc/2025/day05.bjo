@@ -1,31 +1,20 @@
-;; Day 5: Cafeteria. Ranges of fresh ingredient IDs, a blank line, then the
-;; IDs on hand. Part 1 counts the IDs on hand that are fresh; part 2 counts
-;; every ID the ranges cover.
+;; Day 5: Cafeteria. Part 1 counts the IDs on hand that some range covers;
+;; part 2 counts every ID the ranges cover.
 (import (std prelude))
 (import (std eq))
 (import "common.bjo")
 
-(: parse-range (-> string (Tuple long long)))
-(defun (parse-range line)
-  (def parts (string-split line "-"))
-  (Tuple (parse-long (ref parts 0)) (parse-long (ref parts 1))))
-
-(: fresh? (-> (Vec (Tuple long long)) long bool))
-(defun (fresh? ranges id)
-  (any? (fun ((Tuple lo hi)) (and (<= lo id) (<= id hi))) ranges))
-
-;; The number of IDs in the union of ranges, which are sorted by start.
-(: covered (-> (Vec (Tuple long long)) long))
-(defun (covered sorted)
-  {summing (let ((from (if (> lo next) lo next)))
-             (if (> (+ hi 1L) from) (- (+ hi 1L) from) 0L))
-   (:for (Tuple lo hi) sorted)
-   (:with next 0L (if (> (+ hi 1L) next) (+ hi 1L) next))})
-
 (defun (main args)
   (def lines (input-lines args))
+  (defun (parse-range l)
+    (def p (vec-map parse-long (string-split l "-")))
+    (Tuple (ref p 0) (ref p 1)))
   (def ranges {vecing (parse-range l) (:for l lines) (:finish (= l ""))})
-  (def ids {vecing (parse-long l) (:for l lines) (:when (and (not (= l "")) (not (string-contains? l "-"))))})
-  (println {summing (if (fresh? ranges id) 1 0) (:for id ids)})
-  (println (covered (vec-sort ranges)))
+  (def ids {vecing (parse-long l) (:for l lines) (:when (not (or (= l "") (string-contains? l "-"))))})
+  (println {counting id :when (any? (fun ((Tuple lo hi)) (and (<= lo id) (<= id hi))) ranges)
+            (:for id ids)})
+  ;; next is the first ID not yet counted.
+  (println {summing (max 0L (- (+ hi 1L) (max lo next)))
+            (:for (Tuple lo hi) (vec-sort ranges))
+            (:with next 0L (max next (+ hi 1L)))})
   0)

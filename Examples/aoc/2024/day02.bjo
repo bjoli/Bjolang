@@ -1,30 +1,18 @@
-;; Day 2: Red-Nosed Reports. A report is safe when its levels all rise or all
-;; fall, by 1 to 3 at each step. Part 1 counts the safe reports. Part 2 also
-;; counts a report that is safe with one level removed.
+;; Day 2: Red-Nosed Reports. A report is safe when it rises or falls by 1 to 3
+;; at each step. Part 2 also counts a report that is safe with one level removed.
 (import (std prelude))
 (import "common.bjo")
 
 (: safe? (-> (Vec int) bool))
 (defun (safe? levels)
   (def n (length levels))
-  (def rising? (and (> n 1) (< (ref levels 0) (ref levels 1))))
-  (loop (:for i (range 1 n))
-        (:let d (if rising?
-                    (- (ref levels i) (ref levels (- i 1)))
-                    (- (ref levels (- i 1)) (ref levels i))))
-        (:acc ok (folding #t (and (>= d 1) (<= d 3))))
-        (:finish (not ok))
-        => ok))
-
-;; The levels with the one at index i taken out.
-(: without (-> (Vec int) int (Vec int)))
-(defun (without levels i)
-  {vecing (ref levels j) (:for j (range 0 (length levels))) (:when (not (= i j)))})
+  (def sign (if (and (> n 1) (< (ref levels 0) (ref levels 1))) 1 -1))
+  (all? #(<= 1 (* sign (- (ref levels &) (ref levels (- & 1)))) 3) (range 1 n)))
 
 (: dampened-safe? (-> (Vec int) bool))
 (defun (dampened-safe? levels)
   (or (safe? levels)
-      (any? (fun (i) (safe? (without levels i))) (range 0 (length levels)))))
+      (any? #(safe? (vec-remove-at levels &)) (range 0 (length levels)))))
 
 (defun (main args)
   (def reports {vecing (vec-map string->int (string-split line " ")) (:for line (input-lines args))})

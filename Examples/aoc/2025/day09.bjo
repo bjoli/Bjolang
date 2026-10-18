@@ -1,67 +1,43 @@
-;; Day 9: Movie Theater. Red tiles, in order around a closed loop whose sides
-;; are horizontal or vertical; the tiles on the loop and inside it are red or
-;; green. Part 1: the largest rectangle with red tiles at two opposite
-;; corners. Part 2: the largest such rectangle with only red and green tiles.
+;; Day 9: Movie Theater. Red tiles in order around a loop of horizontal and
+;; vertical sides. Part 1: the largest rectangle with red tiles at two opposite
+;; corners. Part 2: the largest such rectangle inside the loop.
 (import (std prelude))
-(import (std maths))
 (import "common.bjo")
 
-(type (: P (Record (: x long) (: y long))))
-
-(: area (-> P P long))
-(defun (area a b)
-  (* (+ 1L (abs (- (.x a) (.x b)))) (+ 1L (abs (- (.y a) (.y b))))))
-
-;; Whether some side of the loop passes through the open inside of the
-;; rectangle [x0, x1] x [y0, y1].
-(: crossed? (-> (Vec P) long long long long bool))
-(defun (crossed? ps x0 x1 y0 y1)
-  (def n (length ps))
-  (loop (:for i (range 0 n))
-        (:let a (ref ps i))
-        (:let b (ref ps (% (+ i 1) n)))
-        (:let ex0 (min (.x a) (.x b)))
-        (:let ex1 (max (.x a) (.x b)))
-        (:let ey0 (min (.y a) (.y b)))
-        (:let ey1 (max (.y a) (.y b)))
-        (:acc hit (folding #f (and (< ex0 x1) (> ex1 x0) (< ey0 y1) (> ey1 y0))))
-        (:finish hit)
-        => hit))
-
-;; Whether the point (px + 1/2, py + 1/2) is inside the loop, by counting the
-;; vertical sides to its right.
-(: inside? (-> (Vec P) long long bool))
-(defun (inside? ps px py)
-  (def n (length ps))
-  (loop (:for i (range 0 n))
-        (:let a (ref ps i))
-        (:let b (ref ps (% (+ i 1) n)))
-        (:when (and (= (.x a) (.x b)) (> (.x a) px)
-                    (<= (min (.y a) (.y b)) py) (> (max (.y a) (.y b)) py)))
-        (:acc crossings (summing 1))
-        => (= 1 (% crossings 2))))
-
 (defun (main args)
-  (def ps {vecing (let ((v (vec-map parse-long (string-split l ",")))) (P (x (ref v 0)) (y (ref v 1))))
+  (def ps {vecing (let ((v (vec-map parse-long (string-split l ",")))) (Tuple (ref v 0) (ref v 1)))
                   (:for l (input-lines args))})
   (def n (length ps))
+  ;; Each side as its box x0, x1, y0, y1.
+  (def sides {vecing (Tuple (min ax bx) (max ax bx) (min ay by) (max ay by))
+                     (:for i (range 0 n))
+                     (:let (Tuple ax ay) (ref ps i))
+                     (:let (Tuple bx by) (ref ps (% (+ i 1) n)))})
+  ;; Whether a side passes through the open inside of the rectangle.
+  (defun (crossed? x0 x1 y0 y1)
+    (any? (fun ((Tuple ex0 ex1 ey0 ey1)) (and (< ex0 x1) (> ex1 x0) (< ey0 y1) (> ey1 y0))) sides))
+  ;; Whether (px + 1/2, py + 1/2) is inside, by counting the sides to its right.
+  (defun (inside? px py)
+    (= 1 (% {counting ex0 (:for (Tuple ex0 ex1 ey0 ey1) sides)
+                         (:when (and (= ex0 ex1) (> ex0 px) (<= ey0 py) (> ey1 py)))}
+            2)))
   (def (part1 part2)
     (loop (:for i (range 0 n))
           (:subloop)
           (:for j (range (+ i 1) n))
-          (:let a (ref ps i))
-          (:let b (ref ps j))
-          (:let x0 (min (.x a) (.x b)))
-          (:let x1 (max (.x a) (.x b)))
-          (:let y0 (min (.y a) (.y b)))
-          (:let y1 (max (.y a) (.y b)))
-          (:let s (area a b))
+          (:let (Tuple ax ay) (ref ps i))
+          (:let (Tuple bx by) (ref ps j))
+          (:let x0 (min ax bx))
+          (:let x1 (max ax bx))
+          (:let y0 (min ay by))
+          (:let y1 (max ay by))
+          (:let s (* (+ 1L (- x1 x0)) (+ 1L (- y1 y0))))
           (:acc part1 (folding 0L (max part1 s)))
           ;; A rectangle of one row or column has no inside to test; the
           ;; largest one is never that thin.
           (:acc part2 (folding 0L (if (and (> s part2) (< x0 x1) (< y0 y1)
-                                           (not (crossed? ps x0 x1 y0 y1))
-                                           (inside? ps x0 y0))
+                                           (not (crossed? x0 x1 y0 y1))
+                                           (inside? x0 y0))
                                       s
                                       part2)))
           => (Tuple part1 part2)))

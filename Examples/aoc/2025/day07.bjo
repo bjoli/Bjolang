@@ -1,30 +1,30 @@
-;; Day 7: Laboratories. A tachyon beam enters at S and falls straight down. A
-;; splitter (^) stops it and starts two beams, one column to each side. Part 1
-;; counts the splitters a beam reaches. Part 2 counts the timelines: each
-;; split makes one particle take both ways.
+;; Day 7: Laboratories. A beam falls from S; a splitter (^) starts two beams,
+;; one column to each side. Part 1 counts the splitters a beam reaches, part 2
+;; the timelines.
 (import (std prelude))
 (import "common.bjo")
 
 (defun (main args)
-  (def rows {vecing (string->vec l) (:for l (input-lines args))})
+  (def rows (vec-map string->vec (input-lines args)))
   (def w (length (ref rows 0)))
-  ;; How many timelines have a particle in each column.
-  (def beams (make-array w))
+  ;; The number of timelines with a particle in each column.
+  (def/mutable beams (make-array w))
   (loop (:for x (range 0 w))
         (:do (array-set! beams x (if (char=? (ref (ref rows 0) x) #\S) 1L 0L))))
   (def/mutable splits 0)
   (loop (:for row rows)
         (:do (def next (make-array w))
+             (defun (add! x n) (array-set! next x (+ n (ref next x))))
              (loop (:for x (range 0 w))
                    (:let n (ref beams x))
                    (:when (> n 0L))
                    (:do (if (char=? (ref row x) #\^)
                             (let ()
                               (set! splits (+ splits 1))
-                              (when (> x 0) (array-set! next (- x 1) (+ n (ref next (- x 1)))))
-                              (when (< (+ x 1) w) (array-set! next (+ x 1) (+ n (ref next (+ x 1))))))
-                            (array-set! next x (+ n (ref next x))))))
-             (loop (:for x (range 0 w)) (:do (array-set! beams x (ref next x))))))
+                              (when (> x 0) (add! (- x 1) n))
+                              (when (< (+ x 1) w) (add! (+ x 1) n)))
+                            (add! x n))))
+             (set! beams next)))
   (println splits)
   (println {summing n (:for n beams)})
   0)

@@ -1,41 +1,8 @@
-;; Day 4: Printing Department. A grid of paper rolls (@). A forklift can reach
-;; a roll with fewer than four rolls among its eight neighbours. Part 1 counts
-;; those; part 2 removes reachable rolls until none are left to reach, and
-;; counts all it removed.
+;; Day 4: Printing Department. A roll (@) is reachable with fewer than four
+;; rolls among its eight neighbours. Part 1 counts them; part 2 removes
+;; reachable rolls until none are left to reach.
 (import (std prelude))
 (import "common.bjo")
-
-(type (: Grid (Record (: w int) (: h int) (: cells (Array bool)))))
-
-(: roll? (-> Grid int int bool))
-(defun (roll? g x y)
-  (and (>= x 0) (< x (.w g)) (>= y 0) (< y (.h g))
-       (ref (.cells g) (+ x (* y (.w g))))))
-
-(: neighbours (-> Grid int int int))
-(defun (neighbours g x y)
-  {summing (if (roll? g (+ x dx) (+ y dy)) 1 0)
-   (:for dy (range -1 2))
-   (:subloop)
-   (:for dx (range -1 2))
-   (:when (not (and (= dx 0) (= dy 0))))})
-
-;; The rolls that can be reached now, as cell indices.
-(: reachable (-> Grid (List int)))
-(defun (reachable g)
-  {listing (+ x (* y (.w g)))
-           (:for y (range 0 (.h g)))
-           (:subloop)
-           (:for x (range 0 (.w g)))
-           (:when (and (roll? g x y) (< (neighbours g x y) 4)))})
-
-(: remove-all (-> Grid int int))
-(defun (remove-all g removed)
-  (match (reachable g)
-    (Nil removed)
-    (cells
-     (list-for-each (fun (i) (array-set! (.cells g) i #f)) cells)
-     (remove-all g (+ removed (length cells))))))
 
 (defun (main args)
   (def lines (input-lines args))
@@ -46,7 +13,21 @@
         (:subloop)
         (:for c line) (:with x 0 (+ x 1))
         (:do (array-set! cells (+ x (* y w)) (char=? c #\@))))
-  (def g (Grid (w w) (h h) (cells cells)))
-  (println (length (reachable g)))
-  (println (remove-all g 0))
+  (defun (roll? x y)
+    (and (>= x 0) (< x w) (>= y 0) (< y h) (ref cells (+ x (* y w)))))
+  (defun (neighbours x y)
+    {counting dx :when (and (not (and (= dx 0) (= dy 0))) (roll? (+ x dx) (+ y dy)))
+     (:for dy (range -1 2)) (:subloop) (:for dx (range -1 2))})
+  ;; The rolls that can be reached now, as cell indices.
+  (defun (reachable)
+    {listing (+ x (* y w))
+     (:for y (range 0 h)) (:subloop) (:for x (range 0 w))
+     (:when (and (roll? x y) (< (neighbours x y) 4)))})
+  (defun (remove-all removed)
+    (match (reachable)
+      (Nil removed)
+      (rs (list-for-each #(array-set! cells & #f) rs)
+          (remove-all (+ removed (length rs))))))
+  (println (length (reachable)))
+  (println (remove-all 0))
   0)

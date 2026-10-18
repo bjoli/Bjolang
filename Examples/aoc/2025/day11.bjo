@@ -1,30 +1,27 @@
-;; Day 11: Reactor. A directed acyclic graph of devices. Part 1 counts the
-;; paths from "you" to "out". Part 2 counts the paths from "svr" to "out" that
-;; pass through both "dac" and "fft". A device that is not there has no paths.
+;; Day 11: Reactor. Part 1 counts the paths from "you" to "out". Part 2 counts
+;; the paths from "svr" to "out" through both "dac" and "fft".
 (import (std prelude))
 (import (std mutable map))
 (import "common.bjo")
-
-;; The number of paths from each device to target, memoised in memo.
-(: paths (-> (MutableMap string (Vec string)) (MutableMap string long) string string long))
-(defun (paths graph memo from target)
-  (cond ((= from target) 1L)
-        ((mutablemap-contains? memo from) (mutablemap-ref memo from))
-        (else
-         (def n {summing (paths graph memo next target)
-                 (:for next (mutablemap-ref-or graph from (vec-empty)))})
-         (mutablemap-set! memo from n)
-         n)))
 
 (defun (main args)
   (def graph (mutablemap))
   (loop (:for line (input-lines args))
         (:let parts (string-split line ": "))
         (:do (mutablemap-set! graph (ref parts 0) (string-split (ref parts 1) " "))))
-  (defun (count from target) (paths graph (mutablemap) from target))
+  (defun (count source target)
+    (def memo (mutablemap))
+    (defun (paths node)
+      (cond ((= node target) 1L)
+            ((mutablemap-contains? memo node) (mutablemap-ref memo node))
+            (else
+             (def n {summing (paths m) (:for m (mutablemap-ref-or graph node (vec-empty)))})
+             (mutablemap-set! memo node n)
+             n)))
+    (paths source))
   (println (if (mutablemap-contains? graph "you") (count "you" "out") 0L))
   (println (if (mutablemap-contains? graph "svr")
-               (+ (* (count "svr" "dac") (* (count "dac" "fft") (count "fft" "out")))
-                  (* (count "svr" "fft") (* (count "fft" "dac") (count "dac" "out"))))
+               (+ (* (count "svr" "dac") (count "dac" "fft") (count "fft" "out"))
+                  (* (count "svr" "fft") (count "fft" "dac") (count "dac" "out")))
                0L))
   0)

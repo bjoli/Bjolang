@@ -1,30 +1,23 @@
-;; Day 3: Lobby. Each line is a bank of batteries, one digit each. Turn on k
-;; of them, in order, to make the largest number: k = 2 in part 1, 12 in
-;; part 2. The answer is the sum over the banks.
+;; Day 3: Lobby. Turn on k batteries of each bank, in order, to make the
+;; largest number: k = 2 in part 1, 12 in part 2. Sums over the banks.
 (import (std prelude))
 (import "common.bjo")
 
-;; The index of the first largest digit in ds[from, to).
-(: best-at (-> (Vec int) int int int))
-(defun (best-at ds from to)
-  (loop (:for i (range from to))
-        (:acc best (folding from (if (> (ref ds i) (ref ds best)) i best)))
-        => best))
-
-;; The largest number made of k digits of ds, in order.
 (: joltage (-> (Vec int) int long))
 (defun (joltage ds k)
-  (def n (length ds))
   (let pick ((j 0) (from 0) (acc 0L))
     (if (= j k)
         acc
         (let ()
           ;; Leave room for the k - j - 1 digits still to pick.
-          (def i (best-at ds from (- n (- k j 1))))
+          (def i (loop (:for x (range from (- (length ds) (- k j 1))))
+                       (:acc i (folding from (if (> (ref ds x) (ref ds i)) x i)))
+                       => i))
           (pick (+ j 1) (+ i 1) (+ (* acc 10L) (cast System.Int64 (ref ds i))))))))
 
 (defun (main args)
   (def banks {vecing (vec-map digit (string->vec line)) (:for line (input-lines args))})
-  (println {summing (joltage b 2) (:for b banks)})
-  (println {summing (joltage b 12) (:for b banks)})
+  (defun (total k) {summing (joltage b k) (:for b banks)})
+  (println (total 2))
+  (println (total 12))
   0)

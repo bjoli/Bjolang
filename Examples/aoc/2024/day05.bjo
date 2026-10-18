@@ -1,6 +1,5 @@
-;; Day 5: Print Queue. Ordering rules X|Y (page X before page Y), a blank
-;; line, then updates. Part 1 sums the middle page of each update already in
-;; order. Part 2 puts the others in order and sums their middle pages.
+;; Day 5: Print Queue. Part 1 sums the middle page of each update that obeys
+;; the rules. Part 2 puts the others in order and sums their middle pages.
 (import (std prelude))
 (import (std mutable set))
 (import (std mutable vec))
@@ -8,7 +7,7 @@
 
 (defun (main args)
   (def lines (input-lines args))
-  ;; The rules as "X|Y" strings, which is how a pair is looked up.
+  ;; The rules stay "X|Y" strings, and a pair is looked up as one.
   (def rules (mutableset))
   (loop (:for l lines)
         (:finish (= l ""))
@@ -18,12 +17,8 @@
   (def updates {vecing (vec-map string->int (string-split l ","))
                        (:for l lines)
                        (:when (string-contains? l ","))})
-  (defun (in-order? u)
-    (loop (:for i (range 1 (length u)))
-          (:acc ok (folding #t (and ok (not (before? (ref u i) (ref u (- i 1)))))))
-          => ok))
-  (defun (middle u) (ref u (/ (length u) 2)))
-  (println {summing (middle u) (:for u updates) (:when (in-order? u))})
+  (defun (in-order? u) (all? #(not (before? (ref u &) (ref u (- & 1)))) (range 1 (length u))))
+  (println {summing (ref u (/ (length u) 2)) (:for u updates) (:when (in-order? u))})
   (println {summing (mutablevec-ref m (/ (mutablevec-length m) 2))
             (:for u updates)
             (:when (not (in-order? u)))

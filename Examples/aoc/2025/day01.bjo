@@ -1,31 +1,25 @@
-;; Day 1: Secret Entrance. A dial of 0..99 starts at 50; each line turns it
-;; left or right. Part 1 counts the turns that end at 0, part 2 every click
-;; that passes 0.
+;; Day 1: Secret Entrance. A dial of 0..99 starts at 50. Part 1 counts the
+;; turns that end at 0, part 2 every click that passes 0.
 (import (std prelude))
 (import (std maths))
 (import "common.bjo")
 
-(: turn-hits (-> int string int))
-(defun (turn-hits pos line)
-  (def d (string->int (string-drop line 1)))
-  (if (string-starts-with? line "R")
-      (quotient (+ pos d) 100)
-      (cond ((= pos 0) (quotient d 100))
-            ((>= d pos) (+ 1 (quotient (- d pos) 100)))
-            (else 0))))
-
-(: turn (-> int string int))
-(defun (turn pos line)
-  (def d (string->int (string-drop line 1)))
-  (modulo (if (string-starts-with? line "R") (+ pos d) (- pos d)) 100))
-
 (defun (main args)
-  (def lines (input-lines args))
+  (defun (right? line) (string-starts-with? line "R"))
+  (defun (dist line) (string->int (string-drop line 1)))
+  (defun (turn pos line)
+    (modulo ((if (right? line) + -) pos (dist line)) 100))
+  (defun (hits pos line)
+    (def d (dist line))
+    (cond ((right? line) (quotient (+ pos d) 100))
+          ((= pos 0) (quotient d 100))
+          ((>= d pos) (+ 1 (quotient (- d pos) 100)))
+          (else 0)))
   (def (zeros clicks)
-    (loop (:for line lines)
+    (loop (:for line (input-lines args))
           (:with pos 50 (turn pos line))
-          (:acc zeros (summing (if (= (turn pos line) 0) 1 0)))
-          (:acc clicks (summing (turn-hits pos line)))
+          (:acc zeros (counting line) #:when (= (turn pos line) 0))
+          (:acc clicks (summing (hits pos line)))
           => (Tuple zeros clicks)))
   (println zeros)
   (println clicks)

@@ -1,10 +1,6 @@
-;; Day 12: Christmas Tree Farm. Present shapes on a 3x3 grid, then regions
-;; under trees with how many presents of each shape must go there. Presents
-;; may be turned and flipped, and may not overlap. The answer is the number of
-;; regions all their presents fit in.
-;;
-;; Most regions are settled by area: too little room, or room for every
-;; present in its own 3x3 square. The rest are searched.
+;; Day 12: Christmas Tree Farm. Count the regions that all their presents fit
+;; in, turned or flipped, without overlap. Most regions are settled by area;
+;; the rest are searched square by square.
 (import (std prelude))
 (import (std eq))
 (import "common.bjo")
@@ -14,33 +10,23 @@
 ;; first empty square.
 (: normalise (-> (List (Tuple int int)) (List (Tuple int int))))
 (defun (normalise cells)
-  (def x0 (list-foldl (fun (c m) (min (fst c) m)) 1000 cells))
-  (def y0 (list-foldl (fun (c m) (min (snd c) m)) 1000 cells))
+  (def x0 (list-foldl #(min (fst &1) &2) 1000 cells))
+  (def y0 (list-foldl #(min (snd &1) &2) 1000 cells))
   (list-sort (list-map (fun ((Tuple x y)) (Tuple (- x x0) (- y y0))) cells)))
 
 ;; The eight turns and flips of a shape, without repeats.
 (: orientations (-> (List (Tuple int int)) (List (List (Tuple int int)))))
 (defun (orientations cells)
-  (defun (turn cs) (list-map (fun ((Tuple x y)) (Tuple (- 0 y) x)) cs))
-  (defun (flip cs) (list-map (fun ((Tuple x y)) (Tuple (- 0 x) y)) cs))
   (def all
     (let go ((i 0) (cs cells) (acc Nil))
       (if (= i 4)
           acc
-          (go (+ i 1) (turn cs) (Cons (normalise cs) (Cons (normalise (flip cs)) acc))))))
+          (go (+ i 1)
+              (list-map (fun ((Tuple x y)) (Tuple (- 0 y) x)) cs)
+              (Cons (normalise cs) (Cons (normalise (list-map (fun ((Tuple x y)) (Tuple (- 0 x) y)) cs)) acc))))))
   (loop (:for o all)
-        (:acc kept (folding Nil (if (any? (fun (p) (= p o)) kept) kept (Cons o kept))))
+        (:acc kept (folding Nil (if (any? #(= & o) kept) kept (Cons o kept))))
         => kept))
-
-;; Whether the presents in counts fit a w by h region.
-(: fits? (-> (Vec (List (List (Tuple int int)))) (Vec int) int int (Array int) bool))
-(defun (fits? orients sizes w h counts)
-  (def needed {summing (* (ref counts i) (ref sizes i))
-               (:for i (range 0 (length counts)))})
-  (def presents {summing c (:for c counts)})
-  (cond ((> needed (* w h)) #f)
-        ((<= presents (* (/ w 3) (/ h 3))) #t)
-        (else (search orients w h counts (- (* w h) needed)))))
 
 ;; Fills the region square by square. The first empty square is covered by
 ;; the first cell of some present, or left empty, which spends one square of
@@ -51,9 +37,8 @@
   (defun (free? x y)
     (and (>= x 0) (< x w) (>= y 0) (< y h) (not (ref grid (+ x (* y w))))))
   (defun (mark! o x0 y0 v)
-    (list-for-each (fun ((Tuple dx dy)) (array-set! grid (+ (+ x0 dx) (* (+ y0 dy) w)) v)) o))
+    (list-for-each (fun ((Tuple dx dy)) (array-set! grid (+ x0 dx (* (+ y0 dy) w)) v)) o))
   (defun (take! i n) (array-set! counts i (- (ref counts i) n)))
-
   (defun (go (: at int) (: slack int))
     (def x (% at w))
     (def y (/ at w))
@@ -73,7 +58,7 @@
              (def ok (go (+ at 1) (- slack 1)))
              (array-set! grid at #f)
              ok)))
-    (cond ((all? (fun (c) (= c 0)) counts) #t)
+    (cond ((all? #(= & 0) counts) #t)
           ((>= at (* w h)) #f)
           ((ref grid at) (go (+ at 1) slack))
           (else
@@ -88,24 +73,27 @@
 
 (defun (main args)
   (def lines (input-lines args))
-  ;; Shapes: a line "N:" and three rows under it.
+  ;; Each shape is a header "N:" followed by three rows.
   (def shapes
     {vecing {listing (Tuple x y)
                      (:for y (range 0 3))
                      (:subloop)
                      (:for x (range 0 3))
-                     (:when (char=? #\# (ref (string->vec (ref lines (+ i (+ 1 y)))) x)))}
+                     (:when (char=? #\# (ref (string->vec (ref lines (+ i 1 y))) x)))}
             (:for i (range 0 (length lines)))
             (:when (and (string-ends-with? (ref lines i) ":") (not (string-contains? (ref lines i) "x"))))})
-  (def orients (vec-map (fun (s) (orientations s)) shapes))
-  (def sizes (vec-map length shapes))
+  (def orients (vec-map orientations shapes))
+  (defun (fits? w h counts)
+    (def needed {summing (* (ref counts i) (length (ref shapes i))) (:for i (range 0 (length counts)))})
+    (cond ((> needed (* w h)) #f)
+          ((<= {summing c (:for c counts)} (* (/ w 3) (/ h 3))) #t)
+          (else (search orients w h counts (- (* w h) needed)))))
   (println
-   {summing (if (fits? orients sizes (string->int (ref dims 0)) (string->int (ref dims 1)) arr) 1 0)
+   {counting line
     (:for line lines)
     (:when (string-contains? line "x"))
     (:let halves (string-split line ": "))
-    (:let dims (string-split (ref halves 0) "x"))
+    (:let dims (vec-map string->int (string-split (ref halves 0) "x")))
     (:let counts (vec-map string->int (string-split (ref halves 1) " ")))
-    (:let arr (make-array (length counts)))
-    (:do (loop (:for i (range 0 (length counts))) (:do (array-set! arr i (ref counts i)))))})
+    (:when (fits? (ref dims 0) (ref dims 1) (vec->array counts)))})
   0)

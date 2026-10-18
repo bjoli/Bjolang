@@ -1,39 +1,17 @@
-;; Day 8: Playground. Junction boxes in 3D space. Connect the closest pairs,
-;; closest first. Part 1, after the first K pairs (10 for the example, 1000
-;; for a real input): the product of the sizes of the three largest circuits.
-;; Part 2: keep connecting until there is one circuit, and multiply the X
-;; coordinates of the last two boxes joined.
+;; Day 8: Playground. Connect junction boxes, closest pairs first. Part 1: after
+;; K pairs (10 for the example, 1000 for a real input), the product of the three
+;; largest circuits. Part 2: the product of the X coordinates of the last pair
+;; that makes one circuit.
 (import (std prelude))
 (import (std eq))
 (import (std mutable vec))
 (import "common.bjo")
 
-(type (: Box (Record (: x long) (: y long) (: z long))))
-
-(: dist2 (-> Box Box long))
-(defun (dist2 a b)
-  (def dx (- (.x a) (.x b)))
-  (def dy (- (.y a) (.y b)))
-  (def dz (- (.z a) (.z b)))
-  (+ (* dx dx) (+ (* dy dy) (* dz dz))))
-
-;; Union-find over box indices.
-(: find-root (-> (Array int) int int))
-(defun (find-root parent i)
-  (def p (ref parent i))
-  (if (= p i)
-      i
-      (let ()
-        (def r (find-root parent p))
-        (array-set! parent i r)
-        r)))
-
 (defun (main args)
-  (def boxes {vecing (let ((p (vec-map parse-long (string-split l ","))))
-                       (Box (x (ref p 0)) (y (ref p 1)) (z (ref p 2))))
-                     (:for l (input-lines args))})
+  (def boxes {vecing (vec-map parse-long (string-split l ",")) (:for l (input-lines args))})
   (def n (length boxes))
   (def k (if (< n 100) 10 1000))
+  (defun (dist2 a b) {summing (* d d) (:for c (range 0 3)) (:let d (- (ref a c) (ref b c)))})
   ;; Each pair as distance, i, j packed in one long: 10 bits per index.
   (def pairs (mutablevec))
   (loop (:for i (range 0 n))
@@ -42,36 +20,38 @@
         (:do (mutablevec-add! pairs (bitwise-ior (shift-left (dist2 (ref boxes i) (ref boxes j)) 20)
                                                  (cast System.Int64 (+ (* i 1024) j))))))
   (mutablevec-sort! pairs)
+  (defun (ends p)
+    (def key (mutablevec-ref pairs p))
+    (Tuple (cast System.Int32 (bitwise-and (shift-right key 10) 1023L))
+           (cast System.Int32 (bitwise-and key 1023L))))
+  ;; Union-find over box indices.
   (def parent (make-array n))
-  (def size (make-array n))
-  (loop (:for i (range 0 n)) (:do (array-set! parent i i) (array-set! size i 1)))
+  (def size (make-array n #:fill 1))
+  (loop (:for i (range 0 n)) (:do (array-set! parent i i)))
+  (defun (root i)
+    (def p (ref parent i))
+    (if (= p i)
+        i
+        (let ((r (root p))) (array-set! parent i r) r)))
   ;; Joins the pair at index p and answers whether that merged two circuits.
   (defun (join! p)
-    (def key (mutablevec-ref pairs p))
-    (def i (cast System.Int32 (bitwise-and (shift-right key 10) 1023L)))
-    (def j (cast System.Int32 (bitwise-and key 1023L)))
-    (def a (find-root parent i))
-    (def b (find-root parent j))
-    (if (= a b)
-        #f
-        (let ()
-          (array-set! parent a b)
-          (array-set! size b (+ (ref size a) (ref size b)))
-          #t)))
+    (def (Tuple i j) (ends p))
+    (def a (root i))
+    (def b (root j))
+    (and (not (= a b))
+         (let ()
+           (array-set! parent a b)
+           (array-set! size b (+ (ref size a) (ref size b)))
+           #t)))
   (loop (:for p (range 0 k)) (:do (ignore (join! p))))
-  ;; The circuits' sizes, largest first.
-  (def sizes (vec-sort-by (fun (a b) (compare b a))
-                          {vecing (ref size i) (:for i (range 0 n)) (:when (= (find-root parent i) i))}))
+  (def sizes (vec-sort-by #(compare &2 &1) {vecing (ref size i) (:for i (range 0 n)) (:when (= (root i) i))}))
   (println (* (ref sizes 0) (* (ref sizes 1) (ref sizes 2))))
-  ;; Part 2 goes on from where part 1 stopped, counting circuits down to one.
-  (def circuits {summing (if (= (find-root parent i) i) 1 0) (:for i (range 0 n))})
+  ;; Part 2 goes on from where part 1 stopped, and counts circuits down to one.
   (def last
-    (let go ((p k) (left circuits))
-      (if (join! p)
-          (if (= left 2) p (go (+ p 1) (- left 1)))
-          (go (+ p 1) left))))
-  (def key (mutablevec-ref pairs last))
-  (def i (cast System.Int32 (bitwise-and (shift-right key 10) 1023L)))
-  (def j (cast System.Int32 (bitwise-and key 1023L)))
-  (println (* (.x (ref boxes i)) (.x (ref boxes j))))
+    (let go ((p k) (left (length sizes)))
+      (cond ((not (join! p)) (go (+ p 1) left))
+            ((= left 2) p)
+            (else (go (+ p 1) (- left 1))))))
+  (def (Tuple i j) (ends last))
+  (println (* (ref (ref boxes i) 0) (ref (ref boxes j) 0)))
   0)

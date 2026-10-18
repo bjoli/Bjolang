@@ -1,65 +1,38 @@
-;; Day 6: Trash Compactor. A worksheet of problems side by side, separated by
-;; columns of spaces; the last row holds each problem's operator. Part 1 reads
-;; each row of a problem as a number. Part 2 reads each column as a number,
-;; its digits top to bottom. The answer is the sum of the problems' results.
+;; Day 6: Trash Compactor. Problems side by side, separated by blank columns,
+;; with the operator in the last row. Part 1 reads each row of a problem as a
+;; number; part 2 reads each column, its digits top to bottom.
 (import (std prelude))
 (import "common.bjo")
 
-(type (: Sheet (Record (: rows (Vec (Vec char))) (: width int))))
-
-(: cell (-> Sheet int int char))
-(defun (cell s r c) (ref (ref (.rows s) r) c))
-
-(: blank-column? (-> Sheet int bool))
-(defun (blank-column? s c)
-  (all? (fun (row) (char=? (ref row c) #\space)) (.rows s)))
-
-;; The digits of row r in columns [from, to), as a number. 0 when none.
-(: row-number (-> Sheet int int int long))
-(defun (row-number s r from to)
-  (loop (:for c (range from to))
-        (:let ch (cell s r c))
-        (:when (char-numeric? ch))
-        (:acc n (folding 0L (+ (* n 10L) (cast System.Int64 (digit ch)))))
-        => n))
-
-;; The digits of column c above the operator row, as a number.
-(: column-number (-> Sheet int long))
-(defun (column-number s c)
-  (loop (:for r (range 0 (- (length (.rows s)) 1)))
-        (:let ch (cell s r c))
-        (:when (char-numeric? ch))
-        (:acc n (folding 0L (+ (* n 10L) (cast System.Int64 (digit ch)))))
-        => n))
-
-(: combine (-> char (List long) long))
-(defun (combine op xs)
-  (if (char=? op #\*)
-      (list-foldl (fun (x acc) (* x acc)) 1L xs)
-      (list-foldl (fun (x acc) (+ x acc)) 0L xs)))
-
-;; The problems, as column ranges [from, to).
-(: problems (-> Sheet (List (Tuple int int))))
-(defun (problems s)
-  (let go ((c (- (.width s) 1)) (to (.width s)) (acc Nil))
-    (cond ((< c 0) (Cons (Tuple 0 to) acc))
-          ((blank-column? s c) (go (- c 1) c (Cons (Tuple (+ c 1) to) acc)))
-          (else (go (- c 1) to acc)))))
-
 (defun (main args)
   (def lines (input-lines args))
-  (def width (loop (:for l lines) (:acc w (folding 0 (max w (length l)))) => w))
-  (def s (Sheet (rows {vecing (string->vec (string-pad-right l width)) (:for l lines)}) (width width)))
-  (def last (- (length (.rows s)) 1))
-  (def ps (list-filter (fun ((Tuple from to)) (< from to)) (problems s)))
+  (def width (vec-fold #(max (length &1) &2) 0 lines))
+  (def rows {vecing (string->vec (string-pad-right l width)) (:for l lines)})
+  (def last (- (length rows) 1))
+  (defun (cell r c) (ref (ref rows r) c))
+  ;; The digits of (at i) for i in [from, to), as a number. Spaces are skipped.
+  (defun (number from to at)
+    (loop (:for i (range from to))
+          (:let ch (at i))
+          (:when (char-numeric? ch))
+          (:acc n (folding 0L (+ (* n 10L) (cast System.Int64 (digit ch)))))
+          => n))
+  (defun (combine op xs)
+    (if (char=? op #\*) (list-foldl * 1L xs) (list-foldl + 0L xs)))
+  ;; The problems, as column ranges [from, to).
+  (def ps
+    (list-filter (fun ((Tuple from to)) (< from to))
+                 (let go ((c (- width 1)) (to width) (acc Nil))
+                   (cond ((< c 0) (Cons (Tuple 0 to) acc))
+                         ((all? #(char=? (ref & c) #\space) rows)
+                          (go (- c 1) c (Cons (Tuple (+ c 1) to) acc)))
+                         (else (go (- c 1) to acc))))))
   (defun (op-of from to)
     (loop (:for c (range from to))
-          (:acc op (folding #\+ (if (char=? (cell s last c) #\space) op (cell s last c))))
+          (:acc op (folding #\+ (if (char=? (cell last c) #\space) op (cell last c))))
           => op))
-  (println {summing (combine (op-of from to)
-                                               {listing (row-number s r from to) (:for r (range 0 last))})
-            (:for (Tuple from to) ps)})
-  (println {summing (combine (op-of from to)
-                                               {listing (column-number s c) (:for c (range from to))})
-            (:for (Tuple from to) ps)})
+  (defun (solve nums)
+    {summing (combine (op-of from to) (nums from to)) (:for (Tuple from to) ps)})
+  (println (solve (fun (from to) {listing (number from to #(cell r &)) (:for r (range 0 last))})))
+  (println (solve (fun (from to) {listing (number 0 last #(cell & c)) (:for c (range from to))})))
   0)
