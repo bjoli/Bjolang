@@ -3,6 +3,27 @@
 
 What each change guarantees, and what it leaves open.
 
+* Native AOT, and no call-counting delay
+
+- ~--aot~, and ~(aot #t)~ in a manifest, also build a program as one Native
+  AOT executable beside the source: ~src/main~, or ~src/main.native.exe~ on
+  Windows. It starts in a few milliseconds and needs no .NET installed.
+  ~bjo run~ starts it, and ~bjo publish~ copies it. The ~.exe~ is still built.
+  The runtime settings are built into it; server GC and the other GC settings
+  take effect.
+- The build record has an ~aot~ line, so turning ~aot~ on or off, or deleting
+  the native file, rebuilds the program.
+- A new runtime setting, ~call-counting-delay~, in milliseconds from 0. A
+  program gets 0 unless it says otherwise; .NET's default is 100. A short
+  program then spends less time in unoptimized code: 0.28 s became 0.15 s on
+  one Advent of Code day. Every runtimeconfig now has ~configProperties~.
+- A copy of an impl's body spliced at a call calls a name as the impl's module
+  meant it. A module that shadowed a prelude function with an ~import/extern~
+  alias got the prelude's function in the copy, and a warning that the inline
+  failed.
+- Tests: the ~runtime settings~ and ~native aot~ tests of ~run_bjo_tests.py~,
+  ~warnings/extern_alias_in_inlined_impl.bjo~.
+
 * An associated type can wait for its implementor
 
 - ~(ref row c)~ is accepted where the type of ~row~ is not known yet: in a

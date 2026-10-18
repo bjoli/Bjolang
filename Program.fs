@@ -73,6 +73,9 @@ type CompilerOptions =
       /// given for a name is the one used.
       Runtime: (string * string) list
 
+      /// `--aot`: a program is also published as a Native AOT executable.
+      Aot: bool
+
       /// `--build-graph`: build the libraries under the inputs, files or
       /// directories, and everything they import, in parallel. See `BuildGraph`.
       BuildGraph: bool
@@ -110,6 +113,7 @@ let defaultOptions =
       Frameworks = []
       NuGet = None
       Runtime = []
+      Aot = false
       BuildGraph = false
       Jobs = System.Environment.ProcessorCount
       DryRun = false
@@ -128,6 +132,10 @@ let printUsage () =
     printfn "  --lib       Compile the source as a library (.dll) instead of an executable"
     printfn "  -d, --debug Build unoptimized, for a debugger: the program steps through"
     printfn "              its .bjo lines. Writes nothing else."
+    printfn "  --aot       Also publish a program as a Native AOT executable: <name> beside"
+    printfn "              the source (<name>.native.exe on Windows). It starts in a few"
+    printfn "              milliseconds and needs no .NET installed. The build takes"
+    printfn "              about 10 s more, and needs clang or gcc. A library ignores it."
     printfn "  --emit-cs <file>"
     printfn "              Write the generated C# to <file>, in a debug build or not."
     printfn "  --emit-cs-beside"
@@ -155,8 +163,10 @@ let printUsage () =
     printfn "  --runtime <name>=<value>"
     printfn "              A .NET runtime setting of the program, written into its"
     printfn "              runtimeconfig. Repeatable. The settings are %s." (Build.runtimeSettings |> List.map fst |> String.concat ", ")
-    printfn "              gc-heap-count is a whole number; the others are true or false."
+    printfn "              gc-heap-count is a whole number from 1, and call-counting-delay"
+    printfn "              milliseconds from 0; the others are true or false."
     printfn "              With gc-server=true, gc-dynamic-adaptation is false unless given."
+    printfn "              call-counting-delay is 0 unless given (.NET's default is 100)."
     printfn "  --framework <name>"
     printfn "              A shared framework for every file no --frameworks line covers,"
     printfn "              which is all of them in a single-file build. Repeatable."
@@ -378,6 +388,7 @@ let rec parseArgs (args: string list) (opts: CompilerOptions) =
         parseArgs rest { opts with Frameworks = opts.Frameworks @ [ name ] }
     | "-d" :: rest
     | "--debug" :: rest -> parseArgs rest { opts with Debug = true }
+    | "--aot" :: rest -> parseArgs rest { opts with Aot = true }
     | "--build-graph" :: rest -> parseArgs rest { opts with BuildGraph = true }
     | "--dry-run" :: rest -> parseArgs rest { opts with DryRun = true }
     | "--deps-only" :: rest -> parseArgs rest { opts with DepsOnly = true }
@@ -505,6 +516,7 @@ let private run (argv: string array) =
     let buildOptions: Build.Options =
         { IsLibrary = options.IsLibrary
           Runtime = options.Runtime
+          Aot = options.Aot
           Debug = options.Debug
           EmitCs = options.EmitCs
           DumpAst = options.DumpAst

@@ -30,6 +30,7 @@
 (export
   Prepared prepared-roots-file prepared-frameworks-file prepared-nuget-dir
   prepared-runtime
+  prepared-aot
   prepared-roots prepared-dependencies
   prepare)
 
@@ -48,11 +49,13 @@
 ;; flag is passed, and the build is exactly the build it was before.
 ;; `nuget-dir` is `None` the same way, when the manifest names no NuGet
 ;; packages.
-;; `runtime` is the root manifest's runtime settings, as `name=value`.
+;; `runtime` is the root manifest's runtime settings, as `name=value`, and
+;; `aot` whether it asks for a Native AOT build.
 (type (: Prepared (Record (: roots-file string)
                           (: frameworks-file (Option string))
                           (: nuget-dir (Option string))
                           (: runtime (List string))
+                          (: aot bool)
                           (: roots (List Root)))))
 
 ;; A manifest that has been read and whose dependencies have not been walked.
@@ -124,6 +127,9 @@
 
 (: prepared-runtime (-> Prepared (List string)))
 (defun (prepared-runtime p) (record-ref p runtime))
+
+(: prepared-aot (-> Prepared bool))
+(defun (prepared-aot p) (record-ref p aot))
 
 (: prepared-roots (-> Prepared (List Root)))
 (defun (prepared-roots p) (record-ref p roots))
@@ -828,6 +834,9 @@
                 (frameworks-file (if declared? (Some frameworks-path) None))
                 (nuget-dir nuget-dir)
                 (runtime (runtime-settings (record-ref (project-package project) runtime)))
+                (aot (match (record-ref (project-package project) aot)
+                       ((Some aot?) aot?)
+                       (None #f)))
                 (roots roots))))
 
 ;; Writes the lock if it has to, and says what changed.

@@ -314,9 +314,12 @@
   (list "gc-concurrent" "gc-dynamic-adaptation" "gc-server" "invariant-globalization"
         "tiered-compilation" "tiered-pgo"))
 (def count-settings (list "gc-heap-count"))
+(def millis-settings (list "call-counting-delay"))
 
 (: known-settings string)
-(def known-settings (string-join (list->vec (list-sort (list-append flag-settings count-settings))) ", "))
+(def known-settings
+  (string-join (list->vec (list-sort (list-append flag-settings (list-append count-settings millis-settings))))
+               ", "))
 
 (impl (bjodat-> RuntimeSetting)
   (defun (bjodat-> v)
@@ -332,6 +335,10 @@
             (match value
               ((BjoInt n) #:when (>= n 1L) (Ok (RuntimeSetting (name name) (value (long->string n)))))
               (_ (Err (str "(" name " ...) is a whole number from 1")))))
+           ((any? #(= & name) millis-settings)
+            (match value
+              ((BjoInt n) #:when (>= n 0L) (Ok (RuntimeSetting (name name) (value (long->string n)))))
+              (_ (Err (str "(" name " ...) is a number of milliseconds from 0")))))
            (else (Err (str "(" name " ...) is not a runtime setting. The settings are: "
                            known-settings))))))
       (_ (Err "a runtime setting is (name value), such as (gc-server #t)")))))
@@ -388,6 +395,12 @@
                      ;; root project's count: they are settings of a process,
                      ;; and a dependency is not one.
                      (: runtime (List RuntimeSetting) #:rest #:default Nil)
+                     ;; `(aot #t)`: the program is also built as a Native AOT
+                     ;; executable, and `bjo run` runs that one. Only the root
+                     ;; project's counts, as with `runtime`. Optional rather
+                     ;; than defaulted, so that a manifest written back without
+                     ;; it does not gain an `(aot #f)`.
+                     (: aot (Option bool) #:optional)
                      (: source (Option Source) #:optional)
                      ;; `#:rest`: the clause holds as many packages as it holds,
                      ;; rather than one vec of them. This is the field that made

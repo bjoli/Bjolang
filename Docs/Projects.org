@@ -87,6 +87,8 @@ are in ~bjo/manifest.bjo~, which is the only reader of it.
   and for now only allowed in the project being built.
 - ~runtime~ gives the program's *.NET runtime settings*, such as server GC —
   see below. Optional. Only the project being built uses it.
+- ~(aot #t)~ builds the program as a *Native AOT* executable too — see below.
+  Optional, ~#f~ by default. Only the project being built uses it.
 - ~targets~ and ~(registry ...)~ sources are not implemented. A registry source
   is an error that says so.
 
@@ -245,6 +247,7 @@ A setting goes into the program's ~.runtimeconfig.json~, as one of the
 | ~gc-dynamic-adaptation~   | ~#t~ ~#f~   | ~System.GC.DynamicAdaptationMode~ |
 | ~tiered-compilation~      | ~#t~ ~#f~   | ~System.Runtime.TieredCompilation~ |
 | ~tiered-pgo~              | ~#t~ ~#f~   | ~System.Runtime.TieredPGO~        |
+| ~call-counting-delay~     | ms, from 0  | ~System.Runtime.TieredCompilation.CallCountingDelayMs~ |
 | ~invariant-globalization~ | ~#t~ ~#f~   | ~System.Globalization.Invariant~  |
 
 *Which GC to use is the program's choice.* A program gets the default
@@ -264,6 +267,15 @@ same service used 370 MB in place of 120 MB. Say ~(gc-dynamic-adaptation #t)~
 when memory matters more than latency, or set ~gc-heap-count~ to fix the
 number of heaps.
 
+*~call-counting-delay~ is 0 unless the program says otherwise.* .NET's own
+default is 100 ms. .NET first runs a method as quick, unoptimized code. It
+starts to count the calls, and so to optimize the method, only after 100 ms in
+which no new method was compiled. A program that runs for less than a second
+spends much of its time in the slow code. On Advent of Code solutions, a run
+of 0.28 s became 0.15 s, and one of 0.20 s became 0.08 s. The delay keeps a
+program with a long startup from optimizing code that only its startup runs.
+Such a program can say ~(call-counting-delay 100)~.
+
 *Only the project being built uses its settings.* They are settings of a
 process, and a dependency is not one, so a dependency's ~runtime~ is ignored.
 
@@ -275,6 +287,42 @@ published program has them too.
 *The compiler takes them as ~--runtime name=value~*, repeated, for a
 single-file build: ~--runtime gc-server=true~. ~bjo~ passes the manifest's
 settings that way.
+
+** Native AOT
+
+#+BEGIN_SRC scheme
+(package
+  (name (mytool))
+  (version "0.1.0")
+  (aot #t))
+#+END_SRC
+
+With ~(aot #t)~ the program is also compiled to one native executable, beside
+the source with no extension: ~src/main~, or ~src/main.native.exe~ on
+Windows. It holds the program, the standard library and the runtime, and it
+needs no .NET to run.
+
+- *It starts in a few milliseconds.* A program that runs on .NET first starts
+  the runtime, about 70 ms, and then compiles each method the first time it
+  runs. On Advent of Code solutions, all 17 days together took 3.0 s on .NET
+  and 1.2 s as native executables.
+- *~bjo run~ starts the native executable.* ~bjo publish~ copies it into the
+  output directory.
+- *The ~.exe~ is still built.* The build record, a debugger and ~-d~ use it.
+- *The build takes longer*, about 10 s more, and needs clang or gcc. The first
+  build downloads .NET's ILCompiler package.
+- *The runtime settings are built into the executable.* The GC settings take
+  effect. The settings of tiered compilation do not apply, because there is
+  no JIT.
+- *A long-running program can be slower.* The JIT optimizes from what the
+  program does while it runs (dynamic PGO), and Native AOT can not. A program
+  that calls through many traits and interfaces in a hot loop gains the most
+  from that. Measured on one such program: 0.73 s on .NET, 0.89 s native.
+- *Reflection that is resolved at run time may not work.* Native AOT keeps only
+  the code that the program can be seen to use.
+
+Only the project being built uses ~aot~, as with ~runtime~. The compiler takes
+it as ~--aot~.
 
 ** Sources: where a dependency comes from
 

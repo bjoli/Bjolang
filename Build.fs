@@ -26,11 +26,13 @@ open System.IO
 
 /// The value a runtime setting takes: `true` or `false`, or a whole number.
 /// A `Mode` is given as `true` or `false` too, and written as 1 or 0, which
-/// is what its property takes.
+/// is what its property takes. A `Count` is from 1, and a `Millis` a number
+/// of milliseconds from 0.
 type RuntimeSettingKind =
     | Flag
     | Count
     | Mode
+    | Millis
 
 /// The .NET runtime settings a program may set, by the name that `--runtime`
 /// and a manifest's `(runtime ...)` give them, with the `configProperties` key
@@ -42,6 +44,7 @@ let runtimeSettings: (string * (string * RuntimeSettingKind)) list =
       "gc-dynamic-adaptation", ("System.GC.DynamicAdaptationMode", Mode)
       "tiered-compilation", ("System.Runtime.TieredCompilation", Flag)
       "tiered-pgo", ("System.Runtime.TieredPGO", Flag)
+      "call-counting-delay", ("System.Runtime.TieredCompilation.CallCountingDelayMs", Millis)
       "invariant-globalization", ("System.Globalization.Invariant", Flag) ]
 
 /// `name=value`, as `--runtime` takes it. The value of a flag is `true` or
@@ -62,6 +65,10 @@ let parseRuntimeSetting (text: string) : Result<string * string, string> =
             match System.Int32.TryParse value with
             | true, n when n >= 1 -> Ok(name, string n)
             | _ -> Error $"--runtime: %s{name} is a whole number from 1, not '%s{value}'."
+        | Some(_, (_, Millis)) ->
+            match System.Int32.TryParse value with
+            | true, n when n >= 0 -> Ok(name, string n)
+            | _ -> Error $"--runtime: %s{name} is a number of milliseconds from 0, not '%s{value}'."
     | _ -> Error $"--runtime: '%s{text}' is not name=value. The settings are: %s{known}."
 
 /// The settings the runtimeconfig gets: those given, and the defaults that
@@ -76,16 +83,69 @@ let parseRuntimeSetting (text: string) : Result<string * string, string> =
 /// was 6.5 ms. Off, p99 went from 3.1 to 1.9 ms. The cost is memory: the
 /// heaps have a fixed size, and the process took 370 MB in place of 120 MB.
 /// See BjolangRuntime/Cml/design.md, "GC pauses are the tail".
+///
+/// The other default: `call-counting-delay` is 0 unless the program says
+/// otherwise. .NET first runs a method as quick, unoptimized code, and counts
+/// its calls only after a delay of 100 ms in which no new method was compiled.
+/// A program that runs for less than a second spends much of its time in that
+/// slow code. Measured on Advent of Code solutions: 0.28 s became 0.15 s, and
+/// 0.20 s became 0.08 s. The delay keeps a program that starts up for a long
+/// time from optimizing code it runs only during startup. Such a program can
+/// set .NET's default back with `call-counting-delay=100`.
 let withRuntimeDefaults (settings: (string * string) list) : (string * string) list =
     let says name = settings |> List.exists (fun (n, _) -> n = name)
 
     let serverGc =
         settings |> List.exists (fun (n, v) -> n = "gc-server" && v = "true")
 
-    if serverGc && not (says "gc-dynamic-adaptation") then
-        ("gc-dynamic-adaptation", "false") :: settings |> List.sortBy fst
+    let defaults =
+        [ if serverGc && not (says "gc-dynamic-adaptation") then
+              "gc-dynamic-adaptation", "false"
+          if not (says "call-counting-delay") then
+              "call-counting-delay", "0" ]
+
+    defaults @ settings |> List.sortBy fst
+
+/// A program's runtime settings and the defaults, as the properties the host
+/// reads: each `configProperties` key with its value as JSON writes it.
+let runtimeProperties (settings: (string * string) list) : (string * string) list =
+    withRuntimeDefaults settings
+    |> List.map (fun (name, value) ->
+        let key, kind = runtimeSettings |> List.find (fun (n, _) -> n = name) |> snd
+
+        let written =
+            match kind, value with
+            | Mode, "true" -> "1"
+            | Mode, _ -> "0"
+            | _ -> value
+
+        key, written)
+
+/// Where `--aot` puts a program's native executable: beside the source, with
+/// no extension. On Windows that name is the `.exe` the .NET host runs, so
+/// there it is `<name>.native.exe`.
+let nativePath (exePath: string) : string =
+    if System.OperatingSystem.IsWindows() then
+        Path.ChangeExtension(exePath, ".native.exe")
     else
-        settings
+        Path.ChangeExtension(exePath, null)
+
+/// The runtime identifier of this machine, as Native AOT needs it: the
+/// portable one, such as `linux-x64`. A distribution's own, such as
+/// `fedora.43-x64`, has no ILCompiler package.
+let private portableRid () : string =
+    let os =
+        if System.OperatingSystem.IsWindows() then "win"
+        elif System.OperatingSystem.IsMacOS() then "osx"
+        else "linux"
+
+    let arch =
+        match System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture with
+        | System.Runtime.InteropServices.Architecture.Arm64 -> "arm64"
+        | System.Runtime.InteropServices.Architecture.X86 -> "x86"
+        | _ -> "x64"
+
+    $"%s{os}-%s{arch}"
 
 /// What a compilation is told, once the command line has been read.
 type Options =
@@ -95,6 +155,9 @@ type Options =
       /// answers them, sorted by name. Written into the program's runtimeconfig
       /// and its build record. A library has no runtimeconfig, and ignores them.
       Runtime: (string * string) list
+      /// `--aot`: a program is also published as a Native AOT executable, at
+      /// `nativePath`. A library ignores it.
+      Aot: bool
       /// `--emit-cs`: where the generated C# is written, or nowhere. Apart
       /// from `Debug`, which only decides how the C# is compiled: reading the
       /// C# of an optimized build is as useful as of a debug one, and a debug
@@ -121,6 +184,7 @@ let dependencyOptions: Options =
     { IsLibrary = true
       Debug = false
       Runtime = []
+      Aot = false
       EmitCs = None
       DumpAst = None
       EmitCsBeside = false
@@ -173,6 +237,8 @@ let besidePath (inputFilePath: string) = Path.ChangeExtension(Path.GetFullPath i
 ///              library the program's unmanaged resolver can load
 ///     runtime  for an executable: `runtime <name>=<value>`, one per
 ///              `--runtime` setting written into its runtimeconfig
+///     aot      for an executable built with `--aot`: the path of its native
+///              executable
 ///     written  the output's last-write time, in ticks. A record whose output
 ///              has been written since belongs to another build, and the
 ///              compiler does not trust it
@@ -267,6 +333,15 @@ let private writeBuildRecord
             else
                 []
 
+        // A program built with `--aot`: where its native executable is. A
+        // driver compares this line to the manifest the same way as the
+        // runtime lines, and runs the native file when it is there.
+        let aotLines =
+            if options.Aot && Path.GetExtension(outputFilePath: string) = ".exe" then
+                [ $"aot %s{nativePath (Path.GetFullPath outputFilePath)}" ]
+            else
+                []
+
         // The interfaces of the linked modules as this build saw them, for
         // `Pipeline`'s staleness check. A module that publishes macros has
         // none, and its code runs inside this compile — so neither it nor
@@ -313,6 +388,7 @@ let private writeBuildRecord
             @ frameworkLines
             @ nugetLines
             @ runtimeLines
+            @ aotLines
             @ (sources |> List.map (fun s -> $"source %s{s}"))
             @ (linked |> List.map Path.GetFullPath |> List.distinct |> List.sort |> List.map (fun d -> $"dep %s{d}"))
             @ (links |> List.distinct |> List.sort |> List.map (fun (name, path) -> $"link %s{name} %s{Path.GetFullPath path}"))
@@ -761,23 +837,29 @@ let compile (options: Options) (inputFilePath: string) : int =
             let moduleAssemblyNames =
                 moduleAssemblyPairs |> List.map (fun (name, path) -> path, name) |> Map.ofList
 
+            // `copied` is for a Native AOT publish: ILCompiler compiles only
+            // the references that would be copied into the output, so there
+            // every one has to be.
+            let referenceItem (copied: bool) (name: string) (dllPath: string) =
+                let privateValue = if copied then "true" else "false"
+                $"    <Reference Include=\"{name}\">\n      <HintPath>{dllPath}</HintPath>\n      <Private>{privateValue}</Private>\n    </Reference>"
+
+            let assemblyNameOf (dllPath: string) =
+                match Map.tryFind dllPath moduleAssemblyNames with
+                | Some name -> name
+                | None -> Path.GetFileNameWithoutExtension dllPath
+
             let dllReferences =
                 linkedAssemblies
-                |> List.map (fun dllPath ->
-                    let name =
-                        match Map.tryFind dllPath moduleAssemblyNames with
-                        | Some name -> name
-                        | None -> Path.GetFileNameWithoutExtension dllPath
-
-                    $"    <Reference Include=\"{name}\">\n      <HintPath>{dllPath}</HintPath>\n      <Private>false</Private>\n    </Reference>")
+                |> List.map (fun dllPath -> referenceItem false (assemblyNameOf dllPath) dllPath)
                 |> String.concat "\n"
 
-            let packageReferences =
+            let packageReferencesWith (copied: bool) =
                 packageReferenceFiles
-                |> List.map (fun dllPath ->
-                    let name = Path.GetFileNameWithoutExtension dllPath
-                    $"    <Reference Include=\"{name}\">\n      <HintPath>{dllPath}</HintPath>\n      <Private>false</Private>\n    </Reference>")
+                |> List.map (fun dllPath -> referenceItem copied (Path.GetFileNameWithoutExtension dllPath) dllPath)
                 |> String.concat "\n"
+
+            let packageReferences = packageReferencesWith false
                 
             // MSBuild is told the *framework*, not its files: it then supplies
             // the reference pack and writes a runtimeconfig naming it, which is
@@ -851,24 +933,16 @@ let compile (options: Options) (inputFilePath: string) : int =
 
                             "    \"frameworks\": [\n" + entries + "\n    ]"
 
-                    // The `--runtime` settings. None gives no `configProperties`
-                    // at all, so a program that sets nothing has the file it had
-                    // before settings existed.
+                    // The `--runtime` settings and the defaults that differ
+                    // from .NET's. Every program has at least one of those.
                     let settingsPart =
-                        match withRuntimeDefaults options.Runtime with
+                        match runtimeProperties options.Runtime with
                         | [] -> ""
-                        | settings ->
-                            let property (name, value) =
-                                let key, kind = runtimeSettings |> List.find (fun (n, _) -> n = name) |> snd
-                                let written =
-                                    match kind, value with
-                                    | Mode, "true" -> "1"
-                                    | Mode, _ -> "0"
-                                    | _ -> value
-                                "      \"" + key + "\": " + written
+                        | properties ->
+                            let property (key, written) = "      \"" + key + "\": " + written
 
                             ",\n    \"configProperties\": {\n"
-                            + (settings |> List.map property |> String.concat ",\n")
+                            + (properties |> List.map property |> String.concat ",\n")
                             + "\n    }"
 
                     let runtimeConfigContent =
@@ -1167,6 +1241,124 @@ let compile (options: Options) (inputFilePath: string) : int =
                         // Leave tmpDir for debugging
                         printfn $"Temp directory: %s{tmpDir}"
                         1
+
+            /// `--aot`: the same C#, published as a Native AOT executable at
+            /// `nativePath`. After the ordinary build, which stays: the build
+            /// record, `bjo publish` and a debugger all use the `.exe`.
+            ///
+            /// ILCompiler compiles the program and every assembly it links
+            /// into one native file, so nothing is resolved at run time and
+            /// the generated resolver is never called. A runtime setting is
+            /// built into the file, because there is no runtimeconfig.
+            let publishNative () =
+                let aotDir = Path.Combine(Path.GetTempPath(), "Bjolang_aot_" + System.Guid.NewGuid().ToString("N"))
+                Directory.CreateDirectory aotDir |> ignore
+
+                // ILCompiler finds a reference by its file name, and a module's
+                // file is named after its source while its assembly has the
+                // module's key: `common.dll` holds `BjoMod.<dir>.common`. So
+                // each one is copied under its assembly's name.
+                let refsDir = Path.Combine(aotDir, "refs")
+                Directory.CreateDirectory refsDir |> ignore
+
+                let aotReferences =
+                    linkedAssemblies
+                    |> List.map (fun dllPath ->
+                        let name = assemblyNameOf dllPath
+                        let copy = Path.Combine(refsDir, name + ".dll")
+                        File.Copy(dllPath, copy, true)
+                        referenceItem true name copy)
+                    |> String.concat "\n"
+
+                // The runtime settings, as a native executable takes them. The
+                // GC reads its own options, not the host's properties: server
+                // GC is another GC linked in, and the others are `runtimeopt`
+                // values, a count in hex as in a DOTNET_ variable. The tiered
+                // compilation settings are of the JIT, which is not there.
+                let settings = withRuntimeDefaults options.Runtime
+                let valueOf name = settings |> List.tryFind (fun (n, _) -> n = name) |> Option.map snd
+                let bit value = if value = "true" then "1" else "0"
+
+                let serverGc =
+                    if valueOf "gc-server" = Some "true" then
+                        "    <ServerGarbageCollection>true</ServerGarbageCollection>"
+                    else
+                        ""
+
+                let gcOptions =
+                    [ match valueOf "gc-concurrent" with
+                      | Some v -> "gcConcurrent", bit v
+                      | None -> ()
+                      match valueOf "gc-heap-count" with
+                      | Some v -> "GCHeapCount", (int v).ToString("x")
+                      | None -> ()
+                      match valueOf "gc-dynamic-adaptation" with
+                      | Some v -> "GCDynamicAdaptationMode", bit v
+                      | None -> () ]
+                    |> List.map (fun (name, value) -> $"    <IlcArg Include=\"--runtimeopt:%s{name}=%s{value}\" />")
+
+                let switches =
+                    runtimeProperties options.Runtime
+                    |> List.filter (fun (key, _) -> key = "System.Globalization.Invariant")
+                    |> List.map (fun (key, value) ->
+                        $"    <RuntimeHostConfigurationOption Include=\"%s{key}\" Value=\"%s{value}\" />")
+
+                let hostOptions = gcOptions @ switches |> String.concat "\n"
+
+                // The trim analysis warns about the resolver, which an AOT
+                // program does not use. Its output is shown only when the
+                // publish fails, so that a working build stays quiet.
+                let aotProject = $"""<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PublishAot>true</PublishAot>
+    <OptimizationPreference>Speed</OptimizationPreference>
+    <SuppressTrimAnalysisWarnings>true</SuppressTrimAnalysisWarnings>
+    <AssemblyName>{assemblyName}</AssemblyName>
+{serverGc}
+  </PropertyGroup>
+  <ItemGroup>
+{frameworkReferences}
+{aotReferences}
+{packageReferencesWith true}
+{hostOptions}
+  </ItemGroup>
+</Project>"""
+
+                let projectPath = Path.Combine(aotDir, "Native.csproj")
+                File.WriteAllText(projectPath, aotProject)
+                File.WriteAllText(Path.Combine(aotDir, "Program.cs"), fullCode)
+                let publishDir = Path.Combine(aotDir, "out")
+                Diagnostics.progress "Publishing the Native AOT executable..."
+
+                let exitCode, stdout, stderr =
+                    Timing.phase "native aot" (fun () ->
+                        runProcess
+                            "dotnet"
+                            $"publish \"%s{projectPath}\" -c Release -r %s{portableRid ()} -o \"%s{publishDir}\" --nologo"
+                            [])
+
+                let built =
+                    Path.Combine(publishDir, (if System.OperatingSystem.IsWindows() then assemblyName + ".exe" else assemblyName))
+
+                if exitCode = 0 && File.Exists built then
+                    let target = nativePath (Path.GetFullPath outputFilePath)
+                    AtomicFile.move built target
+                    Diagnostics.progress $"Successfully built %s{target}"
+                    try Directory.Delete(aotDir, true) with | _ -> ()
+                    0
+                else
+                    if not (System.String.IsNullOrWhiteSpace stdout) then printfn "%s" (stdout.TrimEnd())
+                    if not (System.String.IsNullOrWhiteSpace stderr) then printfn "%s" (stderr.TrimEnd())
+                    printfn "The Native AOT publish failed. Native AOT needs clang or gcc, and the ILCompiler package from NuGet."
+                    printfn $"Temp directory: %s{aotDir}"
+                    1
+
+            let buildStatus =
+                if buildStatus = 0 && options.Aot && not isLibrary then publishNative () else buildStatus
 
             // Only after a build that succeeded. A failed one leaves whatever
             // was there before, and a record naming an artefact that was never

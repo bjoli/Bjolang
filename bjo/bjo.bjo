@@ -212,6 +212,9 @@
                          ;; as `nuget`: they are in the manifest, and a change
                          ;; to them changes no file that the build read.
                          (: runtime (List string))
+                         ;; For a program built with `--aot`: its native
+                         ;; executable. "" otherwise.
+                         (: aot string)
                          ;; For a program: what its resolver loads, as the
                          ;; `link` and `native` lines name them. What
                          ;; `bjo publish` copies.
@@ -289,6 +292,7 @@
           (:acc declarations (folding "" (if (= key "frameworks") value declarations)))
           (:acc nuget (folding "" (if (= key "nuget") value nuget)))
           (:acc runtime (listing value) #:when (= key "runtime"))
+          (:acc aot (folding "" (if (= key "aot") value aot)))
           ;; `link <name> <path>` and `native <key> <path>`: the value splits
           ;; at its first space the way a line does, and a path may hold more.
           (:acc links (listing (pair-of value)) #:when (= key "link"))
@@ -309,6 +313,7 @@
                                     (declaration-file declarations)
                                     (nuget nuget)
                                     (runtime (list-sort runtime))
+                                    (aot aot)
                                     (links links)
                                     (natives natives)
                                     (written written)
@@ -345,21 +350,24 @@
 ;; the manifest names some.
 ;;
 ;; `runtime` is the root manifest's runtime settings, as `name=value`, which a
-;; program is built with. Empty outside a project.
+;; program is built with, and `aot` whether it is built as a Native AOT
+;; executable too. Empty and #f outside a project.
 (type (: Against (Record (: roots (Option string))
                          (: frameworks (Option string))
                          (: nuget (Option string))
-                         (: runtime (List string)))))
+                         (: runtime (List string))
+                         (: aot bool))))
 
 (: nothing-against Against)
-(def nothing-against (Against (roots None) (frameworks None) (nuget None) (runtime Nil)))
+(def nothing-against (Against (roots None) (frameworks None) (nuget None) (runtime Nil) (aot #f)))
 
 (: prepared-against (-> Prepared Against))
 (defun (prepared-against ready)
   (Against (roots (Some (prepared-roots-file ready)))
            (frameworks (prepared-frameworks-file ready))
            (nuget (prepared-nuget-dir ready))
-           (runtime (prepared-runtime ready))))
+           (runtime (prepared-runtime ready))
+           (aot (prepared-aot ready))))
 
 (: flag-for (-> string (Option string) (List string)))
 (defun (flag-for flag path)
@@ -382,7 +390,8 @@
   (list-append (flag-for "--roots" (record-ref a roots))
                (list-append (flag-for "--frameworks" (record-ref a frameworks))
                             (list-append (flag-for "--nuget" (record-ref a nuget))
-                                         (runtime-flags (record-ref a runtime))))))
+                                         (list-append (if (record-ref a aot) (list "--aot") Nil)
+                                                      (runtime-flags (record-ref a runtime)))))))
 
 ;; What the frameworks file says the package holding `file` declares.
 ;;
@@ -470,7 +479,12 @@
       ;; Runtime settings changed in the manifest. Only a program has them: a
       ;; library has no runtimeconfig, and its record no `runtime` lines.
       (and (string-ends-with? artefact ".exe")
-           (not (= (record-ref rec runtime) (record-ref against runtime))))))
+           (not (= (record-ref rec runtime) (record-ref against runtime))))
+      ;; `(aot ...)` changed in the manifest, or the native executable is gone.
+      (and (string-ends-with? artefact ".exe")
+           (not (= (not (= (record-ref rec aot) "")) (record-ref against aot))))
+      (and (record-ref against aot)
+           (not (file-exists? (record-ref rec aot))))))
 
 ;; A linked module whose own record vouches for the interface `entry` says the
 ;; build saw: the module and the sources it was built from. Nothing otherwise.
@@ -602,6 +616,15 @@
 ;; The commands
 ;; ---------------------------------------------------------------------------
 
+;; Starts a built program with `arguments`: its Native AOT executable when the
+;; record names one that is there, and the `.exe` under `dotnet` otherwise.
+(: run-built #:sync (-> BuildRecord (List string) int))
+(defun (run-built rec arguments)
+  (def native (record-ref rec aot))
+  (if (and (not (= native "")) (file-exists? native))
+      (exec native (list->vec arguments))
+      (exec "dotnet" (list->vec (Cons (record-ref rec output) arguments)))))
+
 ;; Everything after the source file belongs to the program, which is the only
 ;; reading that lets a program have flags of its own.
 (: cmd-run #:sync (-> string (List string) bool bool Against int))
@@ -613,7 +636,7 @@
      (println "bjo: there is nothing to run. Use 'bjo build' for a library.")
      1)
     ((Ok (Tuple rec _))
-     (exec "dotnet" (list->vec (Cons (record-ref rec output) program-args))))))
+     (run-built rec program-args))))
 
 (: cmd-build #:sync (-> string bool bool bool Against int))
 (defun (cmd-build file debug? lib? force? roots)
@@ -847,7 +870,7 @@
        (def out (record-ref rec output))
        (if (string-ends-with? out ".dll")
            (fail (str "bjo run: " (project-entry project) " has no main, so it builds a library: " out))
-           (exec "dotnet" (list->vec (Cons out arguments))))))))
+           (run-built rec arguments))))))
 
 ;; `bjo check` with no file, inside a project: everything the project holds.
 (: check-project #:sync (-> Project Cmdline int))
@@ -897,6 +920,7 @@
   (if (string-ends-with? program ".dll")
       (fail (str "bjo publish: " program " has no main, so it is a library. Only a program can be published."))
       (match (publish (Publication (program program)
+                                   (native-program (record-ref rec aot))
                                    (links (record-ref rec links))
                                    (natives (record-ref rec natives))
                                    (packages packages)
@@ -911,7 +935,12 @@
                      ((Some name) name)
                      (None program)))
          (println #"Published ${program} to ${dir}: ${n} files.")
-         (println #"Run it with: dotnet ${(path-combine dir name)}")
+         (def native (match (path-filename (record-ref rec aot))
+                       ((Some native) native)
+                       (None "")))
+         (if (= native "")
+             (println #"Run it with: dotnet ${(path-combine dir name)}")
+             (println #"Run it with: ${(path-combine dir native)}"))
          0))))
 
 ;; `bjo publish` in a project: a release build of its entry, then the copy.

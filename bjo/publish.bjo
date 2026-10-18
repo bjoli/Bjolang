@@ -11,6 +11,7 @@
 ;; standard library's `lib/` from `(janitor modules)`:
 ;;
 ;;     <out>/<program>.exe            and its runtimeconfig, deps and pdb
+;;     <out>/<program>                its Native AOT executable, when it has one
 ;;     <out>/<program>.bjolinks       assembly and native library -> path
 ;;     <out>/lib/...                  standard library modules, as under lib/
 ;;     <out>/runtime/...              the Bjolang runtime assemblies
@@ -30,6 +31,7 @@
   (clr-file-name     (: System.IO.Path.GetFileName (-> string string)))
   (clr-file-stem     (: System.IO.Path.GetFileNameWithoutExtension (-> string string)))
   (clr-change-ext    (: System.IO.Path.ChangeExtension (-> string string string)))
+  (clr-file-copy     (: System.IO.File.Copy (-> string string bool void)))
   (error-message     (: System.Exception.Message (-> Exception string) #:get)))
 
 ;; A package the program was built from: its name, the directory its manifest
@@ -41,13 +43,15 @@
                                   (: own bool))))
 
 ;; What to publish. `links` and `natives` are the build record's `link` and
-;; `native` lines: a name or key, and the file's path.
+;; `native` lines: a name or key, and the file's path. `native-program` is the
+;; program's Native AOT executable, or "" when it has none.
 ;;
 ;; `whole-stdlib` copies all of the standard library, sources and documentation
 ;; included, rather than only the modules the program links. A program that
 ;; reads Bjolang's own modules at run time, such as one that shows their
 ;; documentation, needs that.
 (type (: Publication (Record (: program string)
+                             (: native-program string)
                              (: links (List (Tuple string string)))
                              (: natives (List (Tuple string string)))
                              (: packages (List PublishedPackage))
@@ -139,6 +143,14 @@
   (def to (path-combine out rel))
   (directory-create (clr-directory-of to))
   (file-copy from to #:mode Truncate))
+
+;; Copies a native executable. Through .NET's `File.Copy`, which keeps the file's
+;; mode on Unix: a copy made by `file-copy` could not be run.
+(: copy-executable! #:sync (-> string string string void))
+(defun (copy-executable! out rel from)
+  (def to (path-combine out rel))
+  (directory-create (clr-directory-of to))
+  (clr-file-copy from to #t))
 
 ;; Copies an assembly, and its `.pdb` when there is one, so that a stack trace
 ;; from the published program still names the source.
@@ -278,6 +290,9 @@
                                       (clr-change-ext program ".pdb")))
                 (:when (file-exists? companion))
                 (:do (copy-to! out (clr-file-name companion) companion)))
+          (def native (record-ref p native-program))
+          (when (and (not (= native "")) (file-exists? native))
+            (copy-executable! out (clr-file-name native) native))
           (match (record-ref p lib)
             ((Some lib) #:when (record-ref p whole-stdlib)
              (copy-tree! lib (path-combine out "lib") build-record?))

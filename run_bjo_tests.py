@@ -1526,8 +1526,16 @@ def test_runtime(work, c):
     c.that("taking the settings out rebuilds the program",
            "Built" in said(rebuilt) and "Up to date" not in said(rebuilt), said(rebuilt)[-300:])
     c.says("which then has workstation GC", run_bjo(app, "run"), "workstation")
-    c.that("and a runtimeconfig with no settings",
-           "configProperties" not in runtimeconfig_of(app), runtimeconfig_of(app))
+    c.that("and a runtimeconfig with only the defaults",
+           "System.GC.Server" not in runtimeconfig_of(app)
+           and '"System.Runtime.TieredCompilation.CallCountingDelayMs": 0' in runtimeconfig_of(app),
+           runtimeconfig_of(app))
+
+    runtime_manifest(app, "(call-counting-delay 100)")
+    c.worked("build with .NET's call-counting delay", run_bjo(app, "build"))
+    c.that("the delay the manifest gives replaces the default",
+           '"System.Runtime.TieredCompilation.CallCountingDelayMs": 100' in runtimeconfig_of(app),
+           runtimeconfig_of(app))
 
     runtime_manifest(app, "(gc-server #t) (gc-dynamic-adaptation #t)")
     c.worked("build with the adaptation asked for", run_bjo(app, "build"))
@@ -1542,6 +1550,8 @@ def test_runtime(work, c):
     c.says("a flag that is not #t or #f is refused", run_bjo(app, "build"), "is #t or #f")
     runtime_manifest(app, "(gc-heap-count 0)")
     c.says("a count under 1 is refused", run_bjo(app, "build"), "is a whole number from 1")
+    runtime_manifest(app, "(call-counting-delay -1)")
+    c.says("a delay under 0 is refused", run_bjo(app, "build"), "is a number of milliseconds from 0")
 
     # The compiler's own flag, in a single-file build.
     lone = work / "lone"
@@ -1558,6 +1568,58 @@ def test_runtime(work, c):
     refused = subprocess.run(["dotnet", str(compiler), "--runtime", "gc-server=yes", "gc.bjo"],
                              cwd=str(lone), capture_output=True, text=True, timeout=600)
     c.failed("--runtime with a bad value is refused", refused)
+
+
+# ---------------------------------------------------------------------------
+# Native AOT
+# ---------------------------------------------------------------------------
+
+AOT_MAIN = '''(import (std prelude))
+(import/extern (process-path (: System.Environment.ProcessPath string #:get)))
+(import/extern (server-gc? (: System.Runtime.GCSettings.IsServerGC bool #:get)))
+(defun (main) (println (str process-path " " (if server-gc? "server" "workstation"))) 0)
+'''
+
+
+def aot_manifest(app, aot, runtime=""):
+    clauses = ("\n  (aot #t)" if aot else "") + (f"\n  (runtime {runtime})" if runtime else "")
+    write(app / "manifest.bjodat", f'(package\n  (name (aotapp))\n  (version "0.1.0"){clauses})\n')
+
+
+@test("native aot")
+def test_native_aot(work, c):
+    app = work / "app"
+    write(app / "src" / "main.bjo", AOT_MAIN)
+    native = app / "src" / ("main.native.exe" if os.name == "nt" else "main")
+
+    aot_manifest(app, True, "(gc-server #t)")
+    ran = run_bjo(app, "run")
+    c.worked("(aot #t) builds and runs the program", ran)
+    c.that("the native executable is beside the source", native.exists())
+    c.says("bjo run starts the native executable", ran, str(native))
+    c.says("which has the manifest's runtime settings", ran, "server")
+    c.says("a build after that has nothing to do", run_bjo(app, "build"), "Up to date")
+
+    native.unlink()
+    c.that("a build without the native executable rebuilds it",
+           "Built" in said(run_bjo(app, "build")) and native.exists())
+
+    out = work / "out"
+    c.worked("publish", run_bjo(app, "publish", "-o", str(out)))
+    published = out / native.name
+    c.that("the published directory has the native executable", published.exists())
+    if published.exists():
+        alone = subprocess.run([str(published)], cwd=str(work), capture_output=True, text=True, timeout=600)
+        c.says("and it runs", alone, "server")
+
+    aot_manifest(app, False)
+    ran = run_bjo(app, "run")
+    c.that("taking (aot #t) out rebuilds the program", "Built" in said(ran) or "Successfully" in said(ran),
+           said(ran)[-300:])
+    # The program's line is the last one: its process path, then the GC.
+    printed = said(ran).strip().splitlines()[-1] if said(ran).strip() else ""
+    c.that("and bjo run starts it under dotnet",
+           not printed.startswith(str(native) + " ") and "workstation" in printed, printed)
 
 
 # ---------------------------------------------------------------------------
