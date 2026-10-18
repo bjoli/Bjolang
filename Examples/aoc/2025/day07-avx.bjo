@@ -1,0 +1,53 @@
+;; Day 7: Laboratories, with 256-bit vectors. The same puzzle as day07.bjo.
+;;
+;; The timelines in each column are a long array, and a row's splitters are a
+;; mask of the same shape: -1, every bit set, under a splitter and 0
+;; elsewhere. One vector holds 4 columns. A row is two passes over the
+;; columns: the first keeps the beams that pass and sets the ones that hit a
+;; splitter aside, and the second adds those to the columns on each side.
+;;
+;; Column x is at index x + 1, so the column to the left of column 0 is there
+;; to load. The array is longer than the row by more than a vector, and the
+;; columns after the row are cleared after each row: a beam that leaves the
+;; grid is gone.
+(import (std prelude))
+(import (std simd))
+(import "common.bjo")
+
+(defun (main args)
+  (def lines (input-lines args))
+  (def w (length (ref lines 0)))
+  (def size (+ w 8))
+  (: columns (-> (Array long)))
+  (defun (columns) (make-array size #:fill 0L))
+  (def splitters
+    {vecing (let ((mask (columns)))
+              (loop (:for c line) (:with x 0 (+ x 1))
+                    (:do (when (char=? c #\^) (array-set! mask (+ x 1) -1L))))
+              mask)
+            (:for line lines)})
+  (def beams (columns))
+  (loop (:for c (ref lines 0)) (:with x 0 (+ x 1))
+        (:do (when (char=? c #\S) (array-set! beams (+ x 1) 1L))))
+  (def next (columns))
+  (def hits (columns))
+  (def zero (simd256-zero))
+  (: at (-> (Array long) int Int64x4))
+  (defun (at a i) (simd256-load a i))
+  (def/mutable splits 0)
+  (loop (:for split splitters)
+        (:do
+         (loop (:for i (up-from 1 #:to (+ w 1) #:by 4))
+               (:let here (at beams i))
+               (:let mask (at split i))
+               (:let hit (simd-and mask here))
+               (:do (set! splits (+ splits (simd-count-true (simd-and mask (simd-gt here zero)))))
+                    (simd-store! hit hits i)
+                    (simd-store! (simd-select mask zero here) next i)))
+         (loop (:for i (up-from 1 #:to (+ w 1) #:by 4))
+               (:do (simd-store! (simd-add (at next i) (simd-add (at hits (- i 1)) (at hits (+ i 1))))
+                                 beams i)))
+         (loop (:for i (range (+ w 1) size)) (:do (array-set! beams i 0L)))))
+  (println splits)
+  (println {summing (array-ref beams i) (:for i (range 1 (+ w 1)))})
+  0)

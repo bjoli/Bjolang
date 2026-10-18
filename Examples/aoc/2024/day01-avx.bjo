@@ -1,0 +1,34 @@
+;; Day 1: Historian Hysteria, with 256-bit vectors. The same puzzle as
+;; day01.bjo.
+;;
+;; Part 1 takes the distances of 4 pairs at once. Part 2 counts each left ID
+;; in the right column with `array-count` from (std array), which compares 4
+;; longs per instruction. That is n * n comparisons instead of a map's n
+;; lookups, but for the 1000 lines of an input it is still quicker than
+;; building the map.
+(import (std prelude))
+(import (std simd))
+(import (std array))
+(import "common.bjo")
+
+(defun (main args)
+  (def pairs {vecing (let ((cols (string-split (string-trim line) "   ")))
+                        (Tuple (parse-long (ref cols 0)) (parse-long (ref cols 1))))
+                      (:for line (input-lines args))})
+  (def left (vec->array (vec-sort (vec-map fst pairs))))
+  (def right (vec->array (vec-sort (vec-map snd pairs))))
+  (def n (array-length left))
+  (def whole (simd256-whole left))
+  (: at (-> (Array long) int Int64x4))
+  (defun (at a i) (simd256-load a i))
+  (def vector-part
+    (loop (:for i (up-from 0 #:to whole #:by 4))
+          (:acc d (folding (simd256-zero) (simd-add d (simd-abs (simd-sub (at left i) (at right i))))))
+          => (simd-sum d)))
+  (def tail-part
+    (loop (:for i (range whole n))
+          (:acc d (summing (let ((x (- (array-ref left i) (array-ref right i)))) (if (< x 0L) (- 0L x) x))))
+          => d))
+  (println (+ vector-part tail-part))
+  (println {summing (* a (cast System.Int64 (array-count right a))) (:for a left)})
+  0)

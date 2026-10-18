@@ -1,0 +1,85 @@
+;; Day 4: Ceres Search, with 256-bit vectors. The same puzzle as day04.bjo.
+;;
+;; The grid is one byte array with a margin of zeros round it, so a load
+;; that starts outside the letters reads zeros and matches nothing. One
+;; vector holds 32 cells of a row. For each direction, four loads read the
+;; four letters of the word at 32 starting cells at once, and a mask says
+;; which of the 32 spell XMAS.
+(import (std prelude))
+(import (std simd))
+(import "common.bjo")
+
+;; The margin: three cells, the reach of the last letter of XMAS.
+(def margin 3)
+
+(: byte-of (-> char byte))
+(defun (byte-of c) (cast System.Byte (char->integer c)))
+
+(type (: Grid (Record (: cells (Array byte)) (: w int) (: h int) (: stride int))))
+
+;; A row of the grid is a stride of cells. The stride leaves a vector's width
+;; of zeros after the letters, so the last vector of a row reads no letters of
+;; the next row.
+(: make-grid (-> (Vec string) Grid))
+(defun (make-grid lines)
+  (def w (length (ref lines 0)))
+  (def h (length lines))
+  (def stride (* 32 (+ 1 (/ (+ w (* 2 margin) 31) 32))))
+  (def cells (make-array (+ (* (+ h (* 2 margin)) stride) 64) #:fill (cast System.Byte 0)))
+  (loop (:for line lines) (:with y 0 (+ y 1))
+        (:let bytes (string->bytes line))
+        (:subloop)
+        (:for x (range 0 w))
+        (:do (array-set! cells (+ (* (+ y margin) stride) margin x) (array-ref bytes x))))
+  (Grid (cells cells) (w w) (h h) (stride stride)))
+
+;; Calls `f` with the index of the first of each 32 cells of the letters.
+(: for-each-vector (-> Grid (-> int void) void))
+(defun (for-each-vector g f)
+  (loop (:for y (range 0 (.h g)))
+        (:subloop)
+        (:for x (up-from 0 #:to (.w g) #:by 32))
+        (:do (f (+ (* (+ y margin) (.stride g)) margin x)))))
+
+(defun (main args)
+  (def g (make-grid (input-lines args)))
+  (def cells (.cells g))
+  (def s (.stride g))
+  (: letter (-> char UInt8x32))
+  (defun (letter c) (simd256-splat (byte-of c)))
+  (def X (letter #\X))
+  (def M (letter #\M))
+  (def A (letter #\A))
+  (def S (letter #\S))
+  (: at (-> int UInt8x32))
+  (defun (at i) (simd256-load cells i))
+
+  ;; Part 1: XMAS from each cell, in each of the eight directions.
+  (def steps {listing (+ (* dy s) dx)
+                      (:for dy (range -1 2)) (:subloop) (:for dx (range -1 2))
+                      (:when (not (and (= dx 0) (= dy 0))))})
+  (def/mutable part1 0)
+  (for-each-vector g
+    (fun (i)
+      (list-for-each
+        (fun (d)
+          (def hits (simd-and (simd-and (simd-eq (at i) X) (simd-eq (at (+ i d)) M))
+                              (simd-and (simd-eq (at (+ i (* 2 d))) A) (simd-eq (at (+ i (* 3 d))) S))))
+          (set! part1 (+ part1 (simd-count-true hits))))
+        steps)))
+  (println part1)
+
+  ;; Part 2: an A whose two diagonals each read MAS or SAM.
+  (: mas (-> UInt8x32 UInt8x32 UInt8x32))
+  (defun (mas a b)
+    (simd-or (simd-and (simd-eq a M) (simd-eq b S))
+             (simd-and (simd-eq a S) (simd-eq b M))))
+  (def/mutable part2 0)
+  (for-each-vector g
+    (fun (i)
+      (def hits (simd-and (simd-eq (at i) A)
+                          (simd-and (mas (at (- i s 1)) (at (+ i s 1)))
+                                    (mas (at (+ (- i s) 1)) (at (- (+ i s) 1))))))
+      (set! part2 (+ part2 (simd-count-true hits)))))
+  (println part2)
+  0)

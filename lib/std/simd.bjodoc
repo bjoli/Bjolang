@@ -1,0 +1,371 @@
+;; Docs for std/simd.bjo, read through (:doc #:file "simd.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Vectors of numbers, 128 or 256 bits wide, with one CPU instruction per operation.")
+  (see Simd simd256-load simd128-load simd256-whole simd256-accelerated? Float64x4 Int32x4)
+  (example """
+    (import (std simd))
+
+    ;; The dot product of two double arrays, four lanes at a time.
+    (: dot (-> (Array double) (Array double) double))
+    (defun (dot a b)
+      (def w (simd256-lanes a))
+      (def whole (simd256-whole a))
+      (def acc
+        (loop (:for i (up-from 0 #:to whole #:by w))
+              (:acc v (folding (simd256-zero)
+                               (simd-add v (simd-mul (simd256-load a i) (simd256-load b i)))))
+              => v))
+      ;; The elements after the last whole vector, one at a time.
+      (+ (simd-sum acc)
+         (loop (:for i (up-from whole #:to (array-length a)))
+               (:acc s (folding 0.0 (+ s (* (array-ref a i) (array-ref b i)))))
+               => s)))
+    """)
+  (reference """
+    A lane type is a .NET @code{Vector128<T>} or @code{Vector256<T>}: a value
+    that holds 128 or 256 bits of numbers of one type, in lanes. The names
+    say the element and the number of lanes: @code{Float64x4} is four
+    doubles, @code{Int8x32} is 32 signed bytes. @code{(Simd256 double)} is the
+    same type as @code{Float64x4}.
+
+    @strong{Operations.} Every operation is a method of the trait
+    @code{Simd}, which both widths implement at every element type. So
+    @code{simd-add} adds two @code{Float64x2} values or two @code{Int32x8}
+    values. At a known type, each call compiles to the .NET intrinsic, which
+    the JIT compiles to one instruction. Arithmetic on integer lanes wraps.
+
+    @strong{Making a vector.} The functions that make a vector say their
+    width in the name, because there is no vector argument to take it from:
+    @code{simd256-load}, @code{simd128-splat}, @code{simd256-zero}. The
+    element type comes from the argument, or from where the vector is used.
+
+    @strong{Masks.} A comparison such as @code{simd-lt} gives a mask: a
+    vector of the same type, with every bit of a lane set where the
+    comparison holds and no bit set where it does not. @code{simd-select},
+    @code{simd-any?}, @code{simd-all?}, @code{simd-count-true} and
+    @code{simd-first-true} read a mask. The bitwise operations combine masks.
+
+    @strong{The tail.} An array whose length is not a multiple of the lanes
+    has elements after the last whole vector. @code{simd256-whole} is the
+    index where they start; handle them one at a time, as in the example.
+    @code{simd256-load} raises @code{ArgumentOutOfRangeException} when a
+    whole vector does not fit.
+
+    @strong{Which width.} A 128-bit vector is accelerated on every x86-64
+    and ARM64 CPU. A 256-bit vector needs AVX2; elsewhere .NET emulates it,
+    which is much slower than scalar code. @code{simd256-accelerated?} says
+    which. A Native AOT build targets a CPU without AVX2 unless the manifest
+    says @code{(aot-cpu "native")} or a level such as @code{"x86-64-v3"}.
+
+    @strong{Speed.} Use more than one accumulator for a sum: an addition
+    waits for the one before it to finish. On 4 million doubles with AVX2,
+    a dot product with four @code{Float64x4} accumulators took 1.4 ms, and a
+    scalar loop 9.9 ms. For the common reductions, @code{(std array)} has
+    @code{array-sum} and @code{array-dot}, which do this already.
+    """))
+
+(:doc Simd128
+  (summary "A 128-bit vector of numbers of type %a: .NET's @code{Vector128<T>}.")
+  (tparam %a "The element type: a primitive number.")
+  (see Simd simd128-load simd128-splat))
+
+(:doc Simd256
+  (summary "A 256-bit vector of numbers of type %a: .NET's @code{Vector256<T>}.")
+  (tparam %a "The element type: a primitive number.")
+  (see Simd simd256-load simd256-splat))
+
+(:doc Simd
+  (summary "The operations on a vector type, implemented by @code{Simd128} and @code{Simd256}.")
+  (tparam %v "The vector type, such as @code{Float64x4}.")
+  (see simd-add simd-lt simd-select simd-sum))
+
+(:doc Float64x2
+  (summary "2 lanes of @code{double}: @code{(Simd128 double)}."))
+
+(:doc Float32x4
+  (summary "4 lanes of @code{System.Single}: @code{(Simd128 System.Single)}."))
+
+(:doc Int64x2
+  (summary "2 lanes of @code{long}: @code{(Simd128 long)}."))
+
+(:doc Int32x4
+  (summary "4 lanes of @code{int}: @code{(Simd128 int)}."))
+
+(:doc Int16x8
+  (summary "8 lanes of @code{short}: @code{(Simd128 short)}."))
+
+(:doc Int8x16
+  (summary "16 lanes of @code{System.SByte}: @code{(Simd128 System.SByte)}."))
+
+(:doc UInt64x2
+  (summary "2 lanes of @code{ulong}: @code{(Simd128 ulong)}."))
+
+(:doc UInt32x4
+  (summary "4 lanes of @code{uint}: @code{(Simd128 uint)}."))
+
+(:doc UInt16x8
+  (summary "8 lanes of @code{ushort}: @code{(Simd128 ushort)}."))
+
+(:doc UInt8x16
+  (summary "16 lanes of @code{byte}: @code{(Simd128 byte)}."))
+
+(:doc Float64x4
+  (summary "4 lanes of @code{double}: @code{(Simd256 double)}."))
+
+(:doc Float32x8
+  (summary "8 lanes of @code{System.Single}: @code{(Simd256 System.Single)}."))
+
+(:doc Int64x4
+  (summary "4 lanes of @code{long}: @code{(Simd256 long)}."))
+
+(:doc Int32x8
+  (summary "8 lanes of @code{int}: @code{(Simd256 int)}."))
+
+(:doc Int16x16
+  (summary "16 lanes of @code{short}: @code{(Simd256 short)}."))
+
+(:doc Int8x32
+  (summary "32 lanes of @code{System.SByte}: @code{(Simd256 System.SByte)}."))
+
+(:doc UInt64x4
+  (summary "4 lanes of @code{ulong}: @code{(Simd256 ulong)}."))
+
+(:doc UInt32x8
+  (summary "8 lanes of @code{uint}: @code{(Simd256 uint)}."))
+
+(:doc UInt16x16
+  (summary "16 lanes of @code{ushort}: @code{(Simd256 ushort)}."))
+
+(:doc UInt8x32
+  (summary "32 lanes of @code{byte}: @code{(Simd256 byte)}."))
+
+(:doc simd-add
+  (summary "Adds the lanes of two vectors.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "The lane-wise sums."))
+
+(:doc simd-sub
+  (summary "Subtracts the lanes of @code{b} from the lanes of @code{a}.")
+  (arg a "The vector to subtract from.")
+  (arg b "The vector to subtract.")
+  (returns "The lane-wise differences."))
+
+(:doc simd-mul
+  (summary "Multiplies the lanes of two vectors.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "The lane-wise products."))
+
+(:doc simd-div
+  (summary "Divides the lanes of @code{a} by the lanes of @code{b}. Fast at float types only: there is no integer division instruction, so integer lanes are divided one at a time.")
+  (arg a "The dividends.")
+  (arg b "The divisors.")
+  (returns "The lane-wise quotients."))
+
+(:doc simd-scale
+  (summary "Multiplies every lane by one number.")
+  (arg v "The vector.")
+  (arg k "The factor.")
+  (returns "Each lane times @code{k}."))
+
+(:doc simd-neg
+  (summary "Negates every lane.")
+  (arg v "The vector.")
+  (returns "The negated lanes."))
+
+(:doc simd-abs
+  (summary "The absolute value of every lane.")
+  (arg v "The vector.")
+  (returns "The absolute values."))
+
+(:doc simd-min
+  (summary "The lesser of each pair of lanes.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "The lane-wise minimums."))
+
+(:doc simd-max
+  (summary "The greater of each pair of lanes.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "The lane-wise maximums."))
+
+(:doc simd-sqrt
+  (summary "The square root of every lane. For float lanes.")
+  (arg v "The vector.")
+  (returns "The square roots."))
+
+(:doc simd-and
+  (summary "The bitwise and of two vectors. Combines two masks into the lanes set in both.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "The bitwise and."))
+
+(:doc simd-or
+  (summary "The bitwise or of two vectors. Combines two masks into the lanes set in either.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "The bitwise or."))
+
+(:doc simd-xor
+  (summary "The bitwise exclusive or of two vectors.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "The bitwise exclusive or."))
+
+(:doc simd-not
+  (summary "Inverts every bit. Turns a mask into the lanes it does not set.")
+  (arg v "The vector.")
+  (returns "The inverted bits."))
+
+(:doc simd-eq
+  (summary "A mask of the lanes where @code{a} equals @code{b}. NaN equals nothing.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "A mask."))
+
+(:doc simd-lt
+  (summary "A mask of the lanes where @code{a} is less than @code{b}.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "A mask."))
+
+(:doc simd-le
+  (summary "A mask of the lanes where @code{a} is less than or equal to @code{b}.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "A mask."))
+
+(:doc simd-gt
+  (summary "A mask of the lanes where @code{a} is greater than @code{b}.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "A mask."))
+
+(:doc simd-ge
+  (summary "A mask of the lanes where @code{a} is greater than or equal to @code{b}.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "A mask."))
+
+(:doc simd-select
+  (summary "Each lane from @code{a} where @code{mask} is set, and from @code{b} where it is not.")
+  (arg mask "Which lanes to take from @code{a}.")
+  (arg a "The lanes where the mask is set.")
+  (arg b "The lanes where the mask is not set.")
+  (returns "The selected lanes."))
+
+(:doc simd-any?
+  (summary "Whether any lane of a mask is set.")
+  (arg mask "The mask.")
+  (returns "#t when at least one lane is set."))
+
+(:doc simd-all?
+  (summary "Whether every lane of a mask is set.")
+  (arg mask "The mask.")
+  (returns "#t when every lane is set."))
+
+(:doc simd-count-true
+  (summary "How many lanes of a mask are set.")
+  (arg mask "The mask.")
+  (returns "The number of lanes that are set."))
+
+(:doc simd-first-true
+  (summary "The index of the first lane of a mask that is set, or -1.")
+  (arg mask "The mask.")
+  (returns "The lowest index of a set lane, or -1."))
+
+(:doc simd-sum
+  (summary "The sum of the lanes.")
+  (arg v "The vector.")
+  (returns "The sum."))
+
+(:doc simd-dot
+  (summary "The sum of the products of the lanes.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "The dot product."))
+
+(:doc simd-ref
+  (summary "The lane at an index. Raises @code{ArgumentOutOfRangeException} outside the lanes.")
+  (arg v "The vector.")
+  (arg i "The lane, from 0.")
+  (returns "The number in the lane."))
+
+(:doc simd-store!
+  (summary "Writes the lanes into an array, from an index. Raises when they do not fit.")
+  (arg v "The vector.")
+  (arg a "The array to write.")
+  (arg i "The index of the first lane in the array."))
+
+(:doc simd-lanes
+  (summary "How many lanes the vector has.")
+  (arg v "The vector. Only its type is read.")
+  (returns "The number of lanes."))
+
+(:doc simd128-splat
+  (summary "A 128-bit vector with the number in every lane.")
+  (arg x "The number.")
+  (returns "The vector."))
+
+(:doc simd128-zero
+  (summary "A 128-bit vector of zeros. Its element type comes from where it is used.")
+  (returns "The vector."))
+
+(:doc simd128-load
+  (summary "The 128-bit vector of the elements of an array from an index.")
+  (arg a "The array.")
+  (arg i "The index of the first lane.")
+  (returns "The vector.")
+  (reference """
+    Raises @code{ArgumentOutOfRangeException} when fewer than a vector's
+    lanes of elements are left from @code{i}.
+    """))
+
+(:doc simd128-lanes
+  (summary "How many elements of the array one 128-bit vector holds.")
+  (arg a "The array. Only its type is read.")
+  (returns "The number of lanes."))
+
+(:doc simd128-whole
+  (summary "The length of the array, rounded down to whole 128-bit vectors.")
+  (arg a "The array.")
+  (returns "The index of the first element after the last whole vector."))
+
+(:doc simd128-accelerated?
+  (summary "Whether the CPU runs 128-bit vector operations as instructions, not emulated."))
+
+(:doc simd256-splat
+  (summary "A 256-bit vector with the number in every lane.")
+  (arg x "The number.")
+  (returns "The vector."))
+
+(:doc simd256-zero
+  (summary "A 256-bit vector of zeros. Its element type comes from where it is used.")
+  (returns "The vector."))
+
+(:doc simd256-load
+  (summary "The 256-bit vector of the elements of an array from an index.")
+  (arg a "The array.")
+  (arg i "The index of the first lane.")
+  (returns "The vector.")
+  (reference """
+    Raises @code{ArgumentOutOfRangeException} when fewer than a vector's
+    lanes of elements are left from @code{i}.
+    """))
+
+(:doc simd256-lanes
+  (summary "How many elements of the array one 256-bit vector holds.")
+  (arg a "The array. Only its type is read.")
+  (returns "The number of lanes."))
+
+(:doc simd256-whole
+  (summary "The length of the array, rounded down to whole 256-bit vectors.")
+  (arg a "The array.")
+  (returns "The index of the first element after the last whole vector."))
+
+(:doc simd256-accelerated?
+  (summary "Whether the CPU runs 256-bit vector operations as instructions, not emulated."))

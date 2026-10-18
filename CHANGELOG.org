@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* Lane types
+
+- A new module, ~(std simd)~. ~(Simd128 %a)~ and ~(Simd256 %a)~ are .NET's
+  ~Vector128<T>~ and ~Vector256<T>~, with a name per element type as OxCaml
+  has: ~Float64x2~, ~Int32x4~, ~UInt8x16~, ~Float64x4~, ~Int32x8~, ~Int8x32~,
+  and the Float32, Int64, Int16 and unsigned ones.
+- The operations are the methods of one trait, ~Simd~, implemented by both
+  widths at every element type: arithmetic, ~min~/~max~/~abs~/~sqrt~, the
+  bitwise operations, comparisons that give masks, ~simd-select~, the mask
+  readers (~simd-any?~, ~simd-all?~, ~simd-count-true~, ~simd-first-true~),
+  ~simd-sum~, ~simd-dot~, ~simd-ref~, ~simd-store!~ and ~simd-lanes~. At a
+  known type each call is one intrinsic in the C#.
+- The functions that make a vector say the width: ~simd256-load~,
+  ~simd128-splat~, ~simd256-zero~, and ~simd256-lanes~ and ~simd256-whole~
+  for the loop and its tail. ~simd128-accelerated?~ and
+  ~simd256-accelerated?~ say whether the CPU runs a width as instructions.
+- Measured on 4 million doubles with AVX2: a dot product with four
+  ~Float64x4~ accumulators took 1.4 ms, a scalar loop 9.9 ms.
+- Not yet: shifts, conversions between element types, shuffles, and fused
+  multiply-add. Their .NET methods have one overload per element type, which
+  an impl that is generic in the element can not call.
+- Tests: ~403_simd_lanes.bjo~, which also passes with AVX2 and with all
+  hardware intrinsics turned off.
+
 * Whole-array operations, the CPU of a native build, and mixed generic imports
 
 - A new module, ~(std array)~: ~array-sum~, ~array-dot~, ~array-min~,

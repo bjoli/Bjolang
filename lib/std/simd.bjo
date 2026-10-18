@@ -1,0 +1,277 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+
+;; std/simd.bjo — vectors of numbers, a fixed number of lanes wide.
+;;
+;; A lane type is a .NET `Vector128<T>` or `Vector256<T>`: 128 or 256 bits of
+;; numbers of one type. `Float64x4` is four doubles and `Int8x32` is 32 signed
+;; bytes. An operation on one is one CPU instruction where the CPU has it.
+;;
+;; The operations are the methods of one trait, `Simd`, which both widths
+;; implement for every element type. So `simd-add` adds two `Float64x2`s or
+;; two `Int32x8`s. What makes a vector — `simd256-load`, `simd128-splat` — says
+;; its width, as there is no argument to take it from.
+;;
+;; A 128-bit vector is fast on every x86-64 and ARM64 CPU. A 256-bit one needs
+;; AVX2: elsewhere .NET emulates it, which is much slower than scalar code.
+;; `simd256-accelerated?` says which. A Native AOT build has AVX2 only with
+;; `(aot-cpu ...)`.
+(import (std prelude))
+
+(:doc #:file "simd.bjodoc")
+
+(export
+  Simd128 Simd256
+  Float64x2 Float32x4 Int64x2 Int32x4 Int16x8 Int8x16
+  UInt64x2 UInt32x4 UInt16x8 UInt8x16
+  Float64x4 Float32x8 Int64x4 Int32x8 Int16x16 Int8x32
+  UInt64x4 UInt32x8 UInt16x16 UInt8x32
+  ;; The trait, and what it does
+  Simd
+  simd-add simd-sub simd-mul simd-div simd-scale simd-neg simd-abs
+  simd-min simd-max simd-sqrt
+  simd-and simd-or simd-xor simd-not
+  simd-eq simd-lt simd-le simd-gt simd-ge simd-select
+  simd-any? simd-all? simd-count-true simd-first-true
+  simd-sum simd-dot simd-ref simd-store! simd-lanes
+  ;; Making one
+  simd128-splat simd128-zero simd128-load simd128-lanes simd128-whole
+  simd256-splat simd256-zero simd256-load simd256-lanes simd256-whole
+  simd128-accelerated? simd256-accelerated?)
+
+(import/class
+  ((Simd128 %a) (: System.Runtime.Intrinsics.Vector128))
+  ((Simd256 %a) (: System.Runtime.Intrinsics.Vector256)))
+
+;; ---------------------------------------------------------------------------
+;; The lane types
+;; ---------------------------------------------------------------------------
+;;
+;; Named as OxCaml names them: the element's type and bits, and the lanes.
+
+(type (: Float64x2 (Simd128 double)))
+(type (: Float32x4 (Simd128 System.Single)))
+(type (: Int64x2   (Simd128 long)))
+(type (: Int32x4   (Simd128 int)))
+(type (: Int16x8   (Simd128 short)))
+(type (: Int8x16   (Simd128 System.SByte)))
+(type (: UInt64x2  (Simd128 ulong)))
+(type (: UInt32x4  (Simd128 uint)))
+(type (: UInt16x8  (Simd128 ushort)))
+(type (: UInt8x16  (Simd128 byte)))
+
+(type (: Float64x4 (Simd256 double)))
+(type (: Float32x8 (Simd256 System.Single)))
+(type (: Int64x4   (Simd256 long)))
+(type (: Int32x8   (Simd256 int)))
+(type (: Int16x16  (Simd256 short)))
+(type (: Int8x32   (Simd256 System.SByte)))
+(type (: UInt64x4  (Simd256 ulong)))
+(type (: UInt32x8  (Simd256 uint)))
+(type (: UInt16x16 (Simd256 ushort)))
+(type (: UInt8x32  (Simd256 byte)))
+
+;; ---------------------------------------------------------------------------
+;; The trait
+;; ---------------------------------------------------------------------------
+;;
+;; A comparison answers a mask: a vector of the same type with every bit of a
+;; lane set where the comparison holds, and no bit set where it does not.
+;; `simd-select` takes a lane from its second argument where the mask is set,
+;; and from its third where it is not. The `simd-any?` family reads a mask.
+
+(def/trait (Simd %v)
+  (type %elem)
+  (: simd-add   (-> %v %v %v))
+  (: simd-sub   (-> %v %v %v))
+  (: simd-mul   (-> %v %v %v))
+  (: simd-div   (-> %v %v %v))
+  (: simd-scale (-> %v %elem %v))
+  (: simd-neg   (-> %v %v))
+  (: simd-abs   (-> %v %v))
+  (: simd-min   (-> %v %v %v))
+  (: simd-max   (-> %v %v %v))
+  (: simd-sqrt  (-> %v %v))
+  (: simd-and   (-> %v %v %v))
+  (: simd-or    (-> %v %v %v))
+  (: simd-xor   (-> %v %v %v))
+  (: simd-not   (-> %v %v))
+  (: simd-eq    (-> %v %v %v))
+  (: simd-lt    (-> %v %v %v))
+  (: simd-le    (-> %v %v %v))
+  (: simd-gt    (-> %v %v %v))
+  (: simd-ge    (-> %v %v %v))
+  (: simd-select (-> %v %v %v %v))
+  (: simd-any?  (-> %v bool))
+  (: simd-all?  (-> %v bool))
+  (: simd-count-true (-> %v int))
+  (: simd-first-true (-> %v int))
+  (: simd-sum   (-> %v %elem))
+  (: simd-dot   (-> %v %v %elem))
+  (: simd-ref   (-> %v int %elem))
+  (: simd-store! (-> %v (Array %elem) int void))
+  (: simd-lanes (-> %v int)))
+
+;; ---------------------------------------------------------------------------
+;; 128 bits
+;; ---------------------------------------------------------------------------
+
+(import/extern
+  (v128-add (: System.Runtime.Intrinsics.Vector128.Add (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-sub (: System.Runtime.Intrinsics.Vector128.Subtract (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-mul (: System.Runtime.Intrinsics.Vector128.Multiply (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-div (: System.Runtime.Intrinsics.Vector128.Divide (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-scale (: System.Runtime.Intrinsics.Vector128.Multiply (-> (Simd128 %a) %a (Simd128 %a))))
+  (v128-neg (: System.Runtime.Intrinsics.Vector128.Negate (-> (Simd128 %a) (Simd128 %a))))
+  (v128-abs (: System.Runtime.Intrinsics.Vector128.Abs (-> (Simd128 %a) (Simd128 %a))))
+  (v128-min (: System.Runtime.Intrinsics.Vector128.Min (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-max (: System.Runtime.Intrinsics.Vector128.Max (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-sqrt (: System.Runtime.Intrinsics.Vector128.Sqrt (-> (Simd128 %a) (Simd128 %a))))
+  (v128-and (: System.Runtime.Intrinsics.Vector128.BitwiseAnd (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-or (: System.Runtime.Intrinsics.Vector128.BitwiseOr (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-xor (: System.Runtime.Intrinsics.Vector128.Xor (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-not (: System.Runtime.Intrinsics.Vector128.OnesComplement (-> (Simd128 %a) (Simd128 %a))))
+  (v128-eq (: System.Runtime.Intrinsics.Vector128.Equals (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-lt (: System.Runtime.Intrinsics.Vector128.LessThan (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-le (: System.Runtime.Intrinsics.Vector128.LessThanOrEqual (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-gt (: System.Runtime.Intrinsics.Vector128.GreaterThan (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-ge (: System.Runtime.Intrinsics.Vector128.GreaterThanOrEqual (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-select (: System.Runtime.Intrinsics.Vector128.ConditionalSelect (-> (Simd128 %a) (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-sum (: System.Runtime.Intrinsics.Vector128.Sum (-> (Simd128 %a) %a)))
+  (v128-dot (: System.Runtime.Intrinsics.Vector128.Dot (-> (Simd128 %a) (Simd128 %a) %a)))
+  (v128-ref (: System.Runtime.Intrinsics.Vector128.GetElement (-> (Simd128 %a) int %a)))
+  (v128-store! (: System.Runtime.Intrinsics.Vector128.CopyTo (-> (Simd128 %a) (Array %a) int void)))
+  (v128-lanes (: Bjolang.Runtime.BjoSimd.Lanes128 (-> (Simd128 %a) int)))
+  (v128-any? (: Bjolang.Runtime.BjoSimd.Any128 (-> (Simd128 %a) bool)))
+  (v128-all? (: Bjolang.Runtime.BjoSimd.All128 (-> (Simd128 %a) bool)))
+  (v128-count-true (: Bjolang.Runtime.BjoSimd.CountTrue128 (-> (Simd128 %a) int)))
+  (v128-first-true (: Bjolang.Runtime.BjoSimd.FirstTrue128 (-> (Simd128 %a) int)))
+  (simd128-splat (: System.Runtime.Intrinsics.Vector128.Create (-> %a (Simd128 %a))))
+  (simd128-zero (: Bjolang.Runtime.BjoSimd.Zero128 (-> (Simd128 %a))))
+  (simd128-load (: System.Runtime.Intrinsics.Vector128.Create (-> (Array %a) int (Simd128 %a))))
+  (simd128-lanes (: Bjolang.Runtime.BjoSimd.ArrayLanes128 (-> (Array %a) int)))
+  (simd128-accelerated? (: System.Runtime.Intrinsics.Vector128.IsHardwareAccelerated #:get)))
+
+(: simd128-whole (-> (Array %a) int))
+(defun (simd128-whole a)
+  (def w (simd128-lanes a))
+  (* w (/ (array-length a) w)))
+
+(impl (Simd (Simd128 %a))
+  (type %elem %a)
+  (defun (simd-add a b) (v128-add a b))
+  (defun (simd-sub a b) (v128-sub a b))
+  (defun (simd-mul a b) (v128-mul a b))
+  (defun (simd-div a b) (v128-div a b))
+  (defun (simd-scale a b) (v128-scale a b))
+  (defun (simd-neg a) (v128-neg a))
+  (defun (simd-abs a) (v128-abs a))
+  (defun (simd-min a b) (v128-min a b))
+  (defun (simd-max a b) (v128-max a b))
+  (defun (simd-sqrt a) (v128-sqrt a))
+  (defun (simd-and a b) (v128-and a b))
+  (defun (simd-or a b) (v128-or a b))
+  (defun (simd-xor a b) (v128-xor a b))
+  (defun (simd-not a) (v128-not a))
+  (defun (simd-eq a b) (v128-eq a b))
+  (defun (simd-lt a b) (v128-lt a b))
+  (defun (simd-le a b) (v128-le a b))
+  (defun (simd-gt a b) (v128-gt a b))
+  (defun (simd-ge a b) (v128-ge a b))
+  (defun (simd-select a b c) (v128-select a b c))
+  (defun (simd-sum a) (v128-sum a))
+  (defun (simd-dot a b) (v128-dot a b))
+  (defun (simd-ref a b) (v128-ref a b))
+  (defun (simd-store! a b c) (v128-store! a b c))
+  (defun (simd-lanes a) (v128-lanes a))
+  (defun (simd-any? a) (v128-any? a))
+  (defun (simd-all? a) (v128-all? a))
+  (defun (simd-count-true a) (v128-count-true a))
+  (defun (simd-first-true a) (v128-first-true a)))
+
+;; ---------------------------------------------------------------------------
+;; 256 bits
+;; ---------------------------------------------------------------------------
+
+(import/extern
+  (v256-add (: System.Runtime.Intrinsics.Vector256.Add (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-sub (: System.Runtime.Intrinsics.Vector256.Subtract (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-mul (: System.Runtime.Intrinsics.Vector256.Multiply (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-div (: System.Runtime.Intrinsics.Vector256.Divide (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-scale (: System.Runtime.Intrinsics.Vector256.Multiply (-> (Simd256 %a) %a (Simd256 %a))))
+  (v256-neg (: System.Runtime.Intrinsics.Vector256.Negate (-> (Simd256 %a) (Simd256 %a))))
+  (v256-abs (: System.Runtime.Intrinsics.Vector256.Abs (-> (Simd256 %a) (Simd256 %a))))
+  (v256-min (: System.Runtime.Intrinsics.Vector256.Min (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-max (: System.Runtime.Intrinsics.Vector256.Max (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-sqrt (: System.Runtime.Intrinsics.Vector256.Sqrt (-> (Simd256 %a) (Simd256 %a))))
+  (v256-and (: System.Runtime.Intrinsics.Vector256.BitwiseAnd (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-or (: System.Runtime.Intrinsics.Vector256.BitwiseOr (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-xor (: System.Runtime.Intrinsics.Vector256.Xor (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-not (: System.Runtime.Intrinsics.Vector256.OnesComplement (-> (Simd256 %a) (Simd256 %a))))
+  (v256-eq (: System.Runtime.Intrinsics.Vector256.Equals (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-lt (: System.Runtime.Intrinsics.Vector256.LessThan (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-le (: System.Runtime.Intrinsics.Vector256.LessThanOrEqual (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-gt (: System.Runtime.Intrinsics.Vector256.GreaterThan (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-ge (: System.Runtime.Intrinsics.Vector256.GreaterThanOrEqual (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-select (: System.Runtime.Intrinsics.Vector256.ConditionalSelect (-> (Simd256 %a) (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-sum (: System.Runtime.Intrinsics.Vector256.Sum (-> (Simd256 %a) %a)))
+  (v256-dot (: System.Runtime.Intrinsics.Vector256.Dot (-> (Simd256 %a) (Simd256 %a) %a)))
+  (v256-ref (: System.Runtime.Intrinsics.Vector256.GetElement (-> (Simd256 %a) int %a)))
+  (v256-store! (: System.Runtime.Intrinsics.Vector256.CopyTo (-> (Simd256 %a) (Array %a) int void)))
+  (v256-lanes (: Bjolang.Runtime.BjoSimd.Lanes256 (-> (Simd256 %a) int)))
+  (v256-any? (: Bjolang.Runtime.BjoSimd.Any256 (-> (Simd256 %a) bool)))
+  (v256-all? (: Bjolang.Runtime.BjoSimd.All256 (-> (Simd256 %a) bool)))
+  (v256-count-true (: Bjolang.Runtime.BjoSimd.CountTrue256 (-> (Simd256 %a) int)))
+  (v256-first-true (: Bjolang.Runtime.BjoSimd.FirstTrue256 (-> (Simd256 %a) int)))
+  (simd256-splat (: System.Runtime.Intrinsics.Vector256.Create (-> %a (Simd256 %a))))
+  (simd256-zero (: Bjolang.Runtime.BjoSimd.Zero256 (-> (Simd256 %a))))
+  (simd256-load (: System.Runtime.Intrinsics.Vector256.Create (-> (Array %a) int (Simd256 %a))))
+  (simd256-lanes (: Bjolang.Runtime.BjoSimd.ArrayLanes256 (-> (Array %a) int)))
+  (simd256-accelerated? (: System.Runtime.Intrinsics.Vector256.IsHardwareAccelerated #:get)))
+
+(: simd256-whole (-> (Array %a) int))
+(defun (simd256-whole a)
+  (def w (simd256-lanes a))
+  (* w (/ (array-length a) w)))
+
+(impl (Simd (Simd256 %a))
+  (type %elem %a)
+  (defun (simd-add a b) (v256-add a b))
+  (defun (simd-sub a b) (v256-sub a b))
+  (defun (simd-mul a b) (v256-mul a b))
+  (defun (simd-div a b) (v256-div a b))
+  (defun (simd-scale a b) (v256-scale a b))
+  (defun (simd-neg a) (v256-neg a))
+  (defun (simd-abs a) (v256-abs a))
+  (defun (simd-min a b) (v256-min a b))
+  (defun (simd-max a b) (v256-max a b))
+  (defun (simd-sqrt a) (v256-sqrt a))
+  (defun (simd-and a b) (v256-and a b))
+  (defun (simd-or a b) (v256-or a b))
+  (defun (simd-xor a b) (v256-xor a b))
+  (defun (simd-not a) (v256-not a))
+  (defun (simd-eq a b) (v256-eq a b))
+  (defun (simd-lt a b) (v256-lt a b))
+  (defun (simd-le a b) (v256-le a b))
+  (defun (simd-gt a b) (v256-gt a b))
+  (defun (simd-ge a b) (v256-ge a b))
+  (defun (simd-select a b c) (v256-select a b c))
+  (defun (simd-sum a) (v256-sum a))
+  (defun (simd-dot a b) (v256-dot a b))
+  (defun (simd-ref a b) (v256-ref a b))
+  (defun (simd-store! a b c) (v256-store! a b c))
+  (defun (simd-lanes a) (v256-lanes a))
+  (defun (simd-any? a) (v256-any? a))
+  (defun (simd-all? a) (v256-all? a))
+  (defun (simd-count-true a) (v256-count-true a))
+  (defun (simd-first-true a) (v256-first-true a)))

@@ -1,0 +1,129 @@
+;; Lane types from `(std simd)`.
+;;
+;; Each operation is checked at both widths and at a float and an integer
+;; element type. The answers do not depend on whether the CPU accelerates a
+;; width: an emulated vector computes the same lanes.
+(import (std prelude))
+(import (std simpletest))
+(import (std simd))
+
+;; 0, 1, 2, ..., n-1 as doubles and as ints.
+(: doubles (-> int (Array double)))
+(defun (doubles n)
+  (def a (make-array n))
+  (let go ((i 0))
+    (when (< i n)
+      (array-set! a i (cast System.Double i))
+      (go (+ i 1))))
+  a)
+
+(: ints (-> int (Array int)))
+(defun (ints n)
+  (def a (make-array n))
+  (let go ((i 0))
+    (when (< i n)
+      (array-set! a i i)
+      (go (+ i 1))))
+  a)
+
+;; Generic over the vector type: the trait is the constraint.
+(: twice (-> %v %v) (where (Simd %v)))
+(defun (twice v) (simd-add v v))
+
+;; A whole loop and its tail: the sum of the elements below a limit.
+(: sum-below (-> (Array int) int int))
+(defun (sum-below a limit)
+  (def w (simd256-lanes a))
+  (def lim (simd256-splat limit))
+  (def zero (simd256-zero))
+  (def whole (simd256-whole a))
+  (def acc
+    (loop (:for i (up-from 0 #:to whole #:by w))
+          (:let v (simd256-load a i))
+          (:acc s (folding zero (simd-add s (simd-select (simd-lt v lim) v zero))))
+          => s))
+  (+ (simd-sum acc)
+     (loop (:for i (up-from whole #:to (array-length a)))
+           (:acc s (folding 0 (if (< (array-ref a i) limit) (+ s (array-ref a i)) s)))
+           => s)))
+
+(defun (main)
+  ;; Lanes.
+  (def ds (doubles 10))
+  (def is (ints 40))
+  (expect "Float64x2 has 2 lanes" (simd-lanes (simd128-load ds 0)) 2)
+  (expect "Float64x4 has 4 lanes" (simd-lanes (simd256-load ds 0)) 4)
+  (expect "Int32x4 has 4 lanes" (simd128-lanes is) 4)
+  (expect "Int32x8 has 8 lanes" (simd256-lanes is) 8)
+  (expect "UInt8x32 has 32 lanes" (simd256-lanes (make-array 1 #:fill (cast System.Byte 0))) 32)
+  (expect "whole vectors of 10 doubles" (simd256-whole ds) 8)
+  (expect "whole vectors of 10 doubles, 128 bits" (simd128-whole ds) 10)
+
+  ;; Arithmetic, at a float type.
+  (: a Float64x4)
+  (def a (simd256-load ds 2))          ; 2 3 4 5
+  (def b (simd256-splat 0.5))
+  (expect "ref" (double->string (simd-ref a 1)) "3")
+  (expect "sum" (double->string (simd-sum a)) "14")
+  (expect "add" (double->string (simd-sum (simd-add a b))) "16")
+  (expect "sub" (double->string (simd-ref (simd-sub a b) 0)) "1.5")
+  (expect "mul" (double->string (simd-sum (simd-mul a b))) "7")
+  (expect "div" (double->string (simd-ref (simd-div a b) 3)) "10")
+  (expect "scale" (double->string (simd-sum (simd-scale a 2.0))) "28")
+  (expect "neg" (double->string (simd-ref (simd-neg a) 0)) "-2")
+  (expect "abs" (double->string (simd-sum (simd-abs (simd-neg a)))) "14")
+  (expect "sqrt" (double->string (simd-ref (simd-sqrt a) 2)) "2")
+  (expect "dot" (double->string (simd-dot a a)) "54")
+  (expect "min" (double->string (simd-sum (simd-min a (simd256-splat 3.0)))) "11")
+  (expect "max" (double->string (simd-sum (simd-max a (simd256-splat 3.0)))) "15")
+  (expect "zero" (double->string (simd-sum (the-zero-of a))) "0")
+  (expect "generic over the vector" (double->string (simd-sum (twice a))) "28")
+
+  ;; Arithmetic, at an integer type and 128 bits.
+  (: x Int32x4)
+  (def x (simd128-load is 4))          ; 4 5 6 7
+  (expect "int sum" (simd-sum x) 22)
+  (expect "int mul" (simd-ref (simd-mul x x) 3) 49)
+  (expect "int generic" (simd-sum (twice x)) 44)
+  (expect "int and" (simd-ref (simd-and x (simd128-splat 6)) 1) 4)
+  (expect "int or" (simd-ref (simd-or x (simd128-splat 8)) 0) 12)
+  (expect "int xor" (simd-ref (simd-xor x x) 2) 0)
+  (expect "int not" (simd-ref (simd-not (simd128-zero)) 0) -1)
+  (expect "int wraps" (simd-ref (simd-add (simd128-splat 2147483647) (simd128-splat 1)) 0) -2147483648)
+
+  ;; Masks.
+  (def m (simd-lt x (simd128-splat 6)))   ; #t #t #f #f
+  (expect "a mask's lane is all ones" (simd-ref m 0) -1)
+  (expect "and nothing where it does not hold" (simd-ref m 2) 0)
+  (expect "count-true" (simd-count-true m) 2)
+  (expect "first-true" (simd-first-true (simd-ge x (simd128-splat 6))) 2)
+  (expect "first-true of nothing" (simd-first-true (simd-gt x (simd128-splat 99))) -1)
+  (expect "any?" (simd-any? m) #t)
+  (expect "all?" (simd-all? m) #f)
+  (expect "all? of le" (simd-all? (simd-le x (simd128-splat 7))) #t)
+  (expect "eq" (simd-count-true (simd-eq x (simd128-splat 5))) 1)
+  (expect "select" (simd-sum (simd-select m x (simd128-zero))) 9)
+  (expect "a double mask" (simd-count-true (simd-gt a (simd256-splat 3.5))) 2)
+  (expect "NaN equals nothing"
+          (simd-any? (simd-eq (simd256-splat (/ 0.0 0.0)) (simd256-splat (/ 0.0 0.0))))
+          #f)
+
+  ;; A loop and its tail, against a plain one: 0 .. 22 is 253.
+  (expect "a loop with a tail" (sum-below is 23) 253)
+  (expect "a loop with no whole vector" (sum-below (ints 5) 3) 3)
+
+  ;; Storing.
+  (def out (make-array 6 #:fill 0.0))
+  (simd-store! a out 1)
+  (expect "store!" (double->string (array-ref out 4)) "5")
+  (expect "store! leaves the rest" (double->string (array-ref out 5)) "0")
+
+  ;; What does not fit raises.
+  (match (try (simd256-load ds 7) #:catch (System.ArgumentOutOfRangeException))
+    ((Ok v) (println "FAILURE: a load past the end answered"))
+    ((Err e) (println "ok: a load past the end raises")))
+  0)
+
+;; A zero of the same type as `v`: the type comes from the signature.
+(: the-zero-of (-> Float64x4 Float64x4))
+(defun (the-zero-of v) (simd256-zero))

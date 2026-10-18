@@ -1,0 +1,68 @@
+;; Day 4: Printing Department, with 256-bit vectors. The same puzzle as
+;; day04.bjo.
+;;
+;; The grid is one byte array, 1 for a roll and 0 for none, with a margin of
+;; zeros round it. One vector holds 32 cells of a row. The eight neighbours of
+;; 32 cells are eight loads at fixed offsets, and their sum is the count for
+;; each of the 32.
+;;
+;; Part 2 removes the reachable rolls of each vector as it goes, in place. The
+;; rolls that end up removed do not depend on the order: removing a roll only
+;; makes its neighbours easier to reach.
+(import (std prelude))
+(import (std simd))
+(import "common.bjo")
+
+(: byte (-> int byte))
+(defun (byte n) (cast System.Byte n))
+
+;; A row is a stride of cells: a margin cell, the row, and at least a vector's
+;; width of zeros, so the last vector of a row reads no cells of the next row.
+(type (: Grid (Record (: cells (Array byte)) (: w int) (: h int) (: stride int))))
+
+(: make-grid (-> (Vec string) Grid))
+(defun (make-grid lines)
+  (def w (length (ref lines 0)))
+  (def h (length lines))
+  (def stride (* 32 (+ 1 (/ (+ w 2 31) 32))))
+  (def cells (make-array (+ (* (+ h 2) stride) 64) #:fill (byte 0)))
+  (loop (:for line lines) (:with y 0 (+ y 1))
+        (:subloop)
+        (:for c line) (:with x 0 (+ x 1))
+        (:do (when (char=? c #\@)
+               (array-set! cells (+ (* (+ y 1) stride) 1 x) (byte 1)))))
+  (Grid (cells cells) (w w) (h h) (stride stride)))
+
+;; One pass over the grid: the number of reachable rolls. With `remove?` each
+;; is taken out of the grid as soon as it is found.
+(: pass (-> Grid bool int))
+(defun (pass g remove?)
+  (def cells (.cells g))
+  (def s (.stride g))
+  (def zero (simd256-zero))
+  (def four (simd256-splat (byte 4)))
+  (: at (-> int UInt8x32))
+  (defun (at i) (simd256-load cells i))
+  (loop (:for y (range 0 (.h g)))
+        (:subloop)
+        (:for x (up-from 0 #:to (.w g) #:by 32))
+        (:let i (+ (* (+ y 1) s) 1 x))
+        (:let around (simd-add (simd-add (simd-add (at (- i s 1)) (at (- i s))) (simd-add (at (+ (- i s) 1)) (at (- i 1))))
+                               (simd-add (simd-add (at (+ i 1)) (at (- (+ i s) 1))) (simd-add (at (+ i s)) (at (+ i s 1))))))
+        (:let here (at i))
+        (:let reachable (simd-and (simd-gt here zero) (simd-lt around four)))
+        (:do (when remove?
+               (simd-store! (simd-select reachable zero here) cells i)))
+        (:acc n (summing (simd-count-true reachable)))
+        => n))
+
+(: remove-all (-> Grid int int))
+(defun (remove-all g removed)
+  (def n (pass g #t))
+  (if (= n 0) removed (remove-all g (+ removed n))))
+
+(defun (main args)
+  (def g (make-grid (input-lines args)))
+  (println (pass g #f))
+  (println (remove-all g 0))
+  0)

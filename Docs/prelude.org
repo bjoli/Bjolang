@@ -498,6 +498,22 @@ One loop each, in the runtime. When the element is a primitive number (~int~, ~l
 - ~(array-fill! a x)~ : ~x~ in every element, at any element type.
 A Native AOT build uses 128-bit vectors unless the manifest says ~(aot-cpu "native")~ — see =Projects.org=.
 
+** Vectors of lanes =(std simd)=
+A lane type holds 128 or 256 bits of numbers of one type: .NET's ~Vector128<T>~ and ~Vector256<T>~, as ~(Simd128 %a)~ and ~(Simd256 %a)~. The names say the element and the lanes, as OxCaml's do: ~Float64x2~, ~Int32x4~, ~UInt8x16~, and ~Float64x4~, ~Int32x8~, ~Int8x32~ for 256 bits. Float32, Int64, Int16 and the unsigned types are there too.
+- *Operations* are the methods of the trait ~Simd~, which both widths implement at every element type. At a known type a call is one intrinsic. ~simd-add~ ~simd-sub~ ~simd-mul~ ~simd-div~ ~simd-scale~ ~simd-neg~ ~simd-abs~ ~simd-min~ ~simd-max~ ~simd-sqrt~; ~simd-and~ ~simd-or~ ~simd-xor~ ~simd-not~; ~simd-sum~ ~simd-dot~ ~simd-ref~ ~simd-store!~ ~simd-lanes~.
+- *Making one* says the width: ~(simd256-load a i)~, ~(simd128-splat x)~, ~(simd256-zero)~. ~(simd256-lanes a)~ is how many elements of the array ~a~ one vector holds, and ~(simd256-whole a)~ is where the elements after the last whole vector start.
+- *Comparisons give masks*: ~simd-eq~ ~simd-lt~ ~simd-le~ ~simd-gt~ ~simd-ge~ set every bit of a lane where they hold. ~simd-select~, ~simd-any?~, ~simd-all?~, ~simd-count-true~ and ~simd-first-true~ read one.
+- *Which width.* 128 bits is accelerated on every x86-64 and ARM64 CPU. 256 bits needs AVX2, and is emulated, slowly, elsewhere: ~simd256-accelerated?~ says which.
+#+BEGIN_SRC scheme
+;; Four lanes at a time, then the tail one by one.
+(def whole (simd256-whole a))
+(def acc (loop (:for i (up-from 0 #:to whole #:by (simd256-lanes a)))
+               (:acc v (folding (simd256-zero) (simd-add v (simd256-load a i))))
+               => v))
+(+ (simd-sum acc) (loop (:for i (up-from whole #:to (array-length a)))
+                        (:acc s (folding 0.0 (+ s (array-ref a i)))) => s))
+#+END_SRC
+
 ** List Builders
 Mutable builders (~SchemeListBuilder~) for efficiently constructing Scheme lists front-to-back in O(1) time per item.
 - ~(listbuilder-empty)~ : Creates an empty builder.

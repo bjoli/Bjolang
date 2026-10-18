@@ -1,0 +1,133 @@
+;; Day 9: Movie Theater, with 256-bit vectors. The same puzzle as day09.bjo.
+;;
+;; Part 1 computes the areas of 4 rectangles at once: tile i against tiles j
+;; to j + 3. The areas are at most about 10^10, which a double holds exactly.
+;;
+;; Part 2 spends its time asking whether a side of the loop crosses a
+;; rectangle. The sides are four long arrays, one per bound, and one vector
+;; tests 4 sides. The arrays are filled up to whole vectors with sides that
+;; cross nothing.
+(import (std prelude))
+(import (std maths))
+(import (std simd))
+(import "common.bjo")
+
+(type (: P (Record (: x long) (: y long))))
+
+(: area (-> P P long))
+(defun (area a b)
+  (* (+ 1L (abs (- (.x a) (.x b)))) (+ 1L (abs (- (.y a) (.y b))))))
+
+;; The greatest lane of a vector.
+(: max-lane (-> Float64x4 double))
+(defun (max-lane v)
+  (max (max (simd-ref v 0) (simd-ref v 1)) (max (simd-ref v 2) (simd-ref v 3))))
+
+(: part1 (-> (Vec P) long))
+(defun (part1 ps)
+  (def n (length ps))
+  (def xs (vec->array {vecing (cast System.Double (.x p)) (:for p ps)}))
+  (def ys (vec->array {vecing (cast System.Double (.y p)) (:for p ps)}))
+  (def one (simd256-splat 1.0))
+  (: tile-vec (-> (Array double) int Float64x4))
+  (defun (tile-vec a j) (simd256-load a j))
+  (loop (:for i (range 0 n))
+        (:let xi (simd256-splat (array-ref xs i)))
+        (:let yi (simd256-splat (array-ref ys i)))
+        ;; The js after i that fill whole vectors, then the rest one by one.
+        (:let whole (+ i 1 (* 4 (/ (- n i 1) 4))))
+        (:let vec-best
+              (loop (:for j (up-from (+ i 1) #:to whole #:by 4))
+                    (:let w (simd-add one (simd-abs (simd-sub (tile-vec xs j) xi))))
+                    (:let h (simd-add one (simd-abs (simd-sub (tile-vec ys j) yi))))
+                    (:acc m (folding (simd256-zero) (simd-max m (simd-mul w h))))
+                    => (cast System.Int64 (max-lane m))))
+        (:let tail-best
+              (loop (:for j (range whole n))
+                    (:acc m (folding 0L (max m (area (ref ps i) (ref ps j)))))
+                    => m))
+        (:acc best (folding 0L (max best (max vec-best tail-best))))
+        => best))
+
+;; The sides of the loop, by their bounds. Side k runs from tile k to tile k + 1.
+(type (: Sides (Record (: x0 (Array long)) (: x1 (Array long))
+                       (: y0 (Array long)) (: y1 (Array long)))))
+
+(: make-sides (-> (Vec P) Sides))
+(defun (make-sides ps)
+  (def n (length ps))
+  (def size (* 4 (/ (+ n 3) 4)))
+  ;; A side with x0 > x1 crosses no rectangle: x0 < X1 and x1 > X0 can not
+  ;; both hold.
+  (def far 4611686018427387903L)
+  (def x0 (make-array size #:fill far))
+  (def x1 (make-array size #:fill (- 0L far)))
+  (def y0 (make-array size #:fill far))
+  (def y1 (make-array size #:fill (- 0L far)))
+  (loop (:for i (range 0 n))
+        (:let a (ref ps i))
+        (:let b (ref ps (% (+ i 1) n)))
+        (:do (array-set! x0 i (min (.x a) (.x b)))
+             (array-set! x1 i (max (.x a) (.x b)))
+             (array-set! y0 i (min (.y a) (.y b)))
+             (array-set! y1 i (max (.y a) (.y b)))))
+  (Sides (x0 x0) (x1 x1) (y0 y0) (y1 y1)))
+
+;; Whether some side of the loop passes through the open inside of the
+;; rectangle [rx0, rx1] x [ry0, ry1].
+(: crossed? (-> Sides long long long long bool))
+(defun (crossed? sides rx0 rx1 ry0 ry1)
+  (def X0 (simd256-splat rx0))
+  (def X1 (simd256-splat rx1))
+  (def Y0 (simd256-splat ry0))
+  (def Y1 (simd256-splat ry1))
+  (: at (-> (Array long) int Int64x4))
+  (defun (at a k) (simd256-load a k))
+  (loop (:for k (up-from 0 #:to (array-length (.x0 sides)) #:by 4))
+        (:let hit (simd-and (simd-and (simd-lt (at (.x0 sides) k) X1) (simd-gt (at (.x1 sides) k) X0))
+                            (simd-and (simd-lt (at (.y0 sides) k) Y1) (simd-gt (at (.y1 sides) k) Y0))))
+        (:acc any (folding #f (simd-any? hit)))
+        (:finish any)
+        => any))
+
+;; Whether the point (px + 1/2, py + 1/2) is inside the loop, by counting the
+;; vertical sides to its right. Called once per rectangle that is not crossed,
+;; which is rare, so it stays scalar.
+(: inside? (-> (Vec P) long long bool))
+(defun (inside? ps px py)
+  (def n (length ps))
+  (loop (:for i (range 0 n))
+        (:let a (ref ps i))
+        (:let b (ref ps (% (+ i 1) n)))
+        (:when (and (= (.x a) (.x b)) (> (.x a) px)
+                    (<= (min (.y a) (.y b)) py) (> (max (.y a) (.y b)) py)))
+        (:acc crossings (summing 1))
+        => (= 1 (% crossings 2))))
+
+(: part2 (-> (Vec P) long))
+(defun (part2 ps)
+  (def n (length ps))
+  (def sides (make-sides ps))
+  (loop (:for i (range 0 n))
+        (:subloop)
+        (:for j (range (+ i 1) n))
+        (:let a (ref ps i))
+        (:let b (ref ps j))
+        (:let x0 (min (.x a) (.x b)))
+        (:let x1 (max (.x a) (.x b)))
+        (:let y0 (min (.y a) (.y b)))
+        (:let y1 (max (.y a) (.y b)))
+        (:let s (area a b))
+        (:acc best (folding 0L (if (and (> s best) (< x0 x1) (< y0 y1)
+                                        (not (crossed? sides x0 x1 y0 y1))
+                                        (inside? ps x0 y0))
+                                   s
+                                   best)))
+        => best))
+
+(defun (main args)
+  (def ps {vecing (let ((v (vec-map parse-long (string-split l ",")))) (P (x (ref v 0)) (y (ref v 1))))
+                  (:for l (input-lines args))})
+  (println (part1 ps))
+  (println (part2 ps))
+  0)

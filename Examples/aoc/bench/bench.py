@@ -8,7 +8,9 @@ INPUT_DIR holds the inputs as YY-NN.txt, for example 25-03.txt for day 3 of
 started, and stops when the program exits. So the times leave out process and
 runtime startup. They include reading the input, and the .NET JIT. The table
 shows the best of RUNS runs, in seconds. Each run must give the same output in
-all three languages; a difference is marked with "!=".
+all three languages; a difference is marked with "!=". A day that has a
+dayNN-avx.bjo, a solution with (std simd), gets its time in the "avx" column,
+and its output must be the same too.
 """
 import argparse
 import os
@@ -42,7 +44,14 @@ def build(year, day):
                         "-I", BUILD, "-o", native,
                         os.path.join(HERE, "bench.ml"), base + ".ml"],
                        cwd=BUILD, check=True)
-    return exe, native, base + ".py"
+    avx = base + "-avx.bjo"
+    avx_exe = None
+    if os.path.exists(avx):
+        avx_exe = base + "-avx.exe"
+        if stale(avx_exe, avx, os.path.join(AOC, year, "common.bjo")):
+            subprocess.run(["dotnet", COMPILER, f"day{day}-avx.bjo"], cwd=os.path.join(AOC, year),
+                           check=True, stdout=subprocess.DEVNULL)
+    return exe, native, base + ".py", avx_exe
 
 
 def run(cmd, env=None):
@@ -68,13 +77,13 @@ def main():
                        stdout=subprocess.DEVNULL)
     names = args.days or sorted(f[:-4] for f in os.listdir(args.inputs)
                                 if re.fullmatch(r"\d\d-\d\d\.txt", f))
-    print(f"{'day':8}{'bjolang':>9}{'ocaml':>9}{'python':>9}")
+    print(f"{'day':8}{'bjolang':>9}{'avx':>9}{'ocaml':>9}{'python':>9}")
     for name in names:
         yy, day = name.split("-")
         year = "20" + yy
         if not os.path.exists(os.path.join(AOC, year, f"day{day}.bjo")):
             continue
-        exe, native, py = build(year, day)
+        exe, native, py, avx_exe = build(year, day)
         inp = os.path.join(args.inputs, name + ".txt")
         cmds = [(["dotnet", exe, inp], {"DOTNET_STARTUP_HOOKS": HOOK}),
                 ([native, inp], None),
@@ -84,8 +93,13 @@ def main():
             results = [run(cmd, env) for _ in range(args.n)]
             outs.append(results[0][0])
             best.append(min(t for _, t in results))
-        mark = "" if outs[0] == outs[1] == outs[2] else "  != outputs differ"
-        print(f"{name:8}" + "".join(f"{t:9.3f}" for t in best) + mark)
+        avx = "        -"
+        if avx_exe:
+            results = [run(["dotnet", avx_exe, inp], {"DOTNET_STARTUP_HOOKS": HOOK}) for _ in range(args.n)]
+            outs.append(results[0][0])
+            avx = f"{min(t for _, t in results):9.3f}"
+        mark = "" if all(o == outs[0] for o in outs) else "  != outputs differ"
+        print(f"{name:8}{best[0]:9.3f}{avx}" + "".join(f"{t:9.3f}" for t in best[1:]) + mark)
 
 
 if __name__ == "__main__":
