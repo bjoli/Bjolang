@@ -1,0 +1,92 @@
+;; `scan` and `try-scan` from `(std scan)`: a line read by a quoted pattern.
+;;
+;; Each item kind, the values it gives, the rule for spaces, the rule that the
+;; whole line must match, and what a line that does not match reports.
+(import (std simpletest) (std scan))
+
+;; The message of a scan that raises.
+(: message-of (-> (-> %a) string))
+(defun (message-of f)
+  (match (try (f) #:catch (System.FormatException))
+    ((Ok _) "no error")
+    ((Err e) (.-Message e))))
+
+(defun (main)
+  ;; Numbers and strings. The values come back as a tuple.
+  (def (lo . hi) (scan "3-17" '(long "-" long)))
+  (expect "two longs" (+ lo hi) 20L)
+  (expect "a negative and a plus sign" (scan "-3,+4" '(int "," int)) (Tuple -3 4))
+  (expect "one value is the value" (scan "42" '(int)) 42)
+  (expect "a double" (double->string (scan "x=1.5e3" '("x=" double))) "1500")
+  (expect "a character and a word" (scan "a bcd" '(char " " word)) (Tuple #\a "bcd"))
+  (expect "a non-ASCII character" (scan "ö!" '(char "!")) #\ö)
+  (expect "the rest of the line" (scan "name: rest of it" '((chars :alpha) ": " rest))
+          (Tuple "name" "rest of it"))
+  (expect "the rest may be empty" (scan "name:" '(word rest)) (Tuple "name:" ""))
+
+  ;; A space matches any amount of whitespace, none included.
+  (expect "many spaces" (scan "1     2" '(int " " int)) (Tuple 1 2))
+  (expect "a tab" (scan "1\t2" '(int " " int)) (Tuple 1 2))
+  (expect "no space at all" (scan "1,2" '(int " , " int)) (Tuple 1 2))
+  (expect "leading and trailing" (scan "  42  " '(" " int " ")) 42)
+
+  ;; A set of characters.
+  (expect "chars from a string" (scan "[.##.]" '("[" (chars ".#") "]")) ".##.")
+  (expect "chars from classes" (scan "ab_12" '((chars :alpha "_") (chars :digit)))
+          (Tuple "ab_" "12"))
+  (expect "hex digits" (scan "ff00" '((chars :hex))) "ff00")
+
+  ;; Repetitions are vecs.
+  (expect "a repetition" (scan "12x5: 1 0 3" '(int "x" int ": " int ... #:sep " "))
+          (Tuple 12 5 [1 0 3]))
+  (expect "none repeated" (scan "x:" '("x:" int ... #:sep ",")) [])
+  (expect "without a separator" (scan "aaa" '(char ...)) [#\a #\a #\a])
+  (expect "a separator with nothing after it is not read"
+          (try-scan "1,2," '(int ... #:sep ","))
+          (Err "scan: expected the end of the line at column 4 of \"1,2,\""))
+  (expect "a repetition of groups"
+          (scan "(3) (1,3) (2)" '(("(" (int ... #:sep ",") ")") ... #:sep " "))
+          [[3] [1 3] [2]])
+  (expect "the button line of a machine"
+          (scan "[.##.] (3) (1,3) {3,5}"
+                '("[" (chars ".#") "] " ("(" (int ... #:sep ",") ")") ... #:sep " "
+                  " {" (int ... #:sep ",") "}"))
+          (Tuple ".##." [[3] [1 3]] [3 5]))
+  ;; Many items, so the repetition has to run as a loop.
+  (def many (string-join {vecing (int->string i) (:for i (range 0 100000))} ","))
+  (expect "a long repetition" (length (scan many '(int ... #:sep ","))) 100000)
+
+  ;; Options and choices.
+  (expect "an option that is there" (scan "7,8" '(int (:? "," int))) (Tuple 7 (Some 8)))
+  (expect "an option that is not" (scan "7" '(int (:? "," int))) (Tuple 7 None))
+  (expect "an option with no value" (scan "-5" '((:? "-") int)) 5)
+  (expect "a choice of values" (scan "on 3" '((:or (chars :alpha) (chars :digit)) " " (:or (chars :alpha) (chars :digit))))
+          (Tuple "on" "3"))
+  (expect "a choice of strings" (try-scan "off" '((:or "on" "off"))) (Ok unit))
+
+  ;; The whole line has to match.
+  (expect "text after the pattern"
+          (try-scan "12x5 " '(int "x" int))
+          (Err "scan: expected the end of the line at column 5 of \"12x5 \""))
+  (expect "text missing"
+          (try-scan "12x" '(int "x" int))
+          (Err "scan: expected an int at column 4 of \"12x\""))
+  (expect "a number too big for an int"
+          (try-scan "99999999999" '(int))
+          (Err "scan: expected an int at column 1 of \"99999999999\""))
+  (expect "but not for a long" (scan "99999999999" '(long)) 99999999999L)
+
+  ;; try-scan's Ok, and what scan raises.
+  (expect "try-scan's Ok" (try-scan "12x5" '(int "x" int)) (Ok (Tuple 12 5)))
+  (expect "the column counts characters"
+          (try-scan "ååx" '("åå" int))
+          (Err "scan: expected an int at column 3 of \"ååx\""))
+  (expect "scan raises with the same message"
+          (message-of (fun () (scan "12y5" '(int "x" int))))
+          "scan: expected \"x\" at column 3 of \"12y5\"")
+  (expect "the line is evaluated once"
+          (let ((n (make-array 1 #:fill 0)))
+            (ignore (scan (begin (array-set! n 0 (+ (ref n 0) 1)) "1") '(int)))
+            (ref n 0))
+          1)
+  0)

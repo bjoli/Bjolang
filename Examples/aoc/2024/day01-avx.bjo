@@ -6,14 +6,14 @@
 ;; longs per instruction. That is n * n comparisons instead of a map's n
 ;; lookups, but for the 1000 lines of an input it is still quicker than
 ;; building the map.
-(import (std simd) (std array) "common.bjo")
+(import (std simd) (std array) (std scan) "common.bjo")
 
 (defun (main args)
   (def (left right)
     (loop (:for line (input-lines args))
-          (:let cols (string-split (string-trim line) "   "))
-          (:acc left (vecing (parse-long (ref cols 0))))
-          (:acc right (vecing (parse-long (ref cols 1))))
+          (:let (a . b) (scan line '(long " " long)))
+          (:acc left (vecing a))
+          (:acc right (vecing b))
           => (Tuple (vec->array (vec-sort left)) (vec->array (vec-sort right)))))
   (def* (n (array-length left))
         (whole (simd256-whole left)))

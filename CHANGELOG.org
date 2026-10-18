@@ -3,6 +3,26 @@
 
 What each change guarantees, and what it leaves open.
 
+* Reading a line by a pattern
+
+- A new module, ~(std scan)~, after OCaml's ~Scanf~: ~(scan line '(long "-"
+  long))~ reads a line by a pattern written as a quoted list, and
+  ~try-scan~ gives a ~Result~ instead of raising. Items are strings, ~int~,
+  ~long~, ~double~, ~char~, ~word~, ~rest~ and ~(chars ...)~; groups,
+  ~item ... #:sep ","~, ~(:? ...)~ and ~(:or ...)~ combine them. A space in a
+  string matches any amount of whitespace, as in OCaml, and the whole line
+  must match.
+- The macro compiles the pattern into straight-line code over the line's
+  bytes, through the steps in ~BjoScan.cs~, which answer a value and a
+  position as a value tuple. A million ~"123456-789012"~ lines took 12.7 ms
+  and allocated nothing, against 50 ms and 168 bytes a line with
+  ~string-split~, and 731 ms and 288 bytes a line with ~rx-match~.
+- A bad pattern is an error where it is written: an unknown item, a
+  repetition of a string, a choice of values and none, a ~(chars ...)~ that
+  is not ASCII.
+- The AoC solutions read their input with it.
+- Tests: ~404_scan.bjo~, and ~errors/scan_*.bjo~.
+
 * ReadyToRun for the standard library and the runtime
 
 - A module of the standard library is precompiled with crossgen2 after it is

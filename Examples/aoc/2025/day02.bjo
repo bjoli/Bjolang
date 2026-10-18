@@ -1,6 +1,6 @@
 ;; Day 2: Gift Shop. An ID is invalid when its digits are one block repeated:
 ;; exactly twice in part 1, at least twice in part 2. Sums the invalid IDs.
-(import "common.bjo")
+(import (std scan) "common.bjo")
 
 ;; Whether the digits ds are the first k digits repeated.
 (: repeats? (-> (Vec char) int bool))
@@ -19,10 +19,9 @@
 
 (defun (main args)
   (def (part1 part2)
-    (loop (:for r (string-split (string-trim (ref (input-lines args) 0)) ","))
-          (:let bounds (vec-map parse-long (string-split r "-")))
+    (loop (:for (lo . hi) (scan (ref (input-lines args) 0) '((long "-" long) ... #:sep "," " ")))
           (:subloop)
-          (:for id (up-from (ref bounds 0) #:to (+ 1L (ref bounds 1))))
+          (:for id (up-from lo #:to (+ 1L hi)))
           (:let ds (string->vec (long->string id)))
           (:acc part1 (summing id) #:when (twice? ds))
           (:acc part2 (summing id) #:when (some-repeat? ds))

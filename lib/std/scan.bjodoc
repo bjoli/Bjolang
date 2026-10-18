@@ -1,0 +1,168 @@
+;; Docs for std/scan.bjo, read through (:doc #:file "scan.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Reads a line by a pattern written as a quoted list, after OCaml's Scanf.")
+  (see scan try-scan)
+  (example """
+    (import (std scan))
+
+    (def (lo . hi) (scan "3-17" '(long "-" long)))         ; 3L and 17L
+    (def (Tuple w h counts) (scan "12x5: 1 0 3" '(int "x" int ": " int ... #:sep " ")))
+    (try-scan "12y5" '(int "x" int))
+    ;; (Err "scan: expected \"x\" at column 3 of \"12y5\"")
+    """)
+  (reference """
+    A pattern is a quoted list of items, read in order from the start of the
+    line. The whole line must match: after the last item, the line must end.
+
+    @strong{Items.}
+    @code{"text"} matches the text exactly, except that a run of spaces in
+    it matches any amount of whitespace, none included, as a space does in
+    OCaml's formats.
+    @code{int}, @code{long} and @code{double} read a number, with an
+    optional sign. A number too big for its type does not match.
+    @code{char} reads one character, @code{word} the characters up to
+    whitespace or the end, and @code{rest} the rest of the line, which may be
+    empty.
+    @code{(chars ".#")} reads one or more of the characters given. The
+    arguments are strings of ASCII characters and the classes @code{:digit},
+    @code{:lower}, @code{:upper}, @code{:alpha}, @code{:alnum} and @code{:hex}.
+    A list of items is a group, read in order.
+    @code{item ...} reads the item as many times as it matches, none
+    included, and @code{item ... #:sep ","} puts the separator between them.
+    @code{(:? item ...)} reads the items if they match, and nothing if they do
+    not. @code{(:or a b ...)} reads the first choice that matches.
+
+    @strong{Values.}
+    A number, a character, a word, @code{rest} and @code{chars} read a
+    value; a string reads none. A group's value is its one value, or a
+    @code{Tuple} of its values. A repetition's value is a @code{Vec}, and an
+    option's an @code{Option}. Every choice of an @code{:or} must read a value
+    of the same type, or all must read none. The result of a scan is the
+    value of its items as one group, or @code{unit} when they read none. The
+    types come from the pattern, so @code{(scan line '(int ","int))} is a
+    @code{(Tuple int int)}.
+
+    @strong{Speed.} The macro compiles the pattern into straight-line code
+    over the line's bytes when the program is compiled. A pattern of numbers
+    and strings allocates nothing; a word or @code{rest} is a slice of the
+    line, which shares its bytes, and a repetition allocates its vec.
+
+    @strong{Not a regex.} A scan does not search and does not backtrack into
+    an item: a repetition takes as many items as match, and an item that is
+    read is not read again in another way. Use @code{(std rx)} to find text
+    inside other text.
+    """))
+
+(:doc scan
+  (summary "Reads a line by a pattern, and raises when the line does not match.")
+  (form (scan line pattern))
+  (arg line "The text to read.")
+  (arg pattern "A quoted list of items, such as @code{'(int \",\" int)}. See the module's reference.")
+  (reference """
+    The value is what the pattern reads: one value, a @code{Tuple} of them, or
+    @code{unit}. When the line does not match, @code{scan} raises a
+    @code{System.FormatException} whose message says what was expected, at
+    which column, and the line.
+    """)
+  (see try-scan)
+  (example """
+    (def (x . y) (scan "7,1" '(long "," long)))
+    (scan "[.##.]" '("[" (chars ".#") "]"))                 ; ".##."
+    """))
+
+(:doc try-scan
+  (summary "Reads a line by a pattern, as a Result.")
+  (form (try-scan line pattern))
+  (arg line "The text to read.")
+  (arg pattern "A quoted list of items. See the module's reference.")
+  (reference """
+    The value is @code{Ok} with the values @code{scan} would answer, or
+    @code{Err} with the message @code{scan} would raise. A line that does not
+    match costs no exception.
+    """)
+  (see scan)
+  (example """
+    (match (try-scan line '(int "x" int ": " int ... #:sep " "))
+      ((Ok (Tuple w h counts)) (fits? w h counts))
+      ((Err _) #f))
+    """))
+
+(:doc scan-lit
+  (summary "Matches a literal at a position. What a pattern's string compiles to.")
+  (arg s "The line.")
+  (arg pos "The byte position.")
+  (arg literal "The text to match.")
+  (returns "The position after the literal, or -1."))
+
+(:doc scan-ws
+  (summary "Skips whitespace at a position. What a run of spaces in a pattern compiles to.")
+  (arg s "The line.")
+  (arg pos "The byte position.")
+  (returns "The position after the whitespace."))
+
+(:doc scan-int
+  (summary "Reads an int at a position.")
+  (arg s "The line.")
+  (arg pos "The byte position.")
+  (returns "The int and the position after it, or a position of -1."))
+
+(:doc scan-long
+  (summary "Reads a long at a position.")
+  (arg s "The line.")
+  (arg pos "The byte position.")
+  (returns "The long and the position after it, or a position of -1."))
+
+(:doc scan-double
+  (summary "Reads a double at a position.")
+  (arg s "The line.")
+  (arg pos "The byte position.")
+  (returns "The double and the position after it, or a position of -1."))
+
+(:doc scan-char
+  (summary "Reads one character at a position.")
+  (arg s "The line.")
+  (arg pos "The byte position.")
+  (returns "The character and the position after it, or a position of -1 at the end."))
+
+(:doc scan-word
+  (summary "Reads the characters up to whitespace or the end.")
+  (arg s "The line.")
+  (arg pos "The byte position.")
+  (returns "The word, a slice of the line, and the position after it, or a position of -1 when there is none."))
+
+(:doc scan-rest
+  (summary "Reads the rest of the line.")
+  (arg s "The line.")
+  (arg pos "The byte position.")
+  (returns "The rest, a slice of the line, and the end of the line."))
+
+(:doc scan-chars
+  (summary "Reads one or more characters of an ASCII set.")
+  (arg s "The line.")
+  (arg pos "The byte position.")
+  (arg low "Bit c is set for each character c below 64.")
+  (arg high "Bit c - 64 is set for each character c from 64 to 127.")
+  (returns "The run, a slice of the line, and the position after it, or a position of -1 when there is none."))
+
+(:doc scan-end?
+  (summary "Whether a position is the end of the line.")
+  (arg s "The line.")
+  (arg pos "The byte position.")
+  (returns "#t at the end."))
+
+(:doc scan-fail
+  (summary "Raises the error of a line that does not match.")
+  (arg s "The line.")
+  (arg pos "The byte position where the line stops matching.")
+  (arg expected "What the pattern expected there.")
+  (returns "Nothing: it raises.")
+  (raises System.FormatException "Always."))
+
+(:doc scan-message
+  (summary "The message of a line that does not match.")
+  (arg s "The line.")
+  (arg pos "The byte position where the line stops matching.")
+  (arg expected "What the pattern expected there.")
+  (returns "The message: what was expected, at which column, and the line."))

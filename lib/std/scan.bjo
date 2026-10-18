@@ -1,0 +1,423 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/scan.bjo — reading a line by a pattern, after OCaml's Scanf.
+;;
+;; `(scan line '(long "-" long))` reads two longs with a dash between them and
+;; answers them as a tuple. The pattern is a quoted list, read when the macro
+;; expands: the expansion is straight-line code over the line's bytes, one
+;; step of `BjoScan.cs` per item, with no pattern left to interpret at run
+;; time. A step answers a value and the next position as a value tuple, so a
+;; pattern of numbers allocates nothing.
+;;
+;; The code is built in continuation-passing style: each item is given what to
+;; do with its value and the position after it, and what to do when it does
+;; not match. Where the rest of the pattern would be copied into two places —
+;; after a repetition, an option or a choice — it is a local function instead,
+;; a join point, so the expansion grows with the pattern and not faster.
+(import (std prelude) (std syntax-match))
+
+(:doc #:file "scan.bjodoc")
+
+(export scan-lit scan-ws scan-int scan-long scan-double scan-char scan-word
+        scan-rest scan-chars scan-end? scan-fail scan-message)
+
+;; What the expansion calls. Exported, because a template reaches a helper of
+;; its own module only through the module's exports.
+(import/extern
+  (scan-lit     (: Bjolang.Runtime.BjoScan.Lit     (-> string int string int)))
+  (scan-ws      (: Bjolang.Runtime.BjoScan.Ws      (-> string int int)))
+  (scan-int     (: Bjolang.Runtime.BjoScan.Int     (-> string int (Tuple int int))))
+  (scan-long    (: Bjolang.Runtime.BjoScan.Long    (-> string int (Tuple long int))))
+  (scan-double  (: Bjolang.Runtime.BjoScan.Double  (-> string int (Tuple double int))))
+  (scan-char    (: Bjolang.Runtime.BjoScan.Char    (-> string int (Tuple char int))))
+  (scan-word    (: Bjolang.Runtime.BjoScan.Word    (-> string int (Tuple string int))))
+  (scan-rest    (: Bjolang.Runtime.BjoScan.Rest    (-> string int (Tuple string int))))
+  (scan-chars   (: Bjolang.Runtime.BjoScan.Chars   (-> string int long long (Tuple string int))))
+  (scan-end?    (: Bjolang.Runtime.BjoScan.End     (-> string int bool)))
+  (scan-fail    (: Bjolang.Runtime.BjoScan.Fail    (-> string int string %a)))
+  (scan-message (: Bjolang.Runtime.BjoScan.Message (-> string int string string))))
+
+;; ---------------------------------------------------------------------------
+;; The pattern
+;; ---------------------------------------------------------------------------
+
+;; One item of a pattern. `IChars` is an ASCII set as two 64-bit halves, and
+;; the text an error says it expected.
+(type (: Item (Union (: ILit string)
+                     IWs
+                     (: IRead string)
+                     (: IChars long long string)
+                     (: IGroup (List Item))
+                     (: IRep Item (Option Item))
+                     (: IOpt Item)
+                     (: IOr (List Item)))))
+
+;; Whether the item reads a value, which the result then holds.
+(: valued? (-> Item bool))
+(defun (valued? item)
+  (match item
+    ((ILit _) #f)
+    (IWs #f)
+    ((IRead _) #t)
+    ((IChars _ _ _) #t)
+    ((IGroup items) (any? valued? items))
+    ((IRep _ _) #t)
+    ((IOpt inner) (valued? inner))
+    ((IOr alts) (valued? (list-head alts)))))
+
+;; What an error says the item was expected to be.
+(: describe (-> Item string))
+(defun (describe item)
+  (match item
+    ((ILit t) (str "\"" t "\""))
+    (IWs "whitespace")
+    ((IRead kind)
+     (case kind
+       (("int") "an int")
+       (("long") "a long")
+       (("double") "a double")
+       (("char") "a character")
+       (("word") "a word")
+       (else "the rest of the line")))
+    ((IChars _ _ what) what)
+    ((IGroup items) (if (list-empty? items) "nothing" (describe (list-head items))))
+    ((IRep inner _) (describe inner))
+    ((IOpt inner) (describe inner))
+    ((IOr alts) (str "one of " (string-join (list->vec (list-map describe alts)) ", ")))))
+
+(: space? (-> char bool))
+(defun (space? c) (or (char=? c #\space) (char=? c #\tab)))
+
+;; A string of a pattern: the text between its spaces, each exactly, and a
+;; run of spaces as any amount of whitespace.
+(: string-items (-> string (List Item)))
+(defun (string-items text)
+  (defun (flush lit acc)
+    (if (list-empty? lit) acc (Cons (ILit (list->string (list-reverse lit))) acc)))
+  (defun (skip cs)
+    (match cs
+      ((Cons c rest) #:when (space? c) (skip rest))
+      (_ cs)))
+  (let go ((cs (string->list text)) (lit Nil) (acc Nil))
+    (match cs
+      (Nil (list-reverse (flush lit acc)))
+      ((Cons c rest)
+       (cond ((space? c)
+              (go (skip rest) Nil (Cons IWs (flush lit acc))))
+             (else (go rest (Cons c lit) acc)))))))
+
+;; The bit of an ASCII character in a set's two halves.
+(: char-bit (-> int (Tuple long long)))
+(defun (char-bit code)
+  (if (< code 64)
+      (Tuple (shift-left 1L code) 0L)
+      (Tuple 0L (shift-left 1L (- code 64)))))
+
+;; The characters a `(chars ...)` keyword names.
+(: char-class (-> string (Option string)))
+(defun (char-class name)
+  (case name
+    (("digit") (Some "0123456789"))
+    (("lower") (Some "abcdefghijklmnopqrstuvwxyz"))
+    (("upper") (Some "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+    (("alpha") (Some "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+    (("alnum") (Some "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"))
+    (("hex") (Some "0123456789abcdefABCDEF"))
+    (else None)))
+
+;; `(chars ".#")`, `(chars :digit)`, or several of them: a run of one or more
+;; of their characters.
+(: chars-item (-> (List Syntax) Syntax Item))
+(defun (chars-item parts whole)
+  (def text
+    (fold
+     (fun (part acc)
+       (match part
+         ((SStr s) (str acc s))
+         ((SKey k)
+          (match (char-class (->str k))
+            ((Some cs) (str acc cs))
+            (None (ret-error part (str "(chars ...) knows the classes :digit, :lower, :upper, :alpha, :alnum and :hex, not :" (->str k) ".")))))
+         (_ (ret-error part "(chars ...) takes strings of characters and class keywords, such as (chars \".#\") or (chars :digit \"_\")."))))
+     "" parts))
+  (when (string-empty? text)
+    (ignore (ret-error whole "(chars ...) needs at least one character.")))
+  (def (low . high)
+    (string-fold
+     (fun (c acc)
+       (def code (char->integer c))
+       (when (>= code 128)
+         (ignore (ret-error whole (str "(chars ...) takes ASCII characters only, and " (char->string c) " is not one."))))
+       (def (l . h) (char-bit code))
+       (Tuple (bitwise-ior (fst acc) l) (bitwise-ior (snd acc) h)))
+     (Tuple 0L 0L) text))
+  (IChars low high (str "one of \"" text "\"")))
+
+;; A syntax error, as a value of any type: the transformer raises it, and the
+;; expander reports it at the form it names.
+(: ret-error (-> Syntax string %a))
+(defun (ret-error at message)
+  (ignore (syntax-error at message))
+  (panic! "unreachable: syntax-error does not return"))
+
+(: keyword? (-> Syntax string bool))
+(defun (keyword? s name)
+  (match s
+    ((SKey k) (= (->str k) name))
+    (_ #f)))
+
+;; One item, without what follows it.
+(: parse-item (-> Syntax Item))
+(defun (parse-item s)
+  (match s
+    ((SStr text)
+     (match (string-items text)
+       ((Cons only Nil) only)
+       (items (IGroup items))))
+    ((SSym name)
+     (def kind (symbol->string name))
+     (if (any? #(= & kind) (list "int" "long" "double" "char" "word" "rest"))
+         (IRead kind)
+         (ret-error s (str "'" kind "' is not an item of a scan pattern. The items are strings, int, long, double, char, word, rest, (chars ...), a group (...), (:? ...) and (:or ...)."))))
+    ((SList (Cons head rest))
+     (cond ((keyword? head "?")
+            (IOpt (group-of (parse-items rest s))))
+           ((keyword? head "or") (or-item rest s))
+           ((match head ((SSym n) (= (symbol->string n) "chars")) (_ #f))
+            (chars-item rest s))
+           (else (IGroup (parse-items (Cons head rest) s)))))
+    ((SList Nil) (IGroup Nil))
+    (_ (ret-error s "This is not an item of a scan pattern. The items are strings, int, long, double, char, word, rest, (chars ...), a group (...), (:? ...) and (:or ...)."))))
+
+;; `(:or a b ...)`: each choice is one item, and they all read a value or
+;; none does.
+(: or-item (-> (List Syntax) Syntax Item))
+(defun (or-item choices whole)
+  (def alts (list-map (fun (a) (group-of (parse-items (list a) a))) choices))
+  (when (list-empty? alts)
+    (ignore (ret-error whole "(:or ...) needs at least one choice.")))
+  (when (not (all? #(= (valued? &) (valued? (list-head alts))) alts))
+    (ignore (ret-error whole "(:or ...) needs every choice to read a value, or none of them.")))
+  (IOr alts))
+
+;; A list of items as one item.
+(: group-of (-> (List Item) Item))
+(defun (group-of items)
+  (match items
+    ((Cons only Nil) only)
+    (_ (IGroup items))))
+
+;; The items of a list, with `item ...` and `item ... #:sep sep` read as
+;; repetitions of the item before them.
+(: parse-items (-> (List Syntax) Syntax (List Item)))
+(defun (parse-items xs whole)
+  (let go ((xs xs) (acc Nil))
+    (match xs
+      (Nil (list-reverse acc))
+      ((Cons (SPunct "...") rest)
+       (match acc
+         (Nil (ret-error whole "A '...' repeats the item before it, and there is none."))
+         ((Cons prev before)
+          (when (not (valued? prev))
+            (ignore (ret-error whole "A '...' repeats an item that reads a value, and a string reads none. Put the string in a group with something that does, as in (\"(\" int \")\") ...")))
+          (match rest
+            ((Cons k (Cons sep more)) #:when (keyword? k "sep")
+             (go more (Cons (IRep prev (Some (parse-item sep))) before)))
+            ((Cons k Nil) #:when (keyword? k "sep")
+             (ret-error whole "#:sep needs the separator after it, as in int ... #:sep \",\"."))
+            (_ (go rest (Cons (IRep prev None) before)))))))
+      ((Cons x rest) (go rest (Cons (parse-item x) acc))))))
+
+;; ---------------------------------------------------------------------------
+;; The expansion
+;; ---------------------------------------------------------------------------
+
+;; The line's name in the expansion, and a counter for the expansion's own
+;; temporaries. Each temporary is built from a string, so that each one gets a
+;; name of its own: hygiene gives every distinct name one fresh spelling per
+;; expansion, and one template name used at every depth would shadow itself.
+(type (: Ctx (Record (: line Syntax) (: counter (Array int)))))
+
+(: fresh (-> Ctx string Syntax))
+(defun (fresh ctx prefix)
+  (def n (ref (.counter ctx) 0))
+  (array-set! (.counter ctx) 0 (+ n 1))
+  (SSym (string->symbol (str "scan-" prefix (->str n)))))
+
+;; What an item does with its value and the position after it, and what it
+;; does when it does not match.
+(type (: OnValue (-> (Option Syntax) Syntax Syntax)))
+(type (: OnMiss (-> Syntax string Syntax)))
+
+;; The call of the step that reads `kind`.
+(: read-call (-> string Syntax Syntax Syntax))
+(defun (read-call kind s p)
+  (case kind
+    (("int") #'(scan-int ,s ,p))
+    (("long") #'(scan-long ,s ,p))
+    (("double") #'(scan-double ,s ,p))
+    (("char") #'(scan-char ,s ,p))
+    (("word") #'(scan-word ,s ,p))
+    (else #'(scan-rest ,s ,p))))
+
+(: long-literal (-> long Syntax))
+(defun (long-literal n) (SInt (str (long->string n) "L")))
+
+;; Code for `item` at position `p`.
+(: gen (-> Ctx Item Syntax OnValue OnMiss Syntax))
+(defun (gen ctx item p ok fail)
+  (def s (.line ctx))
+  (match item
+    ((ILit text)
+     (def q (fresh ctx "q"))
+     #'(let ((,q (scan-lit ,s ,p ,(SStr text))))
+         (if (< ,q 0) ,(fail p (describe item)) ,(ok None q))))
+    (IWs
+     (def q (fresh ctx "q"))
+     #'(let ((,q (scan-ws ,s ,p))) ,(ok None q)))
+    ((IRead kind)
+     (def* (v (fresh ctx "v"))
+           (q (fresh ctx "q")))
+     #'(match ,(read-call kind s p)
+         ((,v . ,q) (if (< ,q 0) ,(fail p (describe item)) ,(ok (Some v) q)))))
+    ((IChars low high _)
+     (def* (v (fresh ctx "v"))
+           (q (fresh ctx "q")))
+     #'(match (scan-chars ,s ,p ,(long-literal low) ,(long-literal high))
+         ((,v . ,q) (if (< ,q 0) ,(fail p (describe item)) ,(ok (Some v) q)))))
+    ((IGroup items) (gen-seq ctx items p Nil ok fail))
+    ((IOpt inner) (gen-opt ctx inner p ok))
+    ((IOr alts) (gen-or ctx alts item p ok fail))
+    ((IRep inner sep) (gen-rep ctx inner sep p ok))))
+
+;; Code for items in order. A group's value is its one value, or a tuple of
+;; its values, or none.
+(: gen-seq (-> Ctx (List Item) Syntax (List Syntax) OnValue OnMiss Syntax))
+(defun (gen-seq ctx items p vals ok fail)
+  (match items
+    (Nil
+     (match (list-reverse vals)
+       (Nil (ok None p))
+       ((Cons only Nil) (ok (Some only) p))
+       (all (ok (Some #'(Tuple ,@all)) p))))
+    ((Cons item rest)
+     (gen ctx item p
+          (fun (v q)
+            (gen-seq ctx rest q (match v ((Some x) (Cons x vals)) (None vals)) ok fail))
+          fail))))
+
+;; A join point: a local function `k` that runs `ok` on its arguments, so
+;; that several paths can continue with one copy of it. `valued?` says
+;; whether it takes a value before the position.
+(: join (-> Ctx bool OnValue (-> (-> (Option Syntax) Syntax Syntax) Syntax) Syntax))
+(defun (join ctx valued? ok body)
+  (def* (k (fresh ctx "k"))
+        (kv (fresh ctx "kv"))
+        (kp (fresh ctx "kp")))
+  (if valued?
+      #'(let ()
+          (defun (,k ,kv ,kp) ,(ok (Some kv) kp))
+          ,(body (fun (v q) #'(,k ,(option-ref v) ,q))))
+      #'(let ()
+          (defun (,k ,kp) ,(ok None kp))
+          ,(body (fun (v q) #'(,k ,q))))))
+
+;; `(:? item)`: the item's value in a `Some`, or `None` and no text read.
+(: gen-opt (-> Ctx Item Syntax OnValue Syntax))
+(defun (gen-opt ctx inner p ok)
+  (def valued (valued? inner))
+  (join ctx valued ok
+        (fun (k)
+          (gen ctx inner p
+               (fun (v q) (k (match v ((Some x) (Some #'(Some ,x))) (None None)) q))
+               (fun (_ _) (k (if valued (Some #'None) None) p))))))
+
+;; `(:or a b ...)`: the first choice that matches, each tried at `p`.
+(: gen-or (-> Ctx (List Item) Item Syntax OnValue OnMiss Syntax))
+(defun (gen-or ctx alts whole p ok fail)
+  (join ctx (valued? whole) ok
+        (fun (k)
+          (let next ((alts alts))
+            (match alts
+              (Nil (fail p (describe whole)))
+              ((Cons a rest) (gen ctx a p k (fun (_ _) (next rest)))))))))
+
+;; `item ...` and `item ... #:sep sep`: the items as a vec, as many as match,
+;; none included. A separator not followed by an item is not read. The loop
+;; is a named let, so it runs as a loop however many items there are.
+(: gen-rep (-> Ctx Item (Option Item) Syntax OnValue Syntax))
+(defun (gen-rep ctx inner sep p ok)
+  (def* (acc (fresh ctx "acc"))
+        (lp (fresh ctx "lp"))
+        (first (fresh ctx "first"))
+        (more (fresh ctx "more")))
+  (join ctx #t ok
+        (fun (k)
+          (def done #'(vecbuilder->vec ,acc))
+          (defun (stop) (k (Some done) lp))
+          ;; After an item: add its value, and go round again from `q`.
+          (defun (add v q)
+            (match sep
+              (None #'(let () (vecbuilder-add! ,acc ,(option-ref v)) (,more ,q)))
+              (_ #'(let () (vecbuilder-add! ,acc ,(option-ref v)) (,more ,q #f)))))
+          (defun (item-at at) (gen ctx inner at add (fun (_ _) (stop))))
+          (match sep
+            (None
+             #'(let ((,acc (vecbuilder-empty/small)))
+                 (let ,more ((,lp ,p)) ,(item-at lp))))
+            ((Some sep-item)
+             #'(let ((,acc (vecbuilder-empty/small)))
+                 (let ,more ((,lp ,p) (,first #t))
+                   (if ,first
+                       ,(item-at lp)
+                       ,(gen ctx sep-item lp (fun (_ sq) (item-at sq)) (fun (_ _) (stop)))))))))))
+
+;; The whole expansion: the items from position 0, then the end of the line.
+(: expand (-> Syntax Syntax Syntax bool Syntax))
+(defun (expand form line pattern raising?)
+  (def quoted
+    (match pattern
+      ((SList (Cons (SSym q) items))
+       (if (= (symbol->string q) "quoted-list") (Some items) None))
+      (_ None)))
+  (def items
+    (match quoted
+      ((Some items) (parse-items items pattern))
+      (None (ret-error pattern "The pattern of a scan is a quoted list, such as '(int \",\" int)."))))
+  (def ctx (Ctx (line (SSym (string->symbol "scan-line"))) (counter (make-array 1 #:fill 0))))
+  (def s (.line ctx))
+  (defun (fail p expected)
+    (if raising?
+        #'(scan-fail ,s ,p ,(SStr expected))
+        #'(Err (scan-message ,s ,p ,(SStr expected)))))
+  (defun (finish v p)
+    (def value (match v ((Some x) x) (None #'unit)))
+    #'(if (scan-end? ,s ,p)
+          ,(if raising? value #'(Ok ,value))
+          ,(fail p "the end of the line")))
+  #'(let ((,s ,line))
+      ,(gen-seq ctx items #'0 Nil finish fail)))
+
+;; `(scan line '(pattern ...))`: the values the pattern reads, or raises a
+;; FormatException that says where the line does not match.
+(def/macro (scan form inject compare)
+  (syntax-match form
+    ((_ line pattern) (expand form line pattern #t))
+    (bad (syntax-error bad "scan takes a line and a quoted pattern, as in (scan line '(int \",\" int))."))))
+
+;; `(try-scan line '(pattern ...))`: the same values in an `Ok`, or an `Err`
+;; with the message `scan` would raise.
+(def/macro (try-scan form inject compare)
+  (syntax-match form
+    ((_ line pattern) (expand form line pattern #f))
+    (bad (syntax-error bad "try-scan takes a line and a quoted pattern, as in (try-scan line '(int \",\" int))."))))
