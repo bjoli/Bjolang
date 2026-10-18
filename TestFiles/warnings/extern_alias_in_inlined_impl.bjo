@@ -1,0 +1,20 @@
+;; EXPECT-NO-WARNING: could not inline
+;; An `import/extern` alias takes its name over from the prelude's
+;; `string->long`. A copy of the impl's body, spliced at the call, has to call
+;; the alias too. Before, the copy called the prelude's function, its type did
+;; not match, and the compiler warned and fell back to a call.
+(import (std prelude))
+(import (text bjodat))
+
+(import/extern
+  (string->long (: System.Int64.TryParse (-> string (out long) (Option long)))))
+
+(type (: Setting (Record (: value string))))
+
+(impl (->bjodat Setting)
+  (defun (->bjodat s)
+    (BjoInt (match (string->long (record-ref s value)) ((Some n) n) (None 0L)))))
+
+(defun (main)
+  (println (->bjodat (Setting (value "42"))))
+  0)

@@ -2746,20 +2746,31 @@ let loadModuleGraph
 /// The answer is the module *and* the name that module knows it by, which
 /// differ for an import brought in under a modifier: the qualified reference
 /// has to spell the original, since that is what the origin's class defines.
+///
+/// An `import/extern` alias takes its name over from an import, so it removes
+/// the name: the alias has no module class of its own, and a copy of a body
+/// that calls it has to leave the name as written. Qualified to the import, the
+/// copy called the import's function.
 let private moduleOfName (decls: TypedAST.TDecl list) : Map<string, string * string> =
     decls
     |> TypedAST.collectDecls (function
         | TypedAST.TModule(modName, inner, _) ->
             inner
-            |> List.choose (function
-                | TypedAST.TDef(n, _, _, _) -> Some(n, (modName, n))
-                | TypedAST.TDefMutable(n, _, _, _) -> Some(n, (modName, n))
-                | TypedAST.TDefun(n, _, _, _, _, _, _, _, _) -> Some(n, (modName, n))
+            |> List.collect (function
+                | TypedAST.TDef(n, _, _, _) -> [ n, Some(modName, n) ]
+                | TypedAST.TDefMutable(n, _, _, _) -> [ n, Some(modName, n) ]
+                | TypedAST.TDefun(n, _, _, _, _, _, _, _, _) -> [ n, Some(modName, n) ]
                 | TypedAST.TExtern(visible, origin, _, _) ->
-                    Some(visible, (origin.OriginModule, origin.OriginalName))
-                | _ -> None)
+                    [ visible, Some(origin.OriginModule, origin.OriginalName) ]
+                | TypedAST.TImportExtern(infos, _) -> infos |> List.map (fun info -> info.Alias, None)
+                | _ -> [])
         | _ -> [])
-    |> Map.ofList
+    |> List.fold
+        (fun acc (name, origin) ->
+            match origin with
+            | Some o -> Map.add name o acc
+            | None -> Map.remove name acc)
+        Map.empty
 
 /// Works out what each local inline template's free variables should be emitted
 /// as, now that the whole program has been checked.

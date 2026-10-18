@@ -1719,6 +1719,11 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
     // name, so that a local shadows it; an imported binding left in place
     // would shadow this module's own import instead. A prelude that gains a
     // function of the same name then broke the module.
+    //
+    // The registry's tables keyed by name lose the import's entry too, as for
+    // a module's own definition. `ImportAliases` is what an inline template's
+    // qualification reads: left in place, a copy of a body that calls the
+    // alias called the import's function instead, and its type did not match.
     let shadowing =
         infos
         |> List.fold
@@ -1726,7 +1731,14 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                 { acc with
                     Bindings = Map.remove info.Alias acc.Bindings
                     FunMetas = Map.remove info.Alias acc.FunMetas
-                    TraitMethodNames = Set.remove info.Alias acc.TraitMethodNames })
+                    TraitMethodNames = Set.remove info.Alias acc.TraitMethodNames
+                    Registry =
+                        { acc.Registry with
+                            ImportAliases =
+                                acc.Registry.ImportAliases
+                                |> Map.filter (fun name alias -> not (alias.Kind = AliasDef && name = info.Alias))
+                            DoubleDefs = Map.remove info.Alias acc.Registry.DoubleDefs
+                            BlockingNames = Set.remove info.Alias acc.Registry.BlockingNames } })
             { env with Registry = newRegistry }
 
     let withPlaceholders =
