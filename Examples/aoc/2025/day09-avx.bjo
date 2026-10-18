@@ -7,10 +7,7 @@
 ;; rectangle. The sides are four long arrays, one per bound, and one vector
 ;; tests 4 sides. The arrays are filled up to whole vectors with sides that
 ;; cross nothing.
-(import (std prelude))
-(import (std maths))
-(import (std simd))
-(import "common.bjo")
+(import (std maths) (std simd) "common.bjo")
 
 (type (: P (Record (: x long) (: y long))))
 
@@ -25,10 +22,10 @@
 
 (: part1 (-> (Vec P) long))
 (defun (part1 ps)
-  (def n (length ps))
-  (def xs (vec->array {vecing (cast System.Double (.x p)) (:for p ps)}))
-  (def ys (vec->array {vecing (cast System.Double (.y p)) (:for p ps)}))
-  (def one (simd256-splat 1.0))
+  (def* (n (length ps))
+        (xs (vec->array {vecing (cast System.Double (.x p)) (:for p ps)}))
+        (ys (vec->array {vecing (cast System.Double (.y p)) (:for p ps)}))
+        (one (simd256-splat 1.0)))
   (: tile-vec (-> (Array double) int Float64x4))
   (defun (tile-vec a j) (simd256-load a j))
   (loop (:for i (range 0 n))
@@ -55,15 +52,12 @@
 
 (: make-sides (-> (Vec P) Sides))
 (defun (make-sides ps)
-  (def n (length ps))
-  (def size (* 4 (/ (+ n 3) 4)))
+  (def* (n (length ps)) (size (* 4 (/ (+ n 3) 4))))
   ;; A side with x0 > x1 crosses no rectangle: x0 < X1 and x1 > X0 can not
   ;; both hold.
-  (def far 4611686018427387903L)
-  (def x0 (make-array size #:fill far))
-  (def x1 (make-array size #:fill (- 0L far)))
-  (def y0 (make-array size #:fill far))
-  (def y1 (make-array size #:fill (- 0L far)))
+  (def* (far 4611686018427387903L) (x0 (make-array size #:fill far))
+        (x1 (make-array size #:fill (- 0L far))) (y0 (make-array size #:fill far))
+        (y1 (make-array size #:fill (- 0L far))))
   (loop (:for i (range 0 n))
         (:let a (ref ps i))
         (:let b (ref ps (% (+ i 1) n)))
@@ -106,8 +100,7 @@
 
 (: part2 (-> (Vec P) long))
 (defun (part2 ps)
-  (def n (length ps))
-  (def sides (make-sides ps))
+  (def* (n (length ps)) (sides (make-sides ps)))
   (loop (:for i (range 0 n))
         (:subloop)
         (:for j (range (+ i 1) n))

@@ -1,17 +1,15 @@
 ;; Day 12: Christmas Tree Farm. Count the regions that all their presents fit
 ;; in, turned or flipped, without overlap. Most regions are settled by area;
 ;; the rest are searched square by square.
-(import (std prelude))
-(import (std eq))
-(import "common.bjo")
+(import (std eq) "common.bjo")
 
 ;; A shape is the (x, y) of its cells. `normalise` moves it to the origin and
 ;; sorts the cells, so that the first cell is the one a search places at the
 ;; first empty square.
 (: normalise (-> (List (Tuple int int)) (List (Tuple int int))))
 (defun (normalise cells)
-  (def x0 (list-foldl #(min (fst &1) &2) 1000 cells))
-  (def y0 (list-foldl #(min (snd &1) &2) 1000 cells))
+  (def* (x0 (list-foldl #(min (fst &1) &2) 1000 cells))
+        (y0 (list-foldl #(min (snd &1) &2) 1000 cells)))
   (list-sort (list-map (fun ((Tuple x y)) (Tuple (- x x0) (- y y0))) cells)))
 
 ;; The eight turns and flips of a shape, without repeats.
@@ -40,8 +38,7 @@
     (list-for-each (fun ((Tuple dx dy)) (array-set! grid (+ x0 dx (* (+ y0 dy) w)) v)) o))
   (defun (take! i n) (array-set! counts i (- (ref counts i) n)))
   (defun (go (: at int) (: slack int))
-    (def x (% at w))
-    (def y (/ at w))
+    (def* (x (% at w)) (y (/ at w)))
     ;; Puts orientation o of shape i with its first cell on (x, y).
     (defun (place? i o)
       (def ax (- x (fst (list-head o))))

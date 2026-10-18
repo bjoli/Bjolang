@@ -9,9 +9,7 @@
 ;; Part 2 removes the reachable rolls of each vector as it goes, in place. The
 ;; rolls that end up removed do not depend on the order: removing a roll only
 ;; makes its neighbours easier to reach.
-(import (std prelude))
-(import (std simd))
-(import "common.bjo")
+(import (std simd) "common.bjo")
 
 (: byte (-> int byte))
 (defun (byte n) (cast System.Byte n))
@@ -22,10 +20,9 @@
 
 (: make-grid (-> (Vec string) Grid))
 (defun (make-grid lines)
-  (def w (length (ref lines 0)))
-  (def h (length lines))
-  (def stride (* 32 (+ 1 (/ (+ w 2 31) 32))))
-  (def cells (make-array (+ (* (+ h 2) stride) 64) #:fill (byte 0)))
+  (def* (w (length (ref lines 0))) (h (length lines))
+        (stride (* 32 (+ 1 (/ (+ w 2 31) 32))))
+        (cells (make-array (+ (* (+ h 2) stride) 64) #:fill (byte 0))))
   (loop (:for line lines) (:with y 0 (+ y 1))
         (:subloop)
         (:for c line) (:with x 0 (+ x 1))
@@ -37,10 +34,8 @@
 ;; is taken out of the grid as soon as it is found.
 (: pass (-> Grid bool int))
 (defun (pass g remove?)
-  (def cells (.cells g))
-  (def s (.stride g))
-  (def zero (simd256-zero))
-  (def four (simd256-splat (byte 4)))
+  (def* (cells (.cells g)) (s (.stride g)) (zero (simd256-zero))
+        (four (simd256-splat (byte 4))))
   (: at (-> int UInt8x32))
   (defun (at i) (simd256-load cells i))
   (loop (:for y (range 0 (.h g)))

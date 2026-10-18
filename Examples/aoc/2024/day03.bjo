@@ -1,8 +1,6 @@
 ;; Day 3: Mull It Over. Part 1 sums the products of the mul(X,Y)
 ;; instructions. Part 2 obeys do() and don't().
-(import (std prelude))
-(import (std rx))
-(import "common.bjo")
+(import (std rx) "common.bjo")
 
 (def instruction
   #rx(or (seq "mul(" (=> :x (** 1 3 :ascii-digit)) "," (=> :y (** 1 3 :ascii-digit)) ")")
@@ -14,9 +12,8 @@
   (def (all enabled)
     (loop (:for m (rx-matches instruction memory))
           (:with on? #t (case (rx-text m) (("do()") #t) (("don't()") #f) (else on?)))
-          (:let product (match (rx-group m :x)
-                          ((Some x) (* (parse-long x) (parse-long (option-ref (rx-group m :y)))))
-                          (None 0L)))
+          (:when-let (Some x) (rx-group m :x))
+          (:let product (* (parse-long x) (parse-long (option-ref (rx-group m :y)))))
           (:acc all (summing product))
           (:acc enabled (summing product) #:when on?)
           => (Tuple all enabled)))
