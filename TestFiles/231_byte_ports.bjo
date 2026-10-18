@@ -105,14 +105,27 @@
 ;; A losing branch consumes nothing
 ;; ---------------------------------------------------------------------------
 ;;
-;; One round of the race: a `choose` between a read of four bytes and a stop
-;; signal, with a writer fiber putting the four bytes in at about the moment the
-;; stop arrives. Either branch may win.
+;; One round: a `choose` between a read of four bytes and a stop signal, with
+;; a writer fiber that puts the four bytes in. Either branch may win.
 ;;
 ;; What is asserted is the same either way: the four bytes come out of the port
-;; exactly once, whole and in order. If the read branch lost after having taken
-;; them, they are gone and the drain is short; if it took them twice, the drain
+;; exactly once, whole and in order. If the read branch lost after it took
+;; them, they are gone and the drain is short. If it took them twice, the drain
 ;; is long.
+;;
+;; A round has one of three setups. The scheduler decides which branch wins an
+;; open race, and under load it can decide the same way every time. So the
+;; open race only checks the bytes, and each outcome also has its own setup
+;; where it has to win:
+;;
+;; - `ReadWins`: no stop is sent before the `choose` ends. The `choose` parks
+;;   until the writer's bytes land, and the read branch wins.
+;; - `StopWins`: the stop is sent first, and the writer only starts after the
+;;   `choose` ends. The read branch sees an empty pipe and loses.
+;; - `Race`: the writer and a stopper fiber start together before the
+;;   `choose`. Either branch can win.
+(type (: Setup (Union ReadWins StopWins Race)))
+
 ;; `bjo` takes one expression, so every fiber body in this file is a named
 ;; bjoroutine rather than a block written inline.
 (: write-then-flush (-bjo-> OutputPort (Array byte) int))
@@ -121,19 +134,29 @@
   (flush-port out)
   0)
 
+(: send-stop (-bjo-> (Inbox int) int))
+(defbjo (send-stop stop)
+  (ignore (inbox-post! stop 1))
+  0)
+
 ;; Whether the read branch won, and every byte that came out of the port.
-(: race-once (-bjo-> (Tuple bool string)))
-(defbjo (race-once)
+(: race-once (-bjo-> Setup (Tuple bool string)))
+(defbjo (race-once setup)
   (match (byte-pipe)
     ((Tuple in out)
      (def stop (make-inbox 1 DropNewest))
 
      ;; The writer runs on a fiber of its own so that the bytes can land while
-     ;; the `choose` is parked — the case the property is about. A port whose
-     ;; buffer was already full would never publish and never race.
-     (def writer (bjo (write-then-flush out four)))
-
-     (ignore (inbox-post! stop 1))
+     ;; the `choose` is parked. A port whose buffer was already full would
+     ;; never publish and never race.
+     (def early-writer
+       (match setup
+         (StopWins None)
+         (_ (Some (bjo (write-then-flush out four))))))
+     (match setup
+       (ReadWins (ignore 0))
+       (StopWins (ignore (inbox-post! stop 1)))
+       (Race (ignore (bjo (send-stop stop)))))
 
      (def first
        (sync (choose (wrap (read-bytes-evt in 4) (fun (r) (Some (got r))))
@@ -141,6 +164,10 @@
 
      ;; The writer has to have finished before the port may be shut down, or the
      ;; drain would end before the bytes arrived.
+     (def writer
+       (match early-writer
+         ((Some w) w)
+         (None (bjo (write-then-flush out four)))))
      (ignore (sync (promise-join writer)))
      (shutdown! out)
 
@@ -151,20 +178,23 @@
                  (drain-bytes in))))))
 
 ;; How many rounds came out wrong, and how many of them the read branch won.
-;;
-;; The second number is what keeps this test honest. A race that never actually
-;; raced is green in exactly the same way as one that did, so "the read branch
-;; won sometimes and lost sometimes" is asserted rather than hoped for.
-(: race-rounds (-bjo-> int (Tuple int int)))
-(defbjo (race-rounds rounds)
+(: race-rounds (-bjo-> Setup int (Tuple int int)))
+(defbjo (race-rounds setup rounds)
   (let loop ((i 0) (bad 0) (wins 0))
     (if (= i rounds)
         (Tuple bad wins)
-        (match (race-once)
+        (match (race-once setup)
           ((Tuple read-won text)
            (loop (+ i 1)
                  (+ bad (if (= text "11.22.33.44.") 0 1))
                  (+ wins (if read-won 1 0))))))))
+
+;; `race-rounds` on a fiber of its own, joined. A failed join counts as -1.
+(: run-rounds (-> Setup int (Tuple int int)))
+(defun (run-rounds setup rounds)
+  (match (sync/blocking (promise-join (bjo (race-rounds setup rounds))))
+    ((Ok counts) counts)
+    ((Err e) (Tuple -1 -1))))
 
 ;; ---------------------------------------------------------------------------
 ;; Two fibers, one port
@@ -304,22 +334,20 @@
   ;; A losing branch consumes nothing
   ;; =========================================================================
   ;;
-  ;; Run enough times to catch a race. A single round that happened not to race
-  ;; passes just as green as one that did, so the count is what makes this worth
-  ;; anything — and what it is looking for is bytes going missing, which shows
-  ;; as a short answer.
-  (def raced
-    (match (sync/blocking (promise-join (bjo (race-rounds 300))))
-      ((Ok counts) counts)
-      ((Err e) (Tuple -1 -1))))
-
-  (match raced
+  ;; Each setup runs many times, because a bad round can depend on timing. The
+  ;; bytes have to come out whole in every round. In the two fixed setups the
+  ;; winner is fixed too, so both outcomes are surely covered.
+  (match (run-rounds ReadWins 100)
     ((Tuple bad wins)
-     (expect "a losing branch consumes nothing, over 300 rounds" bad 0)
-     ;; Both outcomes have to have happened, or the 300 rounds were 300 copies
-     ;; of the same uninteresting one.
-     (expect-true "the read branch won some of those rounds" (> wins 0))
-     (expect-true "and lost some of them" (< wins 300))))
+     (expect "a winning read takes the bytes once" bad 0)
+     (expect "the read wins when no stop is sent" wins 100)))
+  (match (run-rounds StopWins 100)
+    ((Tuple bad wins)
+     (expect "a losing read consumes nothing" bad 0)
+     (expect "the stop wins when the pipe is empty" wins 0)))
+  (match (run-rounds Race 300)
+    ((Tuple bad wins)
+     (expect "an open race consumes nothing, over 300 rounds" bad 0)))
 
   ;; =========================================================================
   ;; Ephemeral, not persistent
