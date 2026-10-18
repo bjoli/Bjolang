@@ -10,7 +10,7 @@
 (defun (normalise cells)
   (def* (x0 (fold #(min (fst &1) &2) 1000 cells))
         (y0 (fold #(min (snd &1) &2) 1000 cells)))
-  (list-sort (list-map (fun ((Tuple x y)) (Tuple (- x x0) (- y y0))) cells)))
+  (list-sort (list-map (fun ((x . y)) (Tuple (- x x0) (- y y0))) cells)))
 
 ;; The eight turns and flips of a shape, without repeats.
 (: orientations (-> (List (Tuple int int)) (List (List (Tuple int int)))))
@@ -20,8 +20,8 @@
       (if (= i 4)
           acc
           (go (+ i 1)
-              (list-map (fun ((Tuple x y)) (Tuple (- 0 y) x)) cs)
-              (Cons (normalise cs) (Cons (normalise (list-map (fun ((Tuple x y)) (Tuple (- 0 x) y)) cs)) acc))))))
+              (list-map (fun ((x . y)) (Tuple (- 0 y) x)) cs)
+              (Cons (normalise cs) (Cons (normalise (list-map (fun ((x . y)) (Tuple (- 0 x) y)) cs)) acc))))))
   (fold (fun (o kept) (if (any? #(= & o) kept) kept (Cons o kept))) Nil all))
 
 ;; Fills the region square by square. The first empty square is covered by
@@ -33,27 +33,30 @@
   (defun (free? x y)
     (and (>= x 0) (< x w) (>= y 0) (< y h) (not (ref grid (+ x (* y w))))))
   (defun (mark! o x0 y0 v)
-    (list-for-each (fun ((Tuple dx dy)) (array-set! grid (+ x0 dx (* (+ y0 dy) w)) v)) o))
+    (list-for-each (fun ((dx . dy)) (array-set! grid (+ x0 dx (* (+ y0 dy) w)) v)) o))
   (defun (take! i n) (array-set! counts i (- (ref counts i) n)))
   (defun (go (: at int) (: slack int))
     (def* (x (% at w))
           (y (/ at w)))
-    ;; Puts orientation o of shape i with its first cell on (x, y).
+    ;; Puts orientation o of shape i with its first cell on (x, y), searches
+    ;; on, and takes the present away again.
     (defun (place? i o)
       (def ax (- x (fst (list-head o))))
-      (and (all? (fun ((Tuple dx dy)) (free? (+ ax dx) (+ y dy))) o)
-           (let ()
-             (mark! o ax y #t) (take! i 1)
+      (defun (put! n) (mark! o ax y (> n 0)) (take! i n))
+      (cond ((all? (fun ((dx . dy)) (free? (+ ax dx) (+ y dy))) o)
+             (put! 1)
              (def ok (go (+ at 1) slack))
-             (mark! o ax y #f) (take! i -1)
-             ok)))
+             (put! -1)
+             ok)
+            (else #f)))
+    ;; Leaves (x, y) empty, which spends one square of slack.
     (defun (skip?)
-      (and (> slack 0)
-           (let ()
+      (cond ((> slack 0)
              (array-set! grid at #t)
              (def ok (go (+ at 1) (- slack 1)))
              (array-set! grid at #f)
-             ok)))
+             ok)
+            (else #f)))
     (cond ((all? #(= & 0) counts) #t)
           ((>= at (* w h)) #f)
           ((ref grid at) (go (+ at 1) slack))
