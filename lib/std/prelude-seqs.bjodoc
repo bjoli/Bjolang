@@ -111,10 +111,17 @@
     @code{iterable-cleanup},
     @code{fold}, @code{map},
     @code{filter}, @code{take}, @code{drop}, @code{take-while},
-    @code{drop-while}, @code{enumerate}, @code{flat-map}, @code{any?},
+    @code{drop-while}, @code{seq-enumerate}, @code{flat-map}, @code{any?},
     @code{all?}, @code{find}, @code{for-each}, and @code{->seq}. Methods
     returning a @code{Seq} are lazy; @code{fold}, @code{any?}, @code{all?},
     @code{find}, and @code{for-each} execute eagerly.
+
+    @code{iterable-end} may be called after @code{iterable-done?} answered
+    true, or a second time, and must then do nothing.
+
+    @code{enumerate} and @code{zip} are not methods: they make adapters,
+    structs around iterables that are iterables themselves, with no
+    @code{Seq} in between.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -198,12 +205,74 @@
     """))
 
 (:doc enumerate
-  (summary "A lazy sequence of each element paired with its index.")
+  (summary "Each element of an iterable paired with its index, from 0.")
   (arg s "The iterable collection or sequence.")
-  (returns "A Seq of (Tuple i x), with index i counting from 0.")
-  (see map up-from)
+  (returns "An @code{(Enumerated %s)}: an iterable of @code{(Tuple i x)}.")
+  (see zip seq-enumerate Enumerated up-from)
   (example """
-    (seq->list (enumerate "ab"))   ; the pairs 0 and #\a, 1 and #\b
+    {listing (Tuple i c) (:for (Tuple i c) (enumerate "ab"))}   ; (0 a) (1 b)
+    (loop (:for (Tuple i x) (enumerate xs))
+          (:when (> x 10))
+          (:acc at (listing i)))                               ; where the big ones are
+    """)
+  (reference """
+    A struct around @code{s}, not a @code{Seq}. A loop over it at a known
+    type walks @code{s} with an index beside its cursor, and allocates
+    nothing: over an array, the loop reads it by index. Over a generic
+    iterable it calls @code{s}'s methods through its dictionary.
+
+    Over a @code{Seq}, such as @code{(map f xs)}, the adapter walks the
+    sequence through its enumerator. @code{seq-enumerate} is a @code{Seq}
+    itself, and fuses with a chain of @code{seql}s under it into one loop.
+    """))
+
+(:doc zip
+  (summary "The elements of two iterables in pairs, until either ends.")
+  (arg l "The left iterable.")
+  (arg r "The right iterable.")
+  (returns "A @code{(Zipped %l %r)}: an iterable of @code{(Tuple x y)}.")
+  (see enumerate Zipped)
+  (example """
+    {listing (str name "=" (->str n)) (:for (Tuple name n) (zip names #[1 2 3]))}
+    (loop (:for (Tuple a b) (zip xs (drop 1 xs)))   ; each element and the next
+          (:acc rises (counting (< a b))))
+    """)
+  (reference """
+    A struct around both, not a @code{Seq}: a loop over it at a known type
+    walks the two cursors side by side and allocates nothing. The walk ends
+    when either side ends, and the other side is ended then too, so a
+    sequence that holds a file is closed. The left side is asked first:
+    when the right side is the shorter, one more element of the left is
+    read, and not used. The two may be of different types.
+    """))
+
+(:doc Enumerated
+  (summary "What @code{enumerate} gives: an iterable around %s whose elements are paired with their index.")
+  (tparam %s "The iterable it walks.")
+  (field inner "The iterable.")
+  (see enumerate))
+
+(:doc Zipped
+  (summary "What @code{zip} gives: an iterable of the elements of %l and %r in pairs.")
+  (tparam %l "The left iterable.")
+  (tparam %r "The right iterable.")
+  (field left "The left iterable.")
+  (field right "The right iterable.")
+  (see zip))
+
+(:doc seq-enumerate
+  (summary "A lazy sequence of each element paired with its index, from 0.")
+  (arg s "The iterable collection or sequence.")
+  (returns "A Seq of (Tuple i x).")
+  (see enumerate map)
+  (example """
+    {summing i (:for (Tuple i x) (seq-enumerate (filter even? xs)))}
+    """)
+  (reference """
+    What @code{enumerate} was before it made an adapter. Its default is a
+    @code{seql}, so a loop over it fuses with a chain of others under it,
+    such as @code{(seq-enumerate (map f xs))}, into one loop. Over a
+    collection, @code{enumerate} is as fast and allocates nothing.
     """))
 
 (:doc flat-map

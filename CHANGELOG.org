@@ -3,6 +3,45 @@
 
 What each change guarantees, and what it leaves open.
 
+* enumerate and zip are adapters, and a loop splits a tuple cursor into its parts
+
+- ~(enumerate s)~ gives an ~(Enumerated %s)~ and ~(zip l r)~ a
+  ~(Zipped %l %r)~: structs around what they walk, which are iterables
+  themselves, with element and cursor types made from theirs. ~enumerate~
+  was an ~Iterable~ method that gave a ~Seq~; it is a function now, and the
+  method is ~seq-enumerate~. ~zip~ is new.
+- ~zip~ ends when either side ends, asking the left first, and ends the
+  other side's cursor there and then, so a sequence holding a file is
+  closed. When the right side is the shorter, one more element of the left
+  is read and not used. Both adapters pass ~iterable-end~ and
+  ~iterable-cleanup~ on. The ~Iterable~ contract now says ~iterable-end~ on
+  a cursor already ended must do nothing.
+- *Speed.* A loop over an adapter at a known type inlines it with what it
+  walks. Over a million-element array, ~enumerate~ runs as the old fused
+  ~seql~ did (401 µs both), and ~zip~ of two arrays compiles to the same
+  machine code as two lockstep ~:for~s. Over a list it is faster (103 µs
+  against 115). In generic code, through a dictionary, it is 3× faster and
+  allocates nothing (624 µs against 2.04 ms and 98 B a call). Over a
+  ~Seq~ chain, ~(enumerate (map f xs))~ no longer fuses (2.0 ms against
+  490 µs); ~(seq-enumerate (map f xs))~ does, as before.
+- *LoopLowering splits a tuple slot.* A loop slot of tuple type, such as an
+  adapter's cursor, becomes one slot for each part (~splitTupleSlots~).
+  Carried whole, C# copied a ~ValueTuple~ into it on every jump, and the JIT
+  did not turn an array index carried that way into a walking pointer, which
+  made ~enumerate~ over an array 28% slower. Nothing is recognised by name:
+  where the body takes the slot apart, the parts are bound to the new slots,
+  and any other use is the tuple built again from them; a jump binds its
+  arguments in order and passes the parts. Only in a loop emitted inline,
+  whose body reads its slots, and whose entry gives the slot a tuple literal.
+- The adapters' ~iterable-end~ and ~iterable-cleanup~ take the cursor apart
+  with ~def~ rather than ~fst~ and ~snd~, which ~Simplify~ cannot see through:
+  with ~snd~, a loop over ~enumerate~ of an array kept a guard it did not need.
+- Tests: ~411_adapters.bjo~ (each adapter at several iterables, nested, through
+  dictionaries, and what it passes on: ~zip~ ending the longer side, ends at
+  an early exit, cleanup at an exception), ~codegen/adapters.bjo~ (the split
+  cursor, no guard, ~seq-enumerate~ fused), and ~182_iterable~ and
+  ~codegen/impl_assoc_projection~ updated.
+
 * An implementation's where clause may name a trait with associated types
 
 - ~(impl (Iterable (Enumerated %s)) (where (Iterable %s)) ...)~ was refused

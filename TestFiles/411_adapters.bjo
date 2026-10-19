@@ -1,0 +1,120 @@
+;; `enumerate` and `zip`: adapters, structs around iterables that are
+;; iterables themselves.
+;;
+;; Each is checked at several iterables, nested, in comprehensions, through
+;; constrained functions taken as values (which are not specialised, so the
+;; adapter's class is built from the dictionaries of what it wraps), and for
+;; what it passes on: `iterable-end` at an early exit, `iterable-cleanup` at
+;; an exception, and, for `zip`, the end of the longer side when the shorter
+;; one ends.
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (Exception (: System.Exception))
+  (Boom (: System.InvalidOperationException (-> string Boom))))
+
+;; Counts to `n`, and logs each end and cleanup with its label.
+(type (: Counter (Struct (: label string) (: n int))))
+
+(def/mutable events '())
+
+(: log! (-> string void))
+(defun (log! e) (set! events (cons e events)))
+
+(: events-in-order (-> (List string)))
+(defun (events-in-order) (list-reverse events))
+
+(impl (Iterable Counter)
+  (type %elem int)
+  (type %cursor int)
+  (defun (iterable-start c) 0)
+  (defun (iterable-done? c i) (>= i (record-ref c n)))
+  (defun (iterable-current c i) i)
+  (defun (iterable-next c i) (+ i 1))
+  (defun (iterable-end c i) (log! (str "end " (record-ref c label) " at " (->str i))))
+  (defun (iterable-cleanup c i) (log! (str "cleanup " (record-ref c label) " at " (->str i)))))
+
+(: counter (-> string int Counter))
+(defun (counter label n) (Counter (label label) (n n)))
+
+;; Generic over the iterable: the adapter's dictionary is built here, from
+;; the caller's.
+(: index-sum (-> %s int) (where (Iterable %s)))
+(defun (index-sum s) #:no-inline {summing i (:for (Tuple i x) (enumerate s))})
+
+(: pair-count (-> %l %r int) (where (Iterable %l) (Iterable %r)))
+(defun (pair-count l r) #:no-inline {summing 1 (:for p (zip l r))})
+
+(defun (main)
+  ;; --- enumerate -----------------------------------------------------------
+  (expect "enumerate an array"
+          {listing (Tuple i x) (:for (Tuple i x) (enumerate #[10 20 30]))}
+          (list (Tuple 0 10) (Tuple 1 20) (Tuple 2 30)))
+  (expect "enumerate a vec" {summing (* i x) (:for (Tuple i x) (enumerate [5 6 7]))} 20)
+  (expect "enumerate a string, by character"
+          {listing i (:for (Tuple i c) (enumerate "héj!")) (:when (char=? c #\!))}
+          (list 3))
+  (expect "enumerate a range" {listing (Tuple i x) (:for (Tuple i x) (enumerate (range 5 7)))}
+          (list (Tuple 0 5) (Tuple 1 6)))
+  (expect "enumerate a map" {summing i (:for (Tuple i kv) (enumerate #map(("a" 1) ("b" 2))))} 1)
+  (expect "enumerate a seq" {listing i (:for (Tuple i x) (enumerate (map (fun (y) (* y y)) (list 1 2 3))))}
+          (list 0 1 2))
+  (expect "enumerate nothing" {listing p (:for p (enumerate (list)))} (list))
+  (expect "enumerate is an iterable: its Seq" (seq->list (->seq (enumerate "ab")))
+          (list (Tuple 0 #\a) (Tuple 1 #\b)))
+  (expect "enumerate is an iterable: fold" (fold (fun (p acc) (+ acc (fst p))) 0 (enumerate [1 1 1])) 3)
+  (expect "seq-enumerate, the sequence version"
+          {listing (Tuple i x) (:for (Tuple i x) (seq-enumerate (filter even? #[1 2 3 4])))}
+          (list (Tuple 0 2) (Tuple 1 4)))
+
+  ;; --- zip -------------------------------------------------------------------
+  (expect "zip of different types"
+          {listing (str s (->str n)) (:for (Tuple s n) (zip (list "a" "b" "c") #[1 2 3]))}
+          (list "a1" "b2" "c3"))
+  (expect "zip ends at the shorter, left" {listing p (:for p (zip #[1 2] [7 8 9]))}
+          (list (Tuple 1 7) (Tuple 2 8)))
+  (expect "zip ends at the shorter, right" {listing p (:for p (zip "abc" (range 0 1)))}
+          (list (Tuple #\a 0)))
+  (expect "zip with an empty side" {listing p (:for p (zip (list) #[1 2]))} (list))
+  (expect "each element and the next"
+          {summing 1 (:for (Tuple a b) (zip #[1 3 2 5 4] (drop 1 #[1 3 2 5 4]))) (:when (< a b))}
+          2)
+  (expect "zip and enumerate"
+          {listing (Tuple i (fst p)) (:for (Tuple i p) (enumerate (zip "xy" [1.5 2.5])))}
+          (list (Tuple 0 #\x) (Tuple 1 #\y)))
+  (expect "zip three, nested" {listing (Tuple a (fst bc)) (:for (Tuple a bc) (zip #[1 2] (zip "pq" [#t #f])))}
+          (list (Tuple 1 #\p) (Tuple 2 #\q)))
+
+  ;; --- through dictionaries ------------------------------------------------------
+  (def sum-indexes index-sum)
+  (expect "enumerate, generic" (sum-indexes [9 9 9 9]) 6)
+  (def count-pairs pair-count)
+  (expect "zip, generic" (count-pairs (list 1 2 3) #[4 5]) 2)
+
+  ;; --- what is passed on ---------------------------------------------------------
+  ;; zip ends the longer side when the shorter one ends, and nothing else.
+  (set! events '())
+  (expect "zip: the pairs" {summing (+ a b) (:for (Tuple a b) (zip (counter "short" 2) (counter "long" 5)))} 2)
+  (expect "zip: the longer side is ended where the shorter ended"
+          (events-in-order) (list "end long at 2"))
+  (set! events '())
+  (ignore {summing 1 (:for p (zip (counter "long" 5) (counter "short" 1)))})
+  (expect "zip: the left side ended when the right is the shorter"
+          (events-in-order) (list "end long at 1"))
+  ;; An early exit ends the cursors the adapter wraps.
+  (set! events '())
+  (loop (:for (Tuple i x) (enumerate (counter "e" 9))) (:finish (= i 2)))
+  (expect "enumerate passes on the end at a :finish" (events-in-order) (list "end e at 2"))
+  (set! events '())
+  (loop (:for p (zip (counter "a" 9) (counter "b" 9))) (:finish (= (fst p) 1)))
+  (expect "zip passes on the end to both" (events-in-order) (list "end a at 1" "end b at 1"))
+  ;; An exception cleans them up.
+  (set! events '())
+  (match (try (loop (:for (Tuple i x) (enumerate (counter "t" 9)))
+                    (:do (when (= i 3) (raise (cast Exception (Boom. "stop"))))))
+              #:catch (System.InvalidOperationException))
+    ((Ok _) (println "FAILURE: the loop did not throw"))
+    ((Err e) (println "ok: the loop threw")))
+  (expect "enumerate passes on the cleanup" (events-in-order) (list "cleanup t at 3"))
+  0)

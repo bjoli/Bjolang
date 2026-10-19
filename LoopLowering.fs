@@ -336,6 +336,211 @@ let formsClosure (body: TypedExpr) : bool =
         false
 
 // ---------------------------------------------------------------------------
+// Tuple slots
+// ---------------------------------------------------------------------------
+
+/// A loop slot of tuple type, split into one slot for each element.
+///
+/// A cursor made of two cursors, such as `enumerate`'s index and the cursor of
+/// what it walks, is a tuple, and a loop carries it in one slot. C# then copies
+/// a `ValueTuple` into that slot on every jump, and the JIT keeps both parts as
+/// integers: it does not turn an array index carried that way into a pointer
+/// that walks the array, as it does for an index in a local of its own. Split,
+/// each part is such a local, and the loop is the one its parts would make.
+///
+/// Nothing is recognised by name. Where the member's body takes the slot apart,
+/// `(def (Tuple a b) slot)`, the parts are bound to the new slots. Any other use
+/// of the slot is the tuple built again from them, which is the same value. A
+/// jump binds its arguments in order and passes the parts of the split one.
+///
+/// Only a slot the body reads directly, and so with no closure in the body, of
+/// a group emitted inline, and only when the call that enters the loop gives it
+/// a tuple literal: the entry has to stay a call for the group to be emitted
+/// inline, so it cannot bind a temporary first.
+let private splitTupleSlots (members: TLoopMember list) (entry: TypedExpr) : TLoopMember list * TypedExpr =
+    let rec settled (t: HMType) =
+        match t with
+        | TMeta { Value = Some inner } -> settled inner
+        | _ -> t
+
+    let entryCall =
+        match flatLoopEntry members entry with
+        | Some(m, args) -> Some(members |> List.findIndex (fun x -> x.LoopName = m.LoopName), args)
+        | None -> mergedLoopEntry members entry
+
+    match entryCall with
+    | None -> members, entry
+    | Some(entryIdx, initArgs) ->
+
+    // A name bound or assigned anywhere in `e`: the slot is then not only read.
+    let rec bindsOrSets (name: string) (e: TypedExpr) =
+        (match e.Node with
+         | TSet(n, _) -> n = name
+         | TLet(n, _, _, _, _)
+         | TLetMutable(n, _, _) -> n = name
+         | TLetTuple(ns, _, _) -> List.contains name ns
+         | TLambda(ns, _) -> List.contains name ns
+         | _ -> false)
+        || TypeVisitor.children e |> List.exists (bindsOrSets name)
+
+    // The parts of each slot that is split, by member and slot index.
+    let split: Map<int * int, (string * HMType) list> =
+        members
+        |> List.indexed
+        |> List.collect (fun (mi, m) ->
+            m.Slots
+            |> List.indexed
+            |> List.choose (fun (si, (name, t)) ->
+                match settled t with
+                | TTuple ts when ts.Length >= 2 ->
+                    let readsSlot = m.Locals[si] = name
+                    let literalEntry =
+                        mi <> entryIdx
+                        || (match initArgs[si].Node with
+                            | TTupleMake items -> items.Length = ts.Length
+                            | _ -> false)
+
+                    if readsSlot && literalEntry && not (bindsOrSets name m.Body) then
+                        Some((mi, si), ts |> List.mapi (fun k tk -> fresh $"%s{name}_%d{k}", tk))
+                    else
+                        None
+                | _ -> None))
+        |> Map.ofList
+
+    if split.IsEmpty then
+        members, entry
+    else
+
+    let ident (name: string, t: HMType) r : TypedExpr = { Type = t; Range = r; Node = TIdent(name, []) }
+
+    // A member's own uses of its split slots.
+    let rewriteUses (parts: Map<string, (string * HMType) list>) (body: TypedExpr) =
+        let rec go (e: TypedExpr) : TypedExpr =
+            match e.Node with
+            | TLetTuple(names, { Node = TIdent(s, _) }, rest) when parts.ContainsKey s && names.Length = parts[s].Length ->
+                let rest = go rest
+
+                List.foldBack2
+                    (fun (n: string) part (acc: TypedExpr) ->
+                        if n = "_" then acc
+                        else { acc with Node = TLet(n, false, noParams, ident part e.Range, acc) })
+                    names
+                    parts[s]
+                    rest
+            | TIdent(s, _) when parts.ContainsKey s ->
+                { e with Node = TTupleMake(parts[s] |> List.map (fun p -> ident p e.Range)) }
+            | _ -> TypeVisitor.mapChildren go e
+
+        go body
+
+    let letIn (name: string) (value: TypedExpr) (rest: TypedExpr) : TypedExpr =
+        { rest with Node = TLet(name, false, noParams, value, rest) }
+
+    let isSimple (e: TypedExpr) =
+        match e.Node with
+        | TIdent _ | TInt _ | TBool _ | TChar _ | TString _ -> true
+        | _ -> false
+
+    // A jump to a member with split slots: the arguments bound in order, and
+    // the parts of each split one passed in its place.
+    let rewriteJump (depth: int) (target: int) (args: TypedExpr list) (jump: TypedExpr) : TypedExpr =
+        let bindings = ResizeArray<string * TypedExpr>()
+        let tuples = ResizeArray<string list * TypedExpr>()
+
+        let valueOf (arg: TypedExpr) =
+            if isSimple arg then arg
+            else
+                let t = fresh "jumparg"
+                bindings.Add(t, arg)
+                { arg with Node = TIdent(t, []) }
+
+        let newArgs =
+            args
+            |> List.indexed
+            |> List.collect (fun (si, arg) ->
+                match Map.tryFind (target, si) split with
+                | None -> [ valueOf arg ]
+                | Some parts ->
+                    match arg.Node with
+                    | TTupleMake items when items.Length = parts.Length -> items |> List.map valueOf
+                    | _ ->
+                        let whole = fresh "jumparg"
+                        let names = parts |> List.map (fun (p, _) -> fresh p)
+                        bindings.Add(whole, arg)
+                        tuples.Add(names, { arg with Node = TIdent(whole, []) })
+                        List.map2 (fun n (_, t) -> ident (n, t) arg.Range) names parts)
+
+        let inner = { jump with Node = TRecur(depth, target, newArgs) }
+
+        // The whole tuples are taken apart after every argument is bound,
+        // which keeps the order the arguments were written in.
+        let withTuples =
+            Seq.foldBack (fun (names, value) (acc: TypedExpr) -> { acc with Node = TLetTuple(names, value, acc) }) tuples inner
+
+        Seq.foldBack (fun (n, v) acc -> letIn n v acc) bindings withTuples
+
+    let affected = split |> Map.toList |> List.map (fst >> fst) |> Set.ofList
+
+    // Every jump to an affected member at this group's depth, including from
+    // loops nested in it and emitted inline. A jump does not leave a lambda or
+    // a sequence, so those are not entered.
+    let rec jumps (depth: int) (e: TypedExpr) : TypedExpr =
+        match e.Node with
+        | TRecur(d, i, args) when d = depth && affected.Contains i ->
+            rewriteJump d i (args |> List.map (jumps depth)) e
+        | TLoop(ms, entryOpt) ->
+            { e with
+                Node =
+                    TLoop(
+                        ms |> List.map (fun m -> { m with Body = jumps (depth + 1) m.Body }),
+                        entryOpt |> Option.map (jumps depth)
+                    ) }
+        | TLambda _
+        | TSeq _
+        | THoist _
+        | TBjo _
+        | TTaskEvent _ -> e
+        | _ -> TypeVisitor.mapChildren (jumps depth) e
+
+    let newMembers =
+        members
+        |> List.mapi (fun mi m ->
+            let mine =
+                m.Slots
+                |> List.indexed
+                |> List.choose (fun (si, (name, _)) -> Map.tryFind (mi, si) split |> Option.map (fun ps -> name, ps))
+                |> Map.ofList
+
+            let body = jumps 0 (if mine.IsEmpty then m.Body else rewriteUses mine m.Body)
+
+            if mine.IsEmpty then
+                { m with Body = body }
+            else
+                let slots =
+                    m.Slots |> List.collect (fun (name, t) -> match Map.tryFind name mine with Some ps -> ps | None -> [ name, t ])
+
+                { m with
+                    Slots = slots
+                    Locals = slots |> List.map fst
+                    Body = body })
+
+    let newEntry =
+        match entry.Node with
+        | TApply(callee, args, kw) ->
+            let args =
+                args
+                |> List.indexed
+                |> List.collect (fun (si, arg) ->
+                    match Map.tryFind (entryIdx, si) split, arg.Node with
+                    | Some _, TTupleMake items -> items
+                    | _ -> [ arg ])
+
+            { entry with Node = TApply(callee, args, kw) }
+        | _ -> entry
+
+    newMembers, newEntry
+
+// ---------------------------------------------------------------------------
 // Expressions
 // ---------------------------------------------------------------------------
 
@@ -611,6 +816,12 @@ and private lowerLetRec
                 withEnclosing
             else
                 lowerMembers []
+
+        let loweredMembers, loweredBody =
+            if isInlinedLoop loweredMembers loweredBody then
+                splitTupleSlots loweredMembers loweredBody
+            else
+                loweredMembers, loweredBody
 
         { expr with
             Node = TLoop(loweredMembers, Some loweredBody) }
