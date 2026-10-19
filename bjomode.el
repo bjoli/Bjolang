@@ -98,6 +98,19 @@ inside the text, so this finds the right one in any string that compiles."
                              'syntax-table (string-to-syntax "|"))
           (goto-char (match-end 1)))))))
 
+(defun bjo--extend-to-raw-string (start end)
+  "Start a propertize from the opening quotes of a raw string around START.
+
+Emacs propertizes again from the line of a change. Inside a raw string
+over several lines, that line does not hold the opening quotes, and the
+closing ones look like quotes inside a string, so they are never fenced and
+the rest of the buffer is read as string. A raw string is the one kind of
+string with a fence, so a string state of t at START means START is inside
+one. Answers (OPEN . END) to begin at its opening quotes, or nil."
+  (let ((state (save-excursion (syntax-ppss start))))
+    (when (and (eq (nth 3 state) t) (< (nth 8 state) start))
+      (cons (nth 8 state) end))))
+
 (defun bjo-syntax-propertize (start end)
   "Mark character literals and raw strings between START and END.
 A delimiter in a character literal is punctuation, and a raw string is
@@ -633,6 +646,8 @@ is how font-lock is told the region moved."
   (setq-local font-lock-multiline t)
   (add-hook 'font-lock-extend-region-functions #'bjo-extend-region nil t)
   (setq-local syntax-propertize-function #'bjo-syntax-propertize)
+  (add-hook 'syntax-propertize-extend-region-functions
+            #'bjo--extend-to-raw-string nil t)
   (setq-local lisp-indent-function #'bjo-indent-function)
   (setq-local comment-start ";")
   (setq-local comment-add 1)

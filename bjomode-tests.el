@@ -296,6 +296,75 @@
                   ";; (def (Some x) y :propagate)\n(f 1)")
                  nil)))
 
+;;; Raw strings
+
+(defun bjo-tests--string-map ()
+  "One character per position of the buffer: s inside a string, . outside."
+  (syntax-propertize (point-max))
+  (mapconcat (lambda (p) (if (nth 3 (syntax-ppss p)) "s" "."))
+             (number-sequence (point-min) (1- (point-max))) ""))
+
+(defun bjo-tests--typed (text)
+  "A `bjo-mode' buffer's string map after TEXT is typed a character at a time.
+The buffer is propertized after each character, as redisplay does while
+one types, so a fence placed early has to survive what comes after it."
+  (with-temp-buffer
+    (let ((bjo-mode-hook nil)) (bjo-mode))
+    (dolist (ch (string-to-list text))
+      (insert ch)
+      (syntax-propertize (point-max)))
+    (bjo-tests--string-map)))
+
+(defmacro bjo-tests--strings (name text map)
+  "A test that TEXT, loaded and typed, has the string MAP after it.
+MAP has an s for each position inside a string and a . for each outside."
+  (declare (indent 1))
+  `(ert-deftest ,(intern (format "bjo-raw-string/%s" name)) ()
+     (should (equal (bjo-tests--in-buffer ,text (bjo-tests--string-map)) ,map))
+     (should (equal (bjo-tests--typed ,text) ,map))))
+
+;; The string runs from after the first opening quote up to the last closing
+;; one; what follows the string is code.
+(bjo-tests--strings quotes-inside
+  "(def x \"\"\"hej hej \"hej\" \"\"\") (f y)"
+  "........sssssssssssssssssss.......")
+
+(bjo-tests--strings four-quotes
+  "(def x \"\"\"\"a \"\"\" in it\"\"\"\") (f y)"
+  "........ssssssssssssssssss.......")
+
+(bjo-tests--strings backslash
+  "(def x \"\"\"C:\\new\\\"\"\") (f y)"
+  "........ssssssssssss.......")
+
+(bjo-tests--strings two-in-a-row
+  "(def a \"\"\"x\"\"\")\n(def b \"\"\"y \"z\" \"\"\")\n(f y)"
+  "........ssssss..........sssssssssss.......")
+
+;; Over several lines, the closing quotes are on a line without the opening
+;; ones. Typed, they are fenced only if propertizing starts at the opening
+;; quotes again, which `bjo--extend-to-raw-string' arranges.
+(bjo-tests--strings several-lines
+  "(println \"\"\"\n  a \"b\" c\n  \"\"\")\n(f y)"
+  "..........ssssssssssssssssss.......")
+
+(ert-deftest bjo-raw-string/edited-inside ()
+  "A quote typed inside a raw string over several lines, and the closing
+quotes deleted and typed again, leave the code after the string code."
+  (bjo-tests--in-buffer "(println \"\"\"\n  a b c\n  \"\"\")\n(f y)"
+    (syntax-propertize (point-max))
+    (goto-char 17)
+    (insert "\"")
+    (should (equal (bjo-tests--string-map) "..........sssssssssssssssss......."))
+    (goto-char (point-min))
+    (search-forward "\"\"\")")
+    (delete-char -4)
+    (syntax-propertize (point-max))
+    (dolist (ch (string-to-list "\"\"\")"))
+      (insert ch)
+      (syntax-propertize (point-max)))
+    (should (equal (bjo-tests--string-map) "..........sssssssssssssssss......."))))
+
 (provide 'bjomode-tests)
 
 ;;; bjomode-tests.el ends here
