@@ -546,6 +546,9 @@
       @item{@code{Array} and @code{Vec}: indexed by integer.}
       @item{@code{Map}: indexed by key.}
       @item{@code{string}: indexed by @code{StringCursor}, returning a @code{char}.}
+      @item{@code{VecBuilder}, @code{TransientVec} and @code{TransientMap},
+        the collections @code{ref-set!} writes, and @code{MutableVec} and
+        @code{MutableMap} in their own modules.}
     }
     """))
 
@@ -593,6 +596,34 @@
     For a @code{Map}, sets an existing key or inserts a new one in O(log n).
     """))
 
+(:doc ref-set!
+  (summary "Writes a value at a key or index of a mutable collection, in place.")
+  (arg coll "The collection to write.")
+  (arg i "The index or key to write.")
+  (arg x "The value to put at i.")
+  (raises System.IndexOutOfRangeException "When coll is indexed by integer and i is out of bounds.")
+  (see ref ref-set array-set!)
+  (example """
+    (def a (make-array 3 #:fill 0))
+    (ref-set! a 1 5)            ; a holds 0 5 0
+    (set! a 2 7)                ; the same write, through set!
+    """)
+  (reference """
+    The method of the @code{Settable!} trait, the write in place that goes
+    with @code{ref}, as @code{Addable!} goes with @code{Addable}. @code{set!}
+    with a path writes its last key through it.
+
+    Supported collections:
+    @itemlist{
+      @item{@code{Array}, @code{VecBuilder} and @code{TransientVec}: indexed by integer.}
+      @item{@code{TransientMap}: by key, and a key that was not there is added.}
+      @item{@code{MutableVec} and @code{MutableMap}, in @code{(std mutable vec)} and @code{(std mutable map)}.}
+    }
+
+    A persistent @code{Vec} or @code{Map} has no impl, because there is
+    nothing to write in place: @code{ref-set} and @code{set} answer a copy.
+    """))
+
 (:doc deref
   (summary "Returns the current value held in a cell, box, or parameter.")
   (arg p "The cell or parameter.")
@@ -613,6 +644,30 @@
     The optional access method of the @code{Derefable} trait. The default
     implementation returns @code{(Some (deref p))}, which both @code{Box}
     and @code{Param} use.
+    """))
+
+(:doc deref-set!
+  (summary "Puts a new value in a cell, in place.")
+  (arg cell "The cell to write.")
+  (arg x "Its new value.")
+  (see deref box-set! ref-set!)
+  (example """
+    (def hits (make-box 0))
+    (deref-set! hits 1)
+    (set! hits 2)               ; the same write: hits is not a def/mutable
+    (get hits)                  ; 2
+    """)
+  (reference """
+    The method of the @code{Derefable!} trait, the write in place that goes
+    with @code{deref}, as @code{Settable!} goes with @code{Settable}.
+    Implemented for @code{Box}.
+
+    @code{(set! name value)} writes through it when @code{name} is not a
+    @code{def/mutable}: the binding cannot change, so what it holds does. A
+    @code{def/mutable} is written as a variable, whatever it holds.
+
+    A @code{Param} has no impl. It is given a value for an extent with
+    @code{parameterize}, and is not written in place.
     """))
 
 ;; ---------------------------------------------------------------------------

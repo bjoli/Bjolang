@@ -4,6 +4,8 @@
 ;; A loop that stops a walk before `done?` answered true calls `iterable-end`
 ;; on its cursor, so that a walk holding a resource, as `file-read-lines/seq`
 ;; holds the file, releases it. A walk that runs to its end gets no call.
+;; The exits by an exception or a non-local exit are in
+;; `406_loop_end_on_throw.bjo`.
 
 ;; Counts its `iterable-end` calls in a one-element array, which a struct can
 ;; hold by reference.
@@ -113,9 +115,9 @@
     (loop (:for i (range 0 20))
           (:do (ignore (find (fun (l) (= l "1")) (file-read-lines/seq path)))))
     (expect "find closes the file" (- (open-fds) before) 0)
-    ;; `find` stops the `map` iterator, and that does not end the walk over
-    ;; the file. The scope that was ambient at the pull owns the port, and
-    ;; closes it when it ends.
+    ;; `find` stops the `map` iterator, whose loop guard then ends the walk
+    ;; over the file. The scope that was ambient at the pull also owns the
+    ;; port, and closes it when it ends, if nothing did before.
     (with-scope
       (loop (:for i (range 0 5))
             (:do (ignore (find (fun (l) (= l "1!"))

@@ -57,6 +57,12 @@ open Bjolang.TypedAST
 /// without one does not fuse. Last, `inlineEnds` puts each one's body where it
 /// is called and removes it.
 ///
+/// Each loop has a guard, which `LoopDesugar.guardLoop` makes: a cell per
+/// cursor and a `try` that ends the live cursors when an exception or a
+/// non-local exit leaves the loop. Fused, the consumer's guard and the stores
+/// into its cell are removed, because its cursor is gone. The fused group
+/// stays inside the producer's guard, which ends the producer's cursors.
+///
 /// Why slots become cells: the consumer's level function carries its `:with`s
 /// and accumulators as parameters and advances by tail call, but its body now
 /// sits inside the producer's loop and has nothing to tail call. A cell in the
@@ -164,7 +170,7 @@ let private isCallTo (name: string) (e: TypedExpr) =
     | TApply({ Node = TIdent(n, _) }, _, _) when n = name -> true
     | _ -> false
 
-let private size (expr: TypedExpr) : int = TypeVisitor.foldExpr (fun n _ -> n + 1) 0 expr
+let private size (expr: TypedExpr) : int = TypeVisitor.guardFreeSize expr
 
 /// `(seq-cursor-end cursor)`: what the Seq impl's `iterable-end` is once
 /// spliced. A consumer's cursor walks a seq literal, so this is the only form
@@ -173,6 +179,30 @@ let private isEndOf (cursor: string) (e: TypedExpr) =
     match e.Node with
     | TApply({ Node = TIdent("seq-cursor-end", _) }, [ { Node = TIdent(c, _) } ], []) -> c = cursor
     | _ -> false
+
+/// `(set! cell value)` as a statement, where `cell` is a loop guard cell (see
+/// `LoopDesugar.guardLoop`). The last part is the statement's rest.
+let private (|GuardStore|_|) (e: TypedExpr) =
+    match e.Node with
+    | TLet("_", false, _, { Node = TSet(cell, _) }, rest) when LoopDesugar.isGuardCell cell -> Some(cell, rest)
+    | _ -> None
+
+/// Whether `expr` reads a loop guard cell: a loop guard's cleanup does.
+let private readsGuardCell (expr: TypedExpr) =
+    TypeVisitor.foldExpr
+        (fun found e ->
+            found
+            || (match e.Node with
+                | TIdent(n, _) -> LoopDesugar.isGuardCell n
+                | _ -> false))
+        false
+        expr
+
+/// `expr` without the stores into `cells`.
+let rec private withoutStores (cells: Set<string>) (expr: TypedExpr) : TypedExpr =
+    match expr with
+    | GuardStore(cell, rest) when Set.contains cell cells -> withoutStores cells rest
+    | _ -> TypeVisitor.mapChildren (withoutStores cells) expr
 
 /// `(let ((loopends (fun () ...))) body)`: `LoopDesugar` puts one around each
 /// loop member that yields. Its body ends every cursor live in the member.
@@ -353,10 +383,22 @@ let private recognize
 
                 let core, wrapWiths = peelWiths memberBody id
 
-                // The level's `iterable-end` in front of the exhaustion exit.
+                // The guard stores at the head of the member. Fused, the
+                // consumer's cursor and its guard are gone. `fuse` removes the
+                // other stores into its cell.
+                let rec peelStores (e: TypedExpr) =
+                    match e with
+                    | GuardStore(_, inner) -> peelStores inner
+                    | _ -> e
+
+                let core = peelStores core
+
+                // The level's `iterable-end` and guard store in front of the
+                // exhaustion exit.
                 let rec peelEnds (e: TypedExpr) =
-                    match e.Node with
-                    | TLet("_", false, _, v, inner) when isEndOf cur v -> peelEnds inner
+                    match e with
+                    | { Node = TLet("_", false, _, v, inner) } when isEndOf cur v -> peelEnds inner
+                    | GuardStore(_, inner) -> peelEnds inner
                     | _ -> e
 
                 match core.Node with
@@ -492,6 +534,13 @@ let private recognizeProducer (body: TypedExpr) : Producer option =
 
         | TLetMutable(n, v, inner) ->
             walk inner exitFound (fun g -> wrap { e with Type = g.Type; Node = TLetMutable(n, v, g) })
+
+        // The producer's loop guard. The fused group stays inside it, so an
+        // exception or a non-local exit still ends the producer's cursors. A
+        // `try` that the user wrote is not taken: its cleanup would then run
+        // after the consumer's finish block, not before it.
+        | TTryFinally(inner, cleanup) when readsGuardCell cleanup ->
+            walk inner exitFound (fun g -> wrap { e with Type = g.Type; Node = TTryFinally(g, cleanup) })
 
         | _ -> None
 
@@ -740,7 +789,8 @@ let private fusedCount = ref 0
 /// literal and the loop fuses.
 ///
 /// The shape, outermost first: the `loopseq` binding, the `loopcol` bindings,
-/// the `loopexit` binding, and the one-member `letrec`. Only that chain is
+/// the loop guard's cell and `try`, the `loopexit` binding, and the one-member
+/// `letrec`. Only that chain is
 /// descended; a user's own `let` is never mistaken for part of it, because
 /// nothing a user writes has these base names.
 ///
@@ -770,6 +820,12 @@ let private tryFuse (expr: TypedExpr) : TypedExpr option =
             | TLet(n, false, fn, v, body) when baseIs "loopcol" n ->
                 descend body producerBody
                 |> Option.map (fun body' -> { e with Node = TLet(n, false, fn, v, body') })
+            // The consumer's loop guard. Fused, its cursor is gone and the
+            // producer's guard ends what is live, so the guard and the stores
+            // into its cells are removed.
+            | TLetMutable(cell, _, body) when LoopDesugar.isGuardCell cell ->
+                descend body producerBody |> Option.map (withoutStores (Set.singleton cell))
+            | TTryFinally(body, cleanup) when readsGuardCell cleanup -> descend body producerBody
             | _ -> None
 
         match peel source id with

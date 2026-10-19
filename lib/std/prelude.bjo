@@ -24,7 +24,7 @@
   InputPort OutputPort Exception Encoding
 
   ;; Iterable
-  iterable-start iterable-done? iterable-current iterable-next
+  iterable-start iterable-done? iterable-current iterable-next iterable-end iterable-cleanup
   fold map filter take drop take-while drop-while
   enumerate flat-map any? all? find for-each ->seq
   ;; Cursor.
@@ -104,10 +104,12 @@
   Box
   make-box box-ref box-set!
 
-  ;; Refable, Settable, Derefable
+  ;; Refable, Settable, Settable!, Derefable, Derefable!
   ref try-ref
   ref-set
+  ref-set!
   deref try-deref
+  deref-set!
 
   ;; Strings
   str string-append string-length
@@ -783,6 +785,12 @@
   ;; first. It may also come after `done?` answered true, and must then do
   ;; nothing. A cursor that holds a resource for the walk releases it here.
   (: iterable-end (-> %s %cursor void))
+  ;; A loop calls this, in place of `iterable-end`, on each cursor that is
+  ;; live when an exception or a non-local exit (such as `ret` of a
+  ;; `with-return`) leaves it. A cursor that holds a resource releases it here
+  ;; as well. With the default, which does nothing, the loop has no `try`
+  ;; around it and keeps no record of its cursors.
+  (: iterable-cleanup (-> %s %cursor void))
   (: ->seq  (-> %s (Seq %elem)))
   (: fold (-> (-> %elem %acc %acc) %acc %s %acc))
   (: map    (-> (-> %elem %b) %s (Seq %b)))
@@ -803,6 +811,7 @@
 
   ;; Most cursors hold nothing that needs release.
   (defun (iterable-end s c) (when #f ()))
+  (defun (iterable-cleanup s c) (when #f ()))
   (defun (->seq s)
     (seql (:for e s)
           (:yield e)))
@@ -890,6 +899,8 @@
   ;; Disposes the enumerator, which closes a file the sequence opened for
   ;; this walk.
   (defun (iterable-end s c) (seq-cursor-end c))
+  ;; The same on an exception, so that a file is closed then too.
+  (defun (iterable-cleanup s c) (seq-cursor-end c))
 
   (defun (->seq s) s))
 
@@ -1336,6 +1347,36 @@
         None
         (Some (string-cursor-ref str cur)))))
 
+;; The collections written in place, read by the same `ref`, so that `get`
+;; and `try-get` read them and a `set!` path can go through them.
+(impl (Refable (VecBuilder %i))
+  (type %index int)
+  (type %out %i)
+  (defun (ref vb i)
+    (vecbuilder-ref vb i))
+  (defun (try-ref vb i)
+    (if (and (>= i 0) (< i (vecbuilder-length vb)))
+        (Some (vecbuilder-ref vb i))
+        None)))
+
+(impl (Refable (TransientVec %i))
+  (type %index int)
+  (type %out %i)
+  (defun (ref t i)
+    (transientvec-ref t i))
+  (defun (try-ref t i)
+    (if (and (>= i 0) (< i (transientvec-length t)))
+        (Some (transientvec-ref t i))
+        None)))
+
+(impl (Refable (TransientMap %k %v))
+  (type %index %k)
+  (type %out %v)
+  (defun (ref t k)
+    (transientmap-ref t k))
+  (defun (try-ref t k)
+    (transientmap-try-ref t k)))
+
 ;; Settable — the persistent write that goes with `ref`
 ;;
 ;; `(ref-set coll i x)` answers a copy of `coll` with `x` at `i`, and leaves
@@ -1363,6 +1404,44 @@
   (defun (ref-set map k v)
     (map-set map k v)))
 
+;; Settable! — the write in place that goes with `ref`
+;;
+;; `(ref-set! coll i x)` writes `x` at `i` in `coll` itself, as `Addable!`
+;; adds to a collection in place where `Addable` answers a copy. `set!` with a
+;; path writes its last key through it. A persistent collection has no impl,
+;; because it has no place to write: `ref-set` answers its copy.
+;;
+;; A Map, transient or mutable, gains a key it did not have; an Array or a Vec
+;; index out of range throws.
+(def/trait (Settable! %c)
+  (type %index)
+  (type %in)
+  (: ref-set! (-> %c %index %in void)))
+
+(impl (Settable! (Array %i))
+  (type %index int)
+  (type %in %i)
+  (defun (ref-set! arr i x)
+    (array-set! arr i x)))
+
+(impl (Settable! (VecBuilder %i))
+  (type %index int)
+  (type %in %i)
+  (defun (ref-set! vb i x)
+    (vecbuilder-set! vb i x)))
+
+(impl (Settable! (TransientVec %i))
+  (type %index int)
+  (type %in %i)
+  (defun (ref-set! t i x)
+    (transientvec-set! t i x)))
+
+(impl (Settable! (TransientMap %k %v))
+  (type %index %k)
+  (type %in %v)
+  (defun (ref-set! t k v)
+    (transientmap-set! t k v)))
+
 (def/trait (Derefable %a)
   (type %out)
   (: deref (-> %a %out))
@@ -1376,6 +1455,21 @@
 (impl (Derefable (Box %b))
   (type %out %b)
   (defun (deref b) (box-ref b)))
+
+;; Derefable! — the write in place that goes with `deref`
+;;
+;; `(deref-set! cell x)` puts `x` in `cell`, as `Settable!` goes with
+;; `Settable`. `(set! name value)` writes through it when `name` is not a
+;; `def/mutable`: the binding cannot change, so what it holds does. A Param has
+;; no impl, since a Param is rebound for an extent with `parameterize` and
+;; not written.
+(def/trait (Derefable! %a)
+  (type %in)
+  (: deref-set! (-> %a %in void)))
+
+(impl (Derefable! (Box %b))
+  (type %in %b)
+  (defun (deref-set! b x) (box-set! b x)))
 
 
 ;; ---------------------------------------------------------------------------
@@ -2546,13 +2640,12 @@
  
 ;; The items `reader` reads, pulled lazily. The file is opened inside the `seq`,
 ;; so every walk opens it afresh and reads from the start, and closed when the
-;; walk ends - at the end of the file, or when a loop walking it stops early,
-;; through `iterable-end`. When the consumer of a `seql` over it stops early,
-;; or an exception leaves the walk, the file stays open until the scope that
-;; was ambient at the first pull ends, because `open-input-file` registers the
-;; port there. A missing
-;; file raises on the first pull; `(std ports)`' `file->seq` reports it at the
-;; call instead.
+;; walk ends - at the end of the file, when a loop walking it stops early,
+;; through `iterable-end`, or when an exception leaves the loop, through
+;; `iterable-cleanup`. A walk that is never ended stays open until the scope
+;; that was ambient at the first pull ends, because `open-input-file`
+;; registers the port there. A missing file raises on the first pull;
+;; `(std ports)`' `file->seq` reports it at the call instead.
 (: file-read/seq #:sync (-> (-> InputPort %a) string (Seq %a)))
 (defun (file-read/seq reader path)
   (seq
@@ -3240,7 +3333,7 @@
         ((Ok it) ,(try-steps #'it rest))))))
 
 ;; ---------------------------------------------------------------------------
-;; Paths: get, try-get, set and update
+;; Paths: get, try-get, set, update and set!
 ;; ---------------------------------------------------------------------------
 ;;
 ;; `(get target step ...)` reads along a path. `(set target step ... value)` and
@@ -3266,6 +3359,10 @@
 ;; then the value or the function, each exactly once. A key that is missing
 ;; before the last step throws, as `ref` does. `set` does not read the last
 ;; key, so on a Map it adds a key that was not there.
+;;
+;; `set!` with a path is `set` in place: nothing is copied, the steps before
+;; the last are read, and the last is written with `ref-set!` (`Settable!`) or
+;; `record-set!`. See `#set!` below.
 ;;
 ;; Each step's code carries that step's source position, so an error in it is
 ;; reported at the step rather than at the whole form.
@@ -3407,7 +3504,7 @@
   (def reversed (list-reverse items))
   (def value (list-head reversed))
   (def steps (list-reverse (list-tail reversed)))
-  (def named (path-key-names steps 1))
+  (def named (path-key-names steps 1 #t))
   (def obj (path-temp "obj" 0))
   (def new (path-temp "new" 0))
   (def (: leaf (-> Syntax Syntax))
@@ -3421,20 +3518,21 @@
                    (path-key-bindings named steps))))
 
 ;; The steps, each key replaced by the name it is bound to. A field step is
-;; kept, and refused if it is a .NET property: `set` copies with `record-set`,
-;; which has no way to copy a .NET object.
-(: path-key-names (-> (List Syntax) int (List Syntax)))
-(defun (path-key-names steps i)
+;; kept. When `copying?`, a .NET property is refused: `set` copies with
+;; `record-set`, which has no way to copy a .NET object. `set!` copies nothing
+;; and only reads the steps before its last, so it reads a property there.
+(: path-key-names (-> (List Syntax) int bool (List Syntax)))
+(defun (path-key-names steps i copying?)
   (match steps
     (Nil Nil)
     ((Cons step rest)
      (if (path-dotted? (path-check step))
-         (if (path-property? step)
+         (if (and copying? (path-property? step))
              (Cons (syntax-error step
                      (str (syntax->string step) " is a .NET property. set and update copy along the path with record-set, which only copies a Bjolang record or struct; set the property itself, or build the new value with get."))
                    Nil)
-             (Cons step (path-key-names rest (+ i 1))))
-         (Cons (path-temp "key" i) (path-key-names rest (+ i 1)))))))
+             (Cons step (path-key-names rest (+ i 1) copying?)))
+         (Cons (path-temp "key" i) (path-key-names rest (+ i 1) copying?))))))
 
 ;; `(key-n expr)` for each key step, in order.
 (: path-key-bindings (-> (List Syntax) (List Syntax) (List Syntax)))
@@ -3471,6 +3569,64 @@
            #'(record-set ,obj (,(path-field inject step) ,value))
            #'(ref-set ,obj ,key ,value))
        step))))
+
+;; `(set! target step ... value)`: the parser hands `set!` with three or more
+;; operands here, and keeps `(set! name value)`, which writes a variable.
+;;
+;; Nothing is copied. The steps before the last are read, as `get` reads them,
+;; and the last is written in place: a key with `ref-set!` (`Settable!`), a
+;; field with `record-set!`, so the field has to be `#:mutable`. The target,
+;; each key from left to right and then the value are each evaluated once,
+;; before anything is read, as in `set`.
+(def/hash-extend (set! form inject compare)
+  (syntax-match form
+    ((_ target first second rest ...)
+     (path-write! inject target (Cons first (Cons second rest))))
+    (bad (syntax-error bad "set! writes a variable, (set! name value), or along a path in place, (set! target step ... value), where a step is .field or a key."))))
+
+(: path-write! (-> (-> Symbol Syntax) Syntax (List Syntax) Syntax))
+(defun (path-write! inject target items)
+  (def reversed (list-reverse items))
+  (def value (list-head reversed))
+  (def steps (list-reverse (list-tail reversed)))
+  (def named (path-key-names steps 1 #f))
+  (def obj (path-temp "obj" 0))
+  (def new (path-temp "new" 0))
+  #'(let ((,obj ,target))
+      ,(list-foldr (fun (binding inner) #'(let (,binding) ,inner))
+                   #'(let ((,new ,value)) ,(path-store! inject obj named steps new))
+                   (path-key-bindings named steps))))
+
+;; The reads of the steps before the last, then the write of the last. The
+;; container a field is written in is bound to a name first, because
+;; `record-set!` takes the name of a record and not an expression.
+(: path-store! (-> (-> Symbol Syntax) Syntax (List Syntax) (List Syntax) Syntax Syntax))
+(defun (path-store! inject acc named steps new)
+  (match named
+    (Nil (syntax-error acc "internal error: a path ran out of steps."))
+    ((Cons key names)
+     (def step (list-head steps))
+     (def rest (list-tail steps))
+     (def field? (path-dotted? step))
+     (match rest
+       (Nil
+        ;; cond is not available here.
+        (syntax-at
+          (if (not field?)
+              #'(ref-set! ,acc ,key ,new)
+              (if (path-property? step)
+                  (syntax-error step
+                    (str (syntax->string step) " is a .NET property, and set! writes the last step with record-set!, which writes a field of a Bjolang record. Call the property's setter, (.set_Name obj value), instead."))
+                  ;; The write carries the step's position, which is also
+                  ;; what makes it the writing module's: `record-set!` may
+                  ;; write only the fields of a record its own module declared.
+                  (let ((dest (path-temp "dest" 0)))
+                    #'(let ((,dest ,acc))
+                        ,(syntax-at #'(record-set! ,dest (,(path-field inject step) ,new)) step)))))
+          step))
+       (_
+        (def read (syntax-at (if field? #'(,step ,acc) #'(ref ,acc ,key)) step))
+        (path-store! inject read names rest new))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Hash macros

@@ -522,6 +522,35 @@ modules change it, export a function that does. At the REPL each entry is a
 module of its own, and there an entry can ~set!~ a ~def/mutable~ that an
 earlier entry defined.
 
+A name that is not a ~def/mutable~ cannot change, so ~(set! name value)~ on
+one writes what it holds instead, through ~deref-set!~ (the ~Derefable!~
+trait). That is a ~Box~:
+
+#+BEGIN_SRC scheme
+(def hits (make-box 0))
+(set! hits (+ (get hits) 1))      ;; (deref-set! hits ...): the Box is written
+#+END_SRC
+
+Which one ~set!~ does depends on how the name was bound, not on its type: a
+~def/mutable~ holding a ~Box~ is written as a variable, so ~(set! b 2)~ on one
+is a type error. A name of any other type is refused, as before.
+
+With three or more operands, ~set!~ writes along a path in place instead of
+a variable: ~(set! target step ... value)~, where a step is ~.field~ or a key,
+as in ~set~. The steps before the last are read, and the last is written:
+
+#+BEGIN_SRC scheme
+(set! board 2 7)                  ;; board is an Array: (ref-set! board 2 7)
+(set! team .players 0 .score 10)  ;; the score of (ref (.players team) 0)
+#+END_SRC
+
+A key step writes with ~ref-set!~ (the ~Settable!~ trait), so the collection
+has to be one that can be written in place: an ~Array~, a ~MutableVec~, a
+~MutableMap~, a transient or a builder. A field step writes with
+~record-set!~, so the field has to be ~#:mutable~. Nothing on the path is
+copied: a record read out of a persistent ~Vec~ is the one in it, and the
+write shows there too.
+
 *** ~def~ and ~def*~ — a binding that may fail
 A ~def~ takes a pattern, and a failure part saying what happens when the
 pattern does not match. Every failure part starts with a keyword:
@@ -1872,4 +1901,6 @@ Loop levels implicitly structure iteration blocks. A new level opens when an ite
 - The count is not checked for overflow, so a step past the type's end wraps, as `+` does. `down-from` stops at the first count *below* its `#:to`, which an unsigned type cannot have below zero: `(down-from 3u #:to 0u)`, or any step that would take an unsigned count under zero, wraps and never ends. Stop an unsigned count above zero.
 - Each of these is a value, not an allocation: the walk lands in the loop's prologue and compiles to the same code the hand-written loop does. A vec slice walks by the vec's own enumerator, so an element costs an array read rather than a descent of the tree.
 - They are ordinary `Iterable`s, so `fold`, `map`, `filter`, `enumerate`, `any?`, `find` and the rest apply to them: `(fold + 0 (in-array a #:from 7))`.
+- A loop calls `iterable-end` on each cursor that it leaves before the cursor's `iterable-done?` answered true: at a `:finish`, an `:abandon`, or when another driver of the level ends first. When an exception or a non-local exit, such as `ret` of a `with-return`, leaves the loop, it calls `iterable-cleanup` on each live cursor instead. A walk that holds a resource, as `file-read-lines/seq` holds its file, releases it in both, so it is released on every way out. Each cursor gets one of the calls at most, and an inner level's cursor gets it before an outer level's. A `seql` that its consumer stops early cleans up the walks it has open in the same way.
+- The `iterable-cleanup` calls come from a `try`/`finally` around the loop. Where every `iterable-cleanup` of the loop does nothing, which is the default and true for every iterable of the libraries except `Seq`, the compiler removes the `try`, and the loop compiles as it does without one. An `iterable-end` alone does not put a `try` around a loop.
 - `in-port` reads one element ahead, because `done?` has to know before `current` is asked — so a loop left by `:finish` has consumed the element it did not look at. It also *blocks*: `Iterable`'s methods are synchronous, so the reader's sync copy is what runs even inside a bjoroutine. A port that should suspend wants `port->seq`, or `port-fold`, whose callback carries either colour.

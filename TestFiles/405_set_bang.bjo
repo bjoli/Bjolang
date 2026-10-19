@@ -1,0 +1,123 @@
+;; `set!` along a path, in place: `(set! target step ... value)`. The steps
+;; before the last are read as `get` reads them, and the last is written:
+;; a key with `ref-set!` (`Settable!`), a field with `record-set!`.
+;; `(set! name value)` still writes a variable.
+(import (std simpletest))
+(import (std mutable vec))
+(import (std mutable map))
+
+(type (: Player (Record (: name string) (: score int #:mutable))))
+(type (: Team (Record (: players (Vec Player)) (: board (Array int)))))
+
+;; Each call appends its tag to the log, so the order of evaluation shows.
+(: logged (-> (MutableVec string) string %a %a))
+(defun (logged log tag x)
+  (mutablevec-add! log tag)
+  x)
+
+(: hits (Box int))
+(def hits (make-box 0))
+
+(: bump (-> (Box int) void))
+(defun (bump b) (set! b (+ (get b) 1)))
+
+(defun (main)
+  ;; Each collection with a Settable! impl.
+  (def a (make-array 3 #:fill 0))
+  (set! a 1 55)
+  (expect "an array" (array->vec a) [0 55 0])
+
+  (def vb (vecbuilder-empty))
+  (vecbuilder-add! vb 1)
+  (set! vb 0 2)
+  (expect "a vec builder" (vecbuilder->vec vb) [2])
+
+  (def tv (vec->transientvec [1 2 3]))
+  (set! tv 2 30)
+  (expect "a transient vec" (transientvec->vec tv) [1 2 30])
+
+  (def tm (transientmap-empty))
+  (set! tm "a" 1)
+  (set! tm "a" 2)
+  (expect "a transient map gains the key, then changes it" (map-ref (transientmap->map tm) "a") 2)
+
+  (def mv (mutablevec))
+  (mutablevec-add! mv "x")
+  (set! mv 0 "y")
+  (expect "a mutable vec" (ref mv 0) "y")
+
+  (def mm (mutablemap))
+  (set! mm 1 "one")
+  (expect "a mutable map" (ref mm 1) "one")
+
+  ;; ref-set! is the same write, called by name.
+  (ref-set! a 0 7)
+  (expect "ref-set! by name" (ref a 0) 7)
+
+  ;; A field, which has to be #:mutable.
+  (def p (Player (name "Ada") (score 1)))
+  (set! p .score 5)
+  (expect "a mutable field" (.score p) 5)
+
+  ;; A path: read through a persistent Vec and a field, write the last step.
+  ;; The Player in the Vec is the same object, so the write shows through it.
+  (def team (Team (players [p]) (board (make-array 2 #:fill 0))))
+  (set! team .players 0 .score 9)
+  (expect "a field at the end of a path" (.score p) 9)
+  (set! team .board 1 4)
+  (expect "a key at the end of a path" (ref (.board team) 1) 4)
+
+  ;; The target, each key from left to right and then the value, each once,
+  ;; before anything is read or written.
+  (def log (mutablevec))
+  (def grid (make-array 2 #:fill (make-array 2 #:fill 0)))
+  (set! (logged log "target" grid) (logged log "row" 0) (logged log "col" 1) (logged log "value" 8))
+  (expect "evaluation order" (mutablevec->vec log) ["target" "row" "col" "value"])
+  (expect "and the write" (ref (ref grid 0) 1) 8)
+
+  ;; A local named like the trait's method does not capture set!'s write.
+  (let ((ref-set! (fun (c i x) (panic! "captured"))))
+    (set! a 2 3))
+  (expect "a shadowed ref-set!" (ref a 2) 3)
+
+  ;; The variable form is unchanged.
+  (def/mutable n 1)
+  (set! n 2)
+  (expect "a variable" n 2)
+
+  ;; A name that is not a def/mutable cannot change, so set! writes what it
+  ;; holds, through Derefable!: a Box, local, a parameter, or the module's.
+  (def b (make-box 1))
+  (set! b 5)
+  (expect "a local box" (get b) 5)
+  (bump b)
+  (expect "a box as a parameter" (get b) 6)
+  (set! hits 3)
+  (expect "a module's box" (get hits) 3)
+  (deref-set! b 7)
+  (expect "deref-set! by name" (get b) 7)
+  ;; A def/mutable is written as a variable, whatever it holds.
+  (def/mutable held (make-box 10))
+  (set! held (make-box 20))
+  (expect "a def/mutable that holds a box" (get held) 20)
+
+  ;; get, try-get and set! paths read every collection set! writes.
+  (def tm2 (transientmap-empty))
+  (transientmap-set! tm2 "row" (make-array 2 #:fill 0))
+  (set! tm2 "row" 1 4)
+  (expect "a path through a transient map" (get tm2 "row" 1) 4)
+  (expect "try-get on a transient map" (try-get tm2 "nope") None)
+  (def tv2 (vec->transientvec [[1 2] [3 4]]))
+  (expect "get on a transient vec" (get tv2 1 0) 3)
+  (expect "try-get past a transient vec" (try-get tv2 2) None)
+  (def vb2 (vecbuilder-empty))
+  (vecbuilder-add! vb2 "x")
+  (expect "get on a vec builder" (get vb2 0) "x")
+  (expect "try-get past a vec builder" (try-get vb2 1) None)
+  (def mv2 (mutablevec))
+  (mutablevec-add! mv2 [5 6])
+  (expect "get on a mutable vec" (get mv2 0 1) 6)
+  (def mm2 (mutablemap))
+  (mutablemap-set! mm2 "k" 8)
+  (expect "get on a mutable map" (get mm2 "k") 8)
+  0)

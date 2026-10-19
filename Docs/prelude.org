@@ -682,6 +682,9 @@ Reading and copying along a path of fields and keys. A step written ~.name~ is a
 - ~(set target step ... value)~ : A copy of ~target~ with ~value~ at the end of the path. Field steps copy with ~record-set~, key steps with ~ref-set~. The last key is not read, so a Map gains a key it did not have; a key missing earlier in the path throws.
 - ~(update target step ... f)~ : The same, with ~(f old)~ at the end of the path.
 - ~(ref-set coll key value)~ : The ~Settable~ trait, the persistent write that goes with ~ref~. Implemented for ~Vec~ (an index out of range throws), ~Map~ and ~OrderedMap~.
+- ~(set! target step ... value)~ : ~set~ in place. Nothing is copied: the steps before the last are read, as ~get~ reads them, and the last is written. A key step writes with ~ref-set!~, a field step with ~record-set!~, so the field has to be ~#:mutable~ and declared in the module that writes it. The order of evaluation is ~set~'s. ~(set! name value)~, with two operands, still writes a variable.
+- ~(ref-set! coll key value)~ : The ~Settable!~ trait, the write in place that goes with ~ref~, as ~Addable!~ goes with ~Addable~. Implemented for ~Array~, ~VecBuilder~, ~TransientVec~, ~TransientMap~, ~MutableVec~ and ~MutableMap~, which all implement ~Refable~ too, so ~get~ and ~try-get~ read them. A persistent ~Vec~ or ~Map~ has no impl: the error says so, and points at ~Settable~.
+- ~(set! name value)~ on a name that is not a ~def/mutable~ : The binding cannot change, so what it holds does, through ~(deref-set! cell value)~, the ~Derefable!~ trait. Implemented for ~Box~, so ~(set! hits 2)~ writes a ~Box~ as ~(get hits)~ reads it. A ~def/mutable~ is written as a variable, whatever it holds.
 
 ~set~ and ~update~ evaluate the target, then each key from left to right, then the value or function, each once. Only fields of Bjolang records and structs can be written through; a ~.-Property~ step in ~set~ or ~update~ is refused. The step kinds are told apart by spelling because these are macros, which run before anything has a type.
 
@@ -693,6 +696,8 @@ Reading and copying along a path of fields and keys. A step written ~.name~ is a
 (try-get team .tags "veg")                   ;; None
 (set team .players 0 .name "Bea")            ;; a new Team
 (update team .players 1 .score (fun (s) (+ s 1)))
+(set! board 2 7)                             ;; board is an Array: written in place
+(set! team .players 0 .score 10)             ;; score is #:mutable: the Player is written
 #+END_SRC
 
 ** Control =(std prelude)=

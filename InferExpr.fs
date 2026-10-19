@@ -956,7 +956,6 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
 
 
     | ESet(name, value, r) ->
-        let valType, typedVal = infer env value
         let binding = lookup env name
 
         if not binding.IsMutable then
@@ -965,8 +964,32 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                 failwithf
                     $"Type Error: Cannot mutate '%s{name}' at %s{Lexer.formatPos r}. It is a def/mutable of the module '%s{Naming.moduleNameOfPath alias.OriginModule}', and only that module may write it. Give that module a function that sets it, and export the function."
             | _ ->
-                failwithf $"Type Error: Cannot mutate immutable variable '%s{name}' at %s{Lexer.formatPos r}"
+                // A binding that is not a `def/mutable` cannot change, so
+                // `(set! name value)` writes what it holds, through
+                // `Derefable!`: `(set! hits 2)` on a Box. Only a type with an
+                // impl, or a type parameter, which a `(where (Derefable! %a))`
+                // can stand for, goes to the trait. Anything else keeps the
+                // plain refusal, since a variable that was meant to be a
+                // `def/mutable` is the likelier mistake: that includes a type
+                // not known yet, such as an unsettled number literal's.
+                let targetType, _, _ = instantiate env.Registry binding.Scheme
 
+                let writable =
+                    match prune env.Registry targetType with
+                    | TCon(ctor, _) ->
+                        Map.containsKey ("Derefable!", ctor) env.Registry.ImplTargets
+                        || Map.containsKey "Derefable!" env.Registry.BlanketImpls
+                    | TVar _ -> true
+                    | _ -> false
+
+                if not writable then
+                    failwithf
+                        $"Type Error: Cannot mutate immutable variable '%s{name}' at %s{Lexer.formatPos r}. set! with a name and a value writes a def/mutable, or what a Box holds. A Box whose type is not known here needs an annotation."
+
+                infer env (EApp(EResolved("deref-set!", r), [ EIdent(name, r); value ], r))
+        else
+
+        let valType, typedVal = infer env value
         let targetType, _, _ = instantiate env.Registry binding.Scheme
         unify env.Registry valType targetType
 

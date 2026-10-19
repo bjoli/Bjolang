@@ -189,6 +189,30 @@ let rec foldExpr (f: 'S -> TypedExpr -> 'S) (state: 'S) (expr: TypedExpr) : 'S =
 
 /// Applies `f` to every expression directly held by `decl`, recursing into
 /// nested declaration groups (`TModule`, `TImpl`).
+/// The nodes of a loop guard (see `LoopDesugar.guardLoop`) that `expr` holds at
+/// its own level: a guard cell's binding with its initial value and, for the
+/// innermost cell, the `try` and its cleanup; or a store into a cell. The nodes
+/// of the loop in the guard are not included.
+let guardNodesAt (expr: TypedExpr) : int =
+    let size (e: TypedExpr) = foldExpr (fun n _ -> n + 1) 0 e
+
+    match expr.Node with
+    | TLetMutable(n, init, body) when LoopDesugar.isGuardCell n ->
+        let tryNodes =
+            match body.Node with
+            | TTryFinally(_, cleanup) -> 1 + size cleanup
+            | _ -> 0
+
+        1 + size init + tryNodes
+    | TLet("_", false, _, ({ Node = TSet(n, _) } as store), _) when LoopDesugar.isGuardCell n -> 1 + size store
+    | _ -> 0
+
+/// The size of `expr` in nodes, without the nodes of loop guards. Inlining
+/// limits are measured with this, so that a guard that `Simplify` later
+/// removes does not change what is inlined.
+let guardFreeSize (expr: TypedExpr) : int =
+    foldExpr (fun n e -> n + 1 - guardNodesAt e) 0 expr
+
 let rec mapDecl (f: TypedExpr -> TypedExpr) (decl: TDecl) : TDecl =
     match decl with
     | TDef(name, value, t, r) -> TDef(name, f value, t, r)

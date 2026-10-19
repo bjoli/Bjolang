@@ -834,7 +834,7 @@ let private publish
 /// here has been lowered yet — but the copies and the module it is compared
 /// against are counted the same way, which is what the comparison needs.
 let private nodeCount (decls: TDecl list) =
-    decls |> List.sumBy (TypeVisitor.foldDecl (fun n _ -> n + 1) 0)
+    decls |> List.sumBy (TypeVisitor.foldDecl (fun n e -> n + 1 - TypeVisitor.guardNodesAt e) 0)
 
 /// How much specialised code a module may be given before this stops.
 ///

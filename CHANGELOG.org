@@ -3,6 +3,77 @@
 
 What each change guarantees, and what it leaves open.
 
+* A loop cleans up its cursors when an exception or a non-local exit leaves it
+
+- ~Iterable~ has a new method, ~iterable-cleanup~. A loop calls it on each
+  cursor that is live when an exception, or a non-local exit such as ~ret~
+  of a ~with-return~, leaves it, inner levels first. ~iterable-end~ is still
+  what the normal early exits call (~:finish~, ~:abandon~, another driver
+  ending first, ~:final~). Each cursor gets one of the two calls at most. This
+  holds for ~loop~, ~seql~, comprehensions and ~:subloop~ forms.
+- The default ~iterable-cleanup~ does nothing. ~Seq~ implements it as it
+  implements ~iterable-end~, by disposing its enumerator, so a loop over
+  ~file-read-lines/seq~ whose body raises closes the file. Before, the file
+  stayed open until the scope that opened it ended. An iterable of a
+  program's own that holds a resource implements both.
+- The desugaring wraps each loop in a ~try~ / ~finally~ and keeps one cell
+  per cursor that says if the cursor is live. ~Simplify~ removes the ~try~
+  and the cells where every ~iterable-cleanup~ is a no-op once spliced. That
+  is true for every iterable in the libraries except ~Seq~, and for any
+  iterable that leaves the default, whatever its ~iterable-end~ does. Such a
+  loop compiles to the same C# as before (the gensym numbers in names can
+  differ). A loop over a ~Seq~ gets the ~try~ / ~finally~ and one store per
+  iteration, which makes it about 7% slower per element. Fusion of ~seql~
+  chains is unchanged; a fused loop keeps the producer's guard.
+- A module that implements a trait of another module now publishes the
+  inline templates of the impl's methods that do nothing, such as the
+  default ~iterable-cleanup~. An importer can then see that the call does
+  nothing and remove the guard.
+- Inlining limits and the specialisation budget do not count the nodes of
+  the guard, so what is inlined is what was inlined before.
+- An inline template may now hold a ~try~ / ~finally~, which it needs to
+  hold a loop.
+- Tests: ~406_loop_end_on_throw.bjo~, which logs which of the two methods
+  ran, and ~codegen/loop_end_guard.bjo~, which checks that an iterable with
+  only an ~iterable-end~ gets no guard.
+
+* set! along a path, in place
+
+- ~(set! target step ... value)~ is ~set~ in place: the steps before the
+  last are read, as ~get~ reads them, and the last is written. A key step
+  writes with ~ref-set!~, a field step with ~record-set!~, so the field has
+  to be ~#:mutable~ and declared in the module that writes it. The target,
+  each key from left to right and the value are each evaluated once, as in
+  ~set~. ~(set! board 2 7)~ is the one-step case.
+- ~(set! name value)~ still writes a variable. The parser tells the two
+  forms apart by the number of operands, and hands three or more to the
+  prelude's ~#set!~ hash macro, as it hands an operator with three operands
+  to ~#fl~.
+- ~Settable!~ is the trait of the write in place, with ~ref-set!~, as
+  ~Addable!~ goes with ~Addable~. It is implemented for ~Array~,
+  ~VecBuilder~, ~TransientVec~, ~TransientMap~, ~MutableVec~ and
+  ~MutableMap~. On a known type the call is inlined: ~(set! arr i x)~
+  compiles to what ~array-set!~ compiles to.
+- A persistent ~Vec~ or ~Map~ has no ~Settable!~ impl. The error now says
+  that the type is persistent and implements ~Settable~, which answers a
+  copy. The same holds for any trait whose name ends in ~!~ and its twin
+  without it, so ~add!~ on a ~Vec~ says the same about ~Addable~.
+- A ~.-Property~ before the last step is read; as the last step it is
+  refused, since ~record-set!~ writes only a field of a Bjolang record.
+- ~(set! name value)~ on a name that is not a ~def/mutable~ writes what the
+  name holds, through ~deref-set!~, the ~Derefable!~ trait, which ~Box~
+  implements: ~(set! hits 2)~ writes a Box as ~(get hits)~ reads it. The
+  checker decides by how the name was bound: a ~def/mutable~ is written as
+  a variable whatever it holds. A name whose type has no impl, or whose type
+  is not known yet, is refused as before, and the message now says what
+  ~set!~ with two operands writes. ~Param~ has no impl, since a parameter is
+  rebound for an extent with ~parameterize~.
+- ~VecBuilder~, ~TransientVec~ and ~TransientMap~ implement ~Refable~, as
+  the other collections ~set!~ writes already did, so ~get~ and ~try-get~
+  read them and a ~set!~ path goes through them.
+- Tests: ~405_set_bang.bjo~, ~codegen/set_bang.bjo~, and
+  ~errors/set_bang_*.bjo~.
+
 * JSON numbers off the chunk, and a faster string->double
 
 - ~(text json)~ reads a number off the bytes of the chunk it holds, with a

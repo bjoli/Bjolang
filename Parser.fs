@@ -904,10 +904,24 @@ and private parseHeaded (s: SExpr) (r: Range) (head: SExpr) (sym: string) (args:
                     let bound = parsedBindings |> List.map (fun (k, _, _, _, _) -> k, listRange)
                     ELetRec(parsedBindings, withLocals bound (fun () -> parseBody bodyExprs listRange), r)
                 | _ -> failwith "Invalid letrec syntax"
+            // `(set! name value)` writes a variable. With three or more
+            // operands it writes along a path in place, which the prelude's
+            // `#set!` spells out, as `#fl` spells out an operator with three
+            // operands.
             | "set!" ->
                 match args with
                 | [ Ident target; valExpr ] -> ESet(target, parseExpr valExpr, r)
-                | _ -> failwithf $"Invalid set! syntax at %s{Lexer.formatPos r}. Expected: (set! name value)"
+                | _ :: _ :: _ :: _ ->
+                    let form = SList(SAtom { Token = Symbol "#set!"; Range = r } :: args, r)
+
+                    match hashExpandHook form with
+                    | Some expansion -> expansion.Resolve Set.empty (parseExpr expansion.Form)
+                    | None ->
+                        failwithf
+                            $"set! along a path at %s{Lexer.formatPos r} is spelled out by the prelude's #set! hash macro, which is not in scope here. Import (std prelude)."
+                | _ ->
+                    failwithf
+                        $"Invalid set! syntax at %s{Lexer.formatPos r}. Expected (set! name value), which writes a variable, or (set! target step ... value), which writes along a path in place."
             | "->" ->
                 match args with
                 | init :: steps ->

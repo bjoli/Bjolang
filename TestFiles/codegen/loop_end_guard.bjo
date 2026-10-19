@@ -1,0 +1,38 @@
+;; A loop has a guard that calls `iterable-cleanup` on the cursors an
+;; exception or a non-local exit leaves live: a cell per cursor, named
+;; `looplive`, and a `try` whose `finally` reads it. Where every
+;; `iterable-cleanup` is a no-op, which is the default, `Simplify` removes the
+;; guard again. A `Seq`'s cleanup disposes its enumerator, so a loop over one
+;; keeps its guard. An `iterable-end` alone does not keep it.
+;;
+;; A cell's declaration names the sequence and cursor types, on one line, which
+;; tells the loops apart.
+
+(type (: Counter (Struct (: n int))))
+
+;; A walk with an `iterable-end` and the default `iterable-cleanup`.
+(impl (Iterable Counter)
+  (type %elem int)
+  (type %cursor int)
+  (defun (iterable-start s) 0)
+  (defun (iterable-done? s c) (>= c (record-ref s n)))
+  (defun (iterable-current s c) c)
+  (defun (iterable-next s c) (+ c 1))
+  (defun (iterable-end s c) (println "ended early")))
+
+;; EXPECT-NO-CS: looplive.*int\[\]
+(: sum-array (-> (Array int) int))
+(defun (sum-array a)
+  {summing x (:for x a)})
+
+;; EXPECT-NO-CS: looplive.*Counter
+(: sum-counter (-> Counter int))
+(defun (sum-counter c)
+  {summing x (:for x c)})
+
+;; EXPECT-CS: looplive.*SeqCursor
+;; EXPECT-CS: \} finally \{
+;; EXPECT-CS: seqsubcursorsubend\(looplivcur
+(: sum-seq (-> (Seq int) int))
+(defun (sum-seq s)
+  {summing x (:for x s)})

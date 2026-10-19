@@ -363,11 +363,24 @@ let metadata
     // A template that will not serialize is simply left out: whoever
     // imports it then calls the landing pad, which is always correct and
     // is emitted for every impl method regardless.
+    //
+    // An impl of this module for a trait of another module publishes only the
+    // templates whose body does nothing, such as the default `iterable-end`.
+    // An importer that splices one sees that the call does nothing, and
+    // `Simplify` can then remove the loop guard that calls it.
+    let isNoopBody (body: Ast.Expr) =
+        match body with
+        | Ast.EWhen(Ast.EBool(false, _), _, false, _) -> true
+        | _ -> false
+
     let inlineTemplatesToExport =
         env.Registry.InlineMethods
         |> Map.toList
-        |> List.filter (fun ((traitName, _, _), (tpl: TypedAST.InlineTemplate)) ->
-            Map.containsKey traitName exportedTraits
+        |> List.filter (fun ((traitName, _, ctor), (tpl: TypedAST.InlineTemplate)) ->
+            (Map.containsKey traitName exportedTraits
+             || (Set.contains (traitName, ctor) ownImplKeys
+                 && not (Set.contains traitName ownTraitNames)
+                 && isNoopBody tpl.Body))
             && publishableBody tpl)
 
     // The body of every exported constrained generic, so that an importer can

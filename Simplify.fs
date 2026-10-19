@@ -21,6 +21,10 @@ open Bjolang.TypedAST
 ///   * A `match` on the local picks its arm at compile time.
 ///   * A local nothing reads, whose value has no effects, is dropped.
 ///   * An `if` on a literal condition is replaced by the arm it takes.
+///   * A loop guard (see `LoopDesugar.guardLoop`) whose `iterable-cleanup` calls
+///     do nothing once spliced is removed: the `try`, the cells and the
+///     stores into them. The loop is then in the position it had without the
+///     guard, which `LoopLowering` needs to emit it inline.
 ///
 /// Runs on the typed tree before `Lowering`, which turns matches into type
 /// tests that no longer say which case they test for.
@@ -106,12 +110,90 @@ let rec private isPure (ctx: Ctx) (expr: TypedExpr) : bool =
     || (match expr.Node with
         | TIdent _ -> true
         | TTupleMake items -> List.forall (isPure ctx) items
-        // The empty `void`, which a no-op `iterable-end` is once spliced.
+        // The empty `void`, which a no-op `iterable-end` or
+        // `iterable-cleanup` is once spliced.
         | TWhen({ Node = TBool false }, _, _) -> true
         | _ ->
             match asCase ctx expr with
             | Some(_, args) -> List.forall (isPure ctx) args
             | None -> false)
+
+/// A pattern that matches every value of its type: a name, `_`, or a tuple of
+/// such patterns.
+let rec private isIrrefutable (p: TypedPattern) : bool =
+    match p.Node with
+    | TPWildcard
+    | TPIdent _ -> true
+    | TPTuple items -> List.forall isIrrefutable items
+    | _ -> false
+
+/// A pattern that only takes a value apart: matching it runs no code.
+let rec private isPlainPattern (p: TypedPattern) : bool =
+    match p.Node with
+    | TPWildcard
+    | TPIdent _ -> true
+    | TPTuple items
+    | TPConstruct(_, items) -> List.forall isPlainPattern items
+    | _ -> false
+
+/// Whether the clauses of a match take every value, so that the match cannot
+/// fail: one clause is irrefutable, or the clauses are `Some` and `None` with
+/// irrefutable parts, as in a loop guard's cleanup.
+let private coversAll (clauses: TMatchClause list) : bool =
+    let plain = clauses |> List.filter (fun c -> c.Guard.IsNone)
+
+    let caseOf (c: TMatchClause) =
+        match c.Pattern.Node with
+        | TPConstruct(n, items) when List.forall isIrrefutable items -> Some n
+        | _ -> None
+
+    plain |> List.exists (fun c -> isIrrefutable c.Pattern)
+    || (let cases = plain |> List.choose caseOf |> Set.ofList
+        Set.contains "Some" cases && Set.contains "None" cases)
+
+/// Evaluating it has no effect and gives no value: the empty `void`, unit, and
+/// bindings, sequences and matches that cannot fail of such expressions. A
+/// no-op `iterable-cleanup` in a loop guard's cleanup has this shape once spliced.
+let rec private isNoop (ctx: Ctx) (expr: TypedExpr) : bool =
+    match expr.Node with
+    | TWhen({ Node = TBool false }, _, _) -> true
+    | TTupleMake [] -> true
+    | TLet("_", false, fn, value, body) when fn = noParams -> isNoop ctx value && isNoop ctx body
+    | TLet(_, false, fn, value, body) when fn = noParams -> isPure ctx value && isNoop ctx body
+    | TLetTuple(_, value, body) -> isPure ctx value && isNoop ctx body
+    | TMatch(scrutinee, clauses) ->
+        isPure ctx scrutinee
+        && coversAll clauses
+        && clauses
+           |> List.forall (fun c -> c.Guard.IsNone && isPlainPattern c.Pattern && isNoop ctx c.Body)
+    | _ -> false
+
+let private isGuardCell = LoopDesugar.isGuardCell
+
+/// A value the loop guard stores in a cell: `None`, or `Some` of a tuple of
+/// names. Storing it has no effect except on the cell.
+let private isGuardValue (ctx: Ctx) (expr: TypedExpr) : bool =
+    match expr.Node with
+    | TIdent _ -> true
+    | TApply({ Node = TIdent _ }, [ { Node = TTupleMake items } ], []) -> List.forall (isPure ctx) items
+    | _ -> false
+
+/// `body` without the statements that write `cell`, or `None` if `cell`
+/// occurs in it in some other way.
+let private withoutStores (ctx: Ctx) (cell: string) (body: TypedExpr) : TypedExpr option =
+    let rec strip (e: TypedExpr) : TypedExpr =
+        let e = TypeVisitor.mapChildren strip e
+
+        match e.Node with
+        | TLet("_", false, fn, { Node = TSet(n, value) }, rest) when fn = noParams && n = cell && isGuardValue ctx value ->
+            rest
+        // A statement that did nothing but the store, as a consumer's call
+        // of `loopends` is once inlined.
+        | TLet("_", false, fn, value, rest) when fn = noParams && (isPure ctx value || isNoop ctx value) -> rest
+        | _ -> e
+
+    let stripped = strip body
+    if mentions cell stripped then None else Some stripped
 
 let private letIn (name: string) (value: TypedExpr) (body: TypedExpr) : TypedExpr =
     { Type = body.Type
@@ -195,7 +277,7 @@ let rec private simplify (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
     match expr.Node with
     // A statement with no effect. `_` is never read, so a `_` bound again
     // inside `body` does not matter, as it does for the case below.
-    | TLet("_", false, fn, value, body) when fn = noParams && isPure ctx value -> body
+    | TLet("_", false, fn, value, body) when fn = noParams && (isPure ctx value || isNoop ctx value) -> body
 
     | TLet(name, false, fn, value, body) when fn = noParams && not (rebinds name body) ->
         match asCase ctx value with
@@ -233,6 +315,27 @@ let rec private simplify (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
                 { wrapInOrder ctx (named |> List.choose fst) inner with Type = expr.Type }
 
         | None when not (mentions name body) && isPure ctx value -> body
+        | None -> expr
+
+    // A `try` whose cleanup does nothing, such as a loop guard whose every
+    // `iterable-cleanup` is a no-op. Without the `try`, the loop is in the
+    // position it had before the guard, so `LoopLowering` can emit it inline.
+    | TTryFinally(body, cleanup) when isNoop ctx cleanup -> { body with Type = expr.Type }
+
+    // A cleanup is run for its effect only, so a last statement that does
+    // nothing is dropped. The case above has dropped the others. A loop guard
+    // that ends one cursor for real then no longer reads the cells of the
+    // others, and the case below removes them.
+    | TTryFinally(body, ({ Node = TLet("_", false, fn, value, last) } as cleanup)) when
+        fn = noParams && isNoop ctx last
+        ->
+        { expr with Node = TTryFinally(body, { value with Range = cleanup.Range }) }
+
+    // A loop guard cell that nothing reads, after the case above removed the
+    // cleanup: its stores and its binding go too.
+    | TLetMutable(cell, init, body) when isGuardCell cell && isGuardValue ctx init && not (rebinds cell body) ->
+        match withoutStores ctx cell body with
+        | Some stripped -> { stripped with Type = expr.Type }
         | None -> expr
 
     // A constant condition, as the type check of `(:finish test value)` leaves.

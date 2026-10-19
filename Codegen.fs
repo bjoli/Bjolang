@@ -1129,7 +1129,9 @@ and private serializeExprNode (here: string) (e: Ast.Expr) : string =
     // something the reader cannot read back. `isSerializableTemplate` catches
     // this, the template is not published, and the landing pad answers instead.
     | Ast.ESplice _ -> failwith "an inline template body may not contain a spliced literal"
-    | Ast.ETryFinally _ -> failwith "an inline template body may not contain try/finally"
+    // A `(loop ...)` desugars to one: see `LoopDesugar.guardLoop`.
+    | Ast.ETryFinally(body, cleanup, _) ->
+        list [ "try"; serializeExprAt here body; "#:finally"; serializeExprAt here cleanup ]
     | Ast.ETryCatch _ -> failwith "an inline template body may not contain try/catch"
     | Ast.EHoist(body, _) -> list [ "please-hoist-i-promise-i-am-not-naughty"; serializeExprAt here body ]
 

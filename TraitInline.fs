@@ -211,8 +211,7 @@ let rec private betaReduce (writable: Writable) (expr: TypedExpr) : TypedExpr =
 [<Literal>]
 let private maxInlineBodySize = 50
 
-let rec private exprSize (expr: Ast.Expr) : int =
-    1 + (Ast.exprChildren expr |> List.sumBy exprSize)
+let private exprSize (expr: Ast.Expr) : int = LoopDesugar.guardFreeSize expr
 
 let rec private solvedType (t: HMType) : HMType =
     match t with
@@ -486,8 +485,7 @@ let private GrowthFactor = 2
 let private GrowthFloor = 300
 
 
-let rec private typedSize (expr: TypedExpr) : int =
-    1 + (TypeVisitor.children expr |> List.sumBy typedSize)
+let private typedSize (expr: TypedExpr) : int = TypeVisitor.guardFreeSize expr
 
 /// The module and name of the top-level function `name` means here, if it
 /// means one.
@@ -1115,7 +1113,7 @@ let rec private inlineDecl (ctx: Ctx) (decl: TDecl) : TDecl =
 /// what is left in the second pass. Trait splices are made in the first pass
 /// and do not count.
 and private inlineInTwoPasses (ctx: Ctx) (decl: TDecl) : TDecl =
-    let size = TypeVisitor.foldDecl (fun n _ -> n + 1) 0 decl
+    let size = TypeVisitor.foldDecl (fun n e -> n + 1 - TypeVisitor.guardNodesAt e) 0 decl
     let budget = ref (max GrowthFloor (GrowthFactor * size))
     let ctx = { ctx with Budget = budget }
     let first = TypeVisitor.mapDecl (inlineExpr { ctx with SecondPass = false }) decl

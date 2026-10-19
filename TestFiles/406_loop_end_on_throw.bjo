@@ -1,0 +1,153 @@
+;; A loop calls `iterable-end` on each cursor it leaves before `done?` answered
+;; true, and `iterable-cleanup` on each cursor that is live when an exception
+;; or a non-local exit such as `ret` of a `with-return` leaves it. Each cursor
+;; gets one call at most, and an inner level's cursor before an outer level's.
+(import (std simpletest))
+(import (std mutable vec))
+
+(import/class
+  (Exception (: System.Exception))
+  (Boom (: System.InvalidOperationException)))
+
+;; An `iterable-end` call adds the walk's name to the log, and an
+;; `iterable-cleanup` call the name and a `!`.
+(type (: Res (Struct (: name string) (: n int) (: log (MutableVec string)))))
+
+(impl (Iterable Res)
+  (type %elem int)
+  (type %cursor int)
+  (defun (iterable-start s) 0)
+  (defun (iterable-done? s c) (>= c (record-ref s n)))
+  (defun (iterable-current s c) c)
+  (defun (iterable-next s c) (+ c 1))
+  (defun (iterable-end s c) (mutablevec-add! (record-ref s log) (record-ref s name)))
+  (defun (iterable-cleanup s c) (mutablevec-add! (record-ref s log) (str (record-ref s name) "!"))))
+
+;; A walk with an `iterable-end` and the default `iterable-cleanup`.
+(type (: EndOnly (Struct (: n int) (: log (MutableVec string)))))
+
+(impl (Iterable EndOnly)
+  (type %elem int)
+  (type %cursor int)
+  (defun (iterable-start s) 0)
+  (defun (iterable-done? s c) (>= c (record-ref s n)))
+  (defun (iterable-current s c) c)
+  (defun (iterable-next s c) (+ c 1))
+  (defun (iterable-end s c) (mutablevec-add! (record-ref s log) "end-only")))
+
+(: res (-> (MutableVec string) string int Res))
+(defun (res log name n) (Res (name name) (n n) (log log)))
+
+(: boom (-> int))
+(defun (boom) (raise (cast Exception (Boom. "boom"))))
+
+;; The log that `walk` makes, given a fresh log. An exception that `walk`
+;; raises is caught here.
+(: ends-of (-> (-> (MutableVec string) void) (List string)))
+(defun (ends-of walk)
+  (def log (mutablevec))
+  (ignore (try (walk log) #:catch (System.InvalidOperationException)))
+  (mutablevec->list log))
+
+;; A loop that awaits in its body, so that the guard is in an async method.
+(: work (-bjo-> int int))
+(defbjo (work x) (* x 2))
+
+(: walk-awaiting (-> Res int))
+(defbjo (walk-awaiting r)
+  (loop (:for x r)
+        (:do (when (= (work x) 4) (ignore (boom))))
+        (:acc (summing x))))
+
+(: walk-caught (-> (MutableVec string) void))
+(defbjo (walk-caught log)
+  (ignore (try (walk-awaiting (res log "a" 5)) #:catch (System.InvalidOperationException))))
+
+(defun (main args)
+  (expect ":finish"
+          (ends-of (fun (log) (loop (:for x (res log "a" 5)) (:finish (= x 2)))))
+          (list "a"))
+  (expect "a throw in a :do"
+          (ends-of (fun (log) (loop (:for x (res log "a" 5)) (:do (when (= x 2) (ignore (boom)))))))
+          (list "a!"))
+  (expect "a throw in a loop with an accumulator"
+          (ends-of (fun (log) (ignore (loop (:for x (res log "a" 5))
+                                            (:do (when (= x 2) (ignore (boom))))
+                                            (:acc (summing x))))))
+          (list "a!"))
+  (expect "a throw from an inner level cleans up the inner walk, then the outer"
+          (ends-of (fun (log) (loop (:for x (res log "outer" 5))
+                                    (:subloop)
+                                    (:for y (res log "inner" 5))
+                                    (:do (when (and (= x 1) (= y 2)) (ignore (boom)))))))
+          (list "inner!" "outer!"))
+  (expect "a throw from a :subloop form"
+          (ends-of (fun (log) (loop (:for x (res log "outer" 5))
+                                    (:subloop (:for y (res log "inner" 5))
+                                              (:do (when (= y 3) (ignore (boom))))))))
+          (list "inner!" "outer!"))
+  (expect "ret out of a with-return"
+          (ends-of (fun (log) (ignore (with-return ret
+                                        (loop (:for x (res log "a" 5)) (:do (when (= x 2) (ret 0))))
+                                        1))))
+          (list "a!"))
+  (expect "a throw with only an iterable-end calls nothing"
+          (ends-of (fun (log) (loop (:for x (EndOnly (n 5) (log log))) (:do (when (= x 2) (ignore (boom)))))))
+          (list))
+  (expect "but :finish still calls its iterable-end"
+          (ends-of (fun (log) (loop (:for x (EndOnly (n 5) (log log))) (:finish (= x 2)))))
+          (list "end-only"))
+  (expect ":final"
+          (ends-of (fun (log) (loop (:for x (res log "a" 5)) (:final (= x 2)))))
+          (list "a"))
+  (expect "a walk to the end with one driver"
+          (ends-of (fun (log) (loop (:for x (res log "a" 5)))))
+          (list))
+  ;; `a` ends the level. Which driver it was is not known at the exit, so both
+  ;; get the call, and `a` must ignore it. No walk gets a second one.
+  (expect "a walk to the end with two drivers"
+          (ends-of (fun (log) (loop (:for x (res log "a" 3)) (:for y (res log "b" 5)))))
+          (list "a" "b"))
+  (expect "an inner level that runs to its end on each outer element"
+          (ends-of (fun (log) (loop (:for x (res log "outer" 3)) (:subloop) (:for y (res log "inner" 2)))))
+          (list))
+  (expect "a throw after an inner level ran to its end"
+          (ends-of (fun (log) (loop (:for x (res log "outer" 3))
+                                    (:subloop (:for y (res log "inner" 2)))
+                                    (:do (when (= x 1) (ignore (boom)))))))
+          (list "outer!"))
+  (expect "a seql that take stops"
+          (ends-of (fun (log) (ignore (seq->list (take 2 (seql (:for x (res log "a" 10)) (:yield x)))))))
+          (list "a"))
+  (expect "a seql whose consumer throws"
+          (ends-of (fun (log) (def s (seql (:for x (res log "a" 10)) (:yield (* x 2))))
+                              (loop (:for y s) (:do (when (= y 4) (ignore (boom)))))))
+          (list "a!"))
+  (expect "a comprehension that throws"
+          (ends-of (fun (log) (ignore {listing (if (= x 2) (boom) x) (:for x (res log "a" 5))})))
+          (list "a!"))
+
+  (def log (mutablevec))
+  (with-scope (ignore (bjo (walk-caught log))))
+  (expect "a throw in a loop that awaits" (mutablevec->list log) (list "a!"))
+
+  ;; The file that `file-read-lines/seq` opens is closed when the body throws.
+  ;; Only where the open descriptors can be counted.
+  (when (directory-exists? "/proc/self/fd")
+    (def path "406-scratch-lines.txt")
+    (file-write-text path "1\n2\n3\n")
+    (def open-fds (fun () (vec-length (directory-files "/proc/self/fd"))))
+    ;; An empty scope first, so that the assemblies a scope loads are loaded
+    ;; before the count.
+    (with-scope (ignore (open-fds)))
+    (def before (open-fds))
+    (loop (:for i (range 0 20))
+          (:do (ignore (try (loop (:for l (file-read-lines/seq path))
+                                  (:do (when (= l "2") (ignore (boom)))))
+                            #:catch (System.InvalidOperationException)))))
+    (expect "a throw closes the file" (- (open-fds) before) 0)
+    (loop (:for i (range 0 20))
+          (:do (ignore (find (fun (l) (= l "1!")) (map (fun (x) (str x "!")) (file-read-lines/seq path))))))
+    (expect "find over map closes the file" (- (open-fds) before) 0)
+    (file-delete path))
+  0)

@@ -159,7 +159,11 @@ type private GroupCtx =
       /// The enclosing loop's cursors that are live while the form runs, as
       /// (sequence, cursor) pairs. A yield inside the form names them in its
       /// member's `loopends`, see `levelMembers`.
-      Live: (string * string) list }
+      Live: (string * string) list
+      /// The guard of every cursor of the loop, outer levels first, as
+      /// `guardOf` makes it. One collection for the loop and all its
+      /// `:subloop` forms, so that `desugarLoop` binds and cleans every cell.
+      Guards: ResizeArray<string * string * string * string> }
 
 /// A group's members, its entering expression, and the bindings to hoist ahead
 /// of the whole loop.
@@ -205,6 +209,86 @@ let rec private sexprSymbols (s: SExpr) : Set<string> =
     | SAtom { Token = Symbol n } -> Set.singleton n
     | SAtom _ -> Set.empty
     | SList(items, _) -> items |> List.map sexprSymbols |> Set.unionMany
+
+// ---------------------------------------------------------------------------
+// The guard that ends live cursors when the loop is left abnormally
+// ---------------------------------------------------------------------------
+
+/// The guard of one cursor: (cursor, cell, sequence binder, cursor binder).
+/// The cell holds `(Some (Tuple seq cursor))` while the cursor is live, and
+/// `None` before it starts and after it is ended or exhausted. The two binders
+/// are the names the cleanup binds the cell's contents to.
+///
+/// The names are made from the cursor's own gensym suffix, not with
+/// `Gensym.fresh`. Thus a loop whose guard `Simplify` removes has the same
+/// gensym numbers as before, and gives the same C#.
+let private guardOf (cursor: string) : string * string * string * string =
+    let suffix =
+        match cursor.LastIndexOf "__" with
+        | -1 -> "__" + cursor
+        | i -> cursor.Substring i
+
+    let name (prefix: string) =
+        let n = prefix + suffix
+        if Gensym.isWritten n then Gensym.fresh prefix else n
+
+    cursor, name "looplive", name "looplivseq", name "looplivcur"
+
+/// Whether `name` is a guard cell that `guardLoop` binds. Later passes rename
+/// a binder by adding a `__N` suffix, so every suffix is removed first.
+let isGuardCell (name: string) : bool =
+    let rec root (n: string) =
+        let stripped = Gensym.baseName n
+        if stripped = n then n else root stripped
+
+    root name = "looplive"
+
+/// The size of `expr` in nodes, without the nodes of loop guards. Inlining
+/// limits are measured with this, so that a guard that `Simplify` later
+/// removes does not change what is inlined.
+let rec guardFreeSize (expr: Expr) : int =
+    match expr with
+    | ELetMutable(n, _, _, body, _) when isGuardCell n ->
+        match body with
+        | ETryFinally(inner, _, _) -> guardFreeSize inner
+        | _ -> guardFreeSize body
+    | ELet("_", _, _, _, ESet(n, _, _), rest, _) when isGuardCell n -> guardFreeSize rest
+    | _ -> 1 + (exprChildren expr |> List.sumBy guardFreeSize)
+
+/// Wraps a loop in the guard of its cursors: a `try` whose `finally` calls
+/// `iterable-cleanup` on each cursor that its cell shows as live, inner levels
+/// first. A normal exit has set every cell to `None`, so the `finally` ends
+/// only cursors that an exception or a non-local exit (such as `ret`) left
+/// behind. The cells are bound outside the `try`, so that the loop's members
+/// can write them and the `finally` can read them.
+///
+/// `Simplify` removes the guard again where every `iterable-cleanup` is a no-op,
+/// which is the case for every library iterable except `Seq`.
+let private guardLoop (guards: (string * string * string * string) list) (loop: Expr) (r: Range) : Expr =
+    if guards.IsEmpty then
+        loop
+    else
+        let noop = EWhen(EBool(false, r), ETuple([], r), false, r)
+
+        let endIfLive (_, cell, s, c) =
+            EMatch(
+                EIdent(cell, r),
+                [ PConstruct("Some", [ PTuple([ PIdent(s, r); PIdent(c, r) ], r) ], r),
+                  None,
+                  EApp(EResolved("iterable-cleanup", r), [ EIdent(s, r); EIdent(c, r) ], r)
+                  PConstruct("None", [], r), None, noop ],
+                r
+            )
+
+        let cleanup =
+            match List.rev guards |> List.map endIfLive with
+            | [] -> noop
+            | ends -> List.reduceBack (fun e acc -> ELet("_", false, [], None, e, acc, r)) ends
+
+        List.foldBack
+            (fun (_, cell, _, _) acc -> ELetMutable(cell, None, EResolved("None", r), acc, r))
+            guards
+            (ETryFinally(loop, cleanup, r))
 
 // ---------------------------------------------------------------------------
 // n-ary arithmetic and comparison
@@ -797,6 +881,8 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
 
     let clauses = clauseForms |> List.map parseLoopClause
 
+    let guards = ResizeArray()
+
     let top =
         buildGroup
             fns
@@ -808,7 +894,8 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
               AbandonSubloop = None
               Resume = None
               Export = None
-              Live = [] }
+              Live = []
+              Guards = guards }
             clauses
 
     // The prologue. Everything loop-invariant is evaluated once, outside: the
@@ -817,7 +904,10 @@ and desugarLoop (fns: ParseFns) (allForms: SExpr list) (r: Range) : Expr =
     // `let/mono` rather than `let` because a collector is typically a bare
     // nullary constructor, which `let` would generalize — and then its element
     // type would never pin down.
-    List.foldBack (fun (n, e, hr) acc -> ELetMono(n, e, acc, hr)) top.Hoisted (ELetRec(top.Members, top.Entry, r))
+    List.foldBack
+        (fun (n, e, hr) acc -> ELetMono(n, e, acc, hr))
+        top.Hoisted
+        (guardLoop (List.ofSeq guards) (ELetRec(top.Members, top.Entry, r)) r)
 
 /// The members of one group: a `(loop ...)`'s, or a `:subloop` form's, which
 /// its loop merges into its own. A form's members are the members of its
@@ -973,6 +1063,10 @@ and private buildGroup
                CurNames = fors |> List.map (fun _ -> Gensym.fresh "loopcur")
                WithNames = withs |> List.map (fun (p, _, _, _, _) -> withSlotName p)
                Member = Gensym.fresh "looplevel" |} ]
+
+    for lvl in levels do
+        for cn in lvl.CurNames do
+            ctx.Guards.Add(guardOf cn)
 
     // One slot per accumulator, in declaration order across *every* level: an
     // accumulator is hoisted, lives on all members, and is visible in the finish
@@ -1169,14 +1263,27 @@ and private buildGroup
         [ for j in 0..i do
               yield! levelCursors j ]
 
+    /// The guard cell of cursor `cn`. See `guardLoop`.
+    let cellOf (cn: string) =
+        ctx.Guards |> Seq.pick (fun (c, cell, _, _) -> if c = cn then Some cell else None)
+
+    /// Sets the guard cell of `cn` to `None`, then `rest`: the cursor is no
+    /// longer live, and the guard must not end it.
+    let released (cn: string) (cr: Range) (rest: Expr) =
+        ELet("_", false, [], None, ESet(cellOf cn, EResolved("None", cr), cr), rest, cr)
+
     /// `iterable-end` on each of `cursors`, then `rest`. An exit that leaves a
     /// walk before its `done?` answered true goes through this, so that a
     /// cursor holding a resource for the walk, such as an open file, releases
-    /// it now.
+    /// it now. The guard cell is cleared before the call, so an `iterable-end`
+    /// that throws is not called again by the guard.
     let ending (cursors: (string * string) list) (cr: Range) (rest: Expr) =
         List.foldBack
             (fun (sn, cn) acc ->
-                ELet("_", false, [], None, call "iterable-end" [ EIdent(sn, cr); EIdent(cn, cr) ] cr, acc, cr))
+                released
+                    cn
+                    cr
+                    (ELet("_", false, [], None, call "iterable-end" [ EIdent(sn, cr); EIdent(cn, cr) ] cr, acc, cr)))
             cursors
             rest
 
@@ -1558,7 +1665,8 @@ and private buildGroup
                       Resume =
                         Some(fun rr -> EApp(EIdent(resumeName, rr), resumeParams |> List.map (fun n -> EIdent(n, rr)), rr))
                       Export = export
-                      Live = ctx.Live @ groupCursors level }
+                      Live = ctx.Live @ groupCursors level
+                      Guards = ctx.Guards }
                     subClauses
 
             // Members are checked in order, and a slot's type comes from the
@@ -1814,11 +1922,13 @@ and private buildGroup
                     | DTest _ -> true)
                 |> List.length
 
+            // With one driver, its cursor is exhausted and only its guard cell
+            // is cleared.
             let exhaustedExit =
                 if enders > 1 then
                     ending (levelCursors lvl.Index) r (exitLevel lvl.Index r)
                 else
-                    exitLevel lvl.Index r
+                    List.foldBack (fun cn acc -> released cn r acc) lvl.CurNames (exitLevel lvl.Index r)
 
             let iteration =
                 EIf(
@@ -1847,7 +1957,19 @@ and private buildGroup
                     finals
                     iteration
 
-            let withsBound = bindWiths lvl.Index headed
+            // The level's cursors are live from here, for the guard. The cells
+            // are written on each iteration, because a cursor can be a new
+            // value after each `iterable-next`.
+            let live =
+                List.foldBack2
+                    (fun sn cn acc ->
+                        let value = call "Some" [ ETuple([ EIdent(sn, r); EIdent(cn, r) ], r) ] r
+                        ELet("_", false, [], None, ESet(cellOf cn, value, r), acc, r))
+                    lvl.SeqNames
+                    lvl.CurNames
+                    headed
+
+            let withsBound = bindWiths lvl.Index live
 
             // A member that yields is a producer `SeqFusion` may splice a
             // consumer into, at the yield. A consumer that stops early there

@@ -296,8 +296,10 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
                     | (m, _) :: _ -> DotNetInterop.showType (prune registry m)
                     | [] -> Naming.showTypeName ctor
 
+                let hint = persistentTwinHint registry w.Trait ctor shown
+
                 failwithf
-                    $"Type Error at %s{Lexer.formatPos w.Range}: no implementation of trait '%s{w.Trait}' for '%s{shown}', required by '%s{w.Method}'."
+                    $"Type Error at %s{Lexer.formatPos w.Range}: no implementation of trait '%s{w.Trait}' for '%s{shown}', required by '%s{w.Method}'.%s{hint}"
         | Some target ->
             let prefix, classTypeArgs, subst = instantiateImplPrefix target
 

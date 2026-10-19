@@ -147,6 +147,21 @@ let addBinding (name: string) (binding: Binding) (env: Env) : Env =
         // own, because binding a name already means this.
         Escapes = Map.remove name env.Escapes }
 
+/// What to add to "no implementation of trait" for a trait spelled with a `!`,
+/// the in-place twin of a persistent one (`Addable!` of `Addable`, `Settable!`
+/// of `Settable`), when the type implements the persistent one: it is a
+/// persistent type, and nothing in it can be written in place. Empty otherwise.
+let persistentTwinHint (registry: TraitRegistry) (traitName: string) (ctor: string) (shown: string) : string =
+    if traitName.EndsWith "!" then
+        let twin = traitName.Substring(0, traitName.Length - 1)
+
+        if Map.containsKey (twin, ctor) registry.ImplTargets then
+            $" '%s{shown}' is persistent, so it is not written in place: it implements '%s{twin}', whose methods answer a changed copy."
+        else
+            ""
+    else
+        ""
+
 let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
     match t with
     | TMeta m ->
@@ -170,7 +185,17 @@ let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
             match registry.ResolveAssociatedType traitName assocName prunedImpl with
             | Some resolved -> prune registry resolved
             | None ->
-                failwithf $"Missing implementation of %s{traitName} for %s{DotNetInterop.showType prunedImpl}"
+                let shown = DotNetInterop.showType prunedImpl
+
+                let hint =
+                    match prunedImpl with
+                    | TCon(ctor, _) ->
+                        match persistentTwinHint registry traitName ctor shown with
+                        | "" -> ""
+                        | sentence -> "." + sentence
+                    | _ -> ""
+
+                failwithf $"Missing implementation of %s{traitName} for %s{shown}%s{hint}"
         // Still generic. A member-level `(where ...)` may have pinned it: the
         // given equalities in force while a constrained member's body is
         // checked (see `TraitRegistry.PinnedAssocs`). Matched by rigid name

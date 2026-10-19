@@ -59,20 +59,42 @@
     A @code{loop} calls it on each cursor that it stops early: at a
     @code{:finish}, at an @code{:abandon}, or when another driver of the same
     level ends first. So @code{find} and @code{any?} over
-    @code{file-read-lines/seq} close the file when they stop. It may also be
-    called after @code{iterable-done?} returned @code{#t}, and must then do
-    nothing.
+    @code{file-read-lines/seq} close the file when they stop. Each cursor gets
+    the call once at most. It may also be called after @code{iterable-done?}
+    returned @code{#t}, and must then do nothing.
+
+    When an exception or a non-local exit leaves the loop, the loop calls
+    @code{iterable-cleanup} instead. A cursor that holds a resource releases
+    it in both.
 
     The default does nothing. Implement it for a cursor that holds a resource
-    for the traversal. A traversal that an exception leaves, and a lazy
-    @code{seql} whose consumer stops early, do not call it. A file port that
-    such a traversal opened is closed when its scope ends.
+    for the traversal.
+    """))
+
+(:doc iterable-cleanup
+  (summary "Releases what a cursor holds when an exception or a non-local exit leaves the loop.")
+  (arg s "The iterable collection or sequence.")
+  (arg c "The cursor that was live.")
+  (see iterable-end)
+  (reference """
+    A @code{loop} calls it, in place of @code{iterable-end}, on each cursor
+    that is live when an exception or a non-local exit (such as @code{ret} of
+    a @code{with-return}) leaves the loop, inner levels first. A lazy
+    @code{seql} whose consumer stops early calls it on the cursors it has
+    open too. Each cursor gets the call once at most.
+
+    The default does nothing, and with it the loop has no @code{try} around
+    it and keeps no record of its cursors. A cursor that holds a resource,
+    such as an open file, releases it here as well as in
+    @code{iterable-end}: a @code{Seq} does both, which disposes its
+    enumerator, so a loop over @code{file-read-lines/seq} whose body raises
+    closes the file.
     """))
 
 (:doc Iterable
   (summary "Trait for sequentially iterable collections, used by (:for x s) loops.")
   (tparam %s "The iterable collection or sequence type.")
-  (see iterable-start iterable-done? iterable-current iterable-next fold map ->seq)
+  (see iterable-start iterable-done? iterable-current iterable-next iterable-end iterable-cleanup fold map ->seq)
   (example """
     (loop (:for x '(1 2 3))
           (:acc (summing x)))          ; 6
@@ -86,6 +108,7 @@
     @code{iterable-current}, and @code{iterable-next}.
 
     Default implementations are provided for @code{iterable-end},
+    @code{iterable-cleanup},
     @code{fold}, @code{map},
     @code{filter}, @code{take}, @code{drop}, @code{take-while},
     @code{drop-while}, @code{enumerate}, @code{flat-map}, @code{any?},

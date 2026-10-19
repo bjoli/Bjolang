@@ -1,0 +1,16 @@
+;; `set!` along a path compiles to the write itself: the `Settable!` call is
+;; inlined to what `array-set!` compiles to, and a field at the end of a path
+;; is a C# member assignment. No dictionary and no copy.
+
+(type (: Player (Record (: name string) (: score int #:mutable))))
+(type (: Team (Record (: players (Array Player)))))
+
+;; EXPECT-CS: arraysubset_BANG\(obj0__[0-9]+, key1__[0-9]+, new0__[0-9]+\);
+;; EXPECT-NO-CS: Settable_BANG
+(: put (-> (Array int) int int void))
+(defun (put arr i x) (set! arr i x))
+
+;; EXPECT-CS: = \(obj0__[0-9]+\.players\)\[\(key2__[0-9]+\)\];
+;; EXPECT-CS: dest0__[0-9]+\.score = new0__[0-9]+;
+(: score! (-> Team int int void))
+(defun (score! team i s) (set! team .players i .score s))
