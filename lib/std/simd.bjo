@@ -68,7 +68,9 @@
   ;; Integers only
   SimdInt
   simd-shift-left simd-shift-right simd-shift-right-logical
-  simd-add-saturating simd-sub-saturating
+  simd-add-saturating simd-sub-saturating simd-shuffle
+  ;; Byte tables
+  ByteLane SimdLookup simd-lookup
   ;; The same bits as another element type
   SimdBits
   simd-bits->int8 simd-bits->uint8 simd-bits->int16 simd-bits->uint16
@@ -165,6 +167,10 @@
 (impl (FloatLane double))
 (impl (FloatLane System.Single))
 
+;; The element type `simd-lookup` takes its indices in.
+(def/trait (ByteLane %a))
+(impl (ByteLane byte))
+
 ;; ---------------------------------------------------------------------------
 ;; The traits
 ;; ---------------------------------------------------------------------------
@@ -232,13 +238,20 @@
   (: simd-mul-add (-> %v %v %v %v)))
 
 ;; What only integer lanes have. A shift of a float lane would shift the bits
-;; of its encoding.
+;; of its encoding. A shuffle's indices are of the vector's own type, which
+;; for a float vector would be another type; a float vector is shuffled as
+;; the same bits read as integers, with `simd-bits->int64` and back.
 (def/trait (SimdInt %v)
   (: simd-shift-left (-> %v int %v))
   (: simd-shift-right (-> %v int %v))
   (: simd-shift-right-logical (-> %v int %v))
   (: simd-add-saturating (-> %v %v %v))
-  (: simd-sub-saturating (-> %v %v %v)))
+  (: simd-sub-saturating (-> %v %v %v))
+  (: simd-shuffle (-> %v %v %v)))
+
+;; A lookup in a table of 16 bytes, one for each byte of the indices.
+(def/trait (SimdLookup %v)
+  (: simd-lookup (-> (Simd128 byte) %v %v)))
 
 ;; The same bits, read as lanes of another type. The lanes are as many as the
 ;; bits allow: an `Int64x2` is a `UInt8x16`.
@@ -290,6 +303,8 @@
   (v128-store! (: System.Runtime.Intrinsics.Vector128.CopyTo (-> (Simd128 %a) (Array %a) int void)))
   (v128-add-saturating (: System.Runtime.Intrinsics.Vector128.AddSaturate (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
   (v128-sub-saturating (: System.Runtime.Intrinsics.Vector128.SubtractSaturate (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-shuffle (: Bjolang.Runtime.BjoSimd.Shuffle128 (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-lookup (: Bjolang.Runtime.BjoSimd.Lookup128 (-> (Simd128 byte) (Simd128 %a) (Simd128 %a))))
   (v128-as (: System.Runtime.Intrinsics.Vector128.As (-> (Simd128 %a) (Simd128 %b))))
   (v128-floor (: Bjolang.Runtime.BjoSimd.Floor128 (-> (Simd128 %a) (Simd128 %a))))
   (v128-ceiling (: Bjolang.Runtime.BjoSimd.Ceiling128 (-> (Simd128 %a) (Simd128 %a))))
@@ -390,7 +405,11 @@
   (defun (simd-shift-right a n) (v128-shift-right a n))
   (defun (simd-shift-right-logical a n) (v128-shift-right-logical a n))
   (defun (simd-add-saturating a b) (v128-add-saturating a b))
-  (defun (simd-sub-saturating a b) (v128-sub-saturating a b)))
+  (defun (simd-sub-saturating a b) (v128-sub-saturating a b))
+  (defun (simd-shuffle v idx) (v128-shuffle v idx)))
+
+(impl (SimdLookup (Simd128 %a)) (where (ByteLane %a))
+  (defun (simd-lookup table idx) (v128-lookup table idx)))
 
 (impl (SimdBits (Simd128 %a)) (where (Lane %a))
   (type %int8 (Simd128 System.SByte))
@@ -448,6 +467,8 @@
   (v256-store! (: System.Runtime.Intrinsics.Vector256.CopyTo (-> (Simd256 %a) (Array %a) int void)))
   (v256-add-saturating (: System.Runtime.Intrinsics.Vector256.AddSaturate (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
   (v256-sub-saturating (: System.Runtime.Intrinsics.Vector256.SubtractSaturate (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-shuffle (: Bjolang.Runtime.BjoSimd.Shuffle256 (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-lookup (: Bjolang.Runtime.BjoSimd.Lookup256 (-> (Simd128 byte) (Simd256 %a) (Simd256 %a))))
   (v256-as (: System.Runtime.Intrinsics.Vector256.As (-> (Simd256 %a) (Simd256 %b))))
   (v256-floor (: Bjolang.Runtime.BjoSimd.Floor256 (-> (Simd256 %a) (Simd256 %a))))
   (v256-ceiling (: Bjolang.Runtime.BjoSimd.Ceiling256 (-> (Simd256 %a) (Simd256 %a))))
@@ -548,7 +569,11 @@
   (defun (simd-shift-right a n) (v256-shift-right a n))
   (defun (simd-shift-right-logical a n) (v256-shift-right-logical a n))
   (defun (simd-add-saturating a b) (v256-add-saturating a b))
-  (defun (simd-sub-saturating a b) (v256-sub-saturating a b)))
+  (defun (simd-sub-saturating a b) (v256-sub-saturating a b))
+  (defun (simd-shuffle v idx) (v256-shuffle v idx)))
+
+(impl (SimdLookup (Simd256 %a)) (where (ByteLane %a))
+  (defun (simd-lookup table idx) (v256-lookup table idx)))
 
 (impl (SimdBits (Simd256 %a)) (where (Lane %a))
   (type %int8 (Simd256 System.SByte))

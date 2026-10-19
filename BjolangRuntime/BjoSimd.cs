@@ -165,6 +165,69 @@ public static class BjoSimd {
             ? Vector256.FusedMultiplyAdd(a.AsDouble(), b.AsDouble(), c.AsDouble()).As<double, T>()
             : Vector256.FusedMultiplyAdd(a.AsSingle(), b.AsSingle(), c.AsSingle()).As<float, T>();
 
+    // Shuffles. .NET has one overload per element type, whose indices are of
+    // the vector's own type. An index past the last lane gives 0.
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector128<T> Shuffle128<T>(Vector128<T> v, Vector128<T> idx)
+    {
+        if (typeof(T) == typeof(byte)) return Vector128.Shuffle(v.AsByte(), idx.AsByte()).As<byte, T>();
+        if (typeof(T) == typeof(sbyte)) return Vector128.Shuffle(v.AsSByte(), idx.AsSByte()).As<sbyte, T>();
+        if (typeof(T) == typeof(short)) return Vector128.Shuffle(v.AsInt16(), idx.AsInt16()).As<short, T>();
+        if (typeof(T) == typeof(ushort)) return Vector128.Shuffle(v.AsUInt16(), idx.AsUInt16()).As<ushort, T>();
+        if (typeof(T) == typeof(int)) return Vector128.Shuffle(v.AsInt32(), idx.AsInt32()).As<int, T>();
+        if (typeof(T) == typeof(uint)) return Vector128.Shuffle(v.AsUInt32(), idx.AsUInt32()).As<uint, T>();
+        if (typeof(T) == typeof(long)) return Vector128.Shuffle(v.AsInt64(), idx.AsInt64()).As<long, T>();
+        if (typeof(T) == typeof(ulong)) return Vector128.Shuffle(v.AsUInt64(), idx.AsUInt64()).As<ulong, T>();
+        throw new NotSupportedException("Shuffle128: integer lanes only.");
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector256<T> Shuffle256<T>(Vector256<T> v, Vector256<T> idx)
+    {
+        if (typeof(T) == typeof(byte)) return Vector256.Shuffle(v.AsByte(), idx.AsByte()).As<byte, T>();
+        if (typeof(T) == typeof(sbyte)) return Vector256.Shuffle(v.AsSByte(), idx.AsSByte()).As<sbyte, T>();
+        if (typeof(T) == typeof(short)) return Vector256.Shuffle(v.AsInt16(), idx.AsInt16()).As<short, T>();
+        if (typeof(T) == typeof(ushort)) return Vector256.Shuffle(v.AsUInt16(), idx.AsUInt16()).As<ushort, T>();
+        if (typeof(T) == typeof(int)) return Vector256.Shuffle(v.AsInt32(), idx.AsInt32()).As<int, T>();
+        if (typeof(T) == typeof(uint)) return Vector256.Shuffle(v.AsUInt32(), idx.AsUInt32()).As<uint, T>();
+        if (typeof(T) == typeof(long)) return Vector256.Shuffle(v.AsInt64(), idx.AsInt64()).As<long, T>();
+        if (typeof(T) == typeof(ulong)) return Vector256.Shuffle(v.AsUInt64(), idx.AsUInt64()).As<ulong, T>();
+        throw new NotSupportedException("Shuffle256: integer lanes only.");
+    }
+
+    // A table lookup: each byte of `idx` picks a byte of a 16-entry table, and
+    // an index of 16 or more gives 0. On x86 that is `pshufb`, which gives 0
+    // only where the index's top bit is set and otherwise reads its low four
+    // bits. A saturating add of 0x70 makes every index from 16 up reach 0x80,
+    // and keeps the low four bits of the ones below. ARM's `tbl` gives 0 for
+    // 16 and up already, which is what `Vector128.Shuffle` compiles to there.
+    // At 256 bits the table is in both halves, so each half looks up in its
+    // own: `Vector256.Shuffle` would cross the halves, which AVX2 does slowly.
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector128<T> Lookup128<T>(Vector128<byte> table, Vector128<T> idx)
+    {
+        var i = idx.AsByte();
+        if (System.Runtime.Intrinsics.X86.Ssse3.IsSupported)
+        {
+            return System.Runtime.Intrinsics.X86.Ssse3.Shuffle(table, Vector128.AddSaturate(i, Vector128.Create((byte)0x70))).As<byte, T>();
+        }
+        return Vector128.Shuffle(table, i).As<byte, T>();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector256<T> Lookup256<T>(Vector128<byte> table, Vector256<T> idx)
+    {
+        var i = idx.AsByte();
+        if (System.Runtime.Intrinsics.X86.Avx2.IsSupported)
+        {
+            return System.Runtime.Intrinsics.X86.Avx2.Shuffle(
+                Vector256.Create(table, table), Vector256.AddSaturate(i, Vector256.Create((byte)0x70))).As<byte, T>();
+        }
+        return Vector256.Create(Lookup128(table, i.GetLower()), Lookup128(table, i.GetUpper())).As<byte, T>();
+    }
+
     // Loads from a list. Each takes a span of exactly a vector,
     // so the slice is the range check: it throws
     // `ArgumentOutOfRangeException` when fewer elements are left, as the

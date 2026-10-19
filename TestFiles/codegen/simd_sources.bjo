@@ -42,6 +42,16 @@
 (: down-to-integers (-> Float64x4 Float64x4))
 (defun (down-to-integers v) (simd-floor v))
 
+;; A shuffle and a lookup are the runtime's helpers, which pick the overload
+;; and, for a 256-bit lookup on x86, the in-half instruction.
+;; EXPECT-CS: return Bjolang\.Runtime\.BjoSimd\.Shuffle128<int>\(v, idx\);
+(: reorder (-> Int32x4 Int32x4 Int32x4))
+(defun (reorder v idx) (simd-shuffle v idx))
+
+;; EXPECT-CS: return Bjolang\.Runtime\.BjoSimd\.Lookup256<byte>\(table, idx\);
+(: classify (-> UInt8x16 UInt8x32 UInt8x32))
+(defun (classify table idx) (simd-lookup table idx))
+
 ;; Nothing goes through the trait at run time.
 ;; EXPECT-NO-CS: SimdSource
 ;; EXPECT-NO-CS: simd128subload|simd256subload

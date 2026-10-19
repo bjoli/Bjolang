@@ -3,6 +3,31 @@
 
 What each change guarantees, and what it leaves open.
 
+* (std simd): shuffles and byte-table lookups
+
+- ~(simd-shuffle v idx)~ puts lane ~(simd-ref idx i)~ of ~v~ in lane ~i~,
+  and 0 where the index is past the last lane or negative. It is a
+  ~SimdInt~ method: the indices are of the vector's own type, and a float
+  vector is shuffled through ~simd-bits->int64~ and back. At 256 bits a
+  byte or short that crosses the two halves of the vector costs a few
+  instructions on AVX2.
+- ~(simd-lookup table bytes)~ looks each byte up in a ~UInt8x16~ table,
+  and gives 0 from index 16 up, at both widths. On x86 it is ~pshufb~
+  after a saturating add of 0x70, which makes every index from 16 up give
+  0 as .NET's definition says; at 256 bits it is one ~vpshufb~ with the
+  table in both halves, where ~Vector256.Shuffle~ would cross them.
+  Without AVX2 it is two 128-bit lookups, and on ARM64 ~tbl~. Its indices
+  are bytes: ~SimdLookup~ is implemented where they are ~ByteLane~.
+- A digit classifier with two nibble tables, as in the docs of
+  ~simd-lookup~, counts the digits of 32 MB in 1.4 ms, against 14 ms for a
+  scalar loop, and the lookup is inlined into the loop.
+- Tests: ~409_simd_shuffle.bjo~ checks the classifier and the lookup rule
+  at every byte value at both widths, and shuffles across the halves. It
+  passes with AVX2, without it, and with no hardware intrinsics, as do the
+  other ~(std simd)~ tests. ~codegen/simd_sources.bjo~ checks both are the
+  runtime's helpers, and ~errors/simd_shuffle_float~ and
+  ~simd_lookup_ints~ the refusals.
+
 * (std simd): masks of their own type, float-only and integer-only operations, and conversions
 
 The library takes more of OxCaml's SIMD design: typed masks, operations

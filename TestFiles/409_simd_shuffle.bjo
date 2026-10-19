@@ -1,0 +1,133 @@
+;; `(std simd)`: shuffles and byte-table lookups.
+;;
+;; A lookup is checked at every byte value against a scalar answer, at both
+;; widths, since the 256-bit one is a different instruction sequence on x86
+;; (`vpshufb` with the table in both halves, after a saturating add) and an
+;; index from 16 up has to give 0 there as it does in .NET's definition.
+(import (std prelude))
+(import (std simpletest))
+(import (std simd))
+
+;; Every byte value, in order.
+(: all-bytes (-> (Array byte)))
+(defun (all-bytes)
+  (def a (make-array 256 #:fill 0uy))
+  (loop (:for i (range 0 256)) (:do (array-set! a i (cast byte i))))
+  a)
+
+;; The two tables of the digit classifier in the docs of `simd-lookup`.
+(: low-table UInt8x16)
+(def low-table (simd128-of 1uy 1uy 1uy 1uy 1uy 1uy 1uy 1uy 1uy 1uy))
+(: high-table UInt8x16)
+(def high-table (simd128-of 0uy 0uy 0uy 1uy))
+
+(: digits256 (-> UInt8x32 (Mask256 byte)))
+(defun (digits256 bytes)
+  (def lo (simd-lookup low-table (simd-and bytes (simd256-splat 15uy))))
+  (def hi (simd-lookup high-table (simd-shift-right bytes 4)))
+  (simd-ne (simd-and lo hi) (simd256-zero)))
+
+(: digits128 (-> UInt8x16 (Mask128 byte)))
+(defun (digits128 bytes)
+  (def lo (simd-lookup low-table (simd-and bytes (simd128-splat 15uy))))
+  (def hi (simd-lookup high-table (simd-shift-right bytes 4)))
+  (simd-ne (simd-and lo hi) (simd128-zero)))
+
+(: digit? (-> int bool))
+(defun (digit? b) (and (>= b 48) (<= b 57)))
+
+;; How many of the 256 byte values the classifier and the scalar test disagree on.
+(: disagreements256 (-> int))
+(defun (disagreements256)
+  (def a (all-bytes))
+  (loop (:for i (up-from 0 #:to 256 #:by 32))
+        (:let bits (simd-mask-bits (digits256 (simd256-load a i))))
+        (:subloop)
+        (:for k (range 0 32))
+        (:let set? (not (= (bitwise-and (shift-right-logical bits k) 1) 0)))
+        (:when (not (eq? set? (digit? (+ i k)))))
+        (:acc n (summing 1))
+        => n))
+
+(: disagreements128 (-> int))
+(defun (disagreements128)
+  (def a (all-bytes))
+  (loop (:for i (up-from 0 #:to 256 #:by 16))
+        (:let bits (simd-mask-bits (digits128 (simd128-load a i))))
+        (:subloop)
+        (:for k (range 0 16))
+        (:let set? (not (= (bitwise-and (shift-right-logical bits k) 1) 0)))
+        (:when (not (eq? set? (digit? (+ i k)))))
+        (:acc n (summing 1))
+        => n))
+
+;; The lane `simd-lookup` gives for each of 32 indices, against .NET's rule.
+(: lookup-rule-breaks (-> UInt8x32 int))
+(defun (lookup-rule-breaks idx)
+  (def table (simd128-of 100uy 101uy 102uy 103uy 104uy 105uy 106uy 107uy
+                         108uy 109uy 110uy 111uy 112uy 113uy 114uy 115uy))
+  (def got (simd-lookup table idx))
+  (loop (:for k (range 0 32))
+        (:let i (cast int (simd-ref idx k)))
+        (:let want (if (< i 16) (cast byte (+ 100 i)) 0uy))
+        (:when (not (= (simd-ref got k) want)))
+        (:acc n (summing 1))
+        => n))
+
+(defun (main)
+  ;; Shuffles.
+  (def x (simd128-of 10 20 30 40))
+  (expect "reverse" (simd-ref (simd-shuffle x (simd128-of 3 2 1 0)) 0) 40)
+  (expect "reverse, last lane" (simd-ref (simd-shuffle x (simd128-of 3 2 1 0)) 3) 10)
+  (expect "broadcast" (simd-sum (simd-shuffle x (simd128-of 2 2 2 2))) 120)
+  (expect "an index past the last lane gives 0" (simd-ref (simd-shuffle x (simd128-of 0 4 99 1)) 1) 0)
+  (expect "and so does a negative one" (simd-ref (simd-shuffle x (simd128-of -1 0 0 0)) 0) 0)
+  (: b UInt8x16)
+  (def b (simd128-of 0uy 1uy 2uy 3uy 4uy 5uy 6uy 7uy 8uy 9uy 10uy 11uy 12uy 13uy 14uy 15uy))
+  (def rev (simd128-of 15uy 14uy 13uy 12uy 11uy 10uy 9uy 8uy 7uy 6uy 5uy 4uy 3uy 2uy 1uy 0uy))
+  (expect "reverse bytes" (simd-ref (simd-shuffle b rev) 2) 13uy)
+  (: wide Int64x4)
+  (def wide (simd256-of 1L 2L 3L 4L))
+  (expect "rotate longs" (simd-ref (simd-shuffle wide (simd256-of 1L 2L 3L 0L)) 3) 1L)
+  ;; A byte from the other half of a 256-bit vector.
+  (def a (all-bytes))
+  (: bytes32 UInt8x32)
+  (def bytes32 (simd256-load a 0))
+  (def from-other-half (simd-with (simd256-zero) 0 31uy))
+  (expect "a 256-bit shuffle across the halves" (simd-ref (simd-shuffle bytes32 from-other-half) 0) 31uy)
+  (expect "and lane 31 from lane 0" (simd-ref (simd-shuffle bytes32 from-other-half) 31) 0uy)
+  (expect "ushort lanes"
+          (simd-ref (simd-shuffle (simd128-splat (cast ushort 7)) (simd128-splat (cast ushort 1))) 5) (cast ushort 7))
+  ;; Float lanes, through their bits.
+  (def d (simd128-of 1.5 2.5))
+  (expect "a float vector, through its bits"
+          (simd-ref (simd-bits->float64 (simd-shuffle (simd-bits->int64 d) (simd128-of 1L 0L))) 0) 2.5)
+
+  ;; Lookups.
+  (expect "digits, 32 bytes at a time, at every byte value" (disagreements256) 0)
+  (expect "digits, 16 bytes at a time, at every byte value" (disagreements128) 0)
+  (expect "hex digits"
+          (simd-ref (simd-lookup (simd128-load (string->bytes "0123456789abcdef") 0)
+                                 (simd128-of 0uy 10uy 15uy))
+                    2)
+          102uy)
+  ;; Indices below 16, from 16 up, at the 0x70 and 0x80 edges of the x86 trick.
+  (expect "the rule at the edges, 256 bits"
+          (lookup-rule-breaks (simd256-of 0uy 15uy 16uy 17uy 31uy 32uy 100uy 111uy 112uy 127uy 128uy 129uy
+                                          143uy 144uy 200uy 239uy 240uy 254uy 255uy 1uy 2uy 3uy 4uy 5uy
+                                          6uy 7uy 8uy 9uy 10uy 11uy 12uy 13uy))
+          0)
+  (expect "the rule at every byte value, 256 bits"
+          (loop (:for i (up-from 0 #:to 256 #:by 32))
+                (:acc n (summing (lookup-rule-breaks (simd256-load a i))))
+                => n)
+          0)
+  (expect "the rule at the edges, 128 bits"
+          (simd-ref (simd-lookup b (simd128-of 16uy 112uy 128uy 255uy 15uy)) 4)
+          15uy)
+  ;; The four indices given are all past the table; the twelve not given are 0,
+  ;; which picks entry 0, 15.
+  (expect "an index from 16 up gives 0, 128 bits"
+          (simd-count-true (simd-eq (simd-lookup rev (simd128-of 16uy 112uy 128uy 255uy)) (simd128-zero)))
+          4)
+  0)

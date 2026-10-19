@@ -44,8 +44,10 @@
       @item{@code{SimdMask}: reading a mask.}
       @item{@code{SimdFloat}: what only float lanes have. Division, square
         root, rounding, NaN and fused multiply-add.}
-      @item{@code{SimdInt}: what only integer lanes have. Shifts and
-        saturating arithmetic.}
+      @item{@code{SimdInt}: what only integer lanes have. Shifts,
+        saturating arithmetic, and shuffles.}
+      @item{@code{SimdLookup}: 16-byte table lookups, a vector of bytes at
+        a time.}
       @item{@code{SimdBits}: the same bits read as another element type.}
       @item{@code{SimdWiden}, @code{SimdNarrow}, @code{SimdIntToFloat} and
         @code{SimdFloatToInt}: conversions to another element type.}
@@ -90,6 +92,14 @@
     @code{simd128-float->int-truncating} goes toward zero, saturates past
     the range, and gives 0 for NaN. @code{simd-bits->int64} and its family
     keep the bits and read them as another type.
+
+    @strong{Moving lanes.} Every other operation works lane by lane:
+    @code{simd-shuffle} is how a value reaches another lane, as in reversing
+    or reordering. @code{simd-lookup} uses the bytes of a vector as indices
+    into a table of 16: sixteen or thirty-two lookups in one instruction,
+    which is how fast text code classifies and converts bytes. Neighbouring
+    elements are compared by loading again one element on, at
+    @code{(+ i 1)}: an unaligned load is as fast as an aligned one.
 
     @strong{Element types.} A vector holds one of the primitive numbers
     that the trait @code{Lane} lists. A vector of anything else, such as
@@ -191,7 +201,17 @@
 (:doc SimdInt
   (summary "The operations only integer lanes have.")
   (tparam %v "A vector of @code{IntLane} elements, such as @code{Int32x8}.")
-  (see simd-shift-left simd-shift-right simd-shift-right-logical simd-add-saturating simd-sub-saturating IntLane))
+  (see simd-shift-left simd-shift-right simd-shift-right-logical simd-add-saturating simd-sub-saturating simd-shuffle IntLane))
+
+(:doc SimdLookup
+  (summary "Table lookups: each byte of a vector picks one of 16 bytes.")
+  (tparam %v "The vector of indices: @code{UInt8x16} or @code{UInt8x32}.")
+  (see simd-lookup ByteLane))
+
+(:doc ByteLane
+  (summary "The element type of @code{simd-lookup}'s indices: @code{byte}.")
+  (tparam %a "The element type.")
+  (see SimdLookup))
 
 (:doc SimdBits
   (summary "The same bits, read as lanes of another type.")
@@ -449,6 +469,56 @@
     One fused instruction where the CPU has one (FMA3 on x86-64, every
     ARM64). Rounded once, so it can differ in the last bit from
     @code{(simd-add (simd-mul a b) c)}, which rounds twice.
+    """))
+
+(:doc simd-shuffle
+  (summary "The lanes of @code{v}, in the order @code{idx} says: lane i of the result is lane @code{(simd-ref idx i)} of @code{v}.")
+  (arg v "The vector, of integer lanes.")
+  (arg idx "The lane to take for each lane, of the same type. An index past the last lane gives 0.")
+  (returns "The rearranged lanes.")
+  (see simd-lookup simd-bits->int64)
+  (example """
+    (simd-shuffle (simd128-of 10 20 30 40) (simd128-of 3 2 1 0))   ; 40 30 20 10
+    (simd-shuffle v (simd128-of 0 0 0 0))                          ; lane 0 in every lane
+
+    ;; Float lanes, through their bits.
+    (simd-bits->float64 (simd-shuffle (simd-bits->int64 xs) (simd128-of 1L 0L)))
+    """)
+  (reference """
+    One instruction where the indices are known and the CPU has it: SSSE3
+    or AVX2 on x86-64, @code{tbl} on ARM64. Indices that are not constant
+    cost a little more. At 256 bits, AVX2 moves bytes and shorts only within
+    each half of 16 bytes, so a shuffle that takes a lane from the other
+    half is a few instructions.
+    """))
+
+(:doc simd-lookup
+  (summary "Each byte of @code{idx} looked up in a table of 16 bytes. An index of 16 or more gives 0.")
+  (arg table "The table: a @code{UInt8x16}, entry i at lane i.")
+  (arg idx "The indices, a @code{UInt8x16} or @code{UInt8x32}.")
+  (returns "The entries, a vector of the type of @code{idx}.")
+  (see simd-shuffle simd-shift-right-logical)
+  (example """
+    ;; Which bytes are ASCII digits, by their two halves. A byte's high
+    ;; half picks a set of low halves from one table, its low half a bit
+    ;; from the other: bit 0 is "a digit's low half", and only high half 3
+    ;; allows it.
+    (def low-table  (simd128-of 1uy 1uy 1uy 1uy 1uy 1uy 1uy 1uy 1uy 1uy))   ; 0-9
+    (def high-table (simd128-of 0uy 0uy 0uy 1uy))                         ; 0x30-0x3F
+    (: digits (-> UInt8x32 (Mask256 byte)))
+    (defun (digits bytes)
+      (def lo (simd-lookup low-table (simd-and bytes (simd256-splat 15uy))))
+      (def hi (simd-lookup high-table (simd-shift-right bytes 4)))
+      (simd-ne (simd-and lo hi) (simd256-zero)))
+    """)
+  (reference """
+    The instruction is @code{pshufb} on x86-64 and @code{tbl} on ARM64:
+    16 lookups for a @code{UInt8x16} and 32 for a @code{UInt8x32}, in one
+    instruction. A @code{UInt8x32} looks up its two halves in the same
+    table. With a table for each half of a byte, as in the example, a
+    vector of bytes is classified into up to eight sets at once: digits,
+    spaces, the characters a JSON or CSV parser stops at. With a table of
+    characters, it converts: @code{"0123456789abcdef"} gives hex digits.
     """))
 
 (:doc simd-add-saturating
