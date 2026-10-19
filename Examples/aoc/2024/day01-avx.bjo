@@ -6,7 +6,10 @@
 ;; longs per instruction. That is n * n comparisons instead of a map's n
 ;; lookups, but for the 1000 lines of an input it is still quicker than
 ;; building the map.
-(import (std simd) (std array) (std scan) "common.bjo")
+(import (std simd)
+        (std array)
+        (std scan)
+        "common.bjo")
 
 (defun (main args)
   (def (left right)
@@ -15,9 +18,8 @@
           (:acc left (vecing a))
           (:acc right (vecing b))
           => (Tuple (vec->array (vec-sort left)) (vec->array (vec-sort right)))))
-  (def* (n (array-length left))
+  (def* (n     (array-length left))
         (whole (simd256-whole left)))
-  (: at (-> (Array long) int Int64x4))
   (defun (at a i) (simd256-load a i))
   (def vector-part
     (loop (:for i (up-from 0 #:to whole #:by 4))
@@ -25,7 +27,8 @@
           => (simd-sum d)))
   (def tail-part
     (loop (:for i (range whole n))
-          (:acc d (summing (let ((x (- (array-ref left i) (array-ref right i)))) (if (< x 0L) (- 0L x) x))))
+          (:let x (- (get left i) (get right i)))
+          (:acc d (summing (if (< x 0L) (- 0L x) x)))
           => d))
   (println (+ vector-part tail-part))
   (println {summing (* a (cast System.Int64 (array-count right a))) (:for a left)})

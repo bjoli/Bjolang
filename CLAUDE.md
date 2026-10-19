@@ -51,3 +51,8 @@ is finished, and resuming needs a fresh token rather than a reset.""""
 Do not commit prompts.
 
 the timeout command in linux takes seconds while the one in ECA is milliseconds. Do not set excessive timeouts.
+
+
+## Benchmarks
+
+are written usingneither (std stopwatch) forbquick one-off measurements, or (std bench) for proper benchmarks.

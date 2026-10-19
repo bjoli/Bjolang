@@ -1,0 +1,28 @@
+(import (std fmt) (std stopwatch))
+
+(: (-> int (Vec int)))
+(defun (erathostenes n)
+  ;; we walk only odd numbers, so our array only needs
+  ;; n/2 slots.
+  (def arr (make-array (/ n 2) #:fill #t))
+  ;; this loops walks all odd values from 3 and up, by their places
+  (loop (:for k (up-from 1 #:to odds))
+        (:let i (+ (* 2 k) 1))
+        ;; when it is not a multiple of a previously seen number
+        ;; we collect it into a vec
+        (:when (array-ref arr k))
+        (:acc acc (vecing i #:into [2]))
+        ;; for all values from (* i i), we set all odd multiples of i to #f.
+        (:for j (up-from (if (<= i (/ n i)) (/ (* i i) 2) odds)
+                         #:by i #:to odds))
+        (:do (array-set! arr j #f))))
+
+
+(defun (main args)
+  ;; (time-it
+  ;; bjolang generates ok c# code, so on a 5900x it gets all
+  ;; primes below 2 billion in below 10s, even with the naive approach above.
+  ;; A segmented sieve would of course be much faster. 
+  ;;   (println (length (erathostenes 2000000000))))
+  (show [(justified [(->str (erathostenes 10000))])])
+  0) 

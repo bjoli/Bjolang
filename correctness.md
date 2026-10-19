@@ -41,6 +41,18 @@ The repository itself was not modified, apart from adding this file.
 | REPL: `absolutizeImports` rewrites every equal string literal, not only the import path | `bca306b` | `TestFiles/repl/entry_text.in` |
 | REPL: two pending signatures for one name make it impossible to define | `eba7d5f` | `TestFiles/repl/entry_text.in` |
 | REPL: a module edited and rebuilt during a session is still used in its old form, or its names become unbound | `d5eb1d8` | staleness section of `run_tests.py` |
+| Lost rendezvous: a channel match skips a partner that is transiently Claimed (concurrency #1) | `72aa833` | `TestFiles/307_crossed_chooses.bjo`, CML test "two crossed chooses started together always pair" |
+| `wrap`'s function runs on the committing thread with its dynamic environment; its exception goes to the partner (concurrency #2) | `b31956e` | `TestFiles/308_wrap_on_syncing_fiber.bjo`, CML test "a throwing wrap raises in the syncing fiber, not the partner" |
+| (found building glasnost) A published constrained body naming a helper the importer hid with `only`/`prefix` is never specialised | `bbdc000` | `TestFiles/codegen/monomorphise_hidden_import.bjo`, `TestFiles/warnings/specialise_hidden_import.bjo` |
+| A self tail call recomputes omitted keyword defaults from the previous iteration's parameters (lowering) | `baa3c6a` | `TestFiles/309_tail_call_keyword_defaults.bjo` |
+| A named loop's `(lp)` takes slot values from whatever user binding shadows the slot name (lowering) | `a05889e` | `TestFiles/310_named_loop_shadowed_slots.bjo` |
+| `:final` lets the clauses before it run during the next iteration (lowering) | `9726886` | `TestFiles/311_final_after_iteration.bjo` |
+| A local function that shadows a top-level constrained function is replaced by it or gets its dictionaries (lowering) | `85e56e8` | `TestFiles/312_local_shadows_constrained.bjo` |
+| A cancelled `read-line` / `read-all` on a text port throws away text it already read (runtime) | `7b5bc86` | `BjolangRuntime/Cml/Tests/TextPortTests.cs`, `TestFiles/313_text_port_guarantees.bjo` |
+| Text ports are not safe for two fibers (runtime, Medium); also `read-line/opt`/`read-char/opt` were an eof check and a read | `7b5bc86` | same |
+| (introduced by `bbdc000`) builtins redirected to a qualified extern in spliced bodies; `str` stopped checking | `74ebc8f` | stdlib build warning (`std/stopwatch`) |
+| `with-return` escape inside a non-tail-recursive named `let` returns from the local function (front end); now refused after loop lowering | `b6df428` |
+| A forward reference to a top-level `def` that shadows an imported name reads the uninitialised field (driver); also a function body above it, and a def reading its own name | `5fd148f` | `TestFiles/errors/def_above_own_definition.bjo`, `def_reads_itself_over_import.bjo`, `defun_above_own_definition.bjo` | `TestFiles/errors/ret_out_of_recursive_let.bjo`, `TestFiles/errors/ret_out_of_named_let_value.bjo`, `TestFiles/219_with_return.bjo` |
 
 Accepted as is: "Seq fusion moves a yield point out of a `seql`" (lowering). A fused program produces valid C# and runs. A suspending call in a `seq` body is defined as illegal, so a program that relies on it compiling is not expected to work.
 

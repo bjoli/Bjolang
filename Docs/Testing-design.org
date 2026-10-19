@@ -32,6 +32,21 @@ Where the code came out different from the design below:
   ~expect-output~. ~deftest~ looks for the name in its body.
 - ~bjo test~ gives a flag it does not know, with what follows it, to the test
   files.
+- Shrinking keeps only cases that fail the same way as the first failed
+  run: the same place of the first failed check, or an exception of the
+  same type. Otherwise a smaller case could show another bug and hide the
+  one that was found.
+- A stored case is found by its test, the source text of the ~for-all~'s
+  bindings, and its position among the ~for-all~ forms of the test with the
+  same bindings: ~(bindings "((: xs (List int)))")~. Editing the body keeps
+  the case; changing the bindings drops it; adding a ~for-all~ does not
+  move it to another.
+- ~for-all~ refuses a ~(: name Type)~ binding whose type has a type variable
+  in it, with its own message.
+- A promotion records the text the test ran with, and replaces only a
+  literal on its line that still holds it. Two forms on one line both
+  promote, and a form edited since the test was compiled is left alone.
+  Output of one plain line is written as a plain string.
 
 This document describes how ~(std test)~ grows: property tests with
 shrinking, stored counterexamples, default generators by type, table tests,
@@ -326,16 +341,17 @@ time never write the same file. The test file's path comes from
 
 #+BEGIN_SRC scheme
 (failed
-  (case (test "reverse twice is the identity") (index 0) (seed "6782170327520441105") (size 3) (draws [1 0 0 0 1 0 0 1 0])))
+  (case (test "reverse twice is the identity") (bindings "((: xs (List int)))") (index 0) (seed "6782170327520441105") (size 3) (draws [1 0 0 0 1 0 0 1 0])))
 #+END_SRC
 
 | ~test~  | the test's name                                                  |
-| ~index~ | which ~for-all~ in the test, from 0 in the order they run         |
+| ~bindings~ | the source text of the ~for-all~'s bindings                      |
+| ~index~ | which ~for-all~ with those bindings in the test, from 0          |
 | ~seed~  | the run's seed when it was found, for a person to read           |
 | ~size~  | the size the draws were made at                                  |
 | ~draws~ | the shrunk vector; a draw above ~long-max~ is written with ~UL~   |
 
-A case is found by the test's name and the ~for-all~'s position, not by line
+A case is found by the test's name, the bindings and the index, not by line
 number, because line numbers change when the file is edited. The file is read
 and written with ~(text bjodat)~ through ~def/bjodat-type~.
 
