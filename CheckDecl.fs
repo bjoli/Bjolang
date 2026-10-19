@@ -553,6 +553,9 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
     | DSyncOnly _
     | DNoInline _
     | DInline _ -> env, sigs, []
+
+    // Taken in when the group is done (see `checkDeclGroup`).
+    | DDeprecated _ -> env, sigs, []
     | DExport(names, r) -> env, sigs, [ TExport(names, r) ]
 
     | DImportClass(specs, r) ->
@@ -3781,6 +3784,25 @@ and internal checkDeclGroup
 
                 (nextEnv, nextSigs, tDecls @ accDecls))
             (envWithForwardDecls, combinedSigs, [])
+
+    // A `(:deprecated ...)` holds once the group's bindings are made, so it
+    // may stand anywhere in the group: before its definition, binding the
+    // name would take it out of `DeprecatedNames` again. The group's own
+    // uses do not warn, so a module may go on using what it deprecates. Its
+    // importers' uses warn.
+    let finalEnv =
+        decls
+        |> List.fold
+            (fun (acc: Env) d ->
+                match d with
+                | DDeprecated(name, instead, r) ->
+                    if not (Map.containsKey name acc.Bindings) then
+                        failwithf
+                            $"Type Error at %s{Lexer.formatPos r}: (:deprecated %s{name} ...) names nothing this module binds."
+
+                    { acc with DeprecatedNames = Map.add name instead acc.DeprecatedNames }
+                | _ -> acc)
+            finalEnv
 
     finalEnv, finalSigs, List.rev typedDecls
 

@@ -236,7 +236,7 @@
           "xyz")
 
   (expect "port->seq of an empty port"
-          (int->string (seq-length (port->seq (fun (q) (read-line q)) (open-input-string ""))))
+          (int->string (count (port->seq (fun (q) (read-line q)) (open-input-string ""))))
           "0")
 
   ;; Laziness is the point: taking two from a port never reads the third line.
@@ -269,7 +269,7 @@
   ;; do, and the element type follows it rather than being `string` by fiat.
   (expect "file->seq honours the reader procedure"
           (match (file->seq read-all path)
-            ((Ok chunks) (int->string (seq-length chunks)))
+            ((Ok chunks) (int->string (count chunks)))
             ((Err e) "FAILURE"))
           "1")
 
@@ -278,7 +278,7 @@
   ;; from the start. Sharing one spent reader would make this 3.
   (expect "file->seq is re-enumerable"
           (match (file->seq (fun (q) (read-line q)) path)
-            ((Ok lines) (int->string (+ (seq-length lines) (seq-length lines))))
+            ((Ok lines) (int->string (+ (count lines) (count lines))))
             ((Err e) "FAILURE"))
           "6")
 
@@ -290,7 +290,7 @@
               (let ()
                 ;; Walked for its effect — the count is beside the point, which
                 ;; is that the enumerator was disposed part-way through.
-                (ignore (seq-length (take 2 lines)))
+                (ignore (count (take 2 lines)))
                 (seq-fold (fun (l acc) (string-append acc l)) "" lines)))
             ((Err e) "FAILURE"))
           "firstsecondthird")
@@ -376,7 +376,7 @@
           "hey")
 
   (expect "and an astral character counts as one element"
-          (seq-length (port->seq read-char (open-input-string written))) 1)
+          (count (port->seq read-char (open-input-string written))) 1)
 
   (expect "port->list over read-char"
           (int->string (list-length (port->list read-char (open-input-string "four"))))

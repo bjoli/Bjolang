@@ -758,6 +758,10 @@ type Decl =
     ///
     /// Carried as `DNoInline` is.
     | DInline of string * Range
+    /// `(:deprecated name "what to use instead")`. A use of the binding warns,
+    /// here and in a module that imports it, and the warning says what to
+    /// write in its place. Published with the binding.
+    | DDeprecated of string * string * Range
 
     // DImpl (TraitName, TargetType, AssociatedTypeBindings, Constraints, Methods, Range)
     //
@@ -795,6 +799,7 @@ let declRange (decl: Decl) : Range =
     | DSyncOnly(_, r) -> r
     | DNoInline(_, r) -> r
     | DInline(_, r) -> r
+    | DDeprecated(_, _, r) -> r
 
 // ---------------------------------------------------------------------------
 // Macro expansion
@@ -1415,6 +1420,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
         | DSyncOnly _
         | DNoInline _
         | DInline _
+        | DDeprecated _
         | DImplExtern _
         | DInlineImpl _ -> []
 
@@ -1472,5 +1478,6 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DSyncOnly _
     | DNoInline _
     | DInline _
+    | DDeprecated _
     | DImplExtern _ -> d
 

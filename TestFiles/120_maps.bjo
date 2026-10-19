@@ -219,8 +219,8 @@
   (expect-true "any? miss" (not (map-any? (fun (k _) (= k "z")) m)))
   (expect-true "add" (= (map-length (map-add m "d" 4)) 4))
   (expect-true "clear" (map-empty? (map-clear m)))
-  (expect-true "map: keys" (= (seq-length (map-keys m)) 3))
-  (expect-true "map: values" (= (seq-length (map-values m)) 3))
+  (expect-true "map: keys" (= (count (map-keys m)) 3))
+  (expect-true "map: values" (= (count (map-values m)) 3))
 
   (match (map-find (fun (_ v) (> v 2)) m)
     ((Some entry) (expect-true "find" (= (entry-value entry) 3)))
@@ -295,7 +295,7 @@
   (expect "ordered: set-all" (orderedmap-length (orderedmap-set-all m (list->seq (list (Tuple "plum" 4) (Tuple "date" 5))))) 5)
   (expect "ordered: remove-all" (orderedmap-length (orderedmap-remove-all m (list->seq (list "fig" "pear")))) 1)
 
-  (expect "ordered: keys" (seq-length (orderedmap-keys m)) 3)
+  (expect "ordered: keys" (count (orderedmap-keys m)) 3)
   (expect "ordered: values" (seq-fold + 0 (orderedmap-values m)) 6)
 
   ;; A map this big has many leaves, which the cursor finds out of line. The
@@ -353,9 +353,9 @@
     ((Some entry) (expect-str "predecessor" (entry-key entry) "apple"))
     (None (println "FAILURE: predecessor")))
 
-  (expect "range" (seq-length (orderedmap-range m "apple" "fig")) 2)
-  (expect "from" (seq-length (orderedmap-from m "fig")) 2)
-  (expect "until" (seq-length (orderedmap-until m "fig")) 2))
+  (expect "range" (count (orderedmap-range m "apple" "fig")) 2)
+  (expect "from" (count (orderedmap-from m "fig")) 2)
+  (expect "until" (count (orderedmap-until m "fig")) 2))
 
 (: test-walking (-> void))
 (defun (test-walking)
@@ -383,7 +383,7 @@
   (def m (scores))
   (expect "ordered: Collection length" (length m) 3)
   (expect-bool "ordered: Collection empty?" (empty? m) #f)
-  (expect "Collection ->seq" (seq-length (->seq m)) 3)
+  (expect "Collection ->seq" (count (->seq m)) 3)
   (expect "Iterable fold" (fold #(+ &2 (entry-value &1)) 0 m) 6)
   ;; `orderedmap-map-values` moves values and leaves keys alone.
   (expect "map-values" (orderedmap-ref (orderedmap-map-values #(* &1 2) m) "pear") 6)

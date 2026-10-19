@@ -3,6 +3,32 @@
 
 What each change guarantees, and what it leaves open.
 
+* The rest of the seq consumers are deprecated, and a library may deprecate a binding
+
+- ~seq->list~, ~seq->vec~, ~seq->map~, ~seq-length~ and ~seq-head~ are
+  deprecated in favour of ~->list~, ~->vec~, ~->map~, ~count~ and ~first~,
+  which take any iterable and fuse with a chain under them. Each use warns
+  and names its replacement; ~seq-head~'s says that ~first~ answers an
+  ~Option~ rather than failing on an empty sequence. What stays is what only
+  a sequence has: ~seq-empty~, ~seq-empty?~, ~seq-append~, ~seq-range~,
+  ~seq-unfold~, and ~seq-fold~ and ~seq-for-each~, whose callbacks may
+  suspend.
+- ~(:deprecated name "use ...")~ deprecates a binding a module defines. It
+  may stand anywhere in the module and is taken in when the module's
+  declarations are checked, so the module's own uses do not warn. The text is
+  published with the binding (metadata version 22, ~ExportedDef.Deprecated~),
+  so an importer's uses warn under whatever name the import gives it, and a
+  facade passes it on. ~seq->map~ is deprecated this way; the builtins are in
+  ~Prelude.deprecatedBuiltins~.
+- The compiler's own lowering of a spliced list or vec literal still calls
+  ~seq->list~ and ~seq->vec~, and does not warn: it builds the call rather
+  than naming it. Removing the builtins later means changing
+  ~InferExpr.spliceConversions~ first.
+- The library, the tests and the examples use the new names.
+- Tests: warnings ~seq_consumers_deprecated~ and ~deprecated_imported~ (with
+  ~inc/deprecating~ and ~inc/deprecating_facade~), errors
+  ~deprecated_unbound~ and ~deprecated_malformed~.
+
 * A function's where clause pins associated types
 
 - ~(: f (-> %s (Map %k %v)) (where (Iterable %s #:elem (Tuple %k %v))))~: a

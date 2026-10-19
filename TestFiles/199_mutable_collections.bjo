@@ -152,7 +152,7 @@
   (expect "a vec round trip"
           (mutablevec->vec (vec->mutablevec [1 2 3]))
           [1 2 3])
-  (expect "a seq round trip" (seq->list (mutablevec->seq (vec-of xs))) xs)
+  (expect "a seq round trip" (->list (mutablevec->seq (vec-of xs))) xs)
   (expect "capacity is not length" (mutablevec-length (mutablevec-with-capacity 16)) 0)
   (expect "an array" (array-length (mutablevec->array (vec-of xs))) 3))
 
@@ -172,9 +172,9 @@
   ;; allocated for it.
   (expect "summed by a loop" (loop (:for x v) (:acc total (summing x))) 6)
   (expect "folded" (fold (fun (x acc) (+ acc x)) 0 v) 6)
-  (expect "mapped" (seq->list (map (fun (x) (* x 2)) v))
+  (expect "mapped" (->list (map (fun (x) (* x 2)) v))
           (Cons 2 (Cons 4 (Cons 6 Nil))))
-  (expect "filtered" (seq->list (filter (fun (x) (> x 1)) v))
+  (expect "filtered" (->list (filter (fun (x) (> x 1)) v))
           (Cons 2 (Cons 3 Nil)))
 
   ;; Addable!, both halves. `add-all!` walks any `Iterable`, which is what the
@@ -238,14 +238,14 @@
   ;; The order a table walks in is not the order it was filled in, so every
   ;; check here is order-free: a sum, a count, or a lookup.
   (expect "summed values" (loop (:for (Tuple k v) m) (:acc total (summing v))) 3)
-  (expect "counted keys" (seq-length (mutablemap-keys m)) 2)
+  (expect "counted keys" (count (mutablemap-keys m)) 2)
   (expect "summed the values view" (loop (:for v (mutablemap-values m)) (:acc t (summing v))) 3)
 
   (def/mutable seen 0)
   (mutablemap-for-each (fun (k v) (set! seen (+ seen v))) m)
   (expect "for-each takes the key and the value apart" seen 3)
 
-  (expect "->seq is the pairs" (seq-length (mutablemap->seq m)) 2))
+  (expect "->seq is the pairs" (count (mutablemap->seq m)) 2))
 
 (: map-aliasing (-> void))
 (defun (map-aliasing)
@@ -394,7 +394,7 @@
   (def s (set-of (Cons "a" (Cons "b" Nil))))
   (expect "a list round trip" (mutableset-length (list->mutableset (mutableset->list s))) 2)
   (expect "a vec round trip" (mutableset-length (vec->mutableset (mutableset->vec s))) 2)
-  (expect "a seq round trip" (seq-length (mutableset->seq s)) 2)
+  (expect "a seq round trip" (count (mutableset->seq s)) 2)
 
   ;; Across to the persistent set and back.
   (def persistent (mutableset->hashset s))
@@ -517,7 +517,7 @@
 
   ;; The walk is unordered and says so in its name, so it is counted rather
   ;; than listed. Heap order is only observable by popping.
-  (expect "the unordered walk holds them all" (seq-length (mutableheap->unordered-seq h)) 2)
+  (expect "the unordered walk holds them all" (count (mutableheap->unordered-seq h)) 2)
   (expect "as a list" (list-length (mutableheap->unordered-list h)) 2)
   (expect "the walk took nothing out" (mutableheap-length h) 2)
 

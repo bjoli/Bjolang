@@ -99,7 +99,9 @@ open System.Text
 /// qualified reference alone, so that source cannot call it and nothing of the
 /// importer's can take it over. A reader of 20 would read that flag as the next
 /// binding's name.
-let currentVersion = 21
+/// 22: an exported binding carries the text of its `(:deprecated ...)`, or
+/// nothing. A reader of 21 would read that text as the next binding's name.
+let currentVersion = 22
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -122,6 +124,9 @@ type ExportedDef = {
     /// under no name source can write, so a private helper stays private and
     /// two libraries' helpers of one name do not meet.
     IsImplicit: bool
+    /// What to write in its place, from a `(:deprecated ...)`, or `""` for a
+    /// binding that is not deprecated.
+    Deprecated: string
 }
 
 /// A method body an importing module may splice at a call site.
@@ -388,6 +393,7 @@ let private putDef (sb: StringBuilder) (d: ExportedDef) =
     putStr sb (if d.IsMethod then "1" else "0")
     putStr sb (if d.IsMutable then "1" else "0")
     putStr sb (if d.IsImplicit then "1" else "0")
+    putStr sb d.Deprecated
 
 let private getDef (c: Cursor) : ExportedDef =
     let name = getStr c
@@ -397,6 +403,7 @@ let private getDef (c: Cursor) : ExportedDef =
     let isMethod = getStr c = "1"
     let isMutable = getStr c = "1"
     let isImplicit = getStr c = "1"
+    let deprecated = getStr c
 
     { Name = name
       TypeText = typeText
@@ -404,7 +411,8 @@ let private getDef (c: Cursor) : ExportedDef =
       Origin = origin
       IsMethod = isMethod
       IsMutable = isMutable
-      IsImplicit = isImplicit }
+      IsImplicit = isImplicit
+      Deprecated = deprecated }
 
 let private putTemplate (sb: StringBuilder) (t: InlineTemplateEntry) =
     putStr sb t.TraitName

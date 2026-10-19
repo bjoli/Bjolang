@@ -1879,10 +1879,12 @@ type Env =
       /// An *inline* trait's methods are never bound at all and so are never
       /// listed. Their calls are recognised by the absence of a binding.
       TraitMethodNames: Set<string>
-      /// The builtins that are deprecated, each with what to write in its
-      /// place, while their binding is still the builtin's own. `addBinding`
-      /// drops a name from here as it does from `TraitMethodNames`, so a
-      /// program that binds the name over gets no warning for its own.
+      /// The deprecated names, each with what to write in its place, while
+      /// their binding is still the deprecated one: the builtins in
+      /// `Prelude.deprecatedBuiltins`, and what a `(:deprecated ...)` names,
+      /// here or in a module this one imports. `addBinding` drops a name from
+      /// here as it does from `TraitMethodNames`, so a program that binds the
+      /// name over gets no warning for its own.
       DeprecatedNames: Map<string, string>
       /// The trait method this declaration is the implementation of, if it is
       /// one.

@@ -55,8 +55,8 @@ let private orList (names: string list) : string =
 /// and a use warns only the first time.
 let private deprecationsWarned = System.Collections.Generic.HashSet<string>()
 
-/// Warns when `name` is a deprecated builtin and still means the builtin.
-let private warnIfDeprecatedBuiltin (env: Env) (name: string) (r: Range) =
+/// Warns when `name` is deprecated and still means the binding that was.
+let private warnIfDeprecated (env: Env) (name: string) (r: Range) =
     match Map.tryFind name env.DeprecatedNames with
     | Some instead ->
         let at = Lexer.formatPos r
@@ -1742,7 +1742,7 @@ and private inferIdent (env: Env) (name: string) (r: Range) : HMType * TypedExpr
     | _ -> ()
 
     let binding = lookup env name
-    warnIfDeprecatedBuiltin env name r
+    warnIfDeprecated env name r
     let t, tArgs, constraints = instantiate env.Registry binding.Scheme
 
     for c in constraints do

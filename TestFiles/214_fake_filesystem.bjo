@@ -161,10 +161,10 @@
   (with-test "the lazy readers use the fake"
     (with-fake-fs (("lines.txt" "one\ntwo\nthree\n"))
       (expect "file-read-lines/seq reads the fake"
-              (seq->list (file-read-lines/seq "lines.txt")) (list "one" "two" "three"))
+              (->list (file-read-lines/seq "lines.txt")) (list "one" "two" "three"))
       (expect "file->seq checks the fake at the call"
               (match (file->seq (fun (q) (read-line q)) "lines.txt")
-                ((Ok lines) (seq->list lines))
+                ((Ok lines) (->list lines))
                 ((Err e) Nil))
               (list "one" "two" "three"))
       (expect-true "and a path only on the disk is missing"
@@ -181,7 +181,7 @@
       (let ((here (current-scope))
             (start (scope-owned-count (current-scope))))
         (expect "two lines of three"
-                (seq->list (take 2 (file-read-lines/seq "lines.txt"))) (list "one" "two"))
+                (->list (take 2 (file-read-lines/seq "lines.txt"))) (list "one" "two"))
         (box-set! early (- (scope-owned-count here) start)))))
   (expect "a walk that stops early releases its port" (box-ref early) 0)
 

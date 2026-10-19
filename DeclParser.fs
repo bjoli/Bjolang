@@ -300,6 +300,7 @@ let declKindName (d: Decl) : string =
     | DSyncOnly _ -> "a #:sync marker"
     | DNoInline _ -> "a #:no-inline marker"
     | DInline _ -> "an #:inline marker"
+    | DDeprecated _ -> "a (:deprecated ...) declaration"
     | DImpl _ -> "an implementation"
     | DImplExtern _ -> "an imported implementation"
 
@@ -454,6 +455,14 @@ let rec tryParseDecl (s: SExpr) : Decl option =
         | _ ->
             failwithf
                 $"Invalid (:alias ...) at %s{Lexer.formatPos r}. Expected: (:alias new-name existing-name)"
+
+    // (:deprecated old-name "use `new-name`, which ...")
+    | SList(SAtom { Token = Keyword "deprecated" } :: rest, _) ->
+        match rest with
+        | [ SAtom { Token = Symbol name }; SAtom { Token = StringLit instead } ] -> Some(DDeprecated(name, instead, r))
+        | _ ->
+            failwithf
+                $"Invalid (:deprecated ...) at %s{Lexer.formatPos r}. Expected: (:deprecated name \"what to use instead\")"
 
     // (import/extern (write-line (: System.Console.WriteLine (-> string void))) ...)
     | SList(SAtom { Token = Symbol "import/extern" } :: clauses, _) ->

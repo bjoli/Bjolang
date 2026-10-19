@@ -360,6 +360,7 @@ let rec normalizeDecl (decl: Decl) : Decl =
     | DSyncOnly _
     | DNoInline _
     | DInline _
+    | DDeprecated _
     | DImplExtern _ -> decl
 
 and normalizeModule (decls: Decl list) : Decl list = List.map normalizeDecl decls

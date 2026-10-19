@@ -313,6 +313,27 @@ there is no copy to write instead.
   — the parser decides what a head symbol means at the moment it meets it — so
   the alias form is read off the S-expressions alongside the imports.
 
+** ~:deprecated~
+
+#+BEGIN_SRC scheme
+(defun (seq->map xs) (clr-seq->map xs (eq-comparer)))
+(:deprecated seq->map "use `->map`, which takes any iterable of pairs")
+#+END_SRC
+
+says that a binding is going away. It still works, and every use of it warns
+with what the form says to write instead:
+
+#+BEGIN_SRC text
+Warning: `seq->map` at f.bjo:3 is deprecated, use `->map`, which takes any iterable of pairs.
+#+END_SRC
+
+It may stand anywhere in the module, and names something the module binds.
+The text travels with the binding in the module's metadata, so a use in a
+module that imports it warns, under whatever name the import gives it, and a
+facade that re-exports it passes the text on. The deprecating module's own
+uses do not warn, so it may go on using what it deprecates. A use of a name
+that a module binds over with a definition of its own does not warn either.
+
 ** The facade pattern
 
 A module may publish names it did not define, under whatever spelling its

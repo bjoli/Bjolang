@@ -911,7 +911,9 @@ let metadata
                        // bound immutable outside a REPL entry, and a facade
                        // republishing it says no more than it was given.
                        IsMutable = b.IsMutable
-                       IsImplicit = implicit }
+                       IsImplicit = implicit
+                       // A facade passes on what it was told.
+                       Deprecated = Map.tryFind key env.DeprecatedNames |> Option.defaultValue "" }
                     : ModuleMetadata.ExportedDef))
                 
             // A field or payload type is written as the type it resolves to,

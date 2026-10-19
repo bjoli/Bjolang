@@ -333,7 +333,11 @@ let deprecatedBuiltins: Map<string, string> =
         [ "seq-map", "use `map`, which takes any iterable"
           "seq-filter", "use `filter`, which takes any iterable"
           "seq-take", "use `take`, which takes any iterable. Its arguments are in the other order: `(take n xs)`"
-          "seq-drop", "use `drop`, which takes any iterable. Its arguments are in the other order: `(drop n xs)`" ]
+          "seq-drop", "use `drop`, which takes any iterable. Its arguments are in the other order: `(drop n xs)`"
+          "seq->list", "use `->list`, which takes any iterable"
+          "seq->vec", "use `->vec`, which takes any iterable"
+          "seq-length", "use `count`, which takes any iterable"
+          "seq-head", "use `first`, which takes any iterable and answers an Option rather than failing on an empty one" ]
 
 let prelude : Env =
     { Bindings = Map.ofList [

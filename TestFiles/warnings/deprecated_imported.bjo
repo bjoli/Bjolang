@@ -1,0 +1,24 @@
+;; A (:deprecated ...) travels with its binding. A use warns in a module that
+;; imports it, under the name the import gives it, and through a facade. The
+;; deprecating module's own uses do not warn, wherever the form stands.
+
+;; EXPECT-WARNING: `f/old-double` at deprecated_imported.bjo:21 is deprecated, use `new-double`.
+;; EXPECT-WARNING: `doubled-before` at deprecated_imported.bjo:22 is deprecated, use `new-double`.
+;; EXPECT-NO-WARNING: `own-old`
+
+(import (std prelude))
+(import (std simpletest))
+(import (rename "../inc/deprecating.bjo" (old-double doubled-before)))
+(import (prefix "../inc/deprecating_facade.bjo" "f/"))
+
+;; Before the definition, which is allowed.
+(:deprecated own-old "use `own-new`")
+
+(: own-old (-> int int))
+(defun (own-old x) (+ x 1))
+
+(defun (main)
+  (expect "through a facade" (f/old-double 2) 4)
+  (expect "renamed at the import" (doubled-before 3) 6)
+  (expect "this module's own" (own-old 1) 2)
+  0)

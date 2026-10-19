@@ -950,6 +950,10 @@ let private applyDefRenaming (moduleName: string) (renaming: Map<string, string 
                     [ Naming.qualifiedBinding home origin.OriginalName ]
 
             spellings @ hidden |> List.map (fun v -> DExtern(v, origin, t, constraints, r))
+        // Under each name an edge keeps. A binding no edge keeps is bound only
+        // under its qualified reference, which source cannot write, so no use
+        // of it can warn.
+        | DDeprecated(name, instead, r) -> visible name |> List.map (fun v -> DDeprecated(v, instead, r))
         | DImportExtern(specs, r) ->
             let kept =
                 specs
@@ -2379,7 +2383,14 @@ let loadModuleGraph
                                             name
 
                                     DExtern(declared, origin, t, constraints, r)
-                                | other -> other)))
+                                | other -> other)
+                            // After the extern, as a `(:deprecated ...)` comes
+                            // after the definition it names.
+                            |> List.collect (fun decl ->
+                                match decl with
+                                | DExtern(declared, _, _, _, r) when d.Deprecated <> "" ->
+                                    [ decl; DDeprecated(declared, d.Deprecated, r) ]
+                                | _ -> [ decl ])))
 
                     let parsedDecls =
                         typeSpellingDecls @ reExportedSpellings @ declsFromText @ externDecls

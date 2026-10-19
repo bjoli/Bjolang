@@ -298,23 +298,23 @@
   (make-tree dir)
   ;; "." sorts before "a", so `.git` comes first.
   (expect #"${where}: every file, depth first, each directory in order"
-          (seq->list (directory-walk dir))
+          (->list (directory-walk dir))
           (list (path-combine dir ".git" "HEAD")
                 (path-combine dir "a" "m" "k.txt")
                 (path-combine dir "a" "z.txt")
                 (path-combine dir "b.txt")
                 (path-combine dir "c.bjo")))
   (expect #"${where}: into? leaves a directory out"
-          (seq->list (directory-walk dir #:into? (fun (d) (not (= (path-filename d) (Some ".git"))))))
+          (->list (directory-walk dir #:into? (fun (d) (not (= (path-filename d) (Some ".git"))))))
           (list (path-combine dir "a" "m" "k.txt")
                 (path-combine dir "a" "z.txt")
                 (path-combine dir "b.txt")
                 (path-combine dir "c.bjo")))
   (expect #"${where}: filter asks what a glob would"
-          (seq->list (filter #(string-ends-with? & ".bjo") (directory-walk dir)))
+          (->list (filter #(string-ends-with? & ".bjo") (directory-walk dir)))
           (list (path-combine dir "c.bjo")))
   (expect #"${where}: an empty directory has no files"
-          (list-length (seq->list (directory-walk (path-combine dir "empty"))))
+          (list-length (->list (directory-walk (path-combine dir "empty"))))
           0))
 
 ;; On the fake, where every listing can be counted.
@@ -334,13 +334,13 @@
       (expect "a walk stopped early" (find #(string-ends-with? & ".txt") walk)
               (Some (path-combine "lazy" "a" "m" "k.txt")))
       (expect "lists only what it passed" (box-ref listed) 4)
-      (ignore (seq->list walk))
+      (ignore (->list walk))
       (expect "and a whole walk lists every directory once more" (box-ref listed) 9)))
   ;; Nothing is listed until the walk, so a walk made where there is no such
   ;; directory is answered by the handler installed where it is walked.
   (def elsewhere (directory-walk "249_nowhere"))
   (with-fake-fs (("249_nowhere/x.txt" "x"))
-    (expect "the handler at the walk answers" (seq->list elsewhere)
+    (expect "the handler at the walk answers" (->list elsewhere)
             (list (path-combine "249_nowhere" "x.txt")))))
 
 ;; On the disk only: a link to a directory is never entered, by a walk or by
@@ -360,7 +360,7 @@
      (ignore (clr-dir-symlink (in-probe "to-outside") "outside"))
      (expect-true "a link to a directory says so" (link? (path-combine dir "a" "up")))
      (expect "a link back up the tree is not entered"
-             (list-length (seq->list (directory-walk dir)))
+             (list-length (->list (directory-walk dir)))
              5)
      (directory-delete-tree dir)
      (expect-true "a tree with links in it is deleted" (not (directory-exists? dir)))
