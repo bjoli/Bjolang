@@ -437,6 +437,9 @@ let rec tryParseDecl (s: SExpr) : Decl option =
     let s = stripHeadMark s
 
     match s with
+    // `nameSignatures` gave the name of the definition below to every
+    // signature it could, so one still without a name has none below it.
+    | form when isNamelessSignature form -> namelessSignatureError form
     | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol name }; tType ], _) ->
         Some(DSignature(name, parseType tType, [], r))
     // (: name type (where (TraitName %var) ...)) — signature with trait constraints
@@ -1135,7 +1138,7 @@ and parseDeclForms (s: SExpr) : Decl list =
 
     // Each step removes one wrapper, so the form count strictly decreases and
     // arbitrary nesting flattens.
-    | SList(SAtom { Token = Symbol "begin" } :: inner, _) -> List.collect parseDeclForms inner
+    | SList(SAtom { Token = Symbol "begin" } :: inner, _) -> List.collect parseDeclForms (nameSignatures inner)
 
     | other ->
         match tryParseDeclGroup other with
@@ -1172,4 +1175,5 @@ and parseDeclForms (s: SExpr) : Decl list =
 /// being type checked.
 let parseModule (exprs: SExpr list) : Decl list =
     exprs
+    |> nameSignatures
     |> List.collect (fun form -> Diagnostics.recover "parse" (Some(getRange form)) [] (fun () -> parseDeclForms form))

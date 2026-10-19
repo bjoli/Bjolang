@@ -123,6 +123,10 @@ type private State =
       /// into that entry's source, and is then forgotten. Which is what the
       /// same two lines in a file mean.
       Pending: (string * string) list
+      /// A signature without a name, typed as an entry of its own. It takes
+      /// the name of the definition the next entry starts with, as it would
+      /// in a file, so it is put in front of that entry's text.
+      Unnamed: string option
       /// Newest first, so the first entry defining a name is the latest one to
       /// have done so.
       Entries: Entry list
@@ -278,6 +282,10 @@ type private Shape =
     | Malformed of reason: string
 
 let private shapeOf (forms: SExpr list) : Shape =
+    // A signature without a name takes the name of the definition below it,
+    // as it does in a file.
+    let forms = Parser.nameSignatures forms
+
     let asDecls (form: SExpr) =
         try
             // A doc declares nothing: the pipeline takes it out and checks it
@@ -656,6 +664,34 @@ let rec private evaluate (replaying: bool) (state: State) (text: string) : State
         state
     else
 
+    match forms with
+    | [ form ] when Parser.isNamelessSignature form && not replaying ->
+        printfn "The signature takes the name of the definition in the next entry."
+        { state with Unnamed = Some text }
+    | _ ->
+
+    // A signature without a name, typed as the entry before, goes in front,
+    // if this entry starts with a definition it can name. Otherwise it is
+    // dropped, with the reason, and the entry is evaluated alone.
+    let text, forms =
+        match state.Unnamed with
+        | Some signature ->
+            let joined = signature + "\n" + text
+            let joinedForms = Lexer.tokenize "<repl>" joined |> Pipeline.read |> fst
+
+            match Parser.nameSignatures joinedForms with
+            | first :: _ when Parser.isNamelessSignature first ->
+                try
+                    Parser.namelessSignatureError first
+                with ex ->
+                    printfn "%s" (Diagnostics.humanize ex.Message)
+
+                text, forms
+            | _ -> joined, joinedForms
+        | None -> text, forms
+
+    let state = { state with Unnamed = None }
+
     let text = absolutizeImports text forms
 
     // Read again from the rewritten text, whose paths are longer, so that a
@@ -754,6 +790,7 @@ let rec private evaluate (replaying: bool) (state: State) (text: string) : State
             { state with
                 Imports = []
                 Pending = []
+                Unnamed = None
                 Entries = []
                 Generation = new Generation(state.Directory)
                 Compiled = Map.empty }
@@ -1796,6 +1833,7 @@ let run () : int =
         { Next = 1
           Imports = []
           Pending = []
+          Unnamed = None
           Entries = []
           Directory = directory
           Generation = new Generation(directory)

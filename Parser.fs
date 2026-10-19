@@ -559,6 +559,48 @@ let private isConstructorName (sym: string) : bool =
     let afterPrefix = name.Substring(name.LastIndexOfAny([| ':'; '.' |]) + 1)
     afterPrefix.Length > 0 && System.Char.IsUpper afterPrefix[0]
 
+/// Whether `form` is a signature written without a name: `(: type)`, or
+/// `(: type (where ...))`. A named one has a type after its name, and a
+/// `(where ...)` is no type, so the two are told apart by their shape.
+let isNamelessSignature (form: SExpr) : bool =
+    match form with
+    | SList([ SAtom { Token = Colon }; _ ], _) -> true
+    | SList([ SAtom { Token = Colon }; _; SList(SAtom { Token = Symbol "where" } :: _, _) ], _) -> true
+    | _ -> false
+
+/// The name a definition binds, for a signature without a name above it: a
+/// `defun`, `defbjo` or `defbjouble` of `(name args...)`, or a `def` or
+/// `def/mutable` of `name`. None for any other form, a `def` of a pattern
+/// included.
+let private definedName (form: SExpr) : string option =
+    match stripHeadMark form with
+    | SList(SAtom { Token = Symbol("defun" | "defbjo" | "defbjouble") } :: SList(SAtom { Token = Symbol name } :: _, _) :: _, _) ->
+        Some name
+    | SList(SAtom { Token = Symbol("def" | "def/mutable") } :: SAtom { Token = Symbol name } :: _, _) -> Some name
+    | _ -> None
+
+/// Each signature written without a name, given the name of the definition
+/// directly after it: `(: (-> int int))` above `(defun (add1 x) ...)` is
+/// `(: add1 (-> int int))`. One with no definition after it is left as it
+/// is, and the parser of the forms says why it is wrong, where it stands.
+let nameSignatures (forms: SExpr list) : SExpr list =
+    let rec go (forms: SExpr list) =
+        match forms with
+        | (SList(colon :: rest, r) as sigForm) :: next :: tail when isNamelessSignature sigForm ->
+            match definedName next with
+            | Some name ->
+                SList(colon :: SAtom { Token = Symbol name; Range = getRange next } :: rest, r) :: next :: go tail
+            | None -> sigForm :: go (next :: tail)
+        | form :: tail -> form :: go tail
+        | [] -> []
+
+    go forms
+
+/// The error for a signature without a name that no definition follows.
+let namelessSignatureError (form: SExpr) : 'a =
+    failwithf
+        $"Syntax error at %s{Lexer.formatPos (getRange form)}: a signature without a name, (: type), goes directly above the defun, defbjo, defbjouble, def or def/mutable it gives the type of, and takes its name. Nothing it can name comes directly after this one. Write the definition after it, or the name in it: (: name type)."
+
 let rec parseExpr (s: SExpr) : Expr =
     let r = getRange s
 
@@ -2260,6 +2302,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
     // arrow of a `defun` must be `->`.
     let parseDeclaration (form: SExpr) : string * SExpr * Range =
         match form with
+        | _ when isNamelessSignature form -> namelessSignatureError form
         | SList([ SAtom { Token = Colon }; SAtom { Token = Symbol name }; tType ], r) -> name, tType, r
         | SList(SAtom { Token = Colon } :: SAtom { Token = Symbol name } :: _ :: SList(SAtom { Token = Symbol "where" } :: _, _) :: _, r) ->
             failwithf
@@ -2354,7 +2397,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // normal expression, hitting a statement signals the end of the current
         // block of definitions.
         | SList(SAtom { Token = Symbol "begin" } :: (_ :: _ as inner), _) :: rest ->
-            collectDefs acc declared (inner @ rest)
+            collectDefs acc declared (nameSignatures (inner @ rest))
 
         // A declaration directly before a `def/mutable` ends the run, and
         // `parseItems` reads the two together.
@@ -2451,7 +2494,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         // A non-empty one splices into the body it stands in, which is what
         // lets a macro expand to several forms — a definition and the code
         // after it — where only one was written.
-        | SList(SAtom { Token = Symbol "begin" } :: inner, _) :: rest -> parseItems (inner @ rest)
+        | SList(SAtom { Token = Symbol "begin" } :: inner, _) :: rest -> parseItems (nameSignatures (inner @ rest))
 
         // `(def* (pattern scrutinee ...) ...)` — several clauses, run in source
         // order.
@@ -2592,7 +2635,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
 
         | expr :: rest -> ELet("_", false, [], None, parseExpr expr, parseItems rest, fallbackRange)
 
-    parseItems exprs
+    parseItems (nameSignatures exprs)
 
 /// A `def` clause from its binder on: `(def binder scrutinee failure-part ...)`.
 ///

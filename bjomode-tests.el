@@ -263,6 +263,24 @@
       (mapcar (lambda (p) (buffer-substring-no-properties (car p) (cdr p)))
               (nreverse parts)))))
 
+;;; Signatures
+
+(defun bjo-tests--face-of (text word)
+  "The face font lock gives the first WORD in TEXT."
+  (bjo-tests--in-buffer text
+    (font-lock-ensure)
+    (goto-char (point-min))
+    (search-forward word)
+    (get-text-property (match-beginning 0) 'face)))
+
+(ert-deftest bjo-signature-faces ()
+  "A named signature colours its name; one without a name colours no type as one."
+  (should (eq (bjo-tests--face-of "(: add1 (-> int int))" ":") 'font-lock-keyword-face))
+  (should (eq (bjo-tests--face-of "(: add1 (-> int int))" "add1") 'font-lock-function-name-face))
+  (should (eq (bjo-tests--face-of "(: (-> int int))\n(defun (add1 x) x)" ":") 'font-lock-keyword-face))
+  (should (eq (bjo-tests--face-of "(: int)\n(def seven 7)" ":") 'font-lock-keyword-face))
+  (should-not (eq (bjo-tests--face-of "(: int)\n(def seven 7)" "int") 'font-lock-function-name-face)))
+
 (ert-deftest bjo-failure/def ()
   "A `def''s failure part has the face, and the binding has not."
   (should (equal (bjo-tests--failure-text

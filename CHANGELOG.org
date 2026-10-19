@@ -3,6 +3,29 @@
 
 What each change guarantees, and what it leaves open.
 
+* A signature without a name takes the name of the definition below it
+
+- ~(: (-> int int))~ directly above ~(defun (add1 x) ...)~ is
+  ~(: add1 (-> int int))~. Also ~(: type (where ...))~. The definition may be
+  a ~defun~, ~defbjo~, ~defbjouble~, ~def~ or ~def/mutable~, at the top
+  level, in a ~begin~, or in a body. This is the form written day to day; a
+  named one is for a signature that stands apart from its definition.
+- Done on the forms before they are parsed (~Parser.nameSignatures~), so
+  everything after the parser sees a named signature: checking, exports,
+  metadata, docs, colour.
+- The two are told apart by shape: ~(: X)~ and ~(: X (where ...))~ have no
+  name, since a ~(where ...)~ is no type. One with no definition directly
+  below it, or above a ~def~ of a pattern, is an error that says where it
+  goes.
+- The REPL takes one as an entry of its own and puts it in front of the next
+  entry, if that starts with a definition.
+- bjo-mode colours the colon of one, and colours a name only when a type
+  comes after it, so the ~int~ of ~(: int)~ is not coloured as a name.
+- Tests: ~417_nameless_signatures.bjo~ (with ~inc/nameless.bjo~, exported
+  ones), errors ~nameless_signature_orphan~, ~_twice~, ~_pattern_def~,
+  ~_body_orphan~ and ~_both~, the REPL session ~nameless_signature~, and an
+  ERT test of the faces.
+
 * pairwise, chain and in-repeat; an implementation's where clause pins associated types
 
 - ~(pairwise s)~ gives a ~(Pairwise %s)~: each element with the one after

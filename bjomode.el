@@ -585,11 +585,14 @@ is how font-lock is told the region moved."
     ("(with-return\\_>\\s-+\\([^ \t\n()]+\\)"
      1 font-lock-function-name-face)
 
-    ;; (: name type) — a signature. The colon stands alone, which is what
-    ;; distinguishes it from a `:keyword'.
-    ("(\\(:\\)\\s-+\\([^ \t\n()]+\\)"
-     (1 font-lock-keyword-face)
-     (2 font-lock-function-name-face))
+    ;; (: name type) and (: type) — a signature, named or not. The colon
+    ;; stands alone, which is what distinguishes it from a `:keyword'. A name
+    ;; is coloured only when a type comes after it: in `(: int)', `int' is
+    ;; the type of the definition below.
+    ("(\\(:\\)[ \t\n]"
+     1 font-lock-keyword-face)
+    ("(:[ \t\n]+\\([^ \t\n()]+\\)[ \t\n]+[^ \t\n)]"
+     1 font-lock-function-name-face)
 
     ;; The special forms, and the loop and monad clause keywords.
     (,(concat "(\\s-*" (regexp-opt bjo-special-forms t) "\\_>")
