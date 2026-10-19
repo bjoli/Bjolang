@@ -11,22 +11,22 @@
 
 (type (: P (Record (: x long) (: y long))))
 
-(: area (-> P P long))
+(: (-> P P long))
 (defun (area a b)
   (* (+ 1L (abs (- (.x a) (.x b)))) (+ 1L (abs (- (.y a) (.y b))))))
 
 ;; The greatest lane of a vector.
-(: max-lane (-> Float64x4 double))
+(: (-> Float64x4 double))
 (defun (max-lane v)
   (max (max (simd-ref v 0) (simd-ref v 1)) (max (simd-ref v 2) (simd-ref v 3))))
 
-(: part1 (-> (Vec P) long))
+(: (-> (Vec P) long))
 (defun (part1 ps)
   (def* (n (length ps))
         (xs (vec->array {vecing (cast System.Double (.x p)) (:for p ps)}))
         (ys (vec->array {vecing (cast System.Double (.y p)) (:for p ps)}))
         (one (simd256-splat 1.0)))
-  (: tile-vec (-> (Array double) int Float64x4))
+  (: (-> (Array double) int Float64x4))
   (defun (tile-vec a j) (simd256-load a j))
   (loop (:for i (range 0 n))
         (:let xi (simd256-splat (array-ref xs i)))
@@ -48,7 +48,7 @@
 (type (: Sides (Record (: x0 (Array long)) (: x1 (Array long))
                        (: y0 (Array long)) (: y1 (Array long)))))
 
-(: make-sides (-> (Vec P) Sides))
+(: (-> (Vec P) Sides))
 (defun (make-sides ps)
   (def* (n (length ps))
         (size (* 4 (/ (+ n 3) 4))))
@@ -70,13 +70,13 @@
 
 ;; Whether some side of the loop passes through the open inside of the
 ;; rectangle [rx0, rx1] x [ry0, ry1].
-(: crossed? (-> Sides long long long long bool))
+(: (-> Sides long long long long bool))
 (defun (crossed? sides rx0 rx1 ry0 ry1)
   (def X0 (simd256-splat rx0))
   (def X1 (simd256-splat rx1))
   (def Y0 (simd256-splat ry0))
   (def Y1 (simd256-splat ry1))
-  (: at (-> (Array long) int Int64x4))
+  (: (-> (Array long) int Int64x4))
   (defun (at a k) (simd256-load a k))
   (loop (:for k (up-from 0 #:to (array-length (.x0 sides)) #:by 4))
         (:let hit (simd-and (simd-and (simd-lt (at (.x0 sides) k) X1) (simd-gt (at (.x1 sides) k) X0))
@@ -88,7 +88,7 @@
 ;; Whether the point (px + 1/2, py + 1/2) is inside the loop, by counting the
 ;; vertical sides to its right. Called once per rectangle that is not crossed,
 ;; which is rare, so it stays scalar.
-(: inside? (-> (Vec P) long long bool))
+(: (-> (Vec P) long long bool))
 (defun (inside? ps px py)
   (def n (length ps))
   (loop (:for i (range 0 n))
@@ -99,7 +99,7 @@
         (:acc crossings (summing 1))
         => (= 1 (% crossings 2))))
 
-(: part2 (-> (Vec P) long))
+(: (-> (Vec P) long))
 (defun (part2 ps)
   (def* (n (length ps))
         (sides (make-sides ps)))

@@ -10,36 +10,36 @@
 (import "par.bjo")
 (type-rec (: Tree (Union Empty (: Node Tree Tree))))
 
-(: bottom-up (-> int Tree))
+(: (-> int Tree))
 (defun (bottom-up depth)
   (if (> depth 0)
       (Node (bottom-up (- depth 1)) (bottom-up (- depth 1)))
       (Node Empty Empty)))
 
-(: check (-> Tree int))
+(: (-> Tree int))
 (defun (check t)
   (match t
     ((Node l r) (+ 1 (+ (check l) (check r))))
     (Empty 0)))
 
 ;; The checks of count trees of the depth, summed.
-(: sum-checks (-> int int int))
+(: (-> int int int))
 (defun (sum-checks depth count)
   (loop (:for i (range 0 count))
         (:acc s (summing (check (bottom-up depth))))
         => s))
 
-(: iterations (-> int int int int))
+(: (-> int int int int))
 (defun (iterations min-depth max-depth depth)
   (shift-left 1 (+ (- max-depth depth) min-depth)))
 
 ;; One fiber for each block of the iterations of the depth.
-(: start-depth (-> int int (List (Promise int))))
+(: (-> int int (List (Promise int))))
 (defun (start-depth depth iters)
   {listing (bjo (sum-checks depth (- (/ (* (+ w 1) iters) workers) (/ (* w iters) workers))))
            (:for w (range 0 workers))})
 
-(: join-sum (-bjo-> (List (Promise int)) int int))
+(: (-bjo-> (List (Promise int)) int int))
 (defbjo (join-sum ps acc)
   (match ps
     (Nil acc)

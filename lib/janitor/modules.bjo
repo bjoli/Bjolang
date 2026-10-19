@@ -47,7 +47,7 @@
 
 ;; A value of a type this module defines, whose assembly is this module's.
 (type (: OwnMarker (Record (: unused int))))
-(: own-marker OwnMarker)
+(: OwnMarker)
 (def own-marker (OwnMarker (unused 0)))
 
 (:doc #:module
@@ -77,7 +77,7 @@
   (summary "A module name as source writes it.")
   (arg name "The name.")
   (returns "(std random), for (std random)."))
-(: module-name->string (-> (List Symbol) string))
+(: (-> (List Symbol) string))
 (defun (module-name->string name)
   (str "(" (string-join (list->vec (list-map symbol->string name)) " ") ")"))
 
@@ -86,13 +86,13 @@
 ;; ---------------------------------------------------------------------------
 
 ;; `None` at the root of the filesystem, where `GetDirectoryName` answers null.
-(: parent-of (-> string (Option string)))
+(: (-> string (Option string)))
 (defun (parent-of dir)
   (def up (clr-directory-name (path-absolute dir)))
   (if (clr-null-or-empty? up) None (Some up)))
 
 ;; `<dir>/lib` for `dir` and every directory above it, deepest first.
-(: ancestor-libs (-> string (List string)))
+(: (-> string (List string)))
 (defun (ancestor-libs start)
   (let go ((dir (path-absolute start)))
     (Cons (path-combine dir "lib")
@@ -100,7 +100,7 @@
             ((Some up) (go up))
             (None Nil)))))
 
-(: env-dir (-> string string (List string)))
+(: (-> string string (List string)))
 (defun (env-dir var below)
   (match (get-environment-variable var)
     ((Some dir) (Cons (path-absolute (if (= below "") dir (path-combine dir below))) Nil))
@@ -109,7 +109,7 @@
 ;; The lib this module was loaded from: lib/janitor/modules.dll. A program run
 ;; from outside the installation finds no lib above itself or its working
 ;; directory, but it does link this.
-(: own-lib (-> (List string)))
+(: (-> (List string)))
 (defun (own-lib)
   (def own (clr-location (clr-assembly-of (clr-type-of own-marker))))
   (if (clr-null-or-empty? own)
@@ -128,7 +128,7 @@
     The candidates are the compiler's, with one before them: the lib this
     module was loaded from, which a program run from anywhere has.
     """))
-(: lib-directory (-> (Option string)))
+(: (-> (Option string)))
 (defun (lib-directory)
   (find #(directory-exists? (path-combine & "std"))
         (list-append (env-dir "BJOLANG_LIB" "")
@@ -141,7 +141,7 @@
   (summary "The standard library's packages: one per directory of lib.")
   (returns "The packages, or none when there is no lib to find.")
   (see lib-directory))
-(: standard-roots (-> (List PackageRoot)))
+(: (-> (List PackageRoot)))
 (defun (standard-roots)
   (match (lib-directory)
     (None Nil)
@@ -157,7 +157,7 @@
 ;; ---------------------------------------------------------------------------
 
 ;; `(root (pkg name) "dir")`, the directory relative to the file's.
-(: root-entry (-> string Bjodat (Result string PackageRoot)))
+(: (-> string Bjodat (Result string PackageRoot)))
 (defun (root-entry base entry)
   (match entry
     ((BjoList (Cons (BjoSym head) (Cons (BjoList parts) (Cons (BjoStr dir) Nil))))
@@ -172,7 +172,7 @@
                              (standard #f)))))))
     (_ (Err #"expected (root (name ...) \"directory\"), not ${(bjodat->string entry)}"))))
 
-(: symbols-of (-> (List Bjodat) (Option (List Symbol))))
+(: (-> (List Bjodat) (Option (List Symbol))))
 (defun (symbols-of parts)
   (match parts
     (Nil (Some Nil))
@@ -182,7 +182,7 @@
        (None None)))
     (_ None)))
 
-(: root-entries (-> string (List Bjodat) (Result string (List PackageRoot))))
+(: (-> string (List Bjodat) (Result string (List PackageRoot))))
 (defun (root-entries base entries)
   (match entries
     (Nil (Ok Nil))
@@ -196,7 +196,7 @@
   (arg file "The roots file: (roots (root (name ...) \"directory\") ...).")
   (returns "Its packages, or why the file could not be read. A relative directory is relative to the file.")
   (see standard-roots))
-(: read-roots-file (-> string (Result string (List PackageRoot))))
+(: (-> string (Result string (List PackageRoot))))
 (defun (read-roots-file file)
   (if (not (file-exists? file))
       (Err #"no roots file at ${file}")
@@ -215,14 +215,14 @@
 ;; ---------------------------------------------------------------------------
 
 ;; `prefix` is a proper prefix of `name`: shorter, and equal as far as it goes.
-(: proper-prefix? (-> (List Symbol) (List Symbol) bool))
+(: (-> (List Symbol) (List Symbol) bool))
 (defun (proper-prefix? prefix name)
   (match (Tuple prefix name)
     ((Tuple Nil (Cons _ _)) #t)
     ((Tuple (Cons p ps) (Cons n ns)) (and (= p n) (proper-prefix? ps ns)))
     (_ #f)))
 
-(: drop-segments (-> int (List Symbol) (List Symbol)))
+(: (-> int (List Symbol) (List Symbol)))
 (defun (drop-segments n name)
   (match name
     ((Cons _ rest) (if (> n 0) (drop-segments (- n 1) rest) name))
@@ -234,7 +234,7 @@
   (arg name "The module: (std random).")
   (returns "The source path, or None when no package owns the name.")
   (see find-module-assembly standard-roots))
-(: find-module-source (-> (List PackageRoot) (List Symbol) (Option string)))
+(: (-> (List PackageRoot) (List Symbol) (Option string)))
 (defun (find-module-source roots name)
   (def owner
     (loop (:for r roots)
@@ -259,7 +259,7 @@
   (arg name "The module: (std random).")
   (returns "The dll beside the module's source, or why there is none.")
   (see find-module-source))
-(: find-module-assembly (-> (List PackageRoot) (List Symbol) (Result string string)))
+(: (-> (List PackageRoot) (List Symbol) (Result string string)))
 (defun (find-module-assembly roots name)
   (match (find-module-source roots name)
     (None (Err #"no package provides ${(module-name->string name)}"))

@@ -11,7 +11,7 @@
 
 (import (std prelude))
 
-(: takes-suspending (-> (-bjo-> InputPort int) InputPort int))
+(: (-> (-bjo-> InputPort int) InputPort int))
 (defbjo (takes-suspending f p) (f p))
 
 ;; --- Lifted ------------------------------------------------------------------
@@ -21,10 +21,10 @@
 ;; which is what picks the overload family, then wrapped.
 
 ;; EXPECT-CS: Colour.Lift\(\(\(Func<Bjolang.Runtime.BjoInputPort, int>\)\(\(fa0\) => .*measure\(fa0\)\)\)\)
-(: measure (-> InputPort int))
+(: (-> InputPort int))
 (defun (measure p) 0)
 
-(: lifts (-> InputPort int))
+(: (-> InputPort int))
 (defbjo (lifts p) (takes-suspending measure p))
 
 ;; --- Not lifted: a defun that has a copy -------------------------------------
@@ -38,7 +38,7 @@
 ;; lifting is what happens when there is no second body to answer with.
 
 ;; EXPECT-CS: takessubsuspending\(\(\(Func<Bjolang.Runtime.BjoInputPort, Bjoml.Fiber<int>>\)\(\(fa0\) => .*drain__bjo\(fa0\)\)\)
-(: drain (-> InputPort int))
+(: (-> InputPort int))
 (defun (drain p)
   (let loop ((n 0))
     (if (port-eof? p)
@@ -47,7 +47,7 @@
           (ignore (read-line p))
           (loop (+ n 1))))))
 
-(: keeps-the-copy (-> InputPort int))
+(: (-> InputPort int))
 (defbjo (keeps-the-copy p) (takes-suspending drain p))
 
 ;; --- Not lifted: a bjoroutine ------------------------------------------------
@@ -55,8 +55,8 @@
 ;; Already the right colour, so it is passed as it is.
 
 ;; EXPECT-CS: takessubsuspending\(\(\(Func<Bjolang.Runtime.BjoInputPort, Bjoml.Fiber<int>>\)\(\(fa0\) => .*countsubasync\(fa0\)\)\)
-(: count-async (-bjo-> InputPort int))
+(: (-bjo-> InputPort int))
 (defbjo (count-async p) 1)
 
-(: passes-a-bjoroutine (-> InputPort int))
+(: (-> InputPort int))
 (defbjo (passes-a-bjoroutine p) (takes-suspending count-async p))

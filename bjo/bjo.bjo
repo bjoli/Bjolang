@@ -124,11 +124,11 @@
 ;; A file's last write, in ticks. A file that is not there is as old as anything
 ;; can be, so a dependency that has been deleted is not newer than the artefact
 ;; and does not force a rebuild that would fail for the same reason.
-(: mtime (-> string long))
+(: (-> string long))
 (defun (mtime path)
   (if (file-exists? path) (clr-ticks (clr-mtime path)) 0L))
 
-(: newer? (-> string string bool))
+(: (-> string string bool))
 (defun (newer? a b) (> (mtime a) (mtime b)))
 
 
@@ -142,7 +142,7 @@
 ;; started some other way, and the one thing it knows about itself is where it
 ;; sits: a build puts the binary beside its source, so `bjo.exe` is in
 ;; `<root>/bjo`.
-(: root string)
+(: string)
 (def root
   (match (get-environment-variable "BJO_ROOT")
     ((Some dir) dir)
@@ -151,7 +151,7 @@
 ;; The compiler. `build_compiler.sh` is the one place that knows where it is,
 ;; and the launcher exports its answer as `BJOLANG_COMPILER`. The fallback is
 ;; that same answer written down, for a `bjo.exe` started without the launcher.
-(: compiler-dll string)
+(: string)
 (def compiler-dll
   (match (get-environment-variable "BJOLANG_COMPILER")
     ((Some path) path)
@@ -163,7 +163,7 @@
 ;; ---------------------------------------------------------------------------
 
 ;; Is there a compiler to use at all?
-(: have-compiler? (-> bool))
+(: (-> bool))
 (defun (have-compiler?)
   (cond
     ((file-exists? compiler-dll) #t)
@@ -236,14 +236,14 @@
                          ;; The `source` lines alone.
                          (: sources (List string)))))
 
-(: record-file (-> string string))
+(: (-> string string))
 (defun (record-file file) (clr-change-extension file ".bjobuild"))
 
 ;; A line is `key value`, and the value may contain spaces — a path is allowed
 ;; them — so it is everything after the first one rather than a field of a
 ;; split. A line with no space at all is no line, which is the `None` the bind
 ;; short-circuits to.
-(: split-line (-> string (Option (Tuple string string))))
+(: (-> string (Option (Tuple string string))))
 (defun (split-line line)
   (match (string-index #(char=? & #\space) line)
     ((Some space)
@@ -254,7 +254,7 @@
 
 ;; A `link` or `native` value: a name, then a path. A value with no space in it
 ;; is a name with no path, which a publish reports as a file that is not there.
-(: pair-of (-> string (Tuple string string)))
+(: (-> string (Tuple string string)))
 (defun (pair-of value)
   (match (split-line value)
     ((Some pair) pair)
@@ -265,7 +265,7 @@
 ;; `roots` is an input like any other: it says which directory each package name
 ;; means, so a build made against a different one is a build against different
 ;; code — and the `dep` lines here are the files the old one chose.
-(: input-key? (-> string bool))
+(: (-> string bool))
 (defun (input-key? key)
   (case key
     (("source" "dep" "compiler" "roots" "frameworks" "nuget-list") #t)
@@ -274,7 +274,7 @@
 ;; `None` when there is no record, or when what is there names no artefact —
 ;; which is a record written by a newer `bjo` or a truncated one, and either way
 ;; not something to decide against.
-(: read-record (-> string (Option BuildRecord)))
+(: (-> string (Option BuildRecord)))
 (defun (read-record file)
   (with-return ret
     (def path (record-file file))
@@ -332,7 +332,7 @@
 
 ;; The source a name refers to. A bare `foo` is `foo.bjo` when that exists,
 ;; which is what makes `bjo run examples/vec` work.
-(: resolve-source (-> string (Option string)))
+(: (-> string (Option string)))
 (defun (resolve-source name)
   (cond
     ((file-exists? name) (Some name))
@@ -365,10 +365,10 @@
                          (: aot bool)
                          (: aot-cpu string))))
 
-(: nothing-against Against)
+(: Against)
 (def nothing-against (Against (roots None) (frameworks None) (nuget None) (runtime Nil) (aot #f) (aot-cpu "")))
 
-(: prepared-against (-> Prepared Against))
+(: (-> Prepared Against))
 (defun (prepared-against ready)
   (Against (roots (Some (prepared-roots-file ready)))
            (frameworks (prepared-frameworks-file ready))
@@ -377,21 +377,21 @@
            (aot (prepared-aot ready))
            (aot-cpu (prepared-aot-cpu ready))))
 
-(: flag-for (-> string (Option string) (List string)))
+(: (-> string (Option string) (List string)))
 (defun (flag-for flag path)
   (match path
     ((Some p) (Cons flag (Cons p Nil)))
     (None Nil)))
 
 ;; `--runtime name=value` for each runtime setting.
-(: runtime-flags (-> (List string) (List string)))
+(: (-> (List string) (List string)))
 (defun (runtime-flags settings)
   (match settings
     (Nil Nil)
     ((Cons setting rest) (Cons "--runtime" (Cons setting (runtime-flags rest))))))
 
 ;; `--aot`, and `--aot-cpu` with it when the manifest names a CPU.
-(: aot-flags (-> Against (List string)))
+(: (-> Against (List string)))
 (defun (aot-flags a)
   (cond ((not (record-ref a aot)) Nil)
         ((= (record-ref a aot-cpu) "") (list "--aot"))
@@ -400,7 +400,7 @@
 ;; The compiler records both files as inputs of what it builds, so a build made
 ;; against other packages — or against another set of declarations — is stale by
 ;; the same comparison every other change is.
-(: against-flags (-> Against (List string)))
+(: (-> Against (List string)))
 (defun (against-flags a)
   (list-append (flag-for "--roots" (record-ref a roots))
                (list-append (flag-for "--frameworks" (record-ref a frameworks))
@@ -413,7 +413,7 @@
 ;; The longest directory that contains the file wins, which is the rule the
 ;; compiler uses to decide the same question — and has to be, because a
 ;; dependency fetched into `.bjo/pkg` lives *under* the root project.
-(: declared-for (-> Against string (List string)))
+(: (-> Against string (List string)))
 (defun (declared-for against file)
   (match (record-ref against frameworks)
     (None Nil)
@@ -442,7 +442,7 @@
                        => out))))))))
 
 ;; A frameworks-file line: a directory, a tab, a framework name.
-(: split-tab (-> string (Option (Tuple string string))))
+(: (-> string (Option (Tuple string string))))
 (defun (split-tab line)
   (match (string-index #(char=? & #\tab) line)
     ((Some tab)
@@ -452,7 +452,7 @@
     (None None)))
 
 ;; Is there anything to do before the artefact can be used?
-(: stale? (-> string string Against bool))
+(: (-> string string Against bool))
 (defun (stale? file wanted against)
   ;; No record at all is *stale*, not current: there is nothing that says what
   ;; the artefact was built from, so the only safe answer is to build it. `#f`
@@ -464,7 +464,7 @@
 
 ;; Whether the record describes a build other than the one asked for, whatever
 ;; the timestamps say.
-(: built-otherwise? (-> BuildRecord string Against string bool))
+(: (-> BuildRecord string Against string bool))
 (defun (built-otherwise? rec wanted against file)
   (def artefact (record-ref rec output))
   (or (not (= (record-ref rec mode) wanted))
@@ -507,7 +507,7 @@
 
 ;; A linked module whose own record vouches for the interface `entry` says the
 ;; build saw: the module and the sources it was built from. Nothing otherwise.
-(: interface-kept (-> (Tuple string string) (List string)))
+(: (-> (Tuple string string) (List string)))
 (defun (interface-kept entry)
   (def (Tuple digest dll) entry)
   (match (read-record dll)
@@ -522,7 +522,7 @@
 ;; everything newer than it is a linked module whose interface is the one it was
 ;; built against, or a source such a module was built from. The compiler decides
 ;; a library this way; this is the same for the entry it is never asked about.
-(: current-by-interface? (-> string string Against bool))
+(: (-> string string Against bool))
 (defun (current-by-interface? file wanted against)
   (def* ((Some rec) (read-record file) :leave-with #f)
         (artefact (record-ref rec output)))
@@ -570,7 +570,7 @@
 ;;
 ;; Only reached when `stale?` has answered from a record, so there is one to
 ;; read; `None` is the file having gone away between the two reads.
-(: record-as-built (-> string (Result int (Tuple BuildRecord bool))))
+(: (-> string (Result int (Tuple BuildRecord bool))))
 (defun (record-as-built file)
   (match (read-record file)
     ((Some rec) (Ok (rec . #f)))
@@ -584,7 +584,7 @@
 ;; changed. An edit to the entry alone is the common case, and it compiles
 ;; straight away; the entry's own compile would build a stale import too, one
 ;; after another, which is what the graph saves.
-(: imports-first? (-> string bool))
+(: (-> string bool))
 (defun (imports-first? file)
   (def* ((Some rec) (read-record file) :leave-with #t)
         (artefact (record-ref rec output))
@@ -735,7 +735,7 @@
         (Err (fail #"bjo bench: ${file} has no main. End a benchmark file with (run-benches).")))
        ((Ok (Tuple rec _)) (Ok (BenchProgram (source file) (exe (record-ref rec output)))))))))
 
-(: bench-tools (-> bool bool BenchTools))
+(: (-> bool bool BenchTools))
 (defun (bench-tools force? locked?)
   (BenchTools (build (fun (file) (build-bench file force? locked?)))
               (exec exec)
@@ -773,7 +773,7 @@
                      (: rest (List string)))))
 
 ;; The directory a file sits in, for the walk upward that finds a project.
-(: file-directory (-> string string))
+(: (-> string string))
 (defun (file-directory file)
   (match (parent-directory (path-absolute file))
     ((Some dir) dir)
@@ -843,7 +843,7 @@
          (println (str (if built? "Built" "Up to date") ": " (record-ref rec output))))
        (Ok (Some rec))))))
 
-(: package-name-of (-> Project string))
+(: (-> Project string))
 (defun (package-name-of project)
   (name->string (record-ref (project-package project) name)))
 
@@ -915,7 +915,7 @@
 ;; it (`Paths.runtimeDir`): the compiler's own directory, whose copies are
 ;; precompiled, or the Release build of BjolangRuntime when BJOLANG_NO_R2R
 ;; turns the precompiled code off.
-(: runtime-dir string)
+(: string)
 (def runtime-dir
   (let ((precompiled (path-combine root "bin" "compiler"))
         (off? (match (get-environment-variable "BJOLANG_NO_R2R")
@@ -927,7 +927,7 @@
 
 ;; The packages a project was built from, with the resources their manifests
 ;; declare. The project itself is the one whose files go under `app/`.
-(: published-packages (-> Project Prepared (List PublishedPackage)))
+(: (-> Project Prepared (List PublishedPackage)))
 (defun (published-packages project ready)
   (def own-name (record-ref (project-package project) name))
   (loop (:for r (prepared-roots ready))
@@ -1034,7 +1034,7 @@
 ;;
 ;; With `pass-unknown?`, a flag bjo does not know ends bjo's flags instead of
 ;; being an error: `bjo test --seed 7` gives `--seed 7` to the test files.
-(: parse-flags (-> (List string) bool (Result string Cmdline)))
+(: (-> (List string) bool (Result string Cmdline)))
 (defun (parse-flags argv pass-unknown?)
   (let go ((left argv) (debug #f) (force #f) (lib #f) (locked #f) (output None) (whole-stdlib #f))
     (defun (done rest)
@@ -1059,7 +1059,7 @@
               (Err #"bjo: unknown flag '${a}'")
               (Ok (done left)))))))))
 
-(: usage (-> void))
+(: (-> void))
 (defun (usage)
   (println "bjo - the Bjolang command")
   (println "")
@@ -1123,7 +1123,7 @@
 ;; Every name resolved, or the first that names nothing. Resolved here rather
 ;; than left to the compiler, so that a misspelling is reported as one by the
 ;; command that was given it.
-(: resolve-all (-> string (List string) (Result string (List string))))
+(: (-> string (List string) (Result string (List string))))
 (defun (resolve-all command names)
   (with-return ret
     (Ok (loop (:for name names)

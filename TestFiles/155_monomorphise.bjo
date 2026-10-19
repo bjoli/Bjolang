@@ -26,12 +26,12 @@
 
 ;; --- Written once, in this module -------------------------------------------
 
-(: apply-twice (-> (-?-> int int) int int))
+(: (-> (-?-> int int) int int))
 (defun (apply-twice f x) (f (f x)))
 
 ;; --- Ordinary callers -------------------------------------------------------
 
-(: doubled-twice (-> int int))
+(: (-> int int))
 (defun (doubled-twice n)
   (apply-twice (fun (x) (* x 2)) n))
 
@@ -40,7 +40,7 @@
 ;; The lambda is a `(bjoroutine ...)`, so the effect variable is instantiated
 ;; async and the call goes to the generated copy — `await apply_twice__bjo(...)`
 ;; in the emitted C#, with an `async` lambda handed to it.
-(: bumped-twice (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (bumped-twice n)
   (apply-twice (bjoroutine (x) (+ x 1)) n))
 
@@ -48,21 +48,21 @@
 ;; the ordinary copy: being inside a bjoroutine says nothing about what the
 ;; callback is, and calling the suspending copy here would hand a `Func<int,int>`
 ;; where a `Func<int,Fiber<int>>` is wanted.
-(: sync-inside-bjoroutine (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (sync-inside-bjoroutine n)
   (apply-twice (fun (x) (* x 2)) n))
 
 ;; The suspending lambda actually suspends: it awaits a leaf rather than just
 ;; being painted the colour. Without this the test would pass on a copy that was
 ;; async in name only.
-(: read-lengths (-bjo-> InputPort int))
+(: (-bjo-> InputPort int))
 (defbjo (read-lengths p)
   (port-fold (bjoroutine (port acc) (+ acc (string-length (read-line port))))
              0
              p))
 
 ;; The same fold, ordinarily. One source, one name, two emitted bodies.
-(: read-lengths-sync (-> InputPort int))
+(: (-> InputPort int))
 (defun (read-lengths-sync p)
   (port-fold (fun (port acc) (+ acc (string-length (read-line port))))
              0
@@ -81,16 +81,16 @@
 ;; its own ordinary parameter and failed in Roslyn. Advice that produces a
 ;; second error is worse than no advice, so the recommendation and the support
 ;; for it landed together.
-(: twice-and-wait (-> (-?-> int int) int int))
+(: (-> (-?-> int int) int int))
 (defbjo (twice-and-wait f x) (f (f x)))
 
 ;; --- Across a module boundary -----------------------------------------------
 
-(: sum-doubled (-> (List int) int))
+(: (-> (List int) int))
 (defun (sum-doubled xs)
   (sum-with (fun (x) (* x 2)) xs))
 
-(: sum-bumped (-bjo-> (List int) int))
+(: (-bjo-> (List int) int))
 (defbjo (sum-bumped xs)
   (sum-with (bjoroutine (x) (+ x 1)) xs))
 
@@ -102,7 +102,7 @@
 ;; `(-> ...)` is a type error, so there was no way to write it at all.
 ;;
 ;; The reader may be spelled out as a lambda...
-(: drain-count (-bjo-> InputPort int))
+(: (-bjo-> InputPort int))
 (defbjo (drain-count p)
   (list-length (port->list (bjoroutine (q) (read-line q)) p)))
 
@@ -115,7 +115,7 @@
 ;; mention is written in. Spelling out `(bjoroutine (q) (read-line q))` was the
 ;; workaround for that — and naming a colour is the one thing this design exists
 ;; to avoid having to do.
-(: drain-count-named (-bjo-> InputPort int))
+(: (-bjo-> InputPort int))
 (defbjo (drain-count-named p)
   (list-length (port->list (fun (q) (read-line q)) p)))
 
@@ -123,13 +123,13 @@
 ;; reader — passing the suspending one would hand a `Func<A,Fiber<B>>` to a
 ;; parameter emitted for `Func<A,B>`. Nothing here says which; the enclosing
 ;; member does.
-(: drain-count-sync (-> InputPort int))
+(: (-> InputPort int))
 (defun (drain-count-sync p)
   (list-length (port->list (fun (q) (read-line q)) p)))
 
 ;; --- Running a bjoroutine to a value ----------------------------------------
 
-(: run-bjo (-> (Promise int) int))
+(: (-> (Promise int) int))
 (defun (run-bjo p)
   (match (sync/blocking (promise-join p))
     ((Ok n) n)

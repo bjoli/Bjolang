@@ -115,7 +115,7 @@
 ;;
 ;; Closing one half does not close the other — "I have finished listening, now
 ;; let me answer" has to work, and it is the same fact `shutdown!` exists for.
-(: connection->ports (-> Connection (Tuple InputPort OutputPort)))
+(: (-> Connection (Tuple InputPort OutputPort)))
 (defun (connection->ports c)
   (Tuple (clr-conn-in c) (clr-conn-out c)))
 
@@ -137,7 +137,7 @@
 ;; own and `flush-port` is the program saying "send this now", so leaving Nagle on
 ;; would hold a flushed small write back waiting for an ACK — exactly wrong for
 ;; a request/response protocol.
-(: tcp-connect (-bjo-> string int (Result Exception (Tuple InputPort OutputPort))))
+(: (-bjo-> string int (Result Exception (Tuple InputPort OutputPort))))
 (defbjo (tcp-connect host port)
   ;; Raises here if there is no scope, before a socket exists to leak.
   (ignore (current-scope))
@@ -159,7 +159,7 @@
 ;; halves have been closed, or when the ambient scope ends.
 ;;
 ;; `peer` is what `peer-address` answers for the input port; `""` means `None`.
-(: stream->ports (-> Stream (#:peer string) (Tuple InputPort OutputPort)))
+(: (-> Stream (#:peer string) (Tuple InputPort OutputPort)))
 (defun (stream->ports s #:peer "")
   (ignore (current-scope))
   (connection->ports (clr-own-connection (Connection. s peer))))
@@ -177,7 +177,7 @@
 ;; A host name here is resolved synchronously, because binding happens once at
 ;; startup. An address literal — `"127.0.0.1"`, `"0.0.0.0"`, `"::1"` — asks
 ;; nothing of the resolver.
-(: tcp-listen (-> string int (#:backlog int) (Result Exception Listener)))
+(: (-> string int (#:backlog int) (Result Exception Listener)))
 (defun (tcp-listen host port #:backlog 128)
   (ignore (current-scope))
   (match (clr-listen host port backlog)
@@ -186,7 +186,7 @@
 
 ;; The port actually bound, which is the interesting question when 0 was asked
 ;; for. Still answerable after the listener is closed.
-(: listener-port (-> Listener int))
+(: (-> Listener int))
 (defun (listener-port l) (clr-listener-port l))
 
 ;; A real CML event: in a `choose` that another branch wins, nothing is accepted
@@ -209,7 +209,7 @@
 ;;         ((Some (Ok conn)) (spawn (handle conn)) (go))
 ;;         ((Some (Err e))   (log (str "accept failed: " (.-Message e))) (go))
 ;;         (None             'stopped)))
-(: accept-evt (-> Listener (Event (Result Exception (Tuple InputPort OutputPort)))))
+(: (-> Listener (Event (Result Exception (Tuple InputPort OutputPort)))))
 (defun (accept-evt l)
   (wrap (clr-accept-evt l)
         #(match &
@@ -218,11 +218,11 @@
 
 ;; Fires once the listener has stopped accepting, and from then on commits
 ;; immediately on every `sync`.
-(: listener-closed (-> Listener (Event Unit)))
+(: (-> Listener (Event Unit)))
 (defun (listener-closed l) (clr-closed-evt l))
 
-(: accept-or-raise (-> (Result Exception (Tuple InputPort OutputPort))
-                       (Tuple InputPort OutputPort)))
+(: (-> (Result Exception (Tuple InputPort OutputPort))
+       (Tuple InputPort OutputPort)))
 (defun (accept-or-raise r)
   (match r
     ((Ok conn) conn)
@@ -235,7 +235,7 @@
 ;; On a closed listener this waits forever, because the event never commits.
 ;; A program that may meet one uses `accept-evt` under a `choose` with
 ;; `listener-closed`.
-(: accept (-> Listener (Tuple InputPort OutputPort)))
+(: (-> Listener (Tuple InputPort OutputPort)))
 (defbjouble (accept l)
   (#:sync (accept-or-raise (sync/blocking (accept-evt l))))
   (#:bjo  (accept-or-raise (sync (accept-evt l)))))
@@ -249,7 +249,7 @@
 ;;
 ;; So a server drains by closing the listener, letting its handlers finish, and
 ;; leaving the scope — which closes the listening socket and anything still open.
-(: close-listener! (-> Listener void))
+(: (-> Listener void))
 (defun (close-listener! l) (clr-close-listener l))
 
 ;; ---------------------------------------------------------------------------
@@ -261,7 +261,7 @@
 ;; It hangs off the input port because the tuple is fixed at two and there is
 ;; nowhere else to put it. `None` for a port that is not a connection's — a
 ;; file, a pipe, a `limited` view — and for a `stream->ports` given no peer.
-(: peer-address (-> InputPort (Option string)))
+(: (-> InputPort (Option string)))
 (defun (peer-address p)
   (match (clr-peer p)
     ((Some "") None)

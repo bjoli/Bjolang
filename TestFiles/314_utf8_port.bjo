@@ -8,13 +8,13 @@
 (import (std ports))
 (import (std simpletest))
 
-(: text string)
+(: string)
 (def text "räksmörgås\r\nåäö 漢字\rsista 🎉\nlast")
 
-(: expected-lines (Vec string))
+(: (Vec string))
 (def expected-lines ["räksmörgås" "åäö 漢字" "sista 🎉" "last"])
 
-(: opened (-> string InputPort))
+(: (-> string InputPort))
 (defun (opened path)
   (match (open-input-file path)
     ((Ok p) p)
@@ -22,7 +22,7 @@
 
 ;; --- Lines and characters, in both colours ------------------------------------
 
-(: lines-sync (-> string (Vec string)))
+(: (-> string (Vec string)))
 (defun (lines-sync path)
   (def p (opened path))
   (def out (vecbuilder-empty))
@@ -31,7 +31,7 @@
       ((Some l) (vecbuilder-add! out l) (go))
       (None (close-input-port p) (vecbuilder->vec out)))))
 
-(: lines-bjo (-bjo-> string (Vec string)))
+(: (-bjo-> string (Vec string)))
 (defbjo (lines-bjo path)
   (def p (opened path))
   (def out (vecbuilder-empty))
@@ -40,7 +40,7 @@
         (let () (close-input-port p) (vecbuilder->vec out))
         (let () (vecbuilder-add! out (read-line p)) (go)))))
 
-(: chars-sync (-> string (List char)))
+(: (-> string (List char)))
 (defun (chars-sync path)
   (def p (opened path))
   (let go ((acc (list)))
@@ -48,7 +48,7 @@
       ((Some c) (go (cons c acc)))
       (None (close-input-port p) (list-reverse acc)))))
 
-(: chars-bjo (-bjo-> string (List char)))
+(: (-bjo-> string (List char)))
 (defbjo (chars-bjo path)
   (def p (opened path))
   (let go ((acc (list)))
@@ -56,14 +56,14 @@
         (let () (close-input-port p) (list-reverse acc))
         (go (cons (read-char p) acc)))))
 
-(: all-bjo (-bjo-> string string))
+(: (-bjo-> string string))
 (defbjo (all-bjo path)
   (def p (opened path))
   (def all (read-all p))
   (close-input-port p)
   all)
 
-(: codes (-> (List char) string))
+(: (-> (List char) string))
 (defun (codes cs)
   (string-join (list->vec (list-map (fun (c) (int->string (char->integer c))) cs)) " "))
 
@@ -73,17 +73,17 @@
   (utf16 (: System.Text.Encoding.Unicode #:get)))
 
 ;; The way to read a file in another encoding: open it, and re-encode it.
-(: lines-as (-bjo-> string Encoding (Vec string)))
+(: (-bjo-> string Encoding (Vec string)))
 (defbjo (lines-as path encoding)
   (def p (opened path))
   (def lines (port->lines (reencode-input-port p encoding)))
   (close-input-port p)
   lines)
 
-(: replacement string)
+(: string)
 (def replacement (list->string (list (integer->char 65533))))
 
-(: mark string)
+(: string)
 (def mark (list->string (list (integer->char 65279))))
 
 (defbjo (main args)

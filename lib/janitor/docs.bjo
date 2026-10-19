@@ -109,11 +109,11 @@
 ;; ---------------------------------------------------------------------------
 
 ;; A message names the form, so a published doc that does not read says where.
-(: malformed (-> string Bjodat (Result string %a)))
+(: (-> string Bjodat (Result string %a)))
 (defun (malformed what form)
   (Err #"${what}: ${(bjodat->string form)}"))
 
-(: kind-named (-> Symbol DocKind))
+(: (-> Symbol DocKind))
 (defun (kind-named s)
   (match (symbol->string s)
     ("function" KindFunction)
@@ -127,7 +127,7 @@
     ("module" KindModule)
     (_ (KindOther s))))
 
-(: symbol-list (-> (List Bjodat) (Option (List Symbol))))
+(: (-> (List Bjodat) (Option (List Symbol))))
 (defun (symbol-list xs)
   (match xs
     (Nil (Some Nil))
@@ -138,7 +138,7 @@
     (_ None)))
 
 ;; A clause by its head. `#:rng` and `rng` are the same key.
-(: read-clause (-> Bjodat (Result string DocClause)))
+(: (-> Bjodat (Result string DocClause)))
 (defun (read-clause c)
   (match c
     ((BjoList (Cons (BjoSym head) args))
@@ -180,14 +180,14 @@
                          (: clauses (List DocClause)))))
 
 ;; The symbol a list is headed by, or "" for anything else.
-(: head-of (-> Bjodat string))
+(: (-> Bjodat string))
 (defun (head-of b)
   (match b
     ((BjoList (Cons (BjoSym h) _)) (symbol->string h))
     (_ "")))
 
 ;; The added clauses go into the record, the rest into its clauses.
-(: read-clauses (-> Partial (List Bjodat) (Result string Partial)))
+(: (-> Partial (List Bjodat) (Result string Partial)))
 (defun (read-clauses p cs)
   (match cs
     (Nil (Ok p))
@@ -204,7 +204,7 @@
         (read-clauses (record-set p (clauses (Cons clause (record-ref p clauses)))) rest))))))
 
 ;; `(:doc name ...)`, `(:doc name #:reader ...)` or `(:doc #:module ...)`.
-(: read-doc (-> Bjodat (Result string Doc)))
+(: (-> Bjodat (Result string Doc)))
 (defun (read-doc form)
   (def start (Partial (kind (KindOther (string->symbol "unknown")))
                       (signature None) (definition None) (clauses Nil)))
@@ -231,7 +231,7 @@
               (definition (record-ref p definition))
               (clauses (list-reverse (record-ref p clauses))))))))
 
-(: read-docs (-> (List Bjodat) (Result string (List Doc))))
+(: (-> (List Bjodat) (Result string (List Doc))))
 (defun (read-docs forms)
   (match forms
     (Nil (Ok Nil))
@@ -245,7 +245,7 @@
   (arg text "A bjodat vec of (:doc ...) forms, or \"\" for a module with none.")
   (returns "The docs, in the order the module wrote them, or why the text does not read.")
   (see assembly-docs))
-(: parse-docs (-> string (Result string (Vec Doc))))
+(: (-> string (Result string (Vec Doc))))
 (defun (parse-docs text)
   (if (= (string-trim text) "")
       (Ok [])
@@ -261,7 +261,7 @@
   (arg path "The module's dll, or a program's exe.")
   (returns "Its docs, none when it has none, or why the file could not be read.")
   (see module-docs parse-docs))
-(: assembly-docs (-> string (Result string (Vec Doc))))
+(: (-> string (Result string (Vec Doc))))
 (defun (assembly-docs path)
   (if (not (file-exists? path))
       (Err #"no such file: ${path}")
@@ -278,7 +278,7 @@
   (arg name "The module: (std random).")
   (returns "Its docs, or why there are none to read.")
   (see assembly-docs find-module-assembly standard-roots read-roots-file))
-(: module-docs (-> (List PackageRoot) (List Symbol) (Result string (Vec Doc))))
+(: (-> (List PackageRoot) (List Symbol) (Result string (Vec Doc))))
 (defun (module-docs roots name)
   (def (Ok dll) (find-module-assembly roots name) :propagate)
   (assembly-docs dll))
@@ -291,7 +291,7 @@
   (summary "A doc's one-line summary.")
   (arg doc "The doc.")
   (returns "Its summary, or \"\" for one published without."))
-(: doc-summary (-> Doc string))
+(: (-> Doc string))
 (defun (doc-summary doc)
   (loop (:for c (record-ref doc clauses))
         (:acc found (folding ""
@@ -305,7 +305,7 @@
   (arg name "The definition's name. A reader extension's is written with its #: #pair.")
   (returns "The doc, or None when the module has none by that name.")
   (see module-doc))
-(: doc-named (-> (Vec Doc) string (Option Doc)))
+(: (-> (Vec Doc) string (Option Doc)))
 (defun (doc-named docs name)
   (find #(match (record-ref & subject)
            ((SubjectName n) (= (symbol->string n) name))
@@ -318,7 +318,7 @@
   (arg docs "A module's docs.")
   (returns "The doc, or None when the module has none.")
   (see doc-named))
-(: module-doc (-> (Vec Doc) (Option Doc)))
+(: (-> (Vec Doc) (Option Doc)))
 (defun (module-doc docs)
   (find #(match (record-ref & subject)
            (SubjectModule #t)
@@ -329,7 +329,7 @@
   (summary "What a doc is about, as source writes it.")
   (arg subject "The subject.")
   (returns "random-int, #pair for a reader extension, or #:module."))
-(: doc-subject->string (-> DocSubject string))
+(: (-> DocSubject string))
 (defun (doc-subject->string subject)
   (match subject
     ((SubjectName n) (symbol->string n))

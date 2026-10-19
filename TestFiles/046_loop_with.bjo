@@ -5,11 +5,11 @@
 (import (std prelude))
 (import (std simpletest))
 
-(: show (-> (List int) string))
+(: (-> (List int) string))
 (defun (show xs)
   (list-foldl (fun (x acc) (string-append acc (string-append " " (int->string x)))) "" xs))
 
-(: same? (-> (List int) (List int) bool))
+(: (-> (List int) (List int) bool))
 (defun (same? a b)
   (= (show a) (show b)))
 
@@ -17,7 +17,7 @@
 ;; The recurrence
 ;; ---------------------------------------------------------------------------
 
-(: fibs (-> int (List int)))
+(: (-> int (List int)))
 (defun (fibs n)
   (loop (:with a 0 b)
         (:with b 1 (+ a b))
@@ -27,7 +27,7 @@
 
 ;; The same thing with no `:for` at all: a `:with` with an `end` bounds the
 ;; level by itself.
-(: fibs-under (-> int (List int)))
+(: (-> int (List int)))
 (defun (fibs-under limit)
   (loop (:with a 0 b (> a limit))
         (:with b 1 (+ a b))
@@ -35,7 +35,7 @@
         => out))
 
 ;; One clause, one slot: a tuple pattern carries the whole state.
-(: fibs-tupled (-> int (List int)))
+(: (-> int (List int)))
 (defun (fibs-tupled n)
   (loop (:with (Tuple a b) (Tuple 0 1) (Tuple b (+ a b)))
         (:for i (range 0 n))
@@ -48,7 +48,7 @@
 
 ;; Every update in a level is computed before any slot is written, so this is a
 ;; swap rather than two names converging on one value.
-(: swapping (-> (List int)))
+(: (-> (List int)))
 (defun (swapping)
   (loop (:with a 0 b)
         (:with b 1 a)
@@ -62,7 +62,7 @@
 ;; where the simultaneous version fibonaccis. This is the contrast the rule is
 ;; about — clause order in the body does not change it, because an update is
 ;; evaluated at the end of the iteration where every binding is in scope.
-(: doubling (-> int (List int)))
+(: (-> int (List int)))
 (defun (doubling n)
   (loop (:with a 0 a-next)
         (:with b 1 (+ a-next b))
@@ -77,7 +77,7 @@
 
 ;; One level, three clauses in lockstep — not three levels. The level ends with
 ;; the shortest of them, so five xs and three ys give three iterations.
-(: lockstep (-> (List int)))
+(: (-> (List int)))
 (defun (lockstep)
   (loop (:for x '(1 2 3 4 5))
         (:with a 0 (+ a 10))
@@ -86,7 +86,7 @@
         => out))
 
 ;; `(:subloop)` is still how two iterating clauses are separated.
-(: nested (-> (Tuple int int)))
+(: (-> (Tuple int int)))
 (defun (nested)
   (loop (:for x (range 0 3))
         (:subloop)
@@ -105,7 +105,7 @@
 ;; rides along in a one-element array, which a struct can hold by reference.
 (type (: Probe (Struct (: limit int) (: tally (Array int)))))
 
-(: probe (-> int Probe))
+(: (-> int Probe))
 (defun (probe limit)
   (def t (make-array 1))
   (array-set! t 0 0)
@@ -124,7 +124,7 @@
 
 ;; `end` written first: when it holds the level is over and the `:for`'s `done?`
 ;; never runs, so the cursor is left un-advanced.
-(: with-first (-> (Tuple int int)))
+(: (-> (Tuple int int)))
 (defun (with-first)
   (def p (probe 100))
 
@@ -138,7 +138,7 @@
 
 ;; The same tests, written the other way round: now `done?` runs on the
 ;; iteration that `end` stops, one time more.
-(: for-first (-> (Tuple int int)))
+(: (-> (Tuple int int)))
 (defun (for-first)
   (def p (probe 100))
 
@@ -156,7 +156,7 @@
 
 ;; A skipped iteration still advances the level, exactly as its cursors do —
 ;; otherwise this would never get past the first `a`.
-(: skipping (-> (List int)))
+(: (-> (List int)))
 (defun (skipping)
   (loop (:with a 0 (+ a 1))
         (:for i (range 0 6))
@@ -166,7 +166,7 @@
 
 ;; `:finish` leaves through the finish block and updates nothing, so the last
 ;; value accumulated is the one from the iteration before the break.
-(: breaking (-> (List int)))
+(: (-> (List int)))
 (defun (breaking)
   (loop (:with a 0 (+ a 1))
         (:for i (range 0 10))
@@ -180,7 +180,7 @@
 
 ;; A `:with` is carried, so it *can* be jumped ahead — which is the thing a
 ;; `:for` variable could never do.
-(: skipper (-> (List int)))
+(: (-> (List int)))
 (defun (skipper)
   (loop lp (:with a 0 (+ a 1) (> a 20))
            (:acc out (listing a))
@@ -193,7 +193,7 @@
 
 ;; Two expressions is a `:with` with no update: a loop-invariant binding, which
 ;; contributes no override to the jump at all.
-(: invariant (-> int))
+(: (-> int))
 (defun (invariant)
   (loop (:with k 7)
         (:for i (range 0 3))
@@ -201,7 +201,7 @@
         => total))
 
 ;; Deep enough that anything but a jump would exhaust the stack.
-(: deep (-> int int))
+(: (-> int int))
 (defun (deep n)
   (loop (:with a 0 (+ a 1))
         (:for i (range 0 n))

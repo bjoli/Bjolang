@@ -54,7 +54,7 @@
   (: ClientOut (Record (: checksum long) (: samples (MutableVec long)) (: svc (MutableVec long))
                        (: timeouts int))))
 
-(: settle (-> void))
+(: (-> void))
 (defun (settle)
   (gc-collect)
   (gc-wait-finalizers)
@@ -62,20 +62,20 @@
 
 ;; Whole seconds and the rest apart, because ticks times 10^9 overflows a
 ;; long after about 9.2 s at a frequency of 10^9 a second.
-(: ticks->ns (-> long long))
+(: (-> long long))
 (defun (ticks->ns ticks)
   (+ (* (/ ticks stopwatch-frequency) 1000000000L)
      (/ (* (% ticks stopwatch-frequency) 1000000000L) stopwatch-frequency)))
 
-(: ns-since (-> long long))
+(: (-> long long))
 (defun (ns-since t0)
   (ticks->ns (- (timestamp) t0)))
 
-(: cpu-ms (-> long))
+(: (-> long))
 (defun (cpu-ms)
   (cast System.Int64 (timespan-ms (processor-time (current-process)))))
 
-(: crunch (-> int int int))
+(: (-> int int int))
 (defun (crunch n seed)
   (let go ((i 0) (x seed))
     (if (= i n)
@@ -83,7 +83,7 @@
         (go (+ i 1) (% (+ (* x 31) i) 1000003)))))
 
 ;; Serves its slots until told to stop, and answers the work it did.
-(: shard (-bjo-> int (Chan Req) (Chan int) long))
+(: (-bjo-> int (Chan Req) (Chan int) long))
 (defbjo (shard id requests quit)
   (def slots (mutablevec-with-capacity slots-per-shard))
   (loop (:for j (range 0 slots-per-shard))
@@ -103,7 +103,7 @@
       (None work))))
 
 ;; One request and its answer, or None at the deadline.
-(: request (-bjo-> (Vec (Chan Req)) int int int (Option int)))
+(: (-bjo-> (Vec (Chan Req)) int int int (Option int)))
 (defbjo (request chans op key value)
   (def reply (make-chan))
   (sync (chan-send (vec-ref chans (% key shards))
@@ -111,7 +111,7 @@
   (sync (choose (wrap (chan-recv reply) (fun (v) (Some v)))
                 (wrap (timeout deadline-ms) (fun (u) None)))))
 
-(: sub-get (-bjo-> (Vec (Chan Req)) int (Chan int) void))
+(: (-bjo-> (Vec (Chan Req)) int (Chan int) void))
 (defbjo (sub-get chans key results)
   (def v (match (request chans op-get key 0)
            ((Some v) v)
@@ -120,7 +120,7 @@
 
 ;; Four keys from four spawned fibers: the sum of the answers, and how many
 ;; missed their deadline.
-(: multi-get (-bjo-> (Vec (Chan Req)) int (Chan int) (Tuple int int)))
+(: (-bjo-> (Vec (Chan Req)) int (Chan int) (Tuple int int)))
 (defbjo (multi-get chans key results)
   (loop (:for j (range 0 4))
         (:do (ignore (bjo (sub-get chans (% (+ key j) key-space) results)))))
@@ -132,7 +132,7 @@
               (go (+ j 1) sum (+ lost 1))
               (go (+ j 1) (+ sum v) lost))))))
 
-(: single (-bjo-> (Vec (Chan Req)) int int (Tuple int int)))
+(: (-bjo-> (Vec (Chan Req)) int int (Tuple int int)))
 (defbjo (single chans op key)
   (match (request chans op key (* key 7))
     ((Some v) (Tuple v 0))
@@ -143,7 +143,7 @@
 
 ;; Request i of client c is due this many Stopwatch ticks after the
 ;; schedule's start.
-(: due (-> int int int int long))
+(: (-> int int int int long))
 (defun (due c i clients rate)
   (/ (* (cast System.Int64 (+ (* i clients) c)) stopwatch-frequency)
      (cast System.Int64 rate)))
@@ -155,7 +155,7 @@
 ;; client spends most of its time here. `request` is not, though as small: it
 ;; waits for a shard's reply, and its copy would resume the client on the
 ;; shard's thread (see BjolangRuntime/Cml/design.md).
-(: pace (-bjo-> int int int int long long))
+(: (-bjo-> int int int int long long))
 (defbjo (pace c i clients rate start) #:inline
   (def at (+ start (due c i clients rate)))
   (def now (timestamp))
@@ -165,7 +165,7 @@
         (sync (timeout ms))
         (timestamp))))
 
-(: client (-bjo-> int int int int long (Vec (Chan Req)) ClientOut))
+(: (-bjo-> int int int int long (Vec (Chan Req)) ClientOut))
 (defbjo (client c clients requests rate start chans)
   (def results (make-chan))
   ;; Made at its full size, as the Go and Hopac twins make theirs: a list
@@ -202,11 +202,11 @@
               (+ checksum (cast System.Int64 (+ answer (% d 3))))
               (+ timeouts lost))))))
 
-(: percentile (-> (MutableVec long) int int long))
+(: (-> (MutableVec long) int int long))
 (defun (percentile sorted per of)
   (mutablevec-ref sorted (/ (* (mutablevec-length sorted) per) of)))
 
-(: run-rep (-bjo-> int int int int void))
+(: (-bjo-> int int int int void))
 (defbjo (run-rep n clients requests rate)
   (def chans (loop (:for i (range 0 shards)) (:acc v (vecing (make-chan)))))
   (def quits (loop (:for i (range 0 shards)) (:acc v (vecing (make-chan)))))

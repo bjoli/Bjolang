@@ -21,7 +21,7 @@
 ;; type nothing in this module names.
 ;; EXPECT-CS: public static int total<T_a>\(Sized<T_a> _dict_Sized_a, T_a a, T_a b\)
 ;; EXPECT-CS: return \(_dict_Sized_a\.sizesubof\(a\) \+ _dict_Sized_a\.sizesubof\(b\)\);
-(: total (-> %a %a int) (where (Sized %a)))
+(: (-> %a %a int) (where (Sized %a)))
 (defun (total a b) (+ (size-of a) (size-of b)))
 
 ;; The copy: no leading dictionary, and both `size-of` calls spliced away. This
@@ -29,19 +29,19 @@
 ;; would have been devirtualised and nothing more.
 ;; EXPECT-CS: public static int total__at_int\(int a, int b\) \{
 ;; EXPECT-CS: return \(a \+ b\);
-(: total-int (-> int))
+(: (-> int))
 (defun (total-int) (total 3 5))
 
 ;; One copy per instantiation, and the second one proves the first was chosen
 ;; by the type rather than by being the only one there is.
 ;; EXPECT-CS: public static int total__at_string\(BjoString\.Utf8String a, BjoString\.Utf8String b\) \{
-(: total-str (-> int))
+(: (-> int))
 (defun (total-str) (total "ab" "cde"))
 
 ;; Two calls at one type share a copy: this one reaches the same name, and
 ;; `total__at_int` is asserted above to be emitted once.
 ;; EXPECT-CS: \.total__at_int\(1, 2\)
-(: total-int-again (-> int))
+(: (-> int))
 (defun (total-int-again) (total 1 2))
 
 ;; A call site whose type arguments are not ground keeps its dictionary: there
@@ -50,7 +50,7 @@
 ;; `total` inside it dispatches.
 ;; EXPECT-CS: public static int totalsubthrice<T_a>\(Sized<T_a> _dict_Sized_a, T_a x\)
 ;; EXPECT-CS: mono.*\.total\(_dict_Sized_a, x, x\)
-(: total-thrice (-> %a int) (where (Sized %a)))
+(: (-> %a int) (where (Sized %a)))
 (defun (total-thrice x) (+ (total x x) (size-of x)))
 
 ;; A recursive constrained function. The copy's self-call has to reach the copy
@@ -59,13 +59,13 @@
 ;; tail-recursive group at all, so the `while` below is the assertion.
 ;; EXPECT-CS: public static int sumsubsizes__at_int\(SchemeList.SchemeList<int> xs, int acc\) \{
 ;; EXPECT-CS: while \(true\) \{
-(: sum-sizes (-> (List %a) int int) (where (Sized %a)))
+(: (-> (List %a) int int) (where (Sized %a)))
 (defun (sum-sizes xs acc)
   (if (list-empty? xs)
       acc
       (sum-sizes (list-tail xs) (+ acc (size-of (list-head xs))))))
 
-(: sum-ints (-> int))
+(: (-> int))
 (defun (sum-ints) (sum-sizes (list 1 2 3) 0))
 
 ;; ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@
 ;; And nothing is left dispatching: the dictionary-taking `at-most?` in the
 ;; library is no longer what this reaches.
 ;; EXPECT-NO-CS: eq_Module\.atsubmost_QMARK\(Ord_System_Int32
-(: least-int (-> int))
+(: (-> int))
 (defun (least-int) (least 3 5))
 
 ;; A CLR constraint is a `where` clause rather than a parameter, so there is no
@@ -98,10 +98,10 @@
 (def/trait (Num %a)
   (#:clr-constraint (System.Numerics.INumber %a)))
 
-(: twice (-> %a %a) (where (Num %a)))
+(: (-> %a %a) (where (Num %a)))
 (defun (twice n) (+ n n))
 
-(: twice-int (-> int))
+(: (-> int))
 (defun (twice-int) (twice 21))
 
 (defun (main)

@@ -14,22 +14,22 @@
 (type (: Holder #:opaque (Record (: items (Vec Pending) #:mutable)
                         (: field string #:mutable))))
 
-(: make-holder (-> Holder))
+(: (-> Holder))
 (defun (make-holder) (Holder (items (vec-empty)) (field "start")))
 
-(: holder-count (-> Holder int))
+(: (-> Holder int))
 (defun (holder-count h) (vec-length (record-ref h items)))
 
-(: put! (-> Holder Pending int))
+(: (-> Holder Pending int))
 (defun (put! h p)
   (record-set! h (items (vec-add (record-ref h items) p)))
   (vec-length (record-ref h items)))
 
-(: defer! (-> Holder (-> int int) int))
+(: (-> Holder (-> int int) int))
 (defun (defer! h f) (put! h (PendingInt f)))
 
 ;; Runs `thunk` with `field` set to `value`, then sets it back.
-(: in-field (-> Holder string (-> %a) %a))
+(: (-> Holder string (-> %a) %a))
 (defun (in-field h value thunk)
   (def before (record-ref h field))
   (record-set! h (field value))
@@ -37,11 +37,11 @@
   (record-set! h (field before))
   result)
 
-(: holder-field (-> Holder string))
+(: (-> Holder string))
 (defun (holder-field h) (record-ref h field))
 
 ;; A caller in this module, where the call of `in-field` is spliced.
-(: field-during (-> Holder string string))
+(: (-> Holder string string))
 (defun (field-during h value)
   (in-field h value (fun () (holder-field h))))
 
@@ -50,7 +50,7 @@
 ;; name `Cell`, so the body is not published, and a call of `lazily` is a call.
 (type (: (Cell %a) (Record (: value (Option %a) #:mutable))))
 
-(: lazily (-> (-> int) (-> int)))
+(: (-> (-> int) (-> int)))
 (defun (lazily make)
   (def cell (Cell (value None)))
   (fun ()

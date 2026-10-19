@@ -22,7 +22,7 @@
 
 ;; What a path is, as one string a check can compare: "file 3", "dir 0" or
 ;; "none".
-(: described (-> string string))
+(: (-> string string))
 (defun (described path)
   (match (file-info path)
     ((Some info) (str (match (record-ref info kind) (FsFile "file") (FsDirectory "dir"))
@@ -31,37 +31,37 @@
     (None "none")))
 
 ;; The modified time, or -1 for a path that names nothing.
-(: modified (-> string long))
+(: (-> string long))
 (defun (modified path)
   (match (file-info path)
     ((Some info) (record-ref info modified-ms))
     (None -1L)))
 
-(: link? (-> string bool))
+(: (-> string bool))
 (defun (link? path)
   (match (file-info path)
     ((Some info) (record-ref info link?))
     (None #f)))
 
 ;; 2000-01-01T00:00:00Z, the fake clock's start, in Unix milliseconds.
-(: epoch long)
+(: long)
 (def epoch 946684800000L)
 
-(: probe string)
+(: string)
 (def probe "249_probe_dir")
 
-(: in-probe (-> string string))
+(: (-> string string))
 (defun (in-probe name) (path-combine probe name))
 
-(: threw? (-> (Result System.Exception %a) bool))
+(: (-> (Result System.Exception %a) bool))
 (defun (threw? r)
   (match r ((Ok _) #f) ((Err _) #t)))
 
-(: under (-> string string string))
+(: (-> string string string))
 (defun (under dir name) (path-combine dir name))
 
 ;; Every byte value, 0 to 255, most of which is not UTF-8 on its own.
-(: all-bytes (Array byte))
+(: (Array byte))
 (def all-bytes
   (let ((out (make-array 256)))
     (let loop ((i 0))
@@ -70,21 +70,21 @@
         (loop (+ i 1))))
     out))
 
-(: same-bytes? (-> (Array byte) (Array byte) bool))
+(: (-> (Array byte) (Array byte) bool))
 (defun (same-bytes? a b)
   (and (= (array-length a) (array-length b))
        (let loop ((i 0))
          (or (= i (array-length a))
              (and (= (array-ref a i) (array-ref b i)) (loop (+ i 1)))))))
 
-(: vec-of (-> (List string) (Vec string)))
+(: (-> (List string) (Vec string)))
 (defun (vec-of xs) (list->vec xs))
 
 ;; ---------------------------------------------------------------------------
 ;; file-info
 ;; ---------------------------------------------------------------------------
 
-(: info-on-a-fake (-> void))
+(: (-> void))
 (defun (info-on-a-fake)
   (def fs (fake-fs (list (Tuple "a.txt" "abc") (Tuple "å.txt" "å") (Tuple "d/x.txt" "x"))))
   (with-fake-fs-of fs
@@ -121,7 +121,7 @@
     (expect-true "directory-exists?" (directory-exists? "d"))
     (expect-true "not a file" (not (file-exists? "d")))))
 
-(: info-on-the-disk (-> void))
+(: (-> void))
 (defun (info-on-the-disk)
   (directory-create probe)
   (file-write-text (in-probe "abc.txt") "abc")
@@ -149,7 +149,7 @@
 ;; ---------------------------------------------------------------------------
 
 ;; The same checks on the fake and on the disk: `where` says which.
-(: check-moves (-> string void))
+(: (-> string void))
 (defun (check-moves where)
   (def a (in-probe "a.txt"))
   (def b (in-probe "b.txt"))
@@ -183,7 +183,7 @@
 ;; Each takes the directory to work in, so that a second run does not find
 ;; the first one's files.
 
-(: check-copies (-> string string void))
+(: (-> string string void))
 (defun (check-copies where dir)
   (directory-create dir)
   (def src (under dir "src.txt"))
@@ -216,7 +216,7 @@
 ;; The source under another name, which the path's text cannot tell. Opening
 ;; the target to truncate it used to empty the source, and appending a file to
 ;; itself grew it until the disk was full. On the disk only: a link is real.
-(: check-copy-links (-> string string void))
+(: (-> string string void))
 (defun (check-copy-links where dir)
   (directory-create dir)
   (def src (under dir "src.txt"))
@@ -240,7 +240,7 @@
              (file-read-text src) "sourcesource"))
     ((Err _) unit)))
 
-(: check-bytes (-> string string void))
+(: (-> string string void))
 (defun (check-bytes where dir)
   (directory-create dir)
   (def f (under dir "bytes.bin"))
@@ -259,7 +259,7 @@
   (file-write-bytes f three)
   (expect #"${where}: a write replaces" (array-length (file-read-bytes f)) 3))
 
-(: check-lines (-> string string void))
+(: (-> string string void))
 (defun (check-lines where dir)
   (directory-create dir)
   (def f (under dir "lines.txt"))
@@ -282,7 +282,7 @@
 
 ;; A small tree with a `.git` in it, made the same way on the fake and the
 ;; disk. Five directories: `dir`, `.git`, `a`, `a/m` and `empty`.
-(: make-tree (-> string void))
+(: (-> string void))
 (defun (make-tree dir)
   (directory-create (path-combine dir ".git"))
   (directory-create (path-combine dir "a" "m"))
@@ -293,7 +293,7 @@
   (file-write-text (path-combine dir "b.txt") "b")
   (file-write-text (path-combine dir "c.bjo") "c"))
 
-(: check-walk (-> string string void))
+(: (-> string string void))
 (defun (check-walk where dir)
   (make-tree dir)
   ;; "." sorts before "a", so `.git` comes first.
@@ -318,7 +318,7 @@
           0))
 
 ;; On the fake, where every listing can be counted.
-(: walk-is-lazy (-> void))
+(: (-> void))
 (defun (walk-is-lazy)
   (def fs (fake-fs (list)))
   (with-fake-fs-of fs
@@ -347,7 +347,7 @@
 ;; a delete. Entering one to delete would delete what it points at. Some
 ;; systems refuse an unprivileged symbolic link; there is nothing to check
 ;; then.
-(: links-on-the-disk (-> void))
+(: (-> void))
 (defun (links-on-the-disk)
   (def dir (in-probe "linked"))
   (def outside (in-probe "outside"))

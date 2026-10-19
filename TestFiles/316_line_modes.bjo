@@ -8,15 +8,15 @@
 (import (std ports))
 (import (std simpletest))
 
-(: input string)
+(: string)
 (def input "a\rb\nc\r\nd\n\re")
 
 ;; The lines as one string, each made visible: "\r" as <CR>, "\n" as <LF>.
-(: shown (-> (Vec string) string))
+(: (-> (Vec string) string))
 (defun (shown lines)
   (string-join (vec-map (fun (l) (string-replace (string-replace l "\r" "<CR>") "\n" "<LF>")) lines) "|"))
 
-(: lines-sync (-> LineMode (Vec string)))
+(: (-> LineMode (Vec string)))
 (defun (lines-sync mode)
   (def p (open-input-string input))
   (def out (vecbuilder-empty))
@@ -25,7 +25,7 @@
       ((Some l) (vecbuilder-add! out l) (go))
       (None (vecbuilder->vec out)))))
 
-(: lines-bjo (-bjo-> LineMode (Vec string)))
+(: (-bjo-> LineMode (Vec string)))
 (defbjo (lines-bjo mode)
   (def p (open-input-string input))
   (def out (vecbuilder-empty))
@@ -34,7 +34,7 @@
         (vecbuilder->vec out)
         (let () (vecbuilder-add! out (read-line p #:mode mode)) (go)))))
 
-(: check (-bjo-> string LineMode string Unit))
+(: (-bjo-> string LineMode string Unit))
 (defbjo (check name mode wanted)
   (expect (str name ", read-line/opt in a defun") (shown (lines-sync mode)) wanted)
   (expect (str name ", read-line on a fiber") (shown (lines-bjo mode)) wanted)

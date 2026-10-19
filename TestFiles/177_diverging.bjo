@@ -19,23 +19,23 @@
 (import/class (Failure (: System.Exception (-> string Failure))))
 
 ;; The `%a` appears in no parameter, so nothing at a call site can infer it.
-(: bail (-> string %a))
+(: (-> string %a))
 (defun (bail msg)
   (raise (Failure. msg)))
 
-(: bail-with (-> string (#:code int) %a))
+(: (-> string (#:code int) %a))
 (defun (bail-with msg #:code 1)
   (raise (Failure. (str msg ":" (->str code)))))
 
 ;; --- Value position ----------------------------------------------------------
 
-(: pick (-> (Result Exception int) int))
+(: (-> (Result Exception int) int))
 (defun (pick op)
   (match op
     ((Err e) (bail "no"))
     ((Ok b) b)))
 
-(: pick-kw (-> (Result Exception int) int))
+(: (-> (Result Exception int) int))
 (defun (pick-kw op)
   (match op
     ((Err e) (bail-with "no" #:code 7))
@@ -45,14 +45,14 @@
 ;;
 ;; No `(ignore ...)`. There is nothing to ignore: the call does not return.
 
-(: guard (-> bool int))
+(: (-> bool int))
 (defun (guard ok)
   (when (not ok)
     (bail "guard failed"))
   1)
 
 ;; The same for `raise` itself, which needed the ceremony until now.
-(: reraise (-> bool int))
+(: (-> bool int))
 (defun (reraise ok)
   (when (not ok)
     (raise (Failure. "boom")))
@@ -64,19 +64,19 @@
 ;; that it type-checks in both positions, which is the whole of what its
 ;; signature promises.
 
-(: pick-or-panic (-> (Result Exception int) int))
+(: (-> (Result Exception int) int))
 (defun (pick-or-panic op)
   (match op
     ((Err e) (panic! "unreachable in this test" #:exit-code 3))
     ((Ok b) b)))
 
-(: panic-as-statement (-> bool int))
+(: (-> bool int))
 (defun (panic-as-statement ok)
   (when (not ok)
     (panic! "unreachable in this test"))
   3)
 
-(: message-of (-> (-> int) string))
+(: (-> (-> int) string))
 (defun (message-of thunk)
   (match (try (thunk) #:catch (System.Exception))
     ((Ok _) "returned")

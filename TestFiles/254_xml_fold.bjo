@@ -10,13 +10,13 @@
 (import/class
   (XmlException (: System.Xml.XmlException (-> string XmlException))))
 
-(: repeated (-> int string string))
+(: (-> int string string))
 (defun (repeated n s)
   (def sb (stringbuilder-empty))
   (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb s)))
   (stringbuilder->string sb))
 
-(: kind-of (-> (Result XmlError %a) string))
+(: (-> (Result XmlError %a) string))
 (defun (kind-of r)
   (match r
     ((Ok _) "ok")
@@ -28,7 +28,7 @@
 
 ;; An element becomes "(name children...)": new-level starts the element's own
 ;; seed, finish appends the finished element to its parent's.
-(: sxml-ish (-> string (Result XmlError string)))
+(: (-> string (Result XmlError string)))
 (defun (sxml-ish text)
   (xml-fold text ""
             #:new-level (fun (name attrs pos seed) "")
@@ -37,7 +37,7 @@
             #:comment (fun (s seed) (str seed " #" s))
             #:pi (fun (target data seed) (str seed " ?" target))))
 
-(: shape (-> void))
+(: (-> void))
 (defun (shape)
   (expect "the seed's path" (sxml-ish "<a><b>x</b><c/>y</a>") (Ok "(a(b x)(c) y)"))
   (expect "comments and PIs reach their handlers" (sxml-ish "<a><!--c--><?p d?></a>") (Ok "(a #c ?p)"))
@@ -60,7 +60,7 @@
           (xml-fold "<p><b>x</b> <i>y</i></p>" 0 #:text (fun (s n) (+ n 1)) #:whitespace 'drop)
           (Ok 2)))
 
-(: failures (-> void))
+(: (-> void))
 (defun (failures)
   (def seen (make-box 0))
   (def r (xml-fold "<a><b/><c/><d></a>" 0
@@ -75,7 +75,7 @@
           "mine")
   (expect "a DOCTYPE by default" (kind-of (xml-fold "<!DOCTYPE a><a/>" 0)) "dtd-prohibited"))
 
-(: sizes (-> void))
+(: (-> void))
 (defun (sizes)
   (def flat (str "<r>" (repeated 1000000 "<a/>") "</r>"))
   (expect "a million elements side by side, counted"

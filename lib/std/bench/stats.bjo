@@ -46,7 +46,7 @@
 ;; ---------------------------------------------------------------------------
 
 ;; A sorted copy, as an array: what every order statistic below reads.
-(: sorted (-> (Vec double) (Array double)))
+(: (-> (Vec double) (Array double)))
 (defun (sorted xs)
   (def a (clr-vec->array xs))
   (sort-doubles! a)
@@ -54,7 +54,7 @@
 
 ;; The `q`-quantile of a sorted array, interpolated linearly between the two
 ;; samples around it: R's type 7, which is NumPy's default.
-(: sorted-quantile (-> (Array double) double double))
+(: (-> (Array double) double double))
 (defun (sorted-quantile a q)
   (def n (array-length a))
   (cond
@@ -67,20 +67,20 @@
      (def frac (- h (cast System.Double lo)))
      (+ (array-ref a lo) (* frac (- (array-ref a hi) (array-ref a lo)))))))
 
-(: quantile (-> (Vec double) double double))
+(: (-> (Vec double) double double))
 (defun (quantile xs q) (sorted-quantile (sorted xs) q))
 
-(: median (-> (Vec double) double))
+(: (-> (Vec double) double))
 (defun (median xs) (sorted-quantile (sorted xs) 0.5))
 
-(: mean (-> (Vec double) double))
+(: (-> (Vec double) double))
 (defun (mean xs)
   (if (vec-empty? xs)
       0.0
       (/ (vec-fold + 0.0 xs) (cast System.Double (vec-length xs)))))
 
 ;; The sample standard deviation, over n - 1.
-(: std-dev (-> (Vec double) double))
+(: (-> (Vec double) double))
 (defun (std-dev xs)
   (def n (vec-length xs))
   (if (< n 2)
@@ -90,14 +90,14 @@
                  (cast System.Double (- n 1)))))))
 
 ;; The median absolute deviation from the median, unscaled.
-(: mad (-> (Vec double) double))
+(: (-> (Vec double) double))
 (defun (mad xs)
   (def m (median xs))
   (median (vec-map (fun (x) (abs (- x m))) xs)))
 
 ;; How many samples lie more than 1.5 inter-quartile ranges outside the
 ;; quartiles: Tukey's fences.
-(: tukey-outliers (-> (Vec double) int))
+(: (-> (Vec double) int))
 (defun (tukey-outliers xs)
   (def a (sorted xs))
   (def q1 (sorted-quantile a 0.25))
@@ -112,7 +112,7 @@
 ;; ---------------------------------------------------------------------------
 
 ;; The median of `n` draws, with replacement, from `from`, using `scratch`.
-(: resampled-median (-> (Array double) (Array double) RandomSource double))
+(: (-> (Array double) (Array double) RandomSource double))
 (defun (resampled-median from scratch rng)
   (def n (array-length from))
   (loop (:for i (up-from 0 #:to n))
@@ -121,15 +121,15 @@
   (sorted-quantile scratch 0.5))
 
 ;; The 2.5th and 97.5th percentiles of `ratios`.
-(: interval (-> (Array double) (Tuple double double)))
+(: (-> (Array double) (Tuple double double)))
 (defun (interval ratios)
   (sort-doubles! ratios)
   (Tuple (sorted-quantile ratios 0.025) (sorted-quantile ratios 0.975)))
 
 ;; A 95% interval for median(b) / median(a), from `resamples` resamplings of
 ;; each, independently, with replacement. Seeded, so a run is repeatable.
-(: bootstrap-ratio (-> (Vec double) (Vec double) (#:resamples int) (#:seed ulong)
-                       (Tuple double double)))
+(: (-> (Vec double) (Vec double) (#:resamples int) (#:seed ulong)
+       (Tuple double double)))
 (defun (bootstrap-ratio a b #:resamples 10000 #:seed 1UL)
   (def rng (make-random/seed64 seed))
   (def aa (clr-vec->array a))
@@ -144,8 +144,8 @@
 ;; The same for paired samples, `a[i]` and `b[i]` taken together, as an A/B
 ;; run's rounds are: each resampling draws whole pairs, so that what a round
 ;; shared stays shared.
-(: bootstrap-ratio/paired (-> (Vec double) (Vec double) (#:resamples int) (#:seed ulong)
-                              (Tuple double double)))
+(: (-> (Vec double) (Vec double) (#:resamples int) (#:seed ulong)
+       (Tuple double double)))
 (defun (bootstrap-ratio/paired a b #:resamples 10000 #:seed 1UL)
   (def rng (make-random/seed64 seed))
   (def aa (clr-vec->array a))
@@ -170,7 +170,7 @@
 
 ;; erfc(x), from Numerical Recipes' Chebyshev fit: a relative error below
 ;; 1.2e-7 everywhere, tails included, which is what a small p-value needs.
-(: erfc (-> double double))
+(: (-> double double))
 (defun (erfc x)
   (def z (abs x))
   (def t (/ 1.0 (+ 1.0 (* 0.5 z))))
@@ -189,7 +189,7 @@
   (if (>= x 0.0) r (- 2.0 r)))
 
 ;; P(Z > z) for a standard normal Z.
-(: normal-sf (-> double double))
+(: (-> double double))
 (defun (normal-sf z) (* 0.5 (erfc (/ z (sqrt 2.0)))))
 
 ;; ---------------------------------------------------------------------------
@@ -203,7 +203,7 @@
 
 ;; log Γ(x) for x > 0, Lanczos' approximation (g = 7, nine terms): about 15
 ;; correct digits.
-(: log-gamma (-> double double))
+(: (-> double double))
 (defun (log-gamma x)
   (def cs [0.99999999999980993 676.5203681218851 -1259.1392167224028 771.32342877765313
            -176.61502916214059 12.507343278686905 -0.13857109526572012
@@ -219,7 +219,7 @@
 
 ;; The continued fraction of the incomplete beta function, by Lentz's method,
 ;; as Numerical Recipes' `betacf`.
-(: beta-fraction (-> double double double double))
+(: (-> double double double double))
 (defun (beta-fraction a b x)
   (def tiny 1e-300)
   (defun (floor-tiny (: v double)) : double (if (< (abs v) tiny) tiny v))
@@ -244,7 +244,7 @@
           (if (< (abs (- del 1.0)) 1e-15) h2 (go (+ m 1) c2 d2 h2))))))
 
 ;; The regularized incomplete beta function I_x(a, b).
-(: incomplete-beta (-> double double double double))
+(: (-> double double double double))
 (defun (incomplete-beta a b x)
   (cond
     ((<= x 0.0) 0.0)
@@ -257,14 +257,14 @@
          (- 1.0 (/ (* front (beta-fraction b a (- 1.0 x))) b))))))
 
 ;; P(|T| > t) for Student's T with `df` degrees of freedom.
-(: t-two-sided (-> double int double))
+(: (-> double int double))
 (defun (t-two-sided t df)
   (def v (cast System.Double df))
   (incomplete-beta (* 0.5 v) 0.5 (/ v (+ v (* t t)))))
 
 ;; The two-sided p-value of a one-sample t-test of `xs` against a mean of 0.
 ;; SciPy's `ttest_1samp(xs, 0)` gives the same.
-(: t-test-p (-> (Vec double) double))
+(: (-> (Vec double) double))
 (defun (t-test-p xs)
   (def n (vec-length xs))
   (if (< n 2)
@@ -280,7 +280,7 @@
 ;; The t with P(|T| > t) = alpha, for `df` degrees of freedom: what a mean is
 ;; widened by, times its standard error, for a 1 - alpha interval. SciPy's
 ;; `t.ppf(1 - alpha/2, df)`.
-(: t-critical (-> double int double))
+(: (-> double int double))
 (defun (t-critical alpha df)
   ;; P(|T| > t) falls as t grows; bisect on it.
   (let go ((lo 0.0) (hi 1e6) (i 0))
@@ -297,7 +297,7 @@
 ;; The ranks of `xs`, 1-based, a tie getting the mean of the ranks it spans;
 ;; and the sum of t³ - t over the groups of t tied values, which the tests'
 ;; variances are corrected by.
-(: ranks (-> (Array double) (Tuple (Array double) double)))
+(: (-> (Array double) (Tuple (Array double) double)))
 (defun (ranks xs)
   (def n (array-length xs))
   ;; The indices in the order of their values.
@@ -327,7 +327,7 @@
 ;; sum, when at most 50 differences are left and none are tied; otherwise the
 ;; normal approximation, its variance corrected for ties, with no continuity
 ;; correction. SciPy's `wilcoxon` with its defaults gives the same.
-(: wilcoxon-p (-> (Vec double) double))
+(: (-> (Vec double) double))
 (defun (wilcoxon-p ds)
   (def nonzero (vec-filter (fun (d) (not (= d 0.0))) ds))
   (def n (vec-length nonzero))
@@ -353,7 +353,7 @@
 
 ;; 2·P(W ≤ w) for the signed-rank sum W of n untied differences: the number
 ;; of subsets of 1..n with each sum, by counting.
-(: wilcoxon-exact-p (-> int double double))
+(: (-> int double double))
 (defun (wilcoxon-exact-p n w)
   (def max-sum (/ (* n (+ n 1)) 2))
   (def counts (make-array (+ max-sum 1) #:fill 0.0))
@@ -378,7 +378,7 @@
 ;; correction and the variance corrected for ties. SciPy's `mannwhitneyu`
 ;; with `method="asymptotic"` gives the same. Benchmark runs have tens of
 ;; samples or more, where the approximation is good.
-(: mann-whitney-p (-> (Vec double) (Vec double) double))
+(: (-> (Vec double) (Vec double) double))
 (defun (mann-whitney-p xs ys)
   (def n1 (vec-length xs))
   (def n2 (vec-length ys))
@@ -406,7 +406,7 @@
 ;; Holm's step-down correction of `ps`, in their own order: the smallest is
 ;; multiplied by m, the next by m - 1, and so on, each at least the one
 ;; before it, none above 1.
-(: holm (-> (Vec double) (Vec double)))
+(: (-> (Vec double) (Vec double)))
 (defun (holm ps)
   (def m (vec-length ps))
   (def order (arg-sort (clr-vec->array ps)))

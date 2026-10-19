@@ -20,7 +20,7 @@
 (import (std prelude))
 (import (std simpletest))
 
-(: fetch (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (fetch x) (* x 2))
 
 ;; --- The case that was refused -----------------------------------------------
@@ -29,7 +29,7 @@
 ;; test too: called once, beta reduction would substitute it away and the yield
 ;; point would land in the bjoroutine's own body, where it was always legal. Two
 ;; calls are what make the local function real.
-(: outer (-> int int))
+(: (-> int int))
 (defbjo (outer n)
   (defun (helper y) (fetch y))
   (+ (helper n) (helper (+ n 1))))
@@ -41,7 +41,7 @@
 ;; function and called without an await — no state machine and no await per
 ;; call. A rule that painted every local function in a bjoroutine would have
 ;; been simpler to write and would have cost this.
-(: mixed (-> int int))
+(: (-> int int))
 (defbjo (mixed n)
   (defun (twice y) (* y 2))
   (defun (fetch-twice y) (twice (fetch y)))
@@ -53,7 +53,7 @@
 ;; `outer-most` does for calling `middle`. Each decision is made where the
 ;; binding is, and each is read back at the call — one effect cell per binding,
 ;; shared with every reference to it, so nothing walks back to repaint anything.
-(: chained (-> int int))
+(: (-> int int))
 (defbjo (chained n)
   (defun (inner y) (fetch y))
   (defun (middle y) (+ (inner y) 1))
@@ -70,7 +70,7 @@
 ;; shapes work, because they take four different routes to get here.
 ;;
 ;; Tail-recursive, so promoted to a `while`:
-(: countdown (-> int int))
+(: (-> int int))
 (defbjo (countdown n)
   (defun (go i acc)
     (if (<= i 0)
@@ -81,7 +81,7 @@
 ;; And so does a *mutually* recursive pair, as long as both calls are tails.
 ;; Two names, one `while`, and a yield point in either of them is fine — which
 ;; is the case a rule about recursion would have got wrong.
-(: parity (-> int int))
+(: (-> int int))
 (defbjo (parity n)
   (defun (evens i) (if (<= i 0) 0 (odds (- i 1))))
   (defun (odds i) (if (<= i 0) (fetch 21) (evens (- i 1))))
@@ -90,7 +90,7 @@
 ;; Not tail-recursive, so the group stays C# local functions — and those are
 ;; emitted `async` too. `go` is the fold anyone writes by hand, with the
 ;; recursive call inside a `+`.
-(: sum-fetched (-> int int))
+(: (-> int int))
 (defbjo (sum-fetched n)
   (defun (go i)
     (if (<= i 0)
@@ -100,7 +100,7 @@
 
 ;; The same, mutually recursive and not in tail position. Two names, one merged
 ;; C# method with a state discriminant, and entry wrappers that await it.
-(: alternating (-> int int))
+(: (-> int int))
 (defbjo (alternating n)
   (defun (evens i) (if (<= i 0) 0 (+ (fetch i) (odds (- i 1)))))
   (defun (odds i) (if (<= i 0) 0 (evens (- i 1))))
@@ -118,7 +118,7 @@
 ;; The case the restriction was actually costing. `read-line` is a `defbjouble`,
 ;; so this local function reaches a generated copy rather than a hand-written
 ;; bjoroutine — the colour has to travel through selection to get here.
-(: pair-up (-> InputPort string))
+(: (-> InputPort string))
 (defbjo (pair-up p)
   (defun (take-two)
     (string-append (read-line p) (read-line p)))
@@ -128,20 +128,20 @@
 ;;
 ;; Nothing here suspends, so nothing changes: an ordinary `defun` with an
 ;; ordinary local function, emitted exactly as before.
-(: plain (-> int int))
+(: (-> int int))
 (defun (plain n)
   (defun (add-one y) (+ y 1))
   (add-one (add-one n)))
 
 ;; --- Running one to a value ---------------------------------------------------
 
-(: run-int (-> (Promise int) int))
+(: (-> (Promise int) int))
 (defun (run-int p)
   (match (sync/blocking (promise-join p))
     ((Ok n) n)
     ((Err e) -1)))
 
-(: run-str (-> (Promise string) string))
+(: (-> (Promise string) string))
 (defun (run-str p)
   (match (sync/blocking (promise-join p))
     ((Ok s) s)

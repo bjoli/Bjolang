@@ -22,13 +22,13 @@
 (import (std orderedmap))
 (import (std simpletest))
 
-(: expect-bool (-> string bool bool void))
+(: (-> string bool bool void))
 (defun (expect-bool label actual wanted)
   (if (= actual wanted)
       (println (str "ok: " label))
       (println (str "FAILURE: " label))))
 
-(: expect-str (-> string string string void))
+(: (-> string string string void))
 (defun (expect-str label actual wanted)
   (if (= actual wanted)
       (println (str "ok: " label))
@@ -36,12 +36,12 @@
 
 ;; A loop clause is a body of expressions and a `def` is a declaration, so an
 ;; entry has to come apart somewhere a binding may be introduced.
-(: entry-value (-> (Tuple string int) int))
+(: (-> (Tuple string int) int))
 (defun (entry-value entry)
   (def (_ v) entry)
   v)
 
-(: entry-key (-> (Tuple string int) string))
+(: (-> (Tuple string int) string))
 (defun (entry-key entry)
   (def (k v) entry)
   k)
@@ -52,14 +52,14 @@
 
 ;; `#map()` says nothing about what it would hold, so its key and value types
 ;; have to come from the context. Here that is the signature.
-(: nothing (-> (Map string int)))
+(: (-> (Map string int)))
 (defun (nothing) #map())
 
 ;; ---------------------------------------------------------------------------
 ;; 1. The literal
 ;; ---------------------------------------------------------------------------
 
-(: test-literal (-> void))
+(: (-> void))
 (defun (test-literal)
   (def m #map(("a" 1) ("b" 2)))
   (expect-true "literal length" (= (map-length m) 2))
@@ -77,7 +77,7 @@
 ;; 2. The loop — Iterable, through Map.MapCursor
 ;; ---------------------------------------------------------------------------
 
-(: test-loop (-> void))
+(: (-> void))
 (defun (test-loop)
   (def m #map(("a" 1) ("b" 2) ("c" 3)))
 
@@ -116,7 +116,7 @@
 ;; 3. The comprehension — Collector (Mapping %k %v), through MapBuilder
 ;; ---------------------------------------------------------------------------
 
-(: test-comprehension (-> void))
+(: (-> void))
 (defun (test-comprehension)
   (def squares {mapping (Tuple a (* a a)) (:for a (range 1 5))})
   (expect-true "comprehension length" (= (map-length squares) 4))
@@ -138,24 +138,24 @@
 ;; constraints become dictionary parameters filled in where the key and value
 ;; types are known.
 
-(: describe (-> (Map %k %v) string) (where (->str %k) (->str %v)))
+(: (-> (Map %k %v) string) (where (->str %k) (->str %v)))
 (defun (describe m)
   (str "<" (int->string (map-length m)) ": " (map->str m) ">"))
 
 ;; The same map, reached through `Iterable` rather than through `Map`'s own
 ;; operations — so the dictionary has to project `%elem` to `(Tuple %k %v)`.
-(: count-via-iterable (-> (Map %k %v) int))
+(: (-> (Map %k %v) int))
 (defun (count-via-iterable m)
   (fold (fun (_ acc) (+ acc 1)) 0 m))
 
 ;; A generic function taking a Map and nothing else. Under `-nullable:enable`
 ;; this used to raise CS8714 for want of a `notnull` on the emitted type
 ;; parameter; `Map.Map` carries no such constraint now.
-(: key-count (-> (Map %k %v) int))
+(: (-> (Map %k %v) int))
 (defun (key-count m)
   (map-length m))
 
-(: test-generic (-> void))
+(: (-> void))
 (defun (test-generic)
   (def m #map(("a" 1) ("b" 2)))
   (def n #map((1 #t)))
@@ -188,7 +188,7 @@
 ;; 5. Printing
 ;; ---------------------------------------------------------------------------
 
-(: test-printing (-> void))
+(: (-> void))
 (defun (test-printing)
   ;; A single entry, so the trie's order cannot make this flaky.
   (expect-str "->str of a map" (->str #map(("a" 1))) "#map((a 1))")
@@ -209,7 +209,7 @@
 ;; The surface `map-*` did not have before
 ;; ---------------------------------------------------------------------------
 
-(: test-new-surface (-> void))
+(: (-> void))
 (defun (test-new-surface)
   (def m #map(("a" 1) ("b" 2) ("c" 3)))
 
@@ -262,11 +262,11 @@
 ;; ===========================================================================
 
 ;; Out of order on purpose, so that "in order" below is about the map.
-(: scores (-> (OrderedMap string int)))
+(: (-> (OrderedMap string int)))
 (defun (scores)
   (orderedmap-set (orderedmap-set (orderedmap-set (orderedmap-empty) "pear" 3) "apple" 1) "fig" 2))
 
-(: test-map (-> void))
+(: (-> void))
 (defun (test-map)
   (def m (scores))
   (expect "length" (orderedmap-length m) 3)
@@ -306,7 +306,7 @@
                #t)
   (expect "ordered: fold over a big map" (orderedmap-fold (fun (k v n) (+ n 1)) 0 big) 5000))
 
-(: test-merge (-> void))
+(: (-> void))
 (defun (test-merge)
   (def a (scores))
   (def b (orderedmap-set (orderedmap-set (orderedmap-empty) "fig" 200) "plum" 4))
@@ -319,7 +319,7 @@
   (expect "merge-with resolves a collision" (orderedmap-ref summed "fig") 202)
   (expect "and leaves the rest alone" (orderedmap-ref summed "apple") 1))
 
-(: test-order (-> void))
+(: (-> void))
 (defun (test-order)
   (def m (scores))
   (expect-str "a walk arrives sorted by key" (->str m) "#map((apple 1) (fig 2) (pear 3))")
@@ -357,7 +357,7 @@
   (expect "from" (count (orderedmap-from m "fig")) 2)
   (expect "until" (count (orderedmap-until m "fig")) 2))
 
-(: test-walking (-> void))
+(: (-> void))
 (defun (test-walking)
   (def m (scores))
   (expect "filter" (orderedmap-length (orderedmap-filter #(> &2 1) m)) 2)
@@ -378,7 +378,7 @@
   (orderedmap-for-each #(vecbuilder-add! b &2) m)
   (expect "for-each" (vec-fold + 0 (vecbuilder->vec b)) 6))
 
-(: test-traits (-> void))
+(: (-> void))
 (defun (test-traits)
   (def m (scores))
   (expect "ordered: Collection length" (length m) 3)
@@ -409,7 +409,7 @@
   (expect "orderedmap->map" (map-length (orderedmap->map m)) 3)
   (expect "map->orderedmap" (orderedmap-ref (map->orderedmap (orderedmap->map m)) "fig") 2))
 
-(: test-builder (-> void))
+(: (-> void))
 (defun (test-builder)
   (def b (orderedmapbuilder-empty))
   (orderedmapbuilder-add! b "b" 2)
@@ -429,7 +429,7 @@
   (orderedmapbuilder-add! d "plum" 4)
   (expect "orderedmap->orderedmapbuilder" (orderedmap-length (orderedmapbuilder->orderedmap d)) 4))
 
-(: test-transient (-> void))
+(: (-> void))
 (defun (test-transient)
   (def t (transientorderedmap-empty))
   (expect-bool "transient starts empty" (transientorderedmap-empty? t) #t)
@@ -468,7 +468,7 @@
   (expect "ordered: and the map it came from is untouched" (orderedmap-length (scores)) 3))
 
 ;; Int keys, to pin that the type arguments are solved per call site.
-(: test-int-keys (-> void))
+(: (-> void))
 (defun (test-int-keys)
   (def m (seq->orderedmap (list->seq (list (Tuple 3 "c") (Tuple 1 "a") (Tuple 2 "b")))))
   (expect "a map keyed by int" (orderedmap-length m) 3)

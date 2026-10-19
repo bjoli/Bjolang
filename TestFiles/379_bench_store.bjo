@@ -7,36 +7,36 @@
 
 ;; `n` samples around `centre`, spread evenly over ±0.5%, in an order that
 ;; is not sorted.
-(: around (-> double int (Vec double)))
+(: (-> double int (Vec double)))
 (defun (around centre n)
   {vecing (* centre (+ 1.0 (* 0.01 (- (/ (cast System.Double (% (* i 37) n)) (cast System.Double n)) 0.5))))
           (:for i (range 0 n))})
 
-(: case-of (-> string (List (Tuple string string)) (Vec double) SavedCase))
+(: (-> string (List (Tuple string string)) (Vec double) SavedCase))
 (defun (case-of name labels samples)
   (SavedCase (name name) (labels labels) (k 100L) (once #f) (bytes 24.0) (samples samples)))
 
-(: run-of (-> string (List SavedCase) SavedRun))
+(: (-> string (List SavedCase) SavedRun))
 (defun (run-of machine cases)
   (SavedRun (saved "2026-10-16T12:00:00Z") (machine machine)
             (header (list (Tuple "build" "Release") (Tuple "dotnet" ".NET 10.0.4") (Tuple "cpu" "Some CPU")))
             (cases cases)))
 
-(: saved-cases (-> SavedRun (List SavedCase)))
+(: (-> SavedRun (List SavedCase)))
 (defun (saved-cases r) (record-ref r cases))
 
-(: verdict-name (-> Verdict string))
+(: (-> Verdict string))
 (defun (verdict-name v)
   (match v (Faster "faster") (Slower "slower") (SmallChange "small") (NoChange "none")))
 
-(: comparison-verdicts (-> CompareResult (List string)))
+(: (-> CompareResult (List string)))
 (defun (comparison-verdicts r)
   (list-map (fun (c) (verdict-name (comparison-verdict c))) (record-ref r comparisons)))
 
-(: comparison-verdict (-> Comparison Verdict))
+(: (-> Comparison Verdict))
 (defun (comparison-verdict c) (record-ref c verdict))
 
-(: comparison-change (-> Comparison double))
+(: (-> Comparison double))
 (defun (comparison-change c) (record-ref c change))
 
 (def before
@@ -108,10 +108,10 @@
         (:do (check (interval-holds? c))
              (check (corrected-not-lower? c)))))
 
-(: interval-holds? (-> Comparison bool))
+(: (-> Comparison bool))
 (defun (interval-holds? c) (and (<= (record-ref c lo) (record-ref c change)) (<= (record-ref c change) (record-ref c hi))))
 
-(: corrected-not-lower? (-> Comparison bool))
+(: (-> Comparison bool))
 (defun (corrected-not-lower? c) (>= (record-ref c p) (record-ref c p-raw)))
 
 (deftest "a lower threshold makes the small change a verdict"
@@ -130,16 +130,16 @@
 
 ;; --- A/B in rounds -----------------------------------------------------------
 
-(: scaled (-> (Vec double) double (Vec double)))
+(: (-> (Vec double) double (Vec double)))
 (defun (scaled xs by) (vec-map (fun (x) (* x by)) xs))
 
-(: paired (-> string (Vec (Vec double)) (Vec (Vec double)) PairedCase))
+(: (-> string (Vec (Vec double)) (Vec (Vec double)) PairedCase))
 (defun (paired name a b) (PairedCase (name name) (labels (list)) (a a) (b b)))
 
-(: comparison-spread (-> Comparison double))
+(: (-> Comparison double))
 (defun (comparison-spread c) (record-ref c spread))
 
-(: comparison-p (-> Comparison double))
+(: (-> Comparison double))
 (defun (comparison-p c) (record-ref c p))
 
 (deftest "one process pair: the rounds are the pairs"

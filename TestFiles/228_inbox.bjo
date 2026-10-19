@@ -48,14 +48,14 @@
 
 ;; One receive, or nothing within `ms`. Every wait in this file is bounded, so
 ;; that a regression is a failure line rather than a suite that never finishes.
-(: recv-within (-bjo-> (Inbox %a) int (Option %a)))
+(: (-bjo-> (Inbox %a) int (Option %a)))
 (defbjo (recv-within ib ms)
   (sync (choose (wrap (inbox-recv ib) (fun (x) (Some x)))
                 (wrap (timeout ms) (fun (u) None)))))
 
 ;; Receives until the inbox says it has ended, and answers what arrived, in
 ;; order, and how it ended. This is the receive loop from the Readme.
-(: drain (-bjo-> (Inbox int) (Tuple string (Option Exception))))
+(: (-bjo-> (Inbox int) (Tuple string (Option Exception))))
 (defbjo (drain ib)
   (let go ((acc ""))
     (match (sync (choose (wrap (inbox-recv ib) (fun (x) (Ok x)))
@@ -66,7 +66,7 @@
 ;; How a task ended, waited for without blocking a thread. A fiber cannot
 ;; `await` a task it merely holds — an `#:async` import awaits the *call* — so
 ;; this watches it settle, which is all a test needs.
-(: settled (-bjo-> (Task Unit) int string))
+(: (-bjo-> (Task Unit) int string))
 (defbjo (settled t ms)
   (let go ((left ms))
     (cond
@@ -76,7 +76,7 @@
       ((<= left 0) "still pending")
       (else (begin (sync (timeout 5)) (go (- left 5)))))))
 
-(: ended (-> (Option Exception) string))
+(: (-> (Option Exception) string))
 (defun (ended e)
   (match e
     (None "none")
@@ -91,20 +91,20 @@
 ;; several pool threads at once, and every one of them has to come out exactly
 ;; once.
 
-(: post-off-fiber (-bjo-> (Inbox int) int void))
+(: (-bjo-> (Inbox int) int void))
 (defbjo (post-off-fiber ib x)
   (off-task (fun () (ignore (inbox-post! ib x)) done)))
 
 ;; Sends 1..n, each from a pool thread, waiting for each to be accepted before
 ;; making the next. On a full inbox that wait is the backpressure.
-(: send-all (-bjo-> (Inbox int) int void))
+(: (-bjo-> (Inbox int) int void))
 (defbjo (send-all ib n)
   (loop (:for i (range 1 (+ n 1)))
         (:do (off-task (fun () (cast Task (inbox-send ib i)))))))
 
 ;; Receives `n` items slowly, and answers their sum and whether they arrived in
 ;; the order they were sent.
-(: consume-in-order (-bjo-> (Inbox int) int (Tuple int bool)))
+(: (-bjo-> (Inbox int) int (Tuple int bool)))
 (defbjo (consume-in-order ib n)
   (let go ((left n) (sum 0) (ordered #t) (last 0))
     (if (= left 0)
@@ -117,7 +117,7 @@
 
 ;; Receives `n` items, timing out constantly so that the withdrawal path is
 ;; taken over and over. Answers their sum.
-(: gather (-bjo-> (Inbox int) int int))
+(: (-bjo-> (Inbox int) int int))
 (defbjo (gather ib n)
   (let go ((left n) (sum 0))
     (if (= left 0)

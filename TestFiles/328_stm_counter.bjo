@@ -9,7 +9,7 @@
 (import (std stm counter))
 
 ;; Adds 1 to both counters, in one transaction each time.
-(: add-both (-bjo-> (TCounter long) (TCounter long) int (Loc int) void))
+(: (-bjo-> (TCounter long) (TCounter long) int (Loc int) void))
 (defbjo (add-both a b n done)
   (loop (:for i (range 0 n))
         (:do (ignore (try-atomically (fun (tx)
@@ -17,7 +17,7 @@
                                        (tcounter-add! tx b 1L))))))
   (ignore (atomically (fun (tx) (tx-update! tx done #(+ & 1))))))
 
-(: compare-sums (-bjo-> (TCounter long) (TCounter long) (Loc int) (Loc int) void))
+(: (-bjo-> (TCounter long) (TCounter long) (Loc int) (Loc int) void))
 (defbjo (compare-sums a b done bad)
   (let lp ()
     (when (< (loc-ref done) 16)
@@ -25,7 +25,7 @@
         (ignore (atomically (fun (tx) (tx-update! tx bad #(+ & 1))))))
       (lp))))
 
-(: wait-for-three (-bjo-> (TCounter int) (Chan string) void))
+(: (-bjo-> (TCounter int) (Chan string) void))
 (defbjo (wait-for-three c out)
   (chan-put out (atomically (fun (tx) (if (>= (tcounter-ref tx c) 3) "three" (tx-retry tx))))))
 

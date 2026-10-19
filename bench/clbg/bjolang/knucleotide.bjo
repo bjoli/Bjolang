@@ -11,7 +11,7 @@
 
 ;; The sequence after the line that starts with ">THREE", as the codes
 ;; 0 to 3 for A, C, G and T.
-(: read-sequence (-> InputPort (Array byte)))
+(: (-> InputPort (Array byte)))
 (defun (read-sequence in)
   (let skip ()
     (match (read-line/opt in)
@@ -30,7 +30,7 @@
         (:do (array-set! bytes i (code (array-ref bytes i)))))
   bytes)
 
-(: code (-> byte byte))
+(: (-> byte byte))
 (defun (code b)
   (match b
     (97uy 0uy) (65uy 0uy)
@@ -39,7 +39,7 @@
     (_ 3uy)))
 
 ;; Each k-mer is a long, two bits per nucleotide, the first one highest.
-(: count-kmers (-> (Array byte) int (MutableMap long int)))
+(: (-> (Array byte) int (MutableMap long int)))
 (defun (count-kmers sq k)
   (def counts (mutablemap))
   (def mask (- (shift-left 1L (* 2 k)) 1L))
@@ -52,7 +52,7 @@
       (go (+ i 1) key)))
   counts)
 
-(: key->string (-> long int string))
+(: (-> long int string))
 (defun (key->string key k)
   (def sb (stringbuilder-empty))
   (loop (:for i (down-from (- k 1) #:to 0))
@@ -61,14 +61,14 @@
                                    (0L #\A) (1L #\C) (2L #\G) (_ #\T)))))
   (stringbuilder->string sb))
 
-(: string->key (-> string long))
+(: (-> string long))
 (defun (string->key s)
   (string-fold (fun (c key)
                  (bitwise-ior (shift-left key 2)
                              (match c (#\A 0L) (#\C 1L) (#\G 2L) (_ 3L))))
                0L s))
 
-(: write-frequencies (-> (Array byte) int void))
+(: (-> (Array byte) int void))
 (defun (write-frequencies sq k)
   (def counts (count-kmers sq k))
   (def total (cast System.Double (- (+ (array-length sq) 1) k)))
@@ -80,13 +80,13 @@
                                                            #:precision 3)]))))
   (displayln ""))
 
-(: write-count (-> (Array byte) string void))
+(: (-> (Array byte) string void))
 (defun (write-count sq name)
   (def k (string-length name))
   (def counts (count-kmers sq k))
   (displayln #"${(mutablemap-ref-or counts (string->key name) 0)}\t${name}"))
 
-(: run (-> (Vec string) void))
+(: (-> (Vec string) void))
 (defun (run args)
   (def sq (read-sequence (parameter-ref current-input-port)))
   (write-frequencies sq 1)

@@ -77,7 +77,7 @@
 ;; Branches
 ;; ---------------------------------------------------------------------------
 
-(: empty-branch (-> (TMapBranch %k %v)))
+(: (-> (TMapBranch %k %v)))
 (defun (empty-branch) (TMapBranch (bitmap 0) (slots (vec-empty))))
 
 ;; The hash the map uses: `eq-hash` with every bit spread over all bits, by
@@ -86,36 +86,36 @@
 ;; low bits. Without the mix, fibers that add such keys at the same time would
 ;; write the same branches. The mix is a bijection, so
 ;; keys with equal hashes still share a bucket.
-(: mix (-> int int))
+(: (-> int int))
 (defun (mix h0)
   (def h1 (* (bitwise-xor h0 (shift-right-logical h0 16)) -2048144789))
   (def h2 (* (bitwise-xor h1 (shift-right-logical h1 13)) -1028477387))
   (bitwise-xor h2 (shift-right-logical h2 16)))
 
 ;; The slot index of hash `h` at `level`: 0 to 31.
-(: index-at (-> int int int))
+(: (-> int int int))
 (defun (index-at h level)
   (bitwise-and (shift-right-logical h (* 5 level)) 31))
 
 ;; Where the slot for `bit` is in the vec: the number of set bits below it.
-(: position (-> int int int))
+(: (-> int int int))
 (defun (position bitmap bit)
   (popcount (bitwise-and bitmap (- bit 1))))
 
-(: slot-hash (-> (TMapSlot %k %v) int))
+(: (-> (TMapSlot %k %v) int))
 (defun (slot-hash slot)
   (match slot
     ((Leaf h _ _) h)
     ((Bucket h _) h)
     ((Child _) 0)))
 
-(: two-slots (-> (TMapSlot %k %v) (TMapSlot %k %v) (Vec (TMapSlot %k %v))))
+(: (-> (TMapSlot %k %v) (TMapSlot %k %v) (Vec (TMapSlot %k %v))))
 (defun (two-slots a b)
   (vec-add (vec-add (vec-empty) a) b))
 
 ;; A branch at `level` that holds `a` and `b`, whose hashes differ. While the
 ;; two hashes select the same slot, each level gets a branch of one slot.
-(: split (-> int (TMapSlot %k %v) (TMapSlot %k %v) (TMapBranch %k %v)))
+(: (-> int (TMapSlot %k %v) (TMapSlot %k %v) (TMapBranch %k %v)))
 (defun (split level a b)
   (def ia (index-at (slot-hash a) level))
   (def ib (index-at (slot-hash b) level))
@@ -129,13 +129,13 @@
 ;; Buckets
 ;; ---------------------------------------------------------------------------
 
-(: bucket-find (-> %k (List (Tuple %k %v)) (Option %v)) (where (Eq %k)))
+(: (-> %k (List (Tuple %k %v)) (Option %v)) (where (Eq %k)))
 (defun (bucket-find k entries)
   (match entries
     (Nil None)
     ((Cons (Tuple k2 v) rest) (if (= k k2) (Some v) (bucket-find k rest)))))
 
-(: bucket-without (-> %k (List (Tuple %k %v)) (List (Tuple %k %v))) (where (Eq %k)))
+(: (-> %k (List (Tuple %k %v)) (List (Tuple %k %v))) (where (Eq %k)))
 (defun (bucket-without k entries)
   (match entries
     (Nil Nil)
@@ -146,7 +146,7 @@
 ;; Lookup and change
 ;; ---------------------------------------------------------------------------
 
-(: find-in (-> Tx (Loc (TMapBranch %k %v)) int %k int (Option %v)) (where (Eq %k)))
+(: (-> Tx (Loc (TMapBranch %k %v)) int %k int (Option %v)) (where (Eq %k)))
 (defun (find-in tx loc h k level)
   (def b (tx-ref tx loc))
   (def bitmap (struct-ref b bitmap))
@@ -159,7 +159,7 @@
         ((Child sub) (find-in tx sub h k (+ level 1))))))
 
 ;; What `f` does to a slot that is not a branch, at `level`.
-(: change-slot (-> (TMapSlot %k %v) int %k (-> (Option %v) (Option %v)) int (TMapChange %k %v))
+(: (-> (TMapSlot %k %v) int %k (-> (Option %v) (Option %v)) int (TMapChange %k %v))
    (where (Eq %k)))
 (defun (change-slot slot h k f level)
   (match slot
@@ -196,7 +196,7 @@
 
 ;; Applies `f` to the entry for `k` in the branch at `loc`. Returns the change
 ;; of the size: -1, 0 or 1.
-(: change-in (-> Tx (Loc (TMapBranch %k %v)) int %k (-> (Option %v) (Option %v)) int int)
+(: (-> Tx (Loc (TMapBranch %k %v)) int %k (-> (Option %v) (Option %v)) int int)
    (where (Eq %k)))
 (defun (change-in tx loc h k f level)
   (def b (tx-ref tx loc))
@@ -227,7 +227,7 @@
             (tx-set! tx loc (TMapBranch (bitmap (bitwise-xor bitmap bit)) (slots (vec-remove-at slots pos))))
             -1))))))
 
-(: fold-in (-> Tx (Loc (TMapBranch %k %v)) (-> %k %v %s %s) %s %s))
+(: (-> Tx (Loc (TMapBranch %k %v)) (-> %k %v %s %s) %s %s))
 (defun (fold-in tx loc f acc)
   (loop (:for slot (in-vec (struct-ref (tx-ref tx loc) slots)))
         (:acc out (folding acc
@@ -242,68 +242,68 @@
 ;; The map
 ;; ---------------------------------------------------------------------------
 
-(: make-tmap (-> (TMap %k %v)))
+(: (-> (TMap %k %v)))
 (defun (make-tmap)
   (TMap (root (make-loc (empty-branch)))
         (count (make-tcounter 0))))
 
-(: tmap-try-ref (-> Tx (TMap %k %v) %k (Option %v)) (where (Eq %k)))
+(: (-> Tx (TMap %k %v) %k (Option %v)) (where (Eq %k)))
 (defun (tmap-try-ref tx m k)
   (find-in tx (record-ref m root) (mix (eq-hash k)) k 0))
 
 ;; Not constrained, so that it is not specialised in the importer, where the
 ;; class `KeyNotFound` is not known.
-(: key-not-found (-> %v))
+(: (-> %v))
 (defun (key-not-found)
   (raise (cast Exception (KeyNotFound. "tmap-ref: the key is not in the map"))))
 
-(: tmap-ref (-> Tx (TMap %k %v) %k %v) (where (Eq %k)))
+(: (-> Tx (TMap %k %v) %k %v) (where (Eq %k)))
 (defun (tmap-ref tx m k)
   (match (tmap-try-ref tx m k)
     ((Some v) v)
     (None (key-not-found))))
 
-(: tmap-ref-or (-> Tx (TMap %k %v) %k %v %v) (where (Eq %k)))
+(: (-> Tx (TMap %k %v) %k %v %v) (where (Eq %k)))
 (defun (tmap-ref-or tx m k default)
   (match (tmap-try-ref tx m k)
     ((Some v) v)
     (None default)))
 
-(: tmap-contains? (-> Tx (TMap %k %v) %k bool) (where (Eq %k)))
+(: (-> Tx (TMap %k %v) %k bool) (where (Eq %k)))
 (defun (tmap-contains? tx m k)
   (match (tmap-try-ref tx m k)
     ((Some _) #t)
     (None #f)))
 
-(: tmap-update! (-> Tx (TMap %k %v) %k (-> (Option %v) (Option %v)) void) (where (Eq %k)))
+(: (-> Tx (TMap %k %v) %k (-> (Option %v) (Option %v)) void) (where (Eq %k)))
 (defun (tmap-update! tx m k f)
   (def h (mix (eq-hash k)))
   (def d (change-in tx (record-ref m root) h k f 0))
   (when (not (= d 0))
     (tcounter-add! tx (record-ref m count) d)))
 
-(: tmap-set! (-> Tx (TMap %k %v) %k %v void) (where (Eq %k)))
+(: (-> Tx (TMap %k %v) %k %v void) (where (Eq %k)))
 (defun (tmap-set! tx m k v)
   (tmap-update! tx m k (fun (_) (Some v))))
 
-(: tmap-remove! (-> Tx (TMap %k %v) %k void) (where (Eq %k)))
+(: (-> Tx (TMap %k %v) %k void) (where (Eq %k)))
 (defun (tmap-remove! tx m k)
   (tmap-update! tx m k (fun (_) None)))
 
-(: tmap-length (-> Tx (TMap %k %v) int))
+(: (-> Tx (TMap %k %v) int))
 (defun (tmap-length tx m)
   (tcounter-ref tx (record-ref m count)))
 
 ;; Reads only the root: a branch that becomes empty is removed, so the root is
 ;; empty when the map is.
-(: tmap-empty? (-> Tx (TMap %k %v) bool))
+(: (-> Tx (TMap %k %v) bool))
 (defun (tmap-empty? tx m)
   (= 0 (struct-ref (tx-ref tx (record-ref m root)) bitmap)))
 
-(: tmap-fold (-> Tx (-> %k %v %s %s) %s (TMap %k %v) %s))
+(: (-> Tx (-> %k %v %s %s) %s (TMap %k %v) %s))
 (defun (tmap-fold tx f init m)
   (fold-in tx (record-ref m root) f init))
 
-(: tmap->list (-> Tx (TMap %k %v) (List (Tuple %k %v))))
+(: (-> Tx (TMap %k %v) (List (Tuple %k %v))))
 (defun (tmap->list tx m)
   (tmap-fold tx (fun (k v acc) (Cons (Tuple k v) acc)) Nil m))

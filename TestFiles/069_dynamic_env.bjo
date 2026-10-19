@@ -18,10 +18,10 @@
 
 ;; A parameter of a user's own. Module-level, and legal there because
 ;; `(Param int)` is closed — the restriction is on *open* types.
-(: indent (Param int))
+(: (Param int))
 (def indent (make-parameter 0))
 
-(: verbose? (Param bool))
+(: (Param bool))
 (def verbose? (make-parameter #f))
 
 ;; `make-cold-parameter` makes a parameter that gives up its claim on a cheap
@@ -33,30 +33,30 @@
 ;; Two of them, because cold parameters share a place in the environment that
 ;; hot ones do not: one bound alone and two bound at once take different paths
 ;; through it, and both have to answer the same.
-(: cold-a (Param int))
+(: (Param int))
 (def cold-a (make-cold-parameter 10))
 
-(: cold-b (Param int))
+(: (Param int))
 (def cold-b (make-cold-parameter 20))
 
 ;; Parameters past the point where the cheap places run out. `make-parameter`
 ;; spends those and then keeps going, so a program that makes a lot of them gets
 ;; slower reads rather than a failure — and, being the same allocator
 ;; `make-cold-parameter` draws on, it must land the same way.
-(: nth-parameter (-> int (Param int)))
+(: (-> int (Param int)))
 (defun (nth-parameter n)
   (let loop ((i 0) (p (make-parameter -1)))
     (if (>= i n)
         p
         (loop (+ i 1) (make-parameter i)))))
 
-(: spilled (Param int))
+(: (Param int))
 (def spilled (nth-parameter 40))
 
 ;; The point of a dynamic environment: `describe` never mentions the parameter
 ;; in its signature, and every caller between it and the `parameterize` is
 ;; unchanged. Passing this explicitly is what dynamic binding buys you out of.
-(: describe (-> string))
+(: (-> string))
 (defun (describe)
   (string-append (int->string (parameter-ref indent))
                  (if (parameter-ref verbose?) "/loud" "/quiet")))
@@ -64,7 +64,7 @@
 ;; A named let in tail position *inside* the body, which lowers to a jump inside
 ;; a try/finally. Worth pinning: `parameterize` desugars to the same try/finally
 ;; `with-open` does, so whatever this does, both do.
-(: sum-to (-> int int))
+(: (-> int int))
 (defun (sum-to n)
   (parameterize ((indent 1))
     (let loop ((i 0) (acc 0))
@@ -229,6 +229,6 @@
   0)
 
 ;; Takes the parameter itself, not its value.
-(: read-twice (-> (Param int) int))
+(: (-> (Param int) int))
 (defun (read-twice p)
   (+ (parameter-ref p) (parameter-ref p)))

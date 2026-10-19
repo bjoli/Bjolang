@@ -11,7 +11,7 @@
 (import (std simpletest))
 
 ;; A summary to assert on, since the module reads and does not write.
-(: shape (-> Json string))
+(: (-> Json string))
 (defun (shape j)
   (match j
     (JsonNull "null")
@@ -23,26 +23,26 @@
     ((JsonObj m) (str "{" (string-join (entries m) ",") "}"))))
 
 ;; Sorted, so the assertion does not depend on a hash order.
-(: entries (-> (Map string Json) (Vec string)))
+(: (-> (Map string Json) (Vec string)))
 (defun (entries m)
   (let ((pairs (loop (:for (Tuple k v) m)
                      (:acc out (listing (str "\"" k "\":" (shape v)))))))
     (loop (:for e (list-sort pairs)) (:acc v (vecing e)))))
 
-(: ok (-> string string))
+(: (-> string string))
 (defun (ok text)
   (match (parse-json text) ((Ok j) (shape j)) ((Err e) (str "REFUSED " e))))
 
-(: bad (-> string string))
+(: (-> string string))
 (defun (bad text)
   (match (parse-json text) ((Ok j) (str "ACCEPTED " (shape j))) ((Err e) e)))
 
-(: accepted? (-> string bool))
+(: (-> string bool))
 (defun (accepted? text)
   (match (parse-json text) ((Ok _) #t) ((Err _) #f)))
 
 ;; Bytes no string can hold, read off a port.
-(: bytes-json (-> (Array byte) string))
+(: (-> (Array byte) string))
 (defun (bytes-json bytes)
   (match (byte-pipe)
     ((Tuple in out)
@@ -52,7 +52,7 @@
 
 ;; A document that arrives in two reads, the second after the reader has
 ;; started.
-(: split-json (-> string string string))
+(: (-> string string string))
 (defun (split-json first second)
   (match (byte-pipe)
     ((Tuple in out)
@@ -63,18 +63,18 @@
      (close-output-port out)
      (run-str reading))))
 
-(: emoji string)
+(: string)
 (def emoji (list->string (list (integer->char 128512))))
 
 ;; Deeper than anyone types.
-(: nest (-> int string))
+(: (-> int string))
 (defun (nest n)
   (let ((sb (stringbuilder-empty)))
     (loop (:for i (range 0 n)) (:do (stringbuilder-add! sb #\[)))
     (loop (:for i (range 0 n)) (:do (stringbuilder-add! sb #\])))
     (stringbuilder->string sb)))
 
-(: nest-objects (-> int string))
+(: (-> int string))
 (defun (nest-objects n)
   (let ((sb (stringbuilder-empty)))
     (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb "{\"a\":")))
@@ -83,11 +83,11 @@
     (stringbuilder->string sb)))
 
 ;; Nothing here says a colour, and the reader is the same source either way.
-(: read-in-a-fiber (-bjo-> InputPort string))
+(: (-bjo-> InputPort string))
 (defbjo (read-in-a-fiber p)
   (match (read-json p) ((Ok j) (shape j)) ((Err e) e)))
 
-(: run-str (-> (Promise string) string))
+(: (-> (Promise string) string))
 (defun (run-str p)
   (match (sync/blocking (promise-join p)) ((Ok s) s) ((Err e) "raised")))
 

@@ -53,7 +53,7 @@
 (def/grammar Disp
   (:or (: DStr string) (: DInt int) (: DDouble double) (: DChar char) (: DBool bool)))
 
-(: disp->string (-> Disp string))
+(: (-> Disp string))
 (defun (disp->string d)
   (match d
     ((DStr s) s)
@@ -63,7 +63,7 @@
     ((DBool b) (if b "#t" "#f"))))
 
 ;; Formats to string.
-(: str* (-> (Vec Disp) string))
+(: (-> (Vec Disp) string))
 (defun (str* ds)
   (let ((b (stringbuilder-empty)))
     (ignore
@@ -72,7 +72,7 @@
            ds))
     (stringbuilder->string b)))
 
-(: println* (-> (Vec Disp) void))
+(: (-> (Vec Disp) void))
 (defun (println* ds) (displayln (str* ds)))
 
 
@@ -88,11 +88,11 @@
   (:or (: BStr string) (: BInt int) (: BChar char) (: BRun ,(-> Sink int int))))
 
 ;; Computes column position.
-(: column-after (-> int string int))
+(: (-> int string int))
 (defun (column-after col s)
   (string-fold (fun (ch c) (if (char=? ch #\newline) 0 (+ c 1))) col s))
 
-(: run-block (-> Sink int Block int))
+(: (-> Sink int Block int))
 (defun (run-block out col b)
   (match b
     ((BStr s) (let () (out s) (column-after col s)))
@@ -100,7 +100,7 @@
     ((BChar c) (run-block out col (BStr (char->string c))))
     ((BRun f) (f out col))))
 
-(: run-blocks (-> Sink int (Vec Block) int))
+(: (-> Sink int (Vec Block) int))
 (defun (run-blocks out col bs)
   (fold (fun (b c) (run-block out c b)) col bs))
 
@@ -112,7 +112,7 @@
 (defun (render port bs)
   (ignore (run-blocks #(write-string port &1) 0 bs)))
 
-(: render->string (-> (Vec Block) string))
+(: (-> (Vec Block) string))
 (defun (render->string bs)
   (let ((b (stringbuilder-empty)))
     (ignore (run-blocks #(stringbuilder-add-string! b &1) 0 bs))
@@ -127,63 +127,63 @@
 
 
 ;; --- Settings --------------------------------------------------------------
-(: with-fmt (-> (Param %a) %a (Vec Block) Block))
+(: (-> (Param %a) %a (Vec Block) Block))
 (defun (with-fmt p v bs)
   (BRun (fun (out col)
           (parameterize ((p v))
             (run-blocks out col bs)))))
 
 ;; What padding is made of.
-(: current-pad (Param char))
+(: (Param char))
 (def current-pad (make-parameter #\space))
 
-(: with-pad (-> char (Vec Block) Block))
+(: (-> char (Vec Block) Block))
 (defun (with-pad c bs) (with-fmt current-pad c bs))
 
 ;; The right margin: what `wrapped`, `justified` and `columnar` fill up to.
-(: current-width (Param int))
+(: (Param int))
 (def current-width (make-parameter 78))
 
 ;; Put in place of whatever a `trimmed` cut off. Empty means cut silently.
-(: current-ellipsis (Param string))
+(: (Param string))
 (def current-ellipsis (make-cold-parameter ""))
 
 ;; Calculates string width in columns.
-(: current-string-width (Param (-> string int)))
+(: (Param (-> string int)))
 (def current-string-width (make-cold-parameter #(string-count &1)))
 
 ;; --- Number settings -------------------------------------------------------
 
 ;; Digits after the decimal separator. Negative means as many as the number
 ;; needs, which is what `double->string` would have given.
-(: current-precision (Param int))
+(: (Param int))
 (def current-precision (make-cold-parameter -1))
 
 ;; Digits per group in the integer part. Zero means no grouping.
-(: current-comma (Param int))
+(: (Param int))
 (def current-comma (make-cold-parameter 0))
 
-(: current-comma-sep (Param char))
+(: (Param char))
 (def current-comma-sep (make-cold-parameter #\,))
 
-(: current-decimal-sep (Param char))
+(: (Param char))
 (def current-decimal-sep (make-cold-parameter #\.))
 
 ;; A leading `+` on a number that has no sign of its own.
-(: current-signed (Param bool))
+(: (Param bool))
 (def current-signed (make-cold-parameter #f))
 
 
 ;; --- Measuring -------------------------------------------------------------
 
 ;; Returns width of string.
-(: width-of (-> string int))
+(: (-> string int))
 (defun (width-of s)
   (let ((measure (parameter-ref current-string-width)))
     (measure s)))
 
 ;; Generates padding of specified width.
-(: padding (-> int string))
+(: (-> int string))
 (defun (padding w)
   (def* (c (parameter-ref current-pad))
         (cw (width-of (char->string c)))
@@ -196,7 +196,7 @@
   (stringbuilder->string b))
 
 ;; Gets prefix/suffix fitting w columns.
-(: prefix-of-width (-> string int string))
+(: (-> string int string))
 (defun (prefix-of-width s w)
   (let loop ((c (string-cursor-start s)) (room w))
     (if (string-cursor-end? s c)
@@ -206,7 +206,7 @@
               (loop (string-cursor-next s c) (- room cw))
               (substring s (string-cursor-start s) c))))))
 
-(: suffix-of-width (-> string int string))
+(: (-> string int string))
 (defun (suffix-of-width s w)
   (let loop ((c (string-cursor-end s)) (room w))
     (cond
@@ -224,28 +224,28 @@
     ;;               (loop p (- room cw))
     ;;               (substring s c (string-cursor-end s)))))))
 
-(: pad/left (-> int string string))
+(: (-> int string string))
 (defun (pad/left w s) (string-append (padding (- w (width-of s))) s))
 
-(: pad/right (-> int string string))
+(: (-> int string string))
 (defun (pad/right w s) (string-append s (padding (- w (width-of s)))))
 
 ;; Centred, with the odd column on the right — SRFI 166's rule.
-(: pad/both (-> int string string))
+(: (-> int string string))
 (defun (pad/both w s)
   (let* ((missing (- w (width-of s)))
          (left (/ missing 2)))
     (string-append (padding left) (string-append s (padding (- missing left))))))
 
 ;; Trims string to w columns.
-(: trim/left (-> int string string))
+(: (-> int string string))
 (defun (trim/left w s)
   (if (<= (width-of s) w)
       s
       (let ((e (prefix-of-width (parameter-ref current-ellipsis) w)))
         (string-append e (suffix-of-width s (- w (width-of e)))))))
 
-(: trim/right (-> int string string))
+(: (-> int string string))
 (defun (trim/right w s)
   (if (<= (width-of s) w)
       s
@@ -253,7 +253,7 @@
         (string-append (prefix-of-width s (- w (width-of e))) e))))
 
 ;; The middle survives, and both ends say so.
-(: trim/both (-> int string string))
+(: (-> int string string))
 (defun (trim/both w s)
   (if (<= (width-of s) w)
       s
@@ -267,33 +267,33 @@
 ;; --- The block algebra -----------------------------------------------------
 
 ;; Nothing, written. What a conditional arm answers when it has nothing to say.
-(: nothing Block)
+(: Block)
 (def nothing (BRun (fun (out col) col)))
 
 ;; Combines multiple blocks.
-(: each (-> (Vec Block) Block))
+(: (-> (Vec Block) Block))
 (defun (each bs)
   (BRun (fun (out col) (run-blocks out col bs))))
 
 ;; Renders blocks and applies f.
-(: captured (-> (-> string Block) (Vec Block) Block))
+(: (-> (-> string Block) (Vec Block) Block))
 (defun (captured f bs)
   (BRun (fun (out col) (run-block out col (f (render->string bs))))))
 
 
 ;; --- Vertical and horizontal space -----------------------------------------
 
-(: nl Block)
+(: Block)
 (def nl (BStr "\n"))
 
 ;; Outputs newline if not at start of line.
-(: fl Block)
+(: Block)
 (def fl
   (BRun (fun (out col)
           (if (= col 0) col (run-block out col nl)))))
 
 ;; Pads to specified column.
-(: space-to (-> int Block))
+(: (-> int Block))
 (defun (space-to goal)
   (BRun (fun (out col)
           (if (>= col goal)
@@ -301,7 +301,7 @@
               (run-block out col (BStr (padding (- goal col))))))))
 
 ;; Moves to next tab stop.
-(: tab-to (-> (#:width int) Block))
+(: (-> (#:width int) Block))
 (defun (tab-to #:width 8)
   (BRun (fun (out col)
           (run-block out col (BStr (padding (- (* width (+ 1 (/ col width)))
@@ -310,33 +310,33 @@
 
 ;; --- Fitting to a width ----------------------------------------------------
 
-(: padded/left (-> int (Vec Block) Block))
+(: (-> int (Vec Block) Block))
 (defun (padded/left w bs) (captured (fun (s) (BStr (pad/left w s))) bs))
 
-(: padded/right (-> int (Vec Block) Block))
+(: (-> int (Vec Block) Block))
 (defun (padded/right w bs) (captured (fun (s) (BStr (pad/right w s))) bs))
 
-(: padded/both (-> int (Vec Block) Block))
+(: (-> int (Vec Block) Block))
 (defun (padded/both w bs) (captured (fun (s) (BStr (pad/both w s))) bs))
 
-(: trimmed/left (-> int (Vec Block) Block))
+(: (-> int (Vec Block) Block))
 (defun (trimmed/left w bs) (captured (fun (s) (BStr (trim/left w s))) bs))
 
-(: trimmed/right (-> int (Vec Block) Block))
+(: (-> int (Vec Block) Block))
 (defun (trimmed/right w bs) (captured (fun (s) (BStr (trim/right w s))) bs))
 
-(: trimmed/both (-> int (Vec Block) Block))
+(: (-> int (Vec Block) Block))
 (defun (trimmed/both w bs) (captured (fun (s) (BStr (trim/both w s))) bs))
 
-(: fitted/left (-> int (Vec Block) Block))
+(: (-> int (Vec Block) Block))
 (defun (fitted/left w bs)
   (captured (fun (s) (BStr (pad/left w (trim/left w s)))) bs))
 
-(: fitted/right (-> int (Vec Block) Block))
+(: (-> int (Vec Block) Block))
 (defun (fitted/right w bs)
   (captured (fun (s) (BStr (pad/right w (trim/right w s)))) bs))
 
-(: fitted/both (-> int (Vec Block) Block))
+(: (-> int (Vec Block) Block))
 (defun (fitted/both w bs)
   (captured (fun (s) (BStr (pad/both w (trim/both w s)))) bs))
 
@@ -344,11 +344,11 @@
 ;; --- Sequences -------------------------------------------------------------
 
 ;; Every element, with `sep` between them.
-(: joined (-> (-> %a Block) (List %a) (Vec Block) Block))
+(: (-> (-> %a Block) (List %a) (Vec Block) Block))
 (defun (joined f xs sep) (joined/last f f xs sep))
 
 ;; `sep` before each element, including the first.
-(: joined/prefix (-> (-> %a Block) (List %a) (Vec Block) Block))
+(: (-> (-> %a Block) (List %a) (Vec Block) Block))
 (defun (joined/prefix f xs sep)
   (BRun (fun (out col)
           (list-foldl (fun (x c) (run-block out (run-blocks out c sep) (f x)))
@@ -356,7 +356,7 @@
                       xs))))
 
 ;; Appends separator after elements.
-(: joined/suffix (-> (-> %a Block) (List %a) (Vec Block) Block))
+(: (-> (-> %a Block) (List %a) (Vec Block) Block))
 (defun (joined/suffix f xs sep)
   (BRun (fun (out col)
           (list-foldl (fun (x c) (run-blocks out (run-block out c (f x)) sep))
@@ -364,7 +364,7 @@
                       xs))))
 
 ;; Joins elements with custom last element formatter.
-(: joined/last (-> (-> %a Block) (-> %a Block) (List %a) (Vec Block) Block))
+(: (-> (-> %a Block) (-> %a Block) (List %a) (Vec Block) Block))
 (defun (joined/last f last-f xs sep)
   (BRun (fun (out col)
           (let loop ((ys xs) (c col) (first? #t))
@@ -383,7 +383,7 @@
   (clr-invariant (: System.Globalization.CultureInfo.InvariantCulture #:get)))
 
 ;; `n` digits at a time from the right, `sep` between the groups.
-(: grouped (-> string int char string))
+(: (-> string int char string))
 (defun (grouped digits n sep)
   (if (<= n 0)
       digits
@@ -403,8 +403,8 @@
 ;;
 ;; It is `double` rather than anything wider: an `int` crosses with
 ;; `(cast double n)`, and a number being formatted is on its way to a string.
-(: numeric (-> double (#:precision int) (#:comma int) (#:comma-sep char)
-               (#:decimal-sep char) (#:signed bool) Block))
+(: (-> double (#:precision int) (#:comma int) (#:comma-sep char)
+       (#:decimal-sep char) (#:signed bool) Block))
 (defun (numeric x #:precision -1 #:comma -1 #:comma-sep #\nul
                 #:decimal-sep #\nul #:signed #f)
   (BRun (fun (out col)
@@ -422,7 +422,7 @@
                                 decimal-sep)
                             (or signed (parameter-ref current-signed))))))))
 
-(: formatted (-> double int int char char bool string))
+(: (-> double int int char char bool string))
 (defun (formatted x precision comma comma-sep decimal-sep signed)
   (let* ((raw (if (< precision 0)
                   (.ToString x clr-invariant)
@@ -441,25 +441,25 @@
           (string-append (char->string decimal-sep) fraction))))))
 
 ;; The common case, and the reason `comma` is spelled that way: thousands.
-(: numeric/comma (-> double Block))
+(: (-> double Block))
 (defun (numeric/comma x) (numeric x #:comma 3))
 
 ;; The invariant culture's decimal point is `.`, so this is a split on one
 ;; character and not a search for whatever the machine calls a separator.
-(: split-at-point (-> string (Tuple string string)))
+(: (-> string (Tuple string string)))
 (defun (split-at-point s)
   (match (string-index (fun (c) (char=? c #\.)) s)
     ((Some c) (Tuple (substring s (string-cursor-start s) c)
                      (substring s (string-cursor-next s c) (string-cursor-end s))))
     (None (Tuple s ""))))
 
-(: first-of (-> (Tuple string string) string))
+(: (-> (Tuple string string) string))
 (defun (first-of t) (let (((a b) t)) a))
 
-(: second-of (-> (Tuple string string) string))
+(: (-> (Tuple string string) string))
 (defun (second-of t) (let (((a b) t)) b))
 
-(: string-drop-first (-> string string))
+(: (-> string string))
 (defun (string-drop-first s)
   (if (string-empty? s)
       s
@@ -471,7 +471,7 @@
 ;; --- Paragraphs ------------------------------------------------------------
 
 ;; The runs of non-whitespace in `s`, in order.
-(: words-of (-> string (Vec string)))
+(: (-> string (Vec string)))
 (defun (words-of s)
   (def out (vecbuilder-empty))
   (let lp ((c (string-cursor-start s)) (start (string-cursor-start s)) (in? #f))
@@ -486,7 +486,7 @@
   (vecbuilder->vec out))
 
 ;; Packs words into lines.
-(: packed (-> (Vec string) int int (List (List string))))
+(: (-> (Vec string) int int (List (List string))))
 (defun (packed ws first width)
   (let lp ((i 0) (line Nil) (used 0) (budget first) (lines Nil))
     (if (>= i (vec-length ws))
@@ -498,7 +498,7 @@
               (lp i Nil 0 width (Cons (list-reverse line) lines)))))))
 
 ;; The words with a single pad character between them.
-(: spaced (-> (List string) string))
+(: (-> (List string) string))
 (defun (spaced ws)
   (def b (stringbuilder-empty))
   (def gap (padding 1))
@@ -510,7 +510,7 @@
   (stringbuilder->string b))
 
 ;; Stretches spaced words to budget.
-(: stretched (-> (List string) int string))
+(: (-> (List string) int string))
 (defun (stretched ws budget)
   (let ((gaps (- (list-length ws) 1)))
     (if (<= gaps 0)
@@ -532,7 +532,7 @@
                                   ws))
               (stringbuilder->string b)))))
 
-(: wrap (-> (Vec string) bool Block))
+(: (-> (Vec string) bool Block))
 (defun (wrap ws justify?)
   (BRun (fun (out col)
           (let* ((width (parameter-ref current-width))
@@ -550,11 +550,11 @@
                        (loop rest (run-block out c1 (BStr text)) #f)))))))))
 
 ;; Filled to the right margin, ragged on the right.
-(: wrapped (-> (Vec Block) Block))
+(: (-> (Vec Block) Block))
 (defun (wrapped bs) (captured (fun (s) (wrap (words-of s) #f)) bs))
 
 ;; Filled to the right margin and flush against both, the last line excepted.
-(: justified (-> (Vec Block) Block))
+(: (-> (Vec Block) Block))
 (defun (justified bs) (captured (fun (s) (wrap (words-of s) #t)) bs))
 
 
@@ -565,7 +565,7 @@
 ;; column the width its own content asks for and cuts nothing.
 
 ;; The lines of `s`, without the empty one a trailing newline leaves behind.
-(: lines-of (-> string (Vec string)))
+(: (-> string (Vec string)))
 (defun (lines-of s)
   (def* (parts (string-split s "\n"))
         (n (vec-length parts)))
@@ -577,14 +577,14 @@
 (type (: Align (Union AlignLeft AlignRight AlignCentre)))
 
 ;; The alignment of column `i`: left unless said otherwise.
-(: align-at (-> (Vec Align) int Align))
+(: (-> (Vec Align) int Align))
 (defun (align-at aligns i)
   (if (< i (vec-length aligns)) (vec-ref aligns i) AlignLeft))
 
 ;; A cell fitted to its column. A cut keeps the end an alignment leans on,
 ;; as `fitted/left` and the rest do. The last column is not padded on the
 ;; right: there is nothing after it to line up.
-(: fit-cell (-> Align int bool bool string string))
+(: (-> Align int bool bool string string))
 (defun (fit-cell a w cut? last? text)
   (def s (if cut?
              (match a
@@ -599,7 +599,7 @@
                      (string-append (padding (/ (- w (width-of s)) 2)) s)
                      (pad/both w s)))))
 
-(: laid-out (-> (Vec (Vec string)) (Vec int) (Vec Align) string bool Block))
+(: (-> (Vec (Vec string)) (Vec int) (Vec Align) string bool Block))
 (defun (laid-out cells widths aligns sep cut?)
   (BRun (fun (out col)
           (def rows (vec-fold (fun (ls acc) (max acc (vec-length ls))) 0 cells))
@@ -613,7 +613,7 @@
 
 ;; Line `r` of a row. Empty cells at the end of it are left out, separators
 ;; and all, so that no line ends in blanks.
-(: row-of (-> (Vec (Vec string)) (Vec int) (Vec Align) string bool int string))
+(: (-> (Vec (Vec string)) (Vec int) (Vec Align) string bool int string))
 (defun (row-of cells widths aligns sep cut? r)
   (def* (b (stringbuilder-empty))
         (texts (vec-map (fun (ls) (if (< r (vec-length ls)) (vec-ref ls r) "")) cells))
@@ -629,20 +629,20 @@
   (stringbuilder->string b))
 
 ;; Each cell's lines.
-(: rendered-cells (-> (Vec (Vec Block)) (Vec (Vec string))))
+(: (-> (Vec (Vec Block)) (Vec (Vec string))))
 (defun (rendered-cells cells)
   (vec-map (fun (c) (lines-of (render->string c))) cells))
 
 ;; The lines of a row's cells, a block each.
-(: rendered-row (-> (Vec Block) (Vec (Vec string))))
+(: (-> (Vec Block) (Vec (Vec string))))
 (defun (rendered-row row)
   (vec-map (fun (c) (lines-of (render->string [c]))) row))
 
-(: widest (-> (Vec string) int))
+(: (-> (Vec string) int))
 (defun (widest ls) (vec-fold (fun (l acc) (max acc (width-of l))) 0 ls))
 
 ;; Renders columns.
-(: columnar (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) Block))
+(: (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) Block))
 (defun (columnar cols #:sep " " #:align [])
   (BRun (fun (out col)
           (let* ((cells (rendered-cells cols))
@@ -654,7 +654,7 @@
                        col
                        (laid-out cells (vec-map (fun (ls) each-width) cells) align sep #t))))))
 
-(: tabular (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) Block))
+(: (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) Block))
 (defun (tabular cols #:sep " " #:align [])
   (BRun (fun (out col)
           (def cells (rendered-cells cols))
@@ -670,12 +670,12 @@
                              (: aligns (Vec Align))
                              (: sep string))))
 
-(: table-layout (-> (Vec int) (#:sep string) (#:align (Vec Align)) TableLayout))
+(: (-> (Vec int) (#:sep string) (#:align (Vec Align)) TableLayout))
 (defun (table-layout widths #:sep " " #:align [])
   (TableLayout (widths widths) (aligns align) (sep sep)))
 
 ;; The width each column of these rows asks for: its widest line.
-(: table-widths (-> (Vec (Vec Block)) (Vec int)))
+(: (-> (Vec (Vec Block)) (Vec int)))
 (defun (table-widths rows)
   (vec-fold (fun (row acc)
               (def ws (vec-map widest (rendered-row row)))
@@ -688,7 +688,7 @@
 ;; One row, laid out to `layout`. A cell wider than its column is not cut:
 ;; it pushes the rest of its row out. Cells past the layout's columns get
 ;; no width and are left as they are.
-(: table-row (-> TableLayout (Vec Block) Block))
+(: (-> TableLayout (Vec Block) Block))
 (defun (table-row layout row)
   (BRun (fun (out col)
           (def cells (rendered-row row))
@@ -698,7 +698,7 @@
           (run-block out col (laid-out cells widths (record-ref layout aligns) (record-ref layout sep) #f)))))
 
 ;; `tabular`, given rows rather than columns.
-(: tabular/rows (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) Block))
+(: (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) Block))
 (defun (tabular/rows rows #:sep " " #:align [])
   ;; Measured when it runs, where the settings it is run under are bound.
   (BRun (fun (out col)

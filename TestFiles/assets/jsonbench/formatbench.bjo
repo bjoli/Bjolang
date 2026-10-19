@@ -65,24 +65,24 @@
                    (: note (Option string) #:optional)
                    (: version string))))
 
-(: records int)
+(: int)
 (def records 20000)
 
-(: reps int)
+(: int)
 (def reps 20)
 
 ;; .NET compiles a method at tier 0 first and promotes it only once it has been
 ;; called enough times, so a single warm pass leaves the timed reps measuring
 ;; the promotion rather than the code. Every phase runs this many times before
 ;; anything is timed.
-(: warmups int)
+(: int)
 (def warmups 5)
 
 ;; ---------------------------------------------------------------------------
 ;; The corpora
 ;; ---------------------------------------------------------------------------
 
-(: json-text (-> int string))
+(: (-> int string))
 (defun (json-text n)
   (let ((sb (stringbuilder-empty)))
     (stringbuilder-add! sb #\[)
@@ -98,7 +98,7 @@
     (stringbuilder-add! sb #\])
     (stringbuilder->string sb)))
 
-(: bjodat-text (-> int string))
+(: (-> int string))
 (defun (bjodat-text n)
   (let ((sb (stringbuilder-empty)))
     (stringbuilder-add! sb #\[)
@@ -118,7 +118,7 @@
 ;; differs, so the gap between this and `bjodat parse` is what interning costs:
 ;; a string built off the scratch buffer and then a ConcurrentDictionary
 ;; lookup, once per key per record.
-(: bjodat-strkey-text (-> int string))
+(: (-> int string))
 (defun (bjodat-strkey-text n)
   (let ((sb (stringbuilder-empty)))
     (stringbuilder-add! sb #\[)
@@ -134,7 +134,7 @@
     (stringbuilder-add! sb #\])
     (stringbuilder->string sb)))
 
-(: json-rich-text (-> int string))
+(: (-> int string))
 (defun (json-rich-text n)
   (let ((sb (stringbuilder-empty)))
     (stringbuilder-add! sb #\[)
@@ -148,7 +148,7 @@
     (stringbuilder-add! sb #\])
     (stringbuilder->string sb)))
 
-(: bjodat-rich-text (-> int string))
+(: (-> int string))
 (defun (bjodat-rich-text n)
   (let ((sb (stringbuilder-empty)))
     (stringbuilder-add! sb #\[)
@@ -169,15 +169,15 @@
 ;; The scalar decoders all answer 5 per record and the rich ones 3, which is
 ;; also how we know the two formats decoded the same thing.
 
-(: json-parse (-> string int))
+(: (-> string int))
 (defun (json-parse text)
   (match (parse-json text) ((Ok _) 1) ((Err _) 0)))
 
-(: bjodat-parse (-> string int))
+(: (-> string int))
 (defun (bjodat-parse text)
   (match (parse-bjodat text) ((Ok _) 1) ((Err _) 0)))
 
-(: json-sum (-> (Vec Json) int))
+(: (-> (Vec Json) int))
 (defun (json-sum items)
   (vec-fold (fun (j acc)
               (+ acc (match (json->JDep j)
@@ -185,7 +185,7 @@
                        ((Err _) 0))))
             0 items))
 
-(: bjodat-sum (-> (Vec Bjodat) int))
+(: (-> (Vec Bjodat) int))
 (defun (bjodat-sum items)
   (vec-fold (fun (b acc)
               (+ acc (match (bjodat->BDep b)
@@ -193,7 +193,7 @@
                        ((Err _) 0))))
             0 items))
 
-(: json-rich-sum (-> (Vec Json) int))
+(: (-> (Vec Json) int))
 (defun (json-rich-sum items)
   (vec-fold (fun (j acc)
               (+ acc (match (json->JRich j)
@@ -201,7 +201,7 @@
                        ((Err _) 0))))
             0 items))
 
-(: bjodat-rich-sum (-> (Vec Bjodat) int))
+(: (-> (Vec Bjodat) int))
 (defun (bjodat-rich-sum items)
   (vec-fold (fun (b acc)
               (+ acc (match (bjodat->BRich b)
@@ -211,19 +211,19 @@
 
 ;; --- text straight through to records ---------------------------------------
 
-(: json-total (-> string int))
+(: (-> string int))
 (defun (json-total text)
   (match (parse-json text) ((Ok (JsonArr v)) (json-sum v)) (_ 0)))
 
-(: bjodat-total (-> string int))
+(: (-> string int))
 (defun (bjodat-total text)
   (match (parse-bjodat text) ((Ok (BjoVec v)) (bjodat-sum v)) (_ 0)))
 
-(: json-rich-total (-> string int))
+(: (-> string int))
 (defun (json-rich-total text)
   (match (parse-json text) ((Ok (JsonArr v)) (json-rich-sum v)) (_ 0)))
 
-(: bjodat-rich-total (-> string int))
+(: (-> string int))
 (defun (bjodat-rich-total text)
   (match (parse-bjodat text) ((Ok (BjoVec v)) (bjodat-rich-sum v)) (_ 0)))
 
@@ -238,13 +238,13 @@
 ;; This answers a `List` where the phases above answer a `Vec`, which is one
 ;; cons per record against one vec slot. Both are counted in the figure.
 
-(: bjodat-one-pass (-> string int))
+(: (-> string int))
 (defun (bjodat-one-pass text)
   (match (parse-one-pass-all text bjodat-read-BDep)
     ((Err _) 0)
     ((Ok ds) (list-foldl (fun (d acc) (+ acc (string-length (record-ref d version)))) 0 ds))))
 
-(: bjodat-rich-one-pass (-> string int))
+(: (-> string int))
 (defun (bjodat-rich-one-pass text)
   (match (parse-one-pass-all text bjodat-read-BRich)
     ((Err _) 0)
@@ -254,14 +254,14 @@
 ;; Timing
 ;; ---------------------------------------------------------------------------
 
-(: elapsed-ticks (-> Stopwatch int))
+(: (-> Stopwatch int))
 (defun (elapsed-ticks sw)
   (clr-to-int (.-Ticks (.-Elapsed sw))))
 
 ;; The fastest of `reps`, because the mean is largely a measurement of the
 ;; garbage collector: each rep leaves a tree behind, a collection lands in some
 ;; and not others, and the run that was interrupted least is the one to read.
-(: timed (-> (-> %a int) %a int))
+(: (-> (-> %a int) %a int))
 (defun (timed f x)
   (let go ((i 0) (best 2000000000))
     (if (= i reps)
@@ -275,7 +275,7 @@
             (let ((t (elapsed-ticks sw)))
               (go (+ i 1) (if (< t best) t best))))))))
 
-(: as-ms (-> int string))
+(: (-> int string))
 (defun (as-ms ticks)
   (let ((hundredths (/ ticks 100)))
     (let ((frac (% hundredths 100)))
@@ -283,11 +283,11 @@
            (if (< frac 10) ".0" ".")
            (int->string frac)))))
 
-(: ns-per-record (-> int int string))
+(: (-> int int string))
 (defun (ns-per-record n ticks)
   (if (= n 0) "n/a" (int->string (/ (* ticks 100) n))))
 
-(: ratio (-> int int string))
+(: (-> int int string))
 (defun (ratio a b)
   (if (= a 0)
       "n/a"
@@ -297,14 +297,14 @@
                (if (< frac 10) ".0" ".")
                (int->string frac))))))
 
-(: row (-> string int int void))
+(: (-> string int int void))
 (defun (row label ticks base)
   (println (str (string-pad-right label 18)
                 (string-pad-left (as-ms ticks) 9) " ms"
                 (string-pad-left (ns-per-record records ticks) 8) " ns/rec"
                 (string-pad-left (ratio base ticks) 9) "x json")))
 
-(: size-row (-> string string void))
+(: (-> string string void))
 (defun (size-row label text)
   (println (str (string-pad-right label 18)
                 (string-pad-left (int->string (/ (string-length text) 1000)) 6) " kB"
@@ -319,11 +319,11 @@
 ;;
 ;; The corpus is ASCII, so a character is one byte of UTF-8 on disk and two of
 ;; UTF-16 in memory. This counts the first, because that is what a file is.
-(: mb-per-s (-> string int string))
+(: (-> string int string))
 (defun (mb-per-s text ticks)
   (if (= ticks 0) "n/a" (int->string (/ (* (string-length text) 10) ticks))))
 
-(: speed-row (-> string string int void))
+(: (-> string string int void))
 (defun (speed-row label text ticks)
   (println (str (string-pad-right label 18)
                 (string-pad-left (mb-per-s text ticks) 6) " MB/s")))

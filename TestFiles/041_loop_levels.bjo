@@ -14,7 +14,7 @@
 (import (std prelude))
 (import (std simpletest))
 
-(: build-to (-> int (List int)))
+(: (-> int (List int)))
 (defun (build-to n)
   (let mk ((i 0) (acc Nil))
     (if (= i n) acc (mk (+ i 1) (Cons i acc)))))
@@ -24,7 +24,7 @@
 ;; ---------------------------------------------------------------------------
 
 ;; Broken by `:subloop`: a cartesian product.
-(: product (-> (List int) (List int) (List int)))
+(: (-> (List int) (List int) (List int)))
 (defun (product xs ys)
   (loop (:for x xs)
         (:subloop)
@@ -33,7 +33,7 @@
 
 ;; The same clauses without it: adjacent `:for`s pair up in lockstep instead,
 ;; and the level ends with the shorter of them.
-(: lockstep (-> (List int) (List int) (List int)))
+(: (-> (List int) (List int) (List int)))
 (defun (lockstep xs ys)
   (loop (:for x xs)
         (:for y ys)
@@ -42,7 +42,7 @@
 ;; A `:let` breaks adjacency just as well, and is the usual reason to: the inner
 ;; sequence names the outer variable, so it cannot be hoisted to the prologue
 ;; and is evaluated at the jump that enters the level.
-(: expanded (-> (List int) (List int)))
+(: (-> (List int) (List int)))
 (defun (expanded xs)
   (loop (:for x xs)
         (:let inner (build-to x))
@@ -50,7 +50,7 @@
         (:acc out (listing y))))
 
 ;; Three levels.
-(: triple (-> int))
+(: (-> int))
 (defun (triple)
   (loop (:for a (Cons 1 (Cons 2 Nil)))
         (:subloop)
@@ -65,7 +65,7 @@
 
 ;; An `:acc` above the inner `:for` belongs to the *outer* level, so it steps
 ;; once per outer iteration rather than once per inner one.
-(: both-counts (-> (List int) (List int) (Tuple int int)))
+(: (-> (List int) (List int) (Tuple int int)))
 (defun (both-counts xs ys)
   (loop (:for x xs)
         (:acc outer (counting x))
@@ -75,7 +75,7 @@
 
 ;; An accumulator declared inside a subloop persists across outer iterations: it
 ;; is hoisted, and nothing resets it on re-entry.
-(: no-reset (-> (List int) (List int) int))
+(: (-> (List int) (List int) int))
 (defun (no-reset xs ys)
   (loop (:for x xs)
         (:subloop)
@@ -89,7 +89,7 @@
 
 ;; `:finish` from inside a subloop leaves the whole thing, through the finish
 ;; block like every other exit.
-(: until-sum (-> (List int) (List int) (List int)))
+(: (-> (List int) (List int) (List int)))
 (defun (until-sum xs ys)
   (loop (:for x xs)
         (:subloop)
@@ -100,7 +100,7 @@
 ;; `:abandon` abandons *this* level and resumes the enclosing one's next
 ;; iteration — the same edge inner exhaustion takes, and a different jump from
 ;; `:when`, which would only skip one inner iteration.
-(: capped (-> (List int) (List int) (List int)))
+(: (-> (List int) (List int) (List int)))
 (defun (capped xs ys)
   (loop (:for x xs)
         (:subloop)
@@ -109,7 +109,7 @@
         (:acc out (listing (+ (* 10 x) y)))))
 
 ;; ...whereas `:when` on the same condition keeps going round the inner level.
-(: filtered (-> (List int) (List int) (List int)))
+(: (-> (List int) (List int) (List int)))
 (defun (filtered xs ys)
   (loop (:for x xs)
         (:subloop)
@@ -118,7 +118,7 @@
         (:acc out (listing (+ (* 10 x) y)))))
 
 ;; Deep enough that anything but a jump between levels would overflow.
-(: deep (-> int int))
+(: (-> int int))
 (defun (deep n)
   (loop (:for x (build-to n))
         (:subloop)
@@ -132,7 +132,7 @@
 ;; `return` nor a `break` — a `break` would leave the dispatch `switch` and drop
 ;; straight back into the `while` it was meant to end. They go through the
 ;; group's exit label instead, and this is the shape that exercises it.
-(: offset-product (-> (List int) (List int) int))
+(: (-> (List int) (List int) int))
 (defun (offset-product xs ys)
   (def total
     (loop (:for x xs)
@@ -144,7 +144,7 @@
 
 ;; ---------------------------------------------------------------------------
 
-(: show (-> (List int) string))
+(: (-> (List int) string))
 (defun (show xs)
   (list-foldl (fun (x acc) (string-append acc (string-append " " (int->string x)))) "" xs))
 

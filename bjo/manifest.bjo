@@ -62,7 +62,7 @@
 ;; nothing: `(List Symbol)` already has both instances, so `(name (std run))`
 ;; decodes with no code here at all. This is only how to show one in a message.
 
-(: module-name->string (-> (List Symbol) string))
+(: (-> (List Symbol) string))
 (defun (module-name->string m)
   (def sb (stringbuilder-empty))
   (stringbuilder-add! sb #\()
@@ -81,20 +81,20 @@
 
 (type (: Version (Record (: major int) (: minor int) (: patch int))))
 
-(: version (-> int int int Version))
+(: (-> int int int Version))
 (defun (version ma mi pa) (Version (major ma) (minor mi) (patch pa)))
 
-(: version->string (-> Version string))
+(: (-> Version string))
 (defun (version->string v)
   (str (int->string (record-ref v major)) "."
        (int->string (record-ref v minor)) "."
        (int->string (record-ref v patch))))
 
-(: version-shape (-> string string))
+(: (-> string string))
 (defun (version-shape s)
   (str "\"" s "\" is not a version: a version is written \"1.2.3\""))
 
-(: finish-version (-> (List int) string (Result string Version)))
+(: (-> (List int) string (Result string Version)))
 (defun (finish-version out s)
   (match (list-reverse out)
     ((Cons a Nil) (Ok (version a 0 0)))
@@ -105,7 +105,7 @@
 ;; Read by hand rather than by splitting on `.` and converting each piece: the
 ;; split would allocate a list of strings to throw away, and the conversion
 ;; would have to refuse a piece like `"1x"` all over again.
-(: parse-version (-> string (Result string Version)))
+(: (-> string (Result string Version)))
 (defun (parse-version s)
   (if (string-empty? s)
       (Err (version-shape s))
@@ -126,7 +126,7 @@
                 (else (Err (version-shape s)))))))))
 
 ;; Negative when `a` is the older, zero when they are the same version.
-(: version-compare (-> Version Version int))
+(: (-> Version Version int))
 (defun (version-compare a b)
   (def d (- (record-ref a major) (record-ref b major)))
   (if (not (= d 0))
@@ -162,7 +162,7 @@
                        (: AtMost Version)
                        (: Between Version Version))))
 
-(: version-satisfies? (-> Version VersionReq bool))
+(: (-> Version VersionReq bool))
 (defun (version-satisfies? v req)
   (match req
     ((AtLeast lo) (>= (version-compare v lo) 0))
@@ -170,12 +170,12 @@
     ((Between lo hi) (and (>= (version-compare v lo) 0)
                           (<= (version-compare v hi) 0)))))
 
-(: req-shape string)
+(: string)
 (def req-shape
   (str "expected a version constraint: (version-at-least \"1.2\"), "
        "(version-at-most \"2.0\") or (version-between \"1.2\" \"2.0\")"))
 
-(: one-version (-> (List Bjodat) string (Result string Version)))
+(: (-> (List Bjodat) string (Result string Version)))
 (defun (one-version args tag)
   (match args
     ((Cons a Nil) (bjodat-> a))
@@ -297,10 +297,10 @@
                           (: id string)
                           (: version string))))
 
-(: nuget-id (-> NuGetPackage string))
+(: (-> NuGetPackage string))
 (defun (nuget-id p) (record-ref p id))
 
-(: nuget-version (-> NuGetPackage string))
+(: (-> NuGetPackage string))
 (defun (nuget-version p) (record-ref p version))
 
 ;; One .NET runtime setting of the program, `(gc-server #t)`, as the compiler's
@@ -316,7 +316,7 @@
 (def count-settings (list "gc-heap-count"))
 (def millis-settings (list "call-counting-delay"))
 
-(: known-settings string)
+(: string)
 (def known-settings
   (string-join (list->vec (list-sort (list-append flag-settings (list-append count-settings millis-settings))))
                ", "))
@@ -354,7 +354,7 @@
 
 ;; The settings as the compiler's `--runtime` takes them, `name=value`, sorted
 ;; by name: also the form of the `runtime` lines of a program's build record.
-(: runtime-settings (-> (List RuntimeSetting) (List string)))
+(: (-> (List RuntimeSetting) (List string)))
 (defun (runtime-settings settings)
   (list-sort (list-map #(str (record-ref & name) "=" (record-ref & value)) settings)))
 

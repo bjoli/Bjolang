@@ -35,34 +35,34 @@
   (parse-guarded (: System.Int32.TryParse (-> string (out int) (Option int))
                     #:exceptions (System.FormatException))))
 
-(: describe (-> (Option string) string))
+(: (-> (Option string) string))
 (defun (describe found)
   (match found
     ((Some s) (string-append "found " s))
     (None "missing")))
 
 ;; Written generically so that the out type is a type parameter in the C#.
-(: lookup (-> (Dict %k %v) %k (Option %v)))
+(: (-> (Dict %k %v) %k (Option %v)))
 (defun (lookup d k) (dict-try-get d k))
 
 ;; Both colours. A `-?->` parameter makes a suspending twin of the whole body,
 ;; so every out call in it is emitted twice, once around awaits.
-(: bump (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (bump x) (+ x 1))
 
-(: parse-each (-> (-?-> string string) (List string) (List (Tuple (Option int) (Tuple string int)))))
+(: (-> (-?-> string string) (List string) (List (Tuple (Option int) (Tuple string int)))))
 (defun (parse-each f texts)
   (loop (:for t texts)
         (:acc out (listing (let ((text (f t)))
                              (Tuple (parse-int text) (kv-parts (make-kv text (string-length text)))))))))
 
-(: parse-suspending (-> string (Tuple (Option int) (Tuple string int) int)))
+(: (-> string (Tuple (Option int) (Tuple string int) int)))
 (defbjo (parse-suspending text)
   (def n (bump 1))
   (def (k v) (kv-parts (make-kv text (bump n))))
   (Tuple (parse-int (string-append text k)) (Tuple k v) (div-rem-first (bump 9) (bump 2))))
 
-(: div-rem-first (-> int int int))
+(: (-> int int int))
 (defun (div-rem-first a b)
   (def (q r) (div-rem a b))
   (+ q r))

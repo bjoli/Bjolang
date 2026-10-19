@@ -86,7 +86,7 @@
 ;; `make-parameter`. Takes a hot parameter.
 ;; The default ambient-random is null, meaning every read reads the threadlocal.
 ;; Parameterizing current-random to (ambient-random) is thus always safe.
-(: current-random (Param RandomSource))
+(: (Param RandomSource))
 (def current-random (make-parameter (ambient-random)))
 
 ;; ---------------------------------------------------------------------------
@@ -94,43 +94,43 @@
 ;; ---------------------------------------------------------------------------
 
 ;; Inclusive at both ends. Lemire's method, so no modulo bias.
-(: random-int (-> int int (#:rng RandomSource) int))
+(: (-> int int (#:rng RandomSource) int))
 (defun (random-int lo hi #:rng (parameter-ref current-random))
   (clr-random-range rng lo hi))
 
 ;; [0, 1), with 53 bits of randomness.
-(: random-double (-> (#:rng RandomSource) double))
+(: (-> (#:rng RandomSource) double))
 (defun (random-double #:rng (parameter-ref current-random))
   (clr-random-double rng))
 
-(: random-u32 (-> (#:rng RandomSource) uint))
+(: (-> (#:rng RandomSource) uint))
 (defun (random-u32 #:rng (parameter-ref current-random))
   (clr-random-u32 rng))
 
-(: random-u64 (-> (#:rng RandomSource) ulong))
+(: (-> (#:rng RandomSource) ulong))
 (defun (random-u64 #:rng (parameter-ref current-random))
   (clr-random-u64 rng))
 
 ;; One bit per call, taken 64 at a time.
-(: random-bool (-> (#:rng RandomSource) bool))
+(: (-> (#:rng RandomSource) bool))
 (defun (random-bool #:rng (parameter-ref current-random))
   (clr-random-bool rng))
 
 ;; True with probability `p`. Outside [0, 1] it is the nearer of the two, and
 ;; costs no draw.
-(: random-chance? (-> double (#:rng RandomSource) bool))
+(: (-> double (#:rng RandomSource) bool))
 (defun (random-chance? p #:rng (parameter-ref current-random))
   (clr-random-chance rng p))
 
 ;; Fills the array in place. Whole blocks go straight into it, so this is the
 ;; way to ask for many bytes at once.
-(: random-bytes! (-> (Array byte) (#:rng RandomSource) void))
+(: (-> (Array byte) (#:rng RandomSource) void))
 (defun (random-bytes! bytes #:rng (parameter-ref current-random))
   (clr-random-fill rng bytes))
 
 ;; Fisher-Yates, in place. Answers nothing: the array it was given is the
 ;; shuffled one.
-(: shuffle-array! (-> (Array %a) (#:rng RandomSource) void))
+(: (-> (Array %a) (#:rng RandomSource) void))
 (defun (shuffle-array! a #:rng (parameter-ref current-random))
   (clr-random-shuffle rng a))
 
@@ -138,7 +138,7 @@
 ;;
 ;; Walks the vec, and places it's elements into an array of the
 ;; same size randomly. 
-(: shuffle-vec (-> (Vec %a) (#:rng RandomSource) (Vec %a)))
+(: (-> (Vec %a) (#:rng RandomSource) (Vec %a)))
 (defun (shuffle-vec v #:rng (parameter-ref current-random))
   (cond
     ((< (vec-length v) 2) v)
@@ -151,7 +151,7 @@
       (array->vec a))))
 
 ;; A string over `[A-Za-z0-9-_]`. The shim writes the UTF-8 bytes directly.
-(: random-string (-> int (#:rng RandomSource) string))
+(: (-> int (#:rng RandomSource) string))
 (defun (random-string length #:rng (parameter-ref current-random))
   (clr-random-string rng length))
 
@@ -165,14 +165,14 @@
 ;; An element of `v`. Randomly picked.
 ;; This could be a trait function, but currently we cannot constrain
 ;; Refable to integer keys.
-(: random-ref (-> (Vec %a) (#:rng RandomSource) %a))
+(: (-> (Vec %a) (#:rng RandomSource) %a))
 (defun (random-ref v #:rng (parameter-ref current-random))
   (when (= (vec-length v) 0)
     (raise (cast Exception (ArgumentException. "random-ref was given an empty vec."))))
   (vec-ref v (clr-random-range rng 0 (- (vec-length v) 1))))
 
 ;; A string over an alphabet of the caller's own.
-(: random-string/chars (-> int (Vec char) (#:rng RandomSource) string))
+(: (-> int (Vec char) (#:rng RandomSource) string))
 (defun (random-string/chars length alphabet #:rng (parameter-ref current-random))
   (when (= (vec-length alphabet) 0)
     (raise (cast Exception (ArgumentException. "random-string/chars was given an empty alphabet."))))

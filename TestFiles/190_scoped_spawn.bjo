@@ -18,14 +18,14 @@
 ;; The loop has no exit. It does not need one: when the scope is cancelled the
 ;; `sync` it is parked in raises, and a fiber that stopped because it was
 ;; cancelled has not failed — so the scope does not report it.
-(: worker (-bjo-> (Chan int) (Chan int) Unit))
+(: (-bjo-> (Chan int) (Chan int) Unit))
 (defbjo (worker jobs answers)
   (loop (:for n (up-from 0))
         (:let j (sync (chan-recv jobs)))
         (:do (sync (chan-send answers (* j 2))))))
 
 ;; The channel is a rendezvous, so this parks as soon as the crew is busy.
-(: feeder (-bjo-> (Chan int) int Unit))
+(: (-bjo-> (Chan int) int Unit))
 (defbjo (feeder jobs n)
   (loop (:for i (range 0 n))
         (:do (sync (chan-send jobs i)))))
@@ -33,7 +33,7 @@
 ;; Hires `n` workers. It hands nothing back: the promises used to be collected
 ;; only so that something could join them at the end, and the scope holds them
 ;; now.
-(: hire (-> (Chan int) (Chan int) int Unit))
+(: (-> (Chan int) (Chan int) int Unit))
 (defun (hire jobs answers n)
   (loop (:for i (range 0 n))
         (:do (spawn (worker jobs answers)))))
@@ -41,7 +41,7 @@
 ;; Take `wanted` answers off the crew and stop. There are far more jobs than
 ;; that, so several workers are still mid-rendezvous when the token fires, and
 ;; the feeder is parked on a send nobody will ever take.
-(: first-few (-bjo-> int int int (Vec int)))
+(: (-bjo-> int int int (Vec int)))
 (defbjo (first-few jobs-count wanted crew-size)
   (with-cancel (cancel)
     (def jobs (make-chan))
@@ -62,7 +62,7 @@
 ;; answered, the feeder finishes on its own, and the workers park forever on an
 ;; empty channel — so this one *must* cancel, and it is the shape that would
 ;; hang if it did not.
-(: all-of-them (-bjo-> int int (Vec int)))
+(: (-bjo-> int int (Vec int)))
 (defbjo (all-of-them jobs-count crew-size)
   (with-cancel (cancel)
     (def jobs (make-chan))

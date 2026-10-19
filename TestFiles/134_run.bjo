@@ -20,19 +20,19 @@
 
 ;; A filter is a `defbjo`, and `run` spawns it rather than calling it — so it
 ;; may `sync`, and every stage runs at once. `run` closes `out` when it returns.
-(: shout Filter)
+(: Filter)
 (defbjo (shout in out)
   (write-string out (string-upcase (read-all in)))
   unit)
 
-(: exclaim Filter)
+(: Filter)
 (defbjo (exclaim in out)
   (write-string out (string-append (string-trim-right (read-all in)) "!\n"))
   unit)
 
 ;; A filter that suspends, which is the point of writing one in Bjolang: an
 ;; ordinary function could not do this.
-(: slow Filter)
+(: Filter)
 (defbjo (slow in out)
   (sync (timeout 20))
   (write-string out (read-all in))
@@ -41,27 +41,27 @@
 ;; A filter that raises. `run` closes its output anyway — a downstream stage
 ;; waiting on end of stream would otherwise hang — and the exception comes back
 ;; out of `wait`.
-(: broken Filter)
+(: Filter)
 (defbjo (broken in out)
   (raise (cast Exception (Refusal. "this filter refuses"))))
 
-(: failed? (-> (Result Exception %a) bool))
+(: (-> (Result Exception %a) bool))
 (defun (failed? r) (match r ((Ok v) #f) ((Err e) #t)))
 
-(: text-of (-> string string))
+(: (-> string string))
 (defun (text-of path)
   (match (open-input-file path)
     ((Ok p) (let ((s (read-all p))) (close-input-port p) s))
     ((Err e) "ERR")))
 
-(: scratch (-> string string))
+(: (-> string string))
 (defun (scratch name)
   (path-combine (temp-directory) (string-append "bjo-run-test-" name)))
 
 ;; A filter that shells out itself, from inside fiber-land. `run/string` parks
 ;; the thread it is called on, and here that thread belongs to the pool — so it
 ;; goes through `blocking`, which is the documented way and the one this pins.
-(: nested Filter)
+(: Filter)
 (defbjo (nested in out)
   (match (sync (blocking (fun () (run/string '(echo "from inside a fiber")))))
     ((Ok (Ok s)) (write-string out s))
@@ -85,13 +85,13 @@
 
 ;; A reader of the caller's own: one item per line, upcased, to show that how a
 ;; stream divides into items is not this module's business.
-(: shouted-lines (Reader string))
+(: (Reader string))
 (defbjo (shouted-lines out items)
   (loop (:for line (read-lines-of out))
         (:do (sync (chan-send items (string-upcase line)))))
   unit)
 
-(: cml-checks (-> Unit))
+(: (-> Unit))
 (defbjo (cml-checks)
   ;; `exited` is an event, so it races.
   (match (run '(pipe (echo "a b c") (wc -w)))
@@ -192,7 +192,7 @@
 ;; One `(exited p)` per item, which is what makes this more than a channel
 ;; test: a form's exit has to be askable about repeatedly, and a `Process` may
 ;; only be awaited once. See `awaiting-exit` in `std/run`.
-(: collect (-> (Chan string) Proc string))
+(: (-> (Chan string) Proc string))
 (defbjo (collect items p)
   (let go ((acc (vec-empty)))
     (match (sync (choose (wrap (chan-recv items) (fun (x) (Got x)))
@@ -200,7 +200,7 @@
       ((Got x) (go (vec-add acc x)))
       (Ended (string-join acc "|")))))
 
-(: drain-away (-> InputPort Unit))
+(: (-> InputPort Unit))
 (defbjo (drain-away out) (ignore (read-all out)) unit)
 
 ;; **A plain `defun`.** The whole point of the waiting being blocking rather

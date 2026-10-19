@@ -12,14 +12,14 @@
 (import (std simpletest))
 
 ;; The nack the generator was handed, kept so the trial can look at it.
-(: nack-waiter (-bjo-> (Box (Option (Event Unit))) (Chan int) bool void))
+(: (-bjo-> (Box (Option (Event Unit))) (Chan int) bool void))
 (defbjo (nack-waiter slot silent in-choose)
   (def ev (with-nack (fun (nack)
                        (box-set! slot (Some nack))
                        (chan-recv silent))))
   (ignore (sync (if in-choose (choose ev (never)) ev))))
 
-(: nack-trial (-bjo-> bool string))
+(: (-bjo-> bool string))
 (defbjo (nack-trial in-choose)
   (def slot (make-box None))
   (def silent (make-chan))
@@ -34,15 +34,15 @@
                      (wrap (timeout 2000) (fun (u) "nack never fired")))))
       (None "generator never ran"))))
 
-(: forever (-bjo-> (Chan int) int))
+(: (-bjo-> (Chan int) int))
 (defbjo (forever silent) (sync (chan-recv silent)))
 
-(: spawn-waiter (-bjo-> (Chan int) bool void))
+(: (-bjo-> (Chan int) bool void))
 (defbjo (spawn-waiter silent in-choose)
   (def ev (spawn-evt (forever silent)))
   (ignore (sync (if in-choose (choose ev (never)) ev))))
 
-(: spawned-scope (-bjo-> (Chan int) bool (Chan int) void))
+(: (-bjo-> (Chan int) bool (Chan int) void))
 (defbjo (spawned-scope silent in-choose done)
   (with-cancel (cancel)
     (spawn (spawn-waiter silent in-choose))
@@ -50,7 +50,7 @@
     (ignore (cancel (Requested "stop"))))
   (sync (chan-send done 1)))
 
-(: spawn-trial (-bjo-> bool string))
+(: (-bjo-> bool string))
 (defbjo (spawn-trial in-choose)
   (def silent (make-chan))
   (def done (make-chan))

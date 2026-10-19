@@ -8,13 +8,13 @@
 (import (std stm))
 (import (std stm queue))
 
-(: drain (-> (TQueue %a) (List %a)))
+(: (-> (TQueue %a) (List %a)))
 (defun (drain q)
   (match (try-atomically (fun (tx) (queue-pop-all! tx q)))
     ((Some xs) xs)
     (None (list))))
 
-(: push-all (-> (TQueue int) (List int) void))
+(: (-> (TQueue int) (List int) void))
 (defun (push-all q xs)
   (loop (:for x xs)
         (:do (ignore (try-atomically (fun (tx) (queue-push! tx q x)))))))
@@ -23,12 +23,12 @@
 ;; Fibers
 ;; ---------------------------------------------------------------------------
 
-(: producer (-bjo-> (TQueue int) int int void))
+(: (-bjo-> (TQueue int) int int void))
 (defbjo (producer q from n)
   (loop (:for i (range from (+ from n)))
         (:do (queue-put q i))))
 
-(: consumer (-bjo-> (TQueue int) int (Loc int) (Loc int) void))
+(: (-bjo-> (TQueue int) int (Loc int) (Loc int) void))
 (defbjo (consumer q n sum count)
   (loop (:for i (range 0 n))
         (:do (let ((x (queue-get q)))
@@ -36,7 +36,7 @@
                              (ignore (tx-update! tx sum #(+ & x)))
                              (ignore (tx-update! tx count #(+ & 1)))))))))
 
-(: late-producer (-bjo-> (TQueue string) void))
+(: (-bjo-> (TQueue string) void))
 (defbjo (late-producer q)
   (sync (timeout 30))
   (queue-put q "late"))

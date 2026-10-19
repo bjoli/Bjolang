@@ -11,14 +11,14 @@
 ;; makes its neighbours easier to reach.
 (import (std simd) "common.bjo")
 
-(: byte (-> int byte))
+(: (-> int byte))
 (defun (byte n) (cast System.Byte n))
 
 ;; A row is a stride of cells: a margin cell, the row, and at least a vector's
 ;; width of zeros, so the last vector of a row reads no cells of the next row.
 (type (: Grid (Record (: cells (Array byte)) (: w int) (: h int) (: stride int))))
 
-(: make-grid (-> (Vec string) Grid))
+(: (-> (Vec string) Grid))
 (defun (make-grid lines)
   (def* (w (length (ref lines 0)))
         (h (length lines))
@@ -33,13 +33,13 @@
 
 ;; One pass over the grid: the number of reachable rolls. With `remove?` each
 ;; is taken out of the grid as soon as it is found.
-(: pass (-> Grid bool int))
+(: (-> Grid bool int))
 (defun (pass g remove?)
   (def* (cells (.cells g))
         (s (.stride g))
         (zero (simd256-zero))
         (four (simd256-splat (byte 4))))
-  (: at (-> int UInt8x32))
+  (: (-> int UInt8x32))
   (defun (at i) (simd256-load cells i))
   (loop (:for y (range 0 (.h g)))
         (:subloop)
@@ -54,7 +54,7 @@
         (:acc n (summing (simd-count-true reachable)))
         => n))
 
-(: remove-all (-> Grid int int))
+(: (-> Grid int int))
 (defun (remove-all g removed)
   (def n (pass g #t))
   (if (= n 0) removed (remove-all g (+ removed n))))

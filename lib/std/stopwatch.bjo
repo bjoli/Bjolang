@@ -37,21 +37,21 @@
   (: Stopwatch (Record (: started long #:mutable)
                        (: elapsed long #:mutable))))
 
-(: stopwatch (-> Stopwatch))
+(: (-> Stopwatch))
 (defun (stopwatch)
   (Stopwatch (started -1L) (elapsed 0L)))
 
-(: running? (-> Stopwatch bool))
+(: (-> Stopwatch bool))
 (defun (running? sw)
   (>= (record-ref sw started) 0L))
 
 ;; Starting a running watch does nothing, as restarting a .NET one does not.
-(: stopwatch-start! (-> Stopwatch void))
+(: (-> Stopwatch void))
 (defun (stopwatch-start! sw)
   (unless (running? sw)
     (record-set! sw (started (monotonic-ns)))))
 
-(: stopwatch-stop! (-> Stopwatch void))
+(: (-> Stopwatch void))
 (defun (stopwatch-stop! sw)
   (when (running? sw)
     (record-set! sw
@@ -60,17 +60,17 @@
 
 ;; The reading while running includes the segment in progress, so a watch can be
 ;; read without stopping it.
-(: stopwatch-ns (-> Stopwatch long))
+(: (-> Stopwatch long))
 (defun (stopwatch-ns sw)
   (if (running? sw)
       (+ (record-ref sw elapsed) (- (monotonic-ns) (record-ref sw started)))
       (record-ref sw elapsed)))
 
-(: stopwatch-us (-> Stopwatch long))
+(: (-> Stopwatch long))
 (defun (stopwatch-us sw)
   (/ (stopwatch-ns sw) 1000L))
 
-(: stopwatch-ms (-> Stopwatch long))
+(: (-> Stopwatch long))
 (defun (stopwatch-ms sw)
   (/ (stopwatch-ns sw) 1000000L))
 
@@ -93,7 +93,7 @@
 
 ;; A duration in the largest unit that keeps it at 1 or more, with one decimal
 ;; under 100: "850 ns", "12.5 us", "3.2 ms", "1.5 s".
-(: ns->string (-> long string))
+(: (-> long string))
 (defun (ns->string ns)
   (def magnitude (abs ns))
   (cond
@@ -103,7 +103,7 @@
     (else (scaled ns 1000000000L " s"))))
 
 ;; ns in units of `unit` nanoseconds: one decimal under 100, none above.
-(: scaled (-> long long string string))
+(: (-> long long string string))
 (defun (scaled ns unit suffix)
   (def sign (if (< ns 0L) "-" ""))
   (def tenths (/ (* (abs ns) 10L) unit))

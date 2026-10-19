@@ -35,7 +35,7 @@
 ;; deliberately does not: splicing dissolves the call, and the call is what says
 ;; a yield point is allowed. This lands on the implementation's own method
 ;; instead, and is awaited.
-(: resolved (-bjo-> int string))
+(: (-bjo-> int string))
 (defbjo (resolved n) (fetch n))
 
 ;; --- Dispatched --------------------------------------------------------------
@@ -43,7 +43,7 @@
 ;; The receiver is a type variable, so the method is reached through the
 ;; dictionary the caller was handed. The emitted interface slot returns a fiber
 ;; and the call awaits it.
-(: dispatched (-bjo-> %a string) (where (Fetch %a)))
+(: (-bjo-> %a string) (where (Fetch %a)))
 (defbjo (dispatched x) (fetch x))
 
 ;; --- A default body that suspends --------------------------------------------
@@ -60,19 +60,19 @@
 (impl (Twice int)
   (defbjo (once x) (int->string x)))
 
-(: twice-over (-bjo-> int string))
+(: (-bjo-> int string))
 (defbjo (twice-over n) (twice n))
 
 ;; --- An ordinary method is untouched -----------------------------------------
 ;;
 ;; The point of the check being two-directional: nothing about this trait
 ;; changed, and a call to it is not a yield point.
-(: plain-name (-> int string))
+(: (-> int string))
 (defun (plain-name n) (name-of n))
 
 ;; --- Running a bjoroutine to a value ------------------------------------------
 
-(: run-bjo (-> (Promise string) string))
+(: (-> (Promise string) string))
 (defun (run-bjo p)
   (match (sync/blocking (promise-join p))
     ((Ok s) s)

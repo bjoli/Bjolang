@@ -4,29 +4,29 @@
 (import (std prelude))
 (import (std simpletest))
 
-(: drain (-> (TransientVec %a) (List %a)))
+(: (-> (TransientVec %a) (List %a)))
 (defun (drain t)
   (let go ((out Nil))
     (if (transientvec-empty? t)
         (list-reverse out)
         (go (Cons (transientvec-pop-first! t) out)))))
 
-(: list-take (-> (List %a) int (List %a)))
+(: (-> (List %a) int (List %a)))
 (defun (list-take xs n) (->list (take n xs)))
 
-(: list-drop (-> (List %a) int (List %a)))
+(: (-> (List %a) int (List %a)))
 (defun (list-drop xs n) (->list (drop n xs)))
 
 ;; A linear congruential generator: the runs are the same each time.
-(: step (-> long long))
+(: (-> long long))
 (defun (step s) (% (+ (* s 1103515245L) 12345L) 2147483648L))
 
-(: below (-> long int int))
+(: (-> long int int))
 (defun (below s n) (cast int (% (/ s 65536L) (cast long n))))
 
 ;; Runs of adds and removes at both ends, against a list of what it should
 ;; hold, which is slow but plainly right. Runs of up to 70 cross leaves.
-(: random-run (-> long int bool))
+(: (-> long int bool))
 (defun (random-run seed ops)
   (def t (transientvec-empty))
   (let go ((i 0) (s seed) (model Nil) (next 0) (ok #t))
@@ -56,7 +56,7 @@
              (go (+ i 1) (step (step s)) (list-drop model m) next
                  (and ok (= got (list-take model m))))))))))
 
-(: main (-> (Vec string) int))
+(: (-> (Vec string) int))
 (defun (main args)
   ;; --- the ends ---------------------------------------------------------------
   (def t (vec->transientvec [1 2 3]))

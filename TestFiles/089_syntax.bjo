@@ -21,7 +21,7 @@
 ;; identifier and `SDatum` is a quoted symbol written as data; they carry the
 ;; same payload and differ only in whether hygiene renames them.
 
-(: describe (-> Syntax string))
+(: (-> Syntax string))
 (defun (describe s)
   (match s
     ((SSym name) (string-append "sym:" (symbol->string name)))
@@ -35,13 +35,13 @@
 ;; The payload of SList is a real (List Syntax), so ordinary list functions work
 ;; on it — which is what makes plain `match` usable for macro bodies before
 ;; there is a `syntax-match`.
-(: leaves (-> Syntax int))
+(: (-> Syntax int))
 (defun (leaves s)
   (match s
     ((SList items) (fold (fun (item acc) (+ acc (leaves item))) 0 items))
     (_ 1)))
 
-(: test-values (-> void))
+(: (-> void))
 (defun (test-values)
   (def one (SInt "1"))
   (def x (SSym 'x))
@@ -87,10 +87,10 @@
 ;;   ,@xs splices a (List Syntax)
 ;;   'foo inside a template is a datum, not an identifier: it is never renamed.
 
-(: render (-> string Syntax string void))
+(: (-> string Syntax string void))
 (defun (render what s want) (expect what (syntax->string s) want))
 
-(: test-quote (-> void))
+(: (-> void))
 (defun (test-quote)
   ;; A bare identifier. This is the shape `inject` and `compare` are given.
   (render "ident" #'foo "foo")
@@ -144,13 +144,13 @@
 ;; test fall through to the next clause exactly as a shape that does not match
 ;; would.
 
-(: rendered (-> (List Syntax) string))
+(: (-> (List Syntax) string))
 (defun (rendered items)
   (fold (fun (item acc) (string-append acc (syntax->string item))) "" items))
 
 ;; The pattern kinds, in one function. Clause order decides: `(f x)` is two
 ;; items and `(f x ...)` is one or more, so the narrower one is written first.
-(: shape (-> Syntax string))
+(: (-> Syntax string))
 (defun (shape s)
   (syntax-match s
     ;; A quoted name matches that identifier, and nothing else.
@@ -173,7 +173,7 @@
 
 ;; An ellipsis over a compound: every remaining item has to match `(name value)`,
 ;; and each of that pattern's variables collects what it matched.
-(: binding-list (-> Syntax string))
+(: (-> Syntax string))
 (defun (binding-list s)
   (syntax-match s
     ((_ ((name value) ...) body ...)
@@ -184,7 +184,7 @@
 
 ;; Two ellipses deep. `arg` is bound once per argument of each call, so it is a
 ;; list of lists, and `head` is a list.
-(: calls (-> Syntax string))
+(: (-> Syntax string))
 (defun (calls s)
   (syntax-match s
     ((_ (head arg ...) ...)
@@ -194,7 +194,7 @@
 
 ;; A clause body may be several forms, and the pattern's variables are in scope
 ;; throughout.
-(: several (-> Syntax int))
+(: (-> Syntax int))
 (defun (several s)
   (syntax-match s
     ((_ items ...)
@@ -202,7 +202,7 @@
      (+ n n))
     (_ 0)))
 
-(: test-match (-> void))
+(: (-> void))
 (defun (test-match)
   (expect "literal-ident" (shape #'(else 1)) "else:1")
   (expect "not-that-ident" (shape #'(other 1)) "pair:other1")

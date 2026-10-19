@@ -109,23 +109,23 @@
 ;; What makes a set out of nothing asks for the element's Eq, and the set
 ;; compares elements with it — the same answer `=` gives, also for two cases of
 ;; a union that `=` equates. One made from a set keeps that set's.
-(: hashset-empty (-> (HashSet %a)) (where (Eq %a)))
+(: (-> (HashSet %a)) (where (Eq %a)))
 (defun (hashset-empty) (clr-hashset-empty (eq-comparer)))
 
-(: seq->hashset (-> (Seq %a) (HashSet %a)) (where (Eq %a)))
+(: (-> (Seq %a) (HashSet %a)) (where (Eq %a)))
 (defun (seq->hashset xs) (clr-seq->hashset xs (eq-comparer)))
 
-(: hashsetbuilder-empty (-> (HashSetBuilder %a)) (where (Eq %a)))
+(: (-> (HashSetBuilder %a)) (where (Eq %a)))
 (defun (hashsetbuilder-empty) (clr-hashsetbuilder-empty (eq-comparer)))
 
-(: transienthashset-empty (-> (TransientHashSet %a)) (where (Eq %a)))
+(: (-> (TransientHashSet %a)) (where (Eq %a)))
 (defun (transienthashset-empty) (clr-transienthashset-empty (eq-comparer)))
 
 ;; ---------------------------------------------------------------------------
 ;; Sets, where the callback may suspend
 ;; ---------------------------------------------------------------------------
 
-(: hashset-map (-> (-?-> %a %b) (HashSet %a) (HashSet %b)) (where (Eq %b)))
+(: (-> (-?-> %a %b) (HashSet %a) (HashSet %b)) (where (Eq %b)))
 (defbjouble (hashset-map f s)
   (#:sync (clr-hashset-map f s (eq-comparer)))
   (#:bjo
@@ -137,7 +137,7 @@
           (hashsetbuilder-add! b (f (hashset-cursor-current c)))
           (go (hashset-cursor-next c)))))))
 
-(: hashset-filter (-> (-?-> %a bool) (HashSet %a) (HashSet %a)))
+(: (-> (-?-> %a bool) (HashSet %a) (HashSet %a)))
 (defbjouble (hashset-filter keep? s)
   (#:sync (clr-hashset-filter keep? s))
   (#:bjo
@@ -151,7 +151,7 @@
             (hashsetbuilder-add! b x))
           (go (hashset-cursor-next c)))))))
 
-(: hashset-fold (-> (-?-> %a %s %s) %s (HashSet %a) %s))
+(: (-> (-?-> %a %s %s) %s (HashSet %a) %s))
 (defbjouble (hashset-fold f init s)
   (#:sync (clr-hashset-fold f init s))
   (#:bjo
@@ -161,7 +161,7 @@
           acc
           (go (f (hashset-cursor-current c) acc) (hashset-cursor-next c))))))
 
-(: hashset-iter (-> (-?-> %a bool) (HashSet %a) bool))
+(: (-> (-?-> %a bool) (HashSet %a) bool))
 (defbjouble (hashset-iter f s)
   (#:sync (clr-hashset-iter f s))
   (#:bjo
@@ -175,16 +175,16 @@
 ;; ---------------------------------------------------------------------------
 
 
-(: list->hashset (-> (List %a) (HashSet %a)) (where (Eq %a)))
+(: (-> (List %a) (HashSet %a)) (where (Eq %a)))
 (defun (list->hashset xs) (seq->hashset (list->seq xs)))
 
-(: hashset->list (-> (HashSet %a) (List %a)))
+(: (-> (HashSet %a) (List %a)))
 (defun (hashset->list s) (->list (hashset->seq s)))
 
-(: vec->hashset (-> (Vec %a) (HashSet %a)) (where (Eq %a)))
+(: (-> (Vec %a) (HashSet %a)) (where (Eq %a)))
 (defun (vec->hashset v) (seq->hashset (vec->seq v)))
 
-(: hashset->vec (-> (HashSet %a) (Vec %a)))
+(: (-> (HashSet %a) (Vec %a)))
 (defun (hashset->vec s) (->vec (hashset->seq s)))
 
 ;; ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@
   (defun (iterable-current s c) (hashset-cursor-current c))
   (defun (iterable-next s c) (hashset-cursor-next c)))
 
-(: hashset-for-each (-> (-?-> %a void) (HashSet %a) void))
+(: (-> (-?-> %a void) (HashSet %a) void))
 (defun (hashset-for-each f s)
   (let go ((c (hashset-cursor s)))
     (cond
@@ -261,7 +261,7 @@
   (defun (eq-hash s)
     (hashset-fold (fun (x h) (bitwise-xor h (eq-hash x))) 0 s)))
 
-(: hashset->str (-> (HashSet %a) string) (where (->str %a)))
+(: (-> (HashSet %a) string) (where (->str %a)))
 (defun (hashset->str s)
   (def sb (stringbuilder-empty))
   (stringbuilder-add-string! sb "#{")

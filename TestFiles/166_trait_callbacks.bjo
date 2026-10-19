@@ -14,20 +14,20 @@
 (import (std simpletest))
 
 ;; The yield point: `read-line` from a bjoroutine.
-(: slow-double (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (slow-double n)
   (ignore (read-line (open-input-string "tick\n")))
   (* n 2))
 
-(: run-int (-> (Promise int) int))
+(: (-> (Promise int) int))
 (defun (run-int p)
   (match (sync/blocking (promise-join p)) ((Ok n) n) ((Err e) -1)))
 
-(: run-str (-> (Promise string) string))
+(: (-> (Promise string) string))
 (defun (run-str p)
   (match (sync/blocking (promise-join p)) ((Ok s) s) ((Err e) "raised")))
 
-(: total (-> (List int) int))
+(: (-> (List int) int))
 (defun (total xs)
   (loop (:for x xs) (:acc s (summing x))))
 
@@ -51,20 +51,20 @@
   (defun (fmap g o)
     (match o ((Some v) (Some (g v))) (None None))))
 
-(: mapped-list (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (mapped-list)
   (total (fmap slow-double (list 1 2 3))))
 
-(: mapped-vec (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (mapped-vec)
   (vec-fold (fun (x acc) (+ acc x)) 0 (fmap slow-double [1 2 3])))
 
-(: mapped-option (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (mapped-option)
   (match (fmap slow-double (Some 5)) ((Some n) n) (None 0)))
 
 ;; The ordinary copy is still there, in the same file, over the same trait.
-(: mapped-plainly (-> int))
+(: (-> int))
 (defun (mapped-plainly)
   (total (fmap (fun (n) (* n 2)) (list 1 2 3))))
 
@@ -74,7 +74,7 @@
 ;; A `(bjoroutine ...)` is what makes the arrow suspending; a `(fun ...)` in the
 ;; same position leaves it ordinary.
 
-(: mapped-by-hand (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (mapped-by-hand)
   (total (fmap (bjoroutine (n) (+ (slow-double n) 1)) (list 1 2 3))))
 
@@ -82,13 +82,13 @@
 ;; Monad
 ;; ---------------------------------------------------------------------------
 
-(: bound-option (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (bound-option)
   (match (bind (Some 4) (bjoroutine (n) (Some (slow-double n))))
     ((Some n) n)
     (None 0)))
 
-(: bound-list (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (bound-list)
   (total (bind (list 1 2 3) (bjoroutine (n) (Cons (slow-double n) Nil)))))
 
@@ -115,25 +115,25 @@
     (vec-fold (fun (s acc) (string-append acc s)) "" (vec-map f v))))
 
 ;; No implementation is known here, so the call goes through the dictionary.
-(: dispatched (-bjo-> %c (-bjo-> (assoc Over elem %c) string) string) (where (Over %c)))
+(: (-bjo-> %c (-bjo-> (assoc Over elem %c) string) string) (where (Over %c)))
 (defbjo (dispatched c f) (over c f))
 
-(: dispatched-plainly (-> %c (-> (assoc Over elem %c) string) string) (where (Over %c)))
+(: (-> %c (-> (assoc Over elem %c) string) string) (where (Over %c)))
 (defun (dispatched-plainly c f) (over c f))
 
-(: shown (-bjo-> int string))
+(: (-bjo-> int string))
 (defbjo (shown n) (int->string (slow-double n)))
 
 ;; Annotated, because the element type has to be known before an implementation
 ;; can be: `(assoc Over elem %c)` is read out of the implementor, not into it.
-(: three (-> (List int)))
+(: (-> (List int)))
 (defun (three) (list 1 2 3))
 
-(: three-vec (-> (Vec int)))
+(: (-> (Vec int)))
 (defun (three-vec) [1 2 3])
 
 ;; The implementor is known here, so the call lands on the implementation.
-(: resolved (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (resolved) (over (three) shown))
 
 ;; ---------------------------------------------------------------------------
@@ -151,10 +151,10 @@
       (Nil Nil)
       ((Cons h t) (Cons (f h) (walk t f))))))
 
-(: walked (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (walked) (total (walk (three) slow-double)))
 
-(: walked-plainly (-> int))
+(: (-> int))
 (defun (walked-plainly) (total (walk (three) (fun (n) (* n 2)))))
 
 (defun (main)

@@ -13,30 +13,30 @@
 
 (type/derive (Eq Ord) (: Ver (Record (: major int) (: minor int))))
 
-(: v (-> int int Ver))
+(: (-> int int Ver))
 (defun (v major minor) (Ver (major major) (minor minor)))
 
-(: show (-> Ver string))
+(: (-> Ver string))
 (defun (show x)
   (string-append (int->string (record-ref x major))
                  (string-append "." (int->string (record-ref x minor)))))
 
 ;; A constrained function of this program's own, to be passed by name.
-(: pick (-> %a %a %a) (where (Ord %a)))
+(: (-> %a %a %a) (where (Ord %a)))
 (defun (pick a b) (if (less? a b) a b))
 
 ;; Two constraints, so the dictionaries have an order to get wrong.
-(: pick-unless-equal (-> %a %a %a) (where (Eq %a) (Ord %a)))
+(: (-> %a %a %a) (where (Eq %a) (Ord %a)))
 (defun (pick-unless-equal a b) (if (= a b) a (pick a b)))
 
 ;; Returned rather than passed: the dictionary comes from this function's own
 ;; parameter, and the lambda that carries it outlives the call that made it.
-(: chooser (-> bool (-> %a %a %a)) (where (Ord %a)))
+(: (-> bool (-> %a %a %a)) (where (Ord %a)))
 (defun (chooser smallest?) (if smallest? least greatest))
 
 ;; A higher-order function that is itself constrained, so the value handed in
 ;; and the evidence used inside come from two different places.
-(: fold-with (-> (-> %a %a %a) (List %a) %a %a) (where (Ord %a)))
+(: (-> (-> %a %a %a) (List %a) %a %a) (where (Ord %a)))
 (defun (fold-with f xs seed)
   (if (list-empty? xs)
       seed
@@ -45,13 +45,13 @@
 ;; Mentioning a constrained function from inside a constrained function, where
 ;; the mention is at the enclosing function's own type variable rather than at
 ;; anything concrete.
-(: smallest-of (-> (List %a) %a %a) (where (Ord %a)))
+(: (-> (List %a) %a %a) (where (Ord %a)))
 (defun (smallest-of xs seed) (fold-with least xs seed))
 
 ;; A CLR constraint is a `where` clause on the emitted method rather than a
 ;; parameter, so a function constrained only by one already has the arity it
 ;; appears to have and must be left alone.
-(: twice (-> %a %a) (where (Num %a)))
+(: (-> %a %a) (where (Num %a)))
 (defun (twice n) (+ n n))
 
 (defun (main)

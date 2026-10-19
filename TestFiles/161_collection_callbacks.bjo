@@ -18,16 +18,16 @@
 
 ;; --- delade hjälpare, identiska i de fyra ursprungsfilerna --------------------
 
-(: run-int (-> (Promise int) int))
+(: (-> (Promise int) int))
 (defun (run-int p)
   (match (sync/blocking (promise-join p)) ((Ok n) n) ((Err e) -1)))
 
-(: run-str (-> (Promise string) string))
+(: (-> (Promise string) string))
 (defun (run-str p)
   (match (sync/blocking (promise-join p)) ((Ok s) s) ((Err e) "raised")))
 
 ;; The yield point: `read-line` from a bjoroutine.
-(: slow-double (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (slow-double n)
   (ignore (read-line (open-input-string "tick\n")))
   (* n 2))
@@ -51,19 +51,19 @@
 ;; ordinary call. They keep their `->` callbacks, and the error a bjoroutine
 ;; gets there says what to do instead.
 
-(: run-list (-> (Promise (List string)) (List string)))
+(: (-> (Promise (List string)) (List string)))
 (defun (run-list p)
   (match (sync/blocking (promise-join p))
     ((Ok xs) xs)
     ((Err e) (list "raised"))))
 
-(: two-ports (-> (List InputPort)))
+(: (-> (List InputPort)))
 (defun (two-ports)
   (list (open-input-string "one\ntwo\n") (open-input-string "three\n")))
 
 ;; --- map ---------------------------------------------------------------------
 
-(: list-first-lines (-bjo-> (List InputPort) (List string)))
+(: (-bjo-> (List InputPort) (List string)))
 (defbjo (list-first-lines ps)
   (list-map (bjoroutine (p) (read-line p)) ps))
 
@@ -72,25 +72,25 @@
 ;; The predicate suspends, and the elements it keeps are the ports that had
 ;; something on their first line.
 
-(: non-empty-first (-bjo-> (List InputPort) int))
+(: (-bjo-> (List InputPort) int))
 (defbjo (non-empty-first ps)
   (list-length
     (list-filter (bjoroutine (p) (not (string-empty? (read-line p)))) ps)))
 
 ;; --- the folds ---------------------------------------------------------------
 
-(: list-total-length (-bjo-> (List InputPort) int))
+(: (-bjo-> (List InputPort) int))
 (defbjo (list-total-length ps)
   (list-foldl (bjoroutine (p acc) (+ acc (string-length (read-line p)))) 0 ps))
 
-(: joined (-bjo-> (List InputPort) string))
+(: (-bjo-> (List InputPort) string))
 (defbjo (joined ps)
   (list-foldr (bjoroutine (p acc) (string-append (read-line p) acc)) "" ps))
 
 ;; A right fold runs its steps back to front, so the reads happen in the
 ;; opposite order to the list — which is worth having on the page, since it is
 ;; the one place the colour makes the order visible.
-(: joined-check (-> string))
+(: (-> string))
 (defun (joined-check)
   (run-str (bjo (joined (two-ports)))))
 
@@ -100,22 +100,22 @@
 ;; Which copy a call means is decided by the callback it is handed, so these
 ;; reach the body that was always there.
 
-(: lengths (-> (List string) (List int)))
+(: (-> (List string) (List int)))
 (defun (lengths names) (list-map string-length names))
 
-(: longer-than (-> int (List string) (List string)))
+(: (-> int (List string) (List string)))
 (defun (longer-than n names)
   (list-filter (fun (s) (> (string-length s) n)) names))
 
-(: sum-lengths (-> (List string) int))
+(: (-> (List string) int))
 (defun (sum-lengths names)
   (list-foldl (fun (s acc) (+ acc (string-length s))) 0 names))
 
-(: concat (-> (List string) string))
+(: (-> (List string) string))
 (defun (concat names)
   (list-foldr (fun (s acc) (string-append s acc)) "" names))
 
-(: test-list (-> void))
+(: (-> void))
 (defun (test-list)
   ;; --- suspending callbacks --------------------------------------------------
   (expect "list-map with a suspending callback"
@@ -161,22 +161,22 @@
 ;; expressible. `vec-filter` is here because it is the one predicate that is
 ;; not: filtering with a fold needs an intermediate structure.
 
-(: ports (-> (Vec InputPort)))
+(: (-> (Vec InputPort)))
 (defun (ports)
   (vec-add (vec-add (vec-empty) (open-input-string "one\n"))
            (open-input-string "three\n")))
 
 ;; --- suspending callbacks -----------------------------------------------------
 
-(: vec-first-lines (-bjo-> (Vec InputPort) string))
+(: (-bjo-> (Vec InputPort) string))
 (defbjo (vec-first-lines ps)
   (->str (vec-map (bjoroutine (p) (read-line p)) ps)))
 
-(: loud-count (-bjo-> (Vec InputPort) int))
+(: (-bjo-> (Vec InputPort) int))
 (defbjo (loud-count ps)
   (vec-length (vec-filter (bjoroutine (p) (not (string-empty? (read-line p)))) ps)))
 
-(: vec-total-length (-bjo-> (Vec InputPort) int))
+(: (-bjo-> (Vec InputPort) int))
 (defbjo (vec-total-length ps)
   (vec-fold (bjoroutine (p acc) (+ acc (string-length (read-line p)))) 0 ps))
 
@@ -186,7 +186,7 @@
 ;; the predicate is false at the first element and the walk ends there.
 (def/mutable reads 0)
 
-(: read-until-short (-bjo-> (Vec InputPort) int))
+(: (-bjo-> (Vec InputPort) int))
 (defbjo (read-until-short ps)
   (set! reads 0)
   (ignore (vec-iter (bjoroutine (p)
@@ -200,20 +200,20 @@
 ;;
 ;; These reach the C# bodies, which is what the arrangement is for.
 
-(: doubled (-> (Vec int) (Vec int)))
+(: (-> (Vec int) (Vec int)))
 (defun (doubled v) (vec-map (fun (x) (* x 2)) v))
 
-(: evens (-> (Vec int) (Vec int)))
+(: (-> (Vec int) (Vec int)))
 (defun (evens v) (vec-filter (fun (x) (> x 1)) v))
 
-(: summed (-> (Vec int) int))
+(: (-> (Vec int) int))
 (defun (summed v) (vec-fold (fun (x a) (+ a x)) 0 v))
 
-(: nums (-> (Vec int)))
+(: (-> (Vec int)))
 (defun (nums)
   (vec-add (vec-add (vec-add (vec-empty) 1) 2) 3))
 
-(: test-vec (-> void))
+(: (-> void))
 (defun (test-vec)
   (expect "vec-map with a suspending callback"
           (run-str (bjo (vec-first-lines (ports)))) "[one three]")
@@ -241,7 +241,7 @@
 ;; The ordered two are checked by the order they produce, which sums and
 ;; lengths cannot see. The hashed two have no order, so sums and lengths it is.
 
-(: slow-big? (-bjo-> int bool))
+(: (-bjo-> int bool))
 (defbjo (slow-big? n)
   (ignore (read-line (open-input-string "tick\n")))
   (> n 2))
@@ -250,34 +250,34 @@
 ;; Map
 ;; ---------------------------------------------------------------------------
 
-(: pairs (-> (Map int int)))
+(: (-> (Map int int)))
 (defun (pairs)
   (map-set (map-set (map-set (map-empty) 1 1) 2 2) 3 3))
 
-(: sum-values (-> (Map int int) int))
+(: (-> (Map int int) int))
 (defun (sum-values m)
   (map-fold (fun (k v acc) (+ acc v)) 0 m))
 
-(: map-mapped (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (map-mapped)
   (sum-values (map-map (bjoroutine (k v) (slow-double v)) (pairs))))
 
-(: map-valued (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (map-valued)
   (sum-values (map-map-values (bjoroutine (v) (slow-double v)) (pairs))))
 
-(: map-kept (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (map-kept)
   (map-length (map-filter (bjoroutine (k v) (slow-big? v)) (pairs))))
 
-(: map-folded (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (map-folded)
   (map-fold (bjoroutine (k v acc) (+ acc (slow-double v))) 0 (pairs)))
 
 ;; `iter` stops at the first false. Observable, unlike the rest.
 (def/mutable steps 0)
 
-(: map-stopped (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (map-stopped)
   (set! steps 0)
   (ignore (map-iter (bjoroutine (k v)
@@ -289,7 +289,7 @@
 
 (def/mutable seen 0)
 
-(: map-each (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (map-each)
   (set! seen 0)
   (map-for-each (bjoroutine (k v) (set! seen (+ seen (slow-double v)))) (pairs))
@@ -299,27 +299,27 @@
 ;; Set
 ;; ---------------------------------------------------------------------------
 
-(: numbers (-> (HashSet int)))
+(: (-> (HashSet int)))
 (defun (numbers)
   (list->hashset (list 1 2 3)))
 
-(: sum-set (-> (HashSet int) int))
+(: (-> (HashSet int) int))
 (defun (sum-set s)
   (hashset-fold (fun (x acc) (+ acc x)) 0 s))
 
-(: set-mapped (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (set-mapped)
   (sum-set (hashset-map (bjoroutine (x) (slow-double x)) (numbers))))
 
-(: set-kept (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (set-kept)
   (hashset-length (hashset-filter (bjoroutine (x) (slow-big? x)) (numbers))))
 
-(: set-folded (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (set-folded)
   (hashset-fold (bjoroutine (x acc) (+ acc (slow-double x))) 0 (numbers)))
 
-(: set-stopped (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (set-stopped)
   (set! steps 0)
   (ignore (hashset-iter (bjoroutine (x)
@@ -329,7 +329,7 @@
                     (numbers)))
   steps)
 
-(: set-each (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (set-each)
   (set! seen 0)
   (hashset-for-each (bjoroutine (x) (set! seen (+ seen (slow-double x)))) (numbers))
@@ -341,41 +341,41 @@
 ;;
 ;; Built out of order, so the order claims are about the collection.
 
-(: ordered-pairs (-> (OrderedMap int int)))
+(: (-> (OrderedMap int int)))
 (defun (ordered-pairs)
   (list->orderedmap (list (Tuple 3 3) (Tuple 1 1) (Tuple 2 2))))
 
-(: ordered-numbers (-> (OrderedSet int)))
+(: (-> (OrderedSet int)))
 (defun (ordered-numbers)
   (list->orderedset (list 3 1 2)))
 
-(: joined-map (-> (OrderedMap int int) string))
+(: (-> (OrderedMap int int) string))
 (defun (joined-map m)
   (orderedmap-fold (fun (k v acc) (str acc (int->string v))) "" m))
 
-(: joined-set (-> (OrderedSet int) string))
+(: (-> (OrderedSet int) string))
 (defun (joined-set s)
   (orderedset-fold (fun (x acc) (str acc (int->string x))) "" s))
 
-(: orderedmap-mapped (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (orderedmap-mapped)
   (joined-map (orderedmap-map (bjoroutine (k v) (slow-double v)) (ordered-pairs))))
 
-(: orderedmap-valued (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (orderedmap-valued)
   (joined-map (orderedmap-map-values (bjoroutine (v) (slow-double v)) (ordered-pairs))))
 
-(: orderedmap-kept (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (orderedmap-kept)
   (joined-map (orderedmap-filter (bjoroutine (k v) (slow-big? v)) (ordered-pairs))))
 
-(: orderedmap-folded (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (orderedmap-folded)
   (orderedmap-fold (bjoroutine (k v acc) (str acc (int->string (slow-double v))))
                    ""
                    (ordered-pairs)))
 
-(: orderedmap-stopped (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (orderedmap-stopped)
   (set! steps 0)
   (ignore (orderedmap-iter (bjoroutine (k v)
@@ -386,28 +386,28 @@
 
 (def/mutable trail "")
 
-(: orderedmap-each (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (orderedmap-each)
   (set! trail "")
   (orderedmap-for-each (bjoroutine (k v) (set! trail (str trail (int->string (slow-double v)))))
                        (ordered-pairs))
   trail)
 
-(: orderedset-mapped (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (orderedset-mapped)
   (joined-set (orderedset-map (bjoroutine (x) (slow-double x)) (ordered-numbers))))
 
-(: orderedset-kept (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (orderedset-kept)
   (joined-set (orderedset-filter (bjoroutine (x) (slow-big? x)) (ordered-numbers))))
 
-(: orderedset-folded (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (orderedset-folded)
   (orderedset-fold (bjoroutine (x acc) (str acc (int->string (slow-double x))))
                    ""
                    (ordered-numbers)))
 
-(: orderedset-stopped (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (orderedset-stopped)
   (set! steps 0)
   (ignore (orderedset-iter (bjoroutine (x)
@@ -416,14 +416,14 @@
                            (ordered-numbers)))
   steps)
 
-(: orderedset-each (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (orderedset-each)
   (set! trail "")
   (orderedset-for-each (bjoroutine (x) (set! trail (str trail (int->string (slow-double x)))))
                        (ordered-numbers))
   trail)
 
-(: test-map-and-set (-> void))
+(: (-> void))
 (defun (test-map-and-set)
   (expect "map-map suspending" (run-int (bjo (map-mapped))) 12)
   (expect "map-map-values suspending" (run-int (bjo (map-valued))) 12)
@@ -478,13 +478,13 @@
 ;; Seq
 ;; ---------------------------------------------------------------------------
 
-(: seq-folded (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (seq-folded)
   (seq-fold (bjoroutine (x acc) (+ acc (slow-double x))) 0 (seq-range 1 4)))
 
 (def/mutable seq-seen 0)
 
-(: seq-each (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (seq-each)
   (set! seq-seen 0)
   (ignore (seq-for-each (bjoroutine (x) (set! seq-seen (+ seq-seen (slow-double x))))
@@ -492,7 +492,7 @@
   seq-seen)
 
 ;; The lazy half still produces ordinarily while the eager half suspends.
-(: over-lazy (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (over-lazy)
   (seq-fold (bjoroutine (x acc) (+ acc (slow-double x)))
             0
@@ -502,33 +502,33 @@
 ;; Deque
 ;; ---------------------------------------------------------------------------
 
-(: three (-> (Deque int)))
+(: (-> (Deque int)))
 (defun (three)
   (list->deque (list 1 2 3)))
 
-(: deque-folded (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (deque-folded)
   (deque-fold (bjoroutine (x acc) (+ acc (slow-double x))) 0 (three)))
 
-(: deque-each (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (deque-each)
   (set! seq-seen 0)
   (deque-for-each (bjoroutine (x) (set! seq-seen (+ seq-seen (slow-double x)))) (three))
   seq-seen)
 
 ;; Both halves occupied, so the walk crosses the reversed rear list.
-(: split (-> (Deque int)))
+(: (-> (Deque int)))
 (defun (split)
   (let ((d (list->deque (list 2 3))))
     (deque-push-front! d 1)
     (deque-push-back! d 4)
     d))
 
-(: deque-split-folded (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (deque-split-folded)
   (deque-fold (bjoroutine (x acc) (str acc (int->string (slow-double x)))) "" (split)))
 
-(: test-seq-and-deque (-> void))
+(: (-> void))
 (defun (test-seq-and-deque)
   (expect "seq-fold suspending" (run-int (bjo (seq-folded))) 12)
   (expect "seq-for-each suspending" (run-int (bjo (seq-each))) 12)

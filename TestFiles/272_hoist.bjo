@@ -10,50 +10,50 @@
 ;; their own business: the counter is read by `build!`, not by the form.
 (def/mutable builds 0)
 
-(: build! (-> string (Vec string)))
+(: (-> string (Vec string)))
 (defun (build! tag)
   (set! builds (+ builds 1))
   [tag tag])
 
-(: built (-> int))
+(: (-> int))
 (defun (built) builds)
 
-(: shared (-> (Vec string)))
+(: (-> (Vec string)))
 (defun (shared)
   (please-hoist-i-promise-i-am-not-naughty (build! "x")))
 
 ;; The same form again, in another function: one value between them.
-(: shared-again (-> (Vec string)))
+(: (-> (Vec string)))
 (defun (shared-again)
   (please-hoist-i-promise-i-am-not-naughty (build! "x")))
 
 ;; Throws the first time, and the time after that answers.
 (def/mutable attempts 0)
 
-(: flaky! (-> int))
+(: (-> int))
 (defun (flaky!)
   (set! attempts (+ attempts 1))
   (if (= attempts 1) (raise (Failure. "not yet")) 42))
 
 
-(: flaky-value (-> int))
+(: (-> int))
 (defun (flaky-value)
   (please-hoist-i-promise-i-am-not-naughty (flaky!)))
 
 ;; In a generic function, at a type that does not depend on it.
-(: label-all (-> (Vec %a) (Vec string)))
+(: (-> (Vec %a) (Vec string)))
 (defun (label-all xs)
   (vec-map (fun (_) (vec-ref (please-hoist-i-promise-i-am-not-naughty (build! "label")) 0)) xs))
 
 ;; In a pattern's guard and in a view.
-(: classify (-> int string))
+(: (-> int string))
 (defun (classify n)
   (match n
     (k #:when (vec-contains (please-hoist-i-promise-i-am-not-naughty [1 2 3]) k) "small")
     (_ "big")))
 
 ;; Nested, with a keyword and a local bound inside the body.
-(: nested (-> Keyword))
+(: (-> Keyword))
 (defun (nested)
   (please-hoist-i-promise-i-am-not-naughty
     (let ((inner (please-hoist-i-promise-i-am-not-naughty :deep)))

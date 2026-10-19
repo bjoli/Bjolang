@@ -22,23 +22,23 @@
   (defun (= a b) (= (struct-ref a n) (struct-ref b n)))
   (defun (eq-hash a) (shift-left (struct-ref a n) 25)))
 
-(: set-range! (-> (TMap int int) int int void))
+(: (-> (TMap int int) int int void))
 (defun (set-range! m from to)
   (loop (:for i (range from to))
         (:do (atomically (fun (tx) (tmap-set! tx m i (* i 10)))))))
 
-(: present (-> (TMap int int) int int int))
+(: (-> (TMap int int) int int int))
 (defun (present m from to)
   (atomically
    (fun (tx)
      (loop (:for i (range from to))
            (:acc n (summing (if (= (tmap-try-ref tx m i) (Some (* i 10))) 1 0)))))))
 
-(: entry-sum (-> Tx (TMap %k int) int))
+(: (-> Tx (TMap %k int) int))
 (defun (entry-sum tx m)
   (tmap-fold tx (fun (k v acc) (+ v acc)) 0 m))
 
-(: size-agrees? (-> Tx (TMap %k %v) bool))
+(: (-> Tx (TMap %k %v) bool))
 (defun (size-agrees? tx m)
   (= (tmap-length tx m) (tmap-fold tx (fun (k v acc) (+ acc 1)) 0 m)))
 
@@ -47,7 +47,7 @@
 ;; ---------------------------------------------------------------------------
 
 ;; Adds keys base to base + n - 1, then removes the even ones.
-(: churn (-bjo-> (TMap int int) int int (Loc int) void))
+(: (-bjo-> (TMap int int) int int (Loc int) void))
 (defbjo (churn m base n done)
   (loop (:for i (range base (+ base n)))
         (:do (atomically (fun (tx) (tmap-set! tx m i i)))))
@@ -55,7 +55,7 @@
         (:do (atomically (fun (tx) (tmap-remove! tx m i)))))
   (ignore (atomically (fun (tx) (tx-update! tx done #(+ & 1))))))
 
-(: checker (-bjo-> (TMap int int) (Loc int) (Loc int) void))
+(: (-bjo-> (TMap int int) (Loc int) (Loc int) void))
 (defbjo (checker m done bad)
   (let lp ()
     (when (< (loc-ref done) 8)
@@ -63,7 +63,7 @@
         (ignore (atomically (fun (tx) (tx-update! tx bad #(+ & 1))))))
       (lp))))
 
-(: wait-for-key (-bjo-> (TMap string int) (Chan int) void))
+(: (-bjo-> (TMap string int) (Chan int) void))
 (defbjo (wait-for-key m out)
   (chan-put out (atomically (fun (tx) (match (tmap-try-ref tx m "late")
                                         ((Some v) v)

@@ -13,17 +13,17 @@
 (import (std prelude))
 (import (std simpletest))
 
-(: deep int)
+(: int)
 (def deep 300000)
 
 ;; The sequel of a `:propagate`, calling itself.
-(: count-down (-> int (Result string int)))
+(: (-> int (Result string int)))
 (defun (count-down n)
   (def (Ok v) (if (< n 0) (Err "below zero") (Ok n)) :propagate)
   (if (= v 0) (Ok 0) (count-down (- v 1))))
 
 ;; The same, in a named let, with the answer built in the loop.
-(: sum-down (-> int (Result string int)))
+(: (-> int (Result string int)))
 (defun (sum-down n)
   (let go ((i n) (acc 0))
     (def (Ok v) (if (< i 0) (Err "below zero") (Ok i)) :propagate)
@@ -32,14 +32,14 @@
 ;; A written failure value rather than `:propagate`, and the recursion in the
 ;; *arm* rather than in the sequel: an arm answers for the whole form, so it is
 ;; in tail position too.
-(: stubborn (-> int int))
+(: (-> int int))
 (defun (stubborn n)
   (def (Some v) (if (= n 0) (Some 0) None)
     :leave (None (stubborn (- n 1))))
   v)
 
 ;; Several clauses, the last of which may fail.
-(: pairs-down (-> int (Result string int)))
+(: (-> int (Result string int)))
 (defun (pairs-down n)
   (def* ((Ok a) (if (< n 0) (Err "below zero") (Ok n)) :propagate)
         ((Ok b) (Ok (- a 1)) :propagate))

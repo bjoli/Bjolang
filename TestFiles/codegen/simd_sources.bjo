@@ -7,49 +7,49 @@
 (import (std simd))
 
 ;; EXPECT-CS: return System\.Runtime\.Intrinsics\.Vector256\.Create<double>\(a, i\);
-(: from-array (-> (Array double) int Float64x4))
+(: (-> (Array double) int Float64x4))
 (defun (from-array a i) (simd256-load a i))
 
 ;; EXPECT-CS: return Bjolang\.Runtime\.BjoSimd\.LoadList256<long>\(v, i\);
-(: from-list (-> (MutableVec long) int Int64x4))
+(: (-> (MutableVec long) int Int64x4))
 (defun (from-list v i) (simd256-load v i))
 
 ;; EXPECT-CS: return Bjolang\.Runtime\.BjoSimd\.MaskBits256<byte>\(
-(: matches (-> UInt8x32 UInt8x32 int))
+(: (-> UInt8x32 UInt8x32 int))
 (defun (matches a b) (simd-mask-bits (simd-eq a b)))
 
 ;; EXPECT-CS: return Bjolang\.Runtime\.BjoSimd\.ShiftRightLogical128<int>\(v, 3\);
-(: down (-> Int32x4 Int32x4))
+(: (-> Int32x4 Int32x4))
 (defun (down v) (simd-shift-right-logical v 3))
 
 ;; A conversion is dispatched on the element type, and is the .NET overload
 ;; for it.
 ;; EXPECT-CS: return System\.Runtime\.Intrinsics\.Vector128\.WidenLower\(v\);
-(: widen (-> UInt8x16 UInt16x8))
+(: (-> UInt8x16 UInt16x8))
 (defun (widen v) (simd128-widen-lower v))
 
 ;; EXPECT-CS: return System\.Runtime\.Intrinsics\.Vector256\.NarrowWithSaturation\(a, b\);
-(: narrow (-> Int32x8 Int32x8 Int16x16))
+(: (-> Int32x8 Int32x8 Int16x16))
 (defun (narrow a b) (simd256-narrow-saturating a b))
 
 ;; EXPECT-CS: return System\.Runtime\.Intrinsics\.Vector128\.As<double, long>\(v\);
-(: bits (-> Float64x2 Int64x2))
+(: (-> Float64x2 Int64x2))
 (defun (bits v) (simd-bits->int64 v))
 
 ;; A float operation with one .NET overload per element type is the runtime's
 ;; generic helper, which the JIT reduces to the overload.
 ;; EXPECT-CS: return Bjolang\.Runtime\.BjoSimd\.Floor256<double>\(v\);
-(: down-to-integers (-> Float64x4 Float64x4))
+(: (-> Float64x4 Float64x4))
 (defun (down-to-integers v) (simd-floor v))
 
 ;; A shuffle and a lookup are the runtime's helpers, which pick the overload
 ;; and, for a 256-bit lookup on x86, the in-half instruction.
 ;; EXPECT-CS: return Bjolang\.Runtime\.BjoSimd\.Shuffle128<int>\(v, idx\);
-(: reorder (-> Int32x4 Int32x4 Int32x4))
+(: (-> Int32x4 Int32x4 Int32x4))
 (defun (reorder v idx) (simd-shuffle v idx))
 
 ;; EXPECT-CS: return Bjolang\.Runtime\.BjoSimd\.Lookup256<byte>\(table, idx\);
-(: classify (-> UInt8x16 UInt8x32 UInt8x32))
+(: (-> UInt8x16 UInt8x32 UInt8x32))
 (defun (classify table idx) (simd-lookup table idx))
 
 ;; Nothing goes through the trait at run time.

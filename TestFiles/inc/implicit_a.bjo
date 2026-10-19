@@ -6,34 +6,34 @@
 (export a-register! a-count a-twice Tagged a-tagged a-positive)
 (import (std prelude))
 
-(: registry (Box (List int)))
+(: (Box (List int)))
 (def registry (make-box (list)))
 
-(: helper (-> int int))
+(: (-> int int))
 (defun (helper n) (* n 2))
 
-(: a-register! (-> int void))
+(: (-> int void))
 (defun (a-register! n) #:inline (box-set! registry (cons (helper n) (box-ref registry))))
 
-(: a-count (-> int))
+(: (-> int))
 (defun (a-count) #:inline (list-length (box-ref registry)))
 
 ;; A field label that spells the private `helper`. The label is not a
 ;; variable, and it stays the field's name where the body is inlined.
 (type (: Tagged (Record (: helper int))))
 
-(: a-tagged (-> int int))
+(: (-> int int))
 (defun (a-tagged n) #:inline (record-ref (Tagged (helper (helper n))) helper))
 
 ;; A private function whose type variable only its result names. C# cannot
 ;; infer that variable from the arguments, so a call to it in an inlined body
 ;; must give the type argument, also under the implicit export's name.
-(: refuse (-> string (Result string %a)))
+(: (-> string (Result string %a)))
 (defun (refuse what) (Err (str "not " what)))
 
-(: a-positive (-> int (Result string int)))
+(: (-> int (Result string int)))
 (defun (a-positive n) #:inline (if (> n 0) (Ok n) (refuse "positive")))
 
 ;; A constrained body, which an importer specialises.
-(: a-twice (-> %a int) (where (->str %a)))
+(: (-> %a int) (where (->str %a)))
 (defun (a-twice x) (helper (string-length (->str x))))

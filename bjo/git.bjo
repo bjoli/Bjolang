@@ -54,7 +54,7 @@
   (directory-create tmp)
   (Tool (errors (path-combine tmp "git-stderr.txt"))))
 
-(: tool-said (-> Tool string))
+(: (-> Tool string))
 (defun (tool-said g)
   (if (file-exists? (record-ref g errors))
       (string-trim (file-read-text (record-ref g errors)))
@@ -62,7 +62,7 @@
 
 ;; Is there a git to run at all? Asked before the first command, so that a
 ;; machine without one is told what is missing rather than what failed.
-(: git-on-path? (-> bool))
+(: (-> bool))
 (defun (git-on-path?) (some? (which "git")))
 
 ;; Runs git, and answers its exit code and its output. A non-zero code is an
@@ -90,13 +90,13 @@
 ;; One directory per URL, named after it. Every character that is not a letter
 ;; or a digit becomes `_`, so the name is a name on every filesystem and two
 ;; URLs that differ anywhere differ here.
-(: url->directory-name (-> string string))
+(: (-> string string))
 (defun (url->directory-name url)
   (loop (:for c url)
         (:acc out (stringing (if (or (char-alphabetic? c) (char-numeric? c)) c #\_)))
     => out))
 
-(: clone-directory (-> string string string))
+(: (-> string string string))
 (defun (clone-directory dot-bjo url)
   (path-combine dot-bjo "git" (url->directory-name url)))
 
@@ -132,7 +132,7 @@
 ;; Versions, as tags
 ;; ---------------------------------------------------------------------------
 
-(: version->tag (-> Version string))
+(: (-> Version string))
 (defun (version->tag v) (str "v" (version->string v)))
 
 ;; A tag as a version, if it is one.
@@ -141,7 +141,7 @@
 ;; read, so `v1.2` and `v1.2.3-rc1` are not versions and are passed over. A tag
 ;; that is not a version is a name for something else — a branch point, a demo,
 ;; a talk — and a resolver that guessed at them would install one.
-(: tag->version (-> string (Option Version)))
+(: (-> string (Option Version)))
 (defun (tag->version tag)
   (if (not (string-starts-with? tag "v"))
       None
@@ -166,13 +166,13 @@
 
 ;; Insertion sort, oldest first. A repository has tens of tags, not thousands,
 ;; and `Version` is a record with no ordering of its own.
-(: list-sort-versions (-> (List Version) (List Version)))
+(: (-> (List Version) (List Version)))
 (defun (list-sort-versions versions)
   (match versions
     (Nil Nil)
     ((Cons v rest) (insert-version v (list-sort-versions rest)))))
 
-(: insert-version (-> Version (List Version) (List Version)))
+(: (-> Version (List Version) (List Version)))
 (defun (insert-version v sorted)
   (match sorted
     (Nil (Cons v Nil))
@@ -221,17 +221,17 @@
 ;; `.bjo/pkg/bjorsec@1.2.3`, or `.bjo/pkg/my.app@1.2.3` for a name of several
 ;; segments. One directory per version, so two projects' dependencies never
 ;; share one and a version that is no longer wanted can be deleted by name.
-(: package-directory (-> string (List Symbol) Version string))
+(: (-> string (List Symbol) Version string))
 (defun (package-directory dot-bjo name v)
   (path-combine dot-bjo "pkg"
                 (str (string-join (list->vec (list-map symbol->string name)) ".")
                      "@" (version->string v))))
 
 ;; What a materialised directory says it holds.
-(: commit-marker (-> string string))
+(: (-> string string))
 (defun (commit-marker dir) (path-combine dir ".bjo-commit"))
 
-(: marked-commit (-> string string))
+(: (-> string string))
 (defun (marked-commit dir)
   (if (file-exists? (commit-marker dir))
       (string-trim (file-read-text (commit-marker dir)))

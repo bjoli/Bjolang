@@ -13,7 +13,7 @@
 (import (std simpletest))
 (import (std mutable deque))
 
-(: threw? (-> (Result System.Exception %a) bool))
+(: (-> (Result System.Exception %a) bool))
 (defun (threw? r)
   (match r ((Ok _) #f) ((Err _) #t)))
 
@@ -62,10 +62,10 @@
 (type/derive (Eq Ord)
   (: (Pair %a) (Record (: first %a) (: second %a))))
 
-(: pair (-> int int (Pair int)))
+(: (-> int int (Pair int)))
 (defun (pair a b) (Pair (first a) (second b)))
 
-(: eq-edges (-> void))
+(: (-> void))
 (defun (eq-edges)
   (def e1 (Edge (from 1) (to 2)))
   (def e2 (Edge (from 2) (to 1)))
@@ -90,7 +90,7 @@
 
 ;; The element's own `Eq` is what the edge's is built from: here that is a
 ;; derived `Pair`'s, itself compiled into `Pair<int>`.
-(: eq-nested (-> void))
+(: (-> void))
 (defun (eq-nested)
   (def e1 (Edge (from (pair 1 2)) (to (pair 3 4))))
   (def e2 (Edge (from (pair 3 4)) (to (pair 1 2))))
@@ -100,7 +100,7 @@
 
 ;; A derived implementation says what C#'s own members said, field by field,
 ;; so nothing a program can observe changes.
-(: eq-derived (-> void))
+(: (-> void))
 (defun (eq-derived)
   (expect "equal pairs are one" (hashset-length (list->hashset (list (pair 1 2) (pair 1 2)))) 1)
   (expect "pairs differing in order are two" (hashset-length (list->hashset (list (pair 1 2) (pair 2 1)))) 2)
@@ -121,7 +121,7 @@
                     (string-length (->str (record-ref y item)))))
   (defun (eq-hash x) (string-length (->str (record-ref x item)))))
 
-(: eq-other-trait (-> void))
+(: (-> void))
 (defun (eq-other-trait)
   (expect-true "= uses the implementation" (= (Loose (item 1)) (Loose (item 2))))
   (expect "and so does a Set" (hashset-length (list->hashset (list (Loose (item 1)) (Loose (item 2))))) 1))
@@ -139,7 +139,7 @@
 (type/derive (Eq)
   (: (Tally %a) (Record (: key %a) (: hits int #:mutable))))
 
-(: eq-mutable (-> void))
+(: (-> void))
 (defun (eq-mutable)
   (def a (Slot (key "k") (hits 1)))
   (def b (Slot (key "k") (hits 2)))
@@ -161,7 +161,7 @@
 ;; split between its two halves.
 (type (: Holder (Record (: d (Deque int)))))
 
-(: eq-deque (-> void))
+(: (-> void))
 (defun (eq-deque)
   (def a (deque))
   (deque-push-back! a 1)
@@ -185,7 +185,7 @@
 ;; `OrderedMap` and `OrderedSet` compare through `CompareTo`, which C# never
 ;; writes: before, a generic key compiled and crashed at the first comparison.
 
-(: ord-derived (-> void))
+(: (-> void))
 (defun (ord-derived)
   (def om (orderedmap-set (orderedmap-set (orderedmap-set (orderedmap-empty)
                                                           (pair 2 0) "c")
@@ -201,7 +201,7 @@
 
 ;; Strings inside a generic key compare ordinally, as `compare` on strings
 ;; does: "B" (66) before "a" (97), which a culture's order would reverse.
-(: ord-strings (-> void))
+(: (-> void))
 (defun (ord-strings)
   (def lower (Pair (first "a") (second "x")))
   (def upper (Pair (first "B") (second "x")))
@@ -217,10 +217,10 @@
   (where (Ord %a))
   (defun (compare x y) (compare (record-ref y priority) (record-ref x priority))))
 
-(: priorities (-> (List (Job %a)) (List int)))
+(: (-> (List (Job %a)) (List int)))
 (defun (priorities js) (list-map (fun (j) (record-ref j priority)) js))
 
-(: ord-by-hand (-> void))
+(: (-> void))
 (defun (ord-by-hand)
   (def jobs (list (Job (priority 1) (label "low"))
                   (Job (priority 3) (label "high"))
@@ -236,7 +236,7 @@
 (type/derive (Eq Ord)
   (: (Opt %a) (Union Nothing (: Just %a))))
 
-(: ord-union (-> void))
+(: (-> void))
 (defun (ord-union)
   (def j1 (Just 1))
   (def j2 (Just 2))
@@ -253,7 +253,7 @@
 ;; such a union is handed the implementation as its comparer, and keeps one.
 (type (: Money (Union (: Cents int) (: Dollars int))))
 
-(: money->cents (-> Money int))
+(: (-> Money int))
 (defun (money->cents m)
   (match m
     ((Cents c) c)
@@ -263,7 +263,7 @@
   (defun (= x y) (= (money->cents x) (money->cents y)))
   (defun (eq-hash x) (eq-hash (money->cents x))))
 
-(: union-rule (-> void))
+(: (-> void))
 (defun (union-rule)
   (expect-true "= equates the two spellings" (= (Cents 100) (Dollars 1)))
   (expect "and so does a Set" (hashset-length (list->hashset (list (Cents 100) (Dollars 1)))) 1)

@@ -15,7 +15,7 @@
 (def block-count 240)
 
 ;; The number of flips until the first element is 0. Uses perm as scratch.
-(: count-flips (-> (Array int) (Array int) int))
+(: (-> (Array int) (Array int) int))
 (defun (count-flips perm1 perm)
   (def n (array-length perm1))
   (loop (:for i (range 0 n))
@@ -34,7 +34,7 @@
           (flip (+ flips 1))))))
 
 ;; Makes permutation number idx in perm1, and the counts that continue from it.
-(: first-permutation! (-> int (Array int) (Array int) (Array int) (Array int) void))
+(: (-> int (Array int) (Array int) (Array int) (Array int) void))
 (defun (first-permutation! idx fact perm1 count scratch)
   (def n (array-length perm1))
   (loop (:for i (range 0 n)) (:do (array-set! perm1 i i)))
@@ -50,7 +50,7 @@
                                                              (- (+ j d) (+ i 1)))))))
       (go (- i 1) (% idx (array-ref fact i))))))
 
-(: next-permutation! (-> (Array int) (Array int) void))
+(: (-> (Array int) (Array int) void))
 (defun (next-permutation! perm1 count)
   (def first (array-ref perm1 1))
   (array-set! perm1 1 (array-ref perm1 0))
@@ -69,7 +69,7 @@
 
 ;; The checksum and the most flips of the permutations numbered lo..hi-1,
 ;; with perm1 and count at permutation lo.
-(: block-flips (-> int int (Array int) (Array int) (Array int) (Tuple int int)))
+(: (-> int int (Array int) (Array int) (Array int) (Tuple int int)))
 (defun (block-flips lo hi perm1 perm count)
   (let go ((idx lo) (checksum 0) (max-flips 0))
     (def flips (count-flips perm1 perm))
@@ -81,7 +81,7 @@
           (next-permutation! perm1 count)
           (go (+ idx 1) checksum max-flips)))))
 
-(: block-worker (-bjo-> (Chan int) (Array int) int int (Tuple int int)))
+(: (-bjo-> (Chan int) (Array int) int int (Tuple int int)))
 (defbjo (block-worker blocks fact block n)
   (def perm1 (make-array n))
   (def perm (make-array n))
@@ -98,7 +98,7 @@
           (def (c m) (block-flips lo (min (+ lo block) total) perm1 perm count))
           (next-block (+ checksum c) (max max-flips m))))))
 
-(: send-blocks (-bjo-> (Chan int) int int void))
+(: (-bjo-> (Chan int) int int void))
 (defbjo (send-blocks ch block total)
   (let go ((b 0))
     (when (< (* b block) total)
@@ -109,7 +109,7 @@
       (chan-put ch -1)
       (stop (+ w 1)))))
 
-(: join-all (-bjo-> (List (Promise (Tuple int int))) int int (Tuple int int)))
+(: (-bjo-> (List (Promise (Tuple int int))) int int (Tuple int int)))
 (defbjo (join-all ps checksum max-flips)
   (match ps
     (Nil (Tuple checksum max-flips))

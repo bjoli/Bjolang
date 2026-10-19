@@ -13,7 +13,7 @@
 (import "129_lib.bjo")
 (import (std simpletest))
 
-(: expect-int (-> string int int void))
+(: (-> string int int void))
 (defun (expect-int label actual want)
   (expect-true (string-append label
                          (string-append " => " (int->string actual)))
@@ -32,18 +32,18 @@
                         (: back (List %a) #:mutable)
                         (: size int #:mutable))))
 
-(: queue (-> (Queue %a)))
+(: (-> (Queue %a)))
 (defun (queue)
   (Queue (front Nil) (back Nil) (size 0)))
 
-(: queue-size (-> (Queue %a) int))
+(: (-> (Queue %a) int))
 (defun (queue-size q) (record-ref q size))
 
-(: queue-empty? (-> (Queue %a) bool))
+(: (-> (Queue %a) bool))
 (defun (queue-empty? q) (= (record-ref q size) 0))
 
 ;; Arriving items go on `back`, which costs a cons and nothing else.
-(: enqueue! (-> (Queue %a) %a void))
+(: (-> (Queue %a) %a void))
 (defun (enqueue! q x)
   (record-set! q
                (back (Cons x (record-ref q back)))
@@ -54,7 +54,7 @@
 ;; Both fields are written by one form, which is the point of allowing more than
 ;; one. Doing it as two `record-set!`s would leave the queue holding the same
 ;; item twice in between — briefly, but really.
-(: flip! (-> (Queue %a) void))
+(: (-> (Queue %a) void))
 (defun (flip! q)
   (when (and (list-empty? (record-ref q front))
              (not (list-empty? (record-ref q back))))
@@ -62,7 +62,7 @@
                  (front (list-reverse (record-ref q back)))
                  (back Nil))))
 
-(: dequeue! (-> (Queue %a) (Option %a)))
+(: (-> (Queue %a) (Option %a)))
 (defun (dequeue! q)
   (flip! q)
   (match (record-ref q front)
@@ -77,7 +77,7 @@
 ;; queue is *stored*, not to what it holds — which is exactly the sort of thing
 ;; a mutable field is for: nothing about the queue's value has changed, so
 ;; making the caller thread a new queue through a peek would be a lie.
-(: peek! (-> (Queue %a) (Option %a)))
+(: (-> (Queue %a) (Option %a)))
 (defun (peek! q)
   (flip! q)
   (match (record-ref q front)
@@ -87,14 +87,14 @@
 ;; Written here rather than reaching for the prelude's `list-append`, which is a
 ;; `list-foldr`: this is the recursive spelling, and what the queue wants is one
 ;; list in front of another, which is what it says.
-(: list-then (-> (List %a) (List %a) (List %a)))
+(: (-> (List %a) (List %a) (List %a)))
 (defun (list-then xs ys)
   (match xs
     (Nil ys)
     ((Cons x rest) (Cons x (list-then rest ys)))))
 
 ;; Front to back, without disturbing anything.
-(: queue->list (-> (Queue %a) (List %a)))
+(: (-> (Queue %a) (List %a)))
 (defun (queue->list q)
   (list-then (record-ref q front) (list-reverse (record-ref q back))))
 
@@ -102,17 +102,17 @@
 ;; Using it
 ;; ---------------------------------------------------------------------------
 
-(: drain (-> (Queue int) (List int)))
+(: (-> (Queue int) (List int)))
 (defun (drain q)
   (match (dequeue! q)
     (None Nil)
     ((Some x) (Cons x (drain q)))))
 
-(: show (-> (List int) string))
+(: (-> (List int) string))
 (defun (show xs)
   (list-foldl (fun (x acc) (string-append acc (string-append (int->string x) " "))) "" xs))
 
-(: first-in-first-out (-> void))
+(: (-> void))
 (defun (first-in-first-out)
   (def q (queue))
   (enqueue! q 1)
@@ -135,7 +135,7 @@
 
 ;; A queue passed to a function is the caller's queue. Nothing is returned and
 ;; nothing is threaded; this is the property the whole feature buys.
-(: written-through-a-call (-> void))
+(: (-> void))
 (defun (written-through-a-call)
   (def q (queue))
   (enqueue! q 10)
@@ -144,7 +144,7 @@
   (expect-int "and the caller's queue is empty" (queue-size q) 0))
 
 ;; Two names, one queue.
-(: aliasing (-> void))
+(: (-> void))
 (defun (aliasing)
   (def q (queue))
   (def same q)
@@ -155,7 +155,7 @@
 
 ;; `peek!` flips but does not consume, so asking twice gives the same answer and
 ;; the size is unmoved.
-(: peeking (-> void))
+(: (-> void))
 (defun (peeking)
   (def q (queue))
   (enqueue! q 5)
@@ -167,7 +167,7 @@
 
 ;; Generic in the element type, and mutable in it: `Queue` is exactly the shape
 ;; the value restriction exists for, and it is used at two types here.
-(: generic (-> void))
+(: (-> void))
 (defun (generic)
   (def qs (queue))
   (enqueue! qs "a")
@@ -181,7 +181,7 @@
 ;; Every value is evaluated, left to right, before any of them is written. So
 ;; the `size` operand below reads the size as it was, not the one being written
 ;; beside it.
-(: evaluation-order (-> void))
+(: (-> void))
 (defun (evaluation-order)
   (def q (queue))
   (enqueue! q 1)
@@ -194,7 +194,7 @@
 ;; A functional update is still a copy, and takes the mutable fields as they
 ;; stand. Writing one afterwards does not reach the other — which is what makes
 ;; `record-set` and `record-set!` worth telling apart.
-(: copying (-> void))
+(: (-> void))
 (defun (copying)
   (def a (queue))
   (enqueue! a 1)
@@ -229,11 +229,11 @@
   (: Tally (Record (: name string)
                    (: hits int #:mutable))))
 
-(: threw? (-> (Result System.Exception %a) bool))
+(: (-> (Result System.Exception %a) bool))
 (defun (threw? r)
   (match r ((Ok _) #f) ((Err _) #t)))
 
-(: equality (-> void))
+(: (-> void))
 (defun (equality)
   (def a (Tally (name "a") (hits 1)))
   (def b (Tally (name "a") (hits 1)))
@@ -267,7 +267,7 @@
   (defun (= a b) (= (record-ref a key) (record-ref b key)))
   (defun (eq-hash c) (eq-hash (record-ref c key))))
 
-(: hand-written-hash (-> void))
+(: (-> void))
 (defun (hand-written-hash)
   (def a (Cached (key "k") (hits 1)))
   (def b (Cached (key "k") (hits 999)))
@@ -294,7 +294,7 @@
 ;; What crosses is one record, not a copy of one: the writes the library makes
 ;; are visible here because it is the same object.
 
-(: foreign (-> void))
+(: (-> void))
 (defun (foreign)
   (def s (slot "counter" 0))
   (expect-int "constructed across the boundary" (slot-ref s) 0)

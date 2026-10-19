@@ -10,32 +10,32 @@
 
 (import (std prelude))
 
-(: nap (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (nap ms) #:inline
   (sync (timeout ms))
   (+ ms 1))
 
-(: nap-plain (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (nap-plain ms)
   (sync (timeout ms))
   (+ ms 1))
 
 ;; Copied: the call is a yield point here, so the copy may be one too.
 ;; EXPECT-NO-CS: await [\w.]+\.nap\(n\)
-(: copies (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (copies n)
   (nap n))
 
 ;; Not written #:inline: stays a call, however small.
 ;; EXPECT-CS: await [\w.]+\.napsubplain\(n\)
-(: not-asked (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (not-asked n)
   (nap-plain n))
 
 ;; A spawn evaluates its operands in the parent and runs the call in the
 ;; child, so the call stays a call.
 ;; EXPECT-CS: ScopeSpawn<int>\(\(\) => [\w.]+\.nap\(__bjo__\d+\)\)
-(: spawns (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (spawns n)
   (match (sync (promise-join (bjo (nap n))))
     ((Ok v) v)
@@ -43,37 +43,37 @@
 
 ;; A function given as an argument is bridged where it is given, so a call
 ;; to a bjoroutine that is given one stays a call.
-(: apply-to (-bjo-> (-bjo-> int int) int int))
+(: (-bjo-> (-bjo-> int int) int int))
 (defbjo (apply-to f x) #:inline
   (sync (timeout 1))
   (f x))
 
 ;; EXPECT-CS: await [\w.]+\.applysubto\(
-(: gives-function (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (gives-function n)
   (apply-to nap-plain n))
 
 ;; Recursive: refused with a warning, and stays a call.
-(: countdown (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (countdown n) #:inline
   (sync (timeout 1))
   (if (= n 0) 0 (+ 1 (countdown (- n 1)))))
 
 ;; EXPECT-CS: await [\w.]+\.countdown\(n\)
-(: calls-countdown (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (calls-countdown n)
   (countdown n))
 
 ;; An ordinary function written #:inline is copied at a plain call too, and
 ;; one that is not stays a call.
-(: square (-> int int))
+(: (-> int int))
 (defun (square x) #:inline (* x x))
 
-(: cube (-> int int))
+(: (-> int int))
 (defun (cube x) (* x x x))
 
 ;; EXPECT-NO-CS: [\w.]+\.square\(n\)
 ;; EXPECT-CS: [\w.]+\.cube\(n\)
-(: both (-> int int))
+(: (-> int int))
 (defun (both n)
   (+ (square n) (cube n)))

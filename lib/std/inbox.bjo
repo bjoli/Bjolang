@@ -109,7 +109,7 @@
 ;; `FileSystemWatcher` during a large `git checkout` fires thousands of events.
 ;; The number is yours to pick: for an HTTP server it is how many requests may
 ;; wait before the answer is 503.
-(: make-inbox (-> int WhenFull (Inbox %a)))
+(: (-> int WhenFull (Inbox %a)))
 (defun (make-inbox capacity policy)
   (clr-make-inbox capacity (match policy
                              (DropNewest #f)
@@ -124,7 +124,7 @@
 ;;
 ;; `#t` when the item was queued or handed straight to a waiting receiver. `#f`
 ;; when the inbox is closed, or full under `DropNewest`.
-(: inbox-post! (-> (Inbox %a) %a bool))
+(: (-> (Inbox %a) %a bool))
 (defun (inbox-post! ib x) (clr-post ib x))
 
 ;; The same handover for a caller that can wait, because it returns a `Task`:
@@ -133,12 +133,12 @@
 ;; waiting producer holds exactly one item.
 ;;
 ;; On a closed inbox, or an `inbox-abort!` while waiting, the task is cancelled.
-(: inbox-send (-> (Inbox %a) %a (Task Unit)))
+(: (-> (Inbox %a) %a (Task Unit)))
 (defun (inbox-send ib x) (clr-send ib x))
 
 ;; The same, with the caller's own token. If it fires while the send is waiting
 ;; for room, the item never enters the queue and the task is cancelled.
-(: inbox-send/token (-> (Inbox %a) %a CancellationToken (Task Unit)))
+(: (-> (Inbox %a) %a CancellationToken (Task Unit)))
 (defun (inbox-send/token ib x token) (clr-send/token ib x token))
 
 ;; The fiber's form of a send, as a CML event: it commits when there is room,
@@ -150,7 +150,7 @@
 ;;
 ;; On a closed inbox it never commits. A fiber that may meet one should choose
 ;; it together with `inbox-closed`.
-(: inbox-send-evt (-> (Inbox %a) %a (Event Unit)))
+(: (-> (Inbox %a) %a (Event Unit)))
 (defun (inbox-send-evt ib x) (clr-send-evt ib x))
 
 ;; ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@
 ;;
 ;; On a closed, empty inbox it never fires. `inbox-closed` is how the end is
 ;; noticed.
-(: inbox-recv (-> (Inbox %a) (Event %a)))
+(: (-> (Inbox %a) (Event %a)))
 (defun (inbox-recv ib) (clr-recv ib))
 
 ;; Fires once the inbox is closed *and* empty, and from then on commits
@@ -178,7 +178,7 @@
 ;; It is a separate event rather than an `Option` from `inbox-recv` so that code
 ;; which never closes its inbox — an HTTP worker stopped by cancelling its scope
 ;; — keeps the simple form.
-(: inbox-closed (-> (Inbox %a) (Event (Option Exception))))
+(: (-> (Inbox %a) (Event (Option Exception))))
 (defun (inbox-closed ib) (clr-closed ib))
 
 ;; ---------------------------------------------------------------------------
@@ -189,21 +189,21 @@
 ;; cancelled task, but what is already queued stays and receivers can still take
 ;; it; a sender already waiting for room still gets in. `inbox-closed` fires
 ;; once all of that has been received.
-(: inbox-close! (-> (Inbox %a) void))
+(: (-> (Inbox %a) void))
 (defun (inbox-close! ib) (clr-close! ib))
 
 ;; The same as `inbox-close!`, but `inbox-closed` yields `(Some e)`.
 ;;
 ;; The error is kept beside the queue rather than in it, so no full policy can
 ;; drop the one item that says what went wrong.
-(: inbox-fail! (-> (Inbox %a) Exception void))
+(: (-> (Inbox %a) Exception void))
 (defun (inbox-fail! ib e) (clr-fail! ib e))
 
 ;; A hard stop: closed, and everything queued dropped. Queued calls and waiting
 ;; `inbox-send` tasks are cancelled, a waiting `inbox-send-evt` never commits,
 ;; and `inbox-closed` then fires with `None` — or with the earlier error, if
 ;; `inbox-fail!` came first.
-(: inbox-abort! (-> (Inbox %a) void))
+(: (-> (Inbox %a) void))
 (defun (inbox-abort! ib) (clr-abort! ib))
 
 ;; ---------------------------------------------------------------------------
@@ -213,7 +213,7 @@
 ;; How many items the two dropping policies have thrown away, so that a program
 ;; can report its losses: "dropped 37 progress updates". `inbox-abort!` is not
 ;; counted — that is the program stopping, not the inbox overflowing.
-(: inbox-dropped-count (-> (Inbox %a) int))
+(: (-> (Inbox %a) int))
 (defun (inbox-dropped-count ib) (clr-dropped-count ib))
 
 ;; ---------------------------------------------------------------------------
@@ -226,14 +226,14 @@
 ;;
 ;; All three run on the observable's thread, so they follow the rule every
 ;; foreign callback does: post, close or fail, and nothing else.
-(: make-observer (-> (-> %a void) (-> Exception void) (-> void) (IObserver %a)))
+(: (-> (-> %a void) (-> Exception void) (-> void) (IObserver %a)))
 (defun (make-observer on-next on-error on-completed)
   (clr-make-observer on-next on-error on-completed))
 
 ;; The inbox as an observer, for `(.Subscribe observable (inbox-observer ib))`.
 ;; `OnNext` posts, so the inbox's policy applies; `OnError` fails it; and
 ;; `OnCompleted` closes it.
-(: inbox-observer (-> (Inbox %a) (IObserver %a)))
+(: (-> (Inbox %a) (IObserver %a)))
 (defun (inbox-observer ib)
   (make-observer (fun (x) (ignore (inbox-post! ib x)))
                  (fun (e) (inbox-fail! ib e))
@@ -253,7 +253,7 @@
 ;; Posts a call and hands back the task its caller waits on. Safe from any
 ;; thread. When the inbox is full the policy decides, and the task faults with a
 ;; `Bjoml.InboxFullException`; when it is closed, the task is cancelled.
-(: inbox-call (-> (Inbox (Call %q %r)) %q (Task %r)))
+(: (-> (Inbox (Call %q %r)) %q (Task %r)))
 (defun (inbox-call ib request) (clr-call ib request))
 
 ;; The same, with the caller's own `CancellationToken` — Kestrel's
@@ -266,7 +266,7 @@
 ;;     receiver to do as it sees fit. This is what keeps an HTTP handler from
 ;;     writing into a context that has already been recycled into the next
 ;;     request.
-(: inbox-call/token (-> (Inbox (Call %q %r)) %q CancellationToken (Task %r)))
+(: (-> (Inbox (Call %q %r)) %q CancellationToken (Task %r)))
 (defun (inbox-call/token ib request token) (clr-call/token ib request token))
 
 ;; The same two, with the refusal as an answer rather than as a fault on the
@@ -287,28 +287,28 @@
 ;;
 ;; Under `DropOldest` the answer is `(Some ...)`: this call went in, and it is
 ;; an *older* one whose task faults. `inbox-post!` means the same thing by `#t`.
-(: inbox-try-call (-> (Inbox (Call %q %r)) %q (Option (Task %r))))
+(: (-> (Inbox (Call %q %r)) %q (Option (Task %r))))
 (defun (inbox-try-call ib request) (clr-try-call ib request))
 
-(: inbox-try-call/token (-> (Inbox (Call %q %r)) %q CancellationToken (Option (Task %r))))
+(: (-> (Inbox (Call %q %r)) %q CancellationToken (Option (Task %r))))
 (defun (inbox-try-call/token ib request token) (clr-try-call/token ib request token))
 
 ;; What the caller asked.
-(: call-request (-> (Call %q %r) %q))
+(: (-> (Call %q %r) %q))
 (defun (call-request c) (clr-call-request c))
 
 ;; Answers the call. The first completion wins and returns `#t`; a later one
 ;; returns `#f` and does nothing, so a timeout and a handler can race to answer
 ;; safely.
-(: call-reply! (-> (Call %q %r) %r bool))
+(: (-> (Call %q %r) %r bool))
 (defun (call-reply! c value) (clr-call-reply! c value))
 
 ;; The same, with an exception for the caller to receive.
-(: call-fail! (-> (Call %q %r) Exception bool))
+(: (-> (Call %q %r) Exception bool))
 (defun (call-fail! c e) (clr-call-fail! c e))
 
 ;; Fires once the caller's token has fired *after* this call was taken. It never
 ;; fires for a call made without a token, and never for one cancelled while it
 ;; was still queued — nobody had it to be told.
-(: call-abandoned (-> (Call %q %r) (Event Unit)))
+(: (-> (Call %q %r) (Event Unit)))
 (defun (call-abandoned c) (clr-call-abandoned c))

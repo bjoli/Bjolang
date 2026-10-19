@@ -28,13 +28,13 @@
 
 ;; ((fun (x y) (+ x y)) 4 5)
 ;;   => (let ((x 4)) (let ((y 5)) (+ x y)))
-(: basic (-> int))
+(: (-> int))
 (defun (basic)
   ((fun (x y) (+ x y)) 4 5))
 
 ;; ((fun () 7))  =>  7. No parameters means no bindings; the collapse is the
 ;; empty case of the same fold rather than a rule of its own.
-(: nullary (-> int))
+(: (-> int))
 (defun (nullary)
   ((fun () (+ 3 4))))
 
@@ -49,14 +49,14 @@
 ;; `b` and `a` — so this is (- 2 1). Nesting the bindings naively would put the
 ;; parameter `a` in scope for the second argument and give (- 2 2), which is
 ;; why the first parameter is freshened here.
-(: capture (-> int))
+(: (-> int))
 (defun (capture)
   ((fun (a b) (- a b)) b a))
 
 ;; The same shape with an argument that is itself an applied lambda: only comes
 ;; out right if the rewrite is still capture-avoiding after it has fired once.
 ;; (- (* 2 2) 1).
-(: nested-capture (-> int))
+(: (-> int))
 (defun (nested-capture)
   ((fun (a b) (- a b)) ((fun (n) (* n 2)) b) a))
 
@@ -66,14 +66,14 @@
 
 (def/mutable trace "")
 
-(: note (-> string int))
+(: (-> string int))
 (defun (note tag)
   (set! trace (string-append trace tag))
   0)
 
 ;; The parameter is never read. Substituting the argument into the body would
 ;; delete the effect; binding it keeps it, exactly once and before the body.
-(: unused-parameter (-> string))
+(: (-> string))
 (defun (unused-parameter)
   (set! trace "")
   (def result ((fun (ignored) 42) (note "effect ")))
@@ -81,7 +81,7 @@
 
 ;; Arguments are evaluated left to right, and go on being evaluated left to
 ;; right after the rewrite.
-(: argument-order (-> string))
+(: (-> string))
 (defun (argument-order)
   (set! trace "")
   (def result ((fun (p q r) (+ p (+ q r))) (note "1") (note "2") (note "3")))
@@ -93,7 +93,7 @@
 
 ;; Bound to a name and then *passed*, rather than applied. Nothing in this pass
 ;; may turn that into a function-shaped binding: `list-map` needs a value.
-(: escaping (-> int))
+(: (-> int))
 (defun (escaping)
   (let ((f (fun (v) (* v 2))))
     (list-foldl (fun (v acc) (+ acc v)) 0 (list-map f (list 1 2 3)))))
@@ -102,13 +102,13 @@
 ;; Colour
 ;; ---------------------------------------------------------------------------
 
-(: double (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (double v) (* v 2))
 
 ;; A `bjoroutine` in head position. Left completely untouched — the lambda is a
 ;; C# state machine of its own, and calling it is a yield point, which is why
 ;; this only compiles inside a bjoroutine.
-(: suspending-head (-> int))
+(: (-> int))
 (defbjo (suspending-head)
   ((bjoroutine (v) (double v)) 21))
 

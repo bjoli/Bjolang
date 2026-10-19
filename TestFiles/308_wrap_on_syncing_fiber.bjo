@@ -11,17 +11,17 @@
 (import (std simpletest))
 (import/class (Failure (: System.Exception (-> string Failure))))
 
-(: who (Param string))
+(: (Param string))
 (def who (make-parameter "root"))
 
-(: send-as (-bjo-> string (Chan int) (Chan string) void))
+(: (-bjo-> string (Chan int) (Chan string) void))
 (defbjo (send-as name ch done)
   (parameterize ((who name))
     (sync (timeout 50))
     (sync (chan-send ch 1))
     (sync (chan-send done "sender finished"))))
 
-(: seen-across-a-channel (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (seen-across-a-channel)
   (def ch (make-chan))
   (def done (make-chan))
@@ -31,17 +31,17 @@
   (ignore (sync (chan-recv done)))
   seen)
 
-(: seen-after-a-timeout (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (seen-after-a-timeout)
   (parameterize ((who "RECEIVER"))
     (sync (wrap (timeout 20) (fun (u) (parameter-ref who))))))
 
-(: boom (-> int int))
+(: (-> int int))
 (defun (boom v) (raise (Failure. "boom")))
 
 ;; What the receiver caught, and what the sender said afterwards, or that one
 ;; of them never finished.
-(: raised-in-the-receiver (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (raised-in-the-receiver)
   (def ch (make-chan))
   (def done (make-chan))

@@ -72,7 +72,7 @@
   (shim-needs-rehash   (: Bjolang.Runtime.CryptoModule.PasswordNeedsRehash (-> string string int bool))))
 
 ;; The name .NET knows the algorithm by.
-(: algorithm-name (-> HashAlgorithm string))
+(: (-> HashAlgorithm string))
 (defun (algorithm-name a)
   (match a
     (Md5      "MD5")
@@ -85,11 +85,11 @@
     (Sha3-512 "SHA3-512")))
 
 ;; SHA-3 needs OpenSSL 1.1.1 or later, or Windows 11. The others are always there.
-(: hash-algorithm-supported? (-> HashAlgorithm bool))
+(: (-> HashAlgorithm bool))
 (defun (hash-algorithm-supported? a) (shim-supported (algorithm-name a)))
 
 ;; In bytes.
-(: digest-length (-> HashAlgorithm int))
+(: (-> HashAlgorithm int))
 (defun (digest-length a)
   (match a
     (Md5      16)
@@ -105,25 +105,25 @@
 ;; One-shot
 ;; ---------------------------------------------------------------------------
 
-(: hash-bytes (-> (Array byte) (#:algorithm HashAlgorithm) (Array byte)))
+(: (-> (Array byte) (#:algorithm HashAlgorithm) (Array byte)))
 (defun (hash-bytes data #:algorithm Sha256)
   (shim-hash (algorithm-name algorithm) data))
 
-(: hash-string (-> string (#:algorithm HashAlgorithm) (Array byte)))
+(: (-> string (#:algorithm HashAlgorithm) (Array byte)))
 (defun (hash-string text #:algorithm Sha256)
   (shim-hash-string (algorithm-name algorithm) text))
 
 ;; The file is read a buffer at a time, so a large file is never all in memory.
-(: hash-file (-> string (#:algorithm HashAlgorithm) (Array byte)))
+(: (-> string (#:algorithm HashAlgorithm) (Array byte)))
 (defbjouble (hash-file path #:algorithm Sha256)
   (#:sync (shim-hash-file (algorithm-name algorithm) path))
   (#:bjo  (shim-hash-file-await (algorithm-name algorithm) path)))
 
-(: hmac-bytes (-> (Array byte) (Array byte) (#:algorithm HashAlgorithm) (Array byte)))
+(: (-> (Array byte) (Array byte) (#:algorithm HashAlgorithm) (Array byte)))
 (defun (hmac-bytes key data #:algorithm Sha256)
   (shim-hmac (algorithm-name algorithm) key data))
 
-(: hmac-string (-> (Array byte) string (#:algorithm HashAlgorithm) (Array byte)))
+(: (-> (Array byte) string (#:algorithm HashAlgorithm) (Array byte)))
 (defun (hmac-string key text #:algorithm Sha256)
   (shim-hmac-string (algorithm-name algorithm) key text))
 
@@ -133,23 +133,23 @@
 ;;
 ;; A hasher is mutable. Do not share one between fibers without a lock.
 
-(: make-hasher (-> (#:algorithm HashAlgorithm) Hasher))
+(: (-> (#:algorithm HashAlgorithm) Hasher))
 (defun (make-hasher #:algorithm Sha256)
   (shim-make-hasher (algorithm-name algorithm)))
 
-(: make-hmac-hasher (-> (Array byte) (#:algorithm HashAlgorithm) Hasher))
+(: (-> (Array byte) (#:algorithm HashAlgorithm) Hasher))
 (defun (make-hmac-hasher key #:algorithm Sha256)
   (shim-make-hmac (algorithm-name algorithm) key))
 
-(: hasher-add! (-> Hasher (Array byte) void))
+(: (-> Hasher (Array byte) void))
 (defun (hasher-add! h data) (shim-hasher-add h data))
 
-(: hasher-add-string! (-> Hasher string void))
+(: (-> Hasher string void))
 (defun (hasher-add-string! h text) (shim-hasher-add-str h text))
 
 ;; The digest of all that was added. The hasher is then empty, and can be used
 ;; again. An HMAC hasher keeps its key.
-(: hasher-finish! (-> Hasher (Array byte)))
+(: (-> Hasher (Array byte)))
 (defun (hasher-finish! h) (shim-hasher-finish h))
 
 ;; ---------------------------------------------------------------------------
@@ -159,15 +159,15 @@
 ;; Use this to compare a secret, such as an HMAC tag or a token. The time does
 ;; not depend on where the arrays differ. Arrays of different lengths are not
 ;; equal, and the time can show the lengths.
-(: constant-time-equal? (-> (Array byte) (Array byte) bool))
+(: (-> (Array byte) (Array byte) bool))
 (defun (constant-time-equal? a b) (shim-fixed-equal a b))
 
 ;; Lower case.
-(: bytes->hex (-> (Array byte) string))
+(: (-> (Array byte) string))
 (defun (bytes->hex bytes) (shim-to-hex bytes))
 
 ;; Either case. `None` for an odd length or a character that is not a hex digit.
-(: hex->bytes (-> string (Option (Array byte))))
+(: (-> string (Option (Array byte))))
 (defun (hex->bytes text) (shim-from-hex text))
 
 ;; ---------------------------------------------------------------------------
@@ -175,34 +175,34 @@
 ;; ---------------------------------------------------------------------------
 
 ;; The OWASP recommendation for PBKDF2-HMAC-SHA256 in 2023.
-(: default-password-iterations int)
+(: int)
 (def default-password-iterations 600000)
 
 ;; 16 bytes is the size that NIST SP 800-132 recommends as a minimum.
-(: salt-length int)
+(: int)
 (def salt-length 16)
 
-(: password-hash-now (-> string HashAlgorithm int string))
+(: (-> string HashAlgorithm int string))
 (defun (password-hash-now password algorithm iterations)
   (def salt (make-array salt-length))
   (random-bytes! salt)
   (shim-password-hash password salt (algorithm-name algorithm) iterations))
 
 ;; The value of a thread's result, or its exception raised again.
-(: unwrap-thread (-> (Result Exception %a) %a))
+(: (-> (Result Exception %a) %a))
 (defun (unwrap-thread r)
   (match r
     ((Ok v) v)
     ((Err e) (raise e))))
 
-(: password-hash (-> string (#:algorithm HashAlgorithm) (#:iterations int) string))
+(: (-> string (#:algorithm HashAlgorithm) (#:iterations int) string))
 (defbjouble (password-hash password #:algorithm Sha256 #:iterations default-password-iterations)
   (#:sync (password-hash-now password algorithm iterations))
   (#:bjo  (unwrap-thread (sync (spawn/thread #(password-hash-now password algorithm iterations))))))
 
 ;; Raises `ArgumentException` when `stored` is not a hash from `password-hash`.
 ;; This is an error in the stored data, not a wrong password.
-(: password-verify (-> string string bool))
+(: (-> string string bool))
 (defbjouble (password-verify password stored)
   (#:sync (shim-password-verify password stored))
   (#:bjo  (unwrap-thread (sync (spawn/thread #(shim-password-verify password stored))))))
@@ -210,6 +210,6 @@
 ;; True when `stored` was made with another algorithm or with fewer iterations.
 ;; Check this after a correct `password-verify`, and store a new hash of the
 ;; password if it is true.
-(: password-needs-rehash? (-> string (#:algorithm HashAlgorithm) (#:iterations int) bool))
+(: (-> string (#:algorithm HashAlgorithm) (#:iterations int) bool))
 (defun (password-needs-rehash? stored #:algorithm Sha256 #:iterations default-password-iterations)
   (shim-needs-rehash stored (algorithm-name algorithm) iterations))

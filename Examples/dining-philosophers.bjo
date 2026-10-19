@@ -45,7 +45,7 @@
 ;; from an empty one, or putting into a full one, waits. Here it is a
 ;; `(Loc (Option a))`, and `tx-retry` does the wait.
 
-(: mvar-take (-> Tx (Loc (Option %a)) %a))
+(: (-> Tx (Loc (Option %a)) %a))
 (defun (mvar-take tx mvar)
   (match (tx-ref tx mvar)
     ((Some x)
@@ -53,7 +53,7 @@
      x)
     (None (tx-retry tx))))
 
-(: mvar-put (-> Tx (Loc (Option %a)) %a void))
+(: (-> Tx (Loc (Option %a)) %a void))
 (defun (mvar-put tx mvar x)
   (match (tx-ref tx mvar)
     ((Some _) (tx-retry tx))
@@ -66,7 +66,7 @@
 ;; Takes both forks in one transaction, eats, and puts the forks back. Only
 ;; the take must be one transaction. The put is one transaction too because
 ;; that is shorter than two.
-(: eat (-bjo-> (Loc (Option int)) (Loc (Option int)) (Loc int) void))
+(: (-bjo-> (Loc (Option int)) (Loc (Option int)) (Loc int) void))
 (defbjo (eat fork-lhs fork-rhs eaten)
   (def (lhs rhs)
     (atomically (fun (tx) (Tuple (mvar-take tx fork-lhs) (mvar-take tx fork-rhs)))))
@@ -75,7 +75,7 @@
                 (mvar-put tx fork-lhs lhs)
                 (mvar-put tx fork-rhs rhs))))
 
-(: philosopher (-bjo-> (Loc (Option int)) (Loc (Option int)) (Loc int) (-> bool) void))
+(: (-bjo-> (Loc (Option int)) (Loc (Option int)) (Loc int) (-> bool) void))
 (defbjo (philosopher fork-lhs fork-rhs eaten continue?)
   (loop (:while (continue?))
         (:do (eat fork-lhs fork-rhs eaten))))
@@ -87,7 +87,7 @@
 ;; Makes the forks and the meal counts, and runs one fiber for each
 ;; philosopher. `with-scope` returns when all of them have stopped.
 ;; Returns the number of meals of each philosopher.
-(: dining-philosophers (-bjo-> int int (Vec int)))
+(: (-bjo-> int int (Vec int)))
 (defbjo (dining-philosophers philosophers min-rounds)
   (def eaten (loop (:for i (range 0 philosophers))
                    (:acc v (vecing (make-loc 0)))))

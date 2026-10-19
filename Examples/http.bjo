@@ -21,7 +21,7 @@
 ;; gets this. This fetches one url. If it is called from a sync context, it is blocking
 ;; if it is called from a bjoroutine, it is async, meaning it suspends if there is no
 ;; data to be read.
-(: fetch-one (-> string Fetched))
+(: (-> string Fetched))
 (defun (fetch-one url)
   (match (fetch (http-get url))
     ((Err e) (Fetched (url url) (status 0) (bytes 0)))
@@ -31,21 +31,21 @@
        (Fetched (url url) (status (response-status r)) (bytes (string-length body)))))))
 
 ;; promise/join needs to be in a bjoroutine, because a join may wait (and suspend).
-(: collect (-bjo-> (Vec (Promise Fetched)) (Vec Fetched)))
+(: (-bjo-> (Vec (Promise Fetched)) (Vec Fetched)))
 (defbjo (collect promises)
   (loop (:for p promises)
         (:acc out (vecing (match (sync (promise-join p))
                             ((Ok f) f)
                             ((Err e) (Fetched (url "a fiber died") (status 0) (bytes 0))))))))
 
-(: report (-> Fetched void))
+(: (-> Fetched void))
 (defun (report f)
   (let ((url (record-ref f url))
         (status (record-ref f status))
         (bytes (record-ref f bytes)))
     (show [(padded/right 44 [url]) (padded/left 5 [status]) (padded/left 10 [bytes]) nl])))
 
-(: timed (-> Stopwatch string void))
+(: (-> Stopwatch string void))
 (defun (timed sw label)
   (show ["  " label " " (long->string (stopwatch-ms sw)) "ms"])
   (println ""))

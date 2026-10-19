@@ -9,35 +9,35 @@
 (import (std simd))
 
 ;; Every byte value, in order.
-(: all-bytes (-> (Array byte)))
+(: (-> (Array byte)))
 (defun (all-bytes)
   (def a (make-array 256 #:fill 0uy))
   (loop (:for i (range 0 256)) (:do (array-set! a i (cast byte i))))
   a)
 
 ;; The two tables of the digit classifier in the docs of `simd-lookup`.
-(: low-table UInt8x16)
+(: UInt8x16)
 (def low-table (simd128-of 1uy 1uy 1uy 1uy 1uy 1uy 1uy 1uy 1uy 1uy))
-(: high-table UInt8x16)
+(: UInt8x16)
 (def high-table (simd128-of 0uy 0uy 0uy 1uy))
 
-(: digits256 (-> UInt8x32 (Mask256 byte)))
+(: (-> UInt8x32 (Mask256 byte)))
 (defun (digits256 bytes)
   (def lo (simd-lookup low-table (simd-and bytes (simd256-splat 15uy))))
   (def hi (simd-lookup high-table (simd-shift-right bytes 4)))
   (simd-ne (simd-and lo hi) (simd256-zero)))
 
-(: digits128 (-> UInt8x16 (Mask128 byte)))
+(: (-> UInt8x16 (Mask128 byte)))
 (defun (digits128 bytes)
   (def lo (simd-lookup low-table (simd-and bytes (simd128-splat 15uy))))
   (def hi (simd-lookup high-table (simd-shift-right bytes 4)))
   (simd-ne (simd-and lo hi) (simd128-zero)))
 
-(: digit? (-> int bool))
+(: (-> int bool))
 (defun (digit? b) (and (>= b 48) (<= b 57)))
 
 ;; How many of the 256 byte values the classifier and the scalar test disagree on.
-(: disagreements256 (-> int))
+(: (-> int))
 (defun (disagreements256)
   (def a (all-bytes))
   (loop (:for i (up-from 0 #:to 256 #:by 32))
@@ -49,7 +49,7 @@
         (:acc n (summing 1))
         => n))
 
-(: disagreements128 (-> int))
+(: (-> int))
 (defun (disagreements128)
   (def a (all-bytes))
   (loop (:for i (up-from 0 #:to 256 #:by 16))
@@ -62,7 +62,7 @@
         => n))
 
 ;; The lane `simd-lookup` gives for each of 32 indices, against .NET's rule.
-(: lookup-rule-breaks (-> UInt8x32 int))
+(: (-> UInt8x32 int))
 (defun (lookup-rule-breaks idx)
   (def table (simd128-of 100uy 101uy 102uy 103uy 104uy 105uy 106uy 107uy
                          108uy 109uy 110uy 111uy 112uy 113uy 114uy 115uy))
@@ -82,16 +82,16 @@
   (expect "broadcast" (simd-sum (simd-shuffle x (simd128-of 2 2 2 2))) 120)
   (expect "an index past the last lane gives 0" (simd-ref (simd-shuffle x (simd128-of 0 4 99 1)) 1) 0)
   (expect "and so does a negative one" (simd-ref (simd-shuffle x (simd128-of -1 0 0 0)) 0) 0)
-  (: b UInt8x16)
+  (: UInt8x16)
   (def b (simd128-of 0uy 1uy 2uy 3uy 4uy 5uy 6uy 7uy 8uy 9uy 10uy 11uy 12uy 13uy 14uy 15uy))
   (def rev (simd128-of 15uy 14uy 13uy 12uy 11uy 10uy 9uy 8uy 7uy 6uy 5uy 4uy 3uy 2uy 1uy 0uy))
   (expect "reverse bytes" (simd-ref (simd-shuffle b rev) 2) 13uy)
-  (: wide Int64x4)
+  (: Int64x4)
   (def wide (simd256-of 1L 2L 3L 4L))
   (expect "rotate longs" (simd-ref (simd-shuffle wide (simd256-of 1L 2L 3L 0L)) 3) 1L)
   ;; A byte from the other half of a 256-bit vector.
   (def a (all-bytes))
-  (: bytes32 UInt8x32)
+  (: UInt8x32)
   (def bytes32 (simd256-load a 0))
   (def from-other-half (simd-with (simd256-zero) 0 31uy))
   (expect "a 256-bit shuffle across the halves" (simd-ref (simd-shuffle bytes32 from-other-half) 0) 31uy)

@@ -273,7 +273,7 @@
 ;; What generated field code calls
 ;; ---------------------------------------------------------------------------
 
-(: bjodat-map (-> string Bjodat (Result string (Vec Bjodat))))
+(: (-> string Bjodat (Result string (Vec Bjodat))))
 (defun (bjodat-map owner v)
   (match v
     ((BjoMap entries) (Ok entries))
@@ -282,7 +282,7 @@
 ;; The owner and the key are prefixed onto whatever the value's own decoder
 ;; said, so a wrong type reads "Package.version: expected a string" rather than
 ;; naming neither.
-(: bjodat-field (-> string (Vec Bjodat) Keyword (Result string %a)) (where (bjodat-> %a)))
+(: (-> string (Vec Bjodat) Keyword (Result string %a)) (where (bjodat-> %a)))
 (defun (bjodat-field owner entries key)
   (match (bjodat-ref entries key)
     (None (Err (str owner ": the map has no :" (keyword->string key) " entry")))
@@ -292,7 +292,7 @@
        ((Ok x) (Ok x))))))
 
 ;; Absent is the default. Unlike JSON there is no null to mean it as well.
-(: bjodat-field/default (-> string (Vec Bjodat) Keyword %a (Result string %a)) (where (bjodat-> %a)))
+(: (-> string (Vec Bjodat) Keyword %a (Result string %a)) (where (bjodat-> %a)))
 (defun (bjodat-field/default owner entries key fallback)
   (match (bjodat-ref entries key)
     (None (Ok fallback))
@@ -325,14 +325,14 @@
 ;; that is what `(import (text bjodat-core))` is for. It is the rarer thing and
 ;; it is the one that should say so.
 
-(: bjodat-key (-> Keyword Bjodat))
+(: (-> Keyword Bjodat))
 (defun (bjodat-key k) (BjoKey k))
 
 ;; The entries were pushed in reverse, and are turned round once here.
-(: bjodat-entries (-> (List Bjodat) Bjodat))
+(: (-> (List Bjodat) Bjodat))
 (defun (bjodat-entries acc) (BjoMap (list->vec (list-reverse acc))))
 
-(: bjodat-read-field (-> string Keyword Reader (Result string %a)) (where (bjodat-> %a)))
+(: (-> string Keyword Reader (Result string %a)) (where (bjodat-> %a)))
 (defun (bjodat-read-field owner key rd)
   (match (field-value rd)
     ((Err e) (Err e))
@@ -343,7 +343,7 @@
 
 ;; A field that was never met. The message is `bjodat-field`'s, word for word,
 ;; so which decoder read the document is not something an error report reveals.
-(: bjodat-need-field (-> (Option %a) string Keyword (Result string %a)))
+(: (-> (Option %a) string Keyword (Result string %a)))
 (defun (bjodat-need-field slot owner key)
   (match slot
     ((Some x) (Ok x))
@@ -367,7 +367,7 @@
 ;; field is looked for, because the one-pass reader refuses a malformed clause
 ;; whether or not any field wanted it, and two decoders that disagree about the
 ;; same document are worse than either rule.
-(: bjodat-clause-shape (-> string (List Bjodat) (Result string (List Bjodat))))
+(: (-> string (List Bjodat) (Result string (List Bjodat))))
 (defun (bjodat-clause-shape owner cs)
   (let go ((rest cs))
     (match rest
@@ -380,7 +380,7 @@
          (_ (Err (str owner ": a clause begins with a field name"))))))))
 
 ;; The clauses of `(tag (name value) ...)`, with the tag checked.
-(: bjodat-clauses (-> string string Bjodat (Result string (List Bjodat))))
+(: (-> string string Bjodat (Result string (List Bjodat))))
 (defun (bjodat-clauses owner tag v)
   (match v
     ((BjoList (Cons (BjoSym h) cs))
@@ -393,7 +393,7 @@
 ;; The values of the first clause named `name`. **The first wins**, which is
 ;; what `bjodat-ref` does for a map and what the one-pass decoder does for a
 ;; repeated clause, so a document read any of the three ways answers the same.
-(: bjodat-clause-ref (-> (List Bjodat) string (Option (List Bjodat))))
+(: (-> (List Bjodat) string (Option (List Bjodat))))
 (defun (bjodat-clause-ref cs name)
   (let go ((rest cs))
     (def* ((Cons c more) rest :leave-with None)
@@ -403,7 +403,7 @@
         (go more))))
 
 ;; A clause holding exactly one value, which is every field but a `#:rest` one.
-(: bjodat-one-value (-> string string (List Bjodat) (Result string %a)) (where (bjodat-> %a)))
+(: (-> string string (List Bjodat) (Result string %a)) (where (bjodat-> %a)))
 (defun (bjodat-one-value owner name vs)
   (match vs
     ((Cons v Nil)
@@ -413,7 +413,7 @@
     (_ (Err (str owner "." name ": a clause holds a field name and one value")))))
 
 ;; Every value of a clause, for a `#:rest` field.
-(: bjodat-all-values (-> string string (List Bjodat) (Result string (List %a))) (where (bjodat-> %a)))
+(: (-> string string (List Bjodat) (Result string (List %a))) (where (bjodat-> %a)))
 (defun (bjodat-all-values owner name vs)
   (result-map list-reverse
               (list-foldl (fun (el acc)
@@ -424,25 +424,25 @@
                           (Ok Nil)
                           vs)))
 
-(: bjodat-clause-field (-> string (List Bjodat) string (Result string %a)) (where (bjodat-> %a)))
+(: (-> string (List Bjodat) string (Result string %a)) (where (bjodat-> %a)))
 (defun (bjodat-clause-field owner cs name)
   (match (bjodat-clause-ref cs name)
     (None (Err (str owner ": there is no (" name " ...) clause")))
     ((Some vs) (bjodat-one-value owner name vs))))
 
-(: bjodat-clause-field/default (-> string (List Bjodat) string %a (Result string %a)) (where (bjodat-> %a)))
+(: (-> string (List Bjodat) string %a (Result string %a)) (where (bjodat-> %a)))
 (defun (bjodat-clause-field/default owner cs name fallback)
   (match (bjodat-clause-ref cs name)
     (None (Ok fallback))
     ((Some vs) (bjodat-one-value owner name vs))))
 
-(: bjodat-clause-rest (-> string (List Bjodat) string (Result string (List %a))) (where (bjodat-> %a)))
+(: (-> string (List Bjodat) string (Result string (List %a))) (where (bjodat-> %a)))
 (defun (bjodat-clause-rest owner cs name)
   (match (bjodat-clause-ref cs name)
     (None (Err (str owner ": there is no (" name " ...) clause")))
     ((Some vs) (bjodat-all-values owner name vs))))
 
-(: bjodat-clause-rest/default (-> string (List Bjodat) string (List %a) (Result string (List %a))) (where (bjodat-> %a)))
+(: (-> string (List Bjodat) string (List %a) (Result string (List %a))) (where (bjodat-> %a)))
 (defun (bjodat-clause-rest/default owner cs name fallback)
   (match (bjodat-clause-ref cs name)
     (None (Ok fallback))
@@ -453,7 +453,7 @@
 ;; Both of these leave the clause fully consumed, closing paren and all, so the
 ;; generated loop has one shape whether the field took one value or every value.
 
-(: bjodat-read-clause (-> string string Reader (Result string %a)) (where (bjodat-> %a)))
+(: (-> string string Reader (Result string %a)) (where (bjodat-> %a)))
 (defun (bjodat-read-clause owner name rd)
   (def* ((Ok v) (clause-value rd owner name) :propagate)
         ((Ok x) (bjodat-> v) :leave ((Err e) (Err (str owner "." name ": " e))))
@@ -461,7 +461,7 @@
   (Ok x))
 
 
-(: bjodat-read-rest (-> string string Reader (Result string (List %a))) (where (bjodat-> %a)))
+(: (-> string string Reader (Result string (List %a))) (where (bjodat-> %a)))
 (defun (bjodat-read-rest owner name rd)
   (match (clause-values! rd)
     ((Err e) (Err e))
@@ -469,7 +469,7 @@
 
 ;; A clause that was never met. The message is `bjodat-clause-field`'s, word for
 ;; word, so which decoder read the document is not something a report reveals.
-(: bjodat-need-clause (-> (Option %a) string string (Result string %a)))
+(: (-> (Option %a) string string (Result string %a)))
 (defun (bjodat-need-clause slot owner name)
   (match slot
     ((Some x) (Ok x))
@@ -481,20 +481,20 @@
 ;; do not cross a second module boundary, and the encoder is spliced into
 ;; whichever module wrote `def/bjodat-type`.
 
-(: bjodat-clause (-> string Bjodat Bjodat))
+(: (-> string Bjodat Bjodat))
 (defun (bjodat-clause name v)
   (BjoList (Cons (BjoSym (string->symbol name)) (Cons v Nil))))
 
-(: bjodat-clause-many (-> string (List Bjodat) Bjodat))
+(: (-> string (List Bjodat) Bjodat))
 (defun (bjodat-clause-many name vs)
   (BjoList (Cons (BjoSym (string->symbol name)) vs)))
 
-(: bjodat-clause-values (-> (List %a) (List Bjodat)) (where (->bjodat %a)))
+(: (-> (List %a) (List Bjodat)) (where (->bjodat %a)))
 (defun (bjodat-clause-values xs)
   (list-map (fun (x) (->bjodat x)) xs))
 
 ;; The clauses were pushed in reverse, and are turned round once here.
-(: bjodat-form-value (-> string (List Bjodat) Bjodat))
+(: (-> string (List Bjodat) Bjodat))
 (defun (bjodat-form-value tag acc)
   (BjoList (Cons (BjoSym (string->symbol tag)) (list-reverse acc))))
 
@@ -504,26 +504,26 @@
 ;; A runtime macro. Field types are never inspected: what a field encodes as is
 ;; settled later by instance resolution, and only the markers are read here.
 
-(: jb-sym (-> string Syntax))
+(: (-> string Syntax))
 (defun (jb-sym name) (SSym (string->symbol name)))
 
-(: jb-str (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (jb-str s) (SStr (syntax->string s)))
 
 ;; `(Box %a)` names the type `Box`; a bare `Package` names itself.
-(: jb-head-name (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (jb-head-name head)
   (match head
     ((SList parts) (list-head parts))
     (_ head)))
 
-(: jb-head-vars (-> Syntax (List Syntax)))
+(: (-> Syntax (List Syntax)))
 (defun (jb-head-vars head)
   (match head
     ((SList parts) (list-tail parts))
     (_ Nil)))
 
-(: jb-where (-> (-> Symbol Syntax) Syntax string (List Syntax)))
+(: (-> (-> Symbol Syntax) Syntax string (List Syntax)))
 (defun (jb-where inject head trait)
   (def vars (jb-head-vars head))
   (if (list-empty? vars)
@@ -533,7 +533,7 @@
 
 ;; --- markers ---------------------------------------------------------------
 
-(: jb-marker=? (-> Syntax string bool))
+(: (-> Syntax string bool))
 (defun (jb-marker=? m name) (= (syntax->string m) name))
 
 ;; The key this field is written under. `#:key :other-name` renames it; without
@@ -547,7 +547,7 @@
 ;; We don't do that anymore because the compiler's `Codegen` phase is now smart 
 ;; enough to automatically hoist all keyword literals into static fields behind 
 ;; the scenes. It's just as fast, and the code is cleaner.
-(: jb-key (-> Syntax (List Syntax) Syntax))
+(: (-> Syntax (List Syntax) Syntax))
 (defun (jb-key name markers)
   (let go ((ms markers))
     (cond
@@ -556,7 +556,7 @@
       (else (go (list-tail ms))))))
 
 ;; The fallback expression, or None if the field is required.
-(: jb-fallback (-> (List Syntax) (Option Syntax)))
+(: (-> (List Syntax) (Option Syntax)))
 (defun (jb-fallback markers)
   (let go ((ms markers))
     (cond
@@ -566,7 +566,7 @@
       ((jb-marker=? m "#:default") (Some (list-head (list-tail ms))))
       (else (go (list-tail ms))))))
 
-(: jb-optional? (-> (List Syntax) bool))
+(: (-> (List Syntax) bool))
 (defun (jb-optional? markers)
   (let go ((ms markers))
     (cond
@@ -585,7 +585,7 @@
 ;; A field is marked, not a clause repeated. `(depends a) (depends b)` does not
 ;; accumulate — the first clause wins, as the first entry under a key does.
 ;; Accumulating would have meant one rule for maps and another for forms.
-(: jb-rest? (-> (List Syntax) bool))
+(: (-> (List Syntax) bool))
 (defun (jb-rest? markers)
   (let go ((ms markers))
     (cond
@@ -599,7 +599,7 @@
 ;; There is no default. `Package` spelled `package` is a casing guess, and which
 ;; tag a type is written under belongs in the file's vocabulary rather than in a
 ;; rule about capital letters.
-(: jb-tag (-> (List Syntax) (Option Syntax)))
+(: (-> (List Syntax) (Option Syntax)))
 (defun (jb-tag body)
   (cond
     ((list-empty? body) None)
@@ -607,14 +607,14 @@
      (Some (jb-str (list-head (list-tail body)))))
     (else None)))
 
-(: jb-fields (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (jb-fields body)
   (if (some? (jb-tag body))
       (list-tail (list-tail body))
       body))
 
 ;; What the record declaration keeps: everything that is not ours.
-(: jb-keep (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (jb-keep markers)
   (let go ((ms markers))
     (cond
@@ -626,28 +626,28 @@
       ((jb-marker=? m "#:rest") (go (list-tail ms)))
       (else (Cons m (go (list-tail ms)))))))
 
-(: jb-shape string)
+(: string)
 (def jb-shape
   "a field is written (: name type), then any of #:mutable, #:optional, #:default <expr>, #:key :name, #:rest.")
 
-(: jb-fail-list (-> Syntax string (List Syntax)))
+(: (-> Syntax string (List Syntax)))
 (defun (jb-fail-list form message)
   (ignore (syntax-error form message))
   Nil)
 
-(: jb-field-name (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (jb-field-name f)
   (syntax-match f
     ((_ name _ marker ...) name)
     (bad (syntax-error bad jb-shape))))
 
-(: jb-field-markers (-> Syntax (List Syntax)))
+(: (-> Syntax (List Syntax)))
 (defun (jb-field-markers f)
   (syntax-match f
     ((_ _ _ marker ...) marker)
     (bad (jb-fail-list bad jb-shape))))
 
-(: jb-strip (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (jb-strip f)
   (syntax-match f
     ((colon name ty marker ...) #'(,colon ,name ,ty ,@(jb-keep marker)))
@@ -659,7 +659,7 @@
 ;; vec and the order is the order the fields were declared in. An optional
 ;; field that is None is not written at all.
 
-(: jb-enc-chain (-> (List Syntax) Syntax Syntax))
+(: (-> (List Syntax) Syntax Syntax))
 (defun (jb-enc-chain fields acc)
   (cond
     ((list-empty? fields) #'(bjodat-entries ,acc))
@@ -676,7 +676,7 @@
      #'(let ((,acc ,step))
          ,(jb-enc-chain (list-tail fields) acc)))))
 
-(: jb-encode (-> (List Syntax) Syntax))
+(: (-> (List Syntax) Syntax))
 (defun (jb-encode fields)
   (def acc (jb-sym "__jb-acc"))
   #'(let ((,acc Nil))
@@ -687,7 +687,7 @@
 ;; back as — `(authors)` is noise, and a field with no fallback has to be
 ;; written or the document would not read back.
 
-(: jb-form-enc-chain (-> (List Syntax) Syntax Syntax Syntax))
+(: (-> (List Syntax) Syntax Syntax Syntax))
 (defun (jb-form-enc-chain fields tag acc)
   (cond
     ((list-empty? fields) #'(bjodat-form-value ,tag ,acc))
@@ -711,7 +711,7 @@
      #'(let ((,acc ,step))
          ,(jb-form-enc-chain (list-tail fields) tag acc)))))
 
-(: jb-form-encode (-> (List Syntax) Syntax Syntax))
+(: (-> (List Syntax) Syntax Syntax))
 (defun (jb-form-encode fields tag)
   (def acc (jb-sym "__jb-acc"))
   #'(let ((,acc Nil))
@@ -721,7 +721,7 @@
 ;;
 ;; One `match` per field wrapping the next, with the constructor innermost.
 
-(: jb-chain (-> Syntax Syntax (List Syntax) int Syntax Syntax))
+(: (-> Syntax Syntax (List Syntax) int Syntax Syntax))
 (defun (jb-chain owner entries fields i ctor)
   (cond
     ((list-empty? fields) ctor)
@@ -738,7 +738,7 @@
          ((Err ,e) (Err ,e))
          ((Ok ,v) ,(jb-chain owner entries (list-tail fields) (+ i 1) ctor))))))
 
-(: jb-ctor (-> Syntax (List Syntax) Syntax))
+(: (-> Syntax (List Syntax) Syntax))
 (defun (jb-ctor head fields)
   #'(Ok (,(jb-head-name head)
          ,@(let go ((fs fields) (i 0))
@@ -748,7 +748,7 @@
                           ,(jb-sym (str "__jb-v" (int->string i))))
                        (go (list-tail fs) (+ i 1))))))))
 
-(: jb-decode (-> Syntax (List Syntax) Syntax))
+(: (-> Syntax (List Syntax) Syntax))
 (defun (jb-decode head fields)
   (def owner (jb-str (jb-head-name head)))
   (def entries (jb-sym "__jb-entries"))
@@ -760,7 +760,7 @@
 ;; The same, over the clauses of a tagged form. `jb-ctor` is shared, so both
 ;; decoders end in one constructor call written once.
 
-(: jb-form-chain (-> Syntax Syntax (List Syntax) int Syntax Syntax))
+(: (-> Syntax Syntax (List Syntax) int Syntax Syntax))
 (defun (jb-form-chain owner cs fields i ctor)
   (cond
     ((list-empty? fields) ctor)
@@ -781,7 +781,7 @@
          ((Err ,e) (Err ,e))
          ((Ok ,v) ,(jb-form-chain owner cs (list-tail fields) (+ i 1) ctor))))))
 
-(: jb-form-decode (-> Syntax Syntax (List Syntax) Syntax))
+(: (-> Syntax Syntax (List Syntax) Syntax))
 (defun (jb-form-decode head tag fields)
   (def owner (jb-str (jb-head-name head)))
   (def cs (jb-sym "__jb-clauses"))
@@ -813,15 +813,15 @@
 ;; the file. (The standard tree decoder had to intern every single key just to 
 ;; look it up in the map).
 
-(: jb-slot (-> int Syntax))
+(: (-> int Syntax))
 (defun (jb-slot i) (jb-sym (str "__jb-s" (int->string i))))
 
-(: jb-var (-> int Syntax))
+(: (-> int Syntax))
 (defun (jb-var i) (jb-sym (str "__jb-v" (int->string i))))
 
 ;; The key's name as a string, for `key=?`. `#:key :other-name` renames it here
 ;; exactly as it renames the keyword literal, so the two cannot drift.
-(: jb-key-name (-> Syntax (List Syntax) Syntax))
+(: (-> Syntax (List Syntax) Syntax))
 (defun (jb-key-name name markers)
   (let go ((ms markers))
     (cond
@@ -832,7 +832,7 @@
          (other (SStr (syntax->string other)))))
       (else (go (list-tail ms))))))
 
-(: jb-slot-inits (-> (List Syntax) int (List Syntax)))
+(: (-> (List Syntax) int (List Syntax)))
 (defun (jb-slot-inits fields i)
   (if (list-empty? fields)
       Nil
@@ -840,21 +840,21 @@
             (jb-slot-inits (list-tail fields) (+ i 1)))))
 
 ;; The slots a recursive call passes on, unchanged.
-(: jb-slot-args (-> (List Syntax) int (List Syntax)))
+(: (-> (List Syntax) int (List Syntax)))
 (defun (jb-slot-args fields i)
   (if (list-empty? fields)
       Nil
       (Cons (jb-slot i) (jb-slot-args (list-tail fields) (+ i 1)))))
 
 ;; The same, with slot `hit` replaced by the value just read.
-(: jb-slot-args/hit (-> (List Syntax) int int Syntax (List Syntax)))
+(: (-> (List Syntax) int int Syntax (List Syntax)))
 (defun (jb-slot-args/hit fields i hit v)
   (match fields
     (Nil Nil)
     (_ (Cons (if (= i hit) v (jb-slot i))
              (jb-slot-args/hit (list-tail fields) (+ i 1) hit v)))))
 
-(: jb-clauses (-> Syntax Syntax Syntax (List Syntax) (List Syntax) int (List Syntax)))
+(: (-> Syntax Syntax Syntax (List Syntax) (List Syntax) int (List Syntax)))
 (defun (jb-clauses owner paired go all fields i)
   (cond
     ((list-empty? fields) Nil)
@@ -884,7 +884,7 @@
 ;; required field that was never met is the one refusal; a field with a fallback
 ;; takes it here rather than at the entry, because absence is only known once
 ;; the map has closed.
-(: jb-settle (-> Syntax Syntax (List Syntax) (List Syntax) int Syntax))
+(: (-> Syntax Syntax (List Syntax) (List Syntax) int Syntax))
 (defun (jb-settle head owner all fields i)
   (cond
     ((list-empty? fields) (jb-ctor head all))
@@ -904,7 +904,7 @@
                                         (None ,d))))
                      ,rest))))))
 
-(: jb-one-pass (-> Syntax (List Syntax) Syntax))
+(: (-> Syntax (List Syntax) Syntax))
 (defun (jb-one-pass head fields)
   (def owner (jb-str (jb-head-name head)))
   (def paired (jb-sym "__jb-paired"))
@@ -940,7 +940,7 @@
 ;; and `bjodat-read-rest` read it, which is why there is no `end-entry!` here to
 ;; match the map decoder's. That keeps the two branches one shape.
 
-(: jb-form-clauses (-> Syntax Syntax (List Syntax) (List Syntax) int (List Syntax)))
+(: (-> Syntax Syntax (List Syntax) (List Syntax) int (List Syntax)))
 (defun (jb-form-clauses owner go all fields i)
   (cond
     ((list-empty? fields) Nil)
@@ -963,7 +963,7 @@
                  (,go ,@(jb-slot-args/hit all 0 i #'(Some ,x))))))
            (jb-form-clauses owner go all (list-tail fields) (+ i 1))))))
 
-(: jb-form-settle (-> Syntax Syntax (List Syntax) (List Syntax) int Syntax))
+(: (-> Syntax Syntax (List Syntax) (List Syntax) int Syntax))
 (defun (jb-form-settle head owner all fields i)
   (cond
     ((list-empty? fields) (jb-ctor head all))
@@ -983,7 +983,7 @@
                                         (None ,d))))
                      ,rest))))))
 
-(: jb-form-one-pass (-> Syntax Syntax (List Syntax) Syntax))
+(: (-> Syntax Syntax (List Syntax) Syntax))
 (defun (jb-form-one-pass head tag fields)
   (def owner (jb-str (jb-head-name head)))
   (def go (jb-sym "__jb-go"))
@@ -1005,7 +1005,7 @@
 
 ;; --- the form ---------------------------------------------------------------
 
-(: jb-expand (-> (-> Symbol Syntax) Syntax Syntax (List Syntax) Syntax))
+(: (-> (-> Symbol Syntax) Syntax Syntax (List Syntax) Syntax))
 (defun (jb-expand inject colon head body)
   (def tag (jb-tag body))
   (def fields (jb-fields body))

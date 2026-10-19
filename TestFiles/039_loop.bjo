@@ -19,7 +19,7 @@
 ;; Sequences
 ;; ---------------------------------------------------------------------------
 
-(: collect (-> (List int) (List int)))
+(: (-> (List int) (List int)))
 (defun (collect xs)
   (loop (:for x xs)
         (:acc out (listing x))
@@ -27,7 +27,7 @@
 
 ;; A Vec's cursor is a bare int rather than a (vector, index) pair, which is
 ;; what passing the sequence to every method buys.
-(: collect-vec (-> (Vec int) (List int)))
+(: (-> (Vec int) (List int)))
 (defun (collect-vec v)
   (loop (:for x v)
         (:acc out (listing x))))
@@ -38,14 +38,14 @@
 ;; The short sequence is second on purpose: `done?` short-circuits, so when it
 ;; is exhausted the loop leaves without calling `current` on either. Reading a
 ;; List past its end throws, so this terminating at all is the assertion.
-(: zipped (-> (Vec int) (List int) (List int)))
+(: (-> (Vec int) (List int) (List int)))
 (defun (zipped longer shorter)
   (loop (:for a longer)
         (:for b shorter)
         (:acc out (listing (+ a b)))))
 
 ;; A `:for` pattern destructures and must always match; it is not a filter.
-(: seconds (-> (List (Tuple int string)) (List string)))
+(: (-> (List (Tuple int string)) (List string)))
 (defun (seconds pairs)
   (loop (:for (Tuple n s) pairs)
         (:acc out (listing s))))
@@ -56,7 +56,7 @@
 
 ;; The sequence expression belongs to the prologue: evaluated once on entry,
 ;; never per iteration. Returns the number of times it was evaluated.
-(: seq-evals (-> (List int) int))
+(: (-> (List int) int))
 (defun (seq-evals xs)
   (def/mutable calls 0)
   (defun (noisy ys) (set! calls (+ calls 1)) ys)
@@ -70,7 +70,7 @@
 ;; Clause order is significant: a `:when` between two `:let`s means the second
 ;; does not evaluate on a skipped iteration. Returns how many times the `:let`
 ;; below the `:when` ran, and the sum it produced.
-(: filtered-evals (-> (List int) (Tuple int int)))
+(: (-> (List int) (Tuple int int)))
 (defun (filtered-evals xs)
   (def/mutable calls 0)
   (defun (noisy x) (set! calls (+ calls 1)) x)
@@ -91,7 +91,7 @@
 ;; Several accumulators and no `=>`: the result is a tuple of the finished
 ;; values in declaration order. `#:when` gates only the step, and is intercepted
 ;; by the loop rather than passed to the collector.
-(: partition (-> (List int) (Tuple (List int) (List int))))
+(: (-> (List int) (Tuple (List int) (List int))))
 (defun (partition xs)
   (loop (:for x xs)
         (:acc yes (listing x) #:when (= 0 (% x 2)))
@@ -101,7 +101,7 @@
 ;; value as of that point in the clause list; in the finish block the same name
 ;; is the *finished* value. `folding` is the primitive: the accumulator simply
 ;; becomes the step expression.
-(: largest (-> (List int) int))
+(: (-> (List int) int))
 (defun (largest xs)
   (loop (:for x xs)
         (:acc best (folding 0 (if (> x best) x best)))
@@ -111,14 +111,14 @@
 ;; nothing to call it, and the value leaves through the finish block, which
 ;; reads slots rather than source. The invented name is a gensym, so an
 ;; anonymous accumulator is precisely the one nothing can mention.
-(: evens (-> (Vec int) (List int)))
+(: (-> (Vec int) (List int)))
 (defun (evens xs)
   (loop (:for x xs)
         (:acc (listing x) #:when (= 0 (% x 2)))))
 
 ;; Two of them, and the result is still the tuple of finished values in
 ;; declaration order.
-(: sum-and-count (-> (Vec int) (Tuple int int)))
+(: (-> (Vec int) (Tuple int int)))
 (defun (sum-and-count xs)
   (loop (:for x xs)
         (:acc (summing x))
@@ -126,7 +126,7 @@
 
 ;; Named and anonymous in one loop: naming is per clause, so the named one is
 ;; still readable by a later clause and by `=>`.
-(: counted-until (-> (Vec int) int))
+(: (-> (Vec int) int))
 (defun (counted-until xs)
   (loop (:for x xs)
         (:acc seen (counting x))
@@ -137,7 +137,7 @@
 ;; Two `listing` collectors in one function at two different element types. If a
 ;; prologue binding generalized, the element type would never pin down and
 ;; codegen would emit a type parameter that was never declared.
-(: both (-> (List int) (List string) (Tuple int int)))
+(: (-> (List int) (List string) (Tuple int int)))
 (defun (both xs ys)
   (def is (loop (:for x xs) (:acc out (listing x))))
   (def ss (loop (:for y ys) (:acc out (listing y))))
@@ -145,7 +145,7 @@
 
 ;; No accumulators and no `=>`: pure effect, and types as void. The loop is a
 ;; statement here, and `add-all` returns what it accumulated by hand.
-(: add-all (-> (List int) int))
+(: (-> (List int) int))
 (defun (add-all xs)
   (def/mutable side 0)
 
@@ -166,7 +166,7 @@
 
 ;; `:finish` ends the loop before the rest of the iteration runs, so the element
 ;; that triggered it is not accumulated.
-(: until-big (-> (List int) (List int)))
+(: (-> (List int) (List int)))
 (defun (until-big xs)
   (loop (:for x xs)
         (:finish (> x 3))
@@ -175,7 +175,7 @@
 ;; `:final` is the same predicate one iteration later: it reads an accumulator
 ;; slot holding the *previous* iteration's verdict, so the triggering element is
 ;; accumulated and then the loop stops.
-(: through-big (-> (List int) (List int)))
+(: (-> (List int) (List int)))
 (defun (through-big xs)
   (loop (:for x xs)
         (:final (> x 3))
@@ -183,7 +183,7 @@
 
 ;; `:final`'s accumulator is a gensym, so an author's accumulator called `tmp`
 ;; is not captured by it — and does not appear in the result either.
-(: summed-until (-> (List int) int))
+(: (-> (List int) int))
 (defun (summed-until xs)
   (loop (:for x xs)
         (:final (> x 2))
@@ -192,7 +192,7 @@
 
 ;; A `:finish` below an `:acc` accumulates the triggering element first: clause
 ;; order decides, as everywhere else.
-(: including-trigger (-> (List int) (List int)))
+(: (-> (List int) (List int)))
 (defun (including-trigger xs)
   (loop (:for x xs)
         (:acc out (listing x))
@@ -200,7 +200,7 @@
 
 ;; The hidden accumulator does not show up in an auto-generated result, which is
 ;; still a bare single accumulator rather than a tuple.
-(: still-single (-> (List int) int))
+(: (-> (List int) int))
 (defun (still-single xs)
   (loop (:for x xs)
         (:final (> x 100))
@@ -213,11 +213,11 @@
 ;; A `:let` whose pattern is allowed to fail, and which says where the failure
 ;; goes. `:let` refuses such a pattern because it has nowhere to send one.
 
-(: halve (-> int (Option int)))
+(: (-> int (Option int)))
 (defun (halve n)
   (if (= (% n 2) 0) (Some (/ n 2)) None))
 
-(: halve/try (-> int (Result string int)))
+(: (-> int (Result string int)))
 (defun (halve/try n)
   (if (= (% n 2) 0) (Ok (/ n 2)) (Err "odd")))
 
@@ -225,7 +225,7 @@
 
 ;; `:when-let` skips the iteration, so this is a filter and an unwrap in one
 ;; clause.
-(: evens-halved (-> (Vec int) (Vec int)))
+(: (-> (Vec int) (Vec int)))
 (defun (evens-halved xs)
   (loop (:for x xs)
         (:when-let (Some h) (halve x))
@@ -233,13 +233,13 @@
 
 ;; The pattern is what says which constructor, so nothing here is about
 ;; `Option`: a `Result` and a union of the program's own work the same way.
-(: oks (-> (Vec int) (Vec int)))
+(: (-> (Vec int) (Vec int)))
 (defun (oks xs)
   (loop (:for x xs)
         (:when-let (Ok h) (halve/try x))
         (:acc out (vecing h))))
 
-(: rounds (-> (Vec Shape) (Vec int)))
+(: (-> (Vec Shape) (Vec int)))
 (defun (rounds shapes)
   (loop (:for s shapes)
         (:when-let (Round n) s)
@@ -247,7 +247,7 @@
 
 ;; `:finish-let` leaves the loop instead, through the finish block like every
 ;; other exit.
-(: until-odd (-> (Vec int) (Vec int)))
+(: (-> (Vec int) (Vec int)))
 (defun (until-odd xs)
   (loop (:for x xs)
         (:finish-let (Some h) (halve x))
@@ -255,7 +255,7 @@
 
 ;; Clauses above it have already run, so an accumulator stepped before it keeps
 ;; what it was given — the same as `:when` and `:finish`.
-(: seen-before (-> (Vec int) (Vec int)))
+(: (-> (Vec int) (Vec int)))
 (defun (seen-before xs)
   (loop (:for x xs)
         (:acc all (vecing x))
@@ -264,7 +264,7 @@
         => all))
 
 ;; What it binds reaches an inner level, as a `:for` or `:let` binding does.
-(: pairs (-> (Vec int) (Vec int) (Vec int)))
+(: (-> (Vec int) (Vec int) (Vec int)))
 (defun (pairs xs ys)
   (loop (:for x xs)
         (:when-let (Some h) (halve x))
@@ -273,11 +273,11 @@
         (:acc out (vecing (+ h y)))))
 
 ;; And it is an ordinary clause, so a comprehension and a `seql` take it too.
-(: comprehended (-> (Vec int) (Vec int)))
+(: (-> (Vec int) (Vec int)))
 (defun (comprehended xs)
   {vecing h (:for x xs) (:when-let (Some h) (halve x))})
 
-(: lazily (-> (Vec int) (Seq int)))
+(: (-> (Vec int) (Seq int)))
 (defun (lazily xs)
   (seql (:for x xs)
         (:finish-let (Some h) (halve x))
@@ -293,7 +293,7 @@
 ;; `listing` finishes by reversing, so a result in the right order is the
 ;; evidence that this exit ran the finish block rather than handing back the raw
 ;; accumulator.
-(: while-even (-> (List int) (List int)))
+(: (-> (List int) (List int)))
 (defun (while-even xs)
   (loop lp (:for x xs)
            (:acc out (listing x))
@@ -303,7 +303,7 @@
 ;; `(lp #:name expr)` overrides one slot and advances the rest. The argument
 ;; vector is completed at desugar time, since a jump carries one argument per
 ;; slot.
-(: tenfold-after-two (-> (List int) int))
+(: (-> (List int) int))
 (defun (tenfold-after-two xs)
   (loop lp (:for x xs)
            (:acc total (summing x))
@@ -311,7 +311,7 @@
            => total))
 
 ;; A named loop that always iterates behaves exactly like an unnamed one.
-(: plain-named (-> (List int) int))
+(: (-> (List int) int))
 (defun (plain-named xs)
   (loop lp (:for x xs)
            (:acc n (counting x))
@@ -323,20 +323,20 @@
 ;; ---------------------------------------------------------------------------
 
 ;; Gemensam för `deep` och `deep-named`; de två filerna hade samma `build`.
-(: build (-> int (List int)))
+(: (-> int (List int)))
 (defun (build n)
   (let lp ((i 0) (acc Nil))
     (if (= i n) acc (lp (+ i 1) (Cons i acc)))))
 
 ;; In expression position, and deep enough that anything but a jump would
 ;; overflow the stack rather than answer.
-(: deep (-> int int))
+(: (-> int int))
 (defun (deep n)
   (+ 1 (loop (:for x (build n))
              (:acc c (counting x)))))
 
 ;; Still a jump, so still able to run deeply.
-(: deep-named (-> int int))
+(: (-> int int))
 (defun (deep-named n)
   (loop lp (:for x (build n))
            (:acc c (counting x))
@@ -345,11 +345,11 @@
 
 ;; ---------------------------------------------------------------------------
 
-(: show (-> (List int) string))
+(: (-> (List int) string))
 (defun (show xs)
   (list-foldl (fun (x acc) (string-append acc (string-append " " (int->string x)))) "" xs))
 
-(: test-loop (-> void))
+(: (-> void))
 (defun (test-loop)
   (def xs (Cons 1 (Cons 2 (Cons 3 (Cons 4 Nil)))))
 
@@ -400,7 +400,7 @@
 
   (expect "deep" (deep 200000) 200001))
 
-(: test-loop-control (-> void))
+(: (-> void))
 (defun (test-loop-control)
   (def xs (Cons 1 (Cons 2 (Cons 3 (Cons 4 (Cons 5 Nil))))))
 

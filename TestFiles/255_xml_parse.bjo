@@ -15,13 +15,13 @@
   (latin1 (: System.Text.Encoding.Latin1 #:get))
   (encode (: System.Text.Encoding.GetBytes (-> System.Text.Encoding string (Array byte)))))
 
-(: repeated (-> int string string))
+(: (-> int string string))
 (defun (repeated n s)
   (def sb (stringbuilder-empty))
   (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb s)))
   (stringbuilder->string sb))
 
-(: kind-of (-> (Result XmlError %a) string))
+(: (-> (Result XmlError %a) string))
 (defun (kind-of r)
   (match r
     ((Ok _) "ok")
@@ -36,13 +36,13 @@
   (: Tree (Union (: Branch string (List Tree))
                  (: Leaf string))))
 
-(: render (-> Tree string))
+(: (-> Tree string))
 (defun (render t)
   (match t
     ((Leaf s) s)
     ((Branch name kids) (str "(" name (string-join (list->vec (list-map (fun (k) (str " " (render k))) kids)) "") ")"))))
 
-(: tree-of (-> string (Result XmlError string)))
+(: (-> string (Result XmlError string)))
 (defun (tree-of text)
   (match (xml-tree-fold text
                         (fun (name attrs pos kids) (Branch (xml-name-local name) kids))
@@ -51,7 +51,7 @@
     ((Ok t) (Ok (render t)))
     ((Err e) (Err e))))
 
-(: tree-folds (-> void))
+(: (-> void))
 (defun (tree-folds)
   (expect "a tree of the caller's type" (tree-of "<a><b>x</b>y<c/></a>") (Ok "(a (b x) y (c))"))
   (expect "a comment kept by its handler, inside the root only"
@@ -74,13 +74,13 @@
                          #:max-depth 200000)
           (Ok 100000)))
 
-(: root-of (-> (Result XmlError Document) Node))
+(: (-> (Result XmlError Document) Node))
 (defun (root-of r)
   (match r
     ((Ok d) (document-root d))
     ((Err e) (xml-text (str "error: " (->str e))))))
 
-(: documents (-> void))
+(: (-> void))
 (defun (documents)
   (def d (parse-xml "<a href='x'>one <b>two</b> three</a>"))
   (def root (root-of d))
@@ -141,7 +141,7 @@
             ((Err e) (list (->str e))))
           (list "u" "v" "1" "2" "0")))
 
-(: laughs string)
+(: string)
 (def laughs
   (str "<!DOCTYPE lolz [<!ENTITY lol \"lol\">"
        "<!ENTITY lol1 \"&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;\">"
@@ -155,7 +155,7 @@
        "<!ENTITY lol9 \"&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;\">"
        "]><lolz>&lol9;</lolz>"))
 
-(: safety (-> void))
+(: (-> void))
 (defun (safety)
   (def started (monotonic-ms))
   (expect "billion laughs under 'parse is a limit" (kind-of (parse-xml laughs #:dtd 'parse)) "limit-exceeded")
@@ -166,7 +166,7 @@
   (expect "and walked" (text-content (root-of deep)) "bottom")
   (expect "#:max-characters" (kind-of (parse-xml "<a>0123456789</a>" #:max-characters 4L)) "limit-exceeded"))
 
-(: sources (-> void))
+(: (-> void))
 (defun (sources)
   (def expected (xml-element (xml-name "a") Nil (list (xml-text "café"))))
   (expect-true "a port" (node=? (root-of (parse-xml (open-input-string "<a>café</a>"))) expected))

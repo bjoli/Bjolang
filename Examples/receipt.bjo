@@ -33,16 +33,16 @@
                   (: unit double))))
 
 ;; Simple accessors
-(: what-of (-> Line string))
+(: (-> Line string))
 (defun (what-of l) (record-ref l what))
 
-(: qty-of (-> Line double))
+(: (-> Line double))
 (defun (qty-of l) (record-ref l qty))
 
-(: unit-of (-> Line double))
+(: (-> Line double))
 (defun (unit-of l) (record-ref l unit))
 
-(: amount-of (-> Line double))
+(: (-> Line double))
 (defun (amount-of l) (* (qty-of l) (unit-of l)))
 
 
@@ -50,17 +50,17 @@
 
 ;; A rule across the paper: padding with nothing in it. `padded/left` fills
 ;; with the pad character, and `with-pad` says which one.
-(: rule (-> char Block))
+(: (-> char Block))
 (defun (rule c)
   (each [(with-pad c [(padded/left paper [""])]) nl]))
 
-(: heading (-> (Vec Block) Block))
+(: (-> (Vec Block) Block))
 (defun (heading bs)
   (each [(padded/both paper bs) nl]))
 
 ;; Money, in the column it belongs in. Two decimals and grouped thousands are
 ;; what this shop's prices are, whatever the machine's locale thinks.
-(: money (-> double Block))
+(: (-> double Block))
 (defun (money x)
   (padded/left money-column [(numeric x #:precision 2 #:comma 3 #:decimal-sep #\,)]))
 
@@ -68,19 +68,19 @@
 ;; and measured first — `captured` — and the left takes exactly what is left
 ;; over, cut with an ellipsis if it wants more. `fitted/right` is pad *or*
 ;; trim.
-(: spread (-> (Vec Block) (Vec Block) Block))
+(: (-> (Vec Block) (Vec Block) Block))
 (defun (spread left right)
   (captured #(each [(fitted/right (- paper (width-of &)) left) (BStr &) nl])
             right))
 
 ;; A labelled amount. The money is padded to a fixed column, so every amount
 ;; ends where the one above it did however many digits it has.
-(: labelled (-> (Vec Block) double Block))
+(: (-> (Vec Block) double Block))
 (defun (labelled label x)
   (spread label [(money x)]))
 
 ;; If more than one is bought, print a qty X price line under.
-(: detail (-> Line Block))
+(: (-> Line Block))
 (defun (detail l)
   (if (= (qty-of l) 1.0)
       nothing
@@ -90,12 +90,12 @@
              (numeric (unit-of l) #:precision 2)
              nl])))
 
-(: item (-> Line Block))
+(: (-> Line Block))
 (defun (item l)
   (each [(labelled [(what-of l)] (amount-of l)) (detail l)]))
 
 ;; The total, with dot leaders running right up to the digits.
-(: total-line (-> double Block))
+(: (-> double Block))
 (defun (total-line x)
   (captured (fun (s)
               (each ["TOTAL"
@@ -107,7 +107,7 @@
 
 ;; The tax summary. Three columns, each as wide as its own content: that is
 ;; `tabular`. 
-(: vat-summary (-> double double Block))
+(: (-> double double Block))
 (defun (vat-summary net vat)
   (tabular [["Rate" nl "12 %"]
             ["Net" nl (numeric net #:precision 2)]
@@ -115,13 +115,13 @@
            #:sep "   "))
 
 ;; The shop against the left margin, the transaction against the right.
-(: masthead Block)
+(: Block)
 (def masthead
   (each [(spread ["Fruktgatan 12"] ["2026-08-21 14:32"])
          (spread ["211 41 Malmo"] ["Receipt 1042"])]))
 
 ;; justifies the footer so that it fits the paper
-(: footer Block)
+(: Block)
 (def footer
   (with-fmt current-width paper
             [(justified ["Thank you for shopping with us. Please keep the receipt: it is your proof of purchase, and anything unopened may be returned within thirty days."])
@@ -130,7 +130,7 @@
 
 ;; --- The receipt -----------------------------------------------------------
 
-(: basket (List Line))
+(: (List Line))
 (def basket
   (list (Line (what "Bananas, organic")                           (qty 1.24) (unit 24.90))
         (Line (what "Coffee beans, dark roast, whole")            (qty 2.0)  (unit 89.00))
@@ -138,7 +138,7 @@
         (Line (what "Oat milk")                                   (qty 3.0)  (unit 18.95))
         (Line (what "Cloudberry jam from Lapland, the small jar") (qty 1.0)  (unit 64.00))))
 
-(: receipt (-> (List Line) (Vec Block)))
+(: (-> (List Line) (Vec Block)))
 (defun (receipt ls)
   (def* (total (fold #(+ &2 (amount-of &1)) 0.0 ls))
         (net (/ total 1.12))

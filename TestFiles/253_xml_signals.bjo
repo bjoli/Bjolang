@@ -15,13 +15,13 @@
   (latin1 (: System.Text.Encoding.Latin1 #:get))
   (encode (: System.Text.Encoding.GetBytes (-> System.Text.Encoding string (Array byte)))))
 
-(: name->string (-> XmlName string))
+(: (-> XmlName string))
 (defun (name->string n)
   (if (string-empty? (xml-name-ns n))
       (xml-name-local n)
       (str "{" (xml-name-ns n) "}" (xml-name-local n))))
 
-(: signal->string (-> XmlSignal string))
+(: (-> XmlSignal string))
 (defun (signal->string s)
   (match s
     ((XmlStart name attrs pos)
@@ -36,7 +36,7 @@
      (str "!" (record-ref dt name) " " (option-value (record-ref dt public-id) "-")
           " " (option-value (record-ref dt system-id) "-")))))
 
-(: drain (-> XmlSignals (Result XmlError (List string))))
+(: (-> XmlSignals (Result XmlError (List string))))
 (defun (drain sig)
   (def out (listbuilder-empty))
   (let loop ()
@@ -47,15 +47,15 @@
        (listbuilder-add! out (signal->string s))
        (loop)))))
 
-(: signals-of (-> string (#:dtd DtdMode) (#:whitespace WhitespaceMode) (#:comments? bool)
-                  (#:max-depth int) (#:max-characters long)
-                  (Result XmlError (List string))))
+(: (-> string (#:dtd DtdMode) (#:whitespace WhitespaceMode) (#:comments? bool)
+       (#:max-depth int) (#:max-characters long)
+       (Result XmlError (List string))))
 (defun (signals-of text #:dtd 'prohibit #:whitespace 'keep #:comments? #f #:max-depth 512
                    #:max-characters 0L)
   (call-with-xml-signals text drain #:dtd dtd #:whitespace whitespace #:comments? comments?
                          #:max-depth max-depth #:max-characters max-characters))
 
-(: kind-of (-> (Result XmlError %a) string))
+(: (-> (Result XmlError %a) string))
 (defun (kind-of r)
   (match r
     ((Ok _) "ok")
@@ -65,14 +65,14 @@
                (TooDeep "too-deep")
                (LimitExceeded "limit-exceeded")))))
 
-(: nested (-> int string))
+(: (-> int string))
 (defun (nested n)
   (def sb (stringbuilder-empty))
   (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb "<a>")))
   (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb "</a>")))
   (stringbuilder->string sb))
 
-(: basics (-> void))
+(: (-> void))
 (defun (basics)
   (expect "an empty element is a start and an end" (signals-of "<br/>") (Ok (list "<br>" "</>")))
   (expect "text and CDATA are one piece" (signals-of "<a>a<![CDATA[b]]>c</a>") (Ok (list "<a>" "'abc'" "</>")))
@@ -109,7 +109,7 @@
                                      (_ None))))
           (Some (XmlPos (line 2) (column 4)))))
 
-(: skipping (-> void))
+(: (-> void))
 (defun (skipping)
   ;; Skips every element named "skip", empty or not.
   (defun (skipped sig)
@@ -140,7 +140,7 @@
                                                    (xml-skip-element! sig)))
                        #:catch (System.InvalidOperationException)))))
 
-(: doctypes (-> void))
+(: (-> void))
 (defun (doctypes)
   (def doc "<!DOCTYPE a PUBLIC '-//P//EN' 'a.dtd' [<!ENTITY e 'x'>]><a>&e;</a>")
   (expect "a DOCTYPE is refused by default" (kind-of (signals-of doc)) "dtd-prohibited")
@@ -164,7 +164,7 @@
           (kind-of (signals-of "<!DOCTYPE a [<!ENTITY e SYSTEM 'file:///etc/passwd'>]><a>&e;</a>" #:dtd 'parse))
           "dtd-prohibited"))
 
-(: laughs string)
+(: string)
 (def laughs
   (str "<!DOCTYPE lolz [<!ENTITY lol \"lol\">"
        "<!ENTITY lol1 \"&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;\">"
@@ -178,7 +178,7 @@
        "<!ENTITY lol9 \"&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;&lol8;\">"
        "]><lolz>&lol9;</lolz>"))
 
-(: limits (-> void))
+(: (-> void))
 (defun (limits)
   (expect "512 levels are fine by default" (kind-of (signals-of (nested 512))) "ok")
   (expect "513 are too deep" (kind-of (signals-of (nested 513))) "too-deep")
@@ -191,7 +191,7 @@
   (expect-true "a #:max-depth below 1 raises"
                (err? (try (signals-of "<a/>" #:max-depth 0) #:catch (System.ArgumentException)))))
 
-(: errors (-> void))
+(: (-> void))
 (defun (errors)
   (def bad (signals-of "<a>\n  <b>\n</a>"))
   (expect "malformed" (kind-of bad) "malformed")
@@ -218,7 +218,7 @@
           (match bad ((Err e) (string-starts-with? (->str e) "malformed at line 3, column 3: ")) (_ #f))
           #t))
 
-(: sources (-> void))
+(: (-> void))
 (defun (sources)
   (expect "a port" (call-with-xml-signals (open-input-string "<a>p</a>") drain)
           (Ok (list "<a>" "'p'" "</>")))

@@ -76,7 +76,7 @@
 ;; Prints a message and answers what a failed command answers, so that a guard
 ;; is `(ret (fail "..."))` — one expression, and the `when` it stands in has a
 ;; value to give rather than a dropped one.
-(: fail (-> string int))
+(: (-> string int))
 (defun (fail message)
   (println message)
   1)
@@ -88,28 +88,28 @@
 
 ;; The directory above this one, or `None` at the root of the filesystem, where
 ;; `GetDirectoryName` answers null rather than looping.
-(: parent-directory (-> string (Option string)))
+(: (-> string (Option string)))
 (defun (parent-directory dir)
   (def up (clr-directory-name (path-absolute dir)))
   (if (clr-null-or-empty? up) None (Some up)))
 
 ;; A program on PATH, if there is one. Two ways to have no answer — no PATH at
 ;; all, and nothing on it by that name — and both of them propagate.
-(: which (-> string (Option string)))
+(: (-> string (Option string)))
 (defun (which program)
   (def* ((Some path) (get-environment-variable "PATH") :propagate)
         ((Some dir) (find #(file-exists? (path-combine & program))
                           (string-split path ":")) :propagate))
   (Some (path-combine dir program)))
 
-(: manifest-name string)
+(: string)
 (def manifest-name "manifest.bjodat")
 
 ;; The project a directory is in, if it is in one.
 ;;
 ;; Upward rather than downward: a project is the tree under the manifest, and a
 ;; command run three directories down is still run inside it.
-(: find-project-dir (-> string (Option string)))
+(: (-> string (Option string)))
 (defun (find-project-dir start)
   (let go ((dir (path-absolute start)))
     (if (file-exists? (path-combine dir manifest-name))
@@ -126,64 +126,64 @@
 ;; A project: the directory, and what its manifest says.
 (type (: Project (Record (: dir string) (: package Package))))
 
-(: project-dir (-> Project string))
+(: (-> Project string))
 (defun (project-dir p) (record-ref p dir))
 
-(: project-package (-> Project Package))
+(: (-> Project Package))
 (defun (project-package p) (record-ref p package))
 
-(: project-src (-> Project string))
+(: (-> Project string))
 (defun (project-src p) (path-combine (project-dir p) "src"))
 
-(: project-dot-bjo (-> Project string))
+(: (-> Project string))
 (defun (project-dot-bjo p) (path-combine (project-dir p) ".bjo"))
 
-(: project-tmp (-> Project string))
+(: (-> Project string))
 (defun (project-tmp p) (path-combine (project-dot-bjo p) "tmp"))
 
-(: project-roots-file (-> Project string))
+(: (-> Project string))
 (defun (project-roots-file p) (path-combine (project-dot-bjo p) "roots"))
 
 ;; Which package declared which .NET shared framework. Beside the roots file,
 ;; because it answers the same kind of question about the same set of packages.
-(: project-frameworks-file (-> Project string))
+(: (-> Project string))
 (defun (project-frameworks-file p) (path-combine (project-dot-bjo p) "frameworks"))
 
 ;; The generated project the root package's NuGet packages are restored with.
 ;; `root/` because a later dependency with packages gets a directory of its own.
-(: project-nuget-dir (-> Project string))
+(: (-> Project string))
 (defun (project-nuget-dir p) (path-combine (project-dot-bjo p) "nuget" "root"))
 
 ;; The NuGet lock file. At the project root, beside the manifest, and committed.
-(: project-nuget-lock-file (-> Project string))
+(: (-> Project string))
 (defun (project-nuget-lock-file p) (path-combine (project-dir p) "packages.lock.json"))
 
 ;; The target framework the compiler is built for and compiles programs for.
 ;; The compiler's own directory is named after it, and a restore has to resolve
 ;; packages for it.
-(: target-framework string)
+(: string)
 (def target-framework "net10.0")
 
-(: project-lock-file (-> Project string))
+(: (-> Project string))
 (defun (project-lock-file p) (path-combine (project-dir p) "bjo.lock"))
 
 ;; What the manifest says to build. Relative to the manifest, so that a project
 ;; means the same thing wherever it is checked out.
-(: project-entry (-> Project string))
+(: (-> Project string))
 (defun (project-entry p)
   (path-combine (project-dir p) (record-ref (project-package p) entry)))
 
 ;; A package with no entry file is a library. Read from the disk rather than
 ;; from a flag in the manifest: `entry` has a default, and a library would
 ;; otherwise have to say twice that it has no program.
-(: project-has-entry? (-> Project bool))
+(: (-> Project bool))
 (defun (project-has-entry? p) (file-exists? (project-entry p)))
 
 ;; The manifest at `file`, read into the types in `manifest.bjo`.
 ;;
 ;; The file name is in every message: a resolve reads the manifests of
 ;; dependencies too, and "expected a version" says nothing about which one.
-(: read-package (-> string (Result string Package)))
+(: (-> string (Result string Package)))
 (defun (read-package file)
   (if (not (file-exists? file))
       (Err #"bjo: no manifest at ${file}.")
@@ -192,7 +192,7 @@
         ((Ok package) (Ok package)))))
 
 ;; The project a directory holds, manifest read and nothing else checked yet.
-(: project-at (-> string (Result string Project)))
+(: (-> string (Result string Project)))
 (defun (project-at dir)
   (def (Ok package) (read-package (path-combine dir manifest-name)) :propagate)
   (Ok (Project (dir (path-absolute dir)) (package package))))
@@ -203,14 +203,14 @@
 ;; ---------------------------------------------------------------------------
 
 ;; `(myapp lexer)`, for a message.
-(: name->string (-> (List Symbol) string))
+(: (-> (List Symbol) string))
 (defun (name->string name) (module-name->string name))
 
 ;; The installed `lib`, found the way the compiler finds it: an override first,
 ;; then the tree the binary is in, then the working directory, and a candidate
 ;; only counts if `std` is under it. The two have to agree, because a name this
 ;; one misses is a name the compiler refuses to give a directory to.
-(: lib-candidates (-> (List string)))
+(: (-> (List string)))
 (defun (lib-candidates)
   (def from-env
     (list-append
@@ -225,7 +225,7 @@
                             (ancestor-libs (current-directory)))))
 
 ;; `<dir>/lib` for `dir` and every directory above it, deepest first.
-(: ancestor-libs (-> string (List string)))
+(: (-> string (List string)))
 (defun (ancestor-libs start)
   (let go ((dir (path-absolute start)))
     (Cons (path-combine dir "lib")
@@ -233,7 +233,7 @@
             ((Some up) (go up))
             (None Nil)))))
 
-(: lib-dir (-> (Option string)))
+(: (-> (Option string)))
 (defun (lib-dir)
   (find #(directory-exists? (path-combine & "std")) (lib-candidates)))
 
@@ -243,7 +243,7 @@
 ;; roots whether or not a roots file was written, and refuses a roots file that
 ;; names one of them. A package called `(std)` would therefore build here and
 ;; fail at the compiler, one step later than the manifest that asked for it.
-(: reserved-name? (-> (List Symbol) bool))
+(: (-> (List Symbol) bool))
 (defun (reserved-name? name)
   (match name
     (Nil #f)
@@ -264,7 +264,7 @@
 ;; segment that is spelled differently in two places. `init` is the only place
 ;; a name is made out of a string — a directory called `my.app` has no name
 ;; here, and has to be given one.
-(: name-char? (-> char bool))
+(: (-> char bool))
 (defun (name-char? c)
   (or (and (char>=? c #\a) (char<=? c #\z))
       (and (char>=? c #\A) (char<=? c #\Z))
@@ -272,7 +272,7 @@
       (char=? c #\-)
       (char=? c #\_)))
 
-(: valid-segment? (-> string bool))
+(: (-> string bool))
 (defun (valid-segment? s)
   (and (not (= s ""))
        (let ((first (string-cursor-ref s (string-cursor-start s))))
@@ -280,7 +280,7 @@
        (all? name-char? (string->list s))))
 
 ;; The name a command line wrote: `myapp`, or `(my app)` for several segments.
-(: parse-package-name (-> string (Result string (List Symbol))))
+(: (-> string (Result string (List Symbol))))
 (defun (parse-package-name written)
   (def trimmed (string-trim written))
   (def inner (if (and (string-starts-with? trimmed "(") (string-ends-with? trimmed ")"))
@@ -307,21 +307,21 @@
 ;; One package, and the directory its modules are in.
 (type (: Root (Record (: name (List Symbol)) (: dir string))))
 
-(: root-name (-> Root (List Symbol)))
+(: (-> Root (List Symbol)))
 (defun (root-name r) (record-ref r name))
 
-(: root-dir (-> Root string))
+(: (-> Root string))
 (defun (root-dir r) (record-ref r dir))
 
 ;; A directory as a Bjolang string literal.
-(: quoted (-> string string))
+(: (-> string string))
 (defun (quoted s)
   (str "\"" (string-replace (string-replace s "\\" "\\\\") "\"" "\\\"") "\""))
 
 ;; The roots file, sorted, so that a diff of two builds shows what changed
 ;; rather than what was reordered. The line begins with the name, so sorting
 ;; the lines sorts by name.
-(: roots-text (-> (List Root) string))
+(: (-> (List Root) string))
 (defun (roots-text roots)
   (def lines (list-sort (list-map #(str "  (root " (name->string (root-name &))
                                         " " (quoted (root-dir &)) ")")
@@ -368,7 +368,7 @@
 ;; answer to "what did this package say" that could disagree with the first.
 
 ;; The package directory a root's modules live under.
-(: root-package-dir (-> Root (Option string)))
+(: (-> Root (Option string)))
 (defun (root-package-dir r)
   (parent-directory (root-dir r)))
 
@@ -376,7 +376,7 @@
 ;;
 ;; A manifest that does not read is also `None`. It is not this function's to
 ;; report: whatever is about to build against it says so, with the reason.
-(: root-package (-> Root (Option Package)))
+(: (-> Root (Option Package)))
 (defun (root-package r)
   (def* ((Some dir) (root-package-dir r) :propagate)
         (manifest-file (path-combine dir manifest-name)))
@@ -388,7 +388,7 @@
 
 ;; What one root's package declares, or nothing when it has no manifest to say
 ;; it in — which is what a root without one means.
-(: root-frameworks (-> Root (List string)))
+(: (-> Root (List string)))
 (defun (root-frameworks r)
   (match (root-package r)
     (None Nil)
@@ -396,7 +396,7 @@
 
 ;; The file's text, sorted for the same reason the roots file is: a diff shows
 ;; what changed rather than what was reordered.
-(: frameworks-text (-> (List Root) string))
+(: (-> (List Root) string))
 (defun (frameworks-text roots)
   (def lines
     (loop (:for r roots)
@@ -444,11 +444,11 @@
 ;; A library has no entry to start the compiler from, so this is the list the
 ;; batch is given. Sorted only so that a failure is reported in the same order
 ;; twice; the compiler builds imports on demand and does not need the order.
-(: sources-under (-> string (List string)))
+(: (-> string (List string)))
 (defun (sources-under dir)
   (list-sort (collect-sources dir)))
 
-(: collect-sources (-> string (List string)))
+(: (-> string (List string)))
 (defun (collect-sources dir)
   (if (not (directory-exists? dir))
       Nil
@@ -479,7 +479,7 @@
      (file-write-text path contents)
      #t)))
 
-(: manifest-template (-> (List Symbol) string))
+(: (-> (List Symbol) string))
 (defun (manifest-template name)
   (str "(package\n"
        "  (name " (name->string name) ")\n"
@@ -500,11 +500,11 @@
 
 ;; The name without its parentheses, for prose. `name->string` is how an
 ;; import spells a name, which is not how a greeting does.
-(: plain-name (-> (List Symbol) string))
+(: (-> (List Symbol) string))
 (defun (plain-name name)
   (string-join (list->vec (list-map symbol->string name)) " "))
 
-(: main-template (-> (List Symbol) string))
+(: (-> (List Symbol) string))
 (defun (main-template name)
   (str ";; " (name->string name) " — the program.\n"
        "\n"
@@ -514,7 +514,7 @@
        "  (println \"hello from " (plain-name name) "\")\n"
        "  0)\n"))
 
-(: core-template (-> (List Symbol) string))
+(: (-> (List Symbol) string))
 (defun (core-template name)
   (str ";; " (name->string name) " — imported as " (name->string (list-append name (Cons (string->symbol "core") Nil))) ".\n"
        "\n"
@@ -528,7 +528,7 @@
 ;; `bjo publish` writes by default, and the rest is what the compiler writes
 ;; beside a source: one artefact, its debug symbols, the two files the runtime
 ;; needs to start an executable, and the build record.
-(: gitignore-template string)
+(: string)
 (def gitignore-template
   (str ".bjo/\n"
        "publish/\n"
@@ -545,7 +545,7 @@
 ;; chose when they made it. It is refused rather than mangled when it is not a
 ;; name: `bjo init my-app` is one word to type, and a guess at what `my.app`
 ;; was meant to be is a package name nobody wrote.
-(: cmd-init (-> (List string) bool int))
+(: (-> (List string) bool int))
 (defun (cmd-init arguments lib?)
   (with-return ret
     (def here (path-absolute (current-directory)))

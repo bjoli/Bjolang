@@ -28,7 +28,7 @@
 ;; EXPECT-CS: internal static class __Literals \{
 ;; EXPECT-CS: public static readonly BjolangRuntime\.Keyword Kw_apple = BjolangRuntime\.Keyword\.Intern\("apple"\);
 ;; EXPECT-CS: return __Literals\.Kw_apple;
-(: which (-> Keyword))
+(: (-> Keyword))
 (defun (which) :apple)
 
 ;; --- One field, however many uses -------------------------------------------
@@ -38,7 +38,7 @@
 ;; already taken, so the second field would be called `Kw_apple_2`, and that is
 ;; what this asserts the absence of.
 ;; EXPECT-NO-CS: Kw_apple_2
-(: also (-> Keyword))
+(: (-> Keyword))
 (defun (also) :apple)
 
 ;; And nothing is left calling `Intern` at a use site. The only `Intern` in the
@@ -49,7 +49,7 @@
 ;; --- A symbol is the same case ----------------------------------------------
 ;; EXPECT-CS: public static readonly BjolangRuntime\.Symbol Sym_pear = BjolangRuntime\.Symbol\.Intern\("pear"\);
 ;; EXPECT-CS: return __Literals\.Sym_pear;
-(: pear (-> Symbol))
+(: (-> Symbol))
 (defun (pear) 'pear)
 
 ;; --- Two bodies, one field --------------------------------------------------
@@ -61,7 +61,7 @@
 ;; EXPECT-CS: public static int tagged\(Bjolang.Runtime.BjoInputPort p\)
 ;; EXPECT-CS: public static async Bjoml.Fiber<int> tagged__bjo\(Bjolang.Runtime.BjoInputPort p\)
 ;; EXPECT-NO-CS: Kw_doubled_2
-(: tagged (-> InputPort int))
+(: (-> InputPort int))
 (defun (tagged p)
   (if (port-eof? p)
       (string-length (keyword->string :doubled))
@@ -87,7 +87,7 @@
 ;; matched loosely and the initializer by its contents.
 ;; EXPECT-CS: public static readonly Collections\.RrbList<int> Vec[0-9_]* = Collections\.RrbBuilder<int>\.FromArray\(new int\[\] \{ 11, 22, 33 \}, true\);
 ;; EXPECT-CS: return __Literals\.Vec[0-9_]*;
-(: three (-> (Vec int)))
+(: (-> (Vec int)))
 (defun (three) [11 22 33])
 
 ;; --- An array literal is *not* -----------------------------------------------
@@ -97,7 +97,7 @@
 ;; one would be a correctness bug rather than an optimization. It stays where it
 ;; is written.
 ;; EXPECT-CS: return new int\[\] \{ 44, 55 \};
-(: fresh (-> (Array int)))
+(: (-> (Array int)))
 (defun (fresh) #[44 55])
 
 ;; --- Nor a vec whose type is not yet a type ----------------------------------
@@ -105,5 +105,5 @@
 ;; The holder class is not generic and cannot hold a field of `T_a`. Nor are the
 ;; elements literals here, which alone would settle it.
 ;; EXPECT-CS: Collections\.RrbBuilder<T_a>\.FromArray\(new T_a\[\] \{ a, b \}, true\)
-(: pair (-> %a %a (Vec %a)))
+(: (-> %a %a (Vec %a)))
 (defun (pair a b) [a b])

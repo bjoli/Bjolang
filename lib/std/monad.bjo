@@ -59,21 +59,21 @@
     (bad (syntax-error bad "do takes a block of forms: (do (:bind x m) ... (:return e))"))))
 
 ;; Builds the block chain.
-(: do-block (-> (List Syntax) Syntax Syntax))
+(: (-> (List Syntax) Syntax Syntax))
 (defun (do-block steps whole)
   (match steps
     (Nil (syntax-error whole "A (do ...) block is empty. It has to answer something."))
     ((Cons step Nil) (do-last step))
     ((Cons step rest) (do-step step (do-block rest whole)))))
 
-(: identifier? (-> Syntax bool))
+(: (-> Syntax bool))
 (defun (identifier? s)
   (match s
     ((SSym _) #t)
     (_ #f)))
 
 ;; Checks if form is keyword-headed.
-(: clause? (-> Syntax bool))
+(: (-> Syntax bool))
 (defun (clause? s)
   (match s
     ((SList (Cons head _))
@@ -82,12 +82,12 @@
        (_ #f)))
     (_ #f)))
 
-(: unknown-clause (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (unknown-clause step)
   (syntax-error step "This is not a (do ...) form. They are :bind, :match, :let, :then and :return."))
 
 ;; The block's last form, which is its value.
-(: do-last (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (do-last step)
   (syntax-match step
     ((:return expr) #'(pure ,expr))
@@ -104,7 +104,7 @@
     (last (if (clause? last) (unknown-clause last) last))))
 
 ;; A step, and everything after it.
-(: do-step (-> Syntax Syntax Syntax))
+(: (-> Syntax Syntax Syntax))
 (defun (do-step step rest)
   (syntax-match step
     ;; :bind takes an identifier.

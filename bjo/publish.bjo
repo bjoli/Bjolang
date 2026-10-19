@@ -62,7 +62,7 @@
 
 ;; Written into every output directory. An existing directory is only replaced
 ;; when it has this file, so a mistyped `-o` cannot delete something else.
-(: published-marker string)
+(: string)
 (def published-marker ".bjopublish")
 
 ;; ---------------------------------------------------------------------------
@@ -70,14 +70,14 @@
 ;; ---------------------------------------------------------------------------
 
 ;; `path` relative to `dir`, or `None` when it is not below it.
-(: below (-> string string (Option string)))
+(: (-> string string (Option string)))
 (defun (below dir path)
   (def rel (clr-relative-path (path-absolute dir) (path-absolute path)))
   (if (or (= rel ".") (string-starts-with? rel "..") (clr-path-rooted? rel))
       None
       (Some rel)))
 
-(: package-prefix (-> PublishedPackage string))
+(: (-> PublishedPackage string))
 (defun (package-prefix p)
   (if (record-ref p own)
       "app"
@@ -87,7 +87,7 @@
 ;; The package whose directory holds `path`, and the path relative to it. The
 ;; deepest directory wins, because fetched dependencies live in `.bjo/pkg`
 ;; inside the project's own directory.
-(: package-of (-> (List PublishedPackage) string (Option (Tuple PublishedPackage string))))
+(: (-> (List PublishedPackage) string (Option (Tuple PublishedPackage string))))
 (defun (package-of packages path)
   (loop (:for p packages)
         (:when-let (Some rel) (below (record-ref p dir) path))
@@ -101,7 +101,7 @@
 
 ;; Where `path` goes in the output, when it is under the standard library,
 ;; the runtime or a package. `None` for anything else.
-(: known-destination (-> Publication string (Option string)))
+(: (-> Publication string (Option string)))
 (defun (known-destination p path)
   (def in-lib (match (record-ref p lib)
                 ((Some lib) (below lib path))
@@ -117,14 +117,14 @@
           (None None)))))))
 
 ;; The longest list both start with.
-(: common-prefix (-> (List string) (List string) (List string)))
+(: (-> (List string) (List string) (List string)))
 (defun (common-prefix a b)
   (match (Tuple a b)
     ((Tuple (Cons x xs) (Cons y ys)) #:when (= x y) (Cons x (common-prefix xs ys)))
     (_ Nil)))
 
 ;; The deepest directory that holds every one of `paths`.
-(: common-directory (-> (List string) string))
+(: (-> (List string) string))
 (defun (common-directory paths)
   (match (list-map (fun (path) (vec->list (string-split (clr-directory-of (path-absolute path)) "/")))
                    paths)
@@ -175,10 +175,10 @@
 ;; The standard library is copied with its sources and documentation, but not
 ;; its build records, which name this machine's paths and which nothing reads
 ;; in a published program.
-(: build-record? (-> string bool))
+(: (-> string bool))
 (defun (build-record? f) (string-ends-with? f ".bjobuild"))
 
-(: nothing-skipped (-> string bool))
+(: (-> string bool))
 (defun (nothing-skipped f) #f)
 
 ;; Copies a resource, a file or a directory, to `rel` under `out`.
@@ -216,7 +216,7 @@
                "Give an empty or new directory with -o.")))))
 
 ;; Why a declared resource cannot be published, or nothing when it can.
-(: resource-problem (-> PublishedPackage string (Option string)))
+(: (-> PublishedPackage string (Option string)))
 (defun (resource-problem package resource)
   (def shown (str "the resource \"" resource "\" of " (record-ref package dir)))
   (def from (path-combine (record-ref package dir) resource))
@@ -230,7 +230,7 @@
     (else None)))
 
 ;; Every resource problem, across all the packages.
-(: resource-problems (-> (List PublishedPackage) (List string)))
+(: (-> (List PublishedPackage) (List string)))
 (defun (resource-problems packages)
   (loop (:for package packages)
         (:subloop)

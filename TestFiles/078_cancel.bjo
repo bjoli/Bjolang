@@ -37,7 +37,7 @@
 (import (std prelude))
 (import (std simpletest))
 
-(: yes-no (-> bool string))
+(: (-> bool string))
 (defun (yes-no b) (if b "yes" "no"))
 
 ;; A reason rendered flat, so that every assertion below is a string compare.
@@ -45,7 +45,7 @@
 ;; `None` is "not cancelled at all", which is the one case `cancelled?`
 ;; collapses into its `false` — so the poll that answers *why* has four answers
 ;; where the boolean has two, and this is where that shows.
-(: reason-name (-> (Option CancelReason) string))
+(: (-> (Option CancelReason) string))
 (defun (reason-name r)
   (match r
     ((Some (Requested who)) (string-append "requested " who))
@@ -70,7 +70,7 @@
 ;; round again. Persistence makes that mandatory: a loop that carried on would
 ;; spin, because the branch that woke it is available again immediately.
 
-(: worker (-> (Chan int) CancelToken (Chan int) void))
+(: (-> (Chan int) CancelToken (Chan int) void))
 (defbjo (worker jobs ct results)
   (let go ((total 0))
     (match (sync (choose (wrap (chan-recv jobs) (fun (j) (Job j)))
@@ -88,7 +88,7 @@
 ;; §9's limitation 9 in one function: delete the `cancelled?` and this counts
 ;; all the way to `limit` no matter who cancelled what.
 
-(: count-until-cancelled (-> CancelToken int int))
+(: (-> CancelToken int int))
 (defun (count-until-cancelled ct limit)
   (let go ((i 0))
     (if (or (= i limit) (cancelled? ct))
@@ -120,13 +120,13 @@
 ;; Reporting after a cancellation is exactly the work a shield is for, and
 ;; `with-shield` above is where that promise is tested on its own.
 
-(: leaf (-> (Chan string) void))
+(: (-> (Chan string) void))
 (defbjo (leaf report)
   (def fired (sync (cancelled (parameter-ref current-cancel))))
   (with-shield #:within (seconds 5)
     (sync (chan-send report "leaf"))))
 
-(: branch (-> (Chan string) void))
+(: (-> (Chan string) void))
 (defbjo (branch report)
   (def kid (bjo (leaf report)))
   (with-shield #:within (seconds 5)
@@ -136,14 +136,14 @@
 ;; Spawned *outside* the scope, and so under the root token rather than the
 ;; scope's. Reports what it sees rather than waiting for it, because what it
 ;; sees is "nothing has been cancelled" and waiting for that would not return.
-(: outsider (-> (Chan string) void))
+(: (-> (Chan string) void))
 (defbjo (outsider report)
   (sync (chan-send report (yes-no (cancelled? (parameter-ref current-cancel))))))
 
 ;; Raced against a generous timeout wherever a test would otherwise be able to
 ;; hang: a broken link should be a `FAILURE:` line, not a suite that never
 ;; finishes.
-(: within (-> (Event CancelReason) int string))
+(: (-> (Event CancelReason) int string))
 (defbjo (within ev ms)
   (match (sync (choose (wrap ev (fun (u) (Job 0)))
                        (wrap (timeout ms) (fun (u) Quit))))

@@ -9,7 +9,7 @@
 ;; `bind`'s own `%b` is method-level, not the trait's target: it is exactly the
 ;; restriction inline traits lift, and it reaches C# as a generic *method*
 ;; parameter.
-(: pairs (-> (List int)))
+(: (-> (List int)))
 (defun (pairs)
   (do (:bind x (Cons 1 (Cons 2 Nil)))
       (:bind y (Cons 10 (Cons 20 Nil)))
@@ -18,11 +18,11 @@
 ;; The same block, at a different instance. Two `Monad` implementations coexist
 ;; in one program, which is what keying the template registry on the constructor
 ;; is for.
-(: safe-div (-> int int (Option int)))
+(: (-> int int (Option int)))
 (defun (safe-div a b)
   (if (= b 0) None (Some (/ a b))))
 
-(: calc (-> int (Option int)))
+(: (-> int (Option int)))
 (defun (calc n)
   (do (:bind half (safe-div n 2))
       (:let  doubled (* half 2))
@@ -31,7 +31,7 @@
 
 ;; The last form of a block may be any `m a`, not necessarily a `:return`. That
 ;; is what lets a monadic loop put its own recursive call in tail position.
-(: countdown (-> int (List int)))
+(: (-> int (List int)))
 (defun (countdown n)
   (if (= n 0)
       (pure 0)
@@ -41,38 +41,38 @@
 ;; `Result`, where the whole block is the happy path: `%e` is fixed by the
 ;; implementation, so an `Err` short-circuits the rest without being mentioned
 ;; anywhere in the block.
-(: parse-pair (-> string (Result string (Tuple int int))))
+(: (-> string (Result string (Tuple int int))))
 (defun (parse-pair text)
   (let ((parts (string-split text ",")))
     (if (= (length parts) 2)
         (Ok (Tuple (string->int (vec-ref parts 0)) (string->int (vec-ref parts 1))))
         (Err (string-append "not a pair: " text)))))
 
-(: checked (-> int (Result string int)))
+(: (-> int (Result string int)))
 (defun (checked n)
   (if (< n 0) (Err "negative") (Ok n)))
 
 ;; `:match` is `:bind` with a pattern. The `Tuple` cannot fail to match, which
 ;; is what the clause is for; a pattern that can fail throws, as one does
 ;; anywhere else in the language.
-(: area (-> string (Result string int)))
+(: (-> string (Result string int)))
 (defun (area text)
   (do (:match (Tuple w h) (parse-pair text))
       (:bind width (checked w))
       (:bind height (checked h))
       (:return (* width height))))
 
-(: show-result (-> (Result string int) string))
+(: (-> (Result string int) string))
 (defun (show-result r)
   (match r
     ((Ok v) (int->string v))
     ((Err e) e)))
 
-(: show-list (-> (List int) string))
+(: (-> (List int) string))
 (defun (show-list xs)
   (list-foldl (fun (x acc) (string-append acc (string-append " " (int->string x)))) "" xs))
 
-(: show-option (-> (Option int) string))
+(: (-> (Option int) string))
 (defun (show-option o)
   (match o
     ((Some v) (int->string v))

@@ -45,17 +45,17 @@
 ;; Two million, so that ticks * 100 stays inside an `int` in `ps-per-op` below.
 ;; A tick is 100 ns, the products there are ns and then ps, and a benchmark
 ;; that silently wrapped would be worse than none.
-(: iterations int)
+(: int)
 (def iterations 2000000)
 
-(: reps int)
+(: int)
 (def reps 20)
 
-(: warmups int)
+(: int)
 (def warmups 5)
 
 ;; The hand-hoisted shape this work is meant to make unnecessary.
-(: apple-key Keyword)
+(: Keyword)
 (def apple-key :apple)
 
 ;; ---------------------------------------------------------------------------
@@ -65,21 +65,21 @@
 ;; is known before the call, and every one answers a count that depends on the
 ;; work, so that none of it is dead.
 
-(: via-literal (-> Keyword int))
+(: (-> Keyword int))
 (defun (via-literal k)
   (let go ((i 0) (hits 0))
     (if (= i iterations)
         hits
         (go (+ i 1) (if (eq? k :apple) (+ hits 1) hits)))))
 
-(: via-def (-> Keyword int))
+(: (-> Keyword int))
 (defun (via-def k)
   (let go ((i 0) (hits 0))
     (if (= i iterations)
         hits
         (go (+ i 1) (if (eq? k apple-key) (+ hits 1) hits)))))
 
-(: via-intern (-> Keyword int))
+(: (-> Keyword int))
 (defun (via-intern k)
   (let go ((i 0) (hits 0))
     (if (= i iterations)
@@ -92,14 +92,14 @@
 ;; real shape but not the one this is here to price. The fallback answers 4
 ;; rather than 0 so that `timed`'s "a shape answered nothing" check still has
 ;; something to see.
-(: classify-cond (-> Keyword int))
+(: (-> Keyword int))
 (defun (classify-cond k)
   (cond ((eq? k :apple) 1)
         ((eq? k :banana) 2)
         ((eq? k :cherry) 3)
         (else 4)))
 
-(: classify-match (-> Keyword int))
+(: (-> Keyword int))
 (defun (classify-match k)
   (match k
     (:apple 1)
@@ -107,21 +107,21 @@
     (:cherry 3)
     (_ 4)))
 
-(: via-cond (-> Keyword int))
+(: (-> Keyword int))
 (defun (via-cond k)
   (let go ((i 0) (hits 0))
     (if (= i iterations)
         hits
         (go (+ i 1) (+ hits (classify-cond k))))))
 
-(: via-match (-> Keyword int))
+(: (-> Keyword int))
 (defun (via-match k)
   (let go ((i 0) (hits 0))
     (if (= i iterations)
         hits
         (go (+ i 1) (+ hits (classify-match k))))))
 
-(: via-vec (-> Keyword int))
+(: (-> Keyword int))
 (defun (via-vec k)
   (ignore k)
   (let go ((i 0) (hits 0))
@@ -130,7 +130,7 @@
         (go (+ i 1) (+ hits (vec-ref [1 2 3] 1))))))
 
 ;; The empty loop, so that every row above can be read net of the loop itself.
-(: via-nothing (-> Keyword int))
+(: (-> Keyword int))
 (defun (via-nothing k)
   (ignore k)
   (let go ((i 0) (hits 0))
@@ -142,11 +142,11 @@
 ;; Timing
 ;; ---------------------------------------------------------------------------
 
-(: elapsed-ticks (-> Stopwatch int))
+(: (-> Stopwatch int))
 (defun (elapsed-ticks sw)
   (clr-to-int (.-Ticks (.-Elapsed sw))))
 
-(: timed (-> (-> Keyword int) Keyword int))
+(: (-> (-> Keyword int) Keyword int))
 (defun (timed f k)
   (let go ((i 0) (best 2000000000))
     (if (= i reps)
@@ -160,7 +160,7 @@
             (let ((t (elapsed-ticks sw)))
               (go (+ i 1) (if (< t best) t best))))))))
 
-(: as-ms (-> int string))
+(: (-> int string))
 (defun (as-ms ticks)
   (let* ((hundredths (/ ticks 100))
          (frac (% hundredths 100)))
@@ -172,7 +172,7 @@
 ;; tick is 100 ns and the loop runs `iterations / 1000` thousand times, so the
 ;; largest intermediate is `ticks * 100`, which a two-second rep keeps inside an
 ;; `int`.
-(: ns-per-op (-> int string))
+(: (-> int string))
 (defun (ns-per-op ticks)
   (let* ((ps (/ (* ticks 100) (/ iterations 1000)))
          (frac (% ps 1000)))
@@ -182,7 +182,7 @@
                (else "."))
          (int->string frac))))
 
-(: row (-> string int int void))
+(: (-> string int int void))
 (defun (row label ticks floor)
   (println (str (string-pad-right label 14)
                 (string-pad-left (as-ms ticks) 8) " ms"

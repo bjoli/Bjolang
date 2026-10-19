@@ -13,27 +13,27 @@
 (import (std prelude))
 (import (std simpletest))
 
-(: shout (-> string string))
+(: (-> string string))
 (defbjouble (shout s)
   (#:sync (string-append "sync " s))
   (#:bjo (sync (timeout 1)) (string-append "bjo " s)))
 
-(: declared (-> int int))
+(: (-> int int))
 (defun (declared n)
-  (: twice (-> int int))
+  (: (-> int int))
   (defun (twice x) (* x 2))
   (twice n))
 
 ;; A declaration after another definition, and in a recursive function.
-(: sum-to (-> int int))
+(: (-> int int))
 (defun (sum-to n)
   (def start 0)
-  (: go (-> int int int))
+  (: (-> int int int))
   (defun (go i acc) (if (> i n) acc (go (+ i 1) (+ acc i))))
   (go start 0))
 
 ;; Two declarations, then the two functions, which call each other.
-(: parity (-> int string))
+(: (-> int string))
 (defun (parity n)
   (: even? (-> int bool))
   (: odd? (-> int bool))
@@ -42,48 +42,48 @@
   (if (even? n) "even" "odd"))
 
 ;; A type variable, as in a parameter annotation.
-(: first-of (-> string))
+(: (-> string))
 (defun (first-of)
-  (: pick (-> %a %a %a))
+  (: (-> %a %a %a))
   (defun (pick a b) a)
   (pick "first" "second"))
 
-(: values (-> long))
+(: (-> long))
 (defun (values)
-  (: k long)
+  (: long)
   (def k 40)
-  (: m long)
+  (: long)
   (def/mutable m 1)
   (set! m (+ m 1))
   (+ k m))
 
 ;; The arrow is ->, and the function suspends because its body needs it to.
-(: in-bjoroutine (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (in-bjoroutine)
-  (: loud (-> string string))
+  (: (-> string string))
   (defun (loud s) (shout s))
   (sync (timeout 1))
   (loud "local"))
 
-(: in-function (-> string))
+(: (-> string))
 (defun (in-function)
-  (: loud (-> string string))
+  (: (-> string string))
   (defun (loud s) (shout s))
   (loud "local"))
 
 ;; `main` is a bjoroutine, so a call there takes the suspending copy of
 ;; `in-function`. A call in an ordinary lambda takes the ordinary copy.
-(: call-it (-> (-> string) string))
+(: (-> (-> string) string))
 (defun (call-it f) (f))
 
 ;; Ordinary functions for -bjo-> annotations: a declaration, an annotation in
 ;; the def, and a def/mutable.
-(: lifted (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (lifted)
   (def (: g (-bjo-> int int)) (fun (x) (+ x 1)))
-  (: h (-bjo-> int int))
+  (: (-bjo-> int int))
   (def h (fun (x) (* x 2)))
-  (: m (-bjo-> int int))
+  (: (-bjo-> int int))
   (def/mutable m (fun (x) (- x 1)))
   (+ (g 1) (h 20) (m 20)))
 

@@ -118,29 +118,29 @@
                       (: dot-bjo string)
                       (: was-locked (List Locked)))))
 
-(: prepared-roots-file (-> Prepared string))
+(: (-> Prepared string))
 (defun (prepared-roots-file p) (record-ref p roots-file))
 
-(: prepared-frameworks-file (-> Prepared (Option string)))
+(: (-> Prepared (Option string)))
 (defun (prepared-frameworks-file p) (record-ref p frameworks-file))
 
-(: prepared-nuget-dir (-> Prepared (Option string)))
+(: (-> Prepared (Option string)))
 (defun (prepared-nuget-dir p) (record-ref p nuget-dir))
 
-(: prepared-runtime (-> Prepared (List string)))
+(: (-> Prepared (List string)))
 (defun (prepared-runtime p) (record-ref p runtime))
 
-(: prepared-aot (-> Prepared bool))
+(: (-> Prepared bool))
 (defun (prepared-aot p) (record-ref p aot))
 
-(: prepared-aot-cpu (-> Prepared string))
+(: (-> Prepared string))
 (defun (prepared-aot-cpu p) (record-ref p aot-cpu))
 
-(: prepared-roots (-> Prepared (List Root)))
+(: (-> Prepared (List Root)))
 (defun (prepared-roots p) (record-ref p roots))
 
 ;; How many packages other than the project itself.
-(: prepared-dependencies (-> Prepared int))
+(: (-> Prepared int))
 (defun (prepared-dependencies p) (- (length (prepared-roots p)) 1))
 
 
@@ -150,17 +150,17 @@
 
 ;; A package name is the key everywhere here: two names are the same name when
 ;; they are written the same, and `(a b)` is a string a map can hold.
-(: key-of (-> (List Symbol) string))
+(: (-> (List Symbol) string))
 (defun (key-of name) (name->string name))
 
-(: source-shown (-> Source string))
+(: (-> Source string))
 (defun (source-shown s)
   (match s
     ((FromGit g) (str "(git (url \"" (record-ref g url) "\"))"))
     ((FromPath p) (str "(path (dir \"" (record-ref p dir) "\"))"))
     ((FromRegistry r) (str "(registry (host \"" (record-ref r host) "\"))"))))
 
-(: without-suffix (-> string string string))
+(: (-> string string string))
 (defun (without-suffix s suffix)
   (if (not (string-ends-with? s suffix))
       s
@@ -172,7 +172,7 @@
 ;; What two sources are compared as. A repository is the same repository under
 ;; `…/x`, `…/x/` and `…/x.git`, and a manifest that spells it either way means
 ;; the same place.
-(: source-key (-> Source string))
+(: (-> Source string))
 (defun (source-key s)
   (match s
     ((FromGit g) (str "git " (without-suffix (without-suffix (record-ref g url) "/") ".git")))
@@ -191,7 +191,7 @@
 ;; roots file would map the name that was asked for onto these modules, and
 ;; every module in it would then compile under a name its own author never
 ;; wrote.
-(: package-in-directory (-> (List Symbol) string string (Result string Package)))
+(: (-> (List Symbol) string string (Result string Package)))
 (defun (package-in-directory wanted dir asked-by)
   (def manifest-file (path-combine dir manifest-name))
   (cond
@@ -218,7 +218,7 @@
 ;;
 ;; The root's wins and is never overwritten; anyone else's has to agree with
 ;; what is already there.
-(: give-source! (-> Walk (List Symbol) Source string bool (Result string Unit)))
+(: (-> Walk (List Symbol) Source string bool (Result string Unit)))
 (defun (give-source! walk name source from root?)
   (def k (key-of name))
   (def given (Given (given source) (given-from from) (given-root? root?)))
@@ -245,7 +245,7 @@
                   " with the source you want: the root manifest's wins everywhere.")))))))
 
 ;; What a dependency clause has to satisfy before anything is fetched for it.
-(: check-dep (-> Walk Dep string (Result string Unit)))
+(: (-> Walk Dep string (Result string Unit)))
 (defun (check-dep walk dep from)
   (def name (record-ref dep name))
   (cond
@@ -261,7 +261,7 @@
 
 ;; Every dependency of one manifest: its clauses checked, its sources recorded,
 ;; and one `Want` each for the step that places them.
-(: dependencies-of (-> Walk Task (Result string (List Want))))
+(: (-> Walk Task (Result string (List Want))))
 (defun (dependencies-of walk task)
   (with-return ret
     (def package (record-ref task package))
@@ -404,7 +404,7 @@
 ;; A version whose manifest says another name is refused: the roots file would
 ;; file these modules under the name that was asked for, and every one of them
 ;; would then compile under a name its author never wrote.
-(: package-at-tag (-> (List Symbol) string string (Result string Package)))
+(: (-> (List Symbol) string string (Result string Package)))
 (defun (package-at-tag wanted text shown)
   (match (bjodat-parse-Package text)
     ((Err why) (Err (str "bjo: " manifest-name " at " shown ": " why)))
@@ -418,14 +418,14 @@
 ;; What a name is called, where it comes from and where its clone is. Written
 ;; down when the first requirement on it is seen, and read again when the
 ;; chosen version is materialised and locked.
-(: remember! (-> Walk string (List Symbol) Source string Unit))
+(: (-> Walk string (List Symbol) Source string Unit))
 (defun (remember! walk k name source clone)
   (box-set! (record-ref walk names) (map-set (box-ref (record-ref walk names)) k name))
   (box-set! (record-ref walk origins) (map-set (box-ref (record-ref walk origins)) k source))
   (box-set! (record-ref walk clones) (map-set (box-ref (record-ref walk clones)) k clone))
   unit)
 
-(: add-node! (-> Walk string Version Unit))
+(: (-> Walk string Version Unit))
 (defun (add-node! walk k version)
   (def had (match (map-try-ref (box-ref (record-ref walk nodes)) k)
              ((Some versions) versions)
@@ -451,7 +451,7 @@
                "  Write one, as in (version (version-at-least \"0.1.0\")).\n"
                "  The versions that repository has: " (versions-shown tags))))))
 
-(: versions-shown (-> (List Version) string))
+(: (-> (List Version) string))
 (defun (versions-shown versions)
   (if (empty? versions)
       "none — it has no vX.Y.Z tags at all."
@@ -459,7 +459,7 @@
 
 ;; The version a requirement asks for, as minimal version selection reads it:
 ;; the bottom of the range, and `0.0.0` where there is no bottom.
-(: lower-bound (-> VersionReq Version))
+(: (-> VersionReq Version))
 (defun (lower-bound req)
   (match req
     ((AtLeast lo) lo)
@@ -504,14 +504,14 @@
      (Ok #t))))
 
 ;; The dependencies that can be placed now, and the ones that still cannot.
-(: ready-and-waiting (-> Walk (List Want) (Tuple (List Want) (List Want))))
+(: (-> Walk (List Want) (Tuple (List Want) (List Want))))
 (defun (ready-and-waiting walk wants)
   (def known (box-ref (record-ref walk sources)))
   (Tuple (list-filter #(some? (map-try-ref known (key-of (record-ref (record-ref & dep) name)))) wants)
          (list-filter #(not (some? (map-try-ref known (key-of (record-ref (record-ref & dep) name))))) wants)))
 
 ;; A name nobody said where to get.
-(: no-source-message (-> Walk Want string))
+(: (-> Walk Want string))
 (defun (no-source-message walk want)
   (def name (record-ref (record-ref want dep) name))
   (str "bjo: " (record-ref want want-from) " wants " (name->string name)
@@ -570,7 +570,7 @@
 ;; `src/` has to exist: the compiler refuses a roots file naming a directory
 ;; that is not there, and refusing it here says which package and which
 ;; directory instead of naming a file the user never wrote.
-(: root-package-root (-> Project (Result string Root)))
+(: (-> Project (Result string Root)))
 (defun (root-package-root project)
   (def name (record-ref (project-package project) name))
   (def src (project-src project))
@@ -610,13 +610,13 @@
 ;; A's nodes are 1.0.0 and 1.1.0, so A is 1.1.0 — not 1.2.0, which nobody
 ;; asked for, and not 1.0.0, which B would not work with. Remove B and the
 ;; next build uses A 1.0.0 again.
-(: choose (-> Walk (List Chosen)))
+(: (-> Walk (List Chosen)))
 (defun (choose walk)
   (map-fold (fun (k versions found) (Cons (chosen-of walk k versions) found))
             Nil
             (box-ref (record-ref walk nodes))))
 
-(: chosen-of (-> Walk string (List Version) Chosen))
+(: (-> Walk string (List Version) Chosen))
 (defun (chosen-of walk k versions)
   (Chosen (chosen-name (map-ref (box-ref (record-ref walk names)) k))
           (chosen-version (highest versions))
@@ -624,14 +624,14 @@
           (chosen-clone (map-ref (box-ref (record-ref walk clones)) k))))
 
 ;; `list-foldl` hands the item first and the accumulator second.
-(: highest (-> (List Version) Version))
+(: (-> (List Version) Version))
 (defun (highest versions)
   (list-foldl (fun (v best) (if (> (version-compare v best) 0) v best))
               (version 0 0 0)
               versions))
 
 ;; A constraint as a manifest writes it.
-(: req-shown (-> (Option VersionReq) string))
+(: (-> (Option VersionReq) string))
 (defun (req-shown req)
   (match req
     (None "(no version)")
@@ -644,7 +644,7 @@
 ;; a build that does not work at all, while a version that is too high for
 ;; another is a build the author of that one has not tried. So the graph
 ;; decides and the bounds say whether the answer is acceptable.
-(: check-bounds (-> Walk Chosen (Result string Unit)))
+(: (-> Walk Chosen (Result string Unit)))
 (defun (check-bounds walk c)
   (def name (record-ref c chosen-name))
   (def picked (record-ref c chosen-version))
@@ -664,7 +664,7 @@
                 " upper bound never lowers it.\n"
                 "  Raise the bound, or lower what asks for more."))))
 
-(: need-line (-> Version Need string))
+(: (-> Version Need string))
 (defun (need-line picked n)
   (def satisfied?
     (match (record-ref n need-req)
@@ -673,7 +673,7 @@
   (str "    " (req-shown (record-ref n need-req)) " in " (record-ref n need-from)
        (if satisfied? "" (str "   <- " (version->string picked) " breaks this"))))
 
-(: check-every-bound (-> Walk (List Chosen) (Result string Unit)))
+(: (-> Walk (List Chosen) (Result string Unit)))
 (defun (check-every-bound walk chosen)
   (match chosen
     (Nil (Ok unit))
@@ -686,7 +686,7 @@
 ;; The lock
 ;; ---------------------------------------------------------------------------
 
-(: moved-tag-message (-> (List Symbol) Version string string string string))
+(: (-> (List Symbol) Version string string string string))
 (defun (moved-tag-message name v locked-at now lock-file)
   (str "bjo: " (name->string name) " " (version->tag v)
        " no longer points at the commit " lock-file " names.\n"

@@ -8,45 +8,45 @@
 
 ;; EXPECT-CS: = \(elem__[0-9]+ \* 2\);
 ;; EXPECT-NO-CS: listsubmap\(
-(: doubled (-> (List int) (List int)))
+(: (-> (List int) (List int)))
 (defun (doubled xs) (list-map (fun (x) (* x 2)) xs))
 
 ;; A `defbjouble` that takes a `-?->` is inlined with its Bjolang body, which
 ;; walks with a cursor, and not with the one that calls .NET with a delegate.
 ;; EXPECT-CS: vecsubcursorsubnext\(
 ;; EXPECT-NO-CS: clrsubvecsubfilter\(
-(: filtered-vec (-> (Vec int) (Vec int)))
+(: (-> (Vec int) (Vec int)))
 (defun (filtered-vec v) (vec-filter (fun (x) (> x 3)) v))
 
 ;; `vec-map` is written `#:no-inline`: its .NET version, which copies the
 ;; vec's arrays at their exact size, stays the call.
 ;; EXPECT-CS: return vecsubmap\(
-(: tripled-vec (-> (Vec int) (Vec int)))
+(: (-> (Vec int) (Vec int)))
 (defun (tripled-vec v) (vec-map (fun (x) (* x 3)) v))
 
 ;; So does a function of this module written `#:no-inline`.
-(: apply-once (-> (-> int int) int int))
+(: (-> (-> int int) int int))
 (defun (apply-once f x) #:no-inline (f x))
 
 ;; EXPECT-CS: Module\.applysubonce\(
-(: not-inlined (-> int int))
+(: (-> int int))
 (defun (not-inlined n) (apply-once (fun (x) (+ x 1)) n))
 
 ;; EXPECT-CS: Map\.MapModule\.CursorNext<int, int>\(
 ;; EXPECT-NO-CS: clrsubmapsubfold\(
-(: sum-map (-> (Map int int) int))
+(: (-> (Map int int) int))
 (defun (sum-map m) (map-fold (fun (k x acc) (+ acc (+ k x))) 0 m))
 
 ;; A body that calls its function twice keeps the call: the lambda would only
 ;; be bound to a local, and the call through it would remain.
-(: apply-twice (-> (-> int int) int int))
+(: (-> (-> int int) int int))
 (defun (apply-twice f x) (f (f x)))
 
 ;; EXPECT-CS: Module\.applysubtwice\(
-(: twice-used (-> int int))
+(: (-> int int))
 (defun (twice-used n) (apply-twice (fun (x) (+ x 1)) n))
 
 ;; A parameter named like a published function is the parameter.
 ;; EXPECT-CS: return listsubmap__[0-9]+\(
-(: shadow (-> (-> (-> int int) (List int) (List int)) (List int) (List int)))
+(: (-> (-> (-> int int) (List int) (List int)) (List int) (List int)))
 (defun (shadow list-map xs) (list-map (fun (x) (+ x 100)) xs))

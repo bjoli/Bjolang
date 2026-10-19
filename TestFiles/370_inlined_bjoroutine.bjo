@@ -5,29 +5,29 @@
 (import (std prelude))
 (import (std simpletest))
 
-(: depth (Param int))
+(: (Param int))
 (def depth (make-parameter 0))
 
 ;; A binding made inside the callee ends with it.
-(: nested-depth (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (nested-depth n) #:inline
   (parameterize ((depth n))
     (sync (timeout 1))
     (parameter-ref depth)))
 
 ;; A failure inside the callee reaches the caller as the call's failure.
-(: fails-after (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (fails-after zero) #:inline
   (sync (timeout 1))
   (/ 10 zero))
 
 ;; Parks until its scope is cancelled.
-(: waits (-bjo-> (Chan int) int))
+(: (-bjo-> (Chan int) int))
 (defbjo (waits ch) #:inline
   (sync (chan-recv ch)))
 
 ;; A caller that parks inside a copy of `waits`.
-(: caller (-bjo-> (Chan int) int))
+(: (-bjo-> (Chan int) int))
 (defbjo (caller ch)
   (+ 1 (waits ch)))
 

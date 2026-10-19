@@ -101,7 +101,7 @@
 
 ;; The winning root adopts the loser as its first child. O(1): one comparison
 ;; and one cons.
-(: tree-merge (-> (-> %a %a bool) (Tree %a) (Tree %a) (Tree %a)))
+(: (-> (-> %a %a bool) (Tree %a) (Tree %a) (Tree %a)))
 (defun (tree-merge precedes? a b)
   (match a
     (TNil b)
@@ -126,7 +126,7 @@
 ;; natural version recurses to depth (length ts) / 2, and this list is as long as
 ;; the root's child count — which for an unbalanced heap is O(n). That is a .NET
 ;; stack overflow on a large heap, not a slow program.
-(: merge-pairs (-> (-> %a %a bool) (List (Tree %a)) (Tree %a)))
+(: (-> (-> %a %a bool) (List (Tree %a)) (Tree %a)))
 (defun (merge-pairs precedes? ts)
   (let pair ((rest ts) (done Nil))
     (match rest
@@ -151,16 +151,16 @@
 ;; ends up on its signature whether or not the caller supplies `#:by`. For an
 ;; element type with no `Ord` implementation — a record of your own, ordered on
 ;; one of its fields — this is the way in.
-(: heap-by (-> (-> %a %a bool) (Heap %a)))
+(: (-> (-> %a %a bool) (Heap %a)))
 (defun (heap-by precedes?)
   (Heap (tree TNil) (precedes precedes?) (size 0) (settled #t)))
 
 ;; The same, with the element type's natural ordering as the default.
-(: heap-empty (-> (#:by (-> %a %a bool)) (Heap %a)) (where (Ord %a)))
+(: (-> (#:by (-> %a %a bool)) (Heap %a)) (where (Ord %a)))
 (defun (heap-empty #:by less?)
   (heap-by by))
 
-(: heap-singleton (-> %a (#:by (-> %a %a bool)) (Heap %a)) (where (Ord %a)))
+(: (-> %a (#:by (-> %a %a bool)) (Heap %a)) (where (Ord %a)))
 (defun (heap-singleton x #:by less?)
   (Heap (tree (TNode x Nil)) (precedes by) (size 1) (settled #t)))
 
@@ -169,27 +169,27 @@
 ;; ---------------------------------------------------------------------------
 
 ;; O(1). The answer is the root, wherever it came from.
-(: heap-min (-> (Heap %a) (Option %a)))
+(: (-> (Heap %a) (Option %a)))
 (defun (heap-min h)
   (match (record-ref h tree)
     (TNil None)
     ((TNode x _) (Some x))))
 
-(: heap-length (-> (Heap %a) int))
+(: (-> (Heap %a) int))
 (defun (heap-length h) (record-ref h size))
 
-(: heap-empty? (-> (Heap %a) bool))
+(: (-> (Heap %a) bool))
 (defun (heap-empty? h) (< (record-ref h size) 1))
 
 ;; The ordering this heap was built with, so that a heap with a different one can
 ;; be brought into line — see `heap-merge`.
-(: heap-ordering (-> (Heap %a) (-> %a %a bool)))
+(: (-> (Heap %a) (-> %a %a bool)))
 (defun (heap-ordering h) (record-ref h precedes))
 
 ;; #t when this value came out of `heap-balance` or a bulk build untouched. #f is
 ;; not a claim that the heap is badly shaped — only that this module has not
 ;; proved it is well shaped.
-(: heap-balanced? (-> (Heap %a) bool))
+(: (-> (Heap %a) bool))
 (defun (heap-balanced? h) (record-ref h settled))
 
 ;; ---------------------------------------------------------------------------
@@ -199,14 +199,14 @@
 ;; O(1). Note what it does to the shape: the new element becomes one more child
 ;; of the root. A run of inserts therefore builds a root with a very long child
 ;; list, and that list is what `heap-delete-min` has to pay for.
-(: heap-insert (-> (Heap %a) %a (Heap %a)))
+(: (-> (Heap %a) %a (Heap %a)))
 (defun (heap-insert h x)
   (Heap (tree (tree-merge (record-ref h precedes) (TNode x Nil) (record-ref h tree)))
         (precedes (record-ref h precedes))
         (size (+ (record-ref h size) 1))
         (settled #f)))
 
-(: heap-insert-all (-> (Heap %a) (List %a) (Heap %a)))
+(: (-> (Heap %a) (List %a) (Heap %a)))
 (defun (heap-insert-all h xs)
   (let go ((rest xs) (acc h))
     (match rest
@@ -231,7 +231,7 @@
 ;; is both the obvious optimisation and the removal of the commonest way to hit
 ;; this: folding `heap-merge` over a list of heaps starting from a default-
 ;; ordered `(heap-empty)` would otherwise relabel the whole fold.
-(: heap-merge (-> (Heap %a) (Heap %a) (Heap %a)))
+(: (-> (Heap %a) (Heap %a) (Heap %a)))
 (defun (heap-merge a b)
   (cond
     ((heap-empty? a) b)
@@ -245,7 +245,7 @@
 
 ;; The empty heap deletes to itself, so this never fails. Use `heap-pop` when you
 ;; want the element and the rest together.
-(: heap-delete-min (-> (Heap %a) (Heap %a)))
+(: (-> (Heap %a) (Heap %a)))
 (defun (heap-delete-min h)
   (match (record-ref h tree)
     (TNil h)
@@ -255,7 +255,7 @@
            (size (- (record-ref h size) 1))
            (settled #f)))))
 
-(: heap-pop (-> (Heap %a) (Option (Tuple %a (Heap %a)))))
+(: (-> (Heap %a) (Option (Tuple %a (Heap %a)))))
 (defun (heap-pop h)
   (match (record-ref h tree)
     (TNil None)
@@ -272,7 +272,7 @@
 
 ;; Every element, in no useful order. An explicit worklist rather than recursion
 ;; down the children, for the same stack reason as `merge-pairs`.
-(: tree-elements (-> (Tree %a) (List %a)))
+(: (-> (Tree %a) (List %a)))
 (defun (tree-elements t)
   (let walk ((todo (Cons t Nil)) (out Nil))
     (match todo
@@ -283,7 +283,7 @@
 
 ;; One round of a knockout tournament: merge neighbours, halving the list. An odd
 ;; one out is carried into the next round.
-(: pair-round (-> (-> %a %a bool) (List (Tree %a)) (List (Tree %a))))
+(: (-> (-> %a %a bool) (List (Tree %a)) (List (Tree %a))))
 (defun (pair-round precedes? ts)
   (let go ((rest ts) (out Nil))
     (match rest
@@ -296,7 +296,7 @@
 ;; Starting from n single-element trees, round k produces trees whose roots have
 ;; k children, so the survivor's root has ceil(log2 n) children and the tree is
 ;; ceil(log2 n) deep. That is the shape `heap-balance` is buying.
-(: tournament (-> (-> %a %a bool) (List (Tree %a)) (Tree %a)))
+(: (-> (-> %a %a bool) (List (Tree %a)) (Tree %a)))
 (defun (tournament precedes? ts)
   (match ts
     (Nil TNil)
@@ -304,7 +304,7 @@
     (_ (tournament precedes? (pair-round precedes? ts)))))
 
 ;; The one place a heap is built from a bag of elements.
-(: build (-> (List %a) (-> %a %a bool) int (Heap %a)))
+(: (-> (List %a) (-> %a %a bool) int (Heap %a)))
 (defun (build xs precedes? n)
   (Heap (tree (tournament precedes? (list-map (fun (x) (TNode x Nil)) xs)))
         (precedes precedes?)
@@ -317,7 +317,7 @@
 ;; leaves a heap that is still well shaped but clears the flag anyway, so
 ;; balancing again does real work it did not have to. Never the other way round:
 ;; a #t flag always means the shape is good.
-(: heap-balance (-> (Heap %a) (Heap %a)))
+(: (-> (Heap %a) (Heap %a)))
 (defun (heap-balance h)
   (if (record-ref h settled)
       h
@@ -329,7 +329,7 @@
 ;; tells us nothing about the new one, so there is no shortcut and no `settled`
 ;; check. This is what makes a heap with the wrong ordering usable rather than a
 ;; dead end, and it is the safe half of `heap-merge`.
-(: heap-reorder (-> (Heap %a) (-> %a %a bool) (Heap %a)))
+(: (-> (Heap %a) (-> %a %a bool) (Heap %a)))
 (defun (heap-reorder h precedes?)
   (build (tree-elements (record-ref h tree)) precedes? (record-ref h size)))
 
@@ -340,28 +340,28 @@
 ;; Builds the balanced shape directly, so a heap that came from a list is already
 ;; settled and `heap-balance` on it is free. n-1 comparisons, against the n of a
 ;; fold of inserts — but the shape is worth far more than the comparisons.
-(: list->heap/by (-> (List %a) (-> %a %a bool) (Heap %a)))
+(: (-> (List %a) (-> %a %a bool) (Heap %a)))
 (defun (list->heap/by xs precedes?)
   (build xs precedes? (list-length xs)))
 
-(: list->heap (-> (List %a) (#:by (-> %a %a bool)) (Heap %a)) (where (Ord %a)))
+(: (-> (List %a) (#:by (-> %a %a bool)) (Heap %a)) (where (Ord %a)))
 (defun (list->heap xs #:by less?)
   (list->heap/by xs by))
 
 ;; Natural ordering only: `#:rest` has to be the last parameter, so there is no
 ;; room for a `#:by` beside it. For another ordering write
 ;; `(list->heap/by '(...) f)`.
-(: heap-of (-> #:rest %a (Heap %a)) (where (Ord %a)))
+(: (-> #:rest %a (Heap %a)) (where (Ord %a)))
 (defun (heap-of #:rest xs)
   (list->heap/by (loop (:for x xs) (:acc out (listing x))) less?))
 
 ;; Every element, in no particular order. O(n).
-(: heap->list (-> (Heap %a) (List %a)))
+(: (-> (Heap %a) (List %a)))
 (defun (heap->list h)
   (tree-elements (record-ref h tree)))
 
 ;; In the heap's own order. O(n log n), and the honest way to read a heap out.
-(: heap->sorted-list (-> (Heap %a) (List %a)))
+(: (-> (Heap %a) (List %a)))
 (defun (heap->sorted-list h)
   (let go ((rest h) (out Nil))
     (match (heap-min rest)
@@ -374,11 +374,11 @@
 
 ;; Structural order, not the heap's order — this is the cheap walk. For the
 ;; heap's order, fold over `heap->sorted-list`.
-(: heap-fold (-> (-?-> %s %a %s) %s (Heap %a) %s))
+(: (-> (-?-> %s %a %s) %s (Heap %a) %s))
 (defun (heap-fold f init h)
   (list-foldl (fun (x acc) (f acc x)) init (tree-elements (record-ref h tree))))
 
-(: heap-for-each (-> (-?-> %a Unit) (Heap %a) Unit))
+(: (-> (-?-> %a Unit) (Heap %a) Unit))
 (defun (heap-for-each f h)
   (list-for-each f (tree-elements (record-ref h tree))))
 
@@ -443,7 +443,7 @@
 
 ;; In the heap's own order, for the same reason equality is: printing the shape
 ;; would make two equal heaps print differently.
-(: heap->str (-> (Heap %a) string) (where (->str %a)))
+(: (-> (Heap %a) string) (where (->str %a)))
 (defun (heap->str h)
   (def sb (stringbuilder-empty))
   (stringbuilder-add-string! sb "(Heap")

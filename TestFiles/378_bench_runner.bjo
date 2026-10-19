@@ -15,12 +15,12 @@
 
 (def/mutable calls 0L)
 
-(: tick (-> long))
+(: (-> long))
 (defun (tick)
   (set! calls (+ calls 1L))
   calls)
 
-(: driven-clock (-> Clock))
+(: (-> Clock))
 (defun (driven-clock)
   (make-clock #:monotonic-ms (fun () (/ calls 1000L))
               #:monotonic-ns (Some (fun () (* calls 1000L)))))
@@ -69,16 +69,16 @@
   (set! seen-length (list-length xs))
   (tick))
 
-(: name-of (-> Bench string))
+(: (-> Bench string))
 (defun (name-of b) (record-ref b name))
 
-(: bench-named (-> string Bench))
+(: (-> string Bench))
 (defun (bench-named name)
   (match (find (fun (b) (= (name-of b) name)) (module-benches (current-module)))
     ((Some b) b)
     (None (panic! #"no benchmark ${name}"))))
 
-(: defaults (-> BenchOptions))
+(: (-> BenchOptions))
 (defun (defaults)
   (match (parse-bench-args (vec-empty)) ((Ok o) o) ((Err e) (panic! e))))
 
@@ -203,19 +203,19 @@
 
 ;; --- The menu ------------------------------------------------------------
 
-(: selection-name (-> Selection string))
+(: (-> Selection string))
 (defun (selection-name s) (name-of (record-ref s bench)))
 
-(: selection-count (-> Selection int))
+(: (-> Selection int))
 (defun (selection-count s) (list-length (record-ref s cases)))
 
-(: chosen-names (-> (List Selection) (List string)))
+(: (-> (List Selection) (List string)))
 (defun (chosen-names chosen) (list-map selection-name chosen))
 
-(: chosen-counts (-> (List Selection) (List int)))
+(: (-> (List Selection) (List int)))
 (defun (chosen-counts chosen) (list-map selection-count chosen))
 
-(: choose (-> string (List Selection)))
+(: (-> string (List Selection)))
 (defun (choose text)
   (match (parse-choice text (module-benches (current-module)))
     ((Ok chosen) chosen)
@@ -246,7 +246,7 @@
 (deftest "the menu asks, runs, repeats on Enter, and leaves on q"
   (def/mutable lines (list "skipped" "" "nope" "q" "never read"))
   (def/mutable reads 0)
-  (: read (-> (Option string)))
+  (: (-> (Option string)))
   (defun (read)
     (set! reads (+ reads 1))
     (match lines
@@ -276,7 +276,7 @@
   (check (any? (fun (l) (= l "skipped   skipped: why not")) lines))
   (check (not (any? (fun (l) (string-ends-with? l " ")) lines))))
 
-(: options (-> (Vec string) BenchOptions))
+(: (-> (Vec string) BenchOptions))
 (defun (options args)
   (match (parse-bench-args args) ((Ok o) o) ((Err e) (panic! e))))
 
@@ -314,10 +314,10 @@
 
 ;; --- --serve -------------------------------------------------------------
 
-(: serve-session (-> (List string) (List string)))
+(: (-> (List string) (List string)))
 (defun (serve-session commands)
   (def/mutable left commands)
-  (: read (-> (Option string)))
+  (: (-> (Option string)))
   (defun (read)
     (match left
       ((Cons l more) (set! left more) (Some l))

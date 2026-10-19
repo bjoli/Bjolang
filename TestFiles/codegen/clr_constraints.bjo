@@ -14,18 +14,18 @@
 ;; `+` in the body. A dictionary would show up as an extra first argument.
 ;; EXPECT-CS: T_a addsubthem<T_a>\(T_a a, T_a b\) where T_a : System.Numerics.INumber<T_a>
 ;; EXPECT-CS: return \(a \+ b\);
-(: add-them (-> %a %a %a) (where (Num %a)))
+(: (-> %a %a %a) (where (Num %a)))
 (defun (add-them a b) (+ a b))
 
 ;; One clause per constrained variable.
 ;; EXPECT-CS: where T_a : System.Numerics.INumber<T_a> where T_b : System.Numerics.INumber<T_b>
-(: both (-> %a %b %a) (where (Num %a) (Num %b)))
+(: (-> %a %b %a) (where (Num %a) (Num %b)))
 (defun (both a b) (+ a a))
 
 ;; A caller at a concrete type passes no evidence: `int` satisfies the interface
 ;; or it does not, and either way there is nothing to hand over.
 ;; EXPECT-CS: return clr_constraints_Module\.addsubthem\(1, 2\);
-(: at-int (-> int))
+(: (-> int))
 (defun (at-int) (add-them 1 2))
 
 ;; The trait itself emits no C# interface — the one it names already exists in
@@ -61,14 +61,14 @@
 ;; Every call goes through the helper, and the concrete case differs from the
 ;; generic one only in the type argument.
 ;; EXPECT-CS: return Arith_Clr\.bare<int>\(-5\);
-(: at-a-type (-> int))
+(: (-> int))
 (defun (at-a-type) (bare -5))
 
 ;; EXPECT-CS: return Arith_Clr\.bare<T_a>\(x\);
-(: at-a-variable (-> %a %a) (where (Arith %a)))
+(: (-> %a %a) (where (Arith %a)))
 (defun (at-a-variable x) (bare x))
 
 ;; `string` reaches `Order`, which no System.Numerics constraint would allow.
 ;; EXPECT-CS: where T_a : System.IComparable<T_a>
-(: compare-them (-> %a %a int) (where (Order %a)))
+(: (-> %a %a int) (where (Order %a)))
 (defun (compare-them a b) (rel a b))

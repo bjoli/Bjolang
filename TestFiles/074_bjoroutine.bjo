@@ -39,7 +39,7 @@
 ;; `-bjo->` because nothing in the body suspends. A `defbjo` that never reaches
 ;; a yield point is warned about unless the signature asks for the colour, and
 ;; here the colour is the whole point of the definition.
-(: double (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (double x) (* x 2))
 
 ;; And here is the ordinary arrow: `(-> int int)`, the same as any function of
@@ -47,15 +47,15 @@
 ;; whether calling it suspends. The two are only joined up by the compiler.
 ;;
 ;; A bjoroutine calling a bjoroutine. Both of these compile to `await`.
-(: quadruple (-> int int))
+(: (-> int int))
 (defbjo (quadruple x) (double (double x)))
 
 ;; And one calling an ordinary function, which does not — so this one declares
 ;; the colour too.
-(: shout (-> string string))
+(: (-> string string))
 (defun (shout s) (string-append s "!"))
 
-(: greet (-bjo-> string string))
+(: (-bjo-> string string))
 (defbjo (greet who) (shout (string-append "hello " who)))
 
 ;; ---------------------------------------------------------------------------
@@ -67,11 +67,11 @@
 ;; Built as an ordinary arrow it would be called without an `await`, and nothing
 ;; would complain until Roslyn.
 
-(: odd-bjo? (-> int bool))
+(: (-> int bool))
 (defbjo (odd-bjo? n)
   (if (= n 0) #f (even-bjo? (- n 1))))
 
-(: even-bjo? (-> int bool))
+(: (-> int bool))
 (defbjo (even-bjo? n)
   (if (= n 0) #t (odd-bjo? (- n 1))))
 
@@ -83,10 +83,10 @@
 
 ;; `Fiber<void>` is not a type, so this is `Fiber<Bjoml.Unit>` — the second
 ;; reason unit had to become a real value before any of this could work.
-(: bump (-bjo-> int void))
+(: (-bjo-> int void))
 (defbjo (bump n) (set! counter (+ counter n)))
 
-(: bump-twice (-> int void))
+(: (-> int void))
 (defbjo (bump-twice n)
   (bump n)
   (bump n))
@@ -103,21 +103,21 @@
 ;; and asks `LoopLowering` the same question the emitter will ask.
 
 ;; A named `let`: one member, entered by an immediate call, so it is inlined.
-(: sum-doubled (-> int int))
+(: (-> int int))
 (defbjo (sum-doubled n)
   (let go ((i 0) (acc 0))
     (if (= i n) acc (go (+ i 1) (+ acc (double i))))))
 
 ;; The general `(loop ...)` form, with a sequence and an accumulator. Its
 ;; members are inlined for the same reason.
-(: double-all (-> (List int) (List int)))
+(: (-> (List int) (List int)))
 (defbjo (double-all xs)
   (loop (:for x xs)
         (:acc out (listing (double x)))))
 
 ;; Self-recursion in the bjoroutine itself, which lowering turns into
 ;; `TLoop(_, None)` — the loop *is* this method's body.
-(: countdown (-> int int int))
+(: (-> int int int))
 (defbjo (countdown n acc)
   (if (= n 0) acc (countdown (- n 1) (+ acc (double n)))))
 
@@ -140,10 +140,10 @@
 ;; None of this was arranged. It falls out of the colour check running after
 ;; inlining rather than during type checking.
 
-(: safe-div (-> int int (Option int)))
+(: (-> int int (Option int)))
 (defun (safe-div a b) (if (= b 0) None (Some (/ a b))))
 
-(: halve-then-double (-> int (Option int)))
+(: (-> int (Option int)))
 (defbjo (halve-then-double n)
   (do (:bind half (safe-div n 2))
       (:return (double half))))
@@ -156,7 +156,7 @@
 ;; type is not `(-> %a %b)` — but it can be bound and called, and inside a
 ;; bjoroutine that call is a yield point like any other.
 
-(: apply-bjo (-> int int))
+(: (-> int int))
 (defbjo (apply-bjo x)
   (let ((f (bjoroutine (n) (+ n 1))))
     (f (f x))))

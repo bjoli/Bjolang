@@ -26,7 +26,7 @@
 (import (std prelude))
 (import (std simpletest))
 
-(: reason-name (-> (Option CancelReason) string))
+(: (-> (Option CancelReason) string))
 (defun (reason-name r)
   (match r
     ((Some (Requested who)) (string-append "requested " who))
@@ -37,14 +37,14 @@
 
 ;; A child that finishes on its own after a moment. Two of these are what "the
 ;; scope waited for both" is measured with.
-(: mark (-bjo-> (Box string) string void))
+(: (-bjo-> (Box string) string void))
 (defbjo (mark b what)
   (sync (timeout 20))
   (box-set! b what))
 
 ;; A child that never finishes on its own. Only a cancellation gets it out, and
 ;; the `sync` is where the cancellation arrives.
-(: patient (-bjo-> (Chan string) void))
+(: (-bjo-> (Chan string) void))
 (defbjo (patient nothing)
   (let go ()
     (ignore (sync (chan-recv nothing)))
@@ -53,7 +53,7 @@
 ;; A child that fails. The denominator is computed so that C# cannot fold it:
 ;; dividing by a *literal* zero is a compile-time error over there, not an
 ;; exception.
-(: explode (-bjo-> int void))
+(: (-bjo-> int void))
 (defbjo (explode zero)
   (sync (timeout 10))
   (ignore (/ 10 zero))
@@ -61,7 +61,7 @@
 
 ;; A child that outlives its scope, for `spawn/detached`. It sends after the
 ;; scope has gone, which only works because nothing cancelled it.
-(: late (-bjo-> (Chan string) void))
+(: (-bjo-> (Chan string) void))
 (defbjo (late out)
   (sync (timeout 30))
   (sync (chan-send out "detached")))

@@ -42,16 +42,16 @@
   (: Lock (Record #:tag lock
                   (: locked (List Locked) #:rest #:default Nil))))
 
-(: locked-name (-> Locked (List Symbol)))
+(: (-> Locked (List Symbol)))
 (defun (locked-name l) (record-ref l name))
 
-(: locked-version (-> Locked Version))
+(: (-> Locked Version))
 (defun (locked-version l) (record-ref l version))
 
-(: locked-source (-> Locked Source))
+(: (-> Locked Source))
 (defun (locked-source l) (record-ref l source))
 
-(: locked-commit (-> Locked string))
+(: (-> Locked string))
 (defun (locked-commit l) (record-ref l commit))
 
 ;; What the last resolve wrote, or nothing at all.
@@ -59,7 +59,7 @@
 ;; A missing file is an empty lock rather than an error: the first build of a
 ;; checkout that has never been built has no lock, and writing one is what it
 ;; is about to do.
-(: read-lock (-> string (Result string (List Locked))))
+(: (-> string (Result string (List Locked))))
 (defun (read-lock file)
   (if (not (file-exists? file))
       (Ok Nil)
@@ -71,10 +71,10 @@
 
 ;; A source as a manifest writes it. The writer is the one in `(text bjodat)`,
 ;; so what comes out here is what a manifest may say.
-(: source-text (-> Source string))
+(: (-> Source string))
 (defun (source-text source) (bjodat->string (->bjodat source)))
 
-(: locked-text (-> Locked string))
+(: (-> Locked string))
 (defun (locked-text entry)
   (str "    (package (name " (name->string (locked-name entry)) ")"
        " (version \"" (version->string (locked-version entry)) "\")\n"
@@ -83,7 +83,7 @@
 
 ;; The whole file. Sorted by name: the entry begins with it, so sorting the
 ;; entries by their text sorts by name.
-(: lock-text (-> (List Locked) string))
+(: (-> (List Locked) string))
 (defun (lock-text entries)
   (if (empty? entries)
       "(lock)\n"
@@ -95,7 +95,7 @@
 (defun (write-lock file entries)
   (file-write-text file (lock-text entries)))
 
-(: lock-entry-for (-> (List Locked) (List Symbol) (Option Locked)))
+(: (-> (List Locked) (List Symbol) (Option Locked)))
 (defun (lock-entry-for entries name)
   (find #(= (name->string (locked-name &)) (name->string name)) entries))
 
@@ -103,7 +103,7 @@
 ;;
 ;; With minimal version selection this is empty unless a manifest changed: the
 ;; same manifests choose the same versions however many times they are read.
-(: lock-changes (-> (List Locked) (List Locked) (List string)))
+(: (-> (List Locked) (List Locked) (List string)))
 (defun (lock-changes before after)
   (def added-or-changed
     (loop (:for entry after)

@@ -126,14 +126,14 @@
 
 ;; Nothing in the language builds an `Exception`, and every rejection below is
 ;; this module's own rather than .NET's.
-(: http-error (-> string Exception))
+(: (-> string Exception))
 (defun (http-error message)
   (cast Exception (Failure. message)))
 
 ;; .NET says null where it has nothing: a reason phrase over HTTP/2, a header
 ;; that is not there. A .NET string becomes a Bjolang one at the call, and a
 ;; null becomes "" there.
-(: text-or-empty (-> string string))
+(: (-> string string))
 (defun (text-or-empty s) s)
 
 
@@ -144,7 +144,7 @@
 ;; One handler, one client, and a connection that does not live forever: a
 ;; pooled connection outlives DNS, so a client that never recycles keeps
 ;; talking to an address that stopped being right.
-(: make-client (-> (#:connection-seconds double) (#:redirects bool) Client))
+(: (-> (#:connection-seconds double) (#:redirects bool) Client))
 (defun (make-client #:connection-seconds 120.0 #:redirects #t)
   (def handler (SocketsHandler.))
   (handler-lifetime! handler (span-seconds connection-seconds))
@@ -159,7 +159,7 @@
 
 ;; Parameterize another one in for a proxy, a test double or a second set of
 ;; connection settings.
-(: current-http-client (Param Client))
+(: (Param Client))
 (def current-http-client (make-parameter (make-client)))
 
 
@@ -191,19 +191,19 @@
                          (: headers (Vec Pair))
                          (: body Body))))
 
-(: request (-> Method string (#:query (Vec Pair)) (#:headers (Vec Pair)) (#:body Body) Request))
+(: (-> Method string (#:query (Vec Pair)) (#:headers (Vec Pair)) (#:body Body) Request))
 (defun (request method url #:query (vec-empty) #:headers (vec-empty) #:body Empty)
   (Request (method method) (url url) (query query) (headers headers) (body body)))
 
-(: http-get (-> string (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
+(: (-> string (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
 (defun (http-get url #:query (vec-empty) #:headers (vec-empty))
   (request GET url #:query query #:headers headers))
 
-(: http-post (-> string Body (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
+(: (-> string Body (#:query (Vec Pair)) (#:headers (Vec Pair)) Request))
 (defun (http-post url body #:query (vec-empty) #:headers (vec-empty))
   (request POST url #:query query #:headers headers #:body body))
 
-(: method-name (-> Method string))
+(: (-> Method string))
 (defun (method-name m)
   (match m
     (GET "GET")
@@ -221,7 +221,7 @@
 ;; Pairs as `encode` writes each name and value, joined with `&`. A query is
 ;; encoded by `encode-query-part` and a form by `encode-form`, from (std url):
 ;; both encode `&`, `=` and `+`, so a value cannot begin another pair.
-(: encode-pairs (-> (-> string string) (Vec Pair) string))
+(: (-> (-> string string) (Vec Pair) string))
 (defun (encode-pairs encode pairs)
   (string-join (vec-map (fun (pair)
                           (match pair
@@ -229,7 +229,7 @@
                         pairs)
                "&"))
 
-(: full-url (-> Request string))
+(: (-> Request string))
 (defun (full-url req)
   (def base (record-ref req url))
   (def query (record-ref req query))
@@ -247,7 +247,7 @@
           fragment))))
 
 ;; Attaches a body. Helper function for the header functions below
-(: attach-body! (-> Message Body (Option Content)))
+(: (-> Message Body (Option Content)))
 (defun (attach-body! message body)
   (match body
     (Empty None)
@@ -259,7 +259,7 @@
                                    (record-ref custom text)
                                    (record-ref custom content-type))))))
 
-(: attach! (-> Message string string Content))
+(: (-> Message string string Content))
 (defun (attach! message text content-type)
   (def content (cast Content (StringContent. text utf-8)))
   (message-content! message content)
@@ -271,7 +271,7 @@
 ;; Which end of the request a header belongs on is .NET's business, not the
 ;; caller's: `Accept` goes on the request and `Content-Type` on the content.
 ;; `TryAddWithoutValidation` returning false is how it says "the other one".
-(: add-header! (-> Message (Option Content) Pair (Result Exception Unit)))
+(: (-> Message (Option Content) Pair (Result Exception Unit)))
 (defun (add-header! message content pair)
   (match pair
     ((Tuple name value)
@@ -287,7 +287,7 @@
                 (Ok unit)
                 (Err (http-error (str "not a usable header name: " name))))))))))
 
-(: add-headers! (-> Message (Option Content) (Vec Pair) (Result Exception Unit)))
+(: (-> Message (Option Content) (Vec Pair) (Result Exception Unit)))
 (defun (add-headers! message content headers)
   (loop (:for pair headers)
         (:acc outcome (folding (Ok unit)
@@ -295,12 +295,12 @@
                                  ((Err e) (Err e))
                                  ((Ok done) (add-header! message content pair)))))))
 
-(: web-url? (-> Uri bool))
+(: (-> Uri bool))
 (defun (web-url? url)
   (def scheme (url-scheme url))
   (or (= scheme "http") (= scheme "https")))
 
-(: message-of (-> Request (Result Exception Message)))
+(: (-> Request (Result Exception Message)))
 (defun (message-of req)
   (match (Uri. (full-url req))
     ((Err e) (Err (http-error (str "not a url: " (record-ref req url)))))
@@ -329,7 +329,7 @@
              (: headers (Map string string))
              (: raw Reply))))
 
-(: join-values (-> (Seq System.String) string))
+(: (-> (Seq System.String) string))
 (defun (join-values values)
   (string-join (loop (:for value values) (:acc all (vecing (clr-string->string value)))) ", "))
 
@@ -339,7 +339,7 @@
 ;; Set-Cookie is the exception the RFC makes and this does not: folded cookies
 ;; cannot be taken apart again. When something here reads cookies it needs a
 ;; call of its own.
-(: collect-headers (-> (Seq (Pairing System.String (Seq System.String))) (Map string string) (Map string string)))
+(: (-> (Seq (Pairing System.String (Seq System.String))) (Map string string) (Map string string)))
 (defun (collect-headers headers into)
   (loop (:for header headers)
         (:acc all (folding into
@@ -347,7 +347,7 @@
                                     (string-downcase (.-Key header))
                                     (join-values (.-Value header)))))))
 
-(: response-of (-> Reply Response))
+(: (-> Reply Response))
 (defun (response-of raw)
   (Response (status (cast int (reply-status raw)))
             (reason (text-or-empty (reply-reason raw)))
@@ -358,26 +358,26 @@
                        (map-empty))))
             (raw raw)))
 
-(: response-status (-> Response int))
+(: (-> Response int))
 (defun (response-status r) (record-ref r status))
 
 ;; 2xx. Nothing here throws on a 404: which codes are failures is the caller's
 ;; business, and plenty of them are not.
-(: response-ok? (-> Response bool))
+(: (-> Response bool))
 (defun (response-ok? r)
   (def code (record-ref r status))
   (and (>= code 200) (< code 300)))
 
 ;; Empty over HTTP/2, which has no reason phrase. Do not parse it.
-(: response-reason (-> Response string))
+(: (-> Response string))
 (defun (response-reason r) (record-ref r reason))
 
-(: response-headers (-> Response (Map string string)))
+(: (-> Response (Map string string)))
 (defun (response-headers r) (record-ref r headers))
 
 ;; The name is lower-cased for you, so "Content-Type" and "content-type"
 ;; find the same header.
-(: response-header (-> Response string (Option string)))
+(: (-> Response string (Option string)))
 (defun (response-header r name)
   (map-try-ref (record-ref r headers) (string-downcase name)))
 
@@ -386,7 +386,7 @@
 ;; The body
 ;; ===========================================================================
 
-(: body-stream (-> Content Stream))
+(: (-> Content Stream))
 (defbjouble (body-stream content)
   (#:sync (clr-stream content))
   (#:bjo  (clr-stream-await content)))
@@ -395,7 +395,7 @@
 ;; `encoding-named` knows, and UTF-8 when it named none. A charset nothing
 ;; here knows is an error rather than a guess, since text decoded by the wrong
 ;; encoding is wrong without a word; `response-bytes-port` reads such a body.
-(: charset-of (-> Response Encoding))
+(: (-> Response Encoding))
 (defun (charset-of r)
   (match (response-header r "content-type")
     (None utf-8)
@@ -411,7 +411,7 @@
                         ", which is not an encoding (text encodings) knows. "
                         "response-bytes-port reads its bytes as they are"))))))))))
 
-(: charset-name (-> string (Option string)))
+(: (-> string (Option string)))
 (defun (charset-name content-type)
   (loop (:for part (string-split content-type ";"))
         (:acc found (folding None
@@ -420,7 +420,7 @@
                                    (Some (strip-quotes (string-trim (substring-after trimmed "="))))
                                    found))))))
 
-(: substring-after (-> string string string))
+(: (-> string string string))
 (defun (substring-after s sep)
   (def parts (string-split s sep))
   (if (< (length parts) 2)
@@ -429,7 +429,7 @@
 
 ;; charset="utf-8" is as legal as charset=utf-8, and an encoding name has
 ;; no quotes of its own to protect.
-(: strip-quotes (-> string string))
+(: (-> string string))
 (defun (strip-quotes s)
   (string-replace s "\"" ""))
 
@@ -441,7 +441,7 @@
 ;; mark is not treated specially. A UTF-8 body is the port's bytes as they
 ;; arrived; another charset is transcoded to UTF-8 on the way in. A charset
 ;; that no encoding has raises.
-(: response-port (-> Response InputPort))
+(: (-> Response InputPort))
 (defun (response-port r)
   (def body (reply-content (record-ref r raw)))
   (text-port-over (body-stream body) (charset-of r)))
@@ -449,18 +449,18 @@
 ;; The body's bytes as they arrived, whatever the charset says, as Racket's
 ;; HTTP client hands them over: for a body that is not text, or text to decode
 ;; yourself with `reencode-input-port` or `bytes->string`.
-(: response-bytes-port (-> Response InputPort))
+(: (-> Response InputPort))
 (defun (response-bytes-port r)
   (def body (reply-content (record-ref r raw)))
   (text-port-over (body-stream body) utf-8))
 
-(: response-text (-> Response string))
+(: (-> Response string))
 (defun (response-text r)
   (read-all (response-port r)))
 
 ;; A response holds a connection until it is closed. `ignore` does this, so a
 ;; response dropped in statement position releases it rather than leaking it.
-(: response-close (-> Response void))
+(: (-> Response void))
 (defun (response-close r)
   (.Dispose (record-ref r raw)))
 
@@ -479,7 +479,7 @@
 ;; event may be synced any number of times — every retry, every losing branch
 ;; that is tried again. Building the message inside the generator is what makes
 ;; the second sync work.
-(: fetching (-> Request (Event (Result Exception Response))))
+(: (-> Request (Event (Result Exception Response))))
 (defun (fetching req)
   (guard
    (fun ()
@@ -493,7 +493,7 @@
                   ((Err e) (Err e))))))))))
 
 ;; Send it and wait for the answer, in whichever colour the caller is.
-(: fetch (-> Request (Result Exception Response)))
+(: (-> Request (Result Exception Response)))
 (defbjouble (fetch req)
   (#:sync (sync/blocking (fetching req)))
   (#:bjo  (sync (fetching req))))

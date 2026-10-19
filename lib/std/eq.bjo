@@ -34,23 +34,23 @@
   (: compare (-> %a %a int)))
 
 ;; Ord predicates.
-(: less? (-> %a %a bool) (where (Ord %a)))
+(: (-> %a %a bool) (where (Ord %a)))
 (defun (less? a b) (< (compare a b) 0))
 
-(: greater? (-> %a %a bool) (where (Ord %a)))
+(: (-> %a %a bool) (where (Ord %a)))
 (defun (greater? a b) (> (compare a b) 0))
 
-(: at-most? (-> %a %a bool) (where (Ord %a)))
+(: (-> %a %a bool) (where (Ord %a)))
 (defun (at-most? a b) (<= (compare a b) 0))
 
-(: at-least? (-> %a %a bool) (where (Ord %a)))
+(: (-> %a %a bool) (where (Ord %a)))
 (defun (at-least? a b) (>= (compare a b) 0))
 
 ;; least and greatest (ties to left).
-(: least (-> %a %a %a) (where (Ord %a)))
+(: (-> %a %a %a) (where (Ord %a)))
 (defun (least a b) (if (at-most? a b) a b))
 
-(: greatest (-> %a %a %a) (where (Ord %a)))
+(: (-> %a %a %a) (where (Ord %a)))
 (defun (greatest a b) (if (at-least? a b) a b))
 
 ;; --- Sorting ---------------------------------------------------------------
@@ -60,7 +60,7 @@
 ;; list neither overflows the stack nor allocates a cons cell per element per
 ;; level: runs of width 1, 2, 4, ... merge from one array into the other, and
 ;; the list is rebuilt once at the end.
-(: list-sort (-> (List %a) (List %a)) (where (Ord %a)))
+(: (-> (List %a) (List %a)) (where (Ord %a)))
 (defun (list-sort xs)
   (def n (list-length xs))
 
@@ -114,7 +114,7 @@
 ;; when the first comes first, zero when they tie, positive otherwise. Stable,
 ;; since ties take the left run. Answers the array that holds the result, which
 ;; is arr or one of the same length.
-(: sort-array-by (-> (-> %a %a int) (Array %a) (Array %a)))
+(: (-> (-> %a %a int) (Array %a) (Array %a)))
 (defun (sort-array-by cmp arr)
   (def n (array-length arr))
 
@@ -146,7 +146,7 @@
         src)))
 
 ;; A vec in order of a comparison, as `sort-array-by` orders an array.
-(: vec-sort-by (-> (-> %a %a int) (Vec %a) (Vec %a)))
+(: (-> (-> %a %a int) (Vec %a) (Vec %a)))
 (defun (vec-sort-by cmp v)
   (def n (vec-length v))
   (if (< n 2)
@@ -160,24 +160,24 @@
         (array->vec (sort-array-by cmp arr)))))
 
 ;; A vec in the order of its elements' Ord. Stable.
-(: vec-sort (-> (Vec %a) (Vec %a)) (where (Ord %a)))
+(: (-> (Vec %a) (Vec %a)) (where (Ord %a)))
 (defun (vec-sort v) (vec-sort-by (fun (a b) (compare a b)) v))
 
 ;; Private left fold for list min/max.
-(: fold-left (-> (-> %a %b %b) %b (List %a) %b))
+(: (-> (-> %a %b %b) %b (List %a) %b))
 (defun (fold-left f init xs)
   (let go ((rest xs) (acc init))
     (if (list-empty? rest)
         acc
         (go (list-tail rest) (f (list-head rest) acc)))))
 
-(: list-min (-> (List %a) (Option %a)) (where (Ord %a)))
+(: (-> (List %a) (Option %a)) (where (Ord %a)))
 (defun (list-min xs)
   (if (list-empty? xs)
       None
       (Some (fold-left least (list-head xs) (list-tail xs)))))
 
-(: list-max (-> (List %a) (Option %a)) (where (Ord %a)))
+(: (-> (List %a) (Option %a)) (where (Ord %a)))
 (defun (list-max xs)
   (if (list-empty? xs)
       None

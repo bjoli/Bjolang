@@ -145,23 +145,23 @@
 ;; What makes a set out of nothing asks for the element's Ord, and the tree
 ;; orders elements by it — the order `compare` gives, also where the type has
 ;; no CompareTo of its own. One made from a set keeps that set's.
-(: orderedset-empty (-> (OrderedSet %a)) (where (Ord %a)))
+(: (-> (OrderedSet %a)) (where (Ord %a)))
 (defun (orderedset-empty) (clr-orderedset-empty (ord-comparer)))
 
-(: seq->orderedset (-> (Seq %a) (OrderedSet %a)) (where (Ord %a)))
+(: (-> (Seq %a) (OrderedSet %a)) (where (Ord %a)))
 (defun (seq->orderedset xs) (clr-seq->orderedset xs (ord-comparer)))
 
-(: orderedsetbuilder-empty (-> (OrderedSetBuilder %a)) (where (Ord %a)))
+(: (-> (OrderedSetBuilder %a)) (where (Ord %a)))
 (defun (orderedsetbuilder-empty) (clr-orderedsetbuilder-empty (ord-comparer)))
 
-(: transientorderedset-empty (-> (TransientOrderedSet %a)) (where (Ord %a)))
+(: (-> (TransientOrderedSet %a)) (where (Ord %a)))
 (defun (transientorderedset-empty) (clr-transientorderedset-empty (ord-comparer)))
 
 ;; ---------------------------------------------------------------------------
 ;; Ordered sets, where the callback may suspend
 ;; ---------------------------------------------------------------------------
 
-(: orderedset-map (-> (-?-> %a %b) (OrderedSet %a) (OrderedSet %b)) (where (Ord %b)))
+(: (-> (-?-> %a %b) (OrderedSet %a) (OrderedSet %b)) (where (Ord %b)))
 (defbjouble (orderedset-map f s)
   (#:sync (clr-orderedset-map f s (ord-comparer)))
   (#:bjo
@@ -173,7 +173,7 @@
           (orderedsetbuilder-add! b (f (orderedset-cursor-current c)))
           (go (orderedset-cursor-next c)))))))
 
-(: orderedset-filter (-> (-?-> %a bool) (OrderedSet %a) (OrderedSet %a)))
+(: (-> (-?-> %a bool) (OrderedSet %a) (OrderedSet %a)))
 (defbjouble (orderedset-filter keep? s)
   (#:sync (clr-orderedset-filter keep? s))
   (#:bjo
@@ -187,7 +187,7 @@
             (orderedsetbuilder-add! b x))
           (go (orderedset-cursor-next c)))))))
 
-(: orderedset-fold (-> (-?-> %a %s %s) %s (OrderedSet %a) %s))
+(: (-> (-?-> %a %s %s) %s (OrderedSet %a) %s))
 (defbjouble (orderedset-fold f init s)
   (#:sync (clr-orderedset-fold f init s))
   (#:bjo
@@ -197,7 +197,7 @@
           acc
           (go (f (orderedset-cursor-current c) acc) (orderedset-cursor-next c))))))
 
-(: orderedset-iter (-> (-?-> %a bool) (OrderedSet %a) bool))
+(: (-> (-?-> %a bool) (OrderedSet %a) bool))
 (defbjouble (orderedset-iter f s)
   (#:sync (clr-orderedset-iter f s))
   (#:bjo
@@ -206,26 +206,26 @@
             ((f (orderedset-cursor-current c)) (go (orderedset-cursor-next c)))
             (else #f)))))
 
-(: list->orderedset (-> (List %a) (OrderedSet %a)) (where (Ord %a)))
+(: (-> (List %a) (OrderedSet %a)) (where (Ord %a)))
 (defun (list->orderedset xs)
   (def sb (orderedsetbuilder-empty))
   (loop (:for x xs)
         (:do (orderedsetbuilder-add! sb x)))
   (orderedsetbuilder->orderedset sb))
 
-(: orderedset->list (-> (OrderedSet %a) (List %a)))
+(: (-> (OrderedSet %a) (List %a)))
 (defun (orderedset->list s)
   (def lb (listbuilder-empty))
   (orderedset-for-each #(listbuilder-add! lb &) s)
   (listbuilder->list lb))
 
-(: vec->orderedset (-> (Vec %a) (OrderedSet %a)) (where (Ord %a)))
+(: (-> (Vec %a) (OrderedSet %a)) (where (Ord %a)))
 (defun (vec->orderedset v)
   (def sb (orderedsetbuilder-empty))
   (vec-for-each #(orderedsetbuilder-add! sb &) v)
   (orderedsetbuilder->orderedset sb))
 
-(: orderedset->vec (-> (OrderedSet %a) (Vec %a)))
+(: (-> (OrderedSet %a) (Vec %a)))
 (defun (orderedset->vec s)
   (def vb (vecbuilder-empty))
   (orderedset-for-each #(vecbuilder-add! vb &) s)
@@ -253,7 +253,7 @@
   (defun (iterable-current s c) (orderedset-cursor-current c))
   (defun (iterable-next s c) (orderedset-cursor-next c)))
 
-(: orderedset-for-each (-> (-?-> %a void) (OrderedSet %a) void))
+(: (-> (-?-> %a void) (OrderedSet %a) void))
 (defun (orderedset-for-each f s)
   (let go ((c (orderedset-cursor s)))
     (cond
@@ -306,7 +306,7 @@
   (defun (eq-hash s)
     (orderedset-fold (fun (x h) (hash-combine h (eq-hash x))) 17 s)))
 
-(: orderedset->str (-> (OrderedSet %a) string) (where (->str %a)))
+(: (-> (OrderedSet %a) string) (where (->str %a)))
 (defun (orderedset->str s)
   (def sb (stringbuilder-empty))
   (stringbuilder-add-string! sb "#{")

@@ -16,40 +16,40 @@
 
 (type (: Counter (Record (: n long #:mutable))))
 
-(: twice-arg (-> (-> long long) long long))
+(: (-> (-> long long) long long))
 (defun (twice-arg f x) (+ (f x) x))
 
-(: boxed (Box (-> (-> long long) long long)))
+(: (Box (-> (-> long long) long long)))
 (def boxed (make-box twice-arg))
 
 (def/mutable top 5L)
 
-(: local-inlined (-> long))
+(: (-> long))
 (defun (local-inlined)
   (def/mutable k 5L)
   (twice-arg (fun (v) (set! k 100L) v) k))
 
-(: local-called (-> long))
+(: (-> long))
 (defun (local-called)
   (def/mutable k 5L)
   ((box-ref boxed) (fun (v) (set! k 100L) v) k))
 
-(: module-inlined (-> long))
+(: (-> long))
 (defun (module-inlined)
   (set! top 5L)
   (twice-arg (fun (v) (set! top 100L) v) top))
 
-(: module-called (-> long))
+(: (-> long))
 (defun (module-called)
   (set! top 5L)
   ((box-ref boxed) (fun (v) (set! top 100L) v) top))
 
-(: field-inlined (-> long))
+(: (-> long))
 (defun (field-inlined)
   (def c (Counter (n 5L)))
   (twice-arg (fun (v) (record-set! c (n 100L)) v) (record-ref c n)))
 
-(: field-called (-> long))
+(: (-> long))
 (defun (field-called)
   (def c (Counter (n 5L)))
   ((box-ref boxed) (fun (v) (record-set! c (n 100L)) v) (record-ref c n)))

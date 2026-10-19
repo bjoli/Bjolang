@@ -11,27 +11,27 @@
 (import (std simpletest))
 
 ;; Bytes as text: "104.105." for "hi".
-(: shown (-> (Array byte) string))
+(: (-> (Array byte) string))
 (defun (shown bs)
   (let loop ((i 0) (acc ""))
     (if (= i (array-length bs))
         acc
         (loop (+ i 1) (str acc (byte->string (array-ref bs i)) ".")))))
 
-(: drained (-> InputPort string))
+(: (-> InputPort string))
 (defun (drained in)
   (let go ((acc ""))
     (match (read-some in)
       ((Some bs) (go (str acc (shown bs))))
       (None acc))))
 
-(: write-lines (-bjo-> OutputPort int int Unit))
+(: (-bjo-> OutputPort int int Unit))
 (defbjo (write-lines p who n)
   (loop (:for i (range 0 n))
         (:do (writeln p (str "fiber " (int->string who) " line " (int->string i) " ------"))))
   unit)
 
-(: say-bye (-bjo-> OutputPort int))
+(: (-bjo-> OutputPort int))
 (defbjo (say-bye out)
   (write-string out "bye")
   (close-output-port out)

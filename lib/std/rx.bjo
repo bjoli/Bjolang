@@ -95,75 +95,75 @@
 ;; Compiles a pattern. `names` is the Bjolang name of each capture group in
 ;; order, comma-separated — a group `($ ...)` left unnamed contributes an empty
 ;; one. Commas cannot occur in a keyword, so they cannot occur in a name.
-(: rx-compile (-> string string Rx))
+(: (-> string string Rx))
 (defun (rx-compile pattern names) (clr-rx-compile pattern names))
 
 ;; The pattern text this was compiled to. Here so a test can assert what was
 ;; emitted rather than only what it matches.
-(: rx-pattern (-> Rx string))
+(: (-> Rx string))
 (defun (rx-pattern rx) (clr-rx-pattern rx))
 
 ;; The leftmost match anywhere in the string.
-(: rx-search (-> Rx string (Option RxMatch)))
+(: (-> Rx string (Option RxMatch)))
 (defun (rx-search rx s) (clr-rx-search rx s))
 
-(: rx-search? (-> Rx string bool))
+(: (-> Rx string bool))
 (defun (rx-search? rx s) (clr-rx-search? rx s))
 
 ;; The match against the whole string, anchored at both ends.
-(: rx-match (-> Rx string (Option RxMatch)))
+(: (-> Rx string (Option RxMatch)))
 (defun (rx-match rx s) (clr-rx-whole rx s))
 
-(: rx-match? (-> Rx string bool))
+(: (-> Rx string bool))
 (defun (rx-match? rx s) (clr-rx-whole? rx s))
 
 ;; Every non-overlapping match, left to right.
-(: rx-matches (-> Rx string (Vec RxMatch)))
+(: (-> Rx string (Vec RxMatch)))
 (defun (rx-matches rx s) (array->vec (clr-rx-matches rx s)))
 
 ;; Every match replaced by `replacement`, which is literal text: there is no
 ;; `$1` substitution syntax, because that would be a second pattern language
 ;; arriving without being decided on. Use `rx-replace-with` to build the
 ;; replacement from the match.
-(: rx-replace (-> Rx string string string))
+(: (-> Rx string string string))
 (defun (rx-replace rx s replacement) (clr-rx-replace rx s replacement))
 
-(: rx-replace-with (-> Rx string (-> RxMatch string) string))
+(: (-> Rx string (-> RxMatch string) string))
 (defun (rx-replace-with rx s f) (clr-rx-replace-with rx s f))
 
 ;; The pieces between the matches. An empty match is not a separator, so a
 ;; pattern that can match nothing does not split between every character.
-(: rx-split (-> Rx string (Vec string)))
+(: (-> Rx string (Vec string)))
 (defun (rx-split rx s) (array->vec (clr-rx-split rx s)))
 
-(: rx-text (-> RxMatch string))
+(: (-> RxMatch string))
 (defun (rx-text m) (clr-rx-text m))
 
-(: rx-input (-> RxMatch string))
+(: (-> RxMatch string))
 (defun (rx-input m) (clr-rx-input m))
 
-(: rx-start (-> RxMatch StringCursor))
+(: (-> RxMatch StringCursor))
 (defun (rx-start m) (clr-rx-start m))
 
-(: rx-end (-> RxMatch StringCursor))
+(: (-> RxMatch StringCursor))
 (defun (rx-end m) (clr-rx-end m))
 
-(: rx-group-count (-> RxMatch int))
+(: (-> RxMatch int))
 (defun (rx-group-count m) (clr-rx-count m))
 
 ;; The text of the group `(=> :name ...)` named, or `None` if that group took
 ;; no part in the match. An unknown name is `None` as well.
-(: rx-group (-> RxMatch Keyword (Option string)))
+(: (-> RxMatch Keyword (Option string)))
 (defun (rx-group m name) (clr-rx-group-text m (clr-rx-index-of m (keyword->string name))))
 
-(: rx-group-start (-> RxMatch Keyword (Option StringCursor)))
+(: (-> RxMatch Keyword (Option StringCursor)))
 (defun (rx-group-start m name) (clr-rx-group-start m (clr-rx-index-of m (keyword->string name))))
 
-(: rx-group-end (-> RxMatch Keyword (Option StringCursor)))
+(: (-> RxMatch Keyword (Option StringCursor)))
 (defun (rx-group-end m name) (clr-rx-group-end m (clr-rx-index-of m (keyword->string name))))
 
 ;; The text of the nth group, counted from zero in the order the groups open.
-(: rx-group/n (-> RxMatch int (Option string)))
+(: (-> RxMatch int (Option string)))
 (defun (rx-group/n m n) (clr-rx-group-text m n))
 
 ;; ---------------------------------------------------------------------------
@@ -180,19 +180,19 @@
 ;; U+0000–U+D7FF and U+E000–U+10FFFF: every scalar.
 (def universe (list (Tuple 0 55295) (Tuple 57344 1114111)))
 
-(: range-lo (-> (Tuple int int) int))
+(: (-> (Tuple int int) int))
 (defun (range-lo r) (match r ((Tuple lo _) lo)))
 
-(: range-hi (-> (Tuple int int) int))
+(: (-> (Tuple int int) int))
 (defun (range-hi r) (match r ((Tuple _ hi) hi)))
 
-(: imin (-> int int int))
+(: (-> int int int))
 (defun (imin a b) (if (< a b) a b))
 
-(: imax (-> int int int))
+(: (-> int int int))
 (defun (imax a b) (if (> a b) a b))
 
-(: ranges-insert (-> (Tuple int int) (List (Tuple int int)) (List (Tuple int int))))
+(: (-> (Tuple int int) (List (Tuple int int)) (List (Tuple int int))))
 (defun (ranges-insert r sorted)
   (cond
     ((list-empty? sorted) (list r))
@@ -208,7 +208,7 @@
 ;; Insertion sort: a set written by hand has a handful of ranges, and a table
 ;; read out of the hex below is already ascending, so this is the best case
 ;; either way.
-(: ranges-sort (-> (List (Tuple int int)) (List (Tuple int int))))
+(: (-> (List (Tuple int int)) (List (Tuple int int))))
 (defun (ranges-sort rs)
   (match rs
     (Nil Nil)
@@ -217,7 +217,7 @@
 ;; Adjacent as well as overlapping runs are merged, so that `[a-b][c-d]` with
 ;; `c = b + 1` comes out as one range and two sets built differently compare
 ;; the same.
-(: ranges-merge (-> (List (Tuple int int)) (List (Tuple int int))))
+(: (-> (List (Tuple int int)) (List (Tuple int int))))
 (defun (ranges-merge rs)
   (match rs
     (Nil Nil)
@@ -227,11 +227,11 @@
          (ranges-merge (Cons (Tuple (range-lo a) (imax (range-hi a) (range-hi b))) more))
          (Cons a (ranges-merge (Cons b more)))))))
 
-(: ranges-norm (-> (List (Tuple int int)) (List (Tuple int int))))
+(: (-> (List (Tuple int int)) (List (Tuple int int))))
 (defun (ranges-norm rs) (ranges-merge (ranges-sort rs)))
 
 ;; The parts of `lo`–`hi` that `rs` does not cover.
-(: ranges-gaps (-> int int (List (Tuple int int)) (List (Tuple int int))))
+(: (-> int int (List (Tuple int int)) (List (Tuple int int))))
 (defun (ranges-gaps lo hi rs)
   (match rs
     (Nil (if (<= lo hi) (list (Tuple lo hi)) Nil))
@@ -239,7 +239,7 @@
      (def before (if (< lo (range-lo r)) (list (Tuple lo (imin hi (- (range-lo r) 1)))) Nil))
      (list-append before (ranges-gaps (imax lo (+ (range-hi r) 1)) hi more)))))
 
-(: ranges-inter (-> (List (Tuple int int)) (List (Tuple int int)) (List (Tuple int int))))
+(: (-> (List (Tuple int int)) (List (Tuple int int)) (List (Tuple int int))))
 (defun (ranges-inter a b)
   (if (or (list-empty? a) (list-empty? b))
       Nil
@@ -253,32 +253,32 @@
 
 ;; Normalizing and clipping to the universe here is what lets every other
 ;; operation assume both.
-(: cs-make (-> (List (Tuple int int)) Cset))
+(: (-> (List (Tuple int int)) Cset))
 (defun (cs-make rs)
   (Cset (ranges (ranges-inter (ranges-norm rs) universe))))
 
-(: cs-ranges (-> Cset (List (Tuple int int))))
+(: (-> Cset (List (Tuple int int))))
 (defun (cs-ranges c) (record-ref c ranges))
 
-(: cs-union (-> Cset Cset Cset))
+(: (-> Cset Cset Cset))
 (defun (cs-union a b)
   (cs-make (list-append (cs-ranges a) (cs-ranges b))))
 
-(: cs-inter (-> Cset Cset Cset))
+(: (-> Cset Cset Cset))
 (defun (cs-inter a b)
   (cs-make (ranges-inter (cs-ranges a) (cs-ranges b))))
 
-(: cs-complement (-> Cset Cset))
+(: (-> Cset Cset))
 (defun (cs-complement a)
   (cs-make (ranges-gaps 0 1114111 (cs-ranges a))))
 
-(: cs-diff (-> Cset Cset Cset))
+(: (-> Cset Cset Cset))
 (defun (cs-diff a b) (cs-inter a (cs-complement b)))
 
-(: cs-empty? (-> Cset bool))
+(: (-> Cset bool))
 (defun (cs-empty? c) (list-empty? (cs-ranges c)))
 
-(: cs-char (-> int Cset))
+(: (-> int Cset))
 (defun (cs-char n) (cs-make (list (Tuple n n))))
 
 ;; ---------------------------------------------------------------------------
@@ -290,30 +290,30 @@
 ;; as forms is six hundred forms for the compiler to read on every build of
 ;; this module, and the answer is the same every time.
 
-(: hex-val (-> char int))
+(: (-> char int))
 (defun (hex-val c)
   (def n (char->int c))
   (cond ((and (>= n 48) (<= n 57)) (- n 48))
         ((and (>= n 65) (<= n 70)) (+ 10 (- n 65)))
         (else 0)))
 
-(: hex4-val (-> char char char char int))
+(: (-> char char char char int))
 (defun (hex4-val a b c d)
   (+ (* 4096 (hex-val a))
      (+ (* 256 (hex-val b))
         (+ (* 16 (hex-val c)) (hex-val d)))))
 
-(: hex-chunks (-> (List char) (List (Tuple int int))))
+(: (-> (List char) (List (Tuple int int))))
 (defun (hex-chunks cs)
   (match cs
     ((Cons a (Cons b (Cons c (Cons d (Cons e (Cons f (Cons g (Cons h rest))))))))
      (Cons (Tuple (hex4-val a b c d) (hex4-val e f g h)) (hex-chunks rest)))
     (_ Nil)))
 
-(: hex-ranges (-> string (List (Tuple int int))))
+(: (-> string (List (Tuple int int))))
 (defun (hex-ranges text) (hex-chunks (string->list text)))
 
-(: table-set (-> string Cset))
+(: (-> string Cset))
 (defun (table-set text) (cs-make (hex-ranges text)))
 
 ;; ---------------------------------------------------------------------------
@@ -343,41 +343,41 @@
 ;; alternation, `(r least most g|l body)` a repetition, `(g n body)` a group,
 ;; `(A)` and `(z)` the anchors, `(e)` nothing. Scalars are hexadecimal.
 
-(: hex-digit-string (-> int string))
+(: (-> int string))
 (defun (hex-digit-string n)
   (def d (% n 16))
   (char->string (if (< d 10) (int->char (+ 48 d)) (int->char (+ 55 d)))))
 
-(: hex (-> int string))
+(: (-> int string))
 (defun (hex n)
   (if (< n 16)
       (hex-digit-string n)
       (string-append (hex (/ n 16)) (hex-digit-string n))))
 
-(: concat-strings (-> (List string) string))
+(: (-> (List string) string))
 (defun (concat-strings parts) (list-foldl (fun (part acc) (string-append acc part)) "" parts))
 
-(: join-strings (-> (List string) string string))
+(: (-> (List string) string string))
 (defun (join-strings parts sep)
   (match parts
     (Nil "")
     ((Cons p Nil) p)
     ((Cons p more) (str p sep (join-strings more sep)))))
 
-(: emit-range (-> (Tuple int int) string))
+(: (-> (Tuple int int) string))
 (defun (emit-range r)
   (if (= (range-lo r) (range-hi r))
       (str " " (hex (range-lo r)))
       (str " " (hex (range-lo r)) "-" (hex (range-hi r)))))
 
-(: emit-set (-> Cset string))
+(: (-> Cset string))
 (defun (emit-set c) (str "(c" (concat-strings (list-map emit-range (cs-ranges c))) ")"))
 
-(: emit-lit (-> string string))
+(: (-> string string))
 (defun (emit-lit text)
   (str "(l" (concat-strings (list-map (fun (c) (str " " (hex (char->int c)))) (string->list text))) ")"))
 
-(: emit-list (-> string (List Rxn) (Box (List string)) string))
+(: (-> string (List Rxn) (Box (List string)) string))
 (defun (emit-list head parts names)
   (match parts
     (Nil "(e)")
@@ -388,7 +388,7 @@
 ;; group's number is one more than how many were open before it, so the count
 ;; is read before the body is walked and nested groups number after their
 ;; parent.
-(: emit (-> Rxn (Box (List string)) string))
+(: (-> Rxn (Box (List string)) string))
 (defun (emit node names)
   (match node
     (RxEmpty "(e)")
@@ -410,7 +410,7 @@
 ;; Reading a set
 ;; ---------------------------------------------------------------------------
 
-(: head-name (-> Syntax (Option string)))
+(: (-> Syntax (Option string)))
 (defun (head-name form)
   (match form
     ((SList items)
@@ -421,27 +421,27 @@
            (_ None))))
     (_ None)))
 
-(: form-args (-> Syntax (List Syntax)))
+(: (-> Syntax (List Syntax)))
 (defun (form-args form)
   (match form
     ((SList items) (if (list-empty? items) Nil (list-tail items)))
     (_ Nil)))
 
 ;; A character usable as a set member or a range endpoint.
-(: set-scalar (-> Syntax char int))
+(: (-> Syntax char int))
 (defun (set-scalar form c)
   (ignore form)
   (char->int c))
 
 ;; `syntax-error` types as a `Syntax` and never returns, so a branch that owes
 ;; an `int` has to discard it.
-(: ignore-int (-> Syntax int))
+(: (-> Syntax int))
 (defun (ignore-int s) (ignore s) 0)
 
-(: ignore-cset (-> Syntax Cset))
+(: (-> Syntax Cset))
 (defun (ignore-cset s) (ignore s) (cs-make Nil))
 
-(: chars-of (-> Syntax (List Syntax) (List int)))
+(: (-> Syntax (List Syntax) (List int)))
 (defun (chars-of whole items)
   (match items
     (Nil Nil)
@@ -457,7 +457,7 @@
 
 ;; `(/ #\a #\z #\0 #\9)` and `(/ "az09")` are the same set: the endpoints are
 ;; taken in pairs however they were written.
-(: pairs->cset (-> Syntax (List int) Cset))
+(: (-> Syntax (List int) Cset))
 (defun (pairs->cset whole ns)
   (match ns
     (Nil (cs-make Nil))
@@ -469,11 +469,11 @@
     (_ (ignore-cset
          (syntax-error whole "A range takes its endpoints in pairs, and this one has an odd number.")))))
 
-(: union-of (-> (List Syntax) Cset))
+(: (-> (List Syntax) Cset))
 (defun (union-of items)
   (list-foldl (fun (item acc) (cs-union acc (parse-set item))) (cs-make Nil) items))
 
-(: parse-set (-> Syntax Cset))
+(: (-> Syntax Cset))
 (defun (parse-set form)
   (match form
     ((SChar c) (cs-char (set-scalar form c)))
@@ -491,7 +491,7 @@
          (syntax-error form
            "A character set is a character, a string, a named set like :digit, or a form like (in ...), (/ ...), (~ ...), (- ...) or (& ...).")))))
 
-(: parse-set-form (-> Syntax Cset))
+(: (-> Syntax Cset))
 (defun (parse-set-form form)
   (def args (form-args form))
   (match (head-name form)
@@ -508,13 +508,13 @@
                (syntax-error form
                  (str "'" name "' is not a character set operation. Use (in ...), (/ ...), (~ ...), (- ...) or (& ...)."))))))))
 
-(: set-difference (-> Syntax (List Syntax) Cset))
+(: (-> Syntax (List Syntax) Cset))
 (defun (set-difference form args)
   (if (list-empty? args)
       (ignore-cset (syntax-error form "(- ...) takes a set to subtract from."))
       (cs-diff (parse-set (list-head args)) (union-of (list-tail args)))))
 
-(: set-intersection (-> Syntax (List Syntax) Cset))
+(: (-> Syntax (List Syntax) Cset))
 (defun (set-intersection form args)
   (if (list-empty? args)
       (ignore-cset (syntax-error form "(& ...) takes at least one set."))
@@ -524,20 +524,20 @@
 
 ;; A set reaching pattern position has to be able to match something, and an
 ;; empty one is a mistake that would otherwise silently never match.
-(: set-node (-> Syntax Cset Rxn))
+(: (-> Syntax Cset Rxn))
 (defun (set-node form c)
   (if (cs-empty? c)
       (ignore-node (syntax-error form "This character set is empty, so it can never match."))
       (RxSet c)))
 
-(: ignore-node (-> Syntax Rxn))
+(: (-> Syntax Rxn))
 (defun (ignore-node s) (ignore s) RxEmpty)
 
 ;; ---------------------------------------------------------------------------
 ;; Reading a pattern
 ;; ---------------------------------------------------------------------------
 
-(: parse (-> Syntax Rxn))
+(: (-> Syntax Rxn))
 (defun (parse form)
   (match form
     ((SStr text) (RxLit text))
@@ -555,7 +555,7 @@
          "An rx is built at compile time, so it cannot splice a value in. Dynamically built patterns are not supported.")))
     (_ (ignore-node (syntax-error form "This is not an rx.")))))
 
-(: parse-atom (-> Syntax string Rxn))
+(: (-> Syntax string Rxn))
 (defun (parse-atom form name)
   (cond
     ((= name "bos") RxBos)
@@ -569,10 +569,10 @@
               (str "There is no rx called :" name
                    ". The ones taking no argument are :bos :eos :any :nonl and the named sets."))))))))
 
-(: parse-all (-> (List Syntax) (List Rxn)))
+(: (-> (List Syntax) (List Rxn)))
 (defun (parse-all items) (list-map parse items))
 
-(: parse-form (-> Syntax Rxn))
+(: (-> Syntax Rxn))
 (defun (parse-form form)
   (def args (form-args form))
   (match (head-name form)
@@ -607,13 +607,13 @@
              (str "'" name "' is not an rx form. If you meant a set or an anchor, those are keywords: :"
                   name "."))))))))
 
-(: one-arg (-> Syntax (List Syntax) Rxn))
+(: (-> Syntax (List Syntax) Rxn))
 (defun (one-arg form args)
   (match args
     ((Cons a Nil) (parse a))
     (_ (RxSeq (parse-all args)))))
 
-(: literal-text (-> Syntax (List Syntax) string))
+(: (-> Syntax (List Syntax) string))
 (defun (literal-text form args)
   (match args
     ((Cons a Nil)
@@ -623,29 +623,29 @@
        (_ (ignore-string (syntax-error form "(lit ...) takes one string.")))))
     (_ (ignore-string (syntax-error form "(lit ...) takes one string.")))))
 
-(: ignore-string (-> Syntax string))
+(: (-> Syntax string))
 (defun (ignore-string s) (ignore s) "")
 
-(: count-of (-> Syntax Syntax int))
+(: (-> Syntax Syntax int))
 (defun (count-of whole s)
   (match s
     ((SInt text) (string->int text))
     (_ (ignore-int (syntax-error whole "A repetition count is a whole number.")))))
 
-(: bounded (-> Syntax (List Syntax) Rxn))
+(: (-> Syntax (List Syntax) Rxn))
 (defun (bounded form args)
   (match args
     ((Cons lo (Cons hi rest))
      (RxRep (one-arg form rest) (count-of form lo) (count-of form hi) #t))
     (_ (ignore-node (syntax-error form "(** least most rx) takes two counts and a pattern.")))))
 
-(: exactly (-> Syntax (List Syntax) Rxn))
+(: (-> Syntax (List Syntax) Rxn))
 (defun (exactly form args)
   (match args
     ((Cons n rest) (let ((k (count-of form n))) (RxRep (one-arg form rest) k k #t)))
     (_ (ignore-node (syntax-error form "(= n rx) takes a count and a pattern.")))))
 
-(: at-least (-> Syntax (List Syntax) Rxn))
+(: (-> Syntax (List Syntax) Rxn))
 (defun (at-least form args)
   (match args
     ((Cons n rest) (RxRep (one-arg form rest) (count-of form n) -1 #t))
@@ -654,7 +654,7 @@
 ;; The name is a keyword for the same reason every other constant of this
 ;; sublanguage is one: it is a name used as data, not a binding, and a keyword
 ;; can never be mistaken for one.
-(: named-group (-> Syntax (List Syntax) Rxn))
+(: (-> Syntax (List Syntax) Rxn))
 (defun (named-group form args)
   (match args
     ((Cons n rest)
@@ -668,7 +668,7 @@
 ;; The macros
 ;; ---------------------------------------------------------------------------
 
-(: names-text (-> (List string) string))
+(: (-> (List string) string))
 (defun (names-text names) (join-strings names ","))
 
 ;; `#rx(seq a b)` reads as `(#rx seq a b)`, so the arguments are the form's own
@@ -681,7 +681,7 @@
 ;; cache, which hashes and compares the whole pattern string, and an emitted
 ;; character class can be thousands of characters long. A pattern in a match
 ;; clause is evaluated once per match attempt, so it pays that every time.
-(: rx-expansion (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (rx-expansion form)
   (def node (parse form))
   (def names (make-box Nil))
@@ -1069,7 +1069,7 @@
 (def cs-any  (cs-make universe))
 (def cs-nonl (cs-make (ranges-gaps 0 1114111 (list (Tuple 10 10)))))
 
-(: named-class (-> string (Option Cset)))
+(: (-> string (Option Cset)))
 (defun (named-class name)
   (cond
     ((= name "any") (Some cs-any))

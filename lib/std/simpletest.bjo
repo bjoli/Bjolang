@@ -32,27 +32,27 @@
 (import/extern
   (set-exit-code! (: System.Environment.ExitCode (-> int void) #:set)))
 
-(: failed! (-> string void))
+(: (-> string void))
 (defun (failed! message)
   (println message)
   (set-exit-code! 1))
 
 ;; Asserts equality and prints result.
-(: expect (-> string %a %a void) (where (Eq %a) (->str %a)))
+(: (-> string %a %a void) (where (Eq %a) (->str %a)))
 (defun (expect label actual wanted)
   (if (= actual wanted)
       (println #"ok: ${label}")
       (failed! #"FAILURE: ${label} gave ${actual} but wanted ${wanted}")))
 
 ;; Asserts boolean and prints result.
-(: expect-true (-> string bool void))
+(: (-> string bool void))
 (defun (expect-true label ok)
   (if ok
       (println #"ok: ${label}")
       (failed! #"FAILURE: ${label}")))
 
 ;; Marks a failing branch.
-(: fail (-> string void))
+(: (-> string void))
 (defun (fail label)
   (failed! #"FAILURE: ${label}"))
 
@@ -90,10 +90,10 @@
 ;; it. Doing so lets us report a clean failure with the test's name, instead 
 ;; of crashing and dumping an unhelpful stack trace.
 
-(: default-test-ms (-> int))
+(: (-> int))
 (defun (default-test-ms) 5000)
 
-(: leak-check (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (leak-check name)
   #'(let ((left (scope-owned-count (current-scope))))
       (unless (= left 0)
@@ -105,7 +105,7 @@
 ;; and a cancelled child is not a failure - so the scope closes cleanly and the
 ;; test would otherwise pass, slowly. The token carries the reason, so the
 ;; scope is kept in a box and the reason read after it has closed.
-(: overran? (-> (Box (Option Scope)) bool))
+(: (-> (Box (Option Scope)) bool))
 (defun (overran? holder)
   (match (box-ref holder)
     (None #f)
@@ -114,7 +114,7 @@
        ((Some Deadline) #t)
        (_ #f)))))
 
-(: test-expansion (-> Syntax Syntax bool (List Syntax) Syntax))
+(: (-> Syntax Syntax bool (List Syntax) Syntax))
 (defun (test-expansion name ms check body)
   (let ((core (if check
                   #'(let () ,@body ,(leak-check name) unit)
@@ -214,18 +214,18 @@
              (: clock long #:mutable))))
 
 ;; 2000-01-01T00:00:00Z, in Unix milliseconds.
-(: fake-epoch-ms long)
+(: long)
 (def fake-epoch-ms 946684800000L)
 
 ;; What follows `prefix` in `s`, which starts with it.
-(: after-prefix (-> string string string))
+(: (-> string string string))
 (defun (after-prefix s prefix)
   (let go ((c (string-cursor-start s)) (n (string-count prefix)))
     (if (= n 0)
         (substring s c (string-cursor-end s))
         (go (string-cursor-next s c) (- n 1)))))
 
-(: fake-path (-> string string))
+(: (-> string string))
 (defun (fake-path path)
   (let loop ((p (string-replace path "\\" "/")))
     (cond
@@ -235,27 +235,27 @@
        (loop (substring p (string-cursor-start p) (string-cursor-prev p (string-cursor-end p)))))
       (else p))))
 
-(: fake-parent (-> string string))
+(: (-> string string))
 (defun (fake-parent path)
   (match (string-search-backward path "/")
     ((Some at) (substring path (string-cursor-start path) at))
     (None "")))
 
 ;; "" for the root, so that a child of the root is its own name.
-(: fake-prefix (-> string string))
+(: (-> string string))
 (defun (fake-prefix path)
   (if (string-empty? path) "" (str path "/")))
 
 ;; Every directory above `path` gets an entry of its own, so that it outlives
 ;; its contents: emptying a directory does not delete it.
-(: fake-with-ancestors (-> (Map string FakeEntry) string (Map string FakeEntry)))
+(: (-> (Map string FakeEntry) string (Map string FakeEntry)))
 (defun (fake-with-ancestors m path)
   (let loop ((m m) (dir (fake-parent path)))
     (if (or (string-empty? dir) (map-has-key? m dir))
         m
         (loop (map-set m dir FakeDir) (fake-parent dir)))))
 
-(: fake-fs (-> (List (Tuple string string)) FakeFs))
+(: (-> (List (Tuple string string)) FakeFs))
 (defun (fake-fs seeds)
   (FakeFs (entries (list-foldl (fun (seed m)
                                  (def (raw text) seed)
@@ -266,34 +266,34 @@
           (modified (map-empty))
           (clock fake-epoch-ms)))
 
-(: fake-entries (-> FakeFs (Map string FakeEntry)))
+(: (-> FakeFs (Map string FakeEntry)))
 (defun (fake-entries fs) (record-ref fs entries))
 
-(: fake-update! (-> FakeFs (Map string FakeEntry) void))
+(: (-> FakeFs (Map string FakeEntry) void))
 (defun (fake-update! fs m) (record-set! fs (entries m)))
 
 ;; Moves the clock one second on, and gives `path` the new time.
-(: fake-stamp! (-> FakeFs string void))
+(: (-> FakeFs string void))
 (defun (fake-stamp! fs path)
   (def now (+ (record-ref fs clock) 1000L))
   (record-set! fs (clock now) (modified (map-set (record-ref fs modified) path now))))
 
-(: fake-forget-time! (-> FakeFs string void))
+(: (-> FakeFs string void))
 (defun (fake-forget-time! fs path)
   (record-set! fs (modified (map-remove (record-ref fs modified) path))))
 
-(: fake-fs-set-modified! (-> FakeFs string long void))
+(: (-> FakeFs string long void))
 (defun (fake-fs-set-modified! fs path ms)
   (record-set! fs (modified (map-set (record-ref fs modified) (fake-path path) ms))))
 
-(: fake-bytes->text (-> (Array byte) string))
+(: (-> (Array byte) string))
 (defun (fake-bytes->text bytes) (.GetString (cast Encoding clr-utf8) bytes))
 
-(: fake-text->bytes (-> string (Array byte)))
+(: (-> string (Array byte)))
 (defun (fake-text->bytes text) (.GetBytes (cast Encoding clr-utf8) text))
 
 ;; What a file entry holds. `None` for a directory.
-(: fake-entry-text (-> FakeEntry (Option string)))
+(: (-> FakeEntry (Option string)))
 (defun (fake-entry-text entry)
   (match entry
     ((FakeText text) (Some text))
@@ -303,21 +303,21 @@
 ;; What a file entry holds, as bytes. Reading and appending go through this
 ;; rather than through the text, so that bytes that are not UTF-8 come back as
 ;; they were written.
-(: fake-entry-bytes (-> FakeEntry (Option (Array byte))))
+(: (-> FakeEntry (Option (Array byte))))
 (defun (fake-entry-bytes entry)
   (match entry
     ((FakeText text) (Some (fake-text->bytes text)))
     ((FakeWritten s) (Some (.ToArray s)))
     (FakeDir None)))
 
-(: fake-bytes-at (-> FakeFs string (Option (Array byte))))
+(: (-> FakeFs string (Option (Array byte))))
 (defun (fake-bytes-at fs path)
   (match (map-try-ref (fake-entries fs) path)
     ((Some entry) (fake-entry-bytes entry))
     (None None)))
 
 ;; In bytes, as a file on a disk would be.
-(: fake-entry-size (-> FakeEntry long))
+(: (-> FakeEntry long))
 (defun (fake-entry-size entry)
   (match (fake-entry-bytes entry)
     ((Some bytes) (cast System.Int64 (array-length bytes)))
@@ -325,7 +325,7 @@
 
 ;; A path that is no entry of its own is still a directory when something is
 ;; below it.
-(: fake-kind (-> FakeFs string (Option FsKind)))
+(: (-> FakeFs string (Option FsKind)))
 (defun (fake-kind fs path)
   (if (string-empty? path)
       (Some FsDirectory)
@@ -337,7 +337,7 @@
                   (Some FsDirectory)
                   None)))))
 
-(: fake-info (-> FakeFs string (Option FsInfo)))
+(: (-> FakeFs string (Option FsInfo)))
 (defun (fake-info fs path)
   (match (fake-kind fs path)
     (None None)
@@ -349,48 +349,48 @@
                    (modified-ms (map-ref-or (record-ref fs modified) path fake-epoch-ms))
                    (link? #f))))))
 
-(: fake-dir? (-> FakeFs string bool))
+(: (-> FakeFs string bool))
 (defun (fake-dir? fs path)
   (match (fake-kind fs path)
     ((Some FsDirectory) #t)
     (_ #f)))
 
 ;; What a file holds, whether it was seeded or written.
-(: fake-fs-contents (-> FakeFs string (Option string)))
+(: (-> FakeFs string (Option string)))
 (defun (fake-fs-contents fs path)
   (match (map-try-ref (fake-entries fs) (fake-path path))
     ((Some entry) (fake-entry-text entry))
     (None None)))
 
-(: fake-memory-stream (-> (Array byte) MemoryStream))
+(: (-> (Array byte) MemoryStream))
 (defun (fake-memory-stream bytes)
   (def s (MemoryStream.))
   (.Write s bytes 0 (array-length bytes))
   (stream-position! (cast Stream s) 0L)
   s)
 
-(: fake-error (-> Exception (Result Exception %a)))
+(: (-> Exception (Result Exception %a)))
 (defun (fake-error e) (Err e))
 
-(: not-found (-> string (Result Exception %a)))
+(: (-> string (Result Exception %a)))
 (defun (not-found path)
   (fake-error (cast Exception (FileNotFound. #"the fake filesystem has no file ${path}"))))
 
-(: no-directory (-> string (Result Exception %a)))
+(: (-> string (Result Exception %a)))
 (defun (no-directory path)
   (fake-error (cast Exception (DirectoryNotFound. #"the fake filesystem has no directory ${path}"))))
 
-(: io-error (-> string (Result Exception %a)))
+(: (-> string (Result Exception %a)))
 (defun (io-error message)
   (fake-error (cast Exception (IOException. message))))
 
-(: access-denied (-> string (Result Exception %a)))
+(: (-> string (Result Exception %a)))
 (defun (access-denied path)
   (fake-error (cast Exception (AccessDenied. #"the fake filesystem cannot do that to directory ${path}"))))
 
 ;; --- The handlers --------------------------------------------------------------
 
-(: fake-fs-reader (-> FakeFs (-> string (Result Exception Stream))))
+(: (-> FakeFs (-> string (Result Exception Stream))))
 (defun (fake-fs-reader fs)
   (fun (raw)
     (def path (fake-path raw))
@@ -402,7 +402,7 @@
       (None (if (fake-dir? fs (fake-parent path)) (not-found path) (no-directory path))))))
 
 ;; `Append` starts the new stream with what the path held.
-(: fake-fs-writer (-> FakeFs (-> string WriteMode (Result Exception Stream))))
+(: (-> FakeFs (-> string WriteMode (Result Exception Stream))))
 (defun (fake-fs-writer fs)
   (fun (raw mode)
     (def path (fake-path raw))
@@ -423,12 +423,12 @@
           (fake-stamp! fs path)
           (Ok (cast Stream s))))))))
 
-(: fake-fs-info (-> FakeFs (-> string (Option FsInfo))))
+(: (-> FakeFs (-> string (Option FsInfo))))
 (defun (fake-fs-info fs)
   (fun (raw) (fake-info fs (fake-path raw))))
 
 ;; Whole paths, as `Directory.GetFileSystemEntries` gives them, sorted.
-(: fake-fs-list (-> FakeFs (-> string (Result Exception (Vec string)))))
+(: (-> FakeFs (-> string (Result Exception (Vec string)))))
 (defun (fake-fs-list fs)
   (fun (raw)
     (def path (fake-path raw))
@@ -449,7 +449,7 @@
                                           (:acc (listing child))))))))))
 
 ;; Every missing directory along the path, as `Directory.CreateDirectory`.
-(: fake-fs-create-directory (-> FakeFs (-> string (Result Exception Unit))))
+(: (-> FakeFs (-> string (Result Exception Unit))))
 (defun (fake-fs-create-directory fs)
   (fun (raw)
     (def path (fake-path raw))
@@ -461,7 +461,7 @@
             (Ok unit)))))
 
 ;; A missing file is not an error, as with `File.Delete`.
-(: fake-fs-delete-file (-> FakeFs (-> string (Result Exception Unit))))
+(: (-> FakeFs (-> string (Result Exception Unit))))
 (defun (fake-fs-delete-file fs)
   (fun (raw)
     (def path (fake-path raw))
@@ -472,7 +472,7 @@
                      (Ok unit))
       (None (Ok unit)))))
 
-(: fake-fs-delete-directory (-> FakeFs (-> string (Result Exception Unit))))
+(: (-> FakeFs (-> string (Result Exception Unit))))
 (defun (fake-fs-delete-directory fs)
   (fun (raw)
     (def path (fake-path raw))
@@ -491,7 +491,7 @@
 
 ;; `m` with `from`, and everything below it, renamed to `to`. Generic, because
 ;; the entries and their times move by the same renaming.
-(: fake-renamed (-> (Map string %v) string string (Map string %v)))
+(: (-> (Map string %v) string string (Map string %v)))
 (defun (fake-renamed m from to)
   (def from-prefix (fake-prefix from))
   (map-fold (fun (k v acc)
@@ -506,7 +506,7 @@
 ;; A file, or a directory and everything below it. Fails if `to` exists,
 ;; unless `MoveReplace` asks to replace a file there with a file. The source is
 ;; checked first, as `File.Move` does.
-(: fake-fs-move (-> FakeFs (-> string string MoveMode (Result Exception Unit))))
+(: (-> FakeFs (-> string string MoveMode (Result Exception Unit))))
 (defun (fake-fs-move fs)
   (fun (raw-from raw-to mode)
     (def from (fake-path raw-from))
@@ -530,7 +530,7 @@
 
 ;; What was written to `path`, or `None` if nothing was. A seeded file nobody
 ;; wrote is `None`.
-(: fake-fs-written (-> FakeFs string (Option string)))
+(: (-> FakeFs string (Option string)))
 (defun (fake-fs-written fs path)
   (match (map-try-ref (fake-entries fs) (fake-path path))
     ((Some (FakeWritten s)) (Some (fake-bytes->text (.ToArray s))))
@@ -543,7 +543,7 @@
 ;; given, and a renamed `open-read-stream` would derive a cell nothing
 ;; declares. Any macro that writes a `with-handler` has to do this.
 
-(: fake-op (-> (-> Symbol Syntax) string Syntax))
+(: (-> (-> Symbol Syntax) string Syntax))
 (defun (fake-op inject name) (inject (string->symbol name)))
 
 ;; `(with-fake-fs-of fs body ...)`: install `fs` for the body.

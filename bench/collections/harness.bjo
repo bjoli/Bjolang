@@ -48,14 +48,14 @@
 
 ;; A heap with nothing left over from the case before, so that its collections
 ;; are not counted in this one.
-(: settle (-> void))
+(: (-> void))
 (defun (settle)
   (gc-collect)
   (gc-wait-finalizers)
   (gc-collect))
 
 ;; `calls` calls of the case, their results added up and kept.
-(: run-calls (-> (-> long) long void))
+(: (-> (-> long) long void))
 (defun (run-calls work calls)
   (let go ((i 0L) (acc 0L))
     (if (< i calls)
@@ -63,7 +63,7 @@
         (box-set! sink (+ (box-ref sink) acc)))))
 
 ;; Nanoseconds that `calls` calls take.
-(: time-calls (-> (-> long) long long))
+(: (-> (-> long) long long))
 (defun (time-calls work calls)
   (def sw (stopwatch))
   (stopwatch-start! sw)
@@ -72,7 +72,7 @@
   (stopwatch-ns sw))
 
 ;; The number of calls in a round of at least round-ns.
-(: calibrate (-> (-> long) long))
+(: (-> (-> long) long))
 (defun (calibrate work)
   (let go ((calls 1L))
     (if (or (>= (time-calls work calls) round-ns) (>= calls 1000000000L))
@@ -80,7 +80,7 @@
         (go (* calls 2L)))))
 
 ;; The fastest round's nanoseconds per call, and its bytes per call.
-(: measure (-> (-> long) (Tuple long long)))
+(: (-> (-> long) (Tuple long long)))
 (defun (measure work)
   (settle)
   (def calls (calibrate work))
@@ -96,13 +96,13 @@
               (go (+ round 1) best-ns best-bytes))))))
 
 ;; What a call costs that does nothing: the floor under every case.
-(: floor-ns (-> long))
+(: (-> long))
 (defun (floor-ns)
   (match (measure (fun () 1L))
     ((Tuple ns bytes) ns)))
 
 ;; What the table is, where it was made, and the floor.
-(: header (-> string void))
+(: (-> string void))
 (defun (header title)
   (println title)
   (println (str framework ", " os ", " (->str processor-count) " logical processors."))
@@ -113,7 +113,7 @@
                 (if (= floor 0L) "less than 1 ns" (ns->string floor)) ".")))
 
 ;; b / a with two decimals.
-(: ratio (-> long long string))
+(: (-> long long string))
 (defun (ratio a b)
   (if (= a 0L)
       "-"
@@ -123,7 +123,7 @@
              (string-pad-left (->str (% hundredths 100L)) 2 #:with #\0)))))
 
 ;; A cell: time per call, and bytes per call when there are any.
-(: cell (-> (Tuple long long) string))
+(: (-> (Tuple long long) string))
 (defun (cell m)
   (match m
     ((Tuple ns bytes)
@@ -132,7 +132,7 @@
                       cell-width))))
 
 ;; The heading of a table: what it compares, and the names of its two columns.
-(: section (-> string string string void))
+(: (-> string string string void))
 (defun (section title a b)
   (println "")
   (println title)
@@ -141,7 +141,7 @@
                 (string-pad-left (str b "/" a) ratio-width))))
 
 ;; One row: `op` on collections of n items, done the first way and the second.
-(: versus (-> string int (-> long) (-> long) void))
+(: (-> string int (-> long) (-> long) void))
 (defun (versus op n a b)
   (def ma (measure a))
   (def mb (measure b))

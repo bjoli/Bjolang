@@ -31,7 +31,7 @@
 (import/extern
   (file-delete! (: System.IO.File.Delete (-> string void))))
 
-(: pair (-> int int string))
+(: (-> int int string))
 (defun (pair a b)
   (string-append (int->string a) (string-append "/" (int->string b))))
 
@@ -41,14 +41,14 @@
 
 ;; The inner `x` is not in scope for `y`'s init, so `y` reads the outer one.
 ;; Sequentially this would be 2/2.
-(: shadow-and-read (-> string))
+(: (-> string))
 (defun (shadow-and-read)
   (let ((x 1))
     (let ((x 2) (y x))
       (pair x y))))
 
 ;; The same thing twice over, which is what a swap is.
-(: swap (-> string))
+(: (-> string))
 (defun (swap)
   (let ((a 1) (b 2))
     (let ((a b) (b a))
@@ -58,7 +58,7 @@
 ;; group's `p` is not in scope for the init that reads `p`, so `a` and `b` come
 ;; from the *outer* tuple. Sequentially this would not even typecheck, `99`
 ;; being no tuple.
-(: destructuring (-> string))
+(: (-> string))
 (defun (destructuring)
   (let ((p (Tuple 1 2)))
     (let ((p 99) ((a b) p))
@@ -69,14 +69,14 @@
 ;; ---------------------------------------------------------------------------
 
 ;; `let*`, for when a later value really is meant to see an earlier binding.
-(: sequential (-> string))
+(: (-> string))
 (defun (sequential)
   (let* ((a 1) (b (+ a 1)) (c (+ b 1)))
     (string-append (pair a b) (string-append "/" (int->string c)))))
 
 ;; A named `let` was always simultaneous — its inits are the arguments of a
 ;; call, evaluated before the loop is entered — and is untouched by any of this.
-(: named (-> string))
+(: (-> string))
 (defun (named)
   (let ((a 1) (b 2))
     (let loop ((a b) (b a))
@@ -88,7 +88,7 @@
 
 (def/mutable trace "")
 
-(: note (-> string int))
+(: (-> string int))
 (defun (note tag)
   (set! trace (string-append trace tag))
   0)
@@ -96,7 +96,7 @@
 ;; Simultaneous says nothing about *when* each init runs, only about what is in
 ;; scope while it does. R7RS leaves the order unspecified; this compiler keeps
 ;; source order, and a program may rely on that.
-(: left-to-right (-> string))
+(: (-> string))
 (defun (left-to-right)
   (set! trace "")
   (let ((p (note "1")) (q (note "2")) (s (note "3")))
@@ -110,7 +110,7 @@
 ;; constructor runs before any disposal is registered, so a later one that threw
 ;; would leak the earlier resources. Building a later resource from an earlier
 ;; one is also the normal way to write one, which is what this pins.
-(: through-an-alias (-> string string))
+(: (-> string string))
 (defun (through-an-alias path)
   (with-open ((w (StreamWriter. path))
               (echo w))

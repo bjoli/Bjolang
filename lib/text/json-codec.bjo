@@ -160,7 +160,7 @@
 ;; What generated field code calls
 ;; ---------------------------------------------------------------------------
 
-(: json-object (-> string Json (Result string (Map string Json))))
+(: (-> string Json (Result string (Map string Json))))
 (defun (json-object owner j)
   (match j
     ((JsonObj m) (Ok m))
@@ -169,7 +169,7 @@
 ;; The owner and key are prefixed onto whatever the value's own decoder said,
 ;; so a wrong type reads "Point.x: expected an integer" rather than naming
 ;; neither. Paths down the tree are not provided
-(: json-field (-> string (Map string Json) string (Result string %a)) (where (json-> %a)))
+(: (-> string (Map string Json) string (Result string %a)) (where (json-> %a)))
 (defun (json-field owner m key)
   (match (map-try-ref m key)
     (None (Err (str owner ": the object has no \"" key "\" field")))
@@ -179,7 +179,7 @@
        ((Ok v) (Ok v))))))
 
 ;; Absent and null ar the same in the sense that a nullable has the default value None
-(: json-field/default (-> string (Map string Json) string %a (Result string %a)) (where (json-> %a)))
+(: (-> string (Map string Json) string %a (Result string %a)) (where (json-> %a)))
 (defun (json-field/default owner m key fallback)
   (match (map-try-ref m key)
     (None (Ok fallback))
@@ -195,27 +195,27 @@
 ;; This is a runtime macro. Field types are never inspected: what a field encodes as is
 ;; settled later by instance resolution, and only the markers are read here.
 
-(: jt-sym (-> string Syntax))
+(: (-> string Syntax))
 (defun (jt-sym name) (SSym (string->symbol name)))
 
-(: jt-str (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (jt-str s) (SStr (syntax->string s)))
 
 ;; `(Box %a)` names the type `Box`; a bare `Point` names itself.
-(: jt-head-name (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (jt-head-name head)
   (match head
     ((SList parts) (list-head parts))
     (_ head)))
 
-(: jt-head-vars (-> Syntax (List Syntax)))
+(: (-> Syntax (List Syntax)))
 (defun (jt-head-vars head)
   (match head
     ((SList parts) (list-tail parts))
     (_ Nil)))
 
 
-(: jt-where-enc (-> (-> Symbol Syntax) Syntax (List Syntax)))
+(: (-> (-> Symbol Syntax) Syntax (List Syntax)))
 (defun (jt-where-enc inject head)
   (def vars (jt-head-vars head))
   (if (list-empty? vars)
@@ -223,7 +223,7 @@
       (list #'(,(inject 'where)
                ,@(list-map (fun (v) #'(,(inject (string->symbol "->json")) ,v)) vars)))))
 
-(: jt-where-dec (-> (-> Symbol Syntax) Syntax (List Syntax)))
+(: (-> (-> Symbol Syntax) Syntax (List Syntax)))
 (defun (jt-where-dec inject head)
   (def vars (jt-head-vars head))
   (if (list-empty? vars)
@@ -233,12 +233,12 @@
 
 ;; --- fields ----------------------------------------------------------------
 
-(: jt-marker=? (-> Syntax string bool))
+(: (-> Syntax string bool))
 (defun (jt-marker=? m name) (= (syntax->string m) name))
 
 ;; The JSON key: `#:json "name"` means it uses the "name" as the key for the field
 ;; instead of the defined name
-(: jt-key (-> Syntax (List Syntax) Syntax))
+(: (-> Syntax (List Syntax) Syntax))
 (defun (jt-key name markers)
   (let go ((ms markers))
     (cond
@@ -248,7 +248,7 @@
 
 ;; The fallback expression, or None if the field is required. `#:optional` is
 ;; `#:default None`.
-(: jt-fallback (-> (List Syntax) (Option Syntax)))
+(: (-> (List Syntax) (Option Syntax)))
 (defun (jt-fallback markers)
   (let go ((ms markers))
     (cond
@@ -261,7 +261,7 @@
          (else (go (list-tail ms))))))))
 
 ;; strip json markers (default, json, optional)
-(: jt-keep (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (jt-keep markers)
   (let go ((ms markers))
     (cond
@@ -274,29 +274,29 @@
          ((jt-marker=? m "#:optional") (go (list-tail ms)))
          (else (Cons m (go (list-tail ms)))))))))
 
-(: jt-shape string)
+(: string)
 (def jt-shape
   "a field is written (: name type), then any of #:mutable, #:optional, #:default <expr>, #:json \"key\".")
 
 ;; `syntax-error` has the type Syntax, so this is how we work around it.
-(: jt-fail-list (-> Syntax string (List Syntax)))
+(: (-> Syntax string (List Syntax)))
 (defun (jt-fail-list form message)
   (ignore (syntax-error form message))
   Nil)
 
-(: jt-field-name (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (jt-field-name f)
   (syntax-match f
     ((_ name _ marker ...) name)
     (bad (syntax-error bad jt-shape))))
 
-(: jt-field-markers (-> Syntax (List Syntax)))
+(: (-> Syntax (List Syntax)))
 (defun (jt-field-markers f)
   (syntax-match f
     ((_ _ _ marker ...) marker)
     (bad (jt-fail-list bad jt-shape))))
 
-(: jt-strip (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (jt-strip f)
   (syntax-match f
     ((colon name ty marker ...) #'(,colon ,name ,ty ,@(jt-keep marker)))
@@ -305,7 +305,7 @@
 ;; --- encode ----------------------------------------------------------------
 
 ;; An optional field is dropped when it is None; everything else is written.
-(: jt-put (-> Syntax Syntax Syntax))
+(: (-> Syntax Syntax Syntax))
 (defun (jt-put buf f)
   (def name (jt-field-name f))
   (def markers (jt-field-markers f))
@@ -314,7 +314,7 @@
       #'(when (some? (record-ref v ,name)) ,write)
       write))
 
-(: jt-optional? (-> (List Syntax) bool))
+(: (-> (List Syntax) bool))
 (defun (jt-optional? markers)
   (let go ((ms markers))
     (cond
@@ -322,7 +322,7 @@
       ((jt-marker=? (list-head ms) "#:optional") #t)
       (else (go (list-tail ms))))))
 
-(: jt-encode (-> (List Syntax) Syntax))
+(: (-> (List Syntax) Syntax))
 (defun (jt-encode fields)
   (def buf (jt-sym "__jt-buf"))
   #'(let ((,buf (transientmap-empty)))
@@ -333,7 +333,7 @@
 
 ;; One `match` per field wrapping the next, with the constructor innermost.
 ;; Verbose. Macrology.
-(: jt-chain (-> Syntax Syntax (List Syntax) int Syntax Syntax))
+(: (-> Syntax Syntax (List Syntax) int Syntax Syntax))
 (defun (jt-chain owner m fields i ctor)
   (cond
     ((list-empty? fields) ctor)
@@ -350,7 +350,7 @@
          ((Err ,e) (Err ,e))
          ((Ok ,v) ,(jt-chain owner m (list-tail fields) (+ i 1) ctor))))))
 
-(: jt-ctor (-> Syntax (List Syntax) Syntax))
+(: (-> Syntax (List Syntax) Syntax))
 (defun (jt-ctor head fields)
   #'(Ok (,(jt-head-name head)
          ,@(let go ((fs fields) (i 0))
@@ -359,7 +359,7 @@
                  (Cons #'(,(jt-field-name (list-head fs)) ,(jt-sym (str "__jt-v" (int->string i))))
                        (go (list-tail fs) (+ i 1))))))))
 
-(: jt-decode (-> Syntax (List Syntax) Syntax))
+(: (-> Syntax (List Syntax) Syntax))
 (defun (jt-decode head fields)
   (def owner (jt-str (jt-head-name head)))
   (def m (jt-sym "__jt-m"))
@@ -370,7 +370,7 @@
 
 ;; --- the form ---------------------------------------------------------------
 
-(: jt-expand (-> (-> Symbol Syntax) Syntax Syntax (List Syntax) Syntax))
+(: (-> (-> Symbol Syntax) Syntax Syntax (List Syntax) Syntax))
 (defun (jt-expand inject colon head fields)
   (def name (syntax->string (jt-head-name head)))
   (def enc (inject (string->symbol (str name "->json"))))

@@ -183,74 +183,74 @@
 ;; Ranges
 ;; ===========================================================================
 
-(: ticks-per-day long)
+(: long)
 (def ticks-per-day 864000000000L)
-(: ticks-per-hour long)
+(: long)
 (def ticks-per-hour 36000000000L)
-(: ticks-per-minute long)
+(: long)
 (def ticks-per-minute 600000000L)
-(: ticks-per-second long)
+(: long)
 (def ticks-per-second 10000000L)
-(: ticks-per-millisecond long)
+(: long)
 (def ticks-per-millisecond 10000L)
 
 ;; 9999-12-31T23:59:59.9999999 in ticks, and 9999-12-31 as a day number.
-(: max-ticks long)
+(: long)
 (def max-ticks 3155378975999999999L)
-(: max-day-number long)
+(: long)
 (def max-day-number 3652058L)
 
 ;; 1970-01-01T00:00Z in ticks.
-(: unix-epoch-ticks long)
+(: long)
 (def unix-epoch-ticks 621355968000000000L)
 
 ;; Every Duration stays within ±long-max ticks, about ±29 227 years. Leaving
 ;; out long's minimum gives every duration a negation, so each one prints and
 ;; reads back.
-(: long-max long)
+(: long)
 (def long-max 9223372036854775807L)
 
-(: long-of (-> int long))
+(: (-> int long))
 (defun (long-of n) (cast System.Int64 n))
 
-(: int-of (-> long int))
+(: (-> long int))
 (defun (int-of n) (cast System.Int32 n))
 
-(: range-error (-> string %a))
+(: (-> string %a))
 (defun (range-error what)
   (raise (cast Exception (OverflowException. (str "(std datetime): " what)))))
 
-(: calendar-error (-> string %a))
+(: (-> string %a))
 (defun (calendar-error what)
   (range-error (str what " is outside 0001-01-01T00:00 to 9999-12-31T23:59:59.9999999")))
 
-(: duration-error (-> %a))
+(: (-> %a))
 (defun (duration-error)
   (range-error "a duration is outside ±29 227 years (±9 223 372 036 854 775 807 ticks)"))
 
-(: in-calendar? (-> long bool))
+(: (-> long bool))
 (defun (in-calendar? t) (and (>= t 0L) (<= t max-ticks)))
 
 ;; n × unit for a positive unit, or None past the range of a Duration.
-(: checked-mul (-> long long (Option long)))
+(: (-> long long (Option long)))
 (defun (checked-mul n unit)
   (def limit (/ long-max unit))
   (if (or (> n limit) (< n (- limit))) None (Some (* n unit))))
 
 ;; a + b, or None past the range of a Duration.
-(: checked-add (-> long long (Option long)))
+(: (-> long long (Option long)))
 (defun (checked-add a b)
   (if (if (> b 0L) (> a (- long-max b)) (< a (- (- long-max) b)))
       None
       (Some (+ a b))))
 
-(: units->ticks (-> long long long))
+(: (-> long long long))
 (defun (units->ticks n unit)
   (match (checked-mul n unit)
     ((Some t) t)
     (None (duration-error))))
 
-(: plus-ticks (-> long long long))
+(: (-> long long long))
 (defun (plus-ticks a b)
   (match (checked-add a b)
     ((Some t) t)
@@ -259,7 +259,7 @@
 ;; A tick count moved by a duration, for DateTime and Instant. The sum can
 ;; wrap only above long's maximum, and then it lands below zero, so the one
 ;; range check catches it.
-(: shift-ticks (-> long long string long))
+(: (-> long long string long))
 (defun (shift-ticks t d what)
   (def moved (+ t d))
   (if (in-calendar? moved) moved (calendar-error what)))
@@ -269,51 +269,51 @@
 ;; Construction
 ;; ===========================================================================
 
-(: ticks->datetime (-> long DateTime))
+(: (-> long DateTime))
 (defun (ticks->datetime t) (DateTime (v (ClrDateTime. t DateTimeKind.Unspecified))))
 
-(: datetime-ticks (-> DateTime long))
+(: (-> DateTime long))
 (defun (datetime-ticks dt) (clr-datetime-ticks (struct-ref dt v)))
 
-(: ticks->duration (-> long Duration))
+(: (-> long Duration))
 (defun (ticks->duration t) (Duration (v (ClrTimeSpan. t))))
 
-(: duration-ticks (-> Duration long))
+(: (-> Duration long))
 (defun (duration-ticks d) (clr-timespan-ticks (struct-ref d v)))
 
-(: day-number (-> Date long))
+(: (-> Date long))
 (defun (day-number d) (long-of (clr-date-day-number (struct-ref d v))))
 
-(: day-number->date (-> long Date))
+(: (-> long Date))
 (defun (day-number->date n) (Date (v (clr-date-from-day-number (int-of n)))))
 
-(: valid-date? (-> int int int bool))
+(: (-> int int int bool))
 (defun (valid-date? y m d)
   (and (>= y 1) (<= y 9999) (>= m 1) (<= m 12) (>= d 1) (<= d (clr-days-in-month y m))))
 
-(: valid-time? (-> int int int int bool))
+(: (-> int int int int bool))
 (defun (valid-time? h m s ns)
   (and (>= h 0) (< h 24) (>= m 0) (< m 60) (>= s 0) (< s 60)
        (>= ns 0) (< ns 1000000000)))
 
 ;; Nanoseconds are cut to the 100 ns a tick holds.
-(: time-of-day-ticks (-> int int int int long))
+(: (-> int int int int long))
 (defun (time-of-day-ticks h m s ns)
   (+ (+ (* (long-of h) ticks-per-hour) (* (long-of m) ticks-per-minute))
      (+ (* (long-of s) ticks-per-second) (long-of (/ ns 100)))))
 
-(: date (-> int int int (Option Date)))
+(: (-> int int int (Option Date)))
 (defun (date y m d)
   (if (valid-date? y m d) (Some (Date (v (ClrDate. y m d)))) None))
 
-(: time (-> int int (#:seconds int) (#:nanoseconds int) (Option Time)))
+(: (-> int int (#:seconds int) (#:nanoseconds int) (Option Time)))
 (defun (time h m #:seconds 0 #:nanoseconds 0)
   (if (valid-time? h m seconds nanoseconds)
       (Some (Time (v (ClrTime. (time-of-day-ticks h m seconds nanoseconds)))))
       None))
 
-(: datetime (-> int int int (#:hours int) (#:minutes int) (#:seconds int)
-                (#:nanoseconds int) (Option DateTime)))
+(: (-> int int int (#:hours int) (#:minutes int) (#:seconds int)
+       (#:nanoseconds int) (Option DateTime)))
 (defun (datetime y mo d #:hours 0 #:minutes 0 #:seconds 0 #:nanoseconds 0)
   (if (and (valid-date? y mo d) (valid-time? hours minutes seconds nanoseconds))
       (Some (ticks->datetime
@@ -321,12 +321,12 @@
                  (time-of-day-ticks hours minutes seconds nanoseconds))))
       None))
 
-(: date+time->datetime (-> Date Time DateTime))
+(: (-> Date Time DateTime))
 (defun (date+time->datetime d t)
   (ticks->datetime (+ (* (day-number d) ticks-per-day) (clr-time-ticks (struct-ref t v)))))
 
-(: duration (-> (#:days long) (#:hours long) (#:minutes long) (#:seconds long)
-                (#:milliseconds long) (#:nanoseconds long) Duration))
+(: (-> (#:days long) (#:hours long) (#:minutes long) (#:seconds long)
+       (#:milliseconds long) (#:nanoseconds long) Duration))
 (defun (duration #:days 0L #:hours 0L #:minutes 0L #:seconds 0L #:milliseconds 0L
                  #:nanoseconds 0L)
   (ticks->duration
@@ -337,13 +337,13 @@
                 (plus-ticks (units->ticks milliseconds ticks-per-millisecond)
                             (/ nanoseconds 100L)))))
 
-(: date-period (-> (#:years int) (#:months int) (#:weeks int) (#:days int) DatePeriod))
+(: (-> (#:years int) (#:months int) (#:weeks int) (#:days int) DatePeriod))
 (defun (date-period #:years 0 #:months 0 #:weeks 0 #:days 0)
   (DatePeriod (years years) (months months) (weeks weeks) (days days)))
 
-(: period (-> (#:years int) (#:months int) (#:weeks int) (#:days int)
-              (#:hours long) (#:minutes long) (#:seconds long)
-              (#:milliseconds long) (#:nanoseconds long) Period))
+(: (-> (#:years int) (#:months int) (#:weeks int) (#:days int)
+       (#:hours long) (#:minutes long) (#:seconds long)
+       (#:milliseconds long) (#:nanoseconds long) Period))
 (defun (period #:years 0 #:months 0 #:weeks 0 #:days 0
                #:hours 0L #:minutes 0L #:seconds 0L #:milliseconds 0L #:nanoseconds 0L)
   (Period (calendar (DatePeriod (years years) (months months) (weeks weeks) (days days)))
@@ -383,7 +383,7 @@
 
 ;; Each step is checked before .NET takes it, because DateOnly would throw its
 ;; own error, and because weeks × 7 overflows an int.
-(: plus-years (-> ClrDate int ClrDate))
+(: (-> ClrDate int ClrDate))
 (defun (plus-years c n)
   (def y (+ (long-of (clr-date-year c)) (long-of n)))
   (cond ((= n 0) c)
@@ -391,7 +391,7 @@
         (else (calendar-error "a date plus years"))))
 
 ;; Months are counted from year 0, so year 1 January is month 12.
-(: plus-months (-> ClrDate int ClrDate))
+(: (-> ClrDate int ClrDate))
 (defun (plus-months c n)
   (def m (+ (+ (* (long-of (clr-date-year c)) 12L) (long-of (- (clr-date-month c) 1)))
             (long-of n)))
@@ -399,7 +399,7 @@
         ((and (>= m 12L) (<= m 119999L)) (clr-date-add-months c n))
         (else (calendar-error "a date plus months"))))
 
-(: plus-days (-> ClrDate long ClrDate))
+(: (-> ClrDate long ClrDate))
 (defun (plus-days c n)
   (def dn (+ (long-of (clr-date-day-number c)) n))
   (cond ((= n 0L) c)
@@ -407,7 +407,7 @@
         (else (calendar-error "a date plus days"))))
 
 ;; Largest unit first: years, then months, then weeks and days together.
-(: clr-date-plus-period (-> ClrDate DatePeriod ClrDate))
+(: (-> ClrDate DatePeriod ClrDate))
 (defun (clr-date-plus-period c p)
   (plus-days (plus-months (plus-years c (record-ref p years)) (record-ref p months))
              (+ (* (long-of (record-ref p weeks)) 7L) (long-of (record-ref p days)))))
@@ -415,7 +415,7 @@
 ;; This and the other `type+unit` functions are the trait methods at one type.
 ;; They are exported because the impls' bodies, which importers copy, call
 ;; them.
-(: date+date-period (-> Date DatePeriod Date))
+(: (-> Date DatePeriod Date))
 (defun (date+date-period d p) (Date (v (clr-date-plus-period (struct-ref d v) p))))
 
 (impl (HasDate Date)
@@ -464,14 +464,14 @@
 (impl (HasTime DateTime)
   (defun (->time dt) (Time (v (clr-time-from-datetime (struct-ref dt v))))))
 
-(: datetime+date-period (-> DateTime DatePeriod DateTime))
+(: (-> DateTime DatePeriod DateTime))
 (defun (datetime+date-period dt p)
   (def t (datetime-ticks dt))
   (def day (clr-date-plus-period (clr-date-from-day-number (int-of (/ t ticks-per-day))) p))
   (ticks->datetime (+ (* (long-of (clr-date-day-number day)) ticks-per-day)
                       (% t ticks-per-day))))
 
-(: datetime+duration (-> DateTime Duration DateTime))
+(: (-> DateTime Duration DateTime))
 (defun (datetime+duration dt d)
   (ticks->datetime (shift-ticks (datetime-ticks dt) (duration-ticks d)
                                 "a datetime plus a duration")))
@@ -496,14 +496,14 @@
 ;; Instant
 ;; ===========================================================================
 
-(: instant-ticks (-> Instant long))
+(: (-> Instant long))
 (defun (instant-ticks i) (struct-ref i ticks))
 
-(: ticks->instant (-> long string Instant))
+(: (-> long string Instant))
 (defun (ticks->instant t what)
   (if (in-calendar? t) (Instant (ticks t)) (calendar-error what)))
 
-(: instant+duration (-> Instant Duration Instant))
+(: (-> Instant Duration Instant))
 (defun (instant+duration i d)
   (Instant (ticks (shift-ticks (instant-ticks i) (duration-ticks d)
                                "an instant plus a duration"))))
@@ -520,35 +520,35 @@
 (impl (->str Instant)
   (defun (->str i) (ticks->iso-instant (instant-ticks i))))
 
-(: instant->utc-datetime (-> Instant DateTime))
+(: (-> Instant DateTime))
 (defun (instant->utc-datetime i) (ticks->datetime (instant-ticks i)))
 
-(: utc-datetime->instant (-> DateTime Instant))
+(: (-> DateTime Instant))
 (defun (utc-datetime->instant dt) (Instant (ticks (datetime-ticks dt))))
 
 ;; Rounds toward the past, so the second before 1970 is -1 rather than 0.
-(: floor-div (-> long long long))
+(: (-> long long long))
 (defun (floor-div a b)
   (def q (/ a b))
   (if (< (% a b) 0L) (- q 1L) q))
 
-(: instant->unix-seconds (-> Instant long))
+(: (-> Instant long))
 (defun (instant->unix-seconds i)
   (floor-div (- (instant-ticks i) unix-epoch-ticks) ticks-per-second))
 
-(: instant->unix-milliseconds (-> Instant long))
+(: (-> Instant long))
 (defun (instant->unix-milliseconds i)
   (floor-div (- (instant-ticks i) unix-epoch-ticks) ticks-per-millisecond))
 
 ;; The bounds are 0001-01-01T00:00Z and the last whole unit of 9999, so the
 ;; multiplication cannot overflow.
-(: unix-seconds->instant (-> long (Option Instant)))
+(: (-> long (Option Instant)))
 (defun (unix-seconds->instant s)
   (if (and (>= s -62135596800L) (<= s 253402300799L))
       (Some (Instant (ticks (+ (* s ticks-per-second) unix-epoch-ticks))))
       None))
 
-(: unix-milliseconds->instant (-> long (Option Instant)))
+(: (-> long (Option Instant)))
 (defun (unix-milliseconds->instant ms)
   (if (and (>= ms -62135596800000L) (<= ms 253402300799999L))
       (Some (Instant (ticks (+ (* ms ticks-per-millisecond) unix-epoch-ticks))))
@@ -556,7 +556,7 @@
 
 ;; Unix seconds of an instant or a moment, rounded as instant->unix-seconds
 ;; rounds, which it calls because an importer copies this body.
-(: ->unix (-> %a long) (where (HasInstant %a)))
+(: (-> %a long) (where (HasInstant %a)))
 (defun (->unix x) (instant->unix-seconds (->instant x)))
 
 
@@ -567,7 +567,7 @@
 ;; Checked here rather than by TimeSpan.Add, which lets a sum reach -2^63
 ;; ticks: the one TimeSpan with no negation, which could not be printed or
 ;; read back.
-(: duration+duration (-> Duration Duration Duration))
+(: (-> Duration Duration Duration))
 (defun (duration+duration a b) (ticks->duration (plus-ticks (duration-ticks a) (duration-ticks b))))
 
 ;; (+hours (duration #:minutes 30) 1) is PT1H30M.
@@ -581,20 +581,20 @@
   (defun (->str d) (duration->iso (duration-ticks d))))
 
 ;; Whole units, toward zero.
-(: duration->hours (-> Duration long))
+(: (-> Duration long))
 (defun (duration->hours d) (/ (duration-ticks d) ticks-per-hour))
 
-(: duration->minutes (-> Duration long))
+(: (-> Duration long))
 (defun (duration->minutes d) (/ (duration-ticks d) ticks-per-minute))
 
-(: duration->seconds (-> Duration long))
+(: (-> Duration long))
 (defun (duration->seconds d) (/ (duration-ticks d) ticks-per-second))
 
-(: duration->milliseconds (-> Duration long))
+(: (-> Duration long))
 (defun (duration->milliseconds d) (/ (duration-ticks d) ticks-per-millisecond))
 
 ;; Never raises, as no duration reaches -2^63 ticks.
-(: duration-negate (-> Duration Duration))
+(: (-> Duration Duration))
 (defun (duration-negate d) (Duration (v (clr-timespan-negate (struct-ref d v)))))
 
 
@@ -602,7 +602,7 @@
 ;; Periods
 ;; ===========================================================================
 
-(: date-period-negate (-> DatePeriod DatePeriod))
+(: (-> DatePeriod DatePeriod))
 (defun (date-period-negate p)
   (DatePeriod (years (- (record-ref p years))) (months (- (record-ref p months)))
               (weeks (- (record-ref p weeks))) (days (- (record-ref p days)))))
@@ -618,43 +618,43 @@
 ;; Accessors and arithmetic
 ;; ===========================================================================
 
-(: ->datetime (-> %a DateTime) (where (HasDate %a) (HasTime %a)))
+(: (-> %a DateTime) (where (HasDate %a) (HasTime %a)))
 (defun (->datetime x) (date+time->datetime (->date x) (->time x)))
 
-(: ->year (-> %a int) (where (HasDate %a)))
+(: (-> %a int) (where (HasDate %a)))
 (defun (->year x) (clr-date-year (struct-ref (->date x) v)))
 
-(: ->month (-> %a int) (where (HasDate %a)))
+(: (-> %a int) (where (HasDate %a)))
 (defun (->month x) (clr-date-month (struct-ref (->date x) v)))
 
-(: ->day (-> %a int) (where (HasDate %a)))
+(: (-> %a int) (where (HasDate %a)))
 (defun (->day x) (clr-date-day (struct-ref (->date x) v)))
 
 ;; ISO 8601: 1 is Monday, 7 is Sunday. Day number 0, 0001-01-01, was a Monday.
-(: ->weekday (-> %a int) (where (HasDate %a)))
+(: (-> %a int) (where (HasDate %a)))
 (defun (->weekday x) (+ (% (clr-date-day-number (struct-ref (->date x) v)) 7) 1))
 
-(: ->yday (-> %a int) (where (HasDate %a)))
+(: (-> %a int) (where (HasDate %a)))
 (defun (->yday x) (clr-date-day-of-year (struct-ref (->date x) v)))
 
 ;; ISO 8601 weeks run Monday to Sunday, and a week belongs to the year its
 ;; Thursday is in, so week 1 holds the year's first Thursday. n - n mod 7 is
 ;; the Monday, as day number 0 was one. Every date in range has its Thursday
 ;; in range, since 0001-01-01 was a Monday and 9999-12-31 a Friday.
-(: ->week (-> %a int) (where (HasDate %a)))
+(: (-> %a int) (where (HasDate %a)))
 (defun (->week x)
   (def n (clr-date-day-number (struct-ref (->date x) v)))
   (+ (/ (- (clr-date-day-of-year (clr-date-from-day-number (+ (- n (% n 7)) 3))) 1) 7) 1))
 
 ;; The year ->week counts in. It is not always ->year: 2027-01-01 is in week
 ;; 53 of 2026.
-(: ->week-year (-> %a int) (where (HasDate %a)))
+(: (-> %a int) (where (HasDate %a)))
 (defun (->week-year x)
   (def n (clr-date-day-number (struct-ref (->date x) v)))
   (clr-date-year (clr-date-from-day-number (+ (- n (% n 7)) 3))))
 
 ;; 52 or 53. December 28 is always in its year's last week.
-(: weeks-in-year (-> int int))
+(: (-> int int))
 (defun (weeks-in-year y)
   (if (and (>= y 1) (<= y 9999))
       (->week (Date (v (ClrDate. y 12 28))))
@@ -662,7 +662,7 @@
 
 ;; Day d (1 is Monday) of week w of week-year y. Week 1 starts on the Monday
 ;; on or before January 4.
-(: week-date (-> int int int (Option Date)))
+(: (-> int int int (Option Date)))
 (defun (week-date y w d)
   (if (and (>= y 1) (<= y 9999) (>= w 1) (<= w (weeks-in-year y)) (>= d 1) (<= d 7))
       (let* ((jan4 (long-of (clr-date-day-number (ClrDate. y 1 4))))
@@ -671,88 +671,88 @@
         (if (<= n max-day-number) (Some (day-number->date n)) None))
       None))
 
-(: ->hours (-> %a int) (where (HasTime %a)))
+(: (-> %a int) (where (HasTime %a)))
 (defun (->hours x) (clr-time-hour (struct-ref (->time x) v)))
 
-(: ->minutes (-> %a int) (where (HasTime %a)))
+(: (-> %a int) (where (HasTime %a)))
 (defun (->minutes x) (clr-time-minute (struct-ref (->time x) v)))
 
-(: ->seconds (-> %a int) (where (HasTime %a)))
+(: (-> %a int) (where (HasTime %a)))
 (defun (->seconds x) (clr-time-second (struct-ref (->time x) v)))
 
-(: ->milliseconds (-> %a int) (where (HasTime %a)))
+(: (-> %a int) (where (HasTime %a)))
 (defun (->milliseconds x) (clr-time-millisecond (struct-ref (->time x) v)))
 
 ;; The whole fraction of the second, so always a multiple of 100.
-(: ->nanoseconds (-> %a int) (where (HasTime %a)))
+(: (-> %a int) (where (HasTime %a)))
 (defun (->nanoseconds x)
   (def t (struct-ref (->time x) v))
   (+ (* (clr-time-millisecond t) 1000000)
      (+ (* (clr-time-microsecond t) 1000) (clr-time-nanosecond t))))
 
-(: +years (-> %a int %a) (where (DateArith %a)))
+(: (-> %a int %a) (where (DateArith %a)))
 (defun (+years x n) (+date-period x (DatePeriod (years n) (months 0) (weeks 0) (days 0))))
 
-(: +months (-> %a int %a) (where (DateArith %a)))
+(: (-> %a int %a) (where (DateArith %a)))
 (defun (+months x n) (+date-period x (DatePeriod (years 0) (months n) (weeks 0) (days 0))))
 
-(: +weeks (-> %a int %a) (where (DateArith %a)))
+(: (-> %a int %a) (where (DateArith %a)))
 (defun (+weeks x n) (+date-period x (DatePeriod (years 0) (months 0) (weeks n) (days 0))))
 
-(: +days (-> %a int %a) (where (DateArith %a)))
+(: (-> %a int %a) (where (DateArith %a)))
 (defun (+days x n) (+date-period x (DatePeriod (years 0) (months 0) (weeks 0) (days n))))
 
-(: -years (-> %a int %a) (where (DateArith %a)))
+(: (-> %a int %a) (where (DateArith %a)))
 (defun (-years x n) (+years x (- n)))
 
-(: -months (-> %a int %a) (where (DateArith %a)))
+(: (-> %a int %a) (where (DateArith %a)))
 (defun (-months x n) (+months x (- n)))
 
-(: -weeks (-> %a int %a) (where (DateArith %a)))
+(: (-> %a int %a) (where (DateArith %a)))
 (defun (-weeks x n) (+weeks x (- n)))
 
-(: -days (-> %a int %a) (where (DateArith %a)))
+(: (-> %a int %a) (where (DateArith %a)))
 (defun (-days x n) (+days x (- n)))
 
-(: -date-period (-> %a DatePeriod %a) (where (DateArith %a)))
+(: (-> %a DatePeriod %a) (where (DateArith %a)))
 (defun (-date-period x p)
   (+date-period x (DatePeriod (years (- (record-ref p years))) (months (- (record-ref p months)))
                               (weeks (- (record-ref p weeks))) (days (- (record-ref p days))))))
 
-(: +hours (-> %a long %a) (where (TimeArith %a)))
+(: (-> %a long %a) (where (TimeArith %a)))
 (defun (+hours x n) (+duration x (duration #:hours n)))
 
-(: +minutes (-> %a long %a) (where (TimeArith %a)))
+(: (-> %a long %a) (where (TimeArith %a)))
 (defun (+minutes x n) (+duration x (duration #:minutes n)))
 
-(: +seconds (-> %a long %a) (where (TimeArith %a)))
+(: (-> %a long %a) (where (TimeArith %a)))
 (defun (+seconds x n) (+duration x (duration #:seconds n)))
 
-(: +milliseconds (-> %a long %a) (where (TimeArith %a)))
+(: (-> %a long %a) (where (TimeArith %a)))
 (defun (+milliseconds x n) (+duration x (duration #:milliseconds n)))
 
 ;; Negated after the range check, so long's minimum is refused rather than
 ;; wrapped back to itself.
-(: -hours (-> %a long %a) (where (TimeArith %a)))
+(: (-> %a long %a) (where (TimeArith %a)))
 (defun (-hours x n) (+duration x (duration-negate (duration #:hours n))))
 
-(: -minutes (-> %a long %a) (where (TimeArith %a)))
+(: (-> %a long %a) (where (TimeArith %a)))
 (defun (-minutes x n) (+duration x (duration-negate (duration #:minutes n))))
 
-(: -seconds (-> %a long %a) (where (TimeArith %a)))
+(: (-> %a long %a) (where (TimeArith %a)))
 (defun (-seconds x n) (+duration x (duration-negate (duration #:seconds n))))
 
-(: -milliseconds (-> %a long %a) (where (TimeArith %a)))
+(: (-> %a long %a) (where (TimeArith %a)))
 (defun (-milliseconds x n) (+duration x (duration-negate (duration #:milliseconds n))))
 
-(: -duration (-> %a Duration %a) (where (TimeArith %a)))
+(: (-> %a Duration %a) (where (TimeArith %a)))
 (defun (-duration x d) (+duration x (duration-negate d)))
 
-(: +period (-> %a Period %a) (where (DateArith %a) (TimeArith %a)))
+(: (-> %a Period %a) (where (DateArith %a) (TimeArith %a)))
 (defun (+period x p)
   (+duration (+date-period x (record-ref p calendar)) (record-ref p exact)))
 
-(: -period (-> %a Period %a) (where (DateArith %a) (TimeArith %a)))
+(: (-> %a Period %a) (where (DateArith %a) (TimeArith %a)))
 (defun (-period x p)
   (-duration (-date-period x (record-ref p calendar)) (record-ref p exact)))
 
@@ -763,17 +763,17 @@
 
 ;; Calendar differences read the dates only: 23:00 to 01:00 the next day is
 ;; one day. Both arguments have one type, and b's date is read where a is.
-(: days-between (-> %a %a int) (where (HasDate %a) (DateDiff %a)))
+(: (-> %a %a int) (where (HasDate %a) (DateDiff %a)))
 (defun (days-between a b)
   (- (clr-date-day-number (struct-ref (->date-in-zone-of b a) v))
      (clr-date-day-number (struct-ref (->date a) v))))
 
-(: weeks-between (-> %a %a int) (where (HasDate %a) (DateDiff %a)))
+(: (-> %a %a int) (where (HasDate %a) (DateDiff %a)))
 (defun (weeks-between a b) (/ (days-between a b) 7))
 
 ;; A month counts once the day of the month is reached, as in java.time, so
 ;; swapping the arguments only flips the sign: 2026-01-31 to 2026-02-28 is 0.
-(: months-between (-> %a %a int) (where (HasDate %a) (DateDiff %a)))
+(: (-> %a %a int) (where (HasDate %a) (DateDiff %a)))
 (defun (months-between a b)
   (def x (struct-ref (->date a) v))
   (def y (struct-ref (->date-in-zone-of b a) v))
@@ -784,27 +784,27 @@
         ((and (< months 0) (> days 0)) (+ months 1))
         (else months)))
 
-(: years-between (-> %a %a int) (where (HasDate %a) (DateDiff %a)))
+(: (-> %a %a int) (where (HasDate %a) (DateDiff %a)))
 (defun (years-between a b) (/ (months-between a b) 12))
 
 ;; The time that passed from a to b, between their instants, so a moment and
 ;; an instant mix, and a DateTime, which has no instant, does not compile. Two
 ;; instants are less than 10 000 years apart, so the difference fits.
-(: duration-between (-> %a %b Duration) (where (HasInstant %a) (HasInstant %b)))
+(: (-> %a %b Duration) (where (HasInstant %a) (HasInstant %b)))
 (defun (duration-between a b)
   (Duration (v (clr-timespan-from-ticks (- (struct-ref (->instant b) ticks)
                                            (struct-ref (->instant a) ticks))))))
 
-(: hours-between (-> %a %b long) (where (HasInstant %a) (HasInstant %b)))
+(: (-> %a %b long) (where (HasInstant %a) (HasInstant %b)))
 (defun (hours-between a b) (duration->hours (duration-between a b)))
 
-(: minutes-between (-> %a %b long) (where (HasInstant %a) (HasInstant %b)))
+(: (-> %a %b long) (where (HasInstant %a) (HasInstant %b)))
 (defun (minutes-between a b) (duration->minutes (duration-between a b)))
 
-(: seconds-between (-> %a %b long) (where (HasInstant %a) (HasInstant %b)))
+(: (-> %a %b long) (where (HasInstant %a) (HasInstant %b)))
 (defun (seconds-between a b) (duration->seconds (duration-between a b)))
 
-(: milliseconds-between (-> %a %b long) (where (HasInstant %a) (HasInstant %b)))
+(: (-> %a %b long) (where (HasInstant %a) (HasInstant %b)))
 (defun (milliseconds-between a b) (duration->milliseconds (duration-between a b)))
 
 
@@ -812,18 +812,18 @@
 ;; Zones
 ;; ===========================================================================
 
-(: utc TimeZone)
+(: TimeZone)
 (def utc (TimeZone (tz clr-tz-utc)))
 
 ;; IANA ids only: .NET would also take a Windows id such as "W. Europe
 ;; Standard Time", which HasIanaId refuses.
-(: timezone (-> string (Option TimeZone)))
+(: (-> string (Option TimeZone)))
 (defun (timezone id)
   (match (clr-tz-try-find id)
     ((Some z) (if (clr-tz-has-iana-id z) (Some (TimeZone (tz z))) None))
     (None None)))
 
-(: timezone-id (-> TimeZone string))
+(: (-> TimeZone string))
 (defun (timezone-id z) (clr-tz-id (struct-ref z tz)))
 
 (impl (Eq TimeZone)
@@ -837,12 +837,12 @@
 ;; calendar, because local-fit looks a day past a local time on the first or
 ;; last day; no zone changes offset within a day of either end, so the answer
 ;; is the same.
-(: offset-at (-> TimeZoneInfo long long))
+(: (-> TimeZoneInfo long long))
 (defun (offset-at z u)
   (def clamped (if (< u 0L) 0L (if (> u max-ticks) max-ticks u)))
   (clr-timespan-ticks (clr-tz-utc-offset z (ClrDateTime. clamped DateTimeKind.Utc))))
 
-(: timezone-offset-at (-> TimeZone Instant Duration))
+(: (-> TimeZone Instant Duration))
 (defun (timezone-offset-at z i) (ticks->duration (offset-at (struct-ref z tz) (instant-ticks i))))
 
 ;; Where a local time lands in a zone: at one offset, or two in an overlap
@@ -850,7 +850,7 @@
 ;; the offset before and the offset after.
 (type (: Fit (Union (: Fits long long) (: Skipped long long))))
 
-(: member-long? (-> long (List long) bool))
+(: (-> long (List long) bool))
 (defun (member-long? x xs)
   (and (not (list-empty? xs))
        (or (= x (list-head xs)) (member-long? x (list-tail xs)))))
@@ -861,7 +861,7 @@
 ;; the tz database's closest two changes are 95 h apart. When a lookup answers
 ;; with a third offset it becomes a candidate too, which catches most layouts
 ;; with two changes in 48 h, but not all.
-(: local-fit (-> TimeZoneInfo long Fit))
+(: (-> TimeZoneInfo long Fit))
 (defun (local-fit z l)
   (def before (offset-at z (- l ticks-per-day)))
   (def after (offset-at z (+ l ticks-per-day)))
@@ -878,7 +878,7 @@
 
 ;; The first instant at offset `after`, by bisection between an instant still
 ;; before the change and one after it.
-(: change-ticks (-> TimeZoneInfo long long long long))
+(: (-> TimeZoneInfo long long long long))
 (defun (change-ticks z lo hi after)
   (if (<= (- hi lo) 1L)
       hi
@@ -892,25 +892,25 @@
 ;; Moments
 ;; ===========================================================================
 
-(: moment-local-ticks (-> Moment long))
+(: (-> Moment long))
 (defun (moment-local-ticks m) (datetime-ticks (struct-ref m local)))
 
-(: moment-offset-ticks (-> Moment long))
+(: (-> Moment long))
 (defun (moment-offset-ticks m) (duration-ticks (struct-ref m offset)))
 
-(: moment-instant-ticks (-> Moment long))
+(: (-> Moment long))
 (defun (moment-instant-ticks m) (- (moment-local-ticks m) (moment-offset-ticks m)))
 
 ;; A moment from a local time and an offset that fits it. Near either end of
 ;; the calendar the instant can fall outside it: 0001-01-01T00:00 in Tokyo is
 ;; the day before.
-(: fitted-moment (-> long long TimeZone Moment))
+(: (-> long long TimeZone Moment))
 (defun (fitted-moment l o z)
   (if (in-calendar? (- l o))
       (Moment (local (ticks->datetime l)) (offset (ticks->duration o)) (zone z))
       (calendar-error "the instant of a local time")))
 
-(: instant->moment (-> Instant TimeZone Moment))
+(: (-> Instant TimeZone Moment))
 (defun (instant->moment i z)
   (def u (instant-ticks i))
   (def o (offset-at (struct-ref z tz) u))
@@ -918,12 +918,12 @@
       (Moment (local (ticks->datetime (+ u o))) (offset (ticks->duration o)) (zone z))
       (calendar-error "the local time of an instant")))
 
-(: resolver (-> Gap Overlap Resolver))
+(: (-> Gap Overlap Resolver))
 (defun (resolver g o) (Resolver (gap g) (overlap o)))
 
 ;; GapPush moves the local time forward by the length of the gap: the instant
 ;; it names at the offset before the gap, read at the offset after it.
-(: resolve-local (-> long TimeZone Resolver Moment))
+(: (-> long TimeZone Resolver Moment))
 (defun (resolve-local l z r)
   (match (local-fit (struct-ref z tz) l)
     ((Fits earlier later)
@@ -938,10 +938,10 @@
         (instant->moment (Instant (ticks (change-ticks (struct-ref z tz) (- l after) (- l before) after)))
                          z))))))
 
-(: datetime->moment (-> DateTime TimeZone Resolver Moment))
+(: (-> DateTime TimeZone Resolver Moment))
 (defun (datetime->moment dt z r) (resolve-local (datetime-ticks dt) z r))
 
-(: datetime->moment/opt (-> DateTime TimeZone (Option Moment)))
+(: (-> DateTime TimeZone (Option Moment)))
 (defun (datetime->moment/opt dt z)
   (def l (datetime-ticks dt))
   (match (local-fit (struct-ref z tz) l)
@@ -951,17 +951,17 @@
          None))
     (_ None)))
 
-(: +date-period/resolver (-> Moment DatePeriod Resolver Moment))
+(: (-> Moment DatePeriod Resolver Moment))
 (defun (+date-period/resolver m p r)
   (datetime->moment (datetime+date-period (struct-ref m local) p) (struct-ref m zone) r))
 
-(: -date-period/resolver (-> Moment DatePeriod Resolver Moment))
+(: (-> Moment DatePeriod Resolver Moment))
 (defun (-date-period/resolver m p r) (+date-period/resolver m (date-period-negate p) r))
 
 ;; Date arithmetic on a moment keeps its offset through an overlap if that
 ;; offset still fits, takes the earlier one if not, and pushes forward through
 ;; a gap.
-(: moment+date-period (-> Moment DatePeriod Moment))
+(: (-> Moment DatePeriod Moment))
 (defun (moment+date-period m p)
   (def l (datetime-ticks (datetime+date-period (struct-ref m local) p)))
   (def z (struct-ref m zone))
@@ -972,18 +972,18 @@
     ((Skipped before after)
      (instant->moment (ticks->instant (- l before) "the instant of a local time") z))))
 
-(: ->utc-offset (-> Moment Duration))
+(: (-> Moment Duration))
 (defun (->utc-offset m) (struct-ref m offset))
 
-(: ->timezone (-> Moment TimeZone))
+(: (-> Moment TimeZone))
 (defun (->timezone m) (struct-ref m zone))
 
-(: adjust-timezone (-> Moment TimeZone Moment))
+(: (-> Moment TimeZone Moment))
 (defun (adjust-timezone m z)
   (instant->moment (Instant (ticks (moment-instant-ticks m))) z))
 
 ;; Exact: through the instant, and back into the same zone.
-(: moment+duration (-> Moment Duration Moment))
+(: (-> Moment Duration Moment))
 (defun (moment+duration m d)
   (instant->moment
     (Instant (ticks (shift-ticks (moment-instant-ticks m) (duration-ticks d)
@@ -1058,29 +1058,29 @@
 ;; parameter changes no call site. They are the only functions here that are
 ;; not pure.
 
-(: zone-reader (-> TimeZone (-> TimeZoneInfo)))
+(: (-> TimeZone (-> TimeZoneInfo)))
 (defun (zone-reader z)
   (def info (struct-ref z tz))
   (fun () info))
 
 ;; c, with today in z.
-(: clock-in (-> Clock TimeZone Clock))
+(: (-> Clock TimeZone Clock))
 (defun (clock-in c z) (record-set c (read-zone (zone-reader z))))
 
 ;; The system's time in zone z, so that a program on a machine set to UTC can
 ;; bind current-clock once and have (today) be z's date everywhere.
-(: system-clock-in (-> TimeZone Clock))
+(: (-> TimeZone Clock))
 (defun (system-clock-in z) (clock-in system-clock z))
 
 ;; Always the same instant. Its monotonic reading stands still too.
-(: fixed-clock (-> Instant TimeZone Clock))
+(: (-> Instant TimeZone Clock))
 (defun (fixed-clock i z)
   (def t (instant-ticks i))
   (make-clock #:monotonic-ms (fun () 0L)
               #:utc-ticks (fun () t)
               #:zone (zone-reader z)))
 
-(: locked (-> ClrLock (-> %a) %a))
+(: (-> ClrLock (-> %a) %a))
 (defun (locked lock body)
   (clr-lock-enter lock)
   (try (body) #:finally (clr-lock-exit lock)))
@@ -1091,7 +1091,7 @@
 ;;
 ;; The monotonic reading starts at 0 and moves only on a positive advance, so a
 ;; step back of the wall clock never makes an elapsed time negative.
-(: manual-clock (-> Instant TimeZone Clock))
+(: (-> Instant TimeZone Clock))
 (defun (manual-clock i z)
   (def wall (make-box i))
   (def mono (make-box 0L))
@@ -1109,7 +1109,7 @@
                         #:finally (clr-lock-exit lock))))))
 
 ;; A negative duration steps the clock back, as a corrected wall clock does.
-(: clock-advance! (-> Clock Duration void))
+(: (-> Clock Duration void))
 (defun (clock-advance! c d)
   (match (record-ref c advance-ticks)
     ((Some advance) (advance (duration-ticks d)))
@@ -1117,19 +1117,19 @@
                        (ArgumentException.
                          "(std datetime): clock-advance! moves a clock made with #:advance, as a manual clock is, and this one has none."))))))
 
-(: clock-timezone (-> (#:clock Clock) TimeZone))
+(: (-> (#:clock Clock) TimeZone))
 (defun (clock-timezone #:clock (parameter-ref current-clock))
   (TimeZone (tz ((record-ref clock read-zone)))))
 
-(: now (-> (#:clock Clock) Instant))
+(: (-> (#:clock Clock) Instant))
 (defun (now #:clock (parameter-ref current-clock))
   (ticks->instant ((record-ref clock read-utc-ticks)) "a clock's reading"))
 
-(: now/moment (-> (#:clock Clock) (#:tz TimeZone) Moment))
+(: (-> (#:clock Clock) (#:tz TimeZone) Moment))
 (defun (now/moment #:clock (parameter-ref current-clock) #:tz (clock-timezone #:clock clock))
   (instant->moment (now #:clock clock) tz))
 
-(: today (-> (#:clock Clock) (#:tz TimeZone) Date))
+(: (-> (#:clock Clock) (#:tz TimeZone) Date))
 (defun (today #:clock (parameter-ref current-clock) #:tz (clock-timezone #:clock clock))
   (->date (now/moment #:clock clock #:tz tz)))
 
@@ -1142,28 +1142,28 @@
 ;; so writing a value allocates the builder and the string, not a string per
 ;; field.
 
-(: new-text (-> int TextBuilder))
+(: (-> int TextBuilder))
 (defun (new-text capacity) (TextBuilder. capacity))
 
-(: text-of (-> TextBuilder string))
+(: (-> TextBuilder string))
 (defun (text-of sb) (clr-builder-text sb))
 
-(: add-text! (-> TextBuilder string void))
+(: (-> TextBuilder string void))
 (defun (add-text! sb s) (ignore (clr-add-text sb s)))
 
-(: add-digit! (-> TextBuilder long void))
+(: (-> TextBuilder long void))
 (defun (add-digit! sb d) (ignore (clr-add-unit sb (cast System.Char (+ 48 (int-of d))))))
 
 ;; The number of decimal digits in n >= 0, 0 having one.
-(: digit-count (-> long int))
+(: (-> long int))
 (defun (digit-count n) (if (< n 10L) 1 (+ 1 (digit-count (/ n 10L)))))
 
 ;; The largest power of ten not above n >= 0, or 1.
-(: top-power (-> long long))
+(: (-> long long))
 (defun (top-power n) (if (< n 10L) 1L (* 10L (top-power (/ n 10L)))))
 
 ;; n >= 0 in decimal, with zeros in front up to width digits.
-(: add-padded! (-> TextBuilder long int void))
+(: (-> TextBuilder long int void))
 (defun (add-padded! sb n width)
   (let zeros ((k (digit-count n)))
     (when (< k width)
@@ -1174,7 +1174,7 @@
       (add-digit! sb (% (/ n p) 10L))
       (digits (/ p 10L)))))
 
-(: add-date! (-> TextBuilder ClrDate void))
+(: (-> TextBuilder ClrDate void))
 (defun (add-date! sb c)
   (add-padded! sb (long-of (clr-date-year c)) 4)
   (add-text! sb "-")
@@ -1184,7 +1184,7 @@
 
 ;; ".5" for half a second: up to seven digits, without trailing zeros, and
 ;; nothing for a whole second.
-(: add-fraction! (-> TextBuilder long void))
+(: (-> TextBuilder long void))
 (defun (add-fraction! sb f)
   (unless (= f 0L)
     (let loop ((f f) (width 7))
@@ -1195,7 +1195,7 @@
             (add-padded! sb f width))))))
 
 ;; hh:mm:ss of a tick count within a day.
-(: add-clock! (-> TextBuilder long void))
+(: (-> TextBuilder long void))
 (defun (add-clock! sb t)
   (add-padded! sb (/ t ticks-per-hour) 2)
   (add-text! sb ":")
@@ -1203,19 +1203,19 @@
   (add-text! sb ":")
   (add-padded! sb (% (/ t ticks-per-second) 60L) 2))
 
-(: add-time-of-day! (-> TextBuilder long void))
+(: (-> TextBuilder long void))
 (defun (add-time-of-day! sb t)
   (add-clock! sb t)
   (add-fraction! sb (% t ticks-per-second)))
 
-(: add-datetime! (-> TextBuilder long void))
+(: (-> TextBuilder long void))
 (defun (add-datetime! sb t)
   (add-date! sb (clr-date-from-day-number (int-of (/ t ticks-per-day))))
   (add-text! sb "T")
   (add-time-of-day! sb (% t ticks-per-day)))
 
 ;; ±hh:mm, and :ss when there are seconds.
-(: add-offset! (-> TextBuilder long void))
+(: (-> TextBuilder long void))
 (defun (add-offset! sb o)
   (def a (abs o))
   (def s (% (/ a ticks-per-second) 60L))
@@ -1227,25 +1227,25 @@
     (add-text! sb ":")
     (add-padded! sb s 2)))
 
-(: date->string (-> ClrDate string))
+(: (-> ClrDate string))
 (defun (date->string c)
   (def sb (new-text 10))
   (add-date! sb c)
   (text-of sb))
 
-(: time-of-day->string (-> long string))
+(: (-> long string))
 (defun (time-of-day->string t)
   (def sb (new-text 16))
   (add-time-of-day! sb t)
   (text-of sb))
 
-(: ticks->iso-datetime (-> long string))
+(: (-> long string))
 (defun (ticks->iso-datetime t)
   (def sb (new-text 27))
   (add-datetime! sb t)
   (text-of sb))
 
-(: ticks->iso-instant (-> long string))
+(: (-> long string))
 (defun (ticks->iso-instant t)
   (def sb (new-text 28))
   (add-datetime! sb t)
@@ -1253,7 +1253,7 @@
   (text-of sb))
 
 ;; 38 characters hold the longest local time and offset, and the brackets.
-(: moment->string (-> Moment string))
+(: (-> Moment string))
 (defun (moment->string m)
   (def id (timezone-id (struct-ref m zone)))
   (def sb (new-text (+ 38 (string-length id))))
@@ -1265,7 +1265,7 @@
   (text-of sb))
 
 ;; n and its unit, with a minus when n is negative, and nothing for 0.
-(: add-amount! (-> TextBuilder long string void))
+(: (-> TextBuilder long string void))
 (defun (add-amount! sb n unit)
   (unless (= n 0L)
     (when (< n 0L) (add-text! sb "-"))
@@ -1273,7 +1273,7 @@
     (add-text! sb unit)))
 
 ;; The time components of a non-negative tick count, each prefixed by sign.
-(: add-time-parts! (-> TextBuilder long string void))
+(: (-> TextBuilder long string void))
 (defun (add-time-parts! sb a sign)
   (def h (/ a ticks-per-hour))
   (def m (% (/ a ticks-per-minute) 60L))
@@ -1294,7 +1294,7 @@
     (add-text! sb "S")))
 
 ;; PT26H30M, with one leading sign: -PT1H30M.
-(: duration->iso (-> long string))
+(: (-> long string))
 (defun (duration->iso t)
   (if (= t 0L)
       "PT0S"
@@ -1305,19 +1305,19 @@
         (text-of sb))))
 
 ;; Each component carries its own sign, since a period may mix them: P1M-3D.
-(: add-date-parts! (-> TextBuilder DatePeriod void))
+(: (-> TextBuilder DatePeriod void))
 (defun (add-date-parts! sb p)
   (add-amount! sb (long-of (record-ref p years)) "Y")
   (add-amount! sb (long-of (record-ref p months)) "M")
   (add-amount! sb (long-of (record-ref p weeks)) "W")
   (add-amount! sb (long-of (record-ref p days)) "D"))
 
-(: date-period-zero? (-> DatePeriod bool))
+(: (-> DatePeriod bool))
 (defun (date-period-zero? p)
   (and (= (record-ref p years) 0) (= (record-ref p months) 0)
        (= (record-ref p weeks) 0) (= (record-ref p days) 0)))
 
-(: date-period->string (-> DatePeriod string))
+(: (-> DatePeriod string))
 (defun (date-period->string p)
   (if (date-period-zero? p)
       "P0D"
@@ -1327,7 +1327,7 @@
         (text-of sb))))
 
 ;; P1DT3H. A negative exact part signs each of its components: P1DT-3H.
-(: period->string (-> Period string))
+(: (-> Period string))
 (defun (period->string p)
   (def dates (record-ref p calendar))
   (def t (duration-ticks (record-ref p exact)))
@@ -1351,25 +1351,25 @@
 ;; allocates nothing but a moment's zone id. Only the extended format is read
 ;; (2026-10-25T02:30:00, not 20261025T023000), with an upper-case T and Z.
 
-(: ascii-digit (-> char int))
+(: (-> char int))
 (defun (ascii-digit c)
   (def n (char->int c))
   (if (and (>= n 48) (<= n 57)) (- n 48) -1))
 
-(: next-digit (-> string StringCursor int))
+(: (-> string StringCursor int))
 (defun (next-digit s c)
   (if (string-cursor-end? s c) -1 (ascii-digit (string-cursor-ref s c))))
 
-(: starts-with-char? (-> string StringCursor char bool))
+(: (-> string StringCursor char bool))
 (defun (starts-with-char? s c ch)
   (and (not (string-cursor-end? s c)) (char=? (string-cursor-ref s c) ch)))
 
-(: skip-char (-> string StringCursor char (Option StringCursor)))
+(: (-> string StringCursor char (Option StringCursor)))
 (defun (skip-char s c ch)
   (if (starts-with-char? s c ch) (Some (string-cursor-next s c)) None))
 
 ;; Exactly n digits.
-(: read-fixed (-> string StringCursor int (Option (Tuple int StringCursor))))
+(: (-> string StringCursor int (Option (Tuple int StringCursor))))
 (defun (read-fixed s c n)
   (let loop ((c c) (left n) (acc 0))
     (def d (next-digit s c))
@@ -1378,7 +1378,7 @@
           (else (loop (string-cursor-next s c) (- left 1) (+ (* acc 10) d))))))
 
 ;; One or more digits, or None past long's range.
-(: read-number (-> string StringCursor (Option (Tuple long StringCursor))))
+(: (-> string StringCursor (Option (Tuple long StringCursor))))
 (defun (read-number s c)
   (let loop ((c c) (count 0) (acc 0L))
     (def d (long-of (next-digit s c)))
@@ -1388,7 +1388,7 @@
 
 ;; The digits after a decimal point or comma, as ticks. Digits past the
 ;; seventh are read and dropped, as a tick holds no less than 100 ns.
-(: read-fraction (-> string StringCursor (Option (Tuple long StringCursor))))
+(: (-> string StringCursor (Option (Tuple long StringCursor))))
 (defun (read-fraction s c)
   (let loop ((c c) (count 0) (acc 0L))
     (def d (long-of (next-digit s c)))
@@ -1397,19 +1397,19 @@
           ((= count 0) None)
           (else (Some (Tuple (scale-fraction acc count) c))))))
 
-(: scale-fraction (-> long int long))
+(: (-> long int long))
 (defun (scale-fraction f digits)
   (if (>= digits 7) f (scale-fraction (* f 10L) (+ digits 1))))
 
 ;; An optional fraction: nothing, or a separator and at least one digit.
-(: read-optional-fraction (-> string StringCursor (Option (Tuple long StringCursor))))
+(: (-> string StringCursor (Option (Tuple long StringCursor))))
 (defun (read-optional-fraction s c)
   (if (or (starts-with-char? s c #\.) (starts-with-char? s c #\,))
       (read-fraction s (string-cursor-next s c))
       (Some (Tuple 0L c))))
 
 ;; YYYY-MM-DD, as a day number.
-(: read-date (-> string StringCursor (Option (Tuple long StringCursor))))
+(: (-> string StringCursor (Option (Tuple long StringCursor))))
 (defun (read-date s c)
   (def* ((Some (Tuple y c1)) (read-fixed s c 4) :propagate)
         ((Some c2) (skip-char s c1 #\-) :propagate)
@@ -1421,7 +1421,7 @@
       None))
 
 ;; hh:mm, hh:mm:ss or hh:mm:ss.fff, as ticks since midnight. No leap second.
-(: read-time (-> string StringCursor (Option (Tuple long StringCursor))))
+(: (-> string StringCursor (Option (Tuple long StringCursor))))
 (defun (read-time s c)
   (def* ((Some (Tuple h c1)) (read-fixed s c 2) :propagate)
         ((Some c2) (skip-char s c1 #\:) :propagate)
@@ -1434,7 +1434,7 @@
         (else (Some (Tuple (+ (time-of-day-ticks h m sec 0) f) c5)))))
 
 ;; A date, T, and a time, as local ticks.
-(: read-datetime (-> string StringCursor (Option (Tuple long StringCursor))))
+(: (-> string StringCursor (Option (Tuple long StringCursor))))
 (defun (read-datetime s c)
   (def* ((Some (Tuple day c1)) (read-date s c) :propagate)
         ((Some c2) (skip-char s c1 #\T) :propagate)
@@ -1442,14 +1442,14 @@
   (Some (Tuple (+ (* day ticks-per-day) t) c3)))
 
 ;; Z, or ±hh:mm with an optional :ss, as ticks.
-(: read-offset (-> string StringCursor (Option (Tuple long StringCursor))))
+(: (-> string StringCursor (Option (Tuple long StringCursor))))
 (defun (read-offset s c)
   (cond ((starts-with-char? s c #\Z) (Some (Tuple 0L (string-cursor-next s c))))
         ((starts-with-char? s c #\+) (read-hhmm s (string-cursor-next s c) 1L))
         ((starts-with-char? s c #\-) (read-hhmm s (string-cursor-next s c) -1L))
         (else None)))
 
-(: read-hhmm (-> string StringCursor long (Option (Tuple long StringCursor))))
+(: (-> string StringCursor long (Option (Tuple long StringCursor))))
 (defun (read-hhmm s c sign)
   (def* ((Some (Tuple h c1)) (read-fixed s c 2) :propagate)
         ((Some c2) (skip-char s c1 #\:) :propagate)
@@ -1462,7 +1462,7 @@
         (else (Some (Tuple (* sign (time-of-day-ticks h m sec 0)) c4)))))
 
 ;; The text up to the character ch, and the cursor after ch.
-(: read-until (-> string StringCursor char (Option (Tuple string StringCursor))))
+(: (-> string StringCursor char (Option (Tuple string StringCursor))))
 (defun (read-until s c ch)
   (let loop ((e c))
     (cond ((string-cursor-end? s e) None)
@@ -1471,29 +1471,29 @@
           (else (loop (string-cursor-next s e))))))
 
 ;; A reader's value when it read to the end of s.
-(: whole (-> string (Option (Tuple %a StringCursor)) (Option %a)))
+(: (-> string (Option (Tuple %a StringCursor)) (Option %a)))
 (defun (whole s r)
   (match r
     ((Some (Tuple v rest)) (if (string-cursor-end? s rest) (Some v) None))
     (None None)))
 
-(: iso8601->date (-> string (Option Date)))
+(: (-> string (Option Date)))
 (defun (iso8601->date s)
   (def (Some day) (whole s (read-date s (string-cursor-start s))) :propagate)
   (Some (day-number->date day)))
 
-(: iso8601->time (-> string (Option Time)))
+(: (-> string (Option Time)))
 (defun (iso8601->time s)
   (def (Some t) (whole s (read-time s (string-cursor-start s))) :propagate)
   (Some (Time (v (ClrTime. t)))))
 
-(: iso8601->datetime (-> string (Option DateTime)))
+(: (-> string (Option DateTime)))
 (defun (iso8601->datetime s)
   (def (Some t) (whole s (read-datetime s (string-cursor-start s))) :propagate)
   (Some (ticks->datetime t)))
 
 ;; Any offset, converted to UTC.
-(: iso8601->instant (-> string (Option Instant)))
+(: (-> string (Option Instant)))
 (defun (iso8601->instant s)
   (def* ((Some (Tuple l c)) (read-datetime s (string-cursor-start s)) :propagate)
         ((Some o) (whole s (read-offset s c)) :propagate))
@@ -1501,7 +1501,7 @@
 
 ;; The offset has to be one the zone has at that local time, so an overlap
 ;; reads either way and a gap reads neither.
-(: iso8601->moment (-> string (Option Moment)))
+(: (-> string (Option Moment)))
 (defun (iso8601->moment s)
   (def* ((Some (Tuple l c1)) (read-datetime s (string-cursor-start s)) :propagate)
         ((Some (Tuple o c2)) (read-offset s c1) :propagate)
@@ -1513,14 +1513,14 @@
       None))
 
 ;; An optional sign: -1 for a minus, 1 otherwise.
-(: read-sign (-> string StringCursor (Tuple long StringCursor)))
+(: (-> string StringCursor (Tuple long StringCursor)))
 (defun (read-sign s c)
   (cond ((starts-with-char? s c #\-) (Tuple -1L (string-cursor-next s c)))
         ((starts-with-char? s c #\+) (Tuple 1L (string-cursor-next s c)))
         (else (Tuple 1L c))))
 
 ;; A unit's place in P1Y2M3W4D, or -1.
-(: date-unit (-> string StringCursor int))
+(: (-> string StringCursor int))
 (defun (date-unit s c)
   (cond ((starts-with-char? s c #\Y) 0)
         ((starts-with-char? s c #\M) 1)
@@ -1529,7 +1529,7 @@
         (else -1)))
 
 ;; A unit's place in T1H2M3S, or -1.
-(: time-unit (-> string StringCursor int))
+(: (-> string StringCursor int))
 (defun (time-unit s c)
   (cond ((starts-with-char? s c #\H) 0)
         ((starts-with-char? s c #\M) 1)
@@ -1539,7 +1539,7 @@
 ;; The date components of a period, each optional and in the order Y M W D,
 ;; each with its own sign, which multiplies with the period's. Stops at T or
 ;; at the end. next is the place of the first unit still allowed.
-(: read-date-parts (-> string StringCursor long (Option (Tuple (Tuple DatePeriod int) StringCursor))))
+(: (-> string StringCursor long (Option (Tuple (Tuple DatePeriod int) StringCursor))))
 (defun (read-date-parts s c sign)
   (let loop ((c c) (next 0) (p (date-period)) (count 0))
     (if (or (string-cursor-end? s c) (starts-with-char? s c #\T))
@@ -1554,7 +1554,7 @@
               (loop (string-cursor-next s c2) (+ unit 1)
                     (set-date-part p unit (int-of value)) (+ count 1)))))))
 
-(: set-date-part (-> DatePeriod int int DatePeriod))
+(: (-> DatePeriod int int DatePeriod))
 (defun (set-date-part p unit n)
   (cond ((= unit 0) (record-set p (years n)))
         ((= unit 1) (record-set p (months n)))
@@ -1563,7 +1563,7 @@
 
 ;; The time components after T, in the order H M S, as ticks. Only seconds
 ;; take a fraction.
-(: read-time-parts (-> string StringCursor long (Option (Tuple (Tuple long int) StringCursor))))
+(: (-> string StringCursor long (Option (Tuple (Tuple long int) StringCursor))))
 (defun (read-time-parts s c sign)
   (let loop ((c c) (next 0) (total 0L) (count 0))
     (if (string-cursor-end? s c)
@@ -1588,7 +1588,7 @@
 (type (: PeriodText (Struct (: dates DatePeriod) (: date-count int)
                             (: ticks long) (: time-count int) (: has-t bool))))
 
-(: read-period-text (-> string (Option PeriodText)))
+(: (-> string (Option PeriodText)))
 (defun (read-period-text s)
   (def (Tuple sign c0) (read-sign s (string-cursor-start s)))
   (def* ((Some c1) (skip-char s c0 #\P) :propagate)
@@ -1602,14 +1602,14 @@
                           (time-count time-count) (has-t #t))))))
 
 ;; PT26H30M. Days are a calendar amount, so P1D is not a duration.
-(: iso8601->duration (-> string (Option Duration)))
+(: (-> string (Option Duration)))
 (defun (iso8601->duration s)
   (def (Some p) (read-period-text s) :propagate)
   (if (and (= (record-ref p date-count) 0) (> (record-ref p time-count) 0))
       (Some (ticks->duration (record-ref p ticks)))
       None))
 
-(: iso8601->date-period (-> string (Option DatePeriod)))
+(: (-> string (Option DatePeriod)))
 (defun (iso8601->date-period s)
   (def (Some p) (read-period-text s) :propagate)
   (if (and (> (record-ref p date-count) 0) (not (record-ref p has-t)))
@@ -1617,7 +1617,7 @@
       None))
 
 ;; P1DT3H. A T needs a time part after it.
-(: iso8601->period (-> string (Option Period)))
+(: (-> string (Option Period)))
 (defun (iso8601->period s)
   (def (Some p) (read-period-text s) :propagate)
   (if (and (> (+ (record-ref p date-count) (record-ref p time-count)) 0)
@@ -1634,18 +1634,18 @@
 ;; forms, RFC 850 and asctime, are not read.
 
 ;; Numbered as ->weekday numbers them.
-(: day-name (-> int string))
+(: (-> int string))
 (defun (day-name n)
   (match n (1 "Mon") (2 "Tue") (3 "Wed") (4 "Thu") (5 "Fri") (6 "Sat") (_ "Sun")))
 
-(: month-name (-> int string))
+(: (-> int string))
 (defun (month-name n)
   (match n
     (1 "Jan") (2 "Feb") (3 "Mar") (4 "Apr") (5 "May") (6 "Jun")
     (7 "Jul") (8 "Aug") (9 "Sep") (10 "Oct") (11 "Nov") (_ "Dec")))
 
 ;; The fraction of a second is dropped, as the format has none.
-(: instant->http-date (-> Instant string))
+(: (-> Instant string))
 (defun (instant->http-date i)
   (def t (instant-ticks i))
   (def d (day-number->date (/ t ticks-per-day)))
@@ -1664,14 +1664,14 @@
   (text-of sb))
 
 ;; The cursor n characters on, or None when s ends first.
-(: skip-chars (-> string StringCursor int (Option StringCursor)))
+(: (-> string StringCursor int (Option StringCursor)))
 (defun (skip-chars s c n)
   (cond ((= n 0) (Some c))
         ((string-cursor-end? s c) None)
         (else (skip-chars s (string-cursor-next s c) (- n 1)))))
 
 ;; The cursor after the text want, when s has it at c.
-(: skip-string (-> string StringCursor string (Option StringCursor)))
+(: (-> string StringCursor string (Option StringCursor)))
 (defun (skip-string s c want)
   (let loop ((c c) (w (string-cursor-start want)))
     (cond ((string-cursor-end? want w) (Some c))
@@ -1680,7 +1680,7 @@
           (else None))))
 
 ;; A month's name, as its number.
-(: read-month (-> string StringCursor (Option (Tuple int StringCursor))))
+(: (-> string StringCursor (Option (Tuple int StringCursor))))
 (defun (read-month s c)
   (let loop ((m 1))
     (if (> m 12)
@@ -1690,7 +1690,7 @@
           (None (loop (+ m 1)))))))
 
 ;; The day name must be the date's own, so it is checked once the date is read.
-(: http-date->instant (-> string (Option Instant)))
+(: (-> string (Option Instant)))
 (defun (http-date->instant s)
   (def c0 (string-cursor-start s))
   (def* ((Some c1) (skip-chars s c0 3) :propagate)
@@ -1814,7 +1814,7 @@
                     (: InstantChar char))))
 
 ;; A bare number of a date is the number without a width.
-(: bare-date-number (-> DateBareNumber DateNumber))
+(: (-> DateBareNumber DateNumber))
 (defun (bare-date-number b)
   (match b
     (BareYear (NumYear Nil))
@@ -1826,7 +1826,7 @@
     (BareWeekYear (NumWeekYear Nil))))
 
 ;; A bare number of a time is the number without a width.
-(: bare-time-field (-> TimeBareNumber TimeField))
+(: (-> TimeBareNumber TimeField))
 (defun (bare-time-field b)
   (match b
     (BareHours (TimeHours Nil))
@@ -1841,7 +1841,7 @@
                            (: weekdays (Vec string)) (: weekdays-short (Vec string))
                            (: am string) (: pm string))))
 
-(: english-names DateNames)
+(: DateNames)
 (def english-names
   (DateNames (months ["January" "February" "March" "April" "May" "June" "July"
                       "August" "September" "October" "November" "December"])
@@ -1853,7 +1853,7 @@
              (am "AM")
              (pm "PM")))
 
-(: swedish-names DateNames)
+(: DateNames)
 (def swedish-names
   (DateNames (months ["januari" "februari" "mars" "april" "maj" "juni" "juli"
                       "augusti" "september" "oktober" "november" "december"])
@@ -1865,15 +1865,15 @@
              (pm "em")))
 
 ;; After english-names, which is its first value.
-(: current-date-names (Param DateNames))
+(: (Param DateNames))
 (def current-date-names (make-parameter english-names))
 
-(: argument-error (-> string %a))
+(: (-> string %a))
 (defun (argument-error what)
   (raise (cast Exception (ArgumentException. (str "(std datetime): " what)))))
 
 ;; The width a part was written with, 0 for none.
-(: part-width (-> (List int) string int))
+(: (-> (List int) string int))
 (defun (part-width ws tag)
   (cond ((list-empty? ws) 0)
         ((list-empty? (list-tail ws)) (list-head ws))
@@ -1881,7 +1881,7 @@
                                    (->str (list-length ws)) ".")))))
 
 ;; A table of names, which must have count of them.
-(: full-table (-> (Vec string) int string (Vec string)))
+(: (-> (Vec string) int string (Vec string)))
 (defun (full-table names count what)
   (if (= (vec-length names) count)
       names
@@ -1889,18 +1889,18 @@
                            (->str (vec-length names)) "."))))
 
 ;; The i:th name, counting from 1, of a table that must have count of them.
-(: name-at (-> (Vec string) int int string string))
+(: (-> (Vec string) int int string string))
 (defun (name-at names count i what) (vec-ref (full-table names count what) (- i 1)))
 
 ;; MMXXVI. Numerals stop at MMMCMXCIX, and a larger year goes on adding Ms,
 ;; 4000 being MMMM, since nothing else is standard.
-(: roman-steps (List (Tuple int string)))
+(: (List (Tuple int string)))
 (def roman-steps
   (list (Tuple 1000 "M") (Tuple 900 "CM") (Tuple 500 "D") (Tuple 400 "CD")
         (Tuple 100 "C") (Tuple 90 "XC") (Tuple 50 "L") (Tuple 40 "XL")
         (Tuple 10 "X") (Tuple 9 "IX") (Tuple 5 "V") (Tuple 4 "IV") (Tuple 1 "I")))
 
-(: add-roman! (-> TextBuilder int void))
+(: (-> TextBuilder int void))
 (defun (add-roman! sb n)
   (let loop ((n n) (steps roman-steps))
     (unless (list-empty? steps)
@@ -1914,14 +1914,14 @@
 
 ;; The first n digits of a second's fraction f, in ticks: cut, not rounded,
 ;; and zeros past the seventh.
-(: add-fraction-digits! (-> TextBuilder long int void))
+(: (-> TextBuilder long int void))
 (defun (add-fraction-digits! sb f n)
   (let loop ((i 0) (scale 1000000L))
     (when (< i n)
       (add-digit! sb (if (> scale 0L) (% (/ f scale) 10L) 0L))
       (loop (+ i 1) (/ scale 10L)))))
 
-(: add-date-number! (-> TextBuilder Date DateNumber void))
+(: (-> TextBuilder Date DateNumber void))
 (defun (add-date-number! sb d n)
   (match n
     ((NumYear w) (add-padded! sb (long-of (->year d)) (part-width w "year")))
@@ -1932,7 +1932,7 @@
     ((NumWeek w) (add-padded! sb (long-of (->week d)) (part-width w "week")))
     ((NumWeekYear w) (add-padded! sb (long-of (->week-year d)) (part-width w "week-year")))))
 
-(: add-date-field! (-> TextBuilder Date DateNames DateField void))
+(: (-> TextBuilder Date DateNames DateField void))
 (defun (add-date-field! sb d names p)
   (match p
     ((DateNum n) (add-date-number! sb d n))
@@ -1946,7 +1946,7 @@
     (WeekdayAbbr
      (add-text! sb (name-at (record-ref names weekdays-short) 7 (->weekday d) "weekdays")))))
 
-(: add-date-part! (-> TextBuilder Date DateNames DatePart void))
+(: (-> TextBuilder Date DateNames DatePart void))
 (defun (add-date-part! sb d names p)
   (match p
     ((DateOf f) (add-date-field! sb d names f))
@@ -1954,7 +1954,7 @@
     ((DateChar c) (add-text! sb (char->string c)))))
 
 ;; t is the ticks since midnight.
-(: add-time-field! (-> TextBuilder long DateNames TimeField void))
+(: (-> TextBuilder long DateNames TimeField void))
 (defun (add-time-field! sb t names p)
   (def h (/ t ticks-per-hour))
   (match p
@@ -1970,7 +1970,7 @@
     ((TimeBare b) (add-time-field! sb t names (bare-time-field b)))))
 
 ;; t is the ticks since midnight.
-(: add-time-part! (-> TextBuilder long DateNames TimePart void))
+(: (-> TextBuilder long DateNames TimePart void))
 (defun (add-time-part! sb t names p)
   (match p
     ((TimeOf f) (add-time-field! sb t names f))
@@ -1978,14 +1978,14 @@
     ((TimeChar c) (add-text! sb (char->string c)))))
 
 ;; t is local ticks.
-(: add-datetime-field! (-> TextBuilder long DateNames DateTimeField void))
+(: (-> TextBuilder long DateNames DateTimeField void))
 (defun (add-datetime-field! sb t names p)
   (match p
     ((DateTimeDate df) (add-date-field! sb (day-number->date (/ t ticks-per-day)) names df))
     ((DateTimeTime tf) (add-time-field! sb (% t ticks-per-day) names tf))))
 
 ;; t is local ticks.
-(: add-datetime-part! (-> TextBuilder long DateNames DateTimePart void))
+(: (-> TextBuilder long DateNames DateTimePart void))
 (defun (add-datetime-part! sb t names p)
   (match p
     ((DateTimeOf f) (add-datetime-field! sb t names f))
@@ -1993,12 +1993,12 @@
     ((DateTimeChar c) (add-text! sb (char->string c)))))
 
 ;; n in decimal, with a minus when it is negative.
-(: add-signed! (-> TextBuilder long void))
+(: (-> TextBuilder long void))
 (defun (add-signed! sb n)
   (when (< n 0L) (add-text! sb "-"))
   (add-padded! sb (abs n) 1))
 
-(: add-moment-part! (-> TextBuilder Moment DateNames MomentPart void))
+(: (-> TextBuilder Moment DateNames MomentPart void))
 (defun (add-moment-part! sb m names p)
   (match p
     ((MomentDateTime dtf) (add-datetime-field! sb (moment-local-ticks m) names dtf))
@@ -2011,7 +2011,7 @@
     ((MomentText s) (add-text! sb s))
     ((MomentChar c) (add-text! sb (char->string c)))))
 
-(: add-instant-part! (-> TextBuilder Instant DateNames InstantPart void))
+(: (-> TextBuilder Instant DateNames InstantPart void))
 (defun (add-instant-part! sb i names p)
   (match p
     ((InstantDateTime dtf) (add-datetime-field! sb (instant-ticks i) names dtf))
@@ -2023,7 +2023,7 @@
 
 ;; One function per type rather than one over the traits, so a moment's date
 ;; is written with (date->text (->date m) ...), which says whose date it is.
-(: date->text (-> Date (List DatePart) (#:names DateNames) string))
+(: (-> Date (List DatePart) (#:names DateNames) string))
 (defun (date->text d parts #:names (parameter-ref current-date-names))
   (def sb (new-text 32))
   (let loop ((ps parts))
@@ -2032,7 +2032,7 @@
       (loop (list-tail ps))))
   (text-of sb))
 
-(: time->text (-> Time (List TimePart) (#:names DateNames) string))
+(: (-> Time (List TimePart) (#:names DateNames) string))
 (defun (time->text t parts #:names (parameter-ref current-date-names))
   (def sb (new-text 32))
   (let loop ((ps parts))
@@ -2041,7 +2041,7 @@
       (loop (list-tail ps))))
   (text-of sb))
 
-(: datetime->text (-> DateTime (List DateTimePart) (#:names DateNames) string))
+(: (-> DateTime (List DateTimePart) (#:names DateNames) string))
 (defun (datetime->text dt parts #:names (parameter-ref current-date-names))
   (def sb (new-text 48))
   (let loop ((ps parts))
@@ -2050,7 +2050,7 @@
       (loop (list-tail ps))))
   (text-of sb))
 
-(: moment->text (-> Moment (List MomentPart) (#:names DateNames) string))
+(: (-> Moment (List MomentPart) (#:names DateNames) string))
 (defun (moment->text m parts #:names (parameter-ref current-date-names))
   (def sb (new-text 64))
   (let loop ((ps parts))
@@ -2061,7 +2061,7 @@
 
 ;; The date and time are UTC's, so the format that writes a moment's local
 ;; time writes the instant as ->str does.
-(: instant->text (-> Instant (List InstantPart) (#:names DateNames) string))
+(: (-> Instant (List InstantPart) (#:names DateNames) string))
 (defun (instant->text i parts #:names (parameter-ref current-date-names))
   (def sb (new-text 48))
   (let loop ((ps parts))
@@ -2098,19 +2098,19 @@
 ;; know its kind, so they say its most digits, and no reader asks again.
 (type (: Field (Struct (: kind FieldKind) (: width int) (: most int) (: text string) (: ch char))))
 
-(: field (-> FieldKind int Field))
+(: (-> FieldKind int Field))
 (defun (field k w) (Field (kind k) (width w) (most 0) (text "") (ch #\nul)))
 
-(: number-field (-> FieldKind int int Field))
+(: (-> FieldKind int int Field))
 (defun (number-field k most w) (Field (kind k) (width w) (most most) (text "") (ch #\nul)))
 
-(: text-field (-> string Field))
+(: (-> string Field))
 (defun (text-field s) (Field (kind FText) (width 0) (most 0) (text s) (ch #\nul)))
 
-(: char-field (-> char Field))
+(: (-> char Field))
 (defun (char-field c) (Field (kind FChar) (width 0) (most 0) (text "") (ch c)))
 
-(: date-number-field (-> DateNumber Field))
+(: (-> DateNumber Field))
 (defun (date-number-field n)
   (match n
     ((NumYear w) (number-field FYear 4 (part-width w "year")))
@@ -2121,7 +2121,7 @@
     ((NumWeek w) (number-field FWeek 2 (part-width w "week")))
     ((NumWeekYear w) (number-field FWeekYear 4 (part-width w "week-year")))))
 
-(: date-field-field (-> DateField Field))
+(: (-> DateField Field))
 (defun (date-field-field p)
   (match p
     ((DateNum n) (date-number-field n))
@@ -2134,14 +2134,14 @@
     (WeekdayName (field FWeekdayName 0))
     (WeekdayAbbr (field FWeekdayAbbr 0))))
 
-(: date-part-field (-> DatePart Field))
+(: (-> DatePart Field))
 (defun (date-part-field p)
   (match p
     ((DateText s) (text-field s))
     ((DateChar c) (char-field c))
     ((DateOf f) (date-field-field f))))
 
-(: time-field-field (-> TimeField Field))
+(: (-> TimeField Field))
 (defun (time-field-field p)
   (match p
     ((TimeHours w) (number-field FHours 2 (part-width w "hours")))
@@ -2153,27 +2153,27 @@
     (TimeAmPm (field FAmPm 0))
     ((TimeBare b) (time-field-field (bare-time-field b)))))
 
-(: time-part-field (-> TimePart Field))
+(: (-> TimePart Field))
 (defun (time-part-field p)
   (match p
     ((TimeText s) (text-field s))
     ((TimeChar c) (char-field c))
     ((TimeOf f) (time-field-field f))))
 
-(: datetime-field-field (-> DateTimeField Field))
+(: (-> DateTimeField Field))
 (defun (datetime-field-field p)
   (match p
     ((DateTimeDate df) (date-field-field df))
     ((DateTimeTime tf) (time-field-field tf))))
 
-(: datetime-part-field (-> DateTimePart Field))
+(: (-> DateTimePart Field))
 (defun (datetime-part-field p)
   (match p
     ((DateTimeText s) (text-field s))
     ((DateTimeChar c) (char-field c))
     ((DateTimeOf f) (datetime-field-field f))))
 
-(: moment-part-field (-> MomentPart Field))
+(: (-> MomentPart Field))
 (defun (moment-part-field p)
   (match p
     ((MomentText s) (text-field s))
@@ -2184,7 +2184,7 @@
     (MomentUnix (field FUnix 0))
     (MomentUnixMs (field FUnixMs 0))))
 
-(: instant-part-field (-> InstantPart Field))
+(: (-> InstantPart Field))
 (defun (instant-part-field p)
   (match p
     ((InstantText s) (text-field s))
@@ -2215,11 +2215,11 @@
 (impl (FormatPart InstantPart)
   (defun (part-field p) (instant-part-field p)))
 
-(: with-width (-> string int string))
+(: (-> string int string))
 (defun (with-width name w) (if (> w 0) (str "(" name " " (->str w) ")") name))
 
 ;; A part as a format writes it, for a message.
-(: field-name (-> Field string))
+(: (-> Field string))
 (defun (field-name f)
   (def w (struct-ref f width))
   (match (struct-ref f kind)
@@ -2252,36 +2252,36 @@
 
 ;; The kinds of field a format has, one bit per kind that the checks below
 ;; tell apart.
-(: b-year int)
+(: int)
 (def b-year 1)
 ;; month, day and yday, by number, numeral or name: the fields within a year.
-(: b-in-year int)
+(: int)
 (def b-in-year 2)
-(: b-week-year int)
+(: int)
 (def b-week-year 4)
-(: b-week int)
+(: int)
 (def b-week 8)
-(: b-weekday int)
+(: int)
 (def b-weekday 16)
-(: b-hours int)
+(: int)
 (def b-hours 32)
-(: b-hours12 int)
+(: int)
 (def b-hours12 64)
-(: b-am-pm int)
+(: int)
 (def b-am-pm 128)
 ;; minutes, seconds and the fraction: the fields within an hour.
-(: b-in-hour int)
+(: int)
 (def b-in-hour 256)
-(: b-offset int)
+(: int)
 (def b-offset 512)
-(: b-zone int)
+(: int)
 (def b-zone 1024)
-(: b-unix int)
+(: int)
 (def b-unix 2048)
-(: b-unix-ms int)
+(: int)
 (def b-unix-ms 4096)
 
-(: field-bits (-> FieldKind int))
+(: (-> FieldKind int))
 (defun (field-bits k)
   (match k
     (FText 0)
@@ -2311,26 +2311,26 @@
     (FUnix b-unix)
     (FUnixMs b-unix-ms)))
 
-(: has? (-> int int bool))
+(: (-> int int bool))
 (defun (has? bits b) (> (bitwise-and bits b) 0))
 
 ;; The characters a part can go on taking once it has begun, as bits: a
 ;; part of one fixed length takes none.
-(: t-digits int)
+(: int)
 (def t-digits 1)
-(: t-roman int)
+(: int)
 (def t-roman 2)
 ;; A decimal point or comma, which a bare fraction may begin with.
-(: t-point int)
+(: int)
 (def t-point 4)
 ;; The characters of an IANA id.
-(: t-zone int)
+(: int)
 (def t-zone 8)
 ;; The colon before an offset's seconds.
-(: t-colon int)
+(: int)
 (def t-colon 16)
 
-(: roman-value (-> char int))
+(: (-> char int))
 (defun (roman-value c)
   (cond ((char=? c #\I) 1)
         ((char=? c #\V) 5)
@@ -2343,13 +2343,13 @@
 
 ;; ASCII letters and digits, and / _ - +, as in Etc/GMT+5 and
 ;; America/Port-au-Prince.
-(: zone-char? (-> char bool))
+(: (-> char bool))
 (defun (zone-char? c)
   (def n (char->int c))
   (or (and (>= n 65) (<= n 90)) (and (>= n 97) (<= n 122)) (and (>= n 48) (<= n 57))
       (= n 47) (= n 95) (= n 45) (= n 43)))
 
-(: takes? (-> int char bool))
+(: (-> int char bool))
 (defun (takes? taken c)
   (or (and (has? taken t-digits) (>= (ascii-digit c) 0))
       (and (has? taken t-roman) (> (roman-value c) 0))
@@ -2361,7 +2361,7 @@
 ;; so it has one length only when its width is at least its most. A bare
 ;; fraction is nothing, or a point and as many digits as there are, and an
 ;; offset may have seconds after a colon.
-(: field-takes (-> Field int))
+(: (-> Field int))
 (defun (field-takes f)
   (def k (struct-ref f kind))
   (def w (struct-ref f width))
@@ -2381,28 +2381,28 @@
         (FUnixMs t-digits)
         (_ 0))))
 
-(: can-be-empty? (-> Field bool))
+(: (-> Field bool))
 (defun (can-be-empty? f)
   (match (struct-ref f kind)
     (FText (string-empty? (struct-ref f text)))
     (FFraction (<= (struct-ref f width) 0))
     (_ #f)))
 
-(: first-char (-> string char))
+(: (-> string char))
 (defun (first-char s) (string-cursor-ref s (string-cursor-start s)))
 
-(: name-starts? (-> string int bool))
+(: (-> string int bool))
 (defun (name-starts? name taken)
   (and (not (string-empty? name)) (takes? taken (first-char name))))
 
-(: any-name-starts? (-> (Vec string) int bool))
+(: (-> (Vec string) int bool))
 (defun (any-name-starts? table taken)
   (let loop ((i 0))
     (and (< i (vec-length table))
          (or (name-starts? (vec-ref table i) taken) (loop (+ i 1))))))
 
 ;; The table a name reads from, which must be whole.
-(: name-table (-> DateNames FieldKind (Vec string)))
+(: (-> DateNames FieldKind (Vec string)))
 (defun (name-table names k)
   (match k
     (FMonthName (full-table (record-ref names months) 12 "months"))
@@ -2410,7 +2410,7 @@
     (FWeekdayName (full-table (record-ref names weekdays) 7 "weekdays"))
     (_ (full-table (record-ref names weekdays-short) 7 "weekdays"))))
 
-(: name-kind? (-> FieldKind bool))
+(: (-> FieldKind bool))
 (defun (name-kind? k)
   (match k
     (FText #f)
@@ -2424,7 +2424,7 @@
 ;; Whether a part can begin with a character in taken. Digits, Roman
 ;; letters and the letters an id begins with are each one class, so one of
 ;; them stands for all: M is a Roman letter and begins MST.
-(: starts-within? (-> Field DateNames int bool))
+(: (-> Field DateNames int bool))
 (defun (starts-within? f names taken)
   (def k (struct-ref f kind))
   (def w (struct-ref f width))
@@ -2448,7 +2448,7 @@
            (FUnixMs (or (takes? taken #\-) (takes? taken #\0)))
            (_ #f)))))
 
-(: two-readings-error (-> Field Field %a))
+(: (-> Field Field %a))
 (defun (two-readings-error before after)
   (def most (struct-ref before most))
   (argument-error
@@ -2463,7 +2463,7 @@
 ;; can be read with it two ways: no part that can be of more than one length
 ;; is followed by a part that can begin with a character it could also take.
 ;; A part that can be empty passes what could be taken on to the next.
-(: format-bits (-> (List %p) DateNames int) (where (FormatPart %p)))
+(: (-> (List %p) DateNames int) (where (FormatPart %p)))
 (defun (format-bits parts names)
   (let loop ((ps parts) (bits 0) (taken 0) (before (text-field "")))
     (if (list-empty? ps)
@@ -2480,7 +2480,7 @@
                 (if (> own 0) f before))))))
 
 ;; An offset or a Unix time not read, which no reading can be.
-(: no-ticks long)
+(: long)
 (def no-ticks -9223372036854775808L)
 
 ;; The fields read so far, each -1 until it is read, or no-ticks for those
@@ -2497,7 +2497,7 @@
                       (: offset long) (: unix long)
                       (: zone-start StringCursor) (: zone-end StringCursor))))
 
-(: unseen Seen)
+(: Seen)
 (def unseen
   (Seen (year -1) (month -1) (day -1) (weekday -1) (yday -1) (week -1) (week-year -1)
         (hours -1) (hours12 -1) (pm -1) (minutes -1) (seconds -1)
@@ -2507,7 +2507,7 @@
 
 ;; From least to most ASCII digits, as many as there are. The value stops
 ;; growing at eighteen digits, which no field reaches.
-(: read-digits (-> string StringCursor int int (Option (Tuple long StringCursor))))
+(: (-> string StringCursor int int (Option (Tuple long StringCursor))))
 (defun (read-digits s c least most)
   (let loop ((c c) (count 0) (acc 0L))
     (def d (next-digit s c))
@@ -2518,7 +2518,7 @@
 
 ;; Exactly n digits of a second's fraction, as ticks. Digits past the
 ;; seventh are read and dropped, as a tick holds no less than 100 ns.
-(: read-fraction-digits (-> string StringCursor int (Option (Tuple long StringCursor))))
+(: (-> string StringCursor int (Option (Tuple long StringCursor))))
 (defun (read-fraction-digits s c n)
   (let loop ((c c) (i 0) (acc 0L))
     (def d (next-digit s c))
@@ -2528,7 +2528,7 @@
                       (if (< i 7) (+ (* acc 10L) (long-of d)) acc))))))
 
 ;; The cursor after n's numeral as add-roman! writes it, when s has it at c.
-(: skip-roman (-> string StringCursor int (Option StringCursor)))
+(: (-> string StringCursor int (Option StringCursor)))
 (defun (skip-roman s c n)
   (let loop ((c c) (n n) (steps roman-steps))
     (if (list-empty? steps)
@@ -2542,7 +2542,7 @@
 ;; A run of Roman letters, read only as add-roman! writes its value: MCM,
 ;; not MDCCCC, and IV, not IIII. The value stops growing past 100 000, and
 ;; is None there, as no field reaches it.
-(: read-roman (-> string StringCursor (Option (Tuple long StringCursor))))
+(: (-> string StringCursor (Option (Tuple long StringCursor))))
 (defun (read-roman s c)
   (let loop ((e c) (total 0) (prev 0))
     (def v (if (string-cursor-end? s e) 0 (roman-value (string-cursor-ref s e))))
@@ -2558,7 +2558,7 @@
           (else None))))
 
 ;; The number, from 1, of the longest name in the table that s has at c.
-(: read-name (-> string StringCursor (Vec string) (Option (Tuple long StringCursor))))
+(: (-> string StringCursor (Vec string) (Option (Tuple long StringCursor))))
 (defun (read-name s c table)
   (let loop ((i 0) (best 0) (best-end c))
     (if (= i (vec-length table))
@@ -2571,7 +2571,7 @@
 
 ;; 0 for the morning's word and 1 for the afternoon's, the longer when both
 ;; match.
-(: read-am-pm (-> string StringCursor DateNames (Option (Tuple long StringCursor))))
+(: (-> string StringCursor DateNames (Option (Tuple long StringCursor))))
 (defun (read-am-pm s c names)
   (match (Tuple (skip-string s c (record-ref names am)) (skip-string s c (record-ref names pm)))
     ((Tuple (Some a) (Some p)) (if (string-cursor>? p a) (Some (Tuple 1L p)) (Some (Tuple 0L a))))
@@ -2582,7 +2582,7 @@
 ;; A Unix time, an optional minus and up to 12 digits of seconds or 15 of
 ;; milliseconds, as UTC ticks: None outside the years 1 to 9999, as
 ;; unix-seconds->instant answers.
-(: read-unix (-> string StringCursor bool (Option (Tuple long StringCursor))))
+(: (-> string StringCursor bool (Option (Tuple long StringCursor))))
 (defun (read-unix s c ms)
   (def minus (starts-with-char? s c #\-))
   (def (Some (Tuple n c1))
@@ -2594,7 +2594,7 @@
 
 ;; The end of the longest run, at least one long, of the characters an IANA
 ;; id is made of.
-(: skip-zone (-> string StringCursor (Option StringCursor)))
+(: (-> string StringCursor (Option StringCursor)))
 (defun (skip-zone s c)
   (let loop ((e c))
     (cond ((and (not (string-cursor-end? s e)) (zone-char? (string-cursor-ref s e)))
@@ -2603,7 +2603,7 @@
           (else (Some e)))))
 
 ;; Whether s has the same text from a to a-end as from b to b-end.
-(: same-span? (-> string StringCursor StringCursor StringCursor StringCursor bool))
+(: (-> string StringCursor StringCursor StringCursor StringCursor bool))
 (defun (same-span? s a a-end b b-end)
   (cond ((string-cursor=? a a-end) (string-cursor=? b b-end))
         ((string-cursor=? b b-end) #f)
@@ -2611,7 +2611,7 @@
          (same-span? s (string-cursor-next s a) a-end (string-cursor-next s b) b-end))
         (else #f)))
 
-(: zero-after (-> (Option StringCursor) (Option (Tuple long StringCursor))))
+(: (-> (Option StringCursor) (Option (Tuple long StringCursor))))
 (defun (zero-after r)
   (match r
     ((Some c) (Some (Tuple 0L c)))
@@ -2619,7 +2619,7 @@
 
 ;; What one part reads at c, as a number, and the cursor after it. Text and
 ;; characters read as 0, and a zone is read by skip-zone.
-(: read-value (-> string StringCursor DateNames Field (Option (Tuple long StringCursor))))
+(: (-> string StringCursor DateNames Field (Option (Tuple long StringCursor))))
 (defun (read-value s c names f)
   (def k (struct-ref f kind))
   (def w (struct-ref f width))
@@ -2639,20 +2639,20 @@
            (_ (read-roman s c))))))
 
 ;; Whether a field read as old, or not read when -1, agrees with v.
-(: agrees? (-> int int bool))
+(: (-> int int bool))
 (defun (agrees? old v) (or (< old 0) (= old v)))
 
-(: ticks-agree? (-> long long bool))
+(: (-> long long bool))
 (defun (ticks-agree? old t) (or (= old no-ticks) (= old t)))
 
 ;; The ticks in the last of 7 - digits places, which a fraction read to
 ;; digits digits does not say.
-(: fraction-unit (-> int long))
+(: (-> int long))
 (defun (fraction-unit digits) (if (>= digits 7) 1L (* 10L (fraction-unit (+ digits 1)))))
 
 ;; A fraction read twice has to agree to the fewer digits of the two, and
 ;; the one with more is kept: .5 and .5000 agree, and .5 and .4 do not.
-(: put-fraction (-> Seen long int (Option Seen)))
+(: (-> Seen long int (Option Seen)))
 (defun (put-fraction seen f digits)
   (def old (struct-ref seen fraction))
   (def old-digits (struct-ref seen fraction-digits))
@@ -2667,7 +2667,7 @@
 ;; seen with the field f read as v, or None when it was read before as
 ;; something else. A value too large for any field stays too large. The
 ;; check comes first, so a Seen, which is large, is copied only to change it.
-(: put-value (-> Seen Field long (Option Seen)))
+(: (-> Seen Field long (Option Seen)))
 (defun (put-value seen f v)
   (def n (if (or (> v 1000000000L) (< v 0L)) 1000000000 (int-of v)))
   (def w (struct-ref f width))
@@ -2703,7 +2703,7 @@
     (_ (Some seen))))
 
 ;; seen with the zone read from c to e, when no other was read before.
-(: put-zone (-> string Seen StringCursor StringCursor (Option Seen)))
+(: (-> string Seen StringCursor StringCursor (Option Seen)))
 (defun (put-zone s seen c e)
   (def start (struct-ref seen zone-start))
   (def end (struct-ref seen zone-end))
@@ -2714,7 +2714,7 @@
 ;; The fields of a text in a format's parts, when the text has every part
 ;; and nothing after. Text is only skipped, and a field's value is read
 ;; before it is put, so a Seen is copied no more than it has to be.
-(: read-format (-> string (List %p) DateNames (Option Seen)) (where (FormatPart %p)))
+(: (-> string (List %p) DateNames (Option Seen)) (where (FormatPart %p)))
 (defun (read-format s parts names)
   (let loop ((ps parts) (c (string-cursor-start s)) (seen unseen))
     (if (list-empty? ps)
@@ -2741,7 +2741,7 @@
 ;; A date needs its largest unit. Month, day and yday count within year,
 ;; and week within week-year; either may be read beside a date the other
 ;; kind of year makes, and is checked against it.
-(: check-date-bits (-> int void))
+(: (-> int void))
 (defun (check-date-bits bits)
   (def year? (has? bits b-year))
   (def week-year? (has? bits b-week-year))
@@ -2759,7 +2759,7 @@
 ;; A time needs its hours: hours, or hours12 with am-pm, since 1:05 on a
 ;; twelve-hour clock could be either. A datetime's format may leave the time
 ;; out, which is midnight, and then optional is true.
-(: check-time-bits (-> int bool void))
+(: (-> int bool void))
 (defun (check-time-bits bits optional)
   (def hours? (or (has? bits b-hours) (has? bits b-hours12)))
   (when (and (has? bits b-hours12) (not (has? bits b-am-pm)))
@@ -2773,7 +2773,7 @@
 ;; An instant is its Unix time alone, or a date and a time. A Unix time
 ;; beside another field of the instant could say another instant, so a
 ;; format with one has no other field but a moment's zone.
-(: check-instant-bits (-> int void))
+(: (-> int void))
 (defun (check-instant-bits bits)
   (def unix (bitwise-ior b-unix b-unix-ms))
   (def others (- bits (bitwise-and bits (bitwise-ior unix b-zone))))
@@ -2787,21 +2787,21 @@
     (check-time-bits bits #t)))
 
 ;; A moment needs its zone, which is never guessed.
-(: check-moment-bits (-> int void))
+(: (-> int void))
 (defun (check-moment-bits bits)
   (unless (has? bits b-zone)
     (argument-error
       "a format read as a moment needs zone. A text with an offset and no zone is read with text->instant, and put in a zone with instant->moment."))
   (check-instant-bits bits))
 
-(: first-value (-> int int))
+(: (-> int int))
 (defun (first-value n) (if (< n 0) 1 n))
 
-(: calendar-day (-> int int int (Option long)))
+(: (-> int int int (Option long)))
 (defun (calendar-day y m d)
   (if (valid-date? y m d) (Some (long-of (clr-date-day-number (ClrDate. y m d)))) None))
 
-(: ordinal-day (-> int int (Option long)))
+(: (-> int int (Option long)))
 (defun (ordinal-day y yd)
   (if (and (>= y 1) (<= y 9999) (>= yd 1) (<= yd (clr-date-day-of-year (ClrDate. y 12 31))))
       (Some (+ (long-of (clr-date-day-number (ClrDate. y 1 1))) (long-of (- yd 1))))
@@ -2809,7 +2809,7 @@
 
 ;; The day the date fields make: year, month and day; year and yday; or
 ;; week-year, week and weekday. A field left out is its first value.
-(: seen-day-number (-> Seen (Option long)))
+(: (-> Seen (Option long)))
 (defun (seen-day-number seen)
   (def y (struct-ref seen year))
   (def m (struct-ref seen month))
@@ -2828,7 +2828,7 @@
 
 ;; Whether every date field read is the date's own. A field not read is -1,
 ;; and its accessor is not called.
-(: date-agrees? (-> Seen Date bool))
+(: (-> Seen Date bool))
 (defun (date-agrees? seen d)
   (and (or (< (struct-ref seen year) 0) (= (struct-ref seen year) (->year d)))
        (or (< (struct-ref seen month) 0) (= (struct-ref seen month) (->month d)))
@@ -2838,7 +2838,7 @@
        (or (< (struct-ref seen week) 0) (= (struct-ref seen week) (->week d)))
        (or (< (struct-ref seen week-year) 0) (= (struct-ref seen week-year) (->week-year d)))))
 
-(: seen->date (-> Seen (Option Date)))
+(: (-> Seen (Option Date)))
 (defun (seen->date seen)
   (def (Some n) (seen-day-number seen) :propagate)
   (def d (day-number->date n))
@@ -2847,7 +2847,7 @@
 ;; The time of day the fields make, in ticks since midnight: hours, or
 ;; hours12 and am-pm, where 12 AM is 00 and 12 PM is 12; minutes, seconds
 ;; and the fraction left out are 0. am-pm beside hours has to agree with it.
-(: seen-time-ticks (-> Seen (Option long)))
+(: (-> Seen (Option long)))
 (defun (seen-time-ticks seen)
   (def h24 (struct-ref seen hours))
   (def h12 (struct-ref seen hours12))
@@ -2862,7 +2862,7 @@
         (else (Some (+ (time-of-day-ticks h m sec 0) (max (struct-ref seen fraction) 0L))))))
 
 ;; Local ticks: a date and a time, midnight when the format has none.
-(: seen-local-ticks (-> Seen (Option long)))
+(: (-> Seen (Option long)))
 (defun (seen-local-ticks seen)
   (def* ((Some d) (seen->date seen) :propagate)
         ((Some t) (seen-time-ticks seen) :propagate))
@@ -2870,7 +2870,7 @@
 
 ;; The instant's UTC ticks: its Unix time, or the local time at the offset
 ;; read, or in UTC when the format has none, as instant->text writes it.
-(: seen-instant-ticks (-> Seen (Option long)))
+(: (-> Seen (Option long)))
 (defun (seen-instant-ticks seen)
   (def u (struct-ref seen unix))
   (def o (struct-ref seen offset))
@@ -2882,7 +2882,7 @@
 
 ;; resolve-local, None rather than raising where a local time and its
 ;; instant cannot both be in the calendar.
-(: resolve-local/opt (-> long TimeZone Resolver (Option Moment)))
+(: (-> long TimeZone Resolver (Option Moment)))
 (defun (resolve-local/opt l z r)
   (match (try (resolve-local l z r) #:catch (System.OverflowException))
     ((Ok m) (Some m))
@@ -2892,7 +2892,7 @@
 ;; local time at the offset read, when the zone has that offset then; or the
 ;; local time alone, which in a gap or an overlap is None unless a resolver
 ;; says. An id the machine does not know is None.
-(: seen->moment (-> string Seen (Option Resolver) (Option Moment)))
+(: (-> string Seen (Option Resolver) (Option Moment)))
 (defun (seen->moment s seen r)
   (def (Some z)
     (timezone (substring s (struct-ref seen zone-start) (struct-ref seen zone-end)))
@@ -2917,20 +2917,20 @@
            (None (datetime->moment/opt (ticks->datetime l) z))))))
 
 ;; The reader of date->text's formats.
-(: text->date (-> string (List DatePart) (#:names DateNames) (Option Date)))
+(: (-> string (List DatePart) (#:names DateNames) (Option Date)))
 (defun (text->date s parts #:names (parameter-ref current-date-names))
   (check-date-bits (format-bits parts names))
   (def (Some seen) (read-format s parts names) :propagate)
   (seen->date seen))
 
-(: text->time (-> string (List TimePart) (#:names DateNames) (Option Time)))
+(: (-> string (List TimePart) (#:names DateNames) (Option Time)))
 (defun (text->time s parts #:names (parameter-ref current-date-names))
   (check-time-bits (format-bits parts names) #f)
   (def* ((Some seen) (read-format s parts names) :propagate)
         ((Some t) (seen-time-ticks seen) :propagate))
   (Some (Time (v (ClrTime. t)))))
 
-(: text->datetime (-> string (List DateTimePart) (#:names DateNames) (Option DateTime)))
+(: (-> string (List DateTimePart) (#:names DateNames) (Option DateTime)))
 (defun (text->datetime s parts #:names (parameter-ref current-date-names))
   (def bits (format-bits parts names))
   (check-date-bits bits)
@@ -2941,7 +2941,7 @@
 
 ;; The fields are UTC's unless the format has an offset, as instant->text
 ;; writes them.
-(: text->instant (-> string (List InstantPart) (#:names DateNames) (Option Instant)))
+(: (-> string (List InstantPart) (#:names DateNames) (Option Instant)))
 (defun (text->instant s parts #:names (parameter-ref current-date-names))
   (check-instant-bits (format-bits parts names))
   (def* ((Some seen) (read-format s parts names) :propagate)
@@ -2951,7 +2951,7 @@
 ;; With an offset, the offset has to be one the zone has at that local time,
 ;; as iso8601->moment demands. Without one, a local time in a gap or an
 ;; overlap is None.
-(: text->moment (-> string (List MomentPart) (#:names DateNames) (Option Moment)))
+(: (-> string (List MomentPart) (#:names DateNames) (Option Moment)))
 (defun (text->moment s parts #:names (parameter-ref current-date-names))
   (check-moment-bits (format-bits parts names))
   (def (Some seen) (read-format s parts names) :propagate)
@@ -2959,7 +2959,7 @@
 
 ;; A local time without an offset found as the resolver says, as
 ;; datetime->moment finds it.
-(: text->moment/resolver (-> string (List MomentPart) Resolver (#:names DateNames) (Option Moment)))
+(: (-> string (List MomentPart) Resolver (#:names DateNames) (Option Moment)))
 (defun (text->moment/resolver s parts r #:names (parameter-ref current-date-names))
   (check-moment-bits (format-bits parts names))
   (def (Some seen) (read-format s parts names) :propagate)

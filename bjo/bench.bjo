@@ -42,16 +42,16 @@
                             (: exec (-> string (Vec string) int))
                             (: resolve (-> string (Option string))))))
 
-(: program-exe (-> BenchProgram string))
+(: (-> BenchProgram string))
 (defun (program-exe p) (record-ref p exe))
 
-(: program-source (-> BenchProgram string))
+(: (-> BenchProgram string))
 (defun (program-source p) (record-ref p source))
 
-(: file-name-of (-> string string))
+(: (-> string string))
 (defun (file-name-of path) (clr-file-name path))
 
-(: flush! (-> void))
+(: (-> void))
 (defun (flush!) (flush-port (parameter-ref current-output-port)))
 
 ;; ---------------------------------------------------------------------------
@@ -66,11 +66,11 @@
         "--against" "-N" "--processes" "--seed" "--against-warmup" "--against-sample"
         "--against-build"))
 
-(: value-flag? (-> string bool))
+(: (-> string bool))
 (defun (value-flag? a) (any? (fun (f) (= f a)) bench-value-flags))
 
 ;; The benchmark files among the arguments, and what goes to the programs.
-(: split-bench-args (-> (-> string (Option string)) (List string) (Tuple (List string) (List string))))
+(: (-> (-> string (Option string)) (List string) (Tuple (List string) (List string))))
 (defun (split-bench-args resolve args)
   (let go ((left args) (files (list)) (passed (list)))
     (match left
@@ -85,7 +85,7 @@
 
 ;; Whether the arguments leave the choice to a menu: nothing named, and no
 ;; flag that says what to run or that the program is not run for a person.
-(: bench-menu-args? (-> (List string) bool))
+(: (-> (List string) bool))
 (defun (bench-menu-args? passed)
   (let go ((left passed))
     (match left
@@ -98,17 +98,17 @@
           #f)
          (else (go more)))))))
 
-(: bench-at-terminal? (-> bool))
+(: (-> bool))
 (defun (bench-at-terminal?)
   (or (= (get-environment-variable "BJO_BENCH_MENU") (Some "1"))
       (and (not console-input-redirected?) (not console-output-redirected?)
            (none? (get-environment-variable "CI")))))
 
-(: has-flag? (-> (List string) string bool))
+(: (-> (List string) string bool))
 (defun (has-flag? args flag) (any? (fun (a) (= a flag)) args))
 
 ;; The value after `flag`, the last one given.
-(: flag-value (-> (List string) string (Option string)))
+(: (-> (List string) string (Option string)))
 (defun (flag-value args flag)
   (let go ((left args) (found None))
     (match left
@@ -170,26 +170,26 @@
                         (: once int)
                         (: skip string))))
 
-(: listed-name (-> Listed string))
+(: (-> Listed string))
 (defun (listed-name l) (record-ref l name))
 
-(: listed-labels (-> Listed (List (Tuple string string))))
+(: (-> Listed (List (Tuple string string))))
 (defun (listed-labels l) (record-ref l labels))
 
-(: listed-index (-> Listed int))
+(: (-> Listed int))
 (defun (listed-index l) (record-ref l index))
 
-(: listed-skip (-> Listed string))
+(: (-> Listed string))
 (defun (listed-skip l) (record-ref l skip))
 
 ;; What a case is known by on both sides: its name and its parameters.
-(: listed-key (-> Listed string))
+(: (-> Listed string))
 (defun (listed-key l)
   (string-join (list->vec (cons (listed-name l)
                                 (list-map (fun (t) (match t ((Tuple p v) (str p "=" v)))) (listed-labels l))))
                " "))
 
-(: clause-of (-> (List Bjodat) string (Option Bjodat)))
+(: (-> (List Bjodat) string (Option Bjodat)))
 (defun (clause-of clauses name)
   (match clauses
     ((Cons (BjoList (Cons (BjoSym s) (Cons v Nil))) more)
@@ -197,7 +197,7 @@
     ((Cons _ more) (clause-of more name))
     (Nil None)))
 
-(: listed-of (-> Bjodat (Option Listed)))
+(: (-> Bjodat (Option Listed)))
 (defun (listed-of d)
   (match d
     ((BjoList (Cons (BjoSym _) (Cons (BjoInt i) clauses)))
@@ -218,7 +218,7 @@
     (_ None)))
 
 ;; The cases of a `(cases ...)` reply.
-(: listed-cases-of (-> Bjodat (Option (List Listed))))
+(: (-> Bjodat (Option (List Listed))))
 (defun (listed-cases-of reply)
   (match reply
     ((BjoList (Cons (BjoSym head) cases))
@@ -248,19 +248,19 @@
 ;; One menu over several files
 ;; ---------------------------------------------------------------------------
 
-(: bench-name (-> Bench string))
+(: (-> Bench string))
 (defun (bench-name b) (record-ref b name))
 
-(: bench-module (-> Bench string))
+(: (-> Bench string))
 (defun (bench-module b) (record-ref b module))
 
-(: take-while-name (-> string (List Listed) (List Listed)))
+(: (-> string (List Listed) (List Listed)))
 (defun (take-while-name name xs)
   (match xs
     ((Cons x more) (if (= (listed-name x) name) (cons x (take-while-name name more)) (list)))
     (Nil (list))))
 
-(: drop-count (-> int (List %a) (List %a)))
+(: (-> int (List %a) (List %a)))
 (defun (drop-count n xs)
   (match xs
     ((Cons _ more) #:when (> n 0) (drop-count (- n 1) more))
@@ -269,7 +269,7 @@
 ;; The listed cases of one file as benchmarks, for `(std bench)`'s menu: one
 ;; per run of cases of one name, under a heading of the file and its group.
 ;; `module` is the program, and a case's labels find its number again.
-(: listed-benches (-> BenchProgram (List Listed) (List Bench)))
+(: (-> BenchProgram (List Listed) (List Bench)))
 (defun (listed-benches p listed)
   (def shown (file-name-of (program-source p)))
   (let go ((left listed) (acc (list)))
@@ -301,7 +301,7 @@
             (:acc out (listing (Tuple p ls)))))
     (def benches
       (fold (fun (pl acc) (match pl ((Tuple p ls) (list-append acc (listed-benches p ls))))) (list) per-file))
-    (: number-of (-> Bench BenchCase int))
+    (: (-> Bench BenchCase int))
     (defun (number-of b c)
       (match (find (fun (pl) (match pl ((Tuple p _) (= (program-exe p) (bench-module b))))) per-file)
         ((Some (Tuple _ ls))
@@ -311,7 +311,7 @@
            ((Some l) (listed-index l))
            (None -1)))
         (None -1)))
-    (: run-choice (-> (List Selection) void))
+    (: (-> (List Selection) void))
     (defun (run-choice chosen)
       (loop (:for pl per-file)
             (:let (Tuple p _) pl)
@@ -351,13 +351,13 @@
                          (: sample-ms long)
                          (: build (Option string)))))
 
-(: parse-positive (-> string (Option int)))
+(: (-> string (Option int)))
 (defun (parse-positive s)
   (match (try (string->int s) #:catch (System.Exception))
     ((Ok n) (if (> n 0) (Some n) None))
     (_ None)))
 
-(: parse-number (-> string (Option double)))
+(: (-> string (Option double)))
 (defun (parse-number s)
   (match (try (string->double s) #:catch (System.Exception))
     ((Ok x) (if (> x 0.0) (Some x) None))
@@ -365,7 +365,7 @@
 
 ;; The A/B flags read, and the arguments without them, which go on to the
 ;; programs and to `(std bench)`'s own reading of `--alpha` and the rest.
-(: against-options (-> (List string) (Result string (Tuple Against (List string)))))
+(: (-> (List string) (Result string (Tuple Against (List string)))))
 (defun (against-options passed)
   (let go ((left passed)
            (a (Against (ref "") (rounds 20) (processes 1)
@@ -409,7 +409,7 @@
 (import/extern
   (clr-directory-name (: System.IO.Path.GetDirectoryName (-> string string))))
 
-(: file-directory (-> string string))
+(: (-> string string))
 (defun (file-directory file) (clr-directory-name (clr-full-path file)))
 
 ;; The other side's file: a path is taken as it is, a `.bjo` file or a
@@ -463,7 +463,7 @@
        ((not (file-exists? exe)) (Err (fail #"bjo bench: --against-build left no ${exe}.")))
        (else (Ok (BenchProgram (source file) (exe exe))))))))
 
-(: shell-quote (-> string string))
+(: (-> string string))
 (defun (shell-quote s) (str "'" (string-replace s "'" "'\\''") "'"))
 
 ;; --- Serving -----------------------------------------------------------------
@@ -504,7 +504,7 @@
   (ignore (wait (record-ref s proc))))
 
 ;; The value after keyword `name` in a reply.
-(: reply-arg (-> Bjodat string (Option Bjodat)))
+(: (-> Bjodat string (Option Bjodat)))
 (defun (reply-arg reply name)
   (match reply
     ((BjoList items)
@@ -515,7 +515,7 @@
          (Nil None))))
     (_ None)))
 
-(: reply-long (-> Bjodat string long))
+(: (-> Bjodat string long))
 (defun (reply-long reply name)
   (match (reply-arg reply name) ((Some (BjoInt n)) n) (_ -1L)))
 
@@ -541,12 +541,12 @@
 ;; A case both sides have: its number on each.
 (type (: Shared (Record (: listed Listed) (: a int) (: b int))))
 
-(: shared-listed (-> Shared Listed))
+(: (-> Shared Listed))
 (defun (shared-listed s) (record-ref s listed))
 
 ;; Whether a filter chooses a case: its name contains one, or it is one of
 ;; its parameters as the report shows them.
-(: chosen-by? (-> (List string) Listed bool))
+(: (-> (List string) Listed bool))
 (defun (chosen-by? names l)
   (or (list-empty? names)
       (any? (fun (f) (or (string-contains? (listed-name l) f)
@@ -555,7 +555,7 @@
 
 ;; What the programs are given as they are started: the flags of
 ;; `(std bench)` that decide what a case is, `--params` today.
-(: serve-flags (-> (List string) (List string)))
+(: (-> (List string) (List string)))
 (defun (serve-flags rest)
   (let go ((left rest) (acc (list)))
     (match left
@@ -564,7 +564,7 @@
       (Nil (list-reverse acc)))))
 
 ;; The names among the arguments: what is not a flag or a flag's value.
-(: bench-names (-> (List string) (List string)))
+(: (-> (List string) (List string)))
 (defun (bench-names rest)
   (let go ((left rest) (acc (list)))
     (match left
@@ -577,7 +577,7 @@
 
 ;; How many of `rounds` fall to process pair `j` of `pairs`: as even as can
 ;; be, the first ones taking what is left over.
-(: rounds-of (-> int int int int))
+(: (-> int int int int))
 (defun (rounds-of rounds pairs j)
   (+ (/ rounds pairs) (if (< j (% rounds pairs)) 1 0)))
 
@@ -646,7 +646,7 @@
     (stop-server sb)
     (Ok {vecing (Tuple (array-ref as i) (array-ref bs i)) (:for i (range 0 n))})))
 
-(: index-list (-> int (List int)))
+(: (-> int (List int)))
 (defun (index-list n) {listing i (:for i (range 0 n))})
 
 (: cmd-against #:sync (-> BenchTools string (List string) int))
@@ -692,7 +692,7 @@
     (def rng (make-random/seed64 (record-ref a seed)))
     (def pairs (record-ref a processes))
     ;; The cases that did not get steady while warming up, and on which side.
-    (: unsteady (Box (List string)))
+    (: (Box (List string)))
     (def unsteady (make-box (list)))
     (def taken
       (loop (:for j (up-from 0 #:to pairs))
@@ -728,14 +728,14 @@
       (None unit))
     (if (fails-slower? result o) 1 0)))
 
-(: distinct-strings (-> (List string) (List string)))
+(: (-> (List string) (List string)))
 (defun (distinct-strings xs)
   (fold (fun (x acc) (if (any? (fun (y) (= y x)) acc) acc (list-append acc (list x)))) (list) xs))
 
 ;; `--save FILE` of an A/B run: this code's samples to FILE, the other side's
 ;; beside it, `FILE` with `.against` before its extension. Every process
 ;; pair's samples, one after another.
-(: save-sides (-> string string (List PairedCase) void))
+(: (-> string string (List PairedCase) void))
 (defun (save-sides path ref cases)
   (def other (clr-change-extension path (str ".against" (path-extension-of path))))
   (defun (side (: pick (-> PairedCase (Vec (Vec double))))) : (List SavedCase)
@@ -746,7 +746,7 @@
   (write-saved-run! other (this-run (side (fun (c) (record-ref c a)))))
   (println #"bench: saved this code's samples to ${path}, and ${ref}'s to ${other}"))
 
-(: path-extension-of (-> string string))
+(: (-> string string))
 (defun (path-extension-of path)
   (match (string-search-backward path ".")
     ((Some at) (substring path at (string-cursor-end path)))

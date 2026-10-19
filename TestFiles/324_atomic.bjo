@@ -28,7 +28,7 @@
     (atomic-update! a (fun (s) (Score (points (- (struct-ref s points) (struct-ref n points))))))))
 
 ;; A function over any AtomicInteger: specialised at each type it is called at.
-(: twice-up (-> (Atomic %a) %a) (where (AtomicInteger %a)))
+(: (-> (Atomic %a) %a) (where (AtomicInteger %a)))
 (defun (twice-up a)
   (ignore (atomic-increment! a))
   (atomic-increment! a))
@@ -41,17 +41,17 @@
 
 ;; `n` increments that never suspend, so each fiber keeps a thread for its
 ;; whole run and eight of them run at the same time.
-(: hammer (-> (Atomic %a) int void) (where (AtomicInteger %a)))
+(: (-> (Atomic %a) int void) (where (AtomicInteger %a)))
 (defun (hammer a n)
   (loop (:for i (range 0 n))
         (:do (ignore (atomic-increment! a)))))
 
-(: hammer-update (-> (Atomic (List int)) int void))
+(: (-> (Atomic (List int)) int void))
 (defun (hammer-update a n)
   (loop (:for i (range 0 n))
         (:do (ignore (atomic-update! a (fun (xs) (Cons i xs)))))))
 
-(: eight (-bjo-> (-> void) void))
+(: (-bjo-> (-> void) void))
 (defbjo (eight work)
   (with-scope
     (loop (:for k (range 0 8))

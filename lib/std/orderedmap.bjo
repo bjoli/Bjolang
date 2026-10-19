@@ -121,7 +121,7 @@
   (orderedmap-cursor-next    (: OrderedMap.OrderedMapModule.CursorNext    (-> (OrderedMapCursor %k %v) (OrderedMapCursor %k %v)))))
 
 ;; Alias for contains?.
-(: orderedmap-has-key? (-> (OrderedMap %k %v) %k bool))
+(: (-> (OrderedMap %k %v) %k bool))
 (defun (orderedmap-has-key? m key) (orderedmap-contains? m key))
 
 ;; ---------------------------------------------------------------------------
@@ -159,23 +159,23 @@
 ;; What makes a map out of nothing asks for the key's Ord, and the tree orders
 ;; keys by it — the order `compare` gives, also where the type has no CompareTo
 ;; of its own. One made from a map keeps that map's.
-(: orderedmap-empty (-> (OrderedMap %k %v)) (where (Ord %k)))
+(: (-> (OrderedMap %k %v)) (where (Ord %k)))
 (defun (orderedmap-empty) (clr-orderedmap-empty (ord-comparer)))
 
-(: seq->orderedmap (-> (Seq (Tuple %k %v)) (OrderedMap %k %v)) (where (Ord %k)))
+(: (-> (Seq (Tuple %k %v)) (OrderedMap %k %v)) (where (Ord %k)))
 (defun (seq->orderedmap xs) (clr-seq->orderedmap xs (ord-comparer)))
 
-(: orderedmapbuilder-empty (-> (OrderedMapBuilder %k %v)) (where (Ord %k)))
+(: (-> (OrderedMapBuilder %k %v)) (where (Ord %k)))
 (defun (orderedmapbuilder-empty) (clr-orderedmapbuilder-empty (ord-comparer)))
 
-(: transientorderedmap-empty (-> (TransientOrderedMap %k %v)) (where (Ord %k)))
+(: (-> (TransientOrderedMap %k %v)) (where (Ord %k)))
 (defun (transientorderedmap-empty) (clr-transientorderedmap-empty (ord-comparer)))
 
 ;; ---------------------------------------------------------------------------
 ;; Ordered maps, where the callback may suspend
 ;; ---------------------------------------------------------------------------
 
-(: orderedmap-map (-> (-?-> %k %v %w) (OrderedMap %k %v) (OrderedMap %k %w)))
+(: (-> (-?-> %k %v %w) (OrderedMap %k %v) (OrderedMap %k %w)))
 (defbjouble (orderedmap-map f m)
   (#:sync (clr-orderedmap-map f m))
   (#:bjo
@@ -188,7 +188,7 @@
           (orderedmapbuilder-add! b k (f k v))
           (go (orderedmap-cursor-next c)))))))
 
-(: orderedmap-map-values (-> (-?-> %v %w) (OrderedMap %k %v) (OrderedMap %k %w)))
+(: (-> (-?-> %v %w) (OrderedMap %k %v) (OrderedMap %k %w)))
 (defbjouble (orderedmap-map-values f m)
   (#:sync (clr-orderedmap-map-values f m))
   (#:bjo
@@ -201,7 +201,7 @@
           (orderedmapbuilder-add! b k (f v))
           (go (orderedmap-cursor-next c)))))))
 
-(: orderedmap-filter (-> (-?-> %k %v bool) (OrderedMap %k %v) (OrderedMap %k %v)))
+(: (-> (-?-> %k %v bool) (OrderedMap %k %v) (OrderedMap %k %v)))
 (defbjouble (orderedmap-filter keep? m)
   (#:sync (clr-orderedmap-filter keep? m))
   (#:bjo
@@ -215,7 +215,7 @@
             (orderedmapbuilder-add! b k v))
           (go (orderedmap-cursor-next c)))))))
 
-(: orderedmap-fold (-> (-?-> %k %v %s %s) %s (OrderedMap %k %v) %s))
+(: (-> (-?-> %k %v %s %s) %s (OrderedMap %k %v) %s))
 (defbjouble (orderedmap-fold f init m)
   (#:sync (clr-orderedmap-fold f init m))
   (#:bjo
@@ -227,7 +227,7 @@
           (def (k v) (orderedmap-cursor-current c))
           (go (f k v acc) (orderedmap-cursor-next c)))))))
 
-(: orderedmap-iter (-> (-?-> %k %v bool) (OrderedMap %k %v) bool))
+(: (-> (-?-> %k %v bool) (OrderedMap %k %v) bool))
 (defbjouble (orderedmap-iter f m)
   (#:sync (clr-orderedmap-iter f m))
   (#:bjo
@@ -243,40 +243,40 @@
 ;; ---------------------------------------------------------------------------
 ;; TODO: currently orderedmap-for-each goes through the enumerator,
 ;;       when internal iteration would be a lot faster. 
-(: list->orderedmap (-> (List (Tuple %k %v)) (OrderedMap %k %v)) (where (Ord %k)))
+(: (-> (List (Tuple %k %v)) (OrderedMap %k %v)) (where (Ord %k)))
 (defun (list->orderedmap xs)
   (def om (orderedmapbuilder-empty))
   (loop (:for (k . v) xs)
         (:do (orderedmapbuilder-add! om k v)))
   (orderedmapbuilder->orderedmap om))
 
-(: orderedmap->list (-> (OrderedMap %k %v) (List (Tuple %k %v))))
+(: (-> (OrderedMap %k %v) (List (Tuple %k %v))))
 (defun (orderedmap->list m)
   (def lb (listbuilder-empty))
   (orderedmap-for-each #(listbuilder-add! lb (&1 . &2)) m)
   (listbuilder->list lb))
 
-(: vec->orderedmap (-> (Vec (Tuple %k %v)) (OrderedMap %k %v)) (where (Ord %k)))
+(: (-> (Vec (Tuple %k %v)) (OrderedMap %k %v)) (where (Ord %k)))
 (defun (vec->orderedmap v)
   (def om (orderedmapbuilder-empty))
   (vec-for-each #(let (((k . v) &))
                    (orderedmapbuilder-add! om k v)) v)
   (orderedmapbuilder->orderedmap om))
 
-(: orderedmap->vec (-> (OrderedMap %k %v) (Vec (Tuple %k %v))))
+(: (-> (OrderedMap %k %v) (Vec (Tuple %k %v))))
 (defun (orderedmap->vec m)
   (def vb (vecbuilder-empty))
   (orderedmap-for-each #(vecbuilder-add! vb (&1 . &2)) m)
   (vecbuilder->vec vb))
 
 ;; Hashed map conversions.
-(: map->orderedmap (-> (Map %k %v) (OrderedMap %k %v)) (where (Ord %k)))
+(: (-> (Map %k %v) (OrderedMap %k %v)) (where (Ord %k)))
 (defun (map->orderedmap m)
   (def om (orderedmapbuilder-empty))
   (map-for-each #(orderedmapbuilder-add! om &1 &2) m)
   (orderedmapbuilder->orderedmap om))
 
-(: orderedmap->map (-> (OrderedMap %k %v) (Map %k %v)))
+(: (-> (OrderedMap %k %v) (Map %k %v)))
 (defun (orderedmap->map m)
   (def mb (mapbuilder-empty))
   (orderedmap-for-each #(mapbuilder-add! mb &1 &2) m)
@@ -316,7 +316,7 @@
   (defun (iterable-current m c) (orderedmap-cursor-current c))
   (defun (iterable-next m c) (orderedmap-cursor-next c)))
 
-(: orderedmap-for-each (-> (-?-> %k %v void) (OrderedMap %k %v) void))
+(: (-> (-?-> %k %v void) (OrderedMap %k %v) void))
 (defun (orderedmap-for-each f m)
   (loop (:for (k . v) m)
         (:do (f k v))))
@@ -375,12 +375,12 @@
      17
      m)))
 
-(: entry->str (-> (Tuple %k %v) string) (where (->str %k) (->str %v)))
+(: (-> (Tuple %k %v) string) (where (->str %k) (->str %v)))
 (defun (entry->str entry)
   (def (k v) entry)
   (str "(" (->str k) " " (->str v) ")"))
 
-(: orderedmap->str (-> (OrderedMap %k %v) string) (where (->str %k) (->str %v)))
+(: (-> (OrderedMap %k %v) string) (where (->str %k) (->str %v)))
 (defun (orderedmap->str m)
   (def sb (stringbuilder-empty))
   (stringbuilder-add-string! sb "#map(")

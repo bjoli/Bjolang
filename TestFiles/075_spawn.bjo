@@ -27,21 +27,21 @@
 ;; The work
 ;; ---------------------------------------------------------------------------
 
-(: work (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (work x) (* x 2))
 
 ;; A bjoroutine calling a bjoroutine, spawned as one unit.
-(: chained (-> int int))
+(: (-> int int))
 (defbjo (chained x) (work (work x)))
 
 ;; Fails rather than returns. Nothing catches it, so the fiber dies and the
 ;; failure is delivered to whoever joins.
-(: explode (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (explode x) (/ x 0))
 
 ;; An ordinary function, which `bjo` will run concurrently even though it can
 ;; never suspend.
-(: slow-sum (-> int int))
+(: (-> int int))
 (defun (slow-sum n)
   (let go ((i 0) (acc 0))
     (if (> i n) acc (go (+ i 1) (+ acc i)))))
@@ -55,7 +55,7 @@
 ;; caller — this is a `defun`, and it starts a bjoroutine anyway. Joining is
 ;; what needs a bjoroutine, because joining is what waits.
 
-(: start-work (-> int (Promise int)))
+(: (-> int (Promise int)))
 (defun (start-work x) (bjo (work x)))
 
 ;; ---------------------------------------------------------------------------
@@ -68,7 +68,7 @@
 
 (def/mutable trace 0)
 
-(: note (-> int int))
+(: (-> int int))
 (defun (note x)
   (set! trace (+ trace 1))
   x)
@@ -92,7 +92,7 @@
 
 (def depth (make-parameter 1))
 
-(: read-depth (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (read-depth x) (* x (parameter-ref depth)))
 
 ;; ---------------------------------------------------------------------------
@@ -103,11 +103,11 @@
 ;; because `(fun (u) (bjo ...))` does not suspend — it only starts something.
 ;; Collecting cannot be, because `sync` does suspend, so it is a loop.
 
-(: spawn-all (-> (List int) (List (Promise int))))
+(: (-> (List int) (List (Promise int))))
 (defun (spawn-all xs)
   (list-map (fun (x) (bjo (work x))) xs))
 
-(: collect-all (-> (List (Promise int)) int))
+(: (-> (List (Promise int)) int))
 (defbjo (collect-all ps)
   (let go ((remaining ps) (acc 0))
     (match remaining

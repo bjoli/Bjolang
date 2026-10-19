@@ -15,41 +15,41 @@
 (import "inc/splicebody.bjo")
 (import (std simpletest))
 
-(: expect-int (-> string int int void))
+(: (-> string int int void))
 (defun (expect-int label actual wanted)
   (expect label (int->string actual) (int->string wanted)))
 
-(: expect-bool (-> string bool bool void))
+(: (-> string bool bool void))
 (defun (expect-bool label actual wanted)
   (expect label (if actual "#t" "#f") (if wanted "#t" "#f")))
 
 ;; Mutual recursion split across a `begin`, written by hand. `collectDefs` has
 ;; to look through the splice, or these land in two separate groups and the
 ;; first cannot see the second.
-(: even-here? (-> int bool))
+(: (-> int bool))
 (defun (even-here? n)
   (if (= n 0) #t (odd-here? (- n 1))))
 
 (begin
-  (: odd-here? (-> int bool))
+  (: (-> int bool))
   (defun (odd-here? n)
     (if (= n 0) #f (even-here? (- n 1)))))
 
 ;; The same thing inside a body, and from a macro.
-(: parity-of (-> int string))
+(: (-> int string))
 (defun (parity-of n)
   (defun (top-even? k) (if (= k 0) #t (top-odd? (- k 1))))
   (begin
     (defun (top-odd? k) (if (= k 0) #f (top-even? (- k 1)))))
   (if (top-even? n) "even" "odd"))
 
-(: macro-parity (-> int string))
+(: (-> int string))
 (defun (macro-parity n)
   (def/parity mac-even? mac-odd?)
   (if (mac-even? n) "even" "odd"))
 
 ;; A whole body that is one empty `begin`. The function's value is `unit`.
-(: does-nothing (-> void))
+(: (-> void))
 (defun (does-nothing)
   (begin))
 

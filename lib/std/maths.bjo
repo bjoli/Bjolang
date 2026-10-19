@@ -58,14 +58,14 @@
 
 ;; Todo: `min`/`max` over a sequence.
 
-(: sqr (-> %a %a) (where (Num %a)))
+(: (-> %a %a) (where (Num %a)))
 (defun (sqr x) (* x x))
 
 ;; Not `INumber.IsPositive`, which holds for zero.
-(: positive? (-> %a bool) (where (Num %a) (Ordered %a)))
+(: (-> %a bool) (where (Num %a) (Ordered %a)))
 (defun (positive? x) (> x 0))
 
-(: negative? (-> %a bool) (where (Num %a) (Ordered %a)))
+(: (-> %a bool) (where (Num %a) (Ordered %a)))
 (defun (negative? x) (< x 0))
 
 ;; ---------------------------------------------------------------------------
@@ -81,26 +81,26 @@
   (Exception (: System.Exception))
   (ArgumentOutOfRangeException (: System.ArgumentOutOfRangeException)))
 
-(: out-of-range (-> string string %a))
+(: (-> string string %a))
 (defun (out-of-range parameter why)
   (raise (cast Exception (ArgumentOutOfRangeException. parameter why))))
 
-(: quotient (-> %a %a %a) (where (Integral %a) (Num %a)))
+(: (-> %a %a %a) (where (Integral %a) (Num %a)))
 (defun (quotient a b) (/ a b))
 
-(: remainder (-> %a %a %a) (where (Integral %a) (Num %a)))
+(: (-> %a %a %a) (where (Integral %a) (Num %a)))
 (defun (remainder a b) (% a b))
 
 ;; The remainder moved into the divisor's sign: a nonzero remainder of the
 ;; other sign is one divisor away from it.
-(: modulo (-> %a %a %a) (where (Integral %a) (Num %a) (Ordered %a)))
+(: (-> %a %a %a) (where (Integral %a) (Num %a) (Ordered %a)))
 (defun (modulo a b)
   (let ((r (% a b)))
     (if (and (not (zero? r)) (not (= (< r 0) (< b 0))))
         (+ r b)
         r)))
 
-(: quotient/remainder (-> %a %a (Tuple %a %a)) (where (Integral %a) (Num %a)))
+(: (-> %a %a (Tuple %a %a)) (where (Integral %a) (Num %a)))
 (defun (quotient/remainder a b)
   (Tuple (/ a b) (% a b)))
 
@@ -109,14 +109,14 @@
 ;; ---------------------------------------------------------------------------
 
 ;; Euclid's algorithm, on the magnitudes.
-(: gcd (-> %a %a %a) (where (Integral %a) (Num %a)))
+(: (-> %a %a %a) (where (Integral %a) (Num %a)))
 (defun (gcd a b)
   (let go ((x (abs a)) (y (abs b)))
     (if (zero? y) x (go y (% x y)))))
 
 ;; Divided before it is multiplied, so that the product overflows only when the
 ;; answer does.
-(: lcm (-> %a %a %a) (where (Integral %a) (Num %a)))
+(: (-> %a %a %a) (where (Integral %a) (Num %a)))
 (defun (lcm a b)
   (if (or (zero? a) (zero? b))
       0
@@ -124,7 +124,7 @@
 
 ;; By squaring: one multiplication per bit of the exponent, and one more for
 ;; each bit that is set.
-(: expt (-> %a int %a) (where (Integral %a) (Num %a)))
+(: (-> %a int %a) (where (Integral %a) (Num %a)))
 (defun (expt base n)
   (when (< n 0)
     (out-of-range "n" "expt: the exponent is negative, and an integer power has to be one."))
@@ -136,7 +136,7 @@
 ;; Newton's method from above. The start, n/2 + 1, is at least the root for
 ;; every n of 2 or more, and nothing on the way adds past n, so it cannot
 ;; overflow even at the type's largest value.
-(: integer-sqrt (-> %a %a) (where (Integral %a) (Num %a) (Ordered %a)))
+(: (-> %a %a) (where (Integral %a) (Num %a) (Ordered %a)))
 (defun (integer-sqrt n)
   (when (< n 0)
     (out-of-range "n" "integer-sqrt: the number is negative."))
@@ -199,16 +199,16 @@
 (import/extern
   (double->int (: System.Convert.ToInt32 (-> double int))))
 
-(: exact-floor (-> double int))
+(: (-> double int))
 (defun (exact-floor x) (double->int (floor x)))
 
-(: exact-ceiling (-> double int))
+(: (-> double int))
 (defun (exact-ceiling x) (double->int (ceiling x)))
 
-(: exact-truncate (-> double int))
+(: (-> double int))
 (defun (exact-truncate x) (double->int (truncate x)))
 
-(: exact-round (-> double int))
+(: (-> double int))
 (defun (exact-round x) (double->int (round x)))
 
 ;; Trigonometric.

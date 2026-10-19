@@ -201,14 +201,14 @@
 (import/extern (clr-panic (: BjolangRuntime.Panic (-> string int %a))))
 
 
-(: panic! (-> string (#:exit-code int) %a))
+(: (-> string (#:exit-code int) %a))
 (defun (panic! msg #:exit-code 1)
   (clr-panic msg exit-code))
 
 ;; The value of a grammar's check on a literal. The compiler ran the same
 ;; check on the same literal and refused an Err, so the Err case is not
 ;; reached unless the check gives different results for one value.
-(: grammar-checked (-> (Result string %a) %a))
+(: (-> (Result string %a) %a))
 (defun (grammar-checked r)
   (match r
     ((Ok v) v)
@@ -248,7 +248,7 @@
 
 
 ;; List append.
-(: list-append (-> (List %a) (List %a) (List %a)))
+(: (-> (List %a) (List %a) (List %a)))
 (defun (list-append xs ys)
   (list-foldr Cons ys xs))
 
@@ -304,11 +304,11 @@
   (defun (ignore p) (detach p)))
 
 ;; Generic display functions utilizing the ->str trait
-(: print (-> %a void))
+(: (-> %a void))
 (defun (print x)
   (display (->str x)))
 
-(: println (-> %a void))
+(: (-> %a void))
 (defun (println x)
   (displayln (->str x)))
 
@@ -423,27 +423,27 @@
   (transientmap-try-ref     (: Map.TransientMapModule.TryGetValue    (-> (TransientMap %k %v) %k (out %v) (Option %v)))))
 
 
-(: map-has-key? (-> (Map %k %v) %k bool))
+(: (-> (Map %k %v) %k bool))
 (defun (map-has-key? m key) (map-contains? m key))
 
 ;; Find first. The same as `map-try-find`.
-(: map-find (-> (-> %k %v bool) (Map %k %v) (Option (Tuple %k %v))))
+(: (-> (-> %k %v bool) (Map %k %v) (Option (Tuple %k %v))))
 (defun (map-find pred m) (map-try-find pred m))
 
 ;; What makes a map out of nothing asks for the key's Eq, and the map compares
 ;; keys with it — the same answer `=` gives, also for two cases of a union that
 ;; `=` equates. One made from a map keeps that map's.
-(: map-empty (-> (Map %k %v)) (where (Eq %k)))
+(: (-> (Map %k %v)) (where (Eq %k)))
 (defun (map-empty) (clr-map-empty (eq-comparer)))
 
-(: seq->map (-> (Seq (Tuple %k %v)) (Map %k %v)) (where (Eq %k)))
+(: (-> (Seq (Tuple %k %v)) (Map %k %v)) (where (Eq %k)))
 (defun (seq->map xs) (clr-seq->map xs (eq-comparer)))
 (:deprecated seq->map "use `->map`, which takes any iterable of pairs")
 
-(: mapbuilder-empty (-> (MapBuilder %k %v)) (where (Eq %k)))
+(: (-> (MapBuilder %k %v)) (where (Eq %k)))
 (defun (mapbuilder-empty) (clr-mapbuilder-empty (eq-comparer)))
 
-(: transientmap-empty (-> (TransientMap %k %v)) (where (Eq %k)))
+(: (-> (TransientMap %k %v)) (where (Eq %k)))
 (defun (transientmap-empty) (clr-transientmap-empty (eq-comparer)))
 
 
@@ -451,7 +451,7 @@
 ;; Maps, where the callback may suspend
 ;; ---------------------------------------------------------------------------
 
-(: map-map (-> (-?-> %k %v %w) (Map %k %v) (Map %k %w)))
+(: (-> (-?-> %k %v %w) (Map %k %v) (Map %k %w)))
 (defbjouble (map-map f m)
   (#:sync (clr-map-map f m))
   (#:bjo
@@ -466,7 +466,7 @@
               (mapbuilder-add! b k (f k v))
               (go (map-cursor-next c))))))))
 
-(: map-map-values (-> (-?-> %v %w) (Map %k %v) (Map %k %w)))
+(: (-> (-?-> %v %w) (Map %k %v) (Map %k %w)))
 (defbjouble (map-map-values f m)
   (#:sync (clr-map-map-values f m))
   (#:bjo
@@ -479,7 +479,7 @@
               (mapbuilder-add! b k (f v))
               (go (map-cursor-next c))))))))
 
-(: map-filter (-> (-?-> %k %v bool) (Map %k %v) (Map %k %v)))
+(: (-> (-?-> %k %v bool) (Map %k %v) (Map %k %v)))
 (defbjouble (map-filter keep? m)
   (#:sync (clr-map-filter keep? m))
   (#:bjo
@@ -496,7 +496,7 @@
                 (mapbuilder-add! b k v))
               (go (map-cursor-next c))))))))
 
-(: map-fold (-> (-?-> %k %v %s %s) %s (Map %k %v) %s))
+(: (-> (-?-> %k %v %s %s) %s (Map %k %v) %s))
 (defbjouble (map-fold f init m)
   (#:sync (clr-map-fold f init m))
   (#:bjo
@@ -512,7 +512,7 @@
             (def (k v) (map-cursor-current c))
             (go (f k v acc) (map-cursor-next c)))))))
 
-(: map-iter (-> (-?-> %k %v bool) (Map %k %v) bool))
+(: (-> (-?-> %k %v bool) (Map %k %v) bool))
 (defbjouble (map-iter f m)
   (#:sync (clr-map-iter f m))
   (#:bjo
@@ -528,7 +528,7 @@
                 (go (map-cursor-next c))
                 #f))))))
 
-(: map-for-each (-> (-?-> %k %v void) (Map %k %v) void))
+(: (-> (-?-> %k %v void) (Map %k %v) void))
 (defun (map-for-each f m)
   ;; (loop (:for (k v) m)
   ;;       (:do (f k v)))
@@ -970,20 +970,20 @@
 ;; Range of ints.
 (type (: Range (Struct (: lo int) (: hi int) (: by int))))
 
-(: range (-> int int Range))
+(: (-> int int Range))
 (defun (range lo hi)
   (Range (lo lo) (hi hi) (by 1)))
 
 ;; A range counts up, so a step of zero or less would never reach `hi`. The
 ;; message is made in `range-by-panic`, so that `range-by` is small enough for
 ;; the JIT to inline at the start of a loop.
-(: range-by (-> int int int Range))
+(: (-> int int int Range))
 (defun (range-by lo hi by)
   (when (<= by 0)
     (range-by-panic by))
   (Range (lo lo) (hi hi) (by by)))
 
-(: range-by-panic (-> int void))
+(: (-> int void))
 (defun (range-by-panic by)
   (panic! #"range-by: the step is ${by}, and a range counts up from lo to hi. down-from counts down."))
 
@@ -1028,7 +1028,7 @@
 ;; An iterable of pairs as a map. Not a method of `Iterable`: its where clause
 ;; says the element is a pair, and a member may not constrain the
 ;; implementor. Copied into the call, so that it fuses with a chain under it.
-(: ->map (-> %s (Map %k %v)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))))
+(: (-> %s (Map %k %v)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))))
 (defun (->map s) #:inline
   (loop (:for e s)
         (:acc m (mapping e))))
@@ -1051,7 +1051,7 @@
 ;; The elements of `inner`, each with its index from 0.
 (type (: (Enumerated %s) (Struct (: inner %s))))
 
-(: enumerate (-> %s (Enumerated %s)) (where (Iterable %s)))
+(: (-> %s (Enumerated %s)) (where (Iterable %s)))
 (defun (enumerate s) (Enumerated (inner s)))
 
 (impl (Iterable (Enumerated %s)) (where (Iterable %s))
@@ -1071,7 +1071,7 @@
 ;; The elements of `left` and `right` in pairs, until either ends.
 (type (: (Zipped %l %r) (Struct (: left %l) (: right %r))))
 
-(: zip (-> %l %r (Zipped %l %r)) (where (Iterable %l) (Iterable %r)))
+(: (-> %l %r (Zipped %l %r)) (where (Iterable %l) (Iterable %r)))
 (defun (zip l r) (Zipped (left l) (right r)))
 
 ;; `done?` asks the left side first. When one side ends, the other is ended
@@ -1112,7 +1112,7 @@
 ;; than `inner` has, in one walk of it.
 (type (: (Pairwise %s) (Struct (: inner %s))))
 
-(: pairwise (-> %s (Pairwise %s)) (where (Iterable %s)))
+(: (-> %s (Pairwise %s)) (where (Iterable %s)))
 (defun (pairwise s) (Pairwise (inner s)))
 
 ;; The cursor is the element before and the inner cursor at the one after.
@@ -1152,7 +1152,7 @@
 ;; element type, of any two kinds.
 (type (: (Chained %a %b) (Struct (: first %a) (: second %b))))
 
-(: chain (-> %a %b (Chained %a %b)) (where (Iterable %a #:elem %e) (Iterable %b #:elem %e)))
+(: (-> %a %b (Chained %a %b)) (where (Iterable %a #:elem %e) (Iterable %b #:elem %e)))
 (defun (chain a b) (Chained (first a) (second b)))
 
 ;; The cursor is a flag, which says the walk is on the second, and a cursor
@@ -1202,10 +1202,10 @@
 ;; `int-min`, which no count written as a count is.
 (type (: (Repeated %a) (Struct (: item %a) (: times int))))
 
-(: repeat-endless int)
+(: int)
 (def repeat-endless -2147483648)
 
-(: in-repeat (-> %a (#:times int) (Repeated %a)))
+(: (-> %a (#:times int) (Repeated %a)))
 (defun (in-repeat x #:times repeat-endless) (Repeated (item x) (times times)))
 
 (impl (Iterable (Repeated %a))
@@ -1222,7 +1222,7 @@
 ;; iterable is empty, and so is the next pass over a port that is used up.
 (type (: (Cycled %s) (Struct (: inner %s))))
 
-(: in-cycle (-> %s (Cycled %s)) (where (Iterable %s)))
+(: (-> %s (Cycled %s)) (where (Iterable %s)))
 (defun (in-cycle s) (Cycled (inner s)))
 
 ;; `done?` of the inner iterable is asked once for each of its cursors, as
@@ -1288,43 +1288,43 @@
 ;; callback's body in it, and no delegate is made or called.
 ;;
 ;; List map.
-(: list-map (-> (-?-> %a %b) (List %a) (List %b)))
+(: (-> (-?-> %a %b) (List %a) (List %b)))
 (defun (list-map f xs)
   (loop (:for elem xs)
         (:acc lst (listing (f elem)))))
 
-(: list-filter (-> (-?-> %a bool) (List %a) (List %a)))
+(: (-> (-?-> %a bool) (List %a) (List %a)))
 (defun (list-filter keep? xs) #:inline
   (loop (:for elem xs)
         (:when (keep? elem))
         (:acc acc (listing elem))))
 
 ;; List foldl.
-(: list-foldl (-> (-?-> %a %b %b) %b (List %a) %b))
+(: (-> (-?-> %a %b %b) %b (List %a) %b))
 (defun (list-foldl f init xs) #:inline
   (loop (:for elem xs)
         (:acc acc (folding init (f elem acc)))))
 
 ;; List foldr.
-(: list-foldr (-> (-?-> %a %b %b) %b (List %a) %b))
+(: (-> (-?-> %a %b %b) %b (List %a) %b))
 (defun (list-foldr f init xs) #:inline
   (loop (:for elem (list-reverse xs))
         (:acc acc (folding init (f elem acc)))))
 
-(: list-for-each (-> (-?-> %a Unit) (List %a) Unit))
+(: (-> (-?-> %a Unit) (List %a) Unit))
 (defun (list-for-each f xs)
   (loop (:for elem xs)
         (:do (f elem))))
 
 ;; The list seq-unfold would make, without the lazy seq. The update is
 ;; evaluated after the iteration, so it reads the state the :finish-let bound.
-(: list-unfold (-> (-?-> %s (Option (Tuple %a %s))) %s (List %a)))
+(: (-> (-?-> %s (Option (Tuple %a %s))) %s (List %a)))
 (defun (list-unfold f state)
   (loop (:with step (f state) (f next))
         (:finish-let (Some (Tuple x next)) step)
         (:acc out (listing x))))
 
-(: nil? (-> (List %a) bool))
+(: (-> (List %a) bool))
 (defun (nil? lst)
   (match lst
     (Nil #t)
@@ -1355,7 +1355,7 @@
   (vec-add                (: Collections.RrbFun.Add         (-> (Vec %a) %a (Vec %a)))))
 
 ;; Vec map.
-(: vec-map (-> (-?-> %a %b) (Vec %a) (Vec %b)))
+(: (-> (-?-> %a %b) (Vec %a) (Vec %b)))
 ;;
 ;; Not inlined: `clr-vec-map` copies the vec's arrays at their exact size, and
 ;; for the short vecs most programs map that is faster than a loop into a
@@ -1374,7 +1374,7 @@
           (:do (array-set! out i (f elem))))
     (clr-vec-map-shape v out)))
 
-(: vec-filter (-> (-?-> %a bool) (Vec %a) (Vec %a)))
+(: (-> (-?-> %a bool) (Vec %a) (Vec %a)))
 (defbjouble (vec-filter keep? v)
   #:inline
   (#:sync (clr-vec-filter keep? v))
@@ -1383,7 +1383,7 @@
           (:when (keep? elem))
           (:acc acc (vecing/small elem)))))
 
-(: vec-fold (-> (-?-> %a %b %b) %b (Vec %a) %b))
+(: (-> (-?-> %a %b %b) %b (Vec %a) %b))
 (defbjouble (vec-fold f init v)
   #:inline
   (#:sync (clr-vec-fold f init v))
@@ -1392,7 +1392,7 @@
           (:acc acc (folding init (f elem acc))))))
 
 ;; Vec reduce.
-(: vec-reduce (-> (-?-> %a %a %a) (Vec %a) %a))
+(: (-> (-?-> %a %a %a) (Vec %a) %a))
 (defbjouble (vec-reduce f v)
   (#:sync (clr-vec-reduce f v))
   (#:bjo
@@ -1402,14 +1402,14 @@
           acc
           (go (+ i 1) (f (vec-ref v i) acc))))))
 
-(: vec-for-each (-> (-?-> %a Unit) (Vec %a) Unit))
+(: (-> (-?-> %a Unit) (Vec %a) Unit))
 (defbjouble (vec-for-each f v)
   (#:sync (clr-vec-for-each f v))
   (#:bjo
     (loop (:for elem v)
           (:do (f elem)))))
 
-(: vec-for-each/range (-> (-?-> %a Unit) (Vec %a) int int Unit))
+(: (-> (-?-> %a Unit) (Vec %a) int int Unit))
 (defbjouble (vec-for-each/range f v index count)
   (#:sync (clr-vec-for-each/range f v index count))
   (#:bjo
@@ -1422,7 +1422,7 @@
             (go (+ i 1) (- left 1)))))))
 
 ;; Vec iter.
-(: vec-iter (-> (-?-> %a bool) (Vec %a) bool))
+(: (-> (-?-> %a bool) (Vec %a) bool))
 (defbjouble (vec-iter f v)
   #:inline
   (#:sync (clr-vec-iter f v))
@@ -1438,7 +1438,7 @@
 ;; The eager two. `seq-unfold` is lazy and stays a builtin: its callback runs
 ;; when the walker pulls, which is somewhere else.
 
-(: seq-fold (-> (-?-> %a %b %b) %b (Seq %a) %b))
+(: (-> (-?-> %a %b %b) %b (Seq %a) %b))
 (defun (seq-fold f init s)
   (let ((c (seq-cursor s)))
     (let go ((acc init))
@@ -1446,7 +1446,7 @@
           acc
           (go (f (seq-cursor-current c) acc))))))
 
-(: seq-for-each (-> (-?-> %a Unit) (Seq %a) Unit))
+(: (-> (-?-> %a Unit) (Seq %a) Unit))
 (defun (seq-for-each f s)
   (let ((c (seq-cursor s)))
     (let go ()
@@ -1462,33 +1462,33 @@
 ;; ---------------------------------------------------------------------------
 ;; Conversions.
 
-(: list->map (-> (List (Tuple %k %v)) (Map %k %v)))
+(: (-> (List (Tuple %k %v)) (Map %k %v)))
 (defun (list->map xs)
   (loop (:for kvp xs)
         (:acc map (mapping kvp))))
 
-(: list->vec (-> (List %a) (Vec %a)))
+(: (-> (List %a) (Vec %a)))
 (defun (list->vec lst)
   {vecing e (:for e lst)})
 
-(: map->list (-> (Map %k %v) (List (Tuple %k %v))))
+(: (-> (Map %k %v) (List (Tuple %k %v))))
 (defun (map->list m)
   {listing kvp (:for kvp m)})
 
-(: vec->map (-> (Vec (Tuple %k %v)) (Map %k %v)))
+(: (-> (Vec (Tuple %k %v)) (Map %k %v)))
 (defun (vec->map v)
   (loop (:for kvp v)
         (:acc map (mapping kvp))))
 
 ;; This can actually be faster than the loop, since list-for-each
 ;; uses internal iteration.
-(: vec->list (-> (Vec %a) (List %a)))
+(: (-> (Vec %a) (List %a)))
 (defun (vec->list v)
   (def b (listbuilder-empty))
   (vec-for-each (fun (elem) (listbuilder-add! b elem)) v )
   (listbuilder->list b))
 
-(: map->vec (-> (Map %k %v) (Vec (Tuple %k %v))))
+(: (-> (Map %k %v) (Vec (Tuple %k %v))))
 (defun (map->vec m)
   {vecing kvp (:for kvp m)})
 
@@ -1499,26 +1499,26 @@
 
 ;; `some?` and `none?`, for the other two-case builtin.
 
-(: ok? (-> (Result %e %a) bool))
+(: (-> (Result %e %a) bool))
 (defun (ok? r)
   (match r
     ((Ok v) #t)
     ((Err e) #f)))
 
-(: err? (-> (Result %e %a) bool))
+(: (-> (Result %e %a) bool))
 (defun (err? r)
   (match r
     ((Ok v) #f)
     ((Err e) #t)))
 
 ;; If Err, return the same value, otherwise return Ok (f unwrapped-ok-value)
-(: result-map (-> (-?-> %a %b) (Result %e %a) (Result %e %b)))
+(: (-> (-?-> %a %b) (Result %e %a) (Result %e %b)))
 (defun (result-map f r)
   (match r
     ((Ok v) (Ok (f v)))
     ((Err e) (Err e))))
 
-(: option-value (-> (Option %a) %a %a))
+(: (-> (Option %a) %a %a))
 (defun (option-value opt fallback)
   (match opt
     ((Some v) v)
@@ -1526,11 +1526,11 @@
 
 ;; --- Pairs ---
 
-(: fst (-> (Tuple %a %b) %a))
+(: (-> (Tuple %a %b) %a))
 (defun (fst p)
   (match p ((Tuple a _) a)))
 
-(: snd (-> (Tuple %a %b) %b))
+(: (-> (Tuple %a %b) %b))
 (defun (snd p)
   (match p ((Tuple _ b) b)))
 
@@ -1544,18 +1544,18 @@
   (where (->str %a))
   (defun (->str box)
     (str "(Box " (->str (box-ref box)) ")")))
-(: make-box (-> %a (Box %a)))
+(: (-> %a (Box %a)))
 (defun (make-box elem)
   (def arr (make-array 1))
   (array-set! arr 0 elem)
   (Box (field arr)))
 
-(: box-ref (-> (Box %a) %a))
+(: (-> (Box %a) %a))
 (defun (box-ref b)
   (-> (struct-ref b field)
       (array-ref & 0)))
 
-(: box-set! (-> (Box %a) %a Unit))
+(: (-> (Box %a) %a Unit))
 (defun (box-set! box val)
   (def arr (struct-ref box field))
   (array-set! arr 0 val))
@@ -1777,15 +1777,15 @@
   (clr-parse-uint128 (: Bjolang.Runtime.BjoNum.ParseInteger (-> string uint128)))
   (clr-format-number (: Bjolang.Runtime.BjoNum.FormatNumber (-> %a string))))
 
-(: string-append (-> string string string))
+(: (-> string string string))
 (defun (string-append a b) (clr-concat a b))
 
 ;; Variadic concatenation.
-(: str (-> #:rest string string))
+(: (-> #:rest string string))
 (defun (str #:rest parts) (clr-concat-all parts))
 
 ;; String length in storage units: bytes of UTF-8.
-(: string-length (-> string int))
+(: (-> string int))
 (defun (string-length s) (.-ByteLength s))
 
 ;; --- Searching and rewriting -----------------------------------------------
@@ -1797,51 +1797,51 @@
   (clr-ends-with   (: BjolangRuntime.StringEndsWith))
   (clr-replace     (: BjolangRuntime.StringReplace)))
 
-(: string-contains? (-> string string bool))
+(: (-> string string bool))
 (defun (string-contains? s needle) (clr-contains s needle))
 
-(: string-starts-with? (-> string string bool))
+(: (-> string string bool))
 (defun (string-starts-with? s prefix) (clr-starts-with s prefix))
 
-(: string-ends-with? (-> string string bool))
+(: (-> string string bool))
 (defun (string-ends-with? s suffix) (clr-ends-with s suffix))
 
 ;; String replace.
-(: string-replace (-> string string string string))
+(: (-> string string string string))
 (defun (string-replace s old new) (clr-replace s old new))
 
 ;; --- Case ------------------------------------------------------------------
 ;; Invariant case.
-(: string-upcase (-> string string))
+(: (-> string string))
 (defun (string-upcase s) (.ToUpperInvariant s))
 
-(: string-downcase (-> string string))
+(: (-> string string))
 (defun (string-downcase s) (.ToLowerInvariant s))
 
 ;; --- Trimming and padding --------------------------------------------------
 ;; Trim whitespace.
-(: string-trim (-> string string))
+(: (-> string string))
 (defun (string-trim s) (.Trim s))
 
-(: string-trim-left (-> string string))
+(: (-> string string))
 (defun (string-trim-left s) (.TrimStart s))
 
-(: string-trim-right (-> string string))
+(: (-> string string))
 (defun (string-trim-right s) (.TrimEnd s))
 
 ;; The /slice forms share the string's bytes rather than copying them, so
 ;; what they answer keeps the whole string alive. `string-copy` gives such a
 ;; string bytes of its own, and is the string itself when it has them.
-(: string-trim/slice (-> string string))
+(: (-> string string))
 (defun (string-trim/slice s) (.TrimSlice s))
 
-(: string-trim-left/slice (-> string string))
+(: (-> string string))
 (defun (string-trim-left/slice s) (.TrimStartSlice s))
 
-(: string-trim-right/slice (-> string string))
+(: (-> string string))
 (defun (string-trim-right/slice s) (.TrimEndSlice s))
 
-(: string-copy (-> string string))
+(: (-> string string))
 (defun (string-copy s) (.Copy s))
 
 ;; --- Taking and dropping characters ----------------------------------------
@@ -1850,17 +1850,17 @@
 ;; past the end takes or drops the whole string; a negative count is refused.
 ;; The /slice forms share the string's bytes, as the trims' do.
 
-(: check-count (-> string int void))
+(: (-> string int void))
 (defun (check-count who n)
   (when (< n 0)
     (count-panic who n)))
 
-(: count-panic (-> string int void))
+(: (-> string int void))
 (defun (count-panic who n)
   (panic! #"${who}: the count is ${n}, and a count of characters or elements is 0 or more."))
 
 ;; The cursor n characters after c, or the end when there are fewer.
-(: forward-at-most (-> string StringCursor int StringCursor))
+(: (-> string StringCursor int StringCursor))
 (defun (forward-at-most s c n)
   (let go ((c c) (k n))
     (if (or (= k 0) (string-cursor-end? s c))
@@ -1868,7 +1868,7 @@
         (go (string-cursor-next s c) (- k 1)))))
 
 ;; The cursor n characters before c, or the start when there are fewer.
-(: back-at-most (-> string StringCursor int StringCursor))
+(: (-> string StringCursor int StringCursor))
 (defun (back-at-most s c n)
   (def start (string-cursor-start s))
   (let go ((c c) (k n))
@@ -1876,61 +1876,61 @@
         c
         (go (string-cursor-prev s c) (- k 1)))))
 
-(: string-cursor-forward (-> string StringCursor int StringCursor))
+(: (-> string StringCursor int StringCursor))
 (defun (string-cursor-forward s c n)
   (check-count "string-cursor-forward" n)
   (let go ((c c) (k n))
     (if (= k 0) c (go (string-cursor-next s c) (- k 1)))))
 
-(: string-cursor-back (-> string StringCursor int StringCursor))
+(: (-> string StringCursor int StringCursor))
 (defun (string-cursor-back s c n)
   (check-count "string-cursor-back" n)
   (let go ((c c) (k n))
     (if (= k 0) c (go (string-cursor-prev s c) (- k 1)))))
 
-(: string-take (-> string int string))
+(: (-> string int string))
 (defun (string-take s n)
   (check-count "string-take" n)
   (substring s (string-cursor-start s) (forward-at-most s (string-cursor-start s) n)))
 
-(: string-drop (-> string int string))
+(: (-> string int string))
 (defun (string-drop s n)
   (check-count "string-drop" n)
   (substring s (forward-at-most s (string-cursor-start s) n) (string-cursor-end s)))
 
-(: string-take-right (-> string int string))
+(: (-> string int string))
 (defun (string-take-right s n)
   (check-count "string-take-right" n)
   (substring s (back-at-most s (string-cursor-end s) n) (string-cursor-end s)))
 
-(: string-drop-right (-> string int string))
+(: (-> string int string))
 (defun (string-drop-right s n)
   (check-count "string-drop-right" n)
   (substring s (string-cursor-start s) (back-at-most s (string-cursor-end s) n)))
 
-(: string-take/slice (-> string int string))
+(: (-> string int string))
 (defun (string-take/slice s n)
   (check-count "string-take/slice" n)
   (substring/slice s (string-cursor-start s) (forward-at-most s (string-cursor-start s) n)))
 
-(: string-drop/slice (-> string int string))
+(: (-> string int string))
 (defun (string-drop/slice s n)
   (check-count "string-drop/slice" n)
   (substring/slice s (forward-at-most s (string-cursor-start s) n) (string-cursor-end s)))
 
-(: string-take-right/slice (-> string int string))
+(: (-> string int string))
 (defun (string-take-right/slice s n)
   (check-count "string-take-right/slice" n)
   (substring/slice s (back-at-most s (string-cursor-end s) n) (string-cursor-end s)))
 
-(: string-drop-right/slice (-> string int string))
+(: (-> string int string))
 (defun (string-drop-right/slice s n)
   (check-count "string-drop-right/slice" n)
   (substring/slice s (string-cursor-start s) (back-at-most s (string-cursor-end s) n)))
 
 ;; The text before the first sep and the text after it, or None when sep is
 ;; not in s.
-(: string-split-once (-> string string (Option (Tuple string string))))
+(: (-> string string (Option (Tuple string string))))
 (defun (string-split-once s sep)
   (match (string-search s sep)
     ((Some c)
@@ -1938,7 +1938,7 @@
                   (substring s (string-cursor-forward s c (string-count sep)) (string-cursor-end s)))))
     (None None)))
 
-(: string-split-once/slice (-> string string (Option (Tuple string string))))
+(: (-> string string (Option (Tuple string string))))
 (defun (string-split-once/slice s sep)
   (match (string-search s sep)
     ((Some c)
@@ -1947,14 +1947,14 @@
     (None None)))
 
 ;; Pad width.
-(: string-pad-left (-> string int (#:with char) string))
+(: (-> string int (#:with char) string))
 (defun (string-pad-left s width #:with #\space)
   (let ((b (stringbuilder-empty)))
     (string-pad-fill! b with (- width (string-count s)))
     (stringbuilder-add-string! b s)
     (stringbuilder->string b)))
 
-(: string-pad-right (-> string int (#:with char) string))
+(: (-> string int (#:with char) string))
 (defun (string-pad-right s width #:with #\space)
   (let ((b (stringbuilder-empty)))
     (stringbuilder-add-string! b s)
@@ -1962,7 +1962,7 @@
     (stringbuilder->string b)))
 
 ;; Pad fill.
-(: string-pad-fill! (-> StringBuilder char int void))
+(: (-> StringBuilder char int void))
 (defun (string-pad-fill! b c n)
   (let fill ((i 0))
     (when (< i n)
@@ -1977,14 +1977,14 @@
   (clr-split        (: BjolangRuntime.SplitToVec (-> string string (Vec string))))
   (clr-split/slices (: BjolangRuntime.SplitSlicesToVec (-> string string (Vec string)))))
 
-(: string-split (-> string string (Vec string)))
+(: (-> string string (Vec string)))
 (defun (string-split s sep) (clr-split s sep))
 
 ;; The fields as slices of `s`, sharing its bytes.
-(: string-split/slice (-> string string (Vec string)))
+(: (-> string string (Vec string)))
 (defun (string-split/slice s sep) (clr-split/slices s sep))
 
-(: string-join (-> (Vec string) string string))
+(: (-> (Vec string) string string))
 (defun (string-join parts sep)
   (def b (stringbuilder-empty))
   (loop (:with first? #t #f)
@@ -1997,56 +1997,56 @@
 ;; ToString wrappers. Each is invariant, so each round-trips through the
 ;; matching reader on any machine. See the externs above.
 
-(: int->string (-> int string))
+(: (-> int string))
 (defun (int->string n) (clr-int-string n))
 
-(: long->string (-> long string))
+(: (-> long string))
 (defun (long->string n) (clr-long-string n))
 
-(: double->string (-> double string))
+(: (-> double string))
 (defun (double->string n) (clr-double-string n))
 
-(: byte->string (-> byte string))
+(: (-> byte string))
 (defun (byte->string n) (clr-byte-string n))
 
 ;; Number to string.
-(: number->string (-> int string))
+(: (-> int string))
 (defun (number->string n) (int->string n))
 
-(: string->int (-> string int))
+(: (-> string int))
 (defun (string->int s) (clr-parse-int s))
 
-(: string->long (-> string long))
+(: (-> string long))
 (defun (string->long s) (clr-parse-long s))
 
-(: string->double (-> string double))
+(: (-> string double))
 (defun (string->double s) (clr-parse-double s))
 
 ;; The four numbers past the eight. A decimal is written and read with a point
 ;; and no exponent when it has none: (decimal->string 1.50M) is "1.50", as
 ;; .NET keeps a decimal's scale.
-(: decimal->string (-> decimal string))
+(: (-> decimal string))
 (defun (decimal->string n) (clr-format-number n))
 
-(: string->decimal (-> string decimal))
+(: (-> string decimal))
 (defun (string->decimal s) (clr-parse-decimal s))
 
-(: bigint->string (-> bigint string))
+(: (-> bigint string))
 (defun (bigint->string n) (clr-format-number n))
 
-(: string->bigint (-> string bigint))
+(: (-> string bigint))
 (defun (string->bigint s) (clr-parse-bigint s))
 
-(: int128->string (-> int128 string))
+(: (-> int128 string))
 (defun (int128->string n) (clr-format-number n))
 
-(: string->int128 (-> string int128))
+(: (-> string int128))
 (defun (string->int128 s) (clr-parse-int128 s))
 
-(: uint128->string (-> uint128 string))
+(: (-> uint128 string))
 (defun (uint128->string n) (clr-format-number n))
 
-(: string->uint128 (-> string uint128))
+(: (-> string uint128))
 (defun (string->uint128 s) (clr-parse-uint128 s))
 
 ;; --- Bytes and strings ---
@@ -2072,7 +2072,7 @@
 ;; The text of the bytes from `#:start` to `#:end`, in `#:encoding`. A string
 ;; is UTF-8, so from UTF-8 this checks the bytes and copies them. A byte order
 ;; mark is a character like any other.
-(: bytes->string (-> (Array byte) (#:encoding Encoding) (#:start int) (#:end int) (#:replace (Option char)) string))
+(: (-> (Array byte) (#:encoding Encoding) (#:start int) (#:end int) (#:replace (Option char)) string))
 (defun (bytes->string bytes #:encoding clr-utf-8 #:start 0 #:end (array-length bytes) #:replace None)
   (match replace
     (None (clr-decode bytes start end encoding))
@@ -2080,7 +2080,7 @@
 
 ;; The string's bytes in `#:encoding`, without a byte order mark. To UTF-8
 ;; this is a copy of the string's own bytes.
-(: string->bytes (-> string (#:encoding Encoding) (#:replace (Option char)) (Array byte)))
+(: (-> string (#:encoding Encoding) (#:replace (Option char)) (Array byte)))
 (defun (string->bytes s #:encoding clr-utf-8 #:replace None)
   (match replace
     (None (clr-encode s encoding))
@@ -2090,61 +2090,61 @@
 ;; Characters
 ;; ---------------------------------------------------------------------------
 ;; Unicode characters.
-(: char->integer (-> char int))
+(: (-> char int))
 (defun (char->integer c) (char->int c))
 
-(: integer->char (-> int char))
+(: (-> int char))
 (defun (integer->char n) (int->char n))
 
 ;; Character ordering.
-(: char=? (-> char char bool))
+(: (-> char char bool))
 (defun (char=? a b) (= a b))
 
-(: char<? (-> char char bool))
+(: (-> char char bool))
 (defun (char<? a b) (< a b))
 
-(: char>? (-> char char bool))
+(: (-> char char bool))
 (defun (char>? a b) (> a b))
 
-(: char<=? (-> char char bool))
+(: (-> char char bool))
 (defun (char<=? a b) (<= a b))
 
-(: char>=? (-> char char bool))
+(: (-> char char bool))
 (defun (char>=? a b) (>= a b))
 
 ;; Case-insensitive comparison.
-(: char-ci=? (-> char char bool))
+(: (-> char char bool))
 (defun (char-ci=? a b) (= (char-foldcase a) (char-foldcase b)))
 
-(: char-ci<? (-> char char bool))
+(: (-> char char bool))
 (defun (char-ci<? a b) (< (char-foldcase a) (char-foldcase b)))
 
-(: char-ci>? (-> char char bool))
+(: (-> char char bool))
 (defun (char-ci>? a b) (> (char-foldcase a) (char-foldcase b)))
 
-(: char-ci<=? (-> char char bool))
+(: (-> char char bool))
 (defun (char-ci<=? a b) (<= (char-foldcase a) (char-foldcase b)))
 
-(: char-ci>=? (-> char char bool))
+(: (-> char char bool))
 (defun (char-ci>=? a b) (>= (char-foldcase a) (char-foldcase b)))
 
 ;; ---------------------------------------------------------------------------
 ;; String cursors
 ;; ---------------------------------------------------------------------------
 ;; String cursors.
-(: string-cursor=? (-> StringCursor StringCursor bool))
+(: (-> StringCursor StringCursor bool))
 (defun (string-cursor=? a b) (= a b))
 
-(: string-cursor<? (-> StringCursor StringCursor bool))
+(: (-> StringCursor StringCursor bool))
 (defun (string-cursor<? a b) (< a b))
 
-(: string-cursor>? (-> StringCursor StringCursor bool))
+(: (-> StringCursor StringCursor bool))
 (defun (string-cursor>? a b) (> a b))
 
-(: string-cursor<=? (-> StringCursor StringCursor bool))
+(: (-> StringCursor StringCursor bool))
 (defun (string-cursor<=? a b) (<= a b))
 
-(: string-cursor>=? (-> StringCursor StringCursor bool))
+(: (-> StringCursor StringCursor bool))
 (defun (string-cursor>=? a b) (>= a b))
 
 ;; --- Traversal -------------------------------------------------------------
@@ -2153,7 +2153,7 @@
 ;; The forward walks below ask for the character and the step in one call, so
 ;; that the unit at the cursor is read and bounds-checked once per character
 ;; rather than twice.
-(: string-fold (-> (-> char %a %a) %a string %a))
+(: (-> (-> char %a %a) %a string %a))
 (defun (string-fold f init s)
   (let loop ((c (string-cursor-start s)) (acc init))
     (if (string-cursor-end? s c)
@@ -2162,7 +2162,7 @@
           ((Tuple ch next) (loop next (f ch acc)))))))
 
 ;; String fold right.
-(: string-fold-right (-> (-> char %a %a) %a string %a))
+(: (-> (-> char %a %a) %a string %a))
 (defun (string-fold-right f init s)
   (let loop ((c (string-cursor-end s)) (acc init))
     (if (string-cursor=? c (string-cursor-start s))
@@ -2170,7 +2170,7 @@
         (let ((p (string-cursor-prev s c)))
           (loop p (f (string-cursor-ref s p) acc))))))
 
-(: string-for-each (-> (-> char void) string void))
+(: (-> (-> char void) string void))
 (defun (string-for-each f s)
   ;; (loop (:for ch s)
   ;;       (:do (f ch)))
@@ -2181,7 +2181,7 @@
       (loop next))))
 
 ;; String index.
-(: string-index (-> (-> char bool) string (Option StringCursor)))
+(: (-> (-> char bool) string (Option StringCursor)))
 (defun (string-index pred s)
   (let loop ((c (string-cursor-start s)))
     (if (string-cursor-end? s c)
@@ -2194,24 +2194,24 @@
 
 ;; --- Conversions -----------------------------------------------------------
 
-(: string->list (-> string (List char)))
+(: (-> string (List char)))
 (defun (string->list s)
   (string-fold-right cons Nil s))
 
-(: list->string (-> (List char) string))
+(: (-> (List char) string))
 (defun (list->string cs)
   (def b (stringbuilder-empty))
   (list-for-each #(stringbuilder-add! b &1) cs)
   (stringbuilder->string b))
 
-(: string->vec (-> string (Vec char)))
+(: (-> string (Vec char)))
 (defun (string->vec s)
   (def b (vecbuilder-empty))
   (string-for-each #(vecbuilder-add! b &1) s)
   (vecbuilder->vec b))
 
 ;; Reverse string.
-(: string-reverse (-> string string))
+(: (-> string string))
 (defun (string-reverse s) (.Reverse s))
 
 ;; --- File operations.
@@ -2257,14 +2257,14 @@
 
 ;; The operations answer a `Result`; the functions in these two sections raise
 ;; the `Err`, as the .NET methods they replaced did.
-(: raise-err (-> (Result System.Exception %a) %a))
+(: (-> (Result System.Exception %a) %a))
 (defun (raise-err r)
   (match r
     ((Ok v) v)
     ((Err e) (raise e))))
 
 ;; Read all text.
-(: file-read-text (-> string string))
+(: (-> string string))
 (defun (file-read-text path)
   (match (open-input-file path)
     ((Ok opened) (with-open ((p opened)) (read-all p)))
@@ -2272,7 +2272,7 @@
 
 ;; The flush is explicit so that the suspending copy awaits it. Closing would
 ;; flush too, but synchronously, on whatever thread runs the close.
-(: write-whole-file (-> string string WriteMode void))
+(: (-> string string WriteMode void))
 (defun (write-whole-file path contents mode)
   (match (open-output-file path #:mode mode)
     ((Ok opened) (with-open ((p opened))
@@ -2281,35 +2281,35 @@
     ((Err e) (raise e))))
 
 ;; Write text.
-(: file-write-text (-> string string void))
+(: (-> string string void))
 (defun (file-write-text path contents) (write-whole-file path contents Truncate))
 
-(: file-append-text (-> string string void))
+(: (-> string string void))
 (defun (file-append-text path contents) (write-whole-file path contents Append))
 
-(: file-info (-> string (Option FsInfo)))
+(: (-> string (Option FsInfo)))
 (defun (file-info path) (fs-info path))
 
 ;; What a path names, for the functions below that only ask that.
-(: kind-of (-> string (Option FsKind)))
+(: (-> string (Option FsKind)))
 (defun (kind-of path)
   (match (fs-info path)
     ((Some info) (Some (record-ref info kind)))
     (None None)))
 
-(: file-exists? (-> string bool))
+(: (-> string bool))
 (defun (file-exists? path)
   (match (kind-of path)
     ((Some FsFile) #t)
     (_ #f)))
 
 ;; A missing file is not an error, as with `File.Delete`.
-(: file-delete (-> string void))
+(: (-> string void))
 (defun (file-delete path) (raise-err (fs-delete-file path)))
 
 ;; Moves or renames a file or a directory. Fails if `to` exists, unless
 ;; `#:mode MoveReplace` says to replace a file there.
-(: file-move (-> string string (#:mode MoveMode) void))
+(: (-> string string (#:mode MoveMode) void))
 (defun (file-move from to #:mode MoveNew) (raise-err (fs-move from to mode)))
 
 ;; --- Paths ---
@@ -2321,39 +2321,39 @@
   (clr-file-name      (: System.IO.Path.GetFileName))
   (clr-file-extension (: System.IO.Path.GetExtension)))
 
-(: path-absolute (-> string string))
+(: (-> string string))
 (defun (path-absolute path) (clr-full-path path))
 
 ;; Path combine.
-(: path-combine (-> #:rest string string))
+(: (-> #:rest string string))
 (defun (path-combine #:rest parts) (clr-path-combine parts))
 
 ;; Path filename.
-(: path-filename (-> string (Option string)))
+(: (-> string (Option string)))
 (defun (path-filename path)
   (def name (clr-file-name path))
   (if (string-empty? name) None (Some name)))
 
 ;; File extension.
-(: path-file-extension (-> string (Option string)))
+(: (-> string (Option string)))
 (defun (path-file-extension path)
   (def ext (clr-file-extension path))
   (if (string-empty? ext) None (Some ext)))
 
 ;; --- Directories ---
 
-(: directory-exists? (-> string bool))
+(: (-> string bool))
 (defun (directory-exists? path)
   (match (kind-of path)
     ((Some FsDirectory) #t)
     (_ #f)))
 
 ;; Create directory.
-(: directory-create (-> string void))
+(: (-> string void))
 (defun (directory-create path) (raise-err (fs-create-directory path)))
 
 ;; Delete directory.
-(: directory-delete (-> string void))
+(: (-> string void))
 (defun (directory-delete path) (raise-err (fs-delete-directory path)))
 
 ;; Built from the operations rather than handed to `Directory.Delete` with its
@@ -2363,7 +2363,7 @@
 ;; that includes `path` itself. Entering one would delete what it points at: a
 ;; link to the home directory inside a build directory would empty the home
 ;; directory, and a link back up the tree would never end.
-(: directory-delete-tree (-> string void))
+(: (-> string void))
 (defun (directory-delete-tree path)
   (if (directory-link? path)
       (directory-delete path)
@@ -2378,14 +2378,14 @@
                      (None (file-delete entry)))))
         (directory-delete path))))
 
-(: directory-link? (-> string bool))
+(: (-> string bool))
 (defun (directory-link? path)
   (match (fs-info path)
     ((Some info) (and (record-ref info link?)
                       (match (record-ref info kind) (FsDirectory #t) (FsFile #f))))
     (None #f)))
 
-(: entries-of-kind (-> string FsKind (Vec string)))
+(: (-> string FsKind (Vec string)))
 (defun (entries-of-kind path kind)
   (loop (:for entry (raise-err (fs-list path)))
         (:when (match (Tuple (kind-of entry) kind)
@@ -2395,10 +2395,10 @@
         (:acc found (vecing entry))))
 
 ;; Directory files.
-(: directory-files (-> string (Vec string)))
+(: (-> string (Vec string)))
 (defun (directory-files path) (entries-of-kind path FsFile))
 
-(: directory-subdirectories (-> string (Vec string)))
+(: (-> string (Vec string)))
 (defun (directory-subdirectories path) (entries-of-kind path FsDirectory))
 
 ;; --- The environment ---
@@ -2410,7 +2410,7 @@
   (clr-cwd          (: System.Environment.CurrentDirectory #:get))
   (clr-set-cwd      (: System.Environment.CurrentDirectory #:set)))
 
-(: get-environment-variable (-> string (Option string)))
+(: (-> string (Option string)))
 (defun (get-environment-variable name)
   (def value (clr-get-env name))
   (if (clr-empty? value)
@@ -2418,13 +2418,13 @@
       (Some value)))
 
 ;; Set environment variable.
-(: set-environment-variable! (-> string string void))
+(: (-> string string void))
 (defun (set-environment-variable! name value) (clr-set-env name value))
 
-(: current-directory (-> string))
+(: (-> string))
 (defun (current-directory) clr-cwd)
 
-(: set-current-directory! (-> string void))
+(: (-> string void))
 (defun (set-current-directory! path) (clr-set-cwd path))
 
 ;; ---------------------------------------------------------------------------
@@ -2483,7 +2483,7 @@
 ;; An input port over a stream an opener answered, registered on the ambient
 ;; scope. Whatever the stream is - a file, or a `MemoryStream` a fake
 ;; filesystem made - the port is owned the same way.
-(: stream->input-port (-> (Result Exception Stream) (Result Exception InputPort)))
+(: (-> (Result Exception Stream) (Result Exception InputPort)))
 (defun (stream->input-port opened)
   (match opened
     ((Ok s) (Ok (owned-port-over s)))
@@ -2491,7 +2491,7 @@
 
 ;; The same for an output port: a file port is buffered a block at a time, and
 ;; closing it, or its scope ending, writes what is left.
-(: stream->output-port (-> (Result Exception Stream) (Result Exception OutputPort)))
+(: (-> (Result Exception Stream) (Result Exception OutputPort)))
 (defun (stream->output-port opened)
   (match opened
     ((Ok s) (Ok (owned-port-out s)))
@@ -2499,14 +2499,14 @@
 
 ;; Open input string: a port over the string's own UTF-8 bytes, shared rather
 ;; than copied. Memory only, so nothing registers it.
-(: open-input-string (-> string InputPort))
+(: (-> string InputPort))
 (defun (open-input-string contents)
   (string-port contents))
 
 ;; Open output string: a port that keeps what is written to it, read back with
 ;; `get-output-string` or `get-output-bytes`. Memory only, so nothing
 ;; registers it.
-(: open-output-string (-> OutputPort))
+(: (-> OutputPort))
 (defun (open-output-string)
   (string-port-out))
 
@@ -2520,7 +2520,7 @@
 ;; On a port nothing owns this disposes, which is what a string port wants. On
 ;; one of the standard ports it flushes and stops: nothing in the language
 ;; should be able to take stdout away from the rest of the program.
-(: close-input-port (-> InputPort void))
+(: (-> InputPort void))
 (defun (close-input-port p) (close-in p))
 
 ;; What is still buffered goes out first. On a fiber that write suspends, so the
@@ -2528,7 +2528,7 @@
 ;; port is closed even when the write fails, and the failure raised after.
 ;; `with-open` and a scope ending close with a blocking write, which after a
 ;; `flush-port` has nothing left to do.
-(: close-output-port (-> OutputPort void))
+(: (-> OutputPort void))
 (defbjouble (close-output-port p)
   (#:sync (close-out p))
   (#:bjo  (close-out-await p)))
@@ -2574,13 +2574,13 @@
 
 ;; Read-only, and other readers allowed alongside, as `StreamReader`'s own
 ;; path constructor opens.
-(: open-read-stream/raw (-> string (Result Exception Stream)))
+(: (-> string (Result Exception Stream)))
 (defun (open-read-stream/raw path)
   (match (FileStream. path FileMode.Open FileAccess.Read FileShare.Read)
     ((Ok s) (Ok (cast Stream s)))
     ((Err e) (Err e))))
 
-(: write-mode->file-mode (-> WriteMode FileMode))
+(: (-> WriteMode FileMode))
 (defun (write-mode->file-mode mode)
   (match mode
     (Truncate FileMode.Create)
@@ -2589,18 +2589,18 @@
 
 ;; Write-only, readers allowed alongside, as `StreamWriter`'s path constructor
 ;; opens.
-(: open-write-stream/raw (-> string WriteMode (Result Exception Stream)))
+(: (-> string WriteMode (Result Exception Stream)))
 (defun (open-write-stream/raw path mode)
   (match (FileStream. path (write-mode->file-mode mode) FileAccess.Write FileShare.Read)
     ((Ok s) (Ok (cast Stream s)))
     ((Err e) (Err e))))
 
 ;; .NET ticks at 1970-01-01T00:00Z, and per millisecond.
-(: unix-epoch-ticks long)
+(: long)
 (def unix-epoch-ticks 621355968000000000L)
 
 ;; Rounds toward the past, so a write just before 1970 is -1 and not 0.
-(: ticks->unix-ms (-> long long))
+(: (-> long long))
 (defun (ticks->unix-ms ticks)
   (def d (- ticks unix-epoch-ticks))
   (def q (/ d 10000L))
@@ -2616,7 +2616,7 @@
 ;; steps, as Linux allows, so that a loop of links ends. Read step by step
 ;; because `ResolveLinkTarget` answers null for a link to nothing, and there is
 ;; no null to test here.
-(: link-end (-> string string))
+(: (-> string string))
 (defun (link-end path)
   (let loop ((p path) (steps 0))
     (def target (.-LinkTarget (FileInfo. p)))
@@ -2630,7 +2630,7 @@
 ;; A link's size and time are those of the file it leads to, which is what
 ;; reading it reads; `link?` is what says it is one. A link to nothing keeps
 ;; its own.
-(: file-info/raw (-> string (Option FsInfo)))
+(: (-> string (Option FsInfo)))
 (defun (file-info/raw path)
   (def own (FileInfo. path))
   (def link (not (clr-empty? (.-LinkTarget own))))
@@ -2643,7 +2643,7 @@
                     (link? link)))
       None))
 
-(: directory-info/raw (-> string (Option FsInfo)))
+(: (-> string (Option FsInfo)))
 (defun (directory-info/raw path)
   (def own (DirectoryInfo. path))
   (def link (not (clr-empty? (.-LinkTarget own))))
@@ -2656,14 +2656,14 @@
                     (link? link)))
       None))
 
-(: fs-info/raw (-> string (Option FsInfo)))
+(: (-> string (Option FsInfo)))
 (defun (fs-info/raw path)
   (if (clr-file-exists path)
       (file-info/raw path)
       (if (clr-dir-exists path) (directory-info/raw path) None)))
 
 ;; Whole paths, files and directories both, in the order the OS gives them.
-(: fs-list/raw (-> string (Result Exception (Vec string))))
+(: (-> string (Result Exception (Vec string))))
 (defun (fs-list/raw path)
   (match (clr-dir-entries path)
     ((Ok names) (Ok (loop (:for name names) (:acc found (vecing name)))))
@@ -2671,30 +2671,30 @@
 
 ;; Creates every missing directory along the path. One that is already there is
 ;; not an error.
-(: fs-create-directory/raw (-> string (Result Exception Unit)))
+(: (-> string (Result Exception Unit)))
 (defun (fs-create-directory/raw path)
   (match (clr-dir-create path)
     ((Ok _) (Ok unit))
     ((Err e) (Err e))))
 
 ;; What a guarded `void` call answers, as the `Unit` an operation declares.
-(: unit-result (-> (Result Exception %a) (Result Exception Unit)))
+(: (-> (Result Exception %a) (Result Exception Unit)))
 (defun (unit-result r)
   (match r
     ((Ok _) (Ok unit))
     ((Err e) (Err e))))
 
 ;; A missing file is not an error.
-(: fs-delete-file/raw (-> string (Result Exception Unit)))
+(: (-> string (Result Exception Unit)))
 (defun (fs-delete-file/raw path) (unit-result (clr-file-delete path)))
 
 ;; An empty directory. A missing or non-empty one is an `IOException`.
-(: fs-delete-directory/raw (-> string (Result Exception Unit)))
+(: (-> string (Result Exception Unit)))
 (defun (fs-delete-directory/raw path) (unit-result (clr-dir-delete path)))
 
 ;; A file or a directory. Fails if `to` exists, unless `MoveReplace` asks to
 ;; replace a file there. `Directory.Move` never replaces, which is the rule.
-(: fs-move/raw (-> string string MoveMode (Result Exception Unit)))
+(: (-> string string MoveMode (Result Exception Unit)))
 (defun (fs-move/raw from to mode)
   (unit-result (if (clr-dir-exists from)
                    (clr-dir-move from to)
@@ -2725,25 +2725,25 @@
 ;; The scope is read before the perform, so a program with nowhere to put the
 ;; port fails without having opened anything.
 
-(: open-input-file (-> string (Result Exception InputPort)))
+(: (-> string (Result Exception InputPort)))
 (defun (open-input-file path)
   (ignore (current-scope))
   (stream->input-port (open-read-stream path)))
 
 ;; `(open-output-file path)` truncates; `#:mode Append` or `#:mode CreateNew`
 ;; says otherwise.
-(: open-output-file (-> string (#:mode WriteMode) (Result Exception OutputPort)))
+(: (-> string (#:mode WriteMode) (Result Exception OutputPort)))
 (defun (open-output-file path #:mode Truncate)
   (ignore (current-scope))
   (stream->output-port (open-write-stream path mode)))
 
 ;; The same, past whatever handler is installed. The `/raw` says so.
-(: open-input-file/raw (-> string (Result Exception InputPort)))
+(: (-> string (Result Exception InputPort)))
 (defun (open-input-file/raw path)
   (ignore (current-scope))
   (stream->input-port (open-read-stream/raw path)))
 
-(: open-output-file/raw (-> string WriteMode (Result Exception OutputPort)))
+(: (-> string WriteMode (Result Exception OutputPort)))
 (defun (open-output-file/raw path mode)
   (ignore (current-scope))
   (stream->output-port (open-write-stream/raw path mode)))
@@ -2757,13 +2757,13 @@
 ;;
 ;; `proc` is `-?->`, so it may be either colour and both copies are generated.
 ;; A suspending body gets the same closing.
-(: call-with-input-file (-> string (-?-> InputPort %a) (Result Exception %a)))
+(: (-> string (-?-> InputPort %a) (Result Exception %a)))
 (defun (call-with-input-file path proc)
   (match (open-input-file path)
     ((Ok p) (with-open ((it p)) (Ok (proc it))))
     ((Err e) (Err e))))
 
-(: call-with-output-file (-> string (-?-> OutputPort %a) (#:mode WriteMode) (Result Exception %a)))
+(: (-> string (-?-> OutputPort %a) (#:mode WriteMode) (Result Exception %a)))
 (defun (call-with-output-file path proc #:mode Truncate)
   (match (open-output-file path #:mode mode)
     ((Ok p) (with-open ((it p)) (Ok (proc it))))
@@ -2790,17 +2790,17 @@
   (clr-stream-flush       (: System.IO.Stream.Flush       (-> Stream void) #:blocking))
   (clr-stream-flush-await (: System.IO.Stream.FlushAsync  (-> Stream void) #:async)))
 
-(: stream-copy! (-> Stream Stream void))
+(: (-> Stream Stream void))
 (defbjouble (stream-copy! from to)
   (#:sync (clr-copy-to from to))
   (#:bjo  (clr-copy-to-await from to)))
 
-(: stream-write! (-> Stream (Array byte) void))
+(: (-> Stream (Array byte) void))
 (defbjouble (stream-write! s bytes)
   (#:sync (clr-stream-write s bytes 0 (array-length bytes)))
   (#:bjo  (clr-stream-write-await s bytes 0 (array-length bytes))))
 
-(: stream-flush! (-> Stream void))
+(: (-> Stream void))
 (defbjouble (stream-flush! s)
   (#:sync (clr-stream-flush s))
   (#:bjo  (clr-stream-flush-await s)))
@@ -2813,7 +2813,7 @@
   (clr-guid-text        (: System.Guid.ToString (-> System.Guid string string))))
 
 ;; At most `count` bytes: what the source held when it was opened.
-(: stream-copy-count! (-> Stream Stream long void))
+(: (-> Stream Stream long void))
 (defbjouble (stream-copy-count! from to count)
   (#:sync (clr-copy-count from to count))
   (#:bjo  (clr-copy-count-await from to count)))
@@ -2830,7 +2830,7 @@
 ;; the source had when it was opened, so that appending a file to itself ends.
 ;; Replacing by a move means a link at `to` is replaced, not written through.
 ;; The copy is a new file, with a modified time of its own.
-(: file-copy (-> string string (#:mode WriteMode) void))
+(: (-> string string (#:mode WriteMode) void))
 (defun (file-copy from to #:mode CreateNew)
   (when (= (path-absolute from) (path-absolute to))
     (raise (cast Exception (IOException. (string-append "cannot copy a file onto itself: " from)))))
@@ -2854,29 +2854,29 @@
          (stream-copy-count! in out count)
          (stream-flush! out))))))
 
-(: file-read-bytes (-> string (Array byte)))
+(: (-> string (Array byte)))
 (defun (file-read-bytes path)
   (with-open ((in (raise-err (open-read-stream path))))
     (def buffer (MemoryStream.))
     (stream-copy! in (cast Stream buffer))
     (.ToArray buffer)))
 
-(: write-whole-bytes (-> string (Array byte) WriteMode void))
+(: (-> string (Array byte) WriteMode void))
 (defun (write-whole-bytes path bytes mode)
   (with-open ((out (raise-err (open-write-stream path mode))))
     (stream-write! out bytes)
     (stream-flush! out)))
 
-(: file-write-bytes (-> string (Array byte) void))
+(: (-> string (Array byte) void))
 (defun (file-write-bytes path bytes) (write-whole-bytes path bytes Truncate))
 
-(: file-append-bytes (-> string (Array byte) void))
+(: (-> string (Array byte) void))
 (defun (file-append-bytes path bytes) (write-whole-bytes path bytes Append))
 
 ;; The lines, without their line ends. What ends a line is `#:mode`'s to say;
 ;; by default "\n", "\r" and "\r\n" all do. A last line needs no end, and a
 ;; final line end makes no empty line after it.
-(: file-read-lines (-> string (#:mode LineMode) (Vec string)))
+(: (-> string (#:mode LineMode) (Vec string)))
 (defun (file-read-lines path #:mode Any)
   (match (open-input-file path)
     ((Ok opened) (with-open ((p opened))
@@ -2891,7 +2891,7 @@
 ;; Each line followed by "\n", the last one too, on every OS: the same lines
 ;; make the same bytes wherever they are written, and `file-read-lines` gives
 ;; them back as long as none holds a line end of its own.
-(: file-write-lines (-> string (Vec string) void))
+(: (-> string (Vec string) void))
 (defun (file-write-lines path lines)
   (match (open-output-file path)
     ((Ok opened) (with-open ((p opened))
@@ -2936,7 +2936,7 @@
 ;;
 ;; A `seq` body is one iterator, so the walk keeps its own list of what is
 ;; left rather than recursing: a directory's entries go in front of the rest.
-(: sorted-entries (-> string (List string)))
+(: (-> string (List string)))
 (defun (sorted-entries dir) (list-sort (vec->list (raise-err (fs-list dir)))))
 
 (: directory-walk #:sync (-> string (#:into? (-> string bool)) (Seq string)))
@@ -2963,7 +2963,7 @@
   (clr-flush       (: Bjolang.Runtime.OutputPorts.Flush      (-> OutputPort void) #:blocking))
   (clr-flush-await (: Bjolang.Runtime.OutputPorts.FlushAsync (-> OutputPort void) #:async)))
 
-(: flush-port (-> OutputPort void))
+(: (-> OutputPort void))
 (defbjouble (flush-port p)
   (#:sync (clr-flush p))
   (#:bjo  (clr-flush-await p)))
@@ -2989,13 +2989,13 @@
   (clr-peek-char-opt-await (: Bjolang.Runtime.InputPorts.PeekCharOptAsync (-> InputPort (Option char)) #:async)))
 
 ;; Port eof.
-(: port-eof? (-> InputPort bool))
+(: (-> InputPort bool))
 (defbjouble (port-eof? p)
   (#:sync (clr-eof p))
   (#:bjo  (clr-eof-await p)))
 
 ;; `LineMode` as `Bjolang.Runtime.LineMode` numbers it.
-(: line-mode-code (-> LineMode int))
+(: (-> LineMode int))
 (defun (line-mode-code mode)
   (match mode
     (Any 0)
@@ -3007,25 +3007,25 @@
 ;; Where a reader of one argument is expected, `read-line` is the function
 ;; that calls it with the port, and the mode is `Any`: `(port->list read-line
 ;; p)`. For another mode, hand it over as `(fun (p) (read-line p #:mode m))`.
-(: read-line (-> InputPort (#:mode LineMode) string))
+(: (-> InputPort (#:mode LineMode) string))
 (defbjouble (read-line p #:mode Any)
   (#:sync (clr-line p (line-mode-code mode)))
   (#:bjo  (clr-line-await p (line-mode-code mode))))
 
 ;; One read, not `port-eof?` and then `read-line`: between those two another
 ;; fiber reading the same port can take the last line.
-(: read-line/opt (-> InputPort (#:mode LineMode) (Option string)))
+(: (-> InputPort (#:mode LineMode) (Option string)))
 (defbjouble (read-line/opt p #:mode Any)
   (#:sync (clr-line-opt p (line-mode-code mode)))
   (#:bjo  (clr-line-opt-await p (line-mode-code mode))))
 
-(: read-char (-> InputPort char))
+(: (-> InputPort char))
 (defbjouble (read-char p)
   (#:sync (clr-char p))
   (#:bjo  (clr-char-await p)))
 
 ;; One read, for the reason `read-line/opt` is.
-(: read-char/opt (-> InputPort (Option char)))
+(: (-> InputPort (Option char)))
 (defbjouble (read-char/opt p)
   (#:sync (clr-char-opt p))
   (#:bjo  (clr-char-opt-await p)))
@@ -3033,24 +3033,24 @@
 ;; The character `read-char` would answer, left in the port, as Racket's
 ;; `peek-char`. Decoded from the port's buffer: it waits for the bytes a
 ;; character needs and takes none of them.
-(: peek-char (-> InputPort char))
+(: (-> InputPort char))
 (defbjouble (peek-char p)
   (#:sync (clr-peek-char p))
   (#:bjo  (clr-peek-char-await p)))
 
-(: peek-char/opt (-> InputPort (Option char)))
+(: (-> InputPort (Option char)))
 (defbjouble (peek-char/opt p)
   (#:sync (clr-peek-char-opt p))
   (#:bjo  (clr-peek-char-opt-await p)))
 
 ;; Drains a port
-(: read-all (-> InputPort string))
+(: (-> InputPort string))
 (defbjouble (read-all p)
   (#:sync (clr-rest p))
   (#:bjo  (clr-rest-await p)))
 
 ;; Port fold.
-(: port-fold (-> (-?-> InputPort %a %a) %a InputPort %a))
+(: (-> (-?-> InputPort %a %a) %a InputPort %a))
 (defun (port-fold f init port)
   (let loop ((acc init))
     (if (port-eof? port)
@@ -3077,29 +3077,29 @@
   (clr-writeln       (: Bjolang.Runtime.OutputPorts.WriteLine      (-> OutputPort string void) #:blocking))
   (clr-writeln-await (: Bjolang.Runtime.OutputPorts.WriteLineAsync (-> OutputPort string void) #:async)))
 
-(: write-string (-> OutputPort string void))
+(: (-> OutputPort string void))
 (defbjouble (write-string p s)
   (#:sync (clr-write p s))
   (#:bjo  (clr-write-await p s)))
 
 ;; Write char.
-(: write-char (-> OutputPort char void))
+(: (-> OutputPort char void))
 (defbjouble (write-char p c)
   (#:sync (clr-writec p c))
   (#:bjo  (clr-writec-await p c)))
 
-(: writeln (-> OutputPort string void))
+(: (-> OutputPort string void))
 (defbjouble (writeln p s)
   (#:sync (clr-writeln p s))
   (#:bjo  (clr-writeln-await p s)))
 
 ;; What a string port has been given, as text. Bytes written to it with
 ;; `write-bytes!` that are not UTF-8 read as U+FFFD, as Racket's do.
-(: get-output-string (-> OutputPort string))
+(: (-> OutputPort string))
 (defun (get-output-string p) (writer->string p))
 
 ;; What a string port has been given, as bytes.
-(: get-output-bytes (-> OutputPort (Array byte)))
+(: (-> OutputPort (Array byte)))
 (defun (get-output-bytes p) (output-bytes p))
 
 
@@ -3183,21 +3183,21 @@
   (clr-utc-now (: System.DateTime.UtcNow #:get))
   (clr-local-zone (: System.TimeZoneInfo.Local #:get)))
 
-(: system-utc-ticks (-> long))
+(: (-> long))
 (defun (system-utc-ticks) (.-Ticks clr-utc-now))
 
-(: system-zone (-> System.TimeZoneInfo))
+(: (-> System.TimeZoneInfo))
 (defun (system-zone) clr-local-zone)
 
 ;; Each part not given is the system clock's, but for the nanoseconds: when
 ;; `#:monotonic-ns` is not given, they are read from the milliseconds, so that
 ;; a clock given only `#:monotonic-ms` agrees with itself.
-(: make-clock (-> (#:monotonic-ms (-> long))
-                  (#:monotonic-ns (Option (-> long)))
-                  (#:utc-ticks (-> long))
-                  (#:zone (-> System.TimeZoneInfo))
-                  (#:advance (Option (-> long void)))
-                  Clock))
+(: (-> (#:monotonic-ms (-> long))
+       (#:monotonic-ns (Option (-> long)))
+       (#:utc-ticks (-> long))
+       (#:zone (-> System.TimeZoneInfo))
+       (#:advance (Option (-> long void)))
+       Clock))
 (defun (make-clock #:monotonic-ms clock-ms #:monotonic-ns None #:utc-ticks system-utc-ticks
                    #:zone system-zone #:advance None)
   (Clock (read-monotonic-ms monotonic-ms)
@@ -3209,21 +3209,21 @@
          (advance-ticks advance)))
 
 ;; The machine's clock, in the machine's zone.
-(: system-clock Clock)
+(: Clock)
 (def system-clock (make-clock #:monotonic-ns (Some clock-ns)))
 
 ;; Cold: nothing reads the time in a loop.
-(: current-clock (Param Clock))
+(: (Param Clock))
 (def current-clock (make-cold-parameter system-clock))
 
 ;; Not called `now`: that is (std datetime)'s wall-clock `Instant`.
-(: monotonic-ms (-> (#:clock Clock) long))
+(: (-> (#:clock Clock) long))
 (defun (monotonic-ms #:clock (parameter-ref current-clock))
   ((record-ref clock read-monotonic-ms)))
 
 ;; Nanoseconds on the same clock: for timing what takes less than a
 ;; millisecond.
-(: monotonic-ns (-> (#:clock Clock) long))
+(: (-> (#:clock Clock) long))
 (defun (monotonic-ns #:clock (parameter-ref current-clock))
   ((record-ref clock read-monotonic-ns)))
 
@@ -3480,7 +3480,7 @@
     ((_ clause ...) (cond-arms clause form))
     (bad (syntax-error bad "cond takes clauses: (cond (test body ...) ... (else body ...))"))))
 
-(: cond-arms (-> (List Syntax) Syntax Syntax))
+(: (-> (List Syntax) Syntax Syntax))
 (defun (cond-arms clauses whole)
   (match clauses
     (Nil
@@ -3523,7 +3523,7 @@
        (bad (syntax-error bad "A cond clause is (test body ...), (:match pattern expr body ...) to answer on a match, (:def pattern expr) to bind, (:do body ...) to run something, or (else body ...) for the last one."))))))
 
 ;; Several forms as one.
-(: one-form (-> (List Syntax) Syntax Syntax))
+(: (-> (List Syntax) Syntax Syntax))
 (defun (one-form body whole)
   (match body
     (Nil (syntax-error whole "This clause has nothing to do."))
@@ -3560,7 +3560,7 @@
     ((_ value step ...) (some-steps value step))
     (bad (syntax-error bad "some-> takes a value and steps: (some-> value (f &) (g &))"))))
 
-(: some-steps (-> Syntax (List Syntax) Syntax))
+(: (-> Syntax (List Syntax) Syntax))
 (defun (some-steps value steps)
   (match steps
     ;; No steps.
@@ -3581,7 +3581,7 @@
     ((_ value step ...) (try-steps value step))
     (bad (syntax-error bad "try-> takes a value and steps: (try-> value (f &) (g &))"))))
 
-(: try-steps (-> Syntax (List Syntax) Syntax))
+(: (-> Syntax (List Syntax) Syntax))
 (defun (try-steps value steps)
   (match steps
     ;; No steps.
@@ -3662,7 +3662,7 @@
 
 ;; True for a field step: an identifier written with a leading dot. `...` and a
 ;; lone `.` are punctuation, not identifiers, so they never get here.
-(: path-dotted? (-> Syntax bool))
+(: (-> Syntax bool))
 (defun (path-dotted? step)
   (match step
     ((SSym s)
@@ -3671,14 +3671,14 @@
     (_ #f)))
 
 ;; A `.-Name` step, which reads a .NET property.
-(: path-property? (-> Syntax bool))
+(: (-> Syntax bool))
 (defun (path-property? step)
   (match step
     ((SSym s) (string-starts-with? (symbol->string s) ".-"))
     (_ #f)))
 
 ;; Rejects a step that cannot be read: punctuation such as `.` or `...`.
-(: path-check (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (path-check step)
   (match step
     ((SPunct p)
@@ -3686,7 +3686,7 @@
     (_ step)))
 
 ;; One step's read of `acc`.
-(: path-read (-> Syntax Syntax Syntax))
+(: (-> Syntax Syntax Syntax))
 (defun (path-read acc step)
   (syntax-at
     (if (path-dotted? (path-check step))
@@ -3694,7 +3694,7 @@
         #'(ref ,acc ,step))
     step))
 
-(: path-reads (-> Syntax (List Syntax) Syntax))
+(: (-> Syntax (List Syntax) Syntax))
 (defun (path-reads acc steps)
   (match steps
     (Nil acc)
@@ -3702,7 +3702,7 @@
 
 ;; Every key read is a `try-ref`, and the first `None` is the answer. The last
 ;; key's Option is already the answer, so it is not taken apart and rebuilt.
-(: path-tries (-> Syntax (List Syntax) Syntax))
+(: (-> Syntax (List Syntax) Syntax))
 (defun (path-tries acc steps)
   (match steps
     (Nil #'(Some ,acc))
@@ -3720,7 +3720,7 @@
 ;; A name for the expansion's own temporaries. Built from a string so that each
 ;; depth gets a name of its own: hygiene gives every distinct name one fresh
 ;; spelling per expansion, so a single template name would shadow itself.
-(: path-temp (-> string int Syntax))
+(: (-> string int Syntax))
 (defun (path-temp prefix i)
   (SSym (string->symbol (str prefix (->str i)))))
 
@@ -3728,7 +3728,7 @@
 ;; step was written in another macro's template — is stripped, since a field
 ;; name is never renamed. Injected, so that this macro's hygiene leaves it
 ;; alone too.
-(: path-field (-> (-> Symbol Syntax) Syntax Syntax))
+(: (-> (-> Symbol Syntax) Syntax Syntax))
 (defun (path-field inject step)
   (def name
     (match step
@@ -3748,7 +3748,7 @@
         (None name)))))
 
 ;; Is everything in `s` from `c` on an ASCII digit, and is there anything?
-(: path-digits? (-> string StringCursor bool))
+(: (-> string StringCursor bool))
 (defun (path-digits? s c)
   (and (not (string-cursor-end? s c))
        (let go ((c c))
@@ -3762,7 +3762,7 @@
 ;; Everything that is evaluated is bound first, in order — the target, each
 ;; key, then the value — and the copy is then built from the bound names, so
 ;; that nothing is evaluated twice or out of order.
-(: path-write (-> (-> Symbol Syntax) Syntax (List Syntax) bool Syntax))
+(: (-> (-> Symbol Syntax) Syntax (List Syntax) bool Syntax))
 (defun (path-write inject target items update?)
   (def reversed (list-reverse items))
   (def value (list-head reversed))
@@ -3784,7 +3784,7 @@
 ;; kept. When `copying?`, a .NET property is refused: `set` copies with
 ;; `record-set`, which has no way to copy a .NET object. `set!` copies nothing
 ;; and only reads the steps before its last, so it reads a property there.
-(: path-key-names (-> (List Syntax) int bool (List Syntax)))
+(: (-> (List Syntax) int bool (List Syntax)))
 (defun (path-key-names steps i copying?)
   (match steps
     (Nil Nil)
@@ -3798,7 +3798,7 @@
          (Cons (path-temp "key" i) (path-key-names rest (+ i 1) copying?))))))
 
 ;; `(key-n expr)` for each key step, in order.
-(: path-key-bindings (-> (List Syntax) (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax) (List Syntax)))
 (defun (path-key-bindings named steps)
   (match named
     (Nil Nil)
@@ -3812,7 +3812,7 @@
 ;; The copy of `obj` with the rest of the path written. `named` and `steps` run
 ;; side by side: `named` is what the code uses, and `steps` is where each step
 ;; was written.
-(: path-body (-> (-> Symbol Syntax) Syntax int (List Syntax) (List Syntax) (-> Syntax Syntax) Syntax))
+(: (-> (-> Symbol Syntax) Syntax int (List Syntax) (List Syntax) (-> Syntax Syntax) Syntax))
 (defun (path-body inject obj depth named steps leaf)
   (match named
     (Nil (syntax-error obj "internal error: a path ran out of steps."))
@@ -3847,7 +3847,7 @@
      (path-write! inject target (Cons first (Cons second rest))))
     (bad (syntax-error bad "set! writes a variable, (set! name value), or along a path in place, (set! target step ... value), where a step is .field or a key."))))
 
-(: path-write! (-> (-> Symbol Syntax) Syntax (List Syntax) Syntax))
+(: (-> (-> Symbol Syntax) Syntax (List Syntax) Syntax))
 (defun (path-write! inject target items)
   (def reversed (list-reverse items))
   (def value (list-head reversed))
@@ -3863,7 +3863,7 @@
 ;; The reads of the steps before the last, then the write of the last. The
 ;; container a field is written in is bound to a name first, because
 ;; `record-set!` takes the name of a record and not an expression.
-(: path-store! (-> (-> Symbol Syntax) Syntax (List Syntax) (List Syntax) Syntax Syntax))
+(: (-> (-> Symbol Syntax) Syntax (List Syntax) (List Syntax) Syntax Syntax))
 (defun (path-store! inject acc named steps new)
   (match named
     (Nil (syntax-error acc "internal error: a path ran out of steps."))
@@ -3909,7 +3909,7 @@
     ((_ op a b rest ...) (fold-left-forms op #'(,op ,a ,b) rest))
     (bad (syntax-error bad "#fl takes an operator and at least two operands: #fl(+ a b c)."))))
 
-(: fold-left-forms (-> Syntax Syntax (List Syntax) Syntax))
+(: (-> Syntax Syntax (List Syntax) Syntax))
 (defun (fold-left-forms op acc rest)
   (match rest
     (Nil acc)
@@ -3921,7 +3921,7 @@
     ((_ op a b rest ...) (fold-right-forms op a (Cons b rest)))
     (bad (syntax-error bad "#fr takes an operator and at least two operands: #fr(Cons 1 2 Nil)."))))
 
-(: fold-right-forms (-> Syntax Syntax (List Syntax) Syntax))
+(: (-> Syntax Syntax (List Syntax) Syntax))
 (defun (fold-right-forms op x rest)
   (match rest
     (Nil x)
@@ -3941,7 +3941,7 @@
 
 ;; `prev` is safe to read twice: the first operand, an atom, or a temporary.
 ;; `use-t` says which temporary is free; the other may be `prev`.
-(: chain-forms (-> Syntax Syntax (List Syntax) bool Syntax))
+(: (-> Syntax Syntax (List Syntax) bool Syntax))
 (defun (chain-forms op prev rest use-t)
   (match rest
     (Nil prev)
@@ -3955,7 +3955,7 @@
              #'(let ((u ,x)) (if (,op ,prev u) ,(chain-forms op #'u more #t) #f)))))))
 
 ;; Cheap to evaluate twice: anything but a list.
-(: syntax-atom? (-> Syntax bool))
+(: (-> Syntax bool))
 (defun (syntax-atom? s)
   (match s
     ((SList _) #f)
@@ -3967,7 +3967,7 @@
     ((_) #'(map-empty))
     ((_ entry ...) #'(list->map ,(map-entries entry)))))
 
-(: map-entries (-> (List Syntax) Syntax))
+(: (-> (List Syntax) Syntax))
 (defun (map-entries entries)
   (match entries
     (Nil #'Nil)
@@ -4206,13 +4206,13 @@
 ;; like a slow network.
 ;; TODO: rename stupid names. these should milliseconds->seconds, and milliseconds->minutes
 ;; millis shouldn't exist.
-(: millis (-> int int))
+(: (-> int int))
 (defun (millis n) n)
 
-(: seconds (-> int int))
+(: (-> int int))
 (defun (seconds n) (* n 1000))
 
-(: minutes (-> int int))
+(: (-> int int))
 (defun (minutes n) (* n 60000))
 
 ;; ---------------------------------------------------------------------------
@@ -4221,7 +4221,7 @@
 
 ;; `(1 2 3)`, with every element formatted by its own `->str`. No quote, so a
 ;; nested list prints as `((1) (2 3))` and the empty list as `()`.
-(: list->str (-> (List %a) string) (where (->str %a)))
+(: (-> (List %a) string) (where (->str %a)))
 (defun (list->str l)
   (if (list-empty? l)
       "()"
@@ -4244,7 +4244,7 @@
 ;; Formatting should be a pure operation. Using a port would incorrectly inherit
 ;; the port's effect (colour), causing string building to become asynchronous 
 ;; inside bjoroutines. `StringBuilder` is also more efficient here.
-(: vec->str (-> (Vec %a) string) (where (->str %a)))
+(: (-> (Vec %a) string) (where (->str %a)))
 (defun (vec->str v)
   (def sb (stringbuilder-empty))
   (stringbuilder-add-string! sb "[")
@@ -4263,7 +4263,7 @@
   (defun (->str v)
     (vec->str v)))
 
-(: array->str (-> (Array %a) string) (where (->str %a)))
+(: (-> (Array %a) string) (where (->str %a)))
 (defun (array->str a)
   (def sb (stringbuilder-empty))
   (def strit #(stringbuilder-add-string! sb &1))
@@ -4286,7 +4286,7 @@
 
 ;; We use a `StringBuilder` directly rather than a string port to keep 
 ;; formatting pure and synchronous.
-(: seq->str (-> (Seq %a) string) (where (->str %a)))
+(: (-> (Seq %a) string) (where (->str %a)))
 (defun (seq->str sq)
   (def sb (stringbuilder-empty))
   (stringbuilder-add-string! sb "(seq")
@@ -4303,13 +4303,13 @@
     "(Seq ...)"))
 
 ;; Map entry to str.
-(: map-entry->str (-> (Tuple %k %v) string) (where (->str %k) (->str %v)))
+(: (-> (Tuple %k %v) string) (where (->str %k) (->str %v)))
 (defun (map-entry->str entry)
   (def (k v) entry)
   (str (->str k) " " (->str v)))
 
 ;; Map to str. Each entry in parentheses, as the `#map` literal writes it.
-(: map->str (-> (Map %k %v) string) (where (->str %k) (->str %v)))
+(: (-> (Map %k %v) string) (where (->str %k) (->str %v)))
 (defun (map->str m)
   (def sb (stringbuilder-empty))
   (stringbuilder-add-string! sb "#map(")
@@ -4375,17 +4375,17 @@
 ;; type/derive
 ;; ---------------------------------------------------------------------------
 
-(: derive-sym (-> string Syntax))
+(: (-> string Syntax))
 (defun (derive-sym name) (SSym (string->symbol name)))
 
 ;; Refuse invalid syntax.
-(: derive-fail (-> Syntax string (List Syntax)))
+(: (-> Syntax string (List Syntax)))
 (defun (derive-fail form message)
   (ignore (syntax-error form message))
   Nil)
 
 ;; Head type variables.
-(: derive-head-vars (-> Syntax (List Syntax)))
+(: (-> Syntax (List Syntax)))
 (defun (derive-head-vars head)
   (match head
     ((SList items)
@@ -4395,7 +4395,7 @@
     (_ Nil)))
 
 ;; Type name.
-(: derive-head-name (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (derive-head-name head)
   (match head
     ((SList items)
@@ -4405,7 +4405,7 @@
     (_ head)))
 
 ;; Hash combine fold.
-(: derive-hash-fold (-> (List Syntax) Syntax Syntax))
+(: (-> (List Syntax) Syntax Syntax))
 (defun (derive-hash-fold parts acc)
   (match parts
     (Nil acc)
@@ -4414,7 +4414,7 @@
 ;; --- Records and structs ---
 
 ;; Field names.
-(: derive-field-names (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (derive-field-names fields)
   (list-map (fun (f)
               (syntax-match f
@@ -4423,7 +4423,7 @@
             fields))
 
 ;; Any mutable fields.
-(: derive-any-mutable? (-> (List Syntax) bool))
+(: (-> (List Syntax) bool))
 (defun (derive-any-mutable? fields)
   (def (Cons f rest) fields
     :leave-with #f)
@@ -4434,7 +4434,7 @@
       (derive-any-mutable? rest)))
 
 ;; Eq record methods.
-(: derive-eq-record (-> Syntax (List Syntax) bool (List Syntax)))
+(: (-> Syntax (List Syntax) bool (List Syntax)))
 (defun (derive-eq-record head names mutable?)
   (def equals
     #'(defun (= a b)
@@ -4449,7 +4449,7 @@
 ;; --- Unions ---
 
 ;; A case is a bare name or `(: Name type ... markers ...)`.
-(: derive-case-name (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (derive-case-name c)
   (def* ((SList items) c :leave-with c)
         ((Cons _ (Cons name _)) items :leave-with c))
@@ -4457,13 +4457,13 @@
 
 ;; The payload types, which end at the first marker: `#:tag` takes a name after
 ;; it, which is not a type.
-(: derive-payload (-> Syntax (List Syntax)))
+(: (-> Syntax (List Syntax)))
 (defun (derive-payload c)
   (def* ((SList items) c :leave-with Nil)
         ((Cons _ (Cons _ rest)) items :leave-with Nil))
   (derive-types-before-markers rest))
 
-(: derive-types-before-markers (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (derive-types-before-markers items)
   (match items
     ((Cons (SKey _) _) Nil)
@@ -4471,21 +4471,21 @@
     (Nil Nil)))
 
 ;; Binders.
-(: derive-binders (-> string int int (List Syntax)))
+(: (-> string int int (List Syntax)))
 (defun (derive-binders side i n)
   (if (= i n)
       Nil
       (Cons (derive-sym (string-append side (int->string i)))
             (derive-binders side (+ i 1) n))))
 
-(: derive-eq-pairs (-> (List Syntax) (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax) (List Syntax)))
 (defun (derive-eq-pairs ls rs)
   (def* ((Cons l lrest) ls :leave-with Nil)
         ((Cons r rrest) rs :leave-with Nil))
   (Cons #'(= ,l ,r) (derive-eq-pairs lrest rrest)))
 
 ;; Union arm eq.
-(: derive-eq-union-arm (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (derive-eq-union-arm c)
   (def name (derive-case-name c))
   (def n (list-length (derive-payload c)))
@@ -4497,7 +4497,7 @@
        (,(derive-sym "_") #f))))
 
 ;; Hash union arms.
-(: derive-hash-union-arms (-> (List Syntax) int (List Syntax)))
+(: (-> (List Syntax) int (List Syntax)))
 (defun (derive-hash-union-arms cases index)
   (def (Cons c rest) cases :leave-with Nil)
   (def name (derive-case-name c))
@@ -4507,7 +4507,7 @@
            ,(derive-hash-fold (list-map (fun (l) #'(eq-hash ,l)) ls) tag))
         (derive-hash-union-arms rest (+ index 1))))
 
-(: derive-eq-union (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (derive-eq-union cases)
   (def equals
     #'(defun (= a b) (match a ,@(list-map derive-eq-union-arm cases))))
@@ -4518,7 +4518,7 @@
 ;; --- Ordering ---
 
 ;; Ord chain.
-(: derive-ord-chain (-> (List Syntax) int Syntax))
+(: (-> (List Syntax) int Syntax))
 (defun (derive-ord-chain parts i)
   (def* ((Cons p rest) parts :leave-with #'0)
         (c (derive-sym (string-append "__derived-c" (int->string i)))))
@@ -4528,7 +4528,7 @@
           (if (= ,c 0) ,(derive-ord-chain rest (+ i 1)) ,c))))
 
 ;; Ord record.
-(: derive-ord-record (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (derive-ord-record names)
   (Cons #'(defun (compare a b)
             ,(derive-ord-chain
@@ -4537,28 +4537,28 @@
         Nil))
 
 ;; Wildcards.
-(: derive-wildcards (-> int (List Syntax)))
+(: (-> int (List Syntax)))
 (defun (derive-wildcards n)
   (if (= n 0)
       Nil
       (Cons (derive-sym "_") (derive-wildcards (- n 1)))))
 
 ;; Index arms.
-(: derive-ord-index-arms (-> (List Syntax) int (List Syntax)))
+(: (-> (List Syntax) int (List Syntax)))
 (defun (derive-ord-index-arms cases index)
   (def (Cons c rest) cases :leave-with Nil)
   (Cons #'((,(derive-case-name c) ,@(derive-wildcards (list-length (derive-payload c))))
            ,(SInt (int->string index)))
         (derive-ord-index-arms rest (+ index 1))))
 
-(: derive-ord-pairs (-> (List Syntax) (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax) (List Syntax)))
 (defun (derive-ord-pairs ls rs)
   (def* ((Cons l lrest) ls :leave-with Nil)
         ((Cons r rrest) rs :leave-with Nil))
   (Cons #'(compare ,l ,r) (derive-ord-pairs lrest rrest)))
 
 ;; Ord union arm.
-(: derive-ord-union-arm (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (derive-ord-union-arm c)
   (def name (derive-case-name c))
   (def n (list-length (derive-payload c)))
@@ -4570,7 +4570,7 @@
        (,(derive-sym "_") 0))))
 
 ;; Ord union.
-(: derive-ord-union (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (derive-ord-union cases)
   (def ia (derive-sym "__derived-ia"))
   (def ib (derive-sym "__derived-ib"))
@@ -4586,12 +4586,12 @@
 ;; --- Putting one implementation together ---
 
 ;; Shape error.
-(: derive-shape-error (-> Syntax (List Syntax)))
+(: (-> Syntax (List Syntax)))
 (defun (derive-shape-error bad)
   (derive-fail bad "a type that derives has to be a Record, a Struct or a Union. An alias is a second spelling of a type rather than a type of its own — derive for the type it names."))
 
 ;; Eq methods.
-(: derive-eq-methods (-> Syntax Syntax (List Syntax)))
+(: (-> Syntax Syntax (List Syntax)))
 (defun (derive-eq-methods head shape)
   (syntax-match shape
     (('Record fields ...) (derive-eq-record head (derive-field-names fields) (derive-any-mutable? fields)))
@@ -4601,7 +4601,7 @@
     (('Sum cases ...) (derive-eq-union cases))
     (bad (derive-shape-error bad))))
 
-(: derive-ord-methods (-> Syntax (List Syntax)))
+(: (-> Syntax (List Syntax)))
 (defun (derive-ord-methods shape)
   (syntax-match shape
     (('Record fields ...) (derive-ord-record (derive-field-names fields)))
@@ -4611,7 +4611,7 @@
     (('Sum cases ...) (derive-ord-union cases))
     (bad (derive-shape-error bad))))
 
-(: derive-methods (-> Syntax Syntax Syntax (List Syntax)))
+(: (-> Syntax Syntax Syntax (List Syntax)))
 (defun (derive-methods trait head shape)
   (if (syntax-ident=? trait (derive-sym "Eq"))
       (derive-eq-methods head shape)
@@ -4620,7 +4620,7 @@
           (derive-fail trait "the traits that can be derived are Eq and Ord."))))
 
 ;; Derive conditional implementation.
-(: derive-impl (-> Syntax Syntax Syntax))
+(: (-> Syntax Syntax Syntax))
 (defun (derive-impl trait typedef)
   (syntax-match typedef
     ((_ head shape)
@@ -4629,7 +4629,7 @@
         ,@(derive-methods trait head shape)))
     (bad (syntax-error bad "a type declaration is written (: Name (Record ...))."))))
 
-(: derive-impls (-> (List Syntax) (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax) (List Syntax)))
 (defun (derive-impls traits typedefs)
   (match traits
     (Nil Nil)
@@ -4649,7 +4649,7 @@
 ;; Extra thingies for cml
 ;;
 
-(: promise-join/sync (-> (Promise %a) %a))
+(: (-> (Promise %a) %a))
 (defun (promise-join/sync p)
   (match (sync/blocking (promise-join p))
     ((Err e) (raise e))
@@ -4681,20 +4681,20 @@
 ;; A count past the end takes or drops the whole vec, as for a string; a
 ;; negative count is refused.
 
-(: vec-take (-> (Vec %a) int (Vec %a)))
+(: (-> (Vec %a) int (Vec %a)))
 (defun (vec-take v n)
   (check-count "vec-take" n)
   (def len (vec-length v))
   (vec-slice v 0 (if (< n len) n len)))
 
-(: vec-drop (-> (Vec %a) int (Vec %a)))
+(: (-> (Vec %a) int (Vec %a)))
 (defun (vec-drop v n)
   (check-count "vec-drop" n)
   (def len (vec-length v))
   (def k (if (< n len) n len))
   (vec-slice v k (- len k)))
 
-(: vec-reverse (-> (Vec %a) (Vec %a)))
+(: (-> (Vec %a) (Vec %a)))
 (defun (vec-reverse v)
   {vecing x (:for x (in-reverse-vec v))})
 

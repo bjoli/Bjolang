@@ -15,24 +15,24 @@
 ;; Iterating
 ;; ---------------------------------------------------------------------------
 
-(: sum-vec (-> (Vec int) int))
+(: (-> (Vec int) int))
 (defun (sum-vec v)
   (loop (:for x v)
         (:acc total (summing x))))
 
-(: first-of-vec (-> (Vec int) int))
+(: (-> (Vec int) int))
 (defun (first-of-vec v)
   (loop (:for x v)
         (:acc out (listing x))
         => (list-head out)))
 
 ;; A Map's elements are its pairs. The pattern destructures them.
-(: key-sum (-> (Map int int) int))
+(: (-> (Map int int) int))
 (defun (key-sum m)
   (loop (:for (Tuple k v) m)
         (:acc total (summing k))))
 
-(: value-sum (-> (Map int int) int))
+(: (-> (Map int int) int))
 (defun (value-sum m)
   (loop (:for (Tuple k v) m)
         (:acc total (summing v))))
@@ -41,25 +41,25 @@
 ;; Building
 ;; ---------------------------------------------------------------------------
 
-(: doubled (-> (Vec int) (Vec int)))
+(: (-> (Vec int) (Vec int)))
 (defun (doubled v)
   (loop (:for x v)
         (:acc out (vecing (* 2 x)))))
 
-(: listed (-> (Vec int) (List int)))
+(: (-> (Vec int) (List int)))
 (defun (listed v)
   (loop (:for x v)
         (:acc out (listing x))))
 
 ;; A round trip: iterate a map and rebuild it. `mapping` takes the pair whole,
 ;; which is exactly what iterating yields.
-(: copied (-> (Map int int) (Map int int)))
+(: (-> (Map int int) (Map int int)))
 (defun (copied m)
   (loop (:for kv m)
         (:acc out (mapping kv))))
 
 ;; ...and one built from a different shape entirely.
-(: squares (-> (Vec int) (Map int int)))
+(: (-> (Vec int) (Map int int)))
 (defun (squares v)
   (loop (:for x v)
         (:acc out (mapping (Tuple x (* x x))))))
@@ -71,12 +71,12 @@
 ;; A Range's cursor is the number itself, so a loop over one is `c = lo`,
 ;; `c < hi`, `c += by` with the bounds read straight out of the record — no
 ;; sequence object is consulted per element and nothing is allocated per step.
-(: sum-range (-> int int))
+(: (-> int int))
 (defun (sum-range n)
   (loop (:for i (range 0 n))
         (:acc total (summing i))))
 
-(: count-by (-> int int int int))
+(: (-> int int int int))
 (defun (count-by lo hi by)
   (loop (:for i (range-by lo hi by))
         (:acc n (counting i))))
@@ -85,13 +85,13 @@
 ;; name. Without them `record-ref` here fails outright, and an inline template
 ;; that reads one cannot be re-inferred at the splice — so `Range`'s methods
 ;; would quietly fall back to interface calls.
-(: upper (-> Range int))
+(: (-> Range int))
 (defun (upper r)
   (record-ref r hi))
 
 ;; ---------------------------------------------------------------------------
 
-(: build-map (-> int (Map int int)))
+(: (-> int (Map int int)))
 (defun (build-map n)
   (let mk ((i 0) (m (map-empty)))
     (if (= i n) m (mk (+ i 1) (map-set m i (* i 10))))))
@@ -99,7 +99,7 @@
 ;; The builder is named rather than threaded through the loop slot as the
 ;; mutator's result: `vecbuilder-add!` answers `Unit` now (§8.1), and the
 ;; builder it mutated is the one already in hand.
-(: build-vec (-> int (Vec int)))
+(: (-> int (Vec int)))
 (defun (build-vec n)
   (let mk ((i 0) (b (vecbuilder-empty)))
     (if (= i n)

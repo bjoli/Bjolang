@@ -24,7 +24,7 @@
 
 (export all-of)
 
-(: cat (-> string string string))
+(: (-> string string string))
 (defun (cat a b) (str-concat a b))
 
 ;; ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@
 ;; ---------------------------------------------------------------------------
 
 ;; all-of accepts when f accepts all items, else None.
-(: all-of (-> (List %a) (-> %a (Option %b)) (Option (List %b))))
+(: (-> (List %a) (-> %a (Option %b)) (Option (List %b))))
 (defun (all-of items f)
   (match items
     (Nil (Some Nil))
@@ -46,26 +46,26 @@
 ;; ---------------------------------------------------------------------------
 
 ;; Checks for ellipsis.
-(: ellipsis? (-> Syntax bool))
+(: (-> Syntax bool))
 (defun (ellipsis? item)
   (match item
     ((SPunct text) (= text "..."))
     (_ #f)))
 
-(: wildcard? (-> Syntax bool))
+(: (-> Syntax bool))
 (defun (wildcard? p)
   (match p
     ((SSym name) (= (symbol->string name) "_"))
     (_ #f)))
 
 ;; Checks if pattern cannot fail.
-(: irrefutable? (-> Syntax bool))
+(: (-> Syntax bool))
 (defun (irrefutable? p)
   (match p
     ((SSym _) #t)
     (_ #f)))
 
-(: same-name? (-> Syntax Syntax bool))
+(: (-> Syntax Syntax bool))
 (defun (same-name? a b)
   (match a
     ((SSym x)
@@ -74,14 +74,14 @@
        (_ #f)))
     (_ #f)))
 
-(: init-of (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (init-of items)
   (match items
     (Nil Nil)
     ((Cons _ Nil) Nil)
     ((Cons item rest) (Cons item (init-of rest)))))
 
-(: last-of (-> (List Syntax) (Option Syntax)))
+(: (-> (List Syntax) (Option Syntax)))
 (defun (last-of items)
   (match items
     (Nil None)
@@ -89,14 +89,14 @@
     ((Cons _ rest) (last-of rest))))
 
 ;; Private right fold.
-(: fold-right (-> (-> %a %b %b) %b (List %a) %b))
+(: (-> (-> %a %b %b) %b (List %a) %b))
 (defun (fold-right f init xs)
   (let go ((rest (list-reverse xs)) (acc init))
     (if (list-empty? rest)
         acc
         (go (list-tail rest) (f (list-head rest) acc)))))
 
-(: count-ellipses (-> (List Syntax) int))
+(: (-> (List Syntax) int))
 (defun (count-ellipses items)
   (let go ((rest items) (n 0))
     (if (list-empty? rest)
@@ -104,7 +104,7 @@
         (go (list-tail rest) (if (ellipsis? (list-head rest)) (+ n 1) n)))))
 
 ;; Extracts repeated pattern before trailing ellipsis.
-(: repeated-of (-> (List Syntax) Syntax (Option Syntax)))
+(: (-> (List Syntax) Syntax (Option Syntax)))
 (defun (repeated-of items whole)
   (def count (count-ellipses items))
   (if (= count 0)
@@ -121,14 +121,14 @@
                    ((Some repeated) (Some repeated)))))))))
 
 ;; Items matched one for one.
-(: fixed-of (-> (List Syntax) Syntax (List Syntax)))
+(: (-> (List Syntax) Syntax (List Syntax)))
 (defun (fixed-of items whole)
   (match (repeated-of items whole)
     (None items)
     ((Some _) (init-of (init-of items)))))
 
 ;; Every variable a pattern binds, in the order written.
-(: pattern-vars (-> Syntax (List Syntax)))
+(: (-> Syntax (List Syntax)))
 (defun (pattern-vars p)
   (match p
     ((SSym _) (if (wildcard? p) Nil (list p)))
@@ -136,13 +136,13 @@
      (fold-right (fun (item found) (syntax-splice (pattern-vars item) found)) Nil items))
     (_ Nil)))
 
-(: bound-already? (-> Syntax (List Syntax) bool))
+(: (-> Syntax (List Syntax) bool))
 (defun (bound-already? var seen)
   (match seen
     (Nil #f)
     ((Cons other rest) (if (same-name? var other) #t (bound-already? var rest)))))
 
-(: uppercase-name? (-> Syntax bool))
+(: (-> Syntax bool))
 (defun (uppercase-name? var)
   (match var
     ((SSym name)
@@ -153,7 +153,7 @@
     (_ #f)))
 
 ;; Checked bound variables.
-(: checked-vars (-> Syntax (List Syntax)))
+(: (-> Syntax (List Syntax)))
 (defun (checked-vars p)
   (fold-right
     (fun (var seen)
@@ -170,16 +170,16 @@
 ;; ---------------------------------------------------------------------------
 
 ;; Positional name.
-(: at-path (-> string string Syntax))
+(: (-> string string Syntax))
 (defun (at-path prefix path)
   (SSym (string->symbol (cat prefix path))))
 
-(: sub-path (-> string int string))
+(: (-> string int string))
 (defun (sub-path path index)
   (cat path (cat "-" (.ToString index))))
 
 ;; The path of the pattern a `...` repeats: the form's last item.
-(: repeated-path (-> (List Syntax) Syntax string string))
+(: (-> (List Syntax) Syntax string string))
 (defun (repeated-path items whole path)
   (sub-path path (list-length (fixed-of items whole))))
 
@@ -187,7 +187,7 @@
 ;; What a pattern compiles to
 ;; ---------------------------------------------------------------------------
 
-(: structural (-> Syntax string Syntax))
+(: (-> Syntax string Syntax))
 (defun (structural p path)
   (match p
     ((SSym _) p)
@@ -201,7 +201,7 @@
     (_ (syntax-error p "This is not a pattern."))))
 
 ;; Matches known length form.
-(: cons-chain (-> (List Syntax) string int Syntax Syntax))
+(: (-> (List Syntax) string int Syntax Syntax))
 (defun (cons-chain items path index tail)
   (match items
     (Nil tail)
@@ -209,14 +209,14 @@
      #'(Cons ,(structural item (sub-path path index)) ,(cons-chain rest path (+ index 1) tail)))))
 
 ;; Ends cons chain.
-(: tail-of (-> (List Syntax) Syntax string Syntax))
+(: (-> (List Syntax) Syntax string Syntax))
 (defun (tail-of items whole path)
   (match (repeated-of items whole)
     (None #'Nil)
     ((Some repeated)
      (if (irrefutable? repeated) repeated (at-path "sm-rest" path)))))
 
-(: checks (-> Syntax string (List Syntax)))
+(: (-> Syntax string (List Syntax)))
 (defun (checks p path)
   (match p
     ((SDatum _) (list #'(syntax-ident=? ,(at-path "sm-lit" path) (SDatum ,p))))
@@ -224,7 +224,7 @@
      (syntax-splice (fixed-checks (fixed-of items p) path 0) (repeat-check items p path)))
     (_ Nil)))
 
-(: fixed-checks (-> (List Syntax) string int (List Syntax)))
+(: (-> (List Syntax) string int (List Syntax)))
 (defun (fixed-checks items path index)
   (match items
     (Nil Nil)
@@ -232,7 +232,7 @@
      (syntax-splice (checks item (sub-path path index)) (fixed-checks rest path (+ index 1))))))
 
 ;; Checks repeated items match pattern.
-(: repeat-check (-> (List Syntax) Syntax string (List Syntax)))
+(: (-> (List Syntax) Syntax string (List Syntax)))
 (defun (repeat-check items whole path)
   (match (repeated-of items whole)
     (None Nil)
@@ -242,7 +242,7 @@
          (list #'(some? ,(fold-over items whole path repeated #'#t)))))))
 
 ;; Folds ellipsis over compound.
-(: fold-over (-> (List Syntax) Syntax string Syntax Syntax Syntax))
+(: (-> (List Syntax) Syntax string Syntax Syntax Syntax))
 (defun (fold-over items whole path repeated value)
   (def item (at-path "sm-item" path))
   (def inner (repeated-path items whole path))
@@ -253,11 +253,11 @@
                 (_ None)))))
 
 ;; Item answer.
-(: answer (-> (List Syntax) Syntax Syntax))
+(: (-> (List Syntax) Syntax Syntax))
 (defun (answer tests some)
   (if (list-empty? tests) some #'(if ,(conjunction tests) ,some None)))
 
-(: conjunction (-> (List Syntax) Syntax))
+(: (-> (List Syntax) Syntax))
 (defun (conjunction tests)
   (match tests
     (Nil #'#t)
@@ -265,7 +265,7 @@
     (_ #'(and ,@tests))))
 
 ;; Variable value source.
-(: value-of (-> Syntax Syntax string (Option Syntax)))
+(: (-> Syntax Syntax string (Option Syntax)))
 (defun (value-of p var path)
   (match p
     ((SSym _) (if (same-name? p var) (Some p) None))
@@ -275,7 +275,7 @@
        (None (repeated-value items p var path))))
     (_ None)))
 
-(: fixed-value (-> (List Syntax) Syntax string int (Option Syntax)))
+(: (-> (List Syntax) Syntax string int (Option Syntax)))
 (defun (fixed-value items var path index)
   (match items
     (Nil None)
@@ -284,7 +284,7 @@
        ((Some found) (Some found))
        (None (fixed-value rest var path (+ index 1)))))))
 
-(: repeated-value (-> (List Syntax) Syntax Syntax string (Option Syntax)))
+(: (-> (List Syntax) Syntax Syntax string (Option Syntax)))
 (defun (repeated-value items whole var path)
   (def (Some repeated) (repeated-of items whole) :propagate)
   (if (irrefutable? repeated)
@@ -301,7 +301,7 @@
 ;; ---------------------------------------------------------------------------
 
 ;; Clause bindings.
-(: binds (-> Syntax (List Syntax)))
+(: (-> Syntax (List Syntax)))
 (defun (binds p)
   (fold-right
     (fun (var bindings)
@@ -312,13 +312,13 @@
     Nil
     (checked-vars p)))
 
-(: single-body (-> (List Syntax) Syntax))
+(: (-> (List Syntax) Syntax))
 (defun (single-body bodies)
   (match bodies
     ((Cons body Nil) body)
     (_ #'(let () ,@bodies))))
 
-(: compile-clause (-> Syntax Syntax))
+(: (-> Syntax Syntax))
 (defun (compile-clause clause)
   (match clause
     ((SList (Cons p bodies))
@@ -334,7 +334,7 @@
     (_ (syntax-error clause "A syntax-match clause is (pattern body ...)."))))
 
 ;; True if last clause covers everything.
-(: covered? (-> (List Syntax) bool))
+(: (-> (List Syntax) bool))
 (defun (covered? clauses)
   (match (last-of clauses)
     (None #f)
@@ -343,7 +343,7 @@
        ((SList (Cons p _)) (irrefutable? p))
        (_ #f)))))
 
-(: arms (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (arms clauses)
   (syntax-splice
     ;; Built backwards from the reversed input, so it comes out in order.

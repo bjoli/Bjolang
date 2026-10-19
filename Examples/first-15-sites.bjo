@@ -25,7 +25,7 @@
 ;; One request
 ;; ---------------------------------------------------------------------------
 ;; fetch-text, fetches the text at url
-(: fetch-text (-bjo-> string (Result Exception string)))
+(: (-bjo-> string (Result Exception string)))
 (defbjo (fetch-text url)
   (with-response (r (fetch (http-get url)))
     ;; If r is (Ok ...), we read all the contents of the site
@@ -37,7 +37,7 @@
 ;; The crew
 ;; ---------------------------------------------------------------------------
 ;; Take a url, fetch it, hand the answer on, repeat.
-(: worker (-bjo-> (Chan string) (Chan Fetched) Unit))
+(: (-bjo-> (Chan string) (Chan Fetched) Unit))
 (defbjo (worker jobs answers)
   (loop (:for n (up-from 0))
         (:let url (sync (chan-recv jobs)))
@@ -46,14 +46,14 @@
 
 ;; Hires workers and passes them the channel where they get the addresses and
 ;; the channel where they put the result. `n` is the number of workers.
-(: hire (-> (Chan string) (Chan Fetched) int Unit))
+(: (-> (Chan string) (Chan Fetched) int Unit))
 (defun (hire jobs answers n)
   (loop (:for i (range 0 n))
         (:do (spawn (worker jobs answers)))))
 
 ;; Push every url at the crew. The channel is a rendezvous, so this parks on
 ;; send number 9 until a worker frees up.
-(: feeder (-bjo-> (Chan string) (Vec string) Unit))
+(: (-bjo-> (Chan string) (Vec string) Unit))
 (defbjo (feeder jobs urls)
   (loop (:for url urls)
         (:do (sync (chan-send jobs url)))))
@@ -63,7 +63,7 @@
 ;; The whole thing
 ;; ---------------------------------------------------------------------------
 ;; Takes the list of urls, how many are wanted, and how many workers to run.
-(: fetch-first (-bjo-> (Vec string) int int (Vec Fetched)))
+(: (-bjo-> (Vec string) int int (Vec Fetched)))
 (defbjo (fetch-first urls wanted crew-size)
   ;; The fibers spawned registers with the current cancel context
   ;; and they are awaited at the end of with-cancel. 

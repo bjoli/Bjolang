@@ -11,7 +11,7 @@
 
 ;; The shape the clauses exist for: two values, each needed by a later test,
 ;; and no nesting.
-(: classify (-> string string))
+(: (-> string string))
 (defun (classify text)
   (cond
     ((string-empty? text) "empty")
@@ -23,15 +23,15 @@
 
 ;; A `:def` is only reached when the tests above it failed, so the expression
 ;; is not evaluated for a value the first clause answers. The counter says so.
-(: probes (Box int))
+(: (Box int))
 (def probes (make-box 0))
 
-(: counted (-> int int))
+(: (-> int int))
 (defun (counted n)
   (box-set! probes (+ (box-ref probes) 1))
   n)
 
-(: after-a-test (-> bool int))
+(: (-> bool int))
 (defun (after-a-test short?)
   (cond
     (short? 0)
@@ -40,7 +40,7 @@
 
 ;; A refutable pattern takes a failure part, and what it fails to is the value
 ;; of the whole cond — the rest of the form being the body the `def` swallows.
-(: port-of (-> (Map string int) bool int))
+(: (-> (Map string int) bool int))
 (defun (port-of settings override?)
   (cond
     (override? 9999)
@@ -50,7 +50,7 @@
 
 ;; `:default` never answers: the name is bound either way and the clauses below
 ;; decide.
-(: port-class (-> (Map string int) string))
+(: (-> (Map string int) string))
 (defun (port-class settings)
   (cond
     (:def (Some port) (map-try-ref settings "port") :default 8080)
@@ -59,7 +59,7 @@
 
 ;; ...including `:propagate`, which rebuilds the case it did not match at the
 ;; type of the cond.
-(: doubled (-> (Result string int) (Result string int)))
+(: (-> (Result string int) (Result string int)))
 (defun (doubled r)
   (cond
     (:def (Ok n) r :propagate)
@@ -67,13 +67,13 @@
     (else (Ok (* n 2)))))
 
 ;; `:do` runs between two tests.
-(: trace (Box string))
+(: (Box string))
 (def trace (make-box ""))
 
-(: note! (-> string void))
+(: (-> string void))
 (defun (note! text) (box-set! trace (str (box-ref trace) text)))
 
-(: with-notes (-> int string))
+(: (-> int string))
 (defun (with-notes n)
   (cond
     ((< n 0) "negative")
@@ -84,7 +84,7 @@
 
 ;; `:match` is a test that binds: it answers on a match, and falls through to
 ;; the next clause when the pattern or the guard fails.
-(: listen-port (-> (Map string string) bool int))
+(: (-> (Map string string) bool int))
 (defun (listen-port env override?)
   (cond
     (override? 9999)

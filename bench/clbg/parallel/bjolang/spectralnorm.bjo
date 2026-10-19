@@ -8,13 +8,13 @@
 (import "par.bjo")
 (import (std fmt))
 
-(: a (-> int int double))
+(: (-> int int double))
 (defun (a i j)
   (def ij (+ i j))
   (/ 1.0 (cast System.Double (+ (/ (* ij (+ ij 1)) 2) (+ i 1)))))
 
 ;; out[lo..hi) = (A v)[lo..hi)
-(: av-rows (-> (Array double) (Array double) int int void))
+(: (-> (Array double) (Array double) int int void))
 (defun (av-rows v out lo hi)
   (def n (array-length v))
   (loop (:for i (range lo hi))
@@ -24,7 +24,7 @@
                                => s)))))
 
 ;; out[lo..hi) = (A^T v)[lo..hi)
-(: atv-rows (-> (Array double) (Array double) int int void))
+(: (-> (Array double) (Array double) int int void))
 (defun (atv-rows v out lo hi)
   (def n (array-length v))
   (loop (:for i (range lo hi))
@@ -34,7 +34,7 @@
                                => s)))))
 
 ;; out = A v, or A^T v when transposed?.
-(: mul (-bjo-> bool (Array double) (Array double) void))
+(: (-bjo-> bool (Array double) (Array double) void))
 (defbjo (mul transposed? v out)
   (def n (array-length v))
   (with-scope
@@ -45,13 +45,13 @@
                    (spawn (atv-rows v out lo hi))
                    (spawn (av-rows v out lo hi)))))))
 
-(: dot (-> (Array double) (Array double) double))
+(: (-> (Array double) (Array double) double))
 (defun (dot x y)
   (loop (:for i (range 0 (array-length x)))
         (:acc s (summing (* (array-ref x i) (array-ref y i))))
         => s))
 
-(: power (-bjo-> (Array double) (Array double) (Array double) int void))
+(: (-bjo-> (Array double) (Array double) (Array double) int void))
 (defbjo (power u v tmp k)
   (when (< k 10)
     (mul #f u tmp)

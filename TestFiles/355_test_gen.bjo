@@ -10,7 +10,7 @@
 (type (: Suit (Union Hearts Spades Clubs Diamonds)))
 (type (: Card (Record (: rank int) (: suit Suit))))
 
-(: gen-card (Gen Card))
+(: (Gen Card))
 (def gen-card
   (gen-let ((rank (gen-int-range 1 13))
             (suit (gen-element (list Hearts Spades Clubs Diamonds))))
@@ -21,21 +21,21 @@
 ;; A tree, to try gen-recursive.
 (type (: Tree (Union Leaf (: Node Tree int Tree))))
 
-(: depth (-> Tree int))
+(: (-> Tree int))
 (defun (depth t)
   (match t
     (Leaf 0)
     ((Node l _ r) (+ 1 (max (depth l) (depth r))))))
 
-(: gen-tree (Gen Tree))
+(: (Gen Tree))
 (def gen-tree
   (gen-recursive (gen-pure Leaf)
                  (fun (self) (gen-let ((l self) (x gen-int) (r self)) (Node l x r)))))
 
-(: simplest (-> (Gen %a) %a))
+(: (-> (Gen %a) %a))
 (defun (simplest g) (gen-run g (replaying-choices (vec-empty) 50)))
 
-(: samples (-> (Gen %a) int (List %a)))
+(: (-> (Gen %a) int (List %a)))
 (defun (samples g n) (gen-samples g n #:rng (make-random/seed64 7UL)))
 
 (defun (main args)

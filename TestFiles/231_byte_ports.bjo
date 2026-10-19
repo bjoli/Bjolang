@@ -46,21 +46,21 @@
 ;; Bytes as text, so that a comparison is a string comparison and a failure
 ;; prints something readable. A trailing dot on every byte, so that "1.2." and
 ;; "12." cannot be confused.
-(: bytes->text (-> (Array byte) string))
+(: (-> (Array byte) string))
 (defun (bytes->text bs)
   (let loop ((i 0) (acc ""))
     (if (= i (array-length bs))
         acc
         (loop (+ i 1) (str acc (byte->string (array-ref bs i)) ".")))))
 
-(: shown (-> (Option (Array byte)) string))
+(: (-> (Option (Array byte)) string))
 (defun (shown o)
   (match o
     ((Some bs) (bytes->text bs))
     (None "none")))
 
 ;; `from`, `from + 1`, ... as bytes.
-(: byte-run (-> int int (Array byte)))
+(: (-> int int (Array byte)))
 (defun (byte-run from n)
   (def out (make-array n))
   (let loop ((i 0))
@@ -72,7 +72,7 @@
 
 ;; Everything left in the port, as text. Ends at `None`, so the writing side has
 ;; to have been shut down or closed.
-(: drain-bytes (-> InputPort string))
+(: (-> InputPort string))
 (defun (drain-bytes p)
   (let loop ((acc ""))
     (match (read-some p)
@@ -82,7 +82,7 @@
 ;; What a read event answered, with a failure turned back into a raise. The
 ;; event's `Result` is how a broken stream reaches a branch that was parked —
 ;; the CML resume path carries a value, not a raise.
-(: got (-> (Result Exception (Option (Array byte))) (Option (Array byte))))
+(: (-> (Result Exception (Option (Array byte))) (Option (Array byte))))
 (defun (got r)
   (match r
     ((Ok bytes) bytes)
@@ -91,14 +91,14 @@
 ;; The payload that is deliberately not valid UTF-8: 0xFF is not a legal lead
 ;; byte and 0x80 is a bare continuation, so a decoding layer that sneaked in
 ;; anywhere would be caught here rather than somewhere subtle later.
-(: raw (Array byte))
+(: (Array byte))
 (def raw #[104 105 255 128 0 200])
 
-(: four (Array byte))
+(: (Array byte))
 (def four #[11 22 33 44])
 
 ;; Where the borrowed-stream write below lands.
-(: scratch (Array byte))
+(: (Array byte))
 (def scratch #[0 0 0 0])
 
 ;; ---------------------------------------------------------------------------
@@ -128,19 +128,19 @@
 
 ;; `bjo` takes one expression, so every fiber body in this file is a named
 ;; bjoroutine rather than a block written inline.
-(: write-then-flush (-bjo-> OutputPort (Array byte) int))
+(: (-bjo-> OutputPort (Array byte) int))
 (defbjo (write-then-flush out bytes)
   (write-bytes! out bytes)
   (flush-port out)
   0)
 
-(: send-stop (-bjo-> (Inbox int) int))
+(: (-bjo-> (Inbox int) int))
 (defbjo (send-stop stop)
   (ignore (inbox-post! stop 1))
   0)
 
 ;; Whether the read branch won, and every byte that came out of the port.
-(: race-once (-bjo-> Setup (Tuple bool string)))
+(: (-bjo-> Setup (Tuple bool string)))
 (defbjo (race-once setup)
   (match (byte-pipe)
     ((Tuple in out)
@@ -178,7 +178,7 @@
                  (drain-bytes in))))))
 
 ;; How many rounds came out wrong, and how many of them the read branch won.
-(: race-rounds (-bjo-> Setup int (Tuple int int)))
+(: (-bjo-> Setup int (Tuple int int)))
 (defbjo (race-rounds setup rounds)
   (let loop ((i 0) (bad 0) (wins 0))
     (if (= i rounds)
@@ -190,7 +190,7 @@
                  (+ wins (if read-won 1 0))))))))
 
 ;; `race-rounds` on a fiber of its own, joined. A failed join counts as -1.
-(: run-rounds (-> Setup int (Tuple int int)))
+(: (-> Setup int (Tuple int int)))
 (defun (run-rounds setup rounds)
   (match (sync/blocking (promise-join (bjo (race-rounds setup rounds))))
     ((Ok counts) counts)
@@ -207,7 +207,7 @@
 ;; The two fibers only ever write to *distinct* slots, because a value appears
 ;; once in the stream — which is the property under test, stated as the reason
 ;; the test itself is safe.
-(: tally-reader (-bjo-> InputPort (Array int) int))
+(: (-bjo-> InputPort (Array int) int))
 (defbjo (tally-reader p seen)
   (let loop ((n 0))
     (match (read-bytes p 1)
@@ -217,7 +217,7 @@
        (loop (+ n 1)))
       (None n))))
 
-(: every-mark-once? (-> (Array int) int bool))
+(: (-> (Array int) int bool))
 (defun (every-mark-once? seen n)
   (let loop ((i 1))
     (cond
@@ -228,7 +228,7 @@
 ;; 1..10, 11..20, ... a chunk at a time, so that the two readers meet an empty
 ;; buffer over and over and have to serialize on the refill rather than each
 ;; taking a contiguous half of one bufferful.
-(: write-in-tens (-bjo-> OutputPort int int))
+(: (-bjo-> OutputPort int int))
 (defbjo (write-in-tens out chunks)
   (let loop ((i 0))
     (if (= i chunks)
@@ -238,13 +238,13 @@
           (flush-port out)
           (loop (+ i 1))))))
 
-(: wait-for-eof (-bjo-> InputPort int))
+(: (-bjo-> InputPort int))
 (defbjo (wait-for-eof in)
   (sync (eof-evt in))
   1)
 
 ;; No `flush-port`, so the close on the fiber is what writes the bytes.
-(: write-then-close (-bjo-> OutputPort (Array byte) int))
+(: (-bjo-> OutputPort (Array byte) int))
 (defbjo (write-then-close out bytes)
   (write-bytes! out bytes)
   (close-output-port out)
@@ -260,7 +260,7 @@
 ;; never commit — and a *persistent* event, which is what `(task->event ...)` is,
 ;; would answer with what it remembered and win every round, starving the
 ;; sibling. Three sibling wins is the assertion.
-(: sibling-wins (-> (Event (Result Exception (Option (Array byte)))) int int))
+(: (-> (Event (Result Exception (Option (Array byte)))) int int))
 (defun (sibling-wins ev rounds)
   (let loop ((i 0) (wins 0))
     (if (= i rounds)

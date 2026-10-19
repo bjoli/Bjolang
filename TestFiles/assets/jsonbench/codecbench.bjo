@@ -44,17 +44,17 @@
                   (: note (Option string) #:optional)
                   (: version string))))
 
-(: records int)
+(: int)
 (def records 20000)
 
-(: reps int)
+(: int)
 (def reps 20)
 
 ;; ---------------------------------------------------------------------------
 ;; The corpus
 ;; ---------------------------------------------------------------------------
 
-(: make-text (-> int string))
+(: (-> int string))
 (defun (make-text n)
   (let ((sb (stringbuilder-empty)))
     (stringbuilder-add! sb #\[)
@@ -74,7 +74,7 @@
 ;; this instead of the objects is what a decoder saves by not going through a
 ;; tree keyed by field name — the key strings it never allocates and the trie it
 ;; never builds. Fewer bytes, so the comparison is per record, not per byte.
-(: make-array-text (-> int string))
+(: (-> int string))
 (defun (make-array-text n)
   (let ((sb (stringbuilder-empty)))
     (stringbuilder-add! sb #\[)
@@ -92,7 +92,7 @@
 
 ;; A vec field of three elements and an optional that is present, so both
 ;; conditional impls really run.
-(: make-rich-text (-> int string))
+(: (-> int string))
 (defun (make-rich-text n)
   (let ((sb (stringbuilder-empty)))
     (stringbuilder-add! sb #\[)
@@ -115,19 +115,19 @@
 ;; field, no error text, no owner prefix. What is left is the map lookups and
 ;; the unwrapping, which is the floor for any decoder that reads from a tree.
 
-(: get-str (-> (Map string Json) string string))
+(: (-> (Map string Json) string string))
 (defun (get-str m k)
   (match (map-try-ref m k)
     ((Some (JsonStr s)) s)
     (_ "")))
 
-(: get-bool (-> (Map string Json) string bool))
+(: (-> (Map string Json) string bool))
 (defun (get-bool m k)
   (match (map-try-ref m k)
     ((Some (JsonBool b)) b)
     (_ #f)))
 
-(: hand->Dep (-> Json Dep))
+(: (-> Json Dep))
 (defun (hand->Dep j)
   (match j
     ((JsonObj m)
@@ -142,7 +142,7 @@
 ;; Timing
 ;; ---------------------------------------------------------------------------
 
-(: elapsed-ticks (-> Stopwatch int))
+(: (-> Stopwatch int))
 (defun (elapsed-ticks sw)
   (clr-to-int (.-Ticks (.-Elapsed sw))))
 
@@ -150,7 +150,7 @@
 ;; it can be dead. The two decoders answer the same int, which is also how we
 ;; know they decoded the same thing.
 
-(: parse-ticks (-> string int))
+(: (-> string int))
 (defun (parse-ticks text)
   (let go ((i 0) (best 2000000000))
     (if (= i reps)
@@ -163,7 +163,7 @@
             (let ((t (elapsed-ticks sw)))
               (go (+ i 1) (if (< t best) t best))))))))
 
-(: generated-sum (-> (Vec Json) int))
+(: (-> (Vec Json) int))
 (defun (generated-sum items)
   (vec-fold (fun (j acc)
               (+ acc (match (json->Dep j)
@@ -171,13 +171,13 @@
                        ((Err _) 0))))
             0 items))
 
-(: hand-sum (-> (Vec Json) int))
+(: (-> (Vec Json) int))
 (defun (hand-sum items)
   (vec-fold (fun (j acc) (+ acc (string-length (record-ref (hand->Dep j) version))))
             0 items))
 
 ;; Forced on the vec field, so the element decoder really ran.
-(: rich-sum (-> (Vec Json) int))
+(: (-> (Vec Json) int))
 (defun (rich-sum items)
   (vec-fold (fun (j acc)
               (+ acc (match (json->Rich j)
@@ -185,7 +185,7 @@
                        ((Err _) 0))))
             0 items))
 
-(: decode-ticks (-> (-> (Vec Json) int) (Vec Json) int))
+(: (-> (-> (Vec Json) int) (Vec Json) int))
 (defun (decode-ticks decode items)
   (let go ((i 0) (best 2000000000))
     (if (= i reps)
@@ -199,7 +199,7 @@
               (go (+ i 1) (if (< t best) t best))))))))
 
 ;; Ticks are 100ns, so this is milliseconds with two decimals.
-(: as-ms (-> int string))
+(: (-> int string))
 (defun (as-ms ticks)
   (let ((hundredths (/ ticks 100)))
     (let ((frac (% hundredths 100)))
@@ -208,7 +208,7 @@
            (int->string frac)))))
 
 ;; A ratio to two decimals, as `b` over `a`.
-(: ratio (-> int int string))
+(: (-> int int string))
 (defun (ratio a b)
   (if (= a 0)
       "n/a"
@@ -220,11 +220,11 @@
 
 ;; Nanoseconds per record. A tick is 100ns, so this is ticks*100/records — and
 ;; it stays inside an int, which `records * 10000000` did not.
-(: ns-per-record (-> int int string))
+(: (-> int int string))
 (defun (ns-per-record n ticks)
   (if (= n 0) "n/a" (int->string (/ (* ticks 100) n))))
 
-(: row (-> string int int void))
+(: (-> string int int void))
 (defun (row label ticks base)
   (println (str (string-pad-right label 14)
                 (string-pad-left (as-ms ticks) 9) " ms"

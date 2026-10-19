@@ -35,7 +35,7 @@
 ;; bolted on, it is what a rendezvous *is* — the producer below cannot run ahead
 ;; of the consumer even by one item.
 
-(: producer (-> (Chan int) int void))
+(: (-> (Chan int) int void))
 (defbjo (producer ch n)
   (let go ((i 0))
     (if (= i n)
@@ -43,7 +43,7 @@
         (let ((sent (sync (chan-send ch i))))
           (go (+ i 1))))))
 
-(: consumer (-> (Chan int) int))
+(: (-> (Chan int) int))
 (defbjo (consumer ch)
   (let go ((acc 0))
     (let ((v (sync (chan-recv ch))))
@@ -66,7 +66,7 @@
 
 (type (: WorkerMsg (Union (: Job int) Quit)))
 
-(: worker (-> (Chan int) (Chan bool) (Chan int) void))
+(: (-> (Chan int) (Chan bool) (Chan int) void))
 (defbjo (worker jobs cancel results)
   (let go ((total 0))
     (match (sync (choose (wrap (chan-recv jobs) (fun (j) (Job j)))
@@ -75,7 +75,7 @@
       (Quit (sync (chan-send results total))))))
 
 ;; Parks a single value on a channel and waits for it to be taken.
-(: feed (-> (Chan int) int void))
+(: (-> (Chan int) int void))
 (defbjo (feed ch v) (sync (chan-send ch v)))
 
 ;; ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@
 
 (def/mutable guard-runs 0)
 
-(: counting-event (-> (Event int)))
+(: (-> (Event int)))
 (defun (counting-event)
   (guard (fun ()
            (set! guard-runs (+ guard-runs 1))
@@ -114,14 +114,14 @@
 ;; it. A channel-based nack would park an operation only one receiver could
 ;; consume.
 
-(: on-nack (-> (Event Unit) (Chan string) void))
+(: (-> (Event Unit) (Chan string) void))
 (defbjo (on-nack nack report)
   (let ((lost (sync nack)))
     (sync (chan-send report "nacked"))))
 
 ;; Never available, so it can never win — and therefore always loses, which is
 ;; what makes this deterministic.
-(: always-loses (-> (Chan string) (Event int)))
+(: (-> (Chan string) (Event int)))
 (defun (always-loses report)
   (with-nack
     (fun (nack)

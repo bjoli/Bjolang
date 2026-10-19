@@ -42,7 +42,7 @@
            (: JsonObj (Map string Json)))))
 
 ;; Max stack depth. This should probably be a parameter.
-(: json-max-depth int)
+(: int)
 (def json-max-depth 1000)
 
 ;; ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@
 ;; The byte is handled as a number, so that the end of the document is a
 ;; value, `spent`, rather than a second case.
 
-(: spent int)
+(: int)
 (def spent -1)
 
 (type
@@ -81,7 +81,7 @@
                     (: top int #:mutable))))
 
 ;; A reader over `bytes`, and then whatever `port` has after them.
-(: reader (-> (Option InputPort) (Array byte) Reader))
+(: (-> (Option InputPort) (Array byte) Reader))
 (defun (reader port bytes)
   (Reader (port port)
           (bytes bytes)
@@ -94,7 +94,7 @@
           (top 0)))
 
 ;; Pushes a new element into the array or grows it 
-(: push! (-> Reader Json void))
+(: (-> Reader Json void))
 (defun (push! rd v)
   (def a (record-ref rd stack))
   (def n (record-ref rd top))
@@ -107,14 +107,14 @@
   (record-set! rd (top (+ n 1))))
 
 ;; Harvests the array, by copying it into a vec
-(: harvest! (-> Reader int (Vec Json)))
+(: (-> Reader int (Vec Json)))
 (defun (harvest! rd mark)
   (def v (subarray->vec (record-ref rd stack) mark (- (record-ref rd top) mark)))
   (record-set! rd (top mark))
   v)
 
 ;; The buffer, emptied and ready.
-(: buffer (-> Reader StringBuilder))
+(: (-> Reader StringBuilder))
 (defun (buffer rd)
   (def sb (record-ref rd scratch))
   (stringbuilder-clear! sb)
@@ -122,7 +122,7 @@
 
 ;; `count` bytes of `old` from `from`, then `more`: what is left of one chunk
 ;; and the next. Almost always nothing is left, and `more` is the answer.
-(: join-bytes (-> (Array byte) int int (Array byte) (Array byte)))
+(: (-> (Array byte) int int (Array byte) (Array byte)))
 (defun (join-bytes old from count more)
   (if (= count 0)
       more
@@ -136,7 +136,7 @@
 ;; Whether there are at least `n` bytes from `next` on, reading from the port
 ;; until there are or it ends. Bytes not yet looked at are kept, so a
 ;; character cut in two by the end of a chunk is whole afterwards.
-(: ensure! (-> Reader int bool))
+(: (-> Reader int bool))
 (defun (ensure! rd n)
   (let go ()
     (def have (- (record-ref rd limit) (record-ref rd next)))
@@ -158,7 +158,7 @@
              (go)))))))))
 
 ;; The byte the reader is looking at, or `spent` at the end of the document.
-(: held-code (-> Reader int))
+(: (-> Reader int))
 (defun (held-code rd)
   (def i (record-ref rd next))
   (cond
@@ -166,14 +166,14 @@
     ((ensure! rd 1) (cast int (array-ref (record-ref rd bytes) (record-ref rd next))))
     (else spent)))
 
-(: at-end? (-> Reader bool))
+(: (-> Reader bool))
 (defun (at-end? rd)
   (= (held-code rd) spent))
 
 ;; Every character this is asked about is a json char meaning it is ascii.
 ;; Anything else — the end of the document, the first byte of a letter from a
 ;; language — answers #\nul.
-(: peek (-> Reader char))
+(: (-> Reader char))
 (defun (peek rd)
   (def c (held-code rd))
   (if (and (>= c 0) (< c 128)) (integer->char c) #\nul))
@@ -183,21 +183,21 @@
 ;; It does not look at what it is stepping over, because every caller just has:
 ;; a digit, an ASCII character inside a string, a bracket. A character of
 ;; several bytes is taken by `take-character!`.
-(: step! (-> Reader void))
+(: (-> Reader void))
 (defun (step! rd)
   (record-set! rd
                (next (+ (record-ref rd next) 1))
                (col (+ (record-ref rd col) 1))))
 
 ;; A line ends at the newline whether or not a return came before it.
-(: newline! (-> Reader void))
+(: (-> Reader void))
 (defun (newline! rd)
   (record-set! rd
                (next (+ (record-ref rd next) 1))
                (row (+ (record-ref rd row) 1))
                (col 1)))
 
-(: skip-space! (-> Reader void))
+(: (-> Reader void))
 (defun (skip-space! rd)
   (let go ()
     (def c (held-code rd))
@@ -211,13 +211,13 @@
 ;; Characters of several bytes
 ;; ---------------------------------------------------------------------------
 
-(: not-utf-8 string)
+(: string)
 (def not-utf-8 "a byte that is not UTF-8")
 
 ;; How many bytes a character starting with `lead` has, by RFC 3629; 0 for a
 ;; byte no character starts with: a continuation byte, C0 and C1 (which could
 ;; only start an overlong form), and F5 and up.
-(: utf8-length (-> int int))
+(: (-> int int))
 (defun (utf8-length lead)
   (cond
     ((< lead 128) 1)
@@ -227,7 +227,7 @@
     ((< lead 245) 4)
     (else 0)))
 
-(: continuation? (-> int bool))
+(: (-> int bool))
 (defun (continuation? b) (= (bitwise-and b 192) 128))
 
 ;; How many bytes the character the reader is looking at has, when they are
@@ -235,7 +235,7 @@
 ;; byte is narrower after E0 and F0, which would otherwise start an overlong
 ;; form, after ED, which would start a surrogate, and after F4, which would
 ;; go past U+10FFFF.
-(: sequence-length (-> Reader int))
+(: (-> Reader int))
 (defun (sequence-length rd)
   (def lead (held-code rd))
   (def n (utf8-length lead))
@@ -260,7 +260,7 @@
 
 ;; Copies the `n` bytes of the character being looked at into `sb`, and moves
 ;; past them: one column.
-(: take-character! (-> Reader StringBuilder int void))
+(: (-> Reader StringBuilder int void))
 (defun (take-character! rd sb n)
   (def b (record-ref rd bytes))
   (def i (record-ref rd next))
@@ -275,13 +275,13 @@
 ;; ---------------------------------------------------------------------------
 ;; Functions to raise errors
 
-(: at (-> Reader string string))
+(: (-> Reader string string))
 (defun (at rd what)
   (str "line " (int->string (record-ref rd row))
        ", column " (int->string (record-ref rd col))
        ": " what))
 
-(: found (-> Reader string))
+(: (-> Reader string))
 (defun (found rd)
   (def c (held-code rd))
   (cond
@@ -294,7 +294,7 @@
          not-utf-8
          (str "'" (bytes->string (record-ref rd bytes) #:start i #:end (+ i n)) "'")))))
 
-(: too-deep (-> Reader string string))
+(: (-> Reader string string))
 (defun (too-deep rd what)
   (at rd (str "this " what " nests deeper than " (int->string json-max-depth)
               ", which is as far as reading goes")))
@@ -304,13 +304,13 @@
 ;; ---------------------------------------------------------------------------
 
 ;; The Bjolang lexer has no \b or \f of its own.
-(: escaped-backspace string)
+(: string)
 (def escaped-backspace (list->string (list (integer->char 8))))
 
-(: escaped-formfeed string)
+(: string)
 (def escaped-formfeed (list->string (list (integer->char 12))))
 
-(: hex-digit (-> char int))
+(: (-> char int))
 (defun (hex-digit c)
   (cond
     ((and (char>=? c #\0) (char<=? c #\9)) (- (char->integer c) 48))
@@ -318,18 +318,18 @@
     ((and (char>=? c #\A) (char<=? c #\F)) (- (char->integer c) 55))
     (else -1)))
 
-(: high-surrogate? (-> int bool))
+(: (-> int bool))
 (defun (high-surrogate? n) (and (>= n 55296) (<= n 56319)))
 
-(: low-surrogate? (-> int bool))
+(: (-> int bool))
 (defun (low-surrogate? n) (and (>= n 56320) (<= n 57343)))
 
 ;; The scalar a surrogate pair stands for.
-(: scalar-of (-> int int int))
+(: (-> int int int))
 (defun (scalar-of hi lo)
   (+ 65536 (* (- hi 55296) 1024) (- lo 56320)))
 
-(: read-hex4 (-> Reader (Result string int)))
+(: (-> Reader (Result string int)))
 (defun (read-hex4 rd)
   (let go ((n 0) (left 4))
     (cond
@@ -344,7 +344,7 @@
          (go (+ (* n 16) d) (- left 1))))))))
 
 ;; The pair is one character. A Bjolang char is a Unicode scalar... Not a match made in heaven
-(: read-low-surrogate (-> Reader int (Result string string)))
+(: (-> Reader int (Result string string)))
 (defun (read-low-surrogate rd hi)
   (def incomplete "a high surrogate has to be followed by \\u and its low surrogate")
   (cond
@@ -357,7 +357,7 @@
    ((low-surrogate? lo) (Ok (list->string (list (integer->char (scalar-of hi lo))))))
    (else (Err (at rd incomplete)))))
 
-(: read-unicode (-> Reader (Result string string)))
+(: (-> Reader (Result string string)))
 (defun (read-unicode rd)
   (def (Ok n) (read-hex4 rd)
     :propagate)
@@ -366,7 +366,7 @@
     ((high-surrogate? n) (read-low-surrogate rd n))
     (else (Ok (list->string (list (integer->char n)))))))
 
-(: read-escape (-> Reader (Result string string)))
+(: (-> Reader (Result string string)))
 (defun (read-escape rd)
   (if (at-end? rd)
       (Err (at rd "the document ended after a backslash"))
@@ -384,7 +384,7 @@
          (Err (at rd (str "\\" (list->string (list (peek rd))) " is not an escape")))))))
 
 ;; Reads a json string
-(: read-text (-> Reader (Result string string)))
+(: (-> Reader (Result string string)))
 (defun (read-text rd)
   (step! rd)
   (def sb (buffer rd))
@@ -419,11 +419,11 @@
 ;; Numbers
 ;; ---------------------------------------------------------------------------
 
-(: digit? (-> char bool))
+(: (-> char bool))
 (defun (digit? c) (and (char>=? c #\0) (char<=? c #\9)))
 
 
-(: take-digits! (-> Reader StringBuilder int))
+(: (-> Reader StringBuilder int))
 ;; Reads a digit into the string builder and advances until
 ;; whatever is in the reader is no longer a digit. Returns the number of digits taken
 (defun (take-digits! rd sb)
@@ -438,7 +438,7 @@
       (else n))))
 
 ;; Answers whether what was scanned has to be read as a double.
-(: scan-exponent (-> Reader StringBuilder (Result string bool)))
+(: (-> Reader StringBuilder (Result string bool)))
 (defun (scan-exponent rd sb)
   (cond
     ((and (not (at-end? rd)) (or (char=? (peek rd) #\e) (char=? (peek rd) #\E)))
@@ -452,7 +452,7 @@
          (Ok #t)))
     (else (Ok #f))))
 
-(: scan-fraction (-> Reader StringBuilder (Result string bool)))
+(: (-> Reader StringBuilder (Result string bool)))
 (defun (scan-fraction rd sb)
   (cond
     ((and (not (at-end? rd)) (char=? (peek rd) #\.))
@@ -466,7 +466,7 @@
            ((Ok _) (Ok #t)))))
     (else (scan-exponent rd sb))))
 
-(: scan-number (-> Reader StringBuilder (Result string bool)))
+(: (-> Reader StringBuilder (Result string bool)))
 (defun (scan-number rd sb)
   (when (and (not (at-end? rd)) (char=? (peek rd) #\-))
     (stringbuilder-add! sb #\-)
@@ -489,7 +489,7 @@
 
 ;; A number byte by byte, fetching more of the document as it goes: for a
 ;; number that the end of a chunk cuts.
-(: read-number/slow (-> Reader (Result string Json)))
+(: (-> Reader (Result string Json)))
 (defun (read-number/slow rd)
   (def sb (buffer rd))
   (def (Ok fractional?) (scan-number rd sb)
@@ -519,38 +519,38 @@
 ;; allocation for every number in the document.
 (type (: NumberScan (Tuple int int)))
 
-(: num-int int)
+(: int)
 (def num-int 0)
-(: num-frac int)
+(: int)
 (def num-frac 1)
-(: num-no-digit int)
+(: int)
 (def num-no-digit 2)
-(: num-leading-zero int)
+(: int)
 (def num-leading-zero 3)
-(: num-no-fraction-digit int)
+(: int)
 (def num-no-fraction-digit 4)
-(: num-no-exponent-digit int)
+(: int)
 (def num-no-exponent-digit 5)
 
-(: digit-at? (-> (Array byte) int int bool))
+(: (-> (Array byte) int int bool))
 (defun (digit-at? b i limit)
   (and (< i limit)
        (let ((c (cast int (array-ref b i))))
          (and (>= c 48) (<= c 57)))))
 
-(: byte-at? (-> (Array byte) int int int bool))
+(: (-> (Array byte) int int int bool))
 (defun (byte-at? b i limit code)
   (and (< i limit) (= (cast int (array-ref b i)) code)))
 
 ;; The position after the digits from `i`.
-(: digits-end (-> (Array byte) int int int))
+(: (-> (Array byte) int int int))
 (defun (digits-end b i limit)
   (let go ((i i))
     (if (digit-at? b i limit) (go (+ i 1)) i)))
 
 ;; The exponent, if there is one, from `i`, after a number that is fractional
 ;; when `frac?` is.
-(: scan-exponent-at (-> (Array byte) int int bool NumberScan))
+(: (-> (Array byte) int int bool NumberScan))
 (defun (scan-exponent-at b i limit frac?)
   (cond
     ((or (byte-at? b i limit 101) (byte-at? b i limit 69))
@@ -561,7 +561,7 @@
     (else (Tuple num-int i))))
 
 ;; The fraction, if there is one, from `i`.
-(: scan-fraction-at (-> (Array byte) int int NumberScan))
+(: (-> (Array byte) int int NumberScan))
 (defun (scan-fraction-at b i limit)
   (cond
     ((byte-at? b i limit 46)
@@ -572,7 +572,7 @@
     (else (scan-exponent-at b i limit #f))))
 
 ;; The number from `pos`, whose digits start at `first`, by RFC 8259.
-(: scan-number-at (-> (Array byte) int int int NumberScan))
+(: (-> (Array byte) int int int NumberScan))
 (defun (scan-number-at b pos first limit)
   (cond
     ((not (digit-at? b first limit)) (Tuple num-no-digit first))
@@ -585,7 +585,7 @@
 ;; Up to 18 digits cannot overflow a long, so they are added up as they are.
 ;; Longer ones go through the parser, which answers a double when the number
 ;; is too wide for a long.
-(: integer-of (-> Reader (Array byte) int int int Json))
+(: (-> Reader (Array byte) int int int Json))
 (defun (integer-of rd b start first end)
   (cond
     ((<= (- end first) 18)
@@ -601,14 +601,14 @@
        ((Err _) (JsonFloat (clr-to-double sb)))))))
 
 ;; The number's bytes in the reader's buffer, for the parser.
-(: copy-number (-> Reader (Array byte) int int StringBuilder))
+(: (-> Reader (Array byte) int int StringBuilder))
 (defun (copy-number rd b start end)
   (def sb (buffer rd))
   (loop (:for i (range start end))
         (:do (stringbuilder-add-unit! sb (cast int (array-ref b i)))))
   sb)
 
-(: read-number (-> Reader (Result string Json)))
+(: (-> Reader (Result string Json)))
 (defun (read-number rd)
   (def* (b (record-ref rd bytes))
         (start (record-ref rd next))
@@ -641,16 +641,16 @@
 ;; ---------------------------------------------------------------------------
 
 ;; only one json null, true or false value.
-(: json-true Json)
+(: Json)
 (def json-true (JsonBool #t))
 
-(: json-false Json)
+(: Json)
 (def json-false (JsonBool #f))
 
-(: json-null Json)
+(: Json)
 (def json-null JsonNull)
 
-(: read-word (-> Reader string Json (Result string Json)))
+(: (-> Reader string Json (Result string Json)))
 (defun (read-word rd word value)
   (let go ((k (string-cursor-start word)))
     (cond
@@ -662,7 +662,7 @@
       (step! rd)
       (go (string-cursor-next word k))))))
 
-(: read-array (-> Reader int (Result string Json)))
+(: (-> Reader int (Result string Json)))
 (defun (read-array rd depth)
   (cond
    ((> depth json-max-depth) (Err (too-deep rd "array")))
@@ -687,7 +687,7 @@
                           (found rd))))))))))
 
 ;; Reads an object. On a duplicate key, the last value wins.
-(: read-object (-> Reader int (Result string Json)))
+(: (-> Reader int (Result string Json)))
 (defun (read-object rd depth)
   (cond
    ((> depth json-max-depth) (Err (too-deep rd "object")))
@@ -724,7 +724,7 @@
          (Err (at rd (str "an object wants ',' or '}' here, and this is "
                           (found rd))))))))))
 
-(: read-value (-> Reader int (Result string Json)))
+(: (-> Reader int (Result string Json)))
 (defun (read-value rd depth)
   (skip-space! rd)
   (if (at-end? rd)
@@ -745,7 +745,7 @@
 ;; Reading a document
 ;; ---------------------------------------------------------------------------
 ;; Whether the reader is looking at a byte order mark: EF BB BF.
-(: at-mark? (-> Reader bool))
+(: (-> Reader bool))
 (defun (at-mark? rd)
   (and (ensure! rd 3)
        (let ((b (record-ref rd bytes)) (i (record-ref rd next)))
@@ -753,7 +753,7 @@
               (= (cast int (array-ref b (+ i 1))) 187)
               (= (cast int (array-ref b (+ i 2))) 191)))))
 
-(: read-document (-> Reader (Result string Json)))
+(: (-> Reader (Result string Json)))
 (defun (read-document rd)
   ;; A byte order mark ahead of the value is skipped, as RFC 8259 lets a
   ;; parser do, and does not count as a column.
@@ -766,15 +766,15 @@
       (Ok v)
       (Err (at rd (str "the value ended here, and then there is " (found rd))))))
 
-(: no-bytes (Array byte))
+(: (Array byte))
 (def no-bytes (make-array 0))
 
-(: read-json (-> InputPort (Result string Json)))
+(: (-> InputPort (Result string Json)))
 (defun (read-json port)
   (read-document (reader (Some port) no-bytes)))
 
 ;; The string's bytes are the document: no port in between.
-(: parse-json (-> string (Result string Json)))
+(: (-> string (Result string Json)))
 (defun (parse-json text)
   (read-document (reader None (string->bytes text))))
 
@@ -791,10 +791,10 @@
 (import/extern
   (clr-finite? (: System.Double.IsFinite (-> double bool))))
 
-(: hex-digits (Vec char))
+(: (Vec char))
 (def hex-digits (string->vec "0123456789abcdef"))
 
-(: add-hex4! (-> StringBuilder int void))
+(: (-> StringBuilder int void))
 (defun (add-hex4! sb n)
   (stringbuilder-add-string! sb "\\u")
   (loop (:for shift (list 12 8 4 0))
@@ -803,7 +803,7 @@
 ;; A string, quoted. `"`, `\` and the control characters are escaped, as RFC
 ;; 8259 requires. With `ascii`, every character outside ASCII is escaped too,
 ;; as one `\u` escape or, outside the BMP, as a surrogate pair of them.
-(: add-string! (-> StringBuilder string bool void))
+(: (-> StringBuilder string bool void))
 (defun (add-string! sb s ascii)
   (stringbuilder-add! sb #\")
   (string-for-each
@@ -830,7 +830,7 @@
 ;; The shortest text that reads back as the same double, with `.0` added when
 ;; it has neither a point nor an exponent, so that it reads back as a
 ;; `JsonFloat` and not a `JsonInt`.
-(: add-float! (-> StringBuilder double void))
+(: (-> StringBuilder double void))
 (defun (add-float! sb d)
   (unless (clr-finite? d)
     (raise (cast Exception (ArgumentException. (str "JSON has no number for " (double->string d))))))
@@ -839,14 +839,14 @@
   (unless (or (string-contains? text ".") (string-contains? text "E") (string-contains? text "e"))
     (stringbuilder-add-string! sb ".0")))
 
-(: add-newline! (-> StringBuilder int int void))
+(: (-> StringBuilder int int void))
 (defun (add-newline! sb indent level)
   (when (> indent 0)
     (stringbuilder-add! sb #\newline)
     (loop (:for i (range 0 (* indent level)))
           (:do (stringbuilder-add! sb #\space)))))
 
-(: add-value! (-> StringBuilder Json int bool int void))
+(: (-> StringBuilder Json int bool int void))
 (defun (add-value! sb j indent ascii level)
   (match j
     (JsonNull (stringbuilder-add-string! sb "null"))
@@ -885,7 +885,7 @@
 ;; JSON text for a value. Compact unless `#:indent` is more than 0, which puts
 ;; each element and field on a line of its own, indented that many spaces a
 ;; level. With `#:ascii #t`, the text is ASCII.
-(: json->string (-> Json (#:indent int) (#:ascii bool) string))
+(: (-> Json (#:indent int) (#:ascii bool) string))
 (defun (json->string j #:indent 0 #:ascii #f)
   (def sb (stringbuilder-empty))
   (add-value! sb j indent ascii 0)
@@ -893,7 +893,7 @@
 
 ;; The text `json->string` gives, written to `port`. The text is made first,
 ;; and written in one piece.
-(: write-json (-> OutputPort Json (#:indent int) (#:ascii bool) void))
+(: (-> OutputPort Json (#:indent int) (#:ascii bool) void))
 (defun (write-json port j #:indent 0 #:ascii #f)
   (write-string port (json->string j #:indent indent #:ascii ascii)))
 

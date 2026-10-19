@@ -65,17 +65,17 @@
              (: back (List %a) #:mutable)
              (: size int #:mutable))))
 
-(: deque (-> (Deque %a)))
+(: (-> (Deque %a)))
 (defun (deque)
   (Deque (front Nil) (back Nil) (size 0)))
 
-(: deque-length (-> (Deque %a) int))
+(: (-> (Deque %a) int))
 (defun (deque-length d) (record-ref d size))
 
-(: deque-empty? (-> (Deque %a) bool))
+(: (-> (Deque %a) bool))
 (defun (deque-empty? d) (= (record-ref d size) 0))
 
-(: deque-clear! (-> (Deque %a) void))
+(: (-> (Deque %a) void))
 (defun (deque-clear! d)
   (record-set! d (front Nil) (back Nil) (size 0)))
 
@@ -89,7 +89,7 @@
 
 ;; Collected reversed and turned once, so a long prefix does not recurse once
 ;; per element.
-(: take-n (-> int (List %a) (List %a)))
+(: (-> int (List %a) (List %a)))
 (defun (take-n k xs)
   (let go ((k k) (rest xs) (acc Nil))
     (if (= k 0)
@@ -98,7 +98,7 @@
           (Nil (list-reverse acc))
           ((Cons x more) (go (- k 1) more (Cons x acc)))))))
 
-(: drop-n (-> int (List %a) (List %a)))
+(: (-> int (List %a) (List %a)))
 (defun (drop-n k xs)
   (if (= k 0)
       xs
@@ -116,7 +116,7 @@
 ;;
 ;; Both fields are written by one `record-set!`, so the deque is never briefly
 ;; holding an element twice.
-(: refill-front! (-> (Deque %a) void))
+(: (-> (Deque %a) void))
 (defun (refill-front! d)
   (when (and (list-empty? (record-ref d front))
              (not (list-empty? (record-ref d back))))
@@ -128,7 +128,7 @@
 
 ;; The mirror image: everything is on `front`, in order, and the rear half moves
 ;; across reversed.
-(: refill-back! (-> (Deque %a) void))
+(: (-> (Deque %a) void))
 (defun (refill-back! d)
   (when (and (list-empty? (record-ref d back))
              (not (list-empty? (record-ref d front))))
@@ -142,19 +142,19 @@
 ;; The ends
 ;; ---------------------------------------------------------------------------
 
-(: deque-push-front! (-> (Deque %a) %a void))
+(: (-> (Deque %a) %a void))
 (defun (deque-push-front! d x)
   (record-set! d
                (front (Cons x (record-ref d front)))
                (size (+ (record-ref d size) 1))))
 
-(: deque-push-back! (-> (Deque %a) %a void))
+(: (-> (Deque %a) %a void))
 (defun (deque-push-back! d x)
   (record-set! d
                (back (Cons x (record-ref d back)))
                (size (+ (record-ref d size) 1))))
 
-(: deque-pop-front! (-> (Deque %a) (Option %a)))
+(: (-> (Deque %a) (Option %a)))
 (defun (deque-pop-front! d)
   (refill-front! d)
   (match (record-ref d front)
@@ -165,7 +165,7 @@
                   (size (- (record-ref d size) 1)))
      (Some x))))
 
-(: deque-pop-back! (-> (Deque %a) (Option %a)))
+(: (-> (Deque %a) (Option %a)))
 (defun (deque-pop-back! d)
   (refill-back! d)
   (match (record-ref d back)
@@ -182,14 +182,14 @@
 ;; a read as far as the caller is concerned. Reading the front of an empty
 ;; `front` without refilling would mean walking to the end of `back`, which is
 ;; the O(n) this structure exists to avoid.
-(: deque-peek-front! (-> (Deque %a) (Option %a)))
+(: (-> (Deque %a) (Option %a)))
 (defun (deque-peek-front! d)
   (refill-front! d)
   (match (record-ref d front)
     (Nil None)
     ((Cons x _) (Some x))))
 
-(: deque-peek-back! (-> (Deque %a) (Option %a)))
+(: (-> (Deque %a) (Option %a)))
 (defun (deque-peek-back! d)
   (refill-back! d)
   (match (record-ref d back)
@@ -205,23 +205,23 @@
 
 ;; `front` reversed, then consed element by element onto `back` in order: the
 ;; front lands first, and nothing recurses per element.
-(: deque->list (-> (Deque %a) (List %a)))
+(: (-> (Deque %a) (List %a)))
 (defun (deque->list d)
   (list-foldl (fun (x acc) (Cons x acc))
               (list-reverse (record-ref d back))
               (list-reverse (record-ref d front))))
 
-(: list->deque (-> (List %a) (Deque %a)))
+(: (-> (List %a) (Deque %a)))
 (defun (list->deque xs)
   (Deque (front xs) (back Nil) (size (list-length xs))))
 
 ;; Front to back. The rear half is reversed once rather than per element.
-(: deque-fold (-> (-?-> %a %b %b) %b (Deque %a) %b))
+(: (-> (-?-> %a %b %b) %b (Deque %a) %b))
 (defun (deque-fold f init d)
   (list-foldl f (list-foldl f init (record-ref d front))
               (list-reverse (record-ref d back))))
 
-(: deque-for-each (-> (-?-> %a void) (Deque %a) void))
+(: (-> (-?-> %a void) (Deque %a) void))
 (defun (deque-for-each f d)
   (list-for-each f (record-ref d front))
   (list-for-each f (list-reverse (record-ref d back))))
@@ -253,7 +253,7 @@
   (defun (eq-hash d) (unhashable "Deque")))
 
 ;; `#<a b c>`, front first, each element by its own `->str`.
-(: deque->str (-> (Deque %a) string) (where (->str %a)))
+(: (-> (Deque %a) string) (where (->str %a)))
 (defun (deque->str d)
   (def sb (stringbuilder-empty))
   (stringbuilder-add-string! sb "#<")

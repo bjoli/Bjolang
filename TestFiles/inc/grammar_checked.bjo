@@ -8,23 +8,23 @@
 (type (: Port #:opaque (Record (: number int))))
 (type (: Host #:opaque (Record (: name string))))
 
-(: port (-> int (Result string Port)))
+(: (-> int (Result string Port)))
 (defun (port n)
   (if (and (>= n 0) (<= n 65535))
       (Ok (Port (number n)))
       (Err (str "a port is from 0 to 65535, and this is " (int->string n)))))
 
 ;; A host is lower case, so the check also normalises.
-(: host (-> string (Result string Host)))
+(: (-> string (Result string Host)))
 (defun (host s)
   (if (or (= s "") (string-contains? s " "))
       (Err (str "'" s "' is not a host name"))
       (Ok (Host (name (string-downcase s))))))
 
-(: port->int (-> Port int))
+(: (-> Port int))
 (defun (port->int p) (record-ref p number))
 
-(: host->string (-> Host string))
+(: (-> Host string))
 (defun (host->string h) (record-ref h name))
 
 (def/grammar Endpoint
@@ -32,7 +32,7 @@
   (Host (string #:check host))
   (Port (int #:check port)))
 
-(: endpoint->string (-> Endpoint string))
+(: (-> Endpoint string))
 (defun (endpoint->string e)
   (str (host->string (record-ref e host))
        (match (record-ref e port) ((Some p) (str ":" (int->string (port->int p)))) (None ""))))

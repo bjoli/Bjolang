@@ -21,7 +21,7 @@
 
 ;; `n` draws from `r`, in order. Wide enough that two different generators
 ;; agreeing on all of them is not a thing that happens.
-(: draws (-> RandomSource int (List int)))
+(: (-> RandomSource int (List int)))
 (defun (draws r n)
   (let go ((i 0) (acc Nil))
     (if (= i n)
@@ -29,24 +29,24 @@
         (go (+ i 1) (Cons (random-int 0 1000000 #:rng r) acc)))))
 
 ;; The same, from whatever `current-random` says.
-(: ambient-draws (-> int (List int)))
+(: (-> int (List int)))
 (defun (ambient-draws n)
   (let go ((i 0) (acc Nil))
     (if (= i n)
         (list-reverse acc)
         (go (+ i 1) (Cons (random-int 0 1000000) acc)))))
 
-(: in-range? (-> int int int bool))
+(: (-> int int int bool))
 (defun (in-range? lo hi x) (and (>= x lo) (<= x hi)))
 
-(: nonzero-count (-> (Array byte) int))
+(: (-> (Array byte) int))
 (defun (nonzero-count a)
   (let go ((i 0) (n 0))
     (if (= i (array-length a))
         n
         (go (+ i 1) (if (= (array-ref a i) 0uy) n (+ n 1))))))
 
-(: iota-array (-> int (Array int)))
+(: (-> int (Array int)))
 (defun (iota-array n)
   (let ((a (make-array n)))
     (let go ((i 0))
@@ -63,12 +63,12 @@
 ;; is the ambient source it names no generator, so the draw goes to whichever
 ;; thread is running now and no two fibers can be inside one generator at once.
 
-(: slow-sum (-> int int))
+(: (-> int int))
 (defun (slow-sum n)
   (let go ((i 0) (acc 0))
     (if (> i n) acc (go (+ i 1) (+ acc i)))))
 
-(: draw-across-suspension (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (draw-across-suspension)
   (def src (parameter-ref current-random))
   (def warmed (match (sync (promise-join (bjo (slow-sum 2000))))
@@ -76,14 +76,14 @@
                 ((Err e) -1)))
   (if (< warmed 0) -1 (random-int 0 99 #:rng src)))
 
-(: spawn-draws (-> int (List (Promise int))))
+(: (-> int (List (Promise int))))
 (defun (spawn-draws n)
   (let go ((i 0) (acc Nil))
     (if (= i n)
         acc
         (go (+ i 1) (Cons (bjo (draw-across-suspension)) acc)))))
 
-(: join-all (-bjo-> (List (Promise int)) (List int)))
+(: (-bjo-> (List (Promise int)) (List int)))
 (defbjo (join-all ps)
   (let go ((rest ps) (acc Nil))
     (match rest
@@ -108,14 +108,14 @@
 ;; because the lock does not promise one — that is the difference between safe
 ;; and reproducible, and it is why a run that must replay splits instead.
 
-(: draw-batch (-> RandomSource int int))
+(: (-> RandomSource int int))
 (defun (draw-batch src n)
   (let go ((i 0) (acc 0))
     (if (= i n)
         acc
         (go (+ i 1) (+ acc (random-int 0 1000000 #:rng src))))))
 
-(: spawn-batches (-> RandomSource int int (List (Promise int))))
+(: (-> RandomSource int int (List (Promise int))))
 (defun (spawn-batches src fibers n)
   (let go ((i 0) (acc Nil))
     (if (= i fibers)

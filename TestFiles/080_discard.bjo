@@ -57,7 +57,7 @@
 ;; merely in speed: a blanket is only ever selected at a ground constructor, so
 ;; a `Receipt` routed through this generic body still files its receipt. Nothing
 ;; here knows that receipts exist.
-(: drop-it (-> %a void) (where (Discard %a)))
+(: (-> %a void) (where (Discard %a)))
 (defun (drop-it x)
   (ignore x))
 
@@ -72,20 +72,20 @@
 
 (def/mutable steps 0)
 
-(: bump (-> int void))
+(: (-> int void))
 (defun (bump n)
   (set! steps (+ steps n)))
 
 ;; A `when` body has no branch to return to, so its value is dropped by
 ;; construction — which is why it is checked even though nothing was sequenced.
-(: bump-when (-> bool void))
+(: (-> bool void))
 (defun (bump-when p)
   (when p (bump 1)))
 
 ;; A builder, mutated in place. Nothing here needs `ignore`, and that is §8.1
 ;; earning its keep: these used to hand the builder back so it could thread
 ;; through a loop slot, which made every ordinary call site ceremony.
-(: collect-to (-> int (List int)))
+(: (-> int (List int)))
 (defun (collect-to n)
   (let ((b (listbuilder-empty)))
     (let go ((i 0))
@@ -95,7 +95,7 @@
             (listbuilder-add! b i)
             (go (+ i 1)))))))
 
-(: work (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (work x) (* x 2))
 
 (defun (main args)

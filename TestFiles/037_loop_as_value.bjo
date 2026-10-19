@@ -16,7 +16,7 @@
 (import (std simpletest))
 
 ;; A let-shaped exit value: the binding is not terminal, the body is.
-(: sum-to (-> int int))
+(: (-> int int))
 (defun (sum-to n)
   (+ 1 (let loop ((i 0) (acc 0))
          (if (= i n)
@@ -24,7 +24,7 @@
              (loop (+ i 1) (+ acc i))))))
 
 ;; A match-shaped exit value, which reaches the same target by way of a hoist.
-(: unwrapped (-> int int))
+(: (-> int int))
 (defun (unwrapped n)
   (+ 1 (let loop ((i 0))
          (if (= i n)
@@ -33,7 +33,7 @@
 
 ;; A let-shaped value in the *middle* of the loop body, which is where a `bind`
 ;; that has been spliced puts one.
-(: stepped (-> int int))
+(: (-> int int))
 (defun (stepped n)
   (let loop ((i 0) (acc 0))
     (if (= i n)
@@ -53,7 +53,7 @@
       ((Ok v) (k v))
       ((Err e) (Err e)))))
 
-(: check (-> int (Result string int)))
+(: (-> int (Result string int)))
 (defun (check n)
   (if (> n 1000000000) (Err "too big") (Ok (* n 2))))
 
@@ -61,7 +61,7 @@
 ;; position, whose body binds monadically and whose tail call must still be a
 ;; jump. Deep enough that a recursion which was not turned into a loop would
 ;; overflow the stack rather than answer.
-(: fold-m (-> (List int) (Result string int)))
+(: (-> (List int) (Result string int)))
 (defun (fold-m xs)
   (bind (let loop ((rest xs) (total 0))
           (if (list-empty? rest)
@@ -71,7 +71,7 @@
         (fun (total) (pure total))))
 
 ;; The same shape collecting its results, which is `mapM`.
-(: map-m (-> (List int) (Result string int)))
+(: (-> (List int) (Result string int)))
 (defun (map-m xs)
   (bind (let loop ((rest xs) (acc Nil))
           (if (list-empty? rest)
@@ -80,12 +80,12 @@
                     (fun (y) (loop (list-tail rest) (Cons y acc))))))
         (fun (ys) (pure (list-length ys)))))
 
-(: build (-> int (List int)))
+(: (-> int (List int)))
 (defun (build n)
   (let loop ((i 0) (acc Nil))
     (if (= i n) acc (loop (+ i 1) (Cons i acc)))))
 
-(: expect-result (-> string (Result string int) int void))
+(: (-> string (Result string int) int void))
 (defun (expect-result label r wanted)
   (match r
     ((Ok v) (expect label v wanted))
@@ -102,13 +102,13 @@
 ;; would leave `(k x)` against a variable, beta would never fire, and this would
 ;; grow the stack one frame per step.
 
-(: step2 (-> int (Result string int)))
+(: (-> int (Result string int)))
 (defun (step2 n)
   (if (> n 1000000) (Err "overflow") (Ok n)))
 
 ;; The tail call *is* the block's last form. Wrapping it in a `:return` would
 ;; make it `(pure (sum-to ...))`, which is a different program.
-(: walk (-> int int (Result string int)))
+(: (-> int int (Result string int)))
 (defun (walk n acc)
   (if (< n 0)
       (Err "negative")
@@ -117,7 +117,7 @@
               (pure acc)
               (walk (- x 1) (+ acc 1))))))
 
-(: render (-> (Result string int) string))
+(: (-> (Result string int) string))
 (defun (render r)
   (match r
     ((Ok v) (string-append "ok " (int->string v)))

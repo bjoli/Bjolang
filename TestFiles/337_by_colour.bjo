@@ -9,32 +9,32 @@
 ;; works in a `defun` too.
 
 ;; The `#:bjo` body awaits, so the copy is kept.
-(: which (-> string))
+(: (-> string))
 (defun (which)
   (by-colour (#:sync "sync")
              (#:bjo (sync (always "bjo")))))
 
 ;; The `#:bjo` body awaits nothing, so the copy is dropped.
-(: idle (-> string))
+(: (-> string))
 (defun (idle)
   (by-colour (#:sync "sync") (#:bjo "bjo")))
 
-(: which/bjo (-bjo-> string))
+(: (-bjo-> string))
 (defbjo (which/bjo)
   (by-colour (#:sync "sync") (#:bjo (sync (always "bjo")))))
 
 ;; Both copies of a `-?->` function.
-(: apply-which (-> (-?-> string string) string))
+(: (-> (-?-> string string) string))
 (defun (apply-which f)
   (f (by-colour (#:sync "sync") (#:bjo (sync (always "bjo"))))))
 
 ;; A scope in ordinary code waits for its fibers, parking the thread.
-(: mark (-bjo-> (Box string) int void))
+(: (-bjo-> (Box string) int void))
 (defbjo (mark b ms)
   (sync (timeout ms))
   (box-set! b "ran"))
 
-(: spawned (-> string))
+(: (-> string))
 (defun (spawned)
   (def b (make-box "not run"))
   (with-scope
@@ -42,7 +42,7 @@
   (box-ref b))
 
 ;; A failure in the body is raised after the children are waited for.
-(: failing (-> string))
+(: (-> string))
 (defun (failing)
   (match (try (with-scope (raise-it)) #:catch (System.InvalidOperationException))
     ((Ok _) "returned")
@@ -50,7 +50,7 @@
 
 (import/class (Refusal (: System.InvalidOperationException (-> string Refusal))))
 
-(: raise-it (-> string))
+(: (-> string))
 (defun (raise-it) (raise (cast Exception (Refusal. "no"))))
 
 
@@ -80,13 +80,13 @@
 
 ;; Calls an ordinary function. A lambda given to it stays a lambda, because
 ;; only a lambda that is applied in place is reduced to its body.
-(: call0 (-> (-> string) string))
+(: (-> (-> string) string))
 (defun (call0 f) (f))
 
 ;; Called only from ordinary code, so only the ordinary copy of `which` runs.
-(: call-sync (-> string))
+(: (-> string))
 (defun (call-sync) (call0 (fun () (which))))
 
 ;; `spawned`, reached through a lambda so that its ordinary copy runs.
-(: spawned-in-sync (-> string))
+(: (-> string))
 (defun (spawned-in-sync) (call0 (fun () (spawned))))

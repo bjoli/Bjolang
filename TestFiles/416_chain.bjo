@@ -18,10 +18,10 @@
 
 (def/mutable events '())
 
-(: log! (-> string void))
+(: (-> string void))
 (defun (log! e) (set! events (cons e events)))
 
-(: events-in-order (-> (List string)))
+(: (-> (List string)))
 (defun (events-in-order) (list-reverse events))
 
 (impl (Iterable Counter)
@@ -36,19 +36,19 @@
   (defun (iterable-end c i) (log! (str "end " (record-ref c label) " " (->str i))))
   (defun (iterable-cleanup c i) (log! (str "cleanup " (record-ref c label) " " (->str i)))))
 
-(: counter (-> string int Counter))
+(: (-> string int Counter))
 (defun (counter label n) (Counter (label label) (n n)))
 
 ;; Generic over any iterable, and taken as a value below: given a chain, the
 ;; caller builds the adapter's dictionary, whose class has the pin.
-(: size-of (-> %s int) (where (Iterable %s)))
+(: (-> %s int) (where (Iterable %s)))
 (defun (size-of s) #:no-inline {summing 1 (:for x s)})
 
 ;; Generic over both: the adapter's dictionary is built here, with the pin.
-(: total (-> %a %b int) (where (Iterable %a #:elem int) (Iterable %b #:elem int)))
+(: (-> %a %b int) (where (Iterable %a #:elem int) (Iterable %b #:elem int)))
 (defun (total a b) #:no-inline {summing x (:for x (chain a b))})
 
-(: events-starting (-> string (List string)))
+(: (-> string (List string)))
 (defun (events-starting prefix)
   (->list (filter (fun (e) (string-starts-with? e prefix)) (events-in-order))))
 

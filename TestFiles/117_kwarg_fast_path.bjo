@@ -33,46 +33,46 @@
 ;; an observable rather than an assumption.
 (def/mutable trace "")
 
-(: note (-> string int int))
+(: (-> string int int))
 (defun (note tag value)
   (set! trace (string-append trace tag))
   value)
 
-(: reset (-> void))
+(: (-> void))
 (defun (reset)
   (set! trace ""))
 
 ;; --- the shape that gets a twin --------------------------------------------
 
-(: shifted (-> int (#:by int) int))
+(: (-> int (#:by int) int))
 (defun (shifted n #:by (+ n 1))
   (+ n by))
 
 ;; Two defaults with effects, the second reading the first. Evaluation order is
 ;; declaration order in both entries.
-(: ordered (-> int (#:a int) (#:b int) int))
+(: (-> int (#:a int) (#:b int) int))
 (defun (ordered n #:a (note "a" n) #:b (note "b" (* a 2)))
   (+ a b))
 
 ;; A statement-shaped default: it needs the prologue's block form, which the
 ;; twin emits without the surrounding `if`.
-(: looped (-> int (#:acc int) int))
+(: (-> int (#:acc int) int))
 (defun (looped n #:acc (let loop ((i 3) (a 0)) (if (= i 0) a (loop (- i 1) (+ a 1)))))
   (+ n acc))
 
 ;; A generic slot whose default is a mandatory parameter.
-(: pick (-> %a (#:fallback %a) %a))
+(: (-> %a (#:fallback %a) %a))
 (defun (pick x #:fallback x)
   fallback)
 
 ;; Recursion. Called without keywords it stays on the twin the whole way down,
 ;; and the default is evaluated once per level either way.
-(: countdown (-> int (#:step int) int))
+(: (-> int (#:step int) int))
 (defun (countdown n #:step (note "s" 1))
   (if (= n 0) 0 (+ 1 (countdown (- n step)))))
 
 ;; All defaults constant: no twin, and nothing here should notice.
-(: scaled (-> int (#:by int) int))
+(: (-> int (#:by int) int))
 (defun (scaled n #:by 3)
   (* n by))
 

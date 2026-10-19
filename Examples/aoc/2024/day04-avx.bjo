@@ -10,7 +10,7 @@
 ;; The margin: three cells, the reach of the last letter of XMAS.
 (def margin 3)
 
-(: byte-of (-> char byte))
+(: (-> char byte))
 (defun (byte-of c) (cast System.Byte (char->integer c)))
 
 (type (: Grid (Record (: cells (Array byte)) (: w int) (: h int) (: stride int))))
@@ -18,7 +18,7 @@
 ;; A row of the grid is a stride of cells. The stride leaves a vector's width
 ;; of zeros after the letters, so the last vector of a row reads no letters of
 ;; the next row.
-(: make-grid (-> (Vec string) Grid))
+(: (-> (Vec string) Grid))
 (defun (make-grid lines)
   (def* (w (length (ref lines 0)))
         (h (length lines))
@@ -32,7 +32,7 @@
   (Grid (cells cells) (w w) (h h) (stride stride)))
 
 ;; Calls `f` with the index of the first of each 32 cells of the letters.
-(: for-each-vector (-> Grid (-> int void) void))
+(: (-> Grid (-> int void) void))
 (defun (for-each-vector g f)
   (loop (:for y (range 0 (.h g)))
         (:subloop)
@@ -43,13 +43,13 @@
   (def* (g (make-grid (input-lines args)))
         (cells (.cells g))
         (s (.stride g)))
-  (: letter (-> char UInt8x32))
+  (: (-> char UInt8x32))
   (defun (letter c) (simd256-splat (byte-of c)))
   (def X (letter #\X))
   (def M (letter #\M))
   (def A (letter #\A))
   (def S (letter #\S))
-  (: at (-> int UInt8x32))
+  (: (-> int UInt8x32))
   (defun (at i) (simd256-load cells i))
 
   ;; Part 1: XMAS from each cell, in each of the eight directions.
@@ -68,7 +68,7 @@
   (println part1)
 
   ;; Part 2: an A whose two diagonals each read MAS or SAM.
-  (: mas (-> UInt8x32 UInt8x32 (Mask256 byte)))
+  (: (-> UInt8x32 UInt8x32 (Mask256 byte)))
   (defun (mas a b)
     (simd-or (simd-and (simd-eq a M) (simd-eq b S))
              (simd-and (simd-eq a S) (simd-eq b M))))

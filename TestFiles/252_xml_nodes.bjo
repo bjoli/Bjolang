@@ -6,23 +6,23 @@
 (import (std simpletest))
 (import (text xml))
 
-(: raises? (-> (-> %a) bool))
+(: (-> (-> %a) bool))
 (defun (raises? thunk)
   (err? (try (thunk) #:catch (System.ArgumentException))))
 
-(: p XmlName)
+(: XmlName)
 (def p (xml-name "p"))
 
-(: b XmlName)
+(: XmlName)
 (def b (xml-name "b"))
 
-(: atom XmlName)
+(: XmlName)
 (def atom (xml-name "entry" #:ns "http://www.w3.org/2005/Atom"))
 
-(: attr (-> string string (Tuple XmlName string)))
+(: (-> string string (Tuple XmlName string)))
 (defun (attr name value) (Tuple (xml-name name) value))
 
-(: names (-> void))
+(: (-> void))
 (defun (names)
   (expect "a local name" (xml-name-local atom) "entry")
   (expect "its namespace" (xml-name-ns atom) "http://www.w3.org/2005/Atom")
@@ -34,7 +34,7 @@
   (expect-true "nor a leading digit" (raises? (fun () (xml-name "1a"))))
   (expect "the xml namespace" xml-namespace "http://www.w3.org/XML/1998/namespace"))
 
-(: construction (-> void))
+(: (-> void))
 (defun (construction)
   (def e (xml-element p Nil (list (xml-text "a") (xml-text "") (xml-text "b")
                                   (xml-comment "c")
@@ -60,7 +60,7 @@
           (Some (XmlPos (line 3) (column 4))))
   (expect "no position" (element-pos (xml-element p Nil Nil)) None))
 
-(: views (-> void))
+(: (-> void))
 (defun (views)
   (def e (xml-element p (list (attr "class" "x") (attr "id" "y"))
                       (list (xml-text "hi ") (xml-element b Nil (list (xml-text "!"))) (xml-pi "t" "d"))))
@@ -105,7 +105,7 @@
   (expect-true "node-case with no clause and no else raises"
                (raises? (fun () (node-case (xml-text "x") #:comment (fun (s) 1))))))
 
-(: equality (-> void))
+(: (-> void))
 (defun (equality)
   (def one (xml-element p (list (attr "a" "1") (attr "b" "2")) (list (xml-text "x"))
                         #:pos (Some (XmlPos (line 1) (column 2)))))
@@ -121,7 +121,7 @@
                                                      (xml-element p Nil (list (xml-text "ab")))))
   (expect-true "a text and a comment" (not (node=? (xml-text "a") (xml-comment "a")))))
 
-(: documents (-> void))
+(: (-> void))
 (defun (documents)
   (def root (xml-element p Nil (list (xml-text "x"))))
   (def d (xml-document root #:prolog (list (xml-comment "c") (xml-pi "style" "a")) #:epilog (list (xml-comment "e"))))
@@ -142,12 +142,12 @@
 ;; n elements, each the only child of the one around it, with text at the
 ;; bottom. Built from the inside out, so building it recurses no more than
 ;; walking it may.
-(: deep (-> int string Node))
+(: (-> int string Node))
 (defun (deep n leaf)
   (let loop ((i 0) (acc (xml-text leaf)))
     (if (= i n) acc (loop (+ i 1) (xml-element (xml-name "d") (list (attr "i" (int->string i))) (list acc))))))
 
-(: depth (-> void))
+(: (-> void))
 (defun (depth)
   (def one (deep 100000 "bottom"))
   (def two (deep 100000 "bottom"))

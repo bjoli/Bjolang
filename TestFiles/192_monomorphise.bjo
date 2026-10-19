@@ -30,7 +30,7 @@
 
 ;; --- The plain case ---------------------------------------------------------
 
-(: total (-> %a %a int) (where (Sized %a)))
+(: (-> %a %a int) (where (Sized %a)))
 (defun (total a b) (+ (size-of a) (size-of b)))
 
 ;; --- Recursion --------------------------------------------------------------
@@ -39,7 +39,7 @@
 ;; not a wrong answer, so the assertion below cannot see it; what it pins is
 ;; that the copy still terminates and still sums, at both types.
 
-(: sum-sizes (-> (List %a) int int) (where (Sized %a)))
+(: (-> (List %a) int int) (where (Sized %a)))
 (defun (sum-sizes xs acc)
   (if (list-empty? xs)
       acc
@@ -47,7 +47,7 @@
 
 ;; --- Two constraints, so the evidence has an order to get wrong -------------
 
-(: same-size? (-> %a %b bool) (where (Sized %a) (Sized %b)))
+(: (-> %a %b bool) (where (Sized %a) (Sized %b)))
 (defun (same-size? a b) (= (size-of a) (size-of b)))
 
 ;; --- A type argument that is not the constrained one ------------------------
@@ -55,7 +55,7 @@
 ;; `%b` carries no constraint and is substituted anyway: a copy has no type
 ;; parameters at all, which is what lets a call site drop its type arguments.
 
-(: tagged-size (-> %a %b int) (where (Sized %a)))
+(: (-> %a %b int) (where (Sized %a)))
 (defun (tagged-size x _tag) (size-of x))
 
 ;; --- A call that must NOT be specialised ------------------------------------
@@ -64,7 +64,7 @@
 ;; it dispatches. It is also what depth one leaves behind: called at `int`
 ;; below, `outer` is copied, but the `total` inside the copy is not.
 
-(: outer (-> %a int) (where (Sized %a)))
+(: (-> %a int) (where (Sized %a)))
 (defun (outer x) (+ (total x x) (size-of x)))
 
 ;; --- A chain of three -------------------------------------------------------
@@ -73,10 +73,10 @@
 ;; constrained, so the sweep has to run three times: the demand for the second
 ;; and third exists only inside the copies the round before it made.
 
-(: pair-total (-> %a %a int) (where (Sized %a)))
+(: (-> %a %a int) (where (Sized %a)))
 (defun (pair-total a b) (+ (total a b) 1))
 
-(: outer-most (-> %a %a int) (where (Sized %a)))
+(: (-> %a %a int) (where (Sized %a)))
 (defun (outer-most a b) (* (pair-total a b) 2))
 
 ;; --- A CLR constraint has no dictionary to remove ---------------------------
@@ -84,7 +84,7 @@
 (def/trait (Num %a)
   (#:clr-constraint (System.Numerics.INumber %a)))
 
-(: twice (-> %a %a) (where (Num %a)))
+(: (-> %a %a) (where (Num %a)))
 (defun (twice n) (+ n n))
 
 (defun (main)

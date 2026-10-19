@@ -54,17 +54,17 @@
 
 ;; The server side has nulls too: a header that was not sent. A .NET string
 ;; becomes a Bjolang one at the call, and a null becomes "" there.
-(: header-or-empty (-> ServerRequest string string))
+(: (-> ServerRequest string string))
 (defun (header-or-empty req name)
   (name-value (request-headers req) name))
 
 ;; A string as its characters' code points, so a test can say exactly which
 ;; characters, invisible ones included, a body read as.
-(: codes (-> string string))
+(: (-> string string))
 (defun (codes s)
   (string-join (list->vec (list-map (fun (c) (int->string (char->integer c))) (string->list s))) " "))
 
-(: request-body (-> ServerRequest string))
+(: (-> ServerRequest string))
 (defun (request-body req)
   (read-all (cast InputPort (StreamPort. (request-stream req)))))
 
@@ -76,7 +76,7 @@
 ;; Writing to a client that has gone away raises, which is exactly what the
 ;; cancellation test makes happen — so the write is guarded and the loop
 ;; carries on rather than taking the rest of the suite down with it.
-(: respond! (-> ServerResponse int string void))
+(: (-> ServerResponse int string void))
 (defun (respond! resp code body)
   (match (try (let ()
                 (reply-status! resp code)
@@ -93,7 +93,7 @@
 
 ;; A body given as bytes, under a Content-Type of the caller's: what an
 ;; encoding test needs to say exactly what is on the wire.
-(: respond-bytes! (-> ServerResponse string (Array byte) void))
+(: (-> ServerResponse string (Array byte) void))
 (defun (respond-bytes! resp content-type body)
   (match (try (let ()
                 (reply-status! resp 200)
@@ -104,7 +104,7 @@
     ((Ok written) unit)
     ((Err e) unit)))
 
-(: serve (-bjo-> Listener int void))
+(: (-bjo-> Listener int void))
 (defbjo (serve listener remaining)
   (when (> remaining 0)
     (let* ((ctx (next-context listener))
@@ -148,7 +148,7 @@
 
 ;; A free port, found by asking. Nothing else in the suite listens, but a
 ;; developer's machine might.
-(: listen-on (-> Listener int int (Option int)))
+(: (-> Listener int int (Option int)))
 (defun (listen-on listener port tries)
   (if (= tries 0)
       None
@@ -167,7 +167,7 @@
 ;; A body read as lines, from a fiber. Nothing here names a colour: `fetch` and
 ;; `read-line` both pick their awaiting copy because this is a `defbjo`, and
 ;; the source is the same as the blocking calls in `main`.
-(: fetch-lines (-bjo-> string (Vec string)))
+(: (-bjo-> string (Vec string)))
 (defbjo (fetch-lines url)
   (match (fetch (http-get url))
     ((Err e) (vec-empty))
@@ -181,7 +181,7 @@
 ;; A request as a losing branch. The timeout wins, the request is withdrawn,
 ;; and its token is cancelled — the server is left writing into a socket that
 ;; nobody is reading, which `respond!` above survives.
-(: race-slow (-bjo-> string string))
+(: (-bjo-> string string))
 (defbjo (race-slow url)
   (match (sync (choose (wrap (fetching (http-get url)) (fun (answer) (Answered answer)))
                        (wrap (timeout 300) (fun (fired) TimedOut))))

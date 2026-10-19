@@ -24,7 +24,7 @@
 ;; quadratic. String traversal belongs to a cursor.
 
 ;; `char` is an ordinary type name, usable in a signature.
-(: vowel? (-> char bool))
+(: (-> char bool))
 (defun (vowel? c)
   (match c
     (#\a #t)
@@ -35,7 +35,7 @@
     (_ #f)))
 
 ;; Named characters and punctuation match like any other literal.
-(: describe (-> char string))
+(: (-> char string))
 (defun (describe c)
   (match c
     (#\space "space")
@@ -45,7 +45,7 @@
     (#\; "semicolon")
     (_ "other")))
 
-(: test-chars (-> void))
+(: (-> void))
 (defun (test-chars)
   ;; Literals and codepoints.
   (expect "plain literal" (char->int #\a) 97)
@@ -119,27 +119,27 @@
 ;; reverses a string, is checking that nothing is counting or cutting in the
 ;; wrong currency.
 
-(: expect-int (-> string int int void))
+(: (-> string int int void))
 (defun (expect-int label actual wanted)
   (expect label (int->string actual) (int->string wanted)))
 
-(: expect-bool (-> string bool bool void))
+(: (-> string bool bool void))
 (defun (expect-bool label actual wanted)
   (expect label (if actual "yes" "no") (if wanted "yes" "no")))
 
-(: expect-char (-> string char char void))
+(: (-> string char char void))
 (defun (expect-char label actual wanted)
   (expect label (char->string actual) (char->string wanted)))
 
 ;; A folder that counts. Named rather than written `#(+ &1 1)`, because a
 ;; shorthand's arity is the highest `&n` it mentions — that one is unary, and a
 ;; folder takes the accumulator *and* the element.
-(: tally (-> char int int))
+(: (-> char int int))
 (defun (tally c acc) (+ acc 1))
 
 ;; Walk a string with the raw cursor API and count what comes past. The loop a
 ;; cursor is *for*: one `next` per character, no indexing, no rescanning.
-(: count-by-cursor (-> string int))
+(: (-> string int))
 (defun (count-by-cursor s)
   (let loop ((c (string-cursor-start s)) (n 0))
     (if (string-cursor-end? s c)
@@ -149,7 +149,7 @@
 ;; The same walk with the fused step. `string-cursor-ref+next` answers the
 ;; character and the cursor after it at once, which is what a traversal wants:
 ;; the unit at the cursor decides both, so asking separately reads it twice.
-(: collect-fused (-> string (List char)))
+(: (-> string (List char)))
 (defun (collect-fused s)
   (let loop ((c (string-cursor-start s)) (acc Nil))
     (if (string-cursor-end? s c)
@@ -158,14 +158,14 @@
           ((Tuple ch next) (loop next (cons ch acc)))))))
 
 ;; The same walk backwards, which `string-cursor-prev` makes O(1) per step.
-(: count-backwards (-> string int))
+(: (-> string int))
 (defun (count-backwards s)
   (let loop ((c (string-cursor-end s)) (n 0))
     (if (string-cursor=? c (string-cursor-start s))
         n
         (loop (string-cursor-prev s c) (+ n 1)))))
 
-(: test-string-cursors (-> void))
+(: (-> void))
 (defun (test-string-cursors)
   ;; ---- R6RS comparisons ---------------------------------------------------
   (expect-bool "char=? same" (char=? #\a #\a) #t)
@@ -413,11 +413,11 @@
 ;; ordinal and every case mapping invariant, so the answers below are the same
 ;; on every machine, and that `string-split` and `string-join` are inverses.
 
-(: expect-false (-> string bool void))
+(: (-> string bool void))
 (defun (expect-false label actual)
   (expect label actual #f))
 
-(: test-strings (-> void))
+(: (-> void))
 (defun (test-strings)
   ;; --- Searching -----------------------------------------------------------
   (expect-true  "contains" (string-contains? "hello world" "o w"))

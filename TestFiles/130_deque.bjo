@@ -3,26 +3,26 @@
 (import (std mutable deque))
 (import (std simpletest))
 
-(: expect-int (-> string int int void))
+(: (-> string int int void))
 (defun (expect-int label actual want)
   (expect-true (string-append label (string-append " => " (int->string actual)))
           (= actual want)))
 
 ;; `(Some x)` holding what was wanted.
-(: gave? (-> (Option int) int bool))
+(: (-> (Option int) int bool))
 (defun (gave? o want)
   (match o ((Some x) (= x want)) (None #f)))
 
-(: nothing? (-> (Option int) bool))
+(: (-> (Option int) bool))
 (defun (nothing? o)
   (match o ((Some _) #f) (None #t)))
 
 ;; An empty deque has nothing in it to pin its element type, and `->str` and `=`
 ;; both need one. A signature is the whole of the fix.
-(: no-ints (-> (Deque int)))
+(: (-> (Deque int)))
 (defun (no-ints) (deque))
 
-(: show (-> (Deque int) string))
+(: (-> (Deque int) string))
 (defun (show d)
   (list-foldl (fun (x acc) (string-append acc (string-append (int->string x) " "))) ""
               (deque->list d)))
@@ -31,7 +31,7 @@
 ;; The two ends
 ;; ---------------------------------------------------------------------------
 
-(: as-a-queue (-> void))
+(: (-> void))
 (defun (as-a-queue)
   (def d (deque))
   (deque-push-back! d 1)
@@ -47,7 +47,7 @@
   (expect-true "and then nothing" (nothing? (deque-pop-front! d)))
   (expect-true "empty" (deque-empty? d)))
 
-(: as-a-stack (-> void))
+(: (-> void))
 (defun (as-a-stack)
   (def d (deque))
   (deque-push-back! d 1)
@@ -58,7 +58,7 @@
   (expect-true "then 1" (gave? (deque-pop-back! d) 1))
   (expect-true "and then nothing" (nothing? (deque-pop-back! d))))
 
-(: both-ends (-> void))
+(: (-> void))
 (defun (both-ends)
   (def d (deque))
   (deque-push-front! d 2)
@@ -77,7 +77,7 @@
 ;; of the other list across each time would make this quadratic. Half moves, so
 ;; both ends stay stocked — and the answers have to come out right either way,
 ;; which is what this pins.
-(: alternating (-> void))
+(: (-> void))
 (defun (alternating)
   (def d (list->deque (list 1 2 3 4 5 6)))
   (expect-true "front 1" (gave? (deque-pop-front! d) 1))
@@ -93,7 +93,7 @@
 ;; A single element has to be reachable from both ends, which is the boundary
 ;; the split's `k = n / 2` has to get right: it rounds to zero, so the one
 ;; element moves across whole rather than being left behind.
-(: singleton (-> void))
+(: (-> void))
 (defun (singleton)
   (def d (deque))
   (deque-push-back! d 42)
@@ -104,7 +104,7 @@
   (expect-true "one element, from the back" (gave? (deque-pop-back! d) 42))
   (expect-true "gone again" (deque-empty? d)))
 
-(: peeking (-> void))
+(: (-> void))
 (defun (peeking)
   (def d (list->deque (list 1 2 3)))
   (expect-true "peek front" (gave? (deque-peek-front! d) 1))
@@ -123,13 +123,13 @@
 ;; The whole reason for the mutable shape: a callee pushes and the caller sees
 ;; it, with nothing threaded back out.
 
-(: fill! (-> (Deque int) int void))
+(: (-> (Deque int) int void))
 (defun (fill! d n)
   (when (> n 0)
     (deque-push-back! d n)
     (fill! d (- n 1))))
 
-(: shared (-> void))
+(: (-> void))
 (defun (shared)
   (def d (deque))
   (fill! d 3)
@@ -142,7 +142,7 @@
 ;; The motivating use: a worklist that is pushed onto while it is being drained.
 ;; The deque is neither an argument that comes back nor a value that is threaded
 ;; — it is the one thing both halves are talking about.
-(: drain-worklist (-> (Deque int) string string))
+(: (-> (Deque int) string string))
 (defun (drain-worklist work acc)
   (match (deque-pop-front! work)
     (None acc)
@@ -150,7 +150,7 @@
      (when (> n 1) (deque-push-back! work (- n 1)))
      (drain-worklist work (string-append acc (string-append (int->string n) " "))))))
 
-(: countdown (-> void))
+(: (-> void))
 (defun (countdown)
   (def work (deque))
   (deque-push-back! work 3)
@@ -161,7 +161,7 @@
 ;; Conversions, folds, printing
 ;; ---------------------------------------------------------------------------
 
-(: converting (-> void))
+(: (-> void))
 (defun (converting)
   (def d (list->deque (list 1 2 3)))
   (expect-true "round trip" (= (deque->list d) (list 1 2 3)))
@@ -178,7 +178,7 @@
   (expect-true "an empty deque converts" (list-empty? (deque->list e)))
   (expect-int "and folds" (deque-fold (fun (x acc) (+ acc x)) 0 e) 0))
 
-(: printing (-> void))
+(: (-> void))
 (defun (printing)
   (expect-true "->str" (= (->str (list->deque (list 1 2 3))) "#<1 2 3>"))
   (expect-true "an empty one" (= (->str (no-ints)) "#<>")))
@@ -191,11 +191,11 @@
 ;; Without the implementation this would be .NET's field-wise comparison of
 ;; `front`, `back` and `size`, and the two below would have been unequal.
 
-(: threw? (-> (Result System.Exception %a) bool))
+(: (-> (Result System.Exception %a) bool))
 (defun (threw? r)
   (match r ((Ok _) #f) ((Err _) #t)))
 
-(: equality (-> void))
+(: (-> void))
 (defun (equality)
   ;; Everything on `back`.
   (def a (deque))

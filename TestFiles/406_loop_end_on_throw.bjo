@@ -35,31 +35,31 @@
   (defun (iterable-next s c) (+ c 1))
   (defun (iterable-end s c) (mutablevec-add! (record-ref s log) "end-only")))
 
-(: res (-> (MutableVec string) string int Res))
+(: (-> (MutableVec string) string int Res))
 (defun (res log name n) (Res (name name) (n n) (log log)))
 
-(: boom (-> int))
+(: (-> int))
 (defun (boom) (raise (cast Exception (Boom. "boom"))))
 
 ;; The log that `walk` makes, given a fresh log. An exception that `walk`
 ;; raises is caught here.
-(: ends-of (-> (-> (MutableVec string) void) (List string)))
+(: (-> (-> (MutableVec string) void) (List string)))
 (defun (ends-of walk)
   (def log (mutablevec))
   (ignore (try (walk log) #:catch (System.InvalidOperationException)))
   (mutablevec->list log))
 
 ;; A loop that awaits in its body, so that the guard is in an async method.
-(: work (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (work x) (* x 2))
 
-(: walk-awaiting (-> Res int))
+(: (-> Res int))
 (defbjo (walk-awaiting r)
   (loop (:for x r)
         (:do (when (= (work x) 4) (ignore (boom))))
         (:acc (summing x))))
 
-(: walk-caught (-> (MutableVec string) void))
+(: (-> (MutableVec string) void))
 (defbjo (walk-caught log)
   (ignore (try (walk-awaiting (res log "a" 5)) #:catch (System.InvalidOperationException))))
 

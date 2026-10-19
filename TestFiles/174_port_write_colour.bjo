@@ -28,11 +28,11 @@
 ;; A port with a tiny buffer over a string port. What was written is read back
 ;; from the port *underneath*, which has it only once the small one drains or
 ;; is flushed.
-(: sized (-> OutputPort int OutputPort))
+(: (-> OutputPort int OutputPort))
 (defun (sized inner n)
   (cast OutputPort (Sized. (as-stream inner) n #f)))
 
-(: repeat-string (-> string int string))
+(: (-> string int string))
 (defun (repeat-string s n)
   (let loop ((i 0) (acc ""))
     (if (>= i n) acc (loop (+ i 1) (string-append acc s)))))
@@ -45,7 +45,7 @@
 ;; pick a colour; this one is about whether the two bodies of three
 ;; `defbjouble`s agree, so both have to be named explicitly.
 
-(: writes-sync (-> OutputPort string int))
+(: (-> OutputPort string int))
 (defun (writes-sync p text)
   (write-string p text)
   (write-char p (int->char 128512))
@@ -54,7 +54,7 @@
   (flush-port p)
   0)
 
-(: writes-bjo (-> OutputPort string int))
+(: (-> OutputPort string int))
 (defbjo (writes-bjo p text)
   (write-string p text)
   (write-char p (int->char 128512))
@@ -63,19 +63,19 @@
   (flush-port p)
   0)
 
-(: run-int (-> (Promise int) int))
+(: (-> (Promise int) int))
 (defun (run-int p)
   (match (sync/blocking (promise-join p))
     ((Ok n) n)
     ((Err e) -1)))
 
-(: collect-sync (-> string int string))
+(: (-> string int string))
 (defun (collect-sync text n)
   (def inner (open-output-string))
   (ignore (writes-sync (sized inner n) text))
   (get-output-string inner))
 
-(: collect-bjo (-> string int string))
+(: (-> string int string))
 (defun (collect-bjo text n)
   (def inner (open-output-string))
   (if (= (run-int (bjo (writes-bjo (sized inner n) text))) 0)

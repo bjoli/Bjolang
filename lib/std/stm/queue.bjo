@@ -55,16 +55,16 @@
 ;; Making one
 ;; ---------------------------------------------------------------------------
 
-(: empty-side (-> (Side %a)))
+(: (-> (Side %a)))
 (defun (empty-side) (Side (count 0) (items (list))))
 
-(: make-queue (-> (TQueue %a)))
+(: (-> (TQueue %a)))
 (defun (make-queue)
   (TQueue (front (make-loc (empty-side)))
           (back (make-loc (empty-side)))
           (room None)))
 
-(: make-bounded-queue (-> int (TQueue %a)))
+(: (-> int (TQueue %a)))
 (defun (make-bounded-queue capacity)
   (when (< capacity 1)
     (raise (cast Exception (ArgumentException. "make-bounded-queue: the capacity must be at least 1"))))
@@ -77,7 +77,7 @@
 ;; ---------------------------------------------------------------------------
 
 ;; Takes one free place, or retries when there is none.
-(: take-place! (-> Tx (Option Room) void))
+(: (-> Tx (Option Room) void))
 (defun (take-place! tx room)
   (match room
     (None unit)
@@ -92,7 +92,7 @@
                  (tx-set! tx (record-ref r freed) 0)
                  (tx-set! tx (record-ref r write) (- f 1)))))))))
 
-(: free-places! (-> Tx (Option Room) int void))
+(: (-> Tx (Option Room) int void))
 (defun (free-places! tx room n)
   (match room
     (None unit)
@@ -104,7 +104,7 @@
 
 ;; The front side, with the back moved to it when it is empty. Moves nothing
 ;; when both are empty, so that a pop of an empty queue writes nothing.
-(: stocked-front (-> Tx (TQueue %a) (Side %a)))
+(: (-> Tx (TQueue %a) (Side %a)))
 (defun (stocked-front tx q)
   (def f (tx-ref tx (record-ref q front)))
   (if (> (struct-ref f count) 0)
@@ -118,7 +118,7 @@
               (tx-set! tx (record-ref q front) moved)
               moved)))))
 
-(: queue-push! (-> Tx (TQueue %a) %a void))
+(: (-> Tx (TQueue %a) %a void))
 (defun (queue-push! tx q x)
   (take-place! tx (record-ref q room))
   (def b (tx-ref tx (record-ref q back)))
@@ -126,7 +126,7 @@
            (Side (count (+ (struct-ref b count) 1))
                  (items (Cons x (struct-ref b items))))))
 
-(: queue-try-pop! (-> Tx (TQueue %a) (Option %a)))
+(: (-> Tx (TQueue %a) (Option %a)))
 (defun (queue-try-pop! tx q)
   (def f (stocked-front tx q))
   (match (struct-ref f items)
@@ -136,25 +136,25 @@
      (Some x))
     (Nil None)))
 
-(: queue-pop! (-> Tx (TQueue %a) %a))
+(: (-> Tx (TQueue %a) %a))
 (defun (queue-pop! tx q)
   (match (queue-try-pop! tx q)
     ((Some x) x)
     (None (tx-retry tx))))
 
-(: queue-try-peek (-> Tx (TQueue %a) (Option %a)))
+(: (-> Tx (TQueue %a) (Option %a)))
 (defun (queue-try-peek tx q)
   (match (struct-ref (stocked-front tx q) items)
     ((Cons x _) (Some x))
     (Nil None)))
 
-(: queue-peek (-> Tx (TQueue %a) %a))
+(: (-> Tx (TQueue %a) %a))
 (defun (queue-peek tx q)
   (match (queue-try-peek tx q)
     ((Some x) x)
     (None (tx-retry tx))))
 
-(: queue-pop-all! (-> Tx (TQueue %a) (List %a)))
+(: (-> Tx (TQueue %a) (List %a)))
 (defun (queue-pop-all! tx q)
   (def f (tx-ref tx (record-ref q front)))
   (def b (tx-ref tx (record-ref q back)))
@@ -167,32 +167,32 @@
         (free-places! tx (record-ref q room) n)
         (list-append (struct-ref f items) (list-reverse (struct-ref b items))))))
 
-(: queue-length (-> Tx (TQueue %a) int))
+(: (-> Tx (TQueue %a) int))
 (defun (queue-length tx q)
   (+ (struct-ref (tx-ref tx (record-ref q front)) count)
      (struct-ref (tx-ref tx (record-ref q back)) count)))
 
-(: queue-empty? (-> Tx (TQueue %a) bool))
+(: (-> Tx (TQueue %a) bool))
 (defun (queue-empty? tx q) (= (queue-length tx q) 0))
 
 ;; ---------------------------------------------------------------------------
 ;; Outside a transaction
 ;; ---------------------------------------------------------------------------
 
-(: queue-send (-> (TQueue %a) %a (Event Unit)))
+(: (-> (TQueue %a) %a (Event Unit)))
 (defun (queue-send q x)
   (atomically-evt (fun (tx) (queue-push! tx q x))))
 
-(: queue-recv (-> (TQueue %a) (Event %a)))
+(: (-> (TQueue %a) (Event %a)))
 (defun (queue-recv q)
   (atomically-evt (fun (tx) (queue-pop! tx q))))
 
-(: queue-put (-> (TQueue %a) %a void))
+(: (-> (TQueue %a) %a void))
 (defbjouble (queue-put q x)
   (#:sync (sync/blocking (queue-send q x)))
   (#:bjo  (sync (queue-send q x))))
 
-(: queue-get (-> (TQueue %a) %a))
+(: (-> (TQueue %a) %a))
 (defbjouble (queue-get q)
   (#:sync (sync/blocking (queue-recv q)))
   (#:bjo  (sync (queue-recv q))))

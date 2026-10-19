@@ -30,7 +30,7 @@
 ;; and that job moved to `sync`: two mechanisms watching one token — one
 ;; raising, one answering `None` — would be two answers to the same question.
 
-(: worker (-> CancelToken (Chan int) (Chan string) void))
+(: (-> CancelToken (Chan int) (Chan string) void))
 (defbjo (worker tok jobs results)
   (let go ((total 0) (taken 0))
     (match (sync (until-cancelled tok (chan-recv jobs)))
@@ -42,7 +42,7 @@
 ;; Handed a token nobody holds the other half of, `until-cancelled` is `Some`
 ;; for as long as there is anything to take, and the loop leaves on its own
 ;; terms instead.
-(: bounded (-> CancelToken (Chan int) int int))
+(: (-> CancelToken (Chan int) int int))
 (defbjo (bounded tok jobs n)
   (let go ((i 0) (total 0))
     (if (= i n)
@@ -51,7 +51,7 @@
           ((Some j) (go (+ i 1) (+ total j)))
           (None total)))))
 
-(: feed (-> (Chan int) int void))
+(: (-> (Chan int) int void))
 (defbjo (feed jobs n)
   (loop (:for i (range 0 n))
         (:do (sync (chan-send jobs i)))))
@@ -68,7 +68,7 @@
 ;; Written *before* the accumulator on purpose: clause order decides where in an
 ;; iteration the exit happens, so the iteration that sees the token contributes
 ;; nothing.
-(: count-ambient (-> int int))
+(: (-> int int))
 (defun (count-ambient limit)
   (loop (:for i (range 0 limit))
         (:until-cancelled)
@@ -77,7 +77,7 @@
 
 ;; The explicit form does no lookup at all, and is the only way to watch a token
 ;; that is not the ambient one.
-(: count-explicit (-> CancelToken int int))
+(: (-> CancelToken int int))
 (defun (count-explicit tok limit)
   (loop (:for i (range 0 limit))
         (:until-cancelled tok)
@@ -86,7 +86,7 @@
 
 ;; The exit is where it is written, not at the top: this one accumulates first,
 ;; so the iteration that notices the cancellation has already counted.
-(: count-after (-> CancelToken int int))
+(: (-> CancelToken int int))
 (defun (count-after tok limit)
   (loop (:for i (range 0 limit))
         (:acc n (counting i))

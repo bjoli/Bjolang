@@ -37,10 +37,10 @@
                       (: pq-built (PriorityQueue int int))
                       (: heap-built (Heap int)))))
 
-(: long (-> int long))
+(: (-> int long))
 (defun (long x) (cast System.Int64 x))
 
-(: data-of (-> int Data))
+(: (-> int Data))
 (defun (data-of n)
   (def keys (loop (:for i (range 0 n)) (:acc l (listing (% (* i 7919) n)))))
   (def entries (list-map (fun (k) (Tuple k k)) keys))
@@ -50,19 +50,19 @@
         (pq-built (list->priorityqueue entries))
         (heap-built (list->heap keys))))
 
-(: each (-> (Vec Data) (-> Data void) void))
+(: (-> (Vec Data) (-> Data void) void))
 (defun (each data f)
   (loop (:for d data) (:do (f d))))
 
 ;; Every entry removed, least first; the sum of what came out.
-(: pq-drain (-> (PriorityQueue int int) long))
+(: (-> (PriorityQueue int int) long))
 (defun (pq-drain q)
   (let go ((q q) (acc 0L))
     (match (priorityqueue-peek q)
       (None acc)
       ((Some (Tuple x _)) (go (priorityqueue-remove-min q) (+ acc (long x)))))))
 
-(: heap-drain (-> (Heap int) long))
+(: (-> (Heap int) long))
 (defun (heap-drain h)
   (let go ((h h) (acc 0L))
     (match (heap-min h)
@@ -71,7 +71,7 @@
 
 ;; A scheduler's pattern: half the keys added, then each of the others added
 ;; as the least is taken off.
-(: pq-churn (-> (List int) int long))
+(: (-> (List int) int long))
 (defun (pq-churn keys n)
   (def half (/ n 2))
   (let go ((rest keys) (i 0) (q (priorityqueue-empty)) (acc 0L))
@@ -84,7 +84,7 @@
              ((Some (Tuple x _)) (go more (+ i 1) (priorityqueue-add (priorityqueue-remove-min q) k k) (+ acc (long x))))
              (None acc)))))))
 
-(: heap-churn (-> (List int) int long))
+(: (-> (List int) int long))
 (defun (heap-churn keys n)
   (def half (/ n 2))
   (let go ((rest keys) (i 0) (h (heap-empty)) (acc 0L))

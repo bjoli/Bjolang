@@ -16,13 +16,13 @@
 (def solar-mass (* 4.0 (* pi pi)))
 (def days-per-year 365.24)
 
-(: planet (-> double double double double double double double Body))
+(: (-> double double double double double double double Body))
 (defun (planet x y z vx vy vz mass)
   (Body (x x) (y y) (z z)
         (vx (* vx days-per-year)) (vy (* vy days-per-year)) (vz (* vz days-per-year))
         (mass (* mass solar-mass))))
 
-(: make-system (-> (Array Body)))
+(: (-> (Array Body)))
 (defun (make-system)
   #[(planet 0.0 0.0 0.0 0.0 0.0 0.0 1.0)
     ;; Jupiter
@@ -43,7 +43,7 @@
             5.15138902046611451e-5)])
 
 ;; Gives the sun the momentum that makes the total zero.
-(: offset-momentum (-> (Array Body) void))
+(: (-> (Array Body) void))
 (defun (offset-momentum bodies)
   (def (px py pz)
     (loop (:for b (in-array bodies))
@@ -54,7 +54,7 @@
   (def sun (array-ref bodies 0))
   (record-set! sun (vx (/ (- px) solar-mass)) (vy (/ (- py) solar-mass)) (vz (/ (- pz) solar-mass))))
 
-(: energy (-> (Array Body) double))
+(: (-> (Array Body) double))
 (defun (energy bodies)
   (def n (array-length bodies))
   (let outer ((i 0) (e 0.0))
@@ -75,7 +75,7 @@
                 (outer (+ i 1) e))))
         e)))
 
-(: advance (-> (Array Body) double void))
+(: (-> (Array Body) double void))
 (defun (advance bodies dt)
   (def n (array-length bodies))
   (let outer ((i 0))
@@ -104,11 +104,11 @@
                             (y (+ (.y b) (* dt (.vy b))))
                             (z (+ (.z b) (* dt (.vz b))))))))
 
-(: show-energy (-> double void))
+(: (-> double void))
 (defun (show-energy e)
   (displayln (render->string [(numeric e #:precision 9)])))
 
-(: run (-> (Vec string) void))
+(: (-> (Vec string) void))
 (defun (run args)
   (def n (string->int (vec-ref args 0)))
   (def bodies (make-system))

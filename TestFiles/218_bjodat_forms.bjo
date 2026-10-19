@@ -41,13 +41,13 @@
   (: Mapped (Record (: name string)
                     (: kind Symbol #:key :sort))))
 
-(: shown (-> (Result string Item) string))
+(: (-> (Result string Item) string))
 (defun (shown r)
   (match r
     ((Err e) (str "err: " e))
     ((Ok x) (bjodat->string (Item->bjodat x)))))
 
-(: shown-tree (-> (Result string Bjodat) string))
+(: (-> (Result string Bjodat) string))
 (defun (shown-tree r)
   (match r
     ((Err e) (str "parse: " e))
@@ -55,13 +55,13 @@
 
 ;; What the two decoders said, when they agree. When they do not, the
 ;; disagreement is the answer, so the failure names both.
-(: agreed (-> string string string))
+(: (-> string string string))
 (defun (agreed one-pass tree)
   (if (= one-pass tree)
       one-pass
       (str "DIFFER | one-pass: " one-pass " | tree: " tree)))
 
-(: dep-names (-> Package string))
+(: (-> Package string))
 (defun (dep-names p)
   (def sb (stringbuilder-empty))
   (loop (:with first #t #f)
@@ -70,7 +70,7 @@
              (stringbuilder-add-string! sb (module-name->string (record-ref d name)))))
   (stringbuilder->string sb))
 
-(: satisfied (-> string (Option VersionReq) string))
+(: (-> string (Option VersionReq) string))
 (defun (satisfied v req)
   (match (parse-version v)
     ((Err e) e)
@@ -79,14 +79,14 @@
        (None "unconstrained")
        ((Some r) (if (version-satisfies? ver r) "yes" "no"))))))
 
-(: nth-dep (-> Package int (Option Dep)))
+(: (-> Package int (Option Dep)))
 (defun (nth-dep p i)
   (let go ((ds (record-ref p depends)) (k 0))
     (match ds
       (Nil None)
       ((Cons d rest) (if (= k i) (Some d) (go rest (+ k 1)))))))
 
-(: dep-version (-> Package int (Option VersionReq)))
+(: (-> Package int (Option VersionReq)))
 (defun (dep-version p i)
   (match (nth-dep p i)
     (None None)

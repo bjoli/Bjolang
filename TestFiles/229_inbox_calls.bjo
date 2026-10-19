@@ -45,13 +45,13 @@
 ;; ---------------------------------------------------------------------------
 
 ;; One call, or nothing within `ms`.
-(: recv-call (-bjo-> (Inbox (Call int int)) int (Option (Call int int))))
+(: (-bjo-> (Inbox (Call int int)) int (Option (Call int int))))
 (defbjo (recv-call ib ms)
   (sync (choose (wrap (inbox-recv ib) (fun (c) (Some c)))
                 (wrap (timeout ms) (fun (u) None)))))
 
 ;; How a call's task ended, waited for without blocking a thread.
-(: settled (-bjo-> (Task int) int string))
+(: (-bjo-> (Task int) int string))
 (defbjo (settled t ms)
   (let go ((left ms))
     (cond
@@ -62,7 +62,7 @@
       (else (begin (sync (timeout 1)) (go (- left 1)))))))
 
 ;; Answers `n` calls by doubling the request.
-(: answer-calls (-bjo-> (Inbox (Call int int)) int void))
+(: (-bjo-> (Inbox (Call int int)) int void))
 (defbjo (answer-calls ib n)
   (loop (:for i (range 0 n))
         (:do (match (recv-call ib 5000)
@@ -71,7 +71,7 @@
 
 ;; The same, but reporting what the fiber's own environment said while it was
 ;; answering: the parameter it was spawned under, and an effect it performed.
-(: answer-with-environment (-bjo-> (Inbox (Call int int)) (Box string) void))
+(: (-bjo-> (Inbox (Call int int)) (Box string) void))
 (defbjo (answer-with-environment ib seen)
   (match (recv-call ib 5000)
     ((Some c)
@@ -81,18 +81,18 @@
     (None (box-set! seen "no call arrived"))))
 
 ;; Makes a call from a pool thread and waits there for the answer.
-(: call-off-fiber (-bjo-> (Inbox (Call int int)) int void))
+(: (-bjo-> (Inbox (Call int int)) int void))
 (defbjo (call-off-fiber ib request)
   (off-task (fun () (cast Task (inbox-call ib request)))))
 
-(: cancel-off-fiber (-bjo-> Cancelling void))
+(: (-bjo-> Cancelling void))
 (defbjo (cancel-off-fiber cts)
   (off-task (fun () (.Cancel cts) done)))
 
 ;; One round of the token-versus-receive race (prompt test 14). Answers "" when
 ;; the trial came out as exactly one of the two permitted outcomes, and what
 ;; went wrong otherwise.
-(: race-once (-bjo-> (Inbox (Call int int)) int bool string))
+(: (-bjo-> (Inbox (Call int int)) int bool string))
 (defbjo (race-once ib n token-first?)
   (def cts (Cancelling.))
   (def t (inbox-call/token ib n (.-Token cts)))
@@ -127,7 +127,7 @@
   (ignore (sync (promise-join cancelling)))
   outcome)
 
-(: race (-bjo-> (Inbox (Call int int)) int bool string))
+(: (-bjo-> (Inbox (Call int int)) int bool string))
 (defbjo (race ib n token-first?)
   (let go ((i 0) (bad ""))
     (if (= i n)
@@ -354,6 +354,6 @@
 
 ;; Feeding the observer from a pool thread: `OnNext` is called directly, as any
 ;; `IObservable` would call it.
-(: feed (-bjo-> (IObserver int) int void))
+(: (-bjo-> (IObserver int) int void))
 (defbjo (feed obs x)
   (off-task (fun () (.OnNext obs x) done)))

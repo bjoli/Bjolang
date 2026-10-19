@@ -11,40 +11,40 @@
 (import/class
   (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
 
-(: el (-> string (List Node) Node))
+(: (-> string (List Node) Node))
 (defun (el name kids) (xml-element (xml-name name) Nil kids))
 
-(: el/ns (-> string string (List Node) Node))
+(: (-> string string (List Node) Node))
 (defun (el/ns uri name kids) (xml-element (xml-name name #:ns uri) Nil kids))
 
-(: t (-> string Node))
+(: (-> string Node))
 (defun (t s) (xml-text s))
 
-(: written (-> Node (#:indent? bool) (#:prefixes (List (Tuple string string))) string))
+(: (-> Node (#:indent? bool) (#:prefixes (List (Tuple string string))) string))
 (defun (written n #:indent? #f #:prefixes Nil)
   (match (node->xml-string n #:indent? indent? #:prefixes prefixes)
     ((Ok s) s)
     ((Err e) (str "error: " (->str e)))))
 
-(: refused? (-> Node bool))
+(: (-> Node bool))
 (defun (refused? n) (err? (node->xml-string n)))
 
-(: parsed-root (-> string (Option Node)))
+(: (-> string (Option Node)))
 (defun (parsed-root s)
   (match (parse-xml s #:max-depth 200000 #:comments? #t)
     ((Ok d) (Some (document-root d)))
     ((Err _) None)))
 
-(: round-trips? (-> Node (#:prefixes (List (Tuple string string))) bool))
+(: (-> Node (#:prefixes (List (Tuple string string))) bool))
 (defun (round-trips? n #:prefixes Nil)
   (match (node->xml-string n #:prefixes prefixes)
     ((Ok s) (match (parsed-root s) ((Some back) (node=? back n)) (None #f)))
     ((Err _) #f)))
 
-(: atom string)
+(: string)
 (def atom "http://www.w3.org/2005/Atom")
 
-(: basics (-> void))
+(: (-> void))
 (defun (basics)
   (expect "an element" (written (xml-element (xml-name "p") (list (Tuple (xml-name "class") "x"))
                                              (list (t "hi ") (el "b" (list (t "!"))))))
@@ -59,7 +59,7 @@
   (expect "to a port" (node->xml (el "a" (list (t "x"))) port) (Ok unit))
   (expect "what the port holds" (get-output-string port) "<a>x</a>"))
 
-(: namespaces (-> void))
+(: (-> void))
 (defun (namespaces)
   (expect "an element gets a default namespace" (written (el/ns "u" "a" Nil)) "<a xmlns=\"u\" />")
   (expect "its children share it" (written (el/ns "u" "a" (list (el/ns "u" "b" Nil)))) "<a xmlns=\"u\"><b /></a>")
@@ -104,7 +104,7 @@
                (round-trips? (xml-element (xml-name "a" #:ns "u") (list (Tuple (xml-name "x" #:ns "v") "1")) Nil)
                              #:prefixes (list (Tuple "p" "u") (Tuple "p" "v")))))
 
-(: refusals (-> void))
+(: (-> void))
 (defun (refusals)
   (expect-true "U+0000 in text" (refused? (el "a" (list (t (list->string (list (integer->char 0))))))))
   (expect-true "U+0001 in an attribute"
@@ -119,7 +119,7 @@
           (match (node->xml-string (el "a" (list (xml-comment "a--b")))) ((Err e) (->str e)) ((Ok _) ""))
           "a comment may not contain \"--\""))
 
-(: indentation (-> void))
+(: (-> void))
 (defun (indentation)
   (expect "elements indented, mixed content left alone"
           (written (el "r" (list (el "a" (list (el "b" Nil)))
@@ -137,7 +137,7 @@
           "<r>\n  <!--c-->\n  <a />\n</r>")
   (expect "off by default" (written (el "r" (list (el "a" Nil)))) "<r><a /></r>"))
 
-(: documents (-> void))
+(: (-> void))
 (defun (documents)
   (def doc (xml-document (el "root" (list (t "x")))
                          #:prolog (list (xml-comment "before") (xml-pi "style" "a"))
@@ -182,7 +182,7 @@
           (match with-dt ((Ok d) (document->xml-string d #:declaration? #f)) ((Err e) (Ok (->str e))))
           (Ok "<!DOCTYPE a><a>x</a>")))
 
-(: repeated (-> int string string))
+(: (-> int string string))
 (defun (repeated n s)
   (def sb (stringbuilder-empty))
   (loop (:for i (range 0 n)) (:do (stringbuilder-add-string! sb s)))
@@ -190,12 +190,12 @@
 
 ;; n elements, each the only child of the one around it, with text at the
 ;; bottom.
-(: nested (-> int Node))
+(: (-> int Node))
 (defun (nested n)
   (let loop ((i 0) (acc (t "bottom")))
     (if (= i n) acc (loop (+ i 1) (el "d" (list acc))))))
 
-(: depth (-> void))
+(: (-> void))
 (defun (depth)
   (def deep (nested 100000))
   (def s (written deep))

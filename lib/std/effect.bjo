@@ -43,12 +43,12 @@
 
 (export unhandled-effect)
 
-(: cat (-> string string string))
+(: (-> string string string))
 (defun (cat a b) (str-concat a b))
 
 ;; What an operation declared with no `#:default` does when it is performed.
 ;; Written here rather than in the template so that the message is in one place.
-(: unhandled-effect (-> string %a))
+(: (-> string %a))
 (defun (unhandled-effect operation)
   (raise (cast Exception (Unhandled. operation))))
 
@@ -56,29 +56,29 @@
 ;; Reading a declaration
 ;; ---------------------------------------------------------------------------
 
-(: ident-name (-> Syntax string))
+(: (-> Syntax string))
 (defun (ident-name s)
   (match s
     ((SSym name) (symbol->string name))
     (_ "")))
 
 ;; The head of an arrow: "->" or "-bjo->".
-(: arrow-head (-> Syntax string))
+(: (-> Syntax string))
 (defun (arrow-head arrow)
   (match arrow
     ((SList (Cons head _)) (ident-name head))
     (_ "")))
 
-(: suspending-arrow? (-> Syntax bool))
+(: (-> Syntax bool))
 (defun (suspending-arrow? arrow)
   (= (arrow-head arrow) "-bjo->"))
 
-(: arrow? (-> Syntax bool))
+(: (-> Syntax bool))
 (defun (arrow? arrow)
   (if (= (arrow-head arrow) "->") #t (suspending-arrow? arrow)))
 
 ;; Everything but the head and the return type.
-(: arrow-arity (-> Syntax int))
+(: (-> Syntax int))
 (defun (arrow-arity arrow)
   (match arrow
     ((SList items) (- (list-length items) 2))
@@ -93,7 +93,7 @@
 ;; Built through `inject`, so the name is *not* renamed. `defeffect` and
 ;; `with-handler` are separate invocations with separate rename tables, and a
 ;; renamed cell would give each of them a spelling the other could not write.
-(: op-cell (-> (-> Symbol Syntax) Syntax Syntax))
+(: (-> (-> Symbol Syntax) Syntax Syntax))
 (defun (op-cell inject name)
   (inject (string->symbol (cat "op/" (ident-name name)))))
 
@@ -101,7 +101,7 @@
 ;; renamed, to `effect-arg0__164` and the like, which is harmless here: the only
 ;; thing in scope inside the wrapper is the wrapper. A doc of the operation names
 ;; them itself, as it would a builtin's.
-(: wrapper-args (-> int int (List Syntax)))
+(: (-> int int (List Syntax)))
 (defun (wrapper-args i n)
   (if (>= i n)
       Nil
@@ -112,14 +112,14 @@
 ;; The clauses of a `defeffect`
 ;; ---------------------------------------------------------------------------
 
-(: rest-after (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (rest-after clauses)
   (match clauses
     (Nil Nil)
     ((Cons _ rest) rest)))
 
 ;; The items of the form following a keyword clause.
-(: clause-items (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (clause-items clauses)
   (match clauses
     (Nil Nil)
@@ -130,7 +130,7 @@
 
 ;; The operation declarations, which is everything that is not a keyword clause
 ;; or the form one introduces.
-(: operation-clauses (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (operation-clauses clauses)
   (match clauses
     (Nil Nil)
@@ -141,7 +141,7 @@
        (#:adopt (operation-clauses (rest-after rest)))
        (_ (Cons c (operation-clauses rest)))))))
 
-(: default-clauses (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (default-clauses clauses)
   (match clauses
     (Nil Nil)
@@ -150,7 +150,7 @@
        (#:default (clause-items rest))
        (_ (default-clauses rest))))))
 
-(: cold-clauses (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (cold-clauses clauses)
   (match clauses
     (Nil Nil)
@@ -159,7 +159,7 @@
        (#:cold (clause-items rest))
        (_ (cold-clauses rest))))))
 
-(: adopt-clauses (-> (List Syntax) (List Syntax)))
+(: (-> (List Syntax) (List Syntax)))
 (defun (adopt-clauses clauses)
   (match clauses
     (Nil Nil)
@@ -168,13 +168,13 @@
        (#:adopt (clause-items rest))
        (_ (adopt-clauses rest))))))
 
-(: named-in? (-> Syntax (List Syntax) bool))
+(: (-> Syntax (List Syntax) bool))
 (defun (named-in? name names)
   (match names
     (Nil #f)
     ((Cons n rest) (if (syntax-ident=? n name) #t (named-in? name rest)))))
 
-(: default-for (-> Syntax (List Syntax) (Option Syntax)))
+(: (-> Syntax (List Syntax) (Option Syntax)))
 (defun (default-for name pairs)
   (match pairs
     (Nil None)
@@ -189,7 +189,7 @@
 
 ;; The default is a lambda of the operation's own colour: colours are not
 ;; subtypes here, so an ordinary `fun` does not stand in for a `(-bjo-> ...)`.
-(: handler-default (-> Syntax Syntax (List Syntax) (List Syntax) Syntax))
+(: (-> Syntax Syntax (List Syntax) (List Syntax) Syntax))
 (defun (handler-default name arrow args defaults)
   (match (default-for name defaults)
     ((Some handler) handler)
@@ -214,13 +214,13 @@
 ;; named function before returning it to the caller. It is for operations that
 ;; return *resources*: the resource can be registered on the current scope, so
 ;; that one a handler made is cleaned up as a real one would be.
-(: wrapper-body (-> Syntax Syntax (List Syntax) (List Syntax) Syntax))
+(: (-> Syntax Syntax (List Syntax) (List Syntax) Syntax))
 (defun (wrapper-body name cell args adopts)
   (match (default-for name adopts)
     (None #'(let ((handler (parameter-ref ,cell))) (handler ,@args)))
     ((Some adopt) #'(let ((handler (parameter-ref ,cell))) (,adopt (handler ,@args))))))
 
-(: operation-decls (-> (-> Symbol Syntax) Syntax (List Syntax) (List Syntax) (List Syntax) (List Syntax)))
+(: (-> (-> Symbol Syntax) Syntax (List Syntax) (List Syntax) (List Syntax) (List Syntax)))
 (defun (operation-decls inject clause defaults colds adopts)
   (syntax-match clause
     ((name arrow)
@@ -238,7 +238,7 @@
                      #'(defun (,name ,@args) ,(wrapper-body name cell args adopts)))))))
     (bad (list (syntax-error bad "an operation is written (name arrow), as in (log (-> string void)).")))))
 
-(: effect-decls (-> (-> Symbol Syntax) (List Syntax) (List Syntax) (List Syntax) (List Syntax) (List Syntax)))
+(: (-> (-> Symbol Syntax) (List Syntax) (List Syntax) (List Syntax) (List Syntax) (List Syntax)))
 (defun (effect-decls inject ops defaults colds adopts)
   (match ops
     (Nil Nil)
@@ -376,7 +376,7 @@
          #'(parameterize ,(SList (handler-bindings inject op handler)) ,first ,@body)))
     (bad (syntax-error bad "with-handler takes a list of (operation handler) pairs and a body: (with-handler ((log collect)) body ...)"))))
 
-(: handler-bindings (-> (-> Symbol Syntax) (List Syntax) (List Syntax) (List Syntax)))
+(: (-> (-> Symbol Syntax) (List Syntax) (List Syntax) (List Syntax)))
 (defun (handler-bindings inject ops handlers)
   (match ops
     (Nil Nil)

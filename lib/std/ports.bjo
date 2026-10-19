@@ -80,7 +80,7 @@
 
 
 ;; Drains a port.
-(: port->list (-> (-?-> InputPort %a) InputPort (List %a)))
+(: (-> (-?-> InputPort %a) InputPort (List %a)))
 (defun (port->list reader p)
   (loop (:with i 1 1)
         (:finish (port-eof? p))
@@ -88,7 +88,7 @@
 
 
 
-(: port->vec (-> (-?-> InputPort %a) InputPort (Vec %a)))
+(: (-> (-?-> InputPort %a) InputPort (Vec %a)))
 (defun (port->vec reader p)
   (loop (:with i 1 1)
         (:finish (port-eof? p))
@@ -96,7 +96,7 @@
 
 ;; The lines left in `port`, ended as `#:mode` says (`Any` by default), as
 ;; Racket's `port->lines` takes a `#:line-mode`.
-(: port->lines (-> InputPort (#:mode LineMode) (Vec string)))
+(: (-> InputPort (#:mode LineMode) (Vec string)))
 (defun (port->lines port #:mode Any)
   (port->vec (fun (p) (read-line p #:mode mode)) port))
 
@@ -119,13 +119,13 @@
 ;; Returns a channel and end-of-stream promise.
 
 ;; Reads port on a fiber into a channel.
-(: port->chan (-> (-bjo-> InputPort %a) InputPort (Tuple (Chan %a) (Promise int))))
+(: (-> (-bjo-> InputPort %a) InputPort (Tuple (Chan %a) (Promise int))))
 (defun (port->chan reader p)
   (def c (make-chan))
   (Tuple c (bjo (port-fill c reader p))))
 
 ;; Reader loop run on fiber.
-(: port-fill (-bjo-> (Chan %a) (-bjo-> InputPort %a) InputPort int))
+(: (-bjo-> (Chan %a) (-bjo-> InputPort %a) InputPort int))
 (defbjo (port-fill c reader p)
   (let go ((n 0))
     (cond
@@ -136,7 +136,7 @@
         (go (+ n 1))))))
 
 ;; Gets next item or None.
-(: chan-next (-bjo-> (Chan %a) (Promise int) (Option %a)))
+(: (-bjo-> (Chan %a) (Promise int) (Option %a)))
 (defbjo (chan-next c done)
   (sync (choose (wrap (chan-recv c) (fun (x) (Some x)))
                 (wrap (promise-join done) (fun (r) None)))))
@@ -228,7 +228,7 @@
 ;; what an ordinary read wants.
 
 ;; Whatever is available, never an empty array, and `None` once there is no more.
-(: read-some-evt (-> InputPort (Event (Result Exception (Option (Array byte))))))
+(: (-> InputPort (Event (Result Exception (Option (Array byte))))))
 (defun (read-some-evt p) (clr-read-some-evt p))
 
 ;; Exactly `n` bytes. At end of input the short remainder comes back as
@@ -236,13 +236,13 @@
 ;; rather than one ambiguous answer.
 ;;
 ;; `n` must be at least 1.
-(: read-bytes-evt (-> InputPort int (Event (Result Exception (Option (Array byte))))))
+(: (-> InputPort int (Event (Result Exception (Option (Array byte))))))
 (defun (read-bytes-evt p n) (clr-read-bytes-evt p n))
 
 ;; Fires once the port is finished — cleanly, or because it failed. It says only
 ;; that, which is what makes it the thing to wait on for "the other end has gone
 ;; away"; a read beside it is what says which of the two happened.
-(: eof-evt (-> InputPort (Event Unit)))
+(: (-> InputPort (Event Unit)))
 (defun (eof-evt p) (clr-eof-evt p))
 
 ;; ---------------------------------------------------------------------------
@@ -255,20 +255,20 @@
 ;; suspends the fiber — and the raise happens after either of them returns, on
 ;; the caller's own stack.
 
-(: byte-read-or-raise (-> (Result Exception (Option (Array byte))) (Option (Array byte))))
+(: (-> (Result Exception (Option (Array byte))) (Option (Array byte))))
 (defun (byte-read-or-raise r)
   (match r
     ((Ok bytes) bytes)
     ((Err e) (raise e))))
 
 ;; Whatever is available, waiting for at least one byte. `None` at end of input.
-(: read-some (-> InputPort (Option (Array byte))))
+(: (-> InputPort (Option (Array byte))))
 (defbjouble (read-some p)
   (#:sync (byte-read-or-raise (sync/blocking (clr-read-some-evt p))))
   (#:bjo  (byte-read-or-raise (sync (clr-read-some-evt p)))))
 
 ;; Exactly `n` bytes, or the short remainder at end of input, or `None`.
-(: read-bytes (-> InputPort int (Option (Array byte))))
+(: (-> InputPort int (Option (Array byte))))
 (defbjouble (read-bytes p n)
   (#:sync (byte-read-or-raise (sync/blocking (clr-read-bytes-evt p n))))
   (#:bjo  (byte-read-or-raise (sync (clr-read-bytes-evt p n)))))
@@ -284,7 +284,7 @@
 ;; This is the mechanism a read is, with the cursor move left out — which is why
 ;; "peek, decide, then read" loses nothing: the sniffed bytes are still in the
 ;; buffer, for `read-bytes` and `read-line` alike.
-(: peek-bytes (-> InputPort int int (Option (Array byte))))
+(: (-> InputPort int int (Option (Array byte))))
 (defbjouble (peek-bytes p skip count)
   (#:sync (clr-peek p skip count))
   (#:bjo  (clr-peek-await p skip count)))
@@ -296,7 +296,7 @@
 ;; Buffered, so most writes are a copy. A write that fills the buffer drains it,
 ;; and that is a syscall — which is why these have suspending twins at all.
 
-(: write-bytes! (-> OutputPort (Array byte) void))
+(: (-> OutputPort (Array byte) void))
 (defbjouble (write-bytes! p bytes)
   (#:sync (clr-write-bytes p bytes))
   (#:bjo  (clr-write-bytes-await p bytes)))
@@ -316,7 +316,7 @@
 ;; goes out first, and a write after it is refused rather than dropped. A stream
 ;; with no half-close of its own gets the flush and nothing more, which is the
 ;; most that can honestly be done for a file.
-(: shutdown! (-> OutputPort void))
+(: (-> OutputPort void))
 (defbjouble (shutdown! p)
   (#:sync (clr-shutdown p))
   (#:bjo  (clr-shutdown-await p)))
@@ -331,7 +331,7 @@
 ;; double-counted.
 ;;
 ;; The result owns nothing: closing it does not close `p`.
-(: limited (-> InputPort int InputPort))
+(: (-> InputPort int InputPort))
 (defun (limited p n) (clr-limited p n))
 
 ;; A port pair with nothing underneath: what is written to the output can be
@@ -341,7 +341,7 @@
 ;; prices it, nothing registers it on a scope, and a write never waits. Closing
 ;; the output half, or `shutdown!` on it, is what the input half sees as end of
 ;; input.
-(: byte-pipe (-> (Tuple InputPort OutputPort)))
+(: (-> (Tuple InputPort OutputPort)))
 (defun (byte-pipe)
   (def pipe (clr-make-pipe))
   (Tuple (clr-pipe-in pipe) (clr-pipe-out pipe)))
@@ -359,12 +359,12 @@
 ;; framework reach for, and it is the only way into this module from outside it.
 ;;
 ;; Owned like a file, because a `Stream` is a handle in every case that matters.
-(: stream->input-port (-> Stream InputPort))
+(: (-> Stream InputPort))
 (defun (stream->input-port s)
   (ignore (current-scope))
   (clr-from-stream s))
 
-(: stream->output-port (-> Stream OutputPort))
+(: (-> Stream OutputPort))
 (defun (stream->output-port s)
   (ignore (current-scope))
   (clr-to-stream s))
@@ -384,7 +384,7 @@
 ;; `encoding` is any value from `(text encodings)`. Bytes that do not decode
 ;; read as U+FFFD, as they do on every port; `bytes->string` is the strict
 ;; one. A byte order mark is not treated specially.
-(: reencode-input-port (-> InputPort Encoding InputPort))
+(: (-> InputPort Encoding InputPort))
 (defun (reencode-input-port p encoding)
   (clr-reencode p encoding))
 
@@ -392,6 +392,6 @@
 ;; written to the new port is UTF-8 re-encoded as `encoding` on its way into
 ;; `p`. A character the encoding lacks is written as its replacement. Closing
 ;; the new port flushes it into `p` and leaves `p` open.
-(: reencode-output-port (-> OutputPort Encoding OutputPort))
+(: (-> OutputPort Encoding OutputPort))
 (defun (reencode-output-port p encoding)
   (clr-reencode-out p encoding))

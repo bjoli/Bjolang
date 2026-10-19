@@ -17,17 +17,17 @@
 (import (std prelude))
 (import (text json))
 
-(: corpus string)
+(: string)
 (def corpus "TestFiles/assets/jsontests")
 
-(: dir string)
+(: string)
 (def dir (path-combine corpus "test_parsing"))
 
-(: transform-dir string)
+(: string)
 (def transform-dir (path-combine corpus "test_transform"))
 
 ;; A throw is a result too. Letting one out would hide every file after it.
-(: outcome (-> string string))
+(: (-> string string))
 (defun (outcome path)
   (match (try
           (match (open-input-file path)
@@ -37,10 +37,10 @@
     ((Err e) (str "crash " (.ToString e)))
     ((Ok inner) (match inner ((Ok j) "ok") ((Err m) (str "err " m))))))
 
-(: accepted? (-> string bool))
+(: (-> string bool))
 (defun (accepted? o) (= o "ok"))
 
-(: name-of (-> string string))
+(: (-> string string))
 (defun (name-of path)
   (match (path-filename path) ((Some n) n) (None path)))
 
@@ -52,7 +52,7 @@
 (def/mutable i-reject 0)
 (def/mutable crashes 0)
 
-(: check (-> string void))
+(: (-> string void))
 (defun (check path)
   (let ((name (name-of path))
         (o (outcome path)))
@@ -85,10 +85,10 @@
 ;; test_transform: not accept or refuse, but *what value*
 ;; ---------------------------------------------------------------------------
 
-(: hex-digits string)
+(: string)
 (def hex-digits "0123456789ABCDEF")
 
-(: hex (-> int string))
+(: (-> int string))
 (defun (hex n)
   (let go ((n n) (acc ""))
     (if (= n 0)
@@ -98,13 +98,13 @@
 
 ;; Code points, since the point of several of these files is two keys that look
 ;; the same and are not.
-(: points (-> string string))
+(: (-> string string))
 (defun (points s)
   (string-join (loop (:for c s) (:acc v (vecing (str "U+" (hex (char->integer c)))))) " "))
 
 ;; Every file in this corpus wraps the value of interest in a one-element array,
 ;; and that is unwrapped by the tail call below.
-(: render (-> Json string))
+(: (-> Json string))
 (defun (render j)
   (match j
     (JsonNull "null")
@@ -123,7 +123,7 @@
                  (:acc out (vecing (str "[" (points k) "] = " (render v)))))
            ", ")))))
 
-(: transform (-> string void))
+(: (-> string void))
 (defun (transform path)
   (println
    (str (string-pad-right (name-of path) 44)
@@ -132,7 +132,7 @@
           ((Err e) (str "crash " (.ToString e)))
           ((Ok r) (match r ((Ok j) (render j)) ((Err m) (str "refused: " m))))))))
 
-(: sorted-files (-> string (List string)))
+(: (-> string (List string)))
 (defun (sorted-files d)
   (list-sort (loop (:for p (directory-files d)) (:acc l (listing p)))))
 

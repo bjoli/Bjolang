@@ -41,31 +41,31 @@
 
 ;; One stripe for each CPU, rounded up to a power of two, so that the stripe of
 ;; a CPU is a mask of its id.
-(: stripe-count (-> int))
+(: (-> int))
 (defun (stripe-count)
   (let lp ((n 1))
     (if (>= n processor-count) n (lp (* n 2)))))
 
-(: make-tcounter (-> %a (TCounter %a)) (where (Num %a)))
+(: (-> %a (TCounter %a)) (where (Num %a)))
 (defun (make-tcounter initial)
   (def zero (- initial initial))
   (TCounter (stripes (loop (:for i (range 0 (stripe-count)))
                            (:acc v (vecing (make-loc (if (= i 0) initial zero))))))))
 
-(: own-stripe (-> (TCounter %a) (Loc %a)))
+(: (-> (TCounter %a) (Loc %a)))
 (defun (own-stripe c)
   (def stripes (record-ref c stripes))
   (vec-ref stripes (bitwise-and (processor-id) (- (vec-length stripes) 1))))
 
-(: tcounter-add! (-> Tx (TCounter %a) %a void) (where (Num %a)))
+(: (-> Tx (TCounter %a) %a void) (where (Num %a)))
 (defun (tcounter-add! tx c n)
   (ignore (tx-update! tx (own-stripe c) #(+ & n))))
 
-(: tcounter-sub! (-> Tx (TCounter %a) %a void) (where (Num %a)))
+(: (-> Tx (TCounter %a) %a void) (where (Num %a)))
 (defun (tcounter-sub! tx c n)
   (ignore (tx-update! tx (own-stripe c) #(- & n))))
 
-(: tcounter-ref (-> Tx (TCounter %a) %a) (where (Num %a)))
+(: (-> Tx (TCounter %a) %a) (where (Num %a)))
 (defun (tcounter-ref tx c)
   (def stripes (record-ref c stripes))
   (loop (:for i (range 1 (vec-length stripes)))
@@ -73,7 +73,7 @@
                            (+ sum (tx-ref tx (vec-ref stripes i)))))
         => sum))
 
-(: tcounter-set! (-> Tx (TCounter %a) %a void) (where (Num %a)))
+(: (-> Tx (TCounter %a) %a void) (where (Num %a)))
 (defun (tcounter-set! tx c value)
   (def stripes (record-ref c stripes))
   (def zero (- value value))

@@ -22,7 +22,7 @@
 
 (type (: Cfg (Record (: port int) (: hosts (List string)))))
 
-(: blocked? (-> string bool))
+(: (-> string bool))
 (defun (blocked? h) (= h "bad"))
 
 ;; --- a def at the head of a body, and three in sequence --------------------
@@ -30,7 +30,7 @@
 ;; The second scrutinee reads `cfg`, which the first form bound: a `def` scopes
 ;; over its sequel, and the sequel is where the next one stands. Written one at
 ;; a time rather than as a `def*`, so that each failure can say what it was.
-(: configure (-> (Option Cfg) (Option string) (Result string string)))
+(: (-> (Option Cfg) (Option string) (Result string string)))
 (defun (configure cfg-opt host-opt)
   (with-return ret
     (def (Some cfg) cfg-opt :leave-with (Err "no config"))
@@ -43,7 +43,7 @@
 ;;
 ;; Three chained `def`s, each with a failure that leaves the block, so whichever
 ;; scrutinee is missing the answer is the same one.
-(: triple (-> (Option int) (Option int) (Option int) string))
+(: (-> (Option int) (Option int) (Option int) string))
 (defun (triple a b c)
   (with-return ret
     (def (Some x) a :leave-with (ret "something was missing"))
@@ -56,7 +56,7 @@
 ;; A loop is not a function boundary, however it is spelled before lowering: it
 ;; desugars to a letrec whose body immediately calls one of its own members,
 ;; which is exactly what makes it a `while` rather than a local function.
-(: first-blocked (-> (List string) (Option string)))
+(: (-> (List string) (Option string)))
 (defun (first-blocked hosts)
   (with-return ret
     (loop (:for h hosts)
@@ -67,7 +67,7 @@
 ;;
 ;; Leaving a `try` body is legal and correct: C# runs a `finally` on a `goto`
 ;; and on a `return` alike, so resources unwind either way.
-(: cleanup-order (-> bool string))
+(: (-> bool string))
 (defun (cleanup-order early)
   (def/mutable log "")
   (def result
@@ -81,7 +81,7 @@
   (str log "-> " result))
 
 ;; --- the block as a subexpression, which forces the slot-and-label path ----
-(: sub-expression (-> int int))
+(: (-> int int))
 (defun (sub-expression n)
   (+ 1
      (with-return ret
@@ -89,7 +89,7 @@
        (* n 10))))
 
 ;; --- nested blocks, the inner body naming the outer escape -----------------
-(: nested (-> int string))
+(: (-> int string))
 (defun (nested n)
   (with-return outer
     (when (= n 0) (outer "outer-from-outer"))
@@ -103,14 +103,14 @@
 ;; Binding `ret` as an ordinary name is what shadowing an escape *is*:
 ;; `addBinding` drops it from the escape table exactly as it drops a name from
 ;; `TraitMethodNames`. After the `let` below, `ret` is an int.
-(: shadowed (-> int))
+(: (-> int))
 (defun (shadowed)
   (with-return ret
     (let ((ret 7))
       (+ ret 1))))
 
 ;; --- a void block, left with `(ret)` ---------------------------------------
-(: void-block (-> bool string))
+(: (-> bool string))
 (defun (void-block stop)
   (def/mutable trace "")
   (with-return ret
@@ -120,7 +120,7 @@
   trace)
 
 ;; --- an escape inside a match arm ------------------------------------------
-(: from-arm (-> (Option int) string))
+(: (-> (Option int) string))
 (defun (from-arm o)
   (with-return ret
     (match o
@@ -134,7 +134,7 @@
 ;; suspending copies of this body get the identical rewrite. A `defun` is
 ;; already colour-polymorphic and a copy is made for each colour actually used,
 ;; so calling it from a bjoroutine below is what asks for the second one.
-(: classify (-> (Option int) string))
+(: (-> (Option int) string))
 (defun (classify o)
   (with-return ret
     (def (Some n) o :leave-with "none")
@@ -146,7 +146,7 @@
 ;; emitted — and since the two bodies get the identical rewrite, the assertion
 ;; is that this file compiles at all. Running it would need a `sync`, and `main`
 ;; is a `defun`, which may not await.
-(: classify-in-fiber (-bjo-> (Option int) string))
+(: (-bjo-> (Option int) string))
 (defbjo (classify-in-fiber o)
   (classify o))
 
@@ -154,7 +154,7 @@
 ;; the function around it, so an escape out of it leaves the block. One that
 ;; calls itself elsewhere is a function of its own, and an escape out of it is
 ;; refused (errors/ret_out_of_recursive_let.bjo); a block inside it is fine.
-(: first-over (-> (Vec int) int int))
+(: (-> (Vec int) int int))
 (defun (first-over xs limit)
   (with-return ret
     (let go ((i 0))
@@ -163,7 +163,7 @@
         (go (+ i 1))))
     -1))
 
-(: pair-sum (-> (Vec int) int (Option (Tuple int int))))
+(: (-> (Vec int) int (Option (Tuple int int))))
 (defun (pair-sum xs target)
   (with-return ret
     (loop (:for a xs)
@@ -171,7 +171,7 @@
                     (:do (when (= (+ a b) target) (ret (Some (Tuple a b)))))))
     None))
 
-(: depth (-> int int))
+(: (-> int int))
 (defun (depth n)
   (let go ((i 0))
     (if (< i n)

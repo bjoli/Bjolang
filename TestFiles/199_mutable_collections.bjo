@@ -25,45 +25,45 @@
 ;; An empty collection has nothing in it to pin its element type, and `=`,
 ;; `->str` and the trait methods all need one. A signature is the whole of the
 ;; fix, as it is in `130_deque`.
-(: ints (-> (MutableVec int)))
+(: (-> (MutableVec int)))
 (defun (ints) (mutablevec))
 
-(: counts (-> (MutableMap string int)))
+(: (-> (MutableMap string int)))
 (defun (counts) (mutablemap))
 
-(: names (-> (MutableSet string)))
+(: (-> (MutableSet string)))
 (defun (names) (mutableset))
 
-(: tasks (-> (MutableHeap string int)))
+(: (-> (MutableHeap string int)))
 (defun (tasks) (mutableheap))
 
-(: gave? (-> (Option int) int bool))
+(: (-> (Option int) int bool))
 (defun (gave? o want)
   (match o ((Some x) (= x want)) (None #f)))
 
-(: nothing? (-> (Option int) bool))
+(: (-> (Option int) bool))
 (defun (nothing? o)
   (match o ((Some _) #f) (None #t)))
 
 ;; The heap answers a pair, so its `Option` needs an unwrapping of its own.
-(: popped? (-> (Option (Tuple string int)) string int bool))
+(: (-> (Option (Tuple string int)) string int bool))
 (defun (popped? o element priority)
   (match o
     ((Some (Tuple e p)) (and (= e element) (= p priority)))
     (None #f)))
 
-(: nothing-popped? (-> (Option (Tuple string int)) bool))
+(: (-> (Option (Tuple string int)) bool))
 (defun (nothing-popped? o)
   (match o ((Some _) #f) (None #t)))
 
-(: vec-of (-> (List int) (MutableVec int)))
+(: (-> (List int) (MutableVec int)))
 (defun (vec-of xs) (list->mutablevec xs))
 
 ;; ---------------------------------------------------------------------------
 ;; MutableVec — the growable array
 ;; ---------------------------------------------------------------------------
 
-(: vec-basics (-> void))
+(: (-> void))
 (defun (vec-basics)
   (def v (ints))
   (expect-true "a fresh vector is empty" (mutablevec-empty? v))
@@ -84,7 +84,7 @@
   (expect "the index of it" (mutablevec-index-of v 30) 2)
   (expect "and -1 for one it does not" (mutablevec-index-of v 77) -1))
 
-(: vec-inserting (-> void))
+(: (-> void))
 (defun (vec-inserting)
   (def v (vec-of (Cons 1 (Cons 3 Nil))))
   (mutablevec-insert! v 1 2)
@@ -105,7 +105,7 @@
   (expect "removed the even ones" (mutablevec-remove-where! v (fun (x) (even? x))) 2)
   (expect "leaving the odd one" (mutablevec->list v) (Cons 5 Nil)))
 
-(: vec-as-a-stack (-> void))
+(: (-> void))
 (defun (vec-as-a-stack)
   (def v (vec-of (Cons 1 (Cons 2 Nil))))
   (expect-true "the last one out" (gave? (mutablevec-pop! v) 2))
@@ -115,7 +115,7 @@
   (mutablevec-add! v 7)
   (expect "usable" (mutablevec-length v) 1))
 
-(: vec-ordering (-> void))
+(: (-> void))
 (defun (vec-ordering)
   (def v (vec-of (Cons 3 (Cons 1 (Cons 2 Nil)))))
   (mutablevec-reverse! v)
@@ -131,7 +131,7 @@
 
 ;; A write is seen by every holder. That is the whole difference from `Vec`, so
 ;; it is stated rather than assumed — and the copy is what does not share.
-(: vec-aliasing (-> void))
+(: (-> void))
 (defun (vec-aliasing)
   (def v (vec-of (Cons 1 Nil)))
   (def same v)
@@ -145,7 +145,7 @@
   (expect-true "cleared through one name" (mutablevec-empty? same))
   (expect "and the copy is untouched" (mutablevec-length other) 1))
 
-(: vec-conversions (-> void))
+(: (-> void))
 (defun (vec-conversions)
   (def xs (Cons 1 (Cons 2 (Cons 3 Nil))))
   (expect "a list round trip" (mutablevec->list (list->mutablevec xs)) xs)
@@ -156,7 +156,7 @@
   (expect "capacity is not length" (mutablevec-length (mutablevec-with-capacity 16)) 0)
   (expect "an array" (array-length (mutablevec->array (vec-of xs))) 3))
 
-(: vec-traits (-> void))
+(: (-> void))
 (defun (vec-traits)
   (def v (vec-of (Cons 1 (Cons 2 (Cons 3 Nil)))))
 
@@ -187,7 +187,7 @@
 
 ;; Structural, and built twice from the same elements so that nothing is shared
 ;; and only a structural answer can find it.
-(: vec-equality (-> void))
+(: (-> void))
 (defun (vec-equality)
   (expect-true "equal vectors are ="
                (= (vec-of (Cons 1 (Cons 2 Nil))) (vec-of (Cons 1 (Cons 2 Nil)))))
@@ -202,7 +202,7 @@
 ;; MutableMap — the hash table
 ;; ---------------------------------------------------------------------------
 
-(: map-basics (-> void))
+(: (-> void))
 (defun (map-basics)
   (def m (counts))
   (expect-true "a fresh map is empty" (mutablemap-empty? m))
@@ -231,7 +231,7 @@
   (expect-true "and one that is not" (not (mutablemap-remove! m "b")))
   (expect "what is left" (mutablemap-length m) 2))
 
-(: map-walking (-> void))
+(: (-> void))
 (defun (map-walking)
   (def m (list->mutablemap (Cons (Tuple "a" 1) (Cons (Tuple "b" 2) Nil))))
 
@@ -247,7 +247,7 @@
 
   (expect "->seq is the pairs" (count (mutablemap->seq m)) 2))
 
-(: map-aliasing (-> void))
+(: (-> void))
 (defun (map-aliasing)
   (def m (counts))
   (def same m)
@@ -262,7 +262,7 @@
   (expect-true "cleared through one name" (mutablemap-empty? same))
   (expect "and usable again" (mutablemap-ref-or (mutablemap-copy other) "a" 0) 1))
 
-(: map-conversions (-> void))
+(: (-> void))
 (defun (map-conversions)
   (def pairs (Cons (Tuple "a" 1) (Cons (Tuple "b" 2) Nil)))
   (def m (list->mutablemap pairs))
@@ -279,7 +279,7 @@
           (mutablemap-ref (list->mutablemap (Cons (Tuple "a" 1) (Cons (Tuple "a" 2) Nil))) "a")
           2))
 
-(: map-traits (-> void))
+(: (-> void))
 (defun (map-traits)
   (def m (list->mutablemap (Cons (Tuple "a" 1) Nil)))
 
@@ -297,7 +297,7 @@
   (expect "->str" (->str m) "#mmap(a 9)")
   (expect "->str of an empty one" (->str (counts)) "#mmap()"))
 
-(: map-equality (-> void))
+(: (-> void))
 (defun (map-equality)
   (def one (Cons (Tuple "a" 1) (Cons (Tuple "b" 2) Nil)))
   ;; Filled in the other order on purpose: insertion order is not part of the
@@ -318,10 +318,10 @@
 ;; MutableSet — the hash set
 ;; ---------------------------------------------------------------------------
 
-(: set-of (-> (List string) (MutableSet string)))
+(: (-> (List string) (MutableSet string)))
 (defun (set-of xs) (list->mutableset xs))
 
-(: set-basics (-> void))
+(: (-> void))
 (defun (set-basics)
   (def s (names))
   (expect-true "a fresh set is empty" (mutableset-empty? s))
@@ -346,7 +346,7 @@
 
 ;; The algebra writes the left-hand side, which is the reason to reach for this
 ;; set rather than the persistent one.
-(: set-algebra (-> void))
+(: (-> void))
 (defun (set-algebra)
   (def a (set-of (Cons "1" (Cons "2" Nil))))
   (mutableset-union! a (set-of (Cons "2" (Cons "3" Nil))))
@@ -376,7 +376,7 @@
                (not (mutableset-overlaps? big (set-of (Cons "9" Nil)))))
   (expect "the comparison left the argument alone" (mutableset-length small) 1))
 
-(: set-aliasing (-> void))
+(: (-> void))
 (defun (set-aliasing)
   (def s (set-of (Cons "a" Nil)))
   (def same s)
@@ -389,7 +389,7 @@
   (mutableset-clear! s)
   (expect-true "cleared through one name" (mutableset-empty? same)))
 
-(: set-conversions (-> void))
+(: (-> void))
 (defun (set-conversions)
   (def s (set-of (Cons "a" (Cons "b" Nil))))
   (expect "a list round trip" (mutableset-length (list->mutableset (mutableset->list s))) 2)
@@ -406,7 +406,7 @@
           (mutableset-length (set-of (Cons "a" (Cons "a" Nil))))
           1))
 
-(: set-traits (-> void))
+(: (-> void))
 (defun (set-traits)
   (def s (set-of (Cons "a" (Cons "b" Nil))))
 
@@ -431,7 +431,7 @@
   (expect "->str of a single member" (->str (set-of (Cons "a" Nil))) "#mset(a)")
   (expect "->str of an empty one" (->str (names)) "#mset()"))
 
-(: set-equality (-> void))
+(: (-> void))
 (defun (set-equality)
   ;; Filled in opposite orders: what a set holds is not the order it was filled.
   (expect-true "equal sets are ="
@@ -445,7 +445,7 @@
 ;; MutableHeap — the priority queue
 ;; ---------------------------------------------------------------------------
 
-(: heap-basics (-> void))
+(: (-> void))
 (defun (heap-basics)
   (def h (tasks))
   (expect-true "a fresh heap is empty" (mutableheap-empty? h))
@@ -471,7 +471,7 @@
 
 ;; The comparison is the whole of what an order is, so a largest-first heap is
 ;; this structure under the reverse of it.
-(: heap-ordering (-> void))
+(: (-> void))
 (defun (heap-ordering)
   (def h (mutableheap-by (fun (a b) (compare b a))))
   (mutableheap-add! h "small" 1)
@@ -486,7 +486,7 @@
   (expect-true "the copy is ordered the same way" (popped? (mutableheap-pop! again) "huge" 99))
   (expect "and the original is untouched by the copy's write" (mutableheap-length h) 1))
 
-(: heap-bulk (-> void))
+(: (-> void))
 (defun (heap-bulk)
   (def h (tasks))
   (mutableheap-add-all! h (list->seq (Cons (Tuple "b" 2) (Cons (Tuple "a" 1) Nil))))
@@ -508,7 +508,7 @@
   (mutableheap-clear! bounded)
   (expect-true "cleared" (mutableheap-empty? bounded)))
 
-(: heap-traits (-> void))
+(: (-> void))
 (defun (heap-traits)
   (def h (list->mutableheap (Cons (Tuple "a" 1) (Cons (Tuple "b" 2) Nil))))
 

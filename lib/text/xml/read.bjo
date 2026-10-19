@@ -146,10 +146,10 @@
                          (: drop-whitespace bool)
                          (: comments bool))))
 
-(: entity-characters long)
+(: long)
 (def entity-characters 10000000L)
 
-(: options (-> DtdMode int long WhitespaceMode bool Options))
+(: (-> DtdMode int long WhitespaceMode bool Options))
 (defun (options dtd max-depth max-characters whitespace comments)
   (when (< max-depth 1)
     (raise (cast Exception (ArgumentException. "(text xml read): #:max-depth has to be at least 1"))))
@@ -161,7 +161,7 @@
            (drop-whitespace (match whitespace (KeepWhitespace #f) (DropWhitespace #t)))
            (comments comments)))
 
-(: reader-settings (-> Options XmlReaderSettings))
+(: (-> Options XmlReaderSettings))
 (defun (reader-settings opts)
   (def settings (XmlReaderSettings.))
   (clr-settings-close-input! settings #f)
@@ -189,7 +189,7 @@
 ;; line and column are 0 when neither the exception nor the reader knew them.
 (type (: XmlError (Record (: kind XmlErrorKind) (: message string) (: line int) (: column int))))
 
-(: kind-name (-> XmlErrorKind string))
+(: (-> XmlErrorKind string))
 (defun (kind-name k)
   (match k
     (Malformed "malformed")
@@ -204,14 +204,14 @@
          ", column " (int->string (record-ref e column))
          ": " (record-ref e message))))
 
-(: xml-error (-> XmlErrorKind string (Option XmlPos) XmlError))
+(: (-> XmlErrorKind string (Option XmlPos) XmlError))
 (defun (xml-error kind message pos)
   (match pos
     ((Some at) (XmlError (kind kind) (message message) (line (struct-ref at line)) (column (struct-ref at column))))
     (None (XmlError (kind kind) (message message) (line 0) (column 0)))))
 
 ;; The message .NET gives for `text` read with `settings`, or "" if it reads.
-(: reference-message (-> string XmlReaderSettings string))
+(: (-> string XmlReaderSettings string))
 (defun (reference-message text settings)
   (match (try (with-open ((r (clr-reader-over-text (cast TextReader (open-input-string text)) settings)))
                 (let loop () (when (clr-read r) (loop))))
@@ -224,19 +224,19 @@
 ;; and thrown with no position. So their messages are compared with the ones
 ;; .NET gives for three tiny documents, made to fail the same way. Exactly, and
 ;; not by searching for a word: a malformed document can quote any word back.
-(: dtd-prohibited-message (-> string))
+(: (-> string))
 (defun (dtd-prohibited-message)
   (def settings (XmlReaderSettings.))
   (clr-settings-dtd! settings clr-dtd-prohibit)
   (reference-message "<!DOCTYPE a><a/>" settings))
 
-(: document-limit-message (-> string))
+(: (-> string))
 (defun (document-limit-message)
   (def settings (XmlReaderSettings.))
   (clr-settings-document-characters! settings 2L)
   (reference-message "<a>0123456789</a>" settings))
 
-(: entity-limit-message (-> string))
+(: (-> string))
 (defun (entity-limit-message)
   (def settings (XmlReaderSettings.))
   (clr-settings-dtd! settings clr-dtd-parse)
@@ -245,13 +245,13 @@
   (reference-message "<!DOCTYPE a [<!ENTITY e '0123456789'>]><a>&e;</a>" settings))
 
 ;; ThrowingResolver's refusal arrives wrapped in the reader's own exception.
-(: refused-resource? (-> XmlException bool))
+(: (-> XmlException bool))
 (defun (refused-resource? e)
   (match (cast Object (clr-inner-exception (cast Exception e)))
     ((:is System.Xml.XmlException _) #t)
     (_ #f)))
 
-(: exception-kind (-> DtdMode XmlException XmlErrorKind))
+(: (-> DtdMode XmlException XmlErrorKind))
 (defun (exception-kind dtd e)
   (def message (.-Message e))
   (cond
@@ -261,7 +261,7 @@
     ((and (match dtd (DtdParse #t) (_ #f)) (refused-resource? e)) DtdProhibited)
     (else Malformed)))
 
-(: line-info-pos (-> (Option IXmlLineInfo) (Option XmlPos)))
+(: (-> (Option IXmlLineInfo) (Option XmlPos)))
 (defun (line-info-pos info)
   (match info
     ((Some li)
@@ -273,7 +273,7 @@
 ;; Where the exception says. A DOCTYPE refused, a limit reached and a resource
 ;; refused are thrown with no position, and by then the reader has reset its
 ;; own to 0 as well, so those have none.
-(: exception-error (-> DtdMode XmlException XmlError))
+(: (-> DtdMode XmlException XmlError))
 (defun (exception-error dtd e)
   (def line (clr-exception-line e))
   (xml-error (exception-kind dtd e)
@@ -299,7 +299,7 @@
 ;; A path, which the reader opens and closes. A string on its own is XML.
 (type (: XmlFile #:opaque (Record (: path string))))
 
-(: xml-file (-> string XmlFile))
+(: (-> string XmlFile))
 (defun (xml-file path) (XmlFile (path path)))
 
 (impl (XmlSource string)
@@ -341,7 +341,7 @@
                                      (: finished bool #:mutable)
                                      (: failed (Option XmlError) #:mutable))))
 
-(: signals (-> (Option XmlReader) Options (Option XmlError) XmlSignals))
+(: (-> (Option XmlReader) Options (Option XmlError) XmlSignals))
 (defun (signals reader opts failed)
   (XmlSignals (reader reader)
               (line-info (match reader
@@ -357,43 +357,43 @@
               (failed failed)))
 
 ;; XmlNodeType, as numbers.
-(: element-node int)
+(: int)
 (def element-node 1)
-(: text-node int)
+(: int)
 (def text-node 3)
-(: cdata-node int)
+(: int)
 (def cdata-node 4)
-(: pi-node int)
+(: int)
 (def pi-node 7)
-(: comment-node int)
+(: int)
 (def comment-node 8)
-(: doctype-node int)
+(: int)
 (def doctype-node 10)
-(: whitespace-node int)
+(: int)
 (def whitespace-node 13)
-(: significant-whitespace-node int)
+(: int)
 (def significant-whitespace-node 14)
-(: end-element-node int)
+(: int)
 (def end-element-node 15)
 
-(: node-code (-> XmlReader int))
+(: (-> XmlReader int))
 (defun (node-code r) (cast int (clr-node-type r)))
 
-(: text-code? (-> int bool))
+(: (-> int bool))
 (defun (text-code? code)
   (or (= code text-node) (= code cdata-node) (= code whitespace-node) (= code significant-whitespace-node)))
 
-(: xmlns-namespace string)
+(: string)
 (def xmlns-namespace "http://www.w3.org/2000/xmlns/")
 
 ;; Space, tab, line feed and carriage return: XML's whitespace, and no other.
-(: whitespace-only? (-> string bool))
+(: (-> string bool))
 (defun (whitespace-only? s)
   (string-fold (fun (c all) (and all (let ((n (char->integer c))) (or (= n 32) (= n 9) (= n 10) (= n 13)))))
                #t
                s))
 
-(: attribute-opt (-> XmlReader string (Option string)))
+(: (-> XmlReader string (Option string)))
 (defun (attribute-opt r name)
   (match (cast Object (clr-attribute r name))
     ((:is System.String s) (Some (clr-string->string s)))
@@ -401,7 +401,7 @@
 
 ;; In document order, without the namespace declarations, and back on the
 ;; element afterwards.
-(: read-attrs (-> XmlReader XmlAttrs))
+(: (-> XmlReader XmlAttrs))
 (defun (read-attrs r)
   (def out (listbuilder-empty))
   (let loop ()
@@ -413,7 +413,7 @@
   (ignore (clr-to-element r))
   (listbuilder->list out))
 
-(: start-element (-> XmlSignals XmlReader (Result XmlError (Option XmlSignal))))
+(: (-> XmlSignals XmlReader (Result XmlError (Option XmlSignal))))
 (defun (start-element s r)
   (def pos (line-info-pos (record-ref s line-info)))
   (def max-depth (record-ref (record-ref s options) max-depth))
@@ -432,7 +432,7 @@
 
 ;; Text, CDATA and whitespace, from the current node to the next node that is
 ;; none of them, as one string. The reader is left on that node.
-(: read-data (-> XmlSignals XmlReader string))
+(: (-> XmlSignals XmlReader string))
 (defun (read-data s r)
   (def first (clr-value r))
   (cond
@@ -449,7 +449,7 @@
          (else (record-set! s (held #t)))))
      (stringbuilder->string sb))))
 
-(: read-signal (-> XmlSignals XmlReader (Result XmlError (Option XmlSignal))))
+(: (-> XmlSignals XmlReader (Result XmlError (Option XmlSignal))))
 (defun (read-signal s r)
   (let loop ()
     (cond
@@ -476,12 +476,12 @@
       ;; The XML declaration.
       (else (loop)))))
 
-(: fail (-> XmlSignals XmlError (Result XmlError %a)))
+(: (-> XmlSignals XmlError (Result XmlError %a)))
 (defun (fail s e)
   (record-set! s (failed (Some e)))
   (Err e))
 
-(: caught (-> XmlSignals Exception XmlError))
+(: (-> XmlSignals Exception XmlError))
 (defun (caught s e)
   (match (cast Object e)
     ((:is System.Xml.XmlException x)
@@ -490,7 +490,7 @@
 
 ;; The next signal, or None at the end of the document. After an error, the
 ;; same error again.
-(: xml-next! (-> XmlSignals (Result XmlError (Option XmlSignal))))
+(: (-> XmlSignals (Result XmlError (Option XmlSignal))))
 (defun (xml-next! s)
   (cond
     (:match (Some e) (record-ref s failed) (Err e))
@@ -509,7 +509,7 @@
 ;; Right after an XmlStart: skips the rest of that element, its XmlEnd
 ;; included. Anywhere else it raises. The skipped part is not checked against
 ;; #:max-depth.
-(: xml-skip-element! (-> XmlSignals (Result XmlError Unit)))
+(: (-> XmlSignals (Result XmlError Unit)))
 (defun (xml-skip-element! s)
   (cond
     (:match (Some e) (record-ref s failed) (Err e))
@@ -531,7 +531,7 @@
 
 ;; XmlReader.Create reads ahead, so it can fail too. Then the first xml-next!
 ;; answers with the error.
-(: run-signals (-> (-> XmlReaderSettings XmlReader) Options (-> XmlSignals %a) %a))
+(: (-> (-> XmlReaderSettings XmlReader) Options (-> XmlSignals %a) %a))
 (defun (run-signals create opts proc)
   (def settings (reader-settings opts))
   (def s (match (try (create settings) #:catch (System.Xml.XmlException))
@@ -547,7 +547,7 @@
 
 ;; A port or stream that was handed over stays open. A file is opened here,
 ;; through the FS effect, and closed here.
-(: with-signals (-> XmlInput Options (-> XmlSignals %a) %a))
+(: (-> XmlInput Options (-> XmlSignals %a) %a))
 (defun (with-signals input opts proc)
   (match input
     ((InText text)
@@ -563,10 +563,10 @@
        ((Err e) (raise e))))))
 
 ;; The XmlSignals is for proc's use, and closed when proc returns.
-(: call-with-xml-signals (-> %s (-> XmlSignals %a)
-                             (#:dtd DtdMode) (#:max-depth int) (#:max-characters long)
-                             (#:whitespace WhitespaceMode) (#:comments? bool)
-                             %a)
+(: (-> %s (-> XmlSignals %a)
+       (#:dtd DtdMode) (#:max-depth int) (#:max-characters long)
+       (#:whitespace WhitespaceMode) (#:comments? bool)
+       %a)
    (where (XmlSource %s)))
 (defun (call-with-xml-signals source proc
                               #:dtd 'prohibit #:max-depth 512 #:max-characters 0L
@@ -585,14 +585,14 @@
 
 ;; One iteration per signal, as a loop rather than a call: a flat document of a
 ;; million elements is a million iterations. The open elements are the list.
-(: fold-signals (-> XmlSignals %seed
-                    (-> XmlName XmlAttrs (Option XmlPos) %seed %seed)
-                    (-> XmlName XmlAttrs (Option XmlPos) %seed %seed %seed)
-                    (-> string %seed %seed)
-                    (-> string %seed %seed)
-                    (-> string string %seed %seed)
-                    (-> Doctype %seed %seed)
-                    (Result XmlError %seed)))
+(: (-> XmlSignals %seed
+       (-> XmlName XmlAttrs (Option XmlPos) %seed %seed)
+       (-> XmlName XmlAttrs (Option XmlPos) %seed %seed %seed)
+       (-> string %seed %seed)
+       (-> string %seed %seed)
+       (-> string string %seed %seed)
+       (-> Doctype %seed %seed)
+       (Result XmlError %seed)))
 (defun (fold-signals sig seed new-level finish text comment pi doctype)
   (let loop ((seed seed) (open Nil))
     (match (xml-next! sig)
@@ -617,16 +617,16 @@
 ;; finish gets the seed from before the element and the element's final seed,
 ;; and answers the seed to carry on with. Every handler passes the seed
 ;; through unless given.
-(: xml-fold (-> %s %seed
-                (#:new-level (-> XmlName XmlAttrs (Option XmlPos) %seed %seed))
-                (#:finish (-> XmlName XmlAttrs (Option XmlPos) %seed %seed %seed))
-                (#:text (-> string %seed %seed))
-                (#:comment (-> string %seed %seed))
-                (#:pi (-> string string %seed %seed))
-                (#:doctype (-> Doctype %seed %seed))
-                (#:dtd DtdMode) (#:max-depth int) (#:max-characters long)
-                (#:whitespace WhitespaceMode)
-                (Result XmlError %seed))
+(: (-> %s %seed
+       (#:new-level (-> XmlName XmlAttrs (Option XmlPos) %seed %seed))
+       (#:finish (-> XmlName XmlAttrs (Option XmlPos) %seed %seed %seed))
+       (#:text (-> string %seed %seed))
+       (#:comment (-> string %seed %seed))
+       (#:pi (-> string string %seed %seed))
+       (#:doctype (-> Doctype %seed %seed))
+       (#:dtd DtdMode) (#:max-depth int) (#:max-characters long)
+       (#:whitespace WhitespaceMode)
+       (Result XmlError %seed))
    (where (XmlSource %s)))
 (defun (xml-fold source seed
                  #:new-level (fun (name attrs pos seed) seed)
@@ -645,20 +645,20 @@
 
 ;; The seed is the children so far, last first, and whether this is the level
 ;; outside the root, where only the root is kept.
-(: keep-child (-> (Option %a) (Tuple (List %a) bool) (Tuple (List %a) bool)))
+(: (-> (Option %a) (Tuple (List %a) bool) (Tuple (List %a) bool)))
 (defun (keep-child value seed)
   (def (Tuple kids top) seed)
   (match value
     ((Some a) #:when (not top) (Tuple (Cons a kids) top))
     (_ seed)))
 
-(: tree-fold (-> XmlInput
-                 (-> XmlName XmlAttrs (Option XmlPos) (List %a) %a)
-                 (-> string %a)
-                 (-> string (Option %a))
-                 (-> string string (Option %a))
-                 Options
-                 (Result XmlError %a)))
+(: (-> XmlInput
+       (-> XmlName XmlAttrs (Option XmlPos) (List %a) %a)
+       (-> string %a)
+       (-> string (Option %a))
+       (-> string string (Option %a))
+       Options
+       (Result XmlError %a)))
 (defun (tree-fold input element text comment pi opts)
   (def folded
     (with-signals input opts
@@ -685,14 +685,14 @@
 ;; and text a piece of text. A comment or PI handler answers None to leave the
 ;; node out, which is what the defaults do. The answer is the root element's;
 ;; what is outside the root is not folded.
-(: xml-tree-fold (-> %s
-                     (-> XmlName XmlAttrs (Option XmlPos) (List %a) %a)
-                     (-> string %a)
-                     (#:comment (-> string (Option %a)))
-                     (#:pi (-> string string (Option %a)))
-                     (#:dtd DtdMode) (#:max-depth int) (#:max-characters long)
-                     (#:whitespace WhitespaceMode)
-                     (Result XmlError %a))
+(: (-> %s
+       (-> XmlName XmlAttrs (Option XmlPos) (List %a) %a)
+       (-> string %a)
+       (#:comment (-> string (Option %a)))
+       (#:pi (-> string string (Option %a)))
+       (#:dtd DtdMode) (#:max-depth int) (#:max-characters long)
+       (#:whitespace WhitespaceMode)
+       (Result XmlError %a))
    (where (XmlSource %s)))
 (defun (xml-tree-fold source element text
                       #:comment (fun (s) None)
@@ -714,7 +714,7 @@
 (type (: DocumentSeed (Union (: AtTop DocumentParts)
                              (: InElement (List Node)))))
 
-(: add-node (-> Node DocumentSeed DocumentSeed))
+(: (-> Node DocumentSeed DocumentSeed))
 (defun (add-node n seed)
   (match seed
     ((InElement kids) (InElement (Cons n kids)))
@@ -723,7 +723,7 @@
        (None (AtTop (record-set parts (prolog (Cons n (record-ref parts prolog))))))
        ((Some _) (AtTop (record-set parts (epilog (Cons n (record-ref parts epilog))))))))))
 
-(: finish-element (-> XmlName XmlAttrs (Option XmlPos) DocumentSeed DocumentSeed DocumentSeed))
+(: (-> XmlName XmlAttrs (Option XmlPos) DocumentSeed DocumentSeed DocumentSeed))
 (defun (finish-element name attrs pos parent seed)
   (def kids (match seed ((InElement kids) (list-reverse kids)) ((AtTop _) Nil)))
   (def element (xml-element name attrs kids #:pos pos))
@@ -731,7 +731,7 @@
     ((InElement siblings) (InElement (Cons element siblings)))
     ((AtTop parts) (AtTop (record-set parts (root (Some element)))))))
 
-(: document-of (-> DocumentSeed (Result XmlError Document)))
+(: (-> DocumentSeed (Result XmlError Document)))
 (defun (document-of seed)
   (match seed
     ((AtTop (DocumentParts doctype prolog (root (Some root)) epilog))
@@ -741,7 +741,7 @@
                        #:epilog (list-reverse epilog))))
     (_ (Err (xml-error Malformed "the document has no root element" None)))))
 
-(: parse-document (-> XmlInput Options (Result XmlError Document)))
+(: (-> XmlInput Options (Result XmlError Document)))
 (defun (parse-document input opts)
   (def start (AtTop (DocumentParts (doctype None) (prolog Nil) (root None) (epilog Nil))))
   (def folded
@@ -763,10 +763,10 @@
 
 ;; Processing instructions are always kept, and comments when #:comments?
 ;; says so, in the prolog and epilog as in the tree.
-(: parse-xml (-> %s
-                 (#:dtd DtdMode) (#:max-depth int) (#:max-characters long)
-                 (#:whitespace WhitespaceMode) (#:comments? bool)
-                 (Result XmlError Document))
+(: (-> %s
+       (#:dtd DtdMode) (#:max-depth int) (#:max-characters long)
+       (#:whitespace WhitespaceMode) (#:comments? bool)
+       (Result XmlError Document))
    (where (XmlSource %s)))
 (defun (parse-xml source
                   #:dtd 'prohibit #:max-depth 512 #:max-characters 0L
@@ -784,7 +784,7 @@
                           (: pos (Option XmlPos))
                           (: kids (List Node)))))
 
-(: add-child (-> Node (List Building) (List Building)))
+(: (-> Node (List Building) (List Building)))
 (defun (add-child n open)
   (match open
     ((Cons top rest) (Cons (record-set top (kids (Cons n (record-ref top kids)))) rest))
@@ -792,7 +792,7 @@
 
 ;; The rest of the element whose XmlStart was just read, as a Node. The open
 ;; elements are the list, so this is a loop however deep the element goes.
-(: build-element (-> XmlSignals XmlName XmlAttrs (Option XmlPos) (Result XmlError Node)))
+(: (-> XmlSignals XmlName XmlAttrs (Option XmlPos) (Result XmlError Node)))
 (defun (build-element sig name attrs pos)
   (let loop ((open (list (Building (name name) (attrs attrs) (pos pos) (kids Nil)))))
     (match (xml-next! sig)
@@ -815,7 +815,7 @@
       ((Ok (Some (XmlPI target data))) (loop (add-child (xml-pi target data) open)))
       ((Ok (Some (XmlDoctype _))) (loop open)))))
 
-(: for-each-element (-> XmlSignals XmlName (-> Node void) (Result XmlError Unit)))
+(: (-> XmlSignals XmlName (-> Node void) (Result XmlError Unit)))
 (defun (for-each-element sig name f)
   (let loop ()
     (match (xml-next! sig)
@@ -834,10 +834,10 @@
 ;; and then dropped, so what is held is one such element and never the whole
 ;; document. An element with this name inside one is part of it, and not
 ;; visited on its own.
-(: xml-for-each (-> %s XmlName (-> Node void)
-                    (#:dtd DtdMode) (#:max-depth int) (#:max-characters long)
-                    (#:whitespace WhitespaceMode) (#:comments? bool)
-                    (Result XmlError Unit))
+(: (-> %s XmlName (-> Node void)
+       (#:dtd DtdMode) (#:max-depth int) (#:max-characters long)
+       (#:whitespace WhitespaceMode) (#:comments? bool)
+       (Result XmlError Unit))
    (where (XmlSource %s)))
 (defun (xml-for-each source name f
                      #:dtd 'prohibit #:max-depth 512 #:max-characters 0L

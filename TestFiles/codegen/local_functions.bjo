@@ -12,7 +12,7 @@
 
 (import (std prelude))
 
-(: fetch (-> int int))
+(: (-> int int))
 (defbjo (fetch x) (* x 2))
 
 ;; --- A local function that reaches a yield point -----------------------------
@@ -28,7 +28,7 @@
 
 ;; EXPECT-CS: async Bjoml.Fiber<int> helper\(int y\)
 ;; EXPECT-CS: \(await helper\(n\)\)
-(: suspending (-> int int))
+(: (-> int int))
 (defbjo (suspending n)
   (defun (helper y) (fetch y))
   (+ (helper n) (helper (+ n 1))))
@@ -42,7 +42,7 @@
 
 ;; EXPECT-CS: ^\s*int quiet\(int y\) \{
 ;; EXPECT-CS: return \(quiet\(n\) \+ quiet\(n\)\);
-(: ordinary (-> int int))
+(: (-> int int))
 (defbjo (ordinary n)
   (defun (quiet y) (* y 3))
   (+ (quiet n) (quiet n)))
@@ -57,7 +57,7 @@
 
 ;; EXPECT-CS: async Bjoml.Fiber<int> loud\(int
 ;; EXPECT-CS: ^\s*int soft\(int
-(: both (-> int int))
+(: (-> int int))
 (defbjo (both n)
   (defun (soft y) (+ y 1))
   (defun (loud y) (fetch y))
@@ -74,7 +74,7 @@
 ;; EXPECT-CS: async Bjoml.Fiber<int> middle\(int
 ;; EXPECT-CS: async Bjoml.Fiber<int> outersubmost\(int
 ;; EXPECT-CS: \(await middle\(
-(: chained (-> int int))
+(: (-> int int))
 (defbjo (chained n)
   (defun (inner y) (fetch y))
   (defun (middle y) (+ (inner y) 1))
@@ -90,7 +90,7 @@
 
 ;; EXPECT-CS: async Bjoml.Fiber<int> go(__[0-9]+)?\(int
 ;; EXPECT-CS: \(await go(__[0-9]+)?\(
-(: not-tail (-> int int))
+(: (-> int int))
 (defbjo (not-tail n)
   (defun (go i) (if (<= i 0) 0 (+ (fetch i) (go (- i 1)))))
   (go n))
@@ -104,7 +104,7 @@
 
 ;; EXPECT-CS: async Bjoml.Fiber<int> __group__[0-9]+\(int
 ;; EXPECT-CS: async Bjoml.Fiber<int> evens(__[0-9]+)?\(int [a-z_0-9]+\) => await __group
-(: merged (-> int int))
+(: (-> int int))
 (defbjo (merged n)
   (defun (evens i) (if (<= i 0) 0 (+ (fetch i) (odds (- i 1)))))
   (defun (odds i) (if (<= i 0) 0 (evens (- i 1))))

@@ -9,45 +9,45 @@
 (import (std prelude))
 (import (std simpletest))
 
-(: nums (-> (List int)))
+(: (-> (List int)))
 (defun (nums) (list 1 2 3 4 5))
 
-(: pair-fst (-> (Tuple int int) int))
+(: (-> (Tuple int int) int))
 (defun (pair-fst t) (def (a _) t) a)
 
-(: pair-snd (-> (Tuple int int) int))
+(: (-> (Tuple int int) int))
 (defun (pair-snd t) (def (_ b) t) b)
 
 ;; The yield point the suspending copies are exercised with.
-(: slow-double (-bjo-> int int))
+(: (-bjo-> int int))
 (defbjo (slow-double n)
   (ignore (read-line (open-input-string "tick\n")))
   (* n 2))
 
-(: run-int (-> (Promise int) int))
+(: (-> (Promise int) int))
 (defun (run-int p)
   (match (sync/blocking (promise-join p)) ((Ok n) n) ((Err _) -1)))
 
-(: run-bool (-> (Promise bool) bool))
+(: (-> (Promise bool) bool))
 (defun (run-bool p)
   (match (sync/blocking (promise-join p)) ((Ok b) b) ((Err _) #f)))
 
 ;; Suspending callbacks, one per loop-shaped method.
-(: any-suspending (-bjo-> bool))
+(: (-bjo-> bool))
 (defbjo (any-suspending)
   (any? (bjoroutine (x) (> (slow-double x) 8)) (nums)))
 
-(: all-suspending (-bjo-> bool))
+(: (-bjo-> bool))
 (defbjo (all-suspending)
   (all? (bjoroutine (x) (> (slow-double x) 0)) (nums)))
 
-(: find-suspending (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (find-suspending)
   (match (find (bjoroutine (x) (> (slow-double x) 6)) (nums))
     ((Some v) v)
     (None -1)))
 
-(: for-each-suspending (-bjo-> int))
+(: (-bjo-> int))
 (defbjo (for-each-suspending)
   (def/mutable total 0)
   (for-each (bjoroutine (x) (set! total (+ total (slow-double x)))) (nums))

@@ -17,11 +17,11 @@
 (type
   (: Tree (Union (: Leaf int) (: Node (Vec Tree)))))
 
-(: apply-to (-> (-> Tree int) Tree int))
+(: (-> (-> Tree int) Tree int))
 (defun (apply-to f t) (f t))
 
 ;; --- The name as a value, beside a tail self-call ---------------------------
-(: total (-> Tree int))
+(: (-> Tree int))
 (defun (total t)
   (match t
     ((Leaf n) n)
@@ -33,7 +33,7 @@
          (vec-fold (fun (x acc) (+ acc (apply-to total x))) 0 v)))))
 
 ;; --- The name called inside a lambda, beside a tail self-call ----------------
-(: depth (-> Tree int))
+(: (-> Tree int))
 (defun (depth t)
   (match t
     ((Leaf n) 1)
@@ -43,7 +43,7 @@
          (+ 1 (vec-fold (fun (x acc) (max acc (depth x))) 0 v))))))
 
 ;; --- A non-tail self-call, beside a tail one --------------------------------
-(: leaves (-> Tree int))
+(: (-> Tree int))
 (defun (leaves t)
   (match t
     ((Leaf n) 1)
@@ -56,7 +56,7 @@
 ;;
 ;; Not decoration: a real call here would overflow the stack at this depth, so
 ;; this fails loudly if the fix cost the promotion.
-(: count-down (-> int int int))
+(: (-> int int int))
 (defun (count-down n acc)
   (if (= n 0)
       (+ acc (apply-to (fun (t) 0) (Leaf 0)))
@@ -67,13 +67,13 @@
 ;; The binder shadows within its own scope and has to be freshened; the tail
 ;; call outside it is still the function's. Keeping the loop's name is not the
 ;; same as keeping every name.
-(: pick (-> int int))
+(: (-> int int))
 (defun (pick n)
   (if (= n 0)
       (let ((pick 42)) pick)
       (pick (- n 1))))
 
-(: sample (-> Tree))
+(: (-> Tree))
 (defun (sample)
   (Node [(Leaf 1) (Node [(Leaf 2) (Leaf 3)]) (Node [(Leaf 4)])]))
 

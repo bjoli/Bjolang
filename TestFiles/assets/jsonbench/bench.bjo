@@ -29,30 +29,30 @@
 
 (import/extern (clr-to-int (: System.Convert.ToInt32)))
 
-(: dir string)
+(: string)
 (def dir "TestFiles/assets/jsonbench")
 
-(: reps int)
+(: int)
 (def reps 20)
 
 ;; A `TimeSpan` tick is 100ns whatever the platform's timer frequency is, so the
 ;; small file is measured to a part in ten thousand instead of to the nearest
 ;; whole millisecond — which for a two-millisecond parse was a rate that could
 ;; be wrong by half.
-(: elapsed-ticks (-> Stopwatch int))
+(: (-> Stopwatch int))
 (defun (elapsed-ticks sw)
   (clr-to-int (.-Ticks (.-Elapsed sw))))
 
 ;; What the file weighs, rather than how many characters it holds. `twitter` is
 ;; 11% larger in UTF-8 than in characters, and a rate quoted in characters would
 ;; flatter it by that much.
-(: byte-length (-> string int))
+(: (-> string int))
 (defun (byte-length path)
   (clr-to-int (.-Length (FileInfo. path))))
 
 ;; The tree is walked once, outside the timing, so a parse that quietly failed
 ;; cannot read as a fast one.
-(: nodes (-> Json int))
+(: (-> Json int))
 (defun (nodes j)
   (match j
     ((JsonArr v) (+ 1 (vec-fold (fun (x acc) (+ acc (nodes x))) 0 v)))
@@ -61,7 +61,7 @@
 
 ;; The fastest of `reps` parses, in ticks. The outcome is folded into a counter
 ;; so the work cannot be dead.
-(: best-ticks (-> string int))
+(: (-> string int))
 (defun (best-ticks text)
   (let go ((i 0) (best 2000000000) (ok 0))
     (if (= i reps)
@@ -75,10 +75,10 @@
             (let ((t (elapsed-ticks sw)))
               (go (+ i 1) (if (< t best) t best) (+ ok got))))))))
 
-(: stopwatch-of (-> Stopwatch))
+(: (-> Stopwatch))
 (defun (stopwatch-of) (Stopwatch.))
 
-(: file-ticks (-> string int))
+(: (-> string int))
 (defun (file-ticks path)
   (let ((sw (stopwatch-of)))
     (.Start sw)
@@ -91,7 +91,7 @@
 
 ;; Tenths of a MB/s. Ticks are 100ns, so bytes per second is bytes times 1e7
 ;; over ticks, and a tenth of a MB/s is bytes times 100 over ticks.
-(: rate (-> int int string))
+(: (-> int int string))
 (defun (rate bytes ticks)
   (if (= ticks 0)
       "n/a"
@@ -99,7 +99,7 @@
         (str (int->string (/ tenths 10)) "." (int->string (% tenths 10))))))
 
 ;; Ticks as milliseconds with two decimals, since the smallest is under three.
-(: as-ms (-> int string))
+(: (-> int string))
 (defun (as-ms ticks)
   (let ((hundredths (/ ticks 100)))
     (let ((frac (% hundredths 100)))
@@ -107,7 +107,7 @@
            (if (< frac 10) ".0" ".")
            (int->string frac)))))
 
-(: run (-> string void))
+(: (-> string void))
 (defun (run name)
   (let ((path (path-combine dir (str name ".json"))))
     (if (not (file-exists? path))

@@ -6,12 +6,12 @@
 
 (import (std simpletest))
 
-(: halve (-> int (Option int)))
+(: (-> int (Option int)))
 (defun (halve n)
   (if (even? n) (Some (/ n 2)) None))
 
 ;; A bare name as the step, and a predicate as the whole of the pattern.
-(: parity (-> int string))
+(: (-> int string))
 (defun (parity n)
   (match n
     (0 "zero")
@@ -19,7 +19,7 @@
     (_ "odd")))
 
 ;; A partial view: the step answers an Option and the pattern reads it.
-(: halved (-> int string))
+(: (-> int string))
 (defun (halved n)
   (match n
     ((:view halve (Some k)) (->str k))
@@ -27,7 +27,7 @@
 
 ;; A step with extra arguments, written like a `->` step. No lambda is
 ;; allocated: `&` marks where the value goes and the call is emitted directly.
-(: over (-> int int string))
+(: (-> int int string))
 (defun (over n limit)
   (match n
     ((:view (< limit &) #t) "big")
@@ -39,7 +39,7 @@
 ;;
 ;; What it may not do is need a statement to evaluate, exactly as a `#:when`
 ;; may not: `(= 0 (% x 3))` is refused here, because `=` inlines to a binding.
-(: squares (-> int string))
+(: (-> int string))
 (defun (squares n)
   (match n
     ((:view (fun (x) (* x x)) 81) "nine")
@@ -47,7 +47,7 @@
 
 ;; Nested inside a constructor, and nested inside itself: the inner step reads
 ;; what the outer one bound.
-(: quarter (-> (Option int) string))
+(: (-> (Option int) string))
 (defun (quarter o)
   (match o
     ((Some (:view halve (Some (:view halve (Some k))))) (->str k))
@@ -56,7 +56,7 @@
 
 ;; Two views in one clause, and a `#:when` after them — the guard runs last, so
 ;; the names the views bound are available to it.
-(: pair-up (-> (Tuple int int) string))
+(: (-> (Tuple int int) string))
 (defun (pair-up p)
   (match p
     ((Tuple (:view halve (Some a)) (:view halve (Some b))) #:when (< a b) "rising")
@@ -67,7 +67,7 @@
 ;;
 ;; A view clause covers nothing, so the last clause has to be a binder however
 ;; obviously the views between them run out of values.
-(: named (-> int string))
+(: (-> int string))
 (defun (named n)
   (match n
     ((:view ->str "4") "four")
@@ -76,7 +76,7 @@
 
 ;; And the same through a constraint, where the method is reached through a
 ;; dictionary rather than a direct call.
-(: shouted? (-> %a string) (where (->str %a)))
+(: (-> %a string) (where (->str %a)))
 (defun (shouted? x)
   (match x
     ((:view ->str "yes") "affirmative")
@@ -86,14 +86,14 @@
 ;; against the arrow it has to have, so `&` stands at the scrutinee's type and
 ;; `Refable`'s `%index` resolves through it; inferring the call first has
 ;; nothing to resolve it from.
-(: port-of (-> (Map string int) int))
+(: (-> (Map string int) int))
 (defun (port-of config)
   (match config
     ((:view (try-ref & "port") (Some p)) p)
     (_ 8080)))
 
 ;; A step closing over a local of the enclosing scope.
-(: count-over (-> (Vec int) int int))
+(: (-> (Vec int) int int))
 (defun (count-over xs limit)
   (loop (:for x xs)
         (:acc total (summing (match x ((:view (< limit &) #t) 1) (_ 0))))
@@ -101,7 +101,7 @@
 
 ;; A `match` in argument position is a switch *expression*, and a view is a
 ;; `when` on the arm there.
-(: bracket (-> int string))
+(: (-> int string))
 (defun (bracket n)
   (string-append "<" (string-append (match n ((:view halve (Some k)) (->str k)) (_ "-")) ">")))
 

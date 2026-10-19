@@ -13,7 +13,7 @@
 (import/class
   (InvalidOp (: System.InvalidOperationException (-> string InvalidOp))))
 
-(: boom (-> string %a))
+(: (-> string %a))
 (defun (boom message)
   (raise (cast Exception (InvalidOp. message))))
 
@@ -24,7 +24,7 @@
 (def account-count 8)
 (def initial 1000)
 
-(: move! (-> (Vec (Loc int)) int int int void))
+(: (-> (Vec (Loc int)) int int int void))
 (defun (move! accounts from to amount)
   (ignore (atomically
    (fun (tx)
@@ -32,14 +32,14 @@
      (ignore (tx-update! tx (vec-ref accounts to) (fun (x) (+ x amount))))
      0))))
 
-(: total (-> Tx (Vec (Loc int)) int))
+(: (-> Tx (Vec (Loc int)) int))
 (defun (total tx accounts)
   (loop (:for a (in-vec accounts))
         (:acc sum (summing (tx-ref tx a)))))
 
 ;; Transfers that never suspend, so each fiber keeps a thread and eight of
 ;; them run at the same time.
-(: transfers (-> (Vec (Loc int)) int int void))
+(: (-> (Vec (Loc int)) int int void))
 (defun (transfers accounts seed n)
   (loop (:for i (range 0 n))
         (:do (move! accounts
@@ -51,13 +51,13 @@
 ;; Fibers
 ;; ---------------------------------------------------------------------------
 
-(: transfer-fiber (-bjo-> (Vec (Loc int)) int (Loc int) void))
+(: (-bjo-> (Vec (Loc int)) int (Loc int) void))
 (defbjo (transfer-fiber accounts seed done)
   (transfers accounts seed 20000)
   (ignore (atomically (fun (tx) (tx-update! tx done #(+ & 1))))))
 
 ;; Reads all accounts in one snapshot until the eight writers are done.
-(: reader-fiber (-bjo-> (Vec (Loc int)) (Loc int) (Loc int) void))
+(: (-bjo-> (Vec (Loc int)) (Loc int) (Loc int) void))
 (defbjo (reader-fiber accounts done bad-reads)
   (let lp ()
     (when (< (loc-ref done) 8)
@@ -66,7 +66,7 @@
         (ignore (atomically (fun (tx) (tx-update! tx bad-reads #(+ & 1))))))
       (lp))))
 
-(: wait-for-flag (-bjo-> (Loc bool) (Chan string) void))
+(: (-bjo-> (Loc bool) (Chan string) void))
 (defbjo (wait-for-flag flag results)
   (chan-put results (atomically (fun (tx) (if (tx-ref tx flag) "woken" (tx-retry tx))))))
 
@@ -75,11 +75,11 @@
 ;; ---------------------------------------------------------------------------
 
 ;; `atomically` in a function that is not a fiber is the sync/blocking form.
-(: plain-double! (-> (Loc int) int))
+(: (-> (Loc int) int))
 (defun (plain-double! l)
   (atomically (fun (tx) (tx-update! tx l (fun (x) (* x 2))))))
 
-(: plain-fail (-> (Loc int) (Result Exception int)))
+(: (-> (Loc int) (Result Exception int)))
 (defun (plain-fail l)
   (try (atomically (fun (tx) (tx-set! tx l 99) (boom "plain")))
        #:catch (System.InvalidOperationException)))

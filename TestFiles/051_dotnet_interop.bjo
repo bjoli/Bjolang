@@ -48,7 +48,7 @@
 ;; one.
 ;; ---------------------------------------------------------------------------
 
-(: test-static (-> void))
+(: (-> void))
 (defun (test-static)
   ;; Ett statiskt void-anrop, och den enda raden i filen som inte är ett
   ;; påstående: System.Console.WriteLine skriver förbi current-output-port, så
@@ -80,7 +80,7 @@
 ;; ---------------------------------------------------------------------------
 
 ;; The alias is a type, so it may be written in an ordinary signature.
-(: write-greeting (-> StreamWriter void))
+(: (-> StreamWriter void))
 (defun (write-greeting w)
   (.Write w "Bjolang interop")
   (.Flush w))
@@ -99,20 +99,20 @@
 ;; with whatever was written above it. That is why this needs a forward
 ;; reference to show at all, and why it showed as a type refusing to unify with
 ;; the same type spelled the other way.
-(: describe-builder (-> string string))
+(: (-> string string))
 (defun (describe-builder s)
   (builder-text (fill-builder s)))
 
-(: fill-builder (-> string StringBuilder))
+(: (-> string StringBuilder))
 (defun (fill-builder s)
   (let ((sb (StringBuilder.)))
     (ignore (.Append sb s))
     sb))
 
-(: builder-text (-> System.Text.StringBuilder string))
+(: (-> System.Text.StringBuilder string))
 (defun (builder-text b) (.ToString b))
 
-(: test-class-io (-> void))
+(: (-> void))
 (defun (test-class-io)
   (def path "51_dotnet_class_io.tmp")
 
@@ -149,7 +149,7 @@
 ;; different methods and neither is a guess.
 ;; ---------------------------------------------------------------------------
 
-(: test-overloads (-> void))
+(: (-> void))
 (defun (test-overloads)
   ;; An exact match always beats a widening: `Append(int)` rather than
   ;; `Append(long)` or `Append(double)`, even though both would accept an int.
@@ -200,7 +200,7 @@
 
 ;; A constructor that is declared to fail returns a Result, so opening a file
 ;; is an ordinary two-armed match rather than a thing that might not return.
-(: try-open (-> string string))
+(: (-> string string))
 (defun (try-open path)
   (match (FileStream. path FileMode.Open)
     ((Ok fs) (let ()
@@ -208,13 +208,13 @@
                "opened"))
     ((Err e) "missing")))
 
-(: try-read (-> string string))
+(: (-> string string))
 (defun (try-read path)
   (match (read-all-text-guarded path)
     ((Ok text) text)
     ((Err e) "missing")))
 
-(: test-exceptions (-> void))
+(: (-> void))
 (defun (test-exceptions)
   (def path "54_dotnet_exceptions.tmp")
 
@@ -246,20 +246,20 @@
 ;; ---------------------------------------------------------------------------
 
 ;; One guard around the whole region, not around each call.
-(: slurp (-> string (Result System.Exception string)))
+(: (-> string (Result System.Exception string)))
 (defun (slurp path)
   (try (with-open ((r (StreamReader. path)))
          (.ReadToEnd r))
     #:catch (System.IO.FileNotFoundException System.IO.DirectoryNotFoundException)))
 
 ;; The shape a stdlib wrapper wants: no exceptions in the surface API at all.
-(: read-or (-> string string string))
+(: (-> string string string))
 (defun (read-or path fallback)
   (match (slurp path)
     ((Ok text) text)
     ((Err e) fallback)))
 
-(: test-try-catch (-> void))
+(: (-> void))
 (defun (test-try-catch)
   (def path "55_try_catch.tmp")
 
@@ -313,7 +313,7 @@
 
 ;; One guard, several failures, told apart by type. The arms are tried in
 ;; order, so the specific type has to precede the general one.
-(: classify (-> string string))
+(: (-> string string))
 (defun (classify path)
   (match (try (file-read-text path)
            #:catch (System.IO.FileNotFoundException
@@ -328,7 +328,7 @@
 ;; to System.Exception, so this only compiles because the pattern narrowed it.
 ;;
 ;; A `:is` covers nothing, so the `Err` column still needs a clause of its own.
-(: missing-file-name (-> string string))
+(: (-> string string))
 (defun (missing-file-name path)
   (match (try (file-read-text path) #:catch (System.IO.FileNotFoundException))
     ((Ok text) "")
@@ -337,14 +337,14 @@
 
 ;; A type test on an ordinary .NET value, with no exceptions involved: the
 ;; scrutinee is `object`, and each arm narrows it.
-(: describe (-> System.Object string))
+(: (-> System.Object string))
 (defun (describe o)
   (match o
     ((:is string s) (string-append "string of length " (int->string (string-length s))))
     ((:is System.Text.StringBuilder b) (string-append "builder saying " (.ToString b)))
     (_ "something else")))
 
-(: test-type-patterns (-> void))
+(: (-> void))
 (defun (test-type-patterns)
   (def path "56_type_patterns.tmp")
   (file-write-text path "here")

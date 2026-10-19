@@ -20,19 +20,19 @@
 (import (std orderedset))
 (import (std simpletest))
 
-(: expect-bool (-> string bool bool void))
+(: (-> string bool bool void))
 (defun (expect-bool label actual wanted)
   (if (= actual wanted)
       (println (str "ok: " label))
       (println (str "FAILURE: " label))))
 
-(: expect-str (-> string string string void))
+(: (-> string string string void))
 (defun (expect-str label actual wanted)
   (if (string=? actual wanted)
       (println (str "ok: " label))
       (println (str "FAILURE: " label " gave " actual " but wanted " wanted))))
 
-(: string=? (-> string string bool))
+(: (-> string string bool))
 (defun (string=? a b) (= a b))
 
 ;; ===========================================================================
@@ -41,13 +41,13 @@
 
 ;; The type is the library's, written in a signature here — which is what an
 ;; exported `import/class` alias buys.
-(: set-numbers (-> (HashSet int)))
+(: (-> (HashSet int)))
 (defun (set-numbers)
   (hashset-add (hashset-add (hashset-add (hashset-empty) 1) 2) 3))
 
 ;; --- The set ---------------------------------------------------------------
 
-(: test-set-core (-> void))
+(: (-> void))
 (defun (test-set-core)
   (def s (set-numbers))
   (expect "set: length" (hashset-length s) 3)
@@ -92,7 +92,7 @@
 
 ;; --- Conversions and traits ------------------------------------------------
 
-(: test-set-traits (-> void))
+(: (-> void))
 (defun (test-set-traits)
   (def s (set-numbers))
   (expect "set: Collection length" (length s) 3)
@@ -126,7 +126,7 @@
 
 ;; --- The builder -----------------------------------------------------------
 
-(: test-set-builder (-> void))
+(: (-> void))
 (defun (test-set-builder)
   (def b (hashsetbuilder-empty))
   (hashsetbuilder-add! b 1)
@@ -147,7 +147,7 @@
 
 ;; --- The transient ---------------------------------------------------------
 
-(: test-set-transient (-> void))
+(: (-> void))
 (defun (test-set-transient)
   (def t (transienthashset-empty))
   (expect-bool "set: transient starts empty" (transienthashset-empty? t) #t)
@@ -180,7 +180,7 @@
 
 ;; A set of something other than an int, to pin that the type arguments are
 ;; solved per call site rather than once.
-(: test-set-strings (-> void))
+(: (-> void))
 (defun (test-set-strings)
   (def s (hashset-add (hashset-add (hashset-empty) "a") "b"))
   (expect "a set of strings" (hashset-length s) 2)
@@ -192,11 +192,11 @@
 
 ;; Deliberately built out of order, so that every "in order" claim below is
 ;; about the set rather than about how it was made.
-(: oset-numbers (-> (OrderedSet int)))
+(: (-> (OrderedSet int)))
 (defun (oset-numbers)
   (seq->orderedset (list->seq (list 5 1 9 3 7))))
 
-(: test-oset-core (-> void))
+(: (-> void))
 (defun (test-oset-core)
   (def s (oset-numbers))
   (expect "ordered: length" (orderedset-length s) 5)
@@ -223,7 +223,7 @@
     ((Some found) (expect "find takes the smallest match" found 5))
     (None (println "FAILURE: find found nothing"))))
 
-(: test-oset-algebra (-> void))
+(: (-> void))
 (defun (test-oset-algebra)
   (def a (seq->orderedset (list->seq (list 1 2 3 4))))
   (def b (seq->orderedset (list->seq (list 3 4 5 6))))
@@ -233,7 +233,7 @@
   (expect "symmetric difference" (orderedset-length (orderedset-symmetric-difference a b)) 4)
   (expect-str "intersection is sorted" (->str (orderedset-intersection a b)) "#{3 4}"))
 
-(: test-oset-order (-> void))
+(: (-> void))
 (defun (test-oset-order)
   (def s (oset-numbers))
   (expect-str "a walk arrives sorted" (->str s) "#{1 3 5 7 9}")
@@ -279,7 +279,7 @@
   (expect "until" (count (orderedset-until s 5)) 3)
   (expect "the range's own sum" (seq-fold + 0 (orderedset-range s 3 7)) 15))
 
-(: test-oset-traits (-> void))
+(: (-> void))
 (defun (test-oset-traits)
   (def s (oset-numbers))
   (expect "ordered: Collection length" (length s) 5)
@@ -310,7 +310,7 @@
   (expect "orderedset->vec" (vec-length (orderedset->vec s)) 5)
   (expect "orderedset->seq" (count (orderedset->seq s)) 5))
 
-(: test-oset-builder (-> void))
+(: (-> void))
 (defun (test-oset-builder)
   (def b (orderedsetbuilder-empty))
   (orderedsetbuilder-add! b 3)
@@ -329,7 +329,7 @@
   (orderedsetbuilder-add! d 4)
   (expect "orderedset->orderedsetbuilder" (orderedset-length (orderedsetbuilder->orderedset d)) 6))
 
-(: test-oset-transient (-> void))
+(: (-> void))
 (defun (test-oset-transient)
   (def t (transientorderedset-empty))
   (expect-bool "ordered: transient starts empty" (transientorderedset-empty? t) #t)
@@ -367,7 +367,7 @@
 
 ;; Strings order lexicographically, which is `Comparer<string>.Default` — the
 ;; point being that the ordering is the element type's rather than the set's.
-(: test-oset-strings (-> void))
+(: (-> void))
 (defun (test-oset-strings)
   (def s (seq->orderedset (list->seq (list "pear" "apple" "fig"))))
   (expect-str "a set of strings, in order" (->str s) "#{apple fig pear}")
