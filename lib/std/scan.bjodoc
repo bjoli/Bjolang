@@ -11,6 +11,9 @@
     (def (Tuple w h counts) (scan "12x5: 1 0 3" '(int "x" int ": " int ... #:sep " ")))
     (try-scan "12y5" '(int "x" int))
     ;; (Err "scan: expected \"x\" at column 3 of \"12y5\"")
+    (scan "Ada Lovelace,36" '((until ",") "," int))           ; ("Ada Lovelace", 36)
+    (scan "20231015" '(int #:width 4 int #:width 2 int #:width 2))  ; (2023, 10, 15)
+    (scan "id 7: x" '((:skip word) " " int ": " word))     ; (7, "x")
     """)
   (reference """
     A pattern is a quoted list of items, read in order from the start of the
@@ -28,15 +31,31 @@
     @code{(chars ".#")} reads one or more of the characters given. The
     arguments are strings of ASCII characters and the classes @code{:digit},
     @code{:lower}, @code{:upper}, @code{:alpha}, @code{:alnum} and @code{:hex}.
+    In a string, @code{a-z} is all the characters from @code{a} to @code{z};
+    a @code{-} at the start or the end of the string is itself.
+    @code{(until ",")} takes the same arguments, and reads the characters up
+    to one of them or the end of the line, none included. It does not read
+    the character it stops at, so a field and its separator are
+    @code{(until ",") ","}.
     A list of items is a group, read in order.
+    @code{item #:width 4} reads no more than 4 characters for the item, as
+    OCaml's @code{%4d} does, so @code{'(int #:width 4 int #:width 2)} reads
+    @code{"202310"} as 2023 and 10. A width goes after @code{int},
+    @code{long}, @code{double}, @code{word}, @code{rest}, @code{chars} and
+    @code{until}.
+    @code{(:skip item ...)} reads the items and gives no value, as OCaml's
+    @code{%_d} does. Text that it skips is not copied or sliced, and a
+    repetition in it makes no vec.
     @code{item ...} reads the item as many times as it matches, none
     included, and @code{item ... #:sep ","} puts the separator between them.
+    A repetition also ends when a round of it reads no text, so
+    @code{rest ...} reads the rest once.
     @code{(:? item ...)} reads the items if they match, and nothing if they do
     not. @code{(:or a b ...)} reads the first choice that matches.
 
     @strong{Values.}
-    A number, a character, a word, @code{rest} and @code{chars} read a
-    value; a string reads none. A group's value is its one value, or a
+    A number, a character, a word, @code{rest}, @code{chars} and
+    @code{until} read a value; a string and a @code{:skip} read none. A group's value is its one value, or a
     @code{Tuple} of its values. A repetition's value is a @code{Vec}, and an
     option's an @code{Option}. Every choice of an @code{:or} must read a value
     of the same type, or all must read none. The result of a scan is the
@@ -96,6 +115,21 @@
   (arg literal "The text to match.")
   (returns "The position after the literal, or -1."))
 
+(:doc scan-byte
+  (summary "Matches one ASCII character at a position. What a one-character string of a pattern compiles to.")
+  (arg s "The line.")
+  (arg pos "The byte position.")
+  (arg b "The code of the character.")
+  (returns "The position after the character, or -1."))
+
+(:doc scan-lit8
+  (summary "Matches an ASCII literal of 2 to 8 characters at a position, with one 64-bit compare.")
+  (arg s "The line.")
+  (arg pos "The byte position.")
+  (arg bytes "The literal's bytes, the first in the lowest byte.")
+  (arg length "The number of bytes.")
+  (returns "The position after the literal, or -1."))
+
 (:doc scan-ws
   (summary "Skips whitespace at a position. What a run of spaces in a pattern compiles to.")
   (arg s "The line.")
@@ -106,18 +140,21 @@
   (summary "Reads an int at a position.")
   (arg s "The line.")
   (arg pos "The byte position.")
+  (arg width "The most characters to read, or -1 for no limit.")
   (returns "The int and the position after it, or a position of -1."))
 
 (:doc scan-long
   (summary "Reads a long at a position.")
   (arg s "The line.")
   (arg pos "The byte position.")
+  (arg width "The most characters to read, or -1 for no limit.")
   (returns "The long and the position after it, or a position of -1."))
 
 (:doc scan-double
   (summary "Reads a double at a position.")
   (arg s "The line.")
   (arg pos "The byte position.")
+  (arg width "The most characters to read, or -1 for no limit.")
   (returns "The double and the position after it, or a position of -1."))
 
 (:doc scan-char
@@ -127,24 +164,51 @@
   (returns "The character and the position after it, or a position of -1 at the end."))
 
 (:doc scan-word
-  (summary "Reads the characters up to whitespace or the end.")
+  (summary "Finds the end of the characters up to whitespace or the end of the line.")
   (arg s "The line.")
   (arg pos "The byte position.")
-  (returns "The word, a slice of the line, and the position after it, or a position of -1 when there is none."))
+  (arg width "The most characters to read, or -1 for no limit.")
+  (returns "The position after the word, or -1 when there is none."))
 
 (:doc scan-rest
-  (summary "Reads the rest of the line.")
+  (summary "Finds the end of the rest of the line.")
   (arg s "The line.")
   (arg pos "The byte position.")
-  (returns "The rest, a slice of the line, and the end of the line."))
+  (arg width "The most characters to read, or -1 for no limit.")
+  (returns "The end of the line, or the position after width characters."))
 
 (:doc scan-chars
-  (summary "Reads one or more characters of an ASCII set.")
+  (summary "Finds the end of one or more characters of an ASCII set.")
   (arg s "The line.")
   (arg pos "The byte position.")
   (arg low "Bit c is set for each character c below 64.")
   (arg high "Bit c - 64 is set for each character c from 64 to 127.")
-  (returns "The run, a slice of the line, and the position after it, or a position of -1 when there is none."))
+  (arg width "The most characters to read, or -1 for no limit.")
+  (returns "The position after the run, or -1 when there is none."))
+
+(:doc scan-until
+  (summary "Finds the end of the characters up to one of an ASCII set, none included.")
+  (arg s "The line.")
+  (arg pos "The byte position.")
+  (arg low "Bit c is set for each character c below 64.")
+  (arg high "Bit c - 64 is set for each character c from 64 to 127.")
+  (arg width "The most characters to read, or -1 for no limit.")
+  (returns "The position of the first character of the set, or the end."))
+
+(:doc scan-until-byte
+  (summary "Finds the end of the characters up to one ASCII character, none included.")
+  (arg s "The line.")
+  (arg pos "The byte position.")
+  (arg stop "The code of the character.")
+  (arg width "The most characters to read, or -1 for no limit.")
+  (returns "The position of the character, or the end."))
+
+(:doc scan-slice
+  (summary "The text between two positions, which shares the line's bytes.")
+  (arg s "The line.")
+  (arg from "The first byte position.")
+  (arg to "The byte position after the text.")
+  (returns "The text."))
 
 (:doc scan-end?
   (summary "Whether a position is the end of the line.")

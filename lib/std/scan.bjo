@@ -16,8 +16,10 @@
 ;; answers them as a tuple. The pattern is a quoted list, read when the macro
 ;; expands: the expansion is straight-line code over the line's bytes, one
 ;; step of `BjoScan.cs` per item, with no pattern left to interpret at run
-;; time. A step answers a value and the next position as a value tuple, so a
-;; pattern of numbers allocates nothing.
+;; time. A number step answers a value and the next position as a value
+;; tuple, so a pattern of numbers allocates nothing. A text step answers only
+;; the next position, and the value is a slice made after it, so text that
+;; `(:skip ...)` drops allocates nothing either.
 ;;
 ;; The code is built in continuation-passing style: each item is given what to
 ;; do with its value and the position after it, and what to do when it does
@@ -28,21 +30,26 @@
 
 (:doc #:file "scan.bjodoc")
 
-(export scan-lit scan-ws scan-int scan-long scan-double scan-char scan-word
-        scan-rest scan-chars scan-end? scan-fail scan-message)
+(export scan-lit scan-byte scan-lit8 scan-ws scan-int scan-long scan-double scan-char scan-word
+        scan-rest scan-chars scan-until scan-until-byte scan-slice scan-end? scan-fail scan-message)
 
 ;; What the expansion calls. Exported, because a template reaches a helper of
 ;; its own module only through the module's exports.
 (import/extern
   (scan-lit     (: Bjolang.Runtime.BjoScan.Lit     (-> string int string int)))
+  (scan-byte    (: Bjolang.Runtime.BjoScan.Byte    (-> string int int int)))
+  (scan-lit8    (: Bjolang.Runtime.BjoScan.Lit8    (-> string int long int int)))
   (scan-ws      (: Bjolang.Runtime.BjoScan.Ws      (-> string int int)))
-  (scan-int     (: Bjolang.Runtime.BjoScan.Int     (-> string int (Tuple int int))))
-  (scan-long    (: Bjolang.Runtime.BjoScan.Long    (-> string int (Tuple long int))))
-  (scan-double  (: Bjolang.Runtime.BjoScan.Double  (-> string int (Tuple double int))))
+  (scan-int     (: Bjolang.Runtime.BjoScan.Int     (-> string int int (Tuple int int))))
+  (scan-long    (: Bjolang.Runtime.BjoScan.Long    (-> string int int (Tuple long int))))
+  (scan-double  (: Bjolang.Runtime.BjoScan.Double  (-> string int int (Tuple double int))))
   (scan-char    (: Bjolang.Runtime.BjoScan.Char    (-> string int (Tuple char int))))
-  (scan-word    (: Bjolang.Runtime.BjoScan.Word    (-> string int (Tuple string int))))
-  (scan-rest    (: Bjolang.Runtime.BjoScan.Rest    (-> string int (Tuple string int))))
-  (scan-chars   (: Bjolang.Runtime.BjoScan.Chars   (-> string int long long (Tuple string int))))
+  (scan-word    (: Bjolang.Runtime.BjoScan.Word    (-> string int int int)))
+  (scan-rest    (: Bjolang.Runtime.BjoScan.Rest    (-> string int int int)))
+  (scan-chars   (: Bjolang.Runtime.BjoScan.Chars   (-> string int long long int int)))
+  (scan-until   (: Bjolang.Runtime.BjoScan.Until   (-> string int long long int int)))
+  (scan-until-byte (: Bjolang.Runtime.BjoScan.UntilByte (-> string int int int int)))
+  (scan-slice   (: Bjolang.Runtime.BjoScan.Slice   (-> string int int string)))
   (scan-end?    (: Bjolang.Runtime.BjoScan.End     (-> string int bool)))
   (scan-fail    (: Bjolang.Runtime.BjoScan.Fail    (-> string int string %a)))
   (scan-message (: Bjolang.Runtime.BjoScan.Message (-> string int string string))))
@@ -51,16 +58,19 @@
 ;; The pattern
 ;; ---------------------------------------------------------------------------
 
-;; One item of a pattern. `IChars` is an ASCII set as two 64-bit halves, and
-;; the text an error says it expected.
+;; One item of a pattern. An `(Option int)` is the item's width: the most
+;; characters it reads. `ISet` is the characters of `(chars ...)`, or of
+;; `(until ...)` when its flag is set, and the text an error says it
+;; expected.
 (type (: Item (Union (: ILit string)
                      IWs
-                     (: IRead string)
-                     (: IChars long long string)
+                     (: IRead string (Option int))
+                     (: ISet string bool string (Option int))
                      (: IGroup (List Item))
                      (: IRep Item (Option Item))
                      (: IOpt Item)
-                     (: IOr (List Item)))))
+                     (: IOr (List Item))
+                     (: ISkip Item))))
 
 ;; Whether the item reads a value, which the result then holds.
 (: valued? (-> Item bool))
@@ -68,12 +78,13 @@
   (match item
     ((ILit _) #f)
     (IWs #f)
-    ((IRead _) #t)
-    ((IChars _ _ _) #t)
+    ((IRead _ _) #t)
+    ((ISet _ _ _ _) #t)
     ((IGroup items) (any? valued? items))
     ((IRep _ _) #t)
     ((IOpt inner) (valued? inner))
-    ((IOr alts) (valued? (list-head alts)))))
+    ((IOr alts) (valued? (list-head alts)))
+    ((ISkip _) #f)))
 
 ;; What an error says the item was expected to be.
 (: describe (-> Item string))
@@ -81,7 +92,7 @@
   (match item
     ((ILit t) (str "\"" t "\""))
     (IWs "whitespace")
-    ((IRead kind)
+    ((IRead kind _)
      (case kind
        (("int") "an int")
        (("long") "a long")
@@ -89,11 +100,12 @@
        (("char") "a character")
        (("word") "a word")
        (else "the rest of the line")))
-    ((IChars _ _ what) what)
+    ((ISet _ _ what _) what)
     ((IGroup items) (if (list-empty? items) "nothing" (describe (list-head items))))
     ((IRep inner _) (describe inner))
     ((IOpt inner) (describe inner))
-    ((IOr alts) (str "one of " (string-join (list->vec (list-map describe alts)) ", ")))))
+    ((IOr alts) (str "one of " (string-join (list->vec (list-map describe alts)) ", ")))
+    ((ISkip inner) (describe inner))))
 
 (: space? (-> char bool))
 (defun (space? c) (or (char=? c #\space) (char=? c #\tab)))
@@ -135,33 +147,67 @@
     (("hex") (Some "0123456789abcdefABCDEF"))
     (else None)))
 
-;; `(chars ".#")`, `(chars :digit)`, or several of them: a run of one or more
-;; of their characters.
-(: chars-item (-> (List Syntax) Syntax Item))
-(defun (chars-item parts whole)
+;; A set of ASCII characters as the two halves `BjoScan.cs` tests a byte
+;; against.
+(: mask (-> string (Tuple long long)))
+(defun (mask text)
+  (string-fold
+   (fun (c acc)
+     (def (l . h) (char-bit (char->integer c)))
+     (Tuple (bitwise-ior (fst acc) l) (bitwise-ior (snd acc) h)))
+   (Tuple 0L 0L) text))
+
+;; The characters of a string of a set, with `a-z` as all the characters from
+;; `a` to `z`. A `-` at the start or the end is itself.
+(: with-ranges (-> string string Syntax string))
+(defun (with-ranges text form at)
+  (defun (span from to)
+    (let go ((c to) (acc Nil))
+      (if (< c from) (list->string acc) (go (- c 1) (Cons (integer->char c) acc)))))
+  (let go ((cs (string->list text)) (acc ""))
+    (match cs
+      ((Cons a (Cons dash (Cons b rest))) #:when (char=? dash #\-)
+       (def* (from (char->integer a))
+             (to (char->integer b)))
+       (when (> from to)
+         (ignore (ret-error at (str form " has the range " (char->string a) "-" (char->string b) ", which goes backwards."))))
+       (go rest (str acc (span from to))))
+      ((Cons c rest) (go rest (str acc (char->string c))))
+      (Nil acc))))
+
+;; `(chars ".#")`, `(chars "a-z" :digit)` and the same for `(until ...)`:
+;; the characters of the strings and the classes. `form` names the item in
+;; errors.
+(: set-item (-> string bool (List Syntax) Syntax Item))
+(defun (set-item form until? parts whole)
   (def text
     (fold
      (fun (part acc)
        (match part
-         ((SStr s) (str acc s))
+         ((SStr s) (str acc (with-ranges s form part)))
          ((SKey k)
           (match (char-class (->str k))
             ((Some cs) (str acc cs))
-            (None (ret-error part (str "(chars ...) knows the classes :digit, :lower, :upper, :alpha, :alnum and :hex, not :" (->str k) ".")))))
-         (_ (ret-error part "(chars ...) takes strings of characters and class keywords, such as (chars \".#\") or (chars :digit \"_\")."))))
+            (None (ret-error part (str form " knows the classes :digit, :lower, :upper, :alpha, :alnum and :hex, not :" (->str k) ".")))))
+         (_ (ret-error part (str form " takes strings of characters and class keywords, such as (chars \".#\"), (chars \"a-z\" \"_\") or (until \",\").")))))
      "" parts))
   (when (string-empty? text)
-    (ignore (ret-error whole "(chars ...) needs at least one character.")))
-  (def (low . high)
-    (string-fold
-     (fun (c acc)
-       (def code (char->integer c))
-       (when (>= code 128)
-         (ignore (ret-error whole (str "(chars ...) takes ASCII characters only, and " (char->string c) " is not one."))))
-       (def (l . h) (char-bit code))
-       (Tuple (bitwise-ior (fst acc) l) (bitwise-ior (snd acc) h)))
-     (Tuple 0L 0L) text))
-  (IChars low high (str "one of \"" text "\"")))
+    (ignore (ret-error whole (str form " needs at least one character."))))
+  (string-for-each
+   (fun (c)
+     (when (>= (char->integer c) 128)
+       (ignore (ret-error whole (str form " takes ASCII characters only, and " (char->string c) " is not one.")))))
+   text)
+  (def written
+    (string-join
+     (list->vec (list-map (fun (part)
+                            (match part
+                              ((SStr s) (str "\"" s "\""))
+                              ((SKey k) (str ":" (->str k)))
+                              (_ "")))
+                          parts))
+     " "))
+  (ISet text until? (if until? (str "text up to one of " written) (str "one of " written)) None))
 
 ;; A syntax error, as a value of any type: the transformer raises it, and the
 ;; expander reports it at the form it names.
@@ -176,6 +222,9 @@
     ((SKey k) (= (->str k) name))
     (_ #f)))
 
+(def items-are
+  "The items are strings, int, long, double, char, word, rest, (chars ...), (until ...), a group (...), (:? ...), (:or ...) and (:skip ...).")
+
 ;; One item, without what follows it.
 (: parse-item (-> Syntax Item))
 (defun (parse-item s)
@@ -187,17 +236,37 @@
     ((SSym name)
      (def kind (symbol->string name))
      (if (any? #(= & kind) (list "int" "long" "double" "char" "word" "rest"))
-         (IRead kind)
-         (ret-error s (str "'" kind "' is not an item of a scan pattern. The items are strings, int, long, double, char, word, rest, (chars ...), a group (...), (:? ...) and (:or ...)."))))
+         (IRead kind None)
+         (ret-error s (str "'" kind "' is not an item of a scan pattern. " items-are))))
     ((SList (Cons head rest))
      (cond ((keyword? head "?")
             (IOpt (group-of (parse-items rest s))))
            ((keyword? head "or") (or-item rest s))
-           ((match head ((SSym n) (= (symbol->string n) "chars")) (_ #f))
-            (chars-item rest s))
+           ((keyword? head "skip")
+            (ISkip (group-of (parse-items rest s))))
+           ((named? head "chars") (set-item "(chars ...)" #f rest s))
+           ((named? head "until") (set-item "(until ...)" #t rest s))
            (else (IGroup (parse-items (Cons head rest) s)))))
     ((SList Nil) (IGroup Nil))
-    (_ (ret-error s "This is not an item of a scan pattern. The items are strings, int, long, double, char, word, rest, (chars ...), a group (...), (:? ...) and (:or ...)."))))
+    (_ (ret-error s (str "This is not an item of a scan pattern. " items-are)))))
+
+(: named? (-> Syntax string bool))
+(defun (named? s name)
+  (match s
+    ((SSym n) (= (symbol->string n) name))
+    (_ #f)))
+
+;; `item #:width n`: the item reads no more than n characters.
+(: with-width (-> Item int Syntax Item))
+(defun (with-width item n at)
+  (def message "#:width goes after int, long, double, word, rest, (chars ...) or (until ...).")
+  (match item
+    ((IRead _ (Some _)) (ret-error at "This item has a #:width already."))
+    ((ISet _ _ _ (Some _)) (ret-error at "This item has a #:width already."))
+    ((IRead kind None)
+     (if (= kind "char") (ret-error at message) (IRead kind (Some n))))
+    ((ISet text until? what None) (ISet text until? what (Some n)))
+    (_ (ret-error at message))))
 
 ;; `(:or a b ...)`: each choice is one item, and they all read a value or
 ;; none does.
@@ -218,12 +287,19 @@
     (_ (IGroup items))))
 
 ;; The items of a list, with `item ...` and `item ... #:sep sep` read as
-;; repetitions of the item before them.
+;; repetitions of the item before them, and `item #:width n` as the item
+;; with a width.
 (: parse-items (-> (List Syntax) Syntax (List Item)))
 (defun (parse-items xs whole)
   (let go ((xs xs) (acc Nil))
     (match xs
       (Nil (list-reverse acc))
+      ((Cons k (Cons (SInt digits) more)) #:when (and (keyword? k "width") (> (string->int digits) 0))
+       (match acc
+         (Nil (ret-error k "#:width gives a width to the item before it, and there is none."))
+         ((Cons prev before) (go more (Cons (with-width prev (string->int digits) k) before)))))
+      ((Cons k _) #:when (keyword? k "width")
+       (ret-error k "#:width needs a number of characters after it, as in int #:width 4."))
       ((Cons (SPunct "...") rest)
        (match acc
          (Nil (ret-error whole "A '...' repeats the item before it, and there is none."))
@@ -246,7 +322,13 @@
 ;; temporaries. Each temporary is built from a string, so that each one gets a
 ;; name of its own: hygiene gives every distinct name one fresh spelling per
 ;; expansion, and one template name used at every depth would shadow itself.
-(type (: Ctx (Record (: line Syntax) (: counter (Array int)))))
+;; `keep` is false inside `(:skip ...)`: there an item gives no value, so a
+;; text item makes no slice and a repetition no vec.
+(type (: Ctx (Record (: line Syntax) (: counter (Array int)) (: keep bool))))
+
+;; Whether the item gives a value here.
+(: holds? (-> Ctx Item bool))
+(defun (holds? ctx item) (and (.keep ctx) (valued? item)))
 
 (: fresh (-> Ctx string Syntax))
 (defun (fresh ctx prefix)
@@ -259,19 +341,24 @@
 (type (: OnValue (-> (Option Syntax) Syntax Syntax)))
 (type (: OnMiss (-> Syntax string Syntax)))
 
-;; The call of the step that reads `kind`.
-(: read-call (-> string Syntax Syntax Syntax))
-(defun (read-call kind s p)
-  (case kind
-    (("int") #'(scan-int ,s ,p))
-    (("long") #'(scan-long ,s ,p))
-    (("double") #'(scan-double ,s ,p))
-    (("char") #'(scan-char ,s ,p))
-    (("word") #'(scan-word ,s ,p))
-    (else #'(scan-rest ,s ,p))))
+;; A width as the steps take it: -1 for none.
+(: width-literal (-> (Option int) Syntax))
+(defun (width-literal width)
+  (match width
+    ((Some n) (SInt (int->string n)))
+    (None (SInt "-1"))))
+
+(: int-literal (-> int Syntax))
+(defun (int-literal n) (SInt (int->string n)))
 
 (: long-literal (-> long Syntax))
 (defun (long-literal n) (SInt (str (long->string n) "L")))
+
+;; Up to 8 byte values as one long, the first in the lowest byte, as
+;; `scan-lit8` reads them.
+(: packed (-> (List int) long))
+(defun (packed codes)
+  (list-foldr (fun (code acc) (bitwise-ior (shift-left acc 8) (cast System.Int64 code))) 0L codes))
 
 ;; Code for `item` at position `p`.
 (: gen (-> Ctx Item Syntax OnValue OnMiss Syntax))
@@ -280,25 +367,62 @@
   (match item
     ((ILit text)
      (def q (fresh ctx "q"))
-     #'(let ((,q (scan-lit ,s ,p ,(SStr text))))
+     (def codes (list-map char->integer (string->list text)))
+     (def n (list-length codes))
+     (def step
+       (cond ((not (all? #(< & 128) codes)) #'(scan-lit ,s ,p ,(SStr text)))
+             ((= n 1) #'(scan-byte ,s ,p ,(int-literal (list-head codes))))
+             ((<= n 8) #'(scan-lit8 ,s ,p ,(long-literal (packed codes)) ,(int-literal n)))
+             (else #'(scan-lit ,s ,p ,(SStr text)))))
+     #'(let ((,q ,step))
          (if (< ,q 0) ,(fail p (describe item)) ,(ok None q))))
     (IWs
      (def q (fresh ctx "q"))
      #'(let ((,q (scan-ws ,s ,p))) ,(ok None q)))
-    ((IRead kind)
-     (def* (v (fresh ctx "v"))
-           (q (fresh ctx "q")))
-     #'(match ,(read-call kind s p)
-         ((,v . ,q) (if (< ,q 0) ,(fail p (describe item)) ,(ok (Some v) q)))))
-    ((IChars low high _)
-     (def* (v (fresh ctx "v"))
-           (q (fresh ctx "q")))
-     #'(match (scan-chars ,s ,p ,(long-literal low) ,(long-literal high))
-         ((,v . ,q) (if (< ,q 0) ,(fail p (describe item)) ,(ok (Some v) q)))))
+    ((IRead kind width)
+     (def w (width-literal width))
+     (case kind
+       (("int") (gen-number ctx item #'(scan-int ,s ,p ,w) p ok fail))
+       (("long") (gen-number ctx item #'(scan-long ,s ,p ,w) p ok fail))
+       (("double") (gen-number ctx item #'(scan-double ,s ,p ,w) p ok fail))
+       (("char") (gen-number ctx item #'(scan-char ,s ,p) p ok fail))
+       (("word") (gen-text ctx item #'(scan-word ,s ,p ,w) p ok fail))
+       (else (gen-text ctx item #'(scan-rest ,s ,p ,w) p ok fail))))
+    ((ISet text until? _ width)
+     (def w (width-literal width))
+     (def (low . high) (mask text))
+     (def step
+       (cond ((not until?) #'(scan-chars ,s ,p ,(long-literal low) ,(long-literal high) ,w))
+             ((= (string-length text) 1)
+              #'(scan-until-byte ,s ,p ,(int-literal (char->integer (list-head (string->list text)))) ,w))
+             (else #'(scan-until ,s ,p ,(long-literal low) ,(long-literal high) ,w))))
+     (gen-text ctx item step p ok fail))
     ((IGroup items) (gen-seq ctx items p Nil ok fail))
     ((IOpt inner) (gen-opt ctx inner p ok))
     ((IOr alts) (gen-or ctx alts item p ok fail))
-    ((IRep inner sep) (gen-rep ctx inner sep p ok))))
+    ((IRep inner sep) (gen-rep ctx inner sep p ok))
+    ((ISkip inner)
+     (gen (Ctx (line s) (counter (.counter ctx)) (keep #f)) inner p
+          (fun (_ q) (ok None q)) fail))))
+
+;; A step that answers a value and the position after it.
+(: gen-number (-> Ctx Item Syntax Syntax OnValue OnMiss Syntax))
+(defun (gen-number ctx item step p ok fail)
+  (def* (v (fresh ctx "v"))
+        (q (fresh ctx "q")))
+  #'(match ,step
+      ((,v . ,q) (if (< ,q 0) ,(fail p (describe item)) ,(ok (if (.keep ctx) (Some v) None) q)))))
+
+;; A step that answers the position after its text. The value is the slice
+;; from `p` to there, made only where the value is used.
+(: gen-text (-> Ctx Item Syntax Syntax OnValue OnMiss Syntax))
+(defun (gen-text ctx item step p ok fail)
+  (def* (s (.line ctx))
+        (q (fresh ctx "q")))
+  #'(let ((,q ,step))
+      (if (< ,q 0)
+          ,(fail p (describe item))
+          ,(ok (if (.keep ctx) (Some #'(scan-slice ,s ,p ,q)) None) q))))
 
 ;; Code for items in order. A group's value is its one value, or a tuple of
 ;; its values, or none.
@@ -335,7 +459,7 @@
 ;; `(:? item)`: the item's value in a `Some`, or `None` and no text read.
 (: gen-opt (-> Ctx Item Syntax OnValue Syntax))
 (defun (gen-opt ctx inner p ok)
-  (def valued (valued? inner))
+  (def valued (holds? ctx inner))
   (join ctx valued ok
         (fun (k)
           (gen ctx inner p
@@ -354,33 +478,46 @@
 
 ;; `item ...` and `item ... #:sep sep`: the items as a vec, as many as match,
 ;; none included. A separator not followed by an item is not read. The loop
-;; is a named let, so it runs as a loop however many items there are.
+;; is a named let, so it runs as a loop however many items there are. Where
+;; the value is not kept, the loop only moves past the items.
 (: gen-rep (-> Ctx Item (Option Item) Syntax OnValue Syntax))
 (defun (gen-rep ctx inner sep p ok)
-  (def* (acc (fresh ctx "acc"))
-        (lp (fresh ctx "lp"))
-        (first (fresh ctx "first"))
+  ;; The loop reads an item at `at`, and stops at `back` when the item does
+  ;; not match: `back` is the position before the separator, so that a
+  ;; separator not followed by an item is not read. The item and the
+  ;; separator are each written once, so nested repetitions grow with the
+  ;; pattern.
+  (def* (keep (.keep ctx))
+        (acc (fresh ctx "acc"))
+        (back (fresh ctx "back"))
+        (at (fresh ctx "at"))
         (more (fresh ctx "more")))
-  (join ctx #t ok
+  (join ctx keep ok
         (fun (k)
-          (def done #'(vecbuilder->vec ,acc))
-          (defun (stop) (k (Some done) lp))
-          ;; After an item: add its value, and go round again from `q`.
-          (defun (add v q)
+          (defun (stop pos) (k (if keep (Some #'(vecbuilder->vec ,acc)) None) pos))
+          ;; After the separator at `q`, or none: round again, or stop at `q`.
+          (defun (next q)
             (match sep
-              (None #'(let () (vecbuilder-add! ,acc ,(option-ref v)) (,more ,q)))
-              (_ #'(let () (vecbuilder-add! ,acc ,(option-ref v)) (,more ,q #f)))))
-          (defun (item-at at) (gen ctx inner at add (fun (_ _) (stop))))
-          (match sep
-            (None
-             #'(let ((,acc (vecbuilder-empty/small)))
-                 (let ,more ((,lp ,p)) ,(item-at lp))))
-            ((Some sep-item)
-             #'(let ((,acc (vecbuilder-empty/small)))
-                 (let ,more ((,lp ,p) (,first #t))
-                   (if ,first
-                       ,(item-at lp)
-                       ,(gen ctx sep-item lp (fun (_ sq) (item-at sq)) (fun (_ _) (stop)))))))))))
+              (None #'(,more ,q ,q))
+              ((Some sep-item)
+               (gen ctx sep-item q (fun (_ sq) #'(,more ,q ,sq)) (fun (_ _) (stop q))))))
+          ;; After an item: add its value and go on from `q`. A round that
+          ;; reads no text, as `rest` at the end does, ends the repetition
+          ;; without its value, because it would match forever.
+          (defun (add v q)
+            #'(if (= ,q ,back)
+                  ,(stop back)
+                  ,(if keep
+                       #'(let ()
+                           (vecbuilder-add! ,acc ,(option-ref v))
+                           ,(next q))
+                       (next q))))
+          (def loop
+            #'(let ,more ((,back ,p) (,at ,p))
+                ,(gen ctx inner at add (fun (_ _) (stop back)))))
+          (if keep
+              #'(let ((,acc (vecbuilder-empty/small))) ,loop)
+              loop))))
 
 ;; The whole expansion: the items from position 0, then the end of the line.
 (: expand (-> Syntax Syntax Syntax bool Syntax))
@@ -394,7 +531,7 @@
     (match quoted
       ((Some items) (parse-items items pattern))
       (None (ret-error pattern "The pattern of a scan is a quoted list, such as '(int \",\" int)."))))
-  (def ctx (Ctx (line (SSym (string->symbol "scan-line"))) (counter (make-array 1 #:fill 0))))
+  (def ctx (Ctx (line (SSym (string->symbol "scan-line"))) (counter (make-array 1 #:fill 0)) (keep #t)))
   (def s (.line ctx))
   (defun (fail p expected)
     (if raising?

@@ -36,6 +36,49 @@
           (Tuple "ab_" "12"))
   (expect "hex digits" (scan "ff00" '((chars :hex))) "ff00")
 
+  (expect "chars with a range" (scan "x9-a_" '((chars "a-z" "0-9" "_-"))) "x9-a_")
+  (expect "a dash at the start" (scan "-+-" '((chars "-+"))) "-+-")
+
+  ;; Text up to a delimiter.
+  (expect "until a comma" (scan "Ada Lovelace,36" '((until ",") "," int))
+          (Tuple "Ada Lovelace" 36))
+  (expect "until one of several" (scan "key=val;" '((until "=;") "=" (until "=;") ";"))
+          (Tuple "key" "val"))
+  (expect "until a class" (scan "abc123" '((until :digit) int)) (Tuple "abc" 123))
+  (expect "until reads nothing at a delimiter" (scan ",x" '((until ",") "," word)) (Tuple "" "x"))
+  (expect "until reads to the end" (scan "åäö" '((until ","))) "åäö")
+  (expect "fields with empty ones"
+          (scan "a,,b c" '((until ",") ... #:sep ","))
+          ["a" "" "b c"])
+
+  ;; Widths.
+  (expect "a date of fixed widths"
+          (scan "20231015" '(int #:width 4 int #:width 2 int #:width 2))
+          (Tuple 2023 10 15))
+  (expect "a width is the most" (scan "7x" '(int #:width 3 "x")) 7)
+  (expect "a width with a sign" (scan "-12345" '(long #:width 3 long)) (Tuple -12L 345L))
+  (expect "a width of a word" (scan "abcdef" '(word #:width 2 word)) (Tuple "ab" "cdef"))
+  (expect "a width counts characters" (scan "ååå" '(rest #:width 2 rest)) (Tuple "åå" "å"))
+  (expect "a width of chars" (scan "aaab" '((chars "a") #:width 2 (chars "ab")))
+          (Tuple "aa" "ab"))
+  (expect "a width of until" (scan "abc,d" '((until ",") #:width 2 rest)) (Tuple "ab" "c,d"))
+  (expect "a width of a double" (scan "1.2345" '(double #:width 3 int)) (Tuple 1.2 345))
+  (expect "a width too short for the number"
+          (try-scan "-5" '(int #:width 1 rest))
+          (Err "scan: expected an int at column 1 of \"-5\""))
+
+  ;; Items read and dropped.
+  (expect "a skipped word" (scan "id 7: x" '((:skip word) " " int ": " word)) (Tuple 7 "x"))
+  (expect "a skipped group" (scan "1,2;3" '((:skip int "," int) ";" int)) 3)
+  (expect "a skipped repetition" (scan "1 2 3|4" '((:skip int ... #:sep " ") "|" int)) 4)
+  (expect "nothing but skips" (try-scan "a b" '((:skip word " " word))) (Ok unit))
+  (expect "a skipped item that does not match"
+          (try-scan "x" '((:skip int)))
+          (Err "scan: expected an int at column 1 of \"x\""))
+  (expect "a skipped option and choice"
+          (scan "-a5" '((:skip (:? "-") (:or "a" "b")) int))
+          5)
+
   ;; Repetitions are vecs.
   (expect "a repetition" (scan "12x5: 1 0 3" '(int "x" int ": " int ... #:sep " "))
           (Tuple 12 5 [1 0 3]))
@@ -75,6 +118,31 @@
           (try-scan "99999999999" '(int))
           (Err "scan: expected an int at column 1 of \"99999999999\""))
   (expect "but not for a long" (scan "99999999999" '(long)) 99999999999L)
+  (expect "the biggest long" (scan "9223372036854775807" '(long)) 9223372036854775807L)
+  (expect "the smallest long" (scan "-9223372036854775808" '(long)) (- -9223372036854775807L 1L))
+  (expect "one past the biggest long"
+          (try-scan "9223372036854775808" '(long))
+          (Err "scan: expected a long at column 1 of \"9223372036854775808\""))
+  (expect "the smallest int" (scan "-2147483648" '(int)) (- -2147483647 1))
+  (expect "many leading zeros" (scan "000000000000000000000042" '(long)) 42L)
+  (expect "a sign and no digits"
+          (try-scan "+" '(int))
+          (Err "scan: expected an int at column 1 of \"+\""))
+
+  ;; Literals of each length, at the end of the line and before it.
+  (expect "a literal of eight" (scan "abcdefgh1" '("abcdefgh" int)) 1)
+  (expect "a literal of nine" (scan "abcdefghi1" '("abcdefghi" int)) 1)
+  (expect "a literal at the end" (scan "1ab" '(int "ab")) 1)
+  (expect "a literal cut short"
+          (try-scan "1a" '(int "ab"))
+          (Err "scan: expected \"ab\" at column 2 of \"1a\""))
+  (expect "a literal that differs in its last byte"
+          (try-scan "abcdefgX" '("abcdefgh"))
+          (Err "scan: expected \"abcdefgh\" at column 1 of \"abcdefgX\""))
+
+  ;; A repetition ends when a round reads nothing.
+  (expect "a repetition of rest" (scan "ab" '(rest ...)) ["ab"])
+  (expect "a repetition of rest on nothing" (scan "" '(rest ...)) [])
 
   ;; try-scan's Ok, and what scan raises.
   (expect "try-scan's Ok" (try-scan "12x5" '(int "x" int)) (Ok (Tuple 12 5)))

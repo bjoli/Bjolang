@@ -21,6 +21,20 @@ What each change guarantees, and what it leaves open.
   repetition of a string, a choice of values and none, a ~(chars ...)~ that
   is not ASCII.
 - The AoC solutions read their input with it.
+- ~(until ",")~ reads the text up to one of a set of characters, none
+  included, as OCaml's ~%[^,]~ does. With one character it is a vectorized
+  search. ~(chars "a-z")~ and ~(until "a-z")~ take ranges.
+- ~item #:width 4~ reads no more than 4 characters, as ~%4d~ does, so
+  ~'(int #:width 4 int #:width 2)~ reads ~"202310"~ as 2023 and 10.
+- ~(:skip item ...)~ reads the items and gives no value, as ~%_d~ does. A
+  text step answers only a position, and the slice is made where the value
+  is used, so skipped text allocates nothing and a skipped repetition makes
+  no vec: half the time of keeping it on a ~word~ and a ~(chars ...)~.
+- A repetition ends when a round reads no text. ~'(rest ...)~ looped
+  forever before.
+- ~int~ and ~long~ are a digit loop that checks for overflow once, and a
+  string of 1 to 8 ASCII bytes is one compare: a pattern of four ints and
+  four strings went from 29 ns a line to 11.
 - Tests: ~404_scan.bjo~, and ~errors/scan_*.bjo~.
 
 * ReadyToRun for the standard library and the runtime

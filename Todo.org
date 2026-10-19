@@ -37,6 +37,20 @@ noted.
   elsewhere (~Traits.fs~).
 - A ~loop~'s ~:finish~ value against the loop's result reads as "two
   branches": the message is the expansion's ~if~, not the clause.
+- A named let that only calls itself never returns, so nothing gives its
+  result a type, and the type variable stays unresolved:
+  #+begin_src bjolang
+  (def xs (let more ((i 0)) (more (+ i 1))))
+  (println (->str (length xs)))
+  #+end_src
+  ~length~ then fails with "no implementation of trait 'Collection' for
+  '?a' ... no head constructor", which does not say that the loop has no
+  exit. Without the ~length~, it compiles, and the C# has
+  ~object /* unresolved meta */~ in it. Found through ~(std scan)~, where
+  ~'(word (:? int) ...)~ once expanded to such a loop. The fix: report a
+  result type that is still open after generalization as "this never
+  returns a value", at the expression, or close it to ~unit~ when nothing
+  constrains it.
 
 * Characters and strings
 
