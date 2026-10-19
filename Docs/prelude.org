@@ -632,6 +632,7 @@ The pair is also what ~map->list~, ~map->seq~, ~map-cursor-current~, ~map-find~ 
 - ~(vec->map vec)~ : Constructs a map from a vector of pairs/tuples.
 - ~(map->vec map)~ : Converts the map to a vector of pairs/tuples.
 - ~(seq->map seq)~ : Constructs a map from a sequence of pairs/tuples.
+- ~(->map s)~ : Constructs a map from any iterable of pairs: a list, a vec, a sequence, an adapter such as ~(enumerate s)~.
 - ~(map->seq map)~ : Converts the map to a sequence of pairs/tuples.
 
 *** Builders and transients
@@ -1134,12 +1135,8 @@ Lazy, demand-driven sequences.
 - ~(seq-empty)~ : Returns an empty sequence.
 - ~(seq-empty? s)~ : Returns true if the sequence is empty.
 - ~(seq-head s)~ : Returns the first element of the sequence.
-- ~(seq-map f s)~ : Lazily maps ~f~ over the sequence.
-- ~(seq-filter f s)~ : Lazily filters elements satisfying ~f~.
 - ~(seq-fold f init s)~ : Folds over the sequence; ~f~ receives ~(item acc)~.
 - ~(seq-unfold generator state)~ : Produces a sequence from ~state~ and a ~generator~ function returning ~(Some (Tuple next-item next-state))~ or ~None~.
-- ~(seq-take s n)~ : Takes the first ~n~ elements lazily.
-- ~(seq-drop s n)~ : Drops the first ~n~ elements lazily. Dropping more than the sequence holds gives the empty sequence. This is what a ~seq-tail~ would have been: a ~Seq~ has no tail to step to.
 - ~(seq-append s1 s2)~ : Lazily concatenates two sequences.
 - ~(seq-for-each f s)~ : Applies ~f~ to each element for side effects.
 - ~(seq-length s)~ : Consumes the sequence and returns the count.
@@ -1148,6 +1145,10 @@ Lazy, demand-driven sequences.
 - ~(seq->list s)~ : Consumes a sequence into a list.
 - ~(vec->seq vec)~ : Converts a vector to a lazy sequence.
 - ~(seq->vec s)~ : Consumes a sequence into a vector.
+
+A ~Seq~ is an ~Iterable~, so ~map~, ~filter~, ~take~, ~drop~, ~count~, ~first~, ~->list~, ~->vec~ and the other ~Iterable~ methods take one, and so does ~->map~. ~(drop 1 s)~ is what a ~seq-tail~ would have been: a ~Seq~ has no tail to step to.
+
+~(seq-map f s)~, ~(seq-filter f s)~, ~(seq-take s n)~ and ~(seq-drop s n)~ are deprecated, and a use of one warns. Write ~(map f s)~, ~(filter f s)~, ~(take n s)~ and ~(drop n s)~: the count comes first.
 
 ** Monads =(std monad)=
 The ~Monad~ trait, its instances, and the ~(do ...)~ block, none of which is in the prelude: a file that wants one writes ~(import (std monad))~.
@@ -1176,6 +1177,7 @@ These methods use long names to prevent collisions with common user variables (l
 ** Traits
 - ~->str~ : Trait for string representation with method ~(->str x)~. Implemented for ~string~, ~int~, ~double~, ~byte~, ~long~, ~char~, ~Keyword~ and ~Symbol~. A ~char~ prints as itself, not as ~#\a~. A list prints as ~(1 2 3)~, through a *conditional* implementation, ~(impl (->str (List %a)) (where (->str %a)) ...)~. Anything with no implementation of its own falls to the blanket, which is ~Object.ToString~.
 - ~Iterable~ : ~(iterable-start s)~, ~(iterable-done? s c)~, ~(iterable-current s c)~ and ~(iterable-next s c)~ — how to walk a collection, and what a ~(:for ...)~ clause uses. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~(Seq %a)~, ~Range~ and ~string~. A string's ~%cursor~ is a ~StringCursor~ and its ~%elem~ is ~char~, so ~(loop (:for c "a😀b") ...)~ runs three times and hands over whole characters.
+  The trait's other methods have defaults over those four. ~map~, ~filter~, ~take~, ~drop~ and the rest that give a sequence are ~seql~ loops; ~fold~, ~any?~, ~all?~, ~find~, ~for-each~, ~(->list s)~, ~(->vec s)~, ~(count s)~ and ~(first s)~ are plain loops, which answer a value. A default inlines at its call, so ~(->list (map f (filter p xs)))~ walks ~xs~ in one loop and makes no sequence. ~count~ walks, except over a ~Vec~, an ~Array~ or a ~Map~, which answer their length; ~first~ answers an ~Option~ and pulls one element. ~(->map s)~ is not a method, since its where clause says the element is a pair (see *Pins in a function's where clause* in ~Syntax.org~); it is copied into its call at known types and fuses the same way.
 - ~Foldable~ : ~(fold f init col)~, where ~f~ receives ~(item acc)~. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~ and ~string~. A map's ~%item~ is its ~(Tuple %k %v)~ pair; a string's is ~char~, so ~fold~ over one is ~string-fold~.
 - ~Collection~ : ~(length c)~, ~(empty? c)~ and ~(->seq c)~ — what a collection can be *asked*, as opposed to walked (~Iterable~) or consumed (~Foldable~). The associated ~%content~ is the element type, and for a ~(Map %k %v)~ that is the pair. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~Range~, ~(Seq %a)~ and ~string~; not for ~(Array %a)~, which has no ~->seq~ to give. ~length~ is O(1) only where the collection stores a count (~Vec~, ~Map~, and ~Range~): a ~List~ walks, a ~Seq~ walks *and* consumes an effectful source, and a ~string~ walks because its ~%content~ is ~char~ and so ~length~ must be ~string-count~ rather than ~string-length~.
 - ~Monad~ : ~(pure x)~ and ~(bind m k)~ — in ~(std monad)~ rather than here.

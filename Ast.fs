@@ -593,16 +593,17 @@ type ClassImportSpec =
       Range: Range }
 
 /// A trait constraint written in a *member's* `(where ...)` clause inside a
-/// `def/trait`: the trait, the constrained variable, and every associated
-/// type of that trait pinned by keyword —
+/// `def/trait`, or in a function's signature: the trait, the constrained
+/// variable, and the associated types of that trait pinned by keyword —
 /// `(: into! (-> %c %s void) (where (Iterable %s #:elem %added #:cursor %k)))`.
+/// A member pins every associated type; a function pins those it names.
 ///
-/// Distinct from the `(string * string)` pairs a function's or an impl's
-/// `where` carries, because only a member's constraint may pin associated
-/// types. A method-level constraint becomes method-level type parameters and
-/// a dictionary argument at each call site; an impl-level one would have to
-/// become class parameters fixed at impl-declaration time, which is why the
-/// impl-level restriction stays.
+/// Distinct from the `(string * string)` pairs an impl's `where` carries,
+/// because an impl's constraint may not pin associated types. A function's or
+/// a member's constraint becomes type parameters and a dictionary argument at
+/// each call site; an impl-level one would have to become class parameters
+/// fixed at impl-declaration time, which is why the impl-level restriction
+/// stays.
 type MemberConstraint =
     { MCTrait: string
       MCVar: string
@@ -610,7 +611,7 @@ type MemberConstraint =
       MCRange: Range }
 
 type Decl =
-    | DSignature of string * FType * (string * string) list * Range
+    | DSignature of string * FType * MemberConstraint list * Range
     | DImport of ImportSpec list * Range
     /// `(:alias new-name existing-name)`. A second spelling of a binding or
     /// macro already in scope, sharing its scheme, its keyword and rest
@@ -686,7 +687,7 @@ type Decl =
     /// internally — the `Module::name` qualified binding, the reference codegen
     /// emits — uses the origin; the visible name is only a spelling.
     /// DExtern (VisibleName, Origin, Type, Constraints, Range)
-    | DExtern of string * ImportAlias * FType * (string * string) list * Range
+    | DExtern of string * ImportAlias * FType * MemberConstraint list * Range
 
     /// A spelling an import modifier produced for something that is not a
     /// binding: a type, a constructor, a trait or one of its methods.

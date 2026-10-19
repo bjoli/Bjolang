@@ -141,6 +141,7 @@ let addBinding (name: string) (binding: Binding) (env: Env) : Env =
         // like anything else, so binding over one is what shadowing it *is*,
         // and the call site has to stop dispatching on the trait.
         TraitMethodNames = Set.remove name env.TraitMethodNames
+        DeprecatedNames = Map.remove name env.DeprecatedNames
         // And the same for a `with-return` escape, for the same reason. This is
         // the whole of what makes `ret` "bound in the ordinary value namespace"
         // true rather than merely claimed: shadowing it needs no rule of its
@@ -310,11 +311,24 @@ let rec leafConstraints (registry: TraitRegistry) (traitName: string) (t: HMType
         | None -> []
     | _ -> []
 
+/// `registry` with no given pin equalities in force.
+let withoutPins (registry: TraitRegistry) : TraitRegistry =
+    if registry.PinnedAssocs.IsEmpty then
+        registry
+    else
+        { registry with PinnedAssocs = [] }
+
 let instantiate
     (registry: TraitRegistry)
     (Scheme(boundVars, constraints, t))
     : HMType * HMType list * TraitConstraint list =
     let boundVars = List.distinct boundVars
+
+    // The pins of the body being checked do not reach into a scheme. They
+    // are matched by the name of a rigid variable, and a scheme's variables
+    // are its own: `Iterable`'s methods are written over its `%s`, and a
+    // function's pin on its own `%s` would otherwise rewrite them.
+    let registry = withoutPins registry
 
     let boundSubst =
         boundVars |> List.map (fun name -> name, freshMeta ()) |> Map.ofList

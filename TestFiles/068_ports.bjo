@@ -242,16 +242,16 @@
   ;; Laziness is the point: taking two from a port never reads the third line.
   ;; The port is shared, so what is left in it afterwards is the evidence.
   (def p10 (open-input-string "1\n2\n3\n4"))
-  (expect "seq-take pulls only what it needs"
-          (seq-fold (fun (l acc) (string-append acc l)) "" (seq-take (port->seq (fun (q) (read-line q)) p10) 2))
+  (expect "take pulls only what it needs"
+          (seq-fold (fun (l acc) (string-append acc l)) "" (take 2 (port->seq (fun (q) (read-line q)) p10)))
           "12")
   (expect "and the rest is still in the port" (read-line p10) "3")
 
   ;; The sequence composes with the rest of the seq library.
-  (expect "port->seq through seq-map"
+  (expect "port->seq through map"
           (seq-fold (fun (l acc) (string-append acc l)) ""
-                    (seq-map (fun (l) (string-append l "!"))
-                             (port->seq (fun (q) (read-line q)) (open-input-string "a\nb"))))
+                    (map (fun (l) (string-append l "!"))
+                         (port->seq (fun (q) (read-line q)) (open-input-string "a\nb"))))
           "a!b!")
 
   ;; --- file->seq ----------------------------------------------------------
@@ -290,7 +290,7 @@
               (let ()
                 ;; Walked for its effect — the count is beside the point, which
                 ;; is that the enumerator was disposed part-way through.
-                (ignore (seq-length (seq-take lines 2)))
+                (ignore (seq-length (take 2 lines)))
                 (seq-fold (fun (l acc) (string-append acc l)) "" lines)))
             ((Err e) "FAILURE"))
           "firstsecondthird")
@@ -312,7 +312,7 @@
   ;; four-line file never reads the rest.
   (expect "file->seq is lazy in the pulling"
           (match (file->seq (fun (q) (read-line q)) path)
-            ((Ok lines) (seq-fold (fun (l acc) (string-append acc l)) "" (seq-take lines 2)))
+            ((Ok lines) (seq-fold (fun (l acc) (string-append acc l)) "" (take 2 lines)))
             ((Err e) "FAILURE"))
           "firstsecond")
 

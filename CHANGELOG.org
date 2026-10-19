@@ -3,6 +3,97 @@
 
 What each change guarantees, and what it leaves open.
 
+* A function's where clause pins associated types
+
+- ~(: f (-> %s (Map %k %v)) (where (Iterable %s #:elem (Tuple %k %v))))~: a
+  constraint in a function's signature may pin associated types of its trait,
+  with the keywords a member's where clause and a ~dyn~ type use. It pins
+  those it names, not every one. In the body each pin is a given equation,
+  as a member's is (~Registry.PinnedAssocs~), and when the body is checked
+  its types are written with the pinned types (~applyPins~). A call queues
+  an equation per pin (~Traits.queuePins~), checked when its types are known,
+  and a call that breaks one is refused there, naming the pin. A variable
+  that only a pin names (~#:cursor %c~) is a type parameter of the function.
+- Through a dictionary, the dictionary's type has the pinned type where the
+  associated type was, and the function has no type parameter for it: the
+  function above takes an ~Iterable<T_s, ValueTuple<T_k, T_v>, T_s_cursor>~
+  and has the type parameters ~T_s, T_k, T_v, T_s_cursor~
+  (~Lowering.pinnedDictionaryType~). A variable in a
+  pin counts as inferable from the dictionary argument, so a call writes no
+  type arguments for it.
+- Pins travel in the signatures a module publishes, so an importer checks
+  its calls against them. ~DSignature~ and ~DExtern~ carry their constraints
+  as ~MemberConstraint~s.
+- *Fix: a malformed function where clause was dropped.* A constraint not of
+  the form ~(Trait %var)~ was left out without a word, pins included, so the
+  function had no constraint at all. It is now an error: "a where clause
+  holds (TraitName %var) constraints".
+- *Fix: pins reached into a trait's signatures.* A pin is matched by the name
+  of a rigid variable, and ~Iterable~'s methods are written over its own
+  ~%s~, so a function pinning its own ~%s~ rewrote the signature of each
+  method it called. ~instantiate~ and ~traitCallType~ read a scheme without
+  the pins of the body they are in.
+- *A constrained function written ~#:inline~ is copied into its calls by way
+  of its copies.* Its own calls pass dictionaries, so it is still not
+  copied, and no longer warned about. ~Monomorphise~ files the copy it makes
+  at a call's types under the copy's name (~Registry.InlineCopies~), and
+  ~TraitInline~ copies that into the call. A copy that no call names after
+  that is not emitted.
+- Tests: ~413_function_pins.bjo~ with ~inc/pinned.bjo~ (a pin to a pair, to
+  a variable, to ~int~, a cursor pinned, two constraints, through a
+  dictionary, as a value, from a generic caller, across a module);
+  ~codegen/function_pins.bjo~; errors ~signature_where_malformed~,
+  ~signature_where_unknown_assoc~, ~signature_where_pinned_twice~,
+  ~signature_pin_mismatch~ and ~signature_pin_body~.
+
+* Consumers take any iterable: ->list, ->vec, count and first; seq-map and friends are deprecated
+
+- ~(->list s)~, ~(->vec s)~, ~(count s)~ and ~(first s)~ are new ~Iterable~
+  methods. Their defaults are loops, and a trait method's default inlines at
+  its call, so each fuses with a chain under it: ~(->list (map f (filter p
+  xs)))~ walks ~xs~ once and makes no sequence. ~->list~ of a list and
+  ~->vec~ of a vec answer the collection itself. ~count~ of a vec, an array
+  or a map answers its length; of anything else it walks to the end, which
+  over a sequence with effects consumes it. ~first~ answers an ~Option~,
+  pulls one element and ends the cursor there.
+- ~seq->list~ and ~seq->vec~ stay. They take only a ~Seq~.
+- *Speed.* Over a million-element array, ~(count (filter p a))~ takes
+  423 µs and allocates nothing; ~(seq-length (filter p a))~ took 1.59 ms.
+  ~(->list (map f a))~ and ~(seq->list (map f a))~ are the same (36 ms, the
+  list itself).
+- ~seq-map~, ~seq-filter~, ~seq-take~ and ~seq-drop~ are deprecated in favour
+  of ~map~, ~filter~, ~take~ and ~drop~, which take any iterable. They still
+  work for this release, and each use warns, as a value too: "~seq-take~ at
+  f.bjo:3 is deprecated, use ~take~, ... Its arguments are in the other
+  order: ~(take n xs)~". A program's own binding of one of those names does
+  not warn. The table is ~Prelude.deprecatedBuiltins~, which goes into
+  ~Env.DeprecatedNames~; ~addBinding~ removes a name from it, as it does from
+  ~TraitMethodNames~.
+- ~(->map s)~ makes a map of any iterable of pairs. It is a function and not
+  a method, because its where clause pins the element to a pair, which a
+  member's may not do to the implementor: ~(where (Eq %k) (Iterable %s
+  #:elem (Tuple %k %v)))~. It is written ~#:inline~, and at known types it
+  fuses as the methods do (see the entry above). Over 100 000 array elements,
+  ~(->map (map f a))~ takes 1.86 ms and ~(seq->map (map f a))~ 2.00 ms; the
+  map itself is most of both. ~seq->map~, ~list->map~ and ~vec->map~ stay.
+- *Fix: a module-level ~def~ over an imported trait method.* ~(def count 0)~
+  or ~(def/mutable find 5)~ without a signature was checked against the
+  method's arrow, and failed with "'5' is a number, and it is being used
+  where a '(-> ...)' is wanted". A trait's method signatures went into the
+  signatures of its declaration group, and an importer's group holds the
+  traits it imports. They are not put there now; the trait binds its methods
+  itself. The definition warns that it binds over the method, as a ~defun~
+  does.
+- Tests: ~412_iterable_consumers.bjo~ (each method at the built-in iterables,
+  an adapter, a sequence, an iterable of the test's own, through a
+  dictionary, and what ~first~ and ~count~ pull);
+  ~codegen/iterable_consumers.bjo~ (no ~SeqCursor~ or ~IEnumerable~ under a
+  chain, no ~VecCursor~ for ~count~ of a vec); warnings
+  ~seq_builtins_deprecated.bjo~, ~seq_builtin_rebound.bjo~ and
+  ~def_over_imported_method.bjo~. Tests and examples that used the old names
+  now use the new ones, and ones that defined their own ~count~ or ~first~
+  are renamed.
+
 * enumerate and zip are adapters, and a loop splits a tuple cursor into its parts
 
 - ~(enumerate s)~ gives an ~(Enumerated %s)~ and ~(zip l r)~ a

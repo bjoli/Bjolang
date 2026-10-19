@@ -1,0 +1,25 @@
+;; Functions whose where clauses pin associated types, for
+;; 413_function_pins.bjo to import. The pins cross the module boundary in the
+;; signatures this module publishes.
+(import (std prelude))
+
+(export pairs->map first-element count-with-cursor)
+
+(: pairs->map (-> %s (Map %k %v)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))))
+(defun (pairs->map s) #:no-inline
+  (loop (:for e s)
+        (:acc m (mapping e))))
+
+(: first-element (-> %s (Option %e)) (where (Iterable %s #:elem %e)))
+(defun (first-element s) #:no-inline
+  (loop (:for e s)
+        (:acc got (folding None (Some e)))
+        (:finish #t)))
+
+;; The cursor pinned to a variable that only the where clause names.
+(: count-with-cursor (-> %s int) (where (Iterable %s #:elem %e #:cursor %c)))
+(defun (count-with-cursor s) #:no-inline
+  (let go ((c (iterable-start s)) (n 0))
+    (if (iterable-done? s c)
+        n
+        (go (iterable-next s c) (+ n 1)))))

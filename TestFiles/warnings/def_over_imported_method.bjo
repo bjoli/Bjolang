@@ -1,0 +1,18 @@
+;; A module-level `def` or `def/mutable` without a signature may bind over a
+;; method of an imported trait. It warns, as a `defun` does, and has the type
+;; of its own value: the method's arrow is not its expected type.
+
+;; EXPECT-WARNING: 'count' is a method of the trait 'Iterable', and this mutable definition binds over it at def_over_imported_method.bjo:11.
+;; EXPECT-WARNING: 'first' is a method of the trait 'Iterable', and this definition binds over it at def_over_imported_method.bjo:12.
+
+(import (std prelude))
+(import (std simpletest))
+
+(def/mutable count 5)
+(def first "one")
+
+(defun (main)
+  (set! count (+ count 1))
+  (expect "a def/mutable over a method" count 6)
+  (expect "a def over a method" first "one")
+  0)

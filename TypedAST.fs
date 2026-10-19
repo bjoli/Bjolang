@@ -1632,6 +1632,11 @@ type TraitRegistry =
       /// module it was written in, and what its free names have to be emitted
       /// as there.
       ConstrainedBodies: Map<string, InlineTemplate>
+      /// The copies `Monomorphise` made of functions written `#:inline`. Each
+      /// copy's body is in `ConstrainedBodies` under the copy's name, and
+      /// `TraitInline` copies it into each call to the copy. The function
+      /// itself is not copied into its calls, which pass dictionaries.
+      InlineCopies: Set<string>
       Aliases: Map<string, string list * HMType>
       /// Visible name -> what it is really a spelling of.
       ///
@@ -1874,6 +1879,11 @@ type Env =
       /// An *inline* trait's methods are never bound at all and so are never
       /// listed. Their calls are recognised by the absence of a binding.
       TraitMethodNames: Set<string>
+      /// The builtins that are deprecated, each with what to write in its
+      /// place, while their binding is still the builtin's own. `addBinding`
+      /// drops a name from here as it does from `TraitMethodNames`, so a
+      /// program that binds the name over gets no warning for its own.
+      DeprecatedNames: Map<string, string>
       /// The trait method this declaration is the implementation of, if it is
       /// one.
       ///

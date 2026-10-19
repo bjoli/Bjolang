@@ -7,16 +7,16 @@
 
 ;; Generic over the collection: `fold` is dispatched through a dictionary, and
 ;; the element type `%elem` arrives as a synthesized type parameter.
-(: count (-> %c int) (where (Iterable %c)))
-(defun (count c)
+(: count-items (-> %c int) (where (Iterable %c)))
+(defun (count-items c)
   (fold (fun (x acc) (+ acc 1)) 0 c))
 
 ;; Forwards its dictionary to another constrained function.
 (: twice (-> %c int) (where (Iterable %c)))
 (defun (twice c)
-  (+ (count c) (count c)))
+  (+ (count-items c) (count-items c)))
 
-;; Inherits `(Iterable %c)` from `count` without declaring it: the constraint is
+;; Inherits `(Iterable %c)` from `count-items` without declaring it: the constraint is
 ;; only reachable through the callee's signature.
 (: quadruple (-> %c int))
 (defun (quadruple c)
@@ -28,9 +28,9 @@
     (expect "fold sums a List" (fold + 0 (Cons 1 (Cons 2 Nil))) 3)
 
     ;; Generic receivers, at three different element types.
-    (expect "count over a Vec of int" (count [1 2 3 4]) 4)
-    (expect "count over a List of int" (count (Cons 1 (Cons 2 Nil))) 2)
-    (expect "count over a Vec of string" (count ["a" "b" "c"]) 3)
+    (expect "count over a Vec of int" (count-items [1 2 3 4]) 4)
+    (expect "count over a List of int" (count-items (Cons 1 (Cons 2 Nil))) 2)
+    (expect "count over a Vec of string" (count-items ["a" "b" "c"]) 3)
     (expect "twice forwards its dictionary" (twice [1 2]) 4)
     (expect "quadruple inherits the constraint" (quadruple [1 2 3]) 12)
     0)

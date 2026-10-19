@@ -51,6 +51,20 @@ let private orList (names: string list) : string =
     | [ one ] -> one
     | last :: earlier -> String.concat ", " (List.rev earlier) + " or " + last
 
+/// The places already warned about. A body can be inferred more than once,
+/// and a use warns only the first time.
+let private deprecationsWarned = System.Collections.Generic.HashSet<string>()
+
+/// Warns when `name` is a deprecated builtin and still means the builtin.
+let private warnIfDeprecatedBuiltin (env: Env) (name: string) (r: Range) =
+    match Map.tryFind name env.DeprecatedNames with
+    | Some instead ->
+        let at = Lexer.formatPos r
+
+        if deprecationsWarned.Add(name + "@" + at) then
+            Diagnostics.warn $"`%s{name}` at %s{at} is deprecated, %s{instead}."
+    | None -> ()
+
 // ---------------------------------------------------------------------------
 // Grammars: the questions that need no inference
 // ---------------------------------------------------------------------------
@@ -1728,10 +1742,13 @@ and private inferIdent (env: Env) (name: string) (r: Range) : HMType * TypedExpr
     | _ -> ()
 
     let binding = lookup env name
+    warnIfDeprecatedBuiltin env name r
     let t, tArgs, constraints = instantiate env.Registry binding.Scheme
 
     for c in constraints do
         Traits.queueClrObligation env c.TraitName c.TargetType r $"to call '%s{name}'"
+
+    Traits.queuePins name constraints r
 
     // A name with two emitted copies is colour-polymorphic, and its
     // *reference* has to say so, not just its call.

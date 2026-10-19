@@ -1,0 +1,112 @@
+;; `->list`, `->vec`, `count` and `first`, which are `Iterable` methods, and
+;; `->map`: each takes any iterable and gives a value.
+;;
+;; Each is checked at the built-in iterables, at an adapter, at a sequence
+;; and at an iterable of the test's own, through a constrained function taken
+;; as a value, and for what it pulls: `first` stops after one element and
+;; ends the cursor there, and `count` of a sequence walks it.
+(import (std prelude))
+(import (std simpletest))
+
+;; Counts to `n`, and logs each element it yields and each end.
+(type (: Counter (Struct (: n int))))
+
+(def/mutable events '())
+
+(: log! (-> string void))
+(defun (log! e) (set! events (cons e events)))
+
+(: events-in-order (-> (List string)))
+(defun (events-in-order) (list-reverse events))
+
+(impl (Iterable Counter)
+  (type %elem int)
+  (type %cursor int)
+  (defun (iterable-start c) 0)
+  (defun (iterable-done? c i) (>= i (record-ref c n)))
+  (defun (iterable-current c i) (log! (str "yield " (->str i))) i)
+  (defun (iterable-next c i) (+ i 1))
+  (defun (iterable-end c i) (log! (str "end at " (->str i)))))
+
+(: counter (-> int Counter))
+(defun (counter n) (Counter (n n)))
+
+;; Generic over the iterable, and not inlined: the method is reached through
+;; the dictionary.
+(: count-and-first (-> %s (Tuple int (Option %e))) (where (Iterable %s #:elem %e)))
+(defun (count-and-first s) #:no-inline
+  (Tuple (count s) (first s)))
+
+;; `->map` through the dictionary of an iterable of pairs.
+(: index (-> %s (Map %k %v)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))))
+(defun (index s) #:no-inline
+  (->map s))
+
+(defun (main)
+  ;; --- ->list and ->vec ------------------------------------------------------
+  (expect "->list of a list is the list" (->list (list 1 2 3)) (list 1 2 3))
+  (expect "->list of a vec" (->list [1 2 3]) (list 1 2 3))
+  (expect "->list of an array" (->list #[1 2 3]) (list 1 2 3))
+  (expect "->list of a range" (->list (range 2 5)) (list 2 3 4))
+  (expect "->list of a string" (->list "hé!") (list #\h #\é #\!))
+  (expect "->list of a map" (->list #map(("a" 1))) (list (Tuple "a" 1)))
+  (expect "->list of a chain" (->list (map (fun (x) (* x x)) (filter even? #[1 2 3 4]))) (list 4 16))
+  (expect "->list of an adapter" (->list (enumerate "ab")) (list (Tuple 0 #\a) (Tuple 1 #\b)))
+  (expect "->list of nothing" (->list (list)) (list))
+  (expect "->vec of a vec is the vec" (->vec [1 2 3]) [1 2 3])
+  (expect "->vec of a list" (->vec (list 1 2 3)) [1 2 3])
+  (expect "->vec of a seq" (->vec (take 3 (up-from 7))) [7 8 9])
+  (expect "->vec of an adapter" (->vec (zip #[1 2] "xyz")) [(Tuple 1 #\x) (Tuple 2 #\y)])
+  (expect "->vec of nothing" (->vec #[]) [])
+
+  ;; --- ->map -----------------------------------------------------------------
+  (expect "->map of a list" (->map (list (Tuple 1 "a") (Tuple 2 "b"))) #map((1 "a") (2 "b")))
+  (expect "->map of a vec" (->map [(Tuple "x" 1)]) #map(("x" 1)))
+  (expect "->map of a map" (->map #map(("k" #t))) #map(("k" #t)))
+  (expect "->map of an adapter" (->map (enumerate "ab")) #map((0 #\a) (1 #\b)))
+  (expect "->map of a chain" (->map (map (fun (x) (Tuple x (* x x))) (range 1 4))) #map((1 1) (2 4) (3 9)))
+  (expect "->map of a seq" (->map (list->seq (list (Tuple 'a 1)))) #map(('a 1)))
+  (expect "->map, a later key wins" (->map (list (Tuple "k" 1) (Tuple "k" 2))) #map(("k" 2)))
+  (expect "->map of nothing" (map-length (->map (list))) 0)
+
+  ;; --- count -----------------------------------------------------------------
+  (expect "count of a list" (count (list 1 2 3)) 3)
+  (expect "count of a vec" (count [1 2 3 4]) 4)
+  (expect "count of an array" (count #[1 2]) 2)
+  (expect "count of a map" (count #map(("a" 1) ("b" 2))) 2)
+  (expect "count of a range" (count (range 0 10)) 10)
+  (expect "count of a string, in characters" (count "héj") 3)
+  (expect "count of a chain" (count (filter even? (range 0 10))) 5)
+  (expect "count of nothing" (count (list)) 0)
+
+  ;; --- first -----------------------------------------------------------------
+  (expect "first of a list" (first (list 5 6)) (Some 5))
+  (expect "first of a vec" (first [5 6]) (Some 5))
+  (expect "first of a string" (first "éa") (Some #\é))
+  (expect "first of a chain" (first (filter (fun (x) (> x 3)) #[1 5 2 7])) (Some 5))
+  (expect "first of nothing" (first #[]) None)
+  (expect "first of nothing left" (first (drop 3 (list 1 2))) None)
+  (expect "first of an endless seq" (first (map (fun (x) (* 2 x)) (up-from 1))) (Some 2))
+
+  ;; --- through a dictionary --------------------------------------------------
+  (def at-vec count-and-first)
+  (expect "count and first, generic" (at-vec [9 8 7]) (Tuple 3 (Some 9)))
+  (def at-list count-and-first)
+  (expect "count and first, generic, empty" (at-list (list)) (Tuple 0 None))
+  (def index-at-list index)
+  (expect "->map, generic" (index-at-list (list (Tuple 1 "a"))) #map((1 "a")))
+
+  ;; --- what is pulled --------------------------------------------------------
+  (set! events '())
+  (expect "first of an iterable of our own" (first (counter 5)) (Some 0))
+  (expect "first pulls one and ends the cursor there"
+          (events-in-order) (list "yield 0" "end at 0"))
+  (set! events '())
+  (expect "count of an iterable of our own" (count (counter 3)) 3)
+  (expect "count walks to the end, and the end needs no call"
+          (events-in-order) (list "yield 0" "yield 1" "yield 2"))
+  (def/mutable pulled 0)
+  (def s (map (fun (x) (set! pulled (+ pulled 1)) x) (list->seq (list 1 2 3))))
+  (expect "count of a seq" (count s) 3)
+  (expect "count of a seq walks it" pulled 3)
+  0)

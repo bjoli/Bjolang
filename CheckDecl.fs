@@ -328,7 +328,78 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
 type Signature =
     { Type: HMType
       Written: FType option
-      Constraints: (string * string) list }
+      /// The `(where ...)`, each constraint at the variable it names, with
+      /// the associated types it pins. The trait is the name as written.
+      Constraints: TraitConstraint list }
+
+/// A `(where ...)` of a signature or of an imported binding as constraints.
+///
+/// A pin names an associated type of its trait, once. That is checked here
+/// when the trait is known; a trait not known yet is reported where the
+/// constraint is used.
+let private signatureConstraints
+    (registry: TraitRegistry)
+    (resolve: FType -> HMType)
+    (name: string)
+    (cs: MemberConstraint list)
+    : TraitConstraint list =
+    cs
+    |> List.map (fun c ->
+        match Map.tryFind (originalName registry c.MCTrait) registry.Traits with
+        | Some info ->
+            for (pinName, _) in c.MCPins do
+                if not (List.contains pinName info.AssociatedTypes) then
+                    let listed =
+                        match info.AssociatedTypes with
+                        | [] -> "it has none"
+                        | names -> "it has " + (names |> List.map (fun n -> "#:" + n) |> String.concat ", ")
+
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos c.MCRange}: '%s{c.MCTrait}' in the where clause of '%s{name}' has no associated type #:%s{pinName}; %s{listed}."
+
+            for (pinName, _) in c.MCPins |> List.countBy fst |> List.filter (fun (_, n) -> n > 1) do
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos c.MCRange}: #:%s{pinName} is pinned more than once in the where clause of '%s{name}'."
+        | None -> ()
+
+        { TraitName = c.MCTrait
+          TargetType = TVar c.MCVar
+          Pins = c.MCPins |> List.map (fun (n, t) -> n, resolve t) })
+
+/// The variables that only the pins of `cs` name, such as the `%c` of
+/// `#:cursor %c`. A scheme quantifies them as it does its type's.
+let private pinOnlyVars (registry: TraitRegistry) (vars: string list) (cs: TraitConstraint list) : string list =
+    cs
+    |> List.collect (fun c -> c.Pins |> List.collect (snd >> freeTVars registry))
+    |> List.distinct
+    |> List.filter (fun v -> not (List.contains v vars))
+
+/// `body` with every type a pin speaks for written as the pinned type.
+///
+/// A pin is given only while its function's body is checked. Lowering and the
+/// code generator read the body's types without it, and a projection left
+/// standing there is spelled as a type parameter that the function no longer
+/// has: the pinned one's place is taken by the pinned type. `prune` writes a
+/// solved cell's answer back into the cell, so the cells reached here are
+/// rewritten wherever else they are read; a type held directly by a node is
+/// replaced.
+let private applyPins (registry: TraitRegistry) (body: TypedExpr) : TypedExpr =
+    let pinned (t: HMType) = prune registry t
+
+    body
+    |> TypeVisitor.mapExpr (fun e ->
+        let node =
+            match e.Node with
+            | TIdent(n, tArgs) -> TIdent(n, List.map pinned tArgs)
+            | TCast(x, t) -> TCast(x, pinned t)
+            | TCaseCast(x, t, c) -> TCaseCast(x, pinned t, c)
+            | TIsInst(x, t) -> TIsInst(x, pinned t)
+            | TIsInstCase(x, t, c) -> TIsInstCase(x, pinned t, c)
+            | TInterfaceCall(i, m, mt, d, args) -> TInterfaceCall(pinned i, m, pinned mt, d, args)
+            | TDynPack(tn, hole, v) -> TDynPack(tn, pinned hole, v)
+            | other -> other
+
+        { e with Type = pinned e.Type; Node = node })
 
 /// The signatures a declaration group has read so far.
 ///
@@ -369,7 +440,7 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
         let signature =
             { Type = resolveTypeAnnotation env.Registry ftype
               Written = Some ftype
-              Constraints = constraints }
+              Constraints = signatureConstraints env.Registry (resolveTypeAnnotation env.Registry) name constraints }
 
         env, Map.add name signature sigs, []
 
@@ -783,9 +854,25 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
     let explicitConstraints =
         match sigOpt with
         | Some signature ->
-            signature.Constraints |> List.map (fun (traitName, varName) ->
-                { TraitName = originalName env.Registry traitName; TargetType = TVar varName; Pins = [] })
+            signature.Constraints
+            |> List.map (fun c -> { c with TraitName = originalName env.Registry c.TraitName })
         | None -> []
+
+    // What the pins say, granted to the body as given equalities, as a
+    // member's are (see `checkImplMethod`): `(assoc Iterable elem %s)` is
+    // `(Tuple %k %v)` for the whole body. `Unification.prune` reads them.
+    let givenPins =
+        explicitConstraints
+        |> List.collect (fun c -> c.Pins |> List.map (fun (a, t) -> c.TraitName, a, c.TargetType, t))
+
+    let outerPins = env.Registry.PinnedAssocs
+
+    let env =
+        if givenPins.IsEmpty then
+            env
+        else
+            { env with
+                Registry = { env.Registry with PinnedAssocs = givenPins @ env.Registry.PinnedAssocs } }
 
     // From here up to `exitLevel` below we are one level in: parameters
     // without a signature, the return type and everything the body creates are born deeper than
@@ -962,7 +1049,12 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
 
     // The signature's variables are the body's: see `scopedTypeVars`.
     let outerScoped = Unification.scopedTypeVars
-    Unification.scopedTypeVars <- Set.union outerScoped (Set.ofList (freeTVars env.Registry funType))
+    // A variable only a pin names, such as `#:cursor %c`, is the signature's
+    // too.
+    Unification.scopedTypeVars <-
+        Set.union
+            outerScoped
+            (Set.ofList (freeTVars env.Registry funType @ pinOnlyVars env.Registry [] explicitConstraints))
 
     let typedBody, typedKeywordArgs =
         try
@@ -994,10 +1086,18 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
 
     solvePending env
 
+    let typedBody, typedKeywordArgs =
+        if givenPins.IsEmpty then
+            typedBody, typedKeywordArgs
+        else
+            applyPins env.Registry typedBody,
+            typedKeywordArgs |> List.map (fun (n, t, e) -> n, prune env.Registry t, applyPins env.Registry e)
+
     exitLevel ()
 
     let scheme = generalize env funType
     let (Scheme(vars, _, schemeType)) = scheme
+    let vars = vars @ pinOnlyVars env.Registry vars explicitConstraints
 
     // Collect trait constraints from the body and merge with explicit ones
     let inferredConstraints = collectTraitConstraints env typedBody
@@ -1086,7 +1186,11 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
             { Scheme = schemeWithConstraints
               IsMutable = false }
             env
-    let finalEnv = { finalEnv with FunMetas = Map.add name funMeta finalEnv.FunMetas }
+    // The pins hold in this body only.
+    let finalEnv =
+        { finalEnv with
+            FunMetas = Map.add name funMeta finalEnv.FunMetas
+            Registry = { finalEnv.Registry with PinnedAssocs = outerPins } }
 
     let finalEnv =
         if colourDeclared then
@@ -1834,7 +1938,7 @@ and private checkReExport (env: Env) (sigs: Sigs) (names: string list) (r: Range
 
     env, sigs, [ TReExport(names, r) ]
 
-and private checkExtern (env: Env) (sigs: Sigs) (name: string) (declaredOrigin: ImportAlias) (ftype: FType) (constraintPairs: (string * string) list) (r: Range) : Env * Sigs * TDecl list =
+and private checkExtern (env: Env) (sigs: Sigs) (name: string) (declaredOrigin: ImportAlias) (ftype: FType) (whereClause: MemberConstraint list) (r: Range) : Env * Sigs * TDecl list =
     // An unfilled origin module means "the module this declaration is in",
     // which is only knowable here. A filled one is a facade's: the module
     // publishing the name generated no code for it.
@@ -1848,9 +1952,11 @@ and private checkExtern (env: Env) (sigs: Sigs) (name: string) (declaredOrigin: 
     let scheme = generalize env t
     let (Scheme(vars, _, schemeType)) = scheme
     // Add constraints from DLL metadata
-    let constraints = 
-        constraintPairs |> List.map (fun (traitName, varName) ->
-            { TraitName = originalName env.Registry traitName; TargetType = TVar varName; Pins = [] })
+    let constraints =
+        signatureConstraints env.Registry (resolveTypeAnnotation env.Registry) name whereClause
+        |> List.map (fun c -> { c with TraitName = originalName env.Registry c.TraitName })
+
+    let vars = vars @ pinOnlyVars env.Registry vars constraints
     let schemeWithConstraints = Scheme(vars, constraints, schemeType)
     // The same hazard as a top-level definition over a method, arriving by
     // a different route and with nothing in this file to point at — so the
@@ -2936,11 +3042,12 @@ and private checkImplMethod
                   Written = None
                   Constraints =
                     implConstraints
-                    |> List.filter (fun c -> isClrTrait regEnv.Registry c.TraitName)
-                    |> List.choose (fun c ->
-                        match c.TargetType with
-                        | TVar v -> Some(c.TraitName, v)
-                        | _ -> None) }
+                    |> List.filter (fun c ->
+                        isClrTrait regEnv.Registry c.TraitName
+                        && (match c.TargetType with
+                            | TVar _ -> true
+                            | _ -> false))
+                    |> List.map (fun c -> { c with Pins = [] }) }
                 Map.empty
 
         // Which method this is, so that the `defun`'s own recursion
@@ -3306,17 +3413,12 @@ and internal checkDeclGroup
                 [ name,
                   { Type = resolveSigAt r ftype
                     Written = Some ftype
-                    Constraints = constraints } ]
-            // An inline trait's signatures are not `HMType`s and never can be:
-            // they mention the constructor variable applied. They are read as
-            // templates by `DTrait` instead, and there is nothing to inject here.
-            | DTrait(_, _, holeArity, _, signatures, _, _, r) when holeArity = 0 ->
-                signatures
-                |> List.map (fun (name, ftype, _) ->
-                    name,
-                    { Type = resolveSigAt r ftype
-                      Written = Some ftype
-                      Constraints = [] })
+                    Constraints = signatureConstraints sigRegistry (resolveSigAt r) name constraints } ]
+            // A trait's method signatures are not put here. The trait binds its
+            // methods itself, and a signature here would also be the expected
+            // type of a module-level `def` that binds over a method: in a
+            // module that imports the trait, `(def count 0)` was checked
+            // against `count`'s arrow.
             | _ -> [])
         |> Map.ofList
 
@@ -3443,8 +3545,9 @@ and internal checkDeclGroup
 
                     let constraints =
                         signature.Constraints
-                        |> List.map (fun (traitName, varName) ->
-                            { TraitName = originalName acc.Registry traitName; TargetType = TVar varName; Pins = [] })
+                        |> List.map (fun c -> { c with TraitName = originalName acc.Registry c.TraitName })
+
+                    let vars = vars @ pinOnlyVars acc.Registry vars constraints
 
                     let bound =
                         addBinding

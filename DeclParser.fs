@@ -398,6 +398,37 @@ let private parseDefunDecl
             let argTypes = mandatory |> List.map (snd >> Option.get)
             [ DSignature(name, TArrow(argTypes, [], None, ret, Ordinary, r), [], r); defun ]
 
+/// The `(where ...)` of a function's signature: `(Trait %var)` constraints,
+/// and each may pin associated types by keyword, as a trait member's does:
+/// `(Iterable %s #:elem (Tuple %k %v))`. A form of another shape is an error.
+let private parseSignatureWhere (name: string) (constraintExprs: SExpr list) (wr: Lexer.Range) : MemberConstraint list =
+    let refuse (at: Lexer.Range) =
+        failwithf
+            $"Syntax error in the signature of '%s{name}' at %s{Lexer.formatPos at}: a where clause holds (TraitName %%var) constraints, and each may pin associated types of the trait, as in (where (Iterable %%s #:elem %%e))."
+
+    constraintExprs
+    |> List.map (fun c ->
+        match c with
+        | SList(SAtom { Token = Symbol traitName } :: varExpr :: pinItems, cr) ->
+            let varName =
+                match varExpr with
+                | SAtom { Token = QuotedSymbol v } -> "'" + v
+                | SAtom { Token = Symbol v } -> v
+                | _ -> refuse cr
+
+            let rec pins items =
+                match items with
+                | [] -> []
+                | SAtom { Token = Keyword assocName } :: typeExpr :: rest -> (assocName, parseType typeExpr) :: pins rest
+                | _ -> refuse cr
+
+            { MCTrait = traitName
+              MCVar = varName
+              MCPins = pins pinItems
+              MCRange = cr }
+        | SList(_, cr) -> refuse cr
+        | _ -> refuse wr)
+
 let rec tryParseDecl (s: SExpr) : Decl option =
     let r = getRange s
     let s = stripHeadMark s
@@ -407,14 +438,7 @@ let rec tryParseDecl (s: SExpr) : Decl option =
         Some(DSignature(name, parseType tType, [], r))
     // (: name type (where (TraitName %var) ...)) — signature with trait constraints
     | SList(SAtom { Token = Colon } :: SAtom { Token = Symbol name } :: tType :: SList(SAtom { Token = Symbol "where" } :: constraintExprs, _) :: _, _) ->
-        let constraints =
-            constraintExprs |> List.choose (function
-                | SList([ SAtom { Token = Symbol traitName }; SAtom { Token = QuotedSymbol varName } ], _) ->
-                    Some (traitName, "'" + varName)
-                | SList([ SAtom { Token = Symbol traitName }; SAtom { Token = Symbol varName } ], _) ->
-                    Some (traitName, varName)
-                | _ -> None)
-        Some(DSignature(name, parseType tType, constraints, r))
+        Some(DSignature(name, parseType tType, parseSignatureWhere name constraintExprs r, r))
 
     | SList(SAtom { Token = Symbol "import" } :: imports, _) ->
         Some(DImport(List.map parseImportForm imports, r))

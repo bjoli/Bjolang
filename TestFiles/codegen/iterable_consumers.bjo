@@ -1,0 +1,36 @@
+;; `->list`, `->vec`, `count` and `first` have loops for defaults, and a trait
+;; method's default inlines. So each fuses with the `seql`s of a chain under
+;; it: the chain is walked in one loop, and no sequence is made between them.
+(import (std prelude))
+
+;; EXPECT-NO-CS: SeqCursor
+;; EXPECT-NO-CS: IEnumerable
+(: squares-of-evens (-> (Array int) (List int)))
+(defun (squares-of-evens a)
+  (->list (map (fun (x) (* x x)) (filter even? a))))
+
+(: doubled (-> (List int) (Vec int)))
+(defun (doubled xs)
+  (->vec (map (fun (x) (* 2 x)) xs)))
+
+(: evens (-> (Array int) int))
+(defun (evens v)
+  (count (filter even? v)))
+
+(: first-big (-> (Array int) (Option int)))
+(defun (first-big a)
+  (first (filter (fun (x) (> x 100)) a)))
+
+;; `->map` is a constrained function written `#:inline`: the copy made at
+;; these types is copied into the call, and fuses as a default does. The
+;; function walks the array itself.
+;; EXPECT-CS: public static Map\.Map<int, int> squares\(int\[\] a\) \{\n(.*\n){0,12}.*int\[\] loopseq
+(: squares (-> (Array int) (Map int int)))
+(defun (squares a)
+  (->map (map (fun (x) (Tuple x (* x x))) a)))
+
+;; A vec knows its length, and is not walked.
+;; EXPECT-NO-CS: VecCursor
+(: size (-> (Vec int) int))
+(defun (size v)
+  (count v))

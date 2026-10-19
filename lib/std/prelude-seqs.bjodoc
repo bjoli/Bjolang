@@ -99,7 +99,7 @@
     (loop (:for x '(1 2 3))
           (:acc (summing x)))          ; 6
 
-    (seq->list (map (fun (x) (* x x)) (range 0 4)))   ; (0 1 4 9)
+    (->list (map (fun (x) (* x x)) (range 0 4)))   ; (0 1 4 9)
     """)
   (reference """
     An implementation defines two associated types: @code{%elem} (the element
@@ -150,14 +150,14 @@
   (arg f "The transformation function.")
   (arg s "The iterable collection or sequence.")
   (returns "A Seq of the transformed elements, in order.")
-  (see filter flat-map seq-map seq->list)
+  (see filter flat-map ->list)
   (example """
-    (seq->list (map (fun (x) (* 2 x)) '(1 2 3)))   ; (2 4 6)
+    (->list (map (fun (x) (* 2 x)) '(1 2 3)))   ; (2 4 6)
     """)
   (reference """
     Returns a @code{Seq} regardless of @code{s}'s concrete collection type:
     elements are produced lazily as the sequence is evaluated, and @code{f}
-    runs on each traversal. Use @code{seq->list} or @code{seq->vec} to collect
+    runs on each traversal. Use @code{->list} or @code{->vec} to collect
     results into a concrete data structure.
     """))
 
@@ -166,14 +166,14 @@
   (arg f "The predicate function.")
   (arg s "The iterable collection or sequence.")
   (returns "A Seq of elements matching the predicate, in order.")
-  (see map take-while seq-filter))
+  (see map take-while))
 
 (:doc take
   (summary "A lazy sequence of the first n elements.")
   (arg n "The number of elements to take (0 or negative yields an empty sequence).")
   (arg s "The iterable collection or sequence.")
   (returns "A Seq of s's first n elements, or all elements if s contains fewer.")
-  (see drop take-while seq-take)
+  (see drop take-while first)
   (reference """
     Stops after the n-th element without pulling additional elements from s,
     making it safe for endless sequences and stream ports.
@@ -184,7 +184,7 @@
   (arg n "The number of elements to skip.")
   (arg s "The iterable collection or sequence.")
   (returns "A Seq of s without its first n elements; empty if s has no more than n elements.")
-  (see take drop-while seq-drop))
+  (see take drop-while))
 
 (:doc take-while
   (summary "A lazy sequence of elements taken while a predicate holds true.")
@@ -312,11 +312,61 @@
   (arg s "The iterable collection or sequence.")
   (see fold seq-for-each))
 
+(:doc ->list
+  (summary "An iterable's elements as a list.")
+  (arg s "The iterable collection or sequence, walked to the end.")
+  (returns "A list of its elements, in order. Passing a list returns the list itself.")
+  (see ->vec ->seq seq->list)
+  (reference """
+    The default is a loop, so @code{(->list (map f xs))} walks @code{xs}
+    once and makes no sequence between the two.
+    """))
+
+(:doc ->vec
+  (summary "An iterable's elements as a vec.")
+  (arg s "The iterable collection or sequence, walked to the end.")
+  (returns "A vec of its elements, in order. Passing a vec returns the vec itself.")
+  (see ->list ->seq seq->vec))
+
+(:doc ->map
+  (summary "An iterable of key and value pairs as a map.")
+  (arg s "The iterable collection or sequence of (Tuple key value), walked to the end.")
+  (returns "A map of the pairs. A later key replaces an earlier one that is equal to it.")
+  (see ->list ->vec seq->map list->map)
+  (example """
+    (->map (enumerate "ab"))   ; #map((0 #\a) (1 #\b))
+    """)
+  (reference """
+    Not an @code{Iterable} method, since its where clause says the element is
+    a pair. It is copied into its call, so @code{(->map (map f xs))} walks
+    @code{xs} once and makes no sequence.
+    """))
+
+(:doc count
+  (summary "How many elements an iterable yields.")
+  (arg s "The iterable collection or sequence.")
+  (returns "The number of elements.")
+  (see length first)
+  (reference """
+    A vec, an array and a map answer their length. Anything else is walked
+    to the end: over a source with effects that is a consumption, so the
+    count of a @code{port->seq} reads the port.
+    """))
+
+(:doc first
+  (summary "The first element of an iterable, if it has one.")
+  (arg s "The iterable collection or sequence.")
+  (returns "(Some x) for the first element; None when s is empty.")
+  (see find take)
+  (reference """
+    Pulls one element and no more, so it is safe on an endless sequence.
+    """))
+
 (:doc ->seq
   (summary "Converts an iterable into a lazy sequence.")
   (arg s "The iterable collection or sequence.")
   (returns "A Seq of s's elements, in order. Passing a Seq returns the sequence itself.")
-  (see seq->list seq->vec list->seq vec->seq))
+  (see ->list ->vec list->seq vec->seq))
 
 ;; ---------------------------------------------------------------------------
 ;; Cursor
@@ -677,49 +727,58 @@
   (arg s "The sequence. Not empty.")
   (returns "The first element it yields.")
   (raises System.InvalidOperationException "When s is empty.")
-  (see seq-empty? seq-drop find)
+  (see seq-empty? first drop)
   (reference """
-    Pulls one element and no more: @code{(seq-head (seq-map f xs))} calls
+    Pulls one element and no more: @code{(seq-head (map f xs))} calls
     @code{f} once. There is no @code{seq-tail}, since a @code{Seq} has no
-    rest to step to; @code{(seq-drop s 1)} is the sequence without its
+    rest to step to; @code{(drop 1 s)} is the sequence without its
     first element.
     """))
 
 (:doc seq-map
-  (summary "A sequence of a function applied to each element, lazily.")
+  (summary "Deprecated: use map. A sequence of a function applied to each element, lazily.")
   (arg f "The function.")
   (arg s "The sequence.")
   (returns "A Seq of the transformed elements, evaluated as pulled.")
-  (see map seq-filter))
+  (see map)
+  (reference """
+    @code{map} takes any iterable and does the same to a sequence. A use of
+    @code{seq-map} warns, and it goes in a later release.
+    """))
 
 (:doc seq-filter
-  (summary "A sequence of the elements that satisfy a predicate, lazily.")
+  (summary "Deprecated: use filter. A sequence of the elements that satisfy a predicate, lazily.")
   (arg f "The predicate.")
   (arg s "The sequence.")
   (returns "A Seq of the elements where (f x) is true.")
-  (see filter seq-map))
+  (see filter)
+  (reference """
+    @code{filter} takes any iterable and does the same to a sequence. A use
+    of @code{seq-filter} warns, and it goes in a later release.
+    """))
 
 (:doc seq-take
-  (summary "A sequence of the first n elements, lazily.")
+  (summary "Deprecated: use take. A sequence of the first n elements, lazily.")
   (arg s "The sequence.")
   (arg n "How many. Zero or less gives the empty sequence.")
   (returns "A Seq of s's first n elements, or all of them if it has fewer.")
-  (see seq-drop take)
+  (see take)
   (reference """
-    After the n-th element it stops without pulling another from @code{s},
-    so it is safe on an endless sequence.
+    @code{(take n s)} takes any iterable and does the same to a sequence.
+    Its arguments are in the other order. A use of @code{seq-take} warns,
+    and it goes in a later release.
     """))
 
 (:doc seq-drop
-  (summary "A sequence without its first n elements, lazily.")
+  (summary "Deprecated: use drop. A sequence without its first n elements, lazily.")
   (arg s "The sequence.")
   (arg n "How many to skip. Zero or less skips none.")
   (returns "A Seq of what follows; empty when s has no more than n.")
-  (see seq-take drop seq-head)
+  (see drop)
   (reference """
-    What a @code{seq-tail} would have been: @code{(seq-drop s 1)}. To walk a
-    sequence, use @code{loop} rather than dropping one at a time, which
-    starts over from the beginning each time.
+    @code{(drop n s)} takes any iterable and does the same to a sequence.
+    Its arguments are in the other order. A use of @code{seq-drop} warns,
+    and it goes in a later release.
     """))
 
 (:doc seq-unfold
@@ -729,7 +788,7 @@
   (returns "A Seq of the elements f produces, until it returns None.")
   (see seq-range seq-empty)
   (example """
-    (seq-take (seq-unfold (fun (n) (Some (Tuple n (* 2 n)))) 1) 5)
+    (take 5 (seq-unfold (fun (n) (Some (Tuple n (* 2 n)))) 1))
     ; 1 2 4 8 16
     """))
 
@@ -761,13 +820,19 @@
   (summary "A sequence's elements as a list.")
   (arg s "The sequence, walked to the end.")
   (returns "A list of its elements, in order.")
-  (see seq->vec list->seq ->seq))
+  (see ->list seq->vec list->seq ->seq)
+  (reference """
+    @code{->list} does the same for any iterable.
+    """))
 
 (:doc seq->vec
   (summary "A sequence's elements as a vec.")
   (arg s "The sequence, walked to the end.")
   (returns "A vec of its elements, in order.")
-  (see seq->list vec->seq ->seq))
+  (see ->vec seq->list vec->seq ->seq)
+  (reference """
+    @code{->vec} does the same for any iterable.
+    """))
 
 (:doc seq-fold
   (summary "Combines every element of a sequence into one value, front to back.")

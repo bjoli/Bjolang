@@ -1,0 +1,61 @@
+;; A function's where clause may pin associated types of the trait it names:
+;; `(where (Iterable %s #:elem (Tuple %k %v)))` says the elements are pairs,
+;; and the body may use them as pairs. A call is checked against the pin.
+;;
+;; Each function is checked at several iterables, through its dictionary (not
+;; specialised: `#:no-inline` and taken as a value), from a generic caller
+;; that passes its own pinned dictionary on, and across a module boundary.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/pinned.bjo")
+
+;; The same functions in this module.
+(: to-map (-> %s (Map %k %v)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))))
+(defun (to-map s) #:no-inline
+  (loop (:for e s)
+        (:acc m (mapping e))))
+
+(: first-of (-> %s (Option %e)) (where (Iterable %s #:elem %e #:cursor %c)))
+(defun (first-of s) #:no-inline
+  (loop (:for e s)
+        (:acc got (folding None (Some e)))
+        (:finish #t)))
+
+;; A generic caller: its own pin is what the callee's asks for.
+(: keys-of (-> %s (List %k)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))))
+(defun (keys-of s) #:no-inline
+  (seq->list (map-keys (to-map s))))
+
+;; A pin to a type with no variables in it.
+(: sum-ints (-> %s int) (where (Iterable %s #:elem int)))
+(defun (sum-ints s) #:no-inline
+  (loop (:for x s)
+        (:acc n (summing x))))
+
+;; One pin per constraint, on two iterables.
+(: zip-sum (-> %a %b int) (where (Iterable %a #:elem int) (Iterable %b #:elem int)))
+(defun (zip-sum a b) #:no-inline
+  (loop (:for x a)
+        (:for y b)
+        (:acc n (summing (* x y)))))
+
+(defun (main)
+  (expect "to-map of a list" (to-map (list (Tuple 1 "a") (Tuple 2 "b"))) #map((1 "a") (2 "b")))
+  (expect "to-map of a vec" (to-map [(Tuple "x" 1)]) #map(("x" 1)))
+  (expect "to-map of an adapter" (to-map (enumerate "ab")) #map((0 #\a) (1 #\b)))
+  (expect "to-map of a map" (to-map #map(("k" 1))) #map(("k" 1)))
+  (def as-value to-map)
+  (expect "to-map as a value" (as-value #[(Tuple 3 #t)]) #map((3 #t)))
+  (expect "first-of a string" (first-of "héj") (Some #\h))
+  (expect "first-of nothing" (first-of (list)) None)
+  (expect "a generic caller" (keys-of (list (Tuple 7 "q") (Tuple 8 "r"))) (list 7 8))
+  (expect "a pin to int" (sum-ints (range 0 5)) 10)
+  (expect "two pins" (zip-sum [1 2 3] (list 4 5 6)) 32)
+
+  ;; From another module.
+  (expect "imported pairs->map" (pairs->map (list (Tuple "a" 1))) #map(("a" 1)))
+  (expect "imported first-element" (first-element [9 8]) (Some 9))
+  (expect "imported, the cursor pinned" (count-with-cursor "abc") 3)
+  (def imported-as-value pairs->map)
+  (expect "imported, as a value" (imported-as-value [(Tuple 1 2)]) #map((1 2)))
+  0)

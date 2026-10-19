@@ -68,6 +68,16 @@ let signatureText (env: TypedAST.Env) (name: string) (t: TypedAST.HMType) : stri
         + ")"
     | _ -> Codegen.serializeHMType t
 
+/// One constraint of a published `(where ...)`, with the associated types it
+/// pins: `(Iterable 's #:elem (Tuple 'k 'v))`.
+let private constraintText (c: TypedAST.TraitConstraint) : string =
+    let pins =
+        c.Pins
+        |> List.map (fun (pn, t) -> $" #:%s{pn} %s{Codegen.serializeHMType t}")
+        |> String.concat ""
+
+    $"(%s{c.TraitName} %s{Codegen.serializeHMType c.TargetType}%s{pins})"
+
 /// The whole `(: name type (where ...))` form for a checked binding, or nothing
 /// if there is no binding of that name to read a type off.
 let signatureForm (env: TypedAST.Env) (name: string) : string option =
@@ -79,9 +89,7 @@ let signatureForm (env: TypedAST.Env) (name: string) : string option =
             if constraints.IsEmpty then
                 ""
             else
-                let parts =
-                    constraints
-                    |> List.map (fun c -> $"(%s{c.TraitName} %s{Codegen.serializeHMType c.TargetType})")
+                let parts = constraints |> List.map constraintText
 
                 " (where " + String.concat " " parts + ")"
 
@@ -890,10 +898,7 @@ let metadata
                         if constraints.IsEmpty then
                             ""
                         else
-                            let constraintStrs =
-                                constraints |> List.map (fun c ->
-                                    let targetStr = Codegen.serializeHMType c.TargetType
-                                    $"(%s{c.TraitName} %s{targetStr})")
+                            let constraintStrs = constraints |> List.map constraintText
 
                             "(where " + String.concat " " constraintStrs + ")"
 

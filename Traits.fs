@@ -421,6 +421,19 @@ let private pinEquations = ResizeArray<HMType * HMType * string * Lexer.Range>()
 /// Drops whatever pin equations are still queued; see `clearWanteds`.
 let clearPinEquations () : unit = pinEquations.Clear()
 
+/// Queues the pins of a function's instantiated constraints, each an equation
+/// between the projection at this use and the pinned type, as
+/// `traitCallType` does for a member's.
+let queuePins (name: string) (constraints: TraitConstraint list) (r: Lexer.Range) : unit =
+    for c in constraints do
+        for (assocName, pinType) in c.Pins do
+            pinEquations.Add(
+                TAssoc(c.TraitName, assocName, c.TargetType),
+                pinType,
+                $"the associated type #:%s{assocName} of '%s{c.TraitName}', which the where clause of '%s{name}' pins",
+                r
+            )
+
 /// Solves every pin equation whose two sides have said what they are.
 ///
 /// An equation still blocked on a metavariable stays queued — the call that
@@ -747,14 +760,18 @@ let internal traitCallType (env: Env) (traitName: string) (methodName: string) (
                             Pins = c.Pins |> List.map (fun (n, t) -> n, substTypeVars assocSubst t) })
                 | None -> []
 
+            // Without the pins of the body this call is in: they speak of
+            // that body's variables, and the trait's signature has its own.
+            let sigRegistry = Unification.withoutPins env.Registry
+
             let vars =
-                let sigVars = freeTVars env.Registry withAssoc
+                let sigVars = freeTVars sigRegistry withAssoc
 
                 let constraintVars =
                     memberCs
                     |> List.collect (fun c ->
-                        freeTVars env.Registry c.TargetType
-                        @ (c.Pins |> List.collect (fun (_, t) -> freeTVars env.Registry t)))
+                        freeTVars sigRegistry c.TargetType
+                        @ (c.Pins |> List.collect (fun (_, t) -> freeTVars sigRegistry t)))
 
                 implVar :: ((sigVars @ constraintVars) |> List.distinct |> List.filter ((<>) implVar))
 

@@ -372,7 +372,16 @@ let publishBodies
     let bodies =
         candidates
         |> List.choose (fun (name, args, body, isInline) ->
+            // A constrained function written `#:inline` is copied into its
+            // calls by way of `Monomorphise`'s copies at each type (see
+            // `InlineCopies`), so it is not refused there.
+            let copiedAtEachType =
+                match Map.tryFind name env.Registry.ConstrainedBodies with
+                | Some tpl -> tpl.Inline && not (unconstrained name)
+                | None -> false
+
             match refusal name args body isInline with
+            | Some _ when copiedAtEachType -> None
             | Some why ->
                 if isInline then
                     let r = optedIn[name]
@@ -866,6 +875,13 @@ and private inlineOptedIn
     : TypedExpr option =
     let template =
         match topLevelFunction ctx name with
+        // A copy `Monomorphise` made of a constrained function written
+        // `#:inline`. It is this module's own, and its body is filed under its
+        // name; the module it records is the one the body was written in.
+        | _ when Set.contains name ctx.Env.Registry.InlineCopies ->
+            match Map.tryFind name ctx.Env.Registry.ConstrainedBodies with
+            | Some tpl -> Some(functionKey tpl.OriginModule name, name, tpl)
+            | None -> None
         | Some(originModule, original) ->
             match Map.tryFind original ctx.Env.Registry.ConstrainedBodies with
             | Some tpl when tpl.Inline && tpl.OriginModule = originModule ->
@@ -1122,6 +1138,64 @@ and private inlineInTwoPasses (ctx: Ctx) (decl: TDecl) : TDecl =
 /// Inlines every statically resolvable trait call in the program, every call
 /// of a published function that is given a known function, and every plain
 /// call of a function written `#:inline` that may take a copy.
+/// The copies of `#:inline` functions (see `InlineCopies`) that nothing names
+/// any longer, taken out. Each of their calls was given the copy's body, so
+/// the copy would be emitted and never called. A copy that a kept copy names
+/// is kept.
+let private dropUnusedInlineCopies (copies: Set<string>) (decls: TDecl list) : TDecl list =
+    if copies.IsEmpty then
+        decls
+    else
+
+    let rec flatten (ds: TDecl list) =
+        ds
+        |> List.collect (function
+            | TModule(_, inner, _) -> flatten inner
+            | d -> [ d ])
+
+    let namesIn (d: TDecl) =
+        TypeVisitor.foldDecl
+            (fun acc (e: TypedExpr) ->
+                match e.Node with
+                | TIdent(n, _) -> Set.add n acc
+                | _ -> acc)
+            Set.empty
+            d
+
+    let copyOf (d: TDecl) =
+        match d with
+        | TDefun(name, _, _, _, _, _, _, _, _) when Set.contains name copies -> Some name
+        | _ -> None
+
+    let all = flatten decls
+
+    let copyRefs =
+        all |> List.choose (fun d -> copyOf d |> Option.map (fun n -> n, namesIn d)) |> Map.ofList
+
+    let others =
+        all |> List.filter (copyOf >> Option.isNone) |> List.fold (fun acc d -> Set.union acc (namesIn d)) Set.empty
+
+    let rec grow (used: Set<string>) =
+        let next =
+            copyRefs
+            |> Map.fold (fun acc n refs -> if Set.contains n used then Set.union acc refs else acc) used
+
+        if next = used then used else grow next
+
+    let used = grow others
+
+    let rec drop (ds: TDecl list) =
+        ds
+        |> List.choose (fun d ->
+            match d with
+            | TModule(n, inner, r) -> Some(TModule(n, drop inner, r))
+            | _ ->
+                match copyOf d with
+                | Some n when not (Set.contains n used) -> None
+                | _ -> Some d)
+
+    drop decls
+
 let run (env: Env) (moduleOf: Map<string, string * string>) (decls: TDecl list) : TDecl list =
     let qualified =
         moduleOf
@@ -1183,4 +1257,4 @@ let run (env: Env) (moduleOf: Map<string, string * string>) (decls: TDecl list) 
           Budget = ref 0
           CanSuspend = false }
 
-    decls |> List.map (inlineDecl ctx)
+    decls |> List.map (inlineDecl ctx) |> dropUnusedInlineCopies env.Registry.InlineCopies

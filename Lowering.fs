@@ -62,6 +62,28 @@ let dictionaryType (env: Env) (traitName: string) (implType: HMType) : HMType =
 
     TCon(traitName, implType :: assocArgs)
 
+/// The type of the dictionary a function's constraint `c` takes, where the
+/// constraint may pin associated types: a pinned one is the pinned type, as
+/// `(where (Iterable %s #:elem (Tuple %k %v)))` makes the dictionary an
+/// `Iterable<T_s, ValueTuple<T_k, T_v>, T_s_cursor>`.
+let pinnedDictionaryType (env: Env) (c: TraitConstraint) : HMType =
+    match dictionaryType env c.TraitName c.TargetType with
+    | TCon(traitName, implType :: assocArgs) when not c.Pins.IsEmpty ->
+        let assocNames =
+            match Map.tryFind traitName env.Registry.Traits with
+            | Some info -> info.AssociatedTypes
+            | None -> []
+
+        let pinnedArgs =
+            List.zip assocNames assocArgs
+            |> List.map (fun (a, t) ->
+                match List.tryFind (fun (p, _) -> p = a) c.Pins with
+                | Some(_, pinT) -> pinT
+                | None -> t)
+
+        TCon(traitName, implType :: pinnedArgs)
+    | t -> t
+
 /// The .NET interface `traitName` stands for, if it stands for one.
 let clrConstraintOf (env: Env) (traitName: string) : ClrConstraintInfo option =
     match Map.tryFind traitName env.Registry.Traits with
@@ -699,7 +721,7 @@ module DictionaryLowering =
                             | _ -> "unknown"
 
                         let paramName = $"_dict_%s{c.TraitName}_%s{typeVarName}"
-                        Some(paramName, dictionaryType env c.TraitName c.TargetType))
+                        Some(paramName, pinnedDictionaryType env c))
 
                 // Each associated type of a constrained trait becomes a type
                 // parameter of the function itself. The caller never writes it:
@@ -712,6 +734,7 @@ module DictionaryLowering =
                         match prune env.Registry c.TargetType, Map.tryFind c.TraitName env.Registry.Traits with
                         | TVar typeVarName, Some info ->
                             info.AssociatedTypes
+                            |> List.filter (fun a -> not (List.exists (fun (p, _) -> p = a) c.Pins))
                             |> List.map (assocTypeVar typeVarName)
                         | _ -> [])
 

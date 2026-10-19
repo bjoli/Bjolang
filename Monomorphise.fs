@@ -254,7 +254,11 @@ type private Candidate =
       Origin: string option
       Qualification: Map<string, string>
       SigRange: Lexer.Range
-      DefRange: Lexer.Range }
+      DefRange: Lexer.Range
+      /// Written `#:inline`. A copy of it is copied into each call in turn
+      /// (see `InlineCopies`): the function itself cannot be, since its calls
+      /// pass dictionaries.
+      Inline: bool }
 
 /// Does a signature declare a parameter that may take either colour?
 let rec private mentionsPolyArrow (ft: FType) : bool =
@@ -285,13 +289,13 @@ let private eligible
     (env: Env)
     (name: string)
     (ftype: FType)
-    (constraints: (string * string) list)
+    (constraints: MemberConstraint list)
     (args: DefunArg list)
     =
     // A copy is only worth making for a constraint that costs a dictionary.
     constraints
-    |> List.exists (fun (traitName, _) ->
-        not (isClrConstraint env.Registry (TypeEnv.originalName env.Registry traitName)))
+    |> List.exists (fun c ->
+        not (isClrConstraint env.Registry (TypeEnv.originalName env.Registry c.MCTrait)))
     && name <> "main"
     // A `-?->` promises a second body, and the twin is generated inside
     // `checkDeclGroup` — so it is not among the declarations read here, and a
@@ -324,6 +328,13 @@ let private localCandidates (env: Env) (decls: Decl list) : Map<string, Candidat
             | _ -> None)
         |> Map.ofList
 
+    let written =
+        moduleDecls
+        |> List.choose (function
+            | DInline(name, _) -> Some name
+            | _ -> None)
+        |> Set.ofList
+
     let found =
         moduleDecls
         |> List.choose (function
@@ -341,7 +352,8 @@ let private localCandidates (env: Env) (decls: Decl list) : Map<string, Candidat
                           Origin = None
                           Qualification = Map.empty
                           SigRange = sigRange
-                          DefRange = r }
+                          DefRange = r
+                          Inline = Set.contains name written }
                     )
                 | _ -> None
             | _ -> None)
@@ -407,7 +419,8 @@ let private importedCandidates (env: Env) (local: Map<string, Candidate>) (decls
                           Origin = Some tpl.OriginModule
                           Qualification = tpl.Qualification
                           SigRange = r
-                          DefRange = r }
+                          DefRange = r
+                          Inline = tpl.Inline }
                     )
                 else
                     None
@@ -697,13 +710,13 @@ let private generate
         //
         // A hidden import's candidate is named by its qualified spelling, and
         // its body calls itself by the bare name it was written with.
-        let body =
+        let renamed =
             AlphaRename.renameFree
                 (Map.ofList [ cand.Name, demand.CopyName; Naming.writtenName cand.Name, demand.CopyName ])
                 cand.Body
 
         let body =
-            AlphaRename.reachHidden (fun n -> Map.containsKey n env.Bindings) cand.Qualification body
+            AlphaRename.reachHidden (fun n -> Map.containsKey n env.Bindings) cand.Qualification renamed
 
         // A variable that cannot be spelled is left as written; the copy then
         // fails to check and is declined, as any other unspellable type is.
@@ -738,6 +751,26 @@ let private generate
             typed
             |> List.map (TypeVisitor.mapDecl (AlphaRename.applyQualification cand.Qualification))
             |> List.map separate
+
+        // A copy of a function written `#:inline` is copied into its calls,
+        // as an unconstrained one would be. Its body is the source the copy
+        // was checked from, and `TraitInline` qualifies it at each splice.
+        let checked' =
+            if cand.Inline then
+                let template: InlineTemplate =
+                    { Params = mandatoryNames args
+                      Body = substBodyTypes typeSubst renamed
+                      Qualification = cand.Qualification
+                      OriginModule = Option.defaultValue env.CurrentModule cand.Origin
+                      Inline = true }
+
+                { checked' with
+                    Registry =
+                        { checked'.Registry with
+                            ConstrainedBodies = Map.add demand.CopyName template checked'.Registry.ConstrainedBodies
+                            InlineCopies = Set.add demand.CopyName checked'.Registry.InlineCopies } }
+            else
+                checked'
 
         Some({ checked' with CurrentModule = env.CurrentModule }, typed)
     with ex ->
@@ -819,7 +852,7 @@ let private publish
               Body = c.Body
               Qualification = qualification
               OriginModule = ownModuleName
-              Inline = false }
+              Inline = c.Inline }
             : InlineTemplate)
 
     { env with

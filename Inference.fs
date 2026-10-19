@@ -157,14 +157,26 @@ let private genericsNotInferableFrom (env: Env) (inferableFrom: string -> HMType
     env.Bindings
     |> Map.toSeq
     |> Seq.choose (fun (name, binding) ->
-        let (Scheme(vars, _, scheme)) = binding.Scheme
+        let (Scheme(vars, constraints, scheme)) = binding.Scheme
+
+        // A pin is in the type of a dictionary parameter, and C# infers a
+        // variable from that argument as from any other: the `%k` and `%v`
+        // of `(Iterable %s #:elem (Tuple %k %v))`. A .NET interface's
+        // constraint has no dictionary.
+        let pinned =
+            constraints
+            |> List.filter (fun c ->
+                match Map.tryFind c.TraitName env.Registry.Traits with
+                | Some info -> info.ClrConstraint.IsNone
+                | None -> false)
+            |> List.collect (fun c -> c.Pins |> List.map snd)
 
         match Unification.prune env.Registry scheme with
         | TFun(args, _, _) ->
             match inferableFrom name args with
             | None -> None
             | Some parameters ->
-                let inferable = parameters |> List.fold (fun acc a -> Set.union acc (typeVarsOf a)) Set.empty
+                let inferable = parameters @ pinned |> List.fold (fun acc a -> Set.union acc (typeVarsOf a)) Set.empty
 
                 if vars |> List.exists (fun v -> not (Set.contains (bareTypeVar v) inferable)) then
                     Some name

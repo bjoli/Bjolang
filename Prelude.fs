@@ -304,6 +304,7 @@ let emptyRegistry : TraitRegistry =
       ShadowedTraits = Map.empty
       InlineMethods = Map.empty
       ConstrainedBodies = Map.empty
+      InlineCopies = Set.empty
       Aliases = Map.empty
       ImportAliases = Map.empty
       Records = Map.empty
@@ -324,6 +325,15 @@ let emptyRegistry : TraitRegistry =
       ColourDeclared = Set.empty
       ReturnOnlyGenerics = Set.empty
       KeywordOnlyGenerics = Set.empty }
+
+/// Builtins that stay for one release under their old names. A use of one
+/// warns and says what to write in its place.
+let deprecatedBuiltins: Map<string, string> =
+    Map.ofList
+        [ "seq-map", "use `map`, which takes any iterable"
+          "seq-filter", "use `filter`, which takes any iterable"
+          "seq-take", "use `take`, which takes any iterable. Its arguments are in the other order: `(take n xs)`"
+          "seq-drop", "use `drop`, which takes any iterable. Its arguments are in the other order: `(drop n xs)`" ]
 
 let prelude : Env =
     { Bindings = Map.ofList [
@@ -1206,6 +1216,7 @@ let prelude : Env =
       ResolvedFunMetas = Map.empty
       Unshadowed = Set.empty
       TraitMethodNames = Set.empty
+      DeprecatedNames = deprecatedBuiltins
       ImplMethod = None
       Registry = emptyRegistry
       FunMetas = Map.ofList [

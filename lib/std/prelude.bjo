@@ -28,6 +28,7 @@
   iterable-start iterable-done? iterable-current iterable-next iterable-end iterable-cleanup
   fold map filter take drop take-while drop-while
   seq-enumerate flat-map any? all? find for-each ->seq
+  ->list ->vec count first ->map
   ;; Adapters
   enumerate zip
   ;; Cursor.
@@ -812,6 +813,10 @@
   (: all? (-> (-?-> %elem bool) %s bool))
   (: find (-> (-?-> %elem bool) %s (Option %elem)))
   (: for-each (-> (-?-> %elem void) %s void))
+  (: ->list (-> %s (List %elem)))
+  (: ->vec (-> %s (Vec %elem)))
+  (: count (-> %s int))
+  (: first (-> %s (Option %elem)))
 
   ;; Most cursors hold nothing that needs release.
   (defun (iterable-end s c) (when #f ()))
@@ -890,6 +895,25 @@
   (defun (for-each f s)
     (loop (:for e s)
           (:do (ignore (f e)))))
+
+  (defun (->list s)
+    (loop (:for e s)
+          (:acc xs (listing e))))
+
+  (defun (->vec s)
+    (loop (:for e s)
+          (:acc xs (vecing e))))
+
+  ;; Walks the whole of `s`. A collection that knows its length answers it.
+  (defun (count s)
+    (loop (:for e s)
+          (:acc n (counting e))))
+
+  ;; Stops on the first element, so the walk pulls only that one.
+  (defun (first s)
+    (loop (:for e s)
+          (:acc got (folding None (Some e)))
+          (:finish #t)))
   )
 
 ;; Declared before the other implementations because the inherited
@@ -916,7 +940,8 @@
   (defun (iterable-start s) s)
   (defun (iterable-done? s c) (list-empty? c))
   (defun (iterable-current s c) (list-head c))
-  (defun (iterable-next s c) (list-tail c)))
+  (defun (iterable-next s c) (list-tail c))
+  (defun (->list s) s))
 
 ;; A struct cursor that walks the vec's leaf arrays: an array read per
 ;; element, and nothing allocated for the walk.
@@ -926,7 +951,9 @@
   (defun (iterable-start s) (vec-cursor s))
   (defun (iterable-done? s c) (vec-cursor-done? c))
   (defun (iterable-current s c) (vec-cursor-current c))
-  (defun (iterable-next s c) (vec-cursor-next c)))
+  (defun (iterable-next s c) (vec-cursor-next c))
+  (defun (->vec s) s)
+  (defun (count s) (vec-length s)))
 
 ;; `>=` rather than `=`: the JIT drops the bounds check on `array-ref` only
 ;; when the loop test is `index < length`.
@@ -936,7 +963,8 @@
   (defun (iterable-start s) 0)
   (defun (iterable-done? s index) (>= index (array-length s)))
   (defun (iterable-current s index) (array-ref s index))
-  (defun (iterable-next s index) (+ index 1)))
+  (defun (iterable-next s index) (+ index 1))
+  (defun (count s) (array-length s)))
 
 ;; Range of ints.
 (type (: Range (Struct (: lo int) (: hi int) (: by int))))
@@ -973,7 +1001,8 @@
   (defun (iterable-start s) (map-cursor s))
   (defun (iterable-done? s c) (map-cursor-done? c))
   (defun (iterable-current s c) (map-cursor-current c))
-  (defun (iterable-next s c) (map-cursor-next c)))
+  (defun (iterable-next s c) (map-cursor-next c))
+  (defun (count s) (map-length s)))
 
 ;; String characters. Not a `StringCursor`, which asks the string at every
 ;; step whether it is a slice: a walk takes its bytes once and decodes each
@@ -994,6 +1023,14 @@
   (defun (iterable-done? s c) (string-walk-done? c))
   (defun (iterable-current s c) (string-walk-current c))
   (defun (iterable-next s c) (string-walk-next c)))
+
+;; An iterable of pairs as a map. Not a method of `Iterable`: its where clause
+;; says the element is a pair, and a member may not constrain the
+;; implementor. Copied into the call, so that it fuses with a chain under it.
+(: ->map (-> %s (Map %k %v)) (where (Eq %k) (Iterable %s #:elem (Tuple %k %v))))
+(defun (->map s) #:inline
+  (loop (:for e s)
+        (:acc m (mapping e))))
 
 ;; ---------------------------------------------------------------------------
 ;; Adapters
@@ -1252,9 +1289,8 @@
 ;; Seqs, where the callback may suspend
 ;; ---------------------------------------------------------------------------
 ;;
-;; The eager two. `seq-map`, `seq-filter` and `seq-unfold` are lazy and stay
-;; builtins: their callback runs when the walker pulls, which is somewhere
-;; else.
+;; The eager two. `seq-unfold` is lazy and stays a builtin: its callback runs
+;; when the walker pulls, which is somewhere else.
 
 (: seq-fold (-> (-?-> %a %b %b) %b (Seq %a) %b))
 (defun (seq-fold f init s)

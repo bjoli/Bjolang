@@ -1,0 +1,28 @@
+;; `seq-map`, `seq-filter`, `seq-take` and `seq-drop` are the old spellings of
+;; the `Iterable` methods. They still work, and say so. A use as a value warns
+;; too.
+
+;; EXPECT-WARNING: `seq-map` at seq_builtins_deprecated.bjo:18 is deprecated, use `map`, which takes any iterable.
+;; EXPECT-WARNING: `seq-filter` at seq_builtins_deprecated.bjo:19 is deprecated, use `filter`, which takes any iterable.
+;; EXPECT-WARNING: `seq-take` at seq_builtins_deprecated.bjo:20 is deprecated, use `take`, which takes any iterable. Its arguments are in the other order: `(take n xs)`.
+;; EXPECT-WARNING: `seq-drop` at seq_builtins_deprecated.bjo:20 is deprecated, use `drop`, which takes any iterable. Its arguments are in the other order: `(drop n xs)`.
+;; EXPECT-WARNING: `seq-map` at seq_builtins_deprecated.bjo:23 is deprecated
+
+(import (std prelude))
+(import (std simpletest))
+
+(defun (main)
+  (def xs (list->seq '(1 2 3 4 5)))
+  (expect "the old names still work"
+          (seq->list
+           (seq-map (fun (x) (* 10 x))
+                    (seq-filter (fun (x) (> x 1))
+                                (seq-take (seq-drop xs 1) 3))))
+          '(20 30 40))
+  (expect "as a value"
+          (seq->list (apply2 seq-map (fun (x) (+ x 1)) xs))
+          '(2 3 4 5 6))
+  0)
+
+(: apply2 (-> (-> %f %s %r) %f %s %r))
+(defun (apply2 g f s) (g f s))

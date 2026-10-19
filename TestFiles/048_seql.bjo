@@ -156,9 +156,9 @@
   (expect-true "=> is one last yield" (same? (with-final 3) '(0 1 2 99)))
 
   ;; Infinite, and only ever pulled from.
-  (expect-true "infinite :with, taken lazily" (same? (seq-take (fibs) 10) '(0 1 1 2 3 5 8 13 21 34)))
-  (expect-true "...and again from the start" (same? (seq-take (fibs) 3) '(0 1 1)))
-  (expect-true "...dropping into it" (same? (seq-take (seq-drop (fibs) 10) 3) '(55 89 144)))
+  (expect-true "infinite :with, taken lazily" (same? (take 10 (fibs)) '(0 1 1 2 3 5 8 13 21 34)))
+  (expect-true "...and again from the start" (same? (take 3 (fibs)) '(0 1 1)))
+  (expect-true "...dropping into it" (same? (take 3 (drop 10 (fibs))) '(55 89 144)))
 
   (expect-true "lockstep ends with the shortest" (same? (zipped) '(10 21 32)))
   (expect-true ":when filters" (same? (filtered) '(0 3 6 9)))
@@ -172,13 +172,13 @@
   (expect-true ":finish from an inner level leaves it all" (same? (broken) '(0 1 2 3 4 10)))
   (expect-true ":abandon resumes the outer" (same? (cut-short) '(0 10 11 20 21 22)))
   (expect-true "inner :with resets on each entry" (same? (resetting) '(0 1 0 1 0 1)))
-  (expect-true "endless outer, bounded inner" (same? (seq-take (endless) 7) '(0 1 10 11 20 21 30)))
+  (expect-true "endless outer, bounded inner" (same? (take 7 (endless)) '(0 1 10 11 20 21 30)))
   (expect-true "nested via yield-from" (same? (nested) '(0 1 10 11 20 21)))
 
   ;; It is an ordinary sequence: composable, and re-enumerable.
   (def s (basic 4))
   (expect-true "re-enumerable" (same? s '(0 1 2 3)))
-  (expect-true "composes with seq-map" (same? (seq-map (fun (x) (* x 2)) s) '(0 2 4 6)))
-  (expect-true "composes with seq-filter" (same? (seq-filter (fun (x) (= 0 (% x 2))) s) '(0 2)))
-  (expect-true "is lazy end to end" (= 0 (seq-head (seq-filter (fun (x) (= 0 (% x 2))) (fibs)))))
+  (expect-true "composes with map" (same? (map (fun (x) (* x 2)) s) '(0 2 4 6)))
+  (expect-true "composes with filter" (same? (filter (fun (x) (= 0 (% x 2))) s) '(0 2)))
+  (expect-true "is lazy end to end" (= 0 (seq-head (filter (fun (x) (= 0 (% x 2))) (fibs)))))
   0)
