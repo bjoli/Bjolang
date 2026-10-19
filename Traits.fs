@@ -50,6 +50,14 @@ let private clrObligations = ResizeArray<string * HMType * Range * string>()
 /// not queue it again.
 let private clrChecked = System.Collections.Generic.HashSet<Wanted>(HashIdentity.Reference)
 
+/// The `(where ...)` constraints of the conditional impls that resolved
+/// calls use, at the types each call gives them: `(Lane double)` for
+/// `(impl (SimdShift (Simd256 %a)) (where (IntLane %a)))` at `Float64x4`.
+/// `solvePending` checks them. `Lowering` checks them as well when it builds
+/// a dictionary, but an inlined call has no dictionary, so without this check
+/// such a call compiled at a type its impl does not cover.
+let private implObligations = ResizeArray<string * HMType * Range * string>()
+
 /// The holes an unresolved obligation of `kind` is still watching.
 ///
 /// For `InlineTrait`: a local helper written without a signature —
@@ -121,6 +129,7 @@ let clearWanteds () : unit =
     Unification.deferredProjections.Clear()
     clrObligations.Clear()
     clrChecked.Clear()
+    implObligations.Clear()
 
 /// Queues the check of a constraint over a .NET interface at the type a use
 /// instantiated it to: the `(Num %a)` of `+` at the `string` of `(+ "s")`.
@@ -319,6 +328,14 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
 
                 clrObligations.Add(c.TraitName, t, w.Range, $"by the implementation of '%s{w.Trait}' for '%s{Naming.showTypeName ctor}', which '%s{w.Method}' uses")
 
+            for c in dictionaryConstraints registry target do
+                implObligations.Add(
+                    c.TraitName,
+                    substTypeVars subst c.TargetType,
+                    w.Range,
+                    $"by the implementation of '%s{w.Trait}' for '%s{Naming.showTypeName ctor}', which '%s{w.Method}' uses"
+                )
+
             w.Ref.Resolved <- Some(ctor, classTypeArgs |> List.map (prune registry))
             true
 
@@ -465,6 +482,31 @@ let private solveDeferredProjections (env: Env) : bool =
 
     progress
 
+/// Checks that `traitName` has an implementation at `t`, and that the
+/// `(where ...)` of that implementation holds there too, down to the leaves.
+/// Produces nothing: the evidence is built by `Lowering` where a dictionary
+/// is needed, and an inlined call needs none.
+///
+/// A type variable or a type still open is passed over, as `checkClrConstraint`
+/// passes it over: a variable is a constraint of the enclosing function, and
+/// is checked again at each type a caller gives it. The recursion ends because
+/// each constraint is at a proper subterm of `t`.
+let rec private checkImplObligation (env: Env) (traitName: string) (t: HMType) (r: Range) (describe: string) : unit =
+    match prune env.Registry t with
+    | (TCon _ | TTuple _) as ground ->
+        match Map.tryFind traitName env.Registry.Traits with
+        | Some { ClrConstraint = Some clr } -> checkClrConstraint env clr traitName ground r describe
+        | _ ->
+            match implFor env.Registry traitName ground with
+            | Some(target, subst) ->
+                for c in target.Constraints do
+                    checkImplObligation env c.TraitName (substTypeVars subst c.TargetType) r describe
+            | None when Map.containsKey traitName env.Registry.BlanketImpls -> ()
+            | None ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType ground}', needed %s{describe}."
+    | _ -> ()
+
 /// Solves everything raised since the last call. Used at every point that is
 /// about to generalize, since a scheme must not be built over a constructor
 /// that resolution would still have pinned down.
@@ -500,6 +542,13 @@ let solvePending (env: Env) : unit =
         | (TVar _ | TMeta _), _ -> ()
         | _, Some { ClrConstraint = Some clr } -> checkClrConstraint env clr traitName t r describe
         | _ -> ()
+
+    // The same rule for the `(where ...)` of the impls that calls resolved to.
+    let obligations = List.ofSeq implObligations
+    implObligations.Clear()
+
+    for (traitName, t, r, describe) in obligations do
+        checkImplObligation env traitName t r describe
 
     solvePinEquations env
 

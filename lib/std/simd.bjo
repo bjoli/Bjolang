@@ -37,8 +37,10 @@
   UInt64x2 UInt32x4 UInt16x8 UInt8x16
   Float64x4 Float32x8 Int64x4 Int32x8 Int16x16 Int8x32
   UInt64x4 UInt32x8 UInt16x16 UInt8x32
-  ;; The trait, and what it does
-  Simd
+  ;; The element types
+  Lane IntLane
+  ;; The traits, and what they do
+  Simd SimdShift
   simd-add simd-sub simd-mul simd-div simd-scale simd-neg simd-abs
   simd-min simd-max simd-sqrt
   simd-and simd-or simd-xor simd-not
@@ -87,7 +89,40 @@
 (type (: UInt8x32  (Simd256 byte)))
 
 ;; ---------------------------------------------------------------------------
-;; The trait
+;; The element types
+;; ---------------------------------------------------------------------------
+;;
+;; .NET's vectors hold the primitive numbers below and nothing else: a vector
+;; of another type is refused when it is made, at run time. `Lane` says which
+;; types they are, so a vector of a char or a string is refused when it is
+;; compiled. It has no methods, and nothing outside this module implements
+;; it. `IntLane` is the integer types, which the shifts are for: a shift of a
+;; float lane shifts the bits of its encoding.
+
+(def/trait (Lane %a))
+(impl (Lane double))
+(impl (Lane System.Single))
+(impl (Lane long))
+(impl (Lane int))
+(impl (Lane short))
+(impl (Lane System.SByte))
+(impl (Lane ulong))
+(impl (Lane uint))
+(impl (Lane ushort))
+(impl (Lane byte))
+
+(def/trait (IntLane %a))
+(impl (IntLane long))
+(impl (IntLane int))
+(impl (IntLane short))
+(impl (IntLane System.SByte))
+(impl (IntLane ulong))
+(impl (IntLane uint))
+(impl (IntLane ushort))
+(impl (IntLane byte))
+
+;; ---------------------------------------------------------------------------
+;; The traits
 ;; ---------------------------------------------------------------------------
 ;;
 ;; A comparison answers a mask: a vector of the same type with every bit of a
@@ -122,14 +157,17 @@
   (: simd-count-true (-> %v int))
   (: simd-first-true (-> %v int))
   (: simd-mask-bits (-> %v int))
-  (: simd-shift-left (-> %v int %v))
-  (: simd-shift-right (-> %v int %v))
-  (: simd-shift-right-logical (-> %v int %v))
   (: simd-sum   (-> %v %elem))
   (: simd-dot   (-> %v %v %elem))
   (: simd-ref   (-> %v int %elem))
   (: simd-store! (-> %v (Array %elem) int void))
   (: simd-lanes (-> %v int)))
+
+;; Shifts every lane by the same count. For integer lanes only.
+(def/trait (SimdShift %v)
+  (: simd-shift-left (-> %v int %v))
+  (: simd-shift-right (-> %v int %v))
+  (: simd-shift-right-logical (-> %v int %v)))
 
 ;; ---------------------------------------------------------------------------
 ;; 128 bits
@@ -165,8 +203,8 @@
   (v128-all? (: Bjolang.Runtime.BjoSimd.All128 (-> (Simd128 %a) bool)))
   (v128-count-true (: Bjolang.Runtime.BjoSimd.CountTrue128 (-> (Simd128 %a) int)))
   (v128-first-true (: Bjolang.Runtime.BjoSimd.FirstTrue128 (-> (Simd128 %a) int)))
-  (simd128-splat (: System.Runtime.Intrinsics.Vector128.Create (-> %a (Simd128 %a))))
-  (simd128-zero (: Bjolang.Runtime.BjoSimd.Zero128 (-> (Simd128 %a))))
+  (v128-splat (: System.Runtime.Intrinsics.Vector128.Create (-> %a (Simd128 %a))))
+  (v128-zero (: Bjolang.Runtime.BjoSimd.Zero128 (-> (Simd128 %a))))
   (v128-mask-bits (: Bjolang.Runtime.BjoSimd.MaskBits128 (-> (Simd128 %a) int)))
   (v128-shift-left (: Bjolang.Runtime.BjoSimd.ShiftLeft128 (-> (Simd128 %a) int (Simd128 %a))))
   (v128-shift-right (: Bjolang.Runtime.BjoSimd.ShiftRight128 (-> (Simd128 %a) int (Simd128 %a))))
@@ -177,7 +215,13 @@
   (v128-list-lanes (: Bjolang.Runtime.BjoSimd.ListLanes128 (-> (MutableVec %a) int)))
   (simd128-accelerated? (: System.Runtime.Intrinsics.Vector128.IsHardwareAccelerated #:get)))
 
-(impl (Simd (Simd128 %a))
+(: simd128-splat (-> %a (Simd128 %a)) (where (Lane %a)))
+(defun (simd128-splat x) (v128-splat x))
+
+(: simd128-zero (-> (Simd128 %a)) (where (Lane %a)))
+(defun (simd128-zero) (v128-zero))
+
+(impl (Simd (Simd128 %a)) (where (Lane %a))
   (type %elem %a)
   (defun (simd-add a b) (v128-add a b))
   (defun (simd-sub a b) (v128-sub a b))
@@ -208,7 +252,9 @@
   (defun (simd-all? a) (v128-all? a))
   (defun (simd-count-true a) (v128-count-true a))
   (defun (simd-first-true a) (v128-first-true a))
-  (defun (simd-mask-bits a) (v128-mask-bits a))
+  (defun (simd-mask-bits a) (v128-mask-bits a)))
+
+(impl (SimdShift (Simd128 %a)) (where (IntLane %a))
   (defun (simd-shift-left a n) (v128-shift-left a n))
   (defun (simd-shift-right a n) (v128-shift-right a n))
   (defun (simd-shift-right-logical a n) (v128-shift-right-logical a n)))
@@ -247,8 +293,8 @@
   (v256-all? (: Bjolang.Runtime.BjoSimd.All256 (-> (Simd256 %a) bool)))
   (v256-count-true (: Bjolang.Runtime.BjoSimd.CountTrue256 (-> (Simd256 %a) int)))
   (v256-first-true (: Bjolang.Runtime.BjoSimd.FirstTrue256 (-> (Simd256 %a) int)))
-  (simd256-splat (: System.Runtime.Intrinsics.Vector256.Create (-> %a (Simd256 %a))))
-  (simd256-zero (: Bjolang.Runtime.BjoSimd.Zero256 (-> (Simd256 %a))))
+  (v256-splat (: System.Runtime.Intrinsics.Vector256.Create (-> %a (Simd256 %a))))
+  (v256-zero (: Bjolang.Runtime.BjoSimd.Zero256 (-> (Simd256 %a))))
   (v256-mask-bits (: Bjolang.Runtime.BjoSimd.MaskBits256 (-> (Simd256 %a) int)))
   (v256-shift-left (: Bjolang.Runtime.BjoSimd.ShiftLeft256 (-> (Simd256 %a) int (Simd256 %a))))
   (v256-shift-right (: Bjolang.Runtime.BjoSimd.ShiftRight256 (-> (Simd256 %a) int (Simd256 %a))))
@@ -259,7 +305,13 @@
   (v256-list-lanes (: Bjolang.Runtime.BjoSimd.ListLanes256 (-> (MutableVec %a) int)))
   (simd256-accelerated? (: System.Runtime.Intrinsics.Vector256.IsHardwareAccelerated #:get)))
 
-(impl (Simd (Simd256 %a))
+(: simd256-splat (-> %a (Simd256 %a)) (where (Lane %a)))
+(defun (simd256-splat x) (v256-splat x))
+
+(: simd256-zero (-> (Simd256 %a)) (where (Lane %a)))
+(defun (simd256-zero) (v256-zero))
+
+(impl (Simd (Simd256 %a)) (where (Lane %a))
   (type %elem %a)
   (defun (simd-add a b) (v256-add a b))
   (defun (simd-sub a b) (v256-sub a b))
@@ -290,7 +342,9 @@
   (defun (simd-all? a) (v256-all? a))
   (defun (simd-count-true a) (v256-count-true a))
   (defun (simd-first-true a) (v256-first-true a))
-  (defun (simd-mask-bits a) (v256-mask-bits a))
+  (defun (simd-mask-bits a) (v256-mask-bits a)))
+
+(impl (SimdShift (Simd256 %a)) (where (IntLane %a))
   (defun (simd-shift-left a n) (v256-shift-left a n))
   (defun (simd-shift-right a n) (v256-shift-right a n))
   (defun (simd-shift-right-logical a n) (v256-shift-right-logical a n)))
@@ -312,7 +366,7 @@
   (: simd256-lanes (-> %s int))
   (: simd-source-length (-> %s int)))
 
-(impl (SimdSource (Array %a))
+(impl (SimdSource (Array %a)) (where (Lane %a))
   (type %elem %a)
   (defun (simd128-load a i) (v128-load-array a i))
   (defun (simd256-load a i) (v256-load-array a i))
@@ -320,7 +374,7 @@
   (defun (simd256-lanes a) (v256-array-lanes a))
   (defun (simd-source-length a) (array-length a)))
 
-(impl (SimdSource (MutableVec %a))
+(impl (SimdSource (MutableVec %a)) (where (Lane %a))
   (type %elem %a)
   (defun (simd128-load v i) (v128-load-list v i))
   (defun (simd256-load v i) (v256-load-list v i))

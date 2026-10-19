@@ -31,7 +31,8 @@
     same type as @code{Float64x4}.
 
     @strong{Operations.} Every operation is a method of the trait
-    @code{Simd}, which both widths implement at every element type. So
+    @code{Simd}, which both widths implement at every element type of
+    @code{Lane}. So
     @code{simd-add} adds two @code{Float64x2} values or two @code{Int32x8}
     values. At a known type, each call compiles to the .NET intrinsic, which
     the JIT compiles to one instruction. Arithmetic on integer lanes wraps.
@@ -56,7 +57,13 @@
     @strong{Shifts.} @code{simd-shift-left}, @code{simd-shift-right} and
     @code{simd-shift-right-logical} shift every lane by the same count, as
     the scalar @code{shift-left}, @code{shift-right} and
-    @code{shift-right-logical} do. They are for integer lanes.
+    @code{shift-right-logical} do. They are the methods of
+    @code{SimdShift}, which only vectors of integer lanes implement.
+
+    @strong{Element types.} A vector holds one of the primitive numbers
+    that the trait @code{Lane} lists. A vector of anything else, such as
+    @code{(Simd128 char)}, can be named as a type, but nothing makes or
+    takes one: the checker refuses it.
 
     @strong{The tail.} An array whose length is not a multiple of the lanes
     has elements after the last whole vector. @code{simd256-whole} is the
@@ -79,13 +86,40 @@
 
 (:doc Simd128
   (summary "A 128-bit vector of numbers of type %a: .NET's @code{Vector128<T>}.")
-  (tparam %a "The element type: a primitive number.")
+  (tparam %a "The element type: a primitive number, one of @code{Lane}.")
   (see Simd simd128-load simd128-splat))
 
 (:doc Simd256
   (summary "A 256-bit vector of numbers of type %a: .NET's @code{Vector256<T>}.")
-  (tparam %a "The element type: a primitive number.")
+  (tparam %a "The element type: a primitive number, one of @code{Lane}.")
   (see Simd simd256-load simd256-splat))
+
+(:doc Lane
+  (summary "The element types a vector holds: the primitive numbers.")
+  (tparam %a "The element type.")
+  (see IntLane Simd)
+  (reference """
+    @code{double}, @code{System.Single}, @code{long}, @code{int},
+    @code{short}, @code{System.SByte}, @code{ulong}, @code{uint},
+    @code{ushort} and @code{byte}. It has no methods: it only says which
+    types these are, so that a vector of another type, which .NET refuses
+    at run time, is refused when the program is compiled. Every operation
+    and every way to make a vector requires it.
+    """))
+
+(:doc IntLane
+  (summary "The integer element types, which the shifts take.")
+  (tparam %a "The element type.")
+  (see Lane SimdShift)
+  (reference """
+    The eight integer types of @code{Lane}. A shift of a float lane would
+    shift the bits of its encoding, so @code{SimdShift} requires this.
+    """))
+
+(:doc SimdShift
+  (summary "The shifts of a vector of integer lanes.")
+  (tparam %v "The vector type, such as @code{Int32x8}.")
+  (see simd-shift-left simd-shift-right simd-shift-right-logical IntLane))
 
 (:doc Simd
   (summary "The operations on a vector type, implemented by @code{Simd128} and @code{Simd256}.")
@@ -193,6 +227,10 @@
   (arg v "The vector, of integer lanes.")
   (arg n "The number of bits.")
   (returns "The shifted lanes. Bits shifted out are lost, and zeros come in.")
+  (reference """
+    The count is taken modulo the lane's width in bits, as the scalar
+    shifts take it: shifting an @code{Int32x4} by 33 shifts it by 1.
+    """)
   (see simd-shift-right simd-shift-right-logical))
 
 (:doc simd-shift-right
@@ -228,7 +266,7 @@
   (returns "The lane-wise products."))
 
 (:doc simd-div
-  (summary "Divides the lanes of @code{a} by the lanes of @code{b}. Fast at float types only: there is no integer division instruction, so integer lanes are divided one at a time.")
+  (summary "Divides the lanes of @code{a} by the lanes of @code{b}. Fast at float types only: there is no integer division instruction, so integer lanes are divided one at a time. An integer lane divided by 0 raises @code{DivideByZeroException}, as a scalar does; a float lane gives an infinity or NaN.")
   (arg a "The dividends.")
   (arg b "The divisors.")
   (returns "The lane-wise quotients."))

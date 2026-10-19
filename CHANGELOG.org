@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* A conditional impl's where clause holds at an inlined call, and (std simd) checks its element types
+
+- The ~(where ...)~ of a conditional impl, such as
+  ~(impl (Describe (List %a)) (where (Small %a)) ...)~, is now checked at
+  every call that resolves to the impl. Before, it was checked only where
+  ~Lowering~ built a dictionary. A call inlined at a known type builds none,
+  so ~(describe (list "x"))~ compiled with no ~(Small string)~. The check
+  runs when the declaration is inferred, as the check of an impl's .NET
+  constraints does, and goes down through the impls the where clause itself
+  resolves to. A type that is still open there is passed over, and so is a
+  type variable, which is the enclosing function's constraint.
+- ~(std simd)~ has two traits with no methods. ~Lane~ is the ten element
+  types .NET's vectors hold, and ~IntLane~ is its eight integer types. Every
+  impl of ~Simd~ and ~SimdSource~, ~simd128-splat~, ~simd256-splat~,
+  ~simd128-zero~ and ~simd256-zero~ require ~Lane~. ~(simd128-splat #\a)~,
+  which compiled and then raised ~NotSupportedException~, is now a type
+  error.
+- The shifts moved from ~Simd~ to a new trait, ~SimdShift~, implemented for
+  vectors of ~IntLane~ elements. Their names are the same. A shift of a
+  ~Float64x4~, which shifted the bits of the doubles, is now a type error.
+- ~simd-div~ and the shifts say in their docs what a scalar does too: an
+  integer lane divided by 0 raises, and a shift count is taken modulo the
+  lane's width.
+- The ~#set!~ reader extension has its ~(:doc set! #:reader ...)~.
+- Tests: ~errors/conditional_impl_inlined.bjo~, ~errors/simd_lane_char.bjo~,
+  ~errors/simd_shift_float.bjo~ and ~errors/simd_source_string_array.bjo~.
+
 * (std simd): loads from MutableVecs, mask bits, and shifts
 
 - ~simd128-load~ and ~simd256-load~ are the methods of a new trait,

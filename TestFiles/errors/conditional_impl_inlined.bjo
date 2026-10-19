@@ -1,0 +1,19 @@
+;; The `(where ...)` of a conditional impl holds at every call that uses the
+;; impl, including one inlined at a known type, which builds no dictionary.
+
+;; EXPECT-ERROR: no implementation of trait 'Small' for 'string', needed by the implementation of 'Describe'
+
+(import (std prelude))
+
+(def/trait (Small %a))
+(impl (Small int))
+
+(def/trait (Describe %t)
+  (: describe (-> %t string)))
+
+(impl (Describe (List %a)) (where (Small %a))
+  (defun (describe xs) "a list of small things"))
+
+(defun (main)
+  (println (describe (list "x")))
+  0)
