@@ -747,10 +747,7 @@ let metadata
                     match Map.tryFind (traitName, typeKey) env.Registry.ImplTargets with
                     | Some target when not target.Constraints.IsEmpty ->
                         let parts =
-                            target.Constraints
-                            |> List.map (fun c ->
-                                $"(%s{c.TraitName} %s{Codegen.serializeHMType c.TargetType})")
-                            |> String.concat " "
+                                                    target.Constraints |> List.map constraintText |> String.concat " "
 
                         " (where " + parts + ")"
                     | _ -> ""

@@ -534,7 +534,13 @@ let private deriveImpl (traitName: string) (td: TypeDef) : Decl =
         else
             TApp(td.Name, td.TypeArgs |> List.map (fun a -> TName("'" + a, r)), r)
 
-    let constraints = td.TypeArgs |> List.map (fun a -> traitName, "'" + a)
+    let constraints =
+        td.TypeArgs
+        |> List.map (fun a ->
+            { MCTrait = traitName
+              MCVar = "'" + a
+              MCPins = []
+              MCRange = r })
 
     DImpl(traitName, target, [], constraints, [], deriveMethods traitName td, r)
 

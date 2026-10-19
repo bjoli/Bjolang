@@ -1,0 +1,18 @@
+;; A pin in an implementation's where clause names an associated type of the
+;; trait it constrains.
+
+;; EXPECT-ERROR: 'Iterable' in the where clause of the implementation of 'Iterable' has no associated type #:item; it has #:elem, #:cursor.
+
+(import (std prelude))
+
+(type (: (Wrap %s) (Struct (: inner %s))))
+
+(impl (Iterable (Wrap %s)) (where (Iterable %s #:item int))
+  (type %elem (assoc Iterable elem %s))
+  (type %cursor (assoc Iterable cursor %s))
+  (defun (iterable-start w) (iterable-start (record-ref w inner)))
+  (defun (iterable-done? w c) (iterable-done? (record-ref w inner) c))
+  (defun (iterable-current w c) (iterable-current (record-ref w inner) c))
+  (defun (iterable-next w c) (iterable-next (record-ref w inner) c)))
+
+(defun (main args) 0)

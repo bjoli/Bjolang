@@ -1,0 +1,106 @@
+;; `chain`, the elements of one iterable and then of another, and the pin in
+;; an implementation's where clause that it rests on.
+;;
+;; `chain` is checked at iterables of different kinds, empty sides, nesting,
+;; through a constrained function taken as a value, and for what it pulls and
+;; passes on. `inc/pinned_impl.bjo` is an implementation with a pinned where
+;; clause in another module.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/pinned_impl.bjo")
+
+(import/class
+  (Exception (: System.Exception))
+  (Boom (: System.InvalidOperationException (-> string Boom))))
+
+;; Counts to `n`, and logs each `done?`, end and cleanup with its label.
+(type (: Counter (Struct (: label string) (: n int))))
+
+(def/mutable events '())
+
+(: log! (-> string void))
+(defun (log! e) (set! events (cons e events)))
+
+(: events-in-order (-> (List string)))
+(defun (events-in-order) (list-reverse events))
+
+(impl (Iterable Counter)
+  (type %elem int)
+  (type %cursor int)
+  (defun (iterable-start c) 0)
+  (defun (iterable-done? c i)
+    (log! (str "done? " (record-ref c label) " " (->str i)))
+    (>= i (record-ref c n)))
+  (defun (iterable-current c i) i)
+  (defun (iterable-next c i) (+ i 1))
+  (defun (iterable-end c i) (log! (str "end " (record-ref c label) " " (->str i))))
+  (defun (iterable-cleanup c i) (log! (str "cleanup " (record-ref c label) " " (->str i)))))
+
+(: counter (-> string int Counter))
+(defun (counter label n) (Counter (label label) (n n)))
+
+;; Generic over any iterable, and taken as a value below: given a chain, the
+;; caller builds the adapter's dictionary, whose class has the pin.
+(: size-of (-> %s int) (where (Iterable %s)))
+(defun (size-of s) #:no-inline {summing 1 (:for x s)})
+
+;; Generic over both: the adapter's dictionary is built here, with the pin.
+(: total (-> %a %b int) (where (Iterable %a #:elem int) (Iterable %b #:elem int)))
+(defun (total a b) #:no-inline {summing x (:for x (chain a b))})
+
+(: events-starting (-> string (List string)))
+(defun (events-starting prefix)
+  (->list (filter (fun (e) (string-starts-with? e prefix)) (events-in-order))))
+
+(defun (main)
+  ;; --- the elements --------------------------------------------------------------
+  (expect "an array and a list" (->list (chain #[1 2] '(3 4))) '(1 2 3 4))
+  (expect "a range and a vec" {summing x (:for x (chain (range 0 3) [10 20]))} 33)
+  (expect "a string and a sequence" (->list (chain "ab" (map (fun (c) c) "cd")))
+          (list #\a #\b #\c #\d))
+  (expect "the first empty" (->list (chain '() [5])) '(5))
+  (expect "the second empty" (->list (chain [5] '())) '(5))
+  (expect "both empty" (->list (chain '() #[])) '())
+  (expect "nested" (->list (chain (chain '(1) #[2]) [3])) '(1 2 3))
+  (expect "an endless second side" (->list (take 3 (chain (range 0 2) (in-repeat 9)))) '(0 1 9))
+  (expect "count" (count (chain "abc" "de")) 5)
+  (def size size-of)
+  (expect "through the adapter's dictionary" (size (chain #[1 2] '(3))) 3)
+  (def at-types total)
+  (expect "generic" (at-types #[1 2] (list 3 4)) 10)
+  (def at-other-types total)
+  (expect "generic again" (at-other-types [10] (range 0 3)) 13)
+
+  ;; --- what is pulled and passed on ------------------------------------------------
+  (set! events '())
+  (expect "two counters" (->list (chain (counter "a" 2) (counter "b" 2))) '(0 1 0 1))
+  (expect "done? once per cursor"
+          (events-starting "done?")
+          (list "done? a 0" "done? a 1" "done? a 2" "done? b 0" "done? b 1" "done? b 2"))
+  (set! events '())
+  (loop (:for x (chain (counter "a" 5) (counter "b" 5))) (:finish (= x 1)))
+  (expect "a :finish on the first side ends both"
+          (events-starting "end") (list "end a 1" "end b 0"))
+  (set! events '())
+  (def/mutable seen 0)
+  (loop (:for x (chain (counter "a" 1) (counter "b" 5)))
+        (:do (set! seen (+ seen 1)))
+        (:finish (= seen 3)))
+  ;; The first side's cursor is ended too, after its `done?` answered true,
+  ;; which the protocol allows: an end there does nothing but log here.
+  (expect "a :finish on the second side ends both"
+          (events-starting "end") (list "end a 1" "end b 1"))
+  (set! events '())
+  (match (try (loop (:for x (chain (counter "a" 3) (counter "b" 3)))
+                    (:do (when (= x 2) (raise (cast Exception (Boom. "stop"))))))
+              #:catch (System.InvalidOperationException))
+    ((Ok _) (println "FAILURE: the loop did not throw"))
+    ((Err e) (println "ok: the loop threw")))
+  (expect "an exception cleans both up"
+          (events-starting "cleanup") (list "cleanup a 2" "cleanup b 0"))
+
+  ;; --- an implementation's pin across a module -------------------------------------
+  (expect "an imported pinned impl" (->list (both #[1] '(2 3))) '(1 2 3))
+  (expect "an imported pinned impl, built by hand" (->list (Both (left "a") (right "b")))
+          (list #\a #\b))
+  0)

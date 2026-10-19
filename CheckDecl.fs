@@ -332,7 +332,9 @@ type Signature =
       /// the associated types it pins. The trait is the name as written.
       Constraints: TraitConstraint list }
 
-/// A `(where ...)` of a signature or of an imported binding as constraints.
+/// A `(where ...)` of a signature, an imported binding or an implementation
+/// as constraints. `name` says whose, for a message: `'f'`, or "the
+/// implementation of 'Iterable'".
 ///
 /// A pin names an associated type of its trait, once. That is checked here
 /// when the trait is known; a trait not known yet is reported where the
@@ -355,11 +357,11 @@ let private signatureConstraints
                         | names -> "it has " + (names |> List.map (fun n -> "#:" + n) |> String.concat ", ")
 
                     failwithf
-                        $"Type Error at %s{Lexer.formatPos c.MCRange}: '%s{c.MCTrait}' in the where clause of '%s{name}' has no associated type #:%s{pinName}; %s{listed}."
+                        $"Type Error at %s{Lexer.formatPos c.MCRange}: '%s{c.MCTrait}' in the where clause of %s{name} has no associated type #:%s{pinName}; %s{listed}."
 
             for (pinName, _) in c.MCPins |> List.countBy fst |> List.filter (fun (_, n) -> n > 1) do
                 failwithf
-                    $"Type Error at %s{Lexer.formatPos c.MCRange}: #:%s{pinName} is pinned more than once in the where clause of '%s{name}'."
+                    $"Type Error at %s{Lexer.formatPos c.MCRange}: #:%s{pinName} is pinned more than once in the where clause of %s{name}."
         | None -> ()
 
         { TraitName = c.MCTrait
@@ -440,7 +442,7 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
         let signature =
             { Type = resolveTypeAnnotation env.Registry ftype
               Written = Some ftype
-              Constraints = signatureConstraints env.Registry (resolveTypeAnnotation env.Registry) name constraints }
+              Constraints = signatureConstraints env.Registry (resolveTypeAnnotation env.Registry) $"'%s{name}'" constraints }
 
         env, Map.add name signature sigs, []
 
@@ -864,18 +866,9 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
     // What the pins say, granted to the body as given equalities, as a
     // member's are (see `checkImplMethod`): `(assoc Iterable elem %s)` is
     // `(Tuple %k %v)` for the whole body. `Unification.prune` reads them.
-    let givenPins =
-        explicitConstraints
-        |> List.collect (fun c -> c.Pins |> List.map (fun (a, t) -> c.TraitName, a, c.TargetType, t))
-
     let outerPins = env.Registry.PinnedAssocs
 
-    let env =
-        if givenPins.IsEmpty then
-            env
-        else
-            { env with
-                Registry = { env.Registry with PinnedAssocs = givenPins @ env.Registry.PinnedAssocs } }
+    let env = withPinsOf explicitConstraints env
 
     // From here up to `exitLevel` below we are one level in: parameters
     // without a signature, the return type and everything the body creates are born deeper than
@@ -1089,8 +1082,9 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
 
     solvePending env
 
+    // Every pin in force, the enclosing implementation's included.
     let typedBody, typedKeywordArgs =
-        if givenPins.IsEmpty then
+        if env.Registry.PinnedAssocs.IsEmpty then
             typedBody, typedKeywordArgs
         else
             applyPins env.Registry typedBody,
@@ -1956,7 +1950,7 @@ and private checkExtern (env: Env) (sigs: Sigs) (name: string) (declaredOrigin: 
     let (Scheme(vars, _, schemeType)) = scheme
     // Add constraints from DLL metadata
     let constraints =
-        signatureConstraints env.Registry (resolveTypeAnnotation env.Registry) name whereClause
+        signatureConstraints env.Registry (resolveTypeAnnotation env.Registry) $"'%s{name}'" whereClause
         |> List.map (fun c -> { c with TraitName = originalName env.Registry c.TraitName })
 
     let vars = vars @ pinOnlyVars env.Registry vars constraints
@@ -2417,11 +2411,10 @@ and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorV
 
     finalEnv, sigs, [ TTrait(traitName, implementorVar, kind, holeArity, assocTypes, hmSignatures, r) ]
 
-and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExpr: FType) (assocBindings: (string * FType) list) (whereClause: (string * string) list) (implMethodWheres: (string * MemberConstraint list) list) (methods: Decl list) (r: Range) : Env * Sigs * TDecl list =
+and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExpr: FType) (assocBindings: (string * FType) list) (whereClause: MemberConstraint list) (implMethodWheres: (string * MemberConstraint list) list) (methods: Decl list) (r: Range) : Env * Sigs * TDecl list =
     // The trait may be written under a spelling a `prefix` produced; the
     // registries are keyed on the name the `def/trait` gave it.
     let traitName = originalName env.Registry traitName
-    let whereClause = whereClause |> List.map (fun (t, v) -> originalName env.Registry t, v)
     let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
 
     let typeKey =
@@ -2528,8 +2521,16 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
     let targetVars = freeTVars env.Registry targetType |> Set.ofList
 
     let implConstraints =
-        whereClause
-        |> List.map (fun (cTrait, varName) ->
+        signatureConstraints env.Registry (resolveTypeAnnotation env.Registry) $"the implementation of '%s{traitName}'" whereClause
+        |> List.map (fun c -> { c with TraitName = originalName env.Registry c.TraitName })
+        |> List.map (fun c ->
+            let cTrait = c.TraitName
+
+            let varName =
+                match c.TargetType with
+                | TVar v -> v
+                | _ -> ""
+
             if not (Set.contains varName targetVars) then
                 let written = "%" + varName.TrimStart('\'')
 
@@ -2546,7 +2547,17 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
                     failwithf
                         $"Type Error at %s{Lexer.formatPos r}: '%s{cTrait}' is an inline-only trait, so it cannot appear in an implementation's where clause. There is no dictionary for the impl to carry."
 
-                { TraitName = cTrait; TargetType = TVar varName; Pins = [] })
+                // A pin says what an associated type of the constrained
+                // variable's implementation is, and may say it only in
+                // terms of the impl's own variables: there is nothing else
+                // for the class to be generic over.
+                for (pinName, pinType) in c.Pins do
+                    for v in freeTVars env.Registry pinType do
+                        if not (Set.contains v targetVars) then
+                            failwithf
+                                $"Type Error at %s{Lexer.formatPos r}: the where clause of this implementation pins #:%s{pinName} of '%s{cTrait}' to a type that names '%%%s{v.TrimStart('\'')}', which the implemented type does not mention. A pin of an impl is written over the impl's own type variables."
+
+                c)
 
     // A projection in an associated type, `(assoc Iterable elem %s)`, names
     // the impl of a type this impl does not know. It is that impl's only
@@ -2712,9 +2723,13 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
         | TTuple args -> TTuple(args |> List.map applySubst)
         | _ -> t
 
+    // The where clause's pins hold in every method's body: `(Iterable %b
+    // #:elem (assoc Iterable elem %a))` says the two element types are one.
     let typedMethods =
         methods
-        |> List.map (checkImplMethod regEnv traitInfo implTarget implConstraints targetType traitName applySubst substitutions r)
+        |> List.map (
+            checkImplMethod (withPinsOf implConstraints regEnv) traitInfo implTarget implConstraints targetType traitName applySubst substitutions r
+        )
 
     // Ensure all required methods from the trait are implemented
     let requiredMethods =
@@ -2796,9 +2811,16 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
                 | TVar v -> v
                 | other -> failwithf $"Internal error: impl constraint over %s{DotNetInterop.showType other}"
 
+            // A pinned associated type is the pinned type, and no type
+            // parameter of the class.
             let assocArgs =
                 match Map.tryFind c.TraitName finalEnv.Registry.Traits with
-                | Some info -> info.AssociatedTypes |> List.map (fun a -> TAssoc(c.TraitName, a, c.TargetType))
+                | Some info ->
+                    info.AssociatedTypes
+                    |> List.map (fun a ->
+                        match List.tryFind (fun (p, _) -> p = a) c.Pins with
+                        | Some(_, pinned) -> pinned
+                        | None -> TAssoc(c.TraitName, a, c.TargetType))
                 | None -> []
 
             dictParamName c.TraitName varName, TCon(c.TraitName, c.TargetType :: assocArgs))
@@ -3174,13 +3196,12 @@ and private checkImplMethod
 
     | _ -> failwithf $"Only 'defun' declarations are allowed inside 'impl' at %s{Lexer.formatPos r}"
 
-and private checkImplExtern (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExpr: FType) (assocBindings: (string * FType) list) (whereClause: (string * string) list) (r: Range) : Env * Sigs * TDecl list =
+and private checkImplExtern (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExpr: FType) (assocBindings: (string * FType) list) (whereClause: MemberConstraint list) (r: Range) : Env * Sigs * TDecl list =
     // A bodyless implementation, read back from a compiled module's
     // metadata. Only the registry needs to learn about it: the methods are
     // already compiled into the assembly that declared it, so there is
     // nothing to type-check and nothing to emit.
     let traitName = originalName env.Registry traitName
-    let whereClause = whereClause |> List.map (fun (t, v) -> originalName env.Registry t, v)
     let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
 
     let typeKey =
@@ -3205,8 +3226,8 @@ and private checkImplExtern (env: Env) (sigs: Sigs) (traitName: string) (targetT
     // for `(List int)` itself, so it has to know a `(->str int)` goes inside
     // — the impl class in the other assembly has no `Instance` to reach for.
     let implConstraints =
-        whereClause
-        |> List.map (fun (cTrait, varName) -> { TraitName = cTrait; TargetType = TVar varName; Pins = [] })
+        signatureConstraints env.Registry (resolveTypeAnnotation env.Registry) $"the implementation of '%s{traitName}'" whereClause
+        |> List.map (fun c -> { c with TraitName = originalName env.Registry c.TraitName })
 
     let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
     addImplementation traitName typeKey targetType implTarget hmAssocBindings env, sigs, []
@@ -3416,7 +3437,7 @@ and internal checkDeclGroup
                 [ name,
                   { Type = resolveSigAt r ftype
                     Written = Some ftype
-                    Constraints = signatureConstraints sigRegistry (resolveSigAt r) name constraints } ]
+                    Constraints = signatureConstraints sigRegistry (resolveSigAt r) $"'%s{name}'" constraints } ]
             // A trait's method signatures are not put here. The trait binds its
             // methods itself, and a signature here would also be the expected
             // type of a module-level `def` that binds over a method: in a

@@ -1079,6 +1079,13 @@ let rec private inlineDecl (ctx: Ctx) (decl: TDecl) : TDecl =
         // gratuitous copy of itself before falling back.
         let ctor = implCtorKey targetType |> Option.defaultValue ""
 
+        // A splice is checked again in a body, so under the pins the body was
+        // checked under: those of the where clause.
+        let ctx =
+            match Map.tryFind (traitName, ctor) ctx.Env.Registry.ImplTargets with
+            | Some target -> { ctx with Env = withPinsOf target.Constraints ctx.Env }
+            | None -> ctx
+
         // A method of an impl is its own recursive edge. Holding its key down
         // over its own body means a self-call becomes the landing pad, which
         // `LoopLowering` then recognizes and turns into a loop — rather than one
@@ -1108,8 +1115,16 @@ let rec private inlineDecl (ctx: Ctx) (decl: TDecl) : TDecl =
             @ (rest |> Option.map fst |> Option.toList)
             |> List.fold (fun acc n -> Set.add n acc) (localBinders body)
 
+        // A splice is checked again in the body, so under the pins the body
+        // was checked under.
+        let env =
+            match Map.tryFind name ctx.Env.Bindings with
+            | Some { Scheme = Scheme(_, constraints, _) } -> withPinsOf constraints ctx.Env
+            | None -> ctx.Env
+
         inlineInTwoPasses
             { ctx with
+                Env = env
                 Active = active
                 Shadowed = shadowed
                 CanSuspend = pruneEffect effect = EAsync }
@@ -1135,9 +1150,6 @@ and private inlineInTwoPasses (ctx: Ctx) (decl: TDecl) : TDecl =
     let first = TypeVisitor.mapDecl (inlineExpr { ctx with SecondPass = false }) decl
     TypeVisitor.mapDecl (inlineExpr { ctx with SecondPass = true }) first
 
-/// Inlines every statically resolvable trait call in the program, every call
-/// of a published function that is given a known function, and every plain
-/// call of a function written `#:inline` that may take a copy.
 /// The copies of `#:inline` functions (see `InlineCopies`) that nothing names
 /// any longer, taken out. Each of their calls was given the copy's body, so
 /// the copy would be emitted and never called. A copy that a kept copy names
@@ -1196,6 +1208,9 @@ let private dropUnusedInlineCopies (copies: Set<string>) (decls: TDecl list) : T
 
     drop decls
 
+/// Inlines every statically resolvable trait call in the program, every call
+/// of a published function that is given a known function, and every plain
+/// call of a function written `#:inline` that may take a copy.
 let run (env: Env) (moduleOf: Map<string, string * string>) (decls: TDecl list) : TDecl list =
     let qualified =
         moduleOf

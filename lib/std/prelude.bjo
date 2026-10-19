@@ -19,7 +19,7 @@
   Range
   ArraySlice ReverseArraySlice VecSlice ReverseVecSlice
   VecBackCursor StringWalk ListTails PortReads UpFrom DownFrom
-  Enumerated Zipped
+  Enumerated Zipped Cycled Pairwise Repeated Chained
   Listing ListingReverse Vecing VecingSmall Mapping Stringing Summing Counting Folding
   VecingInto ListingInto ListingReverseInto MappingInto
   InputPort OutputPort Exception Encoding
@@ -30,7 +30,7 @@
   seq-enumerate flat-map any? all? find for-each ->seq
   ->list ->vec count first ->map
   ;; Adapters
-  enumerate zip
+  enumerate zip in-cycle pairwise in-repeat chain
   ;; Cursor.
   cursor-start cursor-end cursor-end? cursor-ref cursor-next cursor-prev
   ;; Collector
@@ -1107,6 +1107,151 @@
     (def (Tuple kl kr) c)
     (iterable-cleanup (record-ref z left) kl)
     (iterable-cleanup (record-ref z right) kr)))
+
+;; Each element of `inner` with the one after it: (Tuple a b), one fewer
+;; than `inner` has, in one walk of it.
+(type (: (Pairwise %s) (Struct (: inner %s))))
+
+(: pairwise (-> %s (Pairwise %s)) (where (Iterable %s)))
+(defun (pairwise s) (Pairwise (inner s)))
+
+;; The cursor is the element before and the inner cursor at the one after.
+;; `start` takes the first element, so it asks the inner `done?` of the first
+;; cursor itself; `None` before says the inner iterable was empty, and no
+;; `done?` is asked again of that cursor. `current` and `next` both read the
+;; element at the inner cursor.
+(impl (Iterable (Pairwise %s)) (where (Iterable %s))
+  (type %elem (Tuple (assoc Iterable elem %s) (assoc Iterable elem %s)))
+  (type %cursor (Tuple (Option (assoc Iterable elem %s)) (assoc Iterable cursor %s)))
+  ;; One tuple, not one per branch, and `done?` with `or` rather than a
+  ;; `match`: over an array, the loop is then faster than one that indexes
+  ;; the array twice.
+  (defun (iterable-start w)
+    (def k (iterable-start (record-ref w inner)))
+    (def empty (iterable-done? (record-ref w inner) k))
+    (Tuple (if empty None (Some (iterable-current (record-ref w inner) k)))
+           (if empty k (iterable-next (record-ref w inner) k))))
+  (defun (iterable-done? w c)
+    (def (Tuple before k) c)
+    (or (none? before) (iterable-done? (record-ref w inner) k)))
+  (defun (iterable-current w c)
+    (def (Tuple before k) c)
+    (Tuple (option-ref before) (iterable-current (record-ref w inner) k)))
+  (defun (iterable-next w c)
+    (def (Tuple _ k) c)
+    (Tuple (Some (iterable-current (record-ref w inner) k))
+           (iterable-next (record-ref w inner) k)))
+  (defun (iterable-end w c)
+    (def (Tuple _ k) c)
+    (iterable-end (record-ref w inner) k))
+  (defun (iterable-cleanup w c)
+    (def (Tuple _ k) c)
+    (iterable-cleanup (record-ref w inner) k)))
+
+;; The elements of `first` and then those of `second`: two iterables with one
+;; element type, of any two kinds.
+(type (: (Chained %a %b) (Struct (: first %a) (: second %b))))
+
+(: chain (-> %a %b (Chained %a %b)) (where (Iterable %a #:elem %e) (Iterable %b #:elem %e)))
+(defun (chain a b) (Chained (first a) (second b)))
+
+;; The cursor is a flag, which says the walk is on the second, and a cursor
+;; for each side. A first's `done?` that answers true moves the walk to the
+;; second, which a `done?` of this adapter cannot do, since it answers no
+;; cursor: so the first's is asked where the cursor is made, by `start` and
+;; by `next`, once for each of its cursors, and on the first side this
+;; `done?` answers false without asking. So `next` reads the element after
+;; the current one before a loop does, as `in-cycle` does. The second side's
+;; cursor is made at the start, and its `done?` is the one a loop asks. The
+;; pin is what lets `current` answer either side's element as one type.
+(impl (Iterable (Chained %a %b))
+  (where (Iterable %a) (Iterable %b #:elem (assoc Iterable elem %a)))
+  (type %elem (assoc Iterable elem %a))
+  (type %cursor (Tuple bool (assoc Iterable cursor %a) (assoc Iterable cursor %b)))
+  (defun (iterable-start h)
+    (def ka (iterable-start (record-ref h first)))
+    (Tuple (iterable-done? (record-ref h first) ka) ka (iterable-start (record-ref h second))))
+  (defun (iterable-done? h c)
+    (def (Tuple on-second _ kb) c)
+    (and on-second (iterable-done? (record-ref h second) kb)))
+  (defun (iterable-current h c)
+    (def (Tuple on-second ka kb) c)
+    (if on-second
+        (iterable-current (record-ref h second) kb)
+        (iterable-current (record-ref h first) ka)))
+  (defun (iterable-next h c)
+    (def (Tuple on-second ka kb) c)
+    (if on-second
+        (Tuple #t ka (iterable-next (record-ref h second) kb))
+        (let ((next-a (iterable-next (record-ref h first) ka)))
+          (Tuple (iterable-done? (record-ref h first) next-a) next-a kb))))
+  ;; Both sides, whichever the walk is on: an end of a cursor whose `done?`
+  ;; answered true does nothing, as the protocol says, and with no test
+  ;; here, ends that do nothing leave the loop no guard.
+  (defun (iterable-end h c)
+    (def (Tuple _ ka kb) c)
+    (iterable-end (record-ref h first) ka)
+    (iterable-end (record-ref h second) kb))
+  (defun (iterable-cleanup h c)
+    (def (Tuple _ ka kb) c)
+    (iterable-cleanup (record-ref h first) ka)
+    (iterable-cleanup (record-ref h second) kb)))
+
+;; `item`, `times` times, or without end when `times` is `repeat-endless`,
+;; which is what `in-repeat` gives when no count is written. It is
+;; `int-min`, which no count written as a count is.
+(type (: (Repeated %a) (Struct (: item %a) (: times int))))
+
+(: repeat-endless int)
+(def repeat-endless -2147483648)
+
+(: in-repeat (-> %a (#:times int) (Repeated %a)))
+(defun (in-repeat x #:times repeat-endless) (Repeated (item x) (times times)))
+
+(impl (Iterable (Repeated %a))
+  (type %elem %a)
+  (type %cursor int)
+  (defun (iterable-start r) 0)
+  (defun (iterable-done? r i)
+    (and (not (= (record-ref r times) repeat-endless)) (>= i (record-ref r times))))
+  (defun (iterable-current r i) (record-ref r item))
+  (defun (iterable-next r i) (+ i 1)))
+
+;; The elements of `inner`, over and over: when a walk of it ends, the next
+;; one starts. It ends when a walk yields nothing, so the cycle of an empty
+;; iterable is empty, and so is the next pass over a port that is used up.
+(type (: (Cycled %s) (Struct (: inner %s))))
+
+(: in-cycle (-> %s (Cycled %s)) (where (Iterable %s)))
+(defun (in-cycle s) (Cycled (inner s)))
+
+;; `done?` of the inner iterable is asked once for each of its cursors, as
+;; the protocol wants: a cursor over a sequence pulls when asked. So `next`
+;; asks it of the cursor it makes, and the flag in the cursor says that it
+;; answered false; when it answered true, `next` starts the next walk, and
+;; `done?` asks of that cursor in turn. `next` therefore pulls the element
+;; after the current one before a loop asks for it, as `zip` does on its
+;; left side.
+(impl (Iterable (Cycled %s)) (where (Iterable %s))
+  (type %elem (assoc Iterable elem %s))
+  (type %cursor (Tuple bool (assoc Iterable cursor %s)))
+  (defun (iterable-start y) (Tuple #f (iterable-start (record-ref y inner))))
+  (defun (iterable-done? y c)
+    (def (Tuple asked k) c)
+    (and (not asked) (iterable-done? (record-ref y inner) k)))
+  (defun (iterable-current y c) (iterable-current (record-ref y inner) (snd c)))
+  (defun (iterable-next y c)
+    (def (Tuple _ k) c)
+    (def n (iterable-next (record-ref y inner) k))
+    (if (iterable-done? (record-ref y inner) n)
+        (Tuple #f (iterable-start (record-ref y inner)))
+        (Tuple #t n)))
+  (defun (iterable-end y c)
+    (def (Tuple _ k) c)
+    (iterable-end (record-ref y inner) k))
+  (defun (iterable-cleanup y c)
+    (def (Tuple _ k) c)
+    (iterable-cleanup (record-ref y inner) k)))
 
 
 ;; ---------------------------------------------------------------------------

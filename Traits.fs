@@ -223,6 +223,25 @@ let private instantiateImplPrefix (target: ImplTarget) : HMType list * HMType li
     let prefix = target.FixedPrefix |> List.map (substTypeVars subst)
     prefix, vars |> List.map (fun v -> subst[v]), subst
 
+/// The pin equations a constrained member's instantiation raised — one per
+/// `#:assoc` in its `(where ...)`, per call. Each says "this associated-type
+/// projection equals that type"; both sides may still be metavariables when
+/// queued, so they wait in line until resolution has fed them, exactly as a
+/// wanted does.
+let private pinEquations = ResizeArray<HMType * HMType * string * Lexer.Range>()
+
+/// Queues the pins of a constraint in an implementation's where clause, at
+/// the types `subst` gives the implementation's variables: the impl of
+/// `traitName` holds there only if each does.
+let private queueImplPins (traitName: string) (target: ImplTarget) (c: TraitConstraint) (subst: Map<string, HMType>) (r: Lexer.Range) : unit =
+    for (assocName, pinType) in c.Pins do
+        pinEquations.Add(
+            TAssoc(c.TraitName, assocName, substTypeVars subst c.TargetType),
+            substTypeVars subst pinType,
+            $"the associated type #:%s{assocName} of '%s{c.TraitName}', which the where clause of the implementation of '%s{traitName}' for '%s{Naming.showTypeName target.Ctor}' pins",
+            r
+        )
+
 let private tryResolveWanted (env: Env) (w: Wanted) : bool =
     if w.Ref.Resolved.IsSome then
         true
@@ -329,6 +348,8 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
                 clrObligations.Add(c.TraitName, t, w.Range, $"by the implementation of '%s{w.Trait}' for '%s{Naming.showTypeName ctor}', which '%s{w.Method}' uses")
 
             for c in dictionaryConstraints registry target do
+                queueImplPins w.Trait target c subst w.Range
+
                 implObligations.Add(
                     c.TraitName,
                     substTypeVars subst c.TargetType,
@@ -410,13 +431,6 @@ let private defaultNumericLiterals (env: Env) : unit =
         | _ -> ()
 
     openNumbers.Clear()
-
-/// The pin equations a constrained member's instantiation raised — one per
-/// `#:assoc` in its `(where ...)`, per call. Each says "this associated-type
-/// projection equals that type"; both sides may still be metavariables when
-/// queued, so they wait in line until resolution has fed them, exactly as a
-/// wanted does.
-let private pinEquations = ResizeArray<HMType * HMType * string * Lexer.Range>()
 
 /// Drops whatever pin equations are still queued; see `clearWanteds`.
 let clearPinEquations () : unit = pinEquations.Clear()
@@ -513,6 +527,7 @@ let rec private checkImplObligation (env: Env) (traitName: string) (t: HMType) (
             match implFor env.Registry traitName ground with
             | Some(target, subst) ->
                 for c in target.Constraints do
+                    queueImplPins traitName target c subst r
                     checkImplObligation env c.TraitName (substTypeVars subst c.TargetType) r describe
             | None when Map.containsKey traitName env.Registry.BlanketImpls -> ()
             | None ->

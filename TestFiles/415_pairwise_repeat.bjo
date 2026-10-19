@@ -1,0 +1,96 @@
+;; `pairwise`, each element with the one after it, and `in-repeat`, one value
+;; over and over: adapters, as `enumerate` and `zip` are.
+;;
+;; Each is checked at several iterables, for the short cases, through a
+;; constrained function taken as a value, and, for `pairwise`, for what it
+;; pulls and passes on: one walk, `done?` once per inner cursor, the end at an
+;; early exit and the cleanup at an exception.
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (Exception (: System.Exception))
+  (Boom (: System.InvalidOperationException (-> string Boom))))
+
+;; Counts to `n`, and logs each `done?`, end and cleanup.
+(type (: Counter (Struct (: n int))))
+
+(def/mutable events '())
+
+(: log! (-> string void))
+(defun (log! e) (set! events (cons e events)))
+
+(: events-in-order (-> (List string)))
+(defun (events-in-order) (list-reverse events))
+
+(impl (Iterable Counter)
+  (type %elem int)
+  (type %cursor int)
+  (defun (iterable-start c) 0)
+  (defun (iterable-done? c i)
+    (log! (str "done? " (->str i)))
+    (>= i (record-ref c n)))
+  (defun (iterable-current c i) i)
+  (defun (iterable-next c i) (+ i 1))
+  (defun (iterable-end c i) (log! (str "end " (->str i))))
+  (defun (iterable-cleanup c i) (log! (str "cleanup " (->str i)))))
+
+(: counter (-> int Counter))
+(defun (counter n) (Counter (n n)))
+
+;; Generic over the iterable: the adapter's dictionary is built here.
+(: rises (-> %s int) (where (Iterable %s #:elem int)))
+(defun (rises s) #:no-inline {summing 1 (:for (Tuple a b) (pairwise s)) (:when (< a b))})
+
+(defun (main)
+  ;; --- pairwise ------------------------------------------------------------------
+  (expect "an array" {summing 1 (:for (Tuple a b) (pairwise #[1 3 2 5 4])) (:when (< a b))} 2)
+  (expect "a list" {listing (- b a) (:for (Tuple a b) (pairwise '(1 4 9 16)))} '(3 5 7))
+  (expect "a vec" (->list (pairwise [1 2 3])) (list (Tuple 1 2) (Tuple 2 3)))
+  (expect "a string" (->list (pairwise "abc")) (list (Tuple #\a #\b) (Tuple #\b #\c)))
+  (expect "a range" (->list (pairwise (range 0 3))) (list (Tuple 0 1) (Tuple 1 2)))
+  (expect "a sequence" (->list (pairwise (map (fun (x) (* 2 x)) '(1 2 3)))) (list (Tuple 2 4) (Tuple 4 6)))
+  (expect "one element" (->list (pairwise '(1))) '())
+  (expect "none" (->list (pairwise #[])) '())
+  (expect "count" (count (pairwise (range 0 10))) 9)
+  (expect "with enumerate" (->list (pairwise (enumerate "ab")))
+          (list (Tuple (Tuple 0 #\a) (Tuple 1 #\b))))
+  ;; One walk: a sequence's body runs once.
+  (def/mutable runs 0)
+  (def counted (seq (set! runs (+ runs 1)) (yield 1) (yield 2) (yield 3)))
+  (expect "a sequence walked once" (->list (pairwise counted)) (list (Tuple 1 2) (Tuple 2 3)))
+  (expect "its body ran once" runs 1)
+  (def at-vec rises)
+  (expect "generic" (at-vec [1 2 1 2]) 2)
+
+  ;; What it pulls and passes on.
+  (set! events '())
+  (expect "a counter" (->list (pairwise (counter 3))) (list (Tuple 0 1) (Tuple 1 2)))
+  (expect "done? once per cursor"
+          (->list (filter (fun (e) (string-starts-with? e "done?")) (events-in-order)))
+          (list "done? 0" "done? 1" "done? 2" "done? 3"))
+  (set! events '())
+  (loop (:for (Tuple a b) (pairwise (counter 9))) (:finish (= a 2)))
+  (expect "a :finish ends the inner cursor"
+          (->list (filter (fun (e) (string-starts-with? e "end")) (events-in-order)))
+          (list "end 3"))
+  (set! events '())
+  (match (try (loop (:for (Tuple a b) (pairwise (counter 9)))
+                    (:do (when (= b 4) (raise (cast Exception (Boom. "stop"))))))
+              #:catch (System.InvalidOperationException))
+    ((Ok _) (println "FAILURE: the loop did not throw"))
+    ((Err e) (println "ok: the loop threw")))
+  (expect "an exception cleans the inner cursor up"
+          (->list (filter (fun (e) (string-starts-with? e "cleanup")) (events-in-order)))
+          (list "cleanup 4"))
+
+  ;; --- in-repeat -----------------------------------------------------------------
+  (expect "a number of times" (->list (in-repeat 'a #:times 3)) '(a a a))
+  (expect "zero times" (->list (in-repeat 'a #:times 0)) '())
+  (expect "fewer than zero" (->list (in-repeat 'a #:times -2)) '())
+  (expect "without end, taken" (->list (take 4 (in-repeat 7))) '(7 7 7 7))
+  (expect "a side of a zip" {listing (Tuple k v) (:for (Tuple k v) (zip '(x y) (in-repeat 0)))}
+          (list (Tuple 'x 0) (Tuple 'y 0)))
+  (expect "count" (count (in-repeat "s" #:times 5)) 5)
+  (expect "first" (first (in-repeat #\z)) (Some #\z))
+  0)

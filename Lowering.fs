@@ -702,6 +702,10 @@ module DictionaryLowering =
                     cs
                 | None -> []
 
+            // The body was checked with the pins of its where clause in force,
+            // and the evidence built here for it is read with them too.
+            let env = withPinsOf constraints env
+
             match Scheme([], constraints, retType) with
             | Scheme(_, constraints, _) ->
                 // Inject dictionary parameters into generic functions at the
@@ -767,6 +771,13 @@ module DictionaryLowering =
                 )
 
         | TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods, r) ->
+            // The bodies were checked with the pins of the where clause in
+            // force, and the evidence built in them is read with them too.
+            let env =
+                match implCtorKey targetType |> Option.bind (fun k -> Map.tryFind (traitName, k) env.Registry.ImplTargets) with
+                | Some target -> withPinsOf target.Constraints env
+                | None -> env
+
             // A conditional impl's methods dispatch through the class's fields
             // rather than through parameters of their own. The names are the
             // same either way, so a body reads identically whether it ended up

@@ -260,6 +260,110 @@
   (field right "The right iterable.")
   (see zip))
 
+(:doc in-cycle
+  (summary "The elements of an iterable, over and over.")
+  (arg s "The iterable collection or sequence. Walked again each time a walk of it ends.")
+  (returns "A @code{(Cycled %s)}: an iterable of s's elements, without end unless s is empty.")
+  (see zip take Cycled)
+  (example """
+    (->list (take 5 (in-cycle '(1 2))))              ; (1 2 1 2 1)
+    {summing (* x w) (:for (Tuple x w) (zip #[5 6 7 8] (in-cycle '(1 -1))))}
+    ; 5 - 6 + 7 - 8 = -2
+    """)
+  (reference """
+    It ends when a walk of @code{s} yields nothing, so the cycle of an empty
+    iterable is empty rather than a loop that never yields. A sequence is
+    started again for each walk, which runs its body again; a sequence over a
+    port that is used up yields nothing the second time, and the cycle ends
+    there. To cycle what such a sequence yields once, collect it first:
+    @code{(in-cycle (->vec s))} walks @code{s} once, then cycles the vec by
+    index. @code{->vec} reads all of @code{s} before the first element, so
+    this is for a sequence that is finite and not too long.
+
+    A struct around @code{s}, as @code{zip} is, so a loop over it at a known
+    type inlines it with what it wraps and allocates nothing. Its step asks
+    @code{s} for the element after the current one before a loop does, so
+    over a sequence with effects one element more is read than is used.
+    """))
+
+(:doc Cycled
+  (summary "What @code{in-cycle} gives: an iterable of the elements of %s, over and over.")
+  (tparam %s "The iterable it walks again and again.")
+  (field inner "The iterable.")
+  (see in-cycle))
+
+(:doc pairwise
+  (summary "Each element of an iterable with the one after it.")
+  (arg s "The iterable collection or sequence.")
+  (returns "A @code{(Pairwise %s)}: an iterable of @code{(Tuple a b)}, one fewer than s has, and none when s has fewer than two.")
+  (see zip enumerate Pairwise)
+  (example """
+    {summing 1 (:for (Tuple a b) (pairwise #[1 3 2 5 4])) (:when (< a b))}   ; 2
+    {listing (- b a) (:for (Tuple a b) (pairwise '(1 4 9 16)))}            ; (3 5 7)
+    """)
+  (reference """
+    One walk of @code{s}: @code{(zip xs (drop 1 xs))} gives the same pairs
+    and walks @code{xs} twice, which runs a sequence twice. The first element
+    is read when the walk starts. A struct around @code{s}, as @code{zip}
+    is, so a loop over it at a known type inlines it and allocates nothing.
+    """))
+
+(:doc Pairwise
+  (summary "What @code{pairwise} gives: an iterable of each element of %s with the one after it.")
+  (tparam %s "The iterable it walks.")
+  (field inner "The iterable.")
+  (see pairwise))
+
+(:doc chain
+  (summary "The elements of one iterable, then those of another.")
+  (arg a "The first iterable.")
+  (arg b "The second iterable. Its elements are of the type a's are.")
+  (returns "A @code{(Chained %a %b)}: an iterable of a's elements and then b's.")
+  (see zip seq-append Chained)
+  (example """
+    (->list (chain #[1 2] '(3 4)))                     ; (1 2 3 4)
+    {summing x (:for x (chain (range 0 3) [10 20]))}   ; 33
+    """)
+  (reference """
+    The two may be iterables of different kinds, an array and a list, without
+    making either a sequence. A struct around both, as @code{zip} is, so a
+    loop over it at a known type inlines it and allocates nothing. Its step
+    on the first side asks it for the element after the current one before a
+    loop does, so over a sequence with effects one element more is read than
+    is used.
+    """))
+
+(:doc Chained
+  (summary "What @code{chain} gives: an iterable of the elements of %a and then of %b.")
+  (tparam %a "The first iterable.")
+  (tparam %b "The second iterable, of the same element type.")
+  (field first "The first iterable.")
+  (field second "The second iterable.")
+  (see chain))
+
+(:doc in-repeat
+  (summary "One value, over and over, or a given number of times.")
+  (arg x "The value.")
+  (key #:times "How many times. Without it, without end. Zero or less gives nothing.")
+  (returns "A @code{(Repeated %a)}: an iterable of x.")
+  (see in-cycle zip Repeated)
+  (example """
+    (->list (in-repeat 'a #:times 3))                  ; (a a a)
+    {listing (Tuple k v) (:for (Tuple k v) (zip '(x y) (in-repeat 0)))}
+    ; each key with 0
+    """)
+  (reference """
+    Mostly a side of a @code{zip}, which ends with its other side. The cursor
+    is a count, so a loop over it allocates nothing.
+    """))
+
+(:doc Repeated
+  (summary "What @code{in-repeat} gives: an iterable of one value, a number of times or without end.")
+  (tparam %a "The value's type.")
+  (field item "The value.")
+  (field times "How many times; @code{int-min} for without end.")
+  (see in-repeat))
+
 (:doc seq-enumerate
   (summary "A lazy sequence of each element paired with its index, from 0.")
   (arg s "The iterable collection or sequence.")

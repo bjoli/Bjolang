@@ -592,18 +592,16 @@ type ClassImportSpec =
       Exceptions: string list
       Range: Range }
 
-/// A trait constraint written in a *member's* `(where ...)` clause inside a
-/// `def/trait`, or in a function's signature: the trait, the constrained
-/// variable, and the associated types of that trait pinned by keyword —
+/// A trait constraint written in a `(where ...)`: of a trait *member* inside a
+/// `def/trait`, of a function's signature, or of an implementation. The
+/// trait, the constrained variable, and the associated types of that trait
+/// pinned by keyword —
 /// `(: into! (-> %c %s void) (where (Iterable %s #:elem %added #:cursor %k)))`.
-/// A member pins every associated type; a function pins those it names.
-///
-/// Distinct from the `(string * string)` pairs an impl's `where` carries,
-/// because an impl's constraint may not pin associated types. A function's or
-/// a member's constraint becomes type parameters and a dictionary argument at
-/// each call site; an impl-level one would have to become class parameters
-/// fixed at impl-declaration time, which is why the impl-level restriction
-/// stays.
+/// A member pins every associated type; a function and an implementation pin
+/// those they name. An implementation's pin is written over its own type
+/// variables, and an associated type it pins is no type parameter of its
+/// class: `(Iterable %b #:elem (assoc Iterable elem %a))` makes the two
+/// element types one.
 type MemberConstraint =
     { MCTrait: string
       MCVar: string
@@ -774,14 +772,14 @@ type Decl =
     // `(: name (where ...))` beside its `defun`, and is refused if it does not.
     // The trait's own clause stays the authority for what is checked; the
     // repetition is for the reader and for the diagnostic.
-    | DImpl of string * FType * (string * FType) list * (string * string) list * (string * MemberConstraint list) list * Decl list * Range
+    | DImpl of string * FType * (string * FType) list * MemberConstraint list * (string * MemberConstraint list) list * Decl list * Range
 
     // A declaration-only implementation: it records that the target type
     // implements the trait, and what its associated types are, without carrying
     // any method bodies. This is what a compiled module's metadata exports —
     // the methods themselves already live in that assembly.
     // DImplExtern (TraitName, TargetType, AssociatedTypeBindings, Constraints, Range)
-    | DImplExtern of string * FType * (string * FType) list * (string * string) list * Range
+    | DImplExtern of string * FType * (string * FType) list * MemberConstraint list * Range
 
 /// Gets the source code location (Range) of a declaration.
 ///

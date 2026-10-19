@@ -28,3 +28,38 @@
 (: indexed-squares (-> (Array int) int))
 (defun (indexed-squares a)
   {summing (* i x) (:for (Tuple i x) (seq-enumerate (map (fun (y) (* y y)) a)))})
+
+;; `in-cycle` at a known type inlines too: zipped with an array, the loop
+;; reads both arrays by index and builds no adapter dictionary.
+;; EXPECT-NO-CS: Iterable_prelude__Cycled
+;; EXPECT-NO-CS: looplive.*Cycled
+(: alternating (-> (Array int) (Array int) int))
+(defun (alternating a signs)
+  {summing (* x w) (:for (Tuple x w) (zip a (in-cycle signs)))})
+
+;; `pairwise` over an array inlines, with no dictionary, and reads the array
+;; by index.
+;; EXPECT-NO-CS: Iterable_prelude__Pairwise
+;; EXPECT-CS: \(loopseq__\d+\.inner\)\[\(k__\d+\)\]
+(: rises (-> (Array int) int))
+(defun (rises a)
+  {summing 1 (:for (Tuple x y) (pairwise a)) (:when (< x y))})
+
+;; `in-repeat` as a side of a zip: a count beside the array index.
+;; EXPECT-NO-CS: Iterable_prelude__Repeated
+(: doubled-sum (-> (Array int) int))
+(defun (doubled-sum a)
+  {summing (* x w) (:for (Tuple x w) (zip a (in-repeat 2)))})
+
+;; `chain` of an array and a list inlines too: no adapter dictionary, the
+;; array read by index and the list walked by its cells.
+;; EXPECT-NO-CS: Iterable_prelude__Chained
+;; EXPECT-NO-CS: looplive.*Chained<int\[\]
+(: chained-sum (-> (Array int) (List int) int))
+(defun (chained-sum a l)
+  {summing x (:for x (chain a l))})
+
+;; Over the dictionaries of a generic function's two sides, the impl inlines
+;; too, and no dictionary for the adapter is built.
+(: chained-total (-> %a %b int) (where (Iterable %a #:elem int) (Iterable %b #:elem int)))
+(defun (chained-total a b) #:no-inline {summing x (:for x (chain a b))})

@@ -1,0 +1,102 @@
+;; `in-cycle`: an adapter whose elements are those of the iterable it wraps,
+;; over and over.
+;;
+;; Checked at several iterables, for an empty one and one whose second walk is
+;; empty, with `zip` and `take`, through a constrained function taken as a
+;; value, and for what it passes on and pulls: the inner `done?` is asked once
+;; per cursor, an early exit ends the inner cursor, and an exception cleans it
+;; up.
+(import (std prelude))
+(import (std simpletest))
+(import (std ports))
+
+(import/class
+  (Exception (: System.Exception))
+  (Boom (: System.InvalidOperationException (-> string Boom))))
+
+;; Counts to `n`, and logs each `done?`, end and cleanup.
+(type (: Counter (Struct (: n int))))
+
+(def/mutable events '())
+
+(: log! (-> string void))
+(defun (log! e) (set! events (cons e events)))
+
+(: events-in-order (-> (List string)))
+(defun (events-in-order) (list-reverse events))
+
+(impl (Iterable Counter)
+  (type %elem int)
+  (type %cursor int)
+  (defun (iterable-start c) 0)
+  (defun (iterable-done? c i)
+    (log! (str "done? " (->str i)))
+    (>= i (record-ref c n)))
+  (defun (iterable-current c i) i)
+  (defun (iterable-next c i) (+ i 1))
+  (defun (iterable-end c i) (log! (str "end " (->str i))))
+  (defun (iterable-cleanup c i) (log! (str "cleanup " (->str i)))))
+
+(: counter (-> int Counter))
+(defun (counter n) (Counter (n n)))
+
+;; Generic over the iterable: the adapter's dictionary is built here.
+(: first-n (-> int %s (List %e)) (where (Iterable %s #:elem %e)))
+(defun (first-n n s) #:no-inline (->list (take n (in-cycle s))))
+
+(defun (main)
+  ;; --- the elements ------------------------------------------------------------
+  (expect "a list" (->list (take 5 (in-cycle '(1 2)))) '(1 2 1 2 1))
+  (expect "an array" (->list (take 7 (in-cycle #[1 2 3]))) '(1 2 3 1 2 3 1))
+  (expect "a vec" (->list (take 3 (in-cycle [9]))) '(9 9 9))
+  (expect "a string" (->list (take 5 (in-cycle "ab"))) (list #\a #\b #\a #\b #\a))
+  (expect "a range" (->list (take 5 (in-cycle (range 3 5)))) '(3 4 3 4 3))
+  (expect "a sequence" (->list (take 4 (in-cycle (map (fun (x) (* 10 x)) '(1 2))))) '(10 20 10 20))
+  (expect "an adapter" (->list (take 3 (in-cycle (enumerate "ab"))))
+          (list (Tuple 0 #\a) (Tuple 1 #\b) (Tuple 0 #\a)))
+  (expect "zip with a cycle ends with the other side"
+          {summing (* x w) (:for (Tuple x w) (zip #[5 6 7 8] (in-cycle '(1 -1))))}
+          -2)
+  (expect "first" (first (in-cycle "q")) (Some #\q))
+
+  ;; --- where it ends -----------------------------------------------------------
+  (expect "an empty iterable" (->list (take 3 (in-cycle '()))) '())
+  (expect "count of an empty one" (count (in-cycle #[])) 0)
+  ;; A walk of this sequence reads the port, so the second walk finds it used
+  ;; up, and the cycle ends there.
+  (def p (open-input-string "a\nb"))
+  (expect "a used-up port ends it"
+          (->list (in-cycle (port->seq (fun (q) (read-line q)) p)))
+          '("a" "b"))
+  ;; Each walk of a sequence runs its body again.
+  (def/mutable runs 0)
+  (def counted (seq (set! runs (+ runs 1)) (yield 1)))
+  (ignore (->list (take 3 (in-cycle counted))))
+  (expect "a sequence is walked again" runs 3)
+
+  ;; --- through a dictionary --------------------------------------------------------
+  (def at-vec first-n)
+  (expect "generic" (at-vec 4 [1 2 3]) '(1 2 3 1))
+
+  ;; --- what is passed on ---------------------------------------------------------
+  ;; `done?` once per cursor of each walk, the wrap included.
+  (set! events '())
+  (expect "the elements of a counter" (->list (take 5 (in-cycle (counter 2)))) '(0 1 0 1 0))
+  (expect "done? once per cursor"
+          (->list (filter (fun (e) (string-starts-with? e "done?")) (events-in-order)))
+          (list "done? 0" "done? 1" "done? 2" "done? 0" "done? 1" "done? 2" "done? 0" "done? 1"))
+  (set! events '())
+  (loop (:for x (in-cycle (counter 3))) (:finish (= x 1)))
+  (expect "a :finish ends the inner cursor"
+          (->list (filter (fun (e) (string-starts-with? e "end")) (events-in-order)))
+          (list "end 1"))
+  (set! events '())
+  (match (try (loop (:for x (in-cycle (counter 3)))
+                    (:do (when (= x 2) (raise (cast Exception (Boom. "stop"))))))
+              #:catch (System.InvalidOperationException))
+    ((Ok _) (println "FAILURE: the loop did not throw"))
+    ((Err e) (println "ok: the loop threw")))
+  (expect "an exception cleans the inner cursor up"
+          (->list (filter (fun (e) (string-starts-with? e "cleanup")) (events-in-order)))
+          (list "cleanup 2"))
+  0)

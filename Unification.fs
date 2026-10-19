@@ -311,6 +311,20 @@ let rec leafConstraints (registry: TraitRegistry) (traitName: string) (t: HMType
         | None -> []
     | _ -> []
 
+/// `env` with the pins of `constraints`, a function's own where clause, in
+/// force as given equalities: what its body was checked under. A pass after
+/// checking that infers or prunes in the body again needs them as well.
+let withPinsOf (constraints: TraitConstraint list) (env: Env) : Env =
+    let pins =
+        constraints
+        |> List.collect (fun c -> c.Pins |> List.map (fun (a, t) -> c.TraitName, a, c.TargetType, t))
+
+    if pins.IsEmpty then
+        env
+    else
+        { env with
+            Registry = { env.Registry with PinnedAssocs = pins @ env.Registry.PinnedAssocs } }
+
 /// `registry` with no given pin equalities in force.
 let withoutPins (registry: TraitRegistry) : TraitRegistry =
     if registry.PinnedAssocs.IsEmpty then

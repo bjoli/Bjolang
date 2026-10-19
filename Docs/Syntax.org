@@ -1215,7 +1215,7 @@ A member of an interface trait may carry its own ~(where ...)~, written after it
 
 ~#:elem %elem~ says the element the source yields *is* the one the sink takes — an equation checked at every call site. A fresh pin (~#:cursor %k~) says the association does not matter and becomes one more method-level generic.
 
-The member's dictionary is a leading parameter of the method itself, supplied per call; an impl is one class and its constraints are fixed before any call site exists, so the impl-level restriction on associated-type constraints stays.
+The member's dictionary is a leading parameter of the method itself, supplied per call. An implementation's where clause pins too, but only the associated types it names, over the implementation's own variables (see *Pins in an implementation's where clause*).
 
 The rules:
 - a member's ~where~ constrains variables of its own signature, never the implementor;
@@ -1330,6 +1330,18 @@ types may be written this way: a function's ~where~ cannot yet constrain a
 projection, and a function's signature should not name one at a concrete type.
 A function says what an associated type is with a pin instead (see *Pins in a
 function's where clause*).
+
+**** Pins in an implementation's where clause
+An implementation's ~where~ may pin associated types of the traits it names, as a function's may. The pin is written over the implementation's own type variables, so it relates them:
+
+#+BEGIN_SRC scheme
+(impl (Iterable (Chained %a %b))
+  (where (Iterable %a) (Iterable %b #:elem (assoc Iterable elem %a)))
+  (type %elem (assoc Iterable elem %a))
+  ...)
+#+END_SRC
+
+In the methods, the element type of ~%b~ is that of ~%a~, so a method may answer either side's element. The implementation holds at a type only where its pins do: ~(Chained (first #[1]) (second "ab"))~ is refused at its use, with the pin named. Through a dictionary, an associated type that is pinned is no type parameter of the class: the class above takes one for ~%a~'s element and none for ~%b~'s. A pin naming a type variable that the implemented type does not mention is an error.
 
 **** A ~where~ over a .NET interface
 A constraint may also name a trait that is a .NET interface, such as ~Num~. This is how ~summing~ works at every numeric type:
@@ -1965,6 +1977,10 @@ Loop levels implicitly structure iteration blocks. A new level opens when an ite
 - Each of these is a value, not an allocation: the walk lands in the loop's prologue and compiles to the same code the hand-written loop does. A vec slice walks by the vec's own enumerator, so an element costs an array read rather than a descent of the tree.
 - They are ordinary `Iterable`s, so `fold`, `map`, `filter`, `enumerate`, `any?`, `find` and the rest apply to them: `(fold + 0 (in-array a #:from 7))`.
 - `(enumerate s)` pairs each element with its index, and `(zip l r)` the elements of two iterables, until either ends. Each is an adapter: a struct around what it walks, so a loop over one at a known type is the loop an index beside a `:for`, or two lockstep `:for`s, would make, and allocates nothing: `(:for (Tuple i x) (enumerate xs))`. `seq-enumerate` is the `Seq` version, which fuses with a chain of `seql`s under it.
+- `(pairwise s)` gives each element with the one after it, `(Tuple a b)`, in one walk: `(zip xs (drop 1 xs))` gives the same pairs and walks `xs` twice. Over an array it runs faster than a loop that indexes the array twice.
+- `(chain a b)` gives the elements of `a` and then those of `b`, two iterables of any kinds with one element type, without making either a sequence.
+- `(in-repeat x)` gives `x` without end, and `(in-repeat x #:times n)` n times: mostly a side of a `zip`.
+- `(in-cycle s)` walks `s` over and over: when a walk ends, the next one starts. It ends when a walk yields nothing, so the cycle of an empty iterable is empty. It is an adapter too: `(zip xs (in-cycle '(1 -1)))` at known types reads both by index, and allocates nothing. Its step asks `s` for the next element before the loop does, so over a sequence with effects one element more is read than is used. A sequence is started again for each walk; to cycle what a one-shot sequence yields once, write `(in-cycle (->vec s))`, which reads all of `s` first.
 - A loop calls `iterable-end` on each cursor that it leaves before the cursor's `iterable-done?` answered true: at a `:finish`, an `:abandon`, or when another driver of the level ends first. When an exception or a non-local exit, such as `ret` of a `with-return`, leaves the loop, it calls `iterable-cleanup` on each live cursor instead. A walk that holds a resource, as `file-read-lines/seq` holds its file, releases it in both, so it is released on every way out. Each cursor gets one of the calls at most, and an inner level's cursor gets it before an outer level's. A `seql` that its consumer stops early cleans up the walks it has open in the same way.
 - The `iterable-cleanup` calls come from a `try`/`finally` around the loop. Where every `iterable-cleanup` of the loop does nothing, which is the default and true for every iterable of the libraries except `Seq`, the compiler removes the `try`, and the loop compiles as it does without one. An `iterable-end` alone does not put a `try` around a loop.
 - `in-port` reads one element ahead, because `done?` has to know before `current` is asked — so a loop left by `:finish` has consumed the element it did not look at. It also *blocks*: `Iterable`'s methods are synchronous, so the reader's sync copy is what runs even inside a bjoroutine. A port that should suspend wants `port->seq`, or `port-fold`, whose callback carries either colour.

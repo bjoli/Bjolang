@@ -1,0 +1,18 @@
+;; A pin in an implementation's where clause is written over the impl's own
+;; type variables: the class has nothing else to be generic over.
+
+;; EXPECT-ERROR: pins #:elem of 'Iterable' to a type that names '%e', which the implemented type does not mention.
+
+(import (std prelude))
+
+(type (: (Wrap %s) (Struct (: inner %s))))
+
+(impl (Iterable (Wrap %s)) (where (Iterable %s #:elem %e))
+  (type %elem (assoc Iterable elem %s))
+  (type %cursor (assoc Iterable cursor %s))
+  (defun (iterable-start w) (iterable-start (record-ref w inner)))
+  (defun (iterable-done? w c) (iterable-done? (record-ref w inner) c))
+  (defun (iterable-current w c) (iterable-current (record-ref w inner) c))
+  (defun (iterable-next w c) (iterable-next (record-ref w inner) c)))
+
+(defun (main args) 0)

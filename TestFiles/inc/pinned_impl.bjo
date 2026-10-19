@@ -1,0 +1,24 @@
+;; An implementation whose where clause pins an associated type, for
+;; 416_chain.bjo to use across a module boundary: the pin travels in the
+;; impl/extern this module publishes.
+(import (std prelude))
+
+(export Both both)
+
+;; The elements of `left` and then of `right`, which have one element type.
+(type (: (Both %l %r) (Struct (: left %l) (: right %r))))
+
+(: both (-> %l %r (Both %l %r)) (where (Iterable %l #:elem %e) (Iterable %r #:elem %e)))
+(defun (both l r) (Both (left l) (right r)))
+
+;; Collects both sides into a list first: what matters here is the pin, not
+;; the walk.
+(impl (Iterable (Both %l %r))
+  (where (Iterable %l) (Iterable %r #:elem (assoc Iterable elem %l)))
+  (type %elem (assoc Iterable elem %l))
+  (type %cursor (List (assoc Iterable elem %l)))
+  (defun (iterable-start b)
+    (list-append (->list (record-ref b left)) (->list (record-ref b right))))
+  (defun (iterable-done? b c) (list-empty? c))
+  (defun (iterable-current b c) (list-head c))
+  (defun (iterable-next b c) (list-tail c)))

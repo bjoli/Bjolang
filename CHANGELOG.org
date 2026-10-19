@@ -3,6 +3,78 @@
 
 What each change guarantees, and what it leaves open.
 
+* pairwise, chain and in-repeat; an implementation's where clause pins associated types
+
+- ~(pairwise s)~ gives a ~(Pairwise %s)~: each element with the one after
+  it, ~(Tuple a b)~, in one walk. ~(zip xs (drop 1 xs))~ gives the same pairs
+  and walks ~xs~ twice, which runs a sequence twice. The cursor is the
+  element before, as an ~Option~, and the inner cursor; ~start~ reads the
+  first element. Over a million-element array, counting rises takes 461 µs,
+  against 523 µs for the loop that indexes the array twice and 4.17 ms for
+  ~(zip a (drop 1 a))~.
+- ~(chain a b)~ gives a ~(Chained %a %b)~: the elements of ~a~ and then those
+  of ~b~, two iterables of any kinds with one element type, neither made a
+  sequence. The cursor is a flag for the side and a cursor for each. The
+  first side's ~done?~ is asked where its cursor is made, so the step reads
+  one element ahead there, as ~in-cycle~'s does. ~iterable-end~ and
+  ~iterable-cleanup~ go to both sides; the protocol lets an end come after a
+  ~done?~ that answered true. Summing two arrays of 500 000 through it takes
+  894 µs, against 319 µs for two loops and 5.5 ms for ~seq-append~ of their
+  sequences: each step tests the side, and the JIT keeps the bounds checks.
+- ~(in-repeat x)~ gives a ~(Repeated %a)~: ~x~ without end, or
+  ~#:times n~ times. The cursor is a count. Mostly a side of a ~zip~.
+- All three are adapters, as ~enumerate~ and ~zip~ are: at a known type a
+  loop over one inlines it, with no dictionary.
+- *An implementation's where clause pins associated types:* ~(impl (Iterable
+  (Chained %a %b)) (where (Iterable %a) (Iterable %b #:elem (assoc Iterable
+  elem %a))) ...)~. A pin is written over the implementation's own type
+  variables. In the methods it is a given equation (~withPinsOf~ in
+  ~checkImpl~, and again in ~TraitInline~ and ~Lowering~ for the bodies).
+  Where the implementation is chosen at a type, each pin is an equation of
+  that use (~Traits.queueImplPins~), and a use that breaks one is refused,
+  naming the pin. A pinned associated type is no type parameter of the
+  class (~implAssocTypeArgs~), and the dictionary field has the pinned type.
+  Pins travel in the published ~impl/extern~.
+- *Fix: an ~impl/extern~ where clause of another shape was dropped.* The
+  parser for it read ~(Trait %var)~ and nothing else; ~impl~ and
+  ~impl/extern~ now share the parser a signature's where clause uses.
+- *Fix: pins in a method's body.* ~checkDefun~ wrote the pinned types into a
+  body's types only for its own where clause; it does so for every pin in
+  force, an enclosing implementation's and a member's included.
+- Tests: ~415_pairwise_repeat.bjo~, ~416_chain.bjo~ (with ~inc/pinned_impl~,
+  an implementation with a pin in another module), cases in
+  ~codegen/adapters.bjo~, errors ~impl_pin_mismatch~, ~impl_pin_foreign_var~
+  and ~impl_pin_unknown_assoc~.
+
+* in-cycle: an iterable over and over
+
+- ~(in-cycle s)~ gives a ~(Cycled %s)~: the elements of ~s~, and when a walk
+  of it ends, those of the next walk. It ends when a walk yields nothing, so
+  the cycle of an empty iterable is empty, and a sequence over a port that is
+  used up ends after its one walk. A sequence is started again for each walk,
+  which runs its body again.
+- An adapter, as ~enumerate~ and ~zip~ are, so a loop over it at a known type
+  inlines it with what it wraps. Its cursor is the inner one and a flag that
+  says the inner ~done?~ has answered for it: the protocol asks ~done?~ once
+  per cursor, and a sequence's cursor pulls when asked, so the step asks it of
+  the cursor it makes and, if the walk is over, starts the next. So the step
+  reads one element ahead, as ~zip~ does on its left side. ~iterable-end~ and
+  ~iterable-cleanup~ are passed on.
+- *Speed.* Over a million-element array, ~{summing (* x w) (:for (Tuple x w)
+  (zip a (in-cycle signs)))}~ takes 811 µs and allocates nothing, against
+  749 µs for the loop that indexes ~signs~ with ~(% i 3)~.
+- *Fix: pins after checking.* ~TraitInline~ checks a splice again in the body
+  it lands in, and ~Lowering~ builds evidence there, both without the pins
+  the body was checked under. A function pinning ~#:elem~ that called a
+  conditional implementation's method, such as ~take~ of a ~Cycled~, failed
+  to inline it, and its evidence named the projection's type parameter,
+  which the function does not have (CS0246). Both put the function's pins in
+  force for its body (~Unification.withPinsOf~).
+- Tests: ~414_in_cycle.bjo~ (several iterables, an empty one, a used-up port,
+  a sequence walked again, with ~zip~ and ~take~, through a dictionary, ~done?~
+  once per cursor, the end at a ~:finish~ and the cleanup at an exception), and
+  a case in ~codegen/adapters.bjo~.
+
 * The rest of the seq consumers are deprecated, and a library may deprecate a binding
 
 - ~seq->list~, ~seq->vec~, ~seq->map~, ~seq-length~ and ~seq-head~ are

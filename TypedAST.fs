@@ -2224,7 +2224,11 @@ let implAssocTypeArgs (registry: TraitRegistry) (target: ImplTarget) : (string *
     dictionaryConstraints registry target
     |> List.collect (fun c ->
         match c.TargetType, Map.tryFind c.TraitName registry.Traits with
-        | TVar v, Some info -> info.AssociatedTypes |> List.map (fun a -> c.TraitName, v, a)
+        | TVar v, Some info ->
+            // A pinned one is the pinned type, written over the others.
+            info.AssociatedTypes
+            |> List.filter (fun a -> not (List.exists (fun (p, _) -> p = a) c.Pins))
+            |> List.map (fun a -> c.TraitName, v, a)
         | _ -> [])
 
 /// The constraints of an implementation's `(where ...)` over .NET interfaces.
