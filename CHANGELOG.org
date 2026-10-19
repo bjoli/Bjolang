@@ -3,6 +3,32 @@
 
 What each change guarantees, and what it leaves open.
 
+* (std simd): loads from MutableVecs, mask bits, and shifts
+
+- ~simd128-load~ and ~simd256-load~ are the methods of a new trait,
+  ~SimdSource~, and so are ~simd128-lanes~, ~simd256-lanes~ and
+  ~simd-source-length~. ~simd128-whole~ and ~simd256-whole~ take any source.
+  Arrays and ~MutableVec~ implement it. A load past the end raises
+  ~ArgumentOutOfRangeException~ for both. At a known type the load compiles
+  to the .NET call, as before for arrays. Code that loaded from arrays
+  compiles unchanged.
+- A string is not a source. Its positions are cursors, and a lane of its
+  bytes would be a byte index. ~string->bytes~ gives an array to search.
+- ~simd-mask-bits~ gives a mask as an int, bit i for lane i: the move-mask
+  instruction. A 32-lane mask with its last lane set is negative.
+- ~simd-shift-left~, ~simd-shift-right~ and ~simd-shift-right-logical~ shift
+  every lane, with the scalar shifts' meaning: ~simd-shift-right~ is
+  arithmetic for signed lanes and logical for unsigned ones. Integer lanes
+  only.
+- ~(std maths)~ has ~trailing-zeros~ and ~leading-zeros~ in ~Bits~, at every
+  integer type. With ~simd-mask-bits~ they find every match of a search, not
+  only the first.
+- Not yet: stores to anything but an array, lane conversions and
+  reinterpretation, shuffles, and 512-bit vectors.
+- Tests: ~407_simd_sources.bjo~ (a comma search over bytes across the
+  32-byte line, loads from each source, mask bits, shifts) and
+  ~codegen/simd_sources.bjo~, which checks that each load is the direct call.
+
 * A loop cleans up its cursors when an exception or a non-local exit leaves it
 
 - ~Iterable~ has a new method, ~iterable-cleanup~. A loop calls it on each

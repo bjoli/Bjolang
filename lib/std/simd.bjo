@@ -26,7 +26,8 @@
 ;; AVX2: elsewhere .NET emulates it, which is much slower than scalar code.
 ;; `simd256-accelerated?` says which. A Native AOT build has AVX2 only with
 ;; `(aot-cpu ...)`.
-(import (std prelude))
+(import (std prelude)
+        (std mutable vec))
 
 (:doc #:file "simd.bjodoc")
 
@@ -43,7 +44,11 @@
   simd-and simd-or simd-xor simd-not
   simd-eq simd-lt simd-le simd-gt simd-ge simd-select
   simd-any? simd-all? simd-count-true simd-first-true
+  simd-shift-left simd-shift-right simd-shift-right-logical
+  simd-mask-bits
   simd-sum simd-dot simd-ref simd-store! simd-lanes
+  ;; Where vectors are loaded from
+  SimdSource simd-source-length
   ;; Making one
   simd128-splat simd128-zero simd128-load simd128-lanes simd128-whole
   simd256-splat simd256-zero simd256-load simd256-lanes simd256-whole
@@ -116,6 +121,10 @@
   (: simd-all?  (-> %v bool))
   (: simd-count-true (-> %v int))
   (: simd-first-true (-> %v int))
+  (: simd-mask-bits (-> %v int))
+  (: simd-shift-left (-> %v int %v))
+  (: simd-shift-right (-> %v int %v))
+  (: simd-shift-right-logical (-> %v int %v))
   (: simd-sum   (-> %v %elem))
   (: simd-dot   (-> %v %v %elem))
   (: simd-ref   (-> %v int %elem))
@@ -158,14 +167,15 @@
   (v128-first-true (: Bjolang.Runtime.BjoSimd.FirstTrue128 (-> (Simd128 %a) int)))
   (simd128-splat (: System.Runtime.Intrinsics.Vector128.Create (-> %a (Simd128 %a))))
   (simd128-zero (: Bjolang.Runtime.BjoSimd.Zero128 (-> (Simd128 %a))))
-  (simd128-load (: System.Runtime.Intrinsics.Vector128.Create (-> (Array %a) int (Simd128 %a))))
-  (simd128-lanes (: Bjolang.Runtime.BjoSimd.ArrayLanes128 (-> (Array %a) int)))
+  (v128-mask-bits (: Bjolang.Runtime.BjoSimd.MaskBits128 (-> (Simd128 %a) int)))
+  (v128-shift-left (: Bjolang.Runtime.BjoSimd.ShiftLeft128 (-> (Simd128 %a) int (Simd128 %a))))
+  (v128-shift-right (: Bjolang.Runtime.BjoSimd.ShiftRight128 (-> (Simd128 %a) int (Simd128 %a))))
+  (v128-shift-right-logical (: Bjolang.Runtime.BjoSimd.ShiftRightLogical128 (-> (Simd128 %a) int (Simd128 %a))))
+  (v128-load-array (: System.Runtime.Intrinsics.Vector128.Create (-> (Array %a) int (Simd128 %a))))
+  (v128-load-list (: Bjolang.Runtime.BjoSimd.LoadList128 (-> (MutableVec %a) int (Simd128 %a))))
+  (v128-array-lanes (: Bjolang.Runtime.BjoSimd.ArrayLanes128 (-> (Array %a) int)))
+  (v128-list-lanes (: Bjolang.Runtime.BjoSimd.ListLanes128 (-> (MutableVec %a) int)))
   (simd128-accelerated? (: System.Runtime.Intrinsics.Vector128.IsHardwareAccelerated #:get)))
-
-(: simd128-whole (-> (Array %a) int))
-(defun (simd128-whole a)
-  (def w (simd128-lanes a))
-  (* w (/ (array-length a) w)))
 
 (impl (Simd (Simd128 %a))
   (type %elem %a)
@@ -197,7 +207,11 @@
   (defun (simd-any? a) (v128-any? a))
   (defun (simd-all? a) (v128-all? a))
   (defun (simd-count-true a) (v128-count-true a))
-  (defun (simd-first-true a) (v128-first-true a)))
+  (defun (simd-first-true a) (v128-first-true a))
+  (defun (simd-mask-bits a) (v128-mask-bits a))
+  (defun (simd-shift-left a n) (v128-shift-left a n))
+  (defun (simd-shift-right a n) (v128-shift-right a n))
+  (defun (simd-shift-right-logical a n) (v128-shift-right-logical a n)))
 
 ;; ---------------------------------------------------------------------------
 ;; 256 bits
@@ -235,14 +249,15 @@
   (v256-first-true (: Bjolang.Runtime.BjoSimd.FirstTrue256 (-> (Simd256 %a) int)))
   (simd256-splat (: System.Runtime.Intrinsics.Vector256.Create (-> %a (Simd256 %a))))
   (simd256-zero (: Bjolang.Runtime.BjoSimd.Zero256 (-> (Simd256 %a))))
-  (simd256-load (: System.Runtime.Intrinsics.Vector256.Create (-> (Array %a) int (Simd256 %a))))
-  (simd256-lanes (: Bjolang.Runtime.BjoSimd.ArrayLanes256 (-> (Array %a) int)))
+  (v256-mask-bits (: Bjolang.Runtime.BjoSimd.MaskBits256 (-> (Simd256 %a) int)))
+  (v256-shift-left (: Bjolang.Runtime.BjoSimd.ShiftLeft256 (-> (Simd256 %a) int (Simd256 %a))))
+  (v256-shift-right (: Bjolang.Runtime.BjoSimd.ShiftRight256 (-> (Simd256 %a) int (Simd256 %a))))
+  (v256-shift-right-logical (: Bjolang.Runtime.BjoSimd.ShiftRightLogical256 (-> (Simd256 %a) int (Simd256 %a))))
+  (v256-load-array (: System.Runtime.Intrinsics.Vector256.Create (-> (Array %a) int (Simd256 %a))))
+  (v256-load-list (: Bjolang.Runtime.BjoSimd.LoadList256 (-> (MutableVec %a) int (Simd256 %a))))
+  (v256-array-lanes (: Bjolang.Runtime.BjoSimd.ArrayLanes256 (-> (Array %a) int)))
+  (v256-list-lanes (: Bjolang.Runtime.BjoSimd.ListLanes256 (-> (MutableVec %a) int)))
   (simd256-accelerated? (: System.Runtime.Intrinsics.Vector256.IsHardwareAccelerated #:get)))
-
-(: simd256-whole (-> (Array %a) int))
-(defun (simd256-whole a)
-  (def w (simd256-lanes a))
-  (* w (/ (array-length a) w)))
 
 (impl (Simd (Simd256 %a))
   (type %elem %a)
@@ -274,4 +289,52 @@
   (defun (simd-any? a) (v256-any? a))
   (defun (simd-all? a) (v256-all? a))
   (defun (simd-count-true a) (v256-count-true a))
-  (defun (simd-first-true a) (v256-first-true a)))
+  (defun (simd-first-true a) (v256-first-true a))
+  (defun (simd-mask-bits a) (v256-mask-bits a))
+  (defun (simd-shift-left a n) (v256-shift-left a n))
+  (defun (simd-shift-right a n) (v256-shift-right a n))
+  (defun (simd-shift-right-logical a n) (v256-shift-right-logical a n)))
+
+;; ---------------------------------------------------------------------------
+;; Where vectors are loaded from
+;; ---------------------------------------------------------------------------
+;;
+;; A source is a run of numbers in memory, one after the other: an array or a
+;; `MutableVec`. Every load raises `ArgumentOutOfRangeException` when fewer
+;; than a vector's lanes are left. A string is not a source: its positions
+;; are cursors, and a lane of its bytes would be a byte index.
+
+(def/trait (SimdSource %s)
+  (type %elem)
+  (: simd128-load (-> %s int (Simd128 %elem)))
+  (: simd256-load (-> %s int (Simd256 %elem)))
+  (: simd128-lanes (-> %s int))
+  (: simd256-lanes (-> %s int))
+  (: simd-source-length (-> %s int)))
+
+(impl (SimdSource (Array %a))
+  (type %elem %a)
+  (defun (simd128-load a i) (v128-load-array a i))
+  (defun (simd256-load a i) (v256-load-array a i))
+  (defun (simd128-lanes a) (v128-array-lanes a))
+  (defun (simd256-lanes a) (v256-array-lanes a))
+  (defun (simd-source-length a) (array-length a)))
+
+(impl (SimdSource (MutableVec %a))
+  (type %elem %a)
+  (defun (simd128-load v i) (v128-load-list v i))
+  (defun (simd256-load v i) (v256-load-list v i))
+  (defun (simd128-lanes v) (v128-list-lanes v))
+  (defun (simd256-lanes v) (v256-list-lanes v))
+  (defun (simd-source-length v) (mutablevec-length v)))
+
+;; Where the elements after the last whole vector start.
+(: simd128-whole (-> %s int) (where (SimdSource %s)))
+(defun (simd128-whole s)
+  (def w (simd128-lanes s))
+  (* w (/ (simd-source-length s) w)))
+
+(: simd256-whole (-> %s int) (where (SimdSource %s)))
+(defun (simd256-whole s)
+  (def w (simd256-lanes s))
+  (* w (/ (simd-source-length s) w)))

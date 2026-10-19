@@ -1,0 +1,27 @@
+;; A load from a `SimdSource` at a known type is the load itself: the trait
+;; method is inlined to the .NET call, with no dictionary and no wrapper. The
+;; mask bits and the shifts are the runtime's one-line helpers around the
+;; operators and `ExtractMostSignificantBits`.
+(import (std prelude))
+(import (std mutable vec))
+(import (std simd))
+
+;; EXPECT-CS: return System\.Runtime\.Intrinsics\.Vector256\.Create<double>\(a, i\);
+(: from-array (-> (Array double) int Float64x4))
+(defun (from-array a i) (simd256-load a i))
+
+;; EXPECT-CS: return Bjolang\.Runtime\.BjoSimd\.LoadList256<long>\(v, i\);
+(: from-list (-> (MutableVec long) int Int64x4))
+(defun (from-list v i) (simd256-load v i))
+
+;; EXPECT-CS: return Bjolang\.Runtime\.BjoSimd\.MaskBits256<byte>\(
+(: matches (-> UInt8x32 UInt8x32 int))
+(defun (matches a b) (simd-mask-bits (simd-eq a b)))
+
+;; EXPECT-CS: return Bjolang\.Runtime\.BjoSimd\.ShiftRightLogical128<int>\(v, 3\);
+(: down (-> Int32x4 Int32x4))
+(defun (down v) (simd-shift-right-logical v 3))
+
+;; Nothing goes through the trait at run time.
+;; EXPECT-NO-CS: SimdSource
+;; EXPECT-NO-CS: simd128subload|simd256subload

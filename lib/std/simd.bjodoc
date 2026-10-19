@@ -3,7 +3,7 @@
 
 (:doc #:module
   (summary "Vectors of numbers, 128 or 256 bits wide, with one CPU instruction per operation.")
-  (see Simd simd256-load simd128-load simd256-whole simd256-accelerated? Float64x4 Int32x4)
+  (see Simd SimdSource simd256-load simd128-load simd256-whole simd-mask-bits simd256-accelerated? Float64x4 Int32x4)
   (example """
     (import (std simd))
 
@@ -41,17 +41,28 @@
     @code{simd256-load}, @code{simd128-splat}, @code{simd256-zero}. The
     element type comes from the argument, or from where the vector is used.
 
+    @strong{Sources.} @code{simd128-load} and @code{simd256-load} read from
+    any @code{SimdSource}: an array or a @code{MutableVec}.
+
     @strong{Masks.} A comparison such as @code{simd-lt} gives a mask: a
     vector of the same type, with every bit of a lane set where the
     comparison holds and no bit set where it does not. @code{simd-select},
     @code{simd-any?}, @code{simd-all?}, @code{simd-count-true} and
     @code{simd-first-true} read a mask. The bitwise operations combine masks.
+    @code{simd-mask-bits} gives an int with one bit per lane, which
+    @code{trailing-zeros} from @code{(std maths)} walks: that is how a search
+    finds every match in a vector, not only the first.
+
+    @strong{Shifts.} @code{simd-shift-left}, @code{simd-shift-right} and
+    @code{simd-shift-right-logical} shift every lane by the same count, as
+    the scalar @code{shift-left}, @code{shift-right} and
+    @code{shift-right-logical} do. They are for integer lanes.
 
     @strong{The tail.} An array whose length is not a multiple of the lanes
     has elements after the last whole vector. @code{simd256-whole} is the
     index where they start; handle them one at a time, as in the example.
     @code{simd256-load} raises @code{ArgumentOutOfRangeException} when a
-    whole vector does not fit.
+    whole vector does not fit. @code{simd256-whole} takes any source.
 
     @strong{Which width.} A 128-bit vector is accelerated on every x86-64
     and ARM64 CPU. A 256-bit vector needs AVX2; elsewhere .NET emulates it,
@@ -140,6 +151,63 @@
 
 (:doc UInt8x32
   (summary "32 lanes of @code{byte}: @code{(Simd256 byte)}."))
+
+(:doc SimdSource
+  (summary "What vectors are loaded from: elements of one type, one after the other in memory.")
+  (tparam %s "The source: @code{(Array %a)} or @code{(MutableVec %a)}.")
+  (see simd128-load simd256-load simd256-whole simd-source-length)
+  (reference """
+    A string is not a source. Its positions are cursors, and a lane of its
+    bytes would be a byte index. For a byte search, @code{string->bytes}
+    gives an array.
+    """))
+
+(:doc simd-source-length
+  (summary "How many elements a source has: the length of the array or the @code{MutableVec}.")
+  (arg s "The source.")
+  (returns "The number of elements."))
+
+(:doc simd-mask-bits
+  (summary "A mask as an int: bit i is set where lane i of the mask is.")
+  (arg mask "The mask.")
+  (returns "The bits. A 32-lane mask with its last lane set is a negative int.")
+  (see simd-first-true simd-count-true)
+  (example """
+    (import (std maths))
+
+    ;; The index of every comma in the 32 bytes of the array a from i.
+    (defun (commas a i)
+      (def bits (simd-mask-bits (simd-eq (simd256-load a i) (simd256-splat 44uy))))
+      (loop (:with b bits (bitwise-and b (- b 1)))
+            (:while (not (= b 0)))
+            (:acc out (listing (+ i (trailing-zeros b))))
+            => out))
+    """)
+  (reference """
+    The CPU's move-mask instruction: one instruction for a whole vector.
+    Each lane gives its top bit, which is every bit of a mask's lane.
+    """))
+
+(:doc simd-shift-left
+  (summary "Shifts every lane left by the same number of bits.")
+  (arg v "The vector, of integer lanes.")
+  (arg n "The number of bits.")
+  (returns "The shifted lanes. Bits shifted out are lost, and zeros come in.")
+  (see simd-shift-right simd-shift-right-logical))
+
+(:doc simd-shift-right
+  (summary "Shifts every lane right: arithmetic for signed lanes, logical for unsigned ones.")
+  (arg v "The vector, of integer lanes.")
+  (arg n "The number of bits.")
+  (returns "The shifted lanes. A signed lane keeps its sign, as @code{shift-right} does.")
+  (see simd-shift-right-logical simd-shift-left))
+
+(:doc simd-shift-right-logical
+  (summary "Shifts every lane right, with zeros coming in, for any integer lane type.")
+  (arg v "The vector, of integer lanes.")
+  (arg n "The number of bits.")
+  (returns "The shifted lanes.")
+  (see simd-shift-right simd-shift-left))
 
 (:doc simd-add
   (summary "Adds the lanes of two vectors.")
@@ -316,8 +384,8 @@
   (returns "The vector."))
 
 (:doc simd128-load
-  (summary "The 128-bit vector of the elements of an array from an index.")
-  (arg a "The array.")
+  (summary "The 128-bit vector of the elements of a source from an index.")
+  (arg s "The array or @code{MutableVec}.")
   (arg i "The index of the first lane.")
   (returns "The vector.")
   (reference """
@@ -326,13 +394,13 @@
     """))
 
 (:doc simd128-lanes
-  (summary "How many elements of the array one 128-bit vector holds.")
-  (arg a "The array. Only its type is read.")
+  (summary "How many elements of the source one 128-bit vector holds.")
+  (arg s "The source. Only its type is read.")
   (returns "The number of lanes."))
 
 (:doc simd128-whole
-  (summary "The length of the array, rounded down to whole 128-bit vectors.")
-  (arg a "The array.")
+  (summary "The length of the source, rounded down to whole 128-bit vectors.")
+  (arg s "The array or @code{MutableVec}.")
   (returns "The index of the first element after the last whole vector."))
 
 (:doc simd128-accelerated?
@@ -348,8 +416,8 @@
   (returns "The vector."))
 
 (:doc simd256-load
-  (summary "The 256-bit vector of the elements of an array from an index.")
-  (arg a "The array.")
+  (summary "The 256-bit vector of the elements of a source from an index.")
+  (arg s "The array or @code{MutableVec}.")
   (arg i "The index of the first lane.")
   (returns "The vector.")
   (reference """
@@ -358,13 +426,13 @@
     """))
 
 (:doc simd256-lanes
-  (summary "How many elements of the array one 256-bit vector holds.")
-  (arg a "The array. Only its type is read.")
+  (summary "How many elements of the source one 256-bit vector holds.")
+  (arg s "The source. Only its type is read.")
   (returns "The number of lanes."))
 
 (:doc simd256-whole
-  (summary "The length of the array, rounded down to whole 256-bit vectors.")
-  (arg a "The array.")
+  (summary "The length of the source, rounded down to whole 256-bit vectors.")
+  (arg s "The array or @code{MutableVec}.")
   (returns "The index of the first element after the last whole vector."))
 
 (:doc simd256-accelerated?

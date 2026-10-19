@@ -1,0 +1,83 @@
+;; `(std simd)`: loads from arrays and `MutableVec`s through `SimdSource`,
+;; mask bits, and shifts. Also `trailing-zeros` and `leading-zeros` from
+;; `(std maths)`, which a search with mask bits uses.
+(import (std prelude))
+(import (std simpletest))
+(import (std maths))
+(import (std mutable vec))
+(import (std simd))
+
+;; The index of every comma in a, 32 bytes at a time, and then the tail one
+;; byte at a time.
+(: commas (-> (Array byte) (List int)))
+(defun (commas a)
+  (def comma (simd256-splat 44uy))
+  (def whole (simd256-whole a))
+  (def found (mutablevec))
+  (loop (:for i (up-from 0 #:to whole #:by 32))
+        (:do (let go ((b (simd-mask-bits (simd-eq (simd256-load a i) comma))))
+               (unless (= b 0)
+                 (mutablevec-add! found (+ i (trailing-zeros b)))
+                 (go (bitwise-and b (- b 1)))))))
+  (loop (:for i (up-from whole #:to (array-length a)))
+        (:when (= (array-ref a i) 44uy))
+        (:do (mutablevec-add! found i)))
+  (mutablevec->list found))
+
+(defun (main)
+  ;; Bit counts.
+  (expect "trailing-zeros" (trailing-zeros 12) 2)
+  (expect "trailing-zeros of 0" (trailing-zeros 0) 32)
+  (expect "trailing-zeros of a long" (trailing-zeros 8L) 3L)
+  (expect "leading-zeros" (leading-zeros 1) 31)
+  (expect "leading-zeros of -1" (leading-zeros -1) 0)
+
+  ;; A search with mask bits: commas on both sides of the 32-byte line.
+  (def csv (string->bytes "alpha,beta,,gamma,ö,delta,epsilon,zeta,eta,theta,iota"))
+  (expect "commas" (commas csv) '(5 10 11 17 20 26 34 39 43 49))
+  (expect "no commas" (commas (string->bytes "plain")) '())
+  (expect "a short array" (commas (string->bytes "a,b")) '(1))
+
+  ;; Byte lanes from an array.
+  (def text (string->bytes "0123456789abcdefghijklmnopqrstuvwxyz,,"))   ; 38 bytes
+  (: v UInt8x32)
+  (def v (simd256-load text 1))
+  (expect "a byte lane" (simd-ref v 0) 49uy)
+  (expect "32 lanes" (simd-lanes v) 32)
+  (expect "byte lanes of an array" (simd256-lanes text) 32)
+  (expect "128-bit byte lanes" (simd128-lanes text) 16)
+  (expect "source length" (simd-source-length text) 38)
+  (expect "whole of 38 bytes" (simd256-whole text) 32)
+  (expect "whole of 38 bytes, 128 bits" (simd128-whole text) 32)
+
+  ;; Mask bits.
+  (def x (simd128-load #[4 5 6 7] 0))
+  (expect "mask bits" (simd-mask-bits (simd-lt x (simd128-splat 6))) 3)
+  (expect "mask bits, lanes 1 and 3" (simd-mask-bits (simd-eq (simd-and x (simd128-splat 1)) (simd128-splat 1))) 10)
+  (expect "an empty mask" (simd-mask-bits (simd-gt x (simd128-splat 99))) 0)
+  (expect "a 32-lane mask with lane 31 set is negative"
+          (simd-mask-bits (simd-eq (simd256-load text 0) (simd256-splat 118uy)))   ; v, lane 31
+          -2147483648)
+  (expect "a double mask" (simd-mask-bits (simd-gt (simd256-load #[1.0 5.0 2.0 9.0] 0) (simd256-splat 3.0))) 10)
+
+  ;; Shifts.
+  (def n (simd128-load #[-16 16 1 -1] 0))
+  (expect "shift-left" (simd-ref (simd-shift-left n 2) 1) 64)
+  (expect "shift-right keeps the sign" (simd-ref (simd-shift-right n 2) 0) -4)
+  (expect "shift-right-logical brings in zeros" (simd-ref (simd-shift-right-logical n 28) 0) 15)
+  (expect "shift-right of an unsigned lane is logical"
+          (simd-ref (simd-shift-right (simd256-splat 128uy) 7) 5) 1uy)
+  (expect "a 256-bit shift" (simd-sum (simd-shift-left (simd256-load #[1L 2L 3L 4L] 0) 1)) 20L)
+
+  ;; Loads from a MutableVec.
+  (def mv (mutablevec))
+  (loop (:for i (range 0 10)) (:do (mutablevec-add! mv (* (cast System.Double i) 1.5))))
+  (expect "MutableVec lanes" (simd256-lanes mv) 4)
+  (expect "MutableVec whole" (simd256-whole mv) 8)
+  (expect "MutableVec length" (simd-source-length mv) 10)
+  (expect "a MutableVec load" (double->string (simd-sum (simd256-load mv 4))) "33")
+  (expect "a 128-bit MutableVec load" (double->string (simd-ref (simd128-load mv 8) 1)) "13.5")
+  (match (try (simd256-load mv 7) #:catch (System.ArgumentOutOfRangeException))
+    ((Ok v) (println "FAILURE: a MutableVec load past the end answered"))
+    ((Err e) (println "ok: a MutableVec load past the end raises")))
+  0)

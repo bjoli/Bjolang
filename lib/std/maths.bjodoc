@@ -474,7 +474,7 @@
 (:doc Bits
   (summary "The bit counts of an integer of any type.")
   (tparam %a "The integer type: int, long, byte, bigint and the others.")
-  (see popcount)
+  (see popcount trailing-zeros leading-zeros)
   (reference """
     Answered by .NET's generic math (@code{System.Numerics.IBinaryInteger})
     for every integer type. There is nothing to implement: a type has it
@@ -495,4 +495,36 @@
     @code{PopCount} of the type, which the JIT compiles to the CPU's
     instruction where there is one. A negative number counts its
     two's-complement bits.
+    """))
+
+(:doc trailing-zeros
+  (summary "How many zero bits an integer has below its lowest one bit.")
+  (arg x "The integer.")
+  (returns "The index of the lowest set bit, of the type of x. For 0, the width of the type.")
+  (see leading-zeros popcount)
+  (example """
+    (trailing-zeros 12)   ; 2, for 1100
+    (trailing-zeros 0)    ; 32: an int is 32 bits
+    """)
+  (reference """
+    @code{TrailingZeroCount} of the type, one instruction on x86-64 and
+    ARM64. With @code{(bitwise-and b (- b 1))}, which clears the lowest set
+    bit, it walks the set bits of a mask from @code{simd-mask-bits} of
+    @code{(std simd)} in order.
+    """))
+
+(:doc leading-zeros
+  (summary "How many zero bits an integer has above its highest one bit.")
+  (arg x "The integer.")
+  (returns "The count, of the type of x. For 0, the width of the type.")
+  (see trailing-zeros popcount)
+  (example """
+    (leading-zeros 1)     ; 31
+    (leading-zeros 1L)    ; 63
+    (leading-zeros -1)    ; 0
+    """)
+  (reference """
+    @code{LeadingZeroCount} of the type, one instruction on x86-64 and ARM64.
+    @code{(- 31 (leading-zeros x))} is the index of the highest set bit of a
+    positive int: its base-2 logarithm, rounded down.
     """))

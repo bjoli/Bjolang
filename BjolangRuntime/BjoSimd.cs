@@ -12,6 +12,7 @@
  */
 
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 
 namespace Bjolang.Runtime;
@@ -80,6 +81,59 @@ public static class BjoSimd {
         uint bits = mask.ExtractMostSignificantBits();
         return bits == 0 ? -1 : System.Numerics.BitOperations.TrailingZeroCount(bits);
     }
+
+    /// <summary>One bit per lane, the lowest for lane 0: set where the mask is.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int MaskBits128<T>(Vector128<T> mask) => (int)mask.ExtractMostSignificantBits();
+
+    /// <summary>One bit per lane, the lowest for lane 0. Bit 31 is the sign of the int.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int MaskBits256<T>(Vector256<T> mask) => (int)mask.ExtractMostSignificantBits();
+
+    // The shifts are operators of the generic struct, which an import can not
+    // name. `>>` is arithmetic for a signed element type and logical for an
+    // unsigned one, as it is on a scalar. `>>>` is always logical.
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector128<T> ShiftLeft128<T>(Vector128<T> v, int n) => v << n;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector128<T> ShiftRight128<T>(Vector128<T> v, int n) => v >> n;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector128<T> ShiftRightLogical128<T>(Vector128<T> v, int n) => v >>> n;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector256<T> ShiftLeft256<T>(Vector256<T> v, int n) => v << n;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector256<T> ShiftRight256<T>(Vector256<T> v, int n) => v >> n;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector256<T> ShiftRightLogical256<T>(Vector256<T> v, int n) => v >>> n;
+
+    // Loads from a list. Each takes a span of exactly a vector,
+    // so the slice is the range check: it throws
+    // `ArgumentOutOfRangeException` when fewer elements are left, as the
+    // array load does.
+
+    /// <summary>A 128-bit vector of a list's elements, from an index.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector128<T> LoadList128<T>(List<T> l, int i) =>
+        Vector128.Create((ReadOnlySpan<T>)CollectionsMarshal.AsSpan(l).Slice(i, Vector128<T>.Count));
+
+    /// <summary>A 256-bit vector of a list's elements, from an index.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector256<T> LoadList256<T>(List<T> l, int i) =>
+        Vector256.Create((ReadOnlySpan<T>)CollectionsMarshal.AsSpan(l).Slice(i, Vector256<T>.Count));
+
+    /// <summary>How many elements of a list one 128-bit vector holds.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int ListLanes128<T>(List<T> _) => Vector128<T>.Count;
+
+    /// <summary>How many elements of a list one 256-bit vector holds.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int ListLanes256<T>(List<T> _) => Vector256<T>.Count;
 
     /// <summary>How many elements of an array one 128-bit vector holds.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
