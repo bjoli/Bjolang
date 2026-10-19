@@ -3,6 +3,60 @@
 
 What each change guarantees, and what it leaves open.
 
+* (std simd): masks of their own type, float-only and integer-only operations, and conversions
+
+The library takes more of OxCaml's SIMD design: typed masks, operations
+only where they mean something, and conversions named for what they do
+with what does not fit. It keeps what OCaml could not have: one generic
+trait for both widths, and unsigned lane types, so a comparison or a
+widening of bytes is unsigned by the type.
+
+- *Masks.* A comparison gives a ~(Mask128 %a)~ or ~(Mask256 %a)~, a struct
+  around the vector that only ~(std simd)~ makes. The JIT inlines it away:
+  a loop that compares, combines and counts compiles to one method.
+  ~simd-and~, ~simd-or~, ~simd-xor~, ~simd-not~ and the new ~simd-and-not~
+  are a trait, ~SimdBitwise~, that vectors and masks both implement, so
+  masks combine as before. ~simd-select~, ~simd-any?~, ~simd-all?~,
+  ~simd-count-true~, ~simd-first-true~ and ~simd-mask-bits~ take a mask
+  (~SimdMask~). ~simd-mask->lanes~ gives the -1/0 lanes, and the new
+  ~simd-ne~ against zero makes a mask from such lanes kept in memory.
+  Arithmetic on a mask, which a ~Float64x4~ mask allowed on its NaN bit
+  patterns, is a type error.
+- *Floats only:* ~SimdFloat~, for ~FloatLane~ elements, has ~simd-div~ and
+  ~simd-sqrt~, which were in ~Simd~, and new ~simd-floor~, ~simd-ceiling~,
+  ~simd-round~ (to even from halfway), ~simd-truncate~, ~simd-nan?~ and
+  ~simd-mul-add~ (fused). Integer division is no longer offered: it had no
+  instruction and raised on a zero.
+- *Integers only:* ~SimdShift~ is now ~SimdInt~, with the shifts and the new
+  ~simd-add-saturating~ and ~simd-sub-saturating~.
+- *The same bits as another type:* ~simd-bits->int8~ to
+  ~simd-bits->float64~, ten methods of ~SimdBits~, at either width.
+- *Conversions* change the element type, which depends on the one given,
+  so they are dispatched on the element type (~SimdWiden~, ~SimdNarrow~,
+  ~SimdIntToFloat~, ~SimdFloatToInt~) and the name says the width:
+  ~simd128-widen-lower~ / ~-upper~ (sign- or zero-extended by the type),
+  ~simd128-narrow-wrapping~ / ~-saturating~ (two vectors into one),
+  ~simd128-int->float~ (to the nearest float), and
+  ~simd128-float->int-truncating~ / ~float->uint-truncating~ (toward zero,
+  saturating past the range, NaN to 0), and the ~simd256-~ twins. Each is
+  the .NET overload for its type.
+- *Vectors of given lanes:* ~(simd128-of 1 2 3 4)~ and ~simd256-of~, macros
+  over the new ~simd-with~, which replaces one lane.
+- The runtime has generic helpers for the float operations whose .NET
+  methods are one overload per type (floor, ceiling, round, truncate,
+  fused multiply-add). The JIT keeps only the branch for the type.
+- Not done: a mask that is an integer vector, as in OxCaml. An impl's where
+  clause can not name a trait with associated types, which computing the
+  mask type from the element type would need. Shuffles, 512-bit vectors and
+  double-to-float narrowing are not there either.
+- ~2024/day04-avx.bjo~ says its ~mas~ gives a ~(Mask256 byte)~, and
+  ~2025/day07-avx.bjo~ makes its splitter mask with ~simd-ne~. Both give the
+  answers of their scalar versions.
+- Tests: ~408_simd_kinds.bjo~ (each conversion at values that do not fit,
+  rounding, saturation, masks), ~codegen/simd_sources.bjo~ (conversions and
+  helpers are the direct calls), and ~errors/simd_mask_arithmetic~,
+  ~simd_sqrt_int~, ~simd_div_int~ and ~simd_widen_double~.
+
 * A conditional impl's where clause holds at an inlined call, and (std simd) checks its element types
 
 - The ~(where ...)~ of a conditional impl, such as

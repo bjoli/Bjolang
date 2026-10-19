@@ -1,8 +1,8 @@
 ;; Day 7: Laboratories, with 256-bit vectors. The same puzzle as day07.bjo.
 ;;
 ;; The timelines in each column are a long array, and a row's splitters are a
-;; mask of the same shape: -1, every bit set, under a splitter and 0
-;; elsewhere. One vector holds 4 columns. A row is two passes over the
+;; long array of the same shape: -1 under a splitter and 0 elsewhere, which
+;; `simd-ne` against zero turns into a mask. One vector holds 4 columns. A row is two passes over the
 ;; columns: the first keeps the beams that pass and sets the ones that hit a
 ;; splitter aside, and the second adds those to the columns on each side.
 ;;
@@ -37,8 +37,8 @@
         (:do
          (loop (:for i (up-from 1 #:to (+ w 1) #:by 4))
                (:let here (at beams i))
-               (:let mask (at split i))
-               (:let hit (simd-and mask here))
+               (:let mask (simd-ne (at split i) zero))
+               (:let hit (simd-select mask here zero))
                (:do (set! splits (+ splits (simd-count-true (simd-and mask (simd-gt here zero)))))
                     (simd-store! hit hits i)
                     (simd-store! (simd-select mask zero here) next i)))

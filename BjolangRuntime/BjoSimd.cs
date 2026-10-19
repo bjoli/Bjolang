@@ -112,6 +112,59 @@ public static class BjoSimd {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector256<T> ShiftRightLogical256<T>(Vector256<T> v, int n) => v >>> n;
 
+    // The float operations whose .NET methods are one overload per element
+    // type, not one generic method. The impl that calls them is generic, so
+    // these are too. The test of `T` is a constant to the JIT, which keeps
+    // only the branch for the type it compiles.
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector128<T> Floor128<T>(Vector128<T> v) =>
+        typeof(T) == typeof(double) ? Vector128.Floor(v.AsDouble()).As<double, T>() : Vector128.Floor(v.AsSingle()).As<float, T>();
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector256<T> Floor256<T>(Vector256<T> v) =>
+        typeof(T) == typeof(double) ? Vector256.Floor(v.AsDouble()).As<double, T>() : Vector256.Floor(v.AsSingle()).As<float, T>();
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector128<T> Ceiling128<T>(Vector128<T> v) =>
+        typeof(T) == typeof(double) ? Vector128.Ceiling(v.AsDouble()).As<double, T>() : Vector128.Ceiling(v.AsSingle()).As<float, T>();
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector256<T> Ceiling256<T>(Vector256<T> v) =>
+        typeof(T) == typeof(double) ? Vector256.Ceiling(v.AsDouble()).As<double, T>() : Vector256.Ceiling(v.AsSingle()).As<float, T>();
+
+    /// <summary>To the nearest integer, and to the even one from halfway.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector128<T> Round128<T>(Vector128<T> v) =>
+        typeof(T) == typeof(double) ? Vector128.Round(v.AsDouble()).As<double, T>() : Vector128.Round(v.AsSingle()).As<float, T>();
+
+    /// <summary>To the nearest integer, and to the even one from halfway.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector256<T> Round256<T>(Vector256<T> v) =>
+        typeof(T) == typeof(double) ? Vector256.Round(v.AsDouble()).As<double, T>() : Vector256.Round(v.AsSingle()).As<float, T>();
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector128<T> Truncate128<T>(Vector128<T> v) =>
+        typeof(T) == typeof(double) ? Vector128.Truncate(v.AsDouble()).As<double, T>() : Vector128.Truncate(v.AsSingle()).As<float, T>();
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector256<T> Truncate256<T>(Vector256<T> v) =>
+        typeof(T) == typeof(double) ? Vector256.Truncate(v.AsDouble()).As<double, T>() : Vector256.Truncate(v.AsSingle()).As<float, T>();
+
+    /// <summary><c>a * b + c</c>, rounded once.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector128<T> MulAdd128<T>(Vector128<T> a, Vector128<T> b, Vector128<T> c) =>
+        typeof(T) == typeof(double)
+            ? Vector128.FusedMultiplyAdd(a.AsDouble(), b.AsDouble(), c.AsDouble()).As<double, T>()
+            : Vector128.FusedMultiplyAdd(a.AsSingle(), b.AsSingle(), c.AsSingle()).As<float, T>();
+
+    /// <summary><c>a * b + c</c>, rounded once.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector256<T> MulAdd256<T>(Vector256<T> a, Vector256<T> b, Vector256<T> c) =>
+        typeof(T) == typeof(double)
+            ? Vector256.FusedMultiplyAdd(a.AsDouble(), b.AsDouble(), c.AsDouble()).As<double, T>()
+            : Vector256.FusedMultiplyAdd(a.AsSingle(), b.AsSingle(), c.AsSingle()).As<float, T>();
+
     // Loads from a list. Each takes a span of exactly a vector,
     // so the slice is the range check: it throws
     // `ArgumentOutOfRangeException` when fewer elements are left, as the

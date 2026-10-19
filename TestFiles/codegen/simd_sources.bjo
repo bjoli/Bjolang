@@ -22,6 +22,26 @@
 (: down (-> Int32x4 Int32x4))
 (defun (down v) (simd-shift-right-logical v 3))
 
+;; A conversion is dispatched on the element type, and is the .NET overload
+;; for it.
+;; EXPECT-CS: return System\.Runtime\.Intrinsics\.Vector128\.WidenLower\(v\);
+(: widen (-> UInt8x16 UInt16x8))
+(defun (widen v) (simd128-widen-lower v))
+
+;; EXPECT-CS: return System\.Runtime\.Intrinsics\.Vector256\.NarrowWithSaturation\(a, b\);
+(: narrow (-> Int32x8 Int32x8 Int16x16))
+(defun (narrow a b) (simd256-narrow-saturating a b))
+
+;; EXPECT-CS: return System\.Runtime\.Intrinsics\.Vector128\.As<double, long>\(v\);
+(: bits (-> Float64x2 Int64x2))
+(defun (bits v) (simd-bits->int64 v))
+
+;; A float operation with one .NET overload per element type is the runtime's
+;; generic helper, which the JIT reduces to the overload.
+;; EXPECT-CS: return Bjolang\.Runtime\.BjoSimd\.Floor256<double>\(v\);
+(: down-to-integers (-> Float64x4 Float64x4))
+(defun (down-to-integers v) (simd-floor v))
+
 ;; Nothing goes through the trait at run time.
 ;; EXPECT-NO-CS: SimdSource
 ;; EXPECT-NO-CS: simd128subload|simd256subload

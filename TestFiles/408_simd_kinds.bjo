@@ -1,0 +1,119 @@
+;; `(std simd)`: masks of their own type, the operations only float or only
+;; integer lanes have, the same bits read as another type, conversions, and
+;; vectors of given lanes. Each conversion is checked at a value that does not
+;; fit, since that is what its name says it does something about.
+(import (std prelude))
+(import (std simpletest))
+(import (std simd))
+
+(: f64 (-> Float64x2 int string))
+(defun (f64 v i) (double->string (simd-ref v i)))
+
+(defun (main)
+  ;; Vectors of given lanes, and one lane replaced.
+  (: x Int32x4)
+  (def x (simd128-of 4 5 6 7))
+  (expect "of: lane 0" (simd-ref x 0) 4)
+  (expect "of: lane 3" (simd-ref x 3) 7)
+  (expect "of: a lane not given is 0" (simd-ref (simd128-of 9 8) 3) 0)
+  (expect "of at 256 bits" (simd-sum (simd256-of 1.0 2.0 3.0 4.0)) 10.0)
+  (expect "with" (simd-sum (simd-with x 1 50)) 67)
+  (match (try (simd-with x 4 1) #:catch (System.ArgumentOutOfRangeException))
+    ((Ok v) (println "FAILURE: simd-with past the last lane answered"))
+    ((Err e) (println "ok: simd-with past the last lane raises")))
+  (match (try (simd128-of 1 2 3 4 5) #:catch (System.ArgumentOutOfRangeException))
+    ((Ok v) (println "FAILURE: simd128-of with too many lanes answered"))
+    ((Err e) (println "ok: simd128-of with too many lanes raises")))
+
+  ;; Masks: combined, read, and selected with.
+  (def small (simd-lt x (simd128-splat 6)))          ; 4 5
+  (def odd (simd-eq (simd-and x (simd128-splat 1)) (simd128-splat 1)))   ; 5 7
+  (expect "and of masks" (simd-mask-bits (simd-and small odd)) 2)
+  (expect "or of masks" (simd-mask-bits (simd-or small odd)) 11)
+  (expect "xor of masks" (simd-mask-bits (simd-xor small odd)) 9)
+  (expect "not of a mask" (simd-mask-bits (simd-not small)) 12)
+  (expect "and-not of masks" (simd-mask-bits (simd-and-not small odd)) 1)
+  (expect "select" (simd-sum (simd-select small x (simd128-zero))) 9)
+  (expect "a mask's lanes count by subtracting"
+          (simd-sum (simd-sub (simd128-zero) (simd-mask->lanes small))) 2)
+  (expect "and-not of vectors" (simd-ref (simd-and-not (simd128-splat 7) (simd128-splat 2)) 0) 5)
+
+  ;; A float comparison's mask, read as the integers it holds.
+  (: d Float64x2)
+  (def d (simd128-of 1.5 -2.5))
+  (def neg (simd-lt d (simd128-zero)))
+  (expect "a float mask counts" (simd-count-true neg) 1)
+  (expect "a float mask's bits as int64" (simd-ref (simd-bits->int64 (simd-mask->lanes neg)) 1) -1L)
+  (expect "and nothing where it does not hold" (simd-ref (simd-bits->int64 (simd-mask->lanes neg)) 0) 0L)
+
+  ;; Float lanes only.
+  (expect "div" (f64 (simd-div d (simd128-splat 0.5)) 1) "-5")
+  (expect "div by zero" (f64 (simd-div d (simd128-zero)) 0) "Infinity")
+  (expect "sqrt" (f64 (simd-sqrt (simd128-of 9.0 2.25)) 1) "1.5")
+  (expect "floor" (f64 (simd-floor d) 1) "-3")
+  (expect "ceiling" (f64 (simd-ceiling d) 1) "-2")
+  (expect "truncate" (f64 (simd-truncate d) 1) "-2")
+  (expect "round from halfway to even, up" (f64 (simd-round d) 0) "2")
+  (expect "round from halfway to even, down" (f64 (simd-round d) 1) "-2")
+  (expect "round 0.5" (f64 (simd-round (simd128-of 0.5 0.6)) 0) "0")
+  (expect "nan?" (simd-mask-bits (simd-nan? (simd128-of 1.0 (/ 0.0 0.0)))) 2)
+  (expect "mul-add" (f64 (simd-mul-add d (simd128-splat 2.0) (simd128-splat 1.0)) 1) "-4")
+  (expect "float32 floor" (simd-ref (simd-floor (simd128-of (cast System.Single 1.5) (cast System.Single -1.5))) 1)
+          (cast System.Single -2.0))
+
+  ;; Integer lanes only: saturating arithmetic.
+  (: b UInt8x16)
+  (def b (simd128-splat 250uy))
+  (expect "add-saturating, unsigned" (simd-ref (simd-add-saturating b (simd128-splat 10uy)) 0) 255uy)
+  (expect "add wraps" (simd-ref (simd-add b (simd128-splat 10uy)) 0) 4uy)
+  (expect "sub-saturating, unsigned" (simd-ref (simd-sub-saturating (simd128-splat 5uy) (simd128-splat 10uy)) 0) 0uy)
+  (expect "add-saturating, signed"
+          (simd-ref (simd-add-saturating (simd128-splat 2147483600) (simd128-splat 100)) 0) 2147483647)
+  (expect "sub-saturating, signed"
+          (simd-ref (simd-sub-saturating (simd128-splat -2147483600) (simd128-splat 100)) 0) -2147483648)
+  (expect "a shift at 256 bits" (simd-ref (simd-shift-left (simd256-splat 3L) 2) 3) 12L)
+
+  ;; The same bits as another type.
+  (expect "a double's bits" (simd-ref (simd-bits->int64 (simd128-splat 1.0)) 0) 4607182418800017408L)
+  (expect "bytes of an int" (simd-ref (simd-bits->uint8 (simd128-splat 258)) 1) 1uy)
+  (expect "and back" (f64 (simd-bits->float64 (simd-bits->int64 d)) 1) "-2.5")
+  (expect "lanes as many as the bits allow" (simd-lanes (simd-bits->uint8 (simd256-splat 1L))) 32)
+
+  ;; Widening: sign- or zero-extended by the type.
+  (def sb (simd128-splat (cast System.SByte -1)))
+  (expect "widen a signed byte" (simd-ref (simd128-widen-lower sb) 0) (cast short -1))
+  (expect "widen an unsigned byte" (simd-ref (simd128-widen-upper b) 7) (cast ushort 250))
+  (expect "widen lanes" (simd-lanes (simd128-widen-lower b)) 8)
+  (expect "widen a float" (simd-ref (simd128-widen-lower (simd128-splat (cast System.Single 0.5))) 1) 0.5)
+  (expect "widen at 256 bits" (simd-ref (simd256-widen-upper (simd256-splat -3)) 3) -3L)
+
+  ;; Narrowing: wrapping keeps the low bits, saturating the nearest value.
+  (def big (simd128-of 300 70000 -70000 -1))
+  (def low (simd128-narrow-wrapping big big))
+  (def sat (simd128-narrow-saturating big big))
+  (expect "narrow-wrapping fits" (simd-ref low 0) (cast short 300))
+  (expect "narrow-wrapping keeps the low bits" (simd-ref low 1) (cast short 4464))
+  (expect "narrow-wrapping, upper half" (simd-ref low 5) (cast short 4464))
+  (expect "narrow-saturating, too big" (simd-ref sat 1) (cast short 32767))
+  (expect "narrow-saturating, too small" (simd-ref sat 2) (cast short -32768))
+  (expect "narrow-saturating, -1" (simd-ref sat 3) (cast short -1))
+  (expect "narrow-saturating, unsigned"
+          (simd-ref (simd128-narrow-saturating (simd128-splat (cast ushort 300)) (simd128-splat (cast ushort 1))) 0) 255uy)
+  (expect "narrow at 256 bits"
+          (simd-lanes (simd256-narrow-wrapping (simd256-splat 1L) (simd256-splat 2L))) 8)
+
+  ;; Integers to floats, rounded to the nearest float.
+  (expect "int->float" (simd-ref (simd128-int->float (simd128-splat 16777217)) 0) (cast System.Single 16777216.0))
+  (expect "long->double" (simd-ref (simd256-int->float (simd256-splat -5L)) 0) -5.0)
+
+  ;; Floats to integers, toward zero, saturating, and NaN to 0.
+  (def fs (simd128-of -1.7 3.0e19))
+  (expect "float->int-truncating, toward zero" (simd-ref (simd128-float->int-truncating fs) 0) -1L)
+  (expect "float->int-truncating, past the range" (simd-ref (simd128-float->int-truncating fs) 1) 9223372036854775807L)
+  (expect "float->int-truncating, NaN"
+          (simd-ref (simd128-float->int-truncating (simd128-splat (/ 0.0 0.0))) 0) 0L)
+  (expect "float->uint-truncating, negative" (simd-ref (simd128-float->uint-truncating fs) 0) (cast ulong 0))
+  (expect "float32->int" (simd-ref (simd256-float->int-truncating (simd256-splat (cast System.Single 2.9))) 7) 2)
+  (expect "round, then convert"
+          (simd-ref (simd128-float->int-truncating (simd-round (simd128-splat 2.5))) 0) 2L)
+  0)

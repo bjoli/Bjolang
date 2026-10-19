@@ -17,48 +17,88 @@
 ;; numbers of one type. `Float64x4` is four doubles and `Int8x32` is 32 signed
 ;; bytes. An operation on one is one CPU instruction where the CPU has it.
 ;;
-;; The operations are the methods of one trait, `Simd`, which both widths
-;; implement for every element type. So `simd-add` adds two `Float64x2`s or
-;; two `Int32x8`s. What makes a vector — `simd256-load`, `simd128-splat` — says
-;; its width, as there is no argument to take it from.
+;; The operations are the methods of a few traits, which both widths
+;; implement: `Simd` for what every element type has, `SimdFloat` and
+;; `SimdInt` for what only floats or only integers have, `SimdBitwise` for
+;; vectors and masks alike, and `SimdMask` for masks. So `simd-add` adds two
+;; `Float64x2`s or two `Int32x8`s. What makes a vector — `simd256-load`,
+;; `simd128-splat` — says its width, as there is no argument to take it from,
+;; and so does a conversion, whose result is a vector of another type.
+;;
+;; A comparison gives a mask, `(Mask128 %a)` or `(Mask256 %a)`, which is a
+;; type of its own: it can be combined, counted and selected with, but not
+;; added up as numbers.
+;;
+;; The design follows OxCaml's SIMD library where that fits a language with
+;; traits and unsigned types: typed masks, operations only where they mean
+;; something, and conversions named for what they do with what does not fit.
 ;;
 ;; A 128-bit vector is fast on every x86-64 and ARM64 CPU. A 256-bit one needs
 ;; AVX2: elsewhere .NET emulates it, which is much slower than scalar code.
 ;; `simd256-accelerated?` says which. A Native AOT build has AVX2 only with
 ;; `(aot-cpu ...)`.
 (import (std prelude)
+        (std syntax-match)
         (std mutable vec))
 
 (:doc #:file "simd.bjodoc")
 
 (export
-  Simd128 Simd256
+  Simd128 Simd256 Mask128 Mask256
   Float64x2 Float32x4 Int64x2 Int32x4 Int16x8 Int8x16
   UInt64x2 UInt32x4 UInt16x8 UInt8x16
   Float64x4 Float32x8 Int64x4 Int32x8 Int16x16 Int8x32
   UInt64x4 UInt32x8 UInt16x16 UInt8x32
   ;; The element types
-  Lane IntLane
-  ;; The traits, and what they do
-  Simd SimdShift
-  simd-add simd-sub simd-mul simd-div simd-scale simd-neg simd-abs
-  simd-min simd-max simd-sqrt
-  simd-and simd-or simd-xor simd-not
-  simd-eq simd-lt simd-le simd-gt simd-ge simd-select
-  simd-any? simd-all? simd-count-true simd-first-true
+  Lane IntLane FloatLane
+  ;; What every vector has
+  Simd
+  simd-add simd-sub simd-mul simd-scale simd-neg simd-abs simd-min simd-max
+  simd-eq simd-ne simd-lt simd-le simd-gt simd-ge simd-select
+  simd-sum simd-dot simd-ref simd-with simd-store! simd-lanes
+  ;; Bits, of vectors and masks
+  SimdBitwise
+  simd-and simd-or simd-xor simd-not simd-and-not
+  ;; Masks
+  SimdMask
+  simd-any? simd-all? simd-count-true simd-first-true simd-mask-bits simd-mask->lanes
+  ;; Floats only
+  SimdFloat
+  simd-div simd-sqrt simd-floor simd-ceiling simd-round simd-truncate simd-nan? simd-mul-add
+  ;; Integers only
+  SimdInt
   simd-shift-left simd-shift-right simd-shift-right-logical
-  simd-mask-bits
-  simd-sum simd-dot simd-ref simd-store! simd-lanes
+  simd-add-saturating simd-sub-saturating
+  ;; The same bits as another element type
+  SimdBits
+  simd-bits->int8 simd-bits->uint8 simd-bits->int16 simd-bits->uint16
+  simd-bits->int32 simd-bits->uint32 simd-bits->int64 simd-bits->uint64
+  simd-bits->float32 simd-bits->float64
+  ;; Conversions
+  SimdWiden SimdNarrow SimdIntToFloat SimdFloatToInt
+  simd128-widen-lower simd128-widen-upper simd256-widen-lower simd256-widen-upper
+  simd128-narrow-wrapping simd128-narrow-saturating
+  simd256-narrow-wrapping simd256-narrow-saturating
+  simd128-int->float simd256-int->float
+  simd128-float->int-truncating simd256-float->int-truncating
+  simd128-float->uint-truncating simd256-float->uint-truncating
   ;; Where vectors are loaded from
   SimdSource simd-source-length
   ;; Making one
-  simd128-splat simd128-zero simd128-load simd128-lanes simd128-whole
-  simd256-splat simd256-zero simd256-load simd256-lanes simd256-whole
+  simd128-splat simd128-zero simd128-of simd128-load simd128-lanes simd128-whole
+  simd256-splat simd256-zero simd256-of simd256-load simd256-lanes simd256-whole
   simd128-accelerated? simd256-accelerated?)
 
 (import/class
   ((Simd128 %a) (: System.Runtime.Intrinsics.Vector128))
   ((Simd256 %a) (: System.Runtime.Intrinsics.Vector256)))
+
+;; A comparison's answer: a vector of the same type, with every bit of a lane
+;; set where the comparison holds and none where it does not, kept apart from
+;; the vectors so that it is not mistaken for numbers. Only this module makes
+;; one. The JIT keeps it in a register as it keeps the vector.
+(type (: (Mask128 %a) #:opaque (Struct (: lanes (Simd128 %a)))))
+(type (: (Mask256 %a) #:opaque (Struct (: lanes (Simd256 %a)))))
 
 ;; ---------------------------------------------------------------------------
 ;; The lane types
@@ -95,9 +135,9 @@
 ;; .NET's vectors hold the primitive numbers below and nothing else: a vector
 ;; of another type is refused when it is made, at run time. `Lane` says which
 ;; types they are, so a vector of a char or a string is refused when it is
-;; compiled. It has no methods, and nothing outside this module implements
-;; it. `IntLane` is the integer types, which the shifts are for: a shift of a
-;; float lane shifts the bits of its encoding.
+;; compiled. `IntLane` and `FloatLane` divide them, for the operations that
+;; mean something for one kind only. None has methods, and nothing outside
+;; this module implements them.
 
 (def/trait (Lane %a))
 (impl (Lane double))
@@ -121,53 +161,100 @@
 (impl (IntLane ushort))
 (impl (IntLane byte))
 
+(def/trait (FloatLane %a))
+(impl (FloatLane double))
+(impl (FloatLane System.Single))
+
 ;; ---------------------------------------------------------------------------
 ;; The traits
 ;; ---------------------------------------------------------------------------
-;;
-;; A comparison answers a mask: a vector of the same type with every bit of a
-;; lane set where the comparison holds, and no bit set where it does not.
-;; `simd-select` takes a lane from its second argument where the mask is set,
-;; and from its third where it is not. The `simd-any?` family reads a mask.
 
+;; What every vector has. A comparison gives a `%mask`, which `simd-select`
+;; takes: a lane from its second argument where the mask is set, and from its
+;; third where it is not.
 (def/trait (Simd %v)
   (type %elem)
+  (type %mask)
   (: simd-add   (-> %v %v %v))
   (: simd-sub   (-> %v %v %v))
   (: simd-mul   (-> %v %v %v))
-  (: simd-div   (-> %v %v %v))
   (: simd-scale (-> %v %elem %v))
   (: simd-neg   (-> %v %v))
   (: simd-abs   (-> %v %v))
   (: simd-min   (-> %v %v %v))
   (: simd-max   (-> %v %v %v))
-  (: simd-sqrt  (-> %v %v))
-  (: simd-and   (-> %v %v %v))
-  (: simd-or    (-> %v %v %v))
-  (: simd-xor   (-> %v %v %v))
-  (: simd-not   (-> %v %v))
-  (: simd-eq    (-> %v %v %v))
-  (: simd-lt    (-> %v %v %v))
-  (: simd-le    (-> %v %v %v))
-  (: simd-gt    (-> %v %v %v))
-  (: simd-ge    (-> %v %v %v))
-  (: simd-select (-> %v %v %v %v))
-  (: simd-any?  (-> %v bool))
-  (: simd-all?  (-> %v bool))
-  (: simd-count-true (-> %v int))
-  (: simd-first-true (-> %v int))
-  (: simd-mask-bits (-> %v int))
+  (: simd-eq    (-> %v %v %mask))
+  (: simd-ne    (-> %v %v %mask))
+  (: simd-lt    (-> %v %v %mask))
+  (: simd-le    (-> %v %v %mask))
+  (: simd-gt    (-> %v %v %mask))
+  (: simd-ge    (-> %v %v %mask))
+  (: simd-select (-> %mask %v %v %v))
   (: simd-sum   (-> %v %elem))
   (: simd-dot   (-> %v %v %elem))
   (: simd-ref   (-> %v int %elem))
+  (: simd-with  (-> %v int %elem %v))
   (: simd-store! (-> %v (Array %elem) int void))
   (: simd-lanes (-> %v int)))
 
-;; Shifts every lane by the same count. For integer lanes only.
-(def/trait (SimdShift %v)
+;; The bitwise operations, which vectors and masks both have. Two masks
+;; combine into a mask.
+(def/trait (SimdBitwise %v)
+  (: simd-and (-> %v %v %v))
+  (: simd-or  (-> %v %v %v))
+  (: simd-xor (-> %v %v %v))
+  (: simd-not (-> %v %v))
+  (: simd-and-not (-> %v %v %v)))
+
+;; Reading a mask. A lane is set when every bit of it is, and the top bit says
+;; it, so each reader is one move-mask instruction and an integer operation.
+(def/trait (SimdMask %m)
+  (type %vec)
+  (: simd-any? (-> %m bool))
+  (: simd-all? (-> %m bool))
+  (: simd-count-true (-> %m int))
+  (: simd-first-true (-> %m int))
+  (: simd-mask-bits (-> %m int))
+  (: simd-mask->lanes (-> %m %vec)))
+
+;; What only float lanes have. Integer lanes divide one lane at a time, with
+;; no instruction for it, and raise on a zero; that is not offered as a
+;; vector operation.
+(def/trait (SimdFloat %v)
+  (type %mask)
+  (: simd-div (-> %v %v %v))
+  (: simd-sqrt (-> %v %v))
+  (: simd-floor (-> %v %v))
+  (: simd-ceiling (-> %v %v))
+  (: simd-round (-> %v %v))
+  (: simd-truncate (-> %v %v))
+  (: simd-nan? (-> %v %mask))
+  (: simd-mul-add (-> %v %v %v %v)))
+
+;; What only integer lanes have. A shift of a float lane would shift the bits
+;; of its encoding.
+(def/trait (SimdInt %v)
   (: simd-shift-left (-> %v int %v))
   (: simd-shift-right (-> %v int %v))
-  (: simd-shift-right-logical (-> %v int %v)))
+  (: simd-shift-right-logical (-> %v int %v))
+  (: simd-add-saturating (-> %v %v %v))
+  (: simd-sub-saturating (-> %v %v %v)))
+
+;; The same bits, read as lanes of another type. The lanes are as many as the
+;; bits allow: an `Int64x2` is a `UInt8x16`.
+(def/trait (SimdBits %v)
+  (type %int8) (type %uint8) (type %int16) (type %uint16) (type %int32)
+  (type %uint32) (type %int64) (type %uint64) (type %float32) (type %float64)
+  (: simd-bits->int8 (-> %v %int8))
+  (: simd-bits->uint8 (-> %v %uint8))
+  (: simd-bits->int16 (-> %v %int16))
+  (: simd-bits->uint16 (-> %v %uint16))
+  (: simd-bits->int32 (-> %v %int32))
+  (: simd-bits->uint32 (-> %v %uint32))
+  (: simd-bits->int64 (-> %v %int64))
+  (: simd-bits->uint64 (-> %v %uint64))
+  (: simd-bits->float32 (-> %v %float32))
+  (: simd-bits->float64 (-> %v %float64)))
 
 ;; ---------------------------------------------------------------------------
 ;; 128 bits
@@ -188,16 +275,27 @@
   (v128-or (: System.Runtime.Intrinsics.Vector128.BitwiseOr (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
   (v128-xor (: System.Runtime.Intrinsics.Vector128.Xor (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
   (v128-not (: System.Runtime.Intrinsics.Vector128.OnesComplement (-> (Simd128 %a) (Simd128 %a))))
+  (v128-and-not (: System.Runtime.Intrinsics.Vector128.AndNot (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
   (v128-eq (: System.Runtime.Intrinsics.Vector128.Equals (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
   (v128-lt (: System.Runtime.Intrinsics.Vector128.LessThan (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
   (v128-le (: System.Runtime.Intrinsics.Vector128.LessThanOrEqual (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
   (v128-gt (: System.Runtime.Intrinsics.Vector128.GreaterThan (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
   (v128-ge (: System.Runtime.Intrinsics.Vector128.GreaterThanOrEqual (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-nan? (: System.Runtime.Intrinsics.Vector128.IsNaN (-> (Simd128 %a) (Simd128 %a))))
   (v128-select (: System.Runtime.Intrinsics.Vector128.ConditionalSelect (-> (Simd128 %a) (Simd128 %a) (Simd128 %a) (Simd128 %a))))
   (v128-sum (: System.Runtime.Intrinsics.Vector128.Sum (-> (Simd128 %a) %a)))
   (v128-dot (: System.Runtime.Intrinsics.Vector128.Dot (-> (Simd128 %a) (Simd128 %a) %a)))
   (v128-ref (: System.Runtime.Intrinsics.Vector128.GetElement (-> (Simd128 %a) int %a)))
+  (v128-with (: System.Runtime.Intrinsics.Vector128.WithElement (-> (Simd128 %a) int %a (Simd128 %a))))
   (v128-store! (: System.Runtime.Intrinsics.Vector128.CopyTo (-> (Simd128 %a) (Array %a) int void)))
+  (v128-add-saturating (: System.Runtime.Intrinsics.Vector128.AddSaturate (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-sub-saturating (: System.Runtime.Intrinsics.Vector128.SubtractSaturate (-> (Simd128 %a) (Simd128 %a) (Simd128 %a))))
+  (v128-as (: System.Runtime.Intrinsics.Vector128.As (-> (Simd128 %a) (Simd128 %b))))
+  (v128-floor (: Bjolang.Runtime.BjoSimd.Floor128 (-> (Simd128 %a) (Simd128 %a))))
+  (v128-ceiling (: Bjolang.Runtime.BjoSimd.Ceiling128 (-> (Simd128 %a) (Simd128 %a))))
+  (v128-round (: Bjolang.Runtime.BjoSimd.Round128 (-> (Simd128 %a) (Simd128 %a))))
+  (v128-truncate (: Bjolang.Runtime.BjoSimd.Truncate128 (-> (Simd128 %a) (Simd128 %a))))
+  (v128-mul-add (: Bjolang.Runtime.BjoSimd.MulAdd128 (-> (Simd128 %a) (Simd128 %a) (Simd128 %a) (Simd128 %a))))
   (v128-lanes (: Bjolang.Runtime.BjoSimd.Lanes128 (-> (Simd128 %a) int)))
   (v128-any? (: Bjolang.Runtime.BjoSimd.Any128 (-> (Simd128 %a) bool)))
   (v128-all? (: Bjolang.Runtime.BjoSimd.All128 (-> (Simd128 %a) bool)))
@@ -221,43 +319,100 @@
 (: simd128-zero (-> (Simd128 %a)) (where (Lane %a)))
 (defun (simd128-zero) (v128-zero))
 
+;; The vector a mask holds, and the mask of a vector of a comparison's lanes.
+(: m128 (-> (Simd128 %a) (Mask128 %a)))
+(defun (m128 v) (Mask128 (lanes v)))
+
+(: lanes128 (-> (Mask128 %a) (Simd128 %a)))
+(defun (lanes128 m) (record-ref m lanes))
+
 (impl (Simd (Simd128 %a)) (where (Lane %a))
   (type %elem %a)
+  (type %mask (Mask128 %a))
   (defun (simd-add a b) (v128-add a b))
   (defun (simd-sub a b) (v128-sub a b))
   (defun (simd-mul a b) (v128-mul a b))
-  (defun (simd-div a b) (v128-div a b))
   (defun (simd-scale a b) (v128-scale a b))
   (defun (simd-neg a) (v128-neg a))
   (defun (simd-abs a) (v128-abs a))
   (defun (simd-min a b) (v128-min a b))
   (defun (simd-max a b) (v128-max a b))
-  (defun (simd-sqrt a) (v128-sqrt a))
+  (defun (simd-eq a b) (m128 (v128-eq a b)))
+  (defun (simd-ne a b) (m128 (v128-not (v128-eq a b))))
+  (defun (simd-lt a b) (m128 (v128-lt a b)))
+  (defun (simd-le a b) (m128 (v128-le a b)))
+  (defun (simd-gt a b) (m128 (v128-gt a b)))
+  (defun (simd-ge a b) (m128 (v128-ge a b)))
+  (defun (simd-select m a b) (v128-select (lanes128 m) a b))
+  (defun (simd-sum a) (v128-sum a))
+  (defun (simd-dot a b) (v128-dot a b))
+  (defun (simd-ref a i) (v128-ref a i))
+  (defun (simd-with a i x) (v128-with a i x))
+  (defun (simd-store! a b c) (v128-store! a b c))
+  (defun (simd-lanes a) (v128-lanes a)))
+
+(impl (SimdBitwise (Simd128 %a)) (where (Lane %a))
   (defun (simd-and a b) (v128-and a b))
   (defun (simd-or a b) (v128-or a b))
   (defun (simd-xor a b) (v128-xor a b))
   (defun (simd-not a) (v128-not a))
-  (defun (simd-eq a b) (v128-eq a b))
-  (defun (simd-lt a b) (v128-lt a b))
-  (defun (simd-le a b) (v128-le a b))
-  (defun (simd-gt a b) (v128-gt a b))
-  (defun (simd-ge a b) (v128-ge a b))
-  (defun (simd-select a b c) (v128-select a b c))
-  (defun (simd-sum a) (v128-sum a))
-  (defun (simd-dot a b) (v128-dot a b))
-  (defun (simd-ref a b) (v128-ref a b))
-  (defun (simd-store! a b c) (v128-store! a b c))
-  (defun (simd-lanes a) (v128-lanes a))
-  (defun (simd-any? a) (v128-any? a))
-  (defun (simd-all? a) (v128-all? a))
-  (defun (simd-count-true a) (v128-count-true a))
-  (defun (simd-first-true a) (v128-first-true a))
-  (defun (simd-mask-bits a) (v128-mask-bits a)))
+  (defun (simd-and-not a b) (v128-and-not a b)))
 
-(impl (SimdShift (Simd128 %a)) (where (IntLane %a))
+(impl (SimdBitwise (Mask128 %a)) (where (Lane %a))
+  (defun (simd-and a b) (m128 (v128-and (lanes128 a) (lanes128 b))))
+  (defun (simd-or a b) (m128 (v128-or (lanes128 a) (lanes128 b))))
+  (defun (simd-xor a b) (m128 (v128-xor (lanes128 a) (lanes128 b))))
+  (defun (simd-not a) (m128 (v128-not (lanes128 a))))
+  (defun (simd-and-not a b) (m128 (v128-and-not (lanes128 a) (lanes128 b)))))
+
+(impl (SimdMask (Mask128 %a)) (where (Lane %a))
+  (type %vec (Simd128 %a))
+  (defun (simd-any? m) (v128-any? (lanes128 m)))
+  (defun (simd-all? m) (v128-all? (lanes128 m)))
+  (defun (simd-count-true m) (v128-count-true (lanes128 m)))
+  (defun (simd-first-true m) (v128-first-true (lanes128 m)))
+  (defun (simd-mask-bits m) (v128-mask-bits (lanes128 m)))
+  (defun (simd-mask->lanes m) (lanes128 m)))
+
+(impl (SimdFloat (Simd128 %a)) (where (FloatLane %a))
+  (type %mask (Mask128 %a))
+  (defun (simd-div a b) (v128-div a b))
+  (defun (simd-sqrt a) (v128-sqrt a))
+  (defun (simd-floor a) (v128-floor a))
+  (defun (simd-ceiling a) (v128-ceiling a))
+  (defun (simd-round a) (v128-round a))
+  (defun (simd-truncate a) (v128-truncate a))
+  (defun (simd-nan? a) (m128 (v128-nan? a)))
+  (defun (simd-mul-add a b c) (v128-mul-add a b c)))
+
+(impl (SimdInt (Simd128 %a)) (where (IntLane %a))
   (defun (simd-shift-left a n) (v128-shift-left a n))
   (defun (simd-shift-right a n) (v128-shift-right a n))
-  (defun (simd-shift-right-logical a n) (v128-shift-right-logical a n)))
+  (defun (simd-shift-right-logical a n) (v128-shift-right-logical a n))
+  (defun (simd-add-saturating a b) (v128-add-saturating a b))
+  (defun (simd-sub-saturating a b) (v128-sub-saturating a b)))
+
+(impl (SimdBits (Simd128 %a)) (where (Lane %a))
+  (type %int8 (Simd128 System.SByte))
+  (type %uint8 (Simd128 byte))
+  (type %int16 (Simd128 short))
+  (type %uint16 (Simd128 ushort))
+  (type %int32 (Simd128 int))
+  (type %uint32 (Simd128 uint))
+  (type %int64 (Simd128 long))
+  (type %uint64 (Simd128 ulong))
+  (type %float32 (Simd128 System.Single))
+  (type %float64 (Simd128 double))
+  (defun (simd-bits->int8 v) (v128-as v))
+  (defun (simd-bits->uint8 v) (v128-as v))
+  (defun (simd-bits->int16 v) (v128-as v))
+  (defun (simd-bits->uint16 v) (v128-as v))
+  (defun (simd-bits->int32 v) (v128-as v))
+  (defun (simd-bits->uint32 v) (v128-as v))
+  (defun (simd-bits->int64 v) (v128-as v))
+  (defun (simd-bits->uint64 v) (v128-as v))
+  (defun (simd-bits->float32 v) (v128-as v))
+  (defun (simd-bits->float64 v) (v128-as v)))
 
 ;; ---------------------------------------------------------------------------
 ;; 256 bits
@@ -278,16 +433,27 @@
   (v256-or (: System.Runtime.Intrinsics.Vector256.BitwiseOr (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
   (v256-xor (: System.Runtime.Intrinsics.Vector256.Xor (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
   (v256-not (: System.Runtime.Intrinsics.Vector256.OnesComplement (-> (Simd256 %a) (Simd256 %a))))
+  (v256-and-not (: System.Runtime.Intrinsics.Vector256.AndNot (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
   (v256-eq (: System.Runtime.Intrinsics.Vector256.Equals (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
   (v256-lt (: System.Runtime.Intrinsics.Vector256.LessThan (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
   (v256-le (: System.Runtime.Intrinsics.Vector256.LessThanOrEqual (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
   (v256-gt (: System.Runtime.Intrinsics.Vector256.GreaterThan (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
   (v256-ge (: System.Runtime.Intrinsics.Vector256.GreaterThanOrEqual (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-nan? (: System.Runtime.Intrinsics.Vector256.IsNaN (-> (Simd256 %a) (Simd256 %a))))
   (v256-select (: System.Runtime.Intrinsics.Vector256.ConditionalSelect (-> (Simd256 %a) (Simd256 %a) (Simd256 %a) (Simd256 %a))))
   (v256-sum (: System.Runtime.Intrinsics.Vector256.Sum (-> (Simd256 %a) %a)))
   (v256-dot (: System.Runtime.Intrinsics.Vector256.Dot (-> (Simd256 %a) (Simd256 %a) %a)))
   (v256-ref (: System.Runtime.Intrinsics.Vector256.GetElement (-> (Simd256 %a) int %a)))
+  (v256-with (: System.Runtime.Intrinsics.Vector256.WithElement (-> (Simd256 %a) int %a (Simd256 %a))))
   (v256-store! (: System.Runtime.Intrinsics.Vector256.CopyTo (-> (Simd256 %a) (Array %a) int void)))
+  (v256-add-saturating (: System.Runtime.Intrinsics.Vector256.AddSaturate (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-sub-saturating (: System.Runtime.Intrinsics.Vector256.SubtractSaturate (-> (Simd256 %a) (Simd256 %a) (Simd256 %a))))
+  (v256-as (: System.Runtime.Intrinsics.Vector256.As (-> (Simd256 %a) (Simd256 %b))))
+  (v256-floor (: Bjolang.Runtime.BjoSimd.Floor256 (-> (Simd256 %a) (Simd256 %a))))
+  (v256-ceiling (: Bjolang.Runtime.BjoSimd.Ceiling256 (-> (Simd256 %a) (Simd256 %a))))
+  (v256-round (: Bjolang.Runtime.BjoSimd.Round256 (-> (Simd256 %a) (Simd256 %a))))
+  (v256-truncate (: Bjolang.Runtime.BjoSimd.Truncate256 (-> (Simd256 %a) (Simd256 %a))))
+  (v256-mul-add (: Bjolang.Runtime.BjoSimd.MulAdd256 (-> (Simd256 %a) (Simd256 %a) (Simd256 %a) (Simd256 %a))))
   (v256-lanes (: Bjolang.Runtime.BjoSimd.Lanes256 (-> (Simd256 %a) int)))
   (v256-any? (: Bjolang.Runtime.BjoSimd.Any256 (-> (Simd256 %a) bool)))
   (v256-all? (: Bjolang.Runtime.BjoSimd.All256 (-> (Simd256 %a) bool)))
@@ -311,43 +477,388 @@
 (: simd256-zero (-> (Simd256 %a)) (where (Lane %a)))
 (defun (simd256-zero) (v256-zero))
 
+;; The vector a mask holds, and the mask of a vector of a comparison's lanes.
+(: m256 (-> (Simd256 %a) (Mask256 %a)))
+(defun (m256 v) (Mask256 (lanes v)))
+
+(: lanes256 (-> (Mask256 %a) (Simd256 %a)))
+(defun (lanes256 m) (record-ref m lanes))
+
 (impl (Simd (Simd256 %a)) (where (Lane %a))
   (type %elem %a)
+  (type %mask (Mask256 %a))
   (defun (simd-add a b) (v256-add a b))
   (defun (simd-sub a b) (v256-sub a b))
   (defun (simd-mul a b) (v256-mul a b))
-  (defun (simd-div a b) (v256-div a b))
   (defun (simd-scale a b) (v256-scale a b))
   (defun (simd-neg a) (v256-neg a))
   (defun (simd-abs a) (v256-abs a))
   (defun (simd-min a b) (v256-min a b))
   (defun (simd-max a b) (v256-max a b))
-  (defun (simd-sqrt a) (v256-sqrt a))
+  (defun (simd-eq a b) (m256 (v256-eq a b)))
+  (defun (simd-ne a b) (m256 (v256-not (v256-eq a b))))
+  (defun (simd-lt a b) (m256 (v256-lt a b)))
+  (defun (simd-le a b) (m256 (v256-le a b)))
+  (defun (simd-gt a b) (m256 (v256-gt a b)))
+  (defun (simd-ge a b) (m256 (v256-ge a b)))
+  (defun (simd-select m a b) (v256-select (lanes256 m) a b))
+  (defun (simd-sum a) (v256-sum a))
+  (defun (simd-dot a b) (v256-dot a b))
+  (defun (simd-ref a i) (v256-ref a i))
+  (defun (simd-with a i x) (v256-with a i x))
+  (defun (simd-store! a b c) (v256-store! a b c))
+  (defun (simd-lanes a) (v256-lanes a)))
+
+(impl (SimdBitwise (Simd256 %a)) (where (Lane %a))
   (defun (simd-and a b) (v256-and a b))
   (defun (simd-or a b) (v256-or a b))
   (defun (simd-xor a b) (v256-xor a b))
   (defun (simd-not a) (v256-not a))
-  (defun (simd-eq a b) (v256-eq a b))
-  (defun (simd-lt a b) (v256-lt a b))
-  (defun (simd-le a b) (v256-le a b))
-  (defun (simd-gt a b) (v256-gt a b))
-  (defun (simd-ge a b) (v256-ge a b))
-  (defun (simd-select a b c) (v256-select a b c))
-  (defun (simd-sum a) (v256-sum a))
-  (defun (simd-dot a b) (v256-dot a b))
-  (defun (simd-ref a b) (v256-ref a b))
-  (defun (simd-store! a b c) (v256-store! a b c))
-  (defun (simd-lanes a) (v256-lanes a))
-  (defun (simd-any? a) (v256-any? a))
-  (defun (simd-all? a) (v256-all? a))
-  (defun (simd-count-true a) (v256-count-true a))
-  (defun (simd-first-true a) (v256-first-true a))
-  (defun (simd-mask-bits a) (v256-mask-bits a)))
+  (defun (simd-and-not a b) (v256-and-not a b)))
 
-(impl (SimdShift (Simd256 %a)) (where (IntLane %a))
+(impl (SimdBitwise (Mask256 %a)) (where (Lane %a))
+  (defun (simd-and a b) (m256 (v256-and (lanes256 a) (lanes256 b))))
+  (defun (simd-or a b) (m256 (v256-or (lanes256 a) (lanes256 b))))
+  (defun (simd-xor a b) (m256 (v256-xor (lanes256 a) (lanes256 b))))
+  (defun (simd-not a) (m256 (v256-not (lanes256 a))))
+  (defun (simd-and-not a b) (m256 (v256-and-not (lanes256 a) (lanes256 b)))))
+
+(impl (SimdMask (Mask256 %a)) (where (Lane %a))
+  (type %vec (Simd256 %a))
+  (defun (simd-any? m) (v256-any? (lanes256 m)))
+  (defun (simd-all? m) (v256-all? (lanes256 m)))
+  (defun (simd-count-true m) (v256-count-true (lanes256 m)))
+  (defun (simd-first-true m) (v256-first-true (lanes256 m)))
+  (defun (simd-mask-bits m) (v256-mask-bits (lanes256 m)))
+  (defun (simd-mask->lanes m) (lanes256 m)))
+
+(impl (SimdFloat (Simd256 %a)) (where (FloatLane %a))
+  (type %mask (Mask256 %a))
+  (defun (simd-div a b) (v256-div a b))
+  (defun (simd-sqrt a) (v256-sqrt a))
+  (defun (simd-floor a) (v256-floor a))
+  (defun (simd-ceiling a) (v256-ceiling a))
+  (defun (simd-round a) (v256-round a))
+  (defun (simd-truncate a) (v256-truncate a))
+  (defun (simd-nan? a) (m256 (v256-nan? a)))
+  (defun (simd-mul-add a b c) (v256-mul-add a b c)))
+
+(impl (SimdInt (Simd256 %a)) (where (IntLane %a))
   (defun (simd-shift-left a n) (v256-shift-left a n))
   (defun (simd-shift-right a n) (v256-shift-right a n))
-  (defun (simd-shift-right-logical a n) (v256-shift-right-logical a n)))
+  (defun (simd-shift-right-logical a n) (v256-shift-right-logical a n))
+  (defun (simd-add-saturating a b) (v256-add-saturating a b))
+  (defun (simd-sub-saturating a b) (v256-sub-saturating a b)))
+
+(impl (SimdBits (Simd256 %a)) (where (Lane %a))
+  (type %int8 (Simd256 System.SByte))
+  (type %uint8 (Simd256 byte))
+  (type %int16 (Simd256 short))
+  (type %uint16 (Simd256 ushort))
+  (type %int32 (Simd256 int))
+  (type %uint32 (Simd256 uint))
+  (type %int64 (Simd256 long))
+  (type %uint64 (Simd256 ulong))
+  (type %float32 (Simd256 System.Single))
+  (type %float64 (Simd256 double))
+  (defun (simd-bits->int8 v) (v256-as v))
+  (defun (simd-bits->uint8 v) (v256-as v))
+  (defun (simd-bits->int16 v) (v256-as v))
+  (defun (simd-bits->uint16 v) (v256-as v))
+  (defun (simd-bits->int32 v) (v256-as v))
+  (defun (simd-bits->uint32 v) (v256-as v))
+  (defun (simd-bits->int64 v) (v256-as v))
+  (defun (simd-bits->uint64 v) (v256-as v))
+  (defun (simd-bits->float32 v) (v256-as v))
+  (defun (simd-bits->float64 v) (v256-as v)))
+
+;; ---------------------------------------------------------------------------
+;; Conversions
+;; ---------------------------------------------------------------------------
+;;
+;; A conversion gives a vector of another element type, which depends on the
+;; one it is given. So these traits are over the element type, with an impl
+;; for each, and a method for each width: the name says the width, as the
+;; name of what makes a vector does.
+;;
+;; Each name says what happens to a value that does not fit. Widening keeps
+;; every value: a signed lane is sign-extended and an unsigned one is
+;; zero-extended, by its type. Narrowing takes two vectors, the lower half
+;; first, and either wraps, keeping the low bits, or saturates, giving the
+;; nearest value that fits.
+
+;; The lower or the upper half of the lanes, each widened to twice the bits.
+(def/trait (SimdWiden %a)
+  (type %wide)
+  (: simd128-widen-lower (-> (Simd128 %a) (Simd128 %wide)))
+  (: simd128-widen-upper (-> (Simd128 %a) (Simd128 %wide)))
+  (: simd256-widen-lower (-> (Simd256 %a) (Simd256 %wide)))
+  (: simd256-widen-upper (-> (Simd256 %a) (Simd256 %wide))))
+
+;; Two vectors into one of half the bits a lane.
+(def/trait (SimdNarrow %a)
+  (type %narrow)
+  (: simd128-narrow-wrapping (-> (Simd128 %a) (Simd128 %a) (Simd128 %narrow)))
+  (: simd128-narrow-saturating (-> (Simd128 %a) (Simd128 %a) (Simd128 %narrow)))
+  (: simd256-narrow-wrapping (-> (Simd256 %a) (Simd256 %a) (Simd256 %narrow)))
+  (: simd256-narrow-saturating (-> (Simd256 %a) (Simd256 %a) (Simd256 %narrow))))
+
+;; Integer lanes to float lanes of the same bits, rounded to the nearest float
+;; where the integer has more digits than the float holds.
+(def/trait (SimdIntToFloat %a)
+  (type %float)
+  (: simd128-int->float (-> (Simd128 %a) (Simd128 %float)))
+  (: simd256-int->float (-> (Simd256 %a) (Simd256 %float))))
+
+;; Float lanes to integer lanes of the same bits, toward zero. A value past the
+;; integer type's range gives its least or greatest value, and NaN gives 0.
+(def/trait (SimdFloatToInt %a)
+  (type %int)
+  (type %uint)
+  (: simd128-float->int-truncating (-> (Simd128 %a) (Simd128 %int)))
+  (: simd256-float->int-truncating (-> (Simd256 %a) (Simd256 %int)))
+  (: simd128-float->uint-truncating (-> (Simd128 %a) (Simd128 %uint)))
+  (: simd256-float->uint-truncating (-> (Simd256 %a) (Simd256 %uint))))
+
+(import/extern
+  (widen128-lower-sb (: System.Runtime.Intrinsics.Vector128.WidenLower (-> (Simd128 System.SByte) (Simd128 short))))
+  (widen128-upper-sb (: System.Runtime.Intrinsics.Vector128.WidenUpper (-> (Simd128 System.SByte) (Simd128 short))))
+  (widen256-lower-sb (: System.Runtime.Intrinsics.Vector256.WidenLower (-> (Simd256 System.SByte) (Simd256 short))))
+  (widen256-upper-sb (: System.Runtime.Intrinsics.Vector256.WidenUpper (-> (Simd256 System.SByte) (Simd256 short)))))
+(impl (SimdWiden System.SByte)
+  (type %wide short)
+  (defun (simd128-widen-lower v) (widen128-lower-sb v))
+  (defun (simd128-widen-upper v) (widen128-upper-sb v))
+  (defun (simd256-widen-lower v) (widen256-lower-sb v))
+  (defun (simd256-widen-upper v) (widen256-upper-sb v)))
+
+(import/extern
+  (widen128-lower-b (: System.Runtime.Intrinsics.Vector128.WidenLower (-> (Simd128 byte) (Simd128 ushort))))
+  (widen128-upper-b (: System.Runtime.Intrinsics.Vector128.WidenUpper (-> (Simd128 byte) (Simd128 ushort))))
+  (widen256-lower-b (: System.Runtime.Intrinsics.Vector256.WidenLower (-> (Simd256 byte) (Simd256 ushort))))
+  (widen256-upper-b (: System.Runtime.Intrinsics.Vector256.WidenUpper (-> (Simd256 byte) (Simd256 ushort)))))
+(impl (SimdWiden byte)
+  (type %wide ushort)
+  (defun (simd128-widen-lower v) (widen128-lower-b v))
+  (defun (simd128-widen-upper v) (widen128-upper-b v))
+  (defun (simd256-widen-lower v) (widen256-lower-b v))
+  (defun (simd256-widen-upper v) (widen256-upper-b v)))
+
+(import/extern
+  (widen128-lower-s (: System.Runtime.Intrinsics.Vector128.WidenLower (-> (Simd128 short) (Simd128 int))))
+  (widen128-upper-s (: System.Runtime.Intrinsics.Vector128.WidenUpper (-> (Simd128 short) (Simd128 int))))
+  (widen256-lower-s (: System.Runtime.Intrinsics.Vector256.WidenLower (-> (Simd256 short) (Simd256 int))))
+  (widen256-upper-s (: System.Runtime.Intrinsics.Vector256.WidenUpper (-> (Simd256 short) (Simd256 int)))))
+(impl (SimdWiden short)
+  (type %wide int)
+  (defun (simd128-widen-lower v) (widen128-lower-s v))
+  (defun (simd128-widen-upper v) (widen128-upper-s v))
+  (defun (simd256-widen-lower v) (widen256-lower-s v))
+  (defun (simd256-widen-upper v) (widen256-upper-s v)))
+
+(import/extern
+  (widen128-lower-us (: System.Runtime.Intrinsics.Vector128.WidenLower (-> (Simd128 ushort) (Simd128 uint))))
+  (widen128-upper-us (: System.Runtime.Intrinsics.Vector128.WidenUpper (-> (Simd128 ushort) (Simd128 uint))))
+  (widen256-lower-us (: System.Runtime.Intrinsics.Vector256.WidenLower (-> (Simd256 ushort) (Simd256 uint))))
+  (widen256-upper-us (: System.Runtime.Intrinsics.Vector256.WidenUpper (-> (Simd256 ushort) (Simd256 uint)))))
+(impl (SimdWiden ushort)
+  (type %wide uint)
+  (defun (simd128-widen-lower v) (widen128-lower-us v))
+  (defun (simd128-widen-upper v) (widen128-upper-us v))
+  (defun (simd256-widen-lower v) (widen256-lower-us v))
+  (defun (simd256-widen-upper v) (widen256-upper-us v)))
+
+(import/extern
+  (widen128-lower-i (: System.Runtime.Intrinsics.Vector128.WidenLower (-> (Simd128 int) (Simd128 long))))
+  (widen128-upper-i (: System.Runtime.Intrinsics.Vector128.WidenUpper (-> (Simd128 int) (Simd128 long))))
+  (widen256-lower-i (: System.Runtime.Intrinsics.Vector256.WidenLower (-> (Simd256 int) (Simd256 long))))
+  (widen256-upper-i (: System.Runtime.Intrinsics.Vector256.WidenUpper (-> (Simd256 int) (Simd256 long)))))
+(impl (SimdWiden int)
+  (type %wide long)
+  (defun (simd128-widen-lower v) (widen128-lower-i v))
+  (defun (simd128-widen-upper v) (widen128-upper-i v))
+  (defun (simd256-widen-lower v) (widen256-lower-i v))
+  (defun (simd256-widen-upper v) (widen256-upper-i v)))
+
+(import/extern
+  (widen128-lower-ui (: System.Runtime.Intrinsics.Vector128.WidenLower (-> (Simd128 uint) (Simd128 ulong))))
+  (widen128-upper-ui (: System.Runtime.Intrinsics.Vector128.WidenUpper (-> (Simd128 uint) (Simd128 ulong))))
+  (widen256-lower-ui (: System.Runtime.Intrinsics.Vector256.WidenLower (-> (Simd256 uint) (Simd256 ulong))))
+  (widen256-upper-ui (: System.Runtime.Intrinsics.Vector256.WidenUpper (-> (Simd256 uint) (Simd256 ulong)))))
+(impl (SimdWiden uint)
+  (type %wide ulong)
+  (defun (simd128-widen-lower v) (widen128-lower-ui v))
+  (defun (simd128-widen-upper v) (widen128-upper-ui v))
+  (defun (simd256-widen-lower v) (widen256-lower-ui v))
+  (defun (simd256-widen-upper v) (widen256-upper-ui v)))
+
+(import/extern
+  (widen128-lower-f (: System.Runtime.Intrinsics.Vector128.WidenLower (-> (Simd128 System.Single) (Simd128 double))))
+  (widen128-upper-f (: System.Runtime.Intrinsics.Vector128.WidenUpper (-> (Simd128 System.Single) (Simd128 double))))
+  (widen256-lower-f (: System.Runtime.Intrinsics.Vector256.WidenLower (-> (Simd256 System.Single) (Simd256 double))))
+  (widen256-upper-f (: System.Runtime.Intrinsics.Vector256.WidenUpper (-> (Simd256 System.Single) (Simd256 double)))))
+(impl (SimdWiden System.Single)
+  (type %wide double)
+  (defun (simd128-widen-lower v) (widen128-lower-f v))
+  (defun (simd128-widen-upper v) (widen128-upper-f v))
+  (defun (simd256-widen-lower v) (widen256-lower-f v))
+  (defun (simd256-widen-upper v) (widen256-upper-f v)))
+
+(import/extern
+  (narrow128-wrapping-s (: System.Runtime.Intrinsics.Vector128.Narrow (-> (Simd128 short) (Simd128 short) (Simd128 System.SByte))))
+  (narrow128-saturating-s (: System.Runtime.Intrinsics.Vector128.NarrowWithSaturation (-> (Simd128 short) (Simd128 short) (Simd128 System.SByte))))
+  (narrow256-wrapping-s (: System.Runtime.Intrinsics.Vector256.Narrow (-> (Simd256 short) (Simd256 short) (Simd256 System.SByte))))
+  (narrow256-saturating-s (: System.Runtime.Intrinsics.Vector256.NarrowWithSaturation (-> (Simd256 short) (Simd256 short) (Simd256 System.SByte)))))
+(impl (SimdNarrow short)
+  (type %narrow System.SByte)
+  (defun (simd128-narrow-wrapping a b) (narrow128-wrapping-s a b))
+  (defun (simd128-narrow-saturating a b) (narrow128-saturating-s a b))
+  (defun (simd256-narrow-wrapping a b) (narrow256-wrapping-s a b))
+  (defun (simd256-narrow-saturating a b) (narrow256-saturating-s a b)))
+
+(import/extern
+  (narrow128-wrapping-us (: System.Runtime.Intrinsics.Vector128.Narrow (-> (Simd128 ushort) (Simd128 ushort) (Simd128 byte))))
+  (narrow128-saturating-us (: System.Runtime.Intrinsics.Vector128.NarrowWithSaturation (-> (Simd128 ushort) (Simd128 ushort) (Simd128 byte))))
+  (narrow256-wrapping-us (: System.Runtime.Intrinsics.Vector256.Narrow (-> (Simd256 ushort) (Simd256 ushort) (Simd256 byte))))
+  (narrow256-saturating-us (: System.Runtime.Intrinsics.Vector256.NarrowWithSaturation (-> (Simd256 ushort) (Simd256 ushort) (Simd256 byte)))))
+(impl (SimdNarrow ushort)
+  (type %narrow byte)
+  (defun (simd128-narrow-wrapping a b) (narrow128-wrapping-us a b))
+  (defun (simd128-narrow-saturating a b) (narrow128-saturating-us a b))
+  (defun (simd256-narrow-wrapping a b) (narrow256-wrapping-us a b))
+  (defun (simd256-narrow-saturating a b) (narrow256-saturating-us a b)))
+
+(import/extern
+  (narrow128-wrapping-i (: System.Runtime.Intrinsics.Vector128.Narrow (-> (Simd128 int) (Simd128 int) (Simd128 short))))
+  (narrow128-saturating-i (: System.Runtime.Intrinsics.Vector128.NarrowWithSaturation (-> (Simd128 int) (Simd128 int) (Simd128 short))))
+  (narrow256-wrapping-i (: System.Runtime.Intrinsics.Vector256.Narrow (-> (Simd256 int) (Simd256 int) (Simd256 short))))
+  (narrow256-saturating-i (: System.Runtime.Intrinsics.Vector256.NarrowWithSaturation (-> (Simd256 int) (Simd256 int) (Simd256 short)))))
+(impl (SimdNarrow int)
+  (type %narrow short)
+  (defun (simd128-narrow-wrapping a b) (narrow128-wrapping-i a b))
+  (defun (simd128-narrow-saturating a b) (narrow128-saturating-i a b))
+  (defun (simd256-narrow-wrapping a b) (narrow256-wrapping-i a b))
+  (defun (simd256-narrow-saturating a b) (narrow256-saturating-i a b)))
+
+(import/extern
+  (narrow128-wrapping-ui (: System.Runtime.Intrinsics.Vector128.Narrow (-> (Simd128 uint) (Simd128 uint) (Simd128 ushort))))
+  (narrow128-saturating-ui (: System.Runtime.Intrinsics.Vector128.NarrowWithSaturation (-> (Simd128 uint) (Simd128 uint) (Simd128 ushort))))
+  (narrow256-wrapping-ui (: System.Runtime.Intrinsics.Vector256.Narrow (-> (Simd256 uint) (Simd256 uint) (Simd256 ushort))))
+  (narrow256-saturating-ui (: System.Runtime.Intrinsics.Vector256.NarrowWithSaturation (-> (Simd256 uint) (Simd256 uint) (Simd256 ushort)))))
+(impl (SimdNarrow uint)
+  (type %narrow ushort)
+  (defun (simd128-narrow-wrapping a b) (narrow128-wrapping-ui a b))
+  (defun (simd128-narrow-saturating a b) (narrow128-saturating-ui a b))
+  (defun (simd256-narrow-wrapping a b) (narrow256-wrapping-ui a b))
+  (defun (simd256-narrow-saturating a b) (narrow256-saturating-ui a b)))
+
+(import/extern
+  (narrow128-wrapping-l (: System.Runtime.Intrinsics.Vector128.Narrow (-> (Simd128 long) (Simd128 long) (Simd128 int))))
+  (narrow128-saturating-l (: System.Runtime.Intrinsics.Vector128.NarrowWithSaturation (-> (Simd128 long) (Simd128 long) (Simd128 int))))
+  (narrow256-wrapping-l (: System.Runtime.Intrinsics.Vector256.Narrow (-> (Simd256 long) (Simd256 long) (Simd256 int))))
+  (narrow256-saturating-l (: System.Runtime.Intrinsics.Vector256.NarrowWithSaturation (-> (Simd256 long) (Simd256 long) (Simd256 int)))))
+(impl (SimdNarrow long)
+  (type %narrow int)
+  (defun (simd128-narrow-wrapping a b) (narrow128-wrapping-l a b))
+  (defun (simd128-narrow-saturating a b) (narrow128-saturating-l a b))
+  (defun (simd256-narrow-wrapping a b) (narrow256-wrapping-l a b))
+  (defun (simd256-narrow-saturating a b) (narrow256-saturating-l a b)))
+
+(import/extern
+  (narrow128-wrapping-ul (: System.Runtime.Intrinsics.Vector128.Narrow (-> (Simd128 ulong) (Simd128 ulong) (Simd128 uint))))
+  (narrow128-saturating-ul (: System.Runtime.Intrinsics.Vector128.NarrowWithSaturation (-> (Simd128 ulong) (Simd128 ulong) (Simd128 uint))))
+  (narrow256-wrapping-ul (: System.Runtime.Intrinsics.Vector256.Narrow (-> (Simd256 ulong) (Simd256 ulong) (Simd256 uint))))
+  (narrow256-saturating-ul (: System.Runtime.Intrinsics.Vector256.NarrowWithSaturation (-> (Simd256 ulong) (Simd256 ulong) (Simd256 uint)))))
+(impl (SimdNarrow ulong)
+  (type %narrow uint)
+  (defun (simd128-narrow-wrapping a b) (narrow128-wrapping-ul a b))
+  (defun (simd128-narrow-saturating a b) (narrow128-saturating-ul a b))
+  (defun (simd256-narrow-wrapping a b) (narrow256-wrapping-ul a b))
+  (defun (simd256-narrow-saturating a b) (narrow256-saturating-ul a b)))
+
+(import/extern
+  (int->float128-i (: System.Runtime.Intrinsics.Vector128.ConvertToSingle (-> (Simd128 int) (Simd128 System.Single))))
+  (int->float256-i (: System.Runtime.Intrinsics.Vector256.ConvertToSingle (-> (Simd256 int) (Simd256 System.Single)))))
+(impl (SimdIntToFloat int)
+  (type %float System.Single)
+  (defun (simd128-int->float v) (int->float128-i v))
+  (defun (simd256-int->float v) (int->float256-i v)))
+
+(import/extern
+  (int->float128-ui (: System.Runtime.Intrinsics.Vector128.ConvertToSingle (-> (Simd128 uint) (Simd128 System.Single))))
+  (int->float256-ui (: System.Runtime.Intrinsics.Vector256.ConvertToSingle (-> (Simd256 uint) (Simd256 System.Single)))))
+(impl (SimdIntToFloat uint)
+  (type %float System.Single)
+  (defun (simd128-int->float v) (int->float128-ui v))
+  (defun (simd256-int->float v) (int->float256-ui v)))
+
+(import/extern
+  (int->float128-l (: System.Runtime.Intrinsics.Vector128.ConvertToDouble (-> (Simd128 long) (Simd128 double))))
+  (int->float256-l (: System.Runtime.Intrinsics.Vector256.ConvertToDouble (-> (Simd256 long) (Simd256 double)))))
+(impl (SimdIntToFloat long)
+  (type %float double)
+  (defun (simd128-int->float v) (int->float128-l v))
+  (defun (simd256-int->float v) (int->float256-l v)))
+
+(import/extern
+  (int->float128-ul (: System.Runtime.Intrinsics.Vector128.ConvertToDouble (-> (Simd128 ulong) (Simd128 double))))
+  (int->float256-ul (: System.Runtime.Intrinsics.Vector256.ConvertToDouble (-> (Simd256 ulong) (Simd256 double)))))
+(impl (SimdIntToFloat ulong)
+  (type %float double)
+  (defun (simd128-int->float v) (int->float128-ul v))
+  (defun (simd256-int->float v) (int->float256-ul v)))
+
+(import/extern
+  (float->int128-f (: System.Runtime.Intrinsics.Vector128.ConvertToInt32 (-> (Simd128 System.Single) (Simd128 int))))
+  (float->uint128-f (: System.Runtime.Intrinsics.Vector128.ConvertToUInt32 (-> (Simd128 System.Single) (Simd128 uint))))
+  (float->int256-f (: System.Runtime.Intrinsics.Vector256.ConvertToInt32 (-> (Simd256 System.Single) (Simd256 int))))
+  (float->uint256-f (: System.Runtime.Intrinsics.Vector256.ConvertToUInt32 (-> (Simd256 System.Single) (Simd256 uint)))))
+(impl (SimdFloatToInt System.Single)
+  (type %int int)
+  (type %uint uint)
+  (defun (simd128-float->int-truncating v) (float->int128-f v))
+  (defun (simd128-float->uint-truncating v) (float->uint128-f v))
+  (defun (simd256-float->int-truncating v) (float->int256-f v))
+  (defun (simd256-float->uint-truncating v) (float->uint256-f v)))
+
+(import/extern
+  (float->int128-d (: System.Runtime.Intrinsics.Vector128.ConvertToInt64 (-> (Simd128 double) (Simd128 long))))
+  (float->uint128-d (: System.Runtime.Intrinsics.Vector128.ConvertToUInt64 (-> (Simd128 double) (Simd128 ulong))))
+  (float->int256-d (: System.Runtime.Intrinsics.Vector256.ConvertToInt64 (-> (Simd256 double) (Simd256 long))))
+  (float->uint256-d (: System.Runtime.Intrinsics.Vector256.ConvertToUInt64 (-> (Simd256 double) (Simd256 ulong)))))
+(impl (SimdFloatToInt double)
+  (type %int long)
+  (type %uint ulong)
+  (defun (simd128-float->int-truncating v) (float->int128-d v))
+  (defun (simd128-float->uint-truncating v) (float->uint128-d v))
+  (defun (simd256-float->int-truncating v) (float->int256-d v))
+  (defun (simd256-float->uint-truncating v) (float->uint256-d v)))
+
+;; ---------------------------------------------------------------------------
+;; A vector of given lanes
+;; ---------------------------------------------------------------------------
+;;
+;; `(simd128-of 1 2 3 4)`: a vector with these lanes, from lane 0. Each value
+;; is written into a vector of zeros with `simd-with`. A lane not given is 0,
+;; and a value past the last lane raises `ArgumentOutOfRangeException`. With
+;; constants, the JIT folds the writes into one constant vector.
+
+(: lanes-of (-> Syntax int (List Syntax) Syntax))
+(defun (lanes-of acc i xs)
+  (match xs
+    (Nil acc)
+    ((Cons x rest)
+     (lanes-of #'(simd-with ,acc ,(SInt (int->string i)) ,x) (+ i 1) rest))))
+
+(def/macro (simd128-of form inject compare)
+  (syntax-match form
+    ((_ first rest ...) (lanes-of #'(simd128-zero) 0 (Cons first rest)))
+    (bad (syntax-error bad "simd128-of takes the lanes, one or more: (simd128-of 1 2 3 4)."))))
+
+(def/macro (simd256-of form inject compare)
+  (syntax-match form
+    ((_ first rest ...) (lanes-of #'(simd256-zero) 0 (Cons first rest)))
+    (bad (syntax-error bad "simd256-of takes the lanes, one or more: (simd256-of 1 2 3 4)."))))
 
 ;; ---------------------------------------------------------------------------
 ;; Where vectors are loaded from

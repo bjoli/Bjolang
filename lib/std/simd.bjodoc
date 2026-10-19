@@ -3,7 +3,7 @@
 
 (:doc #:module
   (summary "Vectors of numbers, 128 or 256 bits wide, with one CPU instruction per operation.")
-  (see Simd SimdSource simd256-load simd128-load simd256-whole simd-mask-bits simd256-accelerated? Float64x4 Int32x4)
+  (see Simd SimdBitwise SimdMask SimdFloat SimdInt SimdBits SimdWiden SimdNarrow SimdSource Mask256 simd256-load simd256-whole simd-mask-bits simd256-accelerated? Float64x4 Int32x4)
   (example """
     (import (std simd))
 
@@ -30,40 +30,78 @@
     doubles, @code{Int8x32} is 32 signed bytes. @code{(Simd256 double)} is the
     same type as @code{Float64x4}.
 
-    @strong{Operations.} Every operation is a method of the trait
-    @code{Simd}, which both widths implement at every element type of
-    @code{Lane}. So
-    @code{simd-add} adds two @code{Float64x2} values or two @code{Int32x8}
-    values. At a known type, each call compiles to the .NET intrinsic, which
-    the JIT compiles to one instruction. Arithmetic on integer lanes wraps.
+    @strong{Operations.} The operations are the methods of a few traits,
+    which both widths implement, so @code{simd-add} adds two
+    @code{Float64x2} values or two @code{Int32x8} values. At a known type,
+    each call compiles to the .NET intrinsic, which the JIT compiles to one
+    instruction. Arithmetic on integer lanes wraps.
+
+    @itemlist{
+      @item{@code{Simd}: what every element type has. Arithmetic, min and
+        max, comparisons, @code{simd-select}, sums, and one lane.}
+      @item{@code{SimdBitwise}: and, or, xor, not and and-not, for vectors
+        and for masks.}
+      @item{@code{SimdMask}: reading a mask.}
+      @item{@code{SimdFloat}: what only float lanes have. Division, square
+        root, rounding, NaN and fused multiply-add.}
+      @item{@code{SimdInt}: what only integer lanes have. Shifts and
+        saturating arithmetic.}
+      @item{@code{SimdBits}: the same bits read as another element type.}
+      @item{@code{SimdWiden}, @code{SimdNarrow}, @code{SimdIntToFloat} and
+        @code{SimdFloatToInt}: conversions to another element type.}
+    }
 
     @strong{Making a vector.} The functions that make a vector say their
     width in the name, because there is no vector argument to take it from:
-    @code{simd256-load}, @code{simd128-splat}, @code{simd256-zero}. The
-    element type comes from the argument, or from where the vector is used.
+    @code{simd256-load}, @code{simd128-splat}, @code{simd256-zero},
+    @code{(simd128-of 1 2 3 4)}. The element type comes from the argument,
+    or from where the vector is used. A conversion makes a vector of another
+    type, and says its width too.
 
     @strong{Sources.} @code{simd128-load} and @code{simd256-load} read from
     any @code{SimdSource}: an array or a @code{MutableVec}.
 
-    @strong{Masks.} A comparison such as @code{simd-lt} gives a mask: a
-    vector of the same type, with every bit of a lane set where the
-    comparison holds and no bit set where it does not. @code{simd-select},
-    @code{simd-any?}, @code{simd-all?}, @code{simd-count-true} and
-    @code{simd-first-true} read a mask. The bitwise operations combine masks.
+    @strong{Masks.} A comparison such as @code{simd-lt} gives a mask, a
+    @code{(Mask128 %a)} or @code{(Mask256 %a)}: every bit of a lane is set
+    where the comparison holds and none where it does not. A mask is a type
+    of its own, so it can not be added up or multiplied by mistake.
+    @code{simd-and}, @code{simd-or} and @code{simd-not} combine masks.
+    @code{simd-select}, @code{simd-any?}, @code{simd-all?},
+    @code{simd-count-true} and @code{simd-first-true} read one.
     @code{simd-mask-bits} gives an int with one bit per lane, which
     @code{trailing-zeros} from @code{(std maths)} walks: that is how a search
     finds every match in a vector, not only the first.
+    @code{simd-mask->lanes} gives the lanes themselves, -1 where set and 0
+    where not for integer lanes, for code that counts matches by subtracting
+    them.
 
-    @strong{Shifts.} @code{simd-shift-left}, @code{simd-shift-right} and
-    @code{simd-shift-right-logical} shift every lane by the same count, as
-    the scalar @code{shift-left}, @code{shift-right} and
-    @code{shift-right-logical} do. They are the methods of
-    @code{SimdShift}, which only vectors of integer lanes implement.
+    @strong{Floats and integers.} @code{SimdFloat} and @code{SimdInt} are
+    implemented only for float and only for integer lanes, so a shift of a
+    @code{Float64x4} or the square root of an @code{Int32x8} is refused when
+    the program is compiled. Integer division is not offered: there is no
+    instruction for it, and a zero divisor would raise.
+
+    @strong{Conversions.} Each name says what happens to a value that does
+    not fit. @code{simd128-widen-lower} and @code{-upper} widen half the
+    lanes to twice the bits, sign-extending a signed lane and zero-extending
+    an unsigned one. @code{simd128-narrow-wrapping} and
+    @code{-saturating} make one vector of half the bits from two.
+    @code{simd128-int->float} rounds to the nearest float.
+    @code{simd128-float->int-truncating} goes toward zero, saturates past
+    the range, and gives 0 for NaN. @code{simd-bits->int64} and its family
+    keep the bits and read them as another type.
 
     @strong{Element types.} A vector holds one of the primitive numbers
     that the trait @code{Lane} lists. A vector of anything else, such as
     @code{(Simd128 char)}, can be named as a type, but nothing makes or
     takes one: the checker refuses it.
+
+    @strong{Design.} The library follows OxCaml's SIMD library where that
+    fits a language with traits and unsigned types: masks of their own
+    type, operations only for the element types they mean something for,
+    and conversions named for what they do. Unlike OxCaml's, it has
+    unsigned lane types, so a comparison or a widening of bytes is unsigned
+    by the type, not by the name of the operation.
 
     @strong{The tail.} An array whose length is not a multiple of the lanes
     has elements after the last whole vector. @code{simd256-whole} is the
@@ -108,23 +146,94 @@
     """))
 
 (:doc IntLane
-  (summary "The integer element types, which the shifts take.")
+  (summary "The integer element types, for the operations only integer lanes have.")
   (tparam %a "The element type.")
-  (see Lane SimdShift)
+  (see Lane FloatLane SimdInt)
   (reference """
-    The eight integer types of @code{Lane}. A shift of a float lane would
-    shift the bits of its encoding, so @code{SimdShift} requires this.
+    The eight integer types of @code{Lane}. @code{SimdInt} requires it.
     """))
 
-(:doc SimdShift
-  (summary "The shifts of a vector of integer lanes.")
-  (tparam %v "The vector type, such as @code{Int32x8}.")
-  (see simd-shift-left simd-shift-right simd-shift-right-logical IntLane))
+(:doc FloatLane
+  (summary "The float element types, @code{double} and @code{System.Single}.")
+  (tparam %a "The element type.")
+  (see Lane IntLane SimdFloat))
+
+(:doc Mask128
+  (summary "The answer of a comparison of two 128-bit vectors of %a: which lanes it holds for.")
+  (tparam %a "The element type of the vectors compared.")
+  (see SimdMask SimdBitwise simd-select Mask256)
+  (reference """
+    It holds a @code{(Simd128 %a)} with every bit of a lane set where the
+    comparison holds, and none where it does not. Only @code{(std simd)}
+    makes one. @code{simd-mask->lanes} gives the vector.
+    """))
+
+(:doc Mask256
+  (summary "The answer of a comparison of two 256-bit vectors of %a: which lanes it holds for.")
+  (tparam %a "The element type of the vectors compared.")
+  (see SimdMask SimdBitwise simd-select Mask128))
+
+(:doc SimdBitwise
+  (summary "The bitwise operations, of vectors and of masks.")
+  (tparam %v "A vector or a mask type.")
+  (see simd-and simd-or simd-xor simd-not simd-and-not))
+
+(:doc SimdMask
+  (summary "Reading a mask: which lanes are set.")
+  (tparam %m "A mask type, @code{(Mask128 %a)} or @code{(Mask256 %a)}.")
+  (see simd-any? simd-all? simd-count-true simd-first-true simd-mask-bits simd-mask->lanes))
+
+(:doc SimdFloat
+  (summary "The operations only float lanes have.")
+  (tparam %v "A vector of @code{FloatLane} elements, such as @code{Float64x4}.")
+  (see simd-div simd-sqrt simd-floor simd-ceiling simd-round simd-truncate simd-nan? simd-mul-add))
+
+(:doc SimdInt
+  (summary "The operations only integer lanes have.")
+  (tparam %v "A vector of @code{IntLane} elements, such as @code{Int32x8}.")
+  (see simd-shift-left simd-shift-right simd-shift-right-logical simd-add-saturating simd-sub-saturating IntLane))
+
+(:doc SimdBits
+  (summary "The same bits, read as lanes of another type.")
+  (tparam %v "The vector type.")
+  (see simd-bits->int64 simd-bits->float64 simd-bits->uint8))
+
+(:doc SimdWiden
+  (summary "Widening, by the element type: half the lanes, each to twice the bits.")
+  (tparam %a "The element type of the vector widened.")
+  (see simd128-widen-lower simd128-widen-upper simd256-widen-lower simd256-widen-upper SimdNarrow)
+  (reference """
+    @code{System.SByte} to @code{short}, @code{byte} to @code{ushort},
+    @code{short} to @code{int}, @code{ushort} to @code{uint}, @code{int} to
+    @code{long}, @code{uint} to @code{ulong}, and @code{System.Single} to
+    @code{double}. Every value fits: a signed lane is sign-extended and an
+    unsigned one zero-extended.
+    """))
+
+(:doc SimdNarrow
+  (summary "Narrowing, by the element type: two vectors into one of half the bits a lane.")
+  (tparam %a "The element type of the vectors narrowed.")
+  (see simd128-narrow-wrapping simd128-narrow-saturating SimdWiden)
+  (reference """
+    @code{short} to @code{System.SByte}, @code{ushort} to @code{byte},
+    @code{int} to @code{short}, @code{uint} to @code{ushort}, @code{long}
+    to @code{int} and @code{ulong} to @code{uint}.
+    """))
+
+(:doc SimdIntToFloat
+  (summary "Integer lanes to float lanes of the same bits.")
+  (tparam %a "The element type converted: @code{int}, @code{uint}, @code{long} or @code{ulong}.")
+  (see simd128-int->float simd256-int->float SimdFloatToInt))
+
+(:doc SimdFloatToInt
+  (summary "Float lanes to integer lanes of the same bits, toward zero.")
+  (tparam %a "The element type converted: @code{System.Single} or @code{double}.")
+  (see simd128-float->int-truncating simd128-float->uint-truncating SimdIntToFloat))
 
 (:doc Simd
-  (summary "The operations on a vector type, implemented by @code{Simd128} and @code{Simd256}.")
+  (summary "What every vector has, implemented by @code{Simd128} and @code{Simd256} at every @code{Lane} type.")
   (tparam %v "The vector type, such as @code{Float64x4}.")
-  (see simd-add simd-lt simd-select simd-sum))
+  (see simd-add simd-lt simd-select simd-sum SimdBitwise SimdFloat SimdInt))
 
 (:doc Float64x2
   (summary "2 lanes of @code{double}: @code{(Simd128 double)}."))
@@ -266,7 +375,7 @@
   (returns "The lane-wise products."))
 
 (:doc simd-div
-  (summary "Divides the lanes of @code{a} by the lanes of @code{b}. Fast at float types only: there is no integer division instruction, so integer lanes are divided one at a time. An integer lane divided by 0 raises @code{DivideByZeroException}, as a scalar does; a float lane gives an infinity or NaN.")
+  (summary "Divides the float lanes of @code{a} by those of @code{b}. A lane divided by 0 is an infinity, or NaN for 0 by 0.")
   (arg a "The dividends.")
   (arg b "The divisors.")
   (returns "The lane-wise quotients."))
@@ -300,9 +409,65 @@
   (returns "The lane-wise maximums."))
 
 (:doc simd-sqrt
-  (summary "The square root of every lane. For float lanes.")
+  (summary "The square root of every float lane. A negative lane gives NaN.")
   (arg v "The vector.")
   (returns "The square roots."))
+
+(:doc simd-floor
+  (summary "Every float lane rounded down, toward negative infinity.")
+  (arg v "The vector.")
+  (returns "The rounded lanes, still floats."))
+
+(:doc simd-ceiling
+  (summary "Every float lane rounded up, toward positive infinity.")
+  (arg v "The vector.")
+  (returns "The rounded lanes, still floats."))
+
+(:doc simd-round
+  (summary "Every float lane rounded to the nearest integer, and from halfway to the even one.")
+  (arg v "The vector.")
+  (returns "The rounded lanes, still floats: 0.5 and 1.5 give 0 and 2.")
+  (see simd128-float->int-truncating))
+
+(:doc simd-truncate
+  (summary "Every float lane rounded toward zero.")
+  (arg v "The vector.")
+  (returns "The rounded lanes, still floats."))
+
+(:doc simd-nan?
+  (summary "A mask of the float lanes that are NaN.")
+  (arg v "The vector.")
+  (returns "A mask."))
+
+(:doc simd-mul-add
+  (summary "@code{a * b + c} in every float lane, rounded once.")
+  (arg a "The first factors.")
+  (arg b "The second factors.")
+  (arg c "What is added to the products.")
+  (returns "The lanes of @code{a * b + c}.")
+  (reference """
+    One fused instruction where the CPU has one (FMA3 on x86-64, every
+    ARM64). Rounded once, so it can differ in the last bit from
+    @code{(simd-add (simd-mul a b) c)}, which rounds twice.
+    """))
+
+(:doc simd-add-saturating
+  (summary "Adds the integer lanes, and gives the type's greatest or least value where the sum does not fit.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "The lane-wise sums, saturated: 250uy plus 10uy is 255uy."))
+
+(:doc simd-sub-saturating
+  (summary "Subtracts the integer lanes, and gives the type's greatest or least value where the difference does not fit.")
+  (arg a "The vector to subtract from.")
+  (arg b "The vector to subtract.")
+  (returns "The lane-wise differences, saturated: 5uy minus 10uy is 0uy."))
+
+(:doc simd-and-not
+  (summary "The bits of @code{a} that are not set in @code{b}. Of two masks, the lanes set in the first only.")
+  (arg a "The first vector or mask.")
+  (arg b "The second, whose bits are taken away.")
+  (returns "The bits of @code{a} and not @code{b}."))
 
 (:doc simd-and
   (summary "The bitwise and of two vectors. Combines two masks into the lanes set in both.")
@@ -333,6 +498,15 @@
   (arg b "The second vector.")
   (returns "A mask."))
 
+(:doc simd-ne
+  (summary "A mask of the lanes where @code{a} does not equal @code{b}. NaN differs from everything.")
+  (arg a "The first vector.")
+  (arg b "The second vector.")
+  (returns "A mask.")
+  (example """
+    (simd-ne v (simd256-zero))   ; the lanes that are not 0: a mask from -1/0 lanes kept in memory
+    """))
+
 (:doc simd-lt
   (summary "A mask of the lanes where @code{a} is less than @code{b}.")
   (arg a "The first vector.")
@@ -358,7 +532,7 @@
   (returns "A mask."))
 
 (:doc simd-select
-  (summary "Each lane from @code{a} where @code{mask} is set, and from @code{b} where it is not.")
+  (summary "Each lane from @code{a} where @code{mask} is set, and from @code{b} where it is not. The mask is a comparison's of vectors of the same type.")
   (arg mask "Which lanes to take from @code{a}.")
   (arg a "The lanes where the mask is set.")
   (arg b "The lanes where the mask is not set.")
@@ -401,6 +575,167 @@
   (arg i "The lane, from 0.")
   (returns "The number in the lane."))
 
+(:doc simd-with
+  (summary "The vector with one lane replaced. Raises @code{ArgumentOutOfRangeException} outside the lanes.")
+  (arg v "The vector.")
+  (arg i "The lane, from 0.")
+  (arg x "The new number.")
+  (returns "A vector of the same lanes but the one at @code{i}.")
+  (see simd128-of simd-ref))
+
+(:doc simd-mask->lanes
+  (summary "The vector a mask holds: every bit of a lane set where the mask is, and none where it is not.")
+  (arg mask "The mask.")
+  (returns "For integer lanes, -1 where set and 0 where not. For float lanes, the same bits, which are NaN.")
+  (example """
+    ;; Matches counted lane by lane: subtracting -1 adds one.
+    (simd-sub counts (simd-mask->lanes (simd-eq bytes needle)))
+    """))
+
+(:doc simd-bits->int8
+  (summary "The same bits, as lanes of @code{System.SByte}.")
+  (arg v "The vector.")
+  (returns "An @code{Int8x16} or @code{Int8x32}."))
+
+(:doc simd-bits->uint8
+  (summary "The same bits, as lanes of @code{byte}.")
+  (arg v "The vector.")
+  (returns "A @code{UInt8x16} or @code{UInt8x32}."))
+
+(:doc simd-bits->int16
+  (summary "The same bits, as lanes of @code{short}.")
+  (arg v "The vector.")
+  (returns "An @code{Int16x8} or @code{Int16x16}."))
+
+(:doc simd-bits->uint16
+  (summary "The same bits, as lanes of @code{ushort}.")
+  (arg v "The vector.")
+  (returns "A @code{UInt16x8} or @code{UInt16x16}."))
+
+(:doc simd-bits->int32
+  (summary "The same bits, as lanes of @code{int}.")
+  (arg v "The vector.")
+  (returns "An @code{Int32x4} or @code{Int32x8}."))
+
+(:doc simd-bits->uint32
+  (summary "The same bits, as lanes of @code{uint}.")
+  (arg v "The vector.")
+  (returns "A @code{UInt32x4} or @code{UInt32x8}."))
+
+(:doc simd-bits->int64
+  (summary "The same bits, as lanes of @code{long}.")
+  (arg v "The vector.")
+  (returns "An @code{Int64x2} or @code{Int64x4}.")
+  (example """
+    (simd-bits->int64 (simd-mask->lanes (simd-lt xs ys)))   ; -1 and 0, from doubles
+    """))
+
+(:doc simd-bits->uint64
+  (summary "The same bits, as lanes of @code{ulong}.")
+  (arg v "The vector.")
+  (returns "A @code{UInt64x2} or @code{UInt64x4}."))
+
+(:doc simd-bits->float32
+  (summary "The same bits, as lanes of @code{System.Single}.")
+  (arg v "The vector.")
+  (returns "A @code{Float32x4} or @code{Float32x8}."))
+
+(:doc simd-bits->float64
+  (summary "The same bits, as lanes of @code{double}.")
+  (arg v "The vector.")
+  (returns "A @code{Float64x2} or @code{Float64x4}."))
+
+(:doc simd128-widen-lower
+  (summary "The lower half of the lanes, each widened to twice the bits.")
+  (arg v "The vector.")
+  (returns "A vector of the wider type: @code{UInt8x16} gives @code{UInt16x8}.")
+  (see simd128-widen-upper SimdWiden))
+
+(:doc simd128-widen-upper
+  (summary "The upper half of the lanes, each widened to twice the bits.")
+  (arg v "The vector.")
+  (returns "A vector of the wider type.")
+  (see simd128-widen-lower SimdWiden))
+
+(:doc simd256-widen-lower
+  (summary "The lower half of the lanes, each widened to twice the bits.")
+  (arg v "The vector.")
+  (returns "A vector of the wider type: @code{UInt8x32} gives @code{UInt16x16}.")
+  (see simd256-widen-upper SimdWiden))
+
+(:doc simd256-widen-upper
+  (summary "The upper half of the lanes, each widened to twice the bits.")
+  (arg v "The vector.")
+  (returns "A vector of the wider type.")
+  (see simd256-widen-lower SimdWiden))
+
+(:doc simd128-narrow-wrapping
+  (summary "Two vectors into one of half the bits a lane, keeping the low bits of each.")
+  (arg lower "The vector whose lanes become the lower half.")
+  (arg upper "The vector whose lanes become the upper half.")
+  (returns "The narrowed lanes: an @code{int} 300 becomes the @code{short} 300, and 70000 becomes 4464.")
+  (see simd128-narrow-saturating SimdNarrow))
+
+(:doc simd128-narrow-saturating
+  (summary "Two vectors into one of half the bits a lane, giving the nearest value that fits.")
+  (arg lower "The vector whose lanes become the lower half.")
+  (arg upper "The vector whose lanes become the upper half.")
+  (returns "The narrowed lanes: an @code{int} 70000 becomes the @code{short} 32767.")
+  (see simd128-narrow-wrapping SimdNarrow))
+
+(:doc simd256-narrow-wrapping
+  (summary "Two vectors into one of half the bits a lane, keeping the low bits of each.")
+  (arg lower "The vector whose lanes become the lower half.")
+  (arg upper "The vector whose lanes become the upper half.")
+  (returns "The narrowed lanes.")
+  (see simd256-narrow-saturating SimdNarrow))
+
+(:doc simd256-narrow-saturating
+  (summary "Two vectors into one of half the bits a lane, giving the nearest value that fits.")
+  (arg lower "The vector whose lanes become the lower half.")
+  (arg upper "The vector whose lanes become the upper half.")
+  (returns "The narrowed lanes.")
+  (see simd256-narrow-wrapping SimdNarrow))
+
+(:doc simd128-int->float
+  (summary "Integer lanes as float lanes of the same bits: @code{int} to @code{System.Single}, @code{long} to @code{double}.")
+  (arg v "The vector.")
+  (returns "The floats, each the nearest to its integer.")
+  (see simd128-float->int-truncating SimdIntToFloat))
+
+(:doc simd256-int->float
+  (summary "Integer lanes as float lanes of the same bits.")
+  (arg v "The vector.")
+  (returns "The floats, each the nearest to its integer.")
+  (see simd256-float->int-truncating SimdIntToFloat))
+
+(:doc simd128-float->int-truncating
+  (summary "Float lanes as signed integer lanes of the same bits, rounded toward zero.")
+  (arg v "The vector.")
+  (returns "The integers. Past the range, the type's least or greatest value; NaN gives 0.")
+  (see simd-round simd128-float->uint-truncating SimdFloatToInt)
+  (example """
+    (simd128-float->int-truncating (simd-round v))   ; to the nearest, then exact
+    """))
+
+(:doc simd256-float->int-truncating
+  (summary "Float lanes as signed integer lanes of the same bits, rounded toward zero.")
+  (arg v "The vector.")
+  (returns "The integers. Past the range, the type's least or greatest value; NaN gives 0.")
+  (see simd256-float->uint-truncating SimdFloatToInt))
+
+(:doc simd128-float->uint-truncating
+  (summary "Float lanes as unsigned integer lanes of the same bits, rounded toward zero.")
+  (arg v "The vector.")
+  (returns "The integers. A negative lane gives 0, past the range the greatest value, and NaN 0.")
+  (see simd128-float->int-truncating SimdFloatToInt))
+
+(:doc simd256-float->uint-truncating
+  (summary "Float lanes as unsigned integer lanes of the same bits, rounded toward zero.")
+  (arg v "The vector.")
+  (returns "The integers. A negative lane gives 0, past the range the greatest value, and NaN 0.")
+  (see simd256-float->int-truncating SimdFloatToInt))
+
 (:doc simd-store!
   (summary "Writes the lanes into an array, from an index. Raises when they do not fit.")
   (arg v "The vector.")
@@ -420,6 +755,22 @@
 (:doc simd128-zero
   (summary "A 128-bit vector of zeros. Its element type comes from where it is used.")
   (returns "The vector."))
+
+(:doc simd128-of
+  (summary "A 128-bit vector of the given lanes, from lane 0.")
+  (form (simd128-of x more ...))
+  (arg x "Lane 0.")
+  (rest more "The lanes after it.")
+  (see simd-with simd128-splat)
+  (example """
+    (simd128-of 1 2 3 4)          ; an Int32x4
+    (simd128-of 1.5 2.5)          ; a Float64x2
+    """)
+  (reference """
+    Each value is written into a vector of zeros with @code{simd-with}, so a
+    lane not given is 0, and a value past the last lane raises
+    @code{ArgumentOutOfRangeException}. The element type is the values'.
+    """))
 
 (:doc simd128-load
   (summary "The 128-bit vector of the elements of a source from an index.")
@@ -452,6 +803,21 @@
 (:doc simd256-zero
   (summary "A 256-bit vector of zeros. Its element type comes from where it is used.")
   (returns "The vector."))
+
+(:doc simd256-of
+  (summary "A 256-bit vector of the given lanes, from lane 0.")
+  (form (simd256-of x more ...))
+  (arg x "Lane 0.")
+  (rest more "The lanes after it.")
+  (see simd-with simd256-splat)
+  (example """
+    (simd256-of 1.0 2.0 3.0 4.0)  ; a Float64x4
+    """)
+  (reference """
+    Each value is written into a vector of zeros with @code{simd-with}, so a
+    lane not given is 0, and a value past the last lane raises
+    @code{ArgumentOutOfRangeException}. The element type is the values'.
+    """))
 
 (:doc simd256-load
   (summary "The 256-bit vector of the elements of a source from an index.")
