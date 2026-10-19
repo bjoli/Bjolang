@@ -1,0 +1,20 @@
+;; An iterable adapter whose associated types are projections of the
+;; iterable it wraps: the fixture of 410_impl_assoc_projection.bjo, compiled
+;; as a module of its own so that the impl is used across a module boundary.
+(import (std prelude))
+
+(export Enumerated enumerated)
+
+;; The elements of `inner`, each with its index.
+(type (: (Enumerated %s) (Struct (: inner %s))))
+
+(: enumerated (-> %s (Enumerated %s)))
+(defun (enumerated s) (Enumerated (inner s)))
+
+(impl (Iterable (Enumerated %s)) (where (Iterable %s))
+  (type %elem (Tuple int (assoc Iterable elem %s)))
+  (type %cursor (Tuple int (assoc Iterable cursor %s)))
+  (defun (iterable-start e) (Tuple 0 (iterable-start (record-ref e inner))))
+  (defun (iterable-done? e c) (iterable-done? (record-ref e inner) (snd c)))
+  (defun (iterable-current e c) (Tuple (fst c) (iterable-current (record-ref e inner) (snd c))))
+  (defun (iterable-next e c) (Tuple (+ (fst c) 1) (iterable-next (record-ref e inner) (snd c)))))

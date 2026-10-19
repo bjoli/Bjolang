@@ -1,0 +1,20 @@
+;; A projection in an impl's associated type names the impl of one of the
+;; impl's own type variables, which its where clause has to constrain: the
+;; where clause is what says that impl exists.
+
+;; EXPECT-ERROR: (type %elem ...) projects %elem of 'Iterable' out of
+;; EXPECT-ERROR: add (where (Iterable
+
+(import (std prelude))
+
+(type (: (Wrapped %s) (Struct (: inner %s))))
+
+(def/trait (Holds %c)
+  (type %elem)
+  (: first-of (-> %c %elem)))
+
+(impl (Holds (Wrapped %s))
+  (type %elem (assoc Iterable elem %s))
+  (defun (first-of w) (iterable-current (record-ref w inner) (iterable-start (record-ref w inner)))))
+
+(defun (main) 0)

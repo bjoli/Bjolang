@@ -3,6 +3,65 @@
 
 What each change guarantees, and what it leaves open.
 
+* An implementation's where clause may name a trait with associated types
+
+- ~(impl (Iterable (Enumerated %s)) (where (Iterable %s)) ...)~ was refused
+  ("cannot carry yet"). It is accepted, and the impl's associated types may
+  be projections of the constrained impl's: ~(type %elem (Tuple int (assoc
+  Iterable elem %s)))~. That is what an iterable adapter needs: a struct
+  around any iterable, whose element and cursor types come from it.
+- A projection has to be of a trait the where clause names, on the
+  variable it constrains; anything else is refused at the impl, with the
+  where clause to add. ~(assoc ...)~ is checked when written in source: the
+  trait has to be in scope and to declare the item, which may be spelled
+  ~elem~ or ~%elem~. Before, a projection in an associated type was
+  accepted with no check, and did not reduce at a concrete type, because
+  ~ResolveAssociatedType~ did not substitute inside a projection. Both are
+  fixed.
+- At a concrete type a loop inlines the adapter: over an array, a loop over
+  ~Enumerated~ reads it by index with a tuple of two ints as its cursor, and
+  builds no dictionary.
+- Through a dictionary, the impl's class takes the associated types of each
+  constrained trait as type parameters after its target's, in the order of
+  the where clause: ~Iterable_Enumerated<T_s, T_s_elem, T_s_cursor> :
+  Iterable<Enumerated<T_s>, ValueTuple<int, T_s_elem>, ValueTuple<int,
+  T_s_cursor>>~, holding an ~Iterable<T_s, T_s_elem, T_s_cursor>~. The
+  dictionary field's type (CheckDecl), the class's parameters (Codegen) and
+  the factory's type arguments (Lowering) come from one list,
+  ~implAssocTypeArgs~, which an importer derives the same way from the
+  exported where clause.
+- Fixed on the way: an impl over a type whose variable shared a letter with
+  a method's own type variable, such as ~(impl (Iterable (Pair %a %b)))~
+  against ~map~'s ~%b~, welded the two, and the class did not compile
+  (CS0535). The method's variable is renamed apart first, as a member
+  where's pins already were.
+- Not done, in Todo.org: an impl of another module's trait is not inlined
+  across modules, so an adapter written outside the prelude builds its
+  dictionary at every call of a loop in an importer; and a function cannot
+  yet constrain or name a projection.
+- Tests: ~410_impl_assoc_projection.bjo~ (an imported ~Enumerated~ and a
+  local two-constraint ~Zipped~, at concrete types and through dictionaries,
+  nested, and built in a generic body), ~codegen/impl_assoc_projection.bjo~
+  (the class shape, the inlined loop, the factory in a generic body), and
+  ~errors/impl_assoc_projection_unconstrained~ and
+  ~impl_assoc_unknown_item~.
+
+* bjo-mode: a raw string over several lines stays a string while it is typed
+
+- A raw string, ~"""hej hej "hej" """~, was fenced right when a file was
+  opened, but one over several lines was not while it was typed: Emacs
+  propertizes again from the line of each change, and the line with the
+  closing quotes does not hold the opening ones, so the closing quotes were
+  read as quotes inside the string and the rest of the buffer stayed a
+  string. ~bjo--extend-to-raw-string~ starts each such propertize at the
+  opening quotes of the raw string around it.
+- Tests in ~bjomode-tests.el~: quotes inside the text, four-quote
+  delimiters, a backslash before the closing quotes, two strings in a row,
+  several lines, and a quote typed inside an existing string with its
+  closing quotes deleted and typed again. Each is checked loaded and typed
+  a character at a time. Without the change, the two over several lines
+  fail.
+
 * (std simd): shuffles and byte-table lookups
 
 - ~(simd-shuffle v idx)~ puts lane ~(simd-ref idx i)~ of ~v~ in lane ~i~,

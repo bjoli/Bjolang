@@ -1,0 +1,33 @@
+;; An impl whose where clause names a trait with associated types holds that
+;; trait's dictionary, so its class takes the associated types as type
+;; parameters after its target's, and its own associated types may be
+;; projections of them. At a concrete type the adapter inlines into the loop,
+;; with no dictionary built; in a generic body the factory is given the
+;; caller's dictionary and type parameters.
+(import (std prelude))
+
+(type (: (Enumerated %s) (Struct (: inner %s))))
+
+;; EXPECT-CS: class Iterable_\w*Enumerated<T_s, T_s_elem, T_s_cursor> : Iterable<[\w.]*Enumerated<T_s>, ValueTuple<int, T_s_elem>, ValueTuple<int, T_s_cursor>>
+;; EXPECT-CS: private readonly Iterable<T_s, T_s_elem, T_s_cursor> _dict_Iterable_s;
+(impl (Iterable (Enumerated %s)) (where (Iterable %s))
+  (type %elem (Tuple int (assoc Iterable elem %s)))
+  (type %cursor (Tuple int (assoc Iterable cursor %s)))
+  (defun (iterable-start e) (Tuple 0 (iterable-start (record-ref e inner))))
+  (defun (iterable-done? e c) (iterable-done? (record-ref e inner) (snd c)))
+  (defun (iterable-current e c) (Tuple (fst c) (iterable-current (record-ref e inner) (snd c))))
+  (defun (iterable-next e c) (Tuple (+ (fst c) 1) (iterable-next (record-ref e inner) (snd c)))))
+
+;; The loop reads the array by index, with a tuple of the two cursors.
+;; EXPECT-NO-CS: Enumerated<int\[\], int, int>\.Make
+;; EXPECT-CS: ValueTuple<int, int> loopcur
+(: weighted (-> (Array int) int))
+(defun (weighted xs)
+  {summing (* i x) (:for (Tuple i x) (Enumerated (inner xs)))})
+
+(: count-all (-> %s int) (where (Iterable %s)))
+(defun (count-all s) #:no-inline {summing 1 (:for x s)})
+
+;; EXPECT-CS: Enumerated<T_s, T_s_elem, T_s_cursor>\.Make\(_dict_Iterable_s\)
+(: count-enumerated (-> %s int) (where (Iterable %s)))
+(defun (count-enumerated s) #:no-inline (count-all (Enumerated (inner s))))

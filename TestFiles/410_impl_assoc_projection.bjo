@@ -1,0 +1,77 @@
+;; An impl whose where clause names a trait with associated types, and whose
+;; own associated types are projections of them: iterable adapters.
+;;
+;; `Enumerated` is imported from inc/enumerated.bjo; `Zipped`, written here,
+;; holds two dictionaries, so its class takes the associated types of both, in
+;; the order of its where clause. Zipping elements of different types makes a
+;; wrong order a wrong answer, or C# that does not compile. Its `%b` is also
+;; the letter of `Iterable`'s `map`'s own type variable, which the impl's
+;; methods have to keep apart from the class's.
+;;
+;; Each adapter is used at concrete types, where the loop inlines it, and
+;; through constrained functions taken as values, which are not specialised:
+;; there the impl's class is built by its factory from the dictionaries of
+;; what it wraps, including inside a generic function's body.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/enumerated.bjo")
+
+;; The elements of `left` and `right` side by side, until either ends.
+(type (: (Zipped %a %b) (Struct (: left %a) (: right %b))))
+
+(impl (Iterable (Zipped %a %b)) (where (Iterable %a) (Iterable %b))
+  (type %elem (Tuple (assoc Iterable elem %a) (assoc Iterable elem %b)))
+  (type %cursor (Tuple (assoc Iterable cursor %a) (assoc Iterable cursor %b)))
+  (defun (iterable-start z)
+    (Tuple (iterable-start (record-ref z left)) (iterable-start (record-ref z right))))
+  (defun (iterable-done? z c)
+    (or (iterable-done? (record-ref z left) (fst c)) (iterable-done? (record-ref z right) (snd c))))
+  (defun (iterable-current z c)
+    (Tuple (iterable-current (record-ref z left) (fst c)) (iterable-current (record-ref z right) (snd c))))
+  (defun (iterable-next z c)
+    (Tuple (iterable-next (record-ref z left) (fst c)) (iterable-next (record-ref z right) (snd c)))))
+
+(: zipped (-> %a %b (Zipped %a %b)))
+(defun (zipped a b) (Zipped (left a) (right b)))
+
+;; Generic over what is counted.
+(: count-all (-> %s int) (where (Iterable %s)))
+(defun (count-all s) #:no-inline {summing 1 (:for x s)})
+
+;; Generic over what is enumerated: the Enumerated dictionary is built in this
+;; body, from the caller's.
+(: count-enumerated (-> %s int) (where (Iterable %s)))
+(defun (count-enumerated s) #:no-inline (count-all (enumerated s)))
+
+(: index-sum (-> %s int) (where (Iterable %s)))
+(defun (index-sum s) #:no-inline
+  {summing i (:for (Tuple i x) (enumerated s))})
+
+(defun (main)
+  ;; Concrete: the loop inlines the adapter.
+  (expect "enumerated array"
+          {listing (Tuple i x) (:for (Tuple i x) (enumerated #[10 20 30]))}
+          (list (Tuple 0 10) (Tuple 1 20) (Tuple 2 30)))
+  (expect "enumerated list" {summing (* i x) (:for (Tuple i x) (enumerated (list 5 6 7)))} 20)
+  (expect "enumerated string" {listing i (:for (Tuple i c) (enumerated "héj")) (:when (char=? c #\j))} (list 2))
+  (expect "enumerated twice"
+          {listing (Tuple i (fst p)) (:for (Tuple i p) (enumerated (enumerated #["a" "b"])))}
+          (list (Tuple 0 0) (Tuple 1 1)))
+  (expect "zipped, different types"
+          {listing (str s (->str n)) (:for (Tuple s n) (zipped (list "a" "b" "c") #[1 2]))}
+          (list "a1" "b2"))
+  (expect "zipped with enumerated"
+          {listing (Tuple i p) (:for (Tuple i p) (enumerated (zipped #["x" "y"] (list 1.5 2.5))))}
+          (list (Tuple 0 (Tuple "x" 1.5)) (Tuple 1 (Tuple "y" 2.5))))
+
+  ;; Through dictionaries: the functions as values are not specialised.
+  (def counts (list count-all))
+  (expect "count, through a dictionary" (list-map (fun (f) (f (zipped #[1 2 3] (list "p" "q")))) counts) (list 2))
+  (def via-enumerated count-enumerated)
+  (expect "enumerated built in a generic body" (via-enumerated (list 1 2 3)) 3)
+  (def sum-indexes index-sum)
+  (expect "index sum, through a dictionary" (sum-indexes "abcd") 6)
+  (def nested count-all)
+  (expect "nested adapters, through a dictionary"
+          (nested (enumerated (zipped (enumerated #[7 8 9]) (list #\a #\b)))) 2)
+  0)

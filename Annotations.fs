@@ -156,7 +156,29 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
     // It is also what `serializeHMType` writes for a `TTuple`, so without this
     // no exported signature mentioning a tuple could be read back.
     | TApp("Tuple", args, _) -> TTuple(args |> List.map (resolveWith checkNames registry))
-    | TApp("assoc", [ TName(traitName, _); TName(assocName, _); implType ], _) ->
+    //
+    // A program writes it too, in an impl's associated type:
+    // `(type %elem (assoc Iterable elem %s))` is the `%elem` of the `Iterable`
+    // impl of the `%s` the impl's where clause constrains. The item may be
+    // spelled `%elem`, as an associated type is everywhere else.
+    | TApp("assoc", [ TName(writtenTrait, _); TName(writtenItem, _); implType ], r) ->
+        let traitName = originalName registry writtenTrait
+        let assocName = writtenItem.TrimStart('\'')
+
+        if checkNames then
+            match Map.tryFind traitName registry.Traits with
+            | None ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: (assoc %s{writtenTrait} ...) names '%s{writtenTrait}', which is not a trait in scope."
+            | Some info when not (List.contains assocName info.AssociatedTypes) ->
+                let declared =
+                    if info.AssociatedTypes.IsEmpty then "it declares none"
+                    else "it declares " + (info.AssociatedTypes |> List.map (fun a -> "%" + a) |> String.concat " ")
+
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: trait '%s{writtenTrait}' has no associated type %%%s{assocName}; %s{declared}."
+            | Some _ -> ()
+
         TAssoc(traitName, assocName, resolveWith checkNames registry implType)
     // `(dyn ->str)`, `(dyn Foldable #:item int)` — a trait object type.
     //

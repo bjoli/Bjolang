@@ -2437,16 +2437,37 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
                     failwithf
                         $"Type Error at %s{Lexer.formatPos r}: '%s{cTrait}' is an inline-only trait, so it cannot appear in an implementation's where clause. There is no dictionary for the impl to carry."
 
-                // The dictionary's C# type names the trait's associated
-                // types too, and for a constraint over a type *variable*
-                // those are not known here — they would have to become
-                // further parameters of the impl class. Not built; say so
-                // rather than emitting a class that will not compile.
-                if not cInfo.AssociatedTypes.IsEmpty then
-                    failwithf
-                        $"Type Error at %s{Lexer.formatPos r}: '%s{cTrait}' has associated types, which an implementation's where clause cannot carry yet. Constrain a function instead, where the association becomes a type parameter."
-
                 { TraitName = cTrait; TargetType = TVar varName; Pins = [] })
+
+    // A projection in an associated type, `(assoc Iterable elem %s)`, names
+    // the impl of a type this impl does not know. It is that impl's only
+    // through the where clause, which says there is one: so the projection
+    // has to be of a trait the where clause names, on the variable it
+    // constrains. At a concrete type it reduces through that impl; a
+    // projection of anything else would name an impl nothing guarantees.
+    for (assocName, t) in hmAssocBindings do
+        let rec check (t: HMType) =
+            match t with
+            | TAssoc(pTrait, pItem, inner) ->
+                let held =
+                    match inner with
+                    | TVar v ->
+                        implConstraints |> List.exists (fun c -> c.TraitName = pTrait && c.TargetType = TVar v)
+                    | _ -> false
+
+                if not held then
+                    let shown = DotNetInterop.showType inner
+
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: (type %%%s{assocName} ...) projects %%%s{pItem} of '%s{pTrait}' out of '%s{shown}', and this implementation's where clause does not say (%s{pTrait} %s{shown}). A projection names the impl of one of the impl's own type variables, which the where clause constrains: add (where (%s{pTrait} %s{shown}))."
+            | TCon(_, args)
+            | TTuple args -> List.iter check args
+            | TFun(args, ret, _) ->
+                List.iter check args
+                check ret
+            | _ -> ()
+
+        check t
 
     // Defaults are spliced in *here*, before anything looks at the method
     // list, so that everything below — the definition-site check, the
@@ -2652,8 +2673,11 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
     // dictionary it dispatches through arrived as an argument or was stored
     // by the constructor.
     //
-    // A constrained trait has no associated types (checked above), so the
-    // dictionary's type is the trait applied to the one variable.
+    // The dictionary's type is the trait applied to the variable and to each
+    // of the trait's associated types projected out of it, as a constrained
+    // function's dictionary parameter is: `Iterable<T_s, T_s_elem, T_s_cursor>`.
+    // The projections are type parameters of the class (see
+    // `implAssocTypeArgs`).
     let dictFields =
         implConstraints
         |> List.filter (fun c -> not (isClrTrait finalEnv.Registry c.TraitName))
@@ -2663,7 +2687,12 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
                 | TVar v -> v
                 | other -> failwithf $"Internal error: impl constraint over %s{DotNetInterop.showType other}"
 
-            dictParamName c.TraitName varName, TCon(c.TraitName, [ c.TargetType ]))
+            let assocArgs =
+                match Map.tryFind c.TraitName finalEnv.Registry.Traits with
+                | Some info -> info.AssociatedTypes |> List.map (fun a -> TAssoc(c.TraitName, a, c.TargetType))
+                | None -> []
+
+            dictParamName c.TraitName varName, TCon(c.TraitName, c.TargetType :: assocArgs))
 
     finalEnv,
     sigs,
@@ -2709,7 +2738,39 @@ and private checkImplMethod
                         $"Method '%s{name}' is not a member of trait '%s{traitName}' at %s{Lexer.formatPos methodRange}"
             | InterfaceTrait ->
                 match Map.tryFind name traitInfo.Signatures with
-                | Some sigType -> applySubst sigType
+                | Some sigType ->
+                    // The method's own type variables are spelled in the
+                    // trait's namespace, and the impl's target may use the
+                    // same letters: `map`'s `%b` and the `%b` of
+                    // `(Pair %a %b)`. Substituted as they stand, the two
+                    // would be one variable, and the method would no longer
+                    // be generic in its own `%b`. So a method variable that
+                    // the target also uses is renamed first.
+                    let classVars = freeTVars regEnv.Registry targetType |> Set.ofList
+
+                    let traitVars =
+                        ("'" + traitInfo.ImplementorVar)
+                        :: (traitInfo.AssociatedTypes |> List.map (fun a -> "'" + a))
+                        |> Set.ofList
+
+                    let clashing =
+                        typeVarsOf sigType
+                        |> List.distinct
+                        |> List.filter (fun v -> Set.contains v classVars && not (Set.contains v traitVars))
+
+                    let renamed =
+                        if clashing.IsEmpty then
+                            sigType
+                        else
+                            let taken = Set.union classVars (typeVarsOf sigType |> Set.ofList)
+
+                            let fresh (v: string) =
+                                Seq.initInfinite (fun i -> $"%s{v}_m%d{i}")
+                                |> Seq.find (fun c -> not (Set.contains c taken))
+
+                            substTypeVars (clashing |> List.map (fun v -> v, TVar(fresh v)) |> Map.ofList) sigType
+
+                    applySubst renamed
                 | None ->
                     failwithf
                         $"Method '%s{name}' is not a member of trait '%s{traitName}' at %s{Lexer.formatPos methodRange}"

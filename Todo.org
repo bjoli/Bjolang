@@ -203,6 +203,23 @@ temporary per variable (~__next__~).
   ~Monomorphise.fs~, ~Lowering.fs~, ~Codegen.fs~, ~Exports.fs~ and
   ~Pipeline.fs~, about as much as the keying of types did.
 
+- *An impl of another module's trait is not inlined across modules.* A
+  module publishes the inline templates of its impls only for traits it
+  publishes, and the no-op bodies of others' (Exports.fs,
+  ~inlineTemplatesToExport~). So a loop over a library's own iterable calls
+  it through its dictionary, and for a conditional impl, such as an adapter
+  over ~(where (Iterable %s))~, the loop builds the dictionary with ~Make~ at
+  every call, once per iteration. Adapters in the prelude, which publishes
+  ~Iterable~, are not affected. Publishing every impl's templates, or
+  hoisting the ~Make~ out of the loop, would fix it.
+- *A projection only in an impl's associated types.* ~(assoc Iterable elem
+  %s)~ can be written in an impl's ~(type ...)~, where the where clause
+  guarantees the impl it names. A function's ~where~ cannot constrain one,
+  ~(where (->str (assoc Iterable elem %s)))~ fails in Lowering, and a
+  function signature naming one at a concrete type fails because signatures
+  are read before impls are registered. Both want the same thing as the
+  impl case: a projection treated as a type parameter of the function.
+
 * Equality and hashing
 
 The collections compare with the key's ~Eq~/~Ord~ (~eq-comparer~), but the

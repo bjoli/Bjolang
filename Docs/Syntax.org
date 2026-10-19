@@ -1266,7 +1266,39 @@ Constraints dictate what dictionary dependencies the implementation requires:
 Restrictions:
 - **A blanket may not be conditional.**
 - **A constraint may only name the implementation's own type variables.**
-- **The constrained trait may not have associated types, and may not be inline-only.**
+- **The constrained trait may not be inline-only.**
+
+**** Associated types of what an implementation wraps
+A ~where~ may name a trait with associated types, and the implementation's
+own associated types may then be written from them: ~(assoc Trait item %v)~
+is the ~%item~ of the ~Trait~ implementation of ~%v~. It names only an
+implementation the ~where~ clause guarantees, so ~(Trait %v)~ has to be in it.
+This is how an adapter over any iterable is written:
+
+#+BEGIN_SRC scheme
+(type (: (Enumerated %s) (Struct (: inner %s))))
+
+(impl (Iterable (Enumerated %s)) (where (Iterable %s))
+  (type %elem (Tuple int (assoc Iterable elem %s)))
+  (type %cursor (Tuple int (assoc Iterable cursor %s)))
+  (defun (iterable-start e) (Tuple 0 (iterable-start (record-ref e inner))))
+  (defun (iterable-done? e c) (iterable-done? (record-ref e inner) (snd c)))
+  (defun (iterable-current e c) (Tuple (fst c) (iterable-current (record-ref e inner) (snd c))))
+  (defun (iterable-next e c) (Tuple (+ (fst c) 1) (iterable-next (record-ref e inner) (snd c)))))
+
+{listing (Tuple i x) (:for (Tuple i x) (Enumerated (inner #[10 20])))}   ;; ((0 10) (1 20))
+#+END_SRC
+
+At a concrete type the projection is the inner implementation's, and a loop
+inlines the adapter as it inlines any other iterable: over an array, the loop
+above reads the array by index with a tuple of two ints as its cursor, and
+builds no dictionary. Through a dictionary, the implementation's class takes
+the associated types of each constrained trait as type parameters after its
+target's, in the order of the ~where~ clause.
+
+The item may be spelled ~elem~ or ~%elem~. Only an implementation's associated
+types may be written this way: a function's ~where~ cannot yet constrain a
+projection, and a function's signature should not name one at a concrete type.
 
 **** A ~where~ over a .NET interface
 A constraint may also name a trait that is a .NET interface, such as ~Num~. This is how ~summing~ works at every numeric type:

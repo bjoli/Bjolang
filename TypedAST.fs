@@ -1808,6 +1808,11 @@ type TraitRegistry =
             | TCon(n, args) -> TCon(n, args |> List.map (applySubstLocal subst))
             | TFun(args, ret, eff) -> TFun(args |> List.map (applySubstLocal subst), applySubstLocal subst ret, eff)
             | TTuple args -> TTuple(args |> List.map (applySubstLocal subst))
+            // A projection in an impl's associated type, such as the `%elem`
+            // of the `%s` an `(Enumerated %s)` wraps. Substituted like any
+            // other type, so that the caller's `prune` reduces it in turn at
+            // the concrete `%s`.
+            | TAssoc(traitName, assocName, inner) -> TAssoc(traitName, assocName, applySubstLocal subst inner)
             | _ -> t
 
         let typeKey =
@@ -2191,6 +2196,24 @@ let isClrTrait (registry: TraitRegistry) (traitName: string) : bool =
 /// only such constraints is therefore not conditional, and has an `Instance`.
 let dictionaryConstraints (registry: TraitRegistry) (target: ImplTarget) : TraitConstraint list =
     target.Constraints |> List.filter (fun c -> not (isClrTrait registry c.TraitName))
+
+/// The associated types of the dictionaries an implementation holds, each as
+/// (trait, constrained variable, associated type), in the order of the where
+/// clause and then of the trait's declaration.
+///
+/// The impl class takes one more type parameter for each, after those of its
+/// target: a field of type `Iterable<T_s, T_s_elem, T_s_cursor>` has to have
+/// them declared, and an associated type of the impl may be a projection of
+/// them, such as `ValueTuple<int, T_s_elem>`. `CheckDecl` types the fields,
+/// `Codegen` declares the parameters and `Lowering` passes their arguments, all
+/// from this one list, which an importer derives the same way from the
+/// exported where clause.
+let implAssocTypeArgs (registry: TraitRegistry) (target: ImplTarget) : (string * string * string) list =
+    dictionaryConstraints registry target
+    |> List.collect (fun c ->
+        match c.TargetType, Map.tryFind c.TraitName registry.Traits with
+        | TVar v, Some info -> info.AssociatedTypes |> List.map (fun a -> c.TraitName, v, a)
+        | _ -> [])
 
 /// The constraints of an implementation's `(where ...)` over .NET interfaces.
 let clrConstraints (registry: TraitRegistry) (target: ImplTarget) : TraitConstraint list =

@@ -6957,8 +6957,15 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
 
         let prefixArgs = targetArgs |> List.truncate (max 0 (targetArgs.Length - holeArity))
 
+        // Then one for each associated type of a dictionary the class holds,
+        // in the order `Lowering.buildEvidence` passes them.
+        let assocParamVars =
+            match Map.tryFind (traitName, targetTypeName) ctx.Registry.ImplTargets with
+            | Some target -> implAssocTypeArgs ctx.Registry target |> List.map (fun (_, v, a) -> assocTypeVar v a)
+            | None -> []
+
         let typeParamVars =
-            prefixArgs |> List.collect collectTypeVars |> List.distinct
+            (prefixArgs |> List.collect collectTypeVars) @ assocParamVars |> List.distinct
 
         let tyParamsStr =
             if typeParamVars.IsEmpty then ""

@@ -280,10 +280,21 @@ let rec buildEvidence
             let calleeType =
                 tfun (subEvidence |> List.map (fun e -> e.Type)) dictType
 
+            // The class also takes the associated types of the dictionaries it
+            // holds (see `implAssocTypeArgs`): each the projection at the type
+            // this use gives the impl's variable. At a concrete type `prune`
+            // reduces it; at a variable of a constrained function it stays a
+            // projection, which is that function's own type parameter.
+            let assocTyArgs =
+                let target, subst = selected
+
+                implAssocTypeArgs env.Registry target
+                |> List.map (fun (cTrait, v, a) -> prune env.Registry (TAssoc(cTrait, a, substTypeVars subst (TVar v))))
+
             let callee =
                 { Type = calleeType
                   Range = range
-                  Node = TIdent(implFactoryName traitName ctor, classTyArgs) }
+                  Node = TIdent(implFactoryName traitName ctor, classTyArgs @ assocTyArgs) }
                 : TypedExpr
 
             { Type = dictType
