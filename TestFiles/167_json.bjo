@@ -50,6 +50,19 @@
      (close-output-port out)
      (match (read-json in) ((Ok j) (shape j)) ((Err e) e)))))
 
+;; A document that arrives in two reads, the second after the reader has
+;; started.
+(: split-json (-> string string string))
+(defun (split-json first second)
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out (string->bytes first))
+     (flush-port out)
+     (def reading (bjo (read-in-a-fiber in)))
+     (write-bytes! out (string->bytes second))
+     (close-output-port out)
+     (run-str reading))))
+
 (: emoji string)
 (def emoji (list->string (list (integer->char 128512))))
 
@@ -92,6 +105,14 @@
   (expect "a signed exponent" (ok "-2.5E-2") "f-0.025")
   ;; A long is as wide as an integer goes; past it the value is still a number.
   (expect "wider than a long" (ok "99999999999999999999") "f1E+20")
+  (expect "the narrowest long" (ok "-9223372036854775808") "i-9223372036854775808")
+  (expect "one past the widest long" (ok "9223372036854775808") "f9.223372036854776E+18")
+  (expect "eighteen digits" (ok "999999999999999999") "i999999999999999999")
+  (expect "nineteen digits" (ok "1000000000000000000") "i1000000000000000000")
+  (expect "minus zero" (ok "-0") "i0")
+  (expect "a zero with a fraction" (ok "0.25") "f0.25")
+  (expect "an exponent with a plus" (ok "2e+2") "f200")
+  (expect "numbers in an array" (ok "[1,-2.5,3e1]") "[i1,f-2.5,f30]")
 
   ;; --- Strings -------------------------------------------------------------
   (expect "a string" (ok "\"hi\"") "\"hi\"")
@@ -131,6 +152,16 @@
   (expect "a leading zero" (bad "01") "line 1, column 2: a number may not have a leading zero")
   (expect "a lone decimal point" (bad "1.")
           "line 1, column 3: a number needs a digit after its decimal point, and this is the document ended")
+  (expect "a lone minus" (bad "[-]")
+          "line 1, column 3: a number needs a digit here, and this is ']'")
+  (expect "a decimal point and no digit" (bad "[1.x]")
+          "line 1, column 4: a number needs a digit after its decimal point, and this is 'x'")
+  (expect "an exponent and no digit" (bad "[1e+]")
+          "line 1, column 5: a number needs a digit after its exponent, and this is ']'")
+  (expect "a leading zero in an array" (bad "[0, 012]")
+          "line 1, column 6: a number may not have a leading zero")
+  (expect "a number after a newline" (bad "[1,\n -]")
+          "line 2, column 3: a number needs a digit here, and this is ']'")
   (expect "an unterminated string" (bad "\"abc")
           "line 1, column 5: the document ended inside a string")
   (expect "a raw newline in a string" (bad "\"a\nb\"")
@@ -181,6 +212,20 @@
              (close-output-port out)
              (run-str reading)))
           "\"é\"")
+
+  ;; A number whose digits arrive in two reads is one number.
+  (expect "a number split between two reads"
+          (split-json "[12" "34.5e1, 6]")
+          "[f12345,i6]")
+  (expect "a number split after its minus"
+          (split-json "-" "7")
+          "i-7")
+  (expect "a number split after its exponent"
+          (split-json "[1e" "2]")
+          "[f100]")
+  (expect "a refusal split between two reads"
+          (split-json "[1." "x]")
+          "line 1, column 4: a number needs a digit after its decimal point, and this is 'x'")
 
   ;; The row is the point of all this.
   (expect "the third line" (bad "[\n  1,\n  @\n]")

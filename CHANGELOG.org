@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* JSON numbers off the chunk, and a faster string->double
+
+- ~(text json)~ reads a number off the bytes of the chunk it holds, with a
+  local index, and moves the reader past it once, rather than once a byte.
+  The scan checks RFC 8259's grammar and answers a status and a position as
+  a tuple of ints, so it allocates nothing. An integer of up to 18 digits
+  is added up as it is read; a longer one, or a fraction, goes to the
+  parser. A number that reaches the end of a chunk, when the port may have
+  more, is read the old way, byte by byte, which fetches the rest. All of
+  it is Bjolang.
+- ~Utf8Number.ParseDouble~, which ~string->double~, ~(text json)~ and
+  ~(text bjodat-core)~ use, tries ~Utf8Parser~ first and takes its answer
+  only when it read all of the text. Anything else, such as text with white
+  space around it, goes to ~double.Parse~ as before, so the value and the
+  exception are the same. Over the 127,627 numbers of the three JSON bench
+  files, every value has the same bits, and the conversion takes 4.2 ms
+  where it took 7.8.
+- ~canada.json~ (numbers) went from 21.6 ms to about 18, of which the
+  faster ~ParseDouble~ is about 3 ms. The other two bench files are about
+  the same.
+- The values, the refusals and their positions are the same: the three
+  bench files print the same text, off a string and off a port, and so
+  does JSONTestSuite.
+- Tests: number edges and refusals in ~167_json.bjo~, numbers split between
+  two reads of a port, and ~ParseDouble~ against ~double.Parse~ in the
+  BjoString tests.
+
 * Reading a line by a pattern
 
 - A new module, ~(std scan)~, after OCaml's ~Scanf~: ~(scan line '(long "-"

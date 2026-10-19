@@ -487,8 +487,10 @@
      (ignore (take-digits! rd sb))
      (scan-fraction rd sb))))
 
-(: read-number (-> Reader (Result string Json)))
-(defun (read-number rd)
+;; A number byte by byte, fetching more of the document as it goes: for a
+;; number that the end of a chunk cuts.
+(: read-number/slow (-> Reader (Result string Json)))
+(defun (read-number/slow rd)
   (def sb (buffer rd))
   (def (Ok fractional?) (scan-number rd sb)
     :propagate)
@@ -499,6 +501,140 @@
       (match (try (clr-to-long sb) #:catch (System.OverflowException))
         ((Ok n) (Ok (JsonInt n)))
         ((Err _) (Ok (JsonFloat (clr-to-double sb)))))))
+
+;; ---------------------------------------------------------------------------
+;; Numbers off the chunk
+;; ---------------------------------------------------------------------------
+;; A number is read off the chunk's bytes with a local index, and the reader
+;; moves past it once at the end, rather than once a byte. A number is ASCII,
+;; so the column moves by as many bytes as the number has.
+;;
+;; A number that reaches the end of the chunk, when the port may have more,
+;; could be longer than the chunk shows. That one is read by
+;; `read-number/slow`, which fetches the rest.
+
+;; What a scan of a number found, with a position: the end of the number, or
+;; for a refusal the byte that is wrong. A tuple of two ints rather than a
+;; union, because a tuple is a value and a union case with a field is an
+;; allocation for every number in the document.
+(type (: NumberScan (Tuple int int)))
+
+(: num-int int)
+(def num-int 0)
+(: num-frac int)
+(def num-frac 1)
+(: num-no-digit int)
+(def num-no-digit 2)
+(: num-leading-zero int)
+(def num-leading-zero 3)
+(: num-no-fraction-digit int)
+(def num-no-fraction-digit 4)
+(: num-no-exponent-digit int)
+(def num-no-exponent-digit 5)
+
+(: digit-at? (-> (Array byte) int int bool))
+(defun (digit-at? b i limit)
+  (and (< i limit)
+       (let ((c (cast int (array-ref b i))))
+         (and (>= c 48) (<= c 57)))))
+
+(: byte-at? (-> (Array byte) int int int bool))
+(defun (byte-at? b i limit code)
+  (and (< i limit) (= (cast int (array-ref b i)) code)))
+
+;; The position after the digits from `i`.
+(: digits-end (-> (Array byte) int int int))
+(defun (digits-end b i limit)
+  (let go ((i i))
+    (if (digit-at? b i limit) (go (+ i 1)) i)))
+
+;; The exponent, if there is one, from `i`, after a number that is fractional
+;; when `frac?` is.
+(: scan-exponent-at (-> (Array byte) int int bool NumberScan))
+(defun (scan-exponent-at b i limit frac?)
+  (cond
+    ((or (byte-at? b i limit 101) (byte-at? b i limit 69))
+     (def signed (if (or (byte-at? b (+ i 1) limit 43) (byte-at? b (+ i 1) limit 45)) (+ i 2) (+ i 1)))
+     (def end (digits-end b signed limit))
+     (if (= end signed) (Tuple num-no-exponent-digit end) (Tuple num-frac end)))
+    (frac? (Tuple num-frac i))
+    (else (Tuple num-int i))))
+
+;; The fraction, if there is one, from `i`.
+(: scan-fraction-at (-> (Array byte) int int NumberScan))
+(defun (scan-fraction-at b i limit)
+  (cond
+    ((byte-at? b i limit 46)
+     (def end (digits-end b (+ i 1) limit))
+     (if (= end (+ i 1))
+         (Tuple num-no-fraction-digit end)
+         (scan-exponent-at b end limit #t)))
+    (else (scan-exponent-at b i limit #f))))
+
+;; The number from `pos`, whose digits start at `first`, by RFC 8259.
+(: scan-number-at (-> (Array byte) int int int NumberScan))
+(defun (scan-number-at b pos first limit)
+  (cond
+    ((not (digit-at? b first limit)) (Tuple num-no-digit first))
+    ((byte-at? b first limit 48)
+     (if (digit-at? b (+ first 1) limit)
+         (Tuple num-leading-zero (+ first 1))
+         (scan-fraction-at b (+ first 1) limit)))
+    (else (scan-fraction-at b (digits-end b first limit) limit))))
+
+;; Up to 18 digits cannot overflow a long, so they are added up as they are.
+;; Longer ones go through the parser, which answers a double when the number
+;; is too wide for a long.
+(: integer-of (-> Reader (Array byte) int int int Json))
+(defun (integer-of rd b start first end)
+  (cond
+    ((<= (- end first) 18)
+     (def n (let go ((i first) (acc 0L))
+              (if (< i end)
+                  (go (+ i 1) (+ (* acc 10L) (cast System.Int64 (- (cast int (array-ref b i)) 48))))
+                  acc)))
+     (JsonInt (if (= first start) n (- 0L n))))
+    (else
+     (def sb (copy-number rd b start end))
+     (match (try (clr-to-long sb) #:catch (System.OverflowException))
+       ((Ok n) (JsonInt n))
+       ((Err _) (JsonFloat (clr-to-double sb)))))))
+
+;; The number's bytes in the reader's buffer, for the parser.
+(: copy-number (-> Reader (Array byte) int int StringBuilder))
+(defun (copy-number rd b start end)
+  (def sb (buffer rd))
+  (loop (:for i (range start end))
+        (:do (stringbuilder-add-unit! sb (cast int (array-ref b i)))))
+  sb)
+
+(: read-number (-> Reader (Result string Json)))
+(defun (read-number rd)
+  (def* (b (record-ref rd bytes))
+        (start (record-ref rd next))
+        (limit (record-ref rd limit))
+        (first (if (byte-at? b start limit 45) (+ start 1) start))
+        ((status . end) (scan-number-at b start first limit))
+        (more? (match (record-ref rd port) (None #f) (_ #t))))
+  (cond
+    ((and more? (>= end limit)) (read-number/slow rd))
+    (else
+     (record-set! rd
+                  (next end)
+                  (col (+ (record-ref rd col) (- end start))))
+     (cond
+       ((= status num-int) (Ok (integer-of rd b start first end)))
+       ((= status num-frac) (Ok (JsonFloat (clr-to-double (copy-number rd b start end)))))
+       ((= status num-no-digit)
+        (Err (at rd (str "a number needs a digit here, and this is " (found rd)))))
+       ((= status num-leading-zero)
+        (Err (at rd "a number may not have a leading zero")))
+       ((= status num-no-fraction-digit)
+        (Err (at rd (str "a number needs a digit after its decimal point, and this is "
+                         (found rd)))))
+       (else
+        (Err (at rd (str "a number needs a digit after its exponent, and this is "
+                         (found rd)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Values
