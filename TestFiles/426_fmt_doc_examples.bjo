@@ -62,6 +62,11 @@
 (: scores (Vec (Tuple string int)))
 (def scores [(Tuple "ada" 31) (Tuple "bo" 27)])
 
+(: products (Vec (Vec TableCell)))
+(def products
+  [[(CellText "Green tea") (CellNum 3.5) (CellInt 12) (CellNum 0.4)]
+   [(CellText "Gaiwan") (CellNum 1240.0) (CellInt 2) (CellNum 1.0)]])
+
 (: lines (-> (Vec string) string))
 (defun (lines xs)
   (string-append (string-join xs "\n") "\n"))
@@ -83,12 +88,14 @@
           (render->string [(tabular/rows (vec-map item-row stock)
                                          #:titles ["Item" "Price" "Stock"]
                                          #:align [AlignLeft (AlignOn #\.) AlignRight]
-                                         #:style StyleSimple)])
-          (lines ["Item         Price  Stock"
-                  "─────────  ───────  ─────"
-                  "Green tea     3.50     12"
-                  "Gaiwan     1240.00      2"
-                  "Kettle       89.90      0"]))
+                                         #:style StyleAscii)])
+          (lines ["+-----------+---------+-------+"
+                  "| Item      |   Price | Stock |"
+                  "+-----------+---------+-------+"
+                  "| Green tea |    3.50 |    12 |"
+                  "| Gaiwan    | 1240.00 |     2 |"
+                  "| Kettle    |   89.90 |     0 |"
+                  "+-----------+---------+-------+"]))
   (expect "a match whose arms are blocks"
           (render->string [(greeting "Ada" (Some "Dr")) nl (greeting "Bob" None)])
           "Hello, Dr Ada!\nHello, Bob!")
@@ -170,12 +177,12 @@
   (expect "a cell of several pieces"
           (render->string [(tabular/rows [["tea" (each [3 " cups"])]
                                           ["kettle" (each ["boils in" nl "4 minutes"])]]
-                                         #:style StyleLight)])
-          (lines ["┌────────┬───────────┐"
-                  "│ tea    │ 3 cups    │"
-                  "│ kettle │ boils in  │"
-                  "│        │ 4 minutes │"
-                  "└────────┴───────────┘"]))
+                                         #:style StyleAscii)])
+          (lines ["+--------+-----------+"
+                  "| tea    | 3 cups    |"
+                  "| kettle | boils in  |"
+                  "|        | 4 minutes |"
+                  "+--------+-----------+"]))
 
   ;; The manual's guide, "Formatting text".
   (def who "ada")
@@ -209,31 +216,31 @@
           (render->string [(tabular/rows (vec-map score-row scores)
                                          #:titles ["Player" "Score"]
                                          #:align [AlignLeft AlignRight]
-                                         #:style StyleRounded)])
-          (lines ["╭────────┬───────╮"
-                  "│ Player │ Score │"
-                  "├────────┼───────┤"
-                  "│ ada    │    31 │"
-                  "│ bo     │    27 │"
-                  "╰────────┴───────╯"]))
+                                         #:style StyleAscii)])
+          (lines ["+--------+-------+"
+                  "| Player | Score |"
+                  "+--------+-------+"
+                  "| ada    |    31 |"
+                  "| bo     |    27 |"
+                  "+--------+-------+"]))
   (def layout (table-layout [8 6] #:sep "  " #:align [AlignLeft AlignRight]))
   (expect "a row at a time"
           (render->string [(table-row layout ["Player" "Score"])
                            (each (vec-map (fun (s) (match s ((Tuple name pts) (table-row layout [name pts])))) scores))])
           (lines ["Player     Score" "ada           31" "bo            27"]))
   (expect "a table literal"
-          (render->string [(table-block '(table (style light) header
+          (render->string [(table-block '(table (style ascii) header
                                                 (column "Player")
                                                 (column "Score" (align right))
                                                 (column "Share" (percent (precision 0)))
                                                 (rows (row "ada" 31 0.46) (row "bo" 27 0.40) (row "cy" 9 0.13))))])
-          (lines ["┌────────┬───────┬───────┐"
-                  "│ Player │ Score │ Share │"
-                  "├────────┼───────┼───────┤"
-                  "│ ada    │    31 │   46% │"
-                  "│ bo     │    27 │   40% │"
-                  "│ cy     │     9 │   13% │"
-                  "└────────┴───────┴───────┘"]))
+          (lines ["+--------+-------+-------+"
+                  "| Player | Score | Share |"
+                  "+--------+-------+-------+"
+                  "| ada    |    31 |   46% |"
+                  "| bo     |    27 |   40% |"
+                  "| cy     |     9 |   13% |"
+                  "+--------+-------+-------+"]))
   (expect "separators as settings"
           (render->string [(with-fmt current-comma 3
                              [(with-fmt current-comma-sep #\space
@@ -257,4 +264,42 @@
   (expect "a block from a match arm"
           (render->string [(match title ((Some t) (each [t " "])) (None nothing)) name])
           "Dr Ada")
+
+  ;; The framed examples of the reference, drawn with StyleAscii.
+  (expect "a style"
+          (render->string [(tabular/rows [["tea" "3.50"] ["gaiwan" "1240.00"]]
+                                         #:titles ["Item" "Price"]
+                                         #:style StyleAscii
+                                         #:align [AlignLeft AlignRight])])
+          (lines ["+--------+---------+" "| Item   |   Price |" "+--------+---------+"
+                  "| tea    |    3.50 |" "| gaiwan | 1240.00 |" "+--------+---------+"]))
+  (expect "a cell that wraps"
+          (render->string [(with-fmt current-width 40
+                             [(tabular/rows [["tea" "A green tea from the hills, picked in spring and rolled by hand."]]
+                                            #:titles ["Item" "Note"] #:style StyleAscii #:overflow OverflowWrap)])])
+          (lines ["+------+-------------------------------+"
+                  "| Item | Note                          |"
+                  "+------+-------------------------------+"
+                  "| tea  | A green tea from the hills,   |"
+                  "|      | picked in spring and rolled   |"
+                  "|      | by hand.                      |"
+                  "+------+-------------------------------+"]))
+  (def boxed-layout (table-layout [6 5] #:style StyleAscii #:align [AlignLeft AlignRight]))
+  (expect "a framed table a row at a time"
+          (render->string [(table-top boxed-layout) (table-row boxed-layout ["Item" "Price"]) (table-rule boxed-layout)
+                           (table-row boxed-layout ["tea" "3.50"]) (table-bottom boxed-layout)])
+          (lines ["+--------+-------+" "| Item   | Price |" "+--------+-------+" "| tea    |  3.50 |" "+--------+-------+"]))
+  (expect "a table literal with spliced rows"
+          (render->string [(table-block '(table (style ascii) header
+                                                (column "Item")
+                                                (column "Price" (align (on #\.)) (number (precision 2) (comma 3)))
+                                                (column "Stock" (align right))
+                                                (column "Share" (percent (precision 0)))
+                                                (rows ,products)))])
+          (lines ["+-----------+----------+-------+-------+"
+                  "| Item      |    Price | Stock | Share |"
+                  "+-----------+----------+-------+-------+"
+                  "| Green tea |     3.50 |    12 |   40% |"
+                  "| Gaiwan    | 1,240.00 |     2 |  100% |"
+                  "+-----------+----------+-------+-------+"]))
   0)
