@@ -12,24 +12,23 @@
     (println* ["Hello, " 42 ", ok? " #t])
 
     ;; Layer 2: layout
-    (show ["Padding: [" (padded/left 10 ["foo"]) "]\n"])
-    (show ["Number: " (numeric/comma 1234567.89) "\n"])
-    (show ["Columns:\n"
+    (show "Hello\n")
+    (show ["Padding: [" (padded/left 10 "foo") "]" nl])
+    (show ["Number: " (numeric/comma 1234567.89) nl])
+    (show ["Columns:" nl
            (columnar [["first long text string" "second text string"]
                       ["col 2" "more text for col 2"]])])
     """)
   (example """
-    ;; Strings, ints and chars in a vec literal are blocks, variables too.
-    ;; A number bound by def needs its type, or it is not known to be an int.
+    ;; A string, an int or a char is a block, as a variable or a call as
+    ;; well as written out. A vec of blocks is a block too.
     (def name "Ada")
     (: n int)
     (def n 3)
+    (show (padded/left 8 name))                     ;;      Ada
     (show ["Hello, " name "! You have " n " new messages" #\. nl])
     ;; Hello, Ada! You have 3 new messages.
-
-    ;; A combinator takes its content in brackets and is one block itself.
-    (show [(padded/left 8 ["x = " n]) "|" nl])
-    ;;    x = 3|
+    (show [(padded/left 8 ["x = " n]) "|" nl])      ;;    x = 3|
     """)
   (example """
     ;; A block made from a record, by a function with a signature.
@@ -38,30 +37,29 @@
 
     (: item-line (-> Item Block))
     (defun (item-line i)
-      (each [(padded/right 10 [(record-ref i name)])
-             (padded/left 9 [(numeric (record-ref i price) #:precision 2 #:comma 3)])
-             (if (= (record-ref i stock) 0) "  sold out" nothing)
-             nl]))
+      [(padded/right 10 (record-ref i name))
+       (padded/left 9 (numeric (record-ref i price) #:precision 2 #:comma 3))
+       (if (= (record-ref i stock) 0) "  sold out" nothing)
+       nl])
 
-    ;; A vec of blocks is one block with each.
-    (show [(each (vec-map item-line stock))])
+    ;; vec-map gives a vec of blocks, which is a block.
+    (show (vec-map item-line stock))
     ;; Green tea      3.50
     ;; Gaiwan     1,240.00
     ;; Kettle        89.90  sold out
     """)
   (example """
-    ;; A row per record. The function says it returns (Vec Block), so the
-    ;; literal in it is read as blocks.
+    ;; A row per record. A row is a (Vec Block), a block per cell.
     (: item-row (-> Item (Vec Block)))
     (defun (item-row i)
       [(record-ref i name)
        (numeric (record-ref i price) #:precision 2)
        (record-ref i stock)])
 
-    (show [(tabular/rows (vec-map item-row stock)
-                         #:titles ["Item" "Price" "Stock"]
-                         #:align [AlignLeft (AlignOn #\.) AlignRight]
-                         #:style StyleAscii)])
+    (show (tabular/rows (vec-map item-row stock)
+                        #:titles ["Item" "Price" "Stock"]
+                        #:align [AlignLeft (AlignOn #\.) AlignRight]
+                        #:style StyleAscii))
     ;; +-----------+---------+-------+
     ;; | Item      |   Price | Stock |
     ;; +-----------+---------+-------+
@@ -71,18 +69,17 @@
     ;; +-----------+---------+-------+
     """)
   (example """
-    ;; In a vec literal, what a match gives is read as any element is: the
-    ;; string, or a block. A function that returns one block puts its
-    ;; pieces under each.
+    ;; What an if, a cond, a match or a let gives is a block if it is
+    ;; one of the things a block can be.
     (show ["Title: " (match title ((Some t) t) (None "-")) nl])
 
     (: greeting (-> string (Option string) Block))
     (defun (greeting name title)
-      (each ["Hello, "
-             (match title
-               ((Some t) (each [t " "]))
-               (None nothing))
-             name "!"]))
+      ["Hello, "
+       (match title
+         ((Some t) [t " "])
+         (None nothing))
+       name "!"])
 
     (show [(greeting "Ada" (Some "Dr")) nl (greeting "Bob" None) nl])
     ;; Hello, Dr Ada!
@@ -95,50 +92,38 @@
     into the case that holds it. @code{println*} prints one.
 
     @strong{Layout} is a block algebra, for padding, aligning, wrapping
-    paragraphs and laying out tables. The unit is a @code{Block}: a string,
-    int or char, which needs no wrapping in a vec literal, or a @code{BRun},
-    a function that writes to an output sink and threads the current column
-    through. Every combinator takes its content as a @code{(Vec Block)} and
-    returns a @code{Block}, allowing them to nest. Nothing is written until
-    the blocks are run by @code{show}, @code{render} or @code{render->string}.
+    paragraphs and laying out tables. Everything is a @code{Block}: a piece
+    of output. Every function here that lays something out takes its
+    content as a block and gives back a block, so they nest. Nothing is
+    written until a block is run by @code{show}, @code{render} or
+    @code{render->string}.
 
-    @strong{A block and a vec of blocks.} Two types do all the work, and a
-    type error in a layout is nearly always one of them where the other is
-    wanted:
-
-    @read-list{
-     - A @code{Block} is one piece of output: a string, an int, a char, or a combinator such as @code{(padded/left 5 ["x"])}.
-     - A @code{(Vec Block)} is pieces of output in order, written as a vec literal: @code{["x = " 7 nl]}.
-    }
-
-    Every combinator takes its content as a @code{(Vec Block)} and gives
-    back one @code{Block}. @code{show}, @code{render} and
-    @code{render->string} take a @code{(Vec Block)}. So the brackets go
-    around content, and a combinator call is one element in them:
-
-    @codeblock[#:lang "bjolang"]|{
-    (show (padded/left 5 "x"))       ; refused: "x" is not content, and show wants a vec
-    (show [(padded/left 5 ["x"])])   ; "    x"
-    (show [(padded/left 5 ["x"]) (padded/left 5 ["y"]) nl])   ; two blocks, then a newline
-    }|
-
-    More brackets do not help. @code{[["x"]]} is a vec in a vec, and a vec
-    is not a block. The one place where vecs of vecs are right is a table:
-    @code{tabular} takes a vec of columns and @code{tabular/rows} a vec of
-    rows, each of them a @code{(Vec Block)}.
-
-    @strong{What a vec literal can hold.} A vec literal is read element by
-    element where a @code{(Vec Block)} is wanted: as an argument of a
-    function that takes one, or as the value of a binding whose type is
-    written. Each element is one of these:
+    @strong{What is a block.} Where a @code{Block} is wanted, as an
+    argument or in a vec literal of blocks, each of these is one:
 
     @read-table{
-    | Element                                                        | Is read as                         |
-    |----------------------------------------------------------------+------------------------------------|
-    | A string, an int or a char: a literal, a variable or a call     | @code{BStr}, @code{BInt}, @code{BChar} |
-    | A @code{Block}: @code{nl}, @code{nothing}, a combinator call, a variable of type @code{Block} | itself |
+    | What you write                                                | What it is                      |
+    |---------------------------------------------------------------+---------------------------------|
+    | A string, an int or a char: written out, a variable or a call | @code{BStr}, @code{BInt}, @code{BChar} |
+    | A vec of any of these, written out or a @code{(Vec Block)}     | @code{BMany}: its blocks in order |
+    | A @code{Block}: @code{nl}, @code{nothing}, a call such as @code{(padded/left 5 "x")} | itself |
     | An @code{if}, @code{cond}, @code{match} or @code{let} whose results are any of these | the result it gives |
     }
+
+    So a single thing needs no brackets, and several things are a vec:
+
+    @codeblock[#:lang "bjolang"]|{
+    (show "hej")                                   ; hej
+    (show (padded/left 5 name))                    ; "  Ada"
+    (show (padded/left 8 ["x = " n]))              ; "   x = 3"
+    (show [(padded/left 5 "x") (padded/left 5 "y") nl])
+    }|
+
+    A vec in a vec is a block in a block, so extra brackets change nothing.
+    A table is the place where the brackets matter: @code{tabular/rows}
+    takes a vec of rows, and a row is a @code{(Vec Block)} with a block for
+    each cell. A cell of several pieces is a vec in the row:
+    @code{["tea" [3 " cups"]]} is two cells.
 
     Anything else is converted first:
 
@@ -148,41 +133,38 @@
     | A double @code{x}                 | @code{(numeric x)}, or @code{(numeric x #:precision 2)}   |
     | A bool @code{b}                   | @code{(if b "yes" "no")}                                  |
     | A long @code{n}                   | @code{(long->string n)}, or @code{(bytes n)} for a size   |
-    | A @code{(Vec Block)} @code{bs}    | @code{(each bs)}                                          |
-    | A vec literal                     | @code{(each [...])}, or its elements in the outer vec     |
-    | A @code{(Vec string)} @code{xs}   | @code{(each (vec-map BStr xs))}                           |
-    | A @code{(List %a)} @code{xs}      | @code{(joined f xs [", "])}, where @code{f} makes the block of one element |
+    | A @code{(Vec string)} @code{xs}   | @code{(vec-map BStr xs)}                                  |
+    | A @code{(List %a)} @code{xs}      | @code{(joined f xs ", ")}, where @code{f} makes the block of one element |
     }
 
-    Nothing is converted outside such a vec literal. A function declared
-    to return a @code{Block} returns @code{(BStr s)} or @code{(each [s])},
-    not @code{s}. A vec literal of mixed elements in a lambda, such as one
-    given to @code{vec-map}, has no type to be read at, and is refused: put
-    it under @code{each}, or make the lambda a function with a signature.
-    A function that takes blocks needs its signature for the same reason.
+    @strong{Where the type is known.} A string or a vec is read as a
+    block where a block is wanted: as an argument, as what a function
+    declared to return a @code{Block} returns, and as the value of a
+    binding whose type is written. A lambda given to a function that does
+    not say what the lambda returns, such as @code{vec-map}, has no type
+    to read a vec literal at, so a vec of mixed pieces that it returns is
+    refused: give it to @code{each}, as in @code{(vec-map (fun (x) (each
+    [x nl])) xs)}, or write a function with a signature. A function of
+    your own that takes blocks needs its signature for the same reason.
 
     @strong{A number bound by @code{def}.} @code{(def n 3)} does not say
-    what kind of number @code{n} is, so @code{[n]} cannot read it as a
-    block, and the compiler says so at @code{n}. Write @code{(: n int)}
-    above it. The same holds for
-    @code{(def xs [1 2 3])} and @code{(def total (+ 1 2))}. A number
-    written in the vec itself, as in @code{["n = " 3]}, is an int.
+    what kind of number @code{n} is, so it cannot be read as a block, and
+    the compiler says so at @code{n}. Write @code{(: n int)} above it. The
+    same holds for @code{(def xs [1 2 3])} and @code{(def total (+ 1 2))}.
+    A number written in the vec itself, as in @code{["n = " 3]}, is an int.
 
     @strong{When it does not compile.} The messages for the common mistakes,
     and what to write instead:
 
     @read-table{
-    | The compiler says                                                  | Write                                              |
-    |--------------------------------------------------------------------+----------------------------------------------------|
-    | expected @code{(Vec fmt/Block)}, found @code{string}                | @code{["x"]} for @code{"x"}                        |
-    | expected @code{(Vec fmt/Block)}, found @code{fmt/Block}             | @code{[b]} for @code{b}                            |
-    | expected @code{fmt/Block}, found @code{(Vec ...)}                   | @code{(each bs)} for @code{bs}                     |
-    | They differ inside the Vec: @code{fmt/Block} against @code{string}  | @code{(: bs (Vec Block))} above @code{(def bs ...)} |
-    | Block: expected a string, an int, a char ...; found a vec            | @code{(each [...])}, or no inner brackets          |
+    | The compiler says                                                   | Write                                              |
+    |---------------------------------------------------------------------+----------------------------------------------------|
+    | Block: ... found a double                                            | @code{(numeric x)}                                 |
     | Block: ... found the number 1.5                                      | @code{(numeric 1.5)}                               |
-    | Block: ... found a boolean                                           | @code{(if b "yes" "no")}                           |
+    | Block: ... found a boolean, or found a bool                          | @code{(if b "yes" "no")}                           |
+    | Block: ... found a (Vec string)                                      | @code{(vec-map BStr xs)}, or @code{(: xs (Vec Block))} above @code{(def xs ...)} |
     | Block: 'n' is a number, and nothing says yet whether it is an int ... | @code{(: n int)} above @code{(def n 3)}           |
-    | what @code{f} returns has the wrong type: expected @code{fmt/Block}, found @code{string} | @code{(BStr s)} or @code{(each [s])} |
+    | Block: ... found a (Vec (Vec ...)), at a lambda that returns a vec    | @code{(each [...])} around the vec the lambda returns |
     }
 
     A combinator of your own is a @code{BRun} and the two functions that run
@@ -190,10 +172,10 @@
     thing as the ones in this module:
 
     @codeblock[#:lang "bjolang"]|{
-    (: boxed (-> (Vec Block) Block))
-    (defun (boxed bs)
+    (: boxed (-> Block Block))
+    (defun (boxed b)
       (BRun (fun (out col)
-              (run-blocks out col ["[" (render->string bs) "]"]))))
+              (run-blocks out col ["[" (render->string b) "]"]))))
     }|
 
     @strong{Settings} are parameters, so they are dynamically scoped:
@@ -258,49 +240,48 @@
   (case BStr "A string, written as it is.")
   (case BInt "An int, written in decimal.")
   (case BChar "A char.")
+  (case BMany "Blocks in order: what a vec of blocks is.")
   (case BRun "A function taking (sink, col) that writes output and returns the resulting column.")
   (see run-block each captured)
   (example """
-    (render->string ["x = " 7 #\!])   ; "x = 7!": the leaves need no wrapping
+    (render->string ["x = " 7 #\!])   ; "x = 7!": a vec of a string, an int and a char
     """)
   (example """
-    ;; From one type to the other.
+    ;; The cases are rarely written: where a block is wanted, a value is
+    ;; read as the case that holds it.
     (def s "tea")
     (: b Block)
-    (def b (BStr s))               ; a string as a block, outside a vec literal
+    (def b s)                      ; (BStr "tea")
     (: bs (Vec Block))
-    (def bs [s " and " b])         ; blocks in order: the type is written, so the literal is read
-    (show [(each bs) nl])          ; tea and tea: a vec of blocks as one block
-    (show [(each (vec-map BStr ["a" "b"])) nl])   ; ab: a vec of strings
+    (def bs [s " and " b])
+    (show [bs nl])                 ; tea and tea: a vec in a vec is a block in a block
+    (show (vec-map BStr ["a" "b"]))   ; ab: a vec of strings made a vec of blocks
     """)
   (example """
-    ;; A function that returns one block, and one that returns content.
+    ;; A function that returns a block.
     (: bullets (-> (Vec string) Block))
     (defun (bullets xs)
-      (each (vec-map (fun (x) (each ["  * " x nl])) xs)))
+      (vec-map (fun (x) (each ["  * " x nl])) xs))
 
-    (: labelled (-> string int (Vec Block)))
+    (: labelled (-> string int Block))
     (defun (labelled label n)
       [label ": " n nl])
 
-    (show [(bullets ["tea" "milk"]) (each (labelled "cups" 3))])
-    (show (labelled "pots" 1))
+    (show [(bullets ["tea" "milk"]) (labelled "cups" 3)])
     ;;   * tea
     ;;   * milk
     ;; cups: 3
-    ;; pots: 1
     """)
   (reference """
     The column is counted in characters since the last newline written. It
     is the one thing threaded through every block, and what lets @code{fl},
     @code{space-to} and @code{wrapped} know where the cursor is.
 
-    @code{Block} is a grammar (see @code{def/grammar}). In a vec literal, a
-    string, an int or a char is a block, and a value of type @code{Block},
-    such as @code{nl}, goes in as it is. This happens only where the literal
-    is wanted as a @code{(Vec Block)}; elsewhere, write @code{BStr},
-    @code{BInt} or @code{BChar}. The module doc lists what else goes in a
-    vec literal of blocks and how to convert what does not.
+    @code{Block} is a grammar (see @code{def/grammar}). Where a block is
+    wanted, a string, an int, a char or a vec of blocks is read as the case
+    that holds it, whether it is written out or the value of a variable or
+    a call. The module doc lists what else is a block, and how to convert
+    what is not.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -320,9 +301,9 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc render
-  (summary "Writes blocks to a port.")
+  (summary "Writes a block to a port.")
   (arg port "The port to write to.")
-  (arg bs "The blocks, run from column 0.")
+  (arg b "The block, run from column 0.")
   (see show render->string)
   (reference """
     It is @code{#:sync}, and cannot be otherwise: the sink is stored in a
@@ -332,11 +313,12 @@
     """))
 
 (:doc show
-  (summary "Writes blocks to the current output port.")
-  (arg bs "The blocks, run from column 0.")
+  (summary "Writes a block to the current output port.")
+  (arg b "The block, run from column 0.")
   (see render render->string)
   (example """
-    (show ["Padding: [" (padded/left 10 ["foo"]) "]\n"])
+    (show "Hello\n")
+    (show ["Padding: [" (padded/left 10 "foo") "]" nl])
     """)
   (reference """
     @code{render} to @code{current-output-port}, and @code{#:sync} for the
@@ -344,12 +326,12 @@
     """))
 
 (:doc render->string
-  (summary "The text blocks write, as a string.")
-  (arg bs "The blocks, run from column 0.")
-  (returns "Everything the blocks wrote.")
+  (summary "The text a block writes, as a string.")
+  (arg b "The block, run from column 0.")
+  (returns "Everything the block wrote.")
   (see show render captured)
   (example """
-    (render->string [(padded/left 5 ["7"])])   ; "    7"
+    (render->string (padded/left 5 "7"))   ; "    7"
     """))
 
 (:doc run-block
@@ -373,22 +355,22 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc with-fmt
-  (summary "Runs blocks with a parameter bound to a value.")
+  (summary "Runs a block with a parameter bound to a value.")
   (tparam %a "The parameter's type.")
   (arg p "The parameter: one of this module's settings, or one of your own.")
-  (arg v "Its value while the blocks run.")
-  (arg bs "The blocks.")
+  (arg v "Its value while the block runs.")
+  (arg b "The block.")
   (returns "A block. The parameter is bound when it runs, not when it is built, and restored when it ends.")
   (see with-pad current-width)
   (example """
-    (show [(with-fmt current-precision 2 [(numeric 3.14159)])])   ; 3.14
+    (show (with-fmt current-precision 2 (numeric 3.14159)))   ; 3.14
     """)
   (example """
     ;; Settings nest; each applies to the blocks inside it.
     (show [(with-fmt current-width 24
              [(with-fmt current-ellipsis "…"
-                [(trimmed/right 8 ["A green tea from the hills"]) nl])
-              (wrapped ["A green tea from the hills, picked in spring and rolled by hand."])])
+                [(trimmed/right 8 "A green tea from the hills") nl])
+              (wrapped "A green tea from the hills, picked in spring and rolled by hand.")])
            nl])
     ;; A green…
     ;; A green tea from the
@@ -397,13 +379,13 @@
     """))
 
 (:doc with-pad
-  (summary "Runs blocks with another padding character.")
+  (summary "Runs a block with another padding character.")
   (arg c "The padding character.")
-  (arg bs "The blocks.")
-  (returns "A block: @code{(with-fmt current-pad c bs)}.")
+  (arg b "The block.")
+  (returns "A block: @code{(with-fmt current-pad c b)}.")
   (see current-pad space-to)
   (example """
-    (show [(with-pad #\. ["ab" (space-to 6) "c"])])   ; ab....c, a dot leader
+    (show (with-pad #\. ["ab" (space-to 6) "c"]))   ; ab....c, a dot leader
     """))
 
 (:doc current-pad
@@ -423,7 +405,7 @@
   (summary "What replaces the part a trim cuts off. Empty, which cuts silently, unless set.")
   (see trimmed/right)
   (example """
-    (with-fmt current-ellipsis "..." [(trimmed/right 6 ["abcdefgh"])])   ; abc...
+    (with-fmt current-ellipsis "..." (trimmed/right 6 "abcdefgh"))   ; abc...
     """)
   (reference """
     It takes its room out of the content, so a trimmed text is never wider
@@ -438,7 +420,7 @@
     (defun (terminal-width s)
       (string-fold (fun (ch acc) (+ acc (if (> (char->integer ch) 65535) 2 1))) 0 s))
 
-    (with-fmt current-string-width terminal-width [(padded/left 5 ["😀"])])
+    (with-fmt current-string-width terminal-width (padded/left 5 "😀"))
     """)
   (reference """
     Everything that measures or cuts goes through it: padding, trimming,
@@ -459,7 +441,7 @@
     (terminal-width (str esc "[1mtea" esc "[0m"))             ;; 3: the escapes take none
 
     (with-fmt current-string-width terminal-width
-      [(tabular/rows [["茶" "1"] ["tea" "2"]] #:style StyleAscii)])
+      (tabular/rows [["茶" "1"] ["tea" "2"]] #:style StyleAscii))
     """)
   (reference """
     East Asian Wide and Fullwidth characters, emoji among them, take two
@@ -519,7 +501,7 @@
     ;; The arm of a match that writes nothing.
     (show ["Hello, "
            (match title
-             ((Some t) (each [t " "]))
+             ((Some t) [t " "])
              (None nothing))
            name nl])
     """))
@@ -527,48 +509,47 @@
 (:doc each
   (summary "Many blocks as one.")
   (arg bs "The blocks.")
-  (returns "A block that runs them in order.")
+  (returns "A block that runs them in order: @code{(BMany bs)}.")
   (see nothing joined Block)
   (example """
-    ;; Content that is already a vec, where one block is wanted.
-    (: parts (Vec Block))
-    (def parts ["a" 1 #\b])
-    (show ["<" (each parts) ">" nl])          ; <a1b>
-    """)
-  (example """
-    ;; A block per element of a vec. The literal is under each, so it is
-    ;; read as blocks; a bare literal in the lambda would not be.
-    (show [(each (vec-map (fun (i) (each [(record-ref i name) ": " (record-ref i stock) nl]))
-                          stock))])
+    ;; vec-map does not say what its function returns, so a vec literal
+    ;; of mixed pieces that the lambda returns is not read as blocks.
+    ;; Under each, it is.
+    (show (vec-map (fun (i) (each [(record-ref i name) ": " (record-ref i stock) nl]))
+                   stock))
     ;; Green tea: 12
     ;; Gaiwan: 2
     ;; Kettle: 0
     """)
-  (example """
-    ;; A function that returns one block of several pieces.
-    (: price-tag (-> string double Block))
-    (defun (price-tag name price)
-      (each [name " (" (numeric price #:precision 2) ")"]))
-    """)
   (reference """
-    It is how a @code{(Vec Block)} goes where a @code{Block} is wanted: in
-    a vec literal, as the value of a function that returns a block, or as
-    a cell of a table. It costs nothing to nest.
+    A vec of blocks is a block where a block is wanted, so @code{each} is
+    needed only where nothing says that one is: as the result of a lambda
+    given to a function that does not say what its function returns, such
+    as @code{vec-map}. A lambda given to @code{joined} or @code{captured}
+    returns a block, as their signatures say, and needs no @code{each}.
     """))
 
 (:doc captured
-  (summary "Renders blocks to a string and passes it to a function returning a replacement block.")
-  (arg f "Given the text the blocks wrote; its block is run in their place.")
-  (arg bs "The blocks to render.")
+  (summary "Renders a block to a string and passes it to a function returning a replacement block.")
+  (arg f "Given the text the block wrote; its block is run in its place.")
+  (arg b "The block to render.")
   (returns "A block.")
   (see render->string)
   (example """
-    (captured (fun (s) (BInt (string-count s))) ["abcd"])   ; writes 4
+    (captured (fun (s) (BInt (string-count s))) "abcd")   ; writes 4
+    """)
+  (example """
+    ;; Brackets around whatever the content is.
+    (: boxed (-> Block Block))
+    (defun (boxed b)
+      (captured (fun (s) ["[" s "]"]) b))
+
+    (show [(boxed ["x = " 7]) nl])   ; [x = 7]
     """)
   (reference """
     How a combinator that needs the whole text, rather than writing as it
     goes, is made: padding, trimming and wrapping are all written with it.
-    The blocks are rendered from column 0, and @code{f}'s block runs at the
+    The block is rendered from column 0, and @code{f}'s block runs at the
     current column.
     """))
 
@@ -634,27 +615,27 @@
 (:doc padded/left
   (summary "Pads content on the left to a width: aligned right.")
   (arg w "The width, in columns.")
-  (arg bs "The content.")
+  (arg b "The content, a block.")
   (returns "A block. Content wider than w is left as it is: padding never cuts.")
   (see padded/right padded/both fitted/left current-pad)
   (example """
-    (render->string [(padded/left 6 ["x=" 7])])   ; "   x=7"
+    (render->string (padded/left 6 ["x=" 7]))   ; "   x=7"
     """)
   (example """
     ;; The content is a vec even when it is one thing.
-    (show [(padded/left 9 [(numeric 1240.0 #:precision 2 #:comma 3)]) nl])   ;  1,240.00
-    (show [(with-pad #\0 [(padded/left 4 [42])]) nl])                        ; 0042
+    (show [(padded/left 9 (numeric 1240.0 #:precision 2 #:comma 3)) nl])   ;  1,240.00
+    (show [(with-pad #\0 (padded/left 4 42)) nl])                        ; 0042
     """))
 
 (:doc padded/right
   (summary "Pads content on the right to a width: aligned left.")
   (arg w "The width, in columns.")
-  (arg bs "The content.")
+  (arg b "The content, a block.")
   (returns "A block. Content wider than w is left as it is.")
   (see padded/left padded/both fitted/right)
   (example """
-    (show [(padded/right 10 ["Green tea"]) "3.50" nl
-           (padded/right 10 ["Gaiwan"]) "1240.00" nl])
+    (show [(padded/right 10 "Green tea") "3.50" nl
+           (padded/right 10 "Gaiwan") "1240.00" nl])
     ;; Green tea 3.50
     ;; Gaiwan    1240.00
     """))
@@ -662,70 +643,70 @@
 (:doc padded/both
   (summary "Pads content on both sides to a width: centred.")
   (arg w "The width, in columns.")
-  (arg bs "The content.")
+  (arg b "The content, a block.")
   (returns "A block, with the odd column, if there is one, on the right. Content wider than w is left as it is.")
   (see padded/left padded/right fitted/both)
   (example """
-    (show [(with-pad #\= [(padded/both 20 [" Receipt "])]) nl])
+    (show [(with-pad #\= (padded/both 20 " Receipt ")) nl])
     ;; ===== Receipt ======
     """))
 
 (:doc trimmed/left
   (summary "Cuts content to a width, keeping its end.")
   (arg w "The width, in columns.")
-  (arg bs "The content.")
+  (arg b "The content, a block.")
   (returns "A block. Content that fits is left as it is; otherwise current-ellipsis stands at the start, where the cut was.")
   (see trimmed/right trimmed/both fitted/left current-ellipsis)
   (example """
-    (render->string [(trimmed/left 3 ["abcdef"])])   ; "def"
+    (render->string (trimmed/left 3 "abcdef"))   ; "def"
     """))
 
 (:doc trimmed/right
   (summary "Cuts content to a width, keeping its start.")
   (arg w "The width, in columns.")
-  (arg bs "The content.")
+  (arg b "The content, a block.")
   (returns "A block. Content that fits is left as it is; otherwise current-ellipsis stands at the end.")
   (see trimmed/left trimmed/both fitted/right current-ellipsis)
   (example """
-    (render->string [(trimmed/right 3 ["abcdef"])])   ; "abc"
+    (render->string (trimmed/right 3 "abcdef"))   ; "abc"
     """))
 
 (:doc trimmed/both
   (summary "Cuts content to a width, keeping its middle.")
   (arg w "The width, in columns.")
-  (arg bs "The content.")
+  (arg b "The content, a block.")
   (returns "A block. Content that fits is left as it is; otherwise current-ellipsis stands at both ends.")
   (see trimmed/left trimmed/right fitted/both)
   (example """
-    (render->string [(trimmed/both 4 ["abcdefgh"])])   ; "cdef"
+    (render->string (trimmed/both 4 "abcdefgh"))   ; "cdef"
     """))
 
 (:doc fitted/left
   (summary "Content at exactly a width, aligned right: padded if short, cut if long.")
   (arg w "The width, in columns.")
-  (arg bs "The content.")
+  (arg b "The content, a block.")
   (returns "A block: trimmed/left, then padded/left.")
   (see padded/left trimmed/left))
 
 (:doc fitted/right
   (summary "Content at exactly a width, aligned left: padded if short, cut if long.")
   (arg w "The width, in columns.")
-  (arg bs "The content.")
+  (arg b "The content, a block.")
   (returns "A block: trimmed/right, then padded/right.")
   (see padded/right trimmed/right)
   (example """
-    (render->string [(fitted/right 5 ["ab"]) "|"])       ; "ab   |"
-    (render->string [(fitted/right 3 ["abcdef"]) "|"])   ; "abc|"
+    (render->string [(fitted/right 5 "ab") "|"])       ; "ab   |"
+    (render->string [(fitted/right 3 "abcdef") "|"])   ; "abc|"
     """))
 
 (:doc fitted/both
   (summary "Content at exactly a width, centred: padded if short, cut in the middle if long.")
   (arg w "The width, in columns.")
-  (arg bs "The content.")
+  (arg b "The content, a block.")
   (returns "A block: trimmed/both, then padded/both.")
   (see padded/both trimmed/both)
   (example """
-    (show ["[" (fitted/both 6 ["ab"]) "]" nl])           ; [  ab  ]
+    (show ["[" (fitted/both 6 "ab") "]" nl])           ; [  ab  ]
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -741,20 +722,20 @@
   (returns "A block. One element has no separator, and none is nothing.")
   (see joined/prefix joined/suffix joined/last)
   (example """
-    (show [(joined (fun (n) (BInt n)) (list 1 2 3) [", "])])   ; 1, 2, 3
+    (show (joined (fun (n) (BInt n)) (list 1 2 3) ", "))   ; 1, 2, 3
     """)
   (example """
     ;; A constructor of Block is a function, so a list of strings is
     ;; joined with BStr.
-    (show [(joined BStr (list "tea" "milk" "honey") [", "]) nl])   ; tea, milk, honey
+    (show [(joined BStr (list "tea" "milk" "honey") ", ") nl])   ; tea, milk, honey
 
     ;; f returns a block, so content of several pieces is under each.
-    (show [(joined (fun (s) (each ["* " s])) (list "tea" "milk") [nl]) nl])
+    (show [(joined (fun (s) ["* " s]) (list "tea" "milk") nl) nl])
     ;; * tea
     ;; * milk
 
     ;; For a vec, a separator is vec->list away.
-    (show [(joined BStr (vec->list ["a" "b"]) [" | "]) nl])        ; a | b
+    (show [(joined BStr (vec->list ["a" "b"]) " | ") nl])        ; a | b
     """))
 
 (:doc joined/prefix
@@ -766,7 +747,7 @@
   (returns "A block.")
   (see joined joined/suffix)
   (example """
-    (show [(joined/prefix (fun (s) (BStr s)) (list "a" "b") [","])])   ; ,a,b
+    (show (joined/prefix (fun (s) (BStr s)) (list "a" "b") ","))   ; ,a,b
     """))
 
 (:doc joined/suffix
@@ -778,7 +759,7 @@
   (returns "A block.")
   (see joined joined/prefix)
   (example """
-    (show [(joined/suffix (fun (s) (BStr s)) (list "a" "b") [","])])   ; a,b,
+    (show (joined/suffix (fun (s) (BStr s)) (list "a" "b") ","))   ; a,b,
     """))
 
 (:doc joined/last
@@ -791,10 +772,10 @@
   (returns "A block. A list of one is formatted by last-f alone.")
   (see joined)
   (example """
-    (show [(joined/last (fun (s) (BStr s))
-                        (fun (s) (each ["and " (BStr s)]))
-                        (list "a" "b" "c")
-                        [", "])])
+    (show (joined/last (fun (s) (BStr s))
+                       (fun (s) ["and " s])
+                       (list "a" "b" "c")
+                       ", "))
     ;; a, b, and c
     """)
   (reference """
@@ -830,7 +811,7 @@
     (show ["Total: " (numeric total #:precision 2 #:comma 3) nl])   ; Total: 1,333.40
 
     ;; The settings apply to every numeric inside a with-fmt.
-    (show [(with-fmt current-precision 1 ["pi is about " (numeric 3.14159) nl])])
+    (show (with-fmt current-precision 1 ["pi is about " (numeric 3.14159) nl]))
     ;; pi is about 3.1
     """)
   (reference """
@@ -909,7 +890,7 @@
   (returns "A block, a column for each number.")
   (see bar)
   (example """
-    (show [(sparkline [1.0 2.0 4.0 8.0 4.0 2.0 1.0])])
+    (show (sparkline [1.0 2.0 4.0 8.0 4.0 2.0 1.0]))
     ;; ▁▂▄█▄▂▁
     """)
   (reference """
@@ -920,11 +901,11 @@
 
 (:doc wrapped
   (summary "Content filled to the right margin, ragged on the right.")
-  (arg bs "The content. Every run of whitespace in it, newlines too, is a break between words.")
+  (arg b "The content. Every run of whitespace in it, newlines too, is a break between words.")
   (returns "A block.")
   (see justified current-width)
   (example """
-    (with-fmt current-width 12 [(wrapped ["the quick brown fox jumps"])])
+    (with-fmt current-width 12 (wrapped "the quick brown fox jumps"))
     ;; the quick
     ;; brown fox
     ;; jumps
@@ -949,11 +930,11 @@
 
 (:doc justified
   (summary "Content filled to the right margin and flush against both, the last line excepted.")
-  (arg bs "The content. Every run of whitespace in it is a break between words.")
+  (arg b "The content. Every run of whitespace in it is a break between words.")
   (returns "A block.")
   (see wrapped current-width)
   (example """
-    (with-fmt current-width 12 [(justified ["the quick brown fox jumps"])])
+    (with-fmt current-width 12 (justified "the quick brown fox jumps"))
     ;; the    quick
     ;; brown    fox
     ;; jumps
@@ -972,9 +953,9 @@
   (returns "A block.")
   (see tabular Align current-width)
   (example """
-    (show [(with-fmt current-width 11
-             [(columnar [["abc" nl "def"]
-                         ["123" nl "456"]])])])
+    (show (with-fmt current-width 11
+            (columnar [["abc" nl "def"]
+                       ["123" nl "456"]])))
     ;; abc   123
     ;; def   456
     """)
@@ -1002,23 +983,23 @@
   (returns "A block.")
   (see tabular/rows columnar Align)
   (example """
-    (show [(tabular [["a" nl "bbb"]
-                     ["1" nl "2"]])])
+    (show (tabular [["a" nl "bbb"]
+                    ["1" nl "2"]]))
     ;; a   1
     ;; bbb 2
 
-    (show [(tabular [["a" nl "bbb"]
-                     ["1" nl "2"]]
-                    #:sep " | ")])
+    (show (tabular [["a" nl "bbb"]
+                    ["1" nl "2"]]
+                   #:sep " | "))
     ;; a   | 1
     ;; bbb | 2
     """)
   (example """
     ;; A vec of columns, each a vec of blocks, with nl between its cells.
     ;; Here the brackets in brackets are right: a table is a vec of vecs.
-    (show [(tabular [["tea" nl "gaiwan" nl "kettle"]
-                     [3 nl 1240 nl 90]]
-                    #:sep "  " #:align [AlignLeft AlignRight])])
+    (show (tabular [["tea" nl "gaiwan" nl "kettle"]
+                    [3 nl 1240 nl 90]]
+                   #:sep "  " #:align [AlignLeft AlignRight]))
     ;; tea        3
     ;; gaiwan  1240
     ;; kettle    90
@@ -1045,21 +1026,21 @@
   (returns "A block.")
   (see tabular table-row TableStyle)
   (example """
-    (show [(tabular/rows [["name" "n" "time"]
-                          ["sort" 10 "1.2 µs"]
-                          ["sort" 1000 "210 µs"]]
-                         #:sep "  "
-                         #:align [AlignLeft AlignRight AlignRight])])
+    (show (tabular/rows [["name" "n" "time"]
+                         ["sort" 10 "1.2 µs"]
+                         ["sort" 1000 "210 µs"]]
+                        #:sep "  "
+                        #:align [AlignLeft AlignRight AlignRight]))
     ;; name     n    time
     ;; sort    10  1.2 µs
     ;; sort  1000  210 µs
     """)
   (example """
-    ;; A cell is one block. A cell of several pieces is under each, and a
-    ;; newline in it gives its row another line.
-    (show [(tabular/rows [["tea" (each [3 " cups"])]
-                          ["kettle" (each ["boils in" nl "4 minutes"])]]
-                         #:style StyleAscii)])
+    ;; A cell is one block. A cell of several pieces is a vec in the row,
+    ;; and a newline in it gives its row another line.
+    (show (tabular/rows [["tea" [3 " cups"]]
+                         ["kettle" ["boils in" nl "4 minutes"]]]
+                        #:style StyleAscii))
     ;; +--------+-----------+
     ;; | tea    | 3 cups    |
     ;; | kettle | boils in  |
@@ -1073,10 +1054,10 @@
     (defun (item-row i)
       [(record-ref i name) (numeric (record-ref i price) #:precision 2) (record-ref i stock)])
 
-    (show [(tabular/rows (vec-map item-row stock)
-                         #:titles ["Item" "Price" "Stock"]
-                         #:align [AlignLeft (AlignOn #\.) AlignRight]
-                         #:style StyleAscii)])
+    (show (tabular/rows (vec-map item-row stock)
+                        #:titles ["Item" "Price" "Stock"]
+                        #:align [AlignLeft (AlignOn #\.) AlignRight]
+                        #:style StyleAscii))
     ;; +-----------+---------+-------+
     ;; | Item      |   Price | Stock |
     ;; +-----------+---------+-------+
@@ -1100,8 +1081,8 @@
   (case AlignOn "Every line of the column has the character in the same place, as a decimal point is in a column of numbers. A line without the character ends where the character would be. The part as a whole is aligned to the right, and so is the title over it.")
   (see tabular tabular/rows table-layout columnar)
   (example """
-    (show [(tabular/rows [["tea" "3.5"] ["gaiwan" "1240"] ["kettle" "89.90"]]
-                         #:align [AlignLeft (AlignOn #\.)])])
+    (show (tabular/rows [["tea" "3.5"] ["gaiwan" "1240"] ["kettle" "89.90"]]
+                        #:align [AlignLeft (AlignOn #\.)]))
     ;; tea       3.5
     ;; gaiwan 1240
     ;; kettle   89.90
@@ -1126,10 +1107,10 @@
   (case StyleCustom "The pieces of a BorderChars.")
   (see tabular/rows tabular table-layout BorderChars TableRules)
   (example """
-    (show [(tabular/rows [["tea" "3.50"] ["gaiwan" "1240.00"]]
-                         #:titles ["Item" "Price"]
-                         #:style StyleAscii
-                         #:align [AlignLeft AlignRight])])
+    (show (tabular/rows [["tea" "3.50"] ["gaiwan" "1240.00"]]
+                        #:titles ["Item" "Price"]
+                        #:style StyleAscii
+                        #:align [AlignLeft AlignRight]))
     ;; +--------+---------+
     ;; | Item   |   Price |
     ;; +--------+---------+
@@ -1162,8 +1143,8 @@
   (see tabular/rows Overflow current-width)
   (example """
     (with-fmt current-width 30
-      [(tabular/rows [["a" "b" "c"]] #:style StyleAscii
-                     #:widths [(WidthFixed 5) (WidthShare 1) (WidthShare 2)])])
+      (tabular/rows [["a" "b" "c"]] #:style StyleAscii
+                    #:widths [(WidthFixed 5) (WidthShare 1) (WidthShare 2)]))
     ;; +-------+-------+------------+
     ;; | a     | b     | c          |
     ;; +-------+-------+------------+
@@ -1182,8 +1163,8 @@
   (see tabular/rows ColumnWidth current-width current-ellipsis)
   (example """
     (with-fmt current-width 40
-      [(tabular/rows [["tea" "A green tea from the hills, picked in spring and rolled by hand."]]
-                     #:titles ["Item" "Note"] #:style StyleAscii #:overflow OverflowWrap)])
+      (tabular/rows [["tea" "A green tea from the hills, picked in spring and rolled by hand."]]
+                    #:titles ["Item" "Note"] #:style StyleAscii #:overflow OverflowWrap))
     ;; +------+-------------------------------+
     ;; | Item | Note                          |
     ;; +------+-------------------------------+
@@ -1293,9 +1274,9 @@
   (example """
     ;; Each result printed when it is measured, under a heading printed first.
     (def layout (table-layout [8 8] #:sep "  " #:align [AlignLeft AlignRight]))
-    (show [(table-row layout ["name" "time"])])
+    (show (table-row layout ["name" "time"]))
     (loop (:for (Tuple name t) results)
-          (:do (show [(table-row layout [name t])])))
+          (:do (show (table-row layout [name t]))))
     ;; name          time
     ;; sort        1.2 µs
     """)

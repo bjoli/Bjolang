@@ -1,0 +1,39 @@
+;; An argument at a parameter whose type is a production of a grammar is read
+;; as an element of a literal of it is: a value by its type, a literal by the
+;; grammar, and the results of an if, a match or a let each so.
+(import (std prelude))
+(import (std simpletest))
+
+(def/grammar Piece
+  (:or (: PStr string) (: PInt int) (: PMany (Vec Piece))))
+
+(: (-> Piece string))
+(defun (out p)
+  (match p
+    ((PStr s) s)
+    ((PInt n) (int->string n))
+    ((PMany ps) (string-join (vec-map out ps) ""))))
+
+(: (-> Piece Piece))
+(defun (angled p) (PMany ["<" p ">"]))
+
+(: (-> Piece (#:sep Piece) Piece))
+(defun (twice p #:sep (PStr "|")) (PMany [p sep p]))
+
+(defun (main)
+  (def name "Ada")
+  (: n int)
+  (def n 3)
+  (: ps (Vec Piece))
+  (def ps ["p" "q"])
+  (expect "a string variable" (out name) "Ada")
+  (expect "an int variable" (out n) "3")
+  (expect "a vec of the production" (out ps) "pq")
+  (expect "a call" (out (string-upcase name)) "ADA")
+  (expect "a value of the production itself" (out (angled name)) "<Ada>")
+  (expect "nested" (out (angled (angled n))) "<<3>>")
+  (expect "an if with a variable arm" (out (if (> n 2) name "small")) "Ada")
+  (expect "a match with a variable arm" (out (match (Some name) ((Some s) s) (None "-"))) "Ada")
+  (expect "a keyword argument" (out (twice "x" #:sep name)) "xAdax")
+  (expect "a literal, as before" (out ["a" n "b"]) "a3b")
+  0)

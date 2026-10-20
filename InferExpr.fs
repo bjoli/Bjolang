@@ -2618,6 +2618,14 @@ and private inferGeneralApp (env: Env) (target: Expr) (args: Expr list) (r: Rang
     /// parameter declares.
     let inferArg (arg: Expr) (expected: HMType option) =
         match arg, expected with
+        // At a parameter whose type is a production of a grammar, the
+        // argument is read as an element of a literal of it is: a literal
+        // by the grammar, the results of an `if` or a `match` each so, and
+        // any other value by its type. `(padded/left 5 name)` with `name` a
+        // string is then a block, as `[name]` is a vec of one.
+        | _, Some paramTy when (grammarOf env.Registry paramTy).IsSome ->
+            let typed = matchGrammar env paramTy arg
+            typed.Type, typed
         // A literal is checked against the type its position expects
         // rather than inferred on its own, so a union the parameter
         // names can elaborate it: `(f 'x)` is a `T` because the
@@ -3613,6 +3621,18 @@ and private inferCheckedNode (expected: HMType) (env: Env) (expr: Expr) : HMType
         | Some typed -> typed
         | None -> infer env expr
 
+    // Any other value where a production of a grammar is expected is read
+    // by its type, as it is in an element of a literal: a function declared
+    // to return a `Block` may return a string it was given.
+    | _, (TCon(key, args) as production) when Map.containsKey key env.Registry.Grammars ->
+        let ty, typed = infer env expr
+
+        match grammarOf env.Registry production with
+        | Some(k, a, p) ->
+            let read = spliceIntoGrammar env k a p ty typed
+            read.Type, read
+        | None -> ty, typed
+
     | _ ->
         infer env expr
 
@@ -3874,9 +3894,14 @@ and private spliceIntoGrammar
                 let built = applyConstructor env case [ value ] typed.Range
                 unify env.Registry built.Type pe
                 built
+            // A value of another type, which no alternative takes. Said as a
+            // literal that fits nothing is: what the grammar takes, and
+            // what it was given.
             | [] ->
-                unifyExpecting env.Registry pe ty "this value"
-                typed
+                grammarError
+                    typed.Range
+                    p.Name
+                    $"expected %s{describeGrammarItem env.Registry inst (GrOr alternatives)}; found %s{withArticle (DotNetInterop.showType found)}."
             | many ->
                 let names = many |> List.map (fst >> Naming.showTypeName) |> orList
 

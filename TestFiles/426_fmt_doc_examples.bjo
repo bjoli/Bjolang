@@ -15,10 +15,10 @@
 
 (: item-line (-> Item Block))
 (defun (item-line i)
-  (each [(padded/right 10 [(record-ref i name)])
-         (padded/left 9 [(numeric (record-ref i price) #:precision 2 #:comma 3)])
-         (if (= (record-ref i stock) 0) "  sold out" nothing)
-         nl]))
+  [(padded/right 10 (record-ref i name))
+   (padded/left 9 (numeric (record-ref i price) #:precision 2 #:comma 3))
+   (if (= (record-ref i stock) 0) "  sold out" nothing)
+   nl])
 
 (: item-row (-> Item (Vec Block)))
 (defun (item-row i)
@@ -26,28 +26,24 @@
 
 (: greeting (-> string (Option string) Block))
 (defun (greeting name title)
-  (each ["Hello, "
-         (match title
-           ((Some t) (each [t " "]))
-           (None nothing))
-         name "!"]))
+  ["Hello, "
+   (match title
+     ((Some t) [t " "])
+     (None nothing))
+   name "!"])
 
 (: bullets (-> (Vec string) Block))
 (defun (bullets xs)
-  (each (vec-map (fun (x) (each ["  * " x nl])) xs)))
+  (vec-map (fun (x) (each ["  * " x nl])) xs))
 
-(: labelled (-> string int (Vec Block)))
+(: labelled (-> string int Block))
 (defun (labelled label n)
   [label ": " n nl])
 
-(: price-tag (-> string double Block))
-(defun (price-tag name price)
-  (each [name " (" (numeric price #:precision 2) ")"]))
-
 (: medal (-> int Block))
 (defun (medal place)
-  (cond ((= place 1) (BStr "gold"))
-        ((= place 2) (BStr "silver"))
+  (cond ((= place 1) "gold")
+        ((= place 2) "silver")
         (else nothing)))
 
 (: score-row (-> (Tuple string int) (Vec Block)))
@@ -55,9 +51,9 @@
   (def (Tuple name points) s)
   [name points])
 
-(: boxed (-> (Vec Block) Block))
-(defun (boxed bs)
-  (captured (fun (s) (each ["[" s "]"])) bs))
+(: boxed (-> Block Block))
+(defun (boxed b)
+  (captured (fun (s) ["[" s "]"]) b))
 
 (: scores (Vec (Tuple string int)))
 (def scores [(Tuple "ada" 31) (Tuple "bo" 27)])
@@ -82,13 +78,13 @@
           (render->string [(padded/left 8 ["x = " n]) "|"])
           "   x = 3|")
   (expect "a block per record"
-          (render->string [(each (vec-map item-line stock))])
+          (render->string (vec-map item-line stock))
           (lines ["Green tea      3.50" "Gaiwan     1,240.00" "Kettle        89.90  sold out"]))
   (expect "a row per record"
-          (render->string [(tabular/rows (vec-map item-row stock)
-                                         #:titles ["Item" "Price" "Stock"]
-                                         #:align [AlignLeft (AlignOn #\.) AlignRight]
-                                         #:style StyleAscii)])
+          (render->string (tabular/rows (vec-map item-row stock)
+                                        #:titles ["Item" "Price" "Stock"]
+                                        #:align [AlignLeft (AlignOn #\.) AlignRight]
+                                        #:style StyleAscii))
           (lines ["+-----------+---------+-------+"
                   "| Item      |   Price | Stock |"
                   "+-----------+---------+-------+"
@@ -102,52 +98,50 @@
 
   (def s "tea")
   (: b Block)
-  (def b (BStr s))
+  (def b s)
   (: bs (Vec Block))
   (def bs [s " and " b])
-  (expect "a vec of blocks as one block" (render->string [(each bs)]) "tea and tea")
-  (expect "a vec of strings" (render->string [(each (vec-map BStr ["a" "b"]))]) "ab")
-  (expect "a block, and content"
-          (render->string [(bullets ["tea" "milk"]) (each (labelled "cups" 3))])
+  (expect "a vec in a vec" (render->string [bs nl]) "tea and tea\n")
+  (expect "a vec of strings" (render->string (vec-map BStr ["a" "b"])) "ab")
+  (expect "functions that return a block"
+          (render->string [(bullets ["tea" "milk"]) (labelled "cups" 3)])
           "  * tea\n  * milk\ncups: 3\n")
-  (expect "content returned by a function" (render->string (labelled "pots" 1)) "pots: 1\n")
-  (expect "a price tag" (render->string [(price-tag "tea" 3.5)]) "tea (3.50)")
 
-  (: parts (Vec Block))
+  (: parts Block)
   (def parts ["a" 1 #\b])
-  (expect "each over a vec" (render->string ["<" (each parts) ">"]) "<a1b>")
+  (expect "a block bound by def" (render->string ["<" parts ">"]) "<a1b>")
   (expect "each in a lambda"
-          (render->string [(each (vec-map (fun (i) (each [(record-ref i name) ": " (record-ref i stock) nl])) stock))])
+          (render->string (vec-map (fun (i) (each [(record-ref i name) ": " (record-ref i stock) nl])) stock))
           "Green tea: 12\nGaiwan: 2\nKettle: 0\n")
 
   (expect "one thing is still content"
-          (render->string [(padded/left 9 [(numeric 1240.0 #:precision 2 #:comma 3)])])
+          (render->string (padded/left 9 (numeric 1240.0 #:precision 2 #:comma 3)))
           " 1,240.00")
-  (expect "zero padding" (render->string [(with-pad #\0 [(padded/left 4 [42])])]) "0042")
+  (expect "zero padding" (render->string (with-pad #\0 (padded/left 4 42))) "0042")
   (expect "padded on the right"
-          (render->string [(padded/right 10 ["Green tea"]) "3.50" nl (padded/right 10 ["Gaiwan"]) "1240.00"])
+          (render->string [(padded/right 10 "Green tea") "3.50" nl (padded/right 10 "Gaiwan") "1240.00"])
           "Green tea 3.50\nGaiwan    1240.00")
-  (expect "centred" (render->string [(with-pad #\= [(padded/both 20 [" Receipt "])])]) "===== Receipt ======")
-  (expect "fitted and centred" (render->string ["[" (fitted/both 6 ["ab"]) "]"]) "[  ab  ]")
+  (expect "centred" (render->string (with-pad #\= (padded/both 20 " Receipt "))) "===== Receipt ======")
+  (expect "fitted and centred" (render->string ["[" (fitted/both 6 "ab") "]"]) "[  ab  ]")
   (expect "a dot leader"
           (render->string [(with-pad #\. ["Tea" (space-to 12) "3.50"]) nl
                            (with-pad #\. ["Gaiwan" (space-to 12) "1240.00"])])
           "Tea.........3.50\nGaiwan......1240.00")
 
-  (expect "joined with BStr" (render->string [(joined BStr (list "tea" "milk" "honey") [", "])]) "tea, milk, honey")
-  (expect "joined with each"
-          (render->string [(joined (fun (s) (each ["* " s])) (list "tea" "milk") [nl])])
+  (expect "joined with BStr" (render->string (joined BStr (list "tea" "milk" "honey") ", ")) "tea, milk, honey")
+  (expect "joined, with a lambda that returns a vec"
+          (render->string (joined (fun (s) ["* " s]) (list "tea" "milk") nl))
           "* tea\n* milk")
-  (expect "joined over a vec" (render->string [(joined BStr (vec->list ["a" "b"]) [" | "])]) "a | b")
+  (expect "joined over a vec" (render->string (joined BStr (vec->list ["a" "b"]) " | ")) "a | b")
   (expect "joined, and the last"
-          (render->string [(joined/last BStr (fun (s) (each ["and " s])) (list "tea" "milk" "honey") [", "])])
+          (render->string (joined/last BStr (fun (s) ["and " s]) (list "tea" "milk" "honey") ", "))
           "tea, milk, and honey")
 
   (: total double)
   (def total 1333.4)
   (expect "a double through numeric" (render->string ["Total: " (numeric total #:precision 2 #:comma 3)]) "Total: 1,333.40")
   (expect "a precision for every numeric"
-          (render->string [(with-fmt current-precision 1 ["pi is about " (numeric 3.14159)])])
+          (render->string (with-fmt current-precision 1 ["pi is about " (numeric 3.14159)]))
           "pi is about 3.1")
   (def paid #t)
   (expect "a bool through if" (render->string ["Paid: " (if paid "yes" "no")]) "Paid: yes")
@@ -156,28 +150,28 @@
   (expect "a long" (render->string [(bytes size) " (" (long->string size) " bytes)"]) "1.2 MiB (1258291 bytes)")
 
   (expect "settings nest"
-          (render->string [(with-fmt current-width 24
-                             [(with-fmt current-ellipsis "…"
-                                [(trimmed/right 8 ["A green tea from the hills"]) nl])
-                              (wrapped ["A green tea from the hills, picked in spring and rolled by hand."])])])
+          (render->string (with-fmt current-width 24
+                            [(with-fmt current-ellipsis "…"
+                               [(trimmed/right 8 "A green tea from the hills") nl])
+                             (wrapped "A green tea from the hills, picked in spring and rolled by hand.")]))
           "A green…\nA green tea from the\nhills, picked in spring\nand rolled by hand.")
   (expect "wrapped after a label"
-          (render->string [(with-fmt current-width 30
-                             ["Note: " (wrapped ["picked on day " 3 " of spring, rolled by hand and dried in the sun."])])])
+          (render->string (with-fmt current-width 30
+                            ["Note: " (wrapped ["picked on day " 3 " of spring, rolled by hand and dried in the sun."])]))
           "Note: picked on day 3 of\nspring, rolled by hand and\ndried in the sun.")
 
   (expect "columns"
-          (render->string [(tabular [["tea" nl "gaiwan" nl "kettle"] [3 nl 1240 nl 90]]
-                                    #:sep "  " #:align [AlignLeft AlignRight])])
+          (render->string (tabular [["tea" nl "gaiwan" nl "kettle"] [3 nl 1240 nl 90]]
+                                   #:sep "  " #:align [AlignLeft AlignRight]))
           (lines ["tea        3" "gaiwan  1240" "kettle    90"]))
   (expect "rows"
-          (render->string [(tabular/rows [["tea" 3] ["gaiwan" 1240] ["kettle" 90]]
-                                         #:sep "  " #:align [AlignLeft AlignRight])])
+          (render->string (tabular/rows [["tea" 3] ["gaiwan" 1240] ["kettle" 90]]
+                                        #:sep "  " #:align [AlignLeft AlignRight]))
           (lines ["tea        3" "gaiwan  1240" "kettle    90"]))
   (expect "a cell of several pieces"
-          (render->string [(tabular/rows [["tea" (each [3 " cups"])]
-                                          ["kettle" (each ["boils in" nl "4 minutes"])]]
-                                         #:style StyleAscii)])
+          (render->string (tabular/rows [["tea" [3 " cups"]]
+                                         ["kettle" ["boils in" nl "4 minutes"]]]
+                                        #:style StyleAscii))
           (lines ["+--------+-----------+"
                   "| tea    | 3 cups    |"
                   "| kettle | boils in  |"
@@ -189,18 +183,18 @@
   (: points int)
   (def points 31)
   (expect "interpolation" #"${who} has ${points} points" "ada has 31 points")
-  (expect "two padded blocks" (render->string [(padded/left 5 ["x"]) (padded/left 5 ["y"])]) "    x    y")
-  (expect "a label and a number" (render->string ["Total:" (padded/left 8 [42])]) "Total:      42")
+  (expect "two padded blocks" (render->string [(padded/left 5 "x") (padded/left 5 "y")]) "    x    y")
+  (expect "a label and a number" (render->string ["Total:" (padded/left 8 42)]) "Total:      42")
   (expect "calls in a vec literal" (render->string [(string-upcase name) " " (vec-length [1 2 3])]) "ADA 3")
-  (expect "content from a function, under each" (render->string [">> " (each (labelled "pots" 1))]) ">> pots: 1\n")
+  (expect "a block from a function, in a vec" (render->string [">> " (labelled "pots" 1)]) ">> pots: 1\n")
   (expect "show of content" (render->string parts) "a1b")
   (expect "a cond whose arms are blocks"
           (render->string [(medal 1) "/" (medal 2) "/" (medal 3)])
           "gold/silver/")
-  (expect "padded name and score" (render->string [(padded/right 8 [who]) (padded/left 4 [points])]) "ada       31")
-  (expect "cut on the left" (render->string [(trimmed/left 6 ["/home/ada/scores.txt"])]) "es.txt")
+  (expect "padded name and score" (render->string [(padded/right 8 who) (padded/left 4 points)]) "ada       31")
+  (expect "cut on the left" (render->string (trimmed/left 6 "/home/ada/scores.txt")) "es.txt")
   (expect "cut on the left, with an ellipsis"
-          (render->string [(with-fmt current-ellipsis "…" [(trimmed/left 12 ["/home/ada/scores.txt"])])])
+          (render->string (with-fmt current-ellipsis "…" (trimmed/left 12 "/home/ada/scores.txt")))
           "…/scores.txt")
   (expect "numbers"
           (render->string [(numeric 1234567.891 #:precision 2 #:comma 3) "  "
@@ -210,13 +204,13 @@
                            (bytes 1500L #:si #t)])
           "1,234,567.89  0.500  +42  12.5%  1.5 kB")
   (expect "justified"
-          (render->string [(with-fmt current-width 20 [(justified ["Bjolang lays text out with blocks, and blocks nest."])])])
+          (render->string (with-fmt current-width 20 (justified "Bjolang lays text out with blocks, and blocks nest.")))
           "Bjolang   lays  text\nout with blocks, and\nblocks nest.")
   (expect "the score ledger as a table"
-          (render->string [(tabular/rows (vec-map score-row scores)
-                                         #:titles ["Player" "Score"]
-                                         #:align [AlignLeft AlignRight]
-                                         #:style StyleAscii)])
+          (render->string (tabular/rows (vec-map score-row scores)
+                                        #:titles ["Player" "Score"]
+                                        #:align [AlignLeft AlignRight]
+                                        #:style StyleAscii))
           (lines ["+--------+-------+"
                   "| Player | Score |"
                   "+--------+-------+"
@@ -229,11 +223,11 @@
                            (each (vec-map (fun (s) (match s ((Tuple name pts) (table-row layout [name pts])))) scores))])
           (lines ["Player     Score" "ada           31" "bo            27"]))
   (expect "a table literal"
-          (render->string [(table-block '(table (style ascii) header
-                                                (column "Player")
-                                                (column "Score" (align right))
-                                                (column "Share" (percent (precision 0)))
-                                                (rows (row "ada" 31 0.46) (row "bo" 27 0.40) (row "cy" 9 0.13))))])
+          (render->string (table-block '(table (style ascii) header
+                                               (column "Player")
+                                               (column "Score" (align right))
+                                               (column "Share" (percent (precision 0)))
+                                               (rows (row "ada" 31 0.46) (row "bo" 27 0.40) (row "cy" 9 0.13)))))
           (lines ["+--------+-------+-------+"
                   "| Player | Score | Share |"
                   "+--------+-------+-------+"
@@ -242,11 +236,11 @@
                   "| cy     |     9 |   13% |"
                   "+--------+-------+-------+"]))
   (expect "separators as settings"
-          (render->string [(with-fmt current-comma 3
-                             [(with-fmt current-comma-sep #\space
-                                [(with-fmt current-decimal-sep #\, [(numeric 1234567.5)])])])])
+          (render->string (with-fmt current-comma 3
+                            (with-fmt current-comma-sep #\space
+                              (with-fmt current-decimal-sep #\, (numeric 1234567.5)))))
           "1 234 567,5")
-  (expect "a block of your own" (render->string [(boxed ["x = " 7])]) "[x = 7]")
+  (expect "a block of your own" (render->string (boxed ["x = " 7])) "[x = 7]")
 
   ;; What an if, a match, a cond or a let gives in a vec literal is read as
   ;; an element is: a string variable as well as a string literal.
@@ -254,29 +248,29 @@
   (expect "a match in a vec literal" (render->string ["Title: " (match title ((Some t) t) (None "-"))]) "Title: Dr")
   (: untitled (Option string))
   (def untitled None)
-  (expect "a match with no value" (render->string [(match untitled ((Some t) t) (None "-"))]) "-")
-  (expect "an if with a variable arm" (render->string [(if paid name "-")]) "Ada")
+  (expect "a match with no value" (render->string (match untitled ((Some t) t) (None "-"))) "-")
+  (expect "an if with a variable arm" (render->string (if paid name "-")) "Ada")
   (def place 2)
   (expect "a cond in a vec literal"
-          (render->string [(cond ((= place 1) "gold") ((= place 2) "silver") (else nothing))])
+          (render->string (cond ((= place 1) "gold") ((= place 2) "silver") (else nothing)))
           "silver")
-  (expect "a let in a vec literal" (render->string [(let ((k (string-upcase name))) k)]) "ADA")
+  (expect "a let in a vec literal" (render->string (let ((k (string-upcase name))) k)) "ADA")
   (expect "a block from a match arm"
-          (render->string [(match title ((Some t) (each [t " "])) (None nothing)) name])
+          (render->string [(match title ((Some t) [t " "]) (None nothing)) name])
           "Dr Ada")
 
   ;; The framed examples of the reference, drawn with StyleAscii.
   (expect "a style"
-          (render->string [(tabular/rows [["tea" "3.50"] ["gaiwan" "1240.00"]]
-                                         #:titles ["Item" "Price"]
-                                         #:style StyleAscii
-                                         #:align [AlignLeft AlignRight])])
+          (render->string (tabular/rows [["tea" "3.50"] ["gaiwan" "1240.00"]]
+                                        #:titles ["Item" "Price"]
+                                        #:style StyleAscii
+                                        #:align [AlignLeft AlignRight]))
           (lines ["+--------+---------+" "| Item   |   Price |" "+--------+---------+"
                   "| tea    |    3.50 |" "| gaiwan | 1240.00 |" "+--------+---------+"]))
   (expect "a cell that wraps"
-          (render->string [(with-fmt current-width 40
-                             [(tabular/rows [["tea" "A green tea from the hills, picked in spring and rolled by hand."]]
-                                            #:titles ["Item" "Note"] #:style StyleAscii #:overflow OverflowWrap)])])
+          (render->string (with-fmt current-width 40
+                            (tabular/rows [["tea" "A green tea from the hills, picked in spring and rolled by hand."]]
+                                          #:titles ["Item" "Note"] #:style StyleAscii #:overflow OverflowWrap)))
           (lines ["+------+-------------------------------+"
                   "| Item | Note                          |"
                   "+------+-------------------------------+"
@@ -290,16 +284,24 @@
                            (table-row boxed-layout ["tea" "3.50"]) (table-bottom boxed-layout)])
           (lines ["+--------+-------+" "| Item   | Price |" "+--------+-------+" "| tea    |  3.50 |" "+--------+-------+"]))
   (expect "a table literal with spliced rows"
-          (render->string [(table-block '(table (style ascii) header
-                                                (column "Item")
-                                                (column "Price" (align (on #\.)) (number (precision 2) (comma 3)))
-                                                (column "Stock" (align right))
-                                                (column "Share" (percent (precision 0)))
-                                                (rows ,products)))])
+          (render->string (table-block '(table (style ascii) header
+                                               (column "Item")
+                                               (column "Price" (align (on #\.)) (number (precision 2) (comma 3)))
+                                               (column "Stock" (align right))
+                                               (column "Share" (percent (precision 0)))
+                                               (rows ,products))))
           (lines ["+-----------+----------+-------+-------+"
                   "| Item      |    Price | Stock | Share |"
                   "+-----------+----------+-------+-------+"
                   "| Green tea |     3.50 |    12 |   40% |"
                   "| Gaiwan    | 1,240.00 |     2 |  100% |"
                   "+-----------+----------+-------+-------+"]))
+
+  ;; One thing needs no brackets: a string, a variable, a call.
+  (expect "a string" (render->string "Hello") "Hello")
+  (expect "a variable as content" (render->string (padded/left 6 name)) "   Ada")
+  (expect "a call as content" (render->string (padded/left 6 (string-upcase name))) "   ADA")
+  (expect "pieces as content" (render->string (padded/left 8 ["x = " n])) "   x = 3")
+  (expect "a medal" (render->string [(medal 1) "/" (medal 2) "/" (medal 3)]) "gold/silver/")
+  (expect "a string variable returned as a block" (render->string (labelled name n)) "Ada: 3\n")
   0)

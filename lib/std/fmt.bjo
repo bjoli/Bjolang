@@ -85,9 +85,11 @@
 ;; Output sink.
 (type (: Sink (-> string void)))
 
-;; Layout blocks. BRun runs combinators.
+;; Layout blocks. A vec of blocks is a block: its blocks in order. BRun runs
+;; combinators.
 (def/grammar Block
-  (:or (: BStr string) (: BInt int) (: BChar char) (: BRun ,(-> Sink int int))))
+  (:or (: BStr string) (: BInt int) (: BChar char) (: BMany (Vec Block))
+       (: BRun ,(-> Sink int int))))
 
 ;; Computes column position.
 (: (-> int string int))
@@ -100,6 +102,7 @@
     ((BStr s) (let () (out s) (column-after col s)))
     ((BInt n) (run-block out col (BStr (int->string n))))
     ((BChar c) (run-block out col (BStr (char->string c))))
+    ((BMany bs) (run-blocks out col bs))
     ((BRun f) (f out col))))
 
 (: (-> Sink int (Vec Block) int))
@@ -110,37 +113,37 @@
 ;; `BRun` case, and a stored function's colour is its type — so no `-?->` can
 ;; go there and no suspending copy of this could ever await. Rendering from a
 ;; fiber is `render->string` plus a write you make yourself.
-(: render #:sync (-> OutputPort (Vec Block) void))
-(defun (render port bs)
-  (ignore (run-blocks #(write-string port &1) 0 bs)))
+(: render #:sync (-> OutputPort Block void))
+(defun (render port b)
+  (ignore (run-block #(write-string port &1) 0 b)))
 
-(: (-> (Vec Block) string))
-(defun (render->string bs)
-  (let ((b (stringbuilder-empty)))
-    (ignore (run-blocks #(stringbuilder-add-string! b &1) 0 bs))
-    (stringbuilder->string b)))
+(: (-> Block string))
+(defun (render->string b)
+  (let ((sb (stringbuilder-empty)))
+    (ignore (run-block #(stringbuilder-add-string! sb &1) 0 b))
+    (stringbuilder->string sb)))
 
 ;; Renders to current output port. `#:sync` for `render`'s reason, and stated
 ;; here too rather than left to follow from it: this is the exported one, and
 ;; what it promises a caller should be readable at it.
 ;; 
-(: show #:sync (-> (Vec Block) void))
-(defun (show bs) (render (parameter-ref current-output-port) bs))
+(: show #:sync (-> Block void))
+(defun (show b) (render (parameter-ref current-output-port) b))
 
 
 ;; --- Settings --------------------------------------------------------------
-(: (-> (Param %a) %a (Vec Block) Block))
-(defun (with-fmt p v bs)
+(: (-> (Param %a) %a Block Block))
+(defun (with-fmt p v b)
   (BRun (fun (out col)
           (parameterize ((p v))
-            (run-blocks out col bs)))))
+            (run-block out col b)))))
 
 ;; What padding is made of.
 (: (Param char))
 (def current-pad (make-parameter #\space))
 
-(: (-> char (Vec Block) Block))
-(defun (with-pad c bs) (with-fmt current-pad c bs))
+(: (-> char Block Block))
+(defun (with-pad c b) (with-fmt current-pad c b))
 
 ;; The right margin: what `wrapped`, `justified` and `columnar` fill up to.
 (: (Param int))
@@ -272,15 +275,15 @@
 (: Block)
 (def nothing (BRun (fun (out col) col)))
 
-;; Combines multiple blocks.
+;; Blocks in order, as one. What a vec of blocks is anyway; the name is for
+;; where a function is wanted, as in (vec-map each rows).
 (: (-> (Vec Block) Block))
-(defun (each bs)
-  (BRun (fun (out col) (run-blocks out col bs))))
+(defun (each bs) (BMany bs))
 
-;; Renders blocks and applies f.
-(: (-> (-> string Block) (Vec Block) Block))
-(defun (captured f bs)
-  (BRun (fun (out col) (run-block out col (f (render->string bs))))))
+;; Renders the content and applies f.
+(: (-> (-> string Block) Block Block))
+(defun (captured f b)
+  (BRun (fun (out col) (run-block out col (f (render->string b))))))
 
 
 ;; --- Vertical and horizontal space -----------------------------------------
@@ -312,71 +315,71 @@
 
 ;; --- Fitting to a width ----------------------------------------------------
 
-(: (-> int (Vec Block) Block))
-(defun (padded/left w bs) (captured (fun (s) (BStr (pad/left w s))) bs))
+(: (-> int Block Block))
+(defun (padded/left w b) (captured (fun (s) (BStr (pad/left w s))) b))
 
-(: (-> int (Vec Block) Block))
-(defun (padded/right w bs) (captured (fun (s) (BStr (pad/right w s))) bs))
+(: (-> int Block Block))
+(defun (padded/right w b) (captured (fun (s) (BStr (pad/right w s))) b))
 
-(: (-> int (Vec Block) Block))
-(defun (padded/both w bs) (captured (fun (s) (BStr (pad/both w s))) bs))
+(: (-> int Block Block))
+(defun (padded/both w b) (captured (fun (s) (BStr (pad/both w s))) b))
 
-(: (-> int (Vec Block) Block))
-(defun (trimmed/left w bs) (captured (fun (s) (BStr (trim/left w s))) bs))
+(: (-> int Block Block))
+(defun (trimmed/left w b) (captured (fun (s) (BStr (trim/left w s))) b))
 
-(: (-> int (Vec Block) Block))
-(defun (trimmed/right w bs) (captured (fun (s) (BStr (trim/right w s))) bs))
+(: (-> int Block Block))
+(defun (trimmed/right w b) (captured (fun (s) (BStr (trim/right w s))) b))
 
-(: (-> int (Vec Block) Block))
-(defun (trimmed/both w bs) (captured (fun (s) (BStr (trim/both w s))) bs))
+(: (-> int Block Block))
+(defun (trimmed/both w b) (captured (fun (s) (BStr (trim/both w s))) b))
 
-(: (-> int (Vec Block) Block))
-(defun (fitted/left w bs)
-  (captured (fun (s) (BStr (pad/left w (trim/left w s)))) bs))
+(: (-> int Block Block))
+(defun (fitted/left w b)
+  (captured (fun (s) (BStr (pad/left w (trim/left w s)))) b))
 
-(: (-> int (Vec Block) Block))
-(defun (fitted/right w bs)
-  (captured (fun (s) (BStr (pad/right w (trim/right w s)))) bs))
+(: (-> int Block Block))
+(defun (fitted/right w b)
+  (captured (fun (s) (BStr (pad/right w (trim/right w s)))) b))
 
-(: (-> int (Vec Block) Block))
-(defun (fitted/both w bs)
-  (captured (fun (s) (BStr (pad/both w (trim/both w s)))) bs))
+(: (-> int Block Block))
+(defun (fitted/both w b)
+  (captured (fun (s) (BStr (pad/both w (trim/both w s)))) b))
 
 
 ;; --- Sequences -------------------------------------------------------------
 
 ;; Every element, with `sep` between them.
-(: (-> (-> %a Block) (List %a) (Vec Block) Block))
+(: (-> (-> %a Block) (List %a) Block Block))
 (defun (joined f xs sep) (joined/last f f xs sep))
 
 ;; `sep` before each element, including the first.
-(: (-> (-> %a Block) (List %a) (Vec Block) Block))
+(: (-> (-> %a Block) (List %a) Block Block))
 (defun (joined/prefix f xs sep)
   (BRun (fun (out col)
-          (list-foldl (fun (x c) (run-block out (run-blocks out c sep) (f x)))
+          (list-foldl (fun (x c) (run-block out (run-block out c sep) (f x)))
                       col
                       xs))))
 
 ;; Appends separator after elements.
-(: (-> (-> %a Block) (List %a) (Vec Block) Block))
+(: (-> (-> %a Block) (List %a) Block Block))
 (defun (joined/suffix f xs sep)
   (BRun (fun (out col)
-          (list-foldl (fun (x c) (run-blocks out (run-block out c (f x)) sep))
+          (list-foldl (fun (x c) (run-block out (run-block out c (f x)) sep))
                       col
                       xs))))
 
 ;; Joins elements with custom last element formatter.
-(: (-> (-> %a Block) (-> %a Block) (List %a) (Vec Block) Block))
+(: (-> (-> %a Block) (-> %a Block) (List %a) Block Block))
 (defun (joined/last f last-f xs sep)
   (BRun (fun (out col)
           (let loop ((ys xs) (c col) (first? #t))
             (match ys
               (Nil c)
               ((Cons x Nil)
-               (run-block out (if first? c (run-blocks out c sep)) (last-f x)))
+               (run-block out (if first? c (run-block out c sep)) (last-f x)))
               ((Cons x rest)
                (loop rest
-                     (run-block out (if first? c (run-blocks out c sep)) (f x))
+                     (run-block out (if first? c (run-block out c sep)) (f x))
                      #f)))))))
 
 
@@ -622,12 +625,12 @@
                        (loop rest (run-block out c1 (BStr text)) #f)))))))))
 
 ;; Filled to the right margin, ragged on the right.
-(: (-> (Vec Block) Block))
-(defun (wrapped bs) (captured (fun (s) (wrap (words-of s) #f)) bs))
+(: (-> Block Block))
+(defun (wrapped b) (captured (fun (s) (wrap (words-of s) #f)) b))
 
 ;; Filled to the right margin and flush against both, the last line excepted.
-(: (-> (Vec Block) Block))
-(defun (justified bs) (captured (fun (s) (wrap (words-of s) #t)) bs))
+(: (-> Block Block))
+(defun (justified b) (captured (fun (s) (wrap (words-of s) #t)) b))
 
 
 ;; --- Tables ----------------------------------------------------------------

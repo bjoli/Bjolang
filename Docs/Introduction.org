@@ -218,8 +218,8 @@ and [[file:Grammar-design.org][Grammar-design.org]].
 ** A DSL on top of it: ~(std fmt)~
 
 ~(std fmt)~ lays text out with a ~Block~ grammar whose cases hold a string, an
-int, a char, or a layout combinator. A ~(Vec Block)~ is therefore written as a
-plain vector of the things themselves:
+int, a char, a vec of blocks, or a layout combinator. A string is therefore a
+block as it is, and several pieces are a plain vector of the things themselves:
 
 #+BEGIN_SRC scheme
 (import (std fmt))
@@ -228,18 +228,18 @@ plain vector of the things themselves:
 
 (: bar (-> Bar Block))
 (defun (bar b)
-  (each [(padded/right 5 [(record-ref b label)]) ;; pads every label so that it is at least 5 chars long.
-         "|"
-         ;; builds the bars. Pad a null string with (record-ref b value) amount of #\#
-         (with-pad #\# [(padded/right (record-ref b value) [""])])
-         " "
-         (record-ref b value)                   ;; an int, elaborated
-         nl]))
+  [(padded/right 5 (record-ref b label)) ;; pads every label so that it is at least 5 chars long.
+   "|"
+   ;; builds the bars. Pad a null string with (record-ref b value) amount of #\#
+   (with-pad #\# (padded/right (record-ref b value) ""))
+   " "
+   (record-ref b value)                   ;; an int, elaborated
+   nl])
 
-(: chart (-> string (List Bar) (Vec Block)))
+(: chart (-> string (List Bar) Block))
 (defun (chart title bars)
-  [(with-pad #\= [(padded/both 24 [" " title " "])]) nl
-   (joined bar bars [])
+  [(with-pad #\= (padded/both 24 [" " title " "])) nl
+   (joined bar bars nothing)
    (tabular [["days" nl (list-length bars)]
              ["cups" nl (list-foldl (fun (b acc) (+ acc (record-ref b value))) 0 bars)]]
             #:sep "  ")

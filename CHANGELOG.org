@@ -3,6 +3,32 @@
 
 What each change guarantees, and what it leaves open.
 
+* (std fmt): a string is a block, and so is a vec of blocks
+
+- ~Block~ has a case ~BMany~, a vec of blocks in order, and every function
+  of ~(std fmt)~ that took its content as a ~(Vec Block)~ takes a ~Block~:
+  ~show~, ~render~, ~render->string~, ~with-fmt~, ~with-pad~, ~captured~,
+  ~wrapped~, ~justified~, the padding, trimming and fitting functions, and
+  the separator of the ~joined~ functions. ~(show "hej")~,
+  ~(padded/left 5 name)~ and ~(show (padded/left 5 "x"))~ compile, and
+  so does everything that compiled before: a vec given as content is a
+  ~BMany~. Rows and cells of tables are as they were; a cell of several
+  pieces may be a vec, ~["tea" [3 " cups"]]~.
+- Where a production of a grammar is expected, a value that is not a
+  literal is read by its type, as a value spliced into a literal is: as an
+  argument, a keyword argument, the result of a function with a declared
+  result, and the value of a binding with a written type. A string variable
+  given where a ~Block~ is wanted is a ~BStr~, and a ~(Vec Block)~ is a
+  ~BMany~. A value that no alternative takes is refused with what the
+  production takes: "Block: expected a string, an int, ...; found a
+  double."
+- The docs of ~(std fmt)~, ~Docs/Introduction.org~ and the manual's guide
+  are written for the rule, and ~Docs/Syntax.org~ says where values are
+  read by a grammar.
+- Tests: ~427_grammar_argument_values.bjo~,
+  ~errors/grammar_argument_fits_nothing.bjo~, ~426_fmt_doc_examples.bjo~
+  (62 checks). The error tests whose mistakes now compile are gone.
+
 * (std fmt): framed examples are drawn with StyleAscii
 
 - Every framed table in the docs of ~(std fmt)~ and in the manual's guide
