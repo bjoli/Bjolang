@@ -3,6 +3,43 @@
 
 What each change guarantees, and what it leaves open.
 
+* An if, match or let in a grammar literal is read as an element is
+
+- In a literal read by a grammar, the result of an ~if~, a ~cond~, a
+  ~match~ or a ~let~ is read as the element itself would be. A string
+  variable in an arm is therefore a ~BStr~ where a ~Block~ is wanted, as
+  it is alone: ~[(match title ((Some t) t) (None "-"))]~ compiles. Only a
+  written literal in an arm was read before, and a variable there was
+  refused as a ~string~ where a ~Block~ was wanted.
+- A spliced number whose type nothing has fixed yet, such as ~n~ after
+  ~(def n 3)~, is refused at the name: "'n' is a number, and nothing says
+  yet whether it is an int, a long or a double", with ~(: n int)~ as the
+  fix. The error was at the literal it came from, which can be far away:
+  for ~(def total (+ 1 2))~ it named ~'1'~.
+- A grammar's error message names a type with its article: "an int", not
+  "a int".
+- Tests: ~426_fmt_doc_examples.bjo~, ~errors/fmt_untyped_number.bjo~,
+  ~errors/fmt_double_in_vec.bjo~.
+
+* (std fmt): what a block is, with examples
+
+- The module doc of ~(std fmt)~ explains ~Block~ and ~(Vec Block)~: a
+  combinator takes its content as a vec and gives back one block, and
+  ~show~ takes a vec. It lists what a vec literal of blocks can hold,
+  how to convert what it cannot (a double, a bool, a long, a vec), why a
+  number bound by ~def~ needs its type, and the compiler's
+  messages for the common mistakes with what to write instead.
+- More examples on ~Block~, ~each~, ~nothing~, the padding functions,
+  ~space-to~, ~joined~, ~numeric~, ~with-fmt~, ~wrapped~, ~tabular~ and
+  ~tabular/rows~: blocks from records, a function that returns a block
+  and one that returns content, a lambda under ~each~, a ~match~ in a vec
+  literal, cells of several pieces.
+- The doc of ~terminal-width~ wrote ~@code{@}~, which samizdat refuses,
+  so the module's manual page did not render. It is ~@code{@"@"}~.
+- Tests: ~426_fmt_doc_examples.bjo~ runs the examples of the docs and of
+  the manual's guide and checks their output. The ~errors/fmt_*.bjo~
+  files hold the messages the docs quote.
+
 * A local lambda that is only called is a local function
 
 - A local bound to a ~(fun ...)~, by ~def~ or ~let~, whose scope only calls

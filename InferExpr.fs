@@ -286,6 +286,12 @@ let private grammarClaims registry inst (item: GrammarItem) (expr: Expr) =
     | Some start -> grammarStarts registry inst Set.empty item |> Set.contains start
     | None -> false
 
+/// A type's name with the indefinite article it is read with: "an int",
+/// "a string". A name that starts with a, e, i or o takes "an". One that
+/// starts with u does not, as the u of `uint` and `unit` is said "you".
+let private withArticle (name: string) : string =
+    if name.Length > 0 && "aeioAEIO".Contains name[0] then $"an %s{name}" else $"a %s{name}"
+
 /// How a diagnostic names what an item expects.
 let rec private describeGrammarItem (registry: TraitRegistry) (inst: HMType -> HMType) (item: GrammarItem) : string =
     match item with
@@ -294,7 +300,7 @@ let rec private describeGrammarItem (registry: TraitRegistry) (inst: HMType -> H
     | GrList(None, _) -> "a list"
     | GrVec _ -> "a vec"
     | GrOpt inner -> describeGrammarItem registry inst inner
-    | GrSpliceOnly t -> $"a %s{DotNetInterop.showType (inst t)} spliced in with ,"
+    | GrSpliceOnly t -> $"%s{withArticle (DotNetInterop.showType (inst t))} spliced in with ,"
     | GrOr alternatives -> alternatives |> List.map (snd >> describeGrammarItem registry inst) |> orList
     | GrEach fields -> fields |> List.map (snd >> describeGrammarItem registry inst) |> orList
     | GrType t ->
@@ -304,7 +310,7 @@ let rec private describeGrammarItem (registry: TraitRegistry) (inst: HMType -> H
             match prune registry (inst t) with
             | TCon(name, []) when name = TypeConstants.SymbolName -> "a symbol"
             | TCon(name, []) when name = TypeConstants.StringName -> "a string"
-            | other -> $"a %s{DotNetInterop.showType other}"
+            | other -> withArticle (DotNetInterop.showType other)
 
 /// How a diagnostic names what a literal holds at the place it went wrong.
 let private describeFound (expr: Expr) : string =
@@ -3597,17 +3603,8 @@ and private inferCheckedNode (expected: HMType) (env: Env) (expr: Expr) : HMType
     // A form whose value is one of its tail positions passes the expectation
     // on, so `(if c '(from a) '(from b))` and a `let` body ending in a literal
     // are elaborated where the whole form is expected to be a union.
-    | EIf(cond, t, f, r), _ -> inferIf (inferChecked expected) env cond t f r
-    | ELetMono(name, value, body, r), _ -> inferLetMono (inferChecked expected) env name value body r
-    | ELet(name, isFun, args, typeAnn, value, body, r), _ ->
-        inferLet (inferChecked expected) env name isFun args typeAnn value body r
-    | ELetRec(bindings, body, r), _ -> inferLetRec (inferChecked expected) env bindings body r
-    | ELetMutable(name, typeAnn, value, body, r), _ ->
-        inferLetMutable (inferChecked expected) env name typeAnn value body r
-    | ELetTuple(names, value, body, r), _ -> inferLetTuple (inferChecked expected) env names value body r
-    | EMatch(target, clauses, r), _ -> inferMatch (inferChecked expected) env target clauses r
-    | EDefMatch(binder, scrutinee, failure, sequel, r), _ ->
-        inferDefMatch (inferChecked expected) env binder scrutinee failure sequel r
+    | (EIf _ | ELetMono _ | ELet _ | ELetRec _ | ELetMutable _ | ELetTuple _ | EMatch _ | EDefMatch _), _ ->
+        (inferTailForm (inferChecked expected) env expr).Value
 
     // A function with keyword parameters, where a function of its mandatory
     // ones is expected. See `keywordFreeReference`.
@@ -3618,6 +3615,26 @@ and private inferCheckedNode (expected: HMType) (env: Env) (expr: Expr) : HMType
 
     | _ ->
         infer env expr
+
+/// A form whose value is one of its tail positions, with `tail` checking each
+/// tail position. `None` for any other form.
+and private inferTailForm
+    (tail: Env -> Expr -> HMType * TypedExpr)
+    (env: Env)
+    (expr: Expr)
+    : (HMType * TypedExpr) option =
+    match expr with
+    | EIf(cond, t, f, r) -> Some(inferIf tail env cond t f r)
+    | ELetMono(name, value, body, r) -> Some(inferLetMono tail env name value body r)
+    | ELet(name, isFun, args, typeAnn, value, body, r) ->
+        Some(inferLet tail env name isFun args typeAnn value body r)
+    | ELetRec(bindings, body, r) -> Some(inferLetRec tail env bindings body r)
+    | ELetMutable(name, typeAnn, value, body, r) -> Some(inferLetMutable tail env name typeAnn value body r)
+    | ELetTuple(names, value, body, r) -> Some(inferLetTuple tail env names value body r)
+    | EMatch(target, clauses, r) -> Some(inferMatch tail env target clauses r)
+    | EDefMatch(binder, scrutinee, failure, sequel, r) ->
+        Some(inferDefMatch tail env binder scrutinee failure sequel r)
+    | _ -> None
 
 /// The result type of a function whose body has type `bodyType`, given the
 /// result the context expects, if it expects one.
@@ -3785,8 +3802,18 @@ and internal matchGrammar (env: Env) (expected: HMType) (expr: Expr) : TypedExpr
         if isWrittenLiteral expr then
             matchProduction env key args p expr
         else
-            let ty, typed = inferChecked (TCon(key, args)) env expr
-            spliceIntoGrammar env key args p ty typed
+            // Each tail position of an `if`, a `match` or a `let` is read as
+            // the form itself would be: `(match o ((Some s) s) (None "-"))`
+            // is a block where a block is expected, as `s` alone is.
+            let readTail env' e =
+                let typed = matchGrammar env' expected e
+                typed.Type, typed
+
+            match inferTailForm readTail env expr with
+            | Some(_, typed) -> typed
+            | None ->
+                let ty, typed = inferChecked (TCon(key, args)) env expr
+                spliceIntoGrammar env key args p ty typed
 
 /// A spliced value where a production is expected. A value of the
 /// production's own type is the production. Otherwise, for an `:or`, the
@@ -3807,6 +3834,19 @@ and private spliceIntoGrammar
     | TCon(k, _) when k = key ->
         unify env.Registry ty pe
         typed
+    // A number whose type is still open, as a `(def n 3)` is: no alternative
+    // can be chosen by its type yet. Said here, at the name, because the
+    // literal the type comes from may be far away.
+    | found when isOpenLiteral found ->
+        let named, hint =
+            match typed.Node with
+            | TIdent(n, _) -> $"'%s{n}' is a number", $"(: %s{n} int) above where '%s{n}' is bound"
+            | _ -> "this is a number", "a type where the number is bound, such as (: n int)"
+
+        grammarError
+            typed.Range
+            p.Name
+            $"%s{named}, and nothing says yet whether it is an int, a long or a double, so it cannot be read as %s{withArticle p.Name}. Write %s{hint}."
     | found ->
         let inst = grammarInstance p args
 
@@ -3843,7 +3883,7 @@ and private spliceIntoGrammar
                 grammarError
                     typed.Range
                     p.Name
-                    $"a %s{DotNetInterop.showType found} fits %s{names}, and nothing here says which."
+                    $"%s{withArticle (DotNetInterop.showType found)} fits %s{names}, and nothing here says which."
         | _ ->
             unifyExpecting env.Registry pe ty "this value"
             typed
@@ -4332,7 +4372,7 @@ let checkGrammar (env: Env) (g: Grammar) : unit =
         | StartList -> "a list"
         | StartVec -> "a vec"
         | StartArray -> "an array"
-        | StartAtom name -> $"a %s{DotNetInterop.showType (TCon(name, []))}"
+        | StartAtom name -> withArticle (DotNetInterop.showType (TCon(name, [])))
         | StartSplice t -> $"a spliced %s{t}"
         | StartAny -> "anything"
 
