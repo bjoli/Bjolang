@@ -80,6 +80,17 @@ public sealed class Inbox<T>
     /// </summary>
     private int _reserved;
 
+    /// <summary>
+    /// Items a receiver has taken from the queue and not yet committed to.
+    ///
+    /// A receive takes the item under the lock and commits with the lock
+    /// released, and its sync may then be lost to another branch, which puts
+    /// the item back. In between the item is in neither the queue nor a
+    /// receiver's hands, and `inbox-closed` must not fire: it says nothing is
+    /// left to receive, and the item may come back.
+    /// </summary>
+    private int _inFlight;
+
     private RecvNode? _recvHead;
     private RecvNode? _recvTail;
     private SendNode? _sendHead;
@@ -415,6 +426,8 @@ public sealed class Inbox<T>
                 ParkReceiverLocked(new RecvNode(state, eventId, onSync));
                 return;
             }
+
+            _inFlight++;
         }
 
         Settle();
@@ -422,13 +435,32 @@ public sealed class Inbox<T>
         if (state.TryCommit(eventId))
         {
             Scheduler.DispatchOwn(onSync, value);
+
+            // The item was the last one if the inbox is closed and drained,
+            // and only now can `inbox-closed` say so.
+            if (Landed()) Settle();
             return;
         }
 
         // Another branch of this sync won. Nothing may be consumed: the item
         // goes back where it was, for the next receiver.
         GiveBack(value);
+        Landed();
         Settle();
+    }
+
+    /// <summary>
+    /// A taken item has been delivered or given back. Answers whether the inbox
+    /// is closed, which is when the caller has to settle again for
+    /// `inbox-closed` to fire.
+    /// </summary>
+    private bool Landed()
+    {
+        lock (_gate)
+        {
+            _inFlight--;
+            return _closed;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -512,11 +544,16 @@ public sealed class Inbox<T>
                 PushReceiverFrontLocked(r);
                 return false;
             }
+
+            _inFlight++;
         }
 
+        // `Settle` checks for a drained inbox after its last step, on this
+        // thread, so it sees the count this lands.
         if (r.State.TryCommit(r.EventId)) InboxWake.Resume(r.OnSync, value);
         else GiveBack(value);
 
+        Landed();
         return true;
     }
 
@@ -634,8 +671,9 @@ public sealed class Inbox<T>
 
     /// <summary>
     /// `inbox-closed` fires once there is nothing left to receive: the queue is
-    /// empty *and* no sender that was already waiting is still owed its place.
-    /// Firing earlier would end a receive loop with items still to come.
+    /// empty, no receiver holds an item it may give back, *and* no sender that
+    /// was already waiting is still owed its place. Firing earlier would end a
+    /// receive loop with items still to come.
     /// </summary>
     private void SignalClosedIfDrained()
     {
@@ -643,7 +681,7 @@ public sealed class Inbox<T>
 
         lock (_gate)
         {
-            if (!_closed || _items.Count > 0 || _reserved > 0 || HasLiveSenderLocked()) return;
+            if (!_closed || _items.Count > 0 || _inFlight > 0 || _reserved > 0 || HasLiveSenderLocked()) return;
             error = _error;
         }
 

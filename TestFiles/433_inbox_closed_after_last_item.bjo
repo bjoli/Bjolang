@@ -1,0 +1,42 @@
+;; inbox-closed fires once nothing is left to receive. An item a receive has
+;; taken and not yet committed to is not gone: its sync may still lose to
+;; inbox-closed and give it back. So a drain loop gets every item, whichever
+;; of the two branches is offered first.
+(import (std prelude))
+(import (std inbox))
+(import (std simpletest))
+
+;; inbox-closed offered first: the order that used to lose the last item.
+(: (-bjo-> (Inbox int) (List int)))
+(defbjo (drain-closed-first ib)
+  (let go ((acc Nil))
+    (match (sync (choose (wrap (inbox-closed ib) (fun (e) (Err e)))
+                         (wrap (inbox-recv ib) (fun (x) (Ok x)))))
+      ((Ok x) (go (Cons x acc)))
+      ((Err _) (list-reverse acc)))))
+
+;; The documented order: the receive first.
+(: (-bjo-> (Inbox int) (List int)))
+(defbjo (drain-recv-first ib)
+  (let go ((acc Nil))
+    (match (sync (choose (wrap (inbox-recv ib) (fun (x) (Ok x)))
+                         (wrap (inbox-closed ib) (fun (e) (Err e)))))
+      ((Ok x) (go (Cons x acc)))
+      ((Err _) (list-reverse acc)))))
+
+(: (-> int (Inbox int)))
+(defun (closed-with n)
+  (def ib (make-inbox 16 DropNewest))
+  (loop (:for i (range 1 (+ n 1)))
+        (:do (ignore (inbox-post! ib i))))
+  (inbox-close! ib)
+  ib)
+
+(: (-> int (List int)))
+(defun (one-to n) (->list (range 1 (+ n 1))))
+
+(defbjo (main)
+  (loop (:for n [1 3 10])
+        (:do (expect (str "closed first, " (->str n) " items") (drain-closed-first (closed-with n)) (one-to n))
+             (expect (str "receive first, " (->str n) " items") (drain-recv-first (closed-with n)) (one-to n))))
+  (expect "an empty closed inbox" (drain-closed-first (closed-with 0)) (one-to 0)))
