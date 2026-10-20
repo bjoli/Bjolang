@@ -4637,9 +4637,17 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         // same value the binder was given.
         let scrutinee = freshName "__bound"
 
+        // A lambda has no type of its own, and C# infers none for `var`
+        // (CS8917), so a function is declared with its delegate type, as a
+        // `def` of one is. Anything else is a `var`.
+        let declared =
+            match scrutineeExpr.Type with
+            | TFun _ -> typeToString scrutineeExpr.Type
+            | _ -> "var"
+
         emitStatement ctx (fun c ->
             indent c
-            append c $"var %s{scrutinee} = "
+            append c $"%s{declared} %s{scrutinee} = "
             generateExpr c scrutineeExpr
             appendLine c ";")
 
