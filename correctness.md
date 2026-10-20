@@ -48,11 +48,51 @@ The repository itself was not modified, apart from adding this file.
 | A named loop's `(lp)` takes slot values from whatever user binding shadows the slot name (lowering) | `a05889e` | `TestFiles/310_named_loop_shadowed_slots.bjo` |
 | `:final` lets the clauses before it run during the next iteration (lowering) | `9726886` | `TestFiles/311_final_after_iteration.bjo` |
 | A local function that shadows a top-level constrained function is replaced by it or gets its dictionaries (lowering) | `85e56e8` | `TestFiles/312_local_shadows_constrained.bjo` |
-| A cancelled `read-line` / `read-all` on a text port throws away text it already read (runtime) | `7b5bc86` | `BjolangRuntime/Cml/Tests/TextPortTests.cs`, `TestFiles/313_text_port_guarantees.bjo` |
+| A cancelled `read-line` / `read-all` on a text port throws away text it already read (runtime) | `7b5bc86` | `BjolangRuntime/Cml/Tests/InputPortTextTests.cs` (was `TextPortTests.cs`, removed with `BjoPort.cs` in `46942ba`), `TestFiles/313_text_port_guarantees.bjo` |
 | Text ports are not safe for two fibers (runtime, Medium); also `read-line/opt`/`read-char/opt` were an eof check and a read | `7b5bc86` | same |
 | (introduced by `bbdc000`) builtins redirected to a qualified extern in spliced bodies; `str` stopped checking | `74ebc8f` | stdlib build warning (`std/stopwatch`) |
-| `with-return` escape inside a non-tail-recursive named `let` returns from the local function (front end); now refused after loop lowering | `b6df428` |
-| A forward reference to a top-level `def` that shadows an imported name reads the uninitialised field (driver); also a function body above it, and a def reading its own name | `5fd148f` | `TestFiles/errors/def_above_own_definition.bjo`, `def_reads_itself_over_import.bjo`, `defun_above_own_definition.bjo` | `TestFiles/errors/ret_out_of_recursive_let.bjo`, `TestFiles/errors/ret_out_of_named_let_value.bjo`, `TestFiles/219_with_return.bjo` |
+| `with-return` escape inside a non-tail-recursive named `let` returns from the local function (front end); now refused after loop lowering | `b6df428` | `TestFiles/errors/ret_out_of_recursive_let.bjo`, `TestFiles/errors/ret_out_of_named_let_value.bjo`, `TestFiles/219_with_return.bjo` |
+| A forward reference to a top-level `def` that shadows an imported name reads the uninitialised field (driver); also a function body above it, and a def reading its own name | `5fd148f` | `TestFiles/errors/def_above_own_definition.bjo`, `def_reads_itself_over_import.bjo`, `defun_above_own_definition.bjo` |
+| `into-file`/`append-to-file` truncates the target before the command is known to start, and leaks the writer when it fails (stdlib); `from-file` and `errors-into-file` close their file when the form does not start | `3e6cd15` | `TestFiles/430_run_into_file_failed_start.bjo` |
+| `mutablevec-sort-by!` corrupts the vector when the comparison raises (runtime): a copy is sorted and written back | `404d912` | `TestFiles/431_mutablevec_sort_raises.bjo` |
+| A throwing guard or with-nack generator leaves the branches already published alive, so a sent value is lost (concurrency #4): every sync starts in `Cml.PublishRoot`, which withdraws them and fires their nacks | `c502fb9` | `TestFiles/432_guard_raises_withdraws.bjo` |
+| `inbox-closed` can win while an item is still in the inbox, so the item is lost (concurrency #6): an item a receive has taken and not committed to counts as in the inbox | `85eede3` | `TestFiles/433_inbox_closed_after_last_item.bjo` |
+
+### Found fixed when re-checked (2026-10-20)
+
+Every finding was re-checked against the compiler and libraries of `85dddec`: the repros were run again, or the code read where there is none. These were fixed without being entered above. "—" means the commit was not traced.
+
+| Finding | Commit | Regression test |
+|---|---|---|
+| Gensym names collide with user identifiers spelled `name__N` (front end) | `202c852` | — |
+| User bindings named like special forms or macros are ignored in call position (front end, types): now refused | `1a49af5` | `TestFiles/errors/local_list_called.bjo`, `match_binder_called.bjo` |
+| Duplicate binders in `fun`/`defun` parameters and patterns, non-linear patterns (front end, types) | `3da05a8` | `TestFiles/errors/repeated_fun_parameter.bjo`, `repeated_defun_parameter.bjo`, `repeated_pattern_binder.bjo` |
+| Unsuffixed integer literals that overflow `int` are not range-checked when defaulted (front end, types) | `3da05a8` | `TestFiles/errors/literal_does_not_fit_default_int.bjo` |
+| `case` duplicate-datum check misses `16` and `0x10` (front end): now "this clause can never run" | — | — |
+| Unary `+`, `*`, `bitwise-and/ior/xor` return their operand without requiring a number (front end) | — | — |
+| A generic function accepts an implementation whose fixed type arguments do not match (types) | — | — |
+| A local function annotated with a type variable is not a scope for it (types) | — | — |
+| Nested .NET types are mistyped or unspellable (codegen #2) | `ff6339a` | `TestFiles/350_nested_clr_types.bjo`, `TestFiles/errors/nested_clr_type_is_its_own.bjo` |
+| `$ ^ ~ \| @ \` and infix `%` pass through `sanitizeIdent` (codegen #5) | — | — |
+| `--framework` / `--frameworks` make the shared standard library stale (driver) | `fbe4587` | — |
+| No lock around building an imported module (driver) | `5316b7c` | — |
+| `with-deadline` does not interrupt a read on stdin or a FIFO (runtime) | — | — |
+| `structural-equals` / hash wrong for strings and arrays (runtime) | `605827b` | — |
+| A `with-nack` nack fires for a winning branch (concurrency #5) | `c487543` | — |
+| The `inbox-closed` gate leaks one waiter per sync (concurrency #7) | `d3dbf92` | — |
+| Losing `inbox-recv` branches pile up on an idle inbox (concurrency #8) | `b746849` | — |
+| http `#fragment` loses `#:query` (stdlib) | — | — |
+| stopwatch `time-it` divides by zero at `#:times 0` (stdlib): `time-it` is `(std bench)`'s now | `7734dba` | — |
+| bjodat: a lone surrogate `\u` crashes the reader; a number is not checked for a delimiter after it; a bad binary digit is reported as "does not fit"; `#\` and a line feed do not advance the line; the decoders disagree on duplicate keys and clauses, on `#:key`, and on a clause head or an empty clause (text) | `bca8752` | `TestFiles/381_bjodat_reader_edges.bjo` |
+| bjodat: 64-bit hex and binary literals wrap negative; `long.MinValue`, a non-BMP char and `-0.0` do not round-trip (text) | — | `TestFiles/358_bjodat_wide_numbers.bjo`, `TestFiles/381_bjodat_reader_edges.bjo` |
+
+These no longer hold as written, because what they were about has changed:
+
+- A sibling local binding quantifies a metavariable held back for another local function (types): the repro is now refused by the type checker, and no invalid C# is emitted.
+- `file-read/seq` leaks a file when a walk stops early (prelude): it does not any more, since `Iterable (Seq %a)` has `iterable-end`. The line of `Docs/prelude.org` the audit called wrong (finding at line 2453 below) is now true.
+- `BjoPipe` drops a leading U+FEFF (runtime): `BjoPipe` wraps a `BjoInputPort` now, which keeps a BOM as a character.
+
+The rest still hold, eight of them only in part. The partial ones: template references to builtins are still captured (front end); literal patterns of equal doubles still reach C# (types); an implicit level's `:acc` seed still reads an outer binding (lowering); a record is still refused at an `object` parameter (codegen #12); punctuation other than a space in a module file name (driver); `list-min`/`list-max` pick the last of equal extremes, though they return an `Option` now (prelude); `lcm` raises for `int-min`, and its doc no longer says it wraps but lists no exception (prelude); and of the four `Docs/prelude.org` lines, the `file-read/seq` one is now true (prelude).
 
 Accepted as is: "Seq fusion moves a yield point out of a `seql`" (lowering). A fused program produces valid C# and runs. A suspending call in a `seq` body is defined as illegal, so a program that relies on it compiling is not expected to work.
 

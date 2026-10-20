@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* Four ways a value was lost, fixed
+
+- ~(std run)~: ~into-file~ and ~append-to-file~ open their file once the
+  command has started and has an output to give it. Opening it to write
+  truncates it, so a command that does not start, such as a missing
+  program, left the target empty. It is now left as it was. A ~from-file~
+  or ~errors-into-file~ whose form does not start closes its file.
+  ~errors-into-file~ still truncates its file first: the file is what each
+  command is started with.
+- ~mutablevec-sort-by!~ sorts a copy and writes it back once the sort is
+  done. A comparison that raised partway left an element in the vector
+  twice and another not at all; the vector is now as it was.
+- A sync whose ~guard~ or ~with-nack~ generator raises withdraws the
+  branches it had already published, and fires their nacks. A receive
+  parked before the guard raised could be paired with a later send, whose
+  value then went to a sync that had ended. Every sync now starts in
+  ~Cml.PublishRoot~, ~sync~, ~sync/blocking~ and ~Cml.Sync~ alike. When a
+  branch wins while the others are published, its value is the answer and
+  the exception is not raised.
+- ~inbox-closed~ no longer fires while a receive holds an item it has not
+  committed to. Its sync could lose to ~inbox-closed~ and give the item
+  back, after the loop had been told the inbox was drained: a drain loop
+  that offered ~inbox-closed~ first lost the last item every time.
+- Tests: ~430_run_into_file_failed_start.bjo~,
+  ~431_mutablevec_sort_raises.bjo~, ~432_guard_raises_withdraws.bjo~,
+  ~433_inbox_closed_after_last_item.bjo~. The CML tests pass.
+
 * An untyped number goes where the number written out would go
 
 - A number whose type is still open, as ~n~ after ~(def n 3)~ or
