@@ -44,7 +44,7 @@
 (def key-space (* shards slots-per-shard))
 (def decode-work 100)
 (def serve-work 20)
-(def deadline-ms 1000)
+(def deadline (seconds 1))
 (def op-get 0)
 (def op-put 1)
 
@@ -109,7 +109,7 @@
   (sync (chan-send (vec-ref chans (% key shards))
                    (Req (op op) (key key) (value value) (reply reply))))
   (sync (choose (wrap (chan-recv reply) (fun (v) (Some v)))
-                (wrap (timeout deadline-ms) (fun (u) None)))))
+                (wrap (timeout deadline) (fun (u) None)))))
 
 (: (-bjo-> (Vec (Chan Req)) int (Chan int) void))
 (defbjo (sub-get chans key results)
@@ -161,8 +161,8 @@
   (def now (timestamp))
   (if (>= now at)
       at
-      (let ((ms (+ (cast System.Int32 (/ (* (- at now) 1000L) stopwatch-frequency)) 1)))
-        (sync (timeout ms))
+      (let ((ms (+ (/ (* (- at now) 1000L) stopwatch-frequency) 1L)))
+        (sync (timeout (milliseconds ms)))
         (timestamp))))
 
 (: (-bjo-> int int int int long (Vec (Chan Req)) ClientOut))

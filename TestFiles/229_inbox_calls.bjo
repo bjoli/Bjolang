@@ -45,10 +45,10 @@
 ;; ---------------------------------------------------------------------------
 
 ;; One call, or nothing within `ms`.
-(: (-bjo-> (Inbox (Call int int)) int (Option (Call int int))))
+(: (-bjo-> (Inbox (Call int int)) long (Option (Call int int))))
 (defbjo (recv-call ib ms)
   (sync (choose (wrap (inbox-recv ib) (fun (c) (Some c)))
-                (wrap (timeout ms) (fun (u) None)))))
+                (wrap (timeout (milliseconds ms)) (fun (u) None)))))
 
 ;; How a call's task ended, waited for without blocking a thread.
 (: (-bjo-> (Task int) int string))
@@ -59,7 +59,7 @@
       ((.-IsFaulted t) (.-Message (.-Exception t)))
       ((.-IsCompleted t) "completed")
       ((<= left 0) "still pending")
-      (else (begin (sync (timeout 1)) (go (- left 1)))))))
+      (else (begin (sync (timeout (milliseconds 1))) (go (- left 1)))))))
 
 ;; Answers `n` calls by doubling the request.
 (: (-bjo-> (Inbox (Call int int)) int void))
@@ -103,7 +103,7 @@
   ;; already queued and a queued item commits a receive without publishing
   ;; anything. A pause here lets the token get there first, which is the
   ;; cancelled-while-queued path.
-  (when token-first? (sync (timeout 2)))
+  (when token-first? (sync (timeout (milliseconds 2))))
 
   (def outcome
     ;; A live call is already queued, so a receive that can happen commits
@@ -242,7 +242,7 @@
             (if (= left 0)
                 sum
                 (match (sync (choose (wrap (inbox-recv observed) (fun (x) (Some x)))
-                                     (wrap (timeout 2000) (fun (u) None))))
+                                     (wrap (timeout (seconds 2)) (fun (u) None))))
                   ((Some x) (go (- left 1) (+ sum x)))
                   (None -1))))
           15)
@@ -250,7 +250,7 @@
   (.OnCompleted obs)
   (expect "OnCompleted ends the inbox"
           (match (sync (choose (wrap (inbox-closed observed) (fun (e) (Some e)))
-                               (wrap (timeout 2000) (fun (u) None))))
+                               (wrap (timeout (seconds 2)) (fun (u) None))))
             ((Some None) "ended")
             ((Some (Some e)) (.-Message e))
             (None "never ended"))
@@ -263,12 +263,12 @@
   (expect-true "the inbox takes an item" (inbox-post! failed-by-observer 1))
   (expect "and gives it back"
           (sync (choose (inbox-recv failed-by-observer)
-                        (wrap (timeout 2000) (fun (u) -1))))
+                        (wrap (timeout (seconds 2)) (fun (u) -1))))
           1)
   (.OnError (inbox-observer failed-by-observer) (cast Exception (Boom. "the source failed")))
   (expect "OnError ends it with the error"
           (match (sync (choose (wrap (inbox-closed failed-by-observer) (fun (e) (Some e)))
-                               (wrap (timeout 2000) (fun (u) None))))
+                               (wrap (timeout (seconds 2)) (fun (u) None))))
             ((Some None) "ended without a reason")
             ((Some (Some e)) (.-Message e))
             (None "never ended"))
@@ -304,7 +304,7 @@
              "still pending")
      (expect "and the receiver is told it was abandoned"
              (sync (choose (wrap (call-abandoned c) (fun (u) "abandoned"))
-                           (wrap (timeout 2000) (fun (u) "never told"))))
+                           (wrap (timeout (seconds 2)) (fun (u) "never told"))))
              "abandoned")
      (expect-true "the receiver may still answer" (call-reply! c 6))
      (expect "which completes the caller's task" (settled in-flight 1000) "completed")
@@ -321,7 +321,7 @@
   (def waiting-inbox (make-inbox 8 DropNewest))
   (def waiting-receiver (bjo (recv-call waiting-inbox 2000)))
   ;; Long enough for the receiver to be parked on the inbox.
-  (ignore (sync (timeout 50)))
+  (ignore (sync (timeout (milliseconds 50))))
   (def leaving (Cancelling.))
   (def handed (inbox-call/token waiting-inbox 4 (.-Token leaving)))
   (match (sync (promise-join waiting-receiver))
@@ -332,7 +332,7 @@
              "still pending")
      (expect "and that receiver is told it was abandoned"
              (sync (choose (wrap (call-abandoned c) (fun (u) "abandoned"))
-                           (wrap (timeout 2000) (fun (u) "never told"))))
+                           (wrap (timeout (seconds 2)) (fun (u) "never told"))))
              "abandoned")
      (expect-true "it may still answer" (call-reply! c 8))
      (expect "which completes the caller's task" (settled handed 1000) "completed"))

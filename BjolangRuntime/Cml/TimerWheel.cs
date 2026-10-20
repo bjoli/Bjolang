@@ -88,8 +88,15 @@ internal static class TimerWheel
         return all;
     }
 
-    private static long NowMs() =>
-        (Stopwatch.GetTimestamp() - s_origin) * 1000 / Stopwatch.Frequency;
+    // The origin is read before the clock. Reading it is what runs this
+    // class's static initialiser on the first call, which takes the origin
+    // later than a clock read before it, and the difference was then below
+    // zero.
+    private static long NowMs()
+    {
+        long origin = s_origin;
+        return (Stopwatch.GetTimestamp() - origin) * 1000 / Stopwatch.Frequency;
+    }
 
     /// Nodes linked into every wheel. Test-only.
     internal static int LinkedCount
@@ -103,14 +110,18 @@ internal static class TimerWheel
     }
 
     /// <summary>Link <paramref name="node"/> to fire in <paramref name="ms"/> ms.</summary>
-    internal static void Add(WheelNode node, int ms)
+    internal static void Add(WheelNode node, long ms)
     {
         long now = NowMs();
         var w = s_wheels[Thread.GetCurrentProcessorId() & (s_wheels.Length - 1)];
 
         w.Enter();
         if (w.Count == 0) w.Cursor = now;
+        // A wait too long for a long is a wait that never ends. The sum is
+        // checked after it is made: `ms` is above zero here, so a sum that
+        // wrapped round is below `now`.
         long due = now + ms;
+        if (due < now) due = long.MaxValue;
         // A clock read on this core a moment behind the tick's: the slot it
         // names may have been walked already, and would not come round for a
         // lap. The cursor's slot is the earliest that will still be walked.

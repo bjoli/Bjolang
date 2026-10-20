@@ -37,14 +37,14 @@ namespace Bjoml;
 /// </summary>
 internal sealed class TimeoutEvent : IEvent<Unit>, ISleepEvent
 {
-    private readonly int _ms;
+    private readonly long _ms;
 
-    public TimeoutEvent(int ms) => _ms = ms;
+    public TimeoutEvent(long ms) => _ms = ms;
 
     public void Publish(SyncState state, int eventId, Action<Unit> onSync)
         => TimeoutNode.Arm(state, eventId, onSync, _ms);
 
-    int ISleepEvent.SleepMs() => _ms;
+    long ISleepEvent.SleepMs() => _ms;
 }
 
 /// <summary>
@@ -58,7 +58,7 @@ internal interface ISleepEvent
     /// available now, and the sync then goes the general way, which commits it
     /// at once.
     /// </summary>
-    int SleepMs();
+    long SleepMs();
 }
 
 /// <summary>
@@ -76,12 +76,13 @@ internal sealed class AtEvent : IEvent<Unit>, ISleepEvent
     public void Publish(SyncState state, int eventId, Action<Unit> onSync)
         => TimeoutNode.Arm(state, eventId, onSync, Remaining());
 
-    int ISleepEvent.SleepMs() => Remaining();
+    long ISleepEvent.SleepMs() => Remaining();
 
-    private int Remaining()
+    // Any two DateTimes are less than a long of milliseconds apart.
+    private long Remaining()
     {
         var remaining = (_utcDeadline - DateTime.UtcNow).TotalMilliseconds;
-        return remaining <= 0 ? 0 : (remaining > int.MaxValue ? int.MaxValue : (int)remaining);
+        return remaining <= 0 ? 0 : (long)remaining;
     }
 }
 
@@ -148,7 +149,7 @@ internal sealed class TimeoutNode : WheelNode
         _onSync = onSync;
     }
 
-    public static void Arm(SyncState state, int eventId, Action<Unit> onSync, int ms)
+    public static void Arm(SyncState state, int eventId, Action<Unit> onSync, long ms)
     {
         // An expired deadline is an always-ready event; commit like Cml.Always
         // does (TryCommit, which spins past a sibling's transient claim) instead
@@ -259,11 +260,11 @@ internal sealed class SleepNode : WheelNode, IParkable<Unit>
     private const int Published = 1;
     private const int Done = 2;
 
-    private readonly int _ms;
+    private readonly long _ms;
     private int _gate;
     private IResume? _resume;
 
-    internal SleepNode(int ms) => _ms = ms;
+    internal SleepNode(long ms) => _ms = ms;
 
     /// <summary>
     /// Into the wheel, with the fiber's resume. The op is null; see above.

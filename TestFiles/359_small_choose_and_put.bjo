@@ -42,7 +42,7 @@
           (label (sync (choose (wrap (chan-recv a) (fun (v) (FromA v)))
                                (wrap (promise-join done)
                                      (fun (r) (match r ((Ok v) (FromB v)) ((Err e) Late))))
-                               (wrap (timeout 30000) (fun (u) Late)))))
+                               (wrap (timeout (seconds 30)) (fun (u) Late)))))
           "b21")
 
   (def b (make-chan))
@@ -50,7 +50,7 @@
   (expect "a parked sender in a three-way choose"
           (label (sync (choose (wrap (chan-recv a) (fun (v) (FromA v)))
                                (wrap (chan-recv b) (fun (v) (FromB v)))
-                               (wrap (timeout 30000) (fun (u) Late)))))
+                               (wrap (timeout (seconds 30)) (fun (u) Late)))))
           "b7")
 
   ;; The send forms: to a parked receive, to a receive published in a choose,
@@ -78,7 +78,7 @@
   (def last (bjo (sync (chan-recv c))))
   (expect "a send in a choose still competes"
           (sync (choose (wrap (chan-send c 14) (fun (u) "sent"))
-                        (wrap (timeout 30000) (fun (u) "timed out"))))
+                        (wrap (timeout (seconds 30)) (fun (u) "timed out"))))
           "sent")
   (expect "and it was received"
           (match (sync (promise-join last)) ((Ok v) v) ((Err e) -1))

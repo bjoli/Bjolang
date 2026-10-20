@@ -38,7 +38,7 @@
 
 (: (-bjo-> (TQueue string) void))
 (defbjo (late-producer q)
-  (sync (timeout 30))
+  (sync (timeout (milliseconds 30)))
   (queue-put q "late"))
 
 (defbjo (main args)
@@ -108,13 +108,13 @@
   ;; --- events --------------------------------------------------------------
   (def empty (make-queue))
   (expect "a timeout wins over a receive from an empty queue"
-          (sync (choose (queue-recv empty) (wrap (timeout 30) (fun (_) "timeout"))))
+          (sync (choose (queue-recv empty) (wrap (timeout (milliseconds 30)) (fun (_) "timeout"))))
           "timeout")
   (def full (make-bounded-queue 1))
   (queue-put full 1)
   (expect "a timeout wins over a send to a full queue"
           (sync (choose (wrap (queue-send full 2) (fun (_) "sent"))
-                        (wrap (timeout 30) (fun (_) "timeout"))))
+                        (wrap (timeout (milliseconds 30)) (fun (_) "timeout"))))
           "timeout")
   (expect "and the losing send pushed nothing" (drain full) (list 1))
   (def first (make-queue))

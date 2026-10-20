@@ -27,9 +27,9 @@
   "ran")
 
 ;; Ends after `ms`, then marks the box. A child the scope has to wait for.
-(: (-bjo-> (Box string) string int void))
+(: (-bjo-> (Box string) string long void))
 (defbjo (mark b what ms)
-  (sync (timeout ms))
+  (sync (timeout (milliseconds ms)))
   (box-set! b what))
 
 ;; Never ends on its own: nothing is ever sent on the channel. Only a
@@ -41,9 +41,9 @@
 
 ;; Fails. The denominator is computed so that C# cannot fold it: dividing by a
 ;; *literal* zero is a compile-time error over there, not an exception.
-(: (-bjo-> int int void))
+(: (-bjo-> int long void))
 (defbjo (explode zero ms)
-  (sync (timeout ms))
+  (sync (timeout (milliseconds ms)))
   (ignore (/ 10 zero))
   unit)
 
@@ -58,7 +58,7 @@
 ;; so the scope does not wait for it and is still closing when this runs.
 (: (-bjo-> (Box string) (Box string) void))
 (defbjo (late-spawner spawned bjod)
-  (sync (timeout 40))
+  (sync (timeout (milliseconds 40)))
   (spawn (touch spawned))
   (def p (bjo (touch spawned)))
   (box-set! bjod
@@ -74,7 +74,7 @@
 (defbjo (nested dead b)
   (with-cancel (cancel)
     (spawn (patient dead b))
-    (sync (timeout 60000))))
+    (sync (timeout (minutes 1)))))
 
 (defbjo (main args)
   (def zero (string-length ""))
@@ -91,7 +91,7 @@
 
   (with-cancel (cancel)
     (spawn (touch quick))
-    (sync (timeout 60))
+    (sync (timeout (milliseconds 60)))
     (spawn (mark slow "ran" 60)))
 
   (expect "a scope waits for a child started after an earlier one landed"
@@ -138,7 +138,7 @@
       (with-cancel (cancel)
         (spawn (patient dead sibling))
         (spawn (explode zero 10))
-        (sync (timeout 80))
+        (sync (timeout (milliseconds 80)))
         (box-set! body-finished "ran to the end"))
       #:catch (System.DivideByZeroException)))
 
@@ -229,7 +229,7 @@
     (try
       (with-cancel (cancel)
         (spawn (patient dead stopped-child))
-        (sync (timeout 20))
+        (sync (timeout (milliseconds 20)))
         (def stopped (cancel (Requested "enough")))
         "returned")
       #:catch (System.Exception)))
@@ -262,10 +262,10 @@
   (def seen (make-box (parameter-ref current-cancel)))
   (def timed
     (try
-      (with-deadline 100
+      (with-deadline (milliseconds 100)
         (box-set! seen (parameter-ref current-cancel))
         (spawn (patient dead by-deadline))
-        (sync (timeout 60000))
+        (sync (timeout (minutes 1)))
         "the timer lost")
       #:catch (System.Exception)))
 

@@ -180,8 +180,9 @@
   ;; Ports — output
   write-string write-char writeln get-output-string get-output-bytes
 
-  ;; Durations, for a deadline.
-  millis seconds minutes
+  ;; Durations, which every timer takes.
+  Duration ticks->duration duration-ticks milliseconds seconds minutes hours
+  timeout duration->timer-ms
 
   ;; Effects the standard library performs. The `op/` name of each is the
   ;; parameter `with-handler` binds, and is exported for that reason.
@@ -4131,8 +4132,8 @@
 (def/macro (with-deadline form inject compare)
   (syntax-match form
     ((_ ms first body ...)
-     #'(scope-form (scope-open! ,ms) (fire) ,first ,@body))
-    (bad (syntax-error bad "with-deadline takes a millisecond limit and a body: (with-deadline 5000 body ...)"))))
+     #'(scope-form (deadline-open! (duration->timer-ms ,ms)) (fire) ,first ,@body))
+    (bad (syntax-error bad "with-deadline takes a Duration and a body: (with-deadline (seconds 5) body ...)"))))
 
 ;; `(with-shield body ...)` and `(with-shield #:within ms body ...)` — a scope
 ;; whose token is *not* linked to its parent's.
@@ -4159,9 +4160,9 @@
 (def/macro (with-shield form inject compare)
   (syntax-match form
     ((_ #:within ms first body ...)
-     #'(scope-form (shield-open! ,ms) (fire) ,first ,@body))
+     #'(scope-form (shield-open! (duration->timer-ms ,ms)) (fire) ,first ,@body))
     ((_ first body ...)
-     #'(with-shield #:within 30000 ,first ,@body))
+     #'(with-shield #:within (seconds 30) ,first ,@body))
     (bad (syntax-error bad "with-shield takes a body and an optional deadline: (with-shield #:within (seconds 5) body ...)"))))
 
 ;; ---------------------------------------------------------------------------
@@ -4254,20 +4255,116 @@
          it))
     (bad (syntax-error bad "own-disposable takes one expression: (own-disposable (StreamReader. path))"))))
 
-;; Milliseconds, spelled the way a deadline is usually said. Every timer in the
-;; language counts milliseconds, and `(seconds 5)` is harder to misread than
-;; `5000` — a deadline that is a thousand times too short is a bug that looks
-;; like a slow network.
-;; TODO: rename stupid names. these should milliseconds->seconds, and milliseconds->minutes
-;; millis shouldn't exist.
-(: (-> int int))
-(defun (millis n) n)
+;; ---------------------------------------------------------------------------
+;; Durations
+;; ---------------------------------------------------------------------------
+;;
+;; A length of time, which is what every timer takes. A number of milliseconds
+;; is a number whose unit is in no type: `5000` is easy to misread, and a count
+;; that overflows becomes a different deadline without a word. A Duration has
+;; its unit, and making one past its range raises.
+;;
+;; In .NET ticks of 100 ns, within ±long-max ticks, about ±29 227 years. Leaving
+;; out long's minimum gives every duration a negation, so each one prints and
+;; reads back. (std datetime) adds the arithmetic, the calendar and the text.
 
-(: (-> int int))
-(defun (seconds n) (* n 1000))
+(import/class
+  (DurationSpan (: System.TimeSpan (-> long DurationSpan)))
+  (DurationOverflow (: System.OverflowException (-> string DurationOverflow))))
 
-(: (-> int int))
-(defun (minutes n) (* n 60000))
+(import/extern
+  (clr-duration-span-ticks (: System.TimeSpan.Ticks (-> DurationSpan long) #:get)))
+
+(type (: Duration #:opaque (Struct (: v DurationSpan))))
+
+(: (-> %a))
+(defun (duration-overflow)
+  (raise (cast Exception (DurationOverflow. "a duration is outside ±29 227 years (±9 223 372 036 854 775 807 ticks)"))))
+
+;; The duration of `t` ticks. Raises at long's minimum, the one tick count
+;; with no negation.
+(: (-> long Duration))
+(defun (ticks->duration t)
+  (when (= t -9223372036854775808L) (duration-overflow))
+  (Duration (v (DurationSpan. t))))
+
+(: (-> Duration long))
+(defun (duration-ticks d) (clr-duration-span-ticks (struct-ref d v)))
+
+;; n units of `unit` ticks, or a raise past the range of a Duration.
+(: (-> long long Duration))
+(defun (units->duration n unit)
+  (def limit (/ 9223372036854775807L unit))
+  (when (or (> n limit) (< n (- limit))) (duration-overflow))
+  (Duration (v (DurationSpan. (* n unit)))))
+
+(: (-> long Duration))
+(defun (milliseconds n) (units->duration n 10000L))
+
+(: (-> long Duration))
+(defun (seconds n) (units->duration n 10000000L))
+
+(: (-> long Duration))
+(defun (minutes n) (units->duration n 600000000L))
+
+(: (-> long Duration))
+(defun (hours n) (units->duration n 36000000000L))
+
+(impl (Ord Duration)
+  (defun (compare a b) (compare (duration-ticks a) (duration-ticks b))))
+
+;; ISO 8601: PT26H30M, PT0.5S, with one leading sign: -PT1H30M.
+(impl (->str Duration)
+  (defun (->str d) (duration->iso (duration-ticks d))))
+
+(: (-> long string))
+(defun (duration->iso t)
+  (if (= t 0L)
+      "PT0S"
+      (let ()
+        (def a (if (< t 0L) (- t) t))
+        (def h (/ a 36000000000L))
+        (def m (% (/ a 600000000L) 60L))
+        (def s (% (/ a 10000000L) 60L))
+        (def f (% a 10000000L))
+        (string-append
+          (if (< t 0L) "-PT" "PT")
+          (string-append
+            (if (= h 0L) "" #"${h}H")
+            (string-append
+              (if (= m 0L) "" #"${m}M")
+              (if (and (= s 0L) (= f 0L)) "" #"${s}${(tick-fraction f)}S")))))))
+
+;; ".5" for half a second: up to seven digits, without trailing zeros, and
+;; nothing for a whole second.
+(: (-> long string))
+(defun (tick-fraction f)
+  (if (= f 0L)
+      ""
+      (let trim ((f f) (width 7))
+        (if (= (% f 10L) 0L)
+            (trim (/ f 10L) (- width 1))
+            (let pad ((digits (->str f)))
+              (if (< (string-length digits) width)
+                  (pad (string-append "0" digits))
+                  (string-append "." digits)))))))
+
+;; Milliseconds for a timer, which counts them in a long. A part of a
+;; millisecond counts as a whole one, so that a positive duration does not
+;; become zero, which a timer takes as a time already passed.
+(: (-> Duration long))
+(defun (duration->timer-ms d)
+  (def t (duration-ticks d))
+  (if (<= t 0L) 0L (+ (/ (- t 1L) 10000L) 1L)))
+
+(import/extern
+  (clr-timeout-ms (: BjolangRuntime.timeout (-> long (Event Unit)))))
+
+;; An event that is ready `d` after each sync of it. Zero or less is ready at
+;; once.
+(: (-> Duration (Event Unit)))
+(defun (timeout d) (clr-timeout-ms (duration->timer-ms d)))
+
 
 ;; ---------------------------------------------------------------------------
 ;; Container formats

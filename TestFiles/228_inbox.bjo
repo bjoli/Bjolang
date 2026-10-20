@@ -48,10 +48,10 @@
 
 ;; One receive, or nothing within `ms`. Every wait in this file is bounded, so
 ;; that a regression is a failure line rather than a suite that never finishes.
-(: (-bjo-> (Inbox %a) int (Option %a)))
+(: (-bjo-> (Inbox %a) long (Option %a)))
 (defbjo (recv-within ib ms)
   (sync (choose (wrap (inbox-recv ib) (fun (x) (Some x)))
-                (wrap (timeout ms) (fun (u) None)))))
+                (wrap (timeout (milliseconds ms)) (fun (u) None)))))
 
 ;; Receives until the inbox says it has ended, and answers what arrived, in
 ;; order, and how it ended. This is the receive loop from the Readme.
@@ -74,7 +74,7 @@
       ((.-IsFaulted t) (.-Message (.-Exception t)))
       ((.-IsCompleted t) "completed")
       ((<= left 0) "still pending")
-      (else (begin (sync (timeout 5)) (go (- left 5)))))))
+      (else (begin (sync (timeout (milliseconds 5))) (go (- left 5)))))))
 
 (: (-> (Option Exception) string))
 (defun (ended e)
@@ -111,7 +111,7 @@
         (Tuple sum ordered)
         (match (recv-within ib 5000)
           ((Some x) (begin
-                      (sync (timeout 1))
+                      (sync (timeout (milliseconds 1)))
                       (go (- left 1) (+ sum x) (and ordered (= x (+ last 1))) x)))
           (None (Tuple sum #f))))))
 
@@ -196,7 +196,7 @@
   (expect-true "the inbox is full" (inbox-post! stopped 1))
   (def cancelling (Cancelling.))
   (def cancelled-send (inbox-send/token stopped 99 (.-Token cancelling)))
-  (sync (timeout 20))
+  (sync (timeout (milliseconds 20)))
   (.Cancel cancelling)
   (expect "the cancelled send is cancelled" (settled cancelled-send 2000) "cancelled")
   (expect "and what it offered is never received"
@@ -212,7 +212,7 @@
 
   (expect "a send into a full inbox loses to the timeout"
           (sync (choose (wrap (inbox-send-evt full 99) (fun (u) "sent"))
-                        (wrap (timeout 5) (fun (u) "timed out"))))
+                        (wrap (timeout (milliseconds 5)) (fun (u) "timed out"))))
           "timed out")
 
   (expect "and the item it offered was never queued"
@@ -222,7 +222,7 @@
 
   (expect "with room, the same sync commits"
           (sync (choose (wrap (inbox-send-evt full 7) (fun (u) "sent"))
-                        (wrap (timeout 500) (fun (u) "timed out"))))
+                        (wrap (timeout (milliseconds 500)) (fun (u) "timed out"))))
           "sent")
   (expect "and what it offered is received"
           (match (recv-within full 500) ((Some x) (int->string x)) (None "-"))
@@ -249,8 +249,8 @@
   (def late (make-inbox 1 DropNewest))
   (expect-true "the inbox is full again" (inbox-post! late 1))
   (def waiting (bjo (sync (choose (wrap (inbox-send-evt late 2) (fun (u) "in"))
-                                  (wrap (timeout 2000) (fun (u) "never got in"))))))
-  (sync (timeout 20))
+                                  (wrap (timeout (seconds 2)) (fun (u) "never got in"))))))
+  (sync (timeout (milliseconds 20)))
   (inbox-close! late)
 
   (def (Tuple after-close ended-after)
@@ -300,8 +300,8 @@
   ;; A send waiting for room, and an event sender waiting beside it.
   (def aborted-sender
     (bjo (sync (choose (wrap (inbox-send-evt aborting 3) (fun (u) "committed"))
-                       (wrap (timeout 2000) (fun (u) "never committed"))))))
-  (sync (timeout 20))
+                       (wrap (timeout (seconds 2)) (fun (u) "never committed"))))))
+  (sync (timeout (milliseconds 20)))
   (inbox-abort! aborting)
 
   (def (Tuple nothing-left abort-why)

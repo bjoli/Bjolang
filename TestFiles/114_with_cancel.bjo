@@ -39,7 +39,7 @@
 ;; scope waited for both" is measured with.
 (: (-bjo-> (Box string) string void))
 (defbjo (mark b what)
-  (sync (timeout 20))
+  (sync (timeout (milliseconds 20)))
   (box-set! b what))
 
 ;; A child that never finishes on its own. Only a cancellation gets it out, and
@@ -55,7 +55,7 @@
 ;; exception.
 (: (-bjo-> int void))
 (defbjo (explode zero)
-  (sync (timeout 10))
+  (sync (timeout (milliseconds 10)))
   (ignore (/ 10 zero))
   unit)
 
@@ -63,7 +63,7 @@
 ;; scope has gone, which only works because nothing cancelled it.
 (: (-bjo-> (Chan string) void))
 (defbjo (late out)
-  (sync (timeout 30))
+  (sync (timeout (milliseconds 30)))
   (sync (chan-send out "detached")))
 
 (defbjo (main args)
@@ -92,7 +92,7 @@
   (def answer
     (with-cancel (cancel)
       (spawn (patient nothing))
-      (sync (timeout 20))
+      (sync (timeout (milliseconds 20)))
       (def stopped (cancel (Requested "got it")))
       "returned"))
 
@@ -171,7 +171,7 @@
     (try
       (with-cancel (cancel)
         (def stopped (cancel (Requested "stop")))
-        (sync (timeout 10))
+        (sync (timeout (milliseconds 10)))
         "not reached")
       #:catch (System.Exception)))
 
@@ -189,7 +189,7 @@
       (with-cancel (cancel)
         (def stopped (cancel (Requested "stop")))
         (with-shield #:within (seconds 5)
-          (sync (timeout 10))
+          (sync (timeout (milliseconds 10)))
           (if (cancelled? (parameter-ref current-cancel)) "still cancelled" "flushed")))
       #:catch (System.Exception)))
 
@@ -205,7 +205,7 @@
   (def quick
     (with-cancel (cancel)
       (spawn/daemon (patient ignored))
-      (sync (timeout 20))
+      (sync (timeout (milliseconds 20)))
       "returned"))
 
   (expect "a scope does not wait for a daemon" quick "returned")
@@ -231,7 +231,7 @@
   ;; fires its token, so a fiber waiting for that token would be waiting for the
   ;; scope that is waiting for it.
   ;;
-  ;; The wait is a plain `(sync (timeout 60000))`, and the deadline arrives at
+  ;; The wait is a plain `(sync (timeout (minutes 1)))`, and the deadline arrives at
   ;; it as a raise. Watching the scope's own token with `until-cancelled` would
   ;; be the wrong shape *and* a race: `sync` is already watching that token, so
   ;; there would be two branches on one promise and no saying which commits.
@@ -239,9 +239,9 @@
   (def hit-seen (make-box (parameter-ref current-cancel)))
   (def hit
     (try
-      (with-deadline 100
+      (with-deadline (milliseconds 100)
         (box-set! hit-seen (parameter-ref current-cancel))
-        (sync (timeout 60000))
+        (sync (timeout (minutes 1)))
         "the timer won")
       #:catch (System.Exception)))
 
@@ -253,7 +253,7 @@
   ;; A scope that finishes before its deadline reports the exit, not the timer.
   (def beat-seen (make-box (parameter-ref current-cancel)))
   (def beat
-    (with-deadline 60000
+    (with-deadline (minutes 1)
       (box-set! beat-seen (parameter-ref current-cancel))
       "returned"))
 

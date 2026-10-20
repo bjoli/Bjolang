@@ -34,7 +34,7 @@
 ;; ordinary function could not do this.
 (: Filter)
 (defbjo (slow in out)
-  (sync (timeout 20))
+  (sync (timeout (milliseconds 20)))
   (write-string out (read-all in))
   unit)
 
@@ -99,7 +99,7 @@
      (match (proc-output p) ((Some out) (ignore (bjo (drain-away out)))) (None unit))
      (expect "exited wins when the form finishes"
              (match (sync (choose (wrap (exited p) (fun (r) (Finished r)))
-                                  (wrap (timeout 10000) (fun (u) TimedOut))))
+                                  (wrap (timeout (seconds 10)) (fun (u) TimedOut))))
                ((Finished (Ok code)) (int->string code))
                ((Finished (Err e)) "ERR")
                (TimedOut "timed out"))
@@ -112,7 +112,7 @@
     ((Ok p)
      (expect "a timeout beats a form that will not finish"
              (match (sync (choose (wrap (exited p) (fun (r) (Finished r)))
-                                  (wrap (timeout 50) (fun (u) TimedOut))))
+                                  (wrap (timeout (milliseconds 50)) (fun (u) TimedOut))))
                ((Finished r) "finished")
                (TimedOut "timed out"))
              "timed out")
@@ -138,16 +138,16 @@
     (expect "running loses a race"
             (match (sync (choose (wrap (running '("sh" "-c" ,(str "sleep 0.3; echo alive > " marker)))
                                        (fun (r) (Finished r)))
-                                 (wrap (timeout 50) (fun (u) TimedOut))))
+                                 (wrap (timeout (milliseconds 50)) (fun (u) TimedOut))))
               ((Finished r) "finished")
               (TimedOut "timed out"))
             "timed out")
-    (sync (timeout 600))
+    (sync (timeout (milliseconds 600)))
     (expect "and the form it lost was killed" (file-exists? marker) #f))
 
   (expect "running wins when it is quick"
           (match (sync (choose (wrap (running '(echo "quick")) (fun (r) (Finished r)))
-                               (wrap (timeout 10000) (fun (u) TimedOut))))
+                               (wrap (timeout (seconds 10)) (fun (u) TimedOut))))
             ((Finished (Ok s)) s)
             ((Finished (Err e)) "ERR")
             (TimedOut "timed out"))
@@ -174,7 +174,7 @@
     ((Ok (Tuple items p))
      (expect "a line arrives before the program ends"
              (match (sync (choose (wrap (chan-recv items) (fun (x) (Got x)))
-                                  (wrap (timeout 10000) (fun (u) Ended))))
+                                  (wrap (timeout (seconds 10)) (fun (u) Ended))))
                ((Got x) x)
                (Ended "nothing within ten seconds"))
              "first")

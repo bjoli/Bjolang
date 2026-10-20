@@ -194,7 +194,7 @@
   (expect "a task->event that wins"
           (match (sync (choose (wrap (task->event (fetch "/etc/hostname"))
                                      (fun (r) (match r ((Ok t) (Got "read")) ((Err e) Failed))))
-                               (wrap (timeout 10000) (fun (u) TimedOut))))
+                               (wrap (timeout (seconds 10)) (fun (u) TimedOut))))
             ((Got s) s)
             (TimedOut "timed out")
             (Failed "failed"))
@@ -219,7 +219,7 @@
   (expect "a losing task->event leaves the winner alone"
           (match (sync (choose (wrap (task->event (pause 30000))
                                      (fun (r) (Got "slept")))
-                               (wrap (timeout 50) (fun (u) TimedOut))))
+                               (wrap (timeout (milliseconds 50)) (fun (u) TimedOut))))
             ((Got s) s)
             (TimedOut "timed out")
             (Failed "failed"))
@@ -241,7 +241,7 @@
   (expect "the ambient token cancels a synced task->event"
           (match (sync (choose (wrap (promise-join waiting)
                                      (fun (r) (match r ((Ok u) (Got "finished")) ((Err e) (Got "cancelled")))))
-                               (wrap (timeout 10000) (fun (u) TimedOut))))
+                               (wrap (timeout (seconds 10)) (fun (u) TimedOut))))
             ((Got m) m)
             (TimedOut "timed out")
             (Failed "failed"))
@@ -264,7 +264,7 @@
     (try
       (with-cancel (stop-scope)
         (spawn (sleep-forever))
-        (sync (timeout 30))
+        (sync (timeout (milliseconds 30)))
         (def stopped (stop-scope (Requested "enough")))
         "returned")
       #:catch (System.Exception)))

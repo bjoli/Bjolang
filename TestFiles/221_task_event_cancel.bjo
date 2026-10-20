@@ -57,21 +57,21 @@
 ;;
 ;; Raced against a timeout so that a regression that *wedges* a sync is a
 ;; failure line rather than a suite that never finishes.
-(: (-> int string))
+(: (-> long string))
 (defbjo (trial settle)
   (def (stop! scope) (make-cancel))
   (def waiting (parameterize ((current-cancel scope)) (bjo (probe))))
-  (sync (timeout settle))
+  (sync (timeout (milliseconds settle)))
   (def fired (stop! (Requested "the test")))
   (match (sync (choose (wrap (promise-join waiting)
                              (fun (r) (match r
                                         ((Ok v) v)
                                         ((Err e) "raised"))))
-                       (wrap (timeout 10000) (fun (u) "hung"))))
+                       (wrap (timeout (seconds 10)) (fun (u) "hung"))))
     (v v)))
 
 ;; The number of trials that did anything other than raise.
-(: (-> int int int))
+(: (-> long int int))
 (defbjo (leaks settle n)
   (def/mutable bad 0)
   (loop (:for i (range 0 n))

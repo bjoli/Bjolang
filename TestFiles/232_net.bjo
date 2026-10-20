@@ -309,14 +309,14 @@
 ;; rounds alternate, and the two together straddle the window where they land
 ;; at the same instant — which is the case with a tentative take out at
 ;; `TryCommit`, and the one worth having.
-(: (-bjo-> (Inbox int) int int))
+(: (-bjo-> (Inbox int) long int))
 (defbjo (post-stop stop after)
-  (when (> after 0) (sync (timeout after)))
+  (when (> after 0) (sync (timeout (milliseconds after))))
   (ignore (inbox-post! stop 1))
   0)
 
 ;; `#t` when the accept branch won, and everything the connection carried.
-(: (-bjo-> Listener int int (Tuple bool string)))
+(: (-bjo-> Listener int long (Tuple bool string)))
 (defbjo (race-once l port after)
   (def stop (make-inbox 1 DropNewest))
 
@@ -355,7 +355,7 @@
   (let loop ((i 0) (bad 0) (wins 0))
     (if (= i rounds)
         (Tuple bad wins)
-        (match (race-once l port (% i 2))
+        (match (race-once l port (cast long (% i 2)))
           ((Tuple accepted carried)
            (loop (+ i 1)
                  (+ bad (if (= carried "11.22.33.44.") 0 1))
@@ -525,7 +525,7 @@
        (def port (listener-port l))
        (def acceptor (bjo (waiting-acceptor l)))
        ;; Let it get as far as parking, then stop the listener under it.
-       (sync (timeout 50))
+       (sync (timeout (milliseconds 50)))
        (close-listener! l)
        (def woken (match (sync (promise-join acceptor))
                     ((Ok s) s)

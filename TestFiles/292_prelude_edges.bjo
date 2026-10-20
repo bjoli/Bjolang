@@ -15,12 +15,12 @@
 ;; Suspends, so that a vec function handed it runs its suspending copy.
 (: (-bjo-> int int int))
 (defbjo (slow-add x acc)
-  (sync (timeout 0))
+  (sync (timeout (milliseconds 0)))
   (+ x acc))
 
 (: (-bjo-> int Unit))
 (defbjo (slow-touch x)
-  (sync (timeout 0))
+  (sync (timeout (milliseconds 0)))
   unit)
 
 (: (-> (Result %a %e) bool))
@@ -77,9 +77,9 @@
                                   #:catch (System.ArgumentOutOfRangeException)))))
 
   ;; --- with-shield ---------------------------------------------------------
-  (expect "a shield with a deadline runs its body" (with-shield #:within 1000 (+ 1 2)) 3)
+  (expect "a shield with a deadline runs its body" (with-shield #:within (seconds 1) (+ 1 2)) 3)
   (expect-true "a shield of 0 ms raises"
-               (raised? (try (with-shield #:within 0 1) #:catch (System.ArgumentOutOfRangeException))))
+               (raised? (try (with-shield #:within (milliseconds 0) 1) #:catch (System.ArgumentOutOfRangeException))))
 
   ;; --- async-seq->chan -----------------------------------------------------
   ;; The consumer takes one line and its scope ends. The pump is parked handing

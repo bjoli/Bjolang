@@ -12,12 +12,12 @@
 
 (: (-bjo-> int int))
 (defbjo (nap ms) #:inline
-  (sync (timeout ms))
+  (sync (timeout (milliseconds (cast long ms))))
   (+ ms 1))
 
 (: (-bjo-> int int))
 (defbjo (nap-plain ms)
-  (sync (timeout ms))
+  (sync (timeout (milliseconds (cast long ms))))
   (+ ms 1))
 
 ;; Copied: the call is a yield point here, so the copy may be one too.
@@ -45,7 +45,7 @@
 ;; to a bjoroutine that is given one stays a call.
 (: (-bjo-> (-bjo-> int int) int int))
 (defbjo (apply-to f x) #:inline
-  (sync (timeout 1))
+  (sync (timeout (milliseconds 1)))
   (f x))
 
 ;; EXPECT-CS: await [\w.]+\.applysubto\(
@@ -56,7 +56,7 @@
 ;; Recursive: refused with a warning, and stays a call.
 (: (-bjo-> int int))
 (defbjo (countdown n) #:inline
-  (sync (timeout 1))
+  (sync (timeout (milliseconds 1)))
   (if (= n 0) 0 (+ 1 (countdown (- n 1)))))
 
 ;; EXPECT-CS: await [\w.]+\.countdown\(n\)

@@ -563,10 +563,6 @@ let prelude : Env =
         "always", {Scheme = Scheme(["a"], [], makeFunType [TVar "a"] (makeEventType (TVar "a"))); IsMutable = false }
         "never", {Scheme = Scheme(["a"], [], makeFunType [] (makeEventType (TVar "a"))); IsMutable = false }
 
-        // Timers. Relative and absolute are different events and not
-        // interchangeable — see the runtime's docstrings.
-        "timeout", {Scheme = Scheme([], [], makeFunType [intType] (makeEventType unitType)); IsMutable = false }
-        "at-time", {Scheme = Scheme([], [], makeFunType [TCon("System.DateTime", [])] (makeEventType unitType)); IsMutable = false }
 
         // "I know this can fail, and I still do not want the result." Dropping
         // a promise instead loses the exception inside it silently. `(ignore p)`
@@ -718,7 +714,12 @@ let prelude : Env =
         ///
         /// Linked one way only: cancelling the parent cancels this, and this
         /// cancelling itself says nothing about the parent.
-        "scope-open!", {Scheme = Scheme([], [], makeFunType [intType] scopeType); IsMutable = false }
+        "scope-open!", {Scheme = Scheme([], [], makeFunType [longType] scopeType); IsMutable = false }
+
+        /// The same scope with a deadline that is always there: what
+        /// `with-deadline` opens. Zero or less has passed already, so the
+        /// token fires at once.
+        "deadline-open!", {Scheme = Scheme([], [], makeFunType [longType] scopeType); IsMutable = false }
 
         /// The same scope with no link to the parent, which is the whole of
         /// what `with-shield` is: inside it the ambient token has not fired, so
@@ -726,7 +727,7 @@ let prelude : Env =
         ///
         /// The deadline is not optional. A shield nothing can reach into and
         /// which never times out is a program that cannot be killed.
-        "shield-open!", {Scheme = Scheme([], [], makeFunType [intType] scopeType); IsMutable = false }
+        "shield-open!", {Scheme = Scheme([], [], makeFunType [longType] scopeType); IsMutable = false }
 
         /// Install the scope, and hand back the environment it displaced.
         /// Binds the scope and `current-cancel` together, so a `spawn` and a

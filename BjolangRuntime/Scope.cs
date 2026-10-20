@@ -338,7 +338,16 @@ public static partial class BjolangRuntime {
         /// </summary>
         private System.Threading.Timer? _deadline;
 
-        internal Scope(int deadlineMs, Promise<CancelReason>? parent, bool propagate = true) {
+        /// <summary>
+        /// When a deadline longer than one timer wait is due, in
+        /// <see cref="Environment.TickCount64"/> milliseconds.
+        /// </summary>
+        private long _deadlineDue;
+
+        /// The longest wait a <see cref="System.Threading.Timer"/> takes.
+        private const long MaxTimerMs = 0xFFFF_FFFE;
+
+        internal Scope(long deadlineMs, Promise<CancelReason>? parent, bool propagate = true) {
             _propagate = propagate;
             _reporting = new Landing(this, reports: true);
             _silent = new Landing(this, reports: false);
@@ -352,12 +361,38 @@ public static partial class BjolangRuntime {
             if (parent is not null && !ReferenceEquals(parent, RootCancel))
                 parent.Forward(Token);
 
-            if (deadlineMs > 0)
+            if (deadlineMs > MaxTimerMs) {
+                long now = Environment.TickCount64;
+                _deadlineDue = deadlineMs > long.MaxValue - now ? long.MaxValue : now + deadlineMs;
+                _deadline = new System.Threading.Timer(
+                    static s => ((Scope)s!).DeadlineStep(),
+                    this,
+                    MaxTimerMs,
+                    System.Threading.Timeout.Infinite);
+            } else if (deadlineMs > 0)
                 _deadline = new System.Threading.Timer(
                     static s => ((Scope)s!).Token.TrySetResult(CancelReason.Deadline.Instance),
                     this,
                     deadlineMs,
                     System.Threading.Timeout.Infinite);
+        }
+
+        /// <summary>
+        /// One timer wait of a long deadline has ended: fire the token if the
+        /// deadline is due, else wait again.
+        /// </summary>
+        private void DeadlineStep() {
+            long left = _deadlineDue - Environment.TickCount64;
+            if (left <= 0) {
+                Token.TrySetResult(CancelReason.Deadline.Instance);
+                return;
+            }
+            try {
+                System.Threading.Volatile.Read(ref _deadline)?.Change(
+                    Math.Min(left, MaxTimerMs), System.Threading.Timeout.Infinite);
+            } catch (ObjectDisposedException) {
+                // The scope ended meanwhile; its deadline has nothing to interrupt.
+            }
         }
 
         /// <summary>Has closing started? Read by the daemon and detached spawns.</summary>
@@ -1120,7 +1155,7 @@ public static partial class BjolangRuntime {
     /// `make-parameter`: installing has to be undone by a `finally` that the
     /// macro writes, and a call that both allocated and installed would have no
     /// place to put that.
-    public static Scope scopesubopen_BANG(int deadlineMs) =>
+    public static Scope scopesubopen_BANG(long deadlineMs) =>
         new Scope(deadlineMs, Dyn.Current.Cancel);
 
     /// `(shield-open! ms)` — the same scope, with no link to the parent.
@@ -1137,12 +1172,21 @@ public static partial class BjolangRuntime {
     /// nothing outside it can reach in, by construction. The default is thirty
     /// seconds, which is long enough for a flush and short enough to notice.
     /// Zero or less is refused: to a scope it means no deadline at all.
-    public static Scope shieldsubopen_BANG(int deadlineMs) {
+    public static Scope shieldsubopen_BANG(long deadlineMs) {
         if (deadlineMs <= 0)
             throw new ArgumentOutOfRangeException(
-                "ms", deadlineMs,
-                $"with-shield: a shield needs a deadline above zero, and {deadlineMs} ms is not one. Nothing outside a shield can cancel it, so the deadline is the only way it ends.");
+                "within", deadlineMs,
+                "with-shield: a shield needs a deadline above zero. Nothing outside a shield can cancel it, so the deadline is the only way it ends.");
         return new Scope(deadlineMs, null);
+    }
+
+    /// `(deadline-open! ms)` — the scope of `with-deadline`: `scope-open!`
+    /// with a deadline that is always there. Zero or less has passed already,
+    /// so the token fires at once, with `Deadline`.
+    public static Scope deadlinesubopen_BANG(long deadlineMs) {
+        var scope = new Scope(Math.Max(deadlineMs, 0), Dyn.Current.Cancel);
+        if (deadlineMs <= 0) scope.Token.TrySetResult(CancelReason.Deadline.Instance);
+        return scope;
     }
 
     /// `(scope-push! sc)` — install the scope, and hand back the environment it

@@ -173,7 +173,7 @@
   (def feeder (bjo (feed ready 99)))
   (expect "a channel beats a long timeout"
           (match (sync (choose (wrap (chan-recv ready) (fun (v) (Job v)))
-                               (wrap (timeout 30000) (fun (u) Quit))))
+                               (wrap (timeout (seconds 30)) (fun (u) Quit))))
             ((Job v) (int->string v))
             (Quit "timed out"))
           "99")
@@ -181,7 +181,7 @@
   ;; And a timeout winning, against a channel nobody will ever send on.
   (expect "a timeout beats a silent channel"
           (match (sync (choose (wrap (chan-recv (make-chan)) (fun (v) (Job v)))
-                               (wrap (timeout 50) (fun (u) Quit))))
+                               (wrap (timeout (milliseconds 50)) (fun (u) Quit))))
             ((Job v) (int->string v))
             (Quit "timed out"))
           "timed out")
@@ -194,7 +194,7 @@
   ;; This also happens to depend on the fix that put a body's `def`s back into
   ;; source order: `started`, the two syncs and `elapsed` form three independent
   ;; groups, and a reordering would time the wrong thing.
-  (def t (timeout 40))
+  (def t (timeout (milliseconds 40)))
   (def started Env.TickCount)
   (def t1 (sync t))
   (def t2 (sync t))

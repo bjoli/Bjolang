@@ -48,7 +48,7 @@
     (sync/blocking (chan-recv ch))
     (sync/blocking (promise-join (bjo (work 21))))
     (sync/blocking (choose (wrap (chan-recv ch) (fun (v) (Got v)))
-                           (wrap (timeout 1000) (fun (u) TimedOut))))
+                           (wrap (timeout (seconds 1)) (fun (u) TimedOut))))
     """)
   (reference """
     No fiber is spawned. It is the mirror of @code{blocking}: that one carries
@@ -173,7 +173,7 @@
   (see wrap guard with-nack sync never)
   (example """
     (sync (choose (wrap (chan-recv results) #(Some &))
-                  (wrap (timeout 20) (fun (u) None))))
+                  (wrap (timeout (milliseconds 20)) (fun (u) None))))
     """)
   (reference """
     The losers are withdrawn, not merely ignored: a losing receive is taken off
@@ -196,7 +196,7 @@
   (see choose guard)
   (example """
     (choose (wrap (chan-recv ch) (fun (v) (Got v)))
-            (wrap (timeout 1000) (fun (u) TimedOut)))
+            (wrap (timeout (seconds 1)) (fun (u) TimedOut)))
     """)
   (reference """
     @code{map} for events, and the way branches of different types are brought
@@ -263,10 +263,10 @@
     """))
 
 (:doc timeout
-  (summary "An event that is ready a number of milliseconds after it is synced.")
-  (arg ms "Milliseconds, counted from each sync. Zero or less is ready at once.")
+  (summary "An event that is ready a length of time after it is synced.")
+  (arg d "A Duration, counted from each sync. Zero or less is ready at once.")
   (returns "An event that commits with unit when the time is up.")
-  (see at-time seconds choose with-deadline)
+  (see seconds choose with-deadline)
   (example """
     (sync (choose (wrap (chan-recv ch) #(Some &))
                   (wrap (timeout (seconds 5)) (fun (u) None))))
@@ -276,22 +276,8 @@
     value offered in a loop gives each iteration the full interval. A losing
     timeout's timer is disposed.
 
-    For a budget over a whole loop, use @code{at-time}.
-    """))
-
-(:doc at-time
-  (summary "An event that is ready at a fixed instant.")
-  (arg t "The instant, read as UTC.")
-  (returns "An event that commits with unit at t, or at once if t has passed.")
-  (see timeout)
-  (reference """
-    Absolute, and so not interchangeable with @code{timeout}: the instant is
-    fixed when the event is built, and only the time remaining is worked out
-    at each sync. That makes it a budget for a whole loop rather than for one
-    iteration.
-
-    The instant is compared with @code{DateTime.UtcNow} as it is, so a local
-    time is taken to be UTC.
+    For a budget over a whole loop, use @code{at-time} from (std datetime),
+    which is ready at an @code{Instant}.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -651,9 +637,9 @@
     """))
 
 (:doc with-deadline
-  (summary "Runs body in a scope that is cancelled with Deadline after some milliseconds.")
-  (form (with-deadline ms body ...))
-  (arg ms "Milliseconds. Zero or less means no deadline.")
+  (summary "Runs body in a scope that is cancelled with Deadline after a length of time.")
+  (form (with-deadline d body ...))
+  (arg d "A Duration. Zero or less has passed already: the scope is cancelled at once. For no deadline, write with-scope.")
   (rest body "What to run. Its last value is the form's.")
   (see with-cancel seconds timeout Deadline)
   (example """
@@ -675,8 +661,8 @@
 (:doc with-shield
   (summary "Runs body in a scope that a cancellation outside it does not reach.")
   (form (with-shield body ...))
-  (form (with-shield #:within ms body ...))
-  (arg ms "The shield's own deadline, in milliseconds. Thirty seconds when it is not given.")
+  (form (with-shield #:within d body ...))
+  (arg d "The shield's own deadline, a Duration above zero. Thirty seconds when it is not given.")
   (rest body "What to run. Its last value is the form's.")
   (see with-cancel current-cancel)
   (example """
@@ -692,8 +678,8 @@
     @code{current-cancel} agrees with it.
 
     The deadline is not optional: a shield nothing outside can reach and that
-    never times out would make the program impossible to stop. So an ms of
-    zero or less raises @code{System.ArgumentOutOfRangeException}. It is a
+    never times out would make the program impossible to stop. So a duration
+    of zero or less raises @code{System.ArgumentOutOfRangeException}. It is a
     scope, so it waits for its own children.
     """))
 
@@ -809,8 +795,9 @@
     itself says nothing to its parent. When ms is more than zero, a timer
     fires the scope's token with @code{Deadline}.
 
-    What @code{with-scope}, @code{with-cancel} and @code{with-deadline} expand
-    to, through @code{scope-form}. Not meant to be called directly: an
+    What @code{with-scope} and @code{with-cancel} expand to, through
+    @code{scope-form}; @code{with-deadline} opens the same scope with a
+    deadline that is always there. Not meant to be called directly: an
     install needs a close that a @code{finally} guards.
     """))
 
@@ -928,31 +915,85 @@
 ;; Durations
 ;; ---------------------------------------------------------------------------
 
-(:doc millis
-  (summary "A number of milliseconds, as milliseconds.")
-  (arg n "Milliseconds.")
-  (returns "n, unchanged.")
-  (see seconds minutes)
+(:doc Duration
+  (summary "A fixed length of time: hours, minutes and seconds, not calendar days.")
+  (see seconds timeout with-deadline)
+  (example """
+    (with-deadline (seconds 5) (fetch url))
+    (->str (minutes 90))   ;; "PT1H30M"
+    """)
   (reference """
-    Every timer in the language counts milliseconds. These three spell a
-    duration the way it is said, and @code{(seconds 5)} is harder to misread
-    than @code{5000}.
+    What every timer takes: @code{timeout}, @code{with-deadline} and
+    @code{with-shield}. A number of milliseconds has its unit in no type, so
+    @code{5000} is easy to misread, and a count that overflows becomes a
+    different deadline without a word. A duration has its unit, and making
+    one past its range raises.
+
+    Built on @code{TimeSpan}, and holds ±(2@sup{63} − 1) ticks of 100 ns,
+    about ±29 227 years. Ordered, and printed in ISO 8601: @code{PT1H30M},
+    @code{-PT0.5S}. (std datetime) adds the arithmetic and the calendar:
+    @code{duration}, @code{+duration}, @code{duration-between},
+    @code{iso8601->duration}. A day there is exactly 24 hours; a calendar
+    day is a @code{DatePeriod}.
+
+    A timer counts whole milliseconds. A part of a millisecond counts as a
+    whole one, so a positive duration never reads as zero.
     """))
 
+(:doc ticks->duration
+  (summary "The duration of a number of 100 ns ticks.")
+  (arg t "Ticks, as a .NET TimeSpan counts them.")
+  (returns "The duration.")
+  (raises System.OverflowException "When t is long's minimum, the one tick count with no negation.")
+  (see duration-ticks))
+
+(:doc duration-ticks
+  (summary "A duration's length in 100 ns ticks.")
+  (arg d "The duration.")
+  (returns "The ticks, a long.")
+  (see ticks->duration))
+
+(:doc milliseconds
+  (summary "A number of milliseconds, as a duration.")
+  (arg n "Milliseconds.")
+  (returns "The duration.")
+  (raises System.OverflowException "When n is outside ±29 227 years.")
+  (see seconds minutes hours Duration))
+
 (:doc seconds
-  (summary "A number of seconds, in milliseconds.")
+  (summary "A number of seconds, as a duration.")
   (arg n "Seconds.")
-  (returns "n times 1000.")
-  (see millis minutes with-deadline timeout)
+  (returns "The duration.")
+  (raises System.OverflowException "When n is outside ±29 227 years.")
+  (see milliseconds minutes hours with-deadline timeout)
   (example """
     (with-deadline (seconds 5) (fetch url))
     """))
 
 (:doc minutes
-  (summary "A number of minutes, in milliseconds.")
+  (summary "A number of minutes, as a duration.")
   (arg n "Minutes.")
-  (returns "n times 60000.")
-  (see millis seconds))
+  (returns "The duration.")
+  (raises System.OverflowException "When n is outside ±29 227 years.")
+  (see milliseconds seconds hours))
+
+(:doc hours
+  (summary "A number of hours, as a duration.")
+  (arg n "Hours.")
+  (returns "The duration.")
+  (raises System.OverflowException "When n is outside ±29 227 years.")
+  (see milliseconds seconds minutes))
+
+(:doc duration->timer-ms
+  (summary "The milliseconds a timer waits for a duration.")
+  (arg d "The duration.")
+  (returns "The milliseconds, a long: 0 for zero or less, and a part of a millisecond counted as a whole one.")
+  (see timeout with-deadline Duration)
+  (reference """
+    What @code{with-deadline} and @code{with-shield} give the scope openers.
+    A part of a millisecond counts as a whole one, so a positive duration
+    does not become zero, which a timer takes as a time already passed.
+    """))
 
 ;; ---------------------------------------------------------------------------
 ;; The clock

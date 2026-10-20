@@ -34,7 +34,7 @@
 ;; flags; see `parse-test-args`.
 ;;
 ;; Each test runs in a scope of its own, as `with-test` in `(std simpletest)`
-;; does: under a deadline (`#:within ms`, 5 seconds by default), waiting for
+;; does: under a deadline (`#:within d`, a Duration, 5 seconds by default), waiting for
 ;; the fibers it started, and failing if it left a resource open (unless
 ;; `#:open-ok`). A test that raises fails with the exception's message, and the
 ;; tests after it still run.
@@ -79,7 +79,7 @@
                       (: module string)
                       (: file string)
                       (: line int)
-                      (: within int)
+                      (: within (Option Duration))
                       (: open-ok bool)
                       (: skip string)
                       (: todo string)
@@ -106,7 +106,7 @@
 
 ;; Adds a test. It answers a number only so that `deftest` can bind it at the
 ;; top level, which is what makes it run before `main`.
-(: (-> string string string int int bool string string bool bool (-> void) int))
+(: (-> string string string int (Option Duration) bool string string bool bool (-> void) int))
 (defun (register-test! name module file line within open-ok skip todo slow capture body)
   (box-set! registry
             (cons (Test (name name) (module module) (file file) (line line)
@@ -290,8 +290,8 @@
 (defun (running-test) (box-ref running-box))
 
 ;; When the running test started, and its deadline in milliseconds.
-(: (Box (Tuple long int)))
-(def running-clock (make-box (Tuple 0L 0)))
+(: (Box (Tuple long long)))
+(def running-clock (make-box (Tuple 0L 0L)))
 
 ;; The milliseconds left before the running test's deadline, or a day when no
 ;; test runs. Shrinking stops early when this gets low.
@@ -302,7 +302,7 @@
     ((Some _)
      (match (box-ref running-clock)
        ((Tuple started within)
-        (- (+ started (cast System.Int64 within)) (monotonic-ms)))))))
+        (- (+ started within) (monotonic-ms)))))))
 
 ;; The port a capturing test writes to, and how far `take-test-output!` has
 ;; read it.
@@ -509,10 +509,9 @@
 ;; deftest
 ;; ---------------------------------------------------------------------------
 
-;; The deadline of a test that gives none. A `deftest` without `#:within`
-;; registers 0, which means this.
-(: int)
-(def default-test-ms 5000)
+;; The deadline of a test that gives none.
+(: Duration)
+(def default-test-deadline (seconds 5))
 
 ;; What the options of one `deftest` came to. `cases` is the `#:cases` table:
 ;; the column names, then the rows.
@@ -526,7 +525,7 @@
 
 (: (-> (List Syntax) DeftestOptions))
 (defun (no-options body)
-  (DeftestOptions (within #'0) (open-ok #f) (skip #'"") (todo #'"") (slow #f)
+  (DeftestOptions (within #'None) (open-ok #f) (skip #'"") (todo #'"") (slow #f)
                   (cases None) (body body)))
 
 ;; Reads the options after a test's name, in any order, up to the body.
@@ -537,14 +536,14 @@
 (defun (options-from form items o)
   (let ((go (fun (more o2) (options-from form more o2))))
     (syntax-match (SList items)
-      ((#:within ms more ...) (go more (record-set o (within ms))))
+      ((#:within d more ...) (go more (record-set o (within #'(Some ,d)))))
       ((#:open-ok more ...) (go more (record-set o (open-ok #t))))
       ((#:skip why more ...) (go more (record-set o (skip why))))
       ((#:todo why more ...) (go more (record-set o (todo why))))
       ((#:slow more ...) (go more (record-set o (slow #t))))
       ((#:cases ((column ...) row ...) more ...) (go more (with-cases form column row o)))
       ((first more ...) (record-set o (body (cons first more))))
-      (_ (ignore (syntax-error form "deftest takes a name and a body: (deftest \"name\" body ...), with options such as #:within ms, #:open-ok, #:skip \"why\", #:todo \"why\", #:slow and #:cases after the name."))
+      (_ (ignore (syntax-error form "deftest takes a name and a body: (deftest \"name\" body ...), with options such as #:within (seconds 2), #:open-ok, #:skip \"why\", #:todo \"why\", #:slow and #:cases after the name."))
          o))))
 
 ;; `#:cases ((a b) row ...)`: the first list names the columns, and each row
@@ -669,7 +668,7 @@
         forms))
 
 ;; `(deftest "name" body ...)`, with options after the name in any order:
-;; `#:within ms`, `#:open-ok`, `#:skip "why"`, `#:todo "why"`, `#:slow` and
+;; `#:within d` (a Duration), `#:open-ok`, `#:skip "why"`, `#:todo "why"`, `#:slow` and
 ;; `#:cases ((column ...) row ...)`. Registers the test; `(run-tests)` runs it.
 (def/macro (deftest form inject compare)
   (syntax-match form
@@ -728,10 +727,10 @@
   (box-set! running-box (Some t))
   (def holder (make-box None))
   (def body (record-ref t body))
-  (def within (if (= (record-ref t within) 0) default-test-ms (record-ref t within)))
+  (def within (match (record-ref t within) ((Some d) d) (None default-test-deadline)))
   (def outer-clock (box-ref running-clock))
   (def outer-index (box-ref index-box))
-  (box-set! running-clock (Tuple (monotonic-ms) within))
+  (box-set! running-clock (Tuple (monotonic-ms) (duration->timer-ms within)))
   (box-set! index-box (map-empty))
   (def outer-output (box-ref output-box))
   (def port (open-output-string))
@@ -748,7 +747,7 @@
          #:catch (System.Exception))
     ((Ok _)
      (when (overran? holder)
-       (test-failed! #"  it ran past its deadline of ${within} ms: something it started never finished")))
+       (test-failed! #"  it ran past its deadline of ${within}: something it started never finished")))
     ((Err e) (test-failed! #"  it raised: ${(.-Message e)}")))
   (box-set! current-failures outer)
   (box-set! running-box outer-test)

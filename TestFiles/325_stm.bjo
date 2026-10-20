@@ -126,7 +126,7 @@
   (def results (make-chan))
   (with-scope
     (spawn (wait-for-flag flag results))
-    (sync (timeout 50))
+    (sync (timeout (milliseconds 50)))
     (atomically (fun (tx) (tx-set! tx flag #t)))
     (expect "a write wakes the transaction that retried" (chan-get results) "woken"))
 
@@ -138,10 +138,10 @@
                          (fun (tx)
                            (tx-set! tx side 1)
                            (if (tx-ref tx never) "tx" (tx-retry tx))))
-                        (wrap (timeout 30) (fun (_) "timeout"))))
+                        (wrap (timeout (milliseconds 30)) (fun (_) "timeout"))))
           "timeout")
   (atomically (fun (tx) (tx-set! tx never #t)))
-  (sync (timeout 50))
+  (sync (timeout (milliseconds 50)))
   (expect "the transaction that lost wrote nothing, also after the write" (loc-ref side) 0)
   (expect "a transaction that commits wins over a later branch"
           (sync (choose (atomically-evt (fun (tx) "tx"))

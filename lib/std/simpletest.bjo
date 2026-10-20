@@ -13,7 +13,7 @@
 ;; std/simpletest.bjo — basic test assertion module.
 
 (export expect expect-true fail
-        default-test-ms overran?
+        default-test-deadline overran?
         FakeFs fake-fs fake-fs-written fake-fs-contents fake-fs-set-modified!
         ;; The handlers, one per `FS` operation. Exported because the
         ;; `with-fake-fs` templates name them.
@@ -81,7 +81,7 @@
 ;; You can disable this check using `#:open-ok` (useful if you are specifically 
 ;; testing that cleanup happens on scope-close).
 ;;
-;; `#:within ms` overrides the deadline.
+;; `#:within d`, a Duration, overrides the deadline.
 ;;
 ;; We catch `System.Exception` here to handle `Cancelled` exceptions caused by timeouts.
 ;;
@@ -90,8 +90,8 @@
 ;; it. Doing so lets us report a clean failure with the test's name, instead 
 ;; of crashing and dumping an unhelpful stack trace.
 
-(: (-> int))
-(defun (default-test-ms) 5000)
+(: (-> Duration))
+(defun (default-test-deadline) (seconds 5))
 
 (: (-> Syntax Syntax))
 (defun (leak-check name)
@@ -134,10 +134,10 @@
     ((_ name #:within ms first body ...)
      (test-expansion name ms #t (cons first body)))
     ((_ name #:open-ok first body ...)
-     (test-expansion name #'(default-test-ms) #f (cons first body)))
+     (test-expansion name #'(default-test-deadline) #f (cons first body)))
     ((_ name first body ...)
-     (test-expansion name #'(default-test-ms) #t (cons first body)))
-    (bad (syntax-error bad "with-test takes a name and a body: (with-test \"name\" body ...), optionally #:within ms and #:open-ok."))))
+     (test-expansion name #'(default-test-deadline) #t (cons first body)))
+    (bad (syntax-error bad "with-test takes a name and a body: (with-test \"name\" body ...), optionally #:within d, a Duration, and #:open-ok."))))
 
 ;; ---------------------------------------------------------------------------
 ;; A filesystem that is not one

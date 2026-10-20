@@ -17,7 +17,7 @@
 (: (-bjo-> string (Chan int) (Chan string) void))
 (defbjo (send-as name ch done)
   (parameterize ((who name))
-    (sync (timeout 50))
+    (sync (timeout (milliseconds 50)))
     (sync (chan-send ch 1))
     (sync (chan-send done "sender finished"))))
 
@@ -34,7 +34,7 @@
 (: (-bjo-> string))
 (defbjo (seen-after-a-timeout)
   (parameterize ((who "RECEIVER"))
-    (sync (wrap (timeout 20) (fun (u) (parameter-ref who))))))
+    (sync (wrap (timeout (milliseconds 20)) (fun (u) (parameter-ref who))))))
 
 (: (-> int int))
 (defun (boom v) (raise (Failure. "boom")))
@@ -48,13 +48,13 @@
   (spawn/detached (send-as "SENDER" ch done))
   (def caught
     (match (try (sync (choose (wrap (chan-recv ch) boom)
-                              (wrap (timeout 2000) (fun (u) -1))))
+                              (wrap (timeout (seconds 2)) (fun (u) -1))))
                 #:catch (System.Exception))
       ((Ok -1) "receiver timed out")
       ((Ok v) "receiver got a value")
       ((Err e) "receiver caught it")))
   (def sender (sync (choose (chan-recv done)
-                            (wrap (timeout 2000) (fun (u) "sender never finished")))))
+                            (wrap (timeout (seconds 2)) (fun (u) "sender never finished")))))
   (str caught ", " sender))
 
 (defbjo (main args)

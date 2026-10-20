@@ -36,7 +36,7 @@
     | @code{Instant}      | a point on the global timeline                      | a @code{long} of UTC ticks |
     | @code{TimeZone}     | an IANA zone, such as @code{Europe/Stockholm}       | @code{TimeZoneInfo} |
     | @code{Moment}       | a local datetime, its UTC offset, and its zone      | a struct of the three |
-    | @code{Duration}     | a fixed length of time: hours, not calendar days    | @code{TimeSpan} |
+    | @code{Duration}     | a fixed length of time: hours, not calendar days (the prelude's) | @code{TimeSpan} |
     | @code{DatePeriod}   | calendar amounts: years, months, weeks, days        | a struct of four @code{int} |
     | @code{Period}       | a date period and a duration: 1 day and 3 hours     | a struct of the two |
     | @code{Clock}        | where @code{now} comes from, and its zone (the prelude's) | a record of functions |
@@ -495,15 +495,6 @@
     by instant, then local time, then zone id, so that it is 0 exactly when
     @code{=} holds. For the same instant, compare @code{(->instant a)} and
     @code{(->instant b)}.
-    """))
-
-(:doc Duration
-  (summary "A fixed length of time: hours, minutes and seconds, not calendar days.")
-  (see duration iso8601->duration duration-between)
-  (reference """
-    Built on @code{TimeSpan}, and holds ±(2@sup{63} − 1) ticks, about
-    ±29 227 years. @code{(duration #:days 1)} is exactly 24 hours; a
-    calendar day is a @code{DatePeriod}.
     """))
 
 (:doc DatePeriod
@@ -1034,6 +1025,30 @@
   (example """
     (now)                     ;; the current clock
     (now #:clock some-clock)  ;; this one
+    """))
+
+(:doc at-time
+  (summary "An event that is ready at an instant.")
+  (arg i "The instant.")
+  (returns "An event that commits with unit at i, or at once when i has passed.")
+  (see now timeout)
+  (example """
+    (def budget (at-time (+seconds (now) 5L)))
+    (let go ()
+      (match (sync (choose (wrap (chan-recv jobs) Some)
+                           (wrap budget (fun (u) None))))
+        ((Some job) (run job) (go))
+        (None unit)))
+    """)
+  (reference """
+    Absolute, and so not interchangeable with @code{timeout}: the instant is
+    fixed when the event is made, and only the time left is worked out at
+    each sync. That makes it a budget for a whole loop rather than for one
+    iteration.
+
+    The time left is measured against the system's clock, which is what a
+    timer waits by, and not against @code{current-clock}. A fixed or manual
+    clock gives instants that a timer does not follow.
     """))
 
 (:doc now/moment

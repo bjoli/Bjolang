@@ -3,6 +3,75 @@
 
 What each change guarantees, and what it leaves open.
 
+* Timers take a Duration
+
+- *~Duration~ is the prelude's.* ~timeout~, ~with-deadline~ and
+  ~with-shield #:within~ take a ~Duration~, not a number of milliseconds.
+  ~(seconds 5)~ was ~5000~, an ~int~: ~(minutes 71583)~ wrapped round to
+  12704, so a deadline of 50 days fired after 12.7 s, and ~(minutes 36000)~
+  became negative, a timeout that was ready at once. A Duration has its unit
+  in its type, and making one past its range raises
+  ~System.OverflowException~.
+- Made with ~(milliseconds n)~, ~(seconds n)~, ~(minutes n)~ and ~(hours n)~,
+  each of a ~long~, or ~(ticks->duration t)~; ~(duration-ticks d)~ reads one.
+  It is ordered (~compare~), and prints in ISO 8601: ~PT1H30M~. ~millis~ is
+  gone.
+- ~(std datetime)~ uses the same type, and still exports it, so
+  ~(import (only (std datetime) Duration ...))~ works as before, and so do
+  ~duration~, ~+duration~, ~duration-between~ and the rest.
+- A timer waits whole milliseconds, now in a ~long~: a part of a millisecond
+  counts as a whole one, so a positive duration never becomes zero. A wait
+  longer than a .NET timer takes at once (about 49.7 days) waits in steps.
+  ~duration->timer-ms~ is the conversion.
+- The timer wheel's clock read -1 on the first timer of a process: it read
+  the time before the class's static initialiser took its origin. It reads
+  the origin first now. Before, that timer fired a millisecond early.
+- *~with-deadline~ of zero or less cancels at once.* It meant "no deadline".
+  A deadline worked out to zero has passed; ~with-scope~ is the scope with
+  none.
+- ~deftest #:within~ and ~with-test #:within~ take a Duration. A test that
+  overruns reports its deadline as one: "ran past its deadline of PT0.1S".
+  ~default-test-ms~ is ~default-test-deadline~, ~(seconds 5)~.
+- A program that passes a number now has a type error at the call: write
+  ~(timeout (milliseconds 300))~, and give a helper that takes milliseconds a
+  ~Duration~, or convert at the timer with ~milliseconds~.
+- *~at-time~ takes an ~Instant~*, and is ~(std datetime)~'s, where an
+  ~Instant~ comes from: ~(at-time (+seconds (now) 5L))~. It was the prelude's,
+  and took a .NET ~DateTime~ read as UTC whatever its kind. The time left is
+  measured against the system's clock, as every timer is, and not against
+  ~current-clock~.
+- Left open: ~monotonic-ms~ still answers a bare ~long~.
+- Tests: ~435_durations_and_range_by_stop.bjo~, ~436_at_time_instant.bjo~.
+  The CML tests pass.
+
+* range-by stops at hi near int-max, and a range's length cannot overflow
+
+- ~(range-by lo hi by)~ walked forever when the step after the last value
+  passed ~int-max~: ~(range-by 0 int-max 2)~ wrapped round below ~hi~ and
+  went on. ~range-by~ now answers a ~RangeBy~, which works out once where the
+  walk ends and stops there; a step still costs one comparison.
+- ~range~ is unchanged as a walk, and is steps of one only: ~Range~ has no
+  ~by~ field. Its loop over an array's indices still compiles to the loop
+  the JIT gives no bounds check.
+- ~length~ of either counts in a ~long~, and panics when the range holds more
+  values than an ~int~ counts, such as ~(range -2000000000 2000000000)~. It
+  was negative.
+- Left open: ~up-from #:by~ with a fixed-width integer still wraps past its
+  type's maximum, and ~down-from~ past its minimum; a check would cost every
+  step.
+
+* Chained comparisons evaluate their operands left to right
+
+- ~(< a b c)~ and ~#ch~ evaluated the second operand before the first when
+  the second was not an atom, so ~(< (read p) (read p) 100)~ compared the
+  two readings the wrong way round. A first operand that is not an atom is
+  now bound before the second is evaluated, as ~+~ does it. Each operand is
+  still evaluated at most once, and not at all after a test fails.
+- A first operand that is a variable is still read when the first test
+  runs, after the second operand. A second operand that assigns to that
+  variable is seen by the test.
+- Test: ~434_chained_comparison_order.bjo~.
+
 * Four ways a value was lost, fixed
 
 - ~(std run)~: ~into-file~ and ~append-to-file~ open their file once the

@@ -199,7 +199,7 @@ public static class Cml
     /// and 1360 B per armed sync where the timer itself costs ~100 ns and
     /// 144 B. Both are run against the same tests.
     /// </summary>
-    public static IEvent<Unit> Timeout(int ms) => new TimeoutEvent(ms);
+    public static IEvent<Unit> Timeout(long ms) => new TimeoutEvent(ms);
 
     /// <summary>
     /// The event that becomes available at a fixed instant.

@@ -52,7 +52,7 @@
 
     @strong{Each test runs in a scope of its own}, as @code{with-test} in
     @code{(std simpletest)} does. The scope has a deadline: 5 seconds, or
-    @code{#:within ms}. The scope waits for the fibers that the test
+    @code{#:within d}, a Duration. The scope waits for the fibers that the test
     started. The test fails if it leaves a resource open, unless it has
     @code{#:open-ok}. A test that raises an exception fails with the message
     of the exception, and the tests after it still run. A failed check does
@@ -445,14 +445,14 @@
 (:doc deftest
   (summary "Registers a test. (run-tests) runs it.")
   (form (deftest name body ...))
-  (form (deftest name #:within ms body ...))
+  (form (deftest name #:within d body ...))
   (form (deftest name #:open-ok body ...))
   (form (deftest name #:skip why body ...))
   (form (deftest name #:todo why body ...))
   (form (deftest name #:slow body ...))
   (form (deftest name #:cases ((column ...) row ...) body ...))
   (arg name "A string: the name of the test. The filters of a run match against it.")
-  (arg ms "The deadline of the test, in milliseconds. 5000 when it is not given.")
+  (arg d "The deadline of the test, a Duration. Five seconds when it is not given.")
   (arg why "A string: the reason, which the run shows.")
   (rest column "The names that each row binds.")
   (rest row "A list of values, one for each column.")
@@ -462,7 +462,7 @@
     (deftest "parse adds"
       (check (= (parse "1+2") (Ok 3))))
 
-    (deftest "the server answers" #:within 1000
+    (deftest "the server answers" #:within (seconds 1)
       (check-match (fetch url) (Ok _)))
 
     (deftest "parse-int" #:cases ((input expected)
@@ -482,7 +482,7 @@
     The test runs in a scope with a deadline, as @code{run-test} tells.
 
     @itemlist{
-      @item{@code{#:within ms} sets the deadline.}
+      @item{@code{#:within d} sets the deadline, a Duration: @code{#:within (seconds 10)}.}
       @item{@code{#:open-ok} turns off the check for open resources. Use it
         in a test of what the closing of a scope does.}
       @item{@code{#:skip why}: the test does not run. The last line of the

@@ -71,8 +71,6 @@
   (clr-time-millisecond (: System.TimeOnly.Millisecond (-> ClrTime int) #:get))
   (clr-time-microsecond (: System.TimeOnly.Microsecond (-> ClrTime int) #:get))
   (clr-time-nanosecond (: System.TimeOnly.Nanosecond (-> ClrTime int) #:get))
-  (clr-timespan-from-ticks (: System.TimeSpan.FromTicks (-> long ClrTimeSpan)))
-  (clr-timespan-negate (: System.TimeSpan.Negate (-> ClrTimeSpan ClrTimeSpan)))
   (clr-date-day-number (: System.DateOnly.DayNumber (-> ClrDate int) #:get))
   (clr-date-year (: System.DateOnly.Year (-> ClrDate int) #:get))
   (clr-date-month (: System.DateOnly.Month (-> ClrDate int) #:get))
@@ -91,6 +89,7 @@
   (clr-tz-id (: System.TimeZoneInfo.Id (-> TimeZoneInfo string) #:get))
   (clr-tz-has-iana-id (: System.TimeZoneInfo.HasIanaId (-> TimeZoneInfo bool) #:get))
   (clr-tz-utc-offset (: System.TimeZoneInfo.GetUtcOffset (-> TimeZoneInfo ClrDateTime ClrTimeSpan)))
+  (clr-at-utc (: BjolangRuntime.atsubtime (-> ClrDateTime (Event Unit))))
   (clr-lock-enter (: System.Threading.Lock.Enter (-> ClrLock void)))
   (clr-lock-exit (: System.Threading.Lock.Exit (-> ClrLock void)))
   (clr-add-unit (: System.Text.StringBuilder.Append (-> TextBuilder System.Char TextBuilder)))
@@ -100,9 +99,13 @@
 ;; Every export is documented there; the module doc is too.
 (:doc #:file "datetime.bjodoc")
 
+;; The prelude's, which timers take too. Offered here as well, so that an
+;; import of the time types from this module names it as before.
+(re-export Duration)
+
 (export
   ;; Types
-  Date Time DateTime Instant TimeZone Moment Duration
+  Date Time DateTime Instant TimeZone Moment
   DatePeriod Period Gap Overlap Resolver
   ;; Traits
   HasDate ->date HasTime ->time HasInstant ->instant
@@ -123,6 +126,8 @@
   ;; The clock
   system-clock-in clock-in fixed-clock manual-clock clock-advance!
   clock-timezone now now/moment today
+  ;; Timers
+  at-time
   ;; Accessors
   ->year ->month ->day ->weekday ->yday
   ->week ->week-year weeks-in-year week-date
@@ -164,7 +169,6 @@
 ;; UTC ticks, not a UTC DateTime, because DateTime equality ignores Kind.
 (type (: Instant #:opaque (Struct (: ticks long))))
 (type (: TimeZone #:opaque (Struct (: tz TimeZoneInfo))))
-(type (: Duration #:opaque (Struct (: v ClrTimeSpan))))
 (type (: Moment #:opaque (Struct (: local DateTime) (: offset Duration) (: zone TimeZone))))
 
 ;; Any mix of amounts is a valid period, so these are transparent. Structs,
@@ -274,12 +278,6 @@
 
 (: (-> DateTime long))
 (defun (datetime-ticks dt) (clr-datetime-ticks (struct-ref dt v)))
-
-(: (-> long Duration))
-(defun (ticks->duration t) (Duration (v (ClrTimeSpan. t))))
-
-(: (-> Duration long))
-(defun (duration-ticks d) (clr-timespan-ticks (struct-ref d v)))
 
 (: (-> Date long))
 (defun (day-number d) (long-of (clr-date-day-number (struct-ref d v))))
@@ -444,7 +442,7 @@
 
 ;; Wraps at midnight, as TimeOnly.Add does.
 (impl (TimeArith Time)
-  (defun (+duration t d) (Time (v (clr-time-add (struct-ref t v) (struct-ref d v))))))
+  (defun (+duration t d) (Time (v (clr-time-add (struct-ref t v) (ClrTimeSpan. (duration-ticks d)))))))
 
 (impl (Ord Time)
   (defun (compare a b)
@@ -574,12 +572,6 @@
 (impl (TimeArith Duration)
   (defun (+duration a b) (duration+duration a b)))
 
-(impl (Ord Duration)
-  (defun (compare a b) (compare (duration-ticks a) (duration-ticks b))))
-
-(impl (->str Duration)
-  (defun (->str d) (duration->iso (duration-ticks d))))
-
 ;; Whole units, toward zero.
 (: (-> Duration long))
 (defun (duration->hours d) (/ (duration-ticks d) ticks-per-hour))
@@ -595,7 +587,7 @@
 
 ;; Never raises, as no duration reaches -2^63 ticks.
 (: (-> Duration Duration))
-(defun (duration-negate d) (Duration (v (clr-timespan-negate (struct-ref d v)))))
+(defun (duration-negate d) (ticks->duration (- (duration-ticks d))))
 
 
 ;; ===========================================================================
@@ -792,8 +784,7 @@
 ;; instants are less than 10 000 years apart, so the difference fits.
 (: (-> %a %b Duration) (where (HasInstant %a) (HasInstant %b)))
 (defun (duration-between a b)
-  (Duration (v (clr-timespan-from-ticks (- (struct-ref (->instant b) ticks)
-                                           (struct-ref (->instant a) ticks))))))
+  (ticks->duration (- (struct-ref (->instant b) ticks) (struct-ref (->instant a) ticks))))
 
 (: (-> %a %b long) (where (HasInstant %a) (HasInstant %b)))
 (defun (hours-between a b) (duration->hours (duration-between a b)))
@@ -999,7 +990,7 @@
 (impl (HasInstant Moment)
   (defun (->instant m)
     (Instant (ticks (- (clr-datetime-ticks (struct-ref (struct-ref m local) v))
-                       (clr-timespan-ticks (struct-ref (struct-ref m offset) v)))))))
+                       (duration-ticks (struct-ref m offset)))))))
 
 (impl (DateArith Moment)
   (defun (+date-period m p) (moment+date-period m p)))
@@ -1132,6 +1123,18 @@
 (: (-> (#:clock Clock) (#:tz TimeZone) Date))
 (defun (today #:clock (parameter-ref current-clock) #:tz (clock-timezone #:clock clock))
   (->date (now/moment #:clock clock #:tz tz)))
+
+
+;; ===========================================================================
+;; Timers
+;; ===========================================================================
+
+;; Ready at an instant. The time left is worked out at each sync against the
+;; system's clock, which is what a timer waits by, and not against
+;; `current-clock`: a clock that is fixed or moved by hand does not move a
+;; timer.
+(: (-> Instant (Event Unit)))
+(defun (at-time i) (clr-at-utc (ClrDateTime. (struct-ref i ticks) DateTimeKind.Utc)))
 
 
 ;; ===========================================================================
@@ -1292,17 +1295,6 @@
     (add-padded! sb s 1)
     (add-fraction! sb f)
     (add-text! sb "S")))
-
-;; PT26H30M, with one leading sign: -PT1H30M.
-(: (-> long string))
-(defun (duration->iso t)
-  (if (= t 0L)
-      "PT0S"
-      (let ((sb (new-text 32)))
-        (when (< t 0L) (add-text! sb "-"))
-        (add-text! sb "PT")
-        (add-time-parts! sb (abs t) "")
-        (text-of sb))))
 
 ;; Each component carries its own sign, since a period may mix them: P1M-3D.
 (: (-> TextBuilder DatePeriod void))

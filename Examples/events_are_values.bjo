@@ -12,21 +12,21 @@
 ;; site, and a statement is not something you can hand to a function — so there
 ;; every function that might need a deadline has to be given one, all the way
 ;; down.
-(: (-> int (Event %a) (Event (Option %a))))
-(defun (within ms ev)
+(: (-> Duration (Event %a) (Event (Option %a))))
+(defun (within d ev)
   (choose (wrap ev #(Some &))
-          (wrap (timeout ms) (fun (u) None))))
+          (wrap (timeout d) (fun (u) None))))
 
 ;; A cook in no particular hurry.
 (: (-> (Chan string) void))
 (defbjo (cook ch)
-  (sync (timeout 60))
+  (sync (timeout (milliseconds 60)))
   (sync (chan-send ch "dinner")))
 
 ;; Work that takes as long as it is told to.
-(: (-> int int))
+(: (-> long long))
 (defbjo (count-to ms)
-  (sync (timeout ms))
+  (sync (timeout (milliseconds ms)))
   ms)
 
 (: (-> string (Option string) void))
@@ -40,19 +40,19 @@
   (spawn (cook kitchen))
 
   ;; Too impatient. The receive loses the race and is *withdrawn*.
-  (report "first ask " (sync (within 20 (chan-recv kitchen))))
+  (report "first ask " (sync (within (milliseconds 20) (chan-recv kitchen))))
 
   ;; Withdrawn, not consumed. Nothing was taken off the channel, so the cook is
   ;; still holding dinner out and this ask gets it. A `select` that had taken
   ;; the message and then thrown it away would have lost dinner for good.
-  (report "second ask" (sync (within 500 (chan-recv kitchen))))
+  (report "second ask" (sync (within (milliseconds 500) (chan-recv kitchen))))
 
   ;; The same combinator over something that is not a channel at all — the
   ;; result of a fiber. The deadline wins, so that branch loses, and a losing
   ;; `spawn-evt` cancels its child rather than leaving it running.
   (report "slow work "
-          (match (sync (within 20 (spawn-evt (count-to 1000))))
-            ((Some (Ok n)) (Some (int->string n)))
+          (match (sync (within (milliseconds 20) (spawn-evt (count-to 1000))))
+            ((Some (Ok n)) (Some (->str n)))
             ((Some (Err e)) (Some "it threw"))
             (None None)))
   0)

@@ -22,21 +22,21 @@ It is fully cooperative, and yields control when calling other bjoroutines or wh
 But here is the part that is actually worth waking up for. "within" is a deadline, written once, as an ordinary function — and it works on every event there will ever be, because an event is a @strong{value} and not a statement.
 
 @codeblock[#:lang "scheme"]|{
-(: within (-> int (Event %a) (Event (Option %a))))
-(defun (within ms ev)
+(: within (-> Duration (Event %a) (Event (Option %a))))
+(defun (within d ev)
   (choose (wrap ev #(Some &))
-          (wrap (timeout ms) (fun (u) None))))
+          (wrap (timeout d) (fun (u) None))))
 
 ;; A cook in no particular hurry.
 (: cook (-> (Chan string) void))
 (defbjo (cook ch)
-  (sync (timeout 60))
+  (sync (timeout (milliseconds 60)))
   (sync (chan-send ch "dinner")))
 
 ;; Work that takes as long as it is told to.
-(: count-to (-> int int))
+(: count-to (-> long long))
 (defbjo (count-to ms)
-  (sync (timeout ms))
+  (sync (timeout (milliseconds ms)))
   ms)
 
 (: report (-> string (Option string) void))
@@ -50,18 +50,18 @@ But here is the part that is actually worth waking up for. "within" is a deadlin
   (spawn (cook kitchen))
 
   ;; Too impatient. The receive loses the race and is withdrawn.
-  (report "first ask " (sync (within 20 (chan-recv kitchen))))
+  (report "first ask " (sync (within (milliseconds 20) (chan-recv kitchen))))
 
   ;; Withdrawn, not consumed. Nothing came off the channel, so the cook is
   ;; still holding dinner out and this ask gets it.
-  (report "second ask" (sync (within 500 (chan-recv kitchen))))
+  (report "second ask" (sync (within (milliseconds 500) (chan-recv kitchen))))
 
   ;; The same combinator on something that is not a channel at all: the result
   ;; of a fiber. The deadline wins, so that branch loses, and a losing
   ;; spawn-evt cancels its child rather than leaving it running.
   (report "slow work "
-          (match (sync (within 20 (spawn-evt (count-to 1000))))
-            ((Some (Ok n)) (Some (int->string n)))
+          (match (sync (within (milliseconds 20) (spawn-evt (count-to 1000))))
+            ((Some (Ok n)) (Some (->str n)))
             ((Some (Err e)) (Some "it threw"))
             (None None)))
   0)

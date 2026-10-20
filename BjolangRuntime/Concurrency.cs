@@ -271,7 +271,7 @@ public static partial class BjolangRuntime {
 
         /// A sleep's node as the park site of this sync. `T` is `Unit` for
         /// every timer event, so the cast always holds.
-        private static IParkable<T> SleepSite(int ms) => (IParkable<T>)(object)new SleepNode(ms);
+        private static IParkable<T> SleepSite(long ms) => (IParkable<T>)(object)new SleepNode(ms);
 
         /// A sleep, watched by this fiber's registration: `Watched` with the
         /// node as its site and no op. The node is not in the wheel yet; that
@@ -1036,9 +1036,10 @@ public static partial class BjolangRuntime {
     /// deadline would be in the past after the first iteration and this branch
     /// would win every time round thereafter — silently, because winning a race
     /// is not an error.
-    public static IEvent<Unit> timeout(int ms) => Cml.Timeout(ms);
+    public static IEvent<Unit> timeout(long ms) => Cml.Timeout(ms);
 
-    /// `(at-time deadline)` — available at a fixed instant.
+    /// What `(std datetime)`'s `(at-time instant)` is made of: available at a
+    /// fixed instant, given as a UTC `DateTime`.
     ///
     /// Absolute, and therefore not interchangeable with `timeout`: the deadline
     /// is decided when this is built and only the remaining interval is

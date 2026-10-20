@@ -63,7 +63,7 @@
         ;; Racing the ambient token on every round is what "cooperative" means
         ;; in practice: the cancellation is noticed at a yield point, and this
         ;; loop has one per round.
-        (match (sync (choose (wrap (timeout 20) (fun (u) (Got "tick")))
+        (match (sync (choose (wrap (timeout (milliseconds 20)) (fun (u) (Got "tick")))
                              (wrap (cancelled (parameter-ref current-cancel))
                                    (fun (u) Ended))))
           ((Got t) (go (+ i 1)))
@@ -113,7 +113,7 @@
   (expect "a spawn-evt that wins"
           (match (sync (choose (wrap (spawn-evt (patient-worker 1))
                                      (fun (r) (match r ((Ok s) (Got s)) ((Err e) (Got "err")))))
-                               (wrap (timeout 10000) (fun (u) TimedOut))))
+                               (wrap (timeout (seconds 10)) (fun (u) TimedOut))))
             ((Got s) s)
             (TimedOut "timed out")
             (Ended "ended"))
@@ -127,7 +127,7 @@
   (expect "a spawn-evt that loses"
           (match (sync (choose (wrap (spawn-evt (patient-worker 1000))
                                      (fun (r) (Got "child won")))
-                               (wrap (timeout 50) (fun (u) TimedOut))))
+                               (wrap (timeout (milliseconds 50)) (fun (u) TimedOut))))
             ((Got s) s)
             (TimedOut "timed out")
             (Ended "ended"))
@@ -135,7 +135,7 @@
 
   ;; Long enough that a child which had *not* been cancelled would still be
   ;; going, and not long enough for one that had been to have finished anyway.
-  (def settle (sync (timeout 200)))
+  (def settle (sync (timeout (milliseconds 200))))
   (expect "and the child was cancelled, not just ignored"
           ran-to-completion 0)
 

@@ -1,0 +1,108 @@
+;; Timers take a Duration, so a long one does not wrap round into a short one,
+;; and making one past its range raises. A range-by whose next step passes
+;; int-max stops at hi.
+(import (std prelude))
+(import (std simpletest))
+
+(: (-bjo-> Duration string))
+(defbjo (race-against-50 d)
+  (sync (choose (wrap (timeout d) (fun (u) "the long one"))
+                (wrap (timeout (milliseconds 50)) (fun (u) "50 ms")))))
+
+;; Whether making the duration raises.
+(: (-> (-> Duration) bool))
+(defun (overflows? make)
+  (match (try (make) #:catch (System.OverflowException))
+    ((Ok _) #f)
+    ((Err _) #t)))
+
+(defbjo (main)
+  ;; The units, and their text.
+  (expect "3000000 seconds" (duration-ticks (seconds 3000000)) 30000000000000L)
+  (expect "71583 minutes" (->str (minutes 71583)) "PT1193H3M")
+  (expect "90 minutes" (->str (minutes 90)) "PT1H30M")
+  (expect "half a second back" (->str (milliseconds -500)) "-PT0.5S")
+  (expect "zero" (->str (milliseconds 0)) "PT0S")
+  (expect "ordered" (compare (seconds 59) (minutes 1)) -1)
+  (expect "the same length in other units" (seconds 3600) (hours 1))
+
+  ;; Past the range of a duration, a unit raises rather than wrapping.
+  (expect "too many hours" (overflows? (fun () (hours 9223372036854775807L))) #t)
+  (expect "too few minutes" (overflows? (fun () (minutes -9223372036854775807L))) #t)
+  (expect "the tick count with no negation" (overflows? (fun () (ticks->duration -9223372036854775808L))) #t)
+  (expect "the longest duration" (overflows? (fun () (ticks->duration 9223372036854775807L))) #f)
+
+  ;; A timer waits whole milliseconds, and a part of one counts as a whole one.
+  (expect "a tick waits a millisecond" (duration->timer-ms (ticks->duration 1L)) 1L)
+  (expect "a millisecond and a tick wait two" (duration->timer-ms (ticks->duration 10001L)) 2L)
+  (expect "zero waits nothing" (duration->timer-ms (milliseconds 0)) 0L)
+  (expect "less than zero waits nothing" (duration->timer-ms (seconds -1)) 0L)
+
+  ;; A timeout of 25 days, and of more than a timer can wait at once.
+  (expect "25 days lose to 50 ms" (race-against-50 (minutes 36000)) "50 ms")
+  (expect "the longest timeout loses to 50 ms"
+          (race-against-50 (ticks->duration 9223372036854775807L))
+          "50 ms")
+  (expect "a timeout of zero wins" (race-against-50 (milliseconds 0)) "the long one")
+
+  ;; A lone sync of a timeout is a sleep.
+  (sync (timeout (milliseconds 20)))
+
+  ;; A deadline of 50 days does not cancel a body of 100 ms, and nor does
+  ;; the longest one.
+  (expect "50 days do not cancel the body"
+          (with-deadline (minutes 71583) (sync (timeout (milliseconds 100))) "finished")
+          "finished")
+  (expect "the longest deadline does not either"
+          (with-deadline (ticks->duration 9223372036854775807L) (sync (timeout (milliseconds 20))) "finished")
+          "finished")
+  (expect "a shield takes a long deadline"
+          (with-shield #:within (minutes 71583) (sync (timeout (milliseconds 20))) "finished")
+          "finished")
+
+  ;; A deadline of zero or less has passed already: the scope is cancelled at
+  ;; once, and the body's sync raises.
+  (expect "a deadline of zero cancels at once"
+          (match (try (with-deadline (milliseconds 0) (sync (timeout (seconds 5))) "finished")
+                      #:catch (System.Exception))
+            ((Ok v) v)
+            ((Err _) "cancelled"))
+          "cancelled")
+  (expect "and so does one below zero"
+          (match (try (with-deadline (seconds -1) (sync (timeout (seconds 5))) "finished")
+                      #:catch (System.Exception))
+            ((Ok v) v)
+            ((Err _) "cancelled"))
+          "cancelled")
+
+  ;; The step after the last value passes int-max, and the walk stops.
+  (expect "steps of 3 up to int-max"
+          {listing x (:for x (range-by 2147483640 int-max 3))}
+          (list 2147483640 2147483643 2147483646))
+  (expect "a step of int-max"
+          {listing x (:for x (range-by 2147483646 int-max int-max))}
+          (list 2147483646))
+  (expect "a step that lands on hi"
+          {listing x (:for x (range-by 0 9 3))}
+          (list 0 3 6))
+  (expect "empty: hi is lo" {listing x (:for x (range-by 5 5 3))} (list))
+  (expect "empty: hi below lo" {listing x (:for x (range-by 5 3 2))} (list))
+  (expect "from int-min"
+          {listing x (:for x (range-by -2147483648 -2147483640 4))}
+          (list -2147483648 -2147483644))
+
+  ;; length counts in longs.
+  (expect "length of a range-by" (length (range-by 0 10 3)) 4)
+  (expect "length up to int-max" (length (range-by 2147483640 int-max 3)) 3)
+  (expect "length of a step of int-max over a span of more than int-max"
+          (length (range-by -10 int-max int-max))
+          2)
+  (expect "length of an empty range-by" (length (range-by 5 3 2)) 0)
+  (expect "length of a range" (length (range 0 10)) 10)
+  (expect "length of a range up to int-max" (length (range 2147483600 int-max)) 47)
+  (expect "a range-by is empty?" (empty? (range-by 5 5 1)) #t)
+
+  ;; A range walks as before.
+  (expect "a range" {listing x (:for x (range 2147483645 int-max))}
+          (list 2147483645 2147483646))
+  0)

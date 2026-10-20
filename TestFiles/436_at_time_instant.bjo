@@ -1,0 +1,34 @@
+;; (std datetime)'s at-time is ready at an Instant: not before it, at once
+;; when it has passed, and one event made once is a budget for a whole loop.
+(import (std prelude))
+(import (std datetime))
+(import (std simpletest))
+
+;; Which of an at-time and a timeout of 2 seconds is ready first.
+(: (-bjo-> Instant string))
+(defbjo (race-at i)
+  (sync (choose (wrap (at-time i) (fun (u) "at-time"))
+                (wrap (timeout (seconds 2)) (fun (u) "timeout")))))
+
+(defbjo (main)
+  (def start (monotonic-ms))
+  (sync (at-time (+milliseconds (now) 80L)))
+  (expect-true "it waits until the instant" (>= (- (monotonic-ms) start) 70L))
+
+  (expect "an instant that has passed is ready at once"
+          (race-at (-seconds (now) 1L)) "at-time")
+  (expect "a near instant beats a later timeout"
+          (race-at (+milliseconds (now) 50L)) "at-time")
+  (expect "a far instant loses to a nearer timeout"
+          (race-at (+hours (now) 1L)) "timeout")
+
+  ;; One event, offered on every round: the instant does not move.
+  (def budget (at-time (+milliseconds (now) 150L)))
+  (def rounds
+    (let go ((n 0))
+      (match (sync (choose (wrap (timeout (milliseconds 20)) (fun (u) #t))
+                           (wrap budget (fun (u) #f))))
+        (#t (go (+ n 1)))
+        (#f n))))
+  (expect-true "the budget ends a loop of shorter waits" (and (>= rounds 3) (<= rounds 8)))
+  0)

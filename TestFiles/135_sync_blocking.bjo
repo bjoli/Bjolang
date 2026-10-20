@@ -27,7 +27,7 @@
 
 (: (-> int int))
 (defbjo (adds-up n)
-  (sync (timeout 10))
+  (sync (timeout (milliseconds 10)))
   (+ n n))
 
 (: (-bjo-> int))
@@ -54,14 +54,14 @@
   ;; own way out built in.
   (expect "a timeout composes, and wins"
           (match (sync/blocking (choose (wrap (chan-recv (make-chan)) (fun (v) (Got v)))
-                                        (wrap (timeout 50) (fun (u) TimedOut))))
+                                        (wrap (timeout (milliseconds 50)) (fun (u) TimedOut))))
             ((Got v) v)
             (TimedOut "nothing came"))
           "nothing came")
 
   (expect "a timeout composes, and loses"
           (match (sync/blocking (choose (wrap (always "here already") (fun (v) (Got v)))
-                                        (wrap (timeout 10000) (fun (u) TimedOut))))
+                                        (wrap (timeout (seconds 10)) (fun (u) TimedOut))))
             ((Got v) v)
             (TimedOut "timed out"))
           "here already")

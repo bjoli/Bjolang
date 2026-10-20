@@ -79,7 +79,7 @@
     @item{@strong{Timeouts are yours.} @code{HttpClient.Timeout} is switched
     off, because it cannot be varied per request and arrives as a
     cancellation that cannot be told from a real one. Race a
-    @code{(timeout ms)} branch, or use @code{with-deadline}.}
+    @code{(timeout d)} branch, or use @code{with-deadline}.}
     @item{@strong{A request that has to be losable is @code{fetching}, not
     @code{fetch}.} @code{fetch} waits for one thing; only an event can be a
     branch of a @code{choose}.}
@@ -234,7 +234,7 @@
     ;; because a scope waits for its children before it returns, and waiting
     ;; is a yield point.
     (defbjo (main args)
-      (with-deadline 5000
+      (with-deadline (seconds 5)
         (match (fetch (http-get "https://example.com/slow"))
           ((Ok r) (println (response-text r)) (response-close r) 0)
           ((Err e) (println "gave up") 1))))
@@ -261,7 +261,7 @@
     (defbjo (from-a-mirror)
       (match (sync (choose (wrap (fetching (http-get "https://eu.example.com/fruit")) (fun (a) (Got a)))
                            (wrap (fetching (http-get "https://us.example.com/fruit")) (fun (a) (Got a)))
-                           (wrap (timeout 2000) (fun (fired) TimedOut))))
+                           (wrap (timeout (seconds 2)) (fun (fired) TimedOut))))
         ((Got (Ok r))  (let ((body (response-text r))) (response-close r) body))
         ((Got (Err e)) "failed")
         (TimedOut      "no mirror responded")))
@@ -274,7 +274,7 @@
         ((Ok r) (Ok r))
         ((Err e) (if (= tries 0)
                      (Err e)
-                     (let () (sync (timeout 250)) (with-retries req (- tries 1)))))))
+                     (let () (sync (timeout (milliseconds 250))) (with-retries req (- tries 1)))))))
     """)
   (reference """
     What to reach for when the request has to be a branch of a
@@ -442,7 +442,7 @@
     @code{HttpClient.Timeout} is off on purpose. It applies to every call
     made through the client, cannot be varied per request, and arrives as a
     cancellation that cannot be told from a real one. Race a
-    @code{(timeout ms)} branch, or use @code{with-deadline}.
+    @code{(timeout d)} branch, or use @code{with-deadline}.
     """))
 
 (:doc current-http-client

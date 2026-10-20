@@ -11,7 +11,7 @@
 
 (: (-> (Chan int) void))
 (defbjo (send-later ch)
-  (sync (timeout 200))
+  (sync (timeout (milliseconds 200)))
   (sync (chan-send ch 42)))
 
 (defbjo (main)
@@ -21,7 +21,7 @@
   (def r (try (sync (choose (chan-recv ch) (guard failing))) #:catch (System.Exception)))
   (expect "the sync raises the guard's exception" (match r ((Ok _) "a value") ((Err _) "raised")) "raised")
   (def got (sync (choose (wrap (chan-recv ch) (fun (v) (->str v)))
-                         (wrap (timeout 5000) (fun (u) "timed out")))))
+                         (wrap (timeout (seconds 5)) (fun (u) "timed out")))))
   (expect "the value goes to the next receive" got "42")
 
   ;; A with-nack published before the guard raised sees its nack.
@@ -34,5 +34,5 @@
                #:catch (System.Exception)))
   (expect "the second sync raises too" (match r2 ((Ok _) "a value") ((Err _) "raised")) "raised")
   (def seen (sync (choose (chan-recv nacked)
-                          (wrap (timeout 5000) (fun (u) "no nack")))))
+                          (wrap (timeout (seconds 5)) (fun (u) "no nack")))))
   (expect "the with-nack's nack fires" seen "nacked"))

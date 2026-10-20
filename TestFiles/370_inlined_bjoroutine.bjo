@@ -12,13 +12,13 @@
 (: (-bjo-> int int))
 (defbjo (nested-depth n) #:inline
   (parameterize ((depth n))
-    (sync (timeout 1))
+    (sync (timeout (milliseconds 1)))
     (parameter-ref depth)))
 
 ;; A failure inside the callee reaches the caller as the call's failure.
 (: (-bjo-> int int))
 (defbjo (fails-after zero) #:inline
-  (sync (timeout 1))
+  (sync (timeout (milliseconds 1)))
   (/ 10 zero))
 
 ;; Parks until its scope is cancelled.
@@ -50,7 +50,7 @@
   (def p
     (with-cancel (cancel)
       (def p (bjo (caller ch)))
-      (sync (timeout 20))
+      (sync (timeout (milliseconds 20)))
       (def stopped (cancel (Requested "stop")))
       p))
   (expect "a fiber parked in a copy is cancelled"
