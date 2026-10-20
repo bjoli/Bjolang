@@ -326,8 +326,8 @@ let metadata
         ownModuleDecls
         |> TypedAST.collectDecls (function
             | TypedAST.TImpl(traitName, _, _, targetType, _, _, _, _) ->
-                match TypedAST.implCtorKey targetType with
-                | Some name when name <> TypedAST.BlanketCtor -> [ traitName, name ]
+                match TypedAST.implCtorKey targetType, TypedAST.implKey targetType with
+                | Some ctor, Some key when ctor <> TypedAST.BlanketCtor -> [ traitName, key ]
                 | _ -> []
             | _ -> [])
         |> Set.ofList
@@ -394,9 +394,9 @@ let metadata
     let inlineTemplatesToExport =
         env.Registry.InlineMethods
         |> Map.toList
-        |> List.filter (fun ((traitName, _, ctor), (tpl: TypedAST.InlineTemplate)) ->
+        |> List.filter (fun ((traitName, _, implKey), (tpl: TypedAST.InlineTemplate)) ->
             (Map.containsKey traitName exportedTraits
-             || (Set.contains (traitName, ctor) ownImplKeys
+             || (Set.contains (traitName, implKey) ownImplKeys
                  && not (Set.contains traitName ownTraitNames)
                  && isNoopBody tpl.Body))
             && publishableBody tpl)
@@ -749,7 +749,7 @@ let metadata
             // order is the constructor's, so it is preserved as read.
             let serializeImpl
                 (traitName: string)
-                (typeKey: string)
+                (implKey: string)
                 (targetType: TypedAST.HMType)
                 (assocMap: Map<string, TypedAST.HMType>)
                 =
@@ -760,7 +760,7 @@ let metadata
                     |> String.concat " "
 
                 let whereStr =
-                    match Map.tryFind (traitName, typeKey) env.Registry.ImplTargets with
+                    match Map.tryFind (traitName, implKey) env.Registry.ImplTargets with
                     | Some target when not target.Constraints.IsEmpty ->
                         let parts =
                                                     target.Constraints |> List.map constraintText |> String.concat " "
@@ -1208,12 +1208,15 @@ let metadata
                 // are omitted from exported metadata. They are derived directly
                 // from the trait definition, and importing modules re-register
                 // them automatically when reading back the trait.
-                |> List.filter (fun ((_, typeKey), _) -> not (Naming.isDynType typeKey))
+                |> List.filter (fun ((traitName, implKey), _) ->
+                    match Map.tryFind (traitName, implKey) env.Registry.ImplTargets with
+                    | Some target -> not (Naming.isDynType target.Ctor)
+                    | None -> true)
                 |> List.filter (fun ((traitName, _) as key, _) ->
                     Map.containsKey traitName exportedTraits
                     || (Set.contains key ownImplKeys && not (Set.contains traitName ownTraitNames)))
-                |> List.map (fun ((traitName, typeKey), (targetType, assocMap)) ->
-                    (traitName, typeKey), serializeImpl traitName typeKey targetType assocMap)
+                |> List.map (fun ((traitName, implKey), (targetType, assocMap)) ->
+                    (traitName, targetType), serializeImpl traitName implKey targetType assocMap)
 
             let implDecls = implEntries |> List.map snd
 
@@ -1264,8 +1267,16 @@ let metadata
                 for text in traitDecls do
                     check "an exported trait" text
 
-                for (traitName, typeKey), text in implEntries do
-                    check $"the implementation of '%s{traitName}' for '%s{bare typeKey}'" text
+                // This module's own types by the names its source wrote.
+                let rec ownBare (t: TypedAST.HMType) =
+                    match t with
+                    | TypedAST.TCon(name, args) -> TypedAST.TCon(bare name, List.map ownBare args)
+                    | TypedAST.TTuple args -> TypedAST.TTuple(List.map ownBare args)
+                    | TypedAST.TFun(args, ret, eff) -> TypedAST.TFun(List.map ownBare args, ownBare ret, eff)
+                    | other -> other
+
+                for (traitName, targetType), text in implEntries do
+                    check $"the implementation of '%s{traitName}' for '%s{DotNetInterop.showType (ownBare targetType)}'" text
 
             // Other modules' types that what crosses names, with their own
             // declarations, until nothing new is named. Read off the text for
@@ -1324,7 +1335,7 @@ let metadata
     let inlineTemplates =
         if isLibrary then
             inlineTemplatesToExport
-            |> List.map (fun ((traitName, methodName, ctor), tpl) ->
+            |> List.map (fun ((traitName, methodName, implKey), tpl) ->
                 // Foreign aliases the body names are rewritten to the
                 // names they were published under, so that the splice
                 // resolves them where they were written rather than
@@ -1333,7 +1344,7 @@ let metadata
 
                 ({ TraitName = traitName
                    MethodName = methodName
-                   Ctor = ctor
+                   ImplKey = implKey
                    OriginModule = tpl.OriginModule
                    Params = tpl.Params
                    Body = Codegen.serializeExprFrom tpl.OriginModule body

@@ -997,7 +997,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
                 let writable =
                     match prune env.Registry targetType with
                     | TCon(ctor, _) ->
-                        Map.containsKey ("Derefable!", ctor) env.Registry.ImplTargets
+                        hasImplAtHead env.Registry "Derefable!" ctor
                         || Map.containsKey "Derefable!" env.Registry.BlanketImpls
                     | TVar _ -> true
                     | _ -> false

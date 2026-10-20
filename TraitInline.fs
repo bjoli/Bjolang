@@ -419,14 +419,16 @@ let publishBodies
 // The pass
 // ---------------------------------------------------------------------------
 
-/// Keyed on the **constructor only**, never on the full type arguments.
+/// Keyed on the **implementation** (`implKey`), never on the type arguments a
+/// call gives it.
 ///
 /// That is deliberate: `Vec<Vec<int>>` and `Vec<int>` share a key, so the inner
 /// one falls back to a call. Never incorrect, occasionally less inlining than
-/// would be theoretically possible — and a type-argument-aware key is exactly
-/// what reintroduces non-termination.
-let private inlineKey (traitName: string) (methodName: string) (ctor: string) =
-    $"%s{traitName}::%s{methodName}::%s{ctor}"
+/// would be theoretically possible — and a key that followed the call's type
+/// arguments is exactly what reintroduces non-termination. A program has
+/// finitely many implementations, so a key per implementation does not.
+let private inlineKey (traitName: string) (methodName: string) (implKey: string) =
+    $"%s{traitName}::%s{methodName}::%s{implKey}"
 
 /// The key of a function's body in `Active`, in the namespace of the trait keys
 /// but never equal to one: those hold two `::`, this one starts with `fn`.
@@ -529,7 +531,7 @@ let private localBinders (expr: TypedExpr) : Set<string> =
 /// The call that stands in for an inlined body: the impl's own method, named
 /// directly. Emitted whenever inlining would recur, whenever the occurrence
 /// check refuses, and whenever no template was registered at all.
-let private landingPad (env: Env) (tref: TraitRef) (ctor: string) (tyArgs: HMType list) (args: TypedExpr list) (kwArgs: (string * TypedExpr) list) (expr: TypedExpr) : TypedExpr =
+let private landingPad (env: Env) (tref: TraitRef) (implKey: string) (tyArgs: HMType list) (args: TypedExpr list) (kwArgs: (string * TypedExpr) list) (expr: TypedExpr) : TypedExpr =
     let kind =
         match Map.tryFind tref.Trait env.Registry.Traits with
         | Some info -> info.Kind
@@ -542,7 +544,7 @@ let private landingPad (env: Env) (tref: TraitRef) (ctor: string) (tyArgs: HMTyp
     // `(where (Num %a))` is handed back too, because `Lowering` checks that
     // constraint at the type the call is made at.
     let conditional =
-        match Map.tryFind (tref.Trait, ctor) env.Registry.ImplTargets with
+        match Map.tryFind (tref.Trait, implKey) env.Registry.ImplTargets with
         | Some target -> not target.Constraints.IsEmpty
         | None -> false
 
@@ -569,7 +571,7 @@ let private landingPad (env: Env) (tref: TraitRef) (ctor: string) (tyArgs: HMTyp
     let callee =
         { Type = calleeType
           Range = expr.Range
-          Node = TIdent(landingPadName kind tref.Trait ctor tref.Method, tyArgs) }
+          Node = TIdent(landingPadName kind tref.Trait implKey tref.Method, tyArgs) }
         : TypedExpr
 
     { expr with Node = TApply(callee, args, kwArgs) }
@@ -601,9 +603,9 @@ let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
         // exclude blankets explicitly.
         | None -> { expr with Node = TTraitCall(tref, args, kwArgs) }
 
-        | Some(ctor, tyArgs) ->
-            let key = inlineKey tref.Trait tref.Method ctor
-            let template = Map.tryFind (tref.Trait, tref.Method, ctor) ctx.Env.Registry.InlineMethods
+        | Some(implKey, tyArgs) ->
+            let key = inlineKey tref.Trait tref.Method implKey
+            let template = Map.tryFind (tref.Trait, tref.Method, implKey) ctx.Env.Registry.InlineMethods
 
             // A suspending method is never spliced, and the reason is not the
             // splice itself — it is that splicing dissolves the *call*, and the
@@ -640,13 +642,13 @@ let rec private inlineExpr (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
                 spliceTemplate
                     ctx
                     key
-                    $"the '%s{tref.Method}' implementation of '%s{tref.Trait}' for '%s{ctor}'"
+                    $"the '%s{tref.Method}' implementation of '%s{tref.Trait}' for '%s{implKey}'"
                     tpl
                     args
                     expr
                     TraitMethod
-                    (fun () -> landingPad ctx.Env tref ctor tyArgs args [] expr)
-            | _ -> landingPad ctx.Env tref ctor tyArgs args kwArgs expr
+                    (fun () -> landingPad ctx.Env tref implKey tyArgs args [] expr)
+            | _ -> landingPad ctx.Env tref implKey tyArgs args kwArgs expr
 
     | TApply({ Node = TIdent(name, _) } as callee, args, []) ->
         let args = args |> List.map (inlineExpr ctx)
@@ -1073,16 +1075,16 @@ let rec private inlineDecl (ctx: Ctx) (decl: TDecl) : TDecl =
 
     | TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods, r) ->
         // A blanket impl's methods key off the sentinel exactly as a specific
-        // impl's key off their constructor, and a tuple's off its arity.
+        // impl's key off its `implKey`, and a tuple's off its arity.
         // Getting this wrong would not be a miscompile — the key would simply
         // never match, and every self-call in such a body would inline one
         // gratuitous copy of itself before falling back.
-        let ctor = implCtorKey targetType |> Option.defaultValue ""
+        let key = implKey targetType |> Option.defaultValue ""
 
         // A splice is checked again in a body, so under the pins the body was
         // checked under: those of the where clause.
         let ctx =
-            match Map.tryFind (traitName, ctor) ctx.Env.Registry.ImplTargets with
+            match Map.tryFind (traitName, key) ctx.Env.Registry.ImplTargets with
             | Some target -> { ctx with Env = withPinsOf target.Constraints ctx.Env }
             | None -> ctx
 
@@ -1091,7 +1093,7 @@ let rec private inlineDecl (ctx: Ctx) (decl: TDecl) : TDecl =
         // `LoopLowering` then recognizes and turns into a loop — rather than one
         // gratuitous copy of the body inside itself.
         let methodCtx (methodName: string) =
-            { ctx with Active = Set.add (inlineKey traitName methodName ctor) ctx.Active }
+            { ctx with Active = Set.add (inlineKey traitName methodName key) ctx.Active }
 
         let methods =
             methods

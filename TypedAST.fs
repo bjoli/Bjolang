@@ -1282,6 +1282,8 @@ let onlyParams (names: string list) : LocalFun =
 ///     (impl (Monad (Result %e %a)) ...)   Ctor = "Result", FixedPrefix = ['e]
 type ImplTarget =
     { Ctor: string
+      /// The key the implementation is filed under: see `implKey`.
+      Key: string
       FixedPrefix: HMType list
       HoleArity: int
       /// What the impl demands of its own type variables — the `(where ...)` of
@@ -1299,9 +1301,9 @@ type ImplTarget =
 /// no impl of its own.
 ///
 /// `*` is deliberately not a legal constructor name, so this cannot collide with
-/// a real one in `ImplTargets`, `Implementations` or `InlineMethods` — all three
-/// of which are keyed by constructor. It is spelled `Blanket` in the C# class
-/// name; see `implClassName`.
+/// a real one in `ImplTargets`, `Implementations` or `InlineMethods`, where it
+/// is the blanket's key. It is spelled `Blanket` in the C# class name; see
+/// `implClassName`.
 [<Literal>]
 let BlanketCtor = "*"
 
@@ -1329,6 +1331,56 @@ let implCtorKey (targetType: HMType) : string option =
     | TVar _ -> Some BlanketCtor
     | TTuple args -> Some(tupleCtor args.Length)
     | _ -> None
+
+/// The key of an implementation whose target is the head `ctor` applied to
+/// distinct type variables: the head's key itself. Most implementations are
+/// of this kind, and their C# names are the head's.
+let genericImplKey (ctor: string) = ctor
+
+/// The key an implementation is filed under in `ImplTargets`,
+/// `Implementations` and `InlineMethods`, and that `TraitRef.Resolved` names.
+///
+/// The head is not enough: `(List int)` and `(List string)` have one head and
+/// are two implementations. So a target that is not its head applied to
+/// distinct type variables has its arguments in the key too, with the type
+/// variables numbered in order of first appearance: `List(int)`,
+/// `Pair(%0 %0)`. A parenthesis cannot be part of a constructor name, so no
+/// such key is also a head's key.
+let implKey (targetType: HMType) : string option =
+    match implCtorKey targetType with
+    | None -> None
+    | Some ctor ->
+        let args =
+            match targetType with
+            | TCon(_, args)
+            | TTuple args -> args
+            | _ -> []
+
+        let vars = args |> List.choose (function TVar v -> Some v | _ -> None)
+
+        if vars.Length = args.Length && (List.distinct vars).Length = vars.Length then
+            Some(genericImplKey ctor)
+        else
+            let mutable numbering = Map.empty
+
+            let rec text (t: HMType) =
+                match t with
+                | TVar v ->
+                    match Map.tryFind v numbering with
+                    | Some n -> $"%%%d{n}"
+                    | None ->
+                        let n = numbering.Count
+                        numbering <- Map.add v n numbering
+                        $"%%%d{n}"
+                | TMeta { Value = Some inner } -> text inner
+                | TCon(name, []) -> name
+                | TCon(name, xs) -> "(" + String.concat " " (name :: List.map text xs) + ")"
+                | TTuple xs -> "(" + String.concat " " (tupleCtor xs.Length :: List.map text xs) + ")"
+                | TFun(xs, ret, _) -> "(-> " + String.concat " " (List.map text (xs @ [ ret ])) + ")"
+                | TAssoc(traitName, assocName, inner) -> $"(assoc %s{traitName} %s{assocName} %s{text inner})"
+                | other -> $"%A{other}"
+
+            Some(ctor + "(" + String.concat " " (List.map text args) + ")")
 
 /// A key and its arguments, put back together as the type they came from.
 let implTargetType (ctor: string) (args: HMType list) : HMType =
@@ -1572,12 +1624,17 @@ type TraitRegistry =
       /// application position through this, instead of searching every trait's
       /// signature map and taking whichever matched first.
       TraitMethods: Map<string, string>
-      // Maps (TraitName * TargetTypeIdentifier) -> (GenericTargetType * Map<AssociatedTypeName, HMType>)
+      // Maps (TraitName * ImplKey) -> (GenericTargetType * Map<AssociatedTypeName, HMType>)
       // The GenericTargetType preserves TVars (e.g. TCon("List", [TVar "'a"]))
       // so ResolveAssociatedType can substitute them when given a concrete type.
+      // `ImplsByHead` finds the keys from a head.
       Implementations: Map<string * string, HMType * Map<string, HMType>>
       /// The same implementations, as target *patterns*.
       ImplTargets: Map<string * string, ImplTarget>
+      /// The keys of the implementations of a trait at a head, by trait and
+      /// head key (`implCtorKey`). A type is looked up here by its head, and
+      /// the implementations found are then matched against its arguments.
+      ImplsByHead: Map<string * string, string list>
       /// Blanket impls, by trait: the one that applies when the exact head
       /// constructor has none of its own.
       ///
@@ -1610,11 +1667,11 @@ type TraitRegistry =
       /// Empty outside those bodies; matched by rigid variable name or by
       /// metavariable identity, never structurally.
       PinnedAssocs: (string * string * HMType * HMType) list
-      /// Inlineable method bodies, keyed `TraitName * MethodName * Ctor`.
+      /// Inlineable method bodies, keyed `TraitName * MethodName * ImplKey`.
       ///
-      /// The constructor is part of the key on purpose: `(TraitName, MethodName)`
-      /// alone collides between `Monad for List` and `Monad for Option`, and the
-      /// second registration would silently win.
+      /// The implementation is part of the key on purpose: `(TraitName,
+      /// MethodName)` alone collides between `Monad for List` and `Monad for
+      /// Option`, and the second registration would silently win.
       InlineMethods: Map<string * string * string, InlineTemplate>
       /// The bodies of constrained generic functions, keyed by name.
       ///
@@ -1829,19 +1886,18 @@ type TraitRegistry =
             // `matchTypes` already treats one as a wildcard, so the
             // substitution it yields binds the implementor to the concrete type
             // and the association is read off exactly as for a specific impl.
-            let entry =
-                match Map.tryFind (traitName, tk) this.Implementations with
-                | Some e -> Some e
-                | None -> Map.tryFind (traitName, BlanketCtor) this.Implementations
+            let entries =
+                match Map.tryFind (traitName, tk) this.ImplsByHead with
+                | Some(_ :: _ as keys) -> keys |> List.choose (fun k -> Map.tryFind (traitName, k) this.Implementations)
+                | _ -> Map.tryFind (traitName, genericImplKey BlanketCtor) this.Implementations |> Option.toList
 
-            match entry with
-            | Some (genericTarget, assocMap) ->
+            entries
+            |> List.tryPick (fun (genericTarget, assocMap) ->
                 match matchTypes genericTarget implType Map.empty with
                 | Some subst ->
                     Map.tryFind assocName assocMap
                     |> Option.map (applySubstLocal subst)
-                | None -> None
-            | None -> None
+                | None -> None)
         | None -> None
 
 type Env =
@@ -1949,23 +2005,49 @@ let traitMethodOf (registry: TraitRegistry) (methodKey: string) : (string * stri
     | Some traitName -> Some(traitName, Naming.bareTraitName methodKey)
     | None -> None
 
+/// The implementations of `traitName` at the head `ctor`, blanket excluded.
+let implsAtHead (registry: TraitRegistry) (traitName: string) (ctor: string) : ImplTarget list =
+    match Map.tryFind (traitName, ctor) registry.ImplsByHead with
+    | Some keys -> keys |> List.choose (fun k -> Map.tryFind (traitName, k) registry.ImplTargets)
+    | None -> []
+
+/// Whether `traitName` has an implementation at the head `ctor`, blanket
+/// excluded.
+let hasImplAtHead (registry: TraitRegistry) (traitName: string) (ctor: string) : bool =
+    match Map.tryFind (traitName, ctor) registry.ImplsByHead with
+    | Some keys -> not keys.IsEmpty
+    | None -> false
+
 let addImplementation
     (traitName: string)
-    (typeKey: string)
     (targetType: HMType)
     (implTarget: ImplTarget)
     (assocBindings: Map<string, HMType>)
     (env: Env)
     : Env =
+    let key = implTarget.Key
+    let typeKey = implTarget.Ctor
+
+    let atHead =
+        match Map.tryFind (traitName, typeKey) env.Registry.ImplsByHead with
+        | Some keys when List.contains key keys -> keys
+        | Some keys -> keys @ [ key ]
+        | None -> [ key ]
+
     let newRegistry =
         { env.Registry with
-            Implementations = Map.add (traitName, typeKey) (targetType, assocBindings) env.Registry.Implementations
-            ImplTargets = Map.add (traitName, typeKey) implTarget env.Registry.ImplTargets
+            Implementations = Map.add (traitName, key) (targetType, assocBindings) env.Registry.Implementations
+            ImplTargets = Map.add (traitName, key) implTarget env.Registry.ImplTargets
+            ImplsByHead =
+                if typeKey = BlanketCtor then
+                    env.Registry.ImplsByHead
+                else
+                    Map.add (traitName, typeKey) atHead env.Registry.ImplsByHead
             // A blanket is registered under the sentinel key like any other
             // impl — so that serialization, associated-type resolution and the
-            // inline templates all treat it uniformly — and *additionally* in
-            // its own map, which is the one resolution consults after an exact
-            // head lookup misses.
+            // inline templates all treat it uniformly — and in its own map,
+            // which is the one resolution consults after an exact head lookup
+            // misses, rather than under a head.
             BlanketImpls =
                 if typeKey = BlanketCtor then
                     Map.add traitName implTarget env.Registry.BlanketImpls
@@ -2231,22 +2313,50 @@ let clrConstraints (registry: TraitRegistry) (target: ImplTarget) : TraitConstra
 let addInlineTemplate
     (traitName: string)
     (methodName: string)
-    (ctor: string)
+    (implKey: string)
     (template: InlineTemplate)
     (env: Env)
     : Env =
     { env with
         Registry =
             { env.Registry with
-                InlineMethods = Map.add (traitName, methodName, ctor) template env.Registry.InlineMethods } }
+                InlineMethods = Map.add (traitName, methodName, implKey) template env.Registry.InlineMethods } }
 
-/// The C# class an implementation is emitted as.
+/// The C# class an implementation is emitted as, from its key (`implKey`).
 ///
 /// The blanket sentinel is not an identifier, so it is spelled out:
 /// `Discard_Blanket`, generic in the implementor, which is what makes
 /// `Discard_Blanket<int>.Instance` the dictionary for a type that has no impl
 /// of its own.
-let implClassName (traitName: string) (targetTypeName: string) =
+///
+/// A key with arguments, `List(int)`, gives the head's name, then the
+/// arguments with each character that is not a letter or a digit made `_`,
+/// then a hash of the arguments as written: `Show_List_int_1a2b3c4d`. The
+/// readable part alone could make two keys one name; the hash keeps them
+/// apart.
+let implClassName (traitName: string) (implKey: string) =
+    let targetTypeName, arguments =
+        match implKey.IndexOf '(' with
+        | -1 -> implKey, ""
+        | i -> implKey.Substring(0, i), implKey.Substring i
+
+    let suffix =
+        if arguments = "" then
+            ""
+        else
+            let readable =
+                arguments
+                |> String.map (fun c -> if System.Char.IsLetterOrDigit c then c else '_')
+                |> fun s -> s.Split('_', System.StringSplitOptions.RemoveEmptyEntries)
+                |> String.concat "_"
+
+            // FNV-1a: the same on every run, which `String.GetHashCode` is not.
+            let hash =
+                arguments
+                |> Seq.fold (fun (h: uint32) c -> (h ^^^ uint32 c) * 16777619u) 2166136261u
+
+            $"_%s{readable}_%08x{hash}"
+
     let flattened =
         if targetTypeName = BlanketCtor then "Blanket"
         // A `dyn` type key contains spaces. For the trait's own auto-impl, the
@@ -2266,7 +2376,7 @@ let implClassName (traitName: string) (targetTypeName: string) =
         elif Naming.isModuleKey targetTypeName then Naming.emittedTypeName targetTypeName
         else targetTypeName.Replace(".", "_")
 
-    $"%s{traitName}_%s{flattened}"
+    $"%s{traitName}_%s{flattened}%s{suffix}"
 
 /// The name a dictionary is passed and stored under: a parameter of a
 /// constrained generic function, a field of a conditional impl's class, and the
@@ -2280,8 +2390,8 @@ let dictParamName (traitName: string) (typeVarName: string) =
 /// `Codegen` inserts the class's type arguments *before* the `::`, so this names
 /// a class and its static field rather than a member path — `Foldable_Vec<int>`
 /// followed by `.Instance`.
-let implSingletonName (traitName: string) (targetTypeName: string) =
-    $"%s{implClassName traitName targetTypeName}::Instance"
+let implSingletonName (traitName: string) (implKey: string) =
+    $"%s{implClassName traitName implKey}::Instance"
 
 /// The factory of a *conditional* implementation: `ToStr_List::Make`.
 ///
@@ -2290,14 +2400,14 @@ let implSingletonName (traitName: string) (targetTypeName: string) =
 /// factory is a static method rather than a bare constructor so that the one
 /// name carries the class's type arguments through the `::` spelling every
 /// other landing pad already uses — `Lowering` never has to spell C#.
-let implFactoryName (traitName: string) (targetTypeName: string) =
-    $"%s{implClassName traitName targetTypeName}::Make"
+let implFactoryName (traitName: string) (implKey: string) =
+    $"%s{implClassName traitName implKey}::Make"
 
 /// The landing pad for an interface-trait method: the impl class's methods are
 /// instance methods, so the call goes through the singleton. `Codegen` rewrites
 /// `::` to `.`.
-let implInstanceMethodName (traitName: string) (targetTypeName: string) (methodName: string) =
-    $"%s{implClassName traitName targetTypeName}.Instance::%s{methodName}"
+let implInstanceMethodName (traitName: string) (implKey: string) (methodName: string) =
+    $"%s{implClassName traitName implKey}.Instance::%s{methodName}"
 
 /// The landing pad for an inline-trait method. There is no interface and no
 /// singleton to route through, so the method is `static` and the class names it
@@ -2307,14 +2417,14 @@ let implInstanceMethodName (traitName: string) (targetTypeName: string) (methodN
 /// something can be proven to need it. It costs one static method, and it is
 /// what makes the recursion guard, the occurrence-check fallback, and use of a
 /// trait method at a resolved type all work.
-let implStaticMethodName (traitName: string) (targetTypeName: string) (methodName: string) =
-    $"%s{implClassName traitName targetTypeName}::%s{methodName}"
+let implStaticMethodName (traitName: string) (implKey: string) (methodName: string) =
+    $"%s{implClassName traitName implKey}::%s{methodName}"
 
 /// The landing pad for a method of `kind`.
-let landingPadName (kind: TraitKind) (traitName: string) (targetTypeName: string) (methodName: string) =
+let landingPadName (kind: TraitKind) (traitName: string) (implKey: string) (methodName: string) =
     match kind with
-    | InterfaceTrait -> implInstanceMethodName traitName targetTypeName methodName
-    | InlineTrait -> implStaticMethodName traitName targetTypeName methodName
+    | InterfaceTrait -> implInstanceMethodName traitName implKey methodName
+    | InlineTrait -> implStaticMethodName traitName implKey methodName
 
 /// `f` applied to every declaration in the program, nested ones included.
 ///

@@ -124,8 +124,8 @@ let checkImplClrConstraints
 /// The one question every dispatch site has to ask before naming a class: a
 /// conditional impl is emitted without an `Instance`, so the landing pad that
 /// routes through one does not exist for it.
-let isConditional (env: Env) (traitName: string) (ctor: string) =
-    match Map.tryFind (traitName, ctor) env.Registry.ImplTargets with
+let isConditional (env: Env) (traitName: string) (implKey: string) =
+    match Map.tryFind (traitName, implKey) env.Registry.ImplTargets with
     | Some target -> not (dictionaryConstraints env.Registry target).IsEmpty
     | None -> false
 
@@ -232,24 +232,24 @@ let rec buildEvidence
         // value routed through a constrained generic function gets the impl
         // chosen *here*, at the concrete instantiation, so it is the specific
         // one whenever there is one.
-        let hasSpecific = Map.containsKey (traitName, typeName) env.Registry.ImplTargets
+        let hasSpecific = hasImplAtHead env.Registry traitName typeName
 
-        let ctor, classTyArgs =
+        let classTyArgs =
             if hasSpecific then
-                typeName, tconArgs
+                tconArgs
             else
                 // The blanket's one class type parameter is the implementor
                 // itself, not the head's arguments.
-                BlanketCtor, [ resolved ]
+                [ resolved ]
 
         let selected =
             match implFor env.Registry traitName resolved with
             | Some found -> found
             | None when hasSpecific ->
                 let written =
-                    match Map.tryFind (traitName, typeName) env.Registry.ImplTargets with
-                    | Some target -> DotNetInterop.showType (implTargetType typeName target.FixedPrefix)
-                    | None -> Naming.showTypeName typeName
+                    match implsAtHead env.Registry traitName typeName with
+                    | target :: _ -> DotNetInterop.showType (implTargetType typeName target.FixedPrefix)
+                    | [] -> Naming.showTypeName typeName
 
                 failwithf
                     $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType resolved}', needed %s{describe}. The implementation for '%s{Naming.showTypeName typeName}' is written for '%s{written}' only."
@@ -265,7 +265,7 @@ let rec buildEvidence
 
         // An impl whose target is not all distinct variables — `(Array byte)`,
         // `(Pair %a %a)` — is a class over the variables it does have, as
-        // `Codegen` declares it: `ToSql_Array`, with none.
+        // `Codegen` declares it: `ToSql_Array_System_Byte_…`, with none.
         let classTyArgs =
             let target, subst = selected
             // In the order `Codegen.collectTypeVars` gives the class's.
@@ -287,10 +287,12 @@ let rec buildEvidence
             else
                 vars |> List.map (fun v -> Map.tryFind v subst |> Option.defaultValue (TVar v))
 
+        let implKey = (fst selected).Key
+
         if constraints.IsEmpty then
             { Type = dictType
               Range = range
-              Node = TIdent(implSingletonName traitName ctor, classTyArgs) }
+              Node = TIdent(implSingletonName traitName implKey, classTyArgs) }
         else
             // A conditional impl has no singleton — it does not exist until the
             // dictionaries it stands on do — so the evidence is built by its
@@ -316,7 +318,7 @@ let rec buildEvidence
             let callee =
                 { Type = calleeType
                   Range = range
-                  Node = TIdent(implFactoryName traitName ctor, classTyArgs @ assocTyArgs) }
+                  Node = TIdent(implFactoryName traitName implKey, classTyArgs @ assocTyArgs) }
                 : TypedExpr
 
             { Type = dictType
@@ -332,7 +334,7 @@ let rec buildEvidence
     | TMeta _ when Map.containsKey traitName env.Registry.BlanketImpls ->
         { Type = dictType
           Range = range
-          Node = TIdent(implSingletonName traitName BlanketCtor, [ resolved ]) }
+          Node = TIdent(implSingletonName traitName env.Registry.BlanketImpls[traitName].Key, [ resolved ]) }
 
     // A structural type with no head constructor: a function, or a tuple of an
     // arity nothing implements. There is nothing to key an implementation by,
@@ -425,7 +427,7 @@ module DictionaryLowering =
 
             let node =
                 match tref.Resolved with
-                | Some(ctor, tyArgs) when isConditional env tref.Trait ctor ->
+                | Some(implKey, tyArgs) when isConditional env tref.Trait implKey ->
                     // A conditional impl, whose class has no `Instance` for a
                     // landing pad to route through. The dictionary is built for
                     // this one concrete type and dispatched on directly: still
@@ -448,7 +450,7 @@ module DictionaryLowering =
 
                     TInterfaceCall(dict.Type, tref.Method, tref.MethodType, dict, loweredArgs)
 
-                | Some(ctor, tyArgs) ->
+                | Some(implKey, tyArgs) ->
                     match tref.Holes with
                     | h :: _ -> checkImplClrConstraints env tref.Trait h expr.Range $"to call '%s{tref.Method}'"
                     | [] -> ()
@@ -474,7 +476,7 @@ module DictionaryLowering =
                     let callee =
                         { Type = calleeType
                           Range = expr.Range
-                          Node = TIdent(landingPadName kind tref.Trait ctor tref.Method, tyArgs) }
+                          Node = TIdent(landingPadName kind tref.Trait implKey tref.Method, tyArgs) }
                         : TypedExpr
 
                     TApply(callee, loweredArgs, loweredKwArgs)
@@ -774,7 +776,7 @@ module DictionaryLowering =
             // The bodies were checked with the pins of the where clause in
             // force, and the evidence built in them is read with them too.
             let env =
-                match implCtorKey targetType |> Option.bind (fun k -> Map.tryFind (traitName, k) env.Registry.ImplTargets) with
+                match implKey targetType |> Option.bind (fun k -> Map.tryFind (traitName, k) env.Registry.ImplTargets) with
                 | Some target -> withPinsOf target.Constraints env
                 | None -> env
 

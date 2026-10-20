@@ -104,7 +104,11 @@ open System.Text
 /// 23: a trait declared outside the standard library, and each of its methods,
 /// is named by its key (`Naming.traitKey`), and its bare name is a spelling of
 /// it. Read under the bare name, such a trait would be taken for another.
-let currentVersion = 23
+/// 24: an inline template names its implementation by `TypedAST.implKey`, which
+/// holds the target's arguments where the head alone does not name it:
+/// `List(int)` rather than `List`. A reader of 23 would file such a template
+/// under a key no call names.
+let currentVersion = 24
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {
@@ -136,7 +140,8 @@ type ExportedDef = {
 type InlineTemplateEntry = {
     TraitName: string
     MethodName: string
-    Ctor: string
+    /// The implementation the body belongs to, by its `TypedAST.implKey`.
+    ImplKey: string
     OriginModule: string
     /// Parameter names, body and qualification map stay three distinct fields.
     /// Bundling the parameters and body into a lambda would be worse than
@@ -420,7 +425,7 @@ let private getDef (c: Cursor) : ExportedDef =
 let private putTemplate (sb: StringBuilder) (t: InlineTemplateEntry) =
     putStr sb t.TraitName
     putStr sb t.MethodName
-    putStr sb t.Ctor
+    putStr sb t.ImplKey
     putStr sb t.OriginModule
     putList sb putStr t.Params
     putStr sb t.Body
@@ -429,7 +434,7 @@ let private putTemplate (sb: StringBuilder) (t: InlineTemplateEntry) =
 let private getTemplate (c: Cursor) : InlineTemplateEntry =
     let traitName = getStr c
     let methodName = getStr c
-    let ctor = getStr c
+    let implKey = getStr c
     let originModule = getStr c
     let params' = getList getStr c
     let body = getStr c
@@ -437,7 +442,7 @@ let private getTemplate (c: Cursor) : InlineTemplateEntry =
 
     { TraitName = traitName
       MethodName = methodName
-      Ctor = ctor
+      ImplKey = implKey
       OriginModule = originModule
       Params = params'
       Body = body

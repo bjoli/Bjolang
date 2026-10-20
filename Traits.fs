@@ -288,8 +288,8 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
     // the blanket fallback below safe — see the comment on it.
     | None -> false
     | Some ctor ->
-        match Map.tryFind (w.Trait, ctor) registry.ImplTargets with
-        | None ->
+        match implsAtHead registry w.Trait ctor with
+        | [] ->
             // Level two: the blanket, if the trait has one.
             //
             // Nothing is unified here, and nothing should be. A blanket imposes
@@ -306,7 +306,7 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
             // a value and detaching a promise are not the same act — without
             // generic code ever baking in the wrong one.
             match Map.tryFind w.Trait registry.BlanketImpls with
-            | Some _ ->
+            | Some blanket ->
                 let hole =
                     match w.HoleArgs with
                     | (m, _) :: _ -> prune registry m
@@ -314,7 +314,7 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
                         failwithf
                             $"Internal error: trait obligation for '%s{w.Trait}' has no implementor at %s{Lexer.formatPos w.Range}"
 
-                w.Ref.Resolved <- Some(BlanketCtor, [ hole ])
+                w.Ref.Resolved <- Some(blanket.Key, [ hole ])
                 true
             | None ->
                 // The type as the program writes it: `(Tuple long long)`, not
@@ -328,7 +328,7 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
 
                 failwithf
                     $"Type Error at %s{Lexer.formatPos w.Range}: no implementation of trait '%s{w.Trait}' for '%s{shown}', required by '%s{w.Method}'.%s{hint}"
-        | Some target ->
+        | target :: _ ->
             let prefix, classTypeArgs, subst = instantiateImplPrefix target
 
             for (m, occArgs) in w.HoleArgs do
@@ -357,7 +357,7 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
                     $"by the implementation of '%s{w.Trait}' for '%s{Naming.showTypeName ctor}', which '%s{w.Method}' uses"
                 )
 
-            w.Ref.Resolved <- Some(ctor, classTypeArgs |> List.map (prune registry))
+            w.Ref.Resolved <- Some(target.Key, classTypeArgs |> List.map (prune registry))
             true
 
 /// Runs the wanted queue to a fixpoint, then reports what is left.
@@ -598,6 +598,7 @@ let implTargetOf
                 $"Kind Error at %s{Lexer.formatPos r}: trait '%s{traitName}' abstracts over the last %d{info.HoleArity} argument(s) of its implementor, but '%s{ctor}' is applied to only %d{args.Length}. A constructor whose abstracted argument is not last — `Either e` in the first position — needs a newtype that flips them."
 
         { Ctor = ctor
+          Key = (implKey targetType).Value
           FixedPrefix = args |> List.take (args.Length - info.HoleArity)
           HoleArity = info.HoleArity
           Constraints = constraints }
@@ -624,6 +625,7 @@ let implTargetOf
                 $"Type Error at %s{Lexer.formatPos r}: a blanket implementation of '%s{traitName}' cannot have a where clause. Its target is the implementor itself, so the constraint would be discharged at the very type it is being proved for."
 
         { Ctor = BlanketCtor
+          Key = (implKey targetType).Value
           FixedPrefix = [ targetType ]
           HoleArity = 0
           Constraints = [] }
@@ -638,6 +640,7 @@ let implTargetOf
                 $"Kind Error at %s{Lexer.formatPos r}: trait '%s{traitName}' abstracts over the last %d{info.HoleArity} argument(s) of its implementor, and a tuple has no constructor for it to abstract over."
 
         { Ctor = tupleCtor args.Length
+          Key = (implKey targetType).Value
           FixedPrefix = args
           HoleArity = 0
           Constraints = constraints }
@@ -664,6 +667,7 @@ let registerDynImpl (traitName: string) (info: TraitInfo) (env: Env) : Env =
 
         let implTarget =
             { Ctor = key
+              Key = (implKey (TCon(key, vars))).Value
               FixedPrefix = vars
               HoleArity = 0
               // Unconditional: the box already contains its dictionary, so
@@ -672,7 +676,6 @@ let registerDynImpl (traitName: string) (info: TraitInfo) (env: Env) : Env =
 
         addImplementation
             traitName
-            key
             (TCon(key, vars))
             implTarget
             (List.zip info.AssociatedTypes vars |> Map.ofList)

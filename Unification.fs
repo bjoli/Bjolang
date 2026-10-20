@@ -156,7 +156,7 @@ let persistentTwinHint (registry: TraitRegistry) (traitName: string) (ctor: stri
     if traitName.EndsWith "!" then
         let twin = traitName.Substring(0, traitName.Length - 1)
 
-        if Map.containsKey (twin, ctor) registry.ImplTargets then
+        if hasImplAtHead registry twin ctor then
             $" '%s{shown}' is persistent, so it is not written in place: it implements '%s{twin}', whose methods answer a changed copy."
         else
             ""
@@ -236,14 +236,14 @@ let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTar
 
     match headed with
     | Some(ctor, args) ->
-        let target =
-            match Map.tryFind (traitName, ctor) registry.ImplTargets with
-            | Some target -> Some target
-            | None -> Map.tryFind traitName registry.BlanketImpls
+        let targets =
+            match implsAtHead registry traitName ctor with
+            | [] -> Map.tryFind traitName registry.BlanketImpls |> Option.toList
+            | targets -> targets
 
         // The impl's prefix is matched against the arguments, not only read
-        // for its variables: `(impl (Describe (List int)))` is keyed by `List`
-        // alone, and must not be selected for `(List string)`, nor
+        // for its variables: `(impl (Describe (List int)))` is found by its
+        // head, `List`, and must not be selected for `(List string)`, nor
         // `(Pair %a %a)` for `(Pair int string)`. A metavariable in the
         // arguments matches anything, since nothing decides it yet.
         let rec matchInto (subst: Map<string, HMType> option) (pattern: HMType) (actual: HMType) =
@@ -272,8 +272,8 @@ let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTar
             | TFun(xs, x, _), TFun(ys, y, _) -> xs.Length = ys.Length && List.forall2 sameType xs ys && sameType x y
             | x, y -> x = y
 
-        target
-        |> Option.bind (fun target ->
+        targets
+        |> List.tryPick (fun target ->
             let bound =
                 if target.Ctor = BlanketCtor then
                     [ implTargetType ctor args ]

@@ -299,6 +299,7 @@ let emptyRegistry : TraitRegistry =
       TraitMethods = Map.empty
       Implementations = Map.empty
       ImplTargets = Map.empty
+      ImplsByHead = Map.empty
       BlanketImpls = Map.empty
       TraitOrigins = Map.empty
       InlineMethods = Map.empty

@@ -5811,7 +5811,7 @@ let private materializableImpl
     (typeKey: string)
     (typeArity: int)
     : bool =
-    match Map.tryFind (traitName, typeKey) registry.ImplTargets with
+    match Map.tryFind (traitName, genericImplKey typeKey) registry.ImplTargets with
     | Some target ->
         let vars =
             target.FixedPrefix
@@ -5965,9 +5965,11 @@ let private agreementWithClr
 let private materializedReceiver
     (registry: TraitRegistry)
     (traitName: string)
-    (implKey: string)
+    (typeKey: string)
     (tyArgs: string)
     : string =
+    let implKey = genericImplKey typeKey
+
     match Map.tryFind (traitName, implKey) registry.ImplTargets with
     | Some target when not target.Constraints.IsEmpty -> materializedFieldName traitName
     | _ -> $"%s{implClassName (sanitizeIdent traitName) implKey}%s{tyArgs}.Instance"
@@ -6059,27 +6061,27 @@ let private materializedTraits = [ "Eq"; "Ord" ]
 /// at the first comparison" to working.
 let private materializedInterfaces
     (registry: TraitRegistry)
-    (implKey: string)
+    (typeKey: string)
     (typeArity: int)
     (selfType: string)
     : string list =
-    [ if materializableImpl registry "Ord" implKey typeArity then
+    [ if materializableImpl registry "Ord" typeKey typeArity then
           $"System.IComparable<%s{selfType}>" ]
 
 /// The body a declared type carries because of the implementations written for
 /// it, or `[]` if it carries none.
 let private materializedBody
     (registry: TraitRegistry)
-    (implKey: string)
+    (typeKey: string)
     (typeArity: int)
     (selfType: string)
     (tyArgs: string)
     (target: MaterializeTarget)
     : string list =
     materializedTraits
-    |> List.filter (fun t -> materializableImpl registry t implKey typeArity)
+    |> List.filter (fun t -> materializableImpl registry t typeKey typeArity)
     |> List.collect (fun t ->
-        materializedMembers t (materializedReceiver registry t implKey tyArgs) selfType target)
+        materializedMembers t (materializedReceiver registry t typeKey tyArgs) selfType target)
 
 /// The static fields and stand-in classes a type carries so that its
 /// conditional implementations have a dictionary to be called through, or `[]`.
@@ -6097,16 +6099,18 @@ let private materializedBody
 /// where the case classes nested in it can read a private member.
 let private materializedSupport
     (registry: TraitRegistry)
-    (implKey: string)
+    (typeKey: string)
     (typeArgs: string list)
     : string list =
+    let implKey = genericImplKey typeKey
+
     let tyArgs =
         if typeArgs.IsEmpty then ""
         else "<" + (typeArgs |> List.map typeParamName |> String.concat ", ") + ">"
 
     let conditional =
         materializedTraits
-        |> List.filter (fun t -> materializableImpl registry t implKey typeArgs.Length)
+        |> List.filter (fun t -> materializableImpl registry t typeKey typeArgs.Length)
         |> List.choose (fun t ->
             match Map.tryFind (t, implKey) registry.ImplTargets with
             | Some target when not target.Constraints.IsEmpty -> Some(t, target)
@@ -6965,10 +6969,10 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
     | TImpl (traitName, kind, holeArity, targetType, assocMap, dictFields, methods, _) ->
         // A blanket impl's target is a bare type variable, which becomes the
         // class's one type parameter: `Discard_Blanket<T_a> : Discard<T_a>`.
-        let targetTypeName = implCtorKey targetType |> Option.defaultValue "Unknown"
+        let key = implKey targetType |> Option.defaultValue "Unknown"
 
         let sanitizedTraitName = sanitizeIdent traitName
-        let className = implClassName sanitizedTraitName targetTypeName
+        let className = implClassName sanitizedTraitName key
 
         // The class's type parameters are the impl's *fixed prefix*. For an
         // interface trait that is the whole target; for an inline trait the
@@ -6990,7 +6994,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         // Then one for each associated type of a dictionary the class holds,
         // in the order `Lowering.buildEvidence` passes them.
         let assocParamVars =
-            match Map.tryFind (traitName, targetTypeName) ctx.Registry.ImplTargets with
+            match Map.tryFind (traitName, key) ctx.Registry.ImplTargets with
             | Some target -> implAssocTypeArgs ctx.Registry target |> List.map (fun (_, v, a) -> assocTypeVar v a)
             | None -> []
 
@@ -7021,7 +7025,7 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         // A `(where (Num %a))` is a C# `where` clause on the class, which every
         // method body reads `%a`'s members through.
         let whereStr =
-            match Map.tryFind (traitName, targetTypeName) ctx.Registry.ImplTargets with
+            match Map.tryFind (traitName, key) ctx.Registry.ImplTargets with
             | Some target -> clrWhereClauses ctx.Registry (clrConstraints ctx.Registry target)
             | None -> ""
 

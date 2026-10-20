@@ -358,7 +358,7 @@ let private inlineImplDecl (source: string) (entry: ModuleMetadata.InlineTemplat
     DInlineImpl(
         entry.TraitName,
         entry.MethodName,
-        entry.Ctor,
+        entry.ImplKey,
         entry.OriginModule,
         entry.Params,
         // The reader joins consecutive `defun`s into one group. `SeqFusion`

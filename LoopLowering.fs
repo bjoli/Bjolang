@@ -924,7 +924,7 @@ let rec private lowerDeclWith (aliasFor: string -> string list) (decl: TDecl) : 
         // a singleton, so both spellings have to be recognized.
         let implAlias (methodName: string) =
             match targetType with
-            | TCon(targetTypeName, _) -> [ landingPadName kind traitName targetTypeName methodName ]
+            | TCon _ -> implKey targetType |> Option.map (fun k -> landingPadName kind traitName k methodName) |> Option.toList
             | _ -> []
 
         TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods |> List.map (lowerDeclWith implAlias), r)

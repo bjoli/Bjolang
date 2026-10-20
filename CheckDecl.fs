@@ -30,7 +30,8 @@ open Bjolang.InferExpr
 /// (`Naming.typeKey`), so two modules may each declare a `Banana` and mean two
 /// types. Nothing else has to change to make that work — `Implementations`,
 /// `Unions`, `InlineMethods` and the impl class C# is emitted as are all keyed
-/// on a type's *name*, and the name is now unique.
+/// on a type's *name* (with its arguments, for an implementation at some), and
+/// the name is now unique.
 ///
 /// The bare name is what source goes on writing, here and in anything that
 /// imports this module plainly. It is filed as a spelling in the same table an
@@ -644,7 +645,7 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
         checkImpl env sigs traitName targetTypeExpr assocBindings whereClause implMethodWheres methods r
 
 
-    | DInlineImpl(traitName, methodName, ctor, originModule, parameters, body, qualification, r) ->
+    | DInlineImpl(traitName, methodName, implKey, originModule, parameters, body, qualification, r) ->
         // An inline template read back from a compiled module's metadata. Like
         // `DImplExtern` there is nothing to check and nothing to emit: the
         // landing pad is already compiled into the assembly that declared it,
@@ -653,7 +654,7 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
             addInlineTemplate
                 traitName
                 methodName
-                ctor
+                implKey
                 { Params = parameters
                   Body = body
                   Qualification = Map.ofList qualification
@@ -2816,7 +2817,7 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
 
     let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
     let regEnv =
-        let added = addImplementation traitName typeKey targetType implTarget hmAssocBindingsMap env
+        let added = addImplementation traitName targetType implTarget hmAssocBindingsMap env
         { added with ImplSites = Map.add (env.CurrentModule, traitName, typeKey) (targetType, r) added.ImplSites }
 
     // FIX 1: Prepend the "'" to the substitution keys so they match TVar "'c"
@@ -2890,7 +2891,7 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
                         addInlineTemplate
                             traitName
                             name
-                            implTarget.Ctor
+                            implTarget.Key
                             { Params = paramNames
                               Body = body
                               // Filled in after inference, where a
@@ -3328,10 +3329,8 @@ and private checkImplExtern (env: Env) (sigs: Sigs) (traitName: string) (targetT
     let traitName = originalName env.Registry traitName
     let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
 
-    let typeKey =
-        match implCtorKey targetType with
-        | Some k -> k
-        | None -> failwithf $"Trait implementations require concrete target types at %s{Lexer.formatPos r}"
+    if (implCtorKey targetType).IsNone then
+        failwithf $"Trait implementations require concrete target types at %s{Lexer.formatPos r}"
 
     let traitInfo =
         match Map.tryFind traitName env.Registry.Traits with
@@ -3354,7 +3353,7 @@ and private checkImplExtern (env: Env) (sigs: Sigs) (traitName: string) (targetT
         |> List.map (fun c -> { c with TraitName = originalName env.Registry c.TraitName })
 
     let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
-    addImplementation traitName typeKey targetType implTarget hmAssocBindings env, sigs, []
+    addImplementation traitName targetType implTarget hmAssocBindings env, sigs, []
 
 and internal checkDeclGroup
     (env: Env)

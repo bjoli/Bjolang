@@ -705,7 +705,7 @@ type Decl =
     // One inline-trait method body, read back out of a compiled module's
     // metadata. It is the *untyped* expression: re-inferring it at the splice is
     // what gives it a type its trait signature cannot express.
-    // DInlineImpl (TraitName, MethodName, Ctor, OriginModule, Params, Body, Qualification, Range)
+    // DInlineImpl (TraitName, MethodName, ImplKey, OriginModule, Params, Body, Qualification, Range)
     | DInlineImpl of string * string * string * string * string list * Expr * (string * string) list * Range
 
     /// Records that a name defined in this module is a macro.
