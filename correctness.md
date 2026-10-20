@@ -61,11 +61,11 @@ The repository itself was not modified, apart from adding this file.
 | `seconds` / `minutes` overflow `int`, so timeouts fire early and deadlines at the wrong time (prelude, concurrency #9): timers take a `Duration`, whose constructors raise past its range; timers count in `long` | `cbe225c` | `TestFiles/435_durations_and_range_by_stop.bjo` |
 | `length` of a `Range` whose span exceeds `int-max` is negative: counted in `long`, and a length past `int-max` panics | `b43e598` | `TestFiles/435_durations_and_range_by_stop.bjo` |
 | `range-by` walk wraps past `int-max` instead of stopping: `range-by` answers a `RangeBy`, whose walk ends at a stop value worked out once | `b43e598` | `TestFiles/435_durations_and_range_by_stop.bjo` |
-| Duplicate or overlapping `impl`s for one trait and head are not detected; the later replaces the earlier (types): a second is refused at the impl, naming the first | (uncommitted) | `TestFiles/errors/impl_duplicate.bjo`, `TestFiles/errors/impl_same_head.bjo` |
-| `import/extern` with a declared signature rejects integer literals (interop #3): a literal takes its declared parameter's type before the overload is chosen | (uncommitted) | `TestFiles/437_extern_declared_literals.bjo` |
-| Values of module-declared types, `Symbol` and `Keyword` cannot be passed to a .NET `object` parameter (interop #12): an `object` parameter takes any value but a function, scored as boxing | (uncommitted) | `TestFiles/438_object_parameter_takes_any_value.bjo` |
-| U+2028, U+2029 and U+0085 in a string literal end the emitted C# literal (CS1010): escaped as `\u` in string literals and in module metadata | (uncommitted) | `TestFiles/439_string_line_separators.bjo` |
-| `(- x)` on `uint` is widened to `long` (CS0266) and on `ulong` is undefined (CS0023): emitted as `unchecked(0u - x)` / `unchecked(0UL - x)` | (uncommitted) | `TestFiles/440_unsigned_negate.bjo` |
+| Duplicate or overlapping `impl`s for one trait and head are not detected; the later replaces the earlier (types): a second is refused at the impl, naming the first | `0fa1671` | `TestFiles/errors/impl_duplicate.bjo`, `TestFiles/errors/impl_same_head.bjo` |
+| `import/extern` with a declared signature rejects integer literals (interop #3): a literal takes its declared parameter's type before the overload is chosen | `00293dd` | `TestFiles/437_extern_declared_literals.bjo` |
+| Values of module-declared types, `Symbol` and `Keyword` cannot be passed to a .NET `object` parameter (interop #12): an `object` parameter takes any value but a function, scored as boxing | `90ae98e` | `TestFiles/438_object_parameter_takes_any_value.bjo` |
+| U+2028, U+2029 and U+0085 in a string literal end the emitted C# literal (CS1010): escaped as `\u` in string literals and in module metadata | `82aa824` | `TestFiles/439_string_line_separators.bjo` |
+| `(- x)` on `uint` is widened to `long` (CS0266) and on `ulong` is undefined (CS0023): emitted as `unchecked(0u - x)` / `unchecked(0UL - x)` | `051cc48` | `TestFiles/440_unsigned_negate.bjo` |
 
 ### Found fixed when re-checked (2026-10-20)
 
