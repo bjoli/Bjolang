@@ -1,0 +1,15 @@
+;; U+2028, U+2029 and U+0085 in a string literal. C# ends a line at each of
+;; them, so emitted raw they cut the C# string literal in two (CS1010).
+(import (std prelude))
+(import (std simpletest))
+(import "inc/line_separators.bjo")
+
+(defun (main args)
+  (def s "a  b")
+  (expect "a literal keeps all three, as UTF-8" (string-length s) 10)
+  (expect "a literal round-trips" (string->list s)
+          (list #\a #\x2028 #\x2029 #\x85 #\b))
+  (expect "from a function in another module" (sep-fun) s)
+  (expect "from a macro in another module" (sep-macro) s)
+  (expect "in a pattern" (match s ("a  b" 1) (_ 0)) 1)
+  0)

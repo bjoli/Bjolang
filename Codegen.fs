@@ -1251,8 +1251,12 @@ let getUnionTypeString (hm: HMType) (parentName: string) : string =
 /// it first: escaping only the quotes turns a `\` the source already had into
 /// the start of an escape sequence C# does not recognize, and `"a\c"` emits
 /// source that does not parse.
+///
+/// C# also ends a line at U+0085, U+2028 and U+2029, and a regular string
+/// literal cannot hold a line end, so these are written as `\u` escapes.
 let escapeStringLiteral (s: string) =
     s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r").Replace("\t", "\\t")
+     .Replace("\u0085", "\\u0085").Replace("\u2028", "\\u2028").Replace("\u2029", "\\u2029")
 
 /// A pattern that cannot fail.
 ///
@@ -7607,9 +7611,11 @@ let generateProgram
     for className in moduleUsings do
         appendLine ctx $"using static %s{className};"
         
-    // Backslashes are doubled *first* to avoid double escapes.
+    // Backslashes are doubled *first* to avoid double escapes. U+0085, U+2028
+    // and U+2029 end a line in C#, so they are escaped too.
     let escapeAttribute (s: string) =
         s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r")
+         .Replace("\u0085", "\\u0085").Replace("\u2028", "\\u2028").Replace("\u2029", "\\u2029")
 
     // One attribute for all of it. The parts have different readers on the far
     // side — a macro entry is read before the importing module is parsed, a
