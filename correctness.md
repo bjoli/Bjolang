@@ -62,6 +62,7 @@ The repository itself was not modified, apart from adding this file.
 | `length` of a `Range` whose span exceeds `int-max` is negative: counted in `long`, and a length past `int-max` panics | `b43e598` | `TestFiles/435_durations_and_range_by_stop.bjo` |
 | `range-by` walk wraps past `int-max` instead of stopping: `range-by` answers a `RangeBy`, whose walk ends at a stop value worked out once | `b43e598` | `TestFiles/435_durations_and_range_by_stop.bjo` |
 | Duplicate or overlapping `impl`s for one trait and head are not detected; the later replaces the earlier (types): a second is refused at the impl, naming the first | (uncommitted) | `TestFiles/errors/impl_duplicate.bjo`, `TestFiles/errors/impl_same_head.bjo` |
+| `import/extern` with a declared signature rejects integer literals (interop #3): a literal takes its declared parameter's type before the overload is chosen | (uncommitted) | `TestFiles/437_extern_declared_literals.bjo` |
 
 ### Found fixed when re-checked (2026-10-20)
 

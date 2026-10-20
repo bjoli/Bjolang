@@ -1,0 +1,28 @@
+;; A number literal passed to an import/extern with a declared signature takes
+;; the type the signature gives its parameter, so the overload chosen is the
+;; one the signature names. The literals were settled at int first, which chose
+;; Max(int, int), and the declared (-> long long long) then refused it.
+(import (std prelude))
+(import (std simpletest))
+(import/class (StringBuilder (: System.Text.StringBuilder (-> StringBuilder))))
+(import/extern
+  (lmax (: System.Math.Max (-> long long long)))
+  (dabs (: System.Math.Abs (-> double double)))
+  (dround (: System.Math.Round (-> double double)))
+  (add-long (: System.Text.StringBuilder.Append (-> StringBuilder long StringBuilder))))
+
+(defun (main args)
+  (expect "two literals" (lmax 3 4) 4L)
+  (expect "a negative literal" (dabs -3) 3.0)
+  (expect "a literal beside a variable" (let ((x 10L)) (lmax x 2)) 10L)
+  (expect "a double from an int literal" (dround 2) 2.0)
+
+  ;; An instance method: the receiver is not a literal, the argument is.
+  (def sb (StringBuilder.))
+  (ignore (add-long sb 5000000000))
+  (expect "a literal past int's range to a long parameter" (.ToString sb) "5000000000")
+
+  ;; A variable still chooses as it did: its type is what it is.
+  (def d 2.5)
+  (expect "a variable keeps its own type" (dabs d) 2.5)
+  0)
