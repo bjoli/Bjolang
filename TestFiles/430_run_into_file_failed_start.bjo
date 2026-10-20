@@ -1,0 +1,29 @@
+;; into-file and append-to-file open their file once the command has started:
+;; opening it to write truncates it, so a command that does not start leaves
+;; the file as it was.
+(import (std prelude))
+(import (std run))
+(import (std simpletest))
+
+(import/extern
+  (temp-directory (: System.IO.Path.GetTempPath (-> string)))
+  (random-file-name (: System.IO.Path.GetRandomFileName (-> string))))
+
+(: failed? (-> (Result Exception int) bool))
+(defun (failed? r)
+  (match r ((Ok _) #f) ((Err _) #t)))
+
+(defun (main)
+  (def keep (str (temp-directory) "bjolang-into-file-" (random-file-name)))
+  (file-write-text keep "precious")
+
+  (expect "into-file: the start fails" (failed? (run/status '(into-file ,keep (no-such-program-bjolang)))) #t)
+  (expect "into-file: the file is as it was" (file-read-text keep) "precious")
+  (expect "append-to-file: the start fails" (failed? (run/status '(append-to-file ,keep (no-such-program-bjolang)))) #t)
+  (expect "append-to-file: the file is as it was" (file-read-text keep) "precious")
+
+  (expect "into-file: a command that starts" (failed? (run/status '(into-file ,keep (echo "new")))) #f)
+  (expect "into-file: replaces the file" (file-read-text keep) "new\n")
+  (expect "append-to-file: a command that starts" (failed? (run/status '(append-to-file ,keep (echo "more")))) #f)
+  (expect "append-to-file: adds to the file" (file-read-text keep) "new\nmore\n")
+  (file-delete keep))

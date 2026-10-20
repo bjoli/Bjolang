@@ -509,12 +509,8 @@
     (RFrom
      (def (Ok file) (open-input-file path) :propagate)
      (redirect-input inner errors file))
-    (RInto
-     (def (Ok file) (open-for-writing path #f) :propagate)
-     (redirect-output inner errors file))
-    (RAppend
-     (def (Ok file) (open-for-writing path #t) :propagate)
-     (redirect-output inner errors file))
+    (RInto (redirect-output inner errors path #f))
+    (RAppend (redirect-output inner errors path #t))
     (RErrInto
      (def (Ok file) (open-for-writing path #f) :propagate)
      (redirect-errors inner file))
@@ -523,41 +519,57 @@
      (redirect-errors inner file))))
 
 ;; The file replaces the caller as the thing writing in, so `sink` goes away.
+;; A form that does not start leaves the file closed.
 (: (-> Node (Option OutputPort) InputPort (Result Exception Wired)))
 (defun (redirect-input inner errors file)
-  (def (Ok w) (wire inner errors) :propagate)
-  (match (record-ref w sink)
-    (None (kill-all (record-ref w children))
-          (Err (run-error "this form already takes its input from somewhere, so it cannot also take it from a file")))
-    ((Some to)
-     (Ok (record-set w
-                     (sink None)
-                     (waits (vec-add (record-ref w waits) (bjo (pump file to)))))))))
+  (match (wire inner errors)
+    ((Err e) (close-input-port file) (Err e))
+    ((Ok w)
+     (match (record-ref w sink)
+       (None (kill-all (record-ref w children))
+             (close-input-port file)
+             (Err (run-error "this form already takes its input from somewhere, so it cannot also take it from a file")))
+       ((Some to)
+        (Ok (record-set w
+                        (sink None)
+                        (waits (vec-add (record-ref w waits) (bjo (pump file to)))))))))))
 
 ;; ...and the file replaces the caller as the thing reading out, so `source`
-;; goes away.
-(: (-> Node (Option OutputPort) OutputPort (Result Exception Wired)))
-(defun (redirect-output inner errors file)
+;; goes away. The file is opened once the form has started and has an output
+;; to give it, since opening it to write truncates it: a form that does not
+;; start leaves the file as it was.
+(: (-> Node (Option OutputPort) string bool (Result Exception Wired)))
+(defun (redirect-output inner errors path append)
   (def (Ok w) (wire inner errors) :propagate)
   (match (record-ref w source)
     (None (kill-all (record-ref w children))
           (Err (run-error "this form already sends its output somewhere, so it cannot also send it to a file")))
     ((Some from)
-     (Ok (record-set w
-                     (source None)
-                     (waits (vec-add (record-ref w waits) (bjo (pump from file)))))))))
+     (match (open-for-writing path append)
+       ((Err e) (kill-all (record-ref w children)) (Err e))
+       ((Ok file)
+        (Ok (record-set w
+                        (source None)
+                        (waits (vec-add (record-ref w waits) (bjo (pump from file)))))))))))
 
 ;; Standard error is not a stream this module wires between stages — every
 ;; command under here writes into the one file — so neither end changes.
+;;
+;; Unlike `redirect-output`, the file is opened before the form starts: it is
+;; the error sink each command is started with. A form that does not start
+;; leaves it closed, but already truncated.
 (: (-> Node OutputPort (Result Exception Wired)))
 (defun (redirect-errors inner file)
   ;; Every command under here writes to the one file from a fiber of its own;
   ;; a port takes each write whole, so they can share it as it is.
   (def shared file)
-  (def (Ok w) (wire inner (Some shared)) :propagate)
-  (Ok (record-set w
-                  (waits (vec-add (record-ref w waits)
-                                  (bjo (close-when-all-done (record-ref w waits) shared)))))))
+
+  (match (wire inner (Some shared))
+    ((Err e) (close-output-port shared) (Err e))
+    ((Ok w)
+     (Ok (record-set w
+                     (waits (vec-add (record-ref w waits)
+                                     (bjo (close-when-all-done (record-ref w waits) shared)))))))))
 
 ;; Parses and runs form.
 (: (-> Form (Result Exception Proc)))
