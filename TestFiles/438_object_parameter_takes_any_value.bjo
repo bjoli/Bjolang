@@ -1,0 +1,39 @@
+;; A .NET parameter of type object takes any value. A record or a union this
+;; module declares, a Symbol, a Keyword, a generic over one of them and a type
+;; variable were refused, as their .NET types cannot be looked up while the
+;; module is checked; lists, options and tuples of .NET types were taken.
+(import (std prelude))
+(import (std simpletest))
+(import/class (StringBuilder (: System.Text.StringBuilder (-> StringBuilder))))
+(import/extern
+  (equal? (: System.Object.Equals (-> System.Object System.Object bool))))
+
+(type (: Car (Record (: year int))))
+(type (: Light (Union Red Green)))
+
+;; A type variable, passed on to an object parameter.
+(: appended (-> StringBuilder %a StringBuilder))
+(defun (appended sb x) (.Append sb x))
+
+(defun (main args)
+  (def car (Car (year 1999)))
+  (def sb (StringBuilder.))
+  (ignore (.Append sb car))
+  (expect-true "a record" (string-contains? (.ToString sb) "1999"))
+
+  (ignore (.Append (.Clear sb) 'sym))
+  (expect "a symbol" (.ToString sb) "sym")
+
+  (def cars (list car))
+  (expect "a union, a list of records and a tuple"
+          (list (equal? Red Red) (equal? Red Green) (equal? cars cars) (equal? (Tuple car 1) (Tuple car 1)))
+          (list #t #f #t #t))
+
+  (ignore (appended (.Clear sb) car))
+  (expect-true "a type variable" (string-contains? (.ToString sb) "1999"))
+
+  ;; An exact overload still wins over object.
+  (ignore (.Append (.Clear sb) "text"))
+  (ignore (.Append sb 42))
+  (expect "a string and an int keep their own overloads" (.ToString sb) "text42")
+  0)

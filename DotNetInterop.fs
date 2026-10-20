@@ -1681,7 +1681,17 @@ let private scoreArgument (param: Type) (arg: HMType) : int option =
         Some 100
     else
         match tryClrTypeOf arg with
-        | None -> None
+        // Every value is an object. A type this module declares has no .NET
+        // type while the module is checked, nor has a `Symbol`, a `Keyword` or
+        // a generic over one, nor a type variable; each of them is still an
+        // object to pass, scored as boxing so that any other fit wins. Not a
+        // function: a lambda has no delegate type of its own to convert from.
+        | None ->
+            match pruneLocal arg with
+            | TCon _
+            | TTuple _
+            | TVar _ when param = typeof<obj> -> Some 3
+            | _ -> None
         | Some argType ->
             if argType = param then Some 0
             // A Bjolang string for a .NET one, converted at the call. Scored as
