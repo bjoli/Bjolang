@@ -301,7 +301,6 @@ let emptyRegistry : TraitRegistry =
       ImplTargets = Map.empty
       BlanketImpls = Map.empty
       TraitOrigins = Map.empty
-      ShadowedTraits = Map.empty
       InlineMethods = Map.empty
       ConstrainedBodies = Map.empty
       InlineCopies = Set.empty

@@ -162,6 +162,7 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
     // impl of the `%s` the impl's where clause constrains. The item may be
     // spelled `%elem`, as an associated type is everywhere else.
     | TApp("assoc", [ TName(writtenTrait, _); TName(writtenItem, _); implType ], r) ->
+        Diagnostics.refuseAmbiguous Diagnostics.TraitName r writtenTrait
         let traitName = originalName registry writtenTrait
         let assocName = writtenItem.TrimStart('\'')
 
@@ -187,6 +188,7 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
     // This allows unification, `prune`, substitution, and printing to process
     // dynamic types without special-case logic.
     | TApp("dyn", TName(writtenTrait, _) :: assocItems, r) ->
+        Diagnostics.refuseAmbiguous Diagnostics.TraitName r writtenTrait
         let traitName = originalName registry writtenTrait
 
         let info =

@@ -351,19 +351,29 @@ let metadata
     // used to publish `Num` as though it had declared it, and to drop the
     // binding it actually meant to export — the name was read as the method on
     // both counts.
-    let stillTheMethod (m: string) = Set.contains m env.TraitMethodNames
+    //
+    // A method is bound under its key, and the export list holds the name
+    // source wrote, which is the bare one.
+    let stillTheMethod (traitName: string) (m: string) =
+        Set.contains (Naming.traitMethodKey traitName m) env.TraitMethodNames
 
     let exportedTraits =
         env.Registry.Traits
         |> Map.filter (fun traitName info ->
             List.contains traitName exports
-            || traitMethodNames info |> List.exists (fun m -> List.contains m exports && stillTheMethod m))
+            || List.contains (Naming.bareTraitName traitName) exports
+            || traitMethodNames info
+               |> List.exists (fun m -> List.contains m exports && stillTheMethod traitName m))
 
+    // Both spellings of each: a body names a method by the name it wrote, and
+    // what is bound is the key.
     let exportedTraitMethods =
         exportedTraits
         |> Map.toList
-        |> List.collect (snd >> traitMethodNames)
-        |> List.filter stillTheMethod
+        |> List.collect (fun (traitName, info) ->
+            traitMethodNames info
+            |> List.filter (stillTheMethod traitName)
+            |> List.collect (fun m -> [ m; Naming.traitMethodKey traitName m ]))
         |> Set.ofList
 
     // Every inline template belonging to a trait this module publishes.
@@ -498,9 +508,15 @@ let metadata
         |> Map.ofList
 
     /// The key a spelling of a declared type or constructor stands for here.
+    ///
+    /// And of a trait or a trait method: a default body calls the trait's
+    /// methods, and an importer that prefixed the trait's module has no bare
+    /// name for them.
     let typeKeyOf (n: string) =
         match Map.tryFind n env.Registry.ImportAliases with
         | Some a when (a.Kind = Ast.AliasType || a.Kind = Ast.AliasConstructor) && a.OriginalName.Contains "." ->
+            Some a.OriginalName
+        | Some a when a.Kind = Ast.AliasTrait && Naming.bareTraitName a.OriginalName <> a.OriginalName ->
             Some a.OriginalName
         | _ -> None
 
@@ -1444,7 +1460,15 @@ let metadata
       HashMacros = hashMacros
       MacroTraitMethods =
         if macros.IsEmpty && patternMacros.IsEmpty && hashMacros.IsEmpty then []
-        else env.TraitMethodNames |> Set.toList
+        // The key a method is bound under, and the bare name a template
+        // writes.
+        else
+            env.TraitMethodNames
+            |> Set.toList
+            |> List.collect (fun m ->
+                match TypedAST.traitMethodOf env.Registry m with
+                | Some(_, bare) when bare <> m -> [ m; bare ]
+                | _ -> [ m ])
       BlockingDefs = blockingDefs
       DoubleDefs = doubleDefs
       ConstrainedBodies = constrainedBodies

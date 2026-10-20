@@ -586,6 +586,9 @@ let private checkEntry (env: Env) (moduleKey: string) (localNames: Set<string>) 
                 let known =
                     Map.containsKey n env.Bindings
                     || Set.contains n env.TraitMethodNames
+                    // A method is bound under its key, and `n` may be the
+                    // bare spelling of one.
+                    || Set.contains (TypeEnv.originalName env.Registry n) env.TraitMethodNames
                     || Set.contains n localNames
                     || Macro.isMacro n
                     || Macro.isPatternMacro n

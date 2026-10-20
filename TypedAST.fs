@@ -1596,9 +1596,6 @@ type TraitRegistry =
       /// is a backstop; it is not tolerable for blankets, where the whole point
       /// is that only the trait's own module may declare one.
       TraitOrigins: Map<string, string>
-      /// For a trait name, the modules whose different trait of that name a
-      /// later one took the place of. See `addTrait`.
-      ShadowedTraits: Map<string, string list>
       /// The pin equations in force while a constrained member's body is
       /// checked — the *given* equalities its `(where ...)` grants.
       ///
@@ -1924,37 +1921,27 @@ and EscapeInfo =
       Result: HMType }
 
 
-/// Whether two registrations of a trait name declare the same trait: the same
-/// kind, implementor arity, associated types, and methods with the same
-/// signatures. A trait that a module re-exports is registered from that
-/// module's metadata first, and is the same declaration.
-let private sameTraitDeclaration (a: TraitInfo) (b: TraitInfo) =
-    a.Kind = b.Kind
-    && a.HoleArity = b.HoleArity
-    && a.AssociatedTypes = b.AssociatedTypes
-    && sprintf "%A" a.Signatures = sprintf "%A" b.Signatures
-    && sprintf "%A" a.Templates = sprintf "%A" b.Templates
-
-/// Registers a trait under its name. A trait has no key, so a later trait of
-/// the name takes the place of an earlier one: a module's own trait shadows
-/// an imported one, and a later import's an earlier import's. The module of a
-/// different trait that is shadowed so is recorded in `ShadowedTraits`.
+/// Registers a trait under its key (`Naming.traitKey`). Two modules' traits of
+/// one name have two keys, so neither takes the other's place; a trait
+/// registered again under its key is the same declaration, read once more
+/// through a module that passes it on.
 let addTrait (name: string) (info: TraitInfo) (env: Env) : Env =
-    let shadowed =
-        match Map.tryFind name env.Registry.Traits, Map.tryFind name env.Registry.TraitOrigins with
-        | Some existing, Some origin when origin <> env.CurrentModule && not (sameTraitDeclaration existing info) ->
-            let before = Map.tryFind name env.Registry.ShadowedTraits |> Option.defaultValue []
-            Map.add name (origin :: before) env.Registry.ShadowedTraits
-        | _ -> env.Registry.ShadowedTraits
-
     let newRegistry =
         { env.Registry with
-            ShadowedTraits = shadowed
             LocalTraits = Set.add name env.Registry.LocalTraits
             Traits = Map.add name info env.Registry.Traits
             TraitOrigins = Map.add name env.CurrentModule env.Registry.TraitOrigins }
 
     { env with Registry = newRegistry }
+
+/// The trait a method belongs to, and the method's name within the trait,
+/// for a method as the module binds it: `pretty_a__pretty` gives
+/// `pretty_a__Pretty` and `pretty`. A trait's signatures, templates and
+/// defaults are keyed by the second.
+let traitMethodOf (registry: TraitRegistry) (methodKey: string) : (string * string) option =
+    match Map.tryFind methodKey registry.TraitMethods with
+    | Some traitName -> Some(traitName, Naming.bareTraitName methodKey)
+    | None -> None
 
 let addImplementation
     (traitName: string)

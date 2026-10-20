@@ -494,6 +494,91 @@ let showTypeName (name: string) : string =
     | Some(moduleName, typeName) -> moduleName + "/" + typeName
     | None -> name
 
+/// Where a trait key or a method key divides: the length of the module part
+/// and its `__`, or 0 for a name that is not a key.
+///
+/// The first `__` divides it, which `traitKey` makes true by keeping `__` out
+/// of the module part. A suspending copy's `__bjo` is after the name, and is
+/// not looked at.
+let private traitKeyPrefixLength (key: string) : int =
+    let stem = if key.EndsWith "__bjo" then key.Substring(0, key.Length - 5) else key
+
+    match stem.IndexOf "__" with
+    | i when i > 0 && i + 2 < stem.Length && not (stem.StartsWith "dyn ") -> i + 2
+    | _ -> 0
+
+/// What the module of each REPL entry is called before its number:
+/// `Bjo_Repl_7`.
+let replEntryModulePrefix = "Bjo_Repl_"
+
+/// Every trait key and method key this process has made or read, for
+/// `Diagnostics.humanize`, which shows each as the name source wrote.
+let traitKeys = System.Collections.Concurrent.ConcurrentDictionary<string, int>()
+
+/// The name a declared trait — or one of its methods — is known by
+/// everywhere except in source: `pretty_a__Pretty`, `pretty_a__pretty`.
+///
+/// A trait is nominal like a type, so two modules may each declare a
+/// `Pretty` and mean two traits. Source goes on writing the bare name, which
+/// is filed as a spelling of the key, as a type's is.
+///
+/// The module part is the module's flat name, without the namespace a type
+/// key has: a trait's name goes into C# identifiers in many places — its
+/// interface, the impl classes, the dictionary parameters — and each of them
+/// is one identifier, not a path. A `__` in it is made `_`, so that the first
+/// `__` of a key is where it divides, and a method's key can be made from its
+/// trait's key alone (`traitMethodKey`). A facade passes on another module's
+/// trait, and what it knows of the trait is the key.
+///
+/// A trait of the standard library keeps its bare name. The compiler names
+/// several of them (`Eq`, `Ord`, `Num`, `Iterable`), and the library declares
+/// one trait of each name. A trait of another module with the name of a
+/// standard one is keyed, so it is a trait of its own.
+///
+/// A name that is a key already is left as it is, which is what a `.dll`'s
+/// trait declarations look like read back. So a trait whose own name has `__`
+/// in it is taken for a key.
+let traitKey (moduleKey: string) (name: string) : string =
+    if moduleKey = "" || isStdModuleKey moduleKey then
+        name
+    elif traitKeyPrefixLength name > 0 then
+        traitKeys.TryAdd(name, 0) |> ignore
+        name
+    else
+        let flat = (sanitizeIdent (moduleNameOfPath moduleKey)).TrimStart('@')
+
+        let rec single (s: string) =
+            if s.Contains "__" then single (s.Replace("__", "_")) else s
+
+        let key = single flat + "__" + name
+        traitKeys.TryAdd(key, 0) |> ignore
+        key
+
+/// The key of a method of the trait with key `traitKey`: the trait's module
+/// part and the method's name. A method of a trait that is not keyed is not
+/// keyed either.
+let traitMethodKey (traitKey: string) (methodName: string) : string =
+    match traitKeyPrefixLength traitKey with
+    | 0 -> methodName
+    | n ->
+        let key = traitKey.Substring(0, n) + methodName
+        traitKeys.TryAdd(key, 0) |> ignore
+        key
+
+/// The name source wrote, for a trait key or a method key. The inverse of
+/// `traitKey` and `traitMethodKey`.
+let bareTraitName (key: string) : string =
+    match traitKeyPrefixLength key with
+    | 0 -> key
+    | n -> key.Substring n
+
+/// How a trait or a method name reads in a diagnostic: the name source wrote.
+///
+/// A trait is shown without its module because a message about a trait names
+/// one trait, nearly always: two traits of one name meet only in a program
+/// that uses both, and there the import's prefix tells them apart.
+let showTraitName (name: string) : string = bareTraitName name
+
 /// Formats a type name for error messages, including the directory name only if it's necessary to distinguish it from another type with the same name. This prevents confusing errors like 'Expected Type but got Type'.
 let showQualifiedTypeName (name: string) : string =
     if not (isModuleKey name) then

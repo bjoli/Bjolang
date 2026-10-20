@@ -182,27 +182,6 @@ temporary per variable (~__next__~).
   is built, after ~Simplify~ has removed dead branches.
 
 
-- *Traits are not keyed by module, as types are.* A trait is filed under its
-  bare name, so two modules' traits of one name are one entry, and the later
-  one takes the place of the earlier. A prefix gives a trait and its methods a
-  second spelling and does not keep the two apart. The compiler refuses a
-  prefixed spelling of a trait that was shadowed so
-  (~checkShadowedTraitSpellings~ in ~Inference.fs~,
-  ~errors/trait_prefix_shadowed.bjo~), but a program can use only one trait of
-  a name. The fix is to key traits as types are keyed (see "How a type is
-  keyed" in ~Docs/MODULES.org~):
-  - ~Traits~, ~TraitOrigins~, impls, inline templates and ~BlanketImpls~ keyed
-    by the trait's key.
-  - The bare name and a prefixed name are spellings of the key, so
-    ~prefix-types~ hides a trait's bare name.
-  - Trait methods are names as defs are: two traits' ~pretty~ are different
-    names, and a use that two imports offer is the ambiguity error.
-  - The C# interface of a trait is named from its key.
-  - Module metadata publishes traits, impls and templates by key.
-  It touches ~Traits.fs~, ~TypeEnv.fs~, ~CheckDecl.fs~, ~TraitInline.fs~,
-  ~Monomorphise.fs~, ~Lowering.fs~, ~Codegen.fs~, ~Exports.fs~ and
-  ~Pipeline.fs~, about as much as the keying of types did.
-
 - *An impl of another module's trait is not inlined across modules.* A
   module publishes the inline templates of its impls only for traits it
   publishes, and the no-op bodies of others' (Exports.fs,

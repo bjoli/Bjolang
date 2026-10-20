@@ -711,10 +711,10 @@ let checkAssocBindings (traitName: string) (info: TraitInfo) (bound: string list
 /// Read out of the trait rather than out of a binding, because an inline
 /// trait's methods are not bound at all. Only the count is taken, so no
 /// instantiation happens and nothing is unified.
-let internal traitMethodArity (env: Env) (methodName: string) : int option =
-    match Map.tryFind methodName env.Registry.TraitMethods with
+let internal traitMethodArity (env: Env) (methodKey: string) : int option =
+    match traitMethodOf env.Registry methodKey with
     | None -> None
-    | Some traitName ->
+    | Some(traitName, methodName) ->
         match Map.tryFind traitName env.Registry.Traits with
         | None -> None
         | Some info ->

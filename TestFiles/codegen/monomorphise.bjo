@@ -19,8 +19,8 @@
 
 ;; The written function keeps its dictionary. Somebody may still call it at a
 ;; type nothing in this module names.
-;; EXPECT-CS: public static int total<T_a>\(Sized<T_a> _dict_Sized_a, T_a a, T_a b\)
-;; EXPECT-CS: return \(_dict_Sized_a\.sizesubof\(a\) \+ _dict_Sized_a\.sizesubof\(b\)\);
+;; EXPECT-CS: public static int total<T_a>\(monomorphise__Sized<T_a> _dict_monomorphise__Sized_a, T_a a, T_a b\)
+;; EXPECT-CS: return \(_dict_monomorphise__Sized_a\.sizesubof\(a\) \+ _dict_monomorphise__Sized_a\.sizesubof\(b\)\);
 (: (-> %a %a int) (where (Sized %a)))
 (defun (total a b) (+ (size-of a) (size-of b)))
 
@@ -48,8 +48,8 @@
 ;; is nothing to make a copy at. This is also what depth one looks like from the
 ;; outside — `total-thrice` is generic, so it is never copied, and the call to
 ;; `total` inside it dispatches.
-;; EXPECT-CS: public static int totalsubthrice<T_a>\(Sized<T_a> _dict_Sized_a, T_a x\)
-;; EXPECT-CS: mono.*\.total\(_dict_Sized_a, x, x\)
+;; EXPECT-CS: public static int totalsubthrice<T_a>\(monomorphise__Sized<T_a> _dict_monomorphise__Sized_a, T_a x\)
+;; EXPECT-CS: mono.*\.total\(_dict_monomorphise__Sized_a, x, x\)
 (: (-> %a int) (where (Sized %a)))
 (defun (total-thrice x) (+ (total x x) (size-of x)))
 
@@ -94,10 +94,8 @@
 
 ;; A CLR constraint is a `where` clause rather than a parameter, so there is no
 ;; dictionary to remove and no copy is made. The call keeps its type argument.
+;; The prelude's `Num` stands for `System.Numerics.INumber`.
 ;; EXPECT-NO-CS: twice__at_
-(def/trait (Num %a)
-  (#:clr-constraint (System.Numerics.INumber %a)))
-
 (: (-> %a %a) (where (Num %a)))
 (defun (twice n) (+ n n))
 

@@ -101,7 +101,10 @@ open System.Text
 /// binding's name.
 /// 22: an exported binding carries the text of its `(:deprecated ...)`, or
 /// nothing. A reader of 21 would read that text as the next binding's name.
-let currentVersion = 22
+/// 23: a trait declared outside the standard library, and each of its methods,
+/// is named by its key (`Naming.traitKey`), and its bare name is a spelling of
+/// it. Read under the bare name, such a trait would be taken for another.
+let currentVersion = 23
 
 /// An exported binding: enough to bind its name and give it a type.
 type ExportedDef = {

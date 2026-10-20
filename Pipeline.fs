@@ -406,9 +406,12 @@ type private ImportSurface =
       /// A constructor's key -> its type's key. A constructor follows its
       /// type, so `(only m Figure)` keeps `Figure`'s cases and no others.
       TypeOfCase: Map<string, string>
-      Traits: Set<string>
-      /// Method name -> the trait that declares it.
-      TraitMethods: Map<string, string> }
+      /// The name source writes for each trait -> its key
+      /// (`Naming.traitKey`).
+      Traits: Map<string, string>
+      /// The name source writes for each method -> its key, and the key of
+      /// the trait that declares it.
+      TraitMethods: Map<string, string * string> }
 
 /// `moduleName` is the dependency's own, and is what a type name is read back
 /// through: a declaration is keyed by the module that wrote it, and what an
@@ -503,18 +506,20 @@ let private surfaceOf
 
       TypeOfCase = typeOfCase
 
+      // A trait declaration in metadata is named by its key, and its methods
+      // by the names source wrote.
       Traits =
         decls
         |> List.choose (function
-            | DTrait(n, _, _, _, _, _, _, _) -> Some n
+            | DTrait(key, _, _, _, _, _, _, _) -> Some(Naming.bareTraitName key, key)
             | _ -> None)
-        |> Set.ofList
+        |> Map.ofList
 
       TraitMethods =
         decls
         |> List.collect (function
-            | DTrait(traitName, _, _, _, signatures, _, _, _) ->
-                signatures |> List.map (fun (m, _, _) -> m, traitName)
+            | DTrait(traitKey, _, _, _, signatures, _, _, _) ->
+                signatures |> List.map (fun (m, _, _) -> m, (Naming.traitMethodKey traitKey m, traitKey))
             | _ -> [])
         |> Map.ofList }
 
@@ -565,10 +570,12 @@ let private defRenaming
                     $"Invalid (%s{form} ...) at %s{where}: '%s{name}' is a constructor of '%s{typeName}', and a constructor follows its type. Name '%s{typeName}' in (%s{form} ...) to have or leave out the type and all its constructors."
             | None -> refuse "is a constructor"
         elif Map.containsKey name surface.Constructors then refuse "is a constructor"
-        elif Set.contains name surface.Traits then refuse "is a trait"
+        elif Map.containsKey name surface.Traits then refuse "is a trait"
         else
             match Map.tryFind name surface.TraitMethods with
-            | Some owner ->
+            | Some(_, ownerKey) ->
+                let owner = Naming.showTraitName ownerKey
+
                 failwithf
                     $"Invalid (%s{form} ...) at %s{where}: '%s{name}' is a method of the trait '%s{owner}'. A trait method is dispatched under the name it was declared with, so an individual one cannot be remapped — prefix the module that declares the trait instead, which renames its methods together and still dispatches."
             | None ->
@@ -676,11 +683,11 @@ let private typeRenaming
     let start =
         (surface.Types |> Map.toList |> List.map (fun (n, key) -> key, n, n, AliasType))
         @ (surface.Constructors |> Map.toList |> List.map (fun (n, key) -> key, n, n, AliasConstructor))
-        @ (surface.Traits |> Set.toList |> List.map (fun n -> n, n, n, AliasTrait))
+        @ (surface.Traits |> Map.toList |> List.map (fun (n, key) -> key, n, n, AliasTrait))
         // A method is prefixed with the trait it belongs to. Dispatch resolves
         // through the original, so a systematic prefix costs nothing — which is
         // the reason rule 4 refuses an individual rename and points here.
-        @ (surface.TraitMethods |> Map.toList |> List.map (fun (m, _) -> m, m, m, AliasTrait))
+        @ (surface.TraitMethods |> Map.toList |> List.map (fun (m, (key, _)) -> key, m, m, AliasTrait))
 
     // The type's own name, for a type and for one of its constructors: what
     // `only` and `except` name.
@@ -734,6 +741,17 @@ let private offeredTypes (surface: ImportSurface) (modifiers: ImportModifier lis
             | _ -> kept)
         (surface.Types |> Map.toSeq |> Seq.map snd |> Set.ofSeq)
 
+/// Whether an import edge spells the module's types and traits its own way,
+/// which replaces their bare names.
+let private respells (modifiers: ImportModifier list) : bool =
+    modifiers
+    |> List.exists (function
+        | Prefix _
+        | Postfix _
+        | PrefixTypes _
+        | PostfixTypes _ -> true
+        | _ -> false)
+
 /// The types, as keys, whose bare names one import edge keeps.
 ///
 /// A modifier that spells the types differently replaces the bare name, as a
@@ -748,23 +766,27 @@ let private offeredTypes (surface: ImportSurface) (modifiers: ImportModifier lis
 /// signature names a type by key, and so does a published body, so neither
 /// needs the bare name.
 let private keptTypes (surface: ImportSurface) (modifiers: ImportModifier list) : Set<string> =
-    let respelled =
-        modifiers
-        |> List.exists (function
-            | Prefix _
-            | Postfix _
-            | PrefixTypes _
-            | PostfixTypes _ -> true
-            | _ -> false)
-
-    if respelled then Set.empty else offeredTypes surface modifiers
+    if respells modifiers then Set.empty else offeredTypes surface modifiers
 
 /// The keys whose bare spellings one import edge keeps: the kept types, and
 /// the constructors of those types. A constructor whose type is not known
 /// here goes with the edge's types as a whole.
+///
+/// And the traits and their methods, unless the edge spells them its own
+/// way. A trait always arrives with its module, so `only` and `except` do not
+/// leave one out.
 let private keptSpellings (surface: ImportSurface) (modifiers: ImportModifier list) : Set<string> =
     let kept = keptTypes surface modifiers
     let anyKept = not kept.IsEmpty
+
+    let traits =
+        if respells modifiers then
+            Set.empty
+        else
+            Seq.append
+                (surface.Traits |> Map.toSeq |> Seq.map snd)
+                (surface.TraitMethods |> Map.toSeq |> Seq.map (snd >> fst))
+            |> Set.ofSeq
 
     let constructors =
         surface.Constructors
@@ -776,7 +798,7 @@ let private keptSpellings (surface: ImportSurface) (modifiers: ImportModifier li
             | None -> anyKept)
         |> Set.ofSeq
 
-    Set.union kept constructors
+    Set.unionMany [ kept; constructors; traits ]
 
 /// What one import edge offers its importer, as `(namespace, the name the
 /// importer sees, what the name stands for, the module that offers it)`.
@@ -822,6 +844,17 @@ let private offeredNames
            |> Map.toList
            |> List.filter (fun (_, key) -> Set.contains key kept)
            |> List.map (fun (n, key) -> Diagnostics.ValueName, n, key, provider, true))
+        // A trait and its methods, which arrive with the module.
+        @ (surface.Traits
+           |> Map.toList
+           |> List.filter (fun (_, key) -> Set.contains key kept)
+           |> List.map (fun (n, key) -> Diagnostics.TraitName, n, key, provider, true))
+        @ (surface.TraitMethods
+           |> Map.toList
+           |> List.filter (fun (_, (key, _)) -> Set.contains key kept)
+           |> List.map (fun (n, (key, _)) -> Diagnostics.ValueName, n, key, provider, true))
+
+    let traitKeys = surface.Traits |> Map.toSeq |> Seq.map snd |> Set.ofSeq
 
     let spelled =
         typeRenaming surface modifiers
@@ -829,6 +862,8 @@ let private offeredNames
             match kind with
             | AliasType -> Some(Diagnostics.TypeName, visible, key, provider, true)
             | AliasConstructor -> Some(Diagnostics.ValueName, visible, key, provider, true)
+            | AliasTrait when Set.contains key traitKeys -> Some(Diagnostics.TraitName, visible, key, provider, true)
+            | AliasTrait -> Some(Diagnostics.ValueName, visible, key, provider, true)
             | _ -> None)
 
     defs @ bare @ spelled
@@ -2251,6 +2286,20 @@ let loadModuleGraph
                                        | _ -> []))
                             | _ -> [])
 
+                    // The bare spellings of the traits this assembly declares or
+                    // passes on, and of their methods, as for its types. A
+                    // trait in metadata is named by its key, and a method's key
+                    // is made from it.
+                    let traitSpellingDecls =
+                        declsFromText
+                        |> List.collect (function
+                            | DTrait(key, _, _, _, signatures, _, _, r) when Naming.bareTraitName key <> key ->
+                                DImportAlias(Naming.bareTraitName key, key, AliasTrait, r)
+                                :: (signatures
+                                    |> List.map (fun (m, _, _) ->
+                                        DImportAlias(m, Naming.traitMethodKey key m, AliasTrait, r)))
+                            | _ -> [])
+
                     // The types this assembly re-exported: declarations another
                     // module made, arriving under that module's key.
                     //
@@ -2393,7 +2442,7 @@ let loadModuleGraph
                                 | _ -> [ decl ])))
 
                     let parsedDecls =
-                        typeSpellingDecls @ reExportedSpellings @ declsFromText @ externDecls
+                        typeSpellingDecls @ traitSpellingDecls @ reExportedSpellings @ declsFromText @ externDecls
                     // Macros are registered per import *edge*, not here: which
                     // name a transformer answers to is the importer's to say.
                     //
@@ -2570,7 +2619,19 @@ let loadModuleGraph
                     // parsing, because a macro is expanded while the module is
                     // parsed. This module's own macros are its own.
                     let ownKey = Naming.moduleKeyOfPath absPath
-                    let ambiguous = ambiguousNames offers
+
+                    // At the prompt a later entry's definition takes the place
+                    // of an earlier one's, and the later import's spelling is
+                    // filed last, so a name only earlier entries offer is no
+                    // ambiguity. Two of them are linked at once when both are
+                    // linked unconditionally, as an entry declaring a trait is.
+                    let ambiguous =
+                        let fromEntries (providers: string list) =
+                            providers |> List.forall (fun p -> p.StartsWith Naming.replEntryModulePrefix)
+
+                        ambiguousNames offers
+                        |> Map.filter (fun _ (providers, _) ->
+                            not (TypeEnv.compilingReplEntry && fromEntries providers))
 
                     let setAmbiguous (own: Set<string>) =
                         let kept =
@@ -2695,10 +2756,13 @@ let loadModuleGraph
             // this module did not make is one it re-exported, and there is no
             // prefix of this module's to take off it — what a reader can act on
             // is then the whole thing, module and all.
-            for (key, visible, _, r) in typeSpellings do
+            for (key, visible, kind, r) in typeSpellings do
                 let readable =
-                    let bare = Naming.bareTypeName m.ModuleName key
-                    if bare = key then Naming.showTypeName key else bare
+                    match kind with
+                    | AliasTrait -> Naming.showTraitName key
+                    | _ ->
+                        let bare = Naming.bareTypeName m.ModuleName key
+                        if bare = key then Naming.showTypeName key else bare
 
                 spellings.Add(visible, m.ModuleName, readable, true, r)
 
@@ -2721,7 +2785,7 @@ let loadModuleGraph
             let keptDecls =
                 m.ParsedDecls
                 |> List.filter (function
-                    | DImportAlias(_, key, (AliasType | AliasConstructor), _) -> Set.contains key keptKeys
+                    | DImportAlias(_, key, (AliasType | AliasConstructor | AliasTrait), _) -> Set.contains key keptKeys
                     | _ -> true)
 
             aliasDecls @ applyDefRenaming m.ModuleName byOriginal keptDecls

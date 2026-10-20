@@ -707,7 +707,7 @@ let rec private evaluate (replaying: bool) (state: State) (text: string) : State
     | shape ->
 
     let index = state.Next
-    let moduleName = $"Bjo_Repl_%d{index}"
+    let moduleName = $"%s{Naming.replEntryModulePrefix}%d{index}"
     let sourcePath = Path.Combine(state.Directory, moduleName + ".bjo")
     let dllPath = Path.Combine(state.Directory, moduleName + ".dll")
 
@@ -984,6 +984,8 @@ let private visibleNames (state: State) : Visible list =
                 | AliasConstructor -> None
                 | AliasType ->
                     imported alias.OriginModule (Naming.bareTypeName alias.OriginModule alias.OriginalName) name
+                // A trait's and a method's original name is a key as well.
+                | AliasTrait -> imported alias.OriginModule (Naming.showTraitName alias.OriginalName) name
                 | _ -> imported alias.OriginModule alias.OriginalName name)
 
         // A foreign import a module published is bound to the .NET member
@@ -1014,9 +1016,14 @@ let private visibleNames (state: State) : Visible list =
         // A plain import records no alias for a trait or its methods: only a
         // modifier that respells them does. So they are found through the trait
         // each belongs to, and the module that declared it.
+        //
+        // Under the bare name, which is what source writes and what the doc is
+        // filed under; the trait and the method are bound under their keys.
         let traitOf (traitName: string) (name: string) =
             Map.tryFind traitName env.Registry.TraitOrigins
-            |> Option.bind (fun origin -> imported origin name name)
+            |> Option.bind (fun origin ->
+                let bare = Naming.bareTraitName name
+                imported origin bare bare)
 
         let traits =
             (env.Registry.Traits |> Map.toList |> List.choose (fun (t, _) -> traitOf t t))

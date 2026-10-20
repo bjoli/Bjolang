@@ -66,6 +66,36 @@ let private dropImportedTypeSpelling (currentModule: string) (alias: string) (re
         { registry with ImportAliases = Map.remove alias registry.ImportAliases }
     | _ -> registry
 
+/// A module's declarations with each trait it declares named by its key
+/// (`Naming.traitKey`), and the bare names of the trait and of its methods as
+/// spellings of their keys: `(bare, key)`.
+///
+/// The method names inside the declaration stay bare: a trait's signatures,
+/// templates and defaults are keyed by method name within the trait, and an
+/// impl names its methods the same way. The key of a method is what the
+/// module binds and dispatches on.
+///
+/// A declaration read back from a `.dll` is keyed already, and gets no
+/// spellings here: the import edges give the importer those.
+let private keyTraits (moduleName: string) (decls: Decl list) : (string * string) list * Decl list =
+    let spellings =
+        decls
+        |> List.collect (function
+            | DTrait(name, _, _, _, signatures, _, _, _) when Naming.traitKey moduleName name <> name ->
+                let key = Naming.traitKey moduleName name
+
+                (name, key) :: (signatures |> List.map (fun (m, _, _) -> m, Naming.traitMethodKey key m))
+            | _ -> [])
+
+    let keyed =
+        decls
+        |> List.map (function
+            | DTrait(name, implementorVar, holeArity, assocTypes, signatures, defaults, clrSpec, r) ->
+                DTrait(Naming.traitKey moduleName name, implementorVar, holeArity, assocTypes, signatures, defaults, clrSpec, r)
+            | d -> d)
+
+    spellings, keyed
+
 /// Registers the rules of a grammar, after its types.
 ///
 /// The types are already registered: `DeclParser` puts them in a `DTypeRec`
@@ -347,6 +377,8 @@ let private signatureConstraints
     : TraitConstraint list =
     cs
     |> List.map (fun c ->
+        Diagnostics.refuseAmbiguous Diagnostics.TraitName c.MCRange c.MCTrait
+
         match Map.tryFind (originalName registry c.MCTrait) registry.Traits with
         | Some info ->
             for (pinName, _) in c.MCPins do
@@ -362,7 +394,27 @@ let private signatureConstraints
             for (pinName, _) in c.MCPins |> List.countBy fst |> List.filter (fun (_, n) -> n > 1) do
                 failwithf
                     $"Type Error at %s{Lexer.formatPos c.MCRange}: #:%s{pinName} is pinned more than once in the where clause of %s{name}."
-        | None -> ()
+        // A trait not known yet is reported where the constraint is used. One
+        // an import spells another way has a name here, and that is said now.
+        | None ->
+            let respelled =
+                registry.ImportAliases
+                |> Map.tryPick (fun visible alias ->
+                    if
+                        alias.Kind = AliasTrait
+                        && visible <> c.MCTrait
+                        && Naming.bareTraitName alias.OriginalName = c.MCTrait
+                        && Map.containsKey alias.OriginalName registry.Traits
+                    then
+                        Some visible
+                    else
+                        None)
+
+            match respelled with
+            | Some visible ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos c.MCRange}: there is no trait named '%s{c.MCTrait}'. It is imported as '%s{visible}': the modifier that gave it that name replaces the bare one. Import the module without it as well to have both."
+            | None -> ()
 
         { TraitName = c.MCTrait
           TargetType = TVar c.MCVar
@@ -1225,6 +1277,7 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
     finalEnv, Map.remove name sigs, [ decl ]
 
 and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Decl list) (r: Range) : Env * Sigs * TDecl list =
+    let traitSpellings, decls = keyTraits moduleName decls
     // Rule 5 for aliases, decided over the module as written rather than as
     // checked: an alias may appear above the definition it would collide
     // with, and by the time the fold reached it the collision would look
@@ -1296,13 +1349,41 @@ and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Dec
                     { env.Registry with
                         ImportAliases =
                             env.Registry.ImportAliases
+                            // A trait method's bare name is a spelling too, and
+                            // goes for the same reason.
                             |> Map.filter (fun name alias ->
-                                not (alias.Kind = AliasDef && Set.contains name ownDefinitions))
+                                not (
+                                    (alias.Kind = AliasDef || alias.Kind = AliasTrait)
+                                    && Set.contains name ownDefinitions
+                                ))
                         DoubleDefs =
                             env.Registry.DoubleDefs
                             |> Map.filter (fun name _ ->
                                 Set.contains name ownDoubles || not (Set.contains name ownDefinitions))
                         BlockingNames = Set.difference env.Registry.BlockingNames ownDefinitions } }
+
+    // The bare names of this module's traits and their methods, before
+    // anything is checked: a signature's where clause, a forward declaration
+    // and an impl above the trait all name a trait by its bare name, and
+    // resolve it to the key through this. Filed over an import's spelling of
+    // the same name, as a module's own type is (rule 1).
+    let env =
+        { env with
+            Registry =
+                { env.Registry with
+                    ImportAliases =
+                        traitSpellings
+                        |> List.fold
+                            (fun acc (bare, key) ->
+                                Map.add
+                                    bare
+                                    { OriginModule = moduleName
+                                      OriginalName = key
+                                      Kind = AliasTrait
+                                      IsMethod = false
+                                      IsMutable = false }
+                                    acc)
+                            env.Registry.ImportAliases } }
 
     let finalEnv, finalSigs, typedDecls =
         checkDeclGroup { env with CurrentModule = moduleName } sigs decls
@@ -2346,21 +2427,28 @@ and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorV
     // recognize them in application position without searching every trait.
     // Read off the maps rather than the source, so a derived twin is a
     // method like any other.
+    //
+    // Each under its key (`Naming.traitKey`), which is what the module binds
+    // and dispatches on; the trait's own maps stay keyed by the bare name.
+    let methodKey (m: string) = Naming.traitMethodKey traitName m
+
     let methodNames =
         match kind with
-        | InterfaceTrait -> hmSignatures |> Map.toList |> List.map fst
-        | InlineTrait -> templates |> Map.toList |> List.map fst
+        | InterfaceTrait -> hmSignatures |> Map.toList |> List.map (fst >> methodKey)
+        | InlineTrait -> templates |> Map.toList |> List.map (fst >> methodKey)
 
     // A method name identifies its trait, and that is the *only* thing that
     // can: nothing at a call site says which trait `pure` came from. Two
-    // traits claiming one name is therefore not ambiguity to be resolved
-    // later but a program with no meaning, and it has to be rejected here
-    // rather than silently dispatched to whichever was registered last.
+    // traits of one module claiming one name is therefore a program with no
+    // meaning, and it has to be rejected here rather than silently dispatched
+    // to whichever was registered last. Two modules' traits never meet here:
+    // their methods have two keys, and a use of the bare name that both
+    // imports offer is refused as ambiguous.
     for m in methodNames do
         match Map.tryFind m newEnv.Registry.TraitMethods with
         | Some owner when owner <> traitName ->
             failwithf
-                $"Type Error at %s{Lexer.formatPos r}: trait '%s{traitName}' declares a method '%s{m}', but '%s{owner}' already does. A call site says nothing about which trait a method name belongs to, so the two are indistinguishable. Rename one of them."
+                $"Type Error at %s{Lexer.formatPos r}: trait '%s{Naming.showTraitName traitName}' declares a method '%s{Naming.showTraitName m}', but '%s{Naming.showTraitName owner}' already does. A call site says nothing about which trait a method name belongs to, so the two are indistinguishable. Rename one of them."
         | _ -> ()
 
     let newEnv =
@@ -2393,7 +2481,7 @@ and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorV
             let implVar = "'" + implementorVar
             let allVars = implVar :: (methodVars |> List.filter ((<>) implVar))
             let scheme = Scheme(allVars, [], methodTypeWithAssoc)
-            finalEnv <- addBinding kvp.Key { Scheme = scheme; IsMutable = false } finalEnv
+            finalEnv <- addBinding (methodKey kvp.Key) { Scheme = scheme; IsMutable = false } finalEnv
 
     // Last, because `addBinding` above cleared each name as it bound it.
     // Declaring a trait is the one thing that makes a name mean "dispatch on
@@ -2414,6 +2502,7 @@ and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorV
 and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExpr: FType) (assocBindings: (string * FType) list) (whereClause: MemberConstraint list) (implMethodWheres: (string * MemberConstraint list) list) (methods: Decl list) (r: Range) : Env * Sigs * TDecl list =
     // The trait may be written under a spelling a `prefix` produced; the
     // registries are keyed on the name the `def/trait` gave it.
+    Diagnostics.refuseAmbiguous Diagnostics.TraitName r traitName
     let traitName = originalName env.Registry traitName
     let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
 
@@ -3078,6 +3167,17 @@ and private checkImplMethod
         // Which method this is, so that the `defun`'s own recursion
         // binding is not taken for a shadow of it.
         let regEnv = { regEnv with ImplMethod = Some name }
+
+        // The body calls the method by the name the impl writes, which is the
+        // bare one, and the call dispatches (see `checkDefun`). The trait's
+        // own method is bound under its key, so the bare name is filed for
+        // this body as a name of the same method, over a method of another
+        // trait with that name.
+        let regEnv =
+            { regEnv with
+                Registry =
+                    { regEnv.Registry with
+                        TraitMethods = Map.add name traitName regEnv.Registry.TraitMethods } }
 
         let _, _, tDecls = checkDecl regEnv methodSigs methodDecl
         let tDecl = List.head tDecls // The fully verified TDefun node

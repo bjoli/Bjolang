@@ -3,6 +3,41 @@
 
 What each change guarantees, and what it leaves open.
 
+* A trait belongs to the module that declared it
+
+- A trait and each of its methods are filed under a key, ~pretty_a__Pretty~
+  and ~pretty_a__pretty~ (~Naming.traitKey~, ~traitMethodKey~), as a type is.
+  Two modules' traits of one name are two traits, and a program may use both
+  when it gives each a name with a prefix: in impls, where clauses, ~dyn~
+  types and calls. Before, the later one took the place of the earlier, and a
+  prefixed name of the one it replaced was refused.
+- Writing a bare trait name or method name that two imports offer as two
+  traits is refused as ambiguous, by rule 2, with the prefix to write. At the
+  prompt a later entry's trait takes the place of an earlier one's, as before.
+- A prefix replaces a trait's bare name and its methods' bare names, as it
+  does a type's. A where clause that names the bare trait says which name the
+  prefix gave it.
+- A module's own trait with a standard trait's name is a trait of its own. Two
+  tests declared their own ~Num~ to stand for the prelude's, and now use the
+  prelude's.
+- The standard library's traits are not keyed: the compiler names several of
+  them, and the library has one trait of each name. A key's module part is the
+  file name with ~__~ made ~_~, without the directory, since it goes into C#
+  identifiers; two files of one name in two directories give their traits of
+  one name one key.
+- A method is bound and dispatched under its key, and a call finds the trait
+  and the method's own name from it (~traitMethodOf~). The impl classes, the
+  interfaces and the dictionaries are named from the key.
+- A published body names trait methods by key, so a default body splices into
+  an importer that prefixed the trait's module.
+- Messages show the name source wrote: ~Diagnostics.humanize~ replaces each
+  key the compiler made or read.
+- Metadata version 23. A ~.dll~ built before this names its traits bare.
+- Tests: ~418_two_traits_one_name.bjo~, errors ~trait_two_imports~,
+  ~trait_method_two_imports~ and ~prefixed_trait_hides_bare~, and the REPL
+  session ~trait_redefined~. ~errors/trait_prefix_shadowed.bjo~ is gone: what
+  it refused now compiles.
+
 * A signature without a name takes the name of the definition below it
 
 - ~(: (-> int int))~ directly above ~(defun (add1 x) ...)~ is

@@ -5,10 +5,8 @@
 ;; produce the right answer. What is being pinned is that the constraint becomes
 ;; a `where` clause and the body stays the C# operator.
 
+;; The prelude's `Num` stands for `System.Numerics.INumber`.
 (import (std prelude))
-
-(def/trait (Num %a)
-  (#:clr-constraint (System.Numerics.INumber %a)))
 
 ;; A `where` clause on the type parameter, no dictionary parameter, and a plain
 ;; `+` in the body. A dictionary would show up as an extra first argument.
@@ -43,7 +41,7 @@
 ;; directly: `IsZero` is an *explicit* interface implementation on the
 ;; primitives, so that spelling does not compile, while through a constrained
 ;; type parameter every member is reachable.
-;; EXPECT-CS: public static class Arith_Clr \{
+;; EXPECT-CS: public static class clr_constraints__Arith_Clr \{
 ;; EXPECT-CS: public static T_a bare<T_a>\(T_a a0\) where T_a : System.Numerics.INumber<T_a> => T_a\.Abs\(a0\);
 ;; EXPECT-CS: public static bool zeroish<T_a>\(T_a a0\) where T_a : System.Numerics.INumber<T_a> => T_a\.IsZero\(a0\);
 (def/trait (Arith %a)
@@ -60,11 +58,11 @@
 
 ;; Every call goes through the helper, and the concrete case differs from the
 ;; generic one only in the type argument.
-;; EXPECT-CS: return Arith_Clr\.bare<int>\(-5\);
+;; EXPECT-CS: return clr_constraints__Arith_Clr\.bare<int>\(-5\);
 (: (-> int))
 (defun (at-a-type) (bare -5))
 
-;; EXPECT-CS: return Arith_Clr\.bare<T_a>\(x\);
+;; EXPECT-CS: return clr_constraints__Arith_Clr\.bare<T_a>\(x\);
 (: (-> %a %a) (where (Arith %a)))
 (defun (at-a-variable x) (bare x))
 

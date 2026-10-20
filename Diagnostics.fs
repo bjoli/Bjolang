@@ -84,6 +84,29 @@ module Diagnostics =
     let private landingPad =
         Regex(@"[A-Za-z0-9_.]+::(?=[A-Za-z0-9_?!*/<>=+'&.-])", RegexOptions.Compiled)
 
+    /// Each trait key and method key in a message, shown as the name source
+    /// wrote: `'kitchen__Labelled'` reads `'Labelled'`.
+    ///
+    /// A key is the name every pass works with, so the many sites that raise
+    /// put it in their messages. Only a whole key is replaced, one the
+    /// compiler made or read (`Naming.traitKeys`), so a longer name that
+    /// starts with one is left.
+    let private showTraitKeys (message: string) : string =
+        if Naming.traitKeys.IsEmpty || not (message.Contains "__") then
+            message
+        else
+            Naming.traitKeys.Keys
+            |> Seq.filter message.Contains
+            |> Seq.sortByDescending (fun k -> k.Length)
+            |> Seq.fold
+                (fun (text: string) key ->
+                    Regex.Replace(
+                        text,
+                        @"(?<![^\s()\[\]{}'"",;`])" + Regex.Escape key + @"(?![^\s()\[\]{}'"",;`.:])",
+                        Naming.showTraitName key
+                    ))
+                message
+
     /// Strips the suffix `Gensym.fresh` adds.
     ///
     /// Every renaming in the compiler goes through `Gensym`, and none of the
@@ -109,6 +132,7 @@ module Diagnostics =
             generatedCopy.Replace(specializedCopy.Replace(invented.Replace(message, ""), ""), ""),
             ""
         )
+        |> showTraitKeys
 
     /// Whether the compiler narrates what it is doing.
     ///
@@ -473,11 +497,12 @@ module Diagnostics =
     // Names two imports offer as different things
     // ---------------------------------------------------------------------------
 
-    /// Which namespace an ambiguous name is in. A value, a constructor and a macro
-    /// share one; a type has its own.
+    /// Which namespace an ambiguous name is in. A value, a constructor, a macro
+    /// and a trait method share one; a type has its own, and so has a trait.
     type NameSpace =
         | ValueName
         | TypeName
+        | TraitName
 
     /// For each module being compiled, the names that two of its imports offer as
     /// two different things, and the modules that offer each. The prelude does
@@ -512,8 +537,11 @@ module Diagnostics =
                     match space with
                     | ValueName when not arrivesWithModule ->
                         $"Import it from one of them only, with (except ... %s{name}) on the other, or give one a name of its own with (rename ...) or (prefix ...)."
+                    // A trait arrives with its module, and its methods with it.
+                    | TraitName ->
+                        "A trait arrives with its module, so give one of them a name of its own with (prefix-types ...) or (prefix ...), which spells the trait and its methods together."
                     | _ ->
-                        "Leave the type out of one import with (except ...), name only what is used with (only ...), or give one a name of its own with (prefix-types ...). A constructor goes with its type."
+                        "Leave the type out of one import with (except ...), name only what is used with (only ...), or give one a name of its own with (prefix-types ...). A constructor goes with its type, and a trait method with its trait, which only a prefix renames."
 
                 failwithf
                     $"Ambiguous name at %s{Lexer.formatPos r}: '%s{name}' is imported from %s{modules}, and they are two different things. %s{advice}"

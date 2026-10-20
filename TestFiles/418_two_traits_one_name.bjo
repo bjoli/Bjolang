@@ -1,0 +1,44 @@
+;; Two modules each declare a trait Pretty with a method pretty. A trait
+;; belongs to the module that declared it, so they are two traits, and a
+;; program that gives each its own name with a prefix may use both: impls,
+;; where clauses, dyn types and calls.
+;;
+;; A module's own trait with the name of a standard one is a trait of its own
+;; as well: this module's Collection does not take the prelude's place.
+(import (std prelude))
+(import (std simpletest))
+(import (prefix-types "inc/pretty_a.bjo" "A/") (prefix-defs "inc/pretty_a.bjo" "A/"))
+(import (prefix-types "inc/pretty_b.bjo" "B/") (prefix-defs "inc/pretty_b.bjo" "B/"))
+
+(type (: Box (Record (: label string))))
+
+(impl (A/Pretty Box)
+  (defun (pretty b) (str "box " (.label b))))
+
+(impl (B/Pretty Box)
+  (defun (pretty b) (string-length (.label b))))
+
+(: (-> %a string) (where (A/Pretty %a)))
+(defun (shown x) (str "<" (A/pretty x) ">"))
+
+(: (-> %a int) (where (B/Pretty %a)))
+(defun (sized x) (+ 1 (B/pretty x)))
+
+;; Not the prelude's Collection: `length` still means the prelude's method.
+(def/trait (Collection %a)
+  (: weight (-> %a int)))
+
+(impl (Collection Box)
+  (defun (weight b) 3))
+
+(defun (main)
+  (expect "a's method at a's impl" (A/pretty 5) "a:5")
+  (expect "b's method at b's impl" (B/pretty "hello") 5)
+  (expect "a's method at this module's impl" (A/pretty (Box (label "x"))) "box x")
+  (expect "b's method at this module's impl" (B/pretty (Box (label "xyz"))) 3)
+  (expect "a where clause naming a's trait" (shown (Box (label "y"))) "<box y>")
+  (expect "a where clause naming b's trait" (sized "four") 5)
+  (expect "a dyn of a's trait" (A/pretty (dyn A/Pretty 7)) "a:7")
+  (expect "this module's Collection" (weight (Box (label ""))) 3)
+  (expect "and the prelude's" (length (list 1 2)) 2)
+  0)

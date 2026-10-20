@@ -799,7 +799,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         let traitName = env.Registry.TraitMethods[name]
 
         failwithf
-            $"Type Error at %s{Lexer.formatPos r}: '%s{name}' is a method of the inline-only trait '%s{traitName}' and has no value form. Apply it directly, or wrap it in a lambda at a known type."
+            $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTraitName name}' is a method of the inline-only trait '%s{Naming.showTraitName traitName}' and has no value form. Apply it directly, or wrap it in a lambda at a known type."
 
     | EIdent(name, r) when
         not (Map.containsKey name env.Bindings)
@@ -1787,8 +1787,8 @@ and private inferIdent (env: Env) (name: string) (r: Range) : HMType * TypedExpr
 // `TraitMethodNames` is what distinguishes the method's own binding from a
 // binding over it, which `Bindings` cannot: both sit there under one name.
 // An inline trait's methods are not bound at all, hence the first half.
-and private inferTraitMethodCall (env: Env) (methodName: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
-    let traitName = env.Registry.TraitMethods[methodName]
+and private inferTraitMethodCall (env: Env) (methodKey: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
+    let traitName, methodName = (traitMethodOf env.Registry methodKey).Value
 
     // Every argument is positional, keywords included. A trait method's
     // shape is fixed by its trait and no trait declares a keyword
