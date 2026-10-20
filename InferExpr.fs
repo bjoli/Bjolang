@@ -3854,19 +3854,48 @@ and private spliceIntoGrammar
     | TCon(k, _) when k = key ->
         unify env.Registry ty pe
         typed
-    // A number whose type is still open, as a `(def n 3)` is: no alternative
-    // can be chosen by its type yet. Said here, at the name, because the
-    // literal the type comes from may be far away.
+    // A number whose type is still open, as a `(def n 3)` is. It goes where
+    // the same number written out would go, and has the type that place
+    // gives it: in `["n = " n]`, the `BInt` that `["n = " 3]` would be. A
+    // grammar's alternatives do not overlap, so at most one takes a number.
     | found when isOpenLiteral found ->
-        let named, hint =
-            match typed.Node with
-            | TIdent(n, _) -> $"'%s{n}' is a number", $"(: %s{n} int) above where '%s{n}' is bound"
-            | _ -> "this is a number", "a type where the number is bound, such as (: n int)"
+        let inst = grammarInstance p args
+        let written = EInt("0", typed.Range)
 
-        grammarError
-            typed.Range
-            p.Name
-            $"%s{named}, and nothing says yet whether it is an int, a long or a double, so it cannot be read as %s{withArticle p.Name}. Write %s{hint}."
+        let takesNumber =
+            match p.Shape with
+            | GsUnion alternatives ->
+                alternatives |> List.filter (fun (_, item) -> grammarFits env.Registry inst Set.empty item written)
+            | _ -> []
+
+        match takesNumber with
+        | [ (case, GrType t) ] ->
+            let payloadTy = inst t
+
+            let value =
+                match grammarOf env.Registry payloadTy with
+                | Some(k2, a2, p2) -> spliceIntoGrammar env k2 a2 p2 ty typed
+                | None ->
+                    unifyExpecting env.Registry payloadTy ty "this value"
+                    typed
+
+            let built = applyConstructor env case [ value ] typed.Range
+            unify env.Registry built.Type pe
+            built
+        // No alternative takes a number. Said here, at the value, because the
+        // literal its type comes from may be far away.
+        | _ ->
+            let found =
+                match typed.Node with
+                | TIdent(n, _) -> $"'%s{n}', a number"
+                | _ -> "a number"
+
+            let expected =
+                match p.Shape with
+                | GsUnion alternatives -> describeGrammarItem env.Registry inst (GrOr alternatives)
+                | _ -> p.Name
+
+            grammarError typed.Range p.Name $"expected %s{expected}; found %s{found}."
     | found ->
         let inst = grammarInstance p args
 
