@@ -2548,6 +2548,28 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
         failwithf
             $"Orphan Rule Violation at %s{Lexer.formatPos r}: Cannot implement foreign trait '%s{traitName}' for foreign type '%s{typeKey}'."
 
+    // One implementation per trait and head constructor. A call is resolved
+    // by the head of its type alone, so a second impl for the same head
+    // would replace the first: an exact duplicate then fails to compile as
+    // C#, and `(List int)` beside `(List string)` leaves only the later one,
+    // so a call at the earlier type fails with a mismatch at the call.
+    match Map.tryFind (env.CurrentModule, traitName, typeKey) env.ImplSites with
+    | Some(firstType, firstRange) ->
+        let shown = DotNetInterop.showTypesTogether [ firstType; targetType ]
+        let what = if typeKey = BlanketCtor then "a blanket implementation" else $"an implementation for %s{shown[0]}"
+
+        let why =
+            if typeKey = BlanketCtor then
+                "A trait has one blanket implementation."
+            elif shown[0] = shown[1] then
+                "Remove one of them."
+            else
+                $"An implementation is chosen by the head of the type, %s{Naming.showTypeName typeKey}, and not by its arguments, so %s{shown[0]} and %s{shown[1]} cannot have one each. Write one implementation for %s{Naming.showTypeName typeKey} that covers both, or wrap one of the types in a type of its own."
+
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTraitName traitName}' already has %s{what}, at %s{Lexer.formatPos firstRange}. %s{why}"
+    | None -> ()
+
     // An `Eq` or `Ord` implementation for a type this module did not
     // declare: an `import/class` alias, or a type imported from another
     // module (in the REPL, from an earlier entry).
@@ -2793,7 +2815,9 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
                             env.Registry.GeneratedCopies } }
 
     let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
-    let regEnv = addImplementation traitName typeKey targetType implTarget hmAssocBindingsMap env
+    let regEnv =
+        let added = addImplementation traitName typeKey targetType implTarget hmAssocBindingsMap env
+        { added with ImplSites = Map.add (env.CurrentModule, traitName, typeKey) (targetType, r) added.ImplSites }
 
     // FIX 1: Prepend the "'" to the substitution keys so they match TVar "'c"
     let mutable substitutions = Map.add ("'" + traitInfo.ImplementorVar) targetType Map.empty

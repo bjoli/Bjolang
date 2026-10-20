@@ -1891,6 +1891,12 @@ type Env =
       /// method being implemented. It is not: `(defun (= xs ys) ... (= (list-head
       /// xs) (list-head ys)))` compares the *elements*, and has to dispatch.
       ImplMethod: string option
+      /// The implementations written in each module checked so far, by
+      /// module, trait and head constructor: the type each was written for
+      /// and where. One trait has one implementation per head, so a second
+      /// is refused with the place of the first. Imported implementations
+      /// are not here; they come from metadata, not from an `impl`.
+      ImplSites: Map<string * string * string, HMType * Lexer.Range>
       Registry: TraitRegistry
       FunMetas: Map<string, FunMeta>
       /// The module whose declarations are currently being checked.

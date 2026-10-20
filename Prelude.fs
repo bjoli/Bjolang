@@ -1222,6 +1222,7 @@ let prelude : Env =
       TraitMethodNames = Set.empty
       DeprecatedNames = deprecatedBuiltins
       ImplMethod = None
+      ImplSites = Map.empty
       Registry = emptyRegistry
       FunMetas = Map.ofList [
           // The recorded element type is the declaration's own rigid variable.

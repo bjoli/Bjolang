@@ -61,6 +61,7 @@ The repository itself was not modified, apart from adding this file.
 | `seconds` / `minutes` overflow `int`, so timeouts fire early and deadlines at the wrong time (prelude, concurrency #9): timers take a `Duration`, whose constructors raise past its range; timers count in `long` | `cbe225c` | `TestFiles/435_durations_and_range_by_stop.bjo` |
 | `length` of a `Range` whose span exceeds `int-max` is negative: counted in `long`, and a length past `int-max` panics | `b43e598` | `TestFiles/435_durations_and_range_by_stop.bjo` |
 | `range-by` walk wraps past `int-max` instead of stopping: `range-by` answers a `RangeBy`, whose walk ends at a stop value worked out once | `b43e598` | `TestFiles/435_durations_and_range_by_stop.bjo` |
+| Duplicate or overlapping `impl`s for one trait and head are not detected; the later replaces the earlier (types): a second is refused at the impl, naming the first | (uncommitted) | `TestFiles/errors/impl_duplicate.bjo`, `TestFiles/errors/impl_same_head.bjo` |
 
 ### Found fixed when re-checked (2026-10-20)
 
