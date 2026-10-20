@@ -1,0 +1,22 @@
+;; (: value Type) is the value, with the type written: where a binding would
+;; be needed only to give a type, as for an empty collection or a None.
+(import (std prelude))
+(import (std fmt))
+(import (std simpletest))
+
+(: (-> (Vec int) int))
+(defun (length-of xs) (: (vec-length xs) int))
+
+(defun (main)
+  (expect "an empty vec" (vec-length (: [] (Vec int))) 0)
+  (expect "an empty list" (list-length (: Nil (List int))) 0)
+  (def none (: None (Option string)))
+  (expect "a None" (match none ((Some s) s) (None "none")) "none")
+  (expect "a result" (length-of [1 2 3]) 3)
+  (expect "a literal read by a grammar" (render->string (: ["x = " 3] Block)) "x = 3")
+  (expect "a string as a block" (render->string (: "hej" Block)) "hej")
+  ;; In a body, (: name type) before the def of name is still a declaration.
+  (: n int)
+  (def n 4)
+  (expect "a declaration" (+ n 1) 5)
+  (expect "a variable annotated in an argument" (+ (: n int) 1) 5))

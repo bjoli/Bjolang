@@ -662,11 +662,22 @@ let rec parseExpr (s: SExpr) : Expr =
                 EApp(EResolved(callErrorMarker, listRange), [ EString(message, mr) ], listRange)
             | _ -> failwithf $"Invalid %s{callErrorMarker} at %s{Lexer.formatPos listRange}: expected a message."
 
-        // A body reads a declaration before it gets here. So this one is not
-        // in a run of definitions: it is last in a body, or an argument.
+        // `(: expr Type)`: the value of `expr`, which has the type `Type`. A
+        // body reads `(: name type)` as a declaration before it gets here, so
+        // this one is an argument, or a body's statement that annotates
+        // something other than a name.
+        //
+        // It is the value of a binding with the type written, so it is
+        // checked as one is: against the type, with a literal read by a
+        // grammar where the type is one. `Simplify` takes the binding away.
         | SAtom { Token = Colon } ->
-            failwithf
-                $"Syntax error at %s{Lexer.formatPos listRange}: a declaration (: name type) is not an expression. Put it in a body, before the def, def/mutable or defun of name."
+            match args with
+            | [ value; t ] ->
+                let held = Gensym.fresh "annotated"
+                ELet(held, false, [], Some(parseType t), parseExpr value, EIdent(held, listRange), listRange)
+            | _ ->
+                failwithf
+                    $"Syntax error at %s{Lexer.formatPos listRange}: (: value Type) takes a value and its type."
 
         | _ ->
             // Fallback for tuples or unquoted lists
@@ -2155,6 +2166,15 @@ and parseDefunReturn (rest: SExpr list) : FType option * SExpr list =
     | SAtom { Token = Colon } :: t :: body -> Some(parseType t), body
     | body -> None, body
 
+/// Whether the parts of a `(: ...)` in a body make it a declaration: a name
+/// and a type, or a signature without a name. Anything else is a value with
+/// its type written, such as `(: [] (Vec int))`.
+and private isDeclaration (parts: SExpr list) : bool =
+    match parts with
+    | [ _ ] -> true
+    | SAtom { Token = Symbol _ } :: _ -> true
+    | _ -> false
+
 /// A body: a sequence of forms, where a definition scopes over what follows it.
 ///
 /// Six heads are consumed *here* rather than by `parseExpr`, and are reserved
@@ -2406,7 +2426,7 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
             ->
             close ()
 
-        | (SList(SAtom { Token = Colon } :: _, _) as form) :: rest ->
+        | (SList(SAtom { Token = Colon } :: parts, _) as form) :: rest when isDeclaration parts ->
             let name, tType, r = parseDeclaration form
 
             match Map.tryFind name declared with
@@ -2584,7 +2604,11 @@ and parseBody (exprs: SExpr list) (fallbackRange: Range) : Expr =
         | (SList(SAtom { Token = Symbol "def" } :: _, _)) :: _
         | (SList(SAtom { Token = Symbol "defbjo" } :: _, _)) :: _
         | (SList(SAtom { Token = Symbol "defun" } :: _, _)) :: _
-        | (SList(SAtom { Token = Colon } :: _, _)) :: _ ->
+        | (SList(SAtom { Token = Colon } :: _, _)) :: _ when
+            (match remaining with
+             | SList(SAtom { Token = Colon } :: parts, _) :: _ -> isDeclaration parts
+             | _ -> true)
+            ->
             let defs, rest = collectDefs [] Map.empty remaining
 
             // Nothing recognized means nothing consumed, and recursing on an

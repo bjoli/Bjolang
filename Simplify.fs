@@ -275,6 +275,11 @@ let rec private simplify (ctx: Ctx) (expr: TypedExpr) : TypedExpr =
     let expr = TypeVisitor.mapChildren (simplify ctx) expr
 
     match expr.Node with
+    // A local that is the whole of its scope, as `(: value Type)` writes:
+    // the value itself.
+    | TLet(name, false, fn, value, { Node = TIdent(read, []) }) when fn = noParams && read = name && name <> "_" ->
+        value
+
     // A statement with no effect. `_` is never read, so a `_` bound again
     // inside `body` does not matter, as it does for the case below.
     | TLet("_", false, fn, value, body) when fn = noParams && (isPure ctx value || isNoop ctx value) -> body

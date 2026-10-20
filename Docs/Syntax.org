@@ -505,6 +505,16 @@ A local function's colour is read off its body, with or without a declaration. I
 
 ~%a~ in a local declaration means what it means in a parameter annotation, and is not a promise that the function works for every type, as it is at the top level.
 
+*** A type written on a value
+~(: value Type)~ anywhere else is the value, with the type written: where a binding would be needed only to say a type.
+#+BEGIN_SRC scheme
+(vec-length (: [] (Vec int)))          ;; 0: an empty vec says nothing of its elements
+(def none (: None (Option string)))
+(show (: ["x = " n] Block))            ;; a literal read by the grammar of its type
+#+END_SRC
+
+It is checked as the value of a ~def~ with a type is: against the type, and a literal is read by a grammar where the type is one. In a body, ~(: name type)~ with a name first is a declaration, as above; a statement that annotates anything else, such as ~(: [] (Vec int))~, is a value. ~cast~ is not this: it converts a number to another numeric type.
+
 *** The definitions in a body run in the order they are written
 A run of ~def~ and ~defun~ forms in a body is one scope, as Scheme's ~letrec*~ is: every name in it is visible to all of them. A value's init runs where it is written, so it may read only the values above it. A use inside a ~fun~, a ~seq~ or a ~bjo~ waits until that runs, and may name a value written below.
 
