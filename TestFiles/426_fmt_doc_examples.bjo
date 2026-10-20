@@ -304,4 +304,26 @@
   (expect "pieces as content" (render->string (padded/left 8 ["x = " n])) "   x = 3")
   (expect "a medal" (render->string [(medal 1) "/" (medal 2) "/" (medal 3)]) "gold/silver/")
   (expect "a string variable returned as a block" (render->string (labelled name n)) "Ada: 3\n")
+
+  ;; Settings: parameterize around show, with-fmt and with-fmt* in the layout.
+  (def para "Bjolang lays text out with blocks, and blocks nest.")
+  (def wrapped-20 "Bjolang lays text\nout with blocks, and\nblocks nest.")
+  (expect "parameterize around the run" (parameterize ((current-width 20)) (render->string (wrapped para))) wrapped-20)
+  (expect "parameterize around the building does nothing"
+          (render->string (parameterize ((current-width 20)) (wrapped para)))
+          para)
+  (expect "with-fmt in the layout" (render->string (with-fmt current-width 20 (wrapped para))) wrapped-20)
+  (expect "with-fmt*, several settings and blocks"
+          (render->string (with-fmt* ((current-width 24)
+                                      (current-ellipsis "…"))
+                            (trimmed/right 8 "A green tea from the hills") nl
+                            (wrapped "A green tea from the hills, picked in spring and rolled by hand.")))
+          "A green…\nA green tea from the\nhills, picked in spring\nand rolled by hand.")
+  (expect "with-fmt*, the separators"
+          (render->string (with-fmt* ((current-comma 3)
+                                      (current-comma-sep #\space)
+                                      (current-decimal-sep #\,))
+                            (numeric 1234567.5) nl))
+          "1 234 567,5\n")
+  (expect "with-fmt* with no settings" (render->string (with-fmt* () "plain" nl)) "plain\n")
   0)

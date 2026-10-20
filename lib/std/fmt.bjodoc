@@ -179,8 +179,11 @@
     }|
 
     @strong{Settings} are parameters, so they are dynamically scoped:
-    @code{with-fmt} binds one around some blocks while they run, and it is
-    restored when they end. The ones here are:
+    @code{with-fmt} binds one around a block while it runs, and it is
+    restored when the block ends; @code{with-fmt*} binds several, as
+    @code{parameterize} does. A block reads a setting when it runs, so a
+    @code{parameterize} works around @code{show}, but not around the code
+    that builds the block. The settings here are:
 
     @read-table{
     | Parameter                     | Default                | What it sets                                            |
@@ -361,7 +364,7 @@
   (arg v "Its value while the block runs.")
   (arg b "The block.")
   (returns "A block. The parameter is bound when it runs, not when it is built, and restored when it ends.")
-  (see with-pad current-width)
+  (see with-fmt* with-pad current-width)
   (example """
     (show (with-fmt current-precision 2 (numeric 3.14159)))   ; 3.14
     """)
@@ -376,6 +379,46 @@
     ;; A green tea from the
     ;; hills, picked in spring
     ;; and rolled by hand.
+    """)
+  (reference """
+    A block reads a setting when it runs, not when it is built. So a
+    @code{parameterize} around the code that builds a block does nothing:
+    the block runs later, in @code{show}, when the @code{parameterize} has
+    ended.
+
+    @codeblock[#:lang "bjolang"]|{
+    (parameterize ((current-width 20)) (show (wrapped text)))    ; 20 wide
+    (show (with-fmt current-width 20 (wrapped text)))            ; 20 wide
+    (show (parameterize ((current-width 20)) (wrapped text)))    ; 78 wide: the default
+    }|
+
+    A @code{parameterize} around @code{show} is the simplest way to set
+    something for a whole output. @code{with-fmt} and @code{with-fmt*} set
+    it for part of one: a cell, a paragraph, the numbers of a column.
+    """))
+
+(:doc with-fmt*
+  (summary "Runs blocks with settings bound, written as parameterize is.")
+  (form (with-fmt* ((p v) ...) block ...))
+  (arg p "A parameter: one of this module's settings, or one of your own.")
+  (arg v "Its value while the blocks run.")
+  (rest block "The blocks, run in order.")
+  (see with-fmt with-pad)
+  (example """
+    (show (with-fmt* ((current-width 24)
+                      (current-ellipsis "…"))
+            (trimmed/right 8 "A green tea from the hills") nl
+            (wrapped "A green tea from the hills, picked in spring and rolled by hand.")))
+    ;; A green…
+    ;; A green tea from the
+    ;; hills, picked in spring
+    ;; and rolled by hand.
+    """)
+  (reference """
+    @code{with-fmt} for each setting, the first outermost, around the
+    blocks as a vec. The values are computed where the form is, when the
+    block is built, as the arguments of @code{with-fmt} are. With no
+    settings it is the blocks alone.
     """))
 
 (:doc with-pad
