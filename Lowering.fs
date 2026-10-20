@@ -247,12 +247,12 @@ let rec buildEvidence
             | Some found -> found
             | None when hasSpecific ->
                 let written =
-                    match implsAtHead env.Registry traitName typeName with
-                    | target :: _ -> DotNetInterop.showType (implTargetType typeName target.FixedPrefix)
-                    | [] -> Naming.showTypeName typeName
+                    implsAtHead env.Registry traitName typeName
+                    |> List.map (fun target -> "'" + DotNetInterop.showType (implTargetType typeName target.FixedPrefix) + "'")
+                    |> String.concat " and "
 
                 failwithf
-                    $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType resolved}', needed %s{describe}. The implementation for '%s{Naming.showTypeName typeName}' is written for '%s{written}' only."
+                    $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType resolved}', needed %s{describe}. The implementations for '%s{Naming.showTypeName typeName}' are written for %s{written} only."
             | None ->
                 failwithf
                     $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType resolved}', needed %s{describe}."

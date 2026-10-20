@@ -39,6 +39,11 @@ type Wanted =
 
 let private wantedQueue = ResizeArray<Wanted>()
 
+/// Wanteds that two or more implementations could still answer, because a
+/// type in them is not known yet. `solvePending` tries them again after each
+/// step that can tell it more, and reports those that are left.
+let private undecidedWanteds = ResizeArray<Wanted>()
+
 /// The constraints over .NET interfaces of the implementations that resolution
 /// chose, each with the type it asks it at, where, and why: the `(Num %a)` of
 /// `(Summing %a)` at the `string` a loop sums. Checked in `solvePending`, so
@@ -126,6 +131,7 @@ let takeWanteds () : Wanted list =
 /// is the worst shape a state leak can take.
 let clearWanteds () : unit =
     wantedQueue.Clear()
+    undecidedWanteds.Clear()
     Unification.deferredProjections.Clear()
     clrObligations.Clear()
     clrChecked.Clear()
@@ -242,6 +248,23 @@ let private queueImplPins (traitName: string) (target: ImplTarget) (c: TraitCons
             r
         )
 
+/// The head a wanted's implementor has, and the implementations at that head
+/// its arguments could still be an instance of. `None` while the implementor
+/// is not known to have a head.
+let private candidatesOf (registry: TraitRegistry) (w: Wanted) : (string * (ImplTarget * Map<string, HMType>) list) option =
+    w.HoleArgs
+    |> List.tryPick (fun (m, _) ->
+        match prune registry m with
+        | TCon(ctor, args) -> Some(ctor, args)
+        | TTuple args -> Some(tupleCtor args.Length, args)
+        | _ -> None)
+    |> Option.map (fun (ctor, args) -> ctor, implsMatching registry w.Trait ctor args isOpenLiteral)
+
+let private takeUndecided () : Wanted list =
+    let ws = List.ofSeq undecidedWanteds
+    undecidedWanteds.Clear()
+    ws
+
 let private tryResolveWanted (env: Env) (w: Wanted) : bool =
     if w.Ref.Resolved.IsSome then
         true
@@ -328,7 +351,25 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
 
                 failwithf
                     $"Type Error at %s{Lexer.formatPos w.Range}: no implementation of trait '%s{w.Trait}' for '%s{shown}', required by '%s{w.Method}'.%s{hint}"
-        | target :: _ ->
+        | atHead ->
+        match candidatesOf registry w |> Option.map snd |> Option.defaultValue [] with
+        // Two or more still fit. Choosing now would be a guess, so the
+        // wanted waits for the types to say more.
+        | _ :: _ :: _ -> false
+        | [] ->
+            let shown =
+                match w.HoleArgs with
+                | (m, _) :: _ -> DotNetInterop.showType (prune registry m)
+                | [] -> Naming.showTypeName ctor
+
+            let written =
+                atHead
+                |> List.map (fun t -> "'" + DotNetInterop.showType (implTargetType ctor t.FixedPrefix) + "'")
+                |> String.concat " and "
+
+            failwithf
+                $"Type Error at %s{Lexer.formatPos w.Range}: no implementation of trait '%s{w.Trait}' for '%s{shown}', required by '%s{w.Method}'. It has implementations for %s{written} only."
+        | [ target, _ ] ->
             let prefix, classTypeArgs, subst = instantiateImplPrefix target
 
             for (m, occArgs) in w.HoleArgs do
@@ -382,6 +423,10 @@ let solveWanteds (env: Env) (wanteds: Wanted list) : unit =
                     true)
 
     for w in pending do
+        match candidatesOf env.Registry w with
+        | Some(_, _ :: _ :: _) -> undecidedWanteds.Add w
+        | _ ->
+
         match w.Kind with
         | InterfaceTrait -> ()
         | InlineTrait ->
@@ -545,19 +590,42 @@ let rec private checkImplObligation (env: Env) (traitName: string) (t: HMType) (
 /// Pin equations last, after resolution has fed them.
 let solvePending (env: Env) : unit =
     defaultNumericLiterals env
-    solveWanteds env (takeWanteds ())
+    solveWanteds env (takeWanteds () @ takeUndecided ())
 
     // Resolution may have opened numbers of its own, through an impl's
     // `(where (Num %a))`. They are settled now, before this declaration
     // generalizes, and what they let resolve is resolved.
     if openNumbers.Count > 0 then
         defaultNumericLiterals env
-        solveWanteds env (takeWanteds ())
+        solveWanteds env (takeWanteds () @ takeUndecided ())
 
     // A deferred projection that holds can tell an obligation its implementor,
     // and a resolved obligation can tell a projection its own.
     while solveDeferredProjections env do
-        solveWanteds env (takeWanteds ())
+        solveWanteds env (takeWanteds () @ takeUndecided ())
+
+    // What two implementations still both fit has nothing left to decide it,
+    // and the declaration is about to generalize: an open type in it would
+    // become a type variable, and neither implementation is written for one.
+    match takeUndecided () with
+    | w :: _ ->
+        let shown, written =
+            match candidatesOf env.Registry w with
+            | Some(ctor, candidates) ->
+                let shown =
+                    match w.HoleArgs with
+                    | (m, _) :: _ -> DotNetInterop.showType (prune env.Registry m)
+                    | [] -> Naming.showTypeName ctor
+
+                shown,
+                candidates
+                |> List.map (fun (t, _) -> "'" + DotNetInterop.showType (implTargetType ctor t.FixedPrefix) + "'")
+                |> String.concat " and "
+            | None -> "", ""
+
+        failwithf
+            $"Type Error at %s{Lexer.formatPos w.Range}: which implementation of '%s{w.Trait}' '%s{w.Method}' uses here is not decided. Its type is '%s{shown}', and the implementations for %s{written} both fit it. Say what the type is, with an annotation."
+    | [] -> ()
 
     // A type still open here is not checked: a later declaration may settle
     // it, and `Lowering` checks it again at the type it ends up at.

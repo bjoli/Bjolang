@@ -3,6 +3,29 @@
 
 What each change guarantees, and what it leaves open.
 
+* One head may have several implementations of a trait
+
+- ~(impl (Describe (List int)))~ beside ~(impl (Describe (List string)))~
+  was refused, since an implementation was chosen by the head of the type
+  alone. Each now answers at its own type: a call is resolved by matching
+  its whole type against the implementations at its head, and so is a
+  dictionary built where a constrained function is called. This holds for
+  fixed arguments of an inline trait too, ~(Tagged (Result string %a))~
+  beside ~(Tagged (Result int %a))~, and across a module boundary.
+- Implementations of one trait may not overlap: no type may be an instance
+  of two of them. ~(List int)~ beside ~(List %a)~, or ~(Pair %a %a)~
+  beside ~(Pair int %b)~, is refused at the second, naming the first and
+  a type both fit. Imported implementations count.
+- A call whose type is still open when its declaration ends, such as
+  ~(describe (list))~, is refused when two implementations fit it, and asks
+  for an annotation. A generic function cannot use implementations written
+  for particular arguments: at ~(List %a)~ neither applies.
+- The blanket still applies only at a head with no implementation of its
+  own: ~(List bool)~ beside ~(List int)~ is an error, not the blanket.
+- Tests: ~441_impls_per_type_arguments.bjo~, and in ~TestFiles/errors~
+  ~impl_overlap.bjo~, ~impl_overlap_partial.bjo~, ~impl_ambiguous.bjo~,
+  ~impl_none_of_several.bjo~, ~impl_generic_use_of_specific.bjo~.
+
 * An implementation is filed under its whole target
 
 - The registry kept implementations by trait and head constructor, so

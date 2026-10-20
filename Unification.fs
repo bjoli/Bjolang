@@ -219,12 +219,71 @@ let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
             | None -> TAssoc(traitName, assocName, prunedImpl)
     | _ -> t
 
+/// The implementations of `traitName` at the head `ctor` that a type with the
+/// arguments `args` could be an instance of, each with the substitution that
+/// carries the impl's own type variables to those arguments. The blanket is
+/// not one of them.
+///
+/// The impl's prefix is matched against the arguments, not only read for its
+/// variables: `(impl (Describe (List int)))` is found by its head, `List`, and
+/// must not be selected for `(List string)`, nor `(Pair %a %a)` for
+/// `(Pair int string)`. A metavariable in the arguments matches anything,
+/// since nothing decides it yet, except that one `isOpenLiteral` says is a
+/// number literal matches only a number type: `(List string)` is never the
+/// type of `(list 1 2)`.
+let implsMatching
+    (registry: TraitRegistry)
+    (traitName: string)
+    (ctor: string)
+    (args: HMType list)
+    (isOpenLiteral: HMType -> bool)
+    : (ImplTarget * Map<string, HMType>) list =
+    let rec matchInto (subst: Map<string, HMType> option) (pattern: HMType) (actual: HMType) =
+        match subst with
+        | None -> None
+        | Some s ->
+            match pattern, prune registry actual with
+            | TVar v, a ->
+                match Map.tryFind v s with
+                | None -> Some(Map.add v a s)
+                | Some earlier -> if sameType earlier a then subst else None
+            | p, (TMeta _ as open') ->
+                if isOpenLiteral open' && not (NumericLiteral.isNumeric p) then None else subst
+            | TCon(p, ps), TCon(a, as') when p = a && ps.Length = as'.Length -> List.fold2 matchInto subst ps as'
+            | TTuple ps, TTuple as' when ps.Length = as'.Length -> List.fold2 matchInto subst ps as'
+            | TFun(ps, pr, _), TFun(as', ar, _) when ps.Length = as'.Length ->
+                matchInto (List.fold2 matchInto subst ps as') pr ar
+            | _ -> None
+
+    and sameType (a: HMType) (b: HMType) =
+        match prune registry a, prune registry b with
+        | TMeta _, _
+        | _, TMeta _ -> true
+        | TVar x, TVar y -> x = y
+        | TCon(x, xs), TCon(y, ys) -> x = y && xs.Length = ys.Length && List.forall2 sameType xs ys
+        | TTuple xs, TTuple ys -> xs.Length = ys.Length && List.forall2 sameType xs ys
+        | TFun(xs, x, _), TFun(ys, y, _) -> xs.Length = ys.Length && List.forall2 sameType xs ys && sameType x y
+        | x, y -> x = y
+
+    implsAtHead registry traitName ctor
+    |> List.choose (fun target ->
+        let bound = args |> List.truncate target.FixedPrefix.Length
+
+        List.fold2 matchInto (Some Map.empty) (target.FixedPrefix |> List.truncate bound.Length) bound
+        |> Option.map (fun subst -> target, subst))
+
 /// The implementation `traitName` selects at `t`, with the substitution that
 /// carries the impl's own type variables to `t`'s arguments.
 ///
 /// The two levels resolution uses, in the same order: an exact head, then the
 /// trait's blanket. A blanket's target is the bare implementor, so the
-/// substitution binds its one variable to the whole type.
+/// substitution binds its one variable to the whole type. The blanket is the
+/// answer only for a head with no implementation of its own: one written at
+/// other arguments does not let it through.
+///
+/// Implementations may not overlap, so at a type that is known at least one
+/// of them fits it. Two fit only where a metavariable leaves the type open,
+/// and choosing either would be a guess; that is refused.
 let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTarget * Map<string, HMType>) option =
     // A tuple answers under its synthetic arity key, and is otherwise an
     // ordinary constructor applied to its element types.
@@ -235,54 +294,72 @@ let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTar
         | _ -> None
 
     match headed with
+    | Some(ctor, args) when hasImplAtHead registry traitName ctor ->
+        match implsMatching registry traitName ctor args (fun _ -> false) with
+        | [] -> None
+        | [ found ] -> Some found
+        | several ->
+            let written =
+                several
+                |> List.map (fun (target, _) -> "'" + DotNetInterop.showType (implTargetType ctor target.FixedPrefix) + "'")
+                |> String.concat " and "
+
+            failwithf
+                $"Type Error: which implementation of '%s{traitName}' '%s{DotNetInterop.showType (prune registry t)}' uses is not decided: %s{written} both fit it. Say what the type is with an annotation."
     | Some(ctor, args) ->
-        let targets =
-            match implsAtHead registry traitName ctor with
-            | [] -> Map.tryFind traitName registry.BlanketImpls |> Option.toList
-            | targets -> targets
-
-        // The impl's prefix is matched against the arguments, not only read
-        // for its variables: `(impl (Describe (List int)))` is found by its
-        // head, `List`, and must not be selected for `(List string)`, nor
-        // `(Pair %a %a)` for `(Pair int string)`. A metavariable in the
-        // arguments matches anything, since nothing decides it yet.
-        let rec matchInto (subst: Map<string, HMType> option) (pattern: HMType) (actual: HMType) =
-            match subst with
-            | None -> None
-            | Some s ->
-                match pattern, prune registry actual with
-                | TVar v, a ->
-                    match Map.tryFind v s with
-                    | None -> Some(Map.add v a s)
-                    | Some earlier -> if sameType earlier a then subst else None
-                | _, TMeta _ -> subst
-                | TCon(p, ps), TCon(a, as') when p = a && ps.Length = as'.Length -> List.fold2 matchInto subst ps as'
-                | TTuple ps, TTuple as' when ps.Length = as'.Length -> List.fold2 matchInto subst ps as'
-                | TFun(ps, pr, _), TFun(as', ar, _) when ps.Length = as'.Length ->
-                    matchInto (List.fold2 matchInto subst ps as') pr ar
-                | _ -> None
-
-        and sameType (a: HMType) (b: HMType) =
-            match prune registry a, prune registry b with
-            | TMeta _, _
-            | _, TMeta _ -> true
-            | TVar x, TVar y -> x = y
-            | TCon(x, xs), TCon(y, ys) -> x = y && xs.Length = ys.Length && List.forall2 sameType xs ys
-            | TTuple xs, TTuple ys -> xs.Length = ys.Length && List.forall2 sameType xs ys
-            | TFun(xs, x, _), TFun(ys, y, _) -> xs.Length = ys.Length && List.forall2 sameType xs ys && sameType x y
-            | x, y -> x = y
-
-        targets
-        |> List.tryPick (fun target ->
-            let bound =
-                if target.Ctor = BlanketCtor then
-                    [ implTargetType ctor args ]
-                else
-                    args |> List.truncate target.FixedPrefix.Length
-
-            List.fold2 matchInto (Some Map.empty) (target.FixedPrefix |> List.truncate bound.Length) bound
-            |> Option.map (fun subst -> target, subst))
+        match Map.tryFind traitName registry.BlanketImpls with
+        | Some({ FixedPrefix = [ TVar v ] } as blanket) -> Some(blanket, Map.ofList [ v, implTargetType ctor args ])
+        | _ -> None
     | None -> None
+
+/// Whether two implementation targets have an instance in common: whether
+/// some type is an instance of both `a` and `b`. Each side's type variables
+/// are its own, so `(Pair %a int)` and `(Pair string %a)` overlap at
+/// `(Pair string int)`. Answers that common instance, or `None`.
+let patternsOverlap (a: HMType) (b: HMType) : HMType option =
+    let rec rename (side: string) (t: HMType) =
+        match t with
+        | TVar v -> TVar(side + v)
+        | TCon(n, xs) -> TCon(n, List.map (rename side) xs)
+        | TTuple xs -> TTuple(List.map (rename side) xs)
+        | TFun(xs, r, e) -> TFun(List.map (rename side) xs, rename side r, e)
+        | TMeta { Value = Some inner } -> rename side inner
+        | other -> other
+
+    let rec resolve (s: Map<string, HMType>) (t: HMType) =
+        match t with
+        | TVar v ->
+            match Map.tryFind v s with
+            | Some bound -> resolve s bound
+            | None -> t
+        | TCon(n, xs) -> TCon(n, List.map (resolve s) xs)
+        | TTuple xs -> TTuple(List.map (resolve s) xs)
+        | TFun(xs, r, e) -> TFun(List.map (resolve s) xs, resolve s r, e)
+        | other -> other
+
+    let rec occurs (v: string) (t: HMType) =
+        match t with
+        | TVar w -> v = w
+        | TCon(_, xs)
+        | TTuple xs -> List.exists (occurs v) xs
+        | TFun(xs, r, _) -> List.exists (occurs v) xs || occurs v r
+        | _ -> false
+
+    let rec unifyInto (s: Map<string, HMType> option) (x: HMType) (y: HMType) =
+        match s with
+        | None -> None
+        | Some subst ->
+            match resolve subst x, resolve subst y with
+            | TVar v, TVar w when v = w -> s
+            | TVar v, t
+            | t, TVar v -> if occurs v t then None else Some(Map.add v t subst)
+            | TCon(n, xs), TCon(m, ys) when n = m && xs.Length = ys.Length -> List.fold2 unifyInto s xs ys
+            | TTuple xs, TTuple ys when xs.Length = ys.Length -> List.fold2 unifyInto s xs ys
+            | TFun(xs, r, _), TFun(ys, q, _) when xs.Length = ys.Length -> unifyInto (List.fold2 unifyInto s xs ys) r q
+            | p, q -> if p = q then s else None
+
+    let a, b = rename "l" a, rename "r" b
+    unifyInto (Some Map.empty) a b |> Option.map (fun s -> resolve s a)
 
 /// What a use of `traitName` at `t` still needs from the enclosing function.
 ///

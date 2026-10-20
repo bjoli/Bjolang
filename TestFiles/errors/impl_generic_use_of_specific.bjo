@@ -1,0 +1,22 @@
+;; A generic function cannot use implementations written for particular
+;; element types: at (List %a) neither applies, whatever %a turns out to be.
+
+;; EXPECT-ERROR: no implementation of trait 'Describe' for '(List %a)', required by 'describe'. It has implementations for '(List int)' and '(List string)' only.
+
+(import (std prelude))
+
+(def/trait (Describe %a)
+  (: describe (-> %a string)))
+
+(impl (Describe (List int))
+  (defun (describe xs) "ints"))
+
+(impl (Describe (List string))
+  (defun (describe xs) "strings"))
+
+(: (-> (List %a) string))
+(defun (f xs) (describe xs))
+
+(defun (main args)
+  (println (f (list 1)))
+  0)

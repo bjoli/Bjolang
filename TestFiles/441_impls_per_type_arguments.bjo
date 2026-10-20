@@ -1,0 +1,69 @@
+;; Implementations of one trait at one head, told apart by their type
+;; arguments. An implementation was found by the head alone, so the second
+;; replaced the first; now each is found by matching the whole type, and two
+;; may share a head as long as no type is an instance of both.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/per_argument_impls.bjo")
+
+(type (: (Pair %a %b) (Struct (: l %a) (: r %b))))
+
+(def/trait (Describe %a)
+  (: describe (-> %a string)))
+
+(impl (Describe (List int))
+  (defun (describe xs) "ints"))
+
+(impl (Describe (List string))
+  (defun (describe xs) "strings"))
+
+;; A repeated variable beside fixed arguments that are not a repetition.
+(impl (Describe (Pair %a %a))
+  (defun (describe p) "one type twice"))
+
+(impl (Describe (Pair int string))
+  (defun (describe p) "int and string"))
+
+;; A conditional implementation, whose where clause is met by one of the two.
+(impl (Describe (Option %a)) (where (Describe %a))
+  (defun (describe o)
+    (match o ((Some x) (string-append "some " (describe x))) ((None) "none"))))
+
+(: (-> %a string) (where (Describe %a)))
+(defun (via x) (describe x))
+
+;; An inline trait: the last argument is abstracted, the first is fixed, and
+;; the fixed one tells the implementations apart.
+(def/trait (Tagged (%f %a))
+  (: tag (-> (%f %a) string)))
+
+(impl (Tagged (Result string %a))
+  (defun (tag r) "error is a string"))
+
+(impl (Tagged (Result int %a))
+  (defun (tag r) "error is an int"))
+
+(defun (main args)
+  (expect "a literal list" (describe (list 1 2)) "ints")
+  (expect "a list of strings" (describe (list "a")) "strings")
+  (def xs (list 3))
+  (expect "a variable" (describe xs) "ints")
+  (expect "through a dictionary" (via (list "b")) "strings")
+  (expect "a local function settled by its use" (let ((g (fun (ys) (describe ys)))) (g (list "c"))) "strings")
+
+  (expect "a repeated variable" (describe (Pair (l 1) (r 2))) "one type twice")
+  (expect "fixed arguments" (describe (Pair (l 1) (r "x"))) "int and string")
+  (expect "fixed arguments, through a dictionary" (via (Pair (l 1) (r "x"))) "int and string")
+
+  (expect "a conditional implementation" (describe (Some (list "d"))) "some strings")
+  (expect "a conditional implementation, through a dictionary" (via (Some (list 4))) "some ints")
+
+  (def (: e1 (Result string int)) (Err "no"))
+  (def (: e2 (Result int int)) (Ok 1))
+  (expect "an inline trait, first fixed argument" (tag e1) "error is a string")
+  (expect "an inline trait, second fixed argument" (tag e2) "error is an int")
+
+  (expect "from another module" (label (list 1)) "ints")
+  (expect "from another module, the other one" (label (list "e")) "strings")
+  (expect "from another module, through its dictionary" (label-via (list "f")) "strings")
+  0)

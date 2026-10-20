@@ -2549,27 +2549,51 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
         failwithf
             $"Orphan Rule Violation at %s{Lexer.formatPos r}: Cannot implement foreign trait '%s{traitName}' for foreign type '%s{typeKey}'."
 
-    // One implementation per trait and head constructor. A call is resolved
-    // by the head of its type alone, so a second impl for the same head
-    // would replace the first: an exact duplicate then fails to compile as
-    // C#, and `(List int)` beside `(List string)` leaves only the later one,
-    // so a call at the earlier type fails with a mismatch at the call.
-    match Map.tryFind (env.CurrentModule, traitName, typeKey) env.ImplSites with
-    | Some(firstType, firstRange) ->
-        let shown = DotNetInterop.showTypesTogether [ firstType; targetType ]
-        let what = if typeKey = BlanketCtor then "a blanket implementation" else $"an implementation for %s{shown[0]}"
+    // Implementations of one trait may not overlap: no type may be an
+    // instance of two of them, or a call at that type would have two
+    // meanings, and which one it got would depend on what the compiler knew
+    // where the call was checked. `(List int)` beside `(List string)` is
+    // two; `(List int)` beside `(List %a)` would be one type with two.
+    //
+    // The impls in scope include the imported ones. The orphan rule makes
+    // this enough: of two modules that may each write an impl of a trait for
+    // a head, one declares the trait and the other the type, so the later one
+    // imports the earlier and sees its impl here.
+    let implKeyOfTarget = (implKey targetType).Value
 
-        let why =
+    let refuse (otherType: HMType) (otherKey: string) (why: string) =
+        let where =
+            match Map.tryFind (env.CurrentModule, traitName, otherKey) env.ImplSites with
+            | Some(_, otherRange) -> $"at %s{Lexer.formatPos otherRange}"
+            | None -> "imported"
+
+        let what =
             if typeKey = BlanketCtor then
-                "A trait has one blanket implementation."
-            elif shown[0] = shown[1] then
-                "Remove one of them."
+                "a blanket implementation"
             else
-                $"An implementation is chosen by the head of the type, %s{Naming.showTypeName typeKey}, and not by its arguments, so %s{shown[0]} and %s{shown[1]} cannot have one each. Write one implementation for %s{Naming.showTypeName typeKey} that covers both, or wrap one of the types in a type of its own."
+                $"an implementation for %s{(DotNetInterop.showTypesTogether [ otherType; targetType ])[0]}"
 
         failwithf
-            $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTraitName traitName}' already has %s{what}, at %s{Lexer.formatPos firstRange}. %s{why}"
-    | None -> ()
+            $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTraitName traitName}' already has %s{what}, %s{where}. %s{why}"
+
+    if typeKey = BlanketCtor then
+        match Map.tryFind (env.CurrentModule, traitName, implKeyOfTarget) env.ImplSites with
+        | Some(otherType, _) -> refuse otherType implKeyOfTarget "A trait has one blanket implementation."
+        | None -> ()
+    else
+        for other in implsAtHead env.Registry traitName typeKey do
+            let otherType = fst env.Registry.Implementations[(traitName, other.Key)]
+
+            match patternsOverlap otherType targetType with
+            | Some _ when other.Key = implKeyOfTarget -> refuse otherType other.Key "Remove one of them."
+            | Some common ->
+                let shown = DotNetInterop.showTypesTogether [ otherType; targetType; common ]
+
+                refuse
+                    otherType
+                    other.Key
+                    $"This one, for %s{shown[1]}, overlaps it: %s{shown[2]} is an instance of both, so a call at it would have two implementations to choose from. Implementations of one trait may not overlap. Make the two targets distinct, or wrap one of the types in a type of its own."
+            | None -> ()
 
     // An `Eq` or `Ord` implementation for a type this module did not
     // declare: an `import/class` alias, or a type imported from another
@@ -2818,7 +2842,7 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
     let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
     let regEnv =
         let added = addImplementation traitName targetType implTarget hmAssocBindingsMap env
-        { added with ImplSites = Map.add (env.CurrentModule, traitName, typeKey) (targetType, r) added.ImplSites }
+        { added with ImplSites = Map.add (env.CurrentModule, traitName, implTarget.Key) (targetType, r) added.ImplSites }
 
     // FIX 1: Prepend the "'" to the substitution keys so they match TVar "'c"
     let mutable substitutions = Map.add ("'" + traitInfo.ImplementorVar) targetType Map.empty
