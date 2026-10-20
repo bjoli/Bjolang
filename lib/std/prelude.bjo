@@ -16,7 +16,7 @@
 (export
   ;; Types.
   Map MapBuilder TransientMap MapCursor TransientVec
-  Range
+  Range RangeBy
   ArraySlice ReverseArraySlice VecSlice ReverseVecSlice
   VecBackCursor StringWalk ListTails PortReads UpFrom DownFrom
   Enumerated Zipped Cycled Pairwise Repeated Chained
@@ -967,31 +967,62 @@
   (defun (iterable-next s index) (+ index 1))
   (defun (count s) (array-length s)))
 
-;; Range of ints.
-(type (: Range (Struct (: lo int) (: hi int) (: by int))))
+;; Range of ints, in steps of one. A step of one reaches `hi` before it can
+;; pass `int-max`, so the walk tests `(>= c hi)`, the test the JIT knows from a
+;; loop over an array's indices.
+(type (: Range (Struct (: lo int) (: hi int))))
 
 (: (-> int int Range))
 (defun (range lo hi)
-  (Range (lo lo) (hi hi) (by 1)))
-
-;; A range counts up, so a step of zero or less would never reach `hi`. The
-;; message is made in `range-by-panic`, so that `range-by` is small enough for
-;; the JIT to inline at the start of a loop.
-(: (-> int int int Range))
-(defun (range-by lo hi by)
-  (when (<= by 0)
-    (range-by-panic by))
-  (Range (lo lo) (hi hi) (by by)))
-
-(: (-> int void))
-(defun (range-by-panic by)
-  (panic! #"range-by: the step is ${by}, and a range counts up from lo to hi. down-from counts down."))
+  (Range (lo lo) (hi hi)))
 
 (impl (Iterable Range)
   (type %elem int)
   (type %cursor int)
   (defun (iterable-start s) (record-ref s lo))
   (defun (iterable-done? s c) (>= c (record-ref s hi)))
+  (defun (iterable-current s c) c)
+  (defun (iterable-next s c) (+ c 1)))
+
+;; Range of ints, in steps of `by`. A step past the last value can pass
+;; `int-max` and wrap round below `hi`, so the walk does not compare with
+;; `hi`. `stop` is the value the step after the last one gives, wrapped round
+;; when it is past `int-max`; the walk ends when it gets there. It is `lo` when
+;; the range is empty.
+(type (: RangeBy (Struct (: lo int) (: hi int) (: by int) (: stop int))))
+
+;; A range counts up, so a step of zero or less would never reach `hi`. The
+;; message is made in `range-by-panic`, so that `range-by` is small enough for
+;; the JIT to inline at the start of a loop.
+(: (-> int int int RangeBy))
+(defun (range-by lo hi by)
+  (when (<= by 0)
+    (range-by-panic by))
+  (RangeBy (lo lo) (hi hi) (by by) (stop (range-by-stop lo hi by))))
+
+(: (-> int void))
+(defun (range-by-panic by)
+  (panic! #"range-by: the step is ${by}, and a range counts up from lo to hi. down-from counts down."))
+
+;; In longs, where `hi - lo` and the step past the last value cannot overflow.
+;; The cast back to int wraps round as the walk's own `+` does.
+(: (-> int int int int))
+(defun (range-by-stop lo hi by)
+  (if (<= hi lo)
+      lo
+      (cast int (+ (cast long lo)
+                   (* (range-by-count lo hi by) (cast long by))))))
+
+;; How many values a non-empty range holds.
+(: (-> int int int long))
+(defun (range-by-count lo hi by)
+  (+ (/ (- (- (cast long hi) (cast long lo)) 1L) (cast long by)) 1L))
+
+(impl (Iterable RangeBy)
+  (type %elem int)
+  (type %cursor int)
+  (defun (iterable-start s) (record-ref s lo))
+  (defun (iterable-done? s c) (= c (record-ref s stop)))
   (defun (iterable-current s c) c)
   (defun (iterable-next s c) (+ c (record-ref s by))))
 
@@ -3322,13 +3353,30 @@
   (defun (length r)
     (def lo (record-ref r lo))
     (def hi (record-ref r hi))
-    (def by (record-ref r by))
-    ;; Not (hi - lo + by - 1) / by, which overflows for a step near int-max.
     (if (<= hi lo)
         0
-        (+ (/ (- (- hi lo) 1) by) 1)))
+        (range-length-of (- (cast long hi) (cast long lo)))))
   (defun (empty? r)
     (>= (record-ref r lo) (record-ref r hi))))
+
+(impl (Collection RangeBy)
+  (type %content int)
+  (defun (length r)
+    (def lo (record-ref r lo))
+    (def hi (record-ref r hi))
+    (if (<= hi lo)
+        0
+        (range-length-of (range-by-count lo hi (record-ref r by)))))
+  (defun (empty? r)
+    (>= (record-ref r lo) (record-ref r hi))))
+
+;; A range from below zero to above it can hold more than `int-max` values,
+;; which a length cannot give.
+(: (-> long int))
+(defun (range-length-of n)
+  (when (> n (cast long int-max))
+    (panic! #"length: the range holds ${n} values, more than an int can count."))
+  (cast int n))
 
 ;; String collection.
 (impl (Collection string)

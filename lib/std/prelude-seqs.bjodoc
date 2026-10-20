@@ -707,15 +707,35 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc Range
-  (summary "An integer range from lo up to but not including hi.")
+  (summary "An integer range from lo up to but not including hi, in steps of one.")
+  (field lo "The first integer, included.")
+  (field hi "The upper bound, not included.")
+  (see range RangeBy up-from)
+  (reference """
+    Implements @code{Iterable} and @code{Collection}. Traversal stops at the first
+    value at or above @code{hi}, counting upward only. Use @code{down-from} to
+    count downward.
+
+    A range from below zero to above it can hold more values than an
+    @code{int} counts. Its walk is correct, and @code{length} panics.
+    """))
+
+(:doc RangeBy
+  (summary "An integer range from lo up to but not including hi, in steps of by.")
   (field lo "The first integer, included.")
   (field hi "The upper bound, not included.")
   (field by "The positive step.")
-  (see range range-by up-from)
+  (field stop "The value the step after the last one gives, where the walk ends: lo when the range is empty.")
+  (see range-by Range up-from)
   (reference """
-    Implements @code{Iterable} and @code{Collection}. Traversal stops at the first
-    value at or above @code{hi}, counting upward only. @code{range-by} requires
-    a step strictly greater than zero. Use @code{down-from} to count downward.
+    Implements @code{Iterable} and @code{Collection}. The step after the last
+    value can pass @code{int-max}; it then wraps round below @code{hi}, so
+    the walk ends at @code{stop} and not at the first value at or above
+    @code{hi}. @code{range-by} works out @code{stop} once, and the walk
+    costs one comparison per step, as a @code{Range}'s does.
+
+    As for a @code{Range}, @code{length} panics when the range holds more
+    values than an @code{int} counts.
     """))
 
 (:doc range
@@ -733,7 +753,7 @@
   (arg lo "The first integer, included.")
   (arg hi "The bound, not included.")
   (arg by "The positive step size. Must be greater than zero.")
-  (returns "A Range.")
+  (returns "A RangeBy. A walk of it stops at hi also when hi is near int-max.")
   (see range up-from down-from)
   (example """
     {listing i (:for i (range-by 0 10 3))}   ; (0 3 6 9)
