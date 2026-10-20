@@ -3193,6 +3193,16 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
         // point is that it is otherwise invisible.
         EffectGraph.lint env.Registry loopLoweredAst
 
+        // After inlining, which can leave a lambda as a local's value, and
+        // after the checks, so that their messages describe the program as
+        // written. Before the renaming below, which removes any shadowing that
+        // moving a local out of a binding's value makes.
+        let loopLoweredAst =
+            if codegen then
+                Timing.phase "local function promotion" (fun () -> LocalFunPromotion.run loopLoweredAst)
+            else
+                loopLoweredAst
+
         // Last, and a cleanup pass only: C# rejects a local that shadows an
         // enclosing one, and every pass above is free to produce that. A check
         // emits no C#.

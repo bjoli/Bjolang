@@ -3,6 +3,22 @@
 
 What each change guarantees, and what it leaves open.
 
+* A local lambda that is only called is a local function
+
+- A local bound to a ~(fun ...)~, by ~def~ or ~let~, whose scope only calls
+  it is now emitted as a C# local function instead of a delegate. It then
+  allocates nothing when the binding runs, and a call to it is direct. A
+  name that is also used as a value keeps the delegate.
+- The same holds after inlining. When an inlined call leaves a lambda as
+  the value, the locals that hold the call's arguments are moved in front
+  of the binding, and each of them that is a lambda only called is a local
+  function too: ~(def add2 (twice h))~ with ~twice~ inlined gives two.
+- Typing is as before: the binding stays monomorphic. Only a function
+  written with ~defun~ is generalized.
+- A ~def*~ binding is not promoted.
+- Tests: ~425_local_fun_promotion.bjo~,
+  ~codegen/local_fun_promotion.bjo~.
+
 * A function bound by def* in a body compiles
 
 - ~(def* (f (fun (x) ...)))~ in a body was emitted as ~var __bound = (x) =>

@@ -1,0 +1,37 @@
+;; A local bound to a lambda that is only called is a C# local function, not a
+;; delegate. `425_local_fun_promotion.bjo` checks that each of these runs.
+(import (std prelude))
+
+;; EXPECT-CS: int sq\(int z\)
+;; EXPECT-NO-CS: Func<int, int> sq
+(: (-> int int))
+(defun (square k)
+  (def sq (fun (z) (* z z)))
+  (sq k))
+
+;; An inlined call that returns a lambda. The local that holds the argument is
+;; moved in front of the binding and is a local function too.
+(: (-> int (-> int int)))
+(defun (make-adder k) #:inline
+  (fun (x) (+ x k)))
+
+(: (-> (-> int int) (-> int int)))
+(defun (twice g) #:inline
+  (fun (x) (g (g x))))
+
+;; EXPECT-CS: int add(__\d+)?\(int x__\d+\)
+;; EXPECT-CS: int add2(__\d+)?\(int x__\d+\)
+;; EXPECT-CS: int g__\d+\(int y\)
+;; EXPECT-NO-CS: Func<int, int> (add|add2|g__)
+(: (-> int int int))
+(defun (inlined n k)
+  (def add (make-adder k))
+  (def add2 (twice (fun (y) (* y n))))
+  (+ (add n) (add2 n)))
+
+;; A name used as a value keeps the delegate.
+;; EXPECT-CS: Func<int, int> kept
+(: (-> int (Vec int)))
+(defun (as-value k)
+  (def kept (fun (z) (+ z k)))
+  (vec-map kept [1 2 3]))

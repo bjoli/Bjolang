@@ -1,0 +1,78 @@
+;; A local bound to a lambda that is only called is emitted as a C# local
+;; function. Each case here runs the same as with a delegate.
+(import (std prelude))
+(import (std simpletest))
+
+(: (-> int (-> int int)))
+(defun (make-adder k) #:inline
+  (fun (x) (+ x k)))
+
+(: (-> (-> int int) (-> int int)))
+(defun (twice g) #:inline
+  (fun (x) (g (g x))))
+
+(: (-> (-> int)))
+(defun (make-counter) #:inline
+  (def/mutable n 0)
+  (fun ()
+    (set! n (+ n 1))
+    n))
+
+(: (-> int int int))
+(defun (inlined n k)
+  (def add (make-adder k))
+  (def add2 (twice (fun (y) (* y n))))
+  (+ (add n) (add2 n)))
+
+;; The lambda writes a mutable local, and the scope reads it after each call.
+(: (-> int))
+(defun (counted)
+  (def/mutable total 0)
+  (def bump (fun (d) (set! total (+ total d))))
+  (bump 3)
+  (def seen total)
+  (bump 4)
+  (+ (* seen 100) total))
+
+;; The cell of an inlined counter is moved out with the lambda.
+(: (-> int))
+(defun (counter)
+  (def tick (make-counter))
+  (def a (tick))
+  (def b (tick))
+  (+ (* a 100) (* b 10) (tick)))
+
+;; Members of a group that calls itself, and is not a loop.
+(: (-> int int))
+(defun (fib n)
+  (def go (fun (i) (if (< i 2) i (+ (go (- i 1)) (go (- i 2))))))
+  (go n))
+
+;; A lambda at the enclosing function's type variable.
+(: (-> %a %a))
+(defun (kept x)
+  (def keep (fun (y) y))
+  (keep x))
+
+;; A name used both as a value and in a call keeps the delegate.
+(: (-> int int))
+(defun (both k)
+  (def f (fun (z) (+ z k)))
+  (+ (vec-ref (vec-map f [1 2]) 1) (f 10)))
+
+(: (-> int int))
+(defun (in-a-lambda k)
+  (def f (fun (z) (* z k)))
+  (def g (fun (z) (f (f z))))
+  (g 2))
+
+(defun (main)
+  (expect "an inlined adder and an inlined twice" (inlined 3 4) 34)
+  (expect "a mutable local written by the lambda" (counted) 307)
+  (expect "an inlined counter" (counter) 123)
+  (expect "a recursive lambda" (fib 10) 55)
+  (expect "at the function's type variable" (kept "x") "x")
+  (expect "and at another type" (kept 5) 5)
+  (expect "used as a value too" (both 1) 14)
+  (expect "called from another lambda" (in-a-lambda 3) 18)
+  0)
