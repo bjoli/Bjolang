@@ -1,0 +1,38 @@
+;; A sync whose guard raises ends with the exception, and the branches it had
+;; already published are withdrawn: a value a partner sends goes to the next
+;; receive rather than to the sync that ended, and a with-nack among them sees
+;; its nack, since its branch lost.
+(import (std prelude))
+(import (std simpletest))
+(import/class (Failure (: System.Exception (-> string Failure))))
+
+(: (-> (Event int)))
+(defun (failing) (raise (Failure. "guard failed")))
+
+(: (-> (Chan int) void))
+(defbjo (send-later ch)
+  (sync (timeout 200))
+  (sync (chan-send ch 42)))
+
+(defbjo (main)
+  ;; The receive is parked when the guard raises; the send comes later.
+  (def ch (make-chan))
+  (spawn (send-later ch))
+  (def r (try (sync (choose (chan-recv ch) (guard failing))) #:catch (System.Exception)))
+  (expect "the sync raises the guard's exception" (match r ((Ok _) "a value") ((Err _) "raised")) "raised")
+  (def got (sync (choose (wrap (chan-recv ch) (fun (v) (->str v)))
+                         (wrap (timeout 5000) (fun (u) "timed out")))))
+  (expect "the value goes to the next receive" got "42")
+
+  ;; A with-nack published before the guard raised sees its nack.
+  (def other (make-chan))
+  (def nacked (make-chan))
+  (def r2 (try (sync (choose (with-nack (fun (nack)
+                                          (spawn (let () (sync nack) (sync (chan-send nacked "nacked"))))
+                                          (chan-recv other)))
+                             (guard failing)))
+               #:catch (System.Exception)))
+  (expect "the second sync raises too" (match r2 ((Ok _) "a value") ((Err _) "raised")) "raised")
+  (def seen (sync (choose (chan-recv nacked)
+                          (wrap (timeout 5000) (fun (u) "no nack")))))
+  (expect "the with-nack's nack fires" seen "nacked"))

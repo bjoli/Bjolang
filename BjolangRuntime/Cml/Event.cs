@@ -108,11 +108,43 @@ public readonly struct Unit
 public static class Cml
 {
     // The core entrypoint for all CML operations
-    public static void Sync<T>(IEvent<T> ev, Action<T> continuation)
+    public static void Sync<T>(IEvent<T> ev, Action<T> continuation) =>
+        PublishRoot(ev, new SyncState(), continuation);
+
+    /// <summary>
+    /// Publish <paramref name="ev"/> as the whole of a sync, against
+    /// <paramref name="state"/>. Every sync starts here — <c>Sync</c>, a fiber's
+    /// <c>EventAwaiter</c>, <c>sync/blocking</c> — so that a publish that
+    /// raises ends the sync in one way.
+    /// </summary>
+    internal static void PublishRoot<T>(IEvent<T> ev, SyncState state, Action<T> continuation)
     {
-        var state = new SyncState();
-        ev.Publish(state, SyncState.RootEventId, continuation);
+        try
+        {
+            ev.Publish(state, SyncState.RootEventId, continuation);
+        }
+        catch
+        {
+            // A guard or with-nack generator raised partway. The branches it
+            // published before that are parked where a partner can still pair
+            // with them, and a value given to one would go to a sync that has
+            // ended. So the sync is committed to an id no branch has: every
+            // parked branch is withdrawn, and every nack fires, since every
+            // subtree lost. The exception is then the sync's answer.
+            if (state.TryCommit(Aborted)) throw;
+
+            // A branch won while the others were being published. Its
+            // continuation is this sync's answer and runs as it would have; to
+            // raise as well would resume the syncing fiber twice.
+        }
     }
+
+    /// <summary>
+    /// The id a sync is committed to when publishing it raised: after every id
+    /// a branch is given, and at or after the end of every nack's interval, so
+    /// that no branch wins and every nack fires.
+    /// </summary>
+    private const int Aborted = int.MaxValue;
 
     /// <summary>
     /// When true, <c>choose</c> publishes its branches in a random rotation

@@ -161,7 +161,7 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
     private void Start(IEvent<T> ev)
     {
         if (ev is IDirectSyncable<T> direct) direct.SyncDirect(_onSync);
-        else ev.Publish(NewState(), SyncState.RootEventId, _onSync);
+        else Cml.PublishRoot(ev, NewState(), _onSync);
     }
 
     private void OnSync(T value)
@@ -264,7 +264,7 @@ public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwa
         }
 
         state = aw.NewState();
-        ev.Publish(state, SyncState.RootEventId, aw._onSync);
+        Cml.PublishRoot(ev, state, aw._onSync);
         return aw;
     }
 

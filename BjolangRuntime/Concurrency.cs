@@ -1428,7 +1428,7 @@ public static partial class BjolangRuntime {
         // A committed wrap is handed to this thread, which applies it below, as
         // `sync` applies one on its fiber.
         var landing = new BlockingLanding<Synced<T>>();
-        offered.Publish(new SyncState { WrapHost = landing }, SyncState.RootEventId, landing.Land);
+        Cml.PublishRoot(offered, new SyncState { WrapHost = landing }, landing.Land);
         landing.Wait()?.Run();
 
         // Raised here rather than in the continuation above, which runs on the
