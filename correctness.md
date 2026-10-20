@@ -58,7 +58,7 @@ The repository itself was not modified, apart from adding this file.
 | A throwing guard or with-nack generator leaves the branches already published alive, so a sent value is lost (concurrency #4): every sync starts in `Cml.PublishRoot`, which withdraws them and fires their nacks | `c502fb9` | `TestFiles/432_guard_raises_withdraws.bjo` |
 | `inbox-closed` can win while an item is still in the inbox, so the item is lost (concurrency #6): an item a receive has taken and not committed to counts as in the inbox | `85eede3` | `TestFiles/433_inbox_closed_after_last_item.bjo` |
 | Chained comparisons `(< a b c)` / `#ch` evaluate the second operand before the first (prelude): a first operand that is not an atom is bound first | `b1df15c` | `TestFiles/434_chained_comparison_order.bjo` |
-| `seconds` / `minutes` overflow `int`, so timeouts fire early and deadlines at the wrong time (prelude, concurrency #9): timers take a `Duration`, whose constructors raise past its range; timers count in `long` | (uncommitted) | `TestFiles/435_durations_and_range_by_stop.bjo` |
+| `seconds` / `minutes` overflow `int`, so timeouts fire early and deadlines at the wrong time (prelude, concurrency #9): timers take a `Duration`, whose constructors raise past its range; timers count in `long` | `cbe225c` | `TestFiles/435_durations_and_range_by_stop.bjo` |
 | `length` of a `Range` whose span exceeds `int-max` is negative: counted in `long`, and a length past `int-max` panics | `b43e598` | `TestFiles/435_durations_and_range_by_stop.bjo` |
 | `range-by` walk wraps past `int-max` instead of stopping: `range-by` answers a `RangeBy`, whose walk ends at a stop value worked out once | `b43e598` | `TestFiles/435_durations_and_range_by_stop.bjo` |
 
