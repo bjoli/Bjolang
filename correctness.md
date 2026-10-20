@@ -65,6 +65,7 @@ The repository itself was not modified, apart from adding this file.
 | `import/extern` with a declared signature rejects integer literals (interop #3): a literal takes its declared parameter's type before the overload is chosen | (uncommitted) | `TestFiles/437_extern_declared_literals.bjo` |
 | Values of module-declared types, `Symbol` and `Keyword` cannot be passed to a .NET `object` parameter (interop #12): an `object` parameter takes any value but a function, scored as boxing | (uncommitted) | `TestFiles/438_object_parameter_takes_any_value.bjo` |
 | U+2028, U+2029 and U+0085 in a string literal end the emitted C# literal (CS1010): escaped as `\u` in string literals and in module metadata | (uncommitted) | `TestFiles/439_string_line_separators.bjo` |
+| `(- x)` on `uint` is widened to `long` (CS0266) and on `ulong` is undefined (CS0023): emitted as `unchecked(0u - x)` / `unchecked(0UL - x)` | (uncommitted) | `TestFiles/440_unsigned_negate.bjo` |
 
 ### Found fixed when re-checked (2026-10-20)
 

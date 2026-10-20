@@ -1,0 +1,19 @@
+;; Negating an unsigned value wraps and stays in its type. C# widens `-(uint)x`
+;; to `long` and has no `-` for `ulong`, so `(- x)` on either did not compile.
+(import (std prelude))
+(import (std simpletest))
+
+(: neg-uint (-> uint uint))
+(defun (neg-uint x) (- x))
+
+(: neg-ulong (-> ulong ulong))
+(defun (neg-ulong x) (- x))
+
+(defun (main args)
+  (expect "a uint" (neg-uint 5u) 4294967291u)
+  (expect "a ulong" (neg-ulong 5UL) 18446744073709551611UL)
+  (expect "zero stays zero" (neg-uint 0u) 0u)
+  (expect "twice is the identity" (neg-ulong (neg-ulong 7UL)) 7UL)
+  (expect "a constant uint" (- 1u) 4294967295u)
+  (expect "a constant ulong" (- 1UL) 18446744073709551615UL)
+  0)

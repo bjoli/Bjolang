@@ -2197,6 +2197,18 @@ let rec private promotesToInt (t: HMType) =
     | TMeta { Value = Some inner } -> promotesToInt inner
     | _ -> false
 
+/// The zero to subtract from when negating `t`, if C#'s unary minus does not
+/// give back a `t`.
+///
+/// C# has no `-` for `ulong` and widens `-(uint)x` to `long`. `0u - x` and
+/// `0UL - x` stay in the type and wrap, as negation of an unsigned value does.
+let rec private unsignedZero (t: HMType) =
+    match t with
+    | TCon(TypeConstants.UInt32Name, []) -> Some "0u"
+    | TCon(TypeConstants.UInt64Name, []) -> Some "0UL"
+    | TMeta { Value = Some inner } -> unsignedZero inner
+    | _ -> None
+
 /// Emits `body`, cast back to `t` where C# promoted the operands out of it.
 ///
 /// `-(byte)5` and `(byte)5 & (byte)3` are both `int` in C#, but Bjolang has
@@ -3513,18 +3525,24 @@ and private generateApply
         let operand = (prepareOperands ctx args).Head
         let constant = isCsConstant args.Head
 
-        if constant then append ctx "unchecked("
-
-        castPromoted ctx expr.Type (fun () ->
-            match name with
-            | "negate" -> append ctx "(-("
-            | "recip" -> append ctx "(1 / ("
-            | _ -> append ctx "(~("
-
+        match name, unsignedZero expr.Type with
+        | "negate", Some zero ->
+            append ctx $"unchecked(%s{zero} - ("
             operand ctx
-            append ctx "))")
+            append ctx "))"
+        | _ ->
+            if constant then append ctx "unchecked("
 
-        if constant then append ctx ")"
+            castPromoted ctx expr.Type (fun () ->
+                match name with
+                | "negate" -> append ctx "(-("
+                | "recip" -> append ctx "(1 / ("
+                | _ -> append ctx "(~("
+
+                operand ctx
+                append ctx "))")
+
+            if constant then append ctx ")"
 
     | TIdent (name, _) when Map.containsKey name infixOperators && args.Length = 2 && kwArgs.IsEmpty ->
         if (name = "/" || name = "%") && isZeroLiteral args[1] && isCsConstant args[0]
