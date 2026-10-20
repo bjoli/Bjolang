@@ -3929,14 +3929,20 @@
 
 ;; `#ch(op a b c ...)` — `(op a b)`, and `(op b c)`, and so on, each tested only
 ;; if the one before it held. A middle operand that is not an atom is bound
-;; once, right before its first use.
+;; once, right before its first use. The operands are evaluated left to right:
+;; with three or more, a first operand that is not an atom is bound before the
+;; second is evaluated.
 ;;
 ;; Two template names for the temporaries, `t` and `u`, taken in turn. Hygiene
 ;; gives a template name one fresh spelling per expansion, so a single name
 ;; would shadow itself and `(op t t)` would compare a value to itself.
 (def/hash-extend (ch form inject compare)
   (syntax-match form
-    ((_ op a b rest ...) (chain-forms op a (Cons b rest) #t))
+    ((_ op a b) #'(,op ,a ,b))
+    ((_ op a b rest ...)
+     (if (syntax-atom? a)
+         (chain-forms op a (Cons b rest) #t)
+         #'(let ((u ,a)) ,(chain-forms op #'u (Cons b rest) #t))))
     (bad (syntax-error bad "#ch takes an operator and at least two operands: #ch(< a b c)."))))
 
 ;; `prev` is safe to read twice: the first operand, an atom, or a temporary.

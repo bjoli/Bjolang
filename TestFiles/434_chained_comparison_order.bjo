@@ -1,0 +1,35 @@
+;; A chained comparison evaluates its operands left to right, as `+` does,
+;; and each at most once.
+(import (std prelude))
+(import (std simpletest))
+
+;; Adds `tag` to the log and answers `n`.
+(: (-> (Box string) string int int))
+(defun (logged log tag n)
+  (box-set! log (string-append (box-ref log) tag))
+  n)
+
+(defun (main)
+  (def log (make-box ""))
+  (expect "three operands hold" (< (logged log "a" 1) (logged log "b" 2) (logged log "c" 3)) #t)
+  (expect "in order" (box-ref log) "abc")
+
+  (box-set! log "")
+  (expect "four operands hold" (<= (logged log "a" 1) (logged log "b" 1) (logged log "c" 2) (logged log "d" 2)) #t)
+  (expect "in order, each once" (box-ref log) "abcd")
+
+  (box-set! log "")
+  (expect "a failing test stops the chain" (< (logged log "a" 2) (logged log "b" 1) (logged log "c" 3)) #f)
+  (expect "the rest is not evaluated" (box-ref log) "ab")
+
+  (box-set! log "")
+  (def x 1)
+  (expect "an atom first" (< x (logged log "b" 2) (logged log "c" 3)) #t)
+  (expect "the others in order" (box-ref log) "bc")
+
+  (def p (open-input-string "1\n2\n"))
+  (expect "two readings that increase" (< (string->int (read-line p)) (string->int (read-line p)) 100) #t)
+
+  (box-set! log "")
+  (expect "#ch the same" #ch(> (logged log "a" 3) (logged log "b" 2) (logged log "c" 1)) #t)
+  (expect "#ch in order" (box-ref log) "abc"))
