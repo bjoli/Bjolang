@@ -1888,20 +1888,21 @@ let private moduleEntryParts (entry: string) : string list =
     |> Array.filter (fun s -> s <> "")
     |> List.ofArray
 
-/// The one shape an entry point has: `(-> (Vec string) int)`.
+/// The one parameter an entry point has: the arguments, a `(Vec string)`.
 ///
 /// `main` is called by the generated entry point rather than by anything in the
 /// program, so what it takes is the runtime's to say and not inference's to
-/// work out from a body. There is one type, and a file gets it whatever it
-/// wrote:
+/// work out from a body:
 ///
 /// - a `main` with no parameter is given one. The arguments exist whether or
 ///   not the program wants them, and the entry point then has a single call to
 ///   emit rather than a case analysis over what it may hand over.
-/// - a `main` with no signature is given this one, so its parameter is
-///   `(Vec string)` by declaration rather than by whatever its body happened
-///   to constrain. `(println (vec-ref args 0))` alone leaves the element type
-///   open, and a generic entry point is one nothing can call.
+/// - a `main` with no signature has that parameter declared `(Vec string)`,
+///   rather than typed by whatever its body happened to constrain.
+///   `(println (vec-ref args 0))` alone leaves the element type open, and a
+///   generic entry point is one nothing can call. What it returns is
+///   inferred; the entry point exits with it if it is an int, and with 0 if
+///   it is not.
 ///
 /// A signature written by hand is left as written and checked afterwards, by
 /// `checkEntryPoint`, which can compare types rather than syntax.
@@ -1931,11 +1932,19 @@ let private shapeEntryPoint (decls: Decl list) : Decl list =
                     | DDefun("main", args, body, colour, r) -> DDefun("main", received :: args, body, colour, r)
                     | d -> d)
 
+        // The parameter is declared rather than the whole type, so that what
+        // `main` returns is inferred. The entry point returns 0 for a `main`
+        // that does not return an int.
         if decls |> List.exists (function DSignature("main", _, _, _) -> true | _ -> false) then
             withParameter
         else
             let argsType = TApp("Vec", [ TName("string", r) ], r)
-            DSignature("main", TArrow([ argsType ], [], None, TName("int", r), colour, r), [], r) :: withParameter
+
+            withParameter
+            |> List.map (function
+                | DDefun("main", MandatoryArg(n, None) :: rest, body, colour, r) ->
+                    DDefun("main", MandatoryArg(n, Some argsType) :: rest, body, colour, r)
+                | d -> d)
 
 /// The type `main` ended up with, once the whole program has been checked.
 ///
@@ -1964,12 +1973,13 @@ let private checkEntryPoint (env: TypedAST.Env) (decls: Decl list) : unit =
         let actual = Unification.prune env.Registry t
 
         match actual with
-        | TypedAST.TFun([ TypedAST.TCon("Vec", [ TypedAST.TCon(TypedAST.TypeConstants.StringName, []) ]) ],
-                        TypedAST.TCon(TypedAST.TypeConstants.Int32Name, []),
-                        _) when constraints.IsEmpty -> ()
+        | TypedAST.TFun([ TypedAST.TCon("Vec", [ TypedAST.TCon(TypedAST.TypeConstants.StringName, []) ]) ], _, _) when
+            constraints.IsEmpty
+            ->
+            ()
         | _ ->
             failwithf
-                $"Type Error at %s{Lexer.formatPos r}: 'main' is a program's entry point and has one type, (-> (Vec string) int). This one is %s{DotNetInterop.showType actual}. A main written without a signature is given that one, and a main written without a parameter is given the arguments anyway — so the way to a different type is a signature, and there is nothing the entry point could pass it."
+                $"Type Error at %s{Lexer.formatPos r}: 'main' is a program's entry point and takes the arguments, a (Vec string). This one is %s{DotNetInterop.showType actual}. A main written without a parameter is given the arguments anyway, and one that does not return an int exits with 0 — so the way to a different type is a signature or a parameter type, and there is nothing the entry point could pass it."
     | _ -> ()
 
 let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : Decl list =

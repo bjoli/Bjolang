@@ -916,12 +916,32 @@ let compile (options: Options) (inputFilePath: string) : int =
             // .NET ignores once `Main` returns an int: it is how code that is
             // not `main` — a failed `expect` in `(std simpletest)` — says the
             // program failed.
+            //
+            // A `main` that returns anything but an int exits with 0: the
+            // entry point calls it for its effect and answers 0 itself.
+            let mainReturnsInt =
+                match Map.tryFind "main" env.Bindings with
+                | Some b ->
+                    let (TypedAST.Scheme(_, _, t)) = b.Scheme
+
+                    match Unification.prune env.Registry t with
+                    | TypedAST.TFun(_, ret, _) ->
+                        (match Unification.prune env.Registry ret with
+                         | TypedAST.TCon(name, []) -> name = TypedAST.TypeConstants.Int32Name
+                         | _ -> false)
+                    | _ -> false
+                | None -> false
+
             let callMain (argExpr: string) =
+                let main = $"%s{mainModuleClass}.main(%s{argExpr})"
+
                 let call =
-                    if mainIsBjoroutine then
-                        $"Bjoml.Bjo.RunToCompletion(() => BjolangRuntime.RunMainFiber(() => %s{mainModuleClass}.main(%s{argExpr})))"
-                    else
-                        $"BjolangRuntime.RunMainSync(() => %s{mainModuleClass}.main(%s{argExpr}))"
+                    match mainIsBjoroutine, mainReturnsInt with
+                    | true, true -> $"Bjoml.Bjo.RunToCompletion(() => BjolangRuntime.RunMainFiber(() => %s{main}))"
+                    | true, false ->
+                        $"Bjoml.Bjo.RunToCompletion(() => BjolangRuntime.RunMainFiber(async Bjoml.Fiber<int> () => {{ await %s{main}; return 0; }}))"
+                    | false, true -> $"BjolangRuntime.RunMainSync(() => %s{main})"
+                    | false, false -> $"BjolangRuntime.RunMainSync(() => {{ %s{main}; return 0; }})"
 
                 $"        var exitCode = %s{call};\n        return exitCode == 0 ? System.Environment.ExitCode : exitCode;\n"
 

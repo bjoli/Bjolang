@@ -384,36 +384,38 @@ and the three ways a signature arrives at a prompt.
 
 ** ~main~
 
-The entry point has one type:
+The entry point takes the arguments, a ~(Vec string)~, and its answer is the
+process's exit code:
 
 #+BEGIN_SRC scheme
 (: main (-> (Vec string) int))
 #+END_SRC
 
-and a file gets it whether or not it writes it. A ~main~ with no signature is
-given that one, so ~args~ is a vec of strings by declaration rather than by
-whatever the body happened to constrain — ~(println (vec-ref args 0))~ on its
-own would otherwise leave the element type open, and a generic entry point is
-one nothing can call. A ~main~ with no parameter is given one: the arguments
-exist whether or not the program wants them, and
+A ~main~ with no signature has its parameter declared ~(Vec string)~, so ~args~
+is a vec of strings by declaration rather than by whatever the body happened to
+constrain — ~(println (vec-ref args 0))~ on its own would otherwise leave the
+element type open, and a generic entry point is one nothing can call. What it
+returns is inferred. An int is the exit code; anything else, such as the unit a
+~println~ gives, exits with 0. A ~main~ with no parameter is given one: the
+arguments exist whether or not the program wants them, so
 
 #+BEGIN_SRC scheme
 (defun (main)
-  (println "hi")
-  0)
+  (println "hi"))
 #+END_SRC
 
-is the same function with the parameter left unnamed.
+is a whole program, which prints and exits with 0, and ~(defun (main) ... 1)~
+exits with 1.
 
-Writing a *different* signature is the one way to get a different type, and it
+A signature or a parameter type that says something else about the arguments
 is rejected:
 
 #+BEGIN_SRC text
-Type Error at prog.bjo:15: 'main' is a program's entry point and has one type,
-(-> (Vec string) int). This one is (-> (Array string) int). A main written
-without a signature is given that one, and a main written without a parameter
-is given the arguments anyway — so the way to a different type is a signature,
-and there is nothing the entry point could pass it.
+Type Error at prog.bjo:15: 'main' is a program's entry point and takes the
+arguments, a (Vec string). This one is (-> (Array string) int). A main written
+without a parameter is given the arguments anyway, and one that does not
+return an int exits with 0 — so the way to a different type is a signature or
+a parameter type, and there is nothing the entry point could pass it.
 #+END_SRC
 
 ~main~ may be a ~defbjo~. That is the only way a program gets into fiber-land
