@@ -672,7 +672,8 @@ is how font-lock is told the region moved."
 ;;
 ;; The output goes to a comint buffer, which is also the program's stdin: what is
 ;; typed there is sent a line at a time, and `C-c C-d' sends end of file. The
-;; compiler's `at file.bjo:LINE' is a link to the line, as in a compilation.
+;; compiler's `at file.bjo:LINE:COLUMN' is a link to the place, as in a
+;; compilation.
 
 (require 'comint)
 (require 'compile)
@@ -698,7 +699,7 @@ is how font-lock is told the region moved."
 What `bjo-run-again' starts it with.")
 
 (add-to-list 'compilation-error-regexp-alist-alist
-             '(bjolang "\\_<at \\([^ \t\n:]+\\.\\(?:bjo\\|protobjo\\)\\):\\([0-9]+\\)" 1 2))
+             '(bjolang "\\_<at \\([^ \t\n:]+\\.\\(?:bjo\\|protobjo\\)\\):\\([0-9]+\\)\\(?::\\([0-9]+\\)\\)?" 1 2 3))
 
 (defvar bjo-run-mode-map
   (let ((map (make-sparse-keymap)))

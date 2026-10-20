@@ -38,11 +38,14 @@ module Lexer =
     let private fileLabel (file: string) =
         if String.IsNullOrEmpty file then "<unknown>" else IO.Path.GetFileName file
 
-    /// A location for a diagnostic, as `file.bjo:12`.
-    let formatPos (r: Range) = $"%s{fileLabel r.File}:%d{r.Start.Line}"
+    /// A location for a diagnostic, as `file.bjo:12:5`: the line, and the
+    /// column counted from 1, as editors and Emacs' compilation mode read it.
+    /// A `Range` counts columns from 0.
+    let formatPos (r: Range) = $"%s{fileLabel r.File}:%d{r.Start.Line}:%d{r.Start.Column + 1}"
 
     /// The same, inside the tokenizer, where there is no `Range` to hand yet.
-    let formatAt (file: string) (line: int) (col: int) = $"%s{fileLabel file}:%d{line}:%d{col}"
+    /// `col` counts from 0, as a `Range` does.
+    let formatAt (file: string) (line: int) (col: int) = $"%s{fileLabel file}:%d{line}:%d{col + 1}"
 
     type Token =
         | Hash

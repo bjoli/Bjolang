@@ -233,8 +233,9 @@ module Diagnostics =
         |> Seq.filter (fun (i, d) -> d.Severity = Error && not (suppressedAt i d))
         |> Seq.length
 
-    /// `file.bjo:12`, with the parts pulled out rather than matched.
-    let private locationParts = Regex(@"\bat (\S+):(\d+)", RegexOptions.Compiled)
+    /// `file.bjo:12:5`, with the parts pulled out rather than matched. The
+    /// column is optional, as a location written before it had one has none.
+    let private locationParts = Regex(@"\bat ([^\s:]+):(\d+)(?::(\d+))?", RegexOptions.Compiled)
 
     /// Where a diagnostic sorts: file, then line, then column.
     ///
@@ -249,7 +250,8 @@ module Diagnostics =
             let m = locationParts.Match d.Message
 
             if m.Success then
-                m.Groups[1].Value, int m.Groups[2].Value, 0
+                let column = if m.Groups[3].Success then int m.Groups[3].Value - 1 else 0
+                m.Groups[1].Value, int m.Groups[2].Value, column
             else
                 "\uffff", System.Int32.MaxValue, 0
 
