@@ -126,8 +126,17 @@ public static class MutableVecModule {
 
     /// Stable, as `list-sort` is: equal elements keep their order. `List.Sort`
     /// is introsort, which does not keep it.
-    public static void SortBy<T>(List<T> xs, Func<T, T, int> compare) =>
-        StableSort(CollectionsMarshal.AsSpan(xs), compare);
+    ///
+    /// A copy is sorted and written back once the sort is done, so a `compare`
+    /// that throws leaves the list as it was. Sorted in place, an element in
+    /// the middle of a move would be in the list twice and another not at all.
+    public static void SortBy<T>(List<T> xs, Func<T, T, int> compare)
+    {
+        var items = CollectionsMarshal.AsSpan(xs);
+        var sorted = items.ToArray();
+        StableSort<T>(sorted, compare);
+        sorted.CopyTo(items);
+    }
 
     // Insertion sort over runs of 16, then bottom-up merges between the items
     // and one buffer. A merge takes from the left run on a tie, which is what

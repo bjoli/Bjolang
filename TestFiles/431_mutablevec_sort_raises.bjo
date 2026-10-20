@@ -1,0 +1,39 @@
+;; mutablevec-sort-by! sorts a copy and writes it back once the sort is done,
+;; so a comparison that raises leaves the vector as it was: no element lost,
+;; none twice.
+(import (std prelude))
+(import (std mutable vec))
+(import (std simpletest))
+(import/class (InvalidOp (: System.InvalidOperationException (-> string InvalidOp))))
+
+;; Sorts with a comparison that raises on its nth call, and answers whether it
+;; raised.
+(: (-> (MutableVec int) int bool))
+(defun (sort-failing-at xs n)
+  (def calls (make-box 0))
+  (def r
+    (try
+      (mutablevec-sort-by! xs
+        (fun (a b)
+          (box-set! calls (+ (box-ref calls) 1))
+          (when (= (box-ref calls) n) (raise (cast Exception (InvalidOp. "comparator failed"))))
+          (compare a b)))
+      #:catch (System.InvalidOperationException)))
+  (match r ((Ok _) #f) ((Err _) #t)))
+
+(defun (main)
+  ;; The insertion phase: five elements, one run.
+  (def small (list->mutablevec (list 5 4 3 2 1)))
+  (expect "the sort raises" (sort-failing-at small 3) #t)
+  (expect "the vector is as it was" (mutablevec->list small) (list 5 4 3 2 1))
+
+  ;; The merge phase: more than one run of 16.
+  (def big (list->mutablevec (list-reverse (->list (range 0 40)))))
+  (def before (mutablevec->list big))
+  (expect "a longer sort raises in a merge" (sort-failing-at big 150) #t)
+  (expect "and the vector is as it was" (mutablevec->list big) before)
+
+  ;; A sort that does not raise still sorts, and is stable.
+  (def ok (list->mutablevec (list 3 1 2)))
+  (mutablevec-sort-by! ok compare)
+  (expect "a sort that finishes" (mutablevec->list ok) (list 1 2 3)))
