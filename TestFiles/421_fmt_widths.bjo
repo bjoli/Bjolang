@@ -1,0 +1,69 @@
+;; std/fmt table columns: width rules, and cells wider than their column
+;; pushed, cut or wrapped, with a table that cuts or wraps fitted to
+;; current-width.
+(import (std prelude))
+(import (std fmt))
+(import (std simpletest))
+
+(: (Vec (Vec Block)))
+(def notes
+  [["tea" "A green tea from the hills, picked in spring and rolled by hand."]
+   ["gaiwan" "A lidded bowl."]])
+
+(defun (main)
+  ;; --- overflow -------------------------------------------------------------
+  (expect "wrapped at spaces to fit the width"
+          (render->string [(with-fmt current-width 40
+                             [(tabular/rows notes #:titles ["Item" "Note"] #:style StyleLight
+                                            #:overflow OverflowWrap)])])
+          "┌────────┬─────────────────────────────┐\n│ Item   │ Note                        │\n├────────┼─────────────────────────────┤\n│ tea    │ A green tea from the hills, │\n│        │ picked in spring and rolled │\n│        │ by hand.                    │\n│ gaiwan │ A lidded bowl.              │\n└────────┴─────────────────────────────┘\n")
+  (expect "cut to fit the width"
+          (render->string [(with-fmt current-width 40
+                             [(tabular/rows notes #:style StyleAscii #:overflow OverflowCut)])])
+          "+--------+-----------------------------+\n| tea    | A green tea from the hills, |\n| gaiwan | A lidded bowl.              |\n+--------+-----------------------------+\n")
+  (expect "cut, with an ellipsis"
+          (render->string [(with-fmt current-width 40
+                             [(with-fmt current-ellipsis "…"
+                                [(tabular/rows notes #:style StyleAscii #:overflow OverflowCut)])])])
+          "+--------+-----------------------------+\n| tea    | A green tea from the hills… |\n| gaiwan | A lidded bowl.              |\n+--------+-----------------------------+\n")
+  (expect "a right-aligned cell keeps its end when cut"
+          (render->string [(tabular/rows [["12345678"]] #:style StyleAscii #:align [AlignRight]
+                                         #:widths [(WidthFixed 4)] #:overflow OverflowCut)])
+          "+------+\n| 5678 |\n+------+\n")
+  (expect "pushed, by default: the row is out of line"
+          (render->string [(tabular/rows [["abcdef" "x"] ["a" "y"]] #:style StyleAscii #:widths [(WidthFixed 3)])])
+          "+-----+---+\n| abcdef | x |\n| a   | y |\n+-----+---+\n")
+  (expect "a word wider than its column is broken"
+          (render->string [(tabular/rows [["supercalifragilistic" "x"]] #:style StyleAscii
+                                         #:widths [(WidthFixed 6)] #:overflow OverflowWrap)])
+          "+--------+---+\n| superc | x |\n| alifra |   |\n| gilist |   |\n| ic     |   |\n+--------+---+\n")
+  (expect "without borders the table fits too"
+          (render->string [(with-fmt current-width 20 [(tabular/rows notes #:overflow OverflowWrap)])])
+          "tea    A green tea\n       from the\n       hills, picked\n       in spring and\n       rolled by\n       hand.\ngaiwan A lidded\n       bowl.\n")
+  (expect "a column aligned on a character is not cut"
+          (render->string [(with-fmt current-width 8
+                             [(tabular/rows [["1234.5"]] #:align [(AlignOn #\.)] #:overflow OverflowCut)])])
+          "1234.5\n")
+
+  ;; --- width rules ----------------------------------------------------------
+  (expect "a fixed width and two shares of what is left"
+          (render->string [(with-fmt current-width 30
+                             [(tabular/rows [["a" "b" "c"]] #:style StyleAscii
+                                            #:widths [(WidthFixed 5) (WidthShare 1) (WidthShare 2)])])])
+          "+-------+-------+------------+\n| a     | b     | c          |\n+-------+-------+------------+\n")
+  (expect "at least"
+          (render->string [(tabular/rows [["ab" "x"]] #:style StyleAscii #:widths [(WidthAtLeast 6)])])
+          "+--------+---+\n| ab     | x |\n+--------+---+\n")
+  (expect "at most, wrapped"
+          (render->string [(tabular/rows [["abcdefgh" "x"]] #:style StyleAscii
+                                         #:widths [(WidthAtMost 4)] #:overflow OverflowWrap)])
+          "+------+---+\n| abcd | x |\n| efgh |   |\n+------+---+\n")
+  (expect "a fixed column does not shrink to fit"
+          (render->string [(with-fmt current-width 14
+                             [(tabular/rows [["abcdefgh" "abcdefgh"]] #:style StyleAscii
+                                            #:widths [(WidthFixed 8)] #:overflow OverflowCut)])])
+          "+----------+---+\n| abcdefgh | a |\n+----------+---+\n")
+  (expect "widths apply to tabular as well"
+          (render->string [(tabular [["a"] ["b"]] #:style StyleAscii #:widths [(WidthFixed 3)])])
+          "+-----+---+\n| a   | b |\n+-----+---+\n")
+  0)

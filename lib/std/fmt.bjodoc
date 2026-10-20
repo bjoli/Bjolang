@@ -51,9 +51,9 @@
     | Parameter                     | Default                | What it sets                                            |
     |-------------------------------+------------------------+---------------------------------------------------------|
     | @code{current-pad}            | @code{#\space}         | The character padding is made of.                       |
-    | @code{current-width}          | @code{78}              | The right margin of @code{wrapped}, @code{justified} and @code{columnar}. |
+    | @code{current-width}          | @code{78}              | The right margin of @code{wrapped}, @code{justified}, @code{columnar}, and a table that cuts or wraps. |
     | @code{current-ellipsis}       | @code{""}              | What replaces the part a trim cuts off.                 |
-    | @code{current-string-width}   | the character count    | How wide a string is, in columns.                       |
+    | @code{current-string-width}   | the character count    | How wide a string is, in columns. @code{terminal-width} counts as a terminal does. |
     | @code{current-precision}      | @code{-1}              | Digits after the decimal separator; negative is as many as needed. |
     | @code{current-comma}          | @code{0}               | Digits per group; zero is no grouping.                  |
     | @code{current-comma-sep}      | @code{#\,}             | The character between groups.                           |
@@ -65,6 +65,16 @@
     parameter as an argument. Read it with @code{parameter-ref} inside the
     @code{BRun}'s function, when the block runs. Read where the block is
     built, it is read before any enclosing @code{with-fmt} has bound it.
+
+    @strong{Tables} are @code{tabular}, @code{tabular/rows} and
+    @code{columnar} as functions, @code{table-row} a row at a time, and
+    @code{Table} as a quoted literal that the compiler checks. They draw
+    borders in a @code{TableStyle}, a header and rules, align a column on a
+    character, and fit @code{current-width} by cutting or wrapping cells.
+    @code{bytes}, @code{percent}, @code{bar} and @code{sparkline} are blocks
+    for what goes in a cell, or anywhere else. Set
+    @code{current-string-width} to @code{terminal-width} for text with wide
+    characters or colours in it.
     """))
 
 ;; ---------------------------------------------------------------------------
@@ -239,6 +249,41 @@
     Everything that measures or cuts goes through it: padding, trimming,
     wrapping and tables. The column a @code{BRun} is handed is not: it
     counts characters.
+    """))
+
+(:doc terminal-width
+  (summary "How many columns a string takes in a terminal, for current-string-width.")
+  (arg s "The string.")
+  (returns "Its width in columns.")
+  (see current-string-width width-of)
+  (example """
+    (def esc (char->string (integer->char 27)))
+    (terminal-width "tea")                                   ;; 3
+    (terminal-width "茶")                                     ;; 2
+    (terminal-width (str "e" (char->string (integer->char 769))))  ;; 1: e and an accent
+    (terminal-width (str esc "[1mtea" esc "[0m"))             ;; 3: the escapes take none
+
+    (with-fmt current-string-width terminal-width
+      [(tabular/rows [["茶" "1"] ["tea" "2"]] #:style StyleLight)])
+    """)
+  (reference """
+    East Asian Wide and Fullwidth characters, emoji among them, take two
+    columns. Combining marks, format and control characters take none. An
+    escape sequence takes none: a CSI, as in a colour, ends at a character
+    from @code{@} to @code{~}, and an OSC, as in a link, at BEL or at ESC and a
+    backslash. What follows a zero-width joiner takes no columns of its own,
+    so a family emoji is two wide. Variation selector 16 makes a one-column
+    character before it two wide, a skin tone modifier joins the emoji
+    before it, and two regional indicators are one flag, two wide.
+
+    It is not the default measure, which counts code points and is
+    cheaper. Set it where the text is for a terminal and holds such
+    characters: a wide character measured as one column puts every column
+    after it out of line.
+
+    The table is Unicode 16.0. A terminal whose own idea of a character's
+    width differs from it, as some do for emoji, draws that character wider
+    or narrower than measured.
     """))
 
 (:doc current-precision
@@ -535,6 +580,67 @@
 ;; Paragraphs and tables
 ;; ---------------------------------------------------------------------------
 
+(:doc bytes
+  (summary "A number of bytes, in the largest unit there is at least one of.")
+  (arg n "The number of bytes.")
+  (key si "Units of 1000, kB and MB, rather than of 1024, KiB and MiB. False unless given.")
+  (key precision "Digits after the decimal separator, in any unit but B. One unless given.")
+  (returns "A block.")
+  (see percent numeric current-decimal-sep)
+  (example """
+    (show [(bytes 512L) " " (bytes 1258291L) " " (bytes 1500L #:si #t)])
+    ;; 512 B 1.2 MiB 1.5 kB
+    """)
+  (reference """
+    Bytes are whole, so a size under one kibibyte, or kilobyte, has no
+    decimals. The units go to EiB, or EB. The decimal separator is
+    @code{current-decimal-sep}.
+    """))
+
+(:doc percent
+  (summary "A share, written as a percentage: 0.125 is 12.5%.")
+  (arg x "The share, 1.0 being all of it.")
+  (key precision "Digits after the decimal separator. One unless given.")
+  (returns "A block.")
+  (see bytes bar numeric)
+  (example """
+    (show [(percent 0.125) " " (percent 1.0 #:precision 0)])
+    ;; 12.5% 100%
+    """))
+
+(:doc bar
+  (summary "A horizontal bar, filled to a fraction of its width to an eighth of a column.")
+  (arg fraction "How much of the bar is filled, from 0 to 1; a fraction outside that is the nearer end.")
+  (key width "The width of the whole bar in columns. Ten unless given.")
+  (key empty "What the part not filled is made of, a column at a time. A space unless given.")
+  (returns "A block, exactly width columns wide.")
+  (see sparkline percent)
+  (example """
+    (show ["[" (bar 0.62 #:width 20) "]"])
+    ;; [████████████▍       ]
+    (show ["[" (bar 0.5 #:width 5 #:empty "░") "]"])
+    ;; [██▌░░]
+    """)
+  (reference """
+    The filled part is whole blocks, █, and one of the seven eighths of a
+    block, ▏ to ▉, for what is left over, rounded to the nearest eighth.
+    """))
+
+(:doc sparkline
+  (summary "Numbers as a line of bars of eight heights, a column each.")
+  (arg xs "The numbers.")
+  (returns "A block, a column for each number.")
+  (see bar)
+  (example """
+    (show [(sparkline [1.0 2.0 4.0 8.0 4.0 2.0 1.0])])
+    ;; ▁▂▄█▄▂▁
+    """)
+  (reference """
+    The smallest number is the lowest bar, ▁, and the largest the highest,
+    █; the rest are divided evenly between them. Numbers that are all the
+    same are all in the middle, ▄.
+    """))
+
 (:doc wrapped
   (summary "Content filled to the right margin, ragged on the right.")
   (arg bs "The content. Every run of whitespace in it, newlines too, is a break between words.")
@@ -598,8 +704,13 @@
 (:doc tabular
   (summary "Columns side by side, each as wide as its widest line, cutting nothing.")
   (arg cols "The columns, each a vec of blocks; a newline in one starts its next row.")
-  (key sep "Written between the columns. A space unless given.")
+  (key sep "Written between the columns, without borders. A space unless given.")
   (key align "The alignment of each column, from the first; a column not given one is AlignLeft.")
+  (key style "How the borders are drawn. StyleNone unless given.")
+  (key titles "A header row, a block per column. None unless given.")
+  (key rules "Which rules there are inside the borders. RulesHeader unless given.")
+  (key widths "How wide each column is, from the first; a column not given a rule is as wide as its content.")
+  (key overflow "What a cell wider than its column does. OverflowPush unless given.")
   (returns "A block.")
   (see tabular/rows columnar Align)
   (example """
@@ -626,10 +737,15 @@
 (:doc tabular/rows
   (summary "A table given as rows, each column as wide as its widest cell.")
   (arg rows "The rows, each a vec of cells, a block per cell; a newline in a cell gives its row another line.")
-  (key sep "Written between the columns. A space unless given.")
+  (key sep "Written between the columns, without borders. A space unless given.")
   (key align "The alignment of each column, from the first; a column not given one is AlignLeft.")
+  (key style "How the borders are drawn. StyleNone unless given.")
+  (key titles "A header row, a block per column. None unless given.")
+  (key rules "Which rules there are inside the borders. RulesHeader unless given.")
+  (key widths "How wide each column is, from the first; a column not given a rule is as wide as its content.")
+  (key overflow "What a cell wider than its column does. OverflowPush unless given.")
   (returns "A block.")
-  (see tabular table-row)
+  (see tabular table-row TableStyle)
   (example """
     (show [(tabular/rows [["name" "n" "time"]
                           ["sort" 10 "1.2 µs"]
@@ -652,22 +768,180 @@
   (case AlignLeft "Against the left edge, padded on the right. The default.")
   (case AlignRight "Against the right edge, padded on the left: what numbers want.")
   (case AlignCentre "In the middle, the odd column of padding on the right.")
-  (see tabular tabular/rows table-layout columnar))
+  (case AlignOn "Every line of the column has the character in the same place, as a decimal point is in a column of numbers. A line without the character ends where the character would be. The part as a whole is aligned to the right, and so is the title over it.")
+  (see tabular tabular/rows table-layout columnar)
+  (example """
+    (show [(tabular/rows [["tea" "3.5"] ["gaiwan" "1240"] ["kettle" "89.90"]]
+                         #:align [AlignLeft (AlignOn #\.)])])
+    ;; tea       3.5
+    ;; gaiwan 1240
+    ;; kettle   89.90
+    """)
+  (reference """
+    @code{AlignOn} needs the widest part of a line before the character and
+    the widest part from it on, so it is measured by the tables that see all
+    their rows: @code{tabular} and @code{tabular/rows}. A table laid out a
+    row at a time, and @code{columnar}, align such a column to the right.
+    """))
+
+(:doc TableStyle
+  (summary "How a table's borders and rules are drawn.")
+  (case StyleNone "No borders: the columns with a separator between them. The default.")
+  (case StyleSimple "No borders, two spaces between the columns, and a line of ─ under the header.")
+  (case StyleAscii "A box of +, - and |.")
+  (case StyleLight "A box of light lines: ┌─┬─┐.")
+  (case StyleHeavy "A box of heavy lines: ┏━┳━┓.")
+  (case StyleDouble "A box of double lines: ╔═╦═╗.")
+  (case StyleRounded "A box of light lines with round corners: ╭─┬─╮.")
+  (case StyleMarkdown "A Markdown table, whose rule under the header says how each column is aligned.")
+  (case StyleCustom "The pieces of a BorderChars.")
+  (see tabular/rows tabular table-layout BorderChars TableRules)
+  (example """
+    (show [(tabular/rows [["tea" "3.50"] ["gaiwan" "1240.00"]]
+                         #:titles ["Item" "Price"]
+                         #:style StyleRounded
+                         #:align [AlignLeft AlignRight])])
+    ;; ╭────────┬─────────╮
+    ;; │ Item   │   Price │
+    ;; ├────────┼─────────┤
+    ;; │ tea    │    3.50 │
+    ;; │ gaiwan │ 1240.00 │
+    ;; ╰────────┴─────────╯
+    """)
+  (reference """
+    A style with a box pads each cell with a space on each side, and pads
+    every cell to its column, the last one too, so that the right edge is
+    straight. A Markdown column is at least three wide, as its rule needs.
+    """))
+
+(:doc TableRules
+  (summary "Which horizontal rules a table has inside its borders.")
+  (case RulesHeader "A rule under the header. The default.")
+  (case RulesEvery "A rule under the header and between every two rows. Markdown has none between rows.")
+  (case RulesNone "No rules inside the table.")
+  (see TableStyle tabular/rows))
+
+(:doc ColumnWidth
+  (summary "How wide a table column is.")
+  (case WidthAuto "As wide as its widest line. The default.")
+  (case WidthFixed "This many columns, at least one.")
+  (case WidthAtLeast "As wide as its content, and at least this many columns.")
+  (case WidthAtMost "As wide as its content, and at most this many columns.")
+  (case WidthShare "A share of what the other columns and the borders leave of current-width: two columns of shares 1 and 2 take a third and two thirds of it.")
+  (see tabular/rows Overflow current-width)
+  (example """
+    (with-fmt current-width 30
+      [(tabular/rows [["a" "b" "c"]] #:style StyleAscii
+                     #:widths [(WidthFixed 5) (WidthShare 1) (WidthShare 2)])])
+    ;; +-------+-------+------------+
+    ;; | a     | b     | c          |
+    ;; +-------+-------+------------+
+    """)
+  (reference """
+    A column narrower than its content shows the content as its
+    @code{Overflow} says: pushed out of line, cut or wrapped. A width of no
+    more than zero is one.
+    """))
+
+(:doc Overflow
+  (summary "What a table cell wider than its column does.")
+  (case OverflowPush "It pushes the rest of its row out of line. The default, and what a table without width rules does.")
+  (case OverflowCut "It is cut to the column, on the side away from its alignment, with current-ellipsis in place of what is cut.")
+  (case OverflowWrap "It is broken at its spaces onto more lines, and a word wider than the column is broken where it reaches the edge.")
+  (see tabular/rows ColumnWidth current-width current-ellipsis)
+  (example """
+    (with-fmt current-width 40
+      [(tabular/rows [["tea" "A green tea from the hills, picked in spring and rolled by hand."]]
+                     #:titles ["Item" "Note"] #:style StyleLight #:overflow OverflowWrap)])
+    ;; ┌────────┬─────────────────────────────┐
+    ;; │ Item   │ Note                        │
+    ;; ├────────┼─────────────────────────────┤
+    ;; │ tea    │ A green tea from the hills, │
+    ;; │        │ picked in spring and rolled │
+    ;; │        │ by hand.                    │
+    ;; └────────┴─────────────────────────────┘
+    """)
+  (reference """
+    A table that cuts or wraps is made to fit @code{current-width}: while it
+    is too wide, the widest column that may shrink loses a column. A column
+    of a fixed width does not shrink, nor one at its @code{WidthAtLeast},
+    nor one below one column. A column aligned on a character is neither
+    cut nor wrapped, since the character would no longer line up.
+    """))
+
+(:doc BorderChars
+  (summary "The pieces a table's borders are drawn with, for a style of your own.")
+  (field top-left "The start of the line above the table.")
+  (field top "Repeated across each column in the line above the table. Empty means there is no such line.")
+  (field top-join "Where two columns meet in the line above the table.")
+  (field top-right "The end of the line above the table.")
+  (field left "Before the first cell of a row.")
+  (field column "Between two cells of a row.")
+  (field right "After the last cell of a row.")
+  (field rule-left "The start of a rule.")
+  (field rule "Repeated across each column in a rule. Empty means there are no rules.")
+  (field rule-join "Where two columns meet in a rule.")
+  (field rule-right "The end of a rule.")
+  (field bottom-left "The start of the line under the table.")
+  (field bottom "Repeated across each column in the line under the table. Empty means there is no such line.")
+  (field bottom-join "Where two columns meet in the line under the table.")
+  (field bottom-right "The end of the line under the table.")
+  (field marks "Whether the rule under the header marks each column's alignment with colons, as Markdown's does.")
+  (see TableStyle)
+  (reference """
+    A piece of a horizontal line is as wide as the piece of a row it is
+    under: @code{top-left} as @code{left}, @code{top-join} as
+    @code{column}, and so on. The built-in boxes put a space on each side of
+    a cell, so their @code{left} is @code{"│ "} and their @code{top-left}
+    is @code{"┌─"}. A table without @code{left} and @code{right} leaves out
+    the empty cells at the end of a line and does not pad its last cell, as
+    a table without borders does.
+    """))
 
 (:doc TableLayout
-  (summary "The widths, alignments and separator of a table laid out a row at a time.")
+  (summary "The widths, alignments, separator and style of a table laid out a row at a time.")
   (field widths "The width of each column.")
   (field aligns "The alignment of each column, from the first; a column not given one is AlignLeft.")
-  (field sep "Written between the columns.")
+  (field sep "Written between the columns, without borders.")
+  (field style "How the borders are drawn.")
   (see table-layout table-row))
 
 (:doc table-layout
   (summary "A layout for table-row: the width of each column, settled before any row is written.")
   (arg widths "The width of each column, in columns as current-string-width counts them.")
-  (key sep "Written between the columns. A space unless given.")
+  (key sep "Written between the columns, without borders. A space unless given.")
   (key align "The alignment of each column, from the first; a column not given one is AlignLeft.")
+  (key style "How the borders are drawn. StyleNone unless given.")
   (returns "A TableLayout.")
-  (see table-row table-widths))
+  (see table-row table-widths table-top table-rule table-bottom))
+
+(:doc table-top
+  (summary "The line above a table laid out a row at a time.")
+  (arg layout "The table's layout.")
+  (returns "A block: the line, or nothing for a style without one.")
+  (see table-row table-rule table-bottom)
+  (example """
+    (def layout (table-layout [6 5] #:style StyleLight #:align [AlignLeft AlignRight]))
+    (show [(table-top layout) (table-row layout ["Item" "Price"]) (table-rule layout)
+           (table-row layout ["tea" "3.50"]) (table-bottom layout)])
+    ;; ┌────────┬───────┐
+    ;; │ Item   │ Price │
+    ;; ├────────┼───────┤
+    ;; │ tea    │  3.50 │
+    ;; └────────┴───────┘
+    """))
+
+(:doc table-rule
+  (summary "A rule across a table laid out a row at a time: under its header, or between two rows.")
+  (arg layout "The table's layout.")
+  (returns "A block: the rule, or nothing for a style without rules.")
+  (see table-top table-row table-bottom))
+
+(:doc table-bottom
+  (summary "The line under a table laid out a row at a time.")
+  (arg layout "The table's layout.")
+  (returns "A block: the line, or nothing for a style without one.")
+  (see table-top table-row table-rule))
 
 (:doc table-widths
   (summary "The width each column of some rows asks for: its widest cell.")
@@ -703,3 +977,82 @@
     end of a line are left out, separators and all. The row starts on a
     fresh line and ends with a newline.
     """))
+
+(:doc Table
+  (summary "A table written as a quoted literal: its options, its columns, and its rows.")
+  (field options "The table's style, header, rules, width and overflow, each there or not.")
+  (field columns "The columns, each with its title, alignment, width and kind.")
+  (field rows "The rows, each written or spliced.")
+  (see table-block show-table TableCell tabular/rows)
+  (example """
+    (: (Vec (Vec TableCell)))
+    (def products
+      [[(CellText "Green tea") (CellNum 3.5) (CellInt 12) (CellNum 40.0)]
+       [(CellText "Gaiwan") (CellNum 1240.0) (CellInt 2) (CellNum 100.0)]])
+
+    (show-table
+     '(table (style rounded) header
+             (column "Item")
+             (column "Price" (align (on #\.)) (number (precision 2) (comma 3)))
+             (column "Stock" (align right))
+             (column "Trend" (bar (max 100.0)))
+             (rows ,products)))
+    ;; ╭───────────┬──────────┬───────┬────────────╮
+    ;; │ Item      │    Price │ Stock │ Trend      │
+    ;; ├───────────┼──────────┼───────┼────────────┤
+    ;; │ Green tea │     3.50 │    12 │ ████       │
+    ;; │ Gaiwan    │ 1,240.00 │     2 │ ██████████ │
+    ;; ╰───────────┴──────────┴───────┴────────────╯
+
+    (show-table '(table (style markdown) header (column "Key") (column "Value")
+                        (rows (row "width" 78) (row "style" "markdown"))))
+    """)
+  (reference """
+    The literal is @code{(table option ... column ... (rows row ...))}. The
+    options come first, each at most once and in any order:
+    @code{(style s)} with a @code{TableStyle} as its name, @code{rounded} or
+    @code{markdown}; @code{header}, which makes the column titles a header
+    row; @code{(rules r)} with a @code{TableRules}; @code{(width n)}, the
+    width the table is fitted to in place of @code{current-width}; and
+    @code{(overflow o)} with an @code{Overflow}.
+
+    A column is @code{(column "Title" option ...)}, its options again each
+    at most once: @code{(align a)} with an @code{Align}, as @code{right} or
+    @code{(on #\.)}; @code{(width w)} with a @code{ColumnWidth}, as
+    @code{12} or @code{(share 2)}; and a kind, which shows the column's
+    numbers as one of this module's blocks: @code{(number (precision 2)
+    (comma 3) signed)} as @code{numeric}, @code{bytes}, @code{(percent
+    (precision 1))}, or @code{(bar (max 100.0) (width 10))}, a bar of the
+    number's share of the max. A column of a kind other than a bar is
+    aligned to the right unless it says otherwise. A cell that is not a
+    number is shown as it is in any column.
+
+    A row is written, @code{(row cell ...)}, a cell being a string or a
+    number or a spliced value of one; or spliced, as a @code{(Vec
+    TableCell)} for one row or a @code{(Vec (Vec TableCell))} for many. A
+    spliced number has to have a type: a @code{def} of a bare literal does
+    not say what it is.
+
+    The literal is read where it is written, so a misspelled option, an
+    option given twice, a style that is not one, a table with no columns
+    and a splice of the wrong type are compile errors that say where.
+    """))
+
+(:doc TableCell
+  (summary "A cell of a Table: what a written cell is, and what a spliced row holds.")
+  (case CellText "Text, shown as it is.")
+  (case CellInt "A whole number, shown as its column's kind says.")
+  (case CellNum "A number, shown as its column's kind says.")
+  (case CellBlocks "Blocks, shown as they are, as each shows them.")
+  (see Table))
+
+(:doc table-block
+  (summary "A table literal as a block.")
+  (arg t "The table.")
+  (returns "A block, laid out as tabular/rows lays out a table.")
+  (see Table show-table tabular/rows))
+
+(:doc show-table
+  (summary "Writes a table literal to the current output port.")
+  (arg t "The table.")
+  (see Table table-block show))

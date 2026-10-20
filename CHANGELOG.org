@@ -3,6 +3,49 @@
 
 What each change guarantees, and what it leaves open.
 
+* (std fmt): tables with borders, columns that fit, and a table literal
+
+- ~tabular~, ~tabular/rows~ and ~table-layout~ take ~#:style~, ~#:titles~
+  and ~#:rules~. A ~TableStyle~ is ~StyleNone~, ~StyleSimple~,
+  ~StyleAscii~, ~StyleLight~, ~StyleHeavy~, ~StyleDouble~,
+  ~StyleRounded~, ~StyleMarkdown~ (its rule says each column's alignment),
+  or ~StyleCustom~ with a ~BorderChars~ record of the pieces. ~#:titles~ is
+  a header row; ~TableRules~ puts a rule under it, between every two rows,
+  or nowhere. ~table-top~, ~table-rule~ and ~table-bottom~ draw the lines
+  of a table written a row at a time. A table without these keywords is
+  laid out as before.
+- ~(AlignOn c)~ puts a character of every line of a column in one place,
+  as a decimal point in a column of numbers. ~Align~ is now a grammar, so
+  ~(on #\.)~ can be written in a literal; its other cases are as before.
+- ~#:widths~ gives a column a ~ColumnWidth~: ~WidthAuto~, ~WidthFixed~,
+  ~WidthAtLeast~, ~WidthAtMost~, or ~WidthShare~ of what the others leave
+  of ~current-width~. ~#:overflow~ says what a cell wider than its column
+  does: ~OverflowPush~, as before, ~OverflowCut~, or ~OverflowWrap~ at its
+  spaces. A table that cuts or wraps is fitted to ~current-width~ by
+  shrinking its widest column.
+- ~terminal-width~ measures a string as a terminal draws it: wide and
+  fullwidth characters two columns, combining marks and escape sequences
+  none, a joined emoji sequence and a flag two. For
+  ~current-string-width~; the default is still the code point count. The
+  table is Unicode 16.0, checked in.
+- ~bytes~ (~1.2 MiB~, or ~1.2 MB~ with ~#:si~), ~percent~ (~12.5%~),
+  ~bar~ (to an eighth of a column) and ~sparkline~ (~▁▂▄█~) are blocks.
+- ~Table~ is a grammar of a table literal: ~(table (style rounded) header
+  (column "Price" (align (on #\.)) (number (precision 2))) ... (rows
+  ,rows))~. A column's kind, ~number~, ~bytes~, ~percent~ or ~bar~, shows
+  its cells as that block. A row is written, ~(row ...)~, or spliced as a
+  ~(Vec TableCell)~, and many rows as a ~(Vec (Vec TableCell))~.
+  ~table-block~ lays one out and ~show-table~ shows it. A misspelled
+  option, one given twice, an unknown style and a table with no columns
+  are compile errors.
+- Not done: a whole literal is not checked beyond its parts, so a row with
+  more cells than there are columns, or a text cell in a bar column, is
+  laid out as best it can be.
+- Tests: ~419_fmt_tables~, ~420_fmt_terminal_width~, ~421_fmt_widths~,
+  ~422_fmt_figures~, ~423_fmt_table_literal~, and errors
+  ~table_unknown_style~, ~table_option_twice~, ~table_no_columns~ and
+  ~table_misspelled_option~.
+
 * A trait belongs to the module that declared it
 
 - A trait and each of its methods are filed under a key, ~pretty_a__Pretty~

@@ -1,0 +1,107 @@
+;; std/fmt tables with borders, a header, rules, and a column aligned on a
+;; character. Every expectation is the whole text, with `\n` written out.
+(import (std prelude))
+(import (std fmt))
+(import (std simpletest))
+
+(: (-> TableStyle string))
+(defun (priced style)
+  (render->string [(tabular/rows [["tea" "3.50"] ["gaiwan" "1240.00"]]
+                                 #:titles ["Item" "Price"] #:style style
+                                 #:align [AlignLeft AlignRight])]))
+
+(: BorderChars)
+(def dotted
+  (BorderChars (top-left "..") (top ".") (top-join "...") (top-right "..")
+               (left ": ") (column " : ") (right " :")
+               (rule-left ":.") (rule ".") (rule-join ".:.") (rule-right ".:")
+               (bottom-left "'.") (bottom ".") (bottom-join ".'.") (bottom-right ".'")
+               (marks #f)))
+
+(defun (main)
+  ;; --- styles ---------------------------------------------------------------
+  (expect "a light box with a header"
+          (priced StyleLight)
+          "┌────────┬─────────┐\n│ Item   │   Price │\n├────────┼─────────┤\n│ tea    │    3.50 │\n│ gaiwan │ 1240.00 │\n└────────┴─────────┘\n")
+  (expect "rounded corners"
+          (priced StyleRounded)
+          "╭────────┬─────────╮\n│ Item   │   Price │\n├────────┼─────────┤\n│ tea    │    3.50 │\n│ gaiwan │ 1240.00 │\n╰────────┴─────────╯\n")
+  (expect "ascii"
+          (priced StyleAscii)
+          "+--------+---------+\n| Item   |   Price |\n+--------+---------+\n| tea    |    3.50 |\n| gaiwan | 1240.00 |\n+--------+---------+\n")
+  (expect "heavy"
+          (priced StyleHeavy)
+          "┏━━━━━━━━┳━━━━━━━━━┓\n┃ Item   ┃   Price ┃\n┣━━━━━━━━╋━━━━━━━━━┫\n┃ tea    ┃    3.50 ┃\n┃ gaiwan ┃ 1240.00 ┃\n┗━━━━━━━━┻━━━━━━━━━┛\n")
+  (expect "double"
+          (priced StyleDouble)
+          "╔════════╦═════════╗\n║ Item   ║   Price ║\n╠════════╬═════════╣\n║ tea    ║    3.50 ║\n║ gaiwan ║ 1240.00 ║\n╚════════╩═════════╝\n")
+  (expect "simple: no edges, a rule under the header"
+          (priced StyleSimple)
+          "Item      Price\n──────  ───────\ntea        3.50\ngaiwan  1240.00\n")
+  (expect "none with titles: a header and no rule"
+          (priced StyleNone)
+          "Item     Price\ntea       3.50\ngaiwan 1240.00\n")
+  (expect "markdown marks the alignment in its rule"
+          (render->string [(tabular/rows [["tea" "3.5" "x"]]
+                                         #:titles ["Item" "Price" "Note"] #:style StyleMarkdown
+                                         #:align [AlignLeft AlignRight AlignCentre])])
+          "| Item | Price | Note |\n| :--- | ----: | :--: |\n| tea  |   3.5 |  x   |\n")
+  (expect "a markdown column is at least three wide"
+          (render->string [(tabular/rows [["a"]] #:titles ["k"] #:style StyleMarkdown)])
+          "| k   |\n| :-- |\n| a   |\n")
+  (expect "a style of one's own"
+          (render->string [(tabular/rows [["a" "1"]] #:titles ["k" "v"] #:style (StyleCustom dotted))])
+          ".........\n: k : v :\n:...:...:\n: a : 1 :\n'...'...'\n")
+
+  ;; --- rules ----------------------------------------------------------------
+  (expect "a rule between every two rows"
+          (render->string [(tabular/rows [["a" "1"] ["b" "2"]] #:titles ["k" "v"]
+                                         #:style StyleLight #:rules RulesEvery)])
+          "┌───┬───┐\n│ k │ v │\n├───┼───┤\n│ a │ 1 │\n├───┼───┤\n│ b │ 2 │\n└───┴───┘\n")
+  (expect "no rules"
+          (render->string [(tabular/rows [["a" "1"]] #:titles ["k" "v"]
+                                         #:style StyleAscii #:rules RulesNone)])
+          "+---+---+\n| k | v |\n| a | 1 |\n+---+---+\n")
+  (expect "no header, so no rule under it"
+          (render->string [(tabular/rows [["a" "1"]] #:style StyleAscii)])
+          "+---+---+\n| a | 1 |\n+---+---+\n")
+
+  ;; --- cells ----------------------------------------------------------------
+  (expect "a cell of two lines makes its row two lines"
+          (render->string [(tabular/rows [["a" (each ["x" nl "y"])] ["b" "2"]] #:style StyleRounded)])
+          "╭───┬───╮\n│ a │ x │\n│   │ y │\n│ b │ 2 │\n╰───┴───╯\n")
+  (expect "a short row has empty cells inside a box"
+          (render->string [(tabular/rows [["a" "1"] ["b"]] #:style StyleAscii)])
+          "+---+---+\n| a | 1 |\n| b |   |\n+---+---+\n")
+  (expect "a table starts on a fresh line"
+          (render->string ["x" (tabular/rows [["a"]] #:style StyleAscii)])
+          "x\n+---+\n| a |\n+---+\n")
+  (expect "tabular takes the same keywords"
+          (render->string [(tabular [["a" nl "bbb"] ["1" nl "22"]]
+                                    #:style StyleAscii #:titles ["n" "v"] #:align [AlignLeft AlignRight])])
+          "+-----+----+\n| n   |  v |\n+-----+----+\n| a   |  1 |\n| bbb | 22 |\n+-----+----+\n")
+
+  ;; --- aligned on a character -------------------------------------------------
+  (expect "the points line up, without borders too"
+          (render->string [(tabular/rows [["tea" "3.5"] ["gaiwan" "1240"] ["kettle" "89.90"]]
+                                         #:align [AlignLeft (AlignOn #\.)])])
+          "tea       3.5\ngaiwan 1240\nkettle   89.90\n")
+  (expect "and in a box, under a title aligned right"
+          (render->string [(tabular/rows [["3.5"] ["1240"] ["89.90"]] #:titles ["Price"]
+                                         #:style StyleAscii #:align [(AlignOn #\.)])])
+          "+---------+\n|   Price |\n+---------+\n|    3.5  |\n| 1240    |\n|   89.90 |\n+---------+\n")
+  (expect "on another character"
+          (render->string [(tabular/rows [["a=1"] ["long=22"] ["bb=3"]] #:align [(AlignOn #\=)])])
+          "   a=1\nlong=22\n  bb=3\n")
+
+  ;; --- a row at a time -------------------------------------------------------
+  (def layout (table-layout [6 5] #:style StyleLight #:align [AlignLeft AlignRight]))
+  (expect "the lines and rows of a table written a row at a time"
+          (render->string [(table-top layout) (table-row layout ["Item" "Price"]) (table-rule layout)
+                           (table-row layout ["tea" "3.50"]) (table-bottom layout)])
+          "┌────────┬───────┐\n│ Item   │ Price │\n├────────┼───────┤\n│ tea    │  3.50 │\n└────────┴───────┘\n")
+  (def plain (table-layout [6 5]))
+  (expect "a layout without borders draws no lines"
+          (render->string [(table-top plain) (table-row plain ["a" "b"]) (table-rule plain) (table-bottom plain)])
+          "a      b\n")
+  0)

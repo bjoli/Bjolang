@@ -1,0 +1,44 @@
+;; std/fmt's terminal-width: wide characters take two columns, combining
+;; marks and escape sequences none, and a table measured with it lines up.
+(import (std prelude))
+(import (std fmt))
+(import (std simpletest))
+
+(: (-> int string))
+(defun (cp n) (char->string (integer->char n)))
+
+(def esc (cp 27))
+
+(defun (main)
+  (expect "ascii is a column a character" (terminal-width "tea") 3)
+  (expect "the empty string" (terminal-width "") 0)
+  (expect "a CJK character is two" (terminal-width "茶") 2)
+  (expect "fullwidth forms are two" (terminal-width "ＡＢ") 4)
+  (expect "hangul is two" (terminal-width "한국") 4)
+  (expect "a combining accent is none" (terminal-width (str "e" (cp 769))) 1)
+  (expect "a precomposed letter is one" (terminal-width "é") 1)
+  (expect "an emoji is two" (terminal-width (cp 128512)) 2)
+  (expect "an emoji with a skin tone is two" (terminal-width (str (cp 128075) (cp 127997))) 2)
+  (expect "a family joined by ZWJ is two"
+          (terminal-width (str (cp 128104) (cp 8205) (cp 128105) (cp 8205) (cp 128103)))
+          2)
+  (expect "a flag is two regional indicators and two columns"
+          (terminal-width (str (cp 127480) (cp 127466)))
+          2)
+  (expect "two flags are four" (terminal-width (str (cp 127480) (cp 127466) (cp 127475) (cp 127476))) 4)
+  (expect "variation selector 16 makes a heart two" (terminal-width (str (cp 10084) (cp 65039))) 2)
+  (expect "a heart without it is one" (terminal-width (cp 10084)) 1)
+  (expect "a colour escape takes nothing" (terminal-width (str esc "[1;31mred" esc "[0m")) 3)
+  (expect "a link escape takes nothing"
+          (terminal-width (str esc "]8;;https://example.com" esc "\\" "link" esc "]8;;" (cp 7)))
+          4)
+  (expect "a zero-width space takes nothing" (terminal-width (str "a" (cp 8203) "b")) 2)
+
+  (expect "a table measured by terminal-width lines up"
+          (render->string [(with-fmt current-string-width terminal-width
+                             [(tabular/rows [["茶" "1"] ["tea" "22"]] #:style StyleLight)])])
+          "┌─────┬────┐\n│ 茶  │ 1  │\n│ tea │ 22 │\n└─────┴────┘\n")
+  (expect "and padding counts in columns"
+          (render->string [(with-fmt current-string-width terminal-width [(padded/left 6 ["茶茶"])])])
+          "  茶茶")
+  0)

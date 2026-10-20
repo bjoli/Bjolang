@@ -1,0 +1,58 @@
+;; std/fmt's table literal: the Table grammar reads it, and table-block lays
+;; it out with tabular/rows. Columns say their kind, and a cell of a number,
+;; size, share or bar column is shown as that kind.
+(import (std prelude))
+(import (std fmt))
+(import (std simpletest))
+
+(: (Vec (Vec TableCell)))
+(def products
+  [[(CellText "Green tea") (CellNum 3.5) (CellInt 12) (CellNum 40.0)]
+   [(CellText "Gaiwan") (CellNum 1240.0) (CellInt 2) (CellNum 100.0)]
+   [(CellText "Kettle, matte") (CellNum 89.9) (CellInt 0) (CellNum 12.0)]])
+
+(: (-> Table string))
+(defun (shown t) (render->string [(table-block t)]))
+
+(defun (main)
+  (expect "spliced rows, a header, kinds and alignment"
+          (shown '(table (style rounded) header
+                         (column "Item")
+                         (column "Price" (align (on #\.)) (number (precision 2) (comma 3)))
+                         (column "Stock" (align right))
+                         (column "Trend" (bar (max 100.0)))
+                         (rows ,products)))
+          "╭───────────────┬──────────┬───────┬────────────╮\n│ Item          │    Price │ Stock │ Trend      │\n├───────────────┼──────────┼───────┼────────────┤\n│ Green tea     │     3.50 │    12 │ ████       │\n│ Gaiwan        │ 1,240.00 │     2 │ ██████████ │\n│ Kettle, matte │    89.90 │     0 │ █▎         │\n╰───────────────┴──────────┴───────┴────────────╯\n")
+  (def (: w int) 78)
+  (expect "rows written in the literal, with a splice in a row"
+          (shown '(table (style markdown) header
+                         (column "Key") (column "Value")
+                         (rows (row "width" ,w) (row "style" "markdown"))))
+          "| Key   | Value    |\n| :---- | :------- |\n| width | 78       |\n| style | markdown |\n")
+  (expect "a column of sizes and one of shares, aligned right"
+          (shown '(table (column "Size" bytes) (column "Done" (percent (precision 0)))
+                         (rows (row 1500 0.5) (row 3000000 1.0))))
+          "1.5 KiB  50%\n2.9 MiB 100%\n")
+  (expect "no header unless asked for"
+          (shown '(table (style ascii) (column "a") (rows (row "x"))))
+          "+---+\n| x |\n+---+\n")
+  (: (Vec TableCell))
+  (def one [(CellText "y") (CellInt 2)])
+  (expect "one spliced row, beside written ones"
+          (shown '(table (style ascii) (column "a") (column "b")
+                         (rows (row "x" 1) ,one)))
+          "+---+---+\n| x | 1 |\n| y | 2 |\n+---+---+\n")
+  (: (Vec Block))
+  (def blocks [(bytes 2048L) "!"])
+  (expect "a cell of blocks"
+          (shown '(table (column "a") (rows (row ,blocks))))
+          "2.0 KiB!\n")
+  (expect "a text cell in a number column is shown as it is"
+          (shown '(table (column "n" (number (precision 1))) (rows (row "-") (row 2.25))))
+          "  -\n2.2\n")
+  (expect "the table's width, its rules and a column's width and overflow"
+          (shown '(table (style ascii) (width 20) (rules every) (overflow wrap) header
+                         (column "k" (width 3)) (column "v")
+                         (rows (row "a" "one two three") (row "b" "four"))))
+          "+-----+------------+\n| k   | v          |\n+-----+------------+\n| a   | one two    |\n|     | three      |\n+-----+------------+\n| b   | four       |\n+-----+------------+\n")
+  0)

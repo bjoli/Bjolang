@@ -1,0 +1,39 @@
+;; std/fmt's blocks for sizes, shares, bars and sparklines.
+(import (std prelude))
+(import (std fmt))
+(import (std simpletest))
+
+(defun (main)
+  (expect "bytes under a kibibyte" (render->string [(bytes 512L)]) "512 B")
+  (expect "no bytes" (render->string [(bytes 0L)]) "0 B")
+  (expect "a kibibyte" (render->string [(bytes 1024L)]) "1.0 KiB")
+  (expect "mebibytes" (render->string [(bytes 1258291L)]) "1.2 MiB")
+  (expect "gibibytes" (render->string [(bytes 3650000000L)]) "3.4 GiB")
+  (expect "si units" (render->string [(bytes 1500L #:si #t)]) "1.5 kB")
+  (expect "a precision" (render->string [(bytes 1258291L #:precision 3)]) "1.200 MiB")
+  (expect "a negative size" (render->string [(bytes -2048L)]) "-2.0 KiB")
+  (expect "the decimal separator is the setting's"
+          (render->string [(with-fmt current-decimal-sep #\, [(bytes 1536L)])])
+          "1,5 KiB")
+
+  (expect "a percentage" (render->string [(percent 0.125)]) "12.5%")
+  (expect "all of it, no decimals" (render->string [(percent 1.0 #:precision 0)]) "100%")
+  (expect "two decimals" (render->string [(percent 0.3333 #:precision 2)]) "33.33%")
+
+  (expect "a bar to an eighth" (render->string [(bar 0.62 #:width 20)]) "████████████▍       ")
+  (expect "an empty bar" (render->string [(bar 0.0 #:width 4)]) "    ")
+  (expect "a full bar" (render->string [(bar 1.0 #:width 4)]) "████")
+  (expect "past the end is full" (render->string [(bar 1.7 #:width 3)]) "███")
+  (expect "below nothing is empty" (render->string [(bar -1.0 #:width 3)]) "   ")
+  (expect "what the rest is made of" (render->string [(bar 0.5 #:width 5 #:empty "░")]) "██▌░░")
+
+  (expect "a sparkline" (render->string [(sparkline [1.0 2.0 4.0 8.0 4.0 2.0 1.0])]) "▁▂▄█▄▂▁")
+  (expect "all the same, in the middle" (render->string [(sparkline [3.0 3.0])]) "▄▄")
+  (expect "nothing" (render->string [(sparkline [])]) "")
+
+  (expect "in a table"
+          (render->string [(tabular/rows [["a" (bytes 2048L) (bar 0.5 #:width 4)]
+                                          ["b" (bytes 100L) (bar 1.0 #:width 4)]]
+                                         #:style StyleAscii #:align [AlignLeft AlignRight])])
+          "+---+---------+------+\n| a | 2.0 KiB | ██   |\n| b |   100 B | ████ |\n+---+---------+------+\n")
+  0)

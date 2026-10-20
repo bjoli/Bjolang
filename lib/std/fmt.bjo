@@ -14,7 +14,7 @@
 (import (std prelude))
 (export
   ;; Exported types.
-  Disp Sink Block Align TableLayout
+  Disp Sink Block Align TableLayout TableStyle TableRules BorderChars ColumnWidth Overflow
 
   ;; Layer 1 — interpolation
   println*
@@ -24,7 +24,7 @@
   with-fmt with-pad
   current-pad current-width current-ellipsis current-string-width
   current-precision current-comma current-comma-sep current-decimal-sep
-  current-signed
+  current-signed terminal-width
   ;; The block algebra
   nothing each captured width-of
   ;; Vertical and horizontal space
@@ -36,10 +36,12 @@
   ;; Sequences
   joined joined/prefix joined/suffix joined/last
   ;; Numbers
-  numeric numeric/comma
+  numeric numeric/comma bytes percent bar sparkline
   ;; Paragraphs and tables
   wrapped justified columnar tabular tabular/rows
-  table-layout table-widths table-row)
+  table-layout table-widths table-row table-top table-rule table-bottom
+  ;; A table as a literal
+  Table TableCell table-block show-table)
 
 ;; Every export is documented there; the module doc is too.
 (:doc #:file "fmt.bjodoc")
@@ -468,6 +470,76 @@
                  (string-cursor-end s))))
 
 
+;; --- Sizes, shares, bars ----------------------------------------------------
+
+;; A number of bytes in the largest unit it is at least one of: `512 B`,
+;; `1.2 KiB`, `3.4 GiB`. With `#:si`, the units are powers of 1000: `1.2 kB`.
+(: (-> long (#:si bool) (#:precision int) Block))
+(defun (bytes n #:si #f #:precision 1)
+  (BRun (fun (out col)
+          (def step (if si 1000.0 1024.0))
+          (def units (if si ["B" "kB" "MB" "GB" "TB" "PB" "EB"] ["B" "KiB" "MiB" "GiB" "TiB" "PiB" "EiB"]))
+          (def negative? (< n 0L))
+          (def size (cast double (if negative? (- 0L n) n)))
+          (def text
+            (let lp ((x size) (u 0))
+              (cond
+                ((= u 0) (if (< x step) (str (long->string (cast long x)) " B") (lp (/ x step) 1)))
+                ((and (>= x step) (< u (- (vec-length units) 1))) (lp (/ x step) (+ u 1)))
+                (else (str (formatted x (max precision 0) 0 #\, (parameter-ref current-decimal-sep) #f)
+                           " " (vec-ref units u))))))
+          (run-block out col (BStr (if negative? (str "-" text) text))))))
+
+;; A share, written as a percentage: 0.125 is `12.5%`.
+(: (-> double (#:precision int) Block))
+(defun (percent x #:precision 1)
+  (BRun (fun (out col)
+          (run-block out col
+                     (BStr (str (formatted (* x 100.0) (max precision 0) 0 #\,
+                                           (parameter-ref current-decimal-sep) #f)
+                                "%"))))))
+
+;; The eighths of a block, from one eighth to seven.
+(def eighths ["▏" "▎" "▍" "▌" "▋" "▊" "▉"])
+
+;; A bar `width` columns wide, filled to `fraction` of it to an eighth of a
+;; column, and `empty` in the rest. A fraction outside 0 to 1 is the nearest
+;; end.
+(: (-> double (#:width int) (#:empty string) Block))
+(defun (bar fraction #:width 10 #:empty " ")
+  (BRun (fun (out col)
+          (def* (f (max (min fraction 1.0) 0.0))
+                (total (cast int (+ (* f (cast double (* width 8))) 0.5)))
+                (full (/ total 8))
+                (part (% total 8))
+                (b (stringbuilder-empty)))
+          (loop (:for i (range 0 full)) (:do (stringbuilder-add-string! b "█")))
+          (when (> part 0) (stringbuilder-add-string! b (vec-ref eighths (- part 1))))
+          (def used (+ full (if (> part 0) 1 0)))
+          (loop (:for i (range 0 (- width used))) (:do (stringbuilder-add-string! b empty)))
+          (run-block out col (BStr (stringbuilder->string b))))))
+
+(def levels ["▁" "▂" "▃" "▄" "▅" "▆" "▇" "█"])
+
+;; The values as a line of bars of eight heights, the smallest the lowest and
+;; the largest the highest. Values that are all the same are all in the
+;; middle.
+(: (-> (Vec double) Block))
+(defun (sparkline xs)
+  (BRun (fun (out col)
+          (def* (first (if (> (vec-length xs) 0) (vec-ref xs 0) 0.0))
+                (lo (vec-fold min first xs))
+                (hi (vec-fold max first xs))
+                (b (stringbuilder-empty)))
+          (loop (:for x xs)
+                (:do (stringbuilder-add-string!
+                      b
+                      (if (<= hi lo)
+                          (vec-ref levels 3)
+                          (vec-ref levels (min 7 (cast int (* 8.0 (/ (- x lo) (- hi lo))))))))))
+          (run-block out col (BStr (stringbuilder->string b))))))
+
+
 ;; --- Paragraphs ------------------------------------------------------------
 
 ;; The runs of non-whitespace in `s`, in order.
@@ -573,8 +645,10 @@
       (vec-slice parts 0 (- n 1))
       parts))
 
-;; Where a cell sits in its column.
-(type (: Align (Union AlignLeft AlignRight AlignCentre)))
+;; Where a cell sits in its column. `(on #\.)` puts a character of every cell
+;; in one column, as the decimal point is in a column of numbers.
+(def/grammar Align
+  (:or (: AlignLeft 'left) (: AlignRight 'right) (: AlignCentre 'centre) (: AlignOn (on char))))
 
 ;; The alignment of column `i`: left unless said otherwise.
 (: (-> (Vec Align) int Align))
@@ -590,14 +664,18 @@
              (match a
                (AlignLeft (trim/right w text))
                (AlignRight (trim/left w text))
-               (AlignCentre (trim/both w text)))
+               (AlignCentre (trim/both w text))
+               ((AlignOn _) (trim/left w text)))
              text))
   (match a
     (AlignLeft (if last? s (pad/right w s)))
     (AlignRight (pad/left w s))
     (AlignCentre (if last?
                      (string-append (padding (/ (- w (width-of s)) 2)) s)
-                     (pad/both w s)))))
+                     (pad/both w s)))
+    ;; Without the widths on either side of the character, which these
+    ;; tables do not measure, the cell is aligned to the right.
+    ((AlignOn _) (pad/left w s))))
 
 (: (-> (Vec (Vec string)) (Vec int) (Vec Align) string bool Block))
 (defun (laid-out cells widths aligns sep cut?)
@@ -654,11 +732,420 @@
                        col
                        (laid-out cells (vec-map (fun (ls) each-width) cells) align sep #t))))))
 
-(: (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) Block))
-(defun (tabular cols #:sep " " #:align [])
+;; --- Borders -----------------------------------------------------------------
+;;
+;; A bordered table is lines of three kinds: the cells of a row, a horizontal
+;; line made of a fill repeated to each column's width, and the edges and
+;; joins around both. `BorderChars` is every piece of them, so a style is a
+;; value and a custom one is written as one.
+
+(type (: BorderChars (Record (: top-left string) (: top string) (: top-join string) (: top-right string)
+                             (: left string) (: column string) (: right string)
+                             (: rule-left string) (: rule string) (: rule-join string) (: rule-right string)
+                             (: bottom-left string) (: bottom string) (: bottom-join string)
+                             (: bottom-right string)
+                             (: marks bool))))
+
+(def/grammar TableStyle
+  (:or (: StyleNone 'none) (: StyleSimple 'simple) (: StyleAscii 'ascii) (: StyleLight 'light)
+       (: StyleHeavy 'heavy) (: StyleDouble 'double) (: StyleRounded 'rounded)
+       (: StyleMarkdown 'markdown) (: StyleCustom ,BorderChars)))
+
+;; Which horizontal rules a table has inside it: under the header, between
+;; every two rows, or none.
+(def/grammar TableRules
+  (:or (: RulesHeader 'header) (: RulesEvery 'every) (: RulesNone 'none)))
+
+;; How wide a column is: as its content asks, a number of columns, at least
+;; or at most a number, or a share of what the other columns leave of
+;; `current-width`.
+(def/grammar ColumnWidth
+  (:or (: WidthAuto 'auto) (: WidthFixed int) (: WidthAtLeast (at-least int))
+       (: WidthAtMost (at-most int)) (: WidthShare (share int))))
+
+;; What a cell wider than its column does: pushes the rest of its row out,
+;; is cut, or is wrapped onto more lines. A table that cuts or wraps is made
+;; to fit `current-width`.
+(def/grammar Overflow
+  (:or (: OverflowPush 'push) (: OverflowCut 'cut) (: OverflowWrap 'wrap)))
+
+;; `n` spaces, whatever the pad character is: a border's spacing is part of
+;; the border.
+(: (-> int string))
+(defun (spaces n)
+  (def b (stringbuilder-empty))
+  (loop (:for i (range 0 n)) (:do (stringbuilder-add! b #\space)))
+  (stringbuilder->string b))
+
+;; A box drawn with the line `h`, the line `v`, and the nine places they meet,
+;; as on a keypad: the top row, the middle row and the bottom row, each left,
+;; middle and right. A cell has a space on each side of it.
+(: (-> string string string string string string string string string string string BorderChars))
+(defun (box-chars h v tl tj tr ml mj mr bl bj br)
+  (BorderChars (top-left (str tl h)) (top h) (top-join (str h tj h)) (top-right (str h tr))
+               (left (str v " ")) (column (str " " v " ")) (right (str " " v))
+               (rule-left (str ml h)) (rule h) (rule-join (str h mj h)) (rule-right (str h mr))
+               (bottom-left (str bl h)) (bottom h) (bottom-join (str h bj h)) (bottom-right (str h br))
+               (marks #f)))
+
+;; No edges: `sep` between the columns, and a rule of `fill` under the header
+;; when `fill` is not empty.
+(: (-> string string BorderChars))
+(defun (open-chars sep fill)
+  (BorderChars (top-left "") (top "") (top-join "") (top-right "")
+               (left "") (column sep) (right "")
+               (rule-left "") (rule fill) (rule-join (spaces (width-of sep))) (rule-right "")
+               (bottom-left "") (bottom "") (bottom-join "") (bottom-right "")
+               (marks #f)))
+
+;; The pieces a style is drawn with. `sep` is what `StyleNone` puts between
+;; the columns.
+(: (-> TableStyle string BorderChars))
+(defun (border-chars style sep)
+  (match style
+    (StyleNone (open-chars sep ""))
+    (StyleSimple (open-chars "  " "─"))
+    (StyleAscii (box-chars "-" "|" "+" "+" "+" "+" "+" "+" "+" "+" "+"))
+    (StyleLight (box-chars "─" "│" "┌" "┬" "┐" "├" "┼" "┤" "└" "┴" "┘"))
+    (StyleHeavy (box-chars "━" "┃" "┏" "┳" "┓" "┣" "╋" "┫" "┗" "┻" "┛"))
+    (StyleDouble (box-chars "═" "║" "╔" "╦" "╗" "╠" "╬" "╣" "╚" "╩" "╝"))
+    (StyleRounded (box-chars "─" "│" "╭" "┬" "╮" "├" "┼" "┤" "╰" "┴" "╯"))
+    (StyleMarkdown
+     (BorderChars (top-left "") (top "") (top-join "") (top-right "")
+                  (left "| ") (column " | ") (right " |")
+                  (rule-left "| ") (rule "-") (rule-join " | ") (rule-right " |")
+                  (bottom-left "") (bottom "") (bottom-join "") (bottom-right "")
+                  (marks #t)))
+    ((StyleCustom chars) chars)))
+
+;; Whether a table is laid out as the tables without borders always were:
+;; no borders, no header, no column aligned on a character, which only the
+;; bordered layout measures, and no width rules or overflow.
+(: (-> TableStyle (Vec Block) (Vec Align) (Vec ColumnWidth) Overflow bool))
+(defun (plain-table? style titles aligns widths overflow)
+  (and (match style (StyleNone #t) (_ #f))
+       (= (vec-length titles) 0)
+       (not (any? (fun (a) (match a ((AlignOn _) #t) (_ #f))) aligns))
+       (= (vec-length widths) 0)
+       (match overflow (OverflowPush #t) (_ #f))))
+
+;; A column's width, and for one aligned on a character, the widest part of a
+;; line before the character and the widest from it on.
+(type (: ColumnFit (Record (: width int) (: before int) (: after int))))
+
+;; A line cut where `c` first is: the part before it, and the rest from it
+;; on. A line without one is all before.
+(: (-> char string (Tuple string string)))
+(defun (split-on c s)
+  (match (string-index (fun (x) (char=? x c)) s)
+    ((Some at) (Tuple (substring s (string-cursor-start s) at) (substring s at (string-cursor-end s))))
+    (None (Tuple s ""))))
+
+(: (-> (Vec (Vec string)) int (Vec string)))
+(defun (cell-at cells i)
+  (if (< i (vec-length cells)) (vec-ref cells i) []))
+
+;; Every line of column `i`, in all the rows.
+(: (-> (Vec (Vec (Vec string))) int (Vec string)))
+(defun (column-lines rows i)
+  (def b (vecbuilder-empty))
+  (loop (:for row rows)
+        (:do (loop (:for l (cell-at row i)) (:do (vecbuilder-add! b l)))))
+  (vecbuilder->vec b))
+
+(: (-> Align (Vec string) (Vec string) bool ColumnFit))
+(defun (column-fit a title lines marks)
+  (def* (parts (match a
+                 ((AlignOn c)
+                  (vec-fold (fun (l acc)
+                              (def (Tuple b af) (split-on c l))
+                              (Tuple (max (fst acc) (width-of b)) (max (snd acc) (width-of af))))
+                            (Tuple 0 0) lines))
+                 (_ (Tuple 0 0))))
+        (content (match a
+                   ((AlignOn _) (+ (fst parts) (snd parts)))
+                   (_ (widest lines)))))
+  (ColumnFit (width (max content (max (widest title) (if marks 3 0))))
+             (before (fst parts))
+             (after (snd parts))))
+
+(: (-> (Vec Align) (Vec (Vec string)) (Vec (Vec (Vec string))) bool (Vec ColumnFit)))
+(defun (column-fits aligns titles rows marks)
+  (def n (vec-fold (fun (r acc) (max acc (vec-length r))) (vec-length titles) rows))
+  {vecing (column-fit (align-at aligns i) (cell-at titles i) (column-lines rows i) marks)
+          (:for i (range 0 n))})
+
+;; A title is aligned as its column is, and one over a column aligned on a
+;; character to the right, where the numbers under it end.
+(: (-> Align Align))
+(defun (title-align a)
+  (match a
+    ((AlignOn _) AlignRight)
+    (_ a)))
+
+;; One line of a cell, as wide as its column. `open-end?` is a last cell with
+;; nothing after it, which is not padded on the right.
+(: (-> Align ColumnFit bool string string))
+(defun (fit-line a fit open-end? text)
+  (def w (record-ref fit width))
+  (match a
+    ((AlignOn c)
+     (def* (parts (split-on c text))
+           (before (fst parts))
+           (span (+ (record-ref fit before) (record-ref fit after)))
+           (core (str (padding (- (record-ref fit before) (width-of before))) before (snd parts))))
+     (str (padding (- w span)) (if open-end? core (pad/right span core))))
+    (_ (fit-cell a w #f open-end? text))))
+
+;; One line of a row: the edges, the separators and each cell's line `k`.
+;; Without edges, empty cells at the end are left out and the last one is not
+;; padded, as in a table without borders.
+(: (-> BorderChars (Vec Align) (Vec ColumnFit) (Vec string) string))
+(defun (row-line chars aligns fits texts)
+  (def* (open? (and (string-empty? (record-ref chars left)) (string-empty? (record-ref chars right))))
+        (n (if open?
+               (let lp ((n (vec-length texts)))
+                 (if (and (> n 0) (string-empty? (vec-ref texts (- n 1)))) (lp (- n 1)) n))
+               (vec-length fits)))
+        (b (stringbuilder-empty)))
+  (stringbuilder-add-string! b (record-ref chars left))
+  (loop (:for i (range 0 n))
+        (:do (when (> i 0) (stringbuilder-add-string! b (record-ref chars column)))
+             (stringbuilder-add-string!
+              b
+              (fit-line (align-at aligns i) (vec-ref fits i) (and open? (= i (- n 1)))
+                        (if (< i (vec-length texts)) (vec-ref texts i) "")))))
+  (stringbuilder-add-string! b (record-ref chars right))
+  (stringbuilder->string b))
+
+;; The lines of a row, as many as its tallest cell has.
+(: (-> BorderChars (Vec Align) (Vec ColumnFit) (Vec (Vec string)) (Vec string)))
+(defun (row-lines chars aligns fits cells)
+  (def height (vec-fold (fun (c acc) (max acc (vec-length c))) 1 cells))
+  {vecing (row-line chars aligns fits
+                    (vec-map (fun (c) (if (< k (vec-length c)) (vec-ref c k) "")) cells))
+          (:for k (range 0 height))})
+
+;; `fill` repeated to `w` columns.
+(: (-> string int string))
+(defun (repeated fill w)
+  (def* (fw (width-of fill))
+        (b (stringbuilder-empty)))
+  (when (> fw 0)
+    (loop (:for i (range 0 (/ w fw))) (:do (stringbuilder-add-string! b fill))))
+  (stringbuilder->string b))
+
+;; A column's part of the rule under a Markdown header, which says how the
+;; column is aligned.
+(: (-> Align int string))
+(defun (marked a w)
+  (match a
+    (AlignLeft (str ":" (repeated "-" (- w 1))))
+    (AlignCentre (str ":" (repeated "-" (- w 2)) ":"))
+    (_ (str (repeated "-" (- w 1)) ":"))))
+
+;; A horizontal line: `fill` across each column, `join` where the columns
+;; meet, and the two ends.
+(: (-> string string string string bool (Vec Align) (Vec ColumnFit) string))
+(defun (hline lft fill join rgt marks aligns fits)
+  (def b (stringbuilder-empty))
+  (stringbuilder-add-string! b lft)
+  (loop (:for i (range 0 (vec-length fits)))
+        (:do (when (> i 0) (stringbuilder-add-string! b join))
+             (def w (record-ref (vec-ref fits i) width))
+             (stringbuilder-add-string! b (if marks (marked (align-at aligns i) w) (repeated fill w)))))
+  (stringbuilder-add-string! b rgt)
+  (stringbuilder->string b))
+
+(: (-> BorderChars (Vec Align) (Vec ColumnFit) string))
+(defun (top-line chars aligns fits)
+  (hline (record-ref chars top-left) (record-ref chars top) (record-ref chars top-join)
+         (record-ref chars top-right) #f aligns fits))
+
+(: (-> BorderChars bool (Vec Align) (Vec ColumnFit) string))
+(defun (rule-line chars marks aligns fits)
+  (hline (record-ref chars rule-left) (record-ref chars rule) (record-ref chars rule-join)
+         (record-ref chars rule-right) marks aligns fits))
+
+(: (-> BorderChars (Vec Align) (Vec ColumnFit) string))
+(defun (bottom-line chars aligns fits)
+  (hline (record-ref chars bottom-left) (record-ref chars bottom) (record-ref chars bottom-join)
+         (record-ref chars bottom-right) #f aligns fits))
+
+;; The lines, each ended by a newline, starting on a fresh line.
+(: (-> (Vec string) Block))
+(defun (lines-block lines)
+  (BRun (fun (out col)
+          (vec-fold (fun (l c) (run-block out (run-block out c (BStr l)) nl)) (run-block out col fl) lines))))
+
+;; --- Column widths and overflow ----------------------------------------------
+
+(: (-> (Vec ColumnWidth) int ColumnWidth))
+(defun (width-rule-at rules i)
+  (if (< i (vec-length rules)) (vec-ref rules i) WidthAuto))
+
+(: (-> ColumnWidth bool))
+(defun (shared? rule)
+  (match rule ((WidthShare _) #t) (_ #f)))
+
+;; The narrowest a column may be made to fit the table into its width.
+(: (-> ColumnWidth int))
+(defun (narrowest rule)
+  (match rule
+    ((WidthFixed n) (max n 1))
+    ((WidthAtLeast n) (max n 1))
+    (_ 1)))
+
+;; The width of each column: its content's, `natural`, as its rule says, with
+;; the shares dividing what the others leave of `room`. When `fit?`, the
+;; widest column that may shrink loses a column until the table fits `room`.
+(: (-> (Vec int) (Vec ColumnWidth) int bool (Vec int)))
+(defun (settled-widths natural rules room fit?)
+  (def* (n (vec-length natural))
+        (base {vecing (match (width-rule-at rules i)
+                        ((WidthFixed k) (max k 1))
+                        ((WidthAtLeast k) (max (vec-ref natural i) k))
+                        ((WidthAtMost k) (max (min (vec-ref natural i) k) 1))
+                        ((WidthShare _) 0)
+                        (WidthAuto (vec-ref natural i)))
+                      (:for i (range 0 n))})
+        (shares (loop (:for i (range 0 n))
+                      (:acc (summing (match (width-rule-at rules i) ((WidthShare s) (max s 1)) (_ 0)))))))
+  (defun (shrinkable? ws i)
+    (and (not (shared? (width-rule-at rules i)))
+         (match (width-rule-at rules i) ((WidthFixed _) #f) (_ #t))
+         (> (vec-ref ws i) (narrowest (width-rule-at rules i)))))
+  (def* (fitted (if (not fit?)
+                    base
+                    (let lp ((ws base))
+                      (def used (vec-fold + 0 ws))
+                      (def wanted (+ used (if (> shares 0) n 0)))
+                      (def widest-i
+                        (loop (:for i (range 0 n))
+                              (:when (shrinkable? ws i))
+                              (:acc best (folding -1 (if (or (< best 0) (> (vec-ref ws i) (vec-ref ws best))) i best)))))
+                      (if (or (<= wanted room) (< widest-i 0))
+                          ws
+                          (lp (vec-set ws widest-i (- (vec-ref ws widest-i) 1))))))))
+  (if (= shares 0)
+      fitted
+      (let ()
+        (def left (max (- room (vec-fold + 0 fitted)) 0))
+        {vecing (match (width-rule-at rules i)
+                  ((WidthShare s) (max (/ (* left (max s 1)) shares) 1))
+                  (_ (vec-ref fitted i)))
+                (:for i (range 0 n))})))
+
+;; `word` in pieces no wider than `w`. A character wider than `w` is a piece
+;; of its own.
+(: (-> int string (List string)))
+(defun (chopped w word)
+  (let lp ((c (string-cursor-start word)) (start (string-cursor-start word)) (used 0) (acc Nil))
+    (cond
+      ((string-cursor-end? word c)
+       (list-reverse (if (string-cursor=? start c) acc (Cons (substring word start c) acc))))
+      (:def cw (width-of (char->string (string-cursor-ref word c))))
+      ((and (> used 0) (> (+ used cw) w)) (lp c c 0 (Cons (substring word start c) acc)))
+      (else (lp (string-cursor-next word c) start (+ used cw) acc)))))
+
+;; A line broken at its spaces into lines no wider than `w`.
+(: (-> int string (Vec string)))
+(defun (wrapped-line w line)
+  (if (<= (width-of line) w)
+      [line]
+      (let ()
+        (def pieces (vecbuilder-empty))
+        (loop (:for word (words-of line))
+              (:do (loop (:for p (chopped w word)) (:do (vecbuilder-add! pieces p)))))
+        (list->vec (list-map spaced (packed (vecbuilder->vec pieces) w w))))))
+
+;; A cell's lines made to fit a column of `w`, as `overflow` says.
+(: (-> Overflow Align int (Vec string) (Vec string)))
+(defun (overflowed overflow a w lines)
+  (match (Tuple overflow a)
+    ((Tuple _ (AlignOn _)) lines)
+    ((Tuple OverflowPush _) lines)
+    ((Tuple OverflowCut AlignLeft) (vec-map (fun (l) (trim/right w l)) lines))
+    ((Tuple OverflowCut AlignCentre) (vec-map (fun (l) (trim/both w l)) lines))
+    ((Tuple OverflowCut _) (vec-map (fun (l) (trim/left w l)) lines))
+    ((Tuple OverflowWrap _)
+     (vec-fold (fun (l acc) (vec-merge acc (wrapped-line w l))) [] lines))))
+
+;; A row's cells made to fit their columns.
+(: (-> Overflow (Vec Align) (Vec int) (Vec (Vec string)) (Vec (Vec string))))
+(defun (overflowed-row overflow aligns widths cells)
+  {vecing (overflowed overflow (align-at aligns i)
+                      (if (< i (vec-length widths)) (vec-ref widths i) 1)
+                      (vec-ref cells i))
+          (:for i (range 0 (vec-length cells)))})
+
+;; How many columns the edges and separators of a row of `n` cells take.
+(: (-> BorderChars int int))
+(defun (border-width chars n)
+  (+ (width-of (record-ref chars left))
+     (+ (width-of (record-ref chars right))
+        (* (max (- n 1) 0) (width-of (record-ref chars column))))))
+
+;; A table with borders, its cells rendered already: a header of `titles`
+;; when there are any, and `rows`. A horizontal line is drawn where its fill
+;; is not empty. The columns are as wide as `widths` says, and a cell wider
+;; than its column does what `overflow` says.
+(: (-> BorderChars (Vec Align) (Vec (Vec string)) (Vec (Vec (Vec string))) TableRules
+       (Vec ColumnWidth) Overflow Block))
+(defun (bordered chars aligns titles rows rules widths overflow)
+  (def* (marks (record-ref chars marks))
+        (natural (column-fits aligns titles rows marks))
+        (fit? (match overflow (OverflowPush #f) (_ #t)))
+        (settled (vec-map (fun (w) (if marks (max w 3) w))
+                          (settled-widths (vec-map (fun (f) (record-ref f width)) natural) widths
+                                          (- (parameter-ref current-width)
+                                             (border-width chars (vec-length natural)))
+                                          fit?)))
+        (fits {vecing (ColumnFit (width (vec-ref settled i))
+                                 (before (record-ref (vec-ref natural i) before))
+                                 (after (record-ref (vec-ref natural i) after)))
+                      (:for i (range 0 (vec-length natural)))})
+        (title-aligns {vecing (title-align (align-at aligns i)) (:for i (range 0 (vec-length fits)))})
+        (titles (overflowed-row overflow title-aligns settled titles))
+        (rows (vec-map (fun (row) (overflowed-row overflow aligns settled row)) rows))
+        (ruled? (not (string-empty? (record-ref chars rule))))
+        (under-header? (match rules (RulesNone #f) (_ #t)))
+        (between-rows? (match rules (RulesEvery #t) (_ #f)))
+        (lines (vecbuilder-empty)))
+  (defun (add-all ls) (loop (:for l ls) (:do (vecbuilder-add! lines l))))
+  (unless (string-empty? (record-ref chars top))
+    (vecbuilder-add! lines (top-line chars aligns fits)))
+  (when (> (vec-length titles) 0)
+    (add-all (row-lines chars title-aligns fits titles))
+    (when (and ruled? under-header?)
+      (vecbuilder-add! lines (rule-line chars marks aligns fits))))
+  (loop (:for (Tuple r row) (enumerate rows))
+        (:do (when (and (> r 0) ruled? (not marks) between-rows?)
+               (vecbuilder-add! lines (rule-line chars #f aligns fits)))
+             (add-all (row-lines chars aligns fits row))))
+  (unless (string-empty? (record-ref chars bottom))
+    (vecbuilder-add! lines (bottom-line chars aligns fits)))
+  (lines-block (vecbuilder->vec lines)))
+
+;; Columns of lines as rows of one-line cells: the `r`th line of each column
+;; is row `r`.
+(: (-> (Vec (Vec string)) (Vec (Vec (Vec string)))))
+(defun (columns->rows cols)
+  (def height (vec-fold (fun (c acc) (max acc (vec-length c))) 0 cols))
+  {vecing (vec-map (fun (c) (if (< r (vec-length c)) [(vec-ref c r)] [])) cols)
+          (:for r (range 0 height))})
+
+(: (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) (#:style TableStyle)
+       (#:titles (Vec Block)) (#:rules TableRules) (#:widths (Vec ColumnWidth)) (#:overflow Overflow)
+       Block))
+(defun (tabular cols #:sep " " #:align [] #:style StyleNone #:titles [] #:rules RulesHeader
+                #:widths [] #:overflow OverflowPush)
   (BRun (fun (out col)
           (def cells (rendered-cells cols))
-          (run-block out col (laid-out cells (vec-map widest cells) align sep #f)))))
+          (if (plain-table? style titles align widths overflow)
+              (run-block out col (laid-out cells (vec-map widest cells) align sep #f))
+              (run-block out col (bordered (border-chars style sep) align (rendered-row titles)
+                                           (columns->rows cells) rules widths overflow))))))
 
 ;; --- Tables a row at a time --------------------------------------------------
 ;;
@@ -668,11 +1155,52 @@
 
 (type (: TableLayout (Record (: widths (Vec int))
                              (: aligns (Vec Align))
-                             (: sep string))))
+                             (: sep string)
+                             (: style TableStyle))))
 
-(: (-> (Vec int) (#:sep string) (#:align (Vec Align)) TableLayout))
-(defun (table-layout widths #:sep " " #:align [])
-  (TableLayout (widths widths) (aligns align) (sep sep)))
+(: (-> (Vec int) (#:sep string) (#:align (Vec Align)) (#:style TableStyle) TableLayout))
+(defun (table-layout widths #:sep " " #:align [] #:style StyleNone)
+  (TableLayout (widths widths) (aligns align) (sep sep) (style style)))
+
+;; A layout's columns as fits. The widths on either side of a character are
+;; not known a row at a time, so a column aligned on one is aligned right.
+(: (-> TableLayout (Vec Align)))
+(defun (layout-aligns layout)
+  (def aligns (record-ref layout aligns))
+  {vecing (title-align (align-at aligns i)) (:for i (range 0 (vec-length (record-ref layout widths))))})
+
+(: (-> TableLayout (Vec ColumnFit)))
+(defun (layout-fits layout)
+  (vec-map (fun (w) (ColumnFit (width w) (before 0) (after 0))) (record-ref layout widths)))
+
+(: (-> TableLayout BorderChars))
+(defun (layout-chars layout)
+  (border-chars (record-ref layout style) (record-ref layout sep)))
+
+;; The line above a table laid out a row at a time, or nothing for a style
+;; without one.
+(: (-> TableLayout Block))
+(defun (table-top layout)
+  (def chars (layout-chars layout))
+  (if (string-empty? (record-ref chars top))
+      nothing
+      (lines-block [(top-line chars (layout-aligns layout) (layout-fits layout))])))
+
+;; A rule across the table: under a header row, or between two rows.
+(: (-> TableLayout Block))
+(defun (table-rule layout)
+  (def chars (layout-chars layout))
+  (if (string-empty? (record-ref chars rule))
+      nothing
+      (lines-block [(rule-line chars (record-ref chars marks) (layout-aligns layout) (layout-fits layout))])))
+
+;; The line under a table laid out a row at a time.
+(: (-> TableLayout Block))
+(defun (table-bottom layout)
+  (def chars (layout-chars layout))
+  (if (string-empty? (record-ref chars bottom))
+      nothing
+      (lines-block [(bottom-line chars (layout-aligns layout) (layout-fits layout))])))
 
 ;; The width each column of these rows asks for: its widest line.
 (: (-> (Vec (Vec Block)) (Vec int)))
@@ -688,19 +1216,312 @@
 ;; One row, laid out to `layout`. A cell wider than its column is not cut:
 ;; it pushes the rest of its row out. Cells past the layout's columns get
 ;; no width and are left as they are.
+;;
+;; With a style that has borders, a row is drawn between them, every cell
+;; padded to its column, and a cell past the layout's columns is left out.
 (: (-> TableLayout (Vec Block) Block))
 (defun (table-row layout row)
   (BRun (fun (out col)
           (def cells (rendered-row row))
-          (def ws (record-ref layout widths))
-          (def widths {vecing (if (< i (vec-length ws)) (vec-ref ws i) 0)
-                              (:for i (range 0 (vec-length cells)))})
-          (run-block out col (laid-out cells widths (record-ref layout aligns) (record-ref layout sep) #f)))))
+          (if (plain-table? (record-ref layout style) [] [] [] OverflowPush)
+              (let ()
+                (def ws (record-ref layout widths))
+                (def widths {vecing (if (< i (vec-length ws)) (vec-ref ws i) 0)
+                                    (:for i (range 0 (vec-length cells)))})
+                (run-block out col (laid-out cells widths (record-ref layout aligns) (record-ref layout sep) #f)))
+              (run-block out col (lines-block (row-lines (layout-chars layout) (layout-aligns layout)
+                                                         (layout-fits layout) cells)))))))
 
 ;; `tabular`, given rows rather than columns.
-(: (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) Block))
-(defun (tabular/rows rows #:sep " " #:align [])
+(: (-> (Vec (Vec Block)) (#:sep string) (#:align (Vec Align)) (#:style TableStyle)
+       (#:titles (Vec Block)) (#:rules TableRules) (#:widths (Vec ColumnWidth)) (#:overflow Overflow)
+       Block))
+(defun (tabular/rows rows #:sep " " #:align [] #:style StyleNone #:titles [] #:rules RulesHeader
+                     #:widths [] #:overflow OverflowPush)
   ;; Measured when it runs, where the settings it is run under are bound.
   (BRun (fun (out col)
-          (def layout (table-layout (table-widths rows) #:sep sep #:align align))
-          (run-blocks out col (vec-map (fun (row) (table-row layout row)) rows)))))
+          (if (plain-table? style titles align widths overflow)
+              (let ()
+                (def layout (table-layout (table-widths rows) #:sep sep #:align align))
+                (run-blocks out col (vec-map (fun (row) (table-row layout row)) rows)))
+              (run-block out col (bordered (border-chars style sep) align (rendered-row titles)
+                                           (vec-map rendered-row rows) rules widths overflow))))))
+
+;; --- Width in a terminal ---------------------------------------------------
+;;
+;; The code points whose width in a terminal is not one column, as triples of
+;; the first, the last and the width: 0 for combining marks, format and
+;; control characters and the skin tone modifiers, which join what is before
+;; them, and 2 for East Asian Wide and Fullwidth characters and the regional
+;; indicators. Generated from Python's `unicodedata` (Unicode 16.0) and checked
+;; in, as `(std rx)` checks in its tables.
+(: (Array int))
+(def width-ranges
+  #[
+    0 31 0 127 159 0 173 173 0 768 879 0 1155 1161 0 1425 1469 0 1471 1471 0 1473 1474 0
+    1476 1477 0 1479 1479 0 1536 1541 0 1552 1562 0 1564 1564 0 1611 1631 0 1648 1648 0
+    1750 1757 0 1759 1764 0 1767 1768 0 1770 1773 0 1807 1807 0 1809 1809 0 1840 1866 0
+    1958 1968 0 2027 2035 0 2045 2045 0 2070 2073 0 2075 2083 0 2085 2087 0 2089 2093 0
+    2137 2139 0 2192 2193 0 2199 2207 0 2250 2306 0 2362 2362 0 2364 2364 0 2369 2376 0
+    2381 2381 0 2385 2391 0 2402 2403 0 2433 2433 0 2492 2492 0 2497 2500 0 2509 2509 0
+    2530 2531 0 2558 2558 0 2561 2562 0 2620 2620 0 2625 2626 0 2631 2632 0 2635 2637 0
+    2641 2641 0 2672 2673 0 2677 2677 0 2689 2690 0 2748 2748 0 2753 2757 0 2759 2760 0
+    2765 2765 0 2786 2787 0 2810 2815 0 2817 2817 0 2876 2876 0 2879 2879 0 2881 2884 0
+    2893 2893 0 2901 2902 0 2914 2915 0 2946 2946 0 3008 3008 0 3021 3021 0 3072 3072 0
+    3076 3076 0 3132 3132 0 3134 3136 0 3142 3144 0 3146 3149 0 3157 3158 0 3170 3171 0
+    3201 3201 0 3260 3260 0 3263 3263 0 3270 3270 0 3276 3277 0 3298 3299 0 3328 3329 0
+    3387 3388 0 3393 3396 0 3405 3405 0 3426 3427 0 3457 3457 0 3530 3530 0 3538 3540 0
+    3542 3542 0 3633 3633 0 3636 3642 0 3655 3662 0 3761 3761 0 3764 3772 0 3784 3790 0
+    3864 3865 0 3893 3893 0 3895 3895 0 3897 3897 0 3953 3966 0 3968 3972 0 3974 3975 0
+    3981 3991 0 3993 4028 0 4038 4038 0 4141 4144 0 4146 4151 0 4153 4154 0 4157 4158 0
+    4184 4185 0 4190 4192 0 4209 4212 0 4226 4226 0 4229 4230 0 4237 4237 0 4253 4253 0
+    4352 4447 2 4448 4607 0 4957 4959 0 5906 5908 0 5938 5939 0 5970 5971 0 6002 6003 0
+    6068 6069 0 6071 6077 0 6086 6086 0 6089 6099 0 6109 6109 0 6155 6159 0 6277 6278 0
+    6313 6313 0 6432 6434 0 6439 6440 0 6450 6450 0 6457 6459 0 6679 6680 0 6683 6683 0
+    6742 6742 0 6744 6750 0 6752 6752 0 6754 6754 0 6757 6764 0 6771 6780 0 6783 6783 0
+    6832 6862 0 6912 6915 0 6964 6964 0 6966 6970 0 6972 6972 0 6978 6978 0 7019 7027 0
+    7040 7041 0 7074 7077 0 7080 7081 0 7083 7085 0 7142 7142 0 7144 7145 0 7149 7149 0
+    7151 7153 0 7212 7219 0 7222 7223 0 7376 7378 0 7380 7392 0 7394 7400 0 7405 7405 0
+    7412 7412 0 7416 7417 0 7616 7679 0 8203 8207 0 8234 8238 0 8288 8292 0 8294 8303 0
+    8400 8432 0 8986 8987 2 9001 9002 2 9193 9196 2 9200 9200 2 9203 9203 2 9725 9726 2
+    9748 9749 2 9776 9783 2 9800 9811 2 9855 9855 2 9866 9871 2 9875 9875 2 9889 9889 2
+    9898 9899 2 9917 9918 2 9924 9925 2 9934 9934 2 9940 9940 2 9962 9962 2 9970 9971 2
+    9973 9973 2 9978 9978 2 9981 9981 2 9989 9989 2 9994 9995 2 10024 10024 2 10060 10060 2
+    10062 10062 2 10067 10069 2 10071 10071 2 10133 10135 2 10160 10160 2 10175 10175 2
+    11035 11036 2 11088 11088 2 11093 11093 2 11503 11505 0 11647 11647 0 11744 11775 0
+    11904 11929 2 11931 12019 2 12032 12245 2 12272 12329 2 12330 12333 0 12334 12350 2
+    12353 12438 2 12441 12442 0 12443 12543 2 12549 12591 2 12593 12686 2 12688 12773 2
+    12783 12830 2 12832 12871 2 12880 42124 2 42128 42182 2 42607 42610 0 42612 42621 0
+    42654 42655 0 42736 42737 0 43010 43010 0 43014 43014 0 43019 43019 0 43045 43046 0
+    43052 43052 0 43204 43205 0 43232 43249 0 43263 43263 0 43302 43309 0 43335 43345 0
+    43360 43388 2 43392 43394 0 43443 43443 0 43446 43449 0 43452 43453 0 43493 43493 0
+    43561 43566 0 43569 43570 0 43573 43574 0 43587 43587 0 43596 43596 0 43644 43644 0
+    43696 43696 0 43698 43700 0 43703 43704 0 43710 43711 0 43713 43713 0 43756 43757 0
+    43766 43766 0 44005 44005 0 44008 44008 0 44013 44013 0 44032 55203 2 63744 64255 2
+    64286 64286 0 65024 65039 0 65040 65049 2 65056 65071 0 65072 65106 2 65108 65126 2
+    65128 65131 2 65279 65279 0 65281 65376 2 65504 65510 2 65529 65531 0 66045 66045 0
+    66272 66272 0 66422 66426 0 68097 68099 0 68101 68102 0 68108 68111 0 68152 68154 0
+    68159 68159 0 68325 68326 0 68900 68903 0 68969 68973 0 69291 69292 0 69372 69375 0
+    69446 69456 0 69506 69509 0 69633 69633 0 69688 69702 0 69744 69744 0 69747 69748 0
+    69759 69761 0 69811 69814 0 69817 69818 0 69821 69821 0 69826 69826 0 69837 69837 0
+    69888 69890 0 69927 69931 0 69933 69940 0 70003 70003 0 70016 70017 0 70070 70078 0
+    70089 70092 0 70095 70095 0 70191 70193 0 70196 70196 0 70198 70199 0 70206 70206 0
+    70209 70209 0 70367 70367 0 70371 70378 0 70400 70401 0 70459 70460 0 70464 70464 0
+    70502 70508 0 70512 70516 0 70587 70592 0 70606 70606 0 70608 70608 0 70610 70610 0
+    70625 70626 0 70712 70719 0 70722 70724 0 70726 70726 0 70750 70750 0 70835 70840 0
+    70842 70842 0 70847 70848 0 70850 70851 0 71090 71093 0 71100 71101 0 71103 71104 0
+    71132 71133 0 71219 71226 0 71229 71229 0 71231 71232 0 71339 71339 0 71341 71341 0
+    71344 71349 0 71351 71351 0 71453 71453 0 71455 71455 0 71458 71461 0 71463 71467 0
+    71727 71735 0 71737 71738 0 71995 71996 0 71998 71998 0 72003 72003 0 72148 72151 0
+    72154 72155 0 72160 72160 0 72193 72202 0 72243 72248 0 72251 72254 0 72263 72263 0
+    72273 72278 0 72281 72283 0 72330 72342 0 72344 72345 0 72752 72758 0 72760 72765 0
+    72767 72767 0 72850 72871 0 72874 72880 0 72882 72883 0 72885 72886 0 73009 73014 0
+    73018 73018 0 73020 73021 0 73023 73029 0 73031 73031 0 73104 73105 0 73109 73109 0
+    73111 73111 0 73459 73460 0 73472 73473 0 73526 73530 0 73536 73536 0 73538 73538 0
+    73562 73562 0 78896 78912 0 78919 78933 0 90398 90409 0 90413 90415 0 92912 92916 0
+    92976 92982 0 94031 94031 0 94095 94098 0 94176 94179 2 94180 94180 0 94192 94193 2
+    94208 100343 2 100352 101589 2 101631 101640 2 110576 110579 2 110581 110587 2
+    110589 110590 2 110592 110882 2 110898 110898 2 110928 110930 2 110933 110933 2
+    110948 110951 2 110960 111355 2 113821 113822 0 113824 113827 0 118528 118573 0
+    118576 118598 0 119143 119145 0 119155 119170 0 119173 119179 0 119210 119213 0
+    119362 119364 0 119552 119638 2 119648 119670 2 121344 121398 0 121403 121452 0
+    121461 121461 0 121476 121476 0 121499 121503 0 121505 121519 0 122880 122886 0
+    122888 122904 0 122907 122913 0 122915 122916 0 122918 122922 0 123023 123023 0
+    123184 123190 0 123566 123566 0 123628 123631 0 124140 124143 0 124398 124399 0
+    125136 125142 0 125252 125258 0 126980 126980 2 127183 127183 2 127374 127374 2
+    127377 127386 2 127462 127490 2 127504 127547 2 127552 127560 2 127568 127569 2
+    127584 127589 2 127744 127776 2 127789 127797 2 127799 127868 2 127870 127891 2
+    127904 127946 2 127951 127955 2 127968 127984 2 127988 127988 2 127992 127994 2
+    127995 127999 0 128000 128062 2 128064 128064 2 128066 128252 2 128255 128317 2
+    128331 128334 2 128336 128359 2 128378 128378 2 128405 128406 2 128420 128420 2
+    128507 128591 2 128640 128709 2 128716 128716 2 128720 128722 2 128725 128727 2
+    128732 128735 2 128747 128748 2 128756 128764 2 128992 129003 2 129008 129008 2
+    129292 129338 2 129340 129349 2 129351 129535 2 129648 129660 2 129664 129673 2
+    129679 129734 2 129742 129756 2 129759 129769 2 129776 129784 2 131072 196605 2
+    196608 262141 2 917505 917505 0 917536 917631 0 917760 917999 0])
+
+;; The width of one code point, by a binary search of `width-ranges`.
+(: (-> int int))
+(defun (code-point-width cp)
+  (if (and (>= cp 32) (< cp 127))
+      1
+      (searched-width cp)))
+
+(: (-> int int))
+(defun (searched-width cp)
+  (let lp ((lo 0) (hi (- (/ (array-length width-ranges) 3) 1)))
+    (if (> lo hi)
+        1
+        (let ()
+          (def mid (/ (+ lo hi) 2))
+          (cond
+            ((< cp (ref width-ranges (* 3 mid))) (lp lo (- mid 1)))
+            ((> cp (ref width-ranges (+ (* 3 mid) 1))) (lp (+ mid 1) hi))
+            (else (ref width-ranges (+ (* 3 mid) 2))))))))
+
+;; The cursor after the escape sequence that starts at `c`, an ESC: a CSI
+;; ends at a character from @ to ~, an OSC at BEL or at ESC and a backslash,
+;; and any other is ESC and one character.
+(: (-> string StringCursor StringCursor))
+(defun (after-escape s c)
+  (def next (string-cursor-next s c))
+  (defun (char-at k) (if (string-cursor-end? s k) 0 (char->integer (string-cursor-ref s k))))
+  (cond
+    ((string-cursor-end? s next) next)
+    ((= (char-at next) 91)
+     (let lp ((k (string-cursor-next s next)))
+       (cond
+         ((string-cursor-end? s k) k)
+         ((and (>= (char-at k) 64) (<= (char-at k) 126)) (string-cursor-next s k))
+         (else (lp (string-cursor-next s k))))))
+    ((= (char-at next) 93)
+     (let lp ((k (string-cursor-next s next)))
+       (cond
+         ((string-cursor-end? s k) k)
+         ((= (char-at k) 7) (string-cursor-next s k))
+         ((and (= (char-at k) 27)
+               (let ((k2 (string-cursor-next s k)))
+                 (and (not (string-cursor-end? s k2)) (= (char-at k2) 92))))
+          (string-cursor-next s (string-cursor-next s k)))
+         (else (lp (string-cursor-next s k))))))
+    (else (string-cursor-next s next))))
+
+;; How many columns `s` takes in a terminal.
+(: (-> string int))
+(defun (terminal-width s)
+  (let lp ((c (string-cursor-start s)) (total 0) (last 0) (joined? #f) (open-flag? #f))
+    (if (string-cursor-end? s c)
+        total
+        (let ()
+          (def cp (char->integer (string-cursor-ref s c)))
+          (def next (string-cursor-next s c))
+          (cond
+            ((= cp 27) (lp (after-escape s c) total last joined? open-flag?))
+            ((= cp 8205) (lp next total last #t #f))
+            ((= cp 65039)
+             (if (= last 1) (lp next (+ total 1) 2 #f #f) (lp next total last #f #f)))
+            (joined? (lp next total last #f #f))
+            ((and (>= cp 127462) (<= cp 127487))
+             (if open-flag? (lp next total last #f #f) (lp next (+ total 2) 2 #f #t)))
+            (else
+             (def w (code-point-width cp))
+             (lp next (+ total w) (if (> w 0) w last) #f #f)))))))
+
+;; ===========================================================================
+;; A table as a literal
+;; ===========================================================================
+;;
+;; `(show-table '(table (style rounded) header (column "Item") ... (rows ,rows)))`.
+;; The grammar checks the literal where it is written; `table-block` lays out
+;; the value with `tabular/rows`.
+
+(def/grammar Table
+  (Table (table (: options TableOptions) (: columns TableColumn ...+) (: rows (rows TableRow ...))))
+  (TableOptions (:each (: style    (:? (style TableStyle)))
+                       (: header   (:? 'header))
+                       (: rules    (:? (rules TableRules)))
+                       (: width    (:? (width int)))
+                       (: overflow (:? (overflow Overflow)))))
+  (TableColumn (column (: title string) (: options ColumnOptions)))
+  (ColumnOptions (:each (: align (:? (align Align)))
+                        (: width (:? (width ColumnWidth)))
+                        (: kind  (:? ColumnKind))))
+  (ColumnKind (:or (: KindNumber (number NumberFormat))
+                   (: KindBytes 'bytes)
+                   (: KindPercent (percent (:? (precision int))))
+                   (: KindBar (bar BarFormat))))
+  (NumberFormat (:each (: precision (:? (precision int)))
+                       (: comma     (:? (comma int)))
+                       (: signed    (:? 'signed))))
+  (BarFormat (:each (: limit (:? (max double)))
+                    (: size  (:? (width int)))))
+  (TableRow (:or (: RowOf (row TableCell ...))
+                 (: RowSpliced ,(Vec TableCell))
+                 (: RowsSpliced ,(Vec (Vec TableCell)))))
+  (TableCell (:or (: CellText string) (: CellInt int) (: CellNum double) (: CellBlocks ,(Vec Block)))))
+
+;; A cell shown as it is.
+(: (-> TableCell Block))
+(defun (plain-cell c)
+  (match c
+    ((CellText s) (BStr s))
+    ((CellInt n) (BInt n))
+    ((CellNum x) (numeric x))
+    ((CellBlocks bs) (each bs))))
+
+(: (-> TableCell (Option double)))
+(defun (cell-number c)
+  (match c
+    ((CellInt n) (Some (cast double n)))
+    ((CellNum x) (Some x))
+    (_ None)))
+
+;; A cell shown as its column's kind says. A cell that is not a number is
+;; shown as it is in any column.
+(: (-> (Option ColumnKind) TableCell Block))
+(defun (kind-cell kind c)
+  (match (Tuple kind (cell-number c))
+    ((Tuple (Some (KindNumber f)) (Some x))
+     (numeric x #:precision (option-ref-or (record-ref f precision) -1)
+                #:comma (option-ref-or (record-ref f comma) -1)
+                #:signed (record-ref f signed)))
+    ((Tuple (Some KindBytes) (Some x)) (bytes (cast long x)))
+    ((Tuple (Some (KindPercent p)) (Some x)) (percent x #:precision (option-ref-or p 1)))
+    ((Tuple (Some (KindBar b)) (Some x))
+     (bar (/ x (option-ref-or (record-ref b limit) 1.0)) #:width (option-ref-or (record-ref b size) 10)))
+    (_ (plain-cell c))))
+
+;; A column's alignment: the one it says, or to the right for a column of
+;; numbers, sizes or shares, and to the left for anything else.
+(: (-> TableColumn Align))
+(defun (column-align col)
+  (def o (record-ref col options))
+  (match (record-ref o align)
+    ((Some a) a)
+    (None (match (record-ref o kind)
+            ((Some (KindBar _)) AlignLeft)
+            ((Some _) AlignRight)
+            (None AlignLeft)))))
+
+;; The table's rows, a block a cell, each shown as its column's kind says.
+(: (-> (Vec TableColumn) (Vec (Vec TableCell)) (Vec (Vec Block))))
+(defun (table-cells cols rows)
+  (vec-map (fun (row)
+             {vecing (kind-cell (if (< i (vec-length cols))
+                                    (record-ref (record-ref (vec-ref cols i) options) kind)
+                                    None)
+                                (vec-ref row i))
+                     (:for i (range 0 (vec-length row)))})
+           rows))
+
+;; A table literal as a block, laid out as `tabular/rows` lays out a table.
+(: (-> Table Block))
+(defun (table-block t)
+  (def* (o (record-ref t options))
+        (cols (list->vec (record-ref t columns)))
+        (rows (list-foldl (fun (r acc)
+                            (match r
+                              ((RowOf cells) (vec-add acc (list->vec cells)))
+                              ((RowSpliced cells) (vec-add acc cells))
+                              ((RowsSpliced more) (vec-merge acc more))))
+                          []
+                          (record-ref t rows)))
+        (laid (tabular/rows (table-cells cols rows)
+                            #:titles (if (record-ref o header)
+                                         (vec-map (fun (c) (BStr (record-ref c title))) cols)
+                                         [])
+                            #:style (option-ref-or (record-ref o style) StyleNone)
+                            #:rules (option-ref-or (record-ref o rules) RulesHeader)
+                            #:align (vec-map column-align cols)
+                            #:widths (vec-map (fun (c) (option-ref-or (record-ref (record-ref c options) width)
+                                                                      WidthAuto))
+                                              cols)
+                            #:overflow (option-ref-or (record-ref o overflow) OverflowPush))))
+  (match (record-ref o width)
+    ((Some w) (with-fmt current-width w [laid]))
+    (None laid)))
+
+;; Shows a table literal on the current output port. `#:sync` for `show`'s
+;; reason.
+(: show-table #:sync (-> Table void))
+(defun (show-table t) (show [(table-block t)]))
