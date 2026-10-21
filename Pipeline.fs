@@ -511,14 +511,14 @@ let private surfaceOf
       Traits =
         decls
         |> List.choose (function
-            | DTrait(key, _, _, _, _, _, _, _) -> Some(Naming.bareTraitName key, key)
+            | DTrait(key, _, _, _, _, _, _, _, _) -> Some(Naming.bareTraitName key, key)
             | _ -> None)
         |> Map.ofList
 
       TraitMethods =
         decls
         |> List.collect (function
-            | DTrait(traitKey, _, _, _, signatures, _, _, _) ->
+            | DTrait(traitKey, _, _, _, signatures, _, _, _, _) ->
                 signatures |> List.map (fun (m, _, _) -> m, (Naming.traitMethodKey traitKey m, traitKey))
             | _ -> [])
         |> Map.ofList }
@@ -945,7 +945,7 @@ let private ownNames (decls: Decl list) : Set<string> =
                             | SimpleCase(n, _) -> n
                             | DataCase(n, _, _) -> n)
                     | _ -> []))
-        | DTrait(n, _, _, _, signatures, _, _, _) -> n :: (signatures |> List.map (fun (m, _, _) -> m))
+        | DTrait(n, _, _, _, signatures, _, _, _, _) -> n :: (signatures |> List.map (fun (m, _, _) -> m))
         | DAlias(visible, _, _) -> [ visible ]
         | DImportExtern(specs, _) -> specs |> List.map (fun s -> s.Alias)
         | DImportClass(specs, _) -> specs |> List.map (fun s -> s.Alias)
@@ -1196,7 +1196,7 @@ let private registerMacros
         let traitMethods =
             decls
             |> List.collect (function
-                | DTrait(_, _, _, _, signatures, _, _, _) -> signatures |> List.map (fun (n, _, _) -> n)
+                | DTrait(_, _, _, _, signatures, _, _, _, _) -> signatures |> List.map (fun (n, _, _) -> n)
                 | _ -> [])
             |> Set.ofList
             |> Set.union (
@@ -2303,7 +2303,7 @@ let loadModuleGraph
                     let traitSpellingDecls =
                         declsFromText
                         |> List.collect (function
-                            | DTrait(key, _, _, _, signatures, _, _, r) when Naming.bareTraitName key <> key ->
+                            | DTrait(key, _, _, _, signatures, _, _, _, r) when Naming.bareTraitName key <> key ->
                                 DImportAlias(Naming.bareTraitName key, key, AliasTrait, r)
                                 :: (signatures
                                     |> List.map (fun (m, _, _) ->

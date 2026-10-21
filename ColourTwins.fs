@@ -112,8 +112,8 @@ let rec resolveByColour (decls: Decl list) : Decl list =
             match resolved with
             | DDefDouble(n, a, s, _, r') -> DDefDouble(n, a, s, resolveIn true bjoBody, r')
             | other -> other
-        | DTrait(name, v, arity, assoc, signatures, defaults, clr, r) ->
-            DTrait(name, v, arity, assoc, signatures, resolveByColour defaults, clr, r)
+        | DTrait(name, v, arity, assoc, signatures, defaults, clr, supers, r) ->
+            DTrait(name, v, arity, assoc, signatures, resolveByColour defaults, clr, supers, r)
         | DImpl(name, target, assoc, constraints, methodWheres, methods, r) ->
             DImpl(name, target, assoc, constraints, methodWheres, resolveByColour methods, r)
         // A module's declarations are a group of their own, expanded and

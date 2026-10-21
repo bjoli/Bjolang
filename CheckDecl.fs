@@ -82,7 +82,7 @@ let private keyTraits (moduleName: string) (decls: Decl list) : (string * string
     let spellings =
         decls
         |> List.collect (function
-            | DTrait(name, _, _, _, signatures, _, _, _) when Naming.traitKey moduleName name <> name ->
+            | DTrait(name, _, _, _, signatures, _, _, _, _) when Naming.traitKey moduleName name <> name ->
                 let key = Naming.traitKey moduleName name
 
                 (name, key) :: (signatures |> List.map (fun (m, _, _) -> m, Naming.traitMethodKey key m))
@@ -91,8 +91,8 @@ let private keyTraits (moduleName: string) (decls: Decl list) : (string * string
     let keyed =
         decls
         |> List.map (function
-            | DTrait(name, implementorVar, holeArity, assocTypes, signatures, defaults, clrSpec, r) ->
-                DTrait(Naming.traitKey moduleName name, implementorVar, holeArity, assocTypes, signatures, defaults, clrSpec, r)
+            | DTrait(name, implementorVar, holeArity, assocTypes, signatures, defaults, clrSpec, supers, r) ->
+                DTrait(Naming.traitKey moduleName name, implementorVar, holeArity, assocTypes, signatures, defaults, clrSpec, supers, r)
             | d -> d)
 
     spellings, keyed
@@ -420,6 +420,61 @@ let private signatureConstraints
         { TraitName = c.MCTrait
           TargetType = TVar c.MCVar
           Pins = c.MCPins |> List.map (fun (n, t) -> n, resolve t) })
+    // And what they imply, after them: see `withSuperclasses`. The given
+    // ones keep the spelling source wrote, for the messages that quote it.
+    |> fun given ->
+        let byKey = given |> List.map (fun c -> { c with TraitName = originalName registry c.TraitName })
+        let same (a: TraitConstraint) (b: TraitConstraint) = a.TraitName = b.TraitName && a.TargetType = b.TargetType
+
+        given @ (withSuperclasses registry byKey |> List.filter (fun e -> not (List.exists (same e) byKey)))
+
+/// A trait's own `(where ...)`, as constraints at its implementor variable.
+///
+/// With `strict`, the rules are checked: each constraint is at the
+/// implementor, pins nothing, and names a first-order trait that does not
+/// require this one in turn; and an inline-only trait has none. Without, the
+/// clause is only read, for the provisional registration that comes before
+/// every trait of a group is known.
+let private traitSuperclasses
+    (registry: TraitRegistry)
+    (traitName: string)
+    (implementorVar: string)
+    (holeArity: int)
+    (supers: MemberConstraint list)
+    (strict: bool)
+    : TraitConstraint list =
+    supers
+    |> List.map (fun c ->
+        let superName = originalName registry c.MCTrait
+        let constraintOn = { TraitName = superName; TargetType = TVar c.MCVar; Pins = [] }
+
+        if strict then
+            let refuse (why: string) =
+                failwithf $"Type Error at %s{Lexer.formatPos c.MCRange}: '%s{Naming.showTraitName traitName}' cannot require '%s{c.MCTrait}': %s{why}"
+
+            if holeArity > 0 then
+                refuse "it applies its implementor, so it is inline-only, and an inline-only trait cannot require other traits."
+
+            if c.MCVar <> "'" + implementorVar then
+                refuse $"a trait's where clause is about its implementor, %%%s{implementorVar}, and this names %%%s{c.MCVar.TrimStart '\''}."
+
+            if not c.MCPins.IsEmpty then
+                refuse "a trait's where clause cannot pin associated types."
+
+            if superName = traitName then
+                refuse "a trait cannot require itself."
+
+            // Only a trait declared before this one, or imported, is known
+            // here. That is also what keeps the requirements free of cycles.
+            match Map.tryFind superName registry.Traits with
+            | None -> refuse "no trait of that name is declared before it. A trait can require only one declared earlier, or imported."
+            | Some info when info.HoleArity > 0 -> refuse "it is inline-only, and only a first-order trait can be required."
+            | Some _ -> ()
+
+            if withSuperclasses registry [ constraintOn ] |> List.exists (fun s -> s.TraitName = traitName) then
+                refuse $"it requires '%s{Naming.showTraitName traitName}' in turn, so neither could be implemented first."
+
+        constraintOn)
 
 /// The variables that only the pins of `cs` name, such as the `%c` of
 /// `#:cursor %c`. A scheme quantifies them as it does its type's.
@@ -631,8 +686,8 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
         checkExtern env sigs name declaredOrigin ftype constraintPairs r
 
 
-    | DTrait(traitName, implementorVar, holeArity, assocTypes, signatures, defaults, clrSpec, r) ->
-        checkTrait env sigs traitName implementorVar holeArity assocTypes signatures defaults clrSpec r
+    | DTrait(traitName, implementorVar, holeArity, assocTypes, signatures, defaults, clrSpec, supers, r) ->
+        checkTrait env sigs traitName implementorVar holeArity assocTypes signatures defaults clrSpec supers r
 
     | DTypeRec(typeDefs, r) ->
         let newEnv, keyed = registerTypeDefs true typeDefs env
@@ -1156,6 +1211,8 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
         [ for c in explicitConstraints @ inferredConstraints do
             let key = (c.TraitName, match c.TargetType with TVar v -> v | _ -> "")
             if seen.Add(key) then yield c ]
+        // An inferred constraint implies its superclasses as a written one does.
+        |> withSuperclasses env.Registry
     // A constraint may only land on a type variable this signature
     // quantifies.
     //
@@ -2092,7 +2149,7 @@ and private checkExtern (env: Env) (sigs: Sigs) (name: string) (declaredOrigin: 
 
     newEnv, sigs, [ TExtern(name, origin, ftype, r) ]
 
-and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorVar: string) (holeArity: int) (assocTypes: string list) (signatures: (string * FType * MemberConstraint list) list) (defaults: Decl list) (clrSpec: (string * FType list * (string * string) list) option) (r: Range) : Env * Sigs * TDecl list =
+and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorVar: string) (holeArity: int) (assocTypes: string list) (signatures: (string * FType * MemberConstraint list) list) (defaults: Decl list) (clrSpec: (string * FType list * (string * string) list) option) (supers: MemberConstraint list) (r: Range) : Env * Sigs * TDecl list =
     // The member constraints ride the signature list; split them off here
     // so the many readers of `(name, type)` pairs below keep their shape.
     let memberWheres: Map<string, Ast.MemberConstraint list> =
@@ -2391,7 +2448,8 @@ and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorV
 
                     { TraitName = cTrait
                       TargetType = TVar mc.MCVar
-                      Pins = mc.MCPins |> List.map (fun (n, t) -> n, resolveTypeAnnotation env.Registry t) }))
+                      Pins = mc.MCPins |> List.map (fun (n, t) -> n, resolveTypeAnnotation env.Registry t) })
+                |> withSuperclasses env.Registry)
 
         // A member with a `-?->` parameter has a derived suspending twin;
         // the twin inherits the wheres, being the same source.
@@ -2416,6 +2474,7 @@ and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorV
           Defaults = Map.ofList defaultBodies
           ClrConstraint = clrConstraint
           MemberWheres = resolvedMemberWheres
+          Superclasses = traitSuperclasses env.Registry traitName implementorVar holeArity supers true
           // Derived from signatures and computed on declaration: an
           // imported trait reconstructs its dyn-safety verdict without
           // serializing it to metadata.
@@ -3499,7 +3558,7 @@ and internal checkDeclGroup
                 //
                 // Traits whose signatures cannot be parsed during this pre-pass
                 // are skipped and reported later during `def/trait`.
-                | DTrait(traitName, implementorVar, holeArity, assocTypes, signatures, _, clrSpec, _) ->
+                | DTrait(traitName, implementorVar, holeArity, assocTypes, signatures, _, clrSpec, supers, _) ->
                     try
                         let kind = if holeArity > 0 then InlineTrait else InterfaceTrait
 
@@ -3534,6 +3593,9 @@ and internal checkDeclGroup
                               // `DTrait` pass; this pre-registration only
                               // exists so signatures can be parsed.
                               MemberWheres = Map.empty
+                              // Read, not checked, so that a signature below
+                              // expands to what its constraints imply.
+                              Superclasses = traitSuperclasses acc.Registry traitName implementorVar holeArity supers false
                               DynSafe = dynSafety traitName implementorVar kind clr hmSignatures Map.empty }
                             acc
                     with _ ->
@@ -3603,7 +3665,7 @@ and internal checkDeclGroup
     let traitMethodNames =
         decls
         |> List.collect (function
-            | DTrait(traitName, _, _, _, signatures, _, _, _) ->
+            | DTrait(traitName, _, _, _, signatures, _, _, _, _) ->
                 traitName :: (signatures |> List.map (fun (n, _, _) -> n))
             | _ -> [])
         |> Set.ofList
@@ -3775,7 +3837,7 @@ and internal checkDeclGroup
         match d with
         | DType(typeDefs, _)
         | DTypeRec(typeDefs, _) -> typeDefs |> List.map (fun td -> td.Name)
-        | DTrait(traitName, _, _, _, signatures, _, _, _) ->
+        | DTrait(traitName, _, _, _, signatures, _, _, _, _) ->
             traitName :: (signatures |> List.map (fun (n, _, _) -> n))
         | _ -> declaredNames d
 
@@ -3870,7 +3932,7 @@ and internal checkDeclGroup
             walk Set.empty e
         | DDefun(_, args, body, _, _) -> walkFunction args [ body ]
         | DDefDouble(_, args, syncBody, bjoBody, _) -> walkFunction args [ syncBody; bjoBody ]
-        | DTrait(_, _, _, _, _, defaults, _, _) -> defaults |> List.iter (usesOf >> found.AddRange)
+        | DTrait(_, _, _, _, _, defaults, _, _, _) -> defaults |> List.iter (usesOf >> found.AddRange)
         | DImpl(_, _, _, _, _, methods, _) -> methods |> List.iter (usesOf >> found.AddRange)
         | _ -> ()
 
@@ -3971,6 +4033,63 @@ and internal checkDeclGroup
                     { acc with DeprecatedNames = Map.add name instead acc.DeprecatedNames }
                 | _ -> acc)
             finalEnv
+
+    // An implementation of a trait with superclasses holds only where they
+    // hold too: `(impl (Ord T))` needs `Eq` at `T`. Checked once the whole
+    // group is, so the `Eq` may come after the `Ord`. The implementation's
+    // own where clause is what may be assumed, and it already holds what its
+    // constraints imply: `(where (Ord %a))` gives `(Eq %a)` as well.
+    let registry = finalEnv.Registry
+
+    let rec holds (givens: TraitConstraint list) (traitName: string) (t: HMType) (r: Range) (describe: string) : bool =
+        match prune registry t with
+        // At a variable only a given answers, unless the trait has a blanket:
+        // then every type has an implementation of it, its own or that one.
+        | TVar _ as v ->
+            Map.containsKey traitName registry.BlanketImpls
+            || givens |> List.exists (fun g -> originalName registry g.TraitName = traitName && g.TargetType = v)
+        | ground when isClrTrait registry traitName ->
+            match Map.tryFind traitName registry.Traits with
+            | Some { ClrConstraint = Some clr } -> Traits.checkClrConstraint finalEnv clr traitName ground r describe
+            | _ -> ()
+
+            true
+        | (TCon _ | TTuple _) as ground ->
+            match implFor registry traitName ground with
+            | Some(target, subst) ->
+                target.Constraints
+                |> List.forall (fun c -> holds givens c.TraitName (substTypeVars subst c.TargetType) r describe)
+            | None -> false
+        | _ -> false
+
+    for traitName, targetType, r in
+        typedDecls
+        |> collectDecls (function
+            | TImpl(traitName, _, _, targetType, _, _, _, r) -> [ traitName, targetType, r ]
+            | _ -> []) do
+        match Map.tryFind traitName registry.Traits with
+        | Some info when not info.Superclasses.IsEmpty ->
+            let givens =
+                match implKey targetType |> Option.bind (fun k -> Map.tryFind (traitName, k) registry.ImplTargets) with
+                | Some target -> target.Constraints
+                | None -> []
+
+            let implementor = Map.ofList [ "'" + info.ImplementorVar, targetType ]
+
+            for s in info.Superclasses do
+                let shown = DotNetInterop.showType targetType
+                let describe = $"by '%s{Naming.showTraitName traitName}', which requires it of every implementor"
+
+                if not (holds givens s.TraitName (substTypeVars implementor s.TargetType) r describe) then
+                    let fix =
+                        match targetType with
+                        | TCon(_, args) when args |> List.exists (function TVar _ -> true | _ -> false) ->
+                            $"Write an implementation of '%s{Naming.showTraitName s.TraitName}' for %s{shown}, and give this implementation's where clause what that one needs."
+                        | _ -> $"Write an implementation of '%s{Naming.showTraitName s.TraitName}' for %s{shown}."
+
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTraitName traitName}' requires '%s{Naming.showTraitName s.TraitName}' of every implementor, and '%s{Naming.showTraitName s.TraitName}' does not hold for %s{shown} here. %s{fix}"
+        | _ -> ()
 
     finalEnv, finalSigs, List.rev typedDecls
 

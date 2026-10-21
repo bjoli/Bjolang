@@ -693,9 +693,19 @@ let rec tryParseDecl (s: SExpr) : Decl option =
         let mutable defaults = []
         let mutable clrConstraint = None
         let mutable clrMembers = []
+        let mutable superclasses = []
 
         for item in flattenBegins body do
             match item with
+            // Match: (where (Eq %a)) — the traits every implementor of this one
+            // also implements.
+            | SList (SAtom { Token = Symbol "where" } :: constraintExprs, wr) ->
+                if not superclasses.IsEmpty then
+                    failwithf
+                        $"Syntax error in def/trait '%s{traitName}' at %s{Lexer.formatPos wr}: a trait has one where clause. Write every trait it requires in it."
+
+                superclasses <- parseWhereConstraints $"def/trait '%s{traitName}'" constraintExprs wr
+
             // Match: (#:clr-constraint (System.Numerics.INumber %a))
             //
             // A list headed by the keyword rather than a keyword followed by
@@ -771,13 +781,13 @@ let rec tryParseDecl (s: SExpr) : Decl option =
 
             | _ ->
                 failwithf
-                    $"Syntax error in def/trait '%s{traitName}' at %s{Lexer.formatPos (getRange item)}: Expected (type ...), (: ...), (defun ...), (#:clr-constraint ...), a (begin ...) of those, or a macro producing default method bodies."
+                    $"Syntax error in def/trait '%s{traitName}' at %s{Lexer.formatPos (getRange item)}: Expected (where ...), (type ...), (: ...), (defun ...), (#:clr-constraint ...), a (begin ...) of those, or a macro producing default method bodies."
 
         let clrSpec =
             clrConstraint
             |> Option.map (fun (ifaceName, ifaceArgs) -> ifaceName, ifaceArgs, List.rev clrMembers)
 
-        Some(DTrait(traitName, implementorVar, holeArity, List.rev assocTypes, List.rev signatures, List.rev defaults, clrSpec, r))
+        Some(DTrait(traitName, implementorVar, holeArity, List.rev assocTypes, List.rev signatures, List.rev defaults, clrSpec, superclasses, r))
 
     // Parse: (impl (TraitName (Vec 'a)) (type 'item 'a) (defun (get v i) ...))
     //

@@ -187,6 +187,7 @@ let private bootstrapNum : TraitInfo =
                   Args = [ TVar "'a" ]
                   Members = Map.empty }
           MemberWheres = Map.empty
+          Superclasses = []
           DynSafe = Ok() }
 
 /// `Ordered`, which is what `<` asks of its operands.

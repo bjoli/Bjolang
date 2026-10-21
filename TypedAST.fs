@@ -1547,6 +1547,12 @@ type TraitInfo =
       /// are.
       MemberWheres: Map<string, TraitConstraint list>
 
+      /// The trait's own `(where ...)`: the traits every implementor of this
+      /// one also implements. Each target is the implementor variable,
+      /// `TVar 'a` for `(def/trait (Ord %a) (where (Eq %a)))`. See
+      /// `withSuperclasses`.
+      Superclasses: TraitConstraint list
+
       /// Dynamic safety (boxability) verdict for `(dyn Trait ...)`.
       ///
       /// Derived directly from signatures and never serialized. Evaluated on
@@ -2478,6 +2484,38 @@ let rec substTypeVars (subst: Map<string, HMType>) (t: HMType) : HMType =
     | TTuple args -> TTuple(List.map (substTypeVars subst) args)
     | TAssoc(tn, an, impl) -> TAssoc(tn, an, substTypeVars subst impl)
     | other -> other
+
+/// `constraints` and the superclasses of each, transitively: `(Ord %a)` gives
+/// `(Ord %a)` and `(Eq %a)`.
+///
+/// A constraint stands for what it implies, so a `(where (Ord %a))` lets the
+/// body use `=` at `%a`, and its caller passes the `Eq` dictionary as well as
+/// the `Ord` one. The constraints as given come first, in their order, and
+/// then each superclass not already among them, so a list that was expanded
+/// once comes back unchanged: what an importer reads back from a signature is
+/// what the exporter wrote, in the same order. A superclass already given,
+/// perhaps with pins, is kept as given.
+let withSuperclasses (registry: TraitRegistry) (constraints: TraitConstraint list) : TraitConstraint list =
+    let same (a: TraitConstraint) (b: TraitConstraint) = a.TraitName = b.TraitName && a.TargetType = b.TargetType
+
+    let given =
+        constraints
+        |> List.fold (fun acc c -> if List.exists (same c) acc then acc else acc @ [ c ]) []
+
+    let rec addSupers (acc: TraitConstraint list) (c: TraitConstraint) =
+        match Map.tryFind c.TraitName registry.Traits with
+        | Some info ->
+            let subst = Map.ofList [ "'" + info.ImplementorVar, c.TargetType ]
+
+            info.Superclasses
+            |> List.fold
+                (fun acc s ->
+                    let s = { s with TargetType = substTypeVars subst s.TargetType }
+                    if List.exists (same s) acc then acc else addSupers (acc @ [ s ]) s)
+                acc
+        | None -> acc
+
+    given |> List.fold addSupers given
 
 /// Turns a trait signature template into an ordinary `HMType` at one impl.
 ///

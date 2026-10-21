@@ -651,7 +651,7 @@ type Decl =
     /// A `def/grammar`: the rules a quoted literal of its types is read by.
     /// The types themselves arrive as a `DTypeRec` before it. See `Grammar`.
     | DGrammar of Grammar * Range
-    // DTrait (Name, ImplementorVar, HoleArity, AssociatedTypes, Signatures, Defaults, ClrConstraint, Range)
+    // DTrait (Name, ImplementorVar, HoleArity, AssociatedTypes, Signatures, Defaults, ClrConstraint, Superclasses, Range)
     //
     // `HoleArity` is how many arguments the implementor was written applied to.
     // `(def/trait (Show %c) ...)` gives 0 and means an interface trait;
@@ -675,7 +675,10 @@ type Decl =
     //
     // Each signature carries the member's own `(where ...)` constraints —
     // empty for the ordinary member — see `MemberConstraint`.
-    | DTrait of string * string * int * string list * (string * FType * MemberConstraint list) list * Decl list * (string * FType list * (string * string) list) option * Range
+    //
+    // `Superclasses` is the trait's own `(where ...)`: the traits every
+    // implementor of this one also implements, `(where (Eq %a))` for `Ord`.
+    | DTrait of string * string * int * string list * (string * FType * MemberConstraint list) list * Decl list * (string * FType list * (string * string) list) option * MemberConstraint list * Range
     /// A binding an imported module publishes: the name it is visible under
     /// here, where it actually lives, its type and its constraints.
     ///
@@ -789,7 +792,7 @@ let declRange (decl: Decl) : Range =
     match decl with
     | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefDouble(_, _, _, _, r) | DDefTuple(_, _, r) | DDefPattern(_, _, r)
     | DDefMutable(_, _, r)
-    | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DGrammar(_, r) | DTrait(_, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, _, r)
+    | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DGrammar(_, r) | DTrait(_, _, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, _, r)
     | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
     | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
     | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)
@@ -1397,7 +1400,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
                             | DataCase(n, _, _) -> n)
                     | Alias _
                     | Record _ -> []))
-        | DTrait(name, _, _, _, signatures, defaults, _, _) ->
+        | DTrait(name, _, _, _, signatures, defaults, _, _, _) ->
             (name :: (signatures |> List.map (fun (n, _, _) -> n))) @ Set.toList (boundNames defaults)
         | DImpl(_, _, _, _, _, methods, _) -> Set.toList (boundNames methods)
         | DExtern(visible, _, _, _, _) -> [ visible ]
@@ -1449,8 +1452,8 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DDefun(name, args, body, colour, r) -> DDefun(name, List.map mapArg args, f body, colour, r)
     | DDefDouble(name, args, syncBody, bjoBody, r) ->
         DDefDouble(name, List.map mapArg args, f syncBody, f bjoBody, r)
-    | DTrait(name, v, arity, assoc, signatures, defaults, clr, r) ->
-        DTrait(name, v, arity, assoc, signatures, defaults |> List.map (mapDeclExprs f), clr, r)
+    | DTrait(name, v, arity, assoc, signatures, defaults, clr, supers, r) ->
+        DTrait(name, v, arity, assoc, signatures, defaults |> List.map (mapDeclExprs f), clr, supers, r)
     | DImpl(name, target, assoc, constraints, methodWheres, methods, r) ->
         DImpl(name, target, assoc, constraints, methodWheres, methods |> List.map (mapDeclExprs f), r)
     | DModule(name, inner, r) -> DModule(name, inner |> List.map (mapDeclExprs f), r)

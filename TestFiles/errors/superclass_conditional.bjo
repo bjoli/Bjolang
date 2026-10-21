@@ -1,0 +1,23 @@
+;; A conditional implementation whose superclass holds only at other
+;; arguments: Named is written for (Box int), Greet for every (Box %a).
+
+;; EXPECT-ERROR: 'Greet' requires 'Named' of every implementor, and 'Named' does not hold for (superclass_conditional/Box %a) here. Write an implementation of 'Named' for (superclass_conditional/Box %a), and give this implementation's where clause what that one needs.
+
+(import (std prelude))
+
+(def/trait (Named %a)
+  (: name-of (-> %a string)))
+
+(def/trait (Greet %a)
+  (where (Named %a))
+  (: greeting (-> %a string)))
+
+(type (: (Box %a) (Struct (: v %a))))
+
+(impl (Named (Box int))
+  (defun (name-of b) "a box of ints"))
+
+(impl (Greet (Box %a))
+  (defun (greeting b) "hello"))
+
+(defun (main args) 0)

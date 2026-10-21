@@ -1217,6 +1217,22 @@ Bjolang supports generic traits and implementations. A trait is parameterised by
     (list-foldl f acc col)))
 #+END_SRC
 
+*** Superclasses
+A trait may require other traits of every implementor, with a ~(where ...)~ in its body:
+
+#+BEGIN_SRC scheme
+(def/trait (Ord %a)
+  (where (Eq %a))
+  (: compare (-> %a %a int)))
+#+END_SRC
+
+A constraint then stands for what it implies. A function with ~(where (Ord %a))~ may use ~=~ at ~%a~, and its callers pass the ~Eq~ dictionary along with the ~Ord~ one; a conditional implementation's where clause implies the same. An implementation of ~Ord~ at a type is refused unless ~Eq~ holds there too, under the implementation's own where clause; the ~Eq~ implementation may come later in the module.
+
+The rules:
+- each constraint is at the trait's implementor, and pins nothing;
+- the required trait is declared earlier or imported, so no two traits require each other;
+- the required trait and the trait itself are first-order: an inline-only trait has no dictionary to carry another in.
+
 *** Default method bodies
 A ~def/trait~ may give a ~defun~ as a default body for a method it declares; an implementation may override it with its own ~defun~.
 

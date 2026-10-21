@@ -3,6 +3,25 @@
 
 What each change guarantees, and what it leaves open.
 
+* A trait may require other traits
+
+- ~(def/trait (Ord %a) (where (Eq %a)) ...)~: every implementor of ~Ord~
+  also implements ~Eq~. A constraint stands for what it implies, so
+  ~(where (Ord %a))~ lets a body use ~=~ at ~%a~, and the same holds for an
+  implementation's where clause and a member's. An implementation of ~Ord~
+  is refused where ~Eq~ does not hold at its type; the ~Eq~ implementation
+  may come later in the module. The requirement travels with a published
+  trait.
+- ~Ord~ in the standard library now requires ~Eq~.
+- A required trait is declared earlier or imported, is first-order, and is
+  constrained at the implementor without pins. An inline-only trait cannot
+  require one.
+- A function constrained by ~Ord~ takes an ~Eq~ dictionary as well, where it
+  is not specialised at its types. Haskell keeps the superclass dictionary
+  inside the other; this does not, yet.
+- Tests: ~442_trait_superclasses.bjo~, and ~superclass_*.bjo~ in
+  ~TestFiles/errors~.
+
 * One head may have several implementations of a trait
 
 - ~(impl (Describe (List int)))~ beside ~(impl (Describe (List string)))~

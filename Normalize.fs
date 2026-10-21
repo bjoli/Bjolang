@@ -331,10 +331,10 @@ let rec normalizeDecl (decl: Decl) : Decl =
 
         DDefDouble(name, normalizedArgs, normalizeExpr syncBody, normalizeExpr bjoBody, r)
     | DModule(name, decls, r) -> DModule(name, normalizeModule decls, r)
-    | DTrait(name, implementor, arity, assocTypes, signatures, defaults, clr, r) ->
+    | DTrait(name, implementor, arity, assocTypes, signatures, defaults, clr, supers, r) ->
         // A trait default is a `DDefun` whose body is checked once per impl, so
         // it holds real code and is normalized like any other.
-        DTrait(name, implementor, arity, assocTypes, signatures, List.map normalizeDecl defaults, clr, r)
+        DTrait(name, implementor, arity, assocTypes, signatures, List.map normalizeDecl defaults, clr, supers, r)
     | DImpl(traitName, target, assocTypes, constraints, methodWheres, methods, r) ->
         DImpl(traitName, target, assocTypes, constraints, methodWheres, List.map normalizeDecl methods, r)
     // An inline template's body is untyped source read back out of another

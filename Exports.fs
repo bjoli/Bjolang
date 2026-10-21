@@ -739,7 +739,14 @@ let metadata
                             [ $"(#:clr-constraint (%s{clr.InterfaceName} %s{argsStr}))" ]
                     | None -> []
 
-                let parts = clrStrs @ assocStrs @ methodStrs @ defaultStrs |> String.concat " "
+                // The superclasses, at the implementor variable that
+                // `implementorStr` names.
+                let superStrs =
+                    match info.Superclasses with
+                    | [] -> []
+                    | supers -> [ "(where " + (supers |> List.map constraintText |> String.concat " ") + ")" ]
+
+                let parts = superStrs @ clrStrs @ assocStrs @ methodStrs @ defaultStrs |> String.concat " "
                 $"(def/trait (%s{traitName} %s{implementorStr}) %s{parts})"
 
             // The `(where ...)` travels with the impl, and it is not
@@ -1139,8 +1146,8 @@ let metadata
                 @ (grammarsToExport |> List.map serializeGrammar)
 
             // Dependency order, not map order. A member-level `(where ...)`
-            // names another trait, and the reader resolves the clause when it
-            // registers the declaration — so the named trait has to be read
+            // and a trait's superclasses name other traits, and the reader
+            // resolves them when it registers the declaration — so the named trait has to be read
             // first. The map hands traits back alphabetically, which is how
             // `Addable!` would arrive ahead of the `Iterable` its `add-all!`
             // constrains over. A dependency published by another module is
@@ -1151,6 +1158,7 @@ let metadata
                     info.MemberWheres
                     |> Map.toList
                     |> List.collect (fun (_, cs) -> cs |> List.map (fun c -> c.TraitName))
+                    |> List.append (info.Superclasses |> List.map (fun c -> c.TraitName))
                     |> Set.ofList
 
                 let rec order pending placed acc =

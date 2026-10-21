@@ -398,8 +398,8 @@ let rec letrecifyDecl (decl: Decl) : Decl =
     // A trait default and an impl method are `DDefun`s with bodies like any
     // other, and a run of body-local defs in them is one group this pass has
     // to put in dependency order.
-    | DTrait(name, implementor, arity, assocTypes, signatures, defaults, clr, r) ->
-        DTrait(name, implementor, arity, assocTypes, signatures, List.map letrecifyDecl defaults, clr, r)
+    | DTrait(name, implementor, arity, assocTypes, signatures, defaults, clr, supers, r) ->
+        DTrait(name, implementor, arity, assocTypes, signatures, List.map letrecifyDecl defaults, clr, supers, r)
     | DImpl(traitName, target, assocTypes, constraints, methodWheres, methods, r) ->
         DImpl(traitName, target, assocTypes, constraints, methodWheres, List.map letrecifyDecl methods, r)
     // An inline template is letrecified where it is read back from metadata.

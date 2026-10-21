@@ -435,7 +435,7 @@ let private kindsOf (decls: Decl list) : Map<string, Kind> * Set<string> =
                         | _ -> []
 
                     cases @ [ td.Name, own ])
-            | DTrait(n, implementor, _, _, sigs, _, _, _) ->
+            | DTrait(n, implementor, _, _, sigs, _, _, _, _) ->
                 (n, KTrait implementor)
                 :: (sigs |> List.map (fun (m, t, _) -> m, unnamedOf t |> Option.defaultValue KValue))
             | DAlias(newName, oldName, _) ->
@@ -999,7 +999,7 @@ let publish (decls: Decl list) (entries: Entry list) : string =
             decls
             |> List.collect (function
                 | DSignature(n, t, _, _) -> [ n, t ]
-                | DTrait(_, _, _, _, sigs, _, _, _) -> sigs |> List.map (fun (m, t, _) -> m, t)
+                | DTrait(_, _, _, _, sigs, _, _, _, _) -> sigs |> List.map (fun (m, t, _) -> m, t)
                 | DImportExtern(specs, _) ->
                     specs |> List.choose (fun spec -> spec.ExplicitType |> Option.map (fun t -> spec.Alias, t))
                 | _ -> [])
@@ -1140,7 +1140,7 @@ let check (env: Env) (moduleKey: string) (decls: Decl list) (entries: Entry list
         let traitMethods =
             decls
             |> List.choose (function
-                | DTrait(n, _, _, _, sigs, _, _, _) -> Some(n, sigs |> List.map (fun (m, _, _) -> m))
+                | DTrait(n, _, _, _, sigs, _, _, _, _) -> Some(n, sigs |> List.map (fun (m, _, _) -> m))
                 | _ -> None)
             |> Map.ofList
 

@@ -1,0 +1,43 @@
+;; A trait may require others of every implementor: `(where (Named %a))` in a
+;; `def/trait`. A constraint then stands for what it implies, so a function
+;; that asks for `Greet` may use `Named` too, and `Ord` brings `Eq`.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/superclass_traits.bjo")
+
+(type (: Cat (Struct (: lives int))))
+(type (: (Box %a) (Struct (: v %a))))
+
+;; The superclass may be implemented after the trait that requires it.
+(impl (Greet Cat) (defun (greeting c) "meow"))
+(impl (Named Cat) (defun (name-of c) "cat"))
+
+;; A conditional implementation: its where clause gives Greet at %a, which
+;; gives Named at %a, which is what the Named implementation for Box needs.
+(impl (Named (Box %a)) (where (Named %a))
+  (defun (name-of b) (str "a box of " (name-of (struct-ref b v)))))
+
+(impl (Greet (Box %a)) (where (Greet %a))
+  (defun (greeting b) (greeting (struct-ref b v))))
+
+;; Three levels: Loud requires Greet, which requires Named.
+(def/trait (Loud %a)
+  (where (Greet %a))
+  (: shout (-> %a string)))
+
+(impl (Loud Cat) (defun (shout c) "MEOW"))
+
+(: everything (-> %a string) (where (Loud %a)))
+(defun (everything x) (str (name-of x) ": " (greeting x) ", " (shout x)))
+
+;; `Ord` requires `Eq`, so `=` needs no constraint of its own.
+(: same-or-least (-> %a %a %a) (where (Ord %a)))
+(defun (same-or-least a b) (if (= a b) a (least a b)))
+
+(defun (main args)
+  (expect "through the trait's superclass" (introduce (Cat (lives 9))) "cat says meow")
+  (expect "a conditional implementation" (introduce (Box (v (Cat (lives 1))))) "a box of cat says meow")
+  (expect "two levels down" (everything (Cat (lives 2))) "cat: meow, MEOW")
+  (expect "Ord brings Eq" (same-or-least 3 3) 3)
+  (expect "Ord brings Eq, the other way" (same-or-least "b" "a") "a")
+  0)
