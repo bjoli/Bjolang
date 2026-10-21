@@ -279,21 +279,14 @@ let implsMatching
 /// trait's blanket. A blanket's target is the bare implementor, so the
 /// substitution binds its one variable to the whole type. The blanket is the
 /// answer only for a head with no implementation of its own: one written at
-/// other arguments does not let it through.
+/// other arguments does not let it through. A function type's head is
+/// `Procedure`, and no blanket reaches it.
 ///
 /// Implementations may not overlap, so at a type that is known at most one
 /// of them fits it. Two fit only where a metavariable leaves the type open,
 /// and choosing either would be a guess; that is refused.
 let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTarget * Map<string, HMType>) option =
-    // A tuple answers under its synthetic arity key, and is otherwise an
-    // ordinary constructor applied to its element types.
-    let headed =
-        match prune registry t with
-        | TTuple args -> Some(tupleCtor args.Length, args)
-        | TCon(ctor, args) -> Some(ctor, args)
-        | _ -> None
-
-    match headed with
+    match implHeadOf (prune registry t) with
     | Some(ctor, args) when hasImplAtHead registry traitName ctor ->
         match implsMatching registry traitName ctor args (fun _ _ -> true) with
         | [] -> None
@@ -306,6 +299,7 @@ let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTar
 
             failwithf
                 $"Type Error: which implementation of '%s{traitName}' '%s{DotNetInterop.showType (prune registry t)}' uses is not decided: %s{written} both fit it. Say what the type is with an annotation."
+    | Some(ctor, _) when ctor = ProcedureCtor -> None
     | Some(ctor, args) ->
         match Map.tryFind traitName registry.BlanketImpls with
         | Some({ FixedPrefix = [ TVar v ] } as blanket) -> Some(blanket, Map.ofList [ v, implTargetType ctor args ])

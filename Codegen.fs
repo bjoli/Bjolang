@@ -614,6 +614,8 @@ let private declaredTypeName (key: string) =
 let rec typeToString (hm: HMType) : string =
     match hm with
     | TCon (name, _) when isNewtypeKey name -> typeToString (eraseNewtypes hm)
+    // The implementor of an implementation for function types: the delegate.
+    | TCon (ProcedureCtor, [ functionType ]) -> typeToString functionType
     | TCon ("Array", [elemType]) ->
         $"{typeToString elemType}[]"
     // A nested .NET type: each level takes its own arguments, and the levels

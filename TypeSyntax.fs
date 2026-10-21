@@ -589,48 +589,18 @@ let private parseDerive (isRec: bool) (traits: SExpr list) (typeDefForms: SExpr 
 // declaration, for each type the module does not implement `Written` for
 // itself.
 
-/// Whether a function type is part of this one, through the type aliases in
-/// `aliases` too. A function has no head constructor, so no implementation of
-/// `Written` can be found for it, nor for a type built of one, such as
-/// `(Option (-> int int))`.
-let private mentionsFunction (aliases: Map<string, FType>) (t: FType) : bool =
-    let rec go (seen: Set<string>) (t: FType) =
-        match t with
-        | TArrow _ -> true
-        | TApp(n, args, _) -> List.exists (go seen) args || alias seen n
-        | TName(n, _) -> alias seen n
-
-    and alias (seen: Set<string>) (n: string) =
-        not (Set.contains n seen)
-        && (match Map.tryFind n aliases with
-            | Some target -> go (Set.add n seen) target
-            | None -> false)
-
-    go Set.empty t
-
 /// The body of `write-into` for `td`, writing into `b` the value `v`.
-let private writtenBody (aliases: Map<string, FType>) (td: TypeDef) : Expr =
+let private writtenBody (td: TypeDef) : Expr =
     let r = td.Range
     let add (text: string) = EApp(EResolved("stringbuilder-add-string!", r), [ EIdent("b", r); EString(text, r) ], r)
-
-    // A field with a function in its type is written as the runtime writes
-    // it, which writes a function as `#<procedure>`.
-    let writeOne (t: FType) (x: Expr) =
-        if mentionsFunction aliases t then
-            EApp(EResolved("stringbuilder-add-string!", r), [ EIdent("b", r); EApp(EResolved("written/runtime", r), [ x ], r) ], r)
-        else
-            EApp(EResolved("write-into", r), [ x; EIdent("b", r) ], r)
+    let writeOne (x: Expr) = EApp(EResolved("write-into", r), [ x; EIdent("b", r) ], r)
 
     let inOrder (steps: Expr list) =
         List.reduceBack (fun step rest -> ELet("_", false, [], None, step, rest, r)) steps
 
     // `(Name x y)`: the payloads after the name, a space before each.
-    let constructed (name: string) (items: (FType * Expr) list) =
-        inOrder (
-            add ("(" + name)
-            :: (items |> List.collect (fun (t, x) -> [ add " "; writeOne t x ]))
-            @ [ add ")" ]
-        )
+    let constructed (name: string) (items: Expr list) =
+        inOrder (add ("(" + name) :: (items |> List.collect (fun x -> [ add " "; writeOne x ])) @ [ add ")" ])
 
     if td.IsOpaque then
         // The representation is the module's own, so it is not shown.
@@ -642,7 +612,7 @@ let private writtenBody (aliases: Map<string, FType>) (td: TypeDef) : Expr =
                 add ("(" + td.Name)
                 :: (fields
                     |> List.collect (fun f ->
-                        [ add $" (%s{f.Name} "; writeOne f.Type (EGetField(EIdent("v", f.Range), f.Name, f.Range)); add ")" ]))
+                        [ add $" (%s{f.Name} "; writeOne (EGetField(EIdent("v", f.Range), f.Name, f.Range)); add ")" ]))
                 @ [ add ")" ]
             )
         | Union cases ->
@@ -654,16 +624,16 @@ let private writtenBody (aliases: Map<string, FType>) (td: TypeDef) : Expr =
                     | DataCase(n, types, cr) ->
                         let names = types |> List.mapi (fun i _ -> $"__w%d{i}")
                         let pattern = PConstruct(n, names |> List.map (fun x -> PIdent(x, cr)), cr)
-                        pattern, None, constructed n (List.zip types (names |> List.map (fun x -> EIdent(x, cr)))))
+                        pattern, None, constructed n (names |> List.map (fun x -> EIdent(x, cr))))
 
             EMatch(EIdent("v", r), arms, r)
-        | Newtype inner ->
-            EMatch(EIdent("v", r), [ PConstruct(td.Name, [ PIdent("__w0", r) ], r), None, constructed td.Name [ inner, EIdent("__w0", r) ] ], r)
+        | Newtype _ ->
+            EMatch(EIdent("v", r), [ PConstruct(td.Name, [ PIdent("__w0", r) ], r), None, constructed td.Name [ EIdent("__w0", r) ] ], r)
         | Alias _ -> add ""
 
 /// The `Written` implementation of `td`, conditional on its parameters as a
 /// container's is.
-let private writtenImpl (aliases: Map<string, FType>) (td: TypeDef) : Decl =
+let private writtenImpl (td: TypeDef) : Decl =
     let r = td.Range
 
     let target =
@@ -683,30 +653,13 @@ let private writtenImpl (aliases: Map<string, FType>) (td: TypeDef) : Decl =
                   MCPins = []
                   MCRange = r })
 
-    let writeInto = DDefun("write-into", [ MandatoryArg("v", None); MandatoryArg("b", None) ], writtenBody aliases td, Ordinary, r)
+    let writeInto = DDefun("write-into", [ MandatoryArg("v", None); MandatoryArg("b", None) ], writtenBody td, Ordinary, r)
     DImpl("Written", target, [], constraints, [], [ writeInto ], r)
 
 /// The declarations, and a `Written` implementation for each type they
 /// declare that they do not implement `Written` for themselves. A type alias
 /// is a second name for a type, and has none of its own.
-///
-/// `imported` is the type aliases the imports offer, by the names the module
-/// writes them with: a field of an alias of a function type is written as a
-/// function is.
-let rec withWrittenImpls (imported: Map<string, FType>) (decls: Decl list) : Decl list =
-    let aliases =
-        decls
-        |> List.collect (function
-            | DType(tds, _)
-            | DTypeRec(tds, _) ->
-                tds
-                |> List.choose (fun td ->
-                    match td.Kind with
-                    | Alias target -> Some(td.Name, target)
-                    | _ -> None)
-            | _ -> [])
-        |> List.fold (fun acc (n, t) -> Map.add n t acc) imported
-
+let rec withWrittenImpls (decls: Decl list) : Decl list =
     let headOf (t: FType) =
         match t with
         | TName(n, _)
@@ -728,14 +681,14 @@ let rec withWrittenImpls (imported: Map<string, FType>) (decls: Decl list) : Dec
             && (match td.Kind with
                 | Alias _ -> false
                 | _ -> true))
-        |> List.map (writtenImpl aliases)
+        |> List.map writtenImpl
 
     // Each implementation after its type. Where it stands does not matter to a
     // call: `checkDeclGroup` registers every implementation's head before it
     // checks a body.
     decls
     |> List.collect (function
-        | DModule(name, inner, r) -> [ DModule(name, withWrittenImpls aliases inner, r) ]
+        | DModule(name, inner, r) -> [ DModule(name, withWrittenImpls inner, r) ]
         | (DType(tds, _) | DTypeRec(tds, _)) as d -> d :: derived tds
         | d -> [ d ])
 

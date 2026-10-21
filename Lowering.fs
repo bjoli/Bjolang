@@ -197,6 +197,11 @@ let rec buildEvidence
     let resolved = prune env.Registry implType
     let dictType = dictionaryType env traitName resolved
 
+    let within =
+        match scope.Within with
+        | Some w -> $"\n  in %s{w}"
+        | None -> ""
+
     let isSelf =
         match scope.Self with
         | Some(selfTrait, selfTarget) -> selfTrait = traitName && prune env.Registry selfTarget = resolved
@@ -218,15 +223,13 @@ let rec buildEvidence
           Range = range
           Node = TIdent(name, []) }
 
-    // A tuple dispatches under its synthetic arity key and is otherwise an
-    // ordinary head applied to its element types.
+    // A tuple dispatches under its synthetic arity key, and a function type
+    // under `Procedure`; each is otherwise an ordinary head applied to its
+    // arguments.
     | TCon _
-    | TTuple _ ->
-        let typeName, tconArgs =
-            match resolved with
-            | TTuple args -> tupleCtor args.Length, args
-            | TCon(n, args) -> n, args
-            | _ -> failwith "unreachable"
+    | TTuple _
+    | TFun _ ->
+        let typeName, tconArgs = (implHeadOf resolved).Value
 
         // The same two levels resolution uses — exact head, then the trait's
         // blanket. This is the site that makes the §0.2 guarantee concrete: a
@@ -254,6 +257,9 @@ let rec buildEvidence
 
                 failwithf
                     $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType resolved}', needed %s{describe}. The implementations for '%s{Naming.showTypeName typeName}' are written for %s{written} only."
+            | None when typeName = ProcedureCtor ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{Naming.showTraitName traitName}' for '%s{DotNetInterop.showType resolved}', needed %s{describe}. A function type has the implementations written for Procedure and no others: a blanket implementation does not reach it.%s{within}"
             | None ->
                 failwithf
                     $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType resolved}', needed %s{describe}."
@@ -363,16 +369,9 @@ let rec buildEvidence
               Range = range
               Node = TApply(callee, subEvidence, []) }
 
-    // A structural type with no head constructor: a function, or a tuple of an
-    // arity nothing implements. There is nothing to key an implementation by,
-    // so not even a blanket is reachable — resolution needs a head to look up
-    // before it can fall back to one.
+    // A type with no head, such as a projection nothing reduced. There is
+    // nothing to key an implementation by, so not even a blanket is reachable.
     | other ->
-        let within =
-            match scope.Within with
-            | Some w -> $"\n  in %s{w}"
-            | None -> ""
-
         failwithf
             $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType other}', needed %s{describe}. That type has no head constructor, so it cannot have one — and a blanket implementation is only reached through a head.%s{within}"
 

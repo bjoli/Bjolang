@@ -57,7 +57,7 @@
 
   print println ->str list->str
   ;; Written and Displayed
-  written write-into displayed display-into written/runtime
+  written write-into displayed display-into
   elements-print-into entries-print-into
   list-append
 
@@ -300,17 +300,20 @@
   (defun (written x) (clr-show x))
   (defun (write-into x b) (stringbuilder-add-string! b (clr-show x))))
 
-;; A value as the runtime writes it. For a value whose type no implementation
-;; can be found for, as a function's: it has no head constructor to look one
-;; up by. A function is written `#<procedure>`, also inside an option or a
-;; tuple.
-(: (-> %a string))
-(defun (written/runtime x) (clr-show x))
-
 ;; Every type is displayed as it is written, unless it says otherwise.
 (impl (Displayed %a)
   (defun (displayed x) (written x))
   (defun (display-into x b) (write-into x b)))
+
+;; A function, as Scheme writes one. No blanket reaches a function type, so it
+;; is written and displayed by these, inside a container as well.
+(impl (Written Procedure)
+  (defun (written f) "#<procedure>")
+  (defun (write-into f b) (stringbuilder-add-string! b "#<procedure>")))
+
+(impl (Displayed Procedure)
+  (defun (displayed f) "#<procedure>")
+  (defun (display-into f b) (stringbuilder-add-string! b "#<procedure>")))
 
 ;; Each number with the suffix that gives its type back, and displayed
 ;; without it.

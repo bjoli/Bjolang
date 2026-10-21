@@ -2026,33 +2026,6 @@ let private checkEntryPoint (env: TypedAST.Env) (decls: Decl list) : unit =
                 $"Type Error at %s{Lexer.formatPos r}: 'main' is a program's entry point and takes the arguments, a (Vec string). This one is %s{DotNetInterop.showType actual}. A main written without a parameter is given the arguments anyway, and one that does not return an int exits with 0 — so the way to a different type is a signature or a parameter type, and there is nothing the entry point could pass it."
     | _ -> ()
 
-/// The type aliases a dependency's declarations offer, under their keys and
-/// under the bare spellings it publishes for them. See
-/// `TypeSyntax.withWrittenImpls`, which asks whether a field's type is a
-/// function's.
-let private aliasesOffered (decls: Decl list) : Map<string, FType> =
-    let rec typeDefs (ds: Decl list) =
-        ds
-        |> List.collect (function
-            | DType(tds, _)
-            | DTypeRec(tds, _) -> tds
-            | DModule(_, inner, _) -> typeDefs inner
-            | _ -> [])
-
-    let byKey =
-        typeDefs decls
-        |> List.choose (fun td ->
-            match td.Kind with
-            | Alias target -> Some(td.Name, target)
-            | _ -> None)
-        |> Map.ofList
-
-    decls
-    |> List.choose (function
-        | DImportAlias(visible, key, AliasType, _) -> Map.tryFind key byKey |> Option.map (fun t -> visible, t)
-        | _ -> None)
-    |> List.fold (fun acc (n, t) -> Map.add n t acc) byKey
-
 let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : Decl list =
     // Find the first and last range to represent the module range
     let r = 
@@ -2743,14 +2716,7 @@ let loadModuleGraph
                             && Path.GetFileName(Path.GetDirectoryName absPath) = "std"
 
                         if isPrelude || importsOf forms |> List.exists (fun (s, _) -> s.Path = preludePath) then
-                            let imported =
-                                importEdges
-                                |> List.map (fun (dep, _, _) ->
-                                    let m = resolvedModules[dep]
-                                    aliasesOffered (m.ParsedDecls @ m.Carried))
-                                |> List.fold (fun acc offered -> Map.fold (fun a k v -> Map.add k v a) acc offered) Map.empty
-
-                            TypeSyntax.withWrittenImpls imported parsed
+                            TypeSyntax.withWrittenImpls parsed
                         else
                             parsed
 

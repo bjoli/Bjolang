@@ -282,11 +282,7 @@ let private literalTakes (open': HMType) (pattern: HMType) : bool =
 /// is not known to have a head.
 let private candidatesOf (registry: TraitRegistry) (w: Wanted) : (string * (ImplTarget * Map<string, HMType>) list) option =
     w.HoleArgs
-    |> List.tryPick (fun (m, _) ->
-        match prune registry m with
-        | TCon(ctor, args) -> Some(ctor, args)
-        | TTuple args -> Some(tupleCtor args.Length, args)
-        | _ -> None)
+    |> List.tryPick (fun (m, _) -> implHeadOf (prune registry m))
     |> Option.map (fun (ctor, args) -> ctor, implsMatching registry w.Trait ctor args literalTakes)
 
 let private takeUndecided () : Wanted list =
@@ -327,12 +323,7 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
     else
 
     let ctorOpt =
-        w.HoleArgs
-        |> List.tryPick (fun (m, _) ->
-            match prune registry m with
-            | TCon(ctor, _) -> Some ctor
-            | TTuple args -> Some(tupleCtor args.Length)
-            | _ -> None)
+        w.HoleArgs |> List.tryPick (fun (m, _) -> implHeadOf (prune registry m) |> Option.map fst)
 
     match ctorOpt with
     // A hole that is still a metavariable, or a rigid `TVar`, never reaches a
@@ -357,7 +348,9 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
             // legitimately differ in behaviour from a specific impl — dropping
             // a value and detaching a promise are not the same act — without
             // generic code ever baking in the wrong one.
-            match Map.tryFind w.Trait registry.BlanketImpls with
+            //
+            // A function type is passed over: no blanket reaches it.
+            match (if ctor = ProcedureCtor then None else Map.tryFind w.Trait registry.BlanketImpls) with
             | Some blanket ->
                 let hole =
                     match w.HoleArgs with
@@ -376,7 +369,11 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
                     | (m, _) :: _ -> DotNetInterop.showType (prune registry m)
                     | [] -> Naming.showTypeName ctor
 
-                let hint = persistentTwinHint registry w.Trait ctor shown
+                let hint =
+                    if ctor = ProcedureCtor then
+                        " A function type has the implementations written for Procedure and no others: a blanket implementation does not reach it."
+                    else
+                        persistentTwinHint registry w.Trait ctor shown
 
                 failwithf
                     $"Type Error at %s{Lexer.formatPos w.Range}: no implementation of trait '%s{w.Trait}' for '%s{shown}', required by '%s{w.Method}'.%s{hint}"
@@ -604,7 +601,7 @@ let private solveDeferredProjections (env: Env) : bool =
 /// each constraint is at a proper subterm of `t`.
 let rec private checkImplObligation (env: Env) (traitName: string) (t: HMType) (r: Range) (describe: string) : unit =
     match prune env.Registry t with
-    | (TCon _ | TTuple _) as ground ->
+    | (TCon _ | TTuple _ | TFun _) as ground ->
         match Map.tryFind traitName env.Registry.Traits with
         | Some { ClrConstraint = Some clr } -> checkClrConstraint env clr traitName ground r describe
         | _ ->
@@ -613,7 +610,13 @@ let rec private checkImplObligation (env: Env) (traitName: string) (t: HMType) (
                 for c in target.Constraints do
                     queueImplPins traitName target c subst r
                     checkImplObligation env c.TraitName (substTypeVars subst c.TargetType) r describe
-            | None when Map.containsKey traitName env.Registry.BlanketImpls -> ()
+            | None when
+                Map.containsKey traitName env.Registry.BlanketImpls
+                && (match ground with
+                    | TFun _ -> false
+                    | _ -> true)
+                ->
+                ()
             | None ->
                 failwithf
                     $"Type Error at %s{Lexer.formatPos r}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType ground}', needed %s{describe}."

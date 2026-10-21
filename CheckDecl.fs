@@ -467,6 +467,15 @@ let private signatureConstraints
 
         given @ (withSuperclasses registry byKey |> List.filter (fun e -> not (List.exists (same e) byKey)))
 
+/// An implementation's target. `Procedure` stands for every function type and
+/// is read as `(Procedure %f)`, the variable being the function type, which is
+/// how metadata writes it back.
+let private resolveImplTarget (registry: TraitRegistry) (target: FType) : HMType =
+    match target with
+    | TName(ProcedureCtor, _) -> TCon(ProcedureCtor, [ TVar "'f" ])
+    | TApp(ProcedureCtor, [ functionType ], _) -> TCon(ProcedureCtor, [ resolveTypeAnnotation registry functionType ])
+    | _ -> resolveTypeAnnotation registry target
+
 /// Refuses an implementation of `traitName` for a target whose head key is
 /// `typeKey`, where the module declares neither the trait nor the head.
 ///
@@ -513,6 +522,8 @@ let private refuseOrphan (env: Env) (traitName: string) (typeKey: string) (r: Ra
                 $"'%s{Naming.showTypeName typeKey}' is declared in another module, so '%s{shownTrait}' cannot be implemented for it here"
             elif isTupleCtor typeKey then
                 $"a tuple is declared by no module, so '%s{shownTrait}' cannot be implemented for it here"
+            elif typeKey = ProcedureCtor then
+                $"a function type is declared by no module, so '%s{shownTrait}' cannot be implemented for it here"
             else
                 $"'%s{Naming.showTypeName typeKey}' is a .NET type, so '%s{shownTrait}' cannot be implemented for it here"
 
@@ -2748,7 +2759,7 @@ and private registerImplHead
     // registries are keyed on the name the `def/trait` gave it.
     Diagnostics.refuseAmbiguous Diagnostics.TraitName r traitName
     let traitName = originalTraitName env.Registry traitName
-    let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
+    let targetType = resolveImplTarget env.Registry targetTypeExpr
 
     let typeKey =
         match implCtorKey targetType with
@@ -3497,7 +3508,7 @@ and private checkImplExtern (env: Env) (sigs: Sigs) (traitName: string) (targetT
     // already compiled into the assembly that declared it, so there is
     // nothing to type-check and nothing to emit.
     let traitName = originalTraitName env.Registry traitName
-    let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
+    let targetType = resolveImplTarget env.Registry targetTypeExpr
 
     if (implCtorKey targetType).IsNone then
         failwithf $"Trait implementations require concrete target types at %s{Lexer.formatPos r}"
@@ -4288,7 +4299,7 @@ and internal checkDeclGroup
             | _ -> ()
 
             true
-        | (TCon _ | TTuple _) as ground ->
+        | (TCon _ | TTuple _ | TFun _) as ground ->
             match implFor registry traitName ground with
             | Some(target, subst) ->
                 target.Constraints

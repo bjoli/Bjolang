@@ -1370,6 +1370,21 @@ Restrictions:
 - **Only the module declaring the trait may write its blanket.**
 - **A trait that abstracts over a constructor cannot have a blanket.**
 - **A blanket may not have a where clause of its own.** What it may use is its trait's superclasses.
+- **A blanket does not reach a function type.** See *Implementations for function types*.
+
+*** Implementations for function types
+A function type has no head of its own, and all of them share one: ~Procedure~. An implementation for ~Procedure~ applies at every function type, whatever it takes and returns:
+
+#+BEGIN_SRC scheme
+(impl (Describe Procedure)
+  (defun (describe f) "a function"))
+
+(describe (fun (x) (* x 2)))      ;; "a function"
+#+END_SRC
+
+The value is the function, but its type inside the implementation is not known, so the implementation cannot call it. The prelude writes and displays a function as ~#<procedure>~ this way.
+
+A blanket does not reach a function type: a function type has the implementations written for ~Procedure~ and no others. So ~(= f g)~ is refused, though ~Eq~ has a blanket. As for a tuple, only the module declaring the trait may implement it for ~Procedure~.
 
 *** Conditional implementations
 An implementation may restrict applicability using a ~where~ clause naming constraints on its type arguments:
@@ -1631,7 +1646,7 @@ Each type a module declares has a ~Written~ implementation, unless the module wr
 - A struct is written as a record is.
 - A generic type's implementation has ~(where (Written %a))~ for each type parameter.
 - An ~#:opaque~ type is written ~#<Secret>~, so its representation stays in its module.
-- A field whose type holds a function, directly, through an alias or inside another type such as ~(Option (-> int))~, is written as the runtime writes it: ~#<procedure>~, ~(Some #<procedure>)~. ~(written/runtime x)~ gives that text for any value.
+- A function is written ~#<procedure>~, also as a field or inside another type: ~(Some #<procedure>)~. See *Implementations for function types*.
 
 **** Your own text
 Implement ~Displayed~ for the text a person reads, or ~Written~ to change the written form too. Give ~display-into~ (or ~write-into~); ~displayed~ and ~written~ then use a builder the thread keeps. A type that has its text at hand, as a number has, may give both methods, so that no builder is used.

@@ -1353,6 +1353,22 @@ type ImplTarget =
 [<Literal>]
 let BlanketCtor = "*"
 
+/// The constructor key the implementations for function types are filed
+/// under: `(impl (Written Procedure) ...)` implements `Written` for every one.
+///
+/// A function type has no head to file an implementation by, and it is given
+/// one head for all of them: an implementation cannot call a value of a
+/// function type it does not know, so there is nothing it could do for one
+/// arity or one colour that it could not do for all. The target is
+/// `(Procedure %f)`, `%f` standing for the function type, and `Procedure` is
+/// erased: a value of it is the delegate itself.
+///
+/// A blanket implementation does not reach a function type. A blanket answers
+/// by what .NET says about a value, and of a delegate .NET says nothing a trait
+/// should repeat: `=` on two functions would compare references.
+[<Literal>]
+let ProcedureCtor = "Procedure"
+
 /// The constructor key a tuple of this arity is filed under.
 ///
 /// `TTuple` has no head constructor, so an implementation for it has nothing to
@@ -1430,7 +1446,19 @@ let implKey (targetType: HMType) : string option =
 
 /// A key and its arguments, put back together as the type they came from.
 let implTargetType (ctor: string) (args: HMType list) : HMType =
-    if isTupleCtor ctor then TTuple args else TCon(ctor, args)
+    match args with
+    | [ functionType ] when ctor = ProcedureCtor -> functionType
+    | _ -> if isTupleCtor ctor then TTuple args else TCon(ctor, args)
+
+/// The head implementations are looked up by at `t`, a pruned type, and the
+/// arguments it is applied to: a tuple's arity key, and `Procedure` applied to
+/// the function type for a function type. `None` for a type with no head yet.
+let implHeadOf (t: HMType) : (string * HMType list) option =
+    match t with
+    | TCon(ctor, args) -> Some(ctor, args)
+    | TTuple args -> Some(tupleCtor args.Length, args)
+    | TFun _ -> Some(ProcedureCtor, [ t ])
+    | _ -> None
 
 type TDecl =
     | TImport of ImportSpec list * Range

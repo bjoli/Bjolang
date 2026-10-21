@@ -1,0 +1,40 @@
+;; A function type has the implementations written for `Procedure`, one head
+;; for every function type, and no blanket reaches it. The prelude writes and
+;; displays a function as `#<procedure>`, so a value holding one prints: it
+;; did not compile, as a function type had no head to find an implementation
+;; by. `=` on functions stays refused (errors/eq_on_a_function.bjo).
+(import (std prelude))
+(import (std simpletest))
+
+(def/trait (Describe %a)
+  (: describe (-> %a string)))
+
+(impl (Describe Procedure)
+  (defun (describe f) "a function"))
+
+(impl (Describe int)
+  (defun (describe n) "an int"))
+
+(: (-> %a string) (where (Describe %a)))
+(defun (through-a-dictionary x) #:no-inline (describe x))
+
+(type (: Handler (Record (: name string) (: run (-> int int)))))
+(type (: (Box %a) (Union (: Boxed %a))))
+
+(: (-> int int))
+(defun (inc x) (+ x 1))
+
+(defun (main)
+  (expect "a function" (written inc) "#<procedure>")
+  (expect "displayed" (displayed inc) "#<procedure>")
+  (expect "a lambda" (written (fun (x) (* x 2))) "#<procedure>")
+  (expect "inside an option" (written (Some inc)) "(Some #<procedure>)")
+  (expect "inside a list" (displayed (list inc inc)) "(#<procedure> #<procedure>)")
+  (expect "inside a record" (written (Handler (name "h") (run inc))) "(Handler (name \"h\") (run #<procedure>))")
+  (expect "inside a generic union" (written (Boxed inc)) "(Boxed #<procedure>)")
+  (expect "a bjoroutine-free thunk" (written (fun () 1)) "#<procedure>")
+  (expect "in an interpolation" #"run ${inc}" "run #<procedure>")
+  (expect "a trait of one's own, at a function" (describe inc) "a function")
+  (expect "and at an int beside it" (describe 3) "an int")
+  (expect "through a dictionary" (through-a-dictionary inc) "a function")
+  0)
