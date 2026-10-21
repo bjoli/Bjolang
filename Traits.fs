@@ -867,6 +867,11 @@ let implTargetOf
 /// Enables standard trait calls like `(->str d)` and `(println d)` on boxed
 /// values without special-casing: constraint resolution finds the entry and
 /// `buildEvidence` emits `DynImpl::Instance`.
+///
+/// Each superclass of the trait is implemented at the dyn type too
+/// (`dynSuperclasses`), by a class that forwards to the boxed value's own
+/// implementation, which the box holds. A superclass declares no associated
+/// types (`superclassesBoxable`).
 let registerDynImpl (traitName: string) (info: TraitInfo) (env: Env) : Env =
     match info.DynSafe with
     | Error _ -> env
@@ -874,23 +879,23 @@ let registerDynImpl (traitName: string) (info: TraitInfo) (env: Env) : Env =
         let key = Naming.dynTypeName traitName info.AssociatedTypes
         // One type variable per associated type, named after the associated type.
         let vars = info.AssociatedTypes |> List.map (fun a -> TVar("'" + a))
+        let dynType = TCon(key, vars)
 
         let implTarget =
             { Ctor = key
-              Key = (implKey (TCon(key, vars))).Value
+              Key = (implKey dynType).Value
               Via = None
               FixedPrefix = vars
               HoleArity = 0
-              // Unconditional: the box already contains its dictionary, so
+              // Unconditional: the box already contains its dictionaries, so
               // static `Instance` is used.
               Constraints = [] }
 
-        addImplementation
-            traitName
-            (TCon(key, vars))
-            implTarget
-            (List.zip info.AssociatedTypes vars |> Map.ofList)
-            env
+        let env =
+            addImplementation traitName dynType implTarget (List.zip info.AssociatedTypes vars |> Map.ofList) env
+
+        dynSuperclasses env.Registry info
+        |> List.fold (fun acc superName -> addImplementation superName dynType implTarget Map.empty acc) env
 
 /// Validates that an implementation binds every associated type declared by the
 /// trait, exactly once.

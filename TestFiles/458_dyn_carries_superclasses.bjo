@@ -1,0 +1,46 @@
+;; A `(dyn T)` is a `T` as any implementation of `T` is: it implements the
+;; superclasses of `T` too, by the boxed value's own implementations. It
+;; implemented `T` alone, so a call that needed a superclass found none, and
+;; `written` of a `(dyn Displayed)` took the blanket and wrote the C# box.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/greet_named.bjo")
+
+(def/trait (Loud %a)
+  (where (Greet %a))
+  (: shout (-> %a string)))
+
+(def/trait (Bag %b)
+  (where (Named %b))
+  (type %item)
+  (: first (-> %b %item)))
+
+(type (: Cat (Record (: lives int))))
+(impl (Named Cat) (defun (name-of c) "cat"))
+(impl (Greet Cat) (defun (greeting c) "meow"))
+(impl (Loud Cat) (defun (shout c) "MEOW"))
+(impl (Displayed Cat) (defun (display-into c b) (stringbuilder-add-string! b "a cat")))
+
+(type (: Pile (Record (: items (List int)))))
+(impl (Named Pile) (defun (name-of p) "a pile"))
+(impl (Bag Pile) (type %item int) (defun (first p) (list-ref (record-ref p items) 0)))
+
+(: (-> %a string) (where (Greet %a)))
+(defun (introduce x) (str (name-of x) " says " (greeting x)))
+
+;; Packed at a type variable: the caller's dictionaries fill the box.
+(: (-> %a (dyn Loud)) (where (Loud %a)))
+(defun (box-it x) (dyn Loud x))
+
+(defun (main)
+  (def d (dyn Displayed (Cat (lives 1))))
+  (expect "Written, the boxed value's" (written d) "(Cat (lives 1))")
+  (expect "Displayed itself" (displayed d) "a cat")
+  (def l (box-it (Cat (lives 9))))
+  (expect "superclasses two deep, of a trait from another module" (introduce l) "cat says meow")
+  (expect "the trait itself" (shout l) "MEOW")
+  (expect "a superclass's method on the box" (name-of l) "cat")
+  (def (: b (dyn Bag #:item int)) (dyn Bag (Pile (items (list 7 8)))))
+  (expect "a trait with associated types" (first b) 7)
+  (expect "and its superclass" (name-of b) "a pile")
+  0)

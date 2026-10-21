@@ -3,6 +3,20 @@
 
 What each change guarantees, and what it leaves open.
 
+* A (dyn T) implements the superclasses of T
+
+- A ~(dyn T)~ box holds the boxed value's implementation of each superclass
+  of ~T~, transitively, and implements each superclass at the dyn type by
+  it. A ~(dyn Greet)~ was a ~Greet~ without the ~Named~ that ~Greet~
+  requires, so a function with ~(where (Greet %a))~ could not take it.
+- ~written~ of a ~(dyn Displayed)~ writes the boxed value. It took
+  ~Written~'s blanket and wrote the C# box.
+- A trait whose superclass cannot be boxed, or declares associated types, is
+  refused at the ~(dyn ...)~, which names the superclass.
+- Tests: ~458_dyn_carries_superclasses.bjo~,
+  ~errors/dyn_superclass_not_boxable.bjo~,
+  ~errors/dyn_superclass_with_associated_type.bjo~.
+
 * A call to a constrained function settles its type as a method call does
 
 - What a constrained function requires is checked at each call, at the

@@ -1,0 +1,20 @@
+;; EXPECT-ERROR: whose associated types (#:item) a (dyn Shows ...) does not pin
+;; A box of `Shows` would hold the boxed value's `Holds`, and nothing in
+;; `(dyn Shows)` says what that one's `#:item` is.
+(import (std prelude))
+
+(def/trait (Holds %a)
+  (type %item)
+  (: one (-> %a %item)))
+
+(def/trait (Shows %a)
+  (where (Holds %a))
+  (: show-it (-> %a string)))
+
+(impl (Holds int) (type %item int) (defun (one x) x))
+(impl (Shows int) (defun (show-it x) "int"))
+
+(defun (main)
+  (def d (dyn Shows 1))
+  (println (show-it d))
+  0)

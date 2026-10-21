@@ -2577,6 +2577,15 @@ let withSuperclasses (registry: TraitRegistry) (constraints: TraitConstraint lis
 
     given |> List.fold addSupers given
 
+/// The traits a `(dyn T)` box implements besides `T`: the superclasses of
+/// `T`, transitively, in the order `withSuperclasses` gives them. The box
+/// holds the boxed value's dictionary for each, and forwards to it, so that
+/// a `(dyn T)` is a `T` as any implementation of `T` is.
+let dynSuperclasses (registry: TraitRegistry) (info: TraitInfo) : string list =
+    withSuperclasses registry info.Superclasses
+    |> List.map (fun c -> c.TraitName)
+    |> List.distinct
+
 /// Turns a trait signature template into an ordinary `HMType` at one impl.
 ///
 /// `TplHole args` becomes `TCon(Ctor, FixedPrefix @ args)`, which is what makes
@@ -2690,6 +2699,31 @@ let dynSafety
         Error
             $"'%s{traitName}' cannot be boxed: %s{why}. A boxable method mentions the implementor exactly once, as one of its own parameters — which is why (-> %s{written} %s{written} bool) and (-> %s{written} %s{written}) are not."
     | None -> Ok()
+
+/// Whether a box of `traitName` can carry each superclass in `superclasses`,
+/// and theirs (see `dynSuperclasses`). Each must be boxable itself, and
+/// declare no associated types, which nothing in `(dyn T ...)` pins. A
+/// superclass not known here is reported where the trait is declared.
+let superclassesBoxable (registry: TraitRegistry) (traitName: string) (superclasses: TraitConstraint list) : Result<unit, string> =
+    let shown = Naming.showTraitName traitName
+
+    withSuperclasses registry superclasses
+    |> List.tryPick (fun c ->
+        let superName = Naming.showTraitName c.TraitName
+
+        match Map.tryFind c.TraitName registry.Traits with
+        | Some { DynSafe = Error why } ->
+            Some
+                $"'%s{shown}' cannot be boxed: it requires '%s{superName}', and a box of it holds the boxed value's '%s{superName}' too, which cannot be boxed. %s{why}"
+        | Some { AssociatedTypes = (_ :: _) as assocs } ->
+            let listed = assocs |> List.map (fun a -> "#:" + a) |> String.concat " "
+
+            Some
+                $"'%s{shown}' cannot be boxed: it requires '%s{superName}', and a box of it holds the boxed value's '%s{superName}' too, whose associated types (%s{listed}) a (dyn %s{shown} ...) does not pin."
+        | _ -> None)
+    |> function
+        | Some why -> Error why
+        | None -> Ok()
 
 /// The key of the module whose code `r` is.
 ///

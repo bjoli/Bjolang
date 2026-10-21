@@ -6418,20 +6418,77 @@ let private generateDynTrio
                 Some(mName, args, ret, eff, receiver, methodVars)
             | _ -> None)
 
+    // The superclasses the box implements as well (`dynSuperclasses`), each
+    // with the field that holds the boxed value's dictionary for it.
+    let superclasses =
+        match Map.tryFind traitName ctx.Registry.Traits with
+        | Some info ->
+            dynSuperclasses ctx.Registry info
+            |> List.choose (fun s -> Map.tryFind s ctx.Registry.Traits |> Option.map (fun si -> s, si))
+            |> List.mapi (fun i (s, si) -> s, si, $"super%d{i}")
+        | None -> []
+
+    /// A superclass's methods in the box's variables: its implementor is the
+    /// boxed value's type, and a method generic with the name of one of the
+    /// box's class type parameters is renamed apart from it.
+    let superMethods (superName: string) (info: TraitInfo) =
+        let own = "'" + info.ImplementorVar
+
+        info.Signatures
+        |> Map.toList
+        |> List.choose (fun (mName, mType) ->
+            let clashing =
+                collectTypeVars mType
+                |> List.distinct
+                |> List.filter (fun v -> v <> own && List.contains v classTyVarNames)
+
+            let subst =
+                (own, TVar implVar) :: (clashing |> List.map (fun v -> v, TVar(v + "_" + sanitizeIdent superName)))
+                |> Map.ofList
+
+            match substTypeVars subst mType with
+            | TFun(args, ret, eff) as t ->
+                let receiver = args |> List.findIndex ((=) (TVar implVar))
+
+                let methodVars =
+                    collectTypeVars t
+                    |> List.distinct
+                    |> List.filter (fun v -> not (List.contains v classTyVarNames))
+
+                Some(mName, args, ret, eff, receiver, methodVars)
+            | _ -> None)
+
+    /// Every member of the box and of its interface: the trait's methods,
+    /// dispatched through `dict`, and each superclass's, dispatched through
+    /// its field under a name that says whose it is. Each is the member's
+    /// name, the dictionary's method, the field, and the method as `methods`
+    /// gives it.
+    let members =
+        (methods
+         |> List.map (fun (mName, args, ret, eff, receiver, methodVars) ->
+             sanitizeIdent mName, sanitizeIdent mName, "dict", args, ret, eff, receiver, methodVars))
+        @ (superclasses
+           |> List.collect (fun (s, si, field) ->
+               superMethods s si
+               |> List.map (fun (mName, args, ret, eff, receiver, methodVars) ->
+                   $"%s{sanitizeIdent s}_%s{sanitizeIdent mName}", sanitizeIdent mName, field, args, ret, eff, receiver, methodVars)))
+
     /// Parameters remaining after removing the receiver parameter, in original order.
     let withoutReceiver (args: HMType list) (receiver: int) =
         args |> List.indexed |> List.filter (fun (i, _) -> i <> receiver)
 
-    let signature (mName: string) (ret: HMType) (eff: Effect) (methodVars: string list) (parameters: (int * HMType) list) =
+    /// A method's C# signature under `name`, which is an identifier already.
+    let signature (name: string) (ret: HMType) (eff: Effect) (methodVars: string list) (parameters: (int * HMType) list) =
         let ps =
             parameters
             |> List.map (fun (i, t) -> $"%s{typeToString t} arg%d{i}")
             |> String.concat ", "
 
-        $"%s{returnTypeString eff ret} %s{sanitizeIdent mName}%s{angled (methodVars |> List.map typeParamName)}(%s{ps})"
+        $"%s{returnTypeString eff ret} %s{name}%s{angled (methodVars |> List.map typeParamName)}(%s{ps})"
 
-    /// Forwarding call signature, re-inserting the receiver argument at its original index.
-    let forward (target: string) (mName: string) (methodVars: string list) (args: HMType list) (receiver: int) (receiverArg: string) =
+    /// Forwarding call to `target`'s `dictMethod`, an identifier already,
+    /// re-inserting the receiver argument at its original index.
+    let forward (target: string) (dictMethod: string) (methodVars: string list) (args: HMType list) (receiver: int) (receiverArg: string) =
         let arguments =
             args
             |> List.mapi (fun i _ -> if i = receiver then receiverArg else $"arg%d{i}")
@@ -6440,7 +6497,7 @@ let private generateDynTrio
         // Explicit type arguments. C# usually infers them, but not when a
         // variable appears only in the return type; explicitly emitting them
         // is simpler than detecting inference edge cases.
-        $"%s{target}.%s{sanitizeIdent mName}%s{angled (methodVars |> List.map typeParamName)}(%s{arguments})"
+        $"%s{target}.%s{dictMethod}%s{angled (methodVars |> List.map typeParamName)}(%s{arguments})"
 
     // --- Interface exposed by a dynamic box ---------------------------------
     indent ctx
@@ -6449,9 +6506,9 @@ let private generateDynTrio
     withIndent ctx (fun c ->
         let c = classCtx c (assocTypes |> List.map (fun a -> "'" + a))
 
-        for (mName, args, ret, eff, receiver, methodVars) in methods do
+        for (name, _, _, args, ret, eff, receiver, methodVars) in members do
             indent c
-            appendLine c $"%s{signature mName ret eff methodVars (withoutReceiver args receiver)};")
+            appendLine c $"%s{signature name ret eff methodVars (withoutReceiver args receiver)};")
 
     indent ctx
     appendLine ctx "}"
@@ -6463,25 +6520,40 @@ let private generateDynTrio
     withIndent ctx (fun c ->
         let c = classCtx c classTyVarNames
 
+        // The boxed value's dictionary for each superclass, `Named<T_a>`.
+        // A superclass has no associated types (`superclassesBoxable`).
+        let superDicts =
+            superclasses |> List.map (fun (s, _, field) -> $"%s{sanitizeIdent s}<%s{implParam}>", field)
+
         indent c
         appendLine c $"private readonly %s{implParam} value;"
         indent c
         appendLine c $"private readonly %s{dictType} dict;"
-        indent c
-        appendLine c $"private %s{box}(%s{implParam} v, %s{dictType} d) {{ value = v; dict = d; }}"
 
-        // Dictionary first, value second, so `Make` signatures match
-        // conditional impl `Make` factory signatures.
+        for (superDict, field) in superDicts do
+            indent c
+            appendLine c $"private readonly %s{superDict} %s{field};"
+
+        let superParams = superDicts |> List.map (fun (t, field) -> $", %s{t} %s{field}") |> String.concat ""
+        let superAssigns = superDicts |> List.map (fun (_, field) -> $" this.%s{field} = %s{field};") |> String.concat ""
+        let superArgs = superDicts |> List.map (fun (_, field) -> $", %s{field}") |> String.concat ""
+
+        indent c
+        appendLine c $"private %s{box}(%s{implParam} v, %s{dictType} d%s{superParams}) {{ value = v; dict = d;%s{superAssigns} }}"
+
+        // Dictionaries first, the trait's and then each superclass's, and the
+        // value last, so `Make` signatures match conditional impl `Make`
+        // factory signatures.
         //
         // A static `Make` method is used instead of direct instantiation: the
         // return type is the erased interface.
         indent c
         appendLine c
-            $"public static %s{dynType} Make(%s{dictType} d, %s{implParam} v) => new %s{box}%s{angled (implParam :: assocParams)}(v, d);"
+            $"public static %s{dynType} Make(%s{dictType} d%s{superParams}, %s{implParam} v) => new %s{box}%s{angled (implParam :: assocParams)}(v, d%s{superArgs});"
 
-        for (mName, args, ret, eff, receiver, methodVars) in methods do
-            let head = signature mName ret eff methodVars (withoutReceiver args receiver)
-            let body = forward "dict" mName methodVars args receiver "value"
+        for (name, dictMethod, field, args, ret, eff, receiver, methodVars) in members do
+            let head = signature name ret eff methodVars (withoutReceiver args receiver)
+            let body = forward field dictMethod methodVars args receiver "value"
             indent c
             appendLine c $"public %s{head} => %s{body};")
 
@@ -6519,10 +6591,51 @@ let private generateDynTrio
             indent c
 
             appendLine c
-                $"public %s{signature mName ret eff methodVars parameters} => arg%d{receiver}.%s{sanitizeIdent mName}%s{angled (methodVars |> List.map typeParamName)}(%s{arguments});")
+                $"public %s{signature (sanitizeIdent mName) ret eff methodVars parameters} => arg%d{receiver}.%s{sanitizeIdent mName}%s{angled (methodVars |> List.map typeParamName)}(%s{arguments});")
 
     indent ctx
     appendLine ctx "}"
+
+    // --- Each superclass's implementation for the dyn type ------------------
+    //
+    // `Named<Greet_Dyn>`, forwarding to the box, which forwards to the boxed
+    // value's own: what `registerDynImpl` registers, named as
+    // `buildEvidence` names it (`implClassName`).
+    let dynTypeKey = Naming.dynTypeName traitName assocTypes
+    let dynTypeHM = TCon(dynTypeKey, assocTypes |> List.map (fun a -> TVar("'" + a)))
+
+    for (s, si, _) in superclasses do
+        let className = implClassName (sanitizeIdent s) (implKey dynTypeHM).Value
+
+        indent ctx
+        appendLine ctx $"public sealed class %s{className}%s{angled assocParams} : %s{sanitizeIdent s}<%s{dynType}> {{"
+
+        withIndent ctx (fun c ->
+            let c = classCtx c (assocTypes |> List.map (fun a -> "'" + a))
+
+            indent c
+            appendLine c $"public static readonly %s{className}%s{angled assocParams} Instance = new();"
+
+            for (mName, args, ret, eff, receiver, methodVars) in superMethods s si do
+                let parameters =
+                    args |> List.indexed |> List.map (fun (i, t) -> if i = receiver then i, dynTypeHM else i, t)
+
+                // The receiver is the target of the call, not an argument.
+                let arguments =
+                    args
+                    |> List.indexed
+                    |> List.filter (fun (i, _) -> i <> receiver)
+                    |> List.map (fun (i, _) -> $"arg%d{i}")
+                    |> String.concat ", "
+
+                let call =
+                    $"arg%d{receiver}.%s{sanitizeIdent s}_%s{sanitizeIdent mName}%s{angled (methodVars |> List.map typeParamName)}(%s{arguments})"
+
+                indent c
+                appendLine c $"public %s{signature (sanitizeIdent mName) ret eff methodVars parameters} => %s{call};")
+
+        indent ctx
+        appendLine ctx "}"
 
 let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
     match decl with

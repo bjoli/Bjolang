@@ -2680,6 +2680,8 @@ and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorV
                 [ name, cs ])
         |> Map.ofList
 
+    let superclasses = traitSuperclasses env.Registry traitName implementorVar holeArity supers true
+
     let traitInfo =
         { ImplementorVar = implementorVar
           AssociatedTypes = assocTypes
@@ -2690,11 +2692,13 @@ and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorV
           Defaults = Map.ofList defaultBodies
           ClrConstraint = clrConstraint
           MemberWheres = resolvedMemberWheres
-          Superclasses = traitSuperclasses env.Registry traitName implementorVar holeArity supers true
-          // Derived from signatures and computed on declaration: an
-          // imported trait reconstructs its dyn-safety verdict without
-          // serializing it to metadata.
-          DynSafe = dynSafety traitName implementorVar kind clrConstraint hmSignatures resolvedMemberWheres }
+          Superclasses = superclasses
+          // Derived from signatures and superclasses and computed on
+          // declaration: an imported trait reconstructs its dyn-safety
+          // verdict without serializing it to metadata.
+          DynSafe =
+            dynSafety traitName implementorVar kind clrConstraint hmSignatures resolvedMemberWheres
+            |> Result.bind (fun () -> superclassesBoxable env.Registry traitName superclasses) }
 
     let newEnv = addTrait traitName traitInfo env
     let newEnv = registerDynImpl traitName traitInfo newEnv
@@ -3818,6 +3822,11 @@ and internal checkDeclGroup
                                   Args = []
                                   Members = Map.empty })
 
+                        // Read, not checked, so that a signature below
+                        // expands to what its constraints imply.
+                        let superclasses =
+                            traitSuperclasses acc.Registry traitName implementorVar holeArity supers false
+
                         addTrait
                             traitName
                             { ImplementorVar = implementorVar
@@ -3832,10 +3841,10 @@ and internal checkDeclGroup
                               // `DTrait` pass; this pre-registration only
                               // exists so signatures can be parsed.
                               MemberWheres = Map.empty
-                              // Read, not checked, so that a signature below
-                              // expands to what its constraints imply.
-                              Superclasses = traitSuperclasses acc.Registry traitName implementorVar holeArity supers false
-                              DynSafe = dynSafety traitName implementorVar kind clr hmSignatures Map.empty }
+                              Superclasses = superclasses
+                              DynSafe =
+                                dynSafety traitName implementorVar kind clr hmSignatures Map.empty
+                                |> Result.bind (fun () -> superclassesBoxable acc.Registry traitName superclasses) }
                             acc
                     with _ ->
                         acc

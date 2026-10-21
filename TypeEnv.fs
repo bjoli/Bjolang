@@ -98,11 +98,17 @@ let collectTraitConstraints (env: Env) (body: TypedExpr) : TraitConstraint list 
                 acc
 
         // Packing a value into a trait box requires constructing the same
-        // dictionary evidence as calling a method on it. For type variables,
-        // dictionary evidence must be provided via a parameter on the enclosing
-        // function.
+        // dictionary evidence as calling a method on it, for the trait and for
+        // each superclass the box holds too. For type variables, dictionary
+        // evidence must be provided via a parameter on the enclosing function.
         | TDynPack(traitName, hole, _) ->
-            leafConstraints registry traitName hole
+            let superclasses =
+                match Map.tryFind traitName registry.Traits with
+                | Some info -> dynSuperclasses registry info
+                | None -> []
+
+            (traitName :: superclasses)
+            |> List.collect (fun t -> leafConstraints registry t hole)
             |> List.fold (fun acc c -> Set.add c acc) acc
 
         | TApply({ Node = TIdent(calleeName, tArgs) }, _, _) ->

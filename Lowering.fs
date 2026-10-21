@@ -542,18 +542,26 @@ module DictionaryLowering =
                 | TCon(_, args) -> args
                 | _ -> []
 
-            let dict =
-                buildEvidence env scope traitName implType expr.Range "to pack it as a dyn"
+            // The trait's dictionary, then one for each superclass the box
+            // implements as well (`dynSuperclasses`), in that order.
+            let dicts =
+                let superclasses =
+                    match Map.tryFind traitName env.Registry.Traits with
+                    | Some info -> dynSuperclasses env.Registry info
+                    | None -> []
+
+                (traitName :: superclasses)
+                |> List.map (fun t -> buildEvidence env scope t implType expr.Range "to pack it as a dyn")
 
             let lowered = recurse value
 
             let callee =
-                { Type = tfun [ dict.Type; lowered.Type ] expr.Type
+                { Type = tfun ((dicts |> List.map (fun d -> d.Type)) @ [ lowered.Type ]) expr.Type
                   Range = expr.Range
                   Node = TIdent(Naming.dynBoxFactoryName traitName, implType :: assocTypes) }
                 : TypedExpr
 
-            { expr with Node = TApply(callee, [ dict; lowered ], []) }
+            { expr with Node = TApply(callee, dicts @ [ lowered ], []) }
 
         | TApply(target, args, kwArgs) ->
             // The callee may carry trait constraints that require us to pass
