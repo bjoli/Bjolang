@@ -375,23 +375,18 @@
      17
      m)))
 
-(: (-> (Tuple %k %v) string) (where (->str %k) (->str %v)))
-(defun (entry->str entry)
-  (def (k v) entry)
-  (str "(" (->str k) " " (->str v) ")"))
+;; `#map((k v) ...)` in ascending key order, as a `Map` prints.
+(impl (Written (OrderedMap %k %v))
+  (where (Written %k) (Written %v))
+  (defun (write-into m b)
+    (entries-print-into "#map(" m ")" b (fun (k b) (write-into k b)) (fun (v b) (write-into v b)))))
 
-(: (-> (OrderedMap %k %v) string) (where (->str %k) (->str %v)))
-(defun (orderedmap->str m)
-  (def sb (stringbuilder-empty))
-  (stringbuilder-add-string! sb "#map(")
-  (loop (:with first? #t #f)
-        (:for entry m)
-        (:do (unless first? (stringbuilder-add-string! sb " "))
-             (stringbuilder-add-string! sb (entry->str entry))))
-  (stringbuilder-add-string! sb ")")
-  (stringbuilder->string sb))
+(impl (Displayed (OrderedMap %k %v))
+  (where (Displayed %k) (Displayed %v))
+  (defun (display-into m b)
+    (entries-print-into "#map(" m ")" b (fun (k b) (display-into k b)) (fun (v b) (display-into v b)))))
 
-(impl (->str (OrderedMap %k %v))
-  (where (->str %k) (->str %v))
-  (defun (->str m)
-    (orderedmap->str m)))
+(: (-> (OrderedMap %k %v) string) (where (Displayed %k) (Displayed %v)))
+(defun (orderedmap->str m) (displayed m))
+
+(:deprecated orderedmap->str "use `displayed`")

@@ -490,18 +490,31 @@
   (defun (eq-hash q)
     (list-foldl (fun (entry acc) (hash-combine acc (eq-hash entry))) 17 (priorityqueue->list q))))
 
-;; `#priorityqueue(element priority ...)`, in the order they come out.
-(: (-> (PriorityQueue %a %p) string) (where (->str %a) (->str %p)))
-(defun (priorityqueue->str q)
-  (def sb (stringbuilder-empty))
-  (stringbuilder-add-string! sb "#priorityqueue(")
+;; `#priorityqueue(element priority ...)`, in the order they come out. Each
+;; element and priority is added by the function given for it.
+(: (-> (PriorityQueue %a %p) StringBuilder (-> %a StringBuilder void) (-> %p StringBuilder void) void))
+(defun (priorityqueue-print-into q b each-elem each-priority)
+  (stringbuilder-add-string! b "#priorityqueue(")
   (loop (:with first? #t #f)
-        (:for entry (priorityqueue->list q))
-        (:do (unless first? (stringbuilder-add-string! sb " "))
-             (stringbuilder-add-string! sb (map-entry->str entry))))
-  (stringbuilder-add-string! sb ")")
-  (stringbuilder->string sb))
+        (:for entry q)
+        (:do (def (x p) entry)
+             (unless first? (stringbuilder-add-string! b " "))
+             (each-elem x b)
+             (stringbuilder-add-string! b " ")
+             (each-priority p b)))
+  (stringbuilder-add-string! b ")"))
 
-(impl (->str (PriorityQueue %a %p))
-  (where (->str %a) (->str %p))
-  (defun (->str q) (priorityqueue->str q)))
+(impl (Written (PriorityQueue %a %p))
+  (where (Written %a) (Written %p))
+  (defun (write-into q b)
+    (priorityqueue-print-into q b (fun (x b) (write-into x b)) (fun (p b) (write-into p b)))))
+
+(impl (Displayed (PriorityQueue %a %p))
+  (where (Displayed %a) (Displayed %p))
+  (defun (display-into q b)
+    (priorityqueue-print-into q b (fun (x b) (display-into x b)) (fun (p b) (display-into p b)))))
+
+(: (-> (PriorityQueue %a %p) string) (where (Displayed %a) (Displayed %p)))
+(defun (priorityqueue->str q) (displayed q))
+
+(:deprecated priorityqueue->str "use `displayed`")

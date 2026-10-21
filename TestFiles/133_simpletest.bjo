@@ -11,7 +11,7 @@
 ;;     for exactly that word and would fail a green run;
 ;;   * a failing one always does, and says what it got and what it wanted;
 ;;   * one `expect` serves every type, which is the whole point of routing the
-;;     comparison through `Eq` and the report through `->str`;
+;;     comparison through `Eq` and the report through `written`;
 ;;   * a failure makes the program exit 1, so a test run is a command a shell
 ;;     can check, and a pass does not.
 (import (std prelude))
@@ -47,8 +47,9 @@
 ;; impls rather than a fixed list of builtins.
 (type (: Money (Union (: Kr int))))
 
-(impl (->str Money)
-  (defun (->str m) (match m ((Kr n) #"${n} kr"))))
+(impl (Written Money)
+  (defun (written m) (match m ((Kr n) #"${n} kr")))
+  (defun (write-into m b) (stringbuilder-add-string! b (written m))))
 
 (impl (Eq Money)
   (defun (= a b) (match (Tuple a b) ((Tuple (Kr x) (Kr y)) (= x y))))
@@ -73,6 +74,11 @@
         (printed (fun () (expect "two and two" 4 5)))
         "FAILURE: two and two gave 4 but wanted 5\n")
 
+  ;; Written, so that a string cannot pass for a number.
+  (same "a failure writes a string in quotes"
+        (printed (fun () (expect "text" "4" "5")))
+        "FAILURE: text gave \"4\" but wanted \"5\"\n")
+
   ;; --- One assertion, every type -------------------------------------------
   ;;
   ;; Each of these was a separate hand-written helper before, or a call that
@@ -84,7 +90,7 @@
   (same "doubles"  (printed (fun () (expect "d" 1.5 1.5))) "ok: d\n")
   (same "lists"    (printed (fun () (expect "l" (list 1 2) (list 1 2)))) "ok: l\n")
 
-  ;; And a type declared here, reported through its own `->str`.
+  ;; And a type declared here, reported through its own `written`.
   (same "a type of the test's own"
         (printed (fun () (expect "m" (Kr 5) (Kr 6))))
         "FAILURE: m gave 5 kr but wanted 6 kr\n")

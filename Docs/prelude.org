@@ -5,7 +5,7 @@ The default environment of every Bjolang program. ~(std prelude)~ is linked into
 Two halves:
 
 - the *builtin* environment (~Prelude.fs~, backed by ~BjolangRuntime~) holds what currently isn't written in bjolang.
-- ~lib/std/prelude.bjo~ is an ordinary Bjolang module. It holds everything that *is* just a .NET call — the string, conversion, file, path, directory, environment and port operations below — plus the traits (~->str~, ~Iterable~, ~Collector~, ~Num~) and ~print~/~println~.
+- ~lib/std/prelude.bjo~ is an ordinary Bjolang module. It holds everything that *is* just a .NET call — the string, conversion, file, path, directory, environment and port operations below — plus the traits (~Written~, ~Displayed~, ~Iterable~, ~Collector~, ~Num~) and ~print~/~println~.
 
 Sections below are marked =(std prelude)= where they live in the second.
 
@@ -16,8 +16,9 @@ Sections below are marked =(std prelude)= where they live in the second.
 ** I/O
 - ~(display x)~ : Prints ~x~ to standard output without a newline.
 - ~(displayln x)~ : Prints ~x~ to standard output with a newline.
-- ~(print x)~ : Generic print utilizing the ~->str~ trait. =(std prelude)=
-- ~(println x)~ : Generic println utilizing the ~->str~ trait. =(std prelude)=
+- ~(print x)~ : Prints ~(displayed x)~, for any value. =(std prelude)=
+- ~(println x)~ : Prints ~(displayed x)~ and a newline, for any value. =(std prelude)=
+- ~(written x)~, ~(displayed x)~ : The value as text; see *Traits* below. =(std prelude)=
 - ~(newline)~ : Prints a newline character.
 
 There is no nullary ~read-line~. Standard input is a port: ~(read-line (parameter-ref current-input-port))~. current-input-port can be rebound with ~parameterize~.
@@ -100,7 +101,7 @@ Inside the type nobody hands it the ~Eq~ of ~%a~, so the type answers ~(where (E
 
 Where the type's own .NET members and ~=~ part ways — which matters to .NET code handed such a value, and not to the collections above:
 
-- *An implementation with a ~(where ...)~ of another trait*, such as ~(where (->str %a))~. .NET has nothing to answer it with, so the type keeps the members C# writes, which compare field by field.
+- *An implementation with a ~(where ...)~ of another trait*, such as ~(where (Written %a))~. .NET has nothing to answer it with, so the type keeps the members C# writes, which compare field by field.
 - *An implementation for a specialized target*, such as ~(impl (Eq (Pair %a %a)))~ on a ~Pair~ with two parameters. The same.
 - *Two different cases of a union.* Each case is a C# record, and C# writes its ~Equals~ itself: asked about a value of another case, it answers false before the implementation runs. Two values of the *same* case do reach the implementation.
 
@@ -280,7 +281,7 @@ them; a walk is always on a character of its own string, and
 *** Conversions =(std prelude)=
 - ~(string->list s)~ : ~(List char)~.
 - ~(list->string cs)~ : Builds a string from ~(List char)~.
-- ~(list->str xs)~ : Formats a list as ~(1 2 3)~, each element through its own ~->str~. Constrained ~(where (->str %a))~. =(std prelude)=
+- ~(list->str xs)~ : Deprecated; ~(displayed xs)~. =(std prelude)=
 - ~(string->vec s)~ : ~(Vec char)~.
 - ~(string-reverse s)~ : Reverses by *character*, so an astral character comes back intact.
 
@@ -311,7 +312,7 @@ The numeric ones are =(std prelude)=; the keyword and symbol ones are builtin, s
 - ~(string->long s)~
 - ~(string->double s)~
 
-All seven are *invariant*, for the reason the string comparisons are ordinal: they round-trip, so a number written by one machine reads on the next. .NET's own take the ambient culture, under which ~1.5~ writes as ~1,5~, ~(string->double "1.5")~ throws, and ~-100~ comes back with a U+2212 MINUS SIGN. ~->str~ is invariant for the same reason. A program that wants a number in the reader's own culture sets ~CultureInfo.CurrentCulture~ and formats through .NET; see ~Todo.org~.
+All seven are *invariant*, for the reason the string comparisons are ordinal: they round-trip, so a number written by one machine reads on the next. .NET's own take the ambient culture, under which ~1.5~ writes as ~1,5~, ~(string->double "1.5")~ throws, and ~-100~ comes back with a U+2212 MINUS SIGN. ~written~ and ~displayed~ are invariant for the same reason. A program that wants a number in the reader's own culture sets ~CultureInfo.CurrentCulture~ and formats through .NET; see ~Todo.org~.
 - ~(keyword->string kw)~ : Returns the string name of a keyword.
 - ~(string->keyword s)~ : Interns a string as a ~Keyword~.
 - ~(symbol->string sym)~ : Returns the string name of a symbol.
@@ -626,7 +627,7 @@ The pair is also what ~map->list~, ~map->seq~, ~map-cursor-current~, ~map-find~ 
 - ~(map-filter f map)~ : Returns a new map containing only entries where ~(f key value)~ is true.
 - ~(map-map f map)~ : Returns a new map whose values are ~(f key value)~. The key is what the result is filed under, so the mapper cannot move it.
 - ~(map-map-values f map)~ : Returns a new map with each value replaced by ~(f value)~, keys untouched.
-- ~(map->str map)~ : ~#map((key value) ...)~, the literal's own shape, so a map of numbers reads back. Also the ~->str~ implementation, so ~(println m)~ prints it.
+- ~(map->str map)~ : Deprecated; ~(displayed map)~. A map is written and displayed as ~#map((key value) ...)~, the literal's own shape, so ~(written m)~ reads back. ~map-entry->str~ is deprecated too.
 - ~(list->map lst)~ : Constructs a map from a list of ~(key . val)~ pairs/tuples.
 - ~(map->list map)~ : Converts the map to a list of pairs/tuples.
 - ~(vec->map vec)~ : Constructs a map from a vector of pairs/tuples.
@@ -672,7 +673,7 @@ Each collection provides three identical interfaces for different usage patterns
 
 ~(OrderedMap %k %v)~'s api is the prelude's ~map-*~ under an ~orderedmap-~ prefix.
 
-All three implement ~Iterable~, ~Collection~ and ~->str~, and each publishes a collector — ~hash-setting~, ~ordered-setting~, ~ordered-mapping~ — so a loop can accumulate into one:
+All three implement ~Iterable~, ~Collection~, ~Written~ and ~Displayed~, and each publishes a collector — ~hash-setting~, ~ordered-setting~, ~ordered-mapping~ — so a loop can accumulate into one:
 
 #+BEGIN_SRC scheme
 (loop (:for x (range 0 10))
@@ -1030,7 +1031,7 @@ Use scopes to track resources that the Garbage Collector doesn't know how to man
 - ~(in-scope s body ...)~ : run the body with ~s~ as the ambient scope.
 - ~(scope-cancel! s reason)~ : what the cancel thunk does, on a scope value.
 
-~Owned~ is opaque, and more so than ~Scope~: no ~Eq~, no ~Ord~, no ~->str~, no fields. The only thing to do with one is ~release!~ it.
+~Owned~ is opaque, and more so than ~Scope~: no ~Eq~, no ~Ord~, no fields, and no ~Written~ but the one every .NET type has. The only thing to do with one is ~release!~ it.
 
 *The ordering at close is fixed.* Body finishes or fails → on failure the token fires → every owned fiber lands → the token fires → releases run newest-first, under a shield → failures aggregate, body first, then children, then releases. Cleanup functions (releases) run in a protected state ("under a shield"), so they are not interrupted while doing their job.
 
@@ -1175,7 +1176,12 @@ The sequence is passed to every method, so a cursor need carry nothing — a ~Ve
 These methods use long names to prevent collisions with common user variables (like ~next~, ~start~, and ~current~). They are intended to be called by the compiler rather than directly in user code.
 
 ** Traits
-- ~->str~ : Trait for string representation with method ~(->str x)~. Implemented for ~string~, ~int~, ~double~, ~byte~, ~long~, ~char~, ~Keyword~ and ~Symbol~. A ~char~ prints as itself, not as ~#\a~. A list prints as ~(1 2 3)~, through a *conditional* implementation, ~(impl (->str (List %a)) (where (->str %a)) ...)~. Anything with no implementation of its own falls to the blanket, which is ~Object.ToString~.
+- ~Written~ : ~(write-into x b)~ and ~(written x)~ — a value as the reader reads it, as Scheme's ~write~ writes it. ~write-into~ adds the text to a ~StringBuilder~ and is the method an implementation must give; ~written~ answers a string, and its default uses a builder the thread keeps. A string is quoted and escaped (~"a\"b"~), a char is ~#\a~ or ~#\space~, a number has the suffix that gives its type back (~21L~, ~21uy~, ~2.5M~, ~7I~), a double has a point (~2.0~, ~+nan.0~, ~+inf.0~, ~-inf.0~), a boolean is ~#t~ or ~#f~, a keyword ~#:key~ and a symbol bare. Containers are written as their literals or constructors: ~("a" "b")~, ~[1L 2L]~, ~#[...]~, ~#map(("k" 1))~, ~(Some "x")~, ~None~, ~(Ok 1)~, ~(Err "e")~, ~(Tuple 1 "x")~; a ~Seq~ is not walked and is ~(Seq ...)~. Each type a module declares has an implementation the compiler writes, in constructor syntax (see *Printing* in ~Syntax.org~). A .NET type with no implementation is written as it writes itself, in the invariant culture.
+- ~Displayed~ : ~(display-into x b)~ and ~(displayed x)~ — the value for a person to read, as Scheme's ~display~ writes it. Requires ~Written~. Its blanket displays a value as it is written. Strings (their text), chars, keywords (the name without ~#:~), numbers (no suffix: ~(displayed 21L)~ is ~21~) and the prelude containers, whose elements are displayed (~(displayed (list "a" "b"))~ is ~(a b)~), have implementations of their own. ~print~, ~println~ and ~#"..."~ use it.
+- ~(written/runtime x)~ : ~x~ as the runtime writes it, for a value with no implementation to find, such as a function: ~#<procedure>~. =(std prelude)=
+- ~(elements-print-into open xs close b each)~ : Adds ~open~, each element of the iterable ~xs~ through ~each~ with a space between two, and ~close~ to ~b~. For a ~write-into~ or ~display-into~ of a container. =(std prelude)=
+- ~(entries-print-into open xs close b each-key each-value)~ : The same for an iterable of pairs, each entry as ~(key value)~. =(std prelude)=
+- ~->str~ : Deprecated. Requires ~Displayed~, and its blanket calls ~displayed~; each use warns. Implement ~Displayed~ or ~Written~ instead.
 - ~Iterable~ : ~(iterable-start s)~, ~(iterable-done? s c)~, ~(iterable-current s c)~ and ~(iterable-next s c)~ — how to walk a collection, and what a ~(:for ...)~ clause uses. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~, ~(Seq %a)~, ~Range~ and ~string~. A string's ~%cursor~ is a ~StringCursor~ and its ~%elem~ is ~char~, so ~(loop (:for c "a😀b") ...)~ runs three times and hands over whole characters.
   The trait's other methods have defaults over those four. ~map~, ~filter~, ~take~, ~drop~ and the rest that give a sequence are ~seql~ loops; ~fold~, ~any?~, ~all?~, ~find~, ~for-each~, ~(->list s)~, ~(->vec s)~, ~(count s)~ and ~(first s)~ are plain loops, which answer a value. A default inlines at its call, so ~(->list (map f (filter p xs)))~ walks ~xs~ in one loop and makes no sequence. ~count~ walks, except over a ~Vec~, an ~Array~ or a ~Map~, which answer their length; ~first~ answers an ~Option~ and pulls one element. ~(->map s)~ is not a method, since its where clause says the element is a pair (see *Pins in a function's where clause* in ~Syntax.org~); it is copied into its call at known types and fuses the same way.
 - ~Foldable~ : ~(fold f init col)~, where ~f~ receives ~(item acc)~. Implemented for ~(List %a)~, ~(Vec %a)~, ~(Map %k %v)~ and ~string~. A map's ~%item~ is its ~(Tuple %k %v)~ pair; a string's is ~char~, so ~fold~ over one is ~string-fold~.

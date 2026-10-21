@@ -397,8 +397,8 @@
           (right ,b))
       (unless (,op left right)
         (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
-                       (list (Tuple ,(source-of a) (->str left))
-                             (Tuple ,(source-of b) (->str right)))))))
+                       (list (Tuple ,(source-of a) (displayed left))
+                             (Tuple ,(source-of b) (displayed right)))))))
 
 ;; `(check expr)` passes when `expr` is #t. When it is a comparison — `=`, `<`,
 ;; `>`, `<=` or `>=` — a failure shows both operands' values; otherwise it says
@@ -425,7 +425,7 @@
          (match value
            (,pattern unit)
            (_ (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
-                             (list (Tuple ,(source-of expr) (->str value))))))))
+                             (list (Tuple ,(source-of expr) (displayed value))))))))
     (bad (syntax-error bad "check-match takes an expression and a pattern: (check-match (parse \"x\") (Err _))."))))
 
 ;; The part of `check-raises` that `#:message` adds: the exception was of the
@@ -445,13 +445,13 @@
      #'(match (try ,expr #:catch (,type))
          ((Ok value)
           (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
-                         (list (Tuple ,(source-of expr) (str "answered " (->str value) " and raised nothing")))))
+                         (list (Tuple ,(source-of expr) (str "answered " (displayed value) " and raised nothing")))))
          ((Err e) (check-raises-message ,(file-of form) ,(line-of form) ,(source-of form) (.-Message e) ,part))))
     ((_ type expr)
      #'(match (try ,expr #:catch (,type))
          ((Ok value)
           (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
-                         (list (Tuple ,(source-of expr) (str "answered " (->str value) " and raised nothing")))))
+                         (list (Tuple ,(source-of expr) (str "answered " (displayed value) " and raised nothing")))))
          ((Err _) unit)))
     (bad (syntax-error bad "check-raises takes an exception type and an expression: (check-raises System.FormatException (parse-int \"x\")), optionally #:message \"part\" after them."))))
 
@@ -481,8 +481,8 @@
   #'(let ((left ,a) (right ,b))
       (unless (approx-close? left right ,eps)
         (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
-                       (list (Tuple ,(source-of a) (->str left))
-                             (Tuple ,(source-of b) (->str right)))))))
+                       (list (Tuple ,(source-of a) (displayed left))
+                             (Tuple ,(source-of b) (displayed right)))))))
 
 (def/macro (check-approx form inject compare)
   (syntax-match form
@@ -501,8 +501,8 @@
               (wanted ,text))
          (unless (= written wanted)
            (check-failed! ,(file-of form) ,(line-of form) ,(source-of form)
-                          (list (Tuple "it wrote" (->str written))
-                                (Tuple "wanted" (->str wanted)))))))
+                          (list (Tuple "it wrote" (displayed written))
+                                (Tuple "wanted" (displayed wanted)))))))
     (bad (syntax-error bad "check-output takes an expression and a string: (check-output (display \"hi\") \"hi\")."))))
 
 ;; ---------------------------------------------------------------------------

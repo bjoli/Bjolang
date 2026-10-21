@@ -24,7 +24,7 @@
 (defun (written n #:indent? #f #:prefixes Nil)
   (match (node->xml-string n #:indent? indent? #:prefixes prefixes)
     ((Ok s) s)
-    ((Err e) (str "error: " (->str e)))))
+    ((Err e) (str "error: " (displayed e)))))
 
 (: (-> Node bool))
 (defun (refused? n) (err? (node->xml-string n)))
@@ -116,7 +116,7 @@
   (expect-true "?> in PI data" (refused? (xml-pi "p" "a?>b")))
   (expect-true "a PI target that is no name" (refused? (xml-pi "a b" "x")))
   (expect "the error says why"
-          (match (node->xml-string (el "a" (list (xml-comment "a--b")))) ((Err e) (->str e)) ((Ok _) ""))
+          (match (node->xml-string (el "a" (list (xml-comment "a--b")))) ((Err e) (displayed e)) ((Ok _) ""))
           "a comment may not contain \"--\""))
 
 (: (-> void))
@@ -156,7 +156,7 @@
                                                #:doctype (Some (Doctype (name "html") (public-id pub) (system-id sys))))
                                  #:declaration? #f)
       ((Ok s) s)
-      ((Err e) (str "error: " (->str e)))))
+      ((Err e) (str "error: " (displayed e)))))
   (expect "a doctype with no ids" (with-doctype None None) "<!DOCTYPE html><html />")
   (expect "a system id" (with-doctype None (Some "a.dtd")) "<!DOCTYPE html SYSTEM \"a.dtd\"><html />")
   (expect "a system id with a double quote in it" (with-doctype None (Some "a\"b.dtd")) "<!DOCTYPE html SYSTEM 'a\"b.dtd'><html />")
@@ -179,7 +179,7 @@
                  (_ #f)))
   (def with-dt (parse-xml "<!DOCTYPE a [<!ENTITY e 'x'>]><a>&e;</a>" #:dtd 'parse))
   (expect "a parsed doctype is written back"
-          (match with-dt ((Ok d) (document->xml-string d #:declaration? #f)) ((Err e) (Ok (->str e))))
+          (match with-dt ((Ok d) (document->xml-string d #:declaration? #f)) ((Err e) (Ok (displayed e))))
           (Ok "<!DOCTYPE a><a>x</a>")))
 
 (: (-> int string string))

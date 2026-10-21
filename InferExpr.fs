@@ -1811,6 +1811,7 @@ and private inferIdent (env: Env) (name: string) (r: Range) : HMType * TypedExpr
 // An inline trait's methods are not bound at all, hence the first half.
 and private inferTraitMethodCall (env: Env) (methodKey: string) (args: Expr list) (r: Range) : HMType * TypedExpr =
     let traitName, methodName = (traitMethodOf env.Registry methodKey).Value
+    warnIfDeprecated env methodKey r
 
     // Every argument is positional, keywords included. A trait method's
     // shape is fixed by its trait and no trait declares a keyword

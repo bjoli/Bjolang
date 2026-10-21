@@ -98,7 +98,7 @@
 ;; The traits
 ;; ---------------------------------------------------------------------------
 ;;
-;; `Collection` and `->str` only. There is no `Iterable`: the walk a heap has is
+;; `Collection`, `Written` and `Displayed` only. There is no `Iterable`: the walk a heap has is
 ;; unordered, and a caller reaching for `for-each` would get an order it had
 ;; every reason to expect was the heap's. `mutableheap->unordered-seq` is that
 ;; walk under a name that says so, and is `Iterable` by being a `Seq`.
@@ -111,19 +111,31 @@
   (defun (length h) (mutableheap-length h))
   (defun (empty? h) (mutableheap-empty? h)))
 
-;; `#mheap(element priority ...)`, unordered, for the reason above.
-(: (-> (MutableHeap %a %p) string) (where (->str %a) (->str %p)))
-(defun (mutableheap->str h)
-  (def sb (stringbuilder-empty))
-  (stringbuilder-add-string! sb "#mheap(")
+;; `#mheap(element priority ...)`, unordered, for the reason above. Each
+;; element and priority is added by the function given for it.
+(: (-> (MutableHeap %a %p) StringBuilder (-> %a StringBuilder void) (-> %p StringBuilder void) void))
+(defun (mutableheap-print-into h b each-elem each-priority)
+  (stringbuilder-add-string! b "#mheap(")
   (loop (:with first? #t #f)
         (:for entry (mutableheap->unordered-seq h))
-        (:do (unless first? (stringbuilder-add-string! sb " "))
-             (stringbuilder-add-string! sb (map-entry->str entry))))
-  (stringbuilder-add-string! sb ")")
-  (stringbuilder->string sb))
+        (:do (def (x p) entry)
+             (unless first? (stringbuilder-add-string! b " "))
+             (each-elem x b)
+             (stringbuilder-add-string! b " ")
+             (each-priority p b)))
+  (stringbuilder-add-string! b ")"))
 
-(impl (->str (MutableHeap %a %p))
-  (where (->str %a) (->str %p))
-  (defun (->str h)
-    (mutableheap->str h)))
+(impl (Written (MutableHeap %a %p))
+  (where (Written %a) (Written %p))
+  (defun (write-into h b)
+    (mutableheap-print-into h b (fun (x b) (write-into x b)) (fun (p b) (write-into p b)))))
+
+(impl (Displayed (MutableHeap %a %p))
+  (where (Displayed %a) (Displayed %p))
+  (defun (display-into h b)
+    (mutableheap-print-into h b (fun (x b) (display-into x b)) (fun (p b) (display-into p b)))))
+
+(: (-> (MutableHeap %a %p) string) (where (Displayed %a) (Displayed %p)))
+(defun (mutableheap->str h) (displayed h))
+
+(:deprecated mutableheap->str "use `displayed`")

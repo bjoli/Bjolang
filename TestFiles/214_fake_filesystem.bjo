@@ -51,7 +51,7 @@
     (expect-true "a missing fake path is an Err of the real type"
                  (match (open-input-file "nowhere.txt")
                    ((Ok _) #f)
-                   ((Err e) (string-contains? (->str e) "FileNotFoundException")))))
+                   ((Err e) (string-contains? (displayed e) "FileNotFoundException")))))
 
   ;; --- Writing, and reading what was written -------------------------------
   (def fs (fake-fs (list (Tuple "seed.txt" "seeded"))))
@@ -86,7 +86,7 @@
     (expect-true "CreateNew on a fake path that exists is an IOException"
                  (match (open-output-file "taken.txt" #:mode CreateNew)
                    ((Ok _) #f)
-                   ((Err e) (string-contains? (->str e) "IOException"))))
+                   ((Err e) (string-contains? (displayed e) "IOException"))))
     (expect "CreateNew on a free fake path writes"
             (call-with-output-file "free.txt" #(write-string &1 "mine") #:mode CreateNew)
             (Ok unit))
@@ -103,7 +103,7 @@
   (expect-true "a real CreateNew on an existing file is an IOException"
                (match (open-output-file real #:mode CreateNew)
                  ((Ok p) (let () (close-output-port p) #f))
-                 ((Err e) (string-contains? (->str e) "IOException"))))
+                 ((Err e) (string-contains? (displayed e) "IOException"))))
   (file-delete real)
   (expect "a real CreateNew on a free path"
           (call-with-output-file real #(write-string &1 "d") #:mode CreateNew)

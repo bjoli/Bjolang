@@ -339,9 +339,29 @@ let rec buildEvidence
     // answers is never observed, and the blanket, where the trait has one,
     // is the one that can be named at `object`.
     | TMeta _ when Map.containsKey traitName env.Registry.BlanketImpls ->
-        { Type = dictType
-          Range = range
-          Node = TIdent(implSingletonName traitName env.Registry.BlanketImpls[traitName].Key, [ resolved ]) }
+        let blanket = env.Registry.BlanketImpls[traitName]
+
+        if blanket.Constraints.IsEmpty then
+            { Type = dictType
+              Range = range
+              Node = TIdent(implSingletonName traitName blanket.Key, [ resolved ]) }
+        else
+            // A blanket that stands on its trait's superclasses is built from
+            // their evidence at the same type, which are blankets too or
+            // nothing could be named at `object`.
+            let subEvidence =
+                blanket.Constraints
+                |> List.map (fun c -> buildEvidence env scope c.TraitName resolved range describe)
+
+            let callee =
+                { Type = tfun (subEvidence |> List.map (fun e -> e.Type)) dictType
+                  Range = range
+                  Node = TIdent(implFactoryName traitName blanket.Key, [ resolved ]) }
+                : TypedExpr
+
+            { Type = dictType
+              Range = range
+              Node = TApply(callee, subEvidence, []) }
 
     // A structural type with no head constructor: a function, or a tuple of an
     // arity nothing implements. There is nothing to key an implementation by,

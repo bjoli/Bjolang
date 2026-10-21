@@ -1201,8 +1201,23 @@ let metadata
                                 (ready |> List.fold (fun s (n, _) -> Set.add n s) placed)
                                 (List.rev ready @ acc)
 
+                // A deprecated method is published after its trait, as a
+                // `(:deprecated ...)` comes after what it names: a method is
+                // published by its trait and not as a definition, so this is
+                // the only place its deprecation can go.
+                let deprecations (traitName: string) (info: TypedAST.TraitInfo) =
+                    traitMethodNames info
+                    |> List.choose (fun m ->
+                        let key = Naming.traitMethodKey traitName m
+
+                        Map.tryFind key env.DeprecatedNames
+                        |> Option.map (fun instead ->
+                            let quotedText = instead.Replace("\\", "\\\\").Replace("\"", "\\\"")
+                            $" (:deprecated %s{key} \"%s{quotedText}\")"))
+                    |> String.concat ""
+
                 order (exportedTraits |> Map.toList) Set.empty []
-                |> List.map (fun (traitName, info) -> serializeTrait traitName info)
+                |> List.map (fun (traitName, info) -> serializeTrait traitName info + deprecations traitName info)
 
             // Implementations follow the traits they belong to: reading
             // one back needs the trait already registered.
@@ -1240,6 +1255,20 @@ let metadata
                 |> List.filter (fun ((traitName, _) as key, _) ->
                     Map.containsKey traitName exportedTraits
                     || (Set.contains key ownImplKeys && not (Set.contains traitName ownTraitNames)))
+                // An implementation for a type this module keeps is one no
+                // importer can reach: it has no value of the type to call it
+                // at. Every type has a `Written` one, so this is common.
+                |> List.filter (fun (_, (targetType, _)) ->
+                    let withheldKeys = withheld |> List.map fst |> Set.ofList
+
+                    let rec names (t: TypedAST.HMType) =
+                        match t with
+                        | TypedAST.TCon(name, args) -> Set.contains name withheldKeys || List.exists names args
+                        | TypedAST.TTuple args -> List.exists names args
+                        | TypedAST.TFun(args, ret, _) -> List.exists names args || names ret
+                        | _ -> false
+
+                    not (names targetType))
                 // A `#:via` implementation is read back against the via type's,
                 // so that one comes first: each after the one it is via.
                 |> List.sortBy (fun ((traitName, implKey), _) ->

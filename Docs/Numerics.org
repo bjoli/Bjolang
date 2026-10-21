@@ -178,7 +178,7 @@ comparable, ~string~ and ~bool~ included, and everything ordering-shaped is
 built on it: ~less?~, ~greater?~, ~at-most?~, ~at-least?~, ~least~, ~greatest~,
 ~list-sort~, ~list-min~, ~list-max~. A tuple of two, three or four ordered
 items is ordered too, by its first item and then by the next: ~(list-sort
-(list (Tuple 2 "a") (Tuple 1 "b")))~ is ~((1, b) (2, a))~.
+(list (Tuple 2 "a") (Tuple 1 "b")))~ is ~((Tuple 1 "b") (Tuple 2 "a"))~.
 
 On ~string~ it is *ordinal* — code unit by code unit — and not .NET's
 ~CompareTo~, which orders in the ambient culture and would put ~"ä"~ beside
@@ -275,12 +275,18 @@ pays a dictionary, which is the price of your types being orderable at all.
 
 ** Printing and reading
 
-~println~ and ~print~ take any value and go through ~->str~. ~displayln~ takes a
-string.
+~println~ and ~print~ take any value and go through ~displayed~, which writes a
+number without its suffix. ~written~ keeps the suffix that gives the type back,
+and always writes a double with a point. ~displayln~ takes a string.
 
 #+BEGIN_SRC scheme
 (println 42)                  ;; 42
+(println 21L)                 ;; 21
 (println 2.5)                 ;; 2.5
+(written 21L)                 ;; "21L"
+(written 2.5M)                ;; "2.5M"
+(written 6.0)                 ;; "6.0"
+(written (/ 1.0 0.0))         ;; "+inf.0", and NaN is "+nan.0"
 (displayln (int->string 42))
 #+END_SRC
 
@@ -288,12 +294,12 @@ string.
 those names, and so do ~decimal->string~, ~bigint->string~, ~int128->string~
 and ~uint128->string~ with their ~string->~ inverses. ~string->int~,
 ~string->long~ and ~string->double~ read the first three back. The other three
-types have no wrapper of their own, so use ~->str~.
+types have no wrapper of their own, so use ~displayed~.
 ~number->string~ is ~int->string~ under the name R7RS uses.
 
-Conversion to string is .NET's ~ToString()~ in the invariant culture, so ~6.0~
-prints as ~6~, infinity prints as ~∞~, and a minus is a minus wherever the
-program runs. Reach for ~(std fmt)~ when the shape of the output matters.
+~displayed~ is .NET's ~ToString()~ in the invariant culture, so ~6.0~
+prints as ~6~, infinity prints as ~Infinity~, and a minus is a minus wherever the
+program runs. ~written~ is invariant too. Reach for ~(std fmt)~ when the shape of the output matters.
 
 ~string->int~, ~string->long~ and ~string->double~ *throw*
 ~System.FormatException~ on input that is not a number. Wrap them wherever the input is not yours:
@@ -407,7 +413,7 @@ to paste:
   (: low-bit ... (where (Integral %a) (Num %a)))
 #+END_EXAMPLE
 
-*This is unlike ~Eq~ and ~->str~*, which are inferred from the body and need no
+*This is unlike ~Eq~ and ~Displayed~*, which are inferred from the body and need no
 clause. The difference is that those are open — anyone may implement one, so the
 constraint names something a type can *do*. A CLR constraint is closed: nothing
 declared in Bjolang can ever satisfy ~INumber~, so ~(where (Num %a))~ enumerates

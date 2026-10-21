@@ -973,9 +973,20 @@ let private applyDefRenaming (moduleName: string) (renaming: Map<string, string 
         | Some names -> names
         | None -> []
 
+    // A trait's methods are bound under their keys by the trait, whatever
+    // an edge calls them, so a deprecation of one stays under its key.
+    let methodKeys =
+        decls
+        |> List.collect (function
+            | DTrait(key, _, _, _, signatures, _, _, _, _) ->
+                signatures |> List.map (fun (m, _, _) -> Naming.traitMethodKey key m)
+            | _ -> [])
+        |> Set.ofList
+
     decls
     |> List.collect (fun d ->
         match d with
+        | DDeprecated(name, _, _) when Set.contains name methodKeys -> [ d ]
         | DExtern(name, origin, t, constraints, r) ->
             let spellings = visible name
 
@@ -1398,7 +1409,7 @@ let importsOf (forms: SExpr list) : (ImportSpec * Lexer.Range) list =
 /// Adds the implicit `(import (std prelude))`.
 ///
 /// The prelude is *linked*, not imported: `string-append`, `int->string`,
-/// `print` and the `->str`, `Iterable`, `Collector` and `Num` traits are the
+/// `print` and the `Written`, `Displayed`, `Iterable`, `Collector` and `Num` traits are the
 /// language as far as a program is concerned, and which side of the
 /// compiler/library line they happen to fall on is an implementation detail
 /// that should not show up in every file's header.
@@ -1984,6 +1995,33 @@ let private checkEntryPoint (env: TypedAST.Env) (decls: Decl list) : unit =
                 $"Type Error at %s{Lexer.formatPos r}: 'main' is a program's entry point and takes the arguments, a (Vec string). This one is %s{DotNetInterop.showType actual}. A main written without a parameter is given the arguments anyway, and one that does not return an int exits with 0 — so the way to a different type is a signature or a parameter type, and there is nothing the entry point could pass it."
     | _ -> ()
 
+/// The type aliases a dependency's declarations offer, under their keys and
+/// under the bare spellings it publishes for them. See
+/// `TypeSyntax.withWrittenImpls`, which asks whether a field's type is a
+/// function's.
+let private aliasesOffered (decls: Decl list) : Map<string, FType> =
+    let rec typeDefs (ds: Decl list) =
+        ds
+        |> List.collect (function
+            | DType(tds, _)
+            | DTypeRec(tds, _) -> tds
+            | DModule(_, inner, _) -> typeDefs inner
+            | _ -> [])
+
+    let byKey =
+        typeDefs decls
+        |> List.choose (fun td ->
+            match td.Kind with
+            | Alias target -> Some(td.Name, target)
+            | _ -> None)
+        |> Map.ofList
+
+    decls
+    |> List.choose (function
+        | DImportAlias(visible, key, AliasType, _) -> Map.tryFind key byKey |> Option.map (fun t -> visible, t)
+        | _ -> None)
+    |> List.fold (fun acc (n, t) -> Map.add n t acc) byKey
+
 let wrapInModule (moduleName: string) (filePath: string) (decls: Decl list) : Decl list =
     // Find the first and last range to represent the module range
     let r = 
@@ -2082,6 +2120,10 @@ let loadModuleGraph
             ResizeArray<Map<string, string> * (string * string * AliasKind) list * Set<string> * Lexer.Range>
          >()
 
+    /// The modules each `.dll` was built against, which it links but does not
+    /// offer. See the sort below.
+    let linkedOf = System.Collections.Generic.Dictionary<string, string list>()
+
     let rec load (filePath: string) : unit =
         let absPath = Path.GetFullPath(filePath)
         if currentPath.Contains(absPath) then
@@ -2107,6 +2149,8 @@ let loadModuleGraph
                     for path in hit.Linked do
                         dllDeps.Add path |> ignore
                         noteAssemblyPath path
+
+                    linkedOf[absPath] <- hit.Linked |> List.filter ((<>) absPath)
 
                     Frameworks.noteImported hit.Frameworks
                     noteFacts hit.Facts
@@ -2193,6 +2237,8 @@ let loadModuleGraph
                     for depPath in linkedDeps do
                         dllDeps.Add(depPath) |> ignore
                         noteAssemblyPath depPath
+
+                    linkedOf[absPath] <- linkedDeps
 
                     // What this import was built against is what the importing
                     // module is compiled against too — calling a function whose
@@ -2684,6 +2730,26 @@ let loadModuleGraph
                         else
                             parsed
 
+                    // Every type is written, where `Written` can be seen: in a
+                    // module of the prelude's, and in the prelude itself.
+                    let parsed =
+                        let isPrelude =
+                            isStandardLibrary absPath
+                            && Path.GetFileName absPath = "prelude.bjo"
+                            && Path.GetFileName(Path.GetDirectoryName absPath) = "std"
+
+                        if isPrelude || importsOf forms |> List.exists (fun (s, _) -> s.Path = preludePath) then
+                            let imported =
+                                importEdges
+                                |> List.map (fun (dep, _, _) ->
+                                    let m = resolvedModules[dep]
+                                    aliasesOffered (m.ParsedDecls @ m.Carried))
+                                |> List.fold (fun acc offered -> Map.fold (fun a k v -> Map.add k v a) acc offered) Map.empty
+
+                            TypeSyntax.withWrittenImpls imported parsed
+                        else
+                            parsed
+
                     parsed, [], (importEdges |> List.map (fun (dep, _, _) -> dep)), [], [], [], None
 
             // Dependencies were loaded above, before this module was parsed. A
@@ -2728,6 +2794,15 @@ let loadModuleGraph
             let m = resolvedModules.[path]
             for dep in m.Dependencies do
                 visit dep
+            // A `.dll` comes after the modules of this graph it was built
+            // against, though it does not import them here: what it publishes
+            // may name their traits, as every type's `Written` implementation
+            // names the prelude's, whatever order the importer wrote.
+            match linkedOf.TryGetValue path with
+            | true, linked ->
+                for dep in linked do
+                    if resolvedModules.ContainsKey dep then visit dep
+            | _ -> ()
             sorted.Add(m)
 
     visit (Path.GetFullPath(mainFilePath))

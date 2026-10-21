@@ -190,20 +190,32 @@
                   ((Some w) (if (= v w) (go) #f)))))))))
   (defun (eq-hash m) (unhashable "MutableMap")))
 
-;; `#mmap(k v k v)`, the same shape `map->str` writes.
-(: (-> (MutableMap %k %v) string) (where (->str %k) (->str %v)))
-(defun (mutablemap->str m)
-  (def sb (stringbuilder-empty))
-  (stringbuilder-add-string! sb "#mmap(")
+;; `#mmap(k v k v)`: each key and its value, flat, with a space between all.
+;; Each key and value is added by the function given for it.
+(: (-> (MutableMap %k %v) StringBuilder (-> %k StringBuilder void) (-> %v StringBuilder void) void))
+(defun (mutablemap-print-into m b each-key each-value)
+  (stringbuilder-add-string! b "#mmap(")
   (loop (:with first? #t #f)
         (:for entry m)
-        (:do (unless first? (stringbuilder-add-string! sb " "))
-             (stringbuilder-add-string! sb (map-entry->str entry))))
-  (stringbuilder-add-string! sb ")")
-  (stringbuilder->string sb))
+        (:do (def (k v) entry)
+             (unless first? (stringbuilder-add-string! b " "))
+             (each-key k b)
+             (stringbuilder-add-string! b " ")
+             (each-value v b)))
+  (stringbuilder-add-string! b ")"))
 
-(impl (->str (MutableMap %k %v))
-  (where (->str %k) (->str %v))
-  (defun (->str m)
-    (mutablemap->str m)))
+(impl (Written (MutableMap %k %v))
+  (where (Written %k) (Written %v))
+  (defun (write-into m b)
+    (mutablemap-print-into m b (fun (k b) (write-into k b)) (fun (v b) (write-into v b)))))
+
+(impl (Displayed (MutableMap %k %v))
+  (where (Displayed %k) (Displayed %v))
+  (defun (display-into m b)
+    (mutablemap-print-into m b (fun (k b) (display-into k b)) (fun (v b) (display-into v b)))))
+
+(: (-> (MutableMap %k %v) string) (where (Displayed %k) (Displayed %v)))
+(defun (mutablemap->str m) (displayed m))
+
+(:deprecated mutablemap->str "use `displayed`")
 

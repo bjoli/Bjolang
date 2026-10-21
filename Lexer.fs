@@ -88,7 +88,7 @@ module Lexer =
         ///
         /// String interpolation expands to tokens rather than to a syntax tree
         /// — that is what makes it a *reader* feature — so it has no node to
-        /// emit and needs a token to say "this `str` or `->str` is mine".
+        /// emit and needs a token to say "this `str` or `displayed` is mine".
         ///
         /// No spelling reads as one, so a program cannot write what would
         /// capture it. A macro's input or template may contain one; it crosses
@@ -685,13 +685,13 @@ module Lexer =
     /// Reads `#"a ${x} b"` and returns the tokens it stands for, followed by
     /// the position just past its closing quote.
     ///
-    /// The expansion is `(str "a " (->str x) " b")`. Doing it in the reader is
+    /// The expansion is `(str "a " (displayed x) " b")`. Doing it in the reader is
     /// what a reader macro is, and it is what makes the feature cost nothing
     /// anywhere else: there is no new token for the parser, no new node for
     /// inference, nothing for the emitter, and a `#"..."` inside a macro
     /// template is a template of the expansion without anyone arranging for it.
     ///
-    /// `->str` around every hole is what lets the parts have different types. A
+    /// `displayed` around every hole is what lets the parts have different types. A
     /// `#:rest` parameter has one element type, so `str` can only be variadic
     /// over `string`, and each part has to be converted while it still has a
     /// type of its own. It is the trait, so a type with an impl of its own is
@@ -826,7 +826,7 @@ module Lexer =
               Module = "" }
 
         // The synthesized tokens all carry the whole form's range: `str` and
-        // `->str` were written by nobody, and the nearest true thing to say
+        // `displayed` were written by nobody, and the nearest true thing to say
         // about where they are is "here". A hole's own tokens keep their real
         // positions, so a type error inside one is reported against the source
         // that caused it.
@@ -844,7 +844,7 @@ module Lexer =
                         failwithf
                             $"Empty ${{}} in the interpolated string at %s{formatAt file hl hc}: there is nothing to interpolate."
 
-                    [ mk LParen; mk (ResolvedSymbol "->str") ] @ inner @ [ mk RParen ])
+                    [ mk LParen; mk (ResolvedSymbol "displayed") ] @ inner @ [ mk RParen ])
             |> List.ofSeq
 
         // One part is already a string, and no parts is the empty one. Neither
@@ -852,7 +852,7 @@ module Lexer =
         // would produce — so this is only about not emitting a call with
         // nothing to concatenate.
         //
-        // `str` is resolved for the reason `->str` is: a local of that name
+        // `str` is resolved for the reason `displayed` is: a local of that name
         // must not capture what the reader wrote.
         let expansion =
             match parts with

@@ -3,6 +3,46 @@
 
 What each change guarantees, and what it leaves open.
 
+* Written and Displayed, in place of ->str
+
+- Two traits print a value, as Scheme's ~write~ and ~display~ do. ~written~
+  is a value as the reader reads it: a string in quotes and escaped, a char
+  as ~#\a~, a number with the suffix that gives its type back (~21L~,
+  ~2.5M~), a double with a point (~2.0~). ~displayed~ is the value for a
+  person to read: a string is its text, a number has no suffix, and a list
+  displays what it holds, ~(a b)~.
+- Every type is written. A type a module declares is written in constructor
+  syntax, by an implementation the compiler writes unless the module writes
+  one: ~(Car (brand "volvo") (year 1999))~, ~(Circle 1.0)~, ~(Meters 2.0)~.
+  An ~#:opaque~ type is ~#<Secret>~, as its representation is the module's
+  own. A field with a function in its type is written as ~#<procedure>~.
+  So a record no longer prints as the C# record it compiles to.
+- Every type is displayed as it is written, by a blanket implementation of
+  ~Displayed~, unless it implements ~Displayed~ itself. ~println~, ~print~
+  and an interpolation ~#"${x}"~ display. The REPL shows a value written,
+  so a string in quotes, and ~expect~ reports a failure written, so ~"4"~
+  and ~4~ do not read the same.
+- Each trait has a method that adds to a builder, ~write-into~ and
+  ~display-into~, which an implementation must give, and one that answers a
+  string. A container writes what it holds into the one builder; a number
+  gives the string it has, and no builder is used. The outermost call
+  borrows a builder the thread keeps.
+- ~->str~, ~list->str~, ~map->str~, ~map-entry->str~ and the collections'
+  ~->str~ functions are deprecated, and a use warns. An implementation of
+  ~->str~ of its own is called by ~->str~ only.
+- A blanket implementation stands on its trait's superclasses: the blanket
+  of ~Displayed~ calls ~written~ at the type it is used at. A blanket still
+  may not have a where clause of its own.
+- A deprecated trait method warns where it is used, also in an importer.
+- An implementation for a type its module does not export is not published,
+  instead of failing the build: no importer has a value of the type.
+- A ~.dll~ is read after the modules of the same build it was built
+  against, so what it publishes may name their traits whatever order the
+  importer imports them in.
+- Tests: ~445_blanket_superclasses.bjo~, ~446_written_displayed.bjo~,
+  ~133_simpletest.bjo~, ~334_null_case.bjo~, ~335_struct_union.bjo~,
+  ~codegen/newtype_erased.bjo~, and the REPL transcripts.
+
 * A real number takes the type it is used at
 
 - A number with a decimal point or an exponent and no suffix, ~2.5~ or

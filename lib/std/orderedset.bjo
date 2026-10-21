@@ -306,18 +306,16 @@
   (defun (eq-hash s)
     (orderedset-fold (fun (x h) (hash-combine h (eq-hash x))) 17 s)))
 
-(: (-> (OrderedSet %a) string) (where (->str %a)))
-(defun (orderedset->str s)
-  (def sb (stringbuilder-empty))
-  (stringbuilder-add-string! sb "#{")
-  (loop (:with first? #t #f)
-        (:for elem s)
-        (:do (unless first? (stringbuilder-add-string! sb " "))
-             (stringbuilder-add-string! sb (->str elem))))
-  (stringbuilder-add-string! sb "}")
-  (stringbuilder->string sb))
+;; `#{a b c}`, in ascending order.
+(impl (Written (OrderedSet %a))
+  (where (Written %a))
+  (defun (write-into s b) (elements-print-into "#{" s "}" b (fun (x b) (write-into x b)))))
 
-(impl (->str (OrderedSet %a))
-  (where (->str %a))
-  (defun (->str s)
-    (orderedset->str s)))
+(impl (Displayed (OrderedSet %a))
+  (where (Displayed %a))
+  (defun (display-into s b) (elements-print-into "#{" s "}" b (fun (x b) (display-into x b)))))
+
+(: (-> (OrderedSet %a) string) (where (Displayed %a)))
+(defun (orderedset->str s) (displayed s))
+
+(:deprecated orderedset->str "use `displayed`")

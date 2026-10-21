@@ -175,18 +175,15 @@
   (defun (eq-hash s) (unhashable "MutableSet")))
 
 ;; `#mset(a b c)`, in whatever order the table holds them.
-(: (-> (MutableSet %a) string) (where (->str %a)))
-(defun (mutableset->str s)
-  (def sb (stringbuilder-empty))
-  (stringbuilder-add-string! sb "#mset(")
-  (loop (:with first? #t #f)
-        (:for elem s)
-        (:do (unless first? (stringbuilder-add-string! sb " "))
-             (stringbuilder-add-string! sb (->str elem))))
-  (stringbuilder-add-string! sb ")")
-  (stringbuilder->string sb))
+(impl (Written (MutableSet %a))
+  (where (Written %a))
+  (defun (write-into s b) (elements-print-into "#mset(" s ")" b (fun (x b) (write-into x b)))))
 
-(impl (->str (MutableSet %a))
-  (where (->str %a))
-  (defun (->str s)
-    (mutableset->str s)))
+(impl (Displayed (MutableSet %a))
+  (where (Displayed %a))
+  (defun (display-into s b) (elements-print-into "#mset(" s ")" b (fun (x b) (display-into x b)))))
+
+(: (-> (MutableSet %a) string) (where (Displayed %a)))
+(defun (mutableset->str s) (displayed s))
+
+(:deprecated mutableset->str "use `displayed`")

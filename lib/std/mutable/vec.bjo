@@ -179,19 +179,16 @@
         #f))
   (defun (eq-hash xs) (unhashable "MutableVec")))
 
-;; `#mvec(a b c)`, in order, each element by its own `->str`.
-(: (-> (MutableVec %a) string) (where (->str %a)))
-(defun (mutablevec->str xs)
-  (def sb (stringbuilder-empty))
-  (stringbuilder-add-string! sb "#mvec(")
-  (loop (:with first? #t #f)
-        (:for elem xs)
-        (:do (unless first? (stringbuilder-add-string! sb " "))
-             (stringbuilder-add-string! sb (->str elem))))
-  (stringbuilder-add-string! sb ")")
-  (stringbuilder->string sb))
+;; `#mvec(a b c)`, in order.
+(impl (Written (MutableVec %a))
+  (where (Written %a))
+  (defun (write-into xs b) (elements-print-into "#mvec(" xs ")" b (fun (x b) (write-into x b)))))
 
-(impl (->str (MutableVec %a))
-  (where (->str %a))
-  (defun (->str xs)
-    (mutablevec->str xs)))
+(impl (Displayed (MutableVec %a))
+  (where (Displayed %a))
+  (defun (display-into xs b) (elements-print-into "#mvec(" xs ")" b (fun (x b) (display-into x b)))))
+
+(: (-> (MutableVec %a) string) (where (Displayed %a)))
+(defun (mutablevec->str xs) (displayed xs))
+
+(:deprecated mutablevec->str "use `displayed`")

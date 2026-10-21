@@ -1,0 +1,36 @@
+;; A blanket implementation stands on its trait's superclasses: the blanket of
+;; a trait that requires `Displayed` may call `displayed` at its implementor,
+;; and it reaches the implementation of the type it is used at, not the blanket
+;; of `Displayed`.
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Pt (Record (: x int) (: y int))))
+(impl (Displayed Pt)
+  (defun (displayed p) "a point")
+  (defun (display-into p b) (stringbuilder-add-string! b "a point")))
+
+(def/trait (Shown %a)
+  (where (Displayed %a))
+  (: shown (-> %a string)))
+
+(impl (Shown %a)
+  (defun (shown x) (str "<" (displayed x) ">")))
+
+(impl (Shown int)
+  (defun (shown x) "an int"))
+
+(: (-> %a string) (where (Shown %a)))
+(defun (through-a-dictionary x) (shown x))
+
+(: (-> %a string))
+(defun (with-what-it-needs-inferred x) (shown x))
+
+(defun (main)
+  (expect "the blanket, at a type with its own Displayed" (shown (Pt (x 1) (y 2))) "<a point>")
+  (expect "a type with its own implementation" (shown 5) "an int")
+  (expect "the blanket, at a string" (shown "s") "<s>")
+  (expect "through a dictionary" (through-a-dictionary (Pt (x 1) (y 2))) "<a point>")
+  (expect "with the constraint inferred" (with-what-it-needs-inferred (list 1 2)) "<(1 2)>")
+  (expect "at a type nothing pinned" (shown (list)) "<()>")
+  0)

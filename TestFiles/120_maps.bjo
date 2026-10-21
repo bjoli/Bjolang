@@ -138,9 +138,9 @@
 ;; constraints become dictionary parameters filled in where the key and value
 ;; types are known.
 
-(: (-> (Map %k %v) string) (where (->str %k) (->str %v)))
+(: (-> (Map %k %v) string) (where (Displayed %k) (Displayed %v)))
 (defun (describe m)
-  (str "<" (int->string (map-length m)) ": " (map->str m) ">"))
+  (str "<" (int->string (map-length m)) ": " (displayed m) ">"))
 
 ;; The same map, reached through `Iterable` rather than through `Map`'s own
 ;; operations — so the dictionary has to project `%elem` to `(Tuple %k %v)`.
@@ -189,19 +189,19 @@
 (: (-> void))
 (defun (test-printing)
   ;; A single entry, so the trie's order cannot make this flaky.
-  (expect-str "->str of a map" (->str #map(("a" 1))) "#map((a 1))")
-  (expect-str "an empty map" (->str (nothing)) "#map()")
+  (expect-str "->str of a map" (displayed #map(("a" 1))) "#map((a 1))")
+  (expect-str "an empty map" (displayed (nothing)) "#map()")
 
   ;; Two entries: whichever order the trie walks them in, the result is one of
   ;; two strings, and neither is a .NET type name.
   (def m #map(("a" 1) ("b" 2)))
-  (def shown (->str m))
+  (def shown (displayed m))
   (expect-true "two entries print as a literal"
           (or (= shown "#map((a 1) (b 2))") (= shown "#map((b 2) (a 1))")))
 
   ;; Each entry is in parentheses, as the literal writes it, so a map of
   ;; numbers prints as the literal that makes it.
-  (expect-str "the literal's own shape" (->str #map((1 2))) "#map((1 2))"))
+  (expect-str "the literal's own shape" (displayed #map((1 2))) "#map((1 2))"))
 
 ;; ---------------------------------------------------------------------------
 ;; The surface `map-*` did not have before
@@ -320,7 +320,7 @@
 (: (-> void))
 (defun (test-order)
   (def m (scores))
-  (expect-str "a walk arrives sorted by key" (->str m) "#map((apple 1) (fig 2) (pear 3))")
+  (expect-str "a walk arrives sorted by key" (displayed m) "#map((apple 1) (fig 2) (pear 3))")
 
   (match (orderedmap-min m)
     ((Some entry) (expect-str "min" (entry-key entry) "apple"))
@@ -396,7 +396,7 @@
   (def doubled
     (loop (:for entry m)
           (:acc out (ordered-mapping (Tuple (entry-key entry) (* 2 (entry-value entry)))))))
-  (expect-str "ordered-mapping collector" (->str doubled) "#map((apple 2) (fig 4) (pear 6))")
+  (expect-str "ordered-mapping collector" (displayed doubled) "#map((apple 2) (fig 4) (pear 6))")
 
   (expect "orderedmap->list" (list-length (orderedmap->list m)) 3)
   (expect "list->orderedmap" (orderedmap-length (list->orderedmap (orderedmap->list m))) 3)
@@ -416,12 +416,12 @@
   (expect "builder length counts appends" (orderedmapbuilder-length b) 3)
   ;; A key appended twice is resolved when the map is built, last one winning.
   (expect-str "builder->orderedmap sorts and resolves"
-              (->str (orderedmapbuilder->orderedmap b))
+              (displayed (orderedmapbuilder->orderedmap b))
               "#map((a 1) (b 20))")
 
   (def c (orderedmapbuilder-empty))
   (orderedmapbuilder-add-all! c (list->seq (list (Tuple "z" 26) (Tuple "y" 25))))
-  (expect-str "builder add-all!" (->str (orderedmapbuilder->orderedmap c)) "#map((y 25) (z 26))")
+  (expect-str "builder add-all!" (displayed (orderedmapbuilder->orderedmap c)) "#map((y 25) (z 26))")
 
   (def d (orderedmap->orderedmapbuilder (scores)))
   (orderedmapbuilder-add! d "plum" 4)
@@ -470,7 +470,7 @@
 (defun (test-int-keys)
   (def m (seq->orderedmap (list->seq (list (Tuple 3 "c") (Tuple 1 "a") (Tuple 2 "b")))))
   (expect "a map keyed by int" (orderedmap-length m) 3)
-  (expect-str "in numeric order" (->str m) "#map((1 a) (2 b) (3 c))"))
+  (expect-str "in numeric order" (displayed m) "#map((1 a) (2 b) (3 c))"))
 
 (defun (main args)
   (test-literal)

@@ -83,7 +83,7 @@ A string written ~#"..."~ may contain ~${expression}~ holes.
 ;; => "x is 5 and times two is 10"
 #+END_SRC
 
-It is a *reader* macro: a ~#"..."~ works unchanged wherever a call would — quasiquote, macro template, macro input, or another ~#"..."~. The ~str~ and ~->str~ it expands to are the reader's, not the scope's, so a local binding of either name is never what a hole reaches.
+It is a *reader* macro: a ~#"..."~ works unchanged wherever a call would — quasiquote, macro template, macro input, or another ~#"..."~. The ~str~ and ~displayed~ it expands to are the reader's, not the scope's, so a local binding of either name is never what a hole reaches.
 
 A hole holds an arbitrary expression, nesting and all:
 #+BEGIN_SRC scheme
@@ -94,14 +94,16 @@ A hole holds an arbitrary expression, nesting and all:
 
 ~\$~ writes a literal dollar; a ~$~ not followed by ~{~ needs no escape. Everything else escapes as in an ordinary string, and a ~#"..."~ may span lines.
 
-**** The conversion is ~->str~, and it is per hole
-Each hole is wrapped in ~->str~. A type of your own says how by implementing the trait:
+**** The conversion is ~displayed~, and it is per hole
+Each hole is wrapped in ~displayed~: ~#"x = ${x}"~ is ~(str "x = " (displayed x))~. A string hole gives its text, without quotes. A type of your own says how by implementing ~Displayed~ (see [[*Printing: ~written~ and ~displayed~][Printing]]):
 #+BEGIN_SRC scheme
-(impl (->str Money)
-  (defun (->str m) (match m ((Kr n) (string-append (int->string n) " kr")))))
+(impl (Displayed Money)
+  (defun (display-into m b)
+    (match m ((Kr n) (stringbuilder-add-string! b #"${n} kr")))))
 
 #"you owe ${(Kr 42)}"                  ;; "you owe 42 kr"
 #+END_SRC
+With no implementation of its own, a type is displayed as it is written: ~#"got ${(Kr 42)}"~ is ~"got (Kr 42)"~.
 
 *** ~[...]~ and ~#[...]~ — a vec and an array
 ~[1 2 3]~ is a ~Vec~: immutable, and grown by making another one. ~#[1 2 3]~ is a .NET array: mutable, of a fixed length, and exactly what ~(make-array 3)~ allocates.
@@ -819,7 +821,7 @@ The bindings are *simultaneous*. An initialization that mentions a name the grou
 #+BEGIN_SRC scheme
 (let ((a 1) (b 2))
   (let ((a b) (b a))
-    (Tuple a b)))            ;; (2, 1)
+    (Tuple a b)))            ;; (Tuple 2 1)
 #+END_SRC
 Value expressions run left to right. Binding the same name twice in one ~let~ is an error.
 
@@ -827,7 +829,7 @@ Value expressions run left to right. Binding the same name twice in one ~let~ is
 #+BEGIN_SRC scheme
 (let* ((a 1)
        (b (+ a 1)))
-  (Tuple a b))               ;; (1, 2)
+  (Tuple a b))               ;; (Tuple 1 2)
 #+END_SRC
 
 ** Loops
@@ -1351,32 +1353,47 @@ Resolution strictly tries the exact head constructor first, then the blanket. Th
 (describe-via-dict 2.5)   ;; "any" — the blanket
 #+END_SRC
 
+A blanket stands on its trait's superclasses. The blanket of a trait that requires ~(Written %a)~ may call ~written~ at ~%a~, and where it is used, its dictionary is built from the ~Written~ implementation of that type:
+
+#+BEGIN_SRC scheme
+(def/trait (Shown %a)
+  (where (Written %a))
+  (: shown (-> %a string)))
+
+(impl (Shown %a)                  ;; uses the Written of the type it is used at
+  (defun (shown x) (str "<" (written x) ">")))
+#+END_SRC
+
+The prelude's ~Displayed~ is such a trait: it requires ~Written~, and its blanket displays a value as ~written~ gives it.
+
 Restrictions:
 - **Only the module declaring the trait may write its blanket.**
 - **A trait that abstracts over a constructor cannot have a blanket.**
+- **A blanket may not have a where clause of its own.** What it may use is its trait's superclasses.
 
 *** Conditional implementations
 An implementation may restrict applicability using a ~where~ clause naming constraints on its type arguments:
 
 #+BEGIN_SRC scheme
-(impl (->str (List %a))
-  (where (->str %a))
-  (defun (->str xs) (list->str xs)))
+(impl (Written (List %a))
+  (where (Written %a))
+  (defun (write-into l b)
+    (elements-print-into "(" l ")" b (fun (x b) (write-into x b)))))
 #+END_SRC
 
 Constraints dictate what dictionary dependencies the implementation requires:
 
 #+BEGIN_SRC scheme
-(->str (list 1 2))          ;; built here: List over int
+(written (list 1 2))          ;; built here: List over int
 
-(: show (-> %a string))     
-(defun (show x) (->str x))  ;; %a needs (->str %a), from the caller
+(: show (-> %a string) (where (Written %a)))
+(defun (show x) (written x))  ;; the dictionary for %a comes from the caller
 
-(show (list 1 2))           ;; supplied here, as List over int
+(show (list 1 2))             ;; supplied here, as List over int
 #+END_SRC
 
 Restrictions:
-- **A blanket may not be conditional.**
+- **A blanket may not be conditional,** except on its trait's superclasses (see *Blanket implementations*).
 - **A constraint may only name the implementation's own type variables.**
 - **The constrained trait may not be inline-only.**
 
@@ -1477,7 +1494,7 @@ When interfacing with true C# ~void~ methods, the call executes as a statement a
 
 A small union is a struct: a value of it is not allocated, and an array of it holds the values. A union is one when the struct, with a one-byte tag, is 16 bytes or less, which is the size .NET returns in two registers. Cases share the slots of one size. The union must have no type parameters, must not contain itself through fields of union type, and each case may hold at most one reference (a ~string~, or an object such as a ~Symbol~, a list or a union that is a class); the references of all cases are all strings or all objects. Its other fields are ~bool~, integers of up to 64 bits, ~float~, ~double~ or ~char~. So ~(Union (: I long) (: F double) Missing)~ and ~(Union (: Name string) (: Pos string int) Anon)~ are structs, and a union where every case carries nothing is a struct of one byte. ~Shape~ above is not: its ~Rect~ holds two ~double~ values, and with the tag that is 24 bytes.
 
-A union that is not a struct, with exactly one case that carries nothing, and at least one case that carries something, holds that case as C#'s ~null~. ~Leaf~ above is ~null~, and ~Empty~ in ~Shape~ is too. A node that holds a ~Leaf~ then stores no reference, which needs no GC write barrier, and the test for ~Leaf~ is a compare with zero. Other empty cases are one shared instance each. ~=~, ~eq-hash~, ~compare~, ~->str~ and the collections treat the two kinds the same; ~->str~ writes an empty case as its name. A .NET method called directly on the ~null~ case, such as ~(.ToString Leaf)~, throws.
+A union that is not a struct, with exactly one case that carries nothing, and at least one case that carries something, holds that case as C#'s ~null~. ~Leaf~ above is ~null~, and ~Empty~ in ~Shape~ is too. A node that holds a ~Leaf~ then stores no reference, which needs no GC write barrier, and the test for ~Leaf~ is a compare with zero. Other empty cases are one shared instance each. ~=~, ~eq-hash~, ~compare~, ~written~ and the collections treat the two kinds the same; ~written~ writes an empty case as its name. A .NET method called directly on the ~null~ case, such as ~(.ToString Leaf)~, throws.
 
 *** ~#:opaque~ — a type whose representation stays home
 The ~#:opaque~ marker keeps the type's constructors and representation to the code of its own module:
@@ -1578,6 +1595,64 @@ The rules:
 - ~cast~ cannot make or take apart a newtype;
 - a newtype is not passed to .NET as the type it wraps: take the value out with a pattern first. C# would choose an overload by the wrapped type, and the checker by the newtype.
 
+*** Printing: ~written~ and ~displayed~
+Two prelude traits turn a value into text:
+- ~Written~ gives a value as the reader reads it, as Scheme's ~write~ does. Its methods are ~(write-into x b)~, which adds the text to a ~StringBuilder~ ~b~, and ~(written x)~, which answers a string.
+- ~Displayed~ gives the value for a person to read, as Scheme's ~display~ does. Its methods are ~(display-into x b)~ and ~(displayed x)~. It requires ~Written~, and its blanket displays a value as it is written.
+
+~println~, ~print~ and string interpolation use ~displayed~. The REPL shows a result with ~written~.
+
+Each comment shows the text of the string answered:
+#+BEGIN_SRC scheme
+(written "a\"b")                ;; "a\"b"
+(displayed "a\"b")              ;; a"b
+(written (list 21L 3L))         ;; (21L 3L)
+(displayed (list 21L 3L))       ;; (21 3)
+(written (Some (Tuple 1 "x")))  ;; (Some (Tuple 1 "x"))
+#+END_SRC
+
+~written~ keeps what the reader needs to get the value back: a number has the suffix of its type (~21L~, ~21uy~, ~2.5M~, ~7I~), a double has a point (~2.0~, ~+nan.0~, ~+inf.0~, ~-inf.0~), a char is ~#\a~ or ~#\space~, a boolean ~#t~ or ~#f~, a keyword ~#:key~. A list is ~("a" "b")~, a vec ~[1L 2L]~, an array ~#[...]~, a map ~#map(("k" 1))~, a tuple ~(Tuple 1 "x")~. ~Option~ and ~Result~ are written as their cases: ~(Some "x")~, ~None~, ~(Ok 1)~, ~(Err "e")~. A ~Seq~ is not walked, and is written ~(Seq ...)~.
+
+~displayed~ is ~written~ except for strings (their text), chars, keywords (the name without ~#:~), numbers (no suffix) and the prelude containers, whose elements are displayed: ~(displayed (list "a" "b"))~ is ~(a b)~.
+
+**** The ~Written~ the compiler writes
+Each type a module declares has a ~Written~ implementation, unless the module writes its own. It writes the value as it is built:
+
+#+BEGIN_SRC scheme
+(println (Car (brand "volvo") (year 1999)))   ;; (Car (brand "volvo") (year 1999))
+(println (Circle 1.0))                        ;; (Circle 1.0)
+(println Dot)                                 ;; Dot
+(println (Meters 2.0))                        ;; (Meters 2.0)
+(println (Pair (left "a") (right 1L)))        ;; (Pair (left "a") (right 1L))
+#+END_SRC
+
+~println~ uses ~displayed~, and a type with no ~Displayed~ of its own is displayed as it is written, so the record's string field keeps its quotes.
+
+- A struct is written as a record is.
+- A generic type's implementation has ~(where (Written %a))~ for each type parameter.
+- An ~#:opaque~ type is written ~#<Secret>~, so its representation stays in its module.
+- A field whose type holds a function, directly, through an alias or inside another type such as ~(Option (-> int))~, is written as the runtime writes it: ~#<procedure>~, ~(Some #<procedure>)~. ~(written/runtime x)~ gives that text for any value.
+
+**** Your own text
+Implement ~Displayed~ for the text a person reads, or ~Written~ to change the written form too. Give ~display-into~ (or ~write-into~); ~displayed~ and ~written~ then use a builder the thread keeps. A type that has its text at hand, as a number has, may give both methods, so that no builder is used.
+
+#+BEGIN_SRC scheme
+(impl (Displayed Money)
+  (defun (display-into m b)
+    (match m ((Kr n) (stringbuilder-add-string! b #"${n} kr")))))
+#+END_SRC
+
+A container gives only ~write-into~ and ~display-into~, and calls the same method on its elements, so a nested value is written into one buffer. ~(elements-print-into open xs close b each)~ lays out any iterable, and ~(entries-print-into open xs close b each-key each-value)~ an iterable of pairs:
+
+#+BEGIN_SRC scheme
+(impl (Written (Bag %a))
+  (where (Written %a))
+  (defun (write-into s b)
+    (elements-print-into "#bag(" s ")" b (fun (x b) (write-into x b)))))
+#+END_SRC
+
+~->str~ is deprecated. It requires ~Displayed~, and its blanket calls ~displayed~; each use warns.
+
 *** A constrained function is a value
 A constrained function is an ordinary value. Evaluating it yields a lambda of its arity:
 
@@ -1597,7 +1672,7 @@ Trait methods are dispatched by name, like bindings that can shadow and be shado
 
 #+BEGIN_SRC scheme
 (defun (pick less? a b) (if (less? a b) a b))   ;; a parameter called less?
-(let ((->str (fun (n) "hidden"))) (->str 5))    ;; "hidden"
+(let ((written (fun (n) "hidden"))) (written 5))    ;; "hidden"
 #+END_SRC
 
 An ~impl~ body that calls its own method dispatches to it:
@@ -1648,25 +1723,25 @@ Implementations abstract over trailing arguments:
 ~(dyn Trait)~ holds any value implementing ~Trait~, enabling heterogeneous collections:
 
 #+BEGIN_SRC scheme
-(: render-str (-> (dyn ->str) string))
+(: render-str (-> (dyn Displayed) string))
 (defun (render-str d)
-  (->str d))
+  (displayed d))
 
 (type (: Coin (Struct (: ore int))))
 
-(impl (->str Coin)
-  (defun (->str c) #"${(struct-ref c ore)} öre"))
+(impl (Displayed Coin)
+  (defun (display-into c b) (stringbuilder-add-string! b #"${(struct-ref c ore)} öre")))
 
-(def mixed (list (dyn ->str 1)
-                  (dyn ->str "two")
-                  (dyn ->str (Coin (ore 3)))))
+(def mixed (list (dyn Displayed 1)
+                  (dyn Displayed "two")
+                  (dyn Displayed (Coin (ore 3)))))
 #+END_SRC
 
 **** The Type
 Associated types are pinned by name:
 
 #+BEGIN_SRC scheme
-(dyn ->str)                                        ; no associated types
+(dyn Displayed)                                    ; no associated types
 (dyn Foldable #:item int)                          ; one, pinned
 (dyn Collector #:elem int #:acc int #:out string)  ; all three
 #+END_SRC
@@ -1677,7 +1752,7 @@ Every associated type must be explicitly specified; omitting them is a compile e
 Boxing is strictly explicit using ~(dyn Trait expr)~. Implicit boxing is not supported.
 
 #+BEGIN_SRC scheme
-(dyn ->str 42)            ; : (dyn ->str)
+(dyn Displayed 42)        ; : (dyn Displayed)
 (dyn Foldable [1 2 3])    ; : (dyn Foldable #:item int)
 #+END_SRC
 
@@ -1685,9 +1760,9 @@ Boxing is strictly explicit using ~(dyn Trait expr)~. Implicit boxing is not sup
 Method calls on dynamic types are normal trait calls, over an automatically synthesized implementation.
 
 #+BEGIN_SRC scheme
-(->str d)                       ; resolves to the dyn-type implementation
-(println d)                     ; an unchanged (where (->str %a)) function
-(map (fun (x) (->str x)) xs)    ; over a (List (dyn ->str))
+(displayed d)                       ; resolves to the dyn-type implementation
+(println d)                         ; an unchanged (where (Displayed %a)) function
+(map (fun (x) (displayed x)) xs)    ; over a (List (dyn Displayed))
 #+END_SRC
 
 **** Code Generation
@@ -1716,9 +1791,9 @@ public sealed class Foldable_DynImpl<T_item> : Foldable<Foldable_Dyn<T_item>, T_
 Dictionaries can be synthesized locally or fetched from constraints dynamically:
 
 #+BEGIN_SRC scheme
-(: pack-all (-> (List %a) (List (dyn ->str))) (where (->str %a)))
+(: pack-all (-> (List %a) (List (dyn Displayed))) (where (Displayed %a)))
 (defun (pack-all xs)
-  (map (fun (x) (dyn ->str x)) xs))
+  (map (fun (x) (dyn Displayed x)) xs))
 #+END_SRC
 
 **** Boxability Rules

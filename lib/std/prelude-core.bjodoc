@@ -306,7 +306,7 @@
   (summary "The decimal text of an int, the same on every machine.")
   (arg n "The number.")
   (returns "Its digits, with an ASCII minus when negative.")
-  (see string->int long->string ->str)
+  (see string->int long->string displayed)
   (reference """
     Does not use the c# culture, where minus can come back with U+2212 MINUS SIGN.
     The result is guaranteed to round-trip through string->int. 
@@ -316,13 +316,13 @@
   (summary "The decimal text of a long, the same on every machine.")
   (arg n "The number.")
   (returns "Its digits, with an ASCII minus when negative.")
-  (see int->string ->str))
+  (see int->string displayed))
 
 (:doc decimal->string
   (summary "The text of a decimal, the same on every machine.")
   (arg n "The number.")
   (returns "Its digits, with a point and the digits after it that the decimal holds.")
-  (see double->string string->decimal ->str)
+  (see double->string string->decimal displayed)
   (example """
     (decimal->string 1.50M)   ; "1.50"
     """)
@@ -335,31 +335,31 @@
   (summary "The decimal text of a bigint, the same on every machine.")
   (arg n "The number.")
   (returns "All its digits, with an ASCII minus when negative.")
-  (see long->string string->bigint ->str))
+  (see long->string string->bigint displayed))
 
 (:doc int128->string
   (summary "The decimal text of an int128.")
   (arg n "The number.")
   (returns "Its digits, with an ASCII minus when negative.")
-  (see long->string string->int128 ->str))
+  (see long->string string->int128 displayed))
 
 (:doc uint128->string
   (summary "The decimal text of a uint128.")
   (arg n "The number.")
   (returns "Its digits.")
-  (see int128->string string->uint128 ->str))
+  (see int128->string string->uint128 displayed))
 
 (:doc byte->string
   (summary "The decimal text of a byte.")
   (arg n "The number.")
   (returns "Its digits, from 0 to 255.")
-  (see int->string ->str))
+  (see int->string displayed))
 
 (:doc double->string
   (summary "The text of a double, the same on every machine.")
   (arg n "The number.")
   (returns "The shortest text that reads back as the same double, with a point as the decimal separator.")
-  (see string->double int->string ->str)
+  (see string->double int->string displayed)
   (example """
     (double->string 6.0)   ; "6"
     (double->string 2.5)   ; "2.5"
@@ -375,10 +375,10 @@
   (summary "The decimal text of an int, under the name R7RS uses.")
   (arg n "The number.")
   (returns "The string representation of n, identical to int->string.")
-  (see int->string ->str)
+  (see int->string displayed)
   (reference """
     Only for @code{int}. Other numeric types have their own conversions, or
-    @code{->str}.
+    @code{displayed}.
     """))
 
 (:doc clr-string->string
@@ -396,56 +396,135 @@
 ;; Printing
 ;; ---------------------------------------------------------------------------
 
-(:doc ->str
+(:doc Written
+  (summary "Trait for the text a value is written as, which the reader reads back.")
+  (see written write-into Displayed)
+  (reference """
+    As Scheme's @code{write}: a string is in quotes with its escapes, a
+    char is @code{#\a}, a long is @code{21L}, and a double always has a
+    point, such as @code{2.0}. An implementation gives @code{write-into};
+    @code{written} by default rents a builder and calls it. A type whose
+    text is at hand gives @code{written} too, and adds it in
+    @code{write-into}.
+
+    Every type is @code{Written}. With no implementation of its own, a type
+    is written as .NET's @code{ToString} gives it, in the invariant culture.
+    """))
+
+(:doc written
+  (summary "The text a value is written as.")
+  (arg x "The value.")
+  (returns "Its written text.")
+  (see displayed write-into)
+  (example """
+    (written "a")             ; "\"a\""
+    (written #\a)             ; "#\\a"
+    (written 21L)             ; "21L"
+    (written (list "a" 1))    ; "(\"a\" 1)"
+    """))
+
+(:doc write-into
+  (summary "Adds the written text of a value to a builder.")
+  (arg x "The value.")
+  (arg b "The builder.")
+  (see written display-into)
+  (reference """
+    What a container calls on each element, so that a nested value is
+    written into one builder.
+    """))
+
+(:doc Displayed
+  (summary "Trait for the text a value shows a person.")
+  (see displayed display-into Written)
+  (reference """
+    As Scheme's @code{display}: a string is its text, without quotes. Every
+    @code{Displayed} type is @code{Written}. A type with no implementation
+    of its own is displayed as it is written. @code{println}, @code{print}
+    and @code{#"...${x}..."} use @code{displayed}.
+
+    The containers display their elements displayed and write them
+    written: a @code{List} as @code{(1 2 3)}, a @code{Vec} as
+    @code{[1 2 3]}, an @code{Array} as @code{#[1 2 3]}, a @code{Map} as
+    @code{#map((k v) ...)}, an @code{Option} as @code{(Some x)} or
+    @code{None}, a @code{Result} as @code{(Ok x)} or @code{(Err e)}, a
+    @code{Tuple} as @code{(Tuple 1 2)}, and a @code{Box} as
+    @code{(Box x)}. A @code{Seq} is @code{(Seq ...)}, without being walked.
+    """))
+
+(:doc displayed
   (summary "The text a value prints as.")
   (arg x "The value.")
   (returns "Its text, as print and println write it.")
-  (see print println list->str int->string)
+  (see written display-into print println)
   (example """
-    (->str 42)                ; "42"
-    (->str #\a)               ; "a"
-    (->str (list 1 2 3))      ; "(1 2 3)"
-    (->str [1 2])             ; "[1 2]"
-    (->str (Some "x"))        ; "(Some x)"
+    (displayed 42)                ; "42"
+    (displayed #\a)               ; "a"
+    (displayed (list 1 2 3))      ; "(1 2 3)"
+    (displayed [1 2])             ; "[1 2]"
+    (displayed (Some "x"))        ; "(Some x)"
+    """))
+
+(:doc display-into
+  (summary "Adds the displayed text of a value to a builder.")
+  (arg x "The value.")
+  (arg b "The builder.")
+  (see displayed write-into))
+
+(:doc elements-print-into
+  (summary "Adds the elements of a collection to a builder, between two strings.")
+  (arg open "The text before the elements.")
+  (arg xs "The collection: any Iterable.")
+  (arg close "The text after the elements.")
+  (arg b "The builder.")
+  (arg each "Adds one element, such as write-into or display-into.")
+  (see entries-print-into write-into display-into)
+  (example """
+    (impl (Written (Bag %a))
+      (where (Written %a))
+      (defun (write-into s b)
+        (elements-print-into "#bag(" s ")" b (fun (x b) (write-into x b)))))
     """)
+  (reference "A space goes between two elements."))
+
+(:doc entries-print-into
+  (summary "Adds the entries of a map to a builder, between two strings, each as (k v).")
+  (arg open "The text before the entries.")
+  (arg xs "Any Iterable of (Tuple k v).")
+  (arg close "The text after the entries.")
+  (arg b "The builder.")
+  (arg each-key "Adds one key.")
+  (arg each-value "Adds one value.")
+  (see elements-print-into))
+
+(:doc ->str
+  (summary "Deprecated: use @code{displayed}, and implement @code{Displayed} or @code{Written}.")
+  (arg x "The value.")
+  (returns "What @code{displayed} gives.")
+  (see displayed written)
   (reference """
-    The method of the @code{->str} trait. Implemented for @code{string},
-    which is itself, @code{int}, @code{long}, @code{double} and
-    @code{byte}, through the invariant conversions such as
-    @code{int->string}, and for @code{char}, @code{Keyword} and
-    @code{Symbol}. A @code{char} prints as itself, not as @code{#\a}.
-
-    The containers print their elements through the elements' own
-    @code{->str}: a @code{List} as @code{(1 2 3)}, a @code{Vec} as
-    @code{[1 2 3]}, an @code{Array} as @code{#[1 2 3]}, a @code{Map} as
-    @code{#map((k v) ...)}, an @code{Option} as @code{(Some x)} or
-    @code{None}, a @code{Result} as @code{(Ok x)} or @code{(Err e)}, and a
-    @code{Box} as @code{(Box x)}. A @code{Seq} prints as @code{(Seq ...)},
-    without being walked.
-
-    Anything with no implementation of its own falls to .NET's
-    @code{ToString}, asked in the invariant culture.
+    An implementation of @code{->str} is called by @code{->str} only, not
+    by @code{displayed}, @code{println} or an interpolation.
     """))
 
 (:doc print
   (summary "Writes a value's text to the current output port.")
-  (arg x "The value, written through its ->str.")
-  (see println ->str display)
+  (arg x "The value, written through its displayed.")
+  (see println displayed display)
   (reference """
-    @code{(display (->str x))}: no newline after it. The port is
+    @code{(display (displayed x))}: no newline after it. The port is
     @code{current-output-port}, so @code{parameterize} redirects it.
     """))
 
 (:doc println
   (summary "Writes a value's text to the current output port, then a newline.")
-  (arg x "The value, written through its ->str.")
-  (see print ->str displayln)
+  (arg x "The value, written through its displayed.")
+  (see print displayed displayln)
   (example """
     (println 42)          ; 42
     (println [1 2 3])     ; [1 2 3]
     """)
   (reference """
-    @code{(displayln (->str x))}. The port is @code{current-output-port}.
+    @code{(displayln (displayed x))}. The port is @code{current-output-port}.
     """))
 
 ;; ---------------------------------------------------------------------------

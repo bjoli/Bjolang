@@ -579,6 +579,178 @@ let private parseDerive (isRec: bool) (traits: SExpr list) (typeDefForms: SExpr 
 
     decl :: [ for t in traitNames do for td in typeDefs -> deriveImpl t td ]
 
+// ---------------------------------------------------------------------------
+// Written, for every type
+// ---------------------------------------------------------------------------
+//
+// Every type a module declares is written as it is built: a record as
+// `(Car (brand "volvo") (year 1999))`, a case as `(Some 5)` or `None`, a
+// newtype as `(Meters 1.5)`. The implementation is written here, out of the
+// declaration, for each type the module does not implement `Written` for
+// itself.
+
+/// Whether a function type is part of this one, through the type aliases in
+/// `aliases` too. A function has no head constructor, so no implementation of
+/// `Written` can be found for it, nor for a type built of one, such as
+/// `(Option (-> int int))`.
+let private mentionsFunction (aliases: Map<string, FType>) (t: FType) : bool =
+    let rec go (seen: Set<string>) (t: FType) =
+        match t with
+        | TArrow _ -> true
+        | TApp(n, args, _) -> List.exists (go seen) args || alias seen n
+        | TName(n, _) -> alias seen n
+
+    and alias (seen: Set<string>) (n: string) =
+        not (Set.contains n seen)
+        && (match Map.tryFind n aliases with
+            | Some target -> go (Set.add n seen) target
+            | None -> false)
+
+    go Set.empty t
+
+/// The body of `write-into` for `td`, writing into `b` the value `v`.
+let private writtenBody (aliases: Map<string, FType>) (td: TypeDef) : Expr =
+    let r = td.Range
+    let add (text: string) = EApp(EResolved("stringbuilder-add-string!", r), [ EIdent("b", r); EString(text, r) ], r)
+
+    // A field with a function in its type is written as the runtime writes
+    // it, which writes a function as `#<procedure>`.
+    let writeOne (t: FType) (x: Expr) =
+        if mentionsFunction aliases t then
+            EApp(EResolved("stringbuilder-add-string!", r), [ EIdent("b", r); EApp(EResolved("written/runtime", r), [ x ], r) ], r)
+        else
+            EApp(EResolved("write-into", r), [ x; EIdent("b", r) ], r)
+
+    let inOrder (steps: Expr list) =
+        List.reduceBack (fun step rest -> ELet("_", false, [], None, step, rest, r)) steps
+
+    // `(Name x y)`: the payloads after the name, a space before each.
+    let constructed (name: string) (items: (FType * Expr) list) =
+        inOrder (
+            add ("(" + name)
+            :: (items |> List.collect (fun (t, x) -> [ add " "; writeOne t x ]))
+            @ [ add ")" ]
+        )
+
+    if td.IsOpaque then
+        // The representation is the module's own, so it is not shown.
+        add $"#<%s{td.Name}>"
+    else
+        match td.Kind with
+        | Record(fields, _) ->
+            inOrder (
+                add ("(" + td.Name)
+                :: (fields
+                    |> List.collect (fun f ->
+                        [ add $" (%s{f.Name} "; writeOne f.Type (EGetField(EIdent("v", f.Range), f.Name, f.Range)); add ")" ]))
+                @ [ add ")" ]
+            )
+        | Union cases ->
+            let arms =
+                cases
+                |> List.map (fun c ->
+                    match c with
+                    | SimpleCase(n, cr) -> PConstruct(n, [], cr), None, add n
+                    | DataCase(n, types, cr) ->
+                        let names = types |> List.mapi (fun i _ -> $"__w%d{i}")
+                        let pattern = PConstruct(n, names |> List.map (fun x -> PIdent(x, cr)), cr)
+                        pattern, None, constructed n (List.zip types (names |> List.map (fun x -> EIdent(x, cr)))))
+
+            EMatch(EIdent("v", r), arms, r)
+        | Newtype inner ->
+            EMatch(EIdent("v", r), [ PConstruct(td.Name, [ PIdent("__w0", r) ], r), None, constructed td.Name [ inner, EIdent("__w0", r) ] ], r)
+        | Alias _ -> add ""
+
+/// The `Written` implementation of `td`, conditional on its parameters as a
+/// container's is.
+let private writtenImpl (aliases: Map<string, FType>) (td: TypeDef) : Decl =
+    let r = td.Range
+
+    let target =
+        if td.TypeArgs.IsEmpty then
+            TName(td.Name, r)
+        else
+            TApp(td.Name, td.TypeArgs |> List.map (fun a -> TName("'" + a, r)), r)
+
+    let constraints =
+        if td.IsOpaque then
+            []
+        else
+            td.TypeArgs
+            |> List.map (fun a ->
+                { MCTrait = "Written"
+                  MCVar = "'" + a
+                  MCPins = []
+                  MCRange = r })
+
+    let writeInto = DDefun("write-into", [ MandatoryArg("v", None); MandatoryArg("b", None) ], writtenBody aliases td, Ordinary, r)
+    DImpl("Written", target, [], constraints, [], [ writeInto ], r)
+
+/// The declarations, and a `Written` implementation for each type they
+/// declare that they do not implement `Written` for themselves. A type alias
+/// is a second name for a type, and has none of its own.
+///
+/// `imported` is the type aliases the imports offer, by the names the module
+/// writes them with: a field of an alias of a function type is written as a
+/// function is.
+let rec withWrittenImpls (imported: Map<string, FType>) (decls: Decl list) : Decl list =
+    let aliases =
+        decls
+        |> List.collect (function
+            | DType(tds, _)
+            | DTypeRec(tds, _) ->
+                tds
+                |> List.choose (fun td ->
+                    match td.Kind with
+                    | Alias target -> Some(td.Name, target)
+                    | _ -> None)
+            | _ -> [])
+        |> List.fold (fun acc (n, t) -> Map.add n t acc) imported
+
+    let headOf (t: FType) =
+        match t with
+        | TName(n, _)
+        | TApp(n, _, _) -> Some n
+        | _ -> None
+
+    let implemented =
+        decls
+        |> List.choose (function
+            | DImpl("Written", target, _, _, _, _, _) -> headOf target
+            | DImplVia("Written", target, _, _, _) -> headOf target
+            | _ -> None)
+        |> Set.ofList
+
+    let derived (tds: TypeDef list) =
+        tds
+        |> List.filter (fun td ->
+            not (Set.contains td.Name implemented)
+            && (match td.Kind with
+                | Alias _ -> false
+                | _ -> true))
+        |> List.map (writtenImpl aliases)
+
+    // Each implementation directly after its type, so that a call below the
+    // type finds it. In the module that declares `Written`, not before the
+    // trait: the types above it wait for it.
+    let declaresWritten =
+        decls |> List.exists (function DTrait("Written", _, _, _, _, _, _, _, _) -> true | _ -> false)
+
+    let rec place (traitSeen: bool) (waiting: Decl list) (rest: Decl list) =
+        match rest with
+        | [] -> waiting
+        | d :: more ->
+            match d with
+            | DModule(name, inner, r) -> DModule(name, withWrittenImpls aliases inner, r) :: place traitSeen waiting more
+            | DTrait("Written", _, _, _, _, _, _, _, _) -> d :: waiting @ place true [] more
+            | DType(tds, _)
+            | DTypeRec(tds, _) when traitSeen || not declaresWritten -> d :: derived tds @ place traitSeen waiting more
+            | DType(tds, _)
+            | DTypeRec(tds, _) -> d :: place traitSeen (waiting @ derived tds) more
+            | _ -> d :: place traitSeen waiting more
+
+    place false [] decls
+
 /// The type every macro transformer has. Fixed, and not written by the user:
 /// the expander constructs the arguments and consumes the result, so there is
 /// nothing here for a program to choose.

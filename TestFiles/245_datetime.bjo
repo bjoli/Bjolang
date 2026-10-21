@@ -29,7 +29,7 @@
 
 ;; Names no clock, so it reads whichever is current where it is called.
 (: (-> string))
-(defun (stamp) (->str (now)))
+(defun (stamp) (displayed (now)))
 
 (: Resolver)
 (def earlier (resolver GapPush OverlapEarlier))
@@ -39,24 +39,24 @@
 
 (: (-> void))
 (defun (construction)
-  (expect "a date" (->str (the (date 2026 10 25))) "2026-10-25")
+  (expect "a date" (displayed (the (date 2026 10 25))) "2026-10-25")
   (expect-true "2026-02-30 is not a date" (none? (date 2026 2 30)))
   (expect-true "2024-02-29 is" (some? (date 2024 2 29)))
   (expect-true "no year 0" (none? (date 0 12 31)))
   (expect-true "no year 10000" (none? (date 10000 1 1)))
-  (expect "a time" (->str (the (time 2 30))) "02:30:00")
+  (expect "a time" (displayed (the (time 2 30))) "02:30:00")
   (expect-true "no 24:00" (none? (time 24 0)))
   (expect-true "no leap second" (none? (time 23 59 #:seconds 60)))
   (expect "nanoseconds are cut to 100" (->nanoseconds (the (time 1 2 #:nanoseconds 150))) 100)
-  (expect "a fraction prints short" (->str (the (time 2 30 #:nanoseconds 500000000))) "02:30:00.5")
-  (expect "a datetime" (->str (the (datetime 2026 10 25 #:hours 2 #:minutes 30)))
+  (expect "a fraction prints short" (displayed (the (time 2 30 #:nanoseconds 500000000))) "02:30:00.5")
+  (expect "a datetime" (displayed (the (datetime 2026 10 25 #:hours 2 #:minutes 30)))
           "2026-10-25T02:30:00")
   (expect "date+time->datetime"
-          (->str (date+time->datetime (the (date 2026 1 2)) (the (time 3 4 #:seconds 5))))
+          (displayed (date+time->datetime (the (date 2026 1 2)) (the (time 3 4 #:seconds 5))))
           "2026-01-02T03:04:05")
-  (expect "a duration" (->str (duration #:hours 26 #:minutes 30)) "PT26H30M")
-  (expect "a period" (->str (period #:days 1 #:hours 3)) "P1DT3H")
-  (expect "a date period" (->str (date-period #:months 1 #:days -3)) "P1M-3D"))
+  (expect "a duration" (displayed (duration #:hours 26 #:minutes 30)) "PT26H30M")
+  (expect "a period" (displayed (period #:days 1 #:hours 3)) "P1DT3H")
+  (expect "a date period" (displayed (date-period #:months 1 #:days -3)) "P1M-3D"))
 
 (: (-> void))
 (defun (accessors)
@@ -75,8 +75,8 @@
   (expect "->seconds" (->seconds dt) 15)
   (expect "->milliseconds" (->milliseconds dt) 123)
   (expect "->nanoseconds" (->nanoseconds dt) 123456700)
-  (expect "->date" (->str (->date dt)) "2026-10-25")
-  (expect "->time" (->str (->time dt)) "02:30:15.1234567")
+  (expect "->date" (displayed (->date dt)) "2026-10-25")
+  (expect "->time" (displayed (->time dt)) "02:30:15.1234567")
   (expect "->datetime" (->datetime dt) dt))
 
 ;; How many of the days from start disagree with .NET's ISOWeek, or do not
@@ -115,16 +115,16 @@
   (expect "2027 has 52" (weeks-in-year 2027) 52)
   (expect "a leap year starting on a Wednesday has 53" (weeks-in-year 2020) 53)
   (expect "71 years in 400 have 53 weeks" (long-years 2000 2399) 71)
-  (expect "week-date" (->str (the (week-date 2026 43 7))) "2026-10-25")
-  (expect "week 53 of 2026 ends in 2027" (->str (the (week-date 2026 53 5))) "2027-01-01")
-  (expect "week 1 of 2026 starts in 2025" (->str (the (week-date 2026 1 1))) "2025-12-29")
+  (expect "week-date" (displayed (the (week-date 2026 43 7))) "2026-10-25")
+  (expect "week 53 of 2026 ends in 2027" (displayed (the (week-date 2026 53 5))) "2027-01-01")
+  (expect "week 1 of 2026 starts in 2025" (displayed (the (week-date 2026 1 1))) "2025-12-29")
   (expect-true "2027 has no week 53" (none? (week-date 2027 53 1)))
   (expect-true "no week 0" (none? (week-date 2026 0 1)))
   (expect-true "no day 0" (none? (week-date 2026 1 0)))
   (expect-true "no day 8" (none? (week-date 2026 1 8)))
   (expect-true "no year 0" (none? (week-date 0 1 1)))
-  (expect "the first day is day 1 of week 1 of year 1" (->str (the (week-date 1 1 1))) "0001-01-01")
-  (expect "the last day is day 5 of week 52 of 9999" (->str (the (week-date 9999 52 5))) "9999-12-31")
+  (expect "the first day is day 1 of week 1 of year 1" (displayed (the (week-date 1 1 1))) "0001-01-01")
+  (expect "the last day is day 5 of week 52 of 9999" (displayed (the (week-date 9999 52 5))) "9999-12-31")
   (expect-true "whose day 6 is past the range" (none? (week-date 9999 52 6)))
   (expect-true "weeks-in-year of year 0 raises" (raises? (fun () (weeks-in-year 0))))
   (expect-true "and of 10000" (raises? (fun () (weeks-in-year 10000))))
@@ -215,7 +215,7 @@
   (def i (the (iso8601->instant "2026-10-25T01:30:00Z")))
   (expect "an instant is written in UTC, and its offset is Z" (instant->text i stamp)
           "2026-10-25T01:30:00Z")
-  (expect "as ->str writes it" (instant->text i stamp) (->str i))
+  (expect "as displayed gives it" (instant->text i stamp) (displayed i))
   (expect "Unix time" (instant->text i '("@" unix " " unix-ms)) "@1792891800 1792891800000")
   (expect "before 1970, toward the past"
           (instant->text (the (iso8601->instant "1969-12-31T23:59:59.5Z")) '(unix " " unix-ms))
@@ -230,7 +230,7 @@
 (: (-> string (List DatePart) string))
 (defun (read-date s format)
   (match (text->date s format)
-    ((Some d) (->str d))
+    ((Some d) (displayed d))
     (None "None")))
 
 ;; Formats read back, and the formats that cannot be.
@@ -262,7 +262,7 @@
   (expect "in Swedish, by #:names"
           (match (text->date "söndag 25 oktober 2026" '(weekday-name " " day " " month-name " " year)
                              #:names swedish-names)
-            ((Some d) (->str d))
+            ((Some d) (displayed d))
             (None "None"))
           "2026-10-25")
   (expect "or by current-date-names"
@@ -274,7 +274,7 @@
                        (months ["Jan" "Feb" "Ma" "Apr" "Maj" "Jun" "Jul" "Aug" "Sep" "Oct" "Nov" "Dec"])))
   (expect "the longest name that matches"
           (match (text->date "1 Maj 2026" '(day " " month-name " " year) #:names odd)
-            ((Some d) (->str d))
+            ((Some d) (displayed d))
             (None "None"))
           "2026-05-01")
   (expect "a Roman year" (read-date "MMXXVI" '((roman year))) "2026-01-01")
@@ -332,13 +332,13 @@
 (: (-> string (List TimePart) string))
 (defun (read-time s format)
   (match (text->time s format)
-    ((Some t) (->str t))
+    ((Some t) (displayed t))
     (None "None")))
 
 (: (-> string (List DateTimePart) string))
 (defun (read-datetime s format)
   (match (text->datetime s format)
-    ((Some dt) (->str dt))
+    ((Some dt) (displayed dt))
     (None "None")))
 
 (: (-> void))
@@ -357,7 +357,7 @@
   (expect "am-pm is matched exactly" (read-time "1:05 pm" twelve) "None")
   (expect "in Swedish"
           (match (text->time "1:05 em" twelve #:names swedish-names)
-            ((Some t) (->str t))
+            ((Some t) (displayed t))
             (None "None"))
           "13:05:00")
   (expect "am-pm beside hours agrees with it" (read-time "13 PM" '((hours 2) " " am-pm)) "13:00:00")
@@ -398,19 +398,19 @@
 (: (-> string (List InstantPart) string))
 (defun (read-instant s format)
   (match (text->instant s format)
-    ((Some i) (->str i))
+    ((Some i) (displayed i))
     (None "None")))
 
 (: (-> string (List MomentPart) string))
 (defun (read-moment s format)
   (match (text->moment s format)
-    ((Some m) (->str m))
+    ((Some m) (displayed m))
     (None "None")))
 
 (: (-> string (List MomentPart) Resolver string))
 (defun (read-moment/resolver s format r)
   (match (text->moment/resolver s format r)
-    ((Some m) (->str m))
+    ((Some m) (displayed m))
     (None "None")))
 
 (: (-> void))
@@ -657,29 +657,29 @@
 (: (-> void))
 (defun (arithmetic)
   (expect "+months clamps to February's end"
-          (->str (+months (the (date 2026 1 31)) 1)) "2026-02-28")
+          (displayed (+months (the (date 2026 1 31)) 1)) "2026-02-28")
   (expect "and to a leap February's"
-          (->str (+months (the (date 2024 1 31)) 1)) "2024-02-29")
-  (expect "+years from Feb 29" (->str (+years (the (date 2024 2 29)) 1)) "2025-02-28")
-  (expect "a time wraps at midnight" (->str (+hours (the (time 23 0)) 2)) "01:00:00")
-  (expect "and backwards" (->str (-minutes (the (time 0 10)) 20)) "23:50:00")
-  (expect "whole days drop out" (->str (+duration (the (time 12 0)) (duration #:days 3 #:hours 2)))
+          (displayed (+months (the (date 2024 1 31)) 1)) "2024-02-29")
+  (expect "+years from Feb 29" (displayed (+years (the (date 2024 2 29)) 1)) "2025-02-28")
+  (expect "a time wraps at midnight" (displayed (+hours (the (time 23 0)) 2)) "01:00:00")
+  (expect "and backwards" (displayed (-minutes (the (time 0 10)) 20)) "23:50:00")
+  (expect "whole days drop out" (displayed (+duration (the (time 12 0)) (duration #:days 3 #:hours 2)))
           "14:00:00")
-  (expect "as do hours past a day" (->str (+hours (the (time 12 0)) 50)) "14:00:00")
-  (expect "back past midnight" (->str (-hours (the (time 1 0)) 3)) "22:00:00")
-  (expect "+weeks" (->str (+weeks (the (date 2026 1 1)) 2)) "2026-01-15")
+  (expect "as do hours past a day" (displayed (+hours (the (time 12 0)) 50)) "14:00:00")
+  (expect "back past midnight" (displayed (-hours (the (time 1 0)) 3)) "22:00:00")
+  (expect "+weeks" (displayed (+weeks (the (date 2026 1 1)) 2)) "2026-01-15")
   (expect "a period, largest unit first"
-          (->str (+period (the (datetime 2026 1 31 #:hours 10))
+          (displayed (+period (the (datetime 2026 1 31 #:hours 10))
                           (period #:months 1 #:days 1 #:hours 3)))
           "2026-03-01T13:00:00")
-  (expect "-period" (->str (-period (the (datetime 2026 3 1 #:hours 13))
+  (expect "-period" (displayed (-period (the (datetime 2026 3 1 #:hours 13))
                                     (period #:days 1 #:hours 3)))
           "2026-02-28T10:00:00")
   (expect "a duration takes TimeArith too"
-          (->str (+minutes (duration #:hours 1) 30)) "PT1H30M")
+          (displayed (+minutes (duration #:hours 1) 30)) "PT1H30M")
   (expect "duration->hours rounds toward zero"
           (duration->hours (duration-negate (duration #:minutes 90))) -1L)
-  (expect "a negative duration" (->str (duration #:minutes -90)) "-PT1H30M"))
+  (expect "a negative duration" (displayed (duration #:minutes -90)) "-PT1H30M"))
 
 (: (-> void))
 (defun (differences)
@@ -723,7 +723,7 @@
 (: (-> void))
 (defun (instants)
   (def epoch (the (unix-seconds->instant 0L)))
-  (expect "the epoch" (->str epoch) "1970-01-01T00:00:00Z")
+  (expect "the epoch" (displayed epoch) "1970-01-01T00:00:00Z")
   (expect "unix seconds floor"
           (instant->unix-seconds (-milliseconds epoch 500)) -1L)
   (expect "unix milliseconds" (instant->unix-milliseconds (+seconds epoch 2)) 2000L)
@@ -737,10 +737,10 @@
           (->unix (the (iso8601->instant "9999-12-31T23:59:59.9999999Z"))) 253402300799L)
   (expect "->unix of a moment is its instant's"
           (->unix (instant->moment (-milliseconds epoch 500) utc)) -1L)
-  (expect "instant->utc-datetime" (->str (instant->utc-datetime epoch)) "1970-01-01T00:00:00")
+  (expect "instant->utc-datetime" (displayed (instant->utc-datetime epoch)) "1970-01-01T00:00:00")
   (expect "and back" (utc-datetime->instant (instant->utc-datetime epoch)) epoch)
   (expect "duration-between instants"
-          (->str (duration-between epoch (+hours epoch 26))) "PT26H")
+          (displayed (duration-between epoch (+hours epoch 26))) "PT26H")
   (expect-true "instants order" (less? epoch (+milliseconds epoch 1))))
 
 (: (-> void))
@@ -755,16 +755,16 @@
                (raises? (fun () (-hours (the (time 1 0)) -9223372036854775808L))))
   (expect-true "an instant past 9999 raises"
                (raises? (fun () (+seconds (the (unix-seconds->instant 253402300799L)) 1))))
-  (expect "the last instant" (->str (+milliseconds (the (unix-seconds->instant 253402300799L)) 999))
+  (expect "the last instant" (displayed (+milliseconds (the (unix-seconds->instant 253402300799L)) 999))
           "9999-12-31T23:59:59.999Z")
   ;; long's maximum in ticks. Its negation is the shortest duration, one tick
   ;; above long's minimum, which TimeSpan could reach by adding but which has
   ;; no negation of its own.
   (def longest (duration #:milliseconds 922337203685477L #:nanoseconds 580700L))
   (def shortest (duration-negate longest))
-  (expect "the longest duration" (->str longest) "PT256204778H48M5.4775807S")
-  (expect "the shortest" (->str shortest) "-PT256204778H48M5.4775807S")
-  (expect "which reads back" (the (iso8601->duration (->str shortest))) shortest)
+  (expect "the longest duration" (displayed longest) "PT256204778H48M5.4775807S")
+  (expect "the shortest" (displayed shortest) "-PT256204778H48M5.4775807S")
+  (expect "which reads back" (the (iso8601->duration (displayed shortest))) shortest)
   (expect-true "one tick more raises"
                (raises? (fun () (+duration longest (duration #:nanoseconds 100L)))))
   (expect-true "and one tick less, rather than reaching long's minimum"
@@ -772,10 +772,10 @@
   (expect-true "as does -duration past it"
                (raises? (fun () (-duration shortest (duration #:nanoseconds 100L)))))
   (expect "a local time on the first day resolves in UTC"
-          (->str (datetime->moment (the (datetime 1 1 1)) utc earlier))
+          (displayed (datetime->moment (the (datetime 1 1 1)) utc earlier))
           "0001-01-01T00:00:00+00:00[UTC]")
   (expect "and on the last day"
-          (->str (datetime->moment (the (datetime 9999 12 31 #:hours 23 #:minutes 59)) utc earlier))
+          (displayed (datetime->moment (the (datetime 9999 12 31 #:hours 23 #:minutes 59)) utc earlier))
           "9999-12-31T23:59:00+00:00[UTC]"))
 
 (: (-> void))
@@ -783,36 +783,36 @@
   (expect-true "no single-digit month" (none? (iso8601->date "2026-1-05")))
   (expect-true "no space" (none? (iso8601->date " 2026-10-25")))
   (expect-true "no February 30" (none? (iso8601->date "2026-02-30")))
-  (expect "a date reads" (->str (the (iso8601->date "2026-10-25"))) "2026-10-25")
-  (expect "hh:mm" (->str (the (iso8601->time "02:30"))) "02:30:00")
-  (expect "a fraction" (->str (the (iso8601->time "02:30:00.5"))) "02:30:00.5")
-  (expect "a comma fraction" (->str (the (iso8601->time "02:30:00,25"))) "02:30:00.25")
+  (expect "a date reads" (displayed (the (iso8601->date "2026-10-25"))) "2026-10-25")
+  (expect "hh:mm" (displayed (the (iso8601->time "02:30"))) "02:30:00")
+  (expect "a fraction" (displayed (the (iso8601->time "02:30:00.5"))) "02:30:00.5")
+  (expect "a comma fraction" (displayed (the (iso8601->time "02:30:00,25"))) "02:30:00.25")
   (expect "nine digits" (->nanoseconds (the (iso8601->time "00:00:00.123456789"))) 123456700)
   (expect-true "no 24:00" (none? (iso8601->time "24:00")))
   (expect-true "no :60" (none? (iso8601->time "02:30:60")))
-  (expect "a datetime reads" (->str (the (iso8601->datetime "2026-10-25T02:30:00")))
+  (expect "a datetime reads" (displayed (the (iso8601->datetime "2026-10-25T02:30:00")))
           "2026-10-25T02:30:00")
   (expect-true "a lower-case t does not" (none? (iso8601->datetime "2026-10-25t02:30:00")))
-  (expect "an instant" (->str (the (iso8601->instant "2026-10-25T01:30:00Z")))
+  (expect "an instant" (displayed (the (iso8601->instant "2026-10-25T01:30:00Z")))
           "2026-10-25T01:30:00Z")
-  (expect "an offset is converted" (->str (the (iso8601->instant "2026-10-25T02:30:00+01:00")))
+  (expect "an offset is converted" (displayed (the (iso8601->instant "2026-10-25T02:30:00+01:00")))
           "2026-10-25T01:30:00Z")
   (expect-true "an instant needs an offset" (none? (iso8601->instant "2026-10-25T01:30:00")))
   (expect-true "and one before year 1 is not one"
                (none? (iso8601->instant "0001-01-01T00:30:00+01:00")))
-  (expect "a duration" (->str (the (iso8601->duration "PT26H30M"))) "PT26H30M")
-  (expect "a negative one" (->str (the (iso8601->duration "-PT1H30M"))) "-PT1H30M")
-  (expect "seconds with a fraction" (->str (the (iso8601->duration "PT1.5S"))) "PT1.5S")
-  (expect "zero" (->str (the (iso8601->duration "PT0S"))) "PT0S")
+  (expect "a duration" (displayed (the (iso8601->duration "PT26H30M"))) "PT26H30M")
+  (expect "a negative one" (displayed (the (iso8601->duration "-PT1H30M"))) "-PT1H30M")
+  (expect "seconds with a fraction" (displayed (the (iso8601->duration "PT1.5S"))) "PT1.5S")
+  (expect "zero" (displayed (the (iso8601->duration "PT0S"))) "PT0S")
   (expect-true "a day is not a duration" (none? (iso8601->duration "P1D")))
   (expect-true "a fraction only on seconds" (none? (iso8601->duration "PT1.5H")))
   (expect-true "units in order" (none? (iso8601->duration "PT1M2H")))
-  (expect "a date period" (->str (the (iso8601->date-period "P1Y2M3W4D"))) "P1Y2M3W4D")
-  (expect "signs per unit" (->str (the (iso8601->date-period "P1M-3D"))) "P1M-3D")
-  (expect "a leading sign" (->str (the (iso8601->date-period "-P1M3D"))) "P-1M-3D")
+  (expect "a date period" (displayed (the (iso8601->date-period "P1Y2M3W4D"))) "P1Y2M3W4D")
+  (expect "signs per unit" (displayed (the (iso8601->date-period "P1M-3D"))) "P1M-3D")
+  (expect "a leading sign" (displayed (the (iso8601->date-period "-P1M3D"))) "P-1M-3D")
   (expect-true "no time in a date period" (none? (iso8601->date-period "P1DT1H")))
-  (expect "a period" (->str (the (iso8601->period "P1DT3H"))) "P1DT3H")
-  (expect "a period of time only" (->str (the (iso8601->period "PT3H"))) "PT3H")
+  (expect "a period" (displayed (the (iso8601->period "P1DT3H"))) "P1DT3H")
+  (expect "a period of time only" (displayed (the (iso8601->period "PT3H"))) "PT3H")
   (expect-true "P alone" (none? (iso8601->period "P")))
   (expect-true "a T with nothing after it" (none? (iso8601->period "P1DT")))
   (expect-true "an int's worth of days" (none? (iso8601->date-period "P2147483648D")))
@@ -838,9 +838,9 @@
                                              #:weeks -2147483648 #:days -2147483648))
                        (exact (duration-negate (the (iso8601->duration "PT256204778H48M5.4775807S"))))))
   (expect "the longest period prints"
-          (->str longest)
+          (displayed longest)
           "P-2147483648Y-2147483648M-2147483648W-2147483648DT-256204778H-48M-5.4775807S")
-  (expect "and reads back" (the (iso8601->period (->str longest))) longest))
+  (expect "and reads back" (the (iso8601->period (displayed longest))) longest))
 
 (: (-> void))
 (defun (zones)
@@ -848,7 +848,7 @@
   (expect-true "a Windows id is not an IANA id" (none? (timezone "W. Europe Standard Time")))
   (expect "utc" (timezone-id utc) "UTC")
   (expect "is the zone named UTC" (the (timezone "UTC")) utc)
-  (expect "a resolver prints" (->str earlier) "(resolver GapPush OverlapEarlier)")
+  (expect "a resolver prints" (displayed earlier) "(resolver GapPush OverlapEarlier)")
   (match (timezone "Europe/Stockholm")
     ((Some z) (stockholm z) (whole-days))
     (None (fail "the IANA time zone database was not found: (timezone \"Europe/Stockholm\") is None. Install tzdata."))))
@@ -862,22 +862,22 @@
     ((Tuple (Some apia) (Some sitka))
      (def skipped (the (datetime 2011 12 30 #:hours 12)))
      (expect-true "a day Samoa skipped" (none? (datetime->moment/opt skipped apia)))
-     (expect "pushed a whole day" (->str (datetime->moment skipped apia earlier))
+     (expect "pushed a whole day" (displayed (datetime->moment skipped apia earlier))
              "2011-12-31T12:00:00+14:00[Pacific/Apia]")
-     (expect "or to the first time after it" (->str (datetime->moment skipped apia later))
+     (expect "or to the first time after it" (displayed (datetime->moment skipped apia later))
              "2011-12-31T00:00:00+14:00[Pacific/Apia]")
      (expect "a moment's weekday is its local one: Saturday"
              (->weekday (datetime->moment skipped apia later)) 6)
      (expect "while UTC was still on Friday"
              (->weekday (instant->utc-datetime (->instant (datetime->moment skipped apia later)))) 5)
      (expect "the minute before it is untouched"
-             (->str (datetime->moment (the (datetime 2011 12 29 #:hours 23 #:minutes 59)) apia earlier))
+             (displayed (datetime->moment (the (datetime 2011 12 29 #:hours 23 #:minutes 59)) apia earlier))
              "2011-12-29T23:59:00-10:00[Pacific/Apia]")
      (def twice (the (datetime 1867 10 18 #:hours 20)))
      (expect-true "a day Alaska had twice" (none? (datetime->moment/opt twice sitka)))
-     (expect "the first time" (->str (datetime->moment twice sitka earlier))
+     (expect "the first time" (displayed (datetime->moment twice sitka earlier))
              "1867-10-18T20:00:00+14:00[America/Sitka]")
-     (expect "the second" (->str (datetime->moment twice sitka later))
+     (expect "the second" (displayed (datetime->moment twice sitka later))
              "1867-10-18T20:00:00-09:01[America/Sitka]"))
     (_ (fail "no Pacific/Apia or America/Sitka"))))
 
@@ -889,45 +889,45 @@
 (defun (stockholm z)
   (def noon (local z 2026 10 24 12 0 earlier))
   (expect "+days 1 over the change keeps the clock"
-          (->str (+days noon 1)) "2026-10-25T12:00:00+01:00[Europe/Stockholm]")
+          (displayed (+days noon 1)) "2026-10-25T12:00:00+01:00[Europe/Stockholm]")
   (expect "+hours 24 does not"
-          (->str (+hours noon 24)) "2026-10-25T11:00:00+01:00[Europe/Stockholm]")
+          (displayed (+hours noon 24)) "2026-10-25T11:00:00+01:00[Europe/Stockholm]")
 
   (def overlap (the (datetime 2026 10 25 #:hours 2 #:minutes 30)))
-  (expect "an overlap, earlier" (->str (datetime->moment overlap z earlier))
+  (expect "an overlap, earlier" (displayed (datetime->moment overlap z earlier))
           "2026-10-25T02:30:00+02:00[Europe/Stockholm]")
-  (expect "which is 00:30Z" (->str (->instant (datetime->moment overlap z earlier)))
+  (expect "which is 00:30Z" (displayed (->instant (datetime->moment overlap z earlier)))
           "2026-10-25T00:30:00Z")
-  (expect "an overlap, later" (->str (datetime->moment overlap z later))
+  (expect "an overlap, later" (displayed (datetime->moment overlap z later))
           "2026-10-25T02:30:00+01:00[Europe/Stockholm]")
-  (expect "which is 01:30Z" (->str (->instant (datetime->moment overlap z later)))
+  (expect "which is 01:30Z" (displayed (->instant (datetime->moment overlap z later)))
           "2026-10-25T01:30:00Z")
   (expect-true "an overlap, strict" (none? (datetime->moment/opt overlap z)))
 
   (def gap (the (datetime 2026 3 29 #:hours 2 #:minutes 30)))
-  (expect "a gap, pushed" (->str (datetime->moment gap z earlier))
+  (expect "a gap, pushed" (displayed (datetime->moment gap z earlier))
           "2026-03-29T03:30:00+02:00[Europe/Stockholm]")
-  (expect "which is 01:30Z" (->str (->instant (datetime->moment gap z earlier)))
+  (expect "which is 01:30Z" (displayed (->instant (datetime->moment gap z earlier)))
           "2026-03-29T01:30:00Z")
-  (expect "a gap, next valid" (->str (datetime->moment gap z later))
+  (expect "a gap, next valid" (displayed (datetime->moment gap z later))
           "2026-03-29T03:00:00+02:00[Europe/Stockholm]")
-  (expect "which is 01:00Z" (->str (->instant (datetime->moment gap z later)))
+  (expect "which is 01:00Z" (displayed (->instant (datetime->moment gap z later)))
           "2026-03-29T01:00:00Z")
   (expect-true "a gap, strict" (none? (datetime->moment/opt gap z)))
-  (expect "strict, elsewhere" (->str (the (datetime->moment/opt (the (datetime 2026 6 1)) z)))
+  (expect "strict, elsewhere" (displayed (the (datetime->moment/opt (the (datetime 2026 6 1)) z)))
           "2026-06-01T00:00:00+02:00[Europe/Stockholm]")
 
   (expect "+days keeps the offset into an overlap"
-          (->str (+days (local z 2026 10 24 2 30 earlier) 1))
+          (displayed (+days (local z 2026 10 24 2 30 earlier) 1))
           "2026-10-25T02:30:00+02:00[Europe/Stockholm]")
   (expect "-days keeps it too"
-          (->str (-days (local z 2026 10 26 2 30 earlier) 1))
+          (displayed (-days (local z 2026 10 26 2 30 earlier) 1))
           "2026-10-25T02:30:00+01:00[Europe/Stockholm]")
   (expect "+days into a gap pushes"
-          (->str (+days (local z 2026 3 28 2 30 earlier) 1))
+          (displayed (+days (local z 2026 3 28 2 30 earlier) 1))
           "2026-03-29T03:30:00+02:00[Europe/Stockholm]")
   (expect "+date-period/resolver"
-          (->str (+date-period/resolver (local z 2026 10 24 2 30 earlier) (date-period #:days 1) later))
+          (displayed (+date-period/resolver (local z 2026 10 24 2 30 earlier) (date-period #:days 1) later))
           "2026-10-25T02:30:00+01:00[Europe/Stockholm]")
 
   (def midnight (local z 2026 10 25 0 0 earlier))
@@ -942,23 +942,23 @@
 
   (def in-sthlm (local z 2026 7 1 12 0 earlier))
   (def in-utc (adjust-timezone in-sthlm utc))
-  (expect "adjust-timezone" (->str in-utc) "2026-07-01T10:00:00+00:00[UTC]")
+  (expect "adjust-timezone" (displayed in-utc) "2026-07-01T10:00:00+00:00[UTC]")
   (expect-true "one instant, two moments" (not (= in-sthlm in-utc)))
   (expect "the same instant" (->instant in-sthlm) (->instant in-utc))
   (expect-true "compare agrees with =" (not (= (compare in-sthlm in-utc) 0)))
-  (expect "->utc-offset" (->str (->utc-offset in-sthlm)) "PT2H")
-  (expect "timezone-offset-at" (->str (timezone-offset-at z (->instant noon))) "PT2H")
+  (expect "->utc-offset" (displayed (->utc-offset in-sthlm)) "PT2H")
+  (expect "timezone-offset-at" (displayed (timezone-offset-at z (->instant noon))) "PT2H")
   (expect "->timezone" (->timezone in-sthlm) z)
 
   (expect "a moment reads back"
-          (->str (the (iso8601->moment "2026-10-25T02:30:00+01:00[Europe/Stockholm]")))
+          (displayed (the (iso8601->moment "2026-10-25T02:30:00+01:00[Europe/Stockholm]")))
           "2026-10-25T02:30:00+01:00[Europe/Stockholm]")
   (match (timezone "America/Argentina/ComodRivadavia")
     ((Some long-id)
      (def far (instant->moment (the (iso8601->instant "2026-10-25T01:30:00.1234567Z")) long-id))
      (expect "a long zone id prints in full"
-             (->str far) "2026-10-24T22:30:00.1234567-03:00[America/Argentina/ComodRivadavia]")
-     (expect "and reads back" (->str (the (iso8601->moment (->str far)))) (->str far)))
+             (displayed far) "2026-10-24T22:30:00.1234567-03:00[America/Argentina/ComodRivadavia]")
+     (expect "and reads back" (displayed (the (iso8601->moment (displayed far)))) (displayed far)))
     (None (fail "no America/Argentina/ComodRivadavia")))
   (expect-true "either offset in an overlap"
                (some? (iso8601->moment "2026-10-25T02:30:00+02:00[Europe/Stockholm]")))
@@ -969,29 +969,29 @@
 
   (def half-past (->instant (local z 2026 12 31 23 30 earlier)))
   (def clock (fixed-clock half-past z))
-  (expect "a fixed clock's now" (->str (now #:clock clock)) "2026-12-31T22:30:00Z")
-  (expect "its today, in its zone" (->str (today #:clock clock)) "2026-12-31")
-  (expect "now/moment, in its zone" (->str (now/moment #:clock clock))
+  (expect "a fixed clock's now" (displayed (now #:clock clock)) "2026-12-31T22:30:00Z")
+  (expect "its today, in its zone" (displayed (today #:clock clock)) "2026-12-31")
+  (expect "now/moment, in its zone" (displayed (now/moment #:clock clock))
           "2026-12-31T23:30:00+01:00[Europe/Stockholm]")
-  (expect "now/moment elsewhere" (->str (now/moment #:clock clock #:tz utc))
+  (expect "now/moment elsewhere" (displayed (now/moment #:clock clock #:tz utc))
           "2026-12-31T22:30:00+00:00[UTC]")
   (expect "clock-timezone" (clock-timezone #:clock clock) z)
 
   (expect "the current clock reaches a call that names none"
           (parameterize ((current-clock clock)) (stamp)) "2026-12-31T22:30:00Z")
   (expect "and today"
-          (parameterize ((current-clock clock)) (->str (today))) "2026-12-31")
+          (parameterize ((current-clock clock)) (displayed (today))) "2026-12-31")
   (expect "and the zone" (parameterize ((current-clock clock)) (clock-timezone)) z)
   (expect-true "outside it, the system clock again" (not (= (now) half-past)))
 
   (def manual (manual-clock half-past z))
   (expect "a manual clock stands still" (now #:clock manual) half-past)
   (clock-advance! manual (duration #:minutes 45))
-  (expect "until it is advanced" (->str (now #:clock manual)) "2026-12-31T23:15:00Z")
-  (expect "and today moves past midnight in its zone" (->str (today #:clock manual)) "2027-01-01")
-  (expect "but not yet in UTC" (->str (today #:clock manual #:tz utc)) "2026-12-31")
+  (expect "until it is advanced" (displayed (now #:clock manual)) "2026-12-31T23:15:00Z")
+  (expect "and today moves past midnight in its zone" (displayed (today #:clock manual)) "2027-01-01")
+  (expect "but not yet in UTC" (displayed (today #:clock manual #:tz utc)) "2026-12-31")
   (clock-advance! manual (duration #:hours -1))
-  (expect "a negative duration steps it back" (->str (now #:clock manual)) "2026-12-31T22:15:00Z")
+  (expect "a negative duration steps it back" (displayed (now #:clock manual)) "2026-12-31T22:15:00Z")
   (expect-true "a fixed clock does not move"
                (refused? (fun () (clock-advance! clock (duration #:hours 1)))))
   (expect-true "nor does the system clock"
@@ -1026,13 +1026,13 @@
   (expect "and stays put when the wall clock steps back"
           (- (monotonic-ms #:clock mono) mono-start) 3000L)
   (expect "while the wall clock does step back"
-          (->str (now #:clock mono)) "2026-12-31T21:30:03Z")
+          (displayed (now #:clock mono)) "2026-12-31T21:30:03Z")
   (expect "binding current-clock moves monotonic-ms too"
           (parameterize ((current-clock mono)) (- (monotonic-ms) mono-start)) 3000L)
 
   ;; A clock of one's own, put in a zone.
   (def own (clock-in (make-clock #:utc-ticks (fun () 0L)) z))
-  (expect "a clock made with make-clock" (->str (now #:clock own)) "0001-01-01T00:00:00Z")
+  (expect "a clock made with make-clock" (displayed (now #:clock own)) "0001-01-01T00:00:00Z")
   (expect "in the zone clock-in gave it" (clock-timezone #:clock own) z)
   (expect-true "a clock with no advance is refused"
                (refused? (fun () (clock-advance! own (duration #:hours 1)))))
@@ -1046,7 +1046,7 @@
      (expect-true "a gap from a change of standard time"
                   (none? (datetime->moment/opt (the (datetime 1914 11 8 #:minutes 30)) brussels)))
      (expect "pushed through it"
-             (->str (datetime->moment (the (datetime 1914 11 8 #:minutes 30)) brussels earlier))
+             (displayed (datetime->moment (the (datetime 1914 11 8 #:minutes 30)) brussels earlier))
              "1914-11-08T01:30:00+01:00[Europe/Brussels]"))
     (None (fail "no Europe/Brussels")))
 
@@ -1062,7 +1062,7 @@
                   (raises? (fun () (instant->moment (the (unix-seconds->instant -62135596800L))
                                                     new-york))))
      (expect "a day later, it resolves"
-             (->str (->datetime (datetime->moment (the (datetime 1 1 2)) tokyo earlier)))
+             (displayed (->datetime (datetime->moment (the (datetime 1 1 2)) tokyo earlier)))
              "0001-01-02T00:00:00"))
     (_ (fail "no Asia/Tokyo or America/New_York"))))
 
@@ -1086,7 +1086,7 @@
   (with-scope
     (spawn (stepping c)) (spawn (stepping c)) (spawn (stepping c)) (spawn (stepping c))
     (spawn (stepping c)) (spawn (stepping c)) (spawn (stepping c)) (spawn (stepping c)))
-  (expect "every thread's advances count" (->str (now #:clock c)) "1970-01-01T00:01:20Z"))
+  (expect "every thread's advances count" (displayed (now #:clock c)) "1970-01-01T00:01:20Z"))
 
 (defbjo (main)
   (construction)

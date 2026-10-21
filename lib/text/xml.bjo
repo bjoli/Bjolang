@@ -86,8 +86,9 @@
   (defun (eq-hash n) (clr-xname-hash (struct-ref n v))))
 
 ;; Clark notation: {uri}local, or local alone in no namespace.
-(impl (->str XmlName)
-  (defun (->str n) (clr-xname-clark (struct-ref n v))))
+(impl (Written XmlName)
+  (defun (written n) (clr-xname-clark (struct-ref n v)))
+  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
 
 (: string)
 (def xml-namespace "http://www.w3.org/XML/1998/namespace")
@@ -172,12 +173,12 @@
 (defun (check-attr-name name)
   (when (namespace-declaration? name)
     (argument-error
-      (str "xml-element: " (->str name) " is a namespace declaration, which is not an attribute. "
+      (str "xml-element: " (displayed name) " is a namespace declaration, which is not an attribute. "
            "The writer declares namespaces itself."))))
 
 (: (-> XmlName %a))
 (defun (duplicate-attr name)
-  (argument-error (str "xml-element: the attribute " (->str name) " is given twice")))
+  (argument-error (str "xml-element: the attribute " (displayed name) " is given twice")))
 
 (: (-> XmlAttrs void))
 (defun (check-few-attrs attrs)
@@ -626,7 +627,7 @@
        (loop rest))
       ((Cons (PrintNode (XmlNodeElement name attrs kids _)) rest)
        (stringbuilder-add! sb #\()
-       (stringbuilder-add-string! sb (->str name))
+       (write-into name sb)
        (unless (list-empty? attrs)
          (stringbuilder-add-string! sb " (@")
          (let each ((as attrs))
@@ -634,7 +635,7 @@
              (Nil unit)
              ((Cons (Tuple an value) more)
               (stringbuilder-add-string! sb " (")
-              (stringbuilder-add-string! sb (->str an))
+              (write-into an sb)
               (stringbuilder-add! sb #\space)
               (add-quoted! sb value)
               (stringbuilder-add! sb #\))
@@ -644,11 +645,8 @@
                          (Cons (PrintText ")") rest)
                          kids))))))
 
-(impl (->str Node)
-  (defun (->str n)
-    (def sb (stringbuilder-empty))
-    (print-node! sb n)
-    (stringbuilder->string sb)))
+(impl (Written Node)
+  (defun (write-into n b) (print-node! b n)))
 
 (: (-> StringBuilder Doctype void))
 (defun (print-doctype! sb dt)
@@ -668,9 +666,8 @@
     ((Tuple None None) unit))
   (stringbuilder-add! sb #\)))
 
-(impl (->str Document)
-  (defun (->str d)
-    (def sb (stringbuilder-empty))
+(impl (Written Document)
+  (defun (write-into d sb)
     (stringbuilder-add-string! sb "(*TOP*")
     (match (record-ref d doctype)
       ((Some dt)
@@ -681,5 +678,4 @@
                      (stringbuilder-add! sb #\space)
                      (print-node! sb n))
                    (list-append (record-ref d prolog) (Cons (record-ref d root) (record-ref d epilog))))
-    (stringbuilder-add! sb #\))
-    (stringbuilder->string sb)))
+    (stringbuilder-add! sb #\))))

@@ -261,18 +261,16 @@
   (defun (eq-hash s)
     (hashset-fold (fun (x h) (bitwise-xor h (eq-hash x))) 0 s)))
 
-(: (-> (HashSet %a) string) (where (->str %a)))
-(defun (hashset->str s)
-  (def sb (stringbuilder-empty))
-  (stringbuilder-add-string! sb "#{")
-  (loop (:with first? #t #f)
-        (:for elem s)
-        (:do (unless first? (stringbuilder-add-string! sb " "))
-             (stringbuilder-add-string! sb (->str elem))))
-  (stringbuilder-add-string! sb "}")
-  (stringbuilder->string sb))
+;; `#{a b c}`, in the order of the trie.
+(impl (Written (HashSet %a))
+  (where (Written %a))
+  (defun (write-into s b) (elements-print-into "#{" s "}" b (fun (x b) (write-into x b)))))
 
-(impl (->str (HashSet %a))
-  (where (->str %a))
-  (defun (->str s)
-    (hashset->str s)))
+(impl (Displayed (HashSet %a))
+  (where (Displayed %a))
+  (defun (display-into s b) (elements-print-into "#{" s "}" b (fun (x b) (display-into x b)))))
+
+(: (-> (HashSet %a) string) (where (Displayed %a)))
+(defun (hashset->str s) (displayed s))
+
+(:deprecated hashset->str "use `displayed`")

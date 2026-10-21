@@ -22,7 +22,7 @@
 (: (-> int string))
 (defun (halved n)
   (match n
-    ((:view halve (Some k)) (->str k))
+    ((:view halve (Some k)) (displayed k))
     (_ "odd")))
 
 ;; A step with extra arguments, written like a `->` step. No lambda is
@@ -50,7 +50,7 @@
 (: (-> (Option int) string))
 (defun (quarter o)
   (match o
-    ((Some (:view halve (Some (:view halve (Some k))))) (->str k))
+    ((Some (:view halve (Some (:view halve (Some k))))) (displayed k))
     ((Some _) "no")
     (None "none")))
 
@@ -60,7 +60,7 @@
 (defun (pair-up p)
   (match p
     ((Tuple (:view halve (Some a)) (:view halve (Some b))) #:when (< a b) "rising")
-    ((Tuple (:view halve (Some a)) (:view halve (Some b))) (->str (+ a b)))
+    ((Tuple (:view halve (Some a)) (:view halve (Some b))) (displayed (+ a b)))
     (_ "odd")))
 
 ;; The step is a trait method, dispatched where the clause is written.
@@ -70,16 +70,16 @@
 (: (-> int string))
 (defun (named n)
   (match n
-    ((:view ->str "4") "four")
-    ((:view ->str s) (string-append "n" s))
+    ((:view displayed "4") "four")
+    ((:view displayed s) (string-append "n" s))
     (_ "?")))
 
 ;; And the same through a constraint, where the method is reached through a
 ;; dictionary rather than a direct call.
-(: (-> %a string) (where (->str %a)))
+(: (-> %a string) (where (Displayed %a)))
 (defun (shouted? x)
   (match x
-    ((:view ->str "yes") "affirmative")
+    ((:view displayed "yes") "affirmative")
     (_ "other")))
 
 ;; A trait method with an *associated* type as the step. The step is inferred
@@ -103,7 +103,7 @@
 ;; `when` on the arm there.
 (: (-> int string))
 (defun (bracket n)
-  (string-append "<" (string-append (match n ((:view halve (Some k)) (->str k)) (_ "-")) ">")))
+  (string-append "<" (string-append (match n ((:view halve (Some k)) (displayed k)) (_ "-")) ">")))
 
 (defun (main args)
   (expect "predicate-zero" (parity 0) "zero")

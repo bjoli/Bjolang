@@ -2,27 +2,27 @@
 ;;
 ;; A *reader* macro, and nothing else. The tokenizer expands it into
 ;;
-;;   (str "text " (->str expression) " more")
+;;   (str "text " (displayed expression) " more")
 ;;
 ;; and hands that to the parser, so there is no new AST node, no new type rule
 ;; and nothing for the emitter. Everything downstream sees a call somebody could
 ;; have written by hand, which is why a `#"..."` works unchanged inside a
 ;; quasiquote, a macro template, a macro's input, or another `#"..."`.
 ;;
-;; The one token is `str` and `->str` themselves: the reader writes them
+;; The one token is `str` and `displayed` themselves: the reader writes them
 ;; *resolved*, so a local binding of either name cannot capture them. They cross
 ;; a macro boundary as identifiers marked `Resolved` and come back the same.
 ;;
 ;; Two decisions are worth stating.
 ;;
-;;   * **`->str` goes around each hole, not inside `str`.** A `#:rest`
+;;   * **`displayed` goes around each hole, not inside `str`.** A `#:rest`
 ;;     parameter has one element type, so nothing variadic in this language can
 ;;     take a mixture; the conversion has to happen while each part still has a
 ;;     type of its own. `str` is therefore `(-> #:rest string string)` and is a
 ;;     useful function in its own right.
 ;;
 ;;   * **It is the trait, not a formatter.** A hole is rendered by whatever
-;;     `(impl (->str T) ...)` applies, so a type formats the same way here
+;;     `(impl (Displayed T) ...)` applies, so a type formats the same way here
 ;;     as it does under `println` — and a type of your own can say how.
 ;;
 ;; It costs one array and one `String.Concat`, whatever the number of holes.
@@ -46,12 +46,13 @@
                ""
                s))
 
-;; A type with a `->str` of its own, to pin that a hole goes through the trait.
+;; A type with a `Displayed` of its own, to pin that a hole goes through the trait.
 (type (: Money (Union (: Kr int))))
 
-(impl (->str Money)
-  (defun (->str m)
-    (match m ((Kr n) (string-append (int->string n) " kr")))))
+(impl (Displayed Money)
+  (defun (displayed m)
+    (match m ((Kr n) (string-append (int->string n) " kr"))))
+  (defun (display-into m b) (stringbuilder-add-string! b (displayed m))))
 
 (defun (main)
   ;; ---- The basic shape ----------------------------------------------------
@@ -135,7 +136,7 @@ second"
 
   ;; ---- The conversion is the trait ----------------------------------------
   (expect "a hole that is already a string" #"[${"raw"}]" "[raw]")
-  (expect "a user impl of ->str" #"you owe ${(Kr 42)}" "you owe 42 kr")
+  (expect "a user impl of Displayed" #"you owe ${(Kr 42)}" "you owe 42 kr")
   (expect "the impl for List" #"the list ${(list 1 2 3)}" "the list (1 2 3)")
   (expect "a double" #"pi-ish ${3.5}" "pi-ish 3.5")
   (expect "a char" #"letter ${#\q}" "letter q")
@@ -150,10 +151,10 @@ second"
 
   ;; ---- The names are the reader's -----------------------------------------
   ;;
-  ;; A local `->str` or `str` shadows the trait method or the function for
+  ;; A local `displayed` or `str` shadows the trait method or the function for
   ;; every call written by hand, and for none the reader wrote.
-  (let ((->str (fun (n) "hidden")))
-    (expect "a local ->str is what a hand-written call reaches" (->str 5) "hidden")
+  (let ((displayed (fun (n) "hidden")))
+    (expect "a local displayed is what a hand-written call reaches" (displayed 5) "hidden")
     (expect "and is not what a hole reaches" #"n is ${x}" "n is 5"))
   (let ((str (fun (a b) "hidden")))
     (expect "a local str does not capture the concatenation" #"${x} and ${x}" "5 and 5"))
@@ -163,8 +164,8 @@ second"
   ;; As input: the whole interpolation is handed to the transformer and
   ;; spliced back, resolved names and all.
   (expect "an interpolation as macro input" (twice-said #"x=${x};") "x=5;x=5;")
-  (let ((->str (fun (n) "hidden")))
-    (expect "and still the reader's ->str on the way out" (twice-said #"${x}") "55"))
+  (let ((displayed (fun (n) "hidden")))
+    (expect "and still the reader's displayed on the way out" (twice-said #"${x}") "55"))
 
   ;; In a template: the macro writes the interpolation, and the hole reads the
   ;; template's own renamed temporary.
@@ -174,6 +175,6 @@ second"
   ;; Taken apart: the transformer sees an identifier at the head, not an
   ;; opaque token.
   (expect "a transformer can read the head" (head-of #"a ${x}") "str")
-  (expect "of a single hole too" (head-of #"${x}") "->str")
+  (expect "of a single hole too" (head-of #"${x}") "displayed")
 
   0)

@@ -186,9 +186,9 @@
        (match part
          ((SStr s) (str acc (with-ranges s form part)))
          ((SKey k)
-          (match (char-class (->str k))
+          (match (char-class (displayed k))
             ((Some cs) (str acc cs))
-            (None (ret-error part (str form " knows the classes :digit, :lower, :upper, :alpha, :alnum and :hex, not :" (->str k) ".")))))
+            (None (ret-error part (str form " knows the classes :digit, :lower, :upper, :alpha, :alnum and :hex, not :" (displayed k) ".")))))
          (_ (ret-error part (str form " takes strings of characters and class keywords, such as (chars \".#\"), (chars \"a-z\" \"_\") or (until \",\").")))))
      "" parts))
   (when (string-empty? text)
@@ -203,7 +203,7 @@
      (list->vec (list-map (fun (part)
                             (match part
                               ((SStr s) (str "\"" s "\""))
-                              ((SKey k) (str ":" (->str k)))
+                              ((SKey k) (str ":" (displayed k)))
                               (_ "")))
                           parts))
      " "))
@@ -219,7 +219,7 @@
 (: (-> Syntax string bool))
 (defun (keyword? s name)
   (match s
-    ((SKey k) (= (->str k) name))
+    ((SKey k) (= (displayed k) name))
     (_ #f)))
 
 (def items-are
@@ -334,7 +334,7 @@
 (defun (fresh ctx prefix)
   (def n (ref (.counter ctx) 0))
   (array-set! (.counter ctx) 0 (+ n 1))
-  (SSym (string->symbol (str "scan-" prefix (->str n)))))
+  (SSym (string->symbol (str "scan-" prefix (displayed n)))))
 
 ;; What an item does with its value and the position after it, and what it
 ;; does when it does not match.

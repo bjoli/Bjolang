@@ -429,8 +429,9 @@
   (defun (compare a b)
     (compare (clr-date-day-number (struct-ref a v)) (clr-date-day-number (struct-ref b v)))))
 
-(impl (->str Date)
-  (defun (->str d) (date->string (struct-ref d v))))
+(impl (Written Date)
+  (defun (written d) (date->string (struct-ref d v)))
+  (defun (write-into d b) (stringbuilder-add-string! b (written d))))
 
 
 ;; ===========================================================================
@@ -448,8 +449,9 @@
   (defun (compare a b)
     (compare (clr-time-ticks (struct-ref a v)) (clr-time-ticks (struct-ref b v)))))
 
-(impl (->str Time)
-  (defun (->str t) (time-of-day->string (clr-time-ticks (struct-ref t v)))))
+(impl (Written Time)
+  (defun (written t) (time-of-day->string (clr-time-ticks (struct-ref t v))))
+  (defun (write-into t b) (stringbuilder-add-string! b (written t))))
 
 
 ;; ===========================================================================
@@ -486,8 +488,9 @@
 (impl (Ord DateTime)
   (defun (compare a b) (compare (datetime-ticks a) (datetime-ticks b))))
 
-(impl (->str DateTime)
-  (defun (->str dt) (ticks->iso-datetime (datetime-ticks dt))))
+(impl (Written DateTime)
+  (defun (written dt) (ticks->iso-datetime (datetime-ticks dt)))
+  (defun (write-into dt b) (stringbuilder-add-string! b (written dt))))
 
 
 ;; ===========================================================================
@@ -515,8 +518,9 @@
 (impl (Ord Instant)
   (defun (compare a b) (compare (instant-ticks a) (instant-ticks b))))
 
-(impl (->str Instant)
-  (defun (->str i) (ticks->iso-instant (instant-ticks i))))
+(impl (Written Instant)
+  (defun (written i) (ticks->iso-instant (instant-ticks i)))
+  (defun (write-into i b) (stringbuilder-add-string! b (written i))))
 
 (: (-> Instant DateTime))
 (defun (instant->utc-datetime i) (ticks->datetime (instant-ticks i)))
@@ -599,11 +603,13 @@
   (DatePeriod (years (- (record-ref p years))) (months (- (record-ref p months)))
               (weeks (- (record-ref p weeks))) (days (- (record-ref p days)))))
 
-(impl (->str DatePeriod)
-  (defun (->str p) (date-period->string p)))
+(impl (Written DatePeriod)
+  (defun (written p) (date-period->string p))
+  (defun (write-into p b) (stringbuilder-add-string! b (written p))))
 
-(impl (->str Period)
-  (defun (->str p) (period->string p)))
+(impl (Written Period)
+  (defun (written p) (period->string p))
+  (defun (write-into p b) (stringbuilder-add-string! b (written p))))
 
 
 ;; ===========================================================================
@@ -650,7 +656,7 @@
 (defun (weeks-in-year y)
   (if (and (>= y 1) (<= y 9999))
       (->week (Date (v (ClrDate. y 12 28))))
-      (range-error (str "year " (->str y) " is outside 1 to 9999"))))
+      (range-error (str "year " (displayed y) " is outside 1 to 9999"))))
 
 ;; Day d (1 is Monday) of week w of week-year y. Week 1 starts on the Monday
 ;; on or before January 4.
@@ -821,8 +827,9 @@
   (defun (= a b) (= (timezone-id a) (timezone-id b)))
   (defun (eq-hash z) (eq-hash (timezone-id z))))
 
-(impl (->str TimeZone)
-  (defun (->str z) (timezone-id z)))
+(impl (Written TimeZone)
+  (defun (written z) (timezone-id z))
+  (defun (write-into z b) (stringbuilder-add-string! b (written z))))
 
 ;; The offset in z at the UTC tick count u, in ticks. u is clamped into the
 ;; calendar, because local-fit looks a day past a local time on the first or
@@ -1026,18 +1033,22 @@
           ((not (= by-local 0)) by-local)
           (else (compare (timezone-id (struct-ref a zone)) (timezone-id (struct-ref b zone)))))))
 
-(impl (->str Moment)
-  (defun (->str m) (moment->string m)))
+(impl (Written Moment)
+  (defun (written m) (moment->string m))
+  (defun (write-into m b) (stringbuilder-add-string! b (written m))))
 
-(impl (->str Gap)
-  (defun (->str g) (match g (GapPush "GapPush") (GapNextValid "GapNextValid"))))
+(impl (Written Gap)
+  (defun (written g) (match g (GapPush "GapPush") (GapNextValid "GapNextValid")))
+  (defun (write-into g b) (stringbuilder-add-string! b (written g))))
 
-(impl (->str Overlap)
-  (defun (->str o) (match o (OverlapEarlier "OverlapEarlier") (OverlapLater "OverlapLater"))))
+(impl (Written Overlap)
+  (defun (written o) (match o (OverlapEarlier "OverlapEarlier") (OverlapLater "OverlapLater")))
+  (defun (write-into o b) (stringbuilder-add-string! b (written o))))
 
-(impl (->str Resolver)
-  (defun (->str r)
-    (str "(resolver " (->str (record-ref r gap)) " " (->str (record-ref r overlap)) ")")))
+(impl (Written Resolver)
+  (defun (written r)
+    (str "(resolver " (written (record-ref r gap)) " " (written (record-ref r overlap)) ")"))
+  (defun (write-into r b) (stringbuilder-add-string! b (written r))))
 
 
 ;; ===========================================================================
@@ -1870,15 +1881,15 @@
   (cond ((list-empty? ws) 0)
         ((list-empty? (list-tail ws)) (list-head ws))
         (else (argument-error (str "(" tag " ...) takes one width, and was given "
-                                   (->str (list-length ws)) ".")))))
+                                   (displayed (list-length ws)) ".")))))
 
 ;; A table of names, which must have count of them.
 (: (-> (Vec string) int string (Vec string)))
 (defun (full-table names count what)
   (if (= (vec-length names) count)
       names
-      (argument-error (str "a DateNames has " (->str count) " " what ", and this one has "
-                           (->str (vec-length names)) "."))))
+      (argument-error (str "a DateNames has " (displayed count) " " what ", and this one has "
+                           (displayed (vec-length names)) "."))))
 
 ;; The i:th name, counting from 1, of a table that must have count of them.
 (: (-> (Vec string) int int string string))
@@ -2052,7 +2063,7 @@
   (text-of sb))
 
 ;; The date and time are UTC's, so the format that writes a moment's local
-;; time writes the instant as ->str does.
+;; time writes the instant as `written` does.
 (: (-> Instant (List InstantPart) (#:names DateNames) string))
 (defun (instant->text i parts #:names (parameter-ref current-date-names))
   (def sb (new-text 48))
@@ -2208,7 +2219,7 @@
   (defun (part-field p) (instant-part-field p)))
 
 (: (-> string int string))
-(defun (with-width name w) (if (> w 0) (str "(" name " " (->str w) ")") name))
+(defun (with-width name w) (if (> w 0) (str "(" name " " (displayed w) ")") name))
 
 ;; A part as a format writes it, for a message.
 (: (-> Field string))
@@ -2235,7 +2246,7 @@
     (FHours12 (with-width "hours12" w))
     (FMinutes (with-width "minutes" w))
     (FSeconds (with-width "seconds" w))
-    (FFraction (if (< w 0) "fraction" (str "(fraction " (->str w) ")")))
+    (FFraction (if (< w 0) "fraction" (str "(fraction " (displayed w) ")")))
     (FAmPm "am-pm")
     (FOffset "offset")
     (FZone "zone")
@@ -2448,7 +2459,7 @@
          " after it can begin with a character " (field-name before)
          " could also take, so a text could be read two ways. "
          (if (> most 0)
-             (str "A width of " (->str most) ", or text between the two, reads one way.")
+             (str "A width of " (displayed most) ", or text between the two, reads one way.")
              "Text between the two reads one way."))))
 
 ;; The kinds of field a format has, as bits, once it is known that no text

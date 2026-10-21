@@ -134,15 +134,23 @@ file mean:
 
 * How a value is shown
 
-~->str~, the language's own. The prelude gives it a blanket impl over every
+~written~, the language's own. The prelude gives it a blanket impl over every
 type, so there is no value the prompt cannot show, and no printer inside the
-compiler to keep in step with the language.
+compiler to keep in step with the language. A value is shown as the reader
+reads it: a string in quotes, a long as ~21L~, a record in constructor syntax.
+
+#+begin_src text
+bjo> (string-append "a" "b")
+"ab"
+bjo> (Tuple 1 "x")
+(Tuple 1 "x")
+#+end_src
 
 An expression entry becomes:
 
 #+begin_src scheme
 (def __bjo_value <what was typed>)
-(def __bjo_show (->str __bjo_value))
+(def __bjo_show (written __bjo_value))
 #+end_src
 
 ~def~ rather than ~defun~ because a top-level ~defun~ needs a signature and the
@@ -343,15 +351,20 @@ baked a dictionary choice into entry 4's IL, and that IL is loaded.
 #+begin_src scheme
 bjo> (type (: Colour (Union Red Green)))
 Colour
-bjo> (->str Red)
-Bjo_Repl_1__Red { }
-bjo> (impl (->str Colour) (defun (->str c) (match c (Red "red") (Green "green"))))
-bjo> (->str Red)
-red
+bjo> (defun (show-colour (: c Colour)) : string (displayed c))
+show-colour
+bjo> (show-colour Red)
+"Red"
+bjo> (impl (Displayed Colour) (defun (display-into c b) (stringbuilder-add-string! b (match c (Red "red") (Green "green")))))
+bjo> (show-colour Red)
+"Red"
+bjo> (displayed Red)
+"red"
 #+end_src
 
-The second line is the failure mode: before the impl exists, the *blanket*
-~->str~ impl applies, silently and correctly. Nothing warns, because at that
+The second ~(show-colour Red)~ is the failure mode: ~show-colour~ was compiled
+before the impl existed, so the *blanket* ~Displayed~ impl applies there,
+silently and correctly. Nothing warns, because at that
 point nothing is wrong. It only looks wrong in hindsight.
 
 Warning when a new impl overlaps something already compiled would mean keeping,

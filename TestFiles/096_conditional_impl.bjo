@@ -2,12 +2,12 @@
 ;;
 ;; An impl that holds only where its type argument does. The clause is not a
 ;; note to the reader: it is a dictionary the impl class carries, so
-;; `ToStr_List<int>` is built out of the `int` implementation and the element's
-;; own format is what runs.
+;; the `(Displayed (List int))` class is built out of the `int` implementation
+;; and the element's own format is what runs.
 ;;
 ;; The property being pinned down is the same one `070_blanket_impl.bjo` pins
 ;; down one level up. A blanket is only ever selected at a ground type, so
-;; inside `(impl (->str (List %a)))` the element type `%a` is a variable and
+;; inside `(impl (Displayed (List %a)))` the element type `%a` is a variable and
 ;; the blanket cannot be — must not be — chosen for it: that would format every
 ;; element with `Object.ToString` no matter what impl it has. The where clause
 ;; is what defers the choice to the concrete element type instead.
@@ -20,14 +20,15 @@
 ;; `Object.ToString`, which for a union case is its C# class name.
 (type (: Tag (Enum Red Green)))
 
-(impl (->str Tag)
-  (defun (->str t)
+(impl (Displayed Tag)
+  (defun (displayed t)
     (match t
       (Red "red")
-      (Green "green"))))
+      (Green "green")))
+  (defun (display-into t b) (stringbuilder-add-string! b (displayed t))))
 
 ;; A trait of this file's own, implemented conditionally over `Option`. Two
-;; things it establishes that `->str` cannot: a conditional impl for a trait
+;; things it establishes that `Displayed` cannot: a conditional impl for a trait
 ;; that has *no* blanket, so the where clause is the only thing that can
 ;; discharge the obligation, and one written outside the prelude.
 (def/trait (Size %a)
@@ -65,17 +66,17 @@
 (def no-number None)
 
 ;; A generic function with no where clause of its own. It acquires one:
-;; `(->str %a)` at a `(List %b)` resolves to the conditional impl, which leaves
-;; a `(->str %b)` for whoever instantiates this.
+;; `(Displayed %a)` at a `(List %b)` resolves to the conditional impl, which
+;; leaves a `(Displayed %b)` for whoever instantiates this.
 (: (-> %a string))
 (defun (show x)
-  (->str x))
+  (displayed x))
 
 ;; Two levels of the same thing, so the dictionary has to be *built* rather than
 ;; forwarded: the argument is a list of lists.
 (: (-> (List (List %a)) string))
 (defun (show-nested xs)
-  (->str xs))
+  (displayed xs))
 
 ;; The constraint written by hand rather than inferred, and forwarded to a
 ;; second constrained function.
@@ -85,15 +86,15 @@
 
 (defun (main args)
   ;; Directly, at ground element types.
-  (expect "ints" (->str (list 1 2 3)) "(1 2 3)")
-  (expect "strings" (->str (list "a" "b")) "(a b)")
-  (expect "empty" (->str no-ints) "()")
+  (expect "ints" (displayed (list 1 2 3)) "(1 2 3)")
+  (expect "strings" (displayed (list "a" "b")) "(a b)")
+  (expect "empty" (displayed no-ints) "()")
 
   ;; The element's own impl, not the blanket's.
-  (expect "element impl runs" (->str (list Red Green)) "(red green)")
+  (expect "element impl runs" (displayed (list Red Green)) "(red green)")
 
   ;; Nested: the outer dictionary holds the inner one.
-  (expect "nested" (->str (list (list 1) (list 2 3))) "((1) (2 3))")
+  (expect "nested" (displayed (list (list 1) (list 2 3))) "((1) (2 3))")
 
   ;; Through a dictionary parameter rather than at the call itself.
   (expect "through a generic function" (show (list 1 2)) "(1 2)")

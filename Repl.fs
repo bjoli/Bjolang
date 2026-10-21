@@ -214,7 +214,7 @@ let private bindingNames (decl: Ast.Decl) : string list =
 /// Every name a later entry might write that this one answers for.
 ///
 /// Wider than `definedNames`, and it has to be: a union's cases and a trait's
-/// methods are what source actually writes — `(Circle 2.0)`, `(->str x)` — and
+/// methods are what source actually writes — `(Circle 2.0)`, `(written x)` — and
 /// nothing mentions the type or the trait by name at all. They cannot go in the
 /// `(export ...)` list, which is why this is a second function rather than one:
 /// `(export Circle)` is refused, since a case has no signature and travels with
@@ -348,7 +348,7 @@ let private shapeOf (forms: SExpr list) : Shape =
 /// field, and runs its initializer in the module's static constructor — so
 /// reading the field is what evaluates the entry.
 ///
-/// Rendering is `->str`, the language's own. The prelude gives it a blanket
+/// Rendering is `written`, the language's own. The prelude gives it a blanket
 /// impl over every type, so there is no value the prompt cannot show and no
 /// printer in the compiler to keep in step with the language.
 ///
@@ -549,7 +549,7 @@ let private entrySource
         match shape with
         | Expression ->
             [ $"(def %s{valueName} %s{text}\n)"
-              $"(def %s{showName} (->str %s{valueName}))" ]
+              $"(def %s{showName} (written %s{valueName}))" ]
         | _ -> [ text ]
 
     String.concat "\n" (body @ preamble @ trailer) + "\n"
@@ -1700,7 +1700,7 @@ let private help () =
     printfn "  Tab completes the name at the cursor."
     printfn ""
     printfn "  Anything else is a Bjolang entry: a group of definitions, or one"
-    printfn "  expression, whose value is printed with ->str."
+    printfn "  expression, whose value is printed with written."
     printfn ""
     printfn "  A top-level defun needs a signature. Write it on the definition,"
     printfn "  which is one entry:"

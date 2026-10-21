@@ -1045,7 +1045,8 @@ public static partial class BjolangRuntime {
 
         public override bool Equals(object? obj) => obj is Option<T> other && Equals(other);
         public override int GetHashCode() => IsSome ? HashCode.Combine(true, Value) : 0;
-        public override string ToString() => IsSome ? $"(Some {Value})" : "None";
+        // The payload as a field of a case is written: a function as `#<procedure>`.
+        public override string ToString() => IsSome ? $"(Some {Bjolang.Runtime.BjoNum.ShowField(Value)})" : "None";
     }
 
     // --- Option constructors and accessors ---
@@ -1108,7 +1109,8 @@ public static partial class BjolangRuntime {
         public override int GetHashCode() =>
             IsOk ? HashCode.Combine(true, OkValue) : HashCode.Combine(false, ErrValue);
 
-        public override string ToString() => IsOk ? $"(Ok {OkValue})" : $"(Err {ErrValue})";
+        public override string ToString() =>
+            IsOk ? $"(Ok {Bjolang.Runtime.BjoNum.ShowField(OkValue)})" : $"(Err {Bjolang.Runtime.BjoNum.ShowField(ErrValue)})";
     }
 
     /// `(raise e)` — throw, keeping the stack trace the exception already has.

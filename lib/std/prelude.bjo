@@ -56,6 +56,9 @@
   string-walk string-walk-done? string-walk-current string-walk-next
 
   print println ->str list->str
+  ;; Written and Displayed
+  written write-into displayed display-into written/runtime
+  elements-print-into entries-print-into
   list-append
 
   ;; List operations.
@@ -216,7 +219,7 @@
     ((Err e) (panic! (str "a check of a grammar gave Err for a literal it gave Ok for when compiled: " e)))))
 
 
-;; The `->str` fallback, invariant. `System.Convert.ToString` reads the ambient
+;; The `written` fallback, invariant. `System.Convert.ToString` reads the ambient
 ;; culture, which is how a `short` or a `float` — types with no conversion of
 ;; their own below — would print differently on a differently configured
 ;; machine. Generic, because a union case that is `null` at run time is named
@@ -253,45 +256,194 @@
 (defun (list-append xs ys)
   (list-foldr Cons ys xs))
 
-;; Type to String Trait
+;; ---------------------------------------------------------------------------
+;; Written and Displayed
+;; ---------------------------------------------------------------------------
+;; `written` is a value as the reader reads it, as Scheme's `write` writes
+;; it: a string in quotes, a char as `#\a`, a long as `21L`. `displayed` is
+;; the value for a person to read, as `display` writes it: a string is its
+;; text. Every type is written; a type is displayed as it is written unless
+;; it says otherwise.
+;;
+;; Each trait has two methods. `write-into` adds the value to a builder, and
+;; is what a container calls on its elements, so that a nested value is
+;; written into one buffer. `written` answers a string, through `write-into`
+;; and a builder the thread keeps. A type whose text it has at hand, such as
+;; a number, gives `written` too, and no builder is used.
+(import/extern
+  (clr-builder-rent   (: Bjolang.Runtime.BjoShow.Rent))
+  (clr-builder-finish (: Bjolang.Runtime.BjoShow.Finish))
+  (clr-write-string-into (: Bjolang.Runtime.BjoShow.WriteStringInto))
+  (clr-written-string (: Bjolang.Runtime.BjoShow.WrittenString))
+  (clr-written-char   (: Bjolang.Runtime.BjoShow.WrittenChar))
+  (clr-written-double (: Bjolang.Runtime.BjoShow.WrittenDouble))
+  (clr-written-number (: Bjolang.Runtime.BjoShow.WrittenNumber (-> %a string string))))
+
+(def/trait (Written %a)
+  (: write-into (-> %a StringBuilder void))
+  (: written (-> %a string))
+  (defun (written x)
+    (def b (clr-builder-rent))
+    (write-into x b)
+    (clr-builder-finish b)))
+
+(def/trait (Displayed %a)
+  (where (Written %a))
+  (: display-into (-> %a StringBuilder void))
+  (: displayed (-> %a string))
+  (defun (displayed x)
+    (def b (clr-builder-rent))
+    (display-into x b)
+    (clr-builder-finish b)))
+
+;; A .NET type is written as it writes itself, in the invariant culture.
+(impl (Written %a)
+  (defun (written x) (clr-show x))
+  (defun (write-into x b) (stringbuilder-add-string! b (clr-show x))))
+
+;; A value as the runtime writes it. For a value whose type no implementation
+;; can be found for, as a function's: it has no head constructor to look one
+;; up by. A function is written `#<procedure>`, also inside an option or a
+;; tuple.
+(: (-> %a string))
+(defun (written/runtime x) (clr-show x))
+
+;; Every type is displayed as it is written, unless it says otherwise.
+(impl (Displayed %a)
+  (defun (displayed x) (written x))
+  (defun (display-into x b) (write-into x b)))
+
+;; Each number with the suffix that gives its type back, and displayed
+;; without it.
+(impl (Written int)
+  (defun (written n) (int->string n))
+  (defun (write-into n b) (stringbuilder-add-string! b (int->string n))))
+
+(impl (Written long)
+  (defun (written n) (clr-written-number n "L"))
+  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+
+(impl (Displayed long)
+  (defun (displayed n) (long->string n))
+  (defun (display-into n b) (stringbuilder-add-string! b (long->string n))))
+
+(impl (Written byte)
+  (defun (written n) (clr-written-number n "uy"))
+  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+
+(impl (Displayed byte)
+  (defun (displayed n) (byte->string n))
+  (defun (display-into n b) (stringbuilder-add-string! b (byte->string n))))
+
+(impl (Written short)
+  (defun (written n) (clr-written-number n "s"))
+  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+
+(impl (Displayed short)
+  (defun (displayed n) (clr-show n))
+  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+
+(impl (Written ushort)
+  (defun (written n) (clr-written-number n "us"))
+  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+
+(impl (Displayed ushort)
+  (defun (displayed n) (clr-show n))
+  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+
+(impl (Written uint)
+  (defun (written n) (clr-written-number n "u"))
+  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+
+(impl (Displayed uint)
+  (defun (displayed n) (clr-show n))
+  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+
+(impl (Written ulong)
+  (defun (written n) (clr-written-number n "UL"))
+  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+
+(impl (Displayed ulong)
+  (defun (displayed n) (clr-show n))
+  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+
+(impl (Written decimal)
+  (defun (written n) (clr-written-number n "M"))
+  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+
+(impl (Displayed decimal)
+  (defun (displayed n) (clr-show n))
+  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+
+(impl (Written bigint)
+  (defun (written n) (clr-written-number n "I"))
+  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+
+(impl (Displayed bigint)
+  (defun (displayed n) (clr-show n))
+  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+
+;; A double is written with a point, so that it is not read back as an int.
+(impl (Written double)
+  (defun (written n) (clr-written-double n))
+  (defun (write-into n b) (stringbuilder-add-string! b (clr-written-double n))))
+
+(impl (Displayed double)
+  (defun (displayed n) (double->string n))
+  (defun (display-into n b) (stringbuilder-add-string! b (double->string n))))
+
+;; As the language writes a boolean, not as .NET does.
+(impl (Written bool)
+  (defun (written b) (if b "#t" "#f"))
+  (defun (write-into x b) (stringbuilder-add-string! b (if x "#t" "#f"))))
+
+;; A string in quotes, and displayed as its text.
+(impl (Written string)
+  (defun (written s) (clr-written-string s))
+  (defun (write-into s b) (clr-write-string-into b s)))
+
+(impl (Displayed string)
+  (defun (displayed s) s)
+  (defun (display-into s b) (stringbuilder-add-string! b s)))
+
+(impl (Written Char)
+  (defun (written c) (clr-written-char c))
+  (defun (write-into c b) (stringbuilder-add-string! b (clr-written-char c))))
+
+(impl (Displayed Char)
+  (defun (displayed c) (char->string c))
+  (defun (display-into c b) (stringbuilder-add! b c)))
+
+(impl (Written Keyword)
+  (defun (written k) (str "#:" (keyword->string k)))
+  (defun (write-into k b)
+    (stringbuilder-add-string! b "#:")
+    (stringbuilder-add-string! b (keyword->string k))))
+
+(impl (Displayed Keyword)
+  (defun (displayed k) (keyword->string k))
+  (defun (display-into k b) (stringbuilder-add-string! b (keyword->string k))))
+
+(impl (Written Symbol)
+  (defun (written s) (symbol->string s))
+  (defun (write-into s b) (stringbuilder-add-string! b (symbol->string s))))
+
+;; Container formats are further down.
+
+;; ---------------------------------------------------------------------------
+;; ->str
+;; ---------------------------------------------------------------------------
+;; What `displayed` was called before there was `written`. An implementation
+;; of its own is still called by `->str`, but not by `displayed`, `println`
+;; or an interpolation, which is why it is deprecated.
 (def/trait (->str %a)
+  (where (Displayed %a))
   (: ->str (-> %a string)))
 
 (impl (->str %a)
-  (defun (->str u)
-    (clr-show u)))
+  (defun (->str x) (displayed x)))
 
-;; Implementations for standard scalars
-(impl (->str string)
-  (defun (->str s) s))
-
-;; As the language writes a boolean, not as .NET does.
-(impl (->str bool)
-  (defun (->str b) (if b "#t" "#f")))
-
-(impl (->str int)
-  (defun (->str n) (int->string n)))
-
-(impl (->str double)
-  (defun (->str n) (double->string n)))
-
-(impl (->str byte)
-  (defun (->str n) (byte->string n)))
-
-(impl (->str long)
-  (defun (->str n) (long->string n)))
-
-(impl (->str Keyword)
-  (defun (->str k) (keyword->string k)))
-
-(impl (->str Symbol)
-  (defun (->str s) (symbol->string s)))
-
-
-(impl (->str Char)
-  (defun (->str c) (char->string c)))
-
-;; Container formats are further down.
+(:deprecated ->str "use `displayed`, and implement `Displayed` or `Written`")
 
 
 ;; ---------------------------------------------------------------------------
@@ -308,14 +460,14 @@
 (impl (Discard (Promise %a))
   (defun (ignore p) (detach p)))
 
-;; Generic display functions utilizing the ->str trait
+;; Writes a value as `displayed` gives it.
 (: (-> %a void))
 (defun (print x)
-  (display (->str x)))
+  (display (displayed x)))
 
 (: (-> %a void))
 (defun (println x)
-  (displayln (->str x)))
+  (displayln (displayed x)))
 
 
 ;; ---------------------------------------------------------------------------
@@ -1576,10 +1728,19 @@
 ;; --------------------------------------------------------------------------
 
 (type (: (Box %a) #:opaque (Struct (: field (Array %a)))))
-(impl (->str (Box %a))
-  (where (->str %a))
-  (defun (->str box)
-    (str "(Box " (->str (box-ref box)) ")")))
+(impl (Written (Box %a))
+  (where (Written %a))
+  (defun (write-into box b)
+    (stringbuilder-add-string! b "(Box ")
+    (write-into (box-ref box) b)
+    (stringbuilder-add-string! b ")")))
+
+(impl (Displayed (Box %a))
+  (where (Displayed %a))
+  (defun (display-into box b)
+    (stringbuilder-add-string! b "(Box ")
+    (display-into (box-ref box) b)
+    (stringbuilder-add-string! b ")")))
 (: (-> %a (Box %a)))
 (defun (make-box elem)
   (def arr (make-array 1))
@@ -3775,7 +3936,7 @@
 ;; spelling per expansion, so a single template name would shadow itself.
 (: (-> string int Syntax))
 (defun (path-temp prefix i)
-  (SSym (string->symbol (str prefix (->str i)))))
+  (SSym (string->symbol (str prefix (displayed i)))))
 
 ;; The field a `.name` step writes. A hygiene mark — `.name__37`, when the
 ;; step was written in another macro's template — is stripped, since a field
@@ -4318,8 +4479,9 @@
   (defun (compare a b) (compare (duration-ticks a) (duration-ticks b))))
 
 ;; ISO 8601: PT26H30M, PT0.5S, with one leading sign: -PT1H30M.
-(impl (->str Duration)
-  (defun (->str d) (duration->iso (duration-ticks d))))
+(impl (Written Duration)
+  (defun (written d) (duration->iso (duration-ticks d)))
+  (defun (write-into d b) (stringbuilder-add-string! b (written d))))
 
 (: (-> long string))
 (defun (duration->iso t)
@@ -4348,7 +4510,7 @@
       (let trim ((f f) (width 7))
         (if (= (% f 10L) 0L)
             (trim (/ f 10L) (- width 1))
-            (let pad ((digits (->str f)))
+            (let pad ((digits (displayed f)))
               (if (< (string-length digits) width)
                   (pad (string-append "0" digits))
                   (string-append "." digits)))))))
@@ -4373,132 +4535,181 @@
 ;; ---------------------------------------------------------------------------
 ;; Container formats
 ;; ---------------------------------------------------------------------------
+;; A container is written with its elements written, and displayed with them
+;; displayed, as Scheme's `write` and `display` do: `(written (list "a"))` is
+;; `("a")` and `(displayed (list "a"))` is `(a)`. One function lays out each
+;; kind of container, and is given the method that adds an element.
 
-;; `(1 2 3)`, with every element formatted by its own `->str`. No quote, so a
-;; nested list prints as `((1) (2 3))` and the empty list as `()`.
-(: (-> (List %a) string) (where (->str %a)))
-(defun (list->str l)
-  (if (list-empty? l)
-      "()"
-      (let ((sb (stringbuilder-empty)))
-        (stringbuilder-add-string! sb "(")
-        (stringbuilder-add-string! sb (->str (list-head l)))
-        (loop (:for elem (list-tail l))
-              (:do (stringbuilder-add-string! sb " ")
-                   (stringbuilder-add-string! sb (->str elem))))
-        (stringbuilder-add-string! sb ")")
-        (stringbuilder->string sb))))
+;; The elements of `xs` between `open` and `close`, with a space between two.
+(: (-> string %s string StringBuilder (-> %a StringBuilder void) void)
+   (where (Iterable %s #:elem %a)))
+(defun (elements-print-into open xs close b each)
+  (stringbuilder-add-string! b open)
+  (loop (:with first? #t #f)
+        (:for x xs)
+        (:do (unless first? (stringbuilder-add-string! b " "))
+             (each x b)))
+  (stringbuilder-add-string! b close))
 
-(impl (->str (List %a))
-  (where (->str %a))
-  (defun (->str l)
-    (list->str l)))
+;; `(1 2 3)`. No quote, so a nested list is `((1) (2 3))` and the empty list
+;; is `()`.
+(impl (Written (List %a))
+  (where (Written %a))
+  (defun (write-into l b) (elements-print-into "(" l ")" b (fun (x b) (write-into x b)))))
 
-;; We use a `StringBuilder` directly rather than a string port for string formatting.
-;;
-;; Formatting should be a pure operation. Using a port would incorrectly inherit
-;; the port's effect (colour), causing string building to become asynchronous 
-;; inside bjoroutines. `StringBuilder` is also more efficient here.
-(: (-> (Vec %a) string) (where (->str %a)))
-(defun (vec->str v)
-  (def sb (stringbuilder-empty))
-  (stringbuilder-add-string! sb "[")
-  (when (not (empty? v))
-    (stringbuilder-add-string! sb (->str (vec-ref v 0)))
-    (loop (:with i 0 (+ i 1))
-          (:for elem v)
-          (:when (> i 0))
-          (:do (stringbuilder-add-string! sb " ")
-               (stringbuilder-add-string! sb (->str elem)))))
-  (stringbuilder-add-string! sb "]")
-  (stringbuilder->string sb))
+(impl (Displayed (List %a))
+  (where (Displayed %a))
+  (defun (display-into l b) (elements-print-into "(" l ")" b (fun (x b) (display-into x b)))))
 
-(impl (->str (Vec %a))
-  (where (->str %a))
-  (defun (->str v)
-    (vec->str v)))
+;; `[1 2 3]`, as the literal writes it.
+(impl (Written (Vec %a))
+  (where (Written %a))
+  (defun (write-into v b) (elements-print-into "[" v "]" b (fun (x b) (write-into x b)))))
 
-(: (-> (Array %a) string) (where (->str %a)))
-(defun (array->str a)
-  (def sb (stringbuilder-empty))
-  (def strit #(stringbuilder-add-string! sb &1))
-  (strit "#[")
-  (when (not (empty? a))
-    (strit (->str (array-ref a 0)))
-    (loop (:with i 0 (+ i 1))
-          (:for elem a)
-          (:when (> i 0))
-          (:do (strit " ")
-               (strit (->str elem)))))
-  (strit "]")
-  (stringbuilder->string sb))
+(impl (Displayed (Vec %a))
+  (where (Displayed %a))
+  (defun (display-into v b) (elements-print-into "[" v "]" b (fun (x b) (display-into x b)))))
 
-(impl (->str (Array %a))
-  (where (->str %a))
-  (defun (->str arr)
-    (array->str arr)))
+;; `#[1 2 3]`, as the literal writes it.
+(impl (Written (Array %a))
+  (where (Written %a))
+  (defun (write-into a b) (elements-print-into "#[" a "]" b (fun (x b) (write-into x b)))))
 
+(impl (Displayed (Array %a))
+  (where (Displayed %a))
+  (defun (display-into a b) (elements-print-into "#[" a "]" b (fun (x b) (display-into x b)))))
 
-;; We use a `StringBuilder` directly rather than a string port to keep 
-;; formatting pure and synchronous.
-(: (-> (Seq %a) string) (where (->str %a)))
-(defun (seq->str sq)
-  (def sb (stringbuilder-empty))
-  (stringbuilder-add-string! sb "(seq")
-  ;; Walk sequence.
-  (loop (:for item sq)
-        (:do (stringbuilder-add-string! sb " ")
-             (stringbuilder-add-string! sb (->str item))))
-  (stringbuilder-add-string! sb ")")
-  (stringbuilder->string sb))
+;; A sequence is not walked: walking it could do anything, or never end.
+(impl (Written (Seq %a))
+  (defun (written s) "(Seq ...)")
+  (defun (write-into s b) (stringbuilder-add-string! b "(Seq ...)")))
 
-(impl (->str (Seq %a))
-  (where (->str %a))
-  (defun (->str sq)
-    "(Seq ...)"))
+;; The entries of `xs` between `open` and `close`, each in parentheses, a key
+;; and its value with a space between.
+(: (-> string %s string StringBuilder (-> %k StringBuilder void) (-> %v StringBuilder void) void)
+   (where (Iterable %s #:elem (Tuple %k %v))))
+(defun (entries-print-into open xs close b each-key each-value)
+  (stringbuilder-add-string! b open)
+  (loop (:with first? #t #f)
+        (:for entry xs)
+        (:do (def (k v) entry)
+             (unless first? (stringbuilder-add-string! b " "))
+             (stringbuilder-add-string! b "(")
+             (each-key k b)
+             (stringbuilder-add-string! b " ")
+             (each-value v b)
+             (stringbuilder-add-string! b ")")))
+  (stringbuilder-add-string! b close))
 
-;; Map entry to str.
-(: (-> (Tuple %k %v) string) (where (->str %k) (->str %v)))
+;; `#map((k v) ...)`, as the `#map` literal writes it.
+(impl (Written (Map %k %v))
+  (where (Written %k) (Written %v))
+  (defun (write-into m b)
+    (entries-print-into "#map(" m ")" b (fun (k b) (write-into k b)) (fun (v b) (write-into v b)))))
+
+(impl (Displayed (Map %k %v))
+  (where (Displayed %k) (Displayed %v))
+  (defun (display-into m b)
+    (entries-print-into "#map(" m ")" b (fun (k b) (display-into k b)) (fun (v b) (display-into v b)))))
+
+;; A case of a union the runtime declares, in constructor syntax: `(Some 1)`
+;; and `None`, `(Ok 1)` and `(Err "no")`.
+(: (-> string %a StringBuilder (-> %a StringBuilder void) void))
+(defun (case-print-into name x b each)
+  (stringbuilder-add-string! b "(")
+  (stringbuilder-add-string! b name)
+  (stringbuilder-add-string! b " ")
+  (each x b)
+  (stringbuilder-add-string! b ")"))
+
+(impl (Written (Option %a))
+  (where (Written %a))
+  (defun (write-into o b)
+    (match o
+      ((Some x) (case-print-into "Some" x b (fun (x b) (write-into x b))))
+      (None (stringbuilder-add-string! b "None")))))
+
+(impl (Displayed (Option %a))
+  (where (Displayed %a))
+  (defun (display-into o b)
+    (match o
+      ((Some x) (case-print-into "Some" x b (fun (x b) (display-into x b))))
+      (None (stringbuilder-add-string! b "None")))))
+
+(impl (Written (Result %e %a))
+  (where (Written %e) (Written %a))
+  (defun (write-into r b)
+    (match r
+      ((Ok x) (case-print-into "Ok" x b (fun (x b) (write-into x b))))
+      ((Err e) (case-print-into "Err" e b (fun (e b) (write-into e b)))))))
+
+(impl (Displayed (Result %e %a))
+  (where (Displayed %e) (Displayed %a))
+  (defun (display-into r b)
+    (match r
+      ((Ok x) (case-print-into "Ok" x b (fun (x b) (display-into x b))))
+      ((Err e) (case-print-into "Err" e b (fun (e b) (display-into e b)))))))
+
+;; `(Tuple 1 "a")`, as a tuple is built.
+(impl (Written (Tuple %a %b))
+  (where (Written %a) (Written %b))
+  (defun (write-into t b)
+    (def (x y) t)
+    (stringbuilder-add-string! b "(Tuple ")
+    (write-into x b)
+    (stringbuilder-add-string! b " ")
+    (write-into y b)
+    (stringbuilder-add-string! b ")")))
+
+(impl (Displayed (Tuple %a %b))
+  (where (Displayed %a) (Displayed %b))
+  (defun (display-into t b)
+    (def (x y) t)
+    (stringbuilder-add-string! b "(Tuple ")
+    (display-into x b)
+    (stringbuilder-add-string! b " ")
+    (display-into y b)
+    (stringbuilder-add-string! b ")")))
+
+(impl (Written (Tuple %a %b %c))
+  (where (Written %a) (Written %b) (Written %c))
+  (defun (write-into t b)
+    (def (Tuple x y z) t)
+    (stringbuilder-add-string! b "(Tuple ")
+    (write-into x b)
+    (stringbuilder-add-string! b " ")
+    (write-into y b)
+    (stringbuilder-add-string! b " ")
+    (write-into z b)
+    (stringbuilder-add-string! b ")")))
+
+(impl (Displayed (Tuple %a %b %c))
+  (where (Displayed %a) (Displayed %b) (Displayed %c))
+  (defun (display-into t b)
+    (def (Tuple x y z) t)
+    (stringbuilder-add-string! b "(Tuple ")
+    (display-into x b)
+    (stringbuilder-add-string! b " ")
+    (display-into y b)
+    (stringbuilder-add-string! b " ")
+    (display-into z b)
+    (stringbuilder-add-string! b ")")))
+
+;; What `displayed` was called for these before it took every type.
+(: (-> (List %a) string) (where (Displayed %a)))
+(defun (list->str l) (displayed l))
+
+(: (-> (Map %k %v) string) (where (Displayed %k) (Displayed %v)))
+(defun (map->str m) (displayed m))
+
+(: (-> (Tuple %k %v) string) (where (Displayed %k) (Displayed %v)))
 (defun (map-entry->str entry)
   (def (k v) entry)
-  (str (->str k) " " (->str v)))
+  (str (displayed k) " " (displayed v)))
 
-;; Map to str. Each entry in parentheses, as the `#map` literal writes it.
-(: (-> (Map %k %v) string) (where (->str %k) (->str %v)))
-(defun (map->str m)
-  (def sb (stringbuilder-empty))
-  (stringbuilder-add-string! sb "#map(")
-  (loop (:with first? #t #f)
-        (:for entry m)
-        (:do (unless first? (stringbuilder-add-string! sb " "))
-             (stringbuilder-add-string! sb "(")
-             (stringbuilder-add-string! sb (map-entry->str entry))
-             (stringbuilder-add-string! sb ")")))
-  (stringbuilder-add-string! sb ")")
-  (stringbuilder->string sb))
-
-(impl (->str (Map %k %v))
-  (where (->str %k) (->str %v))
-  (defun (->str m)
-    (map->str m)))
-
-;; Option and Result, in the shape their C# ToString writes. Without these they
-;; fell to the blanket, and that ToString formats the payload with its own
-;; ToString rather than its ->str, so a type with a ->str of its own printed as
-;; the C# record it compiles to.
-(impl (->str (Option %a))
-  (where (->str %a))
-  (defun (->str o)
-    (match o
-      ((Some x) (str "(Some " (->str x) ")"))
-      (None "None"))))
-
-(impl (->str (Result %e %a))
-  (where (->str %e) (->str %a))
-  (defun (->str r)
-    (match r
-      ((Ok x) (str "(Ok " (->str x) ")"))
-      ((Err e) (str "(Err " (->str e) ")")))))
+(:deprecated list->str "use `displayed`")
+(:deprecated map->str "use `displayed`")
+(:deprecated map-entry->str "use `displayed` on the key and the value")
 
 ;; Sequential binding
 ;;

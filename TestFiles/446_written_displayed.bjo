@@ -1,0 +1,84 @@
+;; `written` is a value as the reader reads it, and `displayed` the value for a
+;; person to read. Every type is written, its own types in constructor syntax,
+;; and is displayed as it is written unless it says otherwise.
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Car (Record (: brand string) (: year int))))
+(type (: Shape (Union (: Circle double) (: Rect int int) Dot)))
+(type (: Meters (Newtype double)))
+(type (: (Pair %a %b) (Record (: left %a) (: right %b))))
+(type (: (Tree %a) (Union Leaf (: Node (Tree %a) %a (Tree %a)))))
+(type (: Secret #:opaque (Record (: code int))))
+(type (: Handler (Record (: name string) (: run (-> int int)) (: later (Option (-> int))))))
+(type (: Pt (Struct (: x int) (: y int))))
+
+;; A type that says how it is written, and writes another value inside it
+;; with `written`: that call takes a builder of its own, and the one this
+;; value is being written into is not touched.
+(type (: Tagged (Record (: tag string))))
+
+(impl (Written Tagged)
+  (defun (write-into t b)
+    (stringbuilder-add-string! b "<")
+    (stringbuilder-add-string! b (written (record-ref t tag)))
+    (stringbuilder-add-string! b ">")))
+
+;; A type displayed otherwise than it is written.
+(type (: Money (Union (: Kr int))))
+
+(impl (Displayed Money)
+  (defun (display-into m b)
+    (match m ((Kr n) (stringbuilder-add-string! b #"${n} kr")))))
+
+(: (-> int int))
+(defun (twice x) (* 2 x))
+
+(defun (main)
+  ;; --- What the language writes --------------------------------------------
+  (expect "a string, written" (written "a\"b\n") "\"a\\\"b\\n\"")
+  (expect "a string, displayed" (displayed "a\"b") "a\"b")
+  (expect "a char, written" (written #\a) "#\\a")
+  (expect "a named char, written" (written #\space) "#\\space")
+  (expect "a char, displayed" (displayed #\a) "a")
+  (expect "an int" (written 21) "21")
+  (expect "a long keeps its suffix" (written 21L) "21L")
+  (expect "a long, displayed" (displayed 21L) "21")
+  (expect "a byte" (written 21uy) "21uy")
+  (expect "a decimal" (written 2.5M) "2.5M")
+  (expect "a whole double keeps its point" (written 2.0) "2.0")
+  (expect "a double, displayed" (displayed 2.5) "2.5")
+  (expect "a boolean" (written #f) "#f")
+  (expect "a keyword" (written #:key) "#:key")
+  (expect "a symbol" (written 'sym) "sym")
+
+  ;; --- Containers write or display what they hold --------------------------
+  (expect "a list, written" (written (list "a" "b")) "(\"a\" \"b\")")
+  (expect "a list, displayed" (displayed (list "a" "b")) "(a b)")
+  (expect "a vec" (written [1L 2L]) "[1L 2L]")
+  (expect "a map" (written #map(("k" 1))) "#map((\"k\" 1))")
+  (expect "an option" (written (Some "x")) "(Some \"x\")")
+  (expect "a tuple" (written (Tuple 1 "x")) "(Tuple 1 \"x\")")
+
+  ;; --- The types a program declares -----------------------------------------
+  (expect "a record" (written (Car (brand "volvo") (year 1999))) "(Car (brand \"volvo\") (year 1999))")
+  (expect "cases" (written (list (Circle 1.0) (Rect 2 3) Dot)) "((Circle 1.0) (Rect 2 3) Dot)")
+  (expect "a newtype" (written (Meters 2.0)) "(Meters 2.0)")
+  (expect "a generic record" (written (Pair (left "a") (right 1L))) "(Pair (left \"a\") (right 1L))")
+  (expect "a recursive union" (written (Node Leaf 1 (Node Leaf 2 Leaf))) "(Node Leaf 1 (Node Leaf 2 Leaf))")
+  (expect "a struct" (written (Pt (x 1) (y 2))) "(Pt (x 1) (y 2))")
+  ;; Its representation is the module's own.
+  (expect "an opaque type" (written (Secret (code 1))) "#<Secret>")
+  ;; A function has no head constructor, so nothing can be implemented for
+  ;; it: a field with one in its type is written as the runtime writes it.
+  (expect "a function"
+          (written (Handler (name "h") (run twice) (later (Some (fun () 1)))))
+          "(Handler (name \"h\") (run #<procedure>) (later (Some #<procedure>)))")
+  (expect "a record, displayed as written" (displayed (Car (brand "volvo") (year 1999))) "(Car (brand \"volvo\") (year 1999))")
+  (expect "in an interpolation" #"car: ${(Car (brand "saab") (year 1)) }" "car: (Car (brand \"saab\") (year 1))")
+
+  ;; --- What a type says about itself -----------------------------------------
+  (expect "written inside written" (written (list (Tagged (tag "x")))) "(<\"x\">)")
+  (expect "displayed otherwise" (displayed (list (Kr 5))) "(5 kr)")
+  (expect "written as derived" (written (Kr 5)) "(Kr 5)")
+  0)

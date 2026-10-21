@@ -16,9 +16,9 @@
 ;; The helper uses the *enclosing* function's constrained type variable, so the
 ;; constraint really does belong to `decorate` and really does become a
 ;; dictionary parameter. This must keep working.
-(: (-> %a string) (where (->str %a)))
+(: (-> %a string) (where (Displayed %a)))
 (defun (decorate v)
-  (defun (wrap) (string-append "<" (string-append (->str v) ">")))
+  (defun (wrap) (string-append "<" (string-append (displayed v) ">")))
   (wrap))
 
 ;; A local helper that is generic but *unconstrained* stays fully polymorphic:
@@ -32,7 +32,7 @@
 ;; call site and the call devirtualizes to a direct static call.
 (: (-> string))
 (defun (doubled)
-  (defun (twice x) (string-append (->str x) (->str x)))
+  (defun (twice x) (string-append (displayed x) (displayed x)))
   (string-append (twice 7) (twice 8)))
 
 ;; A recursive constrained local helper, which loop lowering turns into a loop.
@@ -41,7 +41,7 @@
   (defun (go n acc)
     (if (= n 0)
         acc
-        (go (- n 1) (string-append acc (->str n)))))
+        (go (- n 1) (string-append acc (displayed n)))))
   (go 3 ""))
 
 (defun (main)

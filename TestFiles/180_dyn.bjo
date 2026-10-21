@@ -2,12 +2,12 @@
 ;; implementerar traiten, med den konkreta typen dold.
 ;;
 ;; Två saker hänger ihop här och är värda att skilja på. Packningen är alltid
-;; utskriven — `(dyn ->str 42)` — och det finns ingen inbäddning som sker av sig
+;; utskriven — `(dyn Displayed 42)` — och det finns ingen inbäddning som sker av sig
 ;; själv, så en lådtyp som möter ett värde är ett vanligt typfel. Anropet är
 ;; däremot inte något nytt alls: ett metodanrop på ett lådlagt värde är ett
 ;; vanligt trait-anrop som löses genom registret till den implementation traiten
 ;; automatiskt får för sin egen dyn-typ. Det är det som gör att `(println d)`
-;; och `(where (->str %a))` fungerar oförändrat.
+;; och `(where (Displayed %a))` fungerar oförändrat.
 
 (import (std prelude))
 (import (std simpletest))
@@ -17,16 +17,17 @@
 (import "180_a.bjo")
 (import "180_b.bjo")
 
-;; --- 1. En funktion som tar vad som helst med en `->str` --------------------
+;; --- 1. En funktion som tar vad som helst med en `Displayed` ----------------
 
 (type (: Coin (Struct (: ore int))))
 
-(impl (->str Coin)
-  (defun (->str c) (string-append (int->string (struct-ref c ore)) " öre")))
+(impl (Displayed Coin)
+  (defun (displayed c) (string-append (int->string (struct-ref c ore)) " öre"))
+  (defun (display-into c b) (stringbuilder-add-string! b (displayed c))))
 
-(: (-> (dyn ->str) string))
+(: (-> (dyn Displayed) string))
 (defun (render-str d)
-  (->str d))
+  (displayed d))
 
 ;; --- 5, 7. En trait med en associerad typ, och en mottagare som inte är
 ;; första parametern -----------------------------------------------------------
@@ -79,11 +80,11 @@
 
 ;; --- 8. En generisk funktion som packar sina element ------------------------
 ;;
-;; `(->str %a)` finns här bara som en ordboksparameter, och den är vad som går
+;; `(Displayed %a)` finns här bara som en ordboksparameter, och den är vad som går
 ;; in i lådan.
-(: (-> (List %a) (List (dyn ->str))) (where (->str %a)))
+(: (-> (List %a) (List (dyn Displayed))) (where (Displayed %a)))
 (defun (pack-all xs)
-  (list-map (fun (x) (dyn ->str x)) xs))
+  (list-map (fun (x) (dyn Displayed x)) xs))
 
 ;; --- 10. Två associerade typer ----------------------------------------------
 ;;
@@ -113,24 +114,24 @@
 
 (defun (main args)
   ;; --- 1 --------------------------------------------------------------------
-  (expect "an int" (render-str (dyn ->str 42)) "42")
-  (expect "a string" (render-str (dyn ->str "hi")) "hi")
-  (expect "a record with its own impl" (render-str (dyn ->str (Coin (ore 7)))) "7 öre")
+  (expect "an int" (render-str (dyn Displayed 42)) "42")
+  (expect "a string" (render-str (dyn Displayed "hi")) "hi")
+  (expect "a record with its own impl" (render-str (dyn Displayed (Coin (ore 7)))) "7 öre")
 
   ;; --- 2. En lista som blandar tre typer, och en dispatch genom
   ;; den automatiska implementationen ------------------------------------------
   ;; Metoden skickas som ett värde: den blir den lambda den står för, och anropet
   ;; inuti går genom lådan som vilket annat anrop som helst.
-  (def mixed (list (dyn ->str 1) (dyn ->str "two") (dyn ->str (Coin (ore 3)))))
+  (def mixed (list (dyn Displayed 1) (dyn Displayed "two") (dyn Displayed (Coin (ore 3)))))
   (expect "three types in one list"
-          (list-map ->str mixed)
+          (list-map displayed mixed)
           (list "1" "two" "3 öre"))
 
-  ;; --- 3. Ett lådlagt värde in i en `(where (->str %a))`-funktion -------------
-  (println (dyn ->str 7))
+  ;; --- 3. Ett lådlagt värde in i en `(where (Displayed %a))`-funktion -------------
+  (println (dyn Displayed 7))
 
   ;; --- 4. Bevis för en villkorad impl, byggt med `Make` inuti lådan ----------
-  (expect "a conditional impl" (render-str (dyn ->str (list 1 2))) "(1 2)")
+  (expect "a conditional impl" (render-str (dyn Displayed (list 1 2))) "(1 2)")
 
   ;; --- 5, 7 ------------------------------------------------------------------
   (def folded (list (dyn Foldable [1 2 3]) (dyn Foldable (list 10 20))))

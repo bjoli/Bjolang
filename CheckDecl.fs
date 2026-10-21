@@ -517,6 +517,19 @@ let private refuseOverlap (env: Env) (traitName: string) (typeKey: string) (targ
                     $"This one, for %s{shown[1]}, overlaps it: %s{shown[2]} is an instance of both, so a call at it would have two implementations to choose from. Implementations of one trait may not overlap. Make the two targets distinct, or wrap one of the types in a type of its own."
             | None -> ()
 
+/// What a blanket implementation stands on: its trait's superclasses at the
+/// implementor. The blanket of a trait that requires `Written` may call
+/// `written`, and its dictionary is built from the `Written` one of the type
+/// it is used at. No program writes these, and `Traits.implTargetOf` still
+/// refuses a where clause on a blanket. The evidence has a bottom: a
+/// superclass is declared before the trait, so each demand is of an earlier
+/// trait, and the chain ends.
+let private blanketConstraints (traitInfo: TraitInfo) (targetType: HMType) : TraitConstraint list =
+    let implementor = Map.ofList [ "'" + traitInfo.ImplementorVar, targetType ]
+
+    traitInfo.Superclasses
+    |> List.map (fun s -> { s with TargetType = substTypeVars implementor s.TargetType })
+
 /// A trait's own `(where ...)`, as constraints at its implementor variable.
 ///
 /// With `strict`, the rules are checked: each constraint is at the
@@ -2947,6 +2960,12 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
                             env.Registry.GeneratedCopies } }
 
     let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
+
+    let implConstraints =
+        if typeKey = BlanketCtor then blanketConstraints traitInfo targetType else implConstraints
+
+    let implTarget = { implTarget with Constraints = implConstraints }
+
     let regEnv =
         let added = addImplementation traitName targetType implTarget hmAssocBindingsMap env
         { added with ImplSites = Map.add (env.CurrentModule, traitName, implTarget.Key) (targetType, r) added.ImplSites }
@@ -3483,7 +3502,15 @@ and private checkImplExtern (env: Env) (sigs: Sigs) (traitName: string) (targetT
         signatureConstraints env.Registry (resolveTypeAnnotation env.Registry) $"the implementation of '%s{traitName}'" whereClause
         |> List.map (fun c -> { c with TraitName = originalName env.Registry c.TraitName })
 
-    let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
+    // A blanket publishes the superclasses it stands on, which no program
+    // may write: see `blanketConstraints`.
+    let implTarget =
+        if implCtorKey targetType = Some BlanketCtor then
+            { implTargetOf traitName traitInfo targetType [] r with
+                Constraints = blanketConstraints traitInfo targetType }
+        else
+            implTargetOf traitName traitInfo targetType implConstraints r
+
     addImplementation traitName targetType implTarget hmAssocBindings env, sigs, []
 
 /// `(impl (Eq Banana) #:via int)`: the implementation for a newtype that is

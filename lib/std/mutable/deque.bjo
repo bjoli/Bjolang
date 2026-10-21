@@ -252,19 +252,18 @@
          (= (deque->list a) (deque->list b))))
   (defun (eq-hash d) (unhashable "Deque")))
 
-;; `#<a b c>`, front first, each element by its own `->str`.
-(: (-> (Deque %a) string) (where (->str %a)))
-(defun (deque->str d)
-  (def sb (stringbuilder-empty))
-  (stringbuilder-add-string! sb "#<")
-  (loop (:with first? #t #f)
-        (:for elem (deque->list d))
-        (:do (unless first? (stringbuilder-add-string! sb " "))
-             (stringbuilder-add-string! sb (->str elem))))
-  (stringbuilder-add-string! sb ">")
-  (stringbuilder->string sb))
+;; `#<a b c>`, front first.
+(impl (Written (Deque %a))
+  (where (Written %a))
+  (defun (write-into d b)
+    (elements-print-into "#<" (deque->list d) ">" b (fun (x b) (write-into x b)))))
 
-(impl (->str (Deque %a))
-  (where (->str %a))
-  (defun (->str d)
-    (deque->str d)))
+(impl (Displayed (Deque %a))
+  (where (Displayed %a))
+  (defun (display-into d b)
+    (elements-print-into "#<" (deque->list d) ">" b (fun (x b) (display-into x b)))))
+
+(: (-> (Deque %a) string) (where (Displayed %a)))
+(defun (deque->str d) (displayed d))
+
+(:deprecated deque->str "use `displayed`")
