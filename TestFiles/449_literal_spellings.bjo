@@ -1,0 +1,30 @@
+;; Literals C# has to be given in another spelling: an integer zero written
+;; with a minus at an unsigned type, whose minus C# reads as a negation that
+;; makes a long, and a hexadecimal or binary integer at a floating-point or
+;; decimal type, which C# has no literal for and cannot cast from once it is
+;; wider than a ulong.
+(import (std prelude))
+(import (std simpletest))
+
+(: (-> uint string))
+(defun (classify-uint x)
+  (match x
+    (-0 "zero")
+    (_ "other")))
+
+(defun (main)
+  (def (: u uint) -0)
+  (def (: ul ulong) -0)
+  (expect "minus zero at a uint" u 0u)
+  (expect "minus zero at a ulong" ul 0UL)
+  (expect "minus zero as a uint pattern" (classify-uint 0u) "zero")
+
+  (def (: d double) 0x10000000000000000)
+  (def (: m decimal) 0x10000000000000000)
+  (def (: f float) 0b10000000000000000000000000000000000000000000000000000000000000000)
+  (expect "a hexadecimal wider than a ulong at a double" d 18446744073709551616.0)
+  (expect "at a decimal" m 18446744073709551616M)
+  (expect "a binary one at a float" f 18446744073709551616.0)
+  (def (: small double) 0xFF)
+  (expect "a hexadecimal that fits a ulong at a double" small 255.0)
+  0)

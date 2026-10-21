@@ -477,9 +477,9 @@ let solveWanteds (env: Env) (wanteds: Wanted list) : unit =
 let private defaultNumericLiterals (env: Env) : unit =
     for (t, text, r) in openLiterals do
         match prune env.Registry t with
-        // Nothing said what it is, so it is an `int` — which is what a literal
-        // written without a suffix has always been. It has to fit there too,
-        // or C# refuses the literal in the generated code.
+        // Nothing said what it is, so it is an `int`, or a `double` if a real
+        // literal shares it (`literalDefault`). It has to fit there too, or C#
+        // refuses the literal in the generated code.
         | TMeta m ->
             let settled = literalDefault m.Id
             m.Value <- Some settled

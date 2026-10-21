@@ -220,7 +220,7 @@ let private punctToken = punctuation |> List.map (fun (t, s) -> s, t) |> Map.ofL
 /// interns, so the `x` in the input and an `x` a template builds are the same
 /// object and identity cannot tell them apart.
 ///
-/// The one exception is a `ResolvedSymbol`, the `str` or `->str` of a `#"..."`
+/// The one exception is a `ResolvedSymbol`, the `str` or `displayed` of a `#"..."`
 /// the reader expanded: it crosses as an ordinary `SSym` marked `Resolved`, so
 /// a transformer can match it, splice it and hand it back, and `toSExpr` turns
 /// it into the same resolved reference it was.

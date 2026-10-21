@@ -43,11 +43,7 @@ let loadRoots (rootsPath: string) : Paths.PackageRoot list =
     let baseDir = Path.GetDirectoryName full
     let forms, _ = Lexer.tokenize full (File.ReadAllText full) |> Pipeline.read
 
-    /// With the column, unlike the compiler's diagnostics for source files: a
-    /// roots file is written by a tool, which is free to put every package on
-    /// one line, and then the line alone points at all of them.
-    let at (r: Lexer.Range) = $"%s{Lexer.formatPos r}:%d{r.Start.Column}"
-    let where (form: Ast.SExpr) = at (Ast.getRange form)
+    let where (form: Ast.SExpr) = Lexer.formatPos (Ast.getRange form)
 
     let entries =
         match forms with
@@ -72,7 +68,7 @@ let loadRoots (rootsPath: string) : Paths.PackageRoot list =
                                 $"Invalid roots file at %s{where bad}: a package name is a list of plain symbols, as a module path is.")
 
                 if name.IsEmpty then
-                    failwithf $"Invalid roots file at %s{at nameRange}: a package name has at least one segment."
+                    failwithf $"Invalid roots file at %s{Lexer.formatPos nameRange}: a package name has at least one segment."
 
                 // Relative to the roots file, not to the working directory: the
                 // file is written next to the project it describes, and a

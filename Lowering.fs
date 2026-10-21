@@ -176,10 +176,10 @@ let selfDictName (traitName: string) = dictParamName traitName "self"
 ///
 /// Four shapes, and the recursion is what conditional impls buy:
 ///
-///     ->str int             ToStr_Int::Instance
-///     ->str (List int)      ToStr_List<int>::Make(ToStr_Int::Instance)
-///     ->str 'a              _dict_->str_'a, from the enclosing scope
-///     the enclosing impl     _dict_->str_self, which is `this`
+///     Written int           Written_System_Int32::Instance
+///     Written (List int)    Written_List<int>::Make(Written_System_Int32::Instance)
+///     Written 'a            _dict_Written_a, from the enclosing scope
+///     the enclosing impl    _dict_Written_self, which is `this`
 ///
 /// `scope` is what the enclosing function or impl class has to offer, so a
 /// variable bottoms out there. It terminates on everything else because a

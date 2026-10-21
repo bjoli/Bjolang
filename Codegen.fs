@@ -4124,8 +4124,9 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
 
     | TLet (name, isFun, fn, value, body) ->
         // `LetRecify` only emits `ELet` for a singleton component with no
-        // self-edge, so a function-shaped binding here is always a
-        // *non-recursive* local function and needs no loop.
+        // self-edge, and `LocalFunPromotion` marks a `TLet` as a function,
+        // whose value cannot see its own name. So a function-shaped binding
+        // here is always a *non-recursive* local function and needs no loop.
         let asLocalFunction =
             if isFun then
                 match value.Node, value.Type with

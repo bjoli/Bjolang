@@ -929,6 +929,7 @@ let showTypesTogether (ts: HMType list) : string list =
             | "System.UInt32" -> "uint"
             | "System.UInt64" -> "ulong"
             | "System.Double" -> "double"
+            | "System.Single" -> "float"
             | "System.Decimal" -> "decimal"
             | "System.Numerics.BigInteger" -> "bigint"
             | "System.Int128" -> "int128"

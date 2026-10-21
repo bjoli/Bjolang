@@ -281,7 +281,7 @@ let implsMatching
 /// answer only for a head with no implementation of its own: one written at
 /// other arguments does not let it through.
 ///
-/// Implementations may not overlap, so at a type that is known at least one
+/// Implementations may not overlap, so at a type that is known at most one
 /// of them fits it. Two fit only where a metavariable leaves the type open,
 /// and choosing either would be a guess; that is refused.
 let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTarget * Map<string, HMType>) option =

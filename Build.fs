@@ -700,10 +700,10 @@ let compile (options: Options) (inputFilePath: string) : int =
             /// ways a program gets into fiber-land — the other being `bjo`,
             /// which is colourless and so may be written in a plain `main`.
             ///
-            /// The rest of `main`'s type is not a question. It is
-            /// `(-> (Vec string) int)`, given to the module rather than read
-            /// off it (`Pipeline.shapeEntryPoint`) and checked afterwards
-            /// (`Pipeline.checkEntryPoint`).
+            /// Its parameter is a `(Vec string)`, given to the module rather
+            /// than read off it (`Pipeline.shapeEntryPoint`) and checked
+            /// afterwards (`Pipeline.checkEntryPoint`). Its result is inferred,
+            /// and is asked about below.
             let mainIsBjoroutine =
                 match Map.tryFind "main" env.Bindings with
                 | Some b ->
@@ -932,8 +932,21 @@ let compile (options: Options) (inputFilePath: string) : int =
                     | _ -> false
                 | None -> false
 
+            // A `main` whose result no expression fixes, such as one that ends
+            // in `panic!` or returns `(list)`, is generic in it. Nothing reads
+            // that result, so the entry point takes each type variable at
+            // `object`. `checkEntryPoint` has refused constraints on `main`.
+            let mainTypeArgs =
+                match Map.tryFind "main" env.Bindings with
+                | Some b ->
+                    let (TypedAST.Scheme(vars, _, _)) = b.Scheme
+
+                    if vars.IsEmpty then ""
+                    else "<" + (vars |> List.map (fun _ -> "object") |> String.concat ", ") + ">"
+                | None -> ""
+
             let callMain (argExpr: string) =
-                let main = $"%s{mainModuleClass}.main(%s{argExpr})"
+                let main = $"%s{mainModuleClass}.main%s{mainTypeArgs}(%s{argExpr})"
 
                 let call =
                     match mainIsBjoroutine, mainReturnsInt with

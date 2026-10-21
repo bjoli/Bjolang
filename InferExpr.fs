@@ -2107,6 +2107,10 @@ and private inferClassConstruct (env: Env) (name: string) (args: Expr list) (r: 
     let typedArgs = args |> List.map (infer env)
     let argTypes = typedArgs |> List.map fst
 
+    match info.CtorType |> Option.map (prune env.Registry) with
+    | Some(TFun(declared, _, _)) -> pinLiteralsToParameters env.Registry declared argTypes
+    | _ -> ()
+
     settleLiterals argTypes
     let resolved = DotNetInterop.resolveConstructor where clrType argTypes
 
@@ -2285,25 +2289,10 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
 
         let argTypes = typedArgs |> List.map fst
 
-        // A number literal takes the type the declared signature gives its
-        // parameter, before the overload is chosen: `(lmax 3 4)` against
-        // `(-> long long long)` is `Max(long, long)`. Left open, it would be
-        // settled at `int` for the choice, which picks `Max(int, int)`, and the
-        // declared signature would then refuse that overload. Only literals:
-        // any other argument has the type it has, and the overload is chosen
-        // for it as before. Not for a signature with type variables, whose
-        // parameters say nothing concrete.
         match info.DeclaredType |> Option.map (prune env.Registry) with
-        | Some(TFun(declared, _, _)) when freeTVars env.Registry (tfun declared TypeConstants.voidType) |> List.isEmpty ->
+        | Some(TFun(declared, _, _)) ->
             let methodParams = if info.IsInstance && not declared.IsEmpty then List.tail declared else declared
-
-            if methodParams.Length = argTypes.Length then
-                List.iter2
-                    (fun argType paramType ->
-                        if isOpenLiteral argType then
-                            unify env.Registry argType paramType)
-                    argTypes
-                    methodParams
+            pinLiteralsToParameters env.Registry methodParams argTypes
         | _ -> ()
 
         // An `#:async` import resolves against one more parameter than the

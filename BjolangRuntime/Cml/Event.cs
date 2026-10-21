@@ -193,7 +193,8 @@ public static class Cml
     ///
     /// Implemented directly by <see cref="TimeoutEvent"/>, which arms its timer
     /// in <c>Publish</c> — so "relative to each sync" needs no Guard — and
-    /// registers a leaf nack to dispose the timer when the branch loses. The
+    /// registers a leaf nack that takes its node out of the timer wheel when
+    /// the branch loses. The
     /// combinator version below is retained as the executable specification;
     /// the direct one exists because the composition was measured at ~1.4 µs
     /// and 1360 B per armed sync where the timer itself costs ~100 ns and

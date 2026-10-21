@@ -589,32 +589,37 @@ module NumericLiteral =
     /// question to be put in the other language.
     let fits (t: HMType) (text: string) : bool =
         let digitsOnly = digits text
-        let realDecimal =
-            settled t = TypeConstants.decimalType
-            && not (isHex digitsOnly)
-            && (digitsOnly.Contains "." || digitsOnly.Contains "e" || digitsOnly.Contains "E")
+        let styles = System.Globalization.NumberStyles.Float
+        let invariant = System.Globalization.CultureInfo.InvariantCulture
 
-        if realDecimal then
+        // .NET's floating-point parsers do not read a hexadecimal or binary
+        // literal, so its value is given to them in decimal digits.
+        let decimalDigits =
+            match value digitsOnly with
+            | Some v when isHex digitsOnly -> v.ToString()
+            | _ -> digitsOnly
+
+        if settled t = TypeConstants.decimalType && isReal digitsOnly then
             // Too large a decimal is an overflow to .NET's parser, and CS0594
             // to C#.
-            fst (
-                System.Decimal.TryParse(
-                    digitsOnly,
-                    System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture
-                )
-            )
+            fst (System.Decimal.TryParse(digitsOnly, styles, invariant))
         else
 
+        // Too large a floating-point number is infinity to .NET's parser, and
+        // CS0594 to C#. A `System.Half` has no C# literal, and is infinity at
+        // run time.
         match bounds (settled t) with
         | None when settled t = TypeConstants.doubleType ->
-            // Too large a double is infinity to .NET's parser, and CS0594 to C#.
-            match System.Double.TryParse(digits text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+            match System.Double.TryParse(decimalDigits, styles, invariant) with
             | true, v -> not (System.Double.IsInfinity v)
             | _ -> true
         | None when settled t = TypeConstants.singleType ->
-            match System.Single.TryParse(digits text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+            match System.Single.TryParse(decimalDigits, styles, invariant) with
             | true, v -> not (System.Single.IsInfinity v)
+            | _ -> true
+        | None when settled t = TCon(TypeConstants.HalfName, []) ->
+            match System.Half.TryParse(decimalDigits, styles, invariant) with
+            | true, v -> not (System.Half.IsInfinity v)
             | _ -> true
         | None -> true
         | Some(lo, hi) ->
@@ -629,11 +634,21 @@ module NumericLiteral =
     /// access, and `byte` and the two shorts have no C# suffix to be spelled
     /// with at all.
     let csharp (t: HMType) (text: string) : string option =
-        let digits = digits text
+        // Zero has no sign. C# reads the sign of `-0u` as a unary minus, which
+        // makes a long of it.
+        let digits =
+            match value (digits text) with
+            | Some v when v.IsZero -> "0"
+            | _ -> digits text
 
-        let real =
-            not (isHex digits)
-            && (digits.Contains "." || digits.Contains "e" || digits.Contains "E")
+        let real = isReal digits
+
+        // C#'s floating-point and decimal literals have no hexadecimal form,
+        // and a cast from a hexadecimal integer refuses one wider than a ulong.
+        let decimalDigits =
+            match value digits with
+            | Some v when isHex digits -> v.ToString()
+            | _ -> digits
 
         // A solved metavariable is followed rather than pruned: emission has no
         // trait registry to hand, and the answer is the same.
@@ -645,16 +660,11 @@ module NumericLiteral =
         | TCon(TypeConstants.ByteName, []) -> Some $"((byte)%s{digits})"
         | TCon(TypeConstants.Int16Name, []) -> Some $"((short)%s{digits})"
         | TCon(TypeConstants.UInt16Name, []) -> Some $"((ushort)%s{digits})"
-        | TCon(TypeConstants.DoubleName, []) ->
-            if real then Some digits
-            elif isHex digits then Some $"((double)%s{digits})"
-            else Some(digits + "d")
+        | TCon(TypeConstants.DoubleName, []) -> if real then Some digits else Some(decimalDigits + "d")
         // C# has a decimal literal, so a decimal is a constant, and a pattern.
-        | TCon(TypeConstants.DecimalName, []) ->
-            if isHex digits then Some $"((decimal)%s{digits})" else Some(digits + "m")
+        | TCon(TypeConstants.DecimalName, []) -> Some(decimalDigits + "m")
         // C# has a literal for a `float` too, so it is not parsed at run time.
-        | TCon(TypeConstants.SingleName, []) ->
-            if isHex digits then Some $"((float)%s{digits})" else Some(digits + "f")
+        | TCon(TypeConstants.SingleName, []) -> Some(decimalDigits + "f")
         // A .NET number C# has no literal for. A value that fits in a `long`
         // or a `ulong` is converted from one, which every such type allows and
         // the JIT folds. A larger one is parsed, once per evaluation: C# has

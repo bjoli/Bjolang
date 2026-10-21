@@ -130,9 +130,11 @@ public static class BjoNum {
     public static Utf8String FormatNumber<T>(T n) where T : System.Numerics.INumber<T> =>
         Utf8String.FromUtf16(n.ToString(null, CultureInfo.InvariantCulture));
 
-    /// The `->str` fallback at a known type: as <see cref="ToStringInvariant"/>,
-    /// except that `null` at a union whose empty case is `null` is that case's
-    /// name. The type is what says which name, as the value has none.
+    /// The prelude's `clr-show`, which the blanket `Written` writes with:
+    /// whatever a type with no implementation of its own says about itself,
+    /// asked in the invariant culture, except that `null` at a union whose
+    /// empty case is `null` is that case's name. The type is what says which
+    /// name, as the value has none.
     public static Utf8String Show<T>(T value) => Utf8String.FromUtf16(ShowField(value));
 
     /// What a union case's record text writes for one of its fields. A
@@ -165,12 +167,6 @@ public static class BjoNum {
         }
         return sb.Append(')').ToString();
     }
-
-    /// The `->str` fallback: whatever a type with no implementation of its own
-    /// says about itself, asked in the invariant culture. Reaches the numeric
-    /// types the prelude names no conversion for, and every `IFormattable`.
-    public static Utf8String ToStringInvariant(object? o) =>
-        Utf8String.FromUtf16(System.Convert.ToString(o, CultureInfo.InvariantCulture) ?? "");
 
     // A scanner that has just spelled a number into a builder wants the number,
     // not the string. These parse the builder's bytes where they are.

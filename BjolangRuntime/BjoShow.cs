@@ -84,13 +84,6 @@ public static class BjoShow
         b.AppendByte((byte)'"');
     }
 
-    public static Utf8String WrittenString(Utf8String s)
-    {
-        var b = Rent();
-        WriteStringInto(b, s);
-        return Finish(b);
-    }
-
     /// A character as the reader reads it: `#\a`, by its name where the
     /// reader has one, and in hexadecimal where it is not printable.
     public static Utf8String WrittenChar(BjoChar c)
@@ -133,11 +126,6 @@ public static class BjoShow
 
     /// A number in the invariant culture with the suffix the reader reads
     /// its type from, `21L` or `2.5M`.
-    public static Utf8String WrittenNumber<T>(T n, Utf8String suffix) where T : System.Numerics.INumber<T>
-    {
-        var b = Rent();
-        b.Append(n.ToString(null, CultureInfo.InvariantCulture));
-        b.Append(suffix);
-        return Finish(b);
-    }
+    public static Utf8String WrittenNumber<T>(T n, Utf8String suffix) where T : System.Numerics.INumber<T> =>
+        Utf8String.FromUtf16(n.ToString(null, CultureInfo.InvariantCulture) + suffix.ToString());
 }

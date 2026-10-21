@@ -299,7 +299,7 @@ and Expr =
     /// than where it lands.
     ///
     /// A desugaring calls things by name — a loop calls `iterable-next`, string
-    /// interpolation calls `->str`, a record's synthesised equality calls `=` —
+    /// interpolation calls `displayed`, a record's synthesised equality calls `=` —
     /// and those names went into the user's scope to be looked up like any
     /// other. Nothing a program binds can reach one of these.
     ///

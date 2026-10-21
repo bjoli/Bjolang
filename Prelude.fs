@@ -386,9 +386,7 @@ let prelude : Env =
 
         // Bitwise operators, typed and emitted exactly as the arithmetic ones
         // are: C# resolves each from the operand type, so they work on every
-        // integral type including the unsigned ones `Num` leaves out. That is
-        // why they are primitives rather than a trait — bit twiddling is where
-        // `uint` and `ulong` live.
+        // `Integral` type, the unsigned ones included.
         "bitwise-and", {Scheme = Scheme(["a"], integral, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
         "bitwise-ior", {Scheme = Scheme(["a"], integral, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }
         "bitwise-xor", {Scheme = Scheme(["a"], integral, makeFunType [TVar "a"; TVar "a"] (TVar "a")); IsMutable = false }

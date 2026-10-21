@@ -110,7 +110,10 @@ real number. A ~bigint~, ~int128~ or
 
 An argument to a *.NET* method is settled at ~int~, or at ~double~ if it is
 real, before the overload is chosen, then widened as C# would widen it.
-~(sqrt 9)~ is 3.0.
+~(sqrt 9)~ is 3.0. An ~import/extern~ or ~import/class~ constructor with a
+declared signature gives a literal the type of its parameter instead, where
+that parameter is a number: against ~(-> long long long)~, ~(lmax 3 4)~ is
+~Max(long, long)~.
 
 ** Arithmetic
 
@@ -152,6 +155,8 @@ A remainder, not a modulus. ~(std maths)~ has both under Racket's names:
 #+END_SRC
 
 Nothing checks at run time. Widen first where a computation must not overflow.
+Constants wrap as well: ~(+ 2147483647 1)~ is -2147483648, and
+~(cast System.Byte 300)~ is 44.
 
 *** Shifts mask their count
 
@@ -557,10 +562,6 @@ the operator it stands for.
 - *A ~bigint~, ~int128~ or ~uint128~ in a pattern is refused*, as C# has no
   constant of the type.
 - *No digit separators.* ~1_000~ reads as ~1~ followed by the name ~_000~.
-- *A constant that overflows is a C# error rather than a Bjolang one.* Roslyn
-  folds constant expressions in checked mode, so ~(+ 2147483647 1)~ and
-  ~(cast System.Byte 300)~ are rejected with a message naming a C# file. Through
-  a variable both wrap, as documented above.
 - *No implicit widening.* ~(* n 1.5)~ at an ~int~ ~n~ needs a ~cast~. Only
   literals adapt, and only because they had no type to begin with.
 - *A number in a pattern cannot be generic.* See *Two places a number cannot

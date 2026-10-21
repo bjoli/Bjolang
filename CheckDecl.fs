@@ -518,17 +518,18 @@ let private refuseOverlap (env: Env) (traitName: string) (typeKey: string) (targ
             | None -> ()
 
 /// What a blanket implementation stands on: its trait's superclasses at the
-/// implementor. The blanket of a trait that requires `Written` may call
-/// `written`, and its dictionary is built from the `Written` one of the type
-/// it is used at. No program writes these, and `Traits.implTargetOf` still
-/// refuses a where clause on a blanket. The evidence has a bottom: a
-/// superclass is declared before the trait, so each demand is of an earlier
-/// trait, and the chain ends.
-let private blanketConstraints (traitInfo: TraitInfo) (targetType: HMType) : TraitConstraint list =
+/// implementor, and theirs in turn. The blanket of a trait that requires
+/// `Written` may call `written`, and its dictionary is built from the `Written`
+/// one of the type it is used at. No program writes these, and
+/// `Traits.implTargetOf` still refuses a where clause on a blanket. The
+/// evidence has a bottom: a superclass is declared before the trait, so each
+/// demand is of an earlier trait, and the chain ends.
+let private blanketConstraints (registry: TraitRegistry) (traitInfo: TraitInfo) (targetType: HMType) : TraitConstraint list =
     let implementor = Map.ofList [ "'" + traitInfo.ImplementorVar, targetType ]
 
     traitInfo.Superclasses
     |> List.map (fun s -> { s with TargetType = substTypeVars implementor s.TargetType })
+    |> withSuperclasses registry
 
 /// A trait's own `(where ...)`, as constraints at its implementor variable.
 ///
@@ -2962,7 +2963,7 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
     let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
 
     let implConstraints =
-        if typeKey = BlanketCtor then blanketConstraints traitInfo targetType else implConstraints
+        if typeKey = BlanketCtor then blanketConstraints env.Registry traitInfo targetType else implConstraints
 
     let implTarget = { implTarget with Constraints = implConstraints }
 
@@ -3507,7 +3508,7 @@ and private checkImplExtern (env: Env) (sigs: Sigs) (traitName: string) (targetT
     let implTarget =
         if implCtorKey targetType = Some BlanketCtor then
             { implTargetOf traitName traitInfo targetType [] r with
-                Constraints = blanketConstraints traitInfo targetType }
+                Constraints = blanketConstraints env.Registry traitInfo targetType }
         else
             implTargetOf traitName traitInfo targetType implConstraints r
 

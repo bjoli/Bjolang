@@ -12,7 +12,6 @@
  */
 
 using System;
-using System.Diagnostics;
 using System.Threading;
 
 namespace Bjoml;
@@ -72,7 +71,6 @@ internal static class TimerWheel
 #pragma warning restore CS0169
 
     private static readonly Wheel[] s_wheels = CreateWheels();
-    private static readonly long s_origin = Stopwatch.GetTimestamp();
 
     private static readonly Timer s_tick =
         new(static _ => Tick(), null, Timeout.Infinite, Timeout.Infinite);
@@ -88,15 +86,9 @@ internal static class TimerWheel
         return all;
     }
 
-    // The origin is read before the clock. Reading it is what runs this
-    // class's static initialiser on the first call, which takes the origin
-    // later than a clock read before it, and the difference was then below
-    // zero.
-    private static long NowMs()
-    {
-        long origin = s_origin;
-        return (Stopwatch.GetTimestamp() - origin) * 1000 / Stopwatch.Frequency;
-    }
+    // The runtime's monotonic clock divides the timestamp and never
+    // multiplies it, so it does not overflow however long the process runs.
+    private static long NowMs() => global::BjolangRuntime.ClockMs();
 
     /// Nodes linked into every wheel. Test-only.
     internal static int LinkedCount

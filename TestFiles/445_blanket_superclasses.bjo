@@ -1,7 +1,7 @@
-;; A blanket implementation stands on its trait's superclasses: the blanket of
-;; a trait that requires `Displayed` may call `displayed` at its implementor,
-;; and it reaches the implementation of the type it is used at, not the blanket
-;; of `Displayed`.
+;; A blanket implementation stands on its trait's superclasses, and on theirs
+;; in turn: the blanket of a trait that requires `Displayed` may call
+;; `displayed` at its implementor, and it reaches the implementation of the
+;; type it is used at, not the blanket of `Displayed`.
 (import (std prelude))
 (import (std simpletest))
 
@@ -20,8 +20,20 @@
 (impl (Shown int)
   (defun (shown x) "an int"))
 
+;; `Loud` requires `Shown` only, and its blanket calls the methods of
+;; `Displayed` and `Written` as well.
+(def/trait (Loud %a)
+  (where (Shown %a))
+  (: loud (-> %a string)))
+
+(impl (Loud %a)
+  (defun (loud x) (str (shown x) " " (displayed x) " " (written x))))
+
 (: (-> %a string) (where (Shown %a)))
 (defun (through-a-dictionary x) (shown x))
+
+(: (-> %a string) (where (Loud %a)))
+(defun (loud-through-a-dictionary x) (loud x))
 
 (: (-> %a string))
 (defun (with-what-it-needs-inferred x) (shown x))
@@ -33,4 +45,7 @@
   (expect "through a dictionary" (through-a-dictionary (Pt (x 1) (y 2))) "<a point>")
   (expect "with the constraint inferred" (with-what-it-needs-inferred (list 1 2)) "<(1 2)>")
   (expect "at a type nothing pinned" (shown (list)) "<()>")
+  (expect "two superclasses down" (loud (Pt (x 1) (y 2))) "<a point> a point (Pt (x 1) (y 2))")
+  (expect "two superclasses down, at an int" (loud 5) "an int 5 5")
+  (expect "two superclasses down, through a dictionary" (loud-through-a-dictionary "s") "<s> s \"s\"")
   0)

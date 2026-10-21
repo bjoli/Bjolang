@@ -293,6 +293,23 @@ let internal isOpenRealLiteral (t: HMType) : bool =
     | TMeta m -> isOpenLiteral t && literalDefault m.Id = TypeConstants.doubleType
     | _ -> false
 
+/// Gives each open number literal among `argTypes` the type of its parameter in
+/// a declared .NET signature, where that parameter is a number.
+///
+/// Done before the overload is chosen: `(lmax 3 4)` against
+/// `(-> long long long)` is then `Max(long, long)`. Settled at `int` for the
+/// choice instead, the literals pick `Max(int, int)`, which the declared
+/// signature refuses. A literal at any other parameter, such as an `object`
+/// one, is settled by `settleLiterals` and passed as that number.
+let internal pinLiteralsToParameters (registry: TraitRegistry) (parameters: HMType list) (argTypes: HMType list) : unit =
+    if parameters.Length = argTypes.Length then
+        List.iter2
+            (fun argType paramType ->
+                if isOpenLiteral argType && NumericLiteral.isNumeric (prune registry paramType) then
+                    unify registry argType paramType)
+            argTypes
+            parameters
+
 /// The environment slot a `seq` records its element type in, so that the
 /// `yield`s in its body have something to unify against.
 ///

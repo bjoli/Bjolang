@@ -1,15 +1,20 @@
-;; A number literal passed to an import/extern with a declared signature takes
-;; the type the signature gives its parameter, so the overload chosen is the
-;; one the signature names. The literals were settled at int first, which chose
-;; Max(int, int), and the declared (-> long long long) then refused it.
+;; A number literal passed to an import/extern or an import/class constructor
+;; with a declared signature takes the type the signature gives its parameter,
+;; so the overload chosen is the one the signature names. The literals were
+;; settled at int first, which chose Max(int, int), and the declared
+;; (-> long long long) then refused it. A literal at an object parameter is
+;; passed as the number it is.
 (import (std prelude))
 (import (std simpletest))
-(import/class (StringBuilder (: System.Text.StringBuilder (-> StringBuilder))))
+(import/class
+  (StringBuilder (: System.Text.StringBuilder (-> StringBuilder)))
+  (TimeSpan (: System.TimeSpan (-> long TimeSpan))))
 (import/extern
   (lmax (: System.Math.Max (-> long long long)))
   (dabs (: System.Math.Abs (-> double double)))
   (dround (: System.Math.Round (-> double double)))
-  (add-long (: System.Text.StringBuilder.Append (-> StringBuilder long StringBuilder))))
+  (add-long (: System.Text.StringBuilder.Append (-> StringBuilder long StringBuilder)))
+  (equal? (: System.Object.Equals (-> System.Object System.Object bool))))
 
 (defun (main args)
   (expect "two literals" (lmax 3 4) 4L)
@@ -25,4 +30,10 @@
   ;; A variable still chooses as it did: its type is what it is.
   (def d 2.5)
   (expect "a variable keeps its own type" (dabs d) 2.5)
+
+  (expect "literals at object parameters" (list (equal? 1 1) (equal? 1 2) (equal? 2.5 2.5)) (list #t #f #t))
+
+  (expect "a literal past int's range to a constructor's long parameter"
+          (.-Ticks (TimeSpan. 50000000000))
+          50000000000L)
   0)

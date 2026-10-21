@@ -312,9 +312,10 @@ public class SyncState
             // This enqueue — not the timer mechanism — was the dominant cost of
             // the armed choose+timeout path: firing inline took it from 791 to
             // 317 ns/op. That was established by building a timer wheel to
-            // replace System.Threading.Timer and measuring no difference; the
-            // wheel was then discarded. See "The timer wheel: built, measured,
-            // and rejected" in BENCHMARKS.md.
+            // replace System.Threading.Timer and measuring no difference. See
+            // "The timer wheel: built, measured, and rejected" in BENCHMARKS.md.
+            // The wheel in TimerWheel.cs came later, for what a Timer costs to
+            // arm and to cancel.
             //
             // The try/catch is load-bearing: this runs inside the rendezvous
             // commit path, and a throwing nack must not unwind into a channel

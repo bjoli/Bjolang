@@ -3,6 +3,43 @@
 
 What each change guarantees, and what it leaves open.
 
+* Fixes found reviewing the changes of 20 and 21 October
+
+- Timeouts and sleeps keep firing however long a process runs. The timer
+  wheel's clock multiplied the timestamp by 1000 before it divided, which
+  overflows a long after about 107 days where the timestamp counts
+  nanoseconds, as on Linux; every deadline then waited some 200 days. The
+  wheel reads the runtime's monotonic clock, which divides.
+- A blanket implementation stands on the superclasses of its trait's
+  superclasses too. The blanket of a trait that requires one that requires
+  ~Displayed~ could not call ~written~, and could not be written at all,
+  since a blanket may not have a where clause.
+- A number literal passed to a declared ~System.Object~ parameter compiles
+  again, as the number it is. A literal takes a declared parameter's type
+  only where that type is a number. An ~import/class~ constructor with a
+  declared signature gives its literals their parameters' types as an
+  ~import/extern~ does, so ~(TimeSpan. 50000000000)~ against
+  ~(-> long TimeSpan)~ compiles.
+- A ~main~ whose result no expression fixes, such as one that ends in
+  ~panic!~ or returns ~(list)~, compiles. It is generic in that result, and
+  the entry point calls it at ~object~.
+- ~-0~ at a ~uint~ or a ~ulong~, also as a pattern, compiles: an integer zero
+  is emitted without its sign. A hexadecimal or binary literal at a
+  ~double~, a ~float~ or a ~decimal~ is emitted in decimal digits, so one
+  wider than a ~ulong~ compiles, and one too large for the type is refused,
+  as a real literal is. A literal too large for a ~System.Half~ is refused
+  instead of being infinity.
+- A diagnostic says ~float~, not ~System.Single~.
+- An error in a roots file gives its column once.
+- ~inbox-closed~ fires once the last item is committed to a receiver, before
+  the receiver runs. A receiver that ran inline and threw kept it from
+  firing.
+- ~written~ of a number takes no builder.
+- Tests: ~445_blanket_superclasses.bjo~, ~437_extern_declared_literals.bjo~,
+  ~448_main_with_open_result.bjo~, ~449_literal_spellings.bjo~,
+  ~errors/hex_literal_too_large_for_float.bjo~,
+  ~errors/half_literal_too_large.bjo~.
+
 * A trait's name is not a case's
 
 - A trait named in a where clause, a superclass or an implementation

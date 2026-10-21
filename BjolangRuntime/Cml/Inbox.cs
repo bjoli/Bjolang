@@ -434,11 +434,13 @@ public sealed class Inbox<T>
 
         if (state.TryCommit(eventId))
         {
-            Scheduler.DispatchOwn(onSync, value);
-
-            // The item was the last one if the inbox is closed and drained,
-            // and only now can `inbox-closed` say so.
+            // Committed, so the item is the receiver's and cannot come back.
+            // It was the last one if the inbox is closed and drained, and only
+            // now can `inbox-closed` say so. That is settled before the
+            // receiver runs, because the receiver may run here, inline, and
+            // throw or take its time.
             if (Landed()) Settle();
+            Scheduler.DispatchOwn(onSync, value);
             return;
         }
 

@@ -118,7 +118,7 @@ let desugarSyntaxQuote (parseExprFn: SExpr -> Expr) (template: SExpr) (r: Range)
         // token on either side of it changed.
         | SAtom { Token = BoolLit b } -> call "SSym" [ EQuotedSymbol((if b then "#t" else "#f"), ir) ] ir
         | SAtom { Token = Symbol sym } -> call "SSym" [ EQuotedSymbol(sym, ir) ] ir
-        // The `str` and `->str` of a `#"..."` written inside the template. An
+        // The `str` and `displayed` of a `#"..."` written inside the template. An
         // `SSym` marked `Resolved`, so hygiene leaves it and the expander
         // lowers it back to the reference the reader wrote.
         | SAtom { Token = ResolvedSymbol sym } -> call "syntax-resolved" [ EQuotedSymbol(sym, ir) ] ir

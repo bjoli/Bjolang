@@ -274,7 +274,6 @@
   (clr-builder-rent   (: Bjolang.Runtime.BjoShow.Rent))
   (clr-builder-finish (: Bjolang.Runtime.BjoShow.Finish))
   (clr-write-string-into (: Bjolang.Runtime.BjoShow.WriteStringInto))
-  (clr-written-string (: Bjolang.Runtime.BjoShow.WrittenString))
   (clr-written-char   (: Bjolang.Runtime.BjoShow.WrittenChar))
   (clr-written-double (: Bjolang.Runtime.BjoShow.WrittenDouble))
   (clr-written-number (: Bjolang.Runtime.BjoShow.WrittenNumber (-> %a string string))))
@@ -399,7 +398,6 @@
 
 ;; A string in quotes, and displayed as its text.
 (impl (Written string)
-  (defun (written s) (clr-written-string s))
   (defun (write-into s b) (clr-write-string-into b s)))
 
 (impl (Displayed string)
@@ -3264,7 +3262,7 @@
 ;;
 ;; Note that output functions carry a colour (effect). Because `write-string` 
 ;; has an async twin, any function that uses it will also become async. For this 
-;; reason, string building operations like `vec->str` use a `StringBuilder` 
+;; reason, string building operations like `written` use a `StringBuilder` 
 ;; instead of a string port to ensure string formatting remains pure and synchronous.
 (import/extern
   (clr-write         (: Bjolang.Runtime.OutputPorts.Write          (-> OutputPort string void) #:blocking))
@@ -4287,8 +4285,8 @@
      #'(scope-form (scope-open! 0) (,cancel) ,first ,@body))
     (bad (syntax-error bad "with-cancel names its cancel thunk and takes a body: (with-cancel (cancel) body ...)"))))
 
-;; `(with-deadline ms body ...)` — the same scope, whose token also fires on its
-;; own after `ms` milliseconds, with `Deadline`.
+;; `(with-deadline duration body ...)` — the same scope, whose token also fires
+;; on its own once `duration` has passed, with `Deadline`.
 ;;
 ;; The timer belongs to the scope rather than to a fiber racing it. A watcher
 ;; fiber cannot work here: the scope waits for its children before it fires its
