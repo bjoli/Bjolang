@@ -385,6 +385,20 @@ module Diagnostics =
     let recover (phase: string) (where: Lexer.Range option) (fallback: 'a) (f: unit -> 'a) : 'a =
         recoverWith phase where (fun () -> fallback) f
 
+    /// Takes back out what is collected and poisoned from now on, when the
+    /// answer is called.
+    let private rollbackFrom () : unit -> unit =
+        let collectedBefore = collected.Count
+        let poisonedBefore = System.Collections.Generic.HashSet<string>(poisoned.Keys)
+
+        fun () ->
+            collected.RemoveRange(collectedBefore, collected.Count - collectedBefore)
+            reported <- min reported collectedBefore
+
+            for name in List.ofSeq poisoned.Keys do
+                if not (poisonedBefore.Contains name) then
+                    poisoned.Remove name |> ignore
+
     /// Runs `f` as an attempt its caller may abandon. An error `f` collected,
     /// and a name it poisoned, are taken back out, and the first error is raised
     /// instead.
@@ -397,15 +411,8 @@ module Diagnostics =
     /// will not exist; a successful attempt keeps them.
     let speculate (f: unit -> 'a) : 'a =
         let collectedBefore = collected.Count
-        let poisonedBefore = System.Collections.Generic.HashSet<string>(poisoned.Keys)
-
-        let rollback () =
-            collected.RemoveRange(collectedBefore, collected.Count - collectedBefore)
-            reported <- min reported collectedBefore
-
-            for name in List.ofSeq poisoned.Keys do
-                if not (poisonedBefore.Contains name) then
-                    poisoned.Remove name |> ignore
+        let poisonedBefore = poisoned.Count
+        let rollback = rollbackFrom ()
 
         let result =
             try
@@ -421,10 +428,24 @@ module Diagnostics =
         | Some d ->
             rollback ()
             raise (System.Exception(render d))
-        | None when poisoned.Count > poisonedBefore.Count ->
+        | None when poisoned.Count > poisonedBefore ->
             rollback ()
             failwith "a generated declaration failed to check"
         | None -> result
+
+    /// Runs `f` for its result alone, or `None` if it fails. Nothing it records
+    /// is kept, warnings included. For a look ahead at a declaration that is
+    /// checked again where it stands, where it reports what it reports.
+    let attempt (f: unit -> 'a) : 'a option =
+        let rollback = rollbackFrom ()
+
+        try
+            let result = f ()
+            rollback ()
+            Some result
+        with _ ->
+            rollback ()
+            None
 
     let progress (message: string) = if verbose then printfn "%s" message
 

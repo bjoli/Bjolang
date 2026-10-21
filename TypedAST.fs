@@ -1669,8 +1669,7 @@ type AccessScope =
     | ScopeTree of string
 
 type TraitRegistry =
-    { LocalTraits: Set<string>
-      LocalTypes: Set<string>
+    { LocalTypes: Set<string>
       Traits: Map<string, TraitInfo>
       /// Method name -> owning trait. `infer` recognizes a trait method in
       /// application position through this, instead of searching every trait's
@@ -1696,14 +1695,10 @@ type TraitRegistry =
       /// question that makes general specialization hard never arises: a
       /// candidate either matches the head exactly or it is the blanket.
       BlanketImpls: Map<string, ImplTarget>
-      /// Which module each trait was *declared* in.
-      ///
-      /// `LocalTraits` cannot answer this. It only ever grows, and a trait read
-      /// back from a `.dll`'s metadata arrives as an ordinary `def/trait` — so
-      /// by the time a user module is checked, every imported trait is in there
-      /// too. That is tolerable for the constructor-headed orphan rule, which
-      /// is a backstop; it is not tolerable for blankets, where the whole point
-      /// is that only the trait's own module may declare one.
+      /// Which module each trait was *declared* in: the orphan rule asks it. A
+      /// trait read back from a `.dll` is registered under the module it was
+      /// read from, and a facade's re-export is put back with the module that
+      /// declared it (`Pipeline`).
       TraitOrigins: Map<string, string>
       /// The pin equations in force while a constrained member's body is
       /// checked — the *given* equalities its `(where ...)` grants.
@@ -1903,8 +1898,7 @@ type TraitRegistry =
       /// no argument at all. `Codegen` emits their type arguments explicitly.
       KeywordOnlyGenerics: Set<string> }
 
-    member this.IsTraitDefinedLocally(name) = Set.contains name this.LocalTraits
-    member this.IsTypeDefinedLocally(name) = Set.contains name this.LocalTypes
+
 
     member this.ResolveAssociatedType (traitName: string) (assocName: string) (implType: HMType) : HMType option =
         // Pattern-match a stored generic type against a concrete type to build
@@ -2046,7 +2040,6 @@ and EscapeInfo =
 let addTrait (name: string) (info: TraitInfo) (env: Env) : Env =
     let newRegistry =
         { env.Registry with
-            LocalTraits = Set.add name env.Registry.LocalTraits
             Traits = Map.add name info env.Registry.Traits
             TraitOrigins = Map.add name env.CurrentModule env.Registry.TraitOrigins }
 

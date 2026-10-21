@@ -362,6 +362,7 @@ let rec normalizeDecl (decl: Decl) : Decl =
     | DInline _
     | DDeprecated _
     | DImplExtern _
-    | DImplVia _ -> decl
+    | DImplVia _
+    | DLinked _ -> decl
 
 and normalizeModule (decls: Decl list) : Decl list = List.map normalizeDecl decls

@@ -3,6 +3,52 @@
 
 What each change guarantees, and what it leaves open.
 
+* A type's implementations come with it through a module that passes it on
+
+- A program sees the implementations of every module it is linked against,
+  not only of the ones it imports. A type reached through a module that
+  re-exports it, or names it in a signature, was displayed and written by
+  the blanket, as the C# record it compiles to, unless the program also
+  imported the module that declares the type.
+- Only the implementations come: the linked modules' names stay out of
+  scope. An implementation of a trait or for a type the program cannot name
+  is left out.
+- Tests: ~452_impls_of_a_type_passed_on.bjo~.
+
+* An implementation is written with its trait or its type
+
+- The orphan rule holds for every implementation, as it did for blankets
+  only: an implementation is written in the module that declares the trait
+  or the one that declares the head of the target type. Every module that
+  can name both then sees it, and a call at the type means the same in all
+  of them. A third module's implementation of an imported trait for an
+  imported type was accepted, and a module that did not import it used the
+  blanket at the same type; two modules' implementations for one tuple made
+  a program C# refused.
+- A tuple, a type of the runtime such as ~List~, and a .NET type are declared
+  by no module, so only the trait's module may implement a trait for one.
+  The way out is a newtype, with ~#:via~ for what the wrapped type has.
+- The standard library is excepted, as it was for ~Eq~ and ~Ord~: its
+  modules implement its traits for the .NET types each of them imports.
+- In the REPL a trait or a type of an earlier entry counts as the entry's
+  own, except for ~Eq~ and ~Ord~, which are written in the entry that
+  declares the type.
+- The separate rule for ~Eq~ and ~Ord~ is this one now.
+- Tests: ~errors/orphan_imported_trait_and_type.bjo~, ~errors/orphan_tuple.bjo~,
+  ~errors/orphan_builtin_type.bjo~, and the ~Eq~ and ~Ord~ error tests.
+
+* A trait, a type and an implementation may be used above where they are written
+
+- A module's types, traits and ~import/class~ aliases are checked before its
+  other declarations, and the head of every implementation is registered
+  before any body is checked. A function may call a trait's method above the
+  trait, name a type above its declaration, and an implementation may stand
+  above its trait.
+- A call above an implementation of a trait with a blanket, ~Written~ or
+  ~Displayed~ among them, uses the implementation. It used the blanket, and
+  a record was written as the C# record it compiles to.
+- Tests: ~451_declared_below_use.bjo~.
+
 * (std run): a form that fails to wire leaves no filter waiting
 
 - A form that does not start after a filter in it has started is an error,

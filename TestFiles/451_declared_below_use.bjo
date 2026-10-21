@@ -1,0 +1,49 @@
+;; A trait, a type and an implementation may be used above where they are
+;; written. A use above an implementation of a trait with a blanket took the
+;; blanket, silently: a record was written as the C# record it compiles to.
+(import (std prelude))
+(import (std simpletest))
+
+;; A trait's method, called above the trait.
+(: (-> Cat string))
+(defun (greet-cat c) (greet c))
+
+;; A type, used in a signature and a body above it.
+(: (-> Cat))
+(defun (a-cat) (Cat (lives 9)))
+
+;; An implementation above its trait.
+(impl (Greet Cat)
+  (defun (greet c) "meow"))
+
+(def/trait (Greet %a)
+  (: greet (-> %a string)))
+
+(type (: Cat (Record (: lives int))))
+
+;; Uses above implementations of traits with a blanket, which they took.
+(: (-> Foo string))
+(defun (write-foo f) (written f))
+
+(def early (written (Foo (a 2))))
+
+(: (-> Money string))
+(defun (label m) #"price: ${m}")
+
+(type (: Foo (Record (: a int))))
+(type (: Money (Union (: Kr int))))
+
+(impl (Written Foo)
+  (defun (write-into f b) (stringbuilder-add-string! b "FOO")))
+
+(impl (Displayed Money)
+  (defun (display-into m b)
+    (match m ((Kr n) (stringbuilder-add-string! b #"${n} kr")))))
+
+(defun (main)
+  (expect "a method called above its trait" (greet-cat (a-cat)) "meow")
+  (expect "a type used above its declaration" (record-ref (a-cat) lives) 9)
+  (expect "an implementation below a call" (write-foo (Foo (a 1))) "FOO")
+  (expect "an implementation below a def" early "FOO")
+  (expect "an implementation below an interpolation" (label (Kr 5)) "price: 5 kr")
+  0)

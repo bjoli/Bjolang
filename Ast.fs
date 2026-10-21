@@ -794,12 +794,19 @@ type Decl =
     // DImplVia (TraitName, TargetType, ViaType, IsExtern, Range)
     | DImplVia of string * FType * FType * bool * Range
 
+    // An implementation read back from a module the compilation links and
+    // does not import: a `DImplExtern` or an extern `DImplVia`. Checked as that
+    // declaration is, and dropped when it names a trait or a type the
+    // compilation does not know, as nothing in it can then call it.
+    | DLinked of Decl
+
 /// Gets the source code location (Range) of a declaration.
 ///
 /// This provides a fallback location for error reporting, ensuring that any
 /// error during declaration processing can point to the declaration itself.
-let declRange (decl: Decl) : Range =
+let rec declRange (decl: Decl) : Range =
     match decl with
+    | DLinked inner -> declRange inner
     | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefDouble(_, _, _, _, r) | DDefTuple(_, _, r) | DDefPattern(_, _, r)
     | DDefMutable(_, _, r)
     | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DGrammar(_, r) | DTrait(_, _, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, _, r)
@@ -1435,6 +1442,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
         | DDeprecated _
         | DImplExtern _
         | DImplVia _
+        | DLinked _
         | DInlineImpl _ -> []
 
     decls |> List.collect ofDecl |> Set.ofList
@@ -1493,5 +1501,6 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DInline _
     | DDeprecated _
     | DImplExtern _
-    | DImplVia _ -> d
+    | DImplVia _
+    | DLinked _ -> d
 

@@ -511,6 +511,11 @@ let private traitKeyPrefixLength (key: string) : int =
 /// `Bjo_Repl_7`.
 let replEntryModulePrefix = "Bjo_Repl_"
 
+/// Whether a module key, or the key of a type a module declared, is a REPL
+/// entry's.
+let isReplEntry (key: string) =
+    (emittedTypeName key).StartsWith(replEntryModulePrefix, StringComparison.Ordinal)
+
 /// Every trait key and method key this process has made or read, for
 /// `Diagnostics.humanize`, which shows each as the name source wrote.
 let traitKeys = System.Collections.Concurrent.ConcurrentDictionary<string, int>()

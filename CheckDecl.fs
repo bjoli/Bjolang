@@ -467,6 +467,58 @@ let private signatureConstraints
 
         given @ (withSuperclasses registry byKey |> List.filter (fun e -> not (List.exists (same e) byKey)))
 
+/// Refuses an implementation of `traitName` for a target whose head key is
+/// `typeKey`, where the module declares neither the trait nor the head.
+///
+/// The orphan rule. An implementation in the trait's module or the type's is
+/// seen by every module that can name both, and a call at the type means the
+/// same in all of them. One in a third module would be seen by that module's
+/// importers alone, and a module that does not import it would take the
+/// trait's blanket, or another module's implementation, at the same type.
+///
+/// A blanket has no head, so only the trait's module may write one. A tuple,
+/// a type of the runtime and a .NET type are declared by no module, so only
+/// the trait's module may implement a trait for one. The standard library is
+/// excepted: its modules implement its traits for the .NET types each of them
+/// imports, one module for each type.
+///
+/// A REPL session is one program written an entry at a time, so a trait or a
+/// type of an earlier entry counts as the entry's own. Not for `Eq` and `Ord`:
+/// materialization compiles their implementations into the type's class,
+/// which is emitted with the entry that declares the type.
+let private refuseOrphan (env: Env) (traitName: string) (typeKey: string) (r: Range) : unit =
+    let sessionWide =
+        Naming.isReplEntry env.CurrentModule && traitName <> "Eq" && traitName <> "Ord"
+
+    let traitHere =
+        match Map.tryFind traitName env.Registry.TraitOrigins with
+        | Some m -> m = env.CurrentModule || (sessionWide && Naming.isReplEntry m)
+        | None -> false
+
+    // `typeKey` is idempotent on a key this module built, so equality is the
+    // "declared here" test.
+    let typeHere =
+        Naming.isModuleKey typeKey
+        && (Naming.typeKey env.CurrentModule typeKey = typeKey || (sessionWide && Naming.isReplEntry typeKey))
+
+    if not (traitHere || typeHere || Naming.isStdModuleKey env.CurrentModule) then
+        let shownTrait = Naming.showTraitName traitName
+
+        if typeKey = BlanketCtor then
+            failwithf
+                $"Orphan Rule Violation at %s{Lexer.formatPos r}: a blanket implementation of '%s{shownTrait}' may only be written in the module that defines the trait. A blanket applies at every type that has no implementation of its own, so declaring one here would change what '%s{shownTrait}' means for modules that do not import this one."
+
+        let why =
+            if Naming.isModuleKey typeKey then
+                $"'%s{Naming.showTypeName typeKey}' is declared in another module, so '%s{shownTrait}' cannot be implemented for it here"
+            elif isTupleCtor typeKey then
+                $"a tuple is declared by no module, so '%s{shownTrait}' cannot be implemented for it here"
+            else
+                $"'%s{Naming.showTypeName typeKey}' is a .NET type, so '%s{shownTrait}' cannot be implemented for it here"
+
+        failwithf
+            $"Orphan Rule Violation at %s{Lexer.formatPos r}: %s{why}. An implementation is written in the module that declares its trait or the one that declares its type — in the REPL, in the same entry as the type — so that every module that can name both sees it. Otherwise declare a wrapper type, a newtype of your own, and implement '%s{shownTrait}' for that; #:via gives it what the type it wraps implements."
+
 /// Refuses an implementation of `traitName` for `targetType`, whose head key is
 /// `typeKey`, that overlaps one already in scope.
 ///
@@ -476,10 +528,10 @@ let private signatureConstraints
 /// where the call was checked. `(List int)` beside `(List string)` is
 /// two; `(List int)` beside `(List %a)` would be one type with two.
 ///
-/// The impls in scope include the imported ones. The orphan rule makes
-/// this enough: of two modules that may each write an impl of a trait for
-/// a head, one declares the trait and the other the type, so the later one
-/// imports the earlier and sees its impl here.
+/// The impls in scope include the imported ones. `refuseOrphan` makes this
+/// enough: of two modules that may each write an impl of a trait for a head,
+/// one declares the trait and the other the type, so the later one imports
+/// the earlier and sees its impl here.
 let private refuseOverlap (env: Env) (traitName: string) (typeKey: string) (targetType: HMType) (r: Range) : unit =
     let implKeyOfTarget = (implKey targetType).Value
 
@@ -498,12 +550,21 @@ let private refuseOverlap (env: Env) (traitName: string) (typeKey: string) (targ
         failwithf
             $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTraitName traitName}' already has %s{what}, %s{where}. %s{why}"
 
+    // An implementation's head is registered before the module's bodies are
+    // checked (`checkDeclGroup`), so the one being checked may be in scope
+    // already. It is told by where it is written.
+    let isThisOne (otherKey: string) =
+        match Map.tryFind (env.CurrentModule, traitName, otherKey) env.ImplSites with
+        | Some(_, otherRange) -> otherRange = r
+        | None -> false
+
     if typeKey = BlanketCtor then
         match Map.tryFind (env.CurrentModule, traitName, implKeyOfTarget) env.ImplSites with
-        | Some(otherType, _) -> refuse otherType implKeyOfTarget "A trait has one blanket implementation."
-        | None -> ()
+        | Some(otherType, _) when not (isThisOne implKeyOfTarget) ->
+            refuse otherType implKeyOfTarget "A trait has one blanket implementation."
+        | _ -> ()
     else
-        for other in implsAtHead env.Registry traitName typeKey do
+        for other in implsAtHead env.Registry traitName typeKey |> List.filter (fun o -> not (isThisOne o.Key)) do
             let otherType = fst env.Registry.Implementations[(traitName, other.Key)]
 
             match patternsOverlap otherType targetType with
@@ -827,6 +888,10 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
 
     | DImplVia(traitName, targetTypeExpr, viaTypeExpr, isExtern, r) ->
         checkImplVia env sigs traitName targetTypeExpr viaTypeExpr isExtern r
+
+    | DLinked inner ->
+        Diagnostics.attempt (fun () -> checkDeclNode env sigs inner)
+        |> Option.defaultValue (env, sigs, [])
 
 
     // A spelling an import modifier produced for a type, a constructor, a trait
@@ -1712,11 +1777,8 @@ and private checkImportClass (env: Env) (sigs: Sigs) (specs: ClassImportSpec lis
                 { reg with
                     ClrClasses = Map.add info.Alias info reg.ClrClasses
                     Aliases = Map.add info.Alias (info.TypeParams, aliasTarget) reg.Aliases
-                    // Both spellings are this module's: the alias, and the
-                    // .NET name it expands to. The second is what an impl's
-                    // target resolves to, and without it the orphan rule
-                    // would refuse a module the right to implement a trait
-                    // for a type it went to the trouble of importing.
+                    // Both spellings name a type here: the alias, and the
+                    // .NET name it expands to.
                     LocalTypes = reg.LocalTypes |> Set.add info.Alias |> Set.add info.ClrName })
             env.Registry
 
@@ -2665,7 +2727,23 @@ and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorV
 
     finalEnv, sigs, [ TTrait(traitName, implementorVar, kind, holeArity, assocTypes, hmSignatures, r) ]
 
-and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExpr: FType) (assocBindings: (string * FType) list) (whereClause: MemberConstraint list) (implMethodWheres: (string * MemberConstraint list) list) (methods: Decl list) (r: Range) : Env * Sigs * TDecl list =
+/// The head of an implementation, checked and registered: its trait, its
+/// target, its associated types and its where clause. `checkDeclGroup`
+/// registers the head of every implementation in a group before it checks
+/// the group's bodies, so a call above an implementation finds it, and
+/// `checkImpl` checks the head again where the implementation stands.
+///
+/// Answers the environment it is registered in, with the trait's key and
+/// info, the target, the target as a pattern, the associated types and what
+/// the implementation requires.
+and private registerImplHead
+    (env: Env)
+    (traitName: string)
+    (targetTypeExpr: FType)
+    (assocBindings: (string * FType) list)
+    (whereClause: MemberConstraint list)
+    (r: Range)
+    : Env * string * TraitInfo * HMType * ImplTarget * (string * HMType) list * TraitConstraint list =
     // The trait may be written under a spelling a `prefix` produced; the
     // registries are keyed on the name the `def/trait` gave it.
     Diagnostics.refuseAmbiguous Diagnostics.TraitName r traitName
@@ -2677,75 +2755,8 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
         | Some k -> k
         | None -> failwithf $"Trait implementations require concrete target types at %s{Lexer.formatPos r}"
 
-    let isLocalTrait = env.Registry.IsTraitDefinedLocally(traitName)
-
-    // A tuple belongs to no module, exactly as `List` and `Option` do, so
-    // the "or the module defining the type" half of the orphan rule has
-    // nothing to hold it to.
-    let isLocalType =
-        typeKey <> BlanketCtor
-        && (isTupleCtor typeKey || env.Registry.IsTypeDefinedLocally(typeKey))
-
-    // The orphan rule, and it is what keeps the blanket fallback from being
-    // a source of action at a distance. Once impls can overlap, adding one
-    // in a third module could change which impl a call in an unrelated
-    // module selects. Restricting an impl to the module defining the trait
-    // or the module defining the head constructor removes the possibility:
-    // any module that can *mention* both already depends on both, so it
-    // recompiles.
-    //
-    // A blanket has no head constructor at all, so only the trait's own
-    // module may write one — which is exactly right. A blanket declared
-    // elsewhere would change the meaning of every call to that trait in
-    // every module that never heard of it.
-    // A blanket is held to the stricter half of the rule on its own, and
-    // against the module the trait was actually declared in rather than
-    // against `LocalTraits` — which by this point also holds every imported
-    // trait. There is no second escape hatch for it: a blanket has no head
-    // constructor, so "or the module defining the type" has nothing to say.
-    if typeKey = BlanketCtor then
-        let declaredHere =
-            Map.tryFind traitName env.Registry.TraitOrigins = Some env.CurrentModule
-
-        if not declaredHere then
-            failwithf
-                $"Orphan Rule Violation at %s{Lexer.formatPos r}: a blanket implementation of '%s{traitName}' may only be written in the module that defines the trait. A blanket applies at every type that has no implementation of its own, so declaring one here would change what '%s{traitName}' means for modules that do not import this one."
-    elif not (isLocalTrait || isLocalType) then
-        failwithf
-            $"Orphan Rule Violation at %s{Lexer.formatPos r}: Cannot implement foreign trait '%s{traitName}' for foreign type '%s{typeKey}'."
-
+    refuseOrphan env traitName typeKey r
     refuseOverlap env traitName typeKey targetType r
-
-    // An `Eq` or `Ord` implementation for a type this module did not
-    // declare: an `import/class` alias, or a type imported from another
-    // module (in the REPL, from an earlier entry).
-    //
-    // Both pass the orphan rule, and both would work for `(= a b)` — but
-    // not for `Map`, `Set` or the ordered collections, which ask the
-    // *type* for its equality and ordering. Materialization can only put
-    // the implementation there at the moment the type's class is emitted,
-    // which is in the module that declares it; anywhere else the two
-    // answers silently diverge, which is the exact hole materialization
-    // exists to close. Refused, with the fix named.
-    //
-    // The standard library is carved out: `std/eq` and `std/clr-ord`
-    // implement these traits for .NET and runtime types as delegations to
-    // the very members .NET consults — `.CompareTo`,
-    // `EqualityComparer.Default` — so their two answers cannot part ways.
-    // No compiler check could establish that of an arbitrary body, so the
-    // privilege stops at `lib/std`.
-    if (traitName = "Eq" || traitName = "Ord")
-       && typeKey <> BlanketCtor
-       && not (isTupleCtor typeKey)
-       && not (Naming.isStdModuleKey env.CurrentModule) then
-        if not (Naming.isModuleKey typeKey) then
-            failwithf
-                $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTypeName typeKey}' is a .NET type, so '%s{traitName}' cannot be implemented for it. Its equality and ordering are compiled into it already — this implementation would answer '=' and 'compare', but Map, Set and the ordered collections ask the type itself, and the two would silently disagree. Declare a wrapper type with (type ...) and implement '%s{traitName}' for that."
-        // `typeKey` is idempotent on a key this module built, so equality
-        // is the "declared here" test.
-        elif Naming.typeKey env.CurrentModule typeKey <> typeKey then
-            failwithf
-                $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTypeName typeKey}' is declared in another module, so '%s{traitName}' cannot be implemented for it here. Its Equals, GetHashCode and CompareTo were compiled with that module — this implementation would answer '=' and 'compare', but Map, Set and the ordered collections ask the type itself, and the two would silently disagree. Write the implementation in the module that declares the type — in the REPL, in the same entry as the type."
 
     let hmAssocBindings =
         assocBindings
@@ -2845,6 +2856,23 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
             | _ -> ()
 
         check t
+
+    let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
+
+    let implConstraints =
+        if typeKey = BlanketCtor then blanketConstraints env.Registry traitInfo targetType else implConstraints
+
+    let implTarget = { implTarget with Constraints = implConstraints }
+
+    let registered =
+        let added = addImplementation traitName targetType implTarget hmAssocBindingsMap env
+        { added with ImplSites = Map.add (env.CurrentModule, traitName, implTarget.Key) (targetType, r) added.ImplSites }
+
+    registered, traitName, traitInfo, targetType, implTarget, hmAssocBindings, implConstraints
+
+and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExpr: FType) (assocBindings: (string * FType) list) (whereClause: MemberConstraint list) (implMethodWheres: (string * MemberConstraint list) list) (methods: Decl list) (r: Range) : Env * Sigs * TDecl list =
+    let env, traitName, traitInfo, targetType, implTarget, hmAssocBindings, implConstraints =
+        registerImplHead env traitName targetTypeExpr assocBindings whereClause r
 
     // Defaults are spliced in *here*, before anything looks at the method
     // list, so that everything below — the definition-site check, the
@@ -2960,16 +2988,7 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
                                 | _ -> acc)
                             env.Registry.GeneratedCopies } }
 
-    let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
-
-    let implConstraints =
-        if typeKey = BlanketCtor then blanketConstraints env.Registry traitInfo targetType else implConstraints
-
-    let implTarget = { implTarget with Constraints = implConstraints }
-
-    let regEnv =
-        let added = addImplementation traitName targetType implTarget hmAssocBindingsMap env
-        { added with ImplSites = Map.add (env.CurrentModule, traitName, implTarget.Key) (targetType, r) added.ImplSites }
+    let regEnv = env
 
     // FIX 1: Prepend the "'" to the substitution keys so they match TVar "'c"
     let mutable substitutions = Map.add ("'" + traitInfo.ImplementorVar) targetType Map.empty
@@ -3551,10 +3570,8 @@ and private checkImplVia
         | _ -> refuse "only a newtype is implemented via another type, because only a newtype is that type at run time."
 
     // The orphan rule, as for any implementation.
-    if not isExtern
-       && not (env.Registry.IsTraitDefinedLocally traitName || env.Registry.IsTypeDefinedLocally newtypeKey) then
-        failwithf
-            $"Orphan Rule Violation at %s{Lexer.formatPos r}: Cannot implement foreign trait '%s{traitName}' for foreign type '%s{newtypeKey}'."
+    if not isExtern then
+        refuseOrphan env traitName newtypeKey r
 
     // The via type's dictionary is used as this one's, so the two have to be
     // one type at run time.
@@ -3671,9 +3688,9 @@ and internal checkDeclGroup
     /// `(: run/lines (-> ProcList (List string)))` took a `ProcList` that no
     /// later `(List ProcItem)` could unify with.
     ///
-    /// The declarations are registered again by the fold below, in order and
-    /// into the environment the group really uses. This copy is thrown away
-    /// after the signatures have been read off it.
+    /// The declarations are registered again below, before any body, into the
+    /// environment the group really uses. This copy is thrown away after the
+    /// signatures have been read off it.
     ///
     /// A module's own `import/class` aliases are folded in for the same reason
     /// — `Exception` is a type here as much as a `type` declaration is one —
@@ -4147,47 +4164,90 @@ and internal checkDeclGroup
                     $"Type Error at %s{Lexer.formatPos r}: `%s{n}` %s{where}. A module-level value is in scope from its definition down, and the definition takes the name from the imported or built-in `%s{n}` for the whole module, so neither can be meant here. Move the use below the definition, or rename one of the two."
             | _ -> ()
 
-    let finalEnv, finalSigs, typedDecls =
-        decls
-        |> List.indexed
-        |> List.fold
-            (fun (currEnv, currSigs, accDecls) (index, d) ->
-                // One declaration's failure costs that declaration. The group is
-                // checked left to right and each step reads the environment the
-                // step before it produced, so a failure keeps the previous one
-                // and contributes no `TDecl` — what it could not check, it does
-                // not claim to have checked.
-                let nextEnv, nextSigs, tDecls =
-                    Diagnostics.recoverWith
-                        "type check"
-                        (Some(declRange d))
-                        (fun () -> poisonFailed currEnv d, currSigs, [])
-                        (fun () ->
-                        refuseUsesAboveDefinitions currEnv index d
+    // One declaration's failure costs that declaration. The group is checked
+    // declaration by declaration and each step reads the environment the step
+    // before it produced, so a failure keeps the previous one and contributes
+    // no `TDecl`: what it could not check, it does not claim to have checked.
+    let checkOne (currEnv: Env, currSigs: Sigs, accDecls: (int * TDecl list) list) (index: int, d: Decl) =
+        let nextEnv, nextSigs, tDecls =
+            Diagnostics.recoverWith
+                "type check"
+                (Some(declRange d))
+                (fun () -> poisonFailed currEnv d, currSigs, [])
+                (fun () ->
+                    refuseUsesAboveDefinitions currEnv index d
 
+                    match d with
+                    // Which implementation a failure came from. A method body
+                    // is short, and often nobody wrote it — `type/derive`
+                    // writes one per field, and every node a macro builds
+                    // carries the *call site's* range, so the line reported is
+                    // the derive form rather than the field that asked for the
+                    // comparison.
+                    | DImpl(traitName, target, _, _, _, _, ir) ->
+                        try
+                            checkDecl currEnv currSigs d
+                        with ex when Diagnostics.isDiagnostic ex ->
+                            let targetName =
+                                match target with
+                                | TName(n, _) -> n
+                                | TApp(n, _, _) -> n
+                                | _ -> "this type"
+
+                            failwithf
+                                $"%s{ex.Message}\n  in the implementation of '%s{traitName}' for '%s{targetName}' at %s{Lexer.formatPos ir}"
+                    | _ -> checkDecl currEnv currSigs d)
+
+        nextEnv, nextSigs, (index, tDecls) :: accDecls
+
+    // What a declaration elsewhere in the group may use wherever it stands:
+    // the types, the traits and the import/class aliases. These are checked
+    // first, in the order they are written; none of them has a body.
+    let declaresOnly (d: Decl) =
+        match d with
+        | DType _
+        | DTypeRec _
+        | DTrait _
+        | DImportClass _
+        | DImportAlias _ -> true
+        | _ -> false
+
+    let declarations, rest = decls |> List.indexed |> List.partition (snd >> declaresOnly)
+
+    let afterDeclarations =
+        declarations |> List.fold checkOne (envWithForwardDecls, combinedSigs, [])
+
+    // Then the head of every implementation, in order, so that a call above
+    // an implementation resolves to it. A head that does not check is left
+    // out here: it is checked again where it stands, and reported there.
+    let withImplHeads =
+        let (env, sigs, acc) = afterDeclarations
+
+        let env =
+            rest
+            |> List.fold
+                (fun (env: Env) (_, d) ->
+                    let registered =
                         match d with
-                        // Which implementation a failure came from. A method body
-                        // is short, and often nobody wrote it — `type/derive`
-                        // writes one per field, and every node a macro builds
-                        // carries the *call site's* range, so the line reported is
-                        // the derive form rather than the field that asked for the
-                        // comparison.
-                        | DImpl(traitName, target, _, _, _, _, ir) ->
-                            try
-                                checkDecl currEnv currSigs d
-                            with ex when Diagnostics.isDiagnostic ex ->
-                                let targetName =
-                                    match target with
-                                    | TName(n, _) -> n
-                                    | TApp(n, _, _) -> n
-                                    | _ -> "this type"
+                        | DImpl(traitName, target, assocBindings, whereClause, _, _, r) ->
+                            Diagnostics.attempt (fun () ->
+                                let e, _, _, _, _, _, _ = registerImplHead env traitName target assocBindings whereClause r
+                                e)
+                        | DImplVia(traitName, target, via, isExtern, r) ->
+                            Diagnostics.attempt (fun () ->
+                                let e, _, _ = checkImplVia env sigs traitName target via isExtern r
+                                e)
+                        | _ -> None
 
-                                failwithf
-                                    $"%s{ex.Message}\n  in the implementation of '%s{traitName}' for '%s{targetName}' at %s{Lexer.formatPos ir}"
-                        | _ -> checkDecl currEnv currSigs d)
+                    registered |> Option.defaultValue env)
+                env
 
-                (nextEnv, nextSigs, tDecls @ accDecls))
-            (envWithForwardDecls, combinedSigs, [])
+        env, sigs, acc
+
+    let finalEnv, finalSigs, typedDeclsByIndex = rest |> List.fold checkOne withImplHeads
+
+    // In the order the group is written.
+    let typedDecls = typedDeclsByIndex |> List.sortBy fst |> List.collect snd
 
     // A `(:deprecated ...)` holds once the group's bindings are made, so it
     // may stand anywhere in the group: before its definition, binding the
@@ -4267,5 +4327,5 @@ and internal checkDeclGroup
                         $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTraitName traitName}' requires '%s{Naming.showTraitName s.TraitName}' of every implementor, and '%s{Naming.showTraitName s.TraitName}' does not hold for %s{shown} here. %s{fix}"
         | _ -> ()
 
-    finalEnv, finalSigs, List.rev typedDecls
+    finalEnv, finalSigs, typedDecls
 

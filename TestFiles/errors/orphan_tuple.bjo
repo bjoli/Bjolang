@@ -1,0 +1,22 @@
+;; An implementation of an imported trait for a tuple.
+;;
+;; A tuple is declared by no module, so only the trait's module may implement
+;; the trait for one. Two modules that each did were accepted, and C# refused
+;; the program that imported both.
+
+;; EXPECT-ERROR: Orphan Rule Violation
+;; EXPECT-ERROR: a tuple is declared by no module
+
+(import (std prelude))
+
+(def/trait (Tag %a)
+  (: tag (-> %a string)))
+
+;; Allowed: the trait is this module's.
+(impl (Tag (Tuple int int))
+  (defun (tag p) "a pair"))
+
+(impl (Displayed (Tuple int string))
+  (defun (display-into p b) (stringbuilder-add-string! b "a pair")))
+
+(defun (main args) 0)

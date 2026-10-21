@@ -291,8 +291,7 @@ let blockingBuiltins : Set<string> =
 let elsewhereBuiltins : Set<string> = Set.ofList [ "blocking"; "spawn-thunk" ]
 
 let emptyRegistry : TraitRegistry =
-    { LocalTraits = Set.empty
-      PinnedAssocs = []
+    { PinnedAssocs = []
       // The types with no declaring module, which is exactly what `typeKey`
       // leaves unkeyed. One list, in `Naming`, so the registry that holds them
       // and the rule that exempts them cannot drift apart.

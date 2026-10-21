@@ -730,26 +730,14 @@ let rec withWrittenImpls (imported: Map<string, FType>) (decls: Decl list) : Dec
                 | _ -> true))
         |> List.map (writtenImpl aliases)
 
-    // Each implementation directly after its type, so that a call below the
-    // type finds it. In the module that declares `Written`, not before the
-    // trait: the types above it wait for it.
-    let declaresWritten =
-        decls |> List.exists (function DTrait("Written", _, _, _, _, _, _, _, _) -> true | _ -> false)
-
-    let rec place (traitSeen: bool) (waiting: Decl list) (rest: Decl list) =
-        match rest with
-        | [] -> waiting
-        | d :: more ->
-            match d with
-            | DModule(name, inner, r) -> DModule(name, withWrittenImpls aliases inner, r) :: place traitSeen waiting more
-            | DTrait("Written", _, _, _, _, _, _, _, _) -> d :: waiting @ place true [] more
-            | DType(tds, _)
-            | DTypeRec(tds, _) when traitSeen || not declaresWritten -> d :: derived tds @ place traitSeen waiting more
-            | DType(tds, _)
-            | DTypeRec(tds, _) -> d :: place traitSeen (waiting @ derived tds) more
-            | _ -> d :: place traitSeen waiting more
-
-    place false [] decls
+    // Each implementation after its type. Where it stands does not matter to a
+    // call: `checkDeclGroup` registers every implementation's head before it
+    // checks a body.
+    decls
+    |> List.collect (function
+        | DModule(name, inner, r) -> [ DModule(name, withWrittenImpls aliases inner, r) ]
+        | (DType(tds, _) | DTypeRec(tds, _)) as d -> d :: derived tds
+        | d -> [ d ])
 
 /// The type every macro transformer has. Fixed, and not written by the user:
 /// the expander constructs the arguments and consumes the result, so there is

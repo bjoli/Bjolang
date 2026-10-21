@@ -1112,6 +1112,37 @@ let private loadForMetadata (absPath: string) : System.Reflection.Assembly =
     assembliesByModule[Naming.moduleKeyOfPath absPath] <- asm
     asm
 
+/// A compiled module's assembly and the Bjolang metadata it carries.
+let private metadataOf (absPath: string) : System.Reflection.Assembly * ModuleMetadata.Metadata =
+    let asm = Timing.phase "import: load assembly" (fun () -> loadForMetadata absPath)
+    let attr = asm.GetCustomAttributes(typeof<System.Reflection.AssemblyMetadataAttribute>, false)
+
+    let metadataValue (key: string) : string option =
+        attr
+        |> Array.choose (fun a ->
+            let meta = a :?> System.Reflection.AssemblyMetadataAttribute
+            if meta.Key = key then Some meta.Value else None)
+        |> Array.tryHead
+
+    // An assembly with no Bjolang metadata at all exports nothing and is a
+    // perfectly good thing to link — a hand-written C# library is exactly that.
+    // One carrying the attributes an older compiler wrote is a different
+    // thing, and saying so beats reporting every name it was meant to export
+    // as unbound.
+    let meta =
+        match metadataValue "BjolangMetadata" with
+        | Some text -> Timing.phase "import: read metadata" (fun () -> ModuleMetadata.deserialize absPath text)
+        | None ->
+            let legacyKeys = [ "BjolangExports"; "BjolangDeps"; "BjolangInlineImpls"; "BjolangMacros" ]
+
+            if legacyKeys |> List.exists (metadataValue >> Option.isSome) then
+                failwithf
+                    $"'%s{absPath}' was built by an earlier version of the Bjolang compiler, whose metadata format this one does not read. Rebuild it with this compiler version."
+
+            ModuleMetadata.empty
+
+    asm, meta
+
 let mutable private resolverInstalled = false
 
 /// Lets a transformer call into the modules its own module was compiled against.
@@ -2166,34 +2197,7 @@ let loadModuleGraph
                     // publishes may call into any of these, and the resolver is
                     // what makes that possible.
                     noteAssemblyPath absPath
-                    let asm = Timing.phase "import: load assembly" (fun () -> loadForMetadata absPath)
-                    let attr = asm.GetCustomAttributes(typeof<System.Reflection.AssemblyMetadataAttribute>, false)
-
-                    let metadataValue (key: string) : string option =
-                        attr
-                        |> Array.choose (fun a ->
-                            let meta = a :?> System.Reflection.AssemblyMetadataAttribute
-                            if meta.Key = key then Some meta.Value else None)
-                        |> Array.tryHead
-
-                    // An assembly with no Bjolang metadata at all exports
-                    // nothing and is a perfectly good thing to link — a
-                    // hand-written C# library is exactly that. One carrying
-                    // the attributes an older compiler wrote is a different
-                    // thing, and saying so beats reporting every name it was
-                    // meant to export as unbound.
-                    let meta =
-                        match metadataValue "BjolangMetadata" with
-                        | Some text -> Timing.phase "import: read metadata" (fun () -> ModuleMetadata.deserialize absPath text)
-                        | None ->
-                            let legacyKeys =
-                                [ "BjolangExports"; "BjolangDeps"; "BjolangInlineImpls"; "BjolangMacros" ]
-
-                            if legacyKeys |> List.exists (metadataValue >> Option.isSome) then
-                                failwithf
-                                    $"'%s{absPath}' was built by an earlier version of the Bjolang compiler, whose metadata format this one does not read. Rebuild it with this compiler version."
-
-                            ModuleMetadata.empty
+                    let asm, meta = metadataOf absPath
 
                     // A transitive dependency is *linked*, not *imported*. Its
                     // assembly has to be referenced, because that is where the
@@ -2878,17 +2882,56 @@ let loadModuleGraph
             aliasDecls @ applyDefRenaming m.ModuleName byOriginal keptDecls
         | _ -> m.ParsedDecls
 
-    let allDecls =
-        sorted
-        |> Seq.collect (fun m ->
-            // What a module carried stands beside it and ahead of it: those
-            // declarations belong to the module that made them, so they are
-            // registered as its, and the module re-exporting them is checked
-            // after they exist. A module reached both directly and through a
-            // facade therefore has its types registered twice, under one key
-            // and with one meaning, which is the whole point of the key.
-            m.Carried @ wrapInModule m.ModuleName m.FilePath (viewOf m))
+    // The implementations of the modules this compilation links and does not
+    // import. A type reaches a module through one that passes it on, and its
+    // implementations live with it or with their traits (see
+    // `CheckDecl.refuseOrphan`): a module holding a value of the type, and
+    // importing neither, would take the trait's blanket at it. They are read
+    // just before the module being compiled, once every trait and type they
+    // could name is registered. Only the implementations come: the linked
+    // modules' names stay out of scope.
+    let linkedImpls =
+        let loaded = resolvedModules.Keys |> Set.ofSeq
+
+        dllDeps
+        |> Seq.filter (fun dll -> not (Set.contains (Path.GetFullPath dll) loaded))
         |> List.ofSeq
+        |> List.choose (fun dll ->
+            let _, meta = metadataOf dll
+            let moduleKey = Naming.moduleKeyOfPath dll
+
+            let decls =
+                if meta.ImplDecls.IsEmpty then
+                    []
+                else
+                    Lexer.tokenize dll (String.concat "\n" meta.ImplDecls)
+                    |> read
+                    |> fst
+                    |> List.map (readOrigins moduleKey)
+                    |> DeclParser.parseModule
+                    |> List.map DLinked
+
+            match decls with
+            | [] -> None
+            | first :: _ -> Some(DModule(moduleKey, decls, declRange first)))
+
+    let allDecls =
+        let groups =
+            sorted
+            |> Seq.map (fun m ->
+                // What a module carried stands beside it and ahead of it: those
+                // declarations belong to the module that made them, so they are
+                // registered as its, and the module re-exporting them is checked
+                // after they exist. A module reached both directly and through a
+                // facade therefore has its types registered twice, under one key
+                // and with one meaning, which is the whole point of the key.
+                m.Carried @ wrapInModule m.ModuleName m.FilePath (viewOf m))
+            |> List.ofSeq
+
+        // The module being compiled is the last one sorted.
+        match List.rev groups with
+        | compiled :: dependencies -> List.concat (List.rev dependencies) @ linkedImpls @ compiled
+        | [] -> linkedImpls
 
     // Rule 5. Only a spelling a modifier *invented* is checked: two plain
     // imports offering the same name is the older shadowing rule, where the
