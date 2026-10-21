@@ -295,7 +295,7 @@ let private eligible
     // A copy is only worth making for a constraint that costs a dictionary.
     constraints
     |> List.exists (fun c ->
-        not (isClrConstraint env.Registry (TypeEnv.originalName env.Registry c.MCTrait)))
+        not (isClrConstraint env.Registry (TypeEnv.originalTraitName env.Registry c.MCTrait)))
     && name <> "main"
     // A `-?->` promises a second body, and the twin is generated inside
     // `checkDeclGroup` — so it is not among the declarations read here, and a
@@ -504,7 +504,7 @@ let private demandOf (env: Env) (cands: Map<string, Candidate>) (name: string) (
             List.zip schemeVars resolved |> List.map (fun (v, t) -> bareVar v, t) |> Map.ofList
 
         let rec satisfiable (traitName: string) (t: HMType) =
-            isClrConstraint env.Registry (TypeEnv.originalName env.Registry traitName)
+            isClrConstraint env.Registry (TypeEnv.originalTraitName env.Registry traitName)
             || (match implFor env.Registry traitName t with
                 | Some(target, subst) ->
                     target.Constraints

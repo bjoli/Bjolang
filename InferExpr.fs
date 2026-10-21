@@ -3445,7 +3445,7 @@ and private inferRecordSet (env: Env) (targetName: string) (fields: (string * Ex
 // projections linger and the enclosing function receives the constraint as a
 // `_dict_` parameter like any other trait usage.
 and private inferDynPack (env: Env) (writtenTrait: string) (valueExpr: Expr) (r: Range) : HMType * TypedExpr =
-    let traitName = originalName env.Registry writtenTrait
+    let traitName = originalTraitName env.Registry writtenTrait
 
     let info =
         match Map.tryFind traitName env.Registry.Traits with

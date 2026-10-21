@@ -419,7 +419,7 @@ let private signatureConstraints
     |> List.map (fun c ->
         Diagnostics.refuseAmbiguous Diagnostics.TraitName c.MCRange c.MCTrait
 
-        match Map.tryFind (originalName registry c.MCTrait) registry.Traits with
+        match Map.tryFind (originalTraitName registry c.MCTrait) registry.Traits with
         | Some info ->
             for (pinName, _) in c.MCPins do
                 if not (List.contains pinName info.AssociatedTypes) then
@@ -462,7 +462,7 @@ let private signatureConstraints
     // And what they imply, after them: see `withSuperclasses`. The given
     // ones keep the spelling source wrote, for the messages that quote it.
     |> fun given ->
-        let byKey = given |> List.map (fun c -> { c with TraitName = originalName registry c.TraitName })
+        let byKey = given |> List.map (fun c -> { c with TraitName = originalTraitName registry c.TraitName })
         let same (a: TraitConstraint) (b: TraitConstraint) = a.TraitName = b.TraitName && a.TargetType = b.TargetType
 
         given @ (withSuperclasses registry byKey |> List.filter (fun e -> not (List.exists (same e) byKey)))
@@ -547,7 +547,7 @@ let private traitSuperclasses
     : TraitConstraint list =
     supers
     |> List.map (fun c ->
-        let superName = originalName registry c.MCTrait
+        let superName = originalTraitName registry c.MCTrait
         let constraintOn = { TraitName = superName; TargetType = TVar c.MCVar; Pins = [] }
 
         if strict then
@@ -1073,7 +1073,7 @@ and private checkDefun (env: Env) (sigs: Sigs) (decl: Decl) (name: string) (defu
         match sigOpt with
         | Some signature ->
             signature.Constraints
-            |> List.map (fun c -> { c with TraitName = originalName env.Registry c.TraitName })
+            |> List.map (fun c -> { c with TraitName = originalTraitName env.Registry c.TraitName })
         | None -> []
 
     // What the pins say, granted to the body as given equalities, as a
@@ -2195,7 +2195,7 @@ and private checkExtern (env: Env) (sigs: Sigs) (name: string) (declaredOrigin: 
     // Add constraints from DLL metadata
     let constraints =
         signatureConstraints env.Registry (resolveTypeAnnotation env.Registry) $"'%s{name}'" whereClause
-        |> List.map (fun c -> { c with TraitName = originalName env.Registry c.TraitName })
+        |> List.map (fun c -> { c with TraitName = originalTraitName env.Registry c.TraitName })
 
     let vars = vars @ pinOnlyVars env.Registry vars constraints
     let schemeWithConstraints = Scheme(vars, constraints, schemeType)
@@ -2481,7 +2481,7 @@ and private checkTrait (env: Env) (sigs: Sigs) (traitName: string) (implementorV
 
                 cs
                 |> List.map (fun (mc: Ast.MemberConstraint) ->
-                    let cTrait = originalName env.Registry mc.MCTrait
+                    let cTrait = originalTraitName env.Registry mc.MCTrait
                     let cr = mc.MCRange
 
                     // Rule 1: a member's where constrains variables of its
@@ -2668,7 +2668,7 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
     // The trait may be written under a spelling a `prefix` produced; the
     // registries are keyed on the name the `def/trait` gave it.
     Diagnostics.refuseAmbiguous Diagnostics.TraitName r traitName
-    let traitName = originalName env.Registry traitName
+    let traitName = originalTraitName env.Registry traitName
     let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
 
     let typeKey =
@@ -2778,7 +2778,7 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
 
     let implConstraints =
         signatureConstraints env.Registry (resolveTypeAnnotation env.Registry) $"the implementation of '%s{traitName}'" whereClause
-        |> List.map (fun c -> { c with TraitName = originalName env.Registry c.TraitName })
+        |> List.map (fun c -> { c with TraitName = originalTraitName env.Registry c.TraitName })
         |> List.map (fun c ->
             let cTrait = c.TraitName
 
@@ -2900,7 +2900,7 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
 
             let got =
                 ws
-                |> List.map (fun (w: Ast.MemberConstraint) -> originalName env.Registry w.MCTrait)
+                |> List.map (fun (w: Ast.MemberConstraint) -> originalTraitName env.Registry w.MCTrait)
                 |> List.sort
                 |> String.concat ", "
 
@@ -3476,7 +3476,7 @@ and private checkImplExtern (env: Env) (sigs: Sigs) (traitName: string) (targetT
     // metadata. Only the registry needs to learn about it: the methods are
     // already compiled into the assembly that declared it, so there is
     // nothing to type-check and nothing to emit.
-    let traitName = originalName env.Registry traitName
+    let traitName = originalTraitName env.Registry traitName
     let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
 
     if (implCtorKey targetType).IsNone then
@@ -3500,7 +3500,7 @@ and private checkImplExtern (env: Env) (sigs: Sigs) (traitName: string) (targetT
     // — the impl class in the other assembly has no `Instance` to reach for.
     let implConstraints =
         signatureConstraints env.Registry (resolveTypeAnnotation env.Registry) $"the implementation of '%s{traitName}'" whereClause
-        |> List.map (fun c -> { c with TraitName = originalName env.Registry c.TraitName })
+        |> List.map (fun c -> { c with TraitName = originalTraitName env.Registry c.TraitName })
 
     // A blanket publishes the superclasses it stands on, which no program
     // may write: see `blanketConstraints`.
@@ -3528,7 +3528,7 @@ and private checkImplVia
     (r: Range)
     : Env * Sigs * TDecl list =
     Diagnostics.refuseAmbiguous Diagnostics.TraitName r traitName
-    let traitName = originalName env.Registry traitName
+    let traitName = originalTraitName env.Registry traitName
     let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
     let viaType = resolveTypeAnnotation env.Registry viaTypeExpr
 
@@ -3951,7 +3951,7 @@ and internal checkDeclGroup
 
                     let constraints =
                         signature.Constraints
-                        |> List.map (fun c -> { c with TraitName = originalName acc.Registry c.TraitName })
+                        |> List.map (fun c -> { c with TraitName = originalTraitName acc.Registry c.TraitName })
 
                     let vars = vars @ pinOnlyVars acc.Registry vars constraints
 
@@ -4220,7 +4220,7 @@ and internal checkDeclGroup
         // then every type has an implementation of it, its own or that one.
         | TVar _ as v ->
             Map.containsKey traitName registry.BlanketImpls
-            || givens |> List.exists (fun g -> originalName registry g.TraitName = traitName && g.TargetType = v)
+            || givens |> List.exists (fun g -> originalTraitName registry g.TraitName = traitName && g.TargetType = v)
         | ground when isClrTrait registry traitName ->
             match Map.tryFind traitName registry.Traits with
             | Some { ClrConstraint = Some clr } -> Traits.checkClrConstraint finalEnv clr traitName ground r describe

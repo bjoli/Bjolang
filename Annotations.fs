@@ -164,7 +164,7 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
     // spelled `%elem`, as an associated type is everywhere else.
     | TApp("assoc", [ TName(writtenTrait, _); TName(writtenItem, _); implType ], r) ->
         Diagnostics.refuseAmbiguous Diagnostics.TraitName r writtenTrait
-        let traitName = originalName registry writtenTrait
+        let traitName = originalTraitName registry writtenTrait
         let assocName = writtenItem.TrimStart('\'')
 
         if checkNames then
@@ -190,7 +190,7 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
     // dynamic types without special-case logic.
     | TApp("dyn", TName(writtenTrait, _) :: assocItems, r) ->
         Diagnostics.refuseAmbiguous Diagnostics.TraitName r writtenTrait
-        let traitName = originalName registry writtenTrait
+        let traitName = originalTraitName registry writtenTrait
 
         let info =
             match Map.tryFind traitName registry.Traits with

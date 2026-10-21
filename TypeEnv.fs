@@ -31,6 +31,14 @@ let originalName (registry: TraitRegistry) (name: string) : string =
     match Map.tryFind name registry.ImportAliases with
     | Some alias when alias.Kind <> AliasDef && alias.Kind <> AliasMacro -> alias.OriginalName
         | _ -> name
+
+/// The trait, or trait method, a visible spelling stands for. Only a trait's
+/// spelling is followed: a case of an imported union may have a trait's
+/// name, as `Eq` in a grammar does, and that does not make it the trait.
+let originalTraitName (registry: TraitRegistry) (name: string) : string =
+    match Map.tryFind name registry.ImportAliases with
+    | Some alias when alias.Kind = AliasTrait -> alias.OriginalName
+    | _ -> name
     
     /// Walk a typed expression body for the trait constraints its enclosing function
 /// must carry. Returns a list of TraitConstraints (TraitName, TargetType as TVar).
