@@ -453,7 +453,8 @@ let private surfaceOf
                 |> List.map (function
                     | SimpleCase(n, _) -> n, td.Name
                     | DataCase(n, _, _) -> n, td.Name)
-            | Record _ -> [ td.Name, td.Name ]
+            | Record _
+            | Newtype _ -> [ td.Name, td.Name ]
             | Alias _ -> [])
         |> Map.ofList
 
@@ -495,8 +496,9 @@ let private surfaceOf
                  |> List.map (function
                      | SimpleCase(n, _) -> bare n, n
                      | DataCase(n, _, _) -> bare n, n)
-             // A record is constructed by its own name.
-             | Record _ -> [ bare td.Name, td.Name ]
+             // A record and a newtype are constructed by their own name.
+             | Record _
+             | Newtype _ -> [ bare td.Name, td.Name ]
              | Alias _ -> []))
         @ (decls
            |> List.choose (function

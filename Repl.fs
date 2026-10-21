@@ -253,6 +253,7 @@ let private isSticky (decl: Ast.Decl) : bool =
     match decl with
     | Ast.DImpl _
     | Ast.DImplExtern _
+    | Ast.DImplVia _
     | Ast.DInlineImpl _
     | Ast.DTrait _ -> true
     | _ -> false

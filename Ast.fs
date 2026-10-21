@@ -208,6 +208,9 @@ type Grammar =
 
 type TypeDefKind =
     | Alias of FType
+    /// `(Newtype T)`: a type of its own for the checker, with `T`'s
+    /// representation at run time. Built `(Name x)`, taken apart by pattern.
+    | Newtype of FType
     | Union of UnionCase list
     /// A record, and whether it is a *value* type (struct).
     | Record of RecordField list * bool
@@ -784,6 +787,13 @@ type Decl =
     // DImplExtern (TraitName, TargetType, AssociatedTypeBindings, Constraints, Range)
     | DImplExtern of string * FType * (string * FType) list * MemberConstraint list * Range
 
+    // `(impl (Eq Banana) #:via int)`: the implementation for a newtype is the
+    // one for the type it wraps, or for another type with its representation.
+    // `IsExtern` for one read back from metadata, which is checked the same
+    // and belongs to the module that wrote it.
+    // DImplVia (TraitName, TargetType, ViaType, IsExtern, Range)
+    | DImplVia of string * FType * FType * bool * Range
+
 /// Gets the source code location (Range) of a declaration.
 ///
 /// This provides a fallback location for error reporting, ensuring that any
@@ -793,7 +803,7 @@ let declRange (decl: Decl) : Range =
     | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefDouble(_, _, _, _, r) | DDefTuple(_, _, r) | DDefPattern(_, _, r)
     | DDefMutable(_, _, r)
     | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DGrammar(_, r) | DTrait(_, _, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, _, r)
-    | DImplExtern(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
+    | DImplExtern(_, _, _, _, r) | DImplVia(_, _, _, _, r) | DInlineImpl(_, _, _, _, _, _, _, r)
     | DModule(_, _, r) | DImport(_, r) | DAlias(_, _, r) | DExport(_, r) | DReExport(_, r)
     | DExtern(_, _, _, _, r) | DImportAlias(_, _, _, r)
     | DImportExtern(_, r) | DImportClass(_, r) | DMacro(_, r) | DPatternMacro(_, r) | DHashMacro(_, r)
@@ -1399,6 +1409,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
                             | SimpleCase(n, _) -> n
                             | DataCase(n, _, _) -> n)
                     | Alias _
+                    | Newtype _
                     | Record _ -> []))
         | DTrait(name, _, _, _, signatures, defaults, _, _, _) ->
             (name :: (signatures |> List.map (fun (n, _, _) -> n))) @ Set.toList (boundNames defaults)
@@ -1423,6 +1434,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
         | DInline _
         | DDeprecated _
         | DImplExtern _
+        | DImplVia _
         | DInlineImpl _ -> []
 
     decls |> List.collect ofDecl |> Set.ofList
@@ -1480,5 +1492,6 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DNoInline _
     | DInline _
     | DDeprecated _
-    | DImplExtern _ -> d
+    | DImplExtern _
+    | DImplVia _ -> d
 

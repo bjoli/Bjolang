@@ -1,0 +1,83 @@
+;; `(Newtype T)`: a type of its own to the checker and `T` at run time. It is
+;; built `(Name x)` and taken apart by pattern, implements only what it is
+;; given, and `(impl (Trait Name) #:via T)` gives it what `T` has.
+(import (std prelude))
+(import (std simpletest))
+(import (std hashset))
+(import "inc/newtype_lib.bjo")
+
+(type (: Banana (Newtype int)))
+(type (: (Sorted %a) (Newtype (List %a))))
+
+(: (-> Banana int))
+(defun (peel b) (def (Banana n) b) n)
+
+;; Its own equality, which ignores the sign. A HashSet has to use this one,
+;; and not int's, which is what .NET would ask.
+(impl (Eq Banana)
+  (defun (= a b) (= (abs (peel a)) (abs (peel b))))
+  (defun (eq-hash a) (eq-hash (abs (peel a)))))
+
+(impl (Ord Banana) #:via int)
+
+(def/trait (Describe %a) (: describe (-> %a string)))
+(impl (Describe int) (defun (describe x) (str "the number " (->str x))))
+(impl (Describe (List %a)) (where (Describe %a))
+  (defun (describe xs) (str "a list of " (->str (list-length xs)))))
+
+(impl (Describe Banana) #:via int)
+(impl (Describe (Sorted %a)) #:via (List %a))
+
+;; Another newtype over int may borrow Banana's implementation.
+(type (: Plantain (Newtype int)))
+(impl (Describe Plantain) #:via Banana)
+
+;; type/derive on a newtype writes #:via implementations, whatever the trait.
+(type/derive (Eq Ord Num Describe)
+  (: Score (Newtype int)))
+
+(: (-> %a string) (where (Describe %a)))
+(defun (describe-via-dict x) (describe x))
+
+(: (-> %a %a %a) (where (Num %a)))
+(defun (double-sum a b) (* 2 (+ a b)))
+
+(defun (main args)
+  ;; Construction and patterns
+  (expect "construct and take apart" (peel (Banana 3)) 3)
+  (expect "in a match" (match (Banana 4) ((Banana n) (* n 10))) 40)
+  (expect "in a list" (list-map peel (list (Banana 1) (Banana 2))) (list 1 2))
+  (def (Sorted xs) (Sorted (list "a" "b")))
+  (expect "a generic newtype" xs (list "a" "b"))
+  (def make Banana)
+  (expect "the constructor as a value" (peel (make 9)) 9)
+
+  ;; Its own implementation, also in a collection
+  (expect "its own =" (= (Banana 5) (Banana -5)) #t)
+  (expect "a HashSet uses it"
+          (hashset-length (list->hashset (list (Banana 5) (Banana -5) (Banana 6))))
+          2)
+
+  ;; Via int
+  (expect "Ord via int" (list-map peel (list-sort (list (Banana 3) (Banana 1) (Banana 2)))) (list 1 2 3))
+  (expect "a trait via int" (describe (Banana 7)) "the number 7")
+  (expect "through a dictionary" (describe-via-dict (Banana 8)) "the number 8")
+  (expect "a generic newtype via its list" (describe (Sorted (list 1 2))) "a list of 2")
+  (expect "via another newtype" (describe (Plantain 4)) "the number 4")
+
+  ;; Derived, a number included
+  (def (Score total) (+ (Score 40) 2))
+  (expect "derived Num" total 42)
+  (def (Score doubled) (double-sum (Score 1) (Score 2)))
+  (expect "Num through a dictionary, with a literal" doubled 6)
+  (expect "a literal pattern" (match (Score 3) (3 "three") (_ "other")) "three")
+  (expect "derived Describe" (describe (Score 5)) "the number 5")
+
+  ;; From another module
+  (def (: m Meters) (+ (Meters 1.5) 2))
+  (expect "a library's derived Num" (< (Meters 1.0) m) #t)
+  (expect "a library's via for its own trait" (label (Meters 2.0)) "a double, 2")
+  (expect "an opaque newtype through its module's functions"
+          (match (parse-email "x@example.org") ((Some e) (email-domain e)) ((None) "none"))
+          "example.org")
+  0)

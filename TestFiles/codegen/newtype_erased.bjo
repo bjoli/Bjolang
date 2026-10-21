@@ -1,0 +1,26 @@
+;; A newtype is the type it wraps in the emitted C#: no class of its own, its
+;; constructor is the value it is given, and a pattern on it is the pattern
+;; inside. A derived implementation is the wrapped type's and emits nothing.
+;;
+;; EXPECT-CS: public static int next\(int b\)
+;; EXPECT-CS: public static int firstsubraw\(SchemeList\.SchemeList<int> xs\)
+;; EXPECT-CS: newtype_erased_Module\.next\(1\)
+;; EXPECT-NO-CS: class \w*Banana
+;; EXPECT-NO-CS: Num_\w*Banana
+
+(import (std prelude))
+
+(type/derive (Num) (: Banana (Newtype int)))
+
+(: (-> Banana Banana))
+(defun (next b) (+ b 1))
+
+(: (-> (List Banana) int))
+(defun (first-raw xs)
+  (match xs
+    ((Cons (Banana n) _) n)
+    (_ 0)))
+
+(defun (main args)
+  (println (->str (first-raw (list (next (Banana 1))))))
+  0)

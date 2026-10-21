@@ -1,0 +1,23 @@
+;; Newtypes published for another module: one that is a number, one whose
+;; representation stays here, and the implementations they are given.
+(export Meters Email parse-email email-domain Labelled label)
+
+(type/derive (Eq Ord Num Ordered)
+  (: Meters (Newtype double)))
+
+(type (: Email #:opaque (Newtype string)))
+(impl (Eq Email) #:via string)
+
+(: (-> string (Option Email)))
+(defun (parse-email s) (if (string-contains? s "@") (Some (Email s)) None))
+
+(: (-> Email string))
+(defun (email-domain e)
+  (def (Email s) e)
+  (vec-ref (string-split s "@") 1))
+
+(def/trait (Labelled %a)
+  (: label (-> %a string)))
+
+(impl (Labelled double) (defun (label x) (str "a double, " (->str x))))
+(impl (Labelled Meters) #:via double)

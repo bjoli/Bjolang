@@ -172,6 +172,10 @@ let private signatureOf (registry: TraitRegistry) (t: HMType) : Signature =
 
         Closed
             [ CRecord(name, List.map fst fields), fields |> List.map (snd >> substitute typeParams args) ]
+    // One constructor, the type's own name, around the value it wraps.
+    | TCon(name, args) when Map.containsKey name registry.Newtypes ->
+        let typeParams, underlying = registry.Newtypes[name]
+        Closed [ CCase name, [ substitute typeParams args underlying ] ]
     | TCon(name, args) ->
         match Map.tryFind name registry.Unions with
         | Some(typeParams, cases) ->
@@ -843,9 +847,10 @@ let private checkDefPattern
     with Undecidable ->
         ()
 
-/// The registry as the code at `range` sees it: an `#:opaque` union whose
-/// representation that code may not use has no cases, so a match on one is
-/// open and needs a fallback, as a match on a type from outside the language is.
+/// The registry as the code at `range` sees it: an `#:opaque` union or
+/// newtype whose representation that code may not use has no constructors,
+/// so a match on one is open and needs a fallback, as a match on a type from
+/// outside the language is.
 ///
 /// Code no module was assigned to, which only the REPL produces, sees all.
 let private seenFrom (registry: TraitRegistry) (range: Range) : TraitRegistry =
@@ -856,7 +861,9 @@ let private seenFrom (registry: TraitRegistry) (range: Range) : TraitRegistry =
     if hidden.IsEmpty then
         registry
     else
-        { registry with Unions = hidden |> Map.fold (fun acc key _ -> Map.remove key acc) registry.Unions }
+        { registry with
+            Unions = hidden |> Map.fold (fun acc key _ -> Map.remove key acc) registry.Unions
+            Newtypes = hidden |> Map.fold (fun acc key _ -> Map.remove key acc) registry.Newtypes }
 
 let rec private checkExpr (registry: TraitRegistry) (expr: TypedExpr) : unit =
     match expr.Node with

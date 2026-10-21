@@ -349,6 +349,18 @@ let parseTypeDef (s: SExpr) : TypeDef =
           Kind = Union(List.map parseUnionCase cases)
           IsOpaque = isOpaque
           Range = r }
+    // Newtype: (: head (Newtype underlying))
+    | SList([ SAtom { Token = Colon }
+              head
+              SList([ SAtom { Token = Symbol "Newtype" }; underlying ], _) ],
+            _) ->
+        let name, typeArgs = parseTypeDefHead head
+
+        { Name = name
+          TypeArgs = typeArgs
+          Kind = Newtype(parseType underlying)
+          IsOpaque = isOpaque
+          Range = r }
     // Explicit Alias: (: head (Alias aliasType))
     | SList([ SAtom { Token = Colon }
               head
@@ -361,7 +373,7 @@ let parseTypeDef (s: SExpr) : TypeDef =
         // different type inside the module from the one outside.
         if isOpaque then
             failwithf
-                $"#:opaque on the alias '%s{name}' at %s{Lexer.formatPos r}: an alias is expanded wherever it is named, so there is no representation to hold back. Declare '%s{name}' as a Record or a Union with one field to make it a type of its own."
+                $"#:opaque on the alias '%s{name}' at %s{Lexer.formatPos r}: an alias is expanded wherever it is named, so there is no representation to hold back. Declare '%s{name}' as (Newtype T) to make it a type of its own."
 
         { Name = name
           TypeArgs = typeArgs
@@ -374,7 +386,7 @@ let parseTypeDef (s: SExpr) : TypeDef =
 
         if isOpaque then
             failwithf
-                $"#:opaque on the alias '%s{name}' at %s{Lexer.formatPos r}: an alias is expanded wherever it is named, so there is no representation to hold back. Declare '%s{name}' as a Record or a Union with one field to make it a type of its own."
+                $"#:opaque on the alias '%s{name}' at %s{Lexer.formatPos r}: an alias is expanded wherever it is named, so there is no representation to hold back. Declare '%s{name}' as (Newtype T) to make it a type of its own."
 
         { Name = name
           TypeArgs = typeArgs

@@ -312,6 +312,17 @@ let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTar
         | _ -> None
     | None -> None
 
+/// The number type `t` is at run time, if `t` is a newtype that implements
+/// `Num`. A number literal may then stand for a value of it, as it may for
+/// the number type it wraps.
+let numericNewtype (registry: TraitRegistry) (t: HMType) : HMType option =
+    match prune registry t with
+    | TCon(name, _) as newtype when Map.containsKey name registry.Newtypes ->
+        match implFor registry "Num" newtype with
+        | Some({ Via = Some _ }, _) -> Some(eraseNewtypesIn registry.Newtypes newtype)
+        | _ -> None
+    | _ -> None
+
 /// Whether two implementation targets have an instance in common: whether
 /// some type is an instance of both `a` and `b`. Each side's type variables
 /// are its own, so `(Pair %a int)` and `(Pair string %a)` overlap at

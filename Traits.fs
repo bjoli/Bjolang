@@ -156,7 +156,7 @@ let queueClrObligation (env: Env) (traitName: string) (t: HMType) (range: Range)
 ///
 /// The message deliberately does not read like the missing-impl one below. That
 /// one invites you to write an implementation; here there is none to write.
-let checkClrConstraint
+let rec checkClrConstraint
     (env: Env)
     (clr: ClrConstraintInfo)
     (traitName: string)
@@ -177,6 +177,27 @@ let checkClrConstraint
     | TMeta _ ->
         failwithf
             $"Type Error at %s{Lexer.formatPos range}: nothing here says what type '%s{traitName}' is needed at, %s{describe}. A constraint has to be discharged at a type, and this expression never says which one — annotate it."
+    // A newtype is what it wraps to .NET, which would say yes for it. It has
+    // the interface only if it was given it, `#:via` a type that has it.
+    | TCon(name, _) as newtype when Map.containsKey name env.Registry.Newtypes ->
+        match implFor env.Registry traitName newtype with
+        | Some({ Via = Some via }, subst) -> checkClrConstraint env clr traitName (substTypeVars subst via) range describe
+        | _ ->
+            // In the suggested code, this module's own types by the names its
+            // source writes.
+            let rec written (t: HMType) =
+                match t with
+                | TCon(n, args) -> TCon(Naming.bareTypeName env.CurrentModule n, List.map written args)
+                | TTuple args -> TTuple(List.map written args)
+                | TFun(args, ret, eff) -> TFun(List.map written args, written ret, eff)
+                | other -> other
+
+            let shown = DotNetInterop.showType newtype
+            let target = DotNetInterop.showType (written newtype)
+            let wrapped = DotNetInterop.showType (written (eraseNewtypesIn env.Registry.Newtypes newtype))
+
+            failwithf
+                $"Type Error at %s{Lexer.formatPos range}: '%s{shown}' does not satisfy '%s{traitName}', needed %s{describe}. A newtype has only what is implemented for it, and this is not: write (impl (%s{traitName} %s{target}) #:via %s{wrapped})."
     | resolved ->
         // The interface is written over the trait's own implementor variable,
         // so putting the actual implementor in is what turns
@@ -459,6 +480,10 @@ let private defaultNumericLiterals (env: Env) : unit =
         // off it is what makes that legal.
         | TVar _ -> ()
         | numeric when NumericLiteral.isNumeric numeric -> checkLiteralFits numeric text r |> ignore
+        // A newtype that implements `Num` is a number, and a literal is one
+        // of the number type it wraps.
+        | newtype when (numericNewtype env.Registry newtype).IsSome ->
+            checkLiteralFits (numericNewtype env.Registry newtype).Value text r |> ignore
         // The literal is the index or key of a collection that nothing says the
         // type of: a local function that takes the collection is never called.
         | TAssoc(traitName, assocName, impl) as projection when not (List.isEmpty (metaIdsOf impl)) ->
@@ -667,6 +692,7 @@ let implTargetOf
 
         { Ctor = ctor
           Key = (implKey targetType).Value
+          Via = None
           FixedPrefix = args |> List.take (args.Length - info.HoleArity)
           HoleArity = info.HoleArity
           Constraints = constraints }
@@ -694,6 +720,7 @@ let implTargetOf
 
         { Ctor = BlanketCtor
           Key = (implKey targetType).Value
+          Via = None
           FixedPrefix = [ targetType ]
           HoleArity = 0
           Constraints = [] }
@@ -709,6 +736,7 @@ let implTargetOf
 
         { Ctor = tupleCtor args.Length
           Key = (implKey targetType).Value
+          Via = None
           FixedPrefix = args
           HoleArity = 0
           Constraints = constraints }
@@ -736,6 +764,7 @@ let registerDynImpl (traitName: string) (info: TraitInfo) (env: Env) : Env =
         let implTarget =
             { Ctor = key
               Key = (implKey (TCon(key, vars))).Value
+              Via = None
               FixedPrefix = vars
               HoleArity = 0
               // Unconditional: the box already contains its dictionary, so

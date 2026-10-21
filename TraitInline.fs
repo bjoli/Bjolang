@@ -542,10 +542,11 @@ let private landingPad (env: Env) (tref: TraitRef) (implKey: string) (tyArgs: HM
     // `Lowering`'s job. Handing the call back unchanged is what asks for it —
     // the node still says which implementation was chosen. An impl with only a
     // `(where (Num %a))` is handed back too, because `Lowering` checks that
-    // constraint at the type the call is made at.
+    // constraint at the type the call is made at. So is a `#:via` impl, which
+    // has no class: its dictionary is the via type's.
     let conditional =
         match Map.tryFind (tref.Trait, implKey) env.Registry.ImplTargets with
-        | Some target -> not target.Constraints.IsEmpty
+        | Some target -> target.Via.IsSome || not target.Constraints.IsEmpty
         | None -> false
 
     // A member-level `(where ...)` is the same story as a conditional impl:

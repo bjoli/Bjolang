@@ -3,6 +3,35 @@
 
 What each change guarantees, and what it leaves open.
 
+* Newtypes, and implementations via another type
+
+- ~(type (: Banana (Newtype int)))~ is a type of its own to the checker and
+  ~int~ at run time: the emitted C# has no class for it, its constructor
+  ~(Banana 3)~ is the value it is given, and the pattern ~(Banana n)~ is
+  ~n~. A generic one wraps a type at its parameters, ~(Newtype (List %a))~,
+  and ~#:opaque~ keeps its constructor and patterns to its module.
+- A newtype implements only what is implemented for it, besides blanket
+  implementations: ~(+ b b)~ is refused until it implements ~Num~. A
+  hand-written ~Eq~ or ~Ord~ that differs from the wrapped type's is the one
+  ~HashSet~, ~Map~ and the ordered collections use: they are handed it, as
+  .NET would ask the wrapped type.
+- ~(impl (Trait Banana) #:via int)~ makes the implementation the one for
+  ~int~, or for any type that is ~Banana~ at run time, another newtype of
+  ~int~ included. It has no code of its own: the via type's dictionary is
+  used. It is allowed for the .NET-interface traits too, which is how a
+  newtype gets ~+~ and ~<~. ~type/derive~ on a newtype writes one for each
+  trait listed, whatever the trait.
+- A newtype that implements ~Num~ is a number: an integer literal may
+  stand for one, in an expression and in a pattern.
+- Refused: a newtype that contains itself; ~cast~ to or from one; passing
+  one to .NET, where C# would choose an overload by the wrapped type and
+  the checker by the newtype.
+- A call through a ~#:via~ implementation goes through the via type's
+  dictionary, where an implementation of its own would be called
+  directly.
+- Tests: ~443_newtypes.bjo~, ~codegen/newtype_erased.bjo~, and
+  ~newtype_*.bjo~ and ~via_*.bjo~ in ~TestFiles/errors~.
+
 * A trait may require other traits
 
 - ~(def/trait (Ord %a) (where (Eq %a)) ...)~: every implementor of ~Ord~

@@ -1668,13 +1668,29 @@ let private widenings =
         typeof<float32>, [ typeof<float> ]
     ]
 
+/// The keys of every `(Newtype T)` type registered in this process.
+///
+/// A newtype is its underlying type at run time, so C# would bind a call by
+/// that type while the checker, which sees the newtype, would not: the two
+/// could choose different overloads. A newtype therefore fits no .NET
+/// parameter, and the value is taken out first. Keys carry their module, so
+/// the set is shared by every module checked in the process.
+let newtypeKeys = System.Collections.Concurrent.ConcurrentDictionary<string, unit>()
+
+let private isNewtype (t: HMType) =
+    match pruneLocal t with
+    | TCon(name, _) -> newtypeKeys.ContainsKey name
+    | _ -> false
+
 /// How well an argument fits a parameter. Lower is better; `None` is no fit.
 ///
 /// The scores are ordered so that an exact match always beats a widening and a
 /// widening always beats a reference upcast — which is what makes `(.Write w
 /// 42)` pick `Write(int)` rather than `Write(long)` or `Write(object)`.
 let private scoreArgument (param: Type) (arg: HMType) : int option =
-    if isUnresolved arg then
+    if isNewtype arg then
+        None
+    elif isUnresolved arg then
         // Nothing to judge yet. Accepting it is what lets a parameter type flow
         // *into* an argument whose type inference has not settled — but it
         // scores worst, so any candidate that genuinely matches wins.
@@ -1771,8 +1787,14 @@ let private selectOverload
             |> List.map (fun (ps, _) -> "  (" + showParams ps + ")")
             |> String.concat "\n"
 
+        let newtypeHint =
+            if argTypes |> List.exists isNewtype then
+                "\nA newtype is not the type it wraps here: take the value out of it with a pattern first."
+            else
+                ""
+
         failwithf
-            $"Type Error at %s{where}: no overload of %s{describe} accepts %s{shownArgs}. The candidates are:\n%s{overloads}"
+            $"Type Error at %s{where}: no overload of %s{describe} accepts %s{shownArgs}. The candidates are:\n%s{overloads}%s{newtypeHint}"
     | _ ->
         let best = scored |> List.map (fun (s, _, _) -> s) |> List.min
         let winners = scored |> List.filter (fun (s, _, _) -> s = best)

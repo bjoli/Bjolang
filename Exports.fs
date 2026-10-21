@@ -331,6 +331,17 @@ let metadata
                 | _ -> []
             | _ -> [])
         |> Set.ofList
+        // A `#:via` implementation has no declaration of its own to collect,
+        // only its record of where it was written.
+        |> Set.union (
+            env.ImplSites
+            |> Map.toList
+            |> List.choose (fun ((m, traitName, key), _) ->
+                match Map.tryFind (traitName, key) env.Registry.ImplTargets with
+                | Some { Via = Some _ } when m = Naming.moduleKeyOfPath inputFilePath -> Some(traitName, key)
+                | _ -> None)
+            |> Set.ofList
+        )
 
     // A trait travels with its methods. Whichever module publishes a
     // trait method has to publish the trait itself and every
@@ -775,7 +786,12 @@ let metadata
                         " (where " + parts + ")"
                     | _ -> ""
 
-                $"(impl/extern (%s{traitName} %s{Codegen.serializeHMType targetType}) %s{assocStrs}%s{whereStr})"
+                match Map.tryFind (traitName, implKey) env.Registry.ImplTargets with
+                // Everything else about one is the via type's, and is worked
+                // out again where it is read.
+                | Some { Via = Some via } ->
+                    $"(impl/extern (%s{traitName} %s{Codegen.serializeHMType targetType}) #:via %s{Codegen.serializeHMType via})"
+                | _ -> $"(impl/extern (%s{traitName} %s{Codegen.serializeHMType targetType}) %s{assocStrs}%s{whereStr})"
 
             let serializeSignature (name: string) (t: TypedAST.HMType) = signatureText env name t
 
@@ -951,10 +967,11 @@ let metadata
                 let typeArgsStr = if td.TypeArgs.IsEmpty then "" else " " + String.concat " " quotedArgs
                 let headStr = if td.TypeArgs.IsEmpty then td.Name else $"({td.Name}{typeArgsStr})"
                 let head = if isRec then "type-rec" else "type"
-                // An alias cannot be opaque, so only the two below write it.
+                // An alias cannot be opaque, so only the others write it.
                 let opaqueStr = if td.IsOpaque then " #:opaque" else ""
                 match td.Kind with
                 | Ast.Alias(ft) -> $"({head} (: {headStr} {serializeFType ft}))"
+                | Ast.Newtype(ft) -> $"({head} (: {headStr}{opaqueStr} (Newtype {serializeFType ft})))"
                 | Ast.Union(cases) ->
                     let serializeCase c =
                         match c with
@@ -1223,6 +1240,18 @@ let metadata
                 |> List.filter (fun ((traitName, _) as key, _) ->
                     Map.containsKey traitName exportedTraits
                     || (Set.contains key ownImplKeys && not (Set.contains traitName ownTraitNames)))
+                // A `#:via` implementation is read back against the via type's,
+                // so that one comes first: each after the one it is via.
+                |> List.sortBy (fun ((traitName, implKey), _) ->
+                    let rec steps (key: string) (seen: Set<string>) =
+                        match Map.tryFind (traitName, key) env.Registry.ImplTargets with
+                        | Some { Via = Some via } when not (Set.contains key seen) ->
+                            match Unification.implFor env.Registry traitName via with
+                            | Some(target, _) -> 1 + steps target.Key (Set.add key seen)
+                            | None -> 1
+                        | _ -> 0
+
+                    steps implKey Set.empty)
                 |> List.map (fun ((traitName, implKey), (targetType, assocMap)) ->
                     (traitName, targetType), serializeImpl traitName implKey targetType assocMap)
 

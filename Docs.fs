@@ -209,6 +209,7 @@ type private Kind =
     | KRecord of fields: string list * opaque: bool * typeArgs: string list
     | KUnion of cases: string list * opaque: bool * typeArgs: string list
     | KAlias of typeArgs: string list
+    | KNewtype of typeArgs: string list
     | KTrait of implementor: string
     | KMacro
     | KReader
@@ -224,6 +225,7 @@ let private kindName (k: Kind) =
     | KRecord _ -> "a record"
     | KUnion _ -> "a union"
     | KAlias _ -> "a type alias"
+    | KNewtype _ -> "a newtype"
     | KTrait _ -> "a trait"
     | KMacro -> "a macro"
     | KReader -> "a reader extension"
@@ -241,6 +243,7 @@ let private allowedClauses (k: Kind) : string list =
     | KRecord _ -> common @ [ "field"; "tparam" ]
     | KUnion _ -> common @ [ "case"; "tparam" ]
     | KAlias _
+    | KNewtype _
     | KTrait _ -> common @ [ "tparam" ]
     | KMacro
     | KReader -> common @ [ "form"; "arg"; "rest"; "literal" ]
@@ -421,6 +424,7 @@ let private kindsOf (decls: Decl list) : Map<string, Kind> * Set<string> =
 
                             KUnion(names, td.IsOpaque, td.TypeArgs)
                         | Alias _ -> KAlias td.TypeArgs
+                        | Newtype _ -> KNewtype td.TypeArgs
 
                     let cases =
                         match td.Kind with
@@ -763,7 +767,8 @@ let private checkEntry (env: Env) (moduleKey: string) (localNames: Set<string>) 
 
         checkTypeParams typeArgs
 
-    | KAlias typeArgs -> checkTypeParams typeArgs
+    | KAlias typeArgs
+    | KNewtype typeArgs -> checkTypeParams typeArgs
 
     | KTrait implementor -> checkTypeParams [ implementor ]
 
@@ -1033,6 +1038,7 @@ let publish (decls: Decl list) (entries: Entry list) : string =
                         | Some(KRecord _) -> "record"
                         | Some(KUnion _) -> "union"
                         | Some(KAlias _) -> "alias"
+                        | Some(KNewtype _) -> "newtype"
                         | Some(KTrait _) -> "trait"
                         | Some KMacro -> "macro"
                         | _ -> "unknown"

@@ -434,6 +434,17 @@ let mutable private ambiguousModuleClasses: Set<string> = Set.empty
 /// because only the file's registry knows the implementations.
 let mutable private reduceProjection: HMType -> HMType option = fun _ -> None
 
+/// The `(Newtype T)` types the file can see, by key: their parameters and
+/// what each is at run time. Set per file, from the registry.
+let mutable private newtypes: Map<string, string list * HMType> = Map.empty
+
+/// Whether `name` is a newtype's key.
+let private isNewtypeKey (name: string) = Map.containsKey name newtypes
+
+/// What `t` is at run time: see `eraseNewtypesIn`. A newtype exists for the
+/// checker only, so every C# spelling of a type goes through this.
+let eraseNewtypes (t: HMType) : HMType = eraseNewtypesIn newtypes t
+
 /// Every keyword default emitted as a C# constant, as `owner #:name = value`.
 /// The C# compiler copies these into callers, so they are part of what an
 /// importer is compiled against without being in the metadata. Set per file.
@@ -602,6 +613,7 @@ let private declaredTypeName (key: string) =
 
 let rec typeToString (hm: HMType) : string =
     match hm with
+    | TCon (name, _) when isNewtypeKey name -> typeToString (eraseNewtypes hm)
     | TCon ("Array", [elemType]) ->
         $"{typeToString elemType}[]"
     // A nested .NET type: each level takes its own arguments, and the levels
@@ -733,7 +745,8 @@ let private operatorCall (methodName: string) (returnType: HMType) (args: string
 /// for the type it is used at is a mistake, and one `Inference` has already
 /// refused — this is what the run-time answer would be if it had not.
 let private numericLiteral (where: Lexer.Range) (t: HMType) (text: string) : string =
-    match NumericLiteral.settled t with
+    // A literal at a newtype is one at the number type it wraps.
+    match NumericLiteral.settled (eraseNewtypes t) with
     | TVar _ as v -> $"%s{typeToString v}.CreateChecked(%s{NumericLiteral.digits text})"
     | concrete ->
         match NumericLiteral.csharp concrete text with
@@ -791,7 +804,7 @@ let private unitValue = "default(Bjoml.Unit)"
 /// a C# `object`. This prevents the compiler from crashing during the code
 /// generation phase due to an unresolved type.
 let rec private elementTypeString (t: HMType) =
-    match t with
+    match eraseNewtypes t with
     | TCon (_, [ elemT ]) -> typeToString elemT
     | TMeta { Value = Some inner } -> elementTypeString inner
     | _ -> "object"
@@ -2336,6 +2349,9 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TIdent (name, tArgs) ->
         // Cons/Nil are now builtins backed by SchemeList, not union cases.
         match name with
+        // A newtype's constructor as a value: the value it is given is
+        // already what it makes.
+        | _ when isNewtypeKey name -> append ctx "(arg0) => arg0"
         // The static itself, not the `Nil<T>()` wrapper. See `inlineBuiltins`.
         | "Nil" ->
             let elemTypeStr = elementTypeString expr.Type
@@ -3459,7 +3475,7 @@ and private inlineBuiltinFor
     let runtimeName = builtinNamed ctx name
 
     let rec elementOf (t: HMType) =
-        match t with
+        match eraseNewtypes t with
         | TCon (_, [ elemT ]) -> Some(typeToString elemT)
         | TMeta { Value = Some inner } -> elementOf inner
         | _ -> None
@@ -5934,6 +5950,10 @@ let private agreementWithClr
 
     match targetType with
     | TVar _ -> Some "true"
+    // A newtype is what it wraps to .NET, which asks the wrapped type's own
+    // members and never this implementation. A `#:via` one is the wrapped
+    // type's and has no class here; one written by hand may differ.
+    | TCon(key, _) when isNewtypeKey key -> None
     | TCon(key, args) when
         not (Set.contains key Naming.builtinTypeNames)
         && (Map.containsKey key registry.Records || Map.containsKey key registry.Unions)
@@ -6726,7 +6746,9 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                 )
                 indent ctx
                 appendLine ctx "}"
-            | Alias _ -> ()
+            // A newtype is what it wraps at run time, so it has no class.
+            | Alias _
+            | Newtype _ -> ()
 
         // Whatever is emitted next is scaffolding until it says otherwise, as
         // after a method. An `Alias` emits nothing at all, so this is also what
@@ -7362,6 +7384,34 @@ let private clrConstraintClauses (env: Env) : Map<string, string> =
         if clauses = "" then None else Some(name, clauses))
     |> Map.ofSeq
 
+/// `decl` with each newtype's constructor and pattern taken out: `(Banana x)`
+/// is `x` at run time, and the pattern `(Banana p)` is `p`. What is left has
+/// newtypes only in its types, which `typeToString` spells as what they wrap.
+let rec private eraseNewtypeTerms (decl: TDecl) : TDecl =
+    let rec pat (p: TypedPattern) : TypedPattern =
+        match p.Node with
+        | TPConstruct(name, [ inner ]) when isNewtypeKey name -> pat inner
+        | _ -> TypeVisitor.mapPatternChildrenWith id pat p
+
+    let rec expr (e: TypedExpr) : TypedExpr =
+        let e = TypeVisitor.mapChildren expr e
+
+        match e.Node with
+        | TApply({ Node = TIdent(name, _) }, [ value ], []) when isNewtypeKey name -> value
+        | TMatch(target, clauses) ->
+            { e with Node = TMatch(target, clauses |> List.map (fun c -> { c with Pattern = pat c.Pattern })) }
+        | TDefMatch(binder, scrutinee, sequel, arms) ->
+            let arms = arms |> List.map (fun (a: TDefMatchArm) -> { a with Pattern = pat a.Pattern })
+            { e with Node = TDefMatch(pat binder, scrutinee, sequel, arms) }
+        | _ -> e
+
+    match decl with
+    | TDefPattern(pattern, value, binders, r) -> TDefPattern(pat pattern, expr value, binders, r)
+    | TModule(name, decls, r) -> TModule(name, List.map eraseNewtypeTerms decls, r)
+    | TImpl(traitName, kind, holeArity, targetType, assoc, dicts, methods, r) ->
+        TImpl(traitName, kind, holeArity, targetType, assoc, dicts, List.map eraseNewtypeTerms methods, r)
+    | _ -> TypeVisitor.mapDecl expr decl
+
 let generateProgram
     (env: Env)
     (metadata: ModuleMetadata.Metadata)
@@ -7375,6 +7425,9 @@ let generateProgram
     // `prune` raises when the implementor has no implementation. That was
     // reported during checking, so here it only means "not reducible".
     reduceProjection <- fun t -> try Some(Unification.prune registry t) with _ -> None
+    newtypes <- registry.Newtypes
+
+    let decls = if newtypes.IsEmpty then decls else List.map eraseNewtypeTerms decls
 
     let unionCases =
         decls

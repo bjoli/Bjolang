@@ -4770,10 +4770,13 @@
           (derive-ord-methods shape)
           (derive-fail trait "the traits that can be derived are Eq and Ord."))))
 
-;; Derive conditional implementation.
+;; Derive conditional implementation. A newtype's is the type it wraps,
+;; whatever the trait.
 (: (-> Syntax Syntax Syntax))
 (defun (derive-impl trait typedef)
   (syntax-match typedef
+    ((_ head ('Newtype underlying))
+     #'(impl (,trait ,head) #:via ,underlying))
     ((_ head shape)
      #'(impl (,trait ,head)
         (where ,@(list-map (fun (v) #'(,trait ,v)) (derive-head-vars head)))

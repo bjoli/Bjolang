@@ -307,6 +307,7 @@ let emptyRegistry : TraitRegistry =
       ConstrainedBodies = Map.empty
       InlineCopies = Set.empty
       Aliases = Map.empty
+      Newtypes = Map.empty
       ImportAliases = Map.empty
       Records = Map.empty
       RecordFields = Map.empty

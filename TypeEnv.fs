@@ -493,6 +493,14 @@ let rec checkPattern
             | None ->
                 match prune env.Registry expectedType with
                 | scrutinee when NumericLiteral.isBuiltinNumeric scrutinee -> scrutinee
+                // A newtype that is a number: the literal is one of the number
+                // type it wraps, and matches the newtype.
+                | scrutinee when
+                    (numericNewtype env.Registry scrutinee)
+                    |> Option.exists NumericLiteral.isBuiltinNumeric
+                    ->
+                    checkLiteralFits (numericNewtype env.Registry scrutinee).Value value r |> ignore
+                    scrutinee
                 | scrutinee when NumericLiteral.isNumeric scrutinee ->
                     failwithf
                         $"Pattern Error at %s{Lexer.formatPos r}: '%s{value}' is matched against a '%s{DotNetInterop.showType scrutinee}', and a pattern is a C# constant, which that type has none of. Compare it with = instead."
@@ -500,7 +508,7 @@ let rec checkPattern
                     failwithf
                         $"Pattern Error at %s{Lexer.formatPos r}: '%s{value}' is matched against a generic type, and a number has no spelling at a type parameter. Compare it instead, or give the function a concrete type."
                 | _ -> TypeConstants.intType
-            |> fun t -> checkLiteralFits t value r
+            |> fun t -> if (numericNewtype env.Registry t).IsSome then t else checkLiteralFits t value r
 
         unify env.Registry expectedType inferredType
         { Type = inferredType
@@ -764,6 +772,11 @@ let rec checkPattern
 
         match Map.tryFind name env.Registry.OpaqueCases with
         | Some typeKey when not (representationVisible env.Registry (codeModule env r) typeKey) ->
+            // A newtype's one constructor is the type itself.
+            if name = typeKey then
+                failwithf
+                    $"Pattern Error at %s{Lexer.formatPos r}: the newtype %s{Naming.showTypeName typeKey} cannot be taken apart here. %s{opaqueTypeNote env.Registry typeKey}"
+
             failwithf
                 $"Pattern Error: the constructor '%s{Naming.showTypeName name}' at %s{Lexer.formatPos r} is a case of %s{Naming.showTypeName typeKey}, which cannot be taken apart here. %s{opaqueTypeNote env.Registry typeKey}"
         | _ -> ()

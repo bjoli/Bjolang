@@ -218,7 +218,8 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                     failwithf
                         $"Type Error at %s{Lexer.formatPos r}: the case %s{n} has the name of its type, which is a class its cases are nested in, and .NET does not let a member share it. Rename the case or the type."
                 | _ -> ()
-        | Alias _ -> ()
+        | Alias _
+        | Newtype _ -> ()
 
         // A constructor follows its type, in expression and in pattern
         // position alike, so its bare name is a spelling in exactly the same
@@ -240,6 +241,7 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
         let keyedKind =
             match td.Kind with
             | Alias ftype -> Alias(qualifyFTypeNames finalRegistry ftype)
+            | Newtype ftype -> Newtype(qualifyFTypeNames finalRegistry ftype)
             | Record(fields, isStruct) ->
                 Record(fields |> List.map (fun f -> { f with Type = qualifyFTypeNames finalRegistry f.Type }), isStruct)
             | Union cases ->
@@ -261,6 +263,15 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
         | Alias ftype ->
             let resolved = resolveTypeAnnotation finalRegistry ftype
             finalRegistry <- { finalRegistry with Aliases = Map.add td.Name (tArgs, resolved) finalRegistry.Aliases }
+        | Newtype ftype ->
+            // The constructor has the type's name and takes one argument, the
+            // value as it is at run time: `(Banana 3)`.
+            let underlying = resolveTypeAnnotation finalRegistry ftype
+            finalRegistry <- { finalRegistry with Newtypes = Map.add td.Name (tArgs, underlying) finalRegistry.Newtypes }
+            DotNetInterop.newtypeKeys.TryAdd(td.Name, ()) |> ignore
+
+            finalBindings <-
+                Map.add td.Name { Scheme = Scheme(tArgs, [], tfun [ underlying ] parentType); IsMutable = false } finalBindings
         | Record(fields, _) ->
             let resolvedFields = fields |> List.map (fun f -> f.Name, resolveTypeAnnotation finalRegistry f.Type)
             finalRegistry <- { finalRegistry with Records = Map.add td.Name (tArgs, resolvedFields) finalRegistry.Records }
@@ -338,6 +349,8 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                     |> List.map (function
                         | SimpleCase(n, _)
                         | DataCase(n, _, _) -> n)
+                // A newtype's one constructor is its name.
+                | Newtype _ -> [ td.Name ]
                 | _ -> []
 
             finalRegistry <-
@@ -346,6 +359,32 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                     OpaqueCases =
                         caseKeys |> List.fold (fun acc c -> Map.add c td.Name acc) finalRegistry.OpaqueCases }
 
+    // A newtype is erased to what it wraps, so one that wraps itself, however
+    // deep, would be erased forever: `(Newtype (List Foo))` for `Foo` has no
+    // .NET type. Checked once the whole group is registered, for a `type-rec`
+    // whose newtypes wrap each other.
+    for td in keyedDefs do
+        match td.Kind with
+        | Newtype _ ->
+            let rec reaches (seen: Set<string>) (t: HMType) =
+                match t with
+                | TCon(n, args) ->
+                    n = td.Name
+                    || List.exists (reaches seen) args
+                    || (not (Set.contains n seen)
+                        && match Map.tryFind n finalRegistry.Newtypes with
+                           | Some(_, inner) -> reaches (Set.add n seen) inner
+                           | None -> false)
+                | TFun(args, ret, _) -> List.exists (reaches seen) (ret :: args)
+                | TTuple args -> List.exists (reaches seen) args
+                | _ -> false
+
+            let _, underlying = finalRegistry.Newtypes[td.Name]
+
+            if reaches (Set.singleton td.Name) underlying then
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos td.Range}: the newtype %s{Naming.showTypeName td.Name} contains itself. A newtype is what it wraps at run time, so one inside itself would have no end. Declare it as a Record or a Union, whose values are objects that may refer to one another."
+        | _ -> ()
 
     { env with Registry = finalRegistry; Bindings = finalBindings }, List.ofSeq keyedDefs
 
@@ -427,6 +466,56 @@ let private signatureConstraints
         let same (a: TraitConstraint) (b: TraitConstraint) = a.TraitName = b.TraitName && a.TargetType = b.TargetType
 
         given @ (withSuperclasses registry byKey |> List.filter (fun e -> not (List.exists (same e) byKey)))
+
+/// Refuses an implementation of `traitName` for `targetType`, whose head key is
+/// `typeKey`, that overlaps one already in scope.
+///
+/// Implementations of one trait may not overlap: no type may be an
+/// instance of two of them, or a call at that type would have two
+/// meanings, and which one it got would depend on what the compiler knew
+/// where the call was checked. `(List int)` beside `(List string)` is
+/// two; `(List int)` beside `(List %a)` would be one type with two.
+///
+/// The impls in scope include the imported ones. The orphan rule makes
+/// this enough: of two modules that may each write an impl of a trait for
+/// a head, one declares the trait and the other the type, so the later one
+/// imports the earlier and sees its impl here.
+let private refuseOverlap (env: Env) (traitName: string) (typeKey: string) (targetType: HMType) (r: Range) : unit =
+    let implKeyOfTarget = (implKey targetType).Value
+
+    let refuse (otherType: HMType) (otherKey: string) (why: string) =
+        let where =
+            match Map.tryFind (env.CurrentModule, traitName, otherKey) env.ImplSites with
+            | Some(_, otherRange) -> $"at %s{Lexer.formatPos otherRange}"
+            | None -> "imported"
+
+        let what =
+            if typeKey = BlanketCtor then
+                "a blanket implementation"
+            else
+                $"an implementation for %s{(DotNetInterop.showTypesTogether [ otherType; targetType ])[0]}"
+
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTraitName traitName}' already has %s{what}, %s{where}. %s{why}"
+
+    if typeKey = BlanketCtor then
+        match Map.tryFind (env.CurrentModule, traitName, implKeyOfTarget) env.ImplSites with
+        | Some(otherType, _) -> refuse otherType implKeyOfTarget "A trait has one blanket implementation."
+        | None -> ()
+    else
+        for other in implsAtHead env.Registry traitName typeKey do
+            let otherType = fst env.Registry.Implementations[(traitName, other.Key)]
+
+            match patternsOverlap otherType targetType with
+            | Some _ when other.Key = implKeyOfTarget -> refuse otherType other.Key "Remove one of them."
+            | Some common ->
+                let shown = DotNetInterop.showTypesTogether [ otherType; targetType; common ]
+
+                refuse
+                    otherType
+                    other.Key
+                    $"This one, for %s{shown[1]}, overlaps it: %s{shown[2]} is an instance of both, so a call at it would have two implementations to choose from. Implementations of one trait may not overlap. Make the two targets distinct, or wrap one of the types in a type of its own."
+            | None -> ()
 
 /// A trait's own `(where ...)`, as constraints at its implementor variable.
 ///
@@ -721,6 +810,9 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
 
     | DImplExtern(traitName, targetTypeExpr, assocBindings, whereClause, r) ->
         checkImplExtern env sigs traitName targetTypeExpr assocBindings whereClause r
+
+    | DImplVia(traitName, targetTypeExpr, viaTypeExpr, isExtern, r) ->
+        checkImplVia env sigs traitName targetTypeExpr viaTypeExpr isExtern r
 
 
     // A spelling an import modifier produced for a type, a constructor, a trait
@@ -2608,51 +2700,7 @@ and private checkImpl (env: Env) (sigs: Sigs) (traitName: string) (targetTypeExp
         failwithf
             $"Orphan Rule Violation at %s{Lexer.formatPos r}: Cannot implement foreign trait '%s{traitName}' for foreign type '%s{typeKey}'."
 
-    // Implementations of one trait may not overlap: no type may be an
-    // instance of two of them, or a call at that type would have two
-    // meanings, and which one it got would depend on what the compiler knew
-    // where the call was checked. `(List int)` beside `(List string)` is
-    // two; `(List int)` beside `(List %a)` would be one type with two.
-    //
-    // The impls in scope include the imported ones. The orphan rule makes
-    // this enough: of two modules that may each write an impl of a trait for
-    // a head, one declares the trait and the other the type, so the later one
-    // imports the earlier and sees its impl here.
-    let implKeyOfTarget = (implKey targetType).Value
-
-    let refuse (otherType: HMType) (otherKey: string) (why: string) =
-        let where =
-            match Map.tryFind (env.CurrentModule, traitName, otherKey) env.ImplSites with
-            | Some(_, otherRange) -> $"at %s{Lexer.formatPos otherRange}"
-            | None -> "imported"
-
-        let what =
-            if typeKey = BlanketCtor then
-                "a blanket implementation"
-            else
-                $"an implementation for %s{(DotNetInterop.showTypesTogether [ otherType; targetType ])[0]}"
-
-        failwithf
-            $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTraitName traitName}' already has %s{what}, %s{where}. %s{why}"
-
-    if typeKey = BlanketCtor then
-        match Map.tryFind (env.CurrentModule, traitName, implKeyOfTarget) env.ImplSites with
-        | Some(otherType, _) -> refuse otherType implKeyOfTarget "A trait has one blanket implementation."
-        | None -> ()
-    else
-        for other in implsAtHead env.Registry traitName typeKey do
-            let otherType = fst env.Registry.Implementations[(traitName, other.Key)]
-
-            match patternsOverlap otherType targetType with
-            | Some _ when other.Key = implKeyOfTarget -> refuse otherType other.Key "Remove one of them."
-            | Some common ->
-                let shown = DotNetInterop.showTypesTogether [ otherType; targetType; common ]
-
-                refuse
-                    otherType
-                    other.Key
-                    $"This one, for %s{shown[1]}, overlaps it: %s{shown[2]} is an instance of both, so a call at it would have two implementations to choose from. Implementations of one trait may not overlap. Make the two targets distinct, or wrap one of the types in a type of its own."
-            | None -> ()
+    refuseOverlap env traitName typeKey targetType r
 
     // An `Eq` or `Ord` implementation for a type this module did not
     // declare: an `import/class` alias, or a type imported from another
@@ -3438,6 +3486,104 @@ and private checkImplExtern (env: Env) (sigs: Sigs) (traitName: string) (targetT
     let implTarget = implTargetOf traitName traitInfo targetType implConstraints r
     addImplementation traitName targetType implTarget hmAssocBindings env, sigs, []
 
+/// `(impl (Eq Banana) #:via int)`: the implementation for a newtype that is
+/// the one for another type with its representation, usually the type it
+/// wraps. It has no methods and no class: a dictionary for it is the via
+/// type's, the same value at run time. What it requires and its associated
+/// types are the via type's, over the newtype's variables.
+and private checkImplVia
+    (env: Env)
+    (sigs: Sigs)
+    (traitName: string)
+    (targetTypeExpr: FType)
+    (viaTypeExpr: FType)
+    (isExtern: bool)
+    (r: Range)
+    : Env * Sigs * TDecl list =
+    Diagnostics.refuseAmbiguous Diagnostics.TraitName r traitName
+    let traitName = originalName env.Registry traitName
+    let targetType = resolveTypeAnnotation env.Registry targetTypeExpr
+    let viaType = resolveTypeAnnotation env.Registry viaTypeExpr
+
+    let refuse (why: string) =
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTraitName traitName}' cannot be implemented for %s{DotNetInterop.showType targetType} via %s{DotNetInterop.showType viaType}: %s{why}"
+
+    let traitInfo =
+        match Map.tryFind traitName env.Registry.Traits with
+        | Some info -> info
+        | None -> failwithf $"Type Error at %s{Lexer.formatPos r}: there is no trait named '%s{traitName}'."
+
+    if traitInfo.HoleArity > 0 then
+        refuse "the trait is inline-only, and only a first-order trait is implemented via another type."
+
+    let newtypeKey, newtypeArgs =
+        match targetType with
+        | TCon(name, args) when Map.containsKey name env.Registry.Newtypes -> name, args
+        | _ -> refuse "only a newtype is implemented via another type, because only a newtype is that type at run time."
+
+    // The orphan rule, as for any implementation.
+    if not isExtern
+       && not (env.Registry.IsTraitDefinedLocally traitName || env.Registry.IsTypeDefinedLocally newtypeKey) then
+        failwithf
+            $"Orphan Rule Violation at %s{Lexer.formatPos r}: Cannot implement foreign trait '%s{traitName}' for foreign type '%s{newtypeKey}'."
+
+    // The via type's dictionary is used as this one's, so the two have to be
+    // one type at run time.
+    let erase = eraseNewtypesIn env.Registry.Newtypes
+
+    if viaType = targetType then
+        refuse "a type is not implemented via itself."
+
+    if erase targetType <> erase viaType then
+        refuse
+            $"the two are different at run time: %s{DotNetInterop.showType targetType} is %s{DotNetInterop.showType (erase targetType)}, and %s{DotNetInterop.showType viaType} is %s{DotNetInterop.showType (erase viaType)}."
+
+    // What the via type's implementation requires, at the newtype's variables,
+    // and its associated types.
+    let constraints, assocBindings =
+        match viaType, traitInfo.ClrConstraint with
+        | TVar _, _ ->
+            [ { TraitName = traitName; TargetType = viaType; Pins = [] } ],
+            traitInfo.AssociatedTypes |> List.map (fun a -> a, TAssoc(traitName, a, viaType)) |> Map.ofList
+        | _, Some clr ->
+            if not (freeTVars env.Registry viaType).IsEmpty then
+                refuse $"'%s{Naming.showTraitName traitName}' stands for a .NET interface, which is asked of a type with no type variables."
+
+            Traits.checkClrConstraint env clr traitName viaType r $"for the implementation of '%s{Naming.showTraitName traitName}' via it"
+            [], Map.empty
+        | _, None ->
+            match implFor env.Registry traitName viaType with
+            | None -> refuse $"%s{DotNetInterop.showType viaType} has no implementation of '%s{Naming.showTraitName traitName}'."
+            | Some _ ->
+                leafConstraints env.Registry traitName viaType
+                |> List.distinct
+                |> List.map (fun (t, v) -> { TraitName = t; TargetType = TVar v; Pins = [] }),
+                traitInfo.AssociatedTypes
+                |> List.choose (fun a -> env.Registry.ResolveAssociatedType traitName a viaType |> Option.map (fun t -> a, t))
+                |> Map.ofList
+
+    let implTarget =
+        { Ctor = newtypeKey
+          Key = (implKey targetType).Value
+          Via = Some viaType
+          FixedPrefix = newtypeArgs
+          HoleArity = 0
+          Constraints = withSuperclasses env.Registry constraints }
+
+    if not isExtern then
+        refuseOverlap env traitName newtypeKey targetType r
+
+    let added = addImplementation traitName targetType implTarget assocBindings env
+
+    let added =
+        if isExtern then
+            added
+        else
+            { added with ImplSites = Map.add (env.CurrentModule, traitName, implTarget.Key) (targetType, r) added.ImplSites }
+
+    added, sigs, []
+
 and internal checkDeclGroup
     (env: Env)
     (sigs: Sigs)
@@ -4062,11 +4208,13 @@ and internal checkDeclGroup
             | None -> false
         | _ -> false
 
+    // Every implementation written in the module, a `#:via` one included,
+    // which has no declaration of its own.
     for traitName, targetType, r in
-        typedDecls
-        |> collectDecls (function
-            | TImpl(traitName, _, _, targetType, _, _, _, r) -> [ traitName, targetType, r ]
-            | _ -> []) do
+        finalEnv.ImplSites
+        |> Map.toList
+        |> List.choose (fun ((m, traitName, _), (targetType, r)) ->
+            if m = finalEnv.CurrentModule then Some(traitName, targetType, r) else None) do
         match Map.tryFind traitName registry.Traits with
         | Some info when not info.Superclasses.IsEmpty ->
             let givens =

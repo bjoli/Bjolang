@@ -303,6 +303,7 @@ let declKindName (d: Decl) : string =
     | DDeprecated _ -> "a (:deprecated ...) declaration"
     | DImpl _ -> "an implementation"
     | DImplExtern _ -> "an imported implementation"
+    | DImplVia _ -> "an implementation via another type"
 
 /// A macro may not introduce an import.
 ///
@@ -788,6 +789,17 @@ let rec tryParseDecl (s: SExpr) : Decl option =
             |> Option.map (fun (ifaceName, ifaceArgs) -> ifaceName, ifaceArgs, List.rev clrMembers)
 
         Some(DTrait(traitName, implementorVar, holeArity, List.rev assocTypes, List.rev signatures, List.rev defaults, clrSpec, superclasses, r))
+
+    // Parse: (impl (Eq Banana) #:via int), and the same with impl/extern, as
+    // metadata writes it. See `DImplVia`.
+    | SList (SAtom { Token = Symbol("impl" | "impl/extern" as head) } ::
+             SList (StrippedSymbol traitName :: targetTypeExpr :: [], _) ::
+             SAtom { Token = Keyword "via" } :: rest, r) ->
+        match rest with
+        | [ viaTypeExpr ] -> Some(DImplVia(traitName, parseType targetTypeExpr, parseType viaTypeExpr, (head = "impl/extern"), r))
+        | _ ->
+            failwithf
+                $"Syntax error in impl for '%s{traitName}' at %s{Lexer.formatPos r}: an implementation #:via a type is all there is to it, as in (impl (%s{traitName} Banana) #:via int)."
 
     // Parse: (impl (TraitName (Vec 'a)) (type 'item 'a) (defun (get v i) ...))
     //

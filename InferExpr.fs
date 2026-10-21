@@ -1180,6 +1180,17 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     | ECast(targetTypeAnnotation, expr, r) ->
         let targetType = resolveTypeAnnotation env.Registry targetTypeAnnotation
         let exprType, typedExpr = infer env expr
+
+        // A newtype is its constructor's to make and a pattern's to take
+        // apart. A cast would be a third way, past both and past `#:opaque`,
+        // and at run time it would change nothing anyway.
+        for t in [ targetType; exprType ] do
+            match prune env.Registry t with
+            | TCon(name, _) when Map.containsKey name env.Registry.Newtypes ->
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos r}: a cast cannot make or take apart the newtype %s{Naming.showTypeName name}. Write (%s{Naming.bareTypeName env.CurrentModule name} x) to make one, and take one apart with a pattern."
+            | _ -> ()
+
         targetType,
         { Type = targetType
           Range = r
@@ -1743,8 +1754,13 @@ and private inferIdent (env: Env) (name: string) (r: Range) : HMType * TypedExpr
     // an application infers its head here, so this covers both.
     match Map.tryFind name env.Registry.OpaqueCases with
     | Some typeKey when not (representationVisible env.Registry (codeModule env r) typeKey) ->
+        // A newtype's one constructor is the type itself.
+        let what =
+            if name = typeKey then $"the newtype %s{Naming.showTypeName typeKey}"
+            else $"'%s{Naming.showTypeName name}' is a case of %s{Naming.showTypeName typeKey}, which"
+
         failwithf
-            $"Type Error at %s{Lexer.formatPos r}: '%s{Naming.showTypeName name}' is a case of %s{Naming.showTypeName typeKey}, which cannot be built here. %s{opaqueTypeNote env.Registry typeKey}"
+            $"Type Error at %s{Lexer.formatPos r}: %s{what} cannot be built here. %s{opaqueTypeNote env.Registry typeKey}"
     | _ -> ()
 
     let binding = lookup env name

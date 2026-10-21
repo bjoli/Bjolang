@@ -119,14 +119,15 @@ let checkImplClrConstraints
             | None -> ()
     | None -> ()
 
-/// Does this implementation stand on a `(where ...)`?
+/// Does this implementation stand on a `(where ...)`, or on another type's?
 ///
 /// The one question every dispatch site has to ask before naming a class: a
 /// conditional impl is emitted without an `Instance`, so the landing pad that
-/// routes through one does not exist for it.
+/// routes through one does not exist for it. A `#:via` one has no class at
+/// all; its dictionary is the via type's, which `buildEvidence` builds.
 let isConditional (env: Env) (traitName: string) (implKey: string) =
     match Map.tryFind (traitName, implKey) env.Registry.ImplTargets with
-    | Some target -> not (dictionaryConstraints env.Registry target).IsEmpty
+    | Some target -> target.Via.IsSome || not (dictionaryConstraints env.Registry target).IsEmpty
     | None -> false
 
 /// What the code being lowered has to prove things with.
@@ -256,6 +257,12 @@ let rec buildEvidence
             | None ->
                 failwithf
                     $"Type Error at %s{Lexer.formatPos range}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType resolved}', needed %s{describe}."
+
+        match selected with
+        // `#:via`: the via type's dictionary, which is the same value at run
+        // time as this type's would be.
+        | { Via = Some via }, subst -> buildEvidence env scope traitName (substTypeVars subst via) range describe
+        | _ ->
 
         let constraints =
             let target, subst = selected

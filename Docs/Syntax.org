@@ -1541,6 +1541,43 @@ Generic records with mutable fields cannot have working hashes.
 ***** Concurrency
 Mutable records shared between fibers race. No automatic synchronization is provided.
 
+*** Newtypes
+~(: Name (Newtype T))~ defines a type of its own that is ~T~ at run time. The checker keeps the two apart; the emitted C# has only ~T~, so a newtype costs nothing.
+
+#+BEGIN_SRC scheme
+(type (: Banana (Newtype int)))
+(type (: (Sorted %a) (Newtype (List %a))))
+
+(def b (Banana 3))            ;; built by its name, with one argument
+(def (Banana n) b)            ;; taken apart by pattern: n is 3
+(match b ((Banana n) n))
+#+END_SRC
+
+A newtype has only what is implemented for it, besides what a blanket implementation gives every type. ~(+ b b)~ is refused until it implements ~Num~, though ~int~ does. An implementation may be written for it, as for any type, and one that differs from the wrapped type's is the one ~=~, ~compare~ and the collections use.
+
+~(impl (Trait Name) #:via T)~ makes the implementation for the newtype the one for ~T~. The two must be one type at run time: ~T~ is the wrapped type, or another newtype of it. The via type's dictionary is used as the newtype's, so the implementation has no code of its own; its where clause and associated types are the via type's.
+
+#+BEGIN_SRC scheme
+(impl (Eq Banana) #:via int)
+(impl (Num Banana) #:via int)          ;; (+ b b) is a Banana
+(impl (Describe (Sorted %a)) #:via (List %a))
+#+END_SRC
+
+~type/derive~ on a newtype writes a ~#:via~ implementation of the wrapped type for each trait listed, whatever the trait:
+
+#+BEGIN_SRC scheme
+(type/derive (Eq Ord Num Ordered)
+  (: Meters (Newtype double)))
+#+END_SRC
+
+A newtype that implements ~Num~ is a number, and an integer literal may stand for one: ~(+ b 1)~, and ~3~ in a pattern. ~Num~, ~Ordered~ (~<~ and the rest) and ~Integral~ (the bitwise operators) are three traits, as they are for type variables, and a newtype implements those it is given.
+
+The rules:
+- a newtype that contains itself, however deep, is refused: it would have no end at run time;
+- ~#:opaque~ keeps its constructor and patterns to the code of its own module, as for any type;
+- ~cast~ cannot make or take apart a newtype;
+- a newtype is not passed to .NET as the type it wraps: take the value out with a pattern first. C# would choose an overload by the wrapped type, and the checker by the newtype.
+
 *** A constrained function is a value
 A constrained function is an ordinary value. Evaluating it yields a lambda of its arity:
 

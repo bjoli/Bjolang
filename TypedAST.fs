@@ -1284,6 +1284,11 @@ type ImplTarget =
     { Ctor: string
       /// The key the implementation is filed under: see `implKey`.
       Key: string
+      /// For `(impl (Eq Banana) #:via int)`, the type whose implementation
+      /// this one is: `int`, over this one's type variables. Such an
+      /// implementation has no class of its own; its dictionary is the via
+      /// type's, which is the same value at run time.
+      Via: HMType option
       FixedPrefix: HMType list
       HoleArity: int
       /// What the impl demands of its own type variables — the `(where ...)` of
@@ -1698,6 +1703,10 @@ type TraitRegistry =
       /// itself is not copied into its calls, which pass dictionaries.
       InlineCopies: Set<string>
       Aliases: Map<string, string list * HMType>
+      /// The `(Newtype T)` types, by key: their parameters and what each is at
+      /// run time. Unlike an alias, a newtype is a type of its own to the
+      /// checker; only code generation looks through it. See `eraseNewtypes`.
+      Newtypes: Map<string, string list * HMType>
       /// Visible name -> what it is really a spelling of.
       ///
       /// Populated by import modifiers, by `(:alias ...)`, and by every plain
@@ -2483,6 +2492,23 @@ let rec substTypeVars (subst: Map<string, HMType>) (t: HMType) : HMType =
     | TFun(args, ret, eff) -> TFun(List.map (substTypeVars subst) args, substTypeVars subst ret, eff)
     | TTuple args -> TTuple(List.map (substTypeVars subst) args)
     | TAssoc(tn, an, impl) -> TAssoc(tn, an, substTypeVars subst impl)
+    | other -> other
+
+/// `t` with each newtype in it replaced by what it wraps, at its arguments,
+/// until none is left: what the value is at run time. `newtypes` is
+/// `TraitRegistry.Newtypes`.
+let rec eraseNewtypesIn (newtypes: Map<string, string list * HMType>) (t: HMType) : HMType =
+    let erase = eraseNewtypesIn newtypes
+
+    match t with
+    | TCon(name, args) ->
+        match Map.tryFind name newtypes with
+        | Some(typeParams, underlying) -> erase (substTypeVars (List.zip typeParams args |> Map.ofList) underlying)
+        | None -> TCon(name, List.map erase args)
+    | TFun(args, ret, eff) -> TFun(List.map erase args, erase ret, eff)
+    | TTuple args -> TTuple(List.map erase args)
+    | TMeta { Value = Some inner } -> erase inner
+    | TAssoc(traitName, assocName, implementor) -> TAssoc(traitName, assocName, erase implementor)
     | other -> other
 
 /// `constraints` and the superclasses of each, transitively: `(Ord %a)` gives

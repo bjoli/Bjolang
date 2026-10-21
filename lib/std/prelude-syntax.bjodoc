@@ -256,10 +256,10 @@
 ;; ---------------------------------------------------------------------------
 
 (:doc type/derive
-  (summary "Declares types and writes their Eq or Ord implementations from the declaration.")
+  (summary "Declares types and writes their implementations from the declaration.")
   (form (type/derive (trait ...) typedef ...))
-  (rest trait "@code{Eq} or @code{Ord}; the list may hold both.")
-  (rest typedef "A type declaration as @code{type} takes it, @code{(: Name (Record ...))}: a record, a struct or a union.")
+  (rest trait "@code{Eq} or @code{Ord} for a record, a struct or a union; any trait for a newtype.")
+  (rest typedef "A type declaration as @code{type} takes it, @code{(: Name (Record ...))}: a record, a struct, a union or a newtype.")
   (example """
     (type/derive (Eq Ord)
       (: Version (Record (: major int) (: minor int))))
@@ -281,6 +281,10 @@
     @code{Ord}: a record or struct compares its fields in declaration order
     and stops at the first that decides; a union compares the case index
     before the payload.
+
+    A newtype, @code{(: Name (Newtype T))}, gets
+    @code{(impl (trait Name) #:via T)} for each trait: the implementation
+    of the type it wraps, which is the same value at run time.
 
     A type with parameters gets a conditional implementation, with a
     @code{where} of the trait being derived for each parameter:
