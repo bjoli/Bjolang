@@ -5758,8 +5758,20 @@ let private generateMethod
 /// For a constrained function, and for an implementation class with a
 /// `(where (Num %a))`. Other constraints are dictionaries and add nothing here.
 let private clrWhereClauses (registry: TraitRegistry) (constraints: TraitConstraint list) : string =
+    // A superclass of another constraint on the same type is left out: a .NET
+    // interface trait's superclasses are the interfaces its own extends, so
+    // `INumber` already says `IComparisonOperators`.
+    let implied (c: TraitConstraint) =
+        constraints
+        |> List.exists (fun other ->
+            other.TargetType = c.TargetType
+            && other.TraitName <> c.TraitName
+            && withSuperclasses registry [ { other with Pins = [] } ]
+               |> List.exists (fun s -> s.TraitName = c.TraitName && s.TargetType = c.TargetType))
+
     let bounds =
         constraints
+        |> List.filter (implied >> not)
         |> List.choose (fun c ->
             match Map.tryFind c.TraitName registry.Traits with
             | Some info ->
@@ -5786,8 +5798,8 @@ let private clrWhereClauses (registry: TraitRegistry) (constraints: TraitConstra
 
     // Grouped by type parameter, because C# takes one `where` per parameter
     // with its bounds comma-separated and rejects a second clause for the
-    // same one. A variable with two constraints is ordinary — `(+ a b)`
-    // beside `(< a b)` is `INumber` and `IComparisonOperators` — so this is
+    // same one. A variable under two interfaces that do not imply each
+    // other, such as `INumber` and `IComparable`, is ordinary, so this is
     // the common case rather than a corner.
     bounds
     |> List.groupBy fst

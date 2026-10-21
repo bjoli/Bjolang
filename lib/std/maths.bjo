@@ -42,8 +42,10 @@
 ;; Num
 ;; ---------------------------------------------------------------------------
 
-;; `Num` interface.
+;; `Num` interface. A number can be compared with `<`: `INumber` extends
+;; `IComparisonOperators`, which is `Ordered`.
 (def/trait (Num %a)
+  (where (Ordered %a))
   (#:clr-constraint (System.Numerics.INumber %a))
   (: abs   (-> %a %a)        #:clr-member Abs)
   (: sign  (-> %a int)       #:clr-member Sign)
@@ -62,10 +64,10 @@
 (defun (sqr x) (* x x))
 
 ;; Not `INumber.IsPositive`, which holds for zero.
-(: (-> %a bool) (where (Num %a) (Ordered %a)))
+(: (-> %a bool) (where (Num %a)))
 (defun (positive? x) (> x 0))
 
-(: (-> %a bool) (where (Num %a) (Ordered %a)))
+(: (-> %a bool) (where (Num %a)))
 (defun (negative? x) (< x 0))
 
 ;; ---------------------------------------------------------------------------
@@ -85,22 +87,22 @@
 (defun (out-of-range parameter why)
   (raise (cast Exception (ArgumentOutOfRangeException. parameter why))))
 
-(: (-> %a %a %a) (where (Integral %a) (Num %a)))
+(: (-> %a %a %a) (where (Integral %a)))
 (defun (quotient a b) (/ a b))
 
-(: (-> %a %a %a) (where (Integral %a) (Num %a)))
+(: (-> %a %a %a) (where (Integral %a)))
 (defun (remainder a b) (% a b))
 
 ;; The remainder moved into the divisor's sign: a nonzero remainder of the
 ;; other sign is one divisor away from it.
-(: (-> %a %a %a) (where (Integral %a) (Num %a) (Ordered %a)))
+(: (-> %a %a %a) (where (Integral %a)))
 (defun (modulo a b)
   (let ((r (% a b)))
     (if (and (not (zero? r)) (not (= (< r 0) (< b 0))))
         (+ r b)
         r)))
 
-(: (-> %a %a (Tuple %a %a)) (where (Integral %a) (Num %a)))
+(: (-> %a %a (Tuple %a %a)) (where (Integral %a)))
 (defun (quotient/remainder a b)
   (Tuple (/ a b) (% a b)))
 
@@ -109,14 +111,14 @@
 ;; ---------------------------------------------------------------------------
 
 ;; Euclid's algorithm, on the magnitudes.
-(: (-> %a %a %a) (where (Integral %a) (Num %a)))
+(: (-> %a %a %a) (where (Integral %a)))
 (defun (gcd a b)
   (let go ((x (abs a)) (y (abs b)))
     (if (zero? y) x (go y (% x y)))))
 
 ;; Divided before it is multiplied, so that the product overflows only when the
 ;; answer does.
-(: (-> %a %a %a) (where (Integral %a) (Num %a)))
+(: (-> %a %a %a) (where (Integral %a)))
 (defun (lcm a b)
   (if (or (zero? a) (zero? b))
       0
@@ -124,7 +126,7 @@
 
 ;; By squaring: one multiplication per bit of the exponent, and one more for
 ;; each bit that is set.
-(: (-> %a int %a) (where (Integral %a) (Num %a)))
+(: (-> %a int %a) (where (Integral %a)))
 (defun (expt base n)
   (when (< n 0)
     (out-of-range "n" "expt: the exponent is negative, and an integer power has to be one."))
@@ -136,7 +138,7 @@
 ;; Newton's method from above. The start, n/2 + 1, is at least the root for
 ;; every n of 2 or more, and nothing on the way adds past n, so it cannot
 ;; overflow even at the type's largest value.
-(: (-> %a %a) (where (Integral %a) (Num %a) (Ordered %a)))
+(: (-> %a %a) (where (Integral %a)))
 (defun (integer-sqrt n)
   (when (< n 0)
     (out-of-range "n" "integer-sqrt: the number is negative."))

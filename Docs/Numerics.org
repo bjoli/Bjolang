@@ -404,6 +404,13 @@ Three of them exist, because there are three questions:
 | ~Ordered~  | ~< > <= >=~         | numbers and ~char~                |
 | ~Integral~ | bitwise, shifts     | the integer types, signed and not |
 
+They require one another as their interfaces extend one another: ~Num~
+requires ~Ordered~, since ~INumber~ extends ~IComparisonOperators~, and
+~Integral~ requires ~Num~, since ~IBinaryInteger~ extends ~INumber~. So
+~(where (Num %a))~ is enough for ~<~ at ~%a~, and ~(where (Integral %a))~ for
+~+~ as well; the emitted C# names only the interface asked for. The other way
+does not hold: ~char~ is ~Ordered~ and not ~Num~.
+
 Reach for ~(where (Ord %a))~ instead when the function only *compares*. That one
 is an ordinary trait — open, inferred if you leave it out, and reaching ~string~
 and any type of your own:
@@ -438,6 +445,7 @@ implementations:
 
 #+BEGIN_SRC scheme
 (def/trait (Num %a)
+  (where (Ordered %a))
   (#:clr-constraint (System.Numerics.INumber %a))
   (: abs (-> %a %a) #:clr-member Abs)
   ...)

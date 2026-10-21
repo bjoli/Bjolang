@@ -171,6 +171,9 @@ let private withDynSafety (traitName: string) (info: TraitInfo) : TraitInfo =
 /// and overwrites this one for every module above it. Both name the same .NET
 /// interface, so which of the two a module sees changes nothing about what its
 /// arithmetic compiles to.
+///
+/// It requires `Ordered`, as `INumber` extends `IComparisonOperators`: a
+/// number can be compared with `<`. Both declarations say so.
 let private bootstrapNum : TraitInfo =
     withDynSafety
         "Num"
@@ -187,7 +190,7 @@ let private bootstrapNum : TraitInfo =
                   Args = [ TVar "'a" ]
                   Members = Map.empty }
           MemberWheres = Map.empty
-          Superclasses = []
+          Superclasses = [ { TraitName = "Ordered"; TargetType = TVar "'a"; Pins = [] } ]
           DynSafe = Ok() }
 
 /// `Ordered`, which is what `<` asks of its operands.
@@ -210,14 +213,15 @@ let private bootstrapOrdered : TraitInfo =
                       // The result is `bool` and not the implementor, which is why
                       // the arguments are written out rather than assumed.
                       Args = [ TVar "'a"; TVar "'a"; TypeConstants.boolType ]
-                      Members = Map.empty } }
+                      Members = Map.empty }
+            Superclasses = [] }
 
 /// `Integral`, which is what the bitwise and shift builtins ask for.
 ///
-/// `IBinaryInteger` and not `INumber`: bit twiddling is where `uint` and
-/// `ulong` live, and they are not `Num` — .NET draws that line, and this file
-/// no longer has to. It covers the shifts too, `IBinaryInteger` extending
-/// `IShiftOperators`.
+/// `IBinaryInteger` and not `INumber`: the bitwise operators are an integer's,
+/// and a `double` has none. It covers the shifts too, `IBinaryInteger`
+/// extending `IShiftOperators`. It requires `Num`, as `IBinaryInteger`
+/// extends `INumber`: an integer is a number.
 let private bootstrapIntegral : TraitInfo =
     withDynSafety
         "Integral"
@@ -226,7 +230,8 @@ let private bootstrapIntegral : TraitInfo =
                 Some
                     { InterfaceName = "System.Numerics.IBinaryInteger"
                       Args = [ TVar "'a" ]
-                      Members = Map.empty } }
+                      Members = Map.empty }
+            Superclasses = [ { TraitName = "Num"; TargetType = TVar "'a"; Pins = [] } ] }
 
 /// What the arithmetic and comparison builtins ask of their operand type.
 ///

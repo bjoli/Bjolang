@@ -33,7 +33,7 @@
 (impl (Describe Plantain) #:via Banana)
 
 ;; type/derive on a newtype writes #:via implementations, whatever the trait.
-(type/derive (Eq Ord Num Describe)
+(type/derive (Eq Ord Num Ordered Describe)
   (: Score (Newtype int)))
 
 (: (-> %a string) (where (Describe %a)))
@@ -41,6 +41,10 @@
 
 (: (-> %a %a %a) (where (Num %a)))
 (defun (double-sum a b) (* 2 (+ a b)))
+
+;; Num requires Ordered, so a number may be compared with <.
+(: (-> %a %a %a) (where (Num %a)))
+(defun (larger a b) (if (< a b) b a))
 
 (defun (main args)
   ;; Construction and patterns
@@ -72,6 +76,8 @@
   (expect "Num through a dictionary, with a literal" doubled 6)
   (expect "a literal pattern" (match (Score 3) (3 "three") (_ "other")) "three")
   (expect "derived Describe" (describe (Score 5)) "the number 5")
+  (def (Score high) (larger (Score 3) (Score 8)))
+  (expect "Ordered from Num, through a dictionary" high 8)
 
   ;; From another module
   (def (: m Meters) (+ (Meters 1.5) 2))

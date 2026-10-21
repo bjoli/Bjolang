@@ -3,6 +3,22 @@
 
 What each change guarantees, and what it leaves open.
 
+* Num requires Ordered, and Integral requires Num
+
+- The numeric traits require one another as their .NET interfaces extend
+  one another: ~INumber~ extends ~IComparisonOperators~, and
+  ~IBinaryInteger~ extends ~INumber~. So ~(where (Num %a))~ allows ~<~ at
+  ~%a~, and ~(where (Integral %a))~ allows ~+~; the clauses that wrote both
+  in ~(std maths)~ now write one.
+- The emitted C# names only the most specific interface: a constraint
+  implied by another on the same type parameter is left out.
+- A newtype given ~Num~ has to be given ~Ordered~ too, and the ~impl~ that
+  gives ~Num~ without it is refused, naming the ~#:via~ to add.
+- ~Ord~ and ~Eq~ are not required by ~Num~: they are dictionaries, and
+  every function constrained by ~Num~ would take one it mostly does not use.
+- Tests: ~443_newtypes.bjo~, ~codegen/numeric_literals.bjo~,
+  ~errors/via_num_without_ordered.bjo~.
+
 * Newtypes, and implementations via another type
 
 - ~(type (: Banana (Newtype int)))~ is a type of its own to the checker and
