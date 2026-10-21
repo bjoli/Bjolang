@@ -402,6 +402,7 @@ let rec letrecifyDecl (decl: Decl) : Decl =
         DTrait(name, implementor, arity, assocTypes, signatures, List.map letrecifyDecl defaults, clr, supers, r)
     | DImpl(traitName, target, assocTypes, constraints, methodWheres, methods, r) ->
         DImpl(traitName, target, assocTypes, constraints, methodWheres, List.map letrecifyDecl methods, r)
+    | DDerived inner -> DDerived(letrecifyDecl inner)
     // An inline template is letrecified where it is read back from metadata.
     // Types, imports, exports and signatures carry no executable body.
     | _ -> decl

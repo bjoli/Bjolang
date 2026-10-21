@@ -420,8 +420,8 @@ let isStdModuleKey (key: string) =
 /// types.
 ///
 /// Source goes on writing the bare name. `registerTypeDefs` files a spelling
-/// for it in the same table an import modifier's spellings go in, and
-/// `TypeEnv.originalName` resolves it before any registry is consulted.
+/// for it in the table an import modifier's type spellings go in, and
+/// `TypeEnv.originalTypeName` resolves it before any registry is consulted.
 ///
 /// A declaration that shadows a runtime type is keyed like any other: a module
 /// declaring its own `Option` gets `main__Option`, distinct from the `Option`

@@ -1,0 +1,27 @@
+;; A call to a constrained function at a type still open is settled as a
+;; trait method's call is: the one implementation that fits decides the type.
+;; It was left open, and C# could not infer the call's type argument (CS0411).
+(import (std prelude))
+(import (std simpletest))
+
+(def/trait (Describe %a)
+  (: describe (-> %a string)))
+
+(impl (Describe (List int))
+  (defun (describe xs) "ints"))
+
+(impl (Describe (Option %a)) (where (Describe %a))
+  (defun (describe o)
+    (match o
+      ((Some x) (str "some " (describe x)))
+      ((None) "none"))))
+
+(: (-> %a string) (where (Describe %a)))
+(defun (via x) #:no-inline (describe x))
+
+(defun (main)
+  (expect "an empty list" (via (list)) "ints")
+  (expect "through an implementation's where clause" (via (Some (list))) "some ints")
+  (def (: nothing (Option (List int))) None)
+  (expect "nothing inside" (via nothing) "none")
+  0)

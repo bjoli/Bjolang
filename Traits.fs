@@ -55,13 +55,18 @@ let private clrObligations = ResizeArray<string * HMType * Range * string>()
 /// not queue it again.
 let private clrChecked = System.Collections.Generic.HashSet<Wanted>(HashIdentity.Reference)
 
-/// The `(where ...)` constraints of the conditional impls that resolved
-/// calls use, at the types each call gives them: `(Lane double)` for
-/// `(impl (SimdShift (Simd256 %a)) (where (IntLane %a)))` at `Float64x4`.
-/// `solvePending` checks them. `Lowering` checks them as well when it builds
-/// a dictionary, but an inlined call has no dictionary, so without this check
-/// such a call compiled at a type its impl does not cover.
-let private implObligations = ResizeArray<string * HMType * Range * string>()
+/// What the declaration being checked requires at the types it uses, each
+/// with where and why: the `(where ...)` of each constrained binding it refers
+/// to, and of each conditional impl a resolved call uses, as `(Lane double)`
+/// for `(impl (SimdShift (Simd256 %a)) (where (IntLane %a)))` at `Float64x4`.
+///
+/// `solvePending` settles them as it settles wanteds: the one implementation
+/// that fits a type still open decides it, and while several fit the
+/// obligation waits. `Lowering` checks them as well when it builds a
+/// dictionary, but an inlined call has no dictionary, so without this such a
+/// call compiled at a type its impl does not cover; and a type left open made
+/// C# that did not compile.
+let private obligations = ResizeArray<string * HMType * Range * string>()
 
 /// The holes an unresolved obligation of `kind` is still watching.
 ///
@@ -135,7 +140,7 @@ let clearWanteds () : unit =
     Unification.deferredProjections.Clear()
     clrObligations.Clear()
     clrChecked.Clear()
-    implObligations.Clear()
+    obligations.Clear()
 
 /// Queues the check of a constraint over a .NET interface at the type a use
 /// instantiated it to: the `(Num %a)` of `+` at the `string` of `(+ "s")`.
@@ -145,6 +150,15 @@ let clearWanteds () : unit =
 let queueClrObligation (env: Env) (traitName: string) (t: HMType) (range: Range) (describe: string) : unit =
     match Map.tryFind traitName env.Registry.Traits with
     | Some { ClrConstraint = Some _ } -> clrObligations.Add(traitName, t, range, describe)
+    | _ -> ()
+
+/// Queues a constraint of a constrained binding at the type a use
+/// instantiated it to, to be settled as `obligations` says. One over a .NET
+/// interface is `queueClrObligation`'s, and one of an inline trait is decided
+/// where its call is inlined.
+let queueCallObligation (env: Env) (traitName: string) (t: HMType) (range: Range) (describe: string) : unit =
+    match Map.tryFind traitName env.Registry.Traits with
+    | Some { ClrConstraint = None; Kind = InterfaceTrait } -> obligations.Add(traitName, t, range, describe)
     | _ -> ()
 
 /// Checks a CLR constraint at a concrete implementor, and produces nothing.
@@ -290,6 +304,49 @@ let private takeUndecided () : Wanted list =
     undecidedWanteds.Clear()
     ws
 
+/// Settles a requirement of `traitName` on the one implementation, `target`,
+/// that fits it. Each hole, an occurrence of the implementor with the
+/// arguments after the implementation's fixed prefix, is unified with the
+/// implementation's target, and what the implementation requires is queued
+/// at the types that gives it. `user` ends "the implementation of ..., which
+/// ...". Answers the metavariables that stand for the class's type
+/// parameters.
+let private settleOn
+    (registry: TraitRegistry)
+    (traitName: string)
+    (target: ImplTarget)
+    (ctor: string)
+    (holes: (HMType * HMType list) list)
+    (r: Range)
+    (user: string)
+    : HMType list =
+    let prefix, classTypeArgs, subst = instantiateImplPrefix target
+
+    for (m, occArgs) in holes do
+        unify registry m (implTargetType ctor (prefix @ occArgs))
+
+    let describe =
+        $"by the implementation of '%s{Naming.showTraitName traitName}' for '%s{Naming.showTypeName ctor}', which %s{user}"
+
+    // A type that only a `(where (Num %a))` asks anything of is a number
+    // nothing says the type of, as a bare literal is: the count of a
+    // `(counting x)` that is only printed. It is an `int` unless something
+    // else in the declaration says otherwise.
+    for c in clrConstraints registry target do
+        let t = substTypeVars subst c.TargetType
+
+        match prune registry t with
+        | TMeta _ as open' -> openNumbers.Add open'
+        | _ -> ()
+
+        clrObligations.Add(c.TraitName, t, r, describe)
+
+    for c in dictionaryConstraints registry target do
+        queueImplPins traitName target c subst r
+        obligations.Add(c.TraitName, substTypeVars subst c.TargetType, r, describe)
+
+    classTypeArgs
+
 let private tryResolveWanted (env: Env) (w: Wanted) : bool =
     if w.Ref.Resolved.IsSome then
         true
@@ -396,34 +453,7 @@ let private tryResolveWanted (env: Env) (w: Wanted) : bool =
             failwithf
                 $"Type Error at %s{Lexer.formatPos w.Range}: no implementation of trait '%s{w.Trait}' for '%s{shown}', required by '%s{w.Method}'. It has implementations for %s{written} only."
         | [ target, _ ] ->
-            let prefix, classTypeArgs, subst = instantiateImplPrefix target
-
-            for (m, occArgs) in w.HoleArgs do
-                unify registry m (implTargetType ctor (prefix @ occArgs))
-
-            // A type that only a `(where (Num %a))` asks anything of is a
-            // number nothing says the type of, as a bare literal is: the count
-            // of a `(counting x)` that is only printed. It is an `int` unless
-            // something else in the declaration says otherwise.
-            for c in clrConstraints registry target do
-                let t = substTypeVars subst c.TargetType
-
-                match prune registry t with
-                | TMeta _ as open' -> openNumbers.Add open'
-                | _ -> ()
-
-                clrObligations.Add(c.TraitName, t, w.Range, $"by the implementation of '%s{w.Trait}' for '%s{Naming.showTypeName ctor}', which '%s{w.Method}' uses")
-
-            for c in dictionaryConstraints registry target do
-                queueImplPins w.Trait target c subst w.Range
-
-                implObligations.Add(
-                    c.TraitName,
-                    substTypeVars subst c.TargetType,
-                    w.Range,
-                    $"by the implementation of '%s{w.Trait}' for '%s{Naming.showTypeName ctor}', which '%s{w.Method}' uses"
-                )
-
+            let classTypeArgs = settleOn registry w.Trait target ctor w.HoleArgs w.Range $"'%s{w.Method}' uses"
             w.Ref.Resolved <- Some(target.Key, classTypeArgs |> List.map (prune registry))
             true
 
@@ -590,37 +620,99 @@ let private solveDeferredProjections (env: Env) : bool =
 
     progress
 
-/// Checks that `traitName` has an implementation at `t`, and that the
-/// `(where ...)` of that implementation holds there too, down to the leaves.
-/// Produces nothing: the evidence is built by `Lowering` where a dictionary
-/// is needed, and an inlined call needs none.
+/// The implementations that fit an obligation of `traitName` at `ground`.
+let private obligationCandidates (registry: TraitRegistry) (traitName: string) (ground: HMType) =
+    implsFor registry traitName ground literalTakes
+
+/// Settles what `obligations` holds, as far as the types say: that
+/// `traitName` has an implementation at the type, and that what that
+/// implementation requires holds there too, down to the leaves. Produces
+/// nothing: the evidence is built by `Lowering` where a dictionary is needed,
+/// and an inlined call needs none. Answers whether it settled any, as
+/// settling one can bind metavariables that others wait on.
 ///
-/// A type variable or a type still open is passed over, as `checkClrConstraint`
-/// passes it over: a variable is a constraint of the enclosing function, and
-/// is checked again at each type a caller gives it. The recursion ends because
-/// each constraint is at a proper subterm of `t`.
-let rec private checkImplObligation (env: Env) (traitName: string) (t: HMType) (r: Range) (describe: string) : unit =
-    match prune env.Registry t with
-    | (TCon _ | TTuple _ | TFun _) as ground ->
-        match Map.tryFind traitName env.Registry.Traits with
-        | Some { ClrConstraint = Some clr } -> checkClrConstraint env clr traitName ground r describe
-        | _ ->
-            match implFor env.Registry traitName ground with
-            | Some(target, subst) ->
-                for c in target.Constraints do
-                    queueImplPins traitName target c subst r
-                    checkImplObligation env c.TraitName (substTypeVars subst c.TargetType) r describe
-            | None when
-                Map.containsKey traitName env.Registry.BlanketImpls
-                && (match ground with
-                    | TFun _ -> false
-                    | _ -> true)
-                ->
-                ()
-            | None ->
-                failwithf
-                    $"Type Error at %s{Lexer.formatPos r}: no implementation of trait '%s{traitName}' for '%s{DotNetInterop.showType ground}', needed %s{describe}."
-    | _ -> ()
+/// One at a type variable is passed over, as `checkClrConstraint` passes it
+/// over: it is a constraint of the enclosing function, and is checked again
+/// at each type a caller gives it. One at a metavariable, or that several
+/// implementations fit, stays queued. The recursion through what an
+/// implementation requires ends because each constraint is at a proper
+/// subterm of the type.
+let private settleObligations (env: Env) : bool =
+    let registry = env.Registry
+    let pending = List.ofSeq obligations
+    obligations.Clear()
+    let mutable progress = false
+
+    for (traitName, t, r, describe) as entry in pending do
+        match prune registry t with
+        | (TCon _ | TTuple _ | TFun _) as ground ->
+            match Map.tryFind traitName registry.Traits with
+            | Some { ClrConstraint = Some clr } ->
+                progress <- true
+                checkClrConstraint env clr traitName ground r describe
+            | _ ->
+                match obligationCandidates registry traitName ground with
+                | [ target, subst ] when target.Ctor = BlanketCtor ->
+                    progress <- true
+
+                    for c in target.Constraints do
+                        queueImplPins traitName target c subst r
+                        obligations.Add(c.TraitName, substTypeVars subst c.TargetType, r, describe)
+                | [ target, _ ] ->
+                    progress <- true
+                    let ctor, args = (implHeadOf ground).Value
+                    let occArgs = args |> List.skip (min target.FixedPrefix.Length args.Length)
+                    settleOn registry traitName target ctor [ ground, occArgs ] r $"is used %s{describe}" |> ignore
+                | [] when
+                    Map.containsKey traitName registry.BlanketImpls
+                    && (match ground with
+                        | TFun _ -> false
+                        | _ -> true)
+                    ->
+                    progress <- true
+                | [] ->
+                    let ctor, _ = (implHeadOf ground).Value
+
+                    let others =
+                        match implsAtHead registry traitName ctor with
+                        | [] -> ""
+                        | atHead ->
+                            let written =
+                                atHead
+                                |> List.map (fun t -> "'" + DotNetInterop.showType (implTargetType ctor t.FixedPrefix) + "'")
+                                |> String.concat " and "
+
+                            $" It has implementations for %s{written} only."
+
+                    failwithf
+                        $"Type Error at %s{Lexer.formatPos r}: no implementation of trait '%s{Naming.showTraitName traitName}' for '%s{DotNetInterop.showType ground}', needed %s{describe}.%s{others}"
+                | _ -> obligations.Add entry
+        | TMeta _ -> obligations.Add entry
+        | _ -> ()
+
+    progress
+
+/// Refuses an obligation that several implementations still fit, once
+/// nothing is left to decide it, and drops the rest of the queue: one at a
+/// metavariable is checked by `Lowering` at the type it ends up at.
+let private refuseUndecidedObligations (env: Env) : unit =
+    let left = List.ofSeq obligations
+    obligations.Clear()
+
+    for (traitName, t, r, describe) in left do
+        match prune env.Registry t with
+        | TMeta _ -> ()
+        | ground ->
+            let written =
+                obligationCandidates env.Registry traitName ground
+                |> List.map (fun (target, _) ->
+                    match Map.tryFind (traitName, target.Key) env.Registry.Implementations with
+                    | Some(written, _) -> "'" + DotNetInterop.showType written + "'"
+                    | None -> "'" + target.Key + "'")
+                |> String.concat " and "
+
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: which implementation of '%s{Naming.showTraitName traitName}' is needed %s{describe} is not decided. The type is '%s{DotNetInterop.showType ground}', and the implementations for %s{written} both fit it. Say what the type is, with an annotation."
 
 /// Solves everything raised since the last call. Used at every point that is
 /// about to generalize, since a scheme must not be built over a constructor
@@ -642,9 +734,19 @@ let solvePending (env: Env) : unit =
         solveWanteds env (takeWanteds () @ takeUndecided ())
 
     // A deferred projection that holds can tell an obligation its implementor,
-    // and a resolved obligation can tell a projection its own.
-    while solveDeferredProjections env do
-        solveWanteds env (takeWanteds () @ takeUndecided ())
+    // and a resolved obligation can tell a projection its own. A settled
+    // obligation decides types that wanteds and projections wait on, and may
+    // open numbers as resolution does.
+    let rec settle () =
+        if openNumbers.Count > 0 then
+            defaultNumericLiterals env
+            solveWanteds env (takeWanteds () @ takeUndecided ())
+
+        if solveDeferredProjections env || settleObligations env then
+            solveWanteds env (takeWanteds () @ takeUndecided ())
+            settle ()
+
+    settle ()
 
     // What two implementations still both fit has nothing left to decide it,
     // and the declaration is about to generalize: an open type in it would
@@ -669,24 +771,19 @@ let solvePending (env: Env) : unit =
             $"Type Error at %s{Lexer.formatPos w.Range}: which implementation of '%s{w.Trait}' '%s{w.Method}' uses here is not decided. Its type is '%s{shown}', and the implementations for %s{written} both fit it. Say what the type is, with an annotation."
     | [] -> ()
 
+    refuseUndecidedObligations env
+
     // A type still open here is not checked: a later declaration may settle
     // it, and `Lowering` checks it again at the type it ends up at.
-    let obligations = List.ofSeq clrObligations
+    let pendingClr = List.ofSeq clrObligations
     clrObligations.Clear()
     clrChecked.Clear()
 
-    for (traitName, t, r, describe) in obligations do
+    for (traitName, t, r, describe) in pendingClr do
         match prune env.Registry t, Map.tryFind traitName env.Registry.Traits with
         | (TVar _ | TMeta _), _ -> ()
         | _, Some { ClrConstraint = Some clr } -> checkClrConstraint env clr traitName t r describe
         | _ -> ()
-
-    // The same rule for the `(where ...)` of the impls that calls resolved to.
-    let obligations = List.ofSeq implObligations
-    implObligations.Clear()
-
-    for (traitName, t, r, describe) in obligations do
-        checkImplObligation env traitName t r describe
 
     solvePinEquations env
 

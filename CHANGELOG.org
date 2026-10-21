@@ -3,6 +3,67 @@
 
 What each change guarantees, and what it leaves open.
 
+* A call to a constrained function settles its type as a method call does
+
+- What a constrained function requires is checked at each call, at the
+  types the call gives it, as a trait method's implementation is. Where one
+  implementation fits a type not known yet it decides the type: with only
+  ~(impl (Describe (List int)))~, ~(via (list))~ is a list of ~int~. It was
+  left open, and C# could not infer the call's type argument (CS0411).
+- Where two implementations fit and nothing decides between them, the call
+  is refused where it is written. The refusal had no location.
+- What an implementation a call uses requires is settled the same way.
+- Tests: ~457_constrained_call_settles.bjo~,
+  ~errors/constrained_call_undecided.bjo~.
+
+* An associated type is read off the implementation a call selects
+
+- An associated type at a type is found as a call finds its
+  implementation. An argument not known yet no longer makes it "Missing
+  implementation of Holder for (Box ?a)", and ~(Pair %a %a)~ is not taken
+  for ~(Pair int string)~, which made C# that did not compile.
+- Where two implementations fit until an argument is known, as
+  ~(Crate int)~ and ~(Crate string)~ fit ~(Crate ?a)~, the associated type
+  waits for it, as one at an unknown type does.
+- Tests: ~456_associated_type_selection.bjo~.
+
+* A trait is named by its spelling once, and then by its key
+
+- Which trait a where clause or an implementation means is decided once,
+  from the spelling source wrote. A standard trait's key is its bare name,
+  and a module may give a trait of its own that name: it was then taken for
+  the module's trait where the compiler named the standard one. A module
+  with its own ~Eq~ got that ~Eq~ for the one the prelude's ~Ord~ requires,
+  and a module with its own ~Written~ could declare no type.
+- A type's derived ~Written~ gives way to an implementation the module
+  writes for it, however the trait is spelled: ~(impl (p/Written Car) ...)~
+  under ~(prefix (std prelude) "p/")~ was refused as a second one.
+- An imported binding's where clause and an imported implementation are
+  read by key, as metadata writes them.
+- Left open: the superclasses of a trait read back from metadata, and a
+  ~(dyn T)~ in a published type, are still resolved as spellings.
+- Tests: ~455_trait_named_by_its_key.bjo~.
+
+* An imported trait, type and case of one name are all in scope
+
+- Types, traits and values (defs, macros, constructors, trait methods) are
+  three namespaces, and the names an import gives are kept apart by
+  namespace. A module importing a trait ~Greet~, a type ~Greet~ and a union
+  with a case ~Greet~ got only the one it imported last: "Unknown trait
+  'Greet'", "Unbound variable: Greet", or a type error naming two types. The
+  fix of "A trait's name is not a case's" covered a trait that has its bare
+  name as its key, as a standard one has.
+- A record or a newtype is constructed by its type's name, which is a
+  constructor's spelling as well as the type's.
+- A definition of a module takes its name over from an imported constructor,
+  as it does from an imported def. ~(def Bye 3)~ in a module importing a
+  union with a case ~Bye~ was the case.
+- Two imports whose modifiers produce one name are a collision only when
+  the two names are in one namespace.
+- A ~(dyn T)~ or an ~(assoc T ...)~ in a published declaration or body names
+  its trait by the trait's key.
+- Tests: ~454_trait_type_and_case_of_one_name.bjo~.
+
 * A function is written as #<procedure>, inside any value
 
 - Every function type has one head, ~Procedure~, and an implementation for

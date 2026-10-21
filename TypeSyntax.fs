@@ -305,7 +305,7 @@ let parseTypeDef (s: SExpr) : TypeDef =
     // are dispatched on exactly as a special form's head is, and a template that
     // writes one — which is what a `derive` macro does — arrives with it
     // renamed. Nothing else in a type definition needs it: a type *name* is
-    // read through `originalName` and a type inside a field is read by
+    // read through `originalTypeName` and a type inside a field is read by
     // `parseType`, which strips its own.
     let s =
         match s with
@@ -656,32 +656,20 @@ let private writtenImpl (td: TypeDef) : Decl =
     let writeInto = DDefun("write-into", [ MandatoryArg("v", None); MandatoryArg("b", None) ], writtenBody td, Ordinary, r)
     DImpl("Written", target, [], constraints, [], [ writeInto ], r)
 
-/// The declarations, and a `Written` implementation for each type they
-/// declare that they do not implement `Written` for themselves. A type alias
-/// is a second name for a type, and has none of its own.
+/// The declarations, and a derived `Written` implementation for each type they
+/// declare. A type alias is a second name for a type, and has none of its own.
+///
+/// Whether the module implements `Written` for the type itself is decided
+/// where names are resolved (`CheckDecl.checkDeclGroup`), as the trait may be
+/// spelled another way, and a trait of the module's own may be named `Written`.
 let rec withWrittenImpls (decls: Decl list) : Decl list =
-    let headOf (t: FType) =
-        match t with
-        | TName(n, _)
-        | TApp(n, _, _) -> Some n
-        | _ -> None
-
-    let implemented =
-        decls
-        |> List.choose (function
-            | DImpl("Written", target, _, _, _, _, _) -> headOf target
-            | DImplVia("Written", target, _, _, _) -> headOf target
-            | _ -> None)
-        |> Set.ofList
-
     let derived (tds: TypeDef list) =
         tds
         |> List.filter (fun td ->
-            not (Set.contains td.Name implemented)
-            && (match td.Kind with
-                | Alias _ -> false
-                | _ -> true))
-        |> List.map writtenImpl
+            match td.Kind with
+            | Alias _ -> false
+            | _ -> true)
+        |> List.map (writtenImpl >> DDerived)
 
     // Each implementation after its type. Where it stands does not matter to a
     // call: `checkDeclGroup` registers every implementation's head before it

@@ -689,7 +689,7 @@ let private typeRenaming
         // A method is prefixed with the trait it belongs to. Dispatch resolves
         // through the original, so a systematic prefix costs nothing — which is
         // the reason rule 4 refuses an individual rename and points here.
-        @ (surface.TraitMethods |> Map.toList |> List.map (fun (m, (key, _)) -> key, m, m, AliasTrait))
+        @ (surface.TraitMethods |> Map.toList |> List.map (fun (m, (key, _)) -> key, m, m, AliasMethod))
 
     // The type's own name, for a type and for one of its constructors: what
     // `only` and `except` name.
@@ -724,8 +724,8 @@ let private typeRenaming
     List.fold step start modifiers
     |> List.filter (fun (_, original, visible, _) -> original <> visible)
     // A record's name is both its type and its constructor, so it arrives
-    // twice. Which kind wins does not matter — both resolve the same way.
-    |> List.distinctBy (fun (key, _, visible, _) -> key, visible)
+    // twice, once in each namespace.
+    |> List.distinctBy (fun (key, _, visible, kind) -> key, visible, kind)
     |> List.map (fun (key, _, visible, kind) -> key, visible, kind)
 
 /// The types one import edge offers, as keys, after its `only` and `except`.
@@ -856,17 +856,16 @@ let private offeredNames
            |> List.filter (fun (_, (key, _)) -> Set.contains key kept)
            |> List.map (fun (n, (key, _)) -> Diagnostics.ValueName, n, key, provider, true))
 
-    let traitKeys = surface.Traits |> Map.toSeq |> Seq.map snd |> Set.ofSeq
-
     let spelled =
         typeRenaming surface modifiers
         |> List.choose (fun (key, visible, kind) ->
             match kind with
             | AliasType -> Some(Diagnostics.TypeName, visible, key, provider, true)
-            | AliasConstructor -> Some(Diagnostics.ValueName, visible, key, provider, true)
-            | AliasTrait when Set.contains key traitKeys -> Some(Diagnostics.TraitName, visible, key, provider, true)
-            | AliasTrait -> Some(Diagnostics.ValueName, visible, key, provider, true)
-            | _ -> None)
+            | AliasConstructor
+            | AliasMethod -> Some(Diagnostics.ValueName, visible, key, provider, true)
+            | AliasTrait -> Some(Diagnostics.TraitName, visible, key, provider, true)
+            | AliasDef
+            | AliasMacro -> None)
 
     defs @ bare @ spelled
 
@@ -2318,7 +2317,9 @@ let loadModuleGraph
                                            |> List.collect (function
                                                | SimpleCase(n, _)
                                                | DataCase(n, _, _) -> spellingOf AliasConstructor r n)
-                                       | _ -> []))
+                                       | Record _
+                                       | Newtype _ -> spellingOf AliasConstructor r td.Name
+                                       | Alias _ -> []))
                             | _ -> [])
 
                     // The bare spellings of the traits this assembly declares or
@@ -2332,7 +2333,7 @@ let loadModuleGraph
                                 DImportAlias(Naming.bareTraitName key, key, AliasTrait, r)
                                 :: (signatures
                                     |> List.map (fun (m, _, _) ->
-                                        DImportAlias(m, Naming.traitMethodKey key m, AliasTrait, r)))
+                                        DImportAlias(m, Naming.traitMethodKey key m, AliasMethod, r)))
                             | _ -> [])
 
                     // The types this assembly re-exported: declarations another
@@ -2366,7 +2367,9 @@ let loadModuleGraph
                             let bare = Naming.bareTypeName entry.OriginModule
                             let r = Ast.declRange (List.head decls)
 
-                            let cases =
+                            // The cases, and the type itself for a record or
+                            // a newtype, which is constructed by its name.
+                            let constructors =
                                 decls
                                 |> List.collect (function
                                     | DType(tds, _)
@@ -2377,13 +2380,18 @@ let loadModuleGraph
                                             | Union cs ->
                                                 cs
                                                 |> List.map (function
-                                                    | SimpleCase(n, _)
-                                                    | DataCase(n, _, _) -> n)
-                                            | _ -> [])
+                                                    | SimpleCase(n, _) -> bare n, n
+                                                    | DataCase(n, _, _) -> bare n, n)
+                                            | Record _
+                                            | Newtype _ when td.Name = entry.Key -> [ entry.Name, entry.Key ]
+                                            | Record _
+                                            | Newtype _
+                                            | Alias _ -> [])
                                     | _ -> [])
 
                             DImportAlias(entry.Name, entry.Key, AliasType, r)
-                            :: (cases |> List.map (fun n -> DImportAlias(bare n, n, AliasConstructor, r))))
+                            :: (constructors
+                                |> List.map (fun (visible, n) -> DImportAlias(visible, n, AliasConstructor, r))))
 
                     // Declarations of other modules' types this assembly's
                     // signatures name, read the way a re-exported one is and
@@ -2777,10 +2785,11 @@ let loadModuleGraph
 
     visit (Path.GetFullPath(mainFilePath))
 
-    // Every spelling an import made visible: the name, where it came from,
-    // whether a modifier invented it, and the import that did. Rule 5 is
-    // decided over this once every module's edges are known.
-    let spellings = ResizeArray<string * string * string * bool * Lexer.Range>()
+    // Every spelling an import made visible: its namespace, the name, where it
+    // came from, whether a modifier invented it, and the import that did.
+    // Rule 5 is decided over this once every module's edges are known.
+    let spellings =
+        ResizeArray<Diagnostics.NameSpace * string * string * string * bool * Lexer.Range>()
 
     /// A module's declarations as its importers see them.
     ///
@@ -2802,11 +2811,11 @@ let loadModuleGraph
                 edgeList
                 |> Seq.collect (fun (_, types, _, r) ->
                     types |> Seq.map (fun (original, visible, kind) -> original, visible, kind, r))
-                |> Seq.distinctBy (fun (original, visible, _, _) -> original, visible)
+                |> Seq.distinctBy (fun (original, visible, kind, _) -> original, visible, kind)
                 |> List.ofSeq
 
             for (original, visible, r) in merged do
-                spellings.Add(visible, m.ModuleName, original, visible <> original, r)
+                spellings.Add(Diagnostics.ValueName, visible, m.ModuleName, original, visible <> original, r)
 
             // Reported under the name source writes rather than the key, which
             // is what the reader of the collision message is looking at. A key
@@ -2816,12 +2825,22 @@ let loadModuleGraph
             for (key, visible, kind, r) in typeSpellings do
                 let readable =
                     match kind with
-                    | AliasTrait -> Naming.showTraitName key
+                    | AliasTrait
+                    | AliasMethod -> Naming.showTraitName key
                     | _ ->
                         let bare = Naming.bareTypeName m.ModuleName key
                         if bare = key then Naming.showTypeName key else bare
 
-                spellings.Add(visible, m.ModuleName, readable, true, r)
+                let nameSpace =
+                    match kind with
+                    | AliasType -> Diagnostics.TypeName
+                    | AliasTrait -> Diagnostics.TraitName
+                    | AliasDef
+                    | AliasMacro
+                    | AliasConstructor
+                    | AliasMethod -> Diagnostics.ValueName
+
+                spellings.Add(nameSpace, visible, m.ModuleName, readable, true, r)
 
             let byOriginal =
                 merged
@@ -2842,7 +2861,8 @@ let loadModuleGraph
             let keptDecls =
                 m.ParsedDecls
                 |> List.filter (function
-                    | DImportAlias(_, key, (AliasType | AliasConstructor | AliasTrait), _) -> Set.contains key keptKeys
+                    | DImportAlias(_, key, (AliasType | AliasConstructor | AliasTrait | AliasMethod), _) ->
+                        Set.contains key keptKeys
                     | _ -> true)
 
             aliasDecls @ applyDefRenaming m.ModuleName byOriginal keptDecls
@@ -2903,15 +2923,15 @@ let loadModuleGraph
     // imports offering the same name is the older shadowing rule, where the
     // later import wins, and widening this to cover it would reject programs
     // that have always compiled.
-    for (visible, group) in spellings |> Seq.groupBy (fun (v, _, _, _, _) -> v) do
+    for ((_, visible), group) in spellings |> Seq.groupBy (fun (ns, v, _, _, _, _) -> ns, v) do
         let origins =
             group
-            |> Seq.map (fun (_, originModule, original, _, _) -> originModule, original)
+            |> Seq.map (fun (_, _, originModule, original, _, _) -> originModule, original)
             |> Seq.distinct
             |> List.ofSeq
 
-        if origins.Length > 1 && group |> Seq.exists (fun (_, _, _, renamed, _) -> renamed) then
-            let (_, _, _, _, r) = group |> Seq.find (fun (_, _, _, renamed, _) -> renamed)
+        if origins.Length > 1 && group |> Seq.exists (fun (_, _, _, _, renamed, _) -> renamed) then
+            let (_, _, _, _, _, r) = group |> Seq.find (fun (_, _, _, _, renamed, _) -> renamed)
             let describe (m: string, n: string) = $"'%s{n}' from %s{Naming.moduleNameOfPath m}"
             let both = origins |> List.map describe |> String.concat " and "
 

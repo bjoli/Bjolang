@@ -1705,7 +1705,8 @@ type TraitRegistry =
       TraitMethods: Map<string, string>
       // Maps (TraitName * ImplKey) -> (GenericTargetType * Map<AssociatedTypeName, HMType>)
       // The GenericTargetType preserves TVars (e.g. TCon("List", [TVar "'a"]))
-      // so ResolveAssociatedType can substitute them when given a concrete type.
+      // so `Unification.associatedTypeAt` can substitute them when given a
+      // concrete type.
       // `ImplsByHead` finds the keys from a head.
       Implementations: Map<string * string, HMType * Map<string, HMType>>
       /// The same implementations, as target *patterns*.
@@ -1771,7 +1772,8 @@ type TraitRegistry =
       /// run time. Unlike an alias, a newtype is a type of its own to the
       /// checker; only code generation looks through it. See `eraseNewtypes`.
       Newtypes: Map<string, string list * HMType>
-      /// Visible name -> what it is really a spelling of.
+      /// Visible name of a value -> what it is really a spelling of: a def, a
+      /// macro, a constructor or a trait method.
       ///
       /// Populated by import modifiers, by `(:alias ...)`, and by every plain
       /// imported binding — a plain import is the degenerate alias whose
@@ -1784,6 +1786,16 @@ type TraitRegistry =
       /// registry and nothing else. Not to be confused with `Aliases` above,
       /// which is the table of `type` aliases.
       ImportAliases: Map<string, ImportAlias>
+      /// Visible name of a type -> the type it is a spelling of, always with
+      /// `Kind = AliasType`. Apart from `ImportAliases` because a type name is
+      /// in a namespace of its own: an imported union case may have the name
+      /// of an imported type, and one must not replace the other. A record or
+      /// a newtype is constructed by its name, which is then also in
+      /// `ImportAliases`, as an `AliasConstructor`.
+      TypeSpellings: Map<string, ImportAlias>
+      /// Visible name of a trait -> the trait it is a spelling of, always
+      /// with `Kind = AliasTrait`, for the same reason.
+      TraitSpellings: Map<string, ImportAlias>
       Records: Map<string, string list * (string * HMType) list>
       /// Every record type declaring a given field name.
       ///
@@ -1926,58 +1938,6 @@ type TraitRegistry =
       /// no argument at all. `Codegen` emits their type arguments explicitly.
       KeywordOnlyGenerics: Set<string> }
 
-
-
-    member this.ResolveAssociatedType (traitName: string) (assocName: string) (implType: HMType) : HMType option =
-        // Pattern-match a stored generic type against a concrete type to build
-        // a substitution for type variables.
-        let rec matchTypes pat conc subst =
-            match pat, conc with
-            | TVar name, _ -> Some (Map.add name conc subst)
-            | TCon(n1, args1), TCon(n2, args2) when n1 = n2 && args1.Length = args2.Length ->
-                List.fold2 (fun acc p c -> acc |> Option.bind (fun s -> matchTypes p c s)) (Some subst) args1 args2
-            | _ when pat = conc -> Some subst
-            | _ -> None
-
-        let rec applySubstLocal subst t =
-            match t with
-            | TVar name -> match Map.tryFind name subst with Some conc -> conc | None -> t
-            | TCon(n, args) -> TCon(n, args |> List.map (applySubstLocal subst))
-            | TFun(args, ret, eff) -> TFun(args |> List.map (applySubstLocal subst), applySubstLocal subst ret, eff)
-            | TTuple args -> TTuple(args |> List.map (applySubstLocal subst))
-            // A projection in an impl's associated type, such as the `%elem`
-            // of the `%s` an `(Enumerated %s)` wraps. Substituted like any
-            // other type, so that the caller's `prune` reduces it in turn at
-            // the concrete `%s`.
-            | TAssoc(traitName, assocName, inner) -> TAssoc(traitName, assocName, applySubstLocal subst inner)
-            | _ -> t
-
-        let typeKey =
-            match implType with
-            | TCon(name, _) -> Some name
-            | _ -> None
-
-        match typeKey with
-        | Some tk ->
-            // Exact head first, then the blanket — the same two levels
-            // resolution uses. A blanket's stored target is a bare `TVar`, and
-            // `matchTypes` already treats one as a wildcard, so the
-            // substitution it yields binds the implementor to the concrete type
-            // and the association is read off exactly as for a specific impl.
-            let entries =
-                match Map.tryFind (traitName, tk) this.ImplsByHead with
-                | Some(_ :: _ as keys) -> keys |> List.choose (fun k -> Map.tryFind (traitName, k) this.Implementations)
-                | _ -> Map.tryFind (traitName, genericImplKey BlanketCtor) this.Implementations |> Option.toList
-
-            entries
-            |> List.tryPick (fun (genericTarget, assocMap) ->
-                match matchTypes genericTarget implType Map.empty with
-                | Some subst ->
-                    Map.tryFind assocName assocMap
-                    |> Option.map (applySubstLocal subst)
-                | None -> None)
-        | None -> None
-
 type Env =
     { Bindings: Map<string, Binding>
       /// `Bindings` as they stood at module level, which is what an `EResolved`
@@ -2072,6 +2032,18 @@ let addTrait (name: string) (info: TraitInfo) (env: Env) : Env =
             TraitOrigins = Map.add name env.CurrentModule env.Registry.TraitOrigins }
 
     { env with Registry = newRegistry }
+
+/// Files `visible` as a spelling of `alias.OriginalName`, in the table of its
+/// namespace: `TypeSpellings` for a type, `TraitSpellings` for a trait,
+/// `ImportAliases` for a value.
+let addSpelling (visible: string) (alias: ImportAlias) (registry: TraitRegistry) : TraitRegistry =
+    match alias.Kind with
+    | AliasType -> { registry with TypeSpellings = Map.add visible alias registry.TypeSpellings }
+    | AliasTrait -> { registry with TraitSpellings = Map.add visible alias registry.TraitSpellings }
+    | AliasDef
+    | AliasMacro
+    | AliasConstructor
+    | AliasMethod -> { registry with ImportAliases = Map.add visible alias registry.ImportAliases }
 
 /// The trait a method belongs to, and the method's name within the trait,
 /// for a method as the module binds it: `pretty_a__pretty` gives
@@ -2747,14 +2719,16 @@ let representationVisible (registry: TraitRegistry) (moduleKey: string) (typeKey
 /// sentence that says what was refused.
 /// What an import calls a type or constructor whose bare name it does not
 /// give, for a refusal of the bare name: `. It is imported as 'T/Crate' ...`,
-/// or `""` when no import gives `name` a spelling of its own.
+/// or `""` when no import gives `name` a spelling of its own. `spellings` is
+/// the table of the namespace the name was refused in: `TypeSpellings` or
+/// `ImportAliases`.
 ///
 /// A modifier that spells an import's types its own way replaces their bare
 /// names (`Pipeline.keptTypes`), so a program that wrote the bare name is
 /// told the one it has.
-let hiddenSpellingNote (registry: TraitRegistry) (name: string) : string =
+let hiddenSpellingNote (spellings: Map<string, ImportAlias>) (name: string) : string =
     let spellings =
-        registry.ImportAliases
+        spellings
         |> Map.toList
         |> List.choose (fun (visible, alias) ->
             if

@@ -18,7 +18,8 @@ open Bjolang.Ast
 open Bjolang.TypedAST
 open Bjolang.Unification
 
-/// The name a visible spelling stands for, where the spelling is only that.
+/// The value a visible spelling stands for, where the spelling is only that:
+/// a constructor or a trait method.
 ///
 /// A def is deliberately left alone: it is *bound* under the name the import
 /// gave it, and codegen resolves that to the origin's member through
@@ -30,15 +31,22 @@ open Bjolang.Unification
 let originalName (registry: TraitRegistry) (name: string) : string =
     match Map.tryFind name registry.ImportAliases with
     | Some alias when alias.Kind <> AliasDef && alias.Kind <> AliasMacro -> alias.OriginalName
-        | _ -> name
-
-/// The trait, or trait method, a visible spelling stands for. Only a trait's
-/// spelling is followed: a case of an imported union may have a trait's
-/// name, as `Eq` in a grammar does, and that does not make it the trait.
-let originalTraitName (registry: TraitRegistry) (name: string) : string =
-    match Map.tryFind name registry.ImportAliases with
-    | Some alias when alias.Kind = AliasTrait -> alias.OriginalName
     | _ -> name
+
+/// The type a visible spelling stands for. Only `TypeSpellings` is read: a
+/// case of an imported union may have the name of an imported type.
+let originalTypeName (registry: TraitRegistry) (name: string) : string =
+    match Map.tryFind name registry.TypeSpellings with
+    | Some alias -> alias.OriginalName
+    | None -> name
+
+/// The trait a visible spelling stands for. Only `TraitSpellings` is read: a
+/// case of an imported union may have a trait's name, as `Eq` in a grammar
+/// does, and that does not make it the trait.
+let originalTraitName (registry: TraitRegistry) (name: string) : string =
+    match Map.tryFind name registry.TraitSpellings with
+    | Some alias -> alias.OriginalName
+    | None -> name
     
     /// Walk a typed expression body for the trait constraints its enclosing function
 /// must carry. Returns a list of TraitConstraints (TraitName, TargetType as TVar).
@@ -469,7 +477,7 @@ let internal instantiateRecord
 /// What a refusal of an unknown constructor in a pattern adds: the spelling an
 /// import gives it, or the `only` or `except` that left it out.
 let private patternNote (env: Env) (r: Range) (name: string) : string =
-    match hiddenSpellingNote env.Registry name with
+    match hiddenSpellingNote env.Registry.ImportAliases name with
     | "" -> Diagnostics.withheldNote r.Module name
     | spelled -> spelled
 

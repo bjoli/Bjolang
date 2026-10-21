@@ -112,7 +112,7 @@ let lookup (env: Env) (name: string) : Binding =
             failwithf $"Unbound variable: %s{shown}. %s{opaqueTypeNote env.Registry name}"
         else
             let note =
-                match hiddenSpellingNote env.Registry name with
+                match hiddenSpellingNote env.Registry.ImportAliases name with
                 | "" -> Diagnostics.withheldNote env.CurrentModule name
                 | spelled -> spelled
 
@@ -163,6 +163,14 @@ let persistentTwinHint (registry: TraitRegistry) (traitName: string) (ctor: stri
     else
         ""
 
+/// What an associated type is at an implementor that is not a variable.
+type AssocResolution =
+    | Resolved of HMType
+    /// More than one implementation fits the implementor until what a
+    /// metavariable in it is says which.
+    | Undecided
+    | NoImplementation
+
 let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
     match t with
     | TMeta m ->
@@ -183,9 +191,11 @@ let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
         | TCon _
         | TTuple _
         | TFun _ ->
-            match registry.ResolveAssociatedType traitName assocName prunedImpl with
-            | Some resolved -> prune registry resolved
-            | None ->
+            match associatedTypeAt registry traitName assocName prunedImpl with
+            | Resolved resolved -> prune registry resolved
+            // Waits, as one at a metavariable does (`projectionWaits`).
+            | Undecided -> TAssoc(traitName, assocName, prunedImpl)
+            | NoImplementation ->
                 let shown = DotNetInterop.showType prunedImpl
 
                 let hint =
@@ -231,7 +241,7 @@ let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
 /// since nothing decides it yet, except that one `literalTakes` refuses: a
 /// number literal matches only a number type, `(List string)` never being the
 /// type of `(list 1 2)`, and a real literal only a type that has fractions.
-let implsMatching
+and implsMatching
     (registry: TraitRegistry)
     (traitName: string)
     (ctor: string)
@@ -272,8 +282,8 @@ let implsMatching
         List.fold2 matchInto (Some Map.empty) (target.FixedPrefix |> List.truncate bound.Length) bound
         |> Option.map (fun subst -> target, subst))
 
-/// The implementation `traitName` selects at `t`, with the substitution that
-/// carries the impl's own type variables to `t`'s arguments.
+/// The implementations `traitName` may select at `t`, each with the
+/// substitution that carries the impl's own type variables to `t`'s arguments.
 ///
 /// The two levels resolution uses, in the same order: an exact head, then the
 /// trait's blanket. A blanket's target is the bare implementor, so the
@@ -283,28 +293,57 @@ let implsMatching
 /// `Procedure`, and no blanket reaches it.
 ///
 /// Implementations may not overlap, so at a type that is known at most one
-/// of them fits it. Two fit only where a metavariable leaves the type open,
-/// and choosing either would be a guess; that is refused.
-let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTarget * Map<string, HMType>) option =
+/// of them fits it. More than one fit only where a metavariable leaves the
+/// type open. `literalTakes` is as for `implsMatching`.
+and implsFor
+    (registry: TraitRegistry)
+    (traitName: string)
+    (t: HMType)
+    (literalTakes: HMType -> HMType -> bool)
+    : (ImplTarget * Map<string, HMType>) list =
     match implHeadOf (prune registry t) with
     | Some(ctor, args) when hasImplAtHead registry traitName ctor ->
-        match implsMatching registry traitName ctor args (fun _ _ -> true) with
-        | [] -> None
-        | [ found ] -> Some found
-        | several ->
-            let written =
-                several
-                |> List.map (fun (target, _) -> "'" + DotNetInterop.showType (implTargetType ctor target.FixedPrefix) + "'")
-                |> String.concat " and "
-
-            failwithf
-                $"Type Error: which implementation of '%s{traitName}' '%s{DotNetInterop.showType (prune registry t)}' uses is not decided: %s{written} both fit it. Say what the type is with an annotation."
-    | Some(ctor, _) when ctor = ProcedureCtor -> None
+        implsMatching registry traitName ctor args literalTakes
+    | Some(ctor, _) when ctor = ProcedureCtor -> []
     | Some(ctor, args) ->
         match Map.tryFind traitName registry.BlanketImpls with
-        | Some({ FixedPrefix = [ TVar v ] } as blanket) -> Some(blanket, Map.ofList [ v, implTargetType ctor args ])
-        | _ -> None
-    | None -> None
+        | Some({ FixedPrefix = [ TVar v ] } as blanket) -> [ blanket, Map.ofList [ v, implTargetType ctor args ] ]
+        | _ -> []
+    | None -> []
+
+/// The associated type `assocName` of `traitName` at `implementor`, read off
+/// the implementation that applies there, as `implFor` selects it.
+and associatedTypeAt (registry: TraitRegistry) (traitName: string) (assocName: string) (implementor: HMType) : AssocResolution =
+    match implsFor registry traitName implementor (fun _ _ -> true) with
+    | [] -> NoImplementation
+    | [ target, subst ] ->
+        match Map.tryFind (traitName, target.Key) registry.Implementations with
+        | Some(_, assocs) ->
+            match Map.tryFind assocName assocs with
+            | Some t -> Resolved(substTypeVars subst t)
+            | None -> NoImplementation
+        | None -> NoImplementation
+    | _ -> Undecided
+
+/// The implementation `traitName` selects at `t`, with the substitution that
+/// carries the impl's own type variables to `t`'s arguments (see `implsFor`).
+/// Two fit only where a metavariable leaves the type open, and choosing
+/// either would be a guess; that is refused.
+let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTarget * Map<string, HMType>) option =
+    match implsFor registry traitName t (fun _ _ -> true) with
+    | [] -> None
+    | [ found ] -> Some found
+    | several ->
+        let written =
+            several
+            |> List.map (fun (target, _) ->
+                match Map.tryFind (traitName, target.Key) registry.Implementations with
+                | Some(written, _) -> "'" + DotNetInterop.showType written + "'"
+                | None -> "'" + target.Key + "'")
+            |> String.concat " and "
+
+        failwithf
+            $"Type Error: which implementation of '%s{traitName}' '%s{DotNetInterop.showType (prune registry t)}' uses is not decided: %s{written} both fit it. Say what the type is with an annotation."
 
 /// The number type `t` is at run time, if `t` is a newtype that implements
 /// `Num`. A number literal may then stand for a value of it, as it may for
@@ -524,14 +563,18 @@ let bindMeta (registry: TraitRegistry) (m: MetaVar) (t: HMType) =
             m.Value <- Some t
 
 /// Does this type still hide an associated-type projection whose implementor is
-/// unknown? `prune` resolves a projection as soon as the implementor is
-/// concrete, so what is left is a projection waiting on a meta variable —
-/// something else in the same call has to pin it down first.
+/// unknown? `prune` resolves a projection as soon as one implementation
+/// applies at the implementor, so what is left is a projection waiting on a
+/// meta variable — something else in the same call has to pin it down first.
 let rec awaitsImplementor (registry: TraitRegistry) (t: HMType) : bool =
     match prune registry t with
     | TAssoc(_, _, impl) ->
         match prune registry impl with
-        | TMeta _ -> true
+        // Several implementations fit until a metavariable inside is known.
+        | TMeta _
+        | TCon _
+        | TTuple _
+        | TFun _ -> true
         | _ -> false
     | TCon(_, args)
     | TTuple args -> List.exists (awaitsImplementor registry) args
@@ -547,7 +590,12 @@ let rec private projectionWaits (registry: TraitRegistry) (t: HMType) : bool =
     match prune registry t with
     | TAssoc(_, _, impl) ->
         match prune registry impl with
-        | TMeta _ -> true
+        // A projection `prune` leaves at a type that is not a variable is one
+        // that several implementations fit until a metavariable is known.
+        | TMeta _
+        | TCon _
+        | TTuple _
+        | TFun _ -> true
         | TAssoc _ as inner -> projectionWaits registry inner
         | _ -> false
     | _ -> false

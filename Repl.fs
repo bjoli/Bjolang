@@ -978,15 +978,17 @@ let private visibleNames (state: State) : Visible list =
         // own names. A type's original name is its key, which carries the
         // module it was declared in; its doc is under the name alone.
         let bindings =
-            env.Registry.ImportAliases
-            |> Map.toList
+            Map.toList env.Registry.ImportAliases
+            @ Map.toList env.Registry.TypeSpellings
+            @ Map.toList env.Registry.TraitSpellings
             |> List.choose (fun (name, alias) ->
                 match alias.Kind with
                 | AliasConstructor -> None
                 | AliasType ->
                     imported alias.OriginModule (Naming.bareTypeName alias.OriginModule alias.OriginalName) name
                 // A trait's and a method's original name is a key as well.
-                | AliasTrait -> imported alias.OriginModule (Naming.showTraitName alias.OriginalName) name
+                | AliasTrait
+                | AliasMethod -> imported alias.OriginModule (Naming.showTraitName alias.OriginalName) name
                 | _ -> imported alias.OriginModule alias.OriginalName name)
 
         // A foreign import a module published is bound to the .NET member

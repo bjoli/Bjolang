@@ -337,6 +337,7 @@ let rec normalizeDecl (decl: Decl) : Decl =
         DTrait(name, implementor, arity, assocTypes, signatures, List.map normalizeDecl defaults, clr, supers, r)
     | DImpl(traitName, target, assocTypes, constraints, methodWheres, methods, r) ->
         DImpl(traitName, target, assocTypes, constraints, methodWheres, List.map normalizeDecl methods, r)
+    | DDerived inner -> DDerived(normalizeDecl inner)
     // An inline template's body is untyped source read back out of another
     // module's metadata, and that module was compiled by this same pipeline —
     // so it has been normalized already, at its origin.

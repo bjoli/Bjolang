@@ -1,0 +1,34 @@
+;; Which trait an implementation or a constraint means is decided once, from
+;; its spelling, and a trait's key is not taken for a spelling. A standard
+;; trait's key is its bare name, which a module may give a trait of its own.
+;; The derived `Written` gave way only to an implementation spelled `Written`,
+;; so a `p/Written` one was a second; a trait of the module's own named
+;; `Written` made the derived one fail; and an `Eq` of the module's own stood
+;; in for the `Eq` that the prelude's `Ord` requires.
+(import (std prelude))
+(import (prefix (std prelude) "p/"))
+(import (std simpletest))
+
+(def/trait (Written %a) (: shout (-> %a string)))
+(def/trait (Eq %a) (: same? (-> %a %a bool)))
+
+(type (: Car (Record (: brand string))))
+(type (: Bike (Record (: gears int))))
+
+(impl (p/Written Car)
+  (defun (write-into c b) (stringbuilder-add-string! b "a car")))
+
+(impl (Written Bike) (defun (shout b) "BIKE"))
+(impl (Eq int) (defun (same? a b) #t))
+
+(: (-> %a %a bool) (where (p/Ord %a)))
+(defun (equal? a b) (p/= a b))
+
+(defun (main)
+  (expect "an implementation spelled with a prefix" (p/written (Car (brand "v"))) "a car")
+  (expect "the derived one, beside a Written of the module's own" (p/written (Bike (gears 3))) "(Bike (gears 3))")
+  (expect "the Written of the module's own" (shout (Bike (gears 3))) "BIKE")
+  (expect-true "the Eq the prelude's Ord requires, at a string" (equal? "a" "a"))
+  (expect "and again" (equal? "a" "b") #f)
+  (expect-true "the Eq of the module's own" (same? 1 2))
+  0)

@@ -504,7 +504,7 @@ let private demandOf (env: Env) (cands: Map<string, Candidate>) (name: string) (
             List.zip schemeVars resolved |> List.map (fun (v, t) -> bareVar v, t) |> Map.ofList
 
         let rec satisfiable (traitName: string) (t: HMType) =
-            isClrConstraint env.Registry (TypeEnv.originalTraitName env.Registry traitName)
+            isClrConstraint env.Registry traitName
             || (match implFor env.Registry traitName t with
                 | Some(target, subst) ->
                     target.Constraints

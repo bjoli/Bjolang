@@ -504,15 +504,20 @@ type ImportSpec = { Path: ImportPath; Modifiers: ImportModifier list }
 
 /// What kind of thing a visible name is a second spelling of.
 ///
-/// Everything resolves through one table, but the consumers of it consult
-/// different registries once they get there — and only a def keeps its visible
-/// spelling, because only a def is *bound* under it.
+/// Types, traits and values are three namespaces, and each has a table of
+/// spellings (`TypeSpellings`, `TraitSpellings`, `ImportAliases`): an
+/// imported union case may have the name of an imported type or trait. The
+/// values' consumers consult different registries once they get there — and
+/// only a def keeps its visible spelling, because only a def is *bound* under
+/// it.
 type AliasKind =
     | AliasDef
     | AliasMacro
     | AliasType
     | AliasConstructor
     | AliasTrait
+    /// A method of a trait. A value, so it is in the table of values.
+    | AliasMethod
 
 /// Where a visible name really comes from.
 ///
@@ -800,13 +805,20 @@ type Decl =
     // compilation does not know, as nothing in it can then call it.
     | DLinked of Decl
 
+    // An implementation the compiler writes for a type of the module: the
+    // `Written` one of `TypeSyntax.withWrittenImpls`. Its traits are named by
+    // key, and it is left out when the module writes an implementation of the
+    // trait at the type's head itself (`CheckDecl.checkDeclGroup`).
+    | DDerived of Decl
+
 /// Gets the source code location (Range) of a declaration.
 ///
 /// This provides a fallback location for error reporting, ensuring that any
 /// error during declaration processing can point to the declaration itself.
 let rec declRange (decl: Decl) : Range =
     match decl with
-    | DLinked inner -> declRange inner
+    | DLinked inner
+    | DDerived inner -> declRange inner
     | DDef(_, _, r) | DDefun(_, _, _, _, r) | DDefDouble(_, _, _, _, r) | DDefTuple(_, _, r) | DDefPattern(_, _, r)
     | DDefMutable(_, _, r)
     | DSignature(_, _, _, r) | DType(_, r) | DTypeRec(_, r) | DGrammar(_, r) | DTrait(_, _, _, _, _, _, _, _, r) | DImpl(_, _, _, _, _, _, r)
@@ -1421,6 +1433,7 @@ let rec boundNames (decls: Decl list) : Set<string> =
         | DTrait(name, _, _, _, signatures, defaults, _, _, _) ->
             (name :: (signatures |> List.map (fun (n, _, _) -> n))) @ Set.toList (boundNames defaults)
         | DImpl(_, _, _, _, _, methods, _) -> Set.toList (boundNames methods)
+        | DDerived inner -> Set.toList (boundNames [ inner ])
         | DExtern(visible, _, _, _, _) -> [ visible ]
         | DAlias(visible, _, _) -> [ visible ]
         | DImportAlias(visible, _, _, _) -> [ visible ]
@@ -1477,6 +1490,7 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
     | DImpl(name, target, assoc, constraints, methodWheres, methods, r) ->
         DImpl(name, target, assoc, constraints, methodWheres, methods |> List.map (mapDeclExprs f), r)
     | DModule(name, inner, r) -> DModule(name, inner |> List.map (mapDeclExprs f), r)
+    | DDerived inner -> DDerived(mapDeclExprs f inner)
     | DInlineImpl(traitName, method_, ctor, origin, ps, body, qual, r) ->
         DInlineImpl(traitName, method_, ctor, origin, ps, f body, qual, r)
     // No expression to map. A signature and a type carry `FType`s, which hold

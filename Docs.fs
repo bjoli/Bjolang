@@ -466,7 +466,11 @@ let private reportAt (r: Range) (message: string) =
           Phase = "doc" }
 
 let private candidateKeys (env: Env) (moduleKey: string) (name: string) =
-    [ name; TypeEnv.originalName env.Registry name; Naming.typeKey moduleKey name ] |> List.distinct
+    [ name
+      TypeEnv.originalTypeName env.Registry name
+      TypeEnv.originalTraitName env.Registry name
+      Naming.typeKey moduleKey name ]
+    |> List.distinct
 
 let private typeKnown (env: Env) (moduleKey: string) (name: string) =
     let reg = env.Registry
@@ -592,7 +596,7 @@ let private checkEntry (env: Env) (moduleKey: string) (localNames: Set<string>) 
                     || Set.contains n env.TraitMethodNames
                     // A method is bound under its key, and `n` may be the
                     // bare spelling of one.
-                    || Set.contains (TypeEnv.originalTraitName env.Registry n) env.TraitMethodNames
+                    || Set.contains (TypeEnv.originalName env.Registry n) env.TraitMethodNames
                     || Set.contains n localNames
                     || Macro.isMacro n
                     || Macro.isPatternMacro n

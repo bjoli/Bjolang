@@ -1,0 +1,15 @@
+;; EXPECT-ERROR: constrained_call_undecided.bjo:15:25: which implementation of 'Describe' is needed to call 'via' is not decided
+;; Two implementations fit the type of the argument, and nothing says which
+;; it is. The refusal was not located, and named no call.
+(import (std prelude))
+
+(def/trait (Describe %a)
+  (: describe (-> %a string)))
+
+(impl (Describe (List string)) (defun (describe xs) "strings"))
+(impl (Describe (List int)) (defun (describe xs) "ints"))
+
+(: (-> %a string) (where (Describe %a)))
+(defun (via x) #:no-inline (describe x))
+
+(defun (main) (println (via (list))) 0)

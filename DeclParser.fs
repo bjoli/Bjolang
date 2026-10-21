@@ -305,6 +305,7 @@ let declKindName (d: Decl) : string =
     | DImplExtern _ -> "an imported implementation"
     | DImplVia _ -> "an implementation via another type"
     | DLinked _ -> "an implementation of a linked module"
+    | DDerived _ -> "an implementation the compiler derives"
 
 /// A macro may not introduce an import.
 ///

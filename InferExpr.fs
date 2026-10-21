@@ -1769,6 +1769,7 @@ and private inferIdent (env: Env) (name: string) (r: Range) : HMType * TypedExpr
 
     for c in constraints do
         Traits.queueClrObligation env c.TraitName c.TargetType r $"to call '%s{name}'"
+        Traits.queueCallObligation env c.TraitName c.TargetType r $"to call '%s{name}'"
 
     Traits.queuePins name constraints r
 

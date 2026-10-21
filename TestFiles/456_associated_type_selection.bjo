@@ -1,0 +1,44 @@
+;; An associated type is read off the implementation a call selects, found
+;; as a call finds it. It was found by a matcher of its own, which refused a
+;; type with an argument not yet known ("Missing implementation of Holder for
+;; (Box ?a)") and took `(Pair %a %a)` for `(Pair int string)`.
+(import (std prelude))
+(import (std simpletest))
+
+(type (: (Box %a) (Struct (: v %a))))
+(type (: (Pair %a %b) (Struct (: l %a) (: r %b))))
+(type (: (Crate %a) (Struct (: c %a))))
+
+(def/trait (Holder %h)
+  (type %out)
+  (: take (-> %h %out)))
+
+(impl (Holder (Box int))
+  (type %out int)
+  (defun (take b) (+ 1 (struct-ref b v))))
+
+(impl (Holder (Pair %a %a))
+  (type %out %a)
+  (defun (take p) (struct-ref p l)))
+
+(impl (Holder (Pair int string))
+  (type %out bool)
+  (defun (take p) #t))
+
+;; Two at one head: which one is decided by the literal's type, once known.
+(impl (Holder (Crate int))
+  (type %out string)
+  (defun (take c) "an int crate"))
+
+(impl (Holder (Crate string))
+  (type %out int)
+  (defun (take c) 0))
+
+(defun (main)
+  (expect "an argument known later" (take (Box (v 41))) 42)
+  (def (: n int) 1)
+  (expect "a repeated variable is one type" (take (Pair (l n) (r "x"))) #t)
+  (expect "and is matched when it is" (take (Pair (l 3) (r 4))) 3)
+  (expect "a literal decides" (take (Crate (c 5))) "an int crate")
+  (expect "a string decides" (take (Crate (c "x"))) 0)
+  0)

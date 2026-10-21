@@ -145,30 +145,39 @@ let reachHidden (isBound: string -> bool) (qualification: Map<string, string>) (
 /// import's, is a different type. A key resolves to itself everywhere, so the
 /// body means where it lands what it meant where it was written.
 ///
-/// `keyOf` answers a spelling's key, or `None` for a name that is no spelling
-/// of a declared type or constructor. A name `isBound` answers for is a binding
-/// of this module, which wins over a spelling, and is left. Constructors and
-/// record types are rewritten where they are named: as a free name, as the head
-/// of a pattern, and in the type annotations the body writes.
+/// `valueKeyOf`, `typeKeyOf` and `traitKeyOf` answer a spelling's key in each
+/// namespace, or `None` for a name that is no spelling of a declared
+/// constructor, type or trait. A name `isBound` answers for is a binding of
+/// this module, which wins over a spelling, and is left. Constructors are
+/// rewritten where they are named, as a free name and as the head of a
+/// pattern; types and traits in the type annotations the body writes.
 let keyTypeSpellings
-    (keyOf: string -> string option)
+    (valueKeyOf: string -> string option)
+    (typeKeyOf: string -> string option)
+    (traitKeyOf: string -> string option)
     (isBound: string -> bool)
     (parameters: string list)
     (body: Expr)
     : Expr =
-    let key (n: string) = keyOf n |> Option.defaultValue n
+    let valueKey (n: string) = valueKeyOf n |> Option.defaultValue n
+    let typeKey (n: string) = typeKeyOf n |> Option.defaultValue n
+    let traitKey (n: string) = traitKeyOf n |> Option.defaultValue n
 
     let subst =
         freeNames (Set.ofList parameters) body
         |> Seq.filter (isBound >> not)
-        |> Seq.choose (fun n -> keyOf n |> Option.map (fun k -> n, k))
+        |> Seq.choose (fun n -> valueKeyOf n |> Option.map (fun k -> n, k))
         |> Map.ofSeq
 
     let rec ftype (t: FType) : FType =
         match t with
-        | TName(n, r) when not (n.StartsWith "'") -> TName(key n, r)
+        | TName(n, r) when not (n.StartsWith "'") -> TName(typeKey n, r)
         | TName _ -> t
-        | TApp(n, args, r) -> TApp(key n, List.map ftype args, r)
+        // The item an `assoc` names is the trait's, not a type.
+        | TApp("assoc", [ TName(tr, trRange); item; implType ], r) ->
+            TApp("assoc", [ TName(traitKey tr, trRange); item; ftype implType ], r)
+        | TApp("dyn", TName(tr, trRange) :: items, r) -> TApp("dyn", TName(traitKey tr, trRange) :: List.map ftype items, r)
+        | TApp(n, args, r) -> TApp(typeKey n, List.map ftype args, r)
         | TArrow(mandatory, keywords, rest, ret, colour, r) ->
             TArrow(
                 List.map ftype mandatory,
@@ -181,7 +190,7 @@ let keyTypeSpellings
 
     let rec pattern (p: Pattern) : Pattern =
         match p with
-        | PConstruct(n, args, r) -> PConstruct(key n, List.map pattern args, r)
+        | PConstruct(n, args, r) -> PConstruct(valueKey n, List.map pattern args, r)
         | PList(items, tailOpt, r) -> PList(List.map pattern items, Option.map pattern tailOpt, r)
         | PVec(items, tailOpt, r) -> PVec(List.map pattern items, Option.map pattern tailOpt, r)
         | PArray(items, tailOpt, r) -> PArray(List.map pattern items, Option.map pattern tailOpt, r)

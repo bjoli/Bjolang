@@ -116,6 +116,7 @@ let rec resolveByColour (decls: Decl list) : Decl list =
             DTrait(name, v, arity, assoc, signatures, resolveByColour defaults, clr, supers, r)
         | DImpl(name, target, assoc, constraints, methodWheres, methods, r) ->
             DImpl(name, target, assoc, constraints, methodWheres, resolveByColour methods, r)
+        | DDerived inner -> DDerived(List.exactlyOne (resolveByColour [ inner ]))
         // A module's declarations are a group of their own, expanded and
         // resolved when that group is checked. Resolved here, they would lose
         // their `by-colour` before their copies are made.

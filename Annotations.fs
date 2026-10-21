@@ -73,7 +73,7 @@ let private unknownType (registry: TraitRegistry) (r: Range) (name: string) : 'a
     let shown = Naming.showTypeName name
 
     let note =
-        match hiddenSpellingNote registry name with
+        match hiddenSpellingNote registry.TypeSpellings name with
         | "" -> Diagnostics.withheldNote r.Module name
         | spelled -> spelled
 
@@ -100,7 +100,7 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
         else
 
         Diagnostics.refuseAmbiguous Diagnostics.TypeName nameRange name
-        let name = originalName registry name
+        let name = originalTypeName registry name
 
         match Map.tryFind name registry.Aliases with
             | Some (args, t) when args.Length = 0 -> t
@@ -267,7 +267,7 @@ let rec private resolveWith (checkNames: bool) (registry: TraitRegistry) (ptype:
 
     | TApp(name, args, appRange) ->
         Diagnostics.refuseAmbiguous Diagnostics.TypeName appRange name
-        let name = originalName registry name
+        let name = originalTypeName registry name
         let resolvedArgs = args |> List.map (resolveWith checkNames registry)
         DotNetInterop.checkNameableAnnotation appRange name resolvedArgs.Length
         match Map.tryFind name registry.Aliases with
@@ -422,11 +422,17 @@ let instantiateTemplateFresh (tpl: TplType) : HMType * (HMType * HMType list) li
 /// bare `Crate` becomes `kitchen__Crate` here — where the table that knows
 /// which `Crate` is meant is still at hand. Type variables are left alone.
 let rec internal qualifyFTypeNames (registry: TraitRegistry) (ftype: FType) : FType =
-    let qualify (n: string) = if n.StartsWith "'" then n else originalName registry n
+    let qualify (n: string) = if n.StartsWith "'" then n else originalTypeName registry n
     let go = qualifyFTypeNames registry
 
     match ftype with
     | TName(n, r) -> TName(qualify n, r)
+    // A trait is named by its own table, and an `assoc`'s item is the
+    // trait's, not a type.
+    | TApp("assoc", [ TName(tr, trRange); item; implType ], r) ->
+        TApp("assoc", [ TName(originalTraitName registry tr, trRange); item; go implType ], r)
+    | TApp("dyn", TName(tr, trRange) :: items, r) ->
+        TApp("dyn", TName(originalTraitName registry tr, trRange) :: List.map go items, r)
     | TApp(n, args, r) -> TApp(qualify n, List.map go args, r)
     | TArrow(mandatory, keywords, restOpt, ret, colour, r) ->
         TArrow(

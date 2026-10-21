@@ -1,0 +1,59 @@
+;; An imported trait, an imported type and an imported union case of one name
+;; are all in scope, whichever is imported first. They were filed in one
+;; table, so the later import replaced the earlier: "Unknown trait 'Greet'",
+;; "Unbound variable: Greet", or a type error naming two types. A definition
+;; of the module's own, a value, lost to an imported case.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/greet_trait.bjo")
+(import "inc/greet_case.bjo")
+(import "inc/greet_type.bjo")
+(import (prefix-types "inc/greet_trait.bjo" "T/"))
+(import (prefix-types "inc/greet_type.bjo" "Y/"))
+(import "inc/greet_both.bjo")
+
+(type (: Cat (Struct (: lives int))))
+(impl (Greet Cat) (defun (greeting c) "meow"))
+
+(: (-> %a string) (where (Greet %a)))
+(defun (twice x) (str (greeting x) (greeting x)))
+
+(: (-> %a string) (where (T/Greet %a)))
+(defun (prefixed x) (T/greeting x))
+
+(: (-> (dyn Greet) string))
+(defun (boxed d) (greeting d))
+
+(: (-> Greet string))
+(defun (shown g) (match g ((Hi) "hi") ((Ho) "ho")))
+
+(: (-> Y/Greet string))
+(defun (shown/prefixed g) (match g ((Y/Hi) "Y/hi") ((Y/Ho) "Y/ho")))
+
+;; A record and a newtype are constructed and taken apart by their type's
+;; name, under each spelling of it.
+(: (-> Y/Welcome string))
+(defun (who w) (match w ((Y/Welcome (who n)) n)))
+
+(: (-> Count int))
+(defun (counted c) (match c ((Y/Count n) n)))
+
+;; A definition of this module takes the name of an imported case over.
+(def Bye "farewell")
+
+(defun (main)
+  (expect "the trait at a type of this module" (twice (Cat (lives 1))) "meowmeow")
+  (expect "the trait at int" (twice 3) "hi inthi int")
+  (expect "the trait under a prefix" (prefixed 3) "hi int")
+  (expect "a dyn of the trait" (boxed (dyn Greet 4)) "hi int")
+  (expect "the case" (written (Greet 1)) "(Greet 1)")
+  (expect "the type" (shown (hi)) "hi")
+  (expect "the type under a prefix" (shown/prefixed Ho) "Y/ho")
+  (expect "a record" (who (Welcome (who "ann"))) "ann")
+  (expect "a record under a prefix" (who (Y/Welcome (who "bo"))) "bo")
+  (expect "a record's field" (record-ref (Y/Welcome (who "cy")) who) "cy")
+  (expect "a newtype" (counted (Count 3)) 3)
+  (expect "a newtype under a prefix" (counted (Y/Count 4)) 4)
+  (expect "a definition over an imported case" Bye "farewell")
+  (expect "all three, imported the other way round" (both) "woof (Greet 2) hi")
+  0)

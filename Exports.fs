@@ -518,17 +518,27 @@ let metadata
         |> List.map (fun n -> n, publishedAliasOf n)
         |> Map.ofList
 
-    /// The key a spelling of a declared type or constructor stands for here.
+    /// The key a spelling of a declared constructor stands for here.
     ///
-    /// And of a trait or a trait method: a default body calls the trait's
-    /// methods, and an importer that prefixed the trait's module has no bare
-    /// name for them.
-    let typeKeyOf (n: string) =
+    /// And of a trait method: a default body calls the trait's methods, and an
+    /// importer that prefixed the trait's module has no bare name for them.
+    let valueKeyOf (n: string) =
         match Map.tryFind n env.Registry.ImportAliases with
-        | Some a when (a.Kind = Ast.AliasType || a.Kind = Ast.AliasConstructor) && a.OriginalName.Contains "." ->
+        | Some a when a.Kind = Ast.AliasConstructor && a.OriginalName.Contains "." -> Some a.OriginalName
+        | Some a when a.Kind = Ast.AliasMethod && Naming.bareTraitName a.OriginalName <> a.OriginalName ->
             Some a.OriginalName
-        | Some a when a.Kind = Ast.AliasTrait && Naming.bareTraitName a.OriginalName <> a.OriginalName ->
-            Some a.OriginalName
+        | _ -> None
+
+    /// The key a spelling of a declared type stands for here.
+    let typeKeyOf (n: string) =
+        match Map.tryFind n env.Registry.TypeSpellings with
+        | Some a when a.OriginalName.Contains "." -> Some a.OriginalName
+        | _ -> None
+
+    /// The key a spelling of a trait stands for here.
+    let traitKeyOf (n: string) =
+        match Map.tryFind n env.Registry.TraitSpellings with
+        | Some a when Naming.bareTraitName a.OriginalName <> a.OriginalName -> Some a.OriginalName
         | _ -> None
 
     /// A body as it is published: the foreign aliases it names under the
@@ -537,7 +547,7 @@ let metadata
     /// it does not depend on what the importer calls them.
     let publishBody (parameters: string list) (body: Ast.Expr) =
         let body = AlphaRename.renameFree (bodyExternSubst (Set.ofList parameters) body) body
-        AlphaRename.keyTypeSpellings typeKeyOf (fun n -> Map.containsKey n env.Bindings) parameters body
+        AlphaRename.keyTypeSpellings valueKeyOf typeKeyOf traitKeyOf (fun n -> Map.containsKey n env.Bindings) parameters body
 
     // A trait's defaults are published with it, and are spliced into an
     // importing module's own implementations, so they are bodies in
@@ -1027,7 +1037,7 @@ let metadata
                 |> List.filter (fun n -> not (Map.containsKey n env.Bindings))
                 |> List.distinct
                 |> List.map (fun n ->
-                    let key = TypeEnv.originalName env.Registry n
+                    let key = TypeEnv.originalTypeName env.Registry n
 
                     match allTypeDeclarations |> List.tryFind (fun (_, (td: Ast.TypeDef), _) -> td.Name = key) with
                     | Some(originModule, td, isRec) ->
