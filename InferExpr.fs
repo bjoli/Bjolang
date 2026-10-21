@@ -3897,7 +3897,7 @@ and private spliceIntoGrammar
     // grammar's alternatives do not overlap, so at most one takes a number.
     | found when isOpenLiteral found ->
         let inst = grammarInstance p args
-        let written = EInt("0", typed.Range)
+        let written = EInt((if isOpenRealLiteral found then "0.0" else "0"), typed.Range)
 
         let takesNumber =
             match p.Shape with
@@ -3922,10 +3922,12 @@ and private spliceIntoGrammar
         // No alternative takes a number. Said here, at the value, because the
         // literal its type comes from may be far away.
         | _ ->
+            let number = if isOpenRealLiteral found then "a number with a fraction" else "a number"
+
             let found =
                 match typed.Node with
-                | TIdent(n, _) -> $"'%s{n}', a number"
-                | _ -> "a number"
+                | TIdent(n, _) -> $"'%s{n}', %s{number}"
+                | _ -> number
 
             let expected =
                 match p.Shape with

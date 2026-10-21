@@ -30,6 +30,7 @@ let private typeNameMap =
         "ulong", TypeConstants.ulongType
         "double", TypeConstants.doubleType
         "decimal", TypeConstants.decimalType
+        "float", TypeConstants.singleType
         "bigint", TypeConstants.bigintType
         "int128", TypeConstants.int128Type
         "uint128", TypeConstants.uint128Type

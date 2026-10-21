@@ -135,9 +135,11 @@ public static class BjoNum {
     /// name. The type is what says which name, as the value has none.
     public static Utf8String Show<T>(T value) => Utf8String.FromUtf16(ShowField(value));
 
-    /// What a union case's record text writes for one of its fields.
+    /// What a union case's record text writes for one of its fields. A
+    /// boolean is written as the language writes it, `#t` or `#f`.
     public static string ShowField<T>(T value) =>
         value is null ? NullCase<T>.Name ?? ""
+        : value is bool b ? (b ? "#t" : "#f")
         : value is System.Runtime.CompilerServices.ITuple tuple ? ShowTuple(tuple)
         : System.Convert.ToString(value, CultureInfo.InvariantCulture) ?? "";
 

@@ -329,6 +329,11 @@ module TypeConstants =
     let Int128Name = "System.Int128"
     [<Literal>]
     let UInt128Name = "System.UInt128"
+    /// `float`, a 32-bit floating-point number.
+    [<Literal>]
+    let SingleName = "System.Single"
+    [<Literal>]
+    let HalfName = "System.Half"
     [<Literal>]
     let KeywordName = "Keyword"
     [<Literal>]
@@ -387,6 +392,7 @@ module TypeConstants =
     let bigintType = TCon(BigIntegerName, [])
     let int128Type = TCon(Int128Name, [])
     let uint128Type = TCon(UInt128Name, [])
+    let singleType = TCon(SingleName, [])
 
 /// A number as it is written, and as C# has to read it back.
 ///
@@ -445,24 +451,42 @@ module NumericLiteral =
         else
             suffixes
 
+    /// Whether the literal has a decimal point or an exponent, `2.5` or `1e3`.
+    let isReal (text: string) : bool =
+        not (isHex text) && (text.Contains "." || text.Contains "e" || text.Contains "E")
+
     /// The type this spelling fixes, or `None` when it fixes none.
     ///
-    /// Integer literals like `1` aren't strictly typed as `int` right away. We leave
-    /// their type ambiguous (`None`) so that they can automatically adapt when passed
-    /// to functions expecting `byte`, `long`, or `double`. See `TypeEnv.numericLiteralType`.
+    /// A literal without a suffix, `1` or `2.5`, is left open (`None`), so
+    /// that it takes the type it is used at: `byte`, `long`, `decimal`, or a
+    /// newtype that is a number. See `TypeEnv.numericLiteralType`.
     let spelledType (text: string) : HMType option =
-        // A decimal point or an exponent is a real number however it ends,
-        // and it is asked first so that `0.5s` is a malformed double rather
-        // than a short with a fraction in it. The one exception is `M`, which
-        // makes a decimal of a real number.
+        // A real number with a suffix is a double however it ends, so that
+        // `0.5s` is a malformed double rather than a short with a fraction in
+        // it. The one exception is `M`, which makes a decimal of a real number.
         if isDecimalReal text then
             Some TypeConstants.decimalType
-        elif not (isHex text) && (text.Contains "." || text.Contains "e" || text.Contains "E") then
-            Some TypeConstants.doubleType
+        elif isReal text then
+            if System.Char.IsDigit text[text.Length - 1] || text.EndsWith "." then
+                None
+            else
+                Some TypeConstants.doubleType
         else
             applicable text
             |> List.tryFind (fun (s, _) -> text.EndsWith s)
             |> Option.map snd
+
+    /// The type a literal without a suffix has when nothing else says: `double`
+    /// for a real number, `int` for an integer.
+    let defaultType (text: string) : HMType =
+        if isReal text then TypeConstants.doubleType else TypeConstants.intType
+
+    /// Whether a value of this type can have a fraction: `double`, `float`,
+    /// `decimal` and `System.Half`. A real literal can take only these.
+    let holdsFraction (t: HMType) : bool =
+        match settled t with
+        | TCon((TypeConstants.DoubleName | TypeConstants.DecimalName | TypeConstants.SingleName | TypeConstants.HalfName), []) -> true
+        | _ -> false
 
     /// The literal without whatever suffix Bjolang wrote on it.
     let digits (text: string) : string =
@@ -588,6 +612,10 @@ module NumericLiteral =
             match System.Double.TryParse(digits text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
             | true, v -> not (System.Double.IsInfinity v)
             | _ -> true
+        | None when settled t = TypeConstants.singleType ->
+            match System.Single.TryParse(digits text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+            | true, v -> not (System.Single.IsInfinity v)
+            | _ -> true
         | None -> true
         | Some(lo, hi) ->
             match value (digits text) with
@@ -624,6 +652,9 @@ module NumericLiteral =
         // C# has a decimal literal, so a decimal is a constant, and a pattern.
         | TCon(TypeConstants.DecimalName, []) ->
             if isHex digits then Some $"((decimal)%s{digits})" else Some(digits + "m")
+        // C# has a literal for a `float` too, so it is not parsed at run time.
+        | TCon(TypeConstants.SingleName, []) ->
+            if isHex digits then Some $"((float)%s{digits})" else Some(digits + "f")
         // A .NET number C# has no literal for. A value that fits in a `long`
         // or a `ulong` is converted from one, which every such type allows and
         // the JIT folds. A larger one is parsed, once per evaluation: C# has
@@ -645,13 +676,13 @@ module NumericLiteral =
                 | None -> None
         | _ -> None
 
-    /// Is this one of the eight numeric types, which a C# `case` label can
-    /// hold a constant of?
+    /// Is this a numeric type that a C# `case` label can hold a constant of?
     let isBuiltinNumeric (t: HMType) : bool =
         match settled t with
         | TCon((TypeConstants.Int32Name | TypeConstants.Int64Name | TypeConstants.UInt32Name
                | TypeConstants.UInt64Name | TypeConstants.ByteName | TypeConstants.Int16Name
-               | TypeConstants.UInt16Name | TypeConstants.DoubleName | TypeConstants.DecimalName), []) -> true
+               | TypeConstants.UInt16Name | TypeConstants.DoubleName | TypeConstants.DecimalName
+               | TypeConstants.SingleName), []) -> true
         | _ -> false
 
     /// Is this a type a number can have?

@@ -269,6 +269,14 @@ let private queueImplPins (traitName: string) (target: ImplTarget) (c: TraitCons
             r
         )
 
+/// Whether an open metavariable can be the type `pattern`: anything can,
+/// except that a number literal is only a number, and a real one only a number
+/// that has fractions.
+let private literalTakes (open': HMType) (pattern: HMType) : bool =
+    not (isOpenLiteral open')
+    || (NumericLiteral.isNumeric pattern
+        && (not (isOpenRealLiteral open') || NumericLiteral.holdsFraction pattern))
+
 /// The head a wanted's implementor has, and the implementations at that head
 /// its arguments could still be an instance of. `None` while the implementor
 /// is not known to have a head.
@@ -279,7 +287,7 @@ let private candidatesOf (registry: TraitRegistry) (w: Wanted) : (string * (Impl
         | TCon(ctor, args) -> Some(ctor, args)
         | TTuple args -> Some(tupleCtor args.Length, args)
         | _ -> None)
-    |> Option.map (fun (ctor, args) -> ctor, implsMatching registry w.Trait ctor args isOpenLiteral)
+    |> Option.map (fun (ctor, args) -> ctor, implsMatching registry w.Trait ctor args literalTakes)
 
 let private takeUndecided () : Wanted list =
     let ws = List.ofSeq undecidedWanteds
@@ -473,8 +481,14 @@ let private defaultNumericLiterals (env: Env) : unit =
         // written without a suffix has always been. It has to fit there too,
         // or C# refuses the literal in the generated code.
         | TMeta m ->
-            m.Value <- Some TypeConstants.intType
-            checkLiteralFits TypeConstants.intType text r |> ignore
+            let settled = literalDefault m.Id
+            m.Value <- Some settled
+            checkLiteralFits settled text r |> ignore
+        // A real literal at a type variable: `Num` does not say the type has
+        // fractions, and `CreateChecked` would cut the fraction off.
+        | TVar _ as v when NumericLiteral.isReal text ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos r}: '%s{text}' has a fraction, and it is being used at the type parameter '%s{DotNetInterop.showType v}', which may be a whole number. Give the function a concrete type, or write the number as a whole one."
         // A type variable. The literal is emitted through the implementor's own
         // `CreateChecked`, and the `Num` that `collectTraitConstraints` reads
         // off it is what makes that legal.

@@ -137,7 +137,8 @@ let collectTraitConstraints (env: Env) (body: TypedExpr) : TraitConstraint list 
 /// a shape rather than a type. Every other use goes through
 /// `numericLiteralType` below and leaves a bare integer open.
 let inferNumericType (value: string) : HMType =
-    NumericLiteral.spelledType value |> Option.defaultValue TypeConstants.intType
+    NumericLiteral.spelledType value
+    |> Option.defaultWith (fun () -> NumericLiteral.defaultType value)
 
 /// The numeric literals whose type is still open, and where each was written.
 ///
@@ -148,7 +149,8 @@ let inferNumericType (value: string) : HMType =
 /// function could not be written however well the constraints worked.
 ///
 /// Nothing may *stay* open. `defaultNumericLiterals` settles the survivors at
-/// `int` before the enclosing declaration generalizes, and is also where a
+/// `int`, or `double` for a real literal, before the enclosing declaration
+/// generalizes, and is also where a
 /// literal that met a type no number can have is refused.
 ///
 /// Per compilation, and emptied by every defaulting pass — which leaves the
@@ -184,6 +186,10 @@ let clearNumericLiterals () : unit =
 
 /// Refuses a literal the type it has ended up at cannot hold.
 let internal checkLiteralFits (t: HMType) (text: string) (r: Range) : HMType =
+    if NumericLiteral.isReal text && not (NumericLiteral.holdsFraction t) then
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: '%s{text}' has a fraction, and the type '%s{DotNetInterop.showType t}' has none. A number with a decimal point or an exponent can be a double, a float or a decimal."
+
     if not (NumericLiteral.fits t text) then
         failwithf
             $"Type Error at %s{Lexer.formatPos r}: '%s{text}' does not fit in a '%s{DotNetInterop.showType t}'."
@@ -224,21 +230,37 @@ let rec internal metaIdsOf (t: HMType) : int list =
             | None -> [ m.Id ]
         | _ -> [])
 
-/// Settles the numeric literals among `types` at `int`, now.
+/// The type an open literal's metavariable settles at when nothing says what
+/// it is: `double` if a real literal shares it, as in `(+ 1 2.5)`, and `int`
+/// otherwise.
+let internal literalDefault (metaId: int) : HMType =
+    let real =
+        openLiterals
+        |> Seq.exists (fun (lit, text, _) ->
+            NumericLiteral.isReal text
+            && (match followMeta lit with
+                | TMeta l -> l.Id = metaId
+                | _ -> false))
+
+    if real then TypeConstants.doubleType else TypeConstants.intType
+
+/// Settles the numeric literals among `types` at `int`, or at `double` for a
+/// real one, now.
 ///
 /// For the .NET boundary, which needs a concrete type where the rest of
 /// inference can wait. Reflection picks an overload by argument type and scores
 /// one that is still open worst against every candidate, so leaving a literal
 /// open turned `(round 5)` from `Round(double)` into an ambiguity with
-/// `Round(decimal)`. A literal handed to .NET is an `int` and always was; C#'s
-/// own widening is what takes it the rest of the way.
+/// `Round(decimal)`. An integer literal handed to .NET is an `int`, and a real
+/// one a `double`, as they always were; C#'s own widening is what takes them
+/// the rest of the way.
 let internal settleLiterals (types: HMType list) : unit =
     let waiting = types |> List.collect metaIdsOf |> Set.ofList
 
     if not (Set.isEmpty waiting) then
         for (t, _, _) in openLiterals do
             match followMeta t with
-            | TMeta m when Set.contains m.Id waiting -> m.Value <- Some TypeConstants.intType
+            | TMeta m when Set.contains m.Id waiting -> m.Value <- Some(literalDefault m.Id)
             | _ -> ()
 
 /// Whether `t` is a numeric literal whose type is still open.
@@ -254,6 +276,13 @@ let internal isOpenLiteral (t: HMType) : bool =
             match followMeta lit with
             | TMeta l -> l.Id = m.Id
             | _ -> false)
+    | _ -> false
+
+/// Whether `t` is an open numeric literal that a real literal, such as `2.5`,
+/// shares, so that it can take only a type that has fractions.
+let internal isOpenRealLiteral (t: HMType) : bool =
+    match followMeta t with
+    | TMeta m -> isOpenLiteral t && literalDefault m.Id = TypeConstants.doubleType
     | _ -> false
 
 /// The environment slot a `seq` records its element type in, so that the
@@ -484,8 +513,8 @@ let rec checkPattern
     // in a `case` label a `CreateChecked` could reach a type parameter through.
     //
     // So a suffix-free literal takes the scrutinee's type when that is already
-    // a number — which is what lets a `long` be matched on `5` — and `int`
-    // otherwise, as it always did.
+    // a number — which is what lets a `long` be matched on `5` — and otherwise
+    // `int`, or `double` for a real one, as it always did.
     | PInt(value, r) ->
         let inferredType =
             match NumericLiteral.spelledType value with
@@ -507,7 +536,7 @@ let rec checkPattern
                 | TVar _ ->
                     failwithf
                         $"Pattern Error at %s{Lexer.formatPos r}: '%s{value}' is matched against a generic type, and a number has no spelling at a type parameter. Compare it instead, or give the function a concrete type."
-                | _ -> TypeConstants.intType
+                | _ -> NumericLiteral.defaultType value
             |> fun t -> if (numericNewtype env.Registry t).IsSome then t else checkLiteralFits t value r
 
         unify env.Registry expectedType inferredType

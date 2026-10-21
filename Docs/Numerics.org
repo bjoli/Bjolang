@@ -13,15 +13,17 @@ Twelve, each a .NET type under a name a signature can write:
 | ~int~    | −2 147 483 648 … 2 147 483 647 | ~double~  | IEEE 754 binary64         |
 | ~int128~ | −2^127 … 2^127−1               | ~uint128~ | 0 … 2^128−1               |
 | ~bigint~ | any integer                    | ~decimal~ | 28 digits, exact decimals |
+|          |                                | ~float~   | IEEE 754 binary32         |
 
-~bigint~ is ~System.Numerics.BigInteger~, ~decimal~ is ~System.Decimal~, and
-~int128~ and ~uint128~ are ~System.Int128~ and ~System.UInt128~. A ~bigint~
+~bigint~ is ~System.Numerics.BigInteger~, ~decimal~ is ~System.Decimal~,
+~float~ is ~System.Single~, and ~int128~ and ~uint128~ are ~System.Int128~ and
+~System.UInt128~. A ~bigint~
 allocates for each result, as it does in C#. A ~decimal~ adds ~0.1M~ and ~0.2M~
 to exactly ~0.3M~, and keeps the scale it was written with: ~1.50M~ is equal to
 ~1.5M~ and is written as ~1.50~.
 
-There is no ~float~ and no ~sbyte~ name. Nothing in the language depends on
-their absence: see *A .NET number with no name* below.
+There is no ~sbyte~ name. Nothing in the language depends on its absence: see
+*A .NET number with no name* below.
 
 ~char~ is not one of these. It is a Unicode scalar value; it can be compared and
 converted (~char->int~, ~int->char~), and it cannot be added.
@@ -39,8 +41,9 @@ A number written with a suffix is that type and nothing else:
 The suffixes are F#'s. ~int128~ and ~uint128~ have none, in F# as here; a number
 written without a suffix takes either type where it is used as one.
 
-A decimal point or an exponent makes it a ~double~ — ~2.5~, ~1e10~, ~1e+10~ —
-unless it ends in ~M~, which makes it a ~decimal~: ~2.5M~. ~0x2A~ and
+A decimal point or an exponent makes it a real number — ~2.5~, ~1e10~,
+~1e+10~ — which can be a ~double~, a ~float~ or a ~decimal~, and not an integer.
+With ~d~ it is a ~double~ and with ~M~ a ~decimal~: ~2.5M~. ~0x2A~ and
 ~0b101010~ are 42.
 
 A ~bigint~ literal has no limit: ~340282366920938463463374607431768211456I~ is
@@ -55,11 +58,22 @@ whatever surrounds it:
 (doubled 21)                  ;; every number here is a ushort
 #+END_SRC
 
-Where nothing says, it is an ~int~:
+A real number does the same among the types that have fractions:
+
+#+BEGIN_SRC scheme
+(: tenth decimal)
+(def tenth 0.1)               ;; a decimal, so (+ tenth 0.2) is exactly 0.3
+(: n int)
+(def n 2.5)                   ;; Type error: 2.5 has a fraction, and int has none
+#+END_SRC
+
+Where nothing says, it is an ~int~, or a ~double~ if it is real:
 
 #+BEGIN_SRC scheme
 (def n 5)                     ;; int
 (+ 1 2)                       ;; int
+(def x 2.5)                   ;; double
+(+ 1 2.5)                     ;; double: the 1 takes the type of the 2.5
 #+END_SRC
 
 A ~let~ binding takes its answer from any use, not only the first:
@@ -90,11 +104,13 @@ a bare ~5~ before — and is refused against a type variable.
     (_ "other")))
 #+END_SRC
 
-A ~decimal~ has C# constants and can be matched on. A ~bigint~, ~int128~ or
+A ~decimal~ or a ~float~ has C# constants and can be matched on, also on a
+real number. A ~bigint~, ~int128~ or
 ~uint128~ has none, so matching one on a number is refused; compare it with ~=~.
 
-An argument to a *.NET* method is settled at ~int~ before the overload is
-chosen, then widened as C# would widen it. ~(sqrt 9)~ is 3.0.
+An argument to a *.NET* method is settled at ~int~, or at ~double~ if it is
+real, before the overload is chosen, then widened as C# would widen it.
+~(sqrt 9)~ is 3.0.
 
 ** Arithmetic
 
@@ -293,7 +309,7 @@ There is no implicit widening between *variables*. This is a type error:
 
 #+BEGIN_SRC scheme
 (: scale (-> int double))
-(defun (scale n) (* n 1.5))              ;; Type error: int / double
+(defun (scale n) (* n 1.5))              ;; Type error: 1.5 is not an int
 #+END_SRC
 
 ~cast~ is the conversion, and it is C#'s:
@@ -500,9 +516,9 @@ generated code.
 ** A .NET number with no name
 
 A .NET type that implements ~INumber<T>~ for itself is a number to Bjolang,
-named or not. ~System.Half~, ~System.Single~ and ~System.SByte~ have no name
-here, and work through ~import/class~: ~Num~ reaches their arithmetic, and a
-number written without a suffix takes their type.
+named or not. ~System.Half~ and ~System.SByte~ have no name here, and work
+through ~import/class~: ~Num~ reaches their arithmetic, and a number written
+without a suffix takes their type, a real one only ~System.Half~'s.
 
 #+BEGIN_SRC scheme
 (import/class (Half (: System.Half)))
@@ -529,7 +545,9 @@ the operator it stands for.
 
 ** Rough edges
 
-- *No ~float~ or ~sbyte~ name.* See *A .NET number with no name*.
+- *No ~sbyte~ name.* See *A .NET number with no name*.
+- *A real number is refused at a type variable.* ~Num~ does not say that the
+  type has fractions, so ~(* x 0.5)~ at a generic ~x~ is an error.
 - *A ~bigint~, ~int128~ or ~uint128~ in a pattern is refused*, as C# has no
   constant of the type.
 - *No digit separators.* ~1_000~ reads as ~1~ followed by the name ~_000~.

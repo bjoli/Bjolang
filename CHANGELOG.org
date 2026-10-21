@@ -3,6 +3,44 @@
 
 What each change guarantees, and what it leaves open.
 
+* A real number takes the type it is used at
+
+- A number with a decimal point or an exponent and no suffix, ~2.5~ or
+  ~1e3~, is no longer always a ~double~. It takes the type it is used at, as
+  a whole number does, among the types that have fractions: ~double~,
+  ~float~, ~decimal~, ~System.Half~, and a newtype of one of these that
+  implements ~Num~. So ~(+ (Meters 1.5) 2.0)~ type-checks, and ~0.1~ at a
+  ~decimal~ is exactly a tenth, not a double converted to one.
+- Where nothing says, it is a ~double~, as before. ~(+ 1 2.5)~ is a
+  ~double~: the ~1~ takes the type of the ~2.5~. An argument to a .NET
+  method is settled at ~double~.
+- At a type that has no fractions it is refused, naming the type: ~(: n int)
+  (def n 2.5)~. At a type variable it is refused too, as ~Num~ does not say
+  that the type has fractions; a whole number there is still built with
+  ~CreateChecked~.
+- An implementation or a grammar alternative at a type without fractions is
+  not chosen for a real literal. A grammar that has no alternative for one
+  says it found a number with a fraction.
+- ~2.5d~ is a ~double~ and ~2.5M~ a ~decimal~, as before.
+- ~float~ is a name for ~System.Single~. A literal at it is a C# ~float~
+  literal, ~2.5f~, and it can be matched on in a pattern.
+- Tests: ~444_real_literals.bjo~, ~codegen/numeric_literals.bjo~,
+  ~errors/real_literal_at_int.bjo~, ~errors/real_literal_at_int_newtype.bjo~,
+  ~errors/real_literal_at_type_parameter.bjo~,
+  ~errors/grammar_argument_fits_nothing.bjo~.
+
+* A boolean prints as it is written
+
+- ~(->str #t)~ is ~"#t"~, and ~#f~ is ~"#f"~, not .NET's ~True~ and
+  ~False~. This holds for ~println~, interpolation, and a boolean inside a
+  list, a tuple or a union case.
+- A field of a record still prints as .NET prints it, as the rest of the
+  record does.
+- ~.ToString~ on a .NET object is the .NET method and is unchanged.
+- Tests: ~144_booleans.bjo~, ~131_opaque.bjo~, ~120_maps.bjo~,
+  ~312_local_shadows_constrained.bjo~, ~335_struct_union.bjo~,
+  ~repl/materialized_impl_entry~.
+
 * Num requires Ordered, and Integral requires Num
 
 - The numeric traits require one another as their .NET interfaces extend

@@ -228,15 +228,15 @@ let rec prune (registry: TraitRegistry) (t: HMType) : HMType =
 /// variables: `(impl (Describe (List int)))` is found by its head, `List`, and
 /// must not be selected for `(List string)`, nor `(Pair %a %a)` for
 /// `(Pair int string)`. A metavariable in the arguments matches anything,
-/// since nothing decides it yet, except that one `isOpenLiteral` says is a
-/// number literal matches only a number type: `(List string)` is never the
-/// type of `(list 1 2)`.
+/// since nothing decides it yet, except that one `literalTakes` refuses: a
+/// number literal matches only a number type, `(List string)` never being the
+/// type of `(list 1 2)`, and a real literal only a type that has fractions.
 let implsMatching
     (registry: TraitRegistry)
     (traitName: string)
     (ctor: string)
     (args: HMType list)
-    (isOpenLiteral: HMType -> bool)
+    (literalTakes: HMType -> HMType -> bool)
     : (ImplTarget * Map<string, HMType>) list =
     let rec matchInto (subst: Map<string, HMType> option) (pattern: HMType) (actual: HMType) =
         match subst with
@@ -248,7 +248,7 @@ let implsMatching
                 | None -> Some(Map.add v a s)
                 | Some earlier -> if sameType earlier a then subst else None
             | p, (TMeta _ as open') ->
-                if isOpenLiteral open' && not (NumericLiteral.isNumeric p) then None else subst
+                if literalTakes open' p then subst else None
             | TCon(p, ps), TCon(a, as') when p = a && ps.Length = as'.Length -> List.fold2 matchInto subst ps as'
             | TTuple ps, TTuple as' when ps.Length = as'.Length -> List.fold2 matchInto subst ps as'
             | TFun(ps, pr, _), TFun(as', ar, _) when ps.Length = as'.Length ->
@@ -295,7 +295,7 @@ let implFor (registry: TraitRegistry) (traitName: string) (t: HMType) : (ImplTar
 
     match headed with
     | Some(ctor, args) when hasImplAtHead registry traitName ctor ->
-        match implsMatching registry traitName ctor args (fun _ -> false) with
+        match implsMatching registry traitName ctor args (fun _ _ -> true) with
         | [] -> None
         | [ found ] -> Some found
         | several ->
