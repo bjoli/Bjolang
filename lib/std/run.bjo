@@ -427,6 +427,17 @@
   (loop (:for child children)
         (:do (ignore (process-kill child)))))
 
+;; Undoes a form that was wired and will not run, because a stage or a file
+;; after it failed. Its processes are killed and its two ends closed: a filter
+;; then reads to the end of its input and finishes, where it would otherwise
+;; wait for input that never comes, and the scope that started it would wait
+;; for it.
+(: (-> Wired void))
+(defun (abandon w)
+  (kill-all (record-ref w children))
+  (when-let (to (record-ref w sink)) (close-output-port to))
+  (when-let (from (record-ref w source)) (close-input-port from)))
+
 ;; Connect wired stages front to back, pumping each one's output into the next
 ;; one's input.
 (: (-> (List Node) (Option OutputPort) (Result Exception Wired)))
@@ -446,12 +457,12 @@
      (match (wire node errors)
        ;; Whatever is already running would otherwise sit on a stdin nobody
        ;; will ever close.
-       ((Err e) (kill-all (record-ref joined children)) (Err e))
+       ((Err e) (abandon joined) (Err e))
        ((Ok w)
         (match (junction (record-ref joined source) (record-ref w sink))
           ((Err e)
-           (kill-all (record-ref joined children))
-           (kill-all (record-ref w children))
+           (abandon joined)
+           (abandon w)
            (Err e))
           ((Ok link)
            (join-onto
@@ -526,7 +537,7 @@
     ((Err e) (close-input-port file) (Err e))
     ((Ok w)
      (match (record-ref w sink)
-       (None (kill-all (record-ref w children))
+       (None (abandon w)
              (close-input-port file)
              (Err (run-error "this form already takes its input from somewhere, so it cannot also take it from a file")))
        ((Some to)
@@ -542,11 +553,11 @@
 (defun (redirect-output inner errors path append)
   (def (Ok w) (wire inner errors) :propagate)
   (match (record-ref w source)
-    (None (kill-all (record-ref w children))
+    (None (abandon w)
           (Err (run-error "this form already sends its output somewhere, so it cannot also send it to a file")))
     ((Some from)
      (match (open-for-writing path append)
-       ((Err e) (kill-all (record-ref w children)) (Err e))
+       ((Err e) (abandon w) (Err e))
        ((Ok file)
         (Ok (record-set w
                         (source None)

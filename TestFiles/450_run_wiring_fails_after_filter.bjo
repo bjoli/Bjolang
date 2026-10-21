@@ -1,0 +1,32 @@
+;; A form that fails to wire after a filter in it has started is an error,
+;; and leaves nothing running: the filter is given the end of its input and
+;; finishes, so the program ends. into-file over a filter whose file cannot be
+;; opened, and a pipe from a filter into a program that does not start, both
+;; hung at exit.
+(import (std prelude))
+(import (std run))
+(import (std simpletest))
+
+(: Filter)
+(defbjo (shout in out)
+  (write-string out (string-upcase (read-all in)))
+  unit)
+
+(: failed? (-> (Result Exception %a) bool))
+(defun (failed? r)
+  (match r ((Ok _) #f) ((Err _) #t)))
+
+(defun (main)
+  (expect "into-file: a file that cannot be opened, over a filter"
+          (failed? (run/status '(into-file "/nonexistent-dir-bjolang/x.txt" ,shout)))
+          #t)
+  (expect "pipe: a program that does not start, after a filter"
+          (failed? (run/status '(pipe ,shout (no-such-program-bjolang))))
+          #t)
+  (expect "pipe: a program that does not start, between two filters"
+          (failed? (run/status '(pipe ,shout (no-such-program-bjolang) ,shout)))
+          #t)
+  (expect "a filter that wires still runs"
+          (run/string '(pipe (echo "hi") ,shout))
+          (Ok "HI\n"))
+  0)

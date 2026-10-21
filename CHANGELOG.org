@@ -3,6 +3,15 @@
 
 What each change guarantees, and what it leaves open.
 
+* (std run): a form that fails to wire leaves no filter waiting
+
+- A form that does not start after a filter in it has started is an error,
+  and the program still ends. Every stage wired before the failure has its
+  processes killed and both its ends closed, so a filter reads to the end of
+  its input and finishes. ~(into-file "/no/such/dir/x" ,filter)~ and
+  ~(pipe ,filter (no-such-program))~ hung at exit, waiting for the filter.
+- Tests: ~450_run_wiring_fails_after_filter.bjo~.
+
 * Fixes found reviewing the changes of 20 and 21 October
 
 - Timeouts and sleeps keep firing however long a process runs. The timer
