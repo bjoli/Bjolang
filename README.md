@@ -298,7 +298,15 @@ Oh, and it also has a seq version
 
 ### Constructorless DSLs
 
-Lists, quasiquoted lists and vectors do not need constructors in some circumstances, giving us nice small DSLs. Like the (std fmt) string formatter, bringing string formatting into the 1980s:
+A literal can be read by a grammar, which gives us nice small DSLs without constructors everywhere. `def/grammar` declares the syntax of the literals and the types they become. Here is (std fmt)’s grammar for a block of output:
+
+```scheme
+(def/grammar Block
+  (:or (: BStr string) (: BInt int) (: BChar char) (: BMany (Vec Block))
+       (: BRun ,(-> Sink int int))))
+```
+
+Wherever a `Block` is expected, by a parameter, an annotation, a return type or an element of a `(Vec Block)`, a literal is read by that grammar, and the compiler checks it right where it is written. Everywhere else a quoted list is just data. That brings string formatting into the 1980s:
 
 ```scheme
 ;; Check Examples/receipt.bjo for the full source
@@ -377,9 +385,9 @@ purchase,  and  anything unopened may be
 returned within thirty days.
 ```
 
-And any declared (Vec block), also a def, gets this treatment, so any function that needs formatted strings can use this.
+`receipt` says it returns a `(Vec Block)`, so the vec literal it ends in is read as blocks, and so is anything else written where a `Block` goes, a `def` with that type included. Any function that needs formatted strings can take blocks the same way.
 
-The same machinery gives (std run) its shell notation, have a look at [Examples/run_with_bjoroutine.bjo](Examples/run_with_bjoroutine.bjo) which finds insidious plans!
+A grammar is declared in the module with the types, so a library can give its users a notation of their own. (std run) declares one for shell pipelines, have a look at [Examples/run_with_bjoroutine.bjo](Examples/run_with_bjoroutine.bjo) which finds insidious plans!
 
 ## License
 
