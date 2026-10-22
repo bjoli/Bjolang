@@ -266,6 +266,12 @@ let checkAddendum (initialEnv: Env) (decls: Decl list) : Env * TDecl list =
         solvePending env
         env, List.map resolveOpenCaseNamesInDecl typedDecls)
 
+/// Called with every program `checkProgram` checked and the environment it
+/// left, for a tool that reads the types, such as the language server. A
+/// declaration that failed to check is not among them. Called before the
+/// whole-module checks after it, which can still fail the program.
+let mutable observe: (Env -> TDecl list -> unit) option = None
+
 let checkProgram (initialEnv: Env) (program: Decl list) : Env * TDecl list =
     let finalEnv, _, typedDecls = checkDeclGroup initialEnv Map.empty program
     // Anything raised outside a declaration that generalizes still has to be
@@ -273,6 +279,7 @@ let checkProgram (initialEnv: Env) (program: Decl list) : Env * TDecl list =
     solvePending finalEnv
     // Every case a placeholder stood for is chosen by now.
     let typedDecls = List.map resolveOpenCaseNamesInDecl typedDecls
+    observe |> Option.iter (fun f -> f finalEnv typedDecls)
     checkModuleValuesAreConcrete finalEnv.Registry typedDecls
     warnAboutShadowedMethods finalEnv.Registry typedDecls
 
