@@ -85,7 +85,13 @@ type ReturnScope =
 ///
 /// This state is mutable and shared by reference so it persists across 
 /// nested `CodegenContext` records (e.g. during `withIndent`).
-type LineState = { mutable Pending: Lexer.Range option }
+///
+/// `Mapped` is set while a directive is in force. C# numbers every line after a
+/// directive as the source lines following its start, so a brace or scaffolding
+/// line with no directive of its own would claim a made-up source line — often
+/// one inside the next function, where a breakpoint then binds. `indent` ends
+/// such a mapping with `#line hidden`, so a directive maps one line only.
+type LineState = { mutable Pending: Lexer.Range option; mutable Mapped: bool }
 
 /// The constant literals lifted out of method bodies into static fields.
 ///
@@ -253,9 +259,13 @@ let private hasUsableSpan (r: Lexer.Range) =
 /// breakpoints and stack traces in the resulting PDB.
 let private flushLine (ctx: CodegenContext) (indentWidth: int) =
     match ctx.Line.Pending with
-    | None -> ()
+    | None ->
+        if ctx.Line.Mapped then
+            ctx.Line.Mapped <- false
+            ctx.Builder.AppendLine("#line hidden") |> ignore
     | Some r ->
         ctx.Line.Pending <- None
+        ctx.Line.Mapped <- isBjoSource r.File
 
         if not (isBjoSource r.File) then
             // Not skipped: skipping would leave the *previous* directive in
@@ -298,6 +308,7 @@ let lineDirective (ctx: CodegenContext) (r: Lexer.Range) =
 /// any pending directive requests to prevent them from being applied incorrectly.
 let hiddenDirective (ctx: CodegenContext) =
     ctx.Line.Pending <- None
+    ctx.Line.Mapped <- false
     ctx.Builder.AppendLine("#line hidden") |> ignore
 
 /// A user-facing code generation failure. A loud error at compile time beats
@@ -3336,9 +3347,12 @@ and private hoistForm (ctx: CodegenContext) (expr: TypedExpr) (body: TypedExpr) 
     // As in `hoistToTemp`: this is generated out of order, so the directive
     // owed to the line being written must not land inside it.
     let pendingHere = ctx.Line.Pending
+    let mappedHere = ctx.Line.Mapped
     ctx.Line.Pending <- None
+    ctx.Line.Mapped <- false
     generateBlock inner Return body
     ctx.Line.Pending <- pendingHere
+    ctx.Line.Mapped <- mappedHere
 
     let bodyText = scratch.ToString()
 
@@ -7776,7 +7790,7 @@ let generateProgram
 
     let ctx =
         { Builder = StringBuilder()
-          Line = { Pending = None }
+          Line = { Pending = None; Mapped = false }
           Literals =
             { Fields = System.Collections.Generic.Dictionary()
               Taken = System.Collections.Generic.HashSet()

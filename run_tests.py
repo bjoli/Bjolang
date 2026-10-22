@@ -1317,7 +1317,29 @@ def run_pdb_tests():
         check_that("the program builds", False, output)
     else:
         ran = subprocess.run(["dotnet", str(SOURCE.with_suffix(".exe"))], capture_output=True, text=True)
-        check_that("the program runs", ran.stdout == "big 2\n[2 4 6]\n[30 20 10]\n", ran.stdout + ran.stderr)
+        check_that("the program runs", ran.stdout == "12\nbig 2\n[2 4 6]\n[30 20 10]\n", ran.stdout + ran.stderr)
+
+        # Where a debugger stops: inside the function the code is from. A brace
+        # or a loop's scaffolding numbered as a continuation of the directive
+        # above it lands past the function's end, often in the next one, where
+        # a breakpoint then binds. A `defun` runs to the next blank line.
+        lines = SOURCE.read_text().splitlines()
+        defuns = {}
+        for i, text in enumerate(lines):
+            m = re.match(r"\(defun \(([^ )]+)", text)
+            if m:
+                end = i
+                while end + 1 < len(lines) and lines[end + 1].strip():
+                    end += 1
+                defuns[m.group(1)] = (i + 1, end + 1)
+        stops = [(method, int(n)) for k, v in facts if k == "line" for method, n in [v.split(" ")]]
+        check_that("the debugger has lines to stop at", len(stops) > 10, stops)
+        check_that("a function stops only at its own lines",
+                   [(m, n) for m, n in stops
+                    if m in defuns and not defuns[m][0] <= n <= defuns[m][1]] == [], stops)
+        check_that("every stop is in some function",
+                   [(m, n) for m, n in stops
+                    if not any(a <= n <= b for a, b in defuns.values())] == [], stops)
 
         shown = [v for k, v in facts if k == "shown"]
         hidden = [v for k, v in facts if k == "hidden"]

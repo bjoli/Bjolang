@@ -5,6 +5,7 @@
 //   hidden <name>       one it hides
 //   checksum <bool>     whether the assembly's PdbChecksum is of this PDB
 //   id <bool>           whether the assembly's CodeView entry names its ID
+//   line <method> <n>   a source line a debugger stops at in that method
 open System.IO
 open System.Collections.Immutable
 open System.Reflection.Metadata
@@ -33,6 +34,13 @@ for th in metadata.TypeDefinitions do
     if name.StartsWith "<" && name <> "<Module>" && name <> "<PrivateImplementationDetails>" then
         for f in t.GetFields() do
             printfn "field %s" (metadata.GetString(metadata.GetFieldDefinition(f).Name))
+
+for h in reader.MethodDebugInformation do
+    let name = metadata.GetString(metadata.GetMethodDefinition(h.ToDefinitionHandle()).Name)
+
+    for sp in reader.GetMethodDebugInformation(h).GetSequencePoints() do
+        if not sp.IsHidden then
+            printfn "line %s %d" name sp.StartLine
 
 for e in pe.ReadDebugDirectory() do
     match e.Type with
