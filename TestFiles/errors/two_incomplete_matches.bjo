@@ -1,0 +1,19 @@
+;; EXPECT-ERROR: (Square _) reaches no clause
+;; EXPECT-ERROR: (Some (Square _)) reaches no clause
+
+;; Every incomplete match of a module is reported, not only the first.
+
+(type (: Shape (Union (: Circle int) (: Square int))))
+
+(: size (-> Shape int))
+(defun (size s)
+  (match s
+    ((Circle r) r)))
+
+(: pick (-> (Option Shape) int))
+(defun (pick o)
+  (match o
+    ((Some (Circle r)) r)
+    (None 0)))
+
+(defun (main) (println (int->string (+ (size (Circle 1)) (pick None)))) 0)

@@ -340,6 +340,63 @@ let private fitsFor
     |> List.map (fun (_, _, written) -> written)
     |> List.distinct
 
+/// A hole, for a tool that offers what could fill it: its type as shown, the
+/// bindings in scope that fit, ranked as the refusal ranks them, the
+/// constructors of its type written with holes for what they take, and for a
+/// function type how many parameters it takes.
+type Fillers =
+    { Range: Range
+      Type: string
+      Fits: string list
+      Constructors: string list
+      Parameters: int option }
+
+/// Called with each hole as it is refused.
+let mutable observe: (Fillers -> unit) option = None
+
+/// The values of type `t` the code at `h` may build directly, each with a hole
+/// for what it takes: a union's cases, a record with each field, a newtype
+/// around its value. Nothing for a type whose representation is hidden there.
+let private constructorsOf (h: Hole) (t: HMType) : string list =
+    let registry = h.Env.Registry
+    let spellings = spellingsOf registry
+
+    let written (key: string) =
+        match Map.tryFind key spellings with
+        | Some visible -> visible
+        | None ->
+            match Naming.typeKeyParts key with
+            | Some(_, bare) -> bare
+            | None -> key
+
+    let applied (key: string) (arity: int) =
+        if arity = 0 then written key else "(" + written key + String.replicate arity " _" + ")"
+
+    let rec deref t =
+        match t with
+        | TMeta { Value = Some inner } -> deref inner
+        | _ -> t
+
+    match deref t with
+    | TCon(name, _) when
+        Map.containsKey name registry.OpaqueTypes
+        && h.Range.Module <> ""
+        && not (representationVisible registry h.Range.Module name)
+        ->
+        []
+    | TCon(name, _) ->
+        match Map.tryFind name registry.Unions, Map.tryFind name registry.Records, Map.tryFind name registry.Newtypes with
+        | Some(_, cases), _, _ -> cases |> List.map (fun (c, payloads) -> applied c payloads.Length)
+        | _, Some(_, fields), _ ->
+            [ "(" + written name + (fields |> List.map (fun (f, _) -> " (" + f + " _)") |> String.concat "") + ")" ]
+        | _, _, Some _ -> [ applied name 1 ]
+        | _ ->
+            match name with
+            | "Option" -> [ "(Some _)"; "None" ]
+            | "Result" -> [ "(Ok _)"; "(Err _)" ]
+            | _ -> []
+    | _ -> []
+
 /// The refusal of a hole: where it is, what it stands for, and what in scope
 /// would do there. `waiting` is every constraint the declaration raised, with
 /// the type it is asked at; those that mention the hole's type are what the
@@ -393,6 +450,21 @@ let describe (clrHolds: string -> HMType -> bool) (waiting: (string * HMType) li
         match t, asked with
         | TMeta _, [] -> []
         | _ -> fitsFor clrHolds h t waiting (not (namesAType t))
+
+    observe
+    |> Option.iter (fun f ->
+        let rec parameters t =
+            match t with
+            | TMeta { Value = Some inner } -> parameters inner
+            | TFun(args, _, _) -> Some args.Length
+            | _ -> None
+
+        f
+            { Range = h.Range
+              Type = shown.Head
+              Fits = fits
+              Constructors = constructorsOf h t
+              Parameters = parameters t })
 
     let fitsLine =
         let named = fits |> List.truncate fitsShown |> String.concat ", "

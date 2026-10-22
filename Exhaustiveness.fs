@@ -676,6 +676,78 @@ let rec private missing (registry: TraitRegistry) (types: HMType list) (matrix: 
             |> Option.map (fun rest -> missingCtor registry columnType matrix :: rest)
 
 // ---------------------------------------------------------------------------
+// The clauses a match lacks
+// ---------------------------------------------------------------------------
+
+/// A match that does not cover every value, for a tool that offers to add the
+/// clauses it lacks: the match, and patterns that cover what its clauses do
+/// not, as source writes them.
+type MissingClauses = { Range: Range; Patterns: string list }
+
+/// Called with each match the check finds incomplete.
+let mutable observe: (MissingClauses -> unit) option = None
+
+/// A missing value as a clause would match it. A value of an integer or a
+/// char column, or a sequence of one length, is widened to all of them, so
+/// that the clauses added are few and the last of them is reached.
+let rec private widened (w: Witness) : Witness =
+    match w with
+    | WValue _ -> WAny
+    | WCase(name, args) -> WCase(name, List.map widened args)
+    | WTuple args -> WTuple(List.map widened args)
+    | WRecord(name, fields) -> WRecord(name, fields |> List.map (fun (f, x) -> f, widened x))
+    | WSeq(kind, items, false) -> WSeq(kind, List.map widened items @ [ WAny ], true)
+    | WSeq(kind, items, true) -> WSeq(kind, List.map widened items, true)
+    | other -> other
+
+/// The pattern a widened witness is, as a row of the matrix.
+let rec private patternOf (registry: TraitRegistry) (t: HMType) (w: Witness) : TypedPattern =
+    let at node = { Type = t; Range = nowhere; Node = node }
+    let each (types: HMType list) (ws: Witness list) = List.map2 (patternOf registry) types ws
+
+    match w with
+    | WAny
+    | WValue _ -> wildcard t
+    | WBool b -> at (TPBool b)
+    | WCase(name, args) -> at (TPConstruct(name, each (fieldsOf registry t (CCase name)) args))
+    | WTuple args -> at (TPTuple(each (fieldsOf registry t (CTuple args.Length)) args))
+    | WRecord(name, fields) ->
+        let types = fieldsOf registry t (CRecord(name, List.map fst fields))
+        at (TPRecord(name, List.map2 (fun (f, x) ft -> f, patternOf registry ft x) fields types))
+    | WSeq(kind, items, openEnded) ->
+        let elem =
+            match signatureOf registry t with
+            | Sequence(_, e) -> e
+            | _ -> raise Undecidable
+
+        let shown, rest =
+            if openEnded then List.take (items.Length - 1) items, Some(wildcard t) else items, None
+
+        let shownPatterns = List.map (patternOf registry elem) shown
+
+        match kind with
+        | VecSeq -> at (TPVec(shownPatterns, rest))
+        | ArraySeq -> at (TPArray(shownPatterns, rest))
+
+/// The clauses to add to a match whose clauses are `covered`, found one
+/// missing value at a time, each added as a row before the next is looked for.
+/// Past `limit` of them a `_` takes the rest.
+let private missingClauses (registry: TraitRegistry) (scrutinee: HMType) (covered: Row list) : string list =
+    let limit = 20
+
+    let rec go (covered: Row list) (found: string list) =
+        if found.Length = limit then
+            List.rev ("_" :: found)
+        else
+            match missing registry [ scrutinee ] covered with
+            | Some [ w ] ->
+                let w = widened w
+                go (covered @ [ [ patternOf registry scrutinee w ] ]) (showWitness w :: found)
+            | _ -> List.rev found
+
+    go covered []
+
+// ---------------------------------------------------------------------------
 // The check
 // ---------------------------------------------------------------------------
 
@@ -748,6 +820,12 @@ let private checkMatch (registry: TraitRegistry) (range: Range) (scrutinee: HMTy
 
         match missing registry [ scrutinee ] covered with
         | Some [ witness ] ->
+            observe
+            |> Option.iter (fun f ->
+                match (try Some(missingClauses registry scrutinee covered) with Undecidable -> None) with
+                | Some patterns -> f { Range = range; Patterns = patterns }
+                | None -> ())
+
             failwithf
                 $"Pattern Error at %s{formatPos range}: this match does not cover every value. %s{showWitness witness} reaches no clause.%s{coverageNote clauses}"
         | _ -> ()
@@ -903,7 +981,13 @@ let private checkDecl (registry: TraitRegistry) (decl: TDecl) : unit =
 /// Reports every declaration with a match that does not cover its type, not
 /// just the first. The declarations are independent here, so a failure costs
 /// the rest of that declaration and nothing beyond it.
+///
+/// A module's declarations come inside its `TModule`, so they are taken out
+/// of it to be checked one by one.
 let run (registry: TraitRegistry) (decls: TDecl list) : unit =
-    decls
-    |> List.iter (fun d ->
-        Diagnostics.recover "exhaustiveness" (Some(tdeclRange d)) () (fun () -> checkDecl registry d))
+    let rec each (d: TDecl) =
+        match d with
+        | TModule(_, inner, _) -> inner |> List.iter each
+        | _ -> Diagnostics.recover "exhaustiveness" (Some(tdeclRange d)) () (fun () -> checkDecl registry d)
+
+    decls |> List.iter each
