@@ -282,6 +282,13 @@ let rec private expandIncludes
                         (includedFrom r)
                         target
 
+                // An included file is the including module's code, so it is
+                // under the rule an import is.
+                if not TypeEnv.compilingReplEntry then
+                    match Paths.importRefusal filePath target with
+                    | Some why -> failwithf $"Include Error at %s{includedFrom r}: %s{why}"
+                    | None -> ()
+
                 let source = Paths.readSource target
                 let innerForms, _ = Lexer.tokenize target source |> read
                 let inner, innerVisited = expandIncludes (target :: activeFiles) target innerForms
@@ -2571,9 +2578,21 @@ let loadModuleGraph
                     // Resolved *and built*: an imported `.bjo` becomes a `.dll`
                     // here, so every edge in the graph names a compiled unit and
                     // the topological sort below keys on the same paths.
+                    //
+                    // A module under a `_` directory is refused before it is
+                    // built (`Paths.importRefusal`). A REPL entry may import
+                    // anything: it is for looking around.
                     let importEdges =
                         importsOf forms
                         |> List.map (fun (spec, r) ->
+                            if not TypeEnv.compilingReplEntry then
+                                match resolveImport false absPath spec with
+                                | Ok p ->
+                                    match Paths.importRefusal absPath p with
+                                    | Some why -> failwithf $"Import Error at %s{Lexer.formatPos r}: %s{why}"
+                                    | None -> ()
+                                | Error _ -> ()
+
                             match resolveDependency absPath spec with
                             | Ok p -> Path.GetFullPath p, spec, r
                             | Error why -> failwithf $"Import Error at %s{Lexer.formatPos r}: %s{why}")

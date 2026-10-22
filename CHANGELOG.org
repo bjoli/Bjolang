@@ -3,6 +3,29 @@
 
 What each change guarantees, and what it leaves open.
 
+* A directory whose name starts with ~_~ keeps its modules to the directory it is in
+
+- A module under a directory whose name starts with ~_~, such as
+  ~src/_lib/db.bjo~, may be imported or included only by the modules under
+  the directory that directory is in: ~src/~ and everything below it, the
+  ~_~ directory included. Anything else is refused at the import, before the
+  module is built, and the message says where the importer would have to be.
+- A project's ~tests/~ and ~benches/~ may import anything in its own ~src/~.
+  Another package is told the module is internal to the package. A REPL
+  entry may import anything.
+- For a module of a package only the package's own directories count, so a
+  package kept under ~deps/_vendor/~ is imported as any other.
+- What is linked is not imported: a public module that uses one of these may
+  be imported from anywhere, and its macros, inlined bodies and specialised
+  copies still reach the module behind it.
+- Left open: a module built before this, and judged current, is not checked
+  again until it is rebuilt. ~#:opaque~ is still per module; a ~_~
+  directory's tree as the scope of a representation is not there yet.
+- Tests: ~465_private_directory.bjo~, ~errors/private_dir_import.bjo~,
+  ~errors/private_dir_include.bjo~, and the package rules in ~run_tests.py~
+  for ~tests/~, ~benches/~, another directory, another package and a
+  vendored one.
+
 * A warning for a definition nothing uses
 
 - A top-level ~def~ or ~defun~ that the module does not export and none of

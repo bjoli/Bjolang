@@ -410,6 +410,58 @@ A facade may pass on a *type* the same way, with ~(re-export SomeType)~; see
 [[*Re-exporting a type][Re-exporting a type]]. That is what lets a library whose
 macros generate signatures cost its consumers one import rather than two.
 
+** A directory whose name starts with ~_~
+
+A directory whose name starts with ~_~ holds what the directory it is in keeps
+to itself. A module under ~src/_lib/~ may be imported or included by the modules
+under ~src/~, those in ~_lib/~ included, and by nothing else:
+
+#+BEGIN_SRC text
+shop/
+  src/
+    _lib/db.bjo        (shop _lib db): for the modules under src/
+    web/routes.bjo     may import (shop _lib db)
+  tests/db-test.bjo    may import it too: the project's own tests
+  tools/peek.bjo       may not
+#+END_SRC
+
+#+BEGIN_SRC text
+Import Error at peek.bjo:1:1: 'db.bjo' is in src/_lib/, so only modules under
+src/ may import it, and tools/peek.bjo is not one of them. Move tools/peek.bjo
+under src/, or import a module outside _lib/ that exports what it needs. A
+project's tests/ and benches/ may import it as well.
+#+END_SRC
+
+With the export list that is three levels: a name a module does not export is
+its own; one a module under a ~_~ directory exports is the tree's around it; one
+any other module exports is everyone's. A ~_lib/~ at the top of a package's
+~src/~ is the package's own, and another package is told so:
+
+#+BEGIN_SRC text
+Import Error at app.bjo:2:1: 'db.bjo' is internal to the package (shop): it is
+in src/_lib/, which only the package's modules under src/ may import. Import a
+module of (shop) outside _lib/ that exports what is needed.
+#+END_SRC
+
+- *The directory it is in, and everything under it.* ~src/web/routes.bjo~ is
+  under ~src/~ and may use ~src/_lib/~. A ~_~ directory inside another, as in
+  ~src/admin/_lib/~, keeps its modules to ~src/admin/~.
+- *A project's ~tests/~ and ~benches/~ may import anything in its ~src/~.* They
+  are the project's, and a test of an internal module is often the test worth
+  having. Any other directory beside ~src/~, such as ~examples/~, is held to the
+  rule, as an example shows what an importer can do.
+- *For a module of a package, only the package's own directories count.* A
+  package kept in ~deps/_vendor/~ is imported as any other.
+- *What is linked is not imported.* A public module whose code uses
+  ~(shop _lib db)~ may be imported from anywhere, and its importer then links
+  ~db~'s assembly; a macro template, an inlined body or a specialised copy that
+  names one of ~db~'s functions is the public module's code. The rule is about
+  the ~(import ...)~ and ~(include ...)~ forms a module writes.
+- *A REPL entry may import anything.* The prompt is for looking around.
+
+A facade is still how a group of modules offers one name to the world; the ~_~
+directory is how the modules behind it are kept from being imported past it.
+
 ** ~export~
 
 #+BEGIN_SRC scheme

@@ -252,6 +252,103 @@ let identityOf (file: string) : FileIdentity option =
 
         { Root = r; ModuleName = r.Name @ segments })
 
+/// Why the module in `importer` may not import or include the file `target`,
+/// or `None` when it may.
+///
+/// A directory whose name starts with `_` holds what the directory it is in
+/// keeps to itself: a module under `src/_lib/` may be imported by the modules
+/// under `src/`, and by nothing else. A project's `tests/` and `benches/` may
+/// import anything in its own `src/` as well. For a module of a package, only
+/// the `_` directories inside the package count.
+///
+/// Only the `_` directories below the deepest directory the two files share
+/// matter: one above it holds both. Of those, one that is that directory's own
+/// child holds a sibling of the importer, and that is allowed. Any deeper one
+/// is not the importer's. The innermost is named, as it is the one the
+/// importer has to be under.
+let importRefusal (importer: string) (target: string) : string option =
+    let importer = Path.GetFullPath importer
+    let target = Path.GetFullPath target
+    let targetDir = Path.GetDirectoryName target
+
+    let segments (dir: string) =
+        dir.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries) |> List.ofArray
+
+    let from = segments (Path.GetDirectoryName importer)
+    let into = segments targetDir
+
+    let shared =
+        Seq.zip from into |> Seq.takeWhile (fun (a, b) -> String.Equals(a, b, StringComparison.Ordinal)) |> Seq.length
+
+    let rec up (dir: string) (levels: int) =
+        if levels <= 0 then dir else up (Path.GetDirectoryName dir) (levels - 1)
+
+    let below = into |> List.skip shared
+
+    let ownTests () =
+        match identityOf target with
+        | Some id when not id.Root.IsStandardLibrary && Path.GetFileName id.Root.Directory = "src" ->
+            let project = Path.GetDirectoryName id.Root.Directory
+
+            [ "tests"; "benches" ]
+            |> List.exists (fun d -> importer.StartsWith(asPrefix (Path.Combine(project, d)), StringComparison.Ordinal))
+        | _ -> false
+
+    // In a package, only its own directories: a `_` directory above its root,
+    // such as a `../deps/_vendor/` a path dependency is kept in, is not the
+    // package's to keep anything in.
+    let firstOwn =
+        match identityOf target with
+        | Some id -> (segments id.Root.Directory).Length
+        | None -> 0
+
+    match
+        below
+        |> List.indexed
+        |> List.filter (fun (i, s) -> i > 0 && shared + i >= firstOwn && s.StartsWith "_")
+        |> List.tryLast
+    with
+    | None -> None
+    | Some _ when ownTests () -> None
+    | Some(i, name) ->
+        let common = up targetDir below.Length
+        let kept = up targetDir (below.Length - 1 - i)
+        let owner = Path.GetDirectoryName kept
+        let shown (p: string) = Path.GetRelativePath(common, p).Replace(Path.DirectorySeparatorChar, '/')
+
+        let tests =
+            match identityOf target with
+            | Some id when
+                not id.Root.IsStandardLibrary
+                && Path.GetFileName id.Root.Directory = "src"
+                && importer.StartsWith(asPrefix (Path.GetDirectoryName id.Root.Directory), StringComparison.Ordinal)
+                ->
+                " A project's tests/ and benches/ may import it as well."
+            | _ -> ""
+
+        // The source, where there is one: an import resolves to the module's
+        // `.dll`, and the program wrote the `.bjo`.
+        let source = Path.ChangeExtension(target, ".bjo")
+        let written = Path.GetFileName(if File.Exists source then source else target)
+
+        // From outside the package's project, it is that package's own
+        // business, and moving the importer is no answer.
+        match identityOf target with
+        | Some theirs when
+            not (importer.StartsWith(asPrefix (Path.GetDirectoryName theirs.Root.Directory), StringComparison.Ordinal))
+            ->
+            let package = showPackageName theirs.Root.Name
+            let inPackage (p: string) =
+                Path.GetRelativePath(Path.GetDirectoryName theirs.Root.Directory, p).Replace(Path.DirectorySeparatorChar, '/')
+
+            Some(
+                $"'%s{written}' is internal to the package %s{package}: it is in %s{inPackage kept}/, which only the package's modules under %s{inPackage owner}/ may import. Import a module of %s{package} outside %s{name}/ that exports what is needed."
+            )
+        | _ ->
+            Some(
+                $"'%s{written}' is in %s{shown kept}/, so only modules under %s{shown owner}/ may import it, and %s{shown importer} is not one of them. Move %s{shown importer} under %s{shown owner}/, or import a module outside %s{name}/ that exports what it needs.%s{tests}"
+            )
+
 /// The package that would answer a file's own module name, when that is not the
 /// package the file is in.
 ///

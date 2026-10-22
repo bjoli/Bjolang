@@ -699,6 +699,69 @@ def run_package_tests():
         check_that("a recorded dependency that is gone is an error", False,
                    f"the fixture did not build: {(first.stdout + first.stderr)[-300:]}")
 
+    # 13. En katalog vars namn börjar med `_` håller det katalogen den står i
+    # behåller för sig själv: importerbart under `src/`, och från projektets
+    # `tests/` och `benches/`, men inte från något annat.
+    private = PKG_DIR / "private"
+    db = '(import (std prelude))\n(export lookup)\n(: lookup (-> int string))\n(defun (lookup id) (str "item " (int->string id)))\n'
+    using = '(import (std prelude))\n(import (vis _lib db))\n(defun (main) (println (lookup 1)) 0)\n'
+    write(private / "vis" / "src" / "_lib" / "db.bjo", db)
+    write(private / "vis" / "src" / "web" / "routes.bjo",
+          '(import (std prelude))\n(import (vis _lib db))\n(export route)\n(: route (-> string))\n(defun (route) (lookup 7))\n')
+    write(private / "other" / "src" / "app.bjo",
+          '(import (std prelude))\n(import (vis web routes))\n(defun (main) (println (route)) 0)\n')
+    write(private / "roots.bjo", '(roots (root (vis) "vis/src") (root (other) "other/src"))\n')
+    roots = private / "roots.bjo"
+
+    for label, where, allowed, wanted in [
+        ("a module beside the _ directory may import it", "vis/src/web/routes.bjo", True, ""),
+        ("the project's tests may", "vis/tests/db-test.bjo", True, ""),
+        ("the project's benches may", "vis/benches/db-bench.bjo", True, ""),
+        ("another directory of the project may not", "vis/tools/peek.bjo", False,
+         "'db.bjo' is in src/_lib/, so only modules under src/ may import it, and tools/peek.bjo is not one of them"),
+        ("another package may not", "other/src/sneaky.bjo", False,
+         "'db.bjo' is internal to the package (vis): it is in src/_lib/"),
+    ]:
+        source = private / where
+        if not source.exists():
+            write(source, using)
+        res = compile_with(roots, source, "--check")
+        said = res.stdout + res.stderr
+        if allowed:
+            check_that(label, res.returncode == 0, said[-300:])
+        else:
+            check_that(label, res.returncode != 0 and wanted in said and ":2" in said, said[-400:])
+
+    # En `_`-katalog ovanför ett pakets rot är inte paketets: ett paket i
+    # `deps/_vendor/` importeras som vilket annat, och dess egen `_lib` är
+    # fortfarande dess egen.
+    write(private / "deps" / "_vendor" / "vend" / "src" / "core.bjo",
+          '(import (std prelude))\n(export vended)\n(: vended (-> int))\n(defun (vended) 3)\n')
+    write(private / "deps" / "_vendor" / "vend" / "src" / "_lib" / "inner.bjo",
+          '(import (std prelude))\n(export inner)\n(: inner (-> int))\n(defun (inner) 4)\n')
+    write(private / "vendroots.bjo",
+          '(roots (root (vis) "vis/src") (root (vend) "deps/_vendor/vend/src"))\n')
+    write(private / "vis" / "src" / "vended.bjo",
+          '(import (std prelude))\n(import (vend core))\n(defun (main) (println (int->string (vended))) 0)\n')
+    write(private / "vis" / "src" / "vendinner.bjo",
+          '(import (std prelude))\n(import (vend _lib inner))\n(defun (main) (println (int->string (inner))) 0)\n')
+    res = compile_with(private / "vendroots.bjo", private / "vis" / "src" / "vended.bjo", "--check")
+    check_that("a package under a _ directory of somebody else's is imported as any other",
+               res.returncode == 0, (res.stdout + res.stderr)[-300:])
+    res = compile_with(private / "vendroots.bjo", private / "vis" / "src" / "vendinner.bjo", "--check")
+    check_that("and its own _lib is still its own",
+               res.returncode != 0 and "internal to the package (vend)" in (res.stdout + res.stderr),
+               (res.stdout + res.stderr)[-300:])
+
+    # Det som en annan pakets offentliga modul använder av `_lib` är länkat,
+    # inte importerat, och får vara det.
+    res = compile_with(roots, private / "other" / "src" / "app.bjo")
+    ran = subprocess.run(["dotnet", str(private / "other" / "src" / "app.exe")], capture_output=True, text=True) \
+        if res.returncode == 0 else None
+    check_that("a public module that uses its package's _lib links from another package",
+               ran is not None and ran.stdout == "item 7\n",
+               (res.stdout + res.stderr)[-300:] if ran is None else ran.stdout + ran.stderr)
+
     return "packages", p_total, p_failed, p_failures
 
 
