@@ -89,6 +89,9 @@ public static class CmlTests
         Section("Detaching and linking a promise");
         Run("detach routes a failure to the scheduler", DetachReportsFailure);
         Run("detach stays quiet on success", DetachIsQuietOnSuccess);
+        Run("a continuation run inline that raises is reported", InlineContinuationFailureIsReported);
+        Run("a guard raising after another branch won is reported", GuardRaisingAfterAWinIsReported);
+        Run("a guard raising before any branch won raises from the sync", GuardRaisingFirstRaises);
         Run("forward pipes an outcome into another promise", ForwardPipesOutcome);
 
         Section("The ambient token that `sync` races");
@@ -1307,6 +1310,109 @@ public static class CmlTests
             p.TrySetResult(7);
 
             AssertNoSignal(reported, "a successful detached promise reporting a failure");
+        }
+        finally
+        {
+            Scheduler.UnhandledException = previous;
+        }
+    }
+
+    /// <summary>
+    /// A ready branch commits while the sync is published, and its continuation
+    /// runs there. An exception from it cannot be the sync's answer, which the
+    /// continuation already is, so it is reported, as one from a continuation
+    /// a partner's thread runs is. It was dropped.
+    /// </summary>
+    private static void InlineContinuationFailureIsReported()
+    {
+        var reported = new ManualResetEventSlim(false);
+        Exception? seen = null;
+
+        var previous = Scheduler.UnhandledException;
+        Scheduler.UnhandledException = ex => { seen = ex; reported.Set(); };
+
+        try
+        {
+            Cml.Sync(Cml.Always(1), static _ => throw new InvalidOperationException("from the continuation"));
+
+            Await(reported, "the continuation's failure to be reported");
+            AssertEqual("from the continuation", seen?.Message, "reported the wrong exception");
+        }
+        finally
+        {
+            Scheduler.UnhandledException = previous;
+        }
+    }
+
+    /// <summary>
+    /// The first branch parks on a channel, and a partner commits it while the
+    /// second is published: here the second's guard sends to the channel, so
+    /// that the order is certain, and then raises. The winner's continuation
+    /// runs once, and the guard's exception is reported rather than dropped.
+    /// </summary>
+    private static void GuardRaisingAfterAWinIsReported()
+    {
+        var reported = new ManualResetEventSlim(false);
+        var won = new ManualResetEventSlim(false);
+        Exception? seen = null;
+        int ran = 0;
+        var ch = new Channel<int>();
+
+        var previous = Scheduler.UnhandledException;
+        Scheduler.UnhandledException = ex => { seen = ex; reported.Set(); };
+
+        try
+        {
+            Cml.Sync(
+                Cml.Choose(
+                    (IEvent<int>)ch,
+                    Cml.Guard<int>(() =>
+                    {
+                        Cml.Sync(new ChannelSendEvent<int>(ch, 5), static _ => { });
+                        throw new InvalidOperationException("from the guard");
+                    })),
+                _ => { Interlocked.Increment(ref ran); won.Set(); });
+
+            Await(reported, "the guard's failure to be reported");
+            Await(won, "the winner's continuation");
+            AssertEqual("from the guard", seen?.Message, "reported the wrong exception");
+            Thread.Sleep(50);
+            AssertEqual(1, ran, "the winner's continuation runs once");
+        }
+        finally
+        {
+            Scheduler.UnhandledException = previous;
+        }
+    }
+
+    /// <summary>
+    /// A guard that raises before any branch has won ends the sync: the
+    /// exception is the sync's answer, and nothing is reported.
+    /// </summary>
+    private static void GuardRaisingFirstRaises()
+    {
+        var reported = new ManualResetEventSlim(false);
+        int ran = 0;
+
+        var previous = Scheduler.UnhandledException;
+        Scheduler.UnhandledException = _ => reported.Set();
+
+        try
+        {
+            Exception? raised = null;
+
+            try
+            {
+                Cml.Sync(Cml.Guard<int>(static () => throw new InvalidOperationException("first")), _ => Interlocked.Increment(ref ran));
+            }
+            catch (InvalidOperationException ex)
+            {
+                raised = ex;
+            }
+
+            AssertEqual("first", raised?.Message, "the sync did not raise the guard's exception");
+            AssertEqual(0, ran, "a continuation ran for a sync that raised");
+            AssertNoSignal(reported, "a sync's own exception reported as unhandled");
         }
         finally
         {

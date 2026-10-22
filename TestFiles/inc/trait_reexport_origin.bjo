@@ -1,0 +1,21 @@
+;; The module that declares a trait, a type, and an implementation of the one
+;; for the other. Nothing here knows it is behind a facade.
+;;
+;; The trait is keyed, as every trait outside the standard library is, so its
+;; methods are bound under their keys and the names source writes are spellings
+;; of them. That is what `inc/trait_reexport_facade.bjo` has to pass on.
+(export Banana weigh)
+
+(import (std prelude))
+
+(type (: Banana (Record (: grams int))))
+
+;; Two methods. Only `weigh` is named in any export list along the way;
+;; `unit-name` comes with it, because a trait travels with its methods.
+(def/trait (Weighs %a)
+  (: weigh (-> %a int))
+  (: unit-name (-> %a string)))
+
+(impl (Weighs Banana)
+  (defun (weigh b) (record-ref b grams))
+  (defun (unit-name b) "g"))

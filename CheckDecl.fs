@@ -2258,8 +2258,36 @@ and private checkReExport (env: Env) (sigs: Sigs) (names: string list) (r: Range
     // eleven more names to have written.
     let where = Lexer.formatPos r
 
+    // A method of a trait that is keyed, which is every trait outside the
+    // standard library, is bound under its key, `fruit__weigh`, and the name
+    // source writes is a spelling of it in `ImportAliases`. It is in scope as
+    // much as a binding is, and re-exporting it publishes its trait: a trait
+    // travels with its methods (`Exports.exportedTraits`). A standard trait's
+    // method is bound under its bare name, which is why `(re-export = compare)`
+    // never needed this.
+    //
+    // A method of a trait this module declares is published by `export`, as a
+    // type it declares is, and is refused here for the same reason.
+    let isTraitMethodSpelling (name: string) =
+        match Map.tryFind name env.Registry.ImportAliases with
+        | Some alias when
+            alias.Kind = AliasMethod
+            && (Set.contains alias.OriginalName env.TraitMethodNames
+                || Map.containsKey alias.OriginalName env.Bindings)
+            ->
+            match Map.tryFind alias.OriginalName env.Registry.TraitMethods with
+            | Some traitKey when Naming.traitKey env.CurrentModule (Naming.bareTraitName traitKey) = traitKey ->
+                failwithf
+                    "Re-export Error: '%s' at %s is a method of '%s', a trait this module declares, and (re-export ...) publishes a name this module imported. Write (export %s)."
+                    name
+                    where
+                    (Naming.bareTraitName traitKey)
+                    name
+            | _ -> true
+        | _ -> false
+
     for name in names do
-        if not (Map.containsKey name env.Bindings) then
+        if not (Map.containsKey name env.Bindings) && not (isTraitMethodSpelling name) then
             let keyed = originalTypeName env.Registry name
 
             if Set.contains keyed env.Registry.LocalTypes then

@@ -3,6 +3,37 @@
 
 What each change guarantees, and what it leaves open.
 
+* A method of any trait may be re-exported, and its trait crosses with it
+
+- ~(re-export weigh)~ compiles for a method of a trait declared outside the
+  standard library, and publishes the whole trait, as re-exporting a method
+  of a standard trait always did: its other methods, its implementations,
+  and its name for a where clause or an implementation in the importer. It
+  was refused as a name not in scope, since such a method is bound under its
+  key and the name source writes is a spelling of that; past that check, it
+  was then published as a type.
+- Re-exporting a method of a trait the module declares itself is refused,
+  and the message says to write ~(export ...)~, as for a type it declares.
+- Tests: ~460_trait_method_reexported.bjo~,
+  ~errors/reexport_own_trait_method.bjo~.
+
+* CML: an exception after a sync has committed is reported
+
+- An exception from a continuation that a sync runs where it commits, or
+  from a guard that raises after another branch has won, goes to
+  ~Scheduler.ReportUnhandled~, as one from a continuation that a partner's
+  thread runs does. It was dropped. Only a program that calls the CML
+  runtime from C# could raise one there: Bjolang code is wrapped before it
+  reaches the runtime.
+- Tests: three in ~BjolangRuntime/Cml/Tests~.
+
+* A local function may read a value of its group written below it
+
+- In a recursive group of local definitions, a function that reads a value
+  of the group written below it compiles. The values were declared after
+  the group's local functions, and C# refused the read (CS0841).
+- Tests: ~459_recursive_local_group.bjo~.
+
 * A (dyn T) implements the superclasses of T
 
 - A ~(dyn T)~ box holds the boxed value's implementation of each superclass

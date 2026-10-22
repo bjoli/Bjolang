@@ -1,0 +1,22 @@
+;; A recursive local group whose function reads a value of the group written
+;; below it. The values were declared after the group's local functions, and
+;; C# refused the read (CS0841).
+(import (std prelude))
+(import (std simpletest))
+
+(: (-> int))
+(defun (by-lambda)
+  (def f (fun (i) (if (< i 1) (vec-length tbl) (f (- i 1)))))
+  (def tbl [(fun () (f 1)) (fun () (vec-length [f]))])
+  (f 2))
+
+(: (-> int))
+(defun (by-defun)
+  (defun (f i) (if (< i 1) (vec-length tbl) (f (- i 1))))
+  (def tbl [(fun () (f 1))])
+  ((vec-ref tbl 0)))
+
+(defun (main)
+  (expect "a lambda reads a value below it" (by-lambda) 2)
+  (expect "a local defun reads a value below it" (by-defun) 1)
+  0)

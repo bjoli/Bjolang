@@ -123,7 +123,7 @@ public static class Cml
         {
             ev.Publish(state, SyncState.RootEventId, continuation);
         }
-        catch
+        catch (Exception ex)
         {
             // A guard or with-nack generator raised partway. The branches it
             // published before that are parked where a partner can still pair
@@ -133,9 +133,13 @@ public static class Cml
             // subtree lost. The exception is then the sync's answer.
             if (state.TryCommit(Aborted)) throw;
 
-            // A branch won while the others were being published. Its
-            // continuation is this sync's answer and runs as it would have; to
-            // raise as well would resume the syncing fiber twice.
+            // The sync was committed before the exception: a branch won while
+            // the others were being published and a later guard raised, or the
+            // winner's continuation ran inline here and raised. The winner is
+            // this sync's answer, and to raise as well would resume the syncing
+            // fiber twice. The exception is reported, as one from a
+            // continuation that a partner's thread runs is.
+            Scheduler.ReportUnhandled(ex);
         }
     }
 

@@ -1032,9 +1032,15 @@ let metadata
             //
             // A binding of the same name wins. `re-export` was a binding's form
             // first, so a module that has both meant the binding.
+            //
+            // So does a method of a trait this module publishes. A keyed
+            // trait's method is bound under its key, so its spelling is no
+            // binding here, and it crosses with its `def/trait`
+            // (`traitDecls`), not as a type.
             let reExportedTypes =
                 reExports
-                |> List.filter (fun n -> not (Map.containsKey n env.Bindings))
+                |> List.filter (fun n ->
+                    not (Map.containsKey n env.Bindings) && not (Set.contains n exportedTraitMethods))
                 |> List.distinct
                 |> List.map (fun n ->
                     let key = TypeEnv.originalTypeName env.Registry n

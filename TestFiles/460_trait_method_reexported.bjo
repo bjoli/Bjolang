@@ -1,0 +1,45 @@
+;; A method of a trait declared outside the standard library, re-exported.
+;;
+;; `inc/trait_reexport_origin.bjo` declares `Weighs`; `inc/trait_reexport_facade.bjo`
+;; re-exports `weigh`, and `inc/trait_reexport_chain.bjo` re-exports it again.
+;; Nothing here imports the origin. A trait travels with its methods, so the
+;; trait comes through a facade whole: its other method, its name in a where
+;; clause, and its implementations, and this module may implement it too.
+;;
+;; A standard trait's method is bound under its bare name, so `(re-export =)`
+;; always worked. A keyed trait's method is bound under its key, and the
+;; re-export was refused as a name not in scope, and then published as a type.
+;;
+;; The facade and the chain are both imported, so the trait arrives twice
+;; under one key. The prefixed import is a third spelling of the same trait.
+;; The refusal of a method of the module's own trait is
+;; `errors/reexport_own_trait_method.bjo`.
+(import "inc/trait_reexport_facade.bjo")
+(import "inc/trait_reexport_chain.bjo")
+(import (prefix "inc/trait_reexport_facade.bjo" "f/"))
+(import (std simpletest))
+
+;; The trait, by the name it was declared with, in a where clause.
+(: label (-> %a string) (where (Weighs %a)))
+(defun (label x) #"${(weigh x)}${(unit-name x)}")
+
+;; The same trait through the prefixed spelling.
+(: prefixed-label (-> %a string) (where (f/Weighs %a)))
+(defun (prefixed-label x) #"${(f/weigh x)}${(f/unit-name x)}")
+
+;; An implementation of the passed-on trait for a type of this module's.
+(type (: Melon (Record (: kilos int))))
+
+(impl (Weighs Melon)
+  (defun (weigh m) (* 1000 (record-ref m kilos)))
+  (defun (unit-name m) "g"))
+
+(defun (main)
+  (def b (make-banana 120))
+  (expect "the re-exported method" (weigh b) 120)
+  (expect "the method that came with it" (unit-name b) "g")
+  (expect "the trait in a where clause" (label b) "120g")
+  (expect "through the prefixed spelling" (prefixed-label (f/make-banana 90)) "90g")
+  (expect "an implementation written here" (label (Melon (kilos 2))) "2000g")
+  (expect "the origin's type, built here" (weigh (Banana (grams 7))) 7)
+  0)

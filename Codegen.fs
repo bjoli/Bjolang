@@ -4163,12 +4163,20 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         // reasons the promotion was declined.
         //
         // Anything else is a plain local, declared ahead of the group so that a
-        // member can name a sibling, and assigned in source order.
+        // member can name a sibling, and assigned in source order. Declared
+        // ahead of the local functions too: C# refuses a name used above its
+        // declaration (CS0841), local function or not.
         let isLocalFunction (_, isFun, _, (value: TypedExpr)) =
             isFun
             && (match value.Node with
                 | TLambda _ -> true
                 | _ -> false)
+
+        let values = bindings |> List.filter (isLocalFunction >> not)
+
+        for (name, _, _, value) in values do
+            indent ctx
+            appendLine ctx $"{typeToString value.Type} {sanitizeIdent name} = default!;"
 
         for (name, _, fn, value) in bindings |> List.filter isLocalFunction do
             match value.Node, value.Type with
@@ -4176,11 +4184,6 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
                 generateLocalFunction ctx name fn argTypes retType lambdaBody value.Type
             | _ -> ()
 
-        let values = bindings |> List.filter (isLocalFunction >> not)
-
-        for (name, _, _, value) in values do
-            indent ctx
-            appendLine ctx $"{typeToString value.Type} {sanitizeIdent name} = default!;"
         for (name, _, _, value) in values do
             generateBlock { ctx with Loop = None } (Assign(sanitizeIdent name)) value
         generateBlock ctx target body

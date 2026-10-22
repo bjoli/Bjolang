@@ -621,18 +621,28 @@ constructor.
 registered as the declaring module's, so the code that may use its
 representation is still that module's and never the facade's.
 
-*An implementation does not travel.* A re-export publishes a spelling and the
-declaration behind it, and nothing else — an ~impl~ reaches a consumer through
-the module that *wrote* it. So a facade in front of a library whose types have
-~Displayed~, ~Eq~ or ~Ord~ instances hands on the types and not the instances, and a
-program that needs them imports that library too. (A type exported the ordinary
-way is unaffected: its module publishes its impls itself, which is what makes an
-~#:opaque~ type usable.)
+*Its implementations come with it.* A re-export publishes a spelling and the
+declaration behind it, and an ~impl~ is published by the module that *wrote*
+it — but a program sees the implementations of every module it is linked
+against, not only of those it imports, and the declaring module is linked
+through the facade. So a facade in front of a library whose types have
+~Displayed~, ~Eq~ or ~Ord~ implementations hands on the types, and the program
+gets the implementations without importing the library. The orphan rule is
+what makes this enough: an implementation is written with its trait or with its
+type, so the program is linked against the module that wrote it.
+
+*A trait comes with any of its methods.* ~(re-export weigh)~, for a method of
+a trait the facade imported, publishes the whole trait, as exporting a method
+does (see *Exporting a trait*): its other methods, its implementations, and its
+name, for a where clause or an implementation in the importer. A method of a
+trait the facade declares itself is refused, as a type it declares is: write
+~(export ...)~.
 
 Three things are refused, each at the form that wrote them:
 
 | ~(re-export MyOwnType)~ | a type this module declares — write ~(export ...)~, which publishes the declaration |
 | ~(re-export SomeTrait)~ | a trait travels with its methods: re-export a method and the trait crosses with it  |
+| ~(re-export my-method)~ | a method of a trait this module declares — write ~(export ...)~                     |
 | ~(re-export Nonsense)~  | neither a binding nor a type this module imported                                   |
 
 A re-exported type is part of this module's surface like any other name, so an
