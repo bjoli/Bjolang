@@ -60,7 +60,8 @@ let private recordMemberNames =
 /// of this module's own type is left: that is a clash of two declarations, not
 /// an import that a declaration shadows.
 let private dropImportedTypeSpelling (currentModule: string) (alias: string) (registry: TraitRegistry) =
-    let imported (a: ImportAlias) = a.OriginalName <> Naming.typeKey currentModule alias
+    // A key this module made, of a type or of a case, has its prefix.
+    let imported (a: ImportAlias) = Naming.bareTypeName currentModule a.OriginalName = a.OriginalName
 
     let types =
         match Map.tryFind alias registry.TypeSpellings with
@@ -72,9 +73,18 @@ let private dropImportedTypeSpelling (currentModule: string) (alias: string) (re
         | Some a when a.Kind = AliasConstructor && imported a -> Map.remove alias registry.ImportAliases
         | _ -> registry.ImportAliases
 
+    let cases =
+        match Map.tryFind alias registry.CaseSpellings with
+        | Some keys ->
+            match keys |> List.filter (fun k -> Naming.bareTypeName currentModule k <> k) with
+            | [] -> Map.remove alias registry.CaseSpellings
+            | own -> Map.add alias own registry.CaseSpellings
+        | None -> registry.CaseSpellings
+
     { registry with
         TypeSpellings = types
-        ImportAliases = values }
+        ImportAliases = values
+        CaseSpellings = cases }
 
 /// A module's declarations with each trait it declares named by its key
 /// (`Naming.traitKey`), and the bare names of the trait and of its methods as
@@ -119,21 +129,26 @@ let registerGrammar (g: Grammar) (env: Env) : Env =
     let resolve (t: FType) =
         resolveTypeAnnotation env.Registry (qualifyFTypeNames env.Registry (Grammar.applyProductions g t))
 
-    let rec item (i: GItem) : GrammarItem =
+    // `production` is the key of the production an item is in: an `:or` is
+    // always a whole production, and its alternatives are that union's cases.
+    let rec item (production: string) (i: GItem) : GrammarItem =
+        let item = item production
+
         match i with
         | GType(t, _) -> GrType(resolve t)
         | GSpliceOnly(t, _) -> GrSpliceOnly(resolve t)
         | GKeyword(kw, _) -> GrKeyword kw
-        | GList(kw, elements, _) -> GrList(kw, List.map element elements)
-        | GVec(elements, _) -> GrVec(List.map element elements)
+        | GList(kw, elements, _) -> GrList(kw, List.map (element production) elements)
+        | GVec(elements, _) -> GrVec(List.map (element production) elements)
         | GOpt(inner, _) -> GrOpt(item inner)
-        | GOr(alternatives, _) -> GrOr(alternatives |> List.map (fun (case, i, _) -> key case, item i))
+        | GOr(alternatives, _) ->
+            GrOr(alternatives |> List.map (fun (case, i, _) -> Naming.caseKey env.CurrentModule production case, item i))
         | GEach(fields, _) -> GrEach(fields |> List.map (fun (name, i, _) -> name, item i))
         | GChecked(_, _, _, r) -> failwithf $"internal: a checked item at %s{Lexer.formatPos r} outside its production"
 
-    and element (e: GElem) : GrammarElement =
+    and element (production: string) (e: GElem) : GrammarElement =
         { Label = e.Label
-          Item = item e.Item
+          Item = item production e.Item
           Rep = e.Rep
           Range = e.Range }
 
@@ -142,10 +157,16 @@ let registerGrammar (g: Grammar) (env: Env) : Env =
     let productions =
         g.Productions
         |> List.map (fun p ->
+            let production = key p.Name
+            let item = item production
+
             let shape =
                 match Grammar.shapeOf p with
                 | Grammar.ShapeUnion alternatives ->
-                    GsUnion(alternatives |> List.map (fun (case, i, _) -> key case, item i))
+                    GsUnion(
+                        alternatives
+                        |> List.map (fun (case, i, _) -> Naming.caseKey env.CurrentModule production case, item i)
+                    )
                 | Grammar.ShapeAlias i -> GsAlias(item i)
                 | Grammar.ShapeNested i -> GsNested(item i)
                 | Grammar.ShapeEach fields ->
@@ -154,7 +175,7 @@ let registerGrammar (g: Grammar) (env: Env) : Env =
                             Item = GrEach(fields |> List.map (fun (name, i, _) -> name, item i))
                             Rep = GOne
                             Range = p.Range } ]
-                | Grammar.ShapeSequence elements -> GsSequence(List.map element elements)
+                | Grammar.ShapeSequence elements -> GsSequence(List.map (element production) elements)
                 // In the module that declares the grammar the check is the
                 // name source wrote. Read back from metadata it is the
                 // check's module and name, and an importer has the function
@@ -179,10 +200,9 @@ let registerGrammar (g: Grammar) (env: Env) : Env =
 
 let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * TypeDef list =
     let key (name: string) = Naming.typeKey env.CurrentModule name
+    let caseKeyOf (unionName: string) (caseName: string) = Naming.caseKey env.CurrentModule (key unionName) caseName
 
-    let withSpelling (kind: AliasKind) (name: string) (registry: TraitRegistry) =
-        let keyed = key name
-
+    let withSpellingOf (keyed: string) (kind: AliasKind) (name: string) (registry: TraitRegistry) =
         if keyed = name then
             registry
         else
@@ -194,6 +214,9 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                   IsMethod = false
                   IsMutable = false }
                 registry
+
+    let withSpelling (kind: AliasKind) (name: string) (registry: TraitRegistry) =
+        withSpellingOf (key name) kind name registry
 
     // The whole group's type names before any of its bodies: a `type-rec` names
     // its siblings, and a payload written with a bare name has to reach the
@@ -216,6 +239,53 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
     let mutable finalRegistry = preRegistry
     let mutable finalBindings = env.Bindings
     let keyedDefs = ResizeArray<TypeDef>()
+
+    // A record and a newtype are built by their name, as a case is, so within
+    // one module a case may not have the name of either: the two constructors
+    // would be one binding. Checked by bare name against this group and against
+    // what earlier `type` forms of the module registered.
+    let constructorTypeNamed (name: string) =
+        typeDefs
+        |> List.tryPick (fun other ->
+            match other.Kind with
+            | Record _ when other.Name = name -> Some "record"
+            | Newtype _ when other.Name = name -> Some "newtype"
+            | _ -> None)
+        |> Option.orElse (if Map.containsKey (key name) finalRegistry.Records then Some "record" else None)
+        |> Option.orElse (if Map.containsKey (key name) finalRegistry.Newtypes then Some "newtype" else None)
+
+    let unionWithCaseNamed (name: string) =
+        finalRegistry.Unions
+        |> Map.tryPick (fun unionKey (_, cases) ->
+            let ownUnion = key (Naming.bareTypeName env.CurrentModule unionKey) = unionKey
+
+            if ownUnion && cases |> List.exists (fun (c, _) -> Naming.bareTypeName env.CurrentModule c = name) then
+                Some unionKey
+            else
+                None)
+
+    let refuseCaseNamedLikeType (caseName: string) (unionName: string) (kind: string) (r: Range) =
+        failwithf
+            $"Type Error at %s{Lexer.formatPos r}: the case %s{caseName} of %s{unionName} has the name of the %s{kind} %s{caseName}, declared in the same module. A %s{kind} is built by its name, as a case is, so the two would be one constructor. Rename one of them, or move one to a module of its own."
+
+    for td in typeDefs do
+        match td.Kind with
+        | Union cases ->
+            for case in cases do
+                match case with
+                | SimpleCase(n, r)
+                | DataCase(n, _, r) ->
+                    match constructorTypeNamed n with
+                    | Some kind -> refuseCaseNamedLikeType n td.Name kind r
+                    | None -> ()
+        | Record _
+        | Newtype _ ->
+            match unionWithCaseNamed td.Name with
+            | Some unionKey ->
+                let kind = (match td.Kind with Record _ -> "record" | _ -> "newtype")
+                refuseCaseNamedLikeType td.Name (Naming.bareTypeName env.CurrentModule unionKey) kind td.Range
+            | None -> ()
+        | Alias _ -> ()
 
     for td in typeDefs do
         // Names the C# a type becomes already has. A record is a C# record,
@@ -249,7 +319,7 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                     | SimpleCase(n, _) -> n
                     | DataCase(n, _, _) -> n
 
-                finalRegistry <- withSpelling AliasConstructor caseName finalRegistry
+                finalRegistry <- withSpellingOf (caseKeyOf td.Name caseName) AliasConstructor caseName finalRegistry
         | _ -> ()
 
         let name = key td.Name
@@ -263,9 +333,9 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
             | Union cases ->
                 cases
                 |> List.map (function
-                    | SimpleCase(n, r) -> SimpleCase(key n, r)
+                    | SimpleCase(n, r) -> SimpleCase(caseKeyOf td.Name n, r)
                     | DataCase(n, types, r) ->
-                        DataCase(key n, types |> List.map (qualifyFTypeNames finalRegistry), r))
+                        DataCase(caseKeyOf td.Name n, types |> List.map (qualifyFTypeNames finalRegistry), r))
                 |> Union
 
         let td = { td with Name = name; Kind = keyedKind }
@@ -319,27 +389,11 @@ let registerTypeDefs (isRec: bool) (typeDefs: TypeDef list) (env: Env) : Env * T
                     | SimpleCase(n, cr) -> n, [], cr
                     | DataCase(n, types, cr) -> n, types |> List.map (resolveTypeAnnotation finalRegistry), cr
 
-                // A case is a constructor bound at module level and a class
-                // nested in its union, so its name can only be used once per
-                // module. Keys carry the module, so a union from another
-                // module never collides here.
+                // A case's key carries its union, so a case of another union
+                // never collides here, in this module or another.
                 if caseTable |> List.exists (fun (c, _) -> c = caseName) then
                     failwithf
                         $"Type Error at %s{Lexer.formatPos caseRange}: %s{Naming.showTypeName td.Name} lists the case %s{Naming.bareTypeName env.CurrentModule caseName} twice. Remove one of them."
-
-                let otherOwner =
-                    finalRegistry.Unions
-                    |> Map.tryPick (fun unionKey (_, table) ->
-                        if unionKey <> td.Name && table |> List.exists (fun (c, _) -> c = caseName) then
-                            Some unionKey
-                        else
-                            None)
-
-                match otherOwner with
-                | Some owner ->
-                    failwithf
-                        $"Type Error at %s{Lexer.formatPos caseRange}: %s{Naming.bareTypeName env.CurrentModule caseName} is already a case of %s{Naming.showTypeName owner}, which is declared in the same module. A case is a constructor named at module level, so two unions in one module cannot share one. Rename one of them, or move one union to a module of its own."
-                | None -> ()
 
                 let schemeArgs = tArgs
                 let consScheme =
@@ -1623,6 +1677,7 @@ and private checkModule (env: Env) (sigs: Sigs) (moduleName: string) (decls: Dec
             { env with
                 Registry =
                     { env.Registry with
+                        CaseSpellings = env.Registry.CaseSpellings |> Map.filter (fun name _ -> not (Set.contains name ownDefinitions))
                         ImportAliases =
                             env.Registry.ImportAliases
                             // A trait method's and a constructor's bare name

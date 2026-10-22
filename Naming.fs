@@ -433,14 +433,20 @@ let isStdModuleKey (key: string) =
 /// has to guess where a key divides.
 /// Generates the fully qualified C# prefix for types defined in this module.
 /// This prefix is added to internal type names to prevent collisions between types with the same name in different files.
+/// The module's flat name and `__`, which every type and case name of the
+/// module is prefixed with.
+///
+/// The `@` an escaped module name carries is dropped: it is there to make a
+/// reserved word an identifier, and a name with `__Type` after it is not a
+/// reserved word. Keeping it produced `@lock__Locked`, which is a legal
+/// declaration and an illegal *part* of one — the impl class generated
+/// beside it came out as `Trait_@lock__Locked`, which does not parse. Same
+/// reasoning as `keywordParamName` above.
+let private flatPrefix (moduleKey: string) =
+    (sanitizeIdent (moduleNameOfPath moduleKey)).TrimStart('@') + "__"
+
 let private typePrefix (moduleKey: string) =
-    // The `@` an escaped module name carries is dropped: it is there to make a
-    // reserved word an identifier, and a name with `__Type` after it is not a
-    // reserved word. Keeping it produced `@lock__Locked`, which is a legal
-    // declaration and an illegal *part* of one — the impl class generated
-    // beside it came out as `Trait_@lock__Locked`, which does not parse. Same
-    // reasoning as `keywordParamName` above.
-    let flat = (sanitizeIdent (moduleNameOfPath moduleKey)).TrimStart('@') + "__"
+    let flat = flatPrefix moduleKey
 
     if isModuleKey moduleKey then
         namespaceOfKey moduleKey + "." + flat
@@ -454,18 +460,60 @@ let typeKey (moduleKey: string) (typeName: string) : string =
         let prefix = typePrefix moduleKey
         if typeName.StartsWith prefix then typeName else prefix + typeName
 
+/// The key of the case `caseName` of the union with key `unionKey`, declared
+/// in `moduleKey`: the union's key, a `.`, and the case's name with the
+/// module's prefix, `BjoMod.x.paint__Colour.paint__Red`.
+///
+/// The union is part of the key so that two unions of one module may each
+/// have a case of one name. The last segment is what `emittedTypeName` gives,
+/// and so the name of the case's C# class, which is nested in the union's.
+/// A name that is a key already is left as it is.
+let caseKey (moduleKey: string) (unionKey: string) (caseName: string) : string =
+    if moduleKey = "" || caseName.StartsWith(typePrefix moduleKey) then
+        caseName
+    else
+        unionKey + "." + flatPrefix moduleKey + caseName
+
+/// The key of the union, for a key `caseKey` made; `None` for any other name.
+///
+/// A case key's last segment and its union's both begin with the module's
+/// flat name and `__`. A type key's segment before its last is a namespace,
+/// which does not.
+let unionOfCaseKey (key: string) : string option =
+    match key.LastIndexOf '.' with
+    | i when i > 0 && key.StartsWith(moduleNamespaceRoot + ".") ->
+        let union = key.Substring(0, i)
+        let last = key.Substring(i + 1)
+        let unionLast = union.Substring(union.LastIndexOf '.' + 1)
+
+        match last.IndexOf "__" with
+        | j when j > 0 && unionLast.Length > j + 2 && unionLast.StartsWith(last.Substring(0, j + 2)) -> Some union
+        | _ -> None
+    | _ -> None
+
 /// The name source wrote, given a key and the module that declared it.
 ///
-/// The exact inverse of `typeKey` — a prefix this module built is removed
-/// again, rather than a division guessed at — so that an importer can offer
-/// the bare spelling of a type it read out of a `.dll`. A name that does not
-/// carry the prefix was not keyed by this module and is its own bare name.
+/// The exact inverse of `typeKey` and `caseKey` — a prefix this module built
+/// is removed again, rather than a division guessed at — so that an importer
+/// can offer the bare spelling of a type or a case it read out of a `.dll`. A
+/// name that does not carry the prefix was not keyed by this module and is its
+/// own bare name.
 let bareTypeName (moduleName: string) (key: string) : string =
     if moduleName = "" then
         key
     else
         let prefix = typePrefix moduleName
-        if key.StartsWith prefix then key.Substring(prefix.Length) else key
+
+        if key.StartsWith prefix then
+            let rest = key.Substring(prefix.Length)
+            let flat = flatPrefix moduleName
+
+            // A case key: the union's name, `.`, and the case's prefixed name.
+            match rest.LastIndexOf '.' with
+            | i when i > 0 && rest.Substring(i + 1).StartsWith flat -> rest.Substring(i + 1 + flat.Length)
+            | _ -> rest
+        else
+            key
 
 /// The module and the name a key is made of, for a name that looks like one.
 ///

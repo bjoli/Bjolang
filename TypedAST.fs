@@ -1786,6 +1786,11 @@ type TraitRegistry =
       /// registry and nothing else. Not to be confused with `Aliases` above,
       /// which is the table of `type` aliases.
       ImportAliases: Map<string, ImportAlias>
+      /// Visible name of a union case -> the key of every case it is a
+      /// spelling of. Two unions may each have a case of one name, and
+      /// `ImportAliases` keeps one of them; with two or more here, which one a
+      /// use means is decided by its type (`InferExpr.caseCandidates`).
+      CaseSpellings: Map<string, string list>
       /// Visible name of a type -> the type it is a spelling of, always with
       /// `Kind = AliasType`. Apart from `ImportAliases` because a type name is
       /// in a namespace of its own: an imported union case may have the name
@@ -2035,11 +2040,20 @@ let addTrait (name: string) (info: TraitInfo) (env: Env) : Env =
 
 /// Files `visible` as a spelling of `alias.OriginalName`, in the table of its
 /// namespace: `TypeSpellings` for a type, `TraitSpellings` for a trait,
-/// `ImportAliases` for a value.
+/// `ImportAliases` for a value. A spelling of a union case is also added to
+/// the case's candidates in `CaseSpellings`.
 let addSpelling (visible: string) (alias: ImportAlias) (registry: TraitRegistry) : TraitRegistry =
     match alias.Kind with
     | AliasType -> { registry with TypeSpellings = Map.add visible alias registry.TypeSpellings }
     | AliasTrait -> { registry with TraitSpellings = Map.add visible alias registry.TraitSpellings }
+    | AliasConstructor when (Naming.unionOfCaseKey alias.OriginalName).IsSome ->
+        let candidates = Map.tryFind visible registry.CaseSpellings |> Option.defaultValue []
+
+        { registry with
+            ImportAliases = Map.add visible alias registry.ImportAliases
+            CaseSpellings =
+                if List.contains alias.OriginalName candidates then registry.CaseSpellings
+                else Map.add visible (candidates @ [ alias.OriginalName ]) registry.CaseSpellings }
     | AliasDef
     | AliasMacro
     | AliasConstructor

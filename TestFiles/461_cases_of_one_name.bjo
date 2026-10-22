@@ -1,0 +1,103 @@
+;; Two unions may each have a case of one name, in one module or in two.
+;;
+;; A case's key carries its union, so the cases are two constructors. Which one
+;; a use of the name means is decided by type: the type expected where it is
+;; written, the type of the value a pattern matches, or the number of
+;; payloads. Where none says yet, the case waits until the declaration is
+;; checked. If the type has not said by then, the module's own case wins over
+;; an imported one, and an imported one over the standard library's; if that
+;; does not say either, the use is refused (`errors/case_name_undecided.bjo`,
+;; `errors/ambiguous_import_pattern.bjo`).
+;;
+;; `inc/same_a.bjo` and `inc/same_b.bjo` each have a `Figure` with a case
+;; `Pt`. `same_b` is imported twice: plainly, for the bare `Pt`, and with
+;; `prefix-types`, for a name for its `Figure`.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/same_a.bjo")
+(import "inc/same_b.bjo")
+(import (prefix-types "inc/same_b.bjo" "B/"))
+
+(type (: Light (Union Red Amber Green)))
+(type (: Suit (Union Red Black)))
+(type (: Paint (Union (: Red int) (: Mix int int) Clear)))
+
+;; The return type decides.
+(: stop (-> Light))
+(defun (stop) Red)
+
+;; The value matched decides.
+(: light-name (-> Light string))
+(defun (light-name l)
+  (match l
+    (Red "stop")
+    (Amber "wait")
+    (Green "go")))
+
+(: suit-name (-> Suit string))
+(defun (suit-name s)
+  (match s
+    (Red "red")
+    (Black "black")))
+
+;; One of the three takes a payload, so `(Red n)` is Paint's.
+(: paint-red (-> int Paint))
+(defun (paint-red n) (Red n))
+
+(: paint-total (-> Paint int))
+(defun (paint-total p)
+  (match p
+    ((Red n) n)
+    ((Mix a b) (+ a b))
+    (Clear 0)))
+
+;; A local function that returns the case is not generalized while it waits,
+;; so its use decides it.
+(: local-red (-> Suit))
+(defun (local-red)
+  (let ((r (fun () Red)))
+    (r)))
+
+;; Written out.
+(def red-suit (: Red Suit))
+
+;; The prelude has a case `Append` too. Where the type does not say which is
+;; meant, as for what `kind` is called with, this module's case wins over an
+;; imported one, as any name of the module does. An `Append` of the prelude's
+;; would have no `Kind`.
+(type (: Edit (Union Append Delete)))
+
+(def/trait (Kind %a)
+  (: kind (-> %a string)))
+
+(impl (Kind Edit)
+  (defun (kind e) "edit"))
+
+(defun (main)
+  (expect "the return type" (light-name (stop)) "stop")
+  (expect "a parameter's type" (suit-name Red) "red")
+  (expect "the number of payloads" (paint-total (paint-red 3)) 3)
+  (expect "a local function" (suit-name (local-red)) "red")
+  (expect "written out" (suit-name red-suit) "red")
+  (expect "compared with a Light" (= (stop) Red) #t)
+
+  ;; Decided after the use: by another clause, another element, a later use.
+  (defun (light-code l)
+    (match l
+      (Red 1)
+      (Amber 2)
+      (Green 3)))
+
+  (expect "another clause" (light-code Red) 1)
+  (expect "another element" (displayed (list Red Amber)) "(Red Amber)")
+  (def later Red)
+  (expect "a later use" (displayed (list later Black)) "(Red Black)")
+
+  ;; A case's own name in what is written: the derived Written.
+  (expect "written" (written (: Red Suit)) "Red")
+  (expect "this module's case, where the type does not say" (kind Append) "edit")
+
+  ;; The cases of two imported unions.
+  (expect "the scrutinee of same_a's Figure" (match (make-pt 3) ((Pt n) n)) 3)
+  (expect "same_b's Figure, written out" (match (: (Pt "four") B/Figure) ((Pt s) (string-length s))) 4)
+  0)

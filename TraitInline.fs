@@ -975,6 +975,7 @@ and private spliceTemplate
         // Obligations raised by the body — a `bind` calling `bind` — are
         // discharged here, before anything looks at the result.
         Traits.solvePending spliceEnv
+        let typedBody = TypeEnv.resolveOpenCaseNames typedBody
 
         // 4. Free names now say which module they came from.
         let qualified = AlphaRename.applyQualification tpl.Qualification typedBody

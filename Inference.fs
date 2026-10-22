@@ -237,13 +237,15 @@ let checkAddendum (initialEnv: Env) (decls: Decl list) : Env * TDecl list =
     Diagnostics.speculate (fun () ->
         let env, _, typedDecls = checkDeclGroup initialEnv Map.empty decls
         solvePending env
-        env, typedDecls)
+        env, List.map resolveOpenCaseNamesInDecl typedDecls)
 
 let checkProgram (initialEnv: Env) (program: Decl list) : Env * TDecl list =
     let finalEnv, _, typedDecls = checkDeclGroup initialEnv Map.empty program
     // Anything raised outside a declaration that generalizes still has to be
     // answered for.
     solvePending finalEnv
+    // Every case a placeholder stood for is chosen by now.
+    let typedDecls = List.map resolveOpenCaseNamesInDecl typedDecls
     checkModuleValuesAreConcrete finalEnv.Registry typedDecls
     warnAboutShadowedMethods finalEnv.Registry typedDecls
 

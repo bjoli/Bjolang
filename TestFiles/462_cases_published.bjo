@@ -1,0 +1,23 @@
+;; A library's bodies that name a case several of its unions have, used from
+;; another module: `inc/cases_published.bjo`. Imported with a prefix, so that
+;; the bodies cannot lean on a bare `Red` here, and plainly, for the macro,
+;; whose template is checked where it expands. That the bodies are specialised
+;; and inlined rather than called is `warnings/cases_published_bodies.bjo`.
+(import (std prelude))
+(import (std simpletest))
+(import (prefix "inc/cases_published.bjo" "c/"))
+(import (only "inc/cases_published.bjo" Light Suit))
+
+(type (: Fruit (Union Apple Pear)))
+
+;; Inherits `default-suit`, the trait's default, which names Suit's `Red`.
+(impl (c/Describe Fruit)
+  (defun (describe f) "fruit"))
+
+(defun (main)
+  (expect "a constrained function" (c/light-red? 3 (c/first-light)) #t)
+  (expect "an ordinary function" (c/suit-code c/Red) 1)
+  (expect "an implementation's method" (c/describe (c/first-light)) "red")
+  (expect "an inherited default" (c/suit-code (c/default-suit Apple)) 1)
+  (expect "a macro's template" (c/describe (c/red-of-light)) "red")
+  0)

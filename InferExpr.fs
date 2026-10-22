@@ -665,6 +665,10 @@ and private resolveAliasedHead (env: Env) (expr: Expr) : Expr =
         // spelling stands for rather than something in its way.
         if Map.tryFind name env.Bindings <> Map.tryFind name env.Resolved then
             name
+        // A name several unions have a case of is resolved by type, in
+        // `inferCheckedNode` or as an open case.
+        elif not (caseCandidates env name).IsEmpty then
+            name
         else
             originalName env.Registry name
 
@@ -834,6 +838,9 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     | EIdent(name, r) when isDotName env name ->
         inferDotValue env name r
 
+    | EIdent(name, r) when not (caseCandidates env name).IsEmpty ->
+        inferOpenCase env name (caseCandidates env name) r
+
     | EIdent(name, r) ->
         inferIdent env name r
 
@@ -870,6 +877,25 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
         let shielded, args, restore = shieldLocal name env args
         let t, te = infer (unshadow name shielded) (EApp(EIdent(name, mr), args, r))
         t, requalifyResolved name env (restore te)
+
+    // A case that cases of several unions have the name of. The number of
+    // payloads may leave one; otherwise the case is chosen once the type of the
+    // value made says which union it is.
+    | EApp(EIdent(name, ir), args, r) when not (caseCandidates env name).IsEmpty ->
+        match candidatesTaking env args.Length (caseCandidates env name) with
+        | [ only ] ->
+            chooseCase ir name only
+            infer env (EApp(EIdent(only, ir), args, r))
+        | candidates ->
+            let headType, head = inferOpenCase env name candidates ir
+            let argTypes, typedArgs = args |> List.map (infer env) |> List.unzip
+            let result = freshMeta ()
+            unify env.Registry headType (tfun argTypes result)
+
+            result,
+            { Type = result
+              Range = r
+              Node = TApply(head, typedArgs, []) }
 
     | EApp(EIdent(methodName, _), args, r) when Set.contains methodName env.TraitMethodNames ->
         inferTraitMethodCall env methodName args r
@@ -1748,6 +1774,24 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
         | _ ->
             failwithf
                 $"Type Error at %s{where}: '%s{name}' names the .NET method '%s{info.ClrType}.%s{info.MemberName}', and a method group is not a value. To use it as one, give it a signature in its import/extern clause; otherwise call it directly."
+
+// A reference to a case that several unions have, whose union is not known
+// here. See `TypeEnv.openCase`.
+and private inferOpenCase (env: Env) (name: string) (candidates: string list) (r: Range) : HMType * TypedExpr =
+    let t = freshMeta ()
+    let placeholder = openCase env name candidates t r false
+
+    t,
+    { Type = t
+      Range = r
+      Node = TIdent(placeholder, []) }
+
+// The case `name` means where `expected` is the type wanted, when several
+// unions have a case of that name and `expected` is one of them.
+and private caseChosenBy (env: Env) (expected: HMType) (name: string) : string option =
+    match caseCandidates env name with
+    | [] -> None
+    | candidates -> unionHeadOf env.Registry expected |> Option.bind (candidateOf candidates)
 
 and private inferIdent (env: Env) (name: string) (r: Range) : HMType * TypedExpr =
     // A case is referred to by name whether it is built bare or applied, and
@@ -3611,6 +3655,16 @@ and private inferCheckedNode (expected: HMType) (env: Env) (expr: Expr) : HMType
     // The call, as in `inferNode`, and checked against what is expected.
     | EApp(EResolved(marker, _), [ _; _; call ], _), _ when marker = fieldOrCallMarker ->
         inferChecked expected env call
+
+    // A case name several unions have, where a value of one of them is wanted.
+    | EIdent(name, r), _ when (caseChosenBy env expected name).IsSome ->
+        let key = (caseChosenBy env expected name).Value
+        chooseCase r name key
+        inferChecked expected env (EIdent(key, r))
+    | EApp(EIdent(name, ir), args, r), _ when (caseChosenBy env expected name).IsSome ->
+        let key = (caseChosenBy env expected name).Value
+        chooseCase ir name key
+        inferChecked expected env (EApp(EIdent(key, ir), args, r))
     | EList(exprs, r), TCon("List", [ elemTy ]) ->
         inferCheckedLiteral env "List" "list" TListMake elemTy exprs r
     | EVec(exprs, r), TCon("Vec", [ elemTy ]) ->

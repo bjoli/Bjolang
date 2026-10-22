@@ -7315,7 +7315,31 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
         indent ctx
         appendLine ctx $"public static class %s{className} {{"
         withIndent ctx (fun ctx ->
-            // Emit factory methods for union cases
+            // Emit factory methods for union cases. Two unions of the module
+            // may each have a case of one name, and the module class holds the
+            // factories of both: such a factory has its union's name in front.
+            let sharedCaseNames =
+                decls
+                |> List.filter isOuterDecl
+                |> collectDecls (function
+                    | TType (defs, _) | TTypeRec (defs, _) ->
+                        defs |> List.collect (fun td ->
+                            match td.Kind with
+                            | Union cases ->
+                                cases |> List.map (function SimpleCase (n, _) | DataCase (n, _, _) -> declaredTypeName n)
+                            | _ -> [])
+                    | _ -> [])
+                |> List.countBy id
+                |> List.filter (fun (_, count) -> count > 1)
+                |> List.map fst
+                |> Set.ofList
+
+            let factoryName (unionKey: string) (caseKey: string) =
+                if Set.contains (declaredTypeName caseKey) sharedCaseNames then
+                    declaredTypeName unionKey + "_" + declaredTypeName caseKey
+                else
+                    declaredTypeName caseKey
+
             for d in decls |> List.filter isOuterDecl do
                 match d with
                 | TType (defs, _) | TTypeRec (defs, _) ->
@@ -7333,10 +7357,10 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                                 | SimpleCase (n, _)
                                 | DataCase (n, [], _) when isStruct ->
                                     indent ctx
-                                    appendLine ctx $"public static %s{declaredTypeName td.Name} %s{declaredTypeName n}() => %s{declaredTypeName td.Name}.%s{declaredTypeName n};"
+                                    appendLine ctx $"public static %s{declaredTypeName td.Name} %s{factoryName td.Name n}() => %s{declaredTypeName td.Name}.%s{declaredTypeName n};"
                                 | DataCase (n, ftypes, _) when isStruct ->
                                     indent ctx
-                                    append ctx $"public static %s{declaredTypeName td.Name} %s{declaredTypeName n}("
+                                    append ctx $"public static %s{declaredTypeName td.Name} %s{factoryName td.Name n}("
                                     for i, ft in List.indexed ftypes do
                                         if i > 0 then append ctx ", "
                                         append ctx (typeToString (Annotations.resolveTypeAnnotation ctx.Registry ft))
@@ -7345,13 +7369,13 @@ let rec generateDecl (ctx: CodegenContext) (decl: TDecl) : unit =
                                     appendLine ctx $") => %s{declaredTypeName td.Name}.%s{declaredTypeName n}(%s{argsListStr});"
                                 | SimpleCase (n, _) when nullCaseOf ctx.Registry td.Name = Some n ->
                                     indent ctx
-                                    appendLine ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{declaredTypeName n}%s{tyArgsStr}() => null!;"
+                                    appendLine ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{factoryName td.Name n}%s{tyArgsStr}() => null!;"
                                 | SimpleCase (n, _) ->
                                     indent ctx
-                                    appendLine ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{declaredTypeName n}%s{tyArgsStr}() => %s{declaredTypeName td.Name}%s{tyArgsStr}.%s{declaredTypeName n}.Instance;"
+                                    appendLine ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{factoryName td.Name n}%s{tyArgsStr}() => %s{declaredTypeName td.Name}%s{tyArgsStr}.%s{declaredTypeName n}.Instance;"
                                 | DataCase (n, ftypes, _) ->
                                     indent ctx
-                                    append ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{declaredTypeName n}%s{tyArgsStr}("
+                                    append ctx $"public static %s{declaredTypeName td.Name}%s{tyArgsStr} %s{factoryName td.Name n}%s{tyArgsStr}("
                                     for i, ft in List.indexed ftypes do
                                         if i > 0 then append ctx ", "
                                         append ctx (typeToString (Annotations.resolveTypeAnnotation ctx.Registry ft))

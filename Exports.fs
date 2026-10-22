@@ -518,12 +518,21 @@ let metadata
         |> List.map (fun n -> n, publishedAliasOf n)
         |> Map.ofList
 
+    let caseOfSeveral (n: string) =
+        match Map.tryFind n env.Registry.CaseSpellings with
+        | Some(_ :: _ :: _) -> true
+        | _ -> false
+
     /// The key a spelling of a declared constructor stands for here.
     ///
     /// And of a trait method: a default body calls the trait's methods, and an
     /// importer that prefixed the trait's module has no bare name for them.
     let valueKeyOf (n: string) =
         match Map.tryFind n env.Registry.ImportAliases with
+        // A name cases of several unions have is a spelling of none of them:
+        // each use was keyed by `keyChosenCases`, and one inference chose
+        // nothing for is left as written.
+        | Some a when a.Kind = Ast.AliasConstructor && caseOfSeveral n -> None
         | Some a when a.Kind = Ast.AliasConstructor && a.OriginalName.Contains "." -> Some a.OriginalName
         | Some a when a.Kind = Ast.AliasMethod && Naming.bareTraitName a.OriginalName <> a.OriginalName ->
             Some a.OriginalName
@@ -546,6 +555,12 @@ let metadata
     /// keys (see `AlphaRename.keyTypeSpellings`), so that where it is spliced
     /// it does not depend on what the importer calls them.
     let publishBody (parameters: string list) (body: Ast.Expr) =
+        let chosen (r: Lexer.Range) (n: string) =
+            match TypeEnv.chosenCases.TryGetValue((r, n)) with
+            | true, key -> Some key
+            | _ -> None
+
+        let body = AlphaRename.keyChosenCases chosen body
         let body = AlphaRename.renameFree (bodyExternSubst (Set.ofList parameters) body) body
         AlphaRename.keyTypeSpellings valueKeyOf typeKeyOf traitKeyOf (fun n -> Map.containsKey n env.Bindings) parameters body
 

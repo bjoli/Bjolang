@@ -400,9 +400,10 @@ type private ImportSurface =
       /// and the ones it re-exported, keyed by whoever declared them. The
       /// second kind has no derivation from this module's name at all.
       Types: Map<string, string>
-      /// The same, for the constructors. A record is built by its own name, so
-      /// its type name is in here too.
-      Constructors: Map<string, string>
+      /// The same, for the constructors, as pairs: two unions may each have a
+      /// case of one name. A record is built by its own name, so its type name
+      /// is in here too.
+      Constructors: (string * string) list
       /// A constructor's key -> its type's key. A constructor follows its
       /// type, so `(only m Figure)` keeps `Figure`'s cases and no others.
       TypeOfCase: Map<string, string>
@@ -504,7 +505,7 @@ let private surfaceOf
            |> List.choose (function
                | DImportAlias(visible, keyed, AliasConstructor, _) -> Some(visible, keyed)
                | _ -> None))
-        |> Map.ofList
+        |> List.distinct
 
       TypeOfCase = typeOfCase
 
@@ -560,9 +561,10 @@ let private defRenaming
 
         if Map.containsKey name surface.Types && filtersTypes then ()
         elif Map.containsKey name surface.Types then refuse "is a type"
-        elif Map.containsKey name surface.Constructors && filtersTypes then
+        elif List.exists (fst >> (=) name) surface.Constructors && filtersTypes then
             let owner =
-                Map.tryFind surface.Constructors[name] surface.TypeOfCase
+                surface.Constructors
+                |> List.tryPick (fun (n, key) -> if n = name then Map.tryFind key surface.TypeOfCase else None)
                 |> Option.bind (fun key ->
                     surface.Types |> Map.tryFindKey (fun _ k -> k = key))
 
@@ -571,7 +573,7 @@ let private defRenaming
                 failwithf
                     $"Invalid (%s{form} ...) at %s{where}: '%s{name}' is a constructor of '%s{typeName}', and a constructor follows its type. Name '%s{typeName}' in (%s{form} ...) to have or leave out the type and all its constructors."
             | None -> refuse "is a constructor"
-        elif Map.containsKey name surface.Constructors then refuse "is a constructor"
+        elif List.exists (fst >> (=) name) surface.Constructors then refuse "is a constructor"
         elif Map.containsKey name surface.Traits then refuse "is a trait"
         else
             match Map.tryFind name surface.TraitMethods with
@@ -684,7 +686,7 @@ let private typeRenaming
     // which is what decides whether a spelling is produced at all.
     let start =
         (surface.Types |> Map.toList |> List.map (fun (n, key) -> key, n, n, AliasType))
-        @ (surface.Constructors |> Map.toList |> List.map (fun (n, key) -> key, n, n, AliasConstructor))
+        @ (surface.Constructors |> List.map (fun (n, key) -> key, n, n, AliasConstructor))
         @ (surface.Traits |> Map.toList |> List.map (fun (n, key) -> key, n, n, AliasTrait))
         // A method is prefixed with the trait it belongs to. Dispatch resolves
         // through the original, so a systematic prefix costs nothing — which is
@@ -792,7 +794,6 @@ let private keptSpellings (surface: ImportSurface) (modifiers: ImportModifier li
 
     let constructors =
         surface.Constructors
-        |> Map.toSeq
         |> Seq.map snd
         |> Seq.filter (fun key ->
             match Map.tryFind key surface.TypeOfCase with
@@ -843,7 +844,6 @@ let private offeredNames
          |> List.filter (fun (_, key) -> Set.contains key kept)
          |> List.map (fun (n, key) -> Diagnostics.TypeName, n, key, provider, true))
         @ (surface.Constructors
-           |> Map.toList
            |> List.filter (fun (_, key) -> Set.contains key kept)
            |> List.map (fun (n, key) -> Diagnostics.ValueName, n, key, provider, true))
         // A trait and its methods, which arrive with the module.
@@ -898,7 +898,6 @@ let private withheldNames
 
             let constructors =
                 surface.Constructors
-                |> Map.toSeq
                 |> Seq.filter (fun (n, key) -> not (Set.contains key kept) && not (Map.containsKey n surface.Types))
                 |> Seq.map (fun (n, key) ->
                     n, (provider, Map.tryFind key surface.TypeOfCase |> Option.bind typeName))
@@ -914,9 +913,13 @@ let private ambiguousNames
     offers
     |> Seq.groupBy (fun (space, name, _, _, _) -> space, name)
     |> Seq.choose (fun (key, group) ->
-        let things = group |> Seq.map (fun (_, _, thing, _, _) -> thing) |> Seq.distinct |> Seq.length
+        let things = group |> Seq.map (fun (_, _, thing, _, _) -> thing) |> Seq.distinct |> List.ofSeq
 
-        if things > 1 then
+        // Cases of different unions are told apart by type where they are
+        // used (`InferExpr.caseCandidates`), so they are no ambiguity here.
+        let onlyCases = things |> List.forall (fun t -> (Naming.unionOfCaseKey t).IsSome)
+
+        if things.Length > 1 && not onlyCases then
             let providers = group |> Seq.map (fun (_, _, _, provider, _) -> provider) |> Seq.distinct |> List.ofSeq
             Some(key, (providers, group |> Seq.exists (fun (_, _, _, _, withModule) -> withModule)))
         else

@@ -113,9 +113,15 @@ let private heldProjections () : Set<int> =
     |> Seq.collect (fun (projection, _, _) -> metaIdsOf projection)
     |> Set.ofSeq
 
+/// The metavariables an open case waits on. Generalized, a local function that
+/// returns the case would give each use a type of its own, and none of them
+/// would decide the case.
+let private heldOpenCases () : Set<int> =
+    openCases |> Seq.collect (fun c -> metaIdsOf c.Type) |> Set.ofSeq
+
 do
     Unification.heldMetaIds <-
-        fun () -> Set.unionMany [ heldWanteds InlineTrait (); heldLiterals (); heldProjections () ]
+        fun () -> Set.unionMany [ heldWanteds InlineTrait (); heldLiterals (); heldProjections (); heldOpenCases () ]
 do Unification.heldLocalMetaIds <- heldWanteds InterfaceTrait
 
 let internal pushWanted (w: Wanted) = wantedQueue.Add w
@@ -498,6 +504,106 @@ let solveWanteds (env: Env) (wanteds: Wanted list) : unit =
 /// Settles every numeric literal that nothing pinned down, and holds the rest
 /// to being numbers.
 ///
+/// Chooses the case of each open case whose type now says which union it is
+/// (`TypeEnv.openCase`), and answers whether it chose any. A chosen case's
+/// constructor type is unified with the use's, which may decide another.
+///
+/// With `final`, an open case the type has not decided is decided by scope, as
+/// a name is, and one that is not even so is refused: the declaration is about
+/// to generalize, and a case of no particular union has no class to be made
+/// from.
+let private settleOpenCases (env: Env) (final: bool) : bool =
+    let unionNames (keys: string list) =
+        keys
+        |> List.choose Naming.unionOfCaseKey
+        |> List.map Naming.showTypeName
+        |> function
+            | [ one ] -> one
+            | several -> String.concat ", " (List.take (several.Length - 1) several) + " and " + List.last several
+
+    let choose (c: OpenCase) (union: string) =
+        match candidateOf c.Candidates union with
+        | None ->
+            failwithf
+                $"Type Error at %s{Lexer.formatPos c.Range}: %s{c.Written} is used here as a %s{Naming.showTypeName union}, which has no case %s{c.Written}. It is a case of %s{unionNames c.Candidates}."
+        | Some key ->
+            if not (representationVisible env.Registry c.CodeModule union) then
+                failwithf
+                    $"Type Error at %s{Lexer.formatPos c.Range}: '%s{c.Written}' is a case of %s{Naming.showTypeName union}, which cannot be built or taken apart here. %s{opaqueTypeNote env.Registry union}"
+
+            let consType, tArgs, _ = instantiate env.Registry (lookup env key).Scheme
+
+            try
+                unify env.Registry c.Type consType
+            with ex when Diagnostics.needsLocation ex ->
+                raise (Diagnostics.withLocation c.Range ex)
+
+            settledCases[c.Placeholder] <- (key, tArgs)
+            chooseCase c.Range c.Written key
+
+    let rec pass (progress: bool) =
+        let ready, waiting =
+            List.ofSeq openCases
+            |> List.partition (fun c -> (unionHeadOf env.Registry c.Type).IsSome)
+
+        if ready.IsEmpty then
+            progress
+        else
+            openCases.Clear()
+            openCases.AddRange waiting
+
+            for c in ready do
+                choose c (unionHeadOf env.Registry c.Type).Value
+
+            pass true
+
+    let progress = pass false
+
+    // What the type leaves open, the rules every other name follows decide: a
+    // case of the module the use is in wins over an imported one (rule 1 of
+    // MODULES.org), and an imported one over the standard library's (rule 2).
+    let byScope (c: OpenCase) =
+        let own = c.Candidates |> List.filter (fun k -> Naming.bareTypeName c.CodeModule k <> k)
+        let notStd = c.Candidates |> List.filter (Naming.isStdModuleKey >> not)
+
+        match own, notStd with
+        | [ one ], _ -> Some one
+        | [], [ one ] -> Some one
+        | _ -> None
+
+    let rec decideByScope (decided: bool) =
+        match openCases |> Seq.tryFind (fun c -> (byScope c).IsSome) with
+        | Some c ->
+            openCases.Remove c |> ignore
+            choose c (Naming.unionOfCaseKey (byScope c).Value).Value
+            pass true |> ignore
+            decideByScope true
+        | None -> decided
+
+    let progress = if final then decideByScope progress else progress
+
+    if final && openCases.Count > 0 then
+        let c = openCases[0]
+        openCases.Clear()
+
+        let advice =
+            if c.InPattern then
+                "Give the value matched a type, with a signature or as (: value Type)."
+            else
+                let union = (Naming.unionOfCaseKey c.Candidates.Head).Value
+
+                let bare =
+                    match Naming.typeKeyParts union with
+                    | Some(_, name) -> name
+                    | None -> union
+
+                $"Write the type with it, as in (: %s{c.Written} %s{bare}), or give what it is passed to a signature."
+
+        failwithf
+            $"Type Error at %s{Lexer.formatPos c.Range}: %s{c.Written} is a case of %s{unionNames c.Candidates}, and nothing here says which one this is. %s{advice}"
+
+    progress
+
 /// The check has to be here rather than left to unification: a bare literal is
 /// a metavariable, so `(: greeting string) (def greeting 5)` unified rather
 /// than failing, and the mismatch surfaced as C# that would not compile.
@@ -722,7 +828,11 @@ let private refuseUndecidedObligations (env: Env) : unit =
 /// that is still an open literal — `(= 1 2)` — resolves to nothing at all, so
 /// the queue has to be drained after the numbers have said what they are.
 /// Pin equations last, after resolution has fed them.
+///
+/// Open cases before the literals: a case's payload types are what a literal
+/// written as its payload is.
 let solvePending (env: Env) : unit =
+    settleOpenCases env false |> ignore
     defaultNumericLiterals env
     solveWanteds env (takeWanteds () @ takeUndecided ())
 
@@ -742,11 +852,16 @@ let solvePending (env: Env) : unit =
             defaultNumericLiterals env
             solveWanteds env (takeWanteds () @ takeUndecided ())
 
-        if solveDeferredProjections env || settleObligations env then
+        if settleOpenCases env false || solveDeferredProjections env || settleObligations env then
             solveWanteds env (takeWanteds () @ takeUndecided ())
             settle ()
 
     settle ()
+
+    // A case decided by scope decides a type the queue may wait on.
+    if settleOpenCases env true then
+        solveWanteds env (takeWanteds () @ takeUndecided ())
+        settle ()
 
     // What two implementations still both fit has nothing left to decide it,
     // and the declaration is about to generalize: an open type in it would

@@ -227,6 +227,38 @@ let keyTypeSpellings
 
     go (renameFree subst body)
 
+/// A body with each case name that `chosen` answers for, where it is written,
+/// written as the case's key instead.
+///
+/// For a body about to be published: a name that cases of several unions
+/// have is no spelling of one key, and `keyTypeSpellings` cannot key it.
+/// Inference has chosen the case of each use, by type, and recorded where.
+let keyChosenCases (chosen: Lexer.Range -> string -> string option) (body: Expr) : Expr =
+    let key (r: Lexer.Range) (n: string) = chosen r n |> Option.defaultValue n
+
+    let rec pattern (p: Pattern) : Pattern =
+        match p with
+        | PConstruct(n, args, r) -> PConstruct(key r n, List.map pattern args, r)
+        | PList(items, tailOpt, r) -> PList(List.map pattern items, Option.map pattern tailOpt, r)
+        | PVec(items, tailOpt, r) -> PVec(List.map pattern items, Option.map pattern tailOpt, r)
+        | PArray(items, tailOpt, r) -> PArray(List.map pattern items, Option.map pattern tailOpt, r)
+        | PTuple(items, r) -> PTuple(List.map pattern items, r)
+        | POr(alts, r) -> POr(List.map pattern alts, r)
+        | PAnd(alts, r) -> PAnd(List.map pattern alts, r)
+        | PView(step, inner, r) -> PView(step, pattern inner, r)
+        | PFieldOr(label, field, other, r) -> PFieldOr(label, pattern field, Result.map pattern other, r)
+        | leaf -> leaf
+
+    let rec go (e: Expr) : Expr =
+        match mapExprChildren go e with
+        | EIdent(n, r) -> EIdent(key r n, r)
+        | EMatch(target, clauses, r) -> EMatch(target, clauses |> List.map (fun (p, g, b) -> pattern p, g, b), r)
+        | EDefMatch(binder, scrutinee, failure, sequel, r) ->
+            EDefMatch(pattern binder, scrutinee, mapDefFailure id pattern failure, sequel, r)
+        | other -> other
+
+    go body
+
 /// Rewrites the free names of a body that was written somewhere else to name
 /// the module they actually came from — `Origin_Module::helper`.
 ///

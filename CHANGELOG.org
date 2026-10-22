@@ -3,6 +3,42 @@
 
 What each change guarantees, and what it leaves open.
 
+* Two unions may each have a case of one name
+
+- A case's key carries its union, ~BjoMod.x.paint__Colour.paint__Red~, so two
+  unions of one module, or of two, may each have a case ~Red~. "Red is already
+  a case of ..." is gone, and two imports offering cases of one name are no
+  longer an ambiguity.
+- Which case a use means is decided by type: the type expected where it is
+  written, the type of the value a pattern matches, or the number of
+  payloads when only one of the cases takes that many. Where none says yet,
+  the case is chosen once the declaration has said what its type is.
+- What the type leaves open, scope decides, as for any name: a case of the
+  module itself wins over an imported one, and an imported one over the
+  standard library's. A use neither decides is refused, and the message
+  suggests ~(: Red Light)~.
+- A body published for an importer to inline or specialise, and a trait
+  default, names each such case by the key inference chose for it where it is
+  written.
+- The C# for a case is unchanged: a class nested in its union's. The module
+  class's factories of two cases of one name have their union's name in
+  front.
+- Left open: a macro template's case names are resolved where the macro
+  expands, as its constructors always were.
+- Tests: ~461_cases_of_one_name.bjo~, ~462_cases_published.bjo~,
+  ~warnings/cases_published_bodies.bjo~, ~errors/case_name_undecided.bjo~,
+  ~errors/case_not_in_union.bjo~, ~errors/ambiguous_import_pattern.bjo~.
+  ~errors/union_case_in_two_unions.bjo~ is gone.
+
+* A case may not have the name of a record or a newtype of its module
+
+- A record and a newtype are built by their names, as a case is, and the two
+  constructors had one key. The program failed in the derived ~Written~ of the
+  union, with a type error between the two types. It is refused at the case,
+  or at the type when the union came first.
+- Tests: ~errors/case_named_like_record.bjo~,
+  ~errors/case_named_like_newtype.bjo~.
+
 * A method of any trait may be re-exported, and its trait crosses with it
 
 - ~(re-export weigh)~ compiles for a method of a trait declared outside the

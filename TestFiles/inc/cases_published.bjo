@@ -1,0 +1,45 @@
+;; A library whose two unions both have a case `Red`, and whose published
+;; bodies name it: a constrained function, an implementation's method and a
+;; trait default, which an importer specialises, inlines or inherits.
+;;
+;; `Red` is a spelling of neither case on its own, so each body is published
+;; with the case inference chose there written as its key.
+(export Light Suit light-red? suit-code first-light Describe describe default-suit first-light-or red-of-light)
+
+(import (std prelude))
+
+(type (: Light (Union Red Amber Green)))
+(type (: Suit (Union Red Black)))
+
+(: light-red? (-> %a Light bool) (where (Eq %a)))
+(defun (light-red? x l) (and (= x x) (= l Red)))
+
+(: suit-code (-> Suit int))
+(defun (suit-code s)
+  (match s
+    (Red 1)
+    (Black 2)))
+
+(: first-light (-> Light))
+(defun (first-light) Red)
+
+(def/trait (Describe %a)
+  (: describe (-> %a string))
+  (: default-suit (-> %a Suit))
+  (defun (default-suit x) Red))
+
+(impl (Describe Light)
+  (defun (describe l)
+    (match l
+      (Red "red")
+      (Amber "amber")
+      (Green "green"))))
+
+(: first-light-or (-> Light Light))
+(defun (first-light-or l) l)
+
+;; A template is expanded where it is used, and the case is chosen there.
+(def/macro (red-of-light form inject compare)
+  (match form
+    ((SList (Cons _ Nil)) #'(first-light-or Red))
+    (_ (syntax-error form "red-of-light takes nothing"))))

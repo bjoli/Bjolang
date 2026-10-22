@@ -188,6 +188,154 @@ let internal openLiterals = ResizeArray<HMType * string * Range>()
 /// constraint itself, which names the constraint.
 let internal openNumbers = ResizeArray<HMType>()
 
+/// A use of a case name that cases of several unions in scope have, where the
+/// type does not yet say which union it is.
+///
+/// The use is typed as `Type`, and its node names `Placeholder` instead of a
+/// case. `Traits.settleOpenCases` chooses the candidate of the union `Type`
+/// turns out to have, unifies `Type` with that case's constructor type, and
+/// records the choice in `settledCases`; `resolveOpenCaseNames` then puts the
+/// case's key where the placeholder is.
+type OpenCase =
+    { Placeholder: string
+      Written: string
+      /// The keys of the cases the name may mean.
+      Candidates: string list
+      /// For an expression, the type of the reference; for a pattern, the
+      /// constructor type its payloads and the scrutinee make.
+      Type: HMType
+      Range: Range
+      /// The module whose code the use is, for an `#:opaque` union's check.
+      CodeModule: string
+      InPattern: bool }
+
+let internal openCases = ResizeArray<OpenCase>()
+
+/// Placeholder -> the key of the case chosen for it and the type arguments its
+/// constructor was instantiated at. Never cleared: a body spliced after
+/// checking is settled and rewritten through it too, and every placeholder of
+/// the process is a new name (`openCaseCounter`).
+let internal settledCases = System.Collections.Generic.Dictionary<string, string * HMType list>()
+
+/// (where a case name was written, the name) -> the key of the case chosen
+/// for it, however it was chosen. A body published for an importer to splice
+/// names each of these by its key (`AlphaRename.keyChosenCases`), since the
+/// importer's spellings need not choose the same case.
+let internal chosenCases = System.Collections.Generic.Dictionary<Range * string, string>()
+
+let internal chooseCase (r: Range) (written: string) (key: string) : unit = chosenCases[(r, written)] <- key
+
+let private openCasePrefix = "#case:"
+let mutable private openCaseCounter = 0
+
+let isOpenCaseName (name: string) = name.StartsWith openCasePrefix
+
+/// The keys of the union cases a name written at module level may mean, when
+/// there are two or more; otherwise empty. A binding of the name in scope is
+/// not a spelling of anything, and wins.
+let internal caseCandidates (env: Env) (name: string) : string list =
+    if Map.tryFind name env.Bindings <> Map.tryFind name env.Resolved then
+        []
+    else
+        match Map.tryFind name env.Registry.CaseSpellings with
+        | Some keys ->
+            match keys |> List.filter (fun k -> Map.containsKey k env.Bindings) with
+            | _ :: _ :: _ as several -> several
+            | _ -> []
+        | None -> []
+
+/// The union a type is, or returns: a case is used as a value of its union or
+/// as the function that makes one.
+let internal unionHeadOf (registry: TraitRegistry) (t: HMType) : string option =
+    let union (t: HMType) =
+        match prune registry t with
+        | TCon(name, _) when Map.containsKey name registry.Unions -> Some name
+        | _ -> None
+
+    match prune registry t with
+    | TFun(_, ret, _) -> union ret
+    | other -> union other
+
+/// The candidate that is a case of the union `unionKey`.
+let internal candidateOf (candidates: string list) (unionKey: string) : string option =
+    candidates |> List.tryFind (fun k -> Naming.unionOfCaseKey k = Some unionKey)
+
+/// The candidates that take `arity` payloads, or all of them when none does,
+/// so that the refusal names them all.
+let internal candidatesTaking (env: Env) (arity: int) (candidates: string list) : string list =
+    let takes (key: string) =
+        match Naming.unionOfCaseKey key |> Option.bind (fun u -> Map.tryFind u env.Registry.Unions) with
+        | Some(_, cases) -> cases |> List.exists (fun (c, payload) -> c = key && payload.Length = arity)
+        | None -> false
+
+    match candidates |> List.filter takes with
+    | [] -> candidates
+    | some -> some
+
+/// Records a use of `written` that one of `candidates` will be chosen for once
+/// `t` says which union it is, and answers the name its node carries until then.
+let internal openCase
+    (env: Env)
+    (written: string)
+    (candidates: string list)
+    (t: HMType)
+    (r: Range)
+    (inPattern: bool)
+    : string =
+    openCaseCounter <- openCaseCounter + 1
+    let placeholder = $"%s{openCasePrefix}%d{openCaseCounter}:%s{written}"
+
+    openCases.Add
+        { Placeholder = placeholder
+          Written = written
+          Candidates = candidates
+          Type = t
+          Range = r
+          CodeModule = codeModule env r
+          InPattern = inPattern }
+
+    placeholder
+
+/// Puts the chosen case's key where each settled placeholder is, in
+/// references and in patterns.
+let rec private resolveOpenCasePattern (p: TypedPattern) : TypedPattern =
+    let p = TypeVisitor.mapPatternChildrenWith id resolveOpenCasePattern p
+
+    match p.Node with
+    | TPConstruct(name, args) when isOpenCaseName name -> { p with Node = TPConstruct(fst settledCases[name], args) }
+    | _ -> p
+
+let private resolveOpenCaseNode (e: TypedExpr) : TypedExpr =
+    match e.Node with
+    | TIdent(name, _) when isOpenCaseName name ->
+        let key, tArgs = settledCases[name]
+        { e with Node = TIdent(key, tArgs) }
+    | TMatch(target, clauses) ->
+        { e with Node = TMatch(target, clauses |> List.map (fun c -> { c with Pattern = resolveOpenCasePattern c.Pattern })) }
+    | TDefMatch(binder, scrutinee, sequel, arms) ->
+        { e with
+            Node =
+                TDefMatch(
+                    resolveOpenCasePattern binder,
+                    scrutinee,
+                    sequel,
+                    arms |> List.map (fun a -> { a with Pattern = resolveOpenCasePattern a.Pattern })
+                ) }
+    | _ -> e
+
+let resolveOpenCaseNames (e: TypedExpr) : TypedExpr =
+    if settledCases.Count = 0 then e else TypeVisitor.mapExpr resolveOpenCaseNode e
+
+let rec resolveOpenCaseNamesInDecl (d: TDecl) : TDecl =
+    if settledCases.Count = 0 then
+        d
+    else
+        match d with
+        | TDefPattern(pattern, value, binders, r) ->
+            TDefPattern(resolveOpenCasePattern pattern, resolveOpenCaseNames value, binders, r)
+        | TModule(name, decls, r) -> TModule(name, List.map resolveOpenCaseNamesInDecl decls, r)
+        | _ -> TypeVisitor.mapDecl resolveOpenCaseNames d
+
 /// Drops whatever is still open. For the compilation that *failed*: see
 /// `clearWanteds`, which this is the other half of.
 /// Is the module being compiled a REPL entry?
@@ -205,6 +353,7 @@ let mutable compilingReplEntry = false
 let clearNumericLiterals () : unit =
     openLiterals.Clear()
     openNumbers.Clear()
+    openCases.Clear()
 
 /// Refuses a literal the type it has ended up at cannot hold.
 let internal checkLiteralFits (t: HMType) (text: string) (r: Range) : HMType =
@@ -831,6 +980,44 @@ let rec checkPattern
           Range = r
           Node = TPRecord(recordTypeName, orderedFields) },
         binders
+
+    // A name that cases of several unions have. The scrutinee's union decides,
+    // and else the number of payloads, if it leaves one; when neither does, the
+    // case is chosen once the scrutinee's type is known (`openCase`).
+    | PConstruct(name, args, r) when not (caseCandidates env name).IsEmpty ->
+        let all = caseCandidates env name
+        let candidates = candidatesTaking env args.Length all
+
+        let chosen =
+            unionHeadOf env.Registry expectedType
+            |> Option.bind (candidateOf all)
+            |> Option.orElse (
+                match candidates with
+                | [ only ] -> Some only
+                | _ -> None
+            )
+
+        match chosen with
+        | Some key ->
+            chooseCase r name key
+            checkPattern env expectedType (PConstruct(key, args, r))
+        | None ->
+            let argTypes = args |> List.map (fun _ -> freshMeta ())
+            let consType = if argTypes.IsEmpty then expectedType else TFun(argTypes, expectedType, ESync)
+            let placeholder = openCase env name candidates consType r true
+
+            let typedArgs, bound =
+                List.zip argTypes args
+                |> List.mapFold
+                    (fun acc (t, p) ->
+                        let typed, binders = checkPattern env t p
+                        typed, Map.fold (fun acc k v -> Map.add k v acc) acc binders)
+                    Map.empty
+
+            { Type = expectedType
+              Range = r
+              Node = TPConstruct(placeholder, typedArgs) },
+            bound
 
     | PConstruct(name, args, r) ->
         // A prefixed constructor is a spelling: the typed pattern carries the

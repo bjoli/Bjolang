@@ -313,6 +313,7 @@ let emptyRegistry : TraitRegistry =
       Aliases = Map.empty
       Newtypes = Map.empty
       ImportAliases = Map.empty
+      CaseSpellings = Map.empty
       TypeSpellings = Map.empty
       TraitSpellings = Map.empty
       Records = Map.empty
