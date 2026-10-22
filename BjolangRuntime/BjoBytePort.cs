@@ -63,6 +63,7 @@ public interface IHalfClosable {
 /// The peer address lives here for the same reason the stream does: there is
 /// nowhere else, and a server that cannot log who connected is not finished.
 /// </summary>
+[NonUserCode]
 public sealed class BjoConnection : IDisposable {
     private readonly Stream _stream;
     private int _halvesOpen = 2;
@@ -130,6 +131,7 @@ public sealed class BjoConnection : IDisposable {
 /// A bounded pipe would be a different thing with a different name; this one
 /// exists so that everything above can be tested with no file and no network.
 /// </summary>
+[NonUserCode]
 public sealed class BjoBytePipe {
     private readonly BytePipeStream _stream = new();
 
@@ -151,6 +153,7 @@ public sealed class BjoBytePipe {
     /// A byte queue with two faces. Writes append and never wait; reads take
     /// from the front and wait for the writer when there is nothing.
     /// </summary>
+    [NonUserCode]
     private sealed class BytePipeStream : Stream, IHalfClosable, ISyncReadable {
         private readonly object _lock = new();
         private readonly Queue<byte[]> _chunks = new();
@@ -306,6 +309,7 @@ public sealed class BjoBytePipe {
 /// underlying port had buffered counts towards the bound, and once the bound is
 /// reached the underlying port is positioned exactly where the limit ended.
 /// </summary>
+[NonUserCode]
 internal sealed class LimitedStream : Stream, ISyncReadable {
     private readonly Stream _inner;
     private long _left;
@@ -374,6 +378,7 @@ internal sealed class LimitedStream : Stream, ISyncReadable {
 /// successive bytes rather than winning with the same answer forever — which is
 /// what <c>(task-&gt;event ...)</c> does, and why it is not this.
 /// </summary>
+[NonUserCode]
 internal sealed class ByteReadEvent : IEvent<ByteRead>, INowable<ByteRead> {
     private readonly BjoInputPort _port;
     private readonly int _count;
@@ -390,6 +395,7 @@ internal sealed class ByteReadEvent : IEvent<ByteRead>, INowable<ByteRead> {
 }
 
 /// <summary>The port is finished. See <c>EofWaiter</c>.</summary>
+[NonUserCode]
 internal sealed class ByteEofEvent : IEvent<Unit>, INowable<Unit> {
     private readonly BjoInputPort _port;
 
@@ -417,6 +423,7 @@ internal sealed class ByteEofEvent : IEvent<Unit>, INowable<Unit> {
 /// not name it in the Bjolang signature: an `#:async` import fills in the
 /// ambient token at the call site.
 /// </summary>
+[NonUserCode]
 public static class BytePorts {
     // --- Sources ------------------------------------------------------------
 

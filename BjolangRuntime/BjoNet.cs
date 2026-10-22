@@ -77,6 +77,7 @@ namespace Bjolang.Runtime;
 /// what a future websocket shutdown needs, which is why it is here rather than
 /// in whatever is built on this.
 /// </summary>
+[NonUserCode]
 public sealed class BjoTcpListener : IDisposable {
     private readonly object _lock = new();
     private readonly Socket _socket;
@@ -330,6 +331,7 @@ public sealed class BjoTcpListener : IDisposable {
     /// <c>TryCommit</c> fires the losing branches' nacks and a nack can resume a
     /// fiber, so it must not run under the listener's lock.
     /// </summary>
+    [NonUserCode]
     private sealed class Waiter {
         public SyncState State = null!;
         public int EventId;
@@ -623,6 +625,7 @@ public sealed class BjoTcpListener : IDisposable {
 /// is what <c>(task-&gt;event ...)</c> does, and one of the two reasons it is
 /// not this.
 /// </summary>
+[NonUserCode]
 internal sealed class TcpAcceptEvent : IEvent<AcceptResult>, INowable<AcceptResult> {
     private readonly BjoTcpListener _listener;
 
@@ -642,6 +645,7 @@ internal sealed class TcpAcceptEvent : IEvent<AcceptResult>, INowable<AcceptResu
 /// What `(std net)` imports, one entry per operation. `BytePorts`' shape, for
 /// the reason given there: one prefix keeps the `import/extern` block readable.
 /// </summary>
+[NonUserCode]
 public static class Net {
     // --- Connecting ---------------------------------------------------------
 

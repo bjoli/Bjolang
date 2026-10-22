@@ -56,60 +56,61 @@ namespace Bjolang.Runtime;
 /// <c>void</c> is not, so these return the unit rather than nothing.
 /// </para>
 /// </remarks>
+[NonUserCode]
 public static class Colour {
     public static Func<Fiber<TR>> Lift<TR>(Func<TR> f) =>
-        async () => f();
+        [NonUserCode] async () => f();
 
     public static Func<T1, Fiber<TR>> Lift<T1, TR>(Func<T1, TR> f) =>
-        async a1 => f(a1);
+        [NonUserCode] async (a1) => f(a1);
 
     public static Func<T1, T2, Fiber<TR>> Lift<T1, T2, TR>(Func<T1, T2, TR> f) =>
-        async (a1, a2) => f(a1, a2);
+        [NonUserCode] async (a1, a2) => f(a1, a2);
 
     public static Func<T1, T2, T3, Fiber<TR>> Lift<T1, T2, T3, TR>(Func<T1, T2, T3, TR> f) =>
-        async (a1, a2, a3) => f(a1, a2, a3);
+        [NonUserCode] async (a1, a2, a3) => f(a1, a2, a3);
 
     public static Func<T1, T2, T3, T4, Fiber<TR>> Lift<T1, T2, T3, T4, TR>(Func<T1, T2, T3, T4, TR> f) =>
-        async (a1, a2, a3, a4) => f(a1, a2, a3, a4);
+        [NonUserCode] async (a1, a2, a3, a4) => f(a1, a2, a3, a4);
 
     public static Func<T1, T2, T3, T4, T5, Fiber<TR>> Lift<T1, T2, T3, T4, T5, TR>(Func<T1, T2, T3, T4, T5, TR> f) =>
-        async (a1, a2, a3, a4, a5) => f(a1, a2, a3, a4, a5);
+        [NonUserCode] async (a1, a2, a3, a4, a5) => f(a1, a2, a3, a4, a5);
 
     public static Func<T1, T2, T3, T4, T5, T6, Fiber<TR>> Lift<T1, T2, T3, T4, T5, T6, TR>(Func<T1, T2, T3, T4, T5, T6, TR> f) =>
-        async (a1, a2, a3, a4, a5, a6) => f(a1, a2, a3, a4, a5, a6);
+        [NonUserCode] async (a1, a2, a3, a4, a5, a6) => f(a1, a2, a3, a4, a5, a6);
 
     public static Func<T1, T2, T3, T4, T5, T6, T7, Fiber<TR>> Lift<T1, T2, T3, T4, T5, T6, T7, TR>(Func<T1, T2, T3, T4, T5, T6, T7, TR> f) =>
-        async (a1, a2, a3, a4, a5, a6, a7) => f(a1, a2, a3, a4, a5, a6, a7);
+        [NonUserCode] async (a1, a2, a3, a4, a5, a6, a7) => f(a1, a2, a3, a4, a5, a6, a7);
 
     public static Func<T1, T2, T3, T4, T5, T6, T7, T8, Fiber<TR>> Lift<T1, T2, T3, T4, T5, T6, T7, T8, TR>(Func<T1, T2, T3, T4, T5, T6, T7, T8, TR> f) =>
-        async (a1, a2, a3, a4, a5, a6, a7, a8) => f(a1, a2, a3, a4, a5, a6, a7, a8);
+        [NonUserCode] async (a1, a2, a3, a4, a5, a6, a7, a8) => f(a1, a2, a3, a4, a5, a6, a7, a8);
 
     // --- The void-returning half ---------------------------------------------
 
     public static Func<Fiber<Unit>> Lift(Action f) =>
-        async () => { f(); return Unit.Value; };
+        [NonUserCode] async () => { f(); return Unit.Value; };
 
     public static Func<T1, Fiber<Unit>> Lift<T1>(Action<T1> f) =>
-        async a1 => { f(a1); return Unit.Value; };
+        [NonUserCode] async (a1) => { f(a1); return Unit.Value; };
 
     public static Func<T1, T2, Fiber<Unit>> Lift<T1, T2>(Action<T1, T2> f) =>
-        async (a1, a2) => { f(a1, a2); return Unit.Value; };
+        [NonUserCode] async (a1, a2) => { f(a1, a2); return Unit.Value; };
 
     public static Func<T1, T2, T3, Fiber<Unit>> Lift<T1, T2, T3>(Action<T1, T2, T3> f) =>
-        async (a1, a2, a3) => { f(a1, a2, a3); return Unit.Value; };
+        [NonUserCode] async (a1, a2, a3) => { f(a1, a2, a3); return Unit.Value; };
 
     public static Func<T1, T2, T3, T4, Fiber<Unit>> Lift<T1, T2, T3, T4>(Action<T1, T2, T3, T4> f) =>
-        async (a1, a2, a3, a4) => { f(a1, a2, a3, a4); return Unit.Value; };
+        [NonUserCode] async (a1, a2, a3, a4) => { f(a1, a2, a3, a4); return Unit.Value; };
 
     public static Func<T1, T2, T3, T4, T5, Fiber<Unit>> Lift<T1, T2, T3, T4, T5>(Action<T1, T2, T3, T4, T5> f) =>
-        async (a1, a2, a3, a4, a5) => { f(a1, a2, a3, a4, a5); return Unit.Value; };
+        [NonUserCode] async (a1, a2, a3, a4, a5) => { f(a1, a2, a3, a4, a5); return Unit.Value; };
 
     public static Func<T1, T2, T3, T4, T5, T6, Fiber<Unit>> Lift<T1, T2, T3, T4, T5, T6>(Action<T1, T2, T3, T4, T5, T6> f) =>
-        async (a1, a2, a3, a4, a5, a6) => { f(a1, a2, a3, a4, a5, a6); return Unit.Value; };
+        [NonUserCode] async (a1, a2, a3, a4, a5, a6) => { f(a1, a2, a3, a4, a5, a6); return Unit.Value; };
 
     public static Func<T1, T2, T3, T4, T5, T6, T7, Fiber<Unit>> Lift<T1, T2, T3, T4, T5, T6, T7>(Action<T1, T2, T3, T4, T5, T6, T7> f) =>
-        async (a1, a2, a3, a4, a5, a6, a7) => { f(a1, a2, a3, a4, a5, a6, a7); return Unit.Value; };
+        [NonUserCode] async (a1, a2, a3, a4, a5, a6, a7) => { f(a1, a2, a3, a4, a5, a6, a7); return Unit.Value; };
 
     public static Func<T1, T2, T3, T4, T5, T6, T7, T8, Fiber<Unit>> Lift<T1, T2, T3, T4, T5, T6, T7, T8>(Action<T1, T2, T3, T4, T5, T6, T7, T8> f) =>
-        async (a1, a2, a3, a4, a5, a6, a7, a8) => { f(a1, a2, a3, a4, a5, a6, a7, a8); return Unit.Value; };
+        [NonUserCode] async (a1, a2, a3, a4, a5, a6, a7, a8) => { f(a1, a2, a3, a4, a5, a6, a7, a8); return Unit.Value; };
 }

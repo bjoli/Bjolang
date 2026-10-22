@@ -40,6 +40,7 @@ using System.Runtime.CompilerServices;
 /// top of the fiber's own. "Unsafe" in <c>UnsafeQueueUserWorkItem</c> means
 /// precisely "do not flow EC", which is what we want on every path.
 /// </summary>
+[NonUserCode]
 public static class Scheduler
 {
     /// <summary>
@@ -83,7 +84,7 @@ public static class Scheduler
     /// thread tears down the process, so every work item body is wrapped.
     /// </summary>
     public static Action<Exception> UnhandledException { get; set; } =
-        static ex => Console.Error.WriteLine($"BjoML unhandled exception: {ex}");
+        [NonUserCode] static (ex) => Console.Error.WriteLine($"BjoML unhandled exception: {ex}");
 
     /// <summary>
     /// Optional tuning hook, kept for source compatibility with the old
@@ -396,6 +397,7 @@ public static class Scheduler
 /// thread, so a given thread's list drifts in length; that is harmless, it is only
 /// a cache, and both ends fall back to allocation.
 /// </summary>
+[NonUserCode]
 internal sealed class ActionWorkItem : IThreadPoolWorkItem
 {
     private const int MaxCached = 32;
@@ -458,6 +460,7 @@ internal sealed class ActionWorkItem : IThreadPoolWorkItem
 /// Pooled <see cref="IThreadPoolWorkItem"/> wrapper for an <see cref="Action{T}"/>
 /// plus its state, so a continuation carrying a value needs no closure allocation.
 /// </summary>
+[NonUserCode]
 internal sealed class ActionWorkItem<T> : IThreadPoolWorkItem
 {
     private const int MaxCached = 32;

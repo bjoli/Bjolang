@@ -40,6 +40,7 @@ namespace Bjolang.Runtime;
 /// runtime's group index is one less, since group 0 is the whole match.
 /// </para>
 /// </remarks>
+[NonUserCode]
 public sealed class BjoRegex
 {
     internal readonly RxRegex Re;
@@ -82,7 +83,7 @@ public sealed class BjoRegex
         _whole ??= RxRegex.Create(Hir.Concat(Hir.Look(Look.Start), _hir, Hir.Look(Look.End)));
 
     internal static BjoRegex Compile(string pattern, string names) =>
-        Cache.GetOrAdd((pattern, names), key =>
+        Cache.GetOrAdd((pattern, names), [NonUserCode] (key) =>
         {
             Hir hir;
             try
@@ -128,6 +129,7 @@ public sealed class BjoRegex
 /// input, which a slice does not share with its array, so they become cursors
 /// through <c>CursorAt</c>.
 /// </remarks>
+[NonUserCode]
 public sealed class BjoMatch
 {
     internal readonly BjoRegex Owner;
@@ -148,6 +150,7 @@ public sealed class BjoMatch
 }
 
 /// <summary>What <c>(std rx)</c> imports.</summary>
+[NonUserCode]
 public static class BjoRegexModule
 {
     // --- Compiling ---------------------------------------------------------

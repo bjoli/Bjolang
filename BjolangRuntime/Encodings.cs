@@ -33,6 +33,7 @@ using BjoString;
 
 namespace Bjolang.Runtime;
 
+[NonUserCode]
 public static class Encodings {
     private const int Utf8CodePage = 65001;
 
@@ -137,19 +138,19 @@ public static class Encodings {
 
     /// <summary>The encoding, throwing on what does not decode or encode.</summary>
     public static Encoding Strict(Encoding encoding) =>
-        s_strict.GetValue(encoding, e => WithFallbacks(e, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback));
+        s_strict.GetValue(encoding, [NonUserCode] (e) => WithFallbacks(e, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback));
 
     /// <summary>
     /// The encoding as a port decodes with: what does not decode becomes
     /// U+FFFD. Encoding keeps the object's own fallback.
     /// </summary>
     public static Encoding Lenient(Encoding encoding) =>
-        s_lenient.GetValue(encoding, e => WithFallbacks(e, e.EncoderFallback, new DecoderReplacementFallback("\uFFFD")));
+        s_lenient.GetValue(encoding, [NonUserCode] (e) => WithFallbacks(e, e.EncoderFallback, new DecoderReplacementFallback("\uFFFD")));
 
     /// <summary>The encoding, putting <paramref name="replacement"/> where something does not decode or encode.</summary>
     private static Encoding Replacing(Encoding encoding, BjoChar replacement) {
-        var byChar = s_replacing.GetValue(encoding, _ => new());
-        return byChar.GetOrAdd((int)replacement.Value, (r, e) => {
+        var byChar = s_replacing.GetValue(encoding, [NonUserCode] (_) => new());
+        return byChar.GetOrAdd((int)replacement.Value, [NonUserCode] (r, e) => {
             string s = new Rune(r).ToString();
             return WithFallbacks(e, new ScalarReplacementFallback(s), new DecoderReplacementFallback(s));
         }, encoding);
@@ -161,10 +162,12 @@ public static class Encodings {
     /// unit, which is twice for a character outside the Basic Multilingual
     /// Plane.
     /// </summary>
+    [NonUserCode]
     private sealed class ScalarReplacementFallback(string replacement) : EncoderFallback {
         public override int MaxCharCount => replacement.Length;
         public override EncoderFallbackBuffer CreateFallbackBuffer() => new Buffer(replacement);
 
+        [NonUserCode]
         private sealed class Buffer(string replacement) : EncoderFallbackBuffer {
             private int _next = replacement.Length;
 
@@ -305,7 +308,7 @@ public static class Encodings {
     public static byte[] Encode(Utf8String s, Encoding encoding) {
         ArgumentNullException.ThrowIfNull(encoding);
         if (encoding.CodePage == Utf8CodePage) return s.AsSpan().ToArray();
-        return WithChars(s, encoding, static (chars, e) => {
+        return WithChars(s, encoding, [NonUserCode] static (chars, e) => {
             try {
                 return ToBytes(Strict(e), chars);
             } catch (EncoderFallbackException x) {
@@ -330,7 +333,7 @@ public static class Encodings {
                 $"string->bytes: the replacement {Describe(replacement.ToRune())} is not in {NameOf(encoding)} either.");
         }
         var replacing = Replacing(encoding, replacement);
-        return WithChars(s, replacing, static (chars, e) => ToBytes(e, chars));
+        return WithChars(s, replacing, [NonUserCode] static (chars, e) => ToBytes(e, chars));
     }
 
     private static byte[] ToBytes(Encoding encoding, ReadOnlySpan<char> chars) {

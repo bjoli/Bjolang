@@ -23,6 +23,7 @@ namespace Bjolang.Runtime;
 /// fast as the copy writes: the file grows until the disk is full. Copying the
 /// length the source had when it was opened ends.
 /// </remarks>
+[NonUserCode]
 public static class BjoStreams {
     private const int BufferSize = 81920;
 

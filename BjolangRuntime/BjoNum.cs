@@ -47,11 +47,13 @@ namespace Bjolang.Runtime;
 /// union's base class, as <c>null</c> itself says nothing of its type.
 /// </remarks>
 [AttributeUsage(AttributeTargets.Class, Inherited = false)]
+[NonUserCode]
 public sealed class NullCaseAttribute(string name) : Attribute {
     public string Name { get; } = name;
 }
 
 /// <summary>The name of <typeparamref name="T"/>'s null case, read once.</summary>
+[NonUserCode]
 public static class NullCase<T> {
     public static readonly string? Name =
         (Attribute.GetCustomAttribute(typeof(T), typeof(NullCaseAttribute), false) as NullCaseAttribute)?.Name;
@@ -68,6 +70,7 @@ public static class NullCase<T> {
 /// `BigInteger` has no end, so it gets one no count can reach: 2^(2^20), a
 /// number of 128 KiB, made once. `BigInteger` compares lengths before digits,
 /// so a walk's test against it is as cheap as against a small one.
+[NonUserCode]
 public static class NumBounds<T> {
     public static readonly T Top = Find(true);
     public static readonly T Bottom = Find(false);
@@ -89,6 +92,7 @@ public static class NumBounds<T> {
     }
 }
 
+[NonUserCode]
 public static class BjoNum {
     // The ends of a number type: see `NumBounds`.
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]

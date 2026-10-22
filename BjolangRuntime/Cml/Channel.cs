@@ -25,6 +25,7 @@ namespace Bjoml;
 /// hands back the channel rather than wrapping it. A send has to carry the value,
 /// so it still needs an object of its own.
 /// </summary>
+[NonUserCode]
 public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 {
     private readonly SpinGate _lock = new();
@@ -1389,6 +1390,7 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
     }
 }
 
+[NonUserCode]
 public readonly struct ChannelReceiveAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter
 {
     private readonly Channel<T> _channel;
@@ -1439,6 +1441,7 @@ public readonly struct ChannelReceiveAwaiter<T> : ICriticalNotifyCompletion, IFi
     }
 }
 
+[NonUserCode]
 public readonly struct ChannelSendAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter
 {
     private readonly Channel<T> _channel;
@@ -1482,6 +1485,7 @@ public readonly struct ChannelSendAwaiter<T> : ICriticalNotifyCompletion, IFiber
     }
 }
 
+[NonUserCode]
 public readonly struct ChannelReceiveOperation<T> : IEvent<T>
 {
     private readonly Channel<T> _channel;
@@ -1494,6 +1498,7 @@ public readonly struct ChannelReceiveOperation<T> : IEvent<T>
         => _channel.PublishReceive(state, eventId, onSync);
 }
 
+[NonUserCode]
 public readonly struct ChannelSendOperation<T> : IEvent<Unit>
 {
     private readonly Channel<T> _channel;

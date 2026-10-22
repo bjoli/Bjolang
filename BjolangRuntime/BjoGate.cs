@@ -38,6 +38,7 @@ namespace Bjolang.Runtime;
 /// steps are interlocked, so either the holder sees the waiter and releases a
 /// permit, or the waiter sees the int free and takes it.
 /// </remarks>
+[NonUserCode]
 internal sealed class BjoGate {
     private int _held;
     private int _waiting;

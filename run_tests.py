@@ -1387,6 +1387,18 @@ def run_pdb_tests():
                    raw is not None and "<>h__1" not in [v for k, v in raw if k == "field"]
                    and any("__init__" in v for k, v in raw if k == "field"), output)
 
+    # The runtime is not the user's code: a step into a builtin steps over it,
+    # under netcoredbg's rule for what counts. A runtime type or lambda without
+    # `[NonUserCode]` is listed here.
+    runtime = subprocess.run(["dotnet", "fsi", "TestFiles/pdb/nonuser.fsx", str(COMPILER_DLL.parent)],
+                             capture_output=True, text=True)
+    checked = [line.split(" ", 1)[1] for line in runtime.stdout.splitlines() if line.startswith("checked ")]
+    check_that("the runtime's assemblies are looked at", "BjolangRuntime" in checked and "SchemeList" in checked,
+               runtime.stdout + runtime.stderr)
+    check_that("no runtime method is user code to a debugger",
+               [line for line in runtime.stdout.splitlines() if line.startswith("user ")] == [],
+               runtime.stdout)
+
     remove_artifacts(SOURCE)
     return "pdb", p_total, p_failed, p_failures
 

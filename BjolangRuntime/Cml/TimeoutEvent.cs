@@ -35,6 +35,7 @@ namespace Bjoml;
 /// the deadline starts when the event is published, which is what a timeout
 /// inside a choose loop has to mean.
 /// </summary>
+[NonUserCode]
 internal sealed class TimeoutEvent : IEvent<Unit>, ISleepEvent
 {
     private readonly long _ms;
@@ -67,6 +68,7 @@ internal interface ISleepEvent
 /// fixed at construction and only the remaining interval is computed per publish,
 /// which is what makes it usable as an overall budget for a loop.
 /// </summary>
+[NonUserCode]
 internal sealed class AtEvent : IEvent<Unit>, ISleepEvent
 {
     private readonly DateTime _utcDeadline;
@@ -94,6 +96,7 @@ internal sealed class AtEvent : IEvent<Unit>, ISleepEvent
 /// nack and C# has one base class. A <see cref="SleepNode"/> does not use the
 /// nack fields, and pays 24 B for them.
 /// </summary>
+[NonUserCode]
 internal abstract class WheelNode : NackNode
 {
     // Where this node is in the timer wheel: the millisecond it is due, the
@@ -132,6 +135,7 @@ internal abstract class WheelNode : NackNode
 /// unlinked the node already; the nack that made it lose has already run or will
 /// run, and both find the gate Done.
 /// </summary>
+[NonUserCode]
 internal sealed class TimeoutNode : WheelNode
 {
     private const int Pending = 0;
@@ -254,6 +258,7 @@ internal sealed class TimeoutNode : WheelNode
 /// <item><see cref="Done"/>: closed.</item>
 /// </list>
 /// </summary>
+[NonUserCode]
 internal sealed class SleepNode : WheelNode, IParkable<Unit>
 {
     private const int Unpublished = 0;

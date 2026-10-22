@@ -100,11 +100,13 @@ internal interface IDirectSyncable<T> : IParkable<T>
     Operation RentPark();
 }
 
+[NonUserCode]
 public readonly struct Unit
 {
     public static readonly Unit Value = default;
 }
 
+[NonUserCode]
 public static class Cml
 {
     // The core entrypoint for all CML operations
@@ -232,7 +234,7 @@ public static class Cml
     /// dispose its timer, or every iteration of a select over a timeout leaks a
     /// live one until it fires.
     /// </summary>
-    internal static IEvent<Unit> TimeoutViaCombinators(int ms) => Guard(() => TimerEvent(ms));
+    internal static IEvent<Unit> TimeoutViaCombinators(int ms) => Guard([NonUserCode] () => TimerEvent(ms));
 
     /// <summary>
     /// One armed timer, disposed exactly once by whichever of the two paths
@@ -241,18 +243,19 @@ public static class Cml
     /// The same shape as <c>TaskInterop.Cancellable</c>, for the same reason.
     /// </summary>
     private static IEvent<Unit> TimerEvent(int ms) =>
-        WithNack<Unit>(nack =>
+        WithNack<Unit>([NonUserCode] (nack) =>
         {
             var p = new Promise<Unit>();
 
             var timer = new System.Threading.Timer(
-                static s => ((Promise<Unit>)s!).TrySetResult(default),
+                [NonUserCode] static (s) => ((Promise<Unit>)s!).TrySetResult(default),
                 p,
                 ms,
                 System.Threading.Timeout.Infinite);
 
             int disposed = 0;
 
+            [NonUserCode]
             void DisposeOnce()
             {
                 if (System.Threading.Interlocked.Exchange(ref disposed, 1) == 0) timer.Dispose();
@@ -261,7 +264,7 @@ public static class Cml
             // Neither of these runs user code, which is the rule for anything
             // reachable from a nack: they run on a borrowed thread with
             // whatever context it happened to have.
-            Sync(nack, _ => DisposeOnce());
+            Sync(nack, [NonUserCode] (_) => DisposeOnce());
             p.OnCompleted(DisposeOnce);
 
             return p.ValueEvent();
@@ -276,6 +279,7 @@ public static class Cml
 /// allocation and contention do, hence neither <c>Random.Shared</c> (an extra
 /// indirection and defensive locking on older runtimes) nor a lock.
 /// </summary>
+[NonUserCode]
 internal static class ChoiceRng
 {
     [ThreadStatic] private static uint _state;
@@ -296,6 +300,7 @@ internal static class ChoiceRng
 /// <summary>
 /// Optimized binary choice between two events, avoiding array allocation and loop overhead.
 /// </summary>
+[NonUserCode]
 public sealed class PairChooseEvent<T> : IEvent<T>
 {
     private readonly IEvent<T> _ev1;
@@ -325,6 +330,7 @@ public sealed class PairChooseEvent<T> : IEvent<T>
 /// <summary>
 /// Optimized ternary choice between three events, avoiding array allocation and loop overhead.
 /// </summary>
+[NonUserCode]
 public sealed class TripleChooseEvent<T> : IEvent<T>
 {
     private readonly IEvent<T> _ev1;
@@ -369,6 +375,7 @@ public sealed class TripleChooseEvent<T> : IEvent<T>
 /// In CML, 'choose' allows a thread to wait on multiple possible synchronizations simultaneously.
 /// The first event to successfully claim the shared state wins, and all others are discarded.
 /// </summary>
+[NonUserCode]
 public class ChooseEvent<T> : IEvent<T>
 {
     private readonly IEvent<T>[] _events;
@@ -410,6 +417,7 @@ public class ChooseEvent<T> : IEvent<T>
 /// It allows you to combine differently-typed events (like receiving an Int vs a String) 
 /// into a unified type before passing them to Choose.
 /// </summary>
+[NonUserCode]
 public class WrapEvent<T, U> : IEvent<U>
 {
     private readonly IEvent<T> _ev;
@@ -471,6 +479,7 @@ internal interface IWrapHost
 ///
 /// One object per publish, as the closure it replaces was.
 /// </summary>
+[NonUserCode]
 internal sealed class WrapSink<T, U> : IDeferredWrap
 {
     private readonly SyncState _state;
@@ -512,6 +521,7 @@ internal sealed class WrapSink<T, U> : IDeferredWrap
 /// This is used when the event requires side-effects or dynamic state to be allocated 
 /// only at the exact moment the thread commits to the synchronization block.
 /// </summary>
+[NonUserCode]
 public class GuardEvent<T> : IEvent<T>
 {
     private readonly Func<IEvent<T>> _generator;
@@ -531,6 +541,7 @@ public class GuardEvent<T> : IEvent<T>
 /// so it can abort tentative operations or clean up resources.
 /// WithNack passes a NACK event (which fires if the branch loses) into a generator that builds the actual event.
 /// </summary>
+[NonUserCode]
 public class WithNackEvent<T> : IEvent<T>
 {
     private readonly Func<IEvent<Unit>, IEvent<T>> _generator;
@@ -554,7 +565,7 @@ public class WithNackEvent<T> : IEvent<T>
         var nack = new Promise<Unit>();
 
         // Register Nack interval starting at i0.
-        var nackNode = sharedState.RegisterNack(i0, () => nack.TrySetResult(default));
+        var nackNode = sharedState.RegisterNack(i0, [NonUserCode] () => nack.TrySetResult(default));
 
         // A nack promise is only ever completed successfully, so its value is
         // the event.
@@ -587,6 +598,7 @@ public class WithNackEvent<T> : IEvent<T>
     }
 }
 
+[NonUserCode]
 public class AlwaysEvent<T> : IEvent<T>
 {
     private readonly T _value;
@@ -604,6 +616,7 @@ public class AlwaysEvent<T> : IEvent<T>
     }
 }
 
+[NonUserCode]
 public class NeverEvent<T> : IEvent<T>
 {
     public void Publish(SyncState sharedState, int eventId, Action<T> onSync)
@@ -620,6 +633,7 @@ public class NeverEvent<T> : IEvent<T>
 /// Unlike a receive this cannot be the channel itself, because it has to carry
 /// the value. It is the object `(chan-send ch v)` evaluates to.
 /// </summary>
+[NonUserCode]
 public class ChannelSendEvent<T> : IEvent<Unit>, INowable<Unit>, IDirectSyncable<Unit>
 {
     private readonly Channel<T> _channel;
@@ -661,6 +675,7 @@ public class ChannelSendEvent<T> : IEvent<Unit>, INowable<Unit>, IDirectSyncable
 /// first time a send parks, and shared by every send after it. The value is in
 /// the op, which the caller rents, so nothing here is per send.
 /// </summary>
+[NonUserCode]
 internal sealed class ChannelSendSide<T> : IParkable<Unit>
 {
     private readonly Channel<T> _channel;
@@ -683,6 +698,7 @@ internal sealed class ChannelSendSide<T> : IParkable<Unit>
     public Withdrawal CancelParked(Operation op, int gen) => _channel.CancelParked(op, gen);
 }
 
+[NonUserCode]
 public class ChannelReceiveEvent<T> : IEvent<T>
 {
     private readonly Channel<T> _channel;

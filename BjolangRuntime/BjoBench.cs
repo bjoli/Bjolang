@@ -27,9 +27,11 @@ namespace Bjolang.Runtime;
 /// to put a value the JIT may not throw away, the collector's counters, and
 /// the facts about the machine a run's header reports. See
 /// `Docs/Benchmark-design.org`.
+[NonUserCode]
 public static class BjoBench {
     // One field per type, so a value is kept without boxing it, which would
     // be an allocation charged to the benchmark.
+    [NonUserCode]
     static class Sink<T> {
         public static T? Value;
     }
@@ -68,7 +70,7 @@ public static class BjoBench {
         var keys = (double[])values.Clone();
         // `Array.Sort` of keys and items is not stable, so ties are broken by
         // the index, which makes it so.
-        Array.Sort(order, (a, b) => {
+        Array.Sort(order, [NonUserCode] (a, b) => {
             var c = keys[a].CompareTo(keys[b]);
             return c != 0 ? c : a.CompareTo(b);
         });

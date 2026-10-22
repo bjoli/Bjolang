@@ -53,6 +53,7 @@ public enum SyntaxOrigin
 /// transformer so that a piece of the call site keeps its module when it lands
 /// inside an expansion, which is what decides whether it may use an
 /// <c>#:opaque</c> type's representation.</param>
+[NonUserCode]
 public readonly record struct SrcRange(
     string? File,
     int StartLine,
@@ -80,6 +81,7 @@ public readonly record struct SrcRange(
 /// keeping these two out of it is what lets a Bjolang pattern be written
 /// <c>(SList items)</c> without mentioning either.
 /// </remarks>
+[NonUserCode]
 public abstract record Syntax
 {
     private Syntax() { }
@@ -93,25 +95,32 @@ public abstract record Syntax
 
     /// An identifier. Subject to renaming when <see cref="Origin"/> is
     /// <see cref="SyntaxOrigin.Template"/>.
+    [NonUserCode]
     public sealed record SSym(global::BjolangRuntime.Symbol Item1) : Syntax;
 
     /// A quoted symbol written as data — `'foo` inside a template. Never
     /// renamed: it is a value, not a reference to a binding.
+    [NonUserCode]
     public sealed record SDatum(global::BjolangRuntime.Symbol Item1) : Syntax;
 
     /// A numeric literal, as written. Text rather than a number for the same
     /// reason `Parser.EInt` is: the same node carries `1` and `1.5`, and which
     /// one it is has not been decided yet.
+    [NonUserCode]
     public sealed record SInt(global::BjoString.Utf8String Item1) : Syntax;
 
+    [NonUserCode]
     public sealed record SStr(global::BjoString.Utf8String Item1) : Syntax;
 
+    [NonUserCode]
     public sealed record SChar(BjoChar Item1) : Syntax;
 
+    [NonUserCode]
     public sealed record SKey(global::BjolangRuntime.Keyword Item1) : Syntax;
 
     /// A parenthesized form. A real `(List Syntax)`, so `map`, `fold` and the
     /// existing trailing-rest pattern work on macro input with nothing added.
+    [NonUserCode]
     public sealed record SList(global::SchemeList.SchemeList<Syntax> Item1) : Syntax;
 
     /// A punctuation token that survives reading: `,`, `,@`, `:`, `.` or `...`.
@@ -121,6 +130,7 @@ public abstract record Syntax
     /// and `...` is a rest pattern — so an input form can contain any of them,
     /// and dropping one would silently change what the macro was handed.
     /// Carrying the spelling is what makes the round trip total.
+    [NonUserCode]
     public sealed record SPunct(global::BjoString.Utf8String Item1) : Syntax;
 
     /// This node with a different range. The expander's fill-in step; F# has no

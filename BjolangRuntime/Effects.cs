@@ -63,6 +63,7 @@ namespace Bjolang.Runtime {
     /// `#:catch` names .NET types, and a program that wants to answer for a
     /// missing handler has to be able to name one.
     /// </summary>
+    [NonUserCode]
     public sealed class Unhandled : System.Exception {
 
         /// <summary>The operation's name, as it was written in `defeffect`.</summary>

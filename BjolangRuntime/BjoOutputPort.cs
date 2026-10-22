@@ -66,6 +66,7 @@ public enum BufferMode {
 /// cannot suspend. After a flush a close does no I/O at all, and
 /// <see cref="DisposeAsync"/> is the close that suspends instead.
 /// </summary>
+[NonUserCode]
 public sealed class BjoOutputPort : TextWriter {
     /// The buffer of a port over a file or a stream.
     public const int DefaultBufferSize = 16 * 1024;
@@ -684,6 +685,7 @@ public sealed class BjoOutputPort : TextWriter {
     /// </summary>
     public Stream AsStream() => new PortStream(this);
 
+    [NonUserCode]
     private sealed class PortStream(BjoOutputPort port) : Stream {
         public override bool CanRead => false;
         public override bool CanSeek => false;
@@ -726,6 +728,7 @@ public sealed class BjoOutputPort : TextWriter {
 /// name it in the Bjolang signature: an `#:async` import fills in the ambient
 /// token at the call site.
 /// </summary>
+[NonUserCode]
 public static class OutputPorts {
     // --- Making ports ---------------------------------------------------------
 
@@ -849,6 +852,7 @@ public static class OutputPorts {
     /// bytes decoded and written as characters. A character split between two
     /// writes waits in the decoder for its other bytes.
     /// </summary>
+    [NonUserCode]
     private sealed class WriterStream(TextWriter writer) : Stream {
         private readonly Decoder _decoder = new UTF8Encoding(false).GetDecoder();
 

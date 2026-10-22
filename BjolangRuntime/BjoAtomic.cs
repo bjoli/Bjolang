@@ -38,6 +38,7 @@ namespace Bjolang.Runtime;
 // `eq?` does. A value type, the four integers included, compares by value.
 
 /// <summary>An atomic cell. Make one with <see cref="AtomicModule.Make{T}"/>.</summary>
+[NonUserCode]
 public abstract class Atomic<T>
 {
     // Only this assembly makes subclasses. `AtomicModule` depends on this: it
@@ -61,6 +62,7 @@ public abstract class Atomic<T>
     public abstract T Update(Func<T, T> f);
 }
 
+[NonUserCode]
 public sealed class AtomicInt32 : Atomic<int>
 {
     private int _value;
@@ -91,6 +93,7 @@ public sealed class AtomicInt32 : Atomic<int>
     public int Sub(int n) => Interlocked.Add(ref _value, unchecked(-n));
 }
 
+[NonUserCode]
 public sealed class AtomicUInt32 : Atomic<uint>
 {
     private uint _value;
@@ -121,6 +124,7 @@ public sealed class AtomicUInt32 : Atomic<uint>
     public uint Sub(uint n) => Interlocked.Add(ref _value, unchecked(0u - n));
 }
 
+[NonUserCode]
 public sealed class AtomicInt64 : Atomic<long>
 {
     private long _value;
@@ -153,6 +157,7 @@ public sealed class AtomicInt64 : Atomic<long>
     public long Sub(long n) => Interlocked.Add(ref _value, unchecked(-n));
 }
 
+[NonUserCode]
 public sealed class AtomicUInt64 : Atomic<ulong>
 {
     private ulong _value;
@@ -186,6 +191,7 @@ public sealed class AtomicUInt64 : Atomic<ulong>
 }
 
 /// A reference type. Compare-and-swap compares by identity.
+[NonUserCode]
 public sealed class AtomicBox<T> : Atomic<T> where T : class
 {
     private T _value;
@@ -221,8 +227,10 @@ public sealed class AtomicBox<T> : Atomic<T> where T : class
 /// A value type. The value is in an immutable cell, and a store swaps the
 /// cell. Compare-and-swap compares the values with
 /// `EqualityComparer<T>.Default`.
+[NonUserCode]
 public sealed class AtomicStructBox<T> : Atomic<T> where T : struct
 {
+    [NonUserCode]
     private sealed class Cell
     {
         internal readonly T V;
@@ -272,6 +280,7 @@ public sealed class AtomicStructBox<T> : Atomic<T> where T : struct
     }
 }
 
+[NonUserCode]
 public static class AtomicModule
 {
     /// An atomic that holds `value`, of the class for T.
@@ -290,6 +299,7 @@ public static class AtomicModule
 
     // The constructor of AtomicBox<T> or AtomicStructBox<T>, found once for
     // each T.
+    [NonUserCode]
     private static class Factory<T>
     {
         internal static readonly Func<T, Atomic<T>> Create = Find();

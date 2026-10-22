@@ -23,6 +23,7 @@ namespace Bjolang.Runtime;
 /// numbers compares the bytes. Every method answers the high half and gives the
 /// low half as an <c>out</c> parameter.
 /// </summary>
+[NonUserCode]
 public static class UuidModule
 {
     const ulong VersionMask = 0xFFFF_FFFF_FFFF_0FFFUL;

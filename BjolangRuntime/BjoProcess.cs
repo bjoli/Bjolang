@@ -39,6 +39,7 @@ using System.Text;
 
 /// An output port and an input port joined end to end, for a pipeline stage
 /// that is a Bjolang procedure rather than a child process.
+[NonUserCode]
 public sealed class BjoPipe {
     private readonly Bjolang.Runtime.BjoInputPort reader;
     private readonly Bjolang.Runtime.BjoOutputPort writer;
@@ -67,6 +68,7 @@ public sealed class BjoPipe {
 }
 
 /// The parts of running a pipeline that have no Bjolang spelling.
+[NonUserCode]
 public static class BjoProc {
     /// Worth the three lines: the alternative is `ProcessStartInfo.Arguments`,
     /// a single string that .NET re-splits with its own quoting rules, which

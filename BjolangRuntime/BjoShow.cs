@@ -20,6 +20,7 @@ namespace Bjolang.Runtime;
 /// What `written` and `displayed` need from the runtime: a builder to write a
 /// value into, and the written forms of the values whose form is more than
 /// their text.
+[NonUserCode]
 public static class BjoShow
 {
     /// A builder that held more than this many bytes is not kept: a thread

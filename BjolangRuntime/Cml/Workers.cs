@@ -79,6 +79,7 @@ namespace Bjoml;
 /// worker is idle to bind that pump to, one more worker is made, up to four per
 /// processor.
 /// </summary>
+[NonUserCode]
 internal static class Workers
 {
     internal static readonly bool Enabled =
@@ -182,6 +183,7 @@ internal static class Workers
 
     // ---- the pump ------------------------------------------------------------
 
+    [NonUserCode]
     private sealed class Pump : IThreadPoolWorkItem
     {
         private readonly bool _spinning;
@@ -406,7 +408,7 @@ internal static class Workers
     {
         if (Volatile.Read(ref s_monitorStarted) != 0) return;
         if (Interlocked.Exchange(ref s_monitorStarted, 1) != 0) return;
-        s_monitor = new Timer(static _ => Monitor(), null, MonitorPeriodMs, MonitorPeriodMs);
+        s_monitor = new Timer([NonUserCode] static (_) => Monitor(), null, MonitorPeriodMs, MonitorPeriodMs);
     }
 
     /// <summary>
@@ -450,6 +452,7 @@ internal static class Workers
     /// having read the slot first. A slot between head and tail is never
     /// written, so a slot read before a successful exchange was the right one.
     /// </summary>
+    [NonUserCode]
     internal sealed class Worker
     {
         internal const int Size = 256;
@@ -461,6 +464,7 @@ internal static class Workers
         // array of a reference type checks the element type, and StealHalf
         // copies half a ring at a time. That check was 2.8% of the cycles
         // of bench/service's closed loop on all cores.
+        [NonUserCode]
         private struct Slot
         {
             public IThreadPoolWorkItem? Item;

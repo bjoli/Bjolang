@@ -27,6 +27,7 @@ namespace Bjoml;
 /// <c>_ev.GetAwaiter()</c> on an <c>IEvent&lt;T&gt;</c>, which resolves here.
 /// Deleting it takes every <c>sync</c> in the language with it.
 /// </summary>
+[NonUserCode]
 public static class EventAwaitExtensions
 {
     public static EventAwaiter<T> GetAwaiter<T>(this IEvent<T> ev) => EventAwaiter<T>.Rent(ev);
@@ -72,10 +73,11 @@ internal interface ICancellableAwaiter
 /// <see cref="Cml.Sync"/> publishes, because the instant an op is parked, a thread
 /// on the other side of the channel can call <see cref="OnSync"/> concurrently.
 /// </summary>
+[NonUserCode]
 public sealed class EventAwaiter<T> : ICriticalNotifyCompletion, ICancellableAwaiter, IWrapHost, IFiberAwaiter
 {
     /// <summary>Marks "already completed" so a late continuation runs immediately.</summary>
-    private static readonly IResume Sentinel = new ActionResume(static () => { });
+    private static readonly IResume Sentinel = new ActionResume([NonUserCode] static () => { });
 
     private const int MaxCached = 64;
     [ThreadStatic] private static EventAwaiter<T>? _free;

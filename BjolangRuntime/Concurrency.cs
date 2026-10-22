@@ -126,6 +126,7 @@ public static partial class BjolangRuntime {
 
     /// What `(chan-put ch v)` evaluates to. As with `SyncOp`, nothing happens
     /// until `GetAwaiter`.
+    [NonUserCode]
     public readonly struct ChanPut<T> {
         private readonly Channel<T> _ch;
         private readonly T _value;
@@ -154,6 +155,7 @@ public static partial class BjolangRuntime {
     /// Both fields are copied, nothing is built. `GetAwaiter` is where the
     /// synchronisation starts, which is the same moment `await ev` started it
     /// when `sync` was an ordinary async method.
+    [NonUserCode]
     public readonly struct SyncOp<T> {
         private readonly IEvent<T> _ev;
         private readonly Promise<CancelReason>? _token;
@@ -323,6 +325,7 @@ public static partial class BjolangRuntime {
     /// A lock, because it is reached only when a thread's own slots are full
     /// or empty. Capped, because a cell kept here is still registered on the
     /// token: past the cap a cell is dropped, as every cell used to be.
+    [NonUserCode]
     internal sealed class RetiredWatches {
         private const int Cap = 1024;
 
@@ -410,6 +413,7 @@ public static partial class BjolangRuntime {
     /// `choose` through its `SyncState`. That keeps the cell out of the
     /// partner's cache, and keeps interlocked instructions off the partner's
     /// side of a rendezvous.
+    [NonUserCode]
     internal sealed class FiberWatch : PromiseWaiter {
         /// Not in a sync, or in one that has not armed. The prune may drop it.
         private const int Idle = 0;
@@ -711,6 +715,7 @@ public static partial class BjolangRuntime {
 
     /// Forwards to whichever awaiter the sync ended up with, or to nothing at
     /// all when the rendezvous already happened.
+    [NonUserCode]
     public readonly struct SyncAwaiter<T> : System.Runtime.CompilerServices.ICriticalNotifyCompletion, IFiberAwaiter {
         private const byte Ready_ = 0;
         private const byte Direct_ = 1;
@@ -863,6 +868,7 @@ public static partial class BjolangRuntime {
     /// A struct with a factory per case rather than two constructors, because
     /// `T` can be instantiated at `CancelReason` and two constructors would then
     /// be the same constructor.
+    [NonUserCode]
     internal readonly struct Synced<T> {
         private readonly T _value;
         private readonly CancelReason? _why;
@@ -911,7 +917,7 @@ public static partial class BjolangRuntime {
     /// same cooperative limit `cancelled?` exists for, and it means a long thunk
     /// holds its scope open for its whole duration.
     public static Promise<T> spawnsubthunk<T>(Func<T> f) =>
-        ScopeSpawn<T>(() => RunThunk(f));
+        ScopeSpawn<T>([NonUserCode] () => RunThunk(f));
 
     /// The state-taking shape of `Spawn` used to be reachable from here, which
     /// is why this is a separate method rather than an inline lambda: the
@@ -1122,7 +1128,7 @@ public static partial class BjolangRuntime {
     public static ValueTuple<Func<CancelReason, Unit>, Promise<CancelReason>> makesubcancel() {
         var token = new Promise<CancelReason>();
         return new ValueTuple<Func<CancelReason, Unit>, Promise<CancelReason>>(
-            reason => { token.TrySetResult(reason); return default; },
+            [NonUserCode] (reason) => { token.TrySetResult(reason); return default; },
             token);
     }
 
@@ -1189,8 +1195,8 @@ public static partial class BjolangRuntime {
     /// there was still a job waiting.
     public static IEvent<Option<T>> untilsubcancelled<T>(Promise<CancelReason> token, IEvent<T> ev) =>
         Cml.Choose(
-            Cml.Wrap(ev, static v => Some(v)),
-            Cml.Wrap(cancelled(token), static _ => None<T>()));
+            Cml.Wrap(ev, [NonUserCode] static (v) => Some(v)),
+            Cml.Wrap(cancelled(token), [NonUserCode] static (_) => None<T>()));
 
     /// `(cancelled? ct)` — has it fired, right now?
     ///
@@ -1271,10 +1277,10 @@ public static partial class BjolangRuntime {
     /// The dynamic environment travels with the thunk; see
     /// <see cref="InTheCallersEnvironment{T}"/>.
     public static IEvent<Result<Exception, T>> blocking<T>(Func<T> work) =>
-        Cml.Guard(() =>
+        Cml.Guard([NonUserCode] () =>
             Cml.Wrap(
                 TaskInterop.FromTask(Task.Run(InTheCallersEnvironment(work))).Join(),
-                static r =>
+                [NonUserCode] static (r) =>
                     r.IsError
                         ? Result<Exception, T>.Err(r.Error!.SourceException)
                         : Result<Exception, T>.Ok(r.Value)));
@@ -1302,7 +1308,7 @@ public static partial class BjolangRuntime {
     /// </summary>
     private static Func<T> InTheCallersEnvironment<T>(Func<T> work) {
         var env = (DynEnv)Dyn.Current.ForChild();
-        return () => {
+        return [NonUserCode] () => {
             using var _ = Bjoml.FiberContext.Push(env);
             return work();
         };
@@ -1364,7 +1370,7 @@ public static partial class BjolangRuntime {
     /// The dynamic environment travels with the thunk; see
     /// <see cref="InTheCallersEnvironment{T}"/>.
     public static IEvent<Result<Exception, T>> spawndivthread<T>(Func<T> work) =>
-        Cml.Guard(() =>
+        Cml.Guard([NonUserCode] () =>
             Cml.Wrap(
                 TaskInterop.FromTask(
                     Task.Factory.StartNew(
@@ -1376,7 +1382,7 @@ public static partial class BjolangRuntime {
                         // longer than the thunk.
                         TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach,
                         TaskScheduler.Default)).Join(),
-                static r =>
+                [NonUserCode] static (r) =>
                     r.IsError
                         ? Result<Exception, T>.Err(r.Error!.SourceException)
                         : Result<Exception, T>.Ok(r.Value)));
@@ -1421,10 +1427,10 @@ public static partial class BjolangRuntime {
 
         var offered =
             token is null || ReferenceEquals(token, RootCancel)
-                ? Cml.Wrap(ev, static v => Synced<T>.Value(v))
+                ? Cml.Wrap(ev, [NonUserCode] static (v) => Synced<T>.Value(v))
                 : Cml.Choose(
-                    Cml.Wrap(ev, static v => Synced<T>.Value(v)),
-                    Cml.Wrap(cancelled(token), static why => Synced<T>.Cancelled(why)));
+                    Cml.Wrap(ev, [NonUserCode] static (v) => Synced<T>.Value(v)),
+                    Cml.Wrap(cancelled(token), [NonUserCode] static (why) => Synced<T>.Cancelled(why)));
 
         // A committed wrap is handed to this thread, which applies it below, as
         // `sync` applies one on its fiber.
@@ -1440,6 +1446,7 @@ public static partial class BjolangRuntime {
     /// Where a `sync/blocking` lands, and the thread waiting for it: either
     /// the value, or the committed branch's wrap for the waiting thread to
     /// apply, whose result then lands here from that thread.
+    [NonUserCode]
     private sealed class BlockingLanding<T> : IWrapHost {
         private readonly object _gate = new();
         private bool _landed;
@@ -1512,7 +1519,7 @@ public static partial class BjolangRuntime {
 
         var channel = new Channel<T>();
 
-        var finished = Bjo.Spawn<Unit>(async () => {
+        var finished = Bjo.Spawn<Unit>([NonUserCode] async () => {
             // Read inside the fiber rather than at the spawn: `Bjo.Spawn`
             // installs the captured environment before the body runs, so this
             // is the token of the scope that asked for the stream.
@@ -1553,7 +1560,7 @@ public static partial class BjolangRuntime {
     /// that never syncs and never checks `cancelled?` runs to completion no
     /// matter who lost what.
     public static IEvent<Result<Exception, T>> spawnsubevtdivstart<T>(Func<Promise<T>> start) =>
-        Cml.WithNack<Result<Exception, T>>(nack => {
+        Cml.WithNack<Result<Exception, T>>([NonUserCode] (nack) => {
             var token = new Promise<CancelReason>();
 
             // Pushed and restored around the spawn exactly as `parameterize`
@@ -1572,12 +1579,12 @@ public static partial class BjolangRuntime {
             // here knows what the branch was for. A child that wants to tell
             // "my choose branch lost" from "the whole scope is going down" has
             // it in the string.
-            Cml.Sync(nack, _ => token.TrySetResult(
+            Cml.Sync(nack, [NonUserCode] (_) => token.TrySetResult(
                 new CancelReason.Requested(BjoString.Utf8String.FromUtf16("spawn-evt: the branch lost its choose"))));
 
             return Cml.Wrap(
                 child.Join(),
-                static r =>
+                [NonUserCode] static (r) =>
                     r.IsError
                         ? Result<Exception, T>.Err(r.Error!.SourceException)
                         : Result<Exception, T>.Ok(r.Value));
@@ -1696,7 +1703,7 @@ public static partial class BjolangRuntime {
     }
 
     private static CancellationTokenSource Bridge(Promise<CancelReason> token) =>
-        CancelBridges.GetValue(token, static t => {
+        CancelBridges.GetValue(token, [NonUserCode] static (t) => {
             var cts = new CancellationTokenSource();
 
             // A bare callback rather than a fiber that waits: cancelling a
@@ -1704,7 +1711,7 @@ public static partial class BjolangRuntime {
             // so it is safe on the borrowed thread that delivers it. A fiber
             // here would park forever in every scope that is never cancelled,
             // which is most of them.
-            Cml.Sync(t.Join(), _ => {
+            Cml.Sync(t.Join(), [NonUserCode] (_) => {
                 try { cts.Cancel(); }
                 catch (ObjectDisposedException) { /* nothing left to cancel */ }
             });
@@ -1796,7 +1803,7 @@ public static partial class BjolangRuntime {
     /// `TestFiles/221_task_event_cancel.bjo` is the regression test, and it is a
     /// loop because one trial proves nothing about a race.
     public static IEvent<Result<Exception, T>> TaskEvent<T>(Func<CancellationToken, Task<T>> start) =>
-        Cml.Guard(() => {
+        Cml.Guard([NonUserCode] () => {
             var scope = Dyn.Current.Cancel;
 
             // Already cancelled at the moment of the sync, so there is nothing
@@ -1812,7 +1819,7 @@ public static partial class BjolangRuntime {
             // which the call is stopped.
             return Cml.Wrap(
                 TaskInterop.Cancellable(start),
-                static r =>
+                [NonUserCode] static (r) =>
                     r.IsError
                         ? Result<Exception, T>.Err(r.Error!.SourceException)
                         : Result<Exception, T>.Ok(r.Value));

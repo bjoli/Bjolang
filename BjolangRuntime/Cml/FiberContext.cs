@@ -55,6 +55,7 @@ namespace Bjoml;
 /// have. So such callbacks must never run user code; they should only wake a fiber
 /// and let the fiber run it.
 /// </summary>
+[NonUserCode]
 public static class FiberContext
 {
     [ThreadStatic]
@@ -85,6 +86,7 @@ public static class FiberContext
     /// This stays correct across an await ONLY because the fiber builder re-installs
     /// the captured context when the fiber resumes on another thread.
     /// </summary>
+    [NonUserCode]
     public readonly ref struct Scope
     {
         private readonly object? _saved;
@@ -133,5 +135,6 @@ public interface IFiberContext
     /// nothing more in it. Whatever the context holds for that one fiber can be
     /// given up or handed on. The default holds nothing.
     /// </summary>
+    [NonUserCode]
     void FiberEnded() { }
 }

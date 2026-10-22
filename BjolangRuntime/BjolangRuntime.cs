@@ -19,6 +19,7 @@ using Unit = Bjoml.Unit;
 using Utf8String = BjoString.Utf8String;
 using Utf8StringBuilder = BjoString.Utf8StringBuilder;
 
+[NonUserCode]
 public static partial class BjolangRuntime {
 
     /// The unit value. `Bjoml.Unit` rather than a struct of our own, so it is
@@ -166,7 +167,7 @@ public static partial class BjolangRuntime {
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, System.Reflection.FieldInfo[]> structuralFields = new();
 
     private static System.Reflection.FieldInfo[] structuralFieldsOf(Type type) =>
-        structuralFields.GetOrAdd(type, static t => {
+        structuralFields.GetOrAdd(type, [NonUserCode] static (t) => {
             var fields = new List<System.Reflection.FieldInfo>();
             for (var cur = t; cur is not null && cur != typeof(object); cur = cur.BaseType)
                 fields.AddRange(cur.GetFields(System.Reflection.BindingFlags.Instance
@@ -657,7 +658,7 @@ public static partial class BjolangRuntime {
     // of a generic `(-> %a %b)`. The adapter lambda is the price of `for-each`
     // and `map` taking the same function, and the JIT inlines through it.
     public static Unit RrbForEach<T>(Func<T, Unit> action, Collections.RrbList<T> list) where T : notnull {
-        Collections.RrbFun.ForEach(list, x => action(x));
+        Collections.RrbFun.ForEach(list, [NonUserCode] (x) => action(x));
         return unit;
     }
 
@@ -665,7 +666,7 @@ public static partial class BjolangRuntime {
         // Checked here as well as in the library, which reads a count of -1 as
         // "to the end"; a Bjolang count means what it says.
         RrbCheckRange(list, index, count);
-        Collections.RrbFun.ForEach(list, x => action(x), index, count);
+        Collections.RrbFun.ForEach(list, [NonUserCode] (x) => action(x), index, count);
         return unit;
     }
 
@@ -792,6 +793,7 @@ public static partial class BjolangRuntime {
     /// `NextIndex` is the vec index after them, and `Stop` the vec index the
     /// walk ends before.
     /// </summary>
+    [NonUserCode]
     public readonly struct VecCursor<T> {
         private readonly T[] _items;
         private readonly int _i;
@@ -898,6 +900,7 @@ public static partial class BjolangRuntime {
     /// stops early, and a walk that an exception leaves. A file port is still
     /// closed when the scope it was registered with ends.
     /// </summary>
+    [NonUserCode]
     public sealed class SeqCursor<T> {
         /// Null once exhausted, which is what makes a second `Done` after the
         /// end safe rather than a `MoveNext` on a disposed enumerator.
@@ -1025,6 +1028,7 @@ public static partial class BjolangRuntime {
     /// An optional value, and Bjolang's `(Option %a)`. A struct because it
     /// began as the carrier for an omitted keyword argument: `default` is
     /// `None`, so an unsupplied parameter costs nothing.
+    [NonUserCode]
     public struct Option<T> : IEquatable<Option<T>> {
         public readonly bool IsSome;
         public readonly T Value;
@@ -1076,6 +1080,7 @@ public static partial class BjolangRuntime {
     ///
     /// The error comes first, matching the Bjolang spelling and how `Monad` is
     /// implemented for it — the type argument free to move is the trailing one.
+    [NonUserCode]
     public struct Result<TErr, TOk> : IEquatable<Result<TErr, TOk>> {
         public readonly bool IsOk;
         public readonly TOk OkValue;
@@ -1146,6 +1151,7 @@ public static partial class BjolangRuntime {
     /// A panic means the program cannot go on.
     /// Its own type so that the REPL can tell a panic from an ordinary failure
     /// and say so. 
+    [NonUserCode]
     public sealed class PanicException : Exception {
         public PanicException(string message) : base(message) { }
     }
@@ -1187,13 +1193,16 @@ public static partial class BjolangRuntime {
     /// Closed: a library cannot add a case. `(Requested "circuit-breaker")` is
     /// the escape hatch, and it is deliberately an untyped string — naming who
     /// asked is a diagnostic, not a value anything dispatches on.
+    [NonUserCode]
     public abstract record CancelReason {
         private CancelReason() { }
 
         /// Someone asked to stop, and the string names who.
+        [NonUserCode]
         public sealed record Requested(Utf8String Item1) : CancelReason;
 
         /// A time limit fired. What `with-deadline` raises.
+        [NonUserCode]
         public sealed record Deadline : CancelReason {
             /// What generated code reads for a nullary case.
             public static readonly Deadline Instance = new();
@@ -1202,12 +1211,14 @@ public static partial class BjolangRuntime {
         /// The scope owning the token returned normally. What `with-cancel`
         /// raises on the way out, so that a child handed the token stops rather
         /// than outliving the scope that made it.
+        [NonUserCode]
         public sealed record ScopesubEnded : CancelReason {
             /// What generated code reads for a nullary case.
             public static readonly ScopesubEnded Instance = new();
         }
 
         /// The scope body, or a sibling, threw.
+        [NonUserCode]
         public sealed record Failed(Exception Item1) : CancelReason;
 
         /// `sealed` for the reason `Syntax.ToString` is: without it each nested
@@ -1399,6 +1410,7 @@ public static partial class BjolangRuntime {
     /// installing an environment and undoing one are both a single reference
     /// assignment — which is what makes `parameterize` cheap and exception-safe.
     /// </summary>
+    [NonUserCode]
     public sealed class DynEnv : Bjoml.IFiberContext {
         public readonly Bjolang.Runtime.BjoOutputPort Out;
         public readonly Bjolang.Runtime.BjoInputPort In;
@@ -1541,6 +1553,7 @@ public static partial class BjolangRuntime {
     /// every write — the wrong cost model when `parameterize` is meant to be
     /// cheap.
     /// </summary>
+    [NonUserCode]
     public static class Dyn {
         /// What a thread with no fiber context sees. Immutable and shared, so a
         /// thread that never parameterizes anything costs nothing and still
@@ -1592,6 +1605,7 @@ public static partial class BjolangRuntime {
     /// branching these become 0..62 and `63 + (k &lt;&lt; 6)`, and nothing else
     /// here changes.
     /// </summary>
+    [NonUserCode]
     internal static class ParamIds {
         /// One less than the root's branching factor. The odd slot out is the
         /// cold wing.
@@ -1636,6 +1650,7 @@ public static partial class BjolangRuntime {
     /// <see cref="parametersubref"/> cannot fail. That cast is the whole of the
     /// unsoundness, and it is unreachable from Bjolang.
     /// </summary>
+    [NonUserCode]
     public sealed class Param<T> {
         /// 0 = output port, 1 = input port, 2 = ambient cancel token,
         /// -1 = in the champ. This is why `parameterize` is one form for both
@@ -1684,7 +1699,7 @@ public static partial class BjolangRuntime {
     /// that way and 530 ms with plain reads into the default buffer.
     public static readonly Bjolang.Runtime.BjoInputPort StdIn =
         new(Console.OpenStandardInput(), Bjolang.Runtime.BjoInputPort.DefaultBufferSize, ownsInner: false, syncReads: true) {
-            BeforeWait = static () => StdOut?.FlushAtExit(),
+            BeforeWait = [NonUserCode] static () => StdOut?.FlushAtExit(),
         };
 
     /// Standard output, buffered as Racket buffers it: at each newline on a
@@ -1718,8 +1733,8 @@ public static partial class BjolangRuntime {
             Mode = Bjolang.Runtime.BufferMode.None,
         };
         StandardError = error;
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => output.FlushAtExit();
-        AppDomain.CurrentDomain.UnhandledException += (_, _) => output.FlushAtExit();
+        AppDomain.CurrentDomain.ProcessExit += [NonUserCode] (_, _) => output.FlushAtExit();
+        AppDomain.CurrentDomain.UnhandledException += [NonUserCode] (_, _) => output.FlushAtExit();
         return output;
     }
 
@@ -1816,6 +1831,7 @@ public static partial class BjolangRuntime {
     /// <summary>
     /// An interned keyword. All instances of a keyword with the same name share the same reference.
     /// </summary>
+    [NonUserCode]
     public sealed class Keyword : IEquatable<Keyword>, IComparable<Keyword> {
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Keyword> _table = new();
 
@@ -1827,7 +1843,7 @@ public static partial class BjolangRuntime {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Keyword Intern(string name) =>
-            _table.GetOrAdd(name, static n => new Keyword(n));
+            _table.GetOrAdd(name, [NonUserCode] static (n) => new Keyword(n));
 
         public bool Equals(Keyword? other) => ReferenceEquals(this, other);
         public override bool Equals(object? obj) => ReferenceEquals(this, obj);
@@ -1839,6 +1855,7 @@ public static partial class BjolangRuntime {
     /// <summary>
     /// An interned symbol. All instances of a symbol with the same name share the same reference.
     /// </summary>
+    [NonUserCode]
     public sealed class Symbol : IEquatable<Symbol>, IComparable<Symbol> {
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Symbol> _table = new();
 
@@ -1850,7 +1867,7 @@ public static partial class BjolangRuntime {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Symbol Intern(string name) =>
-            _table.GetOrAdd(name, static n => new Symbol(n));
+            _table.GetOrAdd(name, [NonUserCode] static (n) => new Symbol(n));
 
         public bool Equals(Symbol? other) => ReferenceEquals(this, other);
         public override bool Equals(object? obj) => ReferenceEquals(this, obj);

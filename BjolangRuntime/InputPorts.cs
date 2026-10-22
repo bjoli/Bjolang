@@ -24,6 +24,7 @@ using BjoString;
 
 namespace Bjolang.Runtime;
 
+[NonUserCode]
 public static class InputPorts {
     // --- Making ports -------------------------------------------------------
 
@@ -88,6 +89,7 @@ public static class InputPorts {
     /// surrogate becomes U+FFFD, as it does when a .NET string becomes a
     /// Bjolang one.
     /// </summary>
+    [NonUserCode]
     private sealed class ReaderStream(TextReader reader) : Stream, ISyncReadable {
         private readonly Encoder _encoder = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetEncoder();
         private readonly char[] _chars = new char[2048];

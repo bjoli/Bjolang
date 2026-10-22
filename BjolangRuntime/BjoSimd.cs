@@ -29,6 +29,7 @@ namespace Bjolang.Runtime;
 /// methods read them. Each one is inlined, and <c>Count</c> is a constant to
 /// the JIT.
 /// </remarks>
+[NonUserCode]
 public static class BjoSimd {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Vector128<T> Zero128<T>() => Vector128<T>.Zero;

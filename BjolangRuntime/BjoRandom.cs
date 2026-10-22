@@ -52,6 +52,7 @@ namespace Bjolang.Runtime;
 /// only while every one of them is inside it.
 /// </para>
 /// </remarks>
+[NonUserCode]
 public sealed class RandomSource {
     /// Null means the calling thread's generator, and is the whole of the
     /// distinction: null takes the lock-free path, non-null takes its own lock.
@@ -85,6 +86,7 @@ public sealed class RandomSource {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal Lease Borrow() => new(this);
 
+    [NonUserCode]
     internal ref struct Lease {
         /// The generator to use. The thread's, or the source's own.
         public readonly ChaChaRng Rng;
@@ -120,6 +122,7 @@ public sealed class RandomSource {
 /// <see cref="RandomSource.Draw"/>, which is what decides between the
 /// thread's generator and a locked one.
 /// </summary>
+[NonUserCode]
 public static class RandomModule {
     public static RandomSource Ambient() => RandomSource.Ambient;
 

@@ -95,6 +95,7 @@ namespace Bjolang.Runtime;
 // Loc does not keep a chain of old versions alive.
 
 /// <summary>The status of one commit.</summary>
+[NonUserCode]
 internal sealed class Casn
 {
     internal static readonly object Before = new();
@@ -110,6 +111,7 @@ internal sealed class Casn
     internal Casn(object status) => Status = status;
 }
 
+[NonUserCode]
 internal sealed class State<T>
 {
     internal T Value;
@@ -137,6 +139,7 @@ internal sealed class State<T>
 internal enum InstallResult { Installed, Failed, Determined }
 
 /// <summary>One Loc in the log of a transaction.</summary>
+[NonUserCode]
 internal abstract class Entry
 {
     internal readonly LocBase Loc;
@@ -164,6 +167,7 @@ internal abstract class Entry
     internal abstract void Restore(object? value, bool written);
 }
 
+[NonUserCode]
 internal sealed class Entry<T> : Entry
 {
     private readonly Loc<T> _loc;
@@ -241,6 +245,7 @@ internal sealed class Entry<T> : Entry
 }
 
 /// <summary>The MCAS of a commit, which other threads can also run to help it.</summary>
+[NonUserCode]
 internal static class Mcas
 {
     /// Finish the commit, and tell if it succeeded.
@@ -299,6 +304,7 @@ internal static class Mcas
 /// A transactional location: <c>(Loc T)</c> in Bjolang. Make one with
 /// <see cref="StmModule.MakeLoc{T}"/>.
 /// </summary>
+[NonUserCode]
 public abstract class LocBase
 {
     private static long s_nextId;
@@ -329,7 +335,7 @@ public abstract class LocBase
             var list = _waiters ??= new List<StmBlock>();
             if (list.Count >= _purgeAt)
             {
-                list.RemoveAll(static b => b.IsDead);
+                list.RemoveAll([NonUserCode] static (b) => b.IsDead);
                 _purgeAt = Math.Max(MinPurge, list.Count * 2);
             }
             list.Add(block);
@@ -356,6 +362,7 @@ public abstract class LocBase
     }
 }
 
+[NonUserCode]
 public sealed class Loc<T> : LocBase
 {
     internal State<T> Current;
@@ -370,6 +377,7 @@ public sealed class Loc<T> : LocBase
 /// on the <see cref="Tx"/> tell which. Thus a transaction that catches the
 /// signal and returns is still retried or started again.
 /// </summary>
+[NonUserCode]
 internal sealed class StmSignal : Exception
 {
     internal StmSignal() : base("a transaction stopped, to run again later") { }
@@ -380,6 +388,7 @@ internal sealed class StmSignal : Exception
 /// and gives it to each operation, as kcas's <c>~xt</c>. A log is used for one
 /// run only, and operations on it fail after the run.
 /// </summary>
+[NonUserCode]
 public sealed class Tx
 {
     // With more Locs than this, a dictionary finds an entry.
@@ -558,7 +567,7 @@ public sealed class Tx
         for (int i = 0; i < _count; i++) entries[i].Loc.AddWaiter(block);
     }
 
-    private static readonly Comparison<Entry> ById = static (a, b) => a.Loc.Id.CompareTo(b.Loc.Id);
+    private static readonly Comparison<Entry> ById = [NonUserCode] static (a, b) => a.Loc.Id.CompareTo(b.Loc.Id);
 
     internal bool Commit()
     {
@@ -583,6 +592,7 @@ public sealed class Tx
 
 internal enum Ran { Value, Failed, Retry, Restart }
 
+[NonUserCode]
 internal static class Stm
 {
     /// Run the transaction once. On <see cref="Ran.Failed"/> the exception is
@@ -635,6 +645,7 @@ internal static class Stm
 }
 
 /// <summary>What a committed transaction gives its sync: a value or an exception.</summary>
+[NonUserCode]
 internal readonly struct StmOutcome<T>
 {
     private readonly T _value;
@@ -653,6 +664,7 @@ internal readonly struct StmOutcome<T>
     }
 }
 
+[NonUserCode]
 internal abstract class StmAttempt
 {
     /// Another branch of the sync has won.
@@ -667,6 +679,7 @@ internal abstract class StmAttempt
 /// It wakes its attempt once: the first write to any of the Locs fires it,
 /// and the other lists drop it later.
 /// </summary>
+[NonUserCode]
 internal sealed class StmBlock
 {
     private readonly StmAttempt _attempt;
@@ -707,6 +720,7 @@ internal sealed class StmBlock
 /// (<see cref="WrapSink{T, U}"/>). Thus an exception from a run on the pool is
 /// raised in the syncing fiber.
 /// </summary>
+[NonUserCode]
 internal sealed class StmAttempt<T> : StmAttempt
 {
     private readonly Func<Tx, T> _body;
@@ -827,9 +841,10 @@ internal sealed class StmAttempt<T> : StmAttempt
 /// The transaction runs each time the event is synced. If another branch wins,
 /// the transaction has written nothing.
 /// </summary>
+[NonUserCode]
 public sealed class AtomicallyEvent<T> : IEvent<T>, INowable<T>
 {
-    private static readonly Func<StmOutcome<T>, T> s_unwrap = static o => o.Unwrap();
+    private static readonly Func<StmOutcome<T>, T> s_unwrap = [NonUserCode] static (o) => o.Unwrap();
 
     private readonly Func<Tx, T> _body;
 
@@ -848,6 +863,7 @@ public sealed class AtomicallyEvent<T> : IEvent<T>, INowable<T>
 }
 
 /// <summary>The functions of (std stm).</summary>
+[NonUserCode]
 public static class StmModule
 {
     public static Loc<T> MakeLoc<T>(T value) => new(value);

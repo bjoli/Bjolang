@@ -43,6 +43,7 @@ namespace Bjolang.Runtime;
 /// makes an <c>Err</c> with <see cref="Message"/>.
 /// </para>
 /// </remarks>
+[NonUserCode]
 public static class BjoScan {
     // Whitespace, as a space in a pattern matches it: the ASCII blanks.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

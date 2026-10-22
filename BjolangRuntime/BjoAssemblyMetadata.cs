@@ -28,6 +28,7 @@ namespace Bjolang.Runtime;
 /// module's dll, so it reads the metadata tables instead. Written here rather
 /// than in Bjolang because the reader is handles and a mutable struct.
 /// </remarks>
+[NonUserCode]
 public static class BjoAssemblyMetadata {
     /// <summary>
     /// The value stored under <paramref name="key"/>, or <c>""</c> when the

@@ -28,6 +28,7 @@ namespace Bjolang.Runtime;
 /// `Items[I]` down to `Items[Floor]` are this leaf's part of the walk.
 /// `NextIndex` is the vec index below them, and `Stop` the vec index the walk
 /// ends above.
+[NonUserCode]
 public readonly struct VecBackCursor<T> {
     private readonly T[] _items;
     private readonly int _i;
@@ -94,6 +95,7 @@ public readonly struct VecBackCursor<T> {
     private static VecBackCursor<T> AtLeaf(RrbList<T> list, int index, int stop) => Enter(list, index, stop);
 }
 
+[NonUserCode]
 public static class VecWalk {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static VecBackCursor<T> Backward<T>(RrbList<T> list, int last, int count) =>
@@ -122,6 +124,7 @@ public static class VecWalk {
 // one is at the end.
 
 /// The character a walk is on, and where the next one begins.
+[NonUserCode]
 public readonly struct StringWalk {
     private readonly byte[]? _bytes;
     private readonly int _next;
@@ -170,6 +173,7 @@ public readonly struct StringWalk {
         throw new InvalidOperationException("string-walk-current: the walk is at the end of the string.");
 }
 
+[NonUserCode]
 public static class StringWalks {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static StringWalk Start(Utf8String s) => StringWalk.Start(s);

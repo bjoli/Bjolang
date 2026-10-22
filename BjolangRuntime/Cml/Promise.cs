@@ -28,6 +28,7 @@ namespace Bjoml;
 /// travels as a <see cref="Result{T}"/> and is only turned back into an exception
 /// inside a fiber, where the state machine can catch it.
 /// </summary>
+[NonUserCode]
 public readonly struct Result<T>
 {
     public readonly T Value;
@@ -87,6 +88,7 @@ internal interface IPromiseWaiter
 /// kills the process), and the end-of-work-item flush that keeps batched spawns
 /// from being stranded.
 /// </summary>
+[NonUserCode]
 internal abstract class PromiseWaiter : IPromiseWaiter, IThreadPoolWorkItem
 {
     public abstract void Signal();
@@ -127,9 +129,11 @@ internal abstract class PromiseWaiter : IPromiseWaiter, IThreadPoolWorkItem
 /// Each stripe prunes its own abandoned waiters, as the single list does, when
 /// it grows to twice what survived the last prune.
 /// </summary>
+[NonUserCode]
 internal sealed class StripedWaiters
 {
 #pragma warning disable CS0169 // the padding is never read
+    [NonUserCode]
     private sealed class Stripe
     {
         // The two fields every registration on this core writes, kept off the
@@ -186,7 +190,7 @@ internal sealed class StripedWaiters
 
             if (s.Waiters.Count >= s.PruneAt)
             {
-                s.Waiters.RemoveAll(static w => w is PromiseWaiter pw && pw.IsAbandoned);
+                s.Waiters.RemoveAll([NonUserCode] static (w) => w is PromiseWaiter pw && pw.IsAbandoned);
                 s.PruneAt = Math.Max(8, s.Waiters.Count * 2);
             }
 
@@ -246,6 +250,7 @@ internal sealed class StripedWaiters
 /// STARVATION WARNING: a completed promise inside a <c>choose</c> loop wins every
 /// iteration, exactly like <c>Cml.Always</c>. Document this for language users.
 /// </summary>
+[NonUserCode]
 public class Promise<T> : IEvent<Result<T>>,
     IEvent<global::BjolangRuntime.Result<Exception, T>>,
     INowable<global::BjolangRuntime.Result<Exception, T>>
@@ -490,7 +495,7 @@ public class Promise<T> : IEvent<Result<T>>,
                     {
                         if (list.Count >= _pruneAt)
                         {
-                            list.RemoveAll(static w => w is PromiseWaiter pw && pw.IsAbandoned);
+                            list.RemoveAll([NonUserCode] static (w) => w is PromiseWaiter pw && pw.IsAbandoned);
                             _pruneAt = Math.Max(8, list.Count * 2);
                         }
 
@@ -557,6 +562,7 @@ public class Promise<T> : IEvent<Result<T>>,
         Register(new ForwardWaiter(this, target));
     }
 
+    [NonUserCode]
     private sealed class ForwardWaiter : PromiseWaiter
     {
         private readonly Promise<T> _source;
@@ -595,7 +601,7 @@ public class Promise<T> : IEvent<Result<T>>,
     /// </summary>
     public void Detach()
     {
-        OnCompleted(() =>
+        OnCompleted([NonUserCode] () =>
         {
             var r = Outcome;
             if (r.IsError) Scheduler.ReportUnhandled(r.Error!.SourceException);
@@ -634,6 +640,7 @@ public class Promise<T> : IEvent<Result<T>>,
         Scheduler.Dispatch(onSync, Outcome);
     }
 
+    [NonUserCode]
     private sealed class Waiter : PromiseWaiter
     {
         private readonly Promise<T> _owner;
@@ -711,6 +718,7 @@ public class Promise<T> : IEvent<Result<T>>,
         Scheduler.Dispatch(onSync, ForJoin(Outcome));
     }
 
+    [NonUserCode]
     private sealed class JoinWaiter : PromiseWaiter
     {
         private readonly Promise<T> _owner;
@@ -759,6 +767,7 @@ public class Promise<T> : IEvent<Result<T>>,
 /// A failed promise delivers <c>default</c>; nothing that builds one of these
 /// completes its promise with a failure.
 /// </summary>
+[NonUserCode]
 internal sealed class PromiseValue<T> : IEvent<T>, INowable<T>
 {
     private readonly Promise<T> _promise;
@@ -798,6 +807,7 @@ internal sealed class PromiseValue<T> : IEvent<T>, INowable<T>
         Scheduler.Dispatch(onSync, _promise.Outcome.Value);
     }
 
+    [NonUserCode]
     private sealed class Waiter : PromiseWaiter
     {
         private readonly PromiseValue<T> _owner;
@@ -819,6 +829,7 @@ internal sealed class PromiseValue<T> : IEvent<T>, INowable<T>
     }
 }
 
+[NonUserCode]
 public readonly struct PromiseAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter
 {
     private readonly Promise<T> _p;

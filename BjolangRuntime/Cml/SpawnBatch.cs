@@ -58,6 +58,7 @@ namespace Bjoml;
 ///      optimisations rather than correctness requirements: even a thread that
 ///      spawns 5 fibers and then spins forever on a raw lock cannot strand them.
 /// </summary>
+[NonUserCode]
 internal sealed class SpawnBatch
 {
     /// <summary>Fibers per queue operation. 64 puts us at the flat part of the curve.</summary>
@@ -81,7 +82,7 @@ internal sealed class SpawnBatch
     // Created stopped and never replaced. Creating it lazily inside EnsureWatchdog
     // meant two threads could race on the `??=` and build two timers, orphaning one.
     private static readonly Timer s_watchdog =
-        new Timer(static _ => Sweep(), null, Timeout.Infinite, Timeout.Infinite);
+        new Timer([NonUserCode] static (_) => Sweep(), null, Timeout.Infinite, Timeout.Infinite);
 
     private static int s_watchdogState;   // 0 = stopped, 1 = running
 
@@ -287,6 +288,7 @@ internal sealed class SpawnBatch
 /// other half. The result is a tree fan-out — 64 fibers reach 24 cores in ~6 queue
 /// operations instead of 64.
 /// </summary>
+[NonUserCode]
 internal sealed class SpawnBatchItem : IThreadPoolWorkItem
 {
     private readonly IThreadPoolWorkItem[] _items;
@@ -363,6 +365,7 @@ internal sealed class SpawnBatchItem : IThreadPoolWorkItem
 ///   stop the tail from landing entirely on one thread, which is the very problem
 ///   the fixed floor has.
 /// </summary>
+[NonUserCode]
 internal sealed class AdaptiveSpawnBatchItem : IThreadPoolWorkItem
 {
     /// <summary>Cap on a single bite, so one thread cannot swallow a whole batch.</summary>

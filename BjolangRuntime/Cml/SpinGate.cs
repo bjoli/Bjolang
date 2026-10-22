@@ -23,6 +23,7 @@ namespace Bjoml;
 /// Written <c>using (gate.Hold()) { ... }</c>, which is shaped like the
 /// <c>lock</c> statement it stands in for.
 /// </summary>
+[NonUserCode]
 internal sealed class SpinGate
 {
     private int _held;
@@ -42,6 +43,7 @@ internal sealed class SpinGate
         while (Volatile.Read(ref _held) != 0 || Interlocked.CompareExchange(ref _held, 1, 0) != 0);
     }
 
+    [NonUserCode]
     public readonly ref struct Holder
     {
         private readonly SpinGate _gate;

@@ -75,6 +75,7 @@ internal interface IFiberAwaiter
     void ParkFiber(IFiberResume box);
 }
 
+[NonUserCode]
 internal static class Resumes
 {
     /// <summary>
@@ -87,6 +88,7 @@ internal static class Resumes
 }
 
 /// <summary>A delegate as a resume: a continuation from outside the runtime.</summary>
+[NonUserCode]
 internal sealed class ActionResume : IResume
 {
     private readonly Action _action;
@@ -115,6 +117,7 @@ internal sealed class ActionResume : IResume
 }
 
 /// <summary>What resuming a boxed state machine does, for both kinds of box.</summary>
+[NonUserCode]
 internal static class FiberResume
 {
     /// <summary>
@@ -184,6 +187,7 @@ internal static class FiberResume
 /// It implements <see cref="IThreadPoolWorkItem"/> directly, so resuming a fiber
 /// from the scheduler costs no wrapper allocation at all.
 /// </summary>
+[NonUserCode]
 internal sealed class FiberStateMachineBox<TStateMachine> : IFiberResume
     where TStateMachine : IAsyncStateMachine
 {
@@ -237,6 +241,7 @@ internal sealed class FiberStateMachineBox<TStateMachine> : IFiberResume
 /// publishing the outcome that path touches nothing of the box but a virtual
 /// no-op.
 /// </summary>
+[NonUserCode]
 internal sealed class CalledFiber<TStateMachine, T> : Promise<T>, IFiberResume
     where TStateMachine : IAsyncStateMachine
 {
@@ -315,6 +320,7 @@ public interface IFiberLanding
     void Landed(System.Runtime.ExceptionServices.ExceptionDispatchInfo? error);
 }
 
+[NonUserCode]
 public class FiberCore<T> : Promise<T>, IThreadPoolWorkItem
 {
     [ThreadStatic] internal static FiberCore<T>? CurrentSpawning;
@@ -448,6 +454,7 @@ public class FiberCore<T> : Promise<T>, IThreadPoolWorkItem
 /// <c>RunBody</c> clears the slot before it starts the body, so a
 /// long-lived promise handle does not pin the spawn arguments.
 /// </summary>
+[NonUserCode]
 internal sealed class StatefulFiberCore<TState, T> : FiberCore<T>
 {
     internal TState SpawnState;
@@ -488,6 +495,7 @@ internal sealed class StatefulFiberCore<TState, T> : FiberCore<T>
 /// <c>default(Fiber&lt;T&gt;)</c> is therefore a call that returned <c>default</c>.
 /// </summary>
 [AsyncMethodBuilder(typeof(FiberMethodBuilder<>))]
+[NonUserCode]
 public readonly struct Fiber<T>
 {
     internal readonly Promise<T>? Core;
@@ -525,6 +533,7 @@ public readonly struct Fiber<T>
 /// null for a call that completed without suspending, as in <see cref="Fiber{T}"/>.
 /// </summary>
 [AsyncMethodBuilder(typeof(FiberMethodBuilder))]
+[NonUserCode]
 public readonly struct Fiber
 {
     internal readonly Promise<Unit>? Core;
@@ -545,6 +554,7 @@ public readonly struct Fiber
 /// Awaiter for both fiber types: the result itself when the call completed without
 /// suspending, otherwise the call's promise.
 /// </summary>
+[NonUserCode]
 public readonly struct FiberAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter
 {
     private readonly Promise<T>? _p;
@@ -593,6 +603,7 @@ public readonly struct FiberAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaite
 // ---------------------------------------------------------------------------
 
 /// <summary>What the two builders share: finding the box that resumes a fiber, and parking it.</summary>
+[NonUserCode]
 internal static class FiberBuilder
 {
     /// <summary>
@@ -702,6 +713,7 @@ internal static class FiberBuilder
     }
 }
 
+[NonUserCode]
 public struct FiberMethodBuilder<T>
 {
     /// <summary>
@@ -765,6 +777,7 @@ public struct FiberMethodBuilder<T>
         => FiberBuilder.AwaitUnsafe(ref awaiter, ref _core, ref stateMachine);
 }
 
+[NonUserCode]
 public struct FiberMethodBuilder
 {
     /// <summary>See <see cref="FiberMethodBuilder{T}"/>. Null at the end means success.</summary>

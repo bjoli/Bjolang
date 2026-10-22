@@ -43,6 +43,7 @@ namespace Bjolang.Runtime;
 // MutableVec — List<T>
 // ---------------------------------------------------------------------------
 
+[NonUserCode]
 public static class MutableVecModule {
     public static List<T> Empty<T>() => new();
 
@@ -205,6 +206,7 @@ public static class MutableVecModule {
 /// is kept here. The type is still a `Dictionary<K,V>`, so an extern that takes
 /// one accepts it; such an extern does not see the `null` entry.
 /// </remarks>
+[NonUserCode]
 public sealed class NullKeyDictionary<K, V> : Dictionary<K, V> where K : notnull {
     public bool HasNull;
     public V NullValue = default!;
@@ -223,6 +225,7 @@ public sealed class NullKeyDictionary<K, V> : Dictionary<K, V> where K : notnull
 /// A `Dictionary` made elsewhere has no slot: it holds no `null` key, and
 /// writing one there is the error .NET gives.
 /// </remarks>
+[NonUserCode]
 public static class MutableMapModule {
     public static Dictionary<K, V> Empty<K, V>() where K : notnull => new NullKeyDictionary<K, V>();
 
@@ -390,6 +393,7 @@ public static class MutableMapModule {
 /// `Dictionary<K,V>.Enumerator` is a struct, so every copy advances
 /// independently — useless to a caller that has to *hold* the position. This is
 /// that struct in a heap cell: one allocation for the walk, none per element.
+[NonUserCode]
 public sealed class MutableMapCursor<K, V> where K : notnull {
     public const byte InTable = 0;
     public const byte BeforeNull = 1;
@@ -415,6 +419,7 @@ public sealed class MutableMapCursor<K, V> where K : notnull {
 // MutableSet — HashSet<T>
 // ---------------------------------------------------------------------------
 
+[NonUserCode]
 public static class MutableSetModule {
     public static HashSet<T> Empty<T>() => new();
 
@@ -480,6 +485,7 @@ public static class MutableSetModule {
 
 /// A position in a walk of a `HashSet<T>`. A struct enumerator in a heap cell,
 /// for the reason `MutableMapCursor` gives.
+[NonUserCode]
 public sealed class MutableSetCursor<T> {
     public HashSet<T>.Enumerator Enumerator;
 
@@ -492,6 +498,7 @@ public sealed class MutableSetCursor<T> {
 // MutableHeap — PriorityQueue<T,P>
 // ---------------------------------------------------------------------------
 
+[NonUserCode]
 public static class MutableHeapModule {
     /// Ordered by `Comparer<P>.Default`, least priority first.
     public static PriorityQueue<T, P> Empty<T, P>() => new();

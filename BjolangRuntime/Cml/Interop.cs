@@ -18,6 +18,7 @@ using System.Threading.Tasks;
 
 namespace Bjoml;
 
+[NonUserCode]
 public static class Bjo
 {
     // -----------------------------------------------------------------------
@@ -131,7 +132,7 @@ public static class Bjo
         var gate = new object();
         bool completed = false;
 
-        p.GetAwaiter().OnCompleted(() =>
+        p.GetAwaiter().OnCompleted([NonUserCode] () =>
         {
             lock (gate)
             {
@@ -156,6 +157,7 @@ public static class Bjo
 /// it: a lambda that calls one and returns another's fiber, or a fiber that
 /// completed without suspending through a builder that never saw the core.
 /// </summary>
+[NonUserCode]
 internal static class SpawnSettle
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -175,6 +177,7 @@ internal static class SpawnSettle
     }
 }
 
+[NonUserCode]
 public static class TaskInterop
 {
     // -----------------------------------------------------------------------
@@ -198,7 +201,7 @@ public static class TaskInterop
         // continuation, which is exactly what BjoML does not want.
         var awaiter = task.ConfigureAwait(false).GetAwaiter();
         if (awaiter.IsCompleted) Settle(task, p);
-        else awaiter.UnsafeOnCompleted(() => Settle(task, p));
+        else awaiter.UnsafeOnCompleted([NonUserCode] () => Settle(task, p));
 
         return p;
     }
@@ -223,7 +226,7 @@ public static class TaskInterop
     {
         var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        p.GetAwaiter().OnCompleted(() =>
+        p.GetAwaiter().OnCompleted([NonUserCode] () =>
         {
             try { tcs.TrySetResult(p.GetAwaiter().GetResult()); }
             catch (Exception e) { tcs.TrySetException(e); }
@@ -250,12 +253,13 @@ public static class TaskInterop
     /// of a loop and starve its siblings. Same trap as <c>Cml.Always</c>.
     /// </summary>
     public static IEvent<Result<T>> Cancellable<T>(Func<CancellationToken, Task<T>> start)
-        => Cml.WithNack<Result<T>>(nack =>
+        => Cml.WithNack<Result<T>>([NonUserCode] (nack) =>
         {
             var cts = new CancellationTokenSource();
 
             // Dispose exactly once, from whichever of the two paths gets there first.
             int disposed = 0;
+            [NonUserCode]
             void DisposeOnce()
             {
                 if (Interlocked.Exchange(ref disposed, 1) == 0) cts.Dispose();
@@ -265,7 +269,7 @@ public static class TaskInterop
             // spawned a fiber to await the nack, which meant that whenever this
             // branch WON, that fiber parked forever holding the token source. This
             // runs no user code, so it is safe outside a fiber context.
-            Cml.Sync(nack, _ =>
+            Cml.Sync(nack, [NonUserCode] (_) =>
             {
                 try { cts.Cancel(); }
                 catch (ObjectDisposedException) { /* the task already finished */ }

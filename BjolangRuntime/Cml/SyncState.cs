@@ -24,6 +24,7 @@ namespace Bjoml;
 /// <see cref="TimeoutNode"/> does: one object per armed timeout, where a
 /// delegate and a node were two more.
 /// </summary>
+[NonUserCode]
 public class NackNode
 {
     public readonly Action? Action;
@@ -65,6 +66,7 @@ public class NackNode
 /// winning branch index lies OUTSIDE [I0, I1), completely avoiding dictionary allocations,
 /// tree hashing, and locks for ID generation.
 /// </summary>
+[NonUserCode]
 public class SyncState
 {
     public const int W = 0;

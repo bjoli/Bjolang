@@ -122,6 +122,7 @@ public enum LineMode {
 /// A line or character cut short by a failure reports the failure, not the
 /// fragment: the rest of it was lost.
 /// </summary>
+[NonUserCode]
 public sealed class BjoInputPort : TextReader {
     internal const int DefaultBufferSize = 16384;
 
@@ -162,6 +163,7 @@ public sealed class BjoInputPort : TextReader {
 
     /// Holding <see cref="_held"/>, released by <c>Dispose</c> at the end of a
     /// <c>using</c>, which releases it however the section is left.
+    [NonUserCode]
     private readonly ref struct Held {
         private readonly BjoInputPort _port;
         public Held(BjoInputPort port) => _port = port;
@@ -442,6 +444,7 @@ public sealed class BjoInputPort : TextReader {
     // completed rather than faulted even when the read threw: the failure is
     // the port's, sticky, and found by whoever reads next.
 
+    [NonUserCode]
     private readonly record struct RefillStart(TaskCompletionSource Done, byte[] Into, int At, int Room);
 
     /// <summary>
@@ -614,6 +617,7 @@ public sealed class BjoInputPort : TextReader {
     /// resume a fiber; and then either <c>Handover</c> or <c>UndoLocked</c>.
     /// Nothing is consumed by a branch that loses.
     /// </summary>
+    [NonUserCode]
     private abstract class Waiter {
         public SyncState State = null!;
         public int EventId;
@@ -632,6 +636,7 @@ public sealed class BjoInputPort : TextReader {
         public abstract void UndoLocked(BjoInputPort p);
     }
 
+    [NonUserCode]
     private sealed class ReadWaiter : Waiter {
         /// 0 is `read-some`; a positive count is `read-bytes`.
         public int Count;
@@ -669,6 +674,7 @@ public sealed class BjoInputPort : TextReader {
     /// The port is finished — cleanly or because it failed. It says only that,
     /// which is what makes it the right thing to wait on for "the other end has
     /// gone away"; a read beside it is what says which of the two happened.
+    [NonUserCode]
     private sealed class EofWaiter : Waiter {
         public Action<Unit> OnSync = null!;
 
@@ -1668,6 +1674,7 @@ public sealed class BjoInputPort : TextReader {
     /// </summary>
     public Stream AsStream() => new PortStream(this);
 
+    [NonUserCode]
     private sealed class PortStream : Stream, ISyncReadable {
         private readonly BjoInputPort _port;
 

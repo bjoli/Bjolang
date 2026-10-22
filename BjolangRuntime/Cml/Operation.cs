@@ -59,6 +59,7 @@ internal interface IParkSite
     Withdrawal CancelParked(Operation op, int gen);
 }
 
+[NonUserCode]
 public abstract class Operation
 {
     public SyncState? State;
@@ -135,6 +136,7 @@ public abstract class Operation
     internal bool IsCancelled => ParkedGen < 0;
 }
 
+[NonUserCode]
 public sealed class PutOp<T> : Operation
 {
     // 256, not 64, because recycling is BURSTY where renting is steady. A K-wide
@@ -236,6 +238,7 @@ public sealed class PutOp<T> : Operation
     }
 }
 
+[NonUserCode]
 public sealed class GetOp<T> : Operation
 {
     // See PutOp<T>.MaxCached: sized for the sweep bursts of a wide choose.

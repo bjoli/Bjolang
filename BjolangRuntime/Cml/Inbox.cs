@@ -50,6 +50,7 @@ namespace Bjoml;
 /// the same thing for both uses; <see cref="Call{TQ,TR}"/> only adds what a
 /// caller waiting for an answer needs.
 /// </summary>
+[NonUserCode]
 public sealed class Inbox<T>
 {
     // One lock. An inbox is a boundary, not the ring buffer of a hot channel:
@@ -325,7 +326,7 @@ public sealed class Inbox<T>
             // Registered after parking: the other order leaves a window where
             // the token fires, finds nothing to cancel, and the item is parked
             // afterwards anyway.
-            node.Registration = token.Register(static s => ((SendNode)s!).CancelByToken(), node);
+            node.Registration = token.Register([NonUserCode] static (s) => ((SendNode)s!).CancelByToken(), node);
         }
 
         // Room may have appeared while we were parking.
@@ -881,6 +882,7 @@ public sealed class Inbox<T>
     // -----------------------------------------------------------------------
 
     /// <summary>One parked <c>(inbox-recv ib)</c>.</summary>
+    [NonUserCode]
     private sealed class RecvNode
     {
         public readonly SyncState State;
@@ -904,6 +906,7 @@ public sealed class Inbox<T>
     /// served first-in, first-out" is a promise across both forms — and they
     /// differ only in how winning is decided and what winning does.
     /// </summary>
+    [NonUserCode]
     private sealed class SendNode
     {
         public readonly T Value;
@@ -985,6 +988,7 @@ public sealed class Inbox<T>
 /// An <see cref="InvalidOperationException"/> because that is what it is: the
 /// call was made when it could not be served. An HTTP server turns it into 503.
 /// </summary>
+[NonUserCode]
 public sealed class InboxFullException : InvalidOperationException
 {
     public InboxFullException(string message) : base(message) { }
@@ -1032,6 +1036,7 @@ internal interface IInboxItem
 /// cost of one pool hop. A post from inside a fiber keeps the inline path, which
 /// is what every rendezvous in this runtime does.
 /// </summary>
+[NonUserCode]
 internal static class InboxWake
 {
     public static void Resume<TValue>(Action<TValue> k, TValue value)
@@ -1050,6 +1055,7 @@ internal static class InboxWake
 /// carried this way — an inbox that has drained, a call whose caller has gone —
 /// can be signalled from a thread that is not a fiber.
 /// </summary>
+[NonUserCode]
 internal sealed class Gate<T> : IEvent<T>, INowable<T>
 {
     private readonly object _lock = new();
@@ -1163,6 +1169,7 @@ internal sealed class Gate<T> : IEvent<T>, INowable<T>
         return live;
     }
 
+    [NonUserCode]
     private sealed class Node
     {
         public readonly SyncState State;
@@ -1180,6 +1187,7 @@ internal sealed class Gate<T> : IEvent<T>, INowable<T>
     }
 }
 
+[NonUserCode]
 internal sealed class InboxRecvEvent<T> : IEvent<T>, INowable<T>
 {
     private readonly Inbox<T> _inbox;
@@ -1192,6 +1200,7 @@ internal sealed class InboxRecvEvent<T> : IEvent<T>, INowable<T>
     bool INowable<T>.TryNow(out T value) => _inbox.TryReceiveNow(out value);
 }
 
+[NonUserCode]
 internal sealed class InboxSendEvent<T> : IEvent<Unit>
 {
     private readonly Inbox<T> _inbox;
@@ -1229,6 +1238,7 @@ internal sealed class InboxSendEvent<T> : IEvent<Unit>
 /// One word decides, with a compare-and-swap on each side, so it comes out as
 /// exactly one of the two and never both.
 /// </summary>
+[NonUserCode]
 public sealed class Call<TQ, TR> : IInboxItem
 {
     private const int Queued = 0;
@@ -1267,7 +1277,7 @@ public sealed class Call<TQ, TR> : IInboxItem
     internal void Watch(CancellationToken token)
     {
         if (!token.CanBeCanceled) return;
-        _registration = token.Register(static s => ((Call<TQ, TR>)s!).OnToken(), this);
+        _registration = token.Register([NonUserCode] static (s) => ((Call<TQ, TR>)s!).OnToken(), this);
     }
 
     /// <summary>
@@ -1339,6 +1349,7 @@ public sealed class Call<TQ, TR> : IInboxItem
 /// The three run on the observable's thread, so they follow the rule every
 /// foreign callback does: post, close or fail, and nothing else.
 /// </summary>
+[NonUserCode]
 public sealed class DelegateObserver<T> : IObserver<T>
 {
     // `Func<..., Unit>` rather than `Action<...>`, for the reason
@@ -1367,6 +1378,7 @@ public sealed class DelegateObserver<T> : IObserver<T>
 /// The static surface `(std inbox)` imports, in the shape
 /// <c>import/extern</c> reads: one function per operation, the inbox first.
 /// </summary>
+[NonUserCode]
 public static class InboxModule
 {
     public static Inbox<T> Make<T>(int capacity, bool dropOldest) => new(capacity, dropOldest);

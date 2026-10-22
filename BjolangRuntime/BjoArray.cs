@@ -48,6 +48,7 @@ namespace Bjolang.Runtime;
 /// <c>Equals</c> would say otherwise for both.
 /// </para>
 /// </remarks>
+[NonUserCode]
 public static class BjoArray {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     static bool Vectorised<T>(int length) =>

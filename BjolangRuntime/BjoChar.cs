@@ -24,6 +24,7 @@ namespace Bjolang.Runtime;
 // operators below already exist, and declaring the interface is what lets a
 // constrained generic function reach them. `IComparable` is the other half,
 // and is what `Ord`'s `compare` — and so sorting — goes through.
+[NonUserCode]
 public readonly record struct BjoChar : IComparable<BjoChar>, IComparisonOperators<BjoChar, BjoChar, bool>
 {
     public uint Value { get; }

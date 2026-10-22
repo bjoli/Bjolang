@@ -36,6 +36,7 @@ namespace Bjolang.Runtime;
 /// because Bjolang cannot pass a span.
 /// </para>
 /// </remarks>
+[NonUserCode]
 public static class CryptoModule
 {
     static HashAlgorithmName Name(string algorithm) => new HashAlgorithmName(algorithm);
@@ -173,6 +174,7 @@ public static class CryptoModule
         _ => throw new ArgumentException($"Not a password algorithm: {algorithm}."),
     };
 
+    [NonUserCode]
     readonly record struct Phc(string Algorithm, int Iterations, byte[] Salt, byte[] Hash);
 
     static Phc Parse(string encoded)

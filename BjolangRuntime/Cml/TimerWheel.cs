@@ -35,12 +35,14 @@ namespace Bjoml;
 /// lap it is due in. Precision is that of the tick, about a millisecond, which
 /// is what a <see cref="Timer"/> gave too.
 /// </summary>
+[NonUserCode]
 internal static class TimerWheel
 {
     private const int Slots = 1024;
     private const int SlotMask = Slots - 1;
 
 #pragma warning disable CS0169 // the padding is never read
+    [NonUserCode]
     internal sealed class Wheel
     {
         private long _pad0, _pad1, _pad2, _pad3, _pad4, _pad5, _pad6;
@@ -73,7 +75,7 @@ internal static class TimerWheel
     private static readonly Wheel[] s_wheels = CreateWheels();
 
     private static readonly Timer s_tick =
-        new(static _ => Tick(), null, Timeout.Infinite, Timeout.Infinite);
+        new([NonUserCode] static (_) => Tick(), null, Timeout.Infinite, Timeout.Infinite);
 
     private static int s_ticking;   // 0 stopped, 1 running
 

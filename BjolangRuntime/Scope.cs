@@ -108,7 +108,7 @@ public static partial class BjolangRuntime {
     /// borrowed thread that delivers it.
     /// </summary>
     internal static void ReportUnlessCancelled<T>(Promise<T> p, Promise<CancelReason>? token) {
-        Cml.Sync(p.Join(), r => {
+        Cml.Sync(p.Join(), [NonUserCode] (r) => {
             if (r.IsError && !IsCancellation(r.Error!, token))
                 Scheduler.ReportUnhandled(r.Error!.SourceException);
         });
@@ -124,6 +124,7 @@ public static partial class BjolangRuntime {
     /// already been started, and may not be a fiber at all — so the joining
     /// version above stays for it.
     /// </summary>
+    [NonUserCode]
     private sealed class UnhandledReporter : IFiberLanding {
         private readonly Promise<CancelReason>? _token;
 
@@ -148,6 +149,7 @@ public static partial class BjolangRuntime {
     /// an early <see cref="Release"/> and the scope's closing pass: exactly one
     /// of them wins, so the thunk runs exactly once.
     /// </summary>
+    [NonUserCode]
     public sealed class Owned {
         private const int Registered = 0;
         private const int Released = 1;
@@ -201,6 +203,7 @@ public static partial class BjolangRuntime {
     /// neither a spawn nor a sync reads it. A program that owns no resources
     /// runs the code it ran before this existed.
     /// </summary>
+    [NonUserCode]
     public sealed class Scope {
 
         /// <summary>
@@ -365,13 +368,13 @@ public static partial class BjolangRuntime {
                 long now = Environment.TickCount64;
                 _deadlineDue = deadlineMs > long.MaxValue - now ? long.MaxValue : now + deadlineMs;
                 _deadline = new System.Threading.Timer(
-                    static s => ((Scope)s!).DeadlineStep(),
+                    [NonUserCode] static (s) => ((Scope)s!).DeadlineStep(),
                     this,
                     MaxTimerMs,
                     System.Threading.Timeout.Infinite);
             } else if (deadlineMs > 0)
                 _deadline = new System.Threading.Timer(
-                    static s => ((Scope)s!).Token.TrySetResult(CancelReason.Deadline.Instance),
+                    [NonUserCode] static (s) => ((Scope)s!).Token.TrySetResult(CancelReason.Deadline.Instance),
                     this,
                     deadlineMs,
                     System.Threading.Timeout.Infinite);
@@ -555,6 +558,7 @@ public static partial class BjolangRuntime {
         /// individual child gets is the only thing that varies, so the flag lives
         /// in the adapter and the adapter is shared.
         /// </summary>
+        [NonUserCode]
         private sealed class Landing : IFiberLanding {
             private readonly Scope _scope;
             private readonly bool _reports;
@@ -1090,7 +1094,7 @@ public static partial class BjolangRuntime {
         try {
             // No token: a detached fiber inherits none, so nothing can have
             // asked it to stop and every failure it has is a real one.
-            _ = Bjo.Spawn(() => DetachedSubtree(body), new UnhandledReporter(null));
+            _ = Bjo.Spawn([NonUserCode] () => DetachedSubtree(body), new UnhandledReporter(null));
         } finally {
             Dyn.Current = saved;
         }
@@ -1210,7 +1214,7 @@ public static partial class BjolangRuntime {
     /// only the ability to notice. A worker can be given the token to watch its
     /// own deadline without also being given the power to stop its siblings.
     public static System.Func<CancelReason, Unit> scopesubcanceller(Scope scope) =>
-        reason => { scope.Token.TrySetResult(reason); return default; };
+        [NonUserCode] (reason) => { scope.Token.TrySetResult(reason); return default; };
 
     /// `(scope-token sc)` — the scope's token, for a child that wants to watch
     /// it explicitly rather than let `sync` do it.
@@ -1222,7 +1226,7 @@ public static partial class BjolangRuntime {
     /// cannot suspend: the thread waits for the children, as a `defun` `main`
     /// already does at its end (see <see cref="RunMainSync"/>).
     public static Unit scopesubclose_BANGdivblocking(Scope scope, Option<System.Exception> failure) =>
-        Bjo.RunToCompletion(() => scope.Close(failure));
+        Bjo.RunToCompletion([NonUserCode] () => scope.Close(failure));
 
     public static Fiber<Unit> scopesubclose_BANG(Scope scope, Option<System.Exception> failure) =>
         scope.Close(failure);
@@ -1259,7 +1263,7 @@ public static partial class BjolangRuntime {
     /// freshly opened handle finds out it has nowhere to put it before it lets
     /// go of it.
     public static Owned own_BANG(System.Func<Unit> release) =>
-        RequireScope("own!").Own(() => release());
+        RequireScope("own!").Own([NonUserCode] () => release());
 
     /// `(release! owned)` — run the release now. See <see cref="Owned.Release"/>.
     public static Unit release_BANG(Owned owned) => owned.Release();
@@ -1505,7 +1509,7 @@ public static partial class BjolangRuntime {
     /// </summary>
     private static Scope OpenMainScope() {
         var scope = scopesubopen_BANG(0);
-        _ = scope.Own(static () => {
+        _ = scope.Own([NonUserCode] static () => {
             StdOut.Flush();
             StdErr.Flush();
         });
@@ -1557,7 +1561,7 @@ public static partial class BjolangRuntime {
     /// </summary>
     public static Unit CloseReplSession(Scope scope) {
         scope.Token.TrySetResult(new CancelReason.Requested(BjoString.Utf8String.FromUtf16("the REPL session ended")));
-        _ = Bjo.RunToCompletion(() => scope.Close(default));
+        _ = Bjo.RunToCompletion([NonUserCode] () => scope.Close(default));
         return default;
     }
 
@@ -1611,11 +1615,11 @@ public static partial class BjolangRuntime {
             try {
                 answer = body();
             } catch (System.Exception e) {
-                _ = Bjo.RunToCompletion(() => scope.Close(new Option<System.Exception>(e)));
+                _ = Bjo.RunToCompletion([NonUserCode] () => scope.Close(new Option<System.Exception>(e)));
                 throw;
             }
 
-            _ = Bjo.RunToCompletion(() => scope.Close(default));
+            _ = Bjo.RunToCompletion([NonUserCode] () => scope.Close(default));
             return answer;
         } finally {
             _ = dynsubrestore_BANG(saved);
@@ -1656,6 +1660,7 @@ namespace Bjolang.Runtime {
     /// carries on is the classic structured-concurrency bug, and the shape of it
     /// is always the same: the handler catches, logs, and loops.
     /// </summary>
+    [NonUserCode]
     public sealed class Cancelled : System.Exception {
 
         /// <summary>Why the scope was cancelled. A deadline and a shutdown want
@@ -1674,6 +1679,7 @@ namespace Bjolang.Runtime {
     /// and a program is free to catch this and dispose what it was holding.
     /// `#:catch` may name it, unlike `Cancelled`.
     /// </summary>
+    [NonUserCode]
     public sealed class ScopeEnded : System.Exception {
         public ScopeEnded(string message) : base(message) { }
     }

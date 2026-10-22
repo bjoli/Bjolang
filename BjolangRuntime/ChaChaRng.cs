@@ -26,6 +26,7 @@ using Utf8String = BjoString.Utf8String;
 namespace Bjolang.Runtime;
 
 [InlineArray(16)]
+[NonUserCode]
 internal struct StateArray
 {
     private uint _element0;
@@ -41,6 +42,7 @@ internal struct StateArray
 /// work per draw as with a one-block buffer.
 /// </remarks>
 [InlineArray(512)]
+[NonUserCode]
 internal struct BufferArray
 {
     private byte _element0;
@@ -56,6 +58,7 @@ internal struct BufferArray
 /// it is passed by value. The 16-word state and the buffer are inline arrays,
 /// so they are stored in the object and need no heap allocations of their own.
 /// </remarks>
+[NonUserCode]
 public class ChaChaRng
 {
     internal StateArray _state;
