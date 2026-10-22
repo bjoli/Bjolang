@@ -122,9 +122,11 @@ let restore (scope: Scope) : unit =
     TypeEnv.compilingReplEntry <- scope.ReplEntry
     // Not part of the scope value: the queue is either empty or garbage, and
     // there is never a reason to put a previous compilation's obligations back.
-    // The same goes for the numeric literals still waiting to be settled.
+    // The same goes for the numeric literals still waiting to be settled, and
+    // for the holes not yet reported.
     Traits.clearWanteds ()
     TypeEnv.clearNumericLiterals ()
+    Holes.clear ()
 
 /// Runs `f` as though it were the first thing this process compiled, and leaves
 /// everything as it was found.

@@ -121,7 +121,13 @@ let private heldOpenCases () : Set<int> =
 
 do
     Unification.heldMetaIds <-
-        fun () -> Set.unionMany [ heldWanteds InlineTrait (); heldLiterals (); heldProjections (); heldOpenCases () ]
+        fun () ->
+            Set.unionMany
+                [ heldWanteds InlineTrait ()
+                  heldLiterals ()
+                  heldProjections ()
+                  heldOpenCases ()
+                  Holes.heldMetaIds () ]
 do Unification.heldLocalMetaIds <- heldWanteds InterfaceTrait
 
 let internal pushWanted (w: Wanted) = wantedQueue.Add w
@@ -820,9 +826,7 @@ let private refuseUndecidedObligations (env: Env) : unit =
             failwithf
                 $"Type Error at %s{Lexer.formatPos r}: which implementation of '%s{Naming.showTraitName traitName}' is needed %s{describe} is not decided. The type is '%s{DotNetInterop.showType ground}', and the implementations for %s{written} both fit it. Say what the type is, with an annotation."
 
-/// Solves everything raised since the last call. Used at every point that is
-/// about to generalize, since a scheme must not be built over a constructor
-/// that resolution would still have pinned down.
+/// Solves everything raised since the last call: see `solvePending`.
 ///
 /// Literals first. A trait obligation dispatches on its implementor, and one
 /// that is still an open literal — `(= 1 2)` — resolves to nothing at all, so
@@ -831,7 +835,7 @@ let private refuseUndecidedObligations (env: Env) : unit =
 ///
 /// Open cases before the literals: a case's payload types are what a literal
 /// written as its payload is.
-let solvePending (env: Env) : unit =
+let private settlePending (env: Env) : unit =
     settleOpenCases env false |> ignore
     defaultNumericLiterals env
     solveWanteds env (takeWanteds () @ takeUndecided ())
@@ -901,6 +905,86 @@ let solvePending (env: Env) : unit =
         | _ -> ()
 
     solvePinEquations env
+
+/// The constraints raised and not settled yet, each with the type it is asked
+/// at: what a hole's type may be waiting on.
+let private raisedConstraints () : (string * HMType) list =
+    [ for w in Seq.append wantedQueue undecidedWanteds do
+          for (m, _) in w.HoleArgs do
+              w.Trait, m
+      for (traitName, t, _, _) in Seq.append obligations clrObligations do
+          traitName, t ]
+
+/// Whether a constraint over a .NET interface holds at a type, for a binding
+/// offered as what fits a hole.
+let private clrHolds (env: Env) (r: Range) (traitName: string) (t: HMType) : bool =
+    match Map.tryFind traitName env.Registry.Traits with
+    | Some { ClrConstraint = Some clr } ->
+        try
+            checkClrConstraint env clr traitName t r ""
+            true
+        with ex when Diagnostics.isDiagnostic ex ->
+            false
+    | _ -> false
+
+/// Refuses the declaration being checked over its holes, with an error for
+/// each.
+///
+/// `settle` settles what the declaration raised before a hole is described,
+/// so that its type is what the code around it makes it: in `(+ _ 1)` the
+/// literal settles at `int`, and the hole with it. An error that settling
+/// raises, or `failure`, one the declaration failed with before it got that
+/// far, is reported too only when every hole's type is known. While one is
+/// open, the error is as likely to be the hole's doing — nothing decided an
+/// implementation because the hole was to — and it is reported once the hole
+/// is filled.
+///
+/// What is still queued is dropped, since the declaration produces nothing for
+/// it to be about.
+let private refuseHoles (settle: (unit -> unit) option) (failure: exn option) : 'a =
+    let raised = raisedConstraints ()
+
+    let failure =
+        match settle with
+        | Some run ->
+            try
+                run ()
+                failure
+            with ex when Diagnostics.isDiagnostic ex ->
+                Some ex
+        | None -> failure
+
+    let holes = List.ofSeq Holes.pending
+    clearWanteds ()
+    clearPinEquations ()
+    clearNumericLiterals ()
+    Holes.clear ()
+
+    let messages =
+        holes
+        |> List.sortBy (fun h -> h.Range.Start.Line, h.Range.Start.Column)
+        |> List.map (fun h -> Holes.describe (clrHolds h.Env h.Range) raised h)
+
+    let anyOpen = holes |> List.exists (fun h -> not (List.isEmpty (metaIdsOf h.Type)))
+
+    match failure with
+    | Some ex when not anyOpen -> Diagnostics.failWithAll "type check" (messages @ [ ex.Message ])
+    | _ -> Diagnostics.failWithAll "type check" messages
+
+/// Refuses a declaration with holes that failed before they were reported, as
+/// `refuseHoles` does.
+let refuseHolesAfter (failure: exn) : 'a = refuseHoles None (Some failure)
+
+/// Solves everything raised since the last call. Used at every point that is
+/// about to generalize, since a scheme must not be built over a constructor
+/// that resolution would still have pinned down.
+///
+/// A declaration with a hole is settled as well, and then refused over it.
+let solvePending (env: Env) : unit =
+    if Holes.pending.Count = 0 then
+        settlePending env
+    else
+        refuseHoles (Some(fun () -> settlePending env)) None
 
 /// Reads an impl's target as a pattern.
 ///

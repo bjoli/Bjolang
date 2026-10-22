@@ -200,6 +200,22 @@ A special form (~list~, ~not~, ~loop~, ~match~, ...) and a macro are chosen by t
 #+END_SRC
 The binding itself is allowed, and so is any use of it that is not a call by that name: ~(defun (total list) (list-length list))~. A ~loop~ whose arguments are not loop clauses is a call, so a local ~loop~ may be called. A special form or a macro that a macro's template writes is the one the template meant, and is not affected.
 
+** Holes: ~_~ where the code is not written yet
+~_~ written where an expression goes is a hole, and so is a name starting with ~_~ that nothing binds, such as ~_total~. A program with a hole does not compile. For each hole the compiler says what type the code around it wants there, and which bindings in scope have it:
+#+BEGIN_SRC scheme
+(: lengths (-> (Vec string) (Vec int)))
+(defun (lengths names)
+  (vec-map _ names))
+;; Hole at lengths.bjo:3:12: '_' stands for a value of type (-?-> string int).
+;;   Bindings in scope that fit: string-count, unhashable, count, eq-hash, length, structural-hash, and 2 more.
+#+END_SRC
+
+- The bindings are listed from the hole's own scope first, then the module's and the builtins, then the imports, and within each the least generic first. One with a ~where~ clause is listed only where the clause holds. A hole whose type names no type, such as ~(-> ?a ?b)~, is fitted from its own scope only.
+- What the code leaves open is a ~?a~, with what it has to have: ~'_' stands for a value of type ?a, where (Displayed ?a) has to hold~.
+- Every declaration's holes are reported. While a hole's type is open, the other errors in its declaration wait until it is filled: such an error is as likely to be the hole's doing, as when nothing says which implementation a call uses because the hole was to. Once every hole's type is known, they are reported with it.
+- ~(: _ double)~ asks what in scope is a ~double~.
+- ~_~ as a parameter or in a pattern binds nothing, as before. A ~_name~ that something binds is an ordinary name.
+
 ** Naming conventions
 Conventions, mostly from Scheme:
 *** Predicates

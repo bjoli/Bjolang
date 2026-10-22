@@ -726,6 +726,7 @@ and private inferNode (env: Env) (expr: Expr) : HMType * TypedExpr =
     | EApp(EIdent(name, _), args, r) when Map.containsKey name env.Escapes ->
         inferEscapeCall env name args r
 
+    | EIdent(name, r) when Holes.isHoleName env name -> inferHole env name r
 
     | EIdent(name, r) when Map.containsKey name env.Escapes ->
         failwithf
@@ -1774,6 +1775,21 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
         | _ ->
             failwithf
                 $"Type Error at %s{where}: '%s{name}' names the .NET method '%s{info.ClrType}.%s{info.MemberName}', and a method group is not a value. To use it as one, give it a signature in its import/extern clause; otherwise call it directly."
+
+// A hole is whatever the code around it makes it. See `Holes`.
+and private inferHole (env: Env) (name: string) (r: Range) : HMType * TypedExpr =
+    let t = freshMeta ()
+
+    Holes.pending.Add
+        { Written = name
+          Type = t
+          Range = r
+          Env = env }
+
+    t,
+    { Type = t
+      Range = r
+      Node = TIdent(name, []) }
 
 // A reference to a case that several unions have, whose union is not known
 // here. See `TypeEnv.openCase`.
@@ -3655,6 +3671,12 @@ and private inferCheckedNode (expected: HMType) (env: Env) (expr: Expr) : HMType
     // The call, as in `inferNode`, and checked against what is expected.
     | EApp(EResolved(marker, _), [ _; _; call ], _), _ when marker = fieldOrCallMarker ->
         inferChecked expected env call
+
+    // A hole takes the expected type as its own.
+    | EIdent(name, r), _ when Holes.isHoleName env name ->
+        let t, typed = inferHole env name r
+        unify env.Registry t expected
+        t, typed
 
     // A case name several unions have, where a value of one of them is wanted.
     | EIdent(name, r), _ when (caseChosenBy env expected name).IsSome ->

@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* Typed holes: ~_~ where the code is not written yet
+
+- ~_~ written where an expression goes is a hole, and so is a ~_name~ that
+  nothing binds. A ~_name~ that something binds is an ordinary name, as
+  before. A program with a hole does not compile: for each hole the compiler
+  says the type the code around it wants there, with what that type has to
+  have where the code leaves it open, and the bindings in scope that fit,
+  its own scope first: six by name, and how many more. A binding with a
+  ~where~ clause is listed only where the clause is known to hold.
+- The declaration is settled before a hole is described, so a literal or a
+  signature beside it has said what it can: in ~(+ 1.5 _)~ the hole is a
+  ~double~. Every declaration's holes are reported. While a hole's type is
+  open, the other errors in its declaration are left until it is filled, as
+  they may be the hole's doing; once every hole's type is known, they are
+  reported with it.
+- At the prompt a hole is how to ask what goes somewhere: ~(: _ string)~
+  lists what is a ~string~.
+- Left open: a hole is always an error, and nothing defers it to run time.
+  No hole in a type, as a partial signature. A fit that would hold only
+  where an open type turns out to have an implementation is left out, as is
+  one whose .NET interface constraint lands on a variable of the
+  signature. No fit is a call with holes of its own, as ~(f _)~.
+- Tests: ~errors/hole_type_and_fits.bjo~, ~errors/hole_named.bjo~,
+  ~errors/hole_constraint_fit.bjo~, ~errors/hole_and_real_error.bjo~,
+  ~errors/hole_open_undecided.bjo~, ~errors/hole_several_declarations.bjo~,
+  ~464_underscore_names.bjo~.
+
 * A function generic over a newtype's phantom parameter compiles
 
 - A newtype whose type parameter its representation does not use, such as

@@ -4303,6 +4303,14 @@ and internal checkDeclGroup
                     $"Type Error at %s{Lexer.formatPos r}: `%s{n}` %s{where}. A module-level value is in scope from its definition down, and the definition takes the name from the imported or built-in `%s{n}` for the whole module, so neither can be meant here. Move the use below the definition, or rename one of the two."
             | _ -> ()
 
+    // A declaration with a hole that fails before its holes are reported
+    // reports them still: see `Traits.refuseHoles`.
+    let reportingHoles (check: unit -> 'a) () : 'a =
+        try
+            check ()
+        with ex when Diagnostics.isDiagnostic ex && Holes.pending.Count > 0 ->
+            Traits.refuseHolesAfter ex
+
     // One declaration's failure costs that declaration. The group is checked
     // declaration by declaration and each step reads the environment the step
     // before it produced, so a failure keeps the previous one and contributes
@@ -4313,7 +4321,8 @@ and internal checkDeclGroup
                 "type check"
                 (Some(declRange d))
                 (fun () -> poisonFailed currEnv d, currSigs, [])
-                (fun () ->
+                (reportingHoles (fun () ->
+                    Holes.declaring <- Set.ofList (declaredNames d)
                     refuseUsesAboveDefinitions currEnv index d
 
                     match d with
@@ -4341,7 +4350,7 @@ and internal checkDeclGroup
 
                             failwithf
                                 $"%s{ex.Message}\n  in %s{which} of '%s{traitName}' for '%s{targetName}' at %s{Lexer.formatPos ir}"
-                    | _ -> checkDecl currEnv currSigs d)
+                    | _ -> checkDecl currEnv currSigs d))
 
         nextEnv, nextSigs, (index, tDecls) :: accDecls
 

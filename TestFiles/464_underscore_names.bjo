@@ -1,0 +1,22 @@
+;; A `_name` that something binds is an ordinary name; only one that nothing
+;; binds is a hole (`errors/hole_named.bjo`). `_` as a binder still binds
+;; nothing, as a parameter and in a pattern.
+(import (std prelude))
+(import (std simpletest))
+
+(def _offset 10)
+
+(: shifted (-> int int))
+(defun (shifted _x) (+ _x _offset))
+
+(: second (-> int int int))
+(defun (second _ y) y)
+
+(defun (main)
+  (expect "a module-level _name" _offset 10)
+  (expect "a parameter called _x" (shifted 1) 11)
+  (expect "a _ parameter" (second 1 2) 2)
+  (expect "a local _name" (let ((_n 4)) (* _n _n)) 16)
+  (expect "a _ pattern" (match (Some 3) ((Some _) 1) (None 0)) 1)
+  (expect "a _ lambda parameter" ((fun (_) 5) 1) 5)
+  0)

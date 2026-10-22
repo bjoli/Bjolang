@@ -276,6 +276,9 @@ module Diagnostics =
     /// Whether anything was poisoned since the last `reset`.
     let hasPoison () = poisoned.Count > 0
 
+    /// Whether `name` belongs to a declaration that failed to check.
+    let isPoisoned (name: string) = poisoned.ContainsKey name
+
     /// Refuses to hand on a checked program built over a placeholder binding.
     ///
     /// A declaration checked against `forall a. a` can succeed against a type
@@ -384,6 +387,23 @@ module Diagnostics =
     /// The same, where the fallback is already a value.
     let recover (phase: string) (where: Lexer.Range option) (fallback: 'a) (f: unit -> 'a) : 'a =
         recoverWith phase where (fun () -> fallback) f
+
+    /// Fails a unit over several errors at once. All but the first are
+    /// collected here, and the first is raised, for the caller's recovery to
+    /// collect and fail the unit over as it does a single error. Each message
+    /// has to say where it is.
+    let failWithAll (phase: string) (messages: string list) : 'a =
+        match messages with
+        | [] -> failwith "internal: failWithAll was given no errors"
+        | first :: rest ->
+            for m in rest do
+                record
+                    { Severity = Error
+                      Message = humanize m
+                      Where = None
+                      Phase = phase }
+
+            failwith first
 
     /// Takes back out what is collected and poisoned from now on, when the
     /// answer is called.
