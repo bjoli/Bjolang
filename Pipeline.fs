@@ -3087,6 +3087,12 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
             None
         else
 
+        // Before any pass rewrites the module: a binding is then the one the
+        // program wrote.
+        match List.tryLast parsedModuleDecls with
+        | Some(DModule(_, decls, _)) -> Unused.warn (not TypeEnv.compilingReplEntry) decls
+        | _ -> ()
+
         Diagnostics.progress "=== Step 2: Normalization ==="
         // First of the source-to-source passes, and before `LetRecify` on
         // purpose: an applied lambda reduced into a `let` chain here is one

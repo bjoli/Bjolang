@@ -443,6 +443,12 @@ let private resolveIntroduced
 /// nesting happens in the parser rather than inside the call this module makes.
 let private expansions = Dictionary<string * Range, int>()
 
+/// Every place a macro expanded in this compilation, as file, start and end.
+/// Each node an expansion builds carries the call site's range, so a form at
+/// one of these was written by a macro rather than by the program.
+let expansionSites () : Set<string * Position * Position> =
+    expansions.Keys |> Seq.map (fun (_, r) -> r.File, r.Start, r.End) |> Set.ofSeq
+
 /// Called with every expansion as it is made: the macro's name, the call
 /// site, the form expanded, what it expanded to, and each name hygiene renamed
 /// in it, fresh spelling to the one the template wrote. For a host that shows

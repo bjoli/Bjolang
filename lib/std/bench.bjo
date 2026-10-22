@@ -1441,7 +1441,6 @@
 ;; `p=v,w` to narrow its cases to those values of parameter `p`.
 (: (-> string (List Bench) (Result string (List Selection))))
 (defun (parse-choice text benches)
-  (def indexed (list-zip (index-list (list-length benches)) benches))
   (def tokens (list-filter (fun (t) (not (string-empty? t))) (vec->list (string-split (string-trim text) " "))))
   (defun (all-of (: b Bench)) : Selection (Selection (bench b) (cases ((record-ref b cases)))))
   (let go ((left tokens) (acc (list)) (last (list)))
@@ -1825,8 +1824,8 @@
 (: (-> string int int (-> long void) void))
 (defun (time-it-fixed label times warm batch)
   (def run (CaseRun (batch batch) (call None)))
-  (loop (:for i (up-from 0 #:to warm)) (:do ((record-ref run batch) 1L)))
-  (def taken (loop (:for i (up-from 0 #:to times)) (:acc out (vecing (take-sample run 1L))) => out))
+  (loop (:for _ (up-from 0 #:to warm)) (:do ((record-ref run batch) 1L)))
+  (def taken (loop (:for _ (up-from 0 #:to times)) (:acc out (vecing (take-sample run 1L))) => out))
   (def xs (vec-map (fun (x) (cast System.Double (record-ref x ns))) taken))
   (def bytes (vec-fold (fun (x acc) (+ acc (record-ref x bytes))) 0L taken))
   (println (str label ": " (time-text (median xs))

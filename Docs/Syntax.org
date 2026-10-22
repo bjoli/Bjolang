@@ -216,6 +216,21 @@ The binding itself is allowed, and so is any use of it that is not a call by tha
 - ~(: _ double)~ asks what in scope is a ~double~.
 - ~_~ as a parameter or in a pattern binds nothing, as before. A ~_name~ that something binds is an ordinary name.
 
+** Definitions nothing uses
+The compiler warns about a definition nothing uses:
+#+BEGIN_SRC text
+Warning: 'stale' is defined at shapes.bjo:24:1 and nothing uses it: this module does not export it, and none of its code reads it. Remove it, export it, or start its name with _ if it is kept on purpose.
+Warning: 'scratch' is bound to the value at shapes.bjo:46:16 and nothing reads it. Remove it, or start its name with _ if it is kept on purpose.
+#+END_SRC
+
+- At the top level: a ~def~ or a ~defun~ the module does not export and none of its code reads. A function that only calls itself is not used by that. ~main~, a macro and a name an ~(:alias ...)~ gives a second spelling are not reported.
+- In a body: a ~let~, ~let*~, ~letrec~, ~let/mutable~ or tuple binding, a ~def~ or a local ~defun~, and a loop variable such as the ~i~ of ~(:for i (range 0 n))~, that nothing in its scope reads.
+- A name that starts with ~_~ is kept on purpose and never reported: ~(def _registered (register!))~, ~(:for _ (range 0 n))~, ~(let (((a _) pair)) a)~.
+- What a macro wrote is not reported, as the program did not write it.
+- A REPL entry's top-level definitions are not reported, as they are for the entries after it.
+
+Parameters, pattern variables and imports are not checked.
+
 ** Naming conventions
 Conventions, mostly from Scheme:
 *** Predicates
