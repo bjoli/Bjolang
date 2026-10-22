@@ -1037,6 +1037,23 @@ let private generalizeWith (held: Set<int>) (scoped: Set<string>) (env: Env) (t:
 /// obligation is watching stays monomorphic, and everything else is quantified.
 let generalize (env: Env) (t: HMType) : Scheme = generalizeWith (heldMetaIds ()) Set.empty env t
 
+/// The cells of `t` as C# sees them. A newtype is its representation, so a
+/// cell that only a newtype's type arguments hold, as the tag of an `(Id %a)`
+/// that is an `int`, is not among them.
+let rec private emittedFreeVars (registry: TraitRegistry) (t: HMType) : MetaVar list =
+    match prune registry t with
+    | TCon(name, args) when Map.containsKey name registry.Newtypes ->
+        let parameters, representation = registry.Newtypes[name]
+
+        if parameters.Length = args.Length then
+            emittedFreeVars registry (substTypeVars (List.zip parameters args |> Map.ofList) representation)
+        else
+            freeVars registry t
+    | TCon(_, args)
+    | TTuple args -> List.collect (emittedFreeVars registry) args
+    | TFun(args, ret, _) -> List.collect (emittedFreeVars registry) (ret :: args)
+    | other -> freeVars registry other
+
 /// Generalizes a binding local to a function body.
 ///
 /// Everything `generalize` holds back, plus the interface-trait obligations —
@@ -1046,14 +1063,17 @@ let generalize (env: Env) (t: HMType) : Scheme = generalizeWith (heldMetaIds ())
 /// Nor in one only its result mentions. A C# local function gets its type
 /// arguments from its arguments, so `done<T>` answering a `(Result T int)`
 /// was a call C# could not infer (CS0411). Held back, the variable is one
-/// type that every call agrees on.
+/// type that every call agrees on. The arguments are as C# sees them
+/// (`emittedFreeVars`), so a variable only a newtype's tag holds is held back
+/// too.
 let generalizeLocal (env: Env) (t: HMType) : Scheme =
     let resultOnly =
         match prune env.Registry t with
-        | TFun(ps, ret, _) ->
-            let inParams = ps |> List.collect (freeVars env.Registry) |> List.map (fun m -> m.Id) |> Set.ofList
+        | TFun(ps, _, _) as fn ->
+            let inParams =
+                ps |> List.collect (emittedFreeVars env.Registry) |> List.map (fun m -> m.Id) |> Set.ofList
 
-            freeVars env.Registry ret
+            freeVars env.Registry fn
             |> List.map (fun m -> m.Id)
             |> List.filter (fun id -> not (Set.contains id inParams))
             |> Set.ofList

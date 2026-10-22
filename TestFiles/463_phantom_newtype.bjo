@@ -1,0 +1,59 @@
+;; A newtype with a phantom type parameter: `(Id %a)` is an int, and its `%a`
+;; says what it is an id of. Types with no values serve as the tags.
+;;
+;; The C# of an `(Id %a)` is an `int`, so a function generic over `%a` takes an
+;; `int`, and C# could not infer its type argument from the call (CS0411). A
+;; variable only a newtype's type arguments mention counts as one no parameter
+;; does, and its type argument is written at the call, as for a variable only
+;; the result mentions. A local function keeps such a variable monomorphic.
+;;
+;; That the tags are told apart is `errors/phantom_tag_mismatch.bjo`.
+(import (std prelude))
+(import (std simpletest))
+(import "inc/phantom_ids.bjo")
+
+(type (: User (Union)))
+(type (: Order (Union)))
+
+(: user-id (Id User))
+(def user-id (Id 7))
+
+(: order-id (Id Order))
+(def order-id (Id 40))
+
+;; Generic over the tag, calling another that is.
+(: twice-next (-> (Id %a) (Id %a)))
+(defun (twice-next i) (next-id (next-id i)))
+
+;; An implementation per tag.
+(def/trait (Describe %a)
+  (: describe (-> %a string)))
+
+(impl (Describe (Id User))
+  (defun (describe i) #"user ${(id-value i)}"))
+
+(impl (Describe (Id Order))
+  (defun (describe i) #"order ${(id-value i)}"))
+
+;; A newtype whose representation names its variable is inferred as before.
+(type (: (Wrap %a) (Newtype (List %a))))
+
+(: wrap-length (-> (Wrap %a) int))
+(defun (wrap-length w) (match w ((Wrap xs) (length xs))))
+
+(defun (main)
+  (expect "a function of another module, generic over the tag" (id-value user-id) 7)
+  (expect "one generic function calling another" (id-value (twice-next user-id)) 9)
+  (expect "the tag comes back" (describe (next-id order-id)) "order 41")
+  (expect "an implementation per tag" (describe user-id) "user 7")
+  (expect "a tag nothing decides" (id-value (Id 3)) 3)
+  (expect "passed as a value" (list-map id-value (list user-id (Id 9))) (list 7 9))
+
+  (defun (bump i) (next-id i))
+  (expect "a local function over the tag" (id-value (bump user-id)) 8)
+
+  (expect "equal, as the ints are" (= user-id (Id 7)) #t)
+  (expect "written" (written user-id) "(Id 7)")
+  (expect "a key" (map-length (map-set (map-set (map-empty) user-id "a") (Id 7) "b")) 1)
+  (expect "a representation that names the variable" (wrap-length (Wrap (list 1 2 3))) 3)
+  0)

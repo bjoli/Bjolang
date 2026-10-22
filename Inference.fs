@@ -159,6 +159,31 @@ let rec private typeVarsOf (t: HMType) : Set<string> =
         | None -> Set.empty
     | TAssoc(_, _, implementor) -> typeVarsOf implementor
 
+/// The type variables C# can infer from an argument of type `t`. A newtype is
+/// its representation in C#, so a variable that only a newtype's type
+/// arguments mention, and its representation does not, is not one: the tag
+/// `%a` of an `(Id %a)` that is an `int`.
+let rec private inferableTypeVarsOf (registry: TraitRegistry) (t: HMType) : Set<string> =
+    let recur = inferableTypeVarsOf registry
+
+    match t with
+    | TCon(name, args) when Map.containsKey name registry.Newtypes ->
+        let parameters, representation = registry.Newtypes[name]
+
+        if parameters.Length = args.Length then
+            recur (substTypeVars (List.zip parameters args |> Map.ofList) representation)
+        else
+            typeVarsOf t
+    | TVar name -> Set.singleton (bareTypeVar name)
+    | TFun(args, ret, _) -> Set.unionMany (recur ret :: List.map recur args)
+    | TCon(_, args)
+    | TTuple args -> args |> List.fold (fun acc a -> Set.union acc (recur a)) Set.empty
+    | TMeta m ->
+        match m.Value with
+        | Some inner -> recur inner
+        | None -> Set.empty
+    | TAssoc(_, _, implementor) -> recur implementor
+
 /// The bindings whose scheme quantifies a variable that none of the parameters
 /// `inferableFrom` picks out of the flat parameter list mentions. A binding it
 /// answers `None` for is left out.
@@ -185,7 +210,9 @@ let private genericsNotInferableFrom (env: Env) (inferableFrom: string -> HMType
             match inferableFrom name args with
             | None -> None
             | Some parameters ->
-                let inferable = parameters @ pinned |> List.fold (fun acc a -> Set.union acc (typeVarsOf a)) Set.empty
+                let inferable =
+                    parameters @ pinned
+                    |> List.fold (fun acc a -> Set.union acc (inferableTypeVarsOf env.Registry a)) Set.empty
 
                 if vars |> List.exists (fun v -> not (Set.contains (bareTypeVar v) inferable)) then
                     Some name
