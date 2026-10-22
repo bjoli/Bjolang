@@ -1,6 +1,6 @@
 # Bjolang - a language
 
-I think we have all had the thought: all programming languages suck in at least one way. Not all of us think it is a big deal, but some of us feel the urge to try our wings at designing a language. This is my 95% vibe coded try. Not really meant for real use, but to see if my thoughts made any sense. And, oh, it sucks in at least one way.
+I think we have all had the thought: all programming languages suck in at least one way. Not all of us think it is a big deal, but some of us feel the urge to try our wings at designing a language. This is my 98% vibe coded try. Not really meant for real use, but to see if my thoughts made any sense. And, oh, it sucks in at least one way.
 
 ## Elevator pitch
 
@@ -169,7 +169,7 @@ Look Ma, a Monad!
       (:return (+ doubled third))))
 ```
 
-although most do-notation cases (matching option and Result) is better handled by the built in `def` form
+although most do-notation cases (matching option and Result) is better handled by the built in `def` form:
 
 ```scheme
 
@@ -282,7 +282,7 @@ It also supports subloops. Anything that isn’t a for clause followed by a :for
 ;;    [(1 . 1) (1 . 2) (3 . 1) (3 . 2)]
 ```
 
-And the best part? It is fast. The version with subloops has some issues where the JIT cannot
+And the best part? It is fast.
 
 Oh, and it also has a seq version
 
@@ -316,7 +316,7 @@ Lists, quasiquoted lists and vectors do not need constructors in some circumstan
 
 (: receipt (-> (List Line) (Vec Block)))
 (defun (receipt ls)
-  (def* (total (list-foldl #(+ %2 (amount-of %1)) 0.0 ls))
+  (def* (total (list-foldl #(+ &2 (amount-of &1)) 0.0 ls))
         (net (/ total 1.12))
         (vat (- total net)))
     ;; cloudberry jam gets truncated, with "..."
@@ -416,31 +416,18 @@ add #:align to columnar and tabular in (std fmt)
 
 remove the use for (bjoroutine …) special syntax in places where the lambda is in direct argument position: (result-map #(read-line &) r) currently needs a bjoroutine.
 
-extend match to support Records and Structs in a pretty way.
-
-output LINE-directives a little bit better than I do now
-
 ### Things for the stdlib
 
-data structures:
-
-- deque, perhaps by adding a prefix to the vec
-- heap with transients
-
-network io by wrapping c# async in events for the cml goodness. (std http) is here, but we need sockets.
+I think  I am in a pretty good place right now, actually.
 
 ### Performance things
 
-The compiler is too conservative about hoisting operators.
+The ports have very nice guarantees for concurrent code, but when that is not needed, you pay a small tax on all IO. Should this be solved?
 
-Inline small functions, especially things that are just a single expr or seql.
+Figure out a way to add Spans to the language, preferrably without actually changing anything. Can spanization be an automatic process when dealing ith c# code? Or maybe some kind of block where spans cannot escape.
 
-Slices for data structures using Memory\<T>. That would speed up parsers that work on strings.
+Some kind of array slices, based on Memory or ReadOnlyMemory.
 
 Simple source transformations: let bound functions only ever used as function should be turned into static local functions instead of delegates/funcs. lambdas that do not escape that have simple bodies can be inlined (and removed maybe).
 
-Make things like (summing expr) type neutral, so that it can sum doubles.
-
 Hoist the threadlocal loads of several parameter-ref in synchronous functions. Say I do 5 (parameter-ref ) in a body, since there is no parameter-set! we can hoist the environment so that we do not pay the \[ThreadLocal\] read cost.
-
-Unboxing small unions, say if someone call map-try-ref in a tight loop.
