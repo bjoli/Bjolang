@@ -763,6 +763,20 @@ let private numericLiteral (where: Lexer.Range) (t: HMType) (text: string) : str
 /// distinction, and every emission site below turns on it.
 let private isVoidType (t: HMType) = typeToString t = "void"
 
+/// The type a C# local holding a value of `t` is declared with: `var`, unless
+/// C# cannot infer it. A lambda has no type of its own (CS8917), and neither
+/// has a tuple with one in it (CS0815), so a function's type, or a tuple's
+/// with a function in it, is written out.
+let private localDeclarationType (t: HMType) : string =
+    let rec holdsFunction (t: HMType) =
+        match t with
+        | TMeta { Value = Some inner } -> holdsFunction inner
+        | TFun _ -> true
+        | TTuple items -> List.exists holdsFunction items
+        | _ -> false
+
+    if holdsFunction t then typeToString t else "var"
+
 /// A type as an explicit C# type argument. `void` is not a type argument, so a
 /// generic instantiated at void, such as `(tx-retry tx)` in a void position,
 /// is instantiated at the unit.
@@ -4681,13 +4695,7 @@ and generateBlock (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) 
         // same value the binder was given.
         let scrutinee = freshName "__bound"
 
-        // A lambda has no type of its own, and C# infers none for `var`
-        // (CS8917), so a function is declared with its delegate type, as a
-        // `def` of one is. Anything else is a `var`.
-        let declared =
-            match scrutineeExpr.Type with
-            | TFun _ -> typeToString scrutineeExpr.Type
-            | _ -> "var"
+        let declared = localDeclarationType scrutineeExpr.Type
 
         emitStatement ctx (fun c ->
             indent c
@@ -5206,13 +5214,8 @@ and private generateRecur
     // read a slot that an earlier assignment would already have overwritten.
     let temps = args |> List.map (fun _ -> freshName "__next")
 
-    // A lambda has no natural type in C#, so `var t = (v) => …` is CS8917.
-    // Its temporary is declared with the delegate type instead.
     for arg, tmp in List.zip args temps do
-        let declared =
-            match arg.Node with
-            | TLambda _ -> typeToString arg.Type
-            | _ -> "var"
+        let declared = localDeclarationType arg.Type
 
         emitStatement ctx (fun c ->
             indent c

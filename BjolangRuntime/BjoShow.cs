@@ -124,6 +124,17 @@ public static class BjoShow
         return Utf8String.FromUtf16(text.ToString() + ".0");
     }
 
+    /// A float as `WrittenDouble` writes a double. No suffix gives a float its
+    /// type, so the caller writes the type around it.
+    public static Utf8String WrittenSingle(float f)
+    {
+        if (float.IsNaN(f)) return Utf8String.FromUtf16("+nan.0");
+        if (float.IsPositiveInfinity(f)) return Utf8String.FromUtf16("+inf.0");
+        if (float.IsNegativeInfinity(f)) return Utf8String.FromUtf16("-inf.0");
+        var text = f.ToString(CultureInfo.InvariantCulture);
+        return Utf8String.FromUtf16(text.IndexOfAny(['.', 'e', 'E']) >= 0 ? text : text + ".0");
+    }
+
     /// A number in the invariant culture with the suffix the reader reads
     /// its type from, `21L` or `2.5M`.
     public static Utf8String WrittenNumber<T>(T n, Utf8String suffix) where T : System.Numerics.INumber<T> =>

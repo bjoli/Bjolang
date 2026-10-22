@@ -385,6 +385,35 @@
   (defun (displayed n) (clr-show n))
   (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
 
+;; A float, an int128 and a uint128 have no suffix, so each is written with
+;; its type, as a value with its type written is read: `(: 2.5 float)`.
+(import/extern
+  (clr-written-single (: Bjolang.Runtime.BjoShow.WrittenSingle)))
+
+(impl (Written float)
+  (defun (written n) (str "(: " (clr-written-single n) " float)"))
+  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+
+(impl (Displayed float)
+  (defun (displayed n) (clr-show n))
+  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+
+(impl (Written int128)
+  (defun (written n) (str "(: " (clr-written-number n "") " int128)"))
+  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+
+(impl (Displayed int128)
+  (defun (displayed n) (clr-show n))
+  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+
+(impl (Written uint128)
+  (defun (written n) (str "(: " (clr-written-number n "") " uint128)"))
+  (defun (write-into n b) (stringbuilder-add-string! b (written n))))
+
+(impl (Displayed uint128)
+  (defun (displayed n) (clr-show n))
+  (defun (display-into n b) (stringbuilder-add-string! b (clr-show n))))
+
 ;; A double is written with a point, so that it is not read back as an int.
 (impl (Written double)
   (defun (written n) (clr-written-double n))
@@ -1143,11 +1172,10 @@
   (defun (iterable-next s c) (+ c 1)))
 
 ;; Range of ints, in steps of `by`. A step past the last value can pass
-;; `int-max` and wrap round below `hi`, so the walk does not compare with
-;; `hi`. `stop` is the value the step after the last one gives, wrapped round
-;; when it is past `int-max`; the walk ends when it gets there. It is `lo` when
-;; the range is empty.
-(type (: RangeBy (Struct (: lo int) (: hi int) (: by int) (: stop int))))
+;; `int-max`, so the walk counts in a long, where it cannot wrap round below
+;; `hi`: a value below `hi` and a step of at most `int-max` stay far below
+;; `long-max`.
+(type (: RangeBy (Struct (: lo int) (: hi int) (: by int))))
 
 ;; A range counts up, so a step of zero or less would never reach `hi`. The
 ;; message is made in `range-by-panic`, so that `range-by` is small enough for
@@ -1156,33 +1184,25 @@
 (defun (range-by lo hi by)
   (when (<= by 0)
     (range-by-panic by))
-  (RangeBy (lo lo) (hi hi) (by by) (stop (range-by-stop lo hi by))))
+  (RangeBy (lo lo) (hi hi) (by by)))
 
 (: (-> int void))
 (defun (range-by-panic by)
   (panic! #"range-by: the step is ${by}, and a range counts up from lo to hi. down-from counts down."))
 
-;; In longs, where `hi - lo` and the step past the last value cannot overflow.
-;; The cast back to int wraps round as the walk's own `+` does.
-(: (-> int int int int))
-(defun (range-by-stop lo hi by)
-  (if (<= hi lo)
-      lo
-      (cast int (+ (cast long lo)
-                   (* (range-by-count lo hi by) (cast long by))))))
-
-;; How many values a non-empty range holds.
+;; How many values a non-empty range holds, in longs, where `hi - lo` cannot
+;; overflow.
 (: (-> int int int long))
 (defun (range-by-count lo hi by)
   (+ (/ (- (- (cast long hi) (cast long lo)) 1L) (cast long by)) 1L))
 
 (impl (Iterable RangeBy)
   (type %elem int)
-  (type %cursor int)
-  (defun (iterable-start s) (record-ref s lo))
-  (defun (iterable-done? s c) (= c (record-ref s stop)))
-  (defun (iterable-current s c) c)
-  (defun (iterable-next s c) (+ c (record-ref s by))))
+  (type %cursor long)
+  (defun (iterable-start s) (cast long (record-ref s lo)))
+  (defun (iterable-done? s c) (>= c (cast long (record-ref s hi))))
+  (defun (iterable-current s c) (cast int c))
+  (defun (iterable-next s c) (+ c (cast long (record-ref s by)))))
 
 ;; Map elements.
 (impl (Iterable (Map %k %v))
@@ -4146,40 +4166,56 @@
 ;; if the one before it held. A middle operand that is not an atom is bound
 ;; once, right before its first use. The operands are evaluated left to right:
 ;; with three or more, a first operand that is not an atom is bound before the
-;; second is evaluated.
+;; second is evaluated, and a name is read before the operand after it is.
 ;;
-;; Two template names for the temporaries, `t` and `u`, taken in turn. Hygiene
-;; gives a template name one fresh spelling per expansion, so a single name
-;; would shadow itself and `(op t t)` would compare a value to itself.
+;; Three template names for the temporaries. `t` and `u` hold operands and are
+;; taken in turn: hygiene gives a template name one fresh spelling per
+;; expansion, so a single name would shadow itself and `(op t t)` would compare
+;; a value to itself. `s` holds a name's value, and is never needed again once
+;; the operand after the name is bound.
 (def/hash-extend (ch form inject compare)
   (syntax-match form
     ((_ op a b) #'(,op ,a ,b))
     ((_ op a b rest ...)
      (if (syntax-atom? a)
-         (chain-forms op a (Cons b rest) #t)
-         #'(let ((u ,a)) ,(chain-forms op #'u (Cons b rest) #t))))
+         (chain-forms op a (syntax-constant? a) (Cons b rest) #t)
+         #'(let ((u ,a)) ,(chain-forms op #'u #t (Cons b rest) #t))))
     (bad (syntax-error bad "#ch takes an operator and at least two operands: #ch(< a b c)."))))
 
 ;; `prev` is safe to read twice: the first operand, an atom, or a temporary.
+;; `fixed` says whether reading it later gives what reading it now would: a
+;; constant and a temporary do, and a name does not if the operand after it
+;; sets it. So a name is bound before an operand that is not an atom is
+;; evaluated. The last comparison needs no binding: a call evaluates its
+;; arguments left to right.
 ;; `use-t` says which temporary is free; the other may be `prev`.
-(: (-> Syntax Syntax (List Syntax) bool Syntax))
-(defun (chain-forms op prev rest use-t)
+(: (-> Syntax Syntax bool (List Syntax) bool Syntax))
+(defun (chain-forms op prev fixed rest use-t)
   (match rest
     (Nil prev)
     ((Cons x Nil) #'(,op ,prev ,x))
     ((Cons x more)
-     ;; TODO: rewrite to cond.
      (if (syntax-atom? x)
-         #'(if (,op ,prev ,x) ,(chain-forms op x more use-t) #f)
-         (if use-t
-             #'(let ((t ,x)) (if (,op ,prev t) ,(chain-forms op #'t more #f) #f))
-             #'(let ((u ,x)) (if (,op ,prev u) ,(chain-forms op #'u more #t) #f)))))))
+         #'(if (,op ,prev ,x) ,(chain-forms op x (syntax-constant? x) more use-t) #f)
+         (if (not fixed)
+             #'(let ((s ,prev)) ,(chain-forms op #'s #t rest use-t))
+             (if use-t
+                 #'(let ((t ,x)) (if (,op ,prev t) ,(chain-forms op #'t #t more #f) #f))
+                 #'(let ((u ,x)) (if (,op ,prev u) ,(chain-forms op #'u #t more #t) #f))))))))
 
 ;; Cheap to evaluate twice: anything but a list.
 (: (-> Syntax bool))
 (defun (syntax-atom? s)
   (match s
     ((SList _) #f)
+    (_ #t)))
+
+;; The same each time it is evaluated: an atom that is not a name.
+(: (-> Syntax bool))
+(defun (syntax-constant? s)
+  (match s
+    ((SList _) #f)
+    ((SSym _) #f)
     (_ #t)))
 
 ;; `#map((k v) ...)` — a `Map`. An entry is `(k v)`, `[k v]` or `(k . v)`.
@@ -4689,6 +4725,35 @@
   (defun (display-into t b)
     (def (Tuple x y z) t)
     (stringbuilder-add-string! b "(Tuple ")
+    (display-into x b)
+    (stringbuilder-add-string! b " ")
+    (display-into y b)
+    (stringbuilder-add-string! b " ")
+    (display-into z b)
+    (stringbuilder-add-string! b ")")))
+
+;; Four elements, as far as `Eq` and `Ord` go.
+(impl (Written (Tuple %a %b %c %d))
+  (where (Written %a) (Written %b) (Written %c) (Written %d))
+  (defun (write-into t b)
+    (def (Tuple w x y z) t)
+    (stringbuilder-add-string! b "(Tuple ")
+    (write-into w b)
+    (stringbuilder-add-string! b " ")
+    (write-into x b)
+    (stringbuilder-add-string! b " ")
+    (write-into y b)
+    (stringbuilder-add-string! b " ")
+    (write-into z b)
+    (stringbuilder-add-string! b ")")))
+
+(impl (Displayed (Tuple %a %b %c %d))
+  (where (Displayed %a) (Displayed %b) (Displayed %c) (Displayed %d))
+  (defun (display-into t b)
+    (def (Tuple w x y z) t)
+    (stringbuilder-add-string! b "(Tuple ")
+    (display-into w b)
+    (stringbuilder-add-string! b " ")
     (display-into x b)
     (stringbuilder-add-string! b " ")
     (display-into y b)

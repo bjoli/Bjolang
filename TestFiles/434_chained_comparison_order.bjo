@@ -27,6 +27,16 @@
   (expect "an atom first" (< x (logged log "b" 2) (logged log "c" 3)) #t)
   (expect "the others in order" (box-ref log) "bc")
 
+  ;; A name is read where it is written, before an operand after it that sets
+  ;; it is evaluated.
+  (def/mutable y 1)
+  (expect "a name first, set by the operand after it" (< y (begin (set! y 10) 5) 7) #t)
+  (set! y 1)
+  (expect "a name in the middle, set by the operand after it"
+          (< 0 y (begin (set! y 10) 5) 7) #t)
+  (set! y 1)
+  (expect "a name before the last operand, which sets it" (< 0 y (begin (set! y 10) 5)) #t)
+
   (def p (open-input-string "1\n2\n"))
   (expect "two readings that increase" (< (string->int (read-line p)) (string->int (read-line p)) 100) #t)
 

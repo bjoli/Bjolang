@@ -3,6 +3,23 @@
 
 What each change guarantees, and what it leaves open.
 
+* Four fixes from the review of 20 and 21 October
+
+- A chained comparison reads a name before it evaluates the operand after
+  it: ~(< x (begin (set! x 10) 5) 7)~ compares the ~x~ that was there, and
+  is ~#t~ for an ~x~ of 1. It was ~#f~.
+- ~def*~ taking apart a tuple of lambdas compiles, and so does a tail call
+  that passes one: a local whose type has a function in it, also in a
+  tuple, is declared with its type. C# refused it (CS0815).
+- ~range-by~ walks every value also when the steps add up to 2³²:
+  ~(range-by int-min int-max 2)~ walked none. The walk counts in a ~long~ and
+  stops at ~hi~, and ~RangeBy~ has no ~stop~ field.
+- ~written~ writes a ~float~, an ~int128~ and a ~uint128~ with their type,
+  ~(: 2.5 float)~, since no suffix gives it, and a tuple of four as
+  ~(Tuple ...)~, as smaller ones are. ~displayed~ writes the number alone.
+- Tests: ~434_chained_comparison_order.bjo~, ~424_def_star_lambda.bjo~,
+  ~435_durations_and_range_by_stop.bjo~, ~446_written_displayed.bjo~.
+
 * Two unions may each have a case of one name
 
 - A case's key carries its union, ~BjoMod.x.paint__Colour.paint__Red~, so two
