@@ -296,9 +296,9 @@ let metadata
     /// of one: an importer cannot resolve such a name, so the splice would
     /// fail and fall back to a call, with a warning.
     let publishableBody (tpl: TypedAST.InlineTemplate) =
-        Codegen.isSerializableTemplate tpl.Body
+        Codegen.isSerializableTemplate tpl.Body.Value
         && tpl.Qualification |> Map.forall (fun n _ -> reachableFromBody n)
-        && (let text = Codegen.serializeExpr tpl.Body
+        && (let text = Codegen.serializeExpr tpl.Body.Value
             withheldSpellings |> List.forall (fun s -> not (mentionsToken text s)))
 
     
@@ -409,7 +409,7 @@ let metadata
             (Map.containsKey traitName exportedTraits
              || (Set.contains (traitName, implKey) ownImplKeys
                  && not (Set.contains traitName ownTraitNames)
-                 && isNoopBody tpl.Body))
+                 && isNoopBody tpl.Body.Value))
             && publishableBody tpl)
 
     // The body of every exported constrained generic, so that an importer can
@@ -575,10 +575,10 @@ let metadata
     let externsNamedByBodies =
         (inlineTemplatesToExport
          |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) ->
-             bodyExternSubst (Set.ofList tpl.Params) tpl.Body |> Map.toList))
+             bodyExternSubst (Set.ofList tpl.Params) tpl.Body.Value |> Map.toList))
         @ (constrainedBodiesToExport
            |> List.collect (fun (_, (tpl: TypedAST.InlineTemplate)) ->
-               bodyExternSubst (Set.ofList tpl.Params) tpl.Body |> Map.toList))
+               bodyExternSubst (Set.ofList tpl.Params) tpl.Body.Value |> Map.toList))
         @ (exportedTraitDefaults
            |> List.collect (fun (_, decl) ->
                match decl with
@@ -1437,7 +1437,7 @@ let metadata
                 // names they were published under, so that the splice
                 // resolves them where they were written rather than
                 // wherever it lands.
-                let body = publishBody tpl.Params tpl.Body
+                let body = publishBody tpl.Params tpl.Body.Value
 
                 ({ TraitName = traitName
                    MethodName = methodName
@@ -1453,7 +1453,7 @@ let metadata
         if isLibrary then
             constrainedBodiesToExport
             |> List.map (fun (name, (tpl: TypedAST.InlineTemplate)) ->
-                let body = publishBody tpl.Params tpl.Body
+                let body = publishBody tpl.Params tpl.Body.Value
 
                 ({ Name = name
                    OriginModule = tpl.OriginModule

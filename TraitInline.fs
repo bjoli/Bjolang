@@ -402,10 +402,11 @@ let publishBodies
                 Some(
                     name,
                     ({ Params = parameters
-                       Body = body
+                       Body = Lazy<_>.CreateFromValue body
                        Qualification = qualification
                        OriginModule = ownModuleName
-                       Inline = isInline }
+                       Inline = isInline
+                       Imported = false }
                     : InlineTemplate)
                 ))
 
@@ -943,7 +944,7 @@ and private spliceTemplate
             AlphaRename.reachHidden
                 (fun n -> Map.containsKey n ctx.Env.Bindings)
                 tpl.Qualification
-                (ColourTwins.resolveIn suspending tpl.Body)
+                (ColourTwins.resolveIn suspending tpl.Body.Value)
 
         let freshBody, subst = AlphaRename.freshen tpl.Params body
         let freshParams = tpl.Params |> List.map (fun p -> Map.tryFind p subst |> Option.defaultValue p)

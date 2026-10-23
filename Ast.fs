@@ -717,7 +717,10 @@ type Decl =
     // metadata. It is the *untyped* expression: re-inferring it at the splice is
     // what gives it a type its trait signature cannot express.
     // DInlineImpl (TraitName, MethodName, ImplKey, OriginModule, Params, Body, Qualification, Range)
-    | DInlineImpl of string * string * string * string * string list * Expr * (string * string) list * Range
+    //
+    // The body is read when something first splices it: a module imports
+    // hundreds of templates and uses a few (see `Pipeline.inlineImplDecl`).
+    | DInlineImpl of string * string * string * string * string list * Lazy<Expr> * (string * string) list * Range
 
     /// Records that a name defined in this module is a macro.
     ///
@@ -1491,8 +1494,11 @@ let rec mapDeclExprs (f: Expr -> Expr) (d: Decl) : Decl =
         DImpl(name, target, assoc, constraints, methodWheres, methods |> List.map (mapDeclExprs f), r)
     | DModule(name, inner, r) -> DModule(name, inner |> List.map (mapDeclExprs f), r)
     | DDerived inner -> DDerived(mapDeclExprs f inner)
+    // Mapped when it is read, so that mapping does not read it. A body read
+    // already is mapped now, which is what an `f` that collects wants.
     | DInlineImpl(traitName, method_, ctor, origin, ps, body, qual, r) ->
-        DInlineImpl(traitName, method_, ctor, origin, ps, f body, qual, r)
+        let mapped = if body.IsValueCreated then Lazy<_>.CreateFromValue(f body.Value) else lazy (f body.Value)
+        DInlineImpl(traitName, method_, ctor, origin, ps, mapped, qual, r)
     // No expression to map. A signature and a type carry `FType`s, which hold
     // no names a macro introduces, and the rest are declarations about names.
     | DSignature _

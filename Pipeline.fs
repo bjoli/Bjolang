@@ -329,38 +329,110 @@ let rec private expandIncludes
 
     expanded, visited
 
+/// The tokens of text an assembly's metadata holds, `source` being the
+/// assembly: inline templates, constrained bodies and declarations.
+///
+/// Read once per process. A batch compiles hundreds of files that each import
+/// the prelude, whose metadata has some eight hundred inline templates, and
+/// lexing them again for every file was most of what an error test cost. The
+/// tokens are kept and not what is parsed from them: parsing invents names
+/// (`Gensym.fresh`), and a compilation's invented names must not depend on what
+/// the process compiled before it. Lexing has one effect on the session, the
+/// names it reserves, and a cached read reserves them again.
+let private metadataTokens =
+    System.Collections.Concurrent.ConcurrentDictionary<struct (string * string), Lexer.LexedToken list>()
+
+let tokenizeMetadata (source: string) (text: string) : Lexer.LexedToken list =
+    let mutable tokens = []
+
+    if metadataTokens.TryGetValue(struct (source, text), &tokens) then
+        for t in tokens do
+            match t.Token with
+            | Symbol s -> Gensym.reserve s
+            | _ -> ()
+
+        tokens
+    else
+        let tokens = Lexer.tokenize source text
+        metadataTokens[struct (source, text)] <- tokens
+        tokens
+
+/// `f` run with the macros as they were at `at`, and then as they are again.
+///
+/// A body read back from metadata is read when it is first used, and reading
+/// it consults the macro tables: what it holds was expanded where it was
+/// written, but a pattern such as `(Nil)` is a call to a pattern macro if one
+/// is called that. It is read with the tables as they were when its assembly
+/// was imported, as it was when everything was read then, and not with the
+/// macros of whatever was imported after it.
+let private withMacrosOf (at: Macro.State) (f: unit -> 'a) : 'a =
+    let now = Macro.snapshot ()
+    Macro.restore { at with Expansions = now.Expansions }
+
+    try
+        f ()
+    finally
+        Macro.restore now
+
 /// Reads one published constrained body back.
 ///
 /// Not a declaration, unlike an inline template's: nothing is registered under
 /// a trait and nothing is checked. `Monomorphise` reads the map directly, and
 /// only if some call site asks for a copy.
 let private constrainedBodyTemplate
+    (macros: Macro.State)
     (source: string)
     (entry: ModuleMetadata.ConstrainedBodyEntry)
     : TypedAST.InlineTemplate =
-    let form =
-        match Lexer.tokenize source entry.Body |> read |> fst with
-        | [ form ] -> readOrigins entry.OriginModule form
+    let tokens = tokenizeMetadata source entry.Body
+
+    let parse () =
+        match read tokens |> fst with
+        | [ form ] -> LetRecify.letrecifyExpr (Parser.parseExpr (readOrigins entry.OriginModule form))
         | _ -> failwithf $"Malformed constrained body in metadata for '%s{entry.Name}'."
 
+    let body = lazy (withMacrosOf macros parse)
+
     { Params = entry.Params
-      Body = LetRecify.letrecifyExpr (Parser.parseExpr form)
+      Body = body
       Qualification = Map.ofList entry.Qualification
       OriginModule = entry.OriginModule
-      Inline = entry.Inline }
+      Inline = entry.Inline
+      Imported = true }
 
 /// Reads one metadata entry back into a declaration.
 ///
 /// Only the body needs parsing: everything else was a typed field, and the
 /// parameter names, the untyped body and the qualification map stay three
 /// separate things exactly as they were written.
-let private inlineImplDecl (source: string) (entry: ModuleMetadata.InlineTemplateEntry) : Decl =
-    let form =
-        match Lexer.tokenize source entry.Body |> read |> fst with
-        | [ form ] -> readOrigins entry.OriginModule form
+///
+/// The body is parsed when it is first spliced. The prelude publishes some
+/// eight hundred templates and a module uses a few, and parsing them all for
+/// every module that imports it was most of what compiling a small one cost.
+/// It is lexed now, though: lexing reserves the names of `Gensym.fresh`'s shape
+/// that the body has, which a name this compilation invents must not be, from
+/// the start of it.
+let private inlineImplDecl
+    (macros: Macro.State)
+    (source: string)
+    (entry: ModuleMetadata.InlineTemplateEntry)
+    : Decl =
+    let tokens = tokenizeMetadata source entry.Body
+
+    let range =
+        match tokens with
+        | [] -> failwithf $"Empty inline template body in metadata for '%s{entry.TraitName}.%s{entry.MethodName}'."
+        | first :: _ -> { first.Range with End = (List.last tokens).Range.End }
+
+    let parse () =
+        match read tokens |> fst with
+        // The reader joins consecutive `defun`s into one group. `SeqFusion`
+        // recognizes a loop only in the split shape `LetRecify` gives it.
+        | [ form ] -> LetRecify.letrecifyExpr (Parser.parseExpr (readOrigins entry.OriginModule form))
         | _ ->
-            failwithf
-                $"Malformed inline template body in metadata for '%s{entry.TraitName}.%s{entry.MethodName}'."
+            failwithf $"Malformed inline template body in metadata for '%s{entry.TraitName}.%s{entry.MethodName}'."
+
+    let body = lazy (withMacrosOf macros parse)
 
     DInlineImpl(
         entry.TraitName,
@@ -368,11 +440,9 @@ let private inlineImplDecl (source: string) (entry: ModuleMetadata.InlineTemplat
         entry.ImplKey,
         entry.OriginModule,
         entry.Params,
-        // The reader joins consecutive `defun`s into one group. `SeqFusion`
-        // recognizes a loop only in the split shape `LetRecify` gives it.
-        LetRecify.letrecifyExpr (Parser.parseExpr form),
+        body,
         entry.Qualification,
-        getRange form
+        range
     )
 
 // ---------------------------------------------------------------------------
@@ -2246,6 +2316,15 @@ let loadModuleGraph
                         |> Option.bind (fun d -> d.Origin)
                         |> Option.defaultValue (Naming.moduleKeyOfPath absPath, name)
 
+                    // The macros as they are here, where the bodies below used
+                    // to be read: they are read when they are first used, and
+                    // with these (see `withMacrosOf`).
+                    let macrosHere =
+                        if meta.InlineTemplates.IsEmpty && meta.ConstrainedBodies.IsEmpty then
+                            Macro.emptyState
+                        else
+                            Macro.snapshot ()
+
                     // Transitive, unlike the exports above: a name re-exported
                     // through this DLL is bound here, and whether calling it
                     // parks a thread is a fact about the body it still reaches.
@@ -2259,7 +2338,7 @@ let loadModuleGraph
                           Bodies =
                             Timing.phase "import: constrained bodies" (fun () ->
                                 meta.ConstrainedBodies
-                                |> List.map (fun entry -> entry.Name, constrainedBodyTemplate absPath entry))
+                                |> List.map (fun entry -> entry.Name, constrainedBodyTemplate macrosHere absPath entry))
                           TraitOrigins =
                             meta.TraitOrigins
                             |> List.map (fun (t, origin) -> Naming.moduleKeyOfPath absPath, t, origin) }
@@ -2271,7 +2350,7 @@ let loadModuleGraph
                     // calls the landing pad instead.
                     let inlineImplDecls =
                         Timing.phase "import: inline templates" (fun () ->
-                            meta.InlineTemplates |> List.map (inlineImplDecl absPath))
+                            meta.InlineTemplates |> List.map (inlineImplDecl macrosHere absPath))
 
                     // Foreign imports precede the traits: a trait's own
                     // signature may name a type an `import/class` alias
@@ -2290,7 +2369,7 @@ let loadModuleGraph
                             // code: they are spliced at every impl that leaves
                             // the method out.
                             Timing.phase "import: declarations" (fun () ->
-                                Lexer.tokenize absPath declText
+                                tokenizeMetadata absPath declText
                                 |> read
                                 |> fst
                                 |> List.map (readOrigins (Naming.moduleKeyOfPath absPath))
@@ -3018,11 +3097,12 @@ let private qualifyInlineTemplates (moduleOf: Map<string, string * string>) (env
         env.Registry.InlineMethods
         |> Map.map (fun _ (tpl: TypedAST.InlineTemplate) ->
             // A template read back from a `.dll` was qualified where it was
-            // written, by a compilation that could see its module's imports.
-            if not (Map.isEmpty tpl.Qualification) then
+            // written, by a compilation that could see its module's imports,
+            // and its body is not read for this: it is read when it is used.
+            if tpl.Imported || not (Map.isEmpty tpl.Qualification) then
                 tpl
             else
-                let free = AlphaRename.freeNames (Set.ofList tpl.Params) tpl.Body
+                let free = AlphaRename.freeNames (Set.ofList tpl.Params) tpl.Body.Value
 
                 let qualification =
                     free

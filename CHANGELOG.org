@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* An imported inline template is read when it is used
+
+- A module that imports the prelude no longer parses its some eight hundred
+  inline templates, and its constrained bodies, to use a few. A template's
+  body is lexed at the import, as before, so that the names of ~Gensym.fresh~'s
+  shape it holds are reserved from the start of the compilation, and read,
+  parsed and letrecified when something first splices it or makes a copy of
+  it. It is read with the macro tables as they were at its import, so what it
+  means does not depend on what was imported after it.
+- The tokens of a dependency's metadata are kept for the life of the process,
+  keyed on the assembly and the text, and a cached read reserves its names
+  again. What is parsed from them is not kept: parsing invents names, and a
+  compilation's invented names must not depend on what the process compiled
+  before it.
+- An imported template is no longer qualified again by the importing module
+  when the qualification it was published with is empty: it was qualified
+  where it was written.
+- Measured: 60 error tests in one ~--batch~ took 12.1 s and take 5.3 s, of
+  which reading templates went from 7.6 s to 0.7 s. ~run_tests.py~ went from
+  107 s to 60 s on 24 threads; ~BJOLANG_NO_R2R~ made no difference to either.
+- Left open: a parse error in a published body is now reported where the body
+  is first used, not at the import. Reading the declarations and signatures of
+  an import, 1.2 s of the 5.3, is still done for every file of a batch.
+
 * A string continues a line with a backslash
 
 - A backslash that ends a line in a string, plain or ~#"..."~, stands for

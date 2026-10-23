@@ -979,10 +979,11 @@ and private checkDeclNode (env: Env) (sigs: Sigs) (decl: Decl) : Env * Sigs * TD
                 methodName
                 implKey
                 { Params = parameters
-                  Body = body
+                  Body = body // still unread: see `Pipeline.inlineImplDecl`
                   Qualification = Map.ofList qualification
                   OriginModule = originModule
-                  Inline = false }
+                  Inline = false
+                  Imported = true }
                 env
 
         env, sigs, []
@@ -3197,12 +3198,13 @@ and private checkImpl (naming: TraitNaming) (env: Env) (sigs: Sigs) (traitName: 
                             name
                             implTarget.Key
                             { Params = paramNames
-                              Body = body
+                              Body = Lazy<_>.CreateFromValue body
                               // Filled in after inference, where a
                               // name-to-module map exists.
                               Qualification = Map.empty
                               OriginModule = acc.CurrentModule
-                              Inline = false }
+                              Inline = false
+                              Imported = false }
                             acc
                     else
                         acc

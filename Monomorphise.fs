@@ -250,7 +250,9 @@ type private Candidate =
     { Name: string
       Signature: FType
       Args: DefunArg list
-      Body: Expr
+      /// An imported one is read when a copy of it is made: see
+      /// `Pipeline.inlineImplDecl`.
+      Body: Lazy<Expr>
       Origin: string option
       Qualification: Map<string, string>
       SigRange: Lexer.Range
@@ -348,7 +350,7 @@ let private localCandidates (env: Env) (decls: Decl list) : Map<string, Candidat
                         { Name = name
                           Signature = ftype
                           Args = args
-                          Body = body
+                          Body = Lazy<_>.CreateFromValue body
                           Origin = None
                           Qualification = Map.empty
                           SigRange = sigRange
@@ -366,7 +368,7 @@ let private localCandidates (env: Env) (decls: Decl list) : Map<string, Candidat
     let calls =
         found
         |> Map.map (fun name c ->
-            AlphaRename.freeNames (Set.ofList (mandatoryNames c.Args)) c.Body
+            AlphaRename.freeNames (Set.ofList (mandatoryNames c.Args)) c.Body.Value
             |> Set.filter (fun n -> n <> name && Map.containsKey n found))
 
     let inCycle (start: string) =
@@ -713,7 +715,7 @@ let private generate
         let renamed =
             AlphaRename.renameFree
                 (Map.ofList [ cand.Name, demand.CopyName; Naming.writtenName cand.Name, demand.CopyName ])
-                cand.Body
+                cand.Body.Value
 
         let body =
             AlphaRename.reachHidden (fun n -> Map.containsKey n env.Bindings) cand.Qualification renamed
@@ -759,10 +761,11 @@ let private generate
             if cand.Inline then
                 let template: InlineTemplate =
                     { Params = mandatoryNames args
-                      Body = substBodyTypes typeSubst renamed
+                      Body = Lazy<_>.CreateFromValue(substBodyTypes typeSubst renamed)
                       Qualification = cand.Qualification
                       OriginModule = Option.defaultValue env.CurrentModule cand.Origin
-                      Inline = true }
+                      Inline = true
+                      Imported = false }
 
                 { checked' with
                     Registry =
@@ -838,7 +841,7 @@ let private publish
             let params' = mandatoryNames c.Args
 
             let qualification =
-                AlphaRename.freeNames (Set.ofList params') c.Body
+                AlphaRename.freeNames (Set.ofList params') c.Body.Value
                 |> Seq.choose (fun n ->
                     // A name with no module class of its own — a data
                     // constructor, a `Prelude` binding, a trait method — is
@@ -852,7 +855,8 @@ let private publish
               Body = c.Body
               Qualification = qualification
               OriginModule = ownModuleName
-              Inline = c.Inline }
+              Inline = c.Inline
+              Imported = false }
             : InlineTemplate)
 
     { env with

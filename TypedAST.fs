@@ -1545,14 +1545,19 @@ type Binding = { Scheme: Scheme; IsMutable: bool }
 /// trait signature could not express.
 type InlineTemplate =
     { Params: string list
-      Body: Expr
+      /// Lazy because one read back from an assembly's metadata is parsed
+      /// when it is first spliced: a module imports hundreds and uses a few.
+      Body: Lazy<Expr>
       /// Free name -> the name to emit for it. Computed where the origin
       /// module's environment is available, applied after inference.
       Qualification: Map<string, string>
       OriginModule: string
       /// Written `#:inline`: copied at every plain call that may take a copy,
       /// not only at a call given a known function. See `TraitInline`.
-      Inline: bool }
+      Inline: bool
+      /// Read back from a dependency's metadata, qualified where it was
+      /// written, rather than this module's own.
+      Imported: bool }
 
 /// A trait that *is* a .NET interface.
 ///
