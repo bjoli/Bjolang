@@ -328,6 +328,26 @@
                  "(f\n (g \"one \\\n        two\"))\n")))
 
 ;;; ---------------------------------------------------------------------------
+;;; bjo fmt, from the buffer
+
+(ert-deftest bjo-format-buffer/lays-out ()
+  "The buffer is laid out as `bjo fmt' lays it out, point on the same text."
+  (skip-unless (file-executable-p bjo-program))
+  (bjo-tests--in-buffer "(defun (f x)\n(g x\n)\n)\n"
+    (goto-char (point-min))
+    (search-forward "(g")
+    (bjo-format-buffer)
+    (should (equal (buffer-string) "(defun (f x)\n  (g x))\n"))
+    (should (looking-back "(g" (line-beginning-position)))))
+
+(ert-deftest bjo-format-buffer/refuses ()
+  "A buffer `bjo fmt' cannot lay out is left as it is, and why is said."
+  (skip-unless (file-executable-p bjo-program))
+  (bjo-tests--in-buffer "(f (g x)\n"
+    (should-error (bjo-format-buffer) :type 'user-error)
+    (should (equal (buffer-string) "(f (g x)\n"))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Real files, which are indented as the mode indents them
 
 (defconst bjo-tests--corpus

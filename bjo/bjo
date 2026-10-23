@@ -48,16 +48,43 @@ export BJOLANG_COMPILER="$COMPILER_DLL"
 SOURCE="$BJO_DIR/bjo.bjo"
 EXE="$BJO_DIR/bjo.exe"
 
+# `-q` or `--quiet` before the command: what the builds below say is shown
+# only if one fails. For a tool that runs bjo and reads what it writes, such as
+# an editor running `bjo -q fmt -`, which has nowhere to show a build's
+# progress.
+QUIET=0
+if [ "$1" = "-q" ] || [ "$1" = "--quiet" ]; then
+    QUIET=1
+    shift
+fi
+
+# Runs a build, its output on standard error, which is not the command's, or,
+# quiet, only if it fails.
+building() {
+    if [ "$QUIET" = 1 ]; then
+        local said
+        if ! said="$("$@" 2>&1)"; then
+            printf '%s\n' "$said" >&2
+            return 1
+        fi
+    else
+        "$@" >&2
+    fi
+}
+
 # Forced, so that `rebjo` builds whatever MSBuild finds behind, not only what
 # the timestamps above it can see. A forced build with nothing to do costs about
 # a second.
+#
+# What either build says goes to standard error: standard output is the
+# command's, and `bjo fmt -` writes the file there.
 build_compiler() {
-    "$BUILD_COMPILER" --force
+    building "$BUILD_COMPILER" --force
 }
 
 build_bjo() {
-    echo "Building bjo..."
-    dotnet "$COMPILER_DLL" "$SOURCE"
+    [ "$QUIET" = 1 ] || echo "Building bjo..." >&2
+    building dotnet "$COMPILER_DLL" "$SOURCE"
 }
 
 if [ "$1" = "rebjo" ]; then

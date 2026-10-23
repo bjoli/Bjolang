@@ -908,6 +908,77 @@ With a prefix argument ASK, read arguments to pass to the program."
 (define-key bjo-mode-map (kbd "C-c C-p") #'bjo-run-project)
 
 ;;; ---------------------------------------------------------------------------
+;;; Formatting
+;;
+;; `bjo-format-buffer' lays the buffer out with `bjo fmt', which is part of
+;; `bjo' and not of the language server. It reads the buffer on standard input
+;; and writes it laid out, so the buffer need not be saved. `-q' keeps a build
+;; of `bjo' itself, which the launcher makes when it is stale, out of what is
+;; read back.
+
+(defun bjo--format-notes (said)
+  "What `bjo fmt -' SAID about lines, as one line for the echo area."
+  (let ((notes nil))
+    (dolist (line (split-string said "\n" t))
+      (when (string-match "\\`-:\\([0-9]+\\): \\(.*\\)\\'" line)
+        (push (format "line %s: %s" (match-string 1 line) (match-string 2 line)) notes)))
+    (when notes
+      (string-join (nreverse notes) "; "))))
+
+(defun bjo-format-buffer ()
+  "Lay the buffer out as `bjo fmt' lays out a file.
+Point, the mark and undo are kept, the buffer changing only where the
+layout does. A buffer `bjo fmt' cannot lay out, one whose brackets do not
+pair up or with a string that does not end, is left as it is, and why is
+said. So is a line it made wider than it can break."
+  (interactive)
+  (let ((laid (generate-new-buffer " *bjo fmt*"))
+        (errors (make-temp-file "bjo-fmt")))
+    (unwind-protect
+        (let* ((coding-system-for-read 'utf-8-unix)
+               (coding-system-for-write 'utf-8-unix)
+               (status (save-restriction
+                         (widen)
+                         (call-process-region (point-min) (point-max)
+                                              (expand-file-name bjo-program)
+                                              nil (list laid errors) nil
+                                              "-q" "fmt" "-")))
+               (said (with-temp-buffer
+                       (insert-file-contents errors)
+                       (string-trim (buffer-string)))))
+          (unless (eql status 0)
+            (user-error "%s" (if (string-empty-p said)
+                                 (format "bjo fmt failed: %s" status)
+                               said)))
+          (save-restriction
+            (widen)
+            (if (= (compare-buffer-substrings nil nil nil laid nil nil) 0)
+                (message "Already laid out")
+              (replace-buffer-contents laid)))
+          (let ((notes (bjo--format-notes said)))
+            (when notes (message "bjo fmt: %s" notes))))
+      (kill-buffer laid)
+      (delete-file errors))))
+
+(defun bjo--format-before-save ()
+  "Lay the buffer out before it is saved, saying why if it cannot be."
+  (condition-case err
+      (bjo-format-buffer)
+    (error (message "Not laid out: %s" (error-message-string err)))))
+
+;;;###autoload
+(define-minor-mode bjo-format-on-save-mode
+  "Lay a Bjolang buffer out with `bjo fmt' each time it is saved.
+A buffer that cannot be laid out is saved as it is, and why is said."
+  :lighter " Fmt"
+  :group 'bjolang
+  (if bjo-format-on-save-mode
+      (add-hook 'before-save-hook #'bjo--format-before-save nil t)
+    (remove-hook 'before-save-hook #'bjo--format-before-save t)))
+
+(define-key bjo-mode-map (kbd "C-c C-f") #'bjo-format-buffer)
+
+;;; ---------------------------------------------------------------------------
 ;;; The REPL
 ;;
 ;; `bjo repl' in a comint buffer, one per project, or per directory outside one:
