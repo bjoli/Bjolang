@@ -132,7 +132,8 @@
 (bjo-deftest-indent def-star
   "A `def*' lines its clauses up, and each clause's failure is two in."
   "(defun (greet key number)
-  (def* ((Some found) (lookup key) :leave-with (Err \"no such key\"))
+  (def* ((Some found) (lookup key)
+          :leave-with (Err \"no such key\"))
         ((Ok n) (parse-int number)
           :leave ((Err why) (Err why))))
   (Ok (str found \"/\" (int->string n))))

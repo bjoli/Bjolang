@@ -1888,6 +1888,10 @@ def test_fmt(work, c):
     work.mkdir(parents=True, exist_ok=True)
 
     for name, snippet in indentation_snippets():
+        # Indented as bjo-mode indents it, but with several bindings on a line,
+        # which bjo fmt also breaks, a binding a line.
+        if name == "let-bindings":
+            continue
         flat = "\n".join(line.lstrip(" \t") for line in snippet.split("\n"))
         laid = fmt_text(work, flat)
         c.that(f"fmt indents bjo-mode's '{name}' snippet as bjo-mode does", laid.stdout == snippet,
@@ -1915,6 +1919,85 @@ def test_fmt(work, c):
         ("a character literal opens nothing", "(f #\\( #\\;\nx)\n", "(f #\\( #\\;\n   x)\n"),
         ("a brace in an interpolation's string is not the hole's",
          '(f #"a ${(g "}")}"\nx)\n', '(f #"a ${(g "}")}"\n   x)\n'),
+        ("a failure part starts its own line",
+         "(def (Ok n) (parse s) :leave-with 0)\n", "(def (Ok n) (parse s)\n  :leave-with 0)\n"),
+        ("every kind of failure part does, in a def* clause too",
+         "(def* ((Ok a) (f x) :propagate)\n      ((Some b) (g a) :default 0))\n",
+         "(def* ((Ok a) (f x)\n        :propagate)\n      ((Some b) (g a)\n        :default 0))\n"),
+        ("a :leave's arms stay after it",
+         "(def (Ok n) (f s) :leave ((Err a) 1)\n((Err b) 2))\n",
+         "(def (Ok n) (f s)\n  :leave ((Err a) 1)\n         ((Err b) 2))\n"),
+        ("a keyword that is no failure part stays",
+         "(f x :default 1)\n", "(f x :default 1)\n"),
+        ("a cond over several lines has its first arm on a line of its own",
+         "(cond ((a) 1)\n(else 2))\n", "(cond\n  ((a) 1)\n  (else 2))\n"),
+        ("but a cond on one line stays on it", "(cond ((a) 1) (else 2))\n", "(cond ((a) 1) (else 2))\n"),
+        ("each form of a begin over several lines starts a line",
+         "(begin (f 1) (g 2)\n(h 3))\n", "(begin\n  (f 1)\n  (g 2)\n  (h 3))\n"),
+        ("bindings over several lines go a line each",
+         "(let ((a 1) (b 2)\n(c 3))\na)\n", "(let ((a 1)\n      (b 2)\n      (c 3))\n  a)\n"),
+        ("those of a named let too",
+         "(let go ((i 0) (acc Nil)\n(n 1))\n(go i acc n))\n",
+         "(let go ((i 0)\n         (acc Nil)\n         (n 1))\n  (go i acc n))\n"),
+        ("but bindings on one line stay on it", "(let ((a 1) (b 2))\na)\n", "(let ((a 1) (b 2))\n  a)\n"),
+        ("a tab in a string is written \\t, after a backslash too",
+         '(f "a\tb \\\tc")\n', '(f "a\\tb \\\\\\tc")\n'),
+        ("but not in an interpolation's hole", '(f #"a\t${(g\t1)}")\n', '(f #"a\\t${(g\t1)}")\n'),
+        ("a tab in a comment becomes spaces", ";\tx\n", ";       x\n"),
+        ("a call too long for its line has its arguments a line each, under the first",
+         "(defun (f) (some-function-with-a-long-name (another-call (nested alpha) beta gamma) "
+         "(third-call delta epsilon zeta eta) (fourth-call)))\n",
+         "(defun (f)\n  (some-function-with-a-long-name (another-call (nested alpha) beta gamma)\n"
+         "                                  (third-call delta epsilon zeta eta)\n"
+         "                                  (fourth-call)))\n"),
+        ("one with small arguments only is filled",
+         "(defun (f) (str \"one fairly long piece of text \" (int->string count) \" and another long piece \" "
+         "name \" and more\"))\n",
+         "(defun (f)\n  (str \"one fairly long piece of text \" (int->string count) \" and another long piece \" name\n"
+         "       \" and more\"))\n"),
+        ("an if's arms go four in",
+         "(def answer (if (and (> first-number 1000) (< second-number 2000)) (compute-the-result first-number) "
+         "(fallback-value 42)))\n",
+         "(def answer\n  (if (and (> first-number 1000) (< second-number 2000))\n"
+         "      (compute-the-result first-number)\n      (fallback-value 42)))\n"),
+        ("a table is left as it is",
+         "(import/extern\n  (clr-something-with-a-long-name (: Some.Namespace.Module.WithALongName "
+         "(-> (List string) int (Option string)))))\n",
+         "(import/extern\n  (clr-something-with-a-long-name (: Some.Namespace.Module.WithALongName "
+         "(-> (List string) int (Option string)))))\n"),
+        ("a macro is left as it is, but not what is in it",
+         "(with-scope (some-function-with-a-long-name (another-call alpha beta gamma) "
+         "(third-call delta epsilon zeta eta)))\n",
+         "(with-scope (some-function-with-a-long-name (another-call alpha beta gamma)\n"
+         "                                            (third-call delta epsilon zeta eta)))\n"),
+        ("a line continuing a list is filled in it",
+         "(export alpha-function beta-function gamma-function delta-function epsilon-function zeta-function\n"
+         "  eta-function theta-function iota-function kappa-function lambda-function mu-function nu-function xi-function)\n",
+         "(export alpha-function beta-function gamma-function delta-function epsilon-function zeta-function\n"
+         "        eta-function theta-function iota-function kappa-function lambda-function mu-function\n"
+         "        nu-function xi-function)\n"),
+        ("failing that, the list's first argument moves down",
+         "(" + "f" * 60 + " a\n\"" + "x" * 62 + "\")\n",
+         "(" + "f" * 60 + "\n a\n \"" + "x" * 62 + "\")\n"),
+        ("a keyword argument stays with its value in a try over several lines",
+         "(try (let ()\n(a 1))\n#:finally (b))\n",
+         "(try\n  (let ()\n    (a 1))\n  #:finally (b))\n"),
+        ("a clause's guard stays with its pattern when the clause is broken",
+         "(match v\n((Some p) #:when (and (> p 0.0) (< p 1.0) (> p 0.0) (< p 1.0)) "
+         "(go after (record-set options (alpha p)))))\n",
+         "(match v\n  ((Some p) #:when (and (> p 0.0) (< p 1.0) (> p 0.0) (< p 1.0))\n"
+         "   (go after (record-set options (alpha p)))))\n"),
+        ("a line too wide for the brackets that end it is broken in its last list",
+         "(Some (Tuple (substring s (string-cursor-start s) c)\n"
+         "(substring s (string-cursor-forward s c (string-count sep)) (string-cursor-end s-longer))))\n",
+         "(Some (Tuple (substring s (string-cursor-start s) c)\n"
+         "             (substring s\n                        (string-cursor-forward s c (string-count sep))\n"
+         "                        (string-cursor-end s-longer))))\n"),
+        ("the first argument that moves down is the one that gains the most",
+         "(raise (cast Exception (DurationOverflow. \"" + "z" * 80 + "\")))\n",
+         "(raise (cast Exception\n             (DurationOverflow.\n              \"" + "z" * 80 + "\")))\n"),
+        ("a line with a string too wide for any line is left as it is",
+         "(defun (f) (g \"" + "y" * 110 + "\"))\n", "(defun (f) (g \"" + "y" * 110 + "\"))\n"),
     ]
     for label, given, wanted in cases:
         laid = fmt_text(work, given)
@@ -1935,6 +2018,17 @@ def test_fmt(work, c):
     run_bjo(app, "init")
     write(app / "src" / "main.bjo", "(defun (main)\n(println \"hi\")\n0\n)\n")
     write(app / "tests" / "fine.bjo", "(defun (main) 0)\n")
+    shown = run_bjo(app, "fmt", "--diff")
+    c.worked("fmt --diff succeeds", shown)
+    c.that("and prints the change as a unified diff",
+           "--- src/main.bjo\n+++ src/main.bjo\n@@ -1,4 +1,3 @@\n (defun (main)\n"
+           "-(println \"hi\")\n-0\n-)\n+  (println \"hi\")\n+  0)\n" in shown.stdout, shown.stdout)
+    c.that("and writes nothing", "\n0\n)" in (app / "src" / "main.bjo").read_text())
+    c.failed("fmt --diff --check fails as --check does", run_bjo(app, "fmt", "--diff", "--check"))
+    piped = subprocess.run([str(BJO), "fmt", "--diff", "-"], cwd=str(work), input="(f\nx)\n",
+                           capture_output=True, text=True, timeout=120)
+    c.that("fmt --diff - prints the diff of standard input",
+           piped.stdout == "--- -\n+++ -\n@@ -1,2 +1,2 @@\n (f\n-x)\n+ x)\n", piped.stdout + piped.stderr)
     check = run_bjo(app, "fmt", "--check")
     c.failed("fmt --check fails on a file that is not laid out", check)
     c.says("and names it", check, "src/main.bjo: not formatted")
@@ -1943,17 +2037,17 @@ def test_fmt(work, c):
     c.that("and writes the file", (app / "src" / "main.bjo").read_text()
            == "(defun (main)\n  (println \"hi\")\n  0)\n", (app / "src" / "main.bjo").read_text())
     c.worked("after which fmt --check passes", run_bjo(app, "fmt", "--check"))
-    # A line the layout moves past 100 columns is pointed out; one that was
-    # that wide already is not.
-    long_call = "(" + "f" * 60 + " a\n(g " + "x " * 30 + "))\n"
-    already = "(h " + "y " * 60 + ")\n"
+    # A line the layout moves past 102 columns, and cannot break (nothing in
+    # a table is), is pointed out; one that was that wide already is not.
+    long_call = "(import/extern (" + "f" * 60 + " a\n\"" + "x" * 62 + "\"))\n"
+    already = "(h \"" + "y" * 110 + "\")\n"
     write(app / "src" / "wide.bjo", long_call + already)
     laid = run_bjo(app, "fmt", "src/wide.bjo")
-    c.says("fmt names a line it laid out wider than 100 columns", laid,
-           "src/wide.bjo:2: 126 columns once laid out, more than 100")
+    c.says("fmt names a line it laid out wider than 102 columns", laid,
+           "src/wide.bjo:2: 143 columns, more than 102; break the line")
     c.that("and not one that was that wide already", "wide.bjo:3" not in said(laid), said(laid))
     piped = fmt_text(work, long_call)
-    c.that("fmt - names it on standard error", "-:2: 126 columns" in piped.stderr, piped.stderr)
+    c.that("fmt - names it on standard error", "-:2: 143 columns" in piped.stderr, piped.stderr)
     c.failed("fmt refuses a name that is not there", run_bjo(app, "fmt", "nosuch.bjo"))
     c.failed("fmt refuses a flag it does not know", run_bjo(app, "fmt", "--wat"))
 

@@ -1,0 +1,176 @@
+;; bjo/diff.bjo — a unified diff of two texts, line by line, for
+;; `bjo fmt --diff`.
+;;
+;; Made for what `bjo fmt` does to a file: it changes lines in place, joins a
+;; line of closing brackets to the one before it, and drops blank lines. So
+;; the lines are walked together, and where they part the next place two lines
+;; in a row agree again is looked for a few lines ahead; where there is none,
+;; the lines are taken as changed one for one, which is what a re-indented
+;; block is. That is not always the shortest diff, but it is always a true one,
+;; and it costs nothing on a long file.
+
+(export unified-diff)
+
+(import (std prelude))
+
+;; What becomes of a line: kept, at its index in the old text and in the new;
+;; or removed or added, at the index in the old and the new where it is.
+(type (: Op (Union (: Same int int) (: Del int int) (: Add int int))))
+
+;; How far ahead a place where the texts agree again is looked for.
+(: reach int)
+(def reach 40)
+
+;; Lines of context around a change.
+(: context int)
+(def context 3)
+
+(: lines (-> string (Vec string)))
+(defun (lines s)
+  (def parts (string-split s "\n"))
+  (def n (vec-length parts))
+  (if (and (> n 0) (string-empty? (vec-ref parts (- n 1)))) (vec-take parts (- n 1)) parts))
+
+;; Whether old line `i` and new line `j` agree, and the lines after them too,
+;; or one of the texts ends there: one equal line alone, a blank one or a `))`,
+;; agrees anywhere.
+(: agree? (-> (Vec string) (Vec string) int int bool))
+(defun (agree? a b i j)
+  (def n (vec-length a))
+  (def m (vec-length b))
+  (cond
+    ((and (= i n) (= j m)) #t)
+    ((or (>= i n) (>= j m)) #f)
+    ((not (= (vec-ref a i) (vec-ref b j))) #f)
+    ((or (= (+ i 1) n) (= (+ j 1) m)) #t)
+    (else (= (vec-ref a (+ i 1)) (vec-ref b (+ j 1))))))
+
+;; How many old lines to remove and new ones to add from `i` and `j` on for the
+;; texts to agree again, the fewest first, if they do within `reach`.
+(: resync (-> (Vec string) (Vec string) int int (Option (Tuple int int))))
+(defun (resync a b i j)
+  (let by-distance ((d 1))
+    (if (> d reach)
+        None
+        (let by-split ((x 0))
+          (cond
+            ((> x d) (by-distance (+ d 1)))
+            ((agree? a b (+ i x) (+ j (- d x))) (Some (Tuple x (- d x))))
+            (else (by-split (+ x 1))))))))
+
+;; `count` ops made by `make` from `from` on, onto `ops`, the last first.
+(: ops-onto (-> (List Op) int int (-> int Op) (List Op)))
+(defun (ops-onto ops from count make)
+  (let go ((k 0) (ops ops))
+    (if (>= k count) ops (go (+ k 1) (Cons (make (+ from k)) ops)))))
+
+(: edit-script (-> (Vec string) (Vec string) (Vec Op)))
+(defun (edit-script a b)
+  (def n (vec-length a))
+  (def m (vec-length b))
+  (let go ((i 0) (j 0) (ops Nil))
+    (cond
+      ((and (>= i n) (>= j m)) (list->vec (list-reverse ops)))
+      ((>= i n) (go i (+ j 1) (Cons (Add i j) ops)))
+      ((>= j m) (go (+ i 1) j (Cons (Del i j) ops)))
+      ((= (vec-ref a i) (vec-ref b j)) (go (+ i 1) (+ j 1) (Cons (Same i j) ops)))
+      (else
+       (match (resync a b i j)
+         ((Some (Tuple x y))
+          (def removed (ops-onto ops i x #(Del & j)))
+          (go (+ i x) (+ j y) (ops-onto removed j y #(Add (+ i x) &))))
+         (None (go (+ i 1) (+ j 1) (Cons (Add (+ i 1) j) (Cons (Del i j) ops)))))))))
+
+(: changed? (-> Op bool))
+(defun (changed? op)
+  (match op
+    ((Same _ _) #f)
+    (_ #t)))
+
+;; The old and the new index an op is at.
+(: at-of (-> Op (Tuple int int)))
+(defun (at-of op)
+  (match op
+    ((Same i j) (Tuple i j))
+    ((Del i j) (Tuple i j))
+    ((Add i j) (Tuple i j))))
+
+;; The hunks: each as the first and the last op in it, changes no more than
+;; twice the context apart sharing one.
+(: hunks (-> (Vec Op) (List (Tuple int int))))
+(defun (hunks ops)
+  (def n (vec-length ops))
+  (def changes (loop (:for k (range 0 n))
+                     (:acc out (listing k) #:when (changed? (vec-ref ops k)))
+                 => out))
+  (defun (close-hunk first last) (Tuple (max0 (- first context)) (min-of (- n 1) (+ last context))))
+  (match changes
+    (Nil Nil)
+    ((Cons start rest)
+     (let go ((rest rest) (first start) (last start) (out Nil))
+       (match rest
+         (Nil (list-reverse (Cons (close-hunk first last) out)))
+         ((Cons k more)
+          (if (<= (- k last) (* 2 context))
+              (go more first k out)
+              (go more k k (Cons (close-hunk first last) out)))))))))
+
+(: max0 (-> int int))
+(defun (max0 x) (if (< x 0) 0 x))
+
+(: min-of (-> int int int))
+(defun (min-of x y) (if (< x y) x y))
+
+;; `@@ -start,count +start,count @@`, where a side with no lines starts at the
+;; line before.
+(: hunk-header (-> (Vec Op) int int string))
+(defun (hunk-header ops first last)
+  (def (Tuple i j) (at-of (vec-ref ops first)))
+  (def olds (loop (:for k (range first (+ last 1)))
+                  (:acc c (counting k) #:when (match (vec-ref ops k) ((Add _ _) #f) (_ #t)))
+              => c))
+  (def news (loop (:for k (range first (+ last 1)))
+                  (:acc c (counting k) #:when (match (vec-ref ops k) ((Del _ _) #f) (_ #t)))
+              => c))
+  (defun (side start count) #"${(int->string (if (= count 0) start (+ start 1)))},${(int->string count)}")
+  #"@@ -${(side i olds)} +${(side j news)} @@")
+
+;; The lines of one hunk: a run of changes as its removed lines and then its
+;; added ones, as a unified diff writes it.
+(: hunk-lines (-> (Vec string) (Vec string) (Vec Op) int int (List string)))
+(defun (hunk-lines a b ops first last)
+  ;; `out`, `dels` and `adds` are each the last first, so a run of changes goes
+  ;; onto `out` as its additions and then its removals.
+  (let go ((k first) (dels Nil) (adds Nil) (out Nil))
+    (defun (flushed) (list-append adds (list-append dels out)))
+    (if (> k last)
+        (list-reverse (flushed))
+        (match (vec-ref ops k)
+          ((Same i _) (go (+ k 1) Nil Nil (Cons (str " " (vec-ref a i)) (flushed))))
+          ((Del i _) (go (+ k 1) (Cons (str "-" (vec-ref a i)) dels) adds out))
+          ((Add _ j) (go (+ k 1) dels (Cons (str "+" (vec-ref b j)) adds) out))))))
+
+;; The changes from `old` to `new` as a unified diff, the old text named `from`
+;; and the new `to`, or "" when they are the same.
+(: unified-diff (-> string string string string string))
+(defun (unified-diff from to old new)
+  (def a (lines old))
+  (def b (lines new))
+  (def ops (edit-script a b))
+  (def found (hunks ops))
+  (cond
+    ((= old new) "")
+    ((empty? found)
+     ;; The same lines, so what differs is the end of the file.
+     #"--- ${from}\n+++ ${to}\n(the file ends in a newline, and it did not)\n")
+    (else
+     (def body
+       (loop (:for h found)
+             (:acc out (folding Nil
+                                (match h
+                                  ((Tuple first last)
+                                   (list-append out
+                                                (Cons (hunk-header ops first last)
+                                                      (hunk-lines a b ops first last)))))))
+         => out))
+     (str #"--- ${from}\n+++ ${to}\n" (string-join (list->vec body) "\n") "\n"))))

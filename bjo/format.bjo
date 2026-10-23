@@ -1,14 +1,18 @@
 ;; bjo/format.bjo — `bjo fmt`: Bjolang source laid out as bjomode.el lays it
 ;; out.
 ;;
-;; It re-indents and tidies, and keeps every line break the source has but
-;; those before a closing bracket:
+;; It re-indents and tidies, keeps every line break the source has but those
+;; before a closing bracket, and adds the few that make code read the same
+;; everywhere:
 ;;
 ;;   - every line is indented as `indent-region` in `bjo-mode` indents it;
 ;;   - a line of closing brackets goes up to the end of the line before it,
 ;;     Lisp style, unless that line ends in a comment;
-;;   - trailing whitespace goes, as do spaces just inside a bracket, and a tab
-;;     between tokens becomes spaces;
+;;   - a `def`'s failure part starts a line, as does each form of a `cond`,
+;;     `begin`, `seq` or `try` over several lines, and each binding of a `let`
+;;     whose bindings are over several lines (see "Reshaping");
+;;   - trailing whitespace goes, as do spaces just inside a bracket; a tab
+;;     becomes spaces, or `\t` in a string;
 ;;   - three or more blank lines in a row become two, and the file ends in one
 ;;     newline.
 ;;
@@ -23,7 +27,7 @@
 ;; is checked against what went in: the same tokens in the same order, or the
 ;; file is left alone.
 
-(export format-source wide)
+(export format-source format-with wide)
 
 (import (std prelude))
 
@@ -207,10 +211,12 @@
     ((opening? c) (Ok (Tuple (TOpen (char->string c)) (+ i 1))))
     ((closing? c) (Ok (Tuple (TClose (char->string c)) (+ i 1))))
     ((= c #\")
-     (def (Ok e) (string-end cs i) :leave ((Err why) (Err why)))
+     (def (Ok e) (string-end cs i)
+       :leave ((Err why) (Err why)))
      (Ok (Tuple (TStr (text-between cs i e)) e)))
     ((and (= c #\#) (= (char-at cs (+ i 1)) #\"))
-     (def (Ok e) (interpolated-end cs i) :leave ((Err why) (Err why)))
+     (def (Ok e) (interpolated-end cs i)
+       :leave ((Err why) (Err why)))
      (Ok (Tuple (TStr (text-between cs i e)) e)))
     ((and (= c #\#) (= (char-at cs (+ i 1)) #\\)) (Ok (to (char-literal-end cs i))))
     (else (Ok (to (atom-end cs i))))))
@@ -224,11 +230,17 @@
           ((Err why) (Err why))
           ((Ok (Tuple tok next)) (go next (Cons tok out)))))))
 
-;; The tokens that make the program: everything but the spacing.
+;; The tokens that make the program: everything but the spacing, and a string
+;; with its tabs written `\t`, as the layout writes them. A comment's words are
+;; compared, its tabs being spaces once laid out.
 (: significant (-> (List Tok) (List string)))
 (defun (significant toks)
   (loop (:for t toks)
-        (:acc out (listing (tok-text t)) #:when (meaningful? t))
+        (:acc out (listing (match t
+                             ((TStr s) (escape-tabs s))
+                             ((TComment s) (string-replace (string-replace s "\t" "") " " ""))
+                             (_ (tok-text t))))
+              #:when (meaningful? t))
     => out))
 
 (: meaningful? (-> Tok bool))
@@ -250,31 +262,254 @@
     (TNewline "\n")))
 
 ;; ---------------------------------------------------------------------------
+;; Reshaping: the line breaks the layout adds
+;;
+;; Each rule says where a line has to break, and what it adds is a line break,
+;; so that the tokens are what they were:
+;;
+;;   - a `def`'s failure part, `:leave`, `:leave-with`, `:default` or
+;;     `:propagate`, starts a line of its own, so that the way out stands out;
+;;   - in a `cond`, a `begin`, a `seq` or a `try` over several lines, each form
+;;     after the head starts a line, but a keyword argument's value, which
+;;     stays on the keyword's line: `#:finally (restore)`;
+;;   - in a `let`'s bindings over several lines, each binding starts a line.
+;;
+;; A tab in a string, which is otherwise left as it is, is written `\t`.
+
+;; The line breaks in a token.
+(: breaks-in (-> Tok int))
+(defun (breaks-in t)
+  (match t
+    (TNewline 1)
+    ((TStr s) (snd (advance s 0)))
+    (_ 0)))
+
+;; For each token, the index of the token that closes it if it opens a list,
+;; and how many line breaks come before it.
+(: closers-and-lines (-> (Vec Tok) (Tuple (Vec int) (Vec int))))
+(defun (closers-and-lines v)
+  (def n (vec-length v))
+  (def closes (vecbuilder-empty))
+  (def lines (vecbuilder-empty))
+  (let fill ((k 0) (line 0))
+    (when (< k n)
+      (vecbuilder-add! closes -1)
+      (vecbuilder-add! lines line)
+      (fill (+ k 1) (+ line (breaks-in (vec-ref v k))))))
+  (let go ((k 0) (open Nil))
+    (when (< k n)
+      (match (vec-ref v k)
+        ((TOpen _) (go (+ k 1) (Cons k open)))
+        ((TClose _)
+         (match open
+           ((Cons o outer)
+            (vecbuilder-set! closes o k)
+            (go (+ k 1) outer))
+           (Nil (go (+ k 1) open))))
+        (_ (go (+ k 1) open)))))
+  (Tuple (vecbuilder->vec closes) (vecbuilder->vec lines)))
+
+;; A list being reshaped: its bracket, its head, what its second form is if it
+;; is an atom, its last form so far, how many forms it has so far, whether it
+;; spans lines, and whether it is the bindings of a `let`, the forms of which
+;; go a line each.
+(type (: Shape (Record (: bracket string)
+                       (: head string)
+                       (: second string)
+                       (: last string)
+                       (: count int)
+                       (: spans bool)
+                       (: bindings bool))))
+
+;; Whether a form written `raw` is a keyword argument, `#:catch`, which the
+;; form after it belongs with: the two stay on one line.
+(: keyword-arg? (-> string bool))
+(defun (keyword-arg? raw)
+  (and (string-starts-with? raw "#:") (> (string-length raw) 2)))
+
+(: body-only? (-> string bool))
+(defun (body-only? head)
+  (match head
+    ((or "cond" "begin" "seq" "try") #t)
+    (_ #f)))
+
+;; Whether `s` is a `def` clause, of a `def`, a `:def` or a `def*`, in which a
+;; failure part may be.
+(: clause? (-> Shape (Option Shape) bool))
+(defun (clause? s outer)
+  (or (= (record-ref s head) "def")
+      (= (record-ref s head) ":def")
+      (and (= (record-ref s bracket) "(")
+           (not (= (record-ref s head) "def*"))
+           (match outer
+             ((Some o) (= (record-ref o head) "def*"))
+             (None #f)))))
+
+;; Whether a list opening as the next form of `parent` is that form's bindings.
+(: opens-bindings? (-> Shape string bool))
+(defun (opens-bindings? parent bracket)
+  (def head (record-ref parent head))
+  (def named?
+    (and (= head "let")
+         (match (string->list (record-ref parent second))
+           ((Cons c _) (char-alphabetic? c))
+           (Nil #f))))
+  (and (= bracket "(")
+       (binding-form? head)
+       (= (record-ref parent count) (if named? 2 1))))
+
+;; `s` with one more form, written `raw`.
+(: with-form (-> Shape string Shape))
+(defun (with-form s raw)
+  (def n (record-ref s count))
+  (Shape (bracket (record-ref s bracket))
+         (head (if (= n 0) raw (record-ref s head)))
+         (second (if (= n 1) raw (record-ref s second)))
+         (last raw)
+         (count (+ n 1))
+         (spans (record-ref s spans))
+         (bindings (record-ref s bindings))))
+
+;; Whether the form at position `n` of `s`, written `raw`, has to start a line.
+;; One after a keyword argument stays with it.
+(: breaks-before? (-> Shape (Option Shape) int string bool))
+(defun (breaks-before? s outer n raw)
+  (or (and (failure-keyword? raw) (clause? s outer))
+      (and (>= n 1)
+           (record-ref s spans)
+           (or (body-only? (record-ref s head)) (record-ref s bindings))
+           (not (keyword-arg? (record-ref s last))))))
+
+;; The tokens with the line breaks the rules ask for, and their strings' tabs
+;; written `\t`.
+(: reshape (-> (List Tok) (List Tok)))
+(defun (reshape toks)
+  (def v (list->vec toks))
+  (def n (vec-length v))
+  (def (Tuple closes lines) (closers-and-lines v))
+  (defun (spans? k)
+    (def c (vec-ref closes k))
+    (and (>= c 0) (> (vec-ref lines c) (vec-ref lines k))))
+  ;; `shapes` are the lists open, the innermost first; `fresh?` whether
+  ;; nothing but space is on the line yet; `prefixed?` whether a prefix
+  ;; began the form this token belongs to.
+  (let go ((k 0) (shapes Nil) (fresh? #t) (prefixed? #f) (out Nil))
+    (if (>= k n)
+        (list-reverse out)
+        (let ((t (vec-ref v k)))
+          (def rest (if (< (+ k 1) n) (list (vec-ref v (+ k 1))) Nil))
+          (def starts? (and (starts-form? t) (not prefixed?)))
+          (def raw
+            (match t
+              ((TStr _) "\"")
+              (_ (tok-text t))))
+          (def break?
+            (and starts?
+                 (not fresh?)
+                 (match shapes
+                   ((Cons s outer)
+                    (breaks-before? s (match outer ((Cons o _) (Some o)) (Nil None)) (record-ref s count) raw))
+                   (Nil #f))))
+          (def counted
+            (match shapes
+              ((Cons s outer) #:when starts? (Cons (with-form s raw) outer))
+              (_ shapes)))
+          (def shapes-after
+            (match t
+              ((TOpen b)
+               (Cons (Shape (bracket b) (head "") (second "") (last "") (count 0) (spans (spans? k))
+                            (bindings (match shapes
+                                        ((Cons s _) (opens-bindings? s b))
+                                        (Nil #f))))
+                     counted))
+              ((TClose _)
+               (match counted
+                 ((Cons _ outer) outer)
+                 (Nil Nil)))
+              (_ counted)))
+          (def written
+            (match t
+              ((TStr s) (TStr (escape-tabs s)))
+              (_ t)))
+          (def out-after (Cons written (if break? (Cons TNewline out) out)))
+          (go (+ k 1)
+              shapes-after
+              (match t
+                (TNewline #t)
+                ((TSpace _) fresh?)
+                (_ #f))
+              (prefix-of-next? t rest)
+              out-after)))))
+
+;; The tokens reshaped until no rule asks for more. A line break one rule adds
+;; can make a list span lines, which another rule asks a line break of: a
+;; failure part inside a `begin` on one line. The rules only add line breaks,
+;; so this ends.
+(: reshaped (-> (List Tok) (List Tok)))
+(defun (reshaped toks)
+  (def again (reshape toks))
+  (if (= (list-length again) (list-length toks)) again (reshaped again)))
+
+;; A string's tabs written `\t`, as its value is unchanged by: outside the
+;; holes of an interpolated string, and never in a raw one, which has no
+;; escapes. A tab after a backslash is an escape the lexer does not know,
+;; which keeps both, so it becomes `\\\t`.
+(: escape-tabs (-> string string))
+(defun (escape-tabs s)
+  (cond
+    ((string-starts-with? s "\"\"\"") s)
+    ((not (string-contains? s "\t")) s)
+    (else
+     (def cs (string->vec s))
+     (def n (vec-length cs))
+     (def sb (stringbuilder-empty))
+     (defun (copy from to) (stringbuilder-add-string! sb (text-between cs from to)))
+     (let go ((p 0))
+       (when (< p n)
+         (def c (vec-ref cs p))
+         (cond
+           ((and (= c #\\) (= (char-at cs (+ p 1)) #\tab))
+            (stringbuilder-add-string! sb "\\\\\\t")
+            (go (+ p 2)))
+           ((= c #\\)
+            (copy p (+ p 2))
+            (go (+ p 2)))
+           ((= c #\tab)
+            (stringbuilder-add-string! sb "\\t")
+            (go (+ p 1)))
+           ((and (= c #\$) (= (char-at cs (+ p 1)) #\{) (string-starts-with? s "#\""))
+            (def past (hole-end cs (+ p 2)))
+            (copy p past)
+            (go past))
+           (else
+            (stringbuilder-add! sb c)
+            (go (+ p 1))))))
+     (stringbuilder->string sb))))
+
+;; Past the `}` closing the hole whose code starts at `q`, as
+;; `interpolated-end` reads one.
+(: hole-end (-> (Vec char) int int))
+(defun (hole-end cs q)
+  (let hole ((q q) (depth 1))
+    (def c (char-at cs q))
+    (cond
+      ((>= q (vec-length cs)) q)
+      ((= c #\")
+       (match (string-end cs q)
+         ((Ok e) (hole e depth))
+         ((Err _) (vec-length cs))))
+      ((and (= c #\#) (= (char-at cs (+ q 1)) #\\)) (hole (+ q 3) depth))
+      ((= c #\{) (hole (+ q 1) (+ depth 1)))
+      ((and (= c #\}) (= depth 1)) (+ q 1))
+      ((= c #\}) (hole (+ q 1) (- depth 1)))
+      (else (hole (+ q 1) depth)))))
+
+;; ---------------------------------------------------------------------------
 ;; Lines
 
-;; A line's tokens, its own indentation taken off; that indentation as it was,
-;; which a `;;;` comment keeps; and how wide the line was, up to the end of its
-;; first physical line, so that a line laid out wider can be told apart from
-;; one that was wide already.
-(type (: Line (Record (: toks (List Tok)) (: indent string) (: was int))))
-
-;; How wide the tokens are up to the first line break in them.
-(: first-line-width (-> (List Tok) int))
-(defun (first-line-width toks)
-  (let go ((toks toks) (width 0))
-    (match toks
-      (Nil width)
-      ((Cons t rest)
-       (def (Tuple after breaks) (advance (tok-text t) width))
-       (if (> breaks 0) (+ width (before-break (tok-text t))) (go rest after))))))
-
-;; How many characters come before the first line break in `s`.
-(: before-break (-> string int))
-(defun (before-break s)
-  (let go ((cs (string->list s)) (n 0))
-    (match cs
-      ((Cons c rest) (if (= c #\newline) n (go rest (+ n 1))))
-      (Nil n))))
+;; A line's tokens, its own indentation taken off, and that indentation as it
+;; was, which a `;;;` comment keeps.
+(type (: Line (Record (: toks (List Tok)) (: indent string))))
 
 (: lines-of (-> (List Tok) (List Line)))
 (defun (lines-of toks)
@@ -310,9 +545,7 @@
       ((Cons (TSpace s) _) s)
       (_ "")))
   (def trimmed (list-reverse (drop-spaces (list-reverse (drop-spaces toks)))))
-  (Line (toks (inside-brackets trimmed))
-        (indent indent)
-        (was (first-line-width (list-reverse (drop-spaces (list-reverse toks)))))))
+  (Line (toks (inside-brackets trimmed)) (indent indent)))
 
 (: drop-spaces (-> (List Tok) (List Tok)))
 (defun (drop-spaces toks)
@@ -718,19 +951,50 @@
 ;; What is known while the lines are written: the lists open, the innermost
 ;; first; the column kept at each depth, the innermost first, one more than
 ;; there are lists open, and how many lists were open when they were kept;
-;; the physical line being written; and the lines laid out wider than `wide`
-;; and wider than they were, each with its width, the last first.
+;; the physical line being written; and what is to be said about the lines so
+;; far, each with its line, the last first.
 (type (: State (Record (: frames (List Frame))
                        (: kept (List (Option int)))
                        (: kept-depth int)
                        (: line int)
-                       (: long (List (Tuple int int))))))
+                       (: notes (List (Tuple int string))))))
 
 ;; The width past which a line the layout made wider is pointed out: an
 ;; indenter only moves text right, and a line it moves too far wants breaking
-;; by hand.
+;; by hand. Racket's style has the same limit.
 (: wide int)
-(def wide 100)
+(def wide 102)
+
+;; What is to be said about a line whose tokens are `toks` as it is written:
+;; that it has a tab in a raw string, which no escape can write. How wide it
+;; is is said once it is broken; see `width-notes`.
+(: notes-on (-> (List Tok) (List string)))
+(defun (notes-on toks)
+  (if (any? (fun (t)
+              (match t
+                ((TStr s) (and (string-starts-with? s "\"\"\"") (string-contains? s "\t")))
+                (_ #f)))
+            toks)
+      (list "a tab in a raw string, which has no escape for it; write the text another way")
+      Nil))
+
+;; The lines of `result` wider than `wide`, each with its width as a note, but
+;; one that is part of a line of `source` as wide already: a string, a comment
+;; or a table nothing here breaks, which a person has to, and has been told of.
+(: width-notes (-> string string (List (Tuple int string))))
+(defun (width-notes source result)
+  (def wide-before
+    (loop (:for l (string-split source "\n"))
+          (:acc out (listing (string-trim l)) #:when (> (columns l) wide))
+      => out))
+  (def lines (string-split result "\n"))
+  (loop (:for i (range 0 (vec-length lines)))
+        (:acc out (listing (Tuple (+ i 1)
+                                  #"${(int->string (columns (vec-ref lines i)))} columns, more than ${(int->string wide)}; break the line"))
+              #:when (let ((l (vec-ref lines i)))
+                       (and (> (columns l) wide)
+                            (not (any? #(string-contains? & (string-trim l)) wide-before)))))
+    => out))
 
 (: spaces (-> int string))
 (defun (spaces n)
@@ -825,17 +1089,15 @@
   (unless (empty? toks) (stringbuilder-add-string! buffer lead))
   (def (Tuple frames-after line-after)
     (write-toks buffer toks frames (string-length lead) (record-ref st line)))
-  (def text (stringbuilder->string buffer))
-  (stringbuilder-add-string! out text)
+  (stringbuilder-add-string! out (stringbuilder->string buffer))
   (stringbuilder-add! out #\newline)
-  (def width (before-break text))
   (State (frames frames-after)
          (kept kept-now)
          (kept-depth depth)
          (line (+ line-after 1))
-         (long (if (and (> width wide) (> width (record-ref l was)))
-                   (Cons (Tuple (record-ref st line) width) (record-ref st long))
-                   (record-ref st long)))))
+         (notes (list-foldl (fun (note acc) (Cons (Tuple (record-ref st line) note) acc))
+                            (record-ref st notes)
+                            (notes-on toks)))))
 
 ;; Whether the token is a prefix, ' or #' or #, written right before the form
 ;; it belongs to.
@@ -889,6 +1151,7 @@
        (def written
          (match t
            ((TSpace s) (expand-tabs s col))
+           ((TComment s) (expand-tabs s col))
            (_ (tok-text t))))
        (stringbuilder-add-string! out written)
        (def (Tuple next-col breaks) (advance written col))
@@ -960,26 +1223,398 @@
          (_ (go rest open line)))))))
 
 ;; ---------------------------------------------------------------------------
+;; Breaking long lines
+;;
+;; A line wider than `wide` is broken in a list on it that runs past the limit,
+;; the outermost that has somewhere to break, by putting its forms on lines of
+;; their own the way the indentation then lays them out: a call's arguments
+;; after the first under it, a body's forms two in, an `if`'s arms four in, a
+;; clause's forms after its pattern. A call whose arguments are all small, and
+;; a vec, are filled instead: broken only before the form that runs past the
+;; limit. A list runs past the limit when it does with the closing brackets
+;; right after it, so a line too wide only for the brackets that end it is
+;; broken in its last list. A line that continues a list opened on a line
+;; before is filled in that list. What none of that can take, a call's first
+;; argument moving down gives a line more, in the call where that moves the
+;; most left. Then the text is laid out again and looked at again, until
+;; nothing more can be broken.
+;;
+;; A keyword argument's value stays on the keyword's line, and a clause's
+;; `#:when` and guard on the line of its pattern.
+;;
+;; A macro is left as it is: what its forms are is its own business. Those of
+;; the prelude are named here; a head that begins with `with-` is one too. So
+;; is everything in an `import/extern` or an `import/class`, which are tables
+;; written to be read in columns.
+
+(: macro-head? (-> string bool))
+(defun (macro-head? head)
+  (or (string-starts-with? head "with-")
+      (match head
+        ((or "cond" "get" "if-let" "in-scope" "let*" "own-disposable" "parameterize*" "scope-form"
+             "set" "some->" "try->" "try-get" "type/derive" "update" "when-let")
+         #t)
+        (_ #f))))
+
+(: table-head? (-> string bool))
+(defun (table-head? head)
+  (match head
+    ((or "import/extern" "import/class") #t)
+    (_ #f)))
+
+;; How the forms of a list may start lines of their own.
+(type (: Breaking (Union
+                   ;; Each from this position on.
+                   (: OneALine int)
+                   ;; Only the one that runs past the limit, from this position on.
+                   (: Filled int)
+                   ;; A call: filled if its arguments are all small, else one a line.
+                   (: Call int))))
+
+;; How the forms of a list headed `head`, written `bracket`, may start lines of
+;; their own, or `None` for a list to leave as it is.
+(: breaking-of (-> string string (Option Breaking)))
+(defun (breaking-of bracket head)
+  (def name (without-prefix head))
+  (cond
+    ;; A vec and an export list are data, filled.
+    ((= bracket "[") (Some (Filled 1)))
+    ((or (= name "export") (= name "re-export")) (Some (Filled 1)))
+    ((= bracket "{") None)
+    ((or (macro-head? name) (table-head? name)) None)
+    ((not (symbolic? head)) (Some (OneALine 1)))
+    ((= name "if") (Some (OneALine 2)))
+    (else
+     (match (rule-of name)
+       ((Some (Body n)) (Some (OneALine (+ n 1))))
+       ((Some DefStar) (Some (OneALine 1)))
+       ((Some _) (Some (OneALine 2)))
+       (None
+        (if (and (> (string-length name) 3) (string-starts-with? name "def"))
+            (Some (OneALine 2))
+            (Some (Call 2))))))))
+
+;; A form of a list on the line looked at: its token, its position in the
+;; list, the columns it starts and ends at, the closing brackets right after
+;; it included; whether it is small: an atom, a string, or a list on one line
+;; with no list in it; and whether it is glued to the form before it, which a
+;; line break never comes between: the value of a keyword argument, and a
+;; clause's `#:when`, which is part of its pattern.
+(type (: Form (Record (: tok int) (: at int) (: from int) (: to int) (: small bool) (: glued bool))))
+
+;; What the breaking reads of the laid-out tokens: each list's closing token,
+;; each token's line and column, and whether it is inside a table.
+(type (: Placed (Record (: toks (Vec Tok))
+                        (: closes (Vec int))
+                        (: lines (Vec int))
+                        (: cols (Vec int))
+                        (: tabled (Vec bool)))))
+
+(: placed (-> (List Tok) Placed))
+(defun (placed toks)
+  (def v (list->vec toks))
+  (def (Tuple closes _) (closers-and-lines v))
+  (def lines (vecbuilder-empty))
+  (def cols (vecbuilder-empty))
+  (def tabled (vecbuilder-empty))
+  ;; `open` holds for each list open whether it is, or is in, a table.
+  (let go ((k 0) (line 0) (col 0) (open Nil))
+    (when (< k (vec-length v))
+      (def t (vec-ref v k))
+      (def inside (match open ((Cons b _) b) (Nil #f)))
+      (vecbuilder-add! lines line)
+      (vecbuilder-add! cols col)
+      (vecbuilder-add! tabled inside)
+      (def (Tuple after breaks) (advance (tok-text t) col))
+      (def open-after
+        (match t
+          ((TOpen _)
+           (def head (match (vec-ref v (+ k 1)) ((TAtom s) s) (_ "")))
+           (Cons (or inside (table-head? head)) open))
+          ((TClose _) (match open ((Cons _ outer) outer) (Nil Nil)))
+          (_ open)))
+      (go (+ k 1) (+ line breaks) after open-after)))
+  (Placed (toks v) (closes closes) (lines (vecbuilder->vec lines))
+          (cols (vecbuilder->vec cols)) (tabled (vecbuilder->vec tabled))))
+
+(: tok-at (-> Placed int Tok))
+(defun (tok-at p k) (vec-ref (record-ref p toks) k))
+
+(: opens? (-> Tok bool))
+(defun (opens? t)
+  (match t
+    ((TOpen _) #t)
+    (_ #f)))
+
+;; The column after the form starting at `j`, and after the closing brackets
+;; right after it, which go where it goes.
+(: form-end (-> Placed int int))
+(defun (form-end p j)
+  (closers-end p (if (opens? (tok-at p j)) (vec-ref (record-ref p closes) j) j)))
+
+;; The column after token `k` and the closing brackets right after it.
+(: closers-end (-> Placed int int))
+(defun (closers-end p k)
+  (def n (vec-length (record-ref p toks)))
+  (let go ((k k))
+    (if (and (< (+ k 1) n) (close? (tok-at p (+ k 1))))
+        (go (+ k 1))
+        (fst (advance (tok-text (tok-at p k)) (vec-ref (record-ref p cols) k))))))
+
+(: small-form? (-> Placed int bool))
+(defun (small-form? p j)
+  (def close (vec-ref (record-ref p closes) j))
+  (cond
+    ((not (opens? (tok-at p j))) #t)
+    ((not (= (vec-ref (record-ref p lines) close) (vec-ref (record-ref p lines) j))) #f)
+    (else (not (any? #(opens? (tok-at p &)) (range (+ j 1) close))))))
+
+;; The forms of the list opening at `k`, each with its position, from the
+;; first; those that start on line `ln`, unless `ln` is -1.
+(: forms-of (-> Placed int int (List Form)))
+(defun (forms-of p k ln)
+  (def close (vec-ref (record-ref p closes) k))
+  (def n (vec-length (record-ref p toks)))
+  (def head-list? (and (< (+ k 1) n) (opens? (tok-at p (+ k 1)))))
+  ;; `prev` is the text of the form before, if it is an atom.
+  (let go ((j (+ k 1)) (at 0) (prev "") (out Nil))
+    (cond
+      ((or (< close 0) (>= j close)) (list-reverse out))
+      ((not (starts-form? (tok-at p j))) (go (+ j 1) at prev out))
+      (else
+       ;; A prefix is the start of the form after it.
+       (def body (if (and (< (+ j 1) n) (prefix-of-next? (tok-at p j) (list (tok-at p (+ j 1))))) (+ j 1) j))
+       (def next (if (opens? (tok-at p body)) (+ (vec-ref (record-ref p closes) body) 1) (+ body 1)))
+       (def here? (or (= ln -1) (= (vec-ref (record-ref p lines) j) ln)))
+       (def text (if (opens? (tok-at p body)) "" (tok-text (tok-at p j))))
+       (def form (Form (tok j) (at at) (from (vec-ref (record-ref p cols) j)) (to (form-end p body))
+                       (small (small-form? p body))
+                       (glued (or (keyword-arg? prev) (and (= at 1) head-list? (= text "#:when"))))))
+       (go next (+ at 1) text (if here? (Cons form out) out))))))
+
+(: head-text (-> Placed (List Form) string))
+(defun (head-text p forms)
+  (match forms
+    ((Cons f _) #:when (= (record-ref f at) 0) (tok-text (tok-at p (record-ref f tok))))
+    (_ "")))
+
+;; The first of `forms` that runs past the limit, to break before, or, if it is
+;; glued to the one before it, the first of them it is glued to.
+(: first-past (-> (List Form) (List int)))
+(defun (first-past forms)
+  (def v (list->vec forms))
+  (def n (vec-length v))
+  (defun (past? i) (> (record-ref (vec-ref v i) to) wide))
+  (defun (glued? i) (record-ref (vec-ref v i) glued))
+  (defun (back i)
+    (cond
+      ((not (glued? i)) (list (record-ref (vec-ref v i) tok)))
+      ((> i 0) (back (- i 1)))
+      (else Nil)))
+  (let find ((i 0))
+    (cond
+      ((>= i n) Nil)
+      ((past? i) (back i))
+      (else (find (+ i 1))))))
+
+(: unglued (-> (List Form) (List int)))
+(defun (unglued forms)
+  (list-map #(record-ref & tok) (list-filter #(not (record-ref & glued)) forms)))
+
+;; Where to break line `ln` in the list opening at `k` on it.
+(: breaks-in-list (-> Placed int int (List int)))
+(defun (breaks-in-list p k ln)
+  (def all (forms-of p k -1))
+  (def here (forms-of p k ln))
+  (def bracket (tok-text (tok-at p k)))
+  (defun (from-on n)
+    (list-filter #(and (>= (record-ref & at) n) (> (record-ref & from) (+ (vec-ref (record-ref p cols) k) 1)))
+                 here))
+  (match (breaking-of bracket (head-text p all))
+    (None Nil)
+    ((Some (OneALine n)) (unglued (from-on n)))
+    ((Some (Filled n)) (first-past (from-on n)))
+    ((Some (Call n))
+     (if (all? #(record-ref & small) (list-filter #(>= (record-ref & at) 1) all))
+         (first-past (from-on n))
+         (unglued (from-on n))))))
+
+;; Whether the list opening at `k` runs past the limit on line `ln`, the
+;; closing brackets right after it included: a line too wide only for the
+;; brackets that end it is broken in the last list on it.
+(: runs-past? (-> Placed int int bool))
+(defun (runs-past? p k ln)
+  (def c (vec-ref (record-ref p closes) k))
+  (or (not (= (vec-ref (record-ref p lines) c) ln))
+      (> (closers-end p c) wide)))
+
+;; The list a line starts inside of: the innermost open at its first token.
+(: enclosing (-> Placed int (Option int)))
+(defun (enclosing p first)
+  (let go ((k 0) (open Nil))
+    (cond
+      ((>= k first)
+       (match open
+         ((Cons o _) (Some o))
+         (Nil None)))
+      ((opens? (tok-at p k)) (go (+ k 1) (Cons k open)))
+      ((close? (tok-at p k))
+       (go (+ k 1)
+           (match open
+             ((Cons _ outer) outer)
+             (Nil Nil))))
+      (else (go (+ k 1) open)))))
+
+;; A line that continues a list opened before it is filled in that list.
+(: breaks-continuing (-> Placed int int (List int)))
+(defun (breaks-continuing p first ln)
+  (match (enclosing p first)
+    ((Some k) #:when (not (vec-ref (record-ref p tabled) k))
+     (match (breaking-of (tok-text (tok-at p k)) (head-text p (forms-of p k -1)))
+       (None Nil)
+       ((Some _)
+        (first-past (list-filter #(> (record-ref & tok) first) (forms-of p k ln))))))
+    (_ Nil)))
+
+;; The first argument of a call of `lists` that has it on the line of its head,
+;; moved down, when nothing else can be broken: the list the line continues,
+;; which moves the whole line left, or one on the line, which moves what runs
+;; past the limit left. Either moves it left by as much as the argument is to
+;; the right of the call's bracket, so the call where that is the most is
+;; taken, the first of those that gain as much.
+(: first-argument-down (-> Placed (List int) (List int)))
+(defun (first-argument-down p lists)
+  (defun (call? k forms)
+    (match (breaking-of (tok-text (tok-at p k)) (head-text p forms))
+      ((Some (Call _)) #t)
+      (_ #f)))
+  ;; The argument of the call opening at `k` to move down, and how far left
+  ;; that moves what comes after it.
+  (defun (candidate k)
+    (def forms (forms-of p k (vec-ref (record-ref p lines) k)))
+    (match forms
+      ((Cons h (Cons arg _)) #:when (and (= (record-ref h at) 0)
+                                         (= (record-ref arg at) 1)
+                                         (not (vec-ref (record-ref p tabled) k))
+                                         (call? k forms))
+       (Some (Tuple (record-ref arg tok) (- (record-ref arg from) (+ (vec-ref (record-ref p cols) k) 1)))))
+      (_ None)))
+  (def best
+    (list-foldl (fun (k acc)
+                  (match (Tuple (candidate k) acc)
+                    ((Tuple (Some (Tuple tok gain)) (Some (Tuple _ most))) #:when (> gain most)
+                     (Some (Tuple tok gain)))
+                    ((Tuple (Some c) None) (Some c))
+                    (_ acc)))
+                None
+                lists))
+  (match best
+    ((Some (Tuple tok gain)) #:when (> gain 0) (list tok))
+    (_ Nil)))
+
+;; The tokens to put a line break before, to break line `ln`.
+(: breaks-for (-> Placed int (List int)))
+(defun (breaks-for p ln)
+  (def n (vec-length (record-ref p toks)))
+  (def on-line
+    (loop (:for k (range 0 n))
+          (:acc out (listing k) #:when (= (vec-ref (record-ref p lines) k) ln))
+      => out))
+  (def crossing
+    (list-filter #(and (opens? (tok-at p &)) (not (vec-ref (record-ref p tabled) &)) (runs-past? p & ln))
+                 on-line))
+  (def first (match (list-filter #(starts-form? (tok-at p &)) on-line) ((Cons f _) f) (Nil -1)))
+  (def around
+    (match (if (< first 0) None (enclosing p first))
+      ((Some k) (list k))
+      (None Nil)))
+  ;; The least column a form on the line can be moved to: in the list the
+  ;; line continues, or past where the line starts.
+  (def least
+    (match around
+      ((Cons k _)
+       (def a (vec-ref (record-ref p cols) k))
+       (def b (vec-ref (record-ref p cols) first))
+       (+ (if (< a b) a b) 1))
+      (Nil 1)))
+  ;; A string or comment too wide to fit even moved there keeps the line wide
+  ;; whatever is broken, so the line is left as it is.
+  (def hopeless?
+    (any? #(and (not (opens? (tok-at p &))) (> (+ least (columns (tok-text (tok-at p &)))) wide))
+          on-line))
+  (if hopeless?
+      Nil
+      (match (list-filter #(not (empty? &)) (list-map #(breaks-in-list p & ln) crossing))
+        ((Cons found _) found)
+        (Nil
+         (match (if (< first 0) Nil (breaks-continuing p first ln))
+           (Nil (first-argument-down p (list-append around crossing)))
+           (found found))))))
+
+;; The laid-out text with its long lines broken, as far as they can be.
+(: broken (-> (Tuple string (List (Tuple int string))) (Tuple string (List (Tuple int string)))))
+(defun (broken laid)
+  (let again ((laid laid) (rounds 0))
+    (def (Tuple text _) laid)
+    (match (tokenize (string->vec text))
+      ((Err _) laid)
+      ((Ok toks)
+       (def p (placed toks))
+       (def widths (vec-map columns (string-split text "\n")))
+       (def long
+         (loop (:for ln (range 0 (vec-length widths)))
+               (:acc out (listing ln) #:when (> (vec-ref widths ln) wide))
+           => out))
+       (def wanted (list-foldl (fun (ln acc) (list-append acc (breaks-for p ln))) Nil long))
+       (if (or (empty? wanted) (>= rounds 40))
+           laid
+           (again (layout (with-breaks-before toks wanted)) (+ rounds 1)))))))
+
+(: with-breaks-before (-> (List Tok) (List int) (List Tok)))
+(defun (with-breaks-before toks at)
+  (let go ((toks toks) (k 0) (out Nil))
+    (match toks
+      (Nil (list-reverse out))
+      ((Cons t rest)
+       (go rest (+ k 1) (Cons t (if (any? #(= & k) at) (Cons TNewline out) out)))))))
+
+;; How many columns `s` takes, in characters: `string-length` counts the bytes
+;; of its UTF-8.
+(: columns (-> string int))
+(defun (columns s) (fst (advance s 0)))
+
+;; ---------------------------------------------------------------------------
 ;; The whole of it
 
-;; `source` laid out, with the lines the layout made wider than `wide`, each
-;; as its line number in what is laid out and its width; or why it cannot be:
-;; it does not read, or, which would be a bug here, laying it out would change
+;; `source` laid out, with what is to be said about its lines, each with its
+;; line number in what is laid out (see `notes-on`); or why it cannot be: it
+;; does not read, or, which would be a bug here, laying it out would change
 ;; its tokens.
-(: format-source (-> string (Result string (Tuple string (List (Tuple int int))))))
-(defun (format-source source)
+(: format-source (-> string (Result string (Tuple string (List (Tuple int string))))))
+(defun (format-source source) (format-with source #t))
+
+;; `format-source`, its long lines broken if `break?`.
+(: format-with (-> string bool (Result string (Tuple string (List (Tuple int string))))))
+(defun (format-with source break?)
   (def cs (string->vec source))
-  (def (Ok toks) (tokenize cs) :leave ((Err why) (Err why)))
-  (def (Ok _) (balanced toks) :leave ((Err why) (Err why)))
-  (def lines (squeeze-blank-lines (join-closers (lines-of toks))))
-  (def out (stringbuilder-empty))
-  (def done
-    (list-foldl (fun (l st) (write-line out st l))
-                (State (frames Nil) (kept (list None)) (kept-depth 0) (line 1) (long Nil))
-                lines))
-  (def result (stringbuilder->string out))
+  (def (Ok toks) (tokenize cs)
+    :leave ((Err why) (Err why)))
+  (def (Ok _) (balanced toks)
+    :leave ((Err why) (Err why)))
+  (def (Tuple result notes) (if break? (broken (layout toks)) (layout toks)))
   (def (Ok again) (tokenize (string->vec result))
     :leave ((Err why) (Err #"formatting made it unreadable: ${why}")))
   (if (= (significant again) (significant toks))
-      (Ok (Tuple result (list-reverse (record-ref done long))))
+      (Ok (Tuple result (list-sort (list-append notes (width-notes source result)))))
       (Err "formatting would change its tokens, which is a bug in bjo fmt")))
+
+;; The tokens laid out, and what is to be said about their lines.
+(: layout (-> (List Tok) (Tuple string (List (Tuple int string)))))
+(defun (layout toks)
+  (def lines (squeeze-blank-lines (join-closers (lines-of (reshaped toks)))))
+  (def out (stringbuilder-empty))
+  (def done
+    (list-foldl (fun (l st) (write-line out st l))
+                (State (frames Nil) (kept (list None)) (kept-depth 0) (line 1) (notes Nil))
+                lines))
+  (Tuple (stringbuilder->string out) (list-reverse (record-ref done notes))))
