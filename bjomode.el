@@ -35,12 +35,16 @@
 ;;   - `if' indents its arms four;
 ;;   - anything else lines its arguments up under the first one.
 ;;
-;; And one that is Bjolang's own: a `loop''s or a `:subloop''s `=>' is two
-;; spaces in from the paren, out of line with the clauses it follows.
+;; And one that is Bjolang's own: the `=>' of a `loop', a `:subloop' or a
+;; `seql' is two spaces in from the paren, as a body is, out of line with the
+;; clauses it follows.
 ;;
 ;; The third is the default, so a form only appears in `bjo-indent-forms' below
 ;; if it has a body. A call, a `loop' clause list, a `def*' clause list and a
 ;; comprehension all align.
+;;
+;; `bjo fmt' (bjo/format.bjo) indents by the same rules, and run_bjo_tests.py
+;; checks that the two agree: a change to the indentation here is one there.
 
 ;;; Code:
 
@@ -132,12 +136,16 @@ fenced; see `bjo--propertize-raw-strings'."
     (type . 0) (type-rec . 0) (bjo . 0) (begin . 0)
     (spawn . 0) (spawn/daemon . 0) (spawn/detached . 0) (with-shield . 0)
     ;; Makron biblioteket skriver, som är former för den som skriver bjolang.
-    (cond . 0) (time-it . 0)
+    (cond . 0) (time-it . 0) (try . 0)
+    ;; A definition: everything after its head is the body, two in, whatever
+    ;; else is on the head's line — `#:inline' after a `defun''s head, a
+    ;; `(where ...)' after an `impl''s, the name after `:doc'.
+    (defun . defun) (defbjo . defun) (defbjouble . defun)
+    (impl . defun) (impl/extern . defun) (:doc . defun)
     ;; One distinguished form, then the body.
-    (defun . 1) (defbjo . 1) (defbjouble . 1) (def/mutable . 1)
-    (def/trait . 1) (impl . 1) (impl/extern . 1) (def/macro . 1) (def/pattern . 1)
+    (def/mutable . 1) (def/trait . 1) (def/macro . 1) (def/pattern . 1)
     (type/derive . 1)
-    (when . 1) (unless . 1) (match . 1) (case . 1) (try . 1)
+    (when . 1) (unless . 1) (match . 1) (case . 1)
     (with-open . 1) (parameterize . 1) (parameterize* . 1) (fun . 1)
     (let* . 1) (syntax-match . 1) (when-let . 1) (if-let . 1)
     (with-cancel . 1) (with-deadline . 1) (with-response . 1) (with-run . 1)
@@ -255,14 +263,14 @@ arm. Nil for any other line, which indents as it would anyway."
                                     leave))))))))))))
 
 (defun bjo--result-form-p (open)
-  "Whether the list opening at OPEN is a `loop' or a `:subloop'.
+  "Whether the list opening at OPEN is a `loop', a `:subloop' or a `seql'.
 Those are the forms whose result a `=>' introduces."
   (save-excursion
     (goto-char open)
-    (looking-at "(\\s-*:?\\(?:loop\\|subloop\\)\\_>")))
+    (looking-at "(\\s-*\\(?::?\\(?:loop\\|subloop\\)\\|seql\\)\\_>")))
 
 (defun bjo--result-indent (indent-point state)
-  "The column for a `=>' at INDENT-POINT in a `loop' or a `:subloop'.
+  "The column for a `=>' at INDENT-POINT in a `loop', a `:subloop' or a `seql'.
 
 Two columns in from the form's open paren, out of line with the
 clauses, so that where the result starts stands out. Nil for any
@@ -308,6 +316,29 @@ other line."
 
 (advice-add 'calculate-lisp-indent :around #'bjo--calculate-indent)
 
+(defconst bjo--binding-forms
+  '("let" "let*" "letrec" "with-open" "parameterize" "parameterize*")
+  "Forms whose first list after the head binds names, a list per binding.")
+
+(defun bjo--binding-list-p (open)
+  "Whether the list at OPEN is the bindings of a `let' or a form like it.
+Its bindings line up under the first, as a vec's elements do, and not
+under the form after its head, as a clause's body does."
+  (let ((parent (nth 1 (save-excursion (syntax-ppss open)))))
+    (when (and parent (eq (char-after open) ?\())
+      (save-excursion
+        (goto-char (1+ parent))
+        (skip-chars-forward " \t\n")
+        (let ((head (buffer-substring-no-properties
+                     (point) (progn (skip-syntax-forward "w_") (point)))))
+          (when (member head bjo--binding-forms)
+            (forward-comment (buffer-size))
+            ;; A named let has its name before its bindings.
+            (when (and (equal head "let") (looking-at "[[:alpha:]]"))
+              (forward-sexp 1)
+              (forward-comment (buffer-size)))
+            (= (point) open)))))))
+
 (defun bjo-indent-function (indent-point state)
   "Indent a Bjolang form at INDENT-POINT, given parser STATE.
 
@@ -319,6 +350,14 @@ is not decided here; see `bjo--calculate-indent'."
     (goto-char (1+ (elt state 1)))
     (parse-partial-sexp (point) calculate-lisp-indent-last-sexp 0 t)
     (cond
+     ;; A vec or an array is data, and a `let''s bindings are a list of them:
+     ;; every element goes under the first, whatever it is. The rules below
+     ;; are for code.
+     ((or (eq (char-after (elt state 1)) ?\[)
+          (bjo--binding-list-p (elt state 1)))
+      (backward-prefix-chars)
+      (current-column))
+
      ;; En gren med ett nyckelord som huvud har bara kropp, och den dras in två
      ;; steg. `(#:sync ...)' och `(#:bjo ...)' i en `defbjouble' är formen.
      ;;
@@ -344,6 +383,11 @@ is not decided here; see `bjo--calculate-indent'."
             (progn
               (forward-sexp 1)
               (skip-chars-forward " \t")
+              ;; A guard is part of the pattern: `((Some x) #:when (> x 0)'
+              ;; puts its body one column in, as an unguarded clause does.
+              (when (looking-at "#:when\\_>")
+                (forward-sexp 2)
+                (skip-chars-forward " \t"))
               (if (and (= head-line (line-number-at-pos))
                        (not (eolp))
                        (not (looking-at ";")))
@@ -363,10 +407,13 @@ is not decided here; see `bjo--calculate-indent'."
          ;; clause or a `(:doc ...)', is a call or a form like any other.
          ((equal function ":match")
           head-column)
+         ;; A head that begins with `def' defines something and one that
+         ;; begins with `with-' runs a body in something; both have a body.
          ((or (eq method 'defun)
               (and (null method)
                    (> (length function) 3)
-                   (string-prefix-p "def" function)))
+                   (or (string-prefix-p "def" function)
+                       (string-prefix-p "with-" function))))
           (lisp-indent-defform state indent-point))
          ((integerp method)
           (lisp-indent-specform method state indent-point normal-indent))

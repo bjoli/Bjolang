@@ -1,0 +1,985 @@
+;; bjo/format.bjo — `bjo fmt`: Bjolang source laid out as bjomode.el lays it
+;; out.
+;;
+;; It re-indents and tidies, and keeps every line break the source has but
+;; those before a closing bracket:
+;;
+;;   - every line is indented as `indent-region` in `bjo-mode` indents it;
+;;   - a line of closing brackets goes up to the end of the line before it,
+;;     Lisp style, unless that line ends in a comment;
+;;   - trailing whitespace goes, as do spaces just inside a bracket, and a tab
+;;     between tokens becomes spaces;
+;;   - three or more blank lines in a row become two, and the file ends in one
+;;     newline.
+;;
+;; The indentation follows Emacs's own algorithm rather than an idea of it,
+;; because the two have to agree: `calculate-lisp-indent` for the column a
+;; line's form lines up under, `lisp-indent-specform` and `lisp-indent-defform`
+;; for a form with a body, the rules `bjo-indent-function` adds, and even the
+;; column `lisp-indent-region` keeps for the following lines at the same depth.
+;; The comments below say which of them each part is.
+;;
+;; A string's lines are text, not code, and are never touched. What comes out
+;; is checked against what went in: the same tokens in the same order, or the
+;; file is left alone.
+
+(export format-source wide)
+
+(import (std prelude))
+
+;; ---------------------------------------------------------------------------
+;; Tokens
+
+(type (: Tok (Union
+              (: TOpen string)
+              (: TClose string)
+              ;; A symbol, a number, a keyword, a character, or a prefix such
+              ;; as ' or #' — anything up to a space, a bracket, a quote or a
+              ;; semicolon.
+              (: TAtom string)
+              ;; A string of any kind, as written, over several lines too.
+              (: TStr string)
+              (: TComment string)
+              (: TSpace string)
+              TNewline)))
+
+(: text-between (-> (Vec char) int int string))
+(defun (text-between cs from to)
+  (def sb (stringbuilder-empty))
+  (let go ((i from))
+    (when (< i to)
+      (stringbuilder-add! sb (vec-ref cs i))
+      (go (+ i 1))))
+  (stringbuilder->string sb))
+
+(: char-at (-> (Vec char) int char))
+(defun (char-at cs i)
+  (if (< i (vec-length cs)) (vec-ref cs i) #\nul))
+
+(: opening? (-> char bool))
+(defun (opening? c) (or (= c #\() (= c #\[) (= c #\{)))
+
+(: closing? (-> char bool))
+(defun (closing? c) (or (= c #\)) (= c #\]) (= c #\})))
+
+(: line-break? (-> (Vec char) int bool))
+(defun (line-break? cs i)
+  (or (= (char-at cs i) #\newline)
+      (and (= (char-at cs i) #\return) (= (char-at cs (+ i 1)) #\newline))))
+
+(: blank-char? (-> (Vec char) int bool))
+(defun (blank-char? cs i)
+  (and (< i (vec-length cs)) (char-whitespace? (vec-ref cs i)) (not (line-break? cs i))))
+
+;; What the compiler's lexer counts as part of a name: a character literal's
+;; name, `#\space`, is a run of them.
+(: symbol-char? (-> char bool))
+(defun (symbol-char? c)
+  (not (or (char-whitespace? c) (opening? c) (closing? c)
+           (= c #\,) (= c #\:) (= c #\") (= c #\;) (= c #\'))))
+
+(: atom-end (-> (Vec char) int int))
+(defun (atom-end cs i)
+  (def c (char-at cs i))
+  (if (or (>= i (vec-length cs))
+          (char-whitespace? c) (opening? c) (closing? c) (= c #\") (= c #\;))
+      i
+      (atom-end cs (+ i 1))))
+
+(: blank-end (-> (Vec char) int int))
+(defun (blank-end cs i)
+  (if (blank-char? cs i) (blank-end cs (+ i 1)) i))
+
+(: line-end (-> (Vec char) int int))
+(defun (line-end cs i)
+  (if (or (>= i (vec-length cs)) (line-break? cs i)) i (line-end cs (+ i 1))))
+
+(: after-break (-> (Vec char) int int))
+(defun (after-break cs i)
+  (if (= (char-at cs i) #\return) (+ i 2) (+ i 1)))
+
+(: quotes-at (-> (Vec char) int int))
+(defun (quotes-at cs i)
+  (let go ((p i))
+    (if (= (char-at cs p) #\") (go (+ p 1)) (- p i))))
+
+(: line-of (-> (Vec char) int int))
+(defun (line-of cs i)
+  (let go ((k 0) (line 1))
+    (cond
+      ((>= k i) line)
+      ((= (vec-ref cs k) #\newline) (go (+ k 1) (+ line 1)))
+      (else (go (+ k 1) line)))))
+
+(: unterminated (-> (Vec char) int string (Result string int)))
+(defun (unterminated cs i what)
+  (Err #"line ${(int->string (line-of cs i))}: ${what} that does not end"))
+
+;; Past the end of the string at `i`, which is one of the three kinds the
+;; lexer reads: plain, raw on one line, or raw over several lines, which ends
+;; on the first line whose text begins with as many quotes as opened it.
+(: string-end (-> (Vec char) int (Result string int)))
+(defun (string-end cs i)
+  (def n (vec-length cs))
+  (def k (quotes-at cs i))
+  (def opened (+ i k))
+  (def w (blank-end cs opened))
+  (cond
+    ((and (>= k 3) (>= w n)) (unterminated cs i "a raw string"))
+    ((and (>= k 3) (line-break? cs w))
+     (let lines ((p (after-break cs w)))
+       (def start (blank-end cs p))
+       (def e (line-end cs p))
+       (cond
+         ((>= p n) (unterminated cs i "a raw string"))
+         ((= (quotes-at cs start) k) (Ok (+ start k)))
+         ((>= e n) (unterminated cs i "a raw string"))
+         (else (lines (after-break cs e))))))
+    ((>= k 3)
+     (let one ((p opened))
+       (def run (quotes-at cs p))
+       (cond
+         ((or (>= p n) (line-break? cs p)) (unterminated cs i "a raw string"))
+         ((>= run k) (Ok (+ p k)))
+         ((> run 0) (one (+ p run)))
+         (else (one (+ p 1))))))
+    (else
+     (let plain ((p (+ i 1)))
+       (cond
+         ((>= p n) (unterminated cs i "a string"))
+         ((= (vec-ref cs p) #\\) (plain (+ p 2)))
+         ((= (vec-ref cs p) #\") (Ok (+ p 1)))
+         (else (plain (+ p 1))))))))
+
+;; Past the end of the `#"..."` at `i`. A `${...}` hole is code, delimited by
+;; brace depth, with strings and `#\{` inside it skipped whole, as the lexer
+;; does.
+(: interpolated-end (-> (Vec char) int (Result string int)))
+(defun (interpolated-end cs i)
+  (def n (vec-length cs))
+  (let outside ((p (+ i 2)))
+    (cond
+      ((>= p n) (unterminated cs i "an interpolated string"))
+      ((= (vec-ref cs p) #\") (Ok (+ p 1)))
+      ((= (vec-ref cs p) #\\) (outside (+ p 2)))
+      ((and (= (vec-ref cs p) #\$) (= (char-at cs (+ p 1)) #\{))
+       (let hole ((q (+ p 2)) (depth 1))
+         (def c (char-at cs q))
+         (cond
+           ((>= q n) (unterminated cs i "an interpolated string"))
+           ((= c #\")
+            (match (string-end cs q)
+              ((Ok e) (hole e depth))
+              ((Err why) (Err why))))
+           ((and (= c #\#) (= (char-at cs (+ q 1)) #\\)) (hole (+ q 3) depth))
+           ((= c #\{) (hole (+ q 1) (+ depth 1)))
+           ((and (= c #\}) (= depth 1)) (outside (+ q 1)))
+           ((= c #\}) (hole (+ q 1) (- depth 1)))
+           (else (hole (+ q 1) depth)))))
+      (else (outside (+ p 1))))))
+
+;; Past the end of the character literal at `i`: a name, `#\space`, or any one
+;; character, `#\(` and `#\;` included.
+(: char-literal-end (-> (Vec char) int int))
+(defun (char-literal-end cs i)
+  (def start (+ i 2))
+  (def name-end
+    (let go ((p start))
+      (if (and (< p (vec-length cs)) (symbol-char? (vec-ref cs p))) (go (+ p 1)) p)))
+  (cond
+    ((> (- name-end start) 1) name-end)
+    ((< start (vec-length cs)) (+ start 1))
+    (else start)))
+
+;; The token at `i`, and where the next one starts.
+(: token-at (-> (Vec char) int (Result string (Tuple Tok int))))
+(defun (token-at cs i)
+  (def c (vec-ref cs i))
+  (defun (to e) (Tuple (TAtom (text-between cs i e)) e))
+  (cond
+    ((line-break? cs i) (Ok (Tuple TNewline (after-break cs i))))
+    ((blank-char? cs i)
+     (def e (blank-end cs i))
+     (Ok (Tuple (TSpace (text-between cs i e)) e)))
+    ((= c #\;)
+     (def e (line-end cs i))
+     (Ok (Tuple (TComment (string-trim-right (text-between cs i e))) e)))
+    ((opening? c) (Ok (Tuple (TOpen (char->string c)) (+ i 1))))
+    ((closing? c) (Ok (Tuple (TClose (char->string c)) (+ i 1))))
+    ((= c #\")
+     (def (Ok e) (string-end cs i) :leave ((Err why) (Err why)))
+     (Ok (Tuple (TStr (text-between cs i e)) e)))
+    ((and (= c #\#) (= (char-at cs (+ i 1)) #\"))
+     (def (Ok e) (interpolated-end cs i) :leave ((Err why) (Err why)))
+     (Ok (Tuple (TStr (text-between cs i e)) e)))
+    ((and (= c #\#) (= (char-at cs (+ i 1)) #\\)) (Ok (to (char-literal-end cs i))))
+    (else (Ok (to (atom-end cs i))))))
+
+(: tokenize (-> (Vec char) (Result string (List Tok))))
+(defun (tokenize cs)
+  (let go ((i 0) (out Nil))
+    (if (>= i (vec-length cs))
+        (Ok (list-reverse out))
+        (match (token-at cs i)
+          ((Err why) (Err why))
+          ((Ok (Tuple tok next)) (go next (Cons tok out)))))))
+
+;; The tokens that make the program: everything but the spacing.
+(: significant (-> (List Tok) (List string)))
+(defun (significant toks)
+  (loop (:for t toks)
+        (:acc out (listing (tok-text t)) #:when (meaningful? t))
+    => out))
+
+(: meaningful? (-> Tok bool))
+(defun (meaningful? t)
+  (match t
+    ((TSpace _) #f)
+    (TNewline #f)
+    (_ #t)))
+
+(: tok-text (-> Tok string))
+(defun (tok-text t)
+  (match t
+    ((TOpen s) s)
+    ((TClose s) s)
+    ((TAtom s) s)
+    ((TStr s) s)
+    ((TComment s) s)
+    ((TSpace s) s)
+    (TNewline "\n")))
+
+;; ---------------------------------------------------------------------------
+;; Lines
+
+;; A line's tokens, its own indentation taken off; that indentation as it was,
+;; which a `;;;` comment keeps; and how wide the line was, up to the end of its
+;; first physical line, so that a line laid out wider can be told apart from
+;; one that was wide already.
+(type (: Line (Record (: toks (List Tok)) (: indent string) (: was int))))
+
+;; How wide the tokens are up to the first line break in them.
+(: first-line-width (-> (List Tok) int))
+(defun (first-line-width toks)
+  (let go ((toks toks) (width 0))
+    (match toks
+      (Nil width)
+      ((Cons t rest)
+       (def (Tuple after breaks) (advance (tok-text t) width))
+       (if (> breaks 0) (+ width (before-break (tok-text t))) (go rest after))))))
+
+;; How many characters come before the first line break in `s`.
+(: before-break (-> string int))
+(defun (before-break s)
+  (let go ((cs (string->list s)) (n 0))
+    (match cs
+      ((Cons c rest) (if (= c #\newline) n (go rest (+ n 1))))
+      (Nil n))))
+
+(: lines-of (-> (List Tok) (List Line)))
+(defun (lines-of toks)
+  (let go ((toks toks) (here Nil) (out Nil))
+    (match toks
+      (Nil (list-reverse (Cons (tidy (list-reverse here)) out)))
+      ((Cons TNewline rest) (go rest Nil (Cons (tidy (list-reverse here)) out)))
+      ((Cons t rest) (go rest (Cons t here) out)))))
+
+(: space? (-> Tok bool))
+(defun (space? t)
+  (match t
+    ((TSpace _) #t)
+    (_ #f)))
+
+(: comment? (-> Tok bool))
+(defun (comment? t)
+  (match t
+    ((TComment _) #t)
+    (_ #f)))
+
+(: close? (-> Tok bool))
+(defun (close? t)
+  (match t
+    ((TClose _) #t)
+    (_ #f)))
+
+;; A line without the spaces at its ends and just inside its brackets.
+(: tidy (-> (List Tok) Line))
+(defun (tidy toks)
+  (def indent
+    (match toks
+      ((Cons (TSpace s) _) s)
+      (_ "")))
+  (def trimmed (list-reverse (drop-spaces (list-reverse (drop-spaces toks)))))
+  (Line (toks (inside-brackets trimmed))
+        (indent indent)
+        (was (first-line-width (list-reverse (drop-spaces (list-reverse toks)))))))
+
+(: drop-spaces (-> (List Tok) (List Tok)))
+(defun (drop-spaces toks)
+  (match toks
+    ((Cons t rest) #:when (space? t) (drop-spaces rest))
+    (_ toks)))
+
+(: inside-brackets (-> (List Tok) (List Tok)))
+(defun (inside-brackets toks)
+  (match toks
+    ((Cons (TOpen o) (Cons s rest)) #:when (and (space? s) (not (starts-comment? rest)))
+     (inside-brackets (Cons (TOpen o) rest)))
+    ((Cons s (Cons (TClose c) rest)) #:when (space? s)
+     (inside-brackets (Cons (TClose c) rest)))
+    ((Cons t rest) (Cons t (inside-brackets rest)))
+    (Nil Nil)))
+
+(: starts-comment? (-> (List Tok) bool))
+(defun (starts-comment? toks)
+  (match toks
+    ((Cons t _) (comment? t))
+    (Nil #f)))
+
+(: blank? (-> Line bool))
+(defun (blank? l) (empty? (record-ref l toks)))
+
+(: drop-closers (-> (List Tok) (List Tok)))
+(defun (drop-closers toks)
+  (match toks
+    ((Cons t rest) #:when (close? t) (drop-closers rest))
+    (_ toks)))
+
+;; Closing brackets alone on a line, perhaps with a comment after them.
+(: closers-only? (-> Line bool))
+(defun (closers-only? l)
+  (def toks (record-ref l toks))
+  (and (match toks
+         ((Cons t _) (close? t))
+         (Nil #f))
+       (match (drop-closers toks)
+         (Nil #t)
+         ((Cons t Nil) (comment? t))
+         ((Cons s (Cons t Nil)) (and (space? s) (comment? t)))
+         (_ #f))))
+
+(: ends-in-comment? (-> Line bool))
+(defun (ends-in-comment? l)
+  (match (list-reverse (record-ref l toks))
+    ((Cons t _) (comment? t))
+    (Nil #f)))
+
+(: drop-blank-lines (-> (List Line) (List Line)))
+(defun (drop-blank-lines lines)
+  (match lines
+    ((Cons l rest) #:when (blank? l) (drop-blank-lines rest))
+    (_ lines)))
+
+;; Lines of closing brackets go up to the end of the code before them, the
+;; blank lines between going with them, unless that code ends in a comment.
+(: join-closers (-> (List Line) (List Line)))
+(defun (join-closers lines)
+  ;; `done` is the lines so far, the last first.
+  (let go ((lines lines) (done Nil))
+    (match lines
+      (Nil (list-reverse done))
+      ((Cons l rest)
+       (match (drop-blank-lines done)
+         ((Cons before earlier) #:when (and (closers-only? l) (not (ends-in-comment? before)))
+          (def joined (list-append (record-ref before toks) (record-ref l toks)))
+          (go rest (Cons (record-set before (toks joined)) earlier)))
+         (_ (go rest (Cons l done))))))))
+
+;; No blank lines at the ends, and at most two in a row anywhere else.
+(: squeeze-blank-lines (-> (List Line) (List Line)))
+(defun (squeeze-blank-lines lines)
+  (def trimmed (list-reverse (drop-blank-lines (list-reverse (drop-blank-lines lines)))))
+  (let go ((lines trimmed) (run 0) (out Nil))
+    (match lines
+      (Nil (list-reverse out))
+      ((Cons l rest) #:when (blank? l)
+       (if (>= run 2) (go rest run out) (go rest (+ run 1) (Cons l out))))
+      ((Cons l rest) (go rest 0 (Cons l out))))))
+
+;; ---------------------------------------------------------------------------
+;; Indentation
+
+;; A form inside a list, as the indentation reads it: where it starts, a prefix
+;; such as ' or #' included; the physical line it starts on; the column of the
+;; first form that starts on that line; its text if it is an atom, or its
+;; opening bracket; and for a list the column of that bracket.
+(type (: Elem (Record (: col int)
+                      (: line int)
+                      (: line-first int)
+                      (: raw string)
+                      (: is-list bool)
+                      (: bracket int))))
+
+;; An open list: its bracket, the bracket's column and line, the forms in it so
+;; far, the last first, and the first two of them.
+(type (: Frame (Record (: bracket string)
+                       (: col int)
+                       (: line int)
+                       (: elems (List Elem))
+                       (: count int)
+                       (: first (Option Elem))
+                       (: second (Option Elem)))))
+
+;; A column, and whether `lisp-indent-region` keeps it for the following lines
+;; at the same depth, which it does for a plain number and not for the
+;; (COLUMN START) a rule answers when the next line may differ.
+(type (: Indent (Record (: col int) (: keep bool))))
+
+(: indent (-> int bool Indent))
+(defun (indent col keep) (Indent (col col) (keep keep)))
+
+(: with-elem (-> Frame Elem Frame))
+(defun (with-elem f e)
+  (def n (record-ref f count))
+  (Frame (bracket (record-ref f bracket))
+         (col (record-ref f col))
+         (line (record-ref f line))
+         (elems (Cons e (record-ref f elems)))
+         (count (+ n 1))
+         (first (if (= n 0) (Some e) (record-ref f first)))
+         (second (if (= n 1) (Some e) (record-ref f second)))))
+
+(: raw-of (-> (Option Elem) string))
+(defun (raw-of e)
+  (match e
+    ((Some x) (record-ref x raw))
+    (None "")))
+
+(: last-of (-> Frame Elem Elem))
+(defun (last-of f head)
+  (match (record-ref f elems)
+    ((Cons e _) e)
+    (Nil head)))
+
+;; How a form with a body indents, from `bjo-indent-forms` in bjomode.el: how
+;; many forms come before the body, or a rule of its own.
+(type (: Rule (Union (: Body int) DefForm NamedLet DefStar)))
+
+(: rule-of (-> string (Option Rule)))
+(defun (rule-of head)
+  (match head
+    ((or "seq" "letrec" "export" "re-export" "import" "import/extern" "import/class"
+         "type" "type-rec" "bjo" "begin" "spawn" "spawn/daemon" "spawn/detached"
+         "with-shield" "cond" "time-it" "try")
+     (Some (Body 0)))
+    ;; A definition: everything after its head is the body, whatever else is on
+    ;; the head's line.
+    ((or "defun" "defbjo" "defbjouble" "impl" "impl/extern" ":doc") (Some DefForm))
+    ((or "def/mutable" "def/trait" "def/macro" "def/pattern" "type/derive" "when"
+         "unless" "match" "case" "with-open" "parameterize" "parameterize*" "fun"
+         "let*" "syntax-match" "when-let" "if-let" "with-cancel" "with-deadline"
+         "with-response" "with-run" "with-return")
+     (Some (Body 1)))
+    ("let/mono" (Some (Body 2)))
+    ("if" (Some (Body 3)))
+    ("def" (Some DefForm))
+    ("let" (Some NamedLet))
+    ("def*" (Some DefStar))
+    (_ None)))
+
+;; The characters Emacs reads as a prefix of the form after them.
+(: prefix-char? (-> char bool))
+(defun (prefix-char? c)
+  (or (= c #\') (= c #\#) (= c #\,) (= c #\@) (= c #\`)))
+
+(: list-drop-while (-> (-> %a bool) (List %a) (List %a)))
+(defun (list-drop-while drop? xs)
+  (match xs
+    ((Cons x rest) #:when (drop? x) (list-drop-while drop? rest))
+    (_ xs)))
+
+(: without-prefix (-> string string))
+(defun (without-prefix s)
+  (list->string (list-drop-while prefix-char? (string->list s))))
+
+(: prefix-length (-> string int))
+(defun (prefix-length s)
+  (- (string-length s) (string-length (without-prefix s))))
+
+(: prefix-only? (-> string bool))
+(defun (prefix-only? s)
+  (and (not (string-empty? s)) (string-empty? (without-prefix s))))
+
+;; Whether a form written `raw` begins with a word or a symbol character once
+;; its prefix is past: a symbol or a number, not a list, a string or a
+;; character literal.
+(: symbolic? (-> string bool))
+(defun (symbolic? raw)
+  (match (string->list (without-prefix raw))
+    ((Cons c _) (not (or (opening? c) (= c #\") (= c #\\) (= c #\;))))
+    (Nil #f)))
+
+;; `calculate-lisp-indent`'s own column, before any rule: under the first form
+;; when it is a list, under the second when the forms so far are all on the
+;; first one's line, and otherwise under the first form on the line of the
+;; last of them.
+(: normal-indent (-> Frame Elem int))
+(defun (normal-indent f head)
+  (def last (last-of f head))
+  (cond
+    ((record-ref head is-list) (record-ref head bracket))
+    ((= (record-ref last line) (record-ref head line))
+     (match (record-ref f second)
+       ((Some s) (record-ref s col))
+       (None (record-ref head col))))
+    (else (record-ref last line-first))))
+
+;; `lisp-indent-specform`: the first two of a form's `n` distinguished forms
+;; four in, a third under them, and the body two in.
+(: specform (-> int Frame int Indent))
+(defun (specform n f normal)
+  (def args (- (record-ref f count) 1))
+  (def left (- n args))
+  (def body (+ (record-ref f col) 2))
+  (cond
+    ((> left 0) (indent (if (<= args 1) (+ (record-ref f col) 4) normal) #f))
+    ((or (and (= n 0) (= args 0)) (and (= left 0) (<= body normal))) (indent body #t))
+    (else (indent normal #t))))
+
+;; `lisp-indent-defform`: a body two in, when the form before it is on the
+;; line of the bracket.
+(: defform (-> Frame Elem (Option Indent)))
+(defun (defform f head)
+  (if (= (record-ref (last-of f head) line) (record-ref f line))
+      (Some (indent (+ (record-ref f col) 2) #t))
+      None))
+
+;; Whether a `let` is a named one: a name after `let` on its line.
+(: named-let? (-> Frame Elem bool))
+(defun (named-let? f head)
+  (match (record-ref f second)
+    ((Some s) #:when (= (record-ref s line) (record-ref head line))
+     (match (string->list (record-ref s raw))
+       ((Cons c _) (char-alphabetic? c))
+       (Nil #f)))
+    (_ #f)))
+
+;; `bjo-indent-function`: what the form's head says, if it says anything.
+(: by-head (-> Frame Elem int (Option Indent)))
+(defun (by-head f head normal)
+  (def raw (record-ref head raw))
+  (def name (without-prefix raw))
+  (def head-col (+ (record-ref head col) (prefix-length raw)))
+  (cond
+    ((string-starts-with? raw "#:") (Some (specform 0 f normal)))
+    ;; A list or a string as the head: the rest under the form after it on its
+    ;; line, or under the head when nothing follows it there. A guard is part
+    ;; of the pattern, so after `#:when` and its guard the form is the one
+    ;; after those.
+    ((not (symbolic? raw))
+     (def forms (list-reverse (record-ref f elems)))
+     (def after
+       (match forms
+         ((Cons _ (Cons w (Cons _ (Cons x _)))) #:when (= (record-ref w raw) "#:when") (Some x))
+         ((Cons _ (Cons w _)) #:when (= (record-ref w raw) "#:when") None)
+         ((Cons _ (Cons x _)) (Some x))
+         (_ None)))
+     (Some (match after
+             ((Some s) #:when (= (record-ref s line) (record-ref head line)) (indent (record-ref s col) #t))
+             (_ (indent (record-ref head col) #t)))))
+    ((= name ":match") (Some (indent head-col #t)))
+    (else
+     (match (rule-of name)
+       ((Some DefForm) (defform f head))
+       ((Some (Body n)) (Some (specform n f normal)))
+       ((Some NamedLet) (Some (specform (if (named-let? f head) 2 1) f normal)))
+       ((Some DefStar) None)
+       ;; A head that begins with `def` defines something and one that begins
+       ;; with `with-` runs a body in something; both have a body.
+       (None
+        (if (and (> (string-length name) 3)
+                 (or (string-starts-with? name "def") (string-starts-with? name "with-")))
+            (defform f head)
+            None))))))
+
+;; A line that starts with a keyword goes under a keyword that starts the line
+;; of the form before it, when that is not the list's first form.
+(: keyword-aligned (-> Frame Elem int string int))
+(defun (keyword-aligned f head normal here)
+  (def last (last-of f head))
+  (def on-its-line
+    (list-filter #(= (record-ref & line) (record-ref last line)) (record-ref f elems)))
+  (match (list-reverse on-its-line)
+    ((Cons s _) #:when (and (string-starts-with? here ":")
+                            (not (and (= (record-ref s col) (record-ref head col))
+                                      (= (record-ref s line) (record-ref head line))))
+                            (string-starts-with? (record-ref s raw) ":"))
+     (record-ref s col))
+    (_ normal)))
+
+;; Where `def`'s failure part may be: the forms after a `def`'s head, or all
+;; of a parenthesised clause of a `def*`. `None` for any other list.
+(: clause-forms (-> Frame (Option Frame) (Option (List Elem))))
+(defun (clause-forms f outer)
+  (def forms (list-reverse (record-ref f elems)))
+  (def head (raw-of (record-ref f first)))
+  (def in-def-star?
+    (match outer
+      ((Some o) (= (raw-of (record-ref o first)) "def*"))
+      (None #f)))
+  (cond
+    ((or (= head "def") (= head ":def"))
+     (Some (match forms
+             ((Cons _ rest) rest)
+             (Nil Nil))))
+    ((and in-def-star? (= (record-ref f bracket) "(") (not (= head "def*"))) (Some forms))
+    (else None)))
+
+(: failure-keyword? (-> string bool))
+(defun (failure-keyword? s)
+  (match (without-prefix s)
+    ((or ":leave-with" ":leave" ":propagate" ":default") #t)
+    (_ #f)))
+
+;; `bjo--failure-indent`: a failure keyword two in from the clause's bracket,
+;; and the arms after `:leave` under the first of them.
+(: failure-indent (-> Frame (Option Frame) string bool (Option Indent)))
+(defun (failure-indent f outer here here-form?)
+  (match (clause-forms f outer)
+    ((Some forms) #:when (>= (+ (list-length forms) (if here-form? 1 0)) 2)
+     (cond
+       ((and here-form? (failure-keyword? here)) (Some (indent (+ (record-ref f col) 2) #f)))
+       (else
+        (match (list-drop-while #(not (= (without-prefix (record-ref & raw)) ":leave")) forms)
+          ((Cons _ (Cons arm _)) (Some (indent (record-ref arm col) #f)))
+          ((Cons leave Nil) (Some (indent (record-ref leave col) #f)))
+          (Nil None)))))
+    (_ None)))
+
+;; A form whose result a `=>` introduces, which goes two in, as a body does.
+(: loop-form? (-> Frame bool))
+(defun (loop-form? f)
+  (match (raw-of (record-ref f first))
+    ((or "loop" ":loop" "subloop" ":subloop" "seql") #t)
+    (_ #f)))
+
+(: binding-form? (-> string bool))
+(defun (binding-form? head)
+  (match head
+    ((or "let" "let*" "letrec" "with-open" "parameterize" "parameterize*") #t)
+    (_ #f)))
+
+;; `bjo--binding-list-p`: whether `f` is the bindings of a `let` or a form like
+;; it, `outer`: the list after the head, or after the name of a named `let`.
+(: binding-list? (-> Frame (Option Frame) bool))
+(defun (binding-list? f outer)
+  (match outer
+    ((Some o)
+     (def head (raw-of (record-ref o first)))
+     (def named?
+       (and (= head "let")
+            (match (string->list (raw-of (record-ref o second)))
+              ((Cons c _) (char-alphabetic? c))
+              (Nil #f))))
+     ;; `f` is open inside `o`, so it is the last of `o`'s forms so far.
+     (and (= (record-ref f bracket) "(")
+          (binding-form? head)
+          (= (record-ref o count) (if named? 3 2))))
+    (None #f)))
+
+;; Whether `bjo--calculate-indent` stops the column being kept: in a `def`
+;; clause and in a `loop` or a `seql`, where the next line may indent
+;; differently.
+(: no-reuse? (-> Frame (Option Frame) bool))
+(defun (no-reuse? f outer)
+  (or (loop-form? f)
+      (match (clause-forms f outer)
+        ((Some forms) (not (empty? forms)))
+        (None #f))))
+
+;; The column for a line inside `f`, whose first token is `here` and starts a
+;; form if `here-form?`.
+(: indent-in (-> Frame (Option Frame) string bool Indent))
+(defun (indent-in f outer here here-form?)
+  (def calculated
+    (match (record-ref f first)
+      (None (indent (+ (record-ref f col) 1) #t))
+      ;; A vec or an array is data, and a `let`'s bindings are a list of them:
+      ;; every element goes under the first, whatever it is. The rules below
+      ;; are for code.
+      ((Some head) #:when (or (= (record-ref f bracket) "[") (binding-list? f outer))
+       (indent (record-ref head col) #t))
+      ((Some head)
+       (def normal (normal-indent f head))
+       (match (by-head f head normal)
+         ((Some i) i)
+         (None (indent (keyword-aligned f head normal here) #t))))))
+  (match (failure-indent f outer here here-form?)
+    ((Some i) i)
+    (None
+     (cond
+       ((and (loop-form? f) (= here "=>")) (indent (+ (record-ref f col) 2) #f))
+       ((and (record-ref calculated keep) (no-reuse? f outer)) (indent (record-ref calculated col) #f))
+       (else calculated)))))
+
+;; ---------------------------------------------------------------------------
+;; Writing it out
+
+;; What is known while the lines are written: the lists open, the innermost
+;; first; the column kept at each depth, the innermost first, one more than
+;; there are lists open, and how many lists were open when they were kept;
+;; the physical line being written; and the lines laid out wider than `wide`
+;; and wider than they were, each with its width, the last first.
+(type (: State (Record (: frames (List Frame))
+                       (: kept (List (Option int)))
+                       (: kept-depth int)
+                       (: line int)
+                       (: long (List (Tuple int int))))))
+
+;; The width past which a line the layout made wider is pointed out: an
+;; indenter only moves text right, and a line it moves too far wants breaking
+;; by hand.
+(: wide int)
+(def wide 100)
+
+(: spaces (-> int string))
+(defun (spaces n)
+  (def sb (stringbuilder-empty))
+  (let go ((i 0))
+    (when (< i n)
+      (stringbuilder-add! sb #\space)
+      (go (+ i 1))))
+  (stringbuilder->string sb))
+
+;; The column after `s` written at `col`, and how many line breaks it has.
+(: advance (-> string int (Tuple int int)))
+(defun (advance s col)
+  (string-fold (fun (c at)
+                 (match at
+                   ((Tuple column breaks)
+                    (if (= c #\newline) (Tuple 0 (+ breaks 1)) (Tuple (+ column 1) breaks)))))
+               (Tuple col 0)
+               s))
+
+(: expand-tabs (-> string int string))
+(defun (expand-tabs s col)
+  (def sb (stringbuilder-empty))
+  (ignore
+   (string-fold (fun (c at)
+                  (cond
+                    ((= c #\tab)
+                     (def to (* 8 (+ 1 (/ at 8))))
+                     (stringbuilder-add-string! sb (spaces (- to at)))
+                     to)
+                    (else
+                     (stringbuilder-add! sb c)
+                     (+ at 1))))
+                col
+                s))
+  (stringbuilder->string sb))
+
+;; The kept columns adjusted from `from` lists open to `depth`, as
+;; `lisp-indent-calc-next` adjusts its stack: one dropped per list closed
+;; since, a fresh one per list opened.
+(: kept-at (-> (List (Option int)) int int (List (Option int))))
+(defun (kept-at kept from depth)
+  (cond
+    ((> from depth)
+     (kept-at (match kept
+                ((Cons _ rest) rest)
+                (Nil Nil))
+              (- from 1)
+              depth))
+    ((< from depth) (kept-at (Cons None kept) (+ from 1) depth))
+    (else kept)))
+
+;; The text of a line's first token, and whether it starts a form.
+(: first-of-line (-> (List Tok) (Tuple string bool)))
+(defun (first-of-line toks)
+  (match toks
+    ((Cons (TAtom s) _) (Tuple s #t))
+    ((Cons (TOpen s) _) (Tuple s #t))
+    ((Cons (TStr s) _) (Tuple s #t))
+    ((Cons (TComment s) _) (Tuple s #f))
+    ((Cons (TClose s) _) (Tuple s #f))
+    (_ (Tuple "" #f))))
+
+;; One line, indented, and the state after it.
+(: write-line (-> StringBuilder State Line State))
+(defun (write-line out st l)
+  (def toks (record-ref l toks))
+  (def frames (record-ref st frames))
+  (def depth (list-length frames))
+  (def kept (kept-at (record-ref st kept) (record-ref st kept-depth) depth))
+  (def (Tuple here here-form?) (first-of-line toks))
+  (def (Tuple col keep)
+    (match kept
+      ((Cons (Some c) _) (Tuple c #f))
+      (_
+       (match frames
+         (Nil (Tuple 0 #t))
+         ((Cons f rest)
+          (def outer
+            (match rest
+              ((Cons o _) (Some o))
+              (Nil None)))
+          (def i (indent-in f outer here here-form?))
+          (Tuple (record-ref i col) (record-ref i keep)))))))
+  (def kept-now
+    (match kept
+      ((Cons None rest) #:when keep (Cons (Some col) rest))
+      (_ kept)))
+  ;; A `;;;` comment stays where it was, as `lisp-indent-line` leaves it.
+  (def lead (if (string-starts-with? here ";;;") (record-ref l indent) (spaces col)))
+  (def buffer (stringbuilder-empty))
+  (unless (empty? toks) (stringbuilder-add-string! buffer lead))
+  (def (Tuple frames-after line-after)
+    (write-toks buffer toks frames (string-length lead) (record-ref st line)))
+  (def text (stringbuilder->string buffer))
+  (stringbuilder-add-string! out text)
+  (stringbuilder-add! out #\newline)
+  (def width (before-break text))
+  (State (frames frames-after)
+         (kept kept-now)
+         (kept-depth depth)
+         (line (+ line-after 1))
+         (long (if (and (> width wide) (> width (record-ref l was)))
+                   (Cons (Tuple (record-ref st line) width) (record-ref st long))
+                   (record-ref st long)))))
+
+;; Whether the token is a prefix, ' or #' or #, written right before the form
+;; it belongs to.
+(: prefix-of-next? (-> Tok (List Tok) bool))
+(defun (prefix-of-next? t rest)
+  (match t
+    ((TAtom s) #:when (prefix-only? s)
+     (match rest
+       ((Cons (TOpen _) _) #t)
+       ((Cons (TStr _) _) #t)
+       ((Cons (TAtom _) _) #t)
+       (_ #f)))
+    (_ #f)))
+
+(: starts-form? (-> Tok bool))
+(defun (starts-form? t)
+  (match t
+    ((TAtom _) #t)
+    ((TOpen _) #t)
+    ((TStr _) #t)
+    (_ #f)))
+
+;; The forms the token adds to the lists open, and the list it opens or closes.
+(: after-tok (-> Tok (List Frame) Elem (List Frame)))
+(defun (after-tok t frames e)
+  (def added
+    (match frames
+      ((Cons f outer) (if (starts-form? t) (Cons (with-elem f e) outer) frames))
+      (Nil Nil)))
+  (match t
+    ((TOpen s)
+     (Cons (Frame (bracket s) (col (record-ref e bracket)) (line (record-ref e line))
+                  (elems Nil) (count 0) (first None) (second None))
+           added))
+    ((TClose _)
+     (match frames
+       ((Cons _ outer) outer)
+       (Nil Nil)))
+    (_ added)))
+
+;; The tokens of one line, written from `col` on physical line `line`, and the
+;; lists open after them and the physical line they end on.
+(: write-toks (-> StringBuilder (List Tok) (List Frame) int int (Tuple (List Frame) int)))
+(defun (write-toks out toks frames col line)
+  ;; `first` is the column of the first form on the physical line, once there
+  ;; is one; `prefix` that of a prefix waiting for the form it belongs to.
+  (let go ((toks toks) (frames frames) (col col) (line line) (first None) (prefix None))
+    (match toks
+      (Nil (Tuple frames line))
+      ((Cons t rest)
+       (def written
+         (match t
+           ((TSpace s) (expand-tabs s col))
+           (_ (tok-text t))))
+       (stringbuilder-add-string! out written)
+       (def (Tuple next-col breaks) (advance written col))
+       (def waits? (prefix-of-next? t rest))
+       (def form-col
+         (match prefix
+           ((Some p) p)
+           (None col)))
+       (def line-first
+         (match first
+           ((Some c) c)
+           (None form-col)))
+       (def e (Elem (col form-col)
+                    (line line)
+                    (line-first line-first)
+                    (raw (match t
+                           ((TStr _) "\"")
+                           (_ (tok-text t))))
+                    (is-list (match t
+                               ((TOpen _) #t)
+                               (_ #f)))
+                    (bracket col)))
+       (def frames-after (if waits? frames (after-tok t frames e)))
+       (def first-after
+         (cond
+           ((> breaks 0) None)
+           ((and (or waits? (starts-form? t)) (none? first)) (Some form-col))
+           (else first)))
+       (def prefix-after
+         (cond
+           (waits? (Some form-col))
+           (else None)))
+       (go rest frames-after next-col (+ line breaks) first-after prefix-after)))))
+
+;; ---------------------------------------------------------------------------
+;; Brackets
+
+(: partner (-> string string))
+(defun (partner open)
+  (match open
+    ("(" ")")
+    ("[" "]")
+    (_ "}")))
+
+;; Whether every bracket closes the one opened last: indentation means nothing
+;; where they do not, and Emacs, asked to indent such a file, never finishes.
+(: balanced (-> (List Tok) (Result string Unit)))
+(defun (balanced toks)
+  ;; `open` holds each bracket still open and its line, the innermost first.
+  (let go ((toks toks) (open Nil) (line 1))
+    (match toks
+      (Nil
+       (match open
+         (Nil (Ok unit))
+         ((Cons (Tuple b at) _)
+          (Err #"line ${(int->string at)}: a ${b} that is never closed"))))
+      ((Cons t rest)
+       (match t
+         (TNewline (go rest open (+ line 1)))
+         ((TStr s) (go rest open (+ line (snd (advance s 0)))))
+         ((TOpen b) (go rest (Cons (Tuple b line) open) line))
+         ((TClose c)
+          (match open
+            (Nil (Err #"line ${(int->string line)}: a ${c} that closes nothing"))
+            ((Cons (Tuple b at) outer)
+             (if (= (partner b) c)
+                 (go rest outer line)
+                 (Err #"line ${(int->string line)}: a ${c} where the ${b} of line ${(int->string at)} wants a ${(partner b)}")))))
+         (_ (go rest open line)))))))
+
+;; ---------------------------------------------------------------------------
+;; The whole of it
+
+;; `source` laid out, with the lines the layout made wider than `wide`, each
+;; as its line number in what is laid out and its width; or why it cannot be:
+;; it does not read, or, which would be a bug here, laying it out would change
+;; its tokens.
+(: format-source (-> string (Result string (Tuple string (List (Tuple int int))))))
+(defun (format-source source)
+  (def cs (string->vec source))
+  (def (Ok toks) (tokenize cs) :leave ((Err why) (Err why)))
+  (def (Ok _) (balanced toks) :leave ((Err why) (Err why)))
+  (def lines (squeeze-blank-lines (join-closers (lines-of toks))))
+  (def out (stringbuilder-empty))
+  (def done
+    (list-foldl (fun (l st) (write-line out st l))
+                (State (frames Nil) (kept (list None)) (kept-depth 0) (line 1) (long Nil))
+                lines))
+  (def result (stringbuilder->string out))
+  (def (Ok again) (tokenize (string->vec result))
+    :leave ((Err why) (Err #"formatting made it unreadable: ${why}")))
+  (if (= (significant again) (significant toks))
+      (Ok (Tuple result (list-reverse (record-ref done long))))
+      (Err "formatting would change its tokens, which is a bug in bjo fmt")))

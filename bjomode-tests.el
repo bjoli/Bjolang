@@ -100,6 +100,18 @@
                    \"some\")))
 ")
 
+(bjo-deftest-indent match-guard
+  "A guard is part of the pattern: the body is one in, or under a form after it."
+  "(defun (sign n)
+  (match n
+    ((Some x) #:when (> x 0)
+     (println x)
+     \"positive\")
+    ((Some x) #:when (< x 0) (println x)
+                             \"negative\")
+    (_ \"zero\")))
+")
+
 (bjo-deftest-indent def-leave
   "A failure keyword is two in from the `def', and its arms line up."
   "(defun (explain s)
@@ -150,6 +162,28 @@
   (#:bjo (clr-eof-await p)))
 ")
 
+(bjo-deftest-indent vec-elements
+  "A vec's elements line up under its first, a list or a string as well."
+  "(def parts [(numeric 1234567.891 #:precision 2) \"  \"
+            (numeric 0.5 #:precision 3) \"  \"
+            (percent 0.125)])
+(def words [\"one\" \"two\"
+            \"three\"])
+(def cells #[1 2
+             3])
+")
+
+(bjo-deftest-indent let-bindings
+  "A `let''s bindings line up under the first, several on a line or not."
+  "(defun (f args)
+  (let go ((left (vec->list args)) (seed 0)
+           (stats #f))
+    (go left seed stats))
+  (let* ((a 1) (b 2)
+         (c 3))
+    (+ a b c)))
+")
+
 (bjo-deftest-indent comprehension
   "Braces pair like parens, and a comprehension aligns its clauses."
   "(defun (evens xs)
@@ -188,6 +222,14 @@
     => out))
 ")
 
+(bjo-deftest-indent seql-result
+  "A `seql''s `=>' is two in from its paren, as a `loop''s is."
+  "(defun (with-final n)
+  (seql (:for i (range 0 n))
+        (:yield i)
+    => 99))
+")
+
 (bjo-deftest-indent arrow-elsewhere
   "A `=>' outside a `loop' is an argument like any other."
   "(defun (f)
@@ -204,10 +246,43 @@
 ")
 
 (bjo-deftest-indent doc-form
-  "A `(:doc ...)' form is a call: its clauses line up under the first."
+  "A `(:doc ...)' form's clauses are a body, two in."
   "(:doc clamp-all
-      (summary \"Clamps every number.\")
-      (arg lo \"The least it may answer.\"))
+  (summary \"Clamps every number.\")
+  (arg lo \"The least it may answer.\"))
+")
+
+(bjo-deftest-indent defun-flag
+  "A flag after a `defun''s head leaves the body two in."
+  "(defun (ripe-value r) #:inline
+  (match r
+    ((MkRipe n) n)))
+")
+
+(bjo-deftest-indent impl-where
+  "An `impl''s where clause leaves the body two in."
+  "(impl (Iterable (Enumerated %s)) (where (Iterable %s))
+  (type %elem (Tuple int (assoc Iterable elem %s)))
+  (defun (iterable-start e) (Tuple 0 e)))
+")
+
+(bjo-deftest-indent try
+  "A `try' is a body, its keywords as well."
+  "(defun (f early)
+  (try
+    (println \"body\")
+    #:finally
+    (when early (println \"left\"))))
+")
+
+(bjo-deftest-indent with-macro
+  "A head that begins with `with-' has a body, after what is on its line."
+  "(defun (f)
+  (with-scope
+    (println \"inside\")
+    1)
+  (with-fmt current-ellipsis \"...\"
+    (println \"also\")))
 ")
 
 (bjo-deftest-indent character-literal

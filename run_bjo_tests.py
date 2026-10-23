@@ -1846,6 +1846,140 @@ def test_bench(work, c):
              run_bjo(app, "bench", "benches/a.bjo", "benches/b.bjo", "--against", "HEAD"))
 
 
+# --- bjo fmt ----------------------------------------------------------------
+
+def fmt_text(where, text):
+    """`bjo fmt -` on `text`."""
+    return subprocess.run([str(BJO), "fmt", "-"], cwd=str(where), input=text,
+                          capture_output=True, text=True, timeout=120)
+
+
+def indentation_snippets():
+    """The snippets of bjomode-tests.el's indentation tests, each indented as
+    bjo-mode indents it, with the elisp string escapes undone."""
+    source = (ROOT / "bjomode-tests.el").read_text()
+    found = re.findall(r'\(bjo-deftest-indent (\S+)\n\s+"(?:[^"\\]|\\.)*"\n\s+"((?:[^"\\]|\\.)*)"\)', source)
+    return [(name, re.sub(r'\\(.)', r'\1', text)) for name, text in found]
+
+
+# Files Emacs indents the formatter's output of, to see that the two agree. A
+# spread rather than everything: Emacs takes a second or more over a file.
+FMT_CORPUS = ["TestFiles/007_named_let.bjo", "TestFiles/085_comprehension.bjo",
+              "TestFiles/154_lib.bjo", "TestFiles/220_def.bjo", "TestFiles/226_cond_clauses.bjo",
+              "TestFiles/270_loop_subloop_form.bjo", "TestFiles/011_patterns.bjo",
+              "TestFiles/019_imported_trait.bjo", "TestFiles/263_raw_strings.bjo",
+              "bjo/git.bjo", "bjo/lock.bjo", "lib/std/eq.bjo", "lib/std/datetime.bjo"]
+
+EMACS_INDENT = """
+(progn
+  (require 'bjo-mode)
+  (dolist (file command-line-args-left)
+    (with-temp-buffer
+      (insert-file-contents file)
+      (let ((bjo-mode-hook nil)) (bjo-mode))
+      (let ((inhibit-message t)) (indent-region (point-min) (point-max)))
+      (write-region (point-min) (point-max) (concat file ".emacs") nil 'silent)))
+  (setq command-line-args-left nil))
+"""
+
+
+@test("fmt")
+def test_fmt(work, c):
+    work.mkdir(parents=True, exist_ok=True)
+
+    for name, snippet in indentation_snippets():
+        flat = "\n".join(line.lstrip(" \t") for line in snippet.split("\n"))
+        laid = fmt_text(work, flat)
+        c.that(f"fmt indents bjo-mode's '{name}' snippet as bjo-mode does", laid.stdout == snippet,
+               f"wanted:\n{snippet}\ngot:\n{laid.stdout}{laid.stderr}")
+
+    cases = [
+        ("a line of closing brackets goes up to the code before it",
+         "(defun (f)\n  (g)\n  )\n", "(defun (f)\n  (g))\n"),
+        ("blank lines before it go with it",
+         "(defun (f)\n  (g)\n\n)\n", "(defun (f)\n  (g))\n"),
+        ("but not past a comment",
+         "(defun (f)\n  (g) ; done\n  )\n", "(defun (f)\n  (g) ; done\n  )\n"),
+        ("trailing whitespace goes, and the file ends in one newline",
+         "(def x 1)   \n\n\n", "(def x 1)\n"),
+        ("three or more blank lines become two",
+         "(def x 1)\n\n\n\n\n(def y 2)\n\n(def z 3)\n", "(def x 1)\n\n\n(def y 2)\n\n(def z 3)\n"),
+        ("no spaces just inside brackets", "( f  x )\n", "(f  x)\n"),
+        ("a tab between tokens becomes spaces", "(f\tx)\n", "(f      x)\n"),
+        ("a ;;; comment keeps its place", "(defun (f)\n      ;;; here\n  1)\n",
+         "(defun (f)\n      ;;; here\n  1)\n"),
+        ("a string's lines are left as they are",
+         '(defun (f)\n(g "one\n   two"\n"three"))\n', '(defun (f)\n  (g "one\n   two"\n     "three"))\n'),
+        ("a raw string's too",
+         '(def x """\n    a\n      b\n    """)\n', '(def x """\n    a\n      b\n    """)\n'),
+        ("a character literal opens nothing", "(f #\\( #\\;\nx)\n", "(f #\\( #\\;\n   x)\n"),
+        ("a brace in an interpolation's string is not the hole's",
+         '(f #"a ${(g "}")}"\nx)\n', '(f #"a ${(g "}")}"\n   x)\n'),
+    ]
+    for label, given, wanted in cases:
+        laid = fmt_text(work, given)
+        c.that(f"fmt: {label}", laid.stdout == wanted, f"wanted:\n{wanted!r}\ngot:\n{laid.stdout!r}{laid.stderr}")
+
+    for label, given, wanted in [
+        ("an unclosed bracket", "(f\n", "a ( that is never closed"),
+        ("a bracket closed by the wrong one", "(f]\n", "wants a )"),
+        ("a stray closing bracket", "(f))\n", "closes nothing"),
+        ("a string that does not end", '(f "x\n', "a string that does not end"),
+    ]:
+        refused = fmt_text(work, given)
+        c.that(f"fmt refuses {label}", refused.returncode != 0 and refused.stdout == ""
+               and wanted in refused.stderr, refused.stdout + refused.stderr)
+
+    app = work / "laid"
+    app.mkdir()
+    run_bjo(app, "init")
+    write(app / "src" / "main.bjo", "(defun (main)\n(println \"hi\")\n0\n)\n")
+    write(app / "tests" / "fine.bjo", "(defun (main) 0)\n")
+    check = run_bjo(app, "fmt", "--check")
+    c.failed("fmt --check fails on a file that is not laid out", check)
+    c.says("and names it", check, "src/main.bjo: not formatted")
+    c.that("and changes nothing", "\n0\n)" in (app / "src" / "main.bjo").read_text())
+    c.worked("fmt lays out the project", run_bjo(app, "fmt"))
+    c.that("and writes the file", (app / "src" / "main.bjo").read_text()
+           == "(defun (main)\n  (println \"hi\")\n  0)\n", (app / "src" / "main.bjo").read_text())
+    c.worked("after which fmt --check passes", run_bjo(app, "fmt", "--check"))
+    # A line the layout moves past 100 columns is pointed out; one that was
+    # that wide already is not.
+    long_call = "(" + "f" * 60 + " a\n(g " + "x " * 30 + "))\n"
+    already = "(h " + "y " * 60 + ")\n"
+    write(app / "src" / "wide.bjo", long_call + already)
+    laid = run_bjo(app, "fmt", "src/wide.bjo")
+    c.says("fmt names a line it laid out wider than 100 columns", laid,
+           "src/wide.bjo:2: 126 columns once laid out, more than 100")
+    c.that("and not one that was that wide already", "wide.bjo:3" not in said(laid), said(laid))
+    piped = fmt_text(work, long_call)
+    c.that("fmt - names it on standard error", "-:2: 126 columns" in piped.stderr, piped.stderr)
+    c.failed("fmt refuses a name that is not there", run_bjo(app, "fmt", "nosuch.bjo"))
+    c.failed("fmt refuses a flag it does not know", run_bjo(app, "fmt", "--wat"))
+
+    if shutil.which("emacs") is None:
+        print("    (no emacs: the comparison with bjo-mode is skipped)")
+        return
+    copies = []
+    for i, rel in enumerate(FMT_CORPUS):
+        laid = fmt_text(work, (ROOT / rel).read_text())
+        if c.that(f"fmt lays out {rel}", laid.returncode == 0, laid.stderr):
+            copy = work / f"corpus-{i}.bjo"
+            copy.write_text(laid.stdout)
+            copies.append((rel, copy))
+    emacs = subprocess.run(["emacs", "-Q", "--batch", "-l", str(ROOT / "bjomode.el"),
+                            "--eval", EMACS_INDENT, *[str(p) for _, p in copies]],
+                           capture_output=True, text=True, timeout=600)
+    c.that("emacs indents the corpus", emacs.returncode == 0, emacs.stderr[-500:])
+    for rel, copy in copies:
+        again = Path(str(copy) + ".emacs")
+        laid = copy.read_text()
+        indented = again.read_text() if again.exists() else ""
+        first = next((i for i, (a, b) in enumerate(zip(laid.split("\n"), indented.split("\n"))) if a != b), None)
+        c.that(f"bjo-mode leaves fmt's {rel} as it is", laid == indented,
+               f"first difference at line {first + 1 if first is not None else '?'}")
+
+
 def run_test(name, fn):
     """One test in its own work directory. Returns its checks and seconds."""
     work = WORK / name.replace(" ", "_")

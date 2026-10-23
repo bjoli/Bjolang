@@ -57,6 +57,7 @@
 (import "resolve.bjo")
 (import "publish.bjo")
 (import "bench.bjo")
+(import "format.bjo")
 
 ;; ---------------------------------------------------------------------------
 ;; Interop
@@ -1059,6 +1060,92 @@
               (Err #"bjo: unknown flag '${a}'")
               (Ok (done left)))))))))
 
+;; `bjo fmt`: each file laid out as bjo-mode lays it out (see `format.bjo`),
+;; and written back if that changed it, or with `check?` only named. Answers 1
+;; when a file could not be laid out, or, with `check?`, when one is not.
+(: (-> (List string) bool int))
+(defun (cmd-fmt files check?)
+  (def failures (list-foldl (fun (file n) (+ n (fmt-file file check?))) 0 files))
+  (if (> failures 0) 1 0))
+
+;; Lays out one file, and answers 1 when that fails the command: the file
+;; could not be laid out, or, with `check?`, it is not. A file that is laid out
+;; already is not mentioned.
+(: (-> string bool int))
+(defun (fmt-file file check?)
+  (def source (file-read-text file))
+  (def shown (as-seen-from-here file))
+  (match (format-source source)
+    ((Err why) (println #"bjo fmt: ${shown}: ${why}") 1)
+    ((Ok (Tuple text _)) #:when (= text source) 0)
+    ((Ok (Tuple _ long)) #:when check?
+     (println #"${shown}: not formatted")
+     (list-for-each #(println (too-wide shown &)) long)
+     1)
+    ((Ok (Tuple text long))
+     (file-write-text file text)
+     (println #"formatted ${shown}")
+     (list-for-each #(println (too-wide shown &)) long)
+     0)))
+
+;; A line the layout made wider than `wide`, which wants breaking by hand: an
+;; indenter only ever moves text right.
+(: (-> string (Tuple int int) string))
+(defun (too-wide file at)
+  (def (Tuple line width) at)
+  #"${file}:${(int->string line)}: ${(int->string width)} columns once laid out, more than ${(int->string wide)}; break the line")
+
+;; A path under the current directory without it, as a person would type it.
+(: (-> string string))
+(defun (as-seen-from-here path)
+  (def cwd (current-directory))
+  (def here (if (string-ends-with? cwd "/") cwd (str cwd "/")))
+  (if (string-starts-with? path here) (string-drop path (string-length here)) path))
+
+;; `bjo fmt -`: standard input laid out to standard output, for an editor. What
+;; is wrong goes to standard error, and nothing to standard output.
+(: (-> int))
+(defun (fmt-stdin)
+  (def input (parameter-ref current-input-port))
+  (def lines
+    (let go ((acc Nil))
+      (match (read-line/opt input)
+        ((Some line) (go (Cons line acc)))
+        (None (list-reverse acc)))))
+  (match (format-source (string-join (list->vec lines) "\n"))
+    ((Ok (Tuple text long))
+     (display text)
+     (loop (:for at long)
+           (:do (writeln (parameter-ref current-error-port) (too-wide "-" at))))
+     0)
+    ((Err why)
+     (writeln (parameter-ref current-error-port) #"bjo fmt: ${why}")
+     1)))
+
+;; The files `bjo fmt` lays out: those named, a directory's named, or with
+;; nothing named this project's src/, tests/ and benches/.
+(: (-> (List string) (Result string (List string))))
+(defun (fmt-targets named)
+  (match named
+    (Nil
+     (match (project-here "fmt")
+       ((Err why) (Err why))
+       ((Ok project)
+        (Ok (loop (:for dir (list "src" "tests" "benches"))
+                  (:acc out (folding Nil (list-append out (sources-under (path-combine (project-dir project) dir)))))
+              => out)))))
+    (_
+     (loop (:for name named)
+           (:acc out (folding (Ok Nil)
+                              (match out
+                                ((Err why) (Err why))
+                                ((Ok so-far)
+                                 (cond
+                                   ((directory-exists? name) (Ok (list-append so-far (sources-under name))))
+                                   ((file-exists? name) (Ok (list-append so-far (list name))))
+                                   (else (Err #"bjo fmt: no such file or directory '${name}'.")))))))
+       => out))))
+
 (: (-> void))
 (defun (usage)
   (println "bjo - the Bjolang command")
@@ -1088,6 +1175,10 @@
   (println "  bjo publish [-c] [-o dir] [<file.bjo>]  Build a program for release, and copy it with")
   (println "                                          everything it loads into one directory that")
   (println "                                          runs from anywhere. Default: publish/ beside it.")
+  (println "  bjo fmt [--check] [files or dirs...]    Lay source out as bjo-mode does: those named,")
+  (println "                                          or every file under src/, tests/ and benches/.")
+  (println "                                          --check writes nothing and names what is not")
+  (println "                                          laid out. bjo fmt - reads standard input.")
   (println "  bjo repl                                Start a REPL.")
   (println "  bjo rebjo                               Rebuild the compiler and bjo itself.")
   (println "  bjo help                                Show this message.")
@@ -1294,6 +1385,23 @@
     ("rebjo"
      (fail "bjo rebjo: run it through the bjo launcher — it rebuilds this binary, which is running."))
 
+    ;; Source laid out as bjo-mode lays it out. See `format.bjo`.
+    ("fmt"
+     (with-return ret
+       (when (or debug? force? lib?)
+         (ret (fail "bjo fmt: builds nothing, so it takes no build flags.")))
+       (def check? (not (empty? (list-filter #(= & "--check") rest))))
+       (def named (list-filter #(not (= & "--check")) rest))
+       (when (= named (list "-"))
+         (ret (if check?
+                  (fail "bjo fmt: - writes what it lays out, so it takes no --check.")
+                  (fmt-stdin))))
+       (match (list-filter #(string-starts-with? & "-") named)
+         ((Cons flag _) (ret (fail #"bjo fmt: unknown flag '${flag}'.")))
+         (Nil (ignore 0)))
+       (def (Ok files) (fmt-targets named) :leave ((Err why) (fail why)))
+       (cmd-fmt files check?)))
+
     (("help" "-h" "--help") (usage) 0)
 
     (else (fail #"bjo: '${command}' is not a command. Try 'bjo help'."))))
@@ -1309,7 +1417,7 @@
   ;; are what follows it.
   (def (Cons command rest) (vec->list args)
     :leave (Nil (usage) 1))
-  (match (parse-flags rest (or (= command "test") (= command "bench")))
+  (match (parse-flags rest (or (= command "test") (= command "bench") (= command "fmt")))
     ((Err message) (fail message))
     ((Ok line) #:when (and (some? (record-ref line output)) (not (= command "publish")))
      (fail #"bjo ${command}: -o is for publish, which writes a directory; ${command} does not."))
