@@ -732,17 +732,37 @@ let rec private patternOf (registry: TraitRegistry) (t: HMType) (w: Witness) : T
 /// The clauses to add to a match whose clauses are `covered`, found one
 /// missing value at a time, each added as a row before the next is looked for.
 /// Past `limit` of them a `_` takes the rest.
+///
+/// A missing value that is `_` for a type of several constructors, which is
+/// what a match with no clauses yet lacks, or one whose clauses all have a
+/// guard, is every constructor no clause covers, each with `_` for what it
+/// takes: a clause each is what such a match is written with. A `_` is what
+/// the error says, since nothing rules a constructor out there.
 let private missingClauses (registry: TraitRegistry) (scrutinee: HMType) (covered: Row list) : string list =
     let limit = 20
 
+    let eachCase (covered: Row list) =
+        match signatureOf registry scrutinee with
+        | Closed cases when cases.Length > 1 ->
+            cases
+            |> List.map (fun (c, fields) -> applyCtor VecSeq c (fields |> List.map (fun _ -> WAny)))
+            |> List.filter (fun w -> useful registry [ scrutinee ] covered [ patternOf registry scrutinee w ])
+        | _ -> []
+
     let rec go (covered: Row list) (found: string list) =
-        if found.Length = limit then
+        if found.Length >= limit then
             List.rev ("_" :: found)
         else
             match missing registry [ scrutinee ] covered with
             | Some [ w ] ->
-                let w = widened w
-                go (covered @ [ [ patternOf registry scrutinee w ] ]) (showWitness w :: found)
+                let ws =
+                    match widened w, eachCase covered with
+                    | WAny, (_ :: _ as cases) -> cases
+                    | w, _ -> [ w ]
+
+                go
+                    (covered @ (ws |> List.map (fun w -> [ patternOf registry scrutinee w ])))
+                    (List.rev (ws |> List.map showWitness) @ found)
             | _ -> List.rev found
 
     go covered []
