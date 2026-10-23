@@ -3,6 +3,30 @@
 
 What each change guarantees, and what it leaves open.
 
+* bjo fmt splits a long string with a line continuation
+
+- A line wider than 102 columns that its lists cannot be broken to fit, and
+  that a plain or interpolated string runs past the limit on, has that string
+  split with a line continuation after the last space that fits: the space
+  stays before the backslash, and the continued line starts where the text
+  does, so the string stands for what it did. The brackets right after a
+  string count towards where it ends. A continued line still too wide is split
+  again.
+- Splitting comes after a line's lists are broken and after filling a list
+  the line continues, and before a first argument is moved down, so a long
+  string is split where it stands rather than moved first.
+- Never split: a raw string, a string in a ~(:doc ...)~ or in an
+  ~import/extern~ or ~import/class~ table, a string that does not run past
+  the limit itself, and nowhere inside an escape or a ~${...}~ hole, or before
+  a space or the closing quote. A string with no space that fits is left as
+  it is.
+- bjo fmt's token check compares a string by what it stands for, its
+  continued lines joined.
+- On a copy of lib/std it adds 119 line continuations, and a second run
+  changes nothing. A program printing such strings prints the same after
+  bjo fmt as before.
+- Tests: the string-splitting cases of ~bjo fmt~ in ~run_bjo_tests.py~.
+
 * An imported inline template is read when it is used
 
 - A module that imports the prelude no longer parses its some eight hundred

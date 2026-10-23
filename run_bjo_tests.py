@@ -2007,6 +2007,32 @@ def test_fmt(work, c):
          "(f \"one \\   \n   two\")\n", "(f \"one \\\n    two\")\n"),
         ("an escaped backslash before a line break is no continuation",
          "    (f \"a\\\\\nb\")\n", "(f \"a\\\\\nb\")\n"),
+        ("a string too long for its line is split after the last space that fits",
+         '(f "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen '
+         'seventeen")\n',
+         '(f "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen \\\n'
+         '    seventeen")\n'),
+        ("after the line's lists are broken, and as often as it takes",
+         '(defun (g) (f "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen '
+         'sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five '
+         'twenty-six"))\n',
+         '(defun (g)\n'
+         '  (f "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen \\\n'
+         '      sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four \\\n'
+         '      twenty-five twenty-six"))\n'),
+        ("an interpolated string is split outside its holes, under the text after #\"",
+         '(f #"one two three four five six seven eight nine ten eleven twelve thirteen fourteen ${(g "a b c d e f")} xx")\n',
+         '(f #"one two three four five six seven eight nine ten eleven twelve thirteen fourteen \\\n'
+         '     ${(g "a b c d e f")} xx")\n'),
+        ("where it is, before a first argument is moved down, its closing brackets counting",
+         '(f (g (h "' + 'word ' * 18 + 'words!")))\n',
+         '(f (g (h "' + 'word ' * 18 + '\\\n          words!")))\n'),
+        ("a doc's string is not split, a published doc having no columns",
+         '(:doc f (summary "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen"))\n',
+         '(:doc f\n  (summary\n   "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen"))\n'),
+        ("nor is a raw string, which has no escapes",
+         '(f """one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen""")\n',
+         '(f """one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen""")\n'),
         ("a line with a string too wide for any line is left as it is",
          "(defun (f) (g \"" + "y" * 110 + "\"))\n", "(defun (f) (g \"" + "y" * 110 + "\"))\n"),
     ]

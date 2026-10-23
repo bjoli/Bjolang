@@ -11,6 +11,9 @@
 ;;   - a `def`'s failure part starts a line, as does each form of a `cond`,
 ;;     `begin`, `seq` or `try` over several lines, and each binding of a `let`
 ;;     whose bindings are over several lines (see "Reshaping");
+;;   - a line wider than `wide` is broken in its lists, and a string that runs
+;;     past the limit is split with a line continuation after the last space
+;;     that fits (see "Breaking long lines");
 ;;   - trailing whitespace goes, as do spaces just inside a bracket; a tab
 ;;     becomes spaces, or `\t` in a string;
 ;;   - three or more blank lines in a row become two, and the file ends in one
@@ -23,9 +26,10 @@
 ;; column `lisp-indent-region` keeps for the following lines at the same depth.
 ;; The comments below say which of them each part is.
 ;;
-;; A string's lines are text, not code, and are never touched. What comes out
-;; is checked against what went in: the same tokens in the same order, or the
-;; file is left alone.
+;; A string's lines are text, not code. Its continued lines move with it, and
+;; a long one is split, but what it stands for is never changed. What comes
+;; out is checked against what went in: the same tokens in the same order, a
+;; string compared by what it stands for, or the file is left alone.
 
 (export format-source format-with wide)
 
@@ -231,13 +235,14 @@
           ((Ok (Tuple tok next)) (go next (Cons tok out)))))))
 
 ;; The tokens that make the program: everything but the spacing, and a string
-;; with its tabs written `\t`, as the layout writes them. A comment's words are
+;; with its tabs written `\t`, as the layout writes them, and its continued
+;; lines joined, since the layout may split a long one. A comment's words are
 ;; compared, its tabs being spaces once laid out.
 (: significant (-> (List Tok) (List string)))
 (defun (significant toks)
   (loop (:for t toks)
         (:acc out (listing (match t
-                             ((TStr s) (escape-tabs s))
+                             ((TStr s) (escape-tabs (joined-continuations s)))
                              ((TComment s) (string-replace (string-replace s "\t" "") " " ""))
                              (_ (tok-text t))))
               #:when (meaningful? t))
@@ -528,7 +533,7 @@
 (: without-continued-indent (-> string int string))
 (defun (without-continued-indent s col)
   (def text-col (text-column s col))
-  (rewrite-continuations s (fun (sb cs at)
+  (rewrite-continuations s #t (fun (sb cs at)
                              (let skip ((j at))
                                (if (and (< (- j at) text-col)
                                         (or (= (char-at cs j) #\space) (= (char-at cs j) #\tab)))
@@ -540,16 +545,17 @@
 (: with-continued-indent (-> string int string))
 (defun (with-continued-indent s col)
   (def text-col (text-column s col))
-  (rewrite-continuations s (fun (sb cs at)
+  (rewrite-continuations s #t (fun (sb cs at)
                              (unless (or (>= at (vec-length cs)) (line-break? cs at))
                                (stringbuilder-add-string! sb (spaces text-col)))
                              at)))
 
 ;; `s` with each continuation written as `\` and its line break, and after it
 ;; what `after` writes, given where the continued line starts; it answers where
-;; to go on from. A raw string is as it is.
-(: rewrite-continuations (-> string (-> StringBuilder (Vec char) int int) string))
-(defun (rewrite-continuations s after)
+;; to go on from. Without `keep?` a continuation's `\` and line break are left
+;; out, which joins the lines. A raw string is as it is.
+(: rewrite-continuations (-> string bool (-> StringBuilder (Vec char) int int) string))
+(defun (rewrite-continuations s keep? after)
   (cond
     ((string-starts-with? s "\"\"\"") s)
     ((not (string-contains? s "\\")) s)
@@ -566,8 +572,9 @@
             (match (continuation-at cs p)
               ((Some k)
                (def past (if (= (char-at cs k) #\return) (+ k 2) (+ k 1)))
-               (stringbuilder-add! sb #\\)
-               (stringbuilder-add-string! sb (text-between cs k past))
+               (when keep?
+                 (stringbuilder-add! sb #\\)
+                 (stringbuilder-add-string! sb (text-between cs k past)))
                (go (after sb cs past)))
               (None
                (stringbuilder-add-string! sb (text-between cs p (+ p 2)))
@@ -580,6 +587,13 @@
             (stringbuilder-add! sb c)
             (go (+ p 1))))))
      (stringbuilder->string sb))))
+
+;; The string `s`, as `without-continued-indent` reads it, with its continued
+;; lines joined: what it stands for, written without continuations, which a
+;; string split by the layout is compared by.
+(: joined-continuations (-> string string))
+(defun (joined-continuations s)
+  (rewrite-continuations s #f (fun (sb cs at) at)))
 
 ;; A token as it is written at `col`: a string with its continued lines
 ;; indented to where its text then starts.
@@ -1339,8 +1353,10 @@
 ;; broken in its last list. A line that continues a list opened on a line
 ;; before is filled in that list. What none of that can take, a call's first
 ;; argument moving down gives a line more, in the call where that moves the
-;; most left. Then the text is laid out again and looked at again, until
-;; nothing more can be broken.
+;; most left. A line none of that can break, a string that runs past the limit
+;; is split on, with a line continuation after the last space that fits. Then
+;; the text is laid out again and looked at again, until nothing more can be
+;; broken.
 ;;
 ;; A keyword argument's value stays on the keyword's line, and a clause's
 ;; `#:when` and guard on the line of its pattern.
@@ -1406,12 +1422,15 @@
 (type (: Form (Record (: tok int) (: at int) (: from int) (: to int) (: small bool) (: glued bool))))
 
 ;; What the breaking reads of the laid-out tokens: each list's closing token,
-;; each token's line and column, and whether it is inside a table.
+;; each token's line and column, whether it is inside a table, and whether it
+;; is inside a doc, whose strings may not continue lines: a published doc is
+;; bjodat, which has no columns to go by.
 (type (: Placed (Record (: toks (Vec Tok))
                         (: closes (Vec int))
                         (: lines (Vec int))
                         (: cols (Vec int))
-                        (: tabled (Vec bool)))))
+                        (: tabled (Vec bool))
+                        (: docked (Vec bool)))))
 
 (: placed (-> (List Tok) Placed))
 (defun (placed toks)
@@ -1420,25 +1439,29 @@
   (def lines (vecbuilder-empty))
   (def cols (vecbuilder-empty))
   (def tabled (vecbuilder-empty))
-  ;; `open` holds for each list open whether it is, or is in, a table.
+  (def docked (vecbuilder-empty))
+  ;; `open` holds for each list open whether it is, or is in, a table, and
+  ;; whether it is, or is in, a doc.
   (let go ((k 0) (line 0) (col 0) (open Nil))
     (when (< k (vec-length v))
       (def t (vec-ref v k))
-      (def inside (match open ((Cons b _) b) (Nil #f)))
+      (def (Tuple in-table in-doc) (match open ((Cons b _) b) (Nil (Tuple #f #f))))
       (vecbuilder-add! lines line)
       (vecbuilder-add! cols col)
-      (vecbuilder-add! tabled inside)
+      (vecbuilder-add! tabled in-table)
+      (vecbuilder-add! docked in-doc)
       (def (Tuple after breaks) (advance (tok-written t col) col))
       (def open-after
         (match t
           ((TOpen _)
            (def head (match (vec-ref v (+ k 1)) ((TAtom s) s) (_ "")))
-           (Cons (or inside (table-head? head)) open))
+           (Cons (Tuple (or in-table (table-head? head)) (or in-doc (= head ":doc"))) open))
           ((TClose _) (match open ((Cons _ outer) outer) (Nil Nil)))
           (_ open)))
       (go (+ k 1) (+ line breaks) after open-after)))
   (Placed (toks v) (closes closes) (lines (vecbuilder->vec lines))
-          (cols (vecbuilder->vec cols)) (tabled (vecbuilder->vec tabled))))
+          (cols (vecbuilder->vec cols)) (tabled (vecbuilder->vec tabled))
+          (docked (vecbuilder->vec docked))))
 
 (: tok-at (-> Placed int Tok))
 (defun (tok-at p k) (vec-ref (record-ref p toks) k))
@@ -1615,8 +1638,101 @@
     ((Some (Tuple tok gain)) #:when (> gain 0) (list tok))
     (_ Nil)))
 
-;; The tokens to put a line break before, to break line `ln`.
-(: breaks-for (-> Placed int (List int)))
+;; A string that line `ln` has some of, split there with a line continuation,
+;; as its token's index and new text; `None` when there is none to split. A raw
+;; string has no continuations, a doc's strings may not have them, and a table
+;; is left as it is.
+(: split-for (-> Placed int (Option (Tuple int string))))
+(defun (split-for p ln)
+  (def n (vec-length (record-ref p toks)))
+  (let find ((k 0))
+    (cond
+      ((or (>= k n) (> (vec-ref (record-ref p lines) k) ln)) None)
+      (else
+       (match (tok-at p k)
+         ((TStr s) #:when (not (or (vec-ref (record-ref p tabled) k)
+                                   (vec-ref (record-ref p docked) k)
+                                   (string-starts-with? s "\"\"\"")))
+          ;; The closing brackets right after it go where its end goes.
+          (def closers (- (closers-end p k) (closers-end-alone p k)))
+          (match (split-string s (vec-ref (record-ref p cols) k) (- ln (vec-ref (record-ref p lines) k)) closers)
+            ((Some text) (Some (Tuple k text)))
+            (None (find (+ k 1)))))
+         (_ (find (+ k 1))))))))
+
+;; The string `s`, written at `col`, split on its physical line `nth` with a
+;; line continuation: after the last space on it that leaves room for the
+;; backslash within `wide`, with text before it on the line and a word after
+;; it. Never in an escape or an interpolation's hole. What it stands for is
+;; the same: the space stays before the backslash, and the continued line
+;; starts where the text does. `None` when the line has no such space.
+(: split-string (-> string int int int (Option string)))
+(defun (split-string s col nth closers)
+  (def written (with-continued-indent s col))
+  (def text-col (text-column s col))
+  (def cs (string->vec written))
+  (def n (vec-length cs))
+  (def interpolated? (string-starts-with? s "#\""))
+  (def opening (if interpolated? 2 1))
+  ;; `seen` is whether the line has had text, the opening quote aside, and
+  ;; `reach` the column the string reaches on line `nth`: one that does not run
+  ;; past the limit there, with the `closers` columns of brackets after it if
+  ;; it ends there, is not what makes the line too wide, and is left whole.
+  (let go ((p opening) (line 0) (column (+ col opening)) (best None) (seen #f) (reach 0))
+    (def c (char-at cs p))
+    (def reach-now (if (= line nth) column reach))
+    (cond
+      ((or (>= p n) (> line nth))
+       (match best
+         ((Some at) #:when (> (if (and (>= p n) (= line nth)) (+ reach-now closers) reach-now) wide)
+          (Some (without-continued-indent
+                 (str (text-between cs 0 (+ at 1)) "\\\n" (spaces text-col) (text-between cs (+ at 1) n))
+                 col)))
+         (_ None)))
+      ((= c #\newline) (go (+ p 1) (+ line 1) 0 best #f reach-now))
+      ;; A continuation's line break is the next character's to deal with.
+      ((and (= c #\\) (= (char-at cs (+ p 1)) #\newline)) (go (+ p 1) line (+ column 1) best #t reach-now))
+      ((= c #\\) (go (+ p 2) line (+ column 2) best #t reach-now))
+      ((and interpolated? (= c #\$) (= (char-at cs (+ p 1)) #\{))
+       (def past (hole-end cs (+ p 2)))
+       (def (Tuple after breaks) (advance (text-between cs p past) column))
+       (go past (+ line breaks) after best #t reach-now))
+      ((= c #\space)
+       (def next (char-at cs (+ p 1)))
+       (def fits? (<= (+ column 2) wide))
+       (def word-after? (and (< (+ p 2) n) (not (or (= next #\space) (= next #\newline) (= next #\")))))
+       (go (+ p 1) line (+ column 1)
+           (if (and (= line nth) seen fits? word-after?) (Some p) best)
+           seen
+           reach-now))
+      (else (go (+ p 1) line (+ column 1) best #t reach-now)))))
+
+;; The column after token `k`, the closing brackets after it not counted.
+(: closers-end-alone (-> Placed int int))
+(defun (closers-end-alone p k)
+  (def col (vec-ref (record-ref p cols) k))
+  (fst (advance (tok-written (tok-at p k) col) col)))
+
+;; `toks` with the strings `splits` names, by index, given their new text.
+(: with-splits (-> (List Tok) (List (Tuple int string)) (List Tok)))
+(defun (with-splits toks splits)
+  (if (empty? splits)
+      toks
+      (let go ((toks toks) (k 0) (out Nil))
+        (match toks
+          (Nil (list-reverse out))
+          ((Cons t rest)
+           (def now
+             (match (list-filter #(= (fst &) k) splits)
+               ((Cons (Tuple _ text) _) (TStr text))
+               (Nil t)))
+           (go rest (+ k 1) (Cons now out)))))))
+
+;; The tokens to put a line break before, to break line `ln`; and, when there
+;; are none, those that move a first argument down, which is the last resort:
+;; a string that runs past the limit is split before it is moved (see
+;; `broken`).
+(: breaks-for (-> Placed int (Tuple (List int) (List int))))
 (defun (breaks-for p ln)
   (def n (vec-length (record-ref p toks)))
   (def on-line
@@ -1641,18 +1757,35 @@
        (+ (if (< a b) a b) 1))
       (Nil 1)))
   ;; A string or comment too wide to fit even moved there keeps the line wide
-  ;; whatever is broken, so the line is left as it is.
-  (def hopeless?
-    (any? #(and (not (opens? (tok-at p &))) (> (+ least (columns (tok-text (tok-at p &)))) wide))
-          on-line))
-  (if hopeless?
-      Nil
-      (match (list-filter #(not (empty? &)) (list-map #(breaks-in-list p & ln) crossing))
-        ((Cons found _) found)
-        (Nil
-         (match (if (< first 0) Nil (breaks-continuing p first ln))
-           (Nil (first-argument-down p (list-append around crossing)))
-           (found found))))))
+  ;; whatever is broken. One that can not be split leaves the line as it is.
+  ;; One that can is split once the line's lists are broken (see `split-for`),
+  ;; and moving it left, by filling or by moving a first argument down, would
+  ;; only split it later.
+  (def too-wide
+    (list-filter #(and (not (opens? (tok-at p &))) (> (+ least (columns (tok-text (tok-at p &)))) wide))
+                 on-line))
+  (def splits-instead? (not (empty? too-wide)))
+  (cond
+    ((not (all? #(splittable? p &) too-wide)) (Tuple Nil Nil))
+    (else
+     (match (list-filter #(not (empty? &)) (list-map #(breaks-in-list p & ln) crossing))
+       ((Cons found _) (Tuple found Nil))
+       (Nil #:when splits-instead? (Tuple Nil Nil))
+       (Nil
+        (match (if (< first 0) Nil (breaks-continuing p first ln))
+          (Nil (Tuple Nil (first-argument-down p (list-append around crossing))))
+          (found (Tuple found Nil))))))))
+
+;; Whether the token at `k` is a string `split-for` may split: not a raw one,
+;; not one in a doc or a table, and with a space in it.
+(: splittable? (-> Placed int bool))
+(defun (splittable? p k)
+  (match (tok-at p k)
+    ((TStr s) (not (or (string-starts-with? s "\"\"\"")
+                       (vec-ref (record-ref p tabled) k)
+                       (vec-ref (record-ref p docked) k)
+                       (not (string-contains? s " ")))))
+    (_ #f)))
 
 ;; The laid-out text with its long lines broken, as far as they can be.
 (: broken (-> (Tuple string (List (Tuple int string))) (Tuple string (List (Tuple int string)))))
@@ -1668,10 +1801,24 @@
          (loop (:for ln (range 0 (vec-length widths)))
                (:acc out (listing ln) #:when (> (vec-ref widths ln) wide))
            => out))
-       (def wanted (list-foldl (fun (ln acc) (list-append acc (breaks-for p ln))) Nil long))
-       (if (or (empty? wanted) (>= rounds 40))
+       ;; For each long line the line breaks that break it; when there are
+       ;; none, a string that runs past the limit split with a line
+       ;; continuation; and when there is none of those, a first argument
+       ;; moved down.
+       (def (Tuple wanted splits)
+         (list-foldl (fun (ln acc)
+                       (def (Tuple breaks split) acc)
+                       (match (breaks-for p ln)
+                         ((Tuple Nil last-resort)
+                          (match (split-for p ln)
+                            ((Some s) (Tuple breaks (Cons s split)))
+                            (None (Tuple (list-append breaks last-resort) split))))
+                         ((Tuple found _) (Tuple (list-append breaks found) split))))
+                     (Tuple Nil Nil)
+                     long))
+       (if (or (and (empty? wanted) (empty? splits)) (>= rounds 40))
            laid
-           (again (layout (with-breaks-before toks wanted)) (+ rounds 1)))))))
+           (again (layout (with-breaks-before (with-splits toks splits) wanted)) (+ rounds 1)))))))
 
 (: with-breaks-before (-> (List Tok) (List int) (List Tok)))
 (defun (with-breaks-before toks at)
