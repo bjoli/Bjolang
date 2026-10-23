@@ -933,6 +933,12 @@ let private quoted (s: string) =
 /// and `\u0041`, reads a character. A string that writes one is reported,
 /// rather than published as text that does not read or reads differently.
 let private checkPublishable (clause: Range) =
+    // Whether the backslash at `i` ends its line, spaces and tabs after it
+    // aside: a line continuation.
+    let continues (written: string) (i: int) =
+        let after = written.Substring(i + 1).TrimStart(' ', '\t')
+        after.StartsWith "\n" || after.StartsWith "\r\n"
+
     match formTokens clause.File clause.Start with
     | None -> ()
     | Some(lines, span) ->
@@ -947,6 +953,13 @@ let private checkPublishable (clause: Range) =
                                 scan (i + 1)
                             elif "ntr\"\\".Contains written[i + 1] then
                                 scan (i + 2)
+                            elif continues written i then
+                                // What a continued line stands for depends on
+                                // the column the string starts at, which a
+                                // published doc does not have.
+                                reportAt
+                                    t.Range
+                                    "this string continues a line with a backslash, which a published doc cannot. Write the doc's text on one line, or as a raw string over several lines."
                             else
                                 reportAt
                                     t.Range

@@ -130,6 +130,35 @@ module Lexer =
         | Some c -> sb.Append(c) |> ignore
         | None -> sb.Append('\\').Append(escaped) |> ignore
 
+    /// A line continuation: a backslash at `i` that ends its line, perhaps
+    /// with spaces or tabs between it and the line break. It stands for
+    /// nothing, and neither does the next line's indentation up to `textCol`,
+    /// the column the string's text starts at on the line it opens on, which
+    /// is where a continued line is written to line up with it. Indentation
+    /// beyond that column is kept, as spaces of the text:
+    ///
+    ///     (f "one \
+    ///         two")      ; "one two"
+    ///
+    /// The index just past what the continuation stands for, or `None` when
+    /// the backslash at `i` is not one.
+    let private continuationEnd (s: string) (i: int) (textCol: int) : int option =
+        let mutable k = i + 1
+        while k < s.Length && (s[k] = ' ' || s[k] = '\t') do
+            k <- k + 1
+
+        let afterBreak =
+            if k < s.Length && s[k] = '\n' then Some(k + 1)
+            elif k + 1 < s.Length && s[k] = '\r' && s[k + 1] = '\n' then Some(k + 2)
+            else None
+
+        afterBreak
+        |> Option.map (fun start ->
+            let mutable j = start
+            while j < s.Length && j - start < textCol && (s[j] = ' ' || s[j] = '\t') do
+                j <- j + 1
+            j)
+
     /// Decode the escapes in a string literal's body, left to right.
     ///
     /// One pass, and that is the whole point. This was a chain of `Replace`
@@ -137,14 +166,17 @@ module Lexer =
     /// an escaped backslash could not protect the character after it and
     /// `"\\n"` came out as a backslash followed by a newline. A literal
     /// backslash before an `n`, a `t` or a quote was unwritable.
-    let private unescapeString (raw: string) : string =
+    let private unescapeString (raw: string) (textCol: int) : string =
         let sb = Text.StringBuilder(raw.Length)
         let mutable i = 0
 
         while i < raw.Length do
             if raw[i] = '\\' && i + 1 < raw.Length then
-                appendEscape sb false raw[i + 1]
-                i <- i + 2
+                match continuationEnd raw i textCol with
+                | Some past -> i <- past
+                | None ->
+                    appendEscape sb false raw[i + 1]
+                    i <- i + 2
             else
                 sb.Append(raw[i]) |> ignore
                 i <- i + 1
@@ -342,7 +374,10 @@ module Lexer =
             System.Text.RegularExpressions.RegexOptions.Compiled
         )
 
-    let rec tokenize (file: string) (input: string) : LexedToken list =
+    /// The tokens of `input`, whose first character is at column `startCol` of
+    /// line 1. A `${...}` hole is read from the column it is at, so that a
+    /// string in it lines its continuations up with the right column.
+    let rec private tokenizeFrom (file: string) (input: string) (startCol: int) : LexedToken list =
         let length = input.Length
 
         let rec following charList pos =
@@ -486,7 +521,7 @@ module Lexer =
                     let len = nextPos - pos
                     let rawStr = input.Substring(pos + 1, len - 2)
 
-                    let unescaped = unescapeString rawStr
+                    let unescaped = unescapeString rawStr (col + 1)
 
                     let text = input.Substring(pos, len)
                     let endLine, endCol = advance text line col
@@ -680,7 +715,7 @@ module Lexer =
                     let len = nextPos - pos
                     emit (Symbol(input.Substring(pos, len))) len
 
-        loop 0 1 0 []
+        loop 0 1 startCol []
 
     /// Reads `#"a ${x} b"` and returns the tokens it stands for, followed by
     /// the position just past its closing quote.
@@ -745,12 +780,18 @@ module Lexer =
                 closed <- true
 
             // `\$` is how a dollar that opens nothing is written. Everything
-            // else escapes as it does in an ordinary string.
+            // else escapes as it does in an ordinary string, a line
+            // continuation included, lined up with the text after `#"`.
             | '\\' when p + 1 < length ->
-                let escaped = input[p + 1]
-                appendEscape literal true escaped
-                step '\\'
-                step escaped
+                match continuationEnd input p (col + 2) with
+                | Some past ->
+                    while p < past do
+                        step input[p]
+                | None ->
+                    let escaped = input[p + 1]
+                    appendEscape literal true escaped
+                    step '\\'
+                    step escaped
 
             | '$' when p + 1 < length && input[p + 1] = '{' ->
                 flush ()
@@ -838,7 +879,8 @@ module Lexer =
                 match segment with
                 | InterpText text -> [ mk (StringLit text) ]
                 | InterpHole(source, hl, hc) ->
-                    let inner = tokenize file source |> List.map (shiftToken hl hc)
+                    // Read from the hole's column, so only its lines are moved.
+                    let inner = tokenizeFrom file source hc |> List.map (shiftToken hl 0)
 
                     if inner.IsEmpty then
                         failwithf
@@ -861,3 +903,6 @@ module Lexer =
             | many -> [ mk LParen; mk (ResolvedSymbol "str") ] @ List.concat many @ [ mk RParen ]
 
         expansion, p, l, c
+
+    /// The tokens of a file's text, or of any text read as one.
+    let tokenize (file: string) (input: string) : LexedToken list = tokenizeFrom file input 0

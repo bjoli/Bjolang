@@ -2,7 +2,8 @@
 
 ** Literals
 - Numbers: ~42~, ~-100~, ~3.14159~, ~0x2A~, ~0b101010~
-- Strings: ~"hello world"~
+- Strings: ~"hello world"~, with the escapes ~\n~ ~\t~ ~\r~ ~\"~ ~\\~, and a
+  line continued with ~\~ — see below
 - Raw strings: ~"""say "hi" """~, and over several lines — see below
 - Interpolated strings: ~#"x is ${x}"~
 - Booleans: ~#t~, ~#f~
@@ -35,6 +36,36 @@ Written *without* one, a number takes its type from context:
 #+END_SRC
 
 Where nothing says, it is an ~int~. See ~Numerics.org~.
+
+*** Line continuations
+A backslash that ends a line in a string stands for nothing, and neither does
+the next line's indentation up to the column the string's text starts at: the
+column after the opening ~"~, or after ~#"~ in an interpolated string. So a long
+string can be written over several lines, each lined up with the first:
+
+#+BEGIN_SRC scheme
+(println "a long message, \
+          written over two lines")
+;; prints "a long message, written over two lines"
+#+END_SRC
+
+- Indentation beyond that column is kept, as spaces of the text:
+  ~"one \~ followed by ~two~ two columns to the right of ~one~ is ~"one   two"~.
+  A line indented less than the text loses all of its indentation.
+- Spaces and tabs between the backslash and the line break are not text.
+- Every continued line of a string lines up with the column where the string
+  starts, however many there are. A string in an interpolation's hole lines up
+  with where it starts.
+- ~\\~ before a line break is an escaped backslash, and the line break is text.
+- A raw string has no escapes, so a backslash at the end of its line is text.
+- What a continued line stands for depends on the column its string starts at.
+  ~bjo fmt~ moves continued lines along with their string, so what it lays out
+  means what it did. A doc's strings may not continue lines: a published doc is
+  bjodat, which has no columns to go by.
+
+R7RS drops all of a continued line's leading whitespace. Bjolang drops only as
+much as lines the text up, so that spaces can begin a continued line without an
+escape.
 
 *** Raw strings
 Three or more quotes open a raw string, and the same number close it. Nothing
@@ -92,7 +123,7 @@ A hole holds an arbitrary expression, nesting and all:
 #"brace: ${(string-append "}" "!")}"   ;; "brace: }!"
 #+END_SRC
 
-~\$~ writes a literal dollar; a ~$~ not followed by ~{~ needs no escape. Everything else escapes as in an ordinary string, and a ~#"..."~ may span lines.
+~\$~ writes a literal dollar; a ~$~ not followed by ~{~ needs no escape. Everything else escapes as in an ordinary string, and a ~#"..."~ may span lines, a continued line lining up with the text after ~#"~.
 
 **** The conversion is ~displayed~, and it is per hole
 Each hole is wrapped in ~displayed~: ~#"x = ${x}"~ is ~(str "x = " (displayed x))~. A string hole gives its text, without quotes. A type of your own says how by implementing ~Displayed~ (see [[*Printing: ~written~ and ~displayed~][Printing]]):

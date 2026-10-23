@@ -316,6 +316,74 @@ other line."
 
 (advice-add 'calculate-lisp-indent :around #'bjo--calculate-indent)
 
+;; A line continuation in a string, a backslash that ends the line, drops the
+;; next line's indentation up to the column the string's text starts at, and
+;; keeps what is beyond it. What a continued line says therefore depends on
+;; where its string starts, and indentation moves that while it leaves every
+;; line inside a string alone. So when a line is indented, the continued lines
+;; of a string that starts on it move as far as it did: the string means what
+;; it did. `bjo fmt' does the same.
+
+(defun bjo--continued-string-start ()
+  "Where the string that starts on this line and continues past it starts.
+The opening quote of a string that is not raw and runs past the end of
+the line; nil when there is none."
+  (let ((state (save-excursion (syntax-ppss (line-end-position)))))
+    (when (and (nth 3 state) (>= (nth 8 state) (line-beginning-position)))
+      (save-excursion
+        (goto-char (nth 8 state))
+        (unless (looking-at "\"\"\"") (point))))))
+
+(defun bjo--continues-p ()
+  "Whether this line ends in a line continuation: an unescaped backslash,
+perhaps with spaces or tabs after it."
+  (save-excursion
+    (end-of-line)
+    (skip-chars-backward " \t")
+    (and (eq (char-before) ?\\)
+         (let ((n 0))
+           (while (eq (char-before) ?\\)
+             (setq n (1+ n))
+             (backward-char))
+           (= (% n 2) 1)))))
+
+(defun bjo--shift-continued-lines (open delta)
+  "Move the continued lines of the string opening at OPEN DELTA columns.
+Right adds spaces; left takes away as many as there are, which is what
+the string drops either way."
+  (save-excursion
+    (let ((end (copy-marker (save-excursion
+                              (goto-char open)
+                              (condition-case nil (progn (forward-sexp) (point))
+                                (error (point-max))))))
+          (continued nil))
+      (goto-char open)
+      (setq continued (bjo--continues-p))
+      ;; Every line of the string after one that continues: a line break that
+      ;; is not continued is text, and the line after it is left alone.
+      (while (and (zerop (forward-line 1)) (< (point) end))
+        (when continued
+          (if (> delta 0)
+              (unless (looking-at "[ \t]*$") (insert (make-string delta ?\s)))
+            (let ((blank (save-excursion
+                           (skip-chars-forward " \t" (min (line-end-position) (- (point) delta))))))
+              (delete-region (point) (+ (point) blank)))))
+        (setq continued (bjo--continues-p)))
+      (set-marker end nil))))
+
+(defun bjo--indent-line-to (indent column)
+  "Call INDENT with COLUMN, and move a continued string on the line along."
+  (if (not (derived-mode-p 'bjo-mode))
+      (funcall indent column)
+    (let ((before (current-indentation)))
+      (funcall indent column)
+      (let ((delta (- (current-indentation) before))
+            (open (bjo--continued-string-start)))
+        (when (and open (/= delta 0))
+          (bjo--shift-continued-lines open delta))))))
+
+(advice-add 'indent-line-to :around #'bjo--indent-line-to)
+
 (defconst bjo--binding-forms
   '("let" "let*" "letrec" "with-open" "parameterize" "parameterize*")
   "Forms whose first list after the head binds names, a list per binding.")

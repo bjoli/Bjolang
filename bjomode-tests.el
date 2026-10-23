@@ -295,6 +295,39 @@
 ")
 
 ;;; ---------------------------------------------------------------------------
+;;; Continued strings, whose continued lines move with the string
+
+(defun bjo-tests--indented (text)
+  "TEXT indented by `indent-region', its own indentation kept to start from."
+  (bjo-tests--in-buffer text
+    (indent-region (point-min) (point-max))
+    (buffer-string)))
+
+(ert-deftest bjo-continued-string/moves-left ()
+  "A continued line moves left with its string, and keeps what it kept."
+  (should (equal (bjo-tests--indented "(f\n      (g \"one \\\n             two \\\n                 three\"))\n")
+                 "(f\n (g \"one \\\n        two \\\n            three\"))\n")))
+
+(ert-deftest bjo-continued-string/moves-right ()
+  "And right, a blank continued line left blank."
+  (should (equal (bjo-tests--indented "(f\n(g #\"one \\\n     two \\\n\n\"))\n")
+                 "(f\n (g #\"one \\\n      two \\\n\n\"))\n")))
+
+(ert-deftest bjo-continued-string/not-continued ()
+  "A line after a line break that is not continued is text, and stays."
+  (should (equal (bjo-tests--indented "(f\n      (g \"one\n  two \\\\\n  three\"))\n")
+                 "(f\n (g \"one\n  two \\\\\n  three\"))\n")))
+
+(ert-deftest bjo-continued-string/tab ()
+  "TAB on the line a string starts on moves it the same."
+  (should (equal (bjo-tests--in-buffer "(f\n      (g \"one \\\n             two\"))\n"
+                   (goto-char (point-min))
+                   (forward-line 1)
+                   (indent-for-tab-command)
+                   (buffer-string))
+                 "(f\n (g \"one \\\n        two\"))\n")))
+
+;;; ---------------------------------------------------------------------------
 ;;; Real files, which are indented as the mode indents them
 
 (defconst bjo-tests--corpus

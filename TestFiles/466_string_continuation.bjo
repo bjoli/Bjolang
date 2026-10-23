@@ -1,0 +1,76 @@
+;; A line continuation in a string: a backslash that ends a line stands for
+;; nothing, and neither does the next line's indentation up to the column the
+;; string's text starts at, so a long string can be written over several lines
+;; and lined up with itself. Indentation beyond that column is kept: it is text.
+;;
+;;   (f "one \
+;;       two")       ; "one two"
+;;
+;; R7RS drops all of the next line's leading whitespace. Bjolang drops only as
+;; much as lines the text up, so that spaces at the start of a continued line
+;; can still be written without an escape.
+
+(import (std prelude))
+(import (std simpletest))
+
+(defun (main)
+  (expect "a continued line under the text has no indentation"
+          "one \
+           two"
+          "one two")
+
+  (expect "indentation beyond the text is kept"
+          "one \
+             two"
+          "one   two")
+
+  (expect "a line indented less than the text drops all of it"
+          "one \
+   two"
+          "one two")
+
+  (expect "a line not indented at all"
+          "one \
+two"
+          "one two")
+
+  (expect "spaces after the backslash are not text"
+          "one \   
+           two"
+          "one two")
+
+  (expect "every continued line lines up with where the string starts"
+          "one \
+           two \
+             three"
+          "one two   three")
+
+  (expect "an escaped backslash before a line break is a backslash and a line break"
+          "a\\
+b"
+          "a\\\nb")
+
+  (expect "a line break that is not continued is text, indentation and all"
+          "a
+  b"
+          "a\n  b")
+
+  ;; In an interpolated string the text starts after `#"`.
+  (def x 5)
+  (expect "interpolated: lined up with the text after #\""
+          #"x is ${x} \
+            and so on"
+          "x is 5 and so on")
+  (expect "interpolated: and more is kept"
+          #"x is ${x} \
+              and so on"
+          "x is 5   and so on")
+
+  ;; A string in a hole lines up with where it starts, not with the string
+  ;; around it.
+  (expect "a string in a hole lines up with itself"
+          #"[${(string-append "in \
+                               hole" "")}]"
+          "[in hole]")
+
+  0)

@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* A string continues a line with a backslash
+
+- A backslash that ends a line in a string, plain or ~#"..."~, stands for
+  nothing, and neither does the next line's indentation up to the column the
+  string's text starts at: after the ~"~, or after ~#"~. Indentation beyond
+  that column is kept, as text. Spaces and tabs between the backslash and the
+  line break are not text. Every continued line of a string lines up with the
+  column the string starts at, and a string in an interpolation's hole with its
+  own. R7RS drops all of a continued line's indentation; this keeps what is
+  beyond the text, so that spaces can begin a continued line.
+- ~\\~ before a line break is still a backslash and a line break, and a raw
+  string has no escapes. No string in the repository had a backslash before a
+  line break, so none changes.
+- ~bjo fmt~ moves a string's continued lines along with it, so that what it
+  lays out means what it did, and a continued line indented less than the text
+  is lined up with it. bjo-mode does the same when a line is indented, by ~TAB~
+  or ~indent-region~.
+- A doc's string may not continue a line: what one stands for depends on its
+  column, and a published doc is bjodat. The compiler says so.
+- Left open: editing the code before a string on its line moves the string
+  without its continued lines, and changes what they say, in an editor as in
+  any other way of writing it. A string in a hole that continues lines is left
+  as it is by ~bjo fmt~ and bjo-mode. bjodat reads no line continuation.
+- Tests: ~466_string_continuation.bjo~, ~errors/doc_string_continuation.bjo~,
+  the continuation cases of ~bjo fmt~ in ~run_bjo_tests.py~, and
+  ~bjo-continued-string/*~ in ~bjomode-tests.el~.
+
 * A directory whose name starts with ~_~ keeps its modules to the directory it is in
 
 - A module under a directory whose name starts with ~_~, such as

@@ -213,11 +213,11 @@
     ((= c #\")
      (def (Ok e) (string-end cs i)
        :leave ((Err why) (Err why)))
-     (Ok (Tuple (TStr (text-between cs i e)) e)))
+     (Ok (Tuple (TStr (without-continued-indent (text-between cs i e) (column-at cs i))) e)))
     ((and (= c #\#) (= (char-at cs (+ i 1)) #\"))
      (def (Ok e) (interpolated-end cs i)
        :leave ((Err why) (Err why)))
-     (Ok (Tuple (TStr (text-between cs i e)) e)))
+     (Ok (Tuple (TStr (without-continued-indent (text-between cs i e) (column-at cs i))) e)))
     ((and (= c #\#) (= (char-at cs (+ i 1)) #\\)) (Ok (to (char-literal-end cs i))))
     (else (Ok (to (atom-end cs i))))))
 
@@ -485,6 +485,109 @@
             (stringbuilder-add! sb c)
             (go (+ p 1))))))
      (stringbuilder->string sb))))
+
+;; ---------------------------------------------------------------------------
+;; Line continuations
+;;
+;; A backslash that ends a line in a string stands for nothing, and neither
+;; does the next line's indentation up to the column the string's text starts
+;; at; indentation beyond that is text. What a continued line says therefore
+;; depends on where the string starts, which the layout moves. So a string is
+;; read without the indentation a continuation drops, and written with as much
+;; as where it is written drops: the text it stands for stays the same.
+;;
+;; A raw string has no escapes. In the holes of an interpolated string nothing
+;; is changed: a string in a hole that continues lines is left as it is.
+
+;; The column of `i` as the compiler's lexer counts it: characters since the
+;; line began, a tab one.
+(: column-at (-> (Vec char) int int))
+(defun (column-at cs i)
+  (let go ((k i))
+    (if (or (= k 0) (= (vec-ref cs (- k 1)) #\newline)) (- i k) (go (- k 1)))))
+
+;; The column the text of the string `s` written at `col` starts at.
+(: text-column (-> string int int))
+(defun (text-column s col)
+  (if (string-starts-with? s "#\"") (+ col 2) (+ col 1)))
+
+;; Whether the backslash at `p` is a line continuation, and if so where the
+;; line break after it starts.
+(: continuation-at (-> (Vec char) int (Option int)))
+(defun (continuation-at cs p)
+  (let go ((k (+ p 1)))
+    (cond
+      ((line-break? cs k) (Some k))
+      ((or (= (char-at cs k) #\space) (= (char-at cs k) #\tab)) (go (+ k 1)))
+      (else None))))
+
+;; The string `s`, written with its text from `text-col` on, each continuation
+;; as `\` and the line break alone, and from each continued line the
+;; indentation it drops: what it stands for wherever it is written. Indentation
+;; it keeps is kept.
+(: without-continued-indent (-> string int string))
+(defun (without-continued-indent s col)
+  (def text-col (text-column s col))
+  (rewrite-continuations s (fun (sb cs at)
+                             (let skip ((j at))
+                               (if (and (< (- j at) text-col)
+                                        (or (= (char-at cs j) #\space) (= (char-at cs j) #\tab)))
+                                   (skip (+ j 1))
+                                   j)))))
+
+;; The string `s`, as `without-continued-indent` reads it, written at `col`:
+;; each continued line indented to where its text starts.
+(: with-continued-indent (-> string int string))
+(defun (with-continued-indent s col)
+  (def text-col (text-column s col))
+  (rewrite-continuations s (fun (sb cs at)
+                             (unless (or (>= at (vec-length cs)) (line-break? cs at))
+                               (stringbuilder-add-string! sb (spaces text-col)))
+                             at)))
+
+;; `s` with each continuation written as `\` and its line break, and after it
+;; what `after` writes, given where the continued line starts; it answers where
+;; to go on from. A raw string is as it is.
+(: rewrite-continuations (-> string (-> StringBuilder (Vec char) int int) string))
+(defun (rewrite-continuations s after)
+  (cond
+    ((string-starts-with? s "\"\"\"") s)
+    ((not (string-contains? s "\\")) s)
+    (else
+     (def cs (string->vec s))
+     (def n (vec-length cs))
+     (def sb (stringbuilder-empty))
+     (def interpolated? (string-starts-with? s "#\""))
+     (let go ((p 0))
+       (when (< p n)
+         (def c (vec-ref cs p))
+         (cond
+           ((= c #\\)
+            (match (continuation-at cs p)
+              ((Some k)
+               (def past (if (= (char-at cs k) #\return) (+ k 2) (+ k 1)))
+               (stringbuilder-add! sb #\\)
+               (stringbuilder-add-string! sb (text-between cs k past))
+               (go (after sb cs past)))
+              (None
+               (stringbuilder-add-string! sb (text-between cs p (+ p 2)))
+               (go (+ p 2)))))
+           ((and interpolated? (= c #\$) (= (char-at cs (+ p 1)) #\{))
+            (def past (hole-end cs (+ p 2)))
+            (stringbuilder-add-string! sb (text-between cs p past))
+            (go past))
+           (else
+            (stringbuilder-add! sb c)
+            (go (+ p 1))))))
+     (stringbuilder->string sb))))
+
+;; A token as it is written at `col`: a string with its continued lines
+;; indented to where its text then starts.
+(: tok-written (-> Tok int string))
+(defun (tok-written t col)
+  (match t
+    ((TStr s) (with-continued-indent s col))
+    (_ (tok-text t))))
 
 ;; Past the `}` closing the hole whose code starts at `q`, as
 ;; `interpolated-end` reads one.
@@ -1152,7 +1255,7 @@
          (match t
            ((TSpace s) (expand-tabs s col))
            ((TComment s) (expand-tabs s col))
-           (_ (tok-text t))))
+           (_ (tok-written t col))))
        (stringbuilder-add-string! out written)
        (def (Tuple next-col breaks) (advance written col))
        (def waits? (prefix-of-next? t rest))
@@ -1325,7 +1428,7 @@
       (vecbuilder-add! lines line)
       (vecbuilder-add! cols col)
       (vecbuilder-add! tabled inside)
-      (def (Tuple after breaks) (advance (tok-text t) col))
+      (def (Tuple after breaks) (advance (tok-written t col) col))
       (def open-after
         (match t
           ((TOpen _)
@@ -1359,7 +1462,7 @@
   (let go ((k k))
     (if (and (< (+ k 1) n) (close? (tok-at p (+ k 1))))
         (go (+ k 1))
-        (fst (advance (tok-text (tok-at p k)) (vec-ref (record-ref p cols) k))))))
+        (fst (advance (tok-written (tok-at p k) (vec-ref (record-ref p cols) k)) (vec-ref (record-ref p cols) k))))))
 
 (: small-form? (-> Placed int bool))
 (defun (small-form? p j)
