@@ -3,6 +3,27 @@
 
 What each change guarantees, and what it leaves open.
 
+* A longer rest pattern below a literal one is reachable
+
+- ~(match args (["a" _ ...] 1) ([x y rest ...] 2) (_ 3))~ compiles: the
+  second clause was reported as one that can never run. A sequence column's
+  lengths are split into a class for each length up to a bound and one for
+  every length from the bound up, and the bound was the shortest rest prefix
+  written. A rest pattern with more leading elements than that cannot be
+  specialised to the open class, so it reached no class at all. The bound is
+  now the longest rest prefix, or one past the longest fixed length if that is
+  more, and every rest pattern reaches every class.
+- ~(["a" _ ...] 1) ([x y rest ...] 2)~ alone, with no clause for ~[]~, is now
+  reported as not covering every value, ~[]~ reaching no clause, rather than
+  as having a clause that can never run.
+- A clause that really is covered is still reported: ~[x y rest ...]~ below
+  ~[a rest ...]~.
+- What a match does at run time was right before and is unchanged: only the
+  check was wrong.
+- Tests: two matches of this shape in ~202_exhaustiveness.bjo~, each clause
+  reached; ~errors/unreachable_longer_rest.bjo~ and
+  ~errors/vec_rest_not_exhaustive.bjo~.
+
 * bjo fmt splits a long string with a line continuation
 
 - A line wider than 102 columns that its lists cannot be broken to fit, and

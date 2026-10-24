@@ -376,19 +376,27 @@ let rec private columnLengths (matrix: Row list) : int list * int list =
 /// rest pattern and the family stays infinite.
 ///
 /// The classes run `[]`, `[_]`, … up to the longest fixed length written, and
-/// then one class for everything at or above the shortest rest prefix.
+/// then one class for everything at or above the longest rest prefix.
+///
+/// The longest, so that every rest pattern reaches the open class: one with
+/// more leading elements than the class's length cannot be specialised to it,
+/// and was dropped as if it matched nothing there. Under `["a" _ ...]` the
+/// open class began at one, so `[x y rest ...]`, whose two elements do not fit
+/// in it, reached no class at all and was reported as a clause that can never
+/// run. The lengths between the shortest prefix and the longest are classes of
+/// their own, which a shorter rest pattern covers with wildcards.
 let private lengthClasses (matrix: Row list) : Ctor list option =
     let fixedLengths, restPrefixes = columnLengths matrix
 
     match restPrefixes with
     | [] -> None
     | _ ->
-        let shortestRest = List.min restPrefixes
+        let longestRest = List.max restPrefixes
 
         let bound =
             match fixedLengths with
-            | [] -> shortestRest
-            | _ -> max shortestRest (List.max fixedLengths + 1)
+            | [] -> longestRest
+            | _ -> max longestRest (List.max fixedLengths + 1)
 
         Some([ for n in 0 .. bound - 1 -> CLen n ] @ [ CLenGe bound ])
 

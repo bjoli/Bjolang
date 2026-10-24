@@ -81,6 +81,25 @@
     ([a] a)
     ([a b rest ...] (+ a b))))
 
+;; A rest pattern with more leading elements than one above it is still
+;; reachable: the open length class begins at the longest prefix written, so
+;; `[x y rest ...]` is not taken as covered by `["a" _ ...]`, which only matches
+;; vecs that begin with "a". Each clause is reached in `main`.
+(: (-> (Vec string) string))
+(defun (command v)
+  (match v
+    (["help" _ ...] "help")
+    ([name input rest ...] #"${name} ${input} +${(vec-length rest)}")
+    (_ "usage")))
+
+(: (-> (Vec int) string))
+(defun (ones v)
+  (match v
+    ([1 _ ...] "starts with 1")
+    ([x y z rest ...] "three or more")
+    ([x y] "two")
+    (_ "fewer")))
+
 (: (-> (Array int) int))
 (defun (arr-head v)
   (match v
@@ -121,6 +140,13 @@
   (expect "bool by case" (yes-no #f) "no")
   (expect "vec lengths" (vec-head [1 2 3]) 3)
   (expect "array lengths" (arr-head #[7 8]) 7)
+  (expect "literal and rest, then a longer rest: the literal" (command ["help" "x"]) "help")
+  (expect "literal and rest, then a longer rest: the longer" (command ["html" "a.sz" "o"]) "html a.sz +1")
+  (expect "literal and rest, then a longer rest: neither" (command ["html"]) "usage")
+  (expect "an int literal and rest: the literal" (ones [1 2 3]) "starts with 1")
+  (expect "an int literal and rest: three or more" (ones [5 6 7 8]) "three or more")
+  (expect "an int literal and rest: two" (ones [5 6]) "two")
+  (expect "an int literal and rest: fewer" (ones [5]) "fewer")
   (expect "pattern macro" (sum-pair (Tuple 3 4)) 7)
   (expect "guard covers nothing" (sign 0) "zero")
   (expect "view covers nothing" (even-half 7) "odd")

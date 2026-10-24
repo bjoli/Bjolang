@@ -1,0 +1,19 @@
+;; A literal and a rest above a longer rest of binders: the longer one is
+;; reachable, and together they leave the empty vec, and a one-element vec
+;; that does not begin with "a", uncovered. Once the longer clause was taken
+;; for dead, and this was reported as a clause that can never run.
+
+;; EXPECT-ERROR: this match does not cover every value
+;; EXPECT-ERROR: [] reaches no clause
+
+(import (std prelude))
+
+(: (-> (Vec string) int))
+(defun (count-args v)
+  (match v
+    (["a" _ ...] 1)
+    ([x y rest ...] 2)))
+
+(defun (main args)
+  (println (count-args ["q"]))
+  0)
