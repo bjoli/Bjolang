@@ -83,6 +83,28 @@
   "#\\\\\\([][(){};\"'`,]\\)"
   "A character literal whose character would otherwise be a delimiter.")
 
+;; `#map(...)' and `#fl[...]' are one form: the reader takes a hash macro's name
+;; and the bracket right after it together. Emacs reads `#map' as a symbol and
+;; the list as the next form, so `(def b #map((:key "val")))' looked like a
+;; `def' whose scrutinee is `#map' and whose failure part is the list. The name
+;; is made an expression prefix, as `#' and `'' already are, so that moving
+;; over a form moves over the name and its brackets at once. `#t' and `#f' are
+;; booleans even with a bracket after them, as the lexer has it.
+(defconst bjo--hash-macro-re
+  "#\\([[:alpha:]][^][(){}\"';`,#[:space:]]*\\)[[(]"
+  "A hash macro's name, with the bracket that opens its form after it.")
+
+(defun bjo--propertize-hash-macros (end)
+  "Make the name of each hash macro up to END an expression prefix."
+  (while (re-search-forward bjo--hash-macro-re end t)
+    (let ((beg (match-beginning 1))
+          (name-end (match-end 1)))
+      (unless (or (member (match-string 1) '("t" "f"))
+                  (eq (char-before (match-beginning 0)) ?\\)
+                  (nth 8 (save-excursion (syntax-ppss (match-beginning 0)))))
+        (put-text-property beg name-end 'syntax-table (string-to-syntax "'")))
+      (goto-char name-end))))
+
 (defun bjo--propertize-raw-strings (end)
   "Mark raw strings, three or more quotes around text, up to END.
 
@@ -116,15 +138,19 @@ one. Answers (OPEN . END) to begin at its opening quotes, or nil."
       (cons (nth 8 state) end))))
 
 (defun bjo-syntax-propertize (start end)
-  "Mark character literals and raw strings between START and END.
-A delimiter in a character literal is punctuation, and a raw string is
-fenced; see `bjo--propertize-raw-strings'."
+  "Mark character literals, raw strings and hash macros between START and END.
+A delimiter in a character literal is punctuation, a raw string is
+fenced, and a hash macro's name is an expression prefix; see
+`bjo--propertize-raw-strings' and `bjo--propertize-hash-macros'."
   (goto-char start)
   (while (re-search-forward bjo--char-literal-re end t)
     (put-text-property (match-beginning 1) (match-end 1)
                        'syntax-table (string-to-syntax ".")))
   (goto-char start)
-  (bjo--propertize-raw-strings end))
+  (bjo--propertize-raw-strings end)
+  ;; After the strings, so that one in a raw string is seen as in a string.
+  (goto-char start)
+  (bjo--propertize-hash-macros end))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Indentation

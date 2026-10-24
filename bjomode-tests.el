@@ -437,6 +437,19 @@
       ((Ok c) (h) :default 0))")
                  '(":propagate" ":default 0"))))
 
+(ert-deftest bjo-failure/hash-macro ()
+  "A hash macro is one form, so its brackets are the scrutinee, not a failure."
+  (should (equal (bjo-tests--failure-text "(def b #map((:key \"val\")))") nil))
+  (should (equal (bjo-tests--failure-text "(def b #fl[1 2 3])") nil))
+  (should (equal (bjo-tests--failure-text
+                  "(def (Some x) #map((:k 1)) :leave-with 0)")
+                 '(":leave-with 0"))))
+
+(ert-deftest bjo-failure/boolean-before-list ()
+  "`#t' is a boolean even with a list right after it, as the lexer reads it."
+  (should (equal (bjo-tests--failure-text "(def (Some x) #t(f) :propagate)")
+                 '("(f) :propagate"))))
+
 (ert-deftest bjo-failure/comment ()
   "A `def' in a comment heads nothing."
   (should (equal (bjo-tests--failure-text
