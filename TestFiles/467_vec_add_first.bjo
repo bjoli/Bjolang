@@ -1,0 +1,25 @@
+;; `vec-add-first` is `RrbFun.Prepend`: the persistent counterpart of
+;; `transientvec-add-first!`, as `vec-pop-first` is of `transientvec-pop-first!`.
+(import (std prelude))
+(import (std simpletest))
+
+(defun (main)
+  (def base [3 4])
+  (def v (vec-add-first (vec-add-first base 2) 1))
+  (expect "length" (vec-length v) 4)
+  (expect "first" (vec-ref v 0) 1)
+  (expect "second" (vec-ref v 1) 2)
+  (expect "third" (vec-ref v 2) 3)
+  (expect "last" (vec-ref v 3) 4)
+  (expect "the original is untouched" (vec-length base) 2)
+  (expect "and keeps its first" (vec-ref base 0) 3)
+  (expect "onto an empty vec" (vec-ref (vec-add-first (vec-empty) 7) 0) 7)
+  ;; Enough to go past a single leaf, so the tree has to grow at the front.
+  (def many (list-foldl (fun (i acc) (vec-add-first acc i))
+                        (vec-empty)
+                        (list-unfold (fun (i) (if (< i 1000) (Some (Tuple i (+ i 1))) None)) 0)))
+  (expect "many: length" (vec-length many) 1000)
+  (expect "many: first" (vec-ref many 0) 999)
+  (expect "many: middle" (vec-ref many 500) 499)
+  (expect "many: last" (vec-ref many 999) 0)
+  (expect "undone by vec-pop-first" (vec-ref (vec-pop-first many) 0) 998))
