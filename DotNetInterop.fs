@@ -1155,11 +1155,51 @@ let isGenericOnlyMethod (isStatic: bool) (t: Type) (name: string) : bool =
 
     not (Array.isEmpty all) && all |> Array.forall (fun m -> m.IsGenericMethodDefinition)
 
+/// The Bjolang type of a `CancellationToken`, as `mapClrType` spells it.
+///
+/// Named once because two places have to agree on it: the resolver, which
+/// appends it to the argument types so that the token-taking overload is the
+/// one selected, and the emitter, which fills the argument in.
+let cancellationTokenType : HMType = TCon("System.Threading.CancellationToken", [])
+
+/// What `await`ing this .NET type produces, or `None` if it is not awaitable.
+///
+/// Deliberately by name rather than by "has a GetAwaiter": the four types below
+/// are what the BCL's async surface actually returns, and accepting a custom
+/// awaitable would mean accepting one whose awaiter BjoML's builder may not be
+/// able to drive.
+///
+/// A non-generic `Task` produces nothing, which is `void` here — the same thing
+/// a `void` method's call has, so an awaited call performed for its effect is
+/// statement-shaped exactly like an ordinary one.
+///
+/// `ValueTask` is accepted for the direct call and only for that. It may be
+/// consumed once, so it can never become an event; §7.2's third rule is
+/// enforced where `task->event` is, not here.
+let awaitedResultType (t: Type) : HMType option =
+    if t.IsGenericType then
+        match t.GetGenericTypeDefinition().FullName with
+        | "System.Threading.Tasks.Task`1"
+        | "System.Threading.Tasks.ValueTask`1" -> Some(mapClrType (t.GetGenericArguments()[0]))
+        | _ -> None
+    else
+        match t.FullName with
+        | "System.Threading.Tasks.Task"
+        | "System.Threading.Tasks.ValueTask" -> Some voidType
+        | _ -> None
+
 /// Resolves a generic method against the signature its import declared.
 ///
 /// `declaredParams`/`declaredReturn` are the *caller's* view with the receiver
 /// already removed, so an instance member is resolved in its own parameters
 /// exactly as a static one is.
+///
+/// For an `#:async` import, `awaited` is set: the declared result is what the
+/// method's Task answers, and a method that answers no Task does not fit. For
+/// an import that threads the ambient token, `threadsToken` is set: the method
+/// takes a `CancellationToken` after the declared parameters, which nobody
+/// writes. Neither changes what the caller sees, so `ParameterTypes` is the
+/// declared parameters and `ReturnType` the awaited answer.
 let resolveGenericMethod
     (where: string)
     (isStatic: bool)
@@ -1167,6 +1207,8 @@ let resolveGenericMethod
     (name: string)
     (declaredParams: HMType list)
     (declaredReturn: HMType)
+    (awaited: bool)
+    (threadsToken: bool)
     : ResolvedGenericMethod =
 
     let flags = if isStatic then staticFlags else instanceFlags
@@ -1196,11 +1238,16 @@ let resolveGenericMethod
 
         countFrom ps.Length
 
+    // What the method is matched against: the declared parameters, and the
+    // token after them when one is threaded.
+    let matchedParams =
+        if threadsToken then declaredParams @ [ cancellationTokenType ] else declaredParams
+
     let byArity =
         candidates
         |> List.filter (fun m ->
-            declaredParams.Length <= m.GetParameters().Length
-            && declaredParams.Length >= requiredCount m)
+            matchedParams.Length <= m.GetParameters().Length
+            && matchedParams.Length >= requiredCount m)
 
     if byArity.IsEmpty then
         let arities =
@@ -1214,8 +1261,10 @@ let resolveGenericMethod
 
         let shownArities = String.Join(" or ", arities)
 
+        let token = if threadsToken then ", and a CancellationToken after them for the ambient one" else ""
+
         failwithf
-            $"Type Error at %s{where}: '%s{t.FullName}.%s{name}' takes %s{shownArities} argument(s), but the declared signature has %d{declaredParams.Length}."
+            $"Type Error at %s{where}: '%s{t.FullName}.%s{name}' takes %s{shownArities} argument(s), but the declared signature has %d{declaredParams.Length}%s{token}."
 
     let attempt (m: MethodInfo) =
         let typeParams = m.GetGenericArguments() |> Array.map (fun p -> "'" + p.Name) |> Set.ofArray
@@ -1226,9 +1275,16 @@ let resolveGenericMethod
             m.GetParameters()
             |> Array.map (fun p -> mapClrType p.ParameterType)
             |> Array.toList
-            |> List.truncate declaredParams.Length
+            |> List.truncate matchedParams.Length
 
-        let methodReturn = mapClrType m.ReturnType
+        // What the call answers: for an awaited call, what the Task answers.
+        // A method that answers no Task is marked by a type no declaration
+        // can name, so it fits nothing.
+        let methodReturn =
+            if awaited then
+                awaitedResultType m.ReturnType |> Option.defaultValue (TCon("<not a task>", []))
+            else
+                mapClrType m.ReturnType
 
         // A method that answers nothing is declared `void`, which in a Bjolang
         // signature is the unit — there is no way to write the interop void, and
@@ -1243,7 +1299,7 @@ let resolveGenericMethod
                 declaredReturn
 
         let solved =
-            List.zip (methodReturn :: methodParams) (declaredReturn :: declaredParams)
+            List.zip (methodReturn :: methodParams) (declaredReturn :: matchedParams)
             |> List.fold
                 (fun acc (fromMethod, declared) ->
                     acc |> Option.bind (fun s -> solveTypeParams typeParams s fromMethod declared))
@@ -1317,6 +1373,8 @@ let tryResolveMixedGenericMethod
     (name: string)
     (declaredParams: HMType list)
     (declaredReturn: HMType)
+    (awaited: bool)
+    (threadsToken: bool)
     : ResolvedGenericMethod option =
 
     let flags = if isStatic then staticFlags else instanceFlags
@@ -1326,19 +1384,28 @@ let tryResolveMixedGenericMethod
     let sameType (fromMethod: HMType) (declared: HMType) =
         fromMethod = declared || clrStringViewOf fromMethod = Some declared
 
+    // An ordinary overload is matched as the generic ones are: with the token
+    // after the declared parameters, and by what its Task answers.
+    let matchedParams =
+        if threadsToken then declaredParams @ [ cancellationTokenType ] else declaredParams
+
     let exactOrdinary (m: MethodInfo) =
         let ps = m.GetParameters() |> Array.map (fun p -> mapClrType p.ParameterType) |> Array.toList
-        let ret = mapClrType m.ReturnType
 
-        ps.Length = declaredParams.Length
-        && List.forall2 sameType ps declaredParams
-        && (sameType ret declaredReturn || (ret = voidType && declaredReturn = unitType))
+        let ret =
+            if awaited then awaitedResultType m.ReturnType else Some(mapClrType m.ReturnType)
+
+        ps.Length = matchedParams.Length
+        && List.forall2 sameType ps matchedParams
+        && (match ret with
+            | Some ret -> sameType ret declaredReturn || (ret = voidType && declaredReturn = unitType)
+            | None -> false)
 
     if generic.Length = 0 || ordinary.Length = 0 || ordinary |> Array.exists exactOrdinary then
         None
     else
         try
-            Some(resolveGenericMethod where isStatic t name declaredParams declaredReturn)
+            Some(resolveGenericMethod where isStatic t name declaredParams declaredReturn awaited threadsToken)
         with _ ->
             None
 
@@ -2059,38 +2126,6 @@ and resolveMethodReturning
 // Awaiting .NET
 // ---------------------------------------------------------------------------
 
-/// The Bjolang type of a `CancellationToken`, as `mapClrType` spells it.
-///
-/// Named once because two places have to agree on it: the resolver, which
-/// appends it to the argument types so that the token-taking overload is the
-/// one selected, and the emitter, which fills the argument in.
-let cancellationTokenType : HMType = TCon("System.Threading.CancellationToken", [])
-
-/// What `await`ing this .NET type produces, or `None` if it is not awaitable.
-///
-/// Deliberately by name rather than by "has a GetAwaiter": the four types below
-/// are what the BCL's async surface actually returns, and accepting a custom
-/// awaitable would mean accepting one whose awaiter BjoML's builder may not be
-/// able to drive.
-///
-/// A non-generic `Task` produces nothing, which is `void` here — the same thing
-/// a `void` method's call has, so an awaited call performed for its effect is
-/// statement-shaped exactly like an ordinary one.
-///
-/// `ValueTask` is accepted for the direct call and only for that. It may be
-/// consumed once, so it can never become an event; §7.2's third rule is
-/// enforced where `task->event` is, not here.
-let awaitedResultType (t: Type) : HMType option =
-    if t.IsGenericType then
-        match t.GetGenericTypeDefinition().FullName with
-        | "System.Threading.Tasks.Task`1"
-        | "System.Threading.Tasks.ValueTask`1" -> Some(mapClrType (t.GetGenericArguments()[0]))
-        | _ -> None
-    else
-        match t.FullName with
-        | "System.Threading.Tasks.Task"
-        | "System.Threading.Tasks.ValueTask" -> Some voidType
-        | _ -> None
 
 /// Is this a `ValueTask` or a `ValueTask<T>`?
 ///

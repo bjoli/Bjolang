@@ -1,0 +1,31 @@
+;; A case that an imported union has too, used as the function that makes
+;; it.
+;;
+;; Which case such a name means is settled after inference, through a
+;; metavariable, so the reference's type is that variable, solved, and not the
+;; arrow itself. Code generation read the type without following it, took the
+;; reference for a value of the case, and wrote `new Case()` with no payload:
+;; CS7036 for a class union and CS0426 for a struct union. A reference to a
+;; case only this module has got the arrow, and was right.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/cases_published.bjo")      ; Light: Red Amber Green, and Suit: Red Black
+
+;; A class union, a struct union, and nullary cases of the same names as the
+;; imported ones.
+(type (: Note (Union (: Green string) (: Both string string) Plain)))
+(type (: Level (Union (: Red double) Calm)))
+
+(: (-> (-> string Note) string Note))
+(defun (make-note f s) (f s))
+
+(: (-> (-> double Level) double Level))
+(defun (make-level f d) (f d))
+
+(defun (main)
+  (expect "a class union's case as a function" (make-note Green "go") (Green "go"))
+  (expect "a struct union's case as a function" (make-level Red 2.5) (Red 2.5))
+  (expect "mapped over a list" (list-map Green '("a" "b")) (list (Green "a") (Green "b")))
+  (expect "and matched" (match (make-note Green "x") ((Green s) s) (_ "no")) "x")
+  (expect "the imported case is still there" (written (: Amber Light)) "Amber"))

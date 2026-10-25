@@ -2432,6 +2432,11 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             append ctx "."
             append ctx (sanitizeIdent part)
     | TIdent (name, tArgs) ->
+        // Whether a constructor is used as a value or as the function that
+        // makes one is read off this type. A case two unions have is settled
+        // after inference, through a metavariable (`TypeEnv.openCase`), so
+        // its type can be that variable, solved, rather than the arrow.
+        let exprType = NumericLiteral.settled expr.Type
         // Cons/Nil are now builtins backed by SchemeList, not union cases.
         match name with
         // A newtype's constructor as a value: the value it is given is
@@ -2447,7 +2452,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
             let elemTypeStr = elementTypeString expr.Type
             append ctx $"None<%s{elemTypeStr}>()"
         | "Cons" ->
-            match expr.Type with
+            match exprType with
             | TFun (argTypes, _, _) ->
                 // First-class function value: emit a lambda.
                 let argsList = [for i in 0 .. argTypes.Length - 1 -> $"arg{i}"]
@@ -2461,7 +2466,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         // no method group to convert and the lambda has to name the type.
         | "Ok"
         | "Err" when not (Map.containsKey name ctx.UnionCases) ->
-            match expr.Type with
+            match exprType with
             | TFun (_, retType, _) -> append ctx $"(arg0) => {typeToString retType}.{name}(arg0)"
             | _ -> append ctx $"{typeToString expr.Type}.{name}"
         // A case of a struct union, here or imported: a static member of the
@@ -2469,13 +2474,13 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         | _ when
             (structCaseTag
                 ctx.Registry
-                (match expr.Type with
+                (match exprType with
                  | TFun(_, ret, _) -> ret
                  | t -> t)
                 name)
                 .IsSome
             ->
-            match expr.Type with
+            match exprType with
             | TFun (argTypes, retType, _) ->
                 let argsStr = String.concat ", " [ for i in 0 .. argTypes.Length - 1 -> $"arg{i}" ]
                 append ctx $"({argsStr}) => {typeToString retType}.{declaredTypeName name}({argsStr})"
@@ -2488,7 +2493,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
         | Some info ->
             let typeStr = getUnionTypeString expr.Type info.ParentTypeName
             if info.IsDataCase then
-                match expr.Type with
+                match exprType with
                 | TFun (argTypes, _, _) ->
                     // A genuine first-class function value. Roslyn caches
                     // no-capture lambdas, so this allocates once per program.
@@ -2507,7 +2512,7 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
                 append ctx $"({typeStr}){typeStr}.{declaredTypeName name}.Instance"
         | None ->
             let targetName = qualifiedName ctx name
-            match expr.Type with
+            match exprType with
             | TFun (argTypes, _, _) ->
                 // A delegate-typed cast of a value, or for a method a lambda
                 // calling it. Dynamic PGO devirtualizes and inlines a delegate

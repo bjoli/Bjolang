@@ -3,6 +3,35 @@
 
 What each change guarantees, and what it leaves open.
 
+* Generic .NET methods imported #:async and #:cancellable
+
+- A generic method may now be imported ~#:async~. The import is resolved
+  once, against its declared signature, as any generic import is, and the
+  declared result is matched against what the method's ~Task~ or ~ValueTask~
+  answers. ~(: System.Threading.Tasks.Task.Run (-> (-> %a) %a) #:async)~
+  names ~Run<TResult>(Func<TResult>, CancellationToken)~.
+- Unless the import says ~#:uncancellable~, the method has to take a
+  ~CancellationToken~ after the declared parameters, and the ambient token
+  is passed there, as for an async import that is not generic.
+  ~#:cancellable~ threads the token the same way and does not await.
+- This holds for a method group with only generic definitions, which was
+  refused with "not supported for a generic method yet", and for a mixed
+  one, such as ~Task.Run~, whose generic definitions the call site never
+  saw: it offered ~Run(Action)~ and ~Run(Func<Task>)~ for a ~(-> %a)~.
+- The call is awaited and is a yield point, so it is allowed only in a
+  bjoroutine, as before. Used as a value it is refused, as before.
+
+* A case that an imported union has too, used as a function
+
+- ~(list-map Label names)~, where ~Label~ is a case of this module's union
+  and of an imported one, wrote ~new Label()~ with no payload: CS7036 for a
+  class union, and CS0426 for a struct union. Which case such a name means
+  is settled after inference, through a metavariable, so the reference's
+  type was that variable, solved, and code generation read it as not being
+  a function. It now follows the variable, for a case and for a module
+  function used as a value.
+- A case that only one union in scope has was not affected.
+
 * (std interop): Bjolang functions as .NET delegates and event handlers, and null
 
 - ~as-delegate~ makes a delegate of the type the call site expects, such as

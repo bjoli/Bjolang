@@ -1,0 +1,19 @@
+;; A generic method imported #:async with a signature none of its generic
+;; definitions fits.
+;;
+;; The declared result is matched against what each definition's Task
+;; answers. Task.Run<TResult>(Func<TResult>) answers a TResult, not an array
+;; of one, so no generic definition fits. Task.Run has ordinary overloads too,
+;; so the import is left to the call site, as a mixed group's is, and the call
+;; finds no overload either.
+
+;; EXPECT-ERROR: no overload of 'System.Threading.Tasks.Task.Run' accepts
+
+(import (std prelude))
+
+(import/extern
+  (on-pool (: System.Threading.Tasks.Task.Run (-> (-> %a) (Array %a)) #:async #:uncancellable)))
+
+(defbjo (main)
+  (println (on-pool (fun () 1)))
+  0)

@@ -1,0 +1,42 @@
+;; Generic .NET methods imported #:async and #:cancellable.
+;;
+;; A generic import is resolved once, at the import, against its declared
+;; signature. An #:async one is resolved by what its Task answers, which is
+;; what the signature declares; one that threads the ambient token, by a
+;; method that takes a CancellationToken after the declared parameters. The
+;; call is awaited, and the token is passed, as for any other async import.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/extern
+  ;; Task.Run has ordinary overloads too: Run(Action) and Run(Func<Task>).
+  ;; The signature names Run<TResult>(Func<TResult>, CancellationToken).
+  (on-pool       (: System.Threading.Tasks.Task.Run (-> (-> %a) %a) #:async))
+  ;; The same without the token: Run<TResult>(Func<TResult>).
+  (on-pool/plain (: System.Threading.Tasks.Task.Run (-> (-> %a) %a) #:async #:uncancellable))
+  ;; Run<TResult>(Func<Task<TResult>>): the Task the function answers is
+  ;; awaited, and so is the one Run answers.
+  (on-pool/task  (: System.Threading.Tasks.Task.Run (-> (-> (Task %a)) %a) #:async #:uncancellable))
+  (answered      (: System.Threading.Tasks.Task.FromResult (-> %a (Task %a))))
+  ;; WhenAll<TResult>(Task<TResult>[]) beside WhenAll(Task[]).
+  (await-all     (: System.Threading.Tasks.Task.WhenAll (-> (Array (Task %a)) (Array %a))
+                    #:async #:uncancellable)))
+
+(: (-bjo-> int string))
+(defbjo (shown n) (on-pool (fun () (int->string n))))
+
+(defbjo (main)
+  (expect "a generic async import" (on-pool (fun () (+ 40 2))) 42)
+  (expect "at another type" (shown 7) "7")
+  (expect "without the token" (on-pool/plain (fun () "plain")) "plain")
+  (expect "a Task inside" (on-pool/task (fun () (answered 5))) 5)
+  (expect "an array of Tasks" (array->vec (await-all #[(answered "a") (answered "b")])) ["a" "b"])
+  ;; Cancelled before it starts: the ambient token reaches Task.Run.
+  (expect "the ambient token is passed"
+          (ok? (try (with-cancel (cancel)
+                      (cancel (Requested "now"))
+                      (on-pool (fun () 1)))
+                    #:catch (System.OperationCanceledException)))
+          #f)
+  0)

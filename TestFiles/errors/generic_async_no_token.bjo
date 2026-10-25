@@ -1,0 +1,17 @@
+;; A generic method imported #:async that takes no CancellationToken.
+;;
+;; The ambient token is threaded unless the import says #:uncancellable, so the
+;; method has to take one after the declared parameters. WhenAll<TResult>
+;; takes none.
+
+;; EXPECT-ERROR: has no overload taking a System.Threading.CancellationToken
+
+(import (std prelude))
+
+(import/extern
+  (answered  (: System.Threading.Tasks.Task.FromResult (-> %a (Task %a))))
+  (await-all (: System.Threading.Tasks.Task.WhenAll (-> (Array (Task %a)) (Array %a)) #:async)))
+
+(defbjo (main)
+  (println (await-all #[(answered 1)]))
+  0)

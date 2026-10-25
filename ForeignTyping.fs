@@ -412,8 +412,11 @@ let internal genericExternMeta
       Outs = outs
       IsStatic = not info.IsInstance
       Exceptions = info.Exceptions
-      Await = false
-      AmbientToken = false
+      // As the import resolved it: an `#:async` one by what its Task answers,
+      // which `retType` already is, and one threading the token by a method
+      // that takes it last. See `CheckDecl`'s `awaited` and `threadsToken`.
+      Await = info.IsAsync
+      AmbientToken = (info.IsAsync || info.Cancellable) && not info.Uncancellable
       Blocking = info.IsBlocking
       Syntax = ByName }
 

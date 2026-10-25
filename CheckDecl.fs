@@ -2132,9 +2132,17 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
             // A group with both kinds is resolved here too when the signature
             // names one of its generic definitions and none of its ordinary
             // overloads: see `tryResolveMixedGenericMethod`.
+            //
+            // An `#:async` import is resolved by what its Task answers, and
+            // one that threads the ambient token by a method that takes it
+            // after the declared parameters. The call site reads the same two
+            // facts back off the clause, in `genericExternMeta`.
+            let awaited = spec.IsAsync
+            let threadsToken = (spec.IsAsync || spec.Cancellable) && not spec.Uncancellable
+
             let mixedGeneric () =
                 match declaredType with
-                | Some(TFun(declaredParams, declaredReturn, _)) when not spec.IsAsync && not spec.Cancellable ->
+                | Some(TFun(declaredParams, declaredReturn, _)) ->
                     let methodParams =
                         if not isInstance then Some declaredParams
                         else
@@ -2144,7 +2152,8 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
 
                     methodParams
                     |> Option.bind (fun ps ->
-                        DotNetInterop.tryResolveMixedGenericMethod where (not isInstance) clrType memberName ps declaredReturn)
+                        DotNetInterop.tryResolveMixedGenericMethod
+                            where (not isInstance) clrType memberName ps declaredReturn awaited threadsToken)
                     |> Option.map (fun resolved ->
                         let normalized =
                             if resolved.ReturnType = declaredReturn then
@@ -2165,10 +2174,6 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                     | Some resolved -> resolved
                     | None -> None, declaredType
                 else
-                    if spec.IsAsync || spec.Cancellable then
-                        failwithf
-                            $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' is generic, and #:async and #:cancellable are not supported for a generic method yet. Its type arguments are solved from the declared signature, which has no room to say what a threaded token or an unwrapped task does to them."
-
                     match declaredType with
                     | Some(TFun(declaredParams, declaredReturn, _)) ->
                         // The receiver is the alias's first parameter and
@@ -2192,6 +2197,8 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                                 memberName
                                 methodParams
                                 declaredReturn
+                                awaited
+                                threadsToken
 
                         // A method that answers nothing keeps the *interop*
                         // void as its type, not the unit the signature spells

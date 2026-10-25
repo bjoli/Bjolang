@@ -1193,6 +1193,14 @@ Some method groups have both generic definitions and ordinary overloads, as ~Vec
   (load         (: System.Runtime.Intrinsics.Vector256.Create (-> (Array %a) int (V256 %a))))) ; Create<T>(T[], int)
 #+END_SRC
 
+A generic method may be imported ~#:async~ and ~#:cancellable~ too. The declared result is what the method's ~Task~ answers, as for any ~#:async~ import, and the import is resolved by it. Unless the import says ~#:uncancellable~, the ambient token is threaded, so the method has to take a ~CancellationToken~ after the declared parameters:
+#+BEGIN_SRC scheme
+(import/extern
+  (on-pool   (: System.Threading.Tasks.Task.Run (-> (-> %a) %a) #:async))      ; Run<T>(Func<T>, CancellationToken)
+  (await-all (: System.Threading.Tasks.Task.WhenAll (-> (Array (Task %a)) (Array %a))
+                #:async #:uncancellable)))                                     ; WhenAll<T>(Task<T>[])
+#+END_SRC
+
 **** What crosses, and how
 | .NET                 | Bjolang            |
 |----------------------+--------------------|
