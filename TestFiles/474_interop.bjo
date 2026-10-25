@@ -10,13 +10,14 @@
   ((Action %a)   (: System.Action))
   ((Conv %a %b)  (: System.Converter))
   ((Pred %a)     (: System.Predicate))
-  ((Nullable %a) (: System.Nullable)))
+  ((Nullable %a) (: System.Nullable))
+  (ClrString     (: System.String)))
 
 (import/extern
   (array-convert  (: System.Array.ConvertAll (-> (Array %a) (Conv %a %b) (Array %b))))
   (array-find     (: System.Array.FindIndex (-> (Array %a) (Pred %a) int)))
   (clr-type-of    (: System.Object.GetType (-> Object ClrType)))
-  (null?          (: System.Object.ReferenceEquals (-> Object Object bool)))
+  (null-or-empty? (: System.String.IsNullOrEmpty (-> ClrString bool)))
   (dynamic-invoke (: System.Delegate.DynamicInvoke (-> Delegate (Array Object) Object))))
 
 (defun (main)
@@ -62,7 +63,12 @@
 
   ;; --- clr-default ---------------------------------------------------------
   (expect "a nullable default has no value" (.-HasValue (: (clr-default) (Nullable int))) #f)
-  (expect "an object default is null" (null? (: (clr-default) Object) (: (clr-default) Object)) #t)
+  ;; A default string is null and not "": IsNullOrEmpty holds, and Length
+  ;; would throw.
+  (expect "a string default is null" (null-or-empty? (: (clr-default) ClrString)) #t)
+  (expect "it is not a string" (ok? (try (.-Length (: (clr-default) ClrString))
+                                         #:catch (System.NullReferenceException)))
+          #f)
   (expect "a number default is zero" (: (clr-default) int) 0)
 
   ;; --- what does not fit ---------------------------------------------------
