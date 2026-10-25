@@ -116,6 +116,9 @@ type private Head =
     /// `(:is ...)` and `(:view ...)`. Refutable by something nothing here can
     /// enumerate, so it covers nothing.
     | HNever
+    /// An `(and ...)` whose parts no value matches together, such as
+    /// `(and 1 2)`. It covers nothing, and a clause made of one can never run.
+    | HEmpty
 
 let private nowhere =
     { Start = { Line = 0; Column = 0 }
@@ -282,6 +285,70 @@ let private rangeOf (pat: TypedPattern) : IntRange option =
             narrowed |> Option.bind (fun (l, h) -> range l h)
         | _ -> None
 
+/// The constant a number literal of a type with no modelled range stands for.
+/// A real is keyed by its value, because `1.0` and `1.00` are the same label in
+/// C# and a duplicate label is CS0152 there.
+let private numberConst (pat: TypedPattern) (text: string) : string =
+    let invariant = System.Globalization.CultureInfo.InvariantCulture
+    let digits = (NumericLiteral.digits text).Replace("_", "")
+
+    match NumericLiteral.settled pat.Type with
+    | TCon(TypeConstants.DecimalName, []) ->
+        match System.Decimal.TryParse(digits, System.Globalization.NumberStyles.Float, invariant) with
+        // The division drops trailing zeros, which `decimal` keeps as scale.
+        | true, v -> "m:" + (v / 1.0000000000000000000000000000m).ToString(invariant)
+        | _ -> text
+    | t when NumericLiteral.holdsFraction t ->
+        match System.Double.TryParse(digits, System.Globalization.NumberStyles.Float, invariant) with
+        | true, v -> "d:" + v.ToString("R", invariant)
+        | _ -> text
+    | _ -> text
+
+/// Both patterns at once, as one pattern in the place of the first.
+let private both (a: TypedPattern) (b: TypedPattern) : TypedPattern = { a with Node = TPAnd [ a; b ] }
+
+/// The head of the values that two heads both match. Neither is `HWild` or
+/// `HOr`; the caller removed those.
+///
+/// Two constructors that are the same are met field by field, and two that
+/// differ match no value together. A record pattern holds every field of its
+/// record (see `TypeEnv`), so two of one record line up field by field too.
+let private meet (h1: Head) (h2: Head) : Head =
+    match h1, h2 with
+    | HEmpty, _
+    | _, HEmpty -> HEmpty
+    | HCtor(CRange a, _), HCtor(CRange b, _) ->
+        let lo = max a.Lo b.Lo
+        let hi = min a.Hi b.Hi
+
+        if lo > hi then
+            HEmpty
+        else
+            HCtor(CRange { a with Lo = lo; Hi = hi; Shown = false }, [])
+    | HCtor(c1, a1), HCtor(c2, a2) ->
+        if c1 = c2 && a1.Length = a2.Length then
+            HCtor(c1, List.map2 both a1 a2)
+        else
+            HEmpty
+    // Two sequences: a fixed length has to be one the other allows, and the
+    // leading elements are met pairwise. The rest of a rest pattern is a
+    // binder, so it adds nothing to the elements it stands for.
+    | HSeq(i1, t1), HSeq(i2, t2) ->
+        let shorter, longer, shorterOpen, longerTail =
+            if i1.Length <= i2.Length then i1, i2, t1.IsSome, t2 else i2, i1, t2.IsSome, t1
+
+        // A fixed length meets the other only at a length it allows. When the
+        // shorter one is fixed, that is its own length, and the result is
+        // fixed too.
+        if shorterOpen then
+            let n = shorter.Length
+            HSeq(List.map2 both shorter (List.take n longer) @ List.skip n longer, longerTail)
+        elif shorter.Length = longer.Length then
+            HSeq(List.map2 both shorter longer, None)
+        else
+            HEmpty
+    | _ -> HNever
+
 let rec private headOf (pat: TypedPattern) : Head =
     match rangeOf pat with
     | Some r -> HCtor(CRange r, [])
@@ -291,7 +358,7 @@ let rec private headOf (pat: TypedPattern) : Head =
     | TPWildcard
     | TPIdent _ -> HWild
     | TPBool b -> HCtor(CBool b, [])
-    | TPInt v -> HCtor(CConst v, [])
+    | TPInt v -> HCtor(CConst(numberConst pat v), [])
     | TPString v -> HCtor(CConst v, [])
     | TPChar c -> HCtor(CConst(string c), [])
     | TPKeyword k -> HCtor(CConst k, [])
@@ -305,14 +372,20 @@ let rec private headOf (pat: TypedPattern) : Head =
     // A comparison of a `double` or a `decimal`, whose ranges are not
     // modelled. It is emitted as a guard, so it covers nothing, as a view does.
     | TPCompare _ -> HNever
-    // An `and` matches the *intersection* of its conjuncts, and a matrix column
-    // holds one head constructor. A conjunct that cannot fail rules nothing
-    // out, so it is dropped; one that can and stands alone is the whole of what
-    // the conjunction matches. Two that can is an intersection nothing here
-    // spells, and it covers nothing rather than being over-reported.
+    // An `and` matches the *intersection* of its conjuncts. A conjunct that
+    // cannot fail rules nothing out, so it is dropped; one that can and stands
+    // alone is the whole of what the conjunction matches. Several are met into
+    // one head, because C# works out the same intersection of the same
+    // patterns and refuses a label that it proves empty or covered (CS8120).
     | TPAnd alts ->
+        let rec flatten (p: TypedPattern) =
+            match p.Node with
+            | TPAnd inner -> inner |> List.collect flatten
+            | _ -> [ p ]
+
         let refutable =
             alts
+            |> List.collect flatten
             |> List.filter (fun alt ->
                 match headOf alt with
                 | HWild -> false
@@ -321,7 +394,35 @@ let rec private headOf (pat: TypedPattern) : Head =
         match refutable with
         | [] -> HWild
         | [ only ] -> headOf only
-        | _ -> HNever
+        | _ ->
+            // An `or` among the parts is distributed over the others:
+            // `(and (or a b) c)` is `(or (and a c) (and b c))`.
+            match refutable |> List.tryFindIndex (fun p -> match p.Node with TPOr _ -> true | _ -> false) with
+            | Some i ->
+                let others = refutable |> List.removeAt i
+
+                match refutable[i].Node with
+                | TPOr ors -> HOr(ors |> List.map (fun o -> { pat with Node = TPAnd(o :: others) }))
+                | _ -> HNever
+            | None ->
+                let heads = refutable |> List.map headOf
+
+                let modelled =
+                    heads
+                    |> List.filter (function
+                        | HNever -> false
+                        | _ -> true)
+
+                // An empty intersection is empty also with a view or a type
+                // test beside it. Otherwise such a part decides by running
+                // code, and the conjunction covers nothing.
+                match modelled with
+                | [] -> HNever
+                | _ ->
+                    match List.reduce meet modelled with
+                    | HEmpty -> HEmpty
+                    | _ when modelled.Length < heads.Length -> HNever
+                    | met -> met
     | TPVec(items, tailOpt)
     | TPArray(items, tailOpt) ->
         // A rest that is itself refutable constrains lengths this does not
@@ -487,6 +588,7 @@ let rec private specializeRow (asQuery: bool) (c: Ctor) (fields: HMType list) (r
         match headOf head with
         | HWild -> [ wilds () @ rest ]
         | HNever -> if asQuery then [ wilds () @ rest ] else []
+        | HEmpty -> []
         | HOr alts -> alts |> List.collect (fun alt -> specializeRow asQuery c fields (alt :: rest))
         | HCtor(written, args) -> if covers written c then [ args @ rest ] else []
         | HSeq(items, tailOpt) ->
@@ -526,6 +628,7 @@ let rec private defaultRow (row: Row) : Row list =
         | HWild -> [ rest ]
         | HOr alts -> alts |> List.collect (fun alt -> defaultRow (alt :: rest))
         | HNever
+        | HEmpty
         | HCtor _
         | HSeq _ -> []
 
@@ -551,6 +654,7 @@ let rec private useful (registry: TraitRegistry) (types: HMType list) (matrix: R
             |> List.exists (useful registry (fields @ restTypes) (specialize false c fields matrix))
 
         match headOf head with
+        | HEmpty -> false
         | HOr alts -> alts |> List.exists (fun alt -> useful registry types matrix (alt :: queryRest))
         | queryHead ->
             // The query's own head joins the column, because the length classes
@@ -566,7 +670,8 @@ let rec private useful (registry: TraitRegistry) (types: HMType list) (matrix: R
                 // A rest pattern in the query makes the classes finite, so the
                 // signature above was `Some`.
                 | HSeq _
-                | HOr _ -> raise Undecidable
+                | HOr _
+                | HEmpty -> raise Undecidable
 
 // ---------------------------------------------------------------------------
 // Counterexamples
@@ -830,6 +935,43 @@ let private coverageNote (clauses: TMatchClause list) =
 
     runs + ranges
 
+/// The message for a pattern that no value matches, such as `(and 1 2)` or
+/// `(:between 9 0)`.
+let private matchesNoValue =
+    "this pattern matches no value, so its clause can never run. An (and ...) whose parts cannot match the same value, or a comparison whose bounds leave no value between them, does this."
+
+/// Every alternative of a clause's top-level `or` has to be reachable past the
+/// clauses above and the alternatives before it.
+///
+/// Codegen gives each of these alternatives a `case` label of its own, and C#
+/// refuses a label that an earlier one covers (CS8120, CS0152). An earlier
+/// alternative counts as covering also under a guard, because the guard is the
+/// same for each alternative of the clause.
+let private checkAlternatives (registry: TraitRegistry) (scrutinee: HMType) (covered: Row list) (pat: TypedPattern) =
+    let rec flatten (p: TypedPattern) =
+        match p.Node with
+        | TPOr alts -> alts |> List.collect flatten
+        | _ -> [ p ]
+
+    match pat.Node with
+    | TPOr _ ->
+        flatten pat
+        |> List.fold
+            (fun (above: Row list) alt ->
+                let row = [ normalize alt ]
+
+                if not (useful registry [ scrutinee ] [] row) then
+                    failwithf $"Pattern Error at %s{formatPos alt.Range}: %s{matchesNoValue}"
+
+                if not (useful registry [ scrutinee ] above row) then
+                    failwithf
+                        $"Pattern Error at %s{formatPos alt.Range}: this alternative can never run — the clauses above and the alternatives before it already match everything it does."
+
+                above @ [ row ])
+            covered
+        |> ignore
+    | _ -> ()
+
 /// A `#:when` guard may fail, so a guarded clause covers nothing — but it is
 /// still checked for being reachable.
 let private checkMatch (registry: TraitRegistry) (range: Range) (scrutinee: HMType) (clauses: TMatchClause list) =
@@ -839,9 +981,14 @@ let private checkMatch (registry: TraitRegistry) (range: Range) (scrutinee: HMTy
         for clause in clauses do
             let row = [ normalize clause.Pattern ]
 
+            if not (useful registry [ scrutinee ] [] row) then
+                failwithf $"Pattern Error at %s{formatPos clause.Pattern.Range}: %s{matchesNoValue}"
+
             if not (useful registry [ scrutinee ] covered row) then
                 failwithf
                     $"Pattern Error at %s{formatPos clause.Pattern.Range}: this clause can never run — the clauses above it already match everything it does."
+
+            checkAlternatives registry scrutinee covered clause.Pattern
 
             if clause.Guard.IsNone then
                 covered <- covered @ [ row ]

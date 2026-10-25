@@ -1,0 +1,90 @@
+;; A `(:is ...)` covers nothing, so a clause below it that tests a type it
+;; already tested is reachable to Bjolang. C# knows the class hierarchy, and
+;; refuses such a label (CS8120) when the type test is in it. These compile
+;; because the type test is in the guard, and they take the first clause that
+;; matches.
+
+(import (std prelude))
+(import (std simpletest))
+(import/class
+  (StringBuilder (: System.Text.StringBuilder (-> StringBuilder)))
+  (ArgEx (: System.ArgumentException (-> string ArgEx))))
+
+(: (-> System.Object string))
+(defun (same-type-twice o)
+  (match o
+    ((:is string s) s)
+    ((:is string) "string again")
+    (_ "other")))
+
+(: (-> System.Object string))
+(defun (base-first o)
+  (match o
+    ((:is System.Exception) "exception")
+    ((:is System.ArgumentException) "argument exception")
+    (_ "other")))
+
+(: (-> System.Object string))
+(defun (object-first o)
+  (match o
+    ((:is System.Object) "object")
+    ((:is string) "string")
+    (_ "null")))
+
+;; An `or` of type tests, as labels of their own and as one C# `or` pattern.
+(: (-> System.Object string))
+(defun (text-like o)
+  (match o
+    ((or (:is string) (:is System.Text.StringBuilder)) "text")
+    (_ "other")))
+
+(: (-> System.Object string))
+(defun (text-like-some o)
+  (match (Some o)
+    ((Some (or (:is string) (:is System.Exception))) "string or exception")
+    (_ "other")))
+
+;; Nested, with a binder, and a second clause on the same type.
+(: (-> System.Object string))
+(defun (some-string o)
+  (match (Some o)
+    ((Some (:is string s)) s)
+    ((Some (:is string)) "string again")
+    (_ "other")))
+
+;; In a switch expression.
+(: (-> System.Object string))
+(defun (message o)
+  (string-append ""
+                 (match o
+                   ((:is System.Exception e) (.-Message e))
+                   ((:is System.Exception) "exception again")
+                   (_ "other"))))
+
+;; Under a guard that reads the binder.
+(: (-> System.Object string))
+(defun (long-string o)
+  (match o
+    ((:is string s) #:when (> (string-length s) 3) "long")
+    ((:is string s) s)
+    (_ "other")))
+
+(defun (main args)
+  (def text (cast System.Object "words"))
+  (def builder (cast System.Object (StringBuilder.)))
+  (def failure (cast System.Object (ArgEx. "bad")))
+
+  (expect "the same type twice: the first" (same-type-twice text) "words")
+  (expect "the same type twice: neither" (same-type-twice builder) "other")
+  (expect "a base type first" (base-first failure) "exception")
+  (expect "object first" (object-first text) "object")
+  (expect "an or of type tests" (text-like builder) "text")
+  (expect "an or of type tests: neither" (text-like failure) "other")
+  (expect "a nested or of type tests" (text-like-some failure) "string or exception")
+  (expect "a nested or of type tests: neither" (text-like-some builder) "other")
+  (expect "a nested type test" (some-string text) "words")
+  (expect "a type test in a switch expression" (message failure) "bad")
+  (expect "a guard that reads the binder" (long-string text) "long")
+  (expect "a guard that reads the binder: short" (long-string (cast System.Object "ab")) "ab")
+  (println "469 ok")
+  0)

@@ -112,6 +112,8 @@ You can use the spread operator =...= at the end of a sequence pattern to match 
 
 The =:is= pattern matches if the value is of the specified type. It can optionally bind the typed value to a name.
 
+A type test covers nothing in the exhaustiveness check, the same as a view. So a clause below =(:is System.Exception)= that tests for =(:is System.ArgumentException)= compiles, and no value reaches it. Put the more specific type first.
+
 #+BEGIN_SRC scheme
 (match obj
   ((:is System.String) "it's a string")
@@ -136,8 +138,8 @@ The =step= can be a function or an accessor form (e.g., =(& .Property)=).
 
 You can combine patterns using =or= and =and=.
 
-- =(or p1 p2 ...)= matches if any of the patterns match. Because only one alternative runs, an =or= pattern alternative cannot run views or bind variables.
-- =(and p1 p2 ...)= matches if all patterns match the value. Bound names must not be duplicated among the alternatives.
+- =(or p1 p2 ...)= matches if any of the patterns match. Because only one alternative runs, an =or= pattern alternative cannot run views or bind variables. Each alternative of a clause's =or= must be reachable: =(or 3 3)=, or =(or 3 4)= below a clause for =3=, is an error.
+- =(and p1 p2 ...)= matches if all patterns match the value. Bound names must not be duplicated among the alternatives. The exhaustiveness check works out what the parts match together: =(and (:at-least 0) (:at-most 9))= covers the digits, and =(and 1 2)= matches no value, which is an error. A part that is a view or a type test decides by running code, so an =and= that holds one covers nothing.
 
 #+BEGIN_SRC scheme
 (match x

@@ -1316,6 +1316,9 @@ let rec private isIrrefutablePattern (p: TypedPattern) =
     // Every conjunct has to match, so the conjunction fails as soon as any of
     // them can.
     | TPAnd alts -> alts |> List.forall isIrrefutablePattern
+    // One alternative that cannot fail is enough. C# proves this too, and
+    // rejects a fallback arm after `(3 or _)` (CS8510).
+    | TPOr alts -> alts |> List.exists isIrrefutablePattern
     | _ -> false
 
 /// A clause that matches unconditionally; anything after it is dead code.
@@ -1723,10 +1726,15 @@ let private foreignTypeArguments (meta: DotNetMethodMetadata option) =
 /// The label carries `Name` as a `var` designation where the view stood, and
 /// the test itself goes into the clause's guard — which is the only place a
 /// pattern may run code. `Applied` is the step already applied to that name.
+///
+/// `TypeTests` is set for a fragment that holds a `(:is ...)`. Its `Inner` is
+/// then emitted with each type test as a C# type pattern, which is legal there
+/// because the guard is not a label C# checks for subsumption.
 type ViewFragment =
     { Name: string
       Applied: TypedExpr
-      Inner: TypedPattern }
+      Inner: TypedPattern
+      TypeTests: bool }
 
 /// The same pattern with its binders spelled as `locals` says.
 ///
@@ -1778,7 +1786,7 @@ let private generateStringTest
           Range = pat.Range
           Node = TPBool true }
 
-    views.Add { Name = name; Applied = test; Inner = isTrue }
+    views.Add { Name = name; Applied = test; Inner = isTrue; TypeTests = false }
     append ctx $"var %s{name}"
 
 /// Whether the case `name` of the union type `t` is `null` at run time.
@@ -1813,15 +1821,57 @@ let private caseTypeString (ctx: CodegenContext) (pat: TypedPattern) (name: stri
         | Some info -> $"{getUnionTypeString pat.Type info.ParentTypeName}.{declaredTypeName name}"
         | None -> $"{typeToString pat.Type}.{declaredTypeName name}"
 
+/// Whether a `(:is ...)` stands anywhere in the pattern.
+let rec private holdsTypeTest (pat: TypedPattern) : bool =
+    match pat.Node with
+    | TPTypeTest _ -> true
+    | _ ->
+        let mutable found = false
+
+        pat
+        |> TypeVisitor.mapPatternChildrenWith
+            id
+            (fun child ->
+                found <- found || holdsTypeTest child
+                child)
+        |> ignore
+
+        found
+
 /// Translates a typed pattern into C# pattern syntax.
 ///
 /// Every view in the pattern is appended to `views` and stands in the label as
 /// a designation. The caller emits the fragments as a guard; both callers are
 /// clause emitters, and a clause is the only place a pattern is written.
-let rec generatePattern (ctx: CodegenContext) (views: ResizeArray<ViewFragment>) (pat: TypedPattern) : unit =
-    let generatePattern ctx pat = generatePattern ctx views pat
+///
+/// A `(:is ...)` is a view too, unless `typeTests` is set. `Exhaustiveness`
+/// counts a type test as covering nothing, but C# knows the class hierarchy and
+/// refuses a label that an earlier type pattern covers (CS8120). In the guard,
+/// C# proves nothing, so the two checks agree. An `(or ...)` that holds a type
+/// test goes to the guard whole, because C# allows no designation inside an
+/// `or` pattern.
+let rec private generatePatternIn
+    (typeTests: bool)
+    (ctx: CodegenContext)
+    (views: ResizeArray<ViewFragment>)
+    (pat: TypedPattern)
+    : unit =
+    let generatePattern ctx pat = generatePatternIn typeTests ctx views pat
+
+    let toGuard () =
+        let name = freshName "__is"
+
+        let bound: TypedExpr =
+            { Type = pat.Type
+              Range = pat.Range
+              Node = TIdent(name, []) }
+
+        views.Add { Name = name; Applied = bound; Inner = pat; TypeTests = true }
+        append ctx $"var %s{name}"
 
     match pat.Node with
+    | TPTypeTest _
+    | TPOr _ when not typeTests && holdsTypeTest pat -> toGuard ()
     | TPWildcard -> append ctx "_"
     | TPIdent name -> append ctx $"var {sanitizeIdent name}"
     // A constant pattern, spelled for the scrutinee's type like any other
@@ -1900,7 +1950,7 @@ let rec generatePattern (ctx: CodegenContext) (views: ResizeArray<ViewFragment>)
 
         let isTrue: TypedPattern = { Type = bool; Range = pat.Range; Node = TPBool true }
 
-        views.Add { Name = name; Applied = test; Inner = isTrue }
+        views.Add { Name = name; Applied = test; Inner = isTrue; TypeTests = false }
         append ctx $"var %s{name}"
     | TPCompare bounds ->
         let isChar =
@@ -2072,8 +2122,16 @@ let rec generatePattern (ctx: CodegenContext) (views: ResizeArray<ViewFragment>)
                   Range = pat.Range
                   Node = TApply(step, [ argument ], []) }
 
-        views.Add { Name = name; Applied = applied; Inner = inner }
+        views.Add { Name = name; Applied = applied; Inner = inner; TypeTests = false }
         append ctx $"var %s{name}"
+
+/// A pattern in a label, with its views and type tests left to the guard.
+let generatePattern (ctx: CodegenContext) (views: ResizeArray<ViewFragment>) (pat: TypedPattern) : unit =
+    generatePatternIn false ctx views pat
+
+/// A view's inner pattern, as the guard tests it.
+let private generateViewInner (ctx: CodegenContext) (views: ResizeArray<ViewFragment>) (view: ViewFragment) : unit =
+    generatePatternIn view.TypeTests ctx views view.Inner
 
 // ---------------------------------------------------------------------------
 // Operators
@@ -4992,7 +5050,7 @@ and private generateGuardJoined
         next ()
         generateExpr guardCtx view.Applied
         append ctx " is "
-        generatePattern ctx views view.Inner
+        generateViewInner ctx views view
         i <- i + 1
 
     match guard with
@@ -5112,7 +5170,11 @@ and private generateMatch
                     // A label per alternative means a set of view names per
                     // alternative too, which is what the fresh list is for.
                     let views = ResizeArray()
-                    generatePattern c views label
+                    // C# reads `case _:` as a constant named `_`, so a
+                    // wildcard alternative is written as a discarded var.
+                    match label.Node with
+                    | TPWildcard -> append c "var _"
+                    | _ -> generatePattern c views label
                     generateClauseGuard c views clause.Guard
                     appendLine c ":"
 

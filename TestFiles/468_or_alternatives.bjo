@@ -1,0 +1,78 @@
+;; An `(or ...)` whose alternatives each get a `case` label of their own. The
+;; dead ones are refused in `TestFiles/errors/`; these are the live ones, and
+;; they have to come out as C# that compiles.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type (: Colour (Enum Red Green Blue)))
+
+;; A wildcard alternative is a label too. `case _:` is not C#.
+(: (-> int string))
+(defun (three-or-any n)
+  (match n
+    ((or 3 _) "any")))
+
+(: (-> int string))
+(defun (one-then-rest n)
+  (match n
+    (1 "one")
+    ((or 3 _) "rest")))
+
+;; The same in a switch expression, where C# refuses a fallback arm after an
+;; arm that covers everything.
+(: (-> int int))
+(defun (plus-one n)
+  (+ 1 (match n ((or 3 _) 1))))
+
+;; Nested, where the alternatives stay one C# `or` pattern.
+(: (-> (Option int) string))
+(defun (some-any o)
+  (match o
+    ((Some (or 3 _)) "some")
+    (None "none")))
+
+;; Alternatives spelled for the type and different in value.
+(: (-> double string))
+(defun (real d)
+  (match d
+    ((or 3.0 4.5) "listed")
+    (1 "one")
+    (_ "other")))
+
+(: (-> decimal string))
+(defun (money d)
+  (match d
+    ((or 1.0 1.5) "listed")
+    (_ "other")))
+
+;; A guard with alternatives that are each live.
+(: (-> int string))
+(defun (guarded n)
+  (match n
+    ((or 3 4) #:when (> n 3) "four")
+    (_ "other")))
+
+(: (-> Colour string))
+(defun (shade c)
+  (match c
+    ((or Red Green) "warm")
+    (Blue "cool")))
+
+(defun (main args)
+  (expect "a wildcard alternative" (three-or-any 7) "any")
+  (expect "a wildcard alternative, its literal" (three-or-any 3) "any")
+  (expect "a wildcard alternative after a clause" (one-then-rest 1) "one")
+  (expect "a wildcard alternative after a clause, the rest" (one-then-rest 9) "rest")
+  (expect "a wildcard alternative in a switch expression" (plus-one 5) 2)
+  (expect "a nested wildcard alternative" (some-any (Some 8)) "some")
+  (expect "real alternatives" (real 4.5) "listed")
+  (expect "a real written as an integer" (real 1.0) "one")
+  (expect "a real that is not listed" (real 2.0) "other")
+  (expect "decimal alternatives" (money 1.50M) "listed")
+  (expect "a decimal that is not listed" (money 2.0M) "other")
+  (expect "a guarded alternative that passes" (guarded 4) "four")
+  (expect "a guarded alternative that fails" (guarded 3) "other")
+  (expect "union alternatives" (shade Green) "warm")
+  (println "468 ok")
+  0)

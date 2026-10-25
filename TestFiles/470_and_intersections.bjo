@@ -1,0 +1,82 @@
+;; An `(and ...)` with several parts that can fail matches what they all
+;; match. The exhaustiveness check works out that intersection, as C# does for
+;; the same patterns, so the two agree on which clauses are covered. The
+;; patterns that match nothing, and the clauses an intersection covers, are
+;; refused in `TestFiles/errors/`.
+
+(import (std prelude))
+(import (std simpletest))
+
+(type
+  (: Car (Record (: brand string) (: year int))))
+
+;; Two ranges are one range, and the clauses around it cover the rest of
+;; `int` without a `_`.
+(: (-> int string))
+(defun (digit n)
+  (match n
+    ((and (:at-least 0) (:at-most 9)) "digit")
+    ((:less-than 0) "negative")
+    ((:greater-than 9) "big")))
+
+;; The same constructor twice is met field by field.
+(: (-> (Option int) string))
+(defun (positive o)
+  (match o
+    ((and (Some x) (Some (:at-least 1))) #"positive ${x}")
+    ((Some _) "not positive")
+    (None "none")))
+
+(: (-> (Tuple bool bool) string))
+(defun (both-true p)
+  (match p
+    ((and (Tuple #t _) (Tuple _ #t)) "both")
+    (_ "not both")))
+
+;; An `or` inside an `and` is distributed over the other parts: this is 2.
+(: (-> int string))
+(defun (two n)
+  (match n
+    ((and (or 1 2) (or 2 3)) "two")
+    (_ "other")))
+
+;; A fixed length and a rest pattern meet at the fixed length.
+(: (-> (Vec int) string))
+(defun (pair v)
+  (match v
+    ((and [a b] [x y rest ...]) #"${a} ${y}")
+    (_ "other")))
+
+(: (-> Car string))
+(defun (old-volvo c)
+  (match c
+    ((and (Car (year (:at-most 1990))) (Car (brand "volvo"))) "old volvo")
+    (_ "other")))
+
+;; A view beside the ranges decides by running code, so the clause covers
+;; nothing, and the clause below it is still reachable.
+(: (-> int string))
+(defun (even-digit n)
+  (match n
+    ((and (:at-least 0) (:at-most 9) (:view even? #t)) "even digit")
+    ((and (:at-least 0) (:at-most 9)) "odd digit")
+    (_ "other")))
+
+(defun (main args)
+  (expect "a range of two ranges" (digit 5) "digit")
+  (expect "below it" (digit -1) "negative")
+  (expect "above it" (digit 10) "big")
+  (expect "a constructor met field by field" (positive (Some 3)) "positive 3")
+  (expect "a constructor met field by field: the field fails" (positive (Some 0)) "not positive")
+  (expect "two tuples" (both-true (Tuple #t #t)) "both")
+  (expect "two tuples: one fails" (both-true (Tuple #t #f)) "not both")
+  (expect "an or in an and" (two 2) "two")
+  (expect "an or in an and: in one or only" (two 1) "other")
+  (expect "a fixed length and a rest" (pair [1 2]) "1 2")
+  (expect "a fixed length and a rest: longer" (pair [1 2 3]) "other")
+  (expect "two record patterns" (old-volvo (Car (brand "volvo") (year 1980))) "old volvo")
+  (expect "two record patterns: one fails" (old-volvo (Car (brand "volvo") (year 2000))) "other")
+  (expect "a view beside ranges" (even-digit 4) "even digit")
+  (expect "a view beside ranges: the view fails" (even-digit 3) "odd digit")
+  (println "470 ok")
+  0)
