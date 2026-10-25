@@ -2865,12 +2865,20 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
 
     // A constant cast is checked by C# as constant arithmetic is: see
     // `isCsConstant`. `(cast System.Byte 300)` wraps, as the docs say.
+    //
+    // A cast from a type parameter goes through `object`, because C# refuses
+    // `(C)x` for a `T x` unless C is an interface (CS0030).
     | TCast (target, t) ->
         let constant = isCsConstant target
+        let fromTypeParam =
+            match NumericLiteral.settled target.Type, NumericLiteral.settled t with
+            | TVar a, TVar b when a = b -> false
+            | TVar _, _ -> true
+            | _ -> false
         if constant then append ctx "unchecked("
         append ctx "(("
         append ctx (typeToString t)
-        append ctx ")("
+        append ctx (if fromTypeParam then ")(object)(" else ")(")
         generateExpr ctx target
         append ctx "))"
         if constant then append ctx ")"

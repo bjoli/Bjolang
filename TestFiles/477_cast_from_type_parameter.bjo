@@ -1,0 +1,37 @@
+;; A cast from a value of a type parameter's type.
+;;
+;; C# refuses `(C)x` for a `T x` unless C is an interface (CS0030), so the
+;; cast goes through `object`: `(C)(object)x`. This holds for a signature's
+;; type variable and for a local helper whose parameter inference left
+;; generic.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std interop))
+
+(import/class
+  (StringBuilder (: System.Text.StringBuilder (-> StringBuilder)))
+  (Formattable (: System.IFormattable))
+  (Culture (: System.IFormatProvider)))
+
+(: (-> %a StringBuilder))
+(defun (as-builder x) (cast StringBuilder x))
+
+(: (-> %a Formattable))
+(defun (as-formattable x) (cast Formattable x))
+
+(: (-> %a int))
+(defun (as-int x) (cast int x))
+
+(: (-> %a %a))
+(defun (as-itself x) (cast %a x))
+
+(defun (main)
+  (defun (local-builder y) (cast StringBuilder y))
+  (def sb (StringBuilder.))
+  (ignore (.Append sb "abc"))
+  (expect "to a class" (.ToString (as-builder sb)) "abc")
+  (expect "to a class, from a local helper" (.ToString (local-builder sb)) "abc")
+  (expect "to an interface" (.ToString (as-formattable 42) "D4" (: (clr-default) Culture)) "0042")
+  (expect "to a value type, unboxed" (as-int 7) 7)
+  (expect "to the parameter itself" (as-itself "same") "same"))
