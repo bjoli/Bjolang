@@ -151,6 +151,39 @@
   (returns "(Some cursor) on the start of the last occurrence, or None. An empty needle is found at the end.")
   (see string-search substring))
 
+(:doc string-search-any
+  (summary "Where the first character of a set is, at or after a cursor.")
+  (arg s "The string to search.")
+  (arg chars "The set, as a string of its characters. Their order does not matter.")
+  (arg start "Where to start, a cursor of s.")
+  (returns "(Some cursor) on the first character at or after start that is in chars, or None. An empty set is never found.")
+  (see string-search string-index stringbuilder-add-substring!)
+  (example """
+    ;; `&` and `<` as HTML has them. The text between them is copied whole.
+    (def b (stringbuilder-empty))
+    (let go ((from (string-cursor-start s)))
+      (match (string-search-any s "&<" from)
+        (None (stringbuilder-add-substring! b s from (string-cursor-end s)))
+        ((Some at)
+         (stringbuilder-add-substring! b s from at)
+         (stringbuilder-add-string! b (if (char=? (string-cursor-ref s at) #\&) "&amp;" "&lt;"))
+         (go (string-cursor-next s at)))))
+    """)
+  (reference """
+    When every character of the set is ASCII, the search is a vectorized
+    search of the bytes, which is many times faster than a
+    @code{string-index} that tests each character. An ASCII byte is never part
+    of a longer character in UTF-8, so the cursor found is on a character. A
+    set with a character outside ASCII is searched one character at a time.
+
+    The set a string makes is kept for as long as the string is, so a set
+    written once, as a literal or a @code{def}, is made once. A set that is a
+    slice of a longer string is made at each call.
+
+    In a slice, the cursor is a position in the string the slice was taken
+    from, as for @code{string-search}.
+    """))
+
 (:doc string-index
   (summary "Where the first character satisfying a predicate is.")
   (arg pred "The test, given each character in turn from the start.")
@@ -774,6 +807,20 @@
     and copies them; the string never shares the array. A byte order mark is
     not skipped: it is the character U+FEFF. A range outside the array
     throws.
+    """))
+
+(:doc bytes-utf-8?
+  (summary "Whether a range of bytes is UTF-8.")
+  (arg bytes "The array.")
+  (arg start "The first byte checked.")
+  (arg end "Where the range ends, not included.")
+  (returns "#t when the bytes are whole UTF-8 characters, with no overlong form, no surrogate and nothing past U+10FFFF: what bytes->string accepts.")
+  (raises System.ArgumentOutOfRangeException "When the range is not inside the array.")
+  (see bytes->string string->bytes)
+  (reference """
+    One vectorized pass. A reader that copies runs of bytes into a string
+    builder checks each run with it, and looks at the bytes one by one only
+    when a run is not UTF-8, to say where.
     """))
 
 (:doc string->bytes

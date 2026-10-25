@@ -1,0 +1,107 @@
+;; IArray: the immutable array in the prelude, which is .NET's ImmutableArray.
+(import (std prelude))
+(import (std simpletest))
+(import (std mutable vec))
+
+(: (-> (IArray %a) (Vec %a)))
+(defun (walk xs)
+  (def out (transientvec-empty))
+  (loop (:for x xs) (:do (transientvec-add! out x)))
+  (transientvec->vec out))
+
+;; A new array's slot holds the default value of its element type. For an
+;; IArray that is an ImmutableArray with no array, which .NET's own members
+;; throw on.
+(: (-> (IArray int)))
+(defun (default-iarray)
+  (def slots (make-array 1))
+  (array-ref slots 0))
+
+(defun (main)
+  (def empty (iarray-empty))
+  (def xs (vec->iarray [1 2 3]))
+
+  ;; --- Collection and Refable --------------------------------------------
+  (expect "empty has no elements" (iarray-length empty) 0)
+  (expect "empty is empty" (empty? empty) #t)
+  (expect "length" (length xs) 3)
+  (expect "not empty" (empty? xs) #f)
+  (expect "ref" (ref xs 1) 2)
+  (expect "iarray-ref" (iarray-ref xs 2) 3)
+  (expect "try-ref inside" (try-ref xs 0) (Some 1))
+  (expect "try-ref past the end" (try-ref xs 3) None)
+  (expect "try-ref below zero" (iarray-try-ref xs -1) None)
+
+  ;; --- Iterable -----------------------------------------------------------
+  (expect "for walks in order" (walk xs) [1 2 3])
+  (expect "fold" (fold (fun (x acc) (+ acc x)) 0 xs) 6)
+  (expect "count" (count xs) 3)
+  (expect "an empty walk" (walk empty) [])
+
+  ;; --- Copies, not changes ------------------------------------------------
+  (def ys (iarray-set xs 0 10))
+  (expect "set gives a copy" (iarray->vec ys) [10 2 3])
+  (expect "the original is kept" (iarray->vec xs) [1 2 3])
+  (def zs (iarray-add xs 4))
+  (expect "add gives a copy" (iarray->vec zs) [1 2 3 4])
+  (expect "the original is kept after add" (length xs) 3)
+  (expect "map" (iarray->vec (iarray-map (fun (x) (* x x)) xs)) [1 4 9])
+  (expect "map to another type" (iarray->vec (iarray-map int->string xs)) ["1" "2" "3"])
+
+  ;; --- Conversions --------------------------------------------------------
+  (def arr (make-array 5))
+  (array-set! arr 0 7) (array-set! arr 1 8) (array-set! arr 2 9)
+  (def sub (subarray->iarray arr 1 2))
+  (array-set! arr 1 0)
+  (expect "subarray copies" (iarray->vec sub) [8 9])
+  (expect "subarray of nothing" (length (subarray->iarray arr 3 0)) 0)
+  (expect "array->iarray" (iarray->list (array->iarray arr)) '(7 0 9 0 0))
+  (def copy (iarray->array xs))
+  (array-set! copy 0 99)
+  (expect "iarray->array is a copy" (iarray-ref xs 0) 1)
+  (expect "list->iarray" (iarray->vec (list->iarray '(4 5))) [4 5])
+  (expect "seq->iarray" (iarray->vec (seq->iarray (vec->seq [6 7]))) [6 7])
+  (expect "iarray->seq" (->vec (iarray->seq xs)) [1 2 3])
+
+  ;; Built in a MutableVec, copied once.
+  (def buf (mutablevec))
+  (loop (:for i (range 0 100)) (:do (mutablevec-add! buf (* i i))))
+  (def built (mutablevec->iarray buf))
+  (mutablevec-set! buf 0 -1)
+  (mutablevec-add! buf 7)
+  (expect "built from a mutablevec" (iarray-length built) 100)
+  (expect "its last element" (iarray-ref built 99) 9801)
+  (expect "the vector written after is not seen" (iarray-ref built 0) 0)
+  (expect "an empty mutablevec" (iarray-empty? (mutablevec->iarray (mutablevec))) #t)
+
+  ;; --- Eq -----------------------------------------------------------------
+  (def again (list->iarray '(1 2 3)))
+  (expect "equal elements are equal" (= xs again) #t)
+  (expect "a different element" (= xs ys) #f)
+  (expect "a different length" (= xs zs) #f)
+  (expect "two empties" (= empty (vec->iarray [])) #t)
+  (expect "equal hashes" (eq-hash xs) (eq-hash again))
+  (expect "nested" (= (vec->iarray [xs ys]) (vec->iarray [again ys])) #t)
+  (def m (map-set (map-empty) xs "found"))
+  (expect "a key in a map" (map-ref m again) "found")
+
+  ;; --- Printing -----------------------------------------------------------
+  (expect "displayed" (displayed xs) "#iarray[1 2 3]")
+  (expect "written" (written (vec->iarray ["a" "b"])) "#iarray[\"a\" \"b\"]")
+  (expect "empty displayed" (displayed empty) "#iarray[]")
+
+  ;; --- The default value --------------------------------------------------
+  ;; Every function reads the default value as the empty array.
+  (def d (default-iarray))
+  (expect "default length" (iarray-length d) 0)
+  (expect "default is empty" (empty? d) #t)
+  (expect "default walks nothing" (walk d) [])
+  (expect "default equals empty" (= d empty) #t)
+  (expect "default add" (iarray->vec (iarray-add d 1)) [1])
+  (expect "default try-ref" (try-ref d 0) None)
+  (expect "default to a vec" (iarray->vec d) [])
+  (expect "default to an array" (array-length (iarray->array d)) 0)
+  (expect "default displayed" (displayed d) "#iarray[]")
+
+  (println "472 ok")
+  0)

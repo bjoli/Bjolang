@@ -63,9 +63,12 @@
           "err: line 1, column 3: text has to be UTF-8, and this byte is not")
 
   ;; --- A character whose bytes arrive in two reads ---------------------------
+  ;; The reader's first read asks for 16 KB and waits for them, so newlines
+  ;; before the string put the cut between the two bytes of the character.
   (expect "is one character"
           (match (byte-pipe)
             ((Tuple in out)
+             (write-bytes! out (make-array 16383 #:fill (cast byte 10)))
              (write-bytes! out #[34 195])
              (flush-port out)
              (def reading (bjo (read-on-a-fiber in)))

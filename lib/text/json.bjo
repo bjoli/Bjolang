@@ -21,7 +21,10 @@
   json->string write-json)
 
 (import (std prelude))
-(import (only (std ports) read-some))
+(import (only (std ports) read-bytes))
+(import (only (std array) array-copy!))
+(import (std maths))
+(import (std simd))
 
 ;; Every export is documented there; the module doc is too.
 (:doc #:file "json.bjodoc")
@@ -38,7 +41,9 @@
            (: JsonInt long)
            (: JsonFloat double)
            (: JsonStr string)
-           (: JsonArr (Vec Json))
+           ;; An `IArray`: a parsed array is read and not changed, and an
+           ;; `IArray` is its elements' array and no object of its own.
+           (: JsonArr (IArray Json))
            (: JsonObj (Map string Json)))))
 
 ;; Max stack depth. This should probably be a parameter.
@@ -51,7 +56,7 @@
 ;; The reader works on bytes: a chunk of the document in `bytes`, the one it is
 ;; looking at at `next`, and `limit` where the chunk ends. Looking is an array
 ;; load and stepping is an increment. A chunk comes from the port with
-;; `read-some`; `parse-json` hands over the string's own bytes as the one
+;; `read-bytes` (see `ensure!`); `parse-json` hands over the string's own bytes as the one
 ;; chunk there is, and no port.
 ;;
 ;; Everything JSON says outside a string is ASCII, so outside a string a byte
@@ -65,8 +70,22 @@
 (: int)
 (def spent -1)
 
+;; How much a read from the port asks for: the first one what `read-some`
+;; gives a file, each one after it twice the one before, up to `read-most`.
+;; Each read costs a sync on the port, a new array and a pass of the reader's
+;; slow path at the chunk's end, so a big document is read in big chunks.
+;; `read-bytes` makes the port's buffer as big as what it asks for, so a small
+;; one is still read in a small one.
+(: int)
+(def read-first 16384)
+
+(: int)
+(def read-most 262144)
+
 (type
   (: Reader (Record (: port (Option InputPort) #:mutable)
+                    ;; How many bytes the next read from the port asks for.
+                    (: ask int #:mutable)
                     (: bytes (Array byte) #:mutable)
                     (: next int #:mutable)
                     (: limit int #:mutable)
@@ -78,12 +97,20 @@
                     ;; One array for every array in the document, and how much
                     ;; of it is in use.
                     (: stack (Array Json) #:mutable)
-                    (: top int #:mutable))))
+                    (: top int #:mutable)
+                    ;; The keys last read, by slot; empty until the first
+                    ;; object. See `cached-key`.
+                    (: keys (Array string) #:mutable))))
+
+;; What a reader's key cache is until the first key.
+(: (Array string))
+(def no-keys (make-array 0))
 
 ;; A reader over `bytes`, and then whatever `port` has after them.
 (: (-> (Option InputPort) (Array byte) Reader))
 (defun (reader port bytes)
   (Reader (port port)
+          (ask read-first)
           (bytes bytes)
           (next 0)
           (limit (array-length bytes))
@@ -91,7 +118,65 @@
           (col 1)
           (scratch (stringbuilder-empty))
           (stack (make-array 16))
-          (top 0)))
+          (top 0)
+          (keys no-keys)))
+
+;; ---------------------------------------------------------------------------
+;; The key cache
+;; ---------------------------------------------------------------------------
+;; An array of objects repeats its keys: twenty thousand records write the same
+;; five keys twenty thousand times. This holds the last key read in each slot
+;; and compares the buffer with it, without making a string, which is what
+;; `stringbuilder=?` is for. A key read before costs that comparison and no
+;; allocation, and the objects share one string for it. `(text bjodat-core)`
+;; caches its names the same way, with the same slots.
+;;
+;; 64 slots, because an object may have many keys: a tweet has forty. Keys that
+;; share a slot take turns in it and are made each time, as without a cache.
+
+(: int)
+(def key-slots 64)
+
+;; Empty slots hold `""`, which no key but the empty one equals, and that one
+;; is `""` anyway.
+(: (-> (Array string)))
+(defun (new-key-cache)
+  (def a (make-array key-slots))
+  (loop (:for i (range 0 key-slots))
+        (:do (array-set! a i "")))
+  a)
+
+;; The first, middle and last byte and the length: three reads whatever the
+;; length, and enough to part the keys of one object. With the first byte and
+;; the length alone, `name` and `note` shared a slot, and so did `name` and
+;; `pinned`, and each made the other a string every time.
+(: (-> StringBuilder int int))
+(defun (key-slot sb n)
+  (if (= n 0)
+      0
+      (bitwise-and (+ (* (+ (* (+ (* (stringbuilder-code-ref sb 0) 31)
+                                  (stringbuilder-code-ref sb (shift-right n 1)))
+                               31)
+                            (stringbuilder-code-ref sb (- n 1)))
+                         31)
+                      n)
+                   (- key-slots 1))))
+
+;; The buffer as a string, the one already made for the same key if there is
+;; one.
+(: (-> Reader StringBuilder string))
+(defun (cached-key rd sb)
+  (when (= (array-length (record-ref rd keys)) 0)
+    (record-set! rd (keys (new-key-cache))))
+  (def cache (record-ref rd keys))
+  (def i (key-slot sb (stringbuilder-length sb)))
+  (def known (array-ref cache i))
+  (cond
+    ((stringbuilder=? sb known) known)
+    (else
+     (def s (stringbuilder->string sb))
+     (array-set! cache i s)
+     s)))
 
 ;; Pushes a new element into the array or grows it 
 (: (-> Reader Json void))
@@ -106,10 +191,10 @@
      (record-set! rd (stack bigger))))
   (record-set! rd (top (+ n 1))))
 
-;; Harvests the array, by copying it into a vec
-(: (-> Reader int (Vec Json)))
+;; Harvests the array, by copying it out of the stack
+(: (-> Reader int (IArray Json)))
 (defun (harvest! rd mark)
-  (def v (subarray->vec (record-ref rd stack) mark (- (record-ref rd top) mark)))
+  (def v (subarray->iarray (record-ref rd stack) mark (- (record-ref rd top) mark)))
   (record-set! rd (top mark))
   v)
 
@@ -127,10 +212,8 @@
   (if (= count 0)
       more
       (let ((joined (make-array (+ count (array-length more)))))
-        (loop (:for i (range 0 count))
-              (:do (array-set! joined i (array-ref old (+ from i)))))
-        (loop (:for i (range 0 (array-length more)))
-              (:do (array-set! joined (+ count i) (array-ref more i))))
+        (array-copy! old from joined 0 count)
+        (array-copy! more 0 joined count (array-length more))
         joined)))
 
 ;; Whether there are at least `n` bytes from `next` on, reading from the port
@@ -146,7 +229,8 @@
        (match (record-ref rd port)
          (None #f)
          ((Some p)
-          (match (read-some p)
+          (def ask (record-ref rd ask))
+          (match (read-bytes p (if (> n ask) n ask))
             (None
              (record-set! rd (port None))
              #f)
@@ -154,7 +238,8 @@
              (record-set! rd
                           (bytes (join-bytes (record-ref rd bytes) (record-ref rd next) have more))
                           (next 0)
-                          (limit (+ have (array-length more))))
+                          (limit (+ have (array-length more)))
+                          (ask (if (< ask read-most) (* ask 2) read-most)))
              (go)))))))))
 
 ;; The byte the reader is looking at, or `spent` at the end of the document.
@@ -197,15 +282,100 @@
                (row (+ (record-ref rd row) 1))
                (col 1)))
 
+(: (-> int bool))
+(defun (space? c) (or (= c 32) (= c 10) (= c 9) (= c 13)))
+
+;; Moves past the white space. Usually there is none, and that costs one look
+;; at the next byte.
 (: (-> Reader void))
 (defun (skip-space! rd)
-  (let go ()
-    (def c (held-code rd))
-    (cond
-      ((or (= c 32) (= c 10) (= c 9) (= c 13))
-       (if (= c 10) (newline! rd) (step! rd))
-       (go))
-      (else unit))))
+  (when (space? (held-code rd))
+    (skip-space-run! rd)))
+
+;; White space from `start`, 32 or 16 bytes at a time, to the first byte that
+;; is not white space or the last whole block before `limit`: where it ends,
+;; the line and column there, and whether a byte that is not white space was
+;; found. The line moves by the newlines; after one, the column is counted
+;; from it. 256 bits where the CPU has them, as `scan-run` has.
+(: (-> (Array byte) int int int int (Tuple int int int bool)))
+(defun (scan-space b start limit row col)
+  (if simd256-accelerated?
+      (scan-space/256 b start limit row col)
+      (scan-space/128 b start limit row col)))
+
+;; The line and column after `n` bytes of white space whose newlines are the
+;; set bits of `nls`.
+(: (-> int int int int (Tuple int int)))
+(defun (after-space nls n row col)
+  (if (= nls 0)
+      (Tuple row (+ col n))
+      ;; The bytes after the last newline are the column, less one.
+      (Tuple (+ row (popcount nls))
+             (- n (- 31 (leading-zeros nls))))))
+
+(: (-> (Array byte) int int int int (Tuple int int int bool)))
+(defun (scan-space/256 b start limit row col)
+  (let go ((i start) (row row) (col col))
+    (if (> (+ i 32) limit)
+        (Tuple i row col #f)
+        (let ()
+          (def v (simd256-load b i))
+          (def nl (simd-eq v (simd256-splat 10uy)))
+          (def spaces (simd-mask-bits (simd-or (simd-or nl (simd-eq v (simd256-splat 32uy)))
+                                               (simd-or (simd-eq v (simd256-splat 9uy))
+                                                        (simd-eq v (simd256-splat 13uy))))))
+          (def nls (simd-mask-bits nl))
+          (if (= spaces -1)
+              (let ()
+                (def (Tuple r c) (after-space nls 32 row col))
+                (go (+ i 32) r c))
+              (let ()
+                (def t (trailing-zeros (bitwise-not spaces)))
+                (def (Tuple r c) (after-space (bitwise-and nls (- (shift-left 1 t) 1)) t row col))
+                (Tuple (+ i t) r c #t)))))))
+
+(: (-> (Array byte) int int int int (Tuple int int int bool)))
+(defun (scan-space/128 b start limit row col)
+  (let go ((i start) (row row) (col col))
+    (if (> (+ i 16) limit)
+        (Tuple i row col #f)
+        (let ()
+          (def v (simd128-load b i))
+          (def nl (simd-eq v (simd128-splat 10uy)))
+          (def spaces (simd-mask-bits (simd-or (simd-or nl (simd-eq v (simd128-splat 32uy)))
+                                               (simd-or (simd-eq v (simd128-splat 9uy))
+                                                        (simd-eq v (simd128-splat 13uy))))))
+          (def nls (simd-mask-bits nl))
+          (if (= spaces 65535)
+              (let ()
+                (def (Tuple r c) (after-space nls 16 row col))
+                (go (+ i 16) r c))
+              (let ()
+                (def t (trailing-zeros (bitwise-xor spaces 65535)))
+                (def (Tuple r c) (after-space (bitwise-and nls (- (shift-left 1 t) 1)) t row col))
+                (Tuple (+ i t) r c #t)))))))
+
+;; White space a chunk at a time: the chunk is scanned with a local index, and
+;; the reader is moved once for it. A chunk that ends in white space is
+;; followed by the next.
+(: (-> Reader void))
+(defun (skip-space-run! rd)
+  (def b (record-ref rd bytes))
+  (def limit (record-ref rd limit))
+  (def (Tuple fast-end fast-row fast-col stopped)
+    (scan-space b (record-ref rd next) limit (record-ref rd row) (record-ref rd col)))
+  (def (Tuple end row col)
+    (let go ((i fast-end) (row fast-row) (col fast-col))
+      (if (or stopped (>= i limit))
+          (Tuple i row col)
+          (let ((c (cast int (array-ref b i))))
+            (cond
+              ((= c 10) (go (+ i 1) (+ row 1) 1))
+              ((or (= c 32) (= c 9) (= c 13)) (go (+ i 1) row (+ col 1)))
+              (else (Tuple i row col)))))))
+  (record-set! rd (next end) (row row) (col col))
+  (when (and (>= end limit) (ensure! rd 1))
+    (skip-space-run! rd)))
 
 ;; ---------------------------------------------------------------------------
 ;; Characters of several bytes
@@ -242,9 +412,19 @@
   (cond
     ((<= n 1) n)
     ((not (ensure! rd n)) 0)
+    (else (sequence-length-at (record-ref rd bytes) (record-ref rd next) (record-ref rd limit)))))
+
+;; The same for the character at `i` of `b`, whose bytes end at `limit`: 0
+;; also when the character runs past `limit`, where the reader may have more
+;; of it to fetch.
+(: (-> (Array byte) int int int))
+(defun (sequence-length-at b i limit)
+  (def lead (cast int (array-ref b i)))
+  (def n (utf8-length lead))
+  (cond
+    ((<= n 1) n)
+    ((> (+ i n) limit) 0)
     (else
-     (def b (record-ref rd bytes))
-     (def i (record-ref rd next))
      (def second (cast int (array-ref b (+ i 1))))
      (def low (cond ((= lead 224) 160) ((= lead 240) 144) (else 128)))
      (def high (cond ((= lead 237) 159) ((= lead 244) 143) (else 191)))
@@ -383,16 +563,140 @@
         (else
          (Err (at rd (str "\\" (list->string (list (peek rd))) " is not an escape")))))))
 
-;; Reads a json string
-(: (-> Reader (Result string string)))
-(defun (read-text rd)
+;; Where a run from `start` stops, 32 or 16 bytes at a time: at the first `"`, `\`
+;; or control character, or at the last whole block before `limit`.
+;; Also how many characters are before it, which is the bytes that are not a
+;; continuation byte (10xxxxxx), whether one of them is 128 or more, and
+;; whether a stop was found. The count is the characters' count only when the
+;; bytes are UTF-8, which `take-run!` checks when one is 128 or more.
+;;
+;; 256 bits where the CPU has them, and 128 where it has not, which is every
+;; ARM64 CPU: there a 256-bit vector is two 128-bit ones done in software.
+(: (-> (Array byte) int int (Tuple int int bool bool)))
+(defun (scan-run b start limit)
+  (if simd256-accelerated?
+      (scan-run/256 b start limit)
+      (scan-run/128 b start limit)))
+
+(: (-> (Array byte) int int (Tuple int int bool bool)))
+(defun (scan-run/128 b start limit)
+  (let go ((i start) (chars 0) (high #f))
+    (if (> (+ i 16) limit)
+        (Tuple i chars high #f)
+        (let ()
+          (def v (simd128-load b i))
+          (def stops (simd-mask-bits (simd-or (simd-or (simd-eq v (simd128-splat 34uy))
+                                                       (simd-eq v (simd128-splat 92uy)))
+                                              (simd-lt v (simd128-splat 32uy)))))
+          (def conts (simd-mask-bits (simd-eq (simd-and v (simd128-splat 192uy)) (simd128-splat 128uy))))
+          (def highs (simd-mask-bits (simd-ge v (simd128-splat 128uy))))
+          (if (= stops 0)
+              (go (+ i 16) (+ chars (- 16 (popcount conts))) (or high (not (= highs 0))))
+              (let ()
+                (def t (trailing-zeros stops))
+                (def before (- (shift-left 1 t) 1))
+                (Tuple (+ i t)
+                       (+ chars (- t (popcount (bitwise-and conts before))))
+                       (or high (not (= (bitwise-and highs before) 0)))
+                       #t)))))))
+
+(: (-> (Array byte) int int (Tuple int int bool bool)))
+(defun (scan-run/256 b start limit)
+  (let go ((i start) (chars 0) (high #f))
+    (if (> (+ i 32) limit)
+        (Tuple i chars high #f)
+        (let ()
+          (def v (simd256-load b i))
+          (def stops (simd-mask-bits (simd-or (simd-or (simd-eq v (simd256-splat 34uy))
+                                                       (simd-eq v (simd256-splat 92uy)))
+                                              (simd-lt v (simd256-splat 32uy)))))
+          (def conts (simd-mask-bits (simd-eq (simd-and v (simd256-splat 192uy)) (simd256-splat 128uy))))
+          (def highs (simd-mask-bits (simd-ge v (simd256-splat 128uy))))
+          (if (= stops 0)
+              (go (+ i 32) (+ chars (- 32 (popcount conts))) (or high (not (= highs 0))))
+              (let ()
+                ;; The lanes before the first stop.
+                (def t (trailing-zeros stops))
+                (def before (- (shift-left 1 t) 1))
+                (Tuple (+ i t)
+                       (+ chars (- t (popcount (bitwise-and conts before))))
+                       (or high (not (= (bitwise-and highs before) 0)))
+                       #t)))))))
+
+;; Copies the run of characters that need no attention, from where the reader
+;; is to the first `"`, `\`, control character, byte that is not UTF-8 or end
+;; of the chunk, into `sb` in one piece, and moves past it. Whatever stopped
+;; the run is left for `read-text` to look at.
+;;
+;; The run is found a block at a time by `scan-run`, and the bytes left
+;; before `limit` one at a time. A run with a byte of 128 or more is checked
+;; as UTF-8 in one call. A run that is not UTF-8, or that the end of the chunk
+;; cuts inside a character, is read again by `take-run/checked!`, which stops
+;; before the byte at fault, so that the error and its column are where they
+;; were.
+(: (-> Reader StringBuilder void))
+(defun (take-run! rd sb)
+  (def b (record-ref rd bytes))
+  (def start (record-ref rd next))
+  (def limit (record-ref rd limit))
+  (def (Tuple fast-end fast-chars fast-high stopped) (scan-run b start limit))
+  (def (Tuple end chars high)
+    (if stopped
+        (Tuple fast-end fast-chars fast-high)
+        (let go ((i fast-end) (chars fast-chars) (high fast-high))
+          (if (>= i limit)
+              (Tuple i chars high)
+              (let ((c (cast int (array-ref b i))))
+                (cond
+                  ((or (= c 34) (= c 92) (< c 32)) (Tuple i chars high))
+                  ((< c 128) (go (+ i 1) (+ chars 1) high))
+                  ((continuation? c) (go (+ i 1) chars #t))
+                  (else (go (+ i 1) (+ chars 1) #t))))))))
+  (cond
+    ((and high (not (bytes-utf-8? b start end))) (take-run/checked! rd sb))
+    ((> end start)
+     (stringbuilder-add-bytes! sb b start end)
+     (record-set! rd
+                  (next end)
+                  (col (+ (record-ref rd col) chars))))
+    (else unit)))
+
+;; `take-run!` a byte at a time, each character checked as UTF-8: the run
+;; stops before a byte that is not, and before a character the end of the
+;; chunk cuts.
+(: (-> Reader StringBuilder void))
+(defun (take-run/checked! rd sb)
+  (def b (record-ref rd bytes))
+  (def start (record-ref rd next))
+  (def limit (record-ref rd limit))
+  (def (Tuple end chars)
+    (let go ((i start) (chars 0))
+      (if (>= i limit)
+          (Tuple i chars)
+          (let ((c (cast int (array-ref b i))))
+            (cond
+              ((or (= c 34) (= c 92) (< c 32)) (Tuple i chars))
+              ((< c 128) (go (+ i 1) (+ chars 1)))
+              (else
+               (let ((n (sequence-length-at b i limit)))
+                 (if (= n 0) (Tuple i chars) (go (+ i n) (+ chars 1))))))))))
+  (when (> end start)
+    (stringbuilder-add-bytes! sb b start end)
+    (record-set! rd
+                 (next end)
+                 (col (+ (record-ref rd col) chars)))))
+
+;; Reads a json string. An object's key goes through the key cache.
+(: (-> Reader bool (Result string string)))
+(defun (read-text rd key?)
   (step! rd)
   (def sb (buffer rd))
   (let go ()
+    (take-run! rd sb)
     (def c (held-code rd))
     (cond
      ((= c spent) (Err (at rd "the document ended inside a string")))
-     ((= c 34) (step! rd) (Ok (stringbuilder->string sb)))
+     ((= c 34) (step! rd) (Ok (if key? (cached-key rd sb) (stringbuilder->string sb))))
      ((= c 92)
       (step! rd)
       (def (Ok piece) (read-escape rd)
@@ -600,12 +904,11 @@
        ((Ok n) (JsonInt n))
        ((Err _) (JsonFloat (clr-to-double sb)))))))
 
-;; The number's bytes in the reader's buffer, for the parser.
+;; The number's bytes in the reader's buffer, for the parser, in one piece.
 (: (-> Reader (Array byte) int int StringBuilder))
 (defun (copy-number rd b start end)
   (def sb (buffer rd))
-  (loop (:for i (range start end))
-        (:do (stringbuilder-add-unit! sb (cast int (array-ref b i)))))
+  (stringbuilder-add-bytes! sb b start end)
   sb)
 
 (: (-> Reader (Result string Json)))
@@ -704,7 +1007,7 @@
         ((at-end? rd) (Err (at rd "the document ended inside an object")))
         ((not (char=? (peek rd) #\"))
          (Err (at rd (str "an object's key has to be a string, and this is " (found rd)))))
-        (:def (Ok key) (read-text rd)
+        (:def (Ok key) (read-text rd #t)
               :propagate)
         (:do (skip-space! rd))
         ((or (at-end? rd) (not (char=? (peek rd) #\:)))
@@ -732,7 +1035,7 @@
       (case (peek rd)
         ((#\{) (read-object rd depth))
         ((#\[) (read-array rd depth))
-        ((#\") (match (read-text rd)
+        ((#\") (match (read-text rd #f)
                  ((Err e) (Err e))
                  ((Ok s) (Ok (JsonStr s)))))
         ((#\t) (read-word rd "true" json-true))
@@ -800,31 +1103,50 @@
   (loop (:for shift (list 12 8 4 0))
         (:do (stringbuilder-add! sb (vec-ref hex-digits (bitwise-and (shift-right n shift) 15))))))
 
-;; A string, quoted. `"`, `\` and the control characters are escaped, as RFC
-;; 8259 requires. With `ascii`, every character outside ASCII is escaped too,
-;; as one `\u` escape or, outside the BMP, as a surrogate pair of them.
+;; One character as JSON writes it in a string: an escape for `"`, `\` and the
+;; control characters, as RFC 8259 requires, and with `ascii` for every
+;; character outside ASCII too, as one `\u` escape or, outside the BMP, as a
+;; surrogate pair of them.
+(: (-> StringBuilder char bool void))
+(defun (add-char! sb c ascii)
+  (def n (char->integer c))
+  (cond
+    ((= n 34) (stringbuilder-add-string! sb "\\\""))
+    ((= n 92) (stringbuilder-add-string! sb "\\\\"))
+    ((= n 10) (stringbuilder-add-string! sb "\\n"))
+    ((= n 13) (stringbuilder-add-string! sb "\\r"))
+    ((= n 9) (stringbuilder-add-string! sb "\\t"))
+    ((= n 8) (stringbuilder-add-string! sb "\\b"))
+    ((= n 12) (stringbuilder-add-string! sb "\\f"))
+    ((< n 32) (add-hex4! sb n))
+    ((and ascii (> n 126) (< n 65536)) (add-hex4! sb n))
+    ((and ascii (>= n 65536))
+     (def v (- n 65536))
+     (add-hex4! sb (+ 55296 (shift-right v 10)))
+     (add-hex4! sb (+ 56320 (bitwise-and v 1023))))
+    (else (stringbuilder-add! sb c))))
+
+;; The characters a string has to have escaped: `"`, `\` and the control
+;; characters. All ASCII, so `string-search-any` finds them with a byte search.
+(: string)
+(def must-escape
+  (str "\"\\" (list->string (loop (:for n (range 0 32)) (:acc (listing (integer->char n)))))))
+
+;; A string, quoted. The runs between the characters that have to be escaped
+;; are copied whole. With `ascii` every character outside ASCII has to be
+;; escaped too, so each character is looked at.
 (: (-> StringBuilder string bool void))
 (defun (add-string! sb s ascii)
   (stringbuilder-add! sb #\")
-  (string-for-each
-    (fun (c)
-      (def n (char->integer c))
-      (cond
-        ((= n 34) (stringbuilder-add-string! sb "\\\""))
-        ((= n 92) (stringbuilder-add-string! sb "\\\\"))
-        ((= n 10) (stringbuilder-add-string! sb "\\n"))
-        ((= n 13) (stringbuilder-add-string! sb "\\r"))
-        ((= n 9) (stringbuilder-add-string! sb "\\t"))
-        ((= n 8) (stringbuilder-add-string! sb "\\b"))
-        ((= n 12) (stringbuilder-add-string! sb "\\f"))
-        ((< n 32) (add-hex4! sb n))
-        ((and ascii (> n 126) (< n 65536)) (add-hex4! sb n))
-        ((and ascii (>= n 65536))
-         (def v (- n 65536))
-         (add-hex4! sb (+ 55296 (shift-right v 10)))
-         (add-hex4! sb (+ 56320 (bitwise-and v 1023))))
-        (else (stringbuilder-add! sb c))))
-    s)
+  (if ascii
+      (string-for-each (fun (c) (add-char! sb c ascii)) s)
+      (let go ((from (string-cursor-start s)))
+        (match (string-search-any s must-escape from)
+          (None (stringbuilder-add-substring! sb s from (string-cursor-end s)))
+          ((Some at)
+           (stringbuilder-add-substring! sb s from at)
+           (add-char! sb (string-cursor-ref s at) ascii)
+           (go (string-cursor-next s at))))))
   (stringbuilder-add! sb #\"))
 
 ;; The shortest text that reads back as the same double, with `.0` added when
@@ -834,10 +1156,40 @@
 (defun (add-float! sb d)
   (unless (clr-finite? d)
     (raise (cast Exception (ArgumentException. (str "JSON has no number for " (double->string d))))))
-  (def text (double->string d))
-  (stringbuilder-add-string! sb text)
-  (unless (or (string-contains? text ".") (string-contains? text "E") (string-contains? text "e"))
+  (def from (stringbuilder-length sb))
+  (stringbuilder-add-double! sb d)
+  ;; The bytes just written: `.` is 46, `E` 69 and `e` 101.
+  (def fraction?
+    (let go ((i from))
+      (cond ((= i (stringbuilder-length sb)) #f)
+            ((let ((b (stringbuilder-code-ref sb i))) (or (= b 46) (= b 69) (= b 101))) #t)
+            (else (go (+ i 1))))))
+  (unless fraction?
     (stringbuilder-add-string! sb ".0")))
+
+;; An object's entries in an array, in the order of their keys. An insertion
+;; sort, in place: an object has a few keys, and a sort that allocates as it
+;; merges costs more than the comparisons for them. One with many keys is
+;; sorted by `vec-sort-by`, which takes n log n comparisons.
+(: (-> (Map string Json) (Array (Tuple string Json))))
+(defun (sorted-entries fields)
+  (def n (map-length fields))
+  (if (> n 16)
+      (vec->array (vec-sort-by (fun (a b) (compare (fst a) (fst b))) (map->vec fields)))
+      (let ()
+        (def entries (make-array n))
+        (loop (:for e (map->seq fields))
+              (:for i (range 0 n))
+              (:do (array-set! entries i e)))
+        (loop (:for i (range 1 n))
+              (:do (def e (array-ref entries i))
+                   (let shift ((j (- i 1)))
+                     (if (and (>= j 0) (> (compare (fst (array-ref entries j)) (fst e)) 0))
+                         (let ()
+                           (array-set! entries (+ j 1) (array-ref entries j))
+                           (shift (- j 1)))
+                         (array-set! entries (+ j 1) e)))))
+        entries)))
 
 (: (-> StringBuilder int int void))
 (defun (add-newline! sb indent level)
@@ -851,12 +1203,12 @@
   (match j
     (JsonNull (stringbuilder-add-string! sb "null"))
     ((JsonBool b) (stringbuilder-add-string! sb (if b "true" "false")))
-    ((JsonInt n) (stringbuilder-add-string! sb (long->string n)))
+    ((JsonInt n) (stringbuilder-add-long! sb n))
     ((JsonFloat d) (add-float! sb d))
     ((JsonStr s) (add-string! sb s ascii))
     ((JsonArr items)
      (cond
-       ((= (vec-length items) 0) (stringbuilder-add-string! sb "[]"))
+       ((iarray-empty? items) (stringbuilder-add-string! sb "[]"))
        (else
         (stringbuilder-add! sb #\[)
         (loop (:for item items)
@@ -867,18 +1219,20 @@
         (add-newline! sb indent level)
         (stringbuilder-add! sb #\]))))
     ((JsonObj fields)
-     (def keys (list-sort (list-map (fun (kv) (def (k _) kv) k) (map->list fields))))
      (cond
-       ((empty? keys) (stringbuilder-add-string! sb "{}"))
+       ((map-empty? fields) (stringbuilder-add-string! sb "{}"))
        (else
+        ;; The entries, sorted by key once: each is written with the value it
+        ;; already holds, and no key is looked up again.
+        (def entries (sorted-entries fields))
         (stringbuilder-add! sb #\{)
-        (loop (:for k keys)
+        (loop (:for (Tuple k v) entries)
               (:with first? #t #f)
               (:do (unless first? (stringbuilder-add! sb #\,))
                    (add-newline! sb indent (+ level 1))
                    (add-string! sb k ascii)
                    (stringbuilder-add-string! sb (if (> indent 0) ": " ":"))
-                   (add-value! sb (map-ref fields k) indent ascii (+ level 1))))
+                   (add-value! sb v indent ascii (+ level 1))))
         (add-newline! sb indent level)
         (stringbuilder-add! sb #\}))))))
 

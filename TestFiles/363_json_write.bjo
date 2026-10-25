@@ -76,19 +76,19 @@
 
   ;; ---- arrays and objects -------------------------------------------------------
   (expect "keys in sorted order"
-          (w (obj (list (Tuple "b" (JsonInt 1L)) (Tuple "a" (JsonArr [(JsonInt 1L) (JsonFloat 2.5) JsonNull])))))
+          (w (obj (list (Tuple "b" (JsonInt 1L)) (Tuple "a" (JsonArr (vec->iarray [(JsonInt 1L) (JsonFloat 2.5) JsonNull]))))))
           "{\"a\":[1,2.5,null],\"b\":1}")
-  (expect "empty ones" (list (w (JsonArr [])) (w (obj Nil)) (w (obj (list (Tuple "x" (JsonArr []))))))
+  (expect "empty ones" (list (w (JsonArr (vec->iarray []))) (w (obj Nil)) (w (obj (list (Tuple "x" (JsonArr (vec->iarray [])))))))
           (list "[]" "{}" "{\"x\":[]}"))
   (expect "indented"
           (json->string (obj (list (Tuple "b" (JsonStr "c"))
-                                   (Tuple "a" (JsonArr [(JsonInt 1L) (obj Nil)]))))
+                                   (Tuple "a" (JsonArr (vec->iarray [(JsonInt 1L) (obj Nil)])))))
                         #:indent 2)
           "{\n  \"a\": [\n    1,\n    {}\n  ],\n  \"b\": \"c\"\n}")
   (expect "indented empty ones stay on one line"
-          (json->string (JsonArr [(JsonArr []) (obj Nil)]) #:indent 4)
+          (json->string (JsonArr (vec->iarray [(JsonArr (vec->iarray [])) (obj Nil)])) #:indent 4)
           "[\n    [],\n    {}\n]")
-  (expect "->str is the compact text" (displayed (JsonArr [(JsonBool #t) (JsonStr "x")])) "[true,\"x\"]")
+  (expect "->str is the compact text" (displayed (JsonArr (vec->iarray [(JsonBool #t) (JsonStr "x")]))) "[true,\"x\"]")
 
   ;; ---- read back ------------------------------------------------------------------
   (expect "documents that are written, read and written again give the same text"
@@ -106,6 +106,6 @@
 
   ;; ---- a port --------------------------------------------------------------------
   (def out (open-output-string))
-  (write-json out (JsonArr [(JsonInt 1L) (JsonInt 2L)]) #:indent 1)
+  (write-json out (JsonArr (vec->iarray [(JsonInt 1L) (JsonInt 2L)])) #:indent 1)
   (expect "written to a port" (get-output-string out) "[\n 1,\n 2\n]")
   0)

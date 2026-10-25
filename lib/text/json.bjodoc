@@ -67,7 +67,7 @@
   (case JsonInt "A number with no fraction and no exponent that fits in a long.")
   (case JsonFloat "Any other number.")
   (case JsonStr "A string, its escapes resolved.")
-  (case JsonArr "An array, in order.")
+  (case JsonArr "An array, in order, as an IArray. Build one from a vec with vec->iarray.")
   (case JsonObj "An object, by key. The order of the keys is not kept; a key written twice keeps its last value.")
   (see parse-json))
 
@@ -96,7 +96,7 @@
     (json->string (JsonObj (map-set (map-set (map-empty) "b" (JsonInt 1)) "a" (JsonFloat 2.0))))
     ;; "{\"a\":2.0,\"b\":1}"
 
-    (json->string (JsonArr [(JsonStr "knee") JsonNull]) #:indent 2)
+    (json->string (JsonArr (vec->iarray [(JsonStr "knee") JsonNull])) #:indent 2)
     ;; "[\n  \"knee\",\n  null\n]"
     """)
   (reference """
@@ -125,6 +125,6 @@
   (returns "The value, or why the text is not JSON, with its line and column.")
   (see read-json)
   (example """
-    (parse-json "[1, 2.5, null]")   ; (Ok (JsonArr [(JsonInt 1) (JsonFloat 2.5) JsonNull]))
+    (parse-json "[1, 2.5, null]")   ; (Ok (JsonArr #iarray[(JsonInt 1) (JsonFloat 2.5) JsonNull]))
     (parse-json "[1, 2,]")          ; (Err "line 1, column 7: ']' does not begin a value")
     """))

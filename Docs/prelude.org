@@ -255,6 +255,7 @@ Every operation takes the string *and* the cursor, because the cursor carries no
 - ~(substring s start end)~ : The text between two cursors, ~end~ exclusive.
 - ~(substring/slice s start end)~ : The same text as a slice of ~s~, without a copy.
 - ~(string-search s needle)~ / ~(string-search-backward s needle)~ : Where the first, or last, occurrence of ~needle~ starts, as ~(Some cursor)~, or ~None~. An empty needle is found at the start, and searching backward, at the end.
+- ~(string-search-any s chars start)~ : Where the first character at or after ~start~ that is one of the characters of ~chars~ is, as ~(Some cursor)~, or ~None~. A set of ASCII characters is a vectorized byte search, which makes this what an escaper or a tokenizer stops with; ~stringbuilder-add-substring!~ then copies the runs between the stops whole.
 
 Positions in a string are cursors. ~string-length~ counts bytes and ~string-count~ characters, and nothing takes a byte index.
 
@@ -292,8 +293,11 @@ The accumulator behind the ~Stringing~ collector, and the same shape as the vect
 - ~(stringbuilder-empty)~ : Creates an empty builder.
 - ~(stringbuilder-add! b c)~ : Appends a character.
 - ~(stringbuilder-add-string! b s)~ : Appends a string.
+- ~(stringbuilder-add-substring! b s start end)~ : Appends the text between two cursors of ~s~, copied as it is, without the string ~substring~ would make.
+- ~(stringbuilder-add-long! b n)~ / ~(stringbuilder-add-double! b d)~ : Appends a number as ~long->string~ or ~double->string~ writes it, without making the string.
 - ~(stringbuilder-length b)~ : The length so far, in bytes.
 - ~(stringbuilder-add-code! b n)~ / ~(stringbuilder-code-ref b i)~ : One byte in or out, for scanners that copy input a byte at a time. Bytes added this way are checked when the builder becomes a string, which throws if they do not form whole characters.
+- ~(stringbuilder-add-bytes! b bytes start end)~ : Bytes ~start~ to ~end~ of an array in one piece, checked as ~stringbuilder-add-code!~'s are: for a scanner that copies a run of its input.
 - ~(stringbuilder=? b s)~ : Whether the builder holds exactly ~s~, without building a string — what a reader interning names compares with.
 - ~(stringbuilder-add-unit! b n)~ : One UTF-16 code unit, for a reader taking units from a text port; a surrogate pair given in two calls becomes its character.
 - ~(stringbuilder->string b)~ : Freezes the builder into a string.
@@ -498,7 +502,19 @@ One loop each, in the runtime. When the element is a primitive number (~int~, ~l
 - ~(array-add! dst src)~ / ~(array-scale! a k)~ : ~dst[i] += src[i]~, and ~a[i] *= k~, in place.
 - ~(array-count a x)~ / ~(array-index-of a x)~ : By ~=~, so NaN matches nothing. ~array-index-of~ answers -1 when nothing matches.
 - ~(array-fill! a x)~ : ~x~ in every element, at any element type.
+- ~(array-copy! src src-start dst dst-start count)~ : ~count~ elements from ~src~ into ~dst~, one ~Array.Copy~, at any element type. ~dst~ can be ~src~, and overlapping ranges copy correctly.
 A Native AOT build uses 128-bit vectors unless the manifest says ~(aot-cpu "native")~ — see =Projects.org=.
+
+** Immutable arrays (~(IArray %a)~)
+An array that is not written after it is made: a struct around .NET's ~ImmutableArray<T>~, one reference wide. Indexing is an array read. Every change copies the whole array, so it is for values that are built once and then read, such as a parsed JSON array; a ~Vec~ is for one that changes.
+- ~(iarray-empty)~, ~(iarray-length xs)~, ~(iarray-empty? xs)~
+- ~(iarray-ref xs i)~ : Throws when ~i~ is out of range. ~(iarray-try-ref xs i)~ answers an ~Option~.
+- ~(iarray-set xs i x)~ / ~(iarray-add xs x)~ : A copy with one element replaced, or one added at the end. O(n). To build one element by element, add to a ~MutableVec~ and copy it once with ~(mutablevec->iarray v)~ =(std mutable vec)=.
+- ~(iarray-map f xs)~ : A new array of ~f~ of each element.
+- ~(subarray->iarray a start count)~ / ~(array->iarray a)~ : A copy of an array or a part of it, which the array does not share.
+- ~(vec->iarray v)~, ~(list->iarray xs)~, ~(seq->iarray s)~, and back with ~iarray->vec~, ~iarray->list~, ~iarray->seq~ and ~iarray->array~ (a new array).
+
+It is ~Refable~, a ~Collection~ and ~Iterable~, so ~ref~, ~length~ and ~(:for x xs)~ work. Two are ~=~ when their elements are, also to .NET, so one is a good ~Map~ key. It is written ~#iarray[1 2 3]~; there is no literal and no pattern. An unwritten field or array slot holds the default value, which every function reads as the empty array.
 
 ** Reading a line by a pattern =(std scan)=
 After OCaml's ~Scanf~, with the pattern as a quoted list. The macro compiles the pattern into code over the line's bytes, so a pattern of numbers allocates nothing: a million ~"123456-789012"~ lines took 12.7 ms, against 50 ms with ~string-split~ and ~string->long~ and 731 ms with ~rx-match~.

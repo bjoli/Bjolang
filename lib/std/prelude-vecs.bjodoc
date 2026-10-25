@@ -869,3 +869,163 @@
   (example """
     (array-length (vec->array [1 2 3]))   ; 3
     """))
+
+;; ---------------------------------------------------------------------------
+;; The immutable array
+;; ---------------------------------------------------------------------------
+
+(:doc IArray
+  (summary "An array that is not written after it is made: built once, then read.")
+  (tparam %a "The element type.")
+  (see vec->iarray subarray->iarray iarray-ref iarray-length iarray-add iarray-set)
+  (example """
+    (def xs (vec->iarray [1 2 3]))
+    (ref xs 1)                  ; 2
+    (length xs)                 ; 3
+    (iarray->vec (iarray-set xs 0 10))   ; [10 2 3], xs is unchanged
+    (= xs (list->iarray '(1 2 3)))       ; #t
+    """)
+  (reference """
+    A struct around .NET's @code{ImmutableArray<T>}, which holds one array.
+    Indexing is an array read, a walk reads the array in order, and the
+    value is one reference wide, where a vec is an object of its own. Every
+    change copies the whole array, so @code{iarray-add} in a loop is
+    quadratic: build in a @code{MutableVec} and convert once with
+    @code{mutablevec->iarray}. A value that changes after it is made is a
+    @code{Vec}.
+
+    @strong{Equality.} Two arrays are equal when they hold equal elements
+    in the same order, also to .NET: an @code{IArray} is a good key in a
+    @code{Map} or a @code{HashSet}.
+
+    @strong{The default value.} A field or an array slot of this type that
+    is not written yet holds no array. Every function reads it as the
+    empty array.
+
+    @strong{Traits.} Implements @code{Refable}, @code{Collection},
+    @code{Iterable} (an int cursor, as @code{Array} has), @code{Eq},
+    @code{Written} and @code{Displayed}, which write @code{#iarray[1 2 3]}.
+    There is no literal and no pattern.
+    """))
+
+(:doc iarray-empty
+  (summary "An empty immutable array.")
+  (returns "An IArray with no elements.")
+  (see iarray-empty?))
+
+(:doc iarray-length
+  (summary "How many elements an immutable array has.")
+  (arg xs "The array.")
+  (returns "Its number of elements. O(1).")
+  (see iarray-empty?))
+
+(:doc iarray-empty?
+  (summary "Whether an immutable array has no elements.")
+  (arg xs "The array.")
+  (returns "#t when its length is 0.")
+  (see iarray-length))
+
+(:doc iarray-ref
+  (summary "The element of an immutable array at an index.")
+  (arg xs "The array.")
+  (arg i "Zero-based index (0 <= i < length).")
+  (returns "The element at i. An array read.")
+  (raises System.IndexOutOfRangeException "When i is negative or not less than the length.")
+  (see iarray-try-ref ref))
+
+(:doc iarray-try-ref
+  (summary "The element at an index, or None if the index is out of bounds.")
+  (arg xs "The array.")
+  (arg i "Zero-based index.")
+  (returns "(Some x) if index i is valid, otherwise None.")
+  (see iarray-ref try-ref))
+
+(:doc iarray-set
+  (summary "A copy of an immutable array with the element at an index replaced.")
+  (arg xs "The array, which is left as it was.")
+  (arg i "Zero-based index (0 <= i < length).")
+  (arg x "The new element.")
+  (returns "A new array with x at i. O(n): the whole array is copied.")
+  (raises System.ArgumentOutOfRangeException "When i is negative or not less than the length.")
+  (see iarray-add vec-set))
+
+(:doc iarray-add
+  (summary "A copy of an immutable array with one element added at the end.")
+  (arg xs "The array, which is left as it was.")
+  (arg x "The element to add.")
+  (returns "A new array, one longer, with x last. O(n): the whole array is copied.")
+  (see iarray-set vec-add)
+  (reference """
+    To build an array element by element, add to a @code{MutableVec} from
+    @code{(std mutable vec)} and convert it once with
+    @code{mutablevec->iarray}, or fill an array and use
+    @code{subarray->iarray}.
+    """))
+
+(:doc iarray-map
+  (summary "An immutable array of the results of a function on each element.")
+  (arg f "The function, called on each element in order.")
+  (arg xs "The array.")
+  (returns "A new array of the same length.")
+  (see vec-map))
+
+(:doc subarray->iarray
+  (summary "An immutable array of part of an array.")
+  (arg a "The array, which the result does not share and which can be written again.")
+  (arg start "The first index taken, from 0.")
+  (arg count "How many elements are taken.")
+  (returns "An IArray of a[start, start + count).")
+  (raises System.ArgumentOutOfRangeException "When the range is not inside the array.")
+  (see array->iarray subarray->vec)
+  (reference """
+    What a reader that collects elements on a stack uses: the stack is
+    written again after the elements are copied out.
+    """))
+
+(:doc array->iarray
+  (summary "An immutable array of the elements of an array.")
+  (arg a "The array, which the result does not share.")
+  (returns "An IArray of the same elements.")
+  (see subarray->iarray iarray->array))
+
+(:doc iarray->array
+  (summary "The elements of an immutable array in a new array.")
+  (arg xs "The immutable array.")
+  (returns "A new array, which the caller can write.")
+  (see array->iarray))
+
+(:doc seq->iarray
+  (summary "An immutable array of the elements of a sequence.")
+  (arg s "The sequence, walked once.")
+  (returns "An IArray of its elements, in order.")
+  (see iarray->seq vec->iarray))
+
+(:doc iarray->seq
+  (summary "The elements of an immutable array as a sequence.")
+  (arg xs "The array.")
+  (returns "A sequence that walks xs in order.")
+  (see seq->iarray))
+
+(:doc vec->iarray
+  (summary "An immutable array of the elements of a vec.")
+  (arg v "The vec.")
+  (returns "An IArray of its elements, in order.")
+  (see iarray->vec list->iarray))
+
+(:doc iarray->vec
+  (summary "A vec of the elements of an immutable array.")
+  (arg xs "The array.")
+  (returns "A vec of its elements, in order.")
+  (see vec->iarray iarray->list))
+
+(:doc list->iarray
+  (summary "An immutable array of the elements of a list.")
+  (arg xs "The list.")
+  (returns "An IArray of its elements, in order.")
+  (see iarray->list vec->iarray))
+
+(:doc iarray->list
+  (summary "A list of the elements of an immutable array.")
+  (arg xs "The array.")
+  (returns "A list of its elements, in order.")
+  (see list->iarray iarray->vec))

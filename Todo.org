@@ -62,6 +62,61 @@ noted.
   Found while adding ~Settable!~ to ~(std mutable vec)~. The fix: refuse the
   second impl when the impls are registered, naming both places.
 
+* Pattern matching
+
+- A ~(:is ...)~ clause that no value can reach is not reported. A type test
+  covers nothing (~Exhaustiveness.fs~), and it is emitted in the guard, so C#
+  does not see it either:
+  #+begin_src bjolang
+  (match o
+    ((:is System.Exception) "exception")
+    ((:is System.ArgumentException) "never reached")
+    (_ "other"))
+  #+end_src
+  Before the type test moved to the guard, C# refused the second clause with
+  CS8120. The fix: resolve both CLR types and warn when an earlier unguarded
+  ~:is~ in the same position tests a type the later one is assignable to
+  (~IsAssignableFrom~). A warning, not an error, because it is only a part of
+  what C# proved: nulls, interfaces and ~object~ are not modelled.
+- The alternatives of a nested ~or~ are not checked for being reachable:
+  ~(Tuple (or 1 1) _)~ and ~(Some (or (:at-least 0) 3))~ compile. Only a
+  clause's top-level ~or~ is checked (~checkAlternatives~), because only its
+  alternatives become ~case~ labels of their own, and C# accepts the nested
+  ones as one ~or~ pattern. The fix: expand each nested ~or~ into one row per
+  alternative, and check each against the rows above and the alternatives
+  before it, as Maranget's algorithm does for or-patterns.
+
+* JSON (~(text json)~, ~(text json-codec)~)
+
+- ~json-codec.bjodoc~ is out of date in two places. "Not here yet" says
+  ~(text json)~ has no writer, but ~json->string~ and ~write-json~ are there
+  (~363_json_write.bjo~). And it says an error gives no path through several
+  levels of records, but a ~(Vec Item)~ field of an ~Order~ reports
+  ~Order.items: Item.id: expected an integer~. Found while adding
+  ~request-json-as~ to bjoweb.
+- There are no instances for ~List~, ~Array~, tuples, ~decimal~, ~float~, the
+  date and time types or ~Uuid~, and ~def/json-type~ takes records only. A
+  union, such as a status written as ~"open"~, needs its two ~impl~s by hand,
+  which is about eight lines.
+- Reading an object: half of what it allocates, 376 of about 750 bytes for
+  four short fields, is its map, built by ~transientmap-set!~ one key at a time
+  and then frozen. A map built from pairs it knows all of, with nodes of the
+  size they end at, would help every map built from a collection, not only
+  JSON's; the reader would put an object's pairs on its stack, as it does an
+  array's elements, and build the map once.
+- Reading a float copies its bytes into the builder before parsing them.
+  Most of a float's time is .NET's parse, so the copy is a small part.
+- ~write-json~ makes the whole text as a string, then writes it, so a large
+  response is in memory twice and nothing goes out until all of it is made.
+  Writing the builder's chunks to the port needs a port operation that takes a
+  builder, with a twin for a bjoroutine, as ~write-string~ has.
+- With ~#:ascii~, a string is still written a character at a time: every
+  character outside ASCII needs an escape, and ~string-search-any~ takes a
+  set of characters, not a range.
+- What is left in writing an object, about 240 ns for four fields, is not
+  measured further: the entries from ~map->seq~, a search for each key, and
+  ~add-newline!~ called per field even without ~#:indent~.
+
 * Characters and strings
 
 - ~char-foldcase~ is ~ToLowerInvariant~: differs from Unicode's simple fold for

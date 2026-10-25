@@ -94,6 +94,12 @@
   transientvec-length transientvec-empty? transientvec-ref transientvec-set!
   transientvec-add! transientvec-add-all! transientvec-pop!
   transientvec-add-first! transientvec-pop-first!
+  ;; The immutable array.
+  IArray
+  iarray-empty iarray-length iarray-empty? iarray-ref iarray-try-ref
+  iarray-set iarray-add iarray-map
+  subarray->iarray array->iarray iarray->array seq->iarray iarray->seq
+  vec->iarray iarray->vec list->iarray iarray->list
   ;; Transients.
   transientmap-empty map->transientmap transientmap->map
   transientmap-set! transientmap-set-all! transientmap-remove!
@@ -144,7 +150,7 @@
   string->int string->long string->double
   decimal->string string->decimal bigint->string string->bigint
   int128->string string->int128 uint128->string string->uint128
-  bytes->string string->bytes
+  bytes->string string->bytes bytes-utf-8?
   ;; Math.
   sqrt
   ;; Files
@@ -327,7 +333,7 @@
 
 (impl (Displayed long)
   (defun (displayed n) (long->string n))
-  (defun (display-into n b) (stringbuilder-add-string! b (long->string n))))
+  (defun (display-into n b) (stringbuilder-add-long! b n)))
 
 (impl (Written byte)
   (defun (written n) (clr-written-number n "uy"))
@@ -421,7 +427,7 @@
 
 (impl (Displayed double)
   (defun (displayed n) (double->string n))
-  (defun (display-into n b) (stringbuilder-add-string! b (double->string n))))
+  (defun (display-into n b) (stringbuilder-add-double! b n)))
 
 ;; As the language writes a boolean, not as .NET does.
 (impl (Written bool)
@@ -521,6 +527,43 @@
   (transientvec-add-first! (: Collections.TransientVecModule.Prepend  (-> (TransientVec %a) %a void)))
   (transientvec-pop!       (: Collections.TransientVecModule.Pop      (-> (TransientVec %a) %a)))
   (transientvec-pop-first! (: Collections.TransientVecModule.PopFirst (-> (TransientVec %a) %a))))
+
+;; ---------------------------------------------------------------------------
+;; IArray — the immutable array
+;; ---------------------------------------------------------------------------
+;; A struct around .NET's `ImmutableArray<T>`: one array that is not written
+;; after it is made. Indexing is an array read, and the value is one reference
+;; wide. Every change copies the whole array, so it is for values that are
+;; built once and then read. `Vec` is the one to change. The impls are with
+;; those of `Array`. Why it is a wrapper is in `BjoIArray.cs`.
+(import/class
+  ((IArray %a) (: Bjolang.Runtime.IArray)))
+
+(import/extern
+  (iarray-empty     (: Bjolang.Runtime.IArrayModule.Empty          (-> (IArray %a))))
+  (iarray-length    (: Bjolang.Runtime.IArrayModule.Count          (-> (IArray %a) int)))
+  (iarray-empty?    (: Bjolang.Runtime.IArrayModule.IsEmpty        (-> (IArray %a) bool)))
+  ;; Throws when the index is out of range. `iarray-try-ref` is the checked one.
+  (iarray-ref       (: Bjolang.Runtime.IArrayModule.Get            (-> (IArray %a) int %a)))
+  (iarray-try-ref   (: Bjolang.Runtime.IArrayModule.TryGet         (-> (IArray %a) int (out %a) (Option %a))))
+  ;; A copy with one element replaced, or one added at the end.
+  (iarray-set       (: Bjolang.Runtime.IArrayModule.SetItem        (-> (IArray %a) int %a (IArray %a))))
+  (iarray-add       (: Bjolang.Runtime.IArrayModule.Add            (-> (IArray %a) %a (IArray %a))))
+  (iarray-map       (: Bjolang.Runtime.IArrayModule.Map            (-> (-> %a %b) (IArray %a) (IArray %b))))
+  ;; The array, start and count, as `subarray->vec` takes them. The elements
+  ;; are copied, so the array can be written again.
+  (subarray->iarray (: Bjolang.Runtime.IArrayModule.FromSubarray   (-> (Array %a) int int (IArray %a))))
+  (array->iarray    (: Bjolang.Runtime.IArrayModule.FromArray      (-> (Array %a) (IArray %a))))
+  ;; A new array, which the caller can write.
+  (iarray->array    (: Bjolang.Runtime.IArrayModule.ToArray        (-> (IArray %a) (Array %a))))
+  (seq->iarray      (: Bjolang.Runtime.IArrayModule.FromEnumerable (-> (Seq %a) (IArray %a))))
+  (iarray->seq      (: Bjolang.Runtime.IArrayModule.AsEnumerable   (-> (IArray %a) (Seq %a)))))
+
+(: (-> (Vec %a) (IArray %a)))
+(defun (vec->iarray v) (seq->iarray (vec->seq v)))
+
+(: (-> (List %a) (IArray %a)))
+(defun (list->iarray xs) (seq->iarray (list->seq xs)))
 
 ;; ---------------------------------------------------------------------------
 ;; Map — the unordered map
@@ -741,6 +784,27 @@
   ;; Hash map.
   (defun (eq-hash m)
     (map-fold (fun (k v h) (bitwise-xor h (hash-combine (eq-hash k) (eq-hash v)))) 0 m)))
+
+;; Two immutable arrays are equal when they hold equal elements in the same
+;; order. The value cannot change, so it has a hash.
+(impl (Eq (IArray %a))
+  (where (Eq %a))
+  (defun (= a b)
+    (def len (iarray-length a))
+    (if (= len (iarray-length b))
+        (let go ((i 0))
+          (if (= i len)
+              #t
+              (if (= (iarray-ref a i) (iarray-ref b i))
+                  (go (+ i 1))
+                  #f)))
+        #f))
+  (defun (eq-hash xs)
+    (def len (iarray-length xs))
+    (let go ((i 0) (h 17))
+      (if (= i len)
+          h
+          (go (+ i 1) (hash-combine h (eq-hash (iarray-ref xs i))))))))
 
 
 
@@ -1153,6 +1217,22 @@
   (defun (iterable-current s index) (array-ref s index))
   (defun (iterable-next s index) (+ index 1))
   (defun (count s) (array-length s)))
+
+;; An `int` cursor, as `Array` has.
+(impl (Iterable (IArray %a))
+  (type %elem %a)
+  (type %cursor int)
+  (defun (iterable-start s) 0)
+  (defun (iterable-done? s index) (>= index (iarray-length s)))
+  (defun (iterable-current s index) (iarray-ref s index))
+  (defun (iterable-next s index) (+ index 1))
+  (defun (count s) (iarray-length s)))
+
+(: (-> (IArray %a) (Vec %a)))
+(defun (iarray->vec xs) (->vec xs))
+
+(: (-> (IArray %a) (List %a)))
+(defun (iarray->list xs) (->list xs))
 
 ;; Range of ints, in steps of one. A step of one reaches `hi` before it can
 ;; pass `int-max`, so the walk tests `(>= c hi)`, the test the JIT knows from a
@@ -1798,6 +1878,14 @@
   (defun (ref arr i)
     (array-ref arr i)))
 
+(impl (Refable (IArray %i))
+  (type %index int)
+  (type %out %i)
+  (defun (ref xs i)
+    (iarray-ref xs i))
+  (defun (try-ref xs i)
+    (iarray-try-ref xs i)))
+
 (impl (Refable (Vec %i))
   (type %index int)
   (type %out %i)
@@ -2283,7 +2371,11 @@
   (clr-decode         (: Bjolang.Runtime.Encodings.Decode (-> (Array byte) int int Encoding string)))
   (clr-decode/replace (: Bjolang.Runtime.Encodings.Decode (-> (Array byte) int int Encoding char string)))
   (clr-encode         (: Bjolang.Runtime.Encodings.Encode (-> string Encoding (Array byte))))
-  (clr-encode/replace (: Bjolang.Runtime.Encodings.Encode (-> string Encoding char (Array byte)))))
+  (clr-encode/replace (: Bjolang.Runtime.Encodings.Encode (-> string Encoding char (Array byte))))
+  ;; Whether the bytes from `start` to `end` are UTF-8, which is what
+  ;; `bytes->string` would accept. Vectorized: a reader that copies runs of
+  ;; bytes checks a run with it in one call.
+  (bytes-utf-8?       (: Bjolang.Runtime.Encodings.IsUtf8 (-> (Array byte) int int bool))))
 
 ;; The text of the bytes from `#:start` to `#:end`, in `#:encoding`. A string
 ;; is UTF-8, so from UTF-8 this checks the bytes and copies them. A byte order
@@ -3483,6 +3575,13 @@
   (defun (empty? arr)
     (= 0 (array-length arr))))
 
+(impl (Collection (IArray %a))
+  (type %content %a)
+  (defun (length xs)
+    (iarray-length xs))
+  (defun (empty? xs)
+    (iarray-empty? xs)))
+
 (impl (Collection (Vec %a))
   (type %content %a)
   (defun (length vec)
@@ -4613,6 +4712,15 @@
 (impl (Displayed (Array %a))
   (where (Displayed %a))
   (defun (display-into a b) (elements-print-into "#[" a "]" b (fun (x b) (display-into x b)))))
+
+;; `#iarray[1 2 3]`. There is no literal; the name says which collection it is.
+(impl (Written (IArray %a))
+  (where (Written %a))
+  (defun (write-into a b) (elements-print-into "#iarray[" a "]" b (fun (x b) (write-into x b)))))
+
+(impl (Displayed (IArray %a))
+  (where (Displayed %a))
+  (defun (display-into a b) (elements-print-into "#iarray[" a "]" b (fun (x b) (display-into x b)))))
 
 ;; A sequence is not walked: walking it could do anything, or never end.
 (impl (Written (Seq %a))

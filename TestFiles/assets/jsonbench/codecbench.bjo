@@ -163,29 +163,29 @@
             (let ((t (elapsed-ticks sw)))
               (go (+ i 1) (if (< t best) t best))))))))
 
-(: (-> (Vec Json) int))
+(: (-> (IArray Json) int))
 (defun (generated-sum items)
-  (vec-fold (fun (j acc)
+  (fold (fun (j acc)
               (+ acc (match (json->Dep j)
                        ((Ok d) (string-length (record-ref d version)))
                        ((Err _) 0))))
             0 items))
 
-(: (-> (Vec Json) int))
+(: (-> (IArray Json) int))
 (defun (hand-sum items)
-  (vec-fold (fun (j acc) (+ acc (string-length (record-ref (hand->Dep j) version))))
+  (fold (fun (j acc) (+ acc (string-length (record-ref (hand->Dep j) version))))
             0 items))
 
 ;; Forced on the vec field, so the element decoder really ran.
-(: (-> (Vec Json) int))
+(: (-> (IArray Json) int))
 (defun (rich-sum items)
-  (vec-fold (fun (j acc)
+  (fold (fun (j acc)
               (+ acc (match (json->Rich j)
                        ((Ok d) (vec-length (record-ref d tags)))
                        ((Err _) 0))))
             0 items))
 
-(: (-> (-> (Vec Json) int) (Vec Json) int))
+(: (-> (-> (IArray Json) int) (IArray Json) int))
 (defun (decode-ticks decode items)
   (let go ((i 0) (best 2000000000))
     (if (= i reps)
@@ -236,7 +236,7 @@
         (atext (make-array-text records)))
     (let ((items (match (parse-json text)
                    ((Ok (JsonArr v)) v)
-                   (_ (let () (println "the corpus is not an array") (vec-empty))))))
+                   (_ (let () (println "the corpus is not an array") (iarray-empty))))))
       (println (str "records " (int->string records)
                     ", as objects " (int->string (/ (string-length text) 1000)) " kB"
                     ", as arrays " (int->string (/ (string-length atext) 1000)) " kB"
@@ -250,7 +250,7 @@
       (let ((rtext (make-rich-text records)))
         (let ((ritems (match (parse-json rtext)
                         ((Ok (JsonArr v)) v)
-                        (_ (let () (println "the rich corpus is not an array") (vec-empty))))))
+                        (_ (let () (println "the rich corpus is not an array") (iarray-empty))))))
           (let ((rwarm (rich-sum ritems)))
             (when (= rwarm 0) (println "rich warmup decoded nothing")))
 

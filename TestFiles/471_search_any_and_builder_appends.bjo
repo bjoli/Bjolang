@@ -1,0 +1,120 @@
+;; `string-search-any` finds the first character of a set from a cursor, and the
+;; builder takes the text between two cursors, and numbers, without a string
+;; made of them first. An escaper is the two together: search for what needs
+;; an escape, copy the run before it whole, write the escape.
+
+(import (std prelude))
+(import (std simpletest))
+
+;; Where the search stops, as the text before it, or `none`.
+(: (-> string string string))
+(defun (before s chars)
+  (match (string-search-any s chars (string-cursor-start s))
+    ((Some at) (substring s (string-cursor-start s) at))
+    (None "none")))
+
+;; Every stop, as the characters found.
+(: (-> string string string))
+(defun (stops s chars)
+  (let go ((from (string-cursor-start s)) (found ""))
+    (match (string-search-any s chars from)
+      ((Some at) (go (string-cursor-next s at) (str found (list->string (list (string-cursor-ref s at))))))
+      (None found))))
+
+;; `&` and `<` as HTML has them, the runs between them copied whole.
+(: (-> string string))
+(defun (escaped s)
+  (def b (stringbuilder-empty))
+  (let go ((from (string-cursor-start s)))
+    (match (string-search-any s "&<" from)
+      (None (stringbuilder-add-substring! b s from (string-cursor-end s)))
+      ((Some at)
+       (stringbuilder-add-substring! b s from at)
+       (stringbuilder-add-string! b (if (char=? (string-cursor-ref s at) #\&) "&amp;" "&lt;"))
+       (go (string-cursor-next s at)))))
+  (stringbuilder->string b))
+
+(: (-> long string))
+(defun (long-in-builder n)
+  (def b (stringbuilder-empty))
+  (stringbuilder-add-long! b n)
+  (stringbuilder->string b))
+
+(: (-> double string))
+(defun (double-in-builder d)
+  (def b (stringbuilder-empty))
+  (stringbuilder-add-double! b d)
+  (stringbuilder->string b))
+
+(defun (main args)
+  ;; --- string-search-any ---------------------------------------------------
+  (expect "an ASCII set" (before "key=value;rest" "=;") "key")
+  (expect "every stop, in order" (stops "a=b;c=d" "=;") "=;=")
+  (expect "a set that matches nothing" (before "plain text" "=;") "none")
+  (expect "an empty set" (before "plain text" "") "none")
+  (expect "from the end, nothing" (match (string-search-any "abc" "c" (string-cursor-end "abc"))
+                                     ((Some at) "found")
+                                     (None "none"))
+          "none")
+  (expect "past characters of several bytes, the stop is on a boundary"
+          (before "åäö-öäå" "-") "åäö")
+  (expect "a set that is not all ASCII" (stops "smörgåsbord" "åö") "öå")
+  (expect "a set that is a slice of a longer string"
+          (before "abc;def" (substring/slice "xx;yy" (string-cursor-forward "xx;yy" (string-cursor-start "xx;yy") 2)
+                                             (string-cursor-forward "xx;yy" (string-cursor-start "xx;yy") 3)))
+          "abc")
+  (expect "a control character in the set"
+          (before (str "one" (list->string (list (integer->char 9))) "two") (list->string (list (integer->char 9))))
+          "one")
+  (expect "in a slice, the cursor is the slice's source's"
+          (let* ((whole "head:body:tail")
+                 (sl (substring/slice whole (string-cursor-forward whole (string-cursor-start whole) 5)
+                                      (string-cursor-end whole))))
+            (match (string-search-any sl ":" (string-cursor-start sl))
+              ((Some at) (substring whole at (string-cursor-end whole)))
+              (None "none")))
+          ":tail")
+
+  ;; --- stringbuilder-add-substring! ----------------------------------------
+  (expect "the runs between the stops, copied whole" (escaped "a < b && c") "a &lt; b &amp;&amp; c")
+  (expect "nothing to escape" (escaped "plain") "plain")
+  (expect "characters of several bytes in a run" (escaped "blåbär<grön") "blåbär&lt;grön")
+  (expect "an empty range adds nothing"
+          (let ((b (stringbuilder-empty)) (s "abc"))
+            (stringbuilder-add-substring! b s (string-cursor-start s) (string-cursor-start s))
+            (stringbuilder-length b))
+          0)
+
+  ;; --- stringbuilder-add-bytes! --------------------------------------------
+  (expect "bytes of an array, in one piece"
+          (let ((b (stringbuilder-empty)))
+            (stringbuilder-add-bytes! b (string->bytes "xxblåbärxx") 2 10)
+            (stringbuilder->string b))
+          "blåbär")
+  (expect "bytes that are not UTF-8 are refused when the builder becomes a string"
+          (let ((b (stringbuilder-empty)))
+            (stringbuilder-add-bytes! b #[97 255 98] 0 3)
+            (match (try (stringbuilder->string b) #:catch (System.InvalidOperationException))
+              ((Ok s) "accepted")
+              ((Err e) "refused")))
+          "refused")
+  (expect "a range outside the array raises"
+          (let ((b (stringbuilder-empty)))
+            (match (try (stringbuilder-add-bytes! b #[97 98] 1 3) #:catch (System.ArgumentOutOfRangeException))
+              ((Ok u) "added")
+              ((Err e) "refused")))
+          "refused")
+
+  ;; --- numbers --------------------------------------------------------------
+  (loop (:for n [0L -1L 42L 9223372036854775807L -9223372036854775808L])
+        (:do (expect (str "a long, as long->string writes it: " (long->string n))
+                     (long-in-builder n) (long->string n))))
+  (loop (:for d [0.0 -0.0 1.5 0.1 1e21 1.7976931348623157e308 5e-324 (/ 0.0 0.0)])
+        (:do (expect (str "a double, as double->string writes it: " (double->string d))
+                     (double-in-builder d) (double->string d))))
+  (expect "displayed, which writes into a builder now"
+          (str (displayed 12345678901L) " " (displayed 2.5))
+          "12345678901 2.5")
+
+  (println "471 ok")
+  0)

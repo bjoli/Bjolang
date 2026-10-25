@@ -3,6 +3,278 @@
 
 What each change guarantees, and what it leaves open.
 
+* The bjodat reader: keywords kept, runs and white space with (std simd)
+
+- A keyword read before is the value already made for it. The reader keeps
+  the keywords it reads in 64 slots, by the same slot as its names, and a
+  repeated key is one ~stringbuilder=?~ and nothing more. It was a new .NET
+  string of the name, a lookup in the table of interned keywords and a new
+  ~BjoKey~, for every key of every map. Allocation per record of
+  ~formatbench~, before and after: five scalar fields 797 and 485 bytes, the
+  rich records 998 and 766.
+- A string's runs and white space are read as the JSON reader reads them: 32
+  or 16 bytes at a time with ~(std simd)~, a run with a byte of 128 or more
+  checked with ~bytes-utf-8?~ and read again a byte at a time when it is not
+  UTF-8. A run stops at ~"~, ~\~ and a newline, which moves the line; a
+  control character is text, as before. ~;~ comments are skipped as before.
+- A port is read as ~read-json~ reads one: 16 KB, then twice as much each
+  time, up to 256 KB, and the rest of a chunk joined to the next with
+  ~array-copy!~.
+- ~formatbench~, the fastest of 20, before and after: five scalar fields,
+  parse 16.6-17.2 ms and 12.5-12.7 (148 and 188 MB/s), text to records 27.8
+  and 13.6-14.0; one pass 10.9 and 9.3. The rich records, parse 28.4-29.3 ms
+  and 14.4-14.9, which is about what JSON takes for them. Their one-pass
+  decoder is 21-24 ms before and after: the generated decoder reads a ~(Vec
+  string)~ field as a ~BjoVec~ and then converts it, and that is not the
+  reader's.
+- ~BjoVec~ is a ~Vec~ still, and ~BjoMap~ a flat ~Vec~.
+- ~(bjodat-> (Vec %a))~ decodes into one vec builder. It was a ~vec-add~ per
+  element, which made a vec for each. The rich records' tree to records, 2.7-3.0
+  ms and 2.2-2.4.
+- ~read-bjodat-all~, a form's ~#:rest~ values and the one-pass driver's list of
+  records are built front to back with a list builder: one cons per value, and
+  no reverse at the end. The rich one-pass decoder allocates 953 bytes a record,
+  where it was 985.
+- Left open: the rich one-pass decoder is 19-24 ms, and slower than the tree
+  parse. A field is still read into a ~Bjodat~ and converted, which is what lets
+  every ~bjodat->~ instance, written by hand or not, serve both decoders with the
+  same messages: a ~BjoStr~ for each string, and a ~BjoVec~ for ~tags~ that is
+  copied into the record's vec. The generated code also makes the dictionary of a
+  conditional instance, such as ~(Vec string)~'s, at every field it reads.
+- Tests: ~473_bjodat_runs.bjo~, fifteen checks: every string length to 99
+  with an escape after it, a quote in every lane of the second block, a
+  newline in a long string, columns after long runs of letters of several
+  bytes, a bad byte 40 characters in, white space of every length and with
+  newlines in every lane, a comment between long white space, more keywords
+  than slots, and a repeated keyword found by reference. They pass with AVX2
+  and without. With the scan looking for the wrong byte, with the keyword
+  cache not comparing the name, and with one newline counted per block, a
+  test fails each time. ~321_bjodat_utf8.bjo~'s character split between two
+  reads puts newlines before it, so that the cut is at the end of the first
+  16 KB read.
+
+* The JSON reader skips white space with (std simd)
+
+- White space is skipped 32 bytes at a time, or 16 where 256-bit vectors are
+  not accelerated, as a string's run is. One mask finds the first byte that
+  is not white space, and the newlines below it move the line; after the last
+  of them the column is counted from it. The bytes after the last whole block
+  are read one at a time, as before.
+- From memory, in MB/s, the fastest of five runs, before and after:
+  citm_catalog, which is indented, 531 and 589; twitter 343 and 371; canada,
+  which has almost no white space, about the same (215-229).
+- Tests: four in ~167_json.bjo~: the column after every number of spaces up
+  to 99, the line and column after 1, 2, 31, 32, 33 and 64 newlines and every
+  indent up to 69, tabs and returns, and a value after long white space. They
+  pass with AVX2 and without. With the newlines counted as one per block, the
+  lane test and the two tests of a read cut after newlines fail.
+
+* The JSON reader finds a string's end with (std simd)
+
+- A run of a string is scanned 32 bytes at a time with ~(std simd)~, or 16
+  where 256-bit vectors are not accelerated, as on ARM64. One mask finds the
+  first ~"~, ~\~ or control character. The column moves by the bytes that are
+  not a continuation byte, counted from a second mask. The bytes after the
+  last whole block are read one at a time, as before.
+- A run with a byte of 128 or more is checked as UTF-8 in one call, with the
+  new ~(bytes-utf-8? bytes start end)~ in the prelude, which is .NET's
+  vectorized ~Utf8.IsValid~. A run that is not UTF-8, or that the end of a
+  chunk cuts inside a character, is read again a byte at a time, so a refusal
+  and its column are as they were. JSONTestSuite gives the same output.
+- From memory, in MB/s, before and after: twitter 299 and about 330-360,
+  citm_catalog 511 and about 480-536, canada about 220 and the same. With
+  ~DOTNET_EnableAVX2=0~, which takes the 128-bit path, the figures are the
+  same.
+- Tests: six in ~167_json.bjo~ with runs longer than a block: every length up
+  to 100 with an escape after it, a quote in every lane of the second block,
+  the column after 60 characters of several bytes, and a bad byte and a
+  control character 40 characters in. They pass with AVX2 and without it.
+  With the scan looking for the wrong byte, the lane test and two others
+  fail.
+
+* The JSON reader reads a port in growing pieces
+
+- ~read-json~ asks the port for 16 KB with ~read-bytes~, then for twice as
+  much each time, up to 256 KB. It took what ~read-some~ gave, which for a
+  file is at most 16 KB. Each read costs a sync on the port, a new array and
+  the reader's slow path at the end of the chunk, so a big document is now
+  read in fewer of them. A small one is read in one 16 KB piece, as before:
+  ~read-bytes~ makes the port's buffer as large as what it asks for, so the
+  first read is not larger.
+- Off a file, the fastest of 20 warm reads, five runs: canada 13.6 ms and
+  10.8-11.3 ms, citm_catalog 4.7 and 4.0-4.2, twitter 2.8 and 2.5. Parsing
+  the same text from a string takes 10.0, 3.4 and 2.2. Reading the whole
+  file first was measured too and is not faster: ~file-read-text~ and
+  ~parse-json~ was 14-17 ms on canada, and ~file-read-bytes~ and a parse of
+  the bytes about 14.
+- ~read-bytes~ waits for all it asks for, or for the end of the input. The
+  reader needs the end of the input anyway, because only space may follow the
+  value. So the change does not wait for anything new. It parses less of a
+  slow stream while that stream is still arriving.
+- ~(array-copy! src src-start dst dst-start count)~ in ~(std array)~: one
+  ~Array.Copy~. The reader joins what is left of a chunk to the next one with
+  it, not with a loop of ~array-ref~ and ~array-set!~ over the new chunk.
+- Tests: the reads cut in ~167_json.bjo~ put newlines before the document, so
+  that the cut is at the end of the first 16 KB read. Without them the reader
+  now got the whole document in one read, and nothing was cut. With the join
+  broken, the two tests of a character cut in two fail at the line after the
+  newlines.
+
+* IArray, the immutable array, and JSON arrays are one
+
+- The prelude has ~(IArray %a)~: an array that is not written after it is
+  made. It is a struct around .NET's ~ImmutableArray<T>~, one reference wide,
+  and indexing is an array read. Every change copies the whole array.
+  Functions: ~iarray-empty~, ~iarray-length~, ~iarray-empty?~, ~iarray-ref~,
+  ~iarray-try-ref~, ~iarray-set~, ~iarray-add~, ~iarray-map~, and the
+  conversions ~subarray->iarray~, ~array->iarray~, ~iarray->array~,
+  ~seq->iarray~, ~iarray->seq~, ~vec->iarray~, ~iarray->vec~, ~list->iarray~
+  and ~iarray->list~.
+- ~(mutablevec->iarray v)~, in ~(std mutable vec)~, is how to build one an
+  element at a time: ~mutablevec-add!~ is O(1), and the elements are copied
+  once. ~iarray-add~ copies the whole array each time.
+- It implements ~Refable~, ~Collection~, ~Iterable~ (an int cursor, as
+  ~Array~ has), ~Eq~ with a hash, ~Written~ and ~Displayed~, which write
+  ~#iarray[1 2 3]~. There is no literal and no pattern.
+- A wrapper and not ~ImmutableArray<T>~ itself, because of equality: the
+  compiler gives a ~Map~ or a ~HashSet~ .NET's comparer for a .NET type with a
+  std ~Eq~, and an ~ImmutableArray<T>~ is equal only to one that holds the same
+  array. The wrapper's ~Equals~ compares the elements, as ~Vec~'s does, so an
+  ~IArray~ is a good key.
+- The default value, which an unwritten field or array slot holds, is read as
+  the empty array by every function.
+- *Breaking:* ~JsonArr~ holds an ~(IArray Json)~, not a ~(Vec Json)~. Make one
+  with ~(JsonArr (vec->iarray [a b]))~. A parsed array is one copy of the
+  reader's stack and nothing more: an array of two numbers is 64 bytes, the
+  ~JsonArr~ and its array, where it was 128. ~jsonbench~, before and after, in
+  MB/s: canada about 141 and 212, citm_catalog about 482 and 444 to 472,
+  twitter about 282 and 281 to 286. ~(text json-codec)~ decodes a ~Vec~ from
+  a ~JsonArr~ as before.
+- Tests: ~472_iarray.bjo~; ~167_json.bjo~ and ~363_json_write.bjo~ build their
+  arrays with ~vec->iarray~. JSONTestSuite: 95/95 accepted, 188/188 refused,
+  no crash.
+
+* The JSON reader keeps its keys, and reads strings in runs
+
+- An object's key is compared with the last key read in its slot with
+  ~stringbuilder=?~, and the string already made for it is handed out again: a
+  key read before costs no allocation, and the objects of a document share one
+  string for it. The cache is ~(text bjodat-core)~'s, made when the first key
+  is read.
+- Both caches, the reader's and bjodat's, have 64 slots, and a slot is the
+  first, middle and last byte and the length; it was 16 slots and the first
+  byte and the length. ~name~ and ~pinned~ shared a slot then, and so did
+  ~name~ and ~note~, and each made the other a string every time. Hits over the
+  key streams of the benchmark documents: citm_catalog 85% and 97%, twitter 8%
+  and 45% (a tweet has forty keys), and the two record corpora of
+  ~formatbench~ 60% and 50%, now both 100%. ~formatbench~'s five-field records
+  parse in about 760 ns each from about 1200 as JSON, and in about 820 from
+  about 1400 as bjodat. The other ~jsonbench~ figures are within their noise.
+- A string is read in runs: the characters up to the next ~"~, ~\~, control
+  character, byte that is not UTF-8 or end of the chunk are scanned with a
+  local index, checked as UTF-8 as before, and copied in one piece with the
+  new ~stringbuilder-add-bytes!~. The reader is moved once a run. White space
+  is skipped the same way, and costs one look at the next byte when there is
+  none. Errors name the line and column they did.
+- ~(stringbuilder-add-bytes! b bytes start end)~ appends a range of an array,
+  checked as UTF-8 as ~stringbuilder-add-code!~'s bytes are, when the builder
+  becomes a string.
+- Read warm, in MB/s, before and after: one 20 KB string 553 and about 1350;
+  short ASCII strings 235 and about 390; objects of four short fields 46 and
+  about 52, with 16.3 bytes allocated per byte read before and 13.2 after; a
+  0.9 MB array of records 54 and about 65. Strings that are not ASCII, with
+  escapes, numbers and literals are about as they were.
+- A float's bytes go to the parser's buffer in one piece with
+  ~stringbuilder-add-bytes!~, not a byte at a time: canada, 111 000 floats of
+  17 significant digits, from about 125 MB/s to about 135-145.
+- Left open: half of what an object allocates is its map, built by
+  ~transientmap-set!~ one key at a time. In canada, an array of two numbers is
+  128 bytes, its ~RrbList~, its tail and its ~JsonArr~, against 24 for each
+  ~JsonFloat~ in it.
+- Tests: ten checks in ~167_json.bjo~ for a run, a character, an escape and
+  white space cut by the end of a read, columns after runs, and keys repeated
+  and sharing a slot; ~stringbuilder-add-bytes!~ in
+  ~471_search_any_and_builder_appends.bjo~; ~AppendBytesInRuns~ in BjoString's
+  tests.
+
+* string-search-any, and the builder takes substrings and numbers
+
+- ~(string-search-any s chars start)~ is where the first character at or
+  after ~start~ that is one of ~chars~ is. A set of ASCII characters is a
+  vectorized search of the bytes (~Utf8String.IndexOfAny~, a ~SearchValues~
+  made once for a set that is all of its array, and the last set on each
+  thread checked first by reference). A set with a character outside ASCII is
+  searched a character at a time.
+- ~(stringbuilder-add-substring! b s start end)~ appends the text between two
+  cursors without the string ~substring~ makes. ~stringbuilder-add-long!~ and
+  ~stringbuilder-add-double!~ append a number as ~long->string~ and
+  ~double->string~ write it, without the string. ~display-into~ for ~long~ and
+  ~double~ uses them.
+- ~(text json)~'s writer uses them, and is Bjolang still: a string is copied in
+  the runs between the characters that need an escape, a number is written
+  into the builder, and an object's entries are sorted once, in place, rather
+  than its keys sorted as a list and each looked up again. Written warm, in
+  MB/s, before and after: one 20 KB string 421 and about 2200; short strings
+  372 and 1650; strings with an escape every few bytes 386 and 385; integers
+  285 and 600 to 750; floats 117 and 140; objects of four fields 137 and 165;
+  a 0.9 MB array of records 167 and 230. A float is bounded by .NET's shortest
+  round-trip formatting.
+- Left open: with ~#:ascii~ a string is still written a character at a time.
+  ~write-json~ still makes the whole text as a string before it writes it.
+- Tests: ~471_search_any_and_builder_appends.bjo~, and in BjoString's tests
+  ~IndexOfAnyMatchesNaiveSearch~ and ~AppendBetweenCursorsIsTheSlice~.
+
+* Dead ~or~ alternatives are refused in Bjolang, not in C#
+
+- Each alternative of a clause's top-level ~(or ...)~ must be reachable past
+  the clauses above and the alternatives before it. ~(or 3 3)~,
+  ~(or (:at-least 0) 3)~, ~(or _ 3)~ and ~(or 3 4)~ below a clause for ~3~
+  are reported as "this alternative can never run". Before, each compiled in
+  Bjolang and failed in C# with CS0152 or CS8120, because each alternative is
+  a ~case~ label of its own. A guard does not make a repeated alternative
+  live, because the guard is the same for each alternative.
+- A ~double~ or ~decimal~ literal in a pattern is compared by value:
+  ~(1.0 ...)~ above ~(1.00 ...)~, and ~(or 1 1.0)~ at ~double~, are dead
+  clauses. They were taken as different constants and failed with CS0152.
+- ~(or 3 _)~ compiles: a wildcard alternative is emitted as ~case var _:~,
+  not ~case _:~, and a clause with one is irrefutable, so a switch expression
+  gets no fallback arm after it (CS8510).
+- Left open: alternatives of a nested ~or~ are not checked. C# accepts
+  those, because they stay one C# ~or~ pattern.
+- Tests: ~468_or_alternatives.bjo~, and eight files in ~TestFiles/errors/~
+  (~or_*~, ~real_literal_spelled_twice*~, ~decimal_literal_spelled_twice~).
+
+* ~(and ...)~ is the intersection of its parts
+
+- The exhaustiveness check meets the parts of an ~and~: two ranges are one
+  range, the same constructor twice is met field by field, two different
+  constructors, literals or lengths match nothing, a fixed length meets a rest
+  pattern at that length, and an ~or~ among the parts is distributed over the
+  others. Before, an ~and~ of two parts that can fail covered nothing, and C#,
+  which works out the same intersection, refused what followed (CS8120).
+- A pattern that matches no value is an error of its own, "this pattern
+  matches no value": ~(and 1 2)~, ~(Some (and 1 2))~, ~(and [] [_])~, and
+  ~(:between 9 0)~, which was reported as covered by the clauses above.
+- ~(and (:at-least 0) (:at-most 9))~ covers the digits, so a clause for ~3~
+  below it is dead, and the ranges around it make the match exhaustive.
+- A view beside the ranges still makes the ~and~ cover nothing, but an
+  intersection that is empty is empty also with a view in it.
+- Tests: ~470_and_intersections.bjo~, and ten ~and_*~ files in
+  ~TestFiles/errors/~. ~comparison_empty_range.bjo~ expects the new message.
+
+* ~(:is ...)~ is tested in the guard
+
+- A type test is emitted as a ~var~ designation in the ~case~ label and a C#
+  type pattern in its ~when~, as a view is. ~Exhaustiveness~ counts a type
+  test as covering nothing, and C# proves nothing of a guard, so the two
+  checks agree. In the label, C# refused ~(:is string)~ below
+  ~(:is string s)~, or ~(:is System.ArgumentException)~ below
+  ~(:is System.Exception)~ (CS8120). An ~or~ that holds a type test goes to
+  the guard whole, because C# allows no designation inside an ~or~ pattern.
+- Such a clause now compiles, and no value reaches it, as the docs say of a
+  type test.
+- Tests: ~469_type_test_labels.bjo~.
+
 * vec-add-first
 
 - ~(vec-add-first v x)~ is a new vec, one longer, with ~x~ first and ~v~

@@ -19,7 +19,7 @@
     ((JsonInt n) (str "i" (long->string n)))
     ((JsonFloat d) (str "f" (double->string d)))
     ((JsonStr s) (str "\"" s "\""))
-    ((JsonArr v) (str "[" (string-join (vec-map shape v) ",") "]"))
+    ((JsonArr v) (str "[" (string-join (iarray->vec (iarray-map shape v)) ",") "]"))
     ((JsonObj m) (str "{" (string-join (entries m) ",") "}"))))
 
 ;; Sorted, so the assertion does not depend on a hash order.
@@ -32,6 +32,22 @@
 (: (-> string string))
 (defun (ok text)
   (match (parse-json text) ((Ok j) (shape j)) ((Err e) (str "REFUSED " e))))
+
+;; `s` written `n` times.
+(: (-> string int string))
+(defun (repeated s n)
+  (def sb (stringbuilder-empty))
+  (loop (:for _ (range 0 n)) (:do (stringbuilder-add-string! sb s)))
+  (stringbuilder->string sb))
+
+;; The bytes of `s`, and then `tail`.
+(: (-> string (Array byte) (Array byte)))
+(defun (bytes-then s tail)
+  (def head (string->bytes s))
+  (def all (array-resize head (+ (array-length head) (array-length tail))))
+  (loop (:for i (range 0 (array-length tail)))
+        (:do (array-set! all (+ (array-length head) i) (array-ref tail i))))
+  all)
 
 (: (-> string string))
 (defun (bad text)
@@ -50,18 +66,41 @@
      (close-output-port out)
      (match (read-json in) ((Ok j) (shape j)) ((Err e) e)))))
 
-;; A document that arrives in two reads, the second after the reader has
-;; started.
-(: (-> string string string))
-(defun (split-json first second)
+;; The reader's first read from a port asks for this many bytes, and it gets
+;; them all before it parses any (`read-first` in json.bjo). A document is
+;; cut by the end of a read only there.
+(: int)
+(def first-read 16384)
+
+;; How many newlines go before `first`, so that the first read ends where
+;; `first` does.
+(: (-> (Array byte) int))
+(defun (pad-for first) (- first-read (array-length first)))
+
+;; A document that arrives in two reads, cut between `first` and `second`.
+;; Newlines before it make `first` end at the end of the first read; they move
+;; the line of what follows and not its column. `second` is written after the
+;; reader has started.
+(: (-> (Array byte) (Array byte) string))
+(defun (split-bytes first second)
   (match (byte-pipe)
     ((Tuple in out)
-     (write-bytes! out (string->bytes first))
+     (write-bytes! out (make-array (pad-for first) #:fill (cast byte 10)))
+     (write-bytes! out first)
      (flush-port out)
      (def reading (bjo (read-in-a-fiber in)))
-     (write-bytes! out (string->bytes second))
+     (write-bytes! out second)
      (close-output-port out)
      (run-str reading))))
+
+(: (-> string string string))
+(defun (split-json first second)
+  (split-bytes (string->bytes first) (string->bytes second)))
+
+;; The line `n` of `first` is after the newlines `split-json` puts before it.
+(: (-> string int string))
+(defun (cut-line first n)
+  (int->string (+ n (pad-for (string->bytes first)))))
 
 (: string)
 (def emoji (list->string (list (integer->char 128512))))
@@ -203,14 +242,7 @@
 
   ;; A character whose bytes arrive in two reads is one character.
   (expect "a character split between two reads"
-          (match (byte-pipe)
-            ((Tuple in out)
-             (write-bytes! out #[34 195])
-             (flush-port out)
-             (def reading (bjo (read-in-a-fiber in)))
-             (write-bytes! out #[169 34])
-             (close-output-port out)
-             (run-str reading)))
+          (split-bytes #[34 195] #[169 34])
           "\"é\"")
 
   ;; A number whose digits arrive in two reads is one number.
@@ -225,7 +257,93 @@
           "[f100]")
   (expect "a refusal split between two reads"
           (split-json "[1." "x]")
-          "line 1, column 4: a number needs a digit after its decimal point, and this is 'x'")
+          (str "line " (cut-line "[1." 1) ", column 4: a number needs a digit after its decimal point, and this is 'x'"))
+
+  ;; A string is read in runs off the chunk, and white space is skipped a chunk
+  ;; at a time. A run, a character, an escape and white space can each be cut
+  ;; by the end of a read.
+  (expect "a string cut between two reads"
+          (split-json "[\"abc" "def\"]")
+          "[\"abcdef\"]")
+  (expect "a character of several bytes cut inside a run"
+          (split-bytes #[91 34 97 226 130] #[172 98 34 93])
+          "[\"a€b\"]")
+  (expect "an escape cut between its backslash and its letter"
+          (split-json "[\"a\\" "nb\"]")
+          "[\"a\nb\"]")
+  (expect "white space cut between two reads, and the line and column after it"
+          (split-json "[1,  \n  " "  @]")
+          (str "line " (cut-line "[1,  \n  " 2) ", column 5: '@' does not begin a value"))
+  ;; A run is scanned 32 bytes at a time, and the bytes after the last whole
+  ;; block one at a time. These strings are long enough to have whole
+  ;; blocks, and put what stops the run in every lane.
+  (expect "a string of every length up to three blocks, with an escape after it"
+          (loop (:for n (range 0 100))
+                (:let text (repeated "a" n))
+                (:when (not (= (ok (str "\"" text "\\n\""))
+                              (str "\"" text "\n\""))))
+                (:acc bad (listing n))
+                => bad)
+          '())
+  (expect "a quote in every lane of the second block"
+          (loop (:for n (range 32 64))
+                (:let text (repeated "b" n))
+                (:when (not (= (ok (str "[\"" text "\",1]")) (str "[\"" text "\",i1]"))))
+                (:acc bad (listing n))
+                => bad)
+          '())
+  (expect "the column after a long run of letters of several bytes"
+          (bad (str "[\"" (repeated "blåbär" 10) "\", @]"))
+          "line 1, column 66: '@' does not begin a value")
+  (expect "a byte that is not UTF-8 deep in a long run, at its column"
+          (bytes-json (bytes-then (str "\"" (repeated "å" 40)) #[255 34]))
+          "line 1, column 42: a string has to be UTF-8, and this byte is not")
+  (expect "a control character deep in a long run, at its column"
+          (bytes-json (bytes-then (str "\"" (repeated "x" 45)) #[9 34]))
+          "line 1, column 47: a control character in a string has to be written as an escape")
+  (expect "a long run of letters of several bytes, kept"
+          (ok (str "\"" (repeated "€ö😀" 20) "\""))
+          (str "\"" (repeated "€ö😀" 20) "\""))
+  ;; White space is skipped 32 bytes at a time, and the line and column
+  ;; counted from its newlines. An error after it says where it ended.
+  (expect "the column after every length of spaces up to three blocks"
+          (loop (:for n (range 0 100))
+                (:when (not (= (bad (str "[1," (repeated " " n) "@]"))
+                               (str "line 1, column " (int->string (+ 4 n)) ": '@' does not begin a value"))))
+                (:acc wrong (listing n))
+                => wrong)
+          '())
+  (expect "the line and column after newlines and an indent, in every lane"
+          (loop (:for k '(1 2 31 32 33 64))
+                (:subloop)
+                (:for m (range 0 70))
+                (:when (not (= (bad (str "[1," (repeated "\n" k) (repeated " " m) "@]"))
+                               (str "line " (int->string (+ 1 k)) ", column " (int->string (+ 1 m))
+                                    ": '@' does not begin a value"))))
+                (:acc wrong (listing (Tuple k m)))
+                => wrong)
+          '())
+  (expect "tabs and returns are white space, and a return is not a newline"
+          (bad (str "[1," (repeated " \t\r" 20) "\n" (repeated "\t" 40) "@]"))
+          "line 2, column 41: '@' does not begin a value")
+  (expect "a value after long white space"
+          (ok (str "[" (repeated "\n    " 20) "1," (repeated " " 50) "2" (repeated "\n" 40) "]"))
+          "[i1,i2]")
+  (expect "a column after a run with letters of several bytes in it"
+          (bad "[\"blåbär\", @]")
+          "line 1, column 12: '@' does not begin a value")
+  (expect "a byte that is not UTF-8 after a run, at its column"
+          (bytes-json #[34 97 98 99 255 34])
+          "line 1, column 5: a string has to be UTF-8, and this byte is not")
+  ;; Keys are kept and handed out again. Two that share a slot, `xaa` and `xcc`
+  ;; by `key-slot`, are told apart.
+  (expect "keys repeated, and keys that share a slot"
+          (ok "[{\"xaa\":1,\"xcc\":2},{\"xcc\":3,\"xaa\":4},{\"xaa\":5}]")
+          "[{\"xaa\":i1,\"xcc\":i2},{\"xaa\":i4,\"xcc\":i3},{\"xaa\":i5}]")
+  (expect "a key with an escape in it, twice"
+          (ok "[{\"a\\\"b\":1},{\"a\\\"b\":2}]")
+          "[{\"a\"b\":i1},{\"a\"b\":i2}]")
+  (expect "an empty key" (ok "{\"\":1}") "{\"\":i1}")
 
   ;; The row is the point of all this.
   (expect "the third line" (bad "[\n  1,\n  @\n]")

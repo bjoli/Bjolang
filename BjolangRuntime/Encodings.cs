@@ -211,6 +211,12 @@ public static class Encodings {
     /// <paramref name="end"/>, decoded strictly. What does not decode is an
     /// error naming its offset.
     /// </summary>
+    /// Whether the bytes from `start` to `end` are UTF-8: whole characters,
+    /// no overlong form, no surrogate, nothing past U+10FFFF. Vectorized by
+    /// .NET, so a check of a long run costs little more than reading it.
+    public static bool IsUtf8(byte[] bytes, int start, int end) =>
+        Utf8.IsValid(bytes.AsSpan(start, end - start));
+
     public static Utf8String Decode(byte[] bytes, int start, int end, Encoding encoding) {
         ArgumentNullException.ThrowIfNull(encoding);
         var span = Range(bytes, start, end);

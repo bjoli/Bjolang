@@ -119,19 +119,19 @@
 (impl (->json (Vec %a))
   (where (->json %a))
   (defun (->json v)
-    (JsonArr (vec-map (fun (x) (->json x)) v))))
+    (JsonArr (vec->iarray (vec-map (fun (x) (->json x)) v)))))
 
 (impl (json-> (Vec %a))
   (where (json-> %a))
   (defun (json-> j)
     (match j
       ((JsonArr items)
-       (vec-fold (fun (el acc)
-                   (def (Ok b) acc :propagate)
-                   (def (Ok v) (json-> el) :propagate)
-                   (Ok (vec-add b v)))
-                 (Ok (vec-empty))
-                 items))
+       (fold (fun (el acc)
+               (def (Ok b) acc :propagate)
+               (def (Ok v) (json-> el) :propagate)
+               (Ok (vec-add b v)))
+             (Ok (vec-empty))
+             items))
       (_ (Err "expected an array")))))
 
 ;; A JSON object with values all of one type.

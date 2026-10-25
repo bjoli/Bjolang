@@ -240,14 +240,19 @@
   (where (bjodat-> %a))
   (defun (bjodat-> v)
     (match v
+      ;; Into one builder, which the vec takes at the end, and not a
+      ;; `vec-add` per element, which made a vec for each. The first element
+      ;; that does not decode ends the walk.
       ((BjoVec items)
-       ;; vec-fold is already very very fast. no need to rewrite it as a loop
-       (vec-fold (fun (el acc)
-                   (def (Ok b) acc :propagate)
-                   (def (Ok x) (bjodat-> el) :propagate)
-                   (Ok (vec-add b x)))
-                 (Ok (vec-empty))
-                 items))
+       (def b (vecbuilder-empty/small))
+       (let go ((c (vec-cursor items)))
+         (if (vec-cursor-done? c)
+             (Ok (vecbuilder->vec b))
+             (match (bjodat-> (vec-cursor-current c))
+               ((Err e) (Err e))
+               ((Ok x)
+                (vecbuilder-add! b x)
+                (go (vec-cursor-next c)))))))
       (_ (Err "expected a vec")))))
 
 ;; A list is the other sequence, and it is a different shape on the page: a

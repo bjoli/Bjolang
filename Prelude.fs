@@ -943,6 +943,10 @@ let prelude : Env =
         // everywhere else; there is no byte index to get wrong.
         "string-search", {Scheme = Scheme([], [], makeFunType [stringType; stringType] (makeOptionType stringCursorType)); IsMutable = false }
         "string-search-backward", {Scheme = Scheme([], [], makeFunType [stringType; stringType] (makeOptionType stringCursorType)); IsMutable = false }
+        // The first character at or after a cursor that is one of a set,
+        // given as a string. A set of ASCII characters is a vectorized byte
+        // search.
+        "string-search-any", {Scheme = Scheme([], [], makeFunType [stringType; stringType; stringCursorType] (makeOptionType stringCursorType)); IsMutable = false }
         // The character count, as against `string-length`'s storage count. Two
         // names because they are two questions with two answers and two costs:
         // this one walks.
@@ -954,12 +958,21 @@ let prelude : Env =
         "stringbuilder-empty", {Scheme = Scheme([], [], makeFunType [] stringBuilderType); IsMutable = false }
         "stringbuilder-add!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; charType] unitType); IsMutable = false }
         "stringbuilder-add-string!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; stringType] unitType); IsMutable = false }
+        // The text between two cursors, and a number, appended without the
+        // string `substring` or `long->string` would make first.
+        "stringbuilder-add-substring!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; stringType; stringCursorType; stringCursorType] unitType); IsMutable = false }
+        "stringbuilder-add-long!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; longType] unitType); IsMutable = false }
+        "stringbuilder-add-double!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; doubleType] unitType); IsMutable = false }
         // Empties one for reuse. The identity is unchanged, as `add!` leaves it.
         "stringbuilder-clear!", {Scheme = Scheme([], [], makeFunType [stringBuilderType] unitType); IsMutable = false }
         // One UTF-8 byte rather than a scalar, for a reader that holds codes.
         // The bytes are checked when the builder becomes a string, which
         // fails if they do not form whole scalars.
         "stringbuilder-add-code!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; intType] unitType); IsMutable = false }
+        // Bytes `start` to `end` of an array, the second exclusive, checked
+        // as `add-code!`'s are: for a reader that copies a run of its input
+        // in one piece.
+        "stringbuilder-add-bytes!", {Scheme = Scheme([], [], makeFunType [stringBuilderType; makeArrayType byteType; intType; intType] unitType); IsMutable = false }
         // One UTF-16 code unit, for a reader taking units from a text port. A
         // surrogate pair given in two calls becomes its scalar, and one left
         // unpaired fails when the builder becomes a string.

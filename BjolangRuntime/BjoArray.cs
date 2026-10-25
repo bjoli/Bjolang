@@ -234,6 +234,12 @@ public static class BjoArray {
     /// <summary>Writes <paramref name="x"/> to every element.</summary>
     public static void Fill<T>(T[] a, T x) => Array.Fill(a, x);
 
+    /// `count` elements of `src` from `srcStart` into `dst` from `dstStart`.
+    /// One copy, also when the ranges overlap in one array, as `Array.Copy`
+    /// is. A range outside either array throws `ArgumentException`.
+    public static void Copy<T>(T[] src, int srcStart, T[] dst, int dstStart, int count) =>
+        Array.Copy(src, srcStart, dst, dstStart, count);
+
     // One bit per lane, from the lane's top bit. `Vector<T>` has no such
     // method, so the vector is read as the fixed-size type of its width. The
     // width is a constant to the JIT, so two of the branches go.

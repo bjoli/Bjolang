@@ -1,0 +1,129 @@
+;; bjodat reads a string's runs and white space 32 or 16 bytes at a time with
+;; (std simd), and the bytes after the last whole block one at a time. A
+;; keyword read before is the value already made for it. These check the
+;; values, lines and columns where a block ends, across one, and in every lane.
+
+(import (std prelude))
+(import (std ports))
+(import (text bjodat-core))
+(import (std simpletest))
+
+(: (-> (Result string Bjodat) string))
+(defun (shown r)
+  (match r
+    ((Ok v) (bjodat->string v))
+    ((Err e) (str "err: " e))))
+
+;; `s` written `n` times.
+(: (-> string int string))
+(defun (repeated s n)
+  (def sb (stringbuilder-empty))
+  (loop (:for _ (range 0 n)) (:do (stringbuilder-add-string! sb s)))
+  (stringbuilder->string sb))
+
+;; The bytes of `s`, and then `tail`.
+(: (-> string (Array byte) (Array byte)))
+(defun (bytes-then s tail)
+  (def head (string->bytes s))
+  (def all (array-resize head (+ (array-length head) (array-length tail))))
+  (loop (:for i (range 0 (array-length tail)))
+        (:do (array-set! all (+ (array-length head) i) (array-ref tail i))))
+  all)
+
+(: (-> (Array byte) string))
+(defun (from-bytes bytes)
+  (match (byte-pipe)
+    ((Tuple in out)
+     (write-bytes! out bytes)
+     (close-output-port out)
+     (shown (read-bjodat in)))))
+
+(: string)
+(def closes-nothing ": ')' closes nothing here")
+
+(defun (main)
+  ;; --- Runs of a string ------------------------------------------------------
+  (expect "every length up to three blocks, with an escape after it"
+          (loop (:for n (range 0 100))
+                (:let text (repeated "a" n))
+                (:when (not (= (shown (parse-bjodat (str "\"" text "\\t\"")))
+                               (str "\"" text "\\t\""))))
+                (:acc wrong (listing n))
+                => wrong)
+          '())
+  (expect "a quote in every lane of the second block"
+          (loop (:for n (range 32 64))
+                (:let text (repeated "b" n))
+                (:when (not (= (shown (parse-bjodat (str "[\"" text "\" 1]")))
+                               (str "[\"" text "\" 1]"))))
+                (:acc wrong (listing n))
+                => wrong)
+          '())
+  (expect "a newline in a long string moves the line"
+          (shown (parse-bjodat (str "[\"" (repeated "x" 40) "\n" (repeated "y" 40) "\" )")))
+          (str "err: line 2, column 43" closes-nothing))
+  (expect "the column after a long run of letters of several bytes"
+          (shown (parse-bjodat (str "[\"" (repeated "blåbär" 10) "\" )")))
+          (str "err: line 1, column 65" closes-nothing))
+  (expect "a long run of letters of several bytes, kept"
+          (shown (parse-bjodat (str "\"" (repeated "€ö😀" 20) "\"")))
+          (str "\"" (repeated "€ö😀" 20) "\""))
+  (expect "a byte that is not UTF-8 deep in a long run, at its column"
+          (from-bytes (bytes-then (str "\"" (repeated "å" 40)) #[255 34]))
+          "err: line 1, column 42: text has to be UTF-8, and this byte is not")
+  (expect "a control character in a long run is text"
+          (shown (parse-bjodat (str "\"" (repeated "x" 40) (list->string (list (integer->char 1))) "y\"")))
+          (str "\"" (repeated "x" 40) (list->string (list (integer->char 1))) "y\""))
+
+  ;; --- White space -----------------------------------------------------------
+  (expect "the column after every length of spaces up to three blocks"
+          (loop (:for n (range 0 100))
+                (:when (not (= (shown (parse-bjodat (str "[1 " (repeated " " n) ")")))
+                               (str "err: line 1, column " (int->string (+ 4 n)) closes-nothing))))
+                (:acc wrong (listing n))
+                => wrong)
+          '())
+  (expect "the line and column after newlines and an indent, in every lane"
+          (loop (:for k '(1 2 31 32 33 64))
+                (:subloop)
+                (:for m (range 0 70))
+                (:when (not (= (shown (parse-bjodat (str "[1" (repeated "\n" k) (repeated " " m) ")")))
+                               (str "err: line " (int->string (+ 1 k)) ", column " (int->string (+ 1 m))
+                                    closes-nothing))))
+                (:acc wrong (listing (Tuple k m)))
+                => wrong)
+          '())
+  (expect "a comment between long white space"
+          (shown (parse-bjodat (str "[1" (repeated " " 40) "; a comment ) \n" (repeated " " 40) ")")))
+          (str "err: line 2, column 41" closes-nothing))
+  (expect "tabs and returns are white space, and a return is not a newline"
+          (shown (parse-bjodat (str "[1" (repeated " \t\r" 20) "\n" (repeated "\t" 40) ")")))
+          (str "err: line 2, column 41" closes-nothing))
+  (expect "values after long white space"
+          (shown (parse-bjodat (str "[" (repeated "\n    " 20) "1" (repeated " " 50) "2" (repeated "\n" 40) "]")))
+          "[1 2]")
+
+  ;; --- Keywords --------------------------------------------------------------
+  ;; Two hundred names in sixty-four slots: names that share a slot take turns
+  ;; in it, and each is still its own keyword.
+  (def many (loop (:for i (range 0 200)) (:acc out (vecing (str ":k" (int->string i) " " (int->string i))))))
+  (def many-text (str "{" (string-join many " ") "}"))
+  (expect "more keywords than slots, each kept"
+          (shown (parse-bjodat many-text))
+          many-text)
+  (expect "a repeated keyword is the interned one, found by reference"
+          (match (parse-bjodat "[{:a 1 :b 2} {:a 3 :b 4} {:b 5 :a 6}]")
+            ((Ok (BjoVec v))
+             (loop (:for m v)
+                   (:acc found (listing (match m
+                                          ((BjoMap es)
+                                           (match (bjodat-ref es (string->keyword "a"))
+                                             ((Some x) (bjodat->string x))
+                                             (None "missing")))
+                                          (_ "not a map"))))))
+            (_ '()))
+          '("1" "3" "6"))
+  (expect "a keyword after a symbol of the same name is a keyword"
+          (shown (parse-bjodat "[abc :abc abc :abc]"))
+          "[abc :abc abc :abc]")
+  0)

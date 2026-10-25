@@ -450,6 +450,14 @@ public static partial class BjolangRuntime {
     public static Option<BjoString.StringCursor> stringsubsearchsubbackward(Utf8String s, Utf8String needle) =>
         s.LastIndexOf(needle) is { } c ? Some(c) : None<BjoString.StringCursor>();
 
+    // The first character at or after `start` that is one of `chars`. A set
+    // that is all ASCII is a vectorized search of the bytes, which is what an
+    // escaper or a tokenizer wants: the runs between the characters it stops
+    // at are then copied whole with `stringbuilder-add-substring!`.
+    public static Option<BjoString.StringCursor> stringsubsearchsubany(
+        Utf8String s, Utf8String chars, BjoString.StringCursor start) =>
+        s.IndexOfAny(chars, start) is { } c ? Some(c) : None<BjoString.StringCursor>();
+
     // The character count. `string-length` is the byte length and O(1); the two
     // differ for any string with a character outside ASCII in it, and the
     // names are meant to be told apart.
@@ -477,6 +485,29 @@ public static partial class BjolangRuntime {
         return unit;
     }
 
+    // The text between two cursors, copied in one piece, without the string
+    // `substring` would make of it.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Unit stringbuildersubaddsubsubstring_BANG(
+        Utf8StringBuilder b, Utf8String s, BjoString.StringCursor start, BjoString.StringCursor end) {
+        b.Append(s, start, end);
+        return unit;
+    }
+
+    // A number written into the buffer, the text `long->string` and
+    // `double->string` give, without the string they would make.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Unit stringbuildersubaddsublong_BANG(Utf8StringBuilder b, long n) {
+        b.Append(n);
+        return unit;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Unit stringbuildersubaddsubdouble_BANG(Utf8StringBuilder b, double d) {
+        b.Append(d);
+        return unit;
+    }
+
     // Empties one for reuse, keeping the buffer it has already grown. A reader
     // that builds many short strings pays for a fresh builder and its first
     // chunk every time otherwise, which measures as more than the parse it
@@ -497,6 +528,15 @@ public static partial class BjolangRuntime {
     public static Unit stringbuildersubaddsubcode_BANG(Utf8StringBuilder b, int code) {
         if ((uint)code > 0xFF) ThrowNotA("stringbuilder-add-code!", "byte, 0 to 255", code);
         b.AppendByte((byte)code);
+        return unit;
+    }
+
+    // Bytes `start` to `end` of an array, the second exclusive, in one piece,
+    // checked as `add-code!`'s are when the builder becomes a string. A range
+    // outside the array raises, as the slice of it does.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Unit stringbuildersubaddsubbytes_BANG(Utf8StringBuilder b, byte[] bytes, int start, int end) {
+        b.AppendBytes(bytes.AsSpan(start, end - start));
         return unit;
     }
 
