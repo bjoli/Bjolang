@@ -3,6 +3,33 @@
 
 What each change guarantees, and what it leaves open.
 
+* (std interop): Bjolang functions as .NET delegates and event handlers, and null
+
+- ~as-delegate~ makes a delegate of the type the call site expects, such as
+  ~(Predicate int)~ or ~(EventHandler RoutedEventArgs)~, that calls a Bjolang
+  function. ~as-delegate/type~ takes the type as a ~System.Type~ value.
+- A delegate that returns ~void~ drops the unit of the function. That is what
+  a Bjolang function could not do before: it is a ~Func~ that returns
+  ~Bjoml.Unit~, so ~Delegate.CreateDelegate~ refused it for any event handler.
+- Each argument is converted to the parameter type of the function, and the
+  result to the result type of the delegate. A wrong number of arguments, a
+  ~ref~ or ~out~ parameter, or a function that returns nothing for a delegate
+  that returns a value raises ~ArgumentException~ when the delegate is made.
+- ~add-event-handler!~ and ~remove-event-handler!~ subscribe to a CLR event by
+  name, through reflection.
+- The converter for one pair of types is compiled with expression trees once,
+  and kept. In a Native AOT build it is interpreted.
+- Not changed: an ~import/extern~ still cannot name a parameter of type
+  ~Action~, because the interop void has no spelling. A delegate of type
+  ~Action~ can be made and passed as a ~Delegate~.
+- ~clr-default~ is .NET's ~default~ of the type the call site expects: null
+  for a reference type and for ~int?~, zero for a number. Bjolang has no null
+  literal, and a .NET parameter such as ~Bitmap.Save~'s ~int? quality~ must
+  still be given one.
+- Checked against Avalonia 11.3: a window with a button whose ~Click~ handler
+  is a Bjolang function, added with ~Interactive.AddHandler~, with no subclass
+  and no XAML.
+
 * The bjodat reader: keywords kept, runs and white space with (std simd)
 
 - A keyword read before is the value already made for it. The reader keeps

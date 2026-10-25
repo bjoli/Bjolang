@@ -1,0 +1,39 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; std/interop.bjo — what .NET wants and Bjolang cannot write.
+;;
+;; A Bjolang function is a Func. A .NET API that wants an Action, an
+;; EventHandler or a delegate type of its own gets one from `as-delegate`.
+;; A parameter that wants null gets it from `clr-default`. The work is in the
+;; runtime (`BjoInterop.cs`).
+(import (std prelude))
+
+(:doc #:file "interop.bjodoc")
+
+(export Delegate ClrType
+  as-delegate as-delegate/type
+  add-event-handler! remove-event-handler!
+  clr-default)
+
+(import/class
+  (Delegate (: System.Delegate))
+  (ClrType  (: System.Type)))
+
+(import/extern
+  (clr-default           (: Bjolang.Runtime.BjoInterop.Default (-> %a)))
+  (as-delegate           (: Bjolang.Runtime.BjoInterop.As      (-> %f %d)))
+  (as-delegate/type      (: Bjolang.Runtime.BjoInterop.Convert (-> ClrType %f Delegate)))
+  (add-event-handler!    (: Bjolang.Runtime.BjoInterop.AddEventHandler
+                            (-> %t string %f Delegate)))
+  (remove-event-handler! (: Bjolang.Runtime.BjoInterop.RemoveEventHandler
+                            (-> %t string Delegate void))))

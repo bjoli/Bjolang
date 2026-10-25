@@ -1,0 +1,81 @@
+;; (std interop): Bjolang functions as .NET delegates and event handlers, and null.
+(import (std prelude))
+(import (std simpletest))
+(import (std interop))
+
+(import/class
+  (Object        (: System.Object))
+  (EventArgs     (: System.EventArgs))
+  (Component     (: System.ComponentModel.Component (-> Component)))
+  ((Action %a)   (: System.Action))
+  ((Conv %a %b)  (: System.Converter))
+  ((Pred %a)     (: System.Predicate))
+  ((Nullable %a) (: System.Nullable)))
+
+(import/extern
+  (array-convert  (: System.Array.ConvertAll (-> (Array %a) (Conv %a %b) (Array %b))))
+  (array-find     (: System.Array.FindIndex (-> (Array %a) (Pred %a) int)))
+  (clr-type-of    (: System.Object.GetType (-> Object ClrType)))
+  (null?          (: System.Object.ReferenceEquals (-> Object Object bool)))
+  (dynamic-invoke (: System.Delegate.DynamicInvoke (-> Delegate (Array Object) Object))))
+
+(defun (main)
+  ;; --- as-delegate: the type comes from the call site ---------------------
+  (expect "a Converter keeps the result"
+          (->list (array-convert #[1 2 3] (as-delegate (fun (x) (* x 10)))))
+          '(10 20 30))
+  (expect "a Predicate returns bool"
+          (array-find #[5 6 7] (as-delegate (fun (x) (= x 6))))
+          1)
+
+  ;; An Action returns nothing, so the unit of the function is dropped.
+  (def/mutable total 0)
+  (def act (: (as-delegate (fun (x) (set! total (+ total x)))) (Action int)))
+  (ignore (dynamic-invoke (cast Delegate (cast Object act)) #[(cast Object 5)]))
+  (expect "an Action calls the function" total 5)
+
+  ;; --- as-delegate/type: the type is a value -------------------------------
+  (def again (as-delegate/type (clr-type-of (cast Object act))
+                               (fun (x) (set! total (* total x)))))
+  (expect "as-delegate/type makes that type"
+          (eq? (clr-type-of (cast Object again)) (clr-type-of (cast Object act)))
+          #t)
+  (ignore (dynamic-invoke again #[(cast Object 3)]))
+  (expect "and it calls the function" total 15)
+
+  ;; --- events --------------------------------------------------------------
+  (def/mutable seen '())
+  (def c (Component.))
+  (ignore (add-event-handler! c "Disposed"
+                              (: (fun (sender e) (set! seen (cons "c" seen)))
+                                 (-> Object EventArgs void))))
+  (.Dispose c)
+  (expect "the handler ran" seen '("c"))
+
+  (def d (Component.))
+  (def h (add-event-handler! d "Disposed"
+                             (: (fun (sender e) (set! seen (cons "d" seen)))
+                                (-> Object EventArgs void))))
+  (remove-event-handler! d "Disposed" h)
+  (.Dispose d)
+  (expect "a removed handler does not run" seen '("c"))
+
+  ;; --- clr-default ---------------------------------------------------------
+  (expect "a nullable default has no value" (.-HasValue (: (clr-default) (Nullable int))) #f)
+  (expect "an object default is null" (null? (: (clr-default) Object) (: (clr-default) Object)) #t)
+  (expect "a number default is zero" (: (clr-default) int) 0)
+
+  ;; --- what does not fit ---------------------------------------------------
+  (expect "a wrong number of arguments is refused"
+          (ok? (try (add-event-handler! (Component.) "Disposed" (: (fun (x) x) (-> Object Object)))
+                    #:catch (System.ArgumentException)))
+          #f)
+  (expect "an event that is not there is refused"
+          (ok? (try (add-event-handler! (Component.) "Nope"
+                                        (: (fun (s e) unit) (-> Object EventArgs void)))
+                    #:catch (System.ArgumentException)))
+          #f)
+  (expect "a function returning nothing does not fit a Converter"
+          (ok? (try (: (as-delegate (: (fun (x) (set! total x)) (-> int void))) (Conv int int))
+                    #:catch (System.ArgumentException)))
+          #f))

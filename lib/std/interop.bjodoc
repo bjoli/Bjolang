@@ -1,0 +1,107 @@
+;; Docs for std/interop.bjo, read through (:doc #:file "interop.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "What .NET wants and Bjolang cannot write: functions as delegates of any type and as event handlers, and null.")
+  (see as-delegate as-delegate/type add-event-handler! remove-event-handler! clr-default)
+  (example """
+    (import (std interop))
+    (import/class
+      ((Action %a) (: System.Action))
+      (Component   (: System.ComponentModel.Component (-> Component))))
+
+    ;; An Action, for an API that takes one.
+    (def say (: (as-delegate (fun (s) (println s))) (Action string)))
+
+    ;; A handler of a .NET event.
+    (def c (Component.))
+    (add-event-handler! c "Disposed" (fun (sender e) (println "gone")))
+    (.Dispose c)                    ; prints gone
+    """)
+  (reference """
+    A Bjolang function is a @code{Func}, and a function that returns
+    @code{void} returns the unit value. A .NET API often wants another
+    delegate type: @code{Action}, @code{EventHandler}, or a type of its own.
+    The functions here make a delegate of that type that calls the Bjolang
+    function.
+
+    @strong{What fits.} The delegate and the function take the same number
+    of arguments. Each argument is converted to the parameter type of the
+    function, so a function that takes @code{Object} gets any argument. When
+    the delegate returns @code{void}, the result of the function is dropped.
+    Otherwise the result is converted to the result type of the delegate, and
+    a function that returns @code{void} does not fit. A delegate with a
+    @code{ref} or @code{out} parameter does not fit. A function that does not
+    fit raises @code{ArgumentException}, when the delegate is made.
+
+    @strong{Cost.} The converter for one delegate type and one function type
+    is compiled the first time, which takes some milliseconds. After that,
+    making a delegate is one allocation, and a call is one more call.
+
+    @strong{Native AOT.} An ahead-of-time build has no JIT, so the converter
+    is interpreted. A call through it is slower than in a JIT build.
+    """))
+
+(:doc as-delegate
+  (summary "Returns a delegate that calls @code{f}. The type of the delegate is the type that the call site expects.")
+  (arg f "The function.")
+  (returns "A delegate of the expected type.")
+  (example """
+    (import/class ((Func %a %b) (: System.Converter)))
+    (def twice (: (as-delegate (fun (x) (* x 2))) (Func int int)))
+    """)
+  (reference """
+    When the call site does not give a delegate type, use
+    @code{as-delegate/type}. A type that is not a delegate raises
+    @code{ArgumentException}.
+    """))
+
+(:doc as-delegate/type
+  (summary "Returns a delegate of the given type that calls @code{f}.")
+  (arg type "The delegate type, a @code{System.Type}.")
+  (arg f "The function.")
+  (returns "The delegate, as a @code{Delegate}.")
+  (reference """
+    This is for a type that is known only when the program runs, such as the
+    handler type of an event that reflection finds.
+    """))
+
+(:doc add-event-handler!
+  (summary "Adds @code{f} as a handler of the event @code{name} of @code{target}.")
+  (arg target "The object that has the event.")
+  (arg name "The name of the event, such as @code{\"Disposed\"}.")
+  (arg f "The handler. It takes the same arguments as the handler type of the event, usually the sender and the event arguments.")
+  (returns "The delegate that was added. Give it to @code{remove-event-handler!} to remove the handler.")
+  (reference """
+    The event is found by reflection, among the public instance events of the
+    type of @code{target}. An event that is not there raises
+    @code{ArgumentException}.
+    """))
+
+(:doc remove-event-handler!
+  (summary "Removes a handler that @code{add-event-handler!} added.")
+  (arg target "The object that has the event.")
+  (arg name "The name of the event.")
+  (arg handler "The delegate that @code{add-event-handler!} returned."))
+
+(:doc clr-default
+  (summary "Returns .NET's default value of a type. The call site gives the type.")
+  (returns "Null for a reference type and for a nullable value type such as @code{int?}, and zero for a number.")
+  (example """
+    (import/class ((Nullable %a) (: System.Nullable)))
+    (: (clr-default) (Nullable int))   ; a null int?
+    """)
+  (reference """
+    Bjolang has no literal for null. Some .NET parameters want one, such as
+    an optional @code{int?} that a call must still give. Use this only for
+    such an argument: a null in a Bjolang value of a reference type throws
+    when it is used.
+    """))
+
+(:doc Delegate
+  (summary "Type alias for System.Delegate, the type of every delegate.")
+  (see as-delegate/type add-event-handler!))
+
+(:doc ClrType
+  (summary "Type alias for System.Type, which @code{as-delegate/type} takes.")
+  (see as-delegate/type))
