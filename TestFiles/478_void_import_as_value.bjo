@@ -1,0 +1,47 @@
+;; A .NET method or setter that returns void, used as a function value.
+;;
+;; Such an import is a lambda that calls it. The lambda took the method's
+;; `System.Void` as its result type and was written as one that returns
+;; nothing, but a `(-> ... void)` is a `Func<..., Unit>`, which has to return
+;; a unit: CS0126. Where the call was inlined, the lambda was never written,
+;; so the bug showed only where the value was kept or passed on.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (Object        (: System.Object))
+  (ArrayList     (: System.Collections.ArrayList (-> ArrayList)))
+  (StringBuilder (: System.Text.StringBuilder (-> StringBuilder))))
+
+(import/extern
+  ;; Static, and one of many overloads.
+  (write-line (: System.Console.WriteLine (-> string void)))
+  ;; An instance method.
+  (list-clear! (: System.Collections.ArrayList.Clear (-> ArrayList void)))
+  (list-add!   (: System.Collections.ArrayList.Add (-> ArrayList Object int)))
+  (list-count  (: System.Collections.ArrayList.Count (-> ArrayList int) #:get))
+  ;; A setter.
+  (length!     (: System.Text.StringBuilder.Length (-> StringBuilder int void) #:set))
+  (length-of   (: System.Text.StringBuilder.Length (-> StringBuilder int) #:get)))
+
+;; Keeps `f` in a closure, so that the value is passed on and not inlined.
+(: (-> (-> %a void) (-> %a void)))
+(defun (twice f) (fun (x) (f x) (f x)))
+
+(defun (main)
+  (def say (twice write-line))
+  (say "said twice")
+
+  (def xs (ArrayList.))
+  (ignore (list-add! xs (cast Object 1)))
+  (def clear (twice list-clear!))
+  (clear xs)
+  (expect "an instance method as a value" (list-count xs) 0)
+
+  (def sb (StringBuilder.))
+  (ignore (.Append sb "abcdef"))
+  (def fns (list (fun (b n) (length! b (+ n 1))) length!))
+  ((list-ref fns 1) sb 2)
+  (expect "a setter as a value" (length-of sb) 2)
+  (expect "it gives the unit" ((twice list-clear!) xs) unit))

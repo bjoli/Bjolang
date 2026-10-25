@@ -1568,6 +1568,13 @@ and private inferStaticMember (env: Env) (name: string) (r: Range) : HMType * Ty
 
 // An `import/extern` name used as a *value* rather than applied.
 //
+// The result type of the lambda that an import used as a value becomes. A
+// .NET void is the Bjolang unit, because the lambda is a `Func<..., Unit>`
+// wherever a `(-> ... void)` is wanted: with `System.Void` as its result, it
+// was written as a lambda that returns nothing, which C# refuses (CS0126).
+and private lambdaResult (t: HMType) : HMType =
+    if t = TypeConstants.voidType then TypeConstants.unitType else t
+
 // A .NET method group is not a value, so the only thing this can mean is a
 // lambda that calls it — which needs the parameter types before there are
 // any arguments to infer them from. That is what the declared signature is
@@ -1650,7 +1657,7 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
               Range = r
               Node = node }
 
-        let funType = tfun paramTypes TypeConstants.voidType
+        let funType = tfun paramTypes (lambdaResult TypeConstants.voidType)
 
         funType,
         { Type = funType
@@ -1698,7 +1705,7 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
                   Range = r
                   Node = node }
 
-            let funType = tfun paramTypes resultType
+            let funType = tfun paramTypes (lambdaResult resultType)
 
             funType,
             { Type = funType
@@ -1766,7 +1773,7 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
                   Range = r
                   Node = node }
 
-            let funType = tfun paramTypes retType
+            let funType = tfun paramTypes (lambdaResult retType)
 
             funType,
             { Type = funType

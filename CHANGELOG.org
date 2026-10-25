@@ -3,6 +3,17 @@
 
 What each change guarantees, and what it leaves open.
 
+* A .NET void method or setter used as a value
+
+- An import that returns void, used as a function value, is a lambda that
+  calls it. The lambda took ~System.Void~ as its result type and was written
+  as one that returns nothing, but a ~(-> ... void)~ is a ~Func<..., Unit>~,
+  so C# refused it (CS0126). This held for a static method, an instance
+  method and a ~#:set~ accessor, generic or not. The lambda now gives the
+  unit.
+- A call of such an import that was inlined wrote no lambda, and was not
+  affected; so the bug showed only where the value was kept or passed on.
+
 * A cast from a value of a type parameter's type
 
 - ~(cast StringBuilder x)~, where ~x~ has type ~%a~, wrote
