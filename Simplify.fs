@@ -112,7 +112,7 @@ let rec private isPure (ctx: Ctx) (expr: TypedExpr) : bool =
         | TTupleMake items -> List.forall (isPure ctx) items
         // The empty `void`, which a no-op `iterable-end` or
         // `iterable-cleanup` is once spliced.
-        | TWhen({ Node = TBool false }, _, _) -> true
+        | TWhen({ Node = TBool false }, _, false) -> true
         | _ ->
             match asCase ctx expr with
             | Some(_, args) -> List.forall (isPure ctx) args
@@ -231,7 +231,7 @@ let private coversAll (clauses: TMatchClause list) : bool =
 /// no-op `iterable-cleanup` in a loop guard's cleanup has this shape once spliced.
 let rec private isNoop (ctx: Ctx) (expr: TypedExpr) : bool =
     match expr.Node with
-    | TWhen({ Node = TBool false }, _, _) -> true
+    | TWhen({ Node = TBool false }, _, false) -> true
     | TTupleMake [] -> true
     | TLet("_", false, fn, value, body) when fn = noParams -> isNoop ctx value && isNoop ctx body
     | TLet(_, false, fn, value, body) when fn = noParams -> isPure ctx value && isNoop ctx body
