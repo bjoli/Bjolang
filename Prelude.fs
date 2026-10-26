@@ -47,7 +47,7 @@ let makeSeqType a = TCon("Seq", [a])
 /// the sequence. That is what distinguishes it from a `Cursor`, which is a
 /// value and may be held and compared — and why `Seq` implements `Iterable`
 /// and not `Cursor`.
-let makeSeqCursorType a = TCon("SeqCursor", [a])
+let makeSeqEnumeratorType a = TCon("SeqEnumerator", [a])
 let makeOptionType a = TCon("Option", [a])
 let makeResultType e a = TCon("Result", [e; a])
 let makeArrayType a = TCon("Array", [a])
@@ -1214,21 +1214,20 @@ let prelude : Env =
         "vec-cursor", {Scheme = Scheme(["a"], [], makeFunType [makeVecType (TVar "a")] (makeVecCursorType (TVar "a"))); IsMutable = false }
         "vec-cursor-done?", {Scheme = Scheme(["a"], [], makeFunType [makeVecCursorType (TVar "a")] boolType); IsMutable = false }
 
-        // The same three for a `Seq`, holding the enumerator so that a walk
-        // pulls each element once. A `Seq` has no tail to step to, so without
-        // these the only cursor available is the sequence itself and every step
-        // re-enumerates it from the start.
+        // A walk of a `Seq`: its .NET enumerator, with .NET's protocol.
+        // `next!` is `MoveNext` and answers whether the walk is on an element;
+        // `current` is `Current`. A `Seq` has no tail to step to, so a walk has
+        // to hold the enumerator to pull each element once.
         //
-        // Consuming, and the one cursor here that is: stepping it advances the
-        // underlying enumerator, so two walks from one cursor share a position.
-        // `(start s)` makes a fresh one per walk, which is what keeps a `Seq`
-        // re-enumerable.
-        "seq-cursor", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a")] (makeSeqCursorType (TVar "a"))); IsMutable = false }
-        "seq-cursor-done?", {Scheme = Scheme(["a"], [], makeFunType [makeSeqCursorType (TVar "a")] boolType); IsMutable = false }
-        "seq-cursor-current", {Scheme = Scheme(["a"], [], makeFunType [makeSeqCursorType (TVar "a")] (TVar "a")); IsMutable = false }
+        // Not a cursor: stepping it moves it for everyone who holds it, where a
+        // cursor (`vec-cursor`) is a position that does not change. `(start s)`
+        // makes a fresh one per walk, which is what keeps a `Seq` re-enumerable.
+        "seq-enumerator", {Scheme = Scheme(["a"], [], makeFunType [makeSeqType (TVar "a")] (makeSeqEnumeratorType (TVar "a"))); IsMutable = false }
+        "seq-enumerator-next!", {Scheme = Scheme(["a"], [], makeFunType [makeSeqEnumeratorType (TVar "a")] boolType); IsMutable = false }
+        "seq-enumerator-current", {Scheme = Scheme(["a"], [], makeFunType [makeSeqEnumeratorType (TVar "a")] (TVar "a")); IsMutable = false }
         // Ends a walk that stops before the end: disposes the enumerator, so
         // that a file the sequence opened for the walk is closed now.
-        "seq-cursor-end", {Scheme = Scheme(["a"], [], makeFunType [makeSeqCursorType (TVar "a")] unitType); IsMutable = false }
+        "seq-enumerator-end!", {Scheme = Scheme(["a"], [], makeFunType [makeSeqEnumeratorType (TVar "a")] unitType); IsMutable = false }
         "vec-cursor-current", {Scheme = Scheme(["a"], [], makeFunType [makeVecCursorType (TVar "a")] (TVar "a")); IsMutable = false }
         // A vec cursor is a value: `next` answers the cursor one element on,
         // and the cursor it was given still stands where it stood.

@@ -313,14 +313,33 @@ public static class MutableMapModule {
         map[key] = value;
     }
 
-    /// Sets the entry only when the key is new, and answers whether it was.
-    public static bool Add<K, V>(Dictionary<K, V> map, K key, V value) where K : notnull {
+    /// Adds the entry when the key is new, and answers false. When the key is
+    /// there already, changes nothing, and answers true with the value it has.
+    /// One lookup in the table either way.
+    public static bool AddOrExisting<K, V>(Dictionary<K, V> map, K key, V value, [MaybeNullWhen(false)] out V existing) where K : notnull {
         if (IsNull(key)) {
-            if (HasNull(map)) return false;
+            if (HasNull(map)) {
+                existing = ((NullKeyDictionary<K, V>)map).NullValue;
+                return true;
+            }
             Set(map, key, value);
+            existing = default;
+            return false;
+        }
+        ref var slot = ref CollectionsMarshal.GetValueRefOrAddDefault(map, key, out bool exists);
+        if (exists) {
+            existing = slot!;
             return true;
         }
-        return map.TryAdd(key, value);
+        slot = value;
+        existing = default;
+        return false;
+    }
+
+    /// Adds the entry, which must be new.
+    public static void AddNew<K, V>(Dictionary<K, V> map, K key, V value) where K : notnull {
+        if (AddOrExisting(map, key, value, out _))
+            throw new ArgumentException($"The key is already in the map: {key}", nameof(key));
     }
 
     public static bool Remove<K, V>(Dictionary<K, V> map, K key) where K : notnull {
@@ -361,40 +380,40 @@ public static class MutableMapModule {
 
     // --- Walking -----------------------------------------------------------
 
-    public static MutableMapCursor<K, V> Cursor<K, V>(Dictionary<K, V> map) where K : notnull => new(map);
+    public static MutableMapEnumerator<K, V> Enumerator<K, V>(Dictionary<K, V> map) where K : notnull => new(map);
 
-    /// Advances the cursor, and answers whether it ran off the end. The advance
-    /// happens here because a walk asks "is there more?" exactly once per
-    /// element, which is what lets the whole traversal allocate nothing after
-    /// the cursor itself. The `null` key's entry comes first.
+    /// .NET's `MoveNext`: steps to the next entry, and answers whether there is
+    /// one. The `null` key's entry comes first.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool CursorDone<K, V>(MutableMapCursor<K, V> cursor) where K : notnull {
-        if (!typeof(K).IsValueType && cursor.NullState != MutableMapCursor<K, V>.InTable) {
-            if (cursor.NullState == MutableMapCursor<K, V>.BeforeNull) {
-                cursor.NullState = MutableMapCursor<K, V>.OnNull;
-                return false;
+    public static bool MoveNext<K, V>(MutableMapEnumerator<K, V> e) where K : notnull {
+        if (!typeof(K).IsValueType && e.NullState != MutableMapEnumerator<K, V>.InTable) {
+            if (e.NullState == MutableMapEnumerator<K, V>.BeforeNull) {
+                e.NullState = MutableMapEnumerator<K, V>.OnNull;
+                return true;
             }
-            cursor.NullState = MutableMapCursor<K, V>.InTable;
+            e.NullState = MutableMapEnumerator<K, V>.InTable;
         }
-        return !cursor.Enumerator.MoveNext();
+        return e.Enumerator.MoveNext();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static (K, V) CursorCurrent<K, V>(MutableMapCursor<K, V> cursor) where K : notnull {
-        if (!typeof(K).IsValueType && cursor.NullState == MutableMapCursor<K, V>.OnNull)
-            return (default!, cursor.NullValue);
-        var entry = cursor.Enumerator.Current;
+    public static (K, V) Current<K, V>(MutableMapEnumerator<K, V> e) where K : notnull {
+        if (!typeof(K).IsValueType && e.NullState == MutableMapEnumerator<K, V>.OnNull)
+            return (default!, e.NullValue);
+        var entry = e.Enumerator.Current;
         return (entry.Key, entry.Value);
     }
 }
 
-/// A position in a walk of a `Dictionary<K,V>`.
+/// One walk of a `Dictionary<K,V>`, with .NET's protocol: `MoveNext`, then
+/// `Current`. Stepping it changes it for everyone who holds it, which is why
+/// it is not called a cursor.
 ///
 /// `Dictionary<K,V>.Enumerator` is a struct, so every copy advances
-/// independently — useless to a caller that has to *hold* the position. This is
+/// independently — useless to a caller that has to *hold* the walk. This is
 /// that struct in a heap cell: one allocation for the walk, none per element.
 [NonUserCode]
-public sealed class MutableMapCursor<K, V> where K : notnull {
+public sealed class MutableMapEnumerator<K, V> where K : notnull {
     public const byte InTable = 0;
     public const byte BeforeNull = 1;
     public const byte OnNull = 2;
@@ -406,7 +425,7 @@ public sealed class MutableMapCursor<K, V> where K : notnull {
     public byte NullState;
     public V NullValue = default!;
 
-    public MutableMapCursor(Dictionary<K, V> map) {
+    public MutableMapEnumerator(Dictionary<K, V> map) {
         Enumerator = map.GetEnumerator();
         if (map is NullKeyDictionary<K, V> { HasNull: true } slot) {
             NullState = BeforeNull;
@@ -436,9 +455,24 @@ public static class MutableSetModule {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool IsEmpty<T>(HashSet<T> set) => set.Count == 0;
 
-    /// Answers whether the element was new.
+    /// Makes the element a member. One that is already a member stays as it is.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool Add<T>(HashSet<T> set, T value) => set.Add(value);
+    public static void Add<T>(HashSet<T> set, T value) => set.Add(value);
+
+    /// Adds the element when it is new, and answers false. When an equal one
+    /// is there already, changes nothing, and answers true with that one, which
+    /// is what interning needs.
+    public static bool AddOrExisting<T>(HashSet<T> set, T value, [MaybeNullWhen(false)] out T existing) {
+        if (set.TryGetValue(value, out existing)) return true;
+        set.Add(value);
+        return false;
+    }
+
+    /// Adds the element, which must be new.
+    public static void AddNew<T>(HashSet<T> set, T value) {
+        if (!set.Add(value))
+            throw new ArgumentException($"The element is already in the set: {value}", nameof(value));
+    }
 
     public static void AddRange<T>(HashSet<T> set, IEnumerable<T> items) => set.UnionWith(items);
 
@@ -474,22 +508,24 @@ public static class MutableSetModule {
 
     // --- Walking -----------------------------------------------------------
 
-    public static MutableSetCursor<T> Cursor<T>(HashSet<T> set) => new(set);
+    public static MutableSetEnumerator<T> Enumerator<T>(HashSet<T> set) => new(set);
+
+    /// .NET's `MoveNext`: steps to the next element, and answers whether there
+    /// is one.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool MoveNext<T>(MutableSetEnumerator<T> e) => e.Enumerator.MoveNext();
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool CursorDone<T>(MutableSetCursor<T> cursor) => !cursor.Enumerator.MoveNext();
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static T CursorCurrent<T>(MutableSetCursor<T> cursor) => cursor.Enumerator.Current;
+    public static T Current<T>(MutableSetEnumerator<T> e) => e.Enumerator.Current;
 }
 
-/// A position in a walk of a `HashSet<T>`. A struct enumerator in a heap cell,
-/// for the reason `MutableMapCursor` gives.
+/// One walk of a `HashSet<T>`. A struct enumerator in a heap cell, for the
+/// reason `MutableMapEnumerator` gives.
 [NonUserCode]
-public sealed class MutableSetCursor<T> {
+public sealed class MutableSetEnumerator<T> {
     public HashSet<T>.Enumerator Enumerator;
 
-    public MutableSetCursor(HashSet<T> set) {
+    public MutableSetEnumerator(HashSet<T> set) {
         Enumerator = set.GetEnumerator();
     }
 }

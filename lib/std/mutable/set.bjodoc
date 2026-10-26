@@ -8,8 +8,8 @@
     (import (std mutable set))
 
     (def seen (mutableset))
-    (mutableset-add! seen "a")       ; #t: newly added
-    (mutableset-add! seen "a")       ; #f: already existed
+    (mutableset-add! seen "a")
+    (mutableset-add! seen "a")       ; already a member: nothing changes
     (mutableset-contains? seen "a")  ; #t
 
     (def other (list->mutableset (list "b" "c")))
@@ -44,7 +44,7 @@
     internal bucket layout.
 
     @strong{Iteration safety.} Iterating over a set (@code{mutableset->seq},
-    @code{for-each}, or cursor loops) reads the live table directly. Mutating
+    @code{for-each}, or an enumerator) reads the live table directly. Mutating
     the set during traversal raises @code{System.InvalidOperationException}.
     To mutate during iteration, take a snapshot via @code{mutableset->list} or
     use @code{mutableset-remove-where!}.
@@ -71,13 +71,13 @@
   (tparam %a "The element type (compared with .NET equality).")
   (see mutableset hashset->mutableset HashSet))
 
-(:doc MutableSetCursor
-  (summary "Stateful cursor for iterating over a MutableSet.")
+(:doc MutableSetEnumerator
+  (summary "One walk of a MutableSet, with .NET's enumerator protocol.")
   (tparam %a "The element type.")
-  (see mutableset-cursor mutableset-cursor-done? mutableset-cursor-current)
+  (see mutableset-enumerator mutableset-enumerator-next! mutableset-enumerator-current)
   (reference """
-    Wraps .NET's hash set enumerator struct in an object to provide step-by-step
-    cursor iteration with zero allocations per element.
+    .NET's hash set enumerator, a struct, in a heap cell, so that it can be
+    held and stepped: one allocation for the walk, none per element.
     """))
 
 (:doc mutableset
@@ -98,13 +98,40 @@
   (see mutableset-length))
 
 (:doc mutableset-add!
-  (summary "Adds an element to the set, returning #t if it was newly added.")
+  (summary "Makes an element a member of the set.")
   (arg s "The set to modify.")
   (arg x "The element to add.")
-  (returns "#t if x was newly added, #f if x was already present.")
-  (see mutableset-add-all! mutableset-remove!)
+  (see mutableset-add-new! mutableset-try-add-new! mutableset-add-all! mutableset-remove!)
   (reference """
-    Indicates whether an insertion occurred in a single hash table lookup.
+    Adding an element that is already a member is not a failure:
+    afterwards it is a member, which is all this says. It is the
+    @code{add!} of the @code{Addable!} trait. To learn whether x was new,
+    use @code{mutableset-try-add-new!}.
+    """))
+
+(:doc mutableset-add-new!
+  (summary "Adds an element that must be new.")
+  (arg s "The set to modify.")
+  (arg x "The element to add.")
+  (raises System.ArgumentException "When an element equal to x is already in s. s is left as it was.")
+  (see mutableset-try-add-new! mutableset-add!))
+
+(:doc mutableset-try-add-new!
+  (summary "Adds an element that must be new, or answers the equal element already there.")
+  (arg s "The set to modify.")
+  (arg x "The element to add.")
+  (returns "(Ok unit) when x was added; (Err y) when s already holds y, equal to x, and s is left as it was.")
+  (see mutableset-add-new! mutableset-add!)
+  (example """
+    (match (mutableset-try-add-new! seen url)
+      ((Ok _) (spawn (fetch url)))      ; first time: fetch it
+      ((Err _) unit))                   ; seen before
+    """)
+  (reference """
+    @code{mutableset-add-new!} with the failure as a value. The @code{Err}
+    carries the element the set holds, which may be a different object
+    from x: interning a value is a @code{try-add-new!} that keeps what the
+    @code{Err} answers.
     """))
 
 (:doc mutableset-add-all!
@@ -210,50 +237,48 @@
 ;; Traversals
 ;; ---------------------------------------------------------------------------
 
-(:doc mutableset-cursor
-  (summary "Creates an iteration cursor positioned before the first element.")
-  (arg s "The set to traverse.")
-  (returns "A new cursor positioned before the start.")
-  (see mutableset-cursor-done? mutableset-cursor-current mutableset-for-each)
+(:doc mutableset-enumerator
+  (summary "Starts one walk of the set, with .NET's enumerator protocol.")
+  (arg s "The set to walk.")
+  (returns "A new enumerator, before the first element.")
+  (see mutableset-enumerator-next! mutableset-enumerator-current mutableset-for-each)
   (example """
-    (def c (mutableset-cursor s))
-    (let loop ()
-      (cond
-        ((mutableset-cursor-done? c) unit)
-        (else
-         (println (mutableset-cursor-current c))
-         (loop))))
+    (def e (mutableset-enumerator s))
+    (let go ()
+      (when (mutableset-enumerator-next! e)
+        (println (mutableset-enumerator-current e))
+        (go)))
     """)
   (reference """
-    Call @code{mutableset-cursor-done?} before each element, then read with
-    @code{mutableset-cursor-current}. Standard @code{for-each} and @code{:for}
-    loops handle this automatically.
+    @code{mutableset-enumerator-next!} is .NET's @code{MoveNext}, and
+    @code{mutableset-enumerator-current} is @code{Current}. It is not a
+    cursor: stepping it moves it for everyone who holds it, where a cursor
+    such as @code{vec-cursor} is a position that does not change. A
+    @code{for-each}, a @code{loop} or a @code{:for} does the stepping, so
+    most programs never hold one.
     """))
 
-(:doc mutableset-cursor-done?
-  (summary "Advances the cursor to the next element; returns #t if finished.")
-  (arg c "The cursor to advance.")
-  (returns "#t if iteration is finished, #f if positioned on an element.")
-  (see mutableset-cursor-current)
+(:doc mutableset-enumerator-next!
+  (summary "Steps the enumerator to the next element, and answers whether there is one.")
+  (arg e "The enumerator.")
+  (returns "#t when e is on an element; #f when the walk is over.")
+  (see mutableset-enumerator-current)
   (reference """
-    Advances cursor position. Call once before reading each element with
-    @code{mutableset-cursor-current}.
+    .NET's @code{MoveNext}: call it once before each
+    @code{mutableset-enumerator-current}, the first time too.
     """))
 
-(:doc mutableset-cursor-current
-  (summary "Returns the element at the current cursor position.")
-  (arg c "The cursor.")
-  (returns "The element at the current position.")
-  (see mutableset-cursor-done?)
-  (reference """
-    Call only when @code{mutableset-cursor-done?} has returned #f.
-    """))
+(:doc mutableset-enumerator-current
+  (summary "The element the enumerator is on.")
+  (arg e "The enumerator, after mutableset-enumerator-next! returned #t.")
+  (returns "The element.")
+  (see mutableset-enumerator-next!))
 
 (:doc mutableset-for-each
   (summary "Applies a function to each element in the set.")
   (arg f "Function to call on each element.")
   (arg s "The set to iterate over.")
-  (see mutableset-cursor for-each)
+  (see mutableset-enumerator for-each)
   (reference """
     Applies f to each element in arbitrary order. Mutating the set inside f
     raises @code{System.InvalidOperationException}.

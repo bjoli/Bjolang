@@ -428,7 +428,7 @@ let private nullaryCorrespondence =
           "Symbol", "BjolangRuntime.Symbol"
           "CancelReason", "BjolangRuntime.CancelReason"
           "VecCursor", "BjolangRuntime.VecCursor"
-          "SeqCursor", "BjolangRuntime.SeqCursor"
+          "SeqEnumerator", "BjolangRuntime.SeqEnumerator"
           // The non-generic task, which is what `(cast Task t)` names. C# tells
           // `Task` from `Task<T>` by arity and so does Bjolang, so the two are
           // one name here as they are there.

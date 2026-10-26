@@ -3,6 +3,50 @@
 
 What each change guarantees, and what it leaves open.
 
+* add never fails; add-new refuses; try-add-new answers a Result
+
+- ~add~ and ~add!~ mean one thing everywhere: afterwards the collection holds
+  the element. A sequence appends, a set has it as a member, and a map has
+  the key mapped to the value, replacing an older one. This was already what
+  the ~Addable~ and ~Addable!~ impls did. The trait is unchanged, and its
+  comment now says so.
+- ~mutableset-add!~ answers nothing, where it answered whether the element
+  was new. A statement ~(mutableset-add! s x)~ no longer needs an ~ignore~.
+- ~map-add~ is now ~map-add-new~. It raises ~System.ArgumentException~ on a
+  key that is already there, as before, and the name says it does.
+- ~mutablemap-add!~ is gone. It answered ~#f~ on a key already there and
+  dropped the value, which nothing made the caller notice. Its two halves are
+  ~mutablemap-set!~ (and ~add!~), which replace, and ~mutablemap-add-new!~,
+  which raises. ~mutableset-add-new!~ raises the same way.
+- ~map-try-add-new~, ~mutablemap-try-add-new!~ and ~mutableset-try-add-new!~
+  answer what ~add-new~ would raise, as a value. ~Err~ carries what was
+  already there: the key's value, or the equal element the set holds, which
+  is what interning needs. ~Ok~ carries the new map, or ~unit~. The mutable
+  map's does one lookup; the persistent map's does two, since the trie
+  module has no call that adds and reports in one.
+- Not here: ~add-new~ for the persistent sets and for ~OrderedMap~.
+
+* A walk over a .NET enumerator is an enumerator, not a cursor
+
+- ~seq-cursor~, ~mutablemap-cursor~ and ~mutableset-cursor~ were .NET
+  enumerators named as cursors, and their ~-cursor-done?~ stepped the walk
+  before it answered. Every other ~-cursor-done?~ (~vec~, ~map~, ~hashset~,
+  ~orderedmap~, ~orderedset~) is a test that moves nothing, so a second call,
+  or a call in a guard, skipped an element on these three and on no others.
+- They are now ~seq-enumerator~, ~mutablemap-enumerator~ and
+  ~mutableset-enumerator~, with .NET's protocol: ~-enumerator-next!~ is
+  ~MoveNext~ and answers ~#t~ when the walk is on an element, and
+  ~-enumerator-current~ is ~Current~. ~seq-cursor-end~ is
+  ~seq-enumerator-end!~. The types are ~SeqEnumerator~,
+  ~MutableMapEnumerator~ and ~MutableSetEnumerator~.
+- The old names are gone, with no aliases: a ~?~ that steps is the thing
+  being removed. A program that called them gets an unbound name.
+- A cursor in Bjolang is now always a position that does not change.
+  ~Iterable~ still lets a cursor be an enumerator: a walk calls
+  ~iterable-done?~ once per step, before ~current~, and the three impls step
+  there, with ~(not (…-enumerator-next! e))~.
+- A ~for-each~, a ~loop~ or a ~:for~ over these collections is unchanged.
+
 * Where fibers wait: the deadline report and the fiber trace
 
 - When ~with-deadline~ stops its body, the message of the ~Cancelled~ that

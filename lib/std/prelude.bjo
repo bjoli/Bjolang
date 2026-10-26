@@ -75,7 +75,7 @@
 
   ;; Maps. 
   map-empty map-ref map-ref-or map-try-ref
-  map-set map-add map-set-all map-remove map-remove-all
+  map-set map-add-new map-try-add-new map-set-all map-remove map-remove-all
   map-contains? map-has-key? map-length map-empty? map-clear
   map-keys map-values map-merge map-merge-with
   ;; Walking and rebuilding
@@ -584,8 +584,8 @@
   (map-ref        (: Map.MapModule.Ref         (-> (Map %k %v) %k %v)))
   (map-ref-or     (: Map.MapModule.RefOr       (-> (Map %k %v) %k %v %v)))
   (map-set        (: Map.MapModule.Set         (-> (Map %k %v) %k %v (Map %k %v))))
-  ;; Add.
-  (map-add        (: Map.MapModule.Add         (-> (Map %k %v) %k %v (Map %k %v))))
+  ;; Adds a key that must be new, and raises when it is not.
+  (map-add-new    (: Map.MapModule.Add         (-> (Map %k %v) %k %v (Map %k %v))))
   ;; Set multiple.
   (map-set-all    (: Map.MapModule.SetRange    (-> (Map %k %v) (Seq (Tuple %k %v)) (Map %k %v))))
   (map-remove     (: Map.MapModule.Remove      (-> (Map %k %v) %k (Map %k %v))))
@@ -655,6 +655,15 @@
 
 (: (-> (Map %k %v) %k bool))
 (defun (map-has-key? m key) (map-contains? m key))
+
+;; `map-add-new` with the failure as a value: `(Err v)` carries the value the
+;; key already has. Two lookups where `map-add-new` does one, because the trie
+;; module has no call that adds and reports in one.
+(: (-> (Map %k %v) %k %v (Result %v (Map %k %v))))
+(defun (map-try-add-new m k v)
+  (match (map-try-ref m k)
+    ((Some old) (Err old))
+    (None (Ok (map-set m k v)))))
 
 ;; Find first. The same as `map-try-find`.
 (: (-> (-> %k %v bool) (Map %k %v) (Option (Tuple %k %v))))
@@ -1033,6 +1042,9 @@
   (type %elem)
   (type %cursor)
   (: iterable-start (-> %s %cursor))
+  ;; A walk calls this once per step, before `current`. So a cursor may be a
+  ;; .NET enumerator that steps here, as the `Seq` impl's does; its
+  ;; `iterable-next` then answers the same enumerator.
   (: iterable-done? (-> %s %cursor bool))
   (: iterable-current (-> %s %cursor %elem))
   (: iterable-next (-> %s %cursor %cursor))
@@ -1173,16 +1185,19 @@
 ;; implementation is only in scope for the ones checked after it.
 (impl (Iterable (Seq %a))
   (type %elem %a)
-  (type %cursor (SeqCursor %a))
-  (defun (iterable-start s) (seq-cursor s))
-  (defun (iterable-done? s c) (seq-cursor-done? c))
-  (defun (iterable-current s c) (seq-cursor-current c))
-  (defun (iterable-next s c) c)
+  ;; The walk's cursor is the enumerator itself. The protocol calls `done?`
+  ;; once per step, before `current`, so `done?` is where it steps, and
+  ;; `next` has nothing left to do.
+  (type %cursor (SeqEnumerator %a))
+  (defun (iterable-start s) (seq-enumerator s))
+  (defun (iterable-done? s e) (not (seq-enumerator-next! e)))
+  (defun (iterable-current s e) (seq-enumerator-current e))
+  (defun (iterable-next s e) e)
   ;; Disposes the enumerator, which closes a file the sequence opened for
   ;; this walk.
-  (defun (iterable-end s c) (seq-cursor-end c))
+  (defun (iterable-end s e) (seq-enumerator-end! e))
   ;; The same on an exception, so that a file is closed then too.
-  (defun (iterable-cleanup s c) (seq-cursor-end c))
+  (defun (iterable-cleanup s e) (seq-enumerator-end! e))
 
   (defun (->seq s) s))
 
@@ -1727,21 +1742,21 @@
 
 (: (-> (-?-> %a %b %b) %b (Seq %a) %b))
 (defun (seq-fold f init s)
-  (let ((c (seq-cursor s)))
+  (let ((e (seq-enumerator s)))
     (let go ((acc init))
-      (if (seq-cursor-done? c)
-          acc
-          (go (f (seq-cursor-current c) acc))))))
+      (if (seq-enumerator-next! e)
+          (go (f (seq-enumerator-current e) acc))
+          acc))))
 
 (: (-> (-?-> %a Unit) (Seq %a) Unit))
 (defun (seq-for-each f s)
-  (let ((c (seq-cursor s)))
+  (let ((e (seq-enumerator s)))
     (let go ()
-      (if (seq-cursor-done? c)
-          unit
+      (if (seq-enumerator-next! e)
           (let ()
-            (ignore (f (seq-cursor-current c)))
-            (go))))))
+            (ignore (f (seq-enumerator-current e)))
+            (go))
+          unit))))
 
 
 ;; ---------------------------------------------------------------------------
@@ -3682,6 +3697,12 @@
 ;;----------------------------------------------------------------------------
 ;; Addable! trait
 ;; ---------------------------------------------------------------------------
+;;
+;; `add!` never fails. Afterwards the sink holds the element: a sequence has
+;; it appended, a set has it as a member (which it may already have been),
+;; and a map has the key mapped to the value, replacing an older one. An
+;; operation that refuses what is already there is named `add-new` and is
+;; not part of the trait.
 (def/trait (Addable! %coll)
   (type %elem)
   (: add! (-> %coll %elem void))
@@ -3740,11 +3761,10 @@
 ;; ---------------------------------------------------------------------------
 ;;
 ;; The same shape without the `!`: `add` answers a new collection and touches
-;; nothing. One deliberate choice: for a map-shaped collection `add` has
-;; *set* semantics — a key already there is replaced — because that is what
-;; the mutable sinks do, and `(add m e)` and `(add! mb e)` disagreeing about
-;; a duplicate key would be a trap. `map-add`, which refuses a duplicate, is
-;; still there under its own name for the caller who wants the refusal.
+;; nothing. It never fails, as `add!` never does: a map-shaped collection
+;; replaces a key already there, and a set already holding the element
+;; answers an equal set. A caller who wants a duplicate key refused writes
+;; `map-add-new`, which raises, or `map-try-add-new`, which answers a Result.
 (def/trait (Addable %coll)
   (type %elem)
   (: add (-> %coll %elem %coll))

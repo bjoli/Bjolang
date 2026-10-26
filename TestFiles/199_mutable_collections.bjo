@@ -212,14 +212,27 @@
   (expect "two in" (mutablemap-length m) 2)
   (expect "read a key" (mutablemap-ref m "a") 1)
 
-  ;; `set!` replaces; `add!` refuses and says so.
+  ;; `set!` replaces; `add-new!` refuses, by raising or, tried, by an `Err`.
   (mutablemap-set! m "a" 11)
   (expect "set! replaces" (mutablemap-ref m "a") 11)
   (expect "and does not grow the map" (mutablemap-length m) 2)
 
-  (expect-true "add! writes a new key" (mutablemap-add! m "c" 3))
-  (expect-true "and refuses one that is there" (not (mutablemap-add! m "a" 99)))
+  (mutablemap-add-new! m "c" 3)
+  (expect "add-new! writes a new key" (mutablemap-ref m "c") 3)
+  (expect "and raises on one that is there"
+          (match (try (mutablemap-add-new! m "a" 99) #:catch (System.ArgumentException))
+            ((Ok _) "added")
+            ((Err _) "raised"))
+          "raised")
   (expect "leaving the value alone" (mutablemap-ref m "a") 11)
+  (expect "try-add-new! answers the value that is there"
+          (match (mutablemap-try-add-new! m "a" 99) ((Ok _) -1) ((Err old) old))
+          11)
+  (expect "and leaves it alone too" (mutablemap-ref m "a") 11)
+  (expect-true "try-add-new! of a new key is Ok"
+               (match (mutablemap-try-add-new! m "e" 5) ((Ok _) #t) ((Err _) #f)))
+  (expect "and writes it" (mutablemap-ref m "e") 5)
+  (ignore (mutablemap-remove! m "e"))
 
   (expect-true "a hit is Some" (gave? (mutablemap-try-ref m "b") 2))
   (expect-true "a miss is None" (nothing? (mutablemap-try-ref m "z")))
@@ -245,7 +258,20 @@
   (mutablemap-for-each (fun (k v) (set! seen (+ seen v))) m)
   (expect "for-each takes the key and the value apart" seen 3)
 
-  (expect "->seq is the pairs" (count (mutablemap->seq m)) 2))
+  (expect "->seq is the pairs" (count (mutablemap->seq m)) 2)
+
+  ;; The enumerator has .NET's protocol: `next!` is `MoveNext`, and answers
+  ;; whether there is an entry to read with `current`. It is before the first
+  ;; entry when it is made.
+  (def e (mutablemap-enumerator m))
+  (def/mutable walked 0)
+  (let go ()
+    (when (mutablemap-enumerator-next! e)
+      (def (k v) (mutablemap-enumerator-current e))
+      (set! walked (+ walked v))
+      (go)))
+  (expect "an enumerator walks every entry" walked 3)
+  (expect-true "and stays at the end" (not (mutablemap-enumerator-next! e))))
 
 (: (-> void))
 (defun (map-aliasing)
@@ -326,8 +352,21 @@
   (def s (names))
   (expect-true "a fresh set is empty" (mutableset-empty? s))
 
-  (expect-true "add! answers that the element was new" (mutableset-add! s "a"))
-  (expect-true "and that a repeat was not" (not (mutableset-add! s "a")))
+  (mutableset-add! s "a")
+  (mutableset-add! s "a")
+  (expect "add! of a member again is no failure, and no second member" (mutableset-length s) 1)
+
+  (expect "add-new! raises on a member"
+          (match (try (mutableset-add-new! s "a") #:catch (System.ArgumentException))
+            ((Ok _) "added")
+            ((Err _) "raised"))
+          "raised")
+  (expect-true "try-add-new! of a member is an Err"
+               (match (mutableset-try-add-new! s "a") ((Ok _) #f) ((Err y) (= y "a"))))
+  (expect-true "try-add-new! of a new element is Ok"
+               (match (mutableset-try-add-new! s "z") ((Ok _) #t) ((Err _) #f)))
+  (expect "and adds it" (mutableset-length s) 2)
+  (ignore (mutableset-remove! s "z"))
   (expect "one member" (mutableset-length s) 1)
 
   (expect-true "contains it" (mutableset-contains? s "a"))
@@ -382,7 +421,7 @@
   (def same s)
   (def other (mutableset-copy s))
 
-  (ignore (mutableset-add! s "b"))
+  (mutableset-add! s "b")
   (expect "the second name sees the write" (mutableset-length same) 2)
   (expect "the copy does not" (mutableset-length other) 1)
 
@@ -420,6 +459,15 @@
   (def/mutable seen 0)
   (mutableset-for-each (fun (x) (set! seen (+ seen 1))) s)
   (expect "for-each saw them all" seen 2)
+
+  (def e (mutableset-enumerator s))
+  (def/mutable stepped 0)
+  (let go ()
+    (when (mutableset-enumerator-next! e)
+      (ignore (mutableset-enumerator-current e))
+      (set! stepped (+ stepped 1))
+      (go)))
+  (expect "an enumerator steps once per element" stepped 2)
 
   ;; Addable!'s `add!` is void where the module's answers a bool: whether an
   ;; element was new is not something a sink reports.

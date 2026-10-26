@@ -20,7 +20,7 @@ open Bjolang.TypedAST
 /// A `(loop (:for e S) ...)` whose `S` is a `(seq ...)` written right there —
 /// or spliced there by `TraitInline`, which is how `(map f (filter p xs))`
 /// arrives once both defaults are `seql`s — pulls one element at a time through
-/// a `SeqCursor`: an iterator object per stage and two interface calls per
+/// a `SeqEnumerator`: an iterator object per stage and two interface calls per
 /// element. Nothing downstream can see through that. This pass can, because the
 /// producer is source rather than a runtime object, and the rewrite is the old
 /// one: walking a sequence once is running its body with each `yield x`
@@ -172,12 +172,12 @@ let private isCallTo (name: string) (e: TypedExpr) =
 
 let private size (expr: TypedExpr) : int = TypeVisitor.guardFreeSize expr
 
-/// `(seq-cursor-end cursor)`: what the Seq impl's `iterable-end` is once
+/// `(seq-enumerator-end! cursor)`: what the Seq impl's `iterable-end` is once
 /// spliced. A consumer's cursor walks a seq literal, so this is the only form
 /// in which a consumer ends it.
 let private isEndOf (cursor: string) (e: TypedExpr) =
     match e.Node with
-    | TApply({ Node = TIdent("seq-cursor-end", _) }, [ { Node = TIdent(c, _) } ], []) -> c = cursor
+    | TApply({ Node = TIdent("seq-enumerator-end!", _) }, [ { Node = TIdent(c, _) } ], []) -> c = cursor
     | _ -> false
 
 /// `(set! cell value)` as a statement, where `cell` is a loop guard cell (see

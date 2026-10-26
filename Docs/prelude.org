@@ -574,7 +574,7 @@ The persistent trait first — ~add~ answers a new collection and touches nothin
      (where (Iterable %s #:elem %elem #:cursor %k))))
 #+END_SRC
 
-- ~(add coll elem)~ : One element; a new collection back. ~Vec~ appends at the end; ~HashSet~ and ~OrderedSet~ are idempotent; ~Map~ and ~OrderedMap~ take a pair, ~(add m (k . v))~, with *set* semantics — a key already there is replaced. ~map-add~, which refuses a duplicate, keeps its own name.
+- ~(add coll elem)~ : One element; a new collection back. ~Vec~ appends at the end; ~HashSet~ and ~OrderedSet~ are idempotent; ~Map~ and ~OrderedMap~ take a pair, ~(add m (k . v))~, with *set* semantics — a key already there is replaced. ~add~ and ~add!~ never fail. Where a key already there is a mistake, ~map-add-new~ raises and ~map-try-add-new~ answers a ~Result~.
 - ~(add-all coll iterable)~ : Everything the source yields, folded in. ~(add-all (hashset-empty) some-vec)~ is how a collection changes shape.
 
 ~List~ has no implementation: a cheap add would prepend (reversing what ~add-all~ pours in), an in-order one costs O(n) per element. Build with a ~ListBuilder~ instead.
@@ -605,7 +605,8 @@ Not builtins. ~(Map %k %v)~ is an ~import/class~ alias for ~Map.Map~ and the ope
 - ~(map-ref-or map key default-val)~ : Returns the value for ~key~, or ~default-val~ if not found.
 - ~(map-try-ref map key)~ : Returns ~(Some val)~ if found, or ~None~ if not.
 - ~(map-set map key value)~ : Returns a new map with ~key~ mapped to ~value~.
-- ~(map-add map key value)~ : Returns a new map with ~key~ mapped to ~value~.
+- ~(map-add-new map key value)~ : Returns a new map with ~key~ mapped to ~value~. Raises ~System.ArgumentException~ when ~key~ is already in the map.
+- ~(map-try-add-new map key value)~ : ~(Ok new-map)~, or ~(Err old-value)~ when ~key~ is already in the map.
 - ~(map-remove map key)~ : Returns a new map with ~key~ removed.
 - ~(map-contains? map key)~ : Returns true if ~key~ is in ~map~.
 - ~(map-has-key? map key)~ : Returns true if ~key~ is in ~map~.

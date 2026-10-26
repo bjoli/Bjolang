@@ -912,11 +912,17 @@ public static partial class BjolangRuntime {
     public static VecCursor<T> vecsubcursorsubnext<T>(VecCursor<T> cursor) where T : notnull => cursor.Next();
 
     /// <summary>
-    /// A position in a walk of a `Seq`.
+    /// One walk of a `Seq`: the sequence's .NET enumerator, with .NET's
+    /// protocol. `(seq-enumerator-next! e)` is `MoveNext`, and answers whether
+    /// the walk is on an element; `(seq-enumerator-current e)` is `Current`.
     ///
-    /// A class holding an enumerator, unlike the struct `VecCursor`: an
-    /// `IEnumerator&lt;T&gt;` is already a class, and it is needed for two
-    /// reasons.
+    /// It is not called a cursor, because a cursor in Bjolang is a position
+    /// that does not change (`vec-cursor`, `map-cursor`): asking a cursor if it
+    /// is done does not move it. Stepping this one moves it, for everyone who
+    /// holds it.
+    ///
+    /// It holds the enumerator, rather than being a position over the
+    /// sequence, for two reasons.
     ///
     /// **A `Seq` has no cheap tail.** `IEnumerable` gives out enumerators and
     /// nothing else, so "the rest of this sequence" can only be spelled as "the
@@ -928,37 +934,36 @@ public static partial class BjolangRuntime {
     ///
     /// **The enumerator is disposable.** `file->seq` owns a file handle and
     /// `port->seq` a reader, and both are released by disposing the enumerator.
-    /// `Done` therefore disposes as soon as the walk is exhausted, which is
+    /// `MoveNext` therefore disposes as soon as the walk is exhausted, which is
     /// what `foreach` does at the same point.
     ///
     /// A loop that stops a walk part-way — a `:finish`, a `find` that found —
     /// does not reach that point. It calls `iterable-end`, which is `End`, and
-    /// `End` disposes there. Both may run on one cursor, so each does nothing
-    /// after the first.
+    /// `End` disposes there. Both may run on one enumerator, so each does
+    /// nothing after the first.
     ///
     /// A walk that no loop stops is not ended here: a `seql` whose consumer
     /// stops early, and a walk that an exception leaves. A file port is still
     /// closed when the scope it was registered with ends.
     /// </summary>
     [NonUserCode]
-    public sealed class SeqCursor<T> {
-        /// Null once exhausted, which is what makes a second `Done` after the
-        /// end safe rather than a `MoveNext` on a disposed enumerator.
+    public sealed class SeqEnumerator<T> {
+        /// Null once exhausted, which is what makes a second `MoveNext` after
+        /// the end safe rather than a `MoveNext` on a disposed enumerator.
         private IEnumerator<T>? _e;
 
-        public SeqCursor(IEnumerable<T> source) { _e = source.GetEnumerator(); }
+        public SeqEnumerator(IEnumerable<T> source) { _e = source.GetEnumerator(); }
 
-        public bool Done() {
+        public bool MoveNext() {
             var e = _e;
-            if (e is null) return true;
-            if (e.MoveNext()) return false;
+            if (e is null) return false;
+            if (e.MoveNext()) return true;
             _e = null;
             e.Dispose();
-            return true;
+            return false;
         }
 
-        /// Only ever reached after a `Done` that answered false. The `Iterable`
-        /// protocol calls `done?` once per iteration, before `current`.
+        /// Only ever reached after a `MoveNext` that answered true.
         public T Current => _e!.Current;
 
         /// Ends the walk before it is exhausted: disposes the enumerator, which
@@ -973,17 +978,17 @@ public static partial class BjolangRuntime {
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static SeqCursor<T> seqsubcursor<T>(IEnumerable<T> source) => new SeqCursor<T>(source);
+    public static SeqEnumerator<T> seqsubenumerator<T>(IEnumerable<T> source) => new SeqEnumerator<T>(source);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool seqsubcursorsubdone_QMARK<T>(SeqCursor<T> cursor) => cursor.Done();
+    public static bool seqsubenumeratorsubnext_BANG<T>(SeqEnumerator<T> e) => e.MoveNext();
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static T seqsubcursorsubcurrent<T>(SeqCursor<T> cursor) => cursor.Current;
+    public static T seqsubenumeratorsubcurrent<T>(SeqEnumerator<T> e) => e.Current;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static Unit seqsubcursorsubend<T>(SeqCursor<T> cursor) {
-        cursor.End();
+    public static Unit seqsubenumeratorsubend_BANG<T>(SeqEnumerator<T> e) {
+        e.End();
         return default;
     }
 

@@ -45,7 +45,7 @@
     internal bucket layout. If a null key is present, it is visited first.
 
     @strong{Iteration safety.} Iterating over keys, values, or entries
-    (@code{mutablemap->seq}, @code{mutablemap-keys}, or cursor loops) reads the
+    (@code{mutablemap->seq}, @code{mutablemap-keys}, or an enumerator) reads the
     live dictionary directly. Modifying the map during iteration raises
     @code{System.InvalidOperationException}. To mutate during iteration, take a
     snapshot first via @code{mutablemap->list}.
@@ -74,14 +74,14 @@
   (tparam %v "The value type.")
   (see mutablemap map->mutablemap Map))
 
-(:doc MutableMapCursor
-  (summary "Stateful cursor for iterating over a MutableMap.")
+(:doc MutableMapEnumerator
+  (summary "One walk of a MutableMap, with .NET's enumerator protocol.")
   (tparam %k "The key type.")
   (tparam %v "The value type.")
-  (see mutablemap-cursor mutablemap-cursor-done? mutablemap-cursor-current)
+  (see mutablemap-enumerator mutablemap-enumerator-next! mutablemap-enumerator-current)
   (reference """
-    Wraps .NET's dictionary enumerator struct inside an object reference to
-    support cursor-based step iteration with zero allocations per entry.
+    .NET's dictionary enumerator, a struct, in a heap cell, so that it can
+    be held and stepped: one allocation for the walk, none per entry.
     """))
 
 (:doc mutablemap
@@ -141,18 +141,38 @@
   (arg k "The key.")
   (arg v "The value to associate with k.")
   (raises System.ArgumentNullException "When k is null and m is an external .NET Dictionary.")
-  (see mutablemap-add! mutablemap-remove!))
+  (see mutablemap-add-new! mutablemap-remove!))
 
-(:doc mutablemap-add!
-  (summary "Adds a key-value entry only if the key is not already present.")
+(:doc mutablemap-add-new!
+  (summary "Adds an entry whose key must be new.")
   (arg m "The map to modify.")
   (arg k "The key.")
   (arg v "The value to associate with k.")
-  (returns "#t if the key was new and inserted, #f if the key already existed.")
+  (raises System.ArgumentException "When k is already in m. m is left as it was.")
   (raises System.ArgumentNullException "When k is null and m is an external .NET Dictionary.")
-  (see mutablemap-set!)
+  (see mutablemap-try-add-new! mutablemap-set!)
   (reference """
-    Checks presence and inserts in a single dictionary operation.
+    @code{mutablemap-set!} without the replacement, for where a key that
+    is already there is a mistake. @code{add!} of the @code{Addable!}
+    trait never fails, and replaces, as @code{mutablemap-set!} does.
+    """))
+
+(:doc mutablemap-try-add-new!
+  (summary "Adds an entry whose key must be new, or answers the value the key already has.")
+  (arg m "The map to modify.")
+  (arg k "The key.")
+  (arg v "The value to associate with k.")
+  (returns "(Ok unit) when the entry was added; (Err w) when m already maps k to w, and m is left as it was.")
+  (raises System.ArgumentNullException "When k is null and m is an external .NET Dictionary.")
+  (see mutablemap-add-new! mutablemap-set!)
+  (example """
+    (match (mutablemap-try-add-new! first-seen word line)
+      ((Ok _) unit)
+      ((Err earlier) (println #"${word} again, first on line ${earlier}")))
+    """)
+  (reference """
+    @code{mutablemap-add-new!} with the failure as a value. One lookup in
+    the table either way, and the @code{Err} carries what it found.
     """))
 
 (:doc mutablemap-remove!
@@ -200,51 +220,49 @@
   (returns "A new mutable map with identical entries. Keys and values are not cloned.")
   (see mutablemap->map))
 
-(:doc mutablemap-cursor
-  (summary "Creates an iteration cursor positioned before the first entry.")
-  (arg m "The map to traverse.")
-  (returns "A new cursor positioned before the start.")
-  (see mutablemap-cursor-done? mutablemap-cursor-current mutablemap-for-each)
+(:doc mutablemap-enumerator
+  (summary "Starts one walk of the map, with .NET's enumerator protocol.")
+  (arg m "The map to walk.")
+  (returns "A new enumerator, before the first entry.")
+  (see mutablemap-enumerator-next! mutablemap-enumerator-current mutablemap-for-each)
   (example """
-    (def c (mutablemap-cursor m))
-    (let loop ()
-      (cond
-        ((mutablemap-cursor-done? c) unit)
-        (else
-         (def (k v) (mutablemap-cursor-current c))
-         (println (str k ": " v))
-         (loop))))
+    (def e (mutablemap-enumerator m))
+    (let go ()
+      (when (mutablemap-enumerator-next! e)
+        (def (k v) (mutablemap-enumerator-current e))
+        (println (str k ": " v))
+        (go)))
     """)
   (reference """
-    Call @code{mutablemap-cursor-done?} before each entry, then read the
-    entry with @code{mutablemap-cursor-current}. Standard @code{for-each} and
-    @code{:for} loops handle this automatically.
+    @code{mutablemap-enumerator-next!} is .NET's @code{MoveNext}, and
+    @code{mutablemap-enumerator-current} is @code{Current}. It is not a
+    cursor: stepping it moves it for everyone who holds it, where a cursor
+    such as @code{map-cursor} is a position that does not change. A
+    @code{for-each}, a @code{loop} or a @code{:for} does the stepping, so
+    most programs never hold one.
     """))
 
-(:doc mutablemap-cursor-done?
-  (summary "Advances the cursor to the next entry; returns #t if finished.")
-  (arg c "The cursor to advance.")
-  (returns "#t if iteration has finished, #f if positioned on an entry.")
-  (see mutablemap-cursor-current)
+(:doc mutablemap-enumerator-next!
+  (summary "Steps the enumerator to the next entry, and answers whether there is one.")
+  (arg e "The enumerator.")
+  (returns "#t when e is on an entry; #f when the walk is over.")
+  (see mutablemap-enumerator-current)
   (reference """
-    Advances cursor position. Call once before reading each entry with
-    @code{mutablemap-cursor-current}.
+    .NET's @code{MoveNext}: call it once before each
+    @code{mutablemap-enumerator-current}, the first time too.
     """))
 
-(:doc mutablemap-cursor-current
-  (summary "Returns the current entry at the cursor as a (Tuple k v).")
-  (arg c "The cursor.")
-  (returns "The (Tuple key value) pair at the current position.")
-  (see mutablemap-cursor-done?)
-  (reference """
-    Call only when @code{mutablemap-cursor-done?} has returned #f.
-    """))
+(:doc mutablemap-enumerator-current
+  (summary "The entry the enumerator is on, as a (Tuple k v).")
+  (arg e "The enumerator, after mutablemap-enumerator-next! returned #t.")
+  (returns "The (Tuple key value) pair.")
+  (see mutablemap-enumerator-next!))
 
 (:doc mutablemap-for-each
   (summary "Invokes a callback with the key and value of each entry.")
   (arg f "Callback function taking (key, value) arguments.")
   (arg m "The map to iterate over.")
-  (see mutablemap-cursor for-each)
+  (see mutablemap-enumerator for-each)
   (example """
     (mutablemap-for-each (fun (k v) (println (str k ": " v))) counts)
     """)

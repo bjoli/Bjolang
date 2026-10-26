@@ -215,7 +215,17 @@
   (expect-true "map: remove-all" (= (map-length (map-remove-all m (list->seq (Cons "a" (Cons "b" Nil))))) 1))
   (expect-true "any? hit" (map-any? (fun (_ v) (= v 3)) m))
   (expect-true "any? miss" (not (map-any? (fun (k _) (= k "z")) m)))
-  (expect-true "add" (= (map-length (map-add m "d" 4)) 4))
+  (expect-true "add-new" (= (map-length (map-add-new m "d" 4)) 4))
+  (expect "add-new refuses a key that is there"
+          (match (try (map-add-new m "a" 9) #:catch (System.ArgumentException)) ((Ok _) "added") ((Err _) "raised"))
+          "raised")
+  (expect "try-add-new of a new key"
+          (match (map-try-add-new m "d" 4) ((Ok m2) (map-ref m2 "d")) ((Err _) -1))
+          4)
+  (expect "try-add-new answers the value already there"
+          (match (map-try-add-new m "a" 9) ((Ok _) -1) ((Err old) old))
+          (map-ref m "a"))
+  (expect-true "add, the trait's, replaces" (= (map-ref (add m (Tuple "a" 9)) "a") 9))
   (expect-true "clear" (map-empty? (map-clear m)))
   (expect-true "map: keys" (= (count (map-keys m)) 3))
   (expect-true "map: values" (= (count (map-values m)) 3))

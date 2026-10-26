@@ -343,7 +343,7 @@ let mapPrimitiveType (name: string) =
     // spells the type out, so they are qualified here.
     | "ListBuilder" -> "SchemeList.SchemeListBuilder"
     | "VecCursor" -> "BjolangRuntime.VecCursor"
-    | "SeqCursor" -> "BjolangRuntime.SeqCursor"
+    | "SeqEnumerator" -> "BjolangRuntime.SeqEnumerator"
     | "StringCursor" -> "BjoString.StringCursor"
     | "StringBuilder" -> "BjoString.Utf8StringBuilder"
     | "VecBuilder" -> "Collections.RrbBuilder"

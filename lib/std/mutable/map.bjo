@@ -36,13 +36,14 @@
 (:doc #:file "map.bjodoc")
 
 (export
-  MutableMap MutableMapCursor
+  MutableMap MutableMapEnumerator
   mutablemap mutablemap-with-capacity
   mutablemap-length mutablemap-empty?
   mutablemap-ref mutablemap-try-ref mutablemap-ref-or
-  mutablemap-set! mutablemap-add! mutablemap-remove! mutablemap-clear!
+  mutablemap-set! mutablemap-add-new! mutablemap-try-add-new!
+  mutablemap-remove! mutablemap-clear!
   mutablemap-contains? mutablemap-keys mutablemap-values mutablemap-copy
-  mutablemap-cursor mutablemap-cursor-done? mutablemap-cursor-current
+  mutablemap-enumerator mutablemap-enumerator-next! mutablemap-enumerator-current
   mutablemap-for-each
   list->mutablemap mutablemap->list vec->mutablemap mutablemap->vec
   seq->mutablemap mutablemap->seq map->mutablemap mutablemap->map
@@ -53,7 +54,7 @@
 ;; see the entry for a `null` key.
 (import/class
   ((MutableMap %k %v) (: System.Collections.Generic.Dictionary))
-  ((MutableMapCursor %k %v) (: Bjolang.Runtime.MutableMapCursor)))
+  ((MutableMapEnumerator %k %v) (: Bjolang.Runtime.MutableMapEnumerator)))
 
 ;; ---------------------------------------------------------------------------
 ;; The map
@@ -70,9 +71,12 @@
   (mutablemap-ref-or        (: Bjolang.Runtime.MutableMapModule.GetOr        (-> (MutableMap %k %v) %k %v %v)))
   ;; Replaces whatever was under the key.
   (mutablemap-set!          (: Bjolang.Runtime.MutableMapModule.Set          (-> (MutableMap %k %v) %k %v void)))
-  ;; Writes only a key that is new, and answers whether it was — which is the
-  ;; one thing `set!` cannot tell you without a lookup of its own.
-  (mutablemap-add!          (: Bjolang.Runtime.MutableMapModule.Add          (-> (MutableMap %k %v) %k %v bool)))
+  ;; Adds a key that must be new, and raises when it is not. To add or replace,
+  ;; there is `mutablemap-set!`, which is also what `Addable!`'s `add!` does.
+  (mutablemap-add-new!      (: Bjolang.Runtime.MutableMapModule.AddNew       (-> (MutableMap %k %v) %k %v void)))
+  ;; The value already under the key, or None when the entry was added. What
+  ;; `mutablemap-try-add-new!` is made of.
+  (add-or-existing!         (: Bjolang.Runtime.MutableMapModule.AddOrExisting (-> (MutableMap %k %v) %k %v (out %v) (Option %v))))
   (mutablemap-remove!       (: Bjolang.Runtime.MutableMapModule.Remove       (-> (MutableMap %k %v) %k bool)))
   (mutablemap-clear!        (: Bjolang.Runtime.MutableMapModule.Clear        (-> (MutableMap %k %v) void)))
   (mutablemap-contains?     (: Bjolang.Runtime.MutableMapModule.ContainsKey  (-> (MutableMap %k %v) %k bool)))
@@ -87,22 +91,29 @@
 
   (mutablemap-try-ref       (: Bjolang.Runtime.MutableMapModule.TryGet       (-> (MutableMap %k %v) %k (out %v) (Option %v))))
 
-  (mutablemap-cursor         (: Bjolang.Runtime.MutableMapModule.Cursor        (-> (MutableMap %k %v) (MutableMapCursor %k %v))))
-  (mutablemap-cursor-done?   (: Bjolang.Runtime.MutableMapModule.CursorDone    (-> (MutableMapCursor %k %v) bool)))
-  (mutablemap-cursor-current (: Bjolang.Runtime.MutableMapModule.CursorCurrent (-> (MutableMapCursor %k %v) (Tuple %k %v)))))
+  ;; A walk with .NET's protocol: `next!` is `MoveNext`, `current` is `Current`.
+  (mutablemap-enumerator         (: Bjolang.Runtime.MutableMapModule.Enumerator (-> (MutableMap %k %v) (MutableMapEnumerator %k %v))))
+  (mutablemap-enumerator-next!   (: Bjolang.Runtime.MutableMapModule.MoveNext   (-> (MutableMapEnumerator %k %v) bool)))
+  (mutablemap-enumerator-current (: Bjolang.Runtime.MutableMapModule.Current    (-> (MutableMapEnumerator %k %v) (Tuple %k %v)))))
+
+;; `mutablemap-add-new!` with the failure as a value: `(Err v)` carries the
+;; value the key already has, which the lookup found anyway.
+(: (-> (MutableMap %k %v) %k %v (Result %v Unit)))
+(defun (mutablemap-try-add-new! m k v)
+  (match (add-or-existing! m k v)
+    ((Some old) (Err old))
+    (None (Ok unit))))
 
 ;; The key and the value as two arguments, which is what a caller of a map
 ;; almost always wants and what the `Iterable` walk over pairs cannot give.
 (: (-> (-?-> %k %v void) (MutableMap %k %v) void))
 (defun (mutablemap-for-each f m)
-  (def c (mutablemap-cursor m))
+  (def e (mutablemap-enumerator m))
   (let go ()
-    (cond
-      ((mutablemap-cursor-done? c) unit)
-      (else
-        (def (k v) (mutablemap-cursor-current c))
-        (f k v)
-        (go)))))
+    (when (mutablemap-enumerator-next! e)
+      (def (k v) (mutablemap-enumerator-current e))
+      (f k v)
+      (go))))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions
@@ -148,11 +159,13 @@
 
 (impl (Iterable (MutableMap %k %v))
   (type %elem (Tuple %k %v))
-  (type %cursor (MutableMapCursor %k %v))
-  (defun (iterable-start m) (mutablemap-cursor m))
-  (defun (iterable-done? m c) (mutablemap-cursor-done? c))
-  (defun (iterable-current m c) (mutablemap-cursor-current c))
-  (defun (iterable-next m c) c))
+  ;; The enumerator is the cursor, and it steps in `done?`, which the
+  ;; protocol calls once per step before `current`. See the `Seq` impl.
+  (type %cursor (MutableMapEnumerator %k %v))
+  (defun (iterable-start m) (mutablemap-enumerator m))
+  (defun (iterable-done? m e) (not (mutablemap-enumerator-next! e)))
+  (defun (iterable-current m e) (mutablemap-enumerator-current e))
+  (defun (iterable-next m e) e))
 
 (impl (Collection (MutableMap %k %v))
   (type %content (Tuple %k %v))
@@ -179,12 +192,12 @@
   (where (Eq %v))
   (defun (= a b)
     (and (= (mutablemap-length a) (mutablemap-length b))
-         (let ((c (mutablemap-cursor a)))
+         (let ((e (mutablemap-enumerator a)))
            (let go ()
              (cond
-               ((mutablemap-cursor-done? c) #t)
+               ((not (mutablemap-enumerator-next! e)) #t)
                (else
-                (def (k v) (mutablemap-cursor-current c))
+                (def (k v) (mutablemap-enumerator-current e))
                 (match (mutablemap-try-ref b k)
                   (None #f)
                   ((Some w) (if (= v w) (go) #f)))))))))

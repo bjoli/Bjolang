@@ -650,9 +650,11 @@
   (returns "The new collection.")
   (see add-all add! vec-add map-set)
   (reference """
-    A method of the persistent @code{Addable} trait. A @code{Vec} appends at
-    the end. A @code{Map} has set semantics: a key already there takes the
-    new value; @code{map-add}, which refuses a duplicate, keeps its own name.
+    A method of the persistent @code{Addable} trait. It never fails. A
+    @code{Vec} appends at the end. A set already holding x answers an equal
+    set. A @code{Map} has set semantics: a key already there takes the new
+    value. Where a key already there is a mistake, write @code{map-add-new},
+    which raises, or @code{map-try-add-new}.
     The sets and ordered collections implement it in their own modules, where
     adding an element already present changes nothing.
 
@@ -686,8 +688,14 @@
     implements it for @code{VecBuilder}, @code{ListBuilder},
     @code{StringBuilder} (whose element is a @code{char}),
     @code{MapBuilder} and @code{TransientMap}; the set and
-    ordered-collection builders and transients implement it in their own
-    modules.
+    ordered-collection builders and transients, and the mutable collections,
+    implement it in their own modules.
+
+    It never fails. Afterwards the sink holds x: a sequence has it
+    appended, a set has it as a member (which it may already have been), and
+    a map has the key mapped to the value, replacing an older one. An
+    operation that refuses what is already there is named @code{add-new},
+    such as @code{mutablemap-add-new!}, and is not part of the trait.
     """))
 
 (:doc add-all!
@@ -979,46 +987,60 @@
   (see for-each seq-fold))
 
 ;; ---------------------------------------------------------------------------
-;; Seq cursors
+;; Seq enumerators
 ;; ---------------------------------------------------------------------------
 
-(:doc seq-cursor
-  (summary "A cursor for one traversal of a sequence.")
+(:doc seq-enumerator
+  (summary "Starts one walk of a sequence, with .NET's enumerator protocol.")
   (arg s "The sequence.")
-  (returns "A cursor holding a fresh enumerator of s.")
-  (see seq-cursor-done? seq-cursor-current)
+  (returns "A fresh enumerator of s, before its first element.")
+  (see seq-enumerator-next! seq-enumerator-current seq-enumerator-end!)
+  (example """
+    (def e (seq-enumerator s))
+    (let go ()
+      (when (seq-enumerator-next! e)
+        (println (seq-enumerator-current e))
+        (go)))
+    """)
   (reference """
-    What @code{Iterable}'s implementation for @code{Seq} traverses with. Holding
-    the enumerator allows each element to be evaluated once, rather than
-    re-evaluating earlier elements. The cursor is stateful and consumed during
-    iteration; create a new cursor for repeated traversals.
+    What @code{Iterable}'s implementation for @code{Seq} walks with. It holds
+    the sequence's .NET enumerator, so each element is made once, and it has
+    .NET's protocol: @code{seq-enumerator-next!} is @code{MoveNext} and
+    @code{seq-enumerator-current} is @code{Current}.
+
+    It is not a cursor. A cursor, such as @code{vec-cursor}, is a position
+    that does not change: @code{vec-cursor-done?} asks and moves nothing, and
+    @code{vec-cursor-next} answers a new cursor. Stepping an enumerator moves
+    it, for everyone who holds it. A @code{for-each}, a @code{loop} or a
+    @code{:for} does the stepping, so most programs never hold one.
     """))
 
-(:doc seq-cursor-done?
-  (summary "Advances a seq cursor to its next element, returning #t if exhausted.")
-  (arg c "The cursor.")
-  (returns "#t when the sequence is exhausted; #f if an element is available.")
-  (see seq-cursor seq-cursor-current)
+(:doc seq-enumerator-next!
+  (summary "Steps an enumerator to the next element, and answers whether there is one.")
+  (arg e "The enumerator.")
+  (returns "#t when e is on an element; #f when the sequence is exhausted.")
+  (see seq-enumerator seq-enumerator-current)
   (reference """
-    Advances the cursor: call once before each @code{seq-cursor-current}. When
-    it returns @code{#t}, the sequence is exhausted and the underlying enumerator
-    is disposed, closing any underlying file or stream resources. Calling it
-    again continues to return @code{#t}.
+    .NET's @code{MoveNext}: call it once before each
+    @code{seq-enumerator-current}, the first time too. When it returns
+    @code{#f}, the enumerator is disposed, which closes a file or stream that
+    the sequence opened for this walk. Calling it again goes on returning
+    @code{#f}.
     """))
 
-(:doc seq-cursor-current
-  (summary "The element at the current seq cursor position.")
-  (arg c "The cursor, after seq-cursor-done? returned #f.")
+(:doc seq-enumerator-current
+  (summary "The element an enumerator is on.")
+  (arg e "The enumerator, after seq-enumerator-next! returned #t.")
   (returns "The element.")
-  (see seq-cursor-done?))
+  (see seq-enumerator-next!))
 
-(:doc seq-cursor-end
-  (summary "Ends a traversal before the sequence is exhausted.")
-  (arg c "The cursor.")
-  (see seq-cursor seq-cursor-done?)
+(:doc seq-enumerator-end!
+  (summary "Ends a walk before the sequence is exhausted.")
+  (arg e "The enumerator.")
+  (see seq-enumerator seq-enumerator-next!)
   (reference """
     Disposes the underlying enumerator, which closes a file or stream that the
-    sequence opened for this traversal. A loop calls it, through
+    sequence opened for this walk. A loop calls it, through
     @code{iterable-end}, when it stops before the end. After the first call,
-    and after @code{seq-cursor-done?} returned @code{#t}, it does nothing.
+    and after @code{seq-enumerator-next!} returned @code{#f}, it does nothing.
     """))

@@ -381,7 +381,7 @@ let isQualifiedBinding (name: string) = name.Contains "::"
 let builtinTypeNames =
     Set.ofList
         [ "List"; "Vec"; "VecBuilder"; "ListBuilder"; "VecCursor"; "StringCursor"
-          "StringBuilder"; "Seq"; "SeqCursor"; "Option"; "Result"; "Keyword"; "Symbol"; "Array"; "Param"; "DynEnv"
+          "StringBuilder"; "Seq"; "SeqEnumerator"; "Option"; "Result"; "Keyword"; "Symbol"; "Array"; "Param"; "DynEnv"
           "Promise"; "Event"; "Chan"; "CancelToken"; "CancelReason"; "Scope"; "Owned"; "AsyncSeq"; "Syntax" ]
 
 /// The builtins only `std/eq` may name, and the module that may name them.

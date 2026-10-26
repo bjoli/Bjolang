@@ -35,16 +35,17 @@
 (:doc #:file "set.bjodoc")
 
 (export
-  MutableSet MutableSetCursor
+  MutableSet MutableSetEnumerator
   mutableset
   mutableset-length mutableset-empty?
-  mutableset-add! mutableset-add-all! mutableset-remove! mutableset-remove-all!
+  mutableset-add! mutableset-add-new! mutableset-try-add-new!
+  mutableset-add-all! mutableset-remove! mutableset-remove-all!
   mutableset-remove-where! mutableset-clear! mutableset-contains?
   mutableset-union! mutableset-intersect! mutableset-difference!
   mutableset-symmetric-difference!
   mutableset-subset? mutableset-superset? mutableset-overlaps?
   mutableset-copy
-  mutableset-cursor mutableset-cursor-done? mutableset-cursor-current
+  mutableset-enumerator mutableset-enumerator-next! mutableset-enumerator-current
   mutableset-for-each
   list->mutableset mutableset->list vec->mutableset mutableset->vec
   seq->mutableset mutableset->seq hashset->mutableset mutableset->hashset
@@ -54,7 +55,7 @@
 ;; taking a `HashSet<T>` is accepted as it stands.
 (import/class
   ((MutableSet %a) (: System.Collections.Generic.HashSet))
-  ((MutableSetCursor %a) (: Bjolang.Runtime.MutableSetCursor)))
+  ((MutableSetEnumerator %a) (: Bjolang.Runtime.MutableSetEnumerator)))
 
 ;; ---------------------------------------------------------------------------
 ;; The set
@@ -64,9 +65,14 @@
   (mutableset            (: Bjolang.Runtime.MutableSetModule.Empty       (-> (MutableSet %a))))
   (mutableset-length     (: Bjolang.Runtime.MutableSetModule.Count       (-> (MutableSet %a) int)))
   (mutableset-empty?     (: Bjolang.Runtime.MutableSetModule.IsEmpty     (-> (MutableSet %a) bool)))
-  ;; Answers whether the element was new, which is the one thing a caller
-  ;; cannot recover afterwards without a second lookup.
-  (mutableset-add!       (: Bjolang.Runtime.MutableSetModule.Add         (-> (MutableSet %a) %a bool)))
+  ;; Makes x a member. Adding one that is already a member is not a failure:
+  ;; afterwards it is a member, which is all `add!` says.
+  (mutableset-add!       (: Bjolang.Runtime.MutableSetModule.Add         (-> (MutableSet %a) %a void)))
+  ;; Adds an element that must be new, and raises when it is not.
+  (mutableset-add-new!   (: Bjolang.Runtime.MutableSetModule.AddNew      (-> (MutableSet %a) %a void)))
+  ;; The equal element already there, or None when x was added. What
+  ;; `mutableset-try-add-new!` is made of.
+  (add-or-existing!      (: Bjolang.Runtime.MutableSetModule.AddOrExisting (-> (MutableSet %a) %a (out %a) (Option %a))))
   (mutableset-add-all!   (: Bjolang.Runtime.MutableSetModule.AddRange    (-> (MutableSet %a) (Seq %a) void)))
   (mutableset-remove!    (: Bjolang.Runtime.MutableSetModule.Remove      (-> (MutableSet %a) %a bool)))
   (mutableset-remove-all! (: Bjolang.Runtime.MutableSetModule.RemoveRange (-> (MutableSet %a) (Seq %a) void)))
@@ -89,21 +95,28 @@
   (mutableset-superset?  (: Bjolang.Runtime.MutableSetModule.IsSupersetOf (-> (MutableSet %a) (MutableSet %a) bool)))
   (mutableset-overlaps?  (: Bjolang.Runtime.MutableSetModule.Overlaps     (-> (MutableSet %a) (MutableSet %a) bool)))
 
-  (mutableset-cursor         (: Bjolang.Runtime.MutableSetModule.Cursor        (-> (MutableSet %a) (MutableSetCursor %a))))
-  (mutableset-cursor-done?   (: Bjolang.Runtime.MutableSetModule.CursorDone    (-> (MutableSetCursor %a) bool)))
-  (mutableset-cursor-current (: Bjolang.Runtime.MutableSetModule.CursorCurrent (-> (MutableSetCursor %a) %a))))
+  ;; A walk with .NET's protocol: `next!` is `MoveNext`, `current` is `Current`.
+  (mutableset-enumerator         (: Bjolang.Runtime.MutableSetModule.Enumerator (-> (MutableSet %a) (MutableSetEnumerator %a))))
+  (mutableset-enumerator-next!   (: Bjolang.Runtime.MutableSetModule.MoveNext   (-> (MutableSetEnumerator %a) bool)))
+  (mutableset-enumerator-current (: Bjolang.Runtime.MutableSetModule.Current    (-> (MutableSetEnumerator %a) %a))))
+
+;; `mutableset-add-new!` with the failure as a value: `(Err y)` carries the
+;; equal element already in the set, which is what interning a value needs.
+(: (-> (MutableSet %a) %a (Result %a Unit)))
+(defun (mutableset-try-add-new! s x)
+  (match (add-or-existing! s x)
+    ((Some old) (Err old))
+    (None (Ok unit))))
 
 ;; A walk whose callback may suspend. The `Iterable` default would do as well;
 ;; this one names the set first, matching `hashset-for-each`.
 (: (-> (-?-> %a void) (MutableSet %a) void))
 (defun (mutableset-for-each f s)
-  (def c (mutableset-cursor s))
+  (def e (mutableset-enumerator s))
   (let go ()
-    (cond
-      ((mutableset-cursor-done? c) unit)
-      (else
-        (f (mutableset-cursor-current c))
-        (go)))))
+    (when (mutableset-enumerator-next! e)
+      (f (mutableset-enumerator-current e))
+      (go))))
 
 ;; ---------------------------------------------------------------------------
 ;; Conversions
@@ -139,23 +152,23 @@
 
 (impl (Iterable (MutableSet %a))
   (type %elem %a)
-  (type %cursor (MutableSetCursor %a))
-  (defun (iterable-start s) (mutableset-cursor s))
-  (defun (iterable-done? s c) (mutableset-cursor-done? c))
-  (defun (iterable-current s c) (mutableset-cursor-current c))
-  (defun (iterable-next s c) c))
+  ;; The enumerator is the cursor, and it steps in `done?`, which the
+  ;; protocol calls once per step before `current`. See the `Seq` impl.
+  (type %cursor (MutableSetEnumerator %a))
+  (defun (iterable-start s) (mutableset-enumerator s))
+  (defun (iterable-done? s e) (not (mutableset-enumerator-next! e)))
+  (defun (iterable-current s e) (mutableset-enumerator-current e))
+  (defun (iterable-next s e) e))
 
 (impl (Collection (MutableSet %a))
   (type %content %a)
   (defun (length s) (mutableset-length s))
   (defun (empty? s) (mutableset-empty? s)))
 
-;; `add!` is void where `mutableset-add!` answers a bool: the trait is the sink
-;; interface, and whether an element was new is not something a sink reports.
 (impl (Addable! (MutableSet %a))
   (type %elem %a)
   (defun (add! s elem)
-    (ignore (mutableset-add! s elem))))
+    (mutableset-add! s elem)))
 
 ;; Two sets are equal when they hold the same elements. Same size, and every
 ;; element of `a` in `b` — which leaves `b` no room for one of its own.
@@ -166,11 +179,11 @@
 (impl (Eq (MutableSet %a))
   (defun (= a b)
     (and (= (mutableset-length a) (mutableset-length b))
-         (let ((c (mutableset-cursor a)))
+         (let ((e (mutableset-enumerator a)))
            (let go ()
              (cond
-               ((mutableset-cursor-done? c) #t)
-               ((mutableset-contains? b (mutableset-cursor-current c)) (go))
+               ((not (mutableset-enumerator-next! e)) #t)
+               ((mutableset-contains? b (mutableset-enumerator-current e)) (go))
                (else #f))))))
   (defun (eq-hash s) (unhashable "MutableSet")))
 

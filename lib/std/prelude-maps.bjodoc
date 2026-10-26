@@ -209,23 +209,42 @@
   (arg k "The key.")
   (arg v "Its value.")
   (returns "A map with k mapped to v.")
-  (see map-add map-set-all ref-set)
+  (see map-add-new map-set-all ref-set)
   (reference """
     When k already holds a value equal to v, by the value type's .NET
     @code{Equals}, it returns m itself unchanged.
     """))
 
-(:doc map-add
-  (summary "A map with a key that was not there added.")
+(:doc map-add-new
+  (summary "A map with a key that must be new added.")
   (arg m "The map, which is left as it was. Without k.")
   (arg k "The key.")
   (arg v "Its value.")
   (returns "A map with k mapped to v.")
   (raises System.ArgumentException "When k is already in the map.")
-  (see map-set add)
+  (see map-try-add-new map-set add)
   (reference """
-    @code{map-set} without the replacement. The @code{add} of the
-    @code{Addable} trait replaces instead, as @code{map-set} does.
+    @code{map-set} without the replacement. Use it where a key that is
+    already there is a mistake, so that the mistake is not lost.
+    @code{add} of the @code{Addable} trait never fails, and replaces, as
+    @code{map-set} does.
+    """))
+
+(:doc map-try-add-new
+  (summary "A map with a key that must be new added, or the value the key already has.")
+  (arg m "The map, which is left as it was.")
+  (arg k "The key.")
+  (arg v "Its value.")
+  (returns "(Ok m2), where m2 maps k to v; or (Err w) when m already maps k to w.")
+  (see map-add-new map-set)
+  (example """
+    (match (map-try-add-new users name record)
+      ((Ok users2) users2)
+      ((Err taken) (raise (Taken name))))
+    """)
+  (reference """
+    @code{map-add-new} with the failure as a value. The @code{Err} carries
+    the value already there, which the lookup found anyway.
     """))
 
 (:doc map-set-all
