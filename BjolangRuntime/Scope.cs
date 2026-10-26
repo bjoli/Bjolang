@@ -279,6 +279,17 @@ public static partial class BjolangRuntime {
         private const int MaxKept = 32;
 
         /// <summary>
+        /// The cancellations of children that a deadline stopped, for the
+        /// report on the body's own cancellation (see
+        /// <see cref="Bjolang.Runtime.Cancelled.AddWaiting"/>). Null until the
+        /// first. Guarded by <see cref="_gate"/>, and capped as the failures
+        /// are, with <see cref="_waitingCount"/> counting all of them.
+        /// </summary>
+        private List<Bjolang.Runtime.Cancelled>? _waiting;
+
+        private int _waitingCount;
+
+        /// <summary>
         /// Does a child's failure belong to this scope?
         ///
         /// True everywhere except the REPL session scope and the scope around a
@@ -327,6 +338,18 @@ public static partial class BjolangRuntime {
         /// </summary>
         private readonly Promise<Unit> _allDone = new();
 
+        /// What <see cref="Close"/> waits on, so the fiber trace can tell a
+        /// closing scope from other waits.
+        internal Promise<Unit> AllDone => _allDone;
+
+        /// <summary>
+        /// For the fiber trace only, and set only when it is on: the scope that
+        /// was ambient when this one was made, which form made it, and where.
+        /// </summary>
+        internal Scope? TraceParent;
+        internal string TraceKind = "scope";
+        internal string? TraceOpenedAt;
+
         /// <summary>
         /// The scope's deadline, or null when it has none. A bare
         /// <see cref="System.Threading.Timer"/> rather than a fiber that races
@@ -351,6 +374,7 @@ public static partial class BjolangRuntime {
         private const long MaxTimerMs = 0xFFFF_FFFE;
 
         internal Scope(long deadlineMs, Promise<CancelReason>? parent, bool propagate = true) {
+            if (FiberTrace.Enabled) Bjolang.Runtime.FiberReport.Opened(this, deadlineMs > 0 ? "with-deadline" : "scope");
             _propagate = propagate;
             _reporting = new Landing(this, reports: true);
             _silent = new Landing(this, reports: false);
@@ -640,6 +664,12 @@ public static partial class BjolangRuntime {
                 failed = false;
             }
 
+            // A child that a deadline stopped is not a failure, but where it
+            // waited goes into the report. Only the error path reads this.
+            if (error is not null && !failed
+                && error.SourceException is Bjolang.Runtime.Cancelled { Reason: CancelReason.Deadline } stopped)
+                NoteWaiting(stopped);
+
             bool closed = false;
             bool none;
             if (failed) {
@@ -668,6 +698,20 @@ public static partial class BjolangRuntime {
                 Token.TrySetResult(new CancelReason.Failed(error!.SourceException));
 
             if (none) _allDone.TrySetResult(default);
+        }
+
+        /// <summary>
+        /// Keep the cancellation of a child that a deadline stopped. The count
+        /// is interlocked and the lock is taken only while the list is below
+        /// its cap, so a deadline that stops many children takes the lock a
+        /// fixed number of times.
+        /// </summary>
+        private void NoteWaiting(Bjolang.Runtime.Cancelled stopped) {
+            if (System.Threading.Interlocked.Increment(ref _waitingCount) > MaxKept) return;
+            lock (_gate) {
+                _waiting ??= new List<Bjolang.Runtime.Cancelled>();
+                if (_waiting.Count < MaxKept) _waiting.Add(stopped);
+            }
         }
 
         /// <summary>
@@ -827,6 +871,17 @@ public static partial class BjolangRuntime {
             // fired. A drain that gave up on cancellation would be a drain that
             // never drains.
             if (!none) await _allDone;
+
+            // The body was stopped by a deadline. Every child has landed, so
+            // the ones the deadline stopped are all in the list, and they go
+            // on the exception the caller is about to see.
+            if (bodyFailure.IsSome
+                && bodyFailure.Value is Bjolang.Runtime.Cancelled { Reason: CancelReason.Deadline } cancelled) {
+                List<Bjolang.Runtime.Cancelled>? waiting;
+                int waitingCount;
+                lock (_gate) { waiting = _waiting; waitingCount = _waitingCount; }
+                if (waiting is not null) cancelled.AddWaiting(waiting, waitingCount);
+            }
 
             // Everything the scope waits for has finished. The token fires now
             // for the things it does not wait for: daemons, and any child that
@@ -1121,6 +1176,7 @@ public static partial class BjolangRuntime {
     /// </summary>
     private static async Fiber<T> DetachedSubtree<T>(System.Func<Fiber<T>> body) {
         var scope = new Scope(0, null, propagate: false);
+        if (FiberTrace.Enabled) scope.TraceKind = "spawn/detached";
         var saved = scopesubpush_BANG(scope);
         try {
             T answer;
@@ -1181,7 +1237,9 @@ public static partial class BjolangRuntime {
             throw new ArgumentOutOfRangeException(
                 "within", deadlineMs,
                 "with-shield: a shield needs a deadline above zero. Nothing outside a shield can cancel it, so the deadline is the only way it ends.");
-        return new Scope(deadlineMs, null);
+        var scope = new Scope(deadlineMs, null);
+        if (FiberTrace.Enabled) scope.TraceKind = "with-shield";
+        return scope;
     }
 
     /// `(deadline-open! ms)` — the scope of `with-deadline`: `scope-open!`
@@ -1189,6 +1247,7 @@ public static partial class BjolangRuntime {
     /// so the token fires at once, with `Deadline`.
     public static Scope deadlinesubopen_BANG(long deadlineMs) {
         var scope = new Scope(Math.Max(deadlineMs, 0), Dyn.Current.Cancel);
+        if (FiberTrace.Enabled) scope.TraceKind = "with-deadline";
         if (deadlineMs <= 0) scope.Token.TrySetResult(CancelReason.Deadline.Instance);
         return scope;
     }
@@ -1239,6 +1298,11 @@ public static partial class BjolangRuntime {
 
     /// `(scope-owned-count sc)` — the test hook. Not part of the surface.
     public static int scopesubownedsubcount(Scope scope) => scope.OwnedCount;
+
+    /// `(fiber-trace)` — the report of every fiber that waits now, or a line
+    /// that says how to turn the trace on. See `Bjolang.Runtime.FiberReport`.
+    public static BjoString.Utf8String fibersubtrace() =>
+        BjoString.Utf8String.FromUtf16(Bjolang.Runtime.FiberReport.Text());
 
     // -----------------------------------------------------------------------
     // Owned resources
@@ -1509,6 +1573,7 @@ public static partial class BjolangRuntime {
     /// </summary>
     private static Scope OpenMainScope() {
         var scope = scopesubopen_BANG(0);
+        if (FiberTrace.Enabled) scope.TraceKind = "main";
         _ = scope.Own([NonUserCode] static () => {
             StdOut.Flush();
             StdErr.Flush();
@@ -1546,6 +1611,7 @@ public static partial class BjolangRuntime {
         if (!Console.IsOutputRedirected) StdOut.Mode = Bjolang.Runtime.BufferMode.None;
 
         var scope = new Scope(0, null, propagate: false);
+        if (FiberTrace.Enabled) scope.TraceKind = "REPL session";
         _ = scopesubpush_BANG(scope);
         return scope;
     }
@@ -1607,6 +1673,7 @@ public static partial class BjolangRuntime {
     public static T RunMainSync<T>(System.Func<T> body) {
         RunInvariant();
         InstallStandardPorts();
+        if (FiberTrace.Enabled) FiberTrace.EnterOutside();
 
         var scope = OpenMainScope();
         var saved = scopesubpush_BANG(scope);
@@ -1623,6 +1690,7 @@ public static partial class BjolangRuntime {
             return answer;
         } finally {
             _ = dynsubrestore_BANG(saved);
+            if (FiberTrace.Enabled) FiberTrace.LeaveOutside();
         }
     }
 }
@@ -1669,6 +1737,78 @@ namespace Bjolang.Runtime {
 
         public Cancelled(global::BjolangRuntime.CancelReason reason)
             : base($"cancelled: {reason}") => Reason = reason;
+
+        /// <summary>
+        /// The cancellations of the other fibers that a deadline stopped
+        /// together with this one. Null until a scope adds some, in
+        /// <see cref="AddWaiting"/>. Each one can have its own list, from a
+        /// scope further in.
+        /// </summary>
+        private List<Cancelled>? _waiting;
+
+        /// How many fibers were stopped, which is more than `_waiting` holds
+        /// when the scope that added them reached its cap.
+        private int _waitingCount;
+
+        /// The message with the report, made when it is first read.
+        private string? _message;
+
+        /// <summary>
+        /// Add the fibers that a scope's deadline stopped while the body
+        /// waited here. Called by the closing scope after every child has
+        /// landed, so nothing adds to the list while it is read.
+        /// </summary>
+        internal void AddWaiting(List<Cancelled> waiting, int count)
+        {
+            _waiting ??= new List<Cancelled>(waiting.Count);
+            foreach (var w in waiting)
+                if (!ReferenceEquals(w, this)) _waiting.Add(w);
+            _waitingCount += count;
+            _message = null;
+        }
+
+        /// <summary>
+        /// The reason, and for a deadline, where the other fibers were
+        /// waiting when it passed. The report is made from the stacks of
+        /// their cancellations, so it costs nothing until it is read.
+        /// </summary>
+        public override string Message
+        {
+            get
+            {
+                if (_waiting is null) return base.Message;
+                return _message ??= base.Message + Report();
+            }
+        }
+
+        private string Report()
+        {
+            var cache = new Dictionary<string, string[]?>();
+            var sites = new List<string>();
+            int total = 0;
+            Collect(this, sites, ref total, cache);
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append('\n').Append(total == 1
+                ? "When the deadline passed, 1 other fiber was waiting:"
+                : $"When the deadline passed, {total} other fibers were waiting:");
+            WaitSites.AppendCounted(sb, sites, "  ");
+            int dropped = total - sites.Count;
+            if (dropped > 0) sb.Append('\n').Append($"  and {dropped} more, not kept");
+            return sb.ToString();
+        }
+
+        private static void Collect(Cancelled c, List<string> sites, ref int total,
+                                    Dictionary<string, string[]?> cache)
+        {
+            if (c._waiting is null) return;
+            total += c._waitingCount;
+            foreach (var w in c._waiting)
+            {
+                sites.Add(WaitSites.Of(w, cache));
+                Collect(w, sites, ref total, cache);
+            }
+        }
     }
 
     /// <summary>

@@ -202,11 +202,23 @@ internal sealed class FiberStateMachineBox<TStateMachine> : IFiberResume
     /// <summary>See <see cref="IFiberResume.MoveNextAction"/>.</summary>
     public Action MoveNextAction => Run;
 
-    private void Run() => FiberResume.Run(ref StateMachine, Context);
+    private void Run()
+    {
+        if (FiberTrace.Enabled) FiberTrace.Resumed(this);
+        FiberResume.Run(ref StateMachine, Context);
+    }
 
-    public void Resume() => FiberResume.Run(ref StateMachine, Context);
+    public void Resume()
+    {
+        if (FiberTrace.Enabled) FiberTrace.Resumed(this);
+        FiberResume.Run(ref StateMachine, Context);
+    }
 
-    public void Execute() => FiberResume.Execute(ref StateMachine, Context);
+    public void Execute()
+    {
+        if (FiberTrace.Enabled) FiberTrace.Resumed(this);
+        FiberResume.Execute(ref StateMachine, Context);
+    }
 }
 
 /// <summary>
@@ -290,11 +302,23 @@ internal sealed class CalledFiber<TStateMachine, T> : Promise<T>, IFiberResume
         t_free = this;
     }
 
-    private void Run() => FiberResume.Run(ref StateMachine, Context);
+    private void Run()
+    {
+        if (FiberTrace.Enabled) FiberTrace.Resumed(this);
+        FiberResume.Run(ref StateMachine, Context);
+    }
 
-    public void Resume() => FiberResume.Run(ref StateMachine, Context);
+    public void Resume()
+    {
+        if (FiberTrace.Enabled) FiberTrace.Resumed(this);
+        FiberResume.Run(ref StateMachine, Context);
+    }
 
-    public void Execute() => FiberResume.Execute(ref StateMachine, Context);
+    public void Execute()
+    {
+        if (FiberTrace.Enabled) FiberTrace.Resumed(this);
+        FiberResume.Execute(ref StateMachine, Context);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -555,10 +579,13 @@ public readonly struct Fiber
 /// suspending, otherwise the call's promise.
 /// </summary>
 [NonUserCode]
-public readonly struct FiberAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter
+public readonly struct FiberAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter, ITraceAwaiter
 {
     private readonly Promise<T>? _p;
     private readonly T _result;
+
+    /// The called frame's promise: the frame this one waits on.
+    object? ITraceAwaiter.TraceTarget => _p;
 
     internal FiberAwaiter(Promise<T>? p, T result)
     {
@@ -619,10 +646,33 @@ internal static class FiberBuilder
         where TAwaiter : ICriticalNotifyCompletion
         where TStateMachine : IAsyncStateMachine
     {
+        if (FiberTrace.Enabled) { TracedAwait(ref awaiter, ref core, ref stateMachine); return; }
+
         if (awaiter is IFiberAwaiter)
             ((IFiberAwaiter)awaiter).ParkFiber(GetResumeBox(ref core, ref stateMachine));
         else
             awaiter.UnsafeOnCompleted(GetResumeBox(ref core, ref stateMachine).MoveNextAction);
+    }
+
+    /// <summary>
+    /// <see cref="AwaitUnsafe"/> with the trace on: the frame is recorded
+    /// before it parks. Out of line, so that the path with the trace off keeps
+    /// its size.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void TracedAwait<TAwaiter, TStateMachine, T>(
+        ref TAwaiter awaiter, ref Promise<T>? core, ref TStateMachine stateMachine)
+        where TAwaiter : INotifyCompletion
+        where TStateMachine : IAsyncStateMachine
+    {
+        var box = GetResumeBox(ref core, ref stateMachine);
+        FiberTrace.Parked(box, ref awaiter, ref stateMachine);
+        if (awaiter is IFiberAwaiter)
+            ((IFiberAwaiter)awaiter).ParkFiber(box);
+        else if (awaiter is ICriticalNotifyCompletion)
+            ((ICriticalNotifyCompletion)awaiter).UnsafeOnCompleted(box.MoveNextAction);
+        else
+            awaiter.OnCompleted(box.MoveNextAction);
     }
 
     /// <summary>
@@ -635,6 +685,8 @@ internal static class FiberBuilder
         where TAwaiter : INotifyCompletion
         where TStateMachine : IAsyncStateMachine
     {
+        if (FiberTrace.Enabled) { TracedAwait(ref awaiter, ref core, ref stateMachine); return; }
+
         if (awaiter is IFiberAwaiter)
             ((IFiberAwaiter)awaiter).ParkFiber(GetResumeBox(ref core, ref stateMachine));
         else

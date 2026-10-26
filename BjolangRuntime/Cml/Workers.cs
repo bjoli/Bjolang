@@ -370,6 +370,15 @@ internal static class Workers
         return null;
     }
 
+    /// <summary>
+    /// No pump holds a worker and no queue has work. For the fiber trace's
+    /// stall watcher; a moment's answer, which it asks again before it acts.
+    /// </summary>
+    internal static bool IsIdle =>
+        Volatile.Read(ref s_idle) == Volatile.Read(ref s_limit)
+        && Volatile.Read(ref s_spinning) == 0
+        && !AnyWork();
+
     private static bool AnyWork()
     {
         if (!s_global.IsEmpty) return true;

@@ -39,6 +39,100 @@ and what is known about what it cannot do yet.
   longer and shares its bytes with no other name. A captured parameter
   keeps its C# name: its field and the parameter are one string.
 
+* Where fibers wait
+
+A program that hangs usually has fibers that wait for each other. Two
+things show where they wait. Neither needs a debugger.
+
+** A deadline that stops the body says where the others were
+
+When a ~with-deadline~ stops its body, the ~Cancelled~ that the body
+raises says where every other fiber of the scope was waiting when the
+deadline passed. Fibers in nested scopes are counted too:
+
+#+BEGIN_SRC
+cancelled: (Deadline)
+When the deadline passed, 4 other fibers were waiting:
+  3 fibers  at app.bjo:14  (ignore (sync (chan-recv jobs)))
+  1 fiber   at app.bjo:21  (sync (timeout (minutes 1)))
+#+END_SRC
+
+This is always on. It costs nothing until a deadline stops a fiber,
+and the text is made from the stacks of the cancellations only when the
+message is read. A deadline that stops only children, after the body has
+returned, is not a failure, so it raises nothing and there is no report.
+
+** The fiber trace: ~BJO_FIBER_TRACE=1~
+
+Set ~BJO_FIBER_TRACE~ in the environment when the program starts:
+
+#+BEGIN_SRC sh
+BJO_FIBER_TRACE=1 dotnet app.exe
+#+END_SRC
+
+The program then keeps a record of each fiber that waits. You get the
+record as a report in three ways:
+
+- ~(fiber-trace)~ answers it as a string.
+- SIGQUIT (Ctrl-\ in a terminal, or ~kill -QUIT pid~) writes it to
+  standard error. The program does not stop.
+- When the program looks deadlocked, it writes the report once by itself.
+  That is when nothing has run for two seconds and every fiber waits on a
+  channel, on another fiber or on the close of a scope.
+
+#+BEGIN_SRC
+Bjolang fiber trace: nothing has run for 2 s, and every fiber waits on a channel or on another fiber. This looks like a deadlock.
+Bjolang fiber trace: 3 fibers waiting.
+
+main
+
+  scope, opened at app.bjo:25  (with-scope
+
+    scope, opened at app.bjo:18  (with-scope
+      1 fiber closing this scope, waiting for its children, for 2.5 s
+          at   app.bjo:18  (with-scope
+          from app.bjo:28  (table f1 f2))
+      1 fiber waiting in chan-recv on channel #1, for 2.4 s
+          at   app.bjo:9  (def r (sync (chan-recv right)))
+      1 fiber waiting in chan-recv on channel #2, for 2.4 s
+          at   app.bjo:9  (def r (sync (chan-recv right)))
+#+END_SRC
+
+Each fiber is under the scope it waits in, and the scopes are in a tree.
+The ~at~ line is the ~sync~. The ~from~ lines are the bjoroutines that
+called it, innermost first. Fibers that wait at the same place, on the
+same thing, are counted together. A channel has a number, so two fibers
+that wait on one channel can be seen to do so. A thread that waits in
+~sync/blocking~ or at the close of a scope is in the report too.
+
+The deadlock check is careful not to report a program that can still go
+on. A wait on a timer, a ~choose~, an inbox or a .NET task can end without
+help from a fiber, so a program with one of those waits is not reported.
+Nor is a program whose ~defun~ ~main~ still runs, or one whose scheduler
+still has work. A program that is stuck in such a wait is shown by
+SIGQUIT.
+
+*** What it costs
+
+With the trace off, nothing. Every hook tests ~FiberTrace.Enabled~, a
+~static readonly~ field, and the JIT removes the test and the code after
+it when it recompiles a hot method. On ~bench/bjolang/cmlbench.bjo~ the
+rings, the spawn burst and the chooses run at the same speed and allocate
+the same, with the hooks and without them.
+
+With the trace on, each suspension records the frame in a table, and the
+first suspension at each ~sync~ reads the stack once to find the line.
+The ring of ~cmlbench~ goes from about 70 to about 260 ns a message. Use
+it to find where a program is stuck, not in production.
+
+*** What it does not show
+
+- A fiber that runs, or is queued to run, has no place: it shows as
+  "running, or ready to run".
+- A fiber in a pure loop never waits, so the deadlock check sees a
+  scheduler with work and says nothing.
+- Without a pdb there are no lines, only method names.
+
 * Setting it up
 
 - [[https://github.com/Samsung/netcoredbg/releases][netcoredbg]], unpacked to ~~/.local/share/netcoredbg~. It speaks the Debug
@@ -112,7 +206,8 @@ batch Emacs, on a small program:
 - *The watch and the REPL evaluate C#,* not Bjolang, so they take C#
   spellings of names.
 - *A suspended bjoroutine's stack* is in its continuations, so the call stack
-  ends at the scheduler.
+  ends at the scheduler. The fiber trace (see "Where fibers wait") puts
+  the chain of a waiting fiber back together, with its lines.
 - *A breakpoint on a seql's last clause* can bind in the loop's exit
   function, ~<main>g__loopexit__N~, rather than in the iterator, and there
   netcoredbg fails to list the locals (~variables~ answers ~0x80004005~). A

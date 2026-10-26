@@ -163,6 +163,8 @@ public static partial class BjolangRuntime {
         internal SyncOp(IEvent<T> ev, Promise<CancelReason>? token) { _ev = ev; _token = token; }
 
         public SyncAwaiter<T> GetAwaiter() {
+            if (FiberTrace.Enabled) FiberTrace.NoteEvent(_ev);
+
             // The partner is already here, so this commits without publishing
             // anything, without a `SyncState`, and without the race. See
             // `INowable` for why skipping the race is not a change of meaning.
@@ -716,10 +718,15 @@ public static partial class BjolangRuntime {
     /// Forwards to whichever awaiter the sync ended up with, or to nothing at
     /// all when the rendezvous already happened.
     [NonUserCode]
-    public readonly struct SyncAwaiter<T> : System.Runtime.CompilerServices.ICriticalNotifyCompletion, IFiberAwaiter {
+    public readonly struct SyncAwaiter<T> : System.Runtime.CompilerServices.ICriticalNotifyCompletion, IFiberAwaiter, ITraceAwaiter {
         private const byte Ready_ = 0;
         private const byte Direct_ = 1;
         private const byte Event_ = 2;
+
+        /// Where a single operation parks: the channel, its send side or a
+        /// timer node. Null for an event; the trace has the event from
+        /// `FiberTrace.NoteEvent`.
+        object? ITraceAwaiter.TraceTarget => _kind == Direct_ ? _direct : null;
 
         /// What the sync ended up with, told apart by `_kind`: the parked op
         /// (direct), the `EventAwaiter` (event), or, when the sync was over
@@ -1436,7 +1443,13 @@ public static partial class BjolangRuntime {
         // `sync` applies one on its fiber.
         var landing = new BlockingLanding<Synced<T>>();
         Cml.PublishRoot(offered, new SyncState { WrapHost = landing }, landing.Land);
-        landing.Wait()?.Run();
+        if (FiberTrace.Enabled) {
+            var traced = FiberTrace.ThreadWaiting(ev);
+            try { landing.Wait()?.Run(); }
+            finally { FiberTrace.ThreadDone(traced); }
+        } else {
+            landing.Wait()?.Run();
+        }
 
         // Raised here rather than in the continuation above, which runs on the
         // thread that completed the event and must not throw.

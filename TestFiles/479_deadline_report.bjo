@@ -1,0 +1,74 @@
+;; A deadline that stops the body says where the other fibers were waiting.
+;;
+;; The report is part of the message of the body's `Cancelled`, and is made
+;; from the stacks of the children's cancellations when the message is read.
+;; A fiber in a nested scope is counted too: its scope gives its cancellation
+;; to the exception its own body raised, and that one lands in the outer scope.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: (-bjo-> (Chan int) void))
+(defbjo (worker jobs)
+  (let go ()
+    (ignore (sync (chan-recv jobs)))      ; the workers wait here
+    (go)))
+
+(: (-bjo-> (Chan int) void))
+(defbjo (foreman jobs)
+  (with-cancel (cancel)
+    (spawn (worker jobs))
+    (sync (timeout (minutes 1)))))        ; the foreman waits here
+
+(: (-> (Result Exception string) string))
+(defun (message-of r)
+  (match r
+    ((Ok v) #"returned ${v}")
+    ((Err e) (.-Message e))))
+
+(defbjo (main args)
+  (def jobs (make-chan))
+
+  (def stopped
+    (message-of
+     (try (with-deadline (milliseconds 100)
+            (spawn (worker jobs))
+            (spawn (worker jobs))
+            (spawn (foreman jobs))
+            (sync (timeout (minutes 1)))
+            "the timer lost")
+          #:catch (System.Exception))))
+
+  (expect-true "the message still starts with the reason"
+               (string-contains? stopped "cancelled: (Deadline)"))
+  (expect-true "and counts every fiber the deadline stopped, nested ones too"
+               (string-contains? stopped "4 other fibers were waiting"))
+  (expect-true "and groups the workers by where they waited"
+               (string-contains? stopped "3 fibers  at TestFiles/479_deadline_report.bjo:14  (ignore (sync (chan-recv jobs)))"))
+  (expect-true "and names the foreman's wait"
+               (string-contains? stopped "1 fiber   at TestFiles/479_deadline_report.bjo:21"))
+
+  ;; A deadline that only stops children is not a failure, so there is no
+  ;; exception and no report.
+  (def finished
+    (message-of
+     (try (with-deadline (milliseconds 50)
+            (spawn (worker jobs))
+            "body done")
+          #:catch (System.Exception))))
+  (expect "a deadline that stops only children still returns" finished "returned body done")
+
+  ;; A cancellation for another reason has no report.
+  (def requested
+    (message-of
+     (try (with-cancel (cancel)
+            (spawn (worker jobs))
+            (ignore (cancel (Requested "stop")))
+            (sync (timeout (minutes 1)))
+            "not reached")
+          #:catch (System.Exception))))
+  (expect "a requested cancellation says only its reason"
+          requested "cancelled: (Requested \"stop\")")
+
+  (println "479 ok")
+  0)

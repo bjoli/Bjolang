@@ -3,6 +3,43 @@
 
 What each change guarantees, and what it leaves open.
 
+* Where fibers wait: the deadline report and the fiber trace
+
+- When ~with-deadline~ stops its body, the message of the ~Cancelled~ that
+  the body raises tells where the other fibers that the deadline stopped
+  were waiting: ~3 fibers at app.bjo:14 (ignore (sync (chan-recv jobs)))~,
+  each place once, with its count. A fiber in a nested scope is counted: its
+  scope gives its cancellation to the ~Cancelled~ that its own body raises.
+  The text is made from the cancellations' stacks when the message is read.
+  A scope keeps at most 32 cancellations, and counts the others.
+- A deadline that stops only children, after the body has returned, still
+  raises nothing, as the documentation says. A cancellation for another
+  reason has the same message as before.
+- ~BJO_FIBER_TRACE=1~ in the environment turns on the fiber trace. Every
+  fiber frame that suspends is recorded with the line of its await and what
+  it waits on, and removed when it resumes. ~(fiber-trace)~ answers a report
+  of the fibers that wait now, under their scopes, in a tree: what each waits
+  on (~waiting in chan-recv on channel #1~, ~waiting for a timeout~, ~closing
+  this scope, waiting for its children~), for how long, the line of the
+  ~sync~ and the lines of its callers. With the trace off it answers a line
+  that says how to turn it on.
+- With the trace on, SIGQUIT writes the report to standard error, and a
+  watcher thread writes it once when the program looks deadlocked: for two
+  seconds nothing has suspended or resumed, the scheduler has no work, a
+  ~defun~ ~main~ is not running, and every fiber waits on a channel, a fiber,
+  ~never~ or the close of a scope. A wait on a timer, a ~choose~, an inbox,
+  a promise of a .NET task or anything else is taken to be one that can end,
+  so a program with one is not reported. With ~BJO_SCHEDULER=pool~ the
+  scheduler's queues cannot be read, and the watcher reports nothing.
+- With the trace off, the hooks are tests of a ~static readonly~ field,
+  which the JIT removes at tier 1. On ~bench/bjolang/cmlbench.bjo~, against
+  the runtime without the hooks, every row ran within the noise and
+  allocated the same. With the trace on, the ring went from about 70 to
+  about 260 ns a message.
+- Not covered: a fiber that runs or is queued has no place in the report;
+  a fiber in a loop with no ~sync~ hides a deadlock from the watcher; a
+  program without a pdb has method names in place of lines.
+
 * A .NET void method or setter used as a value
 
 - An import that returns void, used as a function value, is a lambda that

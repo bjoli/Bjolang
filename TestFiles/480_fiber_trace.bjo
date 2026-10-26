@@ -1,0 +1,75 @@
+;; The fiber trace: `(fiber-trace)`, and the report of a deadlock.
+;;
+;; The trace is on only when BJO_FIBER_TRACE is set when the program starts,
+;; so the test runs itself again as a child with the variable set, and reads
+;; what the child wrote. The child is two philosophers who each hold one fork
+;; and wait for the other, and a body that waits on a channel nobody sends to.
+
+(import (std prelude))
+(import (std simpletest))
+(import (std run))
+
+(: (-bjo-> (Chan int) (Chan int) void))
+(defbjo (philosopher left right)
+  (def l (sync (chan-recv left)))
+  (sync (timeout (milliseconds 50)))
+  (def r (sync (chan-recv right)))      ; both philosophers wait here
+  (println #"ate with ${l} and ${r}"))
+
+(: (-bjo-> (Chan int) void))
+(defbjo (fork-keeper fork)
+  (sync (chan-send fork 1)))
+
+(: (-bjo-> void))
+(defbjo (child)
+  (def f1 (make-chan))
+  (def f2 (make-chan))
+  (def nobody (make-chan))
+  (match (try (with-deadline (milliseconds 3500)
+                (spawn (fork-keeper f1))
+                (spawn (fork-keeper f2))
+                (spawn (philosopher f1 f2))
+                (spawn (philosopher f2 f1))
+                (sync (timeout (milliseconds 300)))
+                (println (fiber-trace))
+                (ignore (sync (chan-recv nobody)))
+                "not reached")
+              #:catch (System.Exception))
+    ((Ok v) (println v))
+    ((Err e) (println "the deadline ended it"))))
+
+(defbjo (main args)
+  (if (and (= (vec-length args) 1) (= (vec-ref args 0) "child"))
+      (child)
+      (let ()
+        (expect "with the trace off, fiber-trace says how to turn it on"
+                (fiber-trace)
+                "The fiber trace is off. Set BJO_FIBER_TRACE=1 in the environment to turn it on.")
+
+        (def command "BJO_FIBER_TRACE=1 dotnet TestFiles/480_fiber_trace.exe child 2>&1")
+        (def out
+          (match (sync (blocking (fun () (run/string '(sh "-c" ,command)))))
+            ((Ok (Ok s)) s)
+            ((Ok (Err e)) (str "could not run the child: " (.-Message e)))
+            ((Err e) (str "the child raised: " (.-Message e)))))
+
+        (expect-true "the report counts the fibers"
+                     (string-contains? out "Bjolang fiber trace: 3 fibers waiting."))
+        (expect-true "it names the scope and where it was opened"
+                     (string-contains? out "with-deadline, opened at TestFiles/480_fiber_trace.bjo:28"))
+        (expect-true "it says what a fiber waits on, and where"
+                     (string-contains? out "1 fiber waiting in chan-recv on channel #"))
+        (expect-true "with the line of the sync"
+                     (string-contains? out "at   TestFiles/480_fiber_trace.bjo:16  (def r (sync (chan-recv right)))"))
+        (expect-true "a fiber that runs is not waiting"
+                     (string-contains? out "1 fiber running, or ready to run"))
+        (expect-true "when everything waits on everything, the watcher says so"
+                     (string-contains? out "This looks like a deadlock."))
+        (expect-true "and then shows the body's wait too"
+                     (string-contains? out "at   TestFiles/480_fiber_trace.bjo:35  (ignore (sync (chan-recv nobody)))"))
+        (expect-true "and the deadline still ends the program"
+                     (string-contains? out "the deadline ended it"))
+        (when (not (string-contains? out "the deadline ended it"))
+          (println out))))
+  (println "480 ok")
+  0)

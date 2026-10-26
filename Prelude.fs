@@ -819,6 +819,7 @@ let prelude : Env =
         /// prelude: counts, list length, token state and drain order are not
         /// part of the scope surface.
         "scope-owned-count", {Scheme = Scheme([], [], makeFunType [scopeType] intType); IsMutable = false }
+        "fiber-trace", {Scheme = Scheme([], [], makeFunType [] stringType); IsMutable = false }
 
         /// `(raise e)` — the counterpart of `try`, which turns the failures it
         /// names into values. This is how one gets back out, and it keeps the

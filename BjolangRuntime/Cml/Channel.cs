@@ -1391,9 +1391,11 @@ public class Channel<T> : IEvent<T>, INowable<T>, IDirectSyncable<T>
 }
 
 [NonUserCode]
-public readonly struct ChannelReceiveAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter
+public readonly struct ChannelReceiveAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter, ITraceAwaiter
 {
     private readonly Channel<T> _channel;
+
+    object? ITraceAwaiter.TraceTarget => _channel;
     private readonly T _result;
     private readonly bool _isCompleted;
     private readonly GetOp<T>? _op;
@@ -1442,9 +1444,12 @@ public readonly struct ChannelReceiveAwaiter<T> : ICriticalNotifyCompletion, IFi
 }
 
 [NonUserCode]
-public readonly struct ChannelSendAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter
+public readonly struct ChannelSendAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter, ITraceAwaiter
 {
     private readonly Channel<T> _channel;
+
+    /// The send side, so the trace tells a send from a receive.
+    object? ITraceAwaiter.TraceTarget => _channel.SendSide;
     private readonly bool _isCompleted;
     private readonly PutOp<T>? _op;
 

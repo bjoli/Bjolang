@@ -656,6 +656,18 @@
     deadline has not failed, so the form above returns normally either way;
     it raises only when the body itself was stopped, or a child failed.
     A caller that needs to know reads the reason off the scope's token.
+
+    @strong{Where the others waited.} When the deadline stops the body, the
+    message of the @code{Cancelled} that it raises tells where each other
+    fiber that the deadline stopped was waiting, with the fibers of nested
+    scopes, counted by place:
+
+    @code{When the deadline passed, 3 other fibers were waiting:}
+    @code{  3 fibers  at app.bjo:14  (ignore (sync (chan-recv jobs)))}
+
+    The text is made from the stacks of the cancellations when the message
+    is read, so it costs nothing before that. For every fiber of the
+    program, at any time, see @code{fiber-trace}.
     """))
 
 (:doc with-shield
@@ -884,6 +896,44 @@
   (see own! release!)
   (reference """
     A test hook: @code{std/simpletest} fails a test that left one behind.
+    """))
+
+(:doc fiber-trace
+  (summary "A report of every fiber that waits now: where it waits, on what, and in which scope.")
+  (returns "The report as text. When the trace is off, a line that tells how to turn it on.")
+  (see with-deadline with-cancel sync)
+  (example """
+    (with-deadline (seconds 5)
+      (spawn (worker jobs))
+      (sync (timeout (seconds 1)))
+      (warn (fiber-trace)))
+    """)
+  (reference """
+    The trace is on when the environment variable @code{BJO_FIBER_TRACE}
+    is set, as in @code{BJO_FIBER_TRACE=1 dotnet app.exe}. When it is off,
+    the program runs the same code as before the trace existed: every hook
+    tests a value that the JIT reads as a constant.
+
+    The report puts each fiber under the scope it waits in, with the scopes
+    in a tree. For each fiber it gives what the fiber waits on
+    (@code{waiting in chan-recv on channel #1}, @code{waiting for a timeout},
+    @code{waiting in a choose}, @code{closing this scope, waiting for its
+    children}), how long it has waited, the
+    line of the @code{sync}, and the lines of the bjoroutines that called
+    it. Fibers that wait at the same place are counted together. A thread
+    that waits in @code{sync/blocking} or at the close of a scope is in
+    the report too.
+
+    With the trace on, the program also writes the report to standard error
+    when it gets SIGQUIT (Ctrl-\ in a terminal), and once when it looks
+    deadlocked: nothing has run for two seconds, and every fiber waits on a
+    channel, a fiber or the close of a scope. A wait on a timer, a
+    @code{choose} or a .NET task can end without help from a fiber, so then
+    nothing is written.
+
+    The trace costs time when it is on: each wait records a frame, and
+    the first wait at each line reads the stack. Use it to find where a
+    program is stuck, not in production.
     """))
 
 (:doc dyn-restore!

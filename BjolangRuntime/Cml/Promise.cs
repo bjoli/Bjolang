@@ -830,10 +830,12 @@ internal sealed class PromiseValue<T> : IEvent<T>, INowable<T>
 }
 
 [NonUserCode]
-public readonly struct PromiseAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter
+public readonly struct PromiseAwaiter<T> : ICriticalNotifyCompletion, IFiberAwaiter, ITraceAwaiter
 {
     private readonly Promise<T> _p;
     public PromiseAwaiter(Promise<T> p) => _p = p;
+
+    object? ITraceAwaiter.TraceTarget => _p;
 
     public bool IsCompleted => _p.IsCompleted;
 

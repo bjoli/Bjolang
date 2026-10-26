@@ -141,9 +141,17 @@ public static class Bjo
             }
         });
 
-        lock (gate)
+        var traced = FiberTrace.Enabled && !completed ? FiberTrace.ThreadWaiting(p) : null;
+        try
         {
-            while (!completed) Monitor.Wait(gate);
+            lock (gate)
+            {
+                while (!completed) Monitor.Wait(gate);
+            }
+        }
+        finally
+        {
+            if (traced is not null) FiberTrace.ThreadDone(traced);
         }
     }
 }
