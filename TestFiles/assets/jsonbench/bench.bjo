@@ -10,8 +10,9 @@
 ;;   citm_catalog  1.7M, objects and short strings — map building
 ;;   twitter       0.6M, strings, much of it non-ASCII — escapes and decoding
 ;;
-;; Timed off a string that was read first, so the disk is not in the loop. The
-;; file column is the streaming path, for comparison.
+;; Timed off a string that was read first, so the disk is not in the loop:
+;; once with objects as maps, the default, and once with #:objects 'fields.
+;; The file column is the streaming path, for comparison.
 ;;
 ;; The figure is the *fastest* of twenty rather than the mean of them, because
 ;; the mean is largely a measurement of the garbage collector: each parse leaves
@@ -57,12 +58,13 @@
   (match j
     ((JsonArr v) (+ 1 (fold (fun (x acc) (+ acc (nodes x))) 0 v)))
     ((JsonObj m) (+ 1 (map-fold (fun (k x acc) (+ acc (nodes x))) 0 m)))
+    ((JsonFields fs) (+ 1 (fold (fun (p acc) (+ acc (nodes (snd p)))) 0 fs)))
     (_ 1)))
 
 ;; The fastest of `reps` parses, in ticks. The outcome is folded into a counter
 ;; so the work cannot be dead.
-(: (-> string int))
-(defun (best-ticks text)
+(: (-> string JsonObjects int))
+(defun (best-ticks text objects)
   (let go ((i 0) (best 2000000000) (ok 0))
     (if (= i reps)
         (let ()
@@ -70,7 +72,7 @@
           best)
         (let ((sw (stopwatch-of)))
           (.Start sw)
-          (let ((got (match (parse-json text) ((Ok _) 1) ((Err _) 0))))
+          (let ((got (match (parse-json text #:objects objects) ((Ok _) 1) ((Err _) 0))))
             (.Stop sw)
             (let ((t (elapsed-ticks sw)))
               (go (+ i 1) (if (< t best) t best) (+ ok got))))))))
@@ -119,13 +121,16 @@
           (let ((count (nodes (match (parse-json text)
                                 ((Ok j) j)
                                 ((Err e) (let () (println (str name ": " e)) JsonNull))))))
-          (let ((t (best-ticks text))
+          (let ((t (best-ticks text 'map))
+                (tf (best-ticks text 'fields))
                 (ft (file-ticks path)))
             (println
              (str (string-pad-right name 14)
                   (string-pad-left (int->string (/ bytes 1000)) 6) " kB"
                   (string-pad-left (as-ms t) 9) " ms"
                   (string-pad-left (rate bytes t) 8) " MB/s"
+                  (string-pad-left (as-ms tf) 9) " ms"
+                  (string-pad-left (rate bytes tf) 8) " MB/s 'fields"
                   (string-pad-left (as-ms ft) 10) " ms off a file"
                   (string-pad-left (int->string count) 9) " nodes"))))))))
 

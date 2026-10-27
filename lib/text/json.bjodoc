@@ -40,9 +40,28 @@
     different values in the tree; @code{(text json-codec)} reads either into
     a @code{double}, and only the first into an integer.
 
-    @strong{Objects.} An object is a @code{(Map string Json)}, so the order
-    its keys were written in is not kept, and when a key is written twice the
-    last value wins.
+    @strong{Objects.} By default an object is a @code{JsonObj}, a
+    @code{(Map string Json)}, so the order its keys were written in is not
+    kept. With @code{#:objects 'fields} it is a @code{JsonFields}, its keys
+    and values in an @code{IArray} of pairs, in the document's order. That
+    is quicker to read, by a fifth to a third on documents of many objects,
+    and to walk; looking up a key in it is a walk over the fields, which
+    is as quick as a @code{Map} for a few fields and slower for many.
+    @code{json-object-ref} looks up a key in either kind. Either way, when a
+    key is written twice the last value wins, and a @code{JsonFields} has
+    each key once.
+
+    @strong{Which to read.} @code{'fields} is the better choice when the
+    tree is walked rather than searched: when it is written back, folded
+    over, or read into records with @code{(text json-codec)}, which looks
+    up each of a record's few fields once. It also keeps the keys in the
+    document's order. @code{'map} is the better choice when objects with
+    many keys are looked up by key, often. Finding a string key in a
+    @code{JsonFields} compares it with the keys in turn, about 3 ns each:
+    as quick as a @code{Map} up to about five keys, nearly three times as
+    slow at sixteen, and more than ten times as slow at a hundred, where a
+    @code{Map} takes about 10 ns at any size. A key that is not there is compared with all of
+    them.
 
     @strong{Errors.} A document that is not JSON is an @code{Err} saying
     where and why: @code{line 1, column 7: ']' does not begin a value}. A
@@ -55,9 +74,12 @@
     @code{Json} as text, and @code{written} does too. What they write reads
     back as the same value: a @code{JsonFloat} always has a point or an
     exponent, so @code{2.0} stays a float, and a double is written with the
-    fewest digits that read back as the same double. The keys of an object
-    are written in sorted order, because a @code{Map} does not keep the order
-    they were read in. So the same value always gives the same text.
+    fewest digits that read back as the same double. The keys of a
+    @code{JsonObj} are written in sorted order, because a @code{Map} does
+    not keep the order they were read in, so the same value always gives the
+    same text. A @code{JsonFields} is written in its own order, so a
+    document read with @code{#:objects 'fields} is written back with its
+    keys where they were.
     """))
 
 (:doc Json
@@ -69,7 +91,35 @@
   (case JsonStr "A string, its escapes resolved.")
   (case JsonArr "An array, in order, as an IArray. Build one from a vec with vec->iarray.")
   (case JsonObj "An object, by key. The order of the keys is not kept; a key written twice keeps its last value.")
-  (see parse-json))
+  (case JsonFields "An object read with #:objects 'fields: its keys and values in the document's order, each key once, with its last value.")
+  (see parse-json json-object-ref JsonObjects)
+  (reference """
+    The two kinds of object are different values: a @code{JsonObj} and a
+    @code{JsonFields} with the same fields are not @code{=}.
+    """))
+
+(:doc JsonObjects
+  (summary "How a reader stores an object: #:objects's value.")
+  (case ObjectsAsMap "'map, the default: a JsonObj, by key.")
+  (case ObjectsAsFields "'fields: a JsonFields, in the document's order. Quicker to read, and slower to look a key up in when there are many.")
+  (see Json read-json parse-json))
+
+(:doc json-object-ref
+  (summary "The value of a key in an object of either kind.")
+  (arg j "The object: a JsonObj or a JsonFields.")
+  (arg key "The key.")
+  (returns "Some value, or None when there is no such key or j is not an object.")
+  (see Json)
+  (example """
+    (json-object-ref (match (parse-json "{\"a\": 1}" #:objects 'fields) ((Ok j) j) ((Err _) JsonNull)) "a")
+    ;; (Some (JsonInt 1))
+    """)
+  (reference """
+    In a @code{JsonObj} this is @code{map-try-ref}. In a @code{JsonFields}
+    it is a walk over the fields, as quick as a @code{Map} for a few and
+    slower for many: for an object that is looked up in often, read it as
+    a @code{JsonObj}.
+    """))
 
 (:doc json-max-depth
   (summary "How deep arrays and objects may nest before reading refuses the document: 1000.")
@@ -78,6 +128,7 @@
 (:doc read-json
   (summary "Reads one JSON document from a port.")
   (arg port "The port. Everything left in it is read: one value, and only space after it.")
+  (key #:objects "'map, the default, to read objects as JsonObj; 'fields to read them as JsonFields.")
   (returns "The value, or why the text is not JSON, with its line and column.")
   (see parse-json)
   (reference """
@@ -122,6 +173,7 @@
 (:doc parse-json
   (summary "Reads one JSON document from a string.")
   (arg text "The document.")
+  (key #:objects "'map, the default, to read objects as JsonObj; 'fields to read them as JsonFields.")
   (returns "The value, or why the text is not JSON, with its line and column.")
   (see read-json)
   (example """

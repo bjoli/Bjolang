@@ -1,0 +1,110 @@
+;; (text json) with #:objects 'fields: objects as JsonFields, in the
+;; document's order, each key once with its last value; the same tree as a
+;; JsonObj otherwise; written in its own order; and read by json-object-ref
+;; and (text json-codec) as a JsonObj is.
+
+(import (std prelude))
+(import (std simpletest))
+(import (text json))
+(import (text json-codec))
+
+(def/json-type
+  (: Point (Record (: x int) (: y int) (: label string #:default "none"))))
+
+(: (-> string Json))
+(defun (fields text)
+  (match (parse-json text #:objects 'fields)
+    ((Ok j) j)
+    ((Err e) (panic! e))))
+
+(: (-> string Json))
+(defun (as-map text)
+  (match (parse-json text)
+    ((Ok j) j)
+    ((Err e) (panic! e))))
+
+;; The same tree with every JsonFields made a JsonObj.
+(: (-> Json Json))
+(defun (to-map j)
+  (match j
+    ((JsonFields fs)
+     (JsonObj (fold (fun (p m) (map-set m (fst p) (to-map (snd p)))) (map-empty) fs)))
+    ((JsonObj m) (JsonObj (map-map-values to-map m)))
+    ((JsonArr xs) (JsonArr (iarray-map to-map xs)))
+    (_ j)))
+
+(: (-> Json (List string)))
+(defun (keys-of j)
+  (match j
+    ((JsonFields fs) (list-map fst (iarray->list fs)))
+    (_ Nil)))
+
+(: (-> int string string))
+(defun (repeated n s)
+  (def sb (stringbuilder-empty))
+  (loop (:for _ (range 0 n)) (:do (stringbuilder-add-string! sb s)))
+  (stringbuilder->string sb))
+
+(defun (main)
+  ;; ---- The shape ----------------------------------------------------------
+  (expect "the document's order" (keys-of (fields "{\"b\": 1, \"a\": 2, \"c\": 3}")) (list "b" "a" "c"))
+  (expect "an empty object" (fields "{}") (JsonFields (iarray-empty)))
+  (expect "nested"
+          (fields "{\"o\": {\"k\": [1, {\"z\": null}]}}")
+          (JsonFields (list->iarray
+                        (list (Tuple "o" (JsonFields (list->iarray
+                                                       (list (Tuple "k" (JsonArr (list->iarray
+                                                                                   (list (JsonInt 1)
+                                                                                         (JsonFields (list->iarray (list (Tuple "z" JsonNull))))))))))))))))
+  (expect "a map by default" (match (as-map "{\"a\": 1}") ((JsonObj _) "map") (_ "not")) "map")
+
+  ;; ---- A key written twice ------------------------------------------------
+  (expect "a few keys: the last value, where it was last"
+          (fields "{\"a\": 1, \"b\": 2, \"a\": 3}")
+          (JsonFields (list->iarray (list (Tuple "b" (JsonInt 2)) (Tuple "a" (JsonInt 3))))))
+  (def many (str "{" (string-join (loop (:for i (range 0 40)) (:acc (vecing (str "\"k" (int->string i) "\": " (int->string i))))) ", ")
+                 ", \"k7\": 70}"))
+  (expect "many keys: the same, through the hash table" (to-map (fields many)) (as-map many))
+  (expect "many keys: each once" (list-length (keys-of (fields many))) 40)
+  (expect "many keys, none twice" (list-length (keys-of (fields (str "{" (string-join (loop (:for i (range 0 40)) (:acc (vecing (str "\"k" (int->string i) "\": 1")))) ", ") "}")))) 40)
+
+  ;; ---- The same tree as a map ---------------------------------------------
+  (loop (:for name (list "canada" "citm_catalog" "twitter"))
+        (:do (def text (file-read-text (str "TestFiles/assets/jsonbench/" name ".json")))
+             (expect-true (str name ": the same tree as a map") (= (to-map (fields text)) (as-map text)))))
+  (def deep (str (repeated 500 "{\"a\": [") "1" (repeated 500 "]}")))
+  (expect-true "deep: the same tree" (= (to-map (fields deep)) (as-map deep)))
+  (expect-true "errors are the same"
+               (= (parse-json "{\"a\": 1,}" #:objects 'fields) (parse-json "{\"a\": 1,}")))
+  (expect "from a port, in pieces"
+          (keys-of (match (read-json (open-input-string (str "{\"x\": \"" (repeated 40000 "y") "\", \"w\": 1}")) #:objects 'fields)
+                     ((Ok j) j) ((Err e) (panic! e))))
+          (list "x" "w"))
+
+  ;; ---- Writing ------------------------------------------------------------
+  (expect "written in its own order" (json->string (fields "{\"b\": 1, \"a\": [true, {\"d\": 1, \"c\": 2}]}"))
+          "{\"b\":1,\"a\":[true,{\"d\":1,\"c\":2}]}")
+  (expect "a map is still sorted" (json->string (as-map "{\"b\": 1, \"a\": 2}")) "{\"a\":2,\"b\":1}")
+  (expect "indented" (json->string (fields "{\"b\": 1, \"a\": {}}") #:indent 2) "{\n  \"b\": 1,\n  \"a\": {}\n}")
+  (expect "read back as the same fields"
+          (let ((j (fields "{\"z\": 1, \"y\": [\"x\"], \"w\": {\"v\": null}}")))
+            (= (fields (json->string j)) j))
+          #t)
+
+  ;; ---- Looking up ---------------------------------------------------------
+  (expect "json-object-ref, fields" (json-object-ref (fields "{\"a\": 1, \"b\": 2}") "b") (Some (JsonInt 2)))
+  (expect "json-object-ref, a map" (json-object-ref (as-map "{\"a\": 1, \"b\": 2}") "b") (Some (JsonInt 2)))
+  (expect "json-object-ref, no such key" (json-object-ref (fields "{\"a\": 1}") "q") None)
+  (expect "json-object-ref, not an object" (json-object-ref (JsonInt 1) "a") None)
+
+  ;; ---- The codec ----------------------------------------------------------
+  (expect "a record from fields" (json->Point (fields "{\"y\": 2, \"x\": 1}"))
+          (Ok (Point (x 1) (y 2) (label "none"))))
+  (expect "a record from a map" (json->Point (as-map "{\"y\": 2, \"x\": 1, \"label\": \"p\"}"))
+          (Ok (Point (x 1) (y 2) (label "p"))))
+  (expect "a missing field, from fields" (json->Point (fields "{\"y\": 2}"))
+          (Err "Point: the object has no \"x\" field"))
+  (: m (Result string (Map string int)))
+  (def m (json-> (fields "{\"a\": 1, \"b\": 2}")))
+  (expect "a Map from fields" m (Ok (map-set (map-set (map-empty) "a" 1) "b" 2)))
+  0)

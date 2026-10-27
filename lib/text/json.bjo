@@ -15,9 +15,10 @@
 ;; RFC 8259, read off the document's UTF-8 bytes.
 
 (export
-  Json
+  Json JsonObjects
   json-max-depth
   read-json parse-json
+  json-object-ref
   json->string write-json)
 
 (import (std prelude))
@@ -44,7 +45,31 @@
            ;; An `IArray`: a parsed array is read and not changed, and an
            ;; `IArray` is its elements' array and no object of its own.
            (: JsonArr (IArray Json))
-           (: JsonObj (Map string Json)))))
+           (: JsonObj (Map string Json))
+           ;; An object read with `#:objects 'fields`: its keys and values in
+           ;; the order the document has them, each key once.
+           (: JsonFields (IArray (Tuple string Json))))))
+
+;; How a reader stores an object: as a Map, or as its fields in an IArray,
+;; which is quicker to build and keeps their order.
+(def/grammar JsonObjects
+  (:or (: ObjectsAsMap 'map) (: ObjectsAsFields 'fields)))
+
+;; The value of `key` in an object of either kind, or None when `j` is not an
+;; object or has no such key. In a JsonFields this is a walk over the fields.
+(: (-> Json string (Option Json)))
+(defun (json-object-ref j key)
+  (match j
+    ((JsonObj m) (map-try-ref m key))
+    ((JsonFields fields)
+     (def n (iarray-length fields))
+     (let go ((i 0))
+       (cond
+         ((= i n) None)
+         (:def (Tuple k v) (iarray-ref fields i))
+         ((= k key) (Some v))
+         (else (go (+ i 1))))))
+    (_ None)))
 
 ;; Max stack depth. This should probably be a parameter.
 (: int)
@@ -100,16 +125,43 @@
                     (: top int #:mutable)
                     ;; The keys last read, by slot; empty until the first
                     ;; object. See `cached-key`.
-                    (: keys (Array string) #:mutable))))
+                    (: keys (Array string) #:mutable)
+                    ;; Whether objects are read as JsonFields.
+                    (: as-fields bool)
+                    ;; One array for every JsonFields' pairs, as `stack` is
+                    ;; for arrays.
+                    (: pairs (Array (Tuple string Json)) #:mutable)
+                    (: ptop int #:mutable)
+                    ;; A hash table of pair indices, for the check for a
+                    ;; repeated key; see repeated-key/hashed?. A slot is in
+                    ;; use when its stamp is the check's, so the table is never
+                    ;; cleared.
+                    (: slot-stamps (Array int) #:mutable)
+                    (: slot-pairs (Array int) #:mutable)
+                    (: stamp int #:mutable))))
 
 ;; What a reader's key cache is until the first key.
 (: (Array string))
 (def no-keys (make-array 0))
 
+;; What a reader's pair stack and hash table are until the first JsonFields
+;; that needs them.
+(: (Array (Tuple string Json)))
+(def no-pairs (make-array 0))
+
+(: (Array int))
+(def no-slots (make-array 0))
+
 ;; A reader over `bytes`, and then whatever `port` has after them.
-(: (-> (Option InputPort) (Array byte) Reader))
-(defun (reader port bytes)
+(: (-> (Option InputPort) (Array byte) JsonObjects Reader))
+(defun (reader port bytes objects)
   (Reader (port port)
+          (as-fields (match objects (ObjectsAsMap #f) (ObjectsAsFields #t)))
+          (pairs no-pairs)
+          (ptop 0)
+          (slot-stamps no-slots)
+          (slot-pairs no-slots)
+          (stamp 0)
           (ask read-first)
           (bytes bytes)
           (next 0)
@@ -989,9 +1041,154 @@
          (Err (at rd (str "an array wants ',' or ']' here, and this is "
                           (found rd))))))))))
 
-;; Reads an object. On a duplicate key, the last value wins.
+;; ---------------------------------------------------------------------------
+;; Objects as fields
+;; ---------------------------------------------------------------------------
+;; An object's pairs go on the reader's pair stack, as an array's elements go
+;; on `stack`, and are copied out once into the object's own IArray. A key
+;; written twice is found when the object closes: by comparing every two
+;; keys of a small object, and through a hash table of a bigger one, which
+;; the reader keeps, so that the check allocates nothing. Only an object that
+;; does repeat a key is built again.
+
+;; Pushes a pair onto the pair stack, growing it.
+(: (-> Reader (Tuple string Json) void))
+(defun (push-pair! rd p)
+  (def a (record-ref rd pairs))
+  (def n (record-ref rd ptop))
+  (cond
+    ((< n (array-length a)) (array-set! a n p))
+    (else
+     (def bigger (array-resize a (if (< n 8) 16 (* n 2))))
+     (array-set! bigger n p)
+     (record-set! rd (pairs bigger))))
+  (record-set! rd (ptop (+ n 1))))
+
+;; Up to this many keys, every two are compared.
+(: int)
+(def few-keys 8)
+
+;; Whether a key is in the pairs from `from` to `to` twice.
+(: (-> Reader (Array (Tuple string Json)) int int bool))
+(defun (repeated-key? rd a from to)
+  (if (<= (- to from) few-keys)
+      (let outer ((i from))
+        (cond
+          ((>= i to) #f)
+          ((let inner ((j (+ i 1)))
+             (cond
+               ((>= j to) #f)
+               ((= (fst (array-ref a i)) (fst (array-ref a j))) #t)
+               (else (inner (+ j 1)))))
+           #t)
+          (else (outer (+ i 1)))))
+      (repeated-key/hashed? rd a from to)))
+
+;; The table at least twice as big as `n`, and a power of two.
+(: (-> Reader int void))
+(defun (fit-table! rd n)
+  (def size (array-length (record-ref rd slot-stamps)))
+  (when (< size (* 2 n))
+    (def bigger (let grow ((s 64)) (if (< s (* 2 n)) (grow (* s 2)) s)))
+    (record-set! rd (slot-stamps (make-array bigger)) (slot-pairs (make-array bigger)) (stamp 0))))
+
+;; Open addressing over the key's hash. Keys are compared only when their
+;; slots collide.
+(: (-> Reader (Array (Tuple string Json)) int int bool))
+(defun (repeated-key/hashed? rd a from to)
+  (fit-table! rd (- to from))
+  (def stamps (record-ref rd slot-stamps))
+  (def index (record-ref rd slot-pairs))
+  (def mask (- (array-length stamps) 1))
+  (def stamp (+ (record-ref rd stamp) 1))
+  (record-set! rd (stamp stamp))
+  (let go ((i from))
+    (cond
+      ((>= i to) #f)
+      (else
+       (def k (fst (array-ref a i)))
+       (let probe ((s (bitwise-and (eq-hash k) mask)))
+         (cond
+           ((not (= (array-ref stamps s) stamp))
+            (array-set! stamps s stamp)
+            (array-set! index s i)
+            (go (+ i 1)))
+           ((= (fst (array-ref a (array-ref index s))) k) #t)
+           (else (probe (bitwise-and (+ s 1) mask)))))))))
+
+;; The pairs from `from` to `to` with each key once: where it was last, with
+;; its last value, as a Map keeps the last value.
+(: (-> (Array (Tuple string Json)) int int (IArray (Tuple string Json))))
+(defun (last-of-each a from to)
+  (def out (listbuilder-empty))
+  (loop (:for i (range from to))
+        (:do (def k (fst (array-ref a i)))
+             (unless (let later ((j (+ i 1)))
+                       (cond ((>= j to) #f)
+                             ((= (fst (array-ref a j)) k) #t)
+                             (else (later (+ j 1)))))
+               (listbuilder-add! out (array-ref a i)))))
+  (list->iarray (listbuilder->list out)))
+
+;; The object's pairs, copied out of the stack.
+(: (-> Reader int (IArray (Tuple string Json))))
+(defun (harvest-pairs! rd mark)
+  (def a (record-ref rd pairs))
+  (def top (record-ref rd ptop))
+  (def v (if (repeated-key? rd a mark top)
+             (last-of-each a mark top)
+             (subarray->iarray a mark (- top mark))))
+  (record-set! rd (ptop mark))
+  v)
+
+;; Reads an object as a JsonFields. On a duplicate key, the last value wins.
+(: (-> Reader int (Result string Json)))
+(defun (read-object/fields rd depth)
+  (cond
+   ((> depth json-max-depth) (Err (too-deep rd "object")))
+   (:do
+    (step! rd)
+    (skip-space! rd))
+   (:def mark (record-ref rd ptop))
+   ((at-end? rd) (Err (at rd "the document ended inside an object")))
+   ((char=? (peek rd) #\}) (step! rd) (Ok (JsonFields (harvest-pairs! rd mark))))
+   (else
+    (let go ()
+      (skip-space! rd)
+      (cond
+        ((at-end? rd) (Err (at rd "the document ended inside an object")))
+        ((not (char=? (peek rd) #\"))
+         (Err (at rd (str "an object's key has to be a string, and this is " (found rd)))))
+        (:def (Ok key) (read-text rd #t)
+              :propagate)
+        (:do (skip-space! rd))
+        ((or (at-end? rd) (not (char=? (peek rd) #\:)))
+         (Err (at rd (str "an object wants ':' after a key, and this is "
+                          (found rd)))))
+        (:do (step! rd))
+        (:def (Ok v) (read-value rd (+ depth 1))
+              :propagate)
+        (:do (push-pair! rd (Tuple key v))
+             (skip-space! rd))
+        ((at-end? rd) (Err (at rd "the document ended inside an object")))
+        ((char=? (peek rd) #\,) (step! rd) (go))
+        ((char=? (peek rd) #\})
+         (step! rd)
+         (Ok (JsonFields (harvest-pairs! rd mark))))
+        (else
+         (Err (at rd (str "an object wants ',' or '}' here, and this is "
+                          (found rd))))))))))
+
+;; Reads an object as `#:objects` says.
 (: (-> Reader int (Result string Json)))
 (defun (read-object rd depth)
+  (if (record-ref rd as-fields)
+      (read-object/fields rd depth)
+      (read-object/map rd depth)))
+
+;; Reads an object as a JsonObj. On a duplicate key, the last value wins.
+(: (-> Reader int (Result string Json)))
+(defun (read-object/map rd depth)
   (cond
    ((> depth json-max-depth) (Err (too-deep rd "object")))
    (:do 
@@ -1072,21 +1269,22 @@
 (: (Array byte))
 (def no-bytes (make-array 0))
 
-(: (-> InputPort (Result string Json)))
-(defun (read-json port)
-  (read-document (reader (Some port) no-bytes)))
+(: (-> InputPort (#:objects JsonObjects) (Result string Json)))
+(defun (read-json port #:objects 'map)
+  (read-document (reader (Some port) no-bytes objects)))
 
 ;; The string's bytes are the document: no port in between.
-(: (-> string (Result string Json)))
-(defun (parse-json text)
-  (read-document (reader None (string->bytes text))))
+(: (-> string (#:objects JsonObjects) (Result string Json)))
+(defun (parse-json text #:objects 'map)
+  (read-document (reader None (string->bytes text) objects)))
 
 ;; ---------------------------------------------------------------------------
 ;; The writer
 ;; ---------------------------------------------------------------------------
-;; One `StringBuilder` for the whole document. The keys of an object are
+;; One `StringBuilder` for the whole document. The keys of a JsonObj are
 ;; written in sorted order: a `Map` does not keep the order they were read in,
-;; and sorted keys make the same value give the same text in every run.
+;; and sorted keys make the same value give the same text in every run. A
+;; JsonFields has an order of its own, and is written in it.
 
 (import/class
   (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
@@ -1224,17 +1422,26 @@
        (else
         ;; The entries, sorted by key once: each is written with the value it
         ;; already holds, and no key is looked up again.
-        (def entries (sorted-entries fields))
-        (stringbuilder-add! sb #\{)
-        (loop (:for (Tuple k v) entries)
-              (:with first? #t #f)
-              (:do (unless first? (stringbuilder-add! sb #\,))
-                   (add-newline! sb indent (+ level 1))
-                   (add-string! sb k ascii)
-                   (stringbuilder-add-string! sb (if (> indent 0) ": " ":"))
-                   (add-value! sb v indent ascii (+ level 1))))
-        (add-newline! sb indent level)
-        (stringbuilder-add! sb #\}))))))
+        (add-fields! sb (sorted-entries fields) indent ascii level))))
+    ;; In their own order, which for a document read is the document's.
+    ((JsonFields fields)
+     (if (iarray-empty? fields)
+         (stringbuilder-add-string! sb "{}")
+         (add-fields! sb fields indent ascii level)))))
+
+;; An object's fields, in the order `entries` has them.
+(: (-> StringBuilder %s int bool int void) (where (Iterable %s #:elem (Tuple string Json))))
+(defun (add-fields! sb entries indent ascii level)
+  (stringbuilder-add! sb #\{)
+  (loop (:for (Tuple k v) entries)
+        (:with first? #t #f)
+        (:do (unless first? (stringbuilder-add! sb #\,))
+             (add-newline! sb indent (+ level 1))
+             (add-string! sb k ascii)
+             (stringbuilder-add-string! sb (if (> indent 0) ": " ":"))
+             (add-value! sb v indent ascii (+ level 1))))
+  (add-newline! sb indent level)
+  (stringbuilder-add! sb #\}))
 
 ;; JSON text for a value. Compact unless `#:indent` is more than 0, which puts
 ;; each element and field on a line of its own, indented that many spaces a

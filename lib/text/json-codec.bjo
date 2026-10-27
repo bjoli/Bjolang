@@ -154,24 +154,38 @@
                         ((Ok d) (Ok (map-set b k d)))))))
                  (Ok (map-empty))
                  m))
+      ;; In order, so that a key written twice keeps its last value here too.
+      ((JsonFields fields)
+       (fold (fun (p acc)
+               (def (Tuple k v) p)
+               (match acc
+                 ((Err e) (Err e))
+                 ((Ok b)
+                  (match (json-> v)
+                    ((Err e) (Err (str "\"" k "\": " e)))
+                    ((Ok d) (Ok (map-set b k d)))))))
+             (Ok (map-empty))
+             fields))
       (_ (Err "expected an object")))))
 
 ;; ---------------------------------------------------------------------------
 ;; What generated field code calls
 ;; ---------------------------------------------------------------------------
 
-(: (-> string Json (Result string (Map string Json))))
+;; The object itself, a JsonObj or a JsonFields: json-field looks in either.
+(: (-> string Json (Result string Json)))
 (defun (json-object owner j)
   (match j
-    ((JsonObj m) (Ok m))
+    ((JsonObj _) (Ok j))
+    ((JsonFields _) (Ok j))
     (_ (Err (str owner ": expected an object")))))
 
 ;; The owner and key are prefixed onto whatever the value's own decoder said,
 ;; so a wrong type reads "Point.x: expected an integer" rather than naming
 ;; neither. Paths down the tree are not provided
-(: (-> string (Map string Json) string (Result string %a)) (where (json-> %a)))
+(: (-> string Json string (Result string %a)) (where (json-> %a)))
 (defun (json-field owner m key)
-  (match (map-try-ref m key)
+  (match (json-object-ref m key)
     (None (Err (str owner ": the object has no \"" key "\" field")))
     ((Some j)
      (match (json-> j)
@@ -179,9 +193,9 @@
        ((Ok v) (Ok v))))))
 
 ;; Absent and null ar the same in the sense that a nullable has the default value None
-(: (-> string (Map string Json) string %a (Result string %a)) (where (json-> %a)))
+(: (-> string Json string %a (Result string %a)) (where (json-> %a)))
 (defun (json-field/default owner m key fallback)
-  (match (map-try-ref m key)
+  (match (json-object-ref m key)
     (None (Ok fallback))
     ((Some JsonNull) (Ok fallback))
     ((Some j)
