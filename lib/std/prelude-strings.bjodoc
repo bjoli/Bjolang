@@ -843,6 +843,69 @@
     this is a copy of the string's own bytes.
     """))
 
+(:doc Utf8Chunk
+  (summary "A copy of some bytes, checked to be UTF-8 once, to take many strings from.")
+  (see bytes->utf8-chunk utf8-chunk-substring utf8-chunk-valid-end)
+  (reference """
+    For a reader that finds its fields by looking at bytes and makes many
+    small strings from one buffer. @code{bytes->string} checks the bytes of
+    each string it makes. A chunk checks its bytes once, and a string taken
+    from it by @code{utf8-chunk-substring} is not checked again.
+
+    No string taken from a chunk can be invalid. The chunk owns its copy of
+    the bytes, so nothing changes them after the check, and it takes a
+    string only between two character boundaries in the part that is valid
+    UTF-8. An offset that is not a boundary raises.
+    """))
+
+(:doc bytes->utf8-chunk
+  (summary "A chunk of a copy of some bytes.")
+  (arg bytes "The bytes.")
+  (key #:start "The first byte to copy: 0 by default.")
+  (key #:end "One past the last byte to copy: the end of the array by default.")
+  (returns "The chunk. Its offsets count from start.")
+  (raises System.ArgumentOutOfRangeException "When the range is not inside the array.")
+  (see utf8-chunk-substring utf8-chunk-valid-end)
+  (example """
+    (def c (bytes->utf8-chunk (string->bytes "blåbär,öl")))
+    (utf8-chunk-substring c 0 8)    ; "blåbär"
+    (utf8-chunk-substring c 9 12)   ; "öl"
+    (utf8-chunk-substring c 0 3)    ; raises: 3 is inside the å
+    """)
+  (reference """
+    Bytes that are not valid UTF-8 are not an error here. The chunk is
+    valid up to @code{utf8-chunk-valid-end}, and strings are taken only
+    from that part. A buffer read from a port is often cut inside its last
+    character, and is then valid up to that character.
+    """))
+
+(:doc utf8-chunk-length
+  (summary "How many bytes a chunk has.")
+  (arg c "The chunk.")
+  (returns "The number of bytes copied into it.")
+  (see utf8-chunk-valid-end))
+
+(:doc utf8-chunk-valid-end
+  (summary "Where the valid UTF-8 at the start of a chunk ends.")
+  (arg c "The chunk.")
+  (returns "Its length when all of it is UTF-8. Else the offset of the first sequence that is not valid, or not whole. Always between two characters.")
+  (see utf8-chunk-substring))
+
+(:doc utf8-chunk-substring
+  (summary "The text between two byte offsets of a chunk, not checked again.")
+  (arg c "The chunk.")
+  (arg start "The offset of the first byte.")
+  (arg end "The offset after the last byte, not before start.")
+  (returns "A string with bytes of its own.")
+  (raises System.ArgumentOutOfRangeException "When the range is not inside the valid part, or start is after end.")
+  (raises System.ArgumentException "When start or end is inside a character.")
+  (see bytes->utf8-chunk bytes->string)
+  (reference """
+    Checking the two offsets is two byte tests. A range cut out of valid
+    UTF-8 between characters is itself valid, so the bytes are copied and
+    not checked.
+    """))
+
 ;; ---------------------------------------------------------------------------
 ;; Taking and dropping characters
 ;; ---------------------------------------------------------------------------

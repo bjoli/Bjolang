@@ -1,0 +1,307 @@
+;; Docs for text/csv.bjo, read through (:doc #:file "csv.bjodoc"). The
+;; texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "CSV, as RFC 4180 has it: read one row at a time or all at once, and written.")
+  (see parse-csv csv-fold csv-for-each call-with-csv-reader csv->string write-csv CsvSource)
+  (example """
+    (import (text csv))
+
+    (parse-csv "name,age\nAda,36\n")    ; (Ok [#iarray["name" "age"] #iarray["Ada" "36"]])
+    (parse-csv (csv-file "data.tsv") #:separator #\tab)
+    (csv-fold (csv-file "big.csv") 0 (fun (row n) (+ n 1)))   ; the number of rows
+    (csv->string [["a" "b,c"] ["d \"e\"" ""]])  ; "a,\"b,c\"\n\"d \"\"e\"\"\",\n"
+    """)
+  (reference """
+    Three layers for reading, each built on the one below:
+    @code{csv-next!}, a pull reader as OCaml's @code{Csv.next} has it;
+    @code{csv-fold} and @code{csv-for-each}, which hold one row at a time;
+    and @code{parse-csv}, the whole document. A row is an
+    @code{(IArray string)}: one array, and no object of its own, which is
+    the cheapest row there is. The writer takes a row as any
+    @code{Iterable} of strings, so a row read is written as it is.
+
+    Every reader takes a source, anything with a @code{CsvSource}
+    implementation, and the same options.
+
+    @strong{Options.}
+
+    @read-table{
+    | keyword             | default          | what it does |
+    |---------------------+------------------+--------------|
+    | @code{#:separator}  | @code{#\,}       | the character between fields |
+    | @code{#:quote-char} | @code{(Some #\")} | the quote; @code{None} reads every field as it is |
+    | @code{#:strict?}    | @code{#t}        | @code{#f} accepts quotes in the wrong place |
+    }
+
+    The separator and the quote have to be ASCII characters that do not end
+    a line, and different from each other. Anything else raises an
+    @code{ArgumentException}.
+
+    @strong{What is read.} A row ends at LF, CR LF or CR alone, or at the
+    end of the input. A field that starts with the quote ends at the next
+    quote that is not doubled. In it, a doubled quote is one quote, and the
+    separator and line ends are part of the text. A blank line is not a row,
+    and a line end after the last row does not make an empty row. A byte
+    order mark at the start is skipped. Rows can have different numbers of
+    fields.
+
+    @strong{Strict and not.} When strict, which is the default, these are
+    errors: a quote in a field that does not start with one, something
+    other than the separator or a line end after a closing quote, and the
+    end of the input inside quotes. With @code{#:strict? #f}, as Python's
+    @code{csv} reads: the quote in the first case is part of the field; in
+    the second, the text up to the next separator is added to the field; in
+    the third, the field ends with the input.
+
+    @strong{Encodings.} The input is UTF-8, and a field with bytes that are
+    not is an error. To read another encoding, put the port through
+    @code{reencode-input-port} from @code{(std ports)} first.
+
+    @strong{Errors.} What is wrong with the input is a @code{CsvError}, in
+    a @code{Result}, with its line, row and field. An exception your own
+    function raises passes through as it was. A reader streams, so one that
+    fails at a row has already given every row before it.
+
+    @strong{Writing.} A field is written in quotes only when it holds the
+    separator, the quote, CR or LF, or when it is the only field of its row
+    and empty, as @code{""}. So every row reads back as it was written,
+    except a row with no fields, which is written as an empty line.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Errors
+;; ---------------------------------------------------------------------------
+
+(:doc CsvError
+  (summary "What is wrong with the input, and where.")
+  (field message "What is wrong.")
+  (field line "The line where the error is, from 1. For a quoted field that is not closed, the line where it starts.")
+  (field row "The row, from 1. Blank lines are not rows.")
+  (field field "The field in that row, from 1.")
+  (reference """
+    @code{displayed} writes all of it on one line:
+    @code{line 3, row 2, field 4: a quote inside a field that does not start with one}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Sources
+;; ---------------------------------------------------------------------------
+
+(:doc CsvInput
+  (summary "What a source is read as: what csv-input answers.")
+  (see CsvSource csv-input)
+  (reference """
+    Opaque. A type of your own gets one by handing @code{csv-input}
+    something that already has a @code{CsvSource} implementation.
+    """))
+
+(:doc CsvSource
+  (summary "What can be read as CSV.")
+  (tparam %s "The source's type.")
+  (see csv-input csv-file)
+  (example """
+    (impl (CsvSource Upload)
+      (defun (csv-input u) (csv-input (upload-port u))))
+    """)
+  (reference """
+    These have an implementation:
+
+    @read-table{
+    | @code{string}          | the CSV itself |
+    | @code{InputPort}       | read from where the port is, a chunk at a time; left open |
+    | @code{(csv-file path)} | opened through the @code{FS} effect and closed again |
+    }
+
+    A port you hand over stays open: whoever opens a resource closes it.
+    """))
+
+(:doc csv-input
+  (summary "A source as the reader takes it.")
+  (arg source "The source.")
+  (returns "What it reads as.")
+  (see CsvSource))
+
+(:doc CsvFile
+  (summary "A path to read CSV from, as opposed to a string of CSV.")
+  (see csv-file))
+
+(:doc csv-file
+  (summary "A file to read, as a source.")
+  (arg path "The file's path.")
+  (returns "A source the reader opens, through the FS effect, and closes again.")
+  (see CsvSource)
+  (example """
+    (parse-csv (csv-file "data.csv"))
+    """)
+  (reference """
+    Nothing is opened until a reader reads it. A file that cannot be opened
+    then raises, as @code{file-read-text} does; it is not a
+    @code{CsvError}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Pulling rows
+;; ---------------------------------------------------------------------------
+
+(:doc CsvReader
+  (summary "An input being read, row by row.")
+  (see call-with-csv-reader csv-next!))
+
+(:doc call-with-csv-reader
+  (summary "Calls a function with a reader that gives the rows of an input one at a time.")
+  (arg source "What to read.")
+  (arg proc "Called with the reader. A file is closed when it returns.")
+  (key #:separator "The character between fields.")
+  (key #:quote-char "The quote, or None for no quoting.")
+  (key #:strict? "Whether a quote in the wrong place is an error.")
+  (returns "What proc answers.")
+  (raises ArgumentException "When the separator or the quote is not allowed.")
+  (raises System.IO.IOException "When the source is a csv-file that cannot be opened.")
+  (see csv-next! csv-fold)
+  (example """
+    ;; The first row, and nothing after it is read.
+    (call-with-csv-reader (csv-file "data.csv") csv-next!)
+
+    (call-with-csv-reader port
+      (fun (r)
+        (match (csv-next! r)
+          ((Ok (Some row)) ...)
+          ((Ok None) ...)                     ; the end of the input
+          ((Err e) ...))))
+    """)
+  (reference """
+    The bottom layer. The reader is for @code{proc}'s use only. It reads
+    from the port only as far as the rows it gives need, a chunk at a time.
+    """))
+
+(:doc csv-next!
+  (summary "The next row of an input.")
+  (arg rd "The reader.")
+  (returns "Some row, None at the end of the input, or the error. After an error, the same error again.")
+  (see call-with-csv-reader))
+
+;; ---------------------------------------------------------------------------
+;; Folds
+;; ---------------------------------------------------------------------------
+
+(:doc csv-fold
+  (summary "A seed threaded through the rows of an input.")
+  (arg source "What to read.")
+  (arg seed "The seed to begin with.")
+  (arg f "Called with each row and the seed; answers the next seed.")
+  (key #:separator "The character between fields.")
+  (key #:quote-char "The quote, or None for no quoting.")
+  (key #:strict? "Whether a quote in the wrong place is an error.")
+  (returns "The final seed, or the error.")
+  (raises ArgumentException "When the separator or the quote is not allowed.")
+  (raises System.IO.IOException "When the source is a csv-file that cannot be opened.")
+  (see csv-for-each parse-csv)
+  (example """
+    ;; The sum of the second column, without the header.
+    (csv-fold (csv-file "sales.csv") (Tuple #t 0)
+              (fun (row seed)
+                (def (Tuple header? total) seed)
+                (if header?
+                    (Tuple #f total)
+                    (Tuple #f (+ total (string->int (iarray-ref row 1)))))))
+    """)
+  (reference """
+    One row is held at a time, so the input can be bigger than memory. The
+    rows before an error have been folded when the error is answered.
+    """))
+
+(:doc csv-for-each
+  (summary "Calls a function with each row of an input.")
+  (arg source "What to read.")
+  (arg f "Called with each row, in order.")
+  (key #:separator "The character between fields.")
+  (key #:quote-char "The quote, or None for no quoting.")
+  (key #:strict? "Whether a quote in the wrong place is an error.")
+  (returns "Ok at the end of the input, or the error.")
+  (raises ArgumentException "When the separator or the quote is not allowed.")
+  (raises System.IO.IOException "When the source is a csv-file that cannot be opened.")
+  (see csv-fold)
+  (example """
+    (csv-for-each (csv-file "data.csv") (fun (row) (println (iarray-ref row 0))))
+    """))
+
+;; ---------------------------------------------------------------------------
+;; The whole document
+;; ---------------------------------------------------------------------------
+
+(:doc parse-csv
+  (summary "Reads every row of an input.")
+  (arg source "What to read.")
+  (key #:separator "The character between fields.")
+  (key #:quote-char "The quote, or None for no quoting.")
+  (key #:strict? "Whether a quote in the wrong place is an error.")
+  (returns "The rows, or the first error.")
+  (raises ArgumentException "When the separator or the quote is not allowed.")
+  (raises System.IO.IOException "When the source is a csv-file that cannot be opened.")
+  (see csv-fold call-with-csv-reader)
+  (example """
+    (parse-csv "a,\"b,c\"\r\n\"say \"\"hi\"\"\",\n")   ; (Ok [#iarray["a" "b,c"] #iarray["say \"hi\"" ""]])
+    (parse-csv "a,b\"c")                              ; (Err ...): a quote inside a field
+    (parse-csv "a,b\"c" #:strict? #f)                 ; (Ok [#iarray["a" "b\"c"]])
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Writing
+;; ---------------------------------------------------------------------------
+
+(:doc csv-row->string
+  (summary "One row as CSV text, without a line end.")
+  (arg row "The fields: a vec, an IArray, a list, or any other Iterable of strings.")
+  (key #:separator "The character between fields.")
+  (key #:quote-char "The quote, or None for no quoting.")
+  (key #:quote-all? "When @code{#t}, every field is in quotes.")
+  (returns "The text.")
+  (raises ArgumentException "When the separator or the quote is not allowed, or when a field needs quotes and #:quote-char is None.")
+  (see csv->string write-csv-row)
+  (example """
+    (csv-row->string ["a" "b,c" "say \"hi\""])   ; "a,\"b,c\",\"say \"\"hi\"\"\""
+    (csv-row->string [""])                       ; "\"\"", which reads back as one empty field
+    """))
+
+(:doc csv->string
+  (summary "Rows as CSV text, each ended by a line end.")
+  (arg rows "The rows: a vec, a list, a Seq, or anything else that iterates over rows. A row is any Iterable of strings: a vec, an IArray, a list.")
+  (key #:separator "The character between fields.")
+  (key #:quote-char "The quote, or None for no quoting.")
+  (key #:quote-all? "When @code{#t}, every field is in quotes.")
+  (key #:crlf? "When @code{#t}, lines end with CR LF, as RFC 4180 says. Else with LF.")
+  (returns "The text. parse-csv reads it back as the same rows, with the same options.")
+  (raises ArgumentException "When the separator or the quote is not allowed, or when a field needs quotes and #:quote-char is None.")
+  (see write-csv parse-csv))
+
+(:doc write-csv-row
+  (summary "Writes one row and its line end to a port.")
+  (arg port "The port.")
+  (arg row "The fields: a vec, an IArray, a list, or any other Iterable of strings.")
+  (key #:separator "The character between fields.")
+  (key #:quote-char "The quote, or None for no quoting.")
+  (key #:quote-all? "When @code{#t}, every field is in quotes.")
+  (key #:crlf? "When @code{#t}, the line ends with CR LF. Else with LF.")
+  (raises ArgumentException "When the separator or the quote is not allowed, or when a field needs quotes and #:quote-char is None.")
+  (see write-csv csv-row->string)
+  (reference """
+    For output made a row at a time. The row is made first, and written in
+    one piece.
+    """))
+
+(:doc write-csv
+  (summary "Writes rows to a port, each ended by a line end.")
+  (arg port "The port.")
+  (arg rows "The rows: a vec, a list, a Seq, or anything else that iterates over rows. A row is any Iterable of strings: a vec, an IArray, a list.")
+  (key #:separator "The character between fields.")
+  (key #:quote-char "The quote, or None for no quoting.")
+  (key #:quote-all? "When @code{#t}, every field is in quotes.")
+  (key #:crlf? "When @code{#t}, lines end with CR LF, as RFC 4180 says. Else with LF.")
+  (raises ArgumentException "When the separator or the quote is not allowed, or when a field needs quotes and #:quote-char is None.")
+  (see csv->string write-csv-row)
+  (reference """
+    The rows are read once, in order. The text goes to the port in pieces
+    of about 64 KiB, so a Seq of rows is written while it is made, and the
+    whole document is never in memory.
+    """))

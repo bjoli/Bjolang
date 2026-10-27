@@ -1,0 +1,58 @@
+;; Utf8Chunk: bytes checked once, strings taken by byte offset. No offsets can
+;; make a string that is not UTF-8: one inside a character, or past the valid
+;; part, raises.
+
+(import (std prelude))
+(import (std simpletest))
+
+(: (-> (Result System.Exception %a) bool))
+(defun (refused? r) (err? r))
+
+(: (-> (Vec int) (Array byte)))
+(defun (bytes-of codes) (vec->array (vec-map (fun (n) (cast byte n)) codes)))
+
+(defun (main)
+  ;; "blåbär,öl": å, ä and ö are two bytes each.
+  (def c (bytes->utf8-chunk (string->bytes "blåbär,öl")))
+  (expect "the length" (utf8-chunk-length c) 12)
+  (expect "all of it is valid" (utf8-chunk-valid-end c) 12)
+  (expect "a word" (utf8-chunk-substring c 0 8) "blåbär")
+  (expect "the last word" (utf8-chunk-substring c 9 12) "öl")
+  (expect "nothing" (utf8-chunk-substring c 5 5) "")
+  (expect-true "an end inside a character"
+               (refused? (try (utf8-chunk-substring c 0 3) #:catch (System.ArgumentException))))
+  (expect-true "a start inside a character"
+               (refused? (try (utf8-chunk-substring c 3 8) #:catch (System.ArgumentException))))
+  (expect-true "past the end"
+               (refused? (try (utf8-chunk-substring c 9 13) #:catch (System.ArgumentOutOfRangeException))))
+  (expect-true "backwards"
+               (refused? (try (utf8-chunk-substring c 8 2) #:catch (System.ArgumentOutOfRangeException))))
+
+  ;; A copy: changing the array afterwards changes nothing in the chunk.
+  (def bs (string->bytes "abc"))
+  (def copied (bytes->utf8-chunk bs))
+  (array-set! bs 1 (cast byte 255))
+  (expect "the chunk owns its bytes" (utf8-chunk-substring copied 0 3) "abc")
+
+  ;; Part of an array, with offsets from its start.
+  (def part (bytes->utf8-chunk (string->bytes "xxå,y") #:start 2 #:end 6))
+  (expect "a part: its own offsets" (utf8-chunk-substring part 0 2) "å")
+  (expect "a part: its length" (utf8-chunk-length part) 4)
+
+  ;; "ab€" cut inside the €, as a read from a port can cut it.
+  (def cut (bytes->utf8-chunk (bytes-of [97 98 226 130])))
+  (expect "a character cut off: valid before it" (utf8-chunk-valid-end cut) 2)
+  (expect "the text before it" (utf8-chunk-substring cut 0 2) "ab")
+  (expect-true "not past the valid end"
+               (refused? (try (utf8-chunk-substring cut 0 4) #:catch (System.ArgumentOutOfRangeException))))
+
+  ;; A byte that is never UTF-8, in the middle.
+  (def bad (bytes->utf8-chunk (bytes-of [97 98 255 99 100])))
+  (expect "a bad byte: valid before it" (utf8-chunk-valid-end bad) 2)
+  (expect-true "nothing after it"
+               (refused? (try (utf8-chunk-substring bad 3 5) #:catch (System.ArgumentOutOfRangeException))))
+
+  (expect-true "a range outside the array"
+               (refused? (try (bytes->utf8-chunk (string->bytes "ab") #:end 3)
+                              #:catch (System.ArgumentOutOfRangeException))))
+  0)

@@ -1,0 +1,841 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; text/csv.bjo — the module (text csv): RFC 4180, read and written.
+;;
+;; Three layers for reading, each built on the one below:
+;;
+;;   1. csv-next!: a pull reader, one row at a time, as OCaml's Csv.next
+;;   2. csv-fold and csv-for-each: every row, never more than one held
+;;   3. parse-csv: the whole document, as a vec of rows
+;;
+;; The reader works on bytes, as (text json) does: a chunk of the input in
+;; `bytes`, the next byte at `next`, and the end of the chunk at `limit`. The
+;; separator, the quote, CR and LF are all ASCII, and in UTF-8 an ASCII byte
+;; is never part of a longer character. So the scan looks at bytes only, and a
+;; field is checked to be UTF-8 once, when it becomes a string.
+;;
+;; A field is always whole in one chunk. When the scan reaches the end of the
+;; chunk, the bytes from the start of the field are kept, the next chunk is
+;; added after them, and the scan continues where it stopped.
+;;
+;; Its reference is its docs, in csv.bjodoc.
+;;
+;; A row is an IArray: the reader keeps one array for the fields of the row
+;; it is reading, and copies them out once, into the row's own array.
+;;
+;; Each chunk is checked to be UTF-8 once, as it arrives, by making a
+;; Utf8Chunk of it. A field is then taken from the chunk and not checked
+;; again; the chunk itself makes sure that its offsets are between
+;; characters.
+;;
+;; Open:
+;; - The scan is a byte loop. A SIMD search for the four special bytes, as
+;;   (text json) skips white space, would be faster for long fields.
+;; - A header row, and rows decoded to records by column name, are still to
+;;   come.
+
+(export
+  ;; Errors
+  CsvError
+  ;; Sources
+  CsvInput CsvSource csv-input CsvFile csv-file
+  ;; Pulling rows
+  CsvReader call-with-csv-reader csv-next!
+  ;; Folds
+  csv-fold csv-for-each
+  ;; The whole document
+  parse-csv
+  ;; Writing
+  csv-row->string csv->string write-csv-row write-csv)
+
+(import (std prelude))
+(import (only (std ports) read-bytes))
+(import (only (std array) array-copy!))
+(import (std maths))
+(import (std simd))
+
+(import/class
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+;; Every export is documented there; the module doc is too.
+(:doc #:file "csv.bjodoc")
+
+;; An ArgumentException, which is what a programming error raises here.
+(: (-> string %a))
+(defun (argument-error message)
+  (raise (cast Exception (ArgumentException. (str "(text csv): " message)))))
+
+;; ===========================================================================
+;; Errors
+;; ===========================================================================
+
+;; `row` counts the rows read, from 1, and blank lines are not rows. `field`
+;; counts from 1 in that row.
+(type (: CsvError (Record (: message string) (: line int) (: row int) (: field int))))
+
+(impl (Displayed CsvError)
+  (defun (displayed e)
+    (str "line " (int->string (record-ref e line))
+         ", row " (int->string (record-ref e row))
+         ", field " (int->string (record-ref e field))
+         ": " (record-ref e message)))
+  (defun (display-into e b) (stringbuilder-add-string! b (displayed e))))
+
+;; ===========================================================================
+;; Options
+;; ===========================================================================
+
+;; The end of the input, as a byte the reader looks at.
+(: int)
+(def spent -1)
+
+;; The quote byte when there is no quoting. It is not `spent`, so that the end
+;; of the input does not start a quoted field.
+(: int)
+(def no-quote -2)
+
+(type (: Options (Record (: sep-code int) (: quote-code int) (: strict bool))))
+
+(: (-> char (Option char) bool Options))
+(defun (options separator quote-char strict)
+  (def sep (char->integer separator))
+  (def q (match quote-char ((Some c) (char->integer c)) (None no-quote)))
+  (when (or (>= sep 128) (= sep 10) (= sep 13))
+    (argument-error "#:separator has to be an ASCII character that does not end a line"))
+  (when (or (>= q 128) (= q 10) (= q 13) (= q sep))
+    (argument-error
+      "#:quote-char has to be an ASCII character that does not end a line and is not the separator"))
+  (Options (sep-code sep) (quote-code q) (strict strict)))
+
+;; ===========================================================================
+;; The reader
+;; ===========================================================================
+
+;; How much a read from the port asks for: 16 KiB first, and each read after
+;; it twice the one before, up to 64 KiB. Each chunk is copied into a
+;; Utf8Chunk, and an array over 85 000 bytes goes on .NET's large object
+;; heap, which is slow to allocate and freed only by a full collection.
+(: int)
+(def read-first 16384)
+
+(: int)
+(def read-most 65536)
+
+;; `chunk` holds a checked copy of `bytes`, from 0 to `limit`; see
+;; check-chunk!.
+;; `line` is the line the reader is on, from 1. `rows` is the number of rows
+;; read. `started` is set once the byte order mark check is done. After an
+;; error, `failed` holds it, and every later read gives it again.
+(type (: CsvReader #:opaque (Record (: port (Option InputPort) #:mutable)
+                                    (: ask int #:mutable)
+                                    (: bytes (Array byte) #:mutable)
+                                    (: next int #:mutable)
+                                    (: limit int #:mutable)
+                                    (: chunk Utf8Chunk #:mutable)
+                                    (: line int #:mutable)
+                                    (: rows int #:mutable)
+                                    (: options Options)
+                                    ;; One buffer for every field with a doubled quote.
+                                    (: scratch StringBuilder)
+                                    ;; The fields of the row being read, and how many.
+                                    (: fields (Array string) #:mutable)
+                                    (: count int #:mutable)
+                                    (: started bool #:mutable)
+                                    (: failed (Option CsvError) #:mutable))))
+
+(: (Array byte))
+(def no-bytes (make-array 0))
+
+(: Utf8Chunk)
+(def no-chunk (bytes->utf8-chunk no-bytes))
+
+;; A reader over `bytes`, and then whatever `port` has after them.
+(: (-> (Option InputPort) (Array byte) Options CsvReader))
+(defun (make-reader port bytes opts)
+  (def rd (CsvReader (port port)
+                     (ask read-first)
+                     (bytes bytes)
+                     (next 0)
+                     (limit (array-length bytes))
+                     (chunk no-chunk)
+                     (line 1)
+                     (rows 0)
+                     (options opts)
+                     (scratch (stringbuilder-empty))
+                     (fields (make-array 16))
+                     (count 0)
+                     (started #f)
+                     (failed None)))
+  (check-chunk! rd)
+  rd)
+
+(: (-> CsvReader int int string CsvError))
+(defun (error-at rd field line message)
+  (CsvError (message message) (line line) (row (+ (record-ref rd rows) 1)) (field field)))
+
+(: (-> CsvReader int string CsvError))
+(defun (csv-error rd field message)
+  (error-at rd field (record-ref rd line) message))
+
+;; ---------------------------------------------------------------------------
+;; Chunks
+;; ---------------------------------------------------------------------------
+
+;; `count` bytes of `old` from `from`, then `more`: what is left of one chunk
+;; and the next.
+(: (-> (Array byte) int int (Array byte) (Array byte)))
+(defun (join-bytes old from count more)
+  (if (= count 0)
+      more
+      (let ((joined (make-array (+ count (array-length more)))))
+        (array-copy! old from joined 0 count)
+        (array-copy! more 0 joined count (array-length more))
+        joined)))
+
+;; A Utf8Chunk of the bytes the reader has now, so that its offsets are the
+;; reader's. A field before its valid end is taken from it without being
+;; checked again. One after it is checked by itself, so that the error can
+;; say which field it is.
+(: (-> CsvReader void))
+(defun (check-chunk! rd)
+  (record-set! rd (chunk (bytes->utf8-chunk (record-ref rd bytes) #:end (record-ref rd limit)))))
+
+;; Whether there are at least `n` bytes from `next` on. Reads from the port
+;; until there are or the port ends. The bytes from `next` on are kept, and
+;; `next` becomes 0.
+(: (-> CsvReader int bool))
+(defun (ensure! rd n)
+  (let go ()
+    (def have (- (record-ref rd limit) (record-ref rd next)))
+    (cond
+      ((>= have n) #t)
+      (else
+       (match (record-ref rd port)
+         (None #f)
+         ((Some p)
+          (def ask (record-ref rd ask))
+          (match (read-bytes p (if (> n ask) n ask))
+            (None
+             (record-set! rd (port None))
+             #f)
+            ((Some more)
+             (record-set! rd
+                          (bytes (join-bytes (record-ref rd bytes) (record-ref rd next) have more))
+                          (next 0)
+                          (limit (+ have (array-length more)))
+                          (ask (if (< ask read-most) (* ask 2) read-most)))
+             (check-chunk! rd)
+             (go)))))))))
+
+;; At least one byte more than the chunk has now, with the bytes from `next`
+;; on kept. #f when the input has no more. A scan at index `i` continues at
+;; `(+ next (- i start))` afterwards, where `start` was `next` before the call.
+(: (-> CsvReader bool))
+(defun (more! rd)
+  (ensure! rd (+ (- (record-ref rd limit) (record-ref rd next)) 1)))
+
+;; The byte at `next`, or `spent` at the end of the input.
+(: (-> CsvReader int))
+(defun (held-code rd)
+  (def i (record-ref rd next))
+  (cond
+    ((< i (record-ref rd limit)) (cast int (array-ref (record-ref rd bytes) i)))
+    ((ensure! rd 1) (cast int (array-ref (record-ref rd bytes) (record-ref rd next))))
+    (else spent)))
+
+(: (-> CsvReader void))
+(defun (step! rd)
+  (record-set! rd (next (+ (record-ref rd next) 1))))
+
+;; Past one line end: LF, CR LF, or CR alone.
+(: (-> CsvReader void))
+(defun (end-line! rd)
+  (def c (held-code rd))
+  (step! rd)
+  (when (and (= c 13) (= (held-code rd) 10))
+    (step! rd))
+  (record-set! rd (line (+ (record-ref rd line) 1))))
+
+;; Whether the reader is at a byte order mark: EF BB BF.
+(: (-> CsvReader bool))
+(defun (at-mark? rd)
+  (and (ensure! rd 3)
+       (let ((b (record-ref rd bytes)) (i (record-ref rd next)))
+         (and (= (cast int (array-ref b i)) 239)
+              (= (cast int (array-ref b (+ i 1))) 187)
+              (= (cast int (array-ref b (+ i 2))) 191)))))
+
+;; The byte at `next`, for an error message.
+(: (-> CsvReader string))
+(defun (found rd)
+  (def c (held-code rd))
+  (if (and (>= c 32) (< c 127))
+      (str "'" (list->string (list (integer->char c))) "'")
+      (str "the byte " (int->string c))))
+
+;; ---------------------------------------------------------------------------
+;; Fields
+;; ---------------------------------------------------------------------------
+
+(: string)
+(def not-utf-8 "the field has bytes that are not UTF-8")
+
+;; Whether the bytes from `start` to `end` of the chunk are UTF-8.
+(: (-> CsvReader (Array byte) int int bool))
+(defun (utf-8? rd b start end)
+  (or (<= end (utf8-chunk-valid-end (record-ref rd chunk))) (bytes-utf-8? b start end)))
+
+;; The bytes from `start` to `end` as a string, or None when they are not
+;; UTF-8. A field starts and ends next to an ASCII byte or at the end of the
+;; chunk, so both offsets are between characters.
+(: (-> CsvReader (Array byte) int int (Option string)))
+(defun (text-of rd b start end)
+  (def c (record-ref rd chunk))
+  (cond
+    ((= start end) (Some ""))
+    ((<= end (utf8-chunk-valid-end c)) (Some (utf8-chunk-substring c start end)))
+    ((bytes-utf-8? b start end) (Some (bytes->string b #:start start #:end end)))
+    (else None)))
+
+(: (-> CsvReader int (Array byte) int int (Result CsvError string)))
+(defun (field-string rd field b start end)
+  (match (text-of rd b start end)
+    ((Some s) (Ok s))
+    (None (Err (csv-error rd field not-utf-8)))))
+
+;; The first index from `from` that holds the separator, the quote, CR or LF,
+;; or `limit` if there is none.
+;;
+;; 32 or 16 bytes at a time, as (text json) skips white space: each block is
+;; compared with the four bytes at once, and the first match is the lowest set
+;; bit of the mask. The bytes after the last whole block are looked at one by
+;; one. Without a quote, `q` is not a byte, and the separator takes its lane.
+(: (-> (Array byte) int int int int int))
+(defun (plain-end b from limit sep q)
+  (def qb (if (< q 0) sep q))
+  (if simd256-accelerated?
+      (plain-end/256 b from limit sep qb)
+      (plain-end/128 b from limit sep qb)))
+
+(: (-> (Array byte) int int int int int))
+(defun (plain-end/256 b from limit sep q)
+  (def vs (simd256-splat (cast byte sep)))
+  (def vq (simd256-splat (cast byte q)))
+  (def lf (simd256-splat 10uy))
+  (def cr (simd256-splat 13uy))
+  (let go ((i from))
+    (cond
+      ((> (+ i 32) limit) (plain-end/bytes b i limit sep q))
+      (:def v (simd256-load b i))
+      (:def m (simd-mask-bits (simd-or (simd-or (simd-eq v vs) (simd-eq v vq))
+                                       (simd-or (simd-eq v lf) (simd-eq v cr)))))
+      ((= m 0) (go (+ i 32)))
+      (else (+ i (trailing-zeros m))))))
+
+(: (-> (Array byte) int int int int int))
+(defun (plain-end/128 b from limit sep q)
+  (def vs (simd128-splat (cast byte sep)))
+  (def vq (simd128-splat (cast byte q)))
+  (def lf (simd128-splat 10uy))
+  (def cr (simd128-splat 13uy))
+  (let go ((i from))
+    (cond
+      ((> (+ i 16) limit) (plain-end/bytes b i limit sep q))
+      (:def v (simd128-load b i))
+      (:def m (simd-mask-bits (simd-or (simd-or (simd-eq v vs) (simd-eq v vq))
+                                       (simd-or (simd-eq v lf) (simd-eq v cr)))))
+      ((= m 0) (go (+ i 16)))
+      (else (+ i (trailing-zeros m))))))
+
+(: (-> (Array byte) int int int int int))
+(defun (plain-end/bytes b from limit sep q)
+  (let go ((i from))
+    (cond
+      ((>= i limit) i)
+      (:def c (cast int (array-ref b i)))
+      ((or (= c sep) (= c 10) (= c 13) (= c q)) i)
+      (else (go (+ i 1))))))
+
+;; A field that does not start with the quote. It ends before the separator,
+;; a line end or the end of the input. When strict, a quote in it is an error;
+;; else the quote is part of the field.
+(: (-> CsvReader int (Result CsvError string)))
+(defun (read-plain rd field)
+  (def opts (record-ref rd options))
+  (def sep (record-ref opts sep-code))
+  (def q (record-ref opts quote-code))
+  (let go ((from (record-ref rd next)))
+    (def b (record-ref rd bytes))
+    (def start (record-ref rd next))
+    (def limit (record-ref rd limit))
+    (def i (plain-end b from limit sep q))
+    (cond
+      ((and (< i limit) (= (cast int (array-ref b i)) q))
+       (if (record-ref opts strict)
+           (Err (csv-error rd field "a quote inside a field that does not start with one"))
+           (go (+ i 1))))
+      ((< i limit)
+       (record-set! rd (next i))
+       (field-string rd field b start i))
+      ((more! rd) (go (+ (record-ref rd next) (- i start))))
+      (else
+       (record-set! rd (next i))
+       (field-string rd field b start i)))))
+
+;; The first index from `from` that holds the quote, CR or LF, or `limit` if
+;; there is none. A block at a time, as plain-end; `q` is always a byte here,
+;; since a field is quoted only when there is a quote.
+(: (-> (Array byte) int int int int))
+(defun (quoted-end b from limit q)
+  (if simd256-accelerated?
+      (quoted-end/256 b from limit q)
+      (quoted-end/128 b from limit q)))
+
+(: (-> (Array byte) int int int int))
+(defun (quoted-end/256 b from limit q)
+  (def vq (simd256-splat (cast byte q)))
+  (def lf (simd256-splat 10uy))
+  (def cr (simd256-splat 13uy))
+  (let go ((i from))
+    (cond
+      ((> (+ i 32) limit) (quoted-end/bytes b i limit q))
+      (:def v (simd256-load b i))
+      (:def m (simd-mask-bits (simd-or (simd-eq v vq) (simd-or (simd-eq v lf) (simd-eq v cr)))))
+      ((= m 0) (go (+ i 32)))
+      (else (+ i (trailing-zeros m))))))
+
+(: (-> (Array byte) int int int int))
+(defun (quoted-end/128 b from limit q)
+  (def vq (simd128-splat (cast byte q)))
+  (def lf (simd128-splat 10uy))
+  (def cr (simd128-splat 13uy))
+  (let go ((i from))
+    (cond
+      ((> (+ i 16) limit) (quoted-end/bytes b i limit q))
+      (:def v (simd128-load b i))
+      (:def m (simd-mask-bits (simd-or (simd-eq v vq) (simd-or (simd-eq v lf) (simd-eq v cr)))))
+      ((= m 0) (go (+ i 16)))
+      (else (+ i (trailing-zeros m))))))
+
+(: (-> (Array byte) int int int int))
+(defun (quoted-end/bytes b from limit q)
+  (let go ((i from))
+    (cond
+      ((>= i limit) i)
+      (:def c (cast int (array-ref b i)))
+      ((or (= c q) (= c 10) (= c 13)) i)
+      (else (go (+ i 1))))))
+
+;; The text between the quotes, from `start` to `end`. With `escaped`, each
+;; quote in it is the first of a doubled pair, and the second is dropped.
+(: (-> CsvReader int (Array byte) int int bool (Result CsvError string)))
+(defun (quoted-string rd field b start end escaped)
+  (def q (record-ref (record-ref rd options) quote-code))
+  (cond
+    ((not escaped) (field-string rd field b start end))
+    ((not (utf-8? rd b start end)) (Err (csv-error rd field not-utf-8)))
+    (else
+     (def sb (record-ref rd scratch))
+     (stringbuilder-clear! sb)
+     (let go ((from start))
+       (def i (quoted-end b from end q))
+       (cond
+         ;; A line end inside the quotes is part of the text.
+         ((and (< i end) (not (= (cast int (array-ref b i)) q)))
+          (stringbuilder-add-bytes! sb b from (+ i 1))
+          (go (+ i 1)))
+         ((< i end)
+          (stringbuilder-add-bytes! sb b from (+ i 1))
+          (go (+ i 2)))
+         (else
+          (stringbuilder-add-bytes! sb b from end)
+          (Ok (stringbuilder->string sb))))))))
+
+;; After the closing quote: the separator, a line end or the end of the input.
+;; When not strict, anything else up to one of those is added to the field.
+(: (-> CsvReader int string (Result CsvError string)))
+(defun (after-quote rd field content)
+  (def opts (record-ref rd options))
+  (def c (held-code rd))
+  (cond
+    ((or (= c (record-ref opts sep-code)) (= c 10) (= c 13) (= c spent)) (Ok content))
+    ((record-ref opts strict)
+     (Err (csv-error rd field (str "a quoted field ends at its closing quote, and then there is "
+                                   (found rd)))))
+    (else
+     (match (read-plain rd field)
+       ((Ok tail) (Ok (str content tail)))
+       ((Err e) (Err e))))))
+
+;; A field that starts with the quote, at `next`. `from` is where the search
+;; for the closing quote continues, `escaped` whether a doubled quote was
+;; passed, and `lines` how many line ends are inside the quotes.
+;;
+;; A quote or a CR is only known after the byte that follows it is seen, so
+;; when that byte is not in the chunk, the chunk is made longer first.
+(: (-> CsvReader int (Result CsvError string)))
+(defun (read-quoted rd field)
+  (def opts (record-ref rd options))
+  (def q (record-ref opts quote-code))
+  (def first-line (record-ref rd line))
+  (let go ((from (+ (record-ref rd next) 1)) (escaped #f) (lines 0))
+    (def b (record-ref rd bytes))
+    (def start (record-ref rd next))
+    (def limit (record-ref rd limit))
+    (def i (quoted-end b from limit q))
+    (def c (if (< i limit) (cast int (array-ref b i)) spent))
+    (def after (if (< (+ i 1) limit) (cast int (array-ref b (+ i 1))) spent))
+    (cond
+      ((and (or (= c spent) (and (or (= c q) (= c 13)) (= after spent)))
+            (more! rd))
+       (go (+ (record-ref rd next) (- i start)) escaped lines))
+      ((= c 10) (go (+ i 1) escaped (+ lines 1)))
+      ((= c 13) (go (if (= after 10) (+ i 2) (+ i 1)) escaped (+ lines 1)))
+      ((and (= c q) (= after q)) (go (+ i 2) #t lines))
+      ((= c q)
+       (record-set! rd (next (+ i 1)) (line (+ (record-ref rd line) lines)))
+       (match (quoted-string rd field b (+ start 1) i escaped)
+         ((Ok content) (after-quote rd field content))
+         ((Err e) (Err e))))
+      ;; The input ended inside the quotes.
+      ((record-ref opts strict)
+       (Err (error-at rd field first-line "the input ends inside a quoted field that starts on this line")))
+      (else
+       (record-set! rd (next i) (line (+ (record-ref rd line) lines)))
+       (quoted-string rd field b (+ start 1) i escaped)))))
+
+(: (-> CsvReader int (Result CsvError string)))
+(defun (read-field rd field)
+  (if (= (held-code rd) (record-ref (record-ref rd options) quote-code))
+      (read-quoted rd field)
+      (read-plain rd field)))
+
+;; ---------------------------------------------------------------------------
+;; Rows
+;; ---------------------------------------------------------------------------
+
+;; The next row, or None at the end of the input. Blank lines are skipped. A
+;; line end after the last row is not an empty row.
+(: (-> CsvReader (Result CsvError (Option (IArray string)))))
+(defun (read-row rd)
+  (unless (record-ref rd started)
+    (record-set! rd (started #t))
+    (when (at-mark? rd)
+      (record-set! rd (next (+ (record-ref rd next) 3)))))
+  (def sep (record-ref (record-ref rd options) sep-code))
+  (let skip ()
+    (def c (held-code rd))
+    (cond
+      ((= c spent) (Ok None))
+      ((or (= c 10) (= c 13))
+       (end-line! rd)
+       (skip))
+      (else
+       (def q (record-ref (record-ref rd options) quote-code))
+       (let go ((field 1))
+         (def b (record-ref rd bytes))
+         (def start (record-ref rd next))
+         (def limit (record-ref rd limit))
+         (def i (plain-end b start limit sep q))
+         ;; At the end of the chunk, `c` is the quote, so that read-field
+         ;; reads the field and the chunk after it.
+         (def c (if (< i limit) (cast int (array-ref b i)) q))
+         (cond
+           ;; The usual field: no quote, and its end in the chunk. It is read
+           ;; here, without read-field.
+           ((not (= c q))
+            (match (text-of rd b start i)
+              (None (Err (csv-error rd field not-utf-8)))
+              ((Some s)
+               (push-field! rd s)
+               (cond
+                 ((= c sep)
+                  (record-set! rd (next (+ i 1)))
+                  (go (+ field 1)))
+                 (else
+                  (record-set! rd (next i))
+                  (end-row! rd))))))
+           (else
+            (match (read-field rd field)
+              ((Err e) (Err e))
+              ((Ok s)
+               (push-field! rd s)
+               ;; A field ends only at the separator, a line end or the end
+               ;; of the input.
+               (cond
+                 ((= (held-code rd) sep)
+                  (step! rd)
+                  (go (+ field 1)))
+                 (else (end-row! rd))))))))))))
+
+;; At the end of a row: past its line end, if it has one, and the row.
+(: (-> CsvReader (Result CsvError (Option (IArray string)))))
+(defun (end-row! rd)
+  (unless (= (held-code rd) spent) (end-line! rd))
+  (record-set! rd (rows (+ (record-ref rd rows) 1)))
+  (Ok (Some (take-row! rd))))
+
+;; Adds a field to the row being read, growing the array when it is full.
+(: (-> CsvReader string void))
+(defun (push-field! rd s)
+  (def a (record-ref rd fields))
+  (def n (record-ref rd count))
+  (cond
+    ((< n (array-length a)) (array-set! a n s))
+    (else
+     (def bigger (array-resize a (* n 2)))
+     (array-set! bigger n s)
+     (record-set! rd (fields bigger))))
+  (record-set! rd (count (+ n 1))))
+
+;; The row read, as an IArray of its own: one copy of the fields, and no
+;; object but the array. The array is used again for the next.
+(: (-> CsvReader (IArray string)))
+(defun (take-row! rd)
+  (def row (subarray->iarray (record-ref rd fields) 0 (record-ref rd count)))
+  (record-set! rd (count 0))
+  row)
+
+;; The next row, or None at the end of the input. After an error, the same
+;; error again.
+(: (-> CsvReader (Result CsvError (Option (IArray string)))))
+(defun (csv-next! rd)
+  (match (record-ref rd failed)
+    ((Some e) (Err e))
+    (None
+     (match (read-row rd)
+       ((Err e)
+        (record-set! rd (failed (Some e)))
+        (Err e))
+       (r r)))))
+
+;; ===========================================================================
+;; Sources
+;; ===========================================================================
+
+;; Declared before the trait that names it.
+(type (: CsvInput #:opaque (Union (: CsvInText string)
+                                  (: CsvInPort InputPort)
+                                  (: CsvInFile string))))
+
+;; What can be read. A type of your own gets an implementation by handing
+;; csv-input something that already has one.
+(def/trait (CsvSource %s)
+  (: csv-input (-> %s CsvInput)))
+
+;; A path, which the reader opens and closes. A string on its own is CSV.
+(type (: CsvFile #:opaque (Record (: path string))))
+
+(: (-> string CsvFile))
+(defun (csv-file path) (CsvFile (path path)))
+
+(impl (CsvSource string)
+  (defun (csv-input s) (CsvInText s)))
+
+(impl (CsvSource InputPort)
+  (defun (csv-input p) (CsvInPort p)))
+
+(impl (CsvSource CsvFile)
+  (defun (csv-input f) (CsvInFile (record-ref f path))))
+
+;; A port that was handed over stays open. A file is opened here, through the
+;; FS effect, and closed here; a file that does not open raises.
+(: (-> CsvInput Options (-> CsvReader %a) %a))
+(defun (with-reader input opts proc)
+  (match input
+    ((CsvInText text) (proc (make-reader None (string->bytes text) opts)))
+    ((CsvInPort p) (proc (make-reader (Some p) no-bytes opts)))
+    ((CsvInFile path)
+     (match (call-with-input-file path (fun (p) (proc (make-reader (Some p) no-bytes opts))))
+       ((Ok a) a)
+       ((Err e) (raise e))))))
+
+;; The reader is for proc's use, and its file is closed when proc returns.
+(: (-> %s (-> CsvReader %a)
+       (#:separator char) (#:quote-char (Option char)) (#:strict? bool)
+       %a)
+   (where (CsvSource %s)))
+(defun (call-with-csv-reader source proc #:separator #\, #:quote-char (Some #\") #:strict? #t)
+  (with-reader (csv-input source) (options separator quote-char strict?) proc))
+
+;; ===========================================================================
+;; Folds
+;; ===========================================================================
+
+(: (-> CsvReader %seed (-> (IArray string) %seed %seed) (Result CsvError %seed)))
+(defun (fold-rows rd seed f)
+  (let loop ((seed seed))
+    (match (csv-next! rd)
+      ((Err e) (Err e))
+      ((Ok None) (Ok seed))
+      ((Ok (Some row)) (loop (f row seed))))))
+
+;; Each row and the seed so far give the next seed. The rows before an error
+;; have been folded when the error is answered.
+(: (-> %s %seed (-> (IArray string) %seed %seed)
+       (#:separator char) (#:quote-char (Option char)) (#:strict? bool)
+       (Result CsvError %seed))
+   (where (CsvSource %s)))
+(defun (csv-fold source seed f #:separator #\, #:quote-char (Some #\") #:strict? #t)
+  (with-reader (csv-input source) (options separator quote-char strict?)
+    (fun (rd) (fold-rows rd seed f))))
+
+(: (-> %s (-> (IArray string) void)
+       (#:separator char) (#:quote-char (Option char)) (#:strict? bool)
+       (Result CsvError Unit))
+   (where (CsvSource %s)))
+(defun (csv-for-each source f #:separator #\, #:quote-char (Some #\") #:strict? #t)
+  (with-reader (csv-input source) (options separator quote-char strict?)
+    (fun (rd) (fold-rows rd unit (fun (row u) (f row) u)))))
+
+;; ===========================================================================
+;; The whole document
+;; ===========================================================================
+
+(: (-> %s
+       (#:separator char) (#:quote-char (Option char)) (#:strict? bool)
+       (Result CsvError (Vec (IArray string))))
+   (where (CsvSource %s)))
+(defun (parse-csv source #:separator #\, #:quote-char (Some #\") #:strict? #t)
+  (with-reader (csv-input source) (options separator quote-char strict?)
+    (fun (rd)
+      (def rows (transientvec-empty))
+      (match (fold-rows rd unit (fun (row u) (transientvec-add! rows row) u))
+        ((Ok _) (Ok (transientvec->vec rows)))
+        ((Err e) (Err e))))))
+
+;; ===========================================================================
+;; The writer
+;; ===========================================================================
+;;
+;; A field gets quotes only when it holds the separator, the quote, CR or LF,
+;; or when it is the only field of its row and empty: an empty line is not a
+;; row when it is read back, and `""` is.
+
+;; `specials` holds the characters that make a field need quotes.
+(type (: Writer (Record (: separator char)
+                        (: quote-char (Option char))
+                        (: specials string)
+                        (: quote-all bool)
+                        (: newline string))))
+
+(: (-> char (Option char) bool bool Writer))
+(defun (writer separator quote-char quote-all crlf)
+  (ignore (options separator quote-char #t))
+  (def specials (match quote-char
+                  ((Some q) (list->string (list separator q #\return #\newline)))
+                  (None (list->string (list separator #\return #\newline)))))
+  (Writer (separator separator)
+          (quote-char quote-char)
+          (specials specials)
+          (quote-all quote-all)
+          (newline (if crlf "\r\n" "\n"))))
+
+;; `s` between quotes, each quote in it doubled.
+(: (-> StringBuilder string char void))
+(defun (add-quoted! sb s q)
+  (def qs (list->string (list q)))
+  (stringbuilder-add! sb q)
+  (let go ((from (string-cursor-start s)))
+    (match (string-search-any s qs from)
+      (None (stringbuilder-add-substring! sb s from (string-cursor-end s)))
+      ((Some at)
+       (def after (string-cursor-next s at))
+       (stringbuilder-add-substring! sb s from after)
+       (stringbuilder-add! sb q)
+       (go after))))
+  (stringbuilder-add! sb q))
+
+(: (-> StringBuilder Writer string void))
+(defun (add-field! sb w s)
+  (def needs (or (record-ref w quote-all)
+                 (some? (string-search-any s (record-ref w specials) (string-cursor-start s)))))
+  (cond
+    ((not needs) (stringbuilder-add-string! sb s))
+    (:match (Some q) (record-ref w quote-char) (add-quoted! sb s q))
+    ((string-empty? s) unit)
+    (else
+     (argument-error
+       (str "the field " (written s) " needs quotes, and there is no #:quote-char")))))
+
+;; Without the line end. The fields are walked once, so the row can be any
+;; Iterable; a row of one empty field is known only after it.
+(: (-> StringBuilder Writer %row void) (where (Iterable %row #:elem string)))
+(defun (add-row! sb w row)
+  (def mark (stringbuilder-length sb))
+  (def n (loop (:for s row)
+               (:with first? #t #f)
+               (:do (unless first? (stringbuilder-add! sb (record-ref w separator)))
+                    (add-field! sb w s))
+               (:acc (counting s))))
+  (when (and (= n 1) (= (stringbuilder-length sb) mark))
+    (match (record-ref w quote-char)
+      ((Some q)
+       (stringbuilder-add! sb q)
+       (stringbuilder-add! sb q))
+      (None unit))))
+
+;; One row as CSV text, without a line end.
+(: (-> %row (#:separator char) (#:quote-char (Option char)) (#:quote-all? bool) string)
+   (where (Iterable %row #:elem string)))
+(defun (csv-row->string row #:separator #\, #:quote-char (Some #\") #:quote-all? #f)
+  (def sb (stringbuilder-empty))
+  (add-row! sb (writer separator quote-char quote-all? #f) row)
+  (stringbuilder->string sb))
+
+;; Every row, each ended by a line end.
+(: (-> %rows (#:separator char) (#:quote-char (Option char)) (#:quote-all? bool) (#:crlf? bool)
+       string)
+   (where (Iterable %rows #:elem %row) (Iterable %row #:elem string)))
+(defun (csv->string rows #:separator #\, #:quote-char (Some #\") #:quote-all? #f #:crlf? #f)
+  (def w (writer separator quote-char quote-all? crlf?))
+  (def sb (stringbuilder-empty))
+  (loop (:for row rows)
+        (:do (add-row! sb w row)
+             (stringbuilder-add-string! sb (record-ref w newline))))
+  (stringbuilder->string sb))
+
+;; One row and its line end.
+(: (-> OutputPort %row (#:separator char) (#:quote-char (Option char)) (#:quote-all? bool)
+       (#:crlf? bool)
+       void)
+   (where (Iterable %row #:elem string)))
+(defun (write-csv-row port row #:separator #\, #:quote-char (Some #\") #:quote-all? #f #:crlf? #f)
+  (def w (writer separator quote-char quote-all? crlf?))
+  (def sb (stringbuilder-empty))
+  (add-row! sb w row)
+  (stringbuilder-add-string! sb (record-ref w newline))
+  (write-string port (stringbuilder->string sb)))
+
+;; Text is written to the port each time this much has been made, so a long
+;; document is never one string.
+(: int)
+(def write-chunk 65536)
+
+;; Every row, each ended by a line end. The rows are read once, in order, so
+;; a Seq is written as it is made.
+(: (-> OutputPort %rows (#:separator char) (#:quote-char (Option char)) (#:quote-all? bool)
+       (#:crlf? bool)
+       void)
+   (where (Iterable %rows #:elem %row) (Iterable %row #:elem string)))
+(defun (write-csv port rows #:separator #\, #:quote-char (Some #\") #:quote-all? #f #:crlf? #f)
+  (def w (writer separator quote-char quote-all? crlf?))
+  (def sb (stringbuilder-empty))
+  (loop (:for row rows)
+        (:do (add-row! sb w row)
+             (stringbuilder-add-string! sb (record-ref w newline))
+             (when (>= (stringbuilder-length sb) write-chunk)
+               (write-string port (stringbuilder->string sb))
+               (stringbuilder-clear! sb))))
+  (when (> (stringbuilder-length sb) 0)
+    (write-string port (stringbuilder->string sb))))

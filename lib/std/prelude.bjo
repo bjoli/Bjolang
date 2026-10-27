@@ -151,6 +151,7 @@
   decimal->string string->decimal bigint->string string->bigint
   int128->string string->int128 uint128->string string->uint128
   bytes->string string->bytes bytes-utf-8?
+  Utf8Chunk bytes->utf8-chunk utf8-chunk-length utf8-chunk-valid-end utf8-chunk-substring
   ;; Math.
   sqrt
   ;; Files
@@ -2408,6 +2409,23 @@
   (match replace
     (None (clr-encode s encoding))
     ((Some c) (clr-encode/replace s encoding c))))
+
+;; A copy of bytes, checked to be UTF-8 once, for a reader that makes many
+;; strings from one buffer: each string is taken by byte offset and is not
+;; checked again. The chunk owns its copy, and takes a string only between
+;; character boundaries in its valid part, so a string made from it is valid
+;; whatever the offsets are. `BjolangRuntime/Utf8Chunk.cs` says why.
+(type (: Utf8Chunk Bjolang.Runtime.Utf8Chunk))
+
+(import/extern
+  (clr-utf8-chunk       (: Bjolang.Runtime.Utf8Chunk.FromBytes (-> (Array byte) int int Utf8Chunk)))
+  (utf8-chunk-length    (: Bjolang.Runtime.Utf8Chunk.Length (-> Utf8Chunk int) #:get))
+  (utf8-chunk-valid-end (: Bjolang.Runtime.Utf8Chunk.ValidEnd (-> Utf8Chunk int) #:get))
+  (utf8-chunk-substring (: Bjolang.Runtime.Utf8Chunk.Substring (-> Utf8Chunk int int string))))
+
+(: (-> (Array byte) (#:start int) (#:end int) Utf8Chunk))
+(defun (bytes->utf8-chunk bytes #:start 0 #:end (array-length bytes))
+  (clr-utf8-chunk bytes start end))
 
 ;; ---------------------------------------------------------------------------
 ;; Characters

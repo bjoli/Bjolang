@@ -1,0 +1,241 @@
+;; (text csv): RFC 4180 read from strings, ports and files, a row at a time
+;; and whole, strict and not, and written so that it reads back.
+
+(import (std prelude))
+(import (std simpletest))
+(import (only (std ports) byte-pipe write-bytes!))
+(import (text csv))
+
+(import/class
+  (ArgumentException (: System.ArgumentException (-> string ArgumentException))))
+
+(: (-> int string string))
+(defun (repeated n s)
+  (def sb (stringbuilder-empty))
+  (loop (:for _ (range 0 n)) (:do (stringbuilder-add-string! sb s)))
+  (stringbuilder->string sb))
+
+;; The rows, as vecs to compare with vec literals, or the error as displayed.
+(: (-> (Result CsvError (Vec (IArray string))) (Result string (Vec (Vec string)))))
+(defun (shown r)
+  (match r
+    ((Ok rows) (Ok (vec-map iarray->vec rows)))
+    ((Err e) (Err (displayed e)))))
+
+(: (-> (Vec string) (IArray string)))
+(defun (row v) (vec->iarray v))
+
+(: (-> string (Result string (Vec (Vec string)))))
+(defun (rows text) (shown (parse-csv text)))
+
+(: (-> string (Result string (Vec (Vec string)))))
+(defun (lenient text) (shown (parse-csv text #:strict? #f)))
+
+;; Read through a port, so that the reader reads in chunks.
+(: (-> string (Result string (Vec (Vec string)))))
+(defun (via-port text) (shown (parse-csv (open-input-string text))))
+
+(: (-> (Result System.Exception %a) bool))
+(defun (refused? r) (err? r))
+
+(: (List (Vec string)))
+(def no-rows Nil)
+
+(defun (main)
+  ;; ---- What is read -------------------------------------------------------
+  (expect "plain" (rows "a,b,c\n1,2,3\n") (Ok [["a" "b" "c"] ["1" "2" "3"]]))
+  (expect "no line end after the last row" (rows "a,b\n1,2") (Ok [["a" "b"] ["1" "2"]]))
+  (expect "nothing" (rows "") (Ok []))
+  (expect "only line ends" (rows "\n\r\n\r") (Ok []))
+  (expect "CR LF, and CR alone" (rows "a\r\nb\rc\n") (Ok [["a"] ["b"] ["c"]]))
+  (expect "blank lines are not rows" (rows "a\n\n\nb\n") (Ok [["a"] ["b"]]))
+  (expect "empty fields" (rows ",a,,\n") (Ok [["" "a" "" ""]]))
+  (expect "spaces are kept" (rows " a , b \n") (Ok [[" a " " b "]]))
+  (expect "rows of different lengths" (rows "a\nb,c\n") (Ok [["a"] ["b" "c"]]))
+  (expect "quoted" (rows "\"a,b\",c\n") (Ok [["a,b" "c"]]))
+  (expect "a doubled quote" (rows "\"say \"\"hi\"\"\"\n") (Ok [["say \"hi\""]]))
+  (expect "only a doubled quote" (rows "\"\"\"\"") (Ok [["\""]]))
+  (expect "an empty quoted field" (rows "\"\"\n\"\",x\n") (Ok [[""] ["" "x"]]))
+  (expect "line ends inside quotes"
+          (rows "\"a\nb\",\"c\r\nd\"\ne\n")
+          (Ok [["a\nb" "c\r\nd"] ["e"]]))
+  (expect "a byte order mark is skipped"
+          (rows (str (list->string (list (integer->char 65279))) "a,b\n"))
+          (Ok [["a" "b"]]))
+  (expect "characters outside ASCII" (rows "åäö,\"ü\"\n") (Ok [["åäö" "ü"]]))
+  (expect "tabs" (shown (parse-csv "a\tb,c\n" #:separator #\tab)) (Ok [["a" "b,c"]]))
+  (expect "semicolons" (shown (parse-csv "a;\"b;c\"\n" #:separator #\;)) (Ok [["a" "b;c"]]))
+  (expect "no quoting" (shown (parse-csv "\"a\",b\"\n" #:quote-char None)) (Ok [["\"a\"" "b\""]]))
+  (expect "another quote" (shown (parse-csv "'a,''b'''\n" #:quote-char (Some #\'))) (Ok [["a,'b'"]]))
+
+  ;; ---- Every place in a block ---------------------------------------------
+  ;; The scan looks at 32 or 16 bytes at a time and at the rest one by one.
+  ;; A field of each length from 0 to 99 puts the byte that ends it at every
+  ;; place in a block and in the rest, before and after the last one.
+  (expect-true "plain fields of every length"
+               (all? (fun (n)
+                       (def x (repeated n "x"))
+                       (= (rows (str x "," x "\n" x "\r\n" x)) (Ok [[x x] [x] [x]])))
+                     ;; From 1: with 0, the last two lines are blank, and not rows.
+                     (range 1 100)))
+  (expect-true "quoted fields of every length"
+               (all? (fun (n)
+                       (def x (repeated n "x"))
+                       (= (rows (str "\"" x "\"\"" x "\"," "\"" x "\n" x "\"\n"))
+                          (Ok [[(str x "\"" x) (str x "\n" x)]])))
+                     (range 0 100)))
+  (expect-true "no quoting, and a byte the quote would be"
+               (all? (fun (n)
+                       (def x (repeated n "x"))
+                       (= (shown (parse-csv (str x "\t\"" x "\n") #:separator #\tab #:quote-char None))
+                          (Ok [[x (str "\"" x)]])))
+                     (range 0 70)))
+
+  ;; ---- Errors -------------------------------------------------------------
+  (expect "a quote inside a field"
+          (rows "a,b\nc,d\"e\n")
+          (Err "line 2, row 2, field 2: a quote inside a field that does not start with one"))
+  (expect "something after the closing quote"
+          (rows "\"a\"b,c\n")
+          (Err "line 1, row 1, field 1: a quoted field ends at its closing quote, and then there is 'b'"))
+  (expect "not closed: where it starts"
+          (rows "x\n\n\"a\nb\nc")
+          (Err "line 3, row 2, field 1: the input ends inside a quoted field that starts on this line"))
+  (expect "a line counted inside quotes"
+          (rows "\"a\nb\",c\nd\"\n")
+          (Err "line 3, row 2, field 1: a quote inside a field that does not start with one"))
+  (expect "not UTF-8"
+          (match (byte-pipe)
+            ((Tuple in out)
+             (write-bytes! out (vec->array [97uy 44uy 255uy 10uy]))
+             (close-output-port out)
+             (shown (parse-csv in))))
+          (Err "line 1, row 1, field 2: the field has bytes that are not UTF-8"))
+
+  ;; ---- Not strict ---------------------------------------------------------
+  (expect "a quote inside a field is kept" (lenient "a\"b,c\n") (Ok [["a\"b" "c"]]))
+  (expect "the text after a closing quote is added" (lenient "\"a\"b\"c,d\n") (Ok [["ab\"c" "d"]]))
+  (expect "not closed: to the end" (lenient "a,\"b\nc") (Ok [["a" "b\nc"]]))
+
+  ;; ---- Options that are not allowed ---------------------------------------
+  (expect-true "a separator that ends a line"
+               (refused? (try (parse-csv "a" #:separator #\newline) #:catch (System.ArgumentException))))
+  (expect-true "a quote that is the separator"
+               (refused? (try (parse-csv "a" #:quote-char (Some #\,)) #:catch (System.ArgumentException))))
+  (expect-true "a separator that is not ASCII"
+               (refused? (try (parse-csv "a" #:separator #\å) #:catch (System.ArgumentException))))
+
+  ;; ---- Chunks -------------------------------------------------------------
+  ;; A port is read 16 384 bytes first. Each of these puts something the
+  ;; reader has to see two bytes of across that boundary.
+  (def x16382 (repeated 16382 "x"))
+  (def x16383 (repeated 16383 "x"))
+  (expect "a doubled quote across chunks"
+          (via-port (str "\"" x16382 "\"\"x\"\n"))
+          (Ok [[(str x16382 "\"x")]]))
+  (expect "a closing quote at the end of a chunk"
+          (via-port (str "\"" x16382 "\",y\n"))
+          (Ok [[x16382 "y"]]))
+  (expect "CR LF across chunks" (via-port (str x16383 "\r\nb")) (Ok [[x16383] ["b"]]))
+  (expect "a character across chunks" (via-port (str x16383 "å,b")) (Ok [[(str x16383 "å") "b"]]))
+  (expect "bytes that are not UTF-8 in a later chunk: their row and field"
+          (match (byte-pipe)
+            ((Tuple in out)
+             (write-bytes! out (string->bytes (repeated 5000 "abc,d\n")))
+             (write-bytes! out (vec->array [120uy 44uy 121uy 192uy 10uy]))
+             (close-output-port out)
+             (shown (parse-csv in))))
+          (Err "line 5001, row 5001, field 2: the field has bytes that are not UTF-8"))
+  (expect "a character of three bytes across chunks"
+          (via-port (str (repeated 16382 "x") "€\n"))
+          (Ok [[(str (repeated 16382 "x") "€")]]))
+  (def big (repeated 50000 "ab\"\"\n"))
+  (expect "a field longer than several chunks"
+          (via-port (str "1,\"" big "\",2\n"))
+          (Ok [["1" (repeated 50000 "ab\"\n") "2"]]))
+  (def many (str "id,name\n" (repeated 100000 "7,\"x, y\"\r\n")))
+  (expect "a port and a string agree" (via-port many) (rows many))
+
+  ;; ---- Streaming ----------------------------------------------------------
+  (expect "fold: the rows"
+          (csv-fold (open-input-string many) 0 (fun (row n) (+ n 1)))
+          (Ok 100001))
+  (def seen (make-box 0))
+  (def result (csv-for-each "a\nb\n\"c\nd" (fun (row) (box-set! seen (+ (box-ref seen) 1)))))
+  (expect-true "for-each: an error" (err? result))
+  (expect "for-each: after the rows before it" (box-ref seen) 2)
+  (expect "the reader: one row at a time"
+          (call-with-csv-reader "a,b\nc\n"
+            (fun (r)
+              (def first (csv-next! r))
+              (def second (csv-next! r))
+              (def third (csv-next! r))
+              (list first second third)))
+          (list (Ok (Some (row ["a" "b"]))) (Ok (Some (row ["c"]))) (Ok None)))
+  (expect "the reader: the same error again"
+          (call-with-csv-reader "a\"\nb\n"
+            (fun (r)
+              (def first (csv-next! r))
+              (= first (csv-next! r))))
+          #t)
+  (expect "an exception from f passes through"
+          (match (try (csv-for-each "a\n" (fun (row) (raise (cast Exception (ArgumentException. "mine")))))
+                   #:catch (System.ArgumentException))
+            ((Err e) (.-Message e))
+            ((Ok _) "none"))
+          "mine")
+
+  ;; ---- Files --------------------------------------------------------------
+  (def path "481_csv_probe.csv")
+  (file-write-text path "h1,h2\r\n1,\"two\nlines\"\r\n")
+  (expect "a file" (shown (parse-csv (csv-file path))) (Ok [["h1" "h2"] ["1" "two\nlines"]]))
+  (file-delete path)
+  (expect-true "a file that is not there raises"
+               (refused? (try (parse-csv (csv-file path)) #:catch (System.IO.IOException))))
+
+  ;; ---- Writing ------------------------------------------------------------
+  (expect "a plain row" (csv-row->string ["a" "b" "c"]) "a,b,c")
+  (expect "quotes where needed"
+          (csv-row->string ["a,b" "say \"hi\"" "x\ny" "c\rd" "e"])
+          "\"a,b\",\"say \"\"hi\"\"\",\"x\ny\",\"c\rd\",e")
+  (expect "an empty field among others" (csv-row->string ["" "a" ""]) ",a,")
+  (expect "an empty field on its own" (csv-row->string [""]) "\"\"")
+  (expect "an empty field on its own, every field quoted" (csv-row->string [""] #:quote-all? #t) "\"\"")
+  (expect "an empty field on its own, no quote" (csv-row->string [""] #:quote-char None) "")
+  (expect "a row as a list" (csv-row->string (list "a" "b,c")) "a,\"b,c\"")
+  (expect "a row as an IArray" (csv-row->string (row ["a" ""])) "a,")
+  (expect "every field quoted" (csv-row->string ["a" ""] #:quote-all? #t) "\"a\",\"\"")
+  (expect "another separator" (csv-row->string ["a;b" "c,d"] #:separator #\;) "\"a;b\";c,d")
+  (expect "rows" (csv->string [["a" "b"] ["c"]]) "a,b\nc\n")
+  (expect "rows, CR LF" (csv->string (list ["a"] ["b"]) #:crlf? #t) "a\r\nb\r\n")
+  (expect "no rows" (csv->string no-rows) "")
+  (expect-true "a field that needs quotes, and no quote"
+               (refused? (try (csv-row->string ["a,b"] #:quote-char None) #:catch (System.ArgumentException))))
+  (expect "no quote, and no need" (csv-row->string ["a\"b" "c"] #:quote-char None) "a\"b,c")
+
+  (def tricky [["plain" "" "with,comma"]
+               [""]
+               ["\"quoted\"" "line\nend" "cr\r\nlf"]
+               ["åäö" " spaced "]])
+  (expect "written and read back" (rows (csv->string tricky)) (Ok tricky))
+  (expect "read, written and read again"
+          (match (parse-csv (csv->string tricky))
+            ((Ok read) (rows (csv->string read)))
+            ((Err e) (Err (displayed e))))
+          (Ok tricky))
+  (expect "written with CR LF and read back" (rows (csv->string tricky #:crlf? #t)) (Ok tricky))
+  (expect "tabs, written and read back"
+          (shown (parse-csv (csv->string tricky #:separator #\tab) #:separator #\tab))
+          (Ok tricky))
+
+  (def out (open-output-string))
+  (write-csv out (map (fun (i) [(int->string i) "x,y"]) (range 0 20000)))
+  (def written-text (get-output-string out))
+  (expect "a Seq written to a port, in pieces"
+          (csv-fold written-text 0 (fun (r n) (+ n (string->int (iarray-ref r 0)))))
+          (Ok 199990000))
+  (def one (open-output-string))
+  (write-csv-row one ["a" "b c"])
+  (write-csv-row one ["d"] #:crlf? #t)
+  (expect "a row at a time" (get-output-string one) "a,b c\nd\r\n")
+  0)
