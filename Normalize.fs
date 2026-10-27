@@ -284,8 +284,14 @@ let private emittedBySpelling =
           "<"; ">"; "<="; ">="
           "clr-eq" ]
 
+/// The operators above, and every builtin. After inference a builtin and a
+/// local of its name are both `TIdent name`, so a local of a builtin's name
+/// is renamed here too. A template's builtin is an `EResolved`, which keeps
+/// its name.
+let mutable private spelledNames = emittedBySpelling
+
 let private freshenOperators (args: DefunArg list) (body: Expr) : DefunArg list * Expr =
-    Hygiene.freshenNamed emittedBySpelling args body
+    Hygiene.freshenNamed spelledNames args body
 
 let private freshenOperatorsIn (body: Expr) : Expr = snd (freshenOperators [] body)
 
@@ -368,3 +374,8 @@ let rec normalizeDecl (decl: Decl) : Decl =
     | DLinked _ -> decl
 
 and normalizeModule (decls: Decl list) : Decl list = List.map normalizeDecl decls
+
+/// `normalizeModule`, renaming locals named like any of `builtins` as well.
+let normalizeModuleWith (builtins: Set<string>) (decls: Decl list) : Decl list =
+    spelledNames <- Set.union emittedBySpelling builtins
+    normalizeModule decls

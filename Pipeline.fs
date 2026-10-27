@@ -1360,7 +1360,6 @@ let private registerMacros
               ModuleName = entry.ModuleName
               Exports = exports
               TraitMethods = traitMethods
-              Builtins = Prelude.builtinNames
               Method = method }
 
         for entry in entries do
@@ -3256,7 +3255,7 @@ let runFrontend (codegen: bool) (mainFilePath: string) =
         // fewer closure for every pass after it to carry, and the bindings it
         // leaves behind are what `LetRecify` orders.
         let normalizedDecls =
-            Timing.phase "normalize" (fun () -> Normalize.normalizeModule parsedModuleDecls)
+            Timing.phase "normalize" (fun () -> Normalize.normalizeModuleWith Prelude.builtinNames parsedModuleDecls)
 
         let letrecifiedDecls = Timing.phase "letrecify" (fun () -> letrecifyModule normalizedDecls)
 

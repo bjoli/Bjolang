@@ -47,8 +47,7 @@ open Bjolang.Ast
 ///      constructor, or — via `Hygiene.headName` — a special form, which is what
 ///      lets a template write `let`, `if` and `->` unchanged. The name becomes
 ///      an `EResolved` rather than a bare name, so it means what it means at
-///      the call site's module level and no local there can take it over; a
-///      builtin is still left bare (see `resolveIntroduced`). A
+///      the call site's module level and no local there can take it over. A
 ///      trait method so dispatches as the trait it belonged to where the
 ///      template was written: it is published as part of its trait rather than
 ///      as a binding, so rule 2 has nothing to qualify it to, and `EResolved`
@@ -97,9 +96,6 @@ type MacroBinding =
       /// calling one of these meant the method, whatever the call site binds.
       /// A trait it merely imports is not in here — see `Todo.org`.
       TraitMethods: Set<string>
-      /// The compiler's builtins, which rule 3 leaves bare: see
-      /// `resolveIntroduced`.
-      Builtins: Set<string>
       Method: MethodInfo }
 
 let private table = Dictionary<string, MacroBinding>()
@@ -440,16 +436,12 @@ let private resolveIntroduced
     // fresh spelling because that is what the expression still holds — `subst`
     // is what turns it back.
     //
-    // A builtin is left bare, as before. It has no class to qualify it to, so
-    // its resolved reference keeps the bare name, and the renaming pass before
-    // code generation renames it with a local of that name: the checker would
-    // type the builtin and the code would call the local. See `Todo.org`.
+    // A builtin too: `Normalize` renames a local of a builtin's name, so the
+    // builtin's bare name is the only one left.
     let resolved =
         subst
         |> Map.toSeq
-        |> Seq.filter (fun (_, original) ->
-            not (Map.containsKey original binding.Exports)
-            && (Set.contains original binding.TraitMethods || not (Set.contains original binding.Builtins)))
+        |> Seq.filter (fun (_, original) -> not (Map.containsKey original binding.Exports))
         |> Seq.map fst
         |> Set.ofSeq
 

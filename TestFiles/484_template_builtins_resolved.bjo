@@ -1,0 +1,26 @@
+;; A builtin a template names is the builtin, called or as a value, whatever
+;; the caller binds under its name. A local of a builtin's name is still the
+;; local where the caller writes it.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/builtin_writing_macros.bjo")
+
+(: called (-> int (List int)))
+(defun (called n)
+  (def cons (fun (a b) (list 99)))
+  (one-of n))
+
+(: as-value (-> (-> (List int) int) int))
+(defun (as-value list-length) (size-via-value (list 1 2 3)))
+
+(: own-local (-> int (List int)))
+(defun (own-local n)
+  (def cons (fun (a b) (list 99)))
+  (cons n '()))
+
+(defun (main)
+  (expect "called under a local" (called 7) (list 7))
+  (expect "as a value under a parameter" (as-value (fun (xs) 0)) 3)
+  (expect "the caller's own call is its local" (own-local 7) (list 99))
+  (println "done"))
