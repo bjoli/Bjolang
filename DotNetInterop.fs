@@ -739,6 +739,27 @@ let clrStringViewOf (t: HMType) : HMType option =
     | TCon("Array", [ TCon(TypeConstants.ClrStringName, []) ]) -> Some(TCon("Array", [ stringType ]))
     | _ -> None
 
+/// The element type of a constructed `ReadOnlySpan<T>` or `Span<T>`, and
+/// whether it is the read-only one.
+let spanElementOf (t: Type) : (Type * bool) option =
+    if t.IsGenericType && not t.IsGenericTypeDefinition then
+        match t.GetGenericTypeDefinition().FullName with
+        | "System.ReadOnlySpan`1" -> Some(t.GetGenericArguments()[0], true)
+        | "System.Span`1" -> Some(t.GetGenericArguments()[0], false)
+        | _ -> None
+    else
+        None
+
+/// The array a span parameter is passed as: `(Array %a)` for a
+/// `ReadOnlySpan<T>` or a `Span<T>` as `mapClrType` spells them. A span has
+/// no Bjolang type of its own, so a call takes an array where the method takes
+/// a span, and C# makes the span over it. Only a parameter is seen this way:
+/// a span a method answers is not an array, and is not converted.
+let spanArrayViewOf (t: HMType) : HMType option =
+    match t with
+    | TCon(("System.ReadOnlySpan" | "System.Span"), [ elem ]) -> Some(TCon("Array", [ elem ]))
+    | _ -> None
+
 /// The .NET type a Bjolang type corresponds to, when it has one.
 ///
 /// The inverse of `mapClrType`, and it has to be: overload scoring asks this
@@ -1102,6 +1123,9 @@ let rec private solveTypeParams
         | Some existing -> if existing = declared then Some solution else None
         | None -> Some(Map.add v declared solution)
     | TVar a, TVar b -> if a = b then Some solution else None
+    // A span parameter is declared as the array it is passed as.
+    | TCon(("System.ReadOnlySpan" | "System.Span"), [ x ]), TCon("Array", [ y ]) ->
+        solveTypeParams typeParams solution x y
     | TCon(n, xs), TCon(m, ys) when n = m && xs.Length = ys.Length ->
         List.zip xs ys
         |> List.fold (fun acc (x, y) -> acc |> Option.bind (fun s -> solveTypeParams typeParams s x y)) (Some solution)
@@ -1330,7 +1354,39 @@ let resolveGenericMethod
 
         "  (-> " + ps + " " + showType (mapClrType m.ReturnType) + ")"
 
-    match byArity |> List.choose attempt with
+    // A declared array fits a method's array, `ReadOnlySpan<T>` and `Span<T>`
+    // alike. Of those that fit, the ones with the fewest spans for arrays are
+    // kept, and a writable span counts more than a read-only one: as the
+    // ordinary path scores them, and as C# prefers them.
+    let spanCost (m: MethodInfo) =
+        m.GetParameters()
+        |> Array.truncate matchedParams.Length
+        |> Array.sumBy (fun p ->
+            match spanElementOf p.ParameterType, p.ParameterType with
+            | Some(_, true), _ -> 1
+            | Some(_, false), _ -> 2
+            | None, t when t.IsGenericType && t.ContainsGenericParameters ->
+                match t.GetGenericTypeDefinition().FullName with
+                | "System.ReadOnlySpan`1" -> 1
+                | "System.Span`1" -> 2
+                | _ -> 0
+            | None, _ -> 0)
+
+    // Then, of those, the ones that leave out fewest optional parameters, as
+    // C# prefers a candidate that needs no default filled in.
+    let fitting =
+        match byArity |> List.choose attempt with
+        | [] | [ _ ] as few -> few
+        | several ->
+            let keepCheapest cost candidates =
+                let cheapest = candidates |> List.map (fun (m, _, _) -> cost m) |> List.min
+                candidates |> List.filter (fun (m, _, _) -> cost m = cheapest)
+
+            several
+            |> keepCheapest spanCost
+            |> keepCheapest (fun (m: MethodInfo) -> m.GetParameters().Length)
+
+    match fitting with
     | [ (_, typeArgs, returnType) ] ->
         { TypeArguments = typeArgs
           ParameterTypes = declaredParams
@@ -1772,11 +1828,26 @@ let private scoreArgument (param: Type) (arg: HMType) : int option =
         // function: a lambda has no delegate type of its own to convert from.
         | None ->
             match pruneLocal arg with
+            // An array whose elements are not known yet, for a span: the
+            // span's element type is what settles them, as an open argument's
+            // type is settled by its parameter.
+            | TCon("Array", [ elem ]) when isUnresolved elem && (spanElementOf param).IsSome -> Some 50
             | TCon _
             | TTuple _
             | TVar _ when param = typeof<obj> -> Some 3
             | _ -> None
         | Some argType ->
+            // An array for a span over its elements, made by C# at the call.
+            // Scored as a conversion, so that an overload taking the array
+            // itself wins, and the read-only span below the writable one: the
+            // one C# prefers too, and the one that cannot fail on an array of a
+            // derived element type.
+            let spanScore =
+                match spanElementOf param with
+                | Some(elem, readOnly) when argType.IsArray && argType.GetElementType() = elem ->
+                    Some(if readOnly then 1 else 2)
+                | _ -> None
+
             if argType = param then Some 0
             // A Bjolang string for a .NET one, converted at the call. Scored as
             // a widening, so that `Write(string)` beats `Write(object)`.
@@ -1790,6 +1861,8 @@ let private scoreArgument (param: Type) (arg: HMType) : int option =
                 && widenings[argType] |> List.contains param
             then
                 Some 1
+            elif spanScore.IsSome then
+                spanScore
             elif param.IsAssignableFrom argType then
                 // A reference upcast, including anything to `object`.
                 Some 2

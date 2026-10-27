@@ -212,6 +212,22 @@ let internal bjolangViewOf (t: HMType) : HMType option = DotNetInterop.clrString
 
 let internal seenType (t: HMType) : HMType = bjolangViewOf t |> Option.defaultValue t
 
+/// A parameter type as a caller sees it: `seenType`, and an array for a span.
+/// See `DotNetInterop.spanArrayViewOf`. Results are not seen this way.
+let internal seenParamType (t: HMType) : HMType =
+    match DotNetInterop.spanArrayViewOf t with
+    | Some array -> array
+    | None -> seenType t
+
+/// An array passed for a span parameter, cast to that span. C# would make the
+/// span without it, but the cast pins the call to the overload chosen here,
+/// as `reconcileForeignArgs`'s casts do: an array fits a `Span<T>` and a
+/// `ReadOnlySpan<T>` overload alike.
+let internal toSpan (arg: TypedExpr) (spanType: HMType) : TypedExpr =
+    { arg with
+        Type = spanType
+        Node = TCast(arg, spanType) }
+
 /// Whether an import's declared signature names `System.String` (or an array
 /// of it) as its result, which keeps the .NET string unconverted — for a
 /// member whose null means something a Bjolang "" would not.
@@ -301,9 +317,10 @@ let internal unifyForeignArgs (registry: TraitRegistry) (argTypes: HMType list) 
     List.iter2
         (fun argType paramType ->
             // A .NET string parameter is declared as the Bjolang string a
-            // caller passes, unless the declaration names the .NET type itself.
+            // caller passes, unless the declaration names the .NET type itself,
+            // and a span parameter as the array.
             let wanted =
-                if prune registry argType = paramType then paramType else seenType paramType
+                if prune registry argType = paramType then paramType else seenParamType paramType
 
             unify registry argType wanted)
         argTypes
@@ -348,12 +365,16 @@ let internal reconcileForeignArgs
             let argType = prune registry arg.Type
             let paramType = prune registry paramType
 
-            match bjolangViewOf paramType with
-            | Some wanted when argType <> paramType ->
+            match bjolangViewOf paramType, DotNetInterop.spanArrayViewOf paramType with
+            | Some wanted, _ when argType <> paramType ->
                 // A .NET string parameter takes a Bjolang string, converted
                 // here; an argument that already is a .NET string passes as it is.
                 unify registry argType wanted
                 toClrString arg paramType
+            | _, Some array ->
+                // A span parameter takes an array.
+                unify registry argType array
+                toSpan arg paramType
             | _ ->
 
             if not (List.isEmpty (freeVars registry argType)) then
@@ -441,6 +462,7 @@ let internal foreignCallNode
 /// is not a parameter anyone writes, and the receiver is one, so an instance
 /// member's declared type carries it.
 let internal checkDeclaredExtern
+    (where: string)
     (registry: TraitRegistry)
     (info: ClrExternInfo)
     (receiverType: HMType)
@@ -448,6 +470,15 @@ let internal checkDeclaredExtern
     (visibleParams: HMType list)
     (result: HMType)
     : unit =
+    // A span parameter takes an array, so a span result declared as an array
+    // would look like the same thing the other way round. It is not, and is
+    // said so rather than reported as two types that differ.
+    match info.DeclaredType, DotNetInterop.spanArrayViewOf (prune registry result) with
+    | Some(TFun(_, written, _)), Some _ when prune registry written <> prune registry result ->
+        failwithf
+            $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' answers a %s{DotNetInterop.showType (prune registry result)}, and a span is not a Bjolang value: it lives only as long as the call that made it, so it cannot be held, stored or returned. An array can be passed where a method takes a span, but a span it answers is not an array. Copy it into one with .ToArray() in the package's C# glue, (csharp \"glue\") in its manifest, and import that."
+    | _ -> ()
+
     match info.DeclaredType with
     | Some declared ->
         let declaredParams =
@@ -455,13 +486,17 @@ let internal checkDeclaredExtern
 
         // Written as the caller sees it, after the string conversions, unless
         // the declaration names the .NET string itself; see `declaresClrResult`.
-        let seenAs (written: HMType) (actual: HMType) =
-            if prune registry written = actual then actual else seenType actual
+        // A span parameter is written as the array it is passed as.
+        let seenAs (view: HMType -> HMType) (written: HMType) (actual: HMType) =
+            if prune registry written = actual then actual else view actual
 
         match prune registry declared with
         | TFun(written, writtenResult, _) when written.Length = declaredParams.Length ->
-            unify registry declared (tfun (List.map2 seenAs written declaredParams) (seenAs writtenResult result))
-        | _ -> unify registry declared (tfun (List.map seenType declaredParams) (seenType result))
+            unify
+                registry
+                declared
+                (tfun (List.map2 (seenAs seenParamType) written declaredParams) (seenAs seenType writtenResult result))
+        | _ -> unify registry declared (tfun (List.map seenParamType declaredParams) (seenType result))
     | None -> ()
 
 let internal metadataOf (resolved: DotNetInterop.ResolvedCall) (exceptions: string list) : DotNetMethodMetadata =

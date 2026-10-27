@@ -1737,14 +1737,16 @@ and private inferExternValue (env: Env) (name: string) (r: Range) : HMType * Typ
             let argNames = resolved.ParameterTypes |> List.map (fun _ -> Gensym.fresh "__foreign")
 
             // The lambda takes Bjolang strings where the method takes .NET
-            // ones, and converts them in the call.
+            // ones, and converts them in the call; and arrays where it takes
+            // spans, cast to the span.
             let passed (n: string) (t: HMType) : TypedExpr =
-                match bjolangViewOf t with
-                | Some seen -> toClrString (identOf n seen) t
-                | None -> identOf n t
+                match bjolangViewOf t, DotNetInterop.spanArrayViewOf t with
+                | Some seen, _ -> toClrString (identOf n seen) t
+                | None, Some array -> toSpan (identOf n array) t
+                | None, None -> identOf n t
 
             let argExprs = List.map2 passed argNames resolved.ParameterTypes
-            let seenParams = resolved.ParameterTypes |> List.map seenType
+            let seenParams = resolved.ParameterTypes |> List.map seenParamType
 
             let paramNames, paramTypes, node =
                 if info.IsInstance then
@@ -2191,7 +2193,7 @@ and private inferClassConstruct (env: Env) (name: string) (args: Expr list) (r: 
     // consulting the BCL; getting it wrong is an error rather than a
     // silently ignored comment.
     match info.CtorType with
-    | Some declared -> unify env.Registry declared (tfun (resolved.ParameterTypes |> List.map seenType) resolved.ReturnType)
+    | Some declared -> unify env.Registry declared (tfun (resolved.ParameterTypes |> List.map seenParamType) resolved.ReturnType)
     | None -> ()
 
     let retType = wrapForeignExceptions info.CtorExceptions resolved.ReturnType
@@ -2255,7 +2257,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
                 $"Type Error at %s{where}: '%s{name}' reads a property, so it takes exactly one argument — the object to read it from — but was given %d{args.Length}."
 
         let memberType = DotNetInterop.resolveMemberRead where clrType info.MemberName false
-        checkDeclaredExtern env.Registry info receiverType true [] memberType
+        checkDeclaredExtern where env.Registry info receiverType true [] memberType
 
         let read =
             marshalExternResult info
@@ -2289,7 +2291,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
                 failwithf
                     $"Type Error at %s{where}: '%s{name}' writes a property, so it takes %s{wanted}, but was given %d{args.Length} argument(s)."
 
-        checkDeclaredExtern env.Registry info receiverType receiver.IsSome [ memberType ] TypeConstants.voidType
+        checkDeclaredExtern where env.Registry info receiverType receiver.IsSome [ memberType ] TypeConstants.voidType
 
         let node =
             match receiver with
@@ -2391,7 +2393,7 @@ and private inferExternCall (env: Env) (name: string) (args: Expr list) (r: Rang
         let coercedArgs =
             reconcileForeignArgs env.Registry (typedArgs |> List.map snd) visibleParams
 
-        checkDeclaredExtern env.Registry info receiverType receiver.IsSome visibleParams callResultType
+        checkDeclaredExtern where env.Registry info receiverType receiver.IsSome visibleParams callResultType
 
         // A .NET string answer is converted by `Codegen`, which reads
         // `ReturnType` below; see `bjolangViewOf`.
@@ -3319,7 +3321,7 @@ and private inferTaskEvent (env: Env) (call: Expr) (r: Range) : HMType * TypedEx
     let visibleParams = resolved.ParameterTypes |> List.truncate (resolved.ParameterTypes.Length - 1)
     let coercedArgs = reconcileForeignArgs env.Registry (typedArgs |> List.map snd) visibleParams
 
-    checkDeclaredExtern env.Registry info receiverType receiver.IsSome visibleParams awaited
+    checkDeclaredExtern where env.Registry info receiverType receiver.IsSome visibleParams awaited
 
     // A non-generic `Task` carries no result, and `Result<E, void>` is not
     // a type C# has — so the event carries the unit, exactly as a `void`

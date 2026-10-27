@@ -1,0 +1,54 @@
+;; An array where a .NET method takes a span: ReadOnlySpan<T> or Span<T>, in
+;; an import/extern signature and at a (.Method x ...) call, for ordinary and
+;; generic methods. The span is over the array, so a method that writes into
+;; a Span<T> writes into the array.
+
+(import (std prelude))
+(import (std simpletest))
+
+(import/class
+  (MemoryStream (: System.IO.MemoryStream (-> MemoryStream)))
+  (Encoding (: System.Text.Encoding)))
+
+(import/extern
+  ;; Only span overloads: ReadOnlySpan<byte> and ReadOnlySpan<char>.
+  (ascii? (: System.Text.Ascii.IsValid (-> (Array byte) bool)))
+  ;; ReadOnlySpan<byte> only.
+  (read-be (: System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian (-> (Array byte) int)))
+  ;; Span<byte> only: it writes into the array.
+  (write-be! (: System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian (-> (Array byte) int void)))
+  ;; Generic, Span<T> only.
+  (reverse! (: System.MemoryExtensions.Reverse (-> (Array %a) void)))
+  ;; Generic over Span<T> and ReadOnlySpan<T>, one with an optional comparer,
+  ;; beside ordinary overloads.
+  (index-of (: System.MemoryExtensions.IndexOf (-> (Array long) long int)))
+  ;; byte[] and ReadOnlySpan<byte>: the array's own overload is the one taken.
+  (utf8 (: System.Text.Encoding.UTF8 #:get))
+  (decode (: System.Text.Encoding.GetString (-> Encoding (Array byte) string))))
+
+(defun (main)
+  (expect "a read-only span, from an array" (ascii? (vec->array [104uy 105uy])) #t)
+  (expect "and its answer" (ascii? (vec->array [104uy 200uy])) #f)
+
+  (def four (make-array 4))
+  (write-be! four 258)
+  (expect "a writable span writes into the array" (array->vec four) [0uy 0uy 1uy 2uy])
+  (expect "and reads back" (read-be four) 258)
+
+  (def xs (vec->array [1L 2L 3L]))
+  (reverse! xs)
+  (expect "a generic method over a span" (array->vec xs) [3L 2L 1L])
+  (expect "the read-only span of two, without the comparer" (index-of xs 1L) 2)
+  (expect "an empty array is an empty span" (index-of (vec->array (the-longs [])) 1L) -1)
+
+  (expect "an overload taking the array itself wins" (decode utf8 (vec->array [104uy 105uy])) "hi")
+
+  ;; A call that names the method on its object.
+  (def ms (MemoryStream.))
+  (.Write ms (vec->array [1uy 2uy 3uy]))
+  (.Write ms (vec->array [4uy]))
+  (expect "at a (.Method x ...) call" (array->vec (.ToArray ms)) [1uy 2uy 3uy 4uy])
+  0)
+
+(: (-> (Vec long) (Vec long)))
+(defun (the-longs v) v)
