@@ -1191,11 +1191,6 @@ and private parseHeaded (s: SExpr) (r: Range) (head: SExpr) (sym: string) (args:
                         EIf(parseExpr current, EBool(true, listRange), buildOr rest, listRange)
                 buildOr args
 
-            | "not" ->
-                match args with
-                | [arg] -> EIf(parseExpr arg, EBool(false, listRange), EBool(true, listRange), listRange)
-                | _ -> failwithf $"Invalid not syntax at %s{Lexer.formatPos r}"
-
             | "fun"
             | "bjoroutine" ->
                 // `headName sym`, for the reason the spawn forms above use it:

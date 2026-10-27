@@ -1,0 +1,35 @@
+;; `not` is a prelude function: called, as a value, and shadowed.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/not_value_macro.bjo")
+
+(type (: Flags (Record (: shown bool) (: n int))))
+
+(: twice (-> (-> bool bool) bool bool))
+(defun (twice f x) (f (f x)))
+
+(: apply-not (-> (-> bool bool) bool bool))
+(defun (apply-not not x) (not x))
+
+(: pass-on (-> bool (Vec bool)))
+(defun (pass-on not) (vec-map (fun (b) not) [#t]))
+
+;; The template's `not` is the prelude's, whatever the caller binds.
+(: under-a-local (-> int (Vec bool)))
+(defun (under-a-local not) (negate-all [#t #f]))
+
+(defun (main)
+  (expect "called" (not #t) #f)
+  (expect "called on false" (not #f) #t)
+  (expect "nested" (not (not #t)) #t)
+  (expect "as a value" (vec-map not [#t #f #t]) [#f #t #f])
+  (expect "passed on" (twice not #t) #t)
+  (def flip not)
+  (expect "bound" (flip #f) #t)
+  (expect "through update" (get (update (Flags (shown #f) (n 1)) .shown not) .shown) #t)
+  (expect "a local not, called, is the local" (apply-not (fun (b) b) #t) #t)
+  (expect "a local not, as a value, is the local" (pass-on #f) [#f])
+  (expect "in a template, under a local not" (under-a-local 0) [#f #t])
+  (expect "in and" (and (not #f) (not (= 1 2))) #t)
+  (println "done"))

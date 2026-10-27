@@ -1281,7 +1281,7 @@ let private specialForms =
     [ "->"; "and"; "begin"; "bjo"; "bjoroutine"; "by-colour"; "case"; "cast"; "def"; "def*"; "def/hash-extend"
       "def/macro"; "def/mutable"; "def/pattern"; "def/trait"; "defbjo"; "defbjouble"; "defun"; "dyn"
       "export"; "fun"; "if"; "impl"; "impl/extern"; "import"; "import/class"; "import/extern"; "include"
-      "let"; "let/mono"; "letrec"; "loop"; "match"; "module"; "not"; "or"; "parameterize"; "re-export"
+      "let"; "let/mono"; "letrec"; "loop"; "match"; "module"; "or"; "parameterize"; "re-export"
       "record"; "record-ref"; "record-set"; "record-set!"; "seq"; "seql"; "set!"; "spawn"; "spawn-evt"
       "spawn/daemon"; "spawn/detached"; "struct"; "struct-ref"; "struct-set"; "struct-set!"; "task->event"
       "try"; "type"; "type-rec"; "def/grammar"; "unless"; "when"; "with-open"; "with-return"; "yield"; "yield-from" ]
