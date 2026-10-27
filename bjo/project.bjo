@@ -37,7 +37,7 @@
   project-frameworks-file write-frameworks
 
   ;; NuGet
-  project-nuget-dir project-nuget-lock-file target-framework
+  project-nuget-dir project-nuget-lock-file target-framework compiler-dir
 
   ;; Sources
   sources-under
@@ -163,6 +163,20 @@
 ;; packages for it.
 (: string)
 (def target-framework "net10.0")
+
+;; The compiler's directory, where the Bjolang runtime's assemblies are: a
+;; package's C# glue is compiled against them. The launcher exports the
+;; compiler's path as `BJOLANG_COMPILER`; without it, the compiler is where
+;; `build_compiler.sh` puts it.
+(: (-> string))
+(defun (compiler-dir)
+  (match (get-environment-variable "BJOLANG_COMPILER")
+    ((Some path) (option-value (parent-directory (path-absolute path)) "."))
+    (None
+     (path-combine (match (get-environment-variable "BJO_ROOT")
+                     ((Some dir) dir)
+                     (None (path-absolute (path-combine clr-base-dir ".."))))
+                   "bin" "compiler"))))
 
 (: (-> Project string))
 (defun (project-lock-file p) (path-combine (project-dir p) "bjo.lock"))

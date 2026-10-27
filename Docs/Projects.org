@@ -28,6 +28,7 @@ myapp/
     git/            one bare clone per repository URL
     pkg/            one directory per fetched version: bjorsec@1.2.3/
     nuget/root/     the generated project NuGet packages are restored with
+    nuget/glue/     the generated projects the packages' C# glue is built with
     tmp/
 #+END_SRC
 
@@ -88,8 +89,10 @@ are in ~bjo/manifest.bjo~, which is the only reader of it.
   author needs in order to test it, and building it here runs no tests.
 - ~frameworks~ names the .NET *shared frameworks* this package's modules may
   name types from — see below. Optional, allowed in any package.
-- ~packages~ names the *NuGet packages* the project uses — see below. Optional,
-  and for now only allowed in the project being built.
+- ~packages~ names the *NuGet packages* the package uses — see below. Optional,
+  allowed in any package.
+- ~csharp~ names directories of *C# glue*, compiled into an assembly of the
+  package's own — see below. Optional, allowed in any package.
 - ~runtime~ gives the program's *.NET runtime settings*, such as server GC —
   see below. Optional. Only the project being built uses it.
 - ~(aot #t)~ builds the program as a *Native AOT* executable too — see below.
@@ -233,6 +236,88 @@ Current limitations:
 - *The compiler loads the package assemblies into its own process* to read
   their types. A package assembly with the same name as one the compiler
   already uses, in another version, may not load.
+
+** C# glue
+
+#+BEGIN_SRC scheme
+(package
+  (name (data arrow))
+  (version "0.1.0")
+  (packages (nuget (id "Apache.Arrow") (version "20.0.0")))
+  (csharp "glue"))
+#+END_SRC
+
+*Glue is C# that a package carries for what Bjolang's interop cannot reach*:
+spans, ~ref~ and ~in~ parameters, ~Nullable<T>~, pointers, a hot loop. The
+package's modules call it like any other .NET code, through ~import/extern~
+and ~import/class~:
+
+#+BEGIN_SRC csharp
+// glue/Columns.cs
+namespace Data.Arrow;
+
+public static class Columns {
+    // The values of a column, copied out of the span Arrow hands out.
+    public static long[] Values(Apache.Arrow.Int64Array a) => a.Values.ToArray();
+
+    // A Bjolang Option, rather than a long? that Bjolang cannot read.
+    public static BjolangRuntime.Option<long> At(Apache.Arrow.Int64Array a, int i) =>
+        a.GetValue(i) is long v ? BjolangRuntime.Some(v) : BjolangRuntime.None<long>();
+}
+#+END_SRC
+
+#+BEGIN_SRC scheme
+(import/class (Int64Array (: Apache.Arrow.Int64Array)))
+(import/extern
+  (column-values (: Data.Arrow.Columns.Values (-> Int64Array (Array long))))
+  (column-at     (: Data.Arrow.Columns.At (-> Int64Array int (Option long)))))
+#+END_SRC
+
+~csharp~ names directories, relative to the package directory. *Every ~.cs~
+file under them is compiled*, except those under a ~bin~ or ~obj~
+directory, into one assembly of the package's own, ~BjoGlue.<name>~. It is
+compiled:
+
+- for the same target framework as the program, with implicit ~using~s and
+  ~unsafe~ allowed, and nullable reference types off;
+- against the package's NuGet packages and shared frameworks, so that glue
+  can use what the package declares and nothing has to be said twice;
+- against the Bjolang runtime: glue may take and give Bjolang's own values,
+  ~BjolangRuntime.Option<T>~ for an ~(Option %a)~, ~BjoString.Utf8String~ for
+  a ~string~, ~Collections.RrbList<T>~ for a ~(Vec %a)~, and the rest of
+  what the table of types that cross lists. That is often the whole point of
+  the glue: a ~long?~ made into an ~Option~ in C# is one that Bjolang reads.
+
+*What the glue gives Bjolang has to be what Bjolang's interop understands*:
+methods taking and giving arrays, ~Func~, tuples and the runtime's types. A
+span or a ~ref~ parameter is for inside the glue. Nothing checks this
+beyond the ~import/extern~ that names the method, which refuses a method it
+cannot call, as it refuses one of a NuGet package.
+
+*Glue is built by the .NET SDK*, with the NuGet packages: ~bjo~ writes a
+project for it in ~.bjo/nuget/glue/<name>/~, which the generated root project
+references, so the one restore resolves the glue's packages with everything
+else's and ~packages.lock.json~ records them. Then it runs ~dotnet build~ on
+each glue project. A build needs the SDK's ~dotnet~ command, and a
+~Directory.Build.props~ above the package is not used, as for packages.
+
+*Glue that does not compile stops the build*, with the C# compiler's errors:
+
+#+BEGIN_SRC text
+bjo: the C# glue of (data arrow) does not compile:
+  /home/me/arrow/glue/Columns.cs(9,38): error CS1002: ; expected
+#+END_SRC
+
+*Glue is built again when it has changed*: when a ~.cs~ file is added,
+removed or edited, when the manifest's packages change, or when the Bjolang
+runtime is rebuilt. The modules of the build are then compiled again too, so
+a method that changed its parameters is a compile error at the call and not
+a ~MissingMethodException~ when the program runs. When nothing has changed,
+nothing is started.
+
+*A dependency's glue is part of every build that uses it*, as its packages
+are: a program depending on ~(data arrow)~ says nothing about C#. ~bjo
+publish~ copies the glue's assembly with the program.
 
 ** Runtime settings
 

@@ -1371,6 +1371,156 @@ def test_nuget(work, c):
 
 
 # ---------------------------------------------------------------------------
+# C# glue
+# ---------------------------------------------------------------------------
+#
+# A package's `(csharp "glue")`: C# sources that bjo compiles into an assembly
+# of the package's own, against its NuGet packages and the Bjolang runtime.
+
+GLUE_CS = '''using BjoString;
+
+namespace GlueTest;
+
+public static class Numbers {
+    // A Bjolang Option, made in C#, from a Bjolang string.
+    public static BjolangRuntime.Option<long> ParseLong(Utf8String s) =>
+        long.TryParse(s.ToString(), out var n) ? BjolangRuntime.Some(n) : BjolangRuntime.None<long>();
+
+    // A span, which Bjolang cannot use, used inside the glue.
+    public static long Sum(long[] xs) {
+        System.ReadOnlySpan<long> span = xs;
+        long total = 0;
+        foreach (var x in span) total += x;
+        return total;
+    }
+}
+'''
+
+GLUE_MAIN = '''(import (std prelude))
+
+(import/extern
+  (parse-long (: GlueTest.Numbers.ParseLong (-> string (Option long))))
+  (sum (: GlueTest.Numbers.Sum (-> (Array long) long))))
+
+(defun (main)
+  (println (written (parse-long "42")))
+  (println (written (parse-long "nope")))
+  (println (long->string (sum (vec->array [1L 2L 3L]))))
+  0)
+'''
+
+
+def glue_app(directory, feed, cs=GLUE_CS, main=GLUE_MAIN, name="glueapp", extra=""):
+    """A project with `(csharp "glue")` and one C# file in glue/."""
+    directory = Path(directory)
+    write(directory / "manifest.bjodat",
+          f'(package\n  (name ({name}))\n  (version "0.1.0")\n{extra}  (csharp "glue"))\n')
+    write(directory / "glue" / "Glue.cs", cs)
+    write(directory / "src" / "main.bjo", main)
+    nuget_config(directory, feed)
+    return directory
+
+
+@test("csharp glue")
+def test_csharp_glue(work, c):
+    if not shutil.which("dotnet"):
+        c.that("SKIPPED: no dotnet on PATH", True)
+        return
+
+    feed, env, _ = make_feed(work)
+
+    # 1. Glue that answers a Bjolang Option and takes a Bjolang string.
+    app = glue_app(work / "app", feed)
+    ran = run_bjo(app, "run", env=env)
+    c.says("glue answers a Bjolang Option", ran, "(Some 42L)")
+    c.says("and None", ran, "None")
+    c.says("and uses a span inside", ran, "6")
+    root = app / ".bjo" / "nuget" / "root"
+    for listed in ("compile.txt", "runtime.txt"):
+        text = (root / listed).read_text() if (root / listed).exists() else ""
+        c.that(f"{listed} names the glue's assembly", "BjoGlue.glueapp.dll" in text, text)
+        c.that(f"and not the runtime's", "BjolangRuntime.dll" not in text, text)
+
+    # 2. Nothing changed: no restore, and no build of the glue.
+    restored = restore_mark(app)
+    again = run_bjo(app, "build", env=env)
+    c.says("an unchanged second build is up to date", again, "Up to date")
+    c.that("and starts no restore", restore_mark(app) == restored)
+
+    # 3. A change to the glue alone rebuilds it, and the program against it:
+    # a method that lost a parameter is a compile error, not a crash.
+    glue_app(app, feed, cs=GLUE_CS.replace("(long[] xs)", "(long[] xs, long start)"))
+    changed = run_bjo(app, "build", env=env)
+    c.failed("a glue whose method changed makes the program stale", changed)
+    c.says("and its call a compile error", changed, "takes 2 argument(s), but was given 1")
+    glue_app(app, feed)
+    c.says("putting it back builds and runs again", run_bjo(app, "run", env=env), "(Some 42L)")
+
+    # 4. Glue that does not compile.
+    glue_app(app, feed, cs=GLUE_CS.replace("long total = 0;", "long total = 0"))
+    broken = run_bjo(app, "build", env=env)
+    c.failed("glue that does not compile is refused", broken)
+    c.says("naming the package", broken, "the C# glue of (glueapp) does not compile")
+    c.says("and the C# compiler's error, with file and line", broken, "Glue.cs(13,")
+    c.says("and its code", broken, "error CS1002")
+    glue_app(app, feed)
+    c.says("and fixing it is a build that works", run_bjo(app, "run", env=env), "6")
+
+    # 5. A dependency with glue that uses a NuGet package of its own. The
+    # program names neither the glue nor the package.
+    lib = work / "gluelib"
+    write(lib / "manifest.bjodat",
+          '(package\n  (name (gluelib))\n  (version "0.1.0")\n'
+          f'  (packages (nuget (id "{GREETER}") (version "1.0.0")))\n'
+          '  (csharp "glue"))\n')
+    write(lib / "glue" / "Shout.cs",
+          'namespace GlueLib;\n'
+          'public static class Shout {\n'
+          '    public static BjoString.Utf8String Greet(BjoString.Utf8String who) =>\n'
+          '        BjoString.Utf8String.FromUtf16(BjoTest.Greeter.Hello(who.ToString()).ToUpperInvariant());\n'
+          '}\n')
+    write(lib / "src" / "core.bjo",
+          '(import (std prelude))\n(export shout)\n'
+          '(import/extern (greet (: GlueLib.Shout.Greet (-> string string))))\n'
+          '(: shout (-> string))\n(defun (shout) (greet "lib"))\n')
+    user = work / "user"
+    write(user / "manifest.bjodat",
+          '(package\n  (name (user))\n  (version "0.1.0")\n'
+          '  (depends (package (name (gluelib)) (source (path (dir "../gluelib"))))))\n')
+    write(user / "src" / "main.bjo",
+          '(import (std prelude))\n(import (gluelib core))\n(defun (main) (println (shout)) 0)\n')
+    nuget_config(user, feed)
+    c.says("a dependency's glue, and the package it uses, reach the program",
+           run_bjo(user, "run", env=env), "HELLO, LIB FROM 1.0.0")
+    c.that("through a glue project of its own",
+           (user / ".bjo" / "nuget" / "glue" / "gluelib" / "BjoGlue.gluelib.csproj").exists())
+    user_lock = user / "packages.lock.json"
+    c.that("and the lock file names the glue's package",
+           user_lock.exists() and GREETER in user_lock.read_text())
+
+    # 6. A published program loads the glue from beside it.
+    published = work / "glue-published"
+    c.worked("a program with glue publishes",
+             run_bjo(app, "publish", "-o", str(published), env=env))
+    exe = published / "main.exe"
+    if exe.exists():
+        ran = subprocess.run(["dotnet", str(exe)], cwd=str(work), capture_output=True,
+                             text=True, timeout=600)
+        c.says("and the published program uses it", ran, "(Some 42L)")
+
+    # 7. Glue, and no dotnet on PATH.
+    fresh = glue_app(work / "no-dotnet", feed)
+    empty = work / "empty-path"
+    empty.mkdir(exist_ok=True)
+    no_path = {**os.environ, **env, "PATH": str(empty), "BJO_ROOT": str(ROOT)}
+    no_sdk = subprocess.run([shutil.which("dotnet"), str(ROOT / "bjo" / "bjo.exe"), "build"],
+                            cwd=str(fresh), capture_output=True, text=True, timeout=600,
+                            env=no_path)
+    c.failed("glue without a dotnet on PATH is refused", no_sdk)
+    c.says("and the error says what is missing", no_sdk, "has C# glue, and compiling it needs")
+
+
+# ---------------------------------------------------------------------------
 # Running the suite
 # ---------------------------------------------------------------------------
 
