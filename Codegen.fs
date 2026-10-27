@@ -4086,26 +4086,34 @@ and private generateOutCall
 
     outValue
 
+/// The C# class of the module `modName`.
+and private moduleClassOf (modName: string) =
+    if Naming.isModuleKey modName then
+        moduleClassReference $"%s{Naming.namespaceOfKey modName}.%s{moduleClassName modName}"
+    else
+        moduleClassName modName
+
 /// Fully qualifies a module-level binding.
 and private qualifiedName (ctx: CodegenContext) (name: string) =
     match Map.tryFind name ctx.GlobalBindings with
     // If the binding is a standard built-in (from `BjolangRuntime`), we emit its name directly without any class qualification.
     | Some("", member') -> sanitizeIdent (Naming.emittedTypeName member')
-    | Some(modName, member') ->
-        let cls =
-            if Naming.isModuleKey modName then
-                moduleClassReference $"%s{Naming.namespaceOfKey modName}.%s{moduleClassName modName}"
-            else
-                moduleClassName modName
-
-        $"%s{cls}.%s{Prelude.moduleMemberName (Naming.emittedTypeName member')}"
+    | Some(modName, member') -> $"%s{moduleClassOf modName}.%s{Prelude.moduleMemberName (Naming.emittedTypeName member')}"
     | None ->
         // Handle inline macro expansions: if the name is formatted as `Class::name`, we split it and qualify the method call with the class name.
         match name.LastIndexOf "::" with
         | i when i > 0 && isModuleQualified name ->
             let cls = moduleClassReference (name.Substring(0, i))
             $"%s{cls}.%s{Prelude.moduleMemberName (name.Substring(i + 2))}"
-        | _ -> sanitizeIdent (Naming.emittedTypeName name)
+        | _ ->
+            // The suspending copy of an import, made in the imported module:
+            // no import names it, so it lives where the function it copies does.
+            let copied = name.Substring(0, max 0 (name.Length - (Naming.suspendingCopy "").Length))
+
+            match Map.tryFind copied ctx.GlobalBindings with
+            | Some(modName, member') when Naming.isSuspendingCopy name && modName <> "" ->
+                $"%s{moduleClassOf modName}.%s{Prelude.moduleMemberName (Naming.emittedTypeName (Naming.suspendingCopy member'))}"
+            | _ -> sanitizeIdent (Naming.emittedTypeName name)
 
 /// A closed dictionary as a field of the literal holder, and the name the use
 /// site reads it by.
@@ -8863,45 +8871,6 @@ let generateProgram
         // `main__SList`. The two sets merge rather than compete.
         |> List.fold (fun acc (n, info) -> Map.add n info acc) builtinUnionCases
 
-    // The names more than one module binds. Every module is a `using static` at
-    // the call site, so a bare identifier reaches all of them at once: C# merges
-    // the method groups and either resolves the call to whichever overload fits
-    // best — not necessarily the binding inference chose — or reports an
-    // ambiguity. A module is counted by where the binding really lives, so a
-    // facade passing on another module's name is not a second binder.
-    //
-    // Counted by the C# member name, not the Bjolang one: `a-b` in one module
-    // and `asubb` in another are both `asubb` to C# (CS0121).
-    let contested =
-        let bound =
-            decls
-            |> collectDecls (function
-                | TModule (modName, innerDecls, _) ->
-                    innerDecls |> List.collect (function
-                        | TDef (n, _, _, _)
-                        | TDefMutable (n, _, _, _)
-                        | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, modName, n) ]
-                        | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, modName, n))
-                        | TDefPattern (_, _, binders, _) -> binders |> List.map (fun (n, _) -> (n, modName, n))
-                        | TExtern (visible, origin, _, _) -> [ (visible, origin.OriginModule, origin.OriginalName) ]
-                        | _ -> [])
-                | _ -> [])
-            |> List.distinct
-
-        let spelledByMany =
-            bound
-            |> List.map (fun (_, modName, original) -> Prelude.moduleMemberName original, modName)
-            |> List.distinct
-            |> List.countBy fst
-            |> List.filter (fun (_, count) -> count > 1)
-            |> List.map fst
-            |> Set.ofList
-
-        bound
-        |> List.filter (fun (_, _, original) -> spelledByMany.Contains(Prelude.moduleMemberName original))
-        |> List.map (fun (visible, _, _) -> visible)
-        |> Set.ofList
-
     // Two names a module binds that C# spells alike: `a-b` and `asubb`, `a?`
     // and `a_QMARK`. Mangling is not injective, and the module class would
     // declare the member twice (CS0111, CS0102).
@@ -8927,27 +8896,13 @@ let generateProgram
                 | _ -> ())
         | _ -> ()
 
-    // Every segment of every namespace a module of this compilation lives in:
-    // `BjoMod`, `std`, `text`, `net`, `websocket`. The code is emitted inside
-    // `namespace BjoMod.<dir>`, and C# looks a bare name up in each enclosing
-    // namespace before it reaches the `using static` lines at the top of the
-    // file. A function `text` imported into `BjoMod.app` therefore finds the
-    // namespace `BjoMod.text` that `(text encodings)` lives in, and stops there
-    // (CS0118). An import spelled like a segment is qualified, as a contested
-    // one is.
-    let namespaceSegments =
-        (mainModulePath :: linkedDlls)
-        |> List.map (IO.Path.GetFullPath >> Naming.moduleNamespace)
-        |> List.collect (fun ns -> ns.Split '.' |> List.ofArray)
-        |> Set.ofList
-
     // Where each top-level name is emitted from, and under what member name.
     //
-    // A plain import is deliberately absent: it resolves through the
-    // `using static` for its module, as it always has. What is here is what a
-    // bare identifier cannot express — a name whose spelling differs from the
-    // member it stands for, which is every alias and every import brought in
-    // under a modifier, and a name another module binds as well.
+    // Every import is here, and is qualified with its module class. A bare
+    // identifier reaches every module class this file has a `using static`
+    // for, and that includes each module's private members, which no import
+    // lists: bjosql's own `string-take` made every bare call to the prelude's
+    // ambiguous (CS0121).
     //
     // Later entries win, as a later import wins in inference: both read the
     // modules in the same order.
@@ -8961,32 +8916,9 @@ let generateProgram
                     | TDefTuple (names, _, _, _) -> names |> List.map (fun n -> (n, (modName, n)))
                     | TDefPattern (_, _, binders, _) -> binders |> List.map (fun (n, _) -> (n, (modName, n)))
                     | TDefun (n, _, _, _, _, _, _, _, _) -> [ (n, (modName, n)) ]
-                    // When an import shares a name with a builtin, or with a
-                    // binding of another module (`contested` above), both spellings
-                    // reach the call site through a `using static`. Because C# cannot
-                    // resolve ambiguous static imports, we must explicitly qualify
-                    // the method with its class name to prevent a CS0411 compiler error.
-                    //
-                    // Unconditionally, rather than only where the name also
-                    // moved: the branch below reads "differs from what a bare
-                    // identifier would find", and for these a bare identifier
-                    // finds the wrong thing even when nothing differs.
-                    // So does one whose member got a derived name, which a bare
-                    // identifier does not spell: see `Prelude.moduleMemberName`.
-                    | TExtern (visible, origin, _, _) when
-                        Set.contains visible builtinBindings || Set.contains visible contested
-                        || Prelude.moduleMemberName origin.OriginalName <> Naming.sanitizeIdent origin.OriginalName
-                        || Set.contains (Prelude.moduleMemberName origin.OriginalName) namespaceSegments
-                        ->
-                        [ (visible, (origin.OriginModule, origin.OriginalName)) ]
-                    // An import whose spelling or whose home differs from what a
-                    // bare identifier would find: a modifier renamed it, or the
-                    // module publishing it was a facade and generated no code
-                    // for it at all.
-                    | TExtern (visible, origin, _, _) when
-                        visible <> origin.OriginalName || origin.OriginModule <> modName
-                        ->
-                        [ (visible, (origin.OriginModule, origin.OriginalName)) ]
+                    // Its home, under its own name: a modifier may have renamed
+                    // it, and a facade passing it on generated no code for it.
+                    | TExtern (visible, origin, _, _) -> [ (visible, (origin.OriginModule, origin.OriginalName)) ]
                     | _ -> []
                 )
             | _ -> []
