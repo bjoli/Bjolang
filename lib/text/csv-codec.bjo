@@ -1,0 +1,494 @@
+;; This Source Code Form is subject to the terms of the Mozilla Public
+;; License, v. 2.0. If a copy of the MPL was not distributed with this
+;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;;
+;; As a special exception to the Mozilla Public License, version 2.0, if you
+;; compile your application source code and portions of this software are
+;; embedded into the generated object code or executable form as a normal
+;; consequence of the compilation process (such as inline functions,
+;; templates, generics, or macros), you may redistribute such embedded portions
+;; in such object code or executable form without complying with the source code
+;; availability requirements or notice obligations of Section 3 of the MPL 2.0.
+
+;; text/csv-codec.bjo — records to CSV rows and back.
+;;
+;; Two traits for a field, a trait for a record, and a macro that writes the
+;; record's instance, as (text json-codec) has them for JSON. The readers and
+;; writers here are built on (text csv), and an error is its CsvError.
+;;
+;; A record's columns are found by name in the header row, so the order of
+;; the columns does not matter and columns the record does not have are not
+;; read. Without a header, the fields are the columns in order.
+;;
+;; Its reference is its docs, in csv-codec.bjodoc.
+
+(export
+  ;; Fields
+  ->csv-field csv-field->
+  ;; Records
+  CsvRecord csv-columns csv-record-> ->csv-record
+  CsvColumns CsvColumn
+  ;; What generated code calls. Exported because a macro template's names
+  ;; resolve against this module's exports.
+  csv-columns-of csv-required csv-optional csv-decode-field csv-decode-field/default csv-row-of
+  ;; The generator
+  def/csv-type
+  ;; Reading and writing records
+  csv-fold-records csv-for-each-record parse-csv-records
+  csv-records->string write-csv-records)
+
+(import (std prelude))
+(import (std syntax-match))
+(import (text csv))
+
+;; Every export is documented there; the module doc is too.
+(:doc #:file "csv-codec.bjodoc")
+
+;; ===========================================================================
+;; Fields
+;; ===========================================================================
+
+(def/trait (->csv-field %a)
+  (: ->csv-field (-> %a string)))
+
+;; The error is what is wrong with the text, without where: the reader adds
+;; the line, the row and the column.
+(def/trait (csv-field-> %a)
+  (: csv-field-> (-> string (Result string %a))))
+
+(impl (->csv-field string) (defun (->csv-field s) s))
+(impl (->csv-field int) (defun (->csv-field n) (int->string n)))
+(impl (->csv-field long) (defun (->csv-field n) (long->string n)))
+(impl (->csv-field double) (defun (->csv-field n) (double->string n)))
+(impl (->csv-field decimal) (defun (->csv-field n) (decimal->string n)))
+(impl (->csv-field bool) (defun (->csv-field b) (if b "true" "false")))
+
+;; `parse` raises on text that is not a number, as the prelude's string->int
+;; does. The text is quoted in the error: "12,5" is not a decimal.
+(: (-> string string (-> string %a) (Result string %a)))
+(defun (parsed s what parse)
+  (match (try (parse s) #:catch (System.FormatException System.OverflowException))
+    ((Ok v) (Ok v))
+    ((Err _) (Err (str (written s) " is not " what)))))
+
+(impl (csv-field-> string) (defun (csv-field-> s) (Ok s)))
+(impl (csv-field-> int) (defun (csv-field-> s) (parsed s "an int" string->int)))
+(impl (csv-field-> long) (defun (csv-field-> s) (parsed s "a long" string->long)))
+(impl (csv-field-> double) (defun (csv-field-> s) (parsed s "a number" string->double)))
+(impl (csv-field-> decimal) (defun (csv-field-> s) (parsed s "a decimal" string->decimal)))
+
+;; true or false, in any case, with space around it or not.
+(impl (csv-field-> bool)
+  (defun (csv-field-> s)
+    (def t (string-downcase (string-trim s)))
+    (cond
+      ((= t "true") (Ok #t))
+      ((= t "false") (Ok #f))
+      (else (Err (str (written s) " is not true or false"))))))
+
+;; An empty field is None, and is written for None.
+(impl (->csv-field (Option %a))
+  (where (->csv-field %a))
+  (defun (->csv-field o)
+    (match o
+      ((Some x) (->csv-field x))
+      (None ""))))
+
+(impl (csv-field-> (Option %a))
+  (where (csv-field-> %a))
+  (defun (csv-field-> s)
+    (if (string-empty? s)
+        (Ok None)
+        (match (csv-field-> s)
+          ((Ok v) (Ok (Some v)))
+          ((Err e) (Err e))))))
+
+;; ===========================================================================
+;; Records
+;; ===========================================================================
+
+;; A column a record reads: its name in the header, and whether the header
+;; has to have it.
+(type (: CsvColumn (Record (: name string) (: required bool))))
+
+;; A record's columns, one for each field, in the order of the fields. `%a`
+;; is the record: it says whose columns they are, and nothing else.
+(type (: (CsvColumns %a) (Newtype (IArray CsvColumn))))
+
+;; The error of csv-record-> is the field it is about, counted from 0 in the
+;; record's order, and what is wrong.
+(def/trait (CsvRecord %a)
+  (: csv-columns (-> (CsvColumns %a)))
+  ;; `at` holds, for each field, where its column is in the row: -1 for a
+  ;; column the header does not have.
+  (: csv-record-> (-> (IArray int) (IArray string) (Result (Tuple int string) %a)))
+  (: ->csv-record (-> %a (IArray string))))
+
+;; ---------------------------------------------------------------------------
+;; What generated code calls
+;; ---------------------------------------------------------------------------
+
+(: (-> string CsvColumn))
+(defun (csv-required name) (CsvColumn (name name) (required #t)))
+
+(: (-> string CsvColumn))
+(defun (csv-optional name) (CsvColumn (name name) (required #f)))
+
+(: (-> (List CsvColumn) (CsvColumns %a)))
+(defun (csv-columns-of cols) (CsvColumns (list->iarray cols)))
+
+(: (-> (List string) (IArray string)))
+(defun (csv-row-of fields) (list->iarray fields))
+
+;; Field `k`, whose column is at `pos` in the row.
+(: (-> (IArray int) int (IArray string) (Result (Tuple int string) %a)) (where (csv-field-> %a)))
+(defun (csv-decode-field at k row)
+  (def pos (iarray-ref at k))
+  (if (>= pos (iarray-length row))
+      (Err (Tuple k "the row ends before this column"))
+      (match (csv-field-> (iarray-ref row pos))
+        ((Ok v) (Ok v))
+        ((Err e) (Err (Tuple k e))))))
+
+;; The same, with `fallback` when the header has no such column, or the row
+;; ends before it, or the field is empty.
+(: (-> (IArray int) int (IArray string) %a (Result (Tuple int string) %a)) (where (csv-field-> %a)))
+(defun (csv-decode-field/default at k row fallback)
+  (def pos (iarray-ref at k))
+  (cond
+    ((or (< pos 0) (>= pos (iarray-length row))) (Ok fallback))
+    (:def s (iarray-ref row pos))
+    ((string-empty? s) (Ok fallback))
+    (else
+     (match (csv-field-> s)
+       ((Ok v) (Ok v))
+       ((Err e) (Err (Tuple k e)))))))
+
+;; ===========================================================================
+;; Reading
+;; ===========================================================================
+
+;; Where each column is in the row without a header: the fields in order.
+(: (-> (IArray CsvColumn) (IArray int)))
+(defun (in-order cols)
+  (list->iarray (loop (:for i (range 0 (iarray-length cols))) (:acc (listing i)))))
+
+;; Where each column is in the row: the first column in the header with its
+;; name, or -1 for one the header need not have.
+(: (-> (IArray CsvColumn) (IArray string) (Result string (IArray int))))
+(defun (layout cols names)
+  (def found (transientmap-empty))
+  (loop (:for (Tuple i name) (enumerate names))
+        (:do (unless (transientmap-contains? found name)
+               (transientmap-set! found name i))))
+  (let go ((k 0) (out (listbuilder-empty)))
+    (cond
+      ((= k (iarray-length cols)) (Ok (list->iarray (listbuilder->list out))))
+      (:def col (iarray-ref cols k))
+      (:match (Some i) (transientmap-try-ref found (record-ref col name))
+       (listbuilder-add! out i)
+       (go (+ k 1) out))
+      ((record-ref col required)
+       (Err (str "the header has no column " (written (record-ref col name)))))
+      (else
+       (listbuilder-add! out -1)
+       (go (+ k 1) out)))))
+
+;; A field that does not decode, as a CsvError: at the line its row starts
+;; on, in the field the column is in, and named by the column.
+(: (-> CsvReader (IArray CsvColumn) (IArray int) int string CsvError))
+(defun (field-error rd cols at k message)
+  (CsvError (message (str (record-ref (iarray-ref cols k) name) ": " message))
+            (line (csv-row-line rd))
+            (row (csv-row-number rd))
+            (field (+ (iarray-ref at k) 1))))
+
+;; With a header, the first row is it, and an input with no rows has no
+;; records. An error in the header is about all of it, so its field is 0.
+(: (-> CsvReader bool %seed (-> %a %seed %seed) (Result CsvError %seed)) (where (CsvRecord %a)))
+(defun (fold-records rd header? seed f)
+  (: columns (CsvColumns %a))
+  (def columns (csv-columns))
+  (def (CsvColumns cols) columns)
+  (def placed
+    (cond
+      ((not header?) (Ok (Some (in-order cols))))
+      (else
+       (match (csv-next! rd)
+         ((Err e) (Err e))
+         ((Ok None) (Ok None))
+         ((Ok (Some names))
+          (match (layout cols names)
+            ((Ok at) (Ok (Some at)))
+            ((Err message)
+             (Err (CsvError (message message) (line (csv-row-line rd)) (row 1) (field 0))))))))))
+  (match placed
+    ((Err e) (Err e))
+    ((Ok None) (Ok seed))
+    ((Ok (Some at))
+     (let loop ((seed seed))
+       (match (csv-next! rd)
+         ((Err e) (Err e))
+         ((Ok None) (Ok seed))
+         ((Ok (Some row))
+          (match (csv-record-> at row)
+            ((Ok v) (loop (f v seed)))
+            ((Err (Tuple k message)) (Err (field-error rd cols at k message))))))))))
+
+;; Each record and the seed so far give the next seed. The records before an
+;; error have been folded when the error is answered.
+(: (-> %s %seed (-> %a %seed %seed)
+       (#:header? bool) (#:separator char) (#:quote-char (Option char)) (#:strict? bool)
+       (Result CsvError %seed))
+   (where (CsvSource %s) (CsvRecord %a)))
+(defun (csv-fold-records source seed f
+                         #:header? #t #:separator #\, #:quote-char (Some #\") #:strict? #t)
+  (call-with-csv-reader source
+                        (fun (rd) (fold-records rd header? seed f))
+                        #:separator separator #:quote-char quote-char #:strict? strict?))
+
+(: (-> %s (-> %a void)
+       (#:header? bool) (#:separator char) (#:quote-char (Option char)) (#:strict? bool)
+       (Result CsvError Unit))
+   (where (CsvSource %s) (CsvRecord %a)))
+(defun (csv-for-each-record source f
+                            #:header? #t #:separator #\, #:quote-char (Some #\") #:strict? #t)
+  (call-with-csv-reader source
+                        (fun (rd) (fold-records rd header? unit (fun (v u) (f v) u)))
+                        #:separator separator #:quote-char quote-char #:strict? strict?))
+
+(: (-> %s
+       (#:header? bool) (#:separator char) (#:quote-char (Option char)) (#:strict? bool)
+       (Result CsvError (Vec %a)))
+   (where (CsvSource %s) (CsvRecord %a)))
+(defun (parse-csv-records source
+                          #:header? #t #:separator #\, #:quote-char (Some #\") #:strict? #t)
+  (def out (transientvec-empty))
+  (match (call-with-csv-reader source
+                               (fun (rd) (fold-records rd header? unit (fun (v u) (transientvec-add! out v) u)))
+                               #:separator separator #:quote-char quote-char #:strict? strict?)
+    ((Ok _) (Ok (transientvec->vec out)))
+    ((Err e) (Err e))))
+
+;; ===========================================================================
+;; Writing
+;; ===========================================================================
+
+;; The column names, in the order of the fields.
+(: (-> (CsvColumns %a) (IArray string)))
+(defun (column-names columns)
+  (def (CsvColumns cols) columns)
+  (iarray-map (fun (c) (record-ref c name)) cols))
+
+;; The header, then a row for each record, each ended by a line end.
+(: (-> %rs
+       (#:header? bool) (#:separator char) (#:quote-char (Option char)) (#:quote-all? bool)
+       (#:crlf? bool)
+       string)
+   (where (CsvRecord %a) (Iterable %rs #:elem %a)))
+(defun (csv-records->string records
+                            #:header? #t #:separator #\, #:quote-char (Some #\") #:quote-all? #f
+                            #:crlf? #f)
+  (: columns (CsvColumns %a))
+  (def columns (csv-columns))
+  (def head (if header?
+                (csv->string (list (column-names columns))
+                             #:separator separator #:quote-char quote-char #:quote-all? quote-all?
+                             #:crlf? crlf?)
+                ""))
+  (str head
+       (csv->string (map (fun (r) (->csv-record r)) records)
+                    #:separator separator #:quote-char quote-char #:quote-all? quote-all?
+                    #:crlf? crlf?)))
+
+(: (-> OutputPort %rs
+       (#:header? bool) (#:separator char) (#:quote-char (Option char)) (#:quote-all? bool)
+       (#:crlf? bool)
+       void)
+   (where (CsvRecord %a) (Iterable %rs #:elem %a)))
+(defun (write-csv-records port records
+                          #:header? #t #:separator #\, #:quote-char (Some #\") #:quote-all? #f
+                          #:crlf? #f)
+  (: columns (CsvColumns %a))
+  (def columns (csv-columns))
+  (when header?
+    (write-csv-row port (column-names columns)
+                   #:separator separator #:quote-char quote-char #:quote-all? quote-all?
+                   #:crlf? crlf?))
+  (write-csv port (map (fun (r) (->csv-record r)) records)
+             #:separator separator #:quote-char quote-char #:quote-all? quote-all?
+             #:crlf? crlf?))
+
+;; ===========================================================================
+;; The generator
+;; ===========================================================================
+;; A runtime macro, as def/json-type is. Field types are never inspected:
+;; how a field reads and writes is settled later by instance resolution, and
+;; only the markers are read here.
+
+(: (-> string Syntax))
+(defun (ct-sym name) (SSym (string->symbol name)))
+
+(: (-> Syntax Syntax))
+(defun (ct-str s) (SStr (syntax->string s)))
+
+(: (-> int Syntax))
+(defun (ct-int n) (SInt (int->string n)))
+
+;; `(Box %a)` names the type `Box`; a bare `Point` names itself.
+(: (-> Syntax Syntax))
+(defun (ct-head-name head)
+  (match head
+    ((SList parts) (list-head parts))
+    (_ head)))
+
+(: (-> Syntax (List Syntax)))
+(defun (ct-head-vars head)
+  (match head
+    ((SList parts) (list-tail parts))
+    (_ Nil)))
+
+;; Each type parameter has to read and write as a field.
+(: (-> (-> Symbol Syntax) Syntax (List Syntax)))
+(defun (ct-where inject head)
+  (def vars (ct-head-vars head))
+  (if (list-empty? vars)
+      Nil
+      (list #'(,(inject 'where)
+               ,@(list-append
+                   (list-map (fun (v) #'(,(inject (string->symbol "csv-field->")) ,v)) vars)
+                   (list-map (fun (v) #'(,(inject (string->symbol "->csv-field")) ,v)) vars))))))
+
+;; --- fields ----------------------------------------------------------------
+
+(: (-> Syntax string bool))
+(defun (ct-marker=? m name) (= (syntax->string m) name))
+
+;; The column's name: `#:csv "Name"`, or the field's own.
+(: (-> Syntax (List Syntax) Syntax))
+(defun (ct-column name markers)
+  (let go ((ms markers))
+    (cond
+      ((list-empty? ms) (ct-str name))
+      ((ct-marker=? (list-head ms) "#:csv") (list-head (list-tail ms)))
+      (else (go (list-tail ms))))))
+
+;; The fallback expression, or None if the field is required. `#:optional` is
+;; `#:default None`.
+(: (-> (List Syntax) (Option Syntax)))
+(defun (ct-fallback markers)
+  (let go ((ms markers))
+    (cond
+      ((list-empty? ms) None)
+      (else
+       (def m (list-head ms))
+       (cond
+         ((ct-marker=? m "#:optional") (Some (ct-sym "None")))
+         ((ct-marker=? m "#:default") (Some (list-head (list-tail ms))))
+         (else (go (list-tail ms))))))))
+
+;; The markers the record type keeps: all but #:csv, #:default and #:optional.
+(: (-> (List Syntax) (List Syntax)))
+(defun (ct-keep markers)
+  (let go ((ms markers))
+    (cond
+      ((list-empty? ms) Nil)
+      (else
+       (def m (list-head ms))
+       (cond
+         ((ct-marker=? m "#:default") (go (list-tail (list-tail ms))))
+         ((ct-marker=? m "#:csv") (go (list-tail (list-tail ms))))
+         ((ct-marker=? m "#:optional") (go (list-tail ms)))
+         (else (Cons m (go (list-tail ms)))))))))
+
+(: string)
+(def ct-shape
+  "a field is written (: name type), then any of #:mutable, #:optional, #:default <expr>, #:csv \"column\".")
+
+;; `syntax-error` has the type Syntax, so this is how a list is answered.
+(: (-> Syntax string (List Syntax)))
+(defun (ct-fail-list form message)
+  (ignore (syntax-error form message))
+  Nil)
+
+(: (-> Syntax Syntax))
+(defun (ct-field-name f)
+  (syntax-match f
+    ((_ name _ marker ...) name)
+    (bad (syntax-error bad ct-shape))))
+
+(: (-> Syntax (List Syntax)))
+(defun (ct-field-markers f)
+  (syntax-match f
+    ((_ _ _ marker ...) marker)
+    (bad (ct-fail-list bad ct-shape))))
+
+(: (-> Syntax Syntax))
+(defun (ct-strip f)
+  (syntax-match f
+    ((colon name ty marker ...) #'(,colon ,name ,ty ,@(ct-keep marker)))
+    (bad (syntax-error bad ct-shape))))
+
+;; --- columns, encode, decode ------------------------------------------------
+
+;; A column is required unless the field has a fallback.
+(: (-> (List Syntax) Syntax))
+(defun (ct-columns fields)
+  #'(csv-columns-of
+      (list ,@(list-map (fun (f)
+                          (def column (ct-column (ct-field-name f) (ct-field-markers f)))
+                          (match (ct-fallback (ct-field-markers f))
+                            (None #'(csv-required ,column))
+                            ((Some _) #'(csv-optional ,column))))
+                        fields))))
+
+(: (-> (List Syntax) Syntax))
+(defun (ct-encode fields)
+  #'(csv-row-of
+      (list ,@(list-map (fun (f) #'(->csv-field (record-ref v ,(ct-field-name f)))) fields))))
+
+;; One `match` per field wrapping the next, with the constructor innermost.
+(: (-> (List Syntax) int Syntax Syntax))
+(defun (ct-chain fields i ctor)
+  (cond
+    ((list-empty? fields) ctor)
+    (else
+     (def f (list-head fields))
+     (def v (ct-sym (str "__ct-v" (int->string i))))
+     (def e (ct-sym (str "__ct-e" (int->string i))))
+     (def get (match (ct-fallback (ct-field-markers f))
+                (None #'(csv-decode-field at ,(ct-int i) row))
+                ((Some d) #'(csv-decode-field/default at ,(ct-int i) row ,d))))
+     #'(match ,get
+         ((Err ,e) (Err ,e))
+         ((Ok ,v) ,(ct-chain (list-tail fields) (+ i 1) ctor))))))
+
+(: (-> Syntax (List Syntax) Syntax))
+(defun (ct-ctor head fields)
+  #'(Ok (,(ct-head-name head)
+         ,@(let go ((fs fields) (i 0))
+             (if (list-empty? fs)
+                 Nil
+                 (Cons #'(,(ct-field-name (list-head fs)) ,(ct-sym (str "__ct-v" (int->string i))))
+                       (go (list-tail fs) (+ i 1))))))))
+
+;; --- the form ---------------------------------------------------------------
+
+(: (-> (-> Symbol Syntax) Syntax Syntax (List Syntax) Syntax))
+(defun (ct-expand inject colon head fields)
+  #'(begin
+      (type (,colon ,head (Record ,@(list-map ct-strip fields))))
+
+      (impl (CsvRecord ,head)
+        ,@(ct-where inject head)
+        (defun (csv-columns) ,(ct-columns fields))
+        (defun (csv-record-> at row) ,(ct-chain fields 0 (ct-ctor head fields)))
+        (defun (->csv-record v) ,(ct-encode fields)))))
+
+(def/macro (def/csv-type form inject compare)
+  (syntax-match form
+    ((_ typedef)
+     (syntax-match typedef
+       ((colon head ('Record field ...)) (ct-expand inject colon head field))
+       (bad (syntax-error bad "def/csv-type takes a record: (def/csv-type (: Name (Record (: field type) ...)))"))))
+    (bad (syntax-error bad "def/csv-type takes exactly one record declaration."))))

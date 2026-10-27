@@ -50,7 +50,7 @@
   ;; Sources
   CsvInput CsvSource csv-input CsvFile csv-file
   ;; Pulling rows
-  CsvReader call-with-csv-reader csv-next!
+  CsvReader call-with-csv-reader csv-next! csv-row-line csv-row-number
   ;; Folds
   csv-fold csv-for-each
   ;; The whole document
@@ -143,6 +143,8 @@
                                     (: limit int #:mutable)
                                     (: chunk Utf8Chunk #:mutable)
                                     (: line int #:mutable)
+                                    ;; The line the row being read, or last read, starts on.
+                                    (: row-line int #:mutable)
                                     (: rows int #:mutable)
                                     (: options Options)
                                     ;; One buffer for every field with a doubled quote.
@@ -169,6 +171,7 @@
                      (limit (array-length bytes))
                      (chunk no-chunk)
                      (line 1)
+                     (row-line 1)
                      (rows 0)
                      (options opts)
                      (scratch (stringbuilder-empty))
@@ -541,6 +544,7 @@
        (end-line! rd)
        (skip))
       (else
+       (record-set! rd (row-line (record-ref rd line)))
        (def q (record-ref (record-ref rd options) quote-code))
        (let go ((field 1))
          (def b (record-ref rd bytes))
@@ -618,6 +622,16 @@
         (record-set! rd (failed (Some e)))
         (Err e))
        (r r)))))
+
+;; The line the row last read starts on, from 1: where a row's own errors,
+;; such as a field that does not decode, are.
+(: (-> CsvReader int))
+(defun (csv-row-line rd) (record-ref rd row-line))
+
+;; How many rows have been read, the last one included. Blank lines are not
+;; rows.
+(: (-> CsvReader int))
+(defun (csv-row-number rd) (record-ref rd rows))
 
 ;; ===========================================================================
 ;; Sources

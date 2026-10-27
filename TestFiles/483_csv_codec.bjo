@@ -1,0 +1,136 @@
+;; (text csv-codec): records read from CSV rows by the header's names, and
+;; written back; the fields' own types; and the errors, as CsvErrors.
+
+(import (std prelude))
+(import (std simpletest))
+(import (text csv))
+(import (text csv-codec))
+
+(def/csv-type
+  (: Sale (Record (: id int)
+                  (: customer string #:csv "Customer Name")
+                  (: price decimal)
+                  (: currency string #:default "EUR")
+                  (: note (Option string) #:optional))))
+
+(def/csv-type
+  (: Kinds (Record (: n long) (: x double) (: ok bool) (: maybe (Option int)))))
+
+(def/csv-type
+  (: (Tagged %a) (Record (: tag string) (: value %a))))
+
+;; The records, or the error as displayed.
+(: (-> string (Result string (Vec Sale))))
+(defun (sales text)
+  (: read (Result CsvError (Vec Sale)))
+  (def read (parse-csv-records text))
+  (match read
+    ((Ok v) (Ok v))
+    ((Err e) (Err (displayed e)))))
+
+(: (-> int string decimal string (Option string) Sale))
+(defun (sale id customer price currency note)
+  (Sale (id id) (customer customer) (price price) (currency currency) (note note)))
+
+(defun (main)
+  ;; ---- Reading by name ----------------------------------------------------
+  (expect "columns in any order, and one the record does not have"
+          (sales "price,extra,Customer Name,id\n12.50,x,Ada,7\n1,y,\"Lovelace, A\",8\n")
+          (Ok [(sale 7 "Ada" 12.50M "EUR" None) (sale 8 "Lovelace, A" 1M "EUR" None)]))
+  (expect "a default, and an Option"
+          (sales "id,Customer Name,price,currency,note\n1,a,2,SEK,hi\n2,b,3,,\n")
+          (Ok [(sale 1 "a" 2M "SEK" (Some "hi")) (sale 2 "b" 3M "EUR" None)]))
+  (expect "only the header" (sales "id,Customer Name,price\n") (Ok []))
+  (expect "nothing" (sales "") (Ok []))
+  (expect "the first of two columns with one name"
+          (sales "id,Customer Name,price,id\n1,a,2,9\n")
+          (Ok [(sale 1 "a" 2M "EUR" None)]))
+
+  ;; ---- Errors -------------------------------------------------------------
+  (expect "a field that is not a number"
+          (sales "id,Customer Name,price\n1,a,2\nx,b,3\n")
+          (Err "line 3, row 3, field 1: id: \"x\" is not an int"))
+  (expect "a decimal with a comma"
+          (sales "Customer Name,price,id\na,\"12,5\",1\n")
+          (Err "line 2, row 2, field 2: price: \"12,5\" is not a decimal"))
+  (expect "the line a row starts on, after a field with line ends"
+          (sales "id,Customer Name,price\n1,\"a\nb\",2\n2,c,z\n")
+          (Err "line 4, row 3, field 3: price: \"z\" is not a decimal"))
+  (expect "a header without a required column"
+          (sales "id,price\n1,2\n")
+          (Err "line 1, row 1, field 0: the header has no column \"Customer Name\""))
+  (expect "a row that ends before a column"
+          (sales "id,Customer Name,price\n1,a\n")
+          (Err "line 2, row 2, field 3: price: the row ends before this column"))
+  (expect "an error in the CSV itself"
+          (sales "id,Customer Name,price\n1,a\"b,2\n")
+          (Err "line 2, row 2, field 2: a quote inside a field that does not start with one"))
+
+  ;; ---- The field types ----------------------------------------------------
+  (: kinds (Result CsvError (Vec Kinds)))
+  (def kinds (parse-csv-records "n,x,ok,maybe\n 9000000000 ,1.5e3,TRUE,\n-1,-0.25,false,4\n"))
+  (expect "long, double, bool and Option"
+          (match kinds ((Ok v) (Ok v)) ((Err e) (Err (displayed e))))
+          (Ok [(Kinds (n 9000000000L) (x 1500.0) (ok #t) (maybe None))
+               (Kinds (n -1L) (x -0.25) (ok #f) (maybe (Some 4)))]))
+  (: bad-bool (Result CsvError (Vec Kinds)))
+  (def bad-bool (parse-csv-records "n,x,ok,maybe\n1,1,yes,\n"))
+  (expect "a bool that is not one"
+          (match bad-bool ((Ok _) "read") ((Err e) (displayed e)))
+          "line 2, row 2, field 3: ok: \"yes\" is not true or false")
+
+  ;; ---- Without a header ---------------------------------------------------
+  (: by-position (Result CsvError (Vec Sale)))
+  (def by-position (parse-csv-records "7,Ada,1.5,USD,x\n8,Bo,2\n" #:header? #f))
+  (expect "the fields in order"
+          (match by-position ((Ok v) (Ok v)) ((Err e) (Err (displayed e))))
+          (Ok [(sale 7 "Ada" 1.5M "USD" (Some "x")) (sale 8 "Bo" 2M "EUR" None)]))
+  (expect "tabs"
+          (match (the-sales (parse-csv-records "id\tCustomer Name\tprice\n1\ta,b\t2\n" #:separator #\tab))
+            ((Ok v) (Ok v)) ((Err e) (Err (displayed e))))
+          (Ok [(sale 1 "a,b" 2M "EUR" None)]))
+
+  ;; ---- Folding ------------------------------------------------------------
+  (expect "the total"
+          (csv-fold-records "id,Customer Name,price\n1,a,2.5\n2,b,4\n" 0M
+                            (fun (s total) (+ total (record-ref s price))))
+          (Ok 6.5M))
+  (def seen (make-box 0))
+  (def result (csv-for-each-record "id,Customer Name,price\n1,a,2\n2,b,3\nx,c,4\n"
+                                   (fun (s) (box-set! seen (+ (box-ref seen) (record-ref s id))))))
+  (expect-true "for-each: an error" (err? result))
+  (expect "for-each: after the records before it" (box-ref seen) 3)
+
+  ;; ---- Writing ------------------------------------------------------------
+  (def written-sales [(sale 1 "Ada, A" 12.50M "EUR" None) (sale 2 "say \"hi\"" 3M "SEK" (Some "n"))])
+  (expect "the header, then the rows"
+          (csv-records->string written-sales)
+          "id,Customer Name,price,currency,note\n1,\"Ada, A\",12.50,EUR,\n2,\"say \"\"hi\"\"\",3,SEK,n\n")
+  (expect "without the header"
+          (csv-records->string (list (sale 1 "a" 1M "EUR" None)) #:header? #f)
+          "1,a,1,EUR,\n")
+  (expect "no records: the header alone"
+          (csv-records->string (the-list-of-sales Nil))
+          "id,Customer Name,price,currency,note\n")
+  (expect "written and read back" (sales (csv-records->string written-sales)) (Ok written-sales))
+  (def out (open-output-string))
+  (write-csv-records out written-sales #:crlf? #t)
+  (expect "to a port, and read back" (sales (get-output-string out)) (Ok written-sales))
+
+  ;; ---- A record with a type parameter -------------------------------------
+  (: tagged (Result CsvError (Vec (Tagged int))))
+  (def tagged (parse-csv-records "value,tag\n3,a\n"))
+  (expect "a type parameter"
+          (match tagged ((Ok v) (Ok v)) ((Err e) (Err (displayed e))))
+          (Ok [(Tagged (tag "a") (value 3))]))
+  (expect "written"
+          (csv-records->string [(Tagged (tag "b") (value 2.5))])
+          "tag,value\nb,2.5\n")
+  0)
+
+;; The type a call reads, said once.
+(: (-> (Result CsvError (Vec Sale)) (Result CsvError (Vec Sale))))
+(defun (the-sales r) r)
+
+(: (-> (List Sale) (List Sale)))
+(defun (the-list-of-sales xs) xs)

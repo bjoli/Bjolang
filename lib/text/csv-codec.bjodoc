@@ -1,0 +1,286 @@
+;; Docs for text/csv-codec.bjo, read through (:doc #:file "csv-codec.bjodoc").
+;; The texts are samizdat markup: code in prose is @code{...}.
+
+(:doc #:module
+  (summary "Records to CSV rows and back: def/csv-type, and readers and writers of records.")
+  (see def/csv-type parse-csv-records csv-for-each-record csv-records->string CsvRecord)
+  (example """
+    (import (text csv) (text csv-codec))
+
+    (def/csv-type
+      (: Sale (Record (: id int)
+                      (: customer string #:csv "Customer Name")
+                      (: price decimal)
+                      (: note (Option string) #:optional))))
+
+    (: sales (Result CsvError (Vec Sale)))
+    (def sales (parse-csv-records (csv-file "sales.csv")))
+
+    (csv-for-each-record (csv-file "sales.csv")
+                         (fun (s) (println (record-ref s customer))))
+
+    (write-csv-records port sales-vec)   ; the header, then a row for each
+    """)
+  (reference """
+    @code{def/csv-type} declares a record and its @code{CsvRecord}
+    instance, as @code{def/json-type} does for JSON. The readers and writers
+    here then take records of that type. They are built on
+    @code{(text csv)}, and take its options as well as @code{#:header?}.
+
+    @strong{Columns.} With @code{#:header? #t}, the default, the first row
+    is the header, and each field's column is found in it by name: the
+    field's own, or the one @code{#:csv} gives. The order of the columns
+    does not matter, columns no field names are not read, and when two
+    columns have one name the first is used. With @code{#:header? #f} there
+    is no header, and the fields are the columns in order. The writers write
+    the header from the same names.
+
+    @strong{Fields.} A field reads and writes through @code{csv-field->}
+    and @code{->csv-field}, which have instances for @code{string},
+    @code{int}, @code{long}, @code{double}, @code{decimal}, @code{bool}
+    and @code{(Option %a)}. A number is read in the invariant culture, with
+    a point and not a comma, and may have space around it. A bool is
+    @code{true} or @code{false} in any case. An @code{(Option %a)} is
+    @code{None} for an empty field, and is written as one. A type of your
+    own reads and writes as a field when it has the two instances.
+
+    @strong{Errors.} Everything is a @code{CsvError}, at the line where the
+    row starts, in the row and field the column is in, and named by the
+    column: @code{line 12, row 11, field 3: price: "12,5" is not a decimal}.
+    A header without a required column is an error before the first record,
+    in row 1 and field 0. The records before an error have been read when
+    it is answered. A call that cannot tell which record type it reads
+    says so with an annotation, as @code{sales} does above.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Fields
+;; ---------------------------------------------------------------------------
+
+(:doc ->csv-field
+  (summary "A value as the text of a CSV field.")
+  (tparam %a "The type.")
+  (arg value "The value.")
+  (returns "The text. An Option writes None as the empty field.")
+  (see csv-field->)
+  (example """
+    (->csv-field 1.5M)          ; "1.5"
+    (->csv-field (Some 3))      ; "3"
+    """))
+
+(:doc csv-field->
+  (summary "The value the text of a CSV field is.")
+  (tparam %a "The type.")
+  (arg text "The text of the field.")
+  (returns "The value, or what is wrong with the text.")
+  (see ->csv-field)
+  (reference """
+    The error says what is wrong with the text and not where: a reader
+    adds the line, the row and the column. @code{"12,5" is not a decimal}.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Records
+;; ---------------------------------------------------------------------------
+
+(:doc CsvRecord
+  (summary "A record that reads from and writes to a CSV row: what def/csv-type writes.")
+  (tparam %a "The record.")
+  (see def/csv-type CsvColumns)
+  (reference """
+    @code{def/csv-type} writes an instance for its record, and is the way
+    to get one. An instance by hand gives the columns, a way to read a row
+    given where each column is, and a way to write a row.
+    """))
+
+(:doc csv-columns
+  (summary "A record's columns, one for each field, in the order of the fields.")
+  (returns "The columns. The record's type says whose they are: annotate the result to choose.")
+  (see CsvColumns CsvRecord))
+
+(:doc csv-record->
+  (summary "A record read from a row.")
+  (arg at "For each field, where its column is in the row: -1 for a column the header does not have.")
+  (arg row "The row.")
+  (returns "The record, or the field that does not read, from 0 in the record's order, and why.")
+  (see CsvRecord))
+
+(:doc ->csv-record
+  (summary "A record written as a row.")
+  (arg v "The record.")
+  (returns "One field for each of its fields, in their order.")
+  (see CsvRecord))
+
+(:doc CsvColumn
+  (summary "A column a record reads.")
+  (field name "The name of the column in the header.")
+  (field required "Whether the header has to have it. A field with a default does not."))
+
+(:doc CsvColumns
+  (summary "A record's columns. The type parameter is the record they are the columns of.")
+  (see csv-columns CsvColumn))
+
+;; ---------------------------------------------------------------------------
+;; What generated code calls
+;; ---------------------------------------------------------------------------
+
+(:doc csv-required
+  (summary "A column the header has to have. For code def/csv-type writes.")
+  (arg name "The column's name.")
+  (returns "The column."))
+
+(:doc csv-optional
+  (summary "A column the header need not have. For code def/csv-type writes.")
+  (arg name "The column's name.")
+  (returns "The column."))
+
+(:doc csv-columns-of
+  (summary "Columns of a record. For code def/csv-type writes.")
+  (arg cols "The columns, in the order of the fields.")
+  (returns "The columns."))
+
+(:doc csv-row-of
+  (summary "A row of fields. For code def/csv-type writes.")
+  (arg fields "The fields.")
+  (returns "The row."))
+
+(:doc csv-decode-field
+  (summary "A record's field, read from its column. For code def/csv-type writes.")
+  (arg at "Where each field's column is.")
+  (arg k "The field, from 0.")
+  (arg row "The row.")
+  (returns "The value, or the field and why it does not read."))
+
+(:doc csv-decode-field/default
+  (summary "A record's field with a default, read from its column. For code def/csv-type writes.")
+  (arg at "Where each field's column is.")
+  (arg k "The field, from 0.")
+  (arg row "The row.")
+  (arg fallback "The value when the header has no such column, the row ends before it, or the field is empty.")
+  (returns "The value, or the field and why it does not read."))
+
+;; ---------------------------------------------------------------------------
+;; The generator
+;; ---------------------------------------------------------------------------
+
+(:doc def/csv-type
+  (summary "Declares a record, and how it reads from and writes to a CSV row.")
+  (form (def/csv-type declaration))
+  (arg declaration "A record declaration, as type takes one, whose fields may carry the markers below.")
+  (see CsvRecord parse-csv-records csv-records->string)
+  (example """
+    (def/csv-type
+      (: Sale (Record (: id int)
+                      (: customer string #:csv "Customer Name")
+                      (: price decimal)
+                      (: currency string #:default "EUR")
+                      (: note (Option string) #:optional))))
+
+    (def/csv-type
+      (: (Tagged %a) (Record (: tag string) (: value %a))))
+    """)
+  (reference """
+    @code{(def/csv-type (: Name (Record (: field type marker ...) ...)))}
+    declares the record @code{Name} as @code{type} would, and a
+    @code{CsvRecord} instance for it. A record with type parameters gets an
+    instance that needs each of them to read and write as a field.
+
+    @read-table{
+    | marker                | what it does |
+    |-----------------------+--------------|
+    | @code{#:csv "Name"}    | the column's name in the header; the field's name by default |
+    | @code{#:default expr}  | the value when the header has no such column, the row ends before it, or the field is empty |
+    | @code{#:optional}      | @code{#:default None}, for an @code{(Option %a)} |
+    | @code{#:mutable}       | kept: the field is mutable in the record |
+    }
+
+    A field without a default needs its column in the header. An
+    @code{(Option %a)} field without @code{#:optional} still needs its
+    column, and is @code{None} when the field is empty.
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Reading
+;; ---------------------------------------------------------------------------
+
+(:doc csv-fold-records
+  (summary "A seed threaded through the records of an input.")
+  (arg source "What to read: anything with a CsvSource implementation.")
+  (arg seed "The seed to begin with.")
+  (arg f "Called with each record and the seed; answers the next seed.")
+  (key #:header? "Whether the first row is the header. With #f the fields are the columns in order.")
+  (key #:separator "As for parse-csv.")
+  (key #:quote-char "As for parse-csv.")
+  (key #:strict? "As for parse-csv.")
+  (returns "The final seed, or the first error.")
+  (raises System.ArgumentException "When the separator or the quote is not allowed.")
+  (raises System.IO.IOException "When the source is a csv-file that cannot be opened.")
+  (see csv-for-each-record parse-csv-records)
+  (example """
+    ;; The total of the price column.
+    (csv-fold-records (csv-file "sales.csv") 0M
+                      (fun (s total) (+ total (record-ref s price))))
+    """)
+  (reference """
+    One record is held at a time. The records before an error have been
+    folded when it is answered.
+    """))
+
+(:doc csv-for-each-record
+  (summary "Calls a function with each record of an input.")
+  (arg source "What to read.")
+  (arg f "Called with each record, in order.")
+  (key #:header? "Whether the first row is the header.")
+  (key #:separator "As for parse-csv.")
+  (key #:quote-char "As for parse-csv.")
+  (key #:strict? "As for parse-csv.")
+  (returns "Ok at the end of the input, or the first error.")
+  (raises System.ArgumentException "When the separator or the quote is not allowed.")
+  (raises System.IO.IOException "When the source is a csv-file that cannot be opened.")
+  (see csv-fold-records))
+
+(:doc parse-csv-records
+  (summary "Reads every record of an input.")
+  (arg source "What to read.")
+  (key #:header? "Whether the first row is the header.")
+  (key #:separator "As for parse-csv.")
+  (key #:quote-char "As for parse-csv.")
+  (key #:strict? "As for parse-csv.")
+  (returns "The records, or the first error.")
+  (raises System.ArgumentException "When the separator or the quote is not allowed.")
+  (raises System.IO.IOException "When the source is a csv-file that cannot be opened.")
+  (see csv-fold-records)
+  (example """
+    (: sales (Result CsvError (Vec Sale)))
+    (def sales (parse-csv-records "id,Customer Name,price\n7,Ada,12.50\n"))
+    """))
+
+;; ---------------------------------------------------------------------------
+;; Writing
+;; ---------------------------------------------------------------------------
+
+(:doc csv-records->string
+  (summary "Records as CSV text: the header, then a row for each.")
+  (arg records "The records: a vec, a list, a Seq, or any other Iterable of them.")
+  (key #:header? "Whether to write the header first: #t by default.")
+  (key #:separator "As for csv->string.")
+  (key #:quote-char "As for csv->string.")
+  (key #:quote-all? "As for csv->string.")
+  (key #:crlf? "As for csv->string.")
+  (returns "The text. parse-csv-records reads it back as the same records.")
+  (see write-csv-records parse-csv-records))
+
+(:doc write-csv-records
+  (summary "Writes records to a port: the header, then a row for each.")
+  (arg port "The port.")
+  (arg records "The records: a vec, a list, a Seq, or any other Iterable of them.")
+  (key #:header? "Whether to write the header first: #t by default.")
+  (key #:separator "As for write-csv.")
+  (key #:quote-char "As for write-csv.")
+  (key #:quote-all? "As for write-csv.")
+  (key #:crlf? "As for write-csv.")
+  (see csv-records->string write-csv)
+  (reference """
+    The records are read once, in order, and written in pieces, as
+    @code{write-csv} writes rows.
+    """))
