@@ -578,6 +578,9 @@ type ExternImportSpec =
       /// fewer. Declared rather than guessed because only the importer knows —
       /// a .NET method's signature says nothing about whether it waits.
       IsBlocking: bool
+      /// `#:copy`: the target answers a span, and the alias answers a new
+      /// array with a copy of its elements.
+      IsCopy: bool
       /// `#:get`: the target is a property or field, and the alias reads it.
       IsGet: bool
       /// `#:set`: the target is a property or field, and the alias writes it.

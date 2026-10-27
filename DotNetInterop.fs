@@ -2221,6 +2221,20 @@ let hasAwaitableOverload (isStatic: bool) (t: Type) (name: string) : bool =
     callableMethods t name (memberFlags isStatic)
     |> List.exists (fun (_, m) -> (awaitedResultType m.ReturnType).IsSome)
 
+/// Does this method answer a `ReadOnlySpan<T>` or a `Span<T>`, in any
+/// overload? Asked at a `#:copy` import, as `hasAwaitableOverload` is at an
+/// `#:async` one. A generic definition counts, so the type is not required
+/// to be constructed.
+let hasSpanResultOverload (isStatic: bool) (t: Type) (name: string) : bool =
+    t.GetMethods(memberFlags isStatic)
+    |> Array.exists (fun m ->
+        m.Name = name
+        && m.ReturnType.IsGenericType
+        && (match m.ReturnType.GetGenericTypeDefinition().FullName with
+            | "System.ReadOnlySpan`1"
+            | "System.Span`1" -> true
+            | _ -> false))
+
 /// Does this method have an overload whose last parameter is a
 /// `CancellationToken`, and which takes `arity` parameters in total?
 ///

@@ -828,6 +828,11 @@ type ClrExternInfo =
       /// suspending the fiber. Changes no emitted code — it is read by the
       /// blocking lint, which reports the ones a bjoroutine can reach.
       IsBlocking: bool
+      /// `#:copy`: the member answers a span, and the alias answers a new
+      /// array with a copy of its elements. The span itself never becomes a
+      /// Bjolang value, because it can point into memory that a later call
+      /// changes or frees.
+      IsCopy: bool
       /// The target is a *generic* method, and these are its type arguments —
       /// one per parameter C# writes between the angle brackets, each a Bjolang
       /// type written in terms of `DeclaredType`'s own variables.

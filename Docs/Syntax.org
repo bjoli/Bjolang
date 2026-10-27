@@ -1054,6 +1054,17 @@ Reported as a lint warning in a bjoroutine. The fix is to wrap it with ~blocking
     ((Err e) (report e))))
 #+END_SRC
 
+**** ~#:copy~ — a span result, as a new array
+Declares that a member answers a ~ReadOnlySpan<T>~ or a ~Span<T>~, and that the alias answers a new array with a copy of its elements. The declared result is the array.
+#+BEGIN_SRC scheme
+(import/extern
+  (preamble  (: System.Text.Encoding.Preamble (-> Encoding (Array byte)) #:get #:copy))   ; ReadOnlySpan<byte>
+  (drop-span (: System.MemoryExtensions.AsSpan (-> (Array %a) int (Array %a)) #:copy)))   ; Span<T>
+
+(preamble utf8)                        ;; utf8.Preamble.ToArray()
+#+END_SRC
+A span is not a Bjolang value. Thus, without ~#:copy~, a span result declared as an array is refused. The copy costs an allocation per call. If the copy is too slow, write the loop over the span in C# glue (see [[file:Projects.org][Projects.org]], C# glue). ~#:copy~ does not combine with ~#:async~, ~#:set~ or ~(out T)~ parameters.
+
 **** ~#:get~ and ~#:set~ — properties and fields
 ~#:get~ reads a property/field, ~#:set~ writes it.
 #+BEGIN_SRC scheme
@@ -1209,6 +1220,7 @@ A generic method may be imported ~#:async~ and ~#:cancellable~ too. The declared
 | ~(A, B)~             | ~(Tuple %a %b)~    |
 | ~T[]~                | ~(Array %a)~       |
 | a ~ReadOnlySpan<T>~ or ~Span<T>~ parameter | ~(Array %a)~ |
+| a ~ReadOnlySpan<T>~ or ~Span<T>~ result, under ~#:copy~ | ~(Array %a)~, a copy |
 | ~void~               | ~void~             |
 | a method's own ~T~   | a type variable    |
 ~Action<T>~ and ~out~ parameters do not cross directly. Use callbacks returning ~unit~ or tuples. For an event handler, an ~Action~ or a delegate type of a library's own, ~(std interop)~ makes a delegate of that type from a Bjolang function.
@@ -1220,7 +1232,7 @@ A generic method may be imported ~#:async~ and ~#:cancellable~ too. The declared
   (write-be! (: System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian (-> (Array byte) int void)))  ; Span<byte>
   (reverse!  (: System.MemoryExtensions.Reverse (-> (Array %a) void))))                      ; Span<T>
 #+END_SRC
-A span a method *answers* is not an array, and has no Bjolang type: it lives only as long as the call that made it. A member that answers one is imported through C# glue that copies it out (see [[file:Projects.org][Projects.org]], C# glue).
+A span a member *answers* is not an array, and has no Bjolang type: it lives only as long as the call that made it, and can point into memory that a later call changes. Import the member ~#:copy~ to answer a new array with a copy of its elements (see ~#:copy~ above). The array is the declared result, as for a span parameter.
 
 *** Limits
 Destructuring .NET classes with constructor patterns and generic class imports (except as types) are not supported.

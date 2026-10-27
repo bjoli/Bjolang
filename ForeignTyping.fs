@@ -238,8 +238,12 @@ let internal declaresClrResult (info: ClrExternInfo) : bool =
 
 /// What a call to an import answers: the Bjolang view of the member's type,
 /// or the .NET type itself when the declaration asks for it.
+/// Under `#:copy`, a span answer is the array that the call copies it into;
+/// see `Codegen.clrResultConversion`.
 let internal externResultType (info: ClrExternInfo) (memberType: HMType) : HMType =
-    if declaresClrResult info then memberType else seenType memberType
+    match DotNetInterop.spanArrayViewOf memberType with
+    | Some array when info.IsCopy -> array
+    | _ -> if declaresClrResult info then memberType else seenType memberType
 
 /// A call to a runtime conversion, typed as its result.
 let private conversion (helper: string) (arg: TypedExpr) (result: HMType) : TypedExpr =
@@ -298,9 +302,15 @@ let internal convertStringIns (outs: ExternOuts option) (args: TypedExpr list) :
     | _ -> args
 
 /// `marshalResult` for an import's property read, unless its declaration keeps
-/// the .NET string.
+/// the .NET string. Under `#:copy`, a span is copied into a new array with its
+/// own `ToArray`, in the same expression, so the span is never held.
 let internal marshalExternResult (info: ClrExternInfo) (expr: TypedExpr) : TypedExpr =
-    if declaresClrResult info then expr else marshalResult expr
+    match DotNetInterop.spanArrayViewOf expr.Type with
+    | Some array when info.IsCopy ->
+        { Type = array
+          Range = expr.Range
+          Node = TDotMethodCall(expr, "ToArray", [], None) }
+    | _ -> if declaresClrResult info then expr else marshalResult expr
 
 /// Unifies a foreign member's parameter types into the argument types.
 ///
@@ -420,10 +430,16 @@ let internal genericExternMeta
     : DotNetMethodMetadata =
     // With outs, `retType` is the binding's result, and the metadata carries
     // the method's own answer.
+    //
+    // Under `#:copy`, `retType` is the array the answer is copied into, and
+    // the metadata says a span: the emitter reads only that it is one, to
+    // copy it with `ToArray`. The import does not record which of the two
+    // span types the method answers, so the read-only one stands for both.
     let methodReturn =
-        match outs with
-        | Some o -> o.MethodReturn
-        | None -> retType
+        match outs, retType with
+        | Some o, _ -> o.MethodReturn
+        | None, TCon("Array", [ elem ]) when info.IsCopy -> TCon("System.ReadOnlySpan", [ elem ])
+        | None, _ -> retType
 
     { DeclaringType = info.ClrType
       MethodName = info.MemberName
@@ -472,12 +488,23 @@ let internal checkDeclaredExtern
     : unit =
     // A span parameter takes an array, so a span result declared as an array
     // would look like the same thing the other way round. It is not, and is
-    // said so rather than reported as two types that differ.
-    match info.DeclaredType, DotNetInterop.spanArrayViewOf (prune registry result) with
-    | Some(TFun(_, written, _)), Some _ when prune registry written <> prune registry result ->
+    // said so rather than reported as two types that differ. Under `#:copy`
+    // the call answers the array, and the declaration is checked against it.
+    let copied = DotNetInterop.spanArrayViewOf (prune registry result)
+
+    match info.DeclaredType, copied with
+    | _, None when info.IsCopy ->
         failwithf
-            $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' answers a %s{DotNetInterop.showType (prune registry result)}, and a span is not a Bjolang value: it lives only as long as the call that made it, so it cannot be held, stored or returned. An array can be passed where a method takes a span, but a span it answers is not an array. Copy it into one with .ToArray() in the package's C# glue, (csharp \"glue\") in its manifest, and import that."
+            $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' is imported #:copy, but the overload selected here answers %s{DotNetInterop.showType (prune registry result)}, not a span. #:copy only turns a span into an array."
+    | Some(TFun(_, written, _)), Some _ when not info.IsCopy && prune registry written <> prune registry result ->
+        failwithf
+            $"Type Error at %s{where}: '%s{info.ClrType}.%s{info.MemberName}' answers a %s{DotNetInterop.showType (prune registry result)}, and a span is not a Bjolang value: it lives only as long as the call that made it, so it cannot be held, stored or returned. An array can be passed where a method takes a span, but a span it answers is not an array. Write #:copy in the clause to answer a new array with a copy of its elements."
     | _ -> ()
+
+    let result =
+        match copied with
+        | Some array when info.IsCopy -> array
+        | _ -> result
 
     match info.DeclaredType with
     | Some declared ->

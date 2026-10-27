@@ -882,6 +882,10 @@ let metadata
                 // reports nothing where it should report a parked thread.
                 let blockingStr = if info.IsBlocking then " #:blocking" else ""
 
+                // Without it, the importing module sees a span answer where
+                // the declared type says array, and refuses the clause.
+                let copyStr = if info.IsCopy then " #:copy" else ""
+
                 // Whether the member is static or an instance one is
                 // deliberately *not* written here: the reader on the far
                 // side asks the same metadata and gets the same answer,
@@ -893,7 +897,7 @@ let metadata
                     | TypedAST.ExternSet -> " #:set"
                     | TypedAST.ExternMethod -> ""
 
-                $"(import/extern (%s{info.Alias} (: %s{info.ClrType}.%s{info.MemberName}%s{typeStr}%s{exceptionStr}%s{asyncStr}%s{blockingStr}%s{uncancellableStr}%s{cancellableStr}%s{accessorStr})))"
+                $"(import/extern (%s{info.Alias} (: %s{info.ClrType}.%s{info.MemberName}%s{typeStr}%s{exceptionStr}%s{asyncStr}%s{blockingStr}%s{copyStr}%s{uncancellableStr}%s{cancellableStr}%s{accessorStr})))"
 
             /// `None` for a name with no binding to read a type off, so
             /// that a name which cannot be described is dropped rather

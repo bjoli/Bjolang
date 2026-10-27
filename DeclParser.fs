@@ -48,6 +48,13 @@ type ForeignImportOptions =
       /// bjoroutine that reaches it holds a pool thread rather than suspending.
       /// Read by the blocking lint and by nothing else.
       IsBlocking: bool
+      /// `#:copy` — the target answers a span, and the alias answers a new
+      /// array that holds a copy of its elements.
+      ///
+      /// A span is not a Bjolang value: it can point into the stack or into
+      /// memory that a later call changes. The copy is the one form of the
+      /// result that is safe to keep.
+      IsCopy: bool
       /// `#:get` — the target names a property or field, and the alias reads
       /// it.
       IsGet: bool
@@ -74,7 +81,7 @@ let parseForeignImportClause
 
     let malformed () : 'a =
         failwithf
-            $"Syntax error in %s{formName} at %s{Lexer.formatPos r}: expected (alias (: Fully.Qualified.Target type)), the type optionally followed by #:exceptions (ExceptionType ...), #:async, #:blocking, #:uncancellable, #:get or #:set."
+            $"Syntax error in %s{formName} at %s{Lexer.formatPos r}: expected (alias (: Fully.Qualified.Target type)), the type optionally followed by #:exceptions (ExceptionType ...), #:async, #:blocking, #:uncancellable, #:copy, #:get or #:set."
 
     match s with
     // The alias may be written applied — `(Set %a)` — which is how a generic
@@ -123,6 +130,7 @@ let parseForeignImportClause
             | SAtom { Token = Keyword "uncancellable" } :: tail -> readOptions { opts with Uncancellable = true } tail
             | SAtom { Token = Keyword "cancellable" } :: tail -> readOptions { opts with Cancellable = true } tail
             | SAtom { Token = Keyword "blocking" } :: tail -> readOptions { opts with IsBlocking = true } tail
+            | SAtom { Token = Keyword "copy" } :: tail -> readOptions { opts with IsCopy = true } tail
             | SAtom { Token = Keyword "get" } :: tail -> readOptions { opts with IsGet = true } tail
             | SAtom { Token = Keyword "set" } :: tail -> readOptions { opts with IsSet = true } tail
             | _ -> malformed ()
@@ -135,6 +143,7 @@ let parseForeignImportClause
                   Uncancellable = false
                   Cancellable = false
                   IsBlocking = false
+                  IsCopy = false
                   IsGet = false
                   IsSet = false }
                 optionForms
@@ -162,6 +171,10 @@ let private checkAccessorOptions (formName: string) (opts: ForeignImportOptions)
         if opts.IsBlocking then
             failwithf
                 $"Syntax error in %s{formName} at %s{where}: #:blocking says a *call* parks the thread it runs on, and reading or writing a property is not a call. A property that does real work behind an accessor is better imported as the method it is."
+
+        if opts.IsSet && opts.IsCopy then
+            failwithf
+                $"Syntax error in %s{formName} at %s{where}: #:copy turns a span *result* into an array, and a write answers nothing."
 
         if not opts.Exceptions.IsEmpty then
             failwithf
@@ -498,6 +511,7 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                   Uncancellable = opts.Uncancellable
                   Cancellable = opts.Cancellable
                   IsBlocking = opts.IsBlocking
+                  IsCopy = opts.IsCopy
                   IsGet = opts.IsGet
                   IsSet = opts.IsSet
                   Range = cr })
@@ -527,6 +541,11 @@ let rec tryParseDecl (s: SExpr) : Decl option =
                 if opts.IsBlocking then
                     failwithf
                         $"Syntax error in import/class at %s{Lexer.formatPos cr}: #:blocking marks a call that parks the thread it runs on, and this form declares a type and its constructor. Put it on the import/extern clause for the method that does the waiting."
+
+                // A constructor answers its object, never a span.
+                if opts.IsCopy then
+                    failwithf
+                        $"Syntax error in import/class at %s{Lexer.formatPos cr}: #:copy turns a span result into an array, and a constructor answers its object. Put it on the import/extern clause for the member that answers the span."
 
                 // A class is not an accessor. `import/class` declares a type and
                 // its constructor, and a property of that type is imported with

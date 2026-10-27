@@ -1,0 +1,39 @@
+;; #:copy: a member that answers a span answers a new array with a copy of its
+;; elements, for a property read and for generic methods, called and used as
+;; values.
+
+(import (std prelude))
+(import (std simpletest))
+(import "inc/span_copy_lib.bjo")
+
+(import/class
+  (Encoding (: System.Text.Encoding)))
+
+(import/extern
+  (utf8 (: System.Text.Encoding.UTF8 #:get))
+  ;; A ReadOnlySpan<byte> property.
+  (preamble (: System.Text.Encoding.Preamble (-> Encoding (Array byte)) #:get #:copy))
+  ;; Generic, Span<T>, beside an ordinary AsSpan(string, int).
+  (drop-span (: System.MemoryExtensions.AsSpan (-> (Array %a) int (Array %a)) #:copy))
+  ;; Generic over ReadOnlySpan<T> and Span<T>: the read-only one is taken.
+  (trim (: System.MemoryExtensions.Trim (-> (Array long) long (Array long)) #:copy)))
+
+(defun (main)
+  (expect "a span property, copied" (array->vec (preamble utf8)) [239uy 187uy 191uy])
+
+  (def xs (vec->array [1L 2L 3L]))
+  (def tail (drop-span xs 1))
+  (expect "a generic span result, copied" (array->vec tail) [2L 3L])
+  (array-set! tail 0 9L)
+  (expect "the copy is not the array it came from" (array->vec xs) [1L 2L 3L])
+
+  (expect "a read-only span result" (array->vec (trim (vec->array [0L 5L 0L]) 0L)) [5L])
+  (expect "an empty span is an empty array" (array-length (trim (vec->array [0L 0L]) 0L)) 0)
+
+  (def fs [drop-span drop-span])
+  (expect "as a value" (array->vec ((vec-ref fs 0) xs 2)) [3L])
+  (expect "a span property as a value" (array->vec ((vec-ref [preamble] 0) utf8)) [239uy 187uy 191uy])
+
+  (expect "a span property, from another module" (array->vec (bom-of utf8)) [239uy 187uy 191uy])
+  (expect "a generic span result, from another module" (array->vec (take-from xs 2)) [3L])
+  0)

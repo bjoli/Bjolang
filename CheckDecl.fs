@@ -2004,10 +2004,28 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                 // reason existence is: the clause is where the claim was
                 // made. The resolved type is thrown away — each use
                 // re-resolves it, and there is only ever one answer.
-                DotNetInterop.resolveMemberRead where clrType memberName (not isInstance) |> ignore
+                let memberType = DotNetInterop.resolveMemberRead where clrType memberName (not isInstance)
+
+                if spec.IsCopy && (DotNetInterop.spanArrayViewOf memberType).IsNone then
+                    failwithf
+                        $"Syntax error at %s{where}: '%s{clrType.FullName}.%s{memberName}' is imported #:copy, but its type is %s{DotNetInterop.showType memberType}, not a span. #:copy only turns a span into an array. Leave it off."
             | ExternSet -> DotNetInterop.resolveMemberWrite where clrType memberName (not isInstance) |> ignore
             | ExternMethod ->
                 checkExceptionTypes where spec.Exceptions
+
+                // A span cannot be a task's result, and the copy of an out
+                // call's answer would have to be made among its outs.
+                if spec.IsCopy && spec.IsAsync then
+                    failwithf
+                        $"Syntax error at %s{where}: '%s{clrType.FullName}.%s{memberName}' is imported both #:async and #:copy. A task cannot answer a span, so there is nothing to copy. Leave #:copy off."
+
+                if spec.IsCopy && declaresOuts then
+                    failwithf
+                        $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' declares (out T) parameters and is imported #:copy. A span result is not copied for a method with out parameters. Copy it in the package's C# glue, (csharp \"glue\") in its manifest, and import that."
+
+                if spec.IsCopy && not (DotNetInterop.hasSpanResultOverload (not isInstance) clrType memberName) then
+                    failwithf
+                        $"Syntax error at %s{where}: '%s{clrType.FullName}.%s{memberName}' is imported #:copy, but no overload of it answers a span. #:copy only turns a span into an array. Leave it off."
 
                 // An awaited call's outs would be written after the await, and
                 // C# forbids out parameters on an async method anyway. A
@@ -2140,6 +2158,29 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
             let awaited = spec.IsAsync
             let threadsToken = (spec.IsAsync || spec.Cancellable) && not spec.Uncancellable
 
+            // The binding's type, from the declared one and the answer of the
+            // generic method resolved against it.
+            //
+            // A method that answers nothing keeps the *interop* void as its
+            // type, not the unit the signature spells it with. The two are the
+            // same thing to a reader and not to the emitter: a void call is a
+            // statement, and a unit is a value C# would have to produce.
+            //
+            // A span answer is matched by a declared array, because a span
+            // parameter is. The binding answers that array under `#:copy`,
+            // which the call makes; without it, a span is not a Bjolang value
+            // and the import is refused.
+            let normalize (declaredParams: HMType list) (declaredReturn: HMType) (resolvedReturn: HMType) =
+                match DotNetInterop.spanArrayViewOf resolvedReturn with
+                | Some array when spec.IsCopy ->
+                    if array = declaredReturn then declaredType
+                    else Some(TFun(declaredParams, array, ESync))
+                | Some _ when resolvedReturn <> declaredReturn ->
+                    failwithf
+                        $"Type Error at %s{where}: '%s{clrType.FullName}.%s{memberName}' answers a %s{DotNetInterop.showType resolvedReturn}, and a span is not a Bjolang value: it lives only as long as the call that made it. Write #:copy in the clause to answer a new array with a copy of its elements."
+                | _ when resolvedReturn = declaredReturn -> declaredType
+                | _ -> Some(TFun(declaredParams, resolvedReturn, ESync))
+
             let mixedGeneric () =
                 match declaredType with
                 | Some(TFun(declaredParams, declaredReturn, _)) ->
@@ -2155,13 +2196,7 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                         DotNetInterop.tryResolveMixedGenericMethod
                             where (not isInstance) clrType memberName ps declaredReturn awaited threadsToken)
                     |> Option.map (fun resolved ->
-                        let normalized =
-                            if resolved.ReturnType = declaredReturn then
-                                declaredType
-                            else
-                                Some(TFun(declaredParams, resolved.ReturnType, ESync))
-
-                        Some resolved.TypeArguments, normalized)
+                        Some resolved.TypeArguments, normalize declaredParams declaredReturn resolved.ReturnType)
                 | _ -> None
 
             let genericTypeArgs, declaredType =
@@ -2200,18 +2235,7 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
                                 awaited
                                 threadsToken
 
-                        // A method that answers nothing keeps the *interop*
-                        // void as its type, not the unit the signature spells
-                        // it with. The two are the same thing to a reader and
-                        // not to the emitter: a void call is a statement, and
-                        // a unit is a value C# would have to produce.
-                        let normalized =
-                            if resolved.ReturnType = declaredReturn then
-                                declaredType
-                            else
-                                Some(TFun(declaredParams, resolved.ReturnType, ESync))
-
-                        Some resolved.TypeArguments, normalized
+                        Some resolved.TypeArguments, normalize declaredParams declaredReturn resolved.ReturnType
                     | Some _ ->
                         failwithf
                             $"Type Error at %s{where}: '%s{spec.Alias}' names a method, so its declared type has to be a function type."
@@ -2237,7 +2261,8 @@ and private checkImportExtern (env: Env) (sigs: Sigs) (specs: ExternImportSpec l
               IsAsync = spec.IsAsync
               Uncancellable = spec.Uncancellable
               Cancellable = spec.Cancellable
-              IsBlocking = spec.IsBlocking }
+              IsBlocking = spec.IsBlocking
+              IsCopy = spec.IsCopy }
 
     // One clause's failure costs that clause, as one declaration's does in a
     // group: the others are bound, and the failed alias is a placeholder, so

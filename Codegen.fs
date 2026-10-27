@@ -1754,13 +1754,18 @@ let rec renamePatternBinders (locals: Map<string, string>) (pat: TypedPattern) :
 
     { pat with Node = node }
 
-/// The runtime helper that converts a .NET method's answer of type `clrType` to
-/// the Bjolang string inference typed the call as, if it is a .NET string or an
-/// array of them. See `ForeignTyping.bjolangViewOf`.
-let clrStringConversion (clrType: HMType) : string option =
+/// The text written before and after a .NET method's call to convert its
+/// answer of type `clrType` to the Bjolang value inference typed the call as.
+///
+/// A .NET string, or an array of them, goes through a runtime helper; see
+/// `ForeignTyping.bjolangViewOf`. A span, which only a `#:copy` import lets
+/// through, is copied into a new array by its own `ToArray`, in the same
+/// expression, so no local ever holds the span.
+let clrResultConversion (clrType: HMType) : (string * string) option =
     match clrType with
-    | TCon(TypeConstants.ClrStringName, []) -> Some "StringFromClr"
-    | TCon("Array", [ TCon(TypeConstants.ClrStringName, []) ]) -> Some "StringsFromClr"
+    | TCon(TypeConstants.ClrStringName, []) -> Some("BjolangRuntime.StringFromClr(", ")")
+    | TCon("Array", [ TCon(TypeConstants.ClrStringName, []) ]) -> Some("BjolangRuntime.StringsFromClr(", ")")
+    | TCon(("System.ReadOnlySpan" | "System.Span"), [ _ ]) -> Some("(", ").ToArray()")
     | _ -> None
 
 /// A pattern of one or more string literals: a `var` designation in the label,
@@ -2567,14 +2572,15 @@ let rec generateExpr (ctx: CodegenContext) (expr: TypedExpr) : unit =
     | TForeignStaticCall (clrType, methodName, args, Some meta) when meta.Outs.IsSome ->
         generateOutCall ctx None expr None clrType methodName args meta meta.Outs.Value |> ignore
 
-    // A method answering a .NET string, typed by inference as the Bjolang
-    // string it is converted to here. The call itself is emitted with the
-    // method's own type, which is what ends the recursion.
+    // A method answering a .NET string or a span, typed by inference as the
+    // Bjolang string or array it is converted to here. The call itself is
+    // emitted with the method's own type, which is what ends the recursion.
     | TDotMethodCall (_, _, _, Some meta)
-    | TForeignStaticCall (_, _, _, Some meta) when (clrStringConversion meta.ReturnType).IsSome && expr.Type <> meta.ReturnType ->
-        append ctx $"BjolangRuntime.%s{(clrStringConversion meta.ReturnType).Value}("
+    | TForeignStaticCall (_, _, _, Some meta) when (clrResultConversion meta.ReturnType).IsSome && expr.Type <> meta.ReturnType ->
+        let before, after = (clrResultConversion meta.ReturnType).Value
+        append ctx before
         generateExpr ctx { expr with Type = meta.ReturnType }
-        append ctx ")"
+        append ctx after
 
     // An indexer: `x[k]`, and `x[k] = v` for its setter.
     | TDotMethodCall (target, _, args, Some ({ Syntax = IndexerGet | IndexerSet } as meta)) ->
@@ -3149,12 +3155,12 @@ and private generateGuarded
 and private generateGuardedCall (ctx: CodegenContext) (target: BlockTarget) (expr: TypedExpr) : unit =
     // `ConfigureAwait(false)` and the ambient token, as on the unguarded paths
     // in `generateExpr`.
-    // A .NET string answer converted, as on the unguarded path.
+    // A .NET string or span answer converted, as on the unguarded path.
     let callText (meta: DotNetMethodMetadata) (call: string) =
         let call = if meta.Await then $"(await %s{call}.ConfigureAwait(false))" else call
 
-        match clrStringConversion meta.ReturnType with
-        | Some helper -> $"BjolangRuntime.%s{helper}(%s{call})"
+        match clrResultConversion meta.ReturnType with
+        | Some(before, after) -> before + call + after
         | None -> call
 
     let withToken (meta: DotNetMethodMetadata) (names: string list) =
